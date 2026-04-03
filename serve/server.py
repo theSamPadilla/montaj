@@ -496,7 +496,10 @@ async def reload_project(project_id: str, request: Request):
 
 @router.get("/info")
 async def get_info():
-    return {"skill_path": str(MONTAJ_ROOT / "skills/onboarding/SKILL.md")}
+    return {
+        "skill_path": str(MONTAJ_ROOT / "skills/onboarding/SKILL.md"),
+        "style_profile_skill_path": str(MONTAJ_ROOT / "skills/style-profile/SKILL.md"),
+    }
 
 
 def scan_skills() -> list[dict]:

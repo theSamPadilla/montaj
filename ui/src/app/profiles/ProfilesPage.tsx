@@ -338,16 +338,28 @@ function EmptyState() {
 // ---------------------------------------------------------------------------
 
 export default function ProfilesPage() {
-  const [profiles, setProfiles] = useState<Profile[]>([])
-  const [loading, setLoading]   = useState(true)
-  const [selected, setSelected] = useState<string | null>(null)
+  const [profiles, setProfiles]       = useState<Profile[]>([])
+  const [loading, setLoading]         = useState(true)
+  const [selected, setSelected]       = useState<string | null>(null)
+  const [skillPath, setSkillPath]     = useState<string | null>(null)
+  const [copied, setCopied]           = useState(false)
 
   useEffect(() => {
     api.listProfiles()
       .then(setProfiles)
       .catch(console.error)
       .finally(() => setLoading(false))
+    api.getInfo()
+      .then(info => setSkillPath(info.style_profile_skill_path))
+      .catch(() => {})
   }, [])
+
+  function copyPrompt() {
+    if (!skillPath) return
+    navigator.clipboard.writeText(`Load ${skillPath} and help me create a style profile`)
+    setCopied(true)
+    setTimeout(() => setCopied(false), 1500)
+  }
 
   if (selected) {
     return <ProfileDetail name={selected} onBack={() => setSelected(null)} />
@@ -368,6 +380,24 @@ export default function ProfilesPage() {
           <ProfileCard key={p.name} profile={p} onClick={() => setSelected(p.name)} />
         ))}
       </div>
+
+      {skillPath && (
+        <div className="mt-6 rounded-xl border-2 border-indigo-500/40 bg-indigo-50 dark:bg-indigo-950/40 p-4 flex flex-col gap-3">
+          <p className="text-sm font-bold text-indigo-700 dark:text-indigo-300 uppercase tracking-wider">Create a style profile with your agent</p>
+          <div className="flex items-start justify-between gap-3 px-3 py-3 rounded-lg bg-white dark:bg-black/40 border border-indigo-200 dark:border-indigo-700/50">
+            <code className="text-xs text-gray-700 dark:text-gray-200 font-mono break-all leading-relaxed">
+              Load {skillPath} and help me create a style profile
+            </code>
+            <button
+              onClick={copyPrompt}
+              className="flex items-center gap-1.5 text-xs font-semibold text-indigo-600 dark:text-indigo-400 hover:text-indigo-800 dark:hover:text-indigo-200 transition-colors shrink-0 mt-0.5"
+            >
+              <Copy size={13} />
+              {copied ? 'Copied!' : 'Copy'}
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

@@ -122,7 +122,7 @@ export const api = {
   restoreVersion: (id: string, hash: string) =>
     request<Project>(`/api/projects/${id}/versions/${hash}/restore`, { method: 'POST' }),
 
-  getInfo: () => request<{ skill_path: string }>('/api/info'),
+  getInfo: () => request<{ skill_path: string; style_profile_skill_path: string }>('/api/info'),
 
   listProfiles: () => request<Profile[]>('/api/profiles'),
 
