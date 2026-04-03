@@ -1,0 +1,32 @@
+{
+  "name": "fetch",
+  "description": "Download a video from a URL (YouTube, TikTok, Instagram, etc.) using yt-dlp",
+  "output": {
+    "type": "video",
+    "description": "Path to downloaded file, or JSON {paths:[...]} for multi-video downloads"
+  },
+  "params": [
+    {
+      "name": "url",
+      "type": "string",
+      "required": true,
+      "description": "URL to download (video page, profile, or playlist)"
+    },
+    {
+      "name": "out",
+      "type": "string",
+      "description": "Output directory or file path. Defaults to current directory."
+    },
+    {
+      "name": "format",
+      "type": "string",
+      "default": "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
+      "description": "yt-dlp format selector"
+    },
+    {
+      "name": "limit",
+      "type": "int",
+      "description": "Max number of videos to download from a playlist or channel"
+    }
+  ]
+}

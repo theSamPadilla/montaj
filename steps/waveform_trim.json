@@ -1,0 +1,29 @@
+{
+  "name": "waveform_trim",
+  "description": "Detect silence — outputs trim spec JSON with keep ranges. No video encode.",
+  "input": {
+    "type": "video",
+    "description": "Source video file (use 'inputs' for batch parallel processing)",
+    "multiple": true
+  },
+  "output": {
+    "type": "json",
+    "description": "Trim spec: {input, keeps} — or array of trim specs for batch"
+  },
+  "params": [
+    {
+      "name": "threshold",
+      "type": "string",
+      "default": "-30",
+      "description": "Silence threshold in dB (e.g. -30)"
+    },
+    {
+      "name": "min-silence",
+      "type": "float",
+      "default": 0.3,
+      "min": 0.1,
+      "max": 5.0,
+      "description": "Minimum silence duration to remove in seconds"
+    }
+  ]
+}

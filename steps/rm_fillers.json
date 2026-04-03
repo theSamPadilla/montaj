@@ -1,0 +1,21 @@
+{
+  "name": "rm_fillers",
+  "description": "Remove filler words (um, uh, hmm) and surrounding silence from a clip",
+  "input": {
+    "type": "video",
+    "description": "Source video clip"
+  },
+  "output": {
+    "type": "video",
+    "description": "Cleaned clip with fillers removed"
+  },
+  "params": [
+    {
+      "name": "model",
+      "type": "enum",
+      "default": "base.en",
+      "options": ["tiny.en", "base.en", "medium.en", "large"],
+      "description": "Whisper model for filler detection. Larger = slower + more accurate."
+    }
+  ]
+}

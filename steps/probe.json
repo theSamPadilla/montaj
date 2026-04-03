@@ -1,0 +1,13 @@
+{
+  "name": "probe",
+  "description": "Extract metadata from a video file: duration, resolution, fps, codec, audio",
+  "input": {
+    "type": "video",
+    "description": "Video file to probe"
+  },
+  "output": {
+    "type": "json",
+    "description": "JSON object with duration, size_bytes, format, and streams array"
+  },
+  "params": []
+}

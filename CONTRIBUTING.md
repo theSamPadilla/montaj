@@ -1,0 +1,117 @@
+# Contributing to Montaj
+
+## Setup
+
+```bash
+git clone https://github.com/by-crux/montaj
+cd montaj
+
+# Python (CLI, steps, server)
+python -m venv venv && source venv/bin/activate
+pip install -e ".[serve,test]"
+
+# UI
+cd ui && npm install
+
+# Render engine
+cd render && npm install
+```
+
+System deps: `ffmpeg`, `ffprobe`, `whisper.cpp` (with at least `ggml-base.en.bin`).
+
+---
+
+## Running tests
+
+```bash
+make test          # run the full suite
+make test-fast     # skip slow/ffmpeg-heavy tests
+pytest tests/steps/test_probe.py   # single file
+```
+
+Tests require `ffmpeg`. Whisper-dependent tests use a fake binary fixture — no model download needed.
+
+---
+
+## Adding a step
+
+A step is a Python script in `steps/` paired with a JSON schema. That's it.
+
+**1. Write the script** (`steps/my_step.py`):
+
+```python
+#!/usr/bin/env python3
+import argparse, os, sys
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "lib"))
+from common import fail, require_file, check_output, run
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--input", required=True)
+    parser.add_argument("--out")
+    args = parser.parse_args()
+
+    require_file(args.input)
+    out = args.out or args.input.replace(".mp4", "_mystep.mp4")
+
+    run(["ffmpeg", "-y", "-i", args.input, ..., out])
+    check_output(out)
+    print(out)   # stdout = result path
+
+if __name__ == "__main__":
+    main()
+```
+
+**Output contract:**
+- Success → print result path (or JSON) to stdout, exit 0
+- Error → print JSON `{"error": "code", "message": "..."}` to stderr, exit 1
+- Never print progress to stdout — use stderr
+
+**2. Write the schema** (`steps/my_step.json`):
+
+```json
+{
+  "name": "my_step",
+  "description": "One sentence: what it does and when to use it.",
+  "params": [
+    { "name": "input",  "type": "string",  "required": true,  "description": "Source video file" },
+    { "name": "out",    "type": "string",  "required": false, "description": "Output path (default: input + _mystep.mp4)" }
+  ]
+}
+```
+
+The schema is what the agent and MCP server use to discover and call steps — keep the description agent-readable.
+
+**3. Write a test** (`tests/steps/test_my_step.py`):
+
+```python
+import pytest
+from conftest import run_step, assert_file_output
+
+def test_my_step_basic(test_video):
+    proc = run_step("my_step.py", "--input", str(test_video))
+    assert_file_output(proc)
+```
+
+**4. That's it.** The step is automatically available via `montaj step my-step`, `POST /api/steps/my_step`, and MCP.
+
+---
+
+## Adding a workflow
+
+Workflows live in `workflows/`. Copy `workflows/trim_and_overlay.json`, adjust the step sequence and `needs` dependencies, and document it in `docs/WORKFLOWS.md`.
+
+---
+
+## Adding an adaptor
+
+Adaptors live in `adaptors/`. Each is a self-contained directory with its own `package.json` and a `stitch.js` entry point. See `adaptors/stitch/` for the reference implementation and `docs/ADAPTORS.md` for the contract.
+
+---
+
+## PRs
+
+- Keep PRs focused — one feature or fix per PR
+- New steps need a test and a schema
+- Run `make test` before opening a PR
+- If you're not sure about a direction, open an issue first

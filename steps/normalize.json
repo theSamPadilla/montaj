@@ -1,0 +1,29 @@
+{
+  "name": "normalize",
+  "description": "Target a specific loudness level (LUFS) via ffmpeg loudnorm two-pass",
+  "input": {
+    "type": "video",
+    "description": "Video or audio file to normalize"
+  },
+  "output": {
+    "type": "video",
+    "description": "Loudness-normalized file"
+  },
+  "params": [
+    {
+      "name": "target",
+      "type": "enum",
+      "default": "youtube",
+      "options": ["youtube", "podcast", "broadcast", "custom"],
+      "description": "Platform preset. youtube = -14 LUFS, podcast = -16 LUFS, broadcast = -23 LUFS."
+    },
+    {
+      "name": "lufs",
+      "type": "float",
+      "default": -14,
+      "min": -40,
+      "max": 0,
+      "description": "Target LUFS. Used only when --target is 'custom'."
+    }
+  ]
+}

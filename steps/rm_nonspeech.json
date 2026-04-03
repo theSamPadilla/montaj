@@ -1,0 +1,37 @@
+{
+  "name": "rm_nonspeech",
+  "description": "Remove all non-speech regions using whisper word-level timestamps",
+  "input": {
+    "type": "video",
+    "description": "Source video file"
+  },
+  "output": {
+    "type": "video",
+    "description": "Video containing only speech regions"
+  },
+  "params": [
+    {
+      "name": "model",
+      "type": "enum",
+      "default": "base.en",
+      "options": ["tiny", "base", "base.en", "medium", "large"],
+      "description": "Whisper model for speech detection. Larger = slower + more accurate."
+    },
+    {
+      "name": "max-word-gap",
+      "type": "float",
+      "default": 0.18,
+      "min": 0.0,
+      "max": 1.0,
+      "description": "Maximum gap between words to bridge in seconds. Larger = fewer cuts."
+    },
+    {
+      "name": "sentence-edge",
+      "type": "float",
+      "default": 0.10,
+      "min": 0.0,
+      "max": 0.5,
+      "description": "Padding to keep before and after each speech region in seconds"
+    }
+  ]
+}

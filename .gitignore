@@ -1,0 +1,28 @@
+.env
+*.tmp
+*.log
+workspace/
+workflows/*
+!workflows/README.md
+!workflows/*.json
+venv/
+.venv/
+__pycache__/
+docs/plans/
+*.pyc
+*.egg-info/
+
+# Dependencies
+node_modules/
+mcp/node_modules/
+render/node_modules/
+ui/node_modules/
+adaptors/*/package-lock.json
+
+# Build output
+render/dist/
+ui/dist/
+
+# OS
+.DS_Store
+Thumbs.db

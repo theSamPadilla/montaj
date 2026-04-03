@@ -1,0 +1,35 @@
+{
+  "name": "ffmpeg_captions",
+  "description": "Burn static text captions into a video using ffmpeg drawtext",
+  "input": {
+    "type": "video",
+    "description": "Source video file"
+  },
+  "output": {
+    "type": "video",
+    "description": "Video with text burned in"
+  },
+  "params": [
+    {
+      "name": "text",
+      "type": "string",
+      "required": true,
+      "description": "Text to display"
+    },
+    {
+      "name": "fontsize",
+      "type": "int",
+      "default": 48,
+      "min": 10,
+      "max": 200,
+      "description": "Font size in pixels"
+    },
+    {
+      "name": "position",
+      "type": "enum",
+      "default": "center",
+      "options": ["center", "top", "bottom"],
+      "description": "Text position"
+    }
+  ]
+}

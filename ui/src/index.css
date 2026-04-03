@@ -1,0 +1,32 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  /* Light mode — default, matches media frontend */
+  html {
+    @apply bg-white text-gray-900;
+    font-family: 'Inter', system-ui, -apple-system, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    color-scheme: light;
+  }
+
+  /* Dark mode */
+  html.dark {
+    @apply bg-gray-950 text-gray-100;
+    color-scheme: dark;
+  }
+
+  * {
+    @apply border-gray-200;
+  }
+  .dark * {
+    @apply border-gray-800;
+  }
+
+  ::-webkit-scrollbar        { @apply w-1.5 h-1.5; }
+  ::-webkit-scrollbar-track  { @apply bg-transparent; }
+  ::-webkit-scrollbar-thumb  { @apply bg-gray-300 rounded-full; }
+  .dark ::-webkit-scrollbar-thumb { @apply bg-gray-700; }
+}

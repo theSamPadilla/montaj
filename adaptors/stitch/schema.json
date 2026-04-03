@@ -1,0 +1,14 @@
+{
+  "name": "stitch",
+  "description": "Generate a React overlay component (JSX) from a text description via Google Stitch",
+  "credential": "MONTAJ_STITCH_API_KEY",
+  "input": {
+    "description": { "type": "string", "required": true },
+    "device": { "type": "string", "default": "MOBILE", "options": ["MOBILE", "DESKTOP", "TABLET", "AGNOSTIC"] }
+  },
+  "output": {
+    "type": "file",
+    "format": "jsx",
+    "description": "React overlay component ready for the render engine"
+  }
+}

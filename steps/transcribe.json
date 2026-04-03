@@ -1,0 +1,27 @@
+{
+  "name": "transcribe",
+  "description": "Transcribe audio or video to SRT and word-level JSON using whisper.cpp",
+  "input": {
+    "type": "video",
+    "description": "Video or audio file to transcribe"
+  },
+  "output": {
+    "type": "json",
+    "description": "JSON object with paths to both outputs: {\"srt\": \"...\", \"words\": \"...\"}"
+  },
+  "params": [
+    {
+      "name": "model",
+      "type": "enum",
+      "default": "base.en",
+      "options": ["tiny.en", "base.en", "medium.en", "large"],
+      "description": "Whisper model. Larger = slower + more accurate."
+    },
+    {
+      "name": "language",
+      "type": "string",
+      "default": "en",
+      "description": "Language code (e.g. en, fr, de)"
+    }
+  ]
+}

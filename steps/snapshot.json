@@ -1,0 +1,30 @@
+{
+  "name": "snapshot",
+  "description": "Generate a frame grid contact sheet from a video for visual inspection",
+  "input": {
+    "type": "video",
+    "description": "Source video file"
+  },
+  "output": {
+    "type": "image",
+    "description": "JPEG contact sheet image"
+  },
+  "params": [
+    {
+      "name": "cols",
+      "type": "int",
+      "default": 3,
+      "min": 1,
+      "max": 10,
+      "description": "Number of columns in the grid"
+    },
+    {
+      "name": "rows",
+      "type": "int",
+      "default": 3,
+      "min": 1,
+      "max": 10,
+      "description": "Number of rows in the grid"
+    }
+  ]
+}

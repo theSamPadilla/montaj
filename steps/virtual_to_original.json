@@ -1,0 +1,27 @@
+{
+  "name": "virtual_to_original",
+  "category": "inspect",
+  "description": "Map virtual-timeline timestamps to original-file timestamps (or inverse). Utility for debugging trim specs.",
+  "input": {
+    "type": "json",
+    "description": "Trim spec JSON file ({input, keeps})"
+  },
+  "output": {
+    "type": "json",
+    "description": "Object with 'results' array of mapped timestamps"
+  },
+  "params": [
+    {
+      "name": "times",
+      "type": "string",
+      "description": "Timestamps to map, as a JSON array of numbers, e.g. [47.32, 53.23]",
+      "required": true
+    },
+    {
+      "name": "inverse",
+      "type": "bool",
+      "default": false,
+      "description": "If true, map original-file timestamps to virtual timestamps instead"
+    }
+  ]
+}

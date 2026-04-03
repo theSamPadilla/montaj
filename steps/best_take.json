@@ -1,0 +1,36 @@
+{
+  "name": "best_take",
+  "description": "Segment a clip into takes and score each by speech confidence and delivery quality. Returns takes ranked best-first.",
+  "input": {
+    "type": "video",
+    "description": "Source video file"
+  },
+  "output": {
+    "type": "json",
+    "description": "JSON with ranked takes array — each item has start, end, score, confidence, wpm, word count, and transcript text"
+  },
+  "params": [
+    {
+      "name": "model",
+      "type": "enum",
+      "default": "base.en",
+      "options": ["tiny.en", "base.en", "medium.en", "large"],
+      "description": "Whisper model for transcription. Larger = slower + more accurate confidence scores."
+    },
+    {
+      "name": "min-pause",
+      "type": "float",
+      "default": 2.0,
+      "min": 0.5,
+      "max": 10.0,
+      "description": "Minimum pause between words to define a take boundary (seconds)"
+    },
+    {
+      "name": "min-words",
+      "type": "int",
+      "default": 5,
+      "min": 1,
+      "description": "Minimum words in a take to include in results"
+    }
+  ]
+}

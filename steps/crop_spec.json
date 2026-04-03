@@ -1,0 +1,21 @@
+{
+  "name": "crop_spec",
+  "category": "clean",
+  "description": "Crop a trim spec to one or more virtual-timeline windows. Produces a new trim spec — no video encode.",
+  "input": {
+    "type": "json",
+    "description": "Trim spec JSON file ({input, keeps})"
+  },
+  "output": {
+    "type": "json",
+    "description": "Path to the cropped trim spec JSON file"
+  },
+  "params": [
+    {
+      "name": "keeps",
+      "type": "string",
+      "description": "Windows to keep as a JSON array of [start, end] pairs, e.g. [[0, 2.4], [13.84, 18.33]]. Use null for end to mean end-of-clip.",
+      "required": true
+    }
+  ]
+}

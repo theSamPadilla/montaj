@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "montaj"
+version = "0.1.0"
+description = "Video editing toolkit — local-first, CLI-driven, agent-friendly"
+requires-python = ">=3.10"
+dependencies = [
+    "Pillow>=10.0",
+    "yt-dlp>=2026.3",
+    "curl_cffi>=0.7",
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.29",
+    "watchdog>=4.0",
+    "httpx>=0.27",
+    "python-multipart>=0.0.9",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=8", "pytest-timeout"]
+
+[tool.setuptools.packages.find]
+include = ["cli*", "serve*", "engine*", "project*", "lib*", "profiles*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts   = "-v --tb=short"
+markers   = [
+    "slow: tests that take more than a few seconds",
+]
+
+[project.scripts]
+montaj = "cli.main:main"
+mtj    = "cli.main:main"

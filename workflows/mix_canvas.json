@@ -1,0 +1,17 @@
+{
+  "name": "mix_canvas",
+  "description": "Multi-clip edit with canvas sections — silence trim, remove non-speech, transcribe, select best takes, remove fillers, concat, overlays, canvas sections. No captions.",
+  "steps": [
+    { "id": "probe",             "uses": "montaj/probe",           "foreach": "clips" },
+    { "id": "snapshot",          "uses": "montaj/snapshot",        "foreach": "clips" },
+    { "id": "silence",           "uses": "montaj/waveform_trim",   "foreach": "clips",                            "params": { "threshold": "-30", "min-silence": 0.3 } },
+    { "id": "nonspeech",         "uses": "montaj/rm_nonspeech",    "foreach": "clips", "needs": ["silence"],      "params": { "model": "base.en", "max-word-gap": 0.10, "sentence-edge": 0.05 } },
+    { "id": "transcribe",        "uses": "montaj/transcribe",      "foreach": "clips", "needs": ["nonspeech"],    "params": { "model": "base.en" } },
+    { "id": "select-takes",      "uses": "montaj/select-takes",                        "needs": ["transcribe"] },
+    { "id": "fillers",           "uses": "montaj/rm_fillers",      "foreach": "clips", "needs": ["select-takes"], "params": { "model": "base.en" } },
+    { "id": "concat",            "uses": "montaj/concat",                              "needs": ["fillers"] },
+    { "id": "overlays",          "uses": "montaj/overlay",                             "needs": ["concat"],       "params": { "style": "auto" } },
+    { "id": "canvas",            "uses": "montaj/canvas-sections",                     "needs": ["overlays"] },
+    { "id": "review",            "uses": "montaj/transcribe",                          "needs": ["canvas"],       "params": { "model": "base.en" } }
+  ]
+}

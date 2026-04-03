@@ -1,0 +1,36 @@
+{
+  "name": "cut",
+  "description": "Remove one or more sections from a video. Use --cuts for multiple cuts in one pass, --spec to write a trim spec instead of encoding.",
+  "input": {
+    "type": "video",
+    "description": "Source video file"
+  },
+  "output": {
+    "type": "video",
+    "description": "Video with the specified section(s) removed, or trim spec JSON path when --spec is set"
+  },
+  "params": [
+    {
+      "name": "start",
+      "type": "float",
+      "min": 0,
+      "description": "Start of section to remove (seconds). Use with --end for a single cut."
+    },
+    {
+      "name": "end",
+      "type": "float",
+      "min": 0,
+      "description": "End of section to remove (seconds). Use with --start for a single cut."
+    },
+    {
+      "name": "cuts",
+      "type": "string",
+      "description": "JSON array of [start, end] pairs for multiple cuts in one pass, e.g. [[0,1],[5,6]]"
+    },
+    {
+      "name": "spec",
+      "type": "bool",
+      "description": "Write a trim spec JSON file instead of encoding. The path is printed to stdout."
+    }
+  ]
+}

@@ -1,0 +1,37 @@
+{
+  "name": "pacing",
+  "description": "Analyze speech pacing: WPM per time window, energy dips, and slow sections. Suggests where tighter cuts could improve delivery.",
+  "input": {
+    "type": "video",
+    "description": "Source video file"
+  },
+  "output": {
+    "type": "json",
+    "description": "JSON with wpm_avg, per-window segments array, and slow_sections array with timestamps"
+  },
+  "params": [
+    {
+      "name": "model",
+      "type": "enum",
+      "default": "base.en",
+      "options": ["tiny.en", "base.en", "medium.en", "large"],
+      "description": "Whisper model for transcription"
+    },
+    {
+      "name": "window",
+      "type": "float",
+      "default": 5.0,
+      "min": 1.0,
+      "max": 30.0,
+      "description": "Window size in seconds for WPM calculation"
+    },
+    {
+      "name": "slow-threshold",
+      "type": "float",
+      "default": 0.7,
+      "min": 0.1,
+      "max": 1.0,
+      "description": "Fraction of average WPM below which a window is flagged as slow (0.7 = flag if < 70% of avg)"
+    }
+  ]
+}

@@ -1,0 +1,21 @@
+{
+  "name": "resize",
+  "description": "Reframe a video to a standard aspect ratio with letterboxing",
+  "input": {
+    "type": "video",
+    "description": "Source video file"
+  },
+  "output": {
+    "type": "video",
+    "description": "Resized video file"
+  },
+  "params": [
+    {
+      "name": "ratio",
+      "type": "enum",
+      "required": true,
+      "options": ["9:16", "1:1", "16:9"],
+      "description": "Target aspect ratio"
+    }
+  ]
+}

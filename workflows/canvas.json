@@ -1,0 +1,9 @@
+{
+  "name": "canvas",
+  "description": "Animation-only project — no source footage required. Agent builds the video entirely from overlays and audio. Use when the prompt describes a fully animated or motion-graphics video.",
+  "requires_clips": false,
+  "steps": [
+    { "id": "canvas",  "uses": "montaj/canvas-sections" },
+    { "id": "resize",  "uses": "montaj/resize", "needs": ["canvas"], "params": { "ratio": "9:16" } }
+  ]
+}

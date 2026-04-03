@@ -1,0 +1,49 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Montaj Creator Profile",
+  "type": "object",
+  "required": ["name", "created", "updated", "sources"],
+  "properties": {
+    "name": {
+      "type": "string",
+      "description": "Account / profile identifier (e.g. theSamPadilla)"
+    },
+    "display_name": {
+      "type": "string",
+      "description": "Human-readable display name"
+    },
+    "created": { "type": "string", "format": "date-time" },
+    "updated": { "type": "string", "format": "date-time" },
+    "sources": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["type"],
+        "properties": {
+          "type":        { "enum": ["current", "inspired"] },
+          "url":         { "type": "string" },
+          "local_dir":   { "type": "string" },
+          "video_count": { "type": "integer" },
+          "label":       { "type": "string" }
+        }
+      }
+    },
+    "stats": {
+      "type": "object",
+      "properties": {
+        "videos_analyzed":   { "type": "integer" },
+        "avg_duration":      { "type": "number" },
+        "avg_cuts_per_min":  { "type": "number" },
+        "avg_wpm":           { "type": "number" },
+        "avg_speech_ratio":  { "type": "number" },
+        "dominant_colors":   { "type": "array", "items": { "type": "string" } },
+        "common_resolution": { "type": "string" },
+        "common_fps":        { "type": "number" }
+      }
+    },
+    "notes": {
+      "type": "string",
+      "description": "Conversational editorial notes from the profile creation session"
+    }
+  }
+}
