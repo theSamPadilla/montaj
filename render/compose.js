@@ -23,7 +23,7 @@ const FFMPEG_TIMEOUT_MS = 600_000
  * @param {Array<{ webmPath: string, startSeconds: number, endSeconds: number }>} opts.segments
  * @param {string}   opts.outputPath
  */
-export async function compose({ projectJson, baseVideoPath, segments, outputPath }) {
+export async function compose({ projectJson, baseVideoPath, segments, outputPath, videoWidth, videoHeight }) {
   mkdirSync(dirname(outputPath), { recursive: true })
 
   const music      = projectJson.audio?.music
@@ -48,7 +48,11 @@ export async function compose({ projectJson, baseVideoPath, segments, outputPath
   let audioLabel = '0:a'
 
   if (hasOverlays) {
-    const [videoWidth, videoHeight] = projectJson.settings?.resolution ?? [1080, 1920]
+    // Use caller-supplied dimensions (probed from the actual base video file) so
+    // overlay placement and pixelRatio upscaling are correct even when the source
+    // clips differ in resolution from project settings (e.g. 4K clips, 1080 settings).
+    const vw = videoWidth  ?? projectJson.settings?.resolution?.[0] ?? 1080
+    const vh = videoHeight ?? projectJson.settings?.resolution?.[1] ?? 1920
     // yuv420p10le preserves the source's 10-bit HDR signal (bt2020/HLG) through the
     // overlay chain. Downgrading to yuv420p here causes the color shift users see.
     filterParts.push('[0:v]format=yuv420p10le[base]')
@@ -58,8 +62,8 @@ export async function compose({ projectJson, baseVideoPath, segments, outputPath
       const inOver = `[${i + 1}:v]`
       const outVid = i === segments.length - 1 ? '[vout]' : `[ov${i}]`
       const s    = seg.scale ?? 1
-      const xPx  = Math.round(videoWidth  * (0.5 * (1 - s) + (seg.offsetX ?? 0) / 100))
-      const yPx  = Math.round(videoHeight * (0.5 * (1 - s) + (seg.offsetY ?? 0) / 100))
+      const xPx  = Math.round(vw * (0.5 * (1 - s) + (seg.offsetX ?? 0) / 100))
+      const yPx  = Math.round(vh * (0.5 * (1 - s) + (seg.offsetY ?? 0) / 100))
       // Force yuva420p before compositing — VP9 decoders may silently drop the alpha
       // plane and return yuv420p, causing the overlay to composite as fully opaque.
       const fmtLabel = `[fmt${i}]`

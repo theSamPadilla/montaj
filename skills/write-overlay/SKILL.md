@@ -28,6 +28,37 @@ Custom overlay JSX runs in a sandboxed evaluator. All identifiers below are inje
 
 **No imports.** All `import` statements are stripped before evaluation. Do not import anything — use the globals above instead.
 
+### Top-level vs component-body
+
+**All calls to `interpolate`, `spring`, and any read of `frame`, `fps`, `duration`, or `props` must be inside the component function body.** The module's top-level code runs before the render shim sets up these globals — calling them outside a function will throw `interpolate is not defined` and crash the entire render.
+
+```jsx
+// WRONG — crashes at render time
+const opacity = interpolate(frame, [0, 10], [0, 1])
+export default function Hook() { ... }
+
+// CORRECT — inside the component, runs each frame
+export default function Hook() {
+  const opacity = interpolate(frame, [0, 10], [0, 1])
+  return <div style={{ opacity }}>...</div>
+}
+```
+
+Pure helper functions that receive their values as arguments are fine at the top level, as long as they don't call globals at definition time:
+
+```jsx
+// Fine — interpolate is only called when the function is invoked (inside the component)
+const itemStyle = (show) => ({
+  opacity: show,
+  transform: `translateY(${interpolate(show, [0, 1], [20, 0])}px)`,
+})
+
+export default function List() {
+  const show = spring({ frame, fps, stiffness: 300, damping: 24 })
+  return <div style={itemStyle(show)}>...</div>
+}
+```
+
 ---
 
 ## Writing the JSX
@@ -245,6 +276,46 @@ Browse at [phosphoricons.com](https://phosphoricons.com). Over 9000 icons, six w
 
 ---
 
+## Custom fonts (Google Fonts)
+
+System fonts (`Inter`, `Impact`, `Georgia`, `Arial`, etc.) are always available and preferred for performance. To use a Google Font, declare it on the overlay item in `project.json` with a `googleFonts` array:
+
+```json
+{
+  "id": "ov-hook",
+  "type": "custom",
+  "src": "/path/to/overlays/hook.jsx",
+  "start": 0.0,
+  "end": 5.0,
+  "googleFonts": ["Anton", "Playfair+Display:ital@1"]
+}
+```
+
+The render engine injects the font stylesheet into the page `<head>` before any component code runs, so the font is fully loaded at frame 0.
+
+**Do not use `@import url(...)` inside the JSX.** A dynamically-injected `@import` fires after the page loads — the font fetch is still in flight when the next overlay's page initialises, breaking its `window.__setFrame` setup. Always declare fonts in `googleFonts` instead, and reference the family name directly in styles:
+
+```jsx
+// In your JSX — just use the family name, no @import
+fontFamily: '"Anton", Impact, sans-serif'
+fontFamily: '"Playfair Display", Georgia, serif'
+```
+
+**Format:** `FamilyName` for regular, `FamilyName:ital@1` for italic, `FamilyName:wght@700` for a specific weight. Each family is a separate array entry.
+
+**System font fallbacks for common Google Fonts:**
+
+| Google Font | System fallback |
+|-------------|----------------|
+| Anton | Impact |
+| Playfair Display | Georgia |
+| Oswald | Arial Narrow |
+| Roboto / Inter | system-ui, sans-serif |
+
+If visual fidelity isn't critical, the system fallback avoids the network fetch entirely.
+
+---
+
 ## project.json item shape
 
 Place overlay items inside an `overlay` track in `project.json`. Each item must have `type: "custom"` and a `src` path pointing to the JSX file. All custom data goes inside `props`.
@@ -286,6 +357,7 @@ Place overlay items inside an `overlay` track in `project.json`. Each item must 
 | `start` | yes | Start time in output video (seconds) |
 | `end` | yes | End time in output video (seconds) |
 | `props` | no | Arbitrary data passed through to the component as the `props` global |
+| `googleFonts` | no | Google Font families to load before render (e.g. `["Anton", "Playfair+Display:ital@1"]`). See Custom fonts section. |
 
 **Use absolute paths for `src`.** Relative paths are resolved from `project.json` location, but absolute paths are unambiguous.
 

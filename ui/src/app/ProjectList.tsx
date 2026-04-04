@@ -25,7 +25,7 @@ export default function ProjectList() {
 
   function copyGetStarted() {
     if (!skillPath) return
-    navigator.clipboard.writeText(`Read ${skillPath} and explain Montaj to me`)
+    navigator.clipboard.writeText(`Read ${skillPath} and help me get started with Montaj`)
     setCopied(true)
     setTimeout(() => setCopied(false), 1500)
   }
@@ -106,7 +106,7 @@ export default function ProjectList() {
             <p className="text-sm font-bold text-indigo-700 dark:text-indigo-300 uppercase tracking-wider">Send this to your agent to get started</p>
             <div className="flex items-start justify-between gap-3 px-3 py-3 rounded-lg bg-white dark:bg-black/40 border border-indigo-200 dark:border-indigo-700/50">
               <code className="text-xs text-gray-700 dark:text-gray-200 font-mono break-all leading-relaxed">
-                Read {skillPath} and explain Montaj to me
+                Read {skillPath} and help me get started with Montaj
               </code>
               <button
                 onClick={copyGetStarted}

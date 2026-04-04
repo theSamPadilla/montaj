@@ -90,6 +90,31 @@ def main():
         for i, clip in enumerate(args.clips)
     ]
 
+    # Detect resolution and fps from the first clip so settings always reflect
+    # the actual source footage — prevents overlay misalignment at render time.
+    detected_resolution = [1080, 1920]
+    detected_fps = 30
+    if clips:
+        try:
+            probe = subprocess.run(
+                ["ffprobe", "-v", "quiet", "-print_format", "json", "-show_streams", clips[0]["src"]],
+                capture_output=True, text=True, timeout=30
+            )
+            if probe.returncode == 0:
+                streams = json.loads(probe.stdout).get("streams", [])
+                video = next((s for s in streams if s.get("codec_type") == "video"), None)
+                if video:
+                    w, h = video.get("width"), video.get("height")
+                    if w and h:
+                        detected_resolution = [w, h]
+                    fps_str = video.get("r_frame_rate", "")
+                    if "/" in fps_str:
+                        num, den = fps_str.split("/")
+                        if int(den) > 0:
+                            detected_fps = round(int(num) / int(den))
+        except Exception:
+            pass
+
     assets = [
         {"id": f"asset-{i}", "src": copy_into_workspace(os.path.abspath(a), "asset"), "type": "image", "name": os.path.basename(a)}
         for i, a in enumerate(args.assets)
@@ -109,8 +134,8 @@ def main():
         "runCount": 1,
         "sources": clips,
         "settings": {
-            "resolution": [1080, 1920],
-            "fps": 30
+            "resolution": detected_resolution,
+            "fps": detected_fps
         },
         "tracks": tracks,
         "overlay_tracks": [],

@@ -356,9 +356,9 @@ export default function ProfilesPage() {
 
   function copyPrompt() {
     if (!skillPath) return
-    navigator.clipboard.writeText(`Load ${skillPath} and help me create a style profile`)
+    navigator.clipboard.writeText(`Please see @${skillPath} and help me create a style profile. Talk to me if you run into questions.`)
     setCopied(true)
-    setTimeout(() => setCopied(false), 1500)
+    setTimeout(() => setCopied(false), 2000)
   }
 
   if (selected) {
@@ -382,18 +382,29 @@ export default function ProfilesPage() {
       </div>
 
       {skillPath && (
-        <div className="mt-6 rounded-xl border-2 border-indigo-500/40 bg-indigo-50 dark:bg-indigo-950/40 p-4 flex flex-col gap-3">
-          <p className="text-sm font-bold text-indigo-700 dark:text-indigo-300 uppercase tracking-wider">Create a style profile with your agent</p>
-          <div className="flex items-start justify-between gap-3 px-3 py-3 rounded-lg bg-white dark:bg-black/40 border border-indigo-200 dark:border-indigo-700/50">
-            <code className="text-xs text-gray-700 dark:text-gray-200 font-mono break-all leading-relaxed">
-              Load {skillPath} and help me create a style profile
-            </code>
+        <div className="mt-6 rounded-xl border-2 border-white/20 bg-gray-900 p-4 flex flex-col gap-3">
+          <p className="text-white text-xs font-semibold uppercase tracking-wider">Send this to your agent</p>
+          <div className="flex items-start justify-between bg-black/60 rounded-lg px-3 py-3 font-mono gap-3">
+            <span className="text-gray-200 text-[12px] leading-relaxed break-all">
+              Please see @{skillPath} and help me create a style profile. Talk to me if you run into questions.
+            </span>
             <button
               onClick={copyPrompt}
-              className="flex items-center gap-1.5 text-xs font-semibold text-indigo-600 dark:text-indigo-400 hover:text-indigo-800 dark:hover:text-indigo-200 transition-colors shrink-0 mt-0.5"
+              className={`shrink-0 flex items-center gap-1.5 text-xs font-medium px-3 py-1.5 rounded-md transition-colors ${
+                copied
+                  ? 'bg-green-700 text-green-200'
+                  : 'bg-white/10 text-gray-300 hover:bg-white/20 hover:text-white'
+              }`}
             >
-              <Copy size={13} />
-              {copied ? 'Copied!' : 'Copy'}
+              {copied ? '✓ Copied' : (
+                <>
+                  <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <rect width="14" height="14" x="8" y="8" rx="2" ry="2"/>
+                    <path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/>
+                  </svg>
+                  Copy
+                </>
+              )}
             </button>
           </div>
         </div>

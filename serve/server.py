@@ -498,6 +498,7 @@ async def reload_project(project_id: str, request: Request):
 async def get_info():
     return {
         "skill_path": str(MONTAJ_ROOT / "skills/onboarding/SKILL.md"),
+        "root_skill_path": str(MONTAJ_ROOT / "SKILL.md"),
         "style_profile_skill_path": str(MONTAJ_ROOT / "skills/style-profile/SKILL.md"),
     }
 

@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { X, Image, Plus, HelpCircle } from 'lucide-react'
+import { X, Image, Plus, HelpCircle, Copy } from 'lucide-react'
 import PreviewPlayer from '@/components/PreviewPlayer'
 import ProjectHeader from '@/components/ProjectHeader'
 import RerunModal from '@/components/RerunModal'
@@ -34,6 +34,8 @@ export default function ReviewView({ project, onProjectChange }: ReviewViewProps
   const [rerunOpen, setRerunOpen]         = useState(false)
   const [showHelp, setShowHelp]           = useState(false)
   const [renderOpen, setRenderOpen]       = useState(false)
+  const [previewAsset, setPreviewAsset]   = useState<Asset | null>(null)
+  const [pathCopied, setPathCopied]       = useState(false)
   const navigate = useNavigate()
 
   useEffect(() => {
@@ -405,7 +407,8 @@ export default function ReviewView({ project, onProjectChange }: ReviewViewProps
                 <img
                   src={fileUrl(asset.src)}
                   alt={asset.name ?? basename(asset.src)}
-                  className="w-full aspect-video object-cover"
+                  className="w-full aspect-video object-cover cursor-pointer"
+                  onClick={() => { setPreviewAsset(asset); setPathCopied(false) }}
                 />
                 <div className="px-2 py-1 flex items-center gap-1">
                   <Image size={10} className="shrink-0 text-gray-500" />
@@ -468,6 +471,44 @@ export default function ReviewView({ project, onProjectChange }: ReviewViewProps
           projectId={project.id}
           onClose={() => { setRenderOpen(false); navigate('/') }}
         />
+      )}
+
+      {previewAsset && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/80"
+          onClick={() => setPreviewAsset(null)}
+        >
+          <div
+            className="relative flex flex-col bg-gray-900 border border-gray-700 rounded-xl overflow-hidden max-w-3xl w-full mx-6 shadow-2xl"
+            onClick={e => e.stopPropagation()}
+          >
+            <button
+              onClick={() => setPreviewAsset(null)}
+              className="absolute top-2 right-2 p-1 rounded bg-black/60 text-gray-400 hover:text-white transition-colors z-10"
+            >
+              <X size={14} />
+            </button>
+            <img
+              src={fileUrl(previewAsset.src)}
+              alt={previewAsset.name ?? basename(previewAsset.src)}
+              className="w-full object-contain max-h-[70vh]"
+            />
+            <div className="flex items-center justify-between gap-3 px-4 py-3 border-t border-gray-800">
+              <code className="text-xs text-gray-400 font-mono truncate flex-1">{previewAsset.src}</code>
+              <button
+                onClick={() => {
+                  navigator.clipboard.writeText(previewAsset.src)
+                  setPathCopied(true)
+                  setTimeout(() => setPathCopied(false), 1500)
+                }}
+                className="flex items-center gap-1 text-xs text-gray-400 hover:text-white transition-colors shrink-0"
+              >
+                <Copy size={12} />
+                {pathCopied ? 'Copied!' : 'Copy path'}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   )

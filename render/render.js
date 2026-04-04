@@ -71,14 +71,11 @@ async function main(projectPath, { out, workers, clean }) {
 
   const settings = projectJson.settings || {}
   const fps    = settings.fps || 30
-  const [width, height] = settings.resolution || [1080, 1920]
 
-  // Overlay components are authored for a 1080×1920 canvas. For 4K output (2160×3840)
-  // the design pixel ratio is 2. Render segments at design resolution to avoid timing
-  // instability from oversized Puppeteer screenshots; compose.js upscales to full res.
-  const pixelRatio   = Math.max(1, Math.round(width / 1080))
-  const renderWidth  = Math.round(width  / pixelRatio)
-  const renderHeight = Math.round(height / pixelRatio)
+  // Design resolution — what overlay components are authored for (always 1080-wide).
+  // Puppeteer renders at this size regardless of the actual output video resolution.
+  const renderWidth  = 1080
+  const renderHeight = 1920
 
   // project.json always lives at the workspace root (written there by project/init.py),
   // so projectDir === workspaceDir. Render outputs go to workspace/<name>/render/.
@@ -110,9 +107,10 @@ async function main(projectPath, { out, workers, clean }) {
       durationFrames: spec.frameCount,
       width:          renderWidth,
       height:         renderHeight,
-      offsetX:        spec.offsetX ?? 0,
-      offsetY:        spec.offsetY ?? 0,
-      scale:          spec.scale   ?? 1,
+      offsetX:        spec.offsetX     ?? 0,
+      offsetY:        spec.offsetY     ?? 0,
+      scale:          spec.scale       ?? 1,
+      googleFonts:    spec.googleFonts ?? [],
     })
     spec.htmlPath = htmlPath
     workDirs.push(workDir)
@@ -120,22 +118,35 @@ async function main(projectPath, { out, workers, clean }) {
 
   const renderedSegments = await renderAllSegments(segmentSpecs, { workers })
 
-  // Attach positioning offsets + pixelRatio back onto rendered segments
-  // so compose.js can apply x/y coordinates and upscale segments to video resolution.
+  // Attach positioning offsets back onto rendered segments so compose.js can apply
+  // x/y coordinates. pixelRatio is stamped after base video resolution is detected below.
   for (const rSeg of renderedSegments) {
     const spec = segmentSpecs.find(s => s.id === rSeg.id)
     if (spec) {
-      rSeg.offsetX    = spec.offsetX ?? 0
-      rSeg.offsetY    = spec.offsetY ?? 0
-      rSeg.scale      = spec.scale   ?? 1
-      rSeg.opaque     = spec.opaque  ?? false
-      rSeg.pixelRatio = pixelRatio
+      rSeg.offsetX = spec.offsetX ?? 0
+      rSeg.offsetY = spec.offsetY ?? 0
+      rSeg.scale   = spec.scale   ?? 1
+      rSeg.opaque  = spec.opaque  ?? false
     }
   }
 
-  // 4. Compose final MP4
+  // 4. Detect actual base video resolution for correct overlay placement.
+  // buildBaseVideo uses -c copy so the output resolution matches the source clips,
+  // which may differ from settings.resolution (e.g. 4K source with 1080p settings).
+  const actualRes    = probeVideoDimensions(baseVideoPath)
+  const actualWidth  = actualRes?.[0] ?? renderWidth
+  const actualHeight = actualRes?.[1] ?? renderHeight
+  // pixelRatio: how many actual pixels correspond to one design pixel.
+  const pixelRatio   = Math.max(1, Math.round(actualWidth / renderWidth))
+
+  // Re-stamp pixelRatio on rendered segments now that we know the true video dimensions.
+  for (const rSeg of renderedSegments) {
+    rSeg.pixelRatio = pixelRatio
+  }
+
+  // 5. Compose final MP4
   log('composing final video...')
-  await compose({ projectJson, baseVideoPath, segments: renderedSegments, outputPath })
+  await compose({ projectJson, baseVideoPath, segments: renderedSegments, outputPath, videoWidth: actualWidth, videoHeight: actualHeight })
 
   // 5. Cleanup temp bundles (always); intermediate segments only if --clean
   for (const dir of workDirs) cleanupBundle(dir)
@@ -242,6 +253,24 @@ function buildBaseVideo(projectJson, outputPath) {
 }
 
 // ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/** Return [width, height] of the first video stream in a file, or null on error. */
+function probeVideoDimensions(filePath) {
+  const result = spawnSync('ffprobe', [
+    '-v', 'quiet', '-print_format', 'json', '-show_streams', filePath,
+  ], { encoding: 'utf8', timeout: 30_000 })
+  if (result.status !== 0) return null
+  try {
+    const streams = JSON.parse(result.stdout).streams ?? []
+    const video = streams.find(s => s.codec_type === 'video')
+    if (video?.width && video?.height) return [video.width, video.height]
+  } catch {}
+  return null
+}
+
+// ---------------------------------------------------------------------------
 // Segment collection: one spec per caption track + per overlay item
 // ---------------------------------------------------------------------------
 
@@ -276,7 +305,7 @@ function collectSegments(projectJson, fps, width, height, segDir) {
       const durationSecs = item.end - item.start
       const frameCount   = Math.ceil(durationSecs * fps)
 
-      const { id, start, end, src, offsetX = 0, offsetY = 0, scale: overlayScale = 1, opaque = false } = item
+      const { id, start, end, src, offsetX = 0, offsetY = 0, scale: overlayScale = 1, opaque = false, googleFonts = [] } = item
       const props = item.props ?? {}
 
       specs.push({
@@ -287,6 +316,7 @@ function collectSegments(projectJson, fps, width, height, segDir) {
         offsetY,
         scale:         overlayScale,
         opaque,
+        googleFonts,
         frameCount,
         fps,
         startSeconds:  start,

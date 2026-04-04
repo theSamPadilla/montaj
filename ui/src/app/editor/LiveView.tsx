@@ -69,7 +69,7 @@ export default function LiveView({ project, logMessage, onProjectChange }: LiveV
   const history         = project.history ?? []
 
   useEffect(() => {
-    api.getInfo().then(info => setSkillPath(info.skill_path)).catch(() => {})
+    api.getInfo().then(info => setSkillPath(info.root_skill_path)).catch(() => {})
   }, [])
 
   useEffect(() => {
