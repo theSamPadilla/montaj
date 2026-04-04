@@ -903,6 +903,7 @@ async def render_project(project_id: str, request: Request):
             stderr=asyncio.subprocess.PIPE,
             cwd=str(MONTAJ_ROOT),
             env=env,
+            limit=10 * 1024 * 1024,  # 10MB — ffmpeg config/filter lines exceed the 64KB default
         )
 
         # Stream stderr (progress lines) to the client
