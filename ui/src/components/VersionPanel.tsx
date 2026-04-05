@@ -37,10 +37,10 @@ export default function VersionPanel({ versions, restoring, onRestore }: Version
   const deduped = dedupeVersions(versions)
 
   return (
-    <div className="shrink-0 border-b border-gray-800 flex flex-col overflow-hidden" style={{ maxHeight: open ? 224 : 0, transition: 'max-height 0.15s ease' }}>
+    <div className="shrink-0 border-b border-gray-200 dark:border-gray-800 flex flex-col overflow-hidden" style={{ maxHeight: open ? 224 : 0, transition: 'max-height 0.15s ease' }}>
       <button
         onClick={() => setOpen(o => !o)}
-        className="flex items-center justify-between px-3 py-2 border-b border-gray-800 hover:bg-gray-900 transition-colors w-full text-left"
+        className="flex items-center justify-between px-3 py-2 border-b border-gray-200 dark:border-gray-800 hover:bg-gray-100 dark:hover:bg-gray-900 transition-colors w-full text-left"
       >
         <span className="text-xs font-medium text-gray-400 uppercase tracking-wide">Versions</span>
         <span className="text-gray-600 text-[10px]">{open ? '▲' : '▼'}</span>
@@ -52,13 +52,13 @@ export default function VersionPanel({ versions, restoring, onRestore }: Version
           const { run, label } = parseVersion(v)
           const isDefault = label === 'draft' || label === 'final' || label === 'pending'
           return (
-            <div key={v.hash} className="rounded border border-gray-800 bg-gray-900 p-2 flex flex-col gap-1">
+            <div key={v.hash} className="rounded border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 p-2 flex flex-col gap-1">
               <div className="flex items-center gap-1.5">
-                <span className="text-[10px] text-gray-600 shrink-0">Run {run}</span>
+                <span className="text-[10px] text-gray-500 dark:text-gray-600 shrink-0">Run {run}</span>
                 {isDefault ? (
                   <span className="text-[10px] text-gray-500 capitalize">{label}</span>
                 ) : (
-                  <span className="text-xs font-medium text-gray-200 truncate capitalize" title={label}>{label}</span>
+                  <span className="text-xs font-medium text-gray-700 dark:text-gray-200 truncate capitalize" title={label}>{label}</span>
                 )}
               </div>
               <span className="text-[10px] text-gray-600">{formatTime(v.timestamp)}</span>

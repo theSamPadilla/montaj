@@ -49,7 +49,7 @@ function DropZone({ label, sublabel, icon, accept, files, uploading, onBrowse, o
   return (
     <div className="flex flex-col gap-3">
       <div>
-        <p className="text-sm font-medium text-gray-200">{label}</p>
+        <p className="text-sm font-medium text-gray-800 dark:text-gray-200">{label}</p>
         <p className="text-xs text-gray-500 mt-0.5">{sublabel}</p>
       </div>
 
@@ -61,25 +61,25 @@ function DropZone({ label, sublabel, icon, accept, files, uploading, onBrowse, o
         className={`relative rounded-lg border-2 border-dashed transition-colors ${
           dragOver
             ? `${accentClass} border-opacity-100`
-            : 'border-gray-700 hover:border-gray-600'
+            : 'border-gray-300 hover:border-gray-400 dark:border-gray-700 dark:hover:border-gray-600'
         }`}
       >
         <div className="flex flex-col items-center justify-center gap-3 py-10 px-4 text-center">
-          <div className={`${dragOver ? 'text-white' : 'text-gray-600'} transition-colors`}>
+          <div className={`${dragOver ? 'text-white' : 'text-gray-400 dark:text-gray-600'} transition-colors`}>
             {icon}
           </div>
-          <p className={`text-sm transition-colors ${dragOver ? 'text-white' : 'text-gray-500'}`}>
+          <p className={`text-sm transition-colors ${dragOver ? 'text-white' : 'text-gray-500 dark:text-gray-500'}`}>
             {dragOver ? 'Drop to add' : `Drop ${accept === 'video/' ? 'video' : 'image'} files here`}
           </p>
           <div className="flex items-center gap-2 mt-1">
-            <div className="h-px w-8 bg-gray-800" />
-            <span className="text-xs text-gray-700">or</span>
-            <div className="h-px w-8 bg-gray-800" />
+            <div className="h-px w-8 bg-gray-200 dark:bg-gray-800" />
+            <span className="text-xs text-gray-400 dark:text-gray-700">or</span>
+            <div className="h-px w-8 bg-gray-200 dark:bg-gray-800" />
           </div>
           <button
             onClick={onBrowse}
             disabled={uploading}
-            className="flex items-center gap-2 px-4 py-2 rounded-md bg-gray-800 hover:bg-gray-700 text-sm text-gray-200 hover:text-white transition-colors disabled:opacity-50 border border-gray-700"
+            className="flex items-center gap-2 px-4 py-2 rounded-md bg-gray-100 hover:bg-gray-200 dark:bg-gray-800 dark:hover:bg-gray-700 text-sm text-gray-700 hover:text-gray-900 dark:text-gray-200 dark:hover:text-white transition-colors disabled:opacity-50 border border-gray-300 dark:border-gray-700"
           >
             <FolderOpen size={14} />
             {uploading ? 'Opening…' : browseLabel}
@@ -93,17 +93,17 @@ function DropZone({ label, sublabel, icon, accept, files, uploading, onBrowse, o
           {files.map(path => (
             <li
               key={path}
-              className="flex items-center gap-2 px-3 py-2 rounded-md border border-gray-800 bg-gray-900 group"
+              className="flex items-center gap-2 px-3 py-2 rounded-md border border-gray-200 dark:border-gray-800 bg-gray-50 dark:bg-gray-900 group"
             >
-              <span className="text-gray-600 shrink-0">
+              <span className="text-gray-400 dark:text-gray-600 shrink-0">
                 {accept === 'video/' ? <Film size={12} /> : <Image size={12} />}
               </span>
-              <span className="flex-1 text-xs text-gray-300 truncate font-mono">
+              <span className="flex-1 text-xs text-gray-700 dark:text-gray-300 truncate font-mono">
                 {basename(path)}
               </span>
               <button
                 onClick={() => onRemove(path)}
-                className="shrink-0 text-gray-700 hover:text-gray-400 transition-colors opacity-0 group-hover:opacity-100"
+                className="shrink-0 text-gray-400 hover:text-gray-600 dark:text-gray-700 dark:hover:text-gray-400 transition-colors opacity-0 group-hover:opacity-100"
               >
                 <X size={12} />
               </button>
@@ -221,9 +221,9 @@ export default function UploadView() {
   return (
     <div className="flex h-full">
       {/* Left column: name + clips + assets */}
-      <div className="flex-1 overflow-y-auto p-6 border-r border-gray-800 flex flex-col gap-6">
+      <div className="flex-1 overflow-y-auto p-6 border-r border-gray-200 dark:border-gray-800 flex flex-col gap-6">
         <div>
-          <h2 className="text-lg font-semibold text-white mb-1">New project</h2>
+          <h2 className="text-lg font-semibold text-gray-900 dark:text-white mb-1">New project</h2>
           <p className="text-sm text-gray-500">Add clips, write a prompt, hit Run.</p>
         </div>
 
@@ -234,13 +234,13 @@ export default function UploadView() {
             value={name}
             onChange={e => setName(e.target.value)}
             placeholder="Project name (optional)"
-            className="flex-1 h-9 rounded-md border border-gray-700 bg-gray-900 px-3 text-sm text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500"
+            className="flex-1 h-9 rounded-md border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-900 px-3 text-sm text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500"
           />
           {profiles.length > 0 && (
             <select
               value={profile}
               onChange={e => setProfile(e.target.value)}
-              className="h-9 rounded-md border border-gray-700 bg-gray-900 px-2 text-sm text-gray-300 focus:outline-none focus:ring-2 focus:ring-blue-500"
+              className="h-9 rounded-md border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-900 px-2 text-sm text-gray-700 dark:text-gray-300 focus:outline-none focus:ring-2 focus:ring-blue-500"
             >
               <option value="">No profile</option>
               {profiles.map(p => (
@@ -286,7 +286,7 @@ export default function UploadView() {
       {/* Right column: prompt + workflow + run */}
       <div className="w-80 flex flex-col p-6 gap-4">
         <div>
-          <p className="text-sm font-medium text-gray-200 mb-1">Prompt</p>
+          <p className="text-sm font-medium text-gray-800 dark:text-gray-200 mb-1">Prompt</p>
           <p className="text-xs text-gray-500">Describe what you want the agent to do.</p>
         </div>
 
@@ -304,7 +304,7 @@ export default function UploadView() {
             <select
               value={workflow}
               onChange={(e) => setWorkflow(e.target.value)}
-              className="w-full h-9 rounded-md border border-gray-700 bg-gray-800 px-2 text-sm text-gray-100 focus:outline-none focus:ring-2 focus:ring-blue-500"
+              className="w-full h-9 rounded-md border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-800 px-2 text-sm text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-blue-500"
             >
               {workflows.length > 0
                 ? workflows.map(w => <option key={w.name} value={w.name}>{w.name}</option>)

@@ -56,10 +56,10 @@ export default function ProjectHeader({ project, onProjectChange, actions }: Pro
   }
 
   return (
-    <div className="flex items-center gap-2 px-4 py-2 border-b border-gray-800 bg-gray-900 shrink-0">
+    <div className="flex items-center gap-2 px-4 py-2 border-b border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 shrink-0">
       <button
         onClick={() => navigate('/')}
-        className="text-gray-500 hover:text-white text-sm transition-colors shrink-0"
+        className="text-gray-500 hover:text-gray-900 dark:hover:text-white text-sm transition-colors shrink-0"
       >
         ←
       </button>
@@ -73,15 +73,15 @@ export default function ProjectHeader({ project, onProjectChange, actions }: Pro
           onBlur={commitName}
           onKeyDown={handleKeyDown}
           placeholder="Project name…"
-          className="flex-1 min-w-0 bg-gray-800 text-white text-sm font-medium px-2 py-0.5 rounded border border-gray-600 focus:outline-none focus:border-blue-500"
+          className="flex-1 min-w-0 bg-gray-100 dark:bg-gray-800 text-gray-900 dark:text-white text-sm font-medium px-2 py-0.5 rounded border border-gray-300 dark:border-gray-600 focus:outline-none focus:border-blue-500"
         />
       ) : (
         <button
           onClick={startEdit}
-          className="group flex items-center gap-1.5 min-w-0 text-left hover:bg-gray-800 rounded px-1.5 py-0.5 -mx-1.5 transition-colors"
+          className="group flex items-center gap-1.5 min-w-0 text-left hover:bg-gray-100 dark:hover:bg-gray-800 rounded px-1.5 py-0.5 -mx-1.5 transition-colors"
           title="Rename project"
         >
-          <span className="text-sm font-medium text-white truncate">
+          <span className="text-sm font-medium text-gray-900 dark:text-white truncate">
             {project.name ?? <span className="text-gray-500 italic">Untitled</span>}
           </span>
           <Pencil size={11} className="shrink-0 text-gray-500 group-hover:text-gray-300 transition-colors" />
@@ -95,7 +95,7 @@ export default function ProjectHeader({ project, onProjectChange, actions }: Pro
         <button
           onClick={handleDelete}
           disabled={deleting}
-          className="p-1.5 rounded text-gray-600 hover:text-red-400 hover:bg-gray-800 transition-colors"
+          className="p-1.5 rounded text-gray-400 dark:text-gray-600 hover:text-red-500 dark:hover:text-red-400 hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
           title="Delete project"
         >
           <Trash2 size={14} />

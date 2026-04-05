@@ -324,6 +324,15 @@ export default function NodeGraph() {
   const [activeScope,    setActiveScope]    = useState<'user' | 'builtin' | null>(null)
   const [activeDesc,     setActiveDesc]     = useState<string | undefined>(undefined)
   const [isDirty,        setIsDirty]        = useState(false)
+  const [isDark,         setIsDark]         = useState(() => document.documentElement.classList.contains('dark'))
+
+  useEffect(() => {
+    const obs = new MutationObserver(() =>
+      setIsDark(document.documentElement.classList.contains('dark'))
+    )
+    obs.observe(document.documentElement, { attributes: true, attributeFilter: ['class'] })
+    return () => obs.disconnect()
+  }, [])
 
   useEffect(() => {
     api.listSteps().then(setSteps).catch(console.error)
@@ -533,15 +542,15 @@ export default function NodeGraph() {
   return (
     <div className="flex h-full">
       {/* Sidebar */}
-      <div className="w-52 shrink-0 border-r border-gray-800 overflow-y-auto p-2 flex flex-col gap-3">
+      <div className="w-52 shrink-0 border-r border-gray-200 dark:border-gray-800 overflow-y-auto p-2 flex flex-col gap-3">
 
         {/* Workflow loader */}
-        <div className="flex flex-col gap-1.5 pb-2 border-b border-gray-800">
+        <div className="flex flex-col gap-1.5 pb-2 border-b border-gray-200 dark:border-gray-800">
           <p className="text-[10px] text-gray-500 uppercase tracking-wider">Workflow</p>
           <select
             value={activeWorkflow}
             onChange={e => setActiveWorkflow(e.target.value)}
-            className="text-xs bg-gray-800 border border-gray-700 rounded px-2 py-1 text-gray-200 focus:outline-none focus:border-gray-500"
+            className="text-xs bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded px-2 py-1 text-gray-900 dark:text-gray-200 focus:outline-none focus:border-gray-400 dark:focus:border-gray-500"
           >
             <option value={NEW_WF}>＋ New workflow</option>
             {['user', 'builtin'].map(scope => {
@@ -561,7 +570,7 @@ export default function NodeGraph() {
 
         {/* Save controls — new workflow or user workflow only */}
         {(activeWorkflow === NEW_WF || activeScope === 'user') && (
-          <div className="flex flex-col gap-1.5 pb-2 border-b border-gray-800">
+          <div className="flex flex-col gap-1.5 pb-2 border-b border-gray-200 dark:border-gray-800">
             {activeWorkflow === NEW_WF && (
               <Input
                 value={workflowName}
@@ -591,15 +600,15 @@ export default function NodeGraph() {
               <button
                 key={s.name}
                 onClick={() => addNode(s)}
-                className={`w-full text-left px-2 py-1.5 rounded text-xs hover:bg-gray-800 flex items-center justify-between gap-1 ${
-                  isEncode ? 'text-amber-400 hover:text-amber-200' : 'text-gray-300 hover:text-white'
+                className={`w-full text-left px-2 py-1.5 rounded text-xs hover:bg-gray-100 dark:hover:bg-gray-800 flex items-center justify-between gap-1 ${
+                  isEncode ? 'text-amber-600 dark:text-amber-400 hover:text-amber-700 dark:hover:text-amber-200' : 'text-gray-700 dark:text-gray-300 hover:text-gray-900 dark:hover:text-white'
                 }`}
               >
                 <span className="truncate">{s.name}</span>
                 <span className={`shrink-0 text-[9px] font-bold px-1 py-0.5 rounded ${
                   isCustom
-                    ? 'bg-emerald-900/60 text-emerald-400'
-                    : 'bg-gray-700 text-gray-400'
+                    ? 'bg-emerald-100 dark:bg-emerald-900/60 text-emerald-700 dark:text-emerald-400'
+                    : 'bg-gray-200 dark:bg-gray-700 text-gray-600 dark:text-gray-400'
                 }`}>
                   {isCustom ? 'C' : 'N'}
                 </span>
@@ -618,13 +627,13 @@ export default function NodeGraph() {
                 key={s.name}
                 onClick={() => addNode(s)}
                 title={s.description}
-                className="w-full text-left px-2 py-1.5 rounded text-xs text-indigo-300 hover:bg-indigo-900/40 hover:text-indigo-100 flex items-center justify-between gap-1"
+                className="w-full text-left px-2 py-1.5 rounded text-xs text-indigo-600 dark:text-indigo-300 hover:bg-indigo-50 dark:hover:bg-indigo-900/40 hover:text-indigo-800 dark:hover:text-indigo-100 flex items-center justify-between gap-1"
               >
                 <span className="truncate">{s.name}</span>
                 <span className={`shrink-0 text-[9px] font-bold px-1 py-0.5 rounded ${
                   isCustom
-                    ? 'bg-emerald-900/60 text-emerald-400'
-                    : 'bg-indigo-900/60 text-indigo-400'
+                    ? 'bg-emerald-100 dark:bg-emerald-900/60 text-emerald-700 dark:text-emerald-400'
+                    : 'bg-indigo-100 dark:bg-indigo-900/60 text-indigo-600 dark:text-indigo-400'
                 }`}>
                   {isCustom ? 'C' : 'N'}
                 </span>
@@ -659,9 +668,9 @@ export default function NodeGraph() {
           fitViewOptions={{ padding: 0.3 }}
           proOptions={{ hideAttribution: true }}
         >
-          <Background color="#374151" gap={20} />
+          <Background color={isDark ? '#374151' : '#d1d5db'} gap={20} />
           <Controls />
-          <MiniMap nodeColor="#1f2937" maskColor="rgba(0,0,0,0.5)" />
+          <MiniMap nodeColor={isDark ? '#1f2937' : '#e5e7eb'} maskColor={isDark ? 'rgba(0,0,0,0.5)' : 'rgba(255,255,255,0.6)'} />
         </ReactFlow>
       </div>
 
@@ -671,10 +680,10 @@ export default function NodeGraph() {
         const isEncode = selectedNode?.data.uses === 'montaj/concat' ||
                          selectedNode?.data.schema?.name === 'concat'
         return (
-          <div className="w-60 shrink-0 border-l border-gray-800 p-3 overflow-y-auto flex flex-col gap-3">
+          <div className="w-60 shrink-0 border-l border-gray-200 dark:border-gray-800 p-3 overflow-y-auto flex flex-col gap-3">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">
-                <h3 className={`text-sm font-semibold ${isEncode ? 'text-amber-300' : isSelectedSkill ? 'text-indigo-300' : 'text-white'}`}>
+                <h3 className={`text-sm font-semibold ${isEncode ? 'text-amber-600 dark:text-amber-300' : isSelectedSkill ? 'text-indigo-600 dark:text-indigo-300' : 'text-gray-900 dark:text-white'}`}>
                   {selectedSchema.name}
                 </h3>
                 {isEncode && (
@@ -690,13 +699,13 @@ export default function NodeGraph() {
               </div>
               <button
                 onClick={() => setSelectedNode(null)}
-                className="text-gray-500 hover:text-white text-lg leading-none"
+                className="text-gray-500 hover:text-gray-900 dark:hover:text-white text-lg leading-none"
               >
                 ×
               </button>
             </div>
             {selectedSchema.description && (
-              <p className={`text-xs leading-relaxed ${isEncode ? 'text-amber-200/70' : isSelectedSkill ? 'text-indigo-200/70' : 'text-gray-400'}`}>
+              <p className={`text-xs leading-relaxed ${isEncode ? 'text-amber-700 dark:text-amber-200/70' : isSelectedSkill ? 'text-indigo-600 dark:text-indigo-200/70' : 'text-gray-500 dark:text-gray-400'}`}>
                 {selectedSchema.description}
               </p>
             )}

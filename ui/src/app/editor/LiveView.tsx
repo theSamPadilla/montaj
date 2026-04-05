@@ -25,9 +25,9 @@ function SnapshotCard({ snapshot, index, onRestore }: { snapshot: RunSnapshot; i
   const capCount   = captions?.segments.length ?? 0
 
   return (
-    <div className="rounded border border-gray-800 bg-gray-900 p-2.5 flex flex-col gap-2">
+    <div className="rounded border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 p-2.5 flex flex-col gap-2">
       <div className="flex items-center justify-between gap-1">
-        <span className="text-xs font-medium text-gray-300">Run {index + 1}</span>
+        <span className="text-xs font-medium text-gray-700 dark:text-gray-300">Run {index + 1}</span>
         <span className="text-[10px] text-gray-600">{formatRelativeTime(snapshot.timestamp)}</span>
       </div>
       <p className="text-[10px] text-gray-500 line-clamp-2 leading-relaxed">
@@ -144,10 +144,10 @@ export default function LiveView({ project, logMessage, onProjectChange }: LiveV
                     </div>
 
                     {skillPath && (
-                      <div className="w-full rounded-xl border-2 border-white/20 bg-gray-900 p-4 flex flex-col gap-3 text-left">
-                        <p className="text-white text-xs font-semibold uppercase tracking-wider">Send this to your agent</p>
-                        <div className="flex items-start justify-between bg-black/60 rounded-lg px-3 py-3 font-mono gap-3">
-                          <span className="text-gray-200 text-[12px] leading-relaxed break-all">
+                      <div className="w-full rounded-xl border-2 border-gray-200 dark:border-white/20 bg-gray-50 dark:bg-gray-900 p-4 flex flex-col gap-3 text-left">
+                        <p className="text-gray-900 dark:text-white text-xs font-semibold uppercase tracking-wider">Send this to your agent</p>
+                        <div className="flex items-start justify-between bg-white/80 dark:bg-black/60 border border-gray-200 dark:border-transparent rounded-lg px-3 py-3 font-mono gap-3">
+                          <span className="text-gray-700 dark:text-gray-200 text-[12px] leading-relaxed break-all">
                             There is a new project pending. Please see @{skillPath} and start. Talk to me if you run into questions.
                           </span>
                           <button
@@ -203,7 +203,7 @@ export default function LiveView({ project, logMessage, onProjectChange }: LiveV
             )}
           </div>
 
-          <div className="shrink-0 border-t border-gray-800 bg-gray-950">
+          <div className="shrink-0 border-t border-gray-200 dark:border-gray-800 bg-gray-100 dark:bg-gray-950">
             <Timeline
               project={project}
               currentTime={currentTime}
@@ -214,7 +214,7 @@ export default function LiveView({ project, logMessage, onProjectChange }: LiveV
         </div>
 
         {/* Right sidebar */}
-        <div className="w-48 shrink-0 border-l border-gray-800 bg-gray-950 flex flex-col overflow-hidden">
+        <div className="w-48 shrink-0 border-l border-gray-200 dark:border-gray-800 bg-gray-50 dark:bg-gray-950 flex flex-col overflow-hidden">
 
           {/* Versions */}
           <VersionPanel versions={versions} restoring={restoring} onRestore={handleRestoreVersion} />
@@ -222,7 +222,7 @@ export default function LiveView({ project, logMessage, onProjectChange }: LiveV
           {/* Previous runs */}
           {history.length > 0 && (
             <div className="flex-1 overflow-hidden flex flex-col">
-              <div className="px-3 py-2 border-b border-gray-800">
+              <div className="px-3 py-2 border-b border-gray-200 dark:border-gray-800">
                 <span className="text-xs font-medium text-gray-400 uppercase tracking-wide">Previous runs</span>
               </div>
               <div className="flex-1 overflow-y-auto p-2 flex flex-col gap-2">

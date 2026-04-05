@@ -74,7 +74,7 @@ export default function RerunModal({ project, onClose, onRerun }: RerunModalProp
               value={versionName}
               onChange={e => setVersionName(e.target.value)}
               placeholder="e.g. tight cuts, no music"
-              className="h-9 rounded-md border border-gray-700 bg-gray-800 px-3 text-sm text-white placeholder:text-gray-600 focus:outline-none focus:ring-2 focus:ring-blue-500"
+              className="h-9 rounded-md border border-gray-600 bg-gray-800 px-3 text-sm text-white placeholder:text-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500"
             />
             <p className="text-[11px] text-gray-600">Labels the current edit before it's archived — so you can restore it later.</p>
           </div>
@@ -87,7 +87,7 @@ export default function RerunModal({ project, onClose, onRerun }: RerunModalProp
               onChange={e => setPrompt(e.target.value)}
               onKeyDown={e => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) handleRun() }}
               rows={3}
-              className="rounded-md border border-gray-700 bg-gray-800 px-3 py-2 text-sm text-white placeholder:text-gray-600 focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none"
+              className="rounded-md border border-gray-600 bg-gray-800 px-3 py-2 text-sm text-white placeholder:text-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none"
             />
           </div>
 
@@ -97,7 +97,7 @@ export default function RerunModal({ project, onClose, onRerun }: RerunModalProp
             <select
               value={workflow}
               onChange={e => setWorkflow(e.target.value)}
-              className="h-9 rounded-md border border-gray-700 bg-gray-800 px-3 text-sm text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+              className="h-9 rounded-md border border-gray-600 bg-gray-800 px-3 text-sm text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
             >
               {workflows.map(w => <option key={w} value={w}>{w}</option>)}
             </select>

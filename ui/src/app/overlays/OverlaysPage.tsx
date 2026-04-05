@@ -208,14 +208,14 @@ function GlobalOverlayDetail({ overlay }: { overlay: GlobalOverlay }) {
     <div className="flex flex-col h-full overflow-hidden items-center px-8 pt-8 pb-6 gap-6">
       <div className="w-full text-center">
         <div className="flex items-baseline justify-center gap-3">
-          <h2 className="text-base font-semibold text-white">{overlay.name}</h2>
+          <h2 className="text-base font-semibold text-gray-900 dark:text-white">{overlay.name}</h2>
           <span className="text-[11px] text-gray-600 font-mono">{overlay.jsxPath.split('/').pop()}</span>
         </div>
         {overlay.description && <p className="text-sm text-gray-500 mt-0.5">{overlay.description}</p>}
         {error && <div className="mt-2 text-xs text-red-400 font-mono">{error}</div>}
       </div>
       <OverlayPreview factory={factory} props={defaultProps} height={Math.min(720, window.innerHeight - 160)} />
-      <p className="text-xs text-gray-400 border border-gray-700 rounded px-3 py-1.5">
+      <p className="text-xs text-gray-500 dark:text-gray-400 border border-gray-300 dark:border-gray-700 rounded px-3 py-1.5">
         Size and position can be adjusted in the Editor
       </p>
     </div>
@@ -236,7 +236,7 @@ function OverlayItemDetail({ item }: { item: OverlayItem }) {
     <div className="flex flex-col h-full overflow-hidden items-center px-8 pt-8 pb-6 gap-6">
       <div className="w-full text-center">
         <div className="flex items-baseline justify-center gap-3">
-          <h2 className="text-base font-semibold text-white">{overlayDisplayName(item.src, item.type)}</h2>
+          <h2 className="text-base font-semibold text-gray-900 dark:text-white">{overlayDisplayName(item.src, item.type)}</h2>
         </div>
         <p className="text-xs text-gray-500 mt-0.5">{item.start}s – {item.end}s</p>
         {error && <div className="mt-2 text-xs text-red-400 font-mono">{error}</div>}
@@ -246,7 +246,7 @@ function OverlayItemDetail({ item }: { item: OverlayItem }) {
         : <div className="text-sm text-gray-600">No JSX source — nothing to preview</div>
       }
       {jsxPath && (
-        <p className="text-xs text-gray-400 border border-gray-700 rounded px-3 py-1.5">
+        <p className="text-xs text-gray-500 dark:text-gray-400 border border-gray-300 dark:border-gray-700 rounded px-3 py-1.5">
           Size and position can be adjusted in the Editor
         </p>
       )}
@@ -274,7 +274,7 @@ function ProjectOverlayList({ project }: { project: Project }) {
   if (items.length === 0) {
     return (
       <div className="p-6">
-        <h2 className="text-lg font-semibold text-white mb-2">{project.name ?? project.id}</h2>
+        <h2 className="text-lg font-semibold text-gray-900 dark:text-white mb-2">{project.name ?? project.id}</h2>
         <p className="text-sm text-gray-500">No overlays in this project.</p>
       </div>
     )
@@ -282,8 +282,8 @@ function ProjectOverlayList({ project }: { project: Project }) {
 
   return (
     <div className="flex h-full overflow-hidden">
-      <div className="w-52 border-r border-gray-800 overflow-y-auto shrink-0">
-        <div className="px-3 py-2 text-xs text-gray-500 border-b border-gray-800 truncate">
+      <div className="w-52 border-r border-gray-200 dark:border-gray-800 overflow-y-auto shrink-0">
+        <div className="px-3 py-2 text-xs text-gray-500 border-b border-gray-200 dark:border-gray-800 truncate">
           {project.name ?? project.id}
         </div>
         {items.map(item => (
@@ -391,7 +391,7 @@ export default function OverlaysPage() {
       <button
         onClick={() => handleSelect(ov)}
         className={`w-full text-left px-3 py-2 text-sm transition-colors ${
-          active ? 'bg-gray-800 text-white' : 'text-gray-400 hover:bg-gray-900 hover:text-white'
+          active ? 'bg-gray-100 dark:bg-gray-800 text-gray-900 dark:text-white' : 'text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-900 hover:text-gray-900 dark:hover:text-white'
         }`}
       >
         <div className="font-medium truncate">{ov.name}</div>
@@ -401,15 +401,15 @@ export default function OverlaysPage() {
   }
 
   return (
-    <div className="flex h-full overflow-hidden bg-gray-950 text-white">
+    <div className="flex h-full overflow-hidden bg-white dark:bg-gray-950 text-gray-900 dark:text-white">
       {/* Left nav */}
-      <div className="w-52 flex flex-col border-r border-gray-800 overflow-y-auto shrink-0">
+      <div className="w-52 flex flex-col border-r border-gray-200 dark:border-gray-800 overflow-y-auto shrink-0">
         <div className="px-3 pt-3 pb-1 flex items-center justify-between">
           <span className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Library</span>
           <button
             onClick={() => setCreatingGroup(true)}
             title="New folder"
-            className="text-gray-600 hover:text-gray-300 transition-colors text-base leading-none"
+            className="text-gray-400 dark:text-gray-600 hover:text-gray-700 dark:hover:text-gray-300 transition-colors text-base leading-none"
           >
             +
           </button>
@@ -427,7 +427,7 @@ export default function OverlaysPage() {
               }}
               onBlur={submitNewGroup}
               placeholder="Folder name…"
-              className="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs text-white placeholder-gray-600 outline-none focus:border-gray-500"
+              className="w-full bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded px-2 py-1 text-xs text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-600 outline-none focus:border-gray-400 dark:focus:border-gray-500"
             />
           </div>
         )}
@@ -455,7 +455,7 @@ export default function OverlaysPage() {
 
         {profiles.some(p => (profileOverlays[p.name] ?? []).length > 0) && (
           <>
-            <div className="px-3 pt-3 pb-1 mt-1 text-xs font-semibold text-gray-500 uppercase tracking-wide border-t border-gray-800">
+            <div className="px-3 pt-3 pb-1 mt-1 text-xs font-semibold text-gray-500 uppercase tracking-wide border-t border-gray-200 dark:border-gray-800">
               Profiles
             </div>
             {profiles.map(p => {
@@ -490,7 +490,7 @@ export default function OverlaysPage() {
           </>
         )}
 
-        <div className="px-3 pt-3 pb-1 mt-1 text-xs font-semibold text-gray-500 uppercase tracking-wide border-t border-gray-800">
+        <div className="px-3 pt-3 pb-1 mt-1 text-xs font-semibold text-gray-500 uppercase tracking-wide border-t border-gray-200 dark:border-gray-800">
           Projects
         </div>
 
@@ -502,13 +502,13 @@ export default function OverlaysPage() {
               onClick={() => setSelection({ kind: 'project', project: p })}
               className={`text-left px-3 py-2 text-sm flex items-center justify-between gap-2 transition-colors ${
                 selection?.kind === 'project' && selection.project.id === p.id
-                  ? 'bg-gray-800 text-white'
-                  : 'text-gray-400 hover:bg-gray-900 hover:text-white'
+                  ? 'bg-gray-100 dark:bg-gray-800 text-gray-900 dark:text-white'
+                  : 'text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-900 hover:text-gray-900 dark:hover:text-white'
               }`}
             >
               <span className="truncate">{p.name ?? p.id}</span>
               {count > 0 && (
-                <span className="shrink-0 text-xs bg-gray-700 text-gray-300 rounded-full px-1.5 py-0.5 leading-none">
+                <span className="shrink-0 text-xs bg-gray-200 dark:bg-gray-700 text-gray-600 dark:text-gray-300 rounded-full px-1.5 py-0.5 leading-none">
                   {count}
                 </span>
               )}

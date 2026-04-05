@@ -357,7 +357,7 @@ export default function ReviewView({ project, onProjectChange }: ReviewViewProps
             )}
           </div>
 
-          <div className="shrink-0 border-t border-gray-800 bg-gray-950">
+          <div className="shrink-0 border-t border-gray-200 dark:border-gray-800 bg-gray-100 dark:bg-gray-950">
             <Timeline
               project={project}
               currentTime={currentTime}
@@ -374,19 +374,19 @@ export default function ReviewView({ project, onProjectChange }: ReviewViewProps
         </div>
 
         {/* Right sidebar — versions + assets */}
-        <div className="w-48 shrink-0 border-l border-gray-800 bg-gray-950 flex flex-col overflow-hidden">
+        <div className="w-48 shrink-0 border-l border-gray-200 dark:border-gray-800 bg-gray-50 dark:bg-gray-950 flex flex-col overflow-hidden">
 
           {/* Version history */}
           <VersionPanel versions={versions} restoring={restoring} onRestore={handleRestoreVersion} />
 
         {/* Assets */}
         <div className="flex flex-col flex-1 overflow-hidden">
-          <div className="flex items-center justify-between px-3 py-2 border-b border-gray-800">
+          <div className="flex items-center justify-between px-3 py-2 border-b border-gray-200 dark:border-gray-800">
             <span className="text-xs font-medium text-gray-400 uppercase tracking-wide">Assets</span>
             <button
               onClick={handleAddAssets}
               disabled={pickingAssets}
-              className="text-gray-500 hover:text-white transition-colors"
+              className="text-gray-500 hover:text-gray-900 dark:hover:text-white transition-colors"
               title="Add assets"
             >
               <Plus size={14} />
@@ -402,7 +402,7 @@ export default function ReviewView({ project, onProjectChange }: ReviewViewProps
             {assets.map(asset => (
               <div
                 key={asset.id}
-                className="group relative rounded overflow-hidden border border-gray-800 bg-gray-900"
+                className="group relative rounded overflow-hidden border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900"
               >
                 <img
                   src={fileUrl(asset.src)}
@@ -428,20 +428,20 @@ export default function ReviewView({ project, onProjectChange }: ReviewViewProps
         </div>
 
         {/* Help button */}
-        <div className="shrink-0 flex justify-end px-2 py-2 border-t border-gray-800">
+        <div className="shrink-0 flex justify-end px-2 py-2 border-t border-gray-200 dark:border-gray-800">
           {showHelp && (
-            <div className="fixed bottom-12 right-4 w-96 bg-gray-900 border border-gray-700 rounded-xl p-4 text-xs text-gray-400 font-mono shadow-2xl z-50">
-              <p className="text-gray-300 font-sans font-medium mb-3 text-[11px] uppercase tracking-wide">Editor shortcuts</p>
+            <div className="fixed bottom-12 right-4 w-96 bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-xl p-4 text-xs text-gray-500 dark:text-gray-400 font-mono shadow-2xl z-50">
+              <p className="text-gray-700 dark:text-gray-300 font-sans font-medium mb-3 text-[11px] uppercase tracking-wide">Editor shortcuts</p>
               <div className="flex flex-col gap-2">
                 <div className="flex justify-between gap-4"><span className="text-gray-500">Space</span><span>play / pause</span></div>
                 <div className="flex justify-between gap-4"><span className="text-gray-500">← →</span><span>scrub one frame</span></div>
                 <div className="flex justify-between gap-4"><span className="text-gray-500">Enter</span><span>place marker</span></div>
                 <div className="flex justify-between gap-4"><span className="text-gray-500">double-click timeline</span><span>place markers</span></div>
                 <div className="flex justify-between gap-4"><span className="text-gray-500">Cut button</span><span>split clip at markers</span></div>
-                <div className="border-t border-gray-800 my-1" />
+                <div className="border-t border-gray-200 dark:border-gray-800 my-1" />
                 <div className="flex justify-between gap-4"><span className="text-gray-500">drag overlay</span><span>move position</span></div>
                 <div className="flex justify-between gap-4"><span className="text-gray-500">drag corner</span><span>resize overlay</span></div>
-                <div className="border-t border-gray-800 my-1" />
+                <div className="border-t border-gray-200 dark:border-gray-800 my-1" />
                 <div className="flex justify-between gap-4"><span className="text-gray-500">click caption</span><span>edit inline</span></div>
                 <div className="flex justify-between gap-4"><span className="text-gray-500">Expand ↑</span><span>open transcript editor</span></div>
               </div>

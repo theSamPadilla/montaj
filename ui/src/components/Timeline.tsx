@@ -308,7 +308,7 @@ export default function Timeline({ project, currentTime, onTimeUpdate, onProject
     />
   ) : null
 
-  const trackRow = 'relative h-10 bg-gray-900 rounded overflow-hidden cursor-pointer'
+  const trackRow = 'relative h-10 bg-gray-100 dark:bg-gray-900 rounded overflow-hidden cursor-pointer'
 
   function handleKeyDown(e: React.KeyboardEvent<HTMLDivElement>) {
     if ((e.target as HTMLElement).isContentEditable) return
@@ -345,13 +345,13 @@ export default function Timeline({ project, currentTime, onTimeUpdate, onProject
       {/* ── Scrubber ── */}
       <div
         ref={scrubberRef}
-        className={`relative h-4 rounded-full bg-gray-800 group ${markers[0] !== null && markers[1] === null ? 'cursor-cell' : 'cursor-crosshair'}`}
+        className={`relative h-4 rounded-full bg-gray-200 dark:bg-gray-800 group ${markers[0] !== null && markers[1] === null ? 'cursor-cell' : 'cursor-crosshair'}`}
         onClick={handleScrubClick}
         onDoubleClick={handleScrubDoubleClick}
       >
         {/* Elapsed fill */}
         <div
-          className="absolute inset-y-0 left-0 rounded-full bg-gray-600 pointer-events-none"
+          className="absolute inset-y-0 left-0 rounded-full bg-gray-400 dark:bg-gray-600 pointer-events-none"
           style={{ width: `${pct(currentTime)}%` }}
         />
 
@@ -593,7 +593,7 @@ export default function Timeline({ project, currentTime, onTimeUpdate, onProject
         }
 
         return (
-          <div className="rounded border border-gray-800 bg-gray-900 px-3 py-2.5">
+          <div className="rounded border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 px-3 py-2.5">
             <div className="flex items-center justify-between mb-2">
               <span className="text-[10px] text-gray-500 uppercase tracking-wider">Captions</span>
               <div className="flex items-center gap-2">
@@ -605,7 +605,7 @@ export default function Timeline({ project, currentTime, onTimeUpdate, onProject
                       className={`text-[10px] rounded px-2 py-0.5 transition-all border ${
                         active
                           ? 'bg-purple-600/30 border-purple-500/60 text-purple-300'
-                          : 'bg-gray-800 border-gray-700 text-gray-500 hover:text-gray-300 hover:border-gray-500'
+                          : 'bg-gray-100 dark:bg-gray-800 border-gray-300 dark:border-gray-700 text-gray-500 hover:text-gray-700 dark:hover:text-gray-300 hover:border-gray-400 dark:hover:border-gray-500'
                       }`}
                       onClick={() => {
                         const updated = {
@@ -623,7 +623,7 @@ export default function Timeline({ project, currentTime, onTimeUpdate, onProject
                 })}
                 {segs.length > 0 && (
                   <button
-                    className="text-[10px] text-gray-400 hover:text-white border border-gray-700 hover:border-gray-500 bg-gray-800 hover:bg-gray-700 rounded px-2 py-0.5 transition-all"
+                    className="text-[10px] text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white border border-gray-300 dark:border-gray-700 hover:border-gray-400 dark:hover:border-gray-500 bg-gray-100 dark:bg-gray-800 hover:bg-gray-200 dark:hover:bg-gray-700 rounded px-2 py-0.5 transition-all"
                     onClick={() => setTranscriptModalOpen(true)}
                   >
                     Expand ↑
@@ -636,7 +636,7 @@ export default function Timeline({ project, currentTime, onTimeUpdate, onProject
             {segs.length === 0 ? (
               <p className="text-xs text-gray-600 italic">No transcript — captions are generated during the agent pass</p>
             ) : (
-              <p className="text-sm text-gray-200 leading-relaxed">
+              <p className="text-sm text-gray-700 dark:text-gray-200 leading-relaxed">
                 {vicinitySegs.map((seg) => {
                   const i = segs.indexOf(seg)
                   const isActive = currentTime >= seg.start && currentTime < seg.end
@@ -644,7 +644,7 @@ export default function Timeline({ project, currentTime, onTimeUpdate, onProject
                     <span key={seg.id ?? i}>
                       {vicinitySegs.indexOf(seg) > 0 && ' '}
                       <span className="text-gray-500 text-[10px] font-mono mr-1">{formatTime(seg.start)}</span>
-                      <span className={isActive ? 'text-white' : 'text-gray-400'}>
+                      <span className={isActive ? 'text-gray-900 dark:text-white' : 'text-gray-500 dark:text-gray-400'}>
                         <EditableSegment seg={seg} onEdit={makeOnEdit(i)} />
                       </span>
                     </span>
