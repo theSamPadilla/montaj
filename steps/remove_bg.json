@@ -1,0 +1,64 @@
+{
+  "name": "remove_bg",
+  "description": "Remove video background using RVM — outputs ProRes 4444 .mov with alpha + VP9 WebM preview. Quality tuning: use rvm_resnet50 for complex/cluttered backgrounds; use downsample 1.0 for sharper edges (slower). Default settings are fast; prefer quality settings for final output.",
+  "input": {
+    "type": "video",
+    "description": "Source video file"
+  },
+  "output": {
+    "type": "json",
+    "description": "{ nobg_src: ProRes 4444 .mov for render, nobg_preview_src: VP9 WebM for browser preview }"
+  },
+  "params": [
+    {
+      "name": "input",
+      "type": "string",
+      "required": false,
+      "description": "Single source video file (mutually exclusive with inputs)"
+    },
+    {
+      "name": "inputs",
+      "type": "array",
+      "required": false,
+      "description": "Multiple source video files"
+    },
+    {
+      "name": "out",
+      "type": "string",
+      "required": false,
+      "description": "Output path (only valid with --input, default: {stem}_nobg.mov)"
+    },
+    {
+      "name": "model",
+      "type": "enum",
+      "required": false,
+      "default": "rvm_mobilenetv3",
+      "options": ["rvm_mobilenetv3", "rvm_resnet50"],
+      "description": "rvm_mobilenetv3: fast, good for clean backgrounds. rvm_resnet50: slower, significantly better on complex/cluttered backgrounds."
+    },
+    {
+      "name": "cpu",
+      "type": "boolean",
+      "required": false,
+      "default": false
+    },
+    {
+      "name": "workers",
+      "type": "integer",
+      "required": false
+    },
+    {
+      "name": "downsample",
+      "type": "float",
+      "required": false,
+      "default": 0.5,
+      "description": "Inference resolution ratio (0.25–1.0). 0.5 = half resolution (fast). 1.0 = full resolution (4x slower, sharper edges and finer hair/detail)."
+    },
+    {
+      "name": "progress",
+      "type": "boolean",
+      "required": false,
+      "default": false
+    }
+  ]
+}

@@ -2,12 +2,12 @@
   "name": "rm_fillers",
   "description": "Remove filler words (um, uh, hmm) and surrounding silence from a clip",
   "input": {
-    "type": "video",
-    "description": "Source video clip"
+    "type": "video_or_spec",
+    "description": "Source video file or trim spec JSON from a prior step"
   },
   "output": {
-    "type": "video",
-    "description": "Cleaned clip with fillers removed"
+    "type": "spec",
+    "description": "Trim spec JSON with filler word ranges removed and head snapped to first word onset"
   },
   "params": [
     {

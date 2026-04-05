@@ -17,12 +17,13 @@ def main():
         run, serve, render, workflow, step,
         fetch, profile,
         probe, snapshot,
-        filler, waveform_trim, rm_nonspeech, trim, concat, resize,
-        normalize, extract_audio, ffmpeg_captions,
+        filler, waveform_trim, rm_nonspeech, trim, apply_cuts, resize,
+        normalize, extract_audio,
         transcribe, caption,
-        best_take, jump_cut_detect, pacing,
+        jump_cut_detect, pacing,
         init, status, mcp, adaptor, models,
         create_step, validate, install,
+        remove_bg,
     )
 
     parser = argparse.ArgumentParser(
@@ -37,9 +38,10 @@ def main():
     _HIDDEN = {
         "probe", "snapshot",
         "filler", "waveform-trim", "rm-nonspeech",
-        "trim", "concat", "resize", "normalize", "extract-audio", "ffmpeg-captions",
+        "trim", "apply-cuts", "resize", "normalize", "extract-audio",
         "transcribe", "caption",
-        "best-take", "jump-cut-detect", "pacing",
+        "jump-cut-detect", "pacing",
+        "remove-bg",
     }
 
     # Inject formatter into every subcommand without touching each command file
@@ -64,14 +66,12 @@ def main():
     waveform_trim.register(subparsers)
     rm_nonspeech.register(subparsers)
     trim.register(subparsers)
-    concat.register(subparsers)
+    apply_cuts.register(subparsers)
     resize.register(subparsers)
     normalize.register(subparsers)
     extract_audio.register(subparsers)
-    ffmpeg_captions.register(subparsers)
     transcribe.register(subparsers)
     caption.register(subparsers)
-    best_take.register(subparsers)
     jump_cut_detect.register(subparsers)
     pacing.register(subparsers)
     init.register(subparsers)
@@ -82,6 +82,7 @@ def main():
     create_step.register(subparsers)
     validate.register(subparsers)
     install.register(subparsers)
+    remove_bg.register(subparsers)
 
     args = parser.parse_args()
     args.func(args)

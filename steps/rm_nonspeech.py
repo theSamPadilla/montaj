@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Remove non-speech regions using whisper word-level timestamps."""
+"""Remove non-speech regions using whisper word-level timestamps — outputs a trim spec, no encode."""
 import json, os, sys, argparse, shutil, tempfile
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "lib"))
-from common import fail, require_file, check_output, run, transcribe_words
+from common import require_file, get_duration, transcribe_words
 from trim_spec import is_trim_spec, load as load_spec, merge as merge_keeps, audio_extract_cmd, remap_timestamp
 
 def main():
@@ -15,7 +15,6 @@ def main():
                         help="Max gap between words to bridge in seconds (default: 0.18)")
     parser.add_argument("--sentence-edge", type=float, default=0.10,
                         help="Padding around sentence edges in seconds (default: 0.10)")
-    parser.add_argument("--out", help="Output file path (legacy video encode only)")
     args = parser.parse_args()
 
     require_file(args.input)
@@ -81,14 +80,11 @@ def main():
         print(json.dumps({"input": source, "keeps": refined}))
         return
 
-    # ── legacy video encode path ───────────────────────────────────────────────
-    out = args.out or f"{os.path.splitext(args.input)[0]}_voiceonly.mp4"
-
+    # ── Raw video path ────────────────────────────────────────────────────────
     work = tempfile.mkdtemp(prefix="nonspeech_")
     try:
         words = transcribe_words(args.input, args.model, work_dir=work)
 
-        regions = []
         seg_regions = []
         for w in words:
             start, end = w["start"], w["end"]
@@ -104,32 +100,16 @@ def main():
         if seg_regions:
             seg_regions[0]["start"] = max(0, seg_regions[0]["start"] - args.sentence_edge)
             seg_regions[-1]["end"] += args.sentence_edge
-            regions.extend(seg_regions)
-
-        if not regions:
-            shutil.copy2(args.input, out)
-            check_output(out)
-            print(out)
-            return
-
-        vparts, aparts, concat_in = "", "", ""
-        for i, r in enumerate(regions):
-            vparts += f"[0:v]trim=start={r['start']:.3f}:end={r['end']:.3f},setpts=PTS-STARTPTS[v{i}];"
-            aparts += f"[0:a]atrim=start={r['start']:.3f}:end={r['end']:.3f},asetpts=PTS-STARTPTS[a{i}];"
-            concat_in += f"[v{i}][a{i}]"
-
-        filt = f"{vparts}{aparts}{concat_in}concat=n={len(regions)}:v=1:a=1[outv][outa]"
-
-        run(["ffmpeg", "-y", "-i", args.input, "-filter_complex", filt,
-             "-map", "[outv]", "-map", "[outa]",
-             "-c:v", "libx264", "-preset", "slow", "-crf", "18",
-             "-c:a", "aac", "-b:a", "192k", out])
-
     finally:
         shutil.rmtree(work, ignore_errors=True)
 
-    check_output(out)
-    print(out)
+    if not seg_regions:
+        duration = get_duration(args.input)
+        print(json.dumps({"input": args.input, "keeps": [[0.0, duration]]}))
+        return
+
+    keeps = [[r["start"], r["end"]] for r in seg_regions]
+    print(json.dumps({"input": args.input, "keeps": keeps}))
 
 if __name__ == "__main__":
     main()
