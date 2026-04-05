@@ -1,0 +1,28 @@
+{
+  "name": "waveform_image",
+  "description": "Generate waveform PNG images from a video or audio file, subdivided into ≤N-second chunks for visual silence analysis",
+  "input": {
+    "type": "video",
+    "description": "Source video or audio file (use 'inputs' for batch parallel processing)",
+    "multiple": true
+  },
+  "output": {
+    "type": "json",
+    "description": "JSON array of {path, start, end} — one entry per chunk. Batch mode returns an array of arrays."
+  },
+  "params": [
+    {
+      "name": "chunk-duration",
+      "type": "float",
+      "default": 10.0,
+      "min": 1.0,
+      "max": 30.0,
+      "description": "Max duration per waveform image in seconds (default: 10)"
+    },
+    {
+      "name": "out-dir",
+      "type": "string",
+      "description": "Output directory for PNG files (default: <stem>_waveforms/ alongside the input file)"
+    }
+  ]
+}
