@@ -2,7 +2,7 @@
  * compose.js — Build and execute the final ffmpeg filter graph.
  *
  * Inputs:
- *   - baseTrackClips: array of clip objects from base_track[] (trimmed individually)
+ *   - baseTrackClips: array of clip objects from tracks[0] (primary footage clips with explicit start/end)
  *   - puppeteerSegments: rendered MKV/WebM overlay + caption segments from Puppeteer
  *   - imageItems: direct image overlay inputs
  *   - videoItems: direct video overlay inputs
@@ -18,15 +18,13 @@ import { dirname } from 'path'
 const FFMPEG_TIMEOUT_MS = 600_000
 
 /**
- * Compute total video duration from available inputs.
- * If base clips exist, sum their durations.
- * Otherwise, take the max end time across all items.
+ * Compute total video duration from all items.
+ * In v0.2 all items — including primary clips in tracks[0] — carry explicit `end` values.
+ * Take the max end across everything.
  */
 function computeTotalDuration(baseTrackClips, imageItems, videoItems, puppeteerSegments) {
-  if (baseTrackClips.length > 0) {
-    return baseTrackClips.reduce((sum, c) => sum + ((c.outPoint ?? 0) - (c.inPoint ?? 0)), 0)
-  }
   const allEnds = [
+    ...baseTrackClips.map(c => c.end ?? 0),
     ...imageItems.map(i => i.end ?? 0),
     ...videoItems.map(i => i.end ?? 0),
     ...puppeteerSegments.map(s => s.endSeconds ?? 0),
@@ -37,7 +35,7 @@ function computeTotalDuration(baseTrackClips, imageItems, videoItems, puppeteerS
 /**
  * @param {Object} opts
  * @param {Object}   opts.projectJson
- * @param {Array}    opts.baseTrackClips       — clip objects from base_track[]
+ * @param {Array}    opts.baseTrackClips       — clip objects from tracks[0]
  * @param {Array}    opts.puppeteerSegments     — rendered WebM/MKV segments from Puppeteer
  * @param {Array}    opts.imageItems            — direct image overlay inputs
  * @param {Array}    opts.videoItems            — direct video overlay inputs
@@ -85,12 +83,17 @@ export async function compose({
   // --- Build input list ---
   const inputs = []
 
-  // Base track clips (one -i per clip, with -ss and -t for trim)
+  // Primary track clips — one -i per clip.
+  // -itsoffset shifts the input stream's timestamps so frame 0 of the decoded clip
+  // lands at clip.start on the output timeline. Combined with the overlay filter in
+  // the filter_complex (which uses enable='between(t,clip.start,clip.end)'), each clip
+  // is composited onto the canvas at its explicit timeline position.
   for (const clip of baseTrackClips) {
     const inPt = clip.inPoint ?? 0
     const dur  = (clip.outPoint != null && clip.inPoint != null)
       ? clip.outPoint - clip.inPoint
       : null
+    inputs.push('-itsoffset', String(clip.start ?? 0))
     inputs.push('-ss', String(inPt))
     if (dur != null) inputs.push('-t', String(dur))
     inputs.push('-i', clip.src)
@@ -124,22 +127,31 @@ export async function compose({
   let videoLabel
   let audioLabel
 
-  // Step 1: Build base from clips (concat, passthrough, or canvas)
-  if (N > 1) {
-    const concatIn = Array.from({ length: N }, (_, i) => `[${i}:v][${i}:a]`).join('')
-    filterParts.push(`${concatIn}concat=n=${N}:v=1:a=1[base_v][base_a]`)
-    videoLabel = '[base_v]'
-    audioLabel = '[base_a]'
-  } else if (N === 1) {
-    videoLabel = '0:v'
-    audioLabel = '0:a'
-  } else {
-    // Canvas project — no base clips; synthesise black video + silent audio
-    filterParts.push(`color=black:size=${vw}x${vh}:rate=${fps}:duration=${totalDuration}[base_v]`)
-    filterParts.push(`aevalsrc=0:c=stereo:s=44100:d=${totalDuration}[base_a]`)
-    videoLabel = '[base_v]'
-    audioLabel = '[base_a]'
+  // Step 1: Synthesise a black canvas for the full output duration. Each primary clip is
+  // overlaid onto this canvas at its explicit timeline position using the itsoffset on its
+  // input (which shifts timestamps so the clip's frame 0 lands at clip.start) together with
+  // enable='between(t,start,end)' to limit compositing to the clip's window. This replaces
+  // the old concat approach and naturally handles gaps between clips (black frames fill them).
+  filterParts.push(`color=black:size=${vw}x${vh}:rate=${fps}:duration=${totalDuration}[canvas_v]`)
+  filterParts.push(`aevalsrc=0:c=stereo:s=44100:d=${totalDuration}[canvas_a]`)
+  videoLabel = '[canvas_v]'
+  audioLabel = '[canvas_a]'
+
+  for (let i = 0; i < N; i++) {
+    const clip  = baseTrackClips[i]
+    const outV  = `[pv${i}]`
+    const outA  = `[pa${i}]`
+    filterParts.push(
+      `${videoLabel}[${i}:v]overlay=x=0:y=0:enable='between(t,${clip.start},${clip.end})':shortest=0${outV}`
+    )
+    filterParts.push(
+      `${audioLabel}[${i}:a]amix=inputs=2:duration=longest:normalize=0${outA}`
+    )
+    videoLabel = outV
+    audioLabel = outA
   }
+  // After this loop: videoLabel is '[pv{N-1}]' (or '[canvas_v]' if N=0 canvas project).
+  // The format conversion in Step 2 and overlay chain in Steps 3-5 use videoLabel directly.
 
   // Step 2: Format base for compositing (only when overlays exist)
   const hasAnyOverlays = M > 0 || P > 0 || Q > 0
@@ -292,7 +304,7 @@ export async function compose({
   if (hasAnyOverlays) {
     ffmpegArgs.push('-map', '[vout]')
   } else {
-    // videoLabel is still the raw base label (e.g. '0:v' or '[base_v]')
+    // videoLabel is the canvas/clip chain label (e.g. '[canvas_v]' or '[pv{N-1}]')
     ffmpegArgs.push('-map', videoLabel)
   }
 
@@ -357,3 +369,5 @@ function detectVideoCodec() {
   // Software fallback
   return ['-c:v', 'libx264', '-preset', 'fast', '-crf', '18', '-pix_fmt', 'yuv420p']
 }
+
+export { computeTotalDuration }

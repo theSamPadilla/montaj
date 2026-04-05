@@ -19,6 +19,7 @@ import { renderAllSegments }              from './renderer.js'
 import { compose }                        from './compose.js'
 
 const __dirname  = dirname(fileURLToPath(import.meta.url))
+const isMain = resolve(process.argv[1] ?? '') === fileURLToPath(import.meta.url)
 const MONTAJ_ROOT = process.env.MONTAJ_ROOT || join(__dirname, '..')
 const PYTHON = process.env.MONTAJ_PYTHON || 'python3'
 
@@ -26,30 +27,32 @@ const PYTHON = process.env.MONTAJ_PYTHON || 'python3'
 // CLI argument parsing
 // ---------------------------------------------------------------------------
 
-const argv = process.argv.slice(2)
+if (isMain) {
+  const argv = process.argv.slice(2)
 
-if (!argv.length || argv[0] === '--help') {
-  process.stderr.write('Usage: render.js <project.json> [--out <path>] [--workers <n>] [--clean]\n')
-  process.exit(1)
+  if (!argv.length || argv[0] === '--help') {
+    process.stderr.write('Usage: render.js <project.json> [--out <path>] [--workers <n>] [--clean]\n')
+    process.exit(1)
+  }
+
+  let projectArg = null
+  let outArg     = null
+  let workersArg = null
+  let cleanArg   = false
+
+  for (let i = 0; i < argv.length; i++) {
+    if (argv[i] === '--out')     { outArg     = argv[++i]; continue }
+    if (argv[i] === '--workers') { workersArg = parseInt(argv[++i], 10); continue }
+    if (argv[i] === '--clean')   { cleanArg   = true; continue }
+    if (!projectArg) projectArg = argv[i]
+  }
+
+  if (!projectArg) fail('missing_argument', 'No project.json path provided')
+
+  main(projectArg, { out: outArg, workers: workersArg, clean: cleanArg }).catch(err => {
+    fail('render_error', err.message)
+  })
 }
-
-let projectArg = null
-let outArg     = null
-let workersArg = null
-let cleanArg   = false
-
-for (let i = 0; i < argv.length; i++) {
-  if (argv[i] === '--out')     { outArg     = argv[++i]; continue }
-  if (argv[i] === '--workers') { workersArg = parseInt(argv[++i], 10); continue }
-  if (argv[i] === '--clean')   { cleanArg   = true; continue }
-  if (!projectArg) projectArg = argv[i]
-}
-
-if (!projectArg) fail('missing_argument', 'No project.json path provided')
-
-main(projectArg, { out: outArg, workers: workersArg, clean: cleanArg }).catch(err => {
-  fail('render_error', err.message)
-})
 
 // ---------------------------------------------------------------------------
 // Main
@@ -88,7 +91,7 @@ async function main(projectPath, { out, workers, clean }) {
   const outputPath = out ? resolve(out) : join(renderDir, 'final.mp4')
 
   // 2. Collect segments and items
-  const baseTrackClips = projectJson.base_track || []
+  const baseTrackClips = projectJson.tracks?.[0] ?? []
   const segmentSpecs = collectPuppeteerSegments(projectJson, fps, renderWidth, renderHeight, segDir)
   const { imageItems, videoItems } = collectDirectItems(projectJson)
 
@@ -134,7 +137,7 @@ async function main(projectPath, { out, workers, clean }) {
     }
   }
 
-  // 5. Detect base video dimensions (probe first clip in base_track, or use settings).
+  // 5. Detect base video dimensions (probe first clip in tracks[0], or use settings).
   let actualWidth  = renderWidth
   let actualHeight = renderHeight
   if (baseTrackClips.length > 0) {
@@ -197,13 +200,14 @@ function probeVideoDimensions(filePath) {
 // ---------------------------------------------------------------------------
 
 function collectPuppeteerSegments(projectJson, fps, width, height, segDir) {
-  const specs     = []
+  const specs = []
   const totalSecs = getTotalDurationSeconds(projectJson)
 
-  // NEW schema: visual_tracks — process overlay type items
-  for (let trackIdx = 0; trackIdx < (projectJson.visual_tracks || []).length; trackIdx++) {
-    const track = projectJson.visual_tracks[trackIdx]
-    for (const item of track || []) {
+  // Overlay items live in tracks[1+]; tracks[0] is primary footage
+  const overlayTracks = (projectJson.tracks ?? []).slice(1)
+  for (let trackIdx = 0; trackIdx < overlayTracks.length; trackIdx++) {
+    const track = overlayTracks[trackIdx]
+    for (const item of track ?? []) {
       if (item.type === 'overlay') {
         const frameCount = Math.ceil((item.end - item.start) * fps)
         specs.push({
@@ -229,7 +233,7 @@ function collectPuppeteerSegments(projectJson, fps, width, height, segDir) {
     }
   }
 
-  // captions is a top-level object
+  // Captions: top-level projectJson.captions object (unchanged from v0.1)
   const captions = projectJson.captions
   if (captions?.segments?.length > 0 || captions?.style) {
     const frameCount = Math.ceil(totalSecs * fps)
@@ -248,40 +252,25 @@ function collectPuppeteerSegments(projectJson, fps, width, height, segDir) {
     })
   }
 
-  // OLD schema fallback: tracks[type=caption]
-  for (const track of projectJson.tracks || []) {
-    if (track.type === 'caption') {
-      const frameCount = Math.ceil(totalSecs * fps)
-      specs.push({
-        id:            track.id,
-        componentPath: captionTemplatePath(track.style),
-        props:         { segments: track.segments || [] },
-        frameCount,
-        fps,
-        startSeconds:  0,
-        endSeconds:    totalSecs,
-        outputPath:    join(segDir, `${track.id}.webm`),
-        width,
-        height,
-        isCaption:     true,
-      })
-    }
-  }
+  // NOTE: The old schema had a tracks[type=caption] fallback block here. It has been
+  // removed — in v0.2, projectJson.tracks is always an array of arrays, never typed objects.
 
   return specs
 }
 
 // ---------------------------------------------------------------------------
-// Direct items: image and video visual_tracks items (no Puppeteer)
+// Direct items: image and video items from tracks[1+] (no Puppeteer)
 // ---------------------------------------------------------------------------
 
 function collectDirectItems(projectJson) {
   const imageItems = []
   const videoItems = []
 
-  for (let trackIdx = 0; trackIdx < (projectJson.visual_tracks || []).length; trackIdx++) {
-    const track = projectJson.visual_tracks[trackIdx]
-    for (const item of track || []) {
+  // Overlay items live in tracks[1+]; tracks[0] is primary footage
+  const overlayTracks = (projectJson.tracks ?? []).slice(1)
+  for (let trackIdx = 0; trackIdx < overlayTracks.length; trackIdx++) {
+    const track = overlayTracks[trackIdx]
+    for (const item of track ?? []) {
       const base = {
         id:      item.id,
         src:     item.src,
@@ -298,12 +287,11 @@ function collectDirectItems(projectJson) {
       } else if (item.type === 'video') {
         videoItems.push({
           ...base,
-          // Use nobg_src (ProRes 4444 with alpha) for render when available; src stays for preview
-          src:        item.nobg_src && item.remove_bg ? item.nobg_src : item.src,
-          inPoint:    item.inPoint,
-          outPoint:   item.outPoint,
-          remove_bg:  item.remove_bg ?? false,
-          muted:      item.muted ?? false,
+          src:       item.nobg_src && item.remove_bg ? item.nobg_src : item.src,
+          inPoint:   item.inPoint,
+          outPoint:  item.outPoint,
+          remove_bg: item.remove_bg ?? false,
+          muted:     item.muted ?? false,
         })
       }
     }
@@ -360,30 +348,13 @@ function overlayTemplatePath(item) {
 // ---------------------------------------------------------------------------
 
 function resolveProjectPaths(projectJson, projectDir) {
-  // NEW schema: base_track clips
-  for (const clip of projectJson.base_track || []) {
-    if (clip.src && !clip.src.startsWith('/')) {
-      clip.src = resolve(projectDir, clip.src)
-    }
-  }
-
-  // NEW schema: visual_tracks items (overlay, image, video all have src)
-  for (const track of projectJson.visual_tracks || []) {
-    for (const item of track || []) {
+  // v0.2: tracks is an array of arrays; every item in every track may have a src
+  for (const track of projectJson.tracks ?? []) {
+    for (const item of track ?? []) {
       if (item.src && !item.src.startsWith('/')) {
         item.src = resolve(projectDir, item.src)
       }
-    }
-  }
-
-  // OLD schema fallback: tracks[type=video].clips
-  for (const track of projectJson.tracks || []) {
-    if (track.type === 'video') {
-      for (const clip of track.clips || []) {
-        if (clip.src && !clip.src.startsWith('/')) {
-          clip.src = resolve(projectDir, clip.src)
-        }
-      }
+      // nobg_src and nobg_preview_src are always absolute (written by remove_bg step)
     }
   }
 
@@ -398,26 +369,10 @@ function resolveProjectPaths(projectJson, projectDir) {
 function validateProjectFiles(projectJson) {
   const missing = []
 
-  // NEW schema: base_track clips
-  for (const clip of projectJson.base_track || []) {
-    if (clip.src && !existsSync(clip.src)) missing.push(clip.src)
-  }
-
-  // NEW schema: visual_tracks items
-  for (const track of projectJson.visual_tracks || []) {
-    for (const item of track || []) {
-      if ((item.type === 'overlay' || item.type === 'image' || item.type === 'video') && item.src && !existsSync(item.src)) {
-        missing.push(item.src)
-      }
-    }
-  }
-
-  // OLD schema fallback: tracks[type=video].clips
-  for (const track of projectJson.tracks || []) {
-    if (track.type === 'video') {
-      for (const clip of track.clips || []) {
-        if (clip.src && !existsSync(clip.src)) missing.push(clip.src)
-      }
+  // v0.2: tracks is an array of arrays; check src existence on every item in every track
+  for (const track of projectJson.tracks ?? []) {
+    for (const item of track ?? []) {
+      if (item.src && !existsSync(item.src)) missing.push(item.src)
     }
   }
 
@@ -435,18 +390,9 @@ function validateProjectFiles(projectJson) {
 // ---------------------------------------------------------------------------
 
 function getTotalDurationSeconds(projectJson) {
-  // NEW schema: base_track clips
-  if (projectJson.base_track?.length > 0) {
-    return projectJson.base_track.reduce((sum, c) => sum + (c.outPoint - c.inPoint), 0)
-  }
-
-  // Canvas project — infer duration from visual_tracks
-  const visualItems = (projectJson.visual_tracks || []).flat()
-  if (visualItems.length > 0) {
-    return Math.max(...visualItems.map(i => i.end))
-  }
-
-  return 0
+  const allItems = (projectJson.tracks ?? []).flat()
+  if (allItems.length === 0) return 0
+  return Math.max(...allItems.map(i => i.end ?? 0))
 }
 
 // ---------------------------------------------------------------------------
@@ -461,3 +407,5 @@ function fail(code, message) {
   process.stderr.write(JSON.stringify({ error: code, message }) + '\n')
   process.exit(1)
 }
+
+export { getTotalDurationSeconds, collectPuppeteerSegments, collectDirectItems }
