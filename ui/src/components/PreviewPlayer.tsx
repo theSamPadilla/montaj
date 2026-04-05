@@ -1,14 +1,61 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-
-const RENDER_W = 1080
-const RENDER_H = 1920
 import { fileUrl } from '@/lib/api'
-import { getOverlayTracks, getVideoTrack } from '@/lib/project'
 import type { Project } from '@/lib/project'
 import { compileOverlay } from '@/lib/overlay-eval'
 import type { OverlayFactory } from '@/lib/overlay-eval'
 import CaptionPreview from '@/components/CaptionPreview'
-import { getCaptionTrack } from '@/lib/project'
+
+const RENDER_W = 1080
+const RENDER_H = 1920
+
+const VIDEO_PRELOAD_S = 0.4  // mount this many seconds before item.start so the frame is ready
+
+// Synced video overlay — seeks to the correct position within the item's inPoint/outPoint range
+function OverlayVideo({ src, currentTime, itemStart, inPoint, isPlaying, muted, visible }: {
+  src: string; currentTime: number; itemStart: number; inPoint: number
+  isPlaying: boolean; muted?: boolean; visible: boolean
+}) {
+  const ref = useRef<HTMLVideoElement>(null)
+
+  // On mount: seek to the frame that will be shown at itemStart (so it's ready when it becomes visible)
+  useEffect(() => {
+    const v = ref.current
+    if (!v) return
+    const target = Math.max(inPoint, inPoint + (currentTime - itemStart))
+    v.currentTime = target
+    if (isPlaying && visible) v.play().catch(() => {})
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  // On scrub (large jump): re-seek
+  useEffect(() => {
+    const v = ref.current
+    if (!v) return
+    const target = inPoint + (currentTime - itemStart)
+    if (Math.abs(v.currentTime - target) > 0.3) {
+      v.currentTime = Math.max(inPoint, target)
+    }
+  }, [currentTime, itemStart, inPoint])
+
+  // Play/pause sync — only play when visible; pause when pre-loading or past end
+  useEffect(() => {
+    const v = ref.current
+    if (!v) return
+    if (isPlaying && visible) v.play().catch(() => {})
+    else v.pause()
+  }, [isPlaying, visible])
+
+  return (
+    <video
+      ref={ref}
+      src={src}
+      muted={muted}
+      playsInline
+      className="absolute inset-0 w-full h-full object-contain pointer-events-none"
+      style={{ opacity: visible ? 1 : 0 }}
+    />
+  )
+}
 
 interface VirtualClip {
   src: string
@@ -19,14 +66,13 @@ interface VirtualClip {
   pendingCuts?: [number, number][]
 }
 
-function buildVirtualTimeline(clips: { src: string; inPoint?: number; outPoint?: number; order: number; pendingCuts?: [number, number][] }[]): VirtualClip[] {
+function buildVirtualTimeline(clips: { src: string; inPoint?: number; outPoint?: number; pendingCuts?: [number, number][] }[]): VirtualClip[] {
   const ready = clips.filter(
     (c): c is typeof c & { inPoint: number; outPoint: number } =>
       c.inPoint !== undefined && c.outPoint !== undefined && c.outPoint > c.inPoint,
   )
-  const sorted = [...ready].sort((a, b) => a.order - b.order)
   let cursor = 0
-  return sorted.map((c) => {
+  return ready.map((c) => {
     const duration = c.outPoint - c.inPoint
     const entry: VirtualClip = { src: c.src, inPoint: c.inPoint, outPoint: c.outPoint, virtualStart: cursor, duration, pendingCuts: c.pendingCuts }
     cursor += duration
@@ -247,8 +293,8 @@ export default function PreviewPlayer({ project, currentTime, onTimeUpdate, sele
   }, [])
 
   // ── Video timeline ─────────────────────────────────────────────────────────
-  const clips        = useMemo(() => getVideoTrack(project)?.clips ?? [], [project])
-  const overlayTracks = useMemo(() => getOverlayTracks(project), [project])
+  const clips        = useMemo(() => project.base_track ?? [], [project])
+  const overlayTracks = useMemo(() => project.visual_tracks ?? [], [project])
 
   const isCanvasProject = clips.length === 0
 
@@ -285,7 +331,7 @@ export default function PreviewPlayer({ project, currentTime, onTimeUpdate, sele
       if (rafRef.current) cancelAnimationFrame(rafRef.current)
     }
   }, [isPlaying, isCanvasProject, overlayTracks, onTimeUpdate])
-  const captionTrack = useMemo(() => getCaptionTrack(project), [project])
+  const captionTrack = useMemo(() => project.captions, [project])
   const timeline     = useMemo(() => buildVirtualTimeline(clips), [clips])
 
   useEffect(() => {
@@ -301,10 +347,6 @@ export default function PreviewPlayer({ project, currentTime, onTimeUpdate, sele
         const video = videoRef.current
         if (!video) return
         video.paused ? video.play().catch(() => {}) : video.pause()
-      } else if (e.code === 'ArrowLeft' || e.code === 'ArrowRight') {
-        e.preventDefault()
-        const step = e.shiftKey ? 0.1 : 1
-        onTimeUpdate(Math.max(0, lastTimeRef.current + (e.code === 'ArrowLeft' ? -step : step)))
       }
     }
     document.addEventListener('keydown', onKeyDown)
@@ -324,7 +366,7 @@ export default function PreviewPlayer({ project, currentTime, onTimeUpdate, sele
     seekingRef.current = true
     lastTimeRef.current = currentTime
     const idx = timeline.findIndex(c => currentTime >= c.virtualStart && currentTime < c.virtualStart + c.duration)
-    const clipIdx = idx !== -1 ? idx : 0
+    const clipIdx = idx !== -1 ? idx : timeline.length - 1
     const clip = timeline[clipIdx]
     if (!clip) return
     activeIdxRef.current = clipIdx
@@ -375,7 +417,20 @@ export default function PreviewPlayer({ project, currentTime, onTimeUpdate, sele
   return (
     <div ref={containerRef} className="relative bg-black h-full aspect-[9/16] max-w-full overflow-hidden rounded">
       {isCanvasProject ? (
-        <div className="absolute inset-0 bg-black" />
+        <div
+          className="absolute inset-0 bg-black cursor-pointer"
+          onClick={() => setIsPlaying(p => !p)}
+        >
+          {!isPlaying && (
+            <div className="absolute inset-0 flex items-center justify-center">
+              <div className="w-14 h-14 rounded-full bg-black/50 flex items-center justify-center">
+                <svg className="w-6 h-6 text-white ml-1" fill="currentColor" viewBox="0 0 24 24">
+                  <path d="M8 5v14l11-7z" />
+                </svg>
+              </div>
+            </div>
+          )}
+        </div>
       ) : timeline.length === 0 ? (
         <div className="absolute inset-0 flex items-center justify-center text-gray-600 text-sm">
           No clips
@@ -385,6 +440,8 @@ export default function PreviewPlayer({ project, currentTime, onTimeUpdate, sele
           ref={videoRef}
           className="w-full h-full object-contain"
           onTimeUpdate={handleTimeUpdate}
+          onPlay={() => setIsPlaying(true)}
+          onPause={() => setIsPlaying(false)}
           controls
           playsInline
         />
@@ -393,8 +450,12 @@ export default function PreviewPlayer({ project, currentTime, onTimeUpdate, sele
       {/* Overlay tracks — rendered in z-order (track 0 first, higher indexes on top) */}
       {overlayTracks.map((trackItems, trackIdx) =>
         trackItems.map((item) => {
-          const visible = currentTime >= item.start && currentTime < item.end
-          if (!visible) return null
+          const visible  = currentTime >= item.start && currentTime < item.end
+          // Pre-mount video items slightly before their start so the frame is ready (no flash)
+          const mounted  = item.type === 'video'
+            ? currentTime >= item.start - VIDEO_PRELOAD_S && currentTime < item.end
+            : visible
+          if (!mounted) return null
 
           const isSel   = selectedOverlayId === item.id
           const offsetX = (liveOffset?.id === item.id ? liveOffset.x : null) ?? item.offsetX ?? 0
@@ -418,6 +479,7 @@ export default function PreviewPlayer({ project, currentTime, onTimeUpdate, sele
             transform: `translate(${offsetX}%, ${offsetY}%) scale(${scale})`,
             transformOrigin: 'center center',
             zIndex: trackIdx + 1,
+            opacity: item.opacity ?? 1,
           }
 
           const wrapperClass = `absolute inset-0 ${
@@ -426,11 +488,48 @@ export default function PreviewPlayer({ project, currentTime, onTimeUpdate, sele
               : 'pointer-events-none'
           }`
 
-          // Custom JSX overlays
-          if (item.type === 'custom' && item.src) {
+          // Image items
+          if (item.type === 'image' && item.src) {
+            return (
+              <div key={`${trackIdx}-${item.id}`} className={wrapperClass} style={wrapperStyle} onMouseDown={startMove}>
+                <img
+                  src={fileUrl(item.src)}
+                  draggable={false}
+                  className="absolute inset-0 w-full h-full object-contain pointer-events-none"
+                />
+                {isSel && (['nw', 'ne', 'sw', 'se'] as Corner[]).map(c => (
+                  <CornerHandle key={c} corner={c} scale={scale} onMouseDown={startResize(c)} />
+                ))}
+              </div>
+            )
+          }
+
+          // Video items (preview uses raw src; remove_bg compositing only happens at final render)
+          if (item.type === 'video' && item.src) {
+            return (
+              <div key={`${trackIdx}-${item.id}`} className={wrapperClass} style={wrapperStyle} onMouseDown={startMove}>
+                <OverlayVideo
+                  src={fileUrl(item.nobg_preview_src ?? item.src)}
+                  currentTime={currentTime}
+                  itemStart={item.start}
+                  inPoint={item.inPoint ?? 0}
+                  isPlaying={isPlaying}
+                  muted={item.muted}
+                  visible={visible}
+                  key={`vid-${item.id}`}
+                />
+                {isSel && (['nw', 'ne', 'sw', 'se'] as Corner[]).map(c => (
+                  <CornerHandle key={c} corner={c} scale={scale} onMouseDown={startResize(c)} />
+                ))}
+              </div>
+            )
+          }
+
+          // JSX overlays
+          if (item.type === 'overlay' && item.src) {
             const fps = project.settings?.fps ?? 30
             const frame = Math.round((currentTime - item.start) * fps)
-            const durationFrames = Math.round(((item.end as number) - (item.start as number)) * fps)
+            const durationFrames = Math.round((item.end - item.start) * fps)
             return (
               <div key={`${trackIdx}-${item.id}`} className={wrapperClass} style={wrapperStyle} onMouseDown={startMove}>
                 {/* Render at native 1080×1920 then scale down to match container */}
@@ -441,8 +540,8 @@ export default function PreviewPlayer({ project, currentTime, onTimeUpdate, sele
                   pointerEvents: 'none',
                 }}>
                   <CustomOverlay
-                    src={item.src as string}
-                    props={(item.props as Record<string, unknown>) ?? {}}
+                    src={item.src}
+                    props={item.props ?? {}}
                     frame={frame}
                     fps={fps}
                     durationFrames={durationFrames}
@@ -456,7 +555,7 @@ export default function PreviewPlayer({ project, currentTime, onTimeUpdate, sele
           }
 
           // Legacy text overlays
-          const pos = item.position ?? 'bottom-left'
+          const pos = (item.position as string) ?? 'bottom-left'
           const posClass: Record<string, string> = {
             'top-left':      'top-[8%] left-[4%]',
             'top-center':    'top-[8%] left-1/2 -translate-x-1/2',
@@ -473,9 +572,9 @@ export default function PreviewPlayer({ project, currentTime, onTimeUpdate, sele
               style={wrapperStyle}
               onMouseDown={startMove}
             >
-              {item.text && (
+              {!!item.text && (
                 <span className="bg-black/70 text-white text-sm font-bold px-3 py-1.5 rounded">
-                  {item.text}
+                  {item.text as string}
                 </span>
               )}
               {isSel && (['nw', 'ne', 'sw', 'se'] as Corner[]).map(c => (

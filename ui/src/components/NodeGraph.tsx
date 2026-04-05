@@ -85,7 +85,7 @@ function StartNode({ data }: NodeProps) {
 function StepNode({ data, selected }: NodeProps) {
   const isSkill    = data.isSkill as boolean
                   ?? new Set(_skillsCache.map(s => s.name)).has(data.uses as string)
-  const isEncode   = data.schema?.name === 'concat' || data.uses === 'montaj/concat'
+  const isEncode   = data.schema?.name === 'apply_cuts' || data.uses === 'montaj/apply_cuts'
   const isPerClip  = data.foreach === 'clips'
   const bg        = selected
     ? (isEncode ? '#292304' : isSkill ? '#1e1b4b' : '#1e293b')
@@ -595,7 +595,7 @@ export default function NodeGraph() {
           <p className="text-[10px] text-gray-500 uppercase tracking-wider mb-1">Steps</p>
           {[...steps].sort((a, b) => a.name.localeCompare(b.name)).map(s => {
             const isCustom = s.name.includes('/')
-            const isEncode = s.name === 'concat'
+            const isEncode = s.name === 'apply_cuts'
             return (
               <button
                 key={s.name}
@@ -677,8 +677,8 @@ export default function NodeGraph() {
       {/* Step config panel */}
       {selectedSchema && (() => {
         const isSelectedSkill = skillNameSet.has(selectedSchema.name)
-        const isEncode = selectedNode?.data.uses === 'montaj/concat' ||
-                         selectedNode?.data.schema?.name === 'concat'
+        const isEncode = selectedNode?.data.uses === 'montaj/apply_cuts' ||
+                         selectedNode?.data.schema?.name === 'apply_cuts'
         return (
           <div className="w-60 shrink-0 border-l border-gray-200 dark:border-gray-800 p-3 overflow-y-auto flex flex-col gap-3">
             <div className="flex items-center justify-between">

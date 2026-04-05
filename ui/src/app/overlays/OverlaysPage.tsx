@@ -1,6 +1,6 @@
 import { useEffect, useCallback, useRef, useState } from 'react'
-import type { Project, OverlayItem } from '@/lib/project'
-import { getOverlayItems } from '@/lib/project'
+import type { Project, VisualItem } from '@/lib/project'
+import { getVisualItems } from '@/lib/project'
 import { compileOverlay, clearOverlayCache, type OverlayFactory } from '@/lib/overlay-eval'
 import { api, type GlobalOverlay, type Profile } from '@/lib/api'
 
@@ -226,7 +226,7 @@ function GlobalOverlayDetail({ overlay }: { overlay: GlobalOverlay }) {
 // Project overlay item detail panel
 // ---------------------------------------------------------------------------
 
-function OverlayItemDetail({ item }: { item: OverlayItem }) {
+function VisualItemDetail({ item }: { item: VisualItem }) {
   const jsxPath = item.src ?? undefined
   const { factory, error } = useOverlayPreview(jsxPath)
 
@@ -268,8 +268,8 @@ function overlayDisplayName(src: string | undefined, fallback: string): string {
 // ---------------------------------------------------------------------------
 
 function ProjectOverlayList({ project }: { project: Project }) {
-  const items = getOverlayItems(project)
-  const [selected, setSelected] = useState<OverlayItem | null>(null)
+  const items = getVisualItems(project)
+  const [selected, setSelected] = useState<VisualItem | null>(null)
 
   if (items.length === 0) {
     return (
@@ -303,7 +303,7 @@ function ProjectOverlayList({ project }: { project: Project }) {
 
       <div className="flex-1 min-w-0 overflow-hidden">
         {selected ? (
-          <OverlayItemDetail item={selected} />
+          <VisualItemDetail item={selected} />
         ) : (
           <div className="h-full flex items-center justify-center text-gray-600 text-sm">
             Select an overlay to preview
@@ -365,7 +365,7 @@ export default function OverlaysPage() {
     setNewGroupName('')
   }
 
-  const overlayCount = (p: Project) => getOverlayItems(p).length
+  const overlayCount = (p: Project) => getVisualItems(p).length
 
   // Split global overlays into ungrouped + grouped sections
   // Items with empty:true are group sentinels (folder exists but has no overlays yet)

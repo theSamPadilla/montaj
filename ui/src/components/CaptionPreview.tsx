@@ -12,7 +12,7 @@
  */
 
 import { useEffect, useRef, useState } from 'react'
-import type { CaptionTrack } from '@/lib/project'
+import type { Captions } from '@/lib/project'
 import { compileOverlay } from '@/lib/overlay-eval'
 import type { OverlayFactory } from '@/lib/overlay-eval'
 
@@ -20,7 +20,7 @@ const RENDER_W = 1080
 const RENDER_H = 1920
 
 interface CaptionPreviewProps {
-  track:       CaptionTrack
+  track:       Captions
   currentTime: number
   fps:         number
 }

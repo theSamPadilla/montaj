@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { X, FolderOpen, Film, Image } from 'lucide-react'
 import { Button } from '@/components/ui/button'

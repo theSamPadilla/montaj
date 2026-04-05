@@ -1,21 +1,5 @@
 import { createContext, useContext } from 'react'
 
-export interface Clip {
-  id: string
-  src: string
-  inPoint?: number   // undefined = not yet trimmed by agent
-  outPoint?: number  // undefined = not yet trimmed by agent
-  order: number
-  transition?: { type: string; duration: number }
-  pendingCuts?: [number, number][]  // physical [start, end] pairs queued for next apply
-}
-
-export interface VideoTrack {
-  id: string
-  type: 'video'
-  clips: Clip[]
-}
-
 export interface Word {
   word: string
   start: number
@@ -30,36 +14,35 @@ export interface CaptionSegment {
   words?: Word[]
 }
 
-export interface CaptionTrack {
-  id: string
-  type: 'caption'
+export interface Captions {
   style: 'word-by-word' | 'pop' | 'karaoke' | 'subtitle'
   segments: CaptionSegment[]
 }
 
-export interface OverlayItem {
+export interface VisualItem {
   id: string
-  type: string
-  text?: string
+  type: 'overlay' | 'image' | 'video'
+  src?: string
   start: number
   end: number
-  position?: string
-  animation?: string
-  src?: string
+  sourceDuration?: number     // video type only — used for right-edge drag guard
+  inPoint?: number            // video type only
+  outPoint?: number           // video type only
+  transition?: { type: string; duration: number }  // video type only — transition into next clip
   offsetX?: number
   offsetY?: number
   scale?: number
-  opaque?: boolean
-  [key: string]: unknown
+  opacity?: number        // 0.0–1.0
+  opaque?: boolean        // legacy boolean kept for old overlay items
+  props?: Record<string, unknown>  // overlay type only
+  remove_bg?: boolean     // video type only
+  nobg_src?: string         // video type only — ProRes 4444 .mov for final render
+  nobg_preview_src?: string // video type only — VP9 WebM with alpha for browser preview
+  muted?: boolean         // video type only — suppress audio in preview and render
+  // Legacy fields for old text overlay items (pre-schema migration)
+  position?: string
+  text?: string
 }
-
-export interface OverlayTrack {
-  id: string
-  type: 'overlay'
-  items: OverlayItem[]
-}
-
-export type Track = VideoTrack | CaptionTrack | OverlayTrack
 
 export interface Asset {
   id: string
@@ -76,10 +59,10 @@ export interface Project {
   workflow: string
   editingPrompt: string
   runCount?: number
-  sources?: Clip[]
+  sources?: VisualItem[]
   settings: { resolution: [number, number]; fps: number; brandKit?: string }
-  tracks: Track[]
-  overlay_tracks?: OverlayItem[][]
+  tracks: VisualItem[][]
+  captions?: Captions
   assets: Asset[]
   audio: Record<string, unknown>
   profile?: string
@@ -106,32 +89,21 @@ export interface StepSchema {
 }
 
 export interface RunSnapshot {
-  timestamp: string   // ISO-8601
-  tracks: Track[]
+  timestamp: string
+  tracks: VisualItem[][]
+  captions?: Captions
   editingPrompt: string
 }
 
 export interface ProjectVersion {
   hash: string
   message: string
-  timestamp: string  // ISO-8601
+  timestamp: string
 }
 
-// Track helpers
-export function getVideoTrack(p: Project): VideoTrack | undefined {
-  return p.tracks.find((t): t is VideoTrack => t.type === 'video')
-}
-export function getCaptionTrack(p: Project): CaptionTrack | undefined {
-  return p.tracks.find((t): t is CaptionTrack => t.type === 'caption')
-}
-export function getOverlayTrack(p: Project): OverlayTrack | undefined {
-  return p.tracks.find((t): t is OverlayTrack => t.type === 'overlay')
-}
-export function getOverlayItems(p: Project): OverlayItem[] {
-  return (p.overlay_tracks ?? []).flat()
-}
-export function getOverlayTracks(p: Project): OverlayItem[][] {
-  return p.overlay_tracks ?? []
+// Helpers
+export function getVisualItems(p: Project): VisualItem[] {
+  return (p.tracks ?? []).flat()
 }
 
 // React context

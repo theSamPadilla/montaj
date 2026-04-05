@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type KeyboardEvent } from 'react'
 import { createPortal } from 'react-dom'
-import { getCaptionTrack, getOverlayTracks, getVideoTrack } from '@/lib/project'
-import type { Clip, CaptionSegment, OverlayItem, Project } from '@/lib/project'
+import { Volume2, VolumeX } from 'lucide-react'
+import type { Clip, CaptionSegment, VisualItem, Project } from '@/lib/project'
 
 interface TimelineProps {
   project: Project
@@ -24,9 +24,8 @@ function resolveSelectionToPhysical(clips: Clip[], sel: { start: number; end: nu
     (c): c is Clip & { inPoint: number; outPoint: number } =>
       c.inPoint !== undefined && c.outPoint !== undefined && c.outPoint > c.inPoint,
   )
-  const sorted = [...ready].sort((a, b) => a.order - b.order)
   let cursor = 0
-  const vt = sorted.map((c) => {
+  const vt = ready.map((c) => {
     const duration = c.outPoint - c.inPoint
     const entry = { ...c, virtualStart: cursor, duration }
     cursor += duration
@@ -79,12 +78,13 @@ function EditableSegment({ seg, onEdit }: { seg: CaptionSegment; onEdit: (text: 
 
 
 export default function Timeline({ project, currentTime, onTimeUpdate, onProjectChange, onCaptionEdit, onOverlayEdit, onAddCut, onApplyCuts, selectedOverlayId, onSelectOverlay }: TimelineProps) {
-  const videoTrack   = getVideoTrack(project)
-  const captionTrack = getCaptionTrack(project)
-  const overlayTracks = getOverlayTracks(project)
-
-  const clips = [...(videoTrack?.clips ?? [])].sort((a, b) => a.order - b.order)
-  const totalDuration = clips.reduce((s, c) => s + ((c.outPoint ?? 0) - (c.inPoint ?? 0)), 0)
+  const clips         = [...(project.base_track ?? [])]
+  const captionTrack  = project.captions
+  const overlayTracks = project.visual_tracks ?? []
+  const baseDuration  = clips.reduce((s, c) => s + ((c.outPoint ?? 0) - (c.inPoint ?? 0)), 0)
+  const totalDuration = baseDuration > 0
+    ? baseDuration
+    : overlayTracks.flat().reduce((m, i) => Math.max(m, i.end ?? 0), 0)
 
   const [hoverPct, setHoverPct]               = useState<number | null>(null)
   const [draggingPlayhead, setDraggingPlayhead] = useState(false)
@@ -98,10 +98,9 @@ export default function Timeline({ project, currentTime, onTimeUpdate, onProject
       (c): c is Clip & { inPoint: number; outPoint: number } =>
         c.inPoint !== undefined && c.outPoint !== undefined && c.outPoint > c.inPoint,
     )
-    const sorted = [...ready].sort((a, b) => a.order - b.order)
     let cursor = 0
     const zones: { start: number; end: number }[] = []
-    for (const c of sorted) {
+    for (const c of ready) {
       const virtualStart = cursor
       cursor += c.outPoint - c.inPoint
       for (const [physS, physE] of (c.pendingCuts ?? [])) {
@@ -155,7 +154,7 @@ export default function Timeline({ project, currentTime, onTimeUpdate, onProject
 
   function pct(t: number) { return totalDuration > 0 ? (t / totalDuration) * 100 : 0 }
 
-  function handleOverlayResizeStart(e: React.MouseEvent, item: OverlayItem, edge: 'start' | 'end') {
+  function handleOverlayResizeStart(e: React.MouseEvent, item: VisualItem, edge: 'start' | 'end') {
     e.stopPropagation()
     e.preventDefault()
     if (!onProjectChange) return
@@ -171,7 +170,7 @@ export default function Timeline({ project, currentTime, onTimeUpdate, onProject
       const t    = Math.max(0, Math.min(totalDuration, initTime + dt))
       return {
         ...project,
-        overlay_tracks: (project.overlay_tracks ?? []).map(track =>
+        visual_tracks: (project.visual_tracks ?? []).map(track =>
           track.map(ov =>
             ov.id !== item.id ? ov :
             edge === 'start'
@@ -201,7 +200,7 @@ export default function Timeline({ project, currentTime, onTimeUpdate, onProject
     if (!onProjectChange) return
     const updated = {
       ...project,
-      overlay_tracks: (project.overlay_tracks ?? [])
+      visual_tracks: (project.visual_tracks ?? [])
         .map(track => track.filter(ov => ov.id !== id))
         .filter(track => track.length > 0),
     }
@@ -210,7 +209,19 @@ export default function Timeline({ project, currentTime, onTimeUpdate, onProject
     onSelectOverlay?.(null)
   }
 
-  function handleOverlayDragStart(e: React.MouseEvent, item: OverlayItem, sourceTrackIdx: number) {
+  function handleToggleMute(id: string) {
+    if (!onProjectChange) return
+    const updated = {
+      ...project,
+      visual_tracks: (project.visual_tracks ?? []).map(track =>
+        track.map(item => item.id === id ? { ...item, muted: !item.muted } : item)
+      ),
+    }
+    onProjectChange(updated)
+    onOverlayEdit?.(updated)
+  }
+
+  function handleOverlayDragStart(e: React.MouseEvent, item: VisualItem, sourceTrackIdx: number) {
     if ((e.target as HTMLElement).classList.contains('cursor-ew-resize')) return
     if (!onProjectChange) return
     const projectChange = onProjectChange
@@ -236,9 +247,9 @@ export default function Timeline({ project, currentTime, onTimeUpdate, onProject
 
       const trackDelta = Math.round(dy / ROW_HEIGHT_PX)
       const targetIdx  = Math.max(0, sourceTrackIdx + trackDelta)
-      const tracks = lastUpdated.overlay_tracks ?? []
+      const tracks = lastUpdated.visual_tracks ?? []
 
-      function hasOverlap(track: OverlayItem[]): boolean {
+      function hasOverlap(track: VisualItem[]): boolean {
         return track.some(ov => ov.id !== item.id && ov.start < newEnd && ov.end > newStart)
       }
 
@@ -253,7 +264,7 @@ export default function Timeline({ project, currentTime, onTimeUpdate, onProject
         ? [...removed, [movedItem]]
         : removed.map((t, i) => i === bestIdx ? [...t, movedItem] : t)
 
-      const next = { ...lastUpdated, overlay_tracks: final.filter(t => t.length > 0) }
+      const next = { ...lastUpdated, visual_tracks: final.filter(t => t.length > 0) }
       projectChange(next)
       lastUpdated = next
     }
@@ -331,6 +342,32 @@ export default function Timeline({ project, currentTime, onTimeUpdate, onProject
   function handleTrackClick(e: React.MouseEvent) {
     if (totalDuration === 0) return
     onTimeUpdate(ratioFromClientX(e.clientX) * totalDuration)
+  }
+
+  function makeCaptionEdit(globalIdx: number) {
+    return (text: string) => {
+      if (!project.captions) return
+      const updated = {
+        ...project,
+        captions: {
+          ...project.captions,
+          segments: project.captions.segments.map((s, j) => {
+            if (j !== globalIdx) return s
+            const newWords = text.split(/\s+/).filter(Boolean)
+            const segDur = s.end - s.start
+            const wordDur = segDur / (newWords.length || 1)
+            const words = newWords.map((w, wi) => ({
+              word: w,
+              start: s.start + wi * wordDur,
+              end: s.start + (wi + 1) * wordDur,
+            }))
+            return { ...s, text, words }
+          }),
+        },
+      }
+      onProjectChange?.(updated)
+      onCaptionEdit?.(updated)
+    }
   }
 
   return (
@@ -497,23 +534,26 @@ export default function Timeline({ project, currentTime, onTimeUpdate, onProject
             <span className="text-[10px] text-gray-500 uppercase tracking-wider">Overlays</span>
             {[...overlayTracks].reverse().map((trackItems, reversedIdx) => {
               const trackIdx = overlayTracks.length - 1 - reversedIdx
+              // Per-track color palette (cycles for >6 tracks)
+              const trackColors = [
+                { bg: 'bg-slate-600/80',  bgHov: 'hover:bg-slate-500/80',  bgSel: 'bg-slate-500/90',  ring: 'ring-slate-300/80',  border: 'border-slate-400/50',  text: 'text-slate-200',  resHov: 'hover:bg-slate-300/40'  },
+                { bg: 'bg-sky-700/80',    bgHov: 'hover:bg-sky-600/80',    bgSel: 'bg-sky-600/90',    ring: 'ring-sky-300/80',    border: 'border-sky-400/50',    text: 'text-sky-200',    resHov: 'hover:bg-sky-300/40'    },
+                { bg: 'bg-violet-700/80', bgHov: 'hover:bg-violet-600/80', bgSel: 'bg-violet-600/90', ring: 'ring-violet-300/80', border: 'border-violet-400/50', text: 'text-violet-200', resHov: 'hover:bg-violet-300/40' },
+                { bg: 'bg-emerald-700/80',bgHov: 'hover:bg-emerald-600/80',bgSel: 'bg-emerald-600/90',ring: 'ring-emerald-300/80',border: 'border-emerald-400/50',text: 'text-emerald-200',resHov: 'hover:bg-emerald-300/40'},
+                { bg: 'bg-rose-700/80',   bgHov: 'hover:bg-rose-600/80',   bgSel: 'bg-rose-600/90',   ring: 'ring-rose-300/80',   border: 'border-rose-400/50',   text: 'text-rose-200',   resHov: 'hover:bg-rose-300/40'   },
+                { bg: 'bg-amber-700/60',  bgHov: 'hover:bg-amber-700/80',  bgSel: 'bg-amber-600/80',  ring: 'ring-amber-400/80',  border: 'border-amber-500/50',  text: 'text-amber-200',  resHov: 'hover:bg-amber-300/40'  },
+              ]
+              const tc = trackColors[trackIdx % trackColors.length]
               return (
               <div key={trackIdx} className={trackRow} onClick={handleTrackClick} onDoubleClick={handleScrubDoubleClick}>
                 {trackItems.map((item) => {
-                  const isSel    = selectedOverlayId === item.id
-                  const isOpaque = item.opaque === true
+                  const isSel = selectedOverlayId === item.id
                   return (
                     <div
                       key={item.id}
                       className={`absolute top-0 bottom-0 flex items-center overflow-hidden cursor-grab active:cursor-grabbing
-                        ${isOpaque
-                          ? isSel
-                            ? 'bg-slate-500/90 ring-1 ring-inset ring-slate-300/80'
-                            : 'bg-slate-600/80 hover:bg-slate-500/80'
-                          : isSel
-                            ? 'bg-amber-600/80 ring-1 ring-inset ring-amber-400/80'
-                            : 'bg-amber-700/60 hover:bg-amber-700/80'
-                        } border-r ${isOpaque ? 'border-slate-400/50' : 'border-amber-500/50'}`}
+                        ${isSel ? `${tc.bgSel} ring-1 ring-inset ${tc.ring}` : `${tc.bg} ${tc.bgHov}`}
+                        border-r ${tc.border}`}
                       style={{ left: `${pct(item.start)}%`, width: `${pct(item.end - item.start)}%` }}
                       onClick={(e) => {
                         e.stopPropagation()
@@ -525,21 +565,30 @@ export default function Timeline({ project, currentTime, onTimeUpdate, onProject
                       onMouseDown={(e) => handleOverlayDragStart(e, item, trackIdx)}
                     >
                       <div
-                        className="absolute left-0 top-0 bottom-0 w-2.5 cursor-ew-resize z-10 hover:bg-amber-300/40"
+                        className={`absolute left-0 top-0 bottom-0 w-2.5 cursor-ew-resize z-10 ${tc.resHov}`}
                         onMouseDown={(e) => handleOverlayResizeStart(e, item, 'start')}
                       />
-                      <span className="text-[10px] text-amber-200 truncate px-3">
-                        {isOpaque ? '▪ ' : ''}{item.type}
+                      <span className={`text-[10px] ${tc.text} truncate flex-1 min-w-0 pl-3`}>
+                        ▪ {item.type}
                       </span>
+                      {item.type === 'video' && (
+                        <button
+                          className={`shrink-0 mr-3 z-10 cursor-pointer transition-opacity ${item.muted ? 'opacity-30 hover:opacity-60' : 'opacity-50 hover:opacity-90'} ${tc.text}`}
+                          onClick={(e) => { e.stopPropagation(); handleToggleMute(item.id) }}
+                          title={item.muted ? 'Unmute' : 'Mute'}
+                        >
+                          {item.muted ? <VolumeX size={10} /> : <Volume2 size={10} />}
+                        </button>
+                      )}
                       {isSel && (
                         <button
-                          className="absolute right-3 text-amber-300/70 hover:text-white text-[13px] leading-none z-10 cursor-pointer"
+                          className={`shrink-0 ml-1 mr-3 z-10 cursor-pointer opacity-60 hover:opacity-100 ${tc.text} text-[11px] leading-none`}
                           onClick={(e) => { e.stopPropagation(); handleDeleteOverlay(item.id) }}
                           title="Delete overlay"
                         >×</button>
                       )}
                       <div
-                        className="absolute right-0 top-0 bottom-0 w-2.5 cursor-ew-resize z-10 hover:bg-amber-300/40"
+                        className={`absolute right-0 top-0 bottom-0 w-2.5 cursor-ew-resize z-10 ${tc.resHov}`}
                         onMouseDown={(e) => handleOverlayResizeStart(e, item, 'end')}
                       />
                     </div>
@@ -560,37 +609,11 @@ export default function Timeline({ project, currentTime, onTimeUpdate, onProject
         const activeIdx = segs.findIndex(s => currentTime >= s.start && currentTime < s.end)
         const nearIdx   = activeIdx !== -1 ? activeIdx
           : segs.reduce((best, s, i) => s.start <= currentTime ? i : best, -1)
-        // Vicinity: active ± 2 segments
+        // Vicinity: active ± 2 segments; track start offset for O(1) global index
+        const vicinityStart = nearIdx !== -1 ? Math.max(0, nearIdx - 2) : 0
         const vicinitySegs = nearIdx !== -1
-          ? segs.slice(Math.max(0, nearIdx - 2), nearIdx + 3)
+          ? segs.slice(vicinityStart, nearIdx + 3)
           : segs.slice(0, 3)
-
-        function makeOnEdit(globalIdx: number) {
-          return (text: string) => {
-            const updated = {
-              ...project,
-              tracks: project.tracks.map(t =>
-                t.type !== 'caption' ? t : {
-                  ...t,
-                  segments: t.segments.map((s, j) => {
-                    if (j !== globalIdx) return s
-                    const newWords = text.split(/\s+/).filter(Boolean)
-                    const segDur = s.end - s.start
-                    const wordDur = segDur / (newWords.length || 1)
-                    const words = newWords.map((w, wi) => ({
-                      word: w,
-                      start: s.start + wi * wordDur,
-                      end: s.start + (wi + 1) * wordDur,
-                    }))
-                    return { ...s, text, words }
-                  }),
-                }
-              ),
-            }
-            onProjectChange?.(updated)
-            onCaptionEdit?.(updated)
-          }
-        }
 
         return (
           <div className="rounded border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 px-3 py-2.5">
@@ -608,12 +631,8 @@ export default function Timeline({ project, currentTime, onTimeUpdate, onProject
                           : 'bg-gray-100 dark:bg-gray-800 border-gray-300 dark:border-gray-700 text-gray-500 hover:text-gray-700 dark:hover:text-gray-300 hover:border-gray-400 dark:hover:border-gray-500'
                       }`}
                       onClick={() => {
-                        const updated = {
-                          ...project,
-                          tracks: project.tracks.map(t =>
-                            t.type === 'caption' ? { ...t, style } : t
-                          ),
-                        }
+                        if (!project.captions) return
+                        const updated = { ...project, captions: { ...project.captions, style } }
                         onCaptionEdit?.(updated)
                       }}
                     >
@@ -637,15 +656,15 @@ export default function Timeline({ project, currentTime, onTimeUpdate, onProject
               <p className="text-xs text-gray-600 italic">No transcript — captions are generated during the agent pass</p>
             ) : (
               <p className="text-sm text-gray-700 dark:text-gray-200 leading-relaxed">
-                {vicinitySegs.map((seg) => {
-                  const i = segs.indexOf(seg)
+                {vicinitySegs.map((seg, vi) => {
+                  const i = vicinityStart + vi
                   const isActive = currentTime >= seg.start && currentTime < seg.end
                   return (
                     <span key={seg.id ?? i}>
-                      {vicinitySegs.indexOf(seg) > 0 && ' '}
+                      {vi > 0 && ' '}
                       <span className="text-gray-500 text-[10px] font-mono mr-1">{formatTime(seg.start)}</span>
                       <span className={isActive ? 'text-gray-900 dark:text-white' : 'text-gray-500 dark:text-gray-400'}>
-                        <EditableSegment seg={seg} onEdit={makeOnEdit(i)} />
+                        <EditableSegment seg={seg} onEdit={makeCaptionEdit(i)} />
                       </span>
                     </span>
                   )
@@ -678,49 +697,20 @@ export default function Timeline({ project, currentTime, onTimeUpdate, onProject
 
             {/* Segment list */}
             <div className="flex-1 overflow-y-auto px-4 py-3 flex flex-col gap-1.5">
-              {(() => {
-                const segs = captionTrack?.segments ?? []
-                function makeOnEditModal(globalIdx: number) {
-                  return (text: string) => {
-                    const updated = {
-                      ...project,
-                      tracks: project.tracks.map(t =>
-                        t.type !== 'caption' ? t : {
-                          ...t,
-                          segments: t.segments.map((s, j) => {
-                            if (j !== globalIdx) return s
-                            const newWords = text.split(/\s+/).filter(Boolean)
-                            const segDur = s.end - s.start
-                            const wordDur = segDur / (newWords.length || 1)
-                            const words = newWords.map((w, wi) => ({
-                              word: w,
-                              start: s.start + wi * wordDur,
-                              end: s.start + (wi + 1) * wordDur,
-                            }))
-                            return { ...s, text, words }
-                          }),
-                        }
-                      ),
-                    }
-                    onProjectChange?.(updated)
-                    onCaptionEdit?.(updated)
-                  }
-                }
-                return segs.map((seg, i) => {
-                  const isActive = currentTime >= seg.start && currentTime < seg.end
-                  return (
-                    <div
-                      key={seg.id ?? i}
-                      className={`flex gap-3 items-baseline px-2 py-1 rounded transition-colors ${isActive ? 'bg-white/5' : ''}`}
-                    >
-                      <span className="text-gray-600 text-[10px] font-mono shrink-0 w-12 pt-px">{formatTime(seg.start)}</span>
-                      <span className={`text-sm leading-snug ${isActive ? 'text-white' : 'text-gray-300'}`}>
-                        <EditableSegment seg={seg} onEdit={makeOnEditModal(i)} />
-                      </span>
-                    </div>
-                  )
-                })
-              })()}
+              {(captionTrack?.segments ?? []).map((seg, i) => {
+                const isActive = currentTime >= seg.start && currentTime < seg.end
+                return (
+                  <div
+                    key={seg.id ?? i}
+                    className={`flex gap-3 items-baseline px-2 py-1 rounded transition-colors ${isActive ? 'bg-white/5' : ''}`}
+                  >
+                    <span className="text-gray-600 text-[10px] font-mono shrink-0 w-12 pt-px">{formatTime(seg.start)}</span>
+                    <span className={`text-sm leading-snug ${isActive ? 'text-white' : 'text-gray-300'}`}>
+                      <EditableSegment seg={seg} onEdit={makeCaptionEdit(i)} />
+                    </span>
+                  </div>
+                )
+              })}
             </div>
           </div>
         </div>,

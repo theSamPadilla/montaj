@@ -6,7 +6,7 @@ import Timeline from '@/components/Timeline'
 import VersionPanel from '@/components/VersionPanel'
 import { Button } from '@/components/ui/button'
 import { api } from '@/lib/api'
-import { getVideoTrack, type Project, type ProjectVersion, type RunSnapshot } from '@/lib/project'
+import { type Project, type ProjectVersion, type RunSnapshot } from '@/lib/project'
 
 function formatRelativeTime(iso: string): string {
   const diff = Date.now() - new Date(iso).getTime()
@@ -19,10 +19,8 @@ function formatRelativeTime(iso: string): string {
 }
 
 function SnapshotCard({ snapshot, index, onRestore }: { snapshot: RunSnapshot; index: number; onRestore: () => void }) {
-  const videoClips = snapshot.tracks.find(t => t.type === 'video') as import('@/lib/project').VideoTrack | undefined
-  const captions   = snapshot.tracks.find(t => t.type === 'caption') as import('@/lib/project').CaptionTrack | undefined
-  const clipCount  = videoClips?.clips.length ?? 0
-  const capCount   = captions?.segments.length ?? 0
+  const clipCount = snapshot.tracks?.[0]?.length ?? 0
+  const capCount  = snapshot.captions?.segments.length ?? 0
 
   return (
     <div className="rounded border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 p-2.5 flex flex-col gap-2">
@@ -64,7 +62,7 @@ export default function LiveView({ project, logMessage, onProjectChange }: LiveV
   const [copied, setCopied]       = useState(false)
   const navigate = useNavigate()
 
-  const clips           = getVideoTrack(project)?.clips ?? []
+  const clips           = project.tracks?.[0] ?? []
   const hasTrimmedClips = clips.some(c => c.inPoint !== undefined && c.outPoint !== undefined)
   const history         = project.history ?? []
 
@@ -89,7 +87,12 @@ export default function LiveView({ project, logMessage, onProjectChange }: LiveV
   async function handleRestore(snapshot: RunSnapshot) {
     setSaving(true)
     try {
-      const restored = { ...project, status: 'draft' as const, tracks: snapshot.tracks }
+      const restored = {
+        ...project,
+        status: 'draft' as const,
+        tracks: snapshot.tracks,
+        captions: snapshot.captions,
+      }
       await api.saveProject(project.id, restored)
       onProjectChange(restored)
     } catch (e) {

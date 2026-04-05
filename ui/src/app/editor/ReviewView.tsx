@@ -9,7 +9,7 @@ import Timeline from '@/components/Timeline'
 import VersionPanel from '@/components/VersionPanel'
 import { Button } from '@/components/ui/button'
 import { api, fileUrl } from '@/lib/api'
-import { getVideoTrack, type Asset, type Project, type ProjectVersion, type VideoTrack } from '@/lib/project'
+import { type Asset, type Project, type ProjectVersion } from '@/lib/project'
 
 interface ReviewViewProps {
   project: Project
@@ -45,10 +45,10 @@ export default function ReviewView({ project, onProjectChange }: ReviewViewProps
   // Repair caption segments where words text has diverged from edited text.
   // This happens when text was edited before the word-regeneration fix was deployed.
   useEffect(() => {
-    const captionTrack = project.tracks.find(t => t.type === 'caption') as import('@/lib/project').CaptionTrack | undefined
-    if (!captionTrack?.segments?.length) return
+    const captions = project.captions
+    if (!captions?.segments?.length) return
     let dirty = false
-    const repairedSegments = captionTrack.segments.map(seg => {
+    const repairedSegments = captions.segments.map(seg => {
       const wordsText = (seg.words ?? []).map((w: { word: string }) => w.word).join(' ')
       if (wordsText.trim().toLowerCase() === seg.text.trim().toLowerCase()) return seg
       dirty = true
@@ -65,17 +65,15 @@ export default function ReviewView({ project, onProjectChange }: ReviewViewProps
       }
     })
     if (!dirty) return
-    const repaired = {
-      ...project,
-      tracks: project.tracks.map(t => t.type !== 'caption' ? t : { ...captionTrack, segments: repairedSegments }),
-    }
+    const repaired = { ...project, captions: { ...captions, segments: repairedSegments } }
     onProjectChange(repaired)
     api.saveProject(repaired.id, repaired).catch(console.error)
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [project.id])
 
-  const clips  = getVideoTrack(project)?.clips ?? []
-  const assets = project.assets ?? []
+  const clips      = project.base_track ?? []
+  const hasContent = clips.length > 0 || (project.visual_tracks?.flat().length ?? 0) > 0
+  const assets     = project.assets ?? []
 
   function pushHistory(prev: Project) {
     historyRef.current = [...historyRef.current.slice(-49), prev]
@@ -103,7 +101,7 @@ export default function ReviewView({ project, onProjectChange }: ReviewViewProps
     pushHistory(project)
     const updated = {
       ...project,
-      overlay_tracks: (project.overlay_tracks ?? []).map(track =>
+      visual_tracks: (project.visual_tracks ?? []).map(track =>
         track.map(item => item.id !== id ? item : { ...item, ...changes })
       ),
     }
@@ -126,44 +124,31 @@ export default function ReviewView({ project, onProjectChange }: ReviewViewProps
   function handleAddCut(clipId: string, _src: string, physStart: number, physEnd: number) {
     const updated = {
       ...project,
-      tracks: project.tracks.map(t => {
-        if (t.type !== 'video') return t
-        return {
-          ...t,
-          clips: (t as VideoTrack).clips.map(c => {
-            if (c.id !== clipId) return c
-            // Merge overlapping cuts: sort then union any overlapping intervals
-            const raw: [number, number][] = [...(c.pendingCuts ?? []), [physStart, physEnd]]
-            raw.sort((a, b) => a[0] - b[0])
-            const merged: [number, number][] = [raw[0]]
-            for (let i = 1; i < raw.length; i++) {
-              const last = merged[merged.length - 1]
-              if (raw[i][0] <= last[1]) {
-                merged[merged.length - 1] = [last[0], Math.max(last[1], raw[i][1])]
-              } else {
-                merged.push(raw[i])
-              }
-            }
-            return { ...c, pendingCuts: merged }
-          }),
+      base_track: (project.base_track ?? []).map(c => {
+        if (c.id !== clipId) return c
+        const raw: [number, number][] = [...(c.pendingCuts ?? []), [physStart, physEnd]]
+        raw.sort((a, b) => a[0] - b[0])
+        const merged: [number, number][] = [raw[0]]
+        for (let i = 1; i < raw.length; i++) {
+          const last = merged[merged.length - 1]
+          if (raw[i][0] <= last[1]) merged[merged.length - 1] = [last[0], Math.max(last[1], raw[i][1])]
+          else merged.push(raw[i])
         }
+        return { ...c, pendingCuts: merged }
       }),
     }
     handleProjectChange(updated)
   }
 
   async function handleApplyCuts() {
-    const videoTrack = getVideoTrack(project)
-    if (!videoTrack) return
-    const clipsWithCuts = videoTrack.clips.filter(c => c.pendingCuts?.length)
+    const allClips = project.base_track ?? []
+    const clipsWithCuts = allClips.filter(c => c.pendingCuts?.length)
     if (!clipsWithCuts.length) return
 
     // Build virtual timeline to map physical cuts → virtual time for caption/overlay adjustment
     const vtMap = new Map<string, { virtualStart: number }>()
     let cursor = 0
-    for (const c of [...videoTrack.clips]
-      .filter(c => c.inPoint !== undefined && c.outPoint !== undefined)
-      .sort((a, b) => a.order - b.order)) {
+    for (const c of allClips.filter(c => c.inPoint !== undefined && c.outPoint !== undefined)) {
       vtMap.set(c.id, { virtualStart: cursor })
       cursor += (c.outPoint! - c.inPoint!)
     }
@@ -179,10 +164,9 @@ export default function ReviewView({ project, onProjectChange }: ReviewViewProps
     }
     allVCuts.sort((a, b) => a.vStart - b.vStart)
 
-    // Adjust captions and overlays for all virtual cuts (cumulative offset)
-    type CaptionTrack = import('@/lib/project').CaptionTrack
-    let captionT = project.tracks.find(t => t.type === 'caption') as CaptionTrack | undefined
-    let overlayTs = project.overlay_tracks ?? []
+    // Adjust captions and visual tracks for all virtual cuts (cumulative offset)
+    let captions = project.captions
+    let visualTs = project.visual_tracks ?? []
     let removed = 0
 
     for (const { vStart, vEnd } of allVCuts) {
@@ -190,28 +174,38 @@ export default function ReviewView({ project, onProjectChange }: ReviewViewProps
       const e = vEnd - removed
       const dur = e - s
 
-      if (captionT) {
-        const segments = captionT.segments.flatMap(seg => {
+      if (captions) {
+        const segments = captions.segments.flatMap(seg => {
           if (seg.end <= s) return [seg]
           if (seg.start >= e) return [{ ...seg, start: seg.start - dur, end: seg.end - dur,
             words: seg.words?.map(w => ({ ...w, start: w.start - dur, end: w.end - dur })) }]
           const kept: typeof seg[] = []
           if (seg.start < s) kept.push({ ...seg, end: Math.min(seg.end, s),
-            words: seg.words?.filter(w => w.end <= s) })
+            words: seg.words?.filter(w => w.start < s).map(w => w.end > s ? { ...w, end: s } : w) })
           if (seg.end > e) kept.push({ ...seg, start: Math.max(seg.start, e) - dur, end: seg.end - dur,
             words: seg.words?.filter(w => w.start >= e).map(w => ({ ...w, start: w.start - dur, end: w.end - dur })) })
           return kept
         }).filter(seg => seg.end > seg.start)
-        captionT = { ...captionT, segments }
+        captions = { ...captions, segments }
       }
 
-      overlayTs = overlayTs.map(track =>
+      visualTs = visualTs.map(track =>
         track.flatMap(item => {
           if (item.end <= s) return [item]
           if (item.start >= e) return [{ ...item, start: item.start - dur, end: item.end - dur }]
           const kept: typeof item[] = []
           if (item.start < s) kept.push({ ...item, end: s })
-          if (item.end > e) kept.push({ ...item, start: s, end: s + (item.end - e) })
+          if (item.end > e) {
+            const skipDur = e - Math.max(item.start, s)
+            kept.push({
+              ...item,
+              start: s,
+              end: s + (item.end - e),
+              ...(item.type === 'video' && item.inPoint !== undefined
+                ? { inPoint: item.inPoint + skipDur }
+                : {}),
+            })
+          }
           return kept
         }).filter(item => item.end > item.start)
       ).filter(track => track.length > 0)
@@ -227,22 +221,16 @@ export default function ReviewView({ project, onProjectChange }: ReviewViewProps
       encoded.set(c.id, { newSrc: result.path, newOutPoint: (c.outPoint! - c.inPoint!) - totalCut })
     }
 
-    const updatedTracks = project.tracks.map(t => {
-      if (t.type === 'video') {
-        return {
-          ...t,
-          clips: (t as VideoTrack).clips.map(c => {
-            const enc = encoded.get(c.id)
-            if (!enc) return c
-            return { ...c, src: enc.newSrc, inPoint: 0, outPoint: enc.newOutPoint, pendingCuts: undefined }
-          }),
-        }
-      }
-      if (t.type === 'caption' && captionT) return captionT
-      return t
-    })
-
-    const updated = { ...project, tracks: updatedTracks, overlay_tracks: overlayTs }
+    const updated: Project = {
+      ...project,
+      base_track: allClips.map(c => {
+        const enc = encoded.get(c.id)
+        if (!enc) return c
+        return { ...c, src: enc.newSrc, inPoint: 0, outPoint: enc.newOutPoint, pendingCuts: undefined }
+      }),
+      captions,
+      visual_tracks: visualTs,
+    }
     onProjectChange(updated)
     setDirty(true)
     await api.saveProject(updated.id, updated).catch(console.error)
@@ -344,7 +332,7 @@ export default function ReviewView({ project, onProjectChange }: ReviewViewProps
         {/* Main: preview + timeline */}
         <div className="flex flex-col flex-1 overflow-hidden">
           <div className="flex-1 flex items-center justify-center bg-black overflow-hidden p-2">
-            {clips.length > 0 ? (
+            {hasContent ? (
               <PreviewPlayer
                 project={project}
                 currentTime={currentTime}
