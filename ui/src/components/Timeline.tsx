@@ -12,6 +12,7 @@ interface TimelineProps {
   onOverlayEdit?: (p: Project) => void
   selectedOverlayId?: string
   onSelectOverlay?: (id: string | null) => void
+  onCut?: (cut: { start: number; end: number }) => void
 }
 
 
@@ -50,13 +51,13 @@ function EditableSegment({ seg, onEdit }: { seg: CaptionSegment; onEdit: (text: 
 }
 
 
-export default function Timeline({ project, currentTime, onTimeUpdate, onProjectChange, onCaptionEdit, onOverlayEdit, selectedOverlayId, onSelectOverlay }: TimelineProps) {
+export default function Timeline({ project, currentTime, onTimeUpdate, onProjectChange, onCaptionEdit, onOverlayEdit, selectedOverlayId, onSelectOverlay, onCut }: TimelineProps) {
   const clips         = [...(project.tracks?.[0] ?? [])]
   const captionTrack  = project.captions
   const overlayTracks = project.tracks?.slice(1) ?? []
-  const baseDuration  = clips.reduce((s, c) => s + ((c.outPoint ?? 0) - (c.inPoint ?? 0)), 0)
-  const totalDuration = baseDuration > 0
-    ? baseDuration
+  const clipsDuration  = clips.length > 0 ? Math.max(...clips.map(c => c.end)) : 0
+  const totalDuration  = clipsDuration > 0
+    ? clipsDuration
     : overlayTracks.flat().reduce((m, i) => Math.max(m, i.end ?? 0), 0)
 
   const [hoverPct, setHoverPct]               = useState<number | null>(null)
@@ -435,6 +436,18 @@ export default function Timeline({ project, currentTime, onTimeUpdate, onProject
               onClick={(e) => { e.stopPropagation(); setMarkers([null, null]) }}
             >✕</button>
             {formatTime(selection.start)} – {formatTime(selection.end)}
+            {onCut && (
+              <button
+                className="px-2 py-0.5 rounded bg-red-600/80 hover:bg-red-500 text-white text-[10px] font-medium transition-colors"
+                onClick={(e) => {
+                  e.stopPropagation()
+                  onCut(selection)
+                  setMarkers([null, null])
+                }}
+              >
+                Cut
+              </button>
+            )}
           </span>
         )}
         <span>{formatTime(totalDuration)}</span>
@@ -442,6 +455,30 @@ export default function Timeline({ project, currentTime, onTimeUpdate, onProject
 
       {/* ── Tracks ── */}
       <div className="flex flex-col gap-1.5">
+        {clips.length > 0 && (
+          <div className="flex flex-col gap-1">
+            <span className="text-[10px] text-gray-500 uppercase tracking-wider">Clips</span>
+            <div className={`${trackRow} cursor-default`} onClick={handleTrackClick} onDoubleClick={handleScrubDoubleClick}>
+              {clips.map((clip) => (
+                <div
+                  key={clip.id}
+                  className="absolute top-0 bottom-0 bg-indigo-700/70 border-r border-indigo-500/40 flex items-center overflow-hidden pointer-events-none"
+                  style={{ left: `${pct(clip.start)}%`, width: `${pct(clip.end - clip.start)}%` }}
+                >
+                  <span className="text-[10px] text-indigo-200 truncate pl-2">▪ clip</span>
+                </div>
+              ))}
+              {hoverLine}
+              {playheadLine}
+              {selection && (
+                <div
+                  className="absolute inset-y-0 bg-red-500/20 pointer-events-none"
+                  style={{ left: `${pct(selection.start)}%`, width: `${pct(selection.end - selection.start)}%` }}
+                />
+              )}
+            </div>
+          </div>
+        )}
         {overlayTracks.length > 0 && (
           <div className="flex flex-col gap-1">
             <span className="text-[10px] text-gray-500 uppercase tracking-wider">Overlays</span>

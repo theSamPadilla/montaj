@@ -57,28 +57,6 @@ function OverlayVideo({ src, currentTime, itemStart, inPoint, isPlaying, muted, 
   )
 }
 
-interface VirtualClip {
-  src: string
-  inPoint: number
-  outPoint: number
-  virtualStart: number
-  duration: number
-}
-
-function buildVirtualTimeline(clips: { src?: string; inPoint?: number; outPoint?: number }[]): VirtualClip[] {
-  const ready = clips.filter(
-    (c): c is typeof c & { src: string; inPoint: number; outPoint: number } =>
-      c.src !== undefined && c.inPoint !== undefined && c.outPoint !== undefined && c.outPoint > c.inPoint,
-  )
-  let cursor = 0
-  return ready.map((c) => {
-    const duration = c.outPoint - c.inPoint
-    const entry: VirtualClip = { src: c.src, inPoint: c.inPoint, outPoint: c.outPoint, virtualStart: cursor, duration }
-    cursor += duration
-    return entry
-  })
-}
-
 // ---------------------------------------------------------------------------
 // CustomOverlay: fetches, compiles, and renders a custom JSX overlay file
 // ---------------------------------------------------------------------------
@@ -331,7 +309,6 @@ export default function PreviewPlayer({ project, currentTime, onTimeUpdate, sele
     }
   }, [isPlaying, isCanvasProject, overlayTracks, onTimeUpdate])
   const captionTrack = useMemo(() => project.captions, [project])
-  const timeline     = useMemo(() => buildVirtualTimeline(clips), [clips])
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
@@ -350,54 +327,71 @@ export default function PreviewPlayer({ project, currentTime, onTimeUpdate, sele
     }
     document.addEventListener('keydown', onKeyDown)
     return () => document.removeEventListener('keydown', onKeyDown)
-  }, [onTimeUpdate])
+  }, [isCanvasProject])
 
   useEffect(() => {
     const video = videoRef.current
-    if (!video || !timeline.length) return
+    if (!video || !clips.length || !clips[0].src) return
     activeIdxRef.current = 0
-    video.src = fileUrl(timeline[0].src)
-    video.currentTime = timeline[0].inPoint
-  }, [timeline])
+    video.src = fileUrl(clips[0].src)
+    video.currentTime = clips[0].inPoint ?? 0
+  }, [clips])
 
   useEffect(() => {
     if (Math.abs(currentTime - lastTimeRef.current) < 0.05) return
     seekingRef.current = true
-    lastTimeRef.current = currentTime
-    const idx = timeline.findIndex(c => currentTime >= c.virtualStart && currentTime < c.virtualStart + c.duration)
-    const clipIdx = idx !== -1 ? idx : timeline.length - 1
-    const clip = timeline[clipIdx]
-    if (!clip) return
-    activeIdxRef.current = clipIdx
-    const video = videoRef.current
-    if (!video) return
-    const targetSrc = fileUrl(clip.src)
-    if (video.src !== targetSrc) video.src = targetSrc
-    video.currentTime = clip.inPoint + (currentTime - clip.virtualStart)
-    seekingRef.current = false
-  }, [currentTime, timeline])
+    try {
+      lastTimeRef.current = currentTime
+      // v0.2: clips have explicit start/end — find clip covering currentTime directly
+      const idx = clips.findIndex(c => currentTime >= c.start && currentTime < c.end)
+      let clipIdx: number
+      if (idx !== -1) {
+        clipIdx = idx
+      } else {
+        // In a gap — hold on the last clip that ended before currentTime.
+        // reduce returns 0 if currentTime is before the first clip, which is the least-bad fallback.
+        clipIdx = clips.reduce((best, c, i) => (c.end <= currentTime ? i : best), 0)
+      }
+      const clip = clips[clipIdx]
+      if (!clip?.src) return
+      activeIdxRef.current = clipIdx
+      const video = videoRef.current
+      if (!video) return
+      const targetSrc = fileUrl(clip.src)
+      if (video.src !== targetSrc) video.src = targetSrc
+      video.currentTime = Math.max(clip.inPoint ?? 0, (clip.inPoint ?? 0) + (currentTime - clip.start))
+    } finally {
+      seekingRef.current = false
+    }
+  }, [currentTime, clips])
 
   const handleTimeUpdate = useCallback(() => {
     const video = videoRef.current
     if (!video || seekingRef.current) return
-    const clip = timeline[activeIdxRef.current]
+    const clip = clips[activeIdxRef.current]
     if (!clip) return
 
-    if (video.currentTime >= clip.outPoint) {
+    if (video.currentTime >= (clip.outPoint ?? clip.end - clip.start + (clip.inPoint ?? 0))) {
+      // Clip ended — load the next one
       const nextIdx = activeIdxRef.current + 1
-      if (nextIdx < timeline.length) {
-        const next = timeline[nextIdx]
+      if (nextIdx < clips.length && clips[nextIdx].src) {
+        const next = clips[nextIdx]
+        // Natural playback skips gaps: jump the scrubber to next.start immediately.
+        // (Scrubbing into a gap holds on the preceding clip instead — asymmetry is intentional.)
+        lastTimeRef.current = next.start
+        onTimeUpdate(next.start)
         activeIdxRef.current = nextIdx
-        video.src = fileUrl(next.src)
-        video.currentTime = next.inPoint
+        video.src = fileUrl(next.src!)
+        video.currentTime = next.inPoint ?? 0
         video.play().catch(() => {})
       }
       return
     }
-    const vTime = clip.virtualStart + (video.currentTime - clip.inPoint)
-    lastTimeRef.current = vTime
-    onTimeUpdate(vTime)
-  }, [timeline, onTimeUpdate])
+    // v0.2: timeline time = clip.start + elapsed within source
+    const t = clip.start + (video.currentTime - (clip.inPoint ?? 0))
+    lastTimeRef.current = t
+    onTimeUpdate(t)
+  }, [clips, onTimeUpdate])
 
   // ── Render ─────────────────────────────────────────────────────────────────
 
@@ -418,7 +412,7 @@ export default function PreviewPlayer({ project, currentTime, onTimeUpdate, sele
             </div>
           )}
         </div>
-      ) : timeline.length === 0 ? (
+      ) : clips.length === 0 ? (
         <div className="absolute inset-0 flex items-center justify-center text-gray-600 text-sm">
           No clips
         </div>

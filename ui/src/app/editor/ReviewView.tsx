@@ -9,6 +9,7 @@ import Timeline from '@/components/Timeline'
 import VersionPanel from '@/components/VersionPanel'
 import { Button } from '@/components/ui/button'
 import { api, fileUrl } from '@/lib/api'
+import { applyCutToTracks } from '@/lib/cuts'
 import { type Asset, type Project, type ProjectVersion } from '@/lib/project'
 
 interface ReviewViewProps {
@@ -36,6 +37,7 @@ export default function ReviewView({ project, onProjectChange }: ReviewViewProps
   const [renderOpen, setRenderOpen]       = useState(false)
   const [previewAsset, setPreviewAsset]   = useState<Asset | null>(null)
   const [pathCopied, setPathCopied]       = useState(false)
+  const [applyingCuts, setApplyingCuts]   = useState(false)
   const navigate = useNavigate()
 
   useEffect(() => {
@@ -97,6 +99,14 @@ export default function ReviewView({ project, onProjectChange }: ReviewViewProps
     setDirty(true)
   }
 
+  function handleCut(cut: { start: number; end: number }) {
+    pushHistory(project)
+    const updated = applyCutToTracks(project, cut)
+    onProjectChange(updated)
+    api.saveProject(updated.id, updated).catch(console.error)
+    setDirty(true)
+  }
+
   function handleOverlayChange(id: string, changes: { offsetX?: number; offsetY?: number; scale?: number }) {
     pushHistory(project)
     const primaryTrack = project.tracks?.[0] ?? []
@@ -120,6 +130,49 @@ export default function ReviewView({ project, onProjectChange }: ReviewViewProps
       console.error(e)
     } finally {
       setSaving(false)
+    }
+  }
+
+  async function handleApplyCuts() {
+    setApplyingCuts(true)
+    try {
+      pushHistory(project)
+      const primaryClips = project.tracks?.[0] ?? []
+      const updatedClips = [...primaryClips]
+
+      for (let i = 0; i < primaryClips.length; i++) {
+        const clip = primaryClips[i]
+        if (!clip.src) continue
+        const dotIdx = clip.src.lastIndexOf('.')
+        const base = dotIdx !== -1 ? clip.src.slice(0, dotIdx) : clip.src
+        const outPath = `${base}_${clip.id}_cut.mp4`
+        const result = await api.runStep<{ path: string; type: string }>('materialize_cut', {
+          input: clip.src,
+          inpoint: clip.inPoint ?? 0,
+          outpoint: clip.outPoint ?? ((clip.inPoint ?? 0) + (clip.end - clip.start)),
+          out: outPath,
+        })
+        const duration = clip.end - clip.start
+        updatedClips[i] = {
+          ...clip,
+          src: result.path,
+          inPoint: 0,
+          outPoint: duration,
+          sourceDuration: duration,
+        }
+      }
+
+      const updated = {
+        ...project,
+        tracks: [updatedClips, ...(project.tracks?.slice(1) ?? [])],
+      }
+      onProjectChange(updated)
+      await api.saveProject(updated.id, updated)
+      setDirty(false)
+    } catch (e) {
+      alert(`Apply Cuts failed: ${e instanceof Error ? e.message : String(e)}`)
+    } finally {
+      setApplyingCuts(false)
     }
   }
 
@@ -197,6 +250,11 @@ export default function ReviewView({ project, onProjectChange }: ReviewViewProps
             <Button variant="ghost" size="sm" onClick={handleUndo} disabled={!canUndo} title="Undo">
               ↩ Undo
             </Button>
+            {(project.tracks?.[0] ?? []).some(c => (c.inPoint ?? 0) > 0 || (c.outPoint !== undefined && c.outPoint < (c.sourceDuration ?? Infinity))) && (
+              <Button variant="outline" size="sm" onClick={handleApplyCuts} disabled={applyingCuts}>
+                {applyingCuts ? 'Encoding…' : 'Apply Cuts'}
+              </Button>
+            )}
             {dirty && (
               <Button variant="secondary" size="sm" onClick={handleSave} disabled={saving}>
                 {saving ? 'Saving…' : 'Save'}
@@ -242,6 +300,7 @@ export default function ReviewView({ project, onProjectChange }: ReviewViewProps
               onOverlayEdit={(p) => { onProjectChange(p); api.saveProject(p.id, p).catch(console.error) }}
               selectedOverlayId={selectedOverlayId ?? undefined}
               onSelectOverlay={setSelectedOverlayId}
+              onCut={handleCut}
             />
           </div>
         </div>

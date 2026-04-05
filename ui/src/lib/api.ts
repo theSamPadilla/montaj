@@ -85,8 +85,8 @@ export const api = {
   listSteps: () => request<StepSchema[]>('/api/steps'),
   listSkills: () => request<{ name: string; description: string; scope: 'native' | 'custom' }[]>('/api/skills'),
 
-  runStep: (name: string, params: Record<string, unknown>) =>
-    request<unknown>(`/api/steps/${name}`, { method: 'POST', body: JSON.stringify(params) }),
+  runStep: <T = unknown>(name: string, params: Record<string, unknown>) =>
+    request<T>(`/api/steps/${name}`, { method: 'POST', body: JSON.stringify(params) }),
 
   saveWorkflow: (name: string, workflow: Record<string, unknown>) =>
     request<unknown>(`/api/workflows/${name}`, { method: 'PUT', body: JSON.stringify(workflow) }),
