@@ -93,6 +93,8 @@ def load_env(env_path: str = None):
 
 # Add lib dir to path for imports
 LIB_DIR = os.path.dirname(os.path.abspath(__file__))
+if LIB_DIR not in sys.path:
+    sys.path.insert(0, LIB_DIR)
 TOOLKIT_DIR = os.path.dirname(LIB_DIR)
 
 
@@ -101,16 +103,22 @@ TOOLKIT_DIR = os.path.dirname(LIB_DIR)
 # ---------------------------------------------------------------------------
 
 def find_whisper_bin() -> str:
-    """Return path to whisper.cpp binary, or fail."""
+    """Return path to whisper.cpp binary.
+
+    Priority:
+    1. Montaj-managed binary (~/.local/share/montaj/models/whisper/whisper-cli)
+    2. System PATH (whisper-cpp or whisper-cli) — fallback for existing installs
+    """
+    import models as _models
+    managed = _models.model_path("whisper", "whisper-cli")
+    if os.path.isfile(managed):
+        return managed
     for name in ("whisper-cpp", "whisper-cli"):
         path = shutil.which(name)
         if path:
             return path
-    whisper_dir = os.environ.get("WHISPER_DIR", os.path.expanduser("~/.local/share/whisper.cpp"))
-    main_path = os.path.join(whisper_dir, "main")
-    if os.path.isfile(main_path):
-        return main_path
-    fail("missing_dependency", "whisper.cpp not found. Install with: brew install whisper-cpp")
+    fail("missing_dependency",
+         "whisper.cpp not found. Install with: montaj install whisper")
 
 
 def transcribe_words(input_path: str, model: str = "base.en", work_dir: str = None) -> list:
@@ -132,13 +140,18 @@ def transcribe_words(input_path: str, model: str = "base.en", work_dir: str = No
         else:
             audio = input_path
 
-        whisper_dir = os.environ.get("WHISPER_DIR", os.path.expanduser("~/.local/share/whisper.cpp"))
-        model_path = os.path.join(whisper_dir, "models", f"ggml-{model}.bin")
-        require_file(model_path)
+        import models as _models
+        model_file = _models.model_path("whisper", f"ggml-{model}.bin")
+        # Fall back to old brew-installed path for existing users
+        if not os.path.isfile(model_file):
+            old_path = os.path.expanduser(f"~/.local/share/whisper.cpp/models/ggml-{model}.bin")
+            if os.path.isfile(old_path):
+                model_file = old_path
+        require_file(model_file)  # fails with clear error if neither path works
         whisper_bin = find_whisper_bin()
 
         prefix = os.path.join(work_dir, "out")
-        run([whisper_bin, "-m", model_path, "-f", audio, "-l", "en",
+        run([whisper_bin, "-m", model_file, "-f", audio, "-l", "en",
              "--split-on-word", "--max-len", "1", "--output-json", "--output-file", prefix],
             check=False)
 
