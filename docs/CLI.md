@@ -4,7 +4,10 @@
 
 ```bash
 brew install montaj
-montaj install       # install system dependencies (ffmpeg, whisper.cpp, base model)
+montaj install whisper   # ffmpeg + whisper-cpp binary + base.en model weights
+montaj install rvm       # torch/torchvision/av + both RVM model weights
+montaj install all       # everything above
+montaj install           # show help
 ```
 
 ---
@@ -14,9 +17,17 @@ montaj install       # install system dependencies (ffmpeg, whisper.cpp, base mo
 The primary interface for most users.
 
 ```bash
-montaj install
-# Install system dependencies: ffmpeg, whisper-cpp (via Homebrew), and the base.en
-# whisper model. Safe to re-run — skips anything already present.
+montaj install whisper
+# Install ffmpeg, whisper-cpp binary, and base.en model weights.
+# Safe to re-run — skips anything already present.
+
+montaj install rvm
+# Install torch/torchvision/av (pip) and download both RVM model weight files
+# (rvm_mobilenetv3 ~15MB, rvm_resnet50 ~103MB). Required before running remove_bg.
+# Fails loudly at runtime if weights are missing — run this first.
+
+montaj install all
+# Install everything: whisper + rvm.
 
 montaj run ./clips --prompt "tight cuts, remove filler, 9:16"
 # Runs workflows/default.json against all clips in the directory
@@ -161,7 +172,6 @@ montaj step cut --input clip.mp4 --cuts '[[0,1.2],[5.3,7.8]]'
 montaj step cut --input clip.mp4 --cuts '[[3.0,7.5]]' --spec
 # Write a trim spec JSON instead of encoding — use with concat for deferred encode
 
-montaj step concat --input clip1.mp4 clip2.mp4 clip3.mp4
 
 montaj step resize --input clip.mp4 --ratio 9:16     # TikTok / Reels / Shorts
 montaj step resize --input clip.mp4 --ratio 1:1      # Instagram
@@ -174,9 +184,6 @@ montaj step normalize --input clip.mp4 --target custom --lufs -18
 
 montaj step extract_audio --input clip.mp4                       # default: wav
 montaj step extract_audio --input clip.mp4 --format mp3
-
-montaj step ffmpeg_captions --input clip.mp4 --text "Hello World"
-montaj step ffmpeg_captions --input clip.mp4 --text "Lower Third" --position bottom --fontsize 36
 ```
 
 ### Enrich
@@ -196,9 +203,6 @@ montaj step caption --input transcript.json --style subtitle
 ### Analyze
 
 ```bash
-montaj step best_take --input clip.mp4
-montaj step best_take --input clip.mp4 --model base.en --min-pause 2.0 --min-words 5
-
 montaj step jump_cut_detect --input clip.mp4
 montaj step jump_cut_detect --input clip.mp4 --min-pause 0.8 --noise -30
 
@@ -236,11 +240,9 @@ All steps accept `--out <path>` to set the output location. Run `montaj step <na
 | `snapshot` | `--cols <n>`, `--rows <n>` |
 | `trim` | `--start <t>`, `--end <t>` |
 | `cut` | `--start <t>`, `--end <t>` · `--cuts <json>` · `--spec` |
-| `concat` | multiple `--input` values |
 | `resize` | `--ratio <9:16\|1:1\|16:9>` |
 | `normalize` | `--target <youtube\|podcast\|broadcast\|custom>`, `--lufs <n>` |
 | `extract_audio` | `--format <wav\|mp3\|aac>` |
-| `ffmpeg_captions` | `--text <str>`, `--fontsize <n>`, `--position <center\|top\|bottom>` |
 | `rm_fillers` | `--model <tiny.en\|base.en\|medium.en\|large>` |
 | `waveform_trim` | `--threshold <dB>`, `--min-silence <s>` |
 | `rm_nonspeech` | `--model <base\|small\|medium>`, `--max-word-gap <s>`, `--sentence-edge <s>` |
@@ -248,7 +250,6 @@ All steps accept `--out <path>` to set the output location. Run `montaj step <na
 | `virtual_to_original` | `--inverse` |
 | `transcribe` | `--model <base.en\|medium.en>`, `--language <code>` |
 | `caption` | `--style <word-by-word\|pop\|karaoke\|subtitle>` |
-| `best_take` | `--model <base.en\|medium.en>`, `--min-pause <s>`, `--min-words <n>` |
 | `jump_cut_detect` | `--min-pause <s>`, `--noise <dB>`, `--model <none\|base.en>` |
 | `pacing` | `--model <base.en\|medium.en>`, `--window <s>`, `--slow-threshold <0-1>` |
 

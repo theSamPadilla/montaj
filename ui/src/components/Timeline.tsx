@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type KeyboardEvent } from 'react'
 import { createPortal } from 'react-dom'
 import { Volume2, VolumeX } from 'lucide-react'
-import type { Clip, CaptionSegment, VisualItem, Project } from '@/lib/project'
+import type { CaptionSegment, VisualItem, Project } from '@/lib/project'
 
 interface TimelineProps {
   project: Project
@@ -10,37 +10,10 @@ interface TimelineProps {
   onProjectChange?: (p: Project) => void
   onCaptionEdit?: (p: Project) => void
   onOverlayEdit?: (p: Project) => void
-  onAddCut?: (clipId: string, src: string, physStart: number, physEnd: number) => void
-  onApplyCuts?: () => Promise<void>
   selectedOverlayId?: string
   onSelectOverlay?: (id: string | null) => void
 }
 
-
-interface PhysicalCut { clipId: string; src: string; physStart: number; physEnd: number }
-
-function resolveSelectionToPhysical(clips: Clip[], sel: { start: number; end: number }): PhysicalCut | null {
-  const ready = clips.filter(
-    (c): c is Clip & { inPoint: number; outPoint: number } =>
-      c.inPoint !== undefined && c.outPoint !== undefined && c.outPoint > c.inPoint,
-  )
-  let cursor = 0
-  const vt = ready.map((c) => {
-    const duration = c.outPoint - c.inPoint
-    const entry = { ...c, virtualStart: cursor, duration }
-    cursor += duration
-    return entry
-  })
-  const startEntry = vt.find((c) => sel.start >= c.virtualStart && sel.start < c.virtualStart + c.duration)
-  const endEntry   = vt.find((c) => sel.end > c.virtualStart && sel.end <= c.virtualStart + c.duration)
-  if (!startEntry || !endEntry || startEntry.id !== endEntry.id) return null
-  return {
-    clipId:    startEntry.id,
-    src:       startEntry.src,
-    physStart: startEntry.inPoint + (sel.start - startEntry.virtualStart),
-    physEnd:   startEntry.inPoint + (sel.end   - startEntry.virtualStart),
-  }
-}
 
 function formatTime(s: number): string {
   const m   = Math.floor(s / 60)
@@ -77,10 +50,10 @@ function EditableSegment({ seg, onEdit }: { seg: CaptionSegment; onEdit: (text: 
 }
 
 
-export default function Timeline({ project, currentTime, onTimeUpdate, onProjectChange, onCaptionEdit, onOverlayEdit, onAddCut, onApplyCuts, selectedOverlayId, onSelectOverlay }: TimelineProps) {
-  const clips         = [...(project.base_track ?? [])]
+export default function Timeline({ project, currentTime, onTimeUpdate, onProjectChange, onCaptionEdit, onOverlayEdit, selectedOverlayId, onSelectOverlay }: TimelineProps) {
+  const clips         = [...(project.tracks?.[0] ?? [])]
   const captionTrack  = project.captions
-  const overlayTracks = project.visual_tracks ?? []
+  const overlayTracks = project.tracks?.slice(1) ?? []
   const baseDuration  = clips.reduce((s, c) => s + ((c.outPoint ?? 0) - (c.inPoint ?? 0)), 0)
   const totalDuration = baseDuration > 0
     ? baseDuration
@@ -89,31 +62,8 @@ export default function Timeline({ project, currentTime, onTimeUpdate, onProject
   const [hoverPct, setHoverPct]               = useState<number | null>(null)
   const [draggingPlayhead, setDraggingPlayhead] = useState(false)
   const [markers, setMarkers]                 = useState<[number | null, number | null]>([null, null])
-  const [applying, setApplying]               = useState(false)
   const [transcriptModalOpen, setTranscriptModalOpen] = useState(false)
 
-  // Pending cut zones: map physical cuts on each clip to virtual time ranges for display
-  const pendingCutZones = (() => {
-    const ready = clips.filter(
-      (c): c is Clip & { inPoint: number; outPoint: number } =>
-        c.inPoint !== undefined && c.outPoint !== undefined && c.outPoint > c.inPoint,
-    )
-    let cursor = 0
-    const zones: { start: number; end: number }[] = []
-    for (const c of ready) {
-      const virtualStart = cursor
-      cursor += c.outPoint - c.inPoint
-      for (const [physS, physE] of (c.pendingCuts ?? [])) {
-        zones.push({
-          start: virtualStart + (physS - c.inPoint),
-          end:   virtualStart + (physE - c.inPoint),
-        })
-      }
-    }
-    return zones
-  })()
-
-  const totalPendingCuts = clips.reduce((n, c) => n + (c.pendingCuts?.length ?? 0), 0)
   const scrubberRef                           = useRef<HTMLDivElement>(null)
   const overlayDraggedRef                     = useRef(false)
   const [keyNavTime, setKeyNavTime]           = useState<number | null>(null)
@@ -168,16 +118,18 @@ export default function Timeline({ project, currentTime, onTimeUpdate, onProject
       const rect = scrubberRef.current.getBoundingClientRect()
       const dt   = ((moveE.clientX - initX) / rect.width) * totalDuration
       const t    = Math.max(0, Math.min(totalDuration, initTime + dt))
+      const primaryTrack = project.tracks?.[0] ?? []
+      const overlayTs = project.tracks?.slice(1) ?? []
       return {
         ...project,
-        visual_tracks: (project.visual_tracks ?? []).map(track =>
+        tracks: [primaryTrack, ...overlayTs.map(track =>
           track.map(ov =>
             ov.id !== item.id ? ov :
             edge === 'start'
               ? { ...ov, start: Math.min(t, ov.end - 0.1) }
               : { ...ov, end: Math.max(t, ov.start + 0.1) }
           )
-        ),
+        )],
       }
     }
 
@@ -198,11 +150,13 @@ export default function Timeline({ project, currentTime, onTimeUpdate, onProject
 
   function handleDeleteOverlay(id: string) {
     if (!onProjectChange) return
+    const primaryTrack = project.tracks?.[0] ?? []
+    const overlayTs = project.tracks?.slice(1) ?? []
     const updated = {
       ...project,
-      visual_tracks: (project.visual_tracks ?? [])
+      tracks: [primaryTrack, ...overlayTs
         .map(track => track.filter(ov => ov.id !== id))
-        .filter(track => track.length > 0),
+        .filter(track => track.length > 0)],
     }
     onProjectChange(updated)
     onOverlayEdit?.(updated)
@@ -211,11 +165,13 @@ export default function Timeline({ project, currentTime, onTimeUpdate, onProject
 
   function handleToggleMute(id: string) {
     if (!onProjectChange) return
+    const primaryTrack = project.tracks?.[0] ?? []
+    const overlayTs = project.tracks?.slice(1) ?? []
     const updated = {
       ...project,
-      visual_tracks: (project.visual_tracks ?? []).map(track =>
+      tracks: [primaryTrack, ...overlayTs.map(track =>
         track.map(item => item.id === id ? { ...item, muted: !item.muted } : item)
-      ),
+      )],
     }
     onProjectChange(updated)
     onOverlayEdit?.(updated)
@@ -247,24 +203,25 @@ export default function Timeline({ project, currentTime, onTimeUpdate, onProject
 
       const trackDelta = Math.round(dy / ROW_HEIGHT_PX)
       const targetIdx  = Math.max(0, sourceTrackIdx + trackDelta)
-      const tracks = lastUpdated.visual_tracks ?? []
+      const primaryTrack = lastUpdated.tracks?.[0] ?? []
+      const overlayTracks = lastUpdated.tracks?.slice(1) ?? []
 
       function hasOverlap(track: VisualItem[]): boolean {
         return track.some(ov => ov.id !== item.id && ov.start < newEnd && ov.end > newStart)
       }
 
       let bestIdx = targetIdx
-      for (let i = targetIdx; i <= tracks.length; i++) {
-        const candidateTrack = i < tracks.length ? tracks[i] : []
+      for (let i = targetIdx; i <= overlayTracks.length; i++) {
+        const candidateTrack = i < overlayTracks.length ? overlayTracks[i] : []
         if (!hasOverlap(candidateTrack)) { bestIdx = i; break }
       }
 
-      const removed = tracks.map(t => t.filter(ov => ov.id !== item.id))
+      const removed = overlayTracks.map(t => t.filter(ov => ov.id !== item.id))
       const final = bestIdx >= removed.length
         ? [...removed, [movedItem]]
         : removed.map((t, i) => i === bestIdx ? [...t, movedItem] : t)
 
-      const next = { ...lastUpdated, visual_tracks: final.filter(t => t.length > 0) }
+      const next = { ...lastUpdated, tracks: [primaryTrack, ...final.filter(t => t.length > 0)] }
       projectChange(next)
       lastUpdated = next
     }
@@ -400,15 +357,6 @@ export default function Timeline({ project, currentTime, onTimeUpdate, onProject
           />
         )}
 
-        {/* Pending cut zones (red) */}
-        {pendingCutZones.map((zone, i) => (
-          <div
-            key={i}
-            className="absolute inset-y-0 bg-red-500/40 pointer-events-none"
-            style={{ left: `${pct(zone.start)}%`, width: `${pct(zone.end - zone.start)}%` }}
-          />
-        ))}
-
         {/* Marker A */}
         {markers[0] !== null && (
           <div className="absolute top-0 bottom-0 w-px bg-amber-400 pointer-events-none" style={{ left: `${pct(markers[0])}%` }}>
@@ -480,49 +428,14 @@ export default function Timeline({ project, currentTime, onTimeUpdate, onProject
             >✕</button>
           </span>
         )}
-        {selection && (() => {
-          const resolved = resolveSelectionToPhysical(clips, selection)
-          return (
-            <span className="flex items-center gap-2 text-amber-400">
-              <button
-                className="text-gray-600 hover:text-gray-400"
-                onClick={(e) => { e.stopPropagation(); setMarkers([null, null]) }}
-              >✕</button>
-              {formatTime(selection.start)} – {formatTime(selection.end)}
-              {onAddCut && (
-                resolved ? (
-                  <button
-                    className="text-[10px] px-1.5 py-0.5 rounded bg-orange-900/60 text-orange-300 hover:bg-orange-800/80"
-                    onClick={(e) => {
-                      e.stopPropagation()
-                      onAddCut(resolved.clipId, resolved.src, resolved.physStart, resolved.physEnd)
-                      setMarkers([null, null])
-                    }}
-                  >
-                    + Add to cuts
-                  </button>
-                ) : (
-                  <span className="text-[10px] text-gray-600 italic">spans clips</span>
-                )
-              )}
-            </span>
-          )
-        })()}
-        {totalPendingCuts > 0 && onApplyCuts && (
-          <button
-            className="text-[10px] px-1.5 py-0.5 rounded bg-red-900/60 text-red-300 hover:bg-red-800/80 disabled:opacity-40 disabled:cursor-not-allowed"
-            disabled={applying}
-            onClick={async (e) => {
-              e.stopPropagation()
-              setApplying(true)
-              try { await onApplyCuts() } finally { setApplying(false) }
-            }}
-          >
-            {applying ? 'Applying…' : `Apply cuts (${totalPendingCuts})`}
-          </button>
-        )}
-        {applying && (
-          <span className="text-[10px] text-gray-500 italic">re-encoding, may take a moment…</span>
+        {selection && (
+          <span className="flex items-center gap-2 text-amber-400">
+            <button
+              className="text-gray-600 hover:text-gray-400"
+              onClick={(e) => { e.stopPropagation(); setMarkers([null, null]) }}
+            >✕</button>
+            {formatTime(selection.start)} – {formatTime(selection.end)}
+          </span>
         )}
         <span>{formatTime(totalDuration)}</span>
       </div>

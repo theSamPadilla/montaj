@@ -20,7 +20,7 @@ The agent writes project.json as it works — every write pushes to the browser 
 
 ```json
 {
-  "version": "0.1",
+  "version": "0.2",
   "id": "a1b2c3d4-e5f6-...",
   "status": "pending | draft | final",
   "name": "Wedding BTS",
@@ -28,22 +28,22 @@ The agent writes project.json as it works — every write pushes to the browser 
   "editingPrompt": "tight cuts, remove filler, 9:16 for Reels",
   "settings": { ... },
   "tracks": [ ... ],
-  "overlay_tracks": [ ... ],
+  "captions": { ... },
   "audio": { ... }
 }
 ```
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `version` | string | Schema version |
+| `version` | string | Schema version — `"0.2"` |
 | `id` | string | UUID v4. Stable unique identifier for this project. Never changes. |
 | `status` | string | Pipeline state: `pending`, `draft`, `final` |
 | `name` | string \| null | Human-readable label set at init time. Optional. Does not need to be unique. |
 | `workflow` | string | Workflow used to produce this edit |
 | `editingPrompt` | string | The free-form prompt passed in |
 | `settings` | object | Output resolution, fps, brand kit |
-| `tracks` | array | Video, caption, and overlay tracks |
-| `overlay_tracks` | array | Array of overlay track arrays. Each inner array is one z-level. Overlays belong here, not in `tracks[]`. |
+| `tracks` | array | Array of track arrays. `tracks[0]` is the primary footage track. `tracks[1+]` are overlay tracks. Higher-index tracks render on top. May contain one empty track `[[]]` for canvas-only projects. |
+| `captions` | object | Caption configuration. Always rendered topmost, above all tracks. |
 | `audio` | object | Music and ducking config |
 
 ---
@@ -62,118 +62,187 @@ The agent writes project.json as it works — every write pushes to the browser 
 
 ---
 
-## Tracks
+## tracks
 
-Three track types. Rendered in order — later tracks composite over earlier ones.
+All timeline items live in `tracks` — a top-level array of track arrays. `tracks[0]` is the primary track (source footage). `tracks[1+]` are overlay tracks. Each inner array is one z-level; items in higher-index tracks render on top.
 
-### `video` — source footage
+### Track conventions
+
+| Property | Rule |
+|----------|------|
+| **Primary track** | `tracks[0]` — always. Contains the main footage clips (`type: "video"`). |
+| **Z-order** | Track index = z-order. `tracks[0]` renders furthest back; higher indices on top. |
+| **Primary audio** | Non-muted items in `tracks[0]` provide the primary audio mix. |
+| **Transcript source** | Whisper runs against `tracks[0]` audio. |
+| **Canvas projects** | `tracks: [[]]` — one empty primary track. Duration is inferred from max `end` across all overlay tracks. |
+
+### Primary track (`tracks[0]`)
+
+Items in `tracks[0]` are always `type: "video"`. They have explicit `start`/`end` positions on the output timeline. Gaps between items render as black + silence.
 
 ```json
-{
-  "id": "main",
-  "type": "video",
-  "clips": [
+"tracks": [
+  [
     {
       "id": "clip-1",
-      "src": "/tmp/clips/take1.mp4",
+      "type": "video",
+      "src": "./footage/take1.mp4",
+      "start": 0.0,
+      "end": 5.8,
       "inPoint": 2.5,
       "outPoint": 8.3,
-      "order": 0,
       "transition": { "type": "crossfade", "duration": 0.3 }
+    },
+    {
+      "id": "clip-2",
+      "type": "video",
+      "src": "./footage/take2.mp4",
+      "start": 5.8,
+      "end": 17.9,
+      "inPoint": 0.0,
+      "outPoint": 12.1
     }
   ]
-}
+]
 ```
 
 | Field | Type | Description |
 |-------|------|-------------|
+| `id` | string | Unique identifier |
+| `type` | string | Always `"video"` for primary track items |
 | `src` | string | Local file path — always local, never a URL |
-| `inPoint` | number | Start time in the source file (seconds) |
-| `outPoint` | number | End time in the source file (seconds) |
-| `order` | number | Position in the sequence (0-indexed) |
-| `transition` | object | Transition into the next clip. Omit for hard cut |
+| `start` | number | Output timeline position — when this clip starts (seconds) |
+| `end` | number | Output timeline position — when this clip ends (seconds). `end - start` must equal `outPoint - inPoint`. |
+| `inPoint` | number | Start time in the source file (seconds). Set by clean/trim steps. |
+| `outPoint` | number | End time in the source file (seconds). Set by clean/trim steps. |
+| `transition` | object | Transition into this clip. Omit for hard cut. |
 
 **Transition types:** `cut` (default), `crossfade`, `flash-white`, `flash-black`
 
+**Duration formula:**
+```
+totalDuration = max(item.end) across all items in all tracks
+```
+
+### Overlay tracks (`tracks[1+]`)
+
+Overlay tracks contain the same item types as before: `overlay`, `image`, and `video`. See the field reference below.
+
 ---
 
-### `caption` — captions and subtitles
+## Overlay track items
+
+All timed graphical elements in `tracks[1+]` are overlay track items. Each inner track array is one spatial z-level. Items in higher-index tracks render on top. Three item types are supported: `overlay`, `image`, and `video`.
+
+### `type: "overlay"` — JSX component layer
 
 ```json
 {
-  "id": "captions",
-  "type": "caption",
-  "style": "word-by-word",
-  "segments": [
-    {
-      "text": "This is how it works",
-      "start": 0.0,
-      "end": 2.1,
-      "words": [
-        { "word": "This",  "start": 0.0, "end": 0.3 },
-        { "word": "is",    "start": 0.3, "end": 0.5 },
-        { "word": "how",   "start": 0.5, "end": 0.8 },
-        { "word": "it",    "start": 0.8, "end": 1.0 },
-        { "word": "works", "start": 1.0, "end": 2.1 }
-      ]
-    }
-  ]
+  "id": "hook",
+  "type": "overlay",
+  "src": "./overlays/hook.jsx",
+  "start": 0.0,
+  "end": 3.5,
+  "props": { "text": "Watch this" },
+  "offsetX": 0,
+  "offsetY": 0,
+  "scale": 1,
+  "opacity": 1.0,
+  "opaque": false
+}
+```
+
+### `type: "image"` — static image layer (no JSX required)
+
+```json
+{
+  "id": "logo",
+  "type": "image",
+  "src": "./assets/logo.png",
+  "start": 0.0,
+  "end": 120.0,
+  "offsetX": 0.82,
+  "offsetY": 0.04,
+  "scale": 0.12,
+  "opacity": 1.0
+}
+```
+
+### `type: "video"` — video layer (with optional background removal)
+
+```json
+{
+  "id": "presenter",
+  "type": "video",
+  "src": "./assets/presenter.mp4",
+  "remove_bg": true,
+  "nobg_src": "./assets/presenter_nobg.mov",
+  "nobg_preview_src": "./assets/presenter_nobg_preview.webm",
+  "muted": false,
+  "start": 0.0,
+  "end": 120.0,
+  "inPoint": 5.0,
+  "outPoint": 25.0,
+  "offsetX": 0.6,
+  "offsetY": 0.65,
+  "scale": 0.35,
+  "opacity": 1.0
+}
+```
+
+### Field reference
+
+| Field | Type | Types | Description |
+|-------|------|-------|-------------|
+| `id` | string | all | Unique identifier |
+| `type` | string | all | `"overlay"`, `"image"`, or `"video"` |
+| `src` | string | all | Path to JSX file, image, or video — relative to project.json |
+| `start` / `end` | number | all | Timestamps in output video (seconds) |
+| `offsetX` | number | all | Horizontal offset as % of frame width |
+| `offsetY` | number | all | Vertical offset as % of frame height |
+| `scale` | number | all | Size multiplier from center |
+| `opacity` | number | all | Opacity 0.0–1.0 (default 1.0). Applied at compose time. |
+| `props` | object | overlay | Arbitrary props passed to the JSX component |
+| `opaque` | boolean | overlay | When `true`, render engine skips alpha — JSX controls full frame |
+| `googleFonts` | array | overlay | Google Font names to load before rendering |
+| `remove_bg` | boolean | video | Marks this item as background-removed. `src` stays as the original (used for browser preview). Render uses `nobg_src` when present. |
+| `nobg_src` | string | video | Path to the ProRes 4444 `.mov` with alpha channel produced by the `remove_bg` step. Used at final render time. |
+| `nobg_preview_src` | string | video | Path to the VP9 WebM with alpha produced by the `remove_bg` step. Used in the browser preview player (Chrome supports VP9 alpha; ProRes does not play in browsers). |
+| `muted` | boolean | video | When `true`, audio from this video item is suppressed in both preview and final render. Default: `false`. |
+| `inPoint` | number | video | Trim start in the source video file (seconds) |
+| `outPoint` | number | video | Trim end in the source video file (seconds) |
+
+---
+
+## captions
+
+The `captions` field is a top-level object (not a track). It always renders above all tracks — topmost in the compositing stack.
+
+```json
+{
+  "captions": {
+    "style": "word-by-word",
+    "segments": [
+      {
+        "text": "This is how it works",
+        "start": 0.0,
+        "end": 2.1,
+        "words": [
+          { "word": "This",  "start": 0.0, "end": 0.3 },
+          { "word": "is",    "start": 0.3, "end": 0.5 },
+          { "word": "how",   "start": 0.5, "end": 0.8 },
+          { "word": "it",    "start": 0.8, "end": 1.0 },
+          { "word": "works", "start": 1.0, "end": 2.1 }
+        ]
+      }
+    ]
+  }
 }
 ```
 
 `start` and `end` are timestamps in the **output video** — after trim and concat. The `words` array comes from Whisper and is required for animated styles.
 
 **Caption styles:** `word-by-word`, `pop`, `karaoke`, `subtitle`
-
----
-
-> Overlays are not in `tracks`. They live in `overlay_tracks` — see below.
-
----
-
-## Overlay Tracks
-
-All timed graphical elements (except captions) live in `overlay_tracks` — a top-level array of arrays. Each inner array is one z-level track. Items in the same track cannot overlap in time. Items in higher-index tracks render on top.
-
-```json
-{
-  "overlay_tracks": [
-    [
-      {
-        "id": "hook",
-        "type": "custom",
-        "src": "./overlays/hook.jsx",
-        "start": 0.0,
-        "end": 3.0,
-        "props": { "text": "Hook line" }
-      }
-    ],
-    [
-      {
-        "id": "logo",
-        "type": "custom",
-        "src": "./overlays/logo.jsx",
-        "start": 0.0,
-        "end": 30.0
-      }
-    ]
-  ]
-}
-```
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `id` | string | Unique identifier |
-| `type` | string | Always `"custom"` |
-| `src` | string | Path to JSX file, relative to project.json |
-| `start` / `end` | number | Timestamps in output video (seconds) |
-| `props` | object | Arbitrary props passed to the component |
-| `opaque` | boolean | When `true`, render engine skips alpha — JSX root CSS controls the full frame background |
-| `offsetX` | number | Horizontal offset as % of frame width (set by UI drag) |
-| `offsetY` | number | Vertical offset as % of frame height (set by UI drag) |
-| `scale` | number | Size multiplier from center (set by UI resize) |
-
-**Canvas projects (no video track):** When the project has no video track, the render engine generates a synthetic black base video. Duration is inferred from the maximum `end` timestamp across all overlay items.
 
 ---
 
@@ -230,11 +299,69 @@ POST /api/run
 { "clips": ["/path/clip.mp4"], "assets": ["/path/logo.png"], "prompt": "add logo watermark" }
 ```
 
-To use an asset in an overlay, pass its `src` path via `props`:
+To use an asset in a `tracks[1+]` item, pass its `src` path via `props` (for overlays) or directly as `src` (for image/video types):
 
 ```json
-{ "id": "ov-logo", "type": "custom", "src": "./overlays/logo.jsx", "start": 0.0, "end": 30.0,
-  "props": { "src": "/abs/path/to/workspace/logo.png" } }
+{ "id": "logo", "type": "image", "src": "/abs/path/to/workspace/logo.png", "start": 0.0, "end": 30.0,
+  "offsetX": 0.82, "offsetY": 0.04, "scale": 0.12 }
+```
+
+---
+
+## Full example
+
+Talking-head presenter over a screen recording, with a logo watermark, hook overlay, and captions.
+
+```json
+{
+  "version": "0.2",
+  "id": "abc123",
+  "status": "final",
+  "settings": { "resolution": [1080, 1920], "fps": 30 },
+  "tracks": [
+    [
+      { "id": "clip-1", "type": "video", "src": "./screen_recording.mp4", "start": 0.0, "end": 120.0, "inPoint": 0, "outPoint": 120 }
+    ],
+    [
+      {
+        "id": "presenter",
+        "type": "video",
+        "src": "./presenter.mp4",
+        "remove_bg": true,
+        "start": 0.0,
+        "end": 120.0,
+        "inPoint": 0.0,
+        "outPoint": 120.0,
+        "offsetX": 0.6,
+        "offsetY": 0.65,
+        "scale": 0.35
+      }
+    ],
+    [
+      {
+        "id": "logo",
+        "type": "image",
+        "src": "./assets/logo.png",
+        "start": 0.0,
+        "end": 120.0,
+        "offsetX": 0.82,
+        "offsetY": 0.04,
+        "scale": 0.12
+      }
+    ],
+    [
+      {
+        "id": "hook",
+        "type": "overlay",
+        "src": "./overlays/hook.jsx",
+        "start": 0.0,
+        "end": 3.5,
+        "props": { "text": "Watch this" }
+      }
+    ]
+  ],
+  "captions": { "style": "word-by-word", "segments": [] }
+}
 ```
 
 ---

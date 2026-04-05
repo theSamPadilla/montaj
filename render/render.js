@@ -9,8 +9,8 @@
  * stderr: progress lines + JSON error on failure
  * exit 0 on success, exit 1 on failure
  */
-import { readFileSync, existsSync, mkdirSync, writeFileSync, rmSync } from 'fs'
-import { resolve, join, dirname, basename } from 'path'
+import { readFileSync, existsSync, mkdirSync, rmSync } from 'fs'
+import { resolve, join, dirname, basename, extname } from 'path'
 import { fileURLToPath } from 'url'
 import { spawnSync } from 'child_process'
 
@@ -20,6 +20,7 @@ import { compose }                        from './compose.js'
 
 const __dirname  = dirname(fileURLToPath(import.meta.url))
 const MONTAJ_ROOT = process.env.MONTAJ_ROOT || join(__dirname, '..')
+const PYTHON = process.env.MONTAJ_PYTHON || 'python3'
 
 // ---------------------------------------------------------------------------
 // CLI argument parsing
@@ -86,13 +87,15 @@ async function main(projectPath, { out, workers, clean }) {
 
   const outputPath = out ? resolve(out) : join(renderDir, 'final.mp4')
 
-  // 2. Build base video (trim + concat source clips)
-  log('building base video...')
-  const baseVideoPath = join(workspaceDir, 'render', 'base.mp4')
-  buildBaseVideo(projectJson, baseVideoPath)
+  // 2. Collect segments and items
+  const baseTrackClips = projectJson.base_track || []
+  const segmentSpecs = collectPuppeteerSegments(projectJson, fps, renderWidth, renderHeight, segDir)
+  const { imageItems, videoItems } = collectDirectItems(projectJson)
 
-  // 3. Bundle + render all overlay and caption segments
-  const segmentSpecs = collectSegments(projectJson, fps, renderWidth, renderHeight, segDir)
+  // 3. Run remove_bg on any video items that need it
+  await processVideoItems(videoItems, workspaceDir)
+
+  // 4. Bundle + render all overlay and caption segments
   log(`rendering ${segmentSpecs.length} segment(s) with Puppeteer...`)
 
   const workDirs = []
@@ -123,133 +126,52 @@ async function main(projectPath, { out, workers, clean }) {
   for (const rSeg of renderedSegments) {
     const spec = segmentSpecs.find(s => s.id === rSeg.id)
     if (spec) {
-      rSeg.offsetX = spec.offsetX ?? 0
-      rSeg.offsetY = spec.offsetY ?? 0
-      rSeg.scale   = spec.scale   ?? 1
-      rSeg.opaque  = spec.opaque  ?? false
+      rSeg.offsetX   = spec.offsetX   ?? 0
+      rSeg.offsetY   = spec.offsetY   ?? 0
+      rSeg.scale     = spec.scale     ?? 1
+      rSeg.opaque    = spec.opaque    ?? false
+      rSeg.isCaption = spec.isCaption ?? false
     }
   }
 
-  // 4. Detect actual base video resolution for correct overlay placement.
-  // buildBaseVideo uses -c copy so the output resolution matches the source clips,
-  // which may differ from settings.resolution (e.g. 4K source with 1080p settings).
-  const actualRes    = probeVideoDimensions(baseVideoPath)
-  const actualWidth  = actualRes?.[0] ?? renderWidth
-  const actualHeight = actualRes?.[1] ?? renderHeight
+  // 5. Detect base video dimensions (probe first clip in base_track, or use settings).
+  let actualWidth  = renderWidth
+  let actualHeight = renderHeight
+  if (baseTrackClips.length > 0) {
+    const dims = probeVideoDimensions(baseTrackClips[0].src)
+    if (dims) { [actualWidth, actualHeight] = dims }
+  }
   // pixelRatio: how many actual pixels correspond to one design pixel.
-  const pixelRatio   = Math.max(1, Math.round(actualWidth / renderWidth))
+  const pixelRatio = Math.max(1, Math.round(actualWidth / renderWidth))
 
   // Re-stamp pixelRatio on rendered segments now that we know the true video dimensions.
   for (const rSeg of renderedSegments) {
     rSeg.pixelRatio = pixelRatio
   }
 
-  // 5. Compose final MP4
+  // 6. Compose final MP4
   log('composing final video...')
-  await compose({ projectJson, baseVideoPath, segments: renderedSegments, outputPath, videoWidth: actualWidth, videoHeight: actualHeight })
+  await compose({
+    projectJson,
+    baseTrackClips,
+    puppeteerSegments: renderedSegments,
+    imageItems,
+    videoItems,
+    outputPath,
+    videoWidth:  actualWidth,
+    videoHeight: actualHeight,
+  })
 
-  // 5. Cleanup temp bundles (always); intermediate segments only if --clean
+  // 7. Cleanup temp bundles (always); intermediate segments only if --clean
   for (const dir of workDirs) cleanupBundle(dir)
 
   if (clean) {
-    rmSync(join(renderDir, 'base.mp4'),   { force: true })
     rmSync(segDir, { recursive: true, force: true })
     log('intermediate files cleaned')
   }
 
   // Step output convention: final path on stdout
   process.stdout.write(outputPath + '\n')
-}
-
-// ---------------------------------------------------------------------------
-// Base video: trim + concat source clips
-// ---------------------------------------------------------------------------
-
-function buildBaseVideo(projectJson, outputPath) {
-  const videoTrack = projectJson.tracks?.find(t => t.type === 'video')
-
-  if (!videoTrack?.clips?.length) {
-    // Canvas project — generate synthetic black base from overlay duration
-    const allItems = (projectJson.overlay_tracks || []).flat()
-    if (allItems.length === 0) {
-      fail('no_duration', 'Canvas project has no overlay items — cannot infer duration.')
-    }
-    const duration = Math.max(...allItems.map(i => i.end))
-    if (!duration || duration <= 0) {
-      fail('no_duration', 'Canvas project has no overlay items with valid end timestamps.')
-    }
-    log(`canvas project — generating ${duration}s synthetic black base...`)
-    const fps = projectJson.settings?.fps ?? 30
-    const [width, height] = projectJson.settings?.resolution ?? [1080, 1920]
-    const result = spawnSync('ffmpeg', [
-      '-y',
-      '-f', 'lavfi', '-i', `color=black:size=${width}x${height}:rate=${fps}`,
-      '-t', String(duration),
-      '-c:v', 'libx264', '-crf', '18', '-preset', 'fast',
-      '-pix_fmt', 'yuv420p',
-      outputPath,
-    ], { encoding: 'utf8', timeout: 300_000 })
-    if (result.status !== 0) fail('ffmpeg_error', `Synthetic base failed: ${result.stderr}`)
-    log('base video ready (synthetic)')
-    return
-  }
-
-  // --- existing clip trim/concat logic continues below unchanged ---
-
-  const clips = [...videoTrack.clips].sort((a, b) => a.order - b.order)
-  const tmpDir = outputPath + '.tmp'
-  mkdirSync(tmpDir, { recursive: true })
-
-  if (clips.length === 1) {
-    const clip   = clips[0]
-    log(`trimming clip 1/1 (${basename(clip.src)})...`)
-    // Stream copy — no re-encode. compose re-encodes with overlays anyway.
-    // Input-side -ss for fast keyframe seek; -t is duration relative to seek point.
-    const result = spawnSync('ffmpeg', [
-      '-y',
-      '-ss', String(clip.inPoint),
-      '-i', clip.src,
-      '-t', String(clip.outPoint - clip.inPoint),
-      '-c', 'copy',
-      '-avoid_negative_ts', 'make_zero',
-      outputPath,
-    ], { encoding: 'utf8', timeout: 300_000 })
-    if (result.status !== 0) fail('ffmpeg_error', `Trim failed: ${result.stderr}`)
-    rmSync(tmpDir, { recursive: true, force: true })
-    log('base video ready')
-    return
-  }
-
-  // Trim each clip individually, then concat
-  const trimmedPaths = []
-  for (let i = 0; i < clips.length; i++) {
-    const clip      = clips[i]
-    log(`trimming clip ${i + 1}/${clips.length} (${basename(clip.src)})...`)
-    const trimPath  = join(tmpDir, `clip-${i}.mp4`)
-    const result = spawnSync('ffmpeg', [
-      '-y',
-      '-ss', String(clip.inPoint),
-      '-i', clip.src,
-      '-t', String(clip.outPoint - clip.inPoint),
-      '-c', 'copy',
-      '-avoid_negative_ts', 'make_zero',
-      trimPath,
-    ], { encoding: 'utf8', timeout: 300_000 })
-    if (result.status !== 0) fail('ffmpeg_error', `Trim clip ${i} failed: ${result.stderr}`)
-    trimmedPaths.push(trimPath)
-  }
-
-  const listFile = join(tmpDir, 'concat.txt')
-  writeFileSync(listFile, trimmedPaths.map(p => `file '${p}'`).join('\n'))
-
-  const concat = spawnSync('ffmpeg', [
-    '-y', '-f', 'concat', '-safe', '0', '-i', listFile,
-    '-c', 'copy', outputPath,
-  ], { encoding: 'utf8', timeout: 300_000 })
-  if (concat.status !== 0) fail('ffmpeg_error', `Concat failed: ${concat.stderr}`)
-
-  rmSync(tmpDir, { recursive: true, force: true })
-  log('base video ready')
 }
 
 // ---------------------------------------------------------------------------
@@ -271,17 +193,64 @@ function probeVideoDimensions(filePath) {
 }
 
 // ---------------------------------------------------------------------------
-// Segment collection: one spec per caption track + per overlay item
+// Segment collection: Puppeteer segments (overlay + captions)
 // ---------------------------------------------------------------------------
 
-function collectSegments(projectJson, fps, width, height, segDir) {
+function collectPuppeteerSegments(projectJson, fps, width, height, segDir) {
   const specs     = []
   const totalSecs = getTotalDurationSeconds(projectJson)
 
+  // NEW schema: visual_tracks — process overlay type items
+  for (let trackIdx = 0; trackIdx < (projectJson.visual_tracks || []).length; trackIdx++) {
+    const track = projectJson.visual_tracks[trackIdx]
+    for (const item of track || []) {
+      if (item.type === 'overlay') {
+        const frameCount = Math.ceil((item.end - item.start) * fps)
+        specs.push({
+          id:            `overlay-${trackIdx}--${item.id}`,
+          componentPath: overlayTemplatePath(item),
+          props:         item.props ?? {},
+          offsetX:       item.offsetX ?? 0,
+          offsetY:       item.offsetY ?? 0,
+          scale:         item.scale   ?? 1,
+          opacity:       item.opacity ?? 1,
+          opaque:        item.opaque  ?? false,
+          googleFonts:   item.googleFonts ?? [],
+          frameCount,
+          fps,
+          startSeconds:  item.start,
+          endSeconds:    item.end,
+          outputPath:    join(segDir, `overlay-${trackIdx}--${item.id}.mkv`),
+          width,
+          height,
+        })
+      }
+      // image and video types → handled by collectDirectItems, not Puppeteer
+    }
+  }
+
+  // captions is a top-level object
+  const captions = projectJson.captions
+  if (captions?.segments?.length > 0 || captions?.style) {
+    const frameCount = Math.ceil(totalSecs * fps)
+    specs.push({
+      id:            'captions',
+      componentPath: captionTemplatePath(captions.style),
+      props:         { segments: captions.segments || [] },
+      frameCount,
+      fps,
+      startSeconds:  0,
+      endSeconds:    totalSecs,
+      outputPath:    join(segDir, 'captions.mkv'),
+      width,
+      height,
+      isCaption:     true,
+    })
+  }
+
+  // OLD schema fallback: tracks[type=caption]
   for (const track of projectJson.tracks || []) {
     if (track.type === 'caption') {
-      // Caption component renders for the full video duration.
-      // The component itself decides which words/segments are visible at each frame.
       const frameCount = Math.ceil(totalSecs * fps)
       specs.push({
         id:            track.id,
@@ -294,42 +263,81 @@ function collectSegments(projectJson, fps, width, height, segDir) {
         outputPath:    join(segDir, `${track.id}.webm`),
         width,
         height,
-      })
-    }
-
-  }
-
-  for (let trackIdx = 0; trackIdx < (projectJson.overlay_tracks || []).length; trackIdx++) {
-    const overlayItems = projectJson.overlay_tracks[trackIdx]
-    for (const item of overlayItems || []) {
-      const durationSecs = item.end - item.start
-      const frameCount   = Math.ceil(durationSecs * fps)
-
-      const { id, start, end, src, offsetX = 0, offsetY = 0, scale: overlayScale = 1, opaque = false, googleFonts = [] } = item
-      const props = item.props ?? {}
-
-      specs.push({
-        id:            `overlay-${trackIdx}--${id}`,
-        componentPath: overlayTemplatePath(item),
-        props,
-        offsetX,
-        offsetY,
-        scale:         overlayScale,
-        opaque,
-        googleFonts,
-        frameCount,
-        fps,
-        startSeconds:  start,
-        endSeconds:    end,
-        outputPath:    join(segDir, `overlay-${trackIdx}--${id}.mkv`),
-        width,
-        height,
+        isCaption:     true,
       })
     }
   }
 
   return specs
 }
+
+// ---------------------------------------------------------------------------
+// Direct items: image and video visual_tracks items (no Puppeteer)
+// ---------------------------------------------------------------------------
+
+function collectDirectItems(projectJson) {
+  const imageItems = []
+  const videoItems = []
+
+  for (let trackIdx = 0; trackIdx < (projectJson.visual_tracks || []).length; trackIdx++) {
+    const track = projectJson.visual_tracks[trackIdx]
+    for (const item of track || []) {
+      const base = {
+        id:      item.id,
+        src:     item.src,
+        start:   item.start,
+        end:     item.end,
+        offsetX: item.offsetX ?? 0,
+        offsetY: item.offsetY ?? 0,
+        scale:   item.scale   ?? 1,
+        opacity: item.opacity ?? 1,
+        trackIdx,
+      }
+      if (item.type === 'image') {
+        imageItems.push(base)
+      } else if (item.type === 'video') {
+        videoItems.push({
+          ...base,
+          // Use nobg_src (ProRes 4444 with alpha) for render when available; src stays for preview
+          src:        item.nobg_src && item.remove_bg ? item.nobg_src : item.src,
+          inPoint:    item.inPoint,
+          outPoint:   item.outPoint,
+          remove_bg:  item.remove_bg ?? false,
+          muted:      item.muted ?? false,
+        })
+      }
+    }
+  }
+
+  return { imageItems, videoItems }
+}
+
+// ---------------------------------------------------------------------------
+// remove_bg pre-processing for video items
+// ---------------------------------------------------------------------------
+
+async function processVideoItems(videoItems, workspaceDir) {
+  for (const item of videoItems) {
+    if (item.remove_bg) {
+      log(`running remove_bg on ${basename(item.src)}...`)
+      const stem    = join(workspaceDir, 'render', basename(item.src, extname(item.src)))
+      const nobgPath = `${stem}_nobg.mov`
+      const result = spawnSync(PYTHON, [
+        join(MONTAJ_ROOT, 'steps', 'remove_bg.py'),
+        '--input', item.src,
+        '--out',   nobgPath,
+      ], { encoding: 'utf8', timeout: 600_000 })
+      if (result.status !== 0) {
+        fail('remove_bg_failed', `remove_bg failed for ${item.src}: ${result.stderr}`)
+      }
+      item.src = nobgPath
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Caption / overlay template path resolution
+// ---------------------------------------------------------------------------
 
 function captionTemplatePath(style) {
   const styleMap = {
@@ -343,8 +351,8 @@ function captionTemplatePath(style) {
 }
 
 function overlayTemplatePath(item) {
-  if (item.type === 'custom') return resolve(item.src)
-  fail('unknown_overlay_type', `Overlay type '${item.type}' is not supported. Set "type": "custom" and provide a "src" path to a JSX file.`)
+  if (item.type === 'overlay') return resolve(item.src)
+  fail('unknown_overlay_type', `Overlay type '${item.type}' is not supported. Set "type": "overlay" and provide a "src" path to a JSX file.`)
 }
 
 // ---------------------------------------------------------------------------
@@ -352,6 +360,23 @@ function overlayTemplatePath(item) {
 // ---------------------------------------------------------------------------
 
 function resolveProjectPaths(projectJson, projectDir) {
+  // NEW schema: base_track clips
+  for (const clip of projectJson.base_track || []) {
+    if (clip.src && !clip.src.startsWith('/')) {
+      clip.src = resolve(projectDir, clip.src)
+    }
+  }
+
+  // NEW schema: visual_tracks items (overlay, image, video all have src)
+  for (const track of projectJson.visual_tracks || []) {
+    for (const item of track || []) {
+      if (item.src && !item.src.startsWith('/')) {
+        item.src = resolve(projectDir, item.src)
+      }
+    }
+  }
+
+  // OLD schema fallback: tracks[type=video].clips
   for (const track of projectJson.tracks || []) {
     if (track.type === 'video') {
       for (const clip of track.clips || []) {
@@ -361,13 +386,7 @@ function resolveProjectPaths(projectJson, projectDir) {
       }
     }
   }
-  for (const overlayTrack of projectJson.overlay_tracks || []) {
-    for (const item of overlayTrack || []) {
-      if (item.src && !item.src.startsWith('/')) {
-        item.src = resolve(projectDir, item.src)
-      }
-    }
-  }
+
   if (projectJson.audio?.music?.src) {
     const src = projectJson.audio.music.src
     if (!src.startsWith('/')) {
@@ -379,6 +398,21 @@ function resolveProjectPaths(projectJson, projectDir) {
 function validateProjectFiles(projectJson) {
   const missing = []
 
+  // NEW schema: base_track clips
+  for (const clip of projectJson.base_track || []) {
+    if (clip.src && !existsSync(clip.src)) missing.push(clip.src)
+  }
+
+  // NEW schema: visual_tracks items
+  for (const track of projectJson.visual_tracks || []) {
+    for (const item of track || []) {
+      if ((item.type === 'overlay' || item.type === 'image' || item.type === 'video') && item.src && !existsSync(item.src)) {
+        missing.push(item.src)
+      }
+    }
+  }
+
+  // OLD schema fallback: tracks[type=video].clips
   for (const track of projectJson.tracks || []) {
     if (track.type === 'video') {
       for (const clip of track.clips || []) {
@@ -386,11 +420,7 @@ function validateProjectFiles(projectJson) {
       }
     }
   }
-  for (const overlayTrack of projectJson.overlay_tracks || []) {
-    for (const item of overlayTrack || []) {
-      if (item.type === 'custom' && item.src && !existsSync(item.src)) missing.push(item.src)
-    }
-  }
+
   if (projectJson.audio?.music?.src && !existsSync(projectJson.audio.music.src)) {
     missing.push(projectJson.audio.music.src)
   }
@@ -401,19 +431,27 @@ function validateProjectFiles(projectJson) {
 }
 
 // ---------------------------------------------------------------------------
-// Utilities
+// Duration calculation
 // ---------------------------------------------------------------------------
 
 function getTotalDurationSeconds(projectJson) {
-  const videoTrack = projectJson.tracks?.find(t => t.type === 'video')
-  if (videoTrack?.clips?.length) {
-    return videoTrack.clips.reduce((sum, c) => sum + (c.outPoint - c.inPoint), 0)
+  // NEW schema: base_track clips
+  if (projectJson.base_track?.length > 0) {
+    return projectJson.base_track.reduce((sum, c) => sum + (c.outPoint - c.inPoint), 0)
   }
-  // Canvas project — infer duration from overlay_tracks
-  const allItems = (projectJson.overlay_tracks || []).flat()
-  if (allItems.length === 0) return 0
-  return Math.max(...allItems.map(i => i.end))
+
+  // Canvas project — infer duration from visual_tracks
+  const visualItems = (projectJson.visual_tracks || []).flat()
+  if (visualItems.length > 0) {
+    return Math.max(...visualItems.map(i => i.end))
+  }
+
+  return 0
 }
+
+// ---------------------------------------------------------------------------
+// Utilities
+// ---------------------------------------------------------------------------
 
 function log(msg) {
   process.stderr.write(`[montaj render] ${msg}\n`)

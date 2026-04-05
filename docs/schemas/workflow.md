@@ -11,7 +11,7 @@ A workflow is a JSON file that describes a suggested editing plan: which steps t
 ```json
 {
   "name": "trim_and_overlay",
-  "description": "Multi-clip edit — silence trim, transcribe, select best takes, remove fillers, concat, caption, overlays, resize to 9:16.",
+  "description": "Multi-clip edit — silence trim, transcribe, select best takes, remove fillers, caption, overlays, resize to 9:16.",
   "steps": [
     { "id": "probe",             "uses": "montaj/probe" },
     { "id": "snapshot",          "uses": "montaj/snapshot" },
@@ -19,9 +19,8 @@ A workflow is a JSON file that describes a suggested editing plan: which steps t
     { "id": "transcribe",        "uses": "montaj/transcribe",     "foreach": "clips", "needs": ["silence"],           "params": { "model": "base.en" } },
     { "id": "select_takes",      "uses": "montaj/select_takes",                       "needs": ["transcribe"] },
     { "id": "fillers",           "uses": "montaj/rm_fillers",     "foreach": "clips", "needs": ["select_takes"],      "params": { "model": "base.en" } },
-    { "id": "concat",            "uses": "montaj/concat",                             "needs": ["fillers"] },
-    { "id": "transcribe_concat", "uses": "montaj/transcribe",                         "needs": ["concat"],            "params": { "model": "base.en" } },
-    { "id": "caption",           "uses": "montaj/caption",                            "needs": ["transcribe_concat"], "params": { "style": "word-by-word" } },
+    { "id": "transcribe_final", "uses": "montaj/transcribe",                         "needs": ["fillers"],            "params": { "model": "base.en" } },
+    { "id": "caption",           "uses": "montaj/caption",                            "needs": ["transcribe_final"], "params": { "style": "word-by-word" } },
     { "id": "overlays",          "uses": "montaj/overlay",                            "needs": ["caption"],           "params": { "style": "auto" } },
     { "id": "resize",            "uses": "montaj/resize",                             "needs": ["overlays"],          "params": { "ratio": "9:16" } }
   ]
@@ -64,7 +63,7 @@ The workflow gives the agent a sensible starting point and encodes domain knowle
 | `uses` | string | yes | Step reference. See prefix system below. |
 | `params` | object | no | Default param overrides. Keys are param names from the step schema. |
 | `needs` | array | no | IDs of steps that must complete before this one starts. Omit entirely (don't use `[]`) when there are no deps. Drives parallel execution. |
-| `foreach` | string | no | `"clips"` — fan out this step across all project clips in parallel. Each clip gets its own invocation; outputs are collected before dependent steps run. When `foreach: "clips"` steps output trim specs (e.g. `waveform_trim`, `rm_fillers`), downstream steps receive the trim spec as their `--input`, not a video file. Steps that accept trim specs (e.g. `transcribe`, `rm_fillers`, `concat`) detect this automatically by checking for `.json` extension + `input`/`keeps` keys. |
+| `foreach` | string | no | `"clips"` — fan out this step across all project clips in parallel. Each clip gets its own invocation; outputs are collected before dependent steps run. When `foreach: "clips"` steps output trim specs (e.g. `waveform_trim`, `rm_fillers`), downstream steps receive the trim spec as their `--input`, not a video file. Steps that accept trim specs (e.g. `transcribe`, `rm_fillers`) detect this automatically by checking for `.json` extension + `input`/`keeps` keys. |
 
 ### Step reference prefixes
 
@@ -98,12 +97,12 @@ Workflows are discovered the same way steps are. Resolution order: project-local
 
 ### `trim_and_overlay`
 
-Multi-clip edit. Silence trim per clip, transcribe, select best takes, remove fillers, concat, caption, overlays, resize to 9:16. Used by `montaj run` when no `--workflow` is specified.
+Multi-clip edit. Silence trim per clip, transcribe, select best takes, remove fillers, caption, overlays, resize to 9:16. Used by `montaj run` when no `--workflow` is specified.
 
 ```json
 {
   "name": "trim_and_overlay",
-  "description": "Multi-clip edit — silence trim, transcribe, select best takes, remove fillers, concat, caption, overlays, resize to 9:16.",
+  "description": "Multi-clip edit — silence trim, transcribe, select best takes, remove fillers, caption, overlays, resize to 9:16.",
   "steps": [
     { "id": "probe",             "uses": "montaj/probe" },
     { "id": "snapshot",          "uses": "montaj/snapshot" },
@@ -111,9 +110,8 @@ Multi-clip edit. Silence trim per clip, transcribe, select best takes, remove fi
     { "id": "transcribe",        "uses": "montaj/transcribe",     "foreach": "clips", "needs": ["silence"],           "params": { "model": "base.en" } },
     { "id": "select_takes",      "uses": "montaj/select_takes",                       "needs": ["transcribe"] },
     { "id": "fillers",           "uses": "montaj/rm_fillers",     "foreach": "clips", "needs": ["select_takes"],      "params": { "model": "base.en" } },
-    { "id": "concat",            "uses": "montaj/concat",                             "needs": ["fillers"] },
-    { "id": "transcribe_concat", "uses": "montaj/transcribe",                         "needs": ["concat"],            "params": { "model": "base.en" } },
-    { "id": "caption",           "uses": "montaj/caption",                            "needs": ["transcribe_concat"], "params": { "style": "word-by-word" } },
+    { "id": "transcribe_final", "uses": "montaj/transcribe",                         "needs": ["fillers"],            "params": { "model": "base.en" } },
+    { "id": "caption",           "uses": "montaj/caption",                            "needs": ["transcribe_final"], "params": { "style": "word-by-word" } },
     { "id": "overlays",          "uses": "montaj/overlay",                            "needs": ["caption"],           "params": { "style": "auto" } },
     { "id": "resize",            "uses": "montaj/resize",                             "needs": ["overlays"],          "params": { "ratio": "9:16" } }
   ]
@@ -127,15 +125,14 @@ Trim and clean only. No captions, overlays, or resize. Useful when the output fe
 ```json
 {
   "name": "basic_trim",
-  "description": "Trim and clean only — silence trim, transcribe, select best takes, remove fillers, concat. No captions, overlays, or resize.",
+  "description": "Trim and clean only — silence trim, transcribe, select best takes, remove fillers. No captions, overlays, or resize.",
   "steps": [
     { "id": "probe",        "uses": "montaj/probe" },
     { "id": "snapshot",     "uses": "montaj/snapshot" },
     { "id": "silence",      "uses": "montaj/waveform_trim", "foreach": "clips", "params": { "threshold": "-30", "min-silence": 0.3 } },
     { "id": "transcribe",   "uses": "montaj/transcribe",    "foreach": "clips", "needs": ["silence"],       "params": { "model": "base.en" } },
     { "id": "select_takes", "uses": "montaj/select_takes",                      "needs": ["transcribe"] },
-    { "id": "fillers",      "uses": "montaj/rm_fillers",    "foreach": "clips", "needs": ["select_takes"],  "params": { "model": "base.en" } },
-    { "id": "concat",       "uses": "montaj/concat",                            "needs": ["fillers"] }
+    { "id": "fillers",      "uses": "montaj/rm_fillers",    "foreach": "clips", "needs": ["select_takes"],  "params": { "model": "base.en" } }
   ]
 }
 ```
@@ -148,11 +145,11 @@ Steps produce one of three output types:
 
 | Output type | Format | Examples |
 |-------------|--------|---------|
-| Video file | Absolute path printed to stdout | `concat`, `resize`, `trim` |
+| Video file | Absolute path printed to stdout | `resize`, `trim` |
 | Trim spec | JSON `{"input": "...", "keeps": [[s,e],...]}` | `waveform_trim`, `rm_fillers`, `rm_nonspeech` |
 | Data | JSON object | `probe`, `transcribe`, `snapshot` |
 
-**Trim specs are the primary data type flowing between editing steps.** A workflow like `silence → transcribe → fillers → concat` passes trim specs from step to step. Only `concat` converts them to a video file.
+**Trim specs are the primary data type flowing between editing steps.** A workflow like `silence → transcribe → fillers` passes trim specs from step to step. The trim specs from the final editing step translate directly into `inPoint`/`outPoint`/`start`/`end` on `tracks[0]` items — no encode step in the interactive pipeline.
 
 Steps that accept trim spec input detect it automatically — you do not need to change param names or add special flags. Pass the `.json` output path from one step as the `--input` to the next.
 

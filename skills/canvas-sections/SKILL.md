@@ -6,7 +6,7 @@ step: true
 
 # Canvas Sections
 
-`montaj/canvas-sections` is an agent-authored task. No CLI step, no API call. You write the JSX overlay files and place them in `overlay_tracks` to build the full video from scratch.
+`montaj/canvas-sections` is an agent-authored task. No CLI step, no API call. You write the JSX overlay files and place them in `tracks` to build the full video from scratch.
 
 **Before writing any JSX, load the write-overlay subskill** — it has the full authoring reference. Load it with `/write-overlay`.
 
@@ -53,17 +53,20 @@ One JSX file per section. Save to `overlays/<name>.jsx`.
 
 See `/write-overlay` for the JSX authoring reference (globals, `interpolate`, `spring`).
 
-### 3. Place items in overlay_tracks
+### 3. Place items in tracks
 
-Use `overlay_tracks[0]` for the primary visual layer (opaque sections, backgrounds):
+**`tracks[0]` is always `[]` for canvas projects.** The schema enforces that `tracks[0]` items must be `type: "video"` (primary footage). Canvas projects have no footage, so `tracks[0]` stays empty.
+
+Use `tracks[1]` for the primary visual layer — opaque backgrounds and section slides:
 
 ```json
 {
-  "overlay_tracks": [
+  "tracks": [
+    [],
     [
       {
         "id": "title-card",
-        "type": "custom",
+        "type": "overlay",
         "src": "/abs/path/to/project/overlays/title-card.jsx",
         "start": 0.0,
         "end": 3.0,
@@ -71,7 +74,7 @@ Use `overlay_tracks[0]` for the primary visual layer (opaque sections, backgroun
       },
       {
         "id": "stat-card",
-        "type": "custom",
+        "type": "overlay",
         "src": "/abs/path/to/project/overlays/stat-card.jsx",
         "start": 5.0,
         "end": 9.0,
@@ -83,17 +86,17 @@ Use `overlay_tracks[0]` for the primary visual layer (opaque sections, backgroun
 }
 ```
 
-Use `overlay_tracks[1+]` for **layered animations on top** — text, icons, motion graphics that sit above the background layer. Items in track 1 render on top of track 0.
+Use `tracks[2+]` for **layered animations on top** — text, icons, motion graphics that sit above the background layer. Items in higher-numbered tracks render on top.
 
 ### 4. No time overlap within a track
 
 Items in the same track must not overlap in time. If you need two overlays at the same time at different z-levels, put them in different tracks.
 
-For canvas projects (no footage), every timestamp must be covered by an item in track 0. Gaps in coverage produce a black frame.
+For canvas projects (no footage), every timestamp must be covered by an item in `tracks[1]` or higher. Gaps in coverage produce a black frame.
 
 ### 5. Persist to project.json
 
-Write `overlay_tracks` to `project.json` — `PUT /api/projects/{id}` (HTTP) or write directly (headless).
+Write `tracks` to `project.json` — `PUT /api/projects/{id}` (HTTP) or write directly (headless).
 
 ---
 

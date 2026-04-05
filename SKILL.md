@@ -45,7 +45,6 @@ montaj trim clip.mp4 --start 2.5 --end 8.3
 montaj cut clip.mp4 --start 3.0 --end 7.5
 montaj cut clip.mp4 --cuts '[[0,1.2],[5.3,7.8]]'   # multiple cuts, one ffmpeg pass
 montaj cut clip.mp4 --cuts '[[3.0,7.5]]' --spec     # write trim spec instead of encoding
-montaj concat clip1.mp4 clip2.mp4 clip3.mp4 --out joined.mp4
 montaj waveform-trim clip.mp4 --threshold -30 --min-silence 0.3
 montaj rm-nonspeech clip_spec.json --model base
 montaj transcribe clip.mp4 --model base.en
@@ -79,9 +78,7 @@ To see all available steps including project-local custom steps: `montaj step -h
 |------|-------------|------------|
 | `trim` | Cut by start/end/duration | `--start 2.5 --end 8.3` or `--duration 5` |
 | `cut` | Remove one or more sections and rejoin | `--start 3.0 --end 7.5` (single) · `--cuts '[[s,e],...]'` (multi, one pass) · `--spec` (trim spec out, no encode) |
-| `concat` | Join clips — **only encode step** (auto-normalizes HEVC→H.264 CRF 18) | multiple inputs or trim spec array |
 | `resize` | Reframe to aspect ratio | `--ratio 9:16` or `1:1` or `16:9` |
-| `ffmpeg_captions` | Burn static text overlay | `--text "Hello" --fontsize 48 --position center` |
 | `extract_audio` | Extract audio track | `--format wav` |
 
 ### Enrich
@@ -92,6 +89,11 @@ To see all available steps including project-local custom steps: `montaj step -h
 | `normalize` | Loudness normalization (LUFS) | `--target youtube` (or `podcast`, `broadcast`) |
 
 **`caption` produces a data track, not pixels.** Rendered at review/final render time by the UI and render engine.
+
+### VFX
+| Step | What it does | Key params |
+|------|-------------|------------|
+| `remove_bg` | Remove video background via RVM → ProRes 4444 `.mov` with alpha channel. Store result in `nobg_src`; keep original in `src` (for preview). Set `remove_bg: true` on the item. | `--model rvm_mobilenetv3` (or `rvm_resnet50`), `--downsample 0.5`, `--cpu` |
 
 ### Select Takes (`montaj/select_takes`)
 **REQUIRED SUB-SKILL:** Load `skills/select-takes/SKILL.md` before executing this step.
@@ -110,21 +112,26 @@ Editing steps do not encode video. They output **trim specs** — JSON describin
 **Data flow:**
 ```
 waveform_trim → trim spec → transcribe
-                           → rm_fillers → refined spec → concat (ONLY encode)
+                           → rm_fillers → refined spec → tracks[0] inPoint/outPoint/start/end
+                                                               ↓
+                                                       render engine (final assembly)
 ```
 
 **Rules:**
 - Pass original source files to editing steps — never pre-encode them
 - `rm_fillers`, `rm_nonspeech`, `crop_spec` take a trim spec as `input` and output a refined spec — never pass a video file to these
-- `concat` is the encode boundary — the only step that produces a video file
-- One encode total, regardless of how many steps or clips
+- One encode per clip, then one render pass
 
 ## Workflows
 
 Read the assigned workflow from `workflows/{name}.json` (filesystem only — not served via API).
 
 **Available workflows:**
-- `default` — probe, snapshot, transcribe, rm_fillers, waveform_trim, caption (word-by-word), overlays (auto), resize 9:16
+- `basic_trim` — silence trim, remove non-speech, transcribe, select takes, remove fillers
+- `trim_and_caption` — basic_trim + transcribe + caption + overlays + resize 9:16
+- `trim_and_overlay` — basic_trim + transcribe + overlays
+- `canvas` — no source footage; build entirely from animated JSX sections
+- `mix_canvas` — footage clips + canvas sections combined
 
 **Deviation Rules — only when the prompt explicitly requires it:**
 - "no captions" → skip caption
@@ -143,9 +150,7 @@ Read the assigned workflow from `workflows/{name}.json` (filesystem only — not
   "version": "0.1", "id": "<uuid>", "status": "pending",
   "workflow": "trim_and_overlay", "editingPrompt": "...",
   "settings": {"resolution": [1080, 1920], "fps": 30},
-  "tracks": [{"id": "main", "type": "video", "clips": [
-    {"id": "clip-0", "src": "/abs/path/clip.mp4", "order": 0}
-  ]}],
+  "tracks": [[{"id": "clip-0", "type": "video", "src": "/abs/path/clip.mp4", "start": 0.0, "end": 0.0}]],
   "assets": [], "audio": {}
 }
 ```
@@ -153,8 +158,9 @@ Read the assigned workflow from `workflows/{name}.json` (filesystem only — not
 **Assets** — image files (logos, watermarks). Each has `id`, absolute `src`, `type: "image"`, optional `name`. Pass at creation: `--assets logo.png` (CLI) or `"assets": ["/path/logo.png"]` (HTTP `/api/run`).
 
 **Update as you work:**
-- After trim/clean: update clip `src`; set `inPoint`/`outPoint` (seconds)
-- After transcribe + caption: inline `_captions.json` as a `type: "caption"` track with `style` and `segments` — do NOT store a file pointer
+- After trim/clean: update `tracks[0]` clip `src`; set `inPoint`/`outPoint` and `start`/`end` (seconds)
+- After transcribe + caption: set top-level `captions: { "style": "word-by-word", "segments": [...] }` — do NOT store a file pointer
+- After overlays/images/video: populate `tracks[1+]` — array of arrays; items have `type: "overlay"` (JSX), `type: "image"` (static image), or `type: "video"` (video clip with optional `remove_bg: true`)
 - After all steps: set `status: "draft"`
 - HTTP: persist via `PUT /api/projects/{id}` | CLI: write to `project.json`
 

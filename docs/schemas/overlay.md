@@ -80,14 +80,14 @@ const scale = spring({ frame, fps, stiffness: 120, damping: 14 })
 
 ## project.json item shape
 
-How the agent references an overlay in `overlay_tracks`.
+How the agent references an overlay in `tracks[1+]`.
 
 All overlays are agent-written JSX. There are no built-in overlay templates.
 
 ```json
 {
   "id": "countdown",
-  "type": "custom",
+  "type": "overlay",
   "src": "./overlays/countdown.jsx",
   "start": 0.0,
   "end": 3.0,
@@ -103,7 +103,7 @@ All overlays are agent-written JSX. There are no built-in overlay templates.
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `id` | string | yes | Unique identifier |
-| `type` | string | yes | Always `"custom"` |
+| `type` | string | yes | `"overlay"` for custom JSX, `"image"` for static images, `"video"` for video clips |
 | `src` | string | yes | Path to JSX file, relative to project.json |
 | `start` | number | yes | Start time in output video (seconds) |
 | `end` | number | yes | End time in output video (seconds) |

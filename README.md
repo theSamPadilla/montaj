@@ -111,7 +111,7 @@ Every editing operation is a step — a Python executable with a JSON schema. Na
 |----------|-------|
 | **Inspect** | `probe`, `snapshot` |
 | **Clean** | `waveform_trim`, `rm_fillers`, `rm_nonspeech` |
-| **Edit** | `trim`, `concat`, `resize`, `ffmpeg_captions`, `extract_audio` |
+| **Edit** | `trim`, `concat`, `resize`, `extract_audio` |
 | **Enrich** | `transcribe`, `caption`, `normalize` |
 | **Acquire** | `fetch` — download from any URL via yt-dlp |
 

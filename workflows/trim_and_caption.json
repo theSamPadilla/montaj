@@ -1,17 +1,16 @@
 {
   "name": "trim_and_caption",
-  "description": "Multi-clip edit — silence trim, transcribe, select best takes per section, remove fillers, concat, caption, overlays, resize to 9:16.",
+  "description": "Multi-clip edit — silence trim, transcribe, select best takes, remove fillers, caption, overlays, resize to 9:16.",
   "steps": [
-    { "id": "probe",             "uses": "montaj/probe",    "foreach": "clips" },
-    { "id": "snapshot",          "uses": "montaj/snapshot", "foreach": "clips" },
-    { "id": "silence",           "uses": "montaj/waveform_trim",  "foreach": "clips", "params": { "threshold": "-30", "min-silence": 0.3 } },
-    { "id": "transcribe",        "uses": "montaj/transcribe",     "foreach": "clips", "needs": ["silence"],             "params": { "model": "base.en" } },
-    { "id": "select-takes",      "uses": "montaj/select-takes",   "needs": ["transcribe"] },
-    { "id": "fillers",           "uses": "montaj/rm_fillers",     "foreach": "clips", "needs": ["select-takes"],        "params": { "model": "base.en" } },
-    { "id": "concat",            "uses": "montaj/concat",         "needs": ["fillers"] },
-    { "id": "transcribe_concat", "uses": "montaj/transcribe",     "needs": ["concat"],              "params": { "model": "base.en" } },
-    { "id": "caption",           "uses": "montaj/caption",        "needs": ["transcribe_concat"],   "params": { "style": "word-by-word" } },
-    { "id": "overlays",          "uses": "montaj/overlay",        "needs": ["caption"],             "params": { "style": "auto" } },
-    { "id": "resize",            "uses": "montaj/resize",         "needs": ["overlays"],            "params": { "ratio": "9:16" } }
+    { "id": "probe",            "uses": "montaj/probe",          "foreach": "clips" },
+    { "id": "snapshot",         "uses": "montaj/snapshot",       "foreach": "clips" },
+    { "id": "silence",          "uses": "montaj/waveform_trim",  "foreach": "clips",                            "params": { "threshold": "-30", "min-silence": 0.3 } },
+    { "id": "transcribe",       "uses": "montaj/transcribe",     "foreach": "clips", "needs": ["silence"],      "params": { "model": "base.en" } },
+    { "id": "select-takes",     "uses": "montaj/select-takes",                       "needs": ["transcribe"] },
+    { "id": "fillers",          "uses": "montaj/rm_fillers",     "foreach": "clips", "needs": ["select-takes"], "params": { "model": "base.en" } },
+    { "id": "transcribe_final", "uses": "montaj/transcribe",     "foreach": "clips", "needs": ["fillers"],      "params": { "model": "base.en" } },
+    { "id": "caption",          "uses": "montaj/caption",                            "needs": ["transcribe_final"], "params": { "style": "word-by-word" } },
+    { "id": "overlays",         "uses": "montaj/overlay",                            "needs": ["caption"],      "params": { "style": "auto" } },
+    { "id": "resize",           "uses": "montaj/resize",                             "needs": ["overlays"],     "params": { "ratio": "9:16" } }
   ]
 }

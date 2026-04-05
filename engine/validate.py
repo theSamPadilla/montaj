@@ -9,9 +9,12 @@ from common import fail
 from validate_step import validate as validate_step  # noqa: F401
 from validate_step import resolve_step_path  # noqa: F401
 
-VALID_TRACK_TYPES = {"video", "caption"}
-OVERLAY_ITEM_REQUIRED = {"id", "type", "src", "start", "end"}
 VALID_USES_PREFIXES = {"montaj/", "user/", "./steps/"}
+
+# PRIMARY_CLIP_REQUIRED and VISUAL_ITEM_REQUIRED are currently the same set but kept
+# separate — primary clips and overlay items are expected to diverge in future parts.
+PRIMARY_CLIP_REQUIRED = {"id", "type", "src", "start", "end"}
+VISUAL_ITEM_REQUIRED = {"id", "type", "src", "start", "end"}
 
 
 def validate_project(path):
@@ -28,41 +31,47 @@ def validate_project(path):
         if field not in data:
             fail("missing_field", f"Missing required field: {field}")
 
-    # tracks must only contain video and caption
-    for track in data.get("tracks", []):
-        if track.get("type") not in VALID_TRACK_TYPES:
-            fail(
-                "invalid_track_type",
-                f"Invalid track type '{track.get('type')}' in tracks[]. "
-                "Only 'video' and 'caption' are allowed. Overlays go in overlay_tracks."
-            )
+    tracks = data["tracks"]
+    if not isinstance(tracks, list):
+        fail("invalid_tracks", "tracks must be an array")
 
-    # overlay_tracks must be array of arrays
-    overlay_tracks = data.get("overlay_tracks", [])
-    if not isinstance(overlay_tracks, list):
-        fail("invalid_overlay_tracks", "overlay_tracks must be an array")
-
-    for i, track in enumerate(overlay_tracks):
+    for i, track in enumerate(tracks):
         if not isinstance(track, list):
-            fail("invalid_overlay_tracks", f"overlay_tracks[{i}] must be an array of items, not an object")
+            fail("invalid_tracks", f"tracks[{i}] must be an array of items, not an object")
 
-        # validate each item
-        sorted_items = sorted(track, key=lambda x: x.get("start", 0))
-        prev_end = None
-        for item in sorted_items:
-            for field in OVERLAY_ITEM_REQUIRED:
-                if field not in item:
-                    fail("missing_field", f"Overlay item missing required field '{field}': {item.get('id', '?')}")
-            if "opaque" in item and not isinstance(item["opaque"], bool):
-                fail("invalid_field", f"Overlay item '{item['id']}': 'opaque' must be boolean")
-            # overlap check
-            if prev_end is not None and item["start"] < prev_end:
-                fail(
-                    "overlay_overlap",
-                    f"Overlap in overlay_tracks[{i}]: item '{item['id']}' starts at {item['start']} "
-                    f"but previous item ends at {prev_end}"
-                )
-            prev_end = item["end"]
+        if i == 0:
+            # Primary track: items must be type "video" with start/end.
+            # Overlap is intentionally NOT checked here — primary clips can overlap
+            # on the timeline; compose.js handles rendering order via itsoffset.
+            for item in track:
+                for field in PRIMARY_CLIP_REQUIRED:
+                    if field not in item:
+                        fail("missing_field", f"tracks[0] item missing required field '{field}': {item.get('id', '?')}")
+                if item.get("type") != "video":
+                    fail("invalid_primary_clip", f"tracks[0] item '{item.get('id', '?')}' must have type 'video', got '{item.get('type')}'")
+                s, e = item.get("start"), item.get("end")
+                if isinstance(s, (int, float)) and isinstance(e, (int, float)):
+                    # Permit start == end == 0.0: init.py writes these as placeholders;
+                    # the agent fills real values after probing the source file.
+                    if not (s == 0.0 and e == 0.0) and e < s:
+                        fail("invalid_field", f"tracks[0] item '{item.get('id', '?')}': end ({e}) < start ({s})")
+        else:
+            # Overlay tracks: standard visual item validation + overlap check
+            sorted_items = sorted(track, key=lambda x: x.get("start", 0))
+            prev_end = None
+            for item in sorted_items:
+                for field in VISUAL_ITEM_REQUIRED:
+                    if field not in item:
+                        fail("missing_field", f"tracks[{i}] item missing required field '{field}': {item.get('id', '?')}")
+                if "opaque" in item and not isinstance(item["opaque"], bool):
+                    fail("invalid_field", f"Visual item '{item['id']}': 'opaque' must be boolean")
+                if prev_end is not None and item["start"] < prev_end:
+                    fail(
+                        "visual_track_overlap",
+                        f"Overlap in tracks[{i}]: item '{item['id']}' starts at {item['start']} "
+                        f"but previous item ends at {prev_end}"
+                    )
+                prev_end = item["end"]
 
     return {"valid": True}
 

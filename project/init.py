@@ -86,7 +86,11 @@ def main():
         return dest
 
     clips = [
-        {"id": f"clip-{i}", "src": copy_into_workspace(os.path.abspath(clip), "clip"), "order": i}
+        # start/end are placeholder 0.0 values — the agent sets real values
+        # after running probe. Zero-duration is technically valid under the
+        # validator (which only requires the fields exist, not that end > start).
+        {"id": f"clip-{i}", "type": "video", "src": copy_into_workspace(os.path.abspath(clip), "clip"),
+         "start": 0.0, "end": 0.0}
         for i, clip in enumerate(args.clips)
     ]
 
@@ -120,12 +124,8 @@ def main():
         for i, a in enumerate(args.assets)
     ]
 
-    tracks = []
-    if not args.canvas:
-        tracks.append({"id": "main", "type": "video", "clips": clips})
-
     project = {
-        "version": "0.1",
+        "version": "0.2",
         "id": str(uuid.uuid4()),
         "status": "pending",
         "name": args.name or None,
@@ -137,8 +137,7 @@ def main():
             "resolution": detected_resolution,
             "fps": detected_fps
         },
-        "tracks": tracks,
-        "overlay_tracks": [],
+        "tracks": [[] if args.canvas else clips],
         "assets": assets,
         "audio": {},
         **({"profile": args.profile} if args.profile else {})

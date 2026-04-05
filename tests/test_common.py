@@ -119,3 +119,28 @@ def test_load_env_parses_file(tmp_path):
 def test_load_env_fails_for_missing():
     with pytest.raises(SystemExit):
         common.load_env("/nonexistent/.env")
+
+
+# ── find_whisper_bin() ────────────────────────────────────────────────────────
+
+def test_find_whisper_bin_prefers_montaj_managed(tmp_path, monkeypatch):
+    """find_whisper_bin picks up Montaj-managed binary over system PATH."""
+    import models as _models
+    monkeypatch.setattr(_models, "MONTAJ_MODELS_DIR", str(tmp_path))
+    bin_path = tmp_path / "whisper" / "whisper-cli"
+    bin_path.parent.mkdir(parents=True)
+    bin_path.write_text("#!/bin/sh\necho fake")
+    bin_path.chmod(0o755)
+    result = common.find_whisper_bin()
+    assert result == str(bin_path)
+
+def test_find_whisper_bin_falls_back_to_path(tmp_path, monkeypatch):
+    """find_whisper_bin falls back to system PATH when no managed binary exists."""
+    import models as _models
+    monkeypatch.setattr(_models, "MONTAJ_MODELS_DIR", str(tmp_path))
+    # No managed binary — should fall through to system PATH
+    # If whisper-cpp or whisper-cli exists on PATH, it finds it. If not, it calls fail().
+    # We mock shutil.which to return a fake path.
+    monkeypatch.setattr(common.shutil, "which", lambda name: f"/usr/bin/{name}" if name == "whisper-cli" else None)
+    result = common.find_whisper_bin()
+    assert result == "/usr/bin/whisper-cli"

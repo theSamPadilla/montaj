@@ -37,13 +37,11 @@ Before reasoning about dependencies, know what each step reads and produces:
 | `caption` | transcript + cleaned video | caption track data |
 | `normalize` | any video | normalized video |
 | `resize` | any video | resized video |
-| `ffmpeg_captions` | any video | composited video |
 | `extract_audio` | any video | audio file |
 | `concat` | multiple videos | joined video |
 | `fetch` | — | downloaded video file |
 | `pacing` | any video | pacing analysis JSON |
 | `jump_cut_detect` | any video | issues JSON |
-| `best_take` | any video + transcript | best take selection |
 
 ---
 
@@ -83,12 +81,11 @@ Apply these rules:
 **Steps that depend on transcript:**
 - `rm_fillers` needs `transcribe` (uses transcript to locate fillers)
 - `caption` needs `transcribe` (uses word timings)
-- `best_take` needs `transcribe`
 
 **Steps that depend on a prior cleaned video:**
 - `waveform_trim`, `rm_nonspeech` — if the user wants them to run on an already-cleaned clip (e.g. after `rm_fillers`), add that step as a need
 - `caption` — if it should caption the cleaned video (not the original), add the last cleaning step as a need
-- `normalize`, `resize`, `ffmpeg_captions` — chain after whatever the last video-producing step is
+- `normalize`, `resize` — chain after whatever the last video-producing step is
 
 **Steps that depend on both transcript AND a cleaned video:**
 - `caption` commonly needs both `transcribe` AND the last cleaning step (e.g. `waveform_trim`)

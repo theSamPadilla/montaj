@@ -1,4 +1,4 @@
-"""Tests for project/init.py canvas project creation."""
+"""Tests for project/init.py project creation — v0.2 unified tracks schema."""
 import json, subprocess, sys
 from pathlib import Path
 import pytest
@@ -16,14 +16,61 @@ def run_init(*args, env_override=None):
     )
 
 
-def test_canvas_creates_project_without_video_track(tmp_path):
+def test_normal_project_has_tracks(tmp_path):
+    clip = tmp_path / "clip.mp4"
+    clip.write_bytes(b"fake")
+    result = run_init("--clips", str(clip), "--prompt", "test",
+                      env_override={"MONTAJ_WORKSPACE_DIR": str(tmp_path)})
+    assert result.returncode == 0, result.stderr
+    project = json.loads(Path(result.stdout.strip()).read_text())
+    assert "tracks" in project
+    assert "base_track" not in project
+    assert "visual_tracks" not in project
+
+
+def test_normal_project_tracks_has_one_track(tmp_path):
+    clip = tmp_path / "clip.mp4"
+    clip.write_bytes(b"fake")
+    result = run_init("--clips", str(clip), "--prompt", "test",
+                      env_override={"MONTAJ_WORKSPACE_DIR": str(tmp_path)})
+    assert result.returncode == 0, result.stderr
+    project = json.loads(Path(result.stdout.strip()).read_text())
+    assert len(project["tracks"]) == 1
+
+
+def test_normal_project_clip_in_primary_track(tmp_path):
+    clip = tmp_path / "clip.mp4"
+    clip.write_bytes(b"fake")
+    result = run_init("--clips", str(clip), "--prompt", "test",
+                      env_override={"MONTAJ_WORKSPACE_DIR": str(tmp_path)})
+    assert result.returncode == 0, result.stderr
+    project = json.loads(Path(result.stdout.strip()).read_text())
+    primary = project["tracks"][0]
+    assert len(primary) == 1
+    item = primary[0]
+    assert item["id"] == "clip-0"
+    assert item["type"] == "video"
+    assert item["src"].endswith("clip.mp4")
+    assert "start" in item
+    assert "end" in item
+
+
+def test_normal_project_version_is_0_2(tmp_path):
+    clip = tmp_path / "clip.mp4"
+    clip.write_bytes(b"fake")
+    result = run_init("--clips", str(clip), "--prompt", "test",
+                      env_override={"MONTAJ_WORKSPACE_DIR": str(tmp_path)})
+    assert result.returncode == 0, result.stderr
+    project = json.loads(Path(result.stdout.strip()).read_text())
+    assert project["version"] == "0.2"
+
+
+def test_canvas_project_has_empty_primary_track(tmp_path):
     result = run_init("--canvas", "--prompt", "test", "--workflow", "canvas",
                       env_override={"MONTAJ_WORKSPACE_DIR": str(tmp_path)})
     assert result.returncode == 0, result.stderr
     project = json.loads(Path(result.stdout.strip()).read_text())
-    assert not any(t["type"] == "video" for t in project["tracks"])
-    assert "overlay_tracks" in project
-    assert project["overlay_tracks"] == []
+    assert project["tracks"] == [[]]
 
 
 def test_canvas_and_clips_are_mutually_exclusive(tmp_path):
@@ -36,13 +83,16 @@ def test_canvas_and_clips_are_mutually_exclusive(tmp_path):
     assert err["error"] == "mutually_exclusive"
 
 
-def test_normal_project_includes_overlay_tracks(tmp_path):
-    clip = tmp_path / "clip.mp4"
-    clip.write_bytes(b"fake")
-    result = run_init("--clips", str(clip), "--prompt", "test",
+def test_multiple_clips_all_in_primary_track(tmp_path):
+    clip1 = tmp_path / "a.mp4"
+    clip2 = tmp_path / "b.mp4"
+    clip1.write_bytes(b"fake")
+    clip2.write_bytes(b"fake")
+    result = run_init("--clips", str(clip1), str(clip2), "--prompt", "test",
                       env_override={"MONTAJ_WORKSPACE_DIR": str(tmp_path)})
     assert result.returncode == 0, result.stderr
     project = json.loads(Path(result.stdout.strip()).read_text())
-    assert "overlay_tracks" in project
-    assert project["overlay_tracks"] == []
-    assert any(t["type"] == "video" for t in project["tracks"])
+    primary = project["tracks"][0]
+    assert len(primary) == 2
+    assert primary[0]["id"] == "clip-0"
+    assert primary[1]["id"] == "clip-1"

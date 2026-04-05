@@ -71,8 +71,8 @@ export default function ReviewView({ project, onProjectChange }: ReviewViewProps
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [project.id])
 
-  const clips      = project.base_track ?? []
-  const hasContent = clips.length > 0 || (project.visual_tracks?.flat().length ?? 0) > 0
+  const clips      = project.tracks?.[0] ?? []
+  const hasContent = clips.length > 0 || (project.tracks?.slice(1).flat().length ?? 0) > 0
   const assets     = project.assets ?? []
 
   function pushHistory(prev: Project) {
@@ -99,11 +99,13 @@ export default function ReviewView({ project, onProjectChange }: ReviewViewProps
 
   function handleOverlayChange(id: string, changes: { offsetX?: number; offsetY?: number; scale?: number }) {
     pushHistory(project)
+    const primaryTrack = project.tracks?.[0] ?? []
+    const overlayTs = project.tracks?.slice(1) ?? []
     const updated = {
       ...project,
-      visual_tracks: (project.visual_tracks ?? []).map(track =>
+      tracks: [primaryTrack, ...overlayTs.map(track =>
         track.map(item => item.id !== id ? item : { ...item, ...changes })
-      ),
+      )],
     }
     onProjectChange(updated)
     api.saveProject(updated.id, updated).catch(console.error)
@@ -119,121 +121,6 @@ export default function ReviewView({ project, onProjectChange }: ReviewViewProps
     } finally {
       setSaving(false)
     }
-  }
-
-  function handleAddCut(clipId: string, _src: string, physStart: number, physEnd: number) {
-    const updated = {
-      ...project,
-      base_track: (project.base_track ?? []).map(c => {
-        if (c.id !== clipId) return c
-        const raw: [number, number][] = [...(c.pendingCuts ?? []), [physStart, physEnd]]
-        raw.sort((a, b) => a[0] - b[0])
-        const merged: [number, number][] = [raw[0]]
-        for (let i = 1; i < raw.length; i++) {
-          const last = merged[merged.length - 1]
-          if (raw[i][0] <= last[1]) merged[merged.length - 1] = [last[0], Math.max(last[1], raw[i][1])]
-          else merged.push(raw[i])
-        }
-        return { ...c, pendingCuts: merged }
-      }),
-    }
-    handleProjectChange(updated)
-  }
-
-  async function handleApplyCuts() {
-    const allClips = project.base_track ?? []
-    const clipsWithCuts = allClips.filter(c => c.pendingCuts?.length)
-    if (!clipsWithCuts.length) return
-
-    // Build virtual timeline to map physical cuts → virtual time for caption/overlay adjustment
-    const vtMap = new Map<string, { virtualStart: number }>()
-    let cursor = 0
-    for (const c of allClips.filter(c => c.inPoint !== undefined && c.outPoint !== undefined)) {
-      vtMap.set(c.id, { virtualStart: cursor })
-      cursor += (c.outPoint! - c.inPoint!)
-    }
-
-    // Collect all virtual-time cuts in order
-    const allVCuts: { vStart: number; vEnd: number }[] = []
-    for (const c of clipsWithCuts) {
-      const vInfo = vtMap.get(c.id)
-      if (!vInfo || c.inPoint === undefined) continue
-      for (const [ps, pe] of c.pendingCuts!) {
-        allVCuts.push({ vStart: vInfo.virtualStart + (ps - c.inPoint), vEnd: vInfo.virtualStart + (pe - c.inPoint) })
-      }
-    }
-    allVCuts.sort((a, b) => a.vStart - b.vStart)
-
-    // Adjust captions and visual tracks for all virtual cuts (cumulative offset)
-    let captions = project.captions
-    let visualTs = project.visual_tracks ?? []
-    let removed = 0
-
-    for (const { vStart, vEnd } of allVCuts) {
-      const s = vStart - removed
-      const e = vEnd - removed
-      const dur = e - s
-
-      if (captions) {
-        const segments = captions.segments.flatMap(seg => {
-          if (seg.end <= s) return [seg]
-          if (seg.start >= e) return [{ ...seg, start: seg.start - dur, end: seg.end - dur,
-            words: seg.words?.map(w => ({ ...w, start: w.start - dur, end: w.end - dur })) }]
-          const kept: typeof seg[] = []
-          if (seg.start < s) kept.push({ ...seg, end: Math.min(seg.end, s),
-            words: seg.words?.filter(w => w.start < s).map(w => w.end > s ? { ...w, end: s } : w) })
-          if (seg.end > e) kept.push({ ...seg, start: Math.max(seg.start, e) - dur, end: seg.end - dur,
-            words: seg.words?.filter(w => w.start >= e).map(w => ({ ...w, start: w.start - dur, end: w.end - dur })) })
-          return kept
-        }).filter(seg => seg.end > seg.start)
-        captions = { ...captions, segments }
-      }
-
-      visualTs = visualTs.map(track =>
-        track.flatMap(item => {
-          if (item.end <= s) return [item]
-          if (item.start >= e) return [{ ...item, start: item.start - dur, end: item.end - dur }]
-          const kept: typeof item[] = []
-          if (item.start < s) kept.push({ ...item, end: s })
-          if (item.end > e) {
-            const skipDur = e - Math.max(item.start, s)
-            kept.push({
-              ...item,
-              start: s,
-              end: s + (item.end - e),
-              ...(item.type === 'video' && item.inPoint !== undefined
-                ? { inPoint: item.inPoint + skipDur }
-                : {}),
-            })
-          }
-          return kept
-        }).filter(item => item.end > item.start)
-      ).filter(track => track.length > 0)
-
-      removed += dur
-    }
-
-    // Encode new file for each clip (one ffmpeg pass per clip with all its cuts)
-    const encoded = new Map<string, { newSrc: string; newOutPoint: number }>()
-    for (const c of clipsWithCuts) {
-      const result = await api.runStep('cut', { input: c.src, cuts: c.pendingCuts }) as { path: string }
-      const totalCut = c.pendingCuts!.reduce((sum, [a, b]) => sum + (b - a), 0)
-      encoded.set(c.id, { newSrc: result.path, newOutPoint: (c.outPoint! - c.inPoint!) - totalCut })
-    }
-
-    const updated: Project = {
-      ...project,
-      base_track: allClips.map(c => {
-        const enc = encoded.get(c.id)
-        if (!enc) return c
-        return { ...c, src: enc.newSrc, inPoint: 0, outPoint: enc.newOutPoint, pendingCuts: undefined }
-      }),
-      captions,
-      visual_tracks: visualTs,
-    }
-    onProjectChange(updated)
-    setDirty(true)
-    await api.saveProject(updated.id, updated).catch(console.error)
   }
 
   function handleRerunComplete(updated: Project) {
@@ -353,8 +240,6 @@ export default function ReviewView({ project, onProjectChange }: ReviewViewProps
               onProjectChange={handleProjectChange}
               onCaptionEdit={(p) => { onProjectChange(p); api.saveProject(p.id, p).catch(console.error) }}
               onOverlayEdit={(p) => { onProjectChange(p); api.saveProject(p.id, p).catch(console.error) }}
-              onAddCut={handleAddCut}
-              onApplyCuts={handleApplyCuts}
               selectedOverlayId={selectedOverlayId ?? undefined}
               onSelectOverlay={setSelectedOverlayId}
             />

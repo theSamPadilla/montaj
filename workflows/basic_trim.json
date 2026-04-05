@@ -1,15 +1,14 @@
 {
   "name": "basic_trim",
-  "description": "Trim and clean only — silence trim, remove non-speech, transcribe, select best takes, remove fillers, concat. No captions, overlays, or resize.",
+  "description": "Trim and clean only — silence trim, remove non-speech, transcribe, select best takes, remove fillers. No captions, overlays, or resize.",
   "steps": [
-    { "id": "probe",        "uses": "montaj/probe",    "foreach": "clips" },
-    { "id": "snapshot",     "uses": "montaj/snapshot", "foreach": "clips" },
+    { "id": "probe",        "uses": "montaj/probe",          "foreach": "clips" },
+    { "id": "snapshot",     "uses": "montaj/snapshot",       "foreach": "clips" },
     { "id": "silence",      "uses": "montaj/waveform_trim",  "foreach": "clips", "params": { "threshold": "-30", "min-silence": 0.3 } },
-    { "id": "nonspeech",    "uses": "montaj/rm_nonspeech",   "foreach": "clips", "needs": ["silence"],    "params": { "model": "base.en", "max-word-gap": 0.10, "sentence-edge": 0.05 } },
-    { "id": "transcribe",   "uses": "montaj/transcribe",     "foreach": "clips", "needs": ["nonspeech"],      "params": { "model": "base.en" } },
+    { "id": "nonspeech",    "uses": "montaj/rm_nonspeech",   "foreach": "clips", "needs": ["silence"],       "params": { "model": "base.en", "max-word-gap": 0.10, "sentence-edge": 0.05 } },
+    { "id": "transcribe",   "uses": "montaj/transcribe",     "foreach": "clips", "needs": ["nonspeech"],     "params": { "model": "base.en" } },
     { "id": "select-takes", "uses": "montaj/select-takes",                       "needs": ["transcribe"] },
-    { "id": "fillers",      "uses": "montaj/rm_fillers",     "foreach": "clips", "needs": ["select-takes"],   "params": { "model": "base.en" } },
-    { "id": "concat",       "uses": "montaj/concat",                             "needs": ["fillers"] },
-    { "id": "review",       "uses": "montaj/transcribe",                         "needs": ["concat"],    "params": { "model": "base.en" } }
+    { "id": "fillers",      "uses": "montaj/rm_fillers",     "foreach": "clips", "needs": ["select-takes"],  "params": { "model": "base.en" } },
+    { "id": "review",       "uses": "montaj/transcribe",     "foreach": "clips", "needs": ["fillers"],       "params": { "model": "base.en" } }
   ]
 }

@@ -6,7 +6,7 @@ step: true
 
 # Overlay
 
-`montaj/overlay` is an agent-authored task — no CLI step, no API call. You decide what overlays the video needs, write the JSX files, and add them to the project's overlay track in `project.json`.
+`montaj/overlay` is an agent-authored task — no CLI step, no API call. You decide what overlays the video needs, write the JSX files, and add them to the project's visual tracks in `project.json`.
 
 **Before writing any JSX, load the write-overlay subskill** — it contains the full JSX authoring reference (globals, `interpolate`/`spring` utilities, canvas rules, examples). Load it with `/write-overlay`.
 
@@ -41,15 +41,16 @@ See `/write-overlay` for the full authoring reference.
 
 ### 5. Add overlays to project.json
 
-Overlays live in `overlay_tracks` — a top-level array of arrays. Each inner array is one track. Items in the same track cannot overlap in time; items in different tracks are z-ordered (track 0 renders first, higher indexes render on top).
+Overlays live in `tracks[1+]` — overlay tracks in the unified tracks array. Each inner array is one track. Items in the same track cannot overlap in time; items in different tracks are z-ordered (higher indexes render on top). `tracks[0]` is always the primary footage track.
 
 ```json
 {
-  "overlay_tracks": [
+  "tracks": [
+    [],
     [
       {
         "id": "ov-0",
-        "type": "custom",
+        "type": "overlay",
         "src": "/abs/path/to/project/overlays/hook.jsx",
         "props": { "text": "The source code got leaked" },
         "start": 0.0,

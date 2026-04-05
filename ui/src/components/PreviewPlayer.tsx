@@ -63,18 +63,17 @@ interface VirtualClip {
   outPoint: number
   virtualStart: number
   duration: number
-  pendingCuts?: [number, number][]
 }
 
-function buildVirtualTimeline(clips: { src: string; inPoint?: number; outPoint?: number; pendingCuts?: [number, number][] }[]): VirtualClip[] {
+function buildVirtualTimeline(clips: { src?: string; inPoint?: number; outPoint?: number }[]): VirtualClip[] {
   const ready = clips.filter(
-    (c): c is typeof c & { inPoint: number; outPoint: number } =>
-      c.inPoint !== undefined && c.outPoint !== undefined && c.outPoint > c.inPoint,
+    (c): c is typeof c & { src: string; inPoint: number; outPoint: number } =>
+      c.src !== undefined && c.inPoint !== undefined && c.outPoint !== undefined && c.outPoint > c.inPoint,
   )
   let cursor = 0
   return ready.map((c) => {
     const duration = c.outPoint - c.inPoint
-    const entry: VirtualClip = { src: c.src, inPoint: c.inPoint, outPoint: c.outPoint, virtualStart: cursor, duration, pendingCuts: c.pendingCuts }
+    const entry: VirtualClip = { src: c.src, inPoint: c.inPoint, outPoint: c.outPoint, virtualStart: cursor, duration }
     cursor += duration
     return entry
   })
@@ -293,8 +292,8 @@ export default function PreviewPlayer({ project, currentTime, onTimeUpdate, sele
   }, [])
 
   // ── Video timeline ─────────────────────────────────────────────────────────
-  const clips        = useMemo(() => project.base_track ?? [], [project])
-  const overlayTracks = useMemo(() => project.visual_tracks ?? [], [project])
+  const clips        = useMemo(() => project.tracks?.[0] ?? [], [project])
+  const overlayTracks = useMemo(() => project.tracks?.slice(1) ?? [], [project])
 
   const isCanvasProject = clips.length === 0
 
@@ -383,18 +382,6 @@ export default function PreviewPlayer({ project, currentTime, onTimeUpdate, sele
     if (!video || seekingRef.current) return
     const clip = timeline[activeIdxRef.current]
     if (!clip) return
-
-    // Skip over any pending cut range the playhead has entered
-    if (clip.pendingCuts?.length) {
-      for (const [physS, physE] of clip.pendingCuts) {
-        if (video.currentTime >= physS && video.currentTime < physE) {
-          seekingRef.current = true
-          video.currentTime = physE
-          seekingRef.current = false
-          return
-        }
-      }
-    }
 
     if (video.currentTime >= clip.outPoint) {
       const nextIdx = activeIdxRef.current + 1

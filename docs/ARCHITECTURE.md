@@ -313,7 +313,7 @@ When the agent encounters this step, it reads the transcripts from all clips, gr
 
 **`montaj/overlay`**
 
-When the agent encounters this step, it writes custom JSX overlay files and adds them to the project's overlay track in project.json. There are no built-in overlay templates — every overlay is a `type: "custom"` item pointing to a JSX file the agent writes. See the Overlays & Captions section below, and `skills/write-overlay/SKILL.md` for the full authoring reference.
+When the agent encounters this step, it writes custom JSX overlay files and adds them to `tracks` in project.json. There are no built-in overlay templates — every overlay is a `type: "overlay"` item pointing to a JSX file the agent writes. See the Overlays & Captions section below, and `skills/write-overlay/SKILL.md` for the full authoring reference.
 
 ---
 
@@ -411,7 +411,6 @@ All steps are agent-callable tools. The agent decides which to run, when, and wi
 | `montaj/crop_spec` | Crop a trim spec to virtual-timeline windows — outputs refined trim spec, no encode |
 | `montaj/virtual_to_original` | Map virtual-timeline timestamps to original-file timestamps (inspect/debug utility) |
 | `montaj/jump_cut_detect` | Find pauses, stutters, and false starts — advisory JSON output |
-| `montaj/best_take` | Score takes by speech confidence and WPM — ranked JSON output |
 | `montaj/pacing` | WPM per window, slow sections, editing suggestions — JSON output |
 
 ---
@@ -431,7 +430,6 @@ All steps are agent-callable tools. The agent decides which to run, when, and wi
 | `montaj/trim` | Cut by in/out point |
 | `montaj/concat` | Join clips and apply all trim specs in a single encode pass (the only step that writes video) |
 | `montaj/resize` | Reframe: 9:16, 1:1, 16:9 |
-| `montaj/ffmpeg_captions` | Burn static text overlay |
 | `montaj/extract_audio` | Extract as WAV or MP3 |
 
 ---
@@ -508,7 +506,7 @@ Then:
 **Overlays are always custom JSX** — the agent writes a React component per overlay, styled to the editing prompt and brand context. There are no built-in overlay templates.
 
 ```json
-{ "type": "custom", "src": "./overlays/hook.jsx", "props": { "text": "Hook line" }, "start": 0.0, "end": 3.0 }
+{ "type": "overlay", "src": "./overlays/hook.jsx", "props": { "text": "Hook line" }, "start": 0.0, "end": 3.0 }
 ```
 
 **Caption templates** are pre-built and referenced by style name: `word-by-word`, `karaoke`, `pop`, `subtitle`.
@@ -558,28 +556,29 @@ ffmpeg detects and uses available hardware encoders automatically. 5–10x speed
 
 Both are React components rendered frame-by-frame by Puppeteer and composited into the video by ffmpeg. They differ in how they're stored and who authors them.
 
-**Overlays** are custom JSX files written by the agent. Each item points to a JSX file and a time window:
+**Overlays** are custom JSX files written by the agent. They live in `tracks` — a top-level array of arrays (`tracks[0]` is the primary video track; overlay tracks start at index 1). Each item points to a JSX file and a time window:
 
 ```json
 {
-  "id": "overlays",
-  "type": "overlay",
-  "items": [
-    {
-      "id": "ov-hook",
-      "type": "custom",
-      "src": "/abs/path/to/project/overlays/hook.jsx",
-      "props": { "text": "She built an AI employee" },
-      "start": 0.0,
-      "end": 3.0
-    }
+  "tracks": [
+    [],
+    [
+      {
+        "id": "ov-hook",
+        "type": "overlay",
+        "src": "/abs/path/to/project/overlays/hook.jsx",
+        "props": { "text": "She built an AI employee" },
+        "start": 0.0,
+        "end": 3.0
+      }
+    ]
   ]
 }
 ```
 
 | Field | Required | Description |
 |-------|----------|-------------|
-| `type` | yes | Always `"custom"` — no built-in overlay templates |
+| `type` | yes | `"overlay"` for custom JSX, `"image"` for static images, `"video"` for video clips |
 | `src` | yes | Absolute path to the JSX file |
 | `start` / `end` | yes | Time window in output video (seconds) |
 | `props` | no | Arbitrary data injected as the `props` global inside the component |

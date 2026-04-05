@@ -120,11 +120,12 @@ The most reliable way to use frosted-glass / blurred card backgrounds is to **pu
 
 ```json
 {
-  "overlay_tracks": [
+  "tracks": [
+    [],
     [
       {
         "id": "ov-card-bg",
-        "type": "custom",
+        "type": "overlay",
         "src": "/path/overlays/card-bg.jsx",
         "start": 2.0,
         "end": 6.0
@@ -133,7 +134,7 @@ The most reliable way to use frosted-glass / blurred card backgrounds is to **pu
     [
       {
         "id": "ov-card-content",
-        "type": "custom",
+        "type": "overlay",
         "src": "/path/overlays/card-content.jsx",
         "start": 2.0,
         "end": 6.0
@@ -283,7 +284,7 @@ System fonts (`Inter`, `Impact`, `Georgia`, `Arial`, etc.) are always available 
 ```json
 {
   "id": "ov-hook",
-  "type": "custom",
+  "type": "overlay",
   "src": "/path/to/overlays/hook.jsx",
   "start": 0.0,
   "end": 5.0,
@@ -318,33 +319,34 @@ If visual fidelity isn't critical, the system fallback avoids the network fetch 
 
 ## project.json item shape
 
-Place overlay items inside an `overlay` track in `project.json`. Each item must have `type: "custom"` and a `src` path pointing to the JSX file. All custom data goes inside `props`.
+Place overlay items in `tracks[1+]` in `project.json`. Each item must have `type: "overlay"` and a `src` path pointing to the JSX file. All custom data goes inside `props`.
 
 ```json
 {
-  "id": "overlays",
-  "type": "overlay",
-  "items": [
-    {
-      "id": "ov-hook",
-      "type": "custom",
-      "src": "/abs/path/to/project/overlays/hook.jsx",
-      "start": 0.0,
-      "end": 3.0,
-      "props": {
-        "text": "She built an AI employee"
+  "tracks": [
+    [],
+    [
+      {
+        "id": "ov-hook",
+        "type": "overlay",
+        "src": "/abs/path/to/project/overlays/hook.jsx",
+        "start": 0.0,
+        "end": 3.0,
+        "props": {
+          "text": "She built an AI employee"
+        }
+      },
+      {
+        "id": "ov-logo",
+        "type": "overlay",
+        "src": "/abs/path/to/project/overlays/logo.jsx",
+        "start": 0.0,
+        "end": 999.0,
+        "props": {
+          "logoSrc": "/abs/path/to/project/assets/logo.png"
+        }
       }
-    },
-    {
-      "id": "ov-logo",
-      "type": "custom",
-      "src": "/abs/path/to/project/overlays/logo.jsx",
-      "start": 0.0,
-      "end": 999.0,
-      "props": {
-        "logoSrc": "/abs/path/to/project/assets/logo.png"
-      }
-    }
+    ]
   ]
 }
 ```
@@ -352,7 +354,7 @@ Place overlay items inside an `overlay` track in `project.json`. Each item must 
 | Field | Required | Description |
 |-------|----------|-------------|
 | `id` | yes | Unique identifier within the track |
-| `type` | yes | Always `"custom"` |
+| `type` | yes | Always `"overlay"` for JSX overlays |
 | `src` | yes | Absolute path to the JSX file |
 | `start` | yes | Start time in output video (seconds) |
 | `end` | yes | End time in output video (seconds) |
@@ -370,7 +372,7 @@ Assets (logos, images) are declared in `project.assets`. Reference them by passi
 ```json
 {
   "id": "ov-logo",
-  "type": "custom",
+  "type": "overlay",
   "src": "/path/to/overlays/logo.jsx",
   "start": 0.0,
   "end": 30.0,

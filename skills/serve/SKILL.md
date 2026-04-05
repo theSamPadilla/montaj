@@ -34,8 +34,8 @@ curl -s -X POST http://localhost:3000/api/steps/trim \
   -H "Content-Type: application/json" \
   -d '{"input": "/path/to/clip.mp4", "start": 2.5, "end": 8.3}'
 
-# Multiple inputs (concat, waveform_trim batch)
-curl -s -X POST http://localhost:3000/api/steps/concat \
+# Multiple inputs (rm_fillers batch, etc.)
+curl -s -X POST http://localhost:3000/api/steps/rm_fillers \
   -H "Content-Type: application/json" \
   -d '{"inputs": ["/path/clip1.mp4", "/path/clip2.mp4"]}'
 ```
@@ -53,7 +53,7 @@ Call before each step. Short and human-readable — what you're doing, not why. 
 
 ## Background Steps
 
-Long steps (transcribe, rm_fillers, concat, resize) must run in the background to stay available for conversation:
+Long steps (transcribe, rm_fillers, resize) must run in the background to stay available for conversation:
 
 1. **Single long step** — `run_in_background: true` on the Bash tool call. You'll be notified on completion.
 2. **Multiple clips in parallel** — write a shell script with `&` + `wait` to `/tmp`, execute with `run_in_background: true`.

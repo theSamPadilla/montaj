@@ -205,20 +205,24 @@ def test_resolve_step_path_prefers_project_local(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# validate_project
+# validate_project — v0.2 unified tracks schema
 # ---------------------------------------------------------------------------
 
 VALID_PROJECT = {
-    "version": "0.1",
+    "version": "0.2",
     "id": "abc",
     "status": "pending",
     "workflow": "default",
     "editingPrompt": "test",
     "settings": {"resolution": [1080, 1920], "fps": 30},
-    "tracks": [{"id": "main", "type": "video", "clips": []}],
-    "overlay_tracks": [],
+    "tracks": [[]],
     "assets": [],
     "audio": {},
+}
+
+VALID_PRIMARY_CLIP = {
+    "id": "clip-0", "type": "video", "src": "./clip.mp4",
+    "start": 0.0, "end": 5.0
 }
 
 
@@ -241,53 +245,84 @@ def test_validate_project_fails_missing_version(tmp_path):
         v.validate_project(path)
 
 
-def test_validate_project_fails_invalid_track_type(tmp_path):
-    data = {**VALID_PROJECT, "tracks": [{"id": "x", "type": "overlay", "items": []}]}
+def test_validate_project_fails_missing_tracks(tmp_path):
+    data = {**VALID_PROJECT}; del data["tracks"]
     path = _write_project(tmp_path, "project.json", data)
     with pytest.raises(SystemExit):
         v.validate_project(path)
 
 
-def test_validate_project_overlay_tracks_must_be_list_of_lists(tmp_path):
-    data = {**VALID_PROJECT, "overlay_tracks": [{"id": "x"}]}
+def test_validate_project_tracks_must_be_list_of_lists(tmp_path):
+    data = {**VALID_PROJECT, "tracks": [{"id": "x"}]}
     path = _write_project(tmp_path, "project.json", data)
     with pytest.raises(SystemExit):
         v.validate_project(path)
 
 
-def test_validate_project_overlay_item_missing_required_field(tmp_path):
-    item = {"id": "ov-0", "type": "custom", "src": "./x.jsx", "start": 0.0}  # missing end
-    data = {**VALID_PROJECT, "overlay_tracks": [[item]]}
+def test_validate_project_primary_clip_must_be_video_type(tmp_path):
+    clip = {**VALID_PRIMARY_CLIP, "type": "overlay"}
+    data = {**VALID_PROJECT, "tracks": [[clip]]}
+    path = _write_project(tmp_path, "project.json", data)
+    with pytest.raises(SystemExit):
+        v.validate_project(path)
+
+
+def test_validate_project_primary_clip_must_have_start(tmp_path):
+    clip = {k: v for k, v in VALID_PRIMARY_CLIP.items() if k != "start"}
+    data = {**VALID_PROJECT, "tracks": [[clip]]}
+    path = _write_project(tmp_path, "project.json", data)
+    with pytest.raises(SystemExit):
+        v.validate_project(path)
+
+
+def test_validate_project_primary_clip_must_have_end(tmp_path):
+    clip = {k: v for k, v in VALID_PRIMARY_CLIP.items() if k != "end"}
+    data = {**VALID_PROJECT, "tracks": [[clip]]}
+    path = _write_project(tmp_path, "project.json", data)
+    with pytest.raises(SystemExit):
+        v.validate_project(path)
+
+
+def test_validate_project_overlay_track_item_missing_required_field(tmp_path):
+    item = {"id": "ov-0", "type": "overlay", "src": "./x.jsx", "start": 0.0}  # missing end
+    data = {**VALID_PROJECT, "tracks": [[], [item]]}
     path = _write_project(tmp_path, "project.json", data)
     with pytest.raises(SystemExit):
         v.validate_project(path)
 
 
 def test_validate_project_opaque_must_be_bool(tmp_path):
-    item = {"id": "ov-0", "type": "custom", "src": "./x.jsx", "start": 0.0, "end": 3.0, "opaque": "yes"}
-    data = {**VALID_PROJECT, "overlay_tracks": [[item]]}
+    item = {"id": "ov-0", "type": "overlay", "src": "./x.jsx", "start": 0.0, "end": 3.0, "opaque": "yes"}
+    data = {**VALID_PROJECT, "tracks": [[], [item]]}
     path = _write_project(tmp_path, "project.json", data)
     with pytest.raises(SystemExit):
         v.validate_project(path)
 
 
-def test_validate_project_no_overlap_in_track(tmp_path):
+def test_validate_project_no_overlap_in_overlay_track(tmp_path):
     items = [
-        {"id": "ov-0", "type": "custom", "src": "./a.jsx", "start": 0.0, "end": 5.0},
-        {"id": "ov-1", "type": "custom", "src": "./b.jsx", "start": 3.0, "end": 7.0},
+        {"id": "ov-0", "type": "overlay", "src": "./a.jsx", "start": 0.0, "end": 5.0},
+        {"id": "ov-1", "type": "overlay", "src": "./b.jsx", "start": 3.0, "end": 7.0},
     ]
-    data = {**VALID_PROJECT, "overlay_tracks": [items]}
+    data = {**VALID_PROJECT, "tracks": [[], items]}
     path = _write_project(tmp_path, "project.json", data)
     with pytest.raises(SystemExit):
         v.validate_project(path)
 
 
-def test_validate_project_no_overlap_passes_for_sequential(tmp_path):
+def test_validate_project_sequential_overlay_items_pass(tmp_path):
     items = [
-        {"id": "ov-0", "type": "custom", "src": "./a.jsx", "start": 0.0, "end": 3.0},
-        {"id": "ov-1", "type": "custom", "src": "./b.jsx", "start": 3.0, "end": 7.0},
+        {"id": "ov-0", "type": "overlay", "src": "./a.jsx", "start": 0.0, "end": 3.0},
+        {"id": "ov-1", "type": "overlay", "src": "./b.jsx", "start": 3.0, "end": 7.0},
     ]
-    data = {**VALID_PROJECT, "overlay_tracks": [items]}
+    data = {**VALID_PROJECT, "tracks": [[], items]}
+    path = _write_project(tmp_path, "project.json", data)
+    result = v.validate_project(path)
+    assert result["valid"] is True
+
+
+def test_validate_project_primary_clip_passes_full_valid(tmp_path):
+    data = {**VALID_PROJECT, "tracks": [[VALID_PRIMARY_CLIP]]}
     path = _write_project(tmp_path, "project.json", data)
     result = v.validate_project(path)
     assert result["valid"] is True

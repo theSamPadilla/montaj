@@ -26,9 +26,6 @@ def register(subparsers):
 
 
 def handle(args):
-    if not args.component:
-        _parser.print_help()
-        return
     ok = True
     if args.component == "all":
         ok &= _ensure_ffmpeg()
@@ -39,6 +36,10 @@ def handle(args):
         ok &= _ensure_whisper(args.model)
     elif args.component == "rvm":
         ok &= _ensure_rvm()
+    else:
+        # default: install essentials (ffmpeg + whisper)
+        ok &= _ensure_ffmpeg()
+        ok &= _ensure_whisper(args.model)
     if ok:
         print("\nDone.")
     else:

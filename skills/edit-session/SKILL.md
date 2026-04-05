@@ -118,18 +118,22 @@ Example: if "landing" appears at `t=16.70s` in the transcript and the overlay st
 const ITEM_FRAME = Math.round((16.70 - 16.52) * fps)  // 0.18s * fps
 ```
 
-### overlay_tracks layout
+### tracks layout
 
 ```json
 {
-  "overlay_tracks": [
+  "tracks": [
     [
-      // Track 0 — background layer (opaque sections, backgrounds)
-      { "id": "...", "type": "custom", "src": "/abs/path.jsx", "start": 0.0, "end": 5.0, "opaque": true }
+      // Track 0 — primary footage track
+      { "id": "clip-0", "type": "video", "src": "/abs/path/clip.mp4", "start": 0.0, "end": 0.0 }
     ],
     [
-      // Track 1+ — renders on top of track 0
-      { "id": "...", "type": "custom", "src": "/abs/path.jsx", "start": 2.0, "end": 4.0 }
+      // Track 1 — background layer (opaque sections, backgrounds)
+      { "id": "...", "type": "overlay", "src": "/abs/path.jsx", "start": 0.0, "end": 5.0, "opaque": true }
+    ],
+    [
+      // Track 2+ — renders on top of track 1
+      { "id": "...", "type": "overlay", "src": "/abs/path.jsx", "start": 2.0, "end": 4.0 }
     ]
   ]
 }
