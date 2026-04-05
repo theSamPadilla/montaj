@@ -19,11 +19,11 @@ import validate as v
 # ---------------------------------------------------------------------------
 
 def test_resolve_step_builtin(tmp_path):
-    py, js = rw.resolve_step("montaj/trim", str(tmp_path))
+    py, js = rw.resolve_step("montaj/materialize_cut", str(tmp_path))
     assert Path(py).exists()
     assert Path(js).exists()
-    assert py.endswith("trim.py")
-    assert js.endswith("trim.json")
+    assert py.endswith("materialize_cut.py")
+    assert js.endswith("materialize_cut.json")
 
 
 def test_resolve_step_unknown_scope(tmp_path):
@@ -185,8 +185,8 @@ def test_validate_fails_required_not_bool(tmp_path):
 # ---------------------------------------------------------------------------
 
 def test_resolve_step_path_finds_builtin():
-    path = vs.resolve_step_path("trim")
-    assert path.endswith("trim.json")
+    path = vs.resolve_step_path("materialize_cut")
+    assert path.endswith("materialize_cut.json")
     assert Path(path).exists()
 
 
@@ -198,9 +198,9 @@ def test_resolve_step_path_missing():
 def test_resolve_step_path_prefers_project_local(tmp_path):
     steps_dir = tmp_path / "steps"
     steps_dir.mkdir()
-    local = steps_dir / "trim.json"
-    local.write_text('{"name":"trim","local":true}')
-    path = vs.resolve_step_path("trim", str(tmp_path))
+    local = steps_dir / "materialize_cut.json"
+    local.write_text('{"name":"materialize_cut","local":true}')
+    path = vs.resolve_step_path("materialize_cut", str(tmp_path))
     assert path == str(local)
 
 

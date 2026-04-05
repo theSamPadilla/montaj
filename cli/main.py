@@ -17,7 +17,7 @@ def main():
         run, serve, render, workflow, step,
         fetch, profile,
         probe, snapshot,
-        filler, waveform_trim, rm_nonspeech, trim, apply_cuts, resize,
+        filler, waveform_trim, rm_nonspeech, materialize_cut, resize,
         normalize, extract_audio,
         transcribe, caption,
         jump_cut_detect, pacing,
@@ -38,7 +38,7 @@ def main():
     _HIDDEN = {
         "probe", "snapshot",
         "filler", "waveform-trim", "rm-nonspeech",
-        "trim", "apply-cuts", "resize", "normalize", "extract-audio",
+        "materialize-cut", "resize", "normalize", "extract-audio",
         "transcribe", "caption",
         "jump-cut-detect", "pacing",
         "remove-bg",
@@ -65,8 +65,7 @@ def main():
     filler.register(subparsers)
     waveform_trim.register(subparsers)
     rm_nonspeech.register(subparsers)
-    trim.register(subparsers)
-    apply_cuts.register(subparsers)
+    materialize_cut.register(subparsers)
     resize.register(subparsers)
     normalize.register(subparsers)
     extract_audio.register(subparsers)

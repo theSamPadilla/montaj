@@ -1,0 +1,44 @@
+{
+  "name": "materialize_cut",
+  "description": "Encode a trim spec or raw video segment into an H.264 clip. Not part of any workflow — use for ad-hoc encoding or batch scripts that need a materialised file.",
+  "input": {
+    "type": "any",
+    "description": "Trim spec JSON (from waveform_trim / rm_fillers / etc.) or raw video file"
+  },
+  "output": {
+    "type": "video",
+    "description": "Encoded H.264 clip with all cuts applied"
+  },
+  "params": [
+    {
+      "name": "input",
+      "type": "string",
+      "required": true,
+      "description": "Trim spec JSON or video file"
+    },
+    {
+      "name": "inpoint",
+      "type": "float",
+      "required": false,
+      "description": "Keep from this source time (seconds). Used with raw video input."
+    },
+    {
+      "name": "outpoint",
+      "type": "float",
+      "required": false,
+      "description": "Keep to this source time (seconds). Used with raw video input."
+    },
+    {
+      "name": "cuts",
+      "type": "string",
+      "required": false,
+      "description": "JSON [[start,end],...] — time ranges to remove. Used with raw video input. Can be combined with --inpoint/--outpoint."
+    },
+    {
+      "name": "out",
+      "type": "string",
+      "required": false,
+      "description": "Output path (default: {original_stem}_cut.mp4 next to source)"
+    }
+  ]
+}
