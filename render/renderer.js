@@ -67,6 +67,7 @@ export async function renderAllSegments(segments, config = {}) {
       puppeteer.launch({
         headless: true,
         args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-web-security'],
+        protocolTimeout: 120000,
       })
     )
   )
