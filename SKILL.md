@@ -126,6 +126,13 @@ waveform_trim → trim spec → transcribe
 - `rm_fillers`, `rm_nonspeech`, `crop_spec` take a trim spec as `input` and output a refined spec — never pass a video file to these
 - One encode per clip, then one render pass
 
+> **CRITICAL — video clip `src` field:**
+> Any video clip item (in any track) MUST have `src` pointing to a **real video file** (`.MOV`, `.mp4`, etc.) — never a spec JSON file.
+> For clips derived from trim specs: read `spec["input"]` for `src`, and `spec["keeps"]` to derive `inPoint`/`outPoint`.
+> **The UI preview player seeks into the source file using `inPoint`/`outPoint`. It cannot play a JSON spec.**
+> Multi-keep specs expand into multiple clip items, each with their own `inPoint`/`outPoint`.
+> Use a materialized (encoded) file as `src` ONLY if the workflow explicitly includes a `materialize_cut` step — otherwise always use the original source file.
+
 ## Workflows
 
 Read the assigned workflow from `workflows/{name}.json` (filesystem only — not served via API).
