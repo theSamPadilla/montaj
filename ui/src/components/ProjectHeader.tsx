@@ -1,6 +1,6 @@
 import { useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Trash2, Pencil } from 'lucide-react'
+import { Trash2, Pencil, RefreshCw } from 'lucide-react'
 import { StatusBadge } from '@/components/ui/badge'
 import { api } from '@/lib/api'
 import type { Project } from '@/lib/project'
@@ -13,9 +13,10 @@ interface ProjectHeaderProps {
 
 export default function ProjectHeader({ project, onProjectChange, actions }: ProjectHeaderProps) {
   const navigate = useNavigate()
-  const [editing, setEditing]   = useState(false)
-  const [nameVal, setNameVal]   = useState(project.name ?? '')
-  const [deleting, setDeleting] = useState(false)
+  const [editing, setEditing]     = useState(false)
+  const [nameVal, setNameVal]     = useState(project.name ?? '')
+  const [deleting, setDeleting]   = useState(false)
+  const [refreshing, setRefreshing] = useState(false)
   const inputRef = useRef<HTMLInputElement>(null)
 
   function startEdit() {
@@ -89,6 +90,18 @@ export default function ProjectHeader({ project, onProjectChange, actions }: Pro
       )}
 
       <StatusBadge status={project.status} />
+
+      <button
+        onClick={async () => {
+          setRefreshing(true)
+          try { onProjectChange(await api.getProject(project.id)) } catch (e) { console.error(e) } finally { setRefreshing(false) }
+        }}
+        disabled={refreshing}
+        className="p-1 rounded text-gray-500 hover:text-gray-900 dark:hover:text-white hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
+        title="Refresh project"
+      >
+        <RefreshCw size={12} className={refreshing ? 'animate-spin' : ''} />
+      </button>
 
       <div className="ml-auto flex items-center gap-2">
         {actions}

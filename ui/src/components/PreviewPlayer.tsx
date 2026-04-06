@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { fileUrl } from '@/lib/api'
 import type { Project } from '@/lib/project'
-import { compileOverlay } from '@/lib/overlay-eval'
+import { compileOverlay, clearOverlayCache } from '@/lib/overlay-eval'
 import type { OverlayFactory } from '@/lib/overlay-eval'
 import CaptionPreview from '@/components/CaptionPreview'
 
@@ -73,13 +73,20 @@ function CustomOverlay({ src, props, frame, fps, durationFrames }: CustomOverlay
   const [factory, setFactory] = useState<OverlayFactory | null>(null)
   const [error, setError]     = useState<string | null>(null)
 
-  useEffect(() => {
-    let cancelled = false
+  const compile = useCallback(() => {
+    clearOverlayCache(src)
     compileOverlay(src)
-      .then((f) => { if (!cancelled) setFactory(() => f) })
-      .catch((e) => { if (!cancelled) setError(String(e)) })
-    return () => { cancelled = true }
+      .then((f) => setFactory(() => f))
+      .catch((e) => setError(String(e)))
   }, [src])
+
+  useEffect(() => { compile() }, [compile])
+
+  useEffect(() => {
+    const es = new EventSource(`/api/files/stream?path=${encodeURIComponent(src)}`)
+    es.onmessage = () => compile()
+    return () => es.close()
+  }, [src, compile])
 
   if (error) {
     return (
@@ -581,6 +588,12 @@ export default function PreviewPlayer({ project, currentTime, onTimeUpdate, sele
           preloadSrcRef.current = ''
           video.pause()
         }
+      } else {
+        // Last clip — stop at outPoint
+        video.pause()
+        const finalTime = clips[activeIdxRef.current].end
+        lastTimeRef.current = finalTime
+        onTimeUpdate(finalTime)
       }
       return
     }

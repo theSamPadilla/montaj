@@ -102,10 +102,14 @@ export default function Timeline({ project, currentTime, onTimeUpdate, onProject
   }
 
   function handleTimelineWheel(e: React.WheelEvent) {
-    if (!e.ctrlKey && !e.metaKey) return
-    e.preventDefault()
-    const delta = e.deltaY > 0 ? -0.5 : 0.5
-    zoomTo(zoomRef.current + delta, e.clientX)
+    if (e.ctrlKey || e.metaKey) {
+      e.preventDefault()
+      const delta = e.deltaY > 0 ? -0.5 : 0.5
+      zoomTo(zoomRef.current + delta, e.clientX)
+    } else if (e.altKey) {
+      e.preventDefault()
+      if (scrollRef.current) scrollRef.current.scrollLeft += e.deltaY
+    }
   }
 
   useEffect(() => {
@@ -156,7 +160,19 @@ export default function Timeline({ project, currentTime, onTimeUpdate, onProject
       if (!scrubberRef.current) return project
       const rect = scrubberRef.current.getBoundingClientRect()
       const dt   = ((moveE.clientX - initX) / rect.width) * totalDuration
-      const t    = Math.max(0, Math.min(totalDuration, initTime + dt))
+      const raw  = Math.max(0, Math.min(totalDuration, initTime + dt))
+
+      // Snap to any item boundary (start or end) across all tracks within ~8px
+      const snapThreshold = (8 / rect.width) * totalDuration
+      const boundaries = (project.tracks ?? []).flat()
+        .filter(ov => ov.id !== item.id)
+        .flatMap(ov => [ov.start, ov.end])
+      let t = raw
+      let bestDist = snapThreshold
+      for (const b of boundaries) {
+        const d = Math.abs(raw - b)
+        if (d < bestDist) { bestDist = d; t = b }
+      }
       return {
         ...project,
         tracks: (project.tracks ?? []).map(track =>
@@ -245,16 +261,37 @@ export default function Timeline({ project, currentTime, onTimeUpdate, onProject
       const dx = rect ? ((moveE.clientX - initX) / rect.width) * totalDuration : 0
       const dy = moveE.clientY - initY
 
-      const newStart  = Math.max(0, Math.min(totalDuration - duration, initStart + dx))
-      const newEnd    = newStart + duration
+      const rawStart = Math.max(0, Math.min(totalDuration - duration, initStart + dx))
+      const rawEnd   = rawStart + duration
+
+      // Snap leading/trailing edge to nearest item edge within ~8px
+      const snapThreshold = rect ? (8 / rect.width) * totalDuration : 0
+      const tracks     = lastUpdated.tracks ?? []
+      const allOthers  = tracks.flat().filter(ov => ov.id !== item.id)
+      let newStart = rawStart
+      let newEnd   = rawEnd
+      let bestDist = snapThreshold
+      for (const other of allOthers) {
+        const dEnd = Math.abs(rawEnd - other.start)
+        if (dEnd < bestDist) { bestDist = dEnd; newStart = other.start - duration; newEnd = other.start }
+        const dStart = Math.abs(rawStart - other.end)
+        if (dStart < bestDist) { bestDist = dStart; newStart = other.end; newEnd = other.end + duration }
+      }
+      newStart = Math.max(0, Math.min(totalDuration - duration, newStart))
+      newEnd   = newStart + duration
+
       const movedItem = { ...item, start: newStart, end: newEnd }
 
-      const tracks     = lastUpdated.tracks ?? []
       const trackDelta = Math.round(dy / ROW_HEIGHT_PX)
       const targetIdx  = Math.max(0, sourceTrackIdx - trackDelta)
 
+      // Require >30% overlap before bumping to another track — gives snap room to "win"
+      const overlapMin = duration * 0.3
       function hasOverlap(track: VisualItem[]): boolean {
-        return track.some(ov => ov.id !== item.id && ov.start < newEnd && ov.end > newStart)
+        return track.some(ov => {
+          if (ov.id === item.id) return false
+          return Math.min(newEnd, ov.end) - Math.max(newStart, ov.start) > overlapMin
+        })
       }
 
       // Search outward from targetIdx in both directions for the nearest open slot
