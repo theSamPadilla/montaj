@@ -99,15 +99,10 @@ def test_my_step_basic(test_video):
 
 ## Adding a workflow
 
-Workflows live in `workflows/`. Copy `workflows/trim_and_overlay.json`, adjust the step sequence and `needs` dependencies, and document it in `docs/WORKFLOWS.md`.
+Workflows live in `workflows/`. Copy `workflows/overlays.json`, adjust the step sequence and `needs` dependencies, and document it in `docs/WORKFLOWS.md`.
 
 ---
 
-## Adding an adaptor
-
-Adaptors live in `adaptors/`. Each is a self-contained directory with its own `package.json` and a `stitch.js` entry point. See `adaptors/stitch/` for the reference implementation and `docs/ADAPTORS.md` for the contract.
-
----
 
 ## PRs
 

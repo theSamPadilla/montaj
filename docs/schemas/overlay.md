@@ -111,7 +111,7 @@ All overlays are agent-written JSX. There are no built-in overlay templates.
 | `offsetX` | number | no | Horizontal position offset as a percentage of the frame width. Set by the UI when the user drags the overlay. Default: `0` |
 | `offsetY` | number | no | Vertical position offset as a percentage of the frame height. Set by the UI when the user drags the overlay. Default: `0` |
 | `scale` | number | no | Size multiplier applied from the center. Set by the UI when the user resizes the overlay. Default: `1` |
-| `opaque` | boolean | no | When `true`, render engine skips alpha — JSX root CSS controls the full frame background. Use for full-frame covers and canvas sections. |
+| `opaque` | boolean | no | When `true`, render engine skips alpha — JSX root CSS controls the full frame background. Use for full-frame covers and animation sections. |
 
 ---
 

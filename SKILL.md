@@ -45,6 +45,8 @@ montaj trim clip.mp4 --start 2.5 --end 8.3
 montaj cut clip.mp4 --start 3.0 --end 7.5
 montaj cut clip.mp4 --cuts '[[0,1.2],[5.3,7.8]]'   # multiple cuts, one ffmpeg pass
 montaj cut clip.mp4 --cuts '[[3.0,7.5]]' --spec     # write trim spec instead of encoding
+montaj materialize-cut clip.mp4 --inpoint 2.0 --outpoint 8.0
+montaj materialize-cut spec.json
 montaj waveform-trim clip.mp4 --threshold -30 --min-silence 0.3
 montaj rm-nonspeech clip_spec.json --model base
 montaj transcribe clip.mp4 --model base.en
@@ -78,6 +80,7 @@ To see all available steps including project-local custom steps: `montaj step -h
 |------|-------------|------------|
 | `trim` | Cut by start/end/duration | `--start 2.5 --end 8.3` or `--duration 5` |
 | `cut` | Remove one or more sections and rejoin | `--start 3.0 --end 7.5` (single) · `--cuts '[[s,e],...]'` (multi, one pass) · `--spec` (trim spec out, no encode) |
+| `materialize_cut` | Encode a trim spec or raw segment to H.264 — required before steps that need an actual video file (e.g. `remove_bg`) | `spec.json` or `clip.mp4 --inpoint 2.0 --outpoint 8.0` |
 | `resize` | Reframe to aspect ratio | `--ratio 9:16` or `1:1` or `16:9` |
 | `extract_audio` | Extract audio track | `--format wav` |
 
@@ -93,7 +96,8 @@ To see all available steps including project-local custom steps: `montaj step -h
 ### VFX
 | Step | What it does | Key params |
 |------|-------------|------------|
-| `remove_bg` | Remove video background via RVM → ProRes 4444 `.mov` with alpha channel. Store result in `nobg_src`; keep original in `src` (for preview). Set `remove_bg: true` on the item. | `--model rvm_mobilenetv3` (or `rvm_resnet50`), `--downsample 0.5`, `--cpu` |
+| `materialize_cut` | Encode trim spec or raw segment to H.264. **Use `--inputs` for multiple clips** — caps at 2 concurrent encodes by default. Never fan out more than 2–3 instances in parallel; each is a full libx264 encode and will exhaust memory at 4K if over-parallelised. | `--inputs clip0.json clip1.json`, `--workers 2` |
+| `remove_bg` | Remove video background via RVM → ProRes 4444 `.mov` with alpha channel. Store result in `nobg_src`; keep original in `src` (for preview). Set `remove_bg: true` on the item. **Long-running (minutes per clip) — always run in the background with `--progress` so you can monitor status.** Use `--inputs` for multiple clips. | `--inputs clip0.mp4 clip1.mp4`, `--progress`, `--model rvm_mobilenetv3` (or `rvm_resnet50`), `--downsample 0.5` |
 
 ### Select Takes (`montaj/select_takes`)
 **REQUIRED SUB-SKILL:** Load `skills/select-takes/SKILL.md` before executing this step.
@@ -127,11 +131,12 @@ waveform_trim → trim spec → transcribe
 Read the assigned workflow from `workflows/{name}.json` (filesystem only — not served via API).
 
 **Available workflows:**
-- `basic_trim` — silence trim, remove non-speech, transcribe, select takes, remove fillers
-- `trim_and_caption` — basic_trim + transcribe + caption + overlays + resize 9:16
-- `trim_and_overlay` — basic_trim + transcribe + overlays
-- `canvas` — no source footage; build entirely from animated JSX sections
-- `mix_canvas` — footage clips + canvas sections combined
+- `clean_cut` — silence trim, remove non-speech, transcribe, select takes, remove fillers
+- `overlays` — clean_cut + transcribe + overlays
+- `short_captions` — clean_cut + transcribe + caption + overlays + resize 9:16
+- `animations` — no source footage; build entirely from animated JSX sections
+- `explainer` — footage clips + animation sections combined
+- `floating_head` — trim + materialize + RVM background removal; presenter in tracks[1], background asset in tracks[0]
 
 **Deviation Rules — only when the prompt explicitly requires it:**
 - "no captions" → skip caption
@@ -147,8 +152,8 @@ Read the assigned workflow from `workflows/{name}.json` (filesystem only — not
 **Structure:**
 ```json
 {
-  "version": "0.1", "id": "<uuid>", "status": "pending",
-  "workflow": "trim_and_overlay", "editingPrompt": "...",
+  "version": "0.2", "id": "<uuid>", "status": "pending",
+  "workflow": "overlays", "editingPrompt": "...",
   "settings": {"resolution": [1080, 1920], "fps": 30},
   "tracks": [[{"id": "clip-0", "type": "video", "src": "/abs/path/clip.mp4", "start": 0.0, "end": 0.0}]],
   "assets": [], "audio": {}

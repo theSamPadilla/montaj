@@ -36,8 +36,8 @@ montaj run ./clips --prompt "tight cuts, remove filler, 9:16"
 montaj run ./clips --workflow tight-reel --prompt "..."
 # Runs a named workflow instead of the default
 
-montaj run --canvas --workflow canvas --prompt "60s animated explainer, dark theme"
-# Canvas project — no source footage required
+montaj run --workflow animations --prompt "60s animated explainer, dark theme"
+# Animation project — no source footage required
 
 montaj serve
 # Start local HTTP server + open UI at http://localhost:3000
@@ -200,16 +200,6 @@ montaj step caption --input transcript.json --style karaoke
 montaj step caption --input transcript.json --style subtitle
 ```
 
-### Analyze
-
-```bash
-montaj step jump_cut_detect --input clip.mp4
-montaj step jump_cut_detect --input clip.mp4 --min-pause 0.8 --noise -30
-
-montaj step pacing --input clip.mp4
-montaj step pacing --input clip.mp4 --window 5.0 --slow-threshold 0.7
-```
-
 ---
 
 ## Tier 4 — Project commands
@@ -250,8 +240,6 @@ All steps accept `--out <path>` to set the output location. Run `montaj step <na
 | `virtual_to_original` | `--inverse` |
 | `transcribe` | `--model <base.en\|medium.en>`, `--language <code>` |
 | `caption` | `--style <word-by-word\|pop\|karaoke\|subtitle>` |
-| `jump_cut_detect` | `--min-pause <s>`, `--noise <dB>`, `--model <none\|base.en>` |
-| `pacing` | `--model <base.en\|medium.en>`, `--window <s>`, `--slow-threshold <0-1>` |
 
 ---
 

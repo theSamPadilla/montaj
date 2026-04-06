@@ -11,7 +11,7 @@ def register(subparsers):
     p = subparsers.add_parser("run", help="Create a pending project from clips and a prompt")
     p.add_argument("clips", nargs="*", help="Clip files or a directory containing clips")
     p.add_argument("--prompt",   required=True, help="Editing prompt")
-    p.add_argument("--workflow", default="basic_trim", help="Workflow name (default: basic_trim)")
+    p.add_argument("--workflow", default="clean_cut", help="Workflow name (default: clean_cut)")
     p.add_argument("--name",     help="Project name label")
     p.add_argument("--canvas",   action="store_true", help="Canvas project — no source footage required")
     add_global_flags(p)

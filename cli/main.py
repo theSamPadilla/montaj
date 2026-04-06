@@ -20,8 +20,8 @@ def main():
         filler, waveform_trim, rm_nonspeech, materialize_cut, resize,
         normalize, extract_audio,
         transcribe, caption,
-        jump_cut_detect, pacing,
-        init, status, mcp, adaptor, models,
+        init, status, mcp, models,
+
         create_step, validate, install,
         remove_bg,
     )
@@ -40,7 +40,6 @@ def main():
         "filler", "waveform-trim", "rm-nonspeech",
         "materialize-cut", "resize", "normalize", "extract-audio",
         "transcribe", "caption",
-        "jump-cut-detect", "pacing",
         "remove-bg",
     }
 
@@ -71,12 +70,9 @@ def main():
     extract_audio.register(subparsers)
     transcribe.register(subparsers)
     caption.register(subparsers)
-    jump_cut_detect.register(subparsers)
-    pacing.register(subparsers)
     init.register(subparsers)
     status.register(subparsers)
     mcp.register(subparsers)
-    adaptor.register(subparsers)
     models.register(subparsers)
     create_step.register(subparsers)
     validate.register(subparsers)

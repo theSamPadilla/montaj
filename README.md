@@ -34,8 +34,8 @@ montaj serve
 
 ```
 steps/              Step executables + JSON schemas (probe, trim, transcribe, etc.)
-workflows/          Suggested editing plans (trim_and_overlay.json, tight-reel.json, etc.)
-adaptors/           External AI API harnesses (Stitch, Veo, ElevenLabs, etc.)
+workflows/          Suggested editing plans (overlays.json, tight-reel.json, etc.)
+
 render/             React + Puppeteer + ffmpeg render engine
 serve/              Local HTTP + SSE server (montaj serve)
 ui/                 Browser UI (Vite + React + Tailwind)
@@ -111,8 +111,9 @@ Every editing operation is a step — a Python executable with a JSON schema. Na
 |----------|-------|
 | **Inspect** | `probe`, `snapshot` |
 | **Clean** | `waveform_trim`, `rm_fillers`, `rm_nonspeech` |
-| **Edit** | `trim`, `concat`, `resize`, `extract_audio` |
+| **Edit** | `trim`, `concat`, `materialize_cut`, `resize`, `extract_audio` |
 | **Enrich** | `transcribe`, `caption`, `normalize` |
+| **VFX** | `remove_bg` — background removal via RVM (requires `montaj install rvm`) |
 | **Acquire** | `fetch` — download from any URL via yt-dlp |
 
 **Custom steps:** Run `montaj create-step <name>` to scaffold a new step. Drop the generated `.py` + `.json` anywhere in `steps/` — no registration needed, discovered automatically. Works in workflows and the UI node graph.
@@ -138,7 +139,9 @@ A workflow is a suggested editing plan — which steps to use and with what defa
 
 React + Puppeteer + ffmpeg. Reads project.json, renders captions and overlays as React components frame-by-frame via headless Chrome, composites with source footage via ffmpeg.
 
-**Built-in templates:** `word-by-word`, `pop`, `karaoke`, `subtitle`, `title-card`, `lower-third`, `callout`, `flash`, `transition`
+**Built-in caption styles:** `word-by-word`, `pop`, `karaoke`, `subtitle`
+
+**Custom overlays:** agent writes JSX directly — no built-in overlay templates. Full creative control.
 
 **Custom overlays:** Agent writes JSX directly. Full creative control. Rendered the same way.
 
@@ -171,17 +174,6 @@ The single format that flows through the entire pipeline. One file, three states
 
 See [docs/schemas/project.md](docs/schemas/project.md) for the full schema.
 
-## Adaptors
-
-Optional harnesses for external AI APIs. Credentials in `~/.montaj/credentials.json`.
-
-| Adaptor | API | Returns |
-|---------|-----|---------|
-| `stitch` | Google Stitch | React overlay component (JSX) |
-| `veo` | Google Veo | AI-generated video clip |
-| `elevenlabs` | ElevenLabs | Voiceover audio |
-| `suno` | Suno | AI background music |
-| `openai-whisper` | OpenAI Whisper | Transcript (alt to local whisper.cpp) |
 
 ## Dependencies
 
@@ -216,7 +208,7 @@ Optional harnesses for external AI APIs. Credentials in `~/.montaj/credentials.j
 - [UI Design](docs/UI.md) — browser interface
 - [Project JSON Schema](docs/schemas/project.md) — the core format
 - [Overlay Contract](docs/schemas/overlay.md) — render component spec
-- [Adaptor Interface](docs/schemas/adaptor.md) — external API harness
+
 
 ## License
 

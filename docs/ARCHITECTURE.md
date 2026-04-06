@@ -8,11 +8,9 @@
 
 A video editing tool harness that mounts on top of your existing agent framework. Montaj is not an agent — it is the toolkit the agent uses. You bring Claude, OpenClaw, or any agent; Montaj gives it the tools to edit video.
 
-Built-in steps cover the common operations (trim, transcribe, remove fillers, resize). Custom steps and adaptors extend the toolkit. The agent reads the workflow and the editing prompt, then calls steps as tools at its own discretion — deciding what to run, in what order, and with what params.
+Built-in steps cover the common operations (trim, transcribe, remove fillers, resize). Custom steps extend the toolkit. The agent reads the workflow and the editing prompt, then calls steps as tools at its own discretion — deciding what to run, in what order, and with what params.
 
 **The fundamental dependency is an agent.** Montaj headlessly produces nothing on its own. `montaj run` creates a pending project and waits. An agent picks it up, calls steps, and writes the edit.
-
-Adaptors connect Montaj to external AI APIs (Veo, Stitch, ElevenLabs, etc.) when the agent decides to use them. They are optional — the core pipeline runs entirely on local tools (ffmpeg, whisper.cpp) with no external API keys required. API keys are only needed if the agent chooses to call an adaptor.
 
 **Montaj is agent-agnostic.** It exposes two interfaces for agents to call steps — CLI and MCP. Neither is mandatory. The agent uses whichever it has access to. Both wrap the same underlying executables.
 
@@ -193,7 +191,6 @@ Three scopes. Same format at every level — native steps and custom steps are i
     my-watermark.json
   workflows/
     my-brand.json
-  credentials.json              # API keys for adaptors — never committed
   config.json                   # global defaults (workspaceDir, model, etc.)
 
 montaj/                         # built-in (ships with montaj)
@@ -204,16 +201,9 @@ montaj/                         # built-in (ships with montaj)
     transcribe.py + transcribe.json
     ...
   workflows/
-    trim_and_overlay.json
+    overlays.json
     tight-reel.json
     tutorial-style.json
-  adaptors/
-    stitch/                     # Google Stitch — UI + overlay generation
-    veo/                        # Google Veo — AI B-roll generation
-    elevenlabs/                 # ElevenLabs — voiceover generation
-    runway/                     # Runway — AI video generation
-    suno/                       # Suno — AI music generation
-    openai-whisper/             # OpenAI Whisper API (alt to local whisper.cpp)
 
 my-project/                     # project-local steps/workflows
   steps/
@@ -249,7 +239,7 @@ A JSON file that describes a suggested editing plan — which steps to use, thei
 
 ```json
 {
-  "name": "trim_and_overlay",
+  "name": "overlays",
   "description": "Multi-clip edit — silence trim, transcribe, select best takes, remove fillers, concat, caption, overlays, resize to 9:16.",
   "steps": [
     { "id": "probe",             "uses": "montaj/probe" },
@@ -285,7 +275,7 @@ The agent may call these steps in this order, reorder them, adjust params, skip 
 
 `needs` is the dependency graph. The agent fires all steps with no unmet needs simultaneously, then re-evaluates after each completes. Steps in the same "wave" run in parallel.
 
-Example execution waves for the `trim_and_overlay` workflow:
+Example execution waves for the `overlays` workflow:
 
 ```
 Wave 1 (parallel): probe, snapshot, silence×N (foreach clips)
@@ -334,14 +324,14 @@ No registration, no config changes. Discovered automatically.
 
 | Workflow | Description |
 |----------|-------------|
-| `trim_and_overlay` | Multi-clip edit — silence trim, transcribe, select best takes, remove fillers, overlays. No captions. |
-| `trim_and_caption` | Multi-clip edit — same as `trim_and_overlay` plus caption and resize 9:16. |
-| `basic_trim` | Trim and clean only — silence, transcribe, select best takes, remove fillers. No captions, overlays, or resize. |
-| `canvas` | Animation-only — no source footage required. Agent builds entirely from overlays and canvas sections. |
-| `mix_canvas` | Multi-clip edit with canvas sections — same as `trim_and_overlay` plus canvas sections. No captions. |
-| `rvm_presenter` | Talking-head presenter over a custom background — trim, materialize, RVM background removal. Background in `tracks[0]`, presenter in `tracks[1]`. |
+| `overlays` | Multi-clip edit — silence trim, transcribe, select best takes, remove fillers, overlays. No captions. |
+| `short_captions` | Multi-clip edit — same as `overlays` plus caption and resize 9:16. |
+| `clean_cut` | Trim and clean only — silence, transcribe, select best takes, remove fillers. No captions, overlays, or resize. |
+| `animations` | Animation-only — no source footage required. Agent builds entirely from overlays and animation sections. |
+| `explainer` | Multi-clip edit with animation sections — same as `overlays` plus animation sections. No captions. |
+| `floating_head` | Talking-head presenter over a custom background — trim, materialize, RVM background removal. Background in `tracks[0]`, presenter in `tracks[1]`. |
 
-`workflows/trim_and_overlay.json` is used by `montaj run` when no `--workflow` is specified. All workflow files are equal — fork any of them, save under a new name, and it becomes available immediately.
+`workflows/overlays.json` is used by `montaj run` when no `--workflow` is specified. All workflow files are equal — fork any of them, save under a new name, and it becomes available immediately.
 
 ---
 
@@ -364,8 +354,8 @@ Skills without `step: true` (e.g. `skills/write-overlay/SKILL.md`) are loaded ma
 | Skill | Type | Purpose |
 |-------|------|---------|
 | `skills/overlay/` | step | Decide + author overlays; loaded on `montaj/overlay` step |
-| `skills/canvas-sections/` | step | Build animation sections from scratch; loaded on `montaj/canvas-sections` step |
-| `skills/write-overlay/` | manual | JSX authoring reference; loaded by overlay and canvas-sections skills |
+| `skills/animation-sections/` | step | Build animation sections from scratch; loaded on `montaj/animation-sections` step |
+| `skills/write-overlay/` | manual | JSX authoring reference; loaded by overlay and animation-sections skills |
 
 ---
 
@@ -414,8 +404,7 @@ All steps are agent-callable tools. The agent decides which to run, when, and wi
 | `montaj/waveform_trim` | Waveform silence analysis — outputs trim spec JSON (near-instant, no encode) |
 | `montaj/crop_spec` | Crop a trim spec to virtual-timeline windows — outputs refined trim spec, no encode |
 | `montaj/virtual_to_original` | Map virtual-timeline timestamps to original-file timestamps (inspect/debug utility) |
-| `montaj/jump_cut_detect` | Find pauses, stutters, and false starts — advisory JSON output |
-| `montaj/pacing` | WPM per window, slow sections, editing suggestions — JSON output |
+
 
 ---
 
@@ -433,7 +422,7 @@ All steps are agent-callable tools. The agent decides which to run, when, and wi
 |------|-------------|
 | `montaj/trim` | Cut by in/out point |
 | `montaj/concat` | Join clips and apply all trim specs in a single encode pass (the only step that writes video) |
-| `montaj/materialize_cut` | Encode a trim spec or raw video to H.264 — used when a subsequent step (e.g. `remove_bg`) requires an actual video file rather than a trim spec |
+| `montaj/materialize_cut` | Encode a trim spec or raw video to H.264 — used when a subsequent step (e.g. `remove_bg`) requires an actual video file rather than a trim spec. Uses input-level seeking (`-ss`/`-t` before `-i`) so only the requested segment is decoded; for multi-keep specs the same source is opened once per keep. |
 | `montaj/resize` | Reframe: 9:16, 1:1, 16:9 |
 | `montaj/extract_audio` | Extract as WAV or MP3 |
 
@@ -445,7 +434,7 @@ All steps are agent-callable tools. The agent decides which to run, when, and wi
 |------|-------------|
 | `montaj/remove_bg` | Remove video background using RVM (Robust Video Matting). Outputs ProRes 4444 `.mov` with alpha channel (`nobg_src`) for final render and a VP9 WebM (`nobg_preview_src`) for browser preview. Requires `montaj install rvm`. |
 
-Used in the `rvm_presenter` workflow. `remove_bg` requires an actual video file — pass the output of `materialize_cut`, not a trim spec. The step updates the project item with `remove_bg: true`, `nobg_src`, and `nobg_preview_src`. At render time the engine composites the alpha-channel `.mov` over the layers beneath it via ffmpeg.
+Used in the `floating_head` workflow. `remove_bg` requires an actual video file — pass the output of `materialize_cut`, not a trim spec. The step updates the project item with `remove_bg: true`, `nobg_src`, and `nobg_preview_src`. At render time the engine composites the alpha-channel `.mov` over the layers beneath it via ffmpeg.
 
 ---
 
@@ -489,7 +478,8 @@ concat({inputs: [spec1.json, spec2.json, ...]})
 
 - Editing steps (`waveform_trim`, `rm_fillers`, `rm_nonspeech`) always receive the **original source file path**, never a re-encoded intermediate
 - Trim specs chain: each step refines the keeps list, preserving the original `input` path throughout
-- `concat` is the only step that decodes or encodes video
+- `concat` and `materialize_cut` are the only steps that encode video. `concat` is used for the normal pipeline; `materialize_cut` is used only when a subsequent step (e.g. `remove_bg`) requires a physical video file before the final render
+- Both encoders use input-level seeking (`-ss`/`-t` placed before `-i`) — ffmpeg seeks at the container level so only the requested segment is decoded. Neither uses the `trim` filter, which would force a full file decode regardless of the requested range
 - HEVC source files are handled automatically at concat — no pre-conversion needed
 
 ---
@@ -634,66 +624,6 @@ Caption data (segments + word timestamps) is always inlined in the track — nev
 **Preview pipeline** — when `montaj serve` is running, the UI previews overlays and captions live in the browser via `ui/src/lib/overlay-eval.ts`. The JSX file is fetched, transpiled in-browser by `@babel/standalone`, and called directly on every animation frame. It is an approximation — font rendering and CSS compositing differ slightly from the Puppeteer environment. The render output is what matters.
 
 **For JSX authoring details** (globals, `interpolate`, `spring`, rules, examples) — see `skills/write-overlay/SKILL.md`.
-
----
-
-### Adaptors
-
-Adaptors are Montaj's harness for external AI APIs. The agent can call any adaptor as a tool — credentials are resolved automatically from `~/.montaj/credentials.json` or env vars. Each adaptor ships with an optimized prompt template for the specific use case Montaj needs.
-
-All adaptors follow the same output convention as steps: stdout = file path, stderr = JSON error, exit 0/1.
-
-```bash
-montaj adaptor stitch "dark glass lower third, @handle, slide in from left"
-# → ./workspace/overlays/stitch-abc123.jsx
-
-montaj adaptor veo "drone shot over city at sunset, 5 seconds"
-# → ./workspace/clips/veo-abc123.mp4
-
-montaj adaptor elevenlabs "intro voiceover" --voice "calm-male"
-# → ./workspace/audio/elevenlabs-abc123.mp3
-```
-
-**Bundled adaptors:**
-
-| Adaptor | API | Returns |
-|---------|-----|---------|
-| `stitch` | Google Stitch SDK | React overlay component (JSX) |
-| `veo` | Google Veo | AI-generated video clip |
-| `elevenlabs` | ElevenLabs | Voiceover audio file |
-| `runway` | Runway | AI-generated video clip |
-| `suno` | Suno | AI background music |
-| `openai-whisper` | OpenAI Whisper API | Transcript (alternative to local whisper.cpp) |
-
-**Each adaptor contains:**
-
-```
-adaptors/<name>/
-  adaptor.js      # API call + credential resolution
-  prompt.md       # optimized prompt template for montaj's use cases
-  schema.json     # inputs, outputs, required credentials
-```
-
-The `prompt.md` encodes domain knowledge for that API — how to ask it for what Montaj needs. The agent passes a plain description; the adaptor handles the rest.
-
-**Three paths for any capability:**
-
-```
-Need an overlay?
-  1. Write JSX directly
-  2. Delegate to a sub-agent
-  3. montaj adaptor stitch "description" → file path
-
-Need B-roll?
-  1. Use an existing clip
-  2. montaj adaptor veo "description" → clip path
-
-Need music?
-  1. Use a local file
-  2. montaj adaptor suno "upbeat, energetic, no vocals" → audio path
-```
-
-Full spec: `docs/schemas/adaptor.md`
 
 ---
 

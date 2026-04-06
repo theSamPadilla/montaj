@@ -8,7 +8,7 @@ from cli.output import emit
 def register(subparsers):
     p = subparsers.add_parser("init", help="Create an empty project in the current directory")
     p.add_argument("--prompt",   required=True, help="Editing prompt")
-    p.add_argument("--workflow", default="basic_trim", help="Workflow name (default: basic_trim)")
+    p.add_argument("--workflow", default="clean_cut", help="Workflow name (default: clean_cut)")
     p.add_argument("--name",     help="Project name label")
     add_global_flags(p)
     p.set_defaults(func=handle)

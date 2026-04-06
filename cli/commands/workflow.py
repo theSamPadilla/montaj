@@ -3,6 +3,7 @@
 import glob, json, os, subprocess, sys
 from cli.main import MONTAJ_ROOT, add_global_flags
 from cli.output import emit_error, emit_path
+from cli.help import R, B, C, D, Y
 
 
 def register(subparsers):
@@ -38,20 +39,25 @@ def register(subparsers):
 
 
 def _discover_workflows():
-    """Return list of (name, description, scope, path) tuples across all three scopes."""
+    """Return list of dicts across all scopes, deduped (project-local > user > built-in)."""
     scopes = [
         ("project-local", os.path.join(os.getcwd(), "workflows")),
         ("user",          os.path.expanduser("~/.montaj/workflows")),
         ("built-in",      os.path.join(MONTAJ_ROOT, "workflows")),
     ]
+    seen = set()
     results = []
     for scope, directory in scopes:
         for path in sorted(glob.glob(os.path.join(directory, "*.json"))):
+            stem = os.path.splitext(os.path.basename(path))[0]
+            if stem in seen:
+                continue
             try:
                 with open(path) as f:
                     data = json.load(f)
+                seen.add(stem)
                 results.append({
-                    "name":        data.get("name", os.path.splitext(os.path.basename(path))[0]),
+                    "name":        data.get("name", stem),
                     "description": data.get("description", ""),
                     "scope":       scope,
                     "path":        path,
@@ -65,9 +71,25 @@ def handle_list(args):
     workflows = _discover_workflows()
     if getattr(args, "json", False):
         print(json.dumps(workflows, indent=2))
-    else:
-        for w in workflows:
-            print(f"{w['name']:<20} {w['description']:<60} [{w['scope']}]")
+        return
+
+    scope_order = ["project-local", "user", "built-in"]
+    by_scope = {s: [] for s in scope_order}
+    for w in workflows:
+        by_scope.get(w["scope"], by_scope["built-in"]).append(w)
+
+    scope_labels = {"project-local": "Project", "user": "User", "built-in": "Built-in"}
+    first = True
+    for scope in scope_order:
+        group = by_scope[scope]
+        if not group:
+            continue
+        if not first:
+            print()
+        first = False
+        print(f"{Y}{scope_labels[scope]}{R}")
+        for w in group:
+            print(f"  {C}{B}{w['name']:<20}{R}  {w['description']}")
 
 
 def handle_new(args):

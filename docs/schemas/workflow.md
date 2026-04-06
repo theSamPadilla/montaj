@@ -10,7 +10,7 @@ A workflow is a JSON file that describes a suggested editing plan: which steps t
 
 ```json
 {
-  "name": "trim_and_overlay",
+  "name": "overlays",
   "description": "Multi-clip edit — silence trim, transcribe, select best takes, remove fillers, caption, overlays, resize to 9:16.",
   "steps": [
     { "id": "probe",             "uses": "montaj/probe" },
@@ -38,7 +38,7 @@ The workflow is a suggestion, not a mandate. The agent may:
 - Adjust param values beyond the defaults
 - Skip steps that don't apply (e.g. skip `rm_fillers` if the prompt says "keep it raw")
 - Add steps not in the plan (e.g. add `normalize` if audio levels are inconsistent)
-- Call adaptors alongside or instead of native steps
+
 
 The workflow gives the agent a sensible starting point and encodes domain knowledge (e.g. "for a tight reel, use sensitivity 0.8 not 0.5"). It does not constrain execution.
 
@@ -50,7 +50,7 @@ The workflow gives the agent a sensible starting point and encodes domain knowle
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `name` | string | yes | Must match the filename (e.g. `trim_and_overlay` for `trim_and_overlay.json`) |
+| `name` | string | yes | Must match the filename (e.g. `overlays` for `overlays.json`) |
 | `description` | string | yes | One or two sentences. Agent reads this to understand when to use this workflow. |
 | `steps` | array | yes | Ordered list of step entries |
 | `requires_clips` | boolean | no | When `false`, no source footage is needed. Default: `true`. The UI warns if clips are missing for a workflow that requires them. |
@@ -90,19 +90,19 @@ Workflows are discovered the same way steps are. Resolution order: project-local
 | User-global | `~/.montaj/workflows/<name>.json` |
 | Built-in | `workflows/<name>.json` |
 
-`montaj run` without `--workflow` uses `trim_and_overlay`. If a project-local `trim_and_overlay.json` exists, it takes precedence over the built-in.
+`montaj run` without `--workflow` uses `overlays`. If a project-local `overlays.json` exists, it takes precedence over the built-in.
 
 ---
 
 ## Built-in workflows
 
-### `trim_and_overlay`
+### `overlays`
 
 Multi-clip edit. Silence trim per clip, transcribe, select best takes, remove fillers, caption, overlays, resize to 9:16. Used by `montaj run` when no `--workflow` is specified.
 
 ```json
 {
-  "name": "trim_and_overlay",
+  "name": "overlays",
   "description": "Multi-clip edit — silence trim, transcribe, select best takes, remove fillers, caption, overlays, resize to 9:16.",
   "steps": [
     { "id": "probe",             "uses": "montaj/probe" },
@@ -119,7 +119,7 @@ Multi-clip edit. Silence trim per clip, transcribe, select best takes, remove fi
 }
 ```
 
-### `rvm_presenter`
+### `floating_head`
 
 Talking-head presenter over a custom background. Trim silence, remove non-speech, select takes, remove fillers, materialize trimmed footage, background-remove with RVM, resize to 9:16. Background is provided as an asset (image or video) via the editing prompt.
 
@@ -127,7 +127,7 @@ Talking-head presenter over a custom background. Trim silence, remove non-speech
 
 ```json
 {
-  "name": "rvm_presenter",
+  "name": "floating_head",
   "description": "Talking-head presenter over a custom background...",
   "notes": "Background (from assets) goes in tracks[0]. Presenter footage (clips, after remove_bg) goes in tracks[1] with remove_bg: true, nobg_src, and nobg_preview_src set.",
   "steps": [
@@ -144,17 +144,17 @@ Talking-head presenter over a custom background. Trim silence, remove non-speech
 }
 ```
 
-### `trim_and_caption`
+### `short_captions`
 
-Multi-clip edit with captions and resize. Same as `trim_and_overlay` with a caption pass and resize to 9:16 added. Use when the output is going to a social platform and captions are required.
+Multi-clip edit with captions and resize. Same as `overlays` with a caption pass and resize to 9:16 added. Use when the output is going to a social platform and captions are required.
 
-### `basic_trim`
+### `clean_cut`
 
 Trim and clean only. No captions, overlays, or resize. Useful when the output feeds another pipeline or when a clean cut is all that's needed.
 
 ```json
 {
-  "name": "basic_trim",
+  "name": "clean_cut",
   "description": "Trim and clean only — silence trim, transcribe, select best takes, remove fillers. No captions, overlays, or resize.",
   "steps": [
     { "id": "probe",        "uses": "montaj/probe" },

@@ -63,32 +63,6 @@ def resolve_workspace() -> Path:
     return Path.home() / "Montaj"
 
 
-def scan_adaptors() -> dict[str, tuple[dict, Path]]:
-    """Scan built-in → user-global → project-local adaptor directories.
-    Returns dict[name, (schema, js_path)]."""
-    scopes = [
-        MONTAJ_ROOT / "adaptors",
-        Path.home() / ".montaj" / "adaptors",
-        Path.cwd() / "adaptors",
-    ]
-    adaptors: dict[str, tuple[dict, Path]] = {}
-    for scope in scopes:
-        if not scope.exists():
-            continue
-        for subdir in scope.iterdir():
-            if not subdir.is_dir():
-                continue
-            schema_path = subdir / "schema.json"
-            js_path     = subdir / "adaptor.js"
-            if not schema_path.exists() or not js_path.exists():
-                continue
-            try:
-                schema = json.loads(schema_path.read_text())
-            except Exception:
-                continue
-            adaptors[subdir.name] = (schema, js_path)
-    return adaptors
-
 
 def scan_overlays(overlays_dir: Path) -> list[dict]:
     """Scan an overlays directory for overlay entries.
@@ -1026,52 +1000,6 @@ async def create_profile_overlay_group(name: str, body: dict = Body(...)):
     return {"name": group}
 
 
-@router.get("/adaptors")
-async def list_adaptors():
-    return [schema for schema, _ in scan_adaptors().values()]
-
-
-@router.post("/adaptors/{name}")
-async def run_adaptor(name: str, body: dict = Body(default={})):
-    adaptors = scan_adaptors()
-    if name not in adaptors:
-        raise HTTPException(404, detail={"error": "not_found", "message": f"Adaptor '{name}' not found"})
-
-    schema, js_path = adaptors[name]
-    description = body.get("description", "")
-
-    cmd = ["node", str(js_path), description]
-    if "out" in body:
-        cmd += ["--out", str(body["out"])]
-    # Pass through any extra adaptor-specific options
-    for key, val in body.items():
-        if key in ("description", "out"):
-            continue
-        cmd += ["--" + key, str(val)]
-
-    env = os.environ.copy()
-    env["MONTAJ_ROOT"]        = str(MONTAJ_ROOT)
-    env["MONTAJ_PROJECT_DIR"] = str(Path.cwd())
-
-    try:
-        result = subprocess.run(
-            cmd, capture_output=True, text=True,
-            timeout=STEP_TIMEOUT_S, cwd=str(Path.cwd()), env=env,
-        )
-    except subprocess.TimeoutExpired:
-        raise HTTPException(504, detail={"error": "timeout", "message": f"Adaptor '{name}' exceeded {STEP_TIMEOUT_S}s"})
-
-    if result.returncode != 0:
-        try:
-            err = json.loads(result.stderr)
-        except Exception:
-            err = {"error": "adaptor_failed", "message": result.stderr.strip()}
-        raise HTTPException(500, detail=err)
-
-    text = result.stdout.strip()
-    if text.startswith(("{", "[")):
-        return json.loads(text)
-    return {"path": text, "type": schema.get("output", {}).get("format", "file")}
 
 
 def parse_style_frontmatter(style_path: Path) -> dict:

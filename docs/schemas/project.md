@@ -42,7 +42,7 @@ The agent writes project.json as it works — every write pushes to the browser 
 | `workflow` | string | Workflow used to produce this edit |
 | `editingPrompt` | string | The free-form prompt passed in |
 | `settings` | object | Output resolution, fps, brand kit |
-| `tracks` | array | Array of track arrays. `tracks[0]` is the primary footage track. `tracks[1+]` are overlay tracks. Higher-index tracks render on top. May contain one empty track `[[]]` for canvas-only projects. |
+| `tracks` | array | Array of track arrays. `tracks[0]` is the primary footage track. `tracks[1+]` are overlay tracks. Higher-index tracks render on top. May contain one empty track `[[]]` for animation-only projects. |
 | `captions` | object | Caption configuration. Always rendered topmost, above all tracks. |
 | `audio` | object | Music and ducking config |
 
