@@ -871,6 +871,7 @@ async def render_project(project_id: str, request: Request):
     env["MONTAJ_ROOT"] = str(MONTAJ_ROOT)
 
     async def event_stream():
+        import signal as _signal
         proc = await asyncio.create_subprocess_exec(
             node_bin, str(render_script), str(project_path),
             stdout=asyncio.subprocess.PIPE,
@@ -878,12 +879,23 @@ async def render_project(project_id: str, request: Request):
             cwd=str(MONTAJ_ROOT),
             env=env,
             limit=10 * 1024 * 1024,  # 10MB — ffmpeg config/filter lines exceed the 64KB default
+            start_new_session=True,   # new session → process group leader; killpg reaches ffmpeg grandchildren
         )
+
+        def kill_tree():
+            """Kill the entire process group so orphaned ffmpeg children don't keep writing."""
+            try:
+                os.killpg(os.getpgid(proc.pid), _signal.SIGTERM)
+            except (ProcessLookupError, OSError):
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
 
         # Stream stderr (progress lines) to the client
         while True:
             if await request.is_disconnected():
-                proc.kill()
+                kill_tree()
                 return
             line = await proc.stderr.readline()
             if not line:

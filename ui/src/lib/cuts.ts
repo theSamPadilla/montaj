@@ -172,13 +172,21 @@ export function applyCutToTracks(project: Project, cut: Cut): Project {
 
 /**
  * Close all gaps between primary clips by shifting each clip left to butt
- * against the previous one. Captions are remapped to follow their clip.
- * Overlay tracks are left at their absolute positions.
+ * against the previous one. Captions and all other tracks are remapped to
+ * follow using the same shifts.
+ *
+ * The primary track is the first track containing video clips; falls back to
+ * tracks[0] if no video track exists.
  *
  * Returns the same project reference if no gaps exist (safe to call always).
  */
 export function collapseGaps(project: Project): Project {
-  const [primaryTrack = [], ...overlayTracks] = project.tracks ?? []
+  const tracks = project.tracks ?? []
+
+  const primaryIdx = tracks.findIndex(t => t.some(c => c.type === 'video'))
+  const effectiveIdx = primaryIdx >= 0 ? primaryIdx : 0
+
+  const primaryTrack = tracks[effectiveIdx] ?? []
   if (primaryTrack.length < 2) return project
 
   const sorted = [...primaryTrack].sort((a, b) => a.start - b.start)
@@ -199,13 +207,26 @@ export function collapseGaps(project: Project): Project {
 
   if (!anyGap) return project
 
+  function applyShift(start: number, end: number): number {
+    const mid = (start + end) / 2
+    const entry = shifts.find(s => mid >= s.oldStart && mid < s.oldEnd)
+    return entry?.delta ?? 0
+  }
+
+  const newTracks = tracks.map((track, i) => {
+    if (i === effectiveIdx) return compacted
+    return track.map(clip => {
+      const d = applyShift(clip.start, clip.end)
+      if (d === 0) return clip
+      return { ...clip, start: clip.start + d, end: clip.end + d }
+    })
+  })
+
   let newCaptions = project.captions
   if (newCaptions) {
     const segments = newCaptions.segments.map(seg => {
-      const mid = (seg.start + seg.end) / 2
-      const entry = shifts.find(s => mid >= s.oldStart && mid < s.oldEnd)
-      if (!entry || entry.delta === 0) return seg
-      const d = entry.delta
+      const d = applyShift(seg.start, seg.end)
+      if (d === 0) return seg
       return {
         ...seg,
         start: seg.start + d,
@@ -216,7 +237,7 @@ export function collapseGaps(project: Project): Project {
     newCaptions = { ...newCaptions, segments }
   }
 
-  return { ...project, tracks: [compacted, ...overlayTracks], captions: newCaptions }
+  return { ...project, tracks: newTracks, captions: newCaptions }
 }
 
 /**
@@ -286,4 +307,27 @@ export function applyCutToItem(project: Project, itemId: string, cut: Cut): Proj
   }
 
   return project  // itemId not found
+}
+
+/**
+ * Split a clip at a single point in time, producing two adjacent clips with no gap.
+ *
+ * - If `itemId` is provided, only that item is split (must contain `at`).
+ * - If `itemId` is null, every clip across all tracks that contains `at` is split.
+ * - Returns the same project reference if nothing was split.
+ */
+export function splitAtTime(project: Project, at: number, itemId: string | null): Project {
+  let changed = false
+
+  const newTracks = (project.tracks ?? []).map(track => {
+    const next = track.flatMap(item => {
+      if (itemId !== null && item.id !== itemId) return [item]
+      if (at <= item.start || at >= item.end) return [item]      // playhead not inside this clip
+      changed = true
+      return splitClip(item, { start: at, end: at })
+    })
+    return next
+  })
+
+  return changed ? { ...project, tracks: newTracks } : project
 }

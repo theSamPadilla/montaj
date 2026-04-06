@@ -9,7 +9,7 @@
  * stderr: progress lines + JSON error on failure
  * exit 0 on success, exit 1 on failure
  */
-import { readFileSync, existsSync, mkdirSync, rmSync } from 'fs'
+import { readFileSync, existsSync, mkdirSync, rmSync, readdirSync } from 'fs'
 import { resolve, join, dirname, basename, extname } from 'path'
 import { fileURLToPath } from 'url'
 import { spawnSync } from 'child_process'
@@ -91,9 +91,8 @@ async function main(projectPath, { out, workers, clean }) {
   const outputPath = out ? resolve(out) : join(renderDir, 'final.mp4')
 
   // 2. Collect segments and items
-  const baseTrackClips = projectJson.tracks?.[0] ?? []
   const segmentSpecs = collectPuppeteerSegments(projectJson, fps, renderWidth, renderHeight, segDir)
-  const { imageItems, videoItems } = collectDirectItems(projectJson)
+  const { imageItems, videoItems } = collectAllItems(projectJson)
 
   // 3. Run remove_bg on any video items that need it
   await processVideoItems(videoItems, workspaceDir)
@@ -137,11 +136,12 @@ async function main(projectPath, { out, workers, clean }) {
     }
   }
 
-  // 5. Detect base video dimensions (probe first clip in tracks[0], or use settings).
+  // 5. Detect base video dimensions from first video item (lowest trackIdx), or use settings.
   let actualWidth  = renderWidth
   let actualHeight = renderHeight
-  if (baseTrackClips.length > 0) {
-    const dims = probeVideoDimensions(baseTrackClips[0].src)
+  const firstVideo = [...videoItems].sort((a, b) => a.trackIdx - b.trackIdx)[0]
+  if (firstVideo) {
+    const dims = probeVideoDimensions(firstVideo.src)
     if (dims) { [actualWidth, actualHeight] = dims }
   }
   // pixelRatio: how many actual pixels correspond to one design pixel.
@@ -156,7 +156,6 @@ async function main(projectPath, { out, workers, clean }) {
   log('composing final video...')
   await compose({
     projectJson,
-    baseTrackClips,
     puppeteerSegments: renderedSegments,
     imageItems,
     videoItems,
@@ -229,7 +228,7 @@ function collectPuppeteerSegments(projectJson, fps, width, height, segDir) {
           height,
         })
       }
-      // image and video types → handled by collectDirectItems, not Puppeteer
+      // image and video types → handled by collectAllItems, not Puppeteer
     }
   }
 
@@ -259,17 +258,15 @@ function collectPuppeteerSegments(projectJson, fps, width, height, segDir) {
 }
 
 // ---------------------------------------------------------------------------
-// Direct items: image and video items from tracks[1+] (no Puppeteer)
+// Direct items: image and video items from all tracks (no Puppeteer)
 // ---------------------------------------------------------------------------
 
-function collectDirectItems(projectJson) {
+function collectAllItems(projectJson) {
   const imageItems = []
   const videoItems = []
 
-  // Overlay items live in tracks[1+]; tracks[0] is primary footage
-  const overlayTracks = (projectJson.tracks ?? []).slice(1)
-  for (let trackIdx = 0; trackIdx < overlayTracks.length; trackIdx++) {
-    const track = overlayTracks[trackIdx]
+  for (let trackIdx = 0; trackIdx < (projectJson.tracks ?? []).length; trackIdx++) {
+    const track = projectJson.tracks[trackIdx]
     for (const item of track ?? []) {
       const base = {
         id:      item.id,
@@ -288,6 +285,7 @@ function collectDirectItems(projectJson) {
         videoItems.push({
           ...base,
           src:       item.nobg_src && item.remove_bg ? item.nobg_src : item.src,
+          nobg_src:  item.nobg_src,
           inPoint:   item.inPoint,
           outPoint:  item.outPoint,
           remove_bg: item.remove_bg ?? false,
@@ -301,12 +299,17 @@ function collectDirectItems(projectJson) {
 }
 
 // ---------------------------------------------------------------------------
-// remove_bg pre-processing for video items
+// remove_bg pre-processing
 // ---------------------------------------------------------------------------
 
 async function processVideoItems(videoItems, workspaceDir) {
   for (const item of videoItems) {
     if (item.remove_bg) {
+      if (item.nobg_src && existsSync(item.nobg_src)) {
+        // Already processed — reuse the existing alpha clip
+        item.src = item.nobg_src
+        continue
+      }
       log(`running remove_bg on ${basename(item.src)}...`)
       const stem    = join(workspaceDir, 'render', basename(item.src, extname(item.src)))
       const nobgPath = `${stem}_nobg.mov`
@@ -354,6 +357,11 @@ function resolveProjectPaths(projectJson, projectDir) {
       if (item.src && !item.src.startsWith('/')) {
         item.src = resolve(projectDir, item.src)
       }
+      // Normalise macOS narrow no-break space (\u202f) in filenames
+      if (item.src) {
+        const actual = resolveFilePath(item.src)
+        if (actual) item.src = actual
+      }
       // nobg_src and nobg_preview_src are always absolute (written by remove_bg step)
     }
   }
@@ -363,7 +371,26 @@ function resolveProjectPaths(projectJson, projectDir) {
     if (!src.startsWith('/')) {
       projectJson.audio.music.src = resolve(projectDir, src)
     }
+    const actual = resolveFilePath(projectJson.audio.music.src)
+    if (actual) projectJson.audio.music.src = actual
   }
+}
+
+/** Resolve a path that may contain a macOS narrow no-break space (\u202f) instead
+ *  of a regular space — e.g. screenshot filenames like "Screenshot … 12.44.47 PM.png".
+ *  Returns the actual path on disk, or null if not found. */
+function resolveFilePath(p) {
+  if (existsSync(p)) return p
+  // Normalise both sides: replace \u202f with regular space and compare
+  const dn = dirname(p)
+  const bn = basename(p)
+  const target = bn.replace(/\u202f/g, ' ')
+  try {
+    for (const name of readdirSync(dn)) {
+      if (name.replace(/\u202f/g, ' ') === target) return join(dn, name)
+    }
+  } catch { /* parent dir missing */ }
+  return null
 }
 
 function validateProjectFiles(projectJson) {
@@ -372,11 +399,11 @@ function validateProjectFiles(projectJson) {
   // v0.2: tracks is an array of arrays; check src existence on every item in every track
   for (const track of projectJson.tracks ?? []) {
     for (const item of track ?? []) {
-      if (item.src && !existsSync(item.src)) missing.push(item.src)
+      if (item.src && !resolveFilePath(item.src)) missing.push(item.src)
     }
   }
 
-  if (projectJson.audio?.music?.src && !existsSync(projectJson.audio.music.src)) {
+  if (projectJson.audio?.music?.src && !resolveFilePath(projectJson.audio.music.src)) {
     missing.push(projectJson.audio.music.src)
   }
 
@@ -399,8 +426,11 @@ function getTotalDurationSeconds(projectJson) {
 // Utilities
 // ---------------------------------------------------------------------------
 
+const TTY = process.stderr.isTTY
+const C = { cyan: TTY ? '\x1b[96m' : '', reset: TTY ? '\x1b[0m' : '' }
+
 function log(msg) {
-  process.stderr.write(`[montaj render] ${msg}\n`)
+  process.stderr.write(`${C.cyan}[montaj render]${C.reset} ${msg}\n`)
 }
 
 function fail(code, message) {
@@ -408,4 +438,4 @@ function fail(code, message) {
   process.exit(1)
 }
 
-export { getTotalDurationSeconds, collectPuppeteerSegments, collectDirectItems }
+export { getTotalDurationSeconds, collectPuppeteerSegments, collectAllItems, resolveFilePath }

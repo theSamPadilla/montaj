@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type KeyboardEvent } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent } from 'react'
 import { createPortal } from 'react-dom'
 import { Volume2, VolumeX } from 'lucide-react'
 import type { CaptionSegment, VisualItem, Project } from '@/lib/project'
@@ -13,9 +13,8 @@ interface TimelineProps {
   onOverlayEdit?: (p: Project) => void
   selectedOverlayId?: string
   onSelectOverlay?: (id: string | null) => void
+  onSplit?: (at: number) => void
   onCut?: (cut: { start: number; end: number }) => void
-  selectedClipId?: string | null
-  onSelectClip?: (id: string | null) => void
   rippleMode?: boolean
 }
 
@@ -55,14 +54,11 @@ function EditableSegment({ seg, onEdit }: { seg: CaptionSegment; onEdit: (text: 
 }
 
 
-export default function Timeline({ project, currentTime, onTimeUpdate, onProjectChange, onCaptionEdit, onOverlayEdit, selectedOverlayId, onSelectOverlay, onCut, selectedClipId, onSelectClip, rippleMode = false }: TimelineProps) {
-  const clips         = [...(project.tracks?.[0] ?? [])]
-  const captionTrack  = project.captions
-  const overlayTracks = project.tracks?.slice(1) ?? []
-  const clipsDuration  = clips.length > 0 ? Math.max(...clips.map(c => c.end)) : 0
-  const totalDuration  = clipsDuration > 0
-    ? clipsDuration
-    : overlayTracks.flat().reduce((m, i) => Math.max(m, i.end ?? 0), 0)
+export default function Timeline({ project, currentTime, onTimeUpdate, onProjectChange, onCaptionEdit, onOverlayEdit, selectedOverlayId, onSelectOverlay, onSplit, onCut, rippleMode = false }: TimelineProps) {
+  const allTracks      = project.tracks ?? []
+  const captionTrack   = project.captions
+  const snapBoundaries = [...new Set(allTracks.flat().flatMap(c => [c.start, c.end]))]
+  const totalDuration  = allTracks.flat().reduce((m, i) => Math.max(m, i.end ?? 0), 0)
 
   const [hoverPct, setHoverPct]               = useState<number | null>(null)
   const [draggingPlayhead, setDraggingPlayhead] = useState(false)
@@ -73,6 +69,44 @@ export default function Timeline({ project, currentTime, onTimeUpdate, onProject
   const overlayDraggedRef                     = useRef(false)
   const [keyNavTime, setKeyNavTime]           = useState<number | null>(null)
   const keyNavTimerRef                        = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  const [zoom, setZoom]                       = useState(1)
+  const zoomRef                               = useRef(zoom)
+  zoomRef.current                             = zoom
+  const scrollRef                             = useRef<HTMLDivElement>(null)
+  const pendingScrollRef                      = useRef<number | null>(null)
+
+  useLayoutEffect(() => {
+    if (pendingScrollRef.current !== null && scrollRef.current) {
+      scrollRef.current.scrollLeft = pendingScrollRef.current
+      pendingScrollRef.current = null
+    }
+  })
+
+  function zoomTo(newZoom: number, pivotClientX?: number) {
+    const clamped = Math.max(1, Math.min(20, newZoom))
+    if (!scrollRef.current || totalDuration === 0) { setZoom(clamped); return }
+    const container = scrollRef.current
+    const containerWidth = container.clientWidth
+    const currentScrollLeft = container.scrollLeft
+    let pivotPct: number
+    if (pivotClientX !== undefined) {
+      const rect = container.getBoundingClientRect()
+      pivotPct = (currentScrollLeft + (pivotClientX - rect.left)) / (containerWidth * zoomRef.current)
+    } else {
+      pivotPct = (currentScrollLeft + containerWidth / 2) / (containerWidth * zoomRef.current)
+    }
+    pivotPct = Math.max(0, Math.min(1, pivotPct))
+    pendingScrollRef.current = Math.max(0, pivotPct * containerWidth * clamped - containerWidth / 2)
+    setZoom(clamped)
+  }
+
+  function handleTimelineWheel(e: React.WheelEvent) {
+    if (!e.ctrlKey && !e.metaKey) return
+    e.preventDefault()
+    const delta = e.deltaY > 0 ? -0.5 : 0.5
+    zoomTo(zoomRef.current + delta, e.clientX)
+  }
 
   useEffect(() => {
     if (!transcriptModalOpen) return
@@ -109,112 +143,7 @@ export default function Timeline({ project, currentTime, onTimeUpdate, onProject
 
   function pct(t: number) { return totalDuration > 0 ? (t / totalDuration) * 100 : 0 }
 
-  function handleClipResizeStart(e: React.MouseEvent, clip: VisualItem, edge: 'start' | 'end') {
-    e.stopPropagation()
-    e.preventDefault()
-    if (!onProjectChange) return
-
-    const initX    = e.clientX
-    const initTime = edge === 'start' ? clip.start : clip.end
-    let lastUpdated = project
-
-    function buildUpdated(moveE: MouseEvent): Project {
-      if (!scrubberRef.current) return project
-      const rect = scrubberRef.current.getBoundingClientRect()
-      const dt   = ((moveE.clientX - initX) / rect.width) * totalDuration
-      const t    = Math.max(0, Math.min(totalDuration, initTime + dt))
-      const primaryTrack = project.tracks?.[0] ?? []
-      const overlayTs    = project.tracks?.slice(1) ?? []
-      return {
-        ...project,
-        tracks: [
-          primaryTrack.map(c =>
-            c.id !== clip.id ? c :
-            edge === 'start'
-              ? (() => {
-                  const newStart = Math.min(t, c.end - 0.1)
-                  const dtActual = newStart - c.start
-                  return {
-                    ...c,
-                    start: newStart,
-                    inPoint: Math.min(
-                      Math.max(0, (c.inPoint ?? 0) + dtActual),
-                      (c.outPoint ?? ((c.inPoint ?? 0) + (c.end - c.start))) - 0.1,
-                    ),
-                  }
-                })()
-              : (() => {
-                  const newEnd   = Math.max(t, c.start + 0.1)
-                  const origOut  = c.outPoint ?? ((c.inPoint ?? 0) + (c.end - c.start))
-                  const dtActual = newEnd - c.end
-                  return {
-                    ...c,
-                    end: newEnd,
-                    outPoint: Math.max(
-                      (c.inPoint ?? 0) + 0.1,
-                      Math.min(origOut + dtActual, c.sourceDuration ?? Infinity),
-                    ),
-                  }
-                })()
-          ),
-          ...overlayTs,
-        ],
-      }
-    }
-
-    function onMove(moveE: MouseEvent) {
-      let next = buildUpdated(moveE)
-      if (rippleMode) next = collapseGaps(next)
-      lastUpdated = next
-      onProjectChange!(next)
-    }
-    function onUp() {
-      onOverlayEdit?.(lastUpdated)
-      document.removeEventListener('mousemove', onMove)
-      document.removeEventListener('mouseup', onUp)
-    }
-    document.addEventListener('mousemove', onMove)
-    document.addEventListener('mouseup', onUp)
-  }
-
-  function handleClipDragStart(e: React.MouseEvent, clip: VisualItem) {
-    if ((e.target as HTMLElement).classList.contains('cursor-ew-resize')) return
-    if (!onProjectChange) return
-    e.stopPropagation()
-
-    const initX     = e.clientX
-    const initStart = clip.start
-    const duration  = clip.end - clip.start
-    let lastUpdated = project
-
-    function onMove(moveE: MouseEvent) {
-      const rect     = scrubberRef.current?.getBoundingClientRect()
-      const dx       = rect ? ((moveE.clientX - initX) / rect.width) * totalDuration : 0
-      const newStart = Math.max(0, Math.min(totalDuration - duration, initStart + dx))
-      const primaryTrack = project.tracks?.[0] ?? []
-      const overlayTs    = project.tracks?.slice(1) ?? []
-      const next = {
-        ...project,
-        tracks: [
-          primaryTrack.map(c =>
-            c.id !== clip.id ? c : { ...c, start: newStart, end: newStart + duration }
-          ),
-          ...overlayTs,
-        ],
-      }
-      onProjectChange!(next)
-      lastUpdated = next
-    }
-    function onUp() {
-      onOverlayEdit?.(lastUpdated)
-      document.removeEventListener('mousemove', onMove)
-      document.removeEventListener('mouseup', onUp)
-    }
-    document.addEventListener('mousemove', onMove)
-    document.addEventListener('mouseup', onUp)
-  }
-
-  function handleOverlayResizeStart(e: React.MouseEvent, item: VisualItem, edge: 'start' | 'end') {
+  function handleItemResizeStart(e: React.MouseEvent, item: VisualItem, edge: 'start' | 'end') {
     e.stopPropagation()
     e.preventDefault()
     if (!onProjectChange) return
@@ -228,70 +157,56 @@ export default function Timeline({ project, currentTime, onTimeUpdate, onProject
       const rect = scrubberRef.current.getBoundingClientRect()
       const dt   = ((moveE.clientX - initX) / rect.width) * totalDuration
       const t    = Math.max(0, Math.min(totalDuration, initTime + dt))
-      const primaryTrack = project.tracks?.[0] ?? []
-      const overlayTs = project.tracks?.slice(1) ?? []
       return {
         ...project,
-        tracks: [primaryTrack, ...overlayTs.map(track =>
-          track.map(ov =>
-            ov.id !== item.id ? ov :
-            edge === 'start'
-              ? (() => {
-                  const newStart = Math.min(t, ov.end - 0.1)
-                  if (ov.type !== 'video') return { ...ov, start: newStart }
-                  const dtActual = newStart - ov.start
-                  return {
-                    ...ov,
-                    start: newStart,
-                    inPoint: Math.min(
-                      Math.max(0, (ov.inPoint ?? 0) + dtActual),
-                      (ov.outPoint ?? ((ov.inPoint ?? 0) + (ov.end - ov.start))) - 0.1,
-                    ),
-                  }
-                })()
-              : (() => {
-                  const newEnd = Math.max(t, ov.start + 0.1)
-                  if (ov.type !== 'video') return { ...ov, end: newEnd }
-                  const origOut = ov.outPoint ?? ((ov.inPoint ?? 0) + (ov.end - ov.start))
-                  const dtActual = newEnd - ov.end
-                  return {
-                    ...ov,
-                    end: newEnd,
-                    outPoint: Math.max(
-                      (ov.inPoint ?? 0) + 0.1,
-                      Math.min(origOut + dtActual, ov.sourceDuration ?? Infinity),  // unbounded if sourceDuration unknown
-                    ),
-                  }
-                })()
-          )
-        )],
+        tracks: (project.tracks ?? []).map(track =>
+          track.map(ov => {
+            if (ov.id !== item.id) return ov
+            if (edge === 'start') {
+              const newStart = Math.min(t, ov.end - 0.1)
+              if (ov.type !== 'video') return { ...ov, start: newStart }
+              const dtActual = newStart - ov.start
+              return {
+                ...ov, start: newStart,
+                inPoint: Math.min(Math.max(0, (ov.inPoint ?? 0) + dtActual), (ov.outPoint ?? ((ov.inPoint ?? 0) + (ov.end - ov.start))) - 0.1),
+              }
+            } else {
+              const newEnd = Math.max(t, ov.start + 0.1)
+              if (ov.type !== 'video') return { ...ov, end: newEnd }
+              const origOut  = ov.outPoint ?? ((ov.inPoint ?? 0) + (ov.end - ov.start))
+              const dtActual = newEnd - ov.end
+              return {
+                ...ov, end: newEnd,
+                outPoint: Math.max((ov.inPoint ?? 0) + 0.1, Math.min(origOut + dtActual, ov.sourceDuration ?? Infinity)),
+              }
+            }
+          })
+        ),
       }
     }
 
     function onMove(moveE: MouseEvent) {
-      lastUpdated = buildUpdated(moveE)
+      let next = buildUpdated(moveE)
+      if (rippleMode) next = collapseGaps(next)
+      lastUpdated = next
       onProjectChange!(lastUpdated)
     }
-
     function onUp() {
       onOverlayEdit?.(lastUpdated)
       document.removeEventListener('mousemove', onMove)
       document.removeEventListener('mouseup', onUp)
     }
-
     document.addEventListener('mousemove', onMove)
     document.addEventListener('mouseup', onUp)
   }
 
   function handleDeleteOverlay(id: string) {
     if (!onProjectChange) return
-    const primaryTrack = project.tracks?.[0] ?? []
-    const overlayTs = project.tracks?.slice(1) ?? []
     const updated = {
       ...project,
-      tracks: [primaryTrack, ...overlayTs
-        .map(track => track.filter(ov => ov.id !== id))
-        .filter(track => track.length > 0)],
+      tracks: (project.tracks ?? [])
+        .map(track => track.filter(item => item.id !== id))
+        .filter(track => track.length > 0),
     }
     onProjectChange(updated)
     onOverlayEdit?.(updated)
@@ -300,13 +215,11 @@ export default function Timeline({ project, currentTime, onTimeUpdate, onProject
 
   function handleToggleMute(id: string) {
     if (!onProjectChange) return
-    const primaryTrack = project.tracks?.[0] ?? []
-    const overlayTs = project.tracks?.slice(1) ?? []
     const updated = {
       ...project,
-      tracks: [primaryTrack, ...overlayTs.map(track =>
+      tracks: (project.tracks ?? []).map(track =>
         track.map(item => item.id === id ? { ...item, muted: !item.muted } : item)
-      )],
+      ),
     }
     onProjectChange(updated)
     onOverlayEdit?.(updated)
@@ -332,31 +245,34 @@ export default function Timeline({ project, currentTime, onTimeUpdate, onProject
       const dx = rect ? ((moveE.clientX - initX) / rect.width) * totalDuration : 0
       const dy = moveE.clientY - initY
 
-      const newStart = Math.max(0, Math.min(totalDuration - duration, initStart + dx))
-      const newEnd   = newStart + duration
+      const newStart  = Math.max(0, Math.min(totalDuration - duration, initStart + dx))
+      const newEnd    = newStart + duration
       const movedItem = { ...item, start: newStart, end: newEnd }
 
+      const tracks     = lastUpdated.tracks ?? []
       const trackDelta = Math.round(dy / ROW_HEIGHT_PX)
-      const targetIdx  = Math.max(0, sourceTrackIdx + trackDelta)
-      const primaryTrack = lastUpdated.tracks?.[0] ?? []
-      const overlayTracks = lastUpdated.tracks?.slice(1) ?? []
+      const targetIdx  = Math.max(0, sourceTrackIdx - trackDelta)
 
       function hasOverlap(track: VisualItem[]): boolean {
         return track.some(ov => ov.id !== item.id && ov.start < newEnd && ov.end > newStart)
       }
 
+      // Search outward from targetIdx in both directions for the nearest open slot
       let bestIdx = targetIdx
-      for (let i = targetIdx; i <= overlayTracks.length; i++) {
-        const candidateTrack = i < overlayTracks.length ? overlayTracks[i] : []
-        if (!hasOverlap(candidateTrack)) { bestIdx = i; break }
+      outer: for (let delta = 0; delta <= tracks.length; delta++) {
+        for (const i of delta === 0 ? [targetIdx] : [targetIdx - delta, targetIdx + delta]) {
+          if (i < 0) continue
+          const candidateTrack = i < tracks.length ? tracks[i] : []
+          if (!hasOverlap(candidateTrack)) { bestIdx = i; break outer }
+        }
       }
 
-      const removed = overlayTracks.map(t => t.filter(ov => ov.id !== item.id))
+      const removed = tracks.map(t => t.filter(ov => ov.id !== item.id))
       const final = bestIdx >= removed.length
         ? [...removed, [movedItem]]
         : removed.map((t, i) => i === bestIdx ? [...t, movedItem] : t)
 
-      const next = { ...lastUpdated, tracks: [primaryTrack, ...final.filter(t => t.length > 0)] }
+      const next = { ...lastUpdated, tracks: final.filter(t => t.length > 0) }
       projectChange(next)
       lastUpdated = next
     }
@@ -431,7 +347,7 @@ export default function Timeline({ project, currentTime, onTimeUpdate, onProject
     const clickedTime = ratioFromClientX(e.clientX) * totalDuration
     const rect = scrubberRef.current?.getBoundingClientRect()
     const snapThreshold = rect ? (8 / rect.width) * totalDuration : 0
-    const boundaries = clips.flatMap(c => [c.start, c.end])
+    const boundaries = snapBoundaries
     for (const b of boundaries) {
       if (Math.abs(clickedTime - b) < snapThreshold) { onTimeUpdate(b); return }
     }
@@ -444,7 +360,7 @@ export default function Timeline({ project, currentTime, onTimeUpdate, onProject
     const clickedTime = ratioFromClientX(e.clientX) * totalDuration
     const rect = scrubberRef.current?.getBoundingClientRect()
     const snapThreshold = rect ? (8 / rect.width) * totalDuration : 0
-    const boundaries = clips.flatMap(c => [c.start, c.end])
+    const boundaries = snapBoundaries
     for (const b of boundaries) {
       if (Math.abs(clickedTime - b) < snapThreshold) { onTimeUpdate(b); return }
     }
@@ -452,7 +368,7 @@ export default function Timeline({ project, currentTime, onTimeUpdate, onProject
   }
 
   const cutButtonLabel = selectedOverlayId
-    ? `Cut ${overlayTracks.flat().find(i => i.id === selectedOverlayId)?.type ?? 'overlay'}`
+    ? `Cut ${allTracks.flat().find(i => i.id === selectedOverlayId)?.type ?? 'item'}`
     : 'Cut primary'
 
   function makeCaptionEdit(globalIdx: number) {
@@ -490,6 +406,34 @@ export default function Timeline({ project, currentTime, onTimeUpdate, onProject
       onMouseLeave={() => setHoverPct(null)}
       onClick={handleContainerClick}
     >
+
+      {/* Zoom controls */}
+      {totalDuration > 0 && (
+        <div className="flex items-center justify-end gap-0.5 -mb-1">
+          <button
+            className="text-[11px] leading-none text-gray-500 hover:text-gray-300 w-5 h-5 flex items-center justify-center rounded hover:bg-gray-800 transition-colors"
+            title="Zoom out"
+            onClick={(e) => { e.stopPropagation(); zoomTo(zoomRef.current - 1) }}
+          >−</button>
+          <span className="text-[10px] font-mono text-gray-500 w-7 text-center tabular-nums select-none">{zoom}×</span>
+          <button
+            className="text-[11px] leading-none text-gray-500 hover:text-gray-300 w-5 h-5 flex items-center justify-center rounded hover:bg-gray-800 transition-colors"
+            title="Zoom in"
+            onClick={(e) => { e.stopPropagation(); zoomTo(zoomRef.current + 1) }}
+          >+</button>
+          {zoom > 1 && (
+            <button
+              className="text-[10px] text-gray-500 hover:text-gray-300 px-1.5 h-5 rounded hover:bg-gray-800 transition-colors ml-0.5"
+              title="Fit to view"
+              onClick={(e) => { e.stopPropagation(); zoomTo(1) }}
+            >fit</button>
+          )}
+        </div>
+      )}
+
+      {/* Scroll container for zoomed tracks */}
+      <div ref={scrollRef} className="overflow-x-auto" onWheel={handleTimelineWheel}>
+      <div style={{ width: zoom > 1 ? `${zoom * 100}%` : '100%' }} className="min-w-full">
 
       {/* Scrubber + tracks wrapped in a relative container so the hover indicator spans the full height */}
       <div className="relative flex flex-col gap-2">
@@ -543,7 +487,7 @@ export default function Timeline({ project, currentTime, onTimeUpdate, onProject
             e.stopPropagation()
             if (totalDuration === 0) return
             setDraggingPlayhead(true)
-            const boundaries = clips.flatMap(c => [c.start, c.end])
+            const boundaries = snapBoundaries
             let snappedTo: number | null = null   // which boundary we're currently locked to
             function onMove(me: MouseEvent) {
               const rect = scrubberRef.current?.getBoundingClientRect()
@@ -599,10 +543,18 @@ export default function Timeline({ project, currentTime, onTimeUpdate, onProject
       <div className="flex items-center justify-between text-[10px] font-mono text-gray-600 -mt-1">
         <span>{formatTime(currentTime)}</span>
         {markers[0] !== null && markers[1] === null && (
-          <span className="text-amber-400/80">
+          <span className="flex items-center gap-2 text-amber-400/80">
+            {onSplit && (
+              <button
+                className="px-2 py-0.5 rounded bg-amber-500/80 hover:bg-amber-400 text-black text-[10px] font-medium transition-colors"
+                onClick={(e) => { e.stopPropagation(); onSplit(markers[0]!); setMarkers([null, null]) }}
+              >
+                Split
+              </button>
+            )}
             {formatTime(markers[0])} — double-click to set end
             <button
-              className="ml-2 text-gray-600 hover:text-gray-400"
+              className="text-gray-600 hover:text-gray-400"
               onClick={(e) => { e.stopPropagation(); setMarkers([null, null]) }}
             >✕</button>
           </span>
@@ -633,21 +585,21 @@ export default function Timeline({ project, currentTime, onTimeUpdate, onProject
 
       {/* ── Tracks ── */}
       <div className="flex flex-col gap-1">
-        {overlayTracks.length > 0 && (
-          [...overlayTracks].reverse().map((trackItems, reversedIdx) => {
-            const trackIdx = overlayTracks.length - 1 - reversedIdx
-            // Per-track color palette (cycles for >6 tracks)
-            const trackColors = [
-              { bg: 'bg-slate-600/80',  bgHov: 'hover:bg-slate-500/80',  bgSel: 'bg-slate-500/90',  ring: 'ring-slate-300/80',  border: 'border-slate-400/50',  text: 'text-slate-200',  resHov: 'hover:bg-slate-300/40'  },
-              { bg: 'bg-sky-700/80',    bgHov: 'hover:bg-sky-600/80',    bgSel: 'bg-sky-600/90',    ring: 'ring-sky-300/80',    border: 'border-sky-400/50',    text: 'text-sky-200',    resHov: 'hover:bg-sky-300/40'    },
-              { bg: 'bg-violet-700/80', bgHov: 'hover:bg-violet-600/80', bgSel: 'bg-violet-600/90', ring: 'ring-violet-300/80', border: 'border-violet-400/50', text: 'text-violet-200', resHov: 'hover:bg-violet-300/40' },
-              { bg: 'bg-emerald-700/80',bgHov: 'hover:bg-emerald-600/80',bgSel: 'bg-emerald-600/90',ring: 'ring-emerald-300/80',border: 'border-emerald-400/50',text: 'text-emerald-200',resHov: 'hover:bg-emerald-300/40'},
-              { bg: 'bg-rose-700/80',   bgHov: 'hover:bg-rose-600/80',   bgSel: 'bg-rose-600/90',   ring: 'ring-rose-300/80',   border: 'border-rose-400/50',   text: 'text-rose-200',   resHov: 'hover:bg-rose-300/40'   },
-              { bg: 'bg-amber-700/60',  bgHov: 'hover:bg-amber-700/80',  bgSel: 'bg-amber-600/80',  ring: 'ring-amber-400/80',  border: 'border-amber-500/50',  text: 'text-amber-200',  resHov: 'hover:bg-amber-300/40'  },
-            ]
-            const tc = trackColors[trackIdx % trackColors.length]
-            return (
-            <div key={trackIdx} className={trackRow} onClick={handleTrackClick} onDoubleClick={handleScrubDoubleClick}>
+        {[...allTracks].reverse().map((trackItems, reversedIdx) => {
+          const trackIdx = allTracks.length - 1 - reversedIdx
+          const markerActive = markers[0] !== null || selection !== null
+          const dimmed = markerActive && selectedOverlayId !== null && !trackItems.some(i => i.id === selectedOverlayId)
+          const trackColors = [
+            { bg: 'bg-slate-600/80',  bgHov: 'hover:bg-slate-500/80',  bgSel: 'bg-slate-500/90',  ring: 'ring-slate-300/80',  border: 'border-slate-400/50',  text: 'text-slate-200',  resHov: 'hover:bg-slate-300/40'  },
+            { bg: 'bg-sky-700/80',    bgHov: 'hover:bg-sky-600/80',    bgSel: 'bg-sky-600/90',    ring: 'ring-sky-300/80',    border: 'border-sky-400/50',    text: 'text-sky-200',    resHov: 'hover:bg-sky-300/40'    },
+            { bg: 'bg-violet-700/80', bgHov: 'hover:bg-violet-600/80', bgSel: 'bg-violet-600/90', ring: 'ring-violet-300/80', border: 'border-violet-400/50', text: 'text-violet-200', resHov: 'hover:bg-violet-300/40' },
+            { bg: 'bg-emerald-700/80',bgHov: 'hover:bg-emerald-600/80',bgSel: 'bg-emerald-600/90',ring: 'ring-emerald-300/80',border: 'border-emerald-400/50',text: 'text-emerald-200',resHov: 'hover:bg-emerald-300/40'},
+            { bg: 'bg-rose-700/80',   bgHov: 'hover:bg-rose-600/80',   bgSel: 'bg-rose-600/90',   ring: 'ring-rose-300/80',   border: 'border-rose-400/50',   text: 'text-rose-200',   resHov: 'hover:bg-rose-300/40'   },
+            { bg: 'bg-amber-700/60',  bgHov: 'hover:bg-amber-700/80',  bgSel: 'bg-amber-600/80',  ring: 'ring-amber-400/80',  border: 'border-amber-500/50',  text: 'text-amber-200',  resHov: 'hover:bg-amber-300/40'  },
+          ]
+          const tc = trackColors[trackIdx % trackColors.length]
+          return (
+            <div key={trackIdx} className={`${trackRow} transition-opacity ${dimmed ? 'opacity-30 pointer-events-none' : ''}`} onClick={handleTrackClick} onDoubleClick={handleScrubDoubleClick}>
               {trackItems.map((item) => {
                 const isSel = selectedOverlayId === item.id
                 return (
@@ -668,7 +620,7 @@ export default function Timeline({ project, currentTime, onTimeUpdate, onProject
                   >
                     <div
                       className={`absolute left-0 top-0 bottom-0 w-2.5 cursor-ew-resize z-10 ${tc.resHov}`}
-                      onMouseDown={(e) => handleOverlayResizeStart(e, item, 'start')}
+                      onMouseDown={(e) => handleItemResizeStart(e, item, 'start')}
                     />
                     <span className={`text-[10px] ${tc.text} truncate flex-1 min-w-0 pl-3`}>
                       ▪ {item.type}
@@ -686,48 +638,16 @@ export default function Timeline({ project, currentTime, onTimeUpdate, onProject
                       <button
                         className={`shrink-0 ml-1 mr-3 z-10 cursor-pointer opacity-60 hover:opacity-100 ${tc.text} text-[11px] leading-none`}
                         onClick={(e) => { e.stopPropagation(); handleDeleteOverlay(item.id) }}
-                        title="Delete overlay"
+                        title="Delete"
                       >×</button>
                     )}
                     <div
                       className={`absolute right-0 top-0 bottom-0 w-2.5 cursor-ew-resize z-10 ${tc.resHov}`}
-                      onMouseDown={(e) => handleOverlayResizeStart(e, item, 'end')}
+                      onMouseDown={(e) => handleItemResizeStart(e, item, 'end')}
                     />
                   </div>
                 )
               })}
-              {playheadLine}
-            </div>
-          )})
-        )}
-        {clips.length > 0 && (
-          <div className={`${trackRow} cursor-default`} onClick={handleTrackClick} onDoubleClick={handleScrubDoubleClick}>
-            {clips.map((clip) => (
-                <div
-                  key={clip.id}
-                  className={`absolute top-0 bottom-0 flex items-center overflow-hidden cursor-grab active:cursor-grabbing border-r border-indigo-500/40
-                    ${selectedClipId === clip.id
-                      ? 'bg-indigo-500/80 ring-1 ring-inset ring-indigo-300/80'
-                      : 'bg-indigo-700/70 hover:bg-indigo-600/70'}`}
-                  style={{ left: `${pct(clip.start)}%`, width: `${pct(clip.end - clip.start)}%` }}
-                  onClick={(e) => {
-                    e.stopPropagation()
-                    onSelectClip?.(selectedClipId === clip.id ? null : clip.id)
-                    onSelectOverlay?.(null)
-                  }}
-                  onMouseDown={(e) => handleClipDragStart(e, clip)}
-                >
-                  <div
-                    className="absolute left-0 top-0 bottom-0 w-2.5 cursor-ew-resize z-10 hover:bg-indigo-300/40"
-                    onMouseDown={(e) => handleClipResizeStart(e, clip, 'start')}
-                  />
-                  <span className="text-[10px] text-indigo-200 truncate pl-3">▪ {clip.type}</span>
-                  <div
-                    className="absolute right-0 top-0 bottom-0 w-2.5 cursor-ew-resize z-10 hover:bg-indigo-300/40"
-                    onMouseDown={(e) => handleClipResizeStart(e, clip, 'end')}
-                  />
-                </div>
-              ))}
               {playheadLine}
               {selection && (
                 <div
@@ -736,10 +656,13 @@ export default function Timeline({ project, currentTime, onTimeUpdate, onProject
                 />
               )}
             </div>
-        )}
+          )
+        })}
       </div>
 
       </div>{/* end scrubber+tracks wrapper */}
+      </div>{/* end inner zoom div */}
+      </div>{/* end scroll container */}
 
       {/* ── Transcript editor ── */}
       {(() => {

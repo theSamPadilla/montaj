@@ -9,7 +9,7 @@ import Timeline from '@/components/Timeline'
 import VersionPanel from '@/components/VersionPanel'
 import { Button } from '@/components/ui/button'
 import { api, fileUrl } from '@/lib/api'
-import { applyCutToItem, applyCutToTracks, collapseGaps } from '@/lib/cuts'
+import { applyCutToItem, applyCutToTracks, collapseGaps, splitAtTime } from '@/lib/cuts'
 import { type Asset, type Project, type ProjectVersion } from '@/lib/project'
 
 interface ReviewViewProps {
@@ -30,7 +30,6 @@ export default function ReviewView({ project, onProjectChange }: ReviewViewProps
   const historyRef = useRef<Project[]>([])
   const [pickingAssets, setPickingAssets]     = useState(false)
   const [selectedOverlayId, setSelectedOverlayId] = useState<string | null>(null)
-  const [selectedClipId, setSelectedClipId]       = useState<string | null>(null)
   const [versions, setVersions]           = useState<ProjectVersion[]>([])
   const [restoring, setRestoring]         = useState<string | null>(null)
   const [rerunOpen, setRerunOpen]         = useState(false)
@@ -38,8 +37,6 @@ export default function ReviewView({ project, onProjectChange }: ReviewViewProps
   const [renderOpen, setRenderOpen]       = useState(false)
   const [previewAsset, setPreviewAsset]   = useState<Asset | null>(null)
   const [pathCopied, setPathCopied]       = useState(false)
-  const [applyingCuts, setApplyingCuts]   = useState(false)
-  const [editorDirty, setEditorDirty]    = useState(false)
   const [rippleMode, setRippleMode]       = useState(false)
   const navigate = useNavigate()
 
@@ -104,28 +101,23 @@ export default function ReviewView({ project, onProjectChange }: ReviewViewProps
 
   function handleCut(cut: { start: number; end: number }) {
     pushHistory(project)
-    const targetId = selectedClipId ?? selectedOverlayId
-    let updated = targetId
-      ? applyCutToItem(project, targetId, cut)
+    let updated = selectedOverlayId
+      ? applyCutToItem(project, selectedOverlayId, cut)
       : applyCutToTracks(project, cut)
     if (rippleMode) updated = collapseGaps(updated)
     onProjectChange(updated)
     api.saveProject(updated.id, updated).catch(console.error)
-    setSelectedClipId(null)
     setSelectedOverlayId(null)
     setDirty(true)
-    setEditorDirty(true)
   }
 
-  function handleOverlayChange(id: string, changes: { offsetX?: number; offsetY?: number; scale?: number }) {
+  function handleOverlayChange(id: string, changes: { offsetX?: number; offsetY?: number; scale?: number; rotation?: number }) {
     pushHistory(project)
-    const primaryTrack = project.tracks?.[0] ?? []
-    const overlayTs = project.tracks?.slice(1) ?? []
     const updated = {
       ...project,
-      tracks: [primaryTrack, ...overlayTs.map(track =>
+      tracks: (project.tracks ?? []).map(track =>
         track.map(item => item.id !== id ? item : { ...item, ...changes })
-      )],
+      ),
     }
     onProjectChange(updated)
     api.saveProject(updated.id, updated).catch(console.error)
@@ -143,52 +135,14 @@ export default function ReviewView({ project, onProjectChange }: ReviewViewProps
     }
   }
 
-  async function handleApplyCuts() {
-    setApplyingCuts(true)
-    try {
-      pushHistory(project)
-      const primaryClips = project.tracks?.[0] ?? []
-      const updatedClips = [...primaryClips]
 
-      for (let i = 0; i < primaryClips.length; i++) {
-        const clip = primaryClips[i]
-        if (!clip.src) continue
-        const inPoint  = clip.inPoint ?? 0
-        const outPoint = clip.outPoint ?? (inPoint + (clip.end - clip.start))
-        // Skip clips whose in/out points haven't moved — nothing to encode
-        if (inPoint === 0 && outPoint === (clip.sourceDuration ?? outPoint)) continue
-        const dotIdx = clip.src.lastIndexOf('.')
-        const base = dotIdx !== -1 ? clip.src.slice(0, dotIdx) : clip.src
-        const outPath = `${base}_${clip.id}_cut.mp4`
-        const result = await api.runStep<{ path: string; type: string }>('materialize_cut', {
-          input: clip.src,
-          inpoint: inPoint,
-          outpoint: outPoint,
-          out: outPath,
-        })
-        const duration = clip.end - clip.start
-        updatedClips[i] = {
-          ...clip,
-          src: result.path,
-          inPoint: 0,
-          outPoint: duration,
-          sourceDuration: duration,
-        }
-      }
-
-      const updated = {
-        ...project,
-        tracks: [updatedClips, ...(project.tracks?.slice(1) ?? [])],
-      }
-      onProjectChange(updated)
-      await api.saveProject(updated.id, updated)
-      setDirty(false)
-      setEditorDirty(false)
-    } catch (e) {
-      alert(`Apply Cuts failed: ${e instanceof Error ? e.message : String(e)}`)
-    } finally {
-      setApplyingCuts(false)
-    }
+  function handleSplit(at?: number) {
+    const updated = splitAtTime(project, at ?? currentTime, selectedOverlayId ?? null)
+    if (updated === project) return
+    pushHistory(project)
+    onProjectChange(updated)
+    api.saveProject(updated.id, updated).catch(console.error)
+    setDirty(true)
   }
 
   function handleRippleToggle() {
@@ -204,6 +158,18 @@ export default function ReviewView({ project, onProjectChange }: ReviewViewProps
       }
     }
   }
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const el = e.target as HTMLElement
+      if (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable) return
+      if (e.key === 's' || e.key === 'S') { e.preventDefault(); handleSplit() }
+      if ((e.metaKey || e.ctrlKey) && e.key === 'z') { e.preventDefault(); handleUndo() }
+    }
+    document.addEventListener('keydown', onKey)
+    return () => document.removeEventListener('keydown', onKey)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [project, currentTime, selectedOverlayId, canUndo])
 
   function handleRerunComplete(updated: Project) {
     onProjectChange(updated)
@@ -279,12 +245,7 @@ export default function ReviewView({ project, onProjectChange }: ReviewViewProps
             <Button variant="ghost" size="sm" onClick={handleUndo} disabled={!canUndo} title="Undo">
               ↩ Undo
             </Button>
-            {editorDirty && (
-              <Button variant="outline" size="sm" onClick={handleApplyCuts} disabled={applyingCuts}>
-                {applyingCuts ? 'Encoding…' : 'Apply Cuts'}
-              </Button>
-            )}
-            {dirty && (
+{dirty && (
               <Button variant="secondary" size="sm" onClick={handleSave} disabled={saving}>
                 {saving ? 'Saving…' : 'Save'}
               </Button>
@@ -322,6 +283,17 @@ export default function ReviewView({ project, onProjectChange }: ReviewViewProps
           {/* Track controls bar */}
           <div className="shrink-0 flex items-center justify-end gap-1.5 px-3 py-1 border-t border-gray-200 dark:border-gray-800 bg-gray-100 dark:bg-gray-950">
             <button
+              onClick={handleSplit}
+              title="Split at playhead (S) — selected item or all clips"
+              className="flex items-center justify-center w-5 h-5 rounded transition-colors text-gray-500 bg-transparent hover:text-gray-400"
+            >
+              <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.5">
+                <line x1="6" y1="0" x2="6" y2="12" />
+                <polyline points="3,3 6,6 9,3" />
+                <polyline points="3,9 6,6 9,9" />
+              </svg>
+            </button>
+            <button
               onClick={handleRippleToggle}
               title={rippleMode ? 'Ripple mode on — edits close the gap' : 'Ripple mode off — edits leave a gap'}
               aria-pressed={rippleMode}
@@ -352,24 +324,26 @@ export default function ReviewView({ project, onProjectChange }: ReviewViewProps
                       <p className="text-[9px] font-semibold uppercase tracking-widest text-gray-400 mb-0.5">Markers &amp; cuts</p>
                       <div className="flex justify-between gap-4"><span className="text-gray-400 font-mono whitespace-nowrap">Enter</span><span className="text-gray-600 dark:text-gray-400">place marker</span></div>
                       <div className="flex justify-between gap-4"><span className="text-gray-400 font-mono whitespace-nowrap">double-click</span><span className="text-gray-600 dark:text-gray-400">place marker on track</span></div>
-                      <div className="flex justify-between gap-4"><span className="text-gray-400 font-mono whitespace-nowrap">Cut primary</span><span className="text-gray-600 dark:text-gray-400">lift cut, all clips</span></div>
-                      <div className="flex justify-between gap-4"><span className="text-gray-400 font-mono whitespace-nowrap">Cut [type]</span><span className="text-gray-600 dark:text-gray-400">collapse cut, selected only</span></div>
+                      <div className="flex justify-between gap-4"><span className="text-gray-400 font-mono whitespace-nowrap">Split</span><span className="text-gray-600 dark:text-gray-400">one marker — selected or all</span></div>
+                      <div className="flex justify-between gap-4"><span className="text-gray-400 font-mono whitespace-nowrap">Cut</span><span className="text-gray-600 dark:text-gray-400">two markers — selected or all</span></div>
                     </div>
                     <div className="flex flex-col gap-2">
-                      <p className="text-[9px] font-semibold uppercase tracking-widest text-gray-400 mb-0.5">Primary clips</p>
-                      <div className="flex justify-between gap-4"><span className="text-gray-400 font-mono whitespace-nowrap">click</span><span className="text-gray-600 dark:text-gray-400">select clip</span></div>
-                      <div className="flex justify-between gap-4"><span className="text-gray-400 font-mono whitespace-nowrap">drag</span><span className="text-gray-600 dark:text-gray-400">move clip</span></div>
+                      <p className="text-[9px] font-semibold uppercase tracking-widest text-gray-400 mb-0.5">Clips (all tracks)</p>
+                      <div className="flex justify-between gap-4"><span className="text-gray-400 font-mono whitespace-nowrap">click</span><span className="text-gray-600 dark:text-gray-400">select</span></div>
+                      <div className="flex justify-between gap-4"><span className="text-gray-400 font-mono whitespace-nowrap">drag</span><span className="text-gray-600 dark:text-gray-400">move / change track</span></div>
                       <div className="flex justify-between gap-4"><span className="text-gray-400 font-mono whitespace-nowrap">drag edge</span><span className="text-gray-600 dark:text-gray-400">trim in / out point</span></div>
+                      <div className="flex justify-between gap-4"><span className="text-gray-400 font-mono whitespace-nowrap">S</span><span className="text-gray-600 dark:text-gray-400">split at playhead</span></div>
+                      <div className="flex justify-between gap-4"><span className="text-gray-400 font-mono whitespace-nowrap">Delete</span><span className="text-gray-600 dark:text-gray-400">remove selected</span></div>
                       <div className="flex items-center justify-between gap-4">
                         <span className="flex items-center gap-1.5 text-gray-400 whitespace-nowrap"><Magnet size={11} /> ripple toggle</span>
                         <span className="text-gray-600 dark:text-gray-400">close gap on edits</span>
                       </div>
                     </div>
                     <div className="flex flex-col gap-2">
-                      <p className="text-[9px] font-semibold uppercase tracking-widest text-gray-400 mb-0.5">Overlays</p>
+                      <p className="text-[9px] font-semibold uppercase tracking-widest text-gray-400 mb-0.5">Canvas (preview)</p>
                       <div className="flex justify-between gap-4"><span className="text-gray-400 font-mono whitespace-nowrap">drag</span><span className="text-gray-600 dark:text-gray-400">move position</span></div>
                       <div className="flex justify-between gap-4"><span className="text-gray-400 font-mono whitespace-nowrap">drag corner</span><span className="text-gray-600 dark:text-gray-400">resize</span></div>
-                      <div className="flex justify-between gap-4"><span className="text-gray-400 font-mono whitespace-nowrap">Delete</span><span className="text-gray-600 dark:text-gray-400">remove selected</span></div>
+                      <div className="flex justify-between gap-4"><span className="text-gray-400 font-mono whitespace-nowrap">drag ○ handle</span><span className="text-gray-600 dark:text-gray-400">rotate (snaps at 90°)</span></div>
                     </div>
                     <div className="flex flex-col gap-2 col-span-2 border-t border-gray-100 dark:border-gray-800 pt-4">
                       <p className="text-[9px] font-semibold uppercase tracking-widest text-gray-400 mb-0.5">Captions</p>
@@ -400,10 +374,9 @@ export default function ReviewView({ project, onProjectChange }: ReviewViewProps
               onCaptionEdit={(p) => { onProjectChange(p); api.saveProject(p.id, p).catch(console.error) }}
               onOverlayEdit={(p) => { onProjectChange(p); api.saveProject(p.id, p).catch(console.error) }}
               selectedOverlayId={selectedOverlayId ?? undefined}
-              onSelectOverlay={(id) => { setSelectedOverlayId(id); setSelectedClipId(null) }}
+              onSelectOverlay={setSelectedOverlayId}
+              onSplit={handleSplit}
               onCut={handleCut}
-              selectedClipId={selectedClipId}
-              onSelectClip={setSelectedClipId}
               rippleMode={rippleMode}
             />
           </div>

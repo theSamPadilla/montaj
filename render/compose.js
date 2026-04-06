@@ -12,19 +12,43 @@
  *   - final MP4 (H.264, CRF 18, AAC audio)
  */
 import { spawnSync } from 'child_process'
-import { mkdirSync } from 'fs'
-import { dirname } from 'path'
+import { mkdirSync, writeFileSync, rmSync, renameSync } from 'fs'
+import { dirname, join } from 'path'
+import { randomBytes } from 'crypto'
 
-const FFMPEG_TIMEOUT_MS = 600_000
+const FFMPEG_TIMEOUT_MS     = 600_000
+const COMPOSE_CHUNK_SECS    = 30  // seconds per compositing pass when chunking
+const CHUNK_VIDEO_THRESHOLD = 5   // auto-chunk when video item count exceeds this
+
+const TTY = process.stderr.isTTY
+const C = {
+  green: TTY ? '\x1b[92m' : '', dim: TTY ? '\x1b[2m' : '', reset: TTY ? '\x1b[0m' : '',
+}
+function clog(msg)  { process.stderr.write(`${C.green}[montaj compose]${C.reset} ${msg}\n`) }
+function fflog(msg) { process.stderr.write(`${C.dim}[montaj ffmpeg]${C.reset} ${msg}\n`) }
+
+// Only surface ffmpeg lines that carry actionable signal — suppress banner/input listing.
+const FFMPEG_SIGNAL = /warning|error|invalid|failed|matches no streams|^\[.*@/i
+function logFfmpegStderr(stderr) {
+  for (const line of stderr.split('\n')) {
+    if (line.trim() && FFMPEG_SIGNAL.test(line)) fflog(line)
+  }
+}
+
+const IMAGE_EXTENSIONS = /\.(jpe?g|png|gif|webp|bmp|tiff?)$/i
+
+/** True if the item should be treated as a still image (looped, no audio).
+ *  Checks both item.type and the file extension — project JSON sometimes stores
+ *  still images (jpg/png backgrounds) with type:'video'. */
+function isImageItem(item) {
+  return item.type === 'image' || IMAGE_EXTENSIONS.test(item.src)
+}
 
 /**
  * Compute total video duration from all items.
- * In v0.2 all items — including primary clips in tracks[0] — carry explicit `end` values.
- * Take the max end across everything.
  */
-function computeTotalDuration(baseTrackClips, imageItems, videoItems, puppeteerSegments) {
+function computeTotalDuration(imageItems, videoItems, puppeteerSegments) {
   const allEnds = [
-    ...baseTrackClips.map(c => c.end ?? 0),
     ...imageItems.map(i => i.end ?? 0),
     ...videoItems.map(i => i.end ?? 0),
     ...puppeteerSegments.map(s => s.endSeconds ?? 0),
@@ -35,23 +59,23 @@ function computeTotalDuration(baseTrackClips, imageItems, videoItems, puppeteerS
 /**
  * @param {Object} opts
  * @param {Object}   opts.projectJson
- * @param {Array}    opts.baseTrackClips       — clip objects from tracks[0]
  * @param {Array}    opts.puppeteerSegments     — rendered WebM/MKV segments from Puppeteer
- * @param {Array}    opts.imageItems            — direct image overlay inputs
- * @param {Array}    opts.videoItems            — direct video overlay inputs
+ * @param {Array}    opts.imageItems            — image items from all tracks, with trackIdx
+ * @param {Array}    opts.videoItems            — video items from all tracks, with trackIdx
  * @param {string}   opts.outputPath
  * @param {number}   [opts.videoWidth]
  * @param {number}   [opts.videoHeight]
  */
 export async function compose({
   projectJson,
-  baseTrackClips,
   puppeteerSegments,
   imageItems,
   videoItems,
   outputPath,
   videoWidth,
   videoHeight,
+  _dryRun  = false,
+  _lossless = false,  // When true: output FFV1 MKV (intra-only, concat-safe chunk intermediates)
 }) {
   mkdirSync(dirname(outputPath), { recursive: true })
 
@@ -62,13 +86,18 @@ export async function compose({
   const vh  = videoHeight ?? projectJson.settings?.resolution?.[1] ?? 1920
   const fps = projectJson.settings?.fps ?? 30
 
-  const N = baseTrackClips.length
-  const M = imageItems.length
-  const P = videoItems.length
+  // Auto-chunk when too many simultaneous video decodes would exhaust memory.
+  // Each ProRes 4444 input at 4K is ~50 MB/frame decoded; CHUNK_VIDEO_THRESHOLD concurrent
+  // inputs fit comfortably in ~8 GB; beyond that we split into time windows.
+  if (!_dryRun && videoItems.length > CHUNK_VIDEO_THRESHOLD) {
+    return composeChunked({ projectJson, puppeteerSegments, imageItems, videoItems, outputPath, videoWidth: vw, videoHeight: vh })
+  }
 
-  // Sort items by trackIdx for correct z-ordering (lower trackIdx = further back)
-  const sortedImages = [...imageItems].sort((a, b) => (a.trackIdx ?? 0) - (b.trackIdx ?? 0))
-  const sortedVideos = [...videoItems].sort((a, b) => (a.trackIdx ?? 0) - (b.trackIdx ?? 0))
+  // Merge all items and sort by trackIdx (lower = further back), then by start time within track
+  const sortedItems = [...imageItems, ...videoItems].sort((a, b) =>
+    a.trackIdx !== b.trackIdx ? a.trackIdx - b.trackIdx : (a.start ?? 0) - (b.start ?? 0)
+  )
+  const N = sortedItems.length
 
   // Captions always composited last (on top of everything)
   const overlaySegs = puppeteerSegments.filter(s => !s.isCaption)
@@ -76,41 +105,29 @@ export async function compose({
   const orderedSegs = [...overlaySegs, ...captionSegs]
 
   const Q = orderedSegs.length
-  const musicInputIdx = N + M + P + Q
+  const musicInputIdx = N + Q
 
-  const totalDuration = computeTotalDuration(baseTrackClips, imageItems, videoItems, puppeteerSegments)
+  const totalDuration = computeTotalDuration(imageItems, videoItems, puppeteerSegments)
 
   // --- Build input list ---
   const inputs = []
 
-  // Primary track clips — one -i per clip.
-  // -itsoffset shifts the input stream's timestamps so frame 0 of the decoded clip
-  // lands at clip.start on the output timeline. Combined with the overlay filter in
-  // the filter_complex (which uses enable='between(t,clip.start,clip.end)'), each clip
-  // is composited onto the canvas at its explicit timeline position.
-  for (const clip of baseTrackClips) {
-    const inPt = clip.inPoint ?? 0
-    const dur  = (clip.outPoint != null && clip.inPoint != null)
-      ? clip.outPoint - clip.inPoint
-      : null
-    inputs.push('-itsoffset', String(clip.start ?? 0))
-    inputs.push('-ss', String(inPt))
-    if (dur != null) inputs.push('-t', String(dur))
-    inputs.push('-i', clip.src)
-  }
-
-  // Image inputs (looped for full duration)
-  for (const item of sortedImages) {
-    inputs.push('-loop', '1', '-t', String(totalDuration), '-i', item.src)
-  }
-
-  // Video inputs (trimmed to their in/out points)
-  for (const item of sortedVideos) {
-    const inPt = item.inPoint ?? 0
-    const dur  = (item.outPoint != null)
-      ? item.outPoint - inPt
-      : (item.end ?? 0) - (item.start ?? 0)
-    inputs.push('-ss', String(inPt), '-t', String(dur), '-i', item.src)
+  // All items (images + videos) from all tracks, sorted by trackIdx.
+  // Images are looped for the full duration; videos are trimmed and timestamp-shifted
+  // so frame 0 lands at item.start on the output timeline.
+  for (const item of sortedItems) {
+    if (isImageItem(item)) {
+      inputs.push('-loop', '1', '-t', String(totalDuration), '-i', item.src)
+    } else {
+      const inPt = item.inPoint ?? 0
+      const dur  = item.outPoint != null
+        ? item.outPoint - inPt
+        : (item.end ?? 0) - (item.start ?? 0)
+      // No -itsoffset: we handle video PTS via setpts in the filter graph and
+      // audio PTS via asetpts+adelay. itsoffset shifts both streams but amix
+      // drops inputs whose first frame arrives late in the filter timeline.
+      inputs.push('-ss', String(inPt), '-t', String(dur), '-i', item.src)
+    }
   }
 
   // Puppeteer segment inputs (itsoffset aligns frame 0 with startSeconds on the timeline)
@@ -127,112 +144,69 @@ export async function compose({
   let videoLabel
   let audioLabel
 
-  // Step 1: Synthesise a black canvas for the full output duration. Each primary clip is
-  // overlaid onto this canvas at its explicit timeline position using the itsoffset on its
-  // input (which shifts timestamps so the clip's frame 0 lands at clip.start) together with
-  // enable='between(t,start,end)' to limit compositing to the clip's window. This replaces
-  // the old concat approach and naturally handles gaps between clips (black frames fill them).
+  // Step 1: Black canvas for full duration
   filterParts.push(`color=black:size=${vw}x${vh}:rate=${fps}:duration=${totalDuration}[canvas_v]`)
   filterParts.push(`aevalsrc=0:c=stereo:s=44100:d=${totalDuration}[canvas_a]`)
   videoLabel = '[canvas_v]'
   audioLabel = '[canvas_a]'
 
-  for (let i = 0; i < N; i++) {
-    const clip  = baseTrackClips[i]
-    const outV  = `[pv${i}]`
-    const outA  = `[pa${i}]`
-    filterParts.push(
-      `${videoLabel}[${i}:v]overlay=x=0:y=0:enable='between(t,${clip.start},${clip.end})':shortest=0${outV}`
-    )
-    filterParts.push(
-      `${audioLabel}[${i}:a]amix=inputs=2:duration=longest:normalize=0${outA}`
-    )
-    videoLabel = outV
-    audioLabel = outA
-  }
-  // After this loop: videoLabel is '[pv{N-1}]' (or '[canvas_v]' if N=0 canvas project).
-  // The format conversion in Step 2 and overlay chain in Steps 3-5 use videoLabel directly.
-
-  // Step 2: Format base for compositing (only when overlays exist)
-  const hasAnyOverlays = M > 0 || P > 0 || Q > 0
-  if (hasAnyOverlays) {
-    // yuv420p10le preserves 10-bit HDR signal (bt2020/HLG) through the overlay chain
-    filterParts.push(`[${videoLabel.replace(/[\[\]]/g, '')}]format=yuv420p10le[v0]`)
+  // Step 2: Format canvas for compositing (yuv420p10le preserves HDR signal)
+  if (N > 0 || Q > 0) {
+    filterParts.push(`[canvas_v]format=yuv420p10le[v0]`)
     videoLabel = '[v0]'
   }
 
-  // Step 3: Image overlays (sorted by trackIdx, lower = further back)
-  for (let i = 0; i < sortedImages.length; i++) {
-    const item     = sortedImages[i]
-    const s        = item.scale ?? 1
-    const scaledW  = Math.round(vw * s)
-    const scaledH  = Math.round(vh * s)
-    const xPx      = Math.round(vw * (0.5 * (1 - s) + (item.offsetX ?? 0)))
-    const yPx      = Math.round(vh * (0.5 * (1 - s) + (item.offsetY ?? 0)))
-    const inputIdx = N + i
-    const isLast   = (i === M - 1) && P === 0 && Q === 0
-    const outLabel = isLast ? '[vout]' : `[vi${i}]`
+  // Step 3: Composite all items in trackIdx order (lower trackIdx = further back).
+  // Images and videos are handled uniformly — no special treatment for any track index.
+  for (let i = 0; i < N; i++) {
+    const item    = sortedItems[i]
+    const s       = item.scale ?? 1
+    const scaledW = Math.round(vw * s)
+    const scaledH = Math.round(vh * s)
+    const xPx     = Math.round(vw * (0.5 * (1 - s) + (item.offsetX ?? 0) / 100))
+    const yPx     = Math.round(vh * (0.5 * (1 - s) + (item.offsetY ?? 0) / 100))
+    const isLast  = i === N - 1 && Q === 0
+    const outV    = isLast ? '[vout]' : `[iv${i}]`
 
-    filterParts.push(`[${inputIdx}:v]scale=${scaledW}:${scaledH}[img${i}]`)
-
-    let imgLabel = `[img${i}]`
-    if (Math.abs((item.opacity ?? 1) - 1) > 0.001) {
-      filterParts.push(`${imgLabel}colorchannelmixer=aa=${item.opacity}[imgop${i}]`)
-      imgLabel = `[imgop${i}]`
+    if (isImageItem(item)) {
+      filterParts.push(`[${i}:v]scale=${scaledW}:${scaledH}[img${i}]`)
+      let src = `[img${i}]`
+      if (Math.abs((item.opacity ?? 1) - 1) > 0.001) {
+        filterParts.push(`${src}colorchannelmixer=aa=${item.opacity}[imgop${i}]`)
+        src = `[imgop${i}]`
+      }
+      filterParts.push(`${videoLabel}${src}overlay=x=${xPx}:y=${yPx}:enable='between(t,${item.start},${item.end})':shortest=0${outV}`)
+    } else {
+      // ProRes 4444 (.mov) from remove_bg has alpha — use format=auto
+      const fmt = item.src.endsWith('.mov') ? ':format=auto' : ':format=yuv420'
+      // setpts shifts video frames to the correct output timeline position.
+      // (Without -itsoffset, frames arrive at PTS≈0; setpts moves them to item.start.)
+      filterParts.push(`[${i}:v]setpts=PTS-STARTPTS+(${item.start}/TB)[vpts${i}]`)
+      filterParts.push(`[vpts${i}]scale=${scaledW}:${scaledH}[vid${i}]`)
+      let src = `[vid${i}]`
+      if (Math.abs((item.opacity ?? 1) - 1) > 0.001) {
+        filterParts.push(`${src}colorchannelmixer=aa=${item.opacity}[vidop${i}]`)
+        src = `[vidop${i}]`
+      }
+      filterParts.push(`${videoLabel}${src}overlay=x=${xPx}:y=${yPx}${fmt}:enable='between(t,${item.start},${item.end})':shortest=0${outV}`)
+      // Audio: asetpts normalises PTS to 0 (seek may leave non-zero PTS), then
+      // adelay inserts silence so amix sees a continuous stream from t=0.
+      if (!item.muted) {
+        const delayMs = Math.round((item.start ?? 0) * 1000)
+        const audioIn = audioLabel.startsWith('[') ? audioLabel : `[${audioLabel}]`
+        filterParts.push(`[${i}:a]asetpts=PTS-STARTPTS[apts${i}]`)
+        filterParts.push(`[apts${i}]adelay=${delayMs}:all=1[vida${i}]`)
+        filterParts.push(`${audioIn}[vida${i}]amix=inputs=2:duration=longest:normalize=0[amix${i}]`)
+        audioLabel = `[amix${i}]`
+      }
     }
-
-    filterParts.push(
-      `${videoLabel}${imgLabel}overlay=x=${xPx}:y=${yPx}:enable='between(t,${item.start},${item.end})':shortest=0${outLabel}`
-    )
-    videoLabel = outLabel
+    videoLabel = outV
   }
 
-  // Step 4: Video overlays (sorted by trackIdx, lower = further back)
-  for (let i = 0; i < sortedVideos.length; i++) {
-    const item     = sortedVideos[i]
-    const s        = item.scale ?? 1
-    const scaledW  = Math.round(vw * s)
-    const scaledH  = Math.round(vh * s)
-    const xPx      = Math.round(vw * (0.5 * (1 - s) + (item.offsetX ?? 0)))
-    const yPx      = Math.round(vh * (0.5 * (1 - s) + (item.offsetY ?? 0)))
-    const inputIdx = N + M + i
-    // ProRes 4444 from remove_bg has alpha — use format=auto for correct compositing
-    const hasAlpha   = item.src.endsWith('.mov')
-    const formatSpec = hasAlpha ? ':format=auto' : ':format=yuv420'
-    const isLast     = (i === P - 1) && Q === 0
-    const outLabel   = isLast ? '[vout]' : `[vv${i}]`
-
-    filterParts.push(`[${inputIdx}:v]scale=${scaledW}:${scaledH}[vid${i}]`)
-
-    let vidLabel = `[vid${i}]`
-    if (Math.abs((item.opacity ?? 1) - 1) > 0.001) {
-      filterParts.push(`${vidLabel}colorchannelmixer=aa=${item.opacity}[vidop${i}]`)
-      vidLabel = `[vidop${i}]`
-    }
-
-    filterParts.push(
-      `${videoLabel}${vidLabel}overlay=x=${xPx}:y=${yPx}${formatSpec}:enable='between(t,${item.start},${item.end})':shortest=0${outLabel}`
-    )
-    videoLabel = outLabel
-  }
-
-  // Step 4b: Mix audio from non-muted video overlays
-  // Each video input is already trimmed to [inPoint, inPoint+dur]; delay it by item.start to place on timeline.
-  for (let i = 0; i < sortedVideos.length; i++) {
-    const item = sortedVideos[i]
-    if (item.muted) continue
-    const inputIdx = N + M + i
-    const delayMs  = Math.round((item.start ?? 0) * 1000)
-    const audioIn  = audioLabel.startsWith('[') ? audioLabel : `[${audioLabel}]`
-    filterParts.push(`[${inputIdx}:a]adelay=${delayMs}:all=1[vida${i}]`)
-    filterParts.push(`${audioIn}[vida${i}]amix=inputs=2:duration=longest:normalize=0[amix${i}]`)
-    audioLabel = `[amix${i}]`
-  }
-
-  // Step 5: Puppeteer overlay + caption segments (captions always last)
+  // Step 4: Puppeteer overlay + caption segments (captions always last)
   for (let i = 0; i < orderedSegs.length; i++) {
     const seg      = orderedSegs[i]
-    const inputIdx = N + M + P + i
+    const inputIdx = N + i
     const inOver   = `[${inputIdx}:v]`
     const isLast   = i === Q - 1
     const outLabel = isLast ? '[vout]' : `[ov${i}]`
@@ -287,12 +261,14 @@ export async function compose({
   }
 
   // --- Assemble ffmpeg args ---
-  // VideoToolbox produces corrupted output with filter_complex overlay pipelines — hardcode libx264.
-  // Encode at 10-bit to preserve source HDR signal (bt2020/HLG).
-  const videoCodecArgs = [
-    '-c:v', 'libx264', '-preset', 'fast', '-crf', '18', '-pix_fmt', 'yuv420p10le',
-    '-colorspace', 'bt2020nc', '-color_primaries', 'bt2020', '-color_trc', 'arib-std-b67',
-  ]
+  // _lossless: FFV1 MKV for intra-only chunk intermediates (concat-safe, no B-frame DTS issues).
+  // Default: libx264 MP4 at 10-bit to preserve source HDR signal (bt2020/HLG).
+  const videoCodecArgs = _lossless
+    ? ['-c:v', 'ffv1', '-pix_fmt', 'yuv420p10le']
+    : ['-c:v', 'libx264', '-preset', 'fast', '-crf', '18', '-pix_fmt', 'yuv420p']
+  const audioCodecArgs = _lossless
+    ? ['-c:a', 'pcm_s16le']
+    : ['-c:a', 'aac', '-b:a', '192k']
 
   const ffmpegArgs = ['-y', ...inputs]
 
@@ -300,8 +276,8 @@ export async function compose({
     ffmpegArgs.push('-filter_complex', filterParts.join(';'))
   }
 
-  // Map video: if overlays produced a named label use it, else map directly
-  if (hasAnyOverlays) {
+  // Map video: if items produced a named label use it, else map directly
+  if (N > 0 || Q > 0) {
     ffmpegArgs.push('-map', '[vout]')
   } else {
     // videoLabel is the canvas/clip chain label (e.g. '[canvas_v]' or '[pv{N-1}]')
@@ -316,31 +292,172 @@ export async function compose({
     ffmpegArgs.push('-map', `${audioLabel}?`)
   }
 
-  ffmpegArgs.push(
-    ...videoCodecArgs,
-    '-c:a', 'aac', '-b:a', '192k',
-    '-movflags', '+faststart',
-    outputPath,
-  )
+  ffmpegArgs.push(...videoCodecArgs, ...audioCodecArgs)
+  if (!_lossless) ffmpegArgs.push('-movflags', '+faststart')
+  ffmpegArgs.push(outputPath)
 
-  process.stderr.write(
-    `[montaj compose] running ffmpeg: ${N} base clip(s), ${M} image(s), ${P} video(s), ${Q} Puppeteer segment(s)...\n`
-  )
+  if (_dryRun) return { inputs, filterParts, ffmpegArgs }
+
+  const nImages = sortedItems.filter(i => isImageItem(i)).length
+  const nVideos = sortedItems.filter(i => !isImageItem(i)).length
+  clog(`running ffmpeg: ${nImages} image(s), ${nVideos} video(s), ${Q} Puppeteer segment(s)...`)
+
+  // Write to a unique temp path, then atomically rename — prevents concurrent renders
+  // from partially overwriting each other's output.
+  // Insert hash before extension so ffmpeg's format detection still works (e.g. .mkv, .mp4).
+  const tmpPath = outputPath.replace(/(\.\w+)$/, `.${randomBytes(4).toString('hex')}$1`)
+  ffmpegArgs[ffmpegArgs.length - 1] = tmpPath  // replace outputPath with tmpPath
 
   const result = spawnSync('ffmpeg', ffmpegArgs, { encoding: 'utf8', timeout: FFMPEG_TIMEOUT_MS })
 
-  // Always log ffmpeg stderr — warnings explain missing overlays, format issues, etc.
-  if (result.stderr) {
-    for (const line of result.stderr.split('\n').filter(l => l.trim())) {
-      process.stderr.write(`[montaj ffmpeg] ${line}\n`)
-    }
-  }
+  if (result.stderr) logFfmpegStderr(result.stderr)
 
   if (result.status !== 0) {
+    rmSync(tmpPath, { force: true })
     throw new Error(`ffmpeg compose failed:\n${result.stderr}`)
   }
 
+  renameSync(tmpPath, outputPath)
   return outputPath
+}
+
+// ---------------------------------------------------------------------------
+// Chunked compositing — splits the timeline to cap simultaneous video decodes
+// ---------------------------------------------------------------------------
+
+async function composeChunked({ projectJson, puppeteerSegments, imageItems, videoItems, outputPath, videoWidth, videoHeight }) {
+  const music       = projectJson.audio?.music
+  const hasMusic    = !!(music?.src)
+  const totalDuration = computeTotalDuration(imageItems, videoItems, puppeteerSegments)
+  const numChunks   = Math.ceil(totalDuration / COMPOSE_CHUNK_SECS)
+
+  clog(
+    `chunking ${totalDuration.toFixed(1)}s into ${numChunks} pass(es) ` +
+    `(${videoItems.length} video inputs exceed threshold of ${CHUNK_VIDEO_THRESHOLD})`
+  )
+
+  const chunkPaths = []
+
+  for (let ci = 0; ci < numChunks; ci++) {
+    const t0 = ci * COMPOSE_CHUNK_SECS
+    const t1 = Math.min(t0 + COMPOSE_CHUNK_SECS, totalDuration)
+    // FFV1 MKV: intra-only → safe for stream-copy concat at chunk boundaries
+    const chunkPath = outputPath.replace(/(\.\w+)$/, `_chunk${ci}.mkv`)
+    chunkPaths.push(chunkPath)
+
+    // Items overlapping with [t0, t1)
+    const chunkImages = imageItems.filter(item => (item.start ?? 0) < t1 && (item.end ?? 0) > t0)
+    const chunkVideos = videoItems.filter(item => (item.start ?? 0) < t1 && (item.end ?? 0) > t0)
+    const chunkSegs   = puppeteerSegments.filter(seg => seg.startSeconds < t1 && seg.endSeconds > t0)
+
+    clog(
+      `pass ${ci + 1}/${numChunks} (t=${t0.toFixed(1)}–${t1.toFixed(1)}s): ` +
+      `${chunkImages.length} image(s), ${chunkVideos.length} video(s), ${chunkSegs.length} seg(s)`
+    )
+
+    // Remap timestamps to chunk-relative [0, t1-t0]
+    const adjImages = chunkImages.map(item => ({
+      ...item,
+      start: Math.max(item.start ?? 0, t0) - t0,
+      end:   Math.min(item.end ?? totalDuration, t1) - t0,
+    }))
+
+    const adjVideos = chunkVideos.map(item => {
+      const itemStart = item.start ?? 0
+      const relStart  = Math.max(itemStart, t0) - t0
+      const relEnd    = Math.min(item.end ?? totalDuration, t1) - t0
+      const inPt      = item.inPoint ?? 0
+      // Advance source seek position by however much of this clip preceded t0
+      const newInPt   = inPt + Math.max(0, t0 - itemStart)
+      return { ...item, start: relStart, end: relEnd, inPoint: newInPt, outPoint: newInPt + (relEnd - relStart) }
+    })
+
+    // startSeconds may be negative for segments whose start precedes t0 — itsoffset handles it
+    const adjSegs = chunkSegs.map(seg => ({
+      ...seg,
+      startSeconds: seg.startSeconds - t0,
+      endSeconds:   Math.min(seg.endSeconds, t1) - t0,
+    }))
+
+    // Each chunk is composed without music; music is mixed in the final pass
+    const chunkProject = { ...projectJson, audio: undefined }
+
+    await compose({
+      projectJson:       chunkProject,
+      puppeteerSegments: adjSegs,
+      imageItems:        adjImages,
+      videoItems:        adjVideos,
+      outputPath:        chunkPath,
+      videoWidth,
+      videoHeight,
+      _lossless:         true,
+    })
+  }
+
+  // Concat chunks → preMusicPath
+  const preMusicPath = hasMusic ? outputPath.replace(/(\.\w+)$/, '_nomusic$1') : outputPath
+  concatVideoFiles(chunkPaths, preMusicPath)
+  if (!process.env.MONTAJ_KEEP_CHUNKS) {
+    for (const p of chunkPaths) rmSync(p, { force: true })
+  }
+
+  // Add music in a final re-mux pass (video stream copied, no re-encode)
+  if (hasMusic) {
+    mixMusicIntoVideo(preMusicPath, music, outputPath)
+    rmSync(preMusicPath, { force: true })
+  }
+
+  return outputPath
+}
+
+function concatVideoFiles(paths, outputPath) {
+  mkdirSync(dirname(outputPath), { recursive: true })
+  const listFile = outputPath + '.concat.txt'
+  writeFileSync(listFile, paths.map(p => `file '${p}'`).join('\n'))
+  // Inputs are FFV1 MKV (intra-only) — concat demuxer is safe.
+  // Re-encode to H.264 MP4 here; `-c copy` on B-frame streams breaks DTS at boundaries.
+  clog(`concatenating ${paths.length} chunk(s) → final H.264 encode...`)
+  const tmpPath = outputPath.replace(/(\.\w+)$/, `.${randomBytes(4).toString('hex')}$1`)
+  const result = spawnSync('ffmpeg', [
+    '-y', '-f', 'concat', '-safe', '0', '-i', listFile,
+    '-c:v', 'libx264', '-preset', 'fast', '-crf', '18', '-pix_fmt', 'yuv420p',
+    '-c:a', 'aac', '-b:a', '192k',
+    '-movflags', '+faststart', tmpPath,
+  ], { encoding: 'utf8', timeout: FFMPEG_TIMEOUT_MS })
+  rmSync(listFile, { force: true })
+  if (result.stderr) logFfmpegStderr(result.stderr)
+  if (result.status !== 0) {
+    rmSync(tmpPath, { force: true })
+    throw new Error(`ffmpeg concat failed:\n${result.stderr}`)
+  }
+  renameSync(tmpPath, outputPath)
+}
+
+function mixMusicIntoVideo(videoPath, music, outputPath) {
+  const vol = music.volume ?? 0.15
+  let filterStr
+  if (music.ducking?.enabled) {
+    const depth   = music.ducking.depth   ?? -12
+    const attack  = music.ducking.attack  ?? 0.3
+    const release = music.ducking.release ?? 0.5
+    filterStr = (
+      `[0:a]asplit=2[speech][sc];` +
+      `[1:a]volume=${vol}[mscaled];` +
+      `[mscaled][sc]sidechaincompress=threshold=0.02:ratio=4:attack=${attack * 1000}:release=${release * 1000}[ducked];` +
+      `[speech][ducked]amix=inputs=2:duration=first[aout]`
+    )
+  } else {
+    filterStr = `[0:a][1:a]amix=inputs=2:weights='1 ${vol}':duration=first[aout]`
+  }
+  const result = spawnSync('ffmpeg', [
+    '-y', '-i', videoPath, '-i', music.src,
+    '-filter_complex', filterStr,
+    '-map', '0:v', '-map', '[aout]',
+    '-c:v', 'copy', '-c:a', 'aac', '-b:a', '192k',
+    '-movflags', '+faststart', outputPath,
+  ], { encoding: 'utf8', timeout: FFMPEG_TIMEOUT_MS })
+  if (result.stderr) logFfmpegStderr(result.stderr)
+  if (result.status !== 0) throw new Error(`ffmpeg music mix failed:\n${result.stderr}`)
 }
 
 // ---------------------------------------------------------------------------
@@ -371,3 +488,4 @@ function detectVideoCodec() {
 }
 
 export { computeTotalDuration }
+

@@ -149,16 +149,32 @@ function CornerHandle({ corner, scale, onMouseDown }: {
   )
 }
 
+function RotateHandle({ scale, onMouseDown }: {
+  scale: number
+  onMouseDown: (e: React.MouseEvent) => void
+}) {
+  return (
+    <div
+      className="absolute top-0 left-1/2 z-50 cursor-grab flex flex-col items-center"
+      style={{ transform: `translateX(-50%) translateY(-100%) scale(${1 / scale})`, transformOrigin: 'bottom center' }}
+      onMouseDown={onMouseDown}
+    >
+      <div className="w-4 h-4 rounded-full border-2 border-amber-400 bg-black/60" />
+      <div className="w-px h-3 bg-amber-400" />
+    </div>
+  )
+}
+
 // ---------------------------------------------------------------------------
 
-type DragType = 'move' | `resize-${Corner}`
+type DragType = 'move' | `resize-${Corner}` | 'rotate'
 
 interface PreviewPlayerProps {
   project: Project
   currentTime: number
   onTimeUpdate: (t: number) => void
   selectedOverlayId?: string
-  onOverlayChange?: (id: string, changes: { offsetX?: number; offsetY?: number; scale?: number }) => void
+  onOverlayChange?: (id: string, changes: { offsetX?: number; offsetY?: number; scale?: number; rotation?: number }) => void
 }
 
 const SNAP_THRESHOLD = 2.5  // % of container
@@ -202,19 +218,33 @@ export default function PreviewPlayer({ project, currentTime, onTimeUpdate, sele
     initOffsetX: number
     initOffsetY: number
     initScale: number
+    initRotation: number
+    // rotate-specific: center of element in page coords and initial angle
+    cx?: number
+    cy?: number
+    initAngle?: number
   } | null>(null)
 
-  const [liveOffset, setLiveOffset] = useState<{ id: string; x: number; y: number } | null>(null)
-  const [liveScale,  setLiveScale]  = useState<{ id: string; scale: number } | null>(null)
-  const liveOffsetRef = useRef<typeof liveOffset>(null)
-  const liveScaleRef  = useRef<typeof liveScale>(null)
+  const [liveOffset,   setLiveOffset]   = useState<{ id: string; x: number; y: number } | null>(null)
+  const [liveScale,    setLiveScale]    = useState<{ id: string; scale: number } | null>(null)
+  const [liveRotation, setLiveRotation] = useState<{ id: string; rotation: number } | null>(null)
+  const liveOffsetRef   = useRef<typeof liveOffset>(null)
+  const liveScaleRef    = useRef<typeof liveScale>(null)
+  const liveRotationRef = useRef<typeof liveRotation>(null)
 
   // Snap guide visibility
   const [snapGuides, setSnapGuides] = useState({ x: false, y: false })
+  const [snapRotation, setSnapRotation] = useState<number | null>(null)
   const prevSnapRef = useRef({ x: false, y: false })
+  const prevSnapRotRef = useRef<number | null>(null)
 
-  useEffect(() => { liveOffsetRef.current = liveOffset }, [liveOffset])
-  useEffect(() => { liveScaleRef.current  = liveScale  }, [liveScale])
+  const ROT_SNAP_ANGLES = [0, 90, 180, 270]
+  const ROT_ATTRACT_DEG = 5   // snap in within ±5°
+  const ROT_RELEASE_DEG = 8   // break free after ±8°
+
+  useEffect(() => { liveOffsetRef.current   = liveOffset   }, [liveOffset])
+  useEffect(() => { liveScaleRef.current    = liveScale    }, [liveScale])
+  useEffect(() => { liveRotationRef.current = liveRotation }, [liveRotation])
 
   useEffect(() => {
     if (!dragState) return
@@ -241,6 +271,33 @@ export default function PreviewPlayer({ project, currentTime, onTimeUpdate, sele
         const next = { id: dragState.id, x: snapX ? 0 : rawX, y: snapY ? 0 : rawY }
         setLiveOffset(next)
         liveOffsetRef.current = next
+      } else if (dragState.type === 'rotate') {
+        const curAngle = Math.atan2(e.clientY - dragState.cy!, e.clientX - dragState.cx!)
+        const delta = (curAngle - dragState.initAngle!) * (180 / Math.PI)
+        const raw = ((dragState.initRotation + delta) % 360 + 360) % 360
+
+        // Snap to 90° increments with attract/release hysteresis
+        let snapped: number | null = null
+        if (prevSnapRotRef.current !== null) {
+          const diff = Math.abs(((raw - prevSnapRotRef.current) + 180) % 360 - 180)
+          if (diff < ROT_RELEASE_DEG) snapped = prevSnapRotRef.current
+        }
+        if (snapped === null) {
+          for (const angle of ROT_SNAP_ANGLES) {
+            const diff = Math.abs(((raw - angle) + 180) % 360 - 180)
+            if (diff < ROT_ATTRACT_DEG) { snapped = angle; break }
+          }
+        }
+        if (snapped !== prevSnapRotRef.current) {
+          if (snapped !== null) navigator.vibrate?.(10)
+          prevSnapRotRef.current = snapped
+          setSnapRotation(snapped)
+        }
+
+        const finalRotation = snapped ?? raw
+        const next = { id: dragState.id, rotation: finalRotation }
+        setLiveRotation(next)
+        liveRotationRef.current = next
       } else {
         // Resize from corner
         const corner = dragState.type.slice(7) as Corner  // 'resize-se' → 'se'
@@ -257,15 +314,20 @@ export default function PreviewPlayer({ project, currentTime, onTimeUpdate, sele
     function onUp() {
       const lo = liveOffsetRef.current
       const ls = liveScaleRef.current
-      const changes: { offsetX?: number; offsetY?: number; scale?: number } = {}
+      const lr = liveRotationRef.current
+      const changes: { offsetX?: number; offsetY?: number; scale?: number; rotation?: number } = {}
       if (lo) { changes.offsetX = lo.x; changes.offsetY = lo.y }
       if (ls) { changes.scale = ls.scale }
+      if (lr) { changes.rotation = lr.rotation }
       if (Object.keys(changes).length) onOverlayChange?.(dragState!.id, changes)
       setDragState(null)
       setLiveOffset(null)
       setLiveScale(null)
+      setLiveRotation(null)
       setSnapGuides({ x: false, y: false })
+      setSnapRotation(null)
       prevSnapRef.current = { x: false, y: false }
+      prevSnapRotRef.current = null
     }
 
     document.addEventListener('mousemove', onMove)
@@ -540,24 +602,7 @@ export default function PreviewPlayer({ project, currentTime, onTimeUpdate, sele
   return (
     <div ref={containerRef} className="relative bg-black h-full aspect-[9/16] max-w-full overflow-hidden rounded">
       {isCanvasProject ? (
-        <>
-          {/* Background items from tracks[0] — images shown at low z-index */}
-          {clips.map(item => {
-            if (item.type !== 'image' || !item.src) return null
-            const visible = currentTime >= item.start && currentTime < item.end
-            if (!visible) return null
-            return (
-              <img
-                key={item.id}
-                src={fileUrl(item.src)}
-                draggable={false}
-                className="absolute inset-0 w-full h-full object-cover pointer-events-none"
-                style={{ zIndex: 1 }}
-              />
-            )
-          })}
-          <div className="absolute inset-0 cursor-pointer" style={{ zIndex: 10 }} onClick={togglePlay} />
-        </>
+        <div className="absolute inset-0 cursor-pointer" style={{ zIndex: 10 }} onClick={togglePlay} />
       ) : clips.length === 0 ? (
         <div className="absolute inset-0 flex items-center justify-center text-gray-600 text-sm">
           No clips
@@ -607,8 +652,8 @@ export default function PreviewPlayer({ project, currentTime, onTimeUpdate, sele
         </div>
       )}
 
-      {/* Overlay tracks — rendered in z-order (track 0 first, higher indexes on top) */}
-      {overlayTracks.map((trackItems, trackIdx) =>
+      {/* All interactive tracks — in canvas mode this includes track 0; otherwise overlays only */}
+      {(isCanvasProject ? project.tracks ?? [] : overlayTracks).map((trackItems, trackIdx) =>
         trackItems.map((item) => {
           const visible  = currentTime >= item.start && currentTime < item.end
           // Pre-mount video items slightly before their start so the frame is ready (no flash)
@@ -617,28 +662,42 @@ export default function PreviewPlayer({ project, currentTime, onTimeUpdate, sele
             : visible
           if (!mounted) return null
 
-          const isSel   = selectedOverlayId === item.id
-          const offsetX = (liveOffset?.id === item.id ? liveOffset.x : null) ?? item.offsetX ?? 0
-          const offsetY = (liveOffset?.id === item.id ? liveOffset.y : null) ?? item.offsetY ?? 0
-          const scale   = (liveScale?.id  === item.id ? liveScale.scale : null) ?? item.scale ?? 1
+          const isSel    = selectedOverlayId === item.id
+          const offsetX  = (liveOffset?.id   === item.id ? liveOffset.x       : null) ?? item.offsetX  ?? 0
+          const offsetY  = (liveOffset?.id   === item.id ? liveOffset.y       : null) ?? item.offsetY  ?? 0
+          const scale    = (liveScale?.id    === item.id ? liveScale.scale    : null) ?? item.scale    ?? 1
+          const rotation = (liveRotation?.id === item.id ? liveRotation.rotation : null) ?? item.rotation ?? 0
 
           function startMove(e: React.MouseEvent) {
             if (!isSel) return
             e.stopPropagation()
-            setDragState({ id: item.id, type: 'move', initX: e.clientX, initY: e.clientY, initOffsetX: offsetX, initOffsetY: offsetY, initScale: scale })
+            setDragState({ id: item.id, type: 'move', initX: e.clientX, initY: e.clientY, initOffsetX: offsetX, initOffsetY: offsetY, initScale: scale, initRotation: rotation })
           }
 
           function startResize(corner: Corner) {
             return (e: React.MouseEvent) => {
               e.stopPropagation()
-              setDragState({ id: item.id, type: `resize-${corner}`, initX: e.clientX, initY: e.clientY, initOffsetX: offsetX, initOffsetY: offsetY, initScale: scale })
+              setDragState({ id: item.id, type: `resize-${corner}`, initX: e.clientX, initY: e.clientY, initOffsetX: offsetX, initOffsetY: offsetY, initScale: scale, initRotation: rotation })
             }
           }
 
+          function startRotate(e: React.MouseEvent) {
+            e.stopPropagation()
+            const rect = containerRef.current?.getBoundingClientRect()
+            if (!rect) return
+            const cx = rect.left + rect.width  * (0.5 + offsetX / 100)
+            const cy = rect.top  + rect.height * (0.5 + offsetY / 100)
+            const initAngle = Math.atan2(e.clientY - cy, e.clientX - cx)
+            setDragState({ id: item.id, type: 'rotate', initX: e.clientX, initY: e.clientY, initOffsetX: offsetX, initOffsetY: offsetY, initScale: scale, initRotation: rotation, cx, cy, initAngle })
+          }
+
+          // zIndex: canvas mode track 0 sits just above the play-toggle div (10), others stack above
+          const zIndex = isCanvasProject ? trackIdx + 11 : trackIdx + 12
+
           const wrapperStyle: React.CSSProperties = {
-            transform: `translate(${offsetX}%, ${offsetY}%) scale(${scale})`,
+            transform: `translate(${offsetX}%, ${offsetY}%) rotate(${rotation}deg) scale(${scale})`,
             transformOrigin: 'center center',
-            zIndex: trackIdx + 12,
+            zIndex,
             opacity: item.opacity ?? 1,
           }
 
@@ -648,18 +707,25 @@ export default function PreviewPlayer({ project, currentTime, onTimeUpdate, sele
               : 'pointer-events-none'
           }`
 
+          const handles = isSel && (
+            <>
+              {(['nw', 'ne', 'sw', 'se'] as Corner[]).map(c => (
+                <CornerHandle key={c} corner={c} scale={scale} onMouseDown={startResize(c)} />
+              ))}
+              <RotateHandle scale={scale} onMouseDown={startRotate} />
+            </>
+          )
+
           // Image items
           if (item.type === 'image' && item.src) {
             return (
-              <div key={`${trackIdx}-${item.id}`} className={wrapperClass} style={wrapperStyle} onMouseDown={startMove}>
+              <div key={item.id} className={wrapperClass} style={wrapperStyle} onMouseDown={startMove}>
                 <img
                   src={fileUrl(item.src)}
                   draggable={false}
                   className="absolute inset-0 w-full h-full object-contain pointer-events-none"
                 />
-                {isSel && (['nw', 'ne', 'sw', 'se'] as Corner[]).map(c => (
-                  <CornerHandle key={c} corner={c} scale={scale} onMouseDown={startResize(c)} />
-                ))}
+                {handles}
               </div>
             )
           }
@@ -667,7 +733,7 @@ export default function PreviewPlayer({ project, currentTime, onTimeUpdate, sele
           // Video items (preview uses raw src; remove_bg compositing only happens at final render)
           if (item.type === 'video' && item.src) {
             return (
-              <div key={`${trackIdx}-${item.id}`} className={wrapperClass} style={wrapperStyle} onMouseDown={startMove}>
+              <div key={item.id} className={wrapperClass} style={wrapperStyle} onMouseDown={startMove}>
                 <OverlayVideo
                   src={fileUrl(item.nobg_preview_src ?? item.src)}
                   currentTime={currentTime}
@@ -678,9 +744,7 @@ export default function PreviewPlayer({ project, currentTime, onTimeUpdate, sele
                   visible={visible}
                   key={`vid-${item.id}`}
                 />
-                {isSel && (['nw', 'ne', 'sw', 'se'] as Corner[]).map(c => (
-                  <CornerHandle key={c} corner={c} scale={scale} onMouseDown={startResize(c)} />
-                ))}
+                {handles}
               </div>
             )
           }
@@ -691,7 +755,7 @@ export default function PreviewPlayer({ project, currentTime, onTimeUpdate, sele
             const frame = Math.round((currentTime - item.start) * fps)
             const durationFrames = Math.round((item.end - item.start) * fps)
             return (
-              <div key={`${trackIdx}-${item.id}`} className={wrapperClass} style={wrapperStyle} onMouseDown={startMove}>
+              <div key={item.id} className={wrapperClass} style={wrapperStyle} onMouseDown={startMove}>
                 {/* Render at native 1080×1920 then scale down to match container */}
                 <div style={{
                   position: 'absolute', top: 0, left: 0,
@@ -707,9 +771,7 @@ export default function PreviewPlayer({ project, currentTime, onTimeUpdate, sele
                     durationFrames={durationFrames}
                   />
                 </div>
-                {isSel && (['nw', 'ne', 'sw', 'se'] as Corner[]).map(c => (
-                  <CornerHandle key={c} corner={c} scale={scale} onMouseDown={startResize(c)} />
-                ))}
+                {handles}
               </div>
             )
           }
@@ -727,7 +789,7 @@ export default function PreviewPlayer({ project, currentTime, onTimeUpdate, sele
           }
           return (
             <div
-              key={`${trackIdx}-${item.id}`}
+              key={item.id}
               className={`absolute ${isSel ? 'cursor-grab ring-1 ring-amber-400/40' : 'pointer-events-none'} ${posClass[pos] ?? posClass['bottom-left']}`}
               style={wrapperStyle}
               onMouseDown={startMove}
@@ -737,9 +799,7 @@ export default function PreviewPlayer({ project, currentTime, onTimeUpdate, sele
                   {item.text as string}
                 </span>
               )}
-              {isSel && (['nw', 'ne', 'sw', 'se'] as Corner[]).map(c => (
-                <CornerHandle key={c} corner={c} scale={scale} onMouseDown={startResize(c)} />
-              ))}
+              {handles}
             </div>
           )
         })
@@ -753,6 +813,25 @@ export default function PreviewPlayer({ project, currentTime, onTimeUpdate, sele
       {dragState?.type === 'move' && snapGuides.y && (
         <div className="absolute left-0 right-0 top-1/2 h-px bg-amber-400 pointer-events-none z-50"
              style={{ transform: 'translateY(-50%)' }} />
+      )}
+      {/* Rotation snap guide — line through center at the snapped angle */}
+      {dragState?.type === 'rotate' && snapRotation !== null && (
+        <div className="absolute inset-0 pointer-events-none z-50">
+          <svg width="100%" height="100%" overflow="visible">
+            <line
+              x1="50%" y1="50%"
+              x2={`calc(50% + 200% * ${Math.cos((snapRotation - 90) * Math.PI / 180)})`}
+              y2={`calc(50% + 200% * ${Math.sin((snapRotation - 90) * Math.PI / 180)})`}
+              stroke="rgb(251 191 36)" strokeWidth="1" strokeDasharray="4 3" opacity="0.8"
+            />
+            <line
+              x1="50%" y1="50%"
+              x2={`calc(50% - 200% * ${Math.cos((snapRotation - 90) * Math.PI / 180)})`}
+              y2={`calc(50% - 200% * ${Math.sin((snapRotation - 90) * Math.PI / 180)})`}
+              stroke="rgb(251 191 36)" strokeWidth="1" strokeDasharray="4 3" opacity="0.8"
+            />
+          </svg>
+        </div>
       )}
 
       {/* Caption preview */}

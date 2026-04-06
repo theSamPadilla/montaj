@@ -33,6 +33,7 @@ export interface VisualItem {
   offsetY?: number
   scale?: number
   opacity?: number        // 0.0–1.0
+  rotation?: number       // degrees, clockwise
   opaque?: boolean        // legacy boolean kept for old overlay items
   props?: Record<string, unknown>  // overlay type only
   remove_bg?: boolean     // video type only

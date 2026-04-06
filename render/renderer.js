@@ -204,8 +204,11 @@ async function renderChunk(browser, job) {
   return chunkWebm
 }
 
+const TTY = process.stderr.isTTY
+const C = { cyan: TTY ? '\x1b[96m' : '', reset: TTY ? '\x1b[0m' : '' }
+
 function log(msg) {
-  process.stderr.write(`[montaj render] ${msg}\n`)
+  process.stderr.write(`${C.cyan}[montaj render]${C.reset} ${msg}\n`)
 }
 
 function progressBar(label, done, total, startMs) {
