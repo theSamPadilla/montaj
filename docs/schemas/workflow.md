@@ -54,6 +54,7 @@ The workflow gives the agent a sensible starting point and encodes domain knowle
 | `description` | string | yes | One or two sentences. Agent reads this to understand when to use this workflow. |
 | `steps` | array | yes | Ordered list of step entries |
 | `requires_clips` | boolean | no | When `false`, no source footage is needed. Default: `true`. The UI warns if clips are missing for a workflow that requires them. |
+| `notes` | string | no | Extra guidance for the agent — conventions, track ordering rules, or input semantics specific to this workflow. Read alongside the description before the agent begins execution. |
 
 ### Step entry
 
@@ -117,6 +118,35 @@ Multi-clip edit. Silence trim per clip, transcribe, select best takes, remove fi
   ]
 }
 ```
+
+### `rvm_presenter`
+
+Talking-head presenter over a custom background. Trim silence, remove non-speech, select takes, remove fillers, materialize trimmed footage, background-remove with RVM, resize to 9:16. Background is provided as an asset (image or video) via the editing prompt.
+
+**Track ordering note:** background goes in `tracks[0]`; presenter (after `remove_bg`) goes in `tracks[1]`. This is the inverse of the default clip-in-tracks[0] convention — the `notes` field in the workflow JSON encodes this guidance for the agent.
+
+```json
+{
+  "name": "rvm_presenter",
+  "description": "Talking-head presenter over a custom background...",
+  "notes": "Background (from assets) goes in tracks[0]. Presenter footage (clips, after remove_bg) goes in tracks[1] with remove_bg: true, nobg_src, and nobg_preview_src set.",
+  "steps": [
+    { "id": "probe",        "uses": "montaj/probe",           "foreach": "clips" },
+    { "id": "snapshot",     "uses": "montaj/snapshot",        "foreach": "clips" },
+    { "id": "silence",      "uses": "montaj/waveform_trim",   "foreach": "clips",                             "params": { "threshold": "-30", "min-silence": 0.3 } },
+    { "id": "nonspeech",    "uses": "montaj/rm_nonspeech",    "foreach": "clips", "needs": ["silence"],      "params": { "model": "base.en" } },
+    { "id": "transcribe",   "uses": "montaj/transcribe",      "foreach": "clips", "needs": ["nonspeech"],    "params": { "model": "base.en" } },
+    { "id": "select-takes", "uses": "montaj/select-takes",                         "needs": ["transcribe"] },
+    { "id": "fillers",      "uses": "montaj/rm_fillers",      "foreach": "clips", "needs": ["select-takes"], "params": { "model": "base.en" } },
+    { "id": "materialize",  "uses": "montaj/materialize_cut", "foreach": "clips", "needs": ["fillers"] },
+    { "id": "remove_bg",    "uses": "montaj/remove_bg",       "foreach": "clips", "needs": ["materialize"] }
+  ]
+}
+```
+
+### `trim_and_caption`
+
+Multi-clip edit with captions and resize. Same as `trim_and_overlay` with a caption pass and resize to 9:16 added. Use when the output is going to a social platform and captions are required.
 
 ### `basic_trim`
 

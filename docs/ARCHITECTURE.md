@@ -334,8 +334,12 @@ No registration, no config changes. Discovered automatically.
 
 | Workflow | Description |
 |----------|-------------|
-| `trim_and_overlay` | Multi-clip edit — silence trim, transcribe, select best takes, remove fillers, concat, caption, overlays, resize 9:16 |
-| `basic_trim` | Trim and clean only — silence, transcribe, select best takes, remove fillers, concat. No captions, overlays, or resize. |
+| `trim_and_overlay` | Multi-clip edit — silence trim, transcribe, select best takes, remove fillers, overlays. No captions. |
+| `trim_and_caption` | Multi-clip edit — same as `trim_and_overlay` plus caption and resize 9:16. |
+| `basic_trim` | Trim and clean only — silence, transcribe, select best takes, remove fillers. No captions, overlays, or resize. |
+| `canvas` | Animation-only — no source footage required. Agent builds entirely from overlays and canvas sections. |
+| `mix_canvas` | Multi-clip edit with canvas sections — same as `trim_and_overlay` plus canvas sections. No captions. |
+| `rvm_presenter` | Talking-head presenter over a custom background — trim, materialize, RVM background removal. Background in `tracks[0]`, presenter in `tracks[1]`. |
 
 `workflows/trim_and_overlay.json` is used by `montaj run` when no `--workflow` is specified. All workflow files are equal — fork any of them, save under a new name, and it becomes available immediately.
 
@@ -429,8 +433,19 @@ All steps are agent-callable tools. The agent decides which to run, when, and wi
 |------|-------------|
 | `montaj/trim` | Cut by in/out point |
 | `montaj/concat` | Join clips and apply all trim specs in a single encode pass (the only step that writes video) |
+| `montaj/materialize_cut` | Encode a trim spec or raw video to H.264 — used when a subsequent step (e.g. `remove_bg`) requires an actual video file rather than a trim spec |
 | `montaj/resize` | Reframe: 9:16, 1:1, 16:9 |
 | `montaj/extract_audio` | Extract as WAV or MP3 |
+
+---
+
+### Background Removal
+
+| Step | What it does |
+|------|-------------|
+| `montaj/remove_bg` | Remove video background using RVM (Robust Video Matting). Outputs ProRes 4444 `.mov` with alpha channel (`nobg_src`) for final render and a VP9 WebM (`nobg_preview_src`) for browser preview. Requires `montaj install rvm`. |
+
+Used in the `rvm_presenter` workflow. `remove_bg` requires an actual video file — pass the output of `materialize_cut`, not a trim spec. The step updates the project item with `remove_bg: true`, `nobg_src`, and `nobg_preview_src`. At render time the engine composites the alpha-channel `.mov` over the layers beneath it via ffmpeg.
 
 ---
 
@@ -547,6 +562,10 @@ The pipeline is mostly CPU-bound. GPU applies at one step:
 | ffmpeg compositing (filter graph) | CPU | — limited GPU filter support |
 | ffmpeg intermediate encode (PNG → WebM/ProRes) | CPU | — alpha formats lack hwaccel support |
 | **Final H.264 encode** | **GPU** | VideoToolbox (macOS), NVENC (NVIDIA), VAAPI (Intel/Linux) |
+
+**Background-removed video items (`nobg_src`):**
+
+When a `tracks[1+]` item has `remove_bg: true` and `nobg_src` is set, the render engine uses the ProRes 4444 `.mov` (with alpha) in place of the original `src` at compose time. The alpha channel is preserved through the ffmpeg filter graph and composited over the layers beneath. Browser preview uses `nobg_preview_src` (VP9 WebM) instead — Chrome supports VP9 alpha; ProRes does not play in browsers.
 
 ffmpeg detects and uses available hardware encoders automatically. 5–10x speedup on final encode.
 

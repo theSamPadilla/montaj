@@ -61,7 +61,7 @@ Overlays live in `tracks[1+]` — overlay tracks in the unified tracks array. Ea
 }
 ```
 
-For multiple non-overlapping overlays, add them to the same track (index 0). For simultaneous overlays at different z-levels, add them to separate tracks.
+For multiple non-overlapping overlays, add them to the same track. For simultaneous overlays at different z-levels, add them to separate tracks.
 
 Persist via `PUT /api/projects/{id}` (HTTP) or write directly to `project.json` (headless).
 
