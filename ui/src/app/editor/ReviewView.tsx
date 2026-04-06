@@ -9,7 +9,7 @@ import Timeline from '@/components/Timeline'
 import VersionPanel from '@/components/VersionPanel'
 import { Button } from '@/components/ui/button'
 import { api, fileUrl } from '@/lib/api'
-import { applyCutToTracks } from '@/lib/cuts'
+import { applyCutToItem, applyCutToTracks } from '@/lib/cuts'
 import { type Asset, type Project, type ProjectVersion } from '@/lib/project'
 
 interface ReviewViewProps {
@@ -30,6 +30,7 @@ export default function ReviewView({ project, onProjectChange }: ReviewViewProps
   const historyRef = useRef<Project[]>([])
   const [pickingAssets, setPickingAssets]     = useState(false)
   const [selectedOverlayId, setSelectedOverlayId] = useState<string | null>(null)
+  const [selectedClipId, setSelectedClipId]       = useState<string | null>(null)
   const [versions, setVersions]           = useState<ProjectVersion[]>([])
   const [restoring, setRestoring]         = useState<string | null>(null)
   const [rerunOpen, setRerunOpen]         = useState(false)
@@ -101,9 +102,16 @@ export default function ReviewView({ project, onProjectChange }: ReviewViewProps
 
   function handleCut(cut: { start: number; end: number }) {
     pushHistory(project)
-    const updated = applyCutToTracks(project, cut)
+    const targetId = selectedClipId ?? selectedOverlayId
+    const updated = targetId
+      ? applyCutToItem(project, targetId, cut)
+      : applyCutToTracks(project, cut)
     onProjectChange(updated)
     api.saveProject(updated.id, updated).catch(console.error)
+    // The selected item's ID no longer exists after a collapse cut (split into new fragments).
+    // Clear both selections so the UI doesn't reference a stale ID.
+    setSelectedClipId(null)
+    setSelectedOverlayId(null)
     setDirty(true)
   }
 
@@ -299,8 +307,10 @@ export default function ReviewView({ project, onProjectChange }: ReviewViewProps
               onCaptionEdit={(p) => { onProjectChange(p); api.saveProject(p.id, p).catch(console.error) }}
               onOverlayEdit={(p) => { onProjectChange(p); api.saveProject(p.id, p).catch(console.error) }}
               selectedOverlayId={selectedOverlayId ?? undefined}
-              onSelectOverlay={setSelectedOverlayId}
+              onSelectOverlay={(id) => { setSelectedOverlayId(id); setSelectedClipId(null) }}
               onCut={handleCut}
+              selectedClipId={selectedClipId}
+              onSelectClip={setSelectedClipId}
             />
           </div>
         </div>
@@ -336,12 +346,18 @@ export default function ReviewView({ project, onProjectChange }: ReviewViewProps
                 key={asset.id}
                 className="group relative rounded overflow-hidden border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900"
               >
-                <img
-                  src={fileUrl(asset.src)}
-                  alt={asset.name ?? basename(asset.src)}
-                  className="w-full aspect-video object-cover cursor-pointer"
+                <div
+                  className="w-full aspect-video bg-gray-800 relative flex items-center justify-center cursor-pointer overflow-hidden"
                   onClick={() => { setPreviewAsset(asset); setPathCopied(false) }}
-                />
+                >
+                  <Image size={16} className="text-gray-600 absolute" />
+                  <img
+                    src={fileUrl(asset.src)}
+                    alt=""
+                    className="absolute inset-0 w-full h-full object-cover"
+                    onError={(e) => { (e.target as HTMLImageElement).style.display = 'none' }}
+                  />
+                </div>
                 <div className="px-2 py-1 flex items-center gap-1">
                   <Image size={10} className="shrink-0 text-gray-500" />
                   <span className="text-xs text-gray-400 truncate flex-1">

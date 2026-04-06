@@ -164,7 +164,14 @@ interface PreviewPlayerProps {
 const SNAP_THRESHOLD = 2.5  // % of container
 
 export default function PreviewPlayer({ project, currentTime, onTimeUpdate, selectedOverlayId, onOverlayChange }: PreviewPlayerProps) {
-  const videoRef     = useRef<HTMLVideoElement>(null)
+  // Double-buffer video elements for seamless clip transitions
+  const video0Ref    = useRef<HTMLVideoElement>(null)
+  const video1Ref    = useRef<HTMLVideoElement>(null)
+  const activeSlotRef = useRef<0 | 1>(0)
+  const [activeSlot, setActiveSlot] = useState<0 | 1>(0)
+  // Tracks what src is preloaded in the inactive slot (relative URL)
+  const preloadSrcRef = useRef('')
+
   const containerRef    = useRef<HTMLDivElement>(null)
   const [renderScale, setRenderScale] = useState<number>(1)
   const activeIdxRef = useRef(0)
@@ -173,6 +180,9 @@ export default function PreviewPlayer({ project, currentTime, onTimeUpdate, sele
   const rafRef       = useRef<number | null>(null)
   const rafLastMs    = useRef<number | null>(null)
   const [isPlaying, setIsPlaying] = useState(false)
+
+  function getActiveVideo() { return activeSlotRef.current === 0 ? video0Ref.current : video1Ref.current }
+  function getInactiveVideo() { return activeSlotRef.current === 0 ? video1Ref.current : video0Ref.current }
 
   // ── Drag state ────────────────────────────────────────────────────────────
   const [dragState, setDragState] = useState<{
@@ -310,6 +320,7 @@ export default function PreviewPlayer({ project, currentTime, onTimeUpdate, sele
   }, [isPlaying, isCanvasProject, overlayTracks, onTimeUpdate])
   const captionTrack = useMemo(() => project.captions, [project])
 
+  // Space = play/pause
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       const el = e.target as HTMLElement
@@ -320,74 +331,121 @@ export default function PreviewPlayer({ project, currentTime, onTimeUpdate, sele
           setIsPlaying(prev => !prev)
           return
         }
-        const video = videoRef.current
+        const video = getActiveVideo()
         if (!video) return
         video.paused ? video.play().catch(() => {}) : video.pause()
       }
     }
     document.addEventListener('keydown', onKeyDown)
     return () => document.removeEventListener('keydown', onKeyDown)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isCanvasProject])
 
+  // Load first clip into active slot when clips change
   useEffect(() => {
-    const video = videoRef.current
+    const video = getActiveVideo()
     if (!video || !clips.length || !clips[0].src) return
     activeIdxRef.current = 0
+    activeSlotRef.current = 0
+    setActiveSlot(0)
+    preloadSrcRef.current = ''
     video.src = fileUrl(clips[0].src)
     video.currentTime = clips[0].inPoint ?? 0
+    // Clear inactive slot
+    const inactive = getInactiveVideo()
+    if (inactive) { inactive.pause(); inactive.removeAttribute('src') }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [clips])
 
+  // Scrub: seek active slot when currentTime jumps externally
   useEffect(() => {
     if (Math.abs(currentTime - lastTimeRef.current) < 0.05) return
     seekingRef.current = true
     try {
       lastTimeRef.current = currentTime
-      // v0.2: clips have explicit start/end — find clip covering currentTime directly
       const idx = clips.findIndex(c => currentTime >= c.start && currentTime < c.end)
       let clipIdx: number
       if (idx !== -1) {
         clipIdx = idx
       } else {
-        // In a gap — hold on the last clip that ended before currentTime.
-        // reduce returns 0 if currentTime is before the first clip, which is the least-bad fallback.
         clipIdx = clips.reduce((best, c, i) => (c.end <= currentTime ? i : best), 0)
       }
       const clip = clips[clipIdx]
       if (!clip?.src) return
       activeIdxRef.current = clipIdx
-      const video = videoRef.current
+      const video = getActiveVideo()
       if (!video) return
       const targetSrc = fileUrl(clip.src)
-      if (video.src !== targetSrc) video.src = targetSrc
+      if (video.src !== targetSrc) {
+        video.src = targetSrc
+        // Clear preloaded inactive slot — it may no longer be the right next clip
+        preloadSrcRef.current = ''
+        const inactive = getInactiveVideo()
+        if (inactive) { inactive.pause(); inactive.removeAttribute('src') }
+      }
       video.currentTime = Math.max(clip.inPoint ?? 0, (clip.inPoint ?? 0) + (currentTime - clip.start))
     } finally {
       seekingRef.current = false
     }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentTime, clips])
 
   const handleTimeUpdate = useCallback(() => {
-    const video = videoRef.current
+    const slot = activeSlotRef.current
+    const video = slot === 0 ? video0Ref.current : video1Ref.current
     if (!video || seekingRef.current) return
     const clip = clips[activeIdxRef.current]
     if (!clip) return
 
-    if (video.currentTime >= (clip.outPoint ?? clip.end - clip.start + (clip.inPoint ?? 0))) {
-      // Clip ended — load the next one
+    const outPoint = clip.outPoint ?? clip.end - clip.start + (clip.inPoint ?? 0)
+
+    // Preload next clip into inactive slot ~1s before end
+    const timeLeft = outPoint - video.currentTime
+    if (timeLeft < 1.0) {
+      const nextIdx = activeIdxRef.current + 1
+      if (nextIdx < clips.length && clips[nextIdx].src) {
+        const inactiveVideo = slot === 0 ? video1Ref.current : video0Ref.current
+        const nextSrc = fileUrl(clips[nextIdx].src!)
+        if (inactiveVideo && preloadSrcRef.current !== nextSrc) {
+          preloadSrcRef.current = nextSrc
+          inactiveVideo.src = nextSrc
+          inactiveVideo.currentTime = clips[nextIdx].inPoint ?? 0
+        }
+      }
+    }
+
+    if (video.currentTime >= outPoint) {
       const nextIdx = activeIdxRef.current + 1
       if (nextIdx < clips.length && clips[nextIdx].src) {
         const next = clips[nextIdx]
-        // Natural playback skips gaps: jump the scrubber to next.start immediately.
-        // (Scrubbing into a gap holds on the preceding clip instead — asymmetry is intentional.)
+        const nextSlot = (1 - slot) as 0 | 1
+        const nextVideo = nextSlot === 0 ? video0Ref.current : video1Ref.current
+
         lastTimeRef.current = next.start
         onTimeUpdate(next.start)
         activeIdxRef.current = nextIdx
-        video.src = fileUrl(next.src!)
-        video.currentTime = next.inPoint ?? 0
-        video.play().catch(() => {})
+
+        if (nextVideo) {
+          const nextSrc = fileUrl(next.src!)
+          // If not already preloaded, set src now (may have a brief flash)
+          if (preloadSrcRef.current !== nextSrc) {
+            nextVideo.src = nextSrc
+            nextVideo.currentTime = next.inPoint ?? 0
+          }
+          nextVideo.play().catch(() => {})
+        }
+
+        // Swap to next slot
+        activeSlotRef.current = nextSlot
+        setActiveSlot(nextSlot)
+        preloadSrcRef.current = ''
+
+        // Pause outgoing slot
+        video.pause()
       }
       return
     }
-    // v0.2: timeline time = clip.start + elapsed within source
+
     const t = clip.start + (video.currentTime - (clip.inPoint ?? 0))
     lastTimeRef.current = t
     onTimeUpdate(t)
@@ -395,37 +453,67 @@ export default function PreviewPlayer({ project, currentTime, onTimeUpdate, sele
 
   // ── Render ─────────────────────────────────────────────────────────────────
 
+  function togglePlay() {
+    if (isCanvasProject) { setIsPlaying(p => !p); return }
+    const video = getActiveVideo()
+    if (!video) return
+    video.paused ? video.play().catch(() => {}) : video.pause()
+  }
+
   return (
     <div ref={containerRef} className="relative bg-black h-full aspect-[9/16] max-w-full overflow-hidden rounded">
       {isCanvasProject ? (
         <div
           className="absolute inset-0 bg-black cursor-pointer"
-          onClick={() => setIsPlaying(p => !p)}
-        >
-          {!isPlaying && (
-            <div className="absolute inset-0 flex items-center justify-center">
-              <div className="w-14 h-14 rounded-full bg-black/50 flex items-center justify-center">
-                <svg className="w-6 h-6 text-white ml-1" fill="currentColor" viewBox="0 0 24 24">
-                  <path d="M8 5v14l11-7z" />
-                </svg>
-              </div>
-            </div>
-          )}
-        </div>
+          onClick={togglePlay}
+        />
       ) : clips.length === 0 ? (
         <div className="absolute inset-0 flex items-center justify-center text-gray-600 text-sm">
           No clips
         </div>
       ) : (
-        <video
-          ref={videoRef}
-          className="w-full h-full object-contain"
-          onTimeUpdate={handleTimeUpdate}
-          onPlay={() => setIsPlaying(true)}
-          onPause={() => setIsPlaying(false)}
-          controls
-          playsInline
+        <>
+          {/* Slot 0 */}
+          <video
+            ref={video0Ref}
+            className="absolute inset-0 w-full h-full object-contain"
+            onTimeUpdate={() => { if (activeSlotRef.current === 0) handleTimeUpdate() }}
+            onPlay={() => { if (activeSlotRef.current === 0) setIsPlaying(true) }}
+            onPause={() => { if (activeSlotRef.current === 0) setIsPlaying(false) }}
+            playsInline
+            style={{ opacity: activeSlot === 0 ? 1 : 0, pointerEvents: activeSlot === 0 ? 'auto' : 'none', zIndex: activeSlot === 0 ? 1 : 0 }}
+          />
+          {/* Slot 1 */}
+          <video
+            ref={video1Ref}
+            className="absolute inset-0 w-full h-full object-contain"
+            onTimeUpdate={() => { if (activeSlotRef.current === 1) handleTimeUpdate() }}
+            onPlay={() => { if (activeSlotRef.current === 1) setIsPlaying(true) }}
+            onPause={() => { if (activeSlotRef.current === 1) setIsPlaying(false) }}
+            playsInline
+            style={{ opacity: activeSlot === 1 ? 1 : 0, pointerEvents: activeSlot === 1 ? 'auto' : 'none', zIndex: activeSlot === 1 ? 1 : 0 }}
+          />
+        </>
+      )}
+
+      {/* Montaj play/pause control — covers the active video area */}
+      {!isCanvasProject && clips.length > 0 && (
+        <div
+          className="absolute inset-0 cursor-pointer"
+          style={{ zIndex: 10 }}
+          onClick={togglePlay}
         />
+      )}
+
+      {/* Play button overlay — shown when paused */}
+      {!isPlaying && (clips.length > 0 || isCanvasProject) && (
+        <div className="absolute inset-0 flex items-center justify-center pointer-events-none" style={{ zIndex: 11 }}>
+          <div className="w-14 h-14 rounded-full bg-black/50 flex items-center justify-center">
+            <svg className="w-6 h-6 text-white ml-1" fill="currentColor" viewBox="0 0 24 24">
+              <path d="M8 5v14l11-7z" />
+            </svg>
+          </div>
+        </div>
       )}
 
       {/* Overlay tracks — rendered in z-order (track 0 first, higher indexes on top) */}
@@ -459,7 +547,7 @@ export default function PreviewPlayer({ project, currentTime, onTimeUpdate, sele
           const wrapperStyle: React.CSSProperties = {
             transform: `translate(${offsetX}%, ${offsetY}%) scale(${scale})`,
             transformOrigin: 'center center',
-            zIndex: trackIdx + 1,
+            zIndex: trackIdx + 12,
             opacity: item.opacity ?? 1,
           }
 

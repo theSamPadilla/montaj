@@ -110,6 +110,42 @@ function applyCutToCaptions(segments: CaptionSegment[], cut: Cut): CaptionSegmen
   return result
 }
 
+// ── Per-item collapse cut ────────────────────────────────────────────────────
+
+/**
+ * Collapse a single item around a cut.
+ * `cut` must already be clamped to [item.start, item.end].
+ * Right fragment starts at cut.start (item shrinks; gap appears at item tail).
+ */
+function cutSingleItem(item: VisualItem, cut: Cut): VisualItem[] {
+  const inPoint  = item.inPoint  ?? 0
+  const outPoint = item.outPoint ?? (inPoint + (item.end - item.start))
+
+  const physStart = inPoint + (cut.start - item.start)
+  const physEnd   = inPoint + (cut.end   - item.start)
+
+  const result: VisualItem[] = []
+
+  if (physStart > inPoint) {
+    result.push({
+      ...item,
+      end: cut.start,
+      ...(item.outPoint !== undefined ? { outPoint: physStart } : {}),
+    })
+  }
+  if (outPoint - physEnd > 0.001) {
+    result.push({
+      ...item,
+      id: uniqueId(item.id),
+      start: cut.start,
+      end: cut.start + (outPoint - physEnd),
+      ...(item.inPoint !== undefined ? { inPoint: physEnd } : {}),
+    })
+  }
+
+  return result
+}
+
 // ── Public API ──────────────────────────────────────────────────────────────
 
 /**
@@ -132,4 +168,73 @@ export function applyCutToTracks(project: Project, cut: Cut): Project {
     : project.captions
 
   return { ...project, tracks: [newPrimaryTrack, ...overlayTracks], captions: newCaptions }
+}
+
+/**
+ * Apply a collapse-style cut to a single item identified by `itemId`.
+ *
+ * - If the item is in `tracks[0]`, captions are adjusted for the clamped cut,
+ *   but only for segments within [item.start, item.end] — other clips' captions
+ *   are left untouched.
+ * - If the item is in an overlay track, captions are not touched.
+ * - If `itemId` is not found, the project is returned unchanged.
+ *
+ * Returns a new Project — no re-encoding, pure JSON.
+ */
+export function applyCutToItem(project: Project, itemId: string, cut: Cut): Project {
+  if (cut.end <= cut.start) return project
+
+  const [primaryTrack = [], ...overlayTracks] = project.tracks ?? []
+
+  // ── Primary track ──
+  const primaryIdx = primaryTrack.findIndex(item => item.id === itemId)
+  if (primaryIdx !== -1) {
+    const item     = primaryTrack[primaryIdx]
+    const cutStart = Math.max(cut.start, item.start)
+    const cutEnd   = Math.min(cut.end,   item.end)
+    if (cutEnd <= cutStart) return project
+
+    const clamped = { start: cutStart, end: cutEnd }
+    const newPrimary = [
+      ...primaryTrack.slice(0, primaryIdx),
+      ...cutSingleItem(item, clamped),
+      ...primaryTrack.slice(primaryIdx + 1),
+    ]
+    // Only adjust captions within this clip's timeline window [item.start, item.end].
+    // Captions belonging to other clips must not be shifted — applyCutToCaptions shifts
+    // everything after cutEnd, which would misalign adjacent clips.
+    let newCaptions = project.captions
+    if (newCaptions) {
+      const inner = newCaptions.segments.filter(s => s.end > item.start && s.start < item.end)
+      const outer = newCaptions.segments.filter(s => !(s.end > item.start && s.start < item.end))
+      const adjusted = applyCutToCaptions(inner, clamped)
+      const merged = [...adjusted, ...outer].sort((a, b) => a.start - b.start)
+      newCaptions = { ...newCaptions, segments: merged }
+    }
+
+    return { ...project, tracks: [newPrimary, ...overlayTracks], captions: newCaptions }
+  }
+
+  // ── Overlay tracks ──
+  for (let ti = 0; ti < overlayTracks.length; ti++) {
+    const track   = overlayTracks[ti]
+    const itemIdx = track.findIndex(item => item.id === itemId)
+    if (itemIdx === -1) continue
+
+    const item     = track[itemIdx]
+    const cutStart = Math.max(cut.start, item.start)
+    const cutEnd   = Math.min(cut.end,   item.end)
+    if (cutEnd <= cutStart) return project
+
+    const clamped    = { start: cutStart, end: cutEnd }
+    const newTrack   = [
+      ...track.slice(0, itemIdx),
+      ...cutSingleItem(item, clamped),
+      ...track.slice(itemIdx + 1),
+    ]
+    const newOverlays = overlayTracks.map((t, i) => (i === ti ? newTrack : t))
+    return { ...project, tracks: [primaryTrack, ...newOverlays] }
+  }
+
+  return project  // itemId not found
 }

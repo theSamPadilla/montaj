@@ -13,6 +13,8 @@ interface TimelineProps {
   selectedOverlayId?: string
   onSelectOverlay?: (id: string | null) => void
   onCut?: (cut: { start: number; end: number }) => void
+  selectedClipId?: string | null
+  onSelectClip?: (id: string | null) => void
 }
 
 
@@ -51,7 +53,7 @@ function EditableSegment({ seg, onEdit }: { seg: CaptionSegment; onEdit: (text: 
 }
 
 
-export default function Timeline({ project, currentTime, onTimeUpdate, onProjectChange, onCaptionEdit, onOverlayEdit, selectedOverlayId, onSelectOverlay, onCut }: TimelineProps) {
+export default function Timeline({ project, currentTime, onTimeUpdate, onProjectChange, onCaptionEdit, onOverlayEdit, selectedOverlayId, onSelectOverlay, onCut, selectedClipId, onSelectClip }: TimelineProps) {
   const clips         = [...(project.tracks?.[0] ?? [])]
   const captionTrack  = project.captions
   const overlayTracks = project.tracks?.slice(1) ?? []
@@ -127,8 +129,33 @@ export default function Timeline({ project, currentTime, onTimeUpdate, onProject
           track.map(ov =>
             ov.id !== item.id ? ov :
             edge === 'start'
-              ? { ...ov, start: Math.min(t, ov.end - 0.1) }
-              : { ...ov, end: Math.max(t, ov.start + 0.1) }
+              ? (() => {
+                  const newStart = Math.min(t, ov.end - 0.1)
+                  if (ov.type !== 'video') return { ...ov, start: newStart }
+                  const dtActual = newStart - ov.start
+                  return {
+                    ...ov,
+                    start: newStart,
+                    inPoint: Math.min(
+                      Math.max(0, (ov.inPoint ?? 0) + dtActual),
+                      (ov.outPoint ?? ((ov.inPoint ?? 0) + (ov.end - ov.start))) - 0.1,
+                    ),
+                  }
+                })()
+              : (() => {
+                  const newEnd = Math.max(t, ov.start + 0.1)
+                  if (ov.type !== 'video') return { ...ov, end: newEnd }
+                  const origOut = ov.outPoint ?? ((ov.inPoint ?? 0) + (ov.end - ov.start))
+                  const dtActual = newEnd - ov.end
+                  return {
+                    ...ov,
+                    end: newEnd,
+                    outPoint: Math.max(
+                      (ov.inPoint ?? 0) + 0.1,
+                      Math.min(origOut + dtActual, ov.sourceDuration ?? Infinity),  // unbounded if sourceDuration unknown
+                    ),
+                  }
+                })()
           )
         )],
       }
@@ -302,6 +329,10 @@ export default function Timeline({ project, currentTime, onTimeUpdate, onProject
     onTimeUpdate(ratioFromClientX(e.clientX) * totalDuration)
   }
 
+  const cutButtonLabel = selectedOverlayId
+    ? `Cut ${overlayTracks.flat().find(i => i.id === selectedOverlayId)?.type ?? 'overlay'}`
+    : 'Cut primary'
+
   function makeCaptionEdit(globalIdx: number) {
     return (text: string) => {
       if (!project.captions) return
@@ -445,7 +476,7 @@ export default function Timeline({ project, currentTime, onTimeUpdate, onProject
                   setMarkers([null, null])
                 }}
               >
-                Cut
+                {cutButtonLabel}
               </button>
             )}
           </span>
@@ -462,10 +493,18 @@ export default function Timeline({ project, currentTime, onTimeUpdate, onProject
               {clips.map((clip) => (
                 <div
                   key={clip.id}
-                  className="absolute top-0 bottom-0 bg-indigo-700/70 border-r border-indigo-500/40 flex items-center overflow-hidden pointer-events-none"
+                  className={`absolute top-0 bottom-0 flex items-center overflow-hidden cursor-pointer border-r border-indigo-500/40
+                    ${selectedClipId === clip.id
+                      ? 'bg-indigo-500/80 ring-1 ring-inset ring-indigo-300/80'
+                      : 'bg-indigo-700/70 hover:bg-indigo-600/70'}`}
                   style={{ left: `${pct(clip.start)}%`, width: `${pct(clip.end - clip.start)}%` }}
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    onSelectClip?.(selectedClipId === clip.id ? null : clip.id)
+                    onSelectOverlay?.(null)
+                  }}
                 >
-                  <span className="text-[10px] text-indigo-200 truncate pl-2">▪ clip</span>
+                  <span className="text-[10px] text-indigo-200 truncate pl-2">▪ {clip.type}</span>
                 </div>
               ))}
               {hoverLine}
