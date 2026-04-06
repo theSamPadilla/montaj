@@ -1,6 +1,6 @@
 {
   "name": "materialize_cut",
-  "description": "Encode a trim spec or raw video segment into an H.264 clip. Not part of any workflow — use for ad-hoc encoding or batch scripts that need a materialised file.",
+  "description": "Encode a trim spec or raw video segment into an H.264 clip. Used in workflows that require an actual video file before a subsequent step (e.g. remove_bg). Also useful for ad-hoc encoding and batch scripts.",
   "input": {
     "type": "any",
     "description": "Trim spec JSON (from waveform_trim / rm_fillers / etc.) or raw video file"

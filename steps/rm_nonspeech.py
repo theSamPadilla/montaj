@@ -3,7 +3,7 @@
 import json, os, sys, argparse, shutil, tempfile
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "lib"))
-from common import require_file, get_duration, transcribe_words
+from common import require_file, get_duration, transcribe_words, run
 from trim_spec import is_trim_spec, load as load_spec, merge as merge_keeps, audio_extract_cmd, remap_timestamp
 
 def main():
