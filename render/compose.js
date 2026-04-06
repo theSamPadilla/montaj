@@ -89,7 +89,7 @@ export async function compose({
   // Auto-chunk when too many simultaneous video decodes would exhaust memory.
   // Each ProRes 4444 input at 4K is ~50 MB/frame decoded; CHUNK_VIDEO_THRESHOLD concurrent
   // inputs fit comfortably in ~8 GB; beyond that we split into time windows.
-  if (!_dryRun && videoItems.length > CHUNK_VIDEO_THRESHOLD) {
+  if (!_dryRun && !_lossless && videoItems.length > CHUNK_VIDEO_THRESHOLD) {
     return composeChunked({ projectJson, puppeteerSegments, imageItems, videoItems, outputPath, videoWidth: vw, videoHeight: vh })
   }
 
@@ -119,14 +119,16 @@ export async function compose({
     if (isImageItem(item)) {
       inputs.push('-loop', '1', '-t', String(totalDuration), '-i', item.src)
     } else {
-      const inPt = item.inPoint ?? 0
-      const dur  = item.outPoint != null
-        ? item.outPoint - inPt
-        : (item.end ?? 0) - (item.start ?? 0)
+      const inPt  = item.inPoint ?? 0
+      const outPt = item.outPoint ?? (inPt + (item.end ?? 0) - (item.start ?? 0))
+      // Use -to (absolute file timestamp) instead of -t (duration from seek point).
+      // Fast seek lands on the keyframe before inPt; -t would count from there and
+      // clip the end short by however far back the keyframe was. -to stops at the
+      // exact file timestamp regardless of where the keyframe landed.
       // No -itsoffset: we handle video PTS via setpts in the filter graph and
       // audio PTS via asetpts+adelay. itsoffset shifts both streams but amix
       // drops inputs whose first frame arrives late in the filter timeline.
-      inputs.push('-ss', String(inPt), '-t', String(dur), '-i', item.src)
+      inputs.push('-ss', String(inPt), '-to', String(outPt), '-i', item.src)
     }
   }
 
@@ -264,8 +266,11 @@ export async function compose({
   // _lossless: FFV1 MKV for intra-only chunk intermediates (concat-safe, no B-frame DTS issues).
   // Default: libx264 MP4 at 10-bit to preserve source HDR signal (bt2020/HLG).
   const videoCodecArgs = _lossless
-    ? ['-c:v', 'ffv1', '-pix_fmt', 'yuv420p10le']
-    : ['-c:v', 'libx264', '-preset', 'fast', '-crf', '18', '-pix_fmt', 'yuv420p']
+    ? ['-c:v', 'ffv1', '-pix_fmt', 'yuv420p10le', '-reserve_index_space', '1000000']
+    : [
+        '-c:v', 'libx264', '-preset', 'fast', '-crf', '18', '-pix_fmt', 'yuv420p',
+        '-colorspace', 'bt709', '-color_trc', 'bt709', '-color_primaries', 'bt709', '-color_range', '1',
+      ]
   const audioCodecArgs = _lossless
     ? ['-c:a', 'pcm_s16le']
     : ['-c:a', 'aac', '-b:a', '192k']

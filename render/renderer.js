@@ -197,6 +197,7 @@ async function renderChunk(browser, job) {
     '-i',         join(frameDir, 'frame-%06d.png'),
     '-c:v',       'ffv1',
     '-pix_fmt',   pixFmt,
+    '-reserve_index_space', '1000000',
     chunkWebm,
   ], `ffmpeg PNG→ffv1 failed (segment ${id} chunk ${chunkIndex})`)
 
