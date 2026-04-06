@@ -14,7 +14,7 @@ interface PromptBarProps {
   initialWorkflow?: string
 }
 
-export default function PromptBar({ clips, assets = [], name, profile, initialPrompt = '', initialWorkflow = 'basic_trim' }: PromptBarProps) {
+export default function PromptBar({ clips, assets = [], name, profile, initialPrompt = '', initialWorkflow = 'clean_cut' }: PromptBarProps) {
   const [prompt, setPrompt]     = useState(initialPrompt)
   const [workflow, setWorkflow] = useState(initialWorkflow)
   const [loading, setLoading]   = useState(false)
@@ -52,7 +52,7 @@ export default function PromptBar({ clips, assets = [], name, profile, initialPr
             onChange={(e) => setWorkflow(e.target.value)}
             className="h-9 rounded-md border border-gray-700 bg-gray-800 px-2 text-xs text-gray-100 focus:outline-none focus:ring-2 focus:ring-blue-500"
           >
-            <option value="basic_trim">basic_trim</option>
+            <option value="clean_cut">clean_cut</option>
           </select>
           <Button onClick={handleRun} disabled={loading || !prompt.trim()} size="sm">
             {loading ? 'Running…' : 'Run ⌘↵'}

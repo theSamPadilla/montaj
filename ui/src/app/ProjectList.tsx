@@ -97,7 +97,7 @@ export default function ProjectList() {
         </p>
         <br />
         <p className="text-sm text-gray-500 dark:text-gray-400 leading-relaxed">
-          Built-in steps cover common operations. Build your own steps, workflows, and adaptors.
+          Built-in steps cover common operations. Build your own steps and workflows.
           The agent decides what to run, in what order, and with what params.
           Customize your editing style with your social media styles.
         </p>

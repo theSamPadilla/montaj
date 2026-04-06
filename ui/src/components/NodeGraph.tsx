@@ -43,6 +43,8 @@ const CANVAS_CX  = 300
 function StartNode({ data }: NodeProps) {
   const [open, setOpen] = useState(false)
   const description = data.description as string | undefined
+  const notes       = data.notes       as string | undefined
+  const hasInfo     = !!(description || notes)
   return (
     <div style={{ position: 'relative', display: 'inline-block' }}>
       <div style={{
@@ -52,7 +54,7 @@ function StartNode({ data }: NodeProps) {
         display: 'flex', alignItems: 'center', gap: 6,
       }}>
         Start
-        {description && (
+        {hasInfo && (
           <span
             onClick={(e) => { e.stopPropagation(); setOpen(o => !o) }}
             style={{
@@ -65,18 +67,59 @@ function StartNode({ data }: NodeProps) {
           >i</span>
         )}
       </div>
-      {open && description && (
-        <div style={{
-          position: 'absolute', bottom: 'calc(100% + 8px)', left: '50%',
-          transform: 'translateX(-50%)',
-          background: '#1e1b4b', border: '1px solid #4338ca', borderRadius: 8,
-          padding: '8px 12px', width: 240, fontSize: 11, color: '#c7d2fe',
-          lineHeight: 1.5, zIndex: 50, pointerEvents: 'auto',
-          boxShadow: '0 4px 12px rgba(0,0,0,0.5)',
-        }}>
-          {description}
+
+      {open && hasInfo && (
+        <div
+          onClick={e => e.stopPropagation()}
+          style={{
+            position: 'absolute', bottom: 'calc(100% + 10px)', left: '50%',
+            transform: 'translateX(-50%)',
+            background: '#13112b', border: '1px solid #4338ca', borderRadius: 10,
+            width: 320, zIndex: 50, pointerEvents: 'auto',
+            boxShadow: '0 8px 24px rgba(0,0,0,0.6)',
+            overflow: 'hidden',
+          }}
+        >
+          {/* Header */}
+          <div style={{
+            display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+            padding: '10px 14px 8px', borderBottom: '1px solid #2d2a55',
+          }}>
+            <span style={{ fontSize: 11, fontWeight: 700, color: '#a5b4fc', letterSpacing: '0.05em', textTransform: 'uppercase' }}>
+              About this workflow
+            </span>
+            <span
+              onClick={() => setOpen(false)}
+              style={{ fontSize: 14, color: '#6366f1', cursor: 'pointer', lineHeight: 1 }}
+            >×</span>
+          </div>
+
+          {/* Description */}
+          {description && (
+            <div style={{ padding: '10px 14px', borderBottom: notes ? '1px solid #1e1b4b' : undefined }}>
+              <p style={{ fontSize: 10, fontWeight: 600, color: '#6366f1', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 5 }}>
+                Description
+              </p>
+              <p style={{ fontSize: 12, color: '#c7d2fe', lineHeight: 1.6 }}>
+                {description}
+              </p>
+            </div>
+          )}
+
+          {/* Notes */}
+          {notes && (
+            <div style={{ padding: '10px 14px', background: '#0f0d24' }}>
+              <p style={{ fontSize: 10, fontWeight: 600, color: '#f59e0b', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 5 }}>
+                Notes
+              </p>
+              <p style={{ fontSize: 12, color: '#fde68a', lineHeight: 1.6, opacity: 0.85 }}>
+                {notes}
+              </p>
+            </div>
+          )}
         </div>
       )}
+
       <Handle type="source" position={Position.Bottom} style={{ background: '#818cf8' }} />
     </div>
   )
@@ -297,6 +340,7 @@ interface WorkflowStep {
 interface WorkflowFile {
   name: string
   description?: string
+  notes?: string
   steps: WorkflowStep[]
 }
 
@@ -304,12 +348,12 @@ interface WorkflowFile {
 const NEW_WF = '__new__'
 
 // ── Start node factory ────────────────────────────────────────────────────────
-function makeStartNode(description?: string): Node {
+function makeStartNode(description?: string, notes?: string): Node {
   return {
     id: 'start',
     type: 'start',
     position: { x: CANVAS_CX - 40, y: 40 },
-    data: { description },
+    data: { description, notes },
     deletable: false,
   }
 }
@@ -379,7 +423,7 @@ export default function NodeGraph() {
         const wfFile = wf as unknown as WorkflowFile
         setActiveDesc(wfFile.description)
         setIsDirty(false)
-        loadWorkflow(wfFile)
+        loadWorkflow(wfFile, wfFile.notes)
       })
       .catch(err => {
         setLoadErr(err instanceof Error ? err.message : 'Failed to load workflow')
@@ -392,11 +436,11 @@ export default function NodeGraph() {
     return steps.find(s => s.name === name)
   }
 
-  function loadWorkflow(wf: WorkflowFile) {
+  function loadWorkflow(wf: WorkflowFile, notes?: string) {
     const newNodes: Node[] = []
     const newEdges: Edge[] = []
 
-    newNodes.push(makeStartNode(wf.description))
+    newNodes.push(makeStartNode(wf.description, notes))
 
     // Build step id → node id map for edge resolution
     const stepToNodeId = new Map<string, string>()

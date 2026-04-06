@@ -292,7 +292,8 @@ export default function PreviewPlayer({ project, currentTime, onTimeUpdate, sele
   const clips        = useMemo(() => project.tracks?.[0] ?? [], [project])
   const overlayTracks = useMemo(() => project.tracks?.slice(1) ?? [], [project])
 
-  const isCanvasProject = clips.length === 0
+  // Canvas project: no primary video in tracks[0] (e.g. image-only background track)
+  const isCanvasProject = clips.length === 0 || clips.every(c => c.type !== 'video')
 
   useEffect(() => {
     if (!isCanvasProject) return
@@ -539,10 +540,24 @@ export default function PreviewPlayer({ project, currentTime, onTimeUpdate, sele
   return (
     <div ref={containerRef} className="relative bg-black h-full aspect-[9/16] max-w-full overflow-hidden rounded">
       {isCanvasProject ? (
-        <div
-          className="absolute inset-0 bg-black cursor-pointer"
-          onClick={togglePlay}
-        />
+        <>
+          {/* Background items from tracks[0] — images shown at low z-index */}
+          {clips.map(item => {
+            if (item.type !== 'image' || !item.src) return null
+            const visible = currentTime >= item.start && currentTime < item.end
+            if (!visible) return null
+            return (
+              <img
+                key={item.id}
+                src={fileUrl(item.src)}
+                draggable={false}
+                className="absolute inset-0 w-full h-full object-cover pointer-events-none"
+                style={{ zIndex: 1 }}
+              />
+            )
+          })}
+          <div className="absolute inset-0 cursor-pointer" style={{ zIndex: 10 }} onClick={togglePlay} />
+        </>
       ) : clips.length === 0 ? (
         <div className="absolute inset-0 flex items-center justify-center text-gray-600 text-sm">
           No clips

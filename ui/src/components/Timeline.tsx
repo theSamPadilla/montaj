@@ -632,12 +632,77 @@ export default function Timeline({ project, currentTime, onTimeUpdate, onProject
       </div>
 
       {/* ── Tracks ── */}
-      <div className="flex flex-col gap-1.5">
+      <div className="flex flex-col gap-1">
+        {overlayTracks.length > 0 && (
+          [...overlayTracks].reverse().map((trackItems, reversedIdx) => {
+            const trackIdx = overlayTracks.length - 1 - reversedIdx
+            // Per-track color palette (cycles for >6 tracks)
+            const trackColors = [
+              { bg: 'bg-slate-600/80',  bgHov: 'hover:bg-slate-500/80',  bgSel: 'bg-slate-500/90',  ring: 'ring-slate-300/80',  border: 'border-slate-400/50',  text: 'text-slate-200',  resHov: 'hover:bg-slate-300/40'  },
+              { bg: 'bg-sky-700/80',    bgHov: 'hover:bg-sky-600/80',    bgSel: 'bg-sky-600/90',    ring: 'ring-sky-300/80',    border: 'border-sky-400/50',    text: 'text-sky-200',    resHov: 'hover:bg-sky-300/40'    },
+              { bg: 'bg-violet-700/80', bgHov: 'hover:bg-violet-600/80', bgSel: 'bg-violet-600/90', ring: 'ring-violet-300/80', border: 'border-violet-400/50', text: 'text-violet-200', resHov: 'hover:bg-violet-300/40' },
+              { bg: 'bg-emerald-700/80',bgHov: 'hover:bg-emerald-600/80',bgSel: 'bg-emerald-600/90',ring: 'ring-emerald-300/80',border: 'border-emerald-400/50',text: 'text-emerald-200',resHov: 'hover:bg-emerald-300/40'},
+              { bg: 'bg-rose-700/80',   bgHov: 'hover:bg-rose-600/80',   bgSel: 'bg-rose-600/90',   ring: 'ring-rose-300/80',   border: 'border-rose-400/50',   text: 'text-rose-200',   resHov: 'hover:bg-rose-300/40'   },
+              { bg: 'bg-amber-700/60',  bgHov: 'hover:bg-amber-700/80',  bgSel: 'bg-amber-600/80',  ring: 'ring-amber-400/80',  border: 'border-amber-500/50',  text: 'text-amber-200',  resHov: 'hover:bg-amber-300/40'  },
+            ]
+            const tc = trackColors[trackIdx % trackColors.length]
+            return (
+            <div key={trackIdx} className={trackRow} onClick={handleTrackClick} onDoubleClick={handleScrubDoubleClick}>
+              {trackItems.map((item) => {
+                const isSel = selectedOverlayId === item.id
+                return (
+                  <div
+                    key={item.id}
+                    className={`absolute top-0 bottom-0 flex items-center overflow-hidden cursor-grab active:cursor-grabbing
+                      ${isSel ? `${tc.bgSel} ring-1 ring-inset ${tc.ring}` : `${tc.bg} ${tc.bgHov}`}
+                      border-r ${tc.border}`}
+                    style={{ left: `${pct(item.start)}%`, width: `${pct(item.end - item.start)}%` }}
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      if (overlayDraggedRef.current) return
+                      const selecting = !isSel
+                      onSelectOverlay?.(selecting ? item.id : null)
+                      if (selecting) onTimeUpdate(ratioFromClientX(e.clientX) * totalDuration)
+                    }}
+                    onMouseDown={(e) => handleOverlayDragStart(e, item, trackIdx)}
+                  >
+                    <div
+                      className={`absolute left-0 top-0 bottom-0 w-2.5 cursor-ew-resize z-10 ${tc.resHov}`}
+                      onMouseDown={(e) => handleOverlayResizeStart(e, item, 'start')}
+                    />
+                    <span className={`text-[10px] ${tc.text} truncate flex-1 min-w-0 pl-3`}>
+                      ▪ {item.type}
+                    </span>
+                    {item.type === 'video' && (
+                      <button
+                        className={`shrink-0 mr-3 z-10 cursor-pointer transition-opacity ${item.muted ? 'opacity-30 hover:opacity-60' : 'opacity-50 hover:opacity-90'} ${tc.text}`}
+                        onClick={(e) => { e.stopPropagation(); handleToggleMute(item.id) }}
+                        title={item.muted ? 'Unmute' : 'Mute'}
+                      >
+                        {item.muted ? <VolumeX size={10} /> : <Volume2 size={10} />}
+                      </button>
+                    )}
+                    {isSel && (
+                      <button
+                        className={`shrink-0 ml-1 mr-3 z-10 cursor-pointer opacity-60 hover:opacity-100 ${tc.text} text-[11px] leading-none`}
+                        onClick={(e) => { e.stopPropagation(); handleDeleteOverlay(item.id) }}
+                        title="Delete overlay"
+                      >×</button>
+                    )}
+                    <div
+                      className={`absolute right-0 top-0 bottom-0 w-2.5 cursor-ew-resize z-10 ${tc.resHov}`}
+                      onMouseDown={(e) => handleOverlayResizeStart(e, item, 'end')}
+                    />
+                  </div>
+                )
+              })}
+              {playheadLine}
+            </div>
+          )})
+        )}
         {clips.length > 0 && (
-          <div className="flex flex-col gap-1">
-            <span className="text-[10px] text-gray-500 uppercase tracking-wider">Clips</span>
-            <div className={`${trackRow} cursor-default`} onClick={handleTrackClick} onDoubleClick={handleScrubDoubleClick}>
-              {clips.map((clip) => (
+          <div className={`${trackRow} cursor-default`} onClick={handleTrackClick} onDoubleClick={handleScrubDoubleClick}>
+            {clips.map((clip) => (
                 <div
                   key={clip.id}
                   className={`absolute top-0 bottom-0 flex items-center overflow-hidden cursor-grab active:cursor-grabbing border-r border-indigo-500/40
@@ -671,77 +736,6 @@ export default function Timeline({ project, currentTime, onTimeUpdate, onProject
                 />
               )}
             </div>
-          </div>
-        )}
-        {overlayTracks.length > 0 && (
-          <div className="flex flex-col gap-1">
-            <span className="text-[10px] text-gray-500 uppercase tracking-wider">Overlays</span>
-            {[...overlayTracks].reverse().map((trackItems, reversedIdx) => {
-              const trackIdx = overlayTracks.length - 1 - reversedIdx
-              // Per-track color palette (cycles for >6 tracks)
-              const trackColors = [
-                { bg: 'bg-slate-600/80',  bgHov: 'hover:bg-slate-500/80',  bgSel: 'bg-slate-500/90',  ring: 'ring-slate-300/80',  border: 'border-slate-400/50',  text: 'text-slate-200',  resHov: 'hover:bg-slate-300/40'  },
-                { bg: 'bg-sky-700/80',    bgHov: 'hover:bg-sky-600/80',    bgSel: 'bg-sky-600/90',    ring: 'ring-sky-300/80',    border: 'border-sky-400/50',    text: 'text-sky-200',    resHov: 'hover:bg-sky-300/40'    },
-                { bg: 'bg-violet-700/80', bgHov: 'hover:bg-violet-600/80', bgSel: 'bg-violet-600/90', ring: 'ring-violet-300/80', border: 'border-violet-400/50', text: 'text-violet-200', resHov: 'hover:bg-violet-300/40' },
-                { bg: 'bg-emerald-700/80',bgHov: 'hover:bg-emerald-600/80',bgSel: 'bg-emerald-600/90',ring: 'ring-emerald-300/80',border: 'border-emerald-400/50',text: 'text-emerald-200',resHov: 'hover:bg-emerald-300/40'},
-                { bg: 'bg-rose-700/80',   bgHov: 'hover:bg-rose-600/80',   bgSel: 'bg-rose-600/90',   ring: 'ring-rose-300/80',   border: 'border-rose-400/50',   text: 'text-rose-200',   resHov: 'hover:bg-rose-300/40'   },
-                { bg: 'bg-amber-700/60',  bgHov: 'hover:bg-amber-700/80',  bgSel: 'bg-amber-600/80',  ring: 'ring-amber-400/80',  border: 'border-amber-500/50',  text: 'text-amber-200',  resHov: 'hover:bg-amber-300/40'  },
-              ]
-              const tc = trackColors[trackIdx % trackColors.length]
-              return (
-              <div key={trackIdx} className={trackRow} onClick={handleTrackClick} onDoubleClick={handleScrubDoubleClick}>
-                {trackItems.map((item) => {
-                  const isSel = selectedOverlayId === item.id
-                  return (
-                    <div
-                      key={item.id}
-                      className={`absolute top-0 bottom-0 flex items-center overflow-hidden cursor-grab active:cursor-grabbing
-                        ${isSel ? `${tc.bgSel} ring-1 ring-inset ${tc.ring}` : `${tc.bg} ${tc.bgHov}`}
-                        border-r ${tc.border}`}
-                      style={{ left: `${pct(item.start)}%`, width: `${pct(item.end - item.start)}%` }}
-                      onClick={(e) => {
-                        e.stopPropagation()
-                        if (overlayDraggedRef.current) return
-                        const selecting = !isSel
-                        onSelectOverlay?.(selecting ? item.id : null)
-                        if (selecting) onTimeUpdate(ratioFromClientX(e.clientX) * totalDuration)
-                      }}
-                      onMouseDown={(e) => handleOverlayDragStart(e, item, trackIdx)}
-                    >
-                      <div
-                        className={`absolute left-0 top-0 bottom-0 w-2.5 cursor-ew-resize z-10 ${tc.resHov}`}
-                        onMouseDown={(e) => handleOverlayResizeStart(e, item, 'start')}
-                      />
-                      <span className={`text-[10px] ${tc.text} truncate flex-1 min-w-0 pl-3`}>
-                        ▪ {item.type}
-                      </span>
-                      {item.type === 'video' && (
-                        <button
-                          className={`shrink-0 mr-3 z-10 cursor-pointer transition-opacity ${item.muted ? 'opacity-30 hover:opacity-60' : 'opacity-50 hover:opacity-90'} ${tc.text}`}
-                          onClick={(e) => { e.stopPropagation(); handleToggleMute(item.id) }}
-                          title={item.muted ? 'Unmute' : 'Mute'}
-                        >
-                          {item.muted ? <VolumeX size={10} /> : <Volume2 size={10} />}
-                        </button>
-                      )}
-                      {isSel && (
-                        <button
-                          className={`shrink-0 ml-1 mr-3 z-10 cursor-pointer opacity-60 hover:opacity-100 ${tc.text} text-[11px] leading-none`}
-                          onClick={(e) => { e.stopPropagation(); handleDeleteOverlay(item.id) }}
-                          title="Delete overlay"
-                        >×</button>
-                      )}
-                      <div
-                        className={`absolute right-0 top-0 bottom-0 w-2.5 cursor-ew-resize z-10 ${tc.resHov}`}
-                        onMouseDown={(e) => handleOverlayResizeStart(e, item, 'end')}
-                      />
-                    </div>
-                  )
-                })}
-                {playheadLine}
-              </div>
-            )})}
-          </div>
         )}
       </div>
 

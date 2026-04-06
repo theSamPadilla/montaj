@@ -128,7 +128,7 @@ export default function UploadView() {
   const [error, setError]                 = useState<string | null>(null)
 
   const [prompt, setPrompt]     = useState('')
-  const [workflow, setWorkflow] = useState('basic_trim')
+  const [workflow, setWorkflow] = useState('clean_cut')
   const [workflows, setWorkflows] = useState<{ name: string }[]>([])
   const [running, setRunning]   = useState(false)
   const [runError, setRunError] = useState<string | null>(null)
@@ -308,7 +308,7 @@ export default function UploadView() {
             >
               {workflows.length > 0
                 ? workflows.map(w => <option key={w.name} value={w.name}>{w.name}</option>)
-                : <option value="basic_trim">basic_trim</option>}
+                : <option value="clean_cut">clean_cut</option>}
             </select>
           </div>
 

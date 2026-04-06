@@ -12,8 +12,8 @@ interface RerunModalProps {
 export default function RerunModal({ project, onClose, onRerun }: RerunModalProps) {
   const [versionName, setVersionName] = useState('')
   const [prompt, setPrompt]           = useState(project.editingPrompt ?? '')
-  const [workflow, setWorkflow]       = useState(project.workflow ?? 'basic_trim')
-  const [workflows, setWorkflows]     = useState<string[]>(['basic_trim'])
+  const [workflow, setWorkflow]       = useState(project.workflow ?? 'clean_cut')
+  const [workflows, setWorkflows]     = useState<string[]>(['clean_cut'])
   const [loading, setLoading]         = useState(false)
   const [error, setError]             = useState<string | null>(null)
   const nameRef = useRef<HTMLInputElement>(null)
