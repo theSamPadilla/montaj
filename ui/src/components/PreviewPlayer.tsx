@@ -180,6 +180,15 @@ export default function PreviewPlayer({ project, currentTime, onTimeUpdate, sele
   const rafRef       = useRef<number | null>(null)
   const rafLastMs    = useRef<number | null>(null)
   const [isPlaying, setIsPlaying] = useState(false)
+  const [showVideo, setShowVideo] = useState(true)
+
+  // Gap clock — advances time through lift-style gaps between primary clips
+  const gapRAFRef      = useRef<number | null>(null)
+  const inGapRef       = useRef(false)
+  const gapWallRef     = useRef(0)
+  const gapFromRef     = useRef(0)
+  const gapTargetRef   = useRef(0)
+  const gapNextIdxRef  = useRef(0)
 
   function getActiveVideo() { return activeSlotRef.current === 0 ? video0Ref.current : video1Ref.current }
   function getInactiveVideo() { return activeSlotRef.current === 0 ? video1Ref.current : video0Ref.current }
@@ -327,8 +336,18 @@ export default function PreviewPlayer({ project, currentTime, onTimeUpdate, sele
       if (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable) return
       if (e.code === 'Space') {
         e.preventDefault()
-        if (isCanvasProject) {
-          setIsPlaying(prev => !prev)
+        if (isCanvasProject) { setIsPlaying(prev => !prev); return }
+        if (inGapRef.current) {
+          if (gapRAFRef.current !== null) {
+            // Playing through gap → pause
+            cancelAnimationFrame(gapRAFRef.current)
+            gapRAFRef.current = null
+          } else {
+            // Paused in gap → resume from current position
+            gapFromRef.current = lastTimeRef.current
+            gapWallRef.current = performance.now()
+            gapRAFRef.current  = requestAnimationFrame(tickGap)
+          }
           return
         }
         const video = getActiveVideo()
@@ -357,9 +376,55 @@ export default function PreviewPlayer({ project, currentTime, onTimeUpdate, sele
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [clips])
 
+  const cancelGap = useCallback(() => {
+    if (gapRAFRef.current !== null) {
+      cancelAnimationFrame(gapRAFRef.current)
+      gapRAFRef.current = null
+    }
+    inGapRef.current = false
+  }, [])
+
+  const tickGap = useCallback(function tickGap() {
+    if (!inGapRef.current) return
+    const elapsed = (performance.now() - gapWallRef.current) / 1000
+    const t = Math.min(gapFromRef.current + elapsed, gapTargetRef.current)
+    lastTimeRef.current = t
+    onTimeUpdate(t)
+
+    if (t < gapTargetRef.current) {
+      gapRAFRef.current = requestAnimationFrame(tickGap)
+      return
+    }
+
+    // Gap over — transition to next clip
+    inGapRef.current = false
+    gapRAFRef.current = null
+    const ni = gapNextIdxRef.current
+    const nc = clips[ni]
+    if (!nc?.src) return
+    const ns = (1 - activeSlotRef.current) as 0 | 1
+    const nv = ns === 0 ? video0Ref.current : video1Ref.current
+    lastTimeRef.current = nc.start
+    onTimeUpdate(nc.start)
+    activeIdxRef.current = ni
+    if (nv) {
+      const src = fileUrl(nc.src)
+      if (preloadSrcRef.current !== src) { nv.src = src; nv.currentTime = nc.inPoint ?? 0 }
+      nv.play().catch(() => {})
+    }
+    ;(activeSlotRef.current === 0 ? video0Ref.current : video1Ref.current)?.pause()
+    activeSlotRef.current = ns
+    setActiveSlot(ns)
+    setShowVideo(true)
+    preloadSrcRef.current = ''
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [clips, onTimeUpdate])
+
   // Scrub: seek active slot when currentTime jumps externally
   useEffect(() => {
     if (Math.abs(currentTime - lastTimeRef.current) < 0.05) return
+    cancelGap()
+    setShowVideo(true)
     seekingRef.current = true
     try {
       lastTimeRef.current = currentTime
@@ -418,30 +483,41 @@ export default function PreviewPlayer({ project, currentTime, onTimeUpdate, sele
       const nextIdx = activeIdxRef.current + 1
       if (nextIdx < clips.length && clips[nextIdx].src) {
         const next = clips[nextIdx]
-        const nextSlot = (1 - slot) as 0 | 1
-        const nextVideo = nextSlot === 0 ? video0Ref.current : video1Ref.current
+        const cur  = clips[activeIdxRef.current]
 
-        lastTimeRef.current = next.start
-        onTimeUpdate(next.start)
-        activeIdxRef.current = nextIdx
+        if (next.start > cur.end + 0.02) {
+          // Gap between clips — hide video (black), advance time via RAF clock
+          video.pause()
+          setShowVideo(false)
+          inGapRef.current      = true
+          gapFromRef.current    = cur.end
+          gapWallRef.current    = performance.now()
+          gapTargetRef.current  = next.start
+          gapNextIdxRef.current = nextIdx
+          gapRAFRef.current     = requestAnimationFrame(tickGap)
+        } else {
+          // Contiguous — immediate switch
+          const nextSlot = (1 - slot) as 0 | 1
+          const nextVideo = nextSlot === 0 ? video0Ref.current : video1Ref.current
 
-        if (nextVideo) {
-          const nextSrc = fileUrl(next.src!)
-          // If not already preloaded, set src now (may have a brief flash)
-          if (preloadSrcRef.current !== nextSrc) {
-            nextVideo.src = nextSrc
-            nextVideo.currentTime = next.inPoint ?? 0
+          lastTimeRef.current = next.start
+          onTimeUpdate(next.start)
+          activeIdxRef.current = nextIdx
+
+          if (nextVideo) {
+            const nextSrc = fileUrl(next.src!)
+            if (preloadSrcRef.current !== nextSrc) {
+              nextVideo.src = nextSrc
+              nextVideo.currentTime = next.inPoint ?? 0
+            }
+            nextVideo.play().catch(() => {})
           }
-          nextVideo.play().catch(() => {})
+
+          activeSlotRef.current = nextSlot
+          setActiveSlot(nextSlot)
+          preloadSrcRef.current = ''
+          video.pause()
         }
-
-        // Swap to next slot
-        activeSlotRef.current = nextSlot
-        setActiveSlot(nextSlot)
-        preloadSrcRef.current = ''
-
-        // Pause outgoing slot
-        video.pause()
       }
       return
     }
@@ -481,7 +557,7 @@ export default function PreviewPlayer({ project, currentTime, onTimeUpdate, sele
             onPlay={() => { if (activeSlotRef.current === 0) setIsPlaying(true) }}
             onPause={() => { if (activeSlotRef.current === 0) setIsPlaying(false) }}
             playsInline
-            style={{ opacity: activeSlot === 0 ? 1 : 0, pointerEvents: activeSlot === 0 ? 'auto' : 'none', zIndex: activeSlot === 0 ? 1 : 0 }}
+            style={{ opacity: showVideo && activeSlot === 0 ? 1 : 0, pointerEvents: activeSlot === 0 ? 'auto' : 'none', zIndex: activeSlot === 0 ? 1 : 0 }}
           />
           {/* Slot 1 */}
           <video
@@ -491,7 +567,7 @@ export default function PreviewPlayer({ project, currentTime, onTimeUpdate, sele
             onPlay={() => { if (activeSlotRef.current === 1) setIsPlaying(true) }}
             onPause={() => { if (activeSlotRef.current === 1) setIsPlaying(false) }}
             playsInline
-            style={{ opacity: activeSlot === 1 ? 1 : 0, pointerEvents: activeSlot === 1 ? 'auto' : 'none', zIndex: activeSlot === 1 ? 1 : 0 }}
+            style={{ opacity: showVideo && activeSlot === 1 ? 1 : 0, pointerEvents: activeSlot === 1 ? 'auto' : 'none', zIndex: activeSlot === 1 ? 1 : 0 }}
           />
         </>
       )}

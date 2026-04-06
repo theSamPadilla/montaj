@@ -171,6 +171,55 @@ export function applyCutToTracks(project: Project, cut: Cut): Project {
 }
 
 /**
+ * Close all gaps between primary clips by shifting each clip left to butt
+ * against the previous one. Captions are remapped to follow their clip.
+ * Overlay tracks are left at their absolute positions.
+ *
+ * Returns the same project reference if no gaps exist (safe to call always).
+ */
+export function collapseGaps(project: Project): Project {
+  const [primaryTrack = [], ...overlayTracks] = project.tracks ?? []
+  if (primaryTrack.length < 2) return project
+
+  const sorted = [...primaryTrack].sort((a, b) => a.start - b.start)
+
+  let cursor = sorted[0].start
+  let anyGap = false
+  const shifts: Array<{ oldStart: number; oldEnd: number; delta: number }> = []
+
+  const compacted = sorted.map(clip => {
+    const duration = clip.end - clip.start
+    const delta = cursor - clip.start
+    if (delta !== 0) anyGap = true
+    shifts.push({ oldStart: clip.start, oldEnd: clip.end, delta })
+    const out = { ...clip, start: cursor, end: cursor + duration }
+    cursor += duration
+    return out
+  })
+
+  if (!anyGap) return project
+
+  let newCaptions = project.captions
+  if (newCaptions) {
+    const segments = newCaptions.segments.map(seg => {
+      const mid = (seg.start + seg.end) / 2
+      const entry = shifts.find(s => mid >= s.oldStart && mid < s.oldEnd)
+      if (!entry || entry.delta === 0) return seg
+      const d = entry.delta
+      return {
+        ...seg,
+        start: seg.start + d,
+        end: seg.end + d,
+        words: seg.words?.map(w => ({ ...w, start: w.start + d, end: w.end + d })),
+      }
+    })
+    newCaptions = { ...newCaptions, segments }
+  }
+
+  return { ...project, tracks: [compacted, ...overlayTracks], captions: newCaptions }
+}
+
+/**
  * Apply a collapse-style cut to a single item identified by `itemId`.
  *
  * - If the item is in `tracks[0]`, captions are adjusted for the clamped cut,

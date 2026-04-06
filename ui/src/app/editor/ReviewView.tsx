@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { X, Image, Plus, HelpCircle, Copy } from 'lucide-react'
+import { X, Image, Plus, HelpCircle, Copy, Magnet } from 'lucide-react'
 import PreviewPlayer from '@/components/PreviewPlayer'
 import ProjectHeader from '@/components/ProjectHeader'
 import RerunModal from '@/components/RerunModal'
@@ -9,7 +9,7 @@ import Timeline from '@/components/Timeline'
 import VersionPanel from '@/components/VersionPanel'
 import { Button } from '@/components/ui/button'
 import { api, fileUrl } from '@/lib/api'
-import { applyCutToItem, applyCutToTracks } from '@/lib/cuts'
+import { applyCutToItem, applyCutToTracks, collapseGaps } from '@/lib/cuts'
 import { type Asset, type Project, type ProjectVersion } from '@/lib/project'
 
 interface ReviewViewProps {
@@ -39,6 +39,8 @@ export default function ReviewView({ project, onProjectChange }: ReviewViewProps
   const [previewAsset, setPreviewAsset]   = useState<Asset | null>(null)
   const [pathCopied, setPathCopied]       = useState(false)
   const [applyingCuts, setApplyingCuts]   = useState(false)
+  const [editorDirty, setEditorDirty]    = useState(false)
+  const [rippleMode, setRippleMode]       = useState(false)
   const navigate = useNavigate()
 
   useEffect(() => {
@@ -103,16 +105,16 @@ export default function ReviewView({ project, onProjectChange }: ReviewViewProps
   function handleCut(cut: { start: number; end: number }) {
     pushHistory(project)
     const targetId = selectedClipId ?? selectedOverlayId
-    const updated = targetId
+    let updated = targetId
       ? applyCutToItem(project, targetId, cut)
       : applyCutToTracks(project, cut)
+    if (rippleMode) updated = collapseGaps(updated)
     onProjectChange(updated)
     api.saveProject(updated.id, updated).catch(console.error)
-    // The selected item's ID no longer exists after a collapse cut (split into new fragments).
-    // Clear both selections so the UI doesn't reference a stale ID.
     setSelectedClipId(null)
     setSelectedOverlayId(null)
     setDirty(true)
+    setEditorDirty(true)
   }
 
   function handleOverlayChange(id: string, changes: { offsetX?: number; offsetY?: number; scale?: number }) {
@@ -151,13 +153,17 @@ export default function ReviewView({ project, onProjectChange }: ReviewViewProps
       for (let i = 0; i < primaryClips.length; i++) {
         const clip = primaryClips[i]
         if (!clip.src) continue
+        const inPoint  = clip.inPoint ?? 0
+        const outPoint = clip.outPoint ?? (inPoint + (clip.end - clip.start))
+        // Skip clips whose in/out points haven't moved — nothing to encode
+        if (inPoint === 0 && outPoint === (clip.sourceDuration ?? outPoint)) continue
         const dotIdx = clip.src.lastIndexOf('.')
         const base = dotIdx !== -1 ? clip.src.slice(0, dotIdx) : clip.src
         const outPath = `${base}_${clip.id}_cut.mp4`
         const result = await api.runStep<{ path: string; type: string }>('materialize_cut', {
           input: clip.src,
-          inpoint: clip.inPoint ?? 0,
-          outpoint: clip.outPoint ?? ((clip.inPoint ?? 0) + (clip.end - clip.start)),
+          inpoint: inPoint,
+          outpoint: outPoint,
           out: outPath,
         })
         const duration = clip.end - clip.start
@@ -177,10 +183,25 @@ export default function ReviewView({ project, onProjectChange }: ReviewViewProps
       onProjectChange(updated)
       await api.saveProject(updated.id, updated)
       setDirty(false)
+      setEditorDirty(false)
     } catch (e) {
       alert(`Apply Cuts failed: ${e instanceof Error ? e.message : String(e)}`)
     } finally {
       setApplyingCuts(false)
+    }
+  }
+
+  function handleRippleToggle() {
+    const next = !rippleMode
+    setRippleMode(next)
+    if (next) {
+      const collapsed = collapseGaps(project)
+      if (collapsed !== project) {
+        pushHistory(project)
+        onProjectChange(collapsed)
+        api.saveProject(collapsed.id, collapsed).catch(console.error)
+        setDirty(true)
+      }
     }
   }
 
@@ -258,7 +279,7 @@ export default function ReviewView({ project, onProjectChange }: ReviewViewProps
             <Button variant="ghost" size="sm" onClick={handleUndo} disabled={!canUndo} title="Undo">
               ↩ Undo
             </Button>
-            {(project.tracks?.[0] ?? []).some(c => (c.inPoint ?? 0) > 0 || (c.outPoint !== undefined && c.outPoint < (c.sourceDuration ?? Infinity))) && (
+            {editorDirty && (
               <Button variant="outline" size="sm" onClick={handleApplyCuts} disabled={applyingCuts}>
                 {applyingCuts ? 'Encoding…' : 'Apply Cuts'}
               </Button>
@@ -298,6 +319,78 @@ export default function ReviewView({ project, onProjectChange }: ReviewViewProps
             )}
           </div>
 
+          {/* Track controls bar */}
+          <div className="shrink-0 flex items-center justify-end gap-1.5 px-3 py-1 border-t border-gray-200 dark:border-gray-800 bg-gray-100 dark:bg-gray-950">
+            <button
+              onClick={handleRippleToggle}
+              title={rippleMode ? 'Ripple mode on — edits close the gap' : 'Ripple mode off — edits leave a gap'}
+              aria-pressed={rippleMode}
+              className={`flex items-center justify-center w-5 h-5 rounded transition-colors ${
+                rippleMode
+                  ? 'text-teal-400 bg-teal-400/15 hover:bg-teal-400/25'
+                  : 'text-gray-500 bg-transparent hover:text-gray-400'
+              }`}
+            >
+              <Magnet size={12} />
+            </button>
+            {showHelp && (
+              <>
+                <div className="fixed inset-0 z-40" onClick={() => setShowHelp(false)} />
+                <div className="fixed top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[560px] bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-xl shadow-2xl z-50 overflow-hidden">
+                  <div className="flex items-center justify-between px-5 py-3 border-b border-gray-100 dark:border-gray-800">
+                    <span className="text-[11px] font-semibold uppercase tracking-wide text-gray-600 dark:text-gray-300">Editor reference</span>
+                    <button onClick={() => setShowHelp(false)} className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 transition-colors"><X size={13} /></button>
+                  </div>
+                  <div className="p-5 grid grid-cols-2 gap-x-8 gap-y-5 text-[12px]">
+                    <div className="flex flex-col gap-2">
+                      <p className="text-[9px] font-semibold uppercase tracking-widest text-gray-400 mb-0.5">Playback</p>
+                      <div className="flex justify-between gap-4"><span className="text-gray-400 font-mono whitespace-nowrap">Space</span><span className="text-gray-600 dark:text-gray-400">play / pause</span></div>
+                      <div className="flex justify-between gap-4"><span className="text-gray-400 font-mono whitespace-nowrap">← →</span><span className="text-gray-600 dark:text-gray-400">scrub one frame</span></div>
+                      <div className="flex justify-between gap-4"><span className="text-gray-400 font-mono whitespace-nowrap">Shift ← →</span><span className="text-gray-600 dark:text-gray-400">scrub 1 second</span></div>
+                    </div>
+                    <div className="flex flex-col gap-2">
+                      <p className="text-[9px] font-semibold uppercase tracking-widest text-gray-400 mb-0.5">Markers &amp; cuts</p>
+                      <div className="flex justify-between gap-4"><span className="text-gray-400 font-mono whitespace-nowrap">Enter</span><span className="text-gray-600 dark:text-gray-400">place marker</span></div>
+                      <div className="flex justify-between gap-4"><span className="text-gray-400 font-mono whitespace-nowrap">double-click</span><span className="text-gray-600 dark:text-gray-400">place marker on track</span></div>
+                      <div className="flex justify-between gap-4"><span className="text-gray-400 font-mono whitespace-nowrap">Cut primary</span><span className="text-gray-600 dark:text-gray-400">lift cut, all clips</span></div>
+                      <div className="flex justify-between gap-4"><span className="text-gray-400 font-mono whitespace-nowrap">Cut [type]</span><span className="text-gray-600 dark:text-gray-400">collapse cut, selected only</span></div>
+                    </div>
+                    <div className="flex flex-col gap-2">
+                      <p className="text-[9px] font-semibold uppercase tracking-widest text-gray-400 mb-0.5">Primary clips</p>
+                      <div className="flex justify-between gap-4"><span className="text-gray-400 font-mono whitespace-nowrap">click</span><span className="text-gray-600 dark:text-gray-400">select clip</span></div>
+                      <div className="flex justify-between gap-4"><span className="text-gray-400 font-mono whitespace-nowrap">drag</span><span className="text-gray-600 dark:text-gray-400">move clip</span></div>
+                      <div className="flex justify-between gap-4"><span className="text-gray-400 font-mono whitespace-nowrap">drag edge</span><span className="text-gray-600 dark:text-gray-400">trim in / out point</span></div>
+                      <div className="flex items-center justify-between gap-4">
+                        <span className="flex items-center gap-1.5 text-gray-400 whitespace-nowrap"><Magnet size={11} /> ripple toggle</span>
+                        <span className="text-gray-600 dark:text-gray-400">close gap on edits</span>
+                      </div>
+                    </div>
+                    <div className="flex flex-col gap-2">
+                      <p className="text-[9px] font-semibold uppercase tracking-widest text-gray-400 mb-0.5">Overlays</p>
+                      <div className="flex justify-between gap-4"><span className="text-gray-400 font-mono whitespace-nowrap">drag</span><span className="text-gray-600 dark:text-gray-400">move position</span></div>
+                      <div className="flex justify-between gap-4"><span className="text-gray-400 font-mono whitespace-nowrap">drag corner</span><span className="text-gray-600 dark:text-gray-400">resize</span></div>
+                      <div className="flex justify-between gap-4"><span className="text-gray-400 font-mono whitespace-nowrap">Delete</span><span className="text-gray-600 dark:text-gray-400">remove selected</span></div>
+                    </div>
+                    <div className="flex flex-col gap-2 col-span-2 border-t border-gray-100 dark:border-gray-800 pt-4">
+                      <p className="text-[9px] font-semibold uppercase tracking-widest text-gray-400 mb-0.5">Captions</p>
+                      <div className="flex gap-12">
+                        <div className="flex justify-between gap-4 flex-1"><span className="text-gray-400 font-mono whitespace-nowrap">click caption</span><span className="text-gray-600 dark:text-gray-400">edit inline</span></div>
+                        <div className="flex justify-between gap-4 flex-1"><span className="text-gray-400 font-mono whitespace-nowrap">Expand ↑</span><span className="text-gray-600 dark:text-gray-400">transcript editor</span></div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </>
+            )}
+            <button
+              onClick={() => setShowHelp(v => !v)}
+              className={`transition-colors ${showHelp ? 'text-gray-300' : 'text-gray-600 hover:text-gray-400'}`}
+              title="Keyboard shortcuts"
+            >
+              <HelpCircle size={13} />
+            </button>
+          </div>
+
           <div className="shrink-0 border-t border-gray-200 dark:border-gray-800 bg-gray-100 dark:bg-gray-950">
             <Timeline
               project={project}
@@ -311,6 +404,7 @@ export default function ReviewView({ project, onProjectChange }: ReviewViewProps
               onCut={handleCut}
               selectedClipId={selectedClipId}
               onSelectClip={setSelectedClipId}
+              rippleMode={rippleMode}
             />
           </div>
         </div>
@@ -375,34 +469,6 @@ export default function ReviewView({ project, onProjectChange }: ReviewViewProps
           </div>
         </div>
 
-        {/* Help button */}
-        <div className="shrink-0 flex justify-end px-2 py-2 border-t border-gray-200 dark:border-gray-800">
-          {showHelp && (
-            <div className="fixed bottom-12 right-4 w-96 bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-xl p-4 text-xs text-gray-500 dark:text-gray-400 font-mono shadow-2xl z-50">
-              <p className="text-gray-700 dark:text-gray-300 font-sans font-medium mb-3 text-[11px] uppercase tracking-wide">Editor shortcuts</p>
-              <div className="flex flex-col gap-2">
-                <div className="flex justify-between gap-4"><span className="text-gray-500">Space</span><span>play / pause</span></div>
-                <div className="flex justify-between gap-4"><span className="text-gray-500">← →</span><span>scrub one frame</span></div>
-                <div className="flex justify-between gap-4"><span className="text-gray-500">Enter</span><span>place marker</span></div>
-                <div className="flex justify-between gap-4"><span className="text-gray-500">double-click timeline</span><span>place markers</span></div>
-                <div className="flex justify-between gap-4"><span className="text-gray-500">Cut button</span><span>split clip at markers</span></div>
-                <div className="border-t border-gray-200 dark:border-gray-800 my-1" />
-                <div className="flex justify-between gap-4"><span className="text-gray-500">drag overlay</span><span>move position</span></div>
-                <div className="flex justify-between gap-4"><span className="text-gray-500">drag corner</span><span>resize overlay</span></div>
-                <div className="border-t border-gray-200 dark:border-gray-800 my-1" />
-                <div className="flex justify-between gap-4"><span className="text-gray-500">click caption</span><span>edit inline</span></div>
-                <div className="flex justify-between gap-4"><span className="text-gray-500">Expand ↑</span><span>open transcript editor</span></div>
-              </div>
-            </div>
-          )}
-          <button
-            onClick={() => setShowHelp(v => !v)}
-            className={`transition-colors ${showHelp ? 'text-gray-300' : 'text-gray-600 hover:text-gray-400'}`}
-            title="Keyboard shortcuts"
-          >
-            <HelpCircle size={14} />
-          </button>
-        </div>
         </div> {/* end right sidebar */}
       </div>
 

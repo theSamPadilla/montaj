@@ -85,14 +85,15 @@ function StartNode({ data }: NodeProps) {
 function StepNode({ data, selected }: NodeProps) {
   const isSkill    = data.isSkill as boolean
                   ?? new Set(_skillsCache.map(s => s.name)).has(data.uses as string)
-  const isEncode   = data.schema?.name === 'apply_cuts' || data.uses === 'montaj/apply_cuts'
+  const isEncode      = data.schema?.name === 'apply_cuts' || data.uses === 'montaj/apply_cuts'
+  const isMaterialize = data.schema?.name === 'materialize_cut' || data.uses === 'montaj/materialize_cut'
   const isPerClip  = data.foreach === 'clips'
   const bg        = selected
-    ? (isEncode ? '#292304' : isSkill ? '#1e1b4b' : '#1e293b')
-    : (isEncode ? '#1c1a03' : isSkill ? '#1a1740' : '#1f2937')
+    ? (isEncode ? '#292304' : isMaterialize ? '#1e1608' : isSkill ? '#1e1b4b' : '#1e293b')
+    : (isEncode ? '#1c1a03' : isMaterialize ? '#161008' : isSkill ? '#1a1740' : '#1f2937')
   const borderCol = selected
-    ? (isEncode ? '#f59e0b' : isSkill ? '#818cf8' : '#3b82f6')
-    : (isEncode ? '#92400e' : isSkill ? '#4338ca' : '#374151')
+    ? (isEncode ? '#f59e0b' : isMaterialize ? '#c07820' : isSkill ? '#818cf8' : '#3b82f6')
+    : (isEncode ? '#92400e' : isMaterialize ? '#5a3a10' : isSkill ? '#4338ca' : '#374151')
   const nodeStyle  = {
     background: bg, border: `1px solid ${borderCol}`,
     borderRadius: 8, padding: '8px 14px', minWidth: 160,
@@ -108,14 +109,20 @@ function StepNode({ data, selected }: NodeProps) {
         </>
       )}
       <div style={nodeStyle}>
-        <Handle type="target" position={Position.Top} style={{ background: isEncode ? '#d97706' : isSkill ? '#818cf8' : '#6b7280' }} />
+        <Handle type="target" position={Position.Top} style={{ background: isEncode ? '#d97706' : isMaterialize ? '#a06218' : isSkill ? '#818cf8' : '#6b7280' }} />
         <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-          <div style={{ fontSize: 13, fontWeight: 600, color: isEncode ? '#fcd34d' : isSkill ? '#a5b4fc' : '#f3f4f6' }}>{data.label}</div>
+          <div style={{ fontSize: 13, fontWeight: 600, color: isEncode ? '#fcd34d' : isMaterialize ? '#c9973a' : isSkill ? '#a5b4fc' : '#f3f4f6' }}>{data.label}</div>
           {isEncode && (
             <span style={{
               fontSize: 9, fontWeight: 700, letterSpacing: '0.05em', textTransform: 'uppercase',
               background: '#78350f', color: '#fcd34d', borderRadius: 4, padding: '1px 5px',
             }}>encode</span>
+          )}
+          {isMaterialize && (
+            <span style={{
+              fontSize: 9, fontWeight: 700, letterSpacing: '0.05em', textTransform: 'uppercase',
+              background: '#3d2408', color: '#c9973a', borderRadius: 4, padding: '1px 5px',
+            }}>writes</span>
           )}
           {isSkill && (
             <span style={{
@@ -132,13 +139,13 @@ function StepNode({ data, selected }: NodeProps) {
         </div>
         {data.schema?.description && (
           <div style={{
-            fontSize: 11, color: isEncode ? '#d97706' : isSkill ? '#6366f1' : '#9ca3af', marginTop: 2,
+            fontSize: 11, color: isEncode ? '#d97706' : isMaterialize ? '#8a5a18' : isSkill ? '#6366f1' : '#9ca3af', marginTop: 2,
             whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 200,
           }}>
             {data.schema.description}
           </div>
         )}
-        <Handle type="source" position={Position.Bottom} style={{ background: isEncode ? '#d97706' : isSkill ? '#818cf8' : '#6b7280' }} />
+        <Handle type="source" position={Position.Bottom} style={{ background: isEncode ? '#d97706' : isMaterialize ? '#a06218' : isSkill ? '#818cf8' : '#6b7280' }} />
       </div>
     </div>
   )
@@ -596,12 +603,15 @@ export default function NodeGraph() {
           {[...steps].sort((a, b) => a.name.localeCompare(b.name)).map(s => {
             const isCustom = s.name.includes('/')
             const isEncode = s.name === 'apply_cuts'
+            const isMat    = s.name === 'materialize_cut'
             return (
               <button
                 key={s.name}
                 onClick={() => addNode(s)}
                 className={`w-full text-left px-2 py-1.5 rounded text-xs hover:bg-gray-100 dark:hover:bg-gray-800 flex items-center justify-between gap-1 ${
-                  isEncode ? 'text-amber-600 dark:text-amber-400 hover:text-amber-700 dark:hover:text-amber-200' : 'text-gray-700 dark:text-gray-300 hover:text-gray-900 dark:hover:text-white'
+                  isEncode ? 'text-amber-600 dark:text-amber-400 hover:text-amber-700 dark:hover:text-amber-200'
+                  : isMat ? 'text-orange-700 dark:text-orange-500/80 hover:text-orange-800 dark:hover:text-orange-300'
+                  : 'text-gray-700 dark:text-gray-300 hover:text-gray-900 dark:hover:text-white'
                 }`}
               >
                 <span className="truncate">{s.name}</span>
@@ -679,16 +689,23 @@ export default function NodeGraph() {
         const isSelectedSkill = skillNameSet.has(selectedSchema.name)
         const isEncode = selectedNode?.data.uses === 'montaj/apply_cuts' ||
                          selectedNode?.data.schema?.name === 'apply_cuts'
+        const isMaterialize = selectedNode?.data.uses === 'montaj/materialize_cut' ||
+                              selectedNode?.data.schema?.name === 'materialize_cut'
         return (
           <div className="w-60 shrink-0 border-l border-gray-200 dark:border-gray-800 p-3 overflow-y-auto flex flex-col gap-3">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">
-                <h3 className={`text-sm font-semibold ${isEncode ? 'text-amber-600 dark:text-amber-300' : isSelectedSkill ? 'text-indigo-600 dark:text-indigo-300' : 'text-gray-900 dark:text-white'}`}>
+                <h3 className={`text-sm font-semibold ${isEncode ? 'text-amber-600 dark:text-amber-300' : isMaterialize ? 'text-orange-700 dark:text-orange-400/80' : isSelectedSkill ? 'text-indigo-600 dark:text-indigo-300' : 'text-gray-900 dark:text-white'}`}>
                   {selectedSchema.name}
                 </h3>
                 {isEncode && (
                   <span className="text-[9px] font-bold uppercase tracking-wide bg-amber-900/60 text-amber-400 rounded px-1.5 py-0.5">
                     encode
+                  </span>
+                )}
+                {isMaterialize && (
+                  <span className="text-[9px] font-bold uppercase tracking-wide bg-orange-900/40 text-orange-400/80 rounded px-1.5 py-0.5">
+                    writes
                   </span>
                 )}
                 {isSelectedSkill && (
@@ -705,7 +722,7 @@ export default function NodeGraph() {
               </button>
             </div>
             {selectedSchema.description && (
-              <p className={`text-xs leading-relaxed ${isEncode ? 'text-amber-700 dark:text-amber-200/70' : isSelectedSkill ? 'text-indigo-600 dark:text-indigo-200/70' : 'text-gray-500 dark:text-gray-400'}`}>
+              <p className={`text-xs leading-relaxed ${isEncode ? 'text-amber-700 dark:text-amber-200/70' : isMaterialize ? 'text-orange-700 dark:text-orange-300/60' : isSelectedSkill ? 'text-indigo-600 dark:text-indigo-200/70' : 'text-gray-500 dark:text-gray-400'}`}>
                 {selectedSchema.description}
               </p>
             )}
@@ -715,6 +732,14 @@ export default function NodeGraph() {
                 padding: '8px 10px', fontSize: 11, color: '#fcd34d', lineHeight: 1.5,
               }}>
                 ⚡ Encode boundary — the only step that writes video. Receives trim specs from upstream steps and applies all cuts to original sources in one pass.
+              </div>
+            )}
+            {isMaterialize && (
+              <div style={{
+                background: '#160f06', border: '1px solid #5a3a10', borderRadius: 6,
+                padding: '8px 10px', fontSize: 11, color: '#c9973a', lineHeight: 1.5,
+              }}>
+                ✂️ Writes files — applies editor cuts to produce new clip assets on disk.
               </div>
             )}
             {isSelectedSkill ? (
