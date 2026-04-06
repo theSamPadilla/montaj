@@ -52,7 +52,7 @@ RVM_MODELS = {
 }
 
 # ---------------------------------------------------------------------------
-# Device detection
+# Device detection + hardware-aware defaults
 # ---------------------------------------------------------------------------
 
 def _detect_device(force_cpu: bool) -> str:
@@ -66,12 +66,38 @@ def _detect_device(force_cpu: bool) -> str:
     return "cpu"
 
 
+def _auto_downsample(device: str) -> float:
+    """Pick a sensible default downsample ratio based on available memory.
+
+    MPS (Apple Silicon): unified memory — use total RAM as proxy.
+    CUDA: use VRAM. CPU: conservative.
+    """
+    try:
+        if device == "mps":
+            import subprocess, re
+            out = subprocess.check_output(["sysctl", "-n", "hw.memsize"], text=True)
+            ram_gb = int(out.strip()) / (1024 ** 3)
+            if ram_gb >= 32:
+                return 0.5   # plenty of memory — standard quality
+            elif ram_gb >= 16:
+                return 0.375
+            else:
+                return 0.25  # 8 GB M1 base — keep it light
+        elif device == "cuda":
+            import torch
+            vram_gb = torch.cuda.get_device_properties(0).total_memory / (1024 ** 3)
+            return 0.5 if vram_gb >= 8 else 0.375
+    except Exception:
+        pass
+    return 0.5  # safe default
+
+
 # ---------------------------------------------------------------------------
 # Model loading
 # ---------------------------------------------------------------------------
 
 def _load_model(model_name: str, device: str):
-    """Download (if needed) and load the RVM model onto device."""
+    """Download (if needed), load, and optionally compile the RVM model onto device."""
     import torch
     import sys as _sys
     import models as _models
@@ -98,6 +124,14 @@ def _load_model(model_name: str, device: str):
     state = torch.load(model_file, map_location=device, weights_only=True)
     model.load_state_dict(state)
     model = model.to(device).eval()
+
+    # torch.compile gives a free speedup on MPS/CUDA with PyTorch >= 2.0
+    if hasattr(torch, "compile") and device in ("mps", "cuda"):
+        try:
+            model = torch.compile(model)
+        except Exception:
+            pass  # compile is best-effort — fall back to eager silently
+
     return model
 
 
@@ -112,13 +146,18 @@ def _process_one(
     device: str,
     downsample: float,
     emit_progress: bool,
+    model=None,
 ) -> str:
-    """Process one video file through RVM. Returns output_path."""
+    """Process one video file through RVM. Returns output_path.
+
+    Pass a pre-loaded model to avoid reloading weights between clips.
+    """
     import torch
     import numpy as np
     import av
 
-    model = _load_model(model_name, device)
+    if model is None:
+        model = _load_model(model_name, device)
 
     # Use a temp file for the video-only pass, then mux audio
     tmp_video_fd, tmp_video_path = tempfile.mkstemp(suffix="_novg.mov")
@@ -155,7 +194,7 @@ def _process_one(
                                 .unsqueeze(0)            # 1×3×H×W
                                 .float()
                                 .div(255.0)
-                                .to(device)
+                                .to(device, non_blocking=True)
                             )
 
                             fgr, pha, *rec = model(tensor, *rec, downsample_ratio=downsample)
@@ -218,11 +257,13 @@ def _process_one(
 # WebM preview generation (VP9 with alpha — browser-compatible)
 # ---------------------------------------------------------------------------
 
-def _make_webm_preview(mov_path: str) -> str:
+def _make_webm_preview(mov_path: str, emit_progress: bool = False) -> str:
     """Convert a ProRes 4444 .mov with alpha to a VP9 WebM for browser preview."""
+    import subprocess as _sp
     stem = os.path.splitext(mov_path)[0]
     webm_path = f"{stem}_preview.webm"
-    run([
+
+    cmd = [
         "ffmpeg", "-y",
         "-i", mov_path,
         "-c:v", "libvpx-vp9",
@@ -232,7 +273,48 @@ def _make_webm_preview(mov_path: str) -> str:
         "-deadline", "good",
         "-c:a", "libopus", "-b:a", "128k",
         webm_path,
-    ])
+    ]
+
+    if not emit_progress:
+        run(cmd)
+        return webm_path
+
+    # Probe total frames for progress percentage
+    total_frames = 0
+    try:
+        r = _sp.run(
+            ["ffprobe", "-v", "quiet", "-select_streams", "v:0",
+             "-show_entries", "stream=nb_frames", "-of", "csv=p=0", mov_path],
+            capture_output=True, text=True,
+        )
+        val = r.stdout.strip()
+        if val.isdigit():
+            total_frames = int(val)
+    except Exception:
+        pass
+
+    # -progress pipe:2 streams key=value progress blocks to stderr
+    prog_cmd = cmd[:-1] + ["-progress", "pipe:2", webm_path]
+    proc = _sp.Popen(prog_cmd, stderr=_sp.PIPE, stdout=_sp.DEVNULL, text=True)
+    for line in proc.stderr:
+        line = line.strip()
+        if line.startswith("frame="):
+            try:
+                frames_done = int(line.split("=", 1)[1])
+                prog = (frames_done / total_frames) if total_frames else 0.0
+                print(json.dumps({
+                    "file": mov_path,
+                    "phase": "webm",
+                    "progress": round(prog, 4),
+                    "frames_done": frames_done,
+                    "frames_total": total_frames,
+                }), file=sys.stderr, flush=True)
+            except (ValueError, IndexError):
+                pass
+    proc.wait()
+    if proc.returncode != 0:
+        fail("unexpected_error", f"WebM encoding failed for {mov_path}")
+
     return webm_path
 
 
@@ -280,8 +362,8 @@ def main():
     parser.add_argument(
         "--downsample",
         type=float,
-        default=0.5,
-        help="Downsample ratio for inference (0.25–1.0, default 0.5)",
+        default=None,
+        help="Downsample ratio for inference (0.25–1.0). Defaults to auto-detect based on available memory.",
     )
     parser.add_argument("--progress", action="store_true", help="Emit JSON progress lines to stderr")
 
@@ -294,11 +376,15 @@ def main():
     if args.out and args.inputs:
         fail("invalid_args", "--out is only valid with --input, not --inputs")
 
+    device = _detect_device(args.cpu)
+
+    # Auto-detect downsample if not explicitly set
+    if args.downsample is None:
+        args.downsample = _auto_downsample(device)
+
     # Validate downsample range
     if not (0.25 <= args.downsample <= 1.0):
         fail("invalid_args", f"--downsample must be between 0.25 and 1.0, got {args.downsample}")
-
-    device = _detect_device(args.cpu)
 
     if args.input:
         # Single file mode
@@ -306,7 +392,7 @@ def main():
         stem = os.path.splitext(args.input)[0]
         out = args.out or f"{stem}_nobg.mov"
         mov_path = _process_one(args.input, out, args.model, device, args.downsample, args.progress)
-        webm_path = _make_webm_preview(mov_path)
+        webm_path = _make_webm_preview(mov_path, emit_progress=args.progress)
         print(json.dumps({"nobg_src": mov_path, "nobg_preview_src": webm_path}))
 
     else:
@@ -337,17 +423,18 @@ def main():
             with multiprocessing.Pool(processes=workers) as pool:
                 mov_paths = pool.map(_worker_trampoline, worker_args)
         else:
-            # GPU: process sequentially
+            # GPU: load model once, process clips sequentially
+            shared_model = _load_model(args.model, device)
             mov_paths = []
             for path in args.inputs:
                 require_file(path)
                 stem = os.path.splitext(path)[0]
                 out = f"{stem}_nobg.mov"
-                mov_path = _process_one(path, out, args.model, device, args.downsample, args.progress)
+                mov_path = _process_one(path, out, args.model, device, args.downsample, args.progress, model=shared_model)
                 mov_paths.append(mov_path)
 
         for mov_path in mov_paths:
-            webm_path = _make_webm_preview(mov_path)
+            webm_path = _make_webm_preview(mov_path, emit_progress=args.progress)
             results.append({"nobg_src": mov_path, "nobg_preview_src": webm_path})
 
         print(json.dumps(results))

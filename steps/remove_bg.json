@@ -51,8 +51,8 @@
       "name": "downsample",
       "type": "float",
       "required": false,
-      "default": 0.5,
-      "description": "Inference resolution ratio (0.25–1.0). 0.5 = half resolution (fast). 1.0 = full resolution (4x slower, sharper edges and finer hair/detail)."
+      "default": null,
+      "description": "Inference resolution ratio (0.25–1.0). Auto-detected from available memory when omitted: 0.25 on 8 GB, 0.375 on 16 GB, 0.5 on 32 GB+. 1.0 = full resolution (4x slower, sharper edges and finer hair/detail)."
     },
     {
       "name": "progress",
