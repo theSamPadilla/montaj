@@ -1,6 +1,6 @@
 {
   "name": "remove_bg",
-  "description": "Remove video background using RVM — outputs ProRes 4444 .mov with alpha + VP9 WebM preview. Quality tuning: use rvm_resnet50 for complex/cluttered backgrounds; use downsample 1.0 for sharper edges (slower). Default settings are fast; prefer quality settings for final output.",
+  "description": "Remove video background using RVM — outputs ProRes 4444 .mov with alpha + VP9 WebM preview. LONG-RUNNING: typically 1–5 minutes per clip on MPS/GPU depending on length and resolution. Always run via --inputs batch mode and fire in the background so the agent stays responsive. Quality tuning: use rvm_resnet50 for complex/cluttered backgrounds; use downsample 1.0 for sharper edges (slower). Default settings are fast; prefer quality settings for final output.",
   "input": {
     "type": "video",
     "description": "Source video file"

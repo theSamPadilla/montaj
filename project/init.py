@@ -24,7 +24,7 @@ def main():
     parser.add_argument("--clips", nargs="*", default=[], help="Input clip paths")
     parser.add_argument("--assets", nargs="*", default=[], help="Asset file paths (images, logos, etc.)")
     parser.add_argument("--prompt", required=True, help="Editing prompt")
-    parser.add_argument("--workflow", default="basic_trim", help="Workflow name")
+    parser.add_argument("--workflow", default="clean_cut", help="Workflow name")
     parser.add_argument("--name", help="Project name (used as workspace directory suffix)")
     parser.add_argument("--profile", help="Creator profile name to associate with this project")
     parser.add_argument("--canvas", action="store_true", help="Canvas project — no source footage")

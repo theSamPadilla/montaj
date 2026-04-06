@@ -1,44 +1,57 @@
 {
   "name": "materialize_cut",
-  "description": "Encode a trim spec or raw video segment into an H.264 clip. Used in workflows that require an actual video file before a subsequent step (e.g. remove_bg). Also useful for ad-hoc encoding and batch scripts.",
+  "description": "Encode a trim spec or raw video segment into an H.264 clip. Uses input-level seeking (-ss/-t before -i) so only the requested segment is decoded — no full file decode regardless of position. Used in workflows that require an actual video file before a subsequent step (e.g. remove_bg). CONCURRENCY WARNING: each instance is a full libx264 encode — memory-intensive at 4K. Use --inputs (batch mode) which caps concurrency at 2 workers by default. Never fan out more than 2–3 instances in parallel; unlike analysis steps (waveform_trim, rm_nonspeech) this step has a hard concurrency ceiling.",
   "input": {
     "type": "any",
     "description": "Trim spec JSON (from waveform_trim / rm_fillers / etc.) or raw video file"
   },
   "output": {
     "type": "video",
-    "description": "Encoded H.264 clip with all cuts applied"
+    "description": "Encoded H.264 clip with all cuts applied. Batch mode (--inputs) returns a JSON array of output paths."
   },
   "params": [
     {
       "name": "input",
       "type": "string",
-      "required": true,
-      "description": "Trim spec JSON or video file"
+      "required": false,
+      "description": "Single trim spec JSON or video file (mutually exclusive with inputs)"
+    },
+    {
+      "name": "inputs",
+      "type": "array",
+      "required": false,
+      "description": "Multiple trim specs or video files. Preferred over running separate instances in parallel — concurrency is capped internally at --workers (default 2) to prevent memory exhaustion on 4K footage."
     },
     {
       "name": "inpoint",
       "type": "float",
       "required": false,
-      "description": "Keep from this source time (seconds). Used with raw video input."
+      "description": "Keep from this source time (seconds). Used with raw video --input only."
     },
     {
       "name": "outpoint",
       "type": "float",
       "required": false,
-      "description": "Keep to this source time (seconds). Used with raw video input."
+      "description": "Keep to this source time (seconds). Used with raw video --input only."
     },
     {
       "name": "cuts",
       "type": "string",
       "required": false,
-      "description": "JSON [[start,end],...] — time ranges to remove. Used with raw video input. Can be combined with --inpoint/--outpoint."
+      "description": "JSON [[start,end],...] — time ranges to remove. Used with raw video --input only. Can be combined with --inpoint/--outpoint."
+    },
+    {
+      "name": "workers",
+      "type": "integer",
+      "required": false,
+      "default": 2,
+      "description": "Max concurrent encodes in batch mode. Default 2. Do not raise above 3 for 4K footage — each encode holds multiple decoded frame buffers in memory."
     },
     {
       "name": "out",
       "type": "string",
       "required": false,
-      "description": "Output path (default: {original_stem}_cut.mp4 next to source)"
+      "description": "Output path (default: {original_stem}_cut.mp4 next to source). --input only."
     }
   ]
 }

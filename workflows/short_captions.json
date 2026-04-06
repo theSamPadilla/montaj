@@ -1,5 +1,5 @@
 {
-  "name": "trim_and_caption",
+  "name": "short_captions",
   "description": "Multi-clip edit — silence trim, transcribe, select best takes, remove fillers, caption, overlays, resize to 9:16.",
   "steps": [
     { "id": "probe",            "uses": "montaj/probe",          "foreach": "clips" },

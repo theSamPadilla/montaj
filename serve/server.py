@@ -319,7 +319,7 @@ async def run_project(body: dict = Body(...)):
     clips    = body.get("clips", [])
     assets   = body.get("assets", [])
     prompt   = body.get("prompt")
-    workflow = body.get("workflow", "basic_trim")
+    workflow = body.get("workflow", "clean_cut")
     name     = body.get("name")
     profile  = body.get("profile")
 

@@ -26,6 +26,27 @@ echo "$out0"; echo "$out1"  # parse results after all complete
 
 Use for any independent `foreach` step: `waveform_trim`, `transcribe`, `rm_fillers`, `probe`, `snapshot`.
 
+**Do NOT use background jobs for encoding steps.** See Encoding steps below.
+
+## Encoding steps — `materialize_cut`, `remove_bg`
+
+Encoding steps are memory-intensive per instance (full libx264 encode + frame buffers). Fanning them out unbounded across N clips will exhaust memory on 4K footage. Use batch mode with the built-in concurrency cap instead of background jobs:
+
+```bash
+# materialize_cut — batch mode, 2 concurrent encodes (default)
+montaj materialize-cut --inputs clip0_spec.json clip1_spec.json clip2_spec.json
+# → JSON array of output paths
+
+# raise to 3 only on machines with 32GB+ RAM and 1080p or smaller footage
+montaj materialize-cut --inputs clip0.MOV clip1.MOV --workers 3
+
+# remove_bg — always use --inputs; GPU processes sequentially, CPU parallelises with workers
+montaj remove-bg --inputs clip0_cut.mp4 clip1_cut.mp4 clip2_cut.mp4
+# → JSON array of {nobg_src, nobg_preview_src} objects
+```
+
+**`remove_bg` is long-running** (minutes per clip on MPS/GPU). Always run it in the background when using the Agent tool or HTTP API so the agent remains responsive.
+
 ## `waveform_trim` native batch
 
 Preferred over background jobs — pass all clips in a single call:

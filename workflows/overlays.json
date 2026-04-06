@@ -1,5 +1,5 @@
 {
-  "name": "trim_and_overlay",
+  "name": "overlays",
   "description": "Trim and clean, then apply overlays — silence trim, remove non-speech, transcribe, select best takes, remove fillers, overlays.",
   "steps": [
     { "id": "probe",            "uses": "montaj/probe",          "foreach": "clips" },
