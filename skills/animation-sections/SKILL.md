@@ -1,25 +1,25 @@
 ---
-name: canvas-sections
-description: "Agent-authored task: build animation-only sections from scratch using opaque overlays. Load when the agent hits montaj/canvas-sections in a workflow."
+name: animation-sections
+description: "Agent-authored task: build animation-only sections from scratch using opaque overlays. Load when the agent hits montaj/animation-sections in a workflow."
 step: true
 ---
 
-# Canvas Sections
+# Animation Sections
 
-`montaj/canvas-sections` is an agent-authored task. No CLI step, no API call. You write the JSX overlay files and place them in `tracks` to build the full video from scratch.
+`montaj/animation-sections` is an agent-authored task. No CLI step, no API call. You write the JSX overlay files and place them in `tracks` to build the full video from scratch.
 
 **Before writing any JSX, load the write-overlay subskill** — it has the full authoring reference. Load it with `/write-overlay`.
 
 ---
 
-## When to use canvas sections
+## When to use animation sections
 
-Canvas sections are the right tool when:
+Animation sections are the right tool when:
 
-- The project has **no source footage** (canvas workflow) — you build the entire video as animated slides
+- The project has **no source footage** (animations workflow) — you build the entire video as animated slides
 - You want to **cover a section of existing footage** with a full-frame opaque overlay (stats card, pull quote, title card, transition)
 
-Canvas sections are **not** for transparent lower-thirds or watermarks. Use `montaj/overlay` for those.
+Animation sections are **not** for transparent lower-thirds or watermarks. Use `montaj/overlay` for those.
 
 ---
 
@@ -35,7 +35,7 @@ Read the editing prompt. Decide what sections the video needs:
 - **Transition slides** — between major chapters
 - **Outro** — CTA, social handle, end card
 
-For canvas projects (no footage), plan the full sequence: every second must be covered by at least one overlay.
+For animation projects (no footage), plan the full sequence: every second must be covered by at least one overlay.
 
 ### 2. Write the JSX files
 
@@ -55,7 +55,7 @@ See `/write-overlay` for the JSX authoring reference (globals, `interpolate`, `s
 
 ### 3. Place items in tracks
 
-**`tracks[0]` is always `[]` for canvas projects.** The schema enforces that `tracks[0]` items must be `type: "video"` (primary footage). Canvas projects have no footage, so `tracks[0]` stays empty.
+**`tracks[0]` is always `[]` for animation projects.** The schema enforces that `tracks[0]` items must be `type: "video"` (primary footage). Animation projects have no footage, so `tracks[0]` stays empty.
 
 Use `tracks[1]` for the primary visual layer — opaque backgrounds and section slides:
 
@@ -92,7 +92,7 @@ Use `tracks[2+]` for **layered animations on top** — text, icons, motion graph
 
 Items in the same track must not overlap in time. If you need two overlays at the same time at different z-levels, put them in different tracks.
 
-For canvas projects (no footage), every timestamp must be covered by an item in `tracks[1]` or higher. Gaps in coverage produce a black frame.
+For animation projects (no footage), every timestamp must be covered by an item in `tracks[1]` or higher. Gaps in coverage produce a black frame.
 
 ### 5. Persist to project.json
 
@@ -105,5 +105,5 @@ Write `tracks` to `project.json` — `PUT /api/projects/{id}` (HTTP) or write di
 - **Use icons, not emojis** — `Ph.*` (Phosphor) or `FaIcon` with `FaSolid`/`FaBrands` (Font Awesome). Both are available as globals — no imports needed. Only use emojis if the prompt asks.
 - **Always use absolute paths** for `src`
 - **opaque items fill the full frame** — no `offsetX`, `offsetY`, or `scale` on opaque items (they're set to defaults)
-- **Source audio is untouched** — canvas sections only affect video, never audio
-- **Duration inference** — for canvas projects, the render engine infers total duration from the highest `end` value across all items. Ensure your last item ends exactly when the video should end.
+- **Source audio is untouched** — animation sections only affect video, never audio
+- **Duration inference** — for animation projects, the render engine infers total duration from the highest `end` value across all items. Ensure your last item ends exactly when the video should end.
