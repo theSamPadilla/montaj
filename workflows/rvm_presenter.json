@@ -1,0 +1,16 @@
+{
+  "name": "rvm_presenter",
+  "description": "Talking-head presenter over a custom background — trim silence, remove non-speech, remove fillers, materialize trimmed footage, background-remove with RVM. The editing prompt should specify the background (image or video asset).",
+  "notes": "Track ordering is the inverse of the default. Background (from assets — image or video) goes in tracks[0] as the base layer. Presenter footage (clips, after remove_bg) goes in tracks[1] with remove_bg: true, nobg_src, and nobg_preview_src set from the remove_bg output. Do not place the presenter in tracks[0] — it renders behind the background. If no background asset is provided, use a solid-colour or animated animation section in tracks[0].",
+  "steps": [
+    { "id": "probe",        "uses": "montaj/probe",          "foreach": "clips" },
+    { "id": "snapshot",     "uses": "montaj/snapshot",       "foreach": "clips" },
+    { "id": "silence",      "uses": "montaj/waveform_trim",  "foreach": "clips",                             "params": { "threshold": "-30", "min-silence": 0.3 } },
+    { "id": "nonspeech",    "uses": "montaj/rm_nonspeech",   "foreach": "clips", "needs": ["silence"],      "params": { "model": "base.en", "max-word-gap": 0.10, "sentence-edge": 0.05 } },
+    { "id": "transcribe",   "uses": "montaj/transcribe",     "foreach": "clips", "needs": ["nonspeech"],    "params": { "model": "base.en" } },
+    { "id": "select-takes", "uses": "montaj/select-takes",                        "needs": ["transcribe"] },
+    { "id": "fillers",      "uses": "montaj/rm_fillers",     "foreach": "clips", "needs": ["select-takes"], "params": { "model": "base.en" } },
+    { "id": "materialize",  "uses": "montaj/materialize_cut","foreach": "clips", "needs": ["fillers"] },
+    { "id": "remove_bg",    "uses": "montaj/remove_bg",      "foreach": "clips", "needs": ["materialize"] }
+  ]
+}
