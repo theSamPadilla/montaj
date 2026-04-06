@@ -945,9 +945,18 @@ async def serve_file(path: str):
     the browser. Acceptable for a localhost-only tool. If montaj ever leaves
     localhost, scope this to workspace + known clip directories only."""
     p = Path(path)
-    if not p.is_file():
-        raise HTTPException(404, detail={"error": "not_found", "message": f"File not found: {path}"})
-    return FileResponse(str(p))
+    if p.is_file():
+        return FileResponse(str(p))
+    # macOS screenshot filenames use NARROW NO-BREAK SPACE (\u202f) before AM/PM,
+    # but paths written by the agent (or pasted) use a regular space.
+    # Scan the parent directory for a name that matches after normalising both to space.
+    parent = p.parent
+    if parent.is_dir():
+        target = p.name.replace('\u202f', ' ')
+        for candidate in parent.iterdir():
+            if candidate.name.replace('\u202f', ' ') == target:
+                return FileResponse(str(candidate))
+    raise HTTPException(404, detail={"error": "not_found", "message": f"File not found: {path}"})
 
 
 @router.get("/files/stream")
