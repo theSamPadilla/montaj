@@ -207,7 +207,8 @@ export default function ReviewView({ project, onProjectChange }: ReviewViewProps
       if (!newAssets.length) return
       const updated = { ...project, assets: [...assets, ...newAssets] }
       onProjectChange(updated)
-      setDirty(true)
+      await api.saveProject(project.id, updated)
+      setDirty(false)
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e)
       if (!msg.toLowerCase().includes('cancel')) console.error(msg)
