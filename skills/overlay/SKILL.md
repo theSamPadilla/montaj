@@ -36,6 +36,8 @@ If the prompt says "no overlays" — write nothing. Don't add an opening hook an
 - **Covering the face is fine** — text is more important than an unobstructed view of the speaker. Don't shrink or reposition text just to avoid the face.
 - **Match the energy of the speech** — fast, punchy delivery gets tight entrance animations (4–6 frames). Slower, deliberate speech gets a smoother slide or fade (10–15 frames).
 - **Use color sparingly** — one accent color maximum. White text with a colored word or icon reads better than multi-color text.
+- **Avoid the bottom ~350px** — that's where captions render and where platform UI lives (TikTok progress bar, Instagram controls). Keep `bottom` values above 350px, or use `top`-anchored placement instead.
+- **Avoid the right ~200px** — TikTok and Instagram stack action buttons (like, comment, share, follow) down the right edge. Don't push text or icons into that zone.
 
 ### 3. Tie overlays to the transcript
 

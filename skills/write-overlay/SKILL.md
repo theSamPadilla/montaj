@@ -443,6 +443,8 @@ Common overlay set for a social reel:
 - **Match the energy of the speech** — fast, punchy delivery: 4–6 frame entrances. Slower delivery: 10–15 frame fades or slides.
 - **Short text** — 2–6 words for lower-thirds, 4–8 for hooks. Short + large beats long + small.
 - **One accent color max** — white text with one colored word or icon. Multi-color text reads as noise.
+- **Avoid the bottom ~350px** — captions render here, and platform UI (TikTok progress bar, Instagram controls) sits in this zone. Use `bottom: 350` or higher, or anchor from the top instead.
+- **Avoid the right ~200px** — TikTok/Instagram action buttons (like, comment, share) occupy the right edge. Keep text and icons within `right: 200` or use `left`-anchored layout.
 - **Don't overlap** — avoid two overlays occupying the same screen region at the same time
 - **Style to the prompt** — match font weight, color, and motion to the tone of the edit
 - **Opening hook** — almost always appropriate for social content; fires in the first 0–3s
