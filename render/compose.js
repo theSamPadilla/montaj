@@ -262,15 +262,22 @@ export async function compose({
     }
   }
 
+  // --- Stamp color metadata via setparams (output stream flags are overridden by the black
+  //     canvas in filter_complex which has no color metadata). setparams inside the filter
+  //     graph takes precedence over the canvas's unset color info.
+  //     Only for the final H.264 encode — lossless FFV1 chunks pass through unmodified.
+  if (!_lossless) {
+    const preLabel = (N > 0 || Q > 0) ? '[vout]' : videoLabel
+    filterParts.push(`${preLabel}setparams=colorspace=bt709:color_trc=arib-std-b67:color_primaries=bt2020[vout_sp]`)
+    videoLabel = '[vout_sp]'
+  }
+
   // --- Assemble ffmpeg args ---
   // _lossless: FFV1 MKV for intra-only chunk intermediates (concat-safe, no B-frame DTS issues).
-  // Default: libx264 MP4 at 10-bit to preserve source HDR signal (bt2020/HLG).
+  // Default: libx264 MP4 — color metadata is stamped via setparams in the filter graph above.
   const videoCodecArgs = _lossless
     ? ['-c:v', 'ffv1', '-pix_fmt', 'yuv420p10le', '-reserve_index_space', '1000000']
-    : [
-        '-c:v', 'libx264', '-preset', 'fast', '-crf', '18', '-pix_fmt', 'yuv420p',
-        '-colorspace', 'bt709', '-color_trc', 'bt709', '-color_primaries', 'bt709', '-color_range', '1',
-      ]
+    : ['-c:v', 'libx264', '-preset', 'fast', '-crf', '18', '-pix_fmt', 'yuv420p']
   const audioCodecArgs = _lossless
     ? ['-c:a', 'pcm_s16le']
     : ['-c:a', 'aac', '-b:a', '192k']
@@ -281,11 +288,8 @@ export async function compose({
     ffmpegArgs.push('-filter_complex', filterParts.join(';'))
   }
 
-  // Map video: if items produced a named label use it, else map directly
-  if (N > 0 || Q > 0) {
-    ffmpegArgs.push('-map', '[vout]')
-  } else {
-    // videoLabel is the canvas/clip chain label (e.g. '[canvas_v]' or '[pv{N-1}]')
+  // Map video — videoLabel is always current (updated by setparams step above for non-lossless)
+  if (filterParts.length > 0) {
     ffmpegArgs.push('-map', videoLabel)
   }
 
@@ -426,6 +430,7 @@ function concatVideoFiles(paths, outputPath) {
   const result = spawnSync('ffmpeg', [
     '-y', '-f', 'concat', '-safe', '0', '-i', listFile,
     '-c:v', 'libx264', '-preset', 'fast', '-crf', '18', '-pix_fmt', 'yuv420p',
+    '-colorspace', 'bt709', '-color_trc', 'arib-std-b67', '-color_primaries', 'bt2020',
     '-c:a', 'aac', '-b:a', '192k',
     '-movflags', '+faststart', tmpPath,
   ], { encoding: 'utf8', timeout: FFMPEG_TIMEOUT_MS })

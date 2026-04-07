@@ -86,6 +86,8 @@ async function main(projectPath, { out, workers, clean }) {
   const workspaceDir = projectDir
   const renderDir    = join(workspaceDir, 'render')
   const segDir       = join(renderDir, 'segments')
+  // Always wipe segments from previous runs — stale files cause FFV1 decode errors in compose.
+  rmSync(segDir, { recursive: true, force: true })
   mkdirSync(segDir, { recursive: true })
 
   const outputPath = out ? resolve(out) : join(renderDir, 'final.mp4')

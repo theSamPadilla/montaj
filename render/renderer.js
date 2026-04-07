@@ -63,13 +63,7 @@ export async function renderAllSegments(segments, config = {}) {
 
   // Launch browser pool
   const browsers = await Promise.all(
-    Array.from({ length: workerCount }, () =>
-      puppeteer.launch({
-        headless: true,
-        args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-web-security'],
-        protocolTimeout: 120000,
-      })
-    )
+    Array.from({ length: workerCount }, () => launchBrowser())
   )
 
   log(`browsers ready`)
@@ -79,8 +73,20 @@ export async function renderAllSegments(segments, config = {}) {
   const queue = [...jobs]
   let jobsDone = 0
 
+  const RECYCLE_AFTER = 5  // restart browser every N jobs to prevent memory bloat
+
+  async function launchBrowser() {
+    return puppeteer.launch({
+      headless: true,
+      args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-web-security'],
+      protocolTimeout: 120000,
+    })
+  }
+
   await Promise.all(
-    browsers.map(async (browser) => {
+    browsers.map(async (browser, workerIdx) => {
+      let currentBrowser = browser
+      let jobsOnThisBrowser = 0
       while (true) {
         const job = queue.shift()
         if (!job) break
@@ -88,16 +94,24 @@ export async function renderAllSegments(segments, config = {}) {
           ? `${job.id} chunk ${job.chunkIndex + 1}/${job.totalChunks}`
           : job.id
         log(`rendering ${label} (${job.frameEnd - job.frameStart} frames)...`)
-        const webmPath = await renderChunk(browser, job)
+        const webmPath = await renderChunk(currentBrowser, job)
         jobsDone++
+        jobsOnThisBrowser++
         log(`encoded ${label} (${jobsDone}/${jobs.length} done)`)
         if (!chunkResults.has(job.id)) chunkResults.set(job.id, [])
         chunkResults.get(job.id)[job.chunkIndex] = webmPath
+
+        // Recycle browser to flush memory after RECYCLE_AFTER jobs
+        if (jobsOnThisBrowser >= RECYCLE_AFTER && queue.length > 0) {
+          await currentBrowser.close()
+          currentBrowser = await launchBrowser()
+          jobsOnThisBrowser = 0
+          log(`worker ${workerIdx}: browser recycled`)
+        }
       }
+      await currentBrowser.close()
     })
   )
-
-  await Promise.all(browsers.map(b => b.close()))
 
   // Reassemble multi-chunk segments
   const results = []
@@ -185,25 +199,25 @@ async function renderChunk(browser, job) {
   // Encode PNG sequence → VP9 WebM
   // yuva420p for transparent overlays; yuv420p for opaque (no alpha needed).
   // -auto-alt-ref 0 is required when encoding yuva420p — VP9 alpha doesn't support alt-ref frames.
-  const chunkWebm = outputPath.replace(/\.\w+$/, '') + `-chunk-${chunkIndex}.mkv`
-  mkdirSync(dirname(chunkWebm), { recursive: true })
+  // NUT container: simpler than MKV, no EBML unknown-size elements, reliable under
+  // concurrent decode. FFV1 codec preserves alpha (yuva420p) losslessly.
+  const chunkNut = outputPath.replace(/\.\w+$/, '') + `-chunk-${chunkIndex}.nut`
+  mkdirSync(dirname(chunkNut), { recursive: true })
 
   const pixFmt = job.opaque ? 'yuv420p' : 'yuva420p'
-  // ffv1: lossless, fast, and reliably preserves the alpha channel.
-  // VP9 with speed flags silently drops the alpha plane — ffv1 doesn't have this problem.
   await spawnAsync('ffmpeg', [
     '-y',
     '-framerate', String(fps),
     '-i',         join(frameDir, 'frame-%06d.png'),
     '-c:v',       'ffv1',
     '-pix_fmt',   pixFmt,
-    '-reserve_index_space', '1000000',
-    chunkWebm,
+    '-f',         'nut',
+    chunkNut,
   ], `ffmpeg PNG→ffv1 failed (segment ${id} chunk ${chunkIndex})`)
 
   rmSync(frameDir, { recursive: true, force: true })
 
-  return chunkWebm
+  return chunkNut
 }
 
 const TTY = process.stderr.isTTY
@@ -254,7 +268,7 @@ function readMontajConfig() {
 }
 
 function concatChunks(chunkPaths, outputPath) {
-  const webmOutput = outputPath.replace(/\.\w+$/, '.mkv')
+  const webmOutput = outputPath.replace(/\.\w+$/, '.nut')
   const listFile   = webmOutput + '.chunks.txt'
   writeFileSync(listFile, chunkPaths.map(p => `file '${p}'`).join('\n'))
 
