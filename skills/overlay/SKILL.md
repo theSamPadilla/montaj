@@ -20,12 +20,22 @@ The prompt tells you the tone and intent. The transcript tells you the moments w
 
 Ask: what does this video need that isn't already in the footage? Common answers:
 
-- **Opening hook** (0–3s) — almost always right for social content. A punchy text card that sells the video before the viewer decides to scroll.
+- **Opening hook** (0–3s) — almost always right for social content. A punchy text statement that sells the video before the viewer decides to scroll.
 - **Lower-thirds** — speaker name, context, stat callouts. Tied to specific transcript moments.
 - **Logo/watermark** — if assets include a logo, add it as a persistent or bookend overlay.
 - **Stat cards** — when the speaker cites a number ("33 million views"), a card reinforces it visually.
 
 If the prompt says "no overlays" — write nothing. Don't add an opening hook anyway.
+
+### Visual style defaults
+
+**Plain text directly on video is almost always the right call.** Skip the card. Skip the frosted glass. Big, bold text sitting right on the footage is more dynamic and feels native — not slapped on top.
+
+- **Go large** — 96–160px is a starting point, not a ceiling. If it looks a little too big, it's probably right. Small text gets scrolled past.
+- **No backgrounds** — avoid dark cards, frosted panels, and semi-transparent boxes unless the prompt asks for them. A text shadow (`textShadow: '0 2px 16px rgba(0,0,0,0.9)'`) is enough to ensure legibility on any footage without boxing the text in.
+- **Covering the face is fine** — text is more important than an unobstructed view of the speaker. Don't shrink or reposition text just to avoid the face.
+- **Match the energy of the speech** — fast, punchy delivery gets tight entrance animations (4–6 frames). Slower, deliberate speech gets a smoother slide or fade (10–15 frames).
+- **Use color sparingly** — one accent color maximum. White text with a colored word or icon reads better than multi-color text.
 
 ### 3. Tie overlays to the transcript
 
@@ -71,7 +81,10 @@ Persist via `PUT /api/projects/{id}` (HTTP) or write directly to `project.json` 
 - **Always use absolute paths** for `src` — the render engine won't resolve relative paths
 - **Don't overlap items at the same position** at the same time
 - **To cover footage fully**, set `"opaque": true` on the item — the render engine removes transparency and lets the JSX root's CSS define the background. The audio track is unaffected.
-- **Keep text short** — 2–6 words for lower-thirds, 4–8 for hook cards
+- **Go large** — 96px+ for most text, 120–160px for hooks. Big text beats small text every time
+- **No backgrounds by default** — plain text on video with a text shadow is the preferred style. Only use cards or panels when the prompt explicitly asks, or when legibility genuinely requires it
+- **Covering the face is acceptable** — don't compromise text size or position to avoid the speaker
+- **Keep text short** — 2–6 words for lower-thirds, 4–8 for hooks. Short + large beats long + small
 - **Leave `offsetX`, `offsetY`, `scale` at defaults** (`0`, `0`, `1`) — the human positions overlays via the UI drag tool after preview
 - **Use assets from `project.assets`** — pass asset `src` paths as `props`, don't hardcode paths inside JSX
 

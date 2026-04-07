@@ -63,25 +63,26 @@ export default function List() {
 
 ## Writing the JSX
 
-```jsx
-// overlays/hook.jsx
+The default aesthetic is **plain bold text directly on video** — no card, no background, just a text shadow for legibility. Big text (96–160px) that covers the footage, including the speaker's face if needed.
 
-const progress = interpolate(frame, [0, 8], [0, 1], { extrapolateRight: 'clamp' })
-const slideY   = interpolate(frame, [0, 12], [30, 0], { extrapolateRight: 'clamp' })
+```jsx
+// overlays/hook.jsx — plain text on video, no background
 
 export default function Hook() {
+  const progress = interpolate(frame, [0, 8], [0, 1], { extrapolateRight: 'clamp' })
+  const slideY   = interpolate(frame, [0, 10], [40, 0], { extrapolateRight: 'clamp' })
+
   return (
     <div style={{
-      position: 'absolute', bottom: 120, left: 0, right: 0,
-      display: 'flex', justifyContent: 'center',
+      position: 'absolute', bottom: 180, left: 48, right: 48,
       opacity: progress,
       transform: `translateY(${slideY}px)`,
     }}>
       <div style={{
-        background: 'rgba(0,0,0,0.72)', backdropFilter: 'blur(8px)',
-        borderRadius: 12, padding: '10px 22px',
-        fontFamily: 'Inter, sans-serif', fontSize: 28, fontWeight: 700,
-        color: '#fff', letterSpacing: '-0.3px',
+        fontFamily: 'Anton, Impact, sans-serif', fontSize: 120, fontWeight: 900,
+        color: '#fff', lineHeight: 1.05, letterSpacing: '-1px',
+        textShadow: '0 2px 24px rgba(0,0,0,0.9), 0 0 60px rgba(0,0,0,0.5)',
+        textTransform: 'uppercase',
       }}>
         {props.text}
       </div>
@@ -89,6 +90,8 @@ export default function Hook() {
   )
 }
 ```
+
+Only add a card or background when the prompt explicitly asks, or when a specific overlay type genuinely requires it (e.g. a logo lockup, an opaque title card). When you do need a background, prefer a solid semi-transparent color over `backdropFilter: blur()` — see the track-splitting section below.
 
 ### Rules
 
@@ -433,9 +436,14 @@ Common overlay set for a social reel:
 ## Authoring guidelines
 
 - **Use icons, not emojis** — use `Ph.*` or `FaIcon` for visual symbols. Emojis render inconsistently across platforms and look low-effort. Only use emojis if the prompt explicitly asks for them.
-- **Tie to transcript** — use word timings from the transcript to sync text appearance with speech
-- **Short text** — 2–6 words for lower-thirds, one punchy line for hooks
+- **Go large** — 96px is the floor, not the ceiling. 120–160px for hooks. Text should feel oversized; if it looks a little too big, it's probably right. Small text gets scrolled past.
+- **No backgrounds by default** — plain text on video with `textShadow` for legibility is the house style. No dark cards, no frosted glass, no semi-transparent boxes unless the prompt asks. A well-placed `textShadow` works on any footage.
+- **Cover the face if needed** — text position and size take priority. Don't shrink or reposition to avoid the speaker.
+- **Tie to transcript** — use word timings from the transcript to sync text appearance with speech. An overlay that appears exactly when the speaker says the word it displays lands much harder.
+- **Match the energy of the speech** — fast, punchy delivery: 4–6 frame entrances. Slower delivery: 10–15 frame fades or slides.
+- **Short text** — 2–6 words for lower-thirds, 4–8 for hooks. Short + large beats long + small.
+- **One accent color max** — white text with one colored word or icon. Multi-color text reads as noise.
 - **Don't overlap** — avoid two overlays occupying the same screen region at the same time
-- **Style to the prompt** — match font weight, color, and motion to the tone of the edit (e.g. punchy TikTok vs polished tutorial)
+- **Style to the prompt** — match font weight, color, and motion to the tone of the edit
 - **Opening hook** — almost always appropriate for social content; fires in the first 0–3s
 - **Persist after writing** — update `project.json` via `PUT /api/projects/{id}` (HTTP mode) or write directly to `project.json` (headless mode)
