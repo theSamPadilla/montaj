@@ -125,6 +125,7 @@ export default function Timeline({ project, currentTime, onTimeUpdate, onProject
     const frame = 1 / fps
     const onKey = (e: globalThis.KeyboardEvent) => {
       if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return
+      if (e.key === 'Escape') { setMarkers([null, null]); return }
       if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return
       e.preventDefault()
       const step = e.shiftKey ? 1 : frame

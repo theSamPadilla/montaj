@@ -430,10 +430,17 @@ export default function PreviewPlayer({ project, currentTime, onTimeUpdate, sele
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isCanvasProject])
 
+  // Track clip identity to avoid reloading when only overlays change
+  const clipsSourceRef = useRef('')
+
   // Load first clip into active slot when clips change
   useEffect(() => {
     const video = getActiveVideo()
     if (!video || !clips.length || !clips[0].src) return
+    // Only reload if the actual clip sources/trim points changed — not just overlay edits
+    const identity = clips.map(c => `${c.src}|${c.inPoint ?? 0}|${c.outPoint ?? ''}`).join(',')
+    if (identity === clipsSourceRef.current) return
+    clipsSourceRef.current = identity
     activeIdxRef.current = 0
     activeSlotRef.current = 0
     setActiveSlot(0)

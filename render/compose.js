@@ -302,6 +302,9 @@ export async function compose({
   }
 
   ffmpegArgs.push(...videoCodecArgs, ...audioCodecArgs)
+  // Cap output at exactly totalDuration — overlay=shortest=0 allows NUT files that span a chunk
+  // boundary to extend the canvas beyond its intended duration (extra frames, audio drift).
+  ffmpegArgs.push('-t', String(totalDuration))
   if (!_lossless) ffmpegArgs.push('-movflags', '+faststart')
   ffmpegArgs.push(outputPath)
 
@@ -429,8 +432,8 @@ function concatVideoFiles(paths, outputPath) {
   const tmpPath = outputPath.replace(/(\.\w+)$/, `.${randomBytes(4).toString('hex')}$1`)
   const result = spawnSync('ffmpeg', [
     '-y', '-f', 'concat', '-safe', '0', '-i', listFile,
+    '-vf', 'setparams=colorspace=bt709:color_trc=arib-std-b67:color_primaries=bt2020',
     '-c:v', 'libx264', '-preset', 'fast', '-crf', '18', '-pix_fmt', 'yuv420p',
-    '-colorspace', 'bt709', '-color_trc', 'arib-std-b67', '-color_primaries', 'bt2020',
     '-c:a', 'aac', '-b:a', '192k',
     '-movflags', '+faststart', tmpPath,
   ], { encoding: 'utf8', timeout: FFMPEG_TIMEOUT_MS })
