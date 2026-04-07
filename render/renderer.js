@@ -196,28 +196,42 @@ async function renderChunk(browser, job) {
 
   await page.close()
 
-  // Encode PNG sequence → VP9 WebM
+  // Encode PNG sequence → FFV1 in MKV.
   // yuva420p for transparent overlays; yuv420p for opaque (no alpha needed).
-  // -auto-alt-ref 0 is required when encoding yuva420p — VP9 alpha doesn't support alt-ref frames.
-  // NUT container: simpler than MKV, no EBML unknown-size elements, reliable under
-  // concurrent decode. FFV1 codec preserves alpha (yuva420p) losslessly.
-  const chunkNut = outputPath.replace(/\.\w+$/, '') + `-chunk-${chunkIndex}.nut`
-  mkdirSync(dirname(chunkNut), { recursive: true })
+  // FFV1 codec preserves alpha (yuva420p) losslessly.
+  //
+  // Container choice: MKV with cluster_size_limit + reserve_index_space.
+  //   - NUT was used previously to avoid EBML unknown-size clusters, but the NUT muxer
+  //     fails to write the end-of-file index for large files (large frames, many frames),
+  //     causing "no index at the end" and backward timestamp scan failures during compose.
+  //   - MKV with -cluster_size_limit <N> forces finite-size clusters (no unknown-size
+  //     EBML elements), fixing the concurrent-decode EBML error that originally drove the
+  //     switch to NUT.
+  //   - reserve_index_space writes the seek index at the start of the file, ensuring
+  //     fast and reliable seeking without a backward scan.
+  //   - -g 1: every FFV1 frame is a keyframe — required so the MKV muxer places a
+  //     cluster boundary (and thus a cue point) before every frame, enabling accurate
+  //     per-frame seeking used by the compose filter graph.
+  const chunkMkv = outputPath.replace(/\.\w+$/, '') + `-chunk-${chunkIndex}.mkv`
+  mkdirSync(dirname(chunkMkv), { recursive: true })
 
   const pixFmt = job.opaque ? 'yuv420p' : 'yuva420p'
   await spawnAsync('ffmpeg', [
     '-y',
-    '-framerate', String(fps),
-    '-i',         join(frameDir, 'frame-%06d.png'),
-    '-c:v',       'ffv1',
-    '-pix_fmt',   pixFmt,
-    '-f',         'nut',
-    chunkNut,
+    '-framerate',           String(fps),
+    '-i',                   join(frameDir, 'frame-%06d.png'),
+    '-c:v',                 'ffv1',
+    '-g',                   '1',           // all-keyframe → MKV places cluster/cue at every frame
+    '-pix_fmt',             pixFmt,
+    '-f',                   'matroska',
+    '-cluster_size_limit',  '2000000',     // finite-size clusters → no EBML unknown-size errors
+    '-reserve_index_space', '1000000',     // seek index at file start → no backward scan needed
+    chunkMkv,
   ], `ffmpeg PNG→ffv1 failed (segment ${id} chunk ${chunkIndex})`)
 
   rmSync(frameDir, { recursive: true, force: true })
 
-  return chunkNut
+  return chunkMkv
 }
 
 const TTY = process.stderr.isTTY
@@ -268,14 +282,16 @@ function readMontajConfig() {
 }
 
 function concatChunks(chunkPaths, outputPath) {
-  const webmOutput = outputPath.replace(/\.\w+$/, '.nut')
-  const listFile   = webmOutput + '.chunks.txt'
+  const mkvOutput = outputPath.replace(/\.\w+$/, '.mkv')
+  const listFile  = mkvOutput + '.chunks.txt'
   writeFileSync(listFile, chunkPaths.map(p => `file '${p}'`).join('\n'))
 
   const result = spawnSync('ffmpeg', [
     '-y', '-f', 'concat', '-safe', '0', '-i', listFile,
     '-c', 'copy',
-    webmOutput,
+    '-cluster_size_limit',  '2000000',
+    '-reserve_index_space', '1000000',
+    mkvOutput,
   ], { encoding: 'utf8', timeout: FFMPEG_TIMEOUT_MS })
 
   if (result.status !== 0) {
@@ -285,5 +301,5 @@ function concatChunks(chunkPaths, outputPath) {
   for (const p of chunkPaths) rmSync(p, { force: true })
   rmSync(listFile, { force: true })
 
-  return webmOutput
+  return mkvOutput
 }
