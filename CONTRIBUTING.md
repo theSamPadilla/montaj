@@ -8,7 +8,7 @@ cd montaj
 
 # Python (CLI, steps, server)
 python -m venv venv && source venv/bin/activate
-pip install -e ".[serve,test]"
+pip install -e ".[test]"
 
 # UI
 cd ui && npm install
