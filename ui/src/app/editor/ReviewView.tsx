@@ -29,6 +29,8 @@ export default function ReviewView({ project, onProjectChange }: ReviewViewProps
   const [canUndo, setCanUndo]                 = useState(false)
   const historyRef = useRef<Project[]>([])
   const [pickingAssets, setPickingAssets]     = useState(false)
+  const [uploadingAssets, setUploadingAssets] = useState(false)
+  const [dragOverAssets, setDragOverAssets]   = useState(false)
   const [selectedOverlayId, setSelectedOverlayId] = useState<string | null>(null)
   const [versions, setVersions]           = useState<ProjectVersion[]>([])
   const [restoring, setRestoring]         = useState<string | null>(null)
@@ -236,6 +238,35 @@ export default function ReviewView({ project, onProjectChange }: ReviewViewProps
     setDirty(true)
   }
 
+  async function handleAssetDrop(e: React.DragEvent) {
+    e.preventDefault()
+    setDragOverAssets(false)
+    const files = Array.from(e.dataTransfer.files).filter(f => f.type.startsWith('image/'))
+    if (!files.length) return
+    setUploadingAssets(true)
+    try {
+      const paths = await Promise.all(files.map(f => api.uploadFile(f)))
+      const existing = new Set(assets.map(a => a.src))
+      const newAssets: Asset[] = paths
+        .filter(p => !existing.has(p))
+        .map((p, i) => ({
+          id: `asset-${Date.now()}-${i}`,
+          src: p,
+          type: 'image' as const,
+          name: basename(p),
+        }))
+      if (!newAssets.length) return
+      const updated = { ...project, assets: [...assets, ...newAssets] }
+      onProjectChange(updated)
+      await api.saveProject(project.id, updated)
+      setDirty(false)
+    } catch (e: unknown) {
+      console.error(e instanceof Error ? e.message : String(e))
+    } finally {
+      setUploadingAssets(false)
+    }
+  }
+
   return (
     <div className="flex flex-col h-full">
       <ProjectHeader
@@ -403,11 +434,24 @@ export default function ReviewView({ project, onProjectChange }: ReviewViewProps
             </button>
           </div>
 
-          <div className="flex-1 overflow-y-auto p-2 flex flex-col gap-1.5">
-            {assets.length === 0 && (
+          <div
+            className={`flex-1 overflow-y-auto p-2 flex flex-col gap-1.5 transition-colors ${dragOverAssets ? 'bg-blue-50 dark:bg-blue-950/30' : ''}`}
+            onDragOver={e => { e.preventDefault(); setDragOverAssets(true) }}
+            onDragLeave={e => { if (!e.currentTarget.contains(e.relatedTarget as Node)) setDragOverAssets(false) }}
+            onDrop={handleAssetDrop}
+          >
+            {assets.length === 0 && !dragOverAssets && !uploadingAssets && (
               <p className="text-xs text-gray-600 text-center mt-4 px-2 leading-relaxed">
                 No assets yet.<br />Add images the agent can use as overlays.
               </p>
+            )}
+            {dragOverAssets && (
+              <div className="flex-1 flex items-center justify-center">
+                <p className="text-xs text-blue-500 dark:text-blue-400 text-center">Drop to add</p>
+              </div>
+            )}
+            {uploadingAssets && !dragOverAssets && (
+              <p className="text-xs text-gray-500 text-center mt-4">Uploading…</p>
             )}
             {assets.map(asset => (
               <div
