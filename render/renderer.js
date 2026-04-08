@@ -79,7 +79,7 @@ export async function renderAllSegments(segments, config = {}) {
     return puppeteer.launch({
       headless: true,
       args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-web-security'],
-      protocolTimeout: 120000,
+      protocolTimeout: 300000,
     })
   }
 

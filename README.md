@@ -1,18 +1,35 @@
+<p align="center">
+  <img src="ui/public/montaj-logo.png" alt="Montaj" width="200" />
+</p>
+
 # Montaj
 
-> Open source video editing toolkit. AI-native, CLI-first, agent-friendly. Do whatever you want.
+> A video editing CLIP for AI agents. CLI-first, agent-native, open source.
 
-Montaj is a video editing harness that mounts on top of your existing AI agent. You bring Claude, OpenClaw, or any agent — Montaj gives it the tools to edit video. Built-in steps cover the common operations. The agent decides what to run, in what order, and with what params.
+Montaj is a **CLIP** — a CLI Program for agents. It clips onto your existing AI agent (Claude Code, OpenClaw, Cursor, or any harness) and gives it the specialized tools to edit video. Built-in steps cover the full editing pipeline. The agent decides what to run, in what order, and with what params.
 
 **The fundamental dependency is an agent.** Montaj doesn't edit on its own. It provides the tools; the agent makes the creative decisions.
 
+> **What's a CLIP?** Read [*The Harnesses Are Here. Now Clip In.*](https://x.com/theSamPadilla/status/2040965610155155681) — the essay that named this category. An agentic CLIP is a self-contained program that attaches to existing harnesses to give agents specialized capabilities in a specific domain. It doesn't replace the harness. It clips on.
+
 ## Why Montaj Exists
 
-Other programmatic video tools (Remotion, etc.) give an agent a framework to **write code** — the agent authors JSX compositions that describe a video. Montaj takes the opposite approach: the agent **orchestrates tools**. We put a set of discrete, well-defined operations in front of the agent and teach it how to use them. No code authoring. The agent reasons about which steps to call, in what order, with what params.
+A video editing skill tells an agent how to think about editing. An MCP tool lets an agent cut a clip at a timestamp. Montaj is neither — it's a CLIP.
 
-The gaps this fills:
+An agent with Montaj can probe a clip for metadata, transcribe it, identify filler words and silence gaps, pick the best takes, trim out the bad ones with battle-tested ffmpeg operations that handle codec edge cases correctly, and composite the result — all by following an opinionated workflow that encodes domain expertise. All while using a fraction of the tokens an agent would burn building the same pipeline from scratch.
 
-- **Agent-native interface** — CLI, HTTP, and MCP; steps are callable from any agent without writing code
+Other programmatic video tools (Remotion, etc.) give an agent a framework to **write code** — the agent authors JSX compositions that describe a video. Montaj takes the opposite approach: the agent **orchestrates tools**. No code authoring. The agent reasons about which steps to call, in what order, with what params.
+
+What makes Montaj a CLIP and not just an MCP server:
+
+- **Opinionated workflows** — suggested step order, dependencies, and when to parallelize; bounds stochastic output into proven pipelines
+- **Work stateful** — `project.json` tracks everything: what's been done, what's left, raw input → finished output
+- **Dual interface** — agent works, human inspects; browser UI, readable project file, draft/final approval states
+- **Installable** — `brew install montaj` and any agent has video editing
+
+The building blocks:
+
+- **Agent-native interface** — CLI, HTTP, and MCP; steps are callable from any harness without writing code
 - **Editing existing footage** — trim, cut, transcribe, composite against source clips
 - **Animation generation** — agent can generate React overlay components (captions, titles, effects) rendered frame-by-frame via headless Chrome and composited in
 - **Local-first** — ffmpeg + whisper.cpp, no external APIs required

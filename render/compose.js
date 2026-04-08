@@ -163,15 +163,15 @@ export async function compose({
   for (let i = 0; i < N; i++) {
     const item    = sortedItems[i]
     const s       = item.scale ?? 1
-    const scaledW = Math.round(vw * s)
-    const scaledH = Math.round(vh * s)
+    const scaledW = Math.round(vw * s / 2) * 2
+    const scaledH = Math.round(vh * s / 2) * 2
     const xPx     = Math.round(vw * (0.5 * (1 - s) + (item.offsetX ?? 0) / 100))
     const yPx     = Math.round(vh * (0.5 * (1 - s) + (item.offsetY ?? 0) / 100))
     const isLast  = i === N - 1 && Q === 0
     const outV    = isLast ? '[vout]' : `[iv${i}]`
 
     if (isImageItem(item)) {
-      filterParts.push(`[${i}:v]scale=${scaledW}:${scaledH}[img${i}]`)
+      filterParts.push(`[${i}:v]scale=${scaledW}:${scaledH}:force_original_aspect_ratio=decrease,pad=${scaledW}:${scaledH}:(ow-iw)/2:(oh-ih)/2[img${i}]`)
       let src = `[img${i}]`
       if (Math.abs((item.opacity ?? 1) - 1) > 0.001) {
         filterParts.push(`${src}colorchannelmixer=aa=${item.opacity}[imgop${i}]`)
