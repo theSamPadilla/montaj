@@ -33,6 +33,10 @@ markers   = [
     "slow: tests that take more than a few seconds",
 ]
 
+[project.urls]
+Homepage = "https://github.com/theSamPadilla/montaj"
+Repository = "https://github.com/theSamPadilla/montaj"
+
 [project.scripts]
 montaj = "cli.main:main"
 mtj    = "cli.main:main"

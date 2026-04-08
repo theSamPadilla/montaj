@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="ui/public/montaj-logo.png" alt="Montaj" width="200" />
+  <img src="Montaj.jpeg" alt="Montaj" width="200" />
 </p>
 
 # Montaj

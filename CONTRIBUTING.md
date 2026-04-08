@@ -3,7 +3,7 @@
 ## Setup
 
 ```bash
-git clone https://github.com/by-crux/montaj
+git clone https://github.com/theSamPadilla/montaj
 cd montaj
 
 # Python (CLI, steps, server)

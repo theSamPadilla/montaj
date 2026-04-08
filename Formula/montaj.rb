@@ -1,10 +1,10 @@
 class Montaj < Formula
   desc "Video editing toolkit — local-first, CLI-driven, agent-friendly"
-  homepage "https://github.com/ByCrux/montaj"
-  url "https://github.com/ByCrux/montaj/archive/refs/tags/v0.1.0.tar.gz"
+  homepage "https://github.com/theSamPadilla/montaj"
+  url "https://github.com/theSamPadilla/montaj/archive/refs/tags/v0.1.0.tar.gz"
   sha256 "0000000000000000000000000000000000000000000000000000000000000000"
   license "MIT"
-  head "https://github.com/ByCrux/montaj.git", branch: "main"
+  head "https://github.com/theSamPadilla/montaj.git", branch: "main"
 
   depends_on "python@3.12"
 
