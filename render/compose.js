@@ -171,7 +171,7 @@ export async function compose({
     const outV    = isLast ? '[vout]' : `[iv${i}]`
 
     if (isImageItem(item)) {
-      filterParts.push(`[${i}:v]scale=${scaledW}:${scaledH}:force_original_aspect_ratio=decrease,pad=${scaledW}:${scaledH}:(ow-iw)/2:(oh-ih)/2[img${i}]`)
+      filterParts.push(`[${i}:v]format=rgba,scale=${scaledW}:${scaledH}:force_original_aspect_ratio=decrease,pad=${scaledW}:${scaledH}:(ow-iw)/2:(oh-ih)/2:color=0x00000000[img${i}]`)
       let src = `[img${i}]`
       if (Math.abs((item.opacity ?? 1) - 1) > 0.001) {
         filterParts.push(`${src}colorchannelmixer=aa=${item.opacity}[imgop${i}]`)
