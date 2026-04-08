@@ -5,8 +5,8 @@ import { compileOverlay, clearOverlayCache } from '@/lib/overlay-eval'
 import type { OverlayFactory } from '@/lib/overlay-eval'
 import CaptionPreview from '@/components/CaptionPreview'
 
-const RENDER_W = 1080
-const RENDER_H = 1920
+const DEFAULT_RENDER_W = 1080
+const DEFAULT_RENDER_H = 1920
 
 const VIDEO_PRELOAD_S = 0.4  // mount this many seconds before item.start so the frame is ready
 
@@ -187,6 +187,9 @@ interface PreviewPlayerProps {
 const SNAP_THRESHOLD = 2.5  // % of container
 
 export default function PreviewPlayer({ project, currentTime, onTimeUpdate, selectedOverlayId, onOverlayChange }: PreviewPlayerProps) {
+  const RENDER_W = project.settings?.resolution?.[0] ?? DEFAULT_RENDER_W
+  const RENDER_H = project.settings?.resolution?.[1] ?? DEFAULT_RENDER_H
+
   // Double-buffer video elements for seamless clip transitions
   const video0Ref    = useRef<HTMLVideoElement>(null)
   const video1Ref    = useRef<HTMLVideoElement>(null)
@@ -620,7 +623,7 @@ export default function PreviewPlayer({ project, currentTime, onTimeUpdate, sele
   }
 
   return (
-    <div ref={containerRef} className="relative bg-black h-full aspect-[9/16] max-w-full overflow-hidden rounded">
+    <div ref={containerRef} className="relative bg-black h-full max-w-full overflow-hidden rounded" style={{ aspectRatio: `${RENDER_W} / ${RENDER_H}` }}>
       {isCanvasProject ? (
         <div className="absolute inset-0 cursor-pointer" style={{ zIndex: 10 }} onClick={togglePlay} />
       ) : clips.length === 0 ? (
