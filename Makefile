@@ -1,7 +1,7 @@
 .PHONY: test test-fast install
 
 install:
-	pip install -e ".[serve,test]"
+	pip install -e ".[test]"
 
 test:
 	pytest

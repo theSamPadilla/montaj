@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """montaj install — install optional dependencies (whisper binary + weights, rvm)."""
-import os, platform, shutil, subprocess, sys
+import os, platform, subprocess, sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "lib"))
 import models as _models
 

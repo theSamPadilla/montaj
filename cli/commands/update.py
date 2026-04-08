@@ -77,7 +77,7 @@ def _update_whisper() -> bool:
 def _update_pip() -> bool:
     print("→ upgrading Python packages…")
     r = subprocess.run([
-        sys.executable, "-m", "pip", "install", "--upgrade", "-e", ".[serve,test]"
+        sys.executable, "-m", "pip", "install", "--upgrade", "-e", ".[test]"
     ])
     if r.returncode != 0:
         print("error: pip upgrade failed", file=sys.stderr)
