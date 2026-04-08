@@ -76,10 +76,11 @@ async function main(projectPath, { out, workers, clean }) {
   const settings = projectJson.settings || {}
   const fps    = settings.fps || 30
 
-  // Design resolution — what overlay components are authored for (always 1080-wide).
-  // Puppeteer renders at this size regardless of the actual output video resolution.
-  const renderWidth  = 1080
-  const renderHeight = 1920
+  // Design resolution — what overlay components are authored for.
+  // Defaults to 1080×1920 (portrait) but respects settings.resolution when set,
+  // so animations-only projects authored at a different resolution render correctly.
+  const renderWidth  = settings.resolution?.[0] ?? 1080
+  const renderHeight = settings.resolution?.[1] ?? 1920
 
   // project.json always lives at the workspace root (written there by project/init.py),
   // so projectDir === workspaceDir. Render outputs go to workspace/<name>/render/.
@@ -139,8 +140,8 @@ async function main(projectPath, { out, workers, clean }) {
   }
 
   // 5. Detect base video dimensions from first video item (lowest trackIdx), or use settings.
-  let actualWidth  = renderWidth
-  let actualHeight = renderHeight
+  let actualWidth  = settings.resolution?.[0] ?? renderWidth
+  let actualHeight = settings.resolution?.[1] ?? renderHeight
   const firstVideo = [...videoItems].sort((a, b) => a.trackIdx - b.trackIdx)[0]
   if (firstVideo) {
     const dims = probeVideoDimensions(firstVideo.src)
