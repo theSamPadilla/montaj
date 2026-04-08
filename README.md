@@ -6,34 +6,14 @@
 
 > A video editing CLIP for AI agents. CLI-first, agent-native, open source.
 
-Montaj is a **CLIP** — a CLI Program for agents. It clips onto your existing AI agent (Claude Code, OpenClaw, Cursor, or any harness) and gives it the specialized tools to edit video. Built-in steps cover the full editing pipeline. The agent decides what to run, in what order, and with what params.
+Montaj is a **CLIP** — a CLI Program for agents. It clips onto your existing AI agent (Claude Code, OpenClaw, Cursor, or any harness) and gives it the specialized tools to edit video. Built-in steps cover the full editing pipeline. The agent decides what to run, in what order, and with what parameters.
 
 **The fundamental dependency is an agent.** Montaj doesn't edit on its own. It provides the tools; the agent makes the creative decisions.
 
-> **What's a CLIP?** Read [*The Harnesses Are Here. Now Clip In.*](https://x.com/theSamPadilla/status/2040965610155155681) — the essay that named this category. An agentic CLIP is a self-contained program that attaches to existing harnesses to give agents specialized capabilities in a specific domain. It doesn't replace the harness. It clips on.
-
-## Why Montaj Exists
-
-A video editing skill tells an agent how to think about editing. An MCP tool lets an agent cut a clip at a timestamp. Montaj is neither — it's a CLIP.
-
-An agent with Montaj can probe a clip for metadata, transcribe it, identify filler words and silence gaps, pick the best takes, trim out the bad ones with battle-tested ffmpeg operations that handle codec edge cases correctly, and composite the result — all by following an opinionated workflow that encodes domain expertise. All while using a fraction of the tokens an agent would burn building the same pipeline from scratch.
-
-Other programmatic video tools (Remotion, etc.) give an agent a framework to **write code** — the agent authors JSX compositions that describe a video. Montaj takes the opposite approach: the agent **orchestrates tools**. No code authoring. The agent reasons about which steps to call, in what order, with what params.
-
-What makes Montaj a CLIP and not just an MCP server:
-
-- **Opinionated workflows** — suggested step order, dependencies, and when to parallelize; bounds stochastic output into proven pipelines
-- **Work stateful** — `project.json` tracks everything: what's been done, what's left, raw input → finished output
-- **Dual interface** — agent works, human inspects; browser UI, readable project file, draft/final approval states
-- **Installable** — `brew install theSamPadilla/montaj/montaj` and any agent has video editing
-
-The building blocks:
-
-- **Agent-native interface** — CLI, HTTP, and MCP; steps are callable from any harness without writing code
-- **Editing existing footage** — trim, cut, transcribe, composite against source clips
-- **Animation generation** — agent can generate React overlay components (captions, titles, effects) rendered frame-by-frame via headless Chrome and composited in
-- **Local-first** — ffmpeg + whisper.cpp, no external APIs required
-- **Open source** — MIT, self-hosted, no vendor
+**Agent-first install** — paste this to your agent:
+```
+Install Montaj from https://github.com/theSamPadilla/montaj, then read skills/onboarding/SKILL.md to get started.
+```
 
 ## Install
 
@@ -44,7 +24,9 @@ brew install theSamPadilla/montaj/montaj
 
 **Linux / manual:**
 ```bash
-pip install montaj
+git clone https://github.com/theSamPadilla/montaj
+cd montaj
+pip install -e .
 # then install ffmpeg, whisper-cpp, and Node.js >=18 separately
 ```
 
@@ -82,58 +64,104 @@ docs/               Architecture, CLI reference, UI design, schemas
 7. Render engine → final MP4
 ```
 
+## Architecture
+
+```
+┌──────────────────────────────────────────────────────────────────────┐
+│                          LOCAL UI  (ui/)                             │
+│                       browser → montaj serve                         │
+│                                                                      │
+│  ┌───────────────────┐                       ┌──────────────────┐    │
+│  │    1. UPLOAD      │                       │   3. REVIEW      │    │
+│  │  drop clips       │                       │  timeline        │    │
+│  │  write prompt     │                       │  preview player  │    │
+│  │  select workflow ◄├── workflows/ dir      │  caption editor  │    │
+│  │  POST /run        │                       │  overlay editor  │    │
+│  └────────┬──────────┘                       └────────┬─────────┘    │
+│           │                                           │              │
+│           │           ┌──────────────────┐            │              │
+│           │           │   2. LIVE VIEW   │            │              │
+│           │           │  SSE stream of   │────────────┘              │
+│           │           │  project.json as │  rerenders timeline +     │
+│           │           │  agent works     │  preview in real time     │
+│           │           └────────┬─────────┘                           │
+└───────────┼────────────────────┼────────────────────────────────────-┘
+            │ POST /api/run          │ GET /api/projects/:id/stream (SSE)
+            │ clips + prompt         │
+            │ + workflow name        │
+            ▼                        │
+┌───────────────────────────────-────┴────────────────────────────────┐
+│                          montaj serve                               │
+│                      local HTTP + SSE server                        │
+│                                                                     │
+│  POST /api/run      → creates project.json [pending], stores to disk│
+│  GET  /api/projects → list projects; ?status=pending for agent poll│
+│  file watcher       → detects project.json writes, pushes SSE       │
+└───────────┬─────────────────────────────────────────────────────────┘
+            │ agent polls GET /api/projects?status=pending
+            ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│                        AGENT (external)                             │
+│                     Claude, OpenClaw, etc.                          │
+│                                                                     │
+│  reads project.json [pending]                                       │
+│  reads workflows/<name>.json   ← suggested steps + default params   │
+│  reads editing prompt                                               │
+│                                                                     │
+│  calls steps as tools at its own discretion:                        │
+│                                                                     │
+│  Native steps              Custom steps (steps/)                    │
+│  ─────────────             ─────────────────────                    │
+│  probe                     viral-hook-detector.py                   │
+│  snapshot                  sentiment-analysis.py                    │
+│  transcribe                b-roll-inserter.py                       │
+│  rm_fillers                ...any executable + schema               │
+│  trim, concat, resize                                               │
+│  caption                                                            │
+│  ...                                                                │
+│                                                                     │
+│  writes project.json as work progresses ────────────────────────────┼──► file watcher
+│  marks [draft] when done                                            │         │
+└─────────────────────────────────────────────────────────────────────┘         │
+                                               SSE → UI (live timeline update)
+                             │ project.json [draft]
+                             ▼
+                ┌────────────────────────┐
+                │   human review (UI)    │
+                │   optional tweaks      │
+                └────────────┬───────────┘
+                             │ project.json [final]
+                             ▼
+            ┌────────────────────────────────────┐
+            │            RENDER PASS             │
+            │                                    │
+            │  Render Engine                     │
+            │  React + Puppeteer + ffmpeg         │
+            │  captions, overlays, animations    │
+            └────────────────┬───────────────────┘
+                             │
+                             ▼
+                        final MP4
+```
+
+See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full breakdown.
+
 ## CLI
 
-Every operation the UI performs is available from the terminal. `montaj` is the full command, `mtj` is the short alias.
+Every operation is available from the terminal. `montaj` is the full command, `mtj` is the short alias.
 
 ```bash
-# Run a full edit
 montaj run ./clips --prompt "tight cuts, upbeat pacing"
-
-# Start the UI
 montaj serve
-
-# Render project.json → final.mp4
 montaj render
-
-# Fetch a clip from a URL
 montaj fetch https://youtube.com/watch?v=...
-```
-
-Steps are the individual editing operations. Run any step directly:
-
-```bash
-montaj step probe --input clip.mp4          # Metadata: duration, resolution, fps, codec
-montaj step snapshot --input clip.mp4       # Frame grid contact sheet
-montaj step waveform_trim --input clip.mp4  # Remove silent gaps
-montaj step rm_fillers --input clip.mp4     # Remove filler words (um, uh, like)
-montaj step transcribe --input clip.mp4     # Word-level transcript via Whisper
-montaj step caption --input clip.mp4 --style pop
-montaj step trim --input clip.mp4 --start 2.5 --end 8.3
-montaj step concat --input clip1.mp4 --input clip2.mp4
-montaj step resize --input clip.mp4 --ratio 9:16
-montaj step normalize --input clip.mp4 --target youtube
-```
-
-Steps are composable — stdout of one is input to the next:
-
-```bash
-FILE=$(montaj step rm_fillers --input clip.mp4)
-FILE=$(montaj step trim --input "$FILE" --start 5 --end 90)
-FILE=$(montaj step resize --input "$FILE" --ratio 9:16)
-```
-
-List all available steps (including custom):
-
-```bash
-montaj step -h
 ```
 
 See [docs/CLI.md](docs/CLI.md) for the full reference.
 
-## Steps
+## Steps & Workflows
 
-Every editing operation is a step — a Python executable with a JSON schema. Native steps ship with Montaj. Custom steps are any executable that follows the output convention.
+**Steps** are the individual editing operations — Python executables with JSON schemas, callable as agent tools, CLI commands, or API calls. Native steps ship with Montaj; custom steps are any executable that follows the output convention.
 
 | Category | Steps |
 |----------|-------|
@@ -141,39 +169,18 @@ Every editing operation is a step — a Python executable with a JSON schema. Na
 | **Clean** | `waveform_trim`, `rm_fillers`, `rm_nonspeech` |
 | **Edit** | `trim`, `concat`, `materialize_cut`, `resize`, `extract_audio` |
 | **Enrich** | `transcribe`, `caption`, `normalize` |
-| **VFX** | `remove_bg` — background removal via RVM (requires `montaj install rvm`) |
+| **VFX** | `remove_bg` — background removal via RVM |
 | **Acquire** | `fetch` — download from any URL via yt-dlp |
 
-**Custom steps:** Run `montaj create-step <name>` to scaffold a new step. Drop the generated `.py` + `.json` anywhere in `steps/` — no registration needed, discovered automatically. Works in workflows and the UI node graph.
+**Workflows** are suggested editing plans — which steps to use and with what default params. The agent reads the plan, reads the prompt, and decides the actual execution. Available workflows: `clean_cut`, `overlays`, `short_captions`, `animations`, `explainer`, `floating_head`.
 
-## Workflows
-
-A workflow is a suggested editing plan — which steps to use and with what default params. The agent reads the plan, reads the prompt, and decides the actual execution.
-
-```json
-{
-  "name": "tight-reel",
-  "steps": [
-    { "id": "probe",      "uses": "montaj/probe" },
-    { "id": "transcribe", "uses": "montaj/transcribe" },
-    { "id": "clean",      "uses": "montaj/rm_fillers", "params": { "sensitivity": 0.8 } },
-    { "id": "caption",    "uses": "montaj/caption",    "params": { "style": "word-by-word" } },
-    { "id": "resize",     "uses": "montaj/resize",     "params": { "ratio": "9:16" } }
-  ]
-}
-```
+Custom steps and workflows are discovered automatically — no registration needed. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for details.
 
 ## Render Engine
 
-React + Puppeteer + ffmpeg. Reads project.json, renders captions and overlays as React components frame-by-frame via headless Chrome, composites with source footage via ffmpeg.
+React + Puppeteer + ffmpeg. Reads `project.json [final]`, renders captions and overlays frame-by-frame via headless Chrome, composites with source footage via ffmpeg → final MP4.
 
-**Built-in caption styles:** `word-by-word`, `pop`, `karaoke`, `subtitle`
-
-**Custom overlays:** agent writes JSX directly — no built-in overlay templates. Full creative control.
-
-**Custom overlays:** Agent writes JSX directly. Full creative control. Rendered the same way.
-
-**Parallel rendering:** Segment-level (all overlays render simultaneously) + frame chunking (long segments split across workers). Configurable via `~/.montaj/config.json`.
+See [docs/RENDER.md](docs/RENDER.md) for the full breakdown.
 
 ## UI
 
@@ -228,6 +235,24 @@ See [docs/schemas/project.md](docs/schemas/project.md) for the full schema.
 | `Node.js >=18` | `brew install node` / [nodejs.org](https://nodejs.org) |
 
 `brew install theSamPadilla/montaj/montaj` handles all of the above on macOS in one command.
+
+## Why Montaj Exists
+
+A video editing skill tells an agent how to think about editing. An MCP tool lets an agent cut a clip at a timestamp. Montaj is neither — it's a CLIP.
+
+An agent with Montaj can probe a clip for metadata, transcribe it, identify filler words and silence gaps, pick the best takes, trim out the bad ones with battle-tested ffmpeg operations that handle codec edge cases correctly, and composite the result — all by following an opinionated workflow that encodes domain expertise. All while using a fraction of the tokens an agent would burn building the same pipeline from scratch.
+
+Other programmatic video tools (Remotion, etc.) give an agent a framework to **write code** — the agent authors JSX compositions that describe a video.
+
+While Montaj also supports custom JSX compositions for animation generation, it focuses primarily on **existing footage**. Cliping, picking best takes, tuning editing to a given content style, etc. It gives the agent **orchestration tools** to work, and gives humans a **UI for last mile reviews**. 
+
+The building blocks:
+
+- **Agent-native interface** — CLI, HTTP, and MCP; steps are callable from any harness without writing code
+- **Editing existing footage** — trim, cut, transcribe, composite against source clips
+- **Animation generation** — agent can generate React overlay components (captions, titles, effects) rendered frame-by-frame via headless Chrome and composited in
+- **Local-first** — ffmpeg + whisper.cpp, no external APIs required, just an agent
+- **Open source** — MIT, self-hosted, no vendor
 
 ## Docs
 

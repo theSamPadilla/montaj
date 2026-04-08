@@ -5,31 +5,32 @@ description: "You MUST use this whenever the user asks for video editing work. U
 
 # Montaj Skill
 
-Montaj is a video editing harness with agent-first tools. Built-in steps cover common operations. The agent decides what to run, in what order, and with what params.
+Montaj is a video editing toolkit with agent-first tools. Built-in steps cover common operations. Workflows provide suggested operations. But you (the agent) decide what to run, in what order, and with what parameters based on user input.
 
 ## Core Loop
 
 **Detecting which interface to use:**
 Try `GET http://localhost:3000/api/projects?status=pending`. If it responds → **HTTP mode**: load `skills/serve/SKILL.md` before making any API calls, then follow the HTTP loop there. If connection is refused → CLI or MCP mode.
 
+**When running as MCP client:** Load `skills/mcp/SKILL.md`.
+
 **When running headless (CLI):**
 ```
-1. Clips, prompt, and workflow are given to you directly
+1. The location of the clips, the prompt, and preferred workflow should have been given to you by your human. If not provided, ask. Don't guess.
 2. Read the workflow from workflows/{name}.json
 3. Apply editorial judgment (select/order/trim clips via probe + transcribe)
 4. Execute workflow steps following the dependency graph
 5. Write/update project.json in the project directory as you go
 6. Probe the final output → set inPoint: 0, outPoint: <duration>
 7. Mark project as draft (status: "draft") when complete
+8. Notify your human or ask questions if you run into issues.
 ```
-
-**When running as MCP client:** Load `skills/mcp/SKILL.md`.
 
 **Check for a style profile:**
 - **HTTP mode** — read `profile` field from project JSON. If set, load `~/.montaj/profiles/<profile>/style_profile.md` and let it inform editorial decisions.
-- **CLI mode** — run `montaj profile list`. If profiles exist, ask the user which to apply.
+- **CLI mode** — run `montaj profile list`. If profiles exist, ask the user if they wish to apply it.
 
-**Never invent a step sequence from scratch.** Always follow the assigned workflow; deviate only where the prompt explicitly requires it (see Deviation Rules).
+**Never invent a step sequence from scratch.** Follow the assigned workflow; deviate only where the prompt explicitly requires it or the workflow fails (see Deviation Rules).
 
 **Multiple clips or workflow has `foreach` steps:** Load `skills/parallel/SKILL.md`.
 
@@ -145,12 +146,14 @@ Read the assigned workflow from `workflows/{name}.json` (filesystem only — not
 - `explainer` — footage clips + animation sections combined
 - `floating_head` — trim + materialize + RVM background removal; presenter in tracks[1], background asset in tracks[0]
 
-**Deviation Rules — only when the prompt explicitly requires it:**
+**Deviation Rules**
+You should deviate only under one conditions:
+When the prompt or user intent deviates from the selected workflow:**
 - "no captions" → skip caption
 - "keep it raw" → skip rm_fillers, waveform_trim
 - "YouTube format" → resize 16:9
-- "music" → add normalize, consider audio ducking
-- Multiple takes of same content → add select-takes before the workflow
+
+If in doubt, **ask your human**.
 
 ## Project JSON
 
@@ -175,20 +178,6 @@ Read the assigned workflow from `workflows/{name}.json` (filesystem only — not
 - After overlays/images/video: populate `tracks[1+]` — array of arrays; items have `type: "overlay"` (JSX), `type: "image"` (static image), or `type: "video"` (video clip with optional `remove_bg: true`)
 - After all steps: set `status: "draft"`
 - HTTP: persist via `PUT /api/projects/{id}` | CLI: write to `project.json`
-
-## Decision Rules
-
-**Choosing clean steps:**
-- Talking head, one speaker → `rm_fillers` then `waveform_trim`
-- Interview, multiple speakers → `rm_nonspeech`
-- Music/ambient → `waveform_trim` only
-- "tight cuts" → `rm_fillers` + `waveform_trim --threshold -25 --min-silence 0.2`
-- "natural pacing" → `waveform_trim --threshold -35 --min-silence 0.5`
-
-**Choosing caption style:**
-- TikTok/Reels → `pop` or `word-by-word`
-- YouTube → `subtitle`
-- Emphasis/energy → `karaoke`
 
 **HEVC clips:** `concat` handles HEVC automatically. Never manually re-encode before editing steps.
 
