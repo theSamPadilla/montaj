@@ -266,9 +266,14 @@ export async function compose({
   //     canvas in filter_complex which has no color metadata). setparams inside the filter
   //     graph takes precedence over the canvas's unset color info.
   //     Only for the final H.264 encode — lossless FFV1 chunks pass through unmodified.
+  //     When no real video items are present (animations-only), use bt709/sRGB metadata so
+  //     players don't apply HLG tone mapping to sRGB-authored overlay content.
   if (!_lossless) {
     const preLabel = (N > 0 || Q > 0) ? '[vout]' : videoLabel
-    filterParts.push(`${preLabel}setparams=colorspace=bt709:color_trc=arib-std-b67:color_primaries=bt2020[vout_sp]`)
+    const hasRealFootage = videoItems.some(item => !isImageItem(item))
+    const trc      = hasRealFootage ? 'arib-std-b67' : 'bt709'
+    const primaries = hasRealFootage ? 'bt2020'       : 'bt709'
+    filterParts.push(`${preLabel}setparams=colorspace=bt709:color_trc=${trc}:color_primaries=${primaries}[vout_sp]`)
     videoLabel = '[vout_sp]'
   }
 
