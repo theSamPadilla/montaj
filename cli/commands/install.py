@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""montaj install — install system dependencies."""
+"""montaj install — install optional dependencies (whisper binary + weights, rvm)."""
 import os, platform, shutil, subprocess, sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "lib"))
 import models as _models
@@ -17,46 +17,30 @@ _parser = None
 
 def register(subparsers):
     global _parser
-    _parser = subparsers.add_parser("install", help="Install dependencies (whisper | rvm | all)")
+    _parser = subparsers.add_parser("install", help="Install optional dependencies (whisper | rvm | all)")
     _parser.add_argument("component", nargs="?", choices=["whisper", "rvm", "all"],
-                         help="whisper — ffmpeg + whisper binary + model weights; rvm — torch/torchvision/av + RVM weights; all — everything")
+                         help="whisper — whisper-cpp binary + model weights; rvm — torch/torchvision/av + RVM weights; all — everything")
     _parser.add_argument("--model", default="base.en",
                          help="Whisper model to download (default: base.en)")
     _parser.set_defaults(func=handle)
 
 
 def handle(args):
+    if not args.component:
+        _parser.print_help()
+        return
     ok = True
     if args.component == "all":
-        ok &= _ensure_ffmpeg()
         ok &= _ensure_whisper(args.model)
         ok &= _ensure_rvm()
     elif args.component == "whisper":
-        ok &= _ensure_ffmpeg()
         ok &= _ensure_whisper(args.model)
     elif args.component == "rvm":
         ok &= _ensure_rvm()
-    else:
-        # default: install essentials (ffmpeg + whisper)
-        ok &= _ensure_ffmpeg()
-        ok &= _ensure_whisper(args.model)
     if ok:
         print("\nDone.")
     else:
         sys.exit(1)
-
-
-def _ensure_ffmpeg() -> bool:
-    if shutil.which("ffmpeg") and shutil.which("ffprobe"):
-        print("✓ ffmpeg")
-        return True
-    print("→ installing ffmpeg…")
-    r = subprocess.run(["brew", "install", "ffmpeg"])
-    if r.returncode != 0:
-        print("error: brew install ffmpeg failed", file=sys.stderr)
-        return False
-    print("✓ ffmpeg installed")
-    return True
 
 
 def _ensure_whisper(model: str = "base.en") -> bool:
@@ -69,8 +53,18 @@ def _ensure_whisper(model: str = "base.en") -> bool:
         return False
     url, checksum = WHISPER_BINARY_URLS[key]
     bin_path = _models.model_path("whisper", "whisper-cli")
-    if not os.path.isfile(bin_path):
-        print(f"→ downloading whisper-cpp binary ({system}/{machine})…")
+    version_file = bin_path + ".version"
+    installed_version = None
+    if os.path.isfile(version_file):
+        with open(version_file) as f:
+            installed_version = f.read().strip()
+    needs_install = not os.path.isfile(bin_path)
+    needs_upgrade = installed_version and installed_version != WHISPER_VERSION
+    if needs_install or needs_upgrade:
+        if needs_upgrade:
+            print(f"→ upgrading whisper-cpp {installed_version} → {WHISPER_VERSION} ({system}/{machine})…")
+        else:
+            print(f"→ downloading whisper-cpp binary ({system}/{machine})…")
         try:
             _install_whisper_binary(url, checksum, bin_path)
             print("✓ whisper-cpp binary installed")
@@ -78,7 +72,7 @@ def _ensure_whisper(model: str = "base.en") -> bool:
             print(str(e), file=sys.stderr)
             return False
     else:
-        print("✓ whisper-cpp binary")
+        print(f"✓ whisper-cpp {WHISPER_VERSION}")
     if not is_downloaded(model):
         print(f"→ downloading whisper model {model}…")
         try:
@@ -135,6 +129,9 @@ def _install_whisper_binary(url: str, checksum, bin_path: str):
                 )
         os.rename(part_path, bin_path)
         os.chmod(bin_path, 0o755)
+        # Write version marker so `montaj update` can detect stale installs
+        with open(bin_path + ".version", "w") as vf:
+            vf.write(WHISPER_VERSION)
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
 

@@ -2,12 +2,39 @@
 
 > Distributed via Homebrew. Every operation the UI performs is available from the terminal.
 
+---
+
+## Install & update
+
+ffmpeg is bundled automatically via pip — no manual step required.
+
 ```bash
-brew install montaj
-montaj install whisper   # ffmpeg + whisper-cpp binary + base.en model weights
-montaj install rvm       # torch/torchvision/av + both RVM model weights
-montaj install all       # everything above
-montaj install           # show help
+brew install montaj   # or: pip install montaj
+montaj install whisper  # whisper-cpp binary + base.en model weights
+montaj install rvm      # torch/torchvision/av (pip) + RVM model weights
+montaj install all      # everything above
+```
+
+`montaj install whisper` is safe to re-run — skips the binary if already at the pinned version, skips weights if already downloaded.
+
+### Optional dependency groups
+
+| Group | What it installs | Required for |
+|-------|-----------------|--------------|
+| `whisper` | whisper-cpp binary (pinned), base.en model weights | `transcribe`, `rm_fillers`, `rm_nonspeech`, `waveform_trim`, render pipeline |
+| `rvm` | torch, torchvision, av (pip) + rvm_mobilenetv3 (~15 MB) + rvm_resnet50 (~103 MB) | `remove_bg` |
+
+```bash
+montaj install whisper --model medium.en
+# Download a specific whisper model instead of the default base.en
+```
+
+### Upgrade dependencies
+
+```bash
+montaj update            # upgrade everything (whisper binary, pip packages)
+montaj update whisper    # re-download whisper binary if pinned version changed
+montaj update pip        # pip install --upgrade for all Python packages
 ```
 
 ---
@@ -17,18 +44,6 @@ montaj install           # show help
 The primary interface for most users.
 
 ```bash
-montaj install whisper
-# Install ffmpeg, whisper-cpp binary, and base.en model weights.
-# Safe to re-run — skips anything already present.
-
-montaj install rvm
-# Install torch/torchvision/av (pip) and download both RVM model weight files
-# (rvm_mobilenetv3 ~15MB, rvm_resnet50 ~103MB). Required before running remove_bg.
-# Fails loudly at runtime if weights are missing — run this first.
-
-montaj install all
-# Install everything: whisper + rvm.
-
 montaj run ./clips --prompt "tight cuts, remove filler, 9:16"
 # Runs workflows/default.json against all clips in the directory
 # Pre-pass → project.json [pending] → agent pass → project.json [draft]

@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """montaj — video editing toolkit CLI."""
 import argparse, os, sys
+import static_ffmpeg
+static_ffmpeg.add_paths()
 from cli.help import ColorHelpFormatter
 
 MONTAJ_ROOT = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
@@ -22,7 +24,7 @@ def main():
         transcribe, caption,
         init, status, mcp, models,
 
-        create_step, validate, install,
+        create_step, validate, install, update,
         remove_bg,
     )
 
@@ -77,6 +79,7 @@ def main():
     create_step.register(subparsers)
     validate.register(subparsers)
     install.register(subparsers)
+    update.register(subparsers)
     remove_bg.register(subparsers)
 
     args = parser.parse_args()

@@ -7,8 +7,6 @@ class Montaj < Formula
   head "https://github.com/ByCrux/montaj.git", branch: "main"
 
   depends_on "python@3.12"
-  depends_on "ffmpeg"
-  depends_on "whisper-cpp"
 
   def install
     venv = virtualenv_create(libexec, "python3.12")
@@ -17,7 +15,13 @@ class Montaj < Formula
 
   def caveats
     <<~EOS
-      API keys for adaptors (optional) are stored in:
+      Complete setup by downloading the whisper binary and model weights:
+        montaj install
+
+      Optional — background removal support:
+        montaj install rvm
+
+      API keys for adaptors are stored in:
         ~/.montaj/credentials.json
     EOS
   end
