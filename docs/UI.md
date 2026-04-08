@@ -12,8 +12,6 @@ montaj serve       # starts local server + opens http://localhost:3000
 
 Upload clips, watch the agent work live, tweak the result, trigger render. The UI doesn't replace the CLI — every action in the UI maps to a CLI command. `montaj serve` is optional; the full pipeline works headlessly without it.
 
-The local UI and the BY CRUX Media hosted platform editor are parallel implementations of the same design — both consume project.json, both produce the same output. The local UI is the open source version; the hosted platform adds cloud storage, team access, CDN delivery, and publishing.
-
 ---
 
 ## The four modes
