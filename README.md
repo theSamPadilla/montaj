@@ -25,7 +25,7 @@ What makes Montaj a CLIP and not just an MCP server:
 - **Opinionated workflows** — suggested step order, dependencies, and when to parallelize; bounds stochastic output into proven pipelines
 - **Work stateful** — `project.json` tracks everything: what's been done, what's left, raw input → finished output
 - **Dual interface** — agent works, human inspects; browser UI, readable project file, draft/final approval states
-- **Installable** — `brew install montaj` and any agent has video editing
+- **Installable** — `brew install theSamPadilla/montaj/montaj` and any agent has video editing
 
 The building blocks:
 
@@ -35,11 +35,22 @@ The building blocks:
 - **Local-first** — ffmpeg + whisper.cpp, no external APIs required
 - **Open source** — MIT, self-hosted, no vendor
 
+## Install
+
+**macOS** (installs ffmpeg, whisper-cpp, Node.js, and all Python deps):
+```bash
+brew install theSamPadilla/montaj/montaj
+```
+
+**Linux / manual:**
+```bash
+pip install montaj
+# then install ffmpeg, whisper-cpp, and Node.js >=18 separately
+```
+
 ## Quick Start
 
 ```bash
-brew install montaj
-
 # Headless — agent edits, renders, done
 montaj run ./clips --prompt "tight cuts, remove filler, 9:16"
 
@@ -216,7 +227,7 @@ See [docs/schemas/project.md](docs/schemas/project.md) for the full schema.
 |------|---------|
 | `Node.js >=18` | `brew install node` / [nodejs.org](https://nodejs.org) |
 
-`brew install montaj` handles all of the above on macOS in one command.
+`brew install theSamPadilla/montaj/montaj` handles all of the above on macOS in one command.
 
 ## Docs
 
