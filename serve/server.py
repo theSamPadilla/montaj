@@ -413,8 +413,8 @@ async def stream_project(project_id: str, request: Request):
 
     async def event_stream():
         try:
-            # Send current state immediately on connect
-            yield f"data: {project_path.read_text()}\n\n"
+            # Send current state immediately on connect (must be single-line for SSE framing)
+            yield f"data: {json.dumps(json.loads(project_path.read_text()))}\n\n"
             while True:
                 if await request.is_disconnected():
                     break
@@ -625,16 +625,19 @@ async def list_versions(project_id: str):
             pass
     if project_dir is None:
         raise HTTPException(404, detail={"error": "not_found", "message": f"Project '{project_id}' not found"})
-    result = subprocess.run(
-        ["git", "log", "--pretty=format:%H|%s|%aI", "--", "project.json"],
-        cwd=str(project_dir), capture_output=True, text=True,
-    )
-    versions = []
-    for line in result.stdout.strip().splitlines():
-        parts = line.split("|", 2)
-        if len(parts) == 3:
-            versions.append({"hash": parts[0], "message": parts[1], "timestamp": parts[2]})
-    return versions
+    def _git_log():
+        result = subprocess.run(
+            ["git", "log", "--pretty=format:%H|%s|%aI", "--", "project.json"],
+            cwd=str(project_dir), capture_output=True, text=True,
+        )
+        versions = []
+        for line in result.stdout.strip().splitlines():
+            parts = line.split("|", 2)
+            if len(parts) == 3:
+                versions.append({"hash": parts[0], "message": parts[1], "timestamp": parts[2]})
+        return versions
+
+    return await asyncio.to_thread(_git_log)
 
 
 @router.post("/projects/{project_id}/versions/{commit}/restore")
@@ -925,24 +928,79 @@ async def render_project(project_id: str, request: Request):
 
 
 @router.get("/files")
-async def serve_file(path: str):
-    """Serve a local file by absolute path — lets the browser load source clips.
+async def serve_file(path: str, request: Request):
+    """Serve a local file by absolute path with range-request support.
+    Range support is required for browsers to stream video without downloading
+    the entire file first.
     SECURITY NOTE: This endpoint exposes any readable file on the filesystem to
     the browser. Acceptable for a localhost-only tool. If montaj ever leaves
     localhost, scope this to workspace + known clip directories only."""
+    import mimetypes
     p = Path(path)
-    if p.is_file():
-        return FileResponse(str(p))
-    # macOS screenshot filenames use NARROW NO-BREAK SPACE (\u202f) before AM/PM,
-    # but paths written by the agent (or pasted) use a regular space.
-    # Scan the parent directory for a name that matches after normalising both to space.
-    parent = p.parent
-    if parent.is_dir():
-        target = p.name.replace('\u202f', ' ')
-        for candidate in parent.iterdir():
-            if candidate.name.replace('\u202f', ' ') == target:
-                return FileResponse(str(candidate))
-    raise HTTPException(404, detail={"error": "not_found", "message": f"File not found: {path}"})
+    if not p.is_file():
+        # macOS screenshot filenames use NARROW NO-BREAK SPACE (\u202f) before AM/PM,
+        # but paths written by the agent (or pasted) use a regular space.
+        parent = p.parent
+        if parent.is_dir():
+            target = p.name.replace('\u202f', ' ')
+            for candidate in parent.iterdir():
+                if candidate.name.replace('\u202f', ' ') == target:
+                    p = candidate
+                    break
+        if not p.is_file():
+            raise HTTPException(404, detail={"error": "not_found", "message": f"File not found: {path}"})
+
+    file_size = p.stat().st_size
+    media_type = mimetypes.guess_type(str(p))[0] or "application/octet-stream"
+    range_header = request.headers.get("range")
+
+    if not range_header:
+        # No range requested — stream the whole file
+        async def full_stream():
+            with open(p, "rb") as f:
+                while chunk := f.read(1 << 16):
+                    yield chunk
+        return StreamingResponse(full_stream(), media_type=media_type, headers={
+            "Accept-Ranges": "bytes",
+            "Content-Length": str(file_size),
+        })
+
+    # Parse "bytes=start-end"
+    try:
+        byte_range = range_header.removeprefix("bytes=")
+        start_str, end_str = byte_range.split("-", 1)
+        start = int(start_str) if start_str else 0
+        end   = int(end_str)   if end_str   else file_size - 1
+    except Exception:
+        raise HTTPException(416, detail="Invalid Range header")
+
+    end = min(end, file_size - 1)
+    if start > end or start >= file_size:
+        raise HTTPException(416, headers={"Content-Range": f"bytes */{file_size}"})
+
+    chunk_size = end - start + 1
+
+    async def range_stream():
+        with open(p, "rb") as f:
+            f.seek(start)
+            remaining = chunk_size
+            while remaining > 0:
+                data = f.read(min(1 << 16, remaining))
+                if not data:
+                    break
+                remaining -= len(data)
+                yield data
+
+    return StreamingResponse(
+        range_stream(),
+        status_code=206,
+        media_type=media_type,
+        headers={
+            "Content-Range":  f"bytes {start}-{end}/{file_size}",
+            "Accept-Ranges":  "bytes",
+            "Content-Length": str(chunk_size),
+        },
+    )
 
 
 @router.get("/files/stream")

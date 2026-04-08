@@ -26,13 +26,13 @@ class _Handler(FileSystemEventHandler):
         path = event.src_path
         if path.endswith("project.json"):
             try:
-                text = Path(path).read_text()
-                data = json.loads(text)
+                data = json.loads(Path(path).read_text())
                 project_id = data.get("id")
                 if not project_id:
                     return
+                # json.dumps produces a single-line string, required for SSE framing
                 self._loop.call_soon_threadsafe(
-                    self._broadcaster.publish, project_id, f"data: {text}\n\n"
+                    self._broadcaster.publish, project_id, f"data: {json.dumps(data)}\n\n"
                 )
             except Exception:
                 pass
