@@ -107,7 +107,7 @@ Ask the user:
 >
 > **Style profile:** I'll analyze your existing content (or a URL you paste) and build an editing style that gets applied automatically to every project for that account — pacing, caption style, color palette, tone.
 >
-> **Edit a video:** Drop your clips and a prompt, and I'll run the full edit pipeline now. You can always add a style profile later."
+> **Edit a video:** Tell me the location of your clips or drop them in the UI, and I'll run the full edit pipeline for whatever content style you pick. You can always add a style profile later."
 
 - If **style profile**: load `skills/style-profile/SKILL.md` and follow it.
-- If **edit a video**: check for `montaj serve` (`GET http://localhost:3000/api/projects?status=pending`). If running, load `skills/serve/SKILL.md`. If not, load the root `SKILL.md` and follow the CLI loop.
+- If **edit a video**: load the repo root `SKILL.md` and follow it.
