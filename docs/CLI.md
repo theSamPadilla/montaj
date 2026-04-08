@@ -57,6 +57,10 @@ montaj run --workflow animations --prompt "60s animated explainer, dark theme"
 montaj serve
 # Start local HTTP server + open UI at http://localhost:3000
 
+montaj serve --network
+# Bind to all network interfaces — accessible to other devices on the local network.
+# WARNING: only use on trusted networks (e.g. for agents running on other machines).
+
 montaj render
 # Render project.json [final] → final.mp4
 # Uses project.json in the current directory by default
