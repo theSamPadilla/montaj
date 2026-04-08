@@ -10,12 +10,13 @@ Montaj is a **CLIP** — a CLI Program for agents. It clips onto your existing A
 
 **The fundamental dependency is an agent.** Montaj doesn't edit on its own. It provides the tools; the agent makes the creative decisions.
 
-**Agent-first install** — paste this to your agent:
+## Quick install
+Send this to your agent:
 ```
-Install Montaj from https://github.com/theSamPadilla/montaj, then read skills/onboarding/SKILL.md to get started.
+Install Montaj from https://github.com/theSamPadilla/montaj, then read skills/onboarding/SKILL.md to get us started.
 ```
 
-## Install
+## Manual Install
 
 **macOS** (installs ffmpeg, whisper-cpp, Node.js, and all Python deps):
 ```bash
@@ -64,87 +65,7 @@ docs/               Architecture, CLI reference, UI design, schemas
 7. Render engine → final MP4
 ```
 
-## Architecture
-
-```
-┌──────────────────────────────────────────────────────────────────────┐
-│                          LOCAL UI  (ui/)                             │
-│                       browser → montaj serve                         │
-│                                                                      │
-│  ┌───────────────────┐                       ┌──────────────────┐    │
-│  │    1. UPLOAD      │                       │   3. REVIEW      │    │
-│  │  drop clips       │                       │  timeline        │    │
-│  │  write prompt     │                       │  preview player  │    │
-│  │  select workflow ◄├── workflows/ dir      │  caption editor  │    │
-│  │  POST /run        │                       │  overlay editor  │    │
-│  └────────┬──────────┘                       └────────┬─────────┘    │
-│           │                                           │              │
-│           │           ┌──────────────────┐            │              │
-│           │           │   2. LIVE VIEW   │            │              │
-│           │           │  SSE stream of   │────────────┘              │
-│           │           │  project.json as │  rerenders timeline +     │
-│           │           │  agent works     │  preview in real time     │
-│           │           └────────┬─────────┘                           │
-└───────────┼────────────────────┼────────────────────────────────────-┘
-            │ POST /api/run          │ GET /api/projects/:id/stream (SSE)
-            │ clips + prompt         │
-            │ + workflow name        │
-            ▼                        │
-┌───────────────────────────────-────┴────────────────────────────────┐
-│                          montaj serve                               │
-│                      local HTTP + SSE server                        │
-│                                                                     │
-│  POST /api/run      → creates project.json [pending], stores to disk│
-│  GET  /api/projects → list projects; ?status=pending for agent poll│
-│  file watcher       → detects project.json writes, pushes SSE       │
-└───────────┬─────────────────────────────────────────────────────────┘
-            │ agent polls GET /api/projects?status=pending
-            ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│                        AGENT (external)                             │
-│                     Claude, OpenClaw, etc.                          │
-│                                                                     │
-│  reads project.json [pending]                                       │
-│  reads workflows/<name>.json   ← suggested steps + default params   │
-│  reads editing prompt                                               │
-│                                                                     │
-│  calls steps as tools at its own discretion:                        │
-│                                                                     │
-│  Native steps              Custom steps (steps/)                    │
-│  ─────────────             ─────────────────────                    │
-│  probe                     viral-hook-detector.py                   │
-│  snapshot                  sentiment-analysis.py                    │
-│  transcribe                b-roll-inserter.py                       │
-│  rm_fillers                ...any executable + schema               │
-│  trim, concat, resize                                               │
-│  caption                                                            │
-│  ...                                                                │
-│                                                                     │
-│  writes project.json as work progresses ────────────────────────────┼──► file watcher
-│  marks [draft] when done                                            │         │
-└─────────────────────────────────────────────────────────────────────┘         │
-                                               SSE → UI (live timeline update)
-                             │ project.json [draft]
-                             ▼
-                ┌────────────────────────┐
-                │   human review (UI)    │
-                │   optional tweaks      │
-                └────────────┬───────────┘
-                             │ project.json [final]
-                             ▼
-            ┌────────────────────────────────────┐
-            │            RENDER PASS             │
-            │                                    │
-            │  Render Engine                     │
-            │  React + Puppeteer + ffmpeg         │
-            │  captions, overlays, animations    │
-            └────────────────┬───────────────────┘
-                             │
-                             ▼
-                        final MP4
-```
-
-See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full breakdown.
+See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ## CLI
 
