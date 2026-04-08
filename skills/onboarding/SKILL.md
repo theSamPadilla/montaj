@@ -1,6 +1,6 @@
 ---
 name: onboarding
-description: "Orientation skill for new agents and users. Explains what Montaj is, the project model, where things live, account styles, and the UI. Ends with a choice: set up style profiles first, or edit a video."
+description: "Orientation skill for new agents and users. Explains what Montaj is and how it works. Use it when the user asks questions about montaj or is getting started"
 ---
 
 # Montaj — Orientation
@@ -9,7 +9,7 @@ description: "Orientation skill for new agents and users. Explains what Montaj i
 
 ## What Montaj is
 
-A video editing toolkit that mounts on top of your agent. **You bring the brain. Montaj gives you the tools.**
+A video editing toolkit that mounts on top of an agent harness. **You bring the brain. Montaj gives agents the tools.**
 
 Montaj doesn't edit on its own. It provides discrete operations — trim, transcribe, remove fillers, caption, resize, composite overlays — and the agent decides which to call, in what order, with what parameters. The agent is the editor. Montaj is the toolbox.
 
@@ -17,9 +17,9 @@ Montaj doesn't edit on its own. It provides discrete operations — trim, transc
 
 ## How it compares
 
-Most programmatic video tools (Remotion, Revideo) have the agent **write code** that describes a composition. Montaj takes the opposite approach: the agent **calls tools** against existing footage. No code authoring. The agent reasons about which steps to apply and executes them.
+Most programmatic video tools (Remotion, Revideo) have the agent **write code** that describes a composition. Montaj takes the opposite approach: the agent **calls tools** against existing footage. Agent can still write code on top of existing footage for overlays and animations, but montaj is desigend to work **around and with existing footage**. The agent reasons about which steps to apply and executes them.
 
-GUI tools (Premiere, DaVinci, Descript, Runway) are driven by a human. Every decision is a click. Montaj is designed for the agent to drive — the human reviews the result, not the process.
+GUI tools (Premiere, DaVinci, Descript, Runway) are driven by a human. Every decision is a click. Montaj is designed for the agent to drive — the human reviews the result and performs last mile edits, the bulk of the process is agent driven.
 
 **Where Montaj is the right choice:**
 - You have raw footage and want an agent to produce an edited video
@@ -28,8 +28,9 @@ GUI tools (Premiere, DaVinci, Descript, Runway) are driven by a human. Every dec
 - You want to run locally, no API keys required
 
 **Where Montaj is not the right choice:**
-- You want to generate video from scratch (use Veo, Runway, Sora)
-- You want a human-driven GUI with fine-grained manual control
+- You want to generate AI videos from scratch (use Veo, Runway, etc)
+- You want a human-driven rich GUI with fine-grained manual control
+- You want an agent to edit videos based purely on visuals and not on trascripts / audio
 
 ---
 
@@ -80,7 +81,7 @@ montaj/                         ← built-in (ships with Montaj)
 
 A style profile captures the visual and editorial identity of a social media account — pacing, cut frequency, color palette, caption style, tone. Once created, it gets injected into every project for that account so editing decisions stay consistent automatically.
 
-Profiles live at `~/.montaj/profiles/<name>/style_profile.md` and are loaded into your agent context via `~/.claude/CLAUDE.md`.
+Profiles live at `~/.montaj/profiles/<name>/style_profile.md` and are loaded into your agent context when tagged selected in the UI or manually seeked on the prompt.
 
 To create or update one: load `skills/style-profile/SKILL.md`.
 
@@ -90,26 +91,11 @@ To create or update one: load `skills/style-profile/SKILL.md`.
 
 `montaj serve` starts a local server and opens `http://localhost:3000`.
 
-```bash
-montaj serve
-```
+The Editor tab drives the core flow: upload clips + prompt → watch the agent work live → review and tweak → render. The agent writes `project.json` as it works; the UI reflects every change in real time via SSE.
 
-Four modes, in order:
+Four tabs: **Editor**, **Workflows** (node graph), **Overlays** (live JSX preview), **Profiles** (style profiles).
 
-**Upload** — drop clips, write an editing prompt ("tight cuts, remove filler, 9:16 for Reels"), pick a workflow, hit Run.
-
-**Live view** — as the agent works, the timeline updates in real time via SSE. You watch the edit take shape — trim points appear, captions populate, overlays are placed.
-
-**Review** — when the agent marks the project `draft`, it surfaces for human adjustment. Inline caption editing, overlay repositioning, re-run the agent with a revised prompt. Optional — if the first pass is good, render directly.
-
-**Render** — triggers the render pass. Progress streams back. Final MP4 lands in the project directory.
-
-Three tabs:
-- **Editor** — the upload → live → review → render flow above
-- **Workflows** — node graph for building and editing workflow files
-- **Steps** — browse available steps, view schemas, scaffold new custom steps
-
-The UI is a layer on top of the CLI. Every action maps to a CLI command. `montaj serve` is optional — the full pipeline works headlessly without it.
+See [docs/UI.md](docs/UI.md) for the full breakdown.
 
 ---
 

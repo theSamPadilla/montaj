@@ -58,7 +58,7 @@ Triggers the render pass. Progress streams back via SSE. Final MP4 lands in `wor
 
 ## Tabs
 
-The UI has three top-level tabs:
+The UI has four top-level tabs:
 
 ### Editor tab
 The default view. Shows the current project — upload → live view → review flow described above.
@@ -94,15 +94,23 @@ Custom steps:
 - Save → writes `workflows/<name>.json`
 - Run → executes the workflow against the current clips
 
-### Steps tab
+### Overlays tab
 
-Browse, inspect, and create custom steps.
+Live preview environment for custom JSX overlay components.
 
-- List of all native steps + custom steps in `steps/`
-- Click a step to view its schema (params, inputs, outputs, description)
-- **New step** button → scaffolds `steps/<name>.py` + `steps/<name>.json`
-  - Agent can then open and implement the step
-  - Once saved, the step appears immediately in the sidebar and workflow files
+- Select any overlay JSX file from the current project or global overlays
+- Overlay is compiled and rendered at 1080×1920, scaled to fit the viewport
+- File watcher via SSE — recompiles and rerenders automatically on every save
+- Compile errors displayed inline
+
+### Profiles tab
+
+View and manage creator style profiles.
+
+- List of all profiles in `~/.montaj/profiles/`
+- Each card shows name, dominant color palette, and source count
+- Click a profile to inspect pacing, editorial direction, caption style, and color analysis
+- Profiles are created and updated via `skills/style-profile/SKILL.md`
 
 ---
 
@@ -156,19 +164,26 @@ Native `<video>` element with CSS-positioned overlays. No canvas, no WebGL.
 ui/
   src/
     app/
-      page.tsx                  # Project list
-      editor/page.tsx           # Editor view (upload → live → review → render)
-      workflows/page.tsx        # Workflow node graph
-      steps/page.tsx            # Step browser + creator
+      ProjectList.tsx           # Project list (home)
+      editor/
+        EditorPage.tsx          # Editor tab — routes between upload/live/review
+        UploadView.tsx          # Upload clips + prompt + workflow selector
+        LiveView.tsx            # Live SSE view as agent works
+        ReviewView.tsx          # Human review — timeline, captions, overlays
+      WorkflowsPage.tsx         # Workflow node graph
+      overlays/
+        OverlaysPage.tsx        # JSX overlay live preview + file watcher
+      profiles/
+        ProfilesPage.tsx        # Creator style profile browser
     components/
       PreviewPlayer.tsx         # <video> + CSS overlay rendering
       Timeline.tsx              # Clip / caption / overlay tracks
       NodeGraph.tsx             # Workflow builder (nodes + edges)
-      StepConfig.tsx            # Param controls rendered from step schema
       PromptBar.tsx             # Re-run agent with modified prompt
     lib/
       project.ts                # Read/write project.json (via API route to montaj serve)
       sse.ts                    # SSE client — subscribe to project.json changes
+      overlay-eval.ts           # Compile + cache JSX overlay components
   package.json                  # Vite + React
 ```
 
