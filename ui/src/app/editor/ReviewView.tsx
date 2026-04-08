@@ -315,7 +315,7 @@ export default function ReviewView({ project, onProjectChange }: ReviewViewProps
           {/* Track controls bar */}
           <div className="shrink-0 flex items-center justify-end gap-1.5 px-3 py-1 border-t border-gray-200 dark:border-gray-800 bg-gray-100 dark:bg-gray-950">
             <button
-              onClick={handleSplit}
+              onClick={() => handleSplit()}
               title="Split at playhead (S) — selected item or all clips"
               className="flex items-center justify-center w-5 h-5 rounded transition-colors text-gray-500 bg-transparent hover:text-gray-400"
             >

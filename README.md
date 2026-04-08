@@ -18,7 +18,7 @@ Install Montaj from https://github.com/theSamPadilla/montaj, then read skills/on
 
 ## Manual Install
 
-**macOS** (installs ffmpeg, whisper-cpp, Node.js, and all Python deps):
+**macOS** (installs Node.js and all Python deps including bundled ffmpeg):
 ```bash
 brew install theSamPadilla/montaj/montaj
 ```
