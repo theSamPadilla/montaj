@@ -6,11 +6,12 @@
 
 ## Install & update
 
-ffmpeg is bundled automatically via pip — no manual step required.
+ffmpeg is bundled automatically via pip — no manual step required. Node.js is not — pip users must install it separately before running `montaj install ui`.
 
 ```bash
-brew install montaj   # or: pip install montaj
+brew install theSamPadilla/montaj/montaj   # or: pip install montaj
 montaj install whisper  # whisper-cpp binary + base.en model weights
+montaj install ui       # npm deps + UI build (pip users only — brew handles this)
 montaj install rvm      # torch/torchvision/av (pip) + RVM model weights
 montaj install all      # everything above
 ```
@@ -22,6 +23,7 @@ montaj install all      # everything above
 | Group | What it installs | Required for |
 |-------|-----------------|--------------|
 | `whisper` | whisper-cpp binary (pinned), base.en model weights | `transcribe`, `rm_fillers`, `rm_nonspeech`, `waveform_trim`, render pipeline |
+| `ui` | npm deps for `render/` and `ui/`; production UI build | `montaj serve`, render engine |
 | `rvm` | torch, torchvision, av (pip) + rvm_mobilenetv3 (~15 MB) + rvm_resnet50 (~103 MB) | `remove_bg` |
 
 ```bash

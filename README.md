@@ -28,7 +28,9 @@ brew install theSamPadilla/montaj/montaj
 git clone https://github.com/theSamPadilla/montaj
 cd montaj
 pip install -e .
-# then install ffmpeg, whisper-cpp, and Node.js >=18 separately
+# install Node.js >=18 separately: https://nodejs.org
+montaj install whisper   # whisper-cpp binary + model weights
+montaj install ui        # npm deps + UI build
 ```
 
 ## Quick Start
@@ -64,8 +66,6 @@ docs/               Architecture, CLI reference, UI design, schemas
 6. Human reviews in browser (optional) → tweaks → marks [final]
 7. Render engine → final MP4
 ```
-
-See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ## CLI
 
@@ -133,29 +133,28 @@ See [docs/schemas/project.md](docs/schemas/project.md) for the full schema.
 
 ## Dependencies
 
-`pip install montaj` handles Python dependencies automatically. Two system tools require separate installation — they are compiled binaries that can't be bundled in a Python package.
+**macOS — one command installs everything:**
+```bash
+brew install theSamPadilla/montaj/montaj
+montaj install whisper   # whisper model weights
+```
 
-**Included via pip:**
+**Linux / pip install — one manual step required:**
 
-| Package | Purpose |
-|---------|---------|
-| `Pillow` | Image processing (color analysis, frame sampling) |
-| `yt-dlp` | Video download from TikTok, Instagram, YouTube, etc. |
+`pip install montaj` handles Python dependencies (including a bundled `ffmpeg`). Node.js cannot be installed via pip — install it separately, then run:
 
-**Required system dependencies:**
+```bash
+pip install montaj
+# install Node.js >=18: https://nodejs.org
+montaj install whisper   # whisper-cpp binary + model weights
+montaj install ui        # npm deps + UI build
+```
 
-| Tool | macOS | Linux | Windows |
-|------|-------|-------|---------|
-| `ffmpeg` + `ffprobe` | `brew install ffmpeg` | `apt install ffmpeg` | [ffmpeg.org](https://ffmpeg.org/download.html) |
-| `whisper-cpp` | `brew install whisper-cpp` | build from source | build from source |
-
-**Required for the render engine and UI:**
-
-| Tool | Install |
-|------|---------|
-| `Node.js >=18` | `brew install node` / [nodejs.org](https://nodejs.org) |
-
-`brew install theSamPadilla/montaj/montaj` handles all of the above on macOS in one command.
+Optional:
+```bash
+montaj install rvm       # background removal (torch + RVM weights)
+montaj install all       # whisper + ui + rvm
+```
 
 ## Why Montaj Exists
 

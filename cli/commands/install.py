@@ -17,9 +17,9 @@ _parser = None
 
 def register(subparsers):
     global _parser
-    _parser = subparsers.add_parser("install", help="Install optional dependencies (whisper | rvm | all)")
-    _parser.add_argument("component", nargs="?", choices=["whisper", "rvm", "all"],
-                         help="whisper — whisper-cpp binary + model weights; rvm — torch/torchvision/av + RVM weights; all — everything")
+    _parser = subparsers.add_parser("install", help="Install optional dependencies (whisper | rvm | ui | all)")
+    _parser.add_argument("component", nargs="?", choices=["whisper", "rvm", "ui", "all"],
+                         help="whisper — whisper-cpp binary + model weights; rvm — torch/torchvision/av + RVM weights; ui — npm deps + UI build; all — everything")
     _parser.add_argument("--model", default="base.en",
                          help="Whisper model to download (default: base.en)")
     _parser.set_defaults(func=handle)
@@ -33,10 +33,13 @@ def handle(args):
     if args.component == "all":
         ok &= _ensure_whisper(args.model)
         ok &= _ensure_rvm()
+        ok &= _ensure_ui()
     elif args.component == "whisper":
         ok &= _ensure_whisper(args.model)
     elif args.component == "rvm":
         ok &= _ensure_rvm()
+    elif args.component == "ui":
+        ok &= _ensure_ui()
     if ok:
         print("\nDone.")
     else:
@@ -154,4 +157,28 @@ def _ensure_rvm() -> bool:
             print(f"✓ {filename}")
         except Exception as e:
             print(f"warning: could not pre-fetch {filename}: {e}", file=sys.stderr)
+    return True
+
+
+def _ensure_ui() -> bool:
+    import shutil
+    if not shutil.which("npm"):
+        print("error: npm not found — install Node.js >=18 first: https://nodejs.org", file=sys.stderr)
+        return False
+    root = os.path.join(os.path.dirname(__file__), "..", "..")
+    for name, directory in [("render engine", "render"), ("UI", "ui")]:
+        path = os.path.normpath(os.path.join(root, directory))
+        print(f"→ npm install ({name})…")
+        r = subprocess.run(["npm", "install", "--prefix", path])
+        if r.returncode != 0:
+            print(f"error: npm install failed for {directory}/", file=sys.stderr)
+            return False
+        print(f"✓ {name} deps installed")
+    ui_path = os.path.normpath(os.path.join(root, "ui"))
+    print("→ npm run build (UI)…")
+    r = subprocess.run(["npm", "run", "build", "--prefix", ui_path])
+    if r.returncode != 0:
+        print("error: npm run build failed for ui/", file=sys.stderr)
+        return False
+    print("✓ UI built")
     return True
