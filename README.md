@@ -10,12 +10,6 @@ Montaj is a **CLIP** — a CLI Program for agents. It clips onto your existing A
 
 **The fundamental dependency is an agent.** Montaj doesn't edit on its own. It provides the tools; the agent makes the creative decisions.
 
-<p align="center">
-  <a href="https://youtu.be/cbOudpserwI">
-    <img src="https://img.youtube.com/vi/cbOudpserwI/maxresdefault.jpg" alt="Montaj demo" width="600" />
-  </a>
-</p>
-
 ## Quick install
 Send this to your agent:
 ```
