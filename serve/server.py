@@ -792,19 +792,22 @@ async def upload_file(file: UploadFile):
 
 
 @router.get("/pick-files")
-async def pick_files():
-    """Open a native file dialog and return selected absolute paths."""
-    return await asyncio.to_thread(_pick_files_sync)
+async def pick_files(extensions: str | None = None, prompt: str = "Select files"):
+    """Open a native file dialog and return selected absolute paths.
+
+    extensions: optional comma-separated list of lowercase extensions without dots, e.g. "mp4,mov,avi"
+    """
+    exts = {e.strip().lower() for e in extensions.split(",")} if extensions else None
+    return await asyncio.to_thread(_pick_files_sync, exts, prompt)
 
 
-def _pick_files_sync() -> dict:
+def _pick_files_sync(exts: set[str] | None, prompt: str) -> dict:
     """Blocking file-picker — runs in a thread pool so it doesn't block the event loop."""
     if sys.platform == "darwin":
-        # No type filter — 'of type' requires UTIs on modern macOS and is unreliable
         script = (
-            'set chosen to choose file '
-            'with multiple selections allowed '
-            'with prompt "Select video clips"\n'
+            f'set chosen to choose file '
+            f'with multiple selections allowed '
+            f'with prompt "{prompt}"\n'
             'set out to ""\n'
             'repeat with f in chosen\n'
             '  set out to out & POSIX path of f & "\\n"\n'
@@ -822,13 +825,18 @@ def _pick_files_sync() -> dict:
             root = tk.Tk()
             root.withdraw()
             root.wm_attributes("-topmost", True)
-            paths = list(filedialog.askopenfilenames(
-                title="Select video clips",
-                filetypes=[("Video files", "*.mp4 *.mov *.avi *.mkv *.webm *.m4v"), ("All files", "*.*")],
-            ))
+            if exts:
+                pattern = " ".join(f"*.{e}" for e in sorted(exts))
+                filetypes = [(f"Supported files", pattern), ("All files", "*.*")]
+            else:
+                filetypes = [("All files", "*.*")]
+            paths = list(filedialog.askopenfilenames(title=prompt, filetypes=filetypes))
             root.destroy()
         except Exception as exc:
             raise HTTPException(500, detail={"error": "picker_failed", "message": str(exc)})
+
+    if exts:
+        paths = [p for p in paths if p.rsplit(".", 1)[-1].lower() in exts]
     return {"paths": paths}
 
 

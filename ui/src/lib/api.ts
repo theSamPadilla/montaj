@@ -91,8 +91,13 @@ export const api = {
   saveWorkflow: (name: string, workflow: Record<string, unknown>) =>
     request<unknown>(`/api/workflows/${name}`, { method: 'PUT', body: JSON.stringify(workflow) }),
 
-  pickFiles: () =>
-    request<{ paths: string[] }>('/api/pick-files'),
+  pickFiles: (options?: { extensions?: string[]; prompt?: string }) => {
+    const params = new URLSearchParams()
+    if (options?.extensions?.length) params.set('extensions', options.extensions.join(','))
+    if (options?.prompt) params.set('prompt', options.prompt)
+    const qs = params.toString()
+    return request<{ paths: string[] }>(`/api/pick-files${qs ? `?${qs}` : ''}`)
+  },
 
   uploadFile: async (file: File): Promise<string> => {
     const form = new FormData()

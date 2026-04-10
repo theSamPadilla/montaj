@@ -65,6 +65,7 @@ export default function LiveView({ project, logMessage, onProjectChange }: LiveV
   const clips           = project.tracks?.[0] ?? []
   const hasTrimmedClips = clips.some(c => c.inPoint !== undefined && c.outPoint !== undefined)
   const history         = project.history ?? []
+  const canGoBack       = !hasTrimmedClips
 
   useEffect(() => {
     api.getInfo().then(info => setSkillPath(info.root_skill_path)).catch(() => {})
@@ -73,6 +74,21 @@ export default function LiveView({ project, logMessage, onProjectChange }: LiveV
   useEffect(() => {
     api.listVersions(project.id).then(setVersions).catch(() => {})
   }, [project.id, project.status])
+
+  async function handleBackToSetup() {
+    try { await api.deleteProject(project.id) } catch (e) { console.error(e) }
+    navigate('/projects/new', {
+      state: {
+        prefill: {
+          clips:    (project.sources ?? []).map(s => s.src).filter(Boolean),
+          name:     project.name,
+          prompt:   project.editingPrompt,
+          workflow: project.workflow,
+          profile:  project.profile ?? '',
+        },
+      },
+    })
+  }
 
   async function handleRender() {
     setSaving(true)
@@ -183,6 +199,14 @@ export default function LiveView({ project, logMessage, onProjectChange }: LiveV
                     )}
 
                     <p className="text-gray-600 text-xs font-mono">project id: {project.id}</p>
+                    {canGoBack && (
+                      <button
+                        onClick={handleBackToSetup}
+                        className="text-xs text-gray-600 hover:text-gray-400 transition-colors underline underline-offset-2"
+                      >
+                        ← Back to setup
+                      </button>
+                    )}
                   </>
                 ) : (
                   /* ── Agent is working ── */
@@ -200,6 +224,14 @@ export default function LiveView({ project, logMessage, onProjectChange }: LiveV
                       → {logMessage}
                     </p>
                     <p className="text-gray-700 text-xs font-mono">project id: {project.id}</p>
+                    {canGoBack && (
+                      <button
+                        onClick={handleBackToSetup}
+                        className="text-xs text-gray-600 hover:text-gray-400 transition-colors underline underline-offset-2"
+                      >
+                        ← Back to setup
+                      </button>
+                    )}
                   </>
                 )}
               </div>

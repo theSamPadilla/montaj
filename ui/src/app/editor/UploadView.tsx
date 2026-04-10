@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, useLocation } from 'react-router-dom'
 import { X, FolderOpen, Film, Image } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/textarea'
@@ -115,11 +115,22 @@ function DropZone({ label, sublabel, icon, accept, files, uploading, onBrowse, o
   )
 }
 
+interface Prefill {
+  clips?: string[]
+  name?: string | null
+  prompt?: string
+  workflow?: string
+  profile?: string
+}
+
 export default function UploadView() {
-  const [name, setName]                   = useState('')
-  const [clips, setClips]                 = useState<string[]>([])
+  const location = useLocation()
+  const prefill  = (location.state as { prefill?: Prefill } | null)?.prefill
+
+  const [name, setName]                   = useState(prefill?.name ?? '')
+  const [clips, setClips]                 = useState<string[]>(prefill?.clips ?? [])
   const [assets, setAssets]               = useState<string[]>([])
-  const [profile, setProfile]             = useState<string>('')
+  const [profile, setProfile]             = useState<string>(prefill?.profile ?? '')
   const [profiles, setProfiles]           = useState<Profile[]>([])
   const [pickingClips, setPickingClips]   = useState(false)
   const [pickingAssets, setPickingAssets] = useState(false)
@@ -127,8 +138,8 @@ export default function UploadView() {
   const [uploadingAssets, setUploadingAssets] = useState(false)
   const [error, setError]                 = useState<string | null>(null)
 
-  const [prompt, setPrompt]     = useState('')
-  const [workflow, setWorkflow] = useState('clean_cut')
+  const [prompt, setPrompt]     = useState(prefill?.prompt ?? '')
+  const [workflow, setWorkflow] = useState(prefill?.workflow ?? 'clean_cut')
   const [workflows, setWorkflows] = useState<{ name: string }[]>([])
   const [running, setRunning]   = useState(false)
   const [runError, setRunError] = useState<string | null>(null)
@@ -143,11 +154,13 @@ export default function UploadView() {
     return [...prev, ...paths.filter(p => !prev.includes(p))]
   }
 
+  const VIDEO_EXTENSIONS = ['mp4', 'mov', 'avi', 'mkv', 'webm', 'm4v', 'mts', 'mpg', 'mpeg']
+
   async function browseClips() {
     setPickingClips(true)
     setError(null)
     try {
-      const { paths } = await api.pickFiles()
+      const { paths } = await api.pickFiles({ extensions: VIDEO_EXTENSIONS, prompt: 'Select video clips' })
       if (paths.length) setClips(prev => addUnique(prev, paths))
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e)
