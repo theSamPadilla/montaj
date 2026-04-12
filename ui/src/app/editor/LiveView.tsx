@@ -167,12 +167,12 @@ export default function LiveView({ project, logMessage, onProjectChange }: LiveV
                         <p className="text-blue-400 text-xs font-bold uppercase tracking-widest">Send this to your agent</p>
                         <div className="flex items-start justify-between bg-white/80 dark:bg-black/60 border border-gray-200 dark:border-transparent rounded-lg px-3 py-3 font-mono gap-3">
                           <span className="text-gray-700 dark:text-gray-200 text-[12px] leading-relaxed break-all">
-                            There is a new project pending. Please see @{skillPath} and start. Talk to me if you run into questions.
+                            There is a new project pending: "{project.name ?? project.id}". Please see @{skillPath} and start. Talk to me if you run into questions.
                           </span>
                           <button
                             onClick={() => {
                               navigator.clipboard.writeText(
-                                `There is a new project pending. Please see @${skillPath} and start. Talk to me if you run into questions.`
+                                `There is a new project pending: "${project.name ?? project.id}". Please see @${skillPath} and start. Talk to me if you run into questions.`
                               )
                               setCopied(true)
                               setTimeout(() => setCopied(false), 2000)
