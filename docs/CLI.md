@@ -221,6 +221,30 @@ montaj step caption --input transcript.json --style karaoke
 montaj step caption --input transcript.json --style subtitle
 ```
 
+### Lyrics video
+
+```bash
+montaj stem-separation --input song.mp3 --stems vocals --out-dir /tmp/stems
+# Isolate clean vocals via Demucs before running lyrics-sync.
+# Output JSON: { "vocals": "/tmp/stems/htdemucs/song/vocals.wav", ... }
+
+montaj lyrics-sync --input vocals.wav --lyrics lyrics.txt --model medium.en --out captions.json
+# Align lyrics.txt to the audio using Whisper. Pass clean vocals, not the full mix.
+# Output JSON: { segments: [...], audioInPoint: <seconds> }
+# audioInPoint → set as audio.music.inPoint in project.json
+
+montaj lyrics-render \
+  --captions captions.json \
+  --audio song.mp3 \
+  --input background.mov \
+  --position center \
+  --color white \
+  --fontsize 72 \
+  --out preview.mp4
+# Burn captions directly into video via ffmpeg drawtext (ffmpeg render path only).
+# Use --preview-duration <seconds> for a short clip before committing to a full render.
+```
+
 ---
 
 ## Tier 4 — Project commands
@@ -261,6 +285,9 @@ All steps accept `--out <path>` to set the output location. Run `montaj step <na
 | `virtual_to_original` | `--inverse` |
 | `transcribe` | `--model <base.en\|medium.en>`, `--language <code>` |
 | `caption` | `--style <word-by-word\|pop\|karaoke\|subtitle>` |
+| `stem-separation` | `--stems <vocals\|drums\|bass\|other>`, `--out-dir <path>` |
+| `lyrics-sync` | `--lyrics <txt>`, `--model <base.en\|medium.en>`, `--out <path>`, `--start <s>`, `--end <s>` |
+| `lyrics-render` | `--captions <json>`, `--audio <mp3>`, `--input <video>`, `--position <center\|top-left\|bottom-left>`, `--color <str>`, `--fontsize <px>`, `--preview-duration <s>` |
 
 ---
 
