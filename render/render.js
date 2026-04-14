@@ -9,7 +9,7 @@
  * stderr: progress lines + JSON error on failure
  * exit 0 on success, exit 1 on failure
  */
-import { readFileSync, existsSync, mkdirSync, rmSync, readdirSync } from 'fs'
+import { readFileSync, writeFileSync, existsSync, mkdirSync, rmSync, readdirSync } from 'fs'
 import { resolve, join, dirname, basename, extname } from 'path'
 import { fileURLToPath } from 'url'
 import { spawnSync } from 'child_process'
@@ -22,6 +22,9 @@ const __dirname  = dirname(fileURLToPath(import.meta.url))
 const isMain = resolve(process.argv[1] ?? '') === fileURLToPath(import.meta.url)
 const MONTAJ_ROOT = process.env.MONTAJ_ROOT || join(__dirname, '..')
 const PYTHON = process.env.MONTAJ_PYTHON || 'python3'
+
+const TTY = process.stderr.isTTY
+const C = { cyan: TTY ? '\x1b[96m' : '', reset: TTY ? '\x1b[0m' : '' }
 
 // ---------------------------------------------------------------------------
 // CLI argument parsing
@@ -92,6 +95,61 @@ async function main(projectPath, { out, workers, clean }) {
   mkdirSync(segDir, { recursive: true })
 
   const outputPath = out ? resolve(out) : join(renderDir, 'final.mp4')
+
+  // Early exit: ffmpeg drawtext path — bypass Puppeteer, delegate to lyrics_render.py
+  if (projectJson.renderMode === 'ffmpeg-drawtext') {
+    const captions = projectJson.captions
+    if (!captions?.segments?.length) {
+      fail('missing_captions', 'renderMode ffmpeg-drawtext requires project.json captions.segments')
+    }
+    const audioSrc = projectJson.audio?.music?.src
+    if (!audioSrc) fail('missing_audio', 'renderMode ffmpeg-drawtext requires audio.music.src')
+
+    // Write captions to temp file. Captions in project.json are already in project-timeline
+    // coordinates (0-based), so audioInPoint=0 — no timestamp offset needed.
+    // The audio seek is passed separately via --audio-inpoint.
+    const captionsPath = join(renderDir, 'captions_ffmpeg.json')
+    mkdirSync(renderDir, { recursive: true })
+    const captionsWithOffset = { ...captions, audioInPoint: 0 }
+    writeFileSync(captionsPath, JSON.stringify(captionsWithOffset))
+
+    // Optional background video: first video item in tracks[0]
+    const bgItem = (projectJson.tracks?.[0] ?? []).find(i => i.type === 'video')
+
+    const projectDuration = getTotalDurationSeconds(projectJson)
+    const lyricsRenderArgs = [
+      join(MONTAJ_ROOT, 'steps', 'lyrics_render.py'),
+      '--captions', captionsPath,
+      '--audio',    audioSrc,
+      '--width',    String(renderWidth),
+      '--height',   String(renderHeight),
+      '--fps',      String(fps),
+      '--duration', String(projectDuration),
+      '--out',      outputPath,
+    ]
+    const audioInPoint = projectJson.audio?.music?.inPoint ?? 0
+    if (bgItem)                    lyricsRenderArgs.push('--input',         bgItem.src)
+    if (audioInPoint)              lyricsRenderArgs.push('--audio-inpoint', String(audioInPoint))
+    if (captions.position)         lyricsRenderArgs.push('--position',      captions.position)
+    // color: 'auto' is the default — only pass explicit colors
+    if (captions.color && captions.color !== 'auto')
+                                   lyricsRenderArgs.push('--color',         captions.color)
+    if (captions.fontsize)         lyricsRenderArgs.push('--fontsize',      String(captions.fontsize))
+    if (captions.bgColor)          lyricsRenderArgs.push('--bg-color',      captions.bgColor)
+    if (captions.windowSize)       lyricsRenderArgs.push('--window-size',   String(captions.windowSize))
+    if (captions.wordsPerLine)     lyricsRenderArgs.push('--words-per-line', String(captions.wordsPerLine))
+    if (captions.accumulate)       lyricsRenderArgs.push('--accumulate')
+    if (captions.box)              lyricsRenderArgs.push('--box')
+
+    log('rendering via ffmpeg drawtext (skipping Puppeteer)...')
+    const result = spawnSync(PYTHON, lyricsRenderArgs, { encoding: 'utf8', timeout: 600_000 })
+    if (result.status !== 0) {
+      fail('lyrics_render_failed', result.stderr?.trim() || 'lyrics_render.py failed')
+    }
+
+    process.stdout.write(outputPath + '\n')
+    return
+  }
 
   // 2. Collect segments and items
   const segmentSpecs = collectPuppeteerSegments(projectJson, fps, renderWidth, renderHeight, segDir)
@@ -239,10 +297,11 @@ function collectPuppeteerSegments(projectJson, fps, width, height, segDir) {
   const captions = projectJson.captions
   if (captions?.segments?.length > 0 || captions?.style) {
     const frameCount = Math.ceil(totalSecs * fps)
+    const { style: _captStyle, segments: _captSegs, ...captionTheme } = captions
     specs.push({
       id:            'captions',
       componentPath: captionTemplatePath(captions.style),
-      props:         { segments: captions.segments || [] },
+      props:         { segments: captions.segments || [], ...captionTheme },
       frameCount,
       fps,
       startSeconds:  0,
@@ -428,9 +487,6 @@ function getTotalDurationSeconds(projectJson) {
 // ---------------------------------------------------------------------------
 // Utilities
 // ---------------------------------------------------------------------------
-
-const TTY = process.stderr.isTTY
-const C = { cyan: TTY ? '\x1b[96m' : '', reset: TTY ? '\x1b[0m' : '' }
 
 function log(msg) {
   process.stderr.write(`${C.cyan}[montaj render]${C.reset} ${msg}\n`)

@@ -1,0 +1,23 @@
+{
+  "name": "lyrics_video",
+  "description": "Music lyrics video — word-synced text over a background (video or color). JSX overlays always used for preview. At render time, renderMode controls whether Puppeteer (JSX) or ffmpeg drawtext is used.",
+  "requires_clips": false,
+  "steps": [
+    { "id": "stem_separation", "uses": "montaj/stem_separation" },
+    { "id": "lyrics_sync",     "uses": "montaj/lyrics_sync",     "needs": ["stem_separation"] },
+    { "id": "build",           "uses": "montaj/lyrics-video",    "needs": ["lyrics_sync"] }
+  ],
+  "agent_notes": [
+    "INPUT PARSING: Parse the user prompt for 'Lyrics file: <path>' and 'Background video: <path>'. Both may be absent.",
+    "PATH RULE: If NO background video is present → use JSX path only. Never set renderMode when there is no base video.",
+    "PATH RULE: If background video is present → choose JSX or ffmpeg. For fast burn with no animation, use ffmpeg path (set renderMode: 'ffmpeg-drawtext'). For animated text with full preview, use JSX path (leave renderMode unset).",
+    "PREVIEW: Both paths use lyric-phrase.jsx overlays in tracks[1] for UI preview. The overlays ARE the preview — they are skipped at render time when renderMode is set.",
+    "CAPTIONS: Always set project.json captions from lyrics_sync output. This is used by the render.js ffmpeg branch. Even in JSX path, captions are the source of truth for overlay construction.",
+    "OVERLAY CONSTRUCTION (both paths): Convert each lyrics_sync segment into an overlay entry in tracks[1]: { id, type: 'overlay', src: '<montaj_root>/render/templates/overlays/lyric-phrase.jsx', start: seg.start, end: seg.end, props: { words: seg.words, variant: '<variant>', transparent: <bool>, ... } }. For JSX path, transparent:true when base video present.",
+    "FFMPEG PARAMS: When using ffmpeg path, store render params on captions object: captions.position ('center'|'top-left'|'bottom-left'), captions.color (default 'white'), captions.fontsize (default 72), captions.bgColor (default 'black', only used if no base video).",
+    "TRACKS[0]: If background video provided, tracks[0] = [{ id, type:'video', src: <abs_path>, start:0, end:<duration>, inPoint:0, outPoint:<duration> }]. If no background video, tracks[0] = [].",
+    "AUDIO: Set audio.music.src to the song file. Set audio.music.inPoint to lyrics_sync output audioInPoint.",
+    "RESOLUTION: Default 1080x1920 (portrait). Use settings.resolution from project or let agent choose based on source video aspect ratio.",
+    "STATUS: Set project.status to 'final' before render. The render engine will reject non-final projects."
+  ]
+}

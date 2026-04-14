@@ -623,6 +623,12 @@ export default function Timeline({ project, currentTime, onTimeUpdate, onProject
 
       {/* ── Tracks ── */}
       <div className="flex flex-col gap-1">
+        {project.renderMode === 'ffmpeg-drawtext' && (
+          <div className="flex items-center gap-1.5 px-2 py-1 rounded bg-amber-500/10 border border-amber-500/20 text-[10px] text-amber-400/70 select-none">
+            <span>⚡</span>
+            <span>ffmpeg render — overlays are preview only, final text is burned by ffmpeg</span>
+          </div>
+        )}
         {[...allTracks].reverse().map((trackItems, reversedIdx) => {
           const trackIdx = allTracks.length - 1 - reversedIdx
           const markerActive = markers[0] !== null || selection !== null
@@ -662,6 +668,9 @@ export default function Timeline({ project, currentTime, onTimeUpdate, onProject
                     />
                     <span className={`text-[10px] ${tc.text} truncate flex-1 min-w-0 pl-3`}>
                       ▪ {item.type}
+                      {project.renderMode === 'ffmpeg-drawtext' && trackIdx > 0 && (
+                        <span className="ml-1.5 text-amber-400/60">preview</span>
+                      )}
                     </span>
                     {item.type === 'video' && (
                       <button

@@ -203,6 +203,7 @@ If in doubt, **ask your human**.
 | `write-overlay` | `skills/write-overlay/SKILL.md` | Writing custom JSX overlay components |
 | `style-profile` | `skills/style-profile/SKILL.md` | Creating or updating a creator style profile |
 | `workflow-builder` | `skills/workflow-builder/SKILL.md` | Creating or editing workflows |
+| `lyrics-video` | `skills/lyrics-video/SKILL.md` | Working on a `lyrics_video` workflow project |
 
 ## Dependencies
 

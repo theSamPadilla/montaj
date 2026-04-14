@@ -22,6 +22,7 @@ dependencies = [
 [project.optional-dependencies]
 test = ["pytest>=8", "pytest-timeout"]
 rvm = ["torch>=2.0", "torchvision>=0.15", "av>=12.0"]
+demucs = ["demucs>=4.0", "torch>=2.0", "torchaudio>=2.0"]
 
 [tool.setuptools.packages.find]
 include = ["cli*", "serve*", "engine*", "project*", "lib*", "profiles*"]

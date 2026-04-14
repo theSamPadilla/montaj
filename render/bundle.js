@@ -44,7 +44,7 @@ export async function bundleComponent({ componentPath, props, fps, durationFrame
   await esbuild.build({
     entryPoints: [shimPath],
     bundle:      true,
-    format:      'iife',
+    format:      'esm',
     platform:    'browser',
     outfile:     bundlePath,
     jsx:         'automatic',
@@ -175,7 +175,7 @@ html, body, #root {
 </head>
 <body>
 <div id="root"></div>
-<script src="bundle.js"></script>
+<script type="module" src="bundle.js"></script>
 </body>
 </html>`
 }

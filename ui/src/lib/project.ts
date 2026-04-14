@@ -17,6 +17,11 @@ export interface CaptionSegment {
 export interface Captions {
   style: 'word-by-word' | 'pop' | 'karaoke' | 'subtitle'
   segments: CaptionSegment[]
+  // ffmpeg-drawtext render params — ignored by JSX preview, used by render.js ffmpeg branch
+  position?: 'center' | 'top-left' | 'bottom-left'
+  color?: string
+  fontsize?: number
+  bgColor?: string
 }
 
 export interface VisualItem {
@@ -28,6 +33,7 @@ export interface VisualItem {
   sourceDuration?: number     // video type only — used for right-edge drag guard
   inPoint?: number            // video type only
   outPoint?: number           // video type only
+  loop?: boolean              // video type only — loop source clip within project window
   transition?: { type: string; duration: number }  // video type only — transition into next clip
   offsetX?: number
   offsetY?: number
@@ -67,6 +73,7 @@ export interface Project {
   assets: Asset[]
   audio: Record<string, unknown>
   profile?: string
+  renderMode?: 'ffmpeg-drawtext'
   history?: RunSnapshot[]
 }
 

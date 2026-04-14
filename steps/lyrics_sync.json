@@ -1,0 +1,36 @@
+{
+  "name": "lyrics_sync",
+  "description": "Sync lyrics text to audio using Whisper word timestamps on clean vocals (output of stem_separation). Whisper detects the lyrics window automatically then provides word-level timestamps. Lyrics are matched to Whisper words via SequenceMatcher; unmatched words are interpolated between anchors. Outputs a caption track JSON grouped by lyric phrase — ready to use as project.json captions or as overlay entries via lyric-phrase.jsx. For best results, pass the vocals stem from stem_separation rather than the full mix.",
+  "input": {
+    "type": "audio",
+    "description": "Vocals WAV from stem_separation (--stems vocals), or any audio/video file"
+  },
+  "output": {
+    "type": "json",
+    "description": "Caption track JSON: { segments: [{ text, start, end, words: [{word, start, end}] }], audioInPoint: number }"
+  },
+  "params": [
+    {
+      "name": "lyrics",
+      "type": "string",
+      "description": "Path to lyrics text file. One phrase per line. Blank lines ignored."
+    },
+    {
+      "name": "model",
+      "type": "enum",
+      "default": "base.en",
+      "options": ["tiny.en", "base.en", "medium.en", "large"],
+      "description": "Whisper model. medium.en gives more word matches and tighter timestamps. base.en is faster."
+    },
+    {
+      "name": "start",
+      "type": "number",
+      "description": "Optional: override start time in seconds (skips auto-detection). Use when auto-detection is off."
+    },
+    {
+      "name": "end",
+      "type": "number",
+      "description": "Optional: override end time in seconds (skips auto-detection)."
+    }
+  ]
+}

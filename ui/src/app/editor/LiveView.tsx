@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
-import PreviewPlayer from '@/components/PreviewPlayer'
+import PreviewPlayer from '@/components/preview/PreviewPlayer'
 import ProjectHeader from '@/components/ProjectHeader'
 import Timeline from '@/components/Timeline'
 import VersionPanel from '@/components/VersionPanel'

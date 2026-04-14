@@ -1,0 +1,27 @@
+{
+  "name": "stem_separation",
+  "description": "Separate an audio or video file into individual stems (vocals, drums, bass, other) using Demucs. Outputs a JSON with paths to each stem WAV file. Use the vocals stem as input to lyrics_sync for accurate forced alignment on clean vocal audio.",
+  "input": {
+    "type": "audio",
+    "description": "Audio or video file to separate"
+  },
+  "output": {
+    "type": "json",
+    "description": "Stem paths JSON: { vocals: path, drums: path, bass: path, other: path }"
+  },
+  "params": [
+    {
+      "name": "stems",
+      "type": "string",
+      "default": "all",
+      "description": "Comma-separated stems to output: vocals, drums, bass, other, or 'all'. For lyrics_sync, use 'vocals'."
+    },
+    {
+      "name": "model",
+      "type": "enum",
+      "default": "htdemucs",
+      "options": ["htdemucs", "htdemucs_ft", "mdx_extra"],
+      "description": "Demucs model. htdemucs is the default hybrid transformer model. htdemucs_ft is fine-tuned (slower, slightly better). mdx_extra is an alternative architecture."
+    }
+  ]
+}

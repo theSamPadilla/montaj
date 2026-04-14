@@ -21,7 +21,7 @@ def main():
         probe, snapshot,
         filler, waveform_trim, rm_nonspeech, materialize_cut, resize,
         normalize, extract_audio,
-        transcribe, caption,
+        transcribe, caption, lyrics_sync, lyrics_render, stem_separation,
         init, status, mcp, models,
 
         create_step, validate, install, update,
@@ -41,7 +41,7 @@ def main():
         "probe", "snapshot",
         "filler", "waveform-trim", "rm-nonspeech",
         "materialize-cut", "resize", "normalize", "extract-audio",
-        "transcribe", "caption",
+        "transcribe", "caption", "lyrics-sync", "lyrics-render", "stem-separation",
         "remove-bg",
     }
 
@@ -72,6 +72,9 @@ def main():
     extract_audio.register(subparsers)
     transcribe.register(subparsers)
     caption.register(subparsers)
+    lyrics_sync.register(subparsers)
+    lyrics_render.register(subparsers)
+    stem_separation.register(subparsers)
     init.register(subparsers)
     status.register(subparsers)
     mcp.register(subparsers)

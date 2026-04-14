@@ -37,6 +37,16 @@ function logFfmpegStderr(stderr) {
 
 const IMAGE_EXTENSIONS = /\.(jpe?g|png|gif|webp|bmp|tiff?)$/i
 
+/** Returns true if the file has at least one audio stream (fast ffprobe check). */
+function fileHasAudio(filePath) {
+  const result = spawnSync('ffprobe', [
+    '-v', 'quiet', '-select_streams', 'a:0',
+    '-show_entries', 'stream=codec_type',
+    '-of', 'csv=p=0', filePath,
+  ], { encoding: 'utf8', timeout: 5000 })
+  return result.status === 0 && result.stdout.trim().length > 0
+}
+
 /** True if the item should be treated as a still image (looped, no audio).
  *  Checks both item.type and the file extension — project JSON sometimes stores
  *  still images (jpg/png backgrounds) with type:'video'. */
@@ -138,8 +148,11 @@ export async function compose({
     inputs.push('-i', seg.webmPath)
   }
 
-  // Music
-  if (hasMusic) inputs.push('-i', music.src)
+  // Music — optional inPoint seeks into the file (e.g. lyrics_video crops to lyrics window)
+  if (hasMusic) {
+    if (music.inPoint) inputs.push('-ss', String(music.inPoint))
+    inputs.push('-i', music.src)
+  }
 
   // --- Build filter_complex ---
   const filterParts = []
@@ -193,7 +206,7 @@ export async function compose({
       filterParts.push(`${videoLabel}${src}overlay=x=${xPx}:y=${yPx}${fmt}:enable='between(t,${item.start},${item.end})':shortest=0${outV}`)
       // Audio: asetpts normalises PTS to 0 (seek may leave non-zero PTS), then
       // adelay inserts silence so amix sees a continuous stream from t=0.
-      if (!item.muted) {
+      if (!item.muted && fileHasAudio(item.src)) {
         const delayMs = Math.round((item.start ?? 0) * 1000)
         const audioIn = audioLabel.startsWith('[') ? audioLabel : `[${audioLabel}]`
         filterParts.push(`[${i}:a]asetpts=PTS-STARTPTS[apts${i}]`)

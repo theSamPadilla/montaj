@@ -17,11 +17,18 @@ _parser = None
 
 def register(subparsers):
     global _parser
-    _parser = subparsers.add_parser("install", help="Install optional dependencies (whisper | rvm | ui | all)")
-    _parser.add_argument("component", nargs="?", choices=["whisper", "rvm", "ui", "all"],
-                         help="whisper — whisper-cpp binary + model weights; rvm — torch/torchvision/av + RVM weights; ui — npm deps + UI build; all — everything")
-    _parser.add_argument("--model", default="base.en",
-                         help="Whisper model to download (default: base.en)")
+    _parser = subparsers.add_parser("install", help="Install optional dependencies")
+    sub = _parser.add_subparsers(dest="component", metavar="<component>")
+
+    whisper_p = sub.add_parser("whisper", help="whisper-cpp binary + model weights")
+    whisper_p.add_argument("--model", default="base.en",
+                           help="Whisper model to download (default: base.en)")
+
+    sub.add_parser("rvm",    help="torch/torchvision/av + RVM weights")
+    sub.add_parser("demucs", help="Demucs stem separation + htdemucs model weights")
+    sub.add_parser("ui",     help="npm deps + UI build")
+    sub.add_parser("all",    help="Everything above")
+
     _parser.set_defaults(func=handle)
 
 
@@ -31,13 +38,16 @@ def handle(args):
         return
     ok = True
     if args.component == "all":
-        ok &= _ensure_whisper(args.model)
+        ok &= _ensure_whisper("base.en")
         ok &= _ensure_rvm()
+        ok &= _ensure_demucs()
         ok &= _ensure_ui()
     elif args.component == "whisper":
-        ok &= _ensure_whisper(args.model)
+        ok &= _ensure_whisper(getattr(args, "model", "base.en"))
     elif args.component == "rvm":
         ok &= _ensure_rvm()
+    elif args.component == "demucs":
+        ok &= _ensure_demucs()
     elif args.component == "ui":
         ok &= _ensure_ui()
     if ok:
@@ -137,6 +147,25 @@ def _install_whisper_binary(url: str, checksum, bin_path: str):
             vf.write(WHISPER_VERSION)
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+
+def _ensure_demucs() -> bool:
+    print("→ installing demucs deps…")
+    r = subprocess.run([sys.executable, "-m", "pip", "install", "-e", ".[demucs]"])
+    if r.returncode != 0:
+        print("error: pip install .[demucs] failed", file=sys.stderr)
+        return False
+    print("✓ demucs deps installed")
+    # Pre-warm: downloads htdemucs model weights on first use
+    print("→ downloading htdemucs model weights…")
+    try:
+        from demucs.pretrained import get_model
+        get_model("htdemucs")
+        print("✓ htdemucs model ready")
+    except Exception as e:
+        print(f"warning: could not pre-warm demucs model: {e}", file=sys.stderr)
+    return True
 
 
 def _ensure_rvm() -> bool:

@@ -1,0 +1,75 @@
+{
+  "name": "lyrics_render",
+  "description": "Render a lyrics video by burning caption track text onto a background using ffmpeg drawtext. Word-by-word accumulation: each word reveals and the line grows until the phrase ends. Outputs an MP4 with captions baked in.",
+  "input": {
+    "type": "video",
+    "required": false,
+    "description": "Optional background video to loop. If omitted, a solid color background is used."
+  },
+  "output": {
+    "type": "video",
+    "description": "MP4 with captions rendered onto background"
+  },
+  "params": [
+    {
+      "name": "captions",
+      "type": "string",
+      "required": true,
+      "description": "Path to caption track JSON from lyrics_sync or caption step"
+    },
+    {
+      "name": "audio",
+      "type": "string",
+      "required": true,
+      "description": "Song audio file path"
+    },
+    {
+      "name": "bg-color",
+      "type": "string",
+      "default": "black",
+      "description": "Background color when no input video is provided (default: black)"
+    },
+    {
+      "name": "width",
+      "type": "int",
+      "default": 720,
+      "description": "Output width in pixels (default: 720)"
+    },
+    {
+      "name": "height",
+      "type": "int",
+      "default": 1280,
+      "description": "Output height in pixels (default: 1280)"
+    },
+    {
+      "name": "fps",
+      "type": "int",
+      "default": 30,
+      "description": "Output frame rate (default: 30)"
+    },
+    {
+      "name": "fontsize",
+      "type": "integer",
+      "default": 72,
+      "description": "Caption font size in pixels (default: 72)"
+    },
+    {
+      "name": "color",
+      "type": "string",
+      "default": "white",
+      "description": "Caption text color (default: white)"
+    },
+    {
+      "name": "position",
+      "type": "string",
+      "default": "center",
+      "description": "Caption position: center, top-left, or bottom-left (default: center)"
+    },
+    {
+      "name": "preview-duration",
+      "type": "number",
+      "required": false,
+      "description": "Only render this many seconds — useful for quick previews"
+    }
+  ]
+}

@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { X, Image, Plus, HelpCircle, Copy, Magnet } from 'lucide-react'
-import PreviewPlayer from '@/components/PreviewPlayer'
+import PreviewPlayer from '@/components/preview/PreviewPlayer'
 import ProjectHeader from '@/components/ProjectHeader'
 import RerunModal from '@/components/RerunModal'
 import RenderModal from '@/components/RenderModal'
@@ -76,7 +76,7 @@ export default function ReviewView({ project, onProjectChange }: ReviewViewProps
   }, [project.id])
 
   const clips      = project.tracks?.[0] ?? []
-  const hasContent = clips.length > 0 || (project.tracks?.slice(1).flat().length ?? 0) > 0
+  const hasContent = clips.length > 0 || (project.tracks?.slice(1).flat().length ?? 0) > 0 || (project.captions?.segments?.length ?? 0) > 0
   const assets     = project.assets ?? []
 
   function pushHistory(prev: Project) {
