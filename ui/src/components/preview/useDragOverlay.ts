@@ -37,9 +37,9 @@ export function useDragOverlay(
   const liveRotationRef = useRef<typeof liveRotation>(null)
 
   // Snap guide visibility
-  const [snapGuides, setSnapGuides]     = useState({ x: false, y: false })
+  const [snapGuides, setSnapGuides]     = useState({ x: false, y: false, left: false, right: false, top: false, bottom: false })
   const [snapRotation, setSnapRotation] = useState<number | null>(null)
-  const prevSnapRef    = useRef({ x: false, y: false })
+  const prevSnapRef    = useRef({ x: false, y: false, left: false, right: false, top: false, bottom: false })
   const prevSnapRotRef = useRef<number | null>(null)
 
   useEffect(() => { liveOffsetRef.current   = liveOffset   }, [liveOffset])
@@ -59,16 +59,37 @@ export function useDragOverlay(
       if (dragState.type === 'move') {
         const rawX = dragState.initOffsetX + dx
         const rawY = dragState.initOffsetY + dy
-        const snapX = Math.abs(rawX) < SNAP_THRESHOLD
-        const snapY = Math.abs(rawY) < SNAP_THRESHOLD
+
+        // Edge snap positions depend on scale.
+        // Element is inset-0 (fills container) then scaled from center.
+        // Left edge hits screen left / right edge hits screen right when offsetX = ±(0.5 - s/2)*100.
+        // For scale=1 this is 0 (same as center snap), so edge snap only activates for scaled-down items.
+        const s = dragState.initScale
+        const edgeX = (0.5 - s / 2) * 100   // offset where element edge meets screen edge
+        const edgeY = (0.5 - s / 2) * 100
+        const hasEdgeX = edgeX > SNAP_THRESHOLD  // skip if too close to center snap
+        const hasEdgeY = edgeY > SNAP_THRESHOLD
+
+        const snapX      = Math.abs(rawX) < SNAP_THRESHOLD
+        const snapY      = Math.abs(rawY) < SNAP_THRESHOLD
+        const snapLeft   = hasEdgeX && !snapX && Math.abs(rawX - (-edgeX)) < SNAP_THRESHOLD
+        const snapRight  = hasEdgeX && !snapX && Math.abs(rawX -   edgeX)  < SNAP_THRESHOLD
+        const snapTop    = hasEdgeY && !snapY && Math.abs(rawY - (-edgeY)) < SNAP_THRESHOLD
+        const snapBottom = hasEdgeY && !snapY && Math.abs(rawY -   edgeY)  < SNAP_THRESHOLD
 
         // Haptic on snap entry
-        if (snapX && !prevSnapRef.current.x) navigator.vibrate?.(10)
-        if (snapY && !prevSnapRef.current.y) navigator.vibrate?.(10)
-        prevSnapRef.current = { x: snapX, y: snapY }
+        if (snapX      && !prevSnapRef.current.x)      navigator.vibrate?.(10)
+        if (snapY      && !prevSnapRef.current.y)      navigator.vibrate?.(10)
+        if (snapLeft   && !prevSnapRef.current.left)   navigator.vibrate?.(10)
+        if (snapRight  && !prevSnapRef.current.right)  navigator.vibrate?.(10)
+        if (snapTop    && !prevSnapRef.current.top)    navigator.vibrate?.(10)
+        if (snapBottom && !prevSnapRef.current.bottom) navigator.vibrate?.(10)
+        prevSnapRef.current = { x: snapX, y: snapY, left: snapLeft, right: snapRight, top: snapTop, bottom: snapBottom }
 
-        setSnapGuides({ x: snapX, y: snapY })
-        const next = { id: dragState.id, x: snapX ? 0 : rawX, y: snapY ? 0 : rawY }
+        setSnapGuides({ x: snapX, y: snapY, left: snapLeft, right: snapRight, top: snapTop, bottom: snapBottom })
+        const finalX = snapX ? 0 : snapLeft ? -edgeX : snapRight ? edgeX : rawX
+        const finalY = snapY ? 0 : snapTop  ? -edgeY : snapBottom ? edgeY : rawY
+        const next = { id: dragState.id, x: finalX, y: finalY }
         setLiveOffset(next)
         liveOffsetRef.current = next
       } else if (dragState.type === 'rotate') {
@@ -124,9 +145,9 @@ export function useDragOverlay(
       setLiveOffset(null)
       setLiveScale(null)
       setLiveRotation(null)
-      setSnapGuides({ x: false, y: false })
+      setSnapGuides({ x: false, y: false, left: false, right: false, top: false, bottom: false })
       setSnapRotation(null)
-      prevSnapRef.current = { x: false, y: false }
+      prevSnapRef.current = { x: false, y: false, left: false, right: false, top: false, bottom: false }
       prevSnapRotRef.current = null
     }
 

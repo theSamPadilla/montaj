@@ -17,23 +17,36 @@ function OverlayVideo({ src, currentTime, itemStart, inPoint, isPlaying, muted, 
   isPlaying: boolean; muted?: boolean; visible: boolean
 }) {
   const ref = useRef<HTMLVideoElement>(null)
+  // Refs so the onSeeked handler can read current playback intent without stale closures
+  const isPlayingRef = useRef(isPlaying)
+  const visibleRef   = useRef(visible)
+  useEffect(() => { isPlayingRef.current = isPlaying }, [isPlaying])
+  useEffect(() => { visibleRef.current   = visible   }, [visible])
 
-  // On mount: seek to the frame that will be shown at itemStart (so it's ready when it becomes visible)
+  // On mount: seek to the frame that will be shown at itemStart so it's ready when it becomes visible.
+  // Do NOT call play() here — the play/pause effect handles that and runs on mount too.
+  // Calling play() from both effects simultaneously while the WebM is still buffering causes both
+  // play() promises to abort each other, leaving the video in a silent play-pending state.
   useEffect(() => {
     const v = ref.current
     if (!v) return
     const target = Math.max(inPoint, inPoint + (currentTime - itemStart))
     v.currentTime = target
-    if (isPlaying && visible) v.play().catch(() => {})
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  // On scrub (large jump): re-seek
+  // On scrub (large jump): re-seek — but only once the video has data.
+  // While playing, only re-seek on large jumps (>1.5s) to avoid chasing gap-clock drift.
+  // The gap clock and video playback rate diverge slightly; a 0.3s threshold fires too often
+  // and causes cascading re-seeks that skip the video forward until it ends prematurely.
   useEffect(() => {
     const v = ref.current
     if (!v) return
+    if (v.readyState < 2) return
     const target = inPoint + (currentTime - itemStart)
-    if (Math.abs(v.currentTime - target) > 0.3) {
+    const drift = Math.abs(v.currentTime - target)
+    if (!v.paused && drift < 1.5) return
+    if (drift > 0.3) {
       v.currentTime = Math.max(inPoint, target)
     }
   }, [currentTime, itemStart, inPoint])
@@ -42,8 +55,18 @@ function OverlayVideo({ src, currentTime, itemStart, inPoint, isPlaying, muted, 
   useEffect(() => {
     const v = ref.current
     if (!v) return
-    if (isPlaying && visible) v.play().catch(() => {})
-    else v.pause()
+    const label = src.split('/').pop()
+    console.log('[OverlayVideo] isPlaying=', isPlaying, 'visible=', visible, 'paused=', v.paused,
+      'readyState=', v.readyState, 'currentTime=', v.currentTime.toFixed(3), 'duration=', v.duration?.toFixed(3),
+      'videoW=', v.videoWidth, label)
+    if (isPlaying && visible) {
+      v.play().then(() => {
+        console.log('[OverlayVideo] play() resolved', label, 'ct=', v.currentTime.toFixed(3), 'dur=', v.duration?.toFixed(3))
+      }).catch(e => console.warn('[OverlayVideo] play() rejected', label, e))
+    } else {
+      console.log('[OverlayVideo] pausing', label)
+      v.pause()
+    }
   }, [isPlaying, visible])
 
   return (
@@ -51,6 +74,29 @@ function OverlayVideo({ src, currentTime, itemStart, inPoint, isPlaying, muted, 
       ref={ref}
       src={src}
       muted={muted}
+      preload="auto"
+      onSeeked={() => {
+        // After a mid-clip seek the browser may have paused to buffer — restart if we should be playing
+        const v = ref.current
+        if (!v) return
+        const label = src.split('/').pop()
+        console.log('[OverlayVideo] onSeeked paused=', v.paused, 'ct=', v.currentTime.toFixed(3), 'dur=', v.duration?.toFixed(3), 'readyState=', v.readyState, 'isPlaying=', isPlayingRef.current, 'visible=', visibleRef.current, label)
+        if (isPlayingRef.current && visibleRef.current && v.paused) {
+          v.play().catch(() => {})
+        }
+      }}
+      onTimeUpdate={() => {
+        const v = ref.current
+        if (!v) return
+        // Log first few timeupdate events to confirm playback is actually advancing
+        if (!v.dataset.tuCount) v.dataset.tuCount = '0'
+        const n = parseInt(v.dataset.tuCount)
+        if (n < 3) {
+          console.log('[OverlayVideo] timeupdate ct=', v.currentTime.toFixed(3), src.split('/').pop())
+          v.dataset.tuCount = String(n + 1)
+        }
+      }}
+      onEnded={() => console.log('[OverlayVideo] ended ct=', ref.current?.currentTime.toFixed(3), src.split('/').pop())}
       playsInline
       className="absolute inset-0 w-full h-full object-contain pointer-events-none"
       style={{ opacity: visible ? 1 : 0 }}
@@ -179,6 +225,7 @@ interface OverlayItemsLayerProps {
   isPlaying: boolean
   isCanvasProject: boolean
   overlayTracks: VisualItem[][]
+  tracks0NonVideo: VisualItem[]
   renderScale: number
   selectedOverlayId?: string
   containerRef: React.RefObject<HTMLDivElement | null>
@@ -198,6 +245,7 @@ export default function OverlayItemsLayer({
   isPlaying,
   isCanvasProject,
   overlayTracks,
+  tracks0NonVideo,
   renderScale,
   selectedOverlayId,
   containerRef,
@@ -214,6 +262,64 @@ export default function OverlayItemsLayer({
 
   return (
     <>
+      {/* tracks[0] non-video items (background images) — rendered with drag support at base z-level */}
+      {!isCanvasProject && tracks0NonVideo.map((item) => {
+        if (item.type !== 'image' || !item.src) return null
+        const visible = currentTime >= item.start && currentTime < item.end
+        if (!visible) return null
+        const isSel    = selectedOverlayId === item.id
+        const offsetX  = (liveOffset?.id   === item.id ? liveOffset.x       : null) ?? item.offsetX  ?? 0
+        const offsetY  = (liveOffset?.id   === item.id ? liveOffset.y       : null) ?? item.offsetY  ?? 0
+        const scale    = (liveScale?.id    === item.id ? liveScale.scale    : null) ?? item.scale    ?? 1
+        const rotation = (liveRotation?.id === item.id ? liveRotation.rotation : null) ?? item.rotation ?? 0
+        const wrapperStyle: React.CSSProperties = {
+          transform: `translate(${offsetX}%, ${offsetY}%) rotate(${rotation}deg) scale(${scale})`,
+          transformOrigin: 'center center',
+          // Raise above play/pause div (z=10) when selected so pointer events land here
+          zIndex: isSel ? 11 : 2,
+          opacity: item.opacity ?? 1,
+        }
+        const wrapperClass = `absolute inset-0 ${
+          isSel
+            ? `${dragState?.type === 'move' ? 'cursor-grabbing' : 'cursor-grab'} ring-1 ring-inset ring-amber-400/40`
+            : 'pointer-events-none'
+        }`
+        function startMove(e: React.MouseEvent) {
+          if (!isSel) return
+          e.stopPropagation()
+          setDragState({ id: item.id, type: 'move', initX: e.clientX, initY: e.clientY, initOffsetX: offsetX, initOffsetY: offsetY, initScale: scale, initRotation: rotation })
+        }
+        const handles = isSel && (
+          <>
+            {(['nw', 'ne', 'sw', 'se'] as Corner[]).map(c => (
+              <CornerHandle key={c} corner={c} scale={scale} onMouseDown={(e) => {
+                e.stopPropagation()
+                setDragState({ id: item.id, type: `resize-${c}`, initX: e.clientX, initY: e.clientY, initOffsetX: offsetX, initOffsetY: offsetY, initScale: scale, initRotation: rotation })
+              }} />
+            ))}
+            <RotateHandle scale={scale} onMouseDown={(e) => {
+              e.stopPropagation()
+              const rect = containerRef.current?.getBoundingClientRect()
+              if (!rect) return
+              const cx = rect.left + rect.width  * (0.5 + offsetX / 100)
+              const cy = rect.top  + rect.height * (0.5 + offsetY / 100)
+              const initAngle = Math.atan2(e.clientY - cy, e.clientX - cx)
+              setDragState({ id: item.id, type: 'rotate', initX: e.clientX, initY: e.clientY, initOffsetX: offsetX, initOffsetY: offsetY, initScale: scale, initRotation: rotation, cx, cy, initAngle })
+            }} />
+          </>
+        )
+        return (
+          <div key={item.id} className={wrapperClass} style={wrapperStyle} onMouseDown={startMove}>
+            <img
+              src={fileUrl(item.src)}
+              draggable={false}
+              className="absolute inset-0 w-full h-full object-contain pointer-events-none"
+            />
+            {handles}
+          </div>
+        )
+      })}
+
       {/* All interactive tracks — in canvas mode this includes track 0; otherwise overlays only */}
       {(isCanvasProject ? project.tracks ?? [] : overlayTracks).map((trackItems, trackIdx) =>
         trackItems.map((item) => {
@@ -367,7 +473,7 @@ export default function OverlayItemsLayer({
         })
       )}
 
-      {/* Center snap guide lines — rendered at container level, unaffected by overlay transforms */}
+      {/* Center snap guide lines */}
       {dragState?.type === 'move' && snapGuides.x && (
         <div className="absolute top-0 bottom-0 left-1/2 w-px bg-amber-400 pointer-events-none z-50"
              style={{ transform: 'translateX(-50%)' }} />
@@ -376,6 +482,16 @@ export default function OverlayItemsLayer({
         <div className="absolute left-0 right-0 top-1/2 h-px bg-amber-400 pointer-events-none z-50"
              style={{ transform: 'translateY(-50%)' }} />
       )}
+      {/* Edge guide lines — always visible during a move drag as reference frame */}
+      {dragState?.type === 'move' && <div className="absolute top-0 bottom-0 left-0   w-px bg-amber-400/30 pointer-events-none z-50" />}
+      {dragState?.type === 'move' && <div className="absolute top-0 bottom-0 right-0  w-px bg-amber-400/30 pointer-events-none z-50" />}
+      {dragState?.type === 'move' && <div className="absolute left-0 right-0 top-0    h-px bg-amber-400/30 pointer-events-none z-50" />}
+      {dragState?.type === 'move' && <div className="absolute left-0 right-0 bottom-0 h-px bg-amber-400/30 pointer-events-none z-50" />}
+      {/* Edge snap highlight — brighten when snapping to an edge */}
+      {dragState?.type === 'move' && snapGuides.left   && <div className="absolute top-0 bottom-0 left-0   w-px bg-amber-400 pointer-events-none z-50" />}
+      {dragState?.type === 'move' && snapGuides.right  && <div className="absolute top-0 bottom-0 right-0  w-px bg-amber-400 pointer-events-none z-50" />}
+      {dragState?.type === 'move' && snapGuides.top    && <div className="absolute left-0 right-0 top-0    h-px bg-amber-400 pointer-events-none z-50" />}
+      {dragState?.type === 'move' && snapGuides.bottom && <div className="absolute left-0 right-0 bottom-0 h-px bg-amber-400 pointer-events-none z-50" />}
       {/* Rotation snap guide — line through center at the snapped angle */}
       {dragState?.type === 'rotate' && snapRotation !== null && (
         <div className="absolute inset-0 pointer-events-none z-50">

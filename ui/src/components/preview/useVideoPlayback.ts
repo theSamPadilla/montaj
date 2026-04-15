@@ -23,6 +23,9 @@ export function useVideoPlayback(
   const rafLastMs     = useRef<number | null>(null)
   const musicRef      = useRef<HTMLAudioElement>(null)
   const [isPlaying, setIsPlaying] = useState(false)
+  const isPlayingRef = useRef(false)
+  // Keep ref in sync so effects with narrow deps can read current playing state
+  useEffect(() => { isPlayingRef.current = isPlaying }, [isPlaying])
   const [showVideo, setShowVideo] = useState(true)
 
   // Gap clock — advances time through lift-style gaps between primary clips
@@ -37,11 +40,14 @@ export function useVideoPlayback(
   function getInactiveVideo() { return activeSlotRef.current === 0 ? video1Ref.current : video0Ref.current }
 
   // ── Video timeline ─────────────────────────────────────────────────────────
-  const clips         = useMemo(() => project.tracks?.[0] ?? [], [project])
-  const overlayTracks = useMemo(() => project.tracks?.slice(1) ?? [], [project])
+  // Only video items drive the double-buffer player; non-video items (images, etc.)
+  // in tracks[0] are exposed separately for the preview to render as a background layer.
+  const clips           = useMemo(() => (project.tracks?.[0] ?? []).filter(c => c.type === 'video'), [project])
+  const tracks0NonVideo = useMemo(() => (project.tracks?.[0] ?? []).filter(c => c.type !== 'video'), [project])
+  const overlayTracks   = useMemo(() => project.tracks?.slice(1) ?? [], [project])
 
   // Canvas project: no primary video in tracks[0] (e.g. image-only background track)
-  const isCanvasProject = clips.length === 0 || clips.every(c => c.type !== 'video')
+  const isCanvasProject = clips.length === 0
 
   useEffect(() => {
     if (!isCanvasProject) return
@@ -112,11 +118,13 @@ export function useVideoPlayback(
             // Playing through gap → pause
             cancelAnimationFrame(gapRAFRef.current)
             gapRAFRef.current = null
+            setIsPlaying(false)
           } else {
             // Paused in gap → resume from current position
             gapFromRef.current = lastTimeRef.current
             gapWallRef.current = performance.now()
             gapRAFRef.current  = requestAnimationFrame(tickGap)
+            setIsPlaying(true)
           }
           return
         }
@@ -153,6 +161,12 @@ export function useVideoPlayback(
     if (inactive) { inactive.pause(); inactive.removeAttribute('src') }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [clips])
+
+  const handlePause = useCallback(() => {
+    // Ignore pause events while the gap clock owns playback state
+    if (inGapRef.current) return
+    setIsPlaying(false)
+  }, [])
 
   const cancelGap = useCallback(() => {
     if (gapRAFRef.current !== null) {
@@ -202,17 +216,30 @@ export function useVideoPlayback(
   useEffect(() => {
     if (Math.abs(currentTime - lastTimeRef.current) < 0.05) return
     cancelGap()
+    lastTimeRef.current = currentTime
+    const idx = clips.findIndex(c => currentTime >= c.start && currentTime < c.end)
+    if (idx === -1) {
+      // Scrubbed into a gap or image section — hide the main video so it doesn't bleed through
+      setShowVideo(false)
+      // If currently playing, pause the active video and restart the gap clock from the new position
+      if (isPlayingRef.current) {
+        const nextIdx = clips.findIndex(c => c.start > currentTime)
+        if (nextIdx !== -1) {
+          inGapRef.current      = true  // set before pause so handlePause ignores the event
+          gapFromRef.current    = currentTime
+          gapWallRef.current    = performance.now()
+          gapTargetRef.current  = clips[nextIdx].start
+          gapNextIdxRef.current = nextIdx
+          getActiveVideo()?.pause()
+          gapRAFRef.current     = requestAnimationFrame(tickGap)
+        }
+      }
+      return
+    }
     setShowVideo(true)
     seekingRef.current = true
     try {
-      lastTimeRef.current = currentTime
-      const idx = clips.findIndex(c => currentTime >= c.start && currentTime < c.end)
-      let clipIdx: number
-      if (idx !== -1) {
-        clipIdx = idx
-      } else {
-        clipIdx = clips.reduce((best, c, i) => (c.end <= currentTime ? i : best), 0)
-      }
+      const clipIdx = idx
       const clip = clips[clipIdx]
       if (!clip?.src) return
       activeIdxRef.current = clipIdx
@@ -257,6 +284,9 @@ export function useVideoPlayback(
   }, [currentTime, clips])
 
   const handleTimeUpdate = useCallback(() => {
+    // Gap clock owns time during gaps — ignore timeupdate events from the paused video element
+    // to prevent it from resetting currentTime and cancelling the gap clock.
+    if (inGapRef.current) return
     const slot = activeSlotRef.current
     const video = slot === 0 ? video0Ref.current : video1Ref.current
     if (!video || seekingRef.current) return
@@ -307,6 +337,8 @@ export function useVideoPlayback(
           gapTargetRef.current  = next.start
           gapNextIdxRef.current = nextIdx
           gapRAFRef.current     = requestAnimationFrame(tickGap)
+          // Keep isPlaying=true so overlay videos (e.g. floating_head) continue playing
+          setIsPlaying(true)
         } else {
           // Contiguous — immediate switch
           const nextSlot = (1 - slot) as 0 | 1
@@ -366,6 +398,30 @@ export function useVideoPlayback(
 
   function togglePlay() {
     if (isCanvasProject) { setIsPlaying(p => !p); return }
+    // If current time is in a gap/image section (not inside any video clip), drive via gap clock
+    const t = lastTimeRef.current
+    const inVideoClip = clips.some(c => t >= c.start && t < c.end)
+    if (!inVideoClip || inGapRef.current) {
+      if (gapRAFRef.current !== null) {
+        // Currently playing through gap → pause
+        cancelAnimationFrame(gapRAFRef.current)
+        gapRAFRef.current = null
+        inGapRef.current  = false
+        setIsPlaying(false)
+      } else {
+        // Paused in gap/image section → find next video clip and advance via gap clock
+        const nextIdx = clips.findIndex(c => c.start > t)
+        if (nextIdx === -1) return
+        inGapRef.current      = true
+        gapFromRef.current    = t
+        gapWallRef.current    = performance.now()
+        gapTargetRef.current  = clips[nextIdx].start
+        gapNextIdxRef.current = nextIdx
+        gapRAFRef.current     = requestAnimationFrame(tickGap)
+        setIsPlaying(true)
+      }
+      return
+    }
     const video = getActiveVideo()
     if (!video) return
     video.paused ? video.play().catch(() => {}) : video.pause()
@@ -380,10 +436,12 @@ export function useVideoPlayback(
     isPlaying,
     setIsPlaying,
     handleTimeUpdate,
+    handlePause,
     handleEnded,
     togglePlay,
     isCanvasProject,
     clips,
+    tracks0NonVideo,
     overlayTracks,
     musicRef,
   }

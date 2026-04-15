@@ -53,10 +53,12 @@ export default function PreviewPlayer({ project, currentTime, onTimeUpdate, sele
     isPlaying,
     setIsPlaying,
     handleTimeUpdate,
+    handlePause,
     handleEnded,
     togglePlay,
     isCanvasProject,
     clips,
+    tracks0NonVideo,
     overlayTracks,
     musicRef,
   } = useVideoPlayback(project, currentTime, onTimeUpdate)
@@ -80,7 +82,7 @@ export default function PreviewPlayer({ project, currentTime, onTimeUpdate, sele
             onTimeUpdate={() => { if (activeSlotRef.current === 0) handleTimeUpdate() }}
             onEnded={() => { if (activeSlotRef.current === 0) handleEnded() }}
             onPlay={() => { if (activeSlotRef.current === 0) setIsPlaying(true) }}
-            onPause={() => { if (activeSlotRef.current === 0) setIsPlaying(false) }}
+            onPause={() => { if (activeSlotRef.current === 0) handlePause() }}
             playsInline
             style={{ opacity: showVideo && activeSlot === 0 ? 1 : 0, pointerEvents: activeSlot === 0 ? 'auto' : 'none', zIndex: activeSlot === 0 ? 1 : 0 }}
           />
@@ -91,12 +93,13 @@ export default function PreviewPlayer({ project, currentTime, onTimeUpdate, sele
             onTimeUpdate={() => { if (activeSlotRef.current === 1) handleTimeUpdate() }}
             onEnded={() => { if (activeSlotRef.current === 1) handleEnded() }}
             onPlay={() => { if (activeSlotRef.current === 1) setIsPlaying(true) }}
-            onPause={() => { if (activeSlotRef.current === 1) setIsPlaying(false) }}
+            onPause={() => { if (activeSlotRef.current === 1) handlePause() }}
             playsInline
             style={{ opacity: showVideo && activeSlot === 1 ? 1 : 0, pointerEvents: activeSlot === 1 ? 'auto' : 'none', zIndex: activeSlot === 1 ? 1 : 0 }}
           />
         </>
       )}
+
 
       {/* Montaj play/pause control — covers the active video area */}
       {!isCanvasProject && clips.length > 0 && (
@@ -124,6 +127,7 @@ export default function PreviewPlayer({ project, currentTime, onTimeUpdate, sele
         isPlaying={isPlaying}
         isCanvasProject={isCanvasProject}
         overlayTracks={overlayTracks}
+        tracks0NonVideo={tracks0NonVideo}
         renderScale={renderScale}
         selectedOverlayId={selectedOverlayId}
         containerRef={containerRef}
