@@ -105,22 +105,6 @@ def test_get_duration(tmp_path):
     assert 1.9 <= dur <= 2.1
 
 
-# ── load_env() ────────────────────────────────────────────────────────────────
-
-def test_load_env_parses_file(tmp_path):
-    env_file = tmp_path / ".env"
-    env_file.write_text('FOO=bar\nBAZ="quoted"\n# comment\n')
-    loaded = common.load_env(str(env_file))
-    assert loaded["FOO"] == "bar"
-    assert loaded["BAZ"] == "quoted"
-    assert os.environ.get("FOO") == "bar"
-
-
-def test_load_env_fails_for_missing():
-    with pytest.raises(SystemExit):
-        common.load_env("/nonexistent/.env")
-
-
 # ── find_whisper_bin() ────────────────────────────────────────────────────────
 
 def test_find_whisper_bin_prefers_montaj_managed(tmp_path, monkeypatch):

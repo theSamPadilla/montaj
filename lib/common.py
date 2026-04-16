@@ -72,25 +72,6 @@ def api_call(url: str, method: str = "GET", headers: dict = None, data: str = No
     return r.stdout
 
 
-def load_env(env_path: str = None):
-    """Load .env file into os.environ. Returns dict of loaded vars."""
-    if env_path is None:
-        env_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".env")
-    if not os.path.isfile(env_path):
-        fail("missing_config", f".env not found at {env_path}")
-    loaded = {}
-    with open(env_path) as f:
-        for line in f:
-            line = line.strip()
-            if line and not line.startswith("#") and "=" in line:
-                key, _, val = line.partition("=")
-                key = key.strip()
-                val = val.strip().strip('"').strip("'")
-                os.environ[key] = val
-                loaded[key] = val
-    return loaded
-
-
 # Add lib dir to path for imports
 LIB_DIR = os.path.dirname(os.path.abspath(__file__))
 if LIB_DIR not in sys.path:
