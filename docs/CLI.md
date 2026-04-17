@@ -10,10 +10,12 @@ ffmpeg is bundled automatically via pip — no manual step required. Node.js is 
 
 ```bash
 brew install theSamPadilla/montaj/montaj   # or: pip install montaj
-montaj install whisper  # whisper-cpp binary + base.en model weights
-montaj install ui       # npm deps + UI build (pip users only — brew handles this)
-montaj install rvm      # torch/torchvision/av (pip) + RVM model weights
-montaj install all      # everything above
+montaj install whisper      # whisper-cpp binary + base.en model weights
+montaj install ui           # npm deps + UI build (pip users only — brew handles this)
+montaj install rvm          # torch/torchvision/av (pip) + RVM model weights
+montaj install connectors   # pyjwt, requests, google-genai, openai (for API steps)
+montaj install credentials  # interactive setup for API keys (~/.montaj/credentials.json)
+montaj install all          # everything above
 ```
 
 `montaj install whisper` is safe to re-run — skips the binary if already at the pinned version, skips weights if already downloaded.
@@ -25,6 +27,15 @@ montaj install all      # everything above
 | `whisper` | whisper-cpp binary (pinned), base.en model weights | `transcribe`, `rm_fillers`, `rm_nonspeech`, `waveform_trim`, render pipeline |
 | `ui` | npm deps for `render/` and `ui/`; production UI build | `montaj serve`, render engine |
 | `rvm` | torch, torchvision, av (pip) + rvm_mobilenetv3 (~15 MB) + rvm_resnet50 (~103 MB) | `remove_bg` |
+| `connectors` | pyjwt, requests, google-genai, openai | `kling_generate`, `analyze_video`, `generate_image` |
+
+Credentials are stored in `~/.montaj/credentials.json` (0600 permissions). Three modes:
+
+```bash
+montaj install credentials                                            # interactive: pick provider, enter keys
+montaj install credentials --provider gemini --key api_key --value …  # scripted (CI/automation)
+montaj install credentials --list                                     # show set/unset status per provider
+```
 
 ```bash
 montaj install whisper --model medium.en
@@ -221,6 +232,30 @@ montaj step caption --input transcript.json --style karaoke
 montaj step caption --input transcript.json --style subtitle
 ```
 
+### Generation (external APIs)
+
+Requires `montaj install connectors` + `montaj install credentials`. See [docs/CONNECTORS.md](./CONNECTORS.md).
+
+```bash
+montaj kling-generate --prompt "a calico cat walking through a sunlit kitchen, cinematic" --out /tmp/cat.mp4
+montaj kling-generate --prompt "slow zoom in" --first-frame frame.png --out /tmp/zoom.mp4
+montaj kling-generate --prompt "character walks left" --first-frame start.png --last-frame end.png --out /tmp/walk.mp4
+montaj kling-generate --prompt "same style" --ref-image style1.png --ref-image style2.png --out /tmp/styled.mp4
+montaj kling-generate --prompt "..." --out /tmp/pro.mp4 --mode pro --duration 10 --aspect-ratio 9:16
+
+montaj analyze-video clip.mp4 --prompt "Describe the scene in 2 sentences."
+montaj analyze-video clip.mp4 --prompt "Return JSON: {mood, dominant_colors, action}" --json-output
+montaj analyze-video clip.mp4 --prompt "..." --model gemini-2.5-pro    # override model
+montaj analyze-video clip.mp4 --prompt "..." --out analysis.txt        # write to file
+
+montaj generate-image --prompt "portrait, studio lighting" --out /tmp/portrait.png
+montaj generate-image --prompt "same character, profile view" --ref-image /tmp/portrait.png --out /tmp/profile.png
+montaj generate-image --prompt "red apple on white table" --provider openai --out /tmp/apple.png
+montaj generate-image --prompt "..." --provider gemini --aspect-ratio 9:16 --out /tmp/tall.png
+```
+
+---
+
 ### Lyrics video
 
 ```bash
@@ -288,6 +323,9 @@ All steps accept `--out <path>` to set the output location. Run `montaj step <na
 | `stem-separation` | `--stems <vocals\|drums\|bass\|other>`, `--out-dir <path>` |
 | `lyrics-sync` | `--lyrics <txt>`, `--model <base.en\|medium.en>`, `--out <path>`, `--start <s>`, `--end <s>` |
 | `lyrics-render` | `--captions <json>`, `--audio <mp3>`, `--input <video>`, `--position <center\|top-left\|bottom-left>`, `--color <str>`, `--fontsize <px>`, `--preview-duration <s>` |
+| `kling-generate` | `--prompt <text>`, `--out <path>`, `--first-frame <img>`, `--last-frame <img>`, `--ref-image <img>` (repeatable, max 3), `--duration <3-15>`, `--negative-prompt <text>`, `--sound <on\|off>`, `--aspect-ratio <16:9\|9:16\|1:1>`, `--mode <std\|pro>` |
+| `analyze-video` | `<input>`, `--prompt <text>`, `--model <id>`, `--json-output`, `--out <path>` |
+| `generate-image` | `--prompt <text>`, `--out <path>`, `--provider <gemini\|openai>`, `--ref-image <img>` (repeatable), `--size <WxH>`, `--aspect-ratio <ratio>` (Gemini only), `--model <id>` |
 
 ---
 

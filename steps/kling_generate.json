@@ -1,0 +1,20 @@
+{
+  "name": "kling_generate",
+  "description": "Generate video via Kling v3 Omni. Text-to-video, image-to-video, or reference-guided.",
+  "output": {
+    "type": "video",
+    "description": "Path to the generated .mp4 file"
+  },
+  "params": [
+    {"name": "prompt", "type": "string", "required": true, "description": "Scene description (max 2500 chars)"},
+    {"name": "out", "type": "path", "required": true, "description": "Output .mp4 path"},
+    {"name": "first-frame", "type": "path", "required": false, "description": "Starting image"},
+    {"name": "last-frame", "type": "path", "required": false, "description": "Ending image (requires --first-frame)"},
+    {"name": "ref-image", "type": "path", "required": false, "repeatable": true, "description": "Reference image (max 3)"},
+    {"name": "duration", "type": "int", "required": false, "default": 5, "description": "Clip length in seconds (3-15)"},
+    {"name": "negative-prompt", "type": "string", "required": false, "description": "Things to avoid"},
+    {"name": "sound", "type": "string", "required": false, "default": "on", "description": "on|off"},
+    {"name": "aspect-ratio", "type": "string", "required": false, "default": "16:9", "description": "16:9|9:16|1:1"},
+    {"name": "mode", "type": "string", "required": false, "default": "std", "description": "std|pro"}
+  ]
+}

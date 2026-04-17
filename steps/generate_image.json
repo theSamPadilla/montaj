@@ -1,0 +1,23 @@
+{
+  "name": "generate_image",
+  "description": "Generate an image via Gemini or OpenAI. Text-to-image or reference-conditioned.",
+  "output": {
+    "type": "image",
+    "description": "Path to the generated image file"
+  },
+  "params": [
+    {"name": "prompt", "type": "string", "required": true, "description": "Text description of the image"},
+    {"name": "out", "type": "path", "required": true, "description": "Output image path (.png)"},
+    {"name": "provider", "type": "enum", "required": false, "default": "gemini",
+     "values": ["gemini", "openai"],
+     "description": "Which vendor to use"},
+    {"name": "ref-image", "type": "path", "required": false, "repeatable": true,
+     "description": "Reference image(s) for conditioned generation"},
+    {"name": "size", "type": "string", "required": false, "default": "1024x1024",
+     "description": "Image dimensions (vendor-dependent)"},
+    {"name": "aspect-ratio", "type": "string", "required": false,
+     "description": "Gemini only. E.g. '9:16', '1:1'. Ignored by OpenAI."},
+    {"name": "model", "type": "string", "required": false,
+     "description": "Override the connector's default model for the chosen provider"}
+  ]
+}

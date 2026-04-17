@@ -164,6 +164,17 @@ montaj serve  →  browser UI, SSE, project lifecycle, HTTP API
 
 All three execution paths wrap the same underlying CLI executables.
 
+### CLI flag conventions
+
+Two flags look similar and must not be conflated:
+
+| Flag | Layer | Purpose |
+|------|-------|---------|
+| `--json`        | CLI (`add_global_flags`) | Wrap the command's stdout in a JSON envelope for machine-readable output. Available on every `montaj <command>`. |
+| `--json-output` | Step / CLI mirror | Ask the underlying model or API to return structured JSON data. Only present on steps that call out to a model/API with a JSON mode (currently `analyze-video`). |
+
+Per-command parsers must never redefine `--json` — it's reserved globally. When a step needs a model-JSON toggle, use `--json-output` at both the CLI and step layers, with matching names.
+
 ---
 
 ## Workflow Engine
@@ -192,6 +203,7 @@ Three scopes. Same format at every level — native steps and custom steps are i
   workflows/
     my-brand.json
   config.json                   # global defaults (workspaceDir, model, etc.)
+  credentials.json              # API credentials for external connectors (0600)
 
 montaj/                         # built-in (ships with montaj)
   steps/
@@ -199,6 +211,11 @@ montaj/                         # built-in (ships with montaj)
     snapshot.py + snapshot.json
     rm_fillers.py + rm_fillers.json
     transcribe.py + transcribe.json
+    ...
+  connectors/
+    kling.py
+    gemini.py
+    openai.py
     ...
   workflows/
     overlays.json
@@ -218,6 +235,26 @@ The workspace location defaults to `~/Montaj`. Override via `~/.montaj/config.js
 ```json
 { "workspaceDir": "/Volumes/FastSSD/Montaj" }
 ```
+
+### Credentials — `~/.montaj/credentials.json`
+
+API credentials for external connectors (Kling, Gemini, etc.) live in `~/.montaj/credentials.json` with `0600` permissions.
+
+Install via:
+
+    montaj install credentials                                          # interactive
+    montaj install credentials --provider kling --key access_key --value ...
+    montaj install credentials --list                                   # check what's set
+
+Each connector reads credentials via `lib/credentials.get_credential(provider, key)`. Precedence: env var (`KLING_ACCESS_KEY` etc.) > credentials file > fail with install instructions.
+
+Supported providers:
+
+| Provider | Keys |
+|----------|------|
+| `kling` | `access_key`, `secret_key` |
+| `gemini` | `api_key` |
+| `openai` | `api_key` |
 
 **Step resolution order:** project-local → user-global → montaj built-in.
 
@@ -320,6 +357,29 @@ No registration, no config changes. Discovered automatically.
 
 ---
 
+### Connectors — `connectors/`
+
+Wrappers around external AI/video APIs (Kling, Gemini, OpenAI, ElevenLabs, …). Each file in `connectors/` is a framework-agnostic Python module that owns everything about talking to **one vendor**: auth, request shape, polling, response normalization.
+
+**The layering rule — memorize this:**
+
+| Layer | Organized by | Example |
+|-------|--------------|---------|
+| `connectors/<vendor>.py` | **Vendor** (one file per API key) | `connectors/gemini.py` handles video analysis + image gen — all Gemini endpoints share one client and one credential |
+| `steps/<verb>_<noun>.py` | **Use case** (one file per agent-callable action) | `steps/generate_image.py` dispatches to `gemini.generate_image` or `openai.generate_image` based on `--provider` |
+
+A vendor like Gemini can unlock multiple use cases (video analysis today, text/image tomorrow) through the same API key and SDK. Duplicating the client+auth plumbing per endpoint is waste. Specificity lives in the step layer, where the file name (`analyze_video`, `generate_image`, `transcribe_audio`) tells the agent what it does.
+
+Connectors:
+- Read credentials via `lib.credentials.get_credential(provider, key)`.
+- Raise `ConnectorError` on user-facing failures. Step scripts catch and translate to `common.fail()`.
+- Have no argparse, no FastAPI, no CLI concerns, no `sys.exit` — those live in `steps/` and `cli/commands/`.
+- Are **never referenced directly from workflows, the CLI, HTTP API, or MCP**. Every connector function needs a step wrapping it to be agent-callable. See [docs/CONNECTORS.md](./CONNECTORS.md) for the full contract and current connector list.
+
+Install the optional deps with `montaj install connectors`.
+
+---
+
 ### Bundled workflows
 
 | Workflow | Description |
@@ -386,6 +446,12 @@ Schema: `docs/schemas/project.md`
 
 All steps are agent-callable tools. The agent decides which to run, when, and with what params — guided by the workflow plan and the editing prompt.
 
+> **Where to look:**
+> - **Authoring a step** (schema format, output convention, scopes, adding a custom step) → [docs/schemas/step.md](./schemas/step.md)
+> - **Using a step from the CLI** (flags, usage examples per step) → [docs/CLI.md](./CLI.md) → Tier 3 — Steps
+> - **Wrapping an external API as a step** (the connector → step layering) → [docs/CONNECTORS.md](./CONNECTORS.md)
+> - **Quick catalog of built-in steps** (what each one does, by category) → below
+
 ### Inspect
 
 | Step | What it does |
@@ -435,6 +501,18 @@ All steps are agent-callable tools. The agent decides which to run, when, and wi
 | `montaj/remove_bg` | Remove video background using RVM (Robust Video Matting). Outputs ProRes 4444 `.mov` with alpha channel (`nobg_src`) for final render and a VP9 WebM (`nobg_preview_src`) for browser preview. Requires `montaj install rvm`. |
 
 Used in the `floating_head` workflow. `remove_bg` requires an actual video file — pass the output of `materialize_cut`, not a trim spec. The step updates the project item with `remove_bg: true`, `nobg_src`, and `nobg_preview_src`. At render time the engine composites the alpha-channel `.mov` over the layers beneath it via ffmpeg.
+
+---
+
+### Generation (external APIs)
+
+| Step | What it does |
+|------|-------------|
+| `montaj/kling_generate` | Generate video via Kling v3 Omni (text, image, or reference-guided) |
+| `montaj/analyze_video` | Analyze video with Gemini Flash (description, timestamps, structured output) |
+| `montaj/generate_image` | Generate image via Gemini or OpenAI (text-to-image or reference-conditioned) |
+
+These steps require `montaj install connectors` (SDK deps) and `montaj install credentials` (per-provider keys). See [docs/CONNECTORS.md](./CONNECTORS.md).
 
 ---
 

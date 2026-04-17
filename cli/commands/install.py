@@ -26,8 +26,16 @@ def register(subparsers):
 
     sub.add_parser("rvm",    help="torch/torchvision/av + RVM weights")
     sub.add_parser("demucs", help="Demucs stem separation + htdemucs model weights")
+    sub.add_parser("connectors", help="pyjwt + requests + google-genai for external API steps")
     sub.add_parser("ui",     help="npm deps + UI build")
     sub.add_parser("all",    help="Everything above")
+
+    cred_p = sub.add_parser("credentials", help="Set up API credentials for connectors")
+    cred_p.add_argument("--provider", help="Provider name (e.g. kling, gemini)")
+    cred_p.add_argument("--key", help="Credential key (e.g. access_key, api_key)")
+    cred_p.add_argument("--value", help="Credential value")
+    cred_p.add_argument("--list", dest="list_creds", action="store_true",
+                        help="List current credential status")
 
     _parser.set_defaults(func=handle)
 
@@ -36,11 +44,15 @@ def handle(args):
     if not args.component:
         _parser.print_help()
         return
+    if args.component == "credentials":
+        _handle_credentials(args)
+        return
     ok = True
     if args.component == "all":
         ok &= _ensure_whisper("base.en")
         ok &= _ensure_rvm()
         ok &= _ensure_demucs()
+        ok &= _ensure_connectors()
         ok &= _ensure_ui()
     elif args.component == "whisper":
         ok &= _ensure_whisper(getattr(args, "model", "base.en"))
@@ -48,6 +60,8 @@ def handle(args):
         ok &= _ensure_rvm()
     elif args.component == "demucs":
         ok &= _ensure_demucs()
+    elif args.component == "connectors":
+        ok &= _ensure_connectors()
     elif args.component == "ui":
         ok &= _ensure_ui()
     if ok:
@@ -187,6 +201,127 @@ def _ensure_rvm() -> bool:
         except Exception as e:
             print(f"warning: could not pre-fetch {filename}: {e}", file=sys.stderr)
     return True
+
+
+def _ensure_connectors() -> bool:
+    from cli.main import MONTAJ_ROOT
+    print("→ installing connector deps (pyjwt, requests, google-genai, openai)…")
+    r = subprocess.run([sys.executable, "-m", "pip", "install", "-e", ".[connectors]"],
+                       cwd=MONTAJ_ROOT)
+    if r.returncode != 0:
+        print("error: pip install .[connectors] failed", file=sys.stderr)
+        return False
+    print("✓ connector deps installed")
+    return True
+
+
+def _handle_credentials(args):
+    from lib.credentials import (
+        KNOWN_PROVIDERS, CredentialError,
+        get_credential, set_credential, list_providers,
+    )
+
+    try:
+        # --list mode
+        if getattr(args, "list_creds", False):
+            data = list_providers()
+            if not data:
+                print("No credentials configured yet.")
+                print(f"Run: montaj install credentials")
+                return
+            for provider, keys in data.items():
+                print(f"  {provider}:")
+                for k, v in keys.items():
+                    print(f"    {k}: {v}")
+            return
+
+        # Scripted mode: --provider + --key + --value
+        if args.provider and args.key and args.value:
+            if args.provider not in KNOWN_PROVIDERS:
+                print(f"error: unknown provider '{args.provider}'. "
+                      f"Known: {', '.join(KNOWN_PROVIDERS)}", file=sys.stderr)
+                sys.exit(1)
+            if args.key not in KNOWN_PROVIDERS[args.provider]:
+                print(f"error: unknown key '{args.key}' for {args.provider}. "
+                      f"Known: {', '.join(KNOWN_PROVIDERS[args.provider])}", file=sys.stderr)
+                sys.exit(1)
+            set_credential(args.provider, args.key, args.value)
+            print(f"✓ Saved {args.provider}.{args.key}")
+            return
+
+        # If partial scripted args given, error
+        if args.provider or args.key or args.value:
+            print("error: --provider, --key, and --value must all be specified together",
+                  file=sys.stderr)
+            sys.exit(1)
+
+        # Interactive mode
+        import getpass
+
+        _DESCRIPTIONS = {
+            "kling":  "Kling AI — video generation",
+            "gemini": "Google Gemini — video analysis & image generation",
+            "openai": "OpenAI — image generation",
+        }
+
+        providers = list(KNOWN_PROVIDERS.keys())
+        print("Available providers:")
+        for i, p in enumerate(providers, 1):
+            desc = _DESCRIPTIONS.get(p, "")
+            print(f"  {i}. {p}" + (f" — {desc}" if desc else ""))
+
+        choice = input("\nWhich provider? (number, comma-separated list, or 'all'): ").strip()
+        if not choice:
+            print("error: no provider selected", file=sys.stderr)
+            sys.exit(1)
+
+        if choice.lower() == "all":
+            selected = providers
+        else:
+            selected = []
+            for part in choice.split(","):
+                part = part.strip()
+                try:
+                    idx = int(part) - 1
+                    if 0 <= idx < len(providers):
+                        selected.append(providers[idx])
+                    else:
+                        print(f"error: invalid number: {part}", file=sys.stderr)
+                        sys.exit(1)
+                except ValueError:
+                    if part in providers:
+                        selected.append(part)
+                    else:
+                        print(f"error: unknown provider: {part}", file=sys.stderr)
+                        sys.exit(1)
+
+        for provider in selected:
+            print(f"\n{provider}:")
+            keys = KNOWN_PROVIDERS[provider]
+            for key in keys:
+                # Check if already set
+                try:
+                    get_credential(provider, key)
+                    already_set = True
+                except CredentialError:
+                    already_set = False
+
+                if already_set:
+                    prompt_str = f"  {key} [already set, press enter to keep]: "
+                else:
+                    prompt_str = f"  {key}: "
+
+                value = getpass.getpass(prompt_str)
+                if value:
+                    set_credential(provider, key, value)
+                elif not already_set:
+                    print(f"    (skipped)")
+
+        print(f"\n✓ Saved to ~/.montaj/credentials.json (0600)")
+
+    except CredentialError as e:
+        print(f"error: {e}", file=sys.stderr)
+        sys.exit(1)
 
 
 def _ensure_ui() -> bool:
