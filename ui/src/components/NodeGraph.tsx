@@ -20,6 +20,7 @@ import ReactFlow, {
 } from 'reactflow'
 import 'reactflow/dist/style.css'
 import { api } from '@/lib/api'
+import type { Workflow } from '@/lib/types/schema'
 import type { StepParam, StepSchema } from '@/lib/types/schema'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -363,7 +364,7 @@ function makeStartNode(description?: string, notes?: string): Node {
 export default function NodeGraph() {
   const [steps,          setSteps]          = useState<StepSchema[]>([])
   const [skills,         setSkills]         = useState<{ name: string; description: string; scope: 'native' | 'custom' }[]>([])
-  const [workflows,      setWorkflows]      = useState<{ name: string; scope: 'user' | 'builtin' }[]>([])
+  const [workflows,      setWorkflows]      = useState<Workflow[]>([])
   const [activeWorkflow, setActiveWorkflow] = useState<string>('')
   const [nodes, setNodes, onNodesChange]    = useNodesState([])
   const [edges, setEdges, onEdgesChange]    = useEdgesState([])
@@ -372,7 +373,7 @@ export default function NodeGraph() {
   const [workflowName,   setWorkflowName]   = useState('my-workflow')
   const [saveMsg,        setSaveMsg]        = useState<string | null>(null)
   const [loadErr,        setLoadErr]        = useState<string | null>(null)
-  const [activeScope,    setActiveScope]    = useState<'user' | 'builtin' | null>(null)
+  const [activeScope,    setActiveScope]    = useState<Workflow['scope'] | null>(null)
   const [activeDesc,     setActiveDesc]     = useState<string | undefined>(undefined)
   const [isDirty,        setIsDirty]        = useState(false)
   const [isDark,         setIsDark]         = useState(() => document.documentElement.classList.contains('dark'))
@@ -574,11 +575,11 @@ export default function NodeGraph() {
       await api.saveWorkflow(name, workflow)
       setSaveMsg(`Saved workflows/${name}.json`)
       setIsDirty(false)
-      if (activeScope === 'builtin') setActiveScope('user')
+      if (activeScope === 'built-in') setActiveScope('user')
       setWorkflows(prev =>
         prev.some(w => w.name === name)
           ? prev
-          : [...prev, { name, scope: 'user' as const }].sort((a, b) => a.name.localeCompare(b.name))
+          : [...prev, { name, scope: 'user' as const, project_type: 'editing' as const }].sort((a, b) => a.name.localeCompare(b.name))
       )
       setActiveWorkflow(name)
     } catch (e) {
@@ -604,11 +605,12 @@ export default function NodeGraph() {
             className="text-xs bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded px-2 py-1 text-gray-900 dark:text-gray-200 focus:outline-none focus:border-gray-400 dark:focus:border-gray-500"
           >
             <option value={NEW_WF}>＋ New workflow</option>
-            {['user', 'builtin'].map(scope => {
+            {['user', 'project-local', 'built-in'].map(scope => {
               const group = workflows.filter(w => w.scope === scope)
               if (!group.length) return null
+              const label = scope === 'user' ? 'My workflows' : scope === 'project-local' ? 'Project' : 'Built-in'
               return (
-                <optgroup key={scope} label={scope === 'user' ? 'My workflows' : 'Built-in'}>
+                <optgroup key={scope} label={label}>
                   {group.map(w => (
                     <option key={w.name} value={w.name}>{w.name}</option>
                   ))}
@@ -700,7 +702,7 @@ export default function NodeGraph() {
 
       {/* Canvas */}
       <div className="flex-1 relative">
-        {isDirty && activeScope === 'builtin' && (
+        {isDirty && activeScope === 'built-in' && (
           <div className="absolute top-3 left-3 z-10 flex flex-col gap-1">
             <Button size="sm" onClick={handleSave}>
               Fork &amp; save

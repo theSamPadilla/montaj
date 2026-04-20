@@ -1,4 +1,5 @@
-import type { Project, ProjectVersion, StepSchema } from './types/schema'
+import type { Project, ProjectVersion, StepSchema, Workflow } from './types/schema'
+import type { AspectRatio } from './types/kling'
 
 export interface ProfileStats {
   videos_analyzed?:  number
@@ -79,7 +80,20 @@ export const api = {
       body: JSON.stringify(project),
     }),
 
-  createProject: (body: { clips: string[]; assets?: string[]; prompt: string; workflow?: string; name?: string; profile?: string }) =>
+  createProject: (body: {
+    clips: string[]
+    assets?: string[]
+    prompt: string
+    workflow?: string
+    name?: string
+    profile?: string
+    aiVideoIntake?: {
+      imageRefs: Array<{ label: string; path?: string; text?: string }>
+      styleRefs: Array<{ label: string; path: string }>
+      aspectRatio: AspectRatio
+      targetDurationSeconds: number | null
+    }
+  }) =>
     request<Project>('/api/run', { method: 'POST', body: JSON.stringify(body) }),
 
   listSteps: () => request<StepSchema[]>('/api/steps'),
@@ -117,7 +131,7 @@ export const api = {
   rerun: (id: string, params?: { prompt?: string; workflow?: string; versionName?: string }) =>
     request<Project>(`/api/projects/${id}/rerun`, { method: 'POST', body: JSON.stringify(params ?? {}) }),
 
-  listWorkflows: () => request<{ name: string; scope: 'user' | 'builtin' }[]>('/api/workflows'),
+  listWorkflows: () => request<Workflow[]>('/api/workflows'),
 
   getWorkflow: (name: string) => request<Record<string, unknown>>(`/api/workflows/${name}`),
 

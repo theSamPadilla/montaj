@@ -1,5 +1,10 @@
 import { createContext, useContext } from 'react'
 import type { ProjectType, ProjectStatus } from './project'
+export interface Workflow {
+  name: string
+  scope: 'project-local' | 'user' | 'built-in'
+  project_type: ProjectType
+}
 
 export interface Word {
   word: string
