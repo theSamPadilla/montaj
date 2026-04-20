@@ -309,6 +309,31 @@ def test_image_ref_ignored_for_non_ai_video(tmp_path):
     assert "storyboard" not in project
 
 
+def test_ai_video_invalid_aspect_ratio_rejected(tmp_path):
+    """init.py rejects aspect ratios outside the enum (defense-in-depth)."""
+    user_wf = Path.home() / ".montaj" / "workflows"
+    user_wf.mkdir(parents=True, exist_ok=True)
+    user_fixture = user_wf / "_test_ai_bad_aspect.json"
+    user_fixture.write_text(json.dumps({
+        "name": "_test_ai_bad_aspect",
+        "description": "test",
+        "project_type": "ai_video",
+        "requires_clips": False,
+        "steps": [{"id": "noop", "uses": "montaj/probe"}]
+    }))
+    ws = tmp_path / "workspace"
+    ws.mkdir()
+    try:
+        result = run_init("--canvas", "--prompt", "test",
+                          "--workflow", "_test_ai_bad_aspect",
+                          "--aspect-ratio", "4:3",
+                          env_override={"MONTAJ_WORKSPACE_DIR": str(ws)})
+        assert result.returncode != 0
+        assert "invalid_aspect_ratio" in result.stderr or "4:3" in result.stderr
+    finally:
+        user_fixture.unlink(missing_ok=True)
+
+
 def test_assets_array_untouched_with_project_type(tmp_path):
     clip = tmp_path / "clip.mp4"
     clip.write_bytes(b"fake")

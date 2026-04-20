@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import { Trash2, Pencil, RefreshCw, AlertCircle } from 'lucide-react'
 import { StatusBadge } from '@/components/ui/badge'
 import { api } from '@/lib/api'
-import type { Project } from '@/lib/project'
+import type { Project } from '@/lib/types/schema'
 
 interface ProjectHeaderProps {
   project: Project

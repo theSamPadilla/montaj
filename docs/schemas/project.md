@@ -9,7 +9,7 @@
 | State | Who writes it | What's in it |
 |-------|--------------|-------------|
 | `pending` | `montaj run` or `montaj serve` (on `POST /run`) | Clip paths, editing prompt, workflow name. For `ai_video`, also the pre-seeded `storyboard` stub (raw intake references copied from the upload form). No agent work yet. |
-| `storyboard_ready` | agent (for `projectType: "ai_video"` only) | Agent has populated `storyboard.imageRefs[]` with anchors + reference images, written `storyboard.styleAnchor`, and populated `tracks[0]` with scene stubs (each with a `generation` block, empty `src`). Awaiting user approval before scene videos are generated. |
+| `storyboard_ready` | agent (for `projectType: "ai_video"` only) | Agent has populated `storyboard.imageRefs[]` with anchors + reference images, written `storyboard.styleAnchor`, and populated `storyboard.scenes[]` with the editorial plan (each with a prompt, duration, and refImages). `tracks[0]` is still empty — real clips only appear after approval + generation. Awaiting user approval before scene videos are generated. |
 | `draft` | agent (for `editing`/`music_video`) or agent (for `ai_video` after all scene videos complete) | Trim points, ordering, captions, overlays. Complete edit — for `ai_video`, all `tracks[0]` items have non-empty `src`. |
 | `final` | human (via UI) | Reviewed and tweaked. Ready to render. |
 

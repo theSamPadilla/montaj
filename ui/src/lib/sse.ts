@@ -1,5 +1,5 @@
 import { useEffect } from 'react'
-import type { Project } from './project'
+import type { Project } from './types/schema'
 
 /**
  * Subscribe to the SSE stream for a project.

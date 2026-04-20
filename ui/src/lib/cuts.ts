@@ -1,4 +1,4 @@
-import type { Project, VisualItem, CaptionSegment, Word } from './project'
+import type { Project, VisualItem, CaptionSegment, Word } from './types/schema'
 
 /** A time range to excise from the timeline. */
 export interface Cut {

@@ -1,6 +1,6 @@
 import { useEffect, useCallback, useRef, useState } from 'react'
-import type { Project, VisualItem } from '@/lib/project'
-import { getVisualItems } from '@/lib/project'
+import type { Project, VisualItem } from '@/lib/types/schema'
+import { getVisualItems } from '@/lib/types/schema'
 import { compileOverlay, clearOverlayCache, type OverlayFactory } from '@/lib/overlay-eval'
 import { api, type GlobalOverlay, type Profile } from '@/lib/api'
 

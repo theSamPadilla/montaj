@@ -4,7 +4,7 @@ import { X, FolderOpen, Film, Image, Music, FileText } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/textarea'
 import { api, type Profile } from '@/lib/api'
-import type { Project } from '@/lib/project'
+import type { Project } from '@/lib/types/schema'
 
 function basename(path: string) {
   return path.split('/').pop() ?? path
@@ -136,8 +136,6 @@ interface Prefill {
   workflow?: string
   profile?: string
 }
-
-const AUDIO_EXTENSIONS = ['mp3', 'wav', 'aac', 'm4a', 'flac', 'ogg', 'opus']
 
 export default function UploadView() {
   const location = useLocation()

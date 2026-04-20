@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { fileUrl } from '@/lib/api'
-import type { Project, VisualItem } from '@/lib/project'
+import type { Project, VisualItem } from '@/lib/types/schema'
 import { compileOverlay, clearOverlayCache } from '@/lib/overlay-eval'
 import type { OverlayFactory } from '@/lib/overlay-eval'
 import type { Corner } from './useDragOverlay'

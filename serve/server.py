@@ -17,9 +17,10 @@ from fastapi.responses import FileResponse, HTMLResponse, Response, StreamingRes
 from serve.sse import SSEBroadcaster
 from serve.watcher import GlobalOverlayWatcher, ProjectWatcher
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lib"))
-from project_types import normalize_project_type
-from workflow import read_workflow
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from lib.types.project import normalize_project_type
+from lib.types.kling import ASPECT_RATIOS, is_valid_aspect_ratio
+from lib.workflow import read_workflow
 
 MONTAJ_ROOT = Path(__file__).resolve().parent.parent
 PORT      = int(os.environ.get("MONTAJ_SERVE_PORT", "3000"))
@@ -337,8 +338,8 @@ async def run_project(body: dict = Body(...)):
     intake_setting_args = []
     aspect_ratio = intake.get("aspectRatio")
     if aspect_ratio is not None:
-        if aspect_ratio not in ("16:9", "9:16", "1:1"):
-            raise HTTPException(400, detail={"error": "invalid_intake", "message": f"aspectRatio must be one of '16:9', '9:16', '1:1' (got {aspect_ratio!r})"})
+        if not is_valid_aspect_ratio(aspect_ratio):
+            raise HTTPException(400, detail={"error": "invalid_intake", "message": f"aspectRatio must be one of {', '.join(ASPECT_RATIOS)} (got {aspect_ratio!r})"})
         intake_setting_args += ["--aspect-ratio", aspect_ratio]
     target_duration = intake.get("targetDurationSeconds")
     if target_duration is not None:
@@ -781,7 +782,7 @@ async def list_workflows():
                 continue
             try:
                 data = json.loads(p.read_text())
-                project_type = normalize_project_type(data.get("project_type"), warn=False)
+                project_type = normalize_project_type(data.get("project_type"))
             except Exception:
                 project_type = "editing"
             seen[p.stem] = (scope, project_type)

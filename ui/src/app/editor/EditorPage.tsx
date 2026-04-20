@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { useParams, useLocation } from 'react-router-dom'
 import { api } from '@/lib/api'
-import { ProjectContext, type Project } from '@/lib/project'
+import { ProjectContext, type Project } from '@/lib/types/schema'
 import { useProjectStream } from '@/lib/sse'
 import UploadView from './UploadView'
 import LiveView from './LiveView'

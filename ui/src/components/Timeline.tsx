@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent } from 'react'
 import { createPortal } from 'react-dom'
 import { Volume2, VolumeX } from 'lucide-react'
-import type { CaptionSegment, VisualItem, Project } from '@/lib/project'
+import type { CaptionSegment, VisualItem, Project } from '@/lib/types/schema'
 import { collapseGaps } from '@/lib/cuts'
 
 interface TimelineProps {

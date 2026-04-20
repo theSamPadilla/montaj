@@ -1,0 +1,43 @@
+# Shared enum definitions for Montaj. Single source of truth.
+# Generate with: python3 scripts/gen_types.py
+# Generated outputs:
+#   - lib/types/project.py
+#   - lib/types/kling.py
+#   - ui/src/lib/types/project.ts
+#   - ui/src/lib/types/kling.ts
+# CI enforces that generated files match `schema/enums.yaml` (diff check).
+
+enums:
+  - name: project_type
+    module: project
+    values: [editing, music_video, ai_video]
+    default: editing
+    description: |
+      The project's top-level type. Inherited from the workflow's `project_type`
+      at init time; immutable after that. Drives UI branching and available features.
+    helpers:
+      is_valid: true
+      normalize: true
+
+  - name: project_status
+    module: project
+    values: [pending, storyboard_ready, draft, final]
+    default: pending
+    description: |
+      Where in the pipeline the project is. Progression is monotonic for a given
+      project type (ai_video goes pending → storyboard_ready → draft → final;
+      others skip storyboard_ready).
+    helpers:
+      is_valid: true
+      normalize: false
+
+  - name: aspect_ratio
+    module: kling
+    values: ["16:9", "9:16", "1:1"]
+    default: "16:9"
+    description: |
+      Kling `aspect_ratio` body parameter for omni-video (model kling-v3-omni).
+      Constant across an ai_video project's scenes.
+    helpers:
+      is_valid: true
+      normalize: true

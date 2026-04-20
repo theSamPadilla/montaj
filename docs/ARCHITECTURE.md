@@ -747,6 +747,22 @@ agent pass → render   (can't render without a draft)
 
 ---
 
+## Shared-type codegen
+
+Shared enums between Python and TypeScript (`project_type`, `project_status`, `aspect_ratio`, etc.) have a **single source of truth** at `schema/enums.yaml`. A codegen script (`scripts/gen_types.py`) emits per-language modules under `lib/types/` (Python) and `ui/src/lib/types/` (TypeScript). This replaces the earlier manual-mirror convention between `lib/project_types.py` and `ui/src/lib/project.ts`, which relied on developer discipline to stay in sync.
+
+**What's generated** — closed enums with small value sets. Each pair of files (Python module + TS module) is entirely machine-produced, deterministic, and carries a `GENERATED FROM schema/enums.yaml` header.
+
+**What's hand-written** — compound interfaces that describe the full `project.json` shape (`Project`, `VisualItem`, `Asset`, `CaptionSegment`, etc.) live in `ui/src/lib/types/schema.ts`. They're not part of the codegen pipeline; Python consumes `project.json` as dicts and validates via `engine/validate.py`, so there's no equivalent Python module to mirror against.
+
+**Runtime surface: zero.** The generator is a dev-time tool — the server, `pip install`, and `npm install` paths never invoke it. Generated files are committed artifacts, so a fresh clone works without running codegen. `pyyaml` lives in `requirements-dev.txt` only.
+
+**CI enforcement.** A CI step runs `python3 scripts/gen_types.py && git diff --exit-code`. If the YAML was edited but the generator wasn't re-run, CI fails with a diff pointing at the mismatch.
+
+See `CONTRIBUTING.md` → "Adding a shared enum" for the developer workflow (edit YAML → run `gen` → commit both).
+
+---
+
 ## Dependencies
 
 | Tool | Purpose |

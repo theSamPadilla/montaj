@@ -4,7 +4,7 @@ import { Copy, Trash2 } from 'lucide-react'
 import { StatusBadge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { api } from '@/lib/api'
-import type { Project } from '@/lib/project'
+import type { Project } from '@/lib/types/schema'
 
 export default function ProjectList() {
   const [projects, setProjects]   = useState<Project[]>([])

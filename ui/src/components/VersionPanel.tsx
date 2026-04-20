@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import type { ProjectVersion } from '@/lib/project'
+import type { ProjectVersion } from '@/lib/types/schema'
 
 function formatTime(iso: string): string {
   const d = new Date(iso)

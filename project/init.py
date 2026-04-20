@@ -3,10 +3,11 @@
 import argparse, json, os, re, shutil, subprocess, sys, uuid
 from datetime import datetime
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "lib"))
-from common import fail
-from project_types import normalize_project_type
-from workflow import read_workflow
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+from lib.common import fail
+from lib.types.project import normalize_project_type
+from lib.types.kling import is_valid_aspect_ratio, ASPECT_RATIOS
+from lib.workflow import read_workflow
 
 
 def _read_project_type(workflow_name: str) -> str:
@@ -48,6 +49,10 @@ def main():
 
     if args.canvas and args.clips:
         fail("mutually_exclusive", "--canvas and --clips are mutually exclusive")
+
+    if args.aspect_ratio and not is_valid_aspect_ratio(args.aspect_ratio):
+        fail("invalid_aspect_ratio",
+             f"--aspect-ratio must be one of {', '.join(ASPECT_RATIOS)} (got {args.aspect_ratio!r})")
 
     for clip in args.clips:
         if not os.path.isfile(clip):

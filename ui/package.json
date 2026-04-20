@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "gen": "python3 ../scripts/gen_types.py"
   },
   "dependencies": {
     "@babel/standalone": "^7.29.2",

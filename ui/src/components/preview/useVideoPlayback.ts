@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { fileUrl } from '@/lib/api'
-import type { Project } from '@/lib/project'
+import type { Project } from '@/lib/types/schema'
 
 export function useVideoPlayback(
   project: Project,

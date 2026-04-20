@@ -1,24 +1,5 @@
 import { createContext, useContext } from 'react'
-
-// ── Project types & statuses — single source of truth ────────────────────
-// Mirrored in lib/project_types.py. Update BOTH when adding a value.
-
-export const PROJECT_TYPES = ['editing', 'music_video', 'ai_video'] as const
-export type ProjectType = typeof PROJECT_TYPES[number]
-export const DEFAULT_PROJECT_TYPE: ProjectType = 'editing'
-
-export function isProjectType(value: unknown): value is ProjectType {
-  return typeof value === 'string' && (PROJECT_TYPES as readonly string[]).includes(value)
-}
-
-export function normalizeProjectType(value: unknown): ProjectType {
-  if (isProjectType(value)) return value
-  if (value != null) console.warn(`Unknown projectType "${value}" — falling back to "${DEFAULT_PROJECT_TYPE}"`)
-  return DEFAULT_PROJECT_TYPE
-}
-
-export const PROJECT_STATUSES = ['pending', 'storyboard_ready', 'draft', 'final'] as const
-export type ProjectStatus = typeof PROJECT_STATUSES[number]
+import type { ProjectType, ProjectStatus } from './project'
 
 export interface Word {
   word: string

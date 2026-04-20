@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/textarea'
 import { api } from '@/lib/api'
-import type { Project } from '@/lib/project'
+import type { Project } from '@/lib/types/schema'
 
 interface PromptBarProps {
   clips: string[]

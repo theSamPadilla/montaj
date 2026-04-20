@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { fileUrl } from '@/lib/api'
-import type { Project } from '@/lib/project'
+import type { Project } from '@/lib/types/schema'
 import CaptionPreview from '@/components/CaptionPreview'
 import { useDragOverlay } from './useDragOverlay'
 import OverlayItemsLayer from './OverlayItemsLayer'

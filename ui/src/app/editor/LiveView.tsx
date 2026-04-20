@@ -6,7 +6,7 @@ import Timeline from '@/components/Timeline'
 import VersionPanel from '@/components/VersionPanel'
 import { Button } from '@/components/ui/button'
 import { api } from '@/lib/api'
-import { type Project, type ProjectVersion, type RunSnapshot } from '@/lib/project'
+import { type Project, type ProjectVersion, type RunSnapshot } from '@/lib/types/schema'
 
 function formatRelativeTime(iso: string): string {
   const diff = Date.now() - new Date(iso).getTime()

@@ -10,7 +10,7 @@ import VersionPanel from '@/components/VersionPanel'
 import { Button } from '@/components/ui/button'
 import { api, fileUrl } from '@/lib/api'
 import { applyCutToItem, applyCutToTracks, collapseGaps, splitAtTime } from '@/lib/cuts'
-import { type Asset, type Project, type ProjectVersion } from '@/lib/project'
+import { type Asset, type Project, type ProjectVersion } from '@/lib/types/schema'
 
 interface ReviewViewProps {
   project: Project

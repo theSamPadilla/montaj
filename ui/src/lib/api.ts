@@ -1,4 +1,4 @@
-import type { Project, ProjectVersion, StepSchema } from './project'
+import type { Project, ProjectVersion, StepSchema } from './types/schema'
 
 export interface ProfileStats {
   videos_analyzed?:  number
