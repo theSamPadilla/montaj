@@ -9,8 +9,8 @@
  *     before Puppeteer takes the next screenshot
  */
 import esbuild from 'esbuild'
-import { writeFileSync, mkdirSync, rmSync } from 'fs'
-import { join, dirname } from 'path'
+import { writeFileSync, mkdirSync, rmSync, existsSync, readdirSync } from 'fs'
+import { join, dirname, basename } from 'path'
 import { fileURLToPath } from 'url'
 import { tmpdir } from 'os'
 import { randomBytes } from 'crypto'
@@ -73,13 +73,30 @@ export function cleanupBundle(workDir) {
 // Internal helpers
 // ---------------------------------------------------------------------------
 
+/** Resolve a path that may contain macOS narrow no-break spaces (\u202f). */
+function resolveFilePath(p) {
+  if (existsSync(p)) return p
+  const dn = dirname(p)
+  const bn = basename(p)
+  const target = bn.replace(/\u202f/g, ' ')
+  try {
+    for (const name of readdirSync(dn)) {
+      if (name.replace(/\u202f/g, ' ') === target) return join(dn, name)
+    }
+  } catch { /* parent dir missing */ }
+  return null
+}
+
 /**
  * Recursively rewrite absolute filesystem path strings in props to file:// URLs
  * so they resolve correctly in Puppeteer's file:// page context.
  */
 function rewritePathsToFileUrls(value) {
   if (typeof value === 'string' && value.startsWith('/')) {
-    return 'file://' + value
+    // Resolve the actual path on disk — macOS screenshot filenames contain narrow
+    // no-break spaces (\u202f) that don't match the regular spaces in project.json.
+    const resolved = resolveFilePath(value) ?? value
+    return 'file://' + encodeURI(resolved)
   }
   if (Array.isArray(value)) {
     return value.map(rewritePathsToFileUrls)

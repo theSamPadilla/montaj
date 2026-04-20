@@ -78,7 +78,7 @@ export async function renderAllSegments(segments, config = {}) {
   async function launchBrowser() {
     return puppeteer.launch({
       headless: true,
-      args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-web-security'],
+      args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-web-security', '--allow-file-access-from-files'],
       protocolTimeout: 300000,
     })
   }
