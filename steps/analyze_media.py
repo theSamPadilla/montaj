@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Analyze a video with Gemini Flash."""
+"""Analyze a media file (video, audio, or image) with Gemini Flash."""
 import sys, os, argparse
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "lib"))
@@ -9,7 +9,7 @@ from connectors import gemini, ConnectorError
 
 
 def main():
-    p = argparse.ArgumentParser(description="Analyze a video with Gemini Flash")
+    p = argparse.ArgumentParser(description="Analyze a media file (video, audio, or image) with Gemini Flash")
     p.add_argument("--input", required=True)
     p.add_argument("--prompt", required=True)
     p.add_argument("--model", default="gemini-2.5-flash")
@@ -21,7 +21,7 @@ def main():
     require_file(args.input)
 
     try:
-        text = gemini.analyze_video(
+        text = gemini.analyze_media(
             path=args.input,
             prompt=args.prompt,
             model=args.model,

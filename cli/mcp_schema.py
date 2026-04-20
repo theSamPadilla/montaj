@@ -127,7 +127,7 @@ def export():
         probe, snapshot, filler, waveform_trim, rm_nonspeech,
         materialize_cut, resize, normalize, extract_audio,
         transcribe, caption, status, remove_bg, init,
-        kling_generate, analyze_video, generate_image,
+        kling_generate, analyze_media, generate_image,
     )
 
     parser     = argparse.ArgumentParser(prog='montaj')
@@ -138,7 +138,7 @@ def export():
         probe, snapshot, filler, waveform_trim, rm_nonspeech,
         materialize_cut, resize, normalize, extract_audio,
         transcribe, caption, status, remove_bg, init,
-        kling_generate, analyze_video, generate_image,
+        kling_generate, analyze_media, generate_image,
     ]:
         mod.register(subparsers)
 

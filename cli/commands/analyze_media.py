@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
-"""montaj analyze-video — analyze a video with Gemini Flash."""
+"""montaj analyze-media — analyze a media file (video, audio, or image) with Gemini Flash."""
 import os, subprocess, sys
 from cli.main import MONTAJ_ROOT, add_global_flags
 from cli.output import emit, emit_error
 
 
 def register(subparsers):
-    p = subparsers.add_parser("analyze-video", help="Analyze a video with Gemini Flash (API)")
-    p.add_argument("input", help="Video file to analyze")
+    p = subparsers.add_parser("analyze-media", help="Analyze a media file (video, audio, or image) with Gemini Flash (API)")
+    p.add_argument("input", help="Media file (video, audio, or image)")
     p.add_argument("--prompt", required=True, help="Question or instruction")
     p.add_argument("--model", default="gemini-2.5-flash")
     p.add_argument("--json-output", dest="json_output", action="store_true",
@@ -22,7 +22,7 @@ def handle(args):
 
     cmd = [
         sys.executable,
-        os.path.join(MONTAJ_ROOT, "steps", "analyze_video.py"),
+        os.path.join(MONTAJ_ROOT, "steps", "analyze_media.py"),
         "--input",  args.input,
         "--prompt", args.prompt,
         "--model",  args.model,

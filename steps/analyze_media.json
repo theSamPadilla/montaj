@@ -1,16 +1,16 @@
 {
-  "name": "analyze_video",
-  "description": "Analyze a video with Gemini Flash. Ask questions, extract structured data, describe scenes.",
+  "name": "analyze_media",
+  "description": "Analyze a media file (video, audio, or image) with Gemini Flash. Ask questions, extract structured data, describe content.",
   "input": {
-    "type": "video",
-    "description": "Video file to analyze"
+    "type": "media",
+    "description": "Video, audio, or image file to analyze"
   },
   "output": {
     "type": "text",
     "description": "Model response (plain text or JSON if --json-output)"
   },
   "params": [
-    {"name": "input", "type": "path", "required": true, "description": "Video file"},
+    {"name": "input", "type": "path", "required": true, "description": "Media file (video, audio, or image)"},
     {"name": "prompt", "type": "string", "required": true, "description": "Question or instruction"},
     {"name": "model", "type": "string", "required": false, "default": "gemini-2.5-flash", "description": "Gemini model ID"},
     {"name": "json-output", "type": "boolean", "required": false, "description": "Request structured JSON output from the model"},

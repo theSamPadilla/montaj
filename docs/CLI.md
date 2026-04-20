@@ -27,7 +27,7 @@ montaj install all          # everything above
 | `whisper` | whisper-cpp binary (pinned), base.en model weights | `transcribe`, `rm_fillers`, `rm_nonspeech`, `waveform_trim`, render pipeline |
 | `ui` | npm deps for `render/` and `ui/`; production UI build | `montaj serve`, render engine |
 | `rvm` | torch, torchvision, av (pip) + rvm_mobilenetv3 (~15 MB) + rvm_resnet50 (~103 MB) | `remove_bg` |
-| `connectors` | pyjwt, requests, google-genai, openai | `kling_generate`, `analyze_video`, `generate_image` |
+| `connectors` | pyjwt, requests, google-genai, openai | `kling_generate`, `analyze_media`, `generate_image` |
 
 Credentials are stored in `~/.montaj/credentials.json` (0600 permissions). Three modes:
 
@@ -243,10 +243,11 @@ montaj kling-generate --prompt "character walks left" --first-frame start.png --
 montaj kling-generate --prompt "same style" --ref-image style1.png --ref-image style2.png --out /tmp/styled.mp4
 montaj kling-generate --prompt "..." --out /tmp/pro.mp4 --mode pro --duration 10 --aspect-ratio 9:16
 
-montaj analyze-video clip.mp4 --prompt "Describe the scene in 2 sentences."
-montaj analyze-video clip.mp4 --prompt "Return JSON: {mood, dominant_colors, action}" --json-output
-montaj analyze-video clip.mp4 --prompt "..." --model gemini-2.5-pro    # override model
-montaj analyze-video clip.mp4 --prompt "..." --out analysis.txt        # write to file
+montaj analyze-media clip.mp4  --prompt "Describe the scene in 2 sentences."
+montaj analyze-media song.mp3  --prompt "Transcribe with timestamps."
+montaj analyze-media photo.jpg --prompt "Return JSON: {subject, mood, dominant_colors}" --json-output
+montaj analyze-media clip.mp4  --prompt "..." --model gemini-2.5-pro    # override model
+montaj analyze-media clip.mp4  --prompt "..." --out analysis.txt        # write to file
 
 montaj generate-image --prompt "portrait, studio lighting" --out /tmp/portrait.png
 montaj generate-image --prompt "same character, profile view" --ref-image /tmp/portrait.png --out /tmp/profile.png
@@ -324,7 +325,7 @@ All steps accept `--out <path>` to set the output location. Run `montaj step <na
 | `lyrics-sync` | `--lyrics <txt>`, `--model <base.en\|medium.en>`, `--out <path>`, `--start <s>`, `--end <s>` |
 | `lyrics-render` | `--captions <json>`, `--audio <mp3>`, `--input <video>`, `--position <center\|top-left\|bottom-left>`, `--color <str>`, `--fontsize <px>`, `--preview-duration <s>` |
 | `kling-generate` | `--prompt <text>`, `--out <path>`, `--first-frame <img>`, `--last-frame <img>`, `--ref-image <img>` (repeatable, max 3), `--duration <3-15>`, `--negative-prompt <text>`, `--sound <on\|off>`, `--aspect-ratio <16:9\|9:16\|1:1>`, `--mode <std\|pro>` |
-| `analyze-video` | `<input>`, `--prompt <text>`, `--model <id>`, `--json-output`, `--out <path>` |
+| `analyze-media` | `<input>` (video/audio/image), `--prompt <text>`, `--model <id>`, `--json-output`, `--out <path>` |
 | `generate-image` | `--prompt <text>`, `--out <path>`, `--provider <gemini\|openai>`, `--ref-image <img>` (repeatable), `--size <WxH>`, `--aspect-ratio <ratio>` (Gemini only), `--model <id>` |
 
 ---

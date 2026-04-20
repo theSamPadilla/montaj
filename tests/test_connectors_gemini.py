@@ -1,10 +1,44 @@
-"""Tests for connectors.gemini — Gemini video analysis and image generation."""
+"""Tests for connectors.gemini — Gemini media analysis and image generation."""
 import os, types as stdlib_types
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from connectors import ConnectorError
+
+
+# ---------------------------------------------------------------------------
+# Fixtures
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def video_path(tmp_path):
+    """A fake video file. Extension is .mp4 so analyze_media takes the Files API path."""
+    p = tmp_path / "video.mp4"
+    p.write_bytes(b"\x00" * 1024)  # non-zero size to pass require_file-style checks
+    return str(p)
+
+
+@pytest.fixture
+def image_path(tmp_path):
+    """A fake image file. Extension is .png so analyze_media takes the inline path."""
+    p = tmp_path / "image.png"
+    p.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 1024)  # PNG magic + filler
+    return str(p)
+
+
+@pytest.fixture
+def huge_image_path(tmp_path, monkeypatch):
+    """An image file larger than INLINE_BYTE_LIMIT, forcing the Files API path.
+
+    We patch INLINE_BYTE_LIMIT down to a tiny value rather than actually writing
+    a 20 MB file — much faster and equivalent for the branch condition.
+    """
+    import connectors.gemini as mod
+    monkeypatch.setattr(mod, "INLINE_BYTE_LIMIT", 100)
+    p = tmp_path / "huge.png"
+    p.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 1024)  # 1032 bytes > 100
+    return str(p)
 
 
 # ---------------------------------------------------------------------------
@@ -72,14 +106,14 @@ def _make_mock_client(
 # Tests
 # ---------------------------------------------------------------------------
 
-class TestAnalyzeVideoJsonOutput:
+class TestAnalyzeMediaJsonOutput:
     """json_output flag controls response_mime_type in config."""
 
-    def test_json_output_true_passes_response_mime_type(self, monkeypatch):
+    def test_json_output_true_passes_response_mime_type(self, monkeypatch, video_path):
         client = _make_mock_client()
         monkeypatch.setattr("connectors.gemini._client", lambda: client)
 
-        # We need to mock the google.genai.types import inside analyze_video
+        # We need to mock the google.genai.types import inside analyze_media
         fake_types = MagicMock()
         fake_config_obj = MagicMock()
         fake_types.GenerateContentConfig.return_value = fake_config_obj
@@ -95,7 +129,7 @@ class TestAnalyzeVideoJsonOutput:
             "google": fake_google,
             "google.genai": fake_genai,
         }):
-            mod.analyze_video("/tmp/video.mp4", "describe this")
+            mod.analyze_media(video_path, "describe this")
 
         # Should NOT have been called (json_output defaults to False)
         # Now test with json_output=True
@@ -106,13 +140,13 @@ class TestAnalyzeVideoJsonOutput:
             "google": fake_google,
             "google.genai": fake_genai,
         }):
-            mod.analyze_video("/tmp/video.mp4", "describe this", json_output=True)
+            mod.analyze_media(video_path, "describe this", json_output=True)
 
         fake_types.GenerateContentConfig.assert_called_with(
             response_mime_type="application/json"
         )
 
-    def test_json_output_false_no_response_mime_type(self, monkeypatch):
+    def test_json_output_false_no_response_mime_type(self, monkeypatch, video_path):
         client = _make_mock_client()
         monkeypatch.setattr("connectors.gemini._client", lambda: client)
 
@@ -128,7 +162,7 @@ class TestAnalyzeVideoJsonOutput:
             "google": fake_google,
             "google.genai": fake_genai,
         }):
-            mod.analyze_video("/tmp/video.mp4", "describe this", json_output=False)
+            mod.analyze_media(video_path, "describe this", json_output=False)
 
         # config should be None (empty dict → no config), so GenerateContentConfig
         # should NOT have been called
@@ -140,7 +174,7 @@ class TestAnalyzeVideoJsonOutput:
 class TestGenerateContentErrors:
     """SDK exceptions from generate_content → ConnectorError."""
 
-    def test_generate_content_exception_becomes_connector_error(self, monkeypatch):
+    def test_generate_content_exception_becomes_connector_error(self, monkeypatch, video_path):
         client = _make_mock_client(
             generate_side_effect=RuntimeError("API quota exceeded")
         )
@@ -159,7 +193,7 @@ class TestGenerateContentErrors:
             "google.genai": fake_genai,
         }):
             with pytest.raises(ConnectorError, match="generate_content failed"):
-                mod.analyze_video("/tmp/video.mp4", "describe this")
+                mod.analyze_media(video_path, "describe this")
 
 
 class TestUploadErrors:
@@ -174,11 +208,11 @@ class TestUploadErrors:
         import connectors.gemini as mod
 
         with pytest.raises(ConnectorError, match="file upload failed"):
-            mod.upload_video("/tmp/video.mp4")
+            mod.upload_media("/tmp/video.mp4")
 
 
 class TestUploadVideoPolling:
-    """upload_video polls until PROCESSING → ACTIVE."""
+    """upload_media polls until PROCESSING → ACTIVE."""
 
     def test_polls_until_active(self, monkeypatch):
         upload_file = _make_file(state_name="PROCESSING")
@@ -191,7 +225,7 @@ class TestUploadVideoPolling:
         import connectors.gemini as mod
         monkeypatch.setattr(mod, "UPLOAD_POLL_INTERVAL_S", 0.0)
 
-        result = mod.upload_video("/tmp/video.mp4")
+        result = mod.upload_media("/tmp/video.mp4")
         assert result.state.name == "ACTIVE"
         assert client.files.get.call_count == 3
 
@@ -207,7 +241,7 @@ class TestUploadVideoPolling:
         monkeypatch.setattr(mod, "UPLOAD_POLL_INTERVAL_S", 0.0)
 
         with pytest.raises(ConnectorError, match="processing failed"):
-            mod.upload_video("/tmp/video.mp4")
+            mod.upload_media("/tmp/video.mp4")
 
     def test_raises_on_timeout(self, monkeypatch):
         upload_file = _make_file(state_name="PROCESSING")
@@ -221,13 +255,13 @@ class TestUploadVideoPolling:
         monkeypatch.setattr(mod, "UPLOAD_MAX_WAIT_S", 0.0)
 
         with pytest.raises(ConnectorError, match="did not become ACTIVE"):
-            mod.upload_video("/tmp/video.mp4")
+            mod.upload_media("/tmp/video.mp4")
 
 
 class TestDeleteFailureSwallowed:
     """Post-call files.delete failure does NOT propagate."""
 
-    def test_delete_failure_does_not_propagate(self, monkeypatch):
+    def test_delete_failure_does_not_propagate(self, monkeypatch, video_path):
         client = _make_mock_client(
             delete_side_effect=RuntimeError("delete failed"),
             generate_response_text="all good",
@@ -246,15 +280,15 @@ class TestDeleteFailureSwallowed:
             "google": fake_google,
             "google.genai": fake_genai,
         }):
-            result = mod.analyze_video("/tmp/video.mp4", "describe this")
+            result = mod.analyze_media(video_path, "describe this")
 
         assert result == "all good"
 
 
-class TestAnalyzeVideoReturnsText:
-    """analyze_video returns .text from the response."""
+class TestAnalyzeMediaReturnsText:
+    """analyze_media returns .text from the response."""
 
-    def test_returns_response_text(self, monkeypatch):
+    def test_returns_response_text(self, monkeypatch, video_path):
         client = _make_mock_client(generate_response_text="The video shows a cat.")
         monkeypatch.setattr("connectors.gemini._client", lambda: client)
 
@@ -270,7 +304,7 @@ class TestAnalyzeVideoReturnsText:
             "google": fake_google,
             "google.genai": fake_genai,
         }):
-            result = mod.analyze_video("/tmp/video.mp4", "describe this")
+            result = mod.analyze_media(video_path, "describe this")
 
         assert result == "The video shows a cat."
 
@@ -281,9 +315,152 @@ class TestModuleImportsCleanly:
     def test_import_without_google_genai(self):
         # This just verifies the import doesn't blow up at module level
         import connectors.gemini  # noqa: F401
-        assert hasattr(connectors.gemini, "analyze_video")
-        assert hasattr(connectors.gemini, "upload_video")
+        assert hasattr(connectors.gemini, "analyze_media")
+        assert hasattr(connectors.gemini, "upload_media")
         assert hasattr(connectors.gemini, "generate_image")
+
+
+class TestAnalyzeMediaInlineImage:
+    """Images under INLINE_BYTE_LIMIT take the inline path — no Files API."""
+
+    def test_image_skips_files_api(self, monkeypatch, image_path):
+        """Analyzing a PNG should NOT call files.upload / files.delete."""
+        client = _make_mock_client(generate_response_text="a cat")
+        monkeypatch.setattr("connectors.gemini._client", lambda: client)
+
+        fake_types = MagicMock()
+        fake_types.Part.from_bytes.side_effect = (
+            lambda data, mime_type: ("bytes_part", mime_type, len(data))
+        )
+        fake_genai = stdlib_types.ModuleType("google.genai")
+        fake_genai.types = fake_types
+        fake_google = stdlib_types.ModuleType("google")
+        fake_google.genai = fake_genai
+
+        import connectors.gemini as mod
+
+        with patch.dict("sys.modules", {
+            "google": fake_google,
+            "google.genai": fake_genai,
+        }):
+            result = mod.analyze_media(image_path, "describe this")
+
+        assert result == "a cat"
+        # Files API must NOT be touched on the inline path.
+        client.files.upload.assert_not_called()
+        client.files.delete.assert_not_called()
+        # generate_content called once with an inline Part.from_bytes + prompt.
+        assert client.models.generate_content.call_count == 1
+        call = client.models.generate_content.call_args
+        contents = call.kwargs.get("contents") or call.args[0]
+        # First part is the inline bytes tuple, second is the prompt string.
+        assert len(contents) == 2
+        assert contents[0][0] == "bytes_part"
+        assert contents[0][1] == "image/png"
+        assert contents[1] == "describe this"
+
+    def test_jpeg_detected_as_image(self, monkeypatch, tmp_path):
+        """JPEG extension → image/jpeg mime, inline path."""
+        p = tmp_path / "photo.jpg"
+        p.write_bytes(b"\xff\xd8\xff" + b"\x00" * 512)
+        client = _make_mock_client()
+        monkeypatch.setattr("connectors.gemini._client", lambda: client)
+
+        fake_types = MagicMock()
+        fake_types.Part.from_bytes.side_effect = (
+            lambda data, mime_type: ("bytes_part", mime_type)
+        )
+        fake_genai = stdlib_types.ModuleType("google.genai")
+        fake_genai.types = fake_types
+        fake_google = stdlib_types.ModuleType("google")
+        fake_google.genai = fake_genai
+
+        import connectors.gemini as mod
+        with patch.dict("sys.modules", {
+            "google": fake_google,
+            "google.genai": fake_genai,
+        }):
+            mod.analyze_media(str(p), "describe")
+
+        fake_types.Part.from_bytes.assert_called_once()
+        assert fake_types.Part.from_bytes.call_args.kwargs.get("mime_type") == "image/jpeg" \
+            or fake_types.Part.from_bytes.call_args[1].get("mime_type") == "image/jpeg"
+        client.files.upload.assert_not_called()
+
+    def test_oversized_image_falls_back_to_files_api(self, monkeypatch, huge_image_path):
+        """Image above INLINE_BYTE_LIMIT → Files API path."""
+        client = _make_mock_client(generate_response_text="big image")
+        monkeypatch.setattr("connectors.gemini._client", lambda: client)
+
+        fake_types = MagicMock()
+        fake_genai = stdlib_types.ModuleType("google.genai")
+        fake_genai.types = fake_types
+        fake_google = stdlib_types.ModuleType("google")
+        fake_google.genai = fake_genai
+
+        import connectors.gemini as mod
+
+        with patch.dict("sys.modules", {
+            "google": fake_google,
+            "google.genai": fake_genai,
+        }):
+            mod.analyze_media(huge_image_path, "describe this")
+
+        # Falls back to Files API — upload IS called.
+        client.files.upload.assert_called_once()
+        # delete also called (best-effort cleanup).
+        client.files.delete.assert_called_once()
+
+    def test_video_still_uses_files_api(self, monkeypatch, video_path):
+        """Non-image extension → Files API path (unchanged behavior)."""
+        client = _make_mock_client(generate_response_text="a video")
+        monkeypatch.setattr("connectors.gemini._client", lambda: client)
+
+        fake_types = MagicMock()
+        fake_genai = stdlib_types.ModuleType("google.genai")
+        fake_genai.types = fake_types
+        fake_google = stdlib_types.ModuleType("google")
+        fake_google.genai = fake_genai
+
+        import connectors.gemini as mod
+
+        with patch.dict("sys.modules", {
+            "google": fake_google,
+            "google.genai": fake_genai,
+        }):
+            mod.analyze_media(video_path, "describe")
+
+        client.files.upload.assert_called_once()
+
+    def test_nonexistent_path_raises_connector_error(self, monkeypatch):
+        """Stat failure on the path surfaces as ConnectorError, not OSError."""
+        monkeypatch.setattr("connectors.gemini._client", lambda: MagicMock())
+        import connectors.gemini as mod
+        with pytest.raises(ConnectorError, match="Could not stat"):
+            mod.analyze_media("/nonexistent/file.png", "describe")
+
+    def test_inline_image_generate_content_exception_wrapped(self, monkeypatch, image_path):
+        """SDK exception on inline-path generate_content → ConnectorError."""
+        client = _make_mock_client(
+            generate_side_effect=RuntimeError("quota exceeded")
+        )
+        monkeypatch.setattr("connectors.gemini._client", lambda: client)
+
+        fake_types = MagicMock()
+        fake_types.Part.from_bytes.side_effect = lambda **kw: ("bytes_part",)
+        fake_genai = stdlib_types.ModuleType("google.genai")
+        fake_genai.types = fake_types
+        fake_google = stdlib_types.ModuleType("google")
+        fake_google.genai = fake_genai
+
+        import connectors.gemini as mod
+
+        with patch.dict("sys.modules", {
+            "google": fake_google,
+            "google.genai": fake_genai,
+        }):
+            with pytest.raises(ConnectorError, match="generate_content failed"):
+                mod.analyze_media(image_path, "describe")
 
 
 # ---------------------------------------------------------------------------

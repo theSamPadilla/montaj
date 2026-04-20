@@ -171,7 +171,7 @@ Two flags look similar and must not be conflated:
 | Flag | Layer | Purpose |
 |------|-------|---------|
 | `--json`        | CLI (`add_global_flags`) | Wrap the command's stdout in a JSON envelope for machine-readable output. Available on every `montaj <command>`. |
-| `--json-output` | Step / CLI mirror | Ask the underlying model or API to return structured JSON data. Only present on steps that call out to a model/API with a JSON mode (currently `analyze-video`). |
+| `--json-output` | Step / CLI mirror | Ask the underlying model or API to return structured JSON data. Only present on steps that call out to a model/API with a JSON mode (currently `analyze-media`). |
 
 Per-command parsers must never redefine `--json` — it's reserved globally. When a step needs a model-JSON toggle, use `--json-output` at both the CLI and step layers, with matching names.
 
@@ -368,7 +368,7 @@ Wrappers around external AI/video APIs (Kling, Gemini, OpenAI, ElevenLabs, …).
 | `connectors/<vendor>.py` | **Vendor** (one file per API key) | `connectors/gemini.py` handles video analysis + image gen — all Gemini endpoints share one client and one credential |
 | `steps/<verb>_<noun>.py` | **Use case** (one file per agent-callable action) | `steps/generate_image.py` dispatches to `gemini.generate_image` or `openai.generate_image` based on `--provider` |
 
-A vendor like Gemini can unlock multiple use cases (video analysis today, text/image tomorrow) through the same API key and SDK. Duplicating the client+auth plumbing per endpoint is waste. Specificity lives in the step layer, where the file name (`analyze_video`, `generate_image`, `transcribe_audio`) tells the agent what it does.
+A vendor like Gemini can unlock multiple use cases (multimodal analysis today, text/image tomorrow) through the same API key and SDK. Duplicating the client+auth plumbing per endpoint is waste. Specificity lives in the step layer, where the file name (`analyze_media`, `generate_image`, `transcribe_audio`) tells the agent what it does.
 
 Connectors:
 - Read credentials via `lib.credentials.get_credential(provider, key)`.
@@ -509,7 +509,7 @@ Used in the `floating_head` workflow. `remove_bg` requires an actual video file 
 | Step | What it does |
 |------|-------------|
 | `montaj/kling_generate` | Generate video via Kling v3 Omni (text, image, or reference-guided) |
-| `montaj/analyze_video` | Analyze video with Gemini Flash (description, timestamps, structured output) |
+| `montaj/analyze_media` | Analyze a media file (video, audio, or image) with Gemini Flash (description, timestamps, structured output) |
 | `montaj/generate_image` | Generate image via Gemini or OpenAI (text-to-image or reference-conditioned) |
 
 These steps require `montaj install connectors` (SDK deps) and `montaj install credentials` (per-provider keys). See [docs/CONNECTORS.md](./CONNECTORS.md).

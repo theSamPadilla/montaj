@@ -8,19 +8,19 @@ Connectors are Python modules in `connectors/` that wrap external vendor APIs. T
 
 | Layer | Organized by | File name pattern | Example |
 |-------|--------------|-------------------|---------|
-| `connectors/<vendor>.py` | **Vendor** — one file per API key / SDK | Vendor brand | `connectors/gemini.py` exposes `analyze_video`, and could later expose `chat`, `generate_image` — all share one client, one credential |
-| `steps/<verb>_<noun>.py` | **Use case** — one file per agent-callable action | What the agent wants to do | `steps/analyze_video.py` → `gemini.analyze_video`, `steps/generate_image.py` → `openai.generate_image` |
-| `cli/commands/<name>.py` | Use case (mirrors the step) | Same as step | `cli/commands/analyze_video.py` |
+| `connectors/<vendor>.py` | **Vendor** — one file per API key / SDK | Vendor brand | `connectors/gemini.py` exposes `analyze_media`, `generate_image` (and could later add `chat`, etc.) — all share one client, one credential |
+| `steps/<verb>_<noun>.py` | **Use case** — one file per agent-callable action | What the agent wants to do | `steps/analyze_media.py` → `gemini.analyze_media`, `steps/generate_image.py` → `openai.generate_image` |
+| `cli/commands/<name>.py` | Use case (mirrors the step) | Same as step | `cli/commands/analyze_media.py` |
 
 ### Why generalist connectors, specific steps?
 
 A vendor like Gemini unlocks multiple use cases (video analysis, text generation, image generation) through **one API key and one SDK**. Splitting that into `connectors/gemini_video.py`, `connectors/gemini_text.py`, `connectors/gemini_image.py` would triplicate the client construction, credential lookup, lazy-import machinery, and error translation for zero benefit.
 
-The specificity the agent needs lives in the step layer. `steps/analyze_video.py` and its CLI wrapper `montaj analyze-video` have unambiguous names. The fact that Gemini happens to power them is an implementation detail — tomorrow it could be a different vendor, and the step name wouldn't change.
+The specificity the agent needs lives in the step layer. `steps/analyze_media.py` and its CLI wrapper `montaj analyze-media` have unambiguous names. The fact that Gemini happens to power them is an implementation detail — tomorrow it could be a different vendor, and the step name wouldn't change.
 
 ### Corollary: connectors are never agent-callable directly
 
-Workflows reference steps (`"uses": "montaj/analyze_video"`), never connector functions. The CLI, HTTP API, and MCP all dispatch to `steps/`. The connector layer is an internal library — it has no presence in any of Montaj's three agent interfaces. **Every connector function that needs to be agent-callable must have a step wrapping it.**
+Workflows reference steps (`"uses": "montaj/analyze_media"`), never connector functions. The CLI, HTTP API, and MCP all dispatch to `steps/`. The connector layer is an internal library — it has no presence in any of Montaj's three agent interfaces. **Every connector function that needs to be agent-callable must have a step wrapping it.**
 
 ## What a connector is (and isn't)
 
@@ -70,7 +70,7 @@ for precedence rules.
 | Vendor (`connectors/*.py`) | Functions (use cases) | Wrapping steps | Model(s) | Credentials | Docs |
 |----------------------------|------------------------|----------------|----------|-------------|------|
 | `kling.py` | `generate` | `steps/kling_generate.py` | `kling-v3-omni` (hardcoded) | `kling.access_key`, `kling.secret_key` | https://app.klingai.com/global/dev/document-api |
-| `gemini.py` | `analyze_video`, `generate_image` | `steps/analyze_video.py`, `steps/generate_image.py` | video: `gemini-2.5-flash`; image: `gemini-3-pro-image-preview` | `gemini.api_key` | https://ai.google.dev/gemini-api/docs |
+| `gemini.py` | `analyze_media`, `generate_image` | `steps/analyze_media.py`, `steps/generate_image.py` | media analysis: `gemini-2.5-flash` (images under ~18 MB take a fast inline path, no Files API round-trip); image gen: `gemini-3-pro-image-preview` | `gemini.api_key` | https://ai.google.dev/gemini-api/docs |
 | `openai.py` | `generate_image` | `steps/generate_image.py` | `gpt-image-1` | `openai.api_key` | https://platform.openai.com/docs/guides/images |
 
 A single vendor row can grow multiple `Functions` and multiple `Wrapping steps` over time — e.g. a future `gemini.chat` function would add a second entry to the Gemini row alongside a new `steps/llm_prompt.py`. New vendors get a new row.
@@ -106,7 +106,7 @@ Every new user-facing use case gets its own step, even if it reuses an existing 
 3. **Existing vendor, new use case:**
    - Add a new top-level function to the existing `connectors/<vendor>.py`. Keep private helpers shared.
    - No changes to `KNOWN_PROVIDERS` unless the new use case needs an additional credential key.
-4. **Add a step script** in `steps/<verb>_<noun>.py` + `.json` — argparse + fail() + stdout=result. The step name describes the use case, not the vendor (`analyze_video`, not `gemini_analyze`).
+4. **Add a step script** in `steps/<verb>_<noun>.py` + `.json` — argparse + fail() + stdout=result. The step name describes the use case, not the vendor (`analyze_media`, not `gemini_analyze`).
 5. **Add a CLI command** in `cli/commands/<verb>_<noun>.py` — subprocesses the step script. This makes it available via CLI, HTTP (`POST /api/steps/<name>`), and MCP automatically.
 6. **Add unit tests** for any pure functions (payload builders, normalizers). Mock the SDK for branching logic tests.
 7. **Update this doc's "Current connectors" table** to list the new function under the existing vendor row, or add a new row if this is a new vendor.
