@@ -1,6 +1,7 @@
 {
   "name": "floating_head",
   "description": "Talking-head presenter over a custom background — trim silence, remove non-speech, remove fillers, materialize trimmed footage, background-remove with RVM. The editing prompt should specify the background (image or video asset).",
+  "project_type": "editing",
   "notes": "Track ordering is the inverse of the default. Background (from assets — image or video) goes in tracks[0] as the base layer. Presenter footage (clips, after remove_bg) goes in tracks[1] with remove_bg: true, nobg_src, and nobg_preview_src set from the remove_bg output. Do not place the presenter in tracks[0] — it renders behind the background. If no background asset is provided, use a solid-colour or animated animation section in tracks[0].",
   "steps": [
     { "id": "probe",        "uses": "montaj/probe",          "foreach": "clips" },

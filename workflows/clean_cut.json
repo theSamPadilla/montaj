@@ -1,6 +1,7 @@
 {
   "name": "clean_cut",
   "description": "Trim and clean only — silence trim, remove non-speech, transcribe, select best takes, remove fillers. No captions, overlays, or resize.",
+  "project_type": "editing",
   "steps": [
     { "id": "probe",        "uses": "montaj/probe",          "foreach": "clips" },
     { "id": "snapshot",     "uses": "montaj/snapshot",       "foreach": "clips" },

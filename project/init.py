@@ -5,6 +5,14 @@ from datetime import datetime
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "lib"))
 from common import fail
+from project_types import normalize_project_type
+from workflow import read_workflow
+
+
+def _read_project_type(workflow_name: str) -> str:
+    """Read project_type from the workflow JSON, default 'editing' on any failure."""
+    wf = read_workflow(workflow_name)
+    return normalize_project_type(wf.get("project_type") if wf else None)
 
 
 def git(args, cwd):
@@ -28,6 +36,14 @@ def main():
     parser.add_argument("--name", help="Project name (used as workspace directory suffix)")
     parser.add_argument("--profile", help="Creator profile name to associate with this project")
     parser.add_argument("--canvas", action="store_true", help="Canvas project — no source footage")
+    parser.add_argument("--image-ref", dest="image_refs", nargs="+", default=[],
+                        help="ai_video only. JSON objects: {label, path|text}")
+    parser.add_argument("--style-ref", dest="style_refs", nargs="+", default=[],
+                        help="ai_video only. JSON objects: {label, path}")
+    parser.add_argument("--aspect-ratio", dest="aspect_ratio", default=None,
+                        help="ai_video only. Kling aspect_ratio parameter (e.g. '16:9', '9:16', '1:1').")
+    parser.add_argument("--target-duration", dest="target_duration", type=int, default=None,
+                        help="ai_video only. Target total duration in seconds (editorial goal, not a per-scene value).")
     args = parser.parse_args()
 
     if args.canvas and args.clips:
@@ -124,10 +140,13 @@ def main():
         for i, a in enumerate(args.assets)
     ]
 
+    project_type = _read_project_type(args.workflow)
+
     project = {
         "version": "0.2",
         "id": str(uuid.uuid4()),
         "status": "pending",
+        "projectType": project_type,
         "name": args.name or None,
         "workflow": args.workflow,
         "editingPrompt": args.prompt,
@@ -142,6 +161,56 @@ def main():
         "audio": {},
         **({"profile": args.profile} if args.profile else {})
     }
+
+    if project_type == "ai_video":
+        image_refs_stub = []
+        for i, raw in enumerate(args.image_refs):
+            entry = json.loads(raw)
+            label = entry.get("label", f"ref{i+1}")
+            src_path = entry.get("path")
+            text = entry.get("text")
+            if src_path and not os.path.isfile(src_path):
+                fail("file_not_found", f"Image ref not found: {src_path}")
+            copied = copy_into_workspace(os.path.abspath(src_path), "imageref") if src_path else None
+            ref = {
+                "id": f"ref{i+1}",
+                "label": label,
+                "refImages": [copied] if copied else [],
+                "source": "upload" if src_path else "text",
+                "status": "pending",
+            }
+            if text:
+                ref["anchor"] = text
+            image_refs_stub.append(ref)
+
+        style_refs_stub = []
+        for i, raw in enumerate(args.style_refs):
+            entry = json.loads(raw)
+            src_path = entry["path"]
+            if not os.path.isfile(src_path):
+                fail("file_not_found", f"Style ref not found: {src_path}")
+            copied = copy_into_workspace(os.path.abspath(src_path), "styleref")
+            ext = os.path.splitext(copied)[1].lower()
+            kind = "video" if ext in (".mp4", ".mov", ".webm", ".mkv") else \
+                   "audio" if ext in (".mp3", ".wav", ".m4a", ".aac", ".flac") else \
+                   "image"
+            style_refs_stub.append({
+                "id": f"style{i+1}",
+                "kind": kind,
+                "path": copied,
+                "label": entry.get("label", f"style ref {i+1}"),
+            })
+
+        storyboard = {
+            "imageRefs": image_refs_stub,
+            "styleRefs": style_refs_stub,
+            "scenes": [],  # agent populates during `pending`; empty at intake
+        }
+        if args.aspect_ratio:
+            storyboard["aspectRatio"] = args.aspect_ratio
+        if args.target_duration is not None:
+            storyboard["targetDurationSeconds"] = args.target_duration
+        project["storyboard"] = storyboard
 
     project_path = os.path.join(workspace_dir, "project.json")
     with open(project_path, "w") as f:

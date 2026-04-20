@@ -1,6 +1,7 @@
 {
   "name": "explainer",
   "description": "Multi-clip edit with animation sections — silence trim, remove non-speech, transcribe, select best takes, remove fillers, overlays, animation sections. No captions.",
+  "project_type": "editing",
   "steps": [
     { "id": "probe",            "uses": "montaj/probe",              "foreach": "clips" },
     { "id": "snapshot",         "uses": "montaj/snapshot",           "foreach": "clips" },

@@ -54,7 +54,22 @@ The workflow gives the agent a sensible starting point and encodes domain knowle
 | `description` | string | yes | One or two sentences. Agent reads this to understand when to use this workflow. |
 | `steps` | array | yes | Ordered list of step entries |
 | `requires_clips` | boolean | no | When `false`, no source footage is needed. Default: `true`. The UI warns if clips are missing for a workflow that requires them. |
+| `project_type` | string | no | One of `"editing"`, `"music_video"`, `"ai_video"`. Drives UI branching (upload flow, player actions). Default: `"editing"`. |
 | `notes` | string | no | Extra guidance for the agent — conventions, track ordering rules, or input semantics specific to this workflow. Read alongside the description before the agent begins execution. |
+
+### Project types
+
+`project_type` is a coarse UI hint. It does not affect workflow execution. Three values are defined:
+
+| Value | Upload UI | Review phase before timeline | Player actions added |
+|-------|-----------|------------------------------|----------------------|
+| `editing` (default) | Video clip drop zone + prompt + workflow picker | None | None (universal actions only) |
+| `music_video` | Song file + optional bg video + optional lyrics file + prompt | None | Music-specific actions (swap lyrics timing, etc.) — future |
+| `ai_video` | Prompt + image references (image or text per slot) + style references (up to 2) + settings | **StoryboardView** — review + approve the storyboard before videos are generated | "Regenerate section" (per-clip) and future generation actions |
+
+Workflows without `project_type` are treated as `"editing"`. Third-party workflows (user-global in `~/.montaj/workflows/` or project-local in `./workflows/`) can declare any of the three values to invoke the corresponding UI without shipping UI code.
+
+The flag propagates into `project.json` at init time (see `docs/schemas/project.md`). Once written, it never changes — a project's type is decided by the workflow that created it.
 
 ### Step entry
 

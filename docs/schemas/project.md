@@ -8,9 +8,12 @@
 
 | State | Who writes it | What's in it |
 |-------|--------------|-------------|
-| `pending` | `montaj run` or `montaj serve` (on `POST /run`) | Clip paths, editing prompt, workflow name. No agent work yet. |
-| `draft` | agent | Trim points, ordering, captions, overlays. Agent's complete edit. |
+| `pending` | `montaj run` or `montaj serve` (on `POST /run`) | Clip paths, editing prompt, workflow name. For `ai_video`, also the pre-seeded `storyboard` stub (raw intake references copied from the upload form). No agent work yet. |
+| `storyboard_ready` | agent (for `projectType: "ai_video"` only) | Agent has populated `storyboard.imageRefs[]` with anchors + reference images, written `storyboard.styleAnchor`, and populated `tracks[0]` with scene stubs (each with a `generation` block, empty `src`). Awaiting user approval before scene videos are generated. |
+| `draft` | agent (for `editing`/`music_video`) or agent (for `ai_video` after all scene videos complete) | Trim points, ordering, captions, overlays. Complete edit — for `ai_video`, all `tracks[0]` items have non-empty `src`. |
 | `final` | human (via UI) | Reviewed and tweaked. Ready to render. |
+
+The status transition for `ai_video` is: `pending → storyboard_ready → draft → final`. For all other project types it remains `pending → draft → final`.
 
 The agent writes project.json as it works — every write pushes to the browser via SSE.
 
@@ -37,7 +40,8 @@ The agent writes project.json as it works — every write pushes to the browser 
 |-------|------|-------------|
 | `version` | string | Schema version — `"0.2"` |
 | `id` | string | UUID v4. Stable unique identifier for this project. Never changes. |
-| `status` | string | Pipeline state: `pending`, `draft`, `final` |
+| `status` | string | Pipeline state: `pending`, `storyboard_ready`, `draft`, `final` |
+| `projectType` | string | Inherited from the workflow's `project_type` at init time. One of `"editing"`, `"music_video"`, `"ai_video"`. Default: `"editing"`. Never changes after creation. |
 | `name` | string \| null | Human-readable label set at init time. Optional. Does not need to be unique. |
 | `workflow` | string | Workflow used to produce this edit |
 | `editingPrompt` | string | The free-form prompt passed in |
@@ -305,6 +309,177 @@ To use an asset in a `tracks[1+]` item, pass its `src` path via `props` (for ove
 { "id": "logo", "type": "image", "src": "/abs/path/to/workspace/logo.png", "start": 0.0, "end": 30.0,
   "offsetX": 0.82, "offsetY": 0.04, "scale": 0.12 }
 ```
+
+---
+
+## Storyboard
+
+All `ai_video`-specific state lives under a single top-level `storyboard` object. Absent for `editing` and `music_video` projects. Distinct from the flat `assets` array (which is unrelated and used by all project types for user-uploaded logos/watermarks).
+
+The `storyboard` holds four logical groups:
+
+1. **Intake settings** — `aspectRatio`, `targetDurationSeconds`. Structured parameters the user chose at intake.
+2. **Reference library** — `imageRefs[]` (things that appear in the video), `styleRefs[]` (things that influence style without appearing), `styleAnchor` (the agent-written style string prepended to every Kling prompt at call time).
+3. **The editorial plan** — `scenes[]`. One entry per planned scene, reviewable in the StoryboardView before approval. Populated by the agent during `pending`; empty at intake.
+4. **Approval marker** — `approval`. Written by the UI when the user clicks "Approve & Generate."
+
+```json
+{
+  "storyboard": {
+    "aspectRatio": "16:9",
+    "targetDurationSeconds": 30,
+    "imageRefs": [
+      {
+        "id": "ref1",
+        "label": "Max",
+        "anchor": "A golden retriever with one floppy ear, wearing a red collar.",
+        "refImages": ["/abs/path/to/workspace/max.png"],
+        "source": "upload",
+        "status": "ready"
+      },
+      {
+        "id": "ref2",
+        "label": "Lena",
+        "anchor": "A woman in her 30s with curly red hair, freckles, wearing denim.",
+        "refImages": ["/abs/path/to/workspace/lena_generated.png"],
+        "source": "text",
+        "status": "ready"
+      }
+    ],
+    "styleRefs": [
+      {
+        "id": "style1",
+        "kind": "video",
+        "path": "/abs/path/to/workspace/mood_clip.mp4",
+        "label": "mood reference"
+      }
+    ],
+    "styleAnchor": "warm golden-hour lighting, shallow depth of field, cinematic framing",
+    "scenes": [
+      {
+        "id": "scene1",
+        "prompt": "Max runs into the sunlit kitchen, ball in mouth, sliding on tiles.",
+        "duration": 6,
+        "refImages": ["ref1"]
+      },
+      {
+        "id": "scene2",
+        "prompt": "Close-up of Max dropping the ball by the fridge, panting.",
+        "duration": 5,
+        "refImages": ["ref1"]
+      }
+    ],
+    "approval": {
+      "approvedAt": "2026-04-18T14:32:00Z"
+    }
+  }
+}
+```
+
+### Top-level storyboard fields
+
+| Field | Type | Written by | When | Description |
+|-------|------|-----------|------|-------------|
+| `aspectRatio` | string | `init.py` | Intake | Kling body parameter. Enum: `"16:9" \| "9:16" \| "1:1"`. Constant across the project — every scene generates at this aspect. Mutable later via agent chat (rewrites the field; regeneration reads the current value). |
+| `targetDurationSeconds` | number | `init.py` | Intake | Editorial aggregate goal — informs the agent's scene count and per-scene durations. NOT passed to Kling directly. The agent divides this across scenes when populating `scenes[]`. |
+| `styleAnchor` | string | agent | `pending` | Style string prepended to every scene's prompt at call time. Informed by `styleRefs` analysis. Not persisted into per-scene prompts — applied at the `kling_generate` call site. |
+| `scenes` | object[] | agent | `pending` | The editorial plan. Empty at intake. See "`scenes[]` fields" below. |
+| `approval` | object | **UI** | On Approve click | `{approvedAt: ISO-8601}`. The agent watches for field presence (not value) to start scene generation. |
+
+### `imageRefs[]` fields
+
+Anything that *appears in* the video: characters, locations, specific objects. Populated by `init.py` from the user's intake form; anchors written by the agent during `pending`.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | string | Stable within the project. Referenced by `scenes[i].refImages` as well as `tracks[0][i].generation.refImages`. |
+| `label` | string | Short human-friendly name. The user provides this at intake (e.g. "Max"). Agents use labels to match natural-language prompt mentions to refs. |
+| `anchor` | string | Agent-written longer description. If the user provided an image at intake, the agent writes the anchor from the image + label. If the user provided a text description, the anchor starts as that text and the agent enriches it. |
+| `refImages` | string[] | Absolute paths to reference images. For `source: "upload"`, populated at intake with the user's file. For `source: "text"`, starts empty; agent calls `generate_image` with the anchor as prompt and appends the result. Fed into Kling's `image_list` (up to 3 per scene — Kling's hard limit). |
+| `source` | string | What the user gave us at intake. `"upload"` = user uploaded a file (that file is `refImages[0]`). `"text"` = user provided a text description (`anchor` holds it; `refImages` starts empty and the agent populates it). Immutable after intake — describes the user's input, not the ref's current state. The UI shows a "your upload" chip when `source === "upload"`. |
+| `status` | string | `"pending"` \| `"generating"` \| `"ready"` \| `"failed"`. Written by the agent / UI as generation/regeneration runs. |
+
+### `styleRefs[]` fields
+
+Audio/video/image files that influence *style* without appearing in the final video. Consumed once by the agent during `pending` (via `analyze_media`), folded into `storyboard.styleAnchor`. Display-only in the StoryboardView afterwards.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | string | Stable within the project. |
+| `kind` | string | `"video"` \| `"audio"` \| `"image"`. Determined from the file extension at intake. |
+| `path` | string | Absolute path to the file in the workspace. |
+| `label` | string | User-given label (optional). |
+
+Style refs do not reach Kling directly — their influence is mediated entirely through `styleAnchor`.
+
+### `scenes[]` fields
+
+The editorial plan — one entry per scene the agent intends to generate. Empty at intake; agent populates during `pending` informed by `editingPrompt`, `imageRefs`, `styleAnchor`, and `targetDurationSeconds`. Editable pre-approval via the StoryboardView's scene-prompt editor.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | string | Stable within the project. Provenance pointer on every resulting `tracks[0]` clip via `generation.sceneId`. |
+| `prompt` | string | Scene-specific prompt. Does NOT include `styleAnchor` — that's prepended at call time in the connector layer. Max 2500 chars (Kling's limit). |
+| `duration` | number | Per-scene duration in seconds, picked by the agent. Sum across scenes should approximate `targetDurationSeconds` but is not enforced. Constrained to what Kling accepts (currently enum: `5`, `7`, `10` — verify against current Kling docs). |
+| `refImages` | string[] | IDs into `storyboard.imageRefs[]`. Max 3 per scene (Kling hard limit). The agent picks refs that match labels mentioned in the prompt. |
+
+At approval time, the agent iterates `scenes[]` and calls `kling_generate` for each entry. A successful call appends a new `tracks[0]` clip with a frozen `generation` block. See next section.
+
+---
+
+### `generation` (optional, on video items in `tracks[0]`)
+
+Post-generation provenance record. Present on clips produced by an AI-generation step. Absent for items sourced from user-uploaded clips.
+
+This block is a **frozen snapshot** of what was sent to the provider when the clip was created. It is the authoritative record for that clip — regeneration reads from here, not from `storyboard.scenes[]` (which may have drifted since the clip was produced). When a clip is cut into pieces, all pieces inherit the same `generation` block at cut time and can diverge independently on future regeneration.
+
+```json
+{
+  "id": "clip-scene1",
+  "type": "video",
+  "src": "/path/to/scene1.mp4",
+  "start": 0,
+  "end": 6,
+  "inPoint": 0,
+  "outPoint": 6,
+  "generation": {
+    "sceneId": "scene1",
+    "provider": "kling",
+    "model": "kling-v3-omni",
+    "prompt": "warm golden-hour lighting... Max runs into the sunlit kitchen...",
+    "refImages": ["ref1"],
+    "duration": 6,
+    "attempts": [
+      { "ts": "2026-04-18T14:40:00Z", "prompt": "...", "src": "/path/to/scene1_v1.mp4" }
+    ]
+  }
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `generation.sceneId` | string | Optional pointer back to the `storyboard.scenes[i].id` this clip was generated from. Convenience for UI grouping when one scene is cut into multiple pieces. |
+| `generation.provider` | string | Currently `"kling"`. Could grow to include other video-gen providers. |
+| `generation.model` | string | Model used (e.g. `"kling-v3-omni"`). Recorded for reproducibility. |
+| `generation.prompt` | string | The exact combined prompt that was sent to the provider (includes `styleAnchor` and `<<<image_N>>>` tokens for reference images). Useful for "why did this clip look weird" debugging — one field, one answer. |
+| `generation.refImages` | string[] | IDs into `storyboard.imageRefs[]`. Regeneration resolves these to current paths (`imageRefs[i].refImages[0]`), so if the user regenerates a reference image, subsequent regens of this clip pick up the new visual. |
+| `generation.duration` | number | Duration in seconds that was requested for this specific clip. Regeneration pre-fills the modal with this value. |
+| `generation.attempts` | object[] | Chronological (oldest first). On every regeneration, the previous `{ts, prompt, src}` is appended. Does NOT include the current state — that's the top-level `prompt`/`src`. |
+
+**`aspectRatio` is NOT on the generation block.** Aspect ratio lives at `storyboard.aspectRatio` (project-wide). Regeneration reads the current project-wide value. If the user switches aspect mid-draft, regenerated clips pick up the new value — intentionally.
+
+### Lifecycle: when `tracks[0]` is populated
+
+`tracks[0]` holds **real clips only** — items whose `src` is a file that exists on disk. There are no stubs, no placeholder items, no `src: ""` entries. This invariant is consistent across all project types:
+
+- `editing` projects populate `tracks[0]` at intake with user-uploaded clips.
+- `music_video` projects start with `tracks[0] = []` and get populated by the lyrics pipeline.
+- `ai_video` projects start with `tracks[0] = []` and grow by append as each `kling_generate` call returns.
+
+For `ai_video`:
+- At `pending` and `storyboard_ready` (including during active generation), `tracks[0]` is empty or partial. The StoryboardView stays mounted; per-scene progress is derived by checking whether `tracks[0].some(c => c.generation?.sceneId === scene.id)`.
+- Status transitions `storyboard_ready → draft` only when every `storyboard.scenes[i]` has a corresponding clip in `tracks[0]`. At that point `EditorPage` routes to `ReviewView` and the user sees a coherent timeline for the first time.
+- On partial failure, status stays `storyboard_ready`. The failed scene has no corresponding clip; the agent can retry later (idempotent — scenes with existing clips are skipped).
 
 ---
 

@@ -1,6 +1,7 @@
 {
   "name": "animations",
   "description": "Animation-only project — no source footage required. Agent builds the video entirely from overlays and audio. Use when the prompt describes a fully animated or motion-graphics video.",
+  "project_type": "editing",
   "requires_clips": false,
   "steps": [
     { "id": "animations",  "uses": "montaj/animation-sections" },

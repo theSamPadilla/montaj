@@ -17,6 +17,10 @@ from fastapi.responses import FileResponse, HTMLResponse, Response, StreamingRes
 from serve.sse import SSEBroadcaster
 from serve.watcher import GlobalOverlayWatcher, ProjectWatcher
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lib"))
+from project_types import normalize_project_type
+from workflow import read_workflow
+
 MONTAJ_ROOT = Path(__file__).resolve().parent.parent
 PORT      = int(os.environ.get("MONTAJ_SERVE_PORT", "3000"))
 VITE_PORT = 5173
@@ -308,6 +312,40 @@ async def run_project(body: dict = Body(...)):
         if not Path(asset).is_file():
             raise HTTPException(400, detail={"error": "file_not_found", "message": f"Asset not found: {asset}"})
 
+    # ai_video intake — structured image/style refs + intake settings forwarded to init.py
+    intake = body.get("aiVideoIntake") or {}
+
+    if len(intake.get("styleRefs", [])) > 2:
+        raise HTTPException(400, detail={"error": "invalid_intake", "message": "at most 2 style refs allowed"})
+
+    image_ref_args = []
+    for entry in intake.get("imageRefs", []):
+        has_path = bool(entry.get("path"))
+        has_text = bool(entry.get("text"))
+        if has_path == has_text:  # neither or both
+            raise HTTPException(400, detail={"error": "invalid_intake", "message": "each imageRef requires exactly one of 'path' or 'text'"})
+        image_ref_args += ["--image-ref", json.dumps(entry)]
+
+    style_ref_args = []
+    for entry in intake.get("styleRefs", []):
+        if not entry.get("path"):
+            raise HTTPException(400, detail={"error": "invalid_intake", "message": "each styleRef requires 'path'"})
+        style_ref_args += ["--style-ref", json.dumps(entry)]
+
+    # Intake settings — structured Kling parameters + editorial goal.
+    # NEVER appended to the prompt; stored as first-class fields on storyboard.
+    intake_setting_args = []
+    aspect_ratio = intake.get("aspectRatio")
+    if aspect_ratio is not None:
+        if aspect_ratio not in ("16:9", "9:16", "1:1"):
+            raise HTTPException(400, detail={"error": "invalid_intake", "message": f"aspectRatio must be one of '16:9', '9:16', '1:1' (got {aspect_ratio!r})"})
+        intake_setting_args += ["--aspect-ratio", aspect_ratio]
+    target_duration = intake.get("targetDurationSeconds")
+    if target_duration is not None:
+        if not isinstance(target_duration, int) or target_duration <= 0:
+            raise HTTPException(400, detail={"error": "invalid_intake", "message": f"targetDurationSeconds must be a positive integer (got {target_duration!r})"})
+        intake_setting_args += ["--target-duration", str(target_duration)]
+
     init_py = MONTAJ_ROOT / "project" / "init.py"
     cmd = [sys.executable, str(init_py), "--prompt", prompt, "--workflow", workflow]
     if name:
@@ -316,19 +354,16 @@ async def run_project(body: dict = Body(...)):
         cmd += ["--assets"] + [str(a) for a in assets]
     if profile:
         cmd += ["--profile", profile]
+    cmd += image_ref_args + style_ref_args + intake_setting_args
 
     if clips:
         cmd += ["--clips"] + [str(c) for c in clips]
     else:
         # No clips — check workflow's requires_clips to decide how to proceed
         requires_clips = True  # conservative default
-        workflow_path = MONTAJ_ROOT / "workflows" / f"{workflow}.json"
-        if workflow_path.exists():
-            try:
-                wf_data = json.loads(workflow_path.read_text())
-                requires_clips = wf_data.get("requires_clips", True)
-            except Exception:
-                pass
+        wf_data = read_workflow(workflow)
+        if wf_data is not None:
+            requires_clips = wf_data.get("requires_clips", True)
 
         if not requires_clips:
             # Workflow explicitly says no footage needed — create canvas project
@@ -736,16 +771,22 @@ def _workflow_dirs() -> list[tuple[str, Path]]:
 
 @router.get("/workflows")
 async def list_workflows():
-    """List all workflows across scopes. Returns [{name, scope}], deduped (user wins)."""
-    seen: dict[str, str] = {}
+    """List all workflows across scopes. Returns [{name, scope, project_type}], deduped (user wins)."""
+    seen: dict[str, tuple[str, str]] = {}  # name -> (scope, project_type)
     for scope, d in _workflow_dirs():
         if not d.exists():
             continue
         for p in d.glob("*.json"):
-            if p.stem not in seen:
-                seen[p.stem] = scope
+            if p.stem in seen:
+                continue
+            try:
+                data = json.loads(p.read_text())
+                project_type = normalize_project_type(data.get("project_type"), warn=False)
+            except Exception:
+                project_type = "editing"
+            seen[p.stem] = (scope, project_type)
     return sorted(
-        [{"name": name, "scope": scope} for name, scope in seen.items()],
+        [{"name": name, "scope": scope, "project_type": pt} for name, (scope, pt) in seen.items()],
         key=lambda x: x["name"],
     )
 

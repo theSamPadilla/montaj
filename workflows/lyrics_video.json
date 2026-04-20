@@ -1,6 +1,7 @@
 {
   "name": "lyrics_video",
   "description": "Music lyrics video — word-synced text over a background (video or color). JSX overlays always used for preview. At render time, renderMode controls whether Puppeteer (JSX) or ffmpeg drawtext is used.",
+  "project_type": "music_video",
   "requires_clips": false,
   "steps": [
     { "id": "stem_separation", "uses": "montaj/stem_separation" },

@@ -156,6 +156,7 @@ export function useVideoPlayback(
     preloadSrcRef.current = ''
     video.src = fileUrl(clips[0].src)
     video.currentTime = clips[0].inPoint ?? 0
+    video.muted = !!(clips[0].muted)
     // Clear inactive slot
     const inactive = getInactiveVideo()
     if (inactive) { inactive.pause(); inactive.removeAttribute('src') }
@@ -202,6 +203,7 @@ export function useVideoPlayback(
     if (nv) {
       const src = fileUrl(nc.src)
       if (preloadSrcRef.current !== src) { nv.src = src; nv.currentTime = nc.inPoint ?? 0 }
+      nv.muted = !!(nc.muted)
       nv.play().catch(() => {})
     }
     ;(activeSlotRef.current === 0 ? video0Ref.current : video1Ref.current)?.pause()
@@ -253,6 +255,7 @@ export function useVideoPlayback(
         const inactive = getInactiveVideo()
         if (inactive) { inactive.pause(); inactive.removeAttribute('src') }
       }
+      video.muted = !!(clip.muted)
       const inPoint = clip.inPoint ?? 0
       if (clip.loop && clip.outPoint) {
         const loopDur = clip.outPoint - inPoint
@@ -306,6 +309,7 @@ export function useVideoPlayback(
           preloadSrcRef.current = nextSrc
           inactiveVideo.src = nextSrc
           inactiveVideo.currentTime = clips[nextIdx].inPoint ?? 0
+          inactiveVideo.muted = !!(clips[nextIdx].muted)
         }
       }
     }
@@ -354,6 +358,7 @@ export function useVideoPlayback(
               nextVideo.src = nextSrc
               nextVideo.currentTime = next.inPoint ?? 0
             }
+            nextVideo.muted = !!(next.muted)
             nextVideo.play().catch(() => {})
           }
 
