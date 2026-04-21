@@ -37,9 +37,9 @@ def main():
     parser.add_argument("--name", help="Project name (used as workspace directory suffix)")
     parser.add_argument("--profile", help="Creator profile name to associate with this project")
     parser.add_argument("--canvas", action="store_true", help="Canvas project — no source footage")
-    parser.add_argument("--image-ref", dest="image_refs", nargs="+", default=[],
+    parser.add_argument("--image-ref", dest="image_refs", action="append", default=[],
                         help="ai_video only. JSON objects: {label, path|text}")
-    parser.add_argument("--style-ref", dest="style_refs", nargs="+", default=[],
+    parser.add_argument("--style-ref", dest="style_refs", action="append", default=[],
                         help="ai_video only. JSON objects: {label, path}")
     parser.add_argument("--aspect-ratio", dest="aspect_ratio", default=None,
                         help="ai_video only. Kling aspect_ratio parameter (e.g. '16:9', '9:16', '1:1').")

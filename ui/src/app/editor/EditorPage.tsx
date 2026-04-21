@@ -56,10 +56,10 @@ export default function EditorPage() {
   }
 
   let view
-  if (project.status === 'pending') {
+  if (project.projectType === 'ai_video' && (project.status === 'pending' || project.status === 'storyboard_ready')) {
+    view = <StoryboardView project={project} onProjectChange={setProject} logMessage={logMessage} />
+  } else if (project.status === 'pending') {
     view = <LiveView project={project} logMessage={logMessage} onProjectChange={setProject} />
-  } else if (project.projectType === 'ai_video' && project.status === 'storyboard_ready') {
-    view = <StoryboardView project={project} onProjectChange={setProject} />
   } else {
     view = <ReviewView project={project} onProjectChange={setProject} />
   }
