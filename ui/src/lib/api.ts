@@ -158,6 +158,12 @@ export const api = {
   createProfileOverlayGroup: (profileName: string, name: string) =>
     request<{ name: string }>(`/api/profiles/${profileName}/overlays/groups`, { method: 'POST', body: JSON.stringify({ name }) }),
 
+  reservePath: (projectId: string, body: { prefix: string; extension: string }) =>
+    request<{ path: string }>(`/api/projects/${projectId}/reserve-path`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+
   logStatus: (projectId: string, message: string) =>
     request<void>(`/api/projects/${projectId}/log`, { method: 'POST', body: JSON.stringify({ message }) }),
 

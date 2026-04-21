@@ -1,5 +1,6 @@
 import { createContext, useContext } from 'react'
 import type { ProjectType, ProjectStatus } from './project'
+import type { AspectRatio } from './kling'
 export interface Workflow {
   name: string
   scope: 'project-local' | 'user' | 'built-in'
@@ -52,6 +53,15 @@ export interface VisualItem {
   nobg_src?: string         // video type only — ProRes 4444 .mov for final render
   nobg_preview_src?: string // video type only — VP9 WebM with alpha for browser preview
   muted?: boolean         // video type only — suppress audio in preview and render
+  generation?: {            // ai_video only — frozen provenance from Kling generation
+    sceneId?: string
+    provider?: string
+    model?: string
+    prompt?: string
+    refImages?: string[]
+    duration?: number
+    attempts?: Array<{ ts: string; prompt: string; src: string }>
+  }
   // Legacy fields for old text overlay items (pre-schema migration)
   position?: string
   text?: string
@@ -62,6 +72,40 @@ export interface Asset {
   src: string
   type: 'image'
   name?: string
+}
+
+export interface Scene {
+  id: string
+  prompt: string
+  duration: number
+  refImages: string[]
+  lastError?: { ts: string; message: string }
+}
+
+export interface ImageRef {
+  id: string
+  label: string
+  anchor?: string
+  refImages: string[]
+  source: 'upload' | 'text'
+  status: 'pending' | 'generating' | 'ready' | 'failed'
+}
+
+export interface StyleRef {
+  id: string
+  kind: 'video' | 'audio' | 'image'
+  path: string
+  label?: string
+}
+
+export interface Storyboard {
+  aspectRatio?: AspectRatio
+  targetDurationSeconds?: number
+  imageRefs: ImageRef[]
+  styleRefs: StyleRef[]
+  styleAnchor?: string
+  scenes: Scene[]
+  approval?: { approvedAt: string }
 }
 
 export interface Project {
@@ -82,6 +126,7 @@ export interface Project {
   profile?: string
   renderMode?: 'ffmpeg-drawtext'
   history?: RunSnapshot[]
+  storyboard?: Storyboard
 }
 
 export interface StepParam {

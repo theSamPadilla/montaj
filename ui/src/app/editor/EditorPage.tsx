@@ -6,6 +6,7 @@ import { useProjectStream } from '@/lib/sse'
 import UploadView from './UploadView'
 import LiveView from './LiveView'
 import ReviewView from './ReviewView'
+import StoryboardView from './StoryboardView'
 
 export default function EditorPage() {
   const { id } = useParams<{ id: string }>()
@@ -54,13 +55,18 @@ export default function EditorPage() {
     )
   }
 
+  let view
+  if (project.status === 'pending') {
+    view = <LiveView project={project} logMessage={logMessage} onProjectChange={setProject} />
+  } else if (project.projectType === 'ai_video' && project.status === 'storyboard_ready') {
+    view = <StoryboardView project={project} onProjectChange={setProject} />
+  } else {
+    view = <ReviewView project={project} onProjectChange={setProject} />
+  }
+
   return (
     <ProjectContext.Provider value={{ project, setProject }}>
-      {project.status === 'pending' ? (
-        <LiveView project={project} logMessage={logMessage} onProjectChange={setProject} />
-      ) : (
-        <ReviewView project={project} onProjectChange={setProject} />
-      )}
+      {view}
     </ProjectContext.Provider>
   )
 }
