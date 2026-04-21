@@ -1,5 +1,6 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
+import { Pencil } from 'lucide-react'
 import { api } from '@/lib/api'
 import type { Project } from '@/lib/types/schema'
 import { SceneCard } from '@/components/storyboard/SceneCard'
@@ -34,6 +35,9 @@ export default function StoryboardView({ project, onProjectChange, logMessage }:
   const editingScene = editingSceneId ? scenes.find(s => s.id === editingSceneId) : null
   const editingIndex = editingScene ? scenes.indexOf(editingScene) : -1
   const isPending = project.status === 'pending'
+  const [editingStyleAnchor, setEditingStyleAnchor] = useState(false)
+  const [styleAnchorDraft, setStyleAnchorDraft] = useState(styleAnchor ?? '')
+  const styleAnchorRef = useRef<HTMLTextAreaElement>(null)
 
   // For the agent prompt in pending state
   const [skillPath, setSkillPath] = useState<string | null>(null)
@@ -48,6 +52,42 @@ export default function StoryboardView({ project, onProjectChange, logMessage }:
 
   async function saveScenePrompt(sceneId: string, newPrompt: string) {
     const nextProject = updateScenePrompt(project, sceneId, newPrompt)
+    await api.saveProject(project.id, nextProject)
+    onProjectChange(nextProject)
+  }
+
+  async function deleteScene(sceneId: string) {
+    const sb = project.storyboard ?? { imageRefs: [], styleRefs: [], scenes: [] }
+    const newScenes = sb.scenes.filter(s => s.id !== sceneId)
+    // Also remove any matching clip from tracks[0]
+    const newTrack = (project.tracks?.[0] ?? []).filter(c =>
+      c.generation?.sceneId !== sceneId &&
+      !c.generation?.batchShots?.some(shot => shot.sceneId === sceneId)
+    )
+    // Recompute clip start/end times from scene order
+    let cursor = 0
+    const retimedTrack = newTrack.map(c => {
+      const dur = (c.outPoint ?? 0) - (c.inPoint ?? 0)
+      const updated = { ...c, start: cursor, end: cursor + dur }
+      cursor += dur
+      return updated
+    })
+    const nextProject: Project = {
+      ...project,
+      storyboard: { ...sb, scenes: newScenes },
+      tracks: [retimedTrack, ...(project.tracks?.slice(1) ?? [])],
+    }
+    await api.saveProject(project.id, nextProject)
+    onProjectChange(nextProject)
+    setEditingSceneId(null)
+  }
+
+  async function saveStyleAnchor(newAnchor: string) {
+    const sb = project.storyboard ?? { imageRefs: [], styleRefs: [], scenes: [] }
+    const nextProject: Project = {
+      ...project,
+      storyboard: { ...sb, styleAnchor: newAnchor || undefined },
+    }
     await api.saveProject(project.id, nextProject)
     onProjectChange(nextProject)
   }
@@ -189,12 +229,44 @@ export default function StoryboardView({ project, onProjectChange, logMessage }:
           </p>
 
           {/* Style anchor */}
-          {styleAnchor && (
-            <section className="rounded-lg border border-gray-800 bg-gray-900/50 p-4">
-              <h2 className="text-sm font-medium text-gray-300 mb-2">Style</h2>
-              <p className="text-sm text-gray-400">{styleAnchor}</p>
-            </section>
-          )}
+          <section className="rounded-lg border border-gray-800 bg-gray-900/50 p-4">
+            <div className="flex items-center justify-between mb-2">
+              <h2 className="text-sm font-medium text-gray-300">Style</h2>
+              {!editingStyleAnchor && (
+                <button
+                  onClick={() => { setStyleAnchorDraft(styleAnchor ?? ''); setEditingStyleAnchor(true) }}
+                  className="p-1 rounded hover:bg-gray-800 text-gray-500 hover:text-gray-300 transition-colors"
+                >
+                  <Pencil className="w-3.5 h-3.5" />
+                </button>
+              )}
+            </div>
+            {editingStyleAnchor ? (
+              <div className="flex flex-col gap-2">
+                <textarea
+                  ref={styleAnchorRef}
+                  value={styleAnchorDraft}
+                  onChange={e => setStyleAnchorDraft(e.target.value)}
+                  rows={3}
+                  autoFocus
+                  className="rounded-md border border-gray-600 bg-gray-800 px-3 py-2 text-sm text-white placeholder:text-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none"
+                  placeholder="Describe the visual style for all scenes..."
+                />
+                <div className="flex gap-2 justify-end">
+                  <button onClick={() => setEditingStyleAnchor(false)} className="text-xs text-gray-400 hover:text-gray-200 px-2 py-1">Cancel</button>
+                  <button
+                    onClick={async () => {
+                      await saveStyleAnchor(styleAnchorDraft)
+                      setEditingStyleAnchor(false)
+                    }}
+                    className="text-xs text-blue-400 hover:text-blue-300 font-medium px-2 py-1"
+                  >Save</button>
+                </div>
+              </div>
+            ) : (
+              <p className="text-sm text-gray-400">{styleAnchor || <span className="italic text-gray-600">No style anchor set</span>}</p>
+            )}
+          </section>
 
           {/* Refs panels */}
           <section className="flex flex-col gap-4 sm:flex-row">
@@ -212,6 +284,7 @@ export default function StoryboardView({ project, onProjectChange, logMessage }:
                 scene={scene}
                 storyboard={project.storyboard}
                 onEditPrompt={() => setEditingSceneId(scene.id)}
+                onDelete={() => deleteScene(scene.id)}
               />
             ))}
             {scenes.length === 0 && (
@@ -227,6 +300,7 @@ export default function StoryboardView({ project, onProjectChange, logMessage }:
               styleAnchor={styleAnchor}
               onClose={() => setEditingSceneId(null)}
               onSave={(newPrompt) => saveScenePrompt(editingScene.id, newPrompt)}
+              onDelete={() => deleteScene(editingScene.id)}
             />
           )}
         </>

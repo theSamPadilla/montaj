@@ -40,6 +40,7 @@ export default function ReviewView({ project, onProjectChange }: ReviewViewProps
   const [previewAsset, setPreviewAsset]   = useState<Asset | null>(null)
   const [pathCopied, setPathCopied]       = useState(false)
   const [rippleMode, setRippleMode]       = useState(false)
+  const [inspectClipId, setInspectClipId] = useState<string | null>(null)
   const navigate = useNavigate()
 
   useEffect(() => {
@@ -282,6 +283,15 @@ export default function ReviewView({ project, onProjectChange }: ReviewViewProps
                 {saving ? 'Saving…' : 'Save'}
               </Button>
             )}
+            {project.projectType === 'ai_video' && (
+              <Button variant="ghost" size="sm" onClick={async () => {
+                const updated = { ...project, status: 'storyboard_ready' as const }
+                await api.saveProject(project.id, updated)
+                onProjectChange(updated)
+              }}>
+                ← Storyboard
+              </Button>
+            )}
             {project.status !== 'pending' && (
               <Button variant="outline" size="sm" onClick={() => setRerunOpen(true)}>
                 Re-run
@@ -409,6 +419,7 @@ export default function ReviewView({ project, onProjectChange }: ReviewViewProps
               onSelectOverlay={setSelectedOverlayId}
               onSplit={handleSplit}
               onCut={handleCut}
+              onInspectClip={setInspectClipId}
               rippleMode={rippleMode}
             />
           </div>
@@ -542,6 +553,106 @@ export default function ReviewView({ project, onProjectChange }: ReviewViewProps
           </div>
         </div>
       )}
+      {/* Clip inspect modal */}
+      {inspectClipId && (() => {
+        const clip = (project.tracks?.[0] ?? []).find(c => c.id === inspectClipId)
+        const gen = clip?.generation
+        if (!gen) return null
+        const scene = project.storyboard?.scenes?.find(s => s.id === gen.sceneId)
+        return (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60" onClick={() => setInspectClipId(null)}>
+            <div className="bg-gray-900 border border-gray-700 rounded-xl shadow-2xl max-w-2xl w-full mx-4 max-h-[80vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
+              <div className="flex items-center justify-between px-5 py-3 border-b border-gray-800">
+                <h3 className="text-sm font-semibold text-white">
+                  Generation details — {gen.sceneId ?? clip?.id}
+                </h3>
+                <button onClick={() => setInspectClipId(null)} className="text-gray-400 hover:text-white">
+                  <X size={16} />
+                </button>
+              </div>
+              <div className="px-5 py-4 flex flex-col gap-4">
+                {/* Prompt */}
+                <div>
+                  <p className="text-xs font-medium text-gray-400 mb-1">Prompt</p>
+                  <p className="text-sm text-gray-200 whitespace-pre-wrap bg-gray-950 border border-gray-800 rounded-md px-3 py-2 font-mono text-xs leading-relaxed">
+                    {gen.prompt}
+                  </p>
+                </div>
+
+                {/* Metadata row */}
+                <div className="flex flex-wrap gap-4">
+                  {gen.provider && (
+                    <div>
+                      <p className="text-xs text-gray-500">Provider</p>
+                      <p className="text-sm text-gray-300">{gen.provider}</p>
+                    </div>
+                  )}
+                  {gen.model && (
+                    <div>
+                      <p className="text-xs text-gray-500">Model</p>
+                      <p className="text-sm text-gray-300">{gen.model}</p>
+                    </div>
+                  )}
+                  {gen.duration != null && (
+                    <div>
+                      <p className="text-xs text-gray-500">Duration</p>
+                      <p className="text-sm text-gray-300">{gen.duration}s</p>
+                    </div>
+                  )}
+                  {gen.sceneId && (
+                    <div>
+                      <p className="text-xs text-gray-500">Scene</p>
+                      <p className="text-sm text-gray-300">{gen.sceneId}</p>
+                    </div>
+                  )}
+                </div>
+
+                {/* Ref images */}
+                {gen.refImages && gen.refImages.length > 0 && (
+                  <div>
+                    <p className="text-xs font-medium text-gray-400 mb-1">Reference images</p>
+                    <div className="flex flex-wrap gap-1">
+                      {gen.refImages.map((refId: string, i: number) => {
+                        const ref = project.storyboard?.imageRefs?.find(r => r.id === refId)
+                        return (
+                          <span key={i} className="text-xs bg-gray-800 border border-gray-700 rounded px-2 py-0.5 text-gray-300">
+                            {ref ? `${ref.label} (${refId})` : refId}
+                          </span>
+                        )
+                      })}
+                    </div>
+                  </div>
+                )}
+
+                {/* Scene prompt (original, before composition) */}
+                {scene && (
+                  <div>
+                    <p className="text-xs font-medium text-gray-400 mb-1">Scene prompt (pre-composition)</p>
+                    <p className="text-sm text-gray-400 bg-gray-950 border border-gray-800 rounded-md px-3 py-2 text-xs">
+                      {scene.prompt}
+                    </p>
+                  </div>
+                )}
+
+                {/* Attempts */}
+                {gen.attempts && gen.attempts.length > 0 && (
+                  <div>
+                    <p className="text-xs font-medium text-gray-400 mb-1">Previous attempts ({gen.attempts.length})</p>
+                    <div className="flex flex-col gap-1">
+                      {gen.attempts.map((a: { ts?: string; prompt?: string }, i: number) => (
+                        <div key={i} className="text-xs text-gray-500 bg-gray-950 border border-gray-800 rounded px-2 py-1">
+                          {a.ts && <span className="text-gray-600">{new Date(a.ts).toLocaleString()} — </span>}
+                          {a.prompt && <span className="font-mono">{a.prompt.slice(0, 100)}{a.prompt.length > 100 ? '…' : ''}</span>}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        )
+      })()}
     </div>
   )
 }

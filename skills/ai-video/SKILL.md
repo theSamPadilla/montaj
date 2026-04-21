@@ -116,7 +116,7 @@ Fold all outputs into a SINGLE `storyboard.styleAnchor` string — one cohesive 
 Populate `storyboard.scenes[]` with one entry per intended scene: `{id, prompt, duration, refImages}`.
 
 - **`id`** — stable within the project (e.g. `"scene-1"`, `"scene-2"`).
-- **`prompt`** — scene-specific text only. Do NOT pre-prepend `styleAnchor` or `<<<image_N>>>` tokens; those are combined at call time in Phase 6.
+- **`prompt`** — scene-specific prose only. **NEVER include `<<<image_N>>>` tokens or `styleAnchor` text here.** Write natural language that names characters by their labels (e.g. "Rennie sits at the top of the slide, Rosie waits below"). Token substitution and style prepending happen at call time in Phase 6 Step C — not at storyboard time. If you bake tokens into scene prompts, they break when the user reorders `refImages`.
 - **`duration`** — integer seconds. See "Duration budgeting" below for allocation.
 - **`refImages`** — IDs into `storyboard.imageRefs[]` (NOT paths). Pick refs by matching natural-language mentions in the prompt ("Max is walking…") to `imageRefs[i].label`. Hard cap of 3 refs per scene (editorial cap — the connector allows 7, but 3 is the sweet spot for focused scene generation).
 
@@ -273,33 +273,39 @@ State your chosen mode in chat once at the start — the user can redirect if wr
 
 For each scene (or shot, in batched mode):
 
-- **Substitute `storyboard.styleAnchor` literally** at the start of the prompt, followed by the scene-specific prose with `<<<image_N>>>` tokens placed **inline** at the nouns each ref binds to. There is no token for the style anchor — you read the string value from `project.storyboard.styleAnchor` and write it directly into the prompt at compose time. `<<<image_N>>>` IS a token (Kling interprets it); `<<<styleAnchor>>>` is NOT — don't write that.
-- N is 1-indexed and matches the order of paths you pass to `--ref-image`.
+- **Substitute `storyboard.styleAnchor` literally** at the start of the prompt, followed by the scene-specific prose. Write natural language — reference characters by their labels (e.g. "Rennie sits at the top", "Rosie waits below"). Do NOT manually insert `<<<image_N>>>` tokens.
 
-  **Concrete example.** Say `storyboard.styleAnchor` is `"Warm golden-hour lighting, soft film grain, handheld camera."` and `scene.refImages = [max_id, meadow_id]` resolves to paths `/refs/max.jpg` and `/refs/meadow.jpg`. The combined prompt you pass to `kling_generate --prompt` is literally:
+- **The connector handles ref-image binding automatically.** When you pass `--ref-image` paths, the connector prepends a ref clause to the prompt:
+  ```
+  Use the character/style from <<<image_1>>>, <<<image_2>>>. <your prompt here>
+  ```
+  This tells Kling to faithfully reproduce the reference characters/styles. You do not need to (and should not) place `<<<image_N>>>` tokens yourself — the connector owns token generation and prompt prepending.
+
+  **Concrete example.** Say `storyboard.styleAnchor` is `"Warm golden-hour lighting, soft film grain, handheld camera."` and `scene.refImages = [max_id, meadow_id]` resolves to paths `/refs/max.jpg` and `/refs/meadow.jpg`. The prompt you pass to `kling_generate --prompt` is:
 
   ```
-  Warm golden-hour lighting, soft film grain, handheld camera. The dog <<<image_1>>> runs across the <<<image_2>>> meadow.
+  Warm golden-hour lighting, soft film grain, handheld camera. The dog runs across the meadow.
   ```
 
   And the CLI call is:
 
   ```
-  kling_generate --prompt "<that full string>" --ref-image /refs/max.jpg --ref-image /refs/meadow.jpg ...
+  kling_generate --prompt "<that string>" --ref-image /refs/max.jpg --ref-image /refs/meadow.jpg ...
   ```
 
-- **Compose in the skill, not in the connector.** You own `<<<image_N>>>` token placement and `styleAnchor` substitution — the connector does neither. It is NOT fully hands-off, though; it enforces Kling's length caps mechanically:
-  - **Single-shot: silently truncates at 2500 chars.** If your combined prompt exceeds that, the tail is dropped without an exception (the step prints a `prompt_truncated` warning on stderr — watch for it). Respect the cap when composing; don't rely on the truncation to land gracefully.
-  - **Multi-shot customize: hard-rejects any `multi_prompt[i].prompt` > 512 chars.** Raises `ConnectorError`, step fails. Strict — compose tighter per-shot prose.
-  - **Multi-shot customize: omits the top-level `prompt` body field entirely** (per Kling's spec — `prompt` is invalid in that mode). Your per-shot strings in `multi_prompt[]` are what ship.
-  - Otherwise the connector is pass-through — no token auto-prepending, no style injection, no rewriting.
-  - If you forget to place `<<<image_N>>>` tokens inline, Kling has no binding signal and falls back to guessing — weaker consistency across scenes.
+  The connector will produce the final wire prompt:
+  ```
+  Use the character/style from <<<image_1>>>, <<<image_2>>>. Warm golden-hour lighting, soft film grain, handheld camera. The dog runs across the meadow.
+  ```
 
-- Do NOT place tokens all at the front (`<<<image_1>>> <<<image_2>>> <prompt>`). That's the crude fallback shape; it defeats the point of omni binding.
+- **Length caps (enforced by connector):**
+  - **Single-shot: silently truncates at 2500 chars** (after ref clause prepend). The step prints a `prompt_truncated` warning on stderr — watch for it. Respect the cap when composing; don't rely on the truncation to land gracefully.
+  - **Multi-shot customize: hard-rejects any `multi_prompt[i].prompt` > 512 chars.** Raises `ConnectorError`, step fails. Compose tighter per-shot prose.
+  - **Multi-shot customize: omits the top-level `prompt` body field entirely** (per Kling's spec — `prompt` is invalid in that mode). Your per-shot strings in `multi_prompt[]` are what ship.
 
 - Resolve `scene.refImages` IDs against `storyboard.imageRefs` (use `imageRefs[i].refImages[0]` as the primary path). Enforce the editorial cap of 3 refs per scene.
 
-- Respect Kling's length cap: 2500 chars in single-shot, **512 chars per shot in multi-shot**. See the connector behavior above for what happens if you don't.
+- Respect Kling's length cap: 2500 chars in single-shot, **512 chars per shot in multi-shot** (both after ref clause).
 
 ### Step D — call and write
 
@@ -340,9 +346,13 @@ Add `--first-frame <path>` for chained mode (N-1's last frame).
 }
 ```
 
-The combined prompt stored on `generation.prompt` is the final wire-ready string — Plan 5's regenerate modal pre-fills from this. Write `project.json` back. The UI's SSE observer flips scene cards to "done" by checking for this clip.
+The combined prompt stored on `generation.prompt` is the final wire-ready string — Plan 5's regenerate modal pre-fills from this.
 
-**On failure:** record `storyboard.scenes[i].lastError = {ts: <ISO8601>, message: <error>}` (clear on eventual success). Do NOT append to `tracks[0]`. Continue to the next scene.
+**Write `project.json` back IMMEDIATELY after each scene completes** — do not batch writes. The UI watches for changes via SSE and flips scene chips from "pending" → "done" in real time. If you wait until all scenes finish to write, the user sees no progress for minutes. Each `kling_generate` call returns → append the clip to `tracks[0]` → save `project.json` → move to the next result. When running scenes in parallel, save after EACH result lands (not after all parallel calls complete).
+
+**On failure:** record `storyboard.scenes[i].lastError = {ts: <ISO8601>, message: <error>}` and write `project.json` back immediately. Do NOT append to `tracks[0]`. Continue to the next scene. The UI updates in real-time via SSE.
+
+**On retry after failures:** Before retrying failed scenes, clear `lastError` on each scene you're about to retry — set `storyboard.scenes[i].lastError = undefined` and write `project.json`. This resets the UI's red "failed" chips back to "pending" so the user sees live progress. Then proceed with generation as normal. On success, the clip write naturally clears the failed state in the UI.
 
 #### Batched (multi-shot customize)
 
@@ -446,13 +456,13 @@ One table of every field you write, grouped by phase.
 
 ## What NOT to do
 
+- **Don't put `<<<image_N>>>` tokens in scene prompts OR in the composed prompt you pass to `kling_generate`.** Scene prompts are natural language with character labels. The connector auto-prepends a ref clause with the correct tokens when you pass `--ref-image` paths. Manually placing tokens leads to duplicate/conflicting bindings.
 - **Don't generate scenes sequentially in independent mode.** Fire all `kling_generate` calls in parallel (up to 4 concurrent). Sequential one-at-a-time dispatch wastes minutes of wall-clock time — Kling handles concurrent requests fine.
 - **Don't skip Phase 0.** If intake is thin or ambiguous, ASK before writing scenes. A wrong 8-scene storyboard costs more than one clarification turn.
 - **Don't bombard the user with multiple questions at once.** One question per turn, wait for the answer.
 - **Don't call `generate_image` on `imageRefs[i]` with `source: "upload"`.** You'd overwrite the user's file. Only text-sourced refs get image generation.
 - **Don't fold `styleAnchor` into `generate_image` prompts.** Refs are identity-only; style is applied by Kling at scene generation.
-- **Don't skip `<<<image_N>>>` token placement when sending refs.** The connector is pure pass-through and will NOT auto-prepend. If you forget, Kling has no binding signal and output is worse.
-- **Don't put tokens all at the front.** Place them inline at specific nouns, not `<<<image_1>>> <<<image_2>>> <prompt>`.
+- **Don't manually place `<<<image_N>>>` tokens in prompts.** The connector handles ref clause prepending automatically. Adding your own tokens creates duplicate bindings that confuse Kling.
 - **Don't use multi-shot mode with `--first-frame` / `--last-frame`.** Kling doesn't support frame control in multi-shot. If you need frame continuity, use chained mode.
 - **Don't exceed 512 chars per shot in multi-shot mode.** Single-shot's 2500-char budget does NOT apply per-shot. Fall back to independent mode for any scene that needs more prose.
 - **Don't use `sceneId` on the outer `generation` block of a batched clip.** Use `batchShots[].sceneId`. The idempotency check in Step A branches on whether `batchShots` exists.

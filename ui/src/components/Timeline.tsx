@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent } from 'react'
 import { createPortal } from 'react-dom'
-import { Volume2, VolumeX } from 'lucide-react'
+import { Volume2, VolumeX, Info } from 'lucide-react'
 import type { CaptionSegment, VisualItem, Project } from '@/lib/types/schema'
 import { collapseGaps } from '@/lib/cuts'
 
@@ -15,6 +15,7 @@ interface TimelineProps {
   onSelectOverlay?: (id: string | null) => void
   onSplit?: (at: number) => void
   onCut?: (cut: { start: number; end: number }) => void
+  onInspectClip?: (id: string) => void
   rippleMode?: boolean
 }
 
@@ -54,7 +55,7 @@ function EditableSegment({ seg, onEdit }: { seg: CaptionSegment; onEdit: (text: 
 }
 
 
-export default function Timeline({ project, currentTime, onTimeUpdate, onProjectChange, onCaptionEdit, onOverlayEdit, selectedOverlayId, onSelectOverlay, onSplit, onCut, rippleMode = false }: TimelineProps) {
+export default function Timeline({ project, currentTime, onTimeUpdate, onProjectChange, onCaptionEdit, onOverlayEdit, selectedOverlayId, onSelectOverlay, onSplit, onCut, onInspectClip, rippleMode = false }: TimelineProps) {
   const allTracks      = project.tracks ?? []
   const captionTrack   = project.captions
   const snapBoundaries = [...new Set(allTracks.flat().flatMap(c => [c.start, c.end]))]
@@ -680,6 +681,13 @@ export default function Timeline({ project, currentTime, onTimeUpdate, onProject
                       >
                         {item.muted ? <VolumeX size={10} /> : <Volume2 size={10} />}
                       </button>
+                    )}
+                    {isSel && onInspectClip && item.generation && (
+                      <button
+                        className={`shrink-0 ml-1 z-10 cursor-pointer opacity-50 hover:opacity-100 ${tc.text}`}
+                        onClick={(e) => { e.stopPropagation(); onInspectClip(item.id) }}
+                        title="Inspect generation"
+                      ><Info size={10} /></button>
                     )}
                     {isSel && (
                       <button

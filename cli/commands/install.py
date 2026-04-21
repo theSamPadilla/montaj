@@ -371,7 +371,7 @@ def _handle_credentials(args):
                 if already_set:
                     label = f"  {key} {_green('[set]')} {_dim('enter to keep, or paste new value')}: "
                 else:
-                    label = f"  {key} {_dim('(' + hint + ')') if hint else ''}: "
+                    label = f"  {key} {_dim('(' + hint + ')')}{_dim(' — hidden input')}: " if hint else f"  {key}{_dim(' — hidden input')}: "
 
                 value = _read_secret(label)
                 if value:

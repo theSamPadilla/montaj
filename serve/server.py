@@ -173,14 +173,25 @@ def build_cli_args(schema: dict, body: dict) -> list[str]:
         flags += ["--input", str(body["input"])]
 
     for param in schema.get("params", []):
-        val = body.get(param["name"])
+        name = param["name"]
+        # Accept both hyphenated (schema canonical) and underscored (JSON convenience).
+        val = body.get(name)
+        if val is None:
+            val = body.get(name.replace("-", "_"))
         if val is None:
             continue
+        flag = "--" + name
         if param.get("type") == "bool":
             if val:
-                flags.append("--" + param["name"])
+                flags.append(flag)
+        elif isinstance(val, list):
+            # Repeatable params: emit the flag once per element (matches MCP buildCliArgs).
+            for item in val:
+                flags += [flag, str(item)]
+        elif isinstance(val, dict):
+            flags += [flag, json.dumps(val)]
         else:
-            flags += ["--" + param["name"], json.dumps(val) if isinstance(val, (list, dict)) else str(val)]
+            flags += [flag, str(val)]
 
     if "out" in body:
         flags += ["--out", str(body["out"])]

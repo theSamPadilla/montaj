@@ -10,9 +10,10 @@ interface Props {
   styleAnchor?: string
   onClose: () => void
   onSave: (newPrompt: string) => Promise<void>
+  onDelete?: () => Promise<void>
 }
 
-export function SceneEditor({ scene, index, styleAnchor, onClose, onSave }: Props) {
+export function SceneEditor({ scene, index, styleAnchor, onClose, onSave, onDelete }: Props) {
   const [draft, setDraft] = useState(scene.prompt)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -35,6 +36,21 @@ export function SceneEditor({ scene, index, styleAnchor, onClose, onSave }: Prop
     setError(null)
     try {
       await onSave(draft)
+      onClose()
+    } catch (e) {
+      setError(String(e))
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  async function handleDelete() {
+    if (!onDelete) return
+    if (!window.confirm(`Delete scene ${index + 1}? This removes the scene and any generated clip for it.`)) return
+    setSaving(true)
+    setError(null)
+    try {
+      await onDelete()
       onClose()
     } catch (e) {
       setError(String(e))
@@ -80,11 +96,23 @@ export function SceneEditor({ scene, index, styleAnchor, onClose, onSave }: Prop
         </div>
 
         {/* Footer */}
-        <div className="flex items-center justify-end gap-2 px-5 py-4 border-t border-gray-800">
-          <Button variant="secondary" size="sm" onClick={onClose} disabled={saving}>Cancel</Button>
-          <Button size="sm" onClick={handleSave} disabled={saving || !dirty}>
-            {saving ? 'Saving…' : 'Save'}
-          </Button>
+        <div className="flex items-center px-5 py-4 border-t border-gray-800">
+          {onDelete && (
+            <button
+              onClick={handleDelete}
+              disabled={saving}
+              className="text-xs text-red-400 hover:text-red-300 transition-colors disabled:opacity-50"
+            >
+              Delete scene
+            </button>
+          )}
+          <div className="flex-1" />
+          <div className="flex items-center gap-2">
+            <Button variant="secondary" size="sm" onClick={onClose} disabled={saving}>Cancel</Button>
+            <Button size="sm" onClick={handleSave} disabled={saving || !dirty}>
+              {saving ? 'Saving…' : 'Save'}
+            </Button>
+          </div>
         </div>
       </aside>
     </div>

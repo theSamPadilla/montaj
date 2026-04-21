@@ -1,4 +1,4 @@
-import { Pencil } from 'lucide-react'
+import { Pencil, Trash2 } from 'lucide-react'
 import { fileUrl } from '@/lib/api'
 import type { Scene, Storyboard } from '@/lib/types/schema'
 
@@ -7,9 +7,10 @@ interface Props {
   scene: Scene
   storyboard: Storyboard | undefined
   onEditPrompt: () => void
+  onDelete?: () => void
 }
 
-export function SceneCard({ index, scene, storyboard, onEditPrompt }: Props) {
+export function SceneCard({ index, scene, storyboard, onEditPrompt, onDelete }: Props) {
   const resolvedRefs = (scene.refImages ?? [])
     .map(id => storyboard?.imageRefs?.find(r => r.id === id))
     .filter((ref): ref is NonNullable<typeof ref> => !!ref)
@@ -28,6 +29,18 @@ export function SceneCard({ index, scene, storyboard, onEditPrompt }: Props) {
         >
           <Pencil className="w-3.5 h-3.5" />
         </button>
+        {onDelete && (
+          <button
+            type="button"
+            onClick={() => {
+              if (window.confirm(`Delete scene ${index + 1}?`)) onDelete()
+            }}
+            className="p-1 rounded hover:bg-gray-800 text-gray-500 hover:text-red-400 transition-colors"
+            aria-label={`Delete scene ${index + 1}`}
+          >
+            <Trash2 className="w-3.5 h-3.5" />
+          </button>
+        )}
       </header>
 
       {resolvedRefs.length > 0 && (

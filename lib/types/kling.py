@@ -13,6 +13,14 @@ logger = logging.getLogger(__name__)
 ASPECT_RATIOS: tuple[str, ...] = ("16:9", "9:16", "1:1")
 DEFAULT_ASPECT_RATIO: str = "16:9"
 
+# Canonical resolution for each aspect ratio (width, height).
+# Used by init.py to set project settings.resolution and by the render pipeline.
+ASPECT_RESOLUTIONS: dict[str, tuple[int, int]] = {
+    "16:9": (1920, 1080),
+    "9:16": (1080, 1920),
+    "1:1":  (1080, 1080),
+}
+
 def is_valid_aspect_ratio(value: str) -> bool:
     return value in ASPECT_RATIOS
 

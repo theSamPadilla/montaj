@@ -167,10 +167,6 @@ def build_payload(
             f"Too many reference images ({len(reference_image_paths)}); max is {MAX_REF_IMAGES}"
         )
 
-    original_length = len(prompt) if prompt else 0
-    truncated = original_length > MAX_PROMPT_CHARS
-    runtime_prompt = prompt[:MAX_PROMPT_CHARS] if (prompt and truncated) else prompt
-
     # Clamp duration (single-shot; multi-shot computes above from multi_prompt sum).
     if not multi_shot:
         duration_seconds = max(3, min(15, duration_seconds))
@@ -189,19 +185,33 @@ def build_payload(
             "type": "end_frame",
         })
 
-    # Reference images — caller owns token placement.
+    # Reference images — connector prepends a binding clause.
     #
     # Kling's omni-syntax uses <<<image_N>>> tokens in the prompt to bind
-    # references to specific nouns ("The man <<<image_1>>> walks past the
-    # <<<image_2>>> tree"). N is 1-indexed and matches the order of entries
-    # appended to image_list below.
+    # references to specific nouns. N is 1-indexed and matches the order of
+    # entries appended to image_list below.
     #
-    # The connector is pure pass-through: it attaches the images but never
-    # mutates the prompt. Callers (agents/skills) are responsible for placing
-    # <<<image_N>>> tokens inline at the noun each ref maps to.
+    # The connector auto-prepends a ref clause to the prompt:
+    #   "Use the character/style from <<<image_1>>>, <<<image_2>>>. <prompt>"
+    # This tells Kling to faithfully reproduce the reference characters/styles.
+    # Callers may ALSO place <<<image_N>>> tokens inline for additional binding
+    # signal, but the ref clause is the primary driver of character consistency.
+    ref_token_parts = []
     if reference_image_paths:
         for ref_path in reference_image_paths:
             image_list.append({"image_url": _file_to_base64(ref_path)})
+            ref_token_parts.append(f"<<<image_{len(image_list)}>>>")
+
+    # Build runtime prompt with ref clause prepended.
+    runtime_prompt = prompt
+    if ref_token_parts and runtime_prompt:
+        ref_clause = "Use the character/style from " + ", ".join(ref_token_parts) + ". "
+        runtime_prompt = ref_clause + runtime_prompt
+
+    original_length = len(runtime_prompt) if runtime_prompt else 0
+    truncated = original_length > MAX_PROMPT_CHARS
+    if runtime_prompt and truncated:
+        runtime_prompt = runtime_prompt[:MAX_PROMPT_CHARS]
 
     body = {
         "model_name": MODEL_NAME,
@@ -245,9 +255,17 @@ def create_task(body: dict) -> dict:
     url = f"{BASE_URL}/v1/videos/omni-video"
     try:
         r = requests.post(url, json=body, headers=_auth_headers(), timeout=30)
-        r.raise_for_status()
     except requests.RequestException as e:
         raise ConnectorError(f"Kling API request failed: {e}") from e
+    # Capture response body before raising on HTTP errors — Kling returns
+    # useful error details in JSON even on 4xx/5xx responses.
+    if r.status_code >= 400:
+        try:
+            err_data = r.json()
+            msg = err_data.get("message") or err_data.get("msg") or r.text[:500]
+        except Exception:
+            msg = r.text[:500]
+        raise ConnectorError(f"Kling API error (HTTP {r.status_code}): {msg}")
     data = r.json()
     if data.get("code") != 0:
         raise ConnectorError(f"Kling API error: {data.get('message', 'unknown error')}")

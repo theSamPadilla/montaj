@@ -6,7 +6,7 @@ from datetime import datetime
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from lib.common import fail
 from lib.types.project import normalize_project_type
-from lib.types.kling import is_valid_aspect_ratio, ASPECT_RATIOS
+from lib.types.kling import is_valid_aspect_ratio, ASPECT_RATIOS, ASPECT_RESOLUTIONS, DEFAULT_ASPECT_RATIO
 from lib.workflow import read_workflow
 
 
@@ -117,7 +117,9 @@ def main():
 
     # Detect resolution and fps from the first clip so settings always reflect
     # the actual source footage — prevents overlay misalignment at render time.
-    detected_resolution = [1080, 1920]
+    # For ai_video with no clips, derive from the requested aspect ratio.
+    ar = args.aspect_ratio or DEFAULT_ASPECT_RATIO
+    detected_resolution = list(ASPECT_RESOLUTIONS.get(ar, ASPECT_RESOLUTIONS[DEFAULT_ASPECT_RATIO]))
     detected_fps = 30
     if clips:
         try:

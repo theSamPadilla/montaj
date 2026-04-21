@@ -74,24 +74,43 @@ def test_build_payload_reference_images(tmp_path):
     ref2.write_bytes(b"R2")
     result = build_payload(prompt="a person dancing", reference_image_paths=[str(ref1), str(ref2)])
     body = result["body"]
-    # Connector does NOT mutate the prompt. Callers are responsible for
-    # placing <<<image_N>>> tokens inline at the noun each ref binds to.
-    assert body["prompt"] == "a person dancing"
+    # Connector prepends a ref clause: "Use the character/style from <<<image_1>>>, <<<image_2>>>. "
+    assert body["prompt"].startswith("Use the character/style from <<<image_1>>>, <<<image_2>>>. ")
+    assert body["prompt"].endswith("a person dancing")
     # reference images have no type key
     assert len(body["image_list"]) == 2
     assert "type" not in body["image_list"][0]
     assert "type" not in body["image_list"][1]
 
 
+def test_build_payload_ref_clause_with_first_frame(tmp_path):
+    """When first_frame is present, ref image tokens start after the frame entries."""
+    first = tmp_path / "first.png"
+    first.write_bytes(b"F")
+    ref1 = tmp_path / "ref1.png"
+    ref1.write_bytes(b"R1")
+    result = build_payload(
+        prompt="test", first_frame_path=str(first),
+        reference_image_paths=[str(ref1)],
+    )
+    body = result["body"]
+    # first_frame is image_list[0], ref is image_list[1] → token is <<<image_2>>>
+    assert "<<<image_2>>>" in body["prompt"]
+    assert body["image_list"][0]["type"] == "first_frame"
+    assert "type" not in body["image_list"][1]
+
+
 def test_build_payload_preserves_caller_placed_tokens(tmp_path):
-    """If the caller places <<<image_N>>> tokens, the connector leaves them alone."""
+    """Caller-placed inline tokens are preserved alongside the prepended ref clause."""
     ref1 = tmp_path / "ref1.png"
     ref1.write_bytes(b"R1")
     ref2 = tmp_path / "ref2.png"
     ref2.write_bytes(b"R2")
     prompt = "The man <<<image_1>>> walks past the <<<image_2>>> tree"
     result = build_payload(prompt=prompt, reference_image_paths=[str(ref1), str(ref2)])
-    assert result["body"]["prompt"] == prompt
+    # Ref clause is prepended, caller tokens are preserved in the body
+    assert result["body"]["prompt"].startswith("Use the character/style from")
+    assert "<<<image_1>>> walks past" in result["body"]["prompt"]
 
 
 # ---------------------------------------------------------------------------
@@ -102,7 +121,6 @@ def test_build_payload_truncates_long_prompt():
     long_prompt = "x" * (MAX_PROMPT_CHARS + 500)
     result = build_payload(prompt=long_prompt)
     assert result["truncated"] is True
-    assert result["original_prompt_length"] == MAX_PROMPT_CHARS + 500
     assert len(result["body"]["prompt"]) == MAX_PROMPT_CHARS
 
 
@@ -317,3 +335,6 @@ def test_multi_shot_customize_with_ref_images(tmp_path):
     body = result["body"]
     assert body["multi_shot"] is True
     assert len(body["image_list"]) == 1
+    # In customize mode, prompt is omitted from body — per-shot prompts in multi_prompt.
+    # No top-level prompt means no ref clause prepended (callers put refs in per-shot prompts).
+    assert "prompt" not in body
