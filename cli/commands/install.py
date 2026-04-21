@@ -89,26 +89,26 @@ def _ensure_whisper(model: str = "base.en") -> bool:
     needs_upgrade = installed_version and installed_version != WHISPER_VERSION
     if needs_install or needs_upgrade:
         if needs_upgrade:
-            print(f"→ upgrading whisper-cpp {installed_version} → {WHISPER_VERSION} ({system}/{machine})…")
+            print(f"\u2192 upgrading whisper-cpp {installed_version} \u2192 {WHISPER_VERSION} ({system}/{machine})\u2026")
         else:
-            print(f"→ downloading whisper-cpp binary ({system}/{machine})…")
+            print(f"\u2192 downloading whisper-cpp binary ({system}/{machine})\u2026")
         try:
             _install_whisper_binary(url, checksum, bin_path)
-            print("✓ whisper-cpp binary installed")
+            print("\u2713 whisper-cpp binary installed")
         except RuntimeError as e:
             print(str(e), file=sys.stderr)
             return False
     else:
-        print(f"✓ whisper-cpp {WHISPER_VERSION}")
+        print(f"\u2713 whisper-cpp {WHISPER_VERSION}")
     if not is_downloaded(model):
-        print(f"→ downloading whisper model {model}…")
+        print(f"\u2192 downloading whisper model {model}\u2026")
         try:
             _download_model(model)
-            print(f"✓ whisper model {model}")
+            print(f"\u2713 whisper model {model}")
         except (Exception, SystemExit):
             return False
     else:
-        print(f"✓ whisper model {model}")
+        print(f"\u2713 whisper model {model}")
     return True
 
 
@@ -165,30 +165,30 @@ def _install_whisper_binary(url: str, checksum, bin_path: str):
 
 
 def _ensure_demucs() -> bool:
-    print("→ installing demucs deps…")
+    print("\u2192 installing demucs deps\u2026")
     r = subprocess.run([sys.executable, "-m", "pip", "install", "-e", ".[demucs]"])
     if r.returncode != 0:
         print("error: pip install .[demucs] failed", file=sys.stderr)
         return False
-    print("✓ demucs deps installed")
+    print("\u2713 demucs deps installed")
     # Pre-warm: downloads htdemucs model weights on first use
-    print("→ downloading htdemucs model weights…")
+    print("\u2192 downloading htdemucs model weights\u2026")
     try:
         from demucs.pretrained import get_model
         get_model("htdemucs")
-        print("✓ htdemucs model ready")
+        print("\u2713 htdemucs model ready")
     except Exception as e:
         print(f"warning: could not pre-warm demucs model: {e}", file=sys.stderr)
     return True
 
 
 def _ensure_rvm() -> bool:
-    print("→ installing rvm deps (torch, torchvision, av)…")
+    print("\u2192 installing rvm deps (torch, torchvision, av)\u2026")
     r = subprocess.run([sys.executable, "-m", "pip", "install", "-e", ".[rvm]"])
     if r.returncode != 0:
         print("error: pip install .[rvm] failed", file=sys.stderr)
         return False
-    print("✓ rvm deps installed")
+    print("\u2713 rvm deps installed")
     # Pre-fetch all model weights so there are no lazy downloads at runtime
     RVM_WEIGHTS = {
         "rvm_mobilenetv3.pth": "https://github.com/PeterL1n/RobustVideoMatting/releases/download/v1.0.0/rvm_mobilenetv3.pth",
@@ -197,7 +197,7 @@ def _ensure_rvm() -> bool:
     for filename, url in RVM_WEIGHTS.items():
         try:
             _models.ensure_model("rvm", filename, url, None)
-            print(f"✓ {filename}")
+            print(f"\u2713 {filename}")
         except Exception as e:
             print(f"warning: could not pre-fetch {filename}: {e}", file=sys.stderr)
     return True
@@ -205,14 +205,68 @@ def _ensure_rvm() -> bool:
 
 def _ensure_connectors() -> bool:
     from cli.main import MONTAJ_ROOT
-    print("→ installing connector deps (pyjwt, requests, google-genai, openai)…")
+    print("\u2192 installing connector deps (pyjwt, requests, google-genai, openai)\u2026")
     r = subprocess.run([sys.executable, "-m", "pip", "install", "-e", ".[connectors]"],
                        cwd=MONTAJ_ROOT)
     if r.returncode != 0:
         print("error: pip install .[connectors] failed", file=sys.stderr)
         return False
-    print("✓ connector deps installed")
+    print("\u2713 connector deps installed")
     return True
+
+
+# ── ANSI helpers ──────────────────────────────────────────────────────────────
+
+def _supports_color() -> bool:
+    if os.environ.get("NO_COLOR"):
+        return False
+    if os.environ.get("FORCE_COLOR"):
+        return True
+    return hasattr(sys.stdout, "isatty") and sys.stdout.isatty()
+
+_USE_COLOR = _supports_color()
+
+def _c(code: str, text: str) -> str:
+    return f"\033[{code}m{text}\033[0m" if _USE_COLOR else text
+
+def _bold(t: str) -> str:    return _c("1", t)
+def _dim(t: str) -> str:     return _c("2", t)
+def _green(t: str) -> str:   return _c("32", t)
+def _yellow(t: str) -> str:  return _c("33", t)
+def _blue(t: str) -> str:    return _c("34", t)
+def _cyan(t: str) -> str:    return _c("36", t)
+def _red(t: str) -> str:     return _c("31", t)
+
+
+# ── Credentials TUI ──────────────────────────────────────────────────────────
+
+_PROVIDER_INFO = {
+    "kling": {
+        "display": "Kling AI",
+        "desc": "Video generation",
+        "url": "https://platform.klingai.com",
+        "keys": {
+            "access_key": "Your identity (becomes the JWT issuer claim)",
+            "secret_key": "Your signing secret (signs the JWT, never sent over the wire)",
+        },
+    },
+    "gemini": {
+        "display": "Google Gemini",
+        "desc": "Video analysis & image generation",
+        "url": "https://aistudio.google.com/apikey",
+        "keys": {
+            "api_key": "API key from Google AI Studio",
+        },
+    },
+    "openai": {
+        "display": "OpenAI",
+        "desc": "Image generation",
+        "url": "https://platform.openai.com/api-keys",
+        "keys": {
+            "api_key": "API key from OpenAI dashboard",
+        },
+    },
+}
 
 
 def _handle_credentials(args):
@@ -225,55 +279,72 @@ def _handle_credentials(args):
         # --list mode
         if getattr(args, "list_creds", False):
             data = list_providers()
-            if not data:
-                print("No credentials configured yet.")
-                print(f"Run: montaj install credentials")
-                return
+            print()
+            print(_bold("  Credential status"))
+            print()
             for provider, keys in data.items():
-                print(f"  {provider}:")
+                info = _PROVIDER_INFO.get(provider, {})
+                display = info.get("display", provider)
+                print(f"  {_bold(display)} {_dim('(' + provider + ')')}")
                 for k, v in keys.items():
-                    print(f"    {k}: {v}")
+                    if v == "set":
+                        print(f"    {_green('\u2713')} {k}")
+                    else:
+                        print(f"    {_dim('\u2717')} {k} {_dim('not set')}")
+                print()
             return
 
         # Scripted mode: --provider + --key + --value
         if args.provider and args.key and args.value:
             if args.provider not in KNOWN_PROVIDERS:
-                print(f"error: unknown provider '{args.provider}'. "
+                print(f"{_red('error')}: unknown provider '{args.provider}'. "
                       f"Known: {', '.join(KNOWN_PROVIDERS)}", file=sys.stderr)
                 sys.exit(1)
             if args.key not in KNOWN_PROVIDERS[args.provider]:
-                print(f"error: unknown key '{args.key}' for {args.provider}. "
+                print(f"{_red('error')}: unknown key '{args.key}' for {args.provider}. "
                       f"Known: {', '.join(KNOWN_PROVIDERS[args.provider])}", file=sys.stderr)
                 sys.exit(1)
             set_credential(args.provider, args.key, args.value)
-            print(f"✓ Saved {args.provider}.{args.key}")
+            print(f"{_green('\u2713')} Saved {args.provider}.{args.key}")
             return
 
         # If partial scripted args given, error
         if args.provider or args.key or args.value:
-            print("error: --provider, --key, and --value must all be specified together",
+            print(f"{_red('error')}: --provider, --key, and --value must all be specified together",
                   file=sys.stderr)
             sys.exit(1)
 
-        # Interactive mode
-        import getpass
+        # ── Interactive mode ──────────────────────────────────────────────
 
-        _DESCRIPTIONS = {
-            "kling":  "Kling AI — video generation",
-            "gemini": "Google Gemini — video analysis & image generation",
-            "openai": "OpenAI — image generation",
-        }
+        print()
+        print(f"  {_bold('montaj')} {_dim('credential setup')}")
+        print()
+        print(f"  Keys are stored in {_dim('~/.montaj/credentials.json')} (0600, never logged).")
+        print(f"  You can also set env vars instead — e.g. {_dim('KLING_ACCESS_KEY')}.")
+        print()
 
         providers = list(KNOWN_PROVIDERS.keys())
-        print("Available providers:")
         for i, p in enumerate(providers, 1):
-            desc = _DESCRIPTIONS.get(p, "")
-            print(f"  {i}. {p}" + (f" — {desc}" if desc else ""))
+            info = _PROVIDER_INFO.get(p, {})
+            display = info.get("display", p)
+            desc = info.get("desc", "")
+            url = info.get("url", "")
 
-        choice = input("\nWhich provider? (number, comma-separated list, or 'all'): ").strip()
+            # Check current status
+            keys = KNOWN_PROVIDERS[p]
+            all_set = all(_key_is_set(get_credential, p, k) for k in keys)
+            status = _green(" \u2713 ready") if all_set else ""
+
+            print(f"  {_bold(str(i))}  {_bold(display)}{status}")
+            print(f"     {desc}")
+            if url:
+                print(f"     {_dim(url)}")
+            print()
+
+        choice = input(f"  Which provider? {_dim('(number, comma-separated, or all)')}: ").strip()
         if not choice:
-            print("error: no provider selected", file=sys.stderr)
-            sys.exit(1)
+            print(f"\n  {_dim('Nothing selected, exiting.')}")
+            return
 
         if choice.lower() == "all":
             selected = providers
@@ -286,63 +357,105 @@ def _handle_credentials(args):
                     if 0 <= idx < len(providers):
                         selected.append(providers[idx])
                     else:
-                        print(f"error: invalid number: {part}", file=sys.stderr)
+                        print(f"\n  {_red('error')}: invalid number: {part}", file=sys.stderr)
                         sys.exit(1)
                 except ValueError:
                     if part in providers:
                         selected.append(part)
                     else:
-                        print(f"error: unknown provider: {part}", file=sys.stderr)
+                        print(f"\n  {_red('error')}: unknown provider: {part}", file=sys.stderr)
                         sys.exit(1)
 
+        saved_count = 0
         for provider in selected:
-            print(f"\n{provider}:")
+            info = _PROVIDER_INFO.get(provider, {})
+            display = info.get("display", provider)
+            url = info.get("url", "")
+            key_descs = info.get("keys", {})
+
+            print()
+            print(f"  {_bold(display)}")
+            if url:
+                print(f"  Get your keys at: {_cyan(url)}")
+            print()
+
             keys = KNOWN_PROVIDERS[provider]
             for key in keys:
-                # Check if already set
-                try:
-                    get_credential(provider, key)
-                    already_set = True
-                except CredentialError:
-                    already_set = False
+                already_set = _key_is_set(get_credential, provider, key)
+                hint = key_descs.get(key, "")
 
                 if already_set:
-                    prompt_str = f"  {key} [already set, press enter to keep]: "
+                    label = f"  {key} {_green('[set]')} {_dim('enter to keep, or paste new value')}: "
                 else:
-                    prompt_str = f"  {key}: "
+                    label = f"  {key} {_dim('(' + hint + ')') if hint else ''}: "
 
-                value = getpass.getpass(prompt_str)
+                value = _read_secret(label)
                 if value:
                     set_credential(provider, key, value)
-                elif not already_set:
-                    print(f"    (skipped)")
+                    saved_count += 1
+                    print(f"  {_green('\u2713')} {key} saved")
+                elif already_set:
+                    print(f"  {_dim('\u2013 kept existing')}")
+                else:
+                    print(f"  {_yellow('\u2013 skipped')}")
 
-        print(f"\n✓ Saved to ~/.montaj/credentials.json (0600)")
+        print()
+        if saved_count:
+            print(f"  {_green('\u2713')} Saved to {_dim('~/.montaj/credentials.json')}")
+        else:
+            print(f"  {_dim('No changes made.')}")
+        print()
 
+    except KeyboardInterrupt:
+        print(f"\n\n  {_dim('Cancelled.')}")
+        sys.exit(130)
     except CredentialError as e:
-        print(f"error: {e}", file=sys.stderr)
+        print(f"\n  {_red('error')}: {e}", file=sys.stderr)
         sys.exit(1)
+
+
+def _key_is_set(get_fn, provider: str, key: str) -> bool:
+    try:
+        get_fn(provider, key)
+        return True
+    except Exception:
+        return False
+
+
+def _read_secret(prompt: str) -> str:
+    """Read a secret from the terminal. Falls back to plain input() if getpass fails."""
+    try:
+        import getpass
+        return getpass.getpass(prompt).strip()
+    except (EOFError, OSError):
+        # getpass can fail in some terminal environments (piped stdin, IDE terminals)
+        try:
+            sys.stderr.write(prompt)
+            sys.stderr.flush()
+            return input().strip()
+        except (EOFError, KeyboardInterrupt):
+            return ""
 
 
 def _ensure_ui() -> bool:
     import shutil
     if not shutil.which("npm"):
-        print("error: npm not found — install Node.js >=18 first: https://nodejs.org", file=sys.stderr)
+        print("error: npm not found \u2014 install Node.js >=18 first: https://nodejs.org", file=sys.stderr)
         return False
     root = os.path.join(os.path.dirname(__file__), "..", "..")
     for name, directory in [("render engine", "render"), ("UI", "ui")]:
         path = os.path.normpath(os.path.join(root, directory))
-        print(f"→ npm install ({name})…")
+        print(f"\u2192 npm install ({name})\u2026")
         r = subprocess.run(["npm", "install", "--prefix", path])
         if r.returncode != 0:
             print(f"error: npm install failed for {directory}/", file=sys.stderr)
             return False
-        print(f"✓ {name} deps installed")
+        print(f"\u2713 {name} deps installed")
     ui_path = os.path.normpath(os.path.join(root, "ui"))
-    print("→ npm run build (UI)…")
+    print("\u2192 npm run build (UI)\u2026")
     r = subprocess.run(["npm", "run", "build", "--prefix", ui_path])
     if r.returncode != 0:
         print("error: npm run build failed for ui/", file=sys.stderr)
         return False
-    print("✓ UI built")
+    print("\u2713 UI built")
     return True

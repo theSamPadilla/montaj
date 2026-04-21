@@ -1,6 +1,7 @@
 .env
 *.tmp
 *.log
+**/credentials.json
 workspace/
 workflows/*
 !workflows/README.md

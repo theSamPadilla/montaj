@@ -233,9 +233,18 @@ This makes approval idempotent. If the user tweaked scene 3 and hit Approve agai
 
 Three modes; infer from the prompt + scene count (ask in Phase 0 if unclear):
 
-#### Independent (default)
+#### Independent (default — parallel)
 
-Each scene is a separate `kling_generate` call, self-contained. Fan out in parallel if your harness supports it (cap ~3–4 concurrent; Kling handles concurrent requests). When parallel results land out of narrative order, compute each clip's `start`/`end` from the scene's position in `storyboard.scenes[]`, not from generation order. Fault-isolated and easy to regenerate.
+Each scene is a separate `kling_generate` call, self-contained. **You MUST fire these in parallel** — call all scenes' `kling_generate` tool calls in a single response so they execute concurrently. Cap at 4 concurrent calls; if there are more than 4 scenes, fire 4 at a time, wait for any to complete, then fire the next. Do NOT generate scenes one at a time in a sequential loop — that wastes minutes of wall-clock time that parallel dispatch avoids.
+
+When parallel results land out of narrative order, compute each clip's `start`/`end` from the scene's position in `storyboard.scenes[]`, not from generation order. Fault-isolated and easy to regenerate.
+
+**How to fire in parallel:** Include multiple tool calls in one assistant message. For example, if you have 5 scenes and are capping at 4 concurrent:
+
+1. First message: call `kling_generate` for scenes 1, 2, 3, 4 simultaneously (4 tool calls in one response).
+2. When results arrive, write all 4 clips to `tracks[0]`.
+3. Second message: call `kling_generate` for scene 5.
+4. Write the final clip and check if all scenes are done → set status to `draft`.
 
 #### Chained continuity
 
@@ -254,9 +263,9 @@ Trade-offs:
 
 #### Picking a mode
 
-- Strong scene-to-scene continuity **AND** scenes fit in 512 chars each → **batched**. Best cost-to-quality.
-- "Flowing" / "seamless" transitions requiring frame continuity → **chained**.
-- Default for everything else → **independent**.
+- **Default for nearly everything → independent (parallel).** Fastest wall-clock time, fault-isolated, no prompt-length restrictions. Use this unless one of the below specifically applies.
+- "Flowing" / "seamless" transitions requiring frame continuity (e.g. a continuous camera move across scenes) → **chained**. Only use when the creative brief specifically demands visual continuity at scene boundaries.
+- Strong scene-to-scene continuity **AND** scenes fit in 512 chars each **AND** you want cheapest billing → **batched**. Best cost-to-quality when applicable.
 
 State your chosen mode in chat once at the start — the user can redirect if wrong.
 
@@ -437,6 +446,7 @@ One table of every field you write, grouped by phase.
 
 ## What NOT to do
 
+- **Don't generate scenes sequentially in independent mode.** Fire all `kling_generate` calls in parallel (up to 4 concurrent). Sequential one-at-a-time dispatch wastes minutes of wall-clock time — Kling handles concurrent requests fine.
 - **Don't skip Phase 0.** If intake is thin or ambiguous, ASK before writing scenes. A wrong 8-scene storyboard costs more than one clarification turn.
 - **Don't bombard the user with multiple questions at once.** One question per turn, wait for the answer.
 - **Don't call `generate_image` on `imageRefs[i]` with `source: "upload"`.** You'd overwrite the user's file. Only text-sourced refs get image generation.
