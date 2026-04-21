@@ -1,13 +1,13 @@
 {
   "name": "snapshot",
-  "description": "Generate a frame grid contact sheet from a video for visual inspection",
+  "description": "Extract frames from a video: grid contact sheet (default), all frames (--frames all), or single frame at a timestamp (--at <sec>).",
   "input": {
     "type": "video",
     "description": "Source video file"
   },
   "output": {
     "type": "image",
-    "description": "JPEG contact sheet image"
+    "description": "JPEG image — contact sheet (grid mode) or single frame (--at mode), or a directory path followed by frame list (all-frames mode)."
   },
   "params": [
     {
@@ -16,7 +16,7 @@
       "default": 3,
       "min": 1,
       "max": 10,
-      "description": "Number of columns in the grid"
+      "description": "Grid columns (grid mode)"
     },
     {
       "name": "rows",
@@ -24,7 +24,37 @@
       "default": 3,
       "min": 1,
       "max": 10,
-      "description": "Number of rows in the grid"
+      "description": "Grid rows (grid mode)"
+    },
+    {
+      "name": "start",
+      "type": "float",
+      "required": false,
+      "description": "Window start in seconds (grid / all-frames mode)"
+    },
+    {
+      "name": "end",
+      "type": "float",
+      "required": false,
+      "description": "Window end in seconds (grid / all-frames mode)"
+    },
+    {
+      "name": "frames",
+      "type": "string",
+      "required": false,
+      "description": "Number of frames to sample (grid mode), or 'all' to extract every frame in the window"
+    },
+    {
+      "name": "at",
+      "type": "float",
+      "required": false,
+      "description": "Extract a single full-resolution frame at this timestamp (seconds). Mutually exclusive with --frames, --cols, --rows, --start, --end. Used for boundary-frame extraction: scene continuity (Kling --first-frame / --last-frame) and regen stitching."
+    },
+    {
+      "name": "out",
+      "type": "path",
+      "required": false,
+      "description": "Output file path (grid / --at modes) or directory (all-frames mode). Defaults to <input>_snapshot.jpg / <input>_at_<sec>.jpg / <input>_frames/."
     }
   ]
 }

@@ -54,13 +54,29 @@ export interface VisualItem {
   nobg_preview_src?: string // video type only — VP9 WebM with alpha for browser preview
   muted?: boolean         // video type only — suppress audio in preview and render
   generation?: {            // ai_video only — frozen provenance from Kling generation
+    // Single-shot fields (present when multiShot is falsy).
     sceneId?: string
-    provider?: string
-    model?: string
     prompt?: string
     refImages?: string[]
     duration?: number
+    // Shared fields.
+    provider?: string
+    model?: string
     attempts?: Array<{ ts: string; prompt: string; src: string }>
+    // Multi-shot / batched fields. When multiShot is true, the clip represents a
+    // batch of up to 6 scenes generated in ONE Kling call. The outer sceneId/
+    // prompt/refImages fields are replaced by batchShots[] which carries the
+    // per-scene mapping inside the concatenated output video.
+    multiShot?: boolean
+    shotType?: 'customize' | 'intelligence'
+    batchShots?: Array<{
+      sceneId: string
+      index: number          // 1-based, matches Kling's multi_prompt[].index
+      prompt: string         // combined prompt for this shot (styleAnchor + scene prose + tokens)
+      start: number          // shot start, seconds, RELATIVE to the batch clip
+      end: number            // shot end, seconds, RELATIVE to the batch clip
+      duration: number
+    }>
   }
   // Legacy fields for old text overlay items (pre-schema migration)
   position?: string

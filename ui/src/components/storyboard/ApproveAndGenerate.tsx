@@ -17,12 +17,24 @@ export function ApproveAndGenerate({ project, onProjectChange }: Props) {
   const approved = !!project.storyboard?.approval
   const approvedAt = project.storyboard?.approval?.approvedAt
 
-  // Derive per-scene progress from project.json state
+  // Derive per-scene progress from project.json state.
+  //
+  // A scene is "done" when a matching clip exists in tracks[0]. The agent
+  // may use either dispatch mode:
+  //   - Independent / chained: one clip per scene, matched by generation.sceneId.
+  //   - Batched (multi-shot): one clip per batch of up to 6 scenes; per-scene
+  //     mapping lives in generation.batchShots[]. Match by any entry's sceneId.
+  // A scene produced by a single-shot regen of a previously batched scene
+  // shows up as a standalone clip in tracks[0], so the single-shot lookup
+  // still wins (checked first).
   const progress = storyboardScenes.map(s => {
-    const clip = generatedClips.find(c => c.generation?.sceneId === s.id)
+    const done = generatedClips.some(c =>
+      c.generation?.sceneId === s.id ||
+      c.generation?.batchShots?.some(shot => shot.sceneId === s.id)
+    )
     return {
       id: s.id,
-      status: clip?.src
+      status: done
         ? 'done' as const
         : s.lastError ? 'failed' as const : 'pending' as const,
     }

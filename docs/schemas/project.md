@@ -468,6 +468,51 @@ This block is a **frozen snapshot** of what was sent to the provider when the cl
 
 **`aspectRatio` is NOT on the generation block.** Aspect ratio lives at `storyboard.aspectRatio` (project-wide). Regeneration reads the current project-wide value. If the user switches aspect mid-draft, regenerated clips pick up the new value — intentionally.
 
+#### Batched clips (multi-shot mode)
+
+When the agent uses Kling's multi-shot mode, a SINGLE `tracks[0]` clip can contain up to 6 scenes concatenated into one video. The `generation` block shifts shape: `sceneId` / `prompt` / `refImages` / `duration` are replaced by `batchShots[]`, which carries the per-scene mapping.
+
+```json
+{
+  "id": "batch-scene1-scene3",
+  "type": "video",
+  "src": "/path/to/batch.mp4",
+  "start": 0,
+  "end": 10,
+  "inPoint": 0,
+  "outPoint": 10,
+  "generation": {
+    "provider": "kling",
+    "model": "kling-v3-omni",
+    "multiShot": true,
+    "shotType": "customize",
+    "refImages": ["ref1", "ref2"],
+    "attempts": [],
+    "batchShots": [
+      { "sceneId": "scene1", "index": 1, "prompt": "...", "start": 0.0, "end": 3.0, "duration": 3 },
+      { "sceneId": "scene2", "index": 2, "prompt": "...", "start": 3.0, "end": 7.0, "duration": 4 },
+      { "sceneId": "scene3", "index": 3, "prompt": "...", "start": 7.0, "end": 10.0, "duration": 3 }
+    ]
+  }
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `generation.multiShot` | boolean | `true` when this clip came from a multi-shot call. Omitted otherwise. |
+| `generation.shotType` | string | `"customize"` or `"intelligence"`. Mirrors Kling's `shot_type` request param. |
+| `generation.batchShots` | object[] | Per-scene mapping inside the batch. One entry per shot. |
+| `generation.batchShots[i].sceneId` | string | The `storyboard.scenes[i].id` this shot was generated from. |
+| `generation.batchShots[i].index` | number | 1-based, matches Kling's `multi_prompt[].index`. |
+| `generation.batchShots[i].prompt` | string | Combined prompt for this shot (styleAnchor + scene prose + any `<<<image_N>>>` tokens). 512-char cap per Kling's docs. |
+| `generation.batchShots[i].start` | number | Shot start in seconds, **relative to the batch clip** (not the project timeline). UI derives per-scene progress windows from these values. |
+| `generation.batchShots[i].end` | number | Shot end in seconds, relative to the batch clip. |
+| `generation.batchShots[i].duration` | number | Requested duration in seconds (same as `end - start` barring Kling rounding). |
+
+**UI progress check.** A scene is "done" if `tracks[0].some(c => c.generation?.sceneId === s.id || c.generation?.batchShots?.some(x => x.sceneId === s.id))`. Both cases must be checked — the agent chooses between single-shot and batched dispatch per its judgment.
+
+**Regenerating one scene from a batch.** Run that scene as a single-shot call; append the resulting clip to `tracks[0]` as a new entry. Leave the original batched clip in place; its window for the replaced scene becomes unused time between other shots. The timeline readers place clips by `start`/`end`; unused windows are acceptable for v1.
+
 ### Lifecycle: when `tracks[0]` is populated
 
 `tracks[0]` holds **real clips only** — items whose `src` is a file that exists on disk. There are no stubs, no placeholder items, no `src: ""` entries. This invariant is consistent across all project types:
