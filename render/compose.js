@@ -279,13 +279,24 @@ export async function compose({
   //     canvas in filter_complex which has no color metadata). setparams inside the filter
   //     graph takes precedence over the canvas's unset color info.
   //     Only for the final H.264 encode — lossless FFV1 chunks pass through unmodified.
-  //     When no real video items are present (animations-only), use bt709/sRGB metadata so
-  //     players don't apply HLG tone mapping to sRGB-authored overlay content.
+  //
+  //     Detect whether source footage is HDR (HLG/BT.2020) or SDR (BT.709/unknown).
+  //     AI-generated clips (Kling, etc.) have no color metadata — treat as SDR.
+  //     Only stamp HLG/BT.2020 if at least one source clip explicitly declares it.
   if (!_lossless) {
     const preLabel = (N > 0 || Q > 0) ? '[vout]' : videoLabel
-    const hasRealFootage = videoItems.some(item => !isImageItem(item))
-    const trc      = hasRealFootage ? 'arib-std-b67' : 'bt709'
-    const primaries = hasRealFootage ? 'bt2020'       : 'bt709'
+    const hasHDRFootage = videoItems.some(item => {
+      if (isImageItem(item)) return false
+      const probe = spawnSync('ffprobe', [
+        '-v', 'quiet', '-select_streams', 'v:0',
+        '-show_entries', 'stream=color_transfer',
+        '-of', 'csv=p=0', item.src,
+      ], { encoding: 'utf8', timeout: 5000 })
+      const trc = (probe.stdout || '').trim()
+      return trc === 'arib-std-b67' || trc === 'smpte2084'  // HLG or PQ
+    })
+    const trc      = hasHDRFootage ? 'arib-std-b67' : 'bt709'
+    const primaries = hasHDRFootage ? 'bt2020'       : 'bt709'
     filterParts.push(`${preLabel}setparams=colorspace=bt709:color_trc=${trc}:color_primaries=${primaries}[vout_sp]`)
     videoLabel = '[vout_sp]'
   }
@@ -450,7 +461,9 @@ function concatVideoFiles(paths, outputPath) {
   const tmpPath = outputPath.replace(/(\.\w+)$/, `.${randomBytes(4).toString('hex')}$1`)
   const result = spawnSync('ffmpeg', [
     '-y', '-f', 'concat', '-safe', '0', '-i', listFile,
-    '-vf', 'setparams=colorspace=bt709:color_trc=arib-std-b67:color_primaries=bt2020',
+    // Chunks inherit their color metadata from the compose pass (which probes sources).
+    // Default to BT.709 for concat — HDR content would have been tagged in the chunk.
+    '-vf', 'setparams=colorspace=bt709:color_trc=bt709:color_primaries=bt709',
     '-c:v', 'libx264', '-preset', 'fast', '-crf', '18', '-pix_fmt', 'yuv420p',
     '-c:a', 'aac', '-b:a', '192k',
     '-movflags', '+faststart', tmpPath,
