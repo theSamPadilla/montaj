@@ -16,6 +16,11 @@ STEPS_DIR   = os.path.join(MONTAJ_ROOT, "steps")
 PYTHON      = sys.executable
 
 
+def _step(category, name):
+    """Resolve a step executable path: steps/<category>/<name>.py"""
+    return os.path.join(STEPS_DIR, category, f"{name}.py")
+
+
 # ---------------------------------------------------------------------------
 # Per-video analysis helpers
 # ---------------------------------------------------------------------------
@@ -23,7 +28,7 @@ PYTHON      = sys.executable
 def probe_video(video_path: str) -> dict:
     """Run probe step and return parsed JSON."""
     r = subprocess.run(
-        [PYTHON, os.path.join(STEPS_DIR, "probe.py"), "--input", video_path],
+        [PYTHON, _step("media", "probe"), "--input", video_path],
         capture_output=True, text=True, timeout=30,
     )
     if r.returncode != 0:
@@ -44,7 +49,7 @@ def transcribe_and_stats(video_path: str, transcripts_dir: str) -> dict:
     transcript_prefix = os.path.join(transcripts_dir, video_id)
 
     r = subprocess.run(
-        [PYTHON, os.path.join(STEPS_DIR, "transcribe.py"),
+        [PYTHON, _step("speech", "transcribe"),
          "--input", video_path, "--out", transcript_prefix, "--model", "base.en"],
         capture_output=True, text=True, timeout=300,
     )
@@ -136,7 +141,7 @@ def extract_colors(video_path: str, n: int = 8) -> list[str]:
 def capture_frames(video_path: str, out_dir: str, count: int = 3) -> list[str]:
     """Extract evenly-spaced sample frames. Returns saved image paths."""
     r = subprocess.run(
-        [PYTHON, os.path.join(STEPS_DIR, "snapshot.py"),
+        [PYTHON, _step("media", "snapshot"),
          "--input", video_path,
          "--cols", str(count), "--rows", "1",
          "--out", os.path.join(out_dir, os.path.splitext(os.path.basename(video_path))[0] + "_snap.jpg")],

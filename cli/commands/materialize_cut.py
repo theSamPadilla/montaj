@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """montaj materialize-cut — materialise a trim spec or raw video segment into an encoded clip."""
 import os, subprocess, sys
-from cli.main import MONTAJ_ROOT, add_global_flags
+from cli.main import MONTAJ_ROOT, add_global_flags, find_step
 from cli.output import emit, emit_error
 
 DEFAULT_WORKERS = 2
@@ -26,7 +26,7 @@ def register(subparsers):
 
 
 def handle(args):
-    step = os.path.join(MONTAJ_ROOT, "steps", "materialize_cut.py")
+    step = find_step("materialize_cut")
 
     if args.inputs:
         cmd = [sys.executable, step, "--inputs", *args.inputs, "--workers", str(args.workers)]

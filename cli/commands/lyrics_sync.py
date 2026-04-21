@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """montaj lyrics-sync — sync lyrics text to audio and output a caption track JSON."""
 import os, subprocess, sys
-from cli.main import MONTAJ_ROOT, add_global_flags
+from cli.main import MONTAJ_ROOT, add_global_flags, find_step
 from cli.output import emit, emit_error
 
 
@@ -25,7 +25,7 @@ def handle(args):
 
     cmd = [
         sys.executable,
-        os.path.join(MONTAJ_ROOT, "steps", "lyrics_sync.py"),
+        find_step("lyrics_sync"),
         "--input", args.input,
         "--lyrics", args.lyrics,
         "--model", args.model,

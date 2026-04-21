@@ -133,46 +133,51 @@ Populate `storyboard.scenes[]` with one entry per intended scene.
 - **`id`** — stable within the project (e.g. `"scene-1"`, `"scene-2"`).
 - **`prompt`** — structured using `## Section` headers. **NEVER include `<<<image_N>>>` tokens or `styleAnchor` text here.** Write natural language that names characters by their labels. Token substitution, style prepending, and section reordering happen at generation time — not at storyboard time.
 
-  **Required sections** (use exactly these `##` headers):
+  **Sections** (use these `##` headers):
 
   ```
+  ## Camera
+  Shot size + camera motion. One sentence. Kling needs framing context first.
+  Example: "Wide shot, camera slowly pushes in."
+
   ## Subject
-  Who/what is in the scene. This is the FIRST thing Kling reads — anchor
-  identity here. Name the character, describe their pose/position.
+  Who/what is in the scene. Anchor identity here — name the character,
+  describe their pose/position. This is the first thing Kling renders.
   Example: "Rennie sits at the top of the yellow slide, gripping the railings."
 
   ## Action
-  What happens. EVERY sentence must have a motion verb — describe how things
-  MOVE, not how they look. Use sequential phrasing ("First... then...").
+  What happens. EVERY sentence must have a motion verb — describe how
+  things MOVE, not how they look. Sequential phrasing ("First... then...").
   BAD: "Rosie waits at the bottom." (static)
   GOOD: "Rosie wags her tail and tilts her head up." (motion)
-  Example: "She grips the railings and leans forward. Below, Rosie wags her tail and looks up."
 
   ## Dialogue
-  Speech lines for audio generation. Keep it short — one line per character.
-  Example: She says: "It looks high." The corgi says: "I am right here."
+  Voice-tagged speech lines. Prefix each line with a voice tag:
+  (gender, ~age, tone) Character says: "line"
 
-  ## Setting
-  Environment + lighting as CONCRETE VISUALS. No abstract moods.
-  Describe what the camera would see: colors, light direction, objects.
-  Example: "Sunny playground, green grass, blue sky, golden sunlight casting long shadows."
+  Example:
+  (female, ~8yo, gentle nervous voice) Rennie says: "It looks high."
+  (female, warm friendly dog voice) Rosie says: "I am right here."
+
+  OMIT this section entirely if the scene has no dialogue. Do NOT include
+  an empty ## Dialogue section — it wastes prompt budget and may cause
+  Kling to generate gibberish audio trying to fill it.
   ```
 
-  **Do NOT use these as sections** (they are handled mechanically):
-  - ~~Camera~~ → use `shotScale` and `cameraMove` fields instead
-  - ~~Mood~~ → describe the lighting/atmosphere concretely in Setting
-  - ~~Environment~~ → merged into Setting
+  **Setting** is NOT a section — put environment details in `storyboard.styleAnchor` once. If a scene needs specific lighting, include it in `## Camera` (e.g. "Golden hour lighting, wide shot").
 
-  The step parses `##` sections, reorders to optimal Kling sequence (Subject → Action → Dialogue → Setting), adds periods between sections, and flattens into flowing prose. The agent can write sections in any order — the step normalizes.
+  **No two adjacent scenes should use the same shot-size + camera-move pair.** Vary the camera across scenes for visual variety (wide → medium → close-up → medium-wide → wide).
 
-  **Keep each scene's prompt under ~100 words** (excluding headers). Kling's sweet spot is 60-100 words for the scene-specific content. The step adds ~10 words of style prefix on top.
+  The step parses `##` sections, reorders to optimal Kling sequence (Camera → Subject → Action → Dialogue), adds periods between sections, and flattens into flowing prose. The agent can write sections in any order — the step normalizes.
 
-  **Max 4-5 distinct nouns per scene.** Count every character, object, and named prop. If you have more than 5, Kling struggles to render them all correctly — simplify or split into two scenes. Example: Rennie + Rosie + slide = 3 nouns (good). Rennie + Rosie + Pennie + slide + sparkles + trees = 6 nouns (too many — drop sparkles or trees).
+  **Keep each scene's prompt under ~80 words** (excluding headers). Kling's sweet spot is 60-100 words for the scene-specific content. The step adds ~10 words of style prefix on top.
+
+  **Max 4-5 distinct nouns per scene.** Count every character, object, and named prop. If over 5, simplify or split into two scenes.
 
 - **`duration`** — integer seconds. See "Duration budgeting" below for allocation.
-- **`refImages`** — IDs into `storyboard.imageRefs[]` (NOT paths). Pick refs by matching natural-language mentions in the prompt ("Max is walking…") to `imageRefs[i].label`. Hard cap of 3 refs per scene (editorial cap — the connector allows 7, but 3 is the sweet spot for focused scene generation).
-- **`shotScale`** — one of the values from the camera-vocabulary sub-skill (e.g. `"wide"`, `"cu"`, `"medium"`). Stored as structured data for planning and UI display. Write the camera framing naturally in your `## Action` or `## Subject` section prose (e.g. "Wide shot of the playground" or "Close-up on Rennie's face").
-- **`cameraMove`** — one of the values from the camera-vocabulary sub-skill (e.g. `"push-in"`, `"static"`, `"tracking"`). Stored as structured data for planning and UI display. Write the camera motion naturally in your prompt prose (e.g. "The camera slowly pushes in" or "Tracking shot following her down the slide").
+- **`refImages`** — IDs into `storyboard.imageRefs[]` (NOT paths). Pick refs by matching natural-language mentions in the prompt. Hard cap of 3 refs per scene.
+- **`shotScale`** — one of the values from the camera-vocabulary sub-skill. Stored as structured data for planning and UI display.
+- **`cameraMove`** — one of the values from the camera-vocabulary sub-skill. Stored as structured data for planning and UI display.
 
 Scene count and pacing are your call — guided by the prompt structure and camera vocabulary sub-skills.
 

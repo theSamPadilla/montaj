@@ -4,6 +4,8 @@ import os
 import subprocess
 import sys
 
+from cli.main import find_step
+
 
 def register(subparsers):
     p = subparsers.add_parser("remove-bg", help="Remove video background (RVM)")
@@ -25,7 +27,7 @@ def register(subparsers):
 
 
 def handle(args):
-    step = os.path.join(os.path.dirname(__file__), "..", "..", "steps", "remove_bg.py")
+    step = find_step("remove_bg")
     cmd = [sys.executable, step]
 
     if args.input:

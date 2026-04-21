@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """montaj extract-audio — extract the audio track from a video."""
 import os, subprocess, sys
-from cli.main import MONTAJ_ROOT, add_global_flags
+from cli.main import MONTAJ_ROOT, add_global_flags, find_step
 from cli.output import emit, emit_error
 
 
@@ -20,7 +20,7 @@ def handle(args):
 
     cmd = [
         sys.executable,
-        os.path.join(MONTAJ_ROOT, "steps", "extract_audio.py"),
+        find_step("extract_audio"),
         "--input", args.input,
         "--format", args.format,
     ]

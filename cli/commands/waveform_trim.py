@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """montaj waveform-trim — remove silence using waveform amplitude analysis."""
 import os, subprocess, sys
-from cli.main import MONTAJ_ROOT, add_global_flags
+from cli.main import MONTAJ_ROOT, add_global_flags, find_step
 from cli.output import emit, emit_error
 
 
@@ -22,7 +22,7 @@ def handle(args):
         if not os.path.isfile(f):
             emit_error("not_found", f"File not found: {f}")
 
-    step = os.path.join(MONTAJ_ROOT, "steps", "waveform_trim.py")
+    step = find_step("waveform_trim")
 
     if len(args.input) == 1:
         cmd = [

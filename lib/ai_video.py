@@ -8,15 +8,14 @@ from pathlib import Path
 from common import fail
 
 
-# Optimal Kling prompt order: subject first (anchors identity), then action,
-# dialogue, setting. Camera is NOT a section — it's a structured field
-# (shotScale/cameraMove) auto-appended as [SHOT SCALE]/[CAMERA MOVE] tags.
+# Optimal Kling prompt order: camera first (framing context), then subject
+# (anchors identity), action (motion), dialogue (voice-tagged speech).
 #
 # Sources:
-# - Kling guides: "[Subject] + [Subject Detail] + [Movement] + [Scene/Environment]"
-# - Research: "anchor your subject in the first sentence"
+# - Kling guides: "[Camera Movement] + [Subject & Action] + [Environment]"
+# - agent-free-strike: shot scale + camera move as first-class elements
 # - https://promnest.com/blog/kling-3-omni-prompting-guide/
-SECTION_ORDER = ["subject", "action", "dialogue", "setting"]
+SECTION_ORDER = ["camera", "subject", "action", "dialogue"]
 
 # Valid section names the agent can use with ## headers.
 VALID_SECTIONS = set(SECTION_ORDER)

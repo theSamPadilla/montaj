@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """montaj lyrics-render — burn caption track text onto a background video using ffmpeg drawtext."""
 import os, subprocess, sys
-from cli.main import MONTAJ_ROOT, add_global_flags
+from cli.main import MONTAJ_ROOT, add_global_flags, find_step
 from cli.output import emit, emit_error
 
 
@@ -45,7 +45,7 @@ def handle(args):
 
     cmd = [
         sys.executable,
-        os.path.join(MONTAJ_ROOT, "steps", "lyrics_render.py"),
+        find_step("lyrics_render"),
         "--captions", args.captions,
         "--audio",    args.audio,
         "--bg-color", args.bg_color,

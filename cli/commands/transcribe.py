@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """montaj transcribe — transcribe audio/video to SRT and word-level JSON."""
 import os, subprocess, sys
-from cli.main import MONTAJ_ROOT, add_global_flags
+from cli.main import MONTAJ_ROOT, add_global_flags, find_step
 from cli.output import emit, emit_error
 
 
@@ -22,7 +22,7 @@ def handle(args):
 
     cmd = [
         sys.executable,
-        os.path.join(MONTAJ_ROOT, "steps", "transcribe.py"),
+        find_step("transcribe"),
         "--input", args.input,
         "--model", args.model,
         "--language", args.language,

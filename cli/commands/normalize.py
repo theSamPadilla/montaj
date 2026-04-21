@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """montaj normalize — loudness normalization (LUFS)."""
 import os, subprocess, sys
-from cli.main import MONTAJ_ROOT, add_global_flags
+from cli.main import MONTAJ_ROOT, add_global_flags, find_step
 from cli.output import emit, emit_error
 
 
@@ -23,7 +23,7 @@ def handle(args):
 
     cmd = [
         sys.executable,
-        os.path.join(MONTAJ_ROOT, "steps", "normalize.py"),
+        find_step("normalize"),
         "--input", args.input,
         "--target", args.target,
         "--lufs", str(args.lufs),

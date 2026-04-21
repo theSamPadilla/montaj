@@ -23,6 +23,29 @@ USER_STEPS_DIR = os.path.expanduser("~/.montaj/steps")
 USER_SKILLS_DIR = os.path.expanduser("~/.montaj/skills")
 
 
+def _find_step_files(base_dir, name):
+    """Search base_dir and one level of subdirectories for {name}.py + {name}.json.
+
+    Returns (py_path, json_path) or (None, None).
+    """
+    # Flat (backwards compat for user/project-local steps)
+    py = os.path.join(base_dir, f"{name}.py")
+    js = os.path.join(base_dir, f"{name}.json")
+    if os.path.isfile(py) and os.path.isfile(js):
+        return py, js
+
+    # One level of subdirectories
+    if os.path.isdir(base_dir):
+        for entry in os.scandir(base_dir):
+            if entry.is_dir() and not entry.name.startswith((".", "_")):
+                py = os.path.join(entry.path, f"{name}.py")
+                js = os.path.join(entry.path, f"{name}.json")
+                if os.path.isfile(py) and os.path.isfile(js):
+                    return py, js
+
+    return None, None
+
+
 def resolve_step(uses, project_dir):
     """Resolve a `uses` reference.
 
@@ -45,9 +68,8 @@ def resolve_step(uses, project_dir):
     else:
         fail("step_not_found", f"Unknown scope prefix in '{uses}'. Expected: montaj/, user/, or ./steps/")
 
-    py_path = os.path.join(steps_dir, f"{name}.py")
-    json_path = os.path.join(steps_dir, f"{name}.json")
-    if os.path.isfile(py_path) and os.path.isfile(json_path):
+    py_path, json_path = _find_step_files(steps_dir, name)
+    if py_path and json_path:
         return {"kind": "step", "executable": py_path, "schema_path": json_path}
 
     # Skill fallback — skills-as-steps pattern. Skill name is always the

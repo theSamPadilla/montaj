@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """montaj caption — prepare caption data for the render engine."""
 import os, subprocess, sys
-from cli.main import MONTAJ_ROOT, add_global_flags
+from cli.main import MONTAJ_ROOT, add_global_flags, find_step
 from cli.output import emit, emit_error
 
 
@@ -21,7 +21,7 @@ def handle(args):
 
     cmd = [
         sys.executable,
-        os.path.join(MONTAJ_ROOT, "steps", "caption.py"),
+        find_step("caption"),
         "--input", args.input,
         "--style", args.style,
     ]

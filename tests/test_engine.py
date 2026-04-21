@@ -27,6 +27,16 @@ def test_resolve_step_builtin(tmp_path):
     assert ref["schema_path"].endswith("materialize_cut.json")
 
 
+def test_resolve_step_builtin_in_subdirectory(tmp_path):
+    """Built-in steps now live in subdirectories like steps/media/probe.py."""
+    ref = rw.resolve_step("montaj/probe", str(tmp_path))
+    assert ref["kind"] == "step"
+    assert Path(ref["executable"]).exists()
+    assert Path(ref["schema_path"]).exists()
+    assert ref["executable"].endswith("probe.py")
+    assert ref["schema_path"].endswith("probe.json")
+
+
 def test_resolve_step_unknown_scope(tmp_path):
     with pytest.raises(SystemExit):
         rw.resolve_step("unknown/trim", str(tmp_path))
@@ -221,6 +231,13 @@ def test_validate_fails_required_not_bool(tmp_path):
 def test_resolve_step_path_finds_builtin():
     path = vs.resolve_step_path("materialize_cut")
     assert path.endswith("materialize_cut.json")
+    assert Path(path).exists()
+
+
+def test_resolve_step_path_finds_builtin_in_subdirectory():
+    """validate_step.resolve_step_path must find steps inside subdirectories."""
+    path = vs.resolve_step_path("probe")
+    assert path.endswith("probe.json")
     assert Path(path).exists()
 
 

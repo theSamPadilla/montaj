@@ -182,6 +182,7 @@ export interface StepParam {
 export interface StepSchema {
   name: string
   description: string
+  category?: string
   input?: { description?: string; multiple?: boolean; type?: string }
   params?: StepParam[]
   output?: { type: string; description?: string }

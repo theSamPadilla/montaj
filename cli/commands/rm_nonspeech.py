@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """montaj rm-nonspeech — remove all non-speech regions using whisper word-level timestamps."""
 import os, subprocess, sys
-from cli.main import MONTAJ_ROOT, add_global_flags
+from cli.main import MONTAJ_ROOT, add_global_flags, find_step
 from cli.output import emit, emit_error
 
 
@@ -25,7 +25,7 @@ def handle(args):
 
     cmd = [
         sys.executable,
-        os.path.join(MONTAJ_ROOT, "steps", "rm_nonspeech.py"),
+        find_step("rm_nonspeech"),
         "--input", args.input,
         "--model", args.model,
         "--max-word-gap", str(args.max_word_gap),

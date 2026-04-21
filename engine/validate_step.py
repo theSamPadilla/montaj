@@ -77,15 +77,29 @@ def validate(path):
 
 
 def resolve_step_path(name, project_dir=None):
-    """Find a step schema by name, searching project-local → user-global → built-in."""
-    candidates = []
+    """Find a step schema by name, searching project-local -> user-global -> built-in.
+
+    Each scope is searched flat first, then one level of subdirectories.
+    """
+    scopes = []
     if project_dir:
-        candidates.append(os.path.join(project_dir, "steps", f"{name}.json"))
-    candidates.append(os.path.join(USER_DIR, f"{name}.json"))
-    candidates.append(os.path.join(BUILT_IN_DIR, f"{name}.json"))
-    for path in candidates:
+        scopes.append(os.path.join(project_dir, "steps"))
+    scopes.append(USER_DIR)
+    scopes.append(BUILT_IN_DIR)
+
+    for base in scopes:
+        # Flat
+        path = os.path.join(base, f"{name}.json")
         if os.path.isfile(path):
             return path
+        # Subdirectories
+        if os.path.isdir(base):
+            for entry in os.scandir(base):
+                if entry.is_dir() and not entry.name.startswith((".", "_")):
+                    path = os.path.join(entry.path, f"{name}.json")
+                    if os.path.isfile(path):
+                        return path
+
     fail("file_not_found", f"Step '{name}' not found in project-local, user-global, or built-in scopes")
 
 

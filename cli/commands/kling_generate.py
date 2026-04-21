@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """montaj kling-generate — generate video via Kling v3 Omni."""
 import os, subprocess, sys
-from cli.main import MONTAJ_ROOT, add_global_flags
+from cli.main import MONTAJ_ROOT, add_global_flags, find_step
 from cli.output import emit, emit_error
 
 
@@ -26,7 +26,7 @@ def handle(args):
 
     cmd = [
         sys.executable,
-        os.path.join(MONTAJ_ROOT, "steps", "kling_generate.py"),
+        find_step("kling_generate"),
         "--prompt",   args.prompt,
         "--out",      args.out,
         "--duration", str(args.duration),

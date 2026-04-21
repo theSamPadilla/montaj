@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """montaj fetch — download a video from a URL using yt-dlp."""
 import os, subprocess, sys
-from cli.main import MONTAJ_ROOT, add_global_flags
+from cli.main import MONTAJ_ROOT, add_global_flags, find_step
 from cli.output import emit, emit_error
 
 
@@ -18,7 +18,7 @@ def register(subparsers):
 def handle(args):
     cmd = [
         sys.executable,
-        os.path.join(MONTAJ_ROOT, "steps", "fetch.py"),
+        find_step("fetch"),
         "--url", args.url,
         "--format", args.format,
     ]

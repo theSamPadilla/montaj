@@ -17,8 +17,8 @@ Multi-shot intelligence mode (Kling splits one prompt into shots):
 """
 import sys, os, argparse, json, random, uuid
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "lib"))
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "lib"))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 from common import fail, require_file, progress
 from connectors import kling, ConnectorError
 from pathlib import Path

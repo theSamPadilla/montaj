@@ -40,17 +40,23 @@ def _print_help(parser):
         ("project-local", os.path.join(os.getcwd(), "steps")),
     ]
     seen = set()
+    seen_names = set()
     found = False
     for scope, directory in scopes:
         real_dir = os.path.realpath(directory)
         if real_dir in seen:
             continue
         seen.add(real_dir)
-        for path in sorted(glob.glob(os.path.join(directory, "*.json"))):
+        json_files = sorted(glob.glob(os.path.join(directory, "*.json")))
+        json_files += sorted(glob.glob(os.path.join(directory, "*", "*.json")))
+        for path in json_files:
             try:
                 with open(path) as f:
                     data = json.load(f)
                 name = data.get("name", os.path.splitext(os.path.basename(path))[0])
+                if name in seen_names:
+                    continue
+                seen_names.add(name)
                 desc = data.get("description", "")
                 print(f"  {C}{name:<24}{R} {desc:<55} {D}[{scope}]{R}")
                 found = True
@@ -67,7 +73,15 @@ def _find_step_py(name):
         os.path.join(MONTAJ_ROOT, "steps"),
     ]
     for directory in scopes:
+        # Flat
         path = os.path.join(directory, f"{name}.py")
         if os.path.isfile(path):
             return path
+        # Subdirectories
+        if os.path.isdir(directory):
+            for entry in os.scandir(directory):
+                if entry.is_dir() and not entry.name.startswith((".", "_")):
+                    path = os.path.join(entry.path, f"{name}.py")
+                    if os.path.isfile(path):
+                        return path
     return None

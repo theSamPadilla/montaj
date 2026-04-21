@@ -14,14 +14,14 @@ interface Props {
 }
 
 /** Known section types and their display order (matches SECTION_ORDER in lib/ai_video.py). */
-const SECTION_ORDER = ['subject', 'action', 'dialogue', 'setting'] as const
+const SECTION_ORDER = ['camera', 'subject', 'action', 'dialogue'] as const
 type SectionType = typeof SECTION_ORDER[number]
 
-const sectionMeta: Record<SectionType, { label: string; color: string; bg: string; border: string; placeholder: string }> = {
-  subject:  { label: 'Subject',  color: 'text-blue-400',  bg: 'bg-blue-400/10',  border: 'border-blue-400/20',  placeholder: 'Who/what is in the scene. Anchor identity first.\ne.g. "Rennie sits at the top of the yellow slide, gripping the railings."' },
-  action:   { label: 'Action',   color: 'text-cyan-400',  bg: 'bg-cyan-400/10',  border: 'border-cyan-400/20',  placeholder: 'What happens — active verbs, sequential motion.\ne.g. "She peeks over the edge. Below, Rosie waits with tail wagging."' },
-  dialogue: { label: 'Dialogue', color: 'text-green-400', bg: 'bg-green-400/10', border: 'border-green-400/20', placeholder: 'Speech lines for audio generation.\ne.g. She says: "It looks high." The corgi says: "I am right here."' },
-  setting:  { label: 'Setting',  color: 'text-amber-400', bg: 'bg-amber-400/10', border: 'border-amber-400/20', placeholder: 'Environment + lighting as concrete visuals. No abstract moods.\ne.g. "Sunny playground, green grass, golden sunlight casting long shadows."' },
+const sectionMeta: Record<SectionType, { label: string; color: string; bg: string; border: string; placeholder: string; optional?: boolean }> = {
+  camera:   { label: 'Camera',   color: 'text-purple-400', bg: 'bg-purple-400/10', border: 'border-purple-400/20', placeholder: 'Shot size + camera motion. One sentence.\ne.g. "Wide shot, camera slowly pushes in."' },
+  subject:  { label: 'Subject',  color: 'text-blue-400',   bg: 'bg-blue-400/10',   border: 'border-blue-400/20',   placeholder: 'Who/what is in the scene. Anchor identity first.\ne.g. "Rennie sits at the top of the yellow slide, gripping the railings."' },
+  action:   { label: 'Action',   color: 'text-cyan-400',   bg: 'bg-cyan-400/10',   border: 'border-cyan-400/20',   placeholder: 'What happens — active verbs, sequential motion.\ne.g. "She stares down frozen. Rosie looks up and wags her tail."' },
+  dialogue: { label: 'Dialogue', color: 'text-green-400',  bg: 'bg-green-400/10',  border: 'border-green-400/20',  placeholder: 'Voice-tagged speech. Leave empty if no dialogue.\ne.g. (female, ~8yo, nervous) Rennie says: "It looks high."', optional: true },
 }
 
 /** Parse ## section-formatted prompt into ordered entries. */

@@ -134,7 +134,7 @@ def scan_overlays(overlays_dir: Path) -> list[dict]:
 
 def scan_steps() -> dict[str, tuple[dict, Path]]:
     """Scan native (built-in) then custom (~/.montaj/steps). Later scope overwrites earlier.
-    Returns dict[name, (schema, py_path)]."""
+    Returns dict[name, (schema, py_path)]. Schema gets an injected 'category' field from subdirectory name."""
     scopes = [
         MONTAJ_ROOT / "steps",
         Path.home() / ".montaj" / "steps",
@@ -143,19 +143,32 @@ def scan_steps() -> dict[str, tuple[dict, Path]]:
     for scope in scopes:
         if not scope.exists():
             continue
+        # Flat files (backwards compat)
         for json_file in scope.glob("*.json"):
-            try:
-                schema = json.loads(json_file.read_text())
-            except Exception:
-                continue
-            name = schema.get("name")
-            if not name:
-                continue
-            py_path = scope / (name + ".py")
-            if not py_path.exists():
-                continue
-            steps[name] = (schema, py_path)
+            _try_add_step(steps, json_file, scope, category=None)
+        # One level of subdirectories
+        for subdir in sorted(scope.iterdir()):
+            if subdir.is_dir() and not subdir.name.startswith((".", "_")):
+                for json_file in subdir.glob("*.json"):
+                    _try_add_step(steps, json_file, subdir, category=subdir.name)
     return steps
+
+
+def _try_add_step(steps: dict, json_file: Path, parent: Path, category: str | None):
+    """Parse a step JSON and add it to the steps dict if valid."""
+    try:
+        schema = json.loads(json_file.read_text())
+    except Exception:
+        return
+    name = schema.get("name")
+    if not name:
+        return
+    py_path = parent / (name + ".py")
+    if not py_path.exists():
+        return
+    if category:
+        schema["category"] = category
+    steps[name] = (schema, py_path)
 
 
 def build_cli_args(schema: dict, body: dict) -> list[str]:

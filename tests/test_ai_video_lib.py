@@ -52,27 +52,13 @@ def test_compose_partial_label_match():
     assert "Rosie <<<image_1>>> the corgi" in result
 
 
-def test_compose_appends_camera_tags():
+def test_compose_no_camera_tags_appended():
+    """Camera tags are NOT appended — camera is written in prompt prose."""
     project = _make_project()
     scene = _make_scene(shot_scale="wide", camera_move="push-in")
     result = compose_prompt(project, scene)
-    assert "[SHOT SCALE] wide" in result
-    assert "[CAMERA MOVE] push in" in result
-
-
-def test_compose_no_camera_tags_when_absent():
-    project = _make_project()
-    scene = _make_scene()
-    result = compose_prompt(project, scene)
     assert "[SHOT SCALE]" not in result
     assert "[CAMERA MOVE]" not in result
-
-
-def test_compose_hyphen_to_space_in_camera_move():
-    project = _make_project(style_anchor="")
-    scene = _make_scene(camera_move="whip-pan")
-    result = compose_prompt(project, scene)
-    assert "[CAMERA MOVE] whip pan" in result
 
 
 def test_compose_no_character_specs_appendix():
@@ -91,22 +77,22 @@ def test_compose_no_character_specs_appendix():
 # ---------------------------------------------------------------------------
 
 def test_parse_sections_structured():
-    prompt = """## Subject
+    prompt = """## Camera
+Wide shot, camera pushes in
+
+## Subject
 Rennie at the top of the slide
 
 ## Action
 She peeks over the edge
 
 ## Dialogue
-She says: "It looks high."
-
-## Setting
-Sunny playground, green grass, golden sunlight"""
+(female, ~8yo, nervous) She says: "It looks high." """
     sections = parse_prompt_sections(prompt)
+    assert sections["camera"] == "Wide shot, camera pushes in"
     assert sections["subject"] == "Rennie at the top of the slide"
     assert sections["action"] == "She peeks over the edge"
-    assert sections["dialogue"] == 'She says: "It looks high."'
-    assert sections["setting"] == "Sunny playground, green grass, golden sunlight"
+    assert "It looks high" in sections["dialogue"]
 
 
 def test_parse_sections_legacy_flat():
@@ -118,14 +104,16 @@ def test_parse_sections_legacy_flat():
 
 def test_flatten_reorders_to_optimal():
     sections = {
-        "setting": "Sunny playground, golden sunlight",
+        "dialogue": "She says: \"Hello.\"",
         "action": "She slides down",
+        "camera": "Wide shot",
         "subject": "Rennie at the slide",
     }
     result = flatten_prompt_sections(sections)
-    # Subject first, action second, setting last
+    # Camera first, subject second, action third, dialogue last
+    assert result.index("Wide shot") < result.index("Rennie at the slide")
     assert result.index("Rennie at the slide") < result.index("She slides down")
-    assert result.index("She slides down") < result.index("Sunny playground")
+    assert result.index("She slides down") < result.index("Hello")
 
 
 def test_flatten_legacy_passthrough():
@@ -148,20 +136,20 @@ def test_flatten_unknown_sections_appended():
 def test_compose_with_structured_prompt():
     """compose_prompt should parse ## sections, reorder, and flatten."""
     project = _make_project(style_anchor="Cartoon style.")
-    scene = _make_scene(prompt="""## Subject
+    scene = _make_scene(prompt="""## Camera
+Wide shot, camera pushes in
+
+## Subject
 A blonde girl at the slide
 
 ## Action
-She looks down nervously
-
-## Setting
-Sunny playground, green grass""")
+She looks down nervously""")
     result = compose_prompt(project, scene)
     # Should be flattened prose, not have ## headers
     assert "##" not in result
-    # Subject before action before setting
+    # Camera before subject before action
+    assert result.index("Wide shot") < result.index("blonde girl")
     assert result.index("blonde girl") < result.index("looks down")
-    assert result.index("looks down") < result.index("Sunny playground")
     # Style anchor still prepended
     assert result.startswith("Cartoon style.")
 

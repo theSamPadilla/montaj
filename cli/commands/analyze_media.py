@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """montaj analyze-media — analyze a media file (video, audio, or image) with Gemini Flash."""
 import os, subprocess, sys
-from cli.main import MONTAJ_ROOT, add_global_flags
+from cli.main import MONTAJ_ROOT, add_global_flags, find_step
 from cli.output import emit, emit_error
 
 
@@ -22,7 +22,7 @@ def handle(args):
 
     cmd = [
         sys.executable,
-        os.path.join(MONTAJ_ROOT, "steps", "analyze_media.py"),
+        find_step("analyze_media"),
         "--input",  args.input,
         "--prompt", args.prompt,
         "--model",  args.model,

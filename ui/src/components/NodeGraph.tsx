@@ -399,6 +399,7 @@ export default function NodeGraph() {
   const [activeDesc,     setActiveDesc]     = useState<string | undefined>(undefined)
   const [isDirty,        setIsDirty]        = useState(false)
   const [isDark,         setIsDark]         = useState(() => document.documentElement.classList.contains('dark'))
+  const [collapsedCats,  setCollapsedCats]  = useState<Set<string>>(new Set())
 
   useEffect(() => {
     const obs = new MutationObserver(() =>
@@ -668,31 +669,58 @@ export default function NodeGraph() {
         {/* Step palette */}
         <div>
           <p className="text-[10px] text-gray-500 uppercase tracking-wider mb-1">Steps</p>
-          {[...steps].sort((a, b) => a.name.localeCompare(b.name)).map(s => {
-            const isCustom = s.name.includes('/')
-            const isEncode = s.name === 'apply_cuts'
-            const isMat    = s.name === 'materialize_cut'
-            return (
-              <button
-                key={s.name}
-                onClick={() => addNode(s)}
-                className={`w-full text-left px-2 py-1.5 rounded text-xs hover:bg-gray-100 dark:hover:bg-gray-800 flex items-center justify-between gap-1 ${
-                  isEncode ? 'text-amber-600 dark:text-amber-400 hover:text-amber-700 dark:hover:text-amber-200'
-                  : isMat ? 'text-orange-700 dark:text-orange-500/80 hover:text-orange-800 dark:hover:text-orange-300'
-                  : 'text-gray-700 dark:text-gray-300 hover:text-gray-900 dark:hover:text-white'
-                }`}
-              >
-                <span className="truncate">{s.name}</span>
-                <span className={`shrink-0 text-[9px] font-bold px-1 py-0.5 rounded ${
-                  isCustom
-                    ? 'bg-emerald-100 dark:bg-emerald-900/60 text-emerald-700 dark:text-emerald-400'
-                    : 'bg-gray-200 dark:bg-gray-700 text-gray-600 dark:text-gray-400'
-                }`}>
-                  {isCustom ? 'C' : 'N'}
-                </span>
-              </button>
+          {(() => {
+            const grouped = new Map<string, StepSchema[]>()
+            for (const s of steps) {
+              const cat = s.category ?? 'other'
+              if (!grouped.has(cat)) grouped.set(cat, [])
+              grouped.get(cat)!.push(s)
+            }
+            const order = ['media', 'audio', 'speech', 'transform', 'generate', 'lyrics', 'other']
+            const sorted = [...grouped.entries()].sort(
+              (a, b) => (order.indexOf(a[0]) === -1 ? 99 : order.indexOf(a[0])) - (order.indexOf(b[0]) === -1 ? 99 : order.indexOf(b[0]))
             )
-          })}
+            return sorted.map(([cat, catSteps]) => {
+              const isCollapsed = collapsedCats.has(cat)
+              return (
+                <div key={cat} className="mb-1">
+                  <button
+                    onClick={() => setCollapsedCats(prev => {
+                      const next = new Set(prev)
+                      if (next.has(cat)) next.delete(cat); else next.add(cat)
+                      return next
+                    })}
+                    className="w-full flex items-center gap-1 px-2 py-1 rounded text-[10px] text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800 hover:text-gray-700 dark:hover:text-gray-200"
+                  >
+                    <svg className={`w-3 h-3 shrink-0 transition-transform ${isCollapsed ? '' : 'rotate-90'}`} viewBox="0 0 16 16" fill="currentColor">
+                      <path d="M6 3l5 5-5 5V3z"/>
+                    </svg>
+                    <span className="uppercase tracking-widest font-medium">{cat}</span>
+                    <span className="text-[9px] text-gray-400 dark:text-gray-600 ml-auto">{catSteps.length}</span>
+                  </button>
+                  {!isCollapsed && [...catSteps].sort((a, b) => a.name.localeCompare(b.name)).map(s => {
+                    const isCustom = s.name.includes('/')
+                    return (
+                      <button
+                        key={s.name}
+                        onClick={() => addNode(s)}
+                        className="w-full text-left pl-6 pr-2 py-1 rounded text-xs text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800 hover:text-gray-900 dark:hover:text-white flex items-center justify-between gap-1"
+                      >
+                        <span className="truncate">{s.name}</span>
+                        <span className={`shrink-0 text-[9px] font-bold px-1 py-0.5 rounded ${
+                          isCustom
+                            ? 'bg-emerald-100 dark:bg-emerald-900/60 text-emerald-700 dark:text-emerald-400'
+                            : 'bg-gray-200 dark:bg-gray-700 text-gray-600 dark:text-gray-400'
+                        }`}>
+                          {isCustom ? 'C' : 'N'}
+                        </span>
+                      </button>
+                    )
+                  })}
+                </div>
+              )
+            })
+          })()}
           {steps.length === 0 && <p className="text-xs text-gray-600">No steps found.</p>}
         </div>
 

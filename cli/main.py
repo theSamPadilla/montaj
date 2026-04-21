@@ -8,6 +8,20 @@ from cli.help import ColorHelpFormatter
 MONTAJ_ROOT = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 
 
+def find_step(name):
+    """Resolve a built-in step executable: steps/<category>/<name>.py (or flat fallback)."""
+    steps_dir = os.path.join(MONTAJ_ROOT, "steps")
+    flat = os.path.join(steps_dir, f"{name}.py")
+    if os.path.isfile(flat):
+        return flat
+    for entry in os.scandir(steps_dir):
+        if entry.is_dir() and not entry.name.startswith((".", "_")):
+            path = os.path.join(entry.path, f"{name}.py")
+            if os.path.isfile(path):
+                return path
+    raise FileNotFoundError(f"Built-in step not found: {name}")
+
+
 def add_global_flags(parser):
     parser.add_argument("--json",  action="store_true", help="Output result as JSON")
     parser.add_argument("--out",   metavar="PATH",      help="Output file path")

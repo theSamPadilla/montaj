@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """montaj probe — extract metadata from a video file."""
 import os, subprocess, sys
-from cli.main import MONTAJ_ROOT, add_global_flags
+from cli.main import MONTAJ_ROOT, add_global_flags, find_step
 from cli.output import emit, emit_error
 
 
@@ -18,7 +18,7 @@ def handle(args):
 
     cmd = [
         sys.executable,
-        os.path.join(MONTAJ_ROOT, "steps", "probe.py"),
+        find_step("probe"),
         "--input", args.input,
     ]
     if args.out:

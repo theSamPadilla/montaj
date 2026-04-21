@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """montaj stem-separation — separate audio into stems using Demucs."""
 import os, subprocess, sys
-from cli.main import MONTAJ_ROOT, add_global_flags
+from cli.main import MONTAJ_ROOT, add_global_flags, find_step
 from cli.output import emit, emit_error
 
 
@@ -24,7 +24,7 @@ def handle(args):
 
     cmd = [
         sys.executable,
-        os.path.join(MONTAJ_ROOT, "steps", "stem_separation.py"),
+        find_step("stem_separation"),
         "--input", args.input,
         "--stems", args.stems,
         "--model", args.model,

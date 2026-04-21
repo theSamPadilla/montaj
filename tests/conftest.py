@@ -14,11 +14,24 @@ STEPS_DIR  = REPO_ROOT / "steps"
 HAS_FFMPEG = shutil.which("ffmpeg") is not None
 
 
+def _find_step(script: str) -> Path:
+    """Find a step script in STEPS_DIR, checking flat then subdirectories."""
+    path = STEPS_DIR / script
+    if path.exists():
+        return path
+    for subdir in STEPS_DIR.iterdir():
+        if subdir.is_dir() and not subdir.name.startswith((".", "_")):
+            path = subdir / script
+            if path.exists():
+                return path
+    raise FileNotFoundError(f"Step script not found: {script}")
+
+
 # ── helpers ───────────────────────────────────────────────────────────────────
 
 def run_step(script: str, *args) -> subprocess.CompletedProcess:
     """Run a step script as a subprocess and return the completed process."""
-    path = STEPS_DIR / script
+    path = _find_step(script)
     return subprocess.run(
         [sys.executable, str(path), *args],
         capture_output=True, text=True,
@@ -161,7 +174,7 @@ def fake_whisper_env(tmp_path_factory) -> dict:
 def run_step_env(script: str, env_extra: dict, *args) -> subprocess.CompletedProcess:
     """Run a step with extra environment variables merged in."""
     env = {**os.environ, **env_extra}
-    path = STEPS_DIR / script
+    path = _find_step(script)
     return subprocess.run(
         [sys.executable, str(path), *args],
         capture_output=True, text=True, env=env,

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """montaj generate-image — generate an image via Gemini or OpenAI."""
 import os, subprocess, sys
-from cli.main import MONTAJ_ROOT, add_global_flags
+from cli.main import MONTAJ_ROOT, add_global_flags, find_step
 from cli.output import emit, emit_error
 
 
@@ -27,7 +27,7 @@ def handle(args):
 
     cmd = [
         sys.executable,
-        os.path.join(MONTAJ_ROOT, "steps", "generate_image.py"),
+        find_step("generate_image"),
         "--prompt",   args.prompt,
         "--out",      args.out,
         "--provider", args.provider,

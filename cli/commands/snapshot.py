@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """montaj snapshot — generate a frame grid contact sheet from a video."""
 import os, subprocess, sys
-from cli.main import MONTAJ_ROOT, add_global_flags
+from cli.main import MONTAJ_ROOT, add_global_flags, find_step
 from cli.output import emit, emit_error
 
 
@@ -24,7 +24,7 @@ def handle(args):
 
     cmd = [
         sys.executable,
-        os.path.join(MONTAJ_ROOT, "steps", "snapshot.py"),
+        find_step("snapshot"),
         "--input", args.input,
         "--cols", str(args.cols),
         "--rows", str(args.rows),
