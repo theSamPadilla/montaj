@@ -13,7 +13,7 @@ Each encode is a full libx264 pass — running too many in parallel exhausts mem
 import json, os, sys, argparse, tempfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "lib"))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "lib"))
 from common import fail, require_file, check_output, run, get_duration
 from trim_spec import is_trim_spec, load as load_spec, merge as merge_keeps
 

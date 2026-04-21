@@ -13,7 +13,7 @@ import json, mimetypes, os, re, sys, tempfile, argparse
 from difflib import SequenceMatcher
 from pathlib import Path
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "lib"))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "lib"))
 import models as _models
 from common import fail, require_file, check_output, run, find_whisper_bin
 

@@ -3,7 +3,7 @@
 Also trims pre-speech noise at the head by snapping the start to the first word onset."""
 import json, os, re, sys, argparse, tempfile
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "lib"))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "lib"))
 from common import require_file, run, get_duration, transcribe_words
 from trim_spec import is_trim_spec, load as load_spec, merge as merge_keeps, audio_extract_cmd, remap_timestamp
 

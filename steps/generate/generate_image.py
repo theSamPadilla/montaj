@@ -3,8 +3,8 @@
 import sys, os, argparse
 
 # Make lib/ importable (for common) and project root importable (for connectors/).
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "lib"))
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "lib"))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 from common import fail, require_file
 from connectors import ConnectorError
 

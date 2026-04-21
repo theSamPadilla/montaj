@@ -2,7 +2,7 @@
 """Download a video or playlist from a URL using yt-dlp."""
 import json, os, sys, argparse
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "lib"))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "lib"))
 from common import fail, run
 
 

@@ -2,7 +2,7 @@
 """Prepare caption track from word-level transcript JSON for the render engine."""
 import json, os, sys, argparse
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "lib"))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "lib"))
 from common import fail, require_file, check_output
 
 def main():

@@ -3,7 +3,7 @@
 import json, mimetypes, os, sys, tempfile, argparse
 from pathlib import Path
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "lib"))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "lib"))
 import models as _models
 from common import fail, require_file, check_output, run, find_whisper_bin
 from trim_spec import is_trim_spec, load as load_spec, audio_extract_cmd, remap_timestamp

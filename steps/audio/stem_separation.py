@@ -5,7 +5,7 @@ Outputs a JSON with paths to each separated stem file.
 import json, mimetypes, os, sys, tempfile, argparse
 from pathlib import Path
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "lib"))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "lib"))
 from common import fail, require_file, check_output, run
 
 

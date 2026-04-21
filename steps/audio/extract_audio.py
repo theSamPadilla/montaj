@@ -2,7 +2,7 @@
 """Extract audio from a video file."""
 import os, sys, argparse
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "lib"))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "lib"))
 from common import fail, require_file, check_output, run
 
 def main():

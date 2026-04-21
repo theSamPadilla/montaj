@@ -20,7 +20,7 @@ Point-in-time (--at <seconds>):
 """
 import math, os, sys, argparse, glob
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "lib"))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "lib"))
 from common import fail, require_file, check_output, run, get_duration
 
 

@@ -2,7 +2,7 @@
 """Map virtual-timeline timestamps to original-file timestamps (and inverse)."""
 import json, os, sys, argparse
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "lib"))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "lib"))
 from common import fail
 
 

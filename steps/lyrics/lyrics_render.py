@@ -7,7 +7,7 @@ an MP4 with word-by-word accumulated text overlaid on a solid-color or video bac
 import json, os, sys, argparse, subprocess
 from pathlib import Path
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "lib"))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "lib"))
 from common import fail, require_file, check_output, run, run_ffmpeg, get_duration
 
 try:

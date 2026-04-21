@@ -2,7 +2,7 @@
 """Crop a trim spec to one or more virtual-timeline windows."""
 import json, os, sys, argparse
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "lib"))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "lib"))
 from common import fail
 
 

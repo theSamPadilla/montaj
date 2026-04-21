@@ -2,7 +2,7 @@
 """Resize/pad video to standard aspect ratios (9:16, 1:1, 16:9)."""
 import os, sys, argparse
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "lib"))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "lib"))
 from common import fail, require_file, check_output, run
 
 FILTERS = {
