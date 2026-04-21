@@ -544,7 +544,7 @@ Per-clip regeneration queue. The UI (inspect modal, subcut tool) and CLI (`monta
 | `clipId` | string | Must match a `tracks[0][i].id`. |
 | `mode` | string | `"full"` (replace entire clip) or `"subcut"` (replace a window within the clip). |
 | `subrange` | object \| null | `{start: <int>, end: <int>}` in source-seconds. Null for `mode: "full"`. For subcut, `end - start` must be in [3, 15] integer. |
-| `prompt` | string | Natural language. No `<<<image_N>>>` tokens — the connector prepends the ref clause. |
+| `prompt` | string | Natural language. The agent/step composes the ref clause and `<<<image_N>>>` tokens via `compose_prompt()`. |
 | `refImages` | string[] | `imageRef` IDs. Resolved against `storyboard.imageRefs[i].refImages[0]` at call time. |
 | `duration` | number | Integer seconds in [3, 15]. For `kling-video-o1`: must be 5 or 10. |
 | `useFirstFrame` | boolean | Subcut only. When true, the agent extracts the frame at `subrange.start` and passes it as `--first-frame`. |

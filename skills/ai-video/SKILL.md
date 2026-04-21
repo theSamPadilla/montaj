@@ -8,7 +8,14 @@ step: true
 
 You are the director for an `ai_video` project. The workflow file `workflows/ai_video.json` lists four steps: `direct` (this skill), `analyze_style` (`montaj/analyze_media`), `generate_ref` (`montaj/generate_image`), and `generate_scene` (`montaj/kling_generate`). You orchestrate the other three; the engine doesn't auto-execute anything.
 
-This skill is **mechanics only**. It teaches you what fields to write when, which tools to call at which phase, and what NOT to do. Editorial decisions (how to structure a storyboard, tone/genre heuristics, retry strategy on failures) live in your knowledge, user profiles, context, and the conversation with the user.
+This skill covers both **what to do** (field writes, tool calls, status transitions) and **how to do it well** (prompt structure, camera vocabulary, character consistency, quality evaluation). Sub-skills provide best practices for specific areas — load them as referenced.
+
+## Sub-skills
+
+| Name | Path | When to load |
+|------|------|--------------|
+| `camera-vocabulary` | `skills/camera-vocabulary/SKILL.md` | Planning scenes in Phase 1 — shot scale + camera move selection |
+| `eval-scenes` | `skills/eval-scenes/SKILL.md` | After generating scenes in Phase 6 — quality evaluation + retry loop |
 
 ---
 
@@ -87,9 +94,17 @@ Before flipping status to `storyboard_ready`, all of the following must be true 
 For each `storyboard.imageRefs[i]`:
 
 **`source: "upload"`** — user uploaded a file. `refImages[0]` is already set.
-- Your job: write `anchor` — a clear text description of what's in the image. Scene prompts reference subjects by `label`; the `anchor` is the canonical text form used in composition.
+- Your job: write `anchor` — a **detailed character/object spec** (60-120 words). This is appended verbatim to every Kling prompt that references this character as a `[LABEL] spec` block in the CHARACTER/OBJECT SPECS section, so specificity matters. Cover:
+  - **(a) Overall:** age range, gender, species/type, build, size
+  - **(b) Distinguishing features:** face shape, eye color, fur/skin color, markings, expression style
+  - **(c) Clothing/surface:** every visible garment or surface detail — color, fabric, fit, condition
+  - **(d) Accessories:** any props, gear, distinctive marks
+  - **(e) Art style cues:** outline weight, color fill style, proportions
+
+  Example for a corgi character: "A small playful corgi with short legs, a long body, tan and golden fur with a white chest and belly, a fluffy white-tipped tail that curls upward, small pointed ears with tan fronts and white backs, round dark eyes with a friendly alert expression, a small black nose, bold black outlines with flat solid color fills, slightly exaggerated cartoon proportions with an oversized head relative to body."
+
+- If you can't discern enough detail from the image, call `analyze_media --input <path> --prompt "Describe this character in 60-120 words covering: overall appearance, distinguishing features, colors, clothing/surface details, accessories, and art style. Be specific enough that a video generator could reproduce this character consistently across multiple scenes."` and use the output as the anchor.
 - **Do NOT call `generate_image`.** Never overwrite the user's uploaded image.
-- If you can't tell what the image contains, call `analyze_media --input <path> --prompt "Describe this image in one sentence suitable for a video generation reference."` and derive the anchor from its output.
 
 **`source: "text"`** — user typed a description in `anchor`. `refImages` is empty.
 - Your job: call `generate_image --prompt <anchor> --out <path>` and append the result to `refImages`.
@@ -113,14 +128,53 @@ Fold all outputs into a SINGLE `storyboard.styleAnchor` string — one cohesive 
 
 ### Scene plan
 
-Populate `storyboard.scenes[]` with one entry per intended scene: `{id, prompt, duration, refImages}`.
+Populate `storyboard.scenes[]` with one entry per intended scene.
 
 - **`id`** — stable within the project (e.g. `"scene-1"`, `"scene-2"`).
-- **`prompt`** — scene-specific prose only. **NEVER include `<<<image_N>>>` tokens or `styleAnchor` text here.** Write natural language that names characters by their labels (e.g. "Rennie sits at the top of the slide, Rosie waits below"). Token substitution and style prepending happen at call time in Phase 6 Step C — not at storyboard time. If you bake tokens into scene prompts, they break when the user reorders `refImages`.
+- **`prompt`** — structured using `## Section` headers. **NEVER include `<<<image_N>>>` tokens or `styleAnchor` text here.** Write natural language that names characters by their labels. Token substitution, style prepending, and section reordering happen at generation time — not at storyboard time.
+
+  **Required sections** (use exactly these `##` headers):
+
+  ```
+  ## Subject
+  Who/what is in the scene. This is the FIRST thing Kling reads — anchor
+  identity here. Name the character, describe their pose/position.
+  Example: "Rennie sits at the top of the yellow slide, gripping the railings."
+
+  ## Action
+  What happens. EVERY sentence must have a motion verb — describe how things
+  MOVE, not how they look. Use sequential phrasing ("First... then...").
+  BAD: "Rosie waits at the bottom." (static)
+  GOOD: "Rosie wags her tail and tilts her head up." (motion)
+  Example: "She grips the railings and leans forward. Below, Rosie wags her tail and looks up."
+
+  ## Dialogue
+  Speech lines for audio generation. Keep it short — one line per character.
+  Example: She says: "It looks high." The corgi says: "I am right here."
+
+  ## Setting
+  Environment + lighting as CONCRETE VISUALS. No abstract moods.
+  Describe what the camera would see: colors, light direction, objects.
+  Example: "Sunny playground, green grass, blue sky, golden sunlight casting long shadows."
+  ```
+
+  **Do NOT use these as sections** (they are handled mechanically):
+  - ~~Camera~~ → use `shotScale` and `cameraMove` fields instead
+  - ~~Mood~~ → describe the lighting/atmosphere concretely in Setting
+  - ~~Environment~~ → merged into Setting
+
+  The step parses `##` sections, reorders to optimal Kling sequence (Subject → Action → Dialogue → Setting), adds periods between sections, and flattens into flowing prose. The agent can write sections in any order — the step normalizes.
+
+  **Keep each scene's prompt under ~100 words** (excluding headers). Kling's sweet spot is 60-100 words for the scene-specific content. The step adds ~10 words of style prefix on top.
+
+  **Max 4-5 distinct nouns per scene.** Count every character, object, and named prop. If you have more than 5, Kling struggles to render them all correctly — simplify or split into two scenes. Example: Rennie + Rosie + slide = 3 nouns (good). Rennie + Rosie + Pennie + slide + sparkles + trees = 6 nouns (too many — drop sparkles or trees).
+
 - **`duration`** — integer seconds. See "Duration budgeting" below for allocation.
 - **`refImages`** — IDs into `storyboard.imageRefs[]` (NOT paths). Pick refs by matching natural-language mentions in the prompt ("Max is walking…") to `imageRefs[i].label`. Hard cap of 3 refs per scene (editorial cap — the connector allows 7, but 3 is the sweet spot for focused scene generation).
+- **`shotScale`** — one of the values from the camera-vocabulary sub-skill (e.g. `"wide"`, `"cu"`, `"medium"`). Stored as structured data for planning and UI display. Write the camera framing naturally in your `## Action` or `## Subject` section prose (e.g. "Wide shot of the playground" or "Close-up on Rennie's face").
+- **`cameraMove`** — one of the values from the camera-vocabulary sub-skill (e.g. `"push-in"`, `"static"`, `"tracking"`). Stored as structured data for planning and UI display. Write the camera motion naturally in your prompt prose (e.g. "The camera slowly pushes in" or "Tracking shot following her down the slide").
 
-Scene count and pacing are editorial — this skill only enforces mechanics.
+Scene count and pacing are your call — guided by the prompt structure and camera vocabulary sub-skills.
 
 ### Duration budgeting (how to reason about total video time)
 
@@ -231,7 +285,13 @@ A scene is "already done" if EITHER check passes. Then:
 - `scene.lastError` set AND no clip → **retry**.
 - Else → **new generation**.
 
-This makes approval idempotent. If the user tweaked scene 3 and hit Approve again, scenes 1/2/4/5 skip and only scene 3 regenerates — regardless of whether the original was single, chained, or batched. A scene re-generated out of a batched origin runs as a **single-shot call** and gets its own clip on `tracks[0]`; the original batched clip stays in place.
+This makes generation idempotent and incremental:
+
+- **Full approval (first run):** all scenes generate.
+- **Re-approval after editing specific scenes:** only the changed scenes regenerate. Unchanged scenes keep their existing clips.
+- **Selective regeneration (user asks to redo specific scenes):** remove the clip for that scene from `tracks[0]`, then call `kling_generate --project-id X --scene-id Y`. The step's dedup guard replaces any existing clip for the same sceneId, so you can also just re-run the step — it overwrites.
+
+**Never regenerate all scenes when only some changed.** Each Kling call costs credits and takes ~60s. If the user edited scenes 1 and 3, generate only those two. The agent should diff the user's changes against the current storyboard to determine which scenes need regeneration.
 
 ### Step B — pick a dispatch mode
 
@@ -277,50 +337,47 @@ State your chosen mode in chat once at the start — the user can redirect if wr
 
 Two Kling models are available. Pass `--model <name>` to `kling_generate`.
 
-- **`kling-video-o1`** (preferred) — newest model with **higher visual quality**. **Only 5s or 10s durations.** No multi-shot. End frame (`--last-frame`) requires `--mode pro`. Use this whenever a scene's duration is 5 or 10.
-- **`kling-v3-omni`** (fallback) — flexible 3–15s durations, multi-shot support, start+end frame in both std/pro. Use when a scene's duration doesn't fit o1's 5/10 constraint, or when multi-shot dispatch is needed.
+- **`kling-video-o1`** (preferred for visual quality) — newest model. **Only 5s or 10s durations.** No multi-shot. End frame (`--last-frame`) requires `--mode pro`. **Does NOT generate audio** — clips are silent.
+- **`kling-v3-omni`** (required for audio) — flexible 3–15s durations, multi-shot support, start+end frame in both std/pro. **Generates audio** when `sound: "on"`. Use when scenes have dialogue or need sound.
 
-**How to decide:** The model is **per-scene, not per-project** — you can mix and match within a single storyboard. For each scene, check its duration:
-- Duration is 5 or 10 → use `kling-video-o1` for that scene (better quality).
-- Duration is anything else (3, 4, 6, 7, 8, etc.) → use `kling-v3-omni` for that scene.
+**How to decide:** The model is **per-scene, not per-project** — you can mix and match. The step auto-upgrades to o1 when safe:
+- Duration is 5 or 10 AND `sound: "off"` → auto-upgrades to `kling-video-o1`.
+- Duration is 5 or 10 AND `sound: "on"` → stays on `kling-v3-omni` (needs audio).
+- Duration is anything else → `kling-v3-omni`.
 
 This lets you get the best quality where possible while keeping flexible pacing elsewhere. The connector snaps invalid durations to the nearest allowed value, but snapping changes your editorial pacing — better to pick the right model per scene than rely on snapping.
 
 State your model choices in chat alongside the dispatch mode. Record the actual model used on `generation.model` for each clip.
 
-### Step C — compose the combined prompt at call time
+#### Transition style — hard cuts by default
 
-For each scene (or shot, in batched mode):
+Each scene is generated from scratch via text-to-video. Shot-to-shot transitions are **hard cuts**. Do NOT use `--first-frame` to chain scene N's last frame into scene N+1's generation — this produces a morphy, dissolve-y feel that reads as AI-generated.
 
-- **Compose the full prompt yourself, including `<<<image_N>>>` tokens and ref clause.** The connector (`connectors/kling.py`) is a pure pass-through — it does NOT mutate the prompt. You are responsible for placing tokens.
+**The only exception is a deliberate match-cut** — where the end of scene A and the start of scene B form an intentional visual rhyme (e.g. a ball rolling → a globe spinning). This is rare: 0-1 times per video, only when the user explicitly requests it. If you're unsure whether something qualifies as a match-cut, it doesn't — use a hard cut.
 
-  For each scene, compose the prompt as follows:
+Identity consistency across hard cuts comes from **the same character specs and ref images being passed to every scene** — not from pixel handoff between frames. The `kling_generate` step appends character descriptions and `<<<image_N>>>` tokens to every prompt, so identity holds via the spec.
 
-  1. Start with `storyboard.styleAnchor` as a prefix.
-  2. Append the scene prose. At each mention of a character/object label that corresponds to a ref image, insert the positional token `<<<image_N>>>` after the label. N is 1-indexed and matches the order of `--ref-image` args you pass to `kling_generate`.
-  3. Prepend a ref clause: `"Use the character/style from <<<image_1>>>, <<<image_2>>>. "` (listing all ref tokens).
-  4. The resulting string is the `--prompt` you pass to `kling_generate`.
+**Note:** Chained dispatch mode (documented above) remains available for the rare match-cut case. It is no longer the recommended default — use independent dispatch with hard cuts unless the user specifically requests visual continuity at a scene boundary.
 
-  **Concrete example.** `storyboard.styleAnchor` = `"Warm golden-hour lighting, soft film grain, handheld camera."`, `scene.refImages = [max_id, meadow_id]` resolves to paths `/refs/max.jpg` and `/refs/meadow.jpg`, and the scene mentions "Max" (label for `max_id`).
+### Step C — prompt composition (handled by the step)
 
-  Step-by-step:
-  - Scene prose: `"Max runs across the meadow."`
-  - Insert tokens: `"Max <<<image_1>>> runs across the meadow."` (max_id is first ref → image_1)
-  - Ref clause: `"Use the character/style from <<<image_1>>>, <<<image_2>>>. "`
-  - Combined: `"Use the character/style from <<<image_1>>>, <<<image_2>>>. Warm golden-hour lighting, soft film grain, handheld camera. Max <<<image_1>>> runs across the meadow."`
+In project-aware mode (`--project-id` + `--scene-id`), the `kling_generate` step handles all prompt composition automatically. The agent does NOT compose the wire prompt manually. The step:
 
-  The CLI call:
+1. Reads the scene's `## Section` prompt and flattens it (Subject → Action → Dialogue → Setting order, period-terminated).
+2. Prepends `storyboard.styleAnchor` as a short prefix.
+3. Places `<<<image_N>>>` tokens inline at character/object label mentions (matches on first word of label for flexibility — "Rosie" matches even if label is "Rosie the Dog").
+4. Appends `[SHOT SCALE]` and `[CAMERA MOVE]` tags from the scene's structured fields.
+5. Auto-sets a default negative prompt targeting common Kling failure modes.
+6. Generates a random seed for reproducibility.
+7. Auto-upgrades to `kling-video-o1` when duration is 5/10 and sound is off.
 
-  ```
-  kling_generate --prompt "<combined>" --ref-image /refs/max.jpg --ref-image /refs/meadow.jpg ...
-  ```
+**The agent's only job is writing good `## Section` prompts in Phase 1.** Everything else is mechanical.
 
-  **What you store on `generation.prompt`:** the **caller's composed string** — styleAnchor + scene prose in natural language, WITHOUT the ref clause and WITHOUT `<<<image_N>>>` tokens. This is the pre-composition version. Regen pre-fills the UI from this. At call time, you re-compose the full prompt (with tokens + ref clause) from the stored natural-language prompt + `refImages`.
+**What gets stored on `generation.prompt`:** the composed wire-ready string (with tokens, style anchor, camera tags). This is the exact prompt sent to Kling.
 
 - **Length caps (enforced by connector):**
-  - **Single-shot: silently truncates at 2500 chars.** The step prints a `prompt_truncated` warning on stderr — watch for it. Respect the cap when composing.
-  - **Multi-shot customize: hard-rejects any `multi_prompt[i].prompt` > 512 chars.** Raises `ConnectorError`, step fails. Compose tighter per-shot prose.
-  - **Multi-shot customize: omits the top-level `prompt` body field entirely** (per Kling's spec — `prompt` is invalid in that mode). Your per-shot strings in `multi_prompt[]` are what ship.
+  - **Single-shot: silently truncates at 2500 chars.** Keep scene prompts under ~100 words to stay safe.
+  - **Multi-shot customize: hard-rejects any `multi_prompt[i].prompt` > 512 chars.**
 
 - Resolve `scene.refImages` IDs against `storyboard.imageRefs` (use `imageRefs[i].refImages[0]` as the primary path). Enforce the editorial cap of 3 refs per scene.
 
@@ -435,6 +492,21 @@ Refs passed apply to any shot in the batch. Cap still 7 total.
 
 - **When every `storyboard.scenes[i]` has a matching clip** (by sceneId OR batchShots sceneId): set `project.status = "draft"`. The UI's EditorPage routing carries the user to ReviewView.
 - **If some scenes failed:** leave status at `storyboard_ready`. The user sees partial progress (some cards "done," some showing error). They may re-click Approve (idempotency handles retry) or ask in chat for tweaks.
+
+### Step F — evaluate generated clips (optional but recommended)
+
+After all scenes have clips, run the eval loop:
+
+    for each scene:
+      eval_scene --project-id {id} --scene-id {scene.id} --max-retries 2
+
+The step evaluates each clip against a 5-dimension quality rubric (character match, physics, anatomy, action, standalone) using Gemini. If a clip fails, the step regenerates it via Kling (non-deterministic re-roll with the same composed prompt) and re-evaluates, up to `max-retries` times. Previous attempts are preserved as versioned files (`scene-1-v2.mp4`, etc.) and recorded in `generation.attempts[]` with their eval verdicts.
+
+Results are stored on `tracks[0][i].generation.eval` — `{pass, scores, attempt}`.
+
+**When to skip:** If the user says they're happy with the clips, want to iterate manually, or are cost-sensitive (each eval = 1 Gemini call + potentially N Kling calls per scene).
+
+**Note:** The eval loop does NOT revise prompts — it re-rolls generation with the same prompt, relying on Kling's non-determinism to produce a better draw. Prompt revision based on Gemini feedback is a future enhancement.
 
 ---
 
@@ -560,9 +632,5 @@ One table of every field you write, grouped by phase.
 - **Don't regenerate scenes that already have a clip** when the user re-approves. The skip-if-clip-exists check in Phase 6 Step A is mandatory — partial-approval retries depend on it.
 - **Don't invent fields outside the schema.** If you need to store something, ask the user.
 - **Don't touch `project.json` outside ai_video's documented paths** (e.g., don't add fields to `settings`).
+- **Don't chain scenes via `--first-frame` by default.** Hard cuts are the standard. Frame bridging produces morphy AI-slop transitions. Reserve `--first-frame` for deliberate match-cuts (rare, user-requested only).
 
----
-
-## Mechanics vs editorial — one closing reminder
-
-Everything here is **mechanics** — the contract Montaj and the UI are built against. Editorial choices (storyboard structure, scene count, character design, style-anchor voice, retry strategy, prompt craft for specific genres) come from whatever editorial sources you have: your general knowledge, the conversation with the user, user profiles, personal skills if any. If those sources conflict with this skill's field writes, status transitions, or tool-call shapes, the mechanics here win — the downstream UI and persisted project files depend on the invariants in this document.

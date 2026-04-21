@@ -9,7 +9,7 @@ Appends an entry to project.regenQueue[]. The agent picks these up during
 Phase 7 of the ai-video skill, validates each entry, calls kling_generate,
 and patches tracks[0].
 """
-import json, os, tempfile, time
+import json, os, tempfile, time, uuid
 from datetime import datetime, timezone
 
 from cli.main import add_global_flags
@@ -173,7 +173,7 @@ def _build_and_enqueue(args, *, mode, subrange):
 
     # 5. Build entry
     entry = {
-        "id": f"req-{int(time.time())}",
+        "id": f"req-{uuid.uuid4().hex[:8]}",
         "clipId": args.clip_id,
         "mode": mode,
         "subrange": subrange,

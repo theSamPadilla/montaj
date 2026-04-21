@@ -16,21 +16,36 @@ Send this to your agent:
 Install Montaj from https://github.com/theSamPadilla/montaj, then read skills/onboarding/SKILL.md to get us started.
 ```
 
-## Manual Install
+## Install
 
-**macOS** (installs Node.js and all Python deps including bundled ffmpeg):
+**PyPI:**
+```bash
+pip install montaj
+# install Node.js >=18 separately: https://nodejs.org
+montaj install whisper   # whisper-cpp binary + model weights
+montaj install ui        # npm deps + UI build
+```
+
+**Homebrew (macOS)** — installs Node.js and all Python deps including bundled ffmpeg:
 ```bash
 brew install theSamPadilla/montaj/montaj
 ```
 
-**Linux / manual:**
+**From source:**
 ```bash
 git clone https://github.com/theSamPadilla/montaj
 cd montaj
-pip install -e .
-# install Node.js >=18 separately: https://nodejs.org
-montaj install whisper   # whisper-cpp binary + model weights
-montaj install ui        # npm deps + UI build
+pip install -e ".[connectors]"
+montaj install whisper
+montaj install ui
+```
+
+Optional extras:
+```bash
+pip install "montaj[connectors]"  # Kling, Gemini, OpenAI API connectors
+pip install "montaj[rvm]"         # background removal (torch + RVM)
+pip install "montaj[demucs]"      # audio stem separation
+montaj install all                # whisper + ui + rvm
 ```
 
 ## Quick Start
@@ -41,13 +56,18 @@ montaj run ./clips --prompt "tight cuts, remove filler, 9:16"
 
 # With UI — watch the agent work live, tweak the result
 montaj serve
+
+# AI video generation — agent creates from a text prompt via Kling
+montaj serve   # then create an ai_video project in the UI
 ```
 
 ## What's Inside
 
 ```
-steps/              Step executables + JSON schemas (probe, trim, transcribe, etc.)
-workflows/          Suggested editing plans (overlays.json, tight-reel.json, etc.)
+steps/              Step executables + JSON schemas (probe, trim, transcribe, generate, etc.)
+workflows/          Editing plans (clean_cut, overlays, ai_video, lyrics_video, etc.)
+skills/             Agent skill contracts (onboarding, edit-session, ai-video, etc.)
+connectors/         API connectors (Kling, Gemini, OpenAI)
 
 render/             React + Puppeteer + ffmpeg render engine
 serve/              Local HTTP + SSE server (montaj serve)
@@ -58,7 +78,7 @@ docs/               Architecture, CLI reference, UI design, schemas
 ## How It Works
 
 ```
-1. Upload clips + write an editing prompt
+1. Upload clips + write an editing prompt (or describe an AI video)
 2. montaj creates project.json [pending]
 3. Agent picks it up, reads the workflow, calls steps as tools
 4. Agent writes project.json as it works → UI updates live via SSE
@@ -82,20 +102,47 @@ See [docs/CLI.md](docs/CLI.md) for the full reference.
 
 ## Steps & Workflows
 
-**Steps** are the individual editing operations — Python executables with JSON schemas, callable as agent tools, CLI commands, or API calls. Native steps ship with Montaj; custom steps are any executable that follows the output convention.
+**Steps** are individual editing operations — Python executables with JSON schemas, callable as agent tools, CLI commands, or API calls. Native steps ship with Montaj; custom steps are any executable that follows the output convention.
 
 | Category | Steps |
 |----------|-------|
-| **Inspect** | `probe`, `snapshot` |
+| **Inspect** | `probe`, `snapshot`, `analyze_media` |
 | **Clean** | `waveform_trim`, `rm_fillers`, `rm_nonspeech` |
-| **Edit** | `trim`, `concat`, `materialize_cut`, `resize`, `extract_audio` |
-| **Enrich** | `transcribe`, `caption`, `normalize` |
-| **VFX** | `remove_bg` — background removal via RVM |
+| **Edit** | `materialize_cut`, `resize`, `extract_audio`, `crop_spec` |
+| **Enrich** | `transcribe`, `caption`, `normalize`, `lyrics_sync`, `lyrics_render` |
+| **Generate** | `kling_generate`, `generate_image`, `eval_scene` |
+| **VFX** | `remove_bg`, `stem_separation` |
 | **Acquire** | `fetch` — download from any URL via yt-dlp |
 
-**Workflows** are suggested editing plans — which steps to use and with what default params. The agent reads the plan, reads the prompt, and decides the actual execution. Available workflows: `clean_cut`, `overlays`, `short_captions`, `animations`, `explainer`, `floating_head`.
+**Workflows** are suggested editing plans — which steps to use and with what default params. The agent reads the plan, reads the prompt, and decides the actual execution.
+
+| Workflow | Description |
+|----------|-------------|
+| `clean_cut` | Trim, remove filler, clean audio |
+| `overlays` | Add animated overlays and titles |
+| `ai_video` | Generate video from text via Kling + storyboard |
+| `lyrics_video` | Sync lyrics to audio with animated captions |
+| `animations` | Custom JSX animation compositions |
+| `explainer` | Educational/explainer video style |
+| `floating_head` | Speaker overlay on background footage |
 
 Custom steps and workflows are discovered automatically — no registration needed. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for details.
+
+## Skills
+
+Skills are agent-readable contracts that teach the agent how to approach a specific editing task. Each skill describes the goal, the steps to use, the parameter choices, and the quality criteria.
+
+Available skills: `onboarding`, `edit-session`, `ai-video`, `eval-scenes`, `overlay`, `write-overlay`, `animation-sections`, `lyrics-video`, `style-profile`, `serve`, `parallel`, `select-takes`, `waveform-silence`, `camera-vocabulary`, `workflow-builder`, `mcp`.
+
+## Connectors
+
+API connectors for external services. Installed via `pip install "montaj[connectors]"`.
+
+| Connector | Used for |
+|-----------|----------|
+| **Kling** | AI video generation (v3-omni, video-o1) |
+| **Gemini** | Media analysis, scene evaluation, image generation |
+| **OpenAI** | Image generation, analysis |
 
 ## Render Engine
 
@@ -112,6 +159,7 @@ montaj serve   # http://localhost:3000
 ```
 
 - **Editor** — timeline, preview player, caption editor, overlay editor
+- **Storyboard** — AI video scene planning with image/style references
 - **Workflows** — n8n-style node graph for building editing plans
 - **Overlays** — live animated preview of custom JSX overlays
 - **Profiles** — view creator style profiles (pacing, color palette, editorial direction)
@@ -128,51 +176,9 @@ The single format that flows through the entire pipeline. One file, three states
 | `draft` | Agent | Trim points, ordering, captions, overlays — complete edit |
 | `final` | Human (via UI) | Reviewed and tweaked, ready to render |
 
+For AI video projects, the storyboard (scenes, image refs, style refs) lives inside the same `project.json`.
+
 See [docs/schemas/project.md](docs/schemas/project.md) for the full schema.
-
-
-## Dependencies
-
-**macOS — one command installs everything:**
-```bash
-brew install theSamPadilla/montaj/montaj
-montaj install whisper   # whisper model weights
-```
-
-**Linux / pip install — one manual step required:**
-
-`pip install montaj` handles Python dependencies (including a bundled `ffmpeg`). Node.js cannot be installed via pip — install it separately, then run:
-
-```bash
-pip install montaj
-# install Node.js >=18: https://nodejs.org
-montaj install whisper   # whisper-cpp binary + model weights
-montaj install ui        # npm deps + UI build
-```
-
-Optional:
-```bash
-montaj install rvm       # background removal (torch + RVM weights)
-montaj install all       # whisper + ui + rvm
-```
-
-## Why Montaj Exists
-
-A video editing skill tells an agent how to think about editing. An MCP tool lets an agent cut a clip at a timestamp. Montaj is neither — it's a CLIP.
-
-An agent with Montaj can probe a clip for metadata, transcribe it, identify filler words and silence gaps, pick the best takes, trim out the bad ones with battle-tested ffmpeg operations that handle codec edge cases correctly, and composite the result — all by following an opinionated workflow that encodes domain expertise. All while using a fraction of the tokens an agent would burn building the same pipeline from scratch.
-
-Other programmatic video tools (Remotion, etc.) give an agent a framework to **write code** — the agent authors JSX compositions that describe a video.
-
-While Montaj also supports custom JSX compositions for animation generation, it focuses primarily on **existing footage**. Cliping, picking best takes, tuning editing to a given content style, etc. It gives the agent **orchestration tools** to work, and gives humans a **UI for last mile reviews**. 
-
-The building blocks:
-
-- **Agent-native interface** — CLI, HTTP, and MCP; steps are callable from any harness without writing code
-- **Editing existing footage** — trim, cut, transcribe, composite against source clips
-- **Animation generation** — agent can generate React overlay components (captions, titles, effects) rendered frame-by-frame via headless Chrome and composited in
-- **Local-first** — ffmpeg + whisper.cpp, no external APIs required, just an agent
-- **Open source** — MIT, self-hosted, no vendor
 
 ## Docs
 
@@ -181,7 +187,6 @@ The building blocks:
 - [UI Design](docs/UI.md) — browser interface
 - [Project JSON Schema](docs/schemas/project.md) — the core format
 - [Overlay Contract](docs/schemas/overlay.md) — render component spec
-
 
 ## License
 

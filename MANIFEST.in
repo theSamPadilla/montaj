@@ -1,0 +1,18 @@
+include LICENSE
+include README.md
+include Montaj.jpeg
+
+# Step executables + JSON schemas
+recursive-include steps *.py *.json
+
+# Workflow definitions
+recursive-include workflows *.json
+
+# Agent skills
+recursive-include skills *.md
+
+# Schema definitions
+recursive-include schema *.yaml *.json
+
+# Docs (for offline reference)
+recursive-include docs *.md

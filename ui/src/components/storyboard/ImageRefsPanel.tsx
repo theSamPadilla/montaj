@@ -16,6 +16,20 @@ export function ImageRefsPanel({ project, onProjectChange }: Props) {
 
   if (refs.length === 0) return null
 
+  async function handleDelete(refId: string) {
+    if (!window.confirm('Remove this image reference? Scenes using it will lose this ref.')) return
+    const imageRefs = (project.storyboard?.imageRefs ?? []).filter(r => r.id !== refId)
+    const nextProject: Project = {
+      ...project,
+      storyboard: {
+        ...(project.storyboard ?? { imageRefs: [], styleRefs: [], scenes: [] }),
+        imageRefs,
+      },
+    }
+    await api.saveProject(project.id, nextProject)
+    onProjectChange(nextProject)
+  }
+
   async function handleRegenComplete(refId: string, newPath: string) {
     const imageRefs = (project.storyboard?.imageRefs ?? []).map(r => {
       if (r.id !== refId) return r
@@ -41,6 +55,7 @@ export function ImageRefsPanel({ project, onProjectChange }: Props) {
             key={ref.id}
             imageRef={ref}
             onRegenerate={() => setRegenRefId(ref.id)}
+            onDelete={() => handleDelete(ref.id)}
           />
         ))}
       </div>

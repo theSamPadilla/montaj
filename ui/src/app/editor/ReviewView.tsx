@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { X, Image, Plus, HelpCircle, Copy, Magnet } from 'lucide-react'
+import { X, Image, Plus, HelpCircle, Copy, Magnet, Film, Music, Info, Scissors } from 'lucide-react'
 import ClipInspectModal from '@/components/timeline/ClipInspectModal'
 import PreviewPlayer from '@/components/preview/PreviewPlayer'
 import ProjectHeader from '@/components/ProjectHeader'
@@ -8,6 +8,7 @@ import RerunModal from '@/components/RerunModal'
 import RenderModal from '@/components/RenderModal'
 import Timeline from '@/components/Timeline'
 import VersionPanel from '@/components/VersionPanel'
+import { ImagePreviewModal } from '@/components/storyboard/ImagePreviewModal'
 import { Button } from '@/components/ui/button'
 import { api, fileUrl } from '@/lib/api'
 import { applyCutToItem, applyCutToTracks, collapseGaps, splitAtTime } from '@/lib/cuts'
@@ -83,6 +84,7 @@ export default function ReviewView({ project, onProjectChange }: ReviewViewProps
   const [pathCopied, setPathCopied]       = useState(false)
   const [rippleMode, setRippleMode]       = useState(false)
   const [inspectClipId, setInspectClipId] = useState<string | null>(null)
+  const [refPreview, setRefPreview]       = useState<{ src: string; alt: string } | null>(null)
   const navigate = useNavigate()
 
   useEffect(() => {
@@ -392,7 +394,7 @@ export default function ReviewView({ project, onProjectChange }: ReviewViewProps
             {showHelp && (
               <>
                 <div className="fixed inset-0 z-40" onClick={() => setShowHelp(false)} />
-                <div className="fixed top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[560px] bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-xl shadow-2xl z-50 overflow-hidden">
+                <div className={`fixed top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-xl shadow-2xl z-50 overflow-hidden ${project.projectType === 'ai_video' ? 'w-[720px]' : 'w-[560px]'}`}>
                   <div className="flex items-center justify-between px-5 py-3 border-b border-gray-100 dark:border-gray-800">
                     <span className="text-[11px] font-semibold uppercase tracking-wide text-gray-600 dark:text-gray-300">Editor reference</span>
                     <button onClick={() => setShowHelp(false)} className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 transition-colors"><X size={13} /></button>
@@ -436,6 +438,20 @@ export default function ReviewView({ project, onProjectChange }: ReviewViewProps
                         <div className="flex justify-between gap-4 flex-1"><span className="text-gray-400 font-mono whitespace-nowrap">Expand ↑</span><span className="text-gray-600 dark:text-gray-400">transcript editor</span></div>
                       </div>
                     </div>
+                    {project.projectType === 'ai_video' && (<>
+                      <div className="flex flex-col gap-2 col-span-2 border-t border-gray-100 dark:border-gray-800 pt-4">
+                        <p className="text-[9px] font-semibold uppercase tracking-widest text-gray-400 mb-0.5">AI video — regeneration</p>
+                      </div>
+                      <div className="flex flex-col gap-2">
+                        <div className="flex justify-between gap-4"><span className="text-gray-400 font-mono whitespace-nowrap flex items-center gap-1">select clip → <Info size={10} /></span><span className="text-gray-600 dark:text-gray-400">inspect details</span></div>
+                        <div className="flex justify-between gap-4"><span className="text-gray-400 font-mono whitespace-nowrap">double-click clip</span><span className="text-gray-600 dark:text-gray-400">inspect details</span></div>
+                        <div className="flex justify-between gap-4"><span className="text-gray-400 font-mono whitespace-nowrap">inspect → Regenerate</span><span className="text-gray-600 dark:text-gray-400">queue full regen</span></div>
+                      </div>
+                      <div className="flex flex-col gap-2">
+                        <div className="flex justify-between gap-4"><span className="text-gray-400 font-mono whitespace-nowrap flex items-center gap-1">select clip → <Scissors size={10} /></span><span className="text-gray-600 dark:text-gray-400">subcut regen a range</span></div>
+                        <div className="flex justify-between gap-4"><span className="text-gray-400 whitespace-nowrap">right panel</span><span className="text-gray-600 dark:text-gray-400">image &amp; style refs</span></div>
+                      </div>
+                    </>)}
                   </div>
                 </div>
               </>
@@ -476,6 +492,73 @@ export default function ReviewView({ project, onProjectChange }: ReviewViewProps
 
           {/* Version history */}
           <VersionPanel versions={versions} restoring={restoring} onRestore={handleRestoreVersion} />
+
+          {/* Image refs (AI video projects) */}
+          {project.projectType === 'ai_video' && (project.storyboard?.imageRefs ?? []).length > 0 && (
+            <div className="border-b border-gray-200 dark:border-gray-800">
+              <div className="px-3 py-2 border-b border-gray-200 dark:border-gray-800">
+                <span className="text-xs font-medium text-gray-400 uppercase tracking-wide">Image refs</span>
+              </div>
+              <div className="p-2 grid grid-cols-2 gap-2">
+                {(project.storyboard?.imageRefs ?? []).map(ref => {
+                  const thumb = ref.refImages?.[0]
+                  return (
+                    <div
+                      key={ref.id}
+                      className={`rounded border border-gray-700 overflow-hidden bg-gray-800${thumb ? ' cursor-pointer hover:border-gray-500 transition-colors' : ''}`}
+                      onClick={() => thumb && setRefPreview({ src: thumb, alt: ref.anchor || ref.label })}
+                      title={ref.label}
+                    >
+                      <div className="w-full aspect-square flex items-center justify-center">
+                        {thumb ? (
+                          <img src={fileUrl(thumb)} alt={ref.label} className="w-full h-full object-cover" />
+                        ) : (
+                          <Image size={16} className="text-gray-600" />
+                        )}
+                      </div>
+                      <div className="px-1.5 py-1 border-t border-gray-700/50">
+                        <span className="text-[9px] text-gray-500 truncate block">{ref.label}</span>
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
+            </div>
+          )}
+
+          {/* Style refs (AI video projects) */}
+          {project.projectType === 'ai_video' && (project.storyboard?.styleRefs ?? []).length > 0 && (
+            <div className="border-b border-gray-200 dark:border-gray-800">
+              <div className="px-3 py-2 border-b border-gray-200 dark:border-gray-800">
+                <span className="text-xs font-medium text-gray-400 uppercase tracking-wide">Style refs</span>
+              </div>
+              <div className="p-2 grid grid-cols-2 gap-2">
+                {(project.storyboard?.styleRefs ?? []).map(ref => {
+                  const isImage = ref.kind === 'image'
+                  const Icon = ref.kind === 'video' ? Film : ref.kind === 'audio' ? Music : Image
+                  return (
+                    <div
+                      key={ref.id}
+                      className={`rounded border border-gray-700 overflow-hidden bg-gray-800${isImage ? ' cursor-pointer hover:border-gray-500 transition-colors' : ''}`}
+                      onClick={() => isImage && setRefPreview({ src: ref.path, alt: ref.label || ref.path.split('/').pop() || '' })}
+                      title={ref.label || ref.path.split('/').pop()}
+                    >
+                      <div className="w-full aspect-square flex items-center justify-center">
+                        {isImage ? (
+                          <img src={fileUrl(ref.path)} alt={ref.label} className="w-full h-full object-cover" />
+                        ) : (
+                          <Icon size={18} className="text-gray-500" />
+                        )}
+                      </div>
+                      <div className="px-1.5 py-1 border-t border-gray-700/50">
+                        <span className="text-[9px] text-gray-500 truncate block">{ref.label || ref.path.split('/').pop()}</span>
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
+            </div>
+          )}
 
         {/* Assets */}
         <div className="flex flex-col flex-1 overflow-hidden">
@@ -598,6 +681,9 @@ export default function ReviewView({ project, onProjectChange }: ReviewViewProps
             </div>
           </div>
         </div>
+      )}
+      {refPreview && (
+        <ImagePreviewModal src={refPreview.src} alt={refPreview.alt} onClose={() => setRefPreview(null)} />
       )}
       {/* Clip inspect / regenerate modal */}
       {inspectClipId && <ClipInspectModal

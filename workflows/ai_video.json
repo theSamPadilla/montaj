@@ -29,6 +29,13 @@
       "foreach": "storyboard.scenes",
       "needs": ["analyze_style", "generate_ref"],
       "description": "Per scene (post-approval only): Kling generates the clip with combined prompt + refs. Requires storyboard.styleAnchor (from analyze_style) and populated imageRefs[].refImages (from generate_ref for text-sourced refs). Director appends result to tracks[0]. May be batched (multi-shot) at director discretion — up to 6 scenes per call."
+    },
+    {
+      "id": "eval-scenes",
+      "uses": "montaj/eval-scenes",
+      "foreach": "storyboard.scenes",
+      "needs": ["generate_scene"],
+      "description": "Per scene (post-generation, optional): Agent loads skills/eval-scenes/SKILL.md and evaluates clips via analyze_media (Gemini rubric). Failures are regenerated via kling_generate. This is a skill (agent-driven editorial loop), not a mechanical step."
     }
   ],
   "agent_notes": [

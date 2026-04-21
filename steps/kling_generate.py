@@ -15,169 +15,17 @@ Multi-shot customize mode (up to 6 scenes, one API call):
 Multi-shot intelligence mode (Kling splits one prompt into shots):
     --multi-shot --shot-type intelligence --prompt "..." --out video.mp4
 """
-import sys, os, argparse, json, time
+import sys, os, argparse, json, random, uuid
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "lib"))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from common import fail, require_file, progress
 from connectors import kling, ConnectorError
 from pathlib import Path
-
-
-# ---------------------------------------------------------------------------
-# Project-aware helpers
-# ---------------------------------------------------------------------------
-
-def _resolve_workspace() -> Path:
-    config_path = Path.home() / ".montaj" / "config.json"
-    if config_path.exists():
-        try:
-            cfg = json.loads(config_path.read_text())
-            if "workspaceDir" in cfg:
-                return Path(cfg["workspaceDir"])
-        except Exception:
-            pass
-    return Path.home() / "Montaj"
-
-
-def _find_project(project_id: str) -> tuple[Path, dict]:
-    """Find and load project by ID. Returns (project_json_path, project_dict)."""
-    workspace = _resolve_workspace()
-    for p in workspace.glob("*/project.json"):
-        try:
-            data = json.loads(p.read_text())
-            if data.get("id") == project_id:
-                return p, data
-        except Exception:
-            pass
-    fail("not_found", f"Project {project_id} not found in {workspace}")
-
-
-def _save_project(path: Path, project: dict):
-    """Write project JSON back to disk."""
-    path.write_text(json.dumps(project, indent=2, ensure_ascii=False))
-
-
-def _compose_prompt(project: dict, scene: dict) -> str:
-    """Compose the full Kling prompt from project context + scene prose.
-
-    Applies: styleAnchor prefix + ref clause + inline <<<image_N>>> tokens
-    at character/object label positions in the scene prompt.
-    """
-    style_anchor = project.get("storyboard", {}).get("styleAnchor", "")
-    image_refs = {r["id"]: r for r in project.get("storyboard", {}).get("imageRefs", [])}
-
-    prompt = scene["prompt"]
-    ref_ids = scene.get("refImages", [])
-
-    # Build tokens and place inline at label matches
-    token_parts = []
-    for i, rid in enumerate(ref_ids):
-        token = f"<<<image_{i + 1}>>>"
-        token_parts.append(token)
-        ref = image_refs.get(rid, {})
-        label = ref.get("label", "")
-        if label and label in prompt:
-            prompt = prompt.replace(label, f"{label} {token}", 1)
-
-    # Prepend ref clause
-    ref_clause = ""
-    if token_parts:
-        ref_clause = "Use the character/style from " + ", ".join(token_parts) + ". "
-
-    parts = []
-    if style_anchor:
-        parts.append(style_anchor)
-    if ref_clause:
-        parts.append(ref_clause + prompt)
-    else:
-        parts.append(prompt)
-
-    return " ".join(parts)
-
-
-def _resolve_ref_paths(project: dict, scene: dict) -> list[str]:
-    """Resolve scene refImage IDs to file paths."""
-    image_refs = {r["id"]: r for r in project.get("storyboard", {}).get("imageRefs", [])}
-    paths = []
-    for rid in scene.get("refImages", []):
-        ref = image_refs.get(rid, {})
-        ref_images = ref.get("refImages", [])
-        if ref_images:
-            paths.append(ref_images[0])
-    return paths
-
-
-def _save_clip_to_project(project_path: Path, project: dict, scene: dict,
-                          out_path: str, composed_prompt: str, model: str = "kling-v3-omni"):
-    """Append the generated clip to tracks[0] and save the project."""
-    tracks0 = project.get("tracks", [[]])[0]
-    scenes = project.get("storyboard", {}).get("scenes", [])
-
-    # Compute cumulative start from scene order
-    scene_order = [s["id"] for s in scenes]
-    cumulative = 0.0
-    for sid in scene_order:
-        if sid == scene["id"]:
-            break
-        existing = next(
-            (c for c in tracks0 if c.get("generation", {}).get("sceneId") == sid),
-            None,
-        )
-        if existing:
-            cumulative += existing["outPoint"]
-        else:
-            cumulative += next(
-                (s["duration"] for s in scenes if s["id"] == sid), 0
-            )
-
-    clip = {
-        "id": f"clip-{scene['id']}",
-        "type": "video",
-        "src": out_path,
-        "start": cumulative,
-        "end": cumulative + scene["duration"],
-        "inPoint": 0,
-        "outPoint": scene["duration"],
-        "generation": {
-            "sceneId": scene["id"],
-            "provider": "kling",
-            "model": model,
-            "prompt": composed_prompt,
-            "refImages": scene.get("refImages", []),
-            "duration": scene["duration"],
-            "attempts": [],
-        },
-    }
-    tracks0.append(clip)
-    project["tracks"] = [tracks0]
-
-    # Clear lastError on this scene
-    for s in scenes:
-        if s["id"] == scene["id"]:
-            s.pop("lastError", None)
-
-    # Check if all scenes have clips → set draft
-    scene_ids = {s["id"] for s in scenes}
-    clip_ids = {c.get("generation", {}).get("sceneId") for c in tracks0}
-    for c in tracks0:
-        for bs in c.get("generation", {}).get("batchShots", []):
-            clip_ids.add(bs.get("sceneId"))
-    if scene_ids and scene_ids <= clip_ids:
-        project["status"] = "draft"
-
-    _save_project(project_path, project)
-
-
-def _save_error_to_project(project_path: Path, project: dict, scene_id: str, error_msg: str):
-    """Record lastError on a scene and save."""
-    for s in project.get("storyboard", {}).get("scenes", []):
-        if s["id"] == scene_id:
-            s["lastError"] = {
-                "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-                "message": error_msg,
-            }
-    _save_project(project_path, project)
+from lib.ai_video import (
+    find_project, save_project, compose_prompt,
+    resolve_ref_paths, save_clip_to_project, save_error_to_project,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -227,17 +75,17 @@ def main():
     # Project-aware mode
     # -----------------------------------------------------------------------
     if args.project_id and args.scene_id:
-        project_path, project = _find_project(args.project_id)
+        project_path, project = find_project(args.project_id)
         scenes = project.get("storyboard", {}).get("scenes", [])
         scene = next((s for s in scenes if s["id"] == args.scene_id), None)
         if not scene:
             fail("not_found", f"Scene {args.scene_id} not found in project {args.project_id}")
 
         # Compose prompt from project context
-        composed_prompt = _compose_prompt(project, scene)
+        composed_prompt = compose_prompt(project, scene)
 
         # Resolve ref image paths
-        ref_paths = _resolve_ref_paths(project, scene)
+        ref_paths = resolve_ref_paths(project, scene)
         for rp in ref_paths:
             require_file(rp)
 
@@ -245,11 +93,35 @@ def main():
         duration = scene.get("duration", 5)
         sound = scene.get("sound", "on")
         aspect_ratio = project.get("storyboard", {}).get("aspectRatio", "16:9")
-        task_id = f"{args.scene_id}-{int(time.time())}"
-        negative_prompt = args.negative_prompt  # still allow override from CLI
+        task_id = f"{args.scene_id}-{uuid.uuid4().hex[:8]}"
+
+        # Default negative prompt — targets common Kling failure modes.
+        # CLI override replaces entirely if provided.
+        negative_prompt = args.negative_prompt or (
+            "duplicate characters, two copies of same person, extra fingers, "
+            "floating limbs, morphing, text, words, letters, watermark, "
+            "realistic, photographic, 3d render"
+        )
+
+        # Auto-upgrade to best model when duration is compatible.
+        # kling-video-o1 is higher quality but only supports 5s/10s and
+        # does NOT generate audio — only upgrade if sound is off.
+        model = args.model
+        if (model == "kling-v3-omni"
+            and duration in kling.MODELS["kling-video-o1"]["durations"]
+            and sound == "off"):
+            model = "kling-video-o1"
+            progress(f"Auto-upgraded to kling-video-o1 (duration {duration}s, sound=off)")
+        elif (model == "kling-v3-omni"
+              and duration in kling.MODELS["kling-video-o1"]["durations"]
+              and sound == "on"):
+            progress(f"Staying on kling-v3-omni (sound=on requires v3-omni for audio generation)")
+
+        # Generate a seed for reproducibility. Eval retries can offset from this.
+        seed = random.randint(1, 2**31 - 1)
 
         progress(f"Composing prompt for {args.scene_id}: {len(composed_prompt)} chars, {len(ref_paths)} refs, {duration}s, sound={sound}")
-        progress(f"Generating {args.scene_id} via Kling ({args.model}, task={task_id})...")
+        progress(f"Generating {args.scene_id} via Kling ({model}, task={task_id}, seed={seed})...")
 
         try:
             out_path = kling.generate(
@@ -264,20 +136,21 @@ def main():
                 aspect_ratio=aspect_ratio,
                 mode=args.mode,
                 external_task_id=task_id,
-                model=args.model,
+                model=model,
+                seed=seed,
             )
         except ConnectorError as e:
             progress(f"Failed {args.scene_id}: {e}")
             # Re-read project in case another scene wrote concurrently
-            _, project = _find_project(args.project_id)
-            _save_error_to_project(project_path, project, args.scene_id, str(e))
+            project_path, project = find_project(args.project_id)
+            save_error_to_project(project_path, project, args.scene_id, str(e))
             fail("api_error", str(e))
 
         progress(f"Done {args.scene_id} -> {out_path}")
 
         # Re-read project to get latest state (other scenes may have written)
-        _, project = _find_project(args.project_id)
-        _save_clip_to_project(project_path, project, scene, out_path, composed_prompt, model=args.model)
+        project_path, project = find_project(args.project_id)
+        save_clip_to_project(project_path, project, scene, out_path, composed_prompt, model=model, seed=seed)
         progress(f"Saved clip for {args.scene_id} to project tracks[0]")
 
         # Output the path (same contract as standalone mode)

@@ -37,11 +37,13 @@ MODELS = {
         "durations": list(range(3, 16)),       # 3–15, any integer
         "multi_shot": True,
         "end_frame_modes": ("std", "pro"),     # start+end frame in both modes
+        "sound": True,                         # generates audio with sound="on"
     },
     "kling-video-o1": {
         "durations": [5, 10],                  # only 5 or 10
         "multi_shot": False,
         "end_frame_modes": ("pro",),           # end frame only in pro mode
+        "sound": False,                        # does NOT generate audio
     },
 }
 
@@ -127,6 +129,7 @@ def build_payload(
     shot_type: str = None,
     multi_prompt: list[dict] = None,
     model: str = DEFAULT_MODEL,
+    seed: int = None,
 ) -> dict:
     """Build the omni-video request payload.
 
@@ -269,6 +272,8 @@ def build_payload(
         body["image_list"] = image_list
     if external_task_id:
         body["external_task_id"] = external_task_id
+    if seed is not None:
+        body["seed"] = seed
 
     return {
         "runtime_prompt": runtime_prompt,
@@ -364,6 +369,7 @@ def generate(
     shot_type: str = None,
     multi_prompt: list[dict] = None,
     model: str = DEFAULT_MODEL,
+    seed: int = None,
 ) -> str:
     """Top-level entry: build -> create -> poll -> download. Returns out_path."""
     if not out_path:
@@ -383,6 +389,7 @@ def generate(
         shot_type=shot_type,
         multi_prompt=multi_prompt,
         model=model,
+        seed=seed,
     )
     task_data = create_task(payload["body"])
     task_id = task_data["task_id"]

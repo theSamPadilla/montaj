@@ -1,9 +1,10 @@
-import { Film, Music, Image } from 'lucide-react'
-import { fileUrl } from '@/lib/api'
+import { Film, Music, Image, Trash2 } from 'lucide-react'
+import { fileUrl, api } from '@/lib/api'
 import type { Project } from '@/lib/types/schema'
 
 interface Props {
   project: Project
+  onProjectChange?: (project: Project) => void
 }
 
 const kindIcon = {
@@ -12,9 +13,24 @@ const kindIcon = {
   image: Image,
 } as const
 
-export function StyleRefsPanel({ project }: Props) {
+export function StyleRefsPanel({ project, onProjectChange }: Props) {
   const refs = project.storyboard?.styleRefs ?? []
   if (refs.length === 0) return null
+
+  async function handleDelete(refId: string) {
+    if (!onProjectChange) return
+    if (!window.confirm('Remove this style reference?')) return
+    const styleRefs = (project.storyboard?.styleRefs ?? []).filter(r => r.id !== refId)
+    const nextProject: Project = {
+      ...project,
+      storyboard: {
+        ...(project.storyboard ?? { imageRefs: [], styleRefs: [], scenes: [] }),
+        styleRefs,
+      },
+    }
+    await api.saveProject(project.id, nextProject)
+    onProjectChange(nextProject)
+  }
 
   return (
     <section className="flex-1 min-w-0">
@@ -32,10 +48,20 @@ export function StyleRefsPanel({ project }: Props) {
                   <Icon className="w-4 h-4 text-gray-500" />
                 </div>
               )}
-              <div className="flex flex-col min-w-0">
+              <div className="flex flex-col min-w-0 flex-1">
                 <span className="text-sm text-gray-300 truncate">{ref.label || ref.path.split('/').pop()}</span>
                 <span className="text-xs text-gray-500">{ref.kind}</span>
               </div>
+              {onProjectChange && (
+                <button
+                  type="button"
+                  onClick={() => handleDelete(ref.id)}
+                  className="p-1 rounded text-red-400/40 hover:text-red-400 hover:bg-red-900/20 transition-colors"
+                  title="Remove style reference"
+                >
+                  <Trash2 className="w-3.5 h-3.5" />
+                </button>
+              )}
             </div>
           )
         })}

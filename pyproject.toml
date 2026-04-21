@@ -4,9 +4,29 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "montaj"
-version = "0.1.0"
-description = "Video editing toolkit — local-first, CLI-driven, agent-friendly"
+version = "0.2.0"
+description = "Video editing toolkit for AI agents — CLI-first, agent-native, open source"
+readme = "README.md"
+license = "MIT"
 requires-python = ">=3.10"
+authors = [
+    { name = "Sam Padilla", email = "sam@bycrux.com" },
+]
+keywords = ["video", "editing", "ai", "agent", "cli", "ffmpeg", "montaj"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Operating System :: MacOS",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Multimedia :: Video",
+    "Topic :: Software Development :: Libraries",
+]
 dependencies = [
     "Pillow>=10.0",
     "yt-dlp>=2026.3",
@@ -25,8 +45,20 @@ rvm = ["torch>=2.0", "torchvision>=0.15", "av>=12.0"]
 demucs = ["demucs>=4.0", "torch>=2.0", "torchaudio>=2.0"]
 connectors = ["pyjwt>=2.8.0", "requests>=2.31.0", "google-genai>=0.3.0", "openai>=1.75.0"]
 
+[project.urls]
+Homepage = "https://github.com/theSamPadilla/montaj"
+Repository = "https://github.com/theSamPadilla/montaj"
+Issues = "https://github.com/theSamPadilla/montaj/issues"
+
+[project.scripts]
+montaj = "cli.main:main"
+mtj    = "cli.main:main"
+
 [tool.setuptools.packages.find]
 include = ["cli*", "serve*", "engine*", "project*", "lib*", "profiles*", "connectors*"]
+
+[tool.setuptools.package-data]
+"*" = ["*.json", "*.yaml"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -34,11 +66,3 @@ addopts   = "-v --tb=short"
 markers   = [
     "slow: tests that take more than a few seconds",
 ]
-
-[project.urls]
-Homepage = "https://github.com/theSamPadilla/montaj"
-Repository = "https://github.com/theSamPadilla/montaj"
-
-[project.scripts]
-montaj = "cli.main:main"
-mtj    = "cli.main:main"

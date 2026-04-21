@@ -63,6 +63,11 @@ export interface VisualItem {
     provider?: string
     model?: string
     attempts?: Array<{ ts: string; prompt: string; src: string }>
+    eval?: {
+      pass: boolean
+      scores: Record<string, number>
+      attempt: number
+    }
     // Multi-shot / batched fields. When multiShot is true, the clip represents a
     // batch of up to 6 scenes generated in ONE Kling call. The outer sceneId/
     // prompt/refImages fields are replaced by batchShots[] which carries the
@@ -95,6 +100,8 @@ export interface Scene {
   prompt: string
   duration: number
   refImages: string[]
+  shotScale?: string
+  cameraMove?: string
   lastError?: { ts: string; message: string }
 }
 

@@ -271,7 +271,7 @@ export default function StoryboardView({ project, onProjectChange, logMessage }:
           {/* Refs panels */}
           <section className="flex flex-col gap-4 sm:flex-row">
             <ImageRefsPanel project={project} onProjectChange={onProjectChange} />
-            <StyleRefsPanel project={project} />
+            <StyleRefsPanel project={project} onProjectChange={onProjectChange} />
           </section>
 
           {/* Scene list */}

@@ -42,7 +42,7 @@ export function useVideoPlayback(
   // ── Video timeline ─────────────────────────────────────────────────────────
   // Only video items drive the double-buffer player; non-video items (images, etc.)
   // in tracks[0] are exposed separately for the preview to render as a background layer.
-  const clips           = useMemo(() => (project.tracks?.[0] ?? []).filter(c => c.type === 'video'), [project])
+  const clips           = useMemo(() => (project.tracks?.[0] ?? []).filter(c => c.type === 'video').sort((a, b) => a.start - b.start), [project])
   const tracks0NonVideo = useMemo(() => (project.tracks?.[0] ?? []).filter(c => c.type !== 'video'), [project])
   const overlayTracks   = useMemo(() => project.tracks?.slice(1) ?? [], [project])
 

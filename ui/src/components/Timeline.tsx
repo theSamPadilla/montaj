@@ -364,7 +364,8 @@ export default function Timeline({ project, currentTime, onTimeUpdate, onProject
     />
   )
 
-  const trackRow = 'relative h-10 bg-gray-100 dark:bg-gray-900 rounded overflow-hidden cursor-pointer'
+  const trackRow    = 'relative h-10 bg-gray-100 dark:bg-gray-900 rounded overflow-hidden cursor-pointer'
+  const trackRowTall = 'relative h-14 bg-gray-100 dark:bg-gray-900 rounded overflow-hidden cursor-pointer'
 
   function handleKeyDown(e: React.KeyboardEvent<HTMLDivElement>) {
     if ((e.target as HTMLElement).isContentEditable) return
@@ -648,7 +649,7 @@ export default function Timeline({ project, currentTime, onTimeUpdate, onProject
           ]
           const tc = trackColors[trackIdx % trackColors.length]
           return (
-            <div key={trackIdx} className={`${trackRow} transition-opacity ${dimmed ? 'opacity-30 pointer-events-none' : ''}`} onClick={handleTrackClick} onDoubleClick={handleScrubDoubleClick}>
+            <div key={trackIdx} className={`${trackIdx === 0 ? trackRowTall : trackRow} transition-opacity ${dimmed ? 'opacity-30 pointer-events-none' : ''}`} onClick={handleTrackClick} onDoubleClick={handleScrubDoubleClick}>
               {trackItems.map((item) => {
                 const isSel = selectedOverlayId === item.id
                 return (
@@ -664,6 +665,10 @@ export default function Timeline({ project, currentTime, onTimeUpdate, onProject
                       const selecting = !isSel
                       onSelectOverlay?.(selecting ? item.id : null)
                       if (selecting) onTimeUpdate(ratioFromClientX(e.clientX) * totalDuration)
+                    }}
+                    onDoubleClick={(e) => {
+                      e.stopPropagation()
+                      if (item.generation && onInspectClip) onInspectClip(item.id)
                     }}
                     onMouseDown={(e) => handleOverlayDragStart(e, item, trackIdx)}
                   >

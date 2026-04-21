@@ -18,7 +18,7 @@ Current functions:
 Library code — raises ConnectorError, never calls fail() or sys.exit.
 Step scripts catch ConnectorError and translate to fail().
 """
-import os, time
+import os, re, time
 from connectors import ConnectorError
 from lib.credentials import get_credential
 
@@ -41,6 +41,16 @@ _IMAGE_MIME_BY_EXT = {
     ".heif": "image/heif",
     ".gif":  "image/gif",
 }
+
+
+def _strip_markdown_fences(text: str) -> str:
+    """Strip ```json ... ``` fences that Gemini often wraps around JSON responses.
+
+    Applied automatically when json_output=True. Idempotent — plain JSON passes through.
+    """
+    stripped = re.sub(r"^```(?:json)?\s*\n?", "", text.strip())
+    stripped = re.sub(r"\n?```\s*$", "", stripped)
+    return stripped.strip()
 
 
 def _image_mime(path: str) -> str | None:
@@ -143,7 +153,8 @@ def analyze_media(
             )
         except Exception as e:
             raise ConnectorError(f"Gemini generate_content failed: {e}") from e
-        return response.text
+        text = response.text
+        return _strip_markdown_fences(text) if json_output else text
 
     # Files API path for video, audio, and oversized images.
     media_file = upload_media(path)
@@ -164,7 +175,8 @@ def analyze_media(
         except Exception:
             pass
 
-    return response.text
+    text = response.text
+    return _strip_markdown_fences(text) if json_output else text
 
 
 def generate_image(
