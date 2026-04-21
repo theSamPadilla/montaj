@@ -514,6 +514,49 @@ When the agent uses Kling's multi-shot mode, a SINGLE `tracks[0]` clip can conta
 
 **Regenerating one scene from a batch.** Run that scene as a single-shot call; append the resulting clip to `tracks[0]` as a new entry. Leave the original batched clip in place; its window for the replaced scene becomes unused time between other shots. The timeline readers place clips by `start`/`end`; unused windows are acceptable for v1.
 
+### `regenQueue` (ai_video only)
+
+Per-clip regeneration queue. The UI (inspect modal, subcut tool) and CLI (`montaj regen`) append entries; the agent drains them when triggered by the user in chat.
+
+```json
+{
+  "regenQueue": [
+    {
+      "id": "req-1713658092",
+      "clipId": "clip-scene-2",
+      "mode": "full",
+      "subrange": null,
+      "prompt": "warm golden-hour lighting... Max running faster through the meadow",
+      "refImages": ["imgref_max", "imgref_meadow"],
+      "duration": 5,
+      "useFirstFrame": false,
+      "useLastFrame": false,
+      "model": "kling-v3-omni",
+      "requestedAt": "2026-04-20T15:28:12Z"
+    }
+  ]
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | string | Unique within the queue. Convention: `"req-<timestamp>"`. |
+| `clipId` | string | Must match a `tracks[0][i].id`. |
+| `mode` | string | `"full"` (replace entire clip) or `"subcut"` (replace a window within the clip). |
+| `subrange` | object \| null | `{start: <int>, end: <int>}` in source-seconds. Null for `mode: "full"`. For subcut, `end - start` must be in [3, 15] integer. |
+| `prompt` | string | Natural language. No `<<<image_N>>>` tokens — the connector prepends the ref clause. |
+| `refImages` | string[] | `imageRef` IDs. Resolved against `storyboard.imageRefs[i].refImages[0]` at call time. |
+| `duration` | number | Integer seconds in [3, 15]. For `kling-video-o1`: must be 5 or 10. |
+| `useFirstFrame` | boolean | Subcut only. When true, the agent extracts the frame at `subrange.start` and passes it as `--first-frame`. |
+| `useLastFrame` | boolean | Subcut only. When true, the agent extracts the frame at `subrange.end` and passes it as `--last-frame`. |
+| `model` | string | `"kling-v3-omni"` or `"kling-video-o1"`. Inherited from `clip.generation.model`, user-overridable. |
+| `requestedAt` | string | ISO-8601 timestamp. |
+| `lastError` | object \| undefined | Set by the agent on failure: `{ts: ISO-8601, message: string}`. Entry stays in queue until user re-triggers or removes it. |
+
+**Lifecycle:** UI/CLI appends → agent drains on user trigger → entries removed on success, marked with `lastError` on failure.
+
+**UI progress convention:** A small "N queued" chip appears on any clip whose `id` matches a `regenQueue[i].clipId`.
+
 ### Lifecycle: when `tracks[0]` is populated
 
 `tracks[0]` holds **real clips only** — items whose `src` is a file that exists on disk. There are no stubs, no placeholder items, no `src: ""` entries. This invariant is consistent across all project types:

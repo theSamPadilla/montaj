@@ -124,6 +124,21 @@ export interface Storyboard {
   approval?: { approvedAt: string }
 }
 
+export interface RegenQueueEntry {
+  id: string                              // unique within this queue; "req-<ts>" or UUID
+  clipId: string                          // matches a tracks[0][i].id
+  mode: 'full' | 'subcut'
+  subrange: { start: number; end: number } | null  // source-seconds; null for full
+  prompt: string                          // natural language; NO <<<image_N>>> tokens
+  refImages: string[]                     // imageRef IDs
+  duration: number                        // integer seconds in [3, 15]
+  useFirstFrame: boolean                  // subcut only; ignored for full
+  useLastFrame: boolean                   // subcut only; ignored for full
+  model: string                           // e.g. "kling-v3-omni" | "kling-video-o1"
+  requestedAt: string                     // ISO8601
+  lastError?: { ts: string; message: string }
+}
+
 export interface Project {
   version: string
   id: string
@@ -143,6 +158,7 @@ export interface Project {
   renderMode?: 'ffmpeg-drawtext'
   history?: RunSnapshot[]
   storyboard?: Storyboard
+  regenQueue?: RegenQueueEntry[]
 }
 
 export interface StepParam {

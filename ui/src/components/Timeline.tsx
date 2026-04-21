@@ -1,8 +1,9 @@
 import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent } from 'react'
 import { createPortal } from 'react-dom'
-import { Volume2, VolumeX, Info } from 'lucide-react'
+import { Volume2, VolumeX, Info, Scissors } from 'lucide-react'
 import type { CaptionSegment, VisualItem, Project } from '@/lib/types/schema'
 import { collapseGaps } from '@/lib/cuts'
+import SubcutRegenTool from '@/components/timeline/SubcutRegenTool'
 
 interface TimelineProps {
   project: Project
@@ -16,6 +17,7 @@ interface TimelineProps {
   onSplit?: (at: number) => void
   onCut?: (cut: { start: number; end: number }) => void
   onInspectClip?: (id: string) => void
+  onSaveProject?: (p: Project) => Promise<unknown>
   rippleMode?: boolean
 }
 
@@ -55,7 +57,7 @@ function EditableSegment({ seg, onEdit }: { seg: CaptionSegment; onEdit: (text: 
 }
 
 
-export default function Timeline({ project, currentTime, onTimeUpdate, onProjectChange, onCaptionEdit, onOverlayEdit, selectedOverlayId, onSelectOverlay, onSplit, onCut, onInspectClip, rippleMode = false }: TimelineProps) {
+export default function Timeline({ project, currentTime, onTimeUpdate, onProjectChange, onCaptionEdit, onOverlayEdit, selectedOverlayId, onSelectOverlay, onSplit, onCut, onInspectClip, onSaveProject, rippleMode = false }: TimelineProps) {
   const allTracks      = project.tracks ?? []
   const captionTrack   = project.captions
   const snapBoundaries = [...new Set(allTracks.flat().flatMap(c => [c.start, c.end]))]
@@ -70,6 +72,8 @@ export default function Timeline({ project, currentTime, onTimeUpdate, onProject
   const overlayDraggedRef                     = useRef(false)
   const [keyNavTime, setKeyNavTime]           = useState<number | null>(null)
   const keyNavTimerRef                        = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  const [subcutClipId, setSubcutClipId]       = useState<string | null>(null)
 
   const [zoom, setZoom]                       = useState(1)
   const zoomRef                               = useRef(zoom)
@@ -672,6 +676,9 @@ export default function Timeline({ project, currentTime, onTimeUpdate, onProject
                       {project.renderMode === 'ffmpeg-drawtext' && trackIdx > 0 && (
                         <span className="ml-1.5 text-amber-400/60">preview</span>
                       )}
+                      {(project.regenQueue ?? []).some(e => e.clipId === item.id) && (
+                        <span className="ml-1.5 text-amber-300/80 font-medium">queued</span>
+                      )}
                     </span>
                     {item.type === 'video' && (
                       <button
@@ -688,6 +695,13 @@ export default function Timeline({ project, currentTime, onTimeUpdate, onProject
                         onClick={(e) => { e.stopPropagation(); onInspectClip(item.id) }}
                         title="Inspect generation"
                       ><Info size={10} /></button>
+                    )}
+                    {isSel && project.projectType === 'ai_video' && item.generation && (item.end - item.start) >= 3 && (
+                      <button
+                        className={`shrink-0 ml-1 z-10 cursor-pointer opacity-50 hover:opacity-100 ${tc.text}`}
+                        onClick={(e) => { e.stopPropagation(); setSubcutClipId(subcutClipId === item.id ? null : item.id) }}
+                        title="Subcut regenerate"
+                      ><Scissors size={10} /></button>
                     )}
                     {isSel && (
                       <button
@@ -718,6 +732,21 @@ export default function Timeline({ project, currentTime, onTimeUpdate, onProject
       </div>{/* end scrubber+tracks wrapper */}
       </div>{/* end inner zoom div */}
       </div>{/* end scroll container */}
+
+      {/* ── Subcut regen tool ── */}
+      {subcutClipId && (() => {
+        const subcutClip = allTracks[0]?.find(c => c.id === subcutClipId)
+        if (!subcutClip || !subcutClip.generation || project.projectType !== 'ai_video') return null
+        return (
+          <SubcutRegenTool
+            project={project}
+            clip={subcutClip}
+            onClose={() => setSubcutClipId(null)}
+            onProjectChange={(p) => { onProjectChange?.(p); setSubcutClipId(null) }}
+            onSave={onSaveProject ?? (async () => {})}
+          />
+        )
+      })()}
 
       {/* ── Transcript editor ── */}
       {(() => {

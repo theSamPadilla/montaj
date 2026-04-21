@@ -9,6 +9,16 @@ def fail(code: str, message: str):
     sys.exit(1)
 
 
+def progress(message: str):
+    """Print structured progress to stderr. Non-fatal, ignored by serve on success.
+
+    Convention: steps emit {"progress": "..."} to stderr for observability.
+    - On exit 0: serve ignores stderr. CLI callers / agents can read it.
+    - On exit 1: serve parses stderr for {"error": ...}; progress lines are skipped.
+    """
+    print(json.dumps({"progress": message}), file=sys.stderr, flush=True)
+
+
 def require_cmd(name: str):
     if shutil.which(name) is None:
         fail("missing_dependency", f"{name} not found. Run setup/install.sh")

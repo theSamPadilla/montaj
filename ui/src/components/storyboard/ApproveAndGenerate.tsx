@@ -178,6 +178,20 @@ export function ApproveAndGenerate({ project, onProjectChange }: Props) {
             {copied && <span className="text-xs text-green-400">(copied to clipboard)</span>}
           </button>
         )}
+        {/* Re-approve button — lets user write a fresh approval after editing the storyboard */}
+        {!allDone && (
+          <button
+            onClick={onApprove}
+            disabled={submitting}
+            className="flex items-center gap-2 text-sm font-medium text-blue-400 hover:text-blue-300 transition-colors w-fit"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M12 20h9"/>
+              <path d="M16.376 3.622a1 1 0 0 1 3.002 3.002L7.368 18.635a2 2 0 0 1-.855.506l-2.872.838a.5.5 0 0 1-.62-.62l.838-2.872a2 2 0 0 1 .506-.855z"/>
+            </svg>
+            {submitting ? 'Approving…' : 'Re-approve storyboard'}
+          </button>
+        )}
         {/* Tell-your-agent panel. Hidden once generation is complete. */}
         {!allDone && (
           <div className="rounded-md border border-gray-700 bg-gray-900 p-3 flex flex-col gap-2">

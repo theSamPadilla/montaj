@@ -618,27 +618,50 @@ async def run_step(name: str, body: dict = Body(default={})):
     validate_params(schema, body)
     cli_args = build_cli_args(schema, body)
 
-    # Blocking subprocess inside async handler — acceptable for single-user local
-    # tool but blocks all requests (including SSE keepalives) for the duration.
-    # Fix: asyncio.create_subprocess_exec + await proc.communicate()
+    # Non-blocking subprocess — allows the server to keep serving UI, SSE,
+    # and other API requests while long-running steps (kling_generate, etc.)
+    # are in progress.
+    import asyncio
     try:
-        result = subprocess.run(
-            [sys.executable, str(py_path), *cli_args],
-            capture_output=True, text=True,
-            timeout=STEP_TIMEOUT_S,
+        proc = await asyncio.create_subprocess_exec(
+            sys.executable, str(py_path), *cli_args,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
             cwd=str(Path.cwd()),
         )
-    except subprocess.TimeoutExpired:
-        raise HTTPException(504, detail={"error": "timeout", "message": f"Step '{name}' exceeded {STEP_TIMEOUT_S}s"})
-
-    if result.returncode != 0:
         try:
-            err = json.loads(result.stderr)
-        except Exception:
-            err = {"error": "step_failed", "message": result.stderr.strip()}
+            stdout_bytes, stderr_bytes = await asyncio.wait_for(
+                proc.communicate(), timeout=STEP_TIMEOUT_S
+            )
+        except asyncio.TimeoutError:
+            proc.kill()
+            await proc.communicate()
+            raise HTTPException(504, detail={"error": "timeout", "message": f"Step '{name}' exceeded {STEP_TIMEOUT_S}s"})
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(500, detail={"error": "step_failed", "message": str(e)})
+
+    stdout_text = stdout_bytes.decode() if stdout_bytes else ""
+    stderr_text = stderr_bytes.decode() if stderr_bytes else ""
+
+    if proc.returncode != 0:
+        # stderr may contain multiple JSON lines (progress + error).
+        # Find the last line with an "error" key; fall back to raw text.
+        err = None
+        for line in reversed(stderr_text.strip().splitlines()):
+            try:
+                parsed = json.loads(line)
+                if "error" in parsed:
+                    err = parsed
+                    break
+            except Exception:
+                continue
+        if not err:
+            err = {"error": "step_failed", "message": stderr_text.strip()}
         raise HTTPException(500, detail=err)
 
-    return wrap_output(result.stdout, schema)
+    return wrap_output(stdout_text, schema)
 
 
 @router.delete("/projects/{project_id}", status_code=204)

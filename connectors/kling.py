@@ -15,7 +15,7 @@ from connectors import ConnectorError
 from lib.credentials import get_credential
 
 BASE_URL = "https://api-singapore.klingai.com"
-MODEL_NAME = "kling-v3-omni"
+DEFAULT_MODEL = "kling-v3-omni"
 POLL_INTERVAL_S = 10.0
 MAX_POLL_S = 600.0
 MAX_PROMPT_CHARS = 2500
@@ -30,6 +30,20 @@ VALID_SHOT_TYPES = ("customize", "intelligence")
 # Higher editorial caps (e.g. "3 refs per scene") belong in the calling skill,
 # not here — the connector only enforces the API's hard limit.
 MAX_REF_IMAGES = 7
+
+# Model capabilities — the connector validates constraints per model.
+MODELS = {
+    "kling-v3-omni": {
+        "durations": list(range(3, 16)),       # 3–15, any integer
+        "multi_shot": True,
+        "end_frame_modes": ("std", "pro"),     # start+end frame in both modes
+    },
+    "kling-video-o1": {
+        "durations": [5, 10],                  # only 5 or 10
+        "multi_shot": False,
+        "end_frame_modes": ("pro",),           # end frame only in pro mode
+    },
+}
 
 
 def _require_jwt():
@@ -112,6 +126,7 @@ def build_payload(
     multi_shot: bool = False,
     shot_type: str = None,
     multi_prompt: list[dict] = None,
+    model: str = DEFAULT_MODEL,
 ) -> dict:
     """Build the omni-video request payload.
 
@@ -128,8 +143,20 @@ def build_payload(
     When multi_shot=True, first_frame_path and last_frame_path are NOT supported
     (per Kling docs). Total `duration` is computed from the sum of shot durations.
     """
+    # ---- Model validation ----
+    if model not in MODELS:
+        raise ConnectorError(
+            f"Unknown model {model!r}; supported: {', '.join(MODELS)}"
+        )
+    model_caps = MODELS[model]
+
     # ---- Multi-shot preconditions ----
     if multi_shot:
+        if not model_caps["multi_shot"]:
+            raise ConnectorError(
+                f"Model {model!r} does not support multi-shot mode. "
+                f"Use {DEFAULT_MODEL!r} or switch to independent dispatch."
+            )
         if shot_type not in VALID_SHOT_TYPES:
             raise ConnectorError(
                 f"multi_shot=True requires shot_type in {VALID_SHOT_TYPES}; got {shot_type!r}"
@@ -167,9 +194,20 @@ def build_payload(
             f"Too many reference images ({len(reference_image_paths)}); max is {MAX_REF_IMAGES}"
         )
 
-    # Clamp duration (single-shot; multi-shot computes above from multi_prompt sum).
+    # Validate end-frame support for this model + mode combination.
+    if last_frame_path and mode not in model_caps["end_frame_modes"]:
+        raise ConnectorError(
+            f"Model {model!r} only supports end frame (--last-frame) in "
+            f"{'/'.join(model_caps['end_frame_modes'])} mode, but mode={mode!r}. "
+            f"Either switch to --mode pro or remove --last-frame."
+        )
+
+    # Validate/clamp duration against model capabilities.
     if not multi_shot:
-        duration_seconds = max(3, min(15, duration_seconds))
+        allowed = model_caps["durations"]
+        if duration_seconds not in allowed:
+            # Snap to nearest allowed duration.
+            duration_seconds = min(allowed, key=lambda d: abs(d - duration_seconds))
 
     image_list = []
 
@@ -185,36 +223,28 @@ def build_payload(
             "type": "end_frame",
         })
 
-    # Reference images — connector prepends a binding clause.
+    # Reference images — pure pass-through.
     #
     # Kling's omni-syntax uses <<<image_N>>> tokens in the prompt to bind
-    # references to specific nouns. N is 1-indexed and matches the order of
-    # entries appended to image_list below.
+    # references to specific nouns ("The girl <<<image_1>>> sits on the
+    # <<<image_2>>> slide"). N is 1-indexed and matches the order of entries
+    # appended to image_list below (after any first/last frame entries).
     #
-    # The connector auto-prepends a ref clause to the prompt:
-    #   "Use the character/style from <<<image_1>>>, <<<image_2>>>. <prompt>"
-    # This tells Kling to faithfully reproduce the reference characters/styles.
-    # Callers may ALSO place <<<image_N>>> tokens inline for additional binding
-    # signal, but the ref clause is the primary driver of character consistency.
-    ref_token_parts = []
+    # The connector does NOT mutate the prompt. Callers (agents/skills) are
+    # responsible for placing <<<image_N>>> tokens inline at the nouns each
+    # ref maps to, and for prepending any ref clause they want.
     if reference_image_paths:
         for ref_path in reference_image_paths:
             image_list.append({"image_url": _file_to_base64(ref_path)})
-            ref_token_parts.append(f"<<<image_{len(image_list)}>>>")
 
-    # Build runtime prompt with ref clause prepended.
     runtime_prompt = prompt
-    if ref_token_parts and runtime_prompt:
-        ref_clause = "Use the character/style from " + ", ".join(ref_token_parts) + ". "
-        runtime_prompt = ref_clause + runtime_prompt
-
     original_length = len(runtime_prompt) if runtime_prompt else 0
     truncated = original_length > MAX_PROMPT_CHARS
     if runtime_prompt and truncated:
         runtime_prompt = runtime_prompt[:MAX_PROMPT_CHARS]
 
     body = {
-        "model_name": MODEL_NAME,
+        "model_name": model,
         "duration": str(duration_seconds),
         "aspect_ratio": aspect_ratio,
         "mode": mode,
@@ -333,6 +363,7 @@ def generate(
     multi_shot: bool = False,
     shot_type: str = None,
     multi_prompt: list[dict] = None,
+    model: str = DEFAULT_MODEL,
 ) -> str:
     """Top-level entry: build -> create -> poll -> download. Returns out_path."""
     if not out_path:
@@ -351,6 +382,7 @@ def generate(
         multi_shot=multi_shot,
         shot_type=shot_type,
         multi_prompt=multi_prompt,
+        model=model,
     )
     task_data = create_task(payload["body"])
     task_id = task_data["task_id"]

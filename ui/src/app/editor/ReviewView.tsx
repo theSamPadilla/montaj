@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { X, Image, Plus, HelpCircle, Copy, Magnet } from 'lucide-react'
+import ClipInspectModal from '@/components/timeline/ClipInspectModal'
 import PreviewPlayer from '@/components/preview/PreviewPlayer'
 import ProjectHeader from '@/components/ProjectHeader'
 import RerunModal from '@/components/RerunModal'
@@ -21,6 +22,47 @@ function basename(path: string) {
   return path.split('/').pop() ?? path
 }
 
+
+function RegenTriggerPanel({ project }: { project: Project }) {
+  const [copied, setCopied] = useState(false)
+  const queue = project.regenQueue ?? []
+  if (queue.length === 0) return null
+
+  const label = project.name || project.id
+  const id = project.id ? ` (id: ${project.id})` : ''
+  const msg = `I queued ${queue.length} regeneration request${queue.length === 1 ? '' : 's'} for project "${label}"${id}. Please process project.regenQueue[] per the ai-video skill Phase 7 contract.`
+
+  async function copy() {
+    try {
+      await navigator.clipboard.writeText(msg)
+      setCopied(true)
+      setTimeout(() => setCopied(false), 2000)
+    } catch {}
+  }
+
+  return (
+    <div className="shrink-0 border-t border-amber-500/30 bg-amber-950/20 px-3 py-2 flex items-start gap-2">
+      <div className="flex-1 min-w-0">
+        <p className="text-xs text-amber-400/80 mb-1">
+          {queue.length} regeneration request{queue.length === 1 ? '' : 's'} queued. Tell your agent:
+        </p>
+        <code className="block text-xs text-gray-300 bg-gray-950 border border-gray-800 rounded px-2 py-1.5 whitespace-pre-wrap break-words font-mono">
+          {msg}
+        </code>
+      </div>
+      <button
+        onClick={copy}
+        className={`shrink-0 text-xs px-2 py-1.5 rounded border transition-colors mt-4 ${
+          copied
+            ? 'border-green-700 bg-green-900/40 text-green-300'
+            : 'border-gray-700 bg-gray-800 text-gray-300 hover:bg-gray-700 hover:text-white'
+        }`}
+      >
+        {copied ? 'Copied' : 'Copy'}
+      </button>
+    </div>
+  )
+}
 
 export default function ReviewView({ project, onProjectChange }: ReviewViewProps) {
   const [currentTime, setCurrentTime]         = useState(0)
@@ -407,6 +449,9 @@ export default function ReviewView({ project, onProjectChange }: ReviewViewProps
             </button>
           </div>
 
+          {/* Regen queue trigger panel */}
+          <RegenTriggerPanel project={project} />
+
           <div className="shrink-0 border-t border-gray-200 dark:border-gray-800 bg-gray-100 dark:bg-gray-950">
             <Timeline
               project={project}
@@ -420,6 +465,7 @@ export default function ReviewView({ project, onProjectChange }: ReviewViewProps
               onSplit={handleSplit}
               onCut={handleCut}
               onInspectClip={setInspectClipId}
+              onSaveProject={(p) => api.saveProject(p.id, p)}
               rippleMode={rippleMode}
             />
           </div>
@@ -553,106 +599,14 @@ export default function ReviewView({ project, onProjectChange }: ReviewViewProps
           </div>
         </div>
       )}
-      {/* Clip inspect modal */}
-      {inspectClipId && (() => {
-        const clip = (project.tracks?.[0] ?? []).find(c => c.id === inspectClipId)
-        const gen = clip?.generation
-        if (!gen) return null
-        const scene = project.storyboard?.scenes?.find(s => s.id === gen.sceneId)
-        return (
-          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60" onClick={() => setInspectClipId(null)}>
-            <div className="bg-gray-900 border border-gray-700 rounded-xl shadow-2xl max-w-2xl w-full mx-4 max-h-[80vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
-              <div className="flex items-center justify-between px-5 py-3 border-b border-gray-800">
-                <h3 className="text-sm font-semibold text-white">
-                  Generation details — {gen.sceneId ?? clip?.id}
-                </h3>
-                <button onClick={() => setInspectClipId(null)} className="text-gray-400 hover:text-white">
-                  <X size={16} />
-                </button>
-              </div>
-              <div className="px-5 py-4 flex flex-col gap-4">
-                {/* Prompt */}
-                <div>
-                  <p className="text-xs font-medium text-gray-400 mb-1">Prompt</p>
-                  <p className="text-sm text-gray-200 whitespace-pre-wrap bg-gray-950 border border-gray-800 rounded-md px-3 py-2 font-mono text-xs leading-relaxed">
-                    {gen.prompt}
-                  </p>
-                </div>
-
-                {/* Metadata row */}
-                <div className="flex flex-wrap gap-4">
-                  {gen.provider && (
-                    <div>
-                      <p className="text-xs text-gray-500">Provider</p>
-                      <p className="text-sm text-gray-300">{gen.provider}</p>
-                    </div>
-                  )}
-                  {gen.model && (
-                    <div>
-                      <p className="text-xs text-gray-500">Model</p>
-                      <p className="text-sm text-gray-300">{gen.model}</p>
-                    </div>
-                  )}
-                  {gen.duration != null && (
-                    <div>
-                      <p className="text-xs text-gray-500">Duration</p>
-                      <p className="text-sm text-gray-300">{gen.duration}s</p>
-                    </div>
-                  )}
-                  {gen.sceneId && (
-                    <div>
-                      <p className="text-xs text-gray-500">Scene</p>
-                      <p className="text-sm text-gray-300">{gen.sceneId}</p>
-                    </div>
-                  )}
-                </div>
-
-                {/* Ref images */}
-                {gen.refImages && gen.refImages.length > 0 && (
-                  <div>
-                    <p className="text-xs font-medium text-gray-400 mb-1">Reference images</p>
-                    <div className="flex flex-wrap gap-1">
-                      {gen.refImages.map((refId: string, i: number) => {
-                        const ref = project.storyboard?.imageRefs?.find(r => r.id === refId)
-                        return (
-                          <span key={i} className="text-xs bg-gray-800 border border-gray-700 rounded px-2 py-0.5 text-gray-300">
-                            {ref ? `${ref.label} (${refId})` : refId}
-                          </span>
-                        )
-                      })}
-                    </div>
-                  </div>
-                )}
-
-                {/* Scene prompt (original, before composition) */}
-                {scene && (
-                  <div>
-                    <p className="text-xs font-medium text-gray-400 mb-1">Scene prompt (pre-composition)</p>
-                    <p className="text-sm text-gray-400 bg-gray-950 border border-gray-800 rounded-md px-3 py-2 text-xs">
-                      {scene.prompt}
-                    </p>
-                  </div>
-                )}
-
-                {/* Attempts */}
-                {gen.attempts && gen.attempts.length > 0 && (
-                  <div>
-                    <p className="text-xs font-medium text-gray-400 mb-1">Previous attempts ({gen.attempts.length})</p>
-                    <div className="flex flex-col gap-1">
-                      {gen.attempts.map((a: { ts?: string; prompt?: string }, i: number) => (
-                        <div key={i} className="text-xs text-gray-500 bg-gray-950 border border-gray-800 rounded px-2 py-1">
-                          {a.ts && <span className="text-gray-600">{new Date(a.ts).toLocaleString()} — </span>}
-                          {a.prompt && <span className="font-mono">{a.prompt.slice(0, 100)}{a.prompt.length > 100 ? '…' : ''}</span>}
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                )}
-              </div>
-            </div>
-          </div>
-        )
-      })()}
+      {/* Clip inspect / regenerate modal */}
+      {inspectClipId && <ClipInspectModal
+        project={project}
+        clipId={inspectClipId}
+        onClose={() => setInspectClipId(null)}
+        onProjectChange={onProjectChange}
+        onSave={(p) => api.saveProject(p.id, p)}
+      />}
     </div>
   )
 }

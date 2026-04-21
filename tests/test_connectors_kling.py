@@ -3,7 +3,7 @@ import base64
 import pytest
 
 from connectors import ConnectorError
-from connectors.kling import build_payload, _file_to_base64, MAX_PROMPT_CHARS, MAX_REF_IMAGES, MODEL_NAME
+from connectors.kling import build_payload, _file_to_base64, MAX_PROMPT_CHARS, MAX_REF_IMAGES, DEFAULT_MODEL, MODELS
 
 
 # ---------------------------------------------------------------------------
@@ -24,7 +24,7 @@ def test_file_to_base64(tmp_path):
 def test_build_payload_text_only():
     result = build_payload(prompt="A cat walking")
     body = result["body"]
-    assert body["model_name"] == MODEL_NAME
+    assert body["model_name"] == DEFAULT_MODEL
     assert body["prompt"] == "A cat walking"
     assert "image_list" not in body
     assert result["truncated"] is False
@@ -74,17 +74,16 @@ def test_build_payload_reference_images(tmp_path):
     ref2.write_bytes(b"R2")
     result = build_payload(prompt="a person dancing", reference_image_paths=[str(ref1), str(ref2)])
     body = result["body"]
-    # Connector prepends a ref clause: "Use the character/style from <<<image_1>>>, <<<image_2>>>. "
-    assert body["prompt"].startswith("Use the character/style from <<<image_1>>>, <<<image_2>>>. ")
-    assert body["prompt"].endswith("a person dancing")
+    # Connector is pure pass-through — does NOT mutate the prompt.
+    assert body["prompt"] == "a person dancing"
     # reference images have no type key
     assert len(body["image_list"]) == 2
     assert "type" not in body["image_list"][0]
     assert "type" not in body["image_list"][1]
 
 
-def test_build_payload_ref_clause_with_first_frame(tmp_path):
-    """When first_frame is present, ref image tokens start after the frame entries."""
+def test_build_payload_ref_images_after_first_frame(tmp_path):
+    """Ref images are appended after first_frame in image_list."""
     first = tmp_path / "first.png"
     first.write_bytes(b"F")
     ref1 = tmp_path / "ref1.png"
@@ -94,23 +93,21 @@ def test_build_payload_ref_clause_with_first_frame(tmp_path):
         reference_image_paths=[str(ref1)],
     )
     body = result["body"]
-    # first_frame is image_list[0], ref is image_list[1] → token is <<<image_2>>>
-    assert "<<<image_2>>>" in body["prompt"]
+    # first_frame is image_list[0], ref is image_list[1]
     assert body["image_list"][0]["type"] == "first_frame"
     assert "type" not in body["image_list"][1]
+    assert len(body["image_list"]) == 2
 
 
 def test_build_payload_preserves_caller_placed_tokens(tmp_path):
-    """Caller-placed inline tokens are preserved alongside the prepended ref clause."""
+    """Connector preserves caller-placed <<<image_N>>> tokens as-is."""
     ref1 = tmp_path / "ref1.png"
     ref1.write_bytes(b"R1")
     ref2 = tmp_path / "ref2.png"
     ref2.write_bytes(b"R2")
     prompt = "The man <<<image_1>>> walks past the <<<image_2>>> tree"
     result = build_payload(prompt=prompt, reference_image_paths=[str(ref1), str(ref2)])
-    # Ref clause is prepended, caller tokens are preserved in the body
-    assert result["body"]["prompt"].startswith("Use the character/style from")
-    assert "<<<image_1>>> walks past" in result["body"]["prompt"]
+    assert result["body"]["prompt"] == prompt
 
 
 # ---------------------------------------------------------------------------
@@ -336,5 +333,84 @@ def test_multi_shot_customize_with_ref_images(tmp_path):
     assert body["multi_shot"] is True
     assert len(body["image_list"]) == 1
     # In customize mode, prompt is omitted from body — per-shot prompts in multi_prompt.
-    # No top-level prompt means no ref clause prepended (callers put refs in per-shot prompts).
     assert "prompt" not in body
+
+
+# ---------------------------------------------------------------------------
+# Model selection
+# ---------------------------------------------------------------------------
+
+def test_model_defaults_to_v3_omni():
+    result = build_payload(prompt="test")
+    assert result["body"]["model_name"] == "kling-v3-omni"
+
+
+def test_model_o1_sets_model_name():
+    result = build_payload(prompt="test", model="kling-video-o1", duration_seconds=5)
+    assert result["body"]["model_name"] == "kling-video-o1"
+
+
+def test_model_o1_snaps_duration_to_5_or_10():
+    # 7s should snap to nearest allowed (5)
+    result = build_payload(prompt="test", model="kling-video-o1", duration_seconds=7)
+    assert result["body"]["duration"] == "5"
+    # 8s should snap to 10
+    result = build_payload(prompt="test", model="kling-video-o1", duration_seconds=8)
+    assert result["body"]["duration"] == "10"
+    # 3s should snap to 5
+    result = build_payload(prompt="test", model="kling-video-o1", duration_seconds=3)
+    assert result["body"]["duration"] == "5"
+
+
+def test_model_o1_rejects_multi_shot():
+    with pytest.raises(ConnectorError, match="does not support multi-shot"):
+        build_payload(
+            multi_shot=True, shot_type="customize",
+            multi_prompt=_valid_multi_prompt(),
+            model="kling-video-o1",
+        )
+
+
+def test_model_o1_rejects_end_frame_in_std(tmp_path):
+    first = tmp_path / "first.png"
+    first.write_bytes(b"F")
+    last = tmp_path / "last.png"
+    last.write_bytes(b"L")
+    with pytest.raises(ConnectorError, match="end frame.*pro"):
+        build_payload(
+            prompt="test",
+            first_frame_path=str(first),
+            last_frame_path=str(last),
+            model="kling-video-o1",
+            mode="std",
+            duration_seconds=5,
+        )
+
+
+def test_model_o1_allows_end_frame_in_pro(tmp_path):
+    first = tmp_path / "first.png"
+    first.write_bytes(b"F")
+    last = tmp_path / "last.png"
+    last.write_bytes(b"L")
+    result = build_payload(
+        prompt="test",
+        first_frame_path=str(first),
+        last_frame_path=str(last),
+        model="kling-video-o1",
+        mode="pro",
+        duration_seconds=5,
+    )
+    assert result["body"]["model_name"] == "kling-video-o1"
+    assert result["body"]["mode"] == "pro"
+    assert len(result["body"]["image_list"]) == 2
+
+
+def test_model_unknown_rejected():
+    with pytest.raises(ConnectorError, match="Unknown model"):
+        build_payload(prompt="test", model="kling-v99")
+
+
+def test_model_v3_omni_allows_any_duration():
+    for dur in [3, 7, 12, 15]:
+        result = build_payload(prompt="test", model="kling-v3-omni", duration_seconds=dur)
+        assert result["body"]["duration"] == str(dur)

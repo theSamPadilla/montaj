@@ -128,7 +128,11 @@ The final video's length is the **sum of per-scene durations**. Kling generates 
 
 Three interacting constraints:
 
-1. **Per-scene duration is a Kling-enforced integer enum.** Allowed values: `3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15` (seconds). No floats (`8.5` will be rejected or silently clamped). In multi-shot mode the floor drops to `1`.
+1. **Per-scene duration depends on the model.** Two models are available:
+   - **`kling-v3-omni`** (default) — `3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15` seconds. Supports multi-shot. Start+end frames in both std and pro modes.
+   - **`kling-video-o1`** (newer, potentially higher quality) — **`5` or `10` only**. No multi-shot. End frame requires `--mode pro`.
+
+   No floats (`8.5` will be rejected or silently clamped). In multi-shot mode (v3-omni only) the floor drops to `1`.
 
 2. **Min 1 scene per project, no upper cap from the API.** In multi-shot mode, max 6 shots per call — split into multiple batches if the storyboard has more.
 
@@ -269,43 +273,58 @@ Trade-offs:
 
 State your chosen mode in chat once at the start — the user can redirect if wrong.
 
+#### Picking a model
+
+Two Kling models are available. Pass `--model <name>` to `kling_generate`.
+
+- **`kling-video-o1`** (preferred) — newest model with **higher visual quality**. **Only 5s or 10s durations.** No multi-shot. End frame (`--last-frame`) requires `--mode pro`. Use this whenever a scene's duration is 5 or 10.
+- **`kling-v3-omni`** (fallback) — flexible 3–15s durations, multi-shot support, start+end frame in both std/pro. Use when a scene's duration doesn't fit o1's 5/10 constraint, or when multi-shot dispatch is needed.
+
+**How to decide:** The model is **per-scene, not per-project** — you can mix and match within a single storyboard. For each scene, check its duration:
+- Duration is 5 or 10 → use `kling-video-o1` for that scene (better quality).
+- Duration is anything else (3, 4, 6, 7, 8, etc.) → use `kling-v3-omni` for that scene.
+
+This lets you get the best quality where possible while keeping flexible pacing elsewhere. The connector snaps invalid durations to the nearest allowed value, but snapping changes your editorial pacing — better to pick the right model per scene than rely on snapping.
+
+State your model choices in chat alongside the dispatch mode. Record the actual model used on `generation.model` for each clip.
+
 ### Step C — compose the combined prompt at call time
 
 For each scene (or shot, in batched mode):
 
-- **Substitute `storyboard.styleAnchor` literally** at the start of the prompt, followed by the scene-specific prose. Write natural language — reference characters by their labels (e.g. "Rennie sits at the top", "Rosie waits below"). Do NOT manually insert `<<<image_N>>>` tokens.
+- **Compose the full prompt yourself, including `<<<image_N>>>` tokens and ref clause.** The connector (`connectors/kling.py`) is a pure pass-through — it does NOT mutate the prompt. You are responsible for placing tokens.
 
-- **The connector handles ref-image binding automatically.** When you pass `--ref-image` paths, the connector prepends a ref clause to the prompt:
-  ```
-  Use the character/style from <<<image_1>>>, <<<image_2>>>. <your prompt here>
-  ```
-  This tells Kling to faithfully reproduce the reference characters/styles. You do not need to (and should not) place `<<<image_N>>>` tokens yourself — the connector owns token generation and prompt prepending.
+  For each scene, compose the prompt as follows:
 
-  **Concrete example.** Say `storyboard.styleAnchor` is `"Warm golden-hour lighting, soft film grain, handheld camera."` and `scene.refImages = [max_id, meadow_id]` resolves to paths `/refs/max.jpg` and `/refs/meadow.jpg`. The prompt you pass to `kling_generate --prompt` is:
+  1. Start with `storyboard.styleAnchor` as a prefix.
+  2. Append the scene prose. At each mention of a character/object label that corresponds to a ref image, insert the positional token `<<<image_N>>>` after the label. N is 1-indexed and matches the order of `--ref-image` args you pass to `kling_generate`.
+  3. Prepend a ref clause: `"Use the character/style from <<<image_1>>>, <<<image_2>>>. "` (listing all ref tokens).
+  4. The resulting string is the `--prompt` you pass to `kling_generate`.
+
+  **Concrete example.** `storyboard.styleAnchor` = `"Warm golden-hour lighting, soft film grain, handheld camera."`, `scene.refImages = [max_id, meadow_id]` resolves to paths `/refs/max.jpg` and `/refs/meadow.jpg`, and the scene mentions "Max" (label for `max_id`).
+
+  Step-by-step:
+  - Scene prose: `"Max runs across the meadow."`
+  - Insert tokens: `"Max <<<image_1>>> runs across the meadow."` (max_id is first ref → image_1)
+  - Ref clause: `"Use the character/style from <<<image_1>>>, <<<image_2>>>. "`
+  - Combined: `"Use the character/style from <<<image_1>>>, <<<image_2>>>. Warm golden-hour lighting, soft film grain, handheld camera. Max <<<image_1>>> runs across the meadow."`
+
+  The CLI call:
 
   ```
-  Warm golden-hour lighting, soft film grain, handheld camera. The dog runs across the meadow.
+  kling_generate --prompt "<combined>" --ref-image /refs/max.jpg --ref-image /refs/meadow.jpg ...
   ```
 
-  And the CLI call is:
-
-  ```
-  kling_generate --prompt "<that string>" --ref-image /refs/max.jpg --ref-image /refs/meadow.jpg ...
-  ```
-
-  The connector will produce the final wire prompt:
-  ```
-  Use the character/style from <<<image_1>>>, <<<image_2>>>. Warm golden-hour lighting, soft film grain, handheld camera. The dog runs across the meadow.
-  ```
+  **What you store on `generation.prompt`:** the **caller's composed string** — styleAnchor + scene prose in natural language, WITHOUT the ref clause and WITHOUT `<<<image_N>>>` tokens. This is the pre-composition version. Regen pre-fills the UI from this. At call time, you re-compose the full prompt (with tokens + ref clause) from the stored natural-language prompt + `refImages`.
 
 - **Length caps (enforced by connector):**
-  - **Single-shot: silently truncates at 2500 chars** (after ref clause prepend). The step prints a `prompt_truncated` warning on stderr — watch for it. Respect the cap when composing; don't rely on the truncation to land gracefully.
+  - **Single-shot: silently truncates at 2500 chars.** The step prints a `prompt_truncated` warning on stderr — watch for it. Respect the cap when composing.
   - **Multi-shot customize: hard-rejects any `multi_prompt[i].prompt` > 512 chars.** Raises `ConnectorError`, step fails. Compose tighter per-shot prose.
   - **Multi-shot customize: omits the top-level `prompt` body field entirely** (per Kling's spec — `prompt` is invalid in that mode). Your per-shot strings in `multi_prompt[]` are what ship.
 
 - Resolve `scene.refImages` IDs against `storyboard.imageRefs` (use `imageRefs[i].refImages[0]` as the primary path). Enforce the editorial cap of 3 refs per scene.
 
-- Respect Kling's length cap: 2500 chars in single-shot, **512 chars per shot in multi-shot** (both after ref clause).
+- Respect Kling's length cap: 2500 chars in single-shot, **512 chars per shot in multi-shot**.
 
 ### Step D — call and write
 
@@ -316,6 +335,7 @@ kling_generate \
   --prompt <combined> \
   --duration <scene.duration> \
   --aspect-ratio <storyboard.aspectRatio> \
+  --model <chosen model> \
   --ref-image <path> [--ref-image <path> ...] \
   --out <path> \
   --external-task-id <scene.id>
@@ -337,7 +357,7 @@ Add `--first-frame <path>` for chained mode (N-1's last frame).
   "generation": {
     "sceneId": "<scene.id>",
     "provider": "kling",
-    "model": "kling-v3-omni",
+    "model": "<chosen model>",
     "prompt": "<combined>",
     "refImages": ["<ref_id>", ...],
     "duration": <scene.duration>,
@@ -346,7 +366,7 @@ Add `--first-frame <path>` for chained mode (N-1's last frame).
 }
 ```
 
-The combined prompt stored on `generation.prompt` is the final wire-ready string — Plan 5's regenerate modal pre-fills from this.
+The prompt stored on `generation.prompt` is the **caller's composed string** (styleAnchor + scene prose in natural language) — NOT the wire string the connector produced after prepending its ref clause. The connector derives the ref clause deterministically from `refImages`, so regen can re-run the same caller prompt and reproduce the same wire string. Plan 5's regenerate flows (full-scene and subcut) pre-fill the prompt field from this.
 
 **Write `project.json` back IMMEDIATELY after each scene completes** — do not batch writes. The UI watches for changes via SSE and flips scene chips from "pending" → "done" in real time. If you wait until all scenes finish to write, the user sees no progress for minutes. Each `kling_generate` call returns → append the clip to `tracks[0]` → save `project.json` → move to the next result. When running scenes in parallel, save after EACH result lands (not after all parallel calls complete).
 
@@ -394,7 +414,7 @@ Refs passed apply to any shot in the batch. Cap still 7 total.
   "outPoint": <total_batch_duration>,
   "generation": {
     "provider": "kling",
-    "model": "kling-v3-omni",
+    "model": "<chosen model>",
     "multiShot": true,
     "shotType": "customize",
     "refImages": ["<ref_id>", ...],
@@ -424,12 +444,72 @@ Treat the project like any other. Respond to timeline-editing requests.
 
 Don't touch the `generation` block on `tracks[0]` clips unless explicitly asked ("regenerate scene 3 with a different prompt"). That block is a frozen snapshot of what produced the clip.
 
-The UI's post-draft "Regenerate section" action (Plan 5) handles one-shot per-clip regens directly via `/api/steps/kling_generate` + boundary-frame extraction via `/api/steps/snapshot --at`. You don't need to serve that unless the user asks you specifically. When asked, mirror the UI's flow:
+### Processing the regenQueue
 
-1. Extract boundary frames from the selected clip's `src` at its `inPoint` / `outPoint` via `snapshot --at <sec>`.
-2. Call `kling_generate` with those frames as `--first-frame` / `--last-frame`.
-3. Replace `src` on the clip, update `inPoint: 0`, `outPoint: <newDuration>`, `end = start + newDuration`.
-4. Push the old `{ts, prompt, src}` to `generation.attempts[]`.
+Once Plan 5 ships, `project.regenQueue[]` becomes the authoritative queue for per-clip regeneration requests. The UI (inspect modal for full-scene, subcut range-picker tool for windowed regens) and the `montaj regen` / `montaj regen subcut` CLI commands all write entries to this queue. When the user triggers you — typically with *"Please process project.regenQueue[] per the ai-video skill Phase 7 contract."* — drain it.
+
+**Verification guard (same spirit as Phase 6's approval guard):**
+1. `project.projectType === "ai_video"`.
+2. `project.regenQueue` is a non-empty array.
+3. Each entry's `clipId` matches a real item in `tracks[0]`.
+
+Bad entries → tell the user, do NOT drop silently.
+
+**For each entry, in order:**
+
+1. **Locate the clip.** `clip = tracks[0].find(c => c.id === entry.clipId)`. If missing → set `entry.lastError = {ts, message: "clip not found"}`, continue to next entry.
+
+2. **Extract continuity frames if needed (subcut + toggle on):**
+   - `entry.useFirstFrame === true` → `snapshot --input <clip.src> --at <entry.subrange.start> --out <frame_first.jpg>`.
+   - `entry.useLastFrame === true` → `snapshot --input <clip.src> --at <entry.subrange.end> --out <frame_last.jpg>`.
+
+3. **Compose the full prompt** from `entry.prompt` + `entry.refImages`, then **call `kling_generate`**.
+
+   The connector is a pure pass-through — you must place `<<<image_N>>>` tokens and the ref clause yourself, same as Phase 6 Step C. Compose the prompt:
+   - Start with `storyboard.styleAnchor` (if present) as prefix.
+   - Append `entry.prompt`. At each character/object label that matches a ref's `imageRefs[i].label`, insert the positional `<<<image_N>>>` token (N = 1-indexed, matching `--ref-image` order).
+   - Prepend the ref clause: `"Use the character/style from <<<image_1>>>, <<<image_2>>>. "`.
+
+   Store the **pre-composition** natural-language prompt (without tokens/clause) on `generation.prompt` when patching the clip.
+
+   Call `kling_generate` with the composed prompt:
+   - `--prompt "<composed prompt with tokens and ref clause>"`
+   - `--duration <entry.duration>`
+   - `--aspect-ratio <project.storyboard.aspectRatio>`
+   - `--model <entry.model>` (falls back to `kling-v3-omni` if unset)
+   - `--ref-image <resolved_path>` per ID in `entry.refImages` (resolve via `project.storyboard.imageRefs[i].refImages[0]`)
+   - `--first-frame <frame_first.jpg>` / `--last-frame <frame_last.jpg>` if step 2 produced them
+   - `--out <workspace_path>`
+   - `--external-task-id <entry.id>`
+
+4. **Patch `tracks[0]` based on mode:**
+
+   **`mode: "full"`** — replace in place:
+   - Push `{ts, prompt: <clip.generation.prompt>, src: <clip.src>}` onto `clip.generation.attempts[]`.
+   - `clip.src = <new path>`, `clip.inPoint = 0`, `clip.outPoint = entry.duration`.
+   - `clip.end = clip.start + entry.duration` → ripple subsequent items.
+   - Update `clip.generation.prompt = entry.prompt`, `.duration = entry.duration`, `.refImages = entry.refImages`, `.model = entry.model`.
+
+   **`mode: "subcut"`** — split and insert:
+   - **Left piece** (if non-zero duration): `inPoint = clip.inPoint`, `outPoint = entry.subrange.start`; timeline span `start = clip.start`, `end = clip.start + (subrange.start - clip.inPoint)`. Inherits `clip.generation` unchanged.
+   - **Middle piece** (new): `src = <new path>`, `inPoint = 0`, `outPoint = entry.duration`; timeline span starts where left ends. Fresh `generation`: `{sceneId: clip.generation.sceneId, provider: "kling", model: entry.model, prompt: entry.prompt, refImages: entry.refImages, duration: entry.duration, attempts: []}`.
+   - **Right piece** (if non-zero duration): `inPoint = entry.subrange.end`, `outPoint = clip.outPoint`; timeline span starts where middle ends. Inherits `clip.generation` unchanged.
+   - Replace the single `tracks[0]` entry with the non-degenerate pieces in order. Ripple subsequent clips.
+   - Degenerate case: subrange covers the whole clip → no left/right → equivalent to full-scene regen. No special-case logic needed.
+
+5. **Remove the processed entry** from `regenQueue`. Write `project.json`.
+
+6. Loop to the next entry.
+
+**On failure (any entry):** do NOT remove it. Set `entry.lastError = {ts: <ISO8601>, message: <kling error>}` and continue to the next entry. User can re-trigger after investigating.
+
+**Regen contract — what NOT to do:**
+- Don't process `regenQueue` entries before the user triggers you. The queue being non-empty doesn't mean "go" — wait for the chat message, same pattern as `storyboard.approval` in Phase 6.
+- Don't process entries in parallel if they target overlapping clips. Sequential avoids races.
+- Don't mutate `storyboard.scenes[]` during regen. Editorial plan stays stable; regen operates on `tracks[0]` only.
+- Don't drop bad entries silently. Record `lastError` so the user can fix and retry.
+- Don't pass `entry.prompt` raw as `--prompt` — compose it first (tokens + ref clause + styleAnchor). The connector does NOT add tokens; you must.
+- Don't skip the snapshot step when `useFirstFrame` / `useLastFrame` is set. Those toggles are the user's explicit continuity request; honor them.
 
 ---
 
@@ -448,7 +528,8 @@ One table of every field you write, grouped by phase.
 | `project.tracks[0]` | phase 6 | **Append** real clips only. Never stubs, never empty-src items. |
 | `project.tracks[0][i].generation.*` (single-shot) | phase 6 | Frozen snapshot: `{sceneId, provider, model, prompt, refImages, duration, attempts}`. |
 | `project.tracks[0][i].generation.multiShot / shotType / batchShots` | phase 6, batched only | Batched clip metadata; `batchShots[]` carries per-scene mapping inside the concatenated output. |
-| `project.tracks[0][i].generation.attempts` | post-draft regen (Plan 5) | Append previous `{ts, prompt, src}` before overwriting on regeneration. |
+| `project.tracks[0][i].generation.attempts` | post-draft regen (Phase 7 regenQueue drain) | Append previous `{ts, prompt, src}` before overwriting on a `mode: "full"` regen. For `mode: "subcut"`, the middle piece is a fresh clip with empty `attempts[]`; the left/right pieces inherit the original clip's attempts unchanged. |
+| `project.regenQueue` | Phase 7 | UI and CLI append entries. Agent drains on trigger — remove on success, set `lastError` on failure. |
 | `project.status` → `storyboard_ready` | end of Phase 1 | scenes[] populated, refs ready, styleAnchor written, `tracks[0]` still `[]`. |
 | `project.status` → `draft` | end of Phase 6 | Only when every `storyboard.scenes[i]` has a matching clip (single-shot sceneId OR batchShots sceneId). |
 
@@ -456,13 +537,13 @@ One table of every field you write, grouped by phase.
 
 ## What NOT to do
 
-- **Don't put `<<<image_N>>>` tokens in scene prompts OR in the composed prompt you pass to `kling_generate`.** Scene prompts are natural language with character labels. The connector auto-prepends a ref clause with the correct tokens when you pass `--ref-image` paths. Manually placing tokens leads to duplicate/conflicting bindings.
+- **Don't put `<<<image_N>>>` tokens in `storyboard.scenes[i].prompt`.** Scene prompts are natural language with character labels. Token placement happens at composition time in Phase 6 Step C, where you map `refImages` IDs to positional `--ref-image` args and insert tokens inline at the matching nouns.
 - **Don't generate scenes sequentially in independent mode.** Fire all `kling_generate` calls in parallel (up to 4 concurrent). Sequential one-at-a-time dispatch wastes minutes of wall-clock time — Kling handles concurrent requests fine.
 - **Don't skip Phase 0.** If intake is thin or ambiguous, ASK before writing scenes. A wrong 8-scene storyboard costs more than one clarification turn.
 - **Don't bombard the user with multiple questions at once.** One question per turn, wait for the answer.
 - **Don't call `generate_image` on `imageRefs[i]` with `source: "upload"`.** You'd overwrite the user's file. Only text-sourced refs get image generation.
 - **Don't fold `styleAnchor` into `generate_image` prompts.** Refs are identity-only; style is applied by Kling at scene generation.
-- **Don't manually place `<<<image_N>>>` tokens in prompts.** The connector handles ref clause prepending automatically. Adding your own tokens creates duplicate bindings that confuse Kling.
+- **Don't write `<<<image_N>>>` tokens into `storyboard.scenes[i].prompt` or `generation.prompt` (the stored prompt).** These fields hold natural language only. Tokens and the ref clause are composed at call time (Phase 6 Step C / Phase 7 step 3) and passed directly to `kling_generate --prompt` — they are NOT persisted. The connector is a pure pass-through; it does not add tokens.
 - **Don't use multi-shot mode with `--first-frame` / `--last-frame`.** Kling doesn't support frame control in multi-shot. If you need frame continuity, use chained mode.
 - **Don't exceed 512 chars per shot in multi-shot mode.** Single-shot's 2500-char budget does NOT apply per-shot. Fall back to independent mode for any scene that needs more prose.
 - **Don't use `sceneId` on the outer `generation` block of a batched clip.** Use `batchShots[].sceneId`. The idempotency check in Step A branches on whether `batchShots` exists.
@@ -475,7 +556,7 @@ One table of every field you write, grouped by phase.
 - **Don't append `aspectRatio` or `targetDurationSeconds` (or anything else) to `editingPrompt`.** Those fields live at `project.storyboard.*` as structured values. Pass `aspectRatio` directly to `kling_generate`; use `targetDurationSeconds` as input to your scene-count/duration decisions.
 - **Don't call `kling_generate` before `storyboard.approval` is set.** Premature generation wastes credits.
 - **Don't overwrite `storyboard.approval`.** The UI owns that field.
-- **Don't mutate `tracks[0][i].generation` to "edit the scene".** That block is a frozen snapshot. To change editorial intent, edit `storyboard.scenes[i]`. To actually regenerate with new settings, use the Plan 5 regenerate-section flow.
+- **Don't mutate `tracks[0][i].generation` to "edit the scene".** That block is a frozen snapshot. To change editorial intent, edit `storyboard.scenes[i]`. To actually regenerate with new settings, queue a `regenQueue` entry (via UI, CLI, or by writing one yourself in chat) and drain per Phase 7.
 - **Don't regenerate scenes that already have a clip** when the user re-approves. The skip-if-clip-exists check in Phase 6 Step A is mandatory — partial-approval retries depend on it.
 - **Don't invent fields outside the schema.** If you need to store something, ask the user.
 - **Don't touch `project.json` outside ai_video's documented paths** (e.g., don't add fields to `settings`).

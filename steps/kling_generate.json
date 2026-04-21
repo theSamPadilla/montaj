@@ -1,6 +1,6 @@
 {
   "name": "kling_generate",
-  "description": "Generate video via Kling v3 Omni. Supports single-shot (text-to-video, image-to-video, reference-guided) and multi-shot (up to 6 scenes in one API call).",
+  "description": "Generate video via Kling v3 Omni. Standalone mode: pass --prompt and --ref-image directly. Project-aware mode: pass --project-id and --scene-id and the step reads the project, composes the prompt (styleAnchor + ref clause + inline tokens), generates, and saves the clip to tracks[0]. Also supports multi-shot (up to 6 scenes in one API call).",
   "output": {
     "type": "video",
     "description": "Path to the generated .mp4 file"
@@ -16,9 +16,12 @@
     {"name": "sound", "type": "string", "required": false, "default": "on", "description": "on|off"},
     {"name": "aspect-ratio", "type": "string", "required": false, "default": "16:9", "description": "16:9|9:16|1:1"},
     {"name": "mode", "type": "string", "required": false, "default": "std", "description": "std|pro"},
+    {"name": "model", "type": "string", "required": false, "default": "kling-v3-omni", "description": "kling-v3-omni (flexible durations, multi-shot) | kling-video-o1 (newer, 5s/10s only, no multi-shot)"},
     {"name": "external-task-id", "type": "string", "required": false, "description": "Caller correlation ID echoed back by Kling on queries"},
     {"name": "multi-shot", "type": "bool", "required": false, "default": false, "description": "Enable multi-shot mode (up to 6 scenes in one API call)"},
     {"name": "shot-type", "type": "string", "required": false, "description": "customize|intelligence. Required when --multi-shot is set. customize = caller defines each shot via --multi-prompt; intelligence = Kling splits a single --prompt into shots."},
-    {"name": "multi-prompt", "type": "string", "required": false, "description": "JSON array of storyboard entries: [{\"index\":1,\"prompt\":\"...\",\"duration\":\"3\"}, ...]. 1-6 entries, per-prompt cap 512 chars. Required when --shot-type=customize."}
+    {"name": "multi-prompt", "type": "string", "required": false, "description": "JSON array of storyboard entries: [{\"index\":1,\"prompt\":\"...\",\"duration\":\"3\"}, ...]. 1-6 entries, per-prompt cap 512 chars. Required when --shot-type=customize."},
+    {"name": "project-id", "type": "string", "required": false, "description": "Project ID. When set with --scene-id, enables project-aware mode: step reads project, composes prompt, generates, and saves clip to tracks[0]."},
+    {"name": "scene-id", "type": "string", "required": false, "description": "Scene ID within the storyboard. Requires --project-id."}
   ]
 }
