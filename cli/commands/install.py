@@ -17,7 +17,9 @@ _parser = None
 
 def register(subparsers):
     global _parser
-    _parser = subparsers.add_parser("install", help="Install optional dependencies")
+    from cli.help import ColorHelpFormatter
+    _parser = subparsers.add_parser("install", help="Install optional dependencies",
+                                    formatter_class=lambda prog: ColorHelpFormatter(prog, max_help_position=40))
     sub = _parser.add_subparsers(dest="component", metavar="<component>")
 
     whisper_p = sub.add_parser("whisper", help="whisper-cpp binary + model weights")
@@ -215,27 +217,9 @@ def _ensure_connectors() -> bool:
     return True
 
 
-# ── ANSI helpers ──────────────────────────────────────────────────────────────
+# ── ANSI helpers (shared from cli.help) ───────────────────────────────────────
 
-def _supports_color() -> bool:
-    if os.environ.get("NO_COLOR"):
-        return False
-    if os.environ.get("FORCE_COLOR"):
-        return True
-    return hasattr(sys.stdout, "isatty") and sys.stdout.isatty()
-
-_USE_COLOR = _supports_color()
-
-def _c(code: str, text: str) -> str:
-    return f"\033[{code}m{text}\033[0m" if _USE_COLOR else text
-
-def _bold(t: str) -> str:    return _c("1", t)
-def _dim(t: str) -> str:     return _c("2", t)
-def _green(t: str) -> str:   return _c("32", t)
-def _yellow(t: str) -> str:  return _c("33", t)
-def _blue(t: str) -> str:    return _c("34", t)
-def _cyan(t: str) -> str:    return _c("36", t)
-def _red(t: str) -> str:     return _c("31", t)
+from cli.help import c as _c, bold as _bold, dim as _dim, green as _green, yellow as _yellow, blue as _blue, cyan as _cyan, red as _red
 
 
 # ── Credentials TUI ──────────────────────────────────────────────────────────
@@ -285,7 +269,7 @@ def _handle_credentials(args):
             for provider, keys in data.items():
                 info = _PROVIDER_INFO.get(provider, {})
                 display = info.get("display", provider)
-                print(f"  {_bold(display)} {_dim('(' + provider + ')')}")
+                print(f"  {_bold(_cyan(display))} {_dim('(' + provider + ')')}")
                 for k, v in keys.items():
                     if v == "set":
                         print(f"    {_green('\u2713')} {k}")
@@ -335,7 +319,7 @@ def _handle_credentials(args):
             all_set = all(_key_is_set(get_credential, p, k) for k in keys)
             status = _green(" \u2713 ready") if all_set else ""
 
-            print(f"  {_bold(str(i))}  {_bold(display)}{status}")
+            print(f"  {_bold(str(i))}  {_bold(_cyan(display))}{status}")
             print(f"     {desc}")
             if url:
                 print(f"     {_dim(url)}")
@@ -374,7 +358,7 @@ def _handle_credentials(args):
             key_descs = info.get("keys", {})
 
             print()
-            print(f"  {_bold(display)}")
+            print(f"  {_bold(_cyan(display))}")
             if url:
                 print(f"  Get your keys at: {_cyan(url)}")
             print()

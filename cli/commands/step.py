@@ -4,10 +4,7 @@ import argparse, glob, json, os, subprocess, sys
 from cli.main import MONTAJ_ROOT
 from cli.output import emit, emit_error
 
-R = "\033[0m"
-Y = "\033[33;1m"
-C = "\033[36m"
-D = "\033[2m"
+from cli.help import R, Y, C, D
 
 
 def register(subparsers):

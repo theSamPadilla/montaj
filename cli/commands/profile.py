@@ -50,11 +50,7 @@ def handle_analyze(args):
         sys.exit(result.returncode)
 
 
-R  = "\033[0m"
-Y  = "\033[33;1m"
-C  = "\033[36m"
-D  = "\033[2m"
-G  = "\033[32m"
+from cli.help import R, Y, C, D, G
 
 
 def handle_list(args):

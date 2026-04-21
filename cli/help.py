@@ -1,13 +1,41 @@
-"""Color help formatter for argparse — zero dependencies."""
-import argparse
+"""Color help formatter + shared ANSI utilities for the CLI — zero dependencies."""
+import argparse, os, sys
 
-R  = "\033[0m"
-B  = "\033[1m"       # bold
-Y  = "\033[33;1m"    # yellow bold  — section headers / usage label
-G  = "\033[32m"      # green        — flags
-C  = "\033[36m"      # cyan         — subcommand / positional names
-D  = "\033[2m"       # dim          — metavar hints
+# ── Color support detection ───────────────────────────────────────────────────
 
+def _supports_color() -> bool:
+    if os.environ.get("NO_COLOR"):
+        return False
+    if os.environ.get("FORCE_COLOR"):
+        return True
+    return hasattr(sys.stdout, "isatty") and sys.stdout.isatty()
+
+USE_COLOR = _supports_color()
+
+# ── ANSI primitives ──────────────────────────────────────────────────────────
+
+R  = "\033[0m"       if USE_COLOR else ""
+B  = "\033[1m"       if USE_COLOR else ""   # bold
+Y  = "\033[33;1m"    if USE_COLOR else ""   # yellow bold  — section headers
+G  = "\033[32m"      if USE_COLOR else ""   # green        — flags, success
+C  = "\033[36m"      if USE_COLOR else ""   # cyan         — subcommand names
+D  = "\033[2m"       if USE_COLOR else ""   # dim          — hints
+
+# ── Semantic helpers (import these in command files) ─────────────────────────
+
+def c(code: str, text: str) -> str:
+    """Apply an arbitrary ANSI code. e.g. c("1;36", "bold cyan")."""
+    return f"\033[{code}m{text}\033[0m" if USE_COLOR else text
+
+def bold(t: str) -> str:    return c("1", t)
+def dim(t: str) -> str:     return c("2", t)
+def red(t: str) -> str:     return c("31", t)
+def green(t: str) -> str:   return c("32", t)
+def yellow(t: str) -> str:  return c("33", t)
+def blue(t: str) -> str:    return c("34", t)
+def cyan(t: str) -> str:    return c("36", t)
+
+# ── Argparse formatter ───────────────────────────────────────────────────────
 
 class ColorHelpFormatter(argparse.HelpFormatter):
     def start_section(self, heading):
