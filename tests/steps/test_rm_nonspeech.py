@@ -18,9 +18,8 @@ pytestmark = requires_whisper
 
 
 def test_rm_nonspeech_produces_output(test_video, tmp_path, fake_whisper_env):
-    out = tmp_path / "clean.mp4"
     proc = run_step_env("rm_nonspeech.py", fake_whisper_env,
-                        "--input", str(test_video), "--model", "base", "--out", str(out))
+                        "--input", str(test_video), "--model", "base")
     assert proc.returncode == 0, f"stderr: {proc.stderr}"
 
 

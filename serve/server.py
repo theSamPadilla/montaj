@@ -4,10 +4,13 @@ import asyncio
 import html as html_lib
 import json
 import os
+import re
+import secrets
 import subprocess
 import sys
 import webbrowser
 from contextlib import asynccontextmanager
+from datetime import datetime
 from pathlib import Path
 
 import httpx
@@ -34,10 +37,22 @@ _HOP_BY_HOP = frozenset({
 })
 STEP_TIMEOUT_S = int(os.environ.get("MONTAJ_STEP_TIMEOUT", "900"))
 
+_SAFE_NAME = re.compile(r'^[A-Za-z0-9_-]+$')
+
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+def find_project_dir(workspace: Path, project_id: str) -> Path | None:
+    """Find the project directory for a given project id."""
+    for p in workspace.glob("*/project.json"):
+        try:
+            if json.loads(p.read_text()).get("id") == project_id:
+                return p.parent
+        except Exception:
+            pass
+    return None
 
 def _git_commit_sync(project_dir: Path, message: str) -> None:
     """Blocking git commit — call via asyncio.to_thread to avoid blocking the event loop."""
@@ -504,6 +519,26 @@ async def reload_project(project_id: str, request: Request):
     raise HTTPException(404, detail={"error": "not_found", "message": f"Project '{project_id}' not found"})
 
 
+@router.post("/projects/{project_id}/reserve-path")
+async def reserve_path(project_id: str, body: dict = Body(...)):
+    prefix = body.get("prefix", "")
+    extension = body.get("extension", "")
+    if not prefix or not _SAFE_NAME.match(prefix):
+        raise HTTPException(400, detail={"error": "invalid_prefix", "message": "prefix must match [A-Za-z0-9_-]+"})
+    if not extension or not _SAFE_NAME.match(extension):
+        raise HTTPException(400, detail={"error": "invalid_extension", "message": "extension must match [A-Za-z0-9_-]+"})
+
+    workspace = resolve_workspace()
+    project_dir = find_project_dir(workspace, project_id)
+    if project_dir is None:
+        raise HTTPException(404, detail={"error": "project_not_found", "message": f"Project '{project_id}' not found"})
+
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    slug = secrets.token_hex(3)
+    path = project_dir / f"{prefix}_{ts}_{slug}.{extension}"
+    return {"path": str(path)}
+
+
 @router.get("/info")
 async def get_info():
     return {
@@ -766,7 +801,7 @@ def _workflow_dirs() -> list[tuple[str, Path]]:
     """Return [(scope, dir)] in resolution order: user-global → built-in."""
     return [
         ("user",    Path.home() / ".montaj" / "workflows"),
-        ("builtin", Path.cwd() / "workflows"),
+        ("built-in", Path.cwd() / "workflows"),
     ]
 
 

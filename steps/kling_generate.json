@@ -1,20 +1,24 @@
 {
   "name": "kling_generate",
-  "description": "Generate video via Kling v3 Omni. Text-to-video, image-to-video, or reference-guided.",
+  "description": "Generate video via Kling v3 Omni. Supports single-shot (text-to-video, image-to-video, reference-guided) and multi-shot (up to 6 scenes in one API call).",
   "output": {
     "type": "video",
     "description": "Path to the generated .mp4 file"
   },
   "params": [
-    {"name": "prompt", "type": "string", "required": true, "description": "Scene description (max 2500 chars)"},
+    {"name": "prompt", "type": "string", "required": false, "description": "Scene description (max 2500 chars). Required in single-shot mode and in multi-shot intelligence mode; invalid in multi-shot customize mode."},
     {"name": "out", "type": "path", "required": true, "description": "Output .mp4 path"},
-    {"name": "first-frame", "type": "path", "required": false, "description": "Starting image"},
-    {"name": "last-frame", "type": "path", "required": false, "description": "Ending image (requires --first-frame)"},
-    {"name": "ref-image", "type": "path", "required": false, "repeatable": true, "description": "Reference image (max 3)"},
-    {"name": "duration", "type": "int", "required": false, "default": 5, "description": "Clip length in seconds (3-15)"},
+    {"name": "first-frame", "type": "path", "required": false, "description": "Starting image. Not supported in multi-shot mode."},
+    {"name": "last-frame", "type": "path", "required": false, "description": "Ending image (requires --first-frame). Not supported in multi-shot mode."},
+    {"name": "ref-image", "type": "path", "required": false, "repeatable": true, "description": "Reference image (max 7)"},
+    {"name": "duration", "type": "int", "required": false, "default": 5, "description": "Clip length in seconds (3-15). Ignored in multi-shot customize mode (derived from sum of multi_prompt durations)."},
     {"name": "negative-prompt", "type": "string", "required": false, "description": "Things to avoid"},
     {"name": "sound", "type": "string", "required": false, "default": "on", "description": "on|off"},
     {"name": "aspect-ratio", "type": "string", "required": false, "default": "16:9", "description": "16:9|9:16|1:1"},
-    {"name": "mode", "type": "string", "required": false, "default": "std", "description": "std|pro"}
+    {"name": "mode", "type": "string", "required": false, "default": "std", "description": "std|pro"},
+    {"name": "external-task-id", "type": "string", "required": false, "description": "Caller correlation ID echoed back by Kling on queries"},
+    {"name": "multi-shot", "type": "bool", "required": false, "default": false, "description": "Enable multi-shot mode (up to 6 scenes in one API call)"},
+    {"name": "shot-type", "type": "string", "required": false, "description": "customize|intelligence. Required when --multi-shot is set. customize = caller defines each shot via --multi-prompt; intelligence = Kling splits a single --prompt into shots."},
+    {"name": "multi-prompt", "type": "string", "required": false, "description": "JSON array of storyboard entries: [{\"index\":1,\"prompt\":\"...\",\"duration\":\"3\"}, ...]. 1-6 entries, per-prompt cap 512 chars. Required when --shot-type=customize."}
   ]
 }

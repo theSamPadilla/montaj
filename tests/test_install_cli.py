@@ -54,43 +54,50 @@ def _make_args(component=None, install_all=False, model="base.en"):
 
 @pytest.fixture(autouse=False)
 def mock_ensure(monkeypatch):
-    """Patch the three _ensure_* helpers and return their mocks."""
-    ffmpeg  = MagicMock(return_value=True)
-    whisper = MagicMock(return_value=True)
-    rvm     = MagicMock(return_value=True)
-    monkeypatch.setattr(install_cmd, "_ensure_ffmpeg",  ffmpeg)
-    monkeypatch.setattr(install_cmd, "_ensure_whisper", whisper)
-    monkeypatch.setattr(install_cmd, "_ensure_rvm",     rvm)
-    return ffmpeg, whisper, rvm
+    """Patch the _ensure_* helpers and return their mocks."""
+    whisper    = MagicMock(return_value=True)
+    rvm        = MagicMock(return_value=True)
+    demucs     = MagicMock(return_value=True)
+    connectors = MagicMock(return_value=True)
+    ui         = MagicMock(return_value=True)
+    monkeypatch.setattr(install_cmd, "_ensure_whisper",    whisper)
+    monkeypatch.setattr(install_cmd, "_ensure_rvm",        rvm)
+    monkeypatch.setattr(install_cmd, "_ensure_demucs",     demucs)
+    monkeypatch.setattr(install_cmd, "_ensure_connectors", connectors)
+    monkeypatch.setattr(install_cmd, "_ensure_ui",         ui)
+    return whisper, rvm, demucs, connectors, ui
 
 
-def test_handle_rvm_does_not_call_ffmpeg(mock_ensure, capsys):
-    ffmpeg, whisper, rvm = mock_ensure
+def test_handle_rvm_only(mock_ensure, capsys):
+    whisper, rvm, demucs, connectors, ui = mock_ensure
     install_cmd.handle(_make_args(component="rvm"))
-    ffmpeg.assert_not_called()
     whisper.assert_not_called()
     rvm.assert_called_once()
+    demucs.assert_not_called()
 
 
-def test_handle_whisper_calls_ffmpeg(mock_ensure, capsys):
-    ffmpeg, whisper, rvm = mock_ensure
+def test_handle_whisper_only(mock_ensure, capsys):
+    whisper, rvm, demucs, connectors, ui = mock_ensure
     install_cmd.handle(_make_args(component="whisper"))
-    ffmpeg.assert_called_once()
     whisper.assert_called_once()
     rvm.assert_not_called()
 
 
 def test_handle_all_calls_all(mock_ensure, capsys):
-    ffmpeg, whisper, rvm = mock_ensure
+    whisper, rvm, demucs, connectors, ui = mock_ensure
     install_cmd.handle(_make_args(component="all"))
-    ffmpeg.assert_called_once()
     whisper.assert_called_once()
     rvm.assert_called_once()
+    demucs.assert_called_once()
+    connectors.assert_called_once()
+    ui.assert_called_once()
 
 
-def test_handle_default_calls_ffmpeg_and_whisper(mock_ensure, capsys):
-    ffmpeg, whisper, rvm = mock_ensure
+def test_handle_no_component_does_nothing(mock_ensure, monkeypatch):
+    whisper, rvm, demucs, connectors, ui = mock_ensure
+    # _parser is None in test context; patch it so print_help doesn't crash
+    monkeypatch.setattr(install_cmd, "_parser", MagicMock())
     install_cmd.handle(_make_args())
-    ffmpeg.assert_called_once()
-    whisper.assert_called_once()
+    # No component → prints help, no installers called
+    whisper.assert_not_called()
     rvm.assert_not_called()

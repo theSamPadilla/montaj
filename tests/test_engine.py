@@ -19,11 +19,12 @@ import validate as v
 # ---------------------------------------------------------------------------
 
 def test_resolve_step_builtin(tmp_path):
-    py, js = rw.resolve_step("montaj/materialize_cut", str(tmp_path))
-    assert Path(py).exists()
-    assert Path(js).exists()
-    assert py.endswith("materialize_cut.py")
-    assert js.endswith("materialize_cut.json")
+    ref = rw.resolve_step("montaj/materialize_cut", str(tmp_path))
+    assert ref["kind"] == "step"
+    assert Path(ref["executable"]).exists()
+    assert Path(ref["schema_path"]).exists()
+    assert ref["executable"].endswith("materialize_cut.py")
+    assert ref["schema_path"].endswith("materialize_cut.json")
 
 
 def test_resolve_step_unknown_scope(tmp_path):
@@ -41,9 +42,42 @@ def test_resolve_step_project_local(tmp_path):
     steps_dir.mkdir()
     (steps_dir / "my_step.py").write_text("# stub")
     (steps_dir / "my_step.json").write_text('{"name":"my_step"}')
-    py, js = rw.resolve_step("./steps/my_step", str(tmp_path))
-    assert py.endswith("my_step.py")
-    assert js.endswith("my_step.json")
+    ref = rw.resolve_step("./steps/my_step", str(tmp_path))
+    assert ref["kind"] == "step"
+    assert ref["executable"].endswith("my_step.py")
+    assert ref["schema_path"].endswith("my_step.json")
+
+
+def test_resolve_step_skill_fallback_builtin(tmp_path):
+    # Skills-as-steps precedent: lyrics_video.json references `montaj/lyrics-video`
+    # which has no step files, only skills/lyrics-video/SKILL.md.
+    ref = rw.resolve_step("montaj/lyrics-video", str(tmp_path))
+    assert ref["kind"] == "skill"
+    assert ref["skill_path"].endswith("skills/lyrics-video/SKILL.md")
+    assert Path(ref["skill_path"]).exists()
+
+
+def test_resolve_step_skill_fallback_project_local(tmp_path):
+    # ./skills/<name>/SKILL.md is reachable via the ./steps/ scope prefix.
+    skills_dir = tmp_path / "skills" / "my_skill"
+    skills_dir.mkdir(parents=True)
+    (skills_dir / "SKILL.md").write_text("# my skill")
+    ref = rw.resolve_step("./steps/my_skill", str(tmp_path))
+    assert ref["kind"] == "skill"
+    assert ref["skill_path"].endswith("my_skill/SKILL.md")
+
+
+def test_resolve_step_prefers_step_over_skill(tmp_path):
+    # When both exist, the step script wins — skills-as-steps is a fallback.
+    steps_dir = tmp_path / "steps"
+    steps_dir.mkdir()
+    (steps_dir / "dual.py").write_text("# stub")
+    (steps_dir / "dual.json").write_text('{"name":"dual"}')
+    skills_dir = tmp_path / "skills" / "dual"
+    skills_dir.mkdir(parents=True)
+    (skills_dir / "SKILL.md").write_text("# skill")
+    ref = rw.resolve_step("./steps/dual", str(tmp_path))
+    assert ref["kind"] == "step"
 
 
 # ---------------------------------------------------------------------------

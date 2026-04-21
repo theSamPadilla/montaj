@@ -7,19 +7,19 @@ from pathlib import Path
 import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent / "steps"))
-from materialize_cut import build_trim_filter, compute_keeps
+from materialize_cut import build_ffmpeg_args, compute_keeps
 
 from tests.conftest import assert_error, assert_file_output, run_step
 
 
-# ── build_trim_filter unit tests ──────────────────────────────────────────────
+# ── build_ffmpeg_args unit tests ──────────────────────────────────────────────
 
-def test_single_keep_filter_shape():
+def test_single_keep_args_shape():
     spec = {"input": "/v.mp4", "keeps": [[1.0, 3.0]]}
-    flags, fc = build_trim_filter(spec)
-    assert flags == ["-i", "/v.mp4"]
-    assert "trim=start=1.0000:end=3.0000" in fc
-    assert "atrim=start=1.0000:end=3.0000" in fc
+    args, fc = build_ffmpeg_args(spec)
+    assert "-i" in args
+    assert "/v.mp4" in args
+    assert "-ss" in args
     assert "[vout]" in fc
     assert "[aout]" in fc
     assert "aresample" in fc
@@ -27,22 +27,22 @@ def test_single_keep_filter_shape():
 
 def test_single_keep_no_concat():
     spec = {"input": "/v.mp4", "keeps": [[0.0, 5.0]]}
-    _, fc = build_trim_filter(spec)
+    _, fc = build_ffmpeg_args(spec)
     assert "concat" not in fc
 
 
 def test_multi_keep_uses_concat():
     spec = {"input": "/v.mp4", "keeps": [[0.0, 2.0], [3.0, 5.0]]}
-    _, fc = build_trim_filter(spec)
+    args, fc = build_ffmpeg_args(spec)
     assert "concat=n=2" in fc
-    assert "split=2" in fc
-    assert "asplit=2" in fc
+    # Two input segments → two -i flags
+    assert args.count("-i") == 2
 
 
 def test_filter_string_terminates_with_aresample():
     # aresample must be the last filter (handles async audio sync after concat)
     spec = {"input": "/v.mp4", "keeps": [[0.0, 2.0], [3.0, 5.0]]}
-    _, fc = build_trim_filter(spec)
+    _, fc = build_ffmpeg_args(spec)
     assert fc.endswith("[aout]")
     assert "aresample=async=1000" in fc
 
