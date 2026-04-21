@@ -8,14 +8,39 @@ interface Props {
   onProjectChange: (project: Project) => void
 }
 
+// Compose the chat message the user pastes to their agent to trigger Phase 6.
+// Kept in sync with the CLI's cli/commands/approve.py::_agent_message.
+function agentMessageFor(project: Project, sceneCount: number): string {
+  const label = project.name || project.id
+  const id = project.id ? ` (id: ${project.id})` : ''
+  const scenes = `${sceneCount} scene${sceneCount === 1 ? '' : 's'}`
+  return (
+    `I approved the storyboard for project "${label}"${id}. ` +
+    `Please proceed with scene generation (${scenes}) ` +
+    `per the ai-video skill Phase 6 contract.`
+  )
+}
+
 export function ApproveAndGenerate({ project, onProjectChange }: Props) {
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [copied, setCopied] = useState(false)
 
   const storyboardScenes = project.storyboard?.scenes ?? []
   const generatedClips = (project.tracks?.[0] ?? []).filter(item => item.generation)
   const approved = !!project.storyboard?.approval
   const approvedAt = project.storyboard?.approval?.approvedAt
+  const agentMessage = agentMessageFor(project, storyboardScenes.length)
+
+  async function copyAgentMessage() {
+    try {
+      await navigator.clipboard.writeText(agentMessage)
+      setCopied(true)
+      window.setTimeout(() => setCopied(false), 2000)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    }
+  }
 
   // Derive per-scene progress from project.json state.
   //
@@ -71,8 +96,9 @@ export function ApproveAndGenerate({ project, onProjectChange }: Props) {
   }
 
   if (approved) {
+    const allDone = doneCount === storyboardScenes.length && storyboardScenes.length > 0
     return (
-      <div className="rounded-lg border border-gray-800 bg-gray-900/50 p-4 flex flex-col gap-2">
+      <div className="rounded-lg border border-gray-800 bg-gray-900/50 p-4 flex flex-col gap-3">
         <p className="text-sm text-gray-300">
           <span className="font-medium text-green-400">Approved</span>{' '}
           <span className="text-gray-500">{new Date(approvedAt!).toLocaleString()}</span>
@@ -96,8 +122,34 @@ export function ApproveAndGenerate({ project, onProjectChange }: Props) {
             ))}
           </ul>
         )}
-        {doneCount > 0 && doneCount < storyboardScenes.length && (
-          <p className="text-xs text-gray-500">If the agent stalls, ask it in chat to continue generating scenes.</p>
+        {/* Tell-your-agent panel. Hidden once generation is complete. */}
+        {!allDone && (
+          <div className="rounded-md border border-gray-700 bg-gray-900 p-3 flex flex-col gap-2">
+            <p className="text-xs text-gray-400">
+              Your agent doesn't auto-detect approval. Paste this in your chat to start (or resume) generation:
+            </p>
+            <div className="flex items-start gap-2">
+              <code className="flex-1 text-xs text-gray-300 bg-gray-950 border border-gray-800 rounded px-2 py-1.5 whitespace-pre-wrap break-words font-mono">
+                {agentMessage}
+              </code>
+              <button
+                onClick={copyAgentMessage}
+                className={`shrink-0 text-xs px-2 py-1.5 rounded border transition-colors ${
+                  copied
+                    ? 'border-green-700 bg-green-900/40 text-green-300'
+                    : 'border-gray-700 bg-gray-800 text-gray-300 hover:bg-gray-700 hover:text-white'
+                }`}
+                title="Copy to clipboard"
+              >
+                {copied ? 'Copied' : 'Copy'}
+              </button>
+            </div>
+            {doneCount > 0 && doneCount < storyboardScenes.length && (
+              <p className="text-xs text-gray-500">
+                If the agent stalls mid-run, paste the same message again — it's idempotent (already-generated scenes are skipped).
+              </p>
+            )}
+          </div>
         )}
         {error && <p className="text-xs text-red-400">{error}</p>}
       </div>
@@ -117,8 +169,8 @@ export function ApproveAndGenerate({ project, onProjectChange }: Props) {
       </Button>
       {error && <p className="text-xs text-red-400">{error}</p>}
       <p className="text-xs text-gray-500">
-        Approving will ask your agent to generate scenes via Kling. The agent handles
-        retries and orchestration; watch progress below as scenes complete.
+        Approving records the approval on the project. A message will appear here
+        afterward — paste it in your agent's chat to start scene generation.
       </p>
     </div>
   )

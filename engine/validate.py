@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Validate step, project, and workflow JSON files against the montaj spec."""
-import argparse, json, os, sys
+import argparse, json, os, re, sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "lib"))
 from common import fail
@@ -10,6 +10,12 @@ from validate_step import validate as validate_step  # noqa: F401
 from validate_step import resolve_step_path  # noqa: F401
 
 VALID_USES_PREFIXES = {"montaj/", "user/", "./steps/"}
+
+# `foreach` accepts any dotted identifier path — `"clips"`, `"storyboard.scenes"`,
+# `"storyboard.imageRefs"`, etc. No whitelist and no predicate grammar; the agent
+# decides what it means to iterate. The regex only rejects genuinely malformed
+# values (empty strings, whitespace, leading dots, non-identifier characters).
+FOREACH_PATH_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*(\.[a-zA-Z_][a-zA-Z0-9_]*)*$")
 
 # PRIMARY_CLIP_REQUIRED and VISUAL_ITEM_REQUIRED are currently the same set but kept
 # separate — primary clips and overlay items are expected to diverge in future parts.
@@ -110,8 +116,14 @@ def validate_workflow(path):
             fail("missing_field", f"Step '{step['id']}' missing required field 'uses'")
         if not any(step["uses"].startswith(p) for p in VALID_USES_PREFIXES):
             fail("invalid_uses", f"Step '{step['id']}' uses '{step['uses']}' — prefix must be montaj/, user/, or ./steps/")
-        if "foreach" in step and step["foreach"] != "clips":
-            fail("invalid_foreach", f"Step '{step['id']}': foreach must be 'clips'")
+        if "foreach" in step:
+            value = step["foreach"]
+            if not isinstance(value, str) or not FOREACH_PATH_RE.match(value):
+                fail(
+                    "invalid_foreach",
+                    f"Step '{step['id']}': foreach must be a dotted identifier path "
+                    f"(e.g. 'clips', 'storyboard.scenes'); got {value!r}",
+                )
         step_ids.add(step["id"])
 
     # Validate needs references

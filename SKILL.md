@@ -145,6 +145,8 @@ Read the assigned workflow from `workflows/{name}.json` (filesystem only — not
 - `animations` — no source footage; build entirely from animated JSX sections
 - `explainer` — footage clips + animation sections combined
 - `floating_head` — trim + materialize + RVM background removal; presenter in tracks[1], background asset in tracks[0]
+- `lyrics_video` — audio + lyrics → word-synced text video (ffmpeg drawtext or JSX overlays)
+- `ai_video` — director agent writes a storyboard from your prompt and references, you approve, scenes are generated via Kling
 
 **Deviation Rules**
 You should deviate only under one conditions:
@@ -204,6 +206,7 @@ If in doubt, **ask your human**.
 | `style-profile` | `skills/style-profile/SKILL.md` | Creating or updating a creator style profile |
 | `workflow-builder` | `skills/workflow-builder/SKILL.md` | Creating or editing workflows |
 | `lyrics-video` | `skills/lyrics-video/SKILL.md` | Working on a `lyrics_video` workflow project |
+| `ai-video` | `skills/ai-video/SKILL.md` | Working on an `ai_video` workflow project (projectType: "ai_video") |
 
 ## Dependencies
 

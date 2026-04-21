@@ -79,7 +79,7 @@ The flag propagates into `project.json` at init time (see `docs/schemas/project.
 | `uses` | string | yes | Step reference. See prefix system below. |
 | `params` | object | no | Default param overrides. Keys are param names from the step schema. |
 | `needs` | array | no | IDs of steps that must complete before this one starts. Omit entirely (don't use `[]`) when there are no deps. Drives parallel execution. |
-| `foreach` | string | no | `"clips"` — fan out this step across all project clips in parallel. Each clip gets its own invocation; outputs are collected before dependent steps run. When `foreach: "clips"` steps output trim specs (e.g. `waveform_trim`, `rm_fillers`), downstream steps receive the trim spec as their `--input`, not a video file. Steps that accept trim specs (e.g. `transcribe`, `rm_fillers`) detect this automatically by checking for `.json` extension + `input`/`keeps` keys. |
+| `foreach` | string | no | Dotted identifier path into the project object, indicating the step is iterated per entry in that collection. Common values: `"clips"`, `"storyboard.scenes"`, `"storyboard.imageRefs"`, `"storyboard.styleRefs"`. Any value matching `^[a-zA-Z_][a-zA-Z0-9_]*(\.[a-zA-Z_][a-zA-Z0-9_]*)*$` is accepted — the agent decides what it means to iterate; the engine doesn't auto-execute. For `foreach: "clips"` specifically, steps that output trim specs (e.g. `waveform_trim`, `rm_fillers`) have downstream steps receive the trim spec as their `--input`; steps that accept trim specs (e.g. `transcribe`, `rm_fillers`) detect this automatically by checking for `.json` extension + `input`/`keeps` keys. For `ai_video` storyboard-path foreaches, see `skills/ai-video/SKILL.md` for per-item skip rules. |
 
 ### Step reference prefixes
 
@@ -181,6 +181,26 @@ Trim and clean only. No captions, overlays, or resize. Useful when the output fe
   ]
 }
 ```
+
+### `ai_video`
+
+AI-generated video. No source clips required. A director agent (the `ai-video` skill) writes a storyboard from the user's prompt and image/style references, the user reviews and approves, then scenes are generated via Kling. The workflow's `steps[]` array is a **strong suggestion** of pipeline shape — the engine never auto-executes it; the director skill orchestrates the tools.
+
+```json
+{
+  "name": "ai_video",
+  "project_type": "ai_video",
+  "requires_clips": false,
+  "steps": [
+    { "id": "direct",         "uses": "montaj/ai-video" },
+    { "id": "analyze_style",  "uses": "montaj/analyze_media",  "foreach": "storyboard.styleRefs",  "needs": ["direct"] },
+    { "id": "generate_ref",   "uses": "montaj/generate_image", "foreach": "storyboard.imageRefs",  "needs": ["direct"] },
+    { "id": "generate_scene", "uses": "montaj/kling_generate", "foreach": "storyboard.scenes",     "needs": ["direct"] }
+  ]
+}
+```
+
+`foreach` and `needs` are advisory — they document the pipeline shape for readers and UI introspection. The director skill handles iteration, skipping (e.g., `imageRefs` where `source !== "text"`), and the approval gate (no `kling_generate` before `storyboard.approval` is set).
 
 ---
 

@@ -22,7 +22,7 @@ def main():
         filler, waveform_trim, rm_nonspeech, materialize_cut, resize,
         normalize, extract_audio,
         transcribe, caption, lyrics_sync, lyrics_render, stem_separation,
-        init, status, mcp, models,
+        init, status, approve, mcp, models,
 
         create_step, validate, install, update,
         remove_bg,
@@ -79,6 +79,7 @@ def main():
     stem_separation.register(subparsers)
     init.register(subparsers)
     status.register(subparsers)
+    approve.register(subparsers)
     mcp.register(subparsers)
     models.register(subparsers)
     create_step.register(subparsers)

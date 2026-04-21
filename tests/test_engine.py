@@ -435,9 +435,36 @@ def test_validate_workflow_requires_clips_optional_true(tmp_path):
     assert result["valid"] is True
 
 
-def test_validate_workflow_foreach_must_be_clips(tmp_path):
+@pytest.mark.parametrize("value", [
+    "clips",
+    "storyboard.scenes",
+    "storyboard.imageRefs",
+    "storyboard.styleRefs",
+    "tracks",
+    "foo.bar.baz.qux",
+])
+def test_validate_workflow_foreach_accepts_dotted_paths(tmp_path, value):
     data = {**VALID_WORKFLOW, "steps": [
-        {"id": "x", "uses": "montaj/probe", "foreach": "tracks"}
+        {"id": "x", "uses": "montaj/probe", "foreach": value}
+    ]}
+    path = _write_workflow(tmp_path, "my_workflow", data)
+    result = v.validate_workflow(path)
+    assert result["valid"] is True
+
+
+@pytest.mark.parametrize("value", [
+    "",
+    "a b c",
+    ".leading.dot",
+    "trailing.",
+    "has-dash",
+    "1startsWithDigit",
+    42,
+    None,
+])
+def test_validate_workflow_foreach_rejects_bad_shape(tmp_path, value):
+    data = {**VALID_WORKFLOW, "steps": [
+        {"id": "x", "uses": "montaj/probe", "foreach": value}
     ]}
     path = _write_workflow(tmp_path, "my_workflow", data)
     with pytest.raises(SystemExit):

@@ -297,6 +297,12 @@ montaj init --prompt "tight cuts, remove filler"
 
 montaj status
 # Show current project.json state (pending / draft / final) + step progress
+
+montaj approve
+# ai_video projects only — mark the storyboard as approved (writes
+# storyboard.approval). Prints the message to paste into your agent's
+# chat to trigger Phase 6 scene generation. Use --project PATH for an
+# explicit location; --force to refresh an existing approval.
 ```
 
 ---

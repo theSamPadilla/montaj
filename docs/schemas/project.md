@@ -419,9 +419,10 @@ The editorial plan — one entry per scene the agent intends to generate. Empty 
 | Field | Type | Description |
 |-------|------|-------------|
 | `id` | string | Stable within the project. Provenance pointer on every resulting `tracks[0]` clip via `generation.sceneId`. |
-| `prompt` | string | Scene-specific prompt. Does NOT include `styleAnchor` — that's prepended at call time in the connector layer. Max 2500 chars (Kling's limit). |
-| `duration` | number | Per-scene duration in seconds, picked by the agent. Sum across scenes should approximate `targetDurationSeconds` but is not enforced. Constrained to what Kling accepts (currently enum: `5`, `7`, `10` — verify against current Kling docs). |
-| `refImages` | string[] | IDs into `storyboard.imageRefs[]`. Max 3 per scene (Kling hard limit). The agent picks refs that match labels mentioned in the prompt. |
+| `prompt` | string | Scene-specific prompt. Does NOT include `styleAnchor` — that's prepended at call time by the director skill (not the connector). Max 2500 chars single-shot, 512 chars per shot in multi-shot mode. |
+| `duration` | number | Per-scene duration in integer seconds (Kling-enforced enum: 3–15). Sum across scenes should approximate `targetDurationSeconds` but is not enforced. |
+| `refImages` | string[] | IDs into `storyboard.imageRefs[]`. Max 3 per scene (editorial cap — connector allows 7). The agent picks refs that match labels mentioned in the prompt. |
+| `lastError` | object \| undefined | Optional. Written by the agent on a failed `kling_generate` call: `{ts: ISO-8601, message: string}`. Cleared on eventual success. The UI's ApproveAndGenerate progress panel reads this to show "failed" status per scene. |
 
 At approval time, the agent iterates `scenes[]` and calls `kling_generate` for each entry. A successful call appends a new `tracks[0]` clip with a frozen `generation` block. See next section.
 

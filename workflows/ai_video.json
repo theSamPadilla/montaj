@@ -1,0 +1,40 @@
+{
+  "name": "ai_video",
+  "description": "AI-generated video — director agent writes a storyboard from your prompt and references, you review and approve, then scenes are generated via Kling.",
+  "project_type": "ai_video",
+  "requires_clips": false,
+  "steps": [
+    {
+      "id": "direct",
+      "uses": "montaj/ai-video",
+      "description": "Director skill. Orchestrates the pipeline: Phase 0 story clarification, storyboard writes, approval gate, scene-generation dispatch, failure handling."
+    },
+    {
+      "id": "analyze_style",
+      "uses": "montaj/analyze_media",
+      "foreach": "storyboard.styleRefs",
+      "needs": ["direct"],
+      "description": "Per styleRef (audio/video/image): Gemini extracts mood/style text. Director folds outputs into storyboard.styleAnchor."
+    },
+    {
+      "id": "generate_ref",
+      "uses": "montaj/generate_image",
+      "foreach": "storyboard.imageRefs",
+      "needs": ["direct"],
+      "description": "Per imageRef: generate a reference image from the user's anchor text. Director skips entries where source != 'text' or refImages is already populated."
+    },
+    {
+      "id": "generate_scene",
+      "uses": "montaj/kling_generate",
+      "foreach": "storyboard.scenes",
+      "needs": ["analyze_style", "generate_ref"],
+      "description": "Per scene (post-approval only): Kling generates the clip with combined prompt + refs. Requires storyboard.styleAnchor (from analyze_style) and populated imageRefs[].refImages (from generate_ref for text-sourced refs). Director appends result to tracks[0]. May be batched (multi-shot) at director discretion — up to 6 scenes per call."
+    }
+  ],
+  "agent_notes": [
+    "PIPELINE: Director-driven. Load skills/ai-video/SKILL.md — it is the contract. analyze_media, generate_image, kling_generate are the director's tools, invoked from within its flow, not separate engine-scheduled stages.",
+    "INTAKE: project.storyboard is pre-seeded by init.py (aspectRatio, targetDurationSeconds, imageRefs[], styleRefs[], scenes: []). project.tracks[0] is empty at intake and stays empty until post-approval scene generation.",
+    "APPROVAL GATE: Do not call kling_generate until storyboard.approval is set. The UI writes that field when the user clicks Approve.",
+    "TRACKS[0]: Append-only; real clips only, no stubs. Flip status to 'draft' only when every storyboard.scenes[i] has a matching clip (or batchShots entry)."
+  ]
+}

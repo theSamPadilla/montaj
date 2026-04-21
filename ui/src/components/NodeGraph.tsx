@@ -126,12 +126,32 @@ function StartNode({ data }: NodeProps) {
   )
 }
 
+// Derive a short "per X" badge label from a foreach path.
+// `clips` → `per clip`, `storyboard.scenes` → `per scene`, etc.
+// Unknown shapes fall back to the last path segment with naive plural strip.
+function iterationBadgeLabel(foreach: string): string {
+  switch (foreach) {
+    case 'clips':                return 'per clip'
+    case 'storyboard.scenes':    return 'per scene'
+    case 'storyboard.imageRefs': return 'per image ref'
+    case 'storyboard.styleRefs': return 'per style ref'
+    default: {
+      const leaf = foreach.split('.').pop() ?? foreach
+      return `per ${leaf.replace(/s$/, '')}`
+    }
+  }
+}
+
 function StepNode({ data, selected }: NodeProps) {
   const isSkill    = data.isSkill as boolean
                   ?? new Set(_skillsCache.map(s => s.name)).has(data.uses as string)
   const isEncode      = data.schema?.name === 'apply_cuts' || data.uses === 'montaj/apply_cuts'
   const isMaterialize = data.schema?.name === 'materialize_cut' || data.uses === 'montaj/materialize_cut'
-  const isPerClip  = data.foreach === 'clips'
+  // Any `foreach` value marks this as an iterated step — not just `clips`.
+  // The agent/engine iterates whatever the path points to (clips, scenes, refs, …).
+  const foreachValue = typeof data.foreach === 'string' && data.foreach ? data.foreach : null
+  const isIterated   = foreachValue !== null
+  const iterLabel    = foreachValue ? iterationBadgeLabel(foreachValue) : null
   const bg        = selected
     ? (isEncode ? '#292304' : isMaterialize ? '#1e1608' : isSkill ? '#1e1b4b' : '#1e293b')
     : (isEncode ? '#1c1a03' : isMaterialize ? '#161008' : isSkill ? '#1a1740' : '#1f2937')
@@ -146,7 +166,7 @@ function StepNode({ data, selected }: NodeProps) {
   }
   return (
     <div style={{ position: 'relative' }}>
-      {isPerClip && (
+      {isIterated && (
         <>
           <div style={{ ...nodeStyle, position: 'absolute', top: 6, left: 6, right: -6, bottom: -6, opacity: 0.35, pointerEvents: 'none' }} />
           <div style={{ ...nodeStyle, position: 'absolute', top: 3, left: 3, right: -3, bottom: -3, opacity: 0.6, pointerEvents: 'none' }} />
@@ -174,11 +194,13 @@ function StepNode({ data, selected }: NodeProps) {
               background: '#4338ca', color: '#c7d2fe', borderRadius: 4, padding: '1px 5px',
             }}>Skill</span>
           )}
-          {isPerClip && (
-            <span style={{
-              fontSize: 9, fontWeight: 700, letterSpacing: '0.05em', textTransform: 'uppercase',
-              background: '#1e3a2e', color: '#6ee7b7', borderRadius: 4, padding: '1px 5px',
-            }}>per clip</span>
+          {iterLabel && (
+            <span
+              title={`foreach: ${foreachValue}`}
+              style={{
+                fontSize: 9, fontWeight: 700, letterSpacing: '0.05em', textTransform: 'uppercase',
+                background: '#1e3a2e', color: '#6ee7b7', borderRadius: 4, padding: '1px 5px',
+              }}>{iterLabel}</span>
           )}
         </div>
         {data.schema?.description && (

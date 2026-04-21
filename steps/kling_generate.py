@@ -61,6 +61,16 @@ def main():
         fail("invalid_args", "--multi-prompt requires --multi-shot")
     if args.multi_shot and args.shot_type == "customize" and not args.multi_prompt:
         fail("invalid_args", "--shot-type=customize requires --multi-prompt")
+    if args.multi_shot and args.shot_type == "customize" and args.prompt:
+        # Kling's spec: `prompt` is invalid when multi_shot=true with customize.
+        # The connector omits it from the body anyway, but silently dropping the
+        # caller's prompt is a footgun — make it loud.
+        fail(
+            "invalid_args",
+            "--prompt is not supported with --shot-type=customize. In customize mode, "
+            "per-shot prompts live in --multi-prompt entries. Kling ignores the top-level "
+            "prompt here; passing both is almost certainly a mistake.",
+        )
     if args.multi_shot and args.shot_type == "intelligence" and not args.prompt:
         fail("invalid_args", "--shot-type=intelligence requires --prompt")
     if not args.multi_shot and not args.prompt:
@@ -83,6 +93,26 @@ def main():
         require_file(args.last_frame)
     for r in args.ref_image:
         require_file(r)
+
+    # Surface single-shot truncation as a stderr warning before launching the
+    # (long-running) network call. The connector's MAX_PROMPT_CHARS is 2500;
+    # if the combined prompt composed by the caller exceeds that, Kling
+    # would silently truncate — we warn loudly instead so the caller can
+    # notice and tighten the prompt.
+    if args.prompt and not args.multi_shot and len(args.prompt) > kling.MAX_PROMPT_CHARS:
+        print(
+            json.dumps({
+                "warn": "prompt_truncated",
+                "message": (
+                    f"Prompt is {len(args.prompt)} chars; Kling cap is "
+                    f"{kling.MAX_PROMPT_CHARS}. Tail will be dropped at the connector. "
+                    f"Tighten the combined prompt (styleAnchor + scene prose) to stay under the cap."
+                ),
+                "original_length": len(args.prompt),
+                "max": kling.MAX_PROMPT_CHARS,
+            }),
+            file=sys.stderr,
+        )
 
     try:
         out_path = kling.generate(
