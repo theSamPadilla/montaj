@@ -30,7 +30,7 @@ montaj lyrics-sync --input /tmp/stems/htdemucs/song/vocals.wav --lyrics lyrics.t
 
 Output: `captions.json` with shape `{ segments: [{ text, start, end, words: [{word, start, end}] }], audioInPoint: <seconds> }`.
 
-The `audioInPoint` field tells the render engine where in the source file project `t=0` maps to. Set `audio.music.inPoint` in `project.json` to this value.
+The `audioInPoint` field tells the render engine where in the source file project `t=0` maps to. Set `audio.tracks[0].inPoint` in `project.json` to this value.
 
 ---
 
@@ -110,7 +110,11 @@ Requires a background video in `tracks[0]`. Both paths always build `lyric-phras
     "color": "white",
     "fontsize": 72
   },
-  "audio": { "music": { "src": "/abs/path/to/song.mp3", "inPoint": <audioInPoint> } },
+  "audio": {
+    "tracks": [
+      { "id": "music", "src": "/abs/path/to/song.mp3", "start": 0, "end": 0, "inPoint": 0, "volume": 1.0, "label": "song" }
+    ]
+  },
   "status": "final"
 }
 ```
@@ -158,7 +162,11 @@ Verify the burned-in text looks correct, then trigger the full render with `mont
     [],
     []
   ],
-  "audio": { "music": { "src": "/abs/path/to/song.mp3", "volume": 1.0, "inPoint": <audioInPoint> } },
+  "audio": {
+    "tracks": [
+      { "id": "music", "src": "/abs/path/to/song.mp3", "start": 0, "end": 0, "inPoint": 0, "volume": 1.0, "label": "song" }
+    ]
+  },
   "status": "draft"
 }
 ```
@@ -352,4 +360,4 @@ For each segment, create one overlay entry with:
 - `"props.words": segment.words` — **subtract `segment.start` from every word's `start` and `end`** so timestamps are relative to the overlay's own start (the render engine injects `frame` starting at 0 for each overlay, not the project timeline)
 - All other props set globally (same variant/colors for all phrases, unless varying by intent)
 
-Set `audio.music.inPoint` to the `audioInPoint` value from the lyrics_sync output.
+Set `audio.tracks[0].inPoint` to the `audioInPoint` value from the lyrics_sync output.

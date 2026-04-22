@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent } from 'react'
 import { createPortal } from 'react-dom'
-import { Volume2, VolumeX, Info, Scissors } from 'lucide-react'
+import { Volume2, VolumeX, Info, Scissors, Music2 } from 'lucide-react'
 import type { CaptionSegment, VisualItem, Project } from '@/lib/types/schema'
 import { collapseGaps } from '@/lib/cuts'
 import SubcutRegenTool from '@/components/timeline/SubcutRegenTool'
@@ -61,7 +61,11 @@ export default function Timeline({ project, currentTime, onTimeUpdate, onProject
   const allTracks      = project.tracks ?? []
   const captionTrack   = project.captions
   const snapBoundaries = [...new Set(allTracks.flat().flatMap(c => [c.start, c.end]))]
-  const totalDuration  = allTracks.flat().reduce((m, i) => Math.max(m, i.end ?? 0), 0)
+  const audioTracks    = project.audio?.tracks ?? []
+  const totalDuration  = Math.max(
+    allTracks.flat().reduce((m, i) => Math.max(m, i.end ?? 0), 0),
+    audioTracks.reduce((m, t) => Math.max(m, t.end ?? 0), 0),
+  )
 
   const [hoverPct, setHoverPct]               = useState<number | null>(null)
   const [draggingPlayhead, setDraggingPlayhead] = useState(false)
@@ -729,6 +733,28 @@ export default function Timeline({ project, currentTime, onTimeUpdate, onProject
                   style={{ left: `${pct(selection.start)}%`, width: `${pct(selection.end - selection.start)}%` }}
                 />
               )}
+            </div>
+          )
+        })}
+
+        {/* Audio tracks */}
+        {audioTracks.map((track) => {
+          const left  = pct(track.start)
+          const width = pct(track.end - track.start)
+          const label = track.label ?? track.src.split('/').pop() ?? 'audio'
+          return (
+            <div key={track.id} className="relative flex items-center h-8 border-b border-white/5">
+              <div className="absolute left-0 flex items-center gap-1 px-2 z-10 w-24 shrink-0">
+                <Music2 className={`w-3 h-3 ${track.muted ? 'text-white/20' : 'text-emerald-400'}`} />
+                <span className="text-[10px] text-white/40 truncate">{label}</span>
+              </div>
+              <div className="relative flex-1 h-full" style={{ marginLeft: '6rem' }}>
+                <div
+                  className={`absolute top-1 bottom-1 rounded ${track.muted ? 'bg-white/10' : 'bg-emerald-500/40 border border-emerald-500/60'}`}
+                  style={{ left: `${left}%`, width: `${width}%` }}
+                  title={label}
+                />
+              </div>
             </div>
           )
         })}

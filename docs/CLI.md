@@ -267,7 +267,7 @@ montaj stem-separation --input song.mp3 --stems vocals --out-dir /tmp/stems
 montaj lyrics-sync --input vocals.wav --lyrics lyrics.txt --model medium.en --out captions.json
 # Align lyrics.txt to the audio using Whisper. Pass clean vocals, not the full mix.
 # Output JSON: { segments: [...], audioInPoint: <seconds> }
-# audioInPoint → set as audio.music.inPoint in project.json
+# audioInPoint → set as audio.tracks[0].inPoint in project.json
 
 montaj lyrics-render \
   --captions captions.json \

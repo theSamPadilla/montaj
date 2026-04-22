@@ -161,4 +161,4 @@ segment.words.map(w => ({
 
 Set the overlay item's `start` to `segment.start` and `end` to `segment.end`.
 
-Set `audio.music.inPoint` to the `audioInPoint` value from the `lyrics_sync` output.
+Set `audio.tracks[0].inPoint` to the `audioInPoint` value from the `lyrics_sync` output.

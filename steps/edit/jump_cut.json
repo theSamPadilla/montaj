@@ -1,0 +1,39 @@
+{
+  "name": "jump_cut",
+  "category": "edit",
+  "description": "Split a clip into sub-clips by removing time ranges. Metadata-only operation on tracks[0] — no video encoding. Render engine materializes at render time.",
+  "input": {
+    "type": "project",
+    "description": "Project ID"
+  },
+  "output": {
+    "type": "json",
+    "description": "Summary: {clips, removed, duration}"
+  },
+  "params": [
+    {
+      "name": "project-id",
+      "type": "string",
+      "required": true,
+      "description": "Project ID"
+    },
+    {
+      "name": "clip-id",
+      "type": "string",
+      "required": true,
+      "description": "ID of the clip on tracks[0] to jump-cut"
+    },
+    {
+      "name": "cuts",
+      "type": "string",
+      "required": false,
+      "description": "JSON array of [start, end] ranges to REMOVE in clip-local time (0 = clip start). Mutually exclusive with keeps."
+    },
+    {
+      "name": "keeps",
+      "type": "string",
+      "required": false,
+      "description": "JSON array of [start, end] ranges to KEEP in clip-local time. Mutually exclusive with cuts."
+    }
+  ]
+}

@@ -1,0 +1,39 @@
+{
+  "name": "cross_cut",
+  "category": "edit",
+  "description": "Interleave segments from two clips (A-roll / B-roll) at a fixed beat duration. Metadata-only operation on tracks[0] — no video encoding.",
+  "input": {
+    "type": "project",
+    "description": "Project ID"
+  },
+  "output": {
+    "type": "json",
+    "description": "Summary: {clips, duration, segment_duration}"
+  },
+  "params": [
+    {
+      "name": "project-id",
+      "type": "string",
+      "required": true,
+      "description": "Project ID"
+    },
+    {
+      "name": "clip-a",
+      "type": "string",
+      "required": true,
+      "description": "A-roll clip ID"
+    },
+    {
+      "name": "clip-b",
+      "type": "string",
+      "required": true,
+      "description": "B-roll clip ID"
+    },
+    {
+      "name": "segment-duration",
+      "type": "number",
+      "required": false,
+      "description": "Duration of each alternating segment in seconds (default: 1.5)"
+    }
+  ]
+}

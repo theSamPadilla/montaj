@@ -100,7 +100,7 @@ export function useVideoPlayback(
   useEffect(() => {
     const audio = musicRef.current
     if (!audio) return
-    const inPoint = (project.audio?.music as { inPoint?: number } | undefined)?.inPoint ?? 0
+    const inPoint = project.audio?.tracks?.find(t => !t.muted)?.inPoint ?? 0
     const target = inPoint + currentTime
     if (Math.abs(audio.currentTime - target) > 0.3) audio.currentTime = target
   }, [currentTime, project])

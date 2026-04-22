@@ -1,0 +1,39 @@
+{
+  "name": "montage",
+  "category": "edit",
+  "description": "Rapid montage: extract short beats from multiple clips in round-robin order and concatenate. Metadata-only operation on tracks[0] — no video encoding.",
+  "input": {
+    "type": "project",
+    "description": "Project ID"
+  },
+  "output": {
+    "type": "json",
+    "description": "Summary: {clips, duration, beat_duration, source_clips}"
+  },
+  "params": [
+    {
+      "name": "project-id",
+      "type": "string",
+      "required": true,
+      "description": "Project ID"
+    },
+    {
+      "name": "clips",
+      "type": "string",
+      "required": true,
+      "description": "JSON array of clip IDs to montage"
+    },
+    {
+      "name": "beat-duration",
+      "type": "number",
+      "required": false,
+      "description": "Duration of each beat in seconds (default: 1.0)"
+    },
+    {
+      "name": "offset",
+      "type": "number",
+      "required": false,
+      "description": "Start offset within each clip in clip-local seconds (default: 0.0)"
+    }
+  ]
+}

@@ -17,7 +17,7 @@
     "OVERLAY CONSTRUCTION (both paths): Convert each lyrics_sync segment into an overlay entry in tracks[1]: { id, type: 'overlay', src: '<montaj_root>/render/templates/overlays/lyric-phrase.jsx', start: seg.start, end: seg.end, props: { words: seg.words, variant: '<variant>', transparent: <bool>, ... } }. For JSX path, transparent:true when base video present.",
     "FFMPEG PARAMS: When using ffmpeg path, store render params on captions object: captions.position ('center'|'top-left'|'bottom-left'), captions.color (default 'white'), captions.fontsize (default 72), captions.bgColor (default 'black', only used if no base video).",
     "TRACKS[0]: If background video provided, tracks[0] = [{ id, type:'video', src: <abs_path>, start:0, end:<duration>, inPoint:0, outPoint:<duration> }]. If no background video, tracks[0] = [].",
-    "AUDIO: Set audio.music.src to the song file. Set audio.music.inPoint to lyrics_sync output audioInPoint.",
+    "AUDIO: Set audio.tracks to an array with one entry for the song: { id: 'music', src: <abs path to song>, start: 0, end: <song duration>, inPoint: <audioInPoint from lyrics_sync output>, volume: 1.0, label: 'song' }. Use montaj probe to get song duration.",
     "RESOLUTION: Default 1080x1920 (portrait). Use settings.resolution from project or let agent choose based on source video aspect ratio.",
     "STATUS: Set project.status to 'final' before render. The render engine will reject non-final projects."
   ]

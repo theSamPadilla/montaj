@@ -13,6 +13,24 @@ export interface Word {
   end: number
 }
 
+export interface AudioTrack {
+  id: string
+  src: string
+  start: number          // position on project timeline (seconds)
+  end: number
+  volume?: number        // 0.0–2.0, default 1.0
+  inPoint?: number       // offset into source file (seconds)
+  outPoint?: number      // end offset in source file (seconds)
+  label?: string         // display name, defaults to filename
+  muted?: boolean
+  ducking?: {
+    enabled: boolean
+    depth?: number       // dB, default -12
+    attack?: number      // seconds, default 0.3
+    release?: number     // seconds, default 0.5
+  }
+}
+
 export interface CaptionSegment {
   id?: string
   text: string
@@ -46,6 +64,7 @@ export interface VisualItem {
   offsetY?: number
   scale?: number
   opacity?: number        // 0.0–1.0
+  volume?: number         // video audio level 0.0–2.0, default 1.0 (ignored for images)
   rotation?: number       // degrees, clockwise
   opaque?: boolean        // legacy boolean kept for old overlay items
   props?: Record<string, unknown>  // overlay type only
@@ -160,7 +179,7 @@ export interface Project {
   tracks: VisualItem[][]
   captions?: Captions
   assets: Asset[]
-  audio: Record<string, unknown>
+  audio: { tracks: AudioTrack[] }
   profile?: string
   renderMode?: 'ffmpeg-drawtext'
   history?: RunSnapshot[]

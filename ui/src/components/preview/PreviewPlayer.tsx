@@ -141,13 +141,17 @@ export default function PreviewPlayer({ project, currentTime, onTimeUpdate, sele
       />
 
       {/* Background music — canvas and video projects */}
-      {(project.audio?.music as { src?: string } | undefined)?.src && (
-        <audio
-          ref={musicRef}
-          src={fileUrl((project.audio.music as { src: string }).src)}
-          preload="auto"
-        />
-      )}
+      {(() => {
+        const firstTrack = project.audio?.tracks?.find(t => !t.muted)
+        if (!firstTrack?.src) return null
+        return (
+          <audio
+            ref={musicRef}
+            src={fileUrl(firstTrack.src)}
+            preload="auto"
+          />
+        )
+      })()}
 
       {/* Caption preview */}
       {captionTrack && (

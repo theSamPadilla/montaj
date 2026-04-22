@@ -167,13 +167,16 @@ def compose_prompt(project: dict, scene: dict) -> str:
                 prompt = prompt.replace(first_word, f"{first_word} {token}", 1)
 
     # No ref clause prefix — inline <<<image_N>>> tokens at the nouns are
-    # the binding signal. The "Use the character/style from..." prefix was
-    # redundant and ate prompt budget. Inline tokens are sufficient.
+    # the binding signal.
+    #
+    # Style anchor goes AFTER the scene content, not before. The most
+    # valuable real estate in the prompt is the first sentence — Kling
+    # anchors identity from it. Style preamble wastes that position.
+    # Ref images already carry the visual style.
 
-    parts = []
+    parts = [prompt]
     if style_anchor:
         parts.append(style_anchor)
-    parts.append(prompt)
 
     composed = " ".join(parts)
 

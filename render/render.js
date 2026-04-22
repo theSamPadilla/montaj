@@ -102,8 +102,9 @@ async function main(projectPath, { out, workers, clean }) {
     if (!captions?.segments?.length) {
       fail('missing_captions', 'renderMode ffmpeg-drawtext requires project.json captions.segments')
     }
-    const audioSrc = projectJson.audio?.music?.src
-    if (!audioSrc) fail('missing_audio', 'renderMode ffmpeg-drawtext requires audio.music.src')
+    const firstAudioTrack = (projectJson.audio?.tracks ?? []).find(t => !t.muted)
+    if (!firstAudioTrack?.src) fail('missing_audio', 'renderMode ffmpeg-drawtext requires at least one unmuted audio track')
+    const audioSrc = firstAudioTrack.src
 
     // Write captions to temp file. Captions in project.json are already in project-timeline
     // coordinates (0-based), so audioInPoint=0 — no timestamp offset needed.
@@ -118,7 +119,7 @@ async function main(projectPath, { out, workers, clean }) {
 
     const projectDuration = getTotalDurationSeconds(projectJson)
     const lyricsRenderArgs = [
-      join(MONTAJ_ROOT, 'steps', 'lyrics_render.py'),
+      join(MONTAJ_ROOT, 'steps', 'lyrics', 'lyrics_render.py'),
       '--captions', captionsPath,
       '--audio',    audioSrc,
       '--width',    String(renderWidth),
@@ -127,7 +128,7 @@ async function main(projectPath, { out, workers, clean }) {
       '--duration', String(projectDuration),
       '--out',      outputPath,
     ]
-    const audioInPoint = projectJson.audio?.music?.inPoint ?? 0
+    const audioInPoint = firstAudioTrack.inPoint ?? 0
     if (bgItem)                    lyricsRenderArgs.push('--input',         bgItem.src)
     if (audioInPoint)              lyricsRenderArgs.push('--audio-inpoint', String(audioInPoint))
     if (captions.position)         lyricsRenderArgs.push('--position',      captions.position)
@@ -428,13 +429,12 @@ function resolveProjectPaths(projectJson, projectDir) {
     }
   }
 
-  if (projectJson.audio?.music?.src) {
-    const src = projectJson.audio.music.src
-    if (!src.startsWith('/')) {
-      projectJson.audio.music.src = resolve(projectDir, src)
+  for (const track of projectJson.audio?.tracks ?? []) {
+    if (track.src && !track.src.startsWith('/')) {
+      track.src = resolve(projectDir, track.src)
     }
-    const actual = resolveFilePath(projectJson.audio.music.src)
-    if (actual) projectJson.audio.music.src = actual
+    const actual = resolveFilePath(track.src)
+    if (actual) track.src = actual
   }
 }
 
@@ -465,8 +465,8 @@ function validateProjectFiles(projectJson) {
     }
   }
 
-  if (projectJson.audio?.music?.src && !resolveFilePath(projectJson.audio.music.src)) {
-    missing.push(projectJson.audio.music.src)
+  for (const track of projectJson.audio?.tracks ?? []) {
+    if (track.src && !resolveFilePath(track.src)) missing.push(track.src)
   }
 
   if (missing.length > 0) {

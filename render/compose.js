@@ -6,7 +6,7 @@
  *   - puppeteerSegments: rendered MKV/WebM overlay + caption segments from Puppeteer
  *   - imageItems: direct image overlay inputs
  *   - videoItems: direct video overlay inputs
- *   - optionally: music file (from projectJson.audio.music)
+ *   - optionally: audio tracks (from projectJson.audio.tracks)
  *
  * Output:
  *   - final MP4 (H.264, CRF 18, AAC audio)
@@ -15,6 +15,7 @@ import { spawnSync } from 'child_process'
 import { mkdirSync, writeFileSync, rmSync, renameSync } from 'fs'
 import { dirname, join } from 'path'
 import { randomBytes } from 'crypto'
+import { buildAudioTrackInputs, buildAudioTrackFilters, mixAudioIntoVideo } from './mix-audio.js'
 
 const FFMPEG_TIMEOUT_MS     = 600_000
 const COMPOSE_CHUNK_SECS    = 30  // seconds per compositing pass when chunking
@@ -57,11 +58,12 @@ function isImageItem(item) {
 /**
  * Compute total video duration from all items.
  */
-function computeTotalDuration(imageItems, videoItems, puppeteerSegments) {
+function computeTotalDuration(imageItems, videoItems, puppeteerSegments, audioTracks = []) {
   const allEnds = [
     ...imageItems.map(i => i.end ?? 0),
     ...videoItems.map(i => i.end ?? 0),
     ...puppeteerSegments.map(s => s.endSeconds ?? 0),
+    ...audioTracks.map(t => t.end ?? 0),
   ]
   return allEnds.length > 0 ? Math.max(...allEnds) : 0
 }
@@ -89,8 +91,8 @@ export async function compose({
 }) {
   mkdirSync(dirname(outputPath), { recursive: true })
 
-  const music    = projectJson.audio?.music
-  const hasMusic = !!(music?.src)
+  const audioTracks = projectJson.audio?.tracks ?? []
+  const hasAudio    = audioTracks.some(t => !t.muted)
 
   const vw  = videoWidth  ?? projectJson.settings?.resolution?.[0] ?? 1080
   const vh  = videoHeight ?? projectJson.settings?.resolution?.[1] ?? 1920
@@ -115,9 +117,9 @@ export async function compose({
   const orderedSegs = [...overlaySegs, ...captionSegs]
 
   const Q = orderedSegs.length
-  const musicInputIdx = N + Q
+  const audioTrackBaseIdx = N + Q
 
-  const totalDuration = computeTotalDuration(imageItems, videoItems, puppeteerSegments)
+  const totalDuration = computeTotalDuration(imageItems, videoItems, puppeteerSegments, audioTracks)
 
   // --- Build input list ---
   const inputs = []
@@ -148,11 +150,8 @@ export async function compose({
     inputs.push('-i', seg.webmPath)
   }
 
-  // Music — optional inPoint seeks into the file (e.g. lyrics_video crops to lyrics window)
-  if (hasMusic) {
-    if (music.inPoint) inputs.push('-ss', String(music.inPoint))
-    inputs.push('-i', music.src)
-  }
+  // Independent audio tracks
+  inputs.push(...buildAudioTrackInputs(audioTracks))
 
   // --- Build filter_complex ---
   const filterParts = []
@@ -207,10 +206,11 @@ export async function compose({
       // Audio: asetpts normalises PTS to 0 (seek may leave non-zero PTS), then
       // adelay inserts silence so amix sees a continuous stream from t=0.
       if (!item.muted && fileHasAudio(item.src)) {
+        const vol     = item.volume ?? 1.0
         const delayMs = Math.round((item.start ?? 0) * 1000)
         const audioIn = audioLabel.startsWith('[') ? audioLabel : `[${audioLabel}]`
         filterParts.push(`[${i}:a]asetpts=PTS-STARTPTS[apts${i}]`)
-        filterParts.push(`[apts${i}]adelay=${delayMs}:all=1[vida${i}]`)
+        filterParts.push(`[apts${i}]adelay=${delayMs}:all=1,volume=${vol}[vida${i}]`)
         filterParts.push(`${audioIn}[vida${i}]amix=inputs=2:duration=longest:normalize=0[amix${i}]`)
         audioLabel = `[amix${i}]`
       }
@@ -250,29 +250,12 @@ export async function compose({
     videoLabel = outLabel
   }
 
-  // Step 6: Audio — music ducking/mixing
-  if (hasMusic) {
-    const vol = music.volume ?? 0.15
-
-    if (music.ducking?.enabled) {
-      const depth   = music.ducking.depth   ?? -12
-      const attack  = music.ducking.attack  ?? 0.3
-      const release = music.ducking.release ?? 0.5
-      const audioIn = audioLabel.startsWith('[') ? audioLabel : `[${audioLabel}]`
-      filterParts.push(
-        `${audioIn}asplit=2[speech][sc];` +
-        `[${musicInputIdx}:a]volume=${vol}[mscaled];` +
-        `[mscaled][sc]sidechaincompress=threshold=0.02:ratio=4:attack=${attack * 1000}:release=${release * 1000}[ducked];` +
-        `[speech][ducked]amix=inputs=2:duration=first[aout]`
-      )
-      audioLabel = '[aout]'
-    } else {
-      const audioIn = audioLabel.startsWith('[') ? audioLabel : `[${audioLabel}]`
-      filterParts.push(
-        `${audioIn}[${musicInputIdx}:a]amix=inputs=2:weights='1 ${vol}'[aout]`
-      )
-      audioLabel = '[aout]'
-    }
+  // Step 6: Mix independent audio tracks
+  if (hasAudio) {
+    const { filterParts: audioFilterParts, audioLabel: newLabel } =
+      buildAudioTrackFilters(audioTracks, audioTrackBaseIdx, audioLabel)
+    filterParts.push(...audioFilterParts)
+    audioLabel = newLabel
   }
 
   // --- Stamp color metadata via setparams (output stream flags are overridden by the black
@@ -367,9 +350,9 @@ export async function compose({
 // ---------------------------------------------------------------------------
 
 async function composeChunked({ projectJson, puppeteerSegments, imageItems, videoItems, outputPath, videoWidth, videoHeight }) {
-  const music       = projectJson.audio?.music
-  const hasMusic    = !!(music?.src)
-  const totalDuration = computeTotalDuration(imageItems, videoItems, puppeteerSegments)
+  const audioTracks = projectJson.audio?.tracks ?? []
+  const hasAudio    = audioTracks.some(t => !t.muted)
+  const totalDuration = computeTotalDuration(imageItems, videoItems, puppeteerSegments, audioTracks)
   const numChunks   = Math.ceil(totalDuration / COMPOSE_CHUNK_SECS)
 
   clog(
@@ -421,7 +404,7 @@ async function composeChunked({ projectJson, puppeteerSegments, imageItems, vide
     }))
 
     // Each chunk is composed without music; music is mixed in the final pass
-    const chunkProject = { ...projectJson, audio: undefined }
+    const chunkProject = { ...projectJson, audio: { tracks: [] } }
 
     await compose({
       projectJson:       chunkProject,
@@ -436,16 +419,15 @@ async function composeChunked({ projectJson, puppeteerSegments, imageItems, vide
   }
 
   // Concat chunks → preMusicPath
-  const preMusicPath = hasMusic ? outputPath.replace(/(\.\w+)$/, '_nomusic$1') : outputPath
-  concatVideoFiles(chunkPaths, preMusicPath)
+  const preAudioPath = hasAudio ? outputPath.replace(/(\.\w+)$/, '_noaudio$1') : outputPath
+  concatVideoFiles(chunkPaths, preAudioPath)
   if (!process.env.MONTAJ_KEEP_CHUNKS) {
     for (const p of chunkPaths) rmSync(p, { force: true })
   }
 
-  // Add music in a final re-mux pass (video stream copied, no re-encode)
-  if (hasMusic) {
-    mixMusicIntoVideo(preMusicPath, music, outputPath)
-    rmSync(preMusicPath, { force: true })
+  if (hasAudio) {
+    mixAudioIntoVideo(preAudioPath, audioTracks, outputPath)
+    rmSync(preAudioPath, { force: true })
   }
 
   return outputPath
@@ -475,33 +457,6 @@ function concatVideoFiles(paths, outputPath) {
     throw new Error(`ffmpeg concat failed:\n${result.stderr}`)
   }
   renameSync(tmpPath, outputPath)
-}
-
-function mixMusicIntoVideo(videoPath, music, outputPath) {
-  const vol = music.volume ?? 0.15
-  let filterStr
-  if (music.ducking?.enabled) {
-    const depth   = music.ducking.depth   ?? -12
-    const attack  = music.ducking.attack  ?? 0.3
-    const release = music.ducking.release ?? 0.5
-    filterStr = (
-      `[0:a]asplit=2[speech][sc];` +
-      `[1:a]volume=${vol}[mscaled];` +
-      `[mscaled][sc]sidechaincompress=threshold=0.02:ratio=4:attack=${attack * 1000}:release=${release * 1000}[ducked];` +
-      `[speech][ducked]amix=inputs=2:duration=first[aout]`
-    )
-  } else {
-    filterStr = `[0:a][1:a]amix=inputs=2:weights='1 ${vol}':duration=first[aout]`
-  }
-  const result = spawnSync('ffmpeg', [
-    '-y', '-i', videoPath, '-i', music.src,
-    '-filter_complex', filterStr,
-    '-map', '0:v', '-map', '[aout]',
-    '-c:v', 'copy', '-c:a', 'aac', '-b:a', '192k',
-    '-movflags', '+faststart', outputPath,
-  ], { encoding: 'utf8', timeout: FFMPEG_TIMEOUT_MS })
-  if (result.stderr) logFfmpegStderr(result.stderr)
-  if (result.status !== 0) throw new Error(`ffmpeg music mix failed:\n${result.stderr}`)
 }
 
 // ---------------------------------------------------------------------------
