@@ -40,7 +40,8 @@ def main():
 
         create_step, validate, install, update,
         remove_bg,
-        kling_generate, analyze_media, generate_image,
+        kling_generate, analyze_media, generate_image, generate_voiceover,
+        generate_music,
     )
 
     parser = argparse.ArgumentParser(
@@ -58,7 +59,8 @@ def main():
         "materialize-cut", "resize", "normalize", "extract-audio",
         "transcribe", "caption", "lyrics-sync", "lyrics-render", "stem-separation",
         "remove-bg",
-        "kling-generate", "analyze-media", "generate-image",
+        "kling-generate", "analyze-media", "generate-image", "generate-voiceover",
+        "generate-music",
     }
 
     # Inject formatter into every subcommand without touching each command file
@@ -105,6 +107,8 @@ def main():
     kling_generate.register(subparsers)
     analyze_media.register(subparsers)
     generate_image.register(subparsers)
+    generate_voiceover.register(subparsers)
+    generate_music.register(subparsers)
 
     args = parser.parse_args()
     args.func(args)

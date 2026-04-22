@@ -5,7 +5,8 @@ Currently wraps the omni-video endpoint; add more functions here as other
 Kling endpoints get wrapped. See docs/CONNECTORS.md for the layering rule.
 
 Current functions:
-    generate(prompt, out_path, ...) -> str  # path to downloaded .mp4
+    generate(prompt, out_path, ...) -> str       # path to downloaded .mp4
+    generate_speech(text, voice, out_path, ...) -> str  # path to downloaded audio
 
 Library code — raises ConnectorError, never calls fail() or sys.exit.
 Step scripts catch ConnectorError and translate to fail().
@@ -46,6 +47,20 @@ MODELS = {
         "sound": False,                        # does NOT generate audio
     },
 }
+
+# TTS — TODO(live-test): paths, model ID, and voice IDs are placeholders
+# pending verification against Kling partner docs.
+TTS_CREATE_PATH = "/v1/tts/create"
+TTS_QUERY_PATH  = "/v1/tts/{task_id}"
+DEFAULT_TTS_MODEL = "kling-tts-v1"
+
+TTS_VOICES = {
+    # Populate with real voice IDs after vendor docs verification.
+    # "female_warm":   "<kling_voice_id>",
+    # "male_calm":     "<kling_voice_id>",
+}
+
+VIDEO_QUERY_PATH = "/v1/videos/omni-video/{task_id}"
 
 
 def _require_jwt():
@@ -307,10 +322,10 @@ def create_task(body: dict) -> dict:
     return data["data"]
 
 
-def query_task(task_id: str) -> dict:
+def query_task(task_id: str, path_template: str = VIDEO_QUERY_PATH) -> dict:
     """GET task status by ID."""
     requests = _require_requests()
-    url = f"{BASE_URL}/v1/videos/omni-video/{task_id}"
+    url = f"{BASE_URL}{path_template.format(task_id=task_id)}"
     try:
         r = requests.get(url, headers=_auth_headers(), timeout=30)
         r.raise_for_status()
@@ -322,11 +337,11 @@ def query_task(task_id: str) -> dict:
     return data["data"]
 
 
-def poll_until_done(task_id: str) -> dict:
+def poll_until_done(task_id: str, path_template: str = VIDEO_QUERY_PATH) -> dict:
     """Poll task until succeed/failed. Returns task data on success."""
     elapsed = 0.0
     while elapsed < MAX_POLL_S:
-        task_data = query_task(task_id)
+        task_data = query_task(task_id, path_template)
         status = task_data.get("task_status")
         if status == "succeed":
             return task_data
@@ -338,14 +353,14 @@ def poll_until_done(task_id: str) -> dict:
     raise ConnectorError(f"Kling task {task_id} did not complete within {MAX_POLL_S}s")
 
 
-def download_video(url: str, out_path: str) -> str:
-    """Download video from URL to out_path."""
+def _download_file(url: str, out_path: str) -> str:
+    """Download file from URL to out_path."""
     requests = _require_requests()
     try:
         r = requests.get(url, stream=True, timeout=120)
         r.raise_for_status()
     except requests.RequestException as e:
-        raise ConnectorError(f"Failed to download video: {e}") from e
+        raise ConnectorError(f"Download failed: {e}") from e
     os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
     with open(out_path, "wb") as f:
         for chunk in r.iter_content(chunk_size=8192):
@@ -395,4 +410,76 @@ def generate(
     task_id = task_data["task_id"]
     result = poll_until_done(task_id)
     video_url = result["task_result"]["videos"][0]["url"]
-    return download_video(video_url, out_path)
+    return _download_file(video_url, out_path)
+
+
+def generate_speech(
+    text: str,
+    voice: str,
+    out_path: str,
+    model: str = DEFAULT_TTS_MODEL,
+    speed: float = 1.0,
+    language: str = None,
+) -> str:
+    """Generate speech audio from text via Kling TTS.
+
+    text     — script to speak.
+    voice    — voice identifier. Either a raw Kling voice ID or a key in TTS_VOICES.
+    out_path — local file path for the downloaded audio.
+    model    — Kling TTS model name.
+    speed    — playback speed multiplier.
+    language — optional language hint (e.g. 'en', 'zh').
+
+    Returns out_path on success. Raises ConnectorError on failure.
+    """
+    if not text or not text.strip():
+        raise ConnectorError("text must not be empty")
+    if not out_path:
+        raise ConnectorError("out_path is required")
+
+    resolved_voice = TTS_VOICES.get(voice, voice)
+
+    body = {
+        "text": text,
+        "voice_id": resolved_voice,
+        "model": model,
+        "speed": speed,
+    }
+    if language:
+        body["language"] = language
+
+    requests = _require_requests()
+    url = f"{BASE_URL}{TTS_CREATE_PATH}"
+    try:
+        r = requests.post(url, json=body, headers=_auth_headers(), timeout=30)
+    except requests.RequestException as e:
+        raise ConnectorError(f"Kling TTS request failed: {e}") from e
+
+    if r.status_code >= 400:
+        try:
+            err_data = r.json()
+            msg = err_data.get("message") or err_data.get("msg") or r.text[:500]
+        except Exception:
+            msg = r.text[:500]
+        raise ConnectorError(f"Kling TTS error (HTTP {r.status_code}): {msg}")
+
+    data = r.json()
+    if data.get("code") != 0:
+        raise ConnectorError(f"Kling TTS error: {data.get('message', 'unknown error')}")
+
+    result = data["data"]
+
+    # Kling TTS endpoint shape is unverified — keep both sync (audio_url in
+    # initial response) and async (task_id → poll) paths until a live test
+    # confirms which applies, then delete the dead branch.
+    audio_url = result.get("audio_url")
+    if not audio_url:
+        task_id = result.get("task_id")
+        if not task_id:
+            raise ConnectorError(f"Kling TTS returned neither audio_url nor task_id: {result}")
+        task_data = poll_until_done(task_id, TTS_QUERY_PATH)
+        audio_url = task_data.get("task_result", {}).get("audio_url")
+        if not audio_url:
+            raise ConnectorError(f"Kling TTS succeeded but returned no audio_url: {task_data}")
+
+    return _download_file(audio_url, out_path)

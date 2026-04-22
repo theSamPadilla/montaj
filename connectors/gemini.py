@@ -14,11 +14,18 @@ Current functions:
           Files API via upload_media().
         Branching is internal — callers just pass a path and a prompt.
     generate_image(prompt, out_path, ref_images, size, model, aspect_ratio) -> str
+    generate_speech(text, voice, out_path, model) -> str
+    generate_music(prompt, out_path, instrumental, model, seed) -> str
+
+Private helpers:
+    _generate_audio(model, contents, config, out_path, ...) -> str
+        Shared audio-modality generation: SDK call → response extraction → disk write.
+        Used by generate_speech and generate_music.
 
 Library code — raises ConnectorError, never calls fail() or sys.exit.
 Step scripts catch ConnectorError and translate to fail().
 """
-import os, re, time
+import os, re, time, wave
 from connectors import ConnectorError
 from lib.credentials import get_credential
 
@@ -31,6 +38,10 @@ UPLOAD_MAX_WAIT_S = 300.0
 # ceiling that leaves room for the prompt text + JSON overhead. Images above
 # this go through the Files API.
 INLINE_BYTE_LIMIT = 18 * 1024 * 1024  # 18 MB
+
+DEFAULT_TTS_MODEL = "gemini-2.5-flash-preview-tts"
+DEFAULT_TTS_VOICE = "Kore"  # default for generate_speech when caller omits voice
+DEFAULT_MUSIC_MODEL = "lyria-3-clip-preview"
 
 _IMAGE_MIME_BY_EXT = {
     ".png":  "image/png",
@@ -249,3 +260,135 @@ def generate_image(
             return out_path
 
     raise ConnectorError("Gemini returned no image in response")
+
+
+def _generate_audio(
+    model: str,
+    contents,
+    config,
+    out_path: str,
+    channels: int,
+    sample_rate: int,
+    error_prefix: str = "Audio generation",
+) -> str:
+    """Shared helper: Gemini audio-modality generation -> bytes -> disk.
+
+    Handles SDK invocation, response extraction, mime_type routing
+    (pass-through for pre-encoded wav/mp3, WAV-wrap for raw PCM),
+    and file writing. Callers build the config and pick sample rate/channels.
+    """
+    client = _client()
+    try:
+        response = client.models.generate_content(
+            model=model,
+            contents=contents,
+            config=config,
+        )
+    except Exception as e:
+        raise ConnectorError(f"{error_prefix} request failed: {e}") from e
+
+    try:
+        audio_part = response.candidates[0].content.parts[0]
+        audio_bytes = audio_part.inline_data.data
+        mime_type   = audio_part.inline_data.mime_type
+    except (AttributeError, IndexError, KeyError) as e:
+        raise ConnectorError(f"{error_prefix} returned unexpected shape: {e}") from e
+
+    os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
+
+    if mime_type and ("wav" in mime_type or "mp3" in mime_type or "mpeg" in mime_type):
+        with open(out_path, "wb") as f:
+            f.write(audio_bytes)
+    else:
+        # Raw PCM — wrap in WAV header at the caller-specified rate/channels.
+        # If mime_type is None or unrecognised, this may produce corrupt output.
+        import sys as _sys
+        print(f'{{"warn": "{error_prefix}: assuming raw PCM (mime_type={mime_type!r})"}}', file=_sys.stderr)
+        with wave.open(out_path, "wb") as wf:
+            wf.setnchannels(channels)
+            wf.setsampwidth(2)  # 16-bit
+            wf.setframerate(sample_rate)
+            wf.writeframes(audio_bytes)
+
+    return out_path
+
+
+def generate_speech(
+    text: str,
+    voice: str = DEFAULT_TTS_VOICE,
+    out_path: str = None,
+    model: str = DEFAULT_TTS_MODEL,
+) -> str:
+    """Generate speech audio from text via Gemini TTS (single-speaker).
+
+    Writes a WAV file at out_path. Returns out_path on success.
+    Raises ConnectorError on failure.
+    """
+    if not text or not text.strip():
+        raise ConnectorError("text must not be empty")
+    if not out_path:
+        raise ConnectorError("out_path is required")
+
+    try:
+        from google.genai import types
+    except ImportError:
+        raise ConnectorError("Missing connector dependencies. Run: montaj install connectors")
+
+    config = types.GenerateContentConfig(
+        response_modalities=["AUDIO"],
+        speech_config=types.SpeechConfig(
+            voice_config=types.VoiceConfig(
+                prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name=voice),
+            ),
+        ),
+    )
+
+    return _generate_audio(
+        model=model, contents=text, config=config,
+        out_path=out_path, channels=1, sample_rate=24000,
+        error_prefix="Gemini TTS",
+    )
+
+
+def generate_music(
+    prompt: str,
+    out_path: str,
+    instrumental: bool = True,
+    model: str = DEFAULT_MUSIC_MODEL,
+    seed: int = None,
+) -> str:
+    """Generate a music clip from a text prompt via Lyria 3.
+
+    prompt       — text description of the music (genre, mood, instrumentation).
+    out_path     — local file path for the downloaded audio (wav or mp3 per docs).
+    instrumental — if True, ask Lyria to produce instrumental-only output
+                   (suitable for background music under narration).
+    model        — Lyria model variant. Default: lyria-3-clip-preview (30s clips).
+    seed         — optional RNG seed for reproducible outputs.
+
+    Returns out_path on success. Raises ConnectorError on failure.
+    """
+    if not prompt or not prompt.strip():
+        raise ConnectorError("prompt must not be empty")
+    if not out_path:
+        raise ConnectorError("out_path is required")
+
+    try:
+        from google.genai import types
+    except ImportError:
+        raise ConnectorError("Missing connector dependencies. Run: montaj install connectors")
+
+    effective_prompt = ("Instrumental only. " + prompt) if instrumental else prompt
+
+    # TODO(live-test): seed as a top-level GenerateContentConfig kwarg is unverified.
+    # May raise TypeError if Lyria doesn't accept it here. Confirm against live SDK.
+    config_kwargs = {"response_modalities": ["AUDIO"]}
+    if seed is not None:
+        config_kwargs["seed"] = seed
+    config = types.GenerateContentConfig(**config_kwargs)
+
+    return _generate_audio(
+        model=model, contents=effective_prompt, config=config,
+        out_path=out_path, channels=2, sample_rate=44100,
+        error_prefix="Lyria music",
+    )

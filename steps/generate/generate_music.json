@@ -1,0 +1,24 @@
+{
+  "name": "generate_music",
+  "description": "Generate a music clip from a text prompt via Gemini Lyria 3 Clip. Generation step — produces a file on disk; composition happens at render time.",
+  "input": {
+    "type": "any",
+    "description": "Text prompt (via --prompt)"
+  },
+  "output": {
+    "type": "audio",
+    "description": "Path to the generated music clip (plus duration metadata when --json)"
+  },
+  "params": [
+    {"name": "prompt", "type": "string", "required": true,
+     "description": "Text description of the music (genre, mood, instrumentation, BPM)"},
+    {"name": "out", "type": "string", "required": true,
+     "description": "Output audio file path (.wav or .mp3)"},
+    {"name": "model", "type": "string", "required": false,
+     "description": "Override the Lyria model (default: lyria-3-clip-preview, ~30s clips)"},
+    {"name": "seed", "type": "int", "required": false,
+     "description": "RNG seed for reproducible outputs"},
+    {"name": "with-vocals", "type": "bool", "required": false, "default": false,
+     "description": "Allow vocals in the output. Omit (default) for instrumental-only — recommended for background music under narration."}
+  ]
+}

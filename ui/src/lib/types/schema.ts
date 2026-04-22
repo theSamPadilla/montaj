@@ -29,6 +29,7 @@ export interface AudioTrack {
     attack?: number      // seconds, default 0.3
     release?: number     // seconds, default 0.5
   }
+  sourceDuration?: number  // intrinsic duration of the source file in seconds
 }
 
 export interface CaptionSegment {

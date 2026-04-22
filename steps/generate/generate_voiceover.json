@@ -1,0 +1,31 @@
+{
+  "name": "generate_voiceover",
+  "description": "Synthesise a voiceover audio file from text via Kling or Gemini TTS. Generation step — produces a file on disk; composition happens at render time.",
+  "input": {
+    "type": "any",
+    "description": "Text (via --text or --text-file)"
+  },
+  "output": {
+    "type": "audio",
+    "description": "Path to the generated voiceover audio file (plus duration metadata when --json)"
+  },
+  "params": [
+    {"name": "text", "type": "string", "required": false,
+     "description": "Script text (inline). Mutually exclusive with --text-file."},
+    {"name": "text-file", "type": "string", "required": false,
+     "description": "Path to a file containing the script. Mutually exclusive with --text."},
+    {"name": "voice", "type": "string", "required": true,
+     "description": "Voice identifier (vendor-specific). For Kling: voice_id or alias from TTS_VOICES. For Gemini: prebuilt voice name (e.g. 'Kore', 'Puck')."},
+    {"name": "out", "type": "string", "required": true,
+     "description": "Output audio file path (.mp3 or .wav)"},
+    {"name": "vendor", "type": "enum", "required": false, "default": "kling",
+     "values": ["kling", "gemini"],
+     "description": "TTS vendor to use"},
+    {"name": "model", "type": "string", "required": false,
+     "description": "Override the connector's default model for the chosen vendor"},
+    {"name": "speed", "type": "float", "required": false, "default": 1.0,
+     "description": "Playback speed multiplier. Kling only; ignored for Gemini."},
+    {"name": "language", "type": "string", "required": false,
+     "description": "Language hint (e.g. 'en', 'zh'). Kling only; ignored for Gemini."}
+  ]
+}
