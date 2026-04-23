@@ -19,7 +19,7 @@
     {"name": "out", "type": "string", "required": true,
      "description": "Output audio file path (.mp3 or .wav)"},
     {"name": "vendor", "type": "enum", "required": false, "default": "kling",
-     "values": ["kling", "gemini"],
+     "options": ["kling", "gemini"],
      "description": "TTS vendor to use"},
     {"name": "model", "type": "string", "required": false,
      "description": "Override the connector's default model for the chosen vendor"},

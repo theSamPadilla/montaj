@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 REPO_ROOT = Path(__file__).parent.parent
-STEP = REPO_ROOT / "steps" / "remove_bg.py"
+STEP = REPO_ROOT / "steps" / "transform" / "remove_bg.py"
 
 
 # ---------------------------------------------------------------------------

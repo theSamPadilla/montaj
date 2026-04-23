@@ -104,9 +104,9 @@ Audio in Montaj is produced and composed in two separate layers, and the boundar
 
 **Composition** — `render/mix-audio.js` combines independent `AudioTrack` entries at render time via a single ffmpeg `amix` invocation, applying per-track delay, volume, trimming, and optional sidechain ducking.
 
-**The rule: connectors and steps never invoke ffmpeg for composition.** They only generate source assets and report duration metadata. Skills and workflows (e.g. [`skills/ai-video/SKILL.md`](../skills/ai-video/SKILL.md) Phase 6) append `AudioTrack` entries referencing those files to `project.audio.tracks[]`; everything else flows from there to `render/mix-audio.js` at render time.
+**The rule: connectors and steps never invoke ffmpeg for composition.** They only generate source assets and report duration metadata. Skills and workflows (e.g. [`skills/ai-video-generate/SKILL.md`](../skills/ai-video-generate/SKILL.md) Phase 6) append `AudioTrack` entries referencing those files to `project.audio.tracks[]`; everything else flows from there to `render/mix-audio.js` at render time.
 
-See `skills/ai-video/SKILL.md` for the director-level integration (dialogue-omission rule when voiceover is set, Phase 6 audio generation, script-vs-brief heuristic, Kling→Gemini TTS fallback, music looping via `AudioTrack` replication).
+See [`skills/ai-video-plan/SKILL.md`](../skills/ai-video-plan/SKILL.md) for the director-level integration (dialogue-omission rule when voiceover is set, script-vs-brief heuristic) and [`skills/ai-video-generate/SKILL.md`](../skills/ai-video-generate/SKILL.md) for Phase 6 audio generation (Kling→Gemini TTS fallback, music looping via `AudioTrack` replication).
 
 ## Adding a new connector (or a new function to an existing connector)
 

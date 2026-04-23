@@ -28,8 +28,7 @@ VALID_SHOT_TYPES = ("customize", "intelligence")
 #    of the number of reference images and multi-image elements must not
 #    exceed 7."
 # We don't use element_list or video_list, so the effective cap is 7 refs.
-# Higher editorial caps (e.g. "3 refs per scene") belong in the calling skill,
-# not here — the connector only enforces the API's hard limit.
+# The calling skill and connector both enforce the same API hard limit of 7.
 MAX_REF_IMAGES = 7
 
 # Model capabilities — the connector validates constraints per model.
@@ -351,7 +350,7 @@ def create_task(body: dict) -> dict:
     requests = _require_requests()
     url = f"{BASE_URL}/v1/videos/omni-video"
     try:
-        r = requests.post(url, json=body, headers=_auth_headers(), timeout=30)
+        r = requests.post(url, json=body, headers=_auth_headers(), timeout=120)
     except requests.RequestException as e:
         raise ConnectorError(f"Kling API request failed: {e}") from e
     # Capture response body before raising on HTTP errors — Kling returns

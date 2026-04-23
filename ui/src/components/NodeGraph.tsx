@@ -212,6 +212,51 @@ function StepNode({ data, selected }: NodeProps) {
           </div>
         )}
         <Handle type="source" position={Position.Bottom} style={{ background: isEncode ? '#d97706' : isMaterialize ? '#a06218' : isSkill ? '#818cf8' : '#6b7280' }} />
+        {data.hasSubskills && (
+          <Handle type="source" position={Position.Right} id="subskill-out"
+            style={{ background: '#4338ca', width: 6, height: 6 }} />
+        )}
+      </div>
+    </div>
+  )
+}
+
+function SubskillNode({ data, selected }: NodeProps) {
+  return (
+    <div>
+      <div style={{
+        background: selected ? '#1a1740' : '#13112b',
+        border: `1px solid ${selected ? '#6366f1' : '#312e81'}`,
+        borderRadius: 6,
+        padding: '5px 10px',
+        minWidth: 120,
+        color: '#c7d2fe',
+        cursor: 'default',
+        userSelect: 'none',
+        opacity: 0.85,
+      }}>
+        <Handle type="target" position={Position.Left}
+          style={{ background: '#6366f1', width: 6, height: 6 }} />
+        <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
+          <div style={{ fontSize: 11, fontWeight: 500, color: '#a5b4fc' }}>
+            {data.label}
+          </div>
+          <span style={{
+            fontSize: 8, fontWeight: 700, letterSpacing: '0.05em',
+            textTransform: 'uppercase',
+            background: '#312e81', color: '#818cf8',
+            borderRadius: 3, padding: '1px 4px',
+          }}>sub-skill</span>
+        </div>
+        {data.description && (
+          <div style={{
+            fontSize: 10, color: '#6366f1', marginTop: 1,
+            whiteSpace: 'nowrap', overflow: 'hidden',
+            textOverflow: 'ellipsis', maxWidth: 160,
+          }}>
+            {data.description}
+          </div>
+        )}
       </div>
     </div>
   )
@@ -257,8 +302,25 @@ function DeletableEdge({
   )
 }
 
-const nodeTypes = { start: StartNode, step: StepNode }
-const edgeTypes = { deletable: DeletableEdge }
+function SubskillEdge({
+  id, sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition,
+}: EdgeProps) {
+  const [edgePath] = getSmoothStepPath({
+    sourceX, sourceY, sourcePosition,
+    targetX, targetY, targetPosition,
+  })
+  return (
+    <BaseEdge id={id} path={edgePath} style={{
+      strokeDasharray: '4 3',
+      stroke: '#4338ca',
+      strokeWidth: 1,
+      opacity: 0.6,
+    }} />
+  )
+}
+
+const nodeTypes = { start: StartNode, step: StepNode, subskill: SubskillNode }
+const edgeTypes = { deletable: DeletableEdge, subskill: SubskillEdge }
 
 // ── Topological sort ──────────────────────────────────────────────────────────
 
@@ -385,7 +447,7 @@ function makeStartNode(description?: string, notes?: string): Node {
 
 export default function NodeGraph() {
   const [steps,          setSteps]          = useState<StepSchema[]>([])
-  const [skills,         setSkills]         = useState<{ name: string; description: string; scope: 'native' | 'custom' }[]>([])
+  const [skills,         setSkills]         = useState<{ name: string; description: string; scope: 'native' | 'custom'; step?: boolean; subskills?: string[] }[]>([])
   const [workflows,      setWorkflows]      = useState<Workflow[]>([])
   const [activeWorkflow, setActiveWorkflow] = useState<string>('')
   const [nodes, setNodes, onNodesChange]    = useNodesState([])
@@ -537,6 +599,53 @@ export default function NodeGraph() {
       }
     })
 
+    // ── Sub-skill satellite nodes ──────────────────────────────────────
+    const subskillMap = new Map<string, string[]>()
+    for (const s of skills) {
+      if (s.subskills?.length) subskillMap.set(s.name, s.subskills)
+    }
+
+    for (const node of [...newNodes]) {
+      if (node.type !== 'step') continue
+      const uses = node.data.uses as string
+      const subs = subskillMap.get(uses)
+      if (!subs?.length) continue
+
+      // Mark parent so it gets a right-side handle
+      node.data.hasSubskills = true
+
+      subs.forEach((subName: string, i: number) => {
+        const subId = `${node.id}-sub-${i}`
+        const subSkill = skills.find(s => s.name === subName)
+
+        newNodes.push({
+          id: subId,
+          type: 'subskill',
+          position: {
+            x: node.position.x + 220,
+            y: node.position.y + (i * 50),
+          },
+          data: {
+            label: subName,
+            description: subSkill?.description ?? '',
+            parentId: node.id,
+          },
+          draggable: false,
+          selectable: true,
+          deletable: false,
+        })
+
+        newEdges.push({
+          id: `e-sub-${node.id}-${subId}`,
+          source: node.id,
+          sourceHandle: 'subskill-out',
+          target: subId,
+          type: 'subskill',
+          deletable: false,
+        })
+      })
+    }
+
     nodeIdCounter = wf.steps.length + 10
     setNodes(newNodes)
     setEdges(newEdges)
@@ -571,7 +680,7 @@ export default function NodeGraph() {
     const isExisting = activeWorkflow !== NEW_WF
     const name = isExisting ? activeWorkflow : (workflowName.trim() || 'my-workflow')
     const description = isExisting ? (activeDesc ?? '') : 'Saved from montaj UI'
-    const exportNodes = nodes.filter(n => n.type !== 'start')
+    const exportNodes = nodes.filter(n => n.type !== 'start' && n.type !== 'subskill')
     const sorted = topoSort(exportNodes, edges)
     const workflow = {
       name,
@@ -581,7 +690,7 @@ export default function NodeGraph() {
         const params = paramValues[schema?.name]
         const stepId = (node.data.stepId as string) ?? schema?.name ?? node.id
         const needs = edges
-          .filter(e => e.target === node.id && e.source !== 'start')
+          .filter(e => e.target === node.id && e.source !== 'start' && e.type !== 'subskill')
           .map(e => {
             const src = nodes.find(n => n.id === e.source)
             return (src?.data.stepId as string) ?? (src?.data.schema as StepSchema)?.name ?? e.source
@@ -726,7 +835,7 @@ export default function NodeGraph() {
 
         <div>
           <p className="text-[10px] text-gray-500 uppercase tracking-wider mb-1">Skills</p>
-          {skills.map(s => {
+          {skills.filter(s => s.step === true).map(s => {
             const isCustom = s.scope === 'custom'
             return (
               <button
@@ -779,6 +888,36 @@ export default function NodeGraph() {
           <MiniMap nodeColor={isDark ? '#1f2937' : '#e5e7eb'} maskColor={isDark ? 'rgba(0,0,0,0.5)' : 'rgba(255,255,255,0.6)'} />
         </ReactFlow>
       </div>
+
+      {/* Sub-skill config panel */}
+      {selectedNode?.type === 'subskill' && (
+        <div className="w-60 shrink-0 border-l border-gray-200 dark:border-gray-800 p-3 overflow-y-auto flex flex-col gap-3">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <h3 className="text-sm font-semibold text-indigo-300">
+                {(selectedNode.data.label as string)?.replace('montaj/', '')}
+              </h3>
+              <span className="text-[9px] font-bold uppercase tracking-wide bg-indigo-900/40 text-indigo-400 rounded px-1.5 py-0.5">
+                Sub-skill
+              </span>
+            </div>
+            <button
+              onClick={() => setSelectedNode(null)}
+              className="text-gray-500 hover:text-gray-900 dark:hover:text-white text-lg leading-none"
+            >
+              ×
+            </button>
+          </div>
+          {selectedNode.data.description && (
+            <p className="text-xs text-indigo-200/70 leading-relaxed">
+              {selectedNode.data.description as string}
+            </p>
+          )}
+          <p className="text-[10px] text-indigo-400/50 italic">
+            Loaded by the parent skill at runtime. Not independently configurable.
+          </p>
+        </div>
+      )}
 
       {/* Step config panel */}
       {selectedSchema && (() => {

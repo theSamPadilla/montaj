@@ -33,10 +33,13 @@ export default function Timeline({ project, currentTime, onTimeUpdate, onProject
   const captionTrack   = project.captions
   const snapBoundaries = [...new Set(allTracks.flat().flatMap(c => [c.start, c.end]))]
   const audioTracks    = project.audio?.tracks ?? []
-  const totalDuration  = Math.max(
+  const contentDuration = Math.max(
     allTracks.flat().reduce((m, i) => Math.max(m, i.end ?? 0), 0),
     audioTracks.reduce((m, t) => Math.max(m, t.end ?? 0), 0),
   )
+  // Add 20% padding beyond content so the rightmost item can always be
+  // dragged or resized further out. Minimum 5s headroom.
+  const totalDuration  = contentDuration + Math.max(5, contentDuration * 0.2)
 
   const [hoverPct, setHoverPct]               = useState<number | null>(null)
   const [draggingPlayhead, setDraggingPlayhead] = useState(false)
@@ -222,23 +225,39 @@ export default function Timeline({ project, currentTime, onTimeUpdate, onProject
           )
         })}
 
-        {/* Audio tracks */}
-        {audioTracks.map(track => (
-          <AudioTrackRow
-            key={track.id}
-            track={track}
-            project={project}
-            onProjectChange={onProjectChange}
-            onOverlayEdit={onOverlayEdit}
-            selected={selectedAudioTrackId === track.id}
-            onSelect={(id) => {
-              setSelectedAudioTrackId(id)
-              // Deselect visual overlay when selecting audio track
-              if (id) onSelectOverlay?.(null)
-            }}
-            onInspect={onInspectAudio}
-          />
-        ))}
+        {/* Audio tracks — grouped by lane */}
+        {(() => {
+          // Group audio tracks by lane. Tracks without a lane get auto-assigned.
+          const laneMap = new Map<number, typeof audioTracks>()
+          let nextAutoLane = 0
+          for (const t of audioTracks) {
+            if (t.lane != null && t.lane >= nextAutoLane) nextAutoLane = t.lane + 1
+          }
+          for (const t of audioTracks) {
+            const lane = t.lane ?? nextAutoLane++
+            if (!laneMap.has(lane)) laneMap.set(lane, [])
+            laneMap.get(lane)!.push(t)
+          }
+          const lanes = [...laneMap.entries()].sort((a, b) => a[0] - b[0])
+
+          return lanes.map(([laneIdx, laneTracks]) => (
+            <AudioTrackRow
+              key={`audio-lane-${laneIdx}`}
+              tracks={laneTracks}
+              laneIndex={laneIdx}
+              laneCount={lanes.length}
+              project={project}
+              onProjectChange={onProjectChange}
+              onOverlayEdit={onOverlayEdit}
+              selectedTrackId={selectedAudioTrackId}
+              onSelect={(id) => {
+                setSelectedAudioTrackId(id)
+                if (id) onSelectOverlay?.(null)
+              }}
+              onInspect={onInspectAudio}
+            />
+          ))
+        })()}
 
       </div>
 

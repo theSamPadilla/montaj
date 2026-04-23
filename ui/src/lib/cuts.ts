@@ -1,4 +1,4 @@
-import type { Project, VisualItem, CaptionSegment, Word } from './types/schema'
+import type { Project, VisualItem, AudioTrack, CaptionSegment, Word } from './types/schema'
 
 /** A time range to excise from the timeline. */
 export interface Cut {
@@ -309,10 +309,31 @@ export function applyCutToItem(project: Project, itemId: string, cut: Cut): Proj
   return project  // itemId not found
 }
 
+// ── Audio split helper ────────────────────────────────────────────────────
+
+function splitAudioTrack(track: AudioTrack, at: number): [AudioTrack, AudioTrack] {
+  const inPoint = track.inPoint ?? 0
+  const sourceOffset = at - track.start
+
+  const left: AudioTrack = {
+    ...track,
+    end: at,
+    outPoint: inPoint + sourceOffset,
+  }
+  const right: AudioTrack = {
+    ...track,
+    id: uniqueId(track.id),
+    start: at,
+    inPoint: inPoint + sourceOffset,
+  }
+  return [left, right]
+}
+
 /**
  * Split a clip at a single point in time, producing two adjacent clips with no gap.
  *
  * - If `itemId` is provided, only that item is split (must contain `at`).
+ *   Works for both visual items (tracks[][]) and audio tracks (audio.tracks[]).
  * - If `itemId` is null, every clip across all tracks that contains `at` is split.
  * - Returns the same project reference if nothing was split.
  */
@@ -329,5 +350,19 @@ export function splitAtTime(project: Project, at: number, itemId: string | null)
     return next
   })
 
-  return changed ? { ...project, tracks: newTracks } : project
+  // Also split audio tracks
+  const audioTracks = project.audio?.tracks ?? []
+  const newAudioTracks = audioTracks.flatMap(track => {
+    if (itemId !== null && track.id !== itemId) return [track]
+    if (at <= track.start || at >= track.end) return [track]
+    changed = true
+    return splitAudioTrack(track, at)
+  })
+
+  if (!changed) return project
+  return {
+    ...project,
+    tracks: newTracks,
+    audio: { ...project.audio, tracks: newAudioTracks },
+  }
 }

@@ -206,7 +206,8 @@ If in doubt, **ask your human**.
 | `style-profile` | `skills/style-profile/SKILL.md` | Creating or updating a creator style profile |
 | `workflow-builder` | `skills/workflow-builder/SKILL.md` | Creating or editing workflows |
 | `lyrics-video` | `skills/lyrics-video/SKILL.md` | Working on a `lyrics_video` workflow project |
-| `ai-video` | `skills/ai-video/SKILL.md` | Working on an `ai_video` workflow project (projectType: "ai_video") |
+| `ai-video-plan` | `skills/ai-video-plan/SKILL.md` | Working on an `ai_video` project (Phases 0-2: story clarification, storyboard planning) |
+| `ai-video-generate` | `skills/ai-video-generate/SKILL.md` | Working on an `ai_video` project (Phases 6-7: scene generation, audio assembly, regenQueue) |
 
 ## Dependencies
 

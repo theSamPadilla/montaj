@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-sys.path.insert(0, str(Path(__file__).parent.parent.parent / "steps"))
+sys.path.insert(0, str(Path(__file__).parent.parent.parent / "steps" / "transform"))
 from materialize_cut import build_ffmpeg_args, compute_keeps
 
 from tests.conftest import assert_error, assert_file_output, run_step

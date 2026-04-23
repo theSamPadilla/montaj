@@ -150,8 +150,8 @@ She looks down nervously""")
     # Camera before subject before action
     assert result.index("Wide shot") < result.index("blonde girl")
     assert result.index("blonde girl") < result.index("looks down")
-    # Style anchor still prepended
-    assert result.startswith("Cartoon style.")
+    # Style anchor appended after scene content
+    assert result.endswith("Cartoon style.")
 
 
 def test_compose_with_structured_prompt_ref_tokens():

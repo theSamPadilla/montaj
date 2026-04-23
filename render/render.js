@@ -198,13 +198,15 @@ async function main(projectPath, { out, workers, clean }) {
     }
   }
 
-  // 5. Detect base video dimensions from first video item (lowest trackIdx), or use settings.
+  // 5. Use settings.resolution when explicitly set; otherwise detect from first video item.
   let actualWidth  = settings.resolution?.[0] ?? renderWidth
   let actualHeight = settings.resolution?.[1] ?? renderHeight
-  const firstVideo = [...videoItems].sort((a, b) => a.trackIdx - b.trackIdx)[0]
-  if (firstVideo) {
-    const dims = probeVideoDimensions(firstVideo.src)
-    if (dims) { [actualWidth, actualHeight] = dims }
+  if (!settings.resolution) {
+    const firstVideo = [...videoItems].sort((a, b) => a.trackIdx - b.trackIdx)[0]
+    if (firstVideo) {
+      const dims = probeVideoDimensions(firstVideo.src)
+      if (dims) { [actualWidth, actualHeight] = dims }
+    }
   }
   // pixelRatio: how many actual pixels correspond to one design pixel.
   const pixelRatio = Math.max(1, Math.round(actualWidth / renderWidth))

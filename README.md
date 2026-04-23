@@ -66,7 +66,7 @@ montaj serve   # then create an ai_video project in the UI
 ```
 steps/              Step executables + JSON schemas (probe, trim, transcribe, generate, etc.)
 workflows/          Editing plans (clean_cut, overlays, ai_video, lyrics_video, etc.)
-skills/             Agent skill contracts (onboarding, edit-session, ai-video, etc.)
+skills/             Agent skill contracts (onboarding, edit-session, ai-video-plan, ai-video-generate, etc.)
 connectors/         API connectors (Kling, Gemini, OpenAI)
 
 render/             React + Puppeteer + ffmpeg render engine
@@ -132,7 +132,7 @@ Custom steps and workflows are discovered automatically — no registration need
 
 Skills are agent-readable contracts that teach the agent how to approach a specific editing task. Each skill describes the goal, the steps to use, the parameter choices, and the quality criteria.
 
-Available skills: `onboarding`, `edit-session`, `ai-video`, `eval-scenes`, `overlay`, `write-overlay`, `animation-sections`, `lyrics-video`, `style-profile`, `serve`, `parallel`, `select-takes`, `waveform-silence`, `camera-vocabulary`, `workflow-builder`, `mcp`.
+Available skills: `onboarding`, `edit-session`, `ai-video-plan`, `ai-video-generate`, `eval-scenes`, `overlay`, `write-overlay`, `animation-sections`, `lyrics-video`, `style-profile`, `serve`, `parallel`, `select-takes`, `waveform-silence`, `camera-vocabulary`, `workflow-builder`, `mcp`.
 
 ## Connectors
 

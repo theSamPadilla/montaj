@@ -9,7 +9,7 @@
     {"name": "prompt", "type": "string", "required": true, "description": "Text description of the image"},
     {"name": "out", "type": "path", "required": true, "description": "Output image path (.png)"},
     {"name": "provider", "type": "enum", "required": false, "default": "gemini",
-     "values": ["gemini", "openai"],
+     "options": ["gemini", "openai"],
      "description": "Which vendor to use"},
     {"name": "ref-image", "type": "path", "required": false, "repeatable": true,
      "description": "Reference image(s) for conditioned generation"},

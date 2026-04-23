@@ -14,7 +14,7 @@ from tests.conftest import run_step, assert_file_output, assert_error, HAS_FFMPE
 # Import build_drawtext_filters directly from the step module
 # ---------------------------------------------------------------------------
 
-_STEP_PATH = Path(__file__).parent.parent.parent / "steps" / "lyrics_render.py"
+_STEP_PATH = Path(__file__).parent.parent.parent / "steps" / "lyrics" / "lyrics_render.py"
 
 
 def _load_step():

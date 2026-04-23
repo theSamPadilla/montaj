@@ -53,6 +53,15 @@ export function useVideoPlayback(
   // Canvas project: no primary video in tracks[0] (e.g. image-only background track)
   const isCanvasProject = clips.length === 0
 
+  // Total project end — includes opaque overlays and audio that extend beyond video clips.
+  // Used to decide whether to keep playing after the last video clip ends.
+  const projectEnd = useMemo(() => {
+    const videoEnd = clips.length > 0 ? clips[clips.length - 1].end : 0
+    const overlayEnd = overlayTracks.flat().reduce((m, i) => Math.max(m, i.end), 0)
+    const audioEnd = (project.audio?.tracks ?? []).reduce((m, t) => Math.max(m, t.end ?? 0), 0)
+    return Math.max(videoEnd, overlayEnd, audioEnd)
+  }, [clips, overlayTracks, project.audio?.tracks])
+
   // Apply video clip volume via native el.volume (0–1 range; doesn't need Web Audio API)
   useEffect(() => {
     const idx = activeIdxRef.current
@@ -210,8 +219,13 @@ export function useVideoPlayback(
       const el = audioRefsMap.current.get(track.id)
       if (!el) continue
 
-      const trackTime = (playhead - track.start) + (track.inPoint ?? 0)
-      const outPoint = track.outPoint ?? track.sourceDuration ?? Infinity
+      const inPt = track.inPoint ?? 0
+      const trackTime = (playhead - track.start) + inPt
+      // Derive outPoint from the timeline span — the stored outPoint can drift
+      // out of sync with start/end during trim operations, causing premature silence.
+      // The HTML audio element naturally stops at end-of-file, so sourceDuration
+      // acts as an implicit ceiling without needing an explicit check here.
+      const outPoint = inPt + (track.end - track.start)
       const outsideWindow =
         playhead < track.start ||
         playhead >= track.end ||
@@ -328,12 +342,17 @@ export function useVideoPlayback(
       return
     }
 
-    // Gap over — transition to next clip
+    // Gap over — transition to next clip (or end of project)
     inGapRef.current = false
     gapRAFRef.current = null
     const ni = gapNextIdxRef.current
     const nc = clips[ni]
-    if (!nc?.src) return
+    if (!nc?.src) {
+      // No next clip — we were advancing through a trailing overlay/audio section.
+      setIsPlaying(false)
+      syncAudioTracks(t, false)
+      return
+    }
     const ns = (1 - activeSlotRef.current) as 0 | 1
     const nv = ns === 0 ? video0Ref.current : video1Ref.current
     lastTimeRef.current = nc.start
@@ -507,11 +526,24 @@ export function useVideoPlayback(
           video.pause()
         }
       } else {
-        // Last clip — stop at outPoint
+        // Last video clip ended
         video.pause()
         const finalTime = clips[activeIdxRef.current].end
         lastTimeRef.current = finalTime
         onTimeUpdate(finalTime)
+
+        // If overlays or audio extend beyond the last video clip,
+        // continue advancing time via the gap clock (shows overlays, plays audio).
+        if (finalTime < projectEnd) {
+          setShowVideo(false)
+          inGapRef.current      = true
+          gapFromRef.current    = finalTime
+          gapWallRef.current    = performance.now()
+          gapTargetRef.current  = projectEnd
+          gapNextIdxRef.current = clips.length // no next clip
+          gapRAFRef.current     = requestAnimationFrame(tickGap)
+          setIsPlaying(true)
+        }
       }
       return
     }
@@ -554,7 +586,19 @@ export function useVideoPlayback(
       } else {
         // Paused in gap/image section → find next video clip and advance via gap clock
         const nextIdx = clips.findIndex(c => c.start > t)
-        if (nextIdx === -1) return
+        if (nextIdx === -1) {
+          // No more video clips — advance through trailing overlays/audio if any
+          if (t < projectEnd) {
+            inGapRef.current      = true
+            gapFromRef.current    = t
+            gapWallRef.current    = performance.now()
+            gapTargetRef.current  = projectEnd
+            gapNextIdxRef.current = clips.length
+            gapRAFRef.current     = requestAnimationFrame(tickGap)
+            setIsPlaying(true)
+          }
+          return
+        }
         inGapRef.current      = true
         gapFromRef.current    = t
         gapWallRef.current    = performance.now()

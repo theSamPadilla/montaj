@@ -79,7 +79,7 @@ The flag propagates into `project.json` at init time (see `docs/schemas/project.
 | `uses` | string | yes | Step reference. See prefix system below. |
 | `params` | object | no | Default param overrides. Keys are param names from the step schema. |
 | `needs` | array | no | IDs of steps that must complete before this one starts. Omit entirely (don't use `[]`) when there are no deps. Drives parallel execution. |
-| `foreach` | string | no | Dotted identifier path into the project object, indicating the step is iterated per entry in that collection. Common values: `"clips"`, `"storyboard.scenes"`, `"storyboard.imageRefs"`, `"storyboard.styleRefs"`. Any value matching `^[a-zA-Z_][a-zA-Z0-9_]*(\.[a-zA-Z_][a-zA-Z0-9_]*)*$` is accepted — the agent decides what it means to iterate; the engine doesn't auto-execute. For `foreach: "clips"` specifically, steps that output trim specs (e.g. `waveform_trim`, `rm_fillers`) have downstream steps receive the trim spec as their `--input`; steps that accept trim specs (e.g. `transcribe`, `rm_fillers`) detect this automatically by checking for `.json` extension + `input`/`keeps` keys. For `ai_video` storyboard-path foreaches, see `skills/ai-video/SKILL.md` for per-item skip rules. |
+| `foreach` | string | no | Dotted identifier path into the project object, indicating the step is iterated per entry in that collection. Common values: `"clips"`, `"storyboard.scenes"`, `"storyboard.imageRefs"`, `"storyboard.styleRefs"`. Any value matching `^[a-zA-Z_][a-zA-Z0-9_]*(\.[a-zA-Z_][a-zA-Z0-9_]*)*$` is accepted — the agent decides what it means to iterate; the engine doesn't auto-execute. For `foreach: "clips"` specifically, steps that output trim specs (e.g. `waveform_trim`, `rm_fillers`) have downstream steps receive the trim spec as their `--input`; steps that accept trim specs (e.g. `transcribe`, `rm_fillers`) detect this automatically by checking for `.json` extension + `input`/`keeps` keys. For `ai_video` storyboard-path foreaches, see `skills/ai-video-plan/SKILL.md` and `skills/ai-video-generate/SKILL.md` for per-item skip rules. |
 
 ### Step reference prefixes
 
@@ -184,7 +184,7 @@ Trim and clean only. No captions, overlays, or resize. Useful when the output fe
 
 ### `ai_video`
 
-AI-generated video. No source clips required. A director agent (the `ai-video` skill) writes a storyboard from the user's prompt and image/style references, the user reviews and approves, then scenes are generated via Kling. The workflow's `steps[]` array is a **strong suggestion** of pipeline shape — the engine never auto-executes it; the director skill orchestrates the tools.
+AI-generated video. No source clips required. A director agent (the `ai-video-plan` and `ai-video-generate` skills) writes a storyboard from the user's prompt and image/style references, the user reviews and approves, then scenes are generated via Kling. The workflow's `steps[]` array is a **strong suggestion** of pipeline shape — the engine never auto-executes it; the director skill orchestrates the tools.
 
 ```json
 {
@@ -192,7 +192,7 @@ AI-generated video. No source clips required. A director agent (the `ai-video` s
   "project_type": "ai_video",
   "requires_clips": false,
   "steps": [
-    { "id": "direct",         "uses": "montaj/ai-video" },
+    { "id": "direct",         "uses": "montaj/ai-video-plan" },
     { "id": "analyze_style",  "uses": "montaj/analyze_media",  "foreach": "storyboard.styleRefs",  "needs": ["direct"] },
     { "id": "generate_ref",   "uses": "montaj/generate_image", "foreach": "storyboard.imageRefs",  "needs": ["direct"] },
     { "id": "generate_scene", "uses": "montaj/kling_generate", "foreach": "storyboard.scenes",     "needs": ["direct"] }

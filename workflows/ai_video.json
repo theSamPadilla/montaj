@@ -5,43 +5,49 @@
   "requires_clips": false,
   "steps": [
     {
-      "id": "direct",
-      "uses": "montaj/ai-video",
-      "description": "Director skill. Orchestrates the pipeline: Phase 0 story clarification, storyboard writes, approval gate, scene-generation dispatch, failure handling."
+      "id": "plan",
+      "uses": "montaj/ai-video-plan",
+      "description": "Director skill. Story clarification, storyboard writes (scenes, imageRefs, styleAnchor), approval gate."
     },
     {
       "id": "analyze_style",
       "uses": "montaj/analyze_media",
       "foreach": "storyboard.styleRefs",
-      "needs": ["direct"],
-      "description": "Per styleRef (audio/video/image): Gemini extracts mood/style text. Director folds outputs into storyboard.styleAnchor."
+      "needs": ["plan"],
+      "description": "Per styleRef: Gemini extracts mood/style text. Director folds outputs into storyboard.styleAnchor."
     },
     {
       "id": "generate_ref",
       "uses": "montaj/generate_image",
       "foreach": "storyboard.imageRefs",
-      "needs": ["direct"],
+      "needs": ["plan"],
       "description": "Per imageRef: generate a reference image from the user's anchor text. Director skips entries where source != 'text' or refImages is already populated."
+    },
+    {
+      "id": "generate",
+      "uses": "montaj/ai-video-generate",
+      "needs": ["plan", "analyze_style", "generate_ref"],
+      "description": "Generation orchestration. Dispatch mode selection, scene generation via kling_generate, audio assembly. Runs after storyboard approval."
     },
     {
       "id": "generate_scene",
       "uses": "montaj/kling_generate",
       "foreach": "storyboard.scenes",
-      "needs": ["analyze_style", "generate_ref"],
-      "description": "Per scene (post-approval only): Kling generates the clip with combined prompt + refs. Requires storyboard.styleAnchor (from analyze_style) and populated imageRefs[].refImages (from generate_ref for text-sourced refs). Director appends result to tracks[0]. May be batched (multi-shot) at director discretion — up to 6 scenes per call."
+      "needs": ["generate"],
+      "description": "Per scene (post-approval only): Kling generates the clip. Appends result to tracks[0]. May be batched (multi-shot) — up to 6 scenes per call."
     },
     {
       "id": "eval-scenes",
       "uses": "montaj/eval-scenes",
       "foreach": "storyboard.scenes",
       "needs": ["generate_scene"],
-      "description": "Per scene (post-generation, optional): Agent loads skills/eval-scenes/SKILL.md and evaluates clips via analyze_media (Gemini rubric). Failures are regenerated via kling_generate. This is a skill (agent-driven editorial loop), not a mechanical step."
+      "description": "Per scene (post-generation, optional): evaluates clips via analyze_media (Gemini rubric). Failures are regenerated via kling_generate."
     }
   ],
   "agent_notes": [
-    "PIPELINE: Director-driven. Load skills/ai-video/SKILL.md — it is the contract. analyze_media, generate_image, kling_generate are the director's tools, invoked from within its flow, not separate engine-scheduled stages.",
-    "INTAKE: project.storyboard is pre-seeded by init.py (aspectRatio, targetDurationSeconds, imageRefs[], styleRefs[], scenes: []). project.tracks[0] is empty at intake and stays empty until post-approval scene generation.",
-    "APPROVAL GATE: Do not call kling_generate until storyboard.approval is set. The UI writes that field when the user clicks Approve.",
+    "PIPELINE: Director-driven. Two skills: ai-video-plan (Phases 0-2) and ai-video-generate (Phases 6-7). analyze_media, generate_image, kling_generate are the agent's tools, invoked from within these flows.",
+    "INTAKE: project.storyboard is pre-seeded by init.py. project.tracks[0] is empty at intake and stays empty until post-approval generation.",
+    "APPROVAL GATE: Do not load ai-video-generate or call kling_generate until storyboard.approval is set.",
     "TRACKS[0]: Append-only; real clips only, no stubs. Flip status to 'draft' only when every storyboard.scenes[i] has a matching clip (or batchShots entry)."
   ]
 }

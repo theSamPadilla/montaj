@@ -249,7 +249,7 @@ def save_clip_to_project(project_path: Path, project: dict, scene: dict,
     }
     tracks0.append(clip)
     tracks0.sort(key=lambda c: c.get("start", 0))
-    project["tracks"] = [tracks0]
+    project["tracks"][0] = tracks0
 
     # Clear lastError on this scene
     for s in scenes:

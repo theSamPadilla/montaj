@@ -31,6 +31,7 @@ export interface AudioTrack {
     release?: number     // seconds, default 0.5
   }
   sourceDuration?: number  // intrinsic duration of the source file in seconds
+  lane?: number            // visual grouping — tracks sharing a lane render in the same row
 }
 
 export interface CaptionSegment {

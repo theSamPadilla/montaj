@@ -632,12 +632,15 @@ def scan_skills() -> list[dict]:
             name = fm.get("name")
             if not name:
                 continue
-            if fm.get("step", "").lower() not in ("true", "1", "yes"):
-                continue
+            is_step = fm.get("step", "").lower() in ("true", "1", "yes")
+            raw_subs = fm.get("subskills", "")
+            subskills = [s.strip() for s in raw_subs.split(",") if s.strip()] if raw_subs else []
             skills[name] = {
                 "name": f"montaj/{name}",
                 "description": fm.get("description", ""),
                 "scope": scope_label,
+                "step": is_step,
+                "subskills": [f"montaj/{s}" for s in subskills],
             }
     return list(skills.values())
 

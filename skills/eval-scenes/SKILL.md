@@ -8,7 +8,7 @@ step: true
 
 Evaluate generated scene clips against a 5-dimension quality rubric using Gemini. If a clip fails, regenerate it via `kling_generate` (non-deterministic re-roll with the same composed prompt) and re-evaluate. Repeat up to a retry budget.
 
-This is **Step F** of the ai-video Phase 6 contract — optional but recommended.
+This is **Step F** of the ai-video-generate Phase 6 contract — optional but recommended.
 
 ## When to load
 

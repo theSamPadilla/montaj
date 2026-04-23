@@ -164,9 +164,23 @@ export async function compose({
   videoLabel = '[canvas_v]'
   audioLabel = '[canvas_a]'
 
-  // Step 2: Format canvas for compositing (yuv420p10le preserves HDR signal)
+  // Step 2: Format canvas for compositing.
+  // Use yuv420p10le only when at least one source is HDR (10-bit bt2020);
+  // otherwise stay at yuv420p to avoid 8-bit/10-bit overlay mismatches.
+  // Probe sources for HDR — if any source is 10-bit HDR, use 10-bit canvas.
+  const _anyHDR = sortedItems.some(item => {
+    if (isImageItem(item)) return false
+    const probe = spawnSync('ffprobe', [
+      '-v', 'quiet', '-select_streams', 'v:0',
+      '-show_entries', 'stream=color_transfer',
+      '-of', 'csv=p=0', item.src,
+    ], { encoding: 'utf8', timeout: 5000 })
+    const trc = (probe.stdout || '').trim()
+    return trc === 'arib-std-b67' || trc === 'smpte2084'
+  })
+  const canvasFmt = _anyHDR ? 'yuv420p10le' : 'yuv420p'
   if (N > 0 || Q > 0) {
-    filterParts.push(`[canvas_v]format=yuv420p10le[v0]`)
+    filterParts.push(`[canvas_v]format=${canvasFmt}[v0]`)
     videoLabel = '[v0]'
   }
 

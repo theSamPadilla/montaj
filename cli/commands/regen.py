@@ -6,7 +6,7 @@ Two modes:
   montaj regen subcut <clip_id>    — regenerate a sub-range within a clip
 
 Appends an entry to project.regenQueue[]. The agent picks these up during
-Phase 7 of the ai-video skill, validates each entry, calls kling_generate,
+Phase 7 of the ai-video-generate skill, validates each entry, calls kling_generate,
 and patches tracks[0].
 """
 import json, os, tempfile, time, uuid
@@ -226,5 +226,5 @@ def _agent_message(label, project_id, count):
     id_frag = f" (id: {project_id})" if project_id else ""
     return (
         f'I queued {count} regeneration request(s) for project "{label}"{id_frag}. '
-        f"Please process project.regenQueue[] per the ai-video skill Phase 7 contract."
+        f"Please process project.regenQueue[] per the ai-video-generate skill Phase 7 contract."
     )

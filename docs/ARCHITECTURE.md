@@ -326,7 +326,7 @@ Wave 8:            overlays (needs caption)
 Wave 9:            resize (needs overlays)
 ```
 
-`foreach: <path>` fans out a step across all entries in a dotted-path collection on the project. Common values: `"clips"` (all project clips), `"storyboard.scenes"`, `"storyboard.imageRefs"`, `"storyboard.styleRefs"` (used by the `ai_video` workflow). The agent runs them as parallel tool calls (not subagents) and collects the outputs before proceeding to steps that need them. Any dotted identifier path is accepted; the agent decides what iteration means for that collection (e.g. the ai-video skill skips imageRefs with `source: "upload"` since they already have their image).
+`foreach: <path>` fans out a step across all entries in a dotted-path collection on the project. Common values: `"clips"` (all project clips), `"storyboard.scenes"`, `"storyboard.imageRefs"`, `"storyboard.styleRefs"` (used by the `ai_video` workflow). The agent runs them as parallel tool calls (not subagents) and collects the outputs before proceeding to steps that need them. Any dotted identifier path is accepted; the agent decides what iteration means for that collection (e.g. the ai-video-plan skill skips imageRefs with `source: "upload"` since they already have their image).
 
 ---
 
@@ -416,7 +416,8 @@ Skills without `step: true` (e.g. `skills/write-overlay/SKILL.md`) are loaded ma
 | `skills/overlay/` | step | Decide + author overlays; loaded on `montaj/overlay` step |
 | `skills/animation-sections/` | step | Build animation sections from scratch; loaded on `montaj/animation-sections` step |
 | `skills/write-overlay/` | manual | JSX authoring reference; loaded by overlay and animation-sections skills |
-| `skills/ai-video/` | step | Director skill for `ai_video` projects — story clarification, storyboard writes, approval gate, scene-generation dispatch (independent/chained/batched). Loaded on `montaj/ai-video` step or when `projectType` is `"ai_video"`. |
+| `skills/ai-video-plan/` | step | Director skill for `ai_video` projects — story clarification, storyboard writes, approval gate (Phases 0-2). Loaded on `montaj/ai-video-plan` step or when `projectType` is `"ai_video"`. |
+| `skills/ai-video-generate/` | step | Generation skill for `ai_video` projects — scene generation, audio assembly, regenQueue (Phases 6-7). Loaded after storyboard approval when generation begins. |
 
 ---
 
