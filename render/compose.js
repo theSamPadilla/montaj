@@ -311,11 +311,7 @@ export async function compose({
   const ffmpegArgs = ['-y', ...inputs]
 
   if (filterParts.length > 0) {
-    const filterStr = filterParts.join(';')
-    // Debug: log volume filters being applied
-    const volMatches = filterStr.match(/volume=[0-9.]+/g)
-    if (volMatches) clog(`audio volume filters: ${volMatches.join(', ')}`)
-    ffmpegArgs.push('-filter_complex', filterStr)
+    ffmpegArgs.push('-filter_complex', filterParts.join(';'))
   }
 
   // Map video — videoLabel is always current (updated by setparams step above for non-lossless)

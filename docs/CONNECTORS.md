@@ -59,7 +59,7 @@ A connector is NOT:
 
 ```bash
 montaj install connectors        # installs pyjwt, requests, google-genai, openai (extras)
-montaj install credentials       # interactive: pick provider, hidden key input
+montaj credentials               # interactive: pick provider, hidden key input
 ```
 
 Credentials live in `~/.montaj/credentials.json` (0600). See `docs/ARCHITECTURE.md`

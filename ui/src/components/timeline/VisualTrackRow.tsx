@@ -199,7 +199,7 @@ export default function VisualTrackRow({
             }}
             onDoubleClick={(e) => {
               e.stopPropagation()
-              if (item.generation && onInspectClip) onInspectClip(item.id)
+              if (onInspectClip) onInspectClip(item.id)
             }}
             onMouseDown={(e) => handleOverlayDragStart(e, item, trackIdx)}
           >

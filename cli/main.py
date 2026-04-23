@@ -38,7 +38,7 @@ def main():
         transcribe, caption, lyrics_sync, lyrics_render, stem_separation,
         init, status, approve, regen, mcp, models,
 
-        create_step, validate, install, update,
+        create_step, validate, install, update, credentials,
         remove_bg,
         kling_generate, analyze_media, generate_image, generate_voiceover,
         generate_music,
@@ -102,6 +102,7 @@ def main():
     create_step.register(subparsers)
     validate.register(subparsers)
     install.register(subparsers)
+    credentials.register(subparsers)
     update.register(subparsers)
     remove_bg.register(subparsers)
     kling_generate.register(subparsers)

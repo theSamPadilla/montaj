@@ -242,9 +242,9 @@ API credentials for external connectors (Kling, Gemini, etc.) live in `~/.montaj
 
 Install via:
 
-    montaj install credentials                                          # interactive
-    montaj install credentials --provider kling --key access_key --value ...
-    montaj install credentials --list                                   # check what's set
+    montaj credentials                                          # interactive
+    montaj credentials --provider kling --key access_key --value ...
+    montaj credentials --list                                   # check what's set
 
 Each connector reads credentials via `lib/credentials.get_credential(provider, key)`. Precedence: env var (`KLING_ACCESS_KEY` etc.) > credentials file > fail with install instructions.
 
@@ -514,7 +514,7 @@ Used in the `floating_head` workflow. `remove_bg` requires an actual video file 
 | `montaj/analyze_media` | Analyze a media file (video, audio, or image) with Gemini Flash (description, timestamps, structured output) |
 | `montaj/generate_image` | Generate image via Gemini or OpenAI (text-to-image or reference-conditioned) |
 
-These steps require `montaj install connectors` (SDK deps) and `montaj install credentials` (per-provider keys). See [docs/CONNECTORS.md](./CONNECTORS.md).
+These steps require `montaj install connectors` (SDK deps) and `montaj credentials` (per-provider keys). See [docs/CONNECTORS.md](./CONNECTORS.md).
 
 ---
 

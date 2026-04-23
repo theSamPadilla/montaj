@@ -14,7 +14,7 @@ montaj install whisper      # whisper-cpp binary + base.en model weights
 montaj install ui           # npm deps + UI build (pip users only — brew handles this)
 montaj install rvm          # torch/torchvision/av (pip) + RVM model weights
 montaj install connectors   # pyjwt, requests, google-genai, openai (for API steps)
-montaj install credentials  # interactive setup for API keys (~/.montaj/credentials.json)
+montaj credentials          # interactive setup for API keys (~/.montaj/credentials.json)
 montaj install all          # everything above
 ```
 
@@ -32,9 +32,9 @@ montaj install all          # everything above
 Credentials are stored in `~/.montaj/credentials.json` (0600 permissions). Three modes:
 
 ```bash
-montaj install credentials                                            # interactive: pick provider, enter keys
-montaj install credentials --provider gemini --key api_key --value …  # scripted (CI/automation)
-montaj install credentials --list                                     # show set/unset status per provider
+montaj credentials                                            # interactive: pick provider, enter keys
+montaj credentials --provider gemini --key api_key --value …  # scripted (CI/automation)
+montaj credentials --list                                     # show set/unset status per provider
 ```
 
 ```bash
@@ -234,7 +234,7 @@ montaj step caption --input transcript.json --style subtitle
 
 ### Generation (external APIs)
 
-Requires `montaj install connectors` + `montaj install credentials`. See [docs/CONNECTORS.md](./CONNECTORS.md).
+Requires `montaj install connectors` + `montaj credentials`. See [docs/CONNECTORS.md](./CONNECTORS.md).
 
 ```bash
 montaj kling-generate --prompt "a calico cat walking through a sunlit kitchen, cinematic" --out /tmp/cat.mp4
