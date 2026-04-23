@@ -20,7 +20,7 @@ export default function Scrubber({
   onCut,
   cutButtonLabel,
 }: ScrubberProps) {
-  const { currentTime, totalDuration, markers, setMarkers, snapBoundaries, onTimeUpdate, scrubberRef, selection } = useTimelineContext()
+  const { currentTime, totalDuration, contentDuration, markers, setMarkers, snapBoundaries, onTimeUpdate, scrubberRef, selection } = useTimelineContext()
 
   function handleScrubClick(e: React.MouseEvent<HTMLDivElement>) {
     e.stopPropagation()
@@ -177,7 +177,7 @@ export default function Scrubber({
             )}
           </span>
         )}
-        <span>{formatTime(totalDuration)}</span>
+        <span>{formatTime(contentDuration)}</span>
       </div>
     </>
   )

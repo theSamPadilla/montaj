@@ -2,6 +2,7 @@ import { createContext, useContext } from 'react'
 
 export interface TimelineContextValue {
   totalDuration: number
+  contentDuration: number
   snapBoundaries: number[]
   zoom: number
   zoomRef: React.RefObject<number>

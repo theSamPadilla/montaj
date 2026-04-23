@@ -83,9 +83,9 @@ export default function Timeline({ project, currentTime, onTimeUpdate, onProject
     : null
 
   const ctx = useMemo<TimelineContextValue>(() => ({
-    totalDuration, snapBoundaries, zoom, zoomRef, scrollRef, scrubberRef,
+    totalDuration, contentDuration, snapBoundaries, zoom, zoomRef, scrollRef, scrubberRef,
     overlayDraggedRef, currentTime, onTimeUpdate, markers, setMarkers, selection,
-  }), [totalDuration, snapBoundaries, zoom, zoomRef, scrollRef, scrubberRef,
+  }), [totalDuration, contentDuration, snapBoundaries, zoom, zoomRef, scrollRef, scrubberRef,
     overlayDraggedRef, currentTime, onTimeUpdate, markers, setMarkers, selection])
 
   function handleKeyDown(e: React.KeyboardEvent<HTMLDivElement>) {

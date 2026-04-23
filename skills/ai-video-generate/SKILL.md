@@ -2,7 +2,6 @@
 name: ai-video-generate
 description: "Generation orchestration for approved ai_video storyboards: dispatch mode selection, scene generation via kling_generate, audio assembly, regenQueue processing. Load after storyboard approval."
 step: true
-subskills: "eval-scenes"
 ---
 
 # AI Video Generation
