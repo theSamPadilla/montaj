@@ -47,6 +47,15 @@ pending → storyboard_ready → draft → final
 - `project.storyboard.scenes[]` — **empty at intake**. Your job in Phase 1 is to populate this.
 - `project.tracks[0]` — empty. Stays empty until Phase 6 generation.
 
+### Audio intake fields
+
+Two optional fields in `storyboard` control audio generation:
+
+- `storyboard.music` — `{ mode: 'upload', path }` or `{ mode: 'describe', prompt }`. Project-wide background music. Processed at Phase 6.
+- `storyboard.voiceover` — `{ prompt }`. Project-wide narration track (TTS-generated from the prompt). Processed at Phase 6.
+
+Both are project-wide, not per-scene. They never appear in `scenes[]`. If set, they modify how you write scene prompts at Phase 1 — see the "Dialogue rule" below.
+
 **The `source: "upload" | "text"` split on imageRefs:**
 - `"upload"` — user uploaded a file. `refImages[0]` is already the path to that file. `anchor` is NOT yet written; you write it in Phase 1.
 - `"text"` — user typed a description. It's stored in `anchor`. `refImages` is empty; you call `generate_image` in Phase 1 to produce the canonical ref image.
@@ -163,6 +172,12 @@ Populate `storyboard.scenes[]` with one entry per intended scene.
   an empty ## Dialogue section — it wastes prompt budget and may cause
   Kling to generate gibberish audio trying to fill it.
   ```
+
+  ### Dialogue rule (voiceover override)
+
+  **If `storyboard.voiceover` is set, OMIT the `## Dialogue` section from EVERY scene prompt.** Kling-generated speech would compete with the TTS voiceover track. Ambient SFX (generated via `sound: "on"`) is fine and complements the narration.
+
+  When `storyboard.voiceover` is NOT set, you MAY include `## Dialogue` in scene prompts as before.
 
   **Setting** is NOT a section — put environment details in `storyboard.styleAnchor` once. If a scene needs specific lighting, include it in `## Camera` (e.g. "Golden hour lighting, wide shot").
 
@@ -493,9 +508,144 @@ Refs passed apply to any shot in the batch. Cap still 7 total.
 
 **On failure (batch-level):** the whole batch is lost. Record `storyboard.scenes[i].lastError = {ts, message, batchId}` on EVERY scene in the batch. Do NOT append to `tracks[0]`. The user can re-click Approve (Step A skips scenes with existing clips — retry is automatic for batches with no clip) or edit individual prompts and retry.
 
-### Step E — wrap up
+### Step E — Audio generation, then wrap up
 
-- **When every `storyboard.scenes[i]` has a matching clip** (by sceneId OR batchShots sceneId): set `project.status = "draft"`. The UI's EditorPage routing carries the user to ReviewView.
+**Important: generate audio BEFORE setting status to `draft`.** Setting `draft` routes the user to ReviewView — audio tracks must already be on the project by then.
+
+After all scenes have clips on `tracks[0]`, process the audio intake fields first (Step E.1), then set status (Step E.2).
+
+#### Step E.1 — Audio generation and assembly
+
+Process the audio intake fields. Compute total video duration:
+
+```python
+total_duration = sum(scene['duration'] for scene in storyboard['scenes'])
+```
+
+**Re-run cleanup.** Phase 6 may run multiple times. Before appending any generated tracks, remove prior Phase-6-generated audio:
+
+```python
+project['audio']['tracks'] = [
+    t for t in project['audio'].get('tracks', [])
+    if not (t['id'] == 'voiceover' or t['id'].startswith('music-') or t['id'] == 'music')
+]
+```
+
+#### Music
+
+If `storyboard.music` is set:
+
+**Upload mode** (`storyboard.music.mode === 'upload'`):
+- Probe the file: `run_step('probe', { 'input': storyboard.music.path })` → get `duration`.
+- Append one `AudioTrack`:
+  ```json
+  {
+    "id": "music",
+    "src": "<storyboard.music.path>",
+    "start": 0,
+    "end": min(duration, total_duration),
+    "sourceDuration": duration,
+    "volume": 0.3,
+    "label": "music (uploaded)",
+    "ducking": { "enabled": true }
+  }
+  ```
+
+**Describe mode** (`storyboard.music.mode === 'describe'`):
+- Call `run_step('generate_music', { prompt: storyboard.music.prompt, out: '<project_dir>/assets/music.wav' })`.
+- Lyria Clip produces ~30s. If `total_duration > duration`, tile the track by creating multiple `AudioTrack` entries pointing to the same file at sequential start offsets:
+  ```python
+  start = 0
+  while start < total_duration:
+      seg_end = min(start + dur, total_duration)
+      append AudioTrack with id=f"music-{start}", src=result.path,
+        start=start, end=seg_end, inPoint=0, outPoint=seg_end-start,
+        sourceDuration=dur, volume=0.3, label=f"music (generated, loop at {start}s)",
+        ducking={ enabled: true }
+      start += dur
+  ```
+
+**Ducking config:** `{ enabled: true }` is sufficient. The render pipeline's `mix-audio.js` applies defaults for depth (−12 dB), attack (0.3s), and release (0.5s) when those fields are absent.
+
+#### Voiceover
+
+If `storyboard.voiceover` is set:
+
+**Step 1 — decide script vs. brief.** Inspect `storyboard.voiceover.prompt`:
+- If the text reads like literal spoken lines (first-person narrative, quoted dialogue) → use verbatim as TTS input.
+- If the text reads like a direction ("narrate like a documentary") → expand into a full script via LLM call, sized to ~`total_duration * 150 / 60` words (~150 wpm narration pace).
+- Ambiguous cases: prefer verbatim (trust the user's text).
+
+**Concrete examples:**
+
+| User prompt | Interpretation | Action |
+|---|---|---|
+| `"Welcome to our farm, where every morning begins with..."` | First-person narrative, reads as spoken lines | **verbatim** — feed directly to TTS |
+| `"narrate like David Attenborough describing a quiet morning"` | Clear direction, no content | **expand** — LLM generates a script in that voice |
+| `"the dog looks up at the sky"` | Third-person description, could go either way | **verbatim** (prefer trusting the user) |
+| `"make it sound urgent and dramatic, mention the storm"` | Direction + content hint | **expand** — LLM writes an urgent script about a storm |
+
+**Step 2 — call the step (with Kling→Gemini fallback):**
+
+**Voice selection.** `TTS_VOICES` in `connectors/kling.py` is currently empty (placeholder IDs). Pass the raw voice string directly — the connector falls back to using it as-is via `TTS_VOICES.get(voice, voice)`. For Gemini, use documented voice names.
+
+| Inferred tone | Kling `--voice` | Gemini `--voice` |
+|---|---|---|
+| Neutral / documentary / instructional | `"female_warm"` (raw string; Kling resolves or uses default) | `"Kore"` |
+| Energetic / commercial / dramatic | `"female_warm"` | `"Puck"` |
+| Dark / serious | `"male_calm"` | `"Charon"` |
+
+Always record the chosen voice on the resulting track's label (e.g. `"voiceover (kling:female_warm)"` or `"voiceover (gemini:Kore)"`).
+
+```python
+out = f"{project_dir}/assets/voiceover.wav"
+
+# Primary: Kling TTS. Fall back to Gemini if Kling errors.
+try:
+    result = run_step('generate_voiceover', {
+        'text':   script,
+        'voice':  'female_warm',       # raw string — Kling connector passes through
+        'out':    out,
+        'vendor': 'kling',
+    })
+    voice_label = 'kling:female_warm'
+except Exception as e:
+    # Kling TTS failed (likely due to placeholder voice IDs) — retry with Gemini.
+    agent_log(f"Kling TTS failed ({e}); retrying with Gemini TTS")
+    result = run_step('generate_voiceover', {
+        'text':   script,
+        'voice':  'Kore',              # Gemini documented voice name
+        'out':    out,
+        'vendor': 'gemini',
+    })
+    voice_label = 'gemini:Kore'
+```
+
+**Step 3 — append as track:**
+```json
+{
+  "id": "voiceover",
+  "src": "<result.path>",
+  "start": 0,
+  "end": min(result.duration_seconds, total_duration),
+  "sourceDuration": result.duration_seconds,
+  "volume": 1.0,
+  "label": "voiceover (<voice_label>)",
+  "ducking": { "enabled": false }
+}
+```
+
+**Duration mismatch handling:**
+- VO duration > total_duration: clamp `end` to `total_duration` (truncates tail). Warn the user.
+- VO duration < total_duration: VO plays and stops; silence fills the remainder (with music still playing if present). No warning needed.
+
+**Error handling:** If `generate_music` or `generate_voiceover` fails, skip the failed track — do not abort the whole project. Surface the error to the user. Continue with the other track if available.
+
+Write `project.json` after appending the audio tracks.
+
+#### Step E.2 — Set status
+
+- **When every `storyboard.scenes[i]` has a matching clip** (by sceneId OR batchShots sceneId) AND audio generation is complete (or skipped if no intake fields): set `project.status = "draft"`. The UI's EditorPage routing carries the user to ReviewView.
 - **If some scenes failed:** leave status at `storyboard_ready`. The user sees partial progress (some cards "done," some showing error). They may re-click Approve (idempotency handles retry) or ask in chat for tweaks.
 
 ### Step F — evaluate generated clips (optional but recommended)
@@ -607,6 +757,9 @@ One table of every field you write, grouped by phase.
 | `project.tracks[0][i].generation.multiShot / shotType / batchShots` | phase 6, batched only | Batched clip metadata; `batchShots[]` carries per-scene mapping inside the concatenated output. |
 | `project.tracks[0][i].generation.attempts` | post-draft regen (Phase 7 regenQueue drain) | Append previous `{ts, prompt, src}` before overwriting on a `mode: "full"` regen. For `mode: "subcut"`, the middle piece is a fresh clip with empty `attempts[]`; the left/right pieces inherit the original clip's attempts unchanged. |
 | `project.regenQueue` | Phase 7 | UI and CLI append entries. Agent drains on trigger — remove on success, set `lastError` on failure. |
+| `project.storyboard.music` | intake | `{ mode: 'upload', path }` or `{ mode: 'describe', prompt }`. Project-wide music brief. |
+| `project.storyboard.voiceover` | intake | `{ prompt }`. Project-wide voiceover script or brief. |
+| `project.audio.tracks` (music/voiceover entries) | phase 6 | Appended after all scene clips are on `tracks[0]`. Music at volume 0.3 with ducking enabled; voiceover at volume 1.0. Stripped and re-created on Phase 6 re-runs. |
 | `project.status` → `storyboard_ready` | end of Phase 1 | scenes[] populated, refs ready, styleAnchor written, `tracks[0]` still `[]`. |
 | `project.status` → `draft` | end of Phase 6 | Only when every `storyboard.scenes[i]` has a matching clip (single-shot sceneId OR batchShots sceneId). |
 
@@ -638,4 +791,6 @@ One table of every field you write, grouped by phase.
 - **Don't invent fields outside the schema.** If you need to store something, ask the user.
 - **Don't touch `project.json` outside ai_video's documented paths** (e.g., don't add fields to `settings`).
 - **Don't chain scenes via `--first-frame` by default.** Hard cuts are the standard. Frame bridging produces morphy AI-slop transitions. Reserve `--first-frame` for deliberate match-cuts (rare, user-requested only).
+- **Don't include `## Dialogue` in scene prompts when `storyboard.voiceover` is set.** Kling-generated dialogue competes with TTS voiceover — omit it so scenes only produce ambient SFX.
+- **Don't skip the Phase 6 re-run cleanup for audio tracks.** Always strip prior `music`, `music-*`, and `voiceover` tracks before appending new ones — prevents stale accumulation on re-approval.
 

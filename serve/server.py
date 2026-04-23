@@ -386,6 +386,37 @@ async def run_project(body: dict = Body(...)):
             raise HTTPException(400, detail={"error": "invalid_intake", "message": f"targetDurationSeconds must be a positive integer (got {target_duration!r})"})
         intake_setting_args += ["--target-duration", str(target_duration)]
 
+    # Music intake validation
+    music = intake.get('music')
+    if music is not None:
+        mode = music.get('mode')
+        if mode not in ('upload', 'describe'):
+            raise HTTPException(400, detail={"error": "invalid_intake",
+                "message": "music.mode must be 'upload' or 'describe'"})
+        if mode == 'upload' and not music.get('path'):
+            raise HTTPException(400, detail={"error": "invalid_intake",
+                "message": "music mode 'upload' requires a path"})
+        if mode == 'describe' and not music.get('prompt', '').strip():
+            raise HTTPException(400, detail={"error": "invalid_intake",
+                "message": "music mode 'describe' requires a non-empty prompt"})
+
+    # Voiceover intake validation
+    voiceover = intake.get('voiceover')
+    if voiceover is not None:
+        if not voiceover.get('prompt', '').strip():
+            raise HTTPException(400, detail={"error": "invalid_intake",
+                "message": "voiceover.prompt must be a non-empty string"})
+
+    # Music + voiceover CLI args
+    audio_args = []
+    if intake.get('music', {}).get('mode') == 'upload':
+        audio_args += ['--music-upload', intake['music']['path']]
+    elif intake.get('music', {}).get('mode') == 'describe':
+        audio_args += ['--music-describe', intake['music']['prompt']]
+
+    if intake.get('voiceover', {}).get('prompt'):
+        audio_args += ['--voiceover-prompt', intake['voiceover']['prompt']]
+
     init_py = MONTAJ_ROOT / "project" / "init.py"
     cmd = [sys.executable, str(init_py), "--prompt", prompt, "--workflow", workflow]
     if name:
@@ -394,7 +425,7 @@ async def run_project(body: dict = Body(...)):
         cmd += ["--assets"] + [str(a) for a in assets]
     if profile:
         cmd += ["--profile", profile]
-    cmd += image_ref_args + style_ref_args + intake_setting_args
+    cmd += image_ref_args + style_ref_args + intake_setting_args + audio_args
 
     if clips:
         cmd += ["--clips"] + [str(c) for c in clips]

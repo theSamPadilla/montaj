@@ -48,16 +48,63 @@ MODELS = {
     },
 }
 
-# TTS — TODO(live-test): paths, model ID, and voice IDs are placeholders
-# pending verification against Kling partner docs.
-TTS_CREATE_PATH = "/v1/tts/create"
-TTS_QUERY_PATH  = "/v1/tts/{task_id}"
-DEFAULT_TTS_MODEL = "kling-tts-v1"
+# TTS — https://app.klingai.com/global/dev/document-api
+# Synchronous: create response includes task_result directly. No poll endpoint.
+TTS_CREATE_PATH = "/v1/audio/tts"
 
+# Kling TTS voice IDs — aliases map friendly names to raw API voice_id strings.
+# Callers can use either the alias ("the_reader") or raw ID ("reader_en_m-v1").
+# Source: https://app.klingai.com/global/dev/document-api (Voice Guide)
+#
+# Most voice_ids work in both English (voice_language="en") and Chinese ("zh").
+# The alias uses the official English voice name from Kling's docs.
 TTS_VOICES = {
-    # Populate with real voice IDs after vendor docs verification.
-    # "female_warm":   "<kling_voice_id>",
-    # "male_calm":     "<kling_voice_id>",
+    # ── English voices (voice_language="en") ────────────────────────
+    "sunny":            "genshin_vindi2",
+    "sage":             "zhinen_xuesheng",
+    "ace":              "AOT",
+    "blossom":          "ai_shatang",
+    "peppy":            "genshin_klee2",
+    "dove":             "genshin_kirara",
+    "shine":            "ai_kaiya",
+    "anchor":           "oversea_male1",
+    "lyric":            "ai_chenjiahao_712",
+    "melody":           "girlfriend_4_speech02",
+    "tender":           "chat1_female_new-3",
+    "siren":            "chat_0407_5-1",
+    "zippy":            "cartoon-boy-07",
+    "bud":              "uk_boy1",
+    "sprite":           "cartoon-girl-01",
+    "candy":            "PeppaPig_platform",
+    "beacon":           "ai_huangzhong_712",
+    "rock":             "ai_huangyaoshi_712",
+    "titan":            "ai_laoguowang_712",
+    "grace":            "chengshu_jiejie",
+    "helen":            "you_pingjing",
+    "lore":             "calm_story1",
+    "crag":             "uk_man2",
+    "prattle":          "laopopo_speech02",
+    "hearth":           "heainainai_speech02",
+    "the_reader":       "reader_en_m-v1",
+    "commercial_lady":  "commercial_lady_en_f-v1",
+    # ── Chinese-only voices (voice_language="zh") ───────────────────
+    "tiexin_nanyou":    "tiexin_nanyou",
+    "tiyuxi_xuedi":     "tiyuxi_xuedi",
+    "girlfriend_1":     "girlfriend_1_speech02",
+    "girlfriend_2":     "girlfriend_2_speech02",
+    "zhuxi":            "zhuxi_speech02",
+    "uk_oldman":        "uk_oldman3",
+    "dongbeilaotie":    "dongbeilaotie_speech02",
+    "chongqingxiaohuo": "chongqingxiaohuo_speech02",
+    "chuanmeizi":       "chuanmeizi_speech02",
+    "chaoshandashu":    "chaoshandashu_speech02",
+    "taiwan_man":       "ai_taiwan_man2_speech02",
+    "xianzhanggui":     "xianzhanggui_speech02",
+    "tianjinjiejie":    "tianjinjiejie_speech02",
+    "news_anchor_cn":   "diyinnansang_DB_CN_M_04-v2",
+    "dubbed_film_cn":   "yizhipiannan-v1",
+    "raspy_cn":         "daopianyansang-v1",
+    "mengwa":           "mengwa-v1",
 }
 
 VIDEO_QUERY_PATH = "/v1/videos/omni-video/{task_id}"
@@ -417,18 +464,16 @@ def generate_speech(
     text: str,
     voice: str,
     out_path: str,
-    model: str = DEFAULT_TTS_MODEL,
     speed: float = 1.0,
-    language: str = None,
+    language: str = "en",
 ) -> str:
     """Generate speech audio from text via Kling TTS.
 
-    text     — script to speak.
+    text     — script to speak (max 1000 chars per API docs).
     voice    — voice identifier. Either a raw Kling voice ID or a key in TTS_VOICES.
     out_path — local file path for the downloaded audio.
-    model    — Kling TTS model name.
-    speed    — playback speed multiplier.
-    language — optional language hint (e.g. 'en', 'zh').
+    speed    — playback speed multiplier [0.8, 2.0].
+    language — voice language: 'en' or 'zh' (must match the voice_id).
 
     Returns out_path on success. Raises ConnectorError on failure.
     """
@@ -442,16 +487,17 @@ def generate_speech(
     body = {
         "text": text,
         "voice_id": resolved_voice,
-        "model": model,
-        "speed": speed,
+        "voice_language": language,
+        "voice_speed": speed,
     }
-    if language:
-        body["language"] = language
 
     requests = _require_requests()
     url = f"{BASE_URL}{TTS_CREATE_PATH}"
     try:
-        r = requests.post(url, json=body, headers=_auth_headers(), timeout=30)
+        # TTS is synchronous — the API blocks and returns the audio in the
+        # create response. No separate query/poll endpoint exists.
+        # Use a longer timeout since the API may block for the full synthesis.
+        r = requests.post(url, json=body, headers=_auth_headers(), timeout=120)
     except requests.RequestException as e:
         raise ConnectorError(f"Kling TTS request failed: {e}") from e
 
@@ -468,18 +514,16 @@ def generate_speech(
         raise ConnectorError(f"Kling TTS error: {data.get('message', 'unknown error')}")
 
     result = data["data"]
+    status = result.get("task_status")
+    if status == "failed":
+        msg = result.get("task_status_msg", "unknown error")
+        raise ConnectorError(f"Kling TTS failed: {msg}")
 
-    # Kling TTS endpoint shape is unverified — keep both sync (audio_url in
-    # initial response) and async (task_id → poll) paths until a live test
-    # confirms which applies, then delete the dead branch.
-    audio_url = result.get("audio_url")
-    if not audio_url:
-        task_id = result.get("task_id")
-        if not task_id:
-            raise ConnectorError(f"Kling TTS returned neither audio_url nor task_id: {result}")
-        task_data = poll_until_done(task_id, TTS_QUERY_PATH)
-        audio_url = task_data.get("task_result", {}).get("audio_url")
-        if not audio_url:
-            raise ConnectorError(f"Kling TTS succeeded but returned no audio_url: {task_data}")
+    try:
+        audio_url = result["task_result"]["audios"][0]["url"]
+    except (KeyError, IndexError, TypeError) as e:
+        raise ConnectorError(
+            f"Kling TTS returned no audio URL (status={status}): {result}"
+        ) from e
 
     return _download_file(audio_url, out_path)

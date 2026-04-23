@@ -92,6 +92,10 @@ export const api = {
       styleRefs: Array<{ label: string; path: string }>
       aspectRatio: AspectRatio
       targetDurationSeconds: number | null
+      music?:
+        | { mode: 'upload',   path: string }
+        | { mode: 'describe', prompt: string }
+      voiceover?: { prompt: string }
     }
   }) =>
     request<Project>('/api/run', { method: 'POST', body: JSON.stringify(body) }),

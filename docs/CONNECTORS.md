@@ -69,9 +69,17 @@ for precedence rules.
 
 | Vendor (`connectors/*.py`) | Functions (use cases) | Wrapping steps | Model(s) | Credentials | Docs |
 |----------------------------|------------------------|----------------|----------|-------------|------|
-| `kling.py` | `generate` | `steps/kling_generate.py` | `kling-v3-omni` (hardcoded) | `kling.access_key`, `kling.secret_key` | https://app.klingai.com/global/dev/document-api |
-| `gemini.py` | `analyze_media`, `generate_image` | `steps/analyze_media.py`, `steps/generate_image.py` | media analysis: `gemini-2.5-flash` (images under ~18 MB take a fast inline path, no Files API round-trip); image gen: `gemini-3-pro-image-preview` | `gemini.api_key` | https://ai.google.dev/gemini-api/docs |
+| `kling.py` | `generate`, `generate_speech` | `steps/generate/kling_generate.py`, `steps/generate/generate_voiceover.py` (via `--vendor kling`) | video: `kling-v3-omni` (hardcoded); TTS: `kling-tts-v1` (default, `DEFAULT_TTS_MODEL` in `connectors/kling.py`) | `kling.access_key`, `kling.secret_key` | https://app.klingai.com/global/dev/document-api |
+| `gemini.py` | `analyze_media`, `generate_image`, `generate_speech`, `generate_music` | `steps/media/analyze_media.py`, `steps/generate/generate_image.py`, `steps/generate/generate_voiceover.py` (via `--vendor gemini`), `steps/generate/generate_music.py` | media analysis: `gemini-2.5-flash` (images under ~18 MB take a fast inline path, no Files API round-trip); image gen: `gemini-3-pro-image-preview`; TTS: `gemini-2.5-flash-preview-tts` (default `DEFAULT_TTS_MODEL`, default voice `Kore` via `DEFAULT_TTS_VOICE`); music: `lyria-3-clip-preview` (default, `DEFAULT_MUSIC_MODEL`) | `gemini.api_key` | https://ai.google.dev/gemini-api/docs |
 | `openai.py` | `generate_image` | `steps/generate_image.py` | `gpt-image-1` | `openai.api_key` | https://platform.openai.com/docs/guides/images |
+
+Kling TTS calls are async/poll — same pattern as video generation. `generate_speech` returns a local audio file path.
+
+Lyria 3 Clip generates ~30s clips. For longer music beds, callers tile `AudioTrack` entries across the total duration (see Phase F director skill). Lyria 3 Pro (3-minute clips) is not yet wrapped.
+
+Gemini prebuilt voices for TTS include `Kore` (neutral default), `Puck` (bright), `Charon` (deep). See https://ai.google.dev/gemini-api/docs/speech-generation for the full list.
+
+> **Note on `generate_voiceover`.** The step dispatches between Kling TTS (primary) and Gemini TTS (fallback/alternative) via a `--vendor` flag. Both connectors listed in the table above contribute to it. This mirrors the existing dual-vendor pattern for `generate_image` (Gemini + OpenAI). See [`steps/generate/generate_voiceover.json`](../steps/generate/generate_voiceover.json) for the full flag surface.
 
 A single vendor row can grow multiple `Functions` and multiple `Wrapping steps` over time — e.g. a future `gemini.chat` function would add a second entry to the Gemini row alongside a new `steps/llm_prompt.py`. New vendors get a new row.
 
@@ -84,6 +92,21 @@ A single vendor row can grow multiple `Functions` and multiple `Wrapping steps` 
 - **The step knows about both** only enough to dispatch. The step file is ~60 lines.
 
 If a third vendor (e.g. Flux via fal.ai) is added later, the change is: new `connectors/fal.py`, extend the `--provider` enum in the step and CLI, update the `docs/CONNECTORS.md` table. No new step. No new CLI command. No MCP tool shuffle.
+
+### Audio pipeline
+
+Audio in Montaj is produced and composed in two separate layers, and the boundary matters:
+
+**Generation** — connectors and steps produce source audio files on disk.
+- `connectors/kling.py::generate_speech` and `connectors/gemini.py::generate_speech` produce voiceover audio.
+- `connectors/gemini.py::generate_music` produces music clips via Lyria 3.
+- `steps/generate/generate_voiceover.py` and `steps/generate/generate_music.py` wrap the connectors with CLI/MCP surfaces, dispatching to vendors via `--vendor` flags where applicable.
+
+**Composition** — `render/mix-audio.js` combines independent `AudioTrack` entries at render time via a single ffmpeg `amix` invocation, applying per-track delay, volume, trimming, and optional sidechain ducking.
+
+**The rule: connectors and steps never invoke ffmpeg for composition.** They only generate source assets and report duration metadata. Skills and workflows (e.g. [`skills/ai-video/SKILL.md`](../skills/ai-video/SKILL.md) Phase 6) append `AudioTrack` entries referencing those files to `project.audio.tracks[]`; everything else flows from there to `render/mix-audio.js` at render time.
+
+See `skills/ai-video/SKILL.md` for the director-level integration (dialogue-omission rule when voiceover is set, Phase 6 audio generation, script-vs-brief heuristic, Kling→Gemini TTS fallback, music looping via `AudioTrack` replication).
 
 ## Adding a new connector (or a new function to an existing connector)
 

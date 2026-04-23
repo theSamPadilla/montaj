@@ -45,6 +45,9 @@ def main():
                         help="ai_video only. Kling aspect_ratio parameter (e.g. '16:9', '9:16', '1:1').")
     parser.add_argument("--target-duration", dest="target_duration", type=int, default=None,
                         help="ai_video only. Target total duration in seconds (editorial goal, not a per-scene value).")
+    parser.add_argument('--music-upload', dest='music_upload', help='Path to uploaded music file')
+    parser.add_argument('--music-describe', dest='music_describe', help='Prompt describing the music to generate')
+    parser.add_argument('--voiceover-prompt', dest='voiceover_prompt', help='Voiceover script or brief')
     args = parser.parse_args()
 
     if args.canvas and args.clips:
@@ -53,6 +56,12 @@ def main():
     if args.aspect_ratio and not is_valid_aspect_ratio(args.aspect_ratio):
         fail("invalid_aspect_ratio",
              f"--aspect-ratio must be one of {', '.join(ASPECT_RATIOS)} (got {args.aspect_ratio!r})")
+
+    if args.music_upload and args.music_describe:
+        fail('invalid_args', 'Use either --music-upload or --music-describe, not both')
+
+    if args.music_upload and not os.path.isfile(args.music_upload):
+        fail('file_not_found', f'Music file not found: {args.music_upload}')
 
     for clip in args.clips:
         if not os.path.isfile(clip):
@@ -217,6 +226,15 @@ def main():
             storyboard["aspectRatio"] = args.aspect_ratio
         if args.target_duration is not None:
             storyboard["targetDurationSeconds"] = args.target_duration
+
+        if args.music_upload:
+            storyboard['music'] = {'mode': 'upload', 'path': copy_into_workspace(os.path.abspath(args.music_upload), 'music')}
+        elif args.music_describe:
+            storyboard['music'] = {'mode': 'describe', 'prompt': args.music_describe}
+
+        if args.voiceover_prompt:
+            storyboard['voiceover'] = {'prompt': args.voiceover_prompt}
+
         project["storyboard"] = storyboard
 
     project_path = os.path.join(workspace_dir, "project.json")

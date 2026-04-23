@@ -1,5 +1,4 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { fileUrl } from '@/lib/api'
 import type { Project } from '@/lib/types/schema'
 import CaptionPreview from '@/components/CaptionPreview'
 import { useDragOverlay } from './useDragOverlay'
@@ -60,7 +59,6 @@ export default function PreviewPlayer({ project, currentTime, onTimeUpdate, sele
     clips,
     tracks0NonVideo,
     overlayTracks,
-    musicRef,
   } = useVideoPlayback(project, currentTime, onTimeUpdate)
 
   const captionTrack = useMemo(() => project.captions, [project])
@@ -140,18 +138,7 @@ export default function PreviewPlayer({ project, currentTime, onTimeUpdate, sele
         snapRotation={snapRotation}
       />
 
-      {/* Background music — canvas and video projects */}
-      {(() => {
-        const firstTrack = project.audio?.tracks?.find(t => !t.muted)
-        if (!firstTrack?.src) return null
-        return (
-          <audio
-            ref={musicRef}
-            src={fileUrl(firstTrack.src)}
-            preload="auto"
-          />
-        )
-      })()}
+      {/* Audio elements are managed programmatically in useVideoPlayback */}
 
       {/* Caption preview */}
       {captionTrack && (

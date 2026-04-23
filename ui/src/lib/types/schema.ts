@@ -15,6 +15,7 @@ export interface Word {
 
 export interface AudioTrack {
   id: string
+  type?: 'voiceover' | 'music' | 'sfx' | 'audio'
   src: string
   start: number          // position on project timeline (seconds)
   end: number
@@ -141,6 +142,14 @@ export interface StyleRef {
   label?: string
 }
 
+export type StoryboardMusic =
+  | { mode: 'upload',   path: string }
+  | { mode: 'describe', prompt: string }
+
+export interface StoryboardVoiceover {
+  prompt: string
+}
+
 export interface Storyboard {
   aspectRatio?: AspectRatio
   targetDurationSeconds?: number
@@ -149,6 +158,8 @@ export interface Storyboard {
   styleAnchor?: string
   scenes: Scene[]
   approval?: { approvedAt: string }
+  music?:     StoryboardMusic
+  voiceover?: StoryboardVoiceover
 }
 
 export interface RegenQueueEntry {

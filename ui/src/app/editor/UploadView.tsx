@@ -117,6 +117,14 @@ export default function UploadView() {
                 .map(r => ({ label: r.label, path: r.path })),
               aspectRatio,
               targetDurationSeconds: targetDuration,
+              music: aiVideoData.musicMode === 'upload' && aiVideoData.musicFile?.path
+                ? { mode: 'upload' as const, path: aiVideoData.musicFile.path }
+                : aiVideoData.musicMode === 'describe' && aiVideoData.musicPrompt?.trim()
+                ? { mode: 'describe' as const, prompt: aiVideoData.musicPrompt.trim() }
+                : undefined,
+              voiceover: aiVideoData.voiceoverPrompt?.trim()
+                ? { prompt: aiVideoData.voiceoverPrompt.trim() }
+                : undefined,
             },
           })
           break

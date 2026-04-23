@@ -287,11 +287,19 @@ def _generate_audio(
     except Exception as e:
         raise ConnectorError(f"{error_prefix} request failed: {e}") from e
 
+    # Lyria returns multiple parts (text lyrics + audio); TTS returns one.
+    # Iterate to find the part with inline_data rather than assuming parts[0].
     try:
-        audio_part = response.candidates[0].content.parts[0]
-        audio_bytes = audio_part.inline_data.data
-        mime_type   = audio_part.inline_data.mime_type
-    except (AttributeError, IndexError, KeyError) as e:
+        audio_bytes = None
+        mime_type = None
+        for part in response.candidates[0].content.parts:
+            if part.inline_data is not None:
+                audio_bytes = part.inline_data.data
+                mime_type = part.inline_data.mime_type
+                break
+        if audio_bytes is None:
+            raise ConnectorError(f"{error_prefix} returned no audio part in response")
+    except (AttributeError, IndexError) as e:
         raise ConnectorError(f"{error_prefix} returned unexpected shape: {e}") from e
 
     os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
@@ -380,12 +388,13 @@ def generate_music(
 
     effective_prompt = ("Instrumental only. " + prompt) if instrumental else prompt
 
-    # TODO(live-test): seed as a top-level GenerateContentConfig kwarg is unverified.
-    # May raise TypeError if Lyria doesn't accept it here. Confirm against live SDK.
-    config_kwargs = {"response_modalities": ["AUDIO"]}
+    # Lyria returns both text (lyrics/structure) and audio parts.
+    # Don't force response_modalities=["AUDIO"] — it can suppress the audio part.
+    # The basic Lyria example in Google's docs passes no config at all.
+    config_kwargs = {}
     if seed is not None:
         config_kwargs["seed"] = seed
-    config = types.GenerateContentConfig(**config_kwargs)
+    config = types.GenerateContentConfig(**config_kwargs) if config_kwargs else None
 
     return _generate_audio(
         model=model, contents=effective_prompt, config=config,

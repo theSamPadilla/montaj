@@ -54,7 +54,6 @@ def main():
         if args.vendor == "kling":
             from connectors import kling
             kwargs = {"text": text, "voice": args.voice, "out_path": args.out, "speed": args.speed}
-            if args.model:    kwargs["model"]    = args.model
             if args.language: kwargs["language"] = args.language
             path = kling.generate_speech(**kwargs)
         else:  # gemini

@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { X, ImageIcon, Type, Film } from 'lucide-react'
+import { X, ImageIcon, Type, Film, Music } from 'lucide-react'
 import { api } from '@/lib/api'
 import { basename } from '@/lib/utils'
 
@@ -22,6 +22,10 @@ export interface StyleRefDraft {
 export interface AIVideoUploadData {
   imageRefs: ImageRefDraft[]
   styleRefs: StyleRefDraft[]
+  musicMode?: 'upload' | 'describe' | null
+  musicFile?: { name: string; path: string } | null
+  musicPrompt?: string
+  voiceoverPrompt?: string
 }
 
 // --- Generic multi-file drop zone ---
@@ -175,6 +179,7 @@ function DescribeRefCard({ imgRef, onLabelChange, onTextChange, onRemove }: {
 // --- Main component ---
 
 const IMAGE_EXTENSIONS = ['jpg', 'jpeg', 'png', 'webp', 'gif', 'bmp', 'tiff']
+const AUDIO_EXTENSIONS = ['mp3', 'wav', 'm4a', 'flac', 'aac', 'ogg']
 
 export function AIVideoUploadFields({ data, onChange, onError }: {
   data: AIVideoUploadData
@@ -184,6 +189,7 @@ export function AIVideoUploadFields({ data, onChange, onError }: {
   const { imageRefs, styleRefs } = data
   const [uploadingImages, setUploadingImages] = useState(false)
   const [uploadingStyles, setUploadingStyles] = useState(false)
+  const [uploadingMusic, setUploadingMusic] = useState(false)
 
   // --- Image refs ---
 
@@ -312,6 +318,36 @@ export function AIVideoUploadFields({ data, onChange, onError }: {
     }
   }
 
+  // --- Music file ---
+
+  async function browseMusicFile() {
+    onError(null)
+    try {
+      const { paths } = await api.pickFiles({ extensions: AUDIO_EXTENSIONS, prompt: 'Select a music file' })
+      if (paths.length) {
+        onChange({ ...data, musicFile: { name: basename(paths[0]), path: paths[0] } })
+      }
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e)
+      if (!msg.toLowerCase().includes('cancel')) onError(msg)
+    }
+  }
+
+  async function dropMusicFile(files: File[]) {
+    onError(null)
+    const audioFiles = files.filter(f => f.type.startsWith('audio/') || AUDIO_EXTENSIONS.some(ext => f.name.toLowerCase().endsWith('.' + ext)))
+    if (!audioFiles.length) return
+    setUploadingMusic(true)
+    try {
+      const path = await api.uploadFile(audioFiles[0])
+      onChange({ ...data, musicFile: { name: audioFiles[0].name, path } })
+    } catch (e: unknown) {
+      onError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setUploadingMusic(false)
+    }
+  }
+
   const uploadRefs = imageRefs.filter(r => r.mode === 'upload')
   const describeRefs = imageRefs.filter(r => r.mode === 'describe')
 
@@ -417,6 +453,100 @@ export function AIVideoUploadFields({ data, onChange, onError }: {
             ))}
           </div>
         )}
+      </div>
+
+      {/* Music (optional) — full width below the grid */}
+      <div className="col-span-2 flex flex-col gap-3">
+        <div>
+          <p className="text-sm font-medium text-gray-800 dark:text-gray-200">Music <span className="text-gray-400 font-normal">(optional)</span></p>
+          <p className="text-xs text-gray-500 mt-0.5">Upload a music file or describe what you want generated.</p>
+        </div>
+
+        <div className="flex gap-2">
+          <button
+            onClick={() => onChange({ ...data, musicMode: 'upload', musicPrompt: '' })}
+            className={`h-8 px-3 rounded-md border text-xs transition-colors ${
+              data.musicMode === 'upload'
+                ? 'border-blue-500 bg-blue-500/10 text-blue-500'
+                : 'border-gray-300 dark:border-gray-700 text-gray-600 dark:text-gray-400 hover:border-gray-400 dark:hover:border-gray-600'
+            }`}
+          >
+            Upload file
+          </button>
+          <button
+            onClick={() => onChange({ ...data, musicMode: 'describe', musicFile: null })}
+            className={`h-8 px-3 rounded-md border text-xs transition-colors ${
+              data.musicMode === 'describe'
+                ? 'border-blue-500 bg-blue-500/10 text-blue-500'
+                : 'border-gray-300 dark:border-gray-700 text-gray-600 dark:text-gray-400 hover:border-gray-400 dark:hover:border-gray-600'
+            }`}
+          >
+            Describe
+          </button>
+          {data.musicMode && (
+            <button
+              onClick={() => onChange({ ...data, musicMode: null, musicFile: null, musicPrompt: '' })}
+              className="text-xs text-gray-400 hover:text-gray-600"
+            >
+              Clear
+            </button>
+          )}
+        </div>
+
+        {data.musicMode === 'upload' && (
+          <>
+            <MultiFileDropZone
+              onBrowse={browseMusicFile}
+              onDropFiles={dropMusicFile}
+              uploading={uploadingMusic}
+              icon={<Music size={20} className="text-gray-400 dark:text-gray-500" />}
+              browseLabel="Browse audio"
+              dropLabel="or drop an audio file here"
+              accentClass="border-emerald-500 bg-emerald-500/10"
+            />
+            {data.musicFile && (
+              <div className="rounded-lg border border-gray-200 dark:border-gray-800 p-2 flex items-center gap-3">
+                <div className="w-10 h-10 rounded-md bg-emerald-50 dark:bg-emerald-900/30 flex-shrink-0 flex items-center justify-center">
+                  <Music size={16} className="text-emerald-500" />
+                </div>
+                <span className="flex-1 min-w-0 text-sm text-gray-900 dark:text-white truncate font-mono">
+                  {data.musicFile.name}
+                </span>
+                <button
+                  onClick={() => onChange({ ...data, musicFile: null })}
+                  className="text-gray-400 hover:text-gray-600 dark:text-gray-600 dark:hover:text-gray-400 flex-shrink-0"
+                >
+                  <X size={14} />
+                </button>
+              </div>
+            )}
+          </>
+        )}
+
+        {data.musicMode === 'describe' && (
+          <textarea
+            placeholder="Describe the music..."
+            value={data.musicPrompt || ''}
+            onChange={e => onChange({ ...data, musicPrompt: e.target.value })}
+            rows={3}
+            className="w-full rounded-md border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-900 px-3 py-2 text-sm text-gray-900 dark:text-white placeholder-gray-400 focus:outline-none focus:ring-1 focus:ring-blue-500 resize-none"
+          />
+        )}
+      </div>
+
+      {/* Voiceover (optional) — full width */}
+      <div className="col-span-2 flex flex-col gap-3">
+        <div>
+          <p className="text-sm font-medium text-gray-800 dark:text-gray-200">Voiceover <span className="text-gray-400 font-normal">(optional)</span></p>
+          <p className="text-xs text-gray-500 mt-0.5">Write the voiceover script or describe the narration style. The agent decides whether to read it verbatim or interpret it as a brief.</p>
+        </div>
+        <textarea
+          placeholder="Write the voiceover script OR describe the narration..."
+          value={data.voiceoverPrompt || ''}
+          onChange={e => onChange({ ...data, voiceoverPrompt: e.target.value })}
+          rows={4}
+          className="w-full rounded-md border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-900 px-3 py-2 text-sm text-gray-900 dark:text-white placeholder-gray-400 focus:outline-none focus:ring-1 focus:ring-blue-500 resize-none"
+        />
       </div>
     </div>
   )

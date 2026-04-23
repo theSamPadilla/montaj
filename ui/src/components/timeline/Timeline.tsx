@@ -22,12 +22,13 @@ interface TimelineProps {
   onSplit?: (at: number) => void
   onCut?: (cut: { start: number; end: number }) => void
   onInspectClip?: (id: string) => void
+  onInspectAudio?: (id: string) => void
   onSaveProject?: (p: Project) => Promise<unknown>
   rippleMode?: boolean
 }
 
 
-export default function Timeline({ project, currentTime, onTimeUpdate, onProjectChange, onCaptionEdit, onOverlayEdit, selectedOverlayId, onSelectOverlay, onSplit, onCut, onInspectClip, onSaveProject, rippleMode = false }: TimelineProps) {
+export default function Timeline({ project, currentTime, onTimeUpdate, onProjectChange, onCaptionEdit, onOverlayEdit, selectedOverlayId, onSelectOverlay, onSplit, onCut, onInspectClip, onInspectAudio, onSaveProject, rippleMode = false }: TimelineProps) {
   const allTracks      = project.tracks ?? []
   const captionTrack   = project.captions
   const snapBoundaries = [...new Set(allTracks.flat().flatMap(c => [c.start, c.end]))]
@@ -48,6 +49,7 @@ export default function Timeline({ project, currentTime, onTimeUpdate, onProject
   const keyNavTimerRef                        = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   const [subcutClipId, setSubcutClipId]       = useState<string | null>(null)
+  const [selectedAudioTrackId, setSelectedAudioTrackId] = useState<string | null>(null)
 
   const { zoom, zoomRef, scrollRef, zoomTo, handleTimelineWheel } = useTimelineZoom(totalDuration)
 
@@ -209,7 +211,10 @@ export default function Timeline({ project, currentTime, onTimeUpdate, onProject
               rippleMode={rippleMode}
               onProjectChange={onProjectChange}
               onOverlayEdit={onOverlayEdit}
-              onSelectOverlay={onSelectOverlay}
+              onSelectOverlay={(id) => {
+                onSelectOverlay?.(id)
+                if (id) setSelectedAudioTrackId(null)
+              }}
               onInspectClip={onInspectClip}
               subcutClipId={subcutClipId}
               setSubcutClipId={setSubcutClipId}
@@ -219,8 +224,22 @@ export default function Timeline({ project, currentTime, onTimeUpdate, onProject
 
         {/* Audio tracks */}
         {audioTracks.map(track => (
-          <AudioTrackRow key={track.id} track={track} />
+          <AudioTrackRow
+            key={track.id}
+            track={track}
+            project={project}
+            onProjectChange={onProjectChange}
+            onOverlayEdit={onOverlayEdit}
+            selected={selectedAudioTrackId === track.id}
+            onSelect={(id) => {
+              setSelectedAudioTrackId(id)
+              // Deselect visual overlay when selecting audio track
+              if (id) onSelectOverlay?.(null)
+            }}
+            onInspect={onInspectAudio}
+          />
         ))}
+
       </div>
 
       </div>{/* end scrubber+tracks wrapper */}

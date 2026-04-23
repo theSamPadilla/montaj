@@ -225,7 +225,7 @@ export default function VisualTrackRow({
                 {item.muted ? <VolumeX size={10} /> : <Volume2 size={10} />}
               </button>
             )}
-            {isSel && onInspectClip && item.generation && (
+            {isSel && onInspectClip && item.type === 'video' && (
               <button
                 className={`shrink-0 ml-1 z-10 cursor-pointer opacity-50 hover:opacity-100 ${tc.text}`}
                 onClick={(e) => { e.stopPropagation(); onInspectClip(item.id) }}

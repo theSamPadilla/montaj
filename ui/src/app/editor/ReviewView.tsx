@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { X, Image, Plus, HelpCircle, Copy, Magnet, Film, Music, Info, Scissors } from 'lucide-react'
-import ClipInspectModal from '@/components/timeline/ClipInspectModal'
+import ClipInspectModal, { type InspectTarget } from '@/components/timeline/ClipInspectModal'
 import PreviewPlayer from '@/components/preview/PreviewPlayer'
 import ProjectHeader from '@/components/ProjectHeader'
 import RerunModal from '@/components/RerunModal'
@@ -83,7 +83,7 @@ export default function ReviewView({ project, onProjectChange }: ReviewViewProps
   const [previewAsset, setPreviewAsset]   = useState<Asset | null>(null)
   const [pathCopied, setPathCopied]       = useState(false)
   const [rippleMode, setRippleMode]       = useState(false)
-  const [inspectClipId, setInspectClipId] = useState<string | null>(null)
+  const [inspecting, setInspecting] = useState<InspectTarget | null>(null)
   const [refPreview, setRefPreview]       = useState<{ src: string; alt: string } | null>(null)
   const navigate = useNavigate()
 
@@ -480,7 +480,8 @@ export default function ReviewView({ project, onProjectChange }: ReviewViewProps
               onSelectOverlay={setSelectedOverlayId}
               onSplit={handleSplit}
               onCut={handleCut}
-              onInspectClip={setInspectClipId}
+              onInspectClip={(id) => setInspecting({ kind: 'clip', id })}
+              onInspectAudio={(id) => setInspecting({ kind: 'audio', id })}
               onSaveProject={(p) => api.saveProject(p.id, p)}
               rippleMode={rippleMode}
             />
@@ -685,11 +686,11 @@ export default function ReviewView({ project, onProjectChange }: ReviewViewProps
       {refPreview && (
         <ImagePreviewModal src={refPreview.src} alt={refPreview.alt} onClose={() => setRefPreview(null)} />
       )}
-      {/* Clip inspect / regenerate modal */}
-      {inspectClipId && <ClipInspectModal
+      {/* Clip / audio inspect modal */}
+      {inspecting && <ClipInspectModal
         project={project}
-        clipId={inspectClipId}
-        onClose={() => setInspectClipId(null)}
+        target={inspecting}
+        onClose={() => setInspecting(null)}
         onProjectChange={onProjectChange}
         onSave={(p) => api.saveProject(p.id, p)}
       />}

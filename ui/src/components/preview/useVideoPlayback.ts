@@ -21,7 +21,11 @@ export function useVideoPlayback(
   const loopOffsetRef = useRef(0)
   const rafRef        = useRef<number | null>(null)
   const rafLastMs     = useRef<number | null>(null)
-  const musicRef      = useRef<HTMLAudioElement>(null)
+  const audioRefsMap  = useRef<Map<string, HTMLAudioElement>>(new Map())
+  const audioSrcMap   = useRef<Map<string, string>>(new Map())
+  // Web Audio API: GainNode per audio track allows volume > 1.0 (amplification)
+  const audioCtxRef   = useRef<AudioContext | null>(null)
+  const gainNodesMap  = useRef<Map<string, GainNode>>(new Map())
   const [isPlaying, setIsPlaying] = useState(false)
   const isPlayingRef = useRef(false)
   // Keep ref in sync so effects with narrow deps can read current playing state
@@ -48,6 +52,16 @@ export function useVideoPlayback(
 
   // Canvas project: no primary video in tracks[0] (e.g. image-only background track)
   const isCanvasProject = clips.length === 0
+
+  // Apply video clip volume via native el.volume (0–1 range; doesn't need Web Audio API)
+  useEffect(() => {
+    const idx = activeIdxRef.current
+    const clip = clips[idx]
+    if (!clip) return
+    const video = getActiveVideo()
+    if (video) video.volume = Math.min(1, clip.volume ?? 1)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [clips, activeSlot])
 
   useEffect(() => {
     if (!isCanvasProject) return
@@ -87,23 +101,147 @@ export function useVideoPlayback(
     }
   }, [isPlaying, isCanvasProject, overlayTracks, project, onTimeUpdate])
 
-  // Keep background music in sync with playback (canvas and video projects)
+  // ── Multi-track audio management ───────────────────────────────────────────
+  // Derive unmuted tracks. The full tracks array is a new reference on every
+  // project spread, so we stabilize by comparing the *identity key* (id+muted+src)
+  // rather than array reference so we don't tear down audio elements on volume drag.
+  const unmutedAudioTracks = useMemo(() => {
+    return (project.audio?.tracks ?? []).filter(t => !t.muted && t.src)
+  }, [project.audio?.tracks])
+
+  // Stable key: only changes when the set of unmuted track ids or their src changes.
+  // Volume, start/end, inPoint/outPoint changes do NOT trigger element create/destroy.
+  const audioTrackIdentity = useMemo(
+    () => unmutedAudioTracks.map(t => `${t.id}:${t.src}`).join('|'),
+    [unmutedAudioTracks]
+  )
+
+  // Lazily create AudioContext (must happen after user gesture for autoplay policy)
+  function ensureAudioContext(): AudioContext {
+    if (!audioCtxRef.current) {
+      audioCtxRef.current = new AudioContext()
+    }
+    if (audioCtxRef.current.state === 'suspended') {
+      audioCtxRef.current.resume().catch(() => {})
+    }
+    return audioCtxRef.current
+  }
+
+  // Create / destroy audio elements when track set changes
   useEffect(() => {
-    const audio = musicRef.current
-    if (!audio) return
+    const map = audioRefsMap.current
+    const srcMap = audioSrcMap.current
+    const gains = gainNodesMap.current
+    const activeIds = new Set(unmutedAudioTracks.map(t => t.id))
+
+    // Remove elements for tracks that were deleted or muted
+    for (const [id, el] of map) {
+      if (!activeIds.has(id)) {
+        el.pause()
+        el.src = ''
+        map.delete(id)
+        srcMap.delete(id)
+        gains.delete(id)
+      }
+    }
+
+    // Create new elements for newly-added tracks, routed through GainNode
+    for (const track of unmutedAudioTracks) {
+      let el = map.get(track.id)
+      if (!el) {
+        el = new Audio()
+        el.preload = 'auto'
+        map.set(track.id, el)
+
+        // Wire through Web Audio API: element → GainNode → destination
+        // This allows volume > 1.0 for amplification in preview.
+        // createMediaElementSource can only be called once per element.
+        const ctx = ensureAudioContext()
+        const source = ctx.createMediaElementSource(el)
+        const gain = ctx.createGain()
+        gain.gain.value = track.volume ?? 1
+        source.connect(gain)
+        gain.connect(ctx.destination)
+        gains.set(track.id, gain)
+      }
+      if (srcMap.get(track.id) !== track.src) {
+        el.src = fileUrl(track.src)
+        srcMap.set(track.id, track.src)
+      }
+      // Volume is controlled via GainNode, not el.volume
+      const gain = gains.get(track.id)
+      if (gain) gain.gain.value = track.volume ?? 1
+    }
+  // Keyed on identity string — only fires when tracks are added/removed/src changes
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [audioTrackIdentity])
+
+  // Update volume in-place on every render via GainNode — cheap, no element churn
+  useEffect(() => {
+    for (const track of unmutedAudioTracks) {
+      const gain = gainNodesMap.current.get(track.id)
+      if (gain) gain.gain.value = track.volume ?? 1
+    }
+  }, [unmutedAudioTracks])
+
+  // Cleanup on unmount only
+  useEffect(() => {
+    const map = audioRefsMap.current
+    const srcMap = audioSrcMap.current
+    const gains = gainNodesMap.current
+    const ctx = audioCtxRef.current
+    return () => {
+      for (const el of map.values()) { el.pause(); el.src = '' }
+      map.clear()
+      srcMap.clear()
+      gains.clear()
+      if (ctx) ctx.close().catch(() => {})
+      audioCtxRef.current = null
+    }
+  }, [])
+
+  // syncAudioTracks reads from refs + unmutedAudioTracks for window math.
+  // We use a ref to avoid recreating the callback on every track property change.
+  const unmutedAudioTracksRef = useRef(unmutedAudioTracks)
+  useEffect(() => { unmutedAudioTracksRef.current = unmutedAudioTracks }, [unmutedAudioTracks])
+
+  const syncAudioTracks = useCallback(function syncAudioTracks(playhead: number, playing: boolean) {
+    for (const track of unmutedAudioTracksRef.current) {
+      const el = audioRefsMap.current.get(track.id)
+      if (!el) continue
+
+      const trackTime = (playhead - track.start) + (track.inPoint ?? 0)
+      const outPoint = track.outPoint ?? track.sourceDuration ?? Infinity
+      const outsideWindow =
+        playhead < track.start ||
+        playhead >= track.end ||
+        trackTime < 0 ||
+        trackTime >= outPoint
+
+      if (outsideWindow) {
+        if (!el.paused) el.pause()
+        continue
+      }
+
+      if (Math.abs(el.currentTime - trackTime) > 0.3) {
+        el.currentTime = Math.max(0, trackTime)
+      }
+
+      if (playing && el.paused) el.play().catch(() => {})
+      if (!playing && !el.paused) el.pause()
+    }
+  }, [])
+
+  // Keep background audio in sync with playback (canvas and video projects)
+  useEffect(() => {
     // Skip toggling during a seek — prevents audio stutter from brief pause/play events
     if (seekingRef.current) return
-    if (isPlaying) audio.play().catch(() => {})
-    else audio.pause()
-  }, [isPlaying])
+    syncAudioTracks(lastTimeRef.current, isPlaying)
+  }, [isPlaying, syncAudioTracks])
 
   useEffect(() => {
-    const audio = musicRef.current
-    if (!audio) return
-    const inPoint = project.audio?.tracks?.find(t => !t.muted)?.inPoint ?? 0
-    const target = inPoint + currentTime
-    if (Math.abs(audio.currentTime - target) > 0.3) audio.currentTime = target
-  }, [currentTime, project])
+    syncAudioTracks(currentTime, isPlayingRef.current)
+  }, [currentTime, syncAudioTracks])
 
   // Space = play/pause
   useEffect(() => {
@@ -157,6 +295,7 @@ export function useVideoPlayback(
     video.src = fileUrl(clips[0].src)
     video.currentTime = clips[0].inPoint ?? 0
     video.muted = !!(clips[0].muted)
+    video.volume = Math.min(1, clips[0].volume ?? 1)
     // Clear inactive slot
     const inactive = getInactiveVideo()
     if (inactive) { inactive.pause(); inactive.removeAttribute('src') }
@@ -204,6 +343,7 @@ export function useVideoPlayback(
       const src = fileUrl(nc.src)
       if (preloadSrcRef.current !== src) { nv.src = src; nv.currentTime = nc.inPoint ?? 0 }
       nv.muted = !!(nc.muted)
+      nv.volume = Math.min(1, nc.volume ?? 1)
       nv.play().catch(() => {})
     }
     ;(activeSlotRef.current === 0 ? video0Ref.current : video1Ref.current)?.pause()
@@ -256,6 +396,7 @@ export function useVideoPlayback(
         if (inactive) { inactive.pause(); inactive.removeAttribute('src') }
       }
       video.muted = !!(clip.muted)
+      video.volume = Math.min(1, clip.volume ?? 1)
       const inPoint = clip.inPoint ?? 0
       if (clip.loop && clip.outPoint) {
         const loopDur = clip.outPoint - inPoint
@@ -276,11 +417,7 @@ export function useVideoPlayback(
         const v = getActiveVideo()
         if (!v) return
         setIsPlaying(!v.paused)
-        const audio = musicRef.current
-        if (audio) {
-          if (v.paused) audio.pause()
-          else audio.play().catch(() => {})
-        }
+        syncAudioTracks(lastTimeRef.current, !v.paused)
       }, 100)
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -310,6 +447,7 @@ export function useVideoPlayback(
           inactiveVideo.src = nextSrc
           inactiveVideo.currentTime = clips[nextIdx].inPoint ?? 0
           inactiveVideo.muted = !!(clips[nextIdx].muted)
+          inactiveVideo.volume = Math.min(1, clips[nextIdx].volume ?? 1)
         }
       }
     }
@@ -359,6 +497,7 @@ export function useVideoPlayback(
               nextVideo.currentTime = next.inPoint ?? 0
             }
             nextVideo.muted = !!(next.muted)
+            nextVideo.volume = Math.min(1, next.volume ?? 1)
             nextVideo.play().catch(() => {})
           }
 
@@ -384,8 +523,7 @@ export function useVideoPlayback(
       video.pause()
       lastTimeRef.current = clip.end
       onTimeUpdate(clip.end)
-      const audio = musicRef.current
-      if (audio) audio.pause()
+      for (const el of audioRefsMap.current.values()) { if (!el.paused) el.pause() }
       setIsPlaying(false)
       return
     }
@@ -448,6 +586,6 @@ export function useVideoPlayback(
     clips,
     tracks0NonVideo,
     overlayTracks,
-    musicRef,
+    unmutedAudioTracks,
   }
 }
