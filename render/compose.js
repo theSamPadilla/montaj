@@ -302,7 +302,7 @@ export async function compose({
   // _lossless: FFV1 MKV for intra-only chunk intermediates (concat-safe, no B-frame DTS issues).
   // Default: libx264 MP4 — color metadata is stamped via setparams in the filter graph above.
   const videoCodecArgs = _lossless
-    ? ['-c:v', 'ffv1', '-pix_fmt', 'yuv420p10le', '-reserve_index_space', '1000000']
+    ? ['-c:v', 'ffv1', '-pix_fmt', canvasFmt, '-reserve_index_space', '1000000']
     : ['-c:v', 'libx264', '-preset', 'fast', '-crf', '18', '-pix_fmt', 'yuv420p']
   const audioCodecArgs = _lossless
     ? ['-c:a', 'pcm_s16le']
@@ -311,7 +311,11 @@ export async function compose({
   const ffmpegArgs = ['-y', ...inputs]
 
   if (filterParts.length > 0) {
-    ffmpegArgs.push('-filter_complex', filterParts.join(';'))
+    const filterStr = filterParts.join(';')
+    // Debug: log volume filters being applied
+    const volMatches = filterStr.match(/volume=[0-9.]+/g)
+    if (volMatches) clog(`audio volume filters: ${volMatches.join(', ')}`)
+    ffmpegArgs.push('-filter_complex', filterStr)
   }
 
   // Map video — videoLabel is always current (updated by setparams step above for non-lossless)

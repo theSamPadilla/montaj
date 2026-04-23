@@ -355,6 +355,7 @@ function collectAllItems(projectJson) {
           outPoint:  item.outPoint,
           remove_bg: item.remove_bg ?? false,
           muted:     item.muted ?? false,
+          volume:    item.volume,
         })
       }
     }
