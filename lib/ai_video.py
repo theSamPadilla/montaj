@@ -6,6 +6,7 @@ the sys.path that all step scripts set up.
 import json, re, time
 from pathlib import Path
 from common import fail
+from normalize import normalize, is_normalized, probe_video
 
 
 # Optimal Kling prompt order: camera first (framing context), then subject
@@ -247,6 +248,20 @@ def save_clip_to_project(project_path: Path, project: dict, scene: dict,
             "attempts": [],
         },
     }
+    # Normalize clip to project resolution/fps (e.g. Kling outputs 1280x720).
+    settings = project.get("settings", {})
+    res = settings.get("resolution", [1920, 1080])
+    fps = settings.get("fps", 30)
+
+    info = probe_video(out_path)
+    if info and not is_normalized(out_path, info, res[0], res[1], fps):
+        normalized_path = out_path.rsplit(".", 1)[0] + "_normalized.mp4"
+        try:
+            normalize(out_path, normalized_path, res[0], res[1], fps, crf=16)
+            clip["src"] = normalized_path
+        except SystemExit:
+            clip["src"] = out_path
+
     tracks0.append(clip)
     tracks0.sort(key=lambda c: c.get("start", 0))
     project["tracks"][0] = tracks0

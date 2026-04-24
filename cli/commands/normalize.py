@@ -1,35 +1,30 @@
 #!/usr/bin/env python3
-"""montaj normalize — loudness normalization (LUFS)."""
-import os, subprocess, sys
-from cli.main import MONTAJ_ROOT, add_global_flags, find_step
-from cli.output import emit, emit_error
+"""montaj normalize — normalize a video clip to project working format."""
+import os
+from cli.main import add_global_flags
 
 
 def register(subparsers):
-    p = subparsers.add_parser("normalize", help="Loudness normalization (LUFS)")
-    p.add_argument("input", help="Source video or audio file")
-    p.add_argument("--target", default="youtube",
-                   choices=["youtube", "podcast", "broadcast", "custom"],
-                   help="Platform preset: youtube=-14 LUFS, podcast=-16, broadcast=-23 (default: youtube)")
-    p.add_argument("--lufs", type=float, default=-14,
-                   help="Target LUFS when --target is 'custom' (default: -14)")
-    add_global_flags(p)
+    p = subparsers.add_parser("normalize", help="Normalize a video clip to project format (H.264, yuv420p, bt709)")
+    p.add_argument("input", metavar="INPUT", help="Path to video file")
+    p.add_argument("--width", type=int, default=1920)
+    p.add_argument("--height", type=int, default=1080)
+    p.add_argument("--fps", type=int, default=30)
+    p.add_argument("--crf", type=int, default=16)
+    add_global_flags(p)  # adds --out, --json, --quiet
     p.set_defaults(func=handle)
 
 
 def handle(args):
-    if not os.path.isfile(args.input):
-        emit_error("not_found", f"File not found: {args.input}")
+    from lib.normalize import normalize, probe_video, is_normalized
+    from lib.common import require_file
 
-    cmd = [
-        sys.executable,
-        find_step("normalize"),
-        "--input", args.input,
-        "--target", args.target,
-        "--lufs", str(args.lufs),
-    ]
-    if args.out:
-        cmd += ["--out", args.out]
+    require_file(args.input)
+    out = args.out or args.input.rsplit(".", 1)[0] + "_normalized.mp4"
 
-    result = subprocess.run(cmd, capture_output=True, text=True)
-    emit(result, as_json=args.json, quiet=args.quiet)
+    info = probe_video(args.input)
+    if info and is_normalized(args.input, info, args.width, args.height, args.fps):
+        print(args.input)  # already conformant
+        return
+
+    normalize(args.input, out, args.width, args.height, args.fps, args.crf)

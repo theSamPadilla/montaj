@@ -928,6 +928,46 @@ async def save_workflow(name: str, body: dict = Body(...)):
     return body
 
 
+@router.post("/normalize")
+async def normalize_video(body: dict = Body(...)):
+    """Normalize a video file to project working format (H.264, yuv420p, bt709, 48kHz).
+
+    Request:  { "input": "/abs/path/to/video.mp4", "width": 1920, "height": 1080, "fps": 30, "crf": 16, "out": "/abs/path/to/output.mp4" }
+    Response: { "path": "/abs/path/to/output.mp4", "skipped": false }
+    """
+    input_path = body.get("input")
+    if not input_path or not Path(input_path).is_file():
+        raise HTTPException(400, detail={"error": "missing_input", "message": "'input' must be an absolute path to an existing file"})
+
+    width = int(body.get("width", 1920))
+    height = int(body.get("height", 1080))
+    fps = int(body.get("fps", 30))
+    crf = int(body.get("crf", 16))
+    out = body.get("out") or input_path.rsplit(".", 1)[0] + "_normalized.mp4"
+
+    def _run():
+        from lib.normalize import normalize, probe_video, is_normalized
+
+        info = probe_video(input_path)
+        if info is None:
+            raise HTTPException(500, detail={"error": "probe_error", "message": f"Cannot probe {input_path}"})
+
+        if is_normalized(input_path, info, width, height, fps):
+            return {"path": input_path, "skipped": True}
+
+        import io, contextlib
+        stdout_capture = io.StringIO()
+        try:
+            with contextlib.redirect_stdout(stdout_capture):
+                normalize(input_path, out, width, height, fps, crf)
+        except SystemExit:
+            raise HTTPException(500, detail={"error": "normalize_failed", "message": "Normalization failed — check ffmpeg and zscale availability"})
+
+        return {"path": stdout_capture.getvalue().strip() or out, "skipped": False}
+
+    return await asyncio.to_thread(_run)
+
+
 @router.post("/upload")
 async def upload_file(file: UploadFile):
     """Accept a browser file drop, save to workspace/_uploads/, return absolute path."""

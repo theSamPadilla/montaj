@@ -220,6 +220,8 @@ Add `--first-frame <path>` for chained mode (N-1's last frame).
 
 The prompt stored on `generation.prompt` is the **caller's composed string** (styleAnchor + scene prose in natural language) — NOT the wire string the connector produced after prepending its ref clause. The connector derives the ref clause deterministically from `refImages`, so regen can re-run the same caller prompt and reproduce the same wire string. Phase 7's regenerate flows (full-scene and subcut) pre-fill the prompt field from this.
 
+**Post-download normalization:** After a clip is saved, `save_clip_to_project` automatically probes it and normalizes to the project's resolution and fps (from `project.settings`) if they don't match. For example, Kling outputs 1280x720 H.264 clips, which are upscaled to the project resolution (typically 1920x1080). The normalized file is written alongside the original (`*_normalized.mp4`) and `clip.src` is updated to point to it. If normalization fails, the original clip is kept as-is.
+
 **Write `project.json` back IMMEDIATELY after each scene completes** — do not batch writes. The UI watches for changes via SSE and flips scene chips from "pending" → "done" in real time. If you wait until all scenes finish to write, the user sees no progress for minutes. Each `kling_generate` call returns → append the clip to `tracks[0]` → save `project.json` → move to the next result. When running scenes in parallel, save after EACH result lands (not after all parallel calls complete).
 
 **On failure:** record `storyboard.scenes[i].lastError = {ts: <ISO8601>, message: <error>}` and write `project.json` back immediately. Do NOT append to `tracks[0]`. Continue to the next scene. The UI updates in real-time via SSE.
