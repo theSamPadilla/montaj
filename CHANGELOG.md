@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.2.0
+## v2.0.0
 
 ### AI Video Generation
 - Full AI video pipeline: storyboarding, scene-level generation, and regeneration via Kling connector

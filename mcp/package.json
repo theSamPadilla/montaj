@@ -1,6 +1,6 @@
 {
   "name": "montaj-mcp",
-  "version": "0.2.0",
+  "version": "2.0.0",
   "description": "MCP server for montaj — exposes all step schemas as MCP tools",
   "type": "module",
   "bin": {
