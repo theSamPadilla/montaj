@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="Montaj.jpeg" alt="Montaj" width="200" />
+  <img src="https://raw.githubusercontent.com/theSamPadilla/montaj/main/Montaj.jpeg" alt="Montaj" width="200" />
 </p>
 
 # Montaj
