@@ -1,3 +1,5 @@
+> **Canonical docs:** https://docs.montaj.ag/cli — this file is a local quick-reference. Update the docs site in `../landing-montaj/docs/content/docs/cli.mdx` for any user-facing changes.
+
 # montaj — CLI
 
 > Distributed via Homebrew. Every operation the UI performs is available from the terminal.
@@ -40,6 +42,45 @@ montaj credentials --list                                     # show set/unset s
 ```bash
 montaj install whisper --model medium.en
 # Download a specific whisper model instead of the default base.en
+```
+
+### Dependency health check
+
+```bash
+montaj doctor
+# Check all system dependencies. Exit 0 = OK, exit 1 = issues.
+# Checks: ffmpeg (version + required filters via word-boundary match),
+#          ffprobe, node, python3, whisper (optional).
+# Required ffmpeg filters: zscale, tonemap, overlay, scale, format, amix, adelay
+# Recommended ffmpeg filters: sidechaincompress (audio ducking)
+```
+
+### Rebuild ffmpeg with zscale
+
+```bash
+montaj install ffmpeg
+# Rebuild ffmpeg with zscale (libzimg) for HDR normalization.
+# macOS/Homebrew only. Steps: install zimg, patch local Homebrew formula
+# to add --enable-libzimg, clear API cache, rebuild from source.
+# Not included in `montaj install all` — always an explicit opt-in.
+```
+
+### Normalize a video clip
+
+```bash
+montaj normalize video.mov
+# Normalize a video clip to project format:
+# H.264, yuv420p, bt709, project resolution/fps, 48kHz audio.
+# Creates _normalized.mp4 alongside the original.
+
+montaj normalize video.mov --width 1080 --height 1920
+# Explicit resolution
+
+montaj normalize video.mov --crf 18
+# Custom quality setting
+
+montaj normalize video.mov --out /tmp/normalized.mp4
+# Custom output path
 ```
 
 ### Upgrade dependencies
@@ -333,6 +374,9 @@ All steps accept `--out <path>` to set the output location. Run `montaj step <na
 | `kling-generate` | `--prompt <text>`, `--out <path>`, `--first-frame <img>`, `--last-frame <img>`, `--ref-image <img>` (repeatable, max 3), `--duration <3-15>`, `--negative-prompt <text>`, `--sound <on\|off>`, `--aspect-ratio <16:9\|9:16\|1:1>`, `--mode <std\|pro>` |
 | `analyze-media` | `<input>` (video/audio/image), `--prompt <text>`, `--model <id>`, `--json-output`, `--out <path>` |
 | `generate-image` | `--prompt <text>`, `--out <path>`, `--provider <gemini\|openai>`, `--ref-image <img>` (repeatable), `--size <WxH>`, `--aspect-ratio <ratio>` (Gemini only), `--model <id>` |
+| `doctor` | (no params) |
+| `install ffmpeg` | (no params) |
+| `normalize` | `<file>`, `--width <px>`, `--height <px>`, `--crf <n>`, `--out <path>` |
 
 ---
 

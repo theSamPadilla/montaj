@@ -1,3 +1,5 @@
+> **Canonical docs:** https://docs.montaj.ag/render — this file is a local quick-reference. Update the docs site in `../landing-montaj/docs/content/docs/render.mdx` for any user-facing changes.
+
 # Render Engine Architecture
 
 The render engine lives in `render/` and is invoked as:
@@ -82,56 +84,86 @@ This corruption happens during `avformat_open_input()`, leaving the demuxer stat
 
 ---
 
-## Step 7 — Compositing (compose.js)
+## Step 6.5 — Normalize pre-pass
 
-`compose()` builds a single ffmpeg `filter_complex` command that layers everything onto a black canvas.
+After `collectAllItems` (Step 2) and before `processVideoItems` (Step 3), the render engine runs a **normalize pre-pass** on all video items. This is enforcement point 3 — the render pipeline refuses to compose non-normalized sources.
 
-### Normal path vs chunked path
+Each video clip is checked and, if needed, converted to the project's working format:
+
+- **Codec:** H.264 (`libx264`)
+- **Pixel format:** `yuv420p`
+- **Color space:** BT.709 (HDR sources are tonemapped via `zscale` + `tonemap` if available, with a fallback path if `zscale` is missing)
+- **Resolution:** project resolution (e.g. 1080x1920)
+- **Frame rate:** project fps (e.g. 30)
+- **Audio:** 48 kHz, AAC
+
+The normalize step creates `_normalized.mp4` files alongside the originals — originals are never modified and are preserved for potential re-export at different settings. The `lib/normalize.py` module is the shared infrastructure backing this (also used by `project/init.py` for ingest-time normalization and `steps/ai_video.py` for generated clip normalization).
+
+After normalization, all sources entering the compose pipeline are guaranteed to share the same codec, pixel format, color space, resolution, and frame rate. This eliminates an entire class of filter graph bugs (mixed HDR/SDR, mismatched resolutions, incompatible pixel formats).
+
+---
+
+## Step 7 — Compositing (segment-based pipeline)
+
+Compositing uses a **segment-based pipeline** that replaces the previous monolithic `filter_complex` approach. The pipeline has three stages: plan, encode, concat.
+
+### Overview
 
 ```
-videoItems.length > CHUNK_VIDEO_THRESHOLD (5)?
-    yes → composeChunked()   splits timeline into 30s passes
-    no  → compose() directly
+normalized video items + Puppeteer segments
+    │
+    ├─ 1. segment-plan.js   → plan segments at clip/overlay boundaries
+    ├─ 2. encode-segment.js → encode each segment independently
+    ├─ 3. ffmpeg concat      → join segments via concat demuxer
+    └─ 4. mix-audio.js       → mix independent audio tracks (unchanged)
 ```
 
-**Critical:** `composeChunked` calls `compose()` with `_lossless: true` for each chunk. The `_lossless` flag suppresses the threshold check inside `compose()`, preventing infinite recursion. Never remove that guard.
+### Stage 1 — Segment planning (segment-plan.js)
 
-### Filter graph construction
+The timeline is divided into **segments** at every clip and overlay boundary. Each segment is a contiguous time range where the set of active layers does not change. Within a segment, the stack of layers is fixed — N video/image items ordered by `trackIdx`, plus any overlays and captions active during that time window.
+
+Boundary snapping ensures clean cuts — segment boundaries align to frame boundaries at the project frame rate.
+
+### Stage 2 — Segment encoding (encode-segment.js)
+
+Each segment is encoded independently with its own ffmpeg call. The filter graph for a single segment layers items by `trackIdx` (lowest first), then composites overlays and captions on top. Because all sources are pre-normalized to the same format, the per-segment filter graph is simple — no format conversion, no resolution scaling, no HDR handling.
+
+Segments are encoded in parallel using the worker pool.
+
+### Stage 3 — Concat via demuxer
+
+All encoded segments are joined using the **ffmpeg concat demuxer** with:
 
 ```
-color=black (canvas)
-    │
-    ├─ format=yuv420p10le
-    │
-    ├─ [each video item]  setpts → scale → overlay (enable=between(t,...))
-    │       └─ audio: asetpts → adelay → amix
-    │
-    ├─ [each Puppeteer segment]  format=yuva420p → scale → overlay
-    │
-    └─ [music if present]  volume → amix  (+ sidechaincompress if ducking)
+-c:v copy    # no re-encode — segments already share format
+-c:a aac     # audio re-encoded to ensure consistent stream format
 ```
 
-### Output duration cap: `-t totalDuration`
+This is a near-instant operation since the video stream is copied verbatim.
 
-The compose command adds `-t ${totalDuration}` to the ffmpeg output. This is required.
+### Stage 4 — Audio mixing (mix-audio.js)
 
-`overlay=shortest=0` keeps the base video running until the LONGEST input ends. A Puppeteer segment that spans a chunk boundary (e.g., overlay starts at 27.7s and the chunk ends at 30s, but the segment file is 3.1s long) extends past the canvas's intended end. Without the cap, the chunk output is longer than 30s — typically 27–30 extra frames — which causes audio/video desync that compounds across chunk boundaries.
+Independent audio tracks (music, voiceover, sound effects) are mixed in a final pass. This stage is unchanged from the previous pipeline — it handles volume, ducking (`sidechaincompress`), delay offsets, and in/out points.
 
-`-t totalDuration` stops the encoder at exactly the canvas duration regardless of how long any individual input runs.
+### Debugging: `MONTAJ_KEEP_SEGMENTS=1`
 
-### Clip seeking: `-ss` / `-to`
+By default, intermediate segment files are cleaned up after a successful concat. Set the environment variable `MONTAJ_KEEP_SEGMENTS=1` to preserve them for inspection:
+
+```bash
+MONTAJ_KEEP_SEGMENTS=1 montaj render
+```
+
+Segment files are written to `render/segments/` within the project directory.
+
+### Clip seeking: `-ss` / `-t`
 
 Each video clip is fed as:
 
 ```
--ss <inPoint> -to <outPoint> -i <src>
+-ss <actualInPoint> -t <duration> -i <src>
 ```
 
-**Use `-to outPoint` (absolute file timestamp), not `-t duration`.** Fast seek (`-ss` before `-i`) lands on the nearest keyframe before `inPoint`. `-t` measures duration from that keyframe, not from `inPoint` — if the keyframe is 0.3s early, the clip is silently trimmed 0.3s short at the end. `-to` stops at the absolute file timestamp regardless of where the keyframe landed.
-
-### Lossless chunk intermediates
-
-When chunking, each pass writes an FFV1 MKV intermediate. These use `-reserve_index_space 1000000` to ensure a proper seek index is written at the start, required by ffmpeg's concat demuxer.
+**Use `-t duration` (not `-to`).** After normalization, all clips have frequent keyframes (every 1s), so `-ss` lands accurately. `-t` stops after reading `duration` seconds of content, or at EOF — whichever comes first. This is safer than `-to` for clips where the source is shorter than the timeline slot (e.g., a 24fps clip normalized to 30fps may lose frames at the tail). With `-to`, ffmpeg would hold the last frame past EOF; `-t` simply stops.
 
 ### Output encoding
 
@@ -141,30 +173,7 @@ Final H.264 MP4:
 libx264 -preset fast -crf 18 -pix_fmt yuv420p
 ```
 
-Color metadata is stamped **inside the filter graph** via a `setparams` filter appended as the last step before the output:
-
-```
-setparams=colorspace=bt709:color_trc=arib-std-b67:color_primaries=bt2020
-```
-
-#### Why setparams, not output stream flags
-
-The filter graph starts with a `color=black` canvas which has no color metadata. ffmpeg propagates the canvas's unset color info to the output, silently overriding any `-colorspace`/`-color_trc`/`-color_primaries` flags set on the output stream. `setparams` is applied within the filter chain itself, so it takes precedence.
-
-**This applies in two places:**
-
-1. **Non-chunked path** (`compose()`): `setparams` is appended as the last filter step before `[vout_sp]` and the output is mapped from that label.
-2. **Chunked path** (`concatVideoFiles()`): the lossless FFV1 MKV chunks go through a `color=black` filter graph with `_lossless: true` (no `setparams`), so their color metadata is unset. The output stream flags in `concatVideoFiles` do NOT override unset source metadata — only `-vf setparams=...` does. A `-vf` filter is therefore added to the final H.264 re-encode in `concatVideoFiles`.
-
-#### Why these specific values
-
-iPhone HEVC source footage is BT.2020/HLG 10-bit (`color_space: bt2020nc`, `color_transfer: arib-std-b67`, `color_primaries: bt2020`). The filter graph does not apply any gamma conversion — the implicit 10-bit→8-bit downscale just truncates values. So the output pixel values are still HLG-encoded.
-
-- `colorspace=bt709` — corrects the YCbCr matrix coefficient (bt2020nc → bt709). Without this, the yellowish cast from the wrong matrix is visible.
-- `color_trc=arib-std-b67` — preserves the HLG transfer function. If this were set to `bt709`, players would apply SDR gamma to HLG-encoded values → washed/pale output.
-- `color_primaries=bt2020` — preserves the source primaries. These are kept as-is; only the matrix is corrected.
-
-**Do not add zscale or tonemap filters** — tested and the raw + metadata approach produces better visual output than any tone-mapping chain (hable, bt2390 etc.).
+Because all sources are normalized to BT.709/SDR before compositing, no color metadata stamping or format conversion is needed in the compose step. The output inherits correct color metadata from the normalized inputs.
 
 ---
 
@@ -173,11 +182,10 @@ iPhone HEVC source footage is BT.2020/HLG 10-bit (`color_space: bt2020nc`, `colo
 ```
 <project>/
 └── render/
-    ├── segments/           Puppeteer FFV1/MKV files (wiped each run)
-    │   ├── <id>-chunk-0.mkv
+    ├── segments/           Puppeteer FFV1/MKV files + composed segment files
+    │   ├── <id>-chunk-0.mkv    (Puppeteer renders)
+    │   ├── seg-000.mp4         (composed segments, cleaned unless MONTAJ_KEEP_SEGMENTS=1)
     │   └── ...
-    ├── output_chunk0.mkv   Lossless compose intermediates (if chunked)
-    ├── output_chunk1.mkv
     └── final.mp4           Final output
 ```
 
@@ -190,8 +198,6 @@ iPhone HEVC source footage is BT.2020/HLG 10-bit (`color_space: bt2020nc`, `colo
 | `Runtime.callFunctionOn timed out` | Browser memory-saturated after many segments | Browser recycles every 5 jobs; reduce `--workers` if still failing |
 | `Network.enable timed out` | Chromium failed to launch (memory pressure) | Reduce `--workers`; increase `protocolTimeout` in `renderer.js` |
 | `Unknown-sized element` / `Slice pointer chain broken` | Default MKV Cluster EBML unknown-size encoding under concurrent decode | Fixed by `-cluster_size_limit 2000000` in the MKV muxer (Puppeteer segment encoding) |
-| `Maximum call stack size exceeded` in compose | Recursive `composeChunked → compose → composeChunked` | Fixed by `!_lossless` guard in the chunk threshold check |
-| Clips trimmed short at cut points | `-t duration` measured from keyframe, not `inPoint` | Fixed by using `-to outPoint` instead |
-| Pale/yellowish output color | `color=black` canvas clears color metadata; output stream flags (`-colorspace` etc.) cannot override unset source metadata | Fixed via `setparams=colorspace=bt709:color_trc=arib-std-b67:color_primaries=bt2020` inside the filter graph for the non-chunked path, and via `-vf setparams=...` in `concatVideoFiles` for the chunked path |
+| Clips trimmed short at cut points | Sparse keyframes caused seek overshoot | Fixed by normalize pre-pass (keyframes every 1s) + `-t duration` in segment encoder |
+| Mixed HDR/SDR in compose causes color shifts | HDR and SDR sources with different pixel formats, color spaces, or transfer functions in the same filter graph | Fixed by normalize pre-pass — all sources converted to H.264/yuv420p/bt709 before compose |
 | `no index at the end` / `frame size > 2max_distance and no checksum` / `Invalid data found when processing input` (NUT demux) | NUT muxer fails to write end-of-file seek index for large files; backward timestamp scan hits large frames without checksums, corrupting demuxer state | Fixed by switching Puppeteer segments from NUT to MKV with `-cluster_size_limit 2000000 -reserve_index_space 1000000 -g 1` |
-| Audio drifts out of sync / final video too long | `overlay=shortest=0` lets Puppeteer NUT files that span a chunk boundary extend the chunk output beyond its intended duration | Fixed by `-t totalDuration` on the ffmpeg output in `compose()`, capping each pass at exactly the canvas duration |

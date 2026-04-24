@@ -1,3 +1,5 @@
+> **Canonical docs:** https://docs.montaj.ag/connectors — this file is a local quick-reference. Update the docs site in `../landing-montaj/docs/content/docs/connectors.mdx` for any user-facing changes.
+
 # Connectors
 
 Connectors are Python modules in `connectors/` that wrap external vendor APIs. They turn a vendor's SDK or HTTP endpoints into a clean Python function that a Montaj step can call.

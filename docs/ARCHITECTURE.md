@@ -581,10 +581,15 @@ For each item in captions + overlays tracks:
   3. ffmpeg: encode PNG sequence → transparent video segment
 
 Then:
-  ffmpeg filter graph:
-    - trim + concat source clips (per project.json video track)
-    - overlay each transparent segment at its start timestamp
-    - mix audio track
+  Normalize pre-pass:
+    - All video sources → H.264, yuv420p, bt709, project resolution/fps, 48kHz audio
+    - Creates _normalized.mp4 alongside originals (originals preserved)
+
+  Segment-based composition:
+    - Plan segments at clip/overlay boundaries (segment-plan.js)
+    - Encode each segment independently: N layers by trackIdx + overlays + captions (encode-segment.js)
+    - Concat via ffmpeg concat demuxer (-c:v copy, -c:a aac re-encode)
+    - Mix independent audio tracks in final pass (mix-audio.js)
     → final MP4 (H.264, CRF 18)
 ```
 
@@ -735,10 +740,20 @@ Full details: `docs/output-convention.md`
 
 The agent is the editor. It decides the execution order, param values, and whether to deviate from the workflow plan based on what it finds.
 
+### Normalize
+
+After clip copy/ingest and before compose, all video sources are **normalized** to a uniform working format (H.264, yuv420p, bt709, project resolution/fps, 48 kHz audio). This runs at three enforcement points:
+
+1. **Ingest** (`project/init.py`) — when clips are added to a project
+2. **AI video** (`steps/ai_video.py`) — when generated clips are downloaded
+3. **Render** (`render/render.js`) — pre-pass before compose (safety net)
+
+The shared implementation lives in `lib/normalize.py` — a single module used by all three call sites. It creates `_normalized.mp4` alongside the original file; originals are never modified.
+
 ### Render pass
 
 ```
-project.json [final] → Render Engine → final MP4
+project.json [final] → Normalize pre-pass → Segment-based compose → Audio mix → final MP4
 ```
 
 ### Hard dependencies
@@ -769,10 +784,21 @@ See `CONTRIBUTING.md` → "Adding a shared enum" for the developer workflow (edi
 
 | Tool | Purpose |
 |------|---------|
-| `ffmpeg` + `ffprobe` | Core video processing |
+| `ffmpeg` + `ffprobe` | Core video processing. **Strongly recommended:** build with `zscale` (requires libzimg) for accurate HDR-to-SDR tonemap during normalization. Without it, a fallback tonemap runs with degraded colors. |
 | `whisper.cpp` | Local speech-to-text (word-level timestamps) |
 | `yt-dlp` | YouTube downloads |
 | `Python 3.x` | Script + step runtime |
 | `Node.js` | Render engine (React + Puppeteer) + UI server (Vite + React) |
 
-Install: `brew install montaj`
+### Shared infrastructure
+
+| Module | Purpose |
+|--------|---------|
+| `lib/normalize.py` | Video normalization (H.264, yuv420p, bt709, project resolution/fps, 48 kHz audio). Used by `project/init.py`, `steps/ai_video.py`, and `render/render.js`. |
+
+### Dependency management
+
+- `montaj doctor` — check all system dependencies (ffmpeg + required filters, ffprobe, node, python3, whisper). Exit 0 = OK, exit 1 = issues. Run after install to verify setup.
+- `montaj install ffmpeg` — rebuild ffmpeg with `zscale` (libzimg) for HDR normalization. macOS/Homebrew only. Automates zimg install, formula patch, and source rebuild.
+
+Install: `brew install montaj` then `montaj doctor` to verify.

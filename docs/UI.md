@@ -1,3 +1,5 @@
+> **Canonical docs:** https://docs.montaj.ag/ui — this file is a local quick-reference. Update the docs site in `../landing-montaj/docs/content/docs/ui.mdx` for any user-facing changes.
+
 # montaj — UI
 
 > An optional browser-based interface that wraps the entire pipeline. Not a final review step — the UI is the control plane.

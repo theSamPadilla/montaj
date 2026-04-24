@@ -1,3 +1,5 @@
+> **Canonical docs:** https://docs.montaj.ag — this file is a local quick-reference. Update the docs site in `../landing-montaj/docs/content/docs/` for any user-facing changes.
+
 # Profiles
 
 A creator profile captures the visual and editorial identity of a single social media account. Once created, it shapes every editing decision for that account's projects — pacing targets, color palette, overlay assets, and editorial direction are all automatically in scope.
