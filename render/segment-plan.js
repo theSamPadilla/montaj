@@ -44,7 +44,8 @@ export function planSegments(allItems, puppeteerSegs, vw, vh, fps) {
   const sorted = [...boundaries].sort((a, b) => a - b)
   const snapped = [sorted[0]]
   for (let i = 1; i < sorted.length; i++) {
-    if (sorted[i] - snapped[snapped.length - 1] <= frameDur) {
+    const gap = sorted[i] - snapped[snapped.length - 1]
+    if (gap > 0 && gap < frameDur) {
       // Close enough — snap to the earlier boundary (don't add a new one)
       continue
     }

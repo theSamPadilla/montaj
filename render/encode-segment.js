@@ -102,11 +102,14 @@ export function encodeSegment(segment, outputPath, opts = {}) {
       const inPt = item.inPoint ?? 0
       const seekOffset = Math.max(0, start - item.start)
       const actualIn = inPt + seekOffset
-      const actualOut = actualIn + duration
+      // Use -t (duration) not -to (absolute timestamp). If the source file is shorter
+      // than the timeline slot (e.g. 24fps clip normalized to 30fps loses ~0.8s),
+      // -to would read past EOF and ffmpeg holds the last frame. -t stops after
+      // reading `duration` seconds of content, or at EOF — whichever comes first.
       // ProRes 4444 (.mov from remove-bg) has alpha — use format=auto
       const ovFmt = item.src.endsWith('.mov') ? ':format=auto' : ':format=yuv420'
 
-      inputs.push('-ss', String(actualIn), '-to', String(actualOut), '-i', item.src)
+      inputs.push('-ss', String(actualIn), '-t', String(duration), '-i', item.src)
       filterParts.push(`[${idx}:v]setpts=PTS-STARTPTS,scale=${scaledW}:${scaledH}[vid${idx}]`)
       let src = `[vid${idx}]`
       if (Math.abs((item.opacity ?? 1) - 1) > 0.001) {
