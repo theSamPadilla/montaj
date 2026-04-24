@@ -3,6 +3,7 @@
 import os, platform, subprocess, sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "lib"))
 import models as _models
+from cli.help import bold, green, red, yellow, cyan, dim
 
 WHISPER_VERSION = "1.7.4"  # update to latest if needed
 WHISPER_BINARY_URLS = {
@@ -30,7 +31,8 @@ def register(subparsers):
     sub.add_parser("demucs", help="Demucs stem separation + htdemucs model weights")
     sub.add_parser("connectors", help="pyjwt + requests + google-genai for external API steps")
     sub.add_parser("ui",     help="npm deps + UI build")
-    sub.add_parser("all",    help="Everything above")
+    sub.add_parser("ffmpeg", help="Install/upgrade ffmpeg with zscale (libzimg) for HDR video support")
+    sub.add_parser("all",    help="Everything above (except ffmpeg — run separately)")
 
     _parser.set_defaults(func=handle)
 
@@ -56,8 +58,10 @@ def handle(args):
         ok &= _ensure_connectors()
     elif args.component == "ui":
         ok &= _ensure_ui()
+    elif args.component == "ffmpeg":
+        ok = _ensure_ffmpeg_zscale()
     if ok:
-        print("\nDone.")
+        print(f"\n{green('Done.')}")
     else:
         sys.exit(1)
 
@@ -68,7 +72,7 @@ def _ensure_whisper(model: str = "base.en") -> bool:
     machine = platform.machine()
     key = (system, machine)
     if key not in WHISPER_BINARY_URLS:
-        print(f"error: no pre-built whisper binary for {system}/{machine}", file=sys.stderr)
+        print(f"{red('error:')} no pre-built whisper binary for {dim(f'{system}/{machine}')}", file=sys.stderr)
         return False
     url, checksum = WHISPER_BINARY_URLS[key]
     bin_path = _models.model_path("whisper", "whisper-cli")
@@ -81,26 +85,26 @@ def _ensure_whisper(model: str = "base.en") -> bool:
     needs_upgrade = installed_version and installed_version != WHISPER_VERSION
     if needs_install or needs_upgrade:
         if needs_upgrade:
-            print(f"\u2192 upgrading whisper-cpp {installed_version} \u2192 {WHISPER_VERSION} ({system}/{machine})\u2026")
+            print(f"{cyan('→')} upgrading {bold('whisper-cpp')} {installed_version} → {WHISPER_VERSION} {dim(f'({system}/{machine})')}\u2026")
         else:
-            print(f"\u2192 downloading whisper-cpp binary ({system}/{machine})\u2026")
+            print(f"{cyan('→')} downloading {bold('whisper-cpp')} binary {dim(f'({system}/{machine})')}\u2026")
         try:
             _install_whisper_binary(url, checksum, bin_path)
-            print("\u2713 whisper-cpp binary installed")
+            print(f"{green('✓')} whisper-cpp binary installed")
         except RuntimeError as e:
             print(str(e), file=sys.stderr)
             return False
     else:
-        print(f"\u2713 whisper-cpp {WHISPER_VERSION}")
+        print(f"{green('✓')} whisper-cpp {WHISPER_VERSION}")
     if not is_downloaded(model):
-        print(f"\u2192 downloading whisper model {model}\u2026")
+        print(f"{cyan('→')} downloading whisper model {bold(model)}\u2026")
         try:
             _download_model(model)
-            print(f"\u2713 whisper model {model}")
+            print(f"{green('✓')} whisper model {bold(model)}")
         except (Exception, SystemExit):
             return False
     else:
-        print(f"\u2713 whisper model {model}")
+        print(f"{green('✓')} whisper model {bold(model)}")
     return True
 
 
@@ -157,30 +161,30 @@ def _install_whisper_binary(url: str, checksum, bin_path: str):
 
 
 def _ensure_demucs() -> bool:
-    print("\u2192 installing demucs deps\u2026")
+    print(f"{cyan('→')} installing {bold('demucs')} deps\u2026")
     r = subprocess.run([sys.executable, "-m", "pip", "install", "-e", ".[demucs]"])
     if r.returncode != 0:
-        print("error: pip install .[demucs] failed", file=sys.stderr)
+        print(f"{red('error:')} {dim('pip install .[demucs]')} failed", file=sys.stderr)
         return False
-    print("\u2713 demucs deps installed")
+    print(f"{green('✓')} demucs deps installed")
     # Pre-warm: downloads htdemucs model weights on first use
-    print("\u2192 downloading htdemucs model weights\u2026")
+    print(f"{cyan('→')} downloading {bold('htdemucs')} model weights\u2026")
     try:
         from demucs.pretrained import get_model
         get_model("htdemucs")
-        print("\u2713 htdemucs model ready")
+        print(f"{green('✓')} htdemucs model ready")
     except Exception as e:
-        print(f"warning: could not pre-warm demucs model: {e}", file=sys.stderr)
+        print(f"{yellow('warning:')} could not pre-warm demucs model: {e}", file=sys.stderr)
     return True
 
 
 def _ensure_rvm() -> bool:
-    print("\u2192 installing rvm deps (torch, torchvision, av)\u2026")
+    print(f"{cyan('→')} installing {bold('rvm')} deps {dim('(torch, torchvision, av)')}\u2026")
     r = subprocess.run([sys.executable, "-m", "pip", "install", "-e", ".[rvm]"])
     if r.returncode != 0:
-        print("error: pip install .[rvm] failed", file=sys.stderr)
+        print(f"{red('error:')} {dim('pip install .[rvm]')} failed", file=sys.stderr)
         return False
-    print("\u2713 rvm deps installed")
+    print(f"{green('✓')} rvm deps installed")
     # Pre-fetch all model weights so there are no lazy downloads at runtime
     RVM_WEIGHTS = {
         "rvm_mobilenetv3.pth": "https://github.com/PeterL1n/RobustVideoMatting/releases/download/v1.0.0/rvm_mobilenetv3.pth",
@@ -189,21 +193,21 @@ def _ensure_rvm() -> bool:
     for filename, url in RVM_WEIGHTS.items():
         try:
             _models.ensure_model("rvm", filename, url, None)
-            print(f"\u2713 {filename}")
+            print(f"{green('✓')} {dim(filename)}")
         except Exception as e:
-            print(f"warning: could not pre-fetch {filename}: {e}", file=sys.stderr)
+            print(f"{yellow('warning:')} could not pre-fetch {dim(filename)}: {e}", file=sys.stderr)
     return True
 
 
 def _ensure_connectors() -> bool:
     from cli.main import MONTAJ_ROOT
-    print("\u2192 installing connector deps (pyjwt, requests, google-genai, openai)\u2026")
+    print(f"{cyan('→')} installing {bold('connector')} deps {dim('(pyjwt, requests, google-genai, openai)')}\u2026")
     r = subprocess.run([sys.executable, "-m", "pip", "install", "-e", ".[connectors]"],
                        cwd=MONTAJ_ROOT)
     if r.returncode != 0:
-        print("error: pip install .[connectors] failed", file=sys.stderr)
+        print(f"{red('error:')} {dim('pip install .[connectors]')} failed", file=sys.stderr)
         return False
-    print("\u2713 connector deps installed")
+    print(f"{green('✓')} connector deps installed")
     return True
 
 
@@ -211,22 +215,134 @@ def _ensure_connectors() -> bool:
 def _ensure_ui() -> bool:
     import shutil
     if not shutil.which("npm"):
-        print("error: npm not found \u2014 install Node.js >=18 first: https://nodejs.org", file=sys.stderr)
+        print(f"{red('error:')} npm not found \u2014 install Node.js >=18 first: {cyan('https://nodejs.org')}", file=sys.stderr)
         return False
     root = os.path.join(os.path.dirname(__file__), "..", "..")
     for name, directory in [("render engine", "render"), ("UI", "ui")]:
         path = os.path.normpath(os.path.join(root, directory))
-        print(f"\u2192 npm install ({name})\u2026")
+        print(f"{cyan('→')} npm install ({bold(name)})\u2026")
         r = subprocess.run(["npm", "install", "--prefix", path])
         if r.returncode != 0:
-            print(f"error: npm install failed for {directory}/", file=sys.stderr)
+            print(f"{red('error:')} npm install failed for {dim(directory + '/')}", file=sys.stderr)
             return False
-        print(f"\u2713 {name} deps installed")
+        print(f"{green('✓')} {name} deps installed")
     ui_path = os.path.normpath(os.path.join(root, "ui"))
-    print("\u2192 npm run build (UI)\u2026")
+    print(f"{cyan('→')} npm run build ({bold('UI')})\u2026")
     r = subprocess.run(["npm", "run", "build", "--prefix", ui_path])
     if r.returncode != 0:
-        print("error: npm run build failed for ui/", file=sys.stderr)
+        print(f"{red('error:')} npm run build failed for {dim('ui/')}", file=sys.stderr)
         return False
-    print("\u2713 UI built")
+    print(f"{green('✓')} UI built")
     return True
+
+
+def _ensure_ffmpeg_zscale() -> bool:
+    """Ensure ffmpeg is installed with zscale (libzimg) support.
+
+    Steps:
+    1. Install zimg via Homebrew
+    2. Locate the Homebrew ffmpeg formula file
+    3. Patch it to add --enable-libzimg and depends_on "zimg" if not present
+    4. Clear Homebrew API cache (prevents brew from ignoring local edits)
+    5. Rebuild ffmpeg from source
+    6. Verify zscale is available
+    """
+    import shutil, re, platform
+    # Note: os, subprocess already imported at module level in install.py.
+
+    if platform.system() != "Darwin":
+        print(f"{yellow('⚠')} montaj install ffmpeg currently supports macOS (Homebrew) only.")
+        print(f"  On Linux, install ffmpeg with {bold('libzimg')} from your package manager or build from source.")
+        return False
+
+    if not shutil.which("brew"):
+        print(f"{red('✗')} Homebrew not found. Install from {cyan('https://brew.sh')}")
+        return False
+
+    # Check if zscale already works
+    r = subprocess.run(["ffmpeg", "-filters"], capture_output=True, text=True, timeout=5)
+    if r.returncode == 0 and re.search(r'\bzscale\b', r.stdout or ""):
+        print(f"{green('✓')} ffmpeg already has zscale \u2014 nothing to do")
+        return True
+
+    # 1. Install zimg
+    print(f"{cyan('→')} installing {bold('zimg')}...")
+    r = subprocess.run(["brew", "install", "zimg"])
+    if r.returncode != 0:
+        print(f"{red('✗')} {dim('brew install zimg')} failed")
+        return False
+    print(f"{green('✓')} zimg installed")
+
+    # 2. Find the ffmpeg formula file
+    # Homebrew 4.x uses the API by default and may not have homebrew-core tapped locally.
+    # Tap it first to ensure the formula file exists on disk.
+    r = subprocess.run(["brew", "--prefix"], capture_output=True, text=True)
+    brew_prefix = r.stdout.strip()
+    formula_path = os.path.join(brew_prefix, "Library", "Taps", "homebrew",
+                                "homebrew-core", "Formula", "f", "ffmpeg.rb")
+    if not os.path.isfile(formula_path):
+        print(f"{cyan('→')} tapping {bold('homebrew/core')} (needed for formula editing)...")
+        subprocess.run(["brew", "tap", "homebrew/core"], capture_output=True)
+    if not os.path.isfile(formula_path):
+        print(f"{red('✗')} ffmpeg formula not found at {dim(formula_path)}")
+        print(f"  Try: {dim('brew tap homebrew/core')}")
+        return False
+
+    # 3. Patch the formula
+    print(f"{cyan('→')} patching {dim(formula_path)}...")
+    with open(formula_path) as f:
+        content = f.read()
+    patched = False
+
+    if '--enable-libzimg' not in content:
+        # Add --enable-libzimg after --enable-libx264 (or any existing --enable- line)
+        content = re.sub(
+            r'(--enable-libx264)',
+            r'\1\n      --enable-libzimg',
+            content, count=1
+        )
+        patched = True
+
+    if 'depends_on "zimg"' not in content:
+        # Add depends_on "zimg" after depends_on "x264"
+        content = re.sub(
+            r'(depends_on "x264")',
+            r'\1\n  depends_on "zimg"',
+            content, count=1
+        )
+        patched = True
+
+    if patched:
+        with open(formula_path, "w") as f:
+            f.write(content)
+        print(f"{green('✓')} formula patched")
+    else:
+        print(f"{green('✓')} formula already has libzimg")
+
+    # 4. Clear API cache
+    cache_file = os.path.expanduser("~/Library/Caches/Homebrew/api/formula.jws.json")
+    if os.path.isfile(cache_file):
+        os.remove(cache_file)
+        print(f"{green('✓')} cleared Homebrew API cache")
+
+    # 5. Rebuild ffmpeg from source
+    print(f"{cyan('→')} rebuilding {bold('ffmpeg')} from source {dim('(this takes 1-3 minutes)')}...")
+    env = os.environ.copy()
+    env["HOMEBREW_NO_INSTALL_FROM_API"] = "1"
+    env["HOMEBREW_NO_AUTO_UPDATE"] = "1"
+    r = subprocess.run(
+        ["brew", "reinstall", "--formula", formula_path, "--build-from-source"],
+        env=env
+    )
+    if r.returncode != 0:
+        print(f"{red('✗')} ffmpeg rebuild failed")
+        return False
+
+    # 6. Verify
+    r = subprocess.run(["ffmpeg", "-filters"], capture_output=True, text=True, timeout=5)
+    if r.returncode == 0 and re.search(r'\bzscale\b', r.stdout or ""):
+        print(f"{green('✓')} ffmpeg rebuilt with zscale support")
+        return True
+    else:
+        print(f"{red('✗')} ffmpeg rebuilt but zscale still not found \u2014 check build output above")
+        return False

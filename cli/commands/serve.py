@@ -5,6 +5,7 @@ import sys
 
 from cli.main import add_global_flags
 from cli.deps import check_deps
+from cli.help import bold, green, yellow, cyan, dim, red
 
 
 def register(subparsers):
@@ -26,18 +27,18 @@ def handle(args):
 
     missing = check_deps()
     if missing:
-        print("error: missing dependencies:", file=sys.stderr)
+        print(red("error: missing dependencies:"), file=sys.stderr)
         for m in missing:
-            print(f"  • {m}", file=sys.stderr)
-        print("\nRun: montaj install", file=sys.stderr)
+            print(red(f"  • {m}"), file=sys.stderr)
+        print(f"\nRun: {bold('montaj install')}", file=sys.stderr)
         sys.exit(1)
 
     host = "0.0.0.0" if args.network else "127.0.0.1"
 
     if args.network:
         print(
-            "WARNING: server is listening on all network interfaces — "
-            "all devices on your local network can reach this server.",
+            yellow("WARNING: server is listening on all network interfaces — "
+                   "all devices on your local network can reach this server."),
             file=sys.stderr,
         )
 

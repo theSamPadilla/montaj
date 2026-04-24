@@ -4,6 +4,8 @@ import os, sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "lib"))
 import models as _models
 
+from cli.help import bold, green, yellow, cyan, dim
+
 AVAILABLE = {
     "tiny": 39, "tiny.en": 39,
     "base": 74, "base.en": 74,
@@ -43,16 +45,16 @@ def handle(args):
 
 
 def _list():
-    print(f"{'MODEL':<12}  {'SIZE':>7}  STATUS")
-    print("-" * 32)
+    print(bold(f"{'MODEL':<12}  {'SIZE':>7}  STATUS"))
+    print(dim("-" * 32))
     for name, size_mb in AVAILABLE.items():
-        status = "downloaded" if is_downloaded(name) else "not downloaded"
-        print(f"{name:<12}  {size_mb:>5} MB  {status}")
+        status = green("downloaded") if is_downloaded(name) else yellow("not downloaded")
+        print(f"{bold(f'{name:<12}')}  {size_mb:>5} MB  {status}")
 
 
 def _download(name: str):
     url = f"{HF_BASE}/ggml-{name}.bin"
     checksum = CHECKSUMS.get(name)
-    print(f"Downloading whisper model {name} (~{AVAILABLE[name]} MB)…")
+    print(f"Downloading whisper model {bold(name)} (~{AVAILABLE[name]} MB)…")
     dest = _models.ensure_model("whisper", f"ggml-{name}.bin", url, checksum)
-    print(f"Saved to {dest}")
+    print(f"Saved to {dim(dest)}")

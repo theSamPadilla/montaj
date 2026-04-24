@@ -42,6 +42,7 @@ def main():
         remove_bg,
         kling_generate, analyze_media, generate_image, generate_voiceover,
         generate_music,
+        doctor,
     )
 
     parser = argparse.ArgumentParser(
@@ -99,6 +100,7 @@ def main():
     regen.register(subparsers)
     mcp.register(subparsers)
     models.register(subparsers)
+    doctor.register(subparsers)
     create_step.register(subparsers)
     validate.register(subparsers)
     install.register(subparsers)
