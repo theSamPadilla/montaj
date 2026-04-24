@@ -86,11 +86,12 @@ def _probe_max_keyframe_interval(path):
     return max_gap
 
 
-def is_normalized(path, info, target_w, target_h, target_fps):
+def is_normalized(path, info, target_w, target_h):
     """Returns True if the file already matches the project working format.
     Shortcut: files ending in _normalized.mp4 are assumed conformant (we produced them).
-    Otherwise probes codec, resolution, pix_fmt, color, fps, audio sample rate,
-    and keyframe interval."""
+    Otherwise probes codec, resolution, pix_fmt, color, audio sample rate,
+    and keyframe interval. FPS is NOT checked — the segment encoder handles
+    fps conversion at render time, preserving source duration."""
     if path.endswith("_normalized.mp4"):
         return True
     return (
@@ -99,7 +100,6 @@ def is_normalized(path, info, target_w, target_h, target_fps):
         and info["height"] == target_h
         and info["pix_fmt"] == "yuv420p"
         and info["color_transfer"] not in ("arib-std-b67", "smpte2084")
-        and info["fps"] == target_fps
         and info["has_audio"]
         and info.get("audio_sample_rate") == 48000
         and info.get("max_keyframe_interval", 999) <= 2.0
@@ -135,15 +135,17 @@ def _build_tonemap_vf(width, height, use_zscale):
                 f"format=yuv420p")
 
 
-def normalize(input_path, out_path, width, height, fps, crf):
+def normalize(input_path, out_path, width, height, crf=16):
     info = probe_video(input_path)
     if info is None:
         fail("probe_error", f"Cannot probe {input_path}")
 
-    if is_normalized(input_path, info, width, height, fps):
+    if is_normalized(input_path, info, width, height):
         progress("Already conformant, skipping normalize")
         print(input_path)
         return
+
+    source_fps = info["fps"] or 30  # use source fps for keyframe interval
 
     # Build video filter chain
     _used_fallback_tonemap = False
@@ -163,7 +165,7 @@ def normalize(input_path, out_path, width, height, fps, crf):
         "-vf", vf,
         "-color_primaries", "bt709", "-color_trc", "bt709", "-colorspace", "bt709",
         "-c:v", "libx264", "-crf", str(crf), "-preset", "slow",
-        "-r", str(fps), "-g", str(fps), "-keyint_min", str(fps),
+        "-g", str(source_fps), "-keyint_min", str(source_fps),
         "-c:a", "aac", "-b:a", "192k", "-ar", "48000",
         "-movflags", "+faststart",
         out_path,
@@ -179,7 +181,7 @@ def normalize(input_path, out_path, width, height, fps, crf):
 
     progress(f"Normalizing: {info['codec']} {info['width']}x{info['height']} "
              f"{info['pix_fmt']} {info['color_transfer']} {info['fps']}fps → "
-             f"h264 {width}x{height} yuv420p bt709 {fps}fps 48kHz")
+             f"h264 {width}x{height} yuv420p bt709 {source_fps}fps 48kHz")
     r = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
     if r.returncode != 0:
         fail("encode_error", f"ffmpeg normalize failed:\n{(r.stderr or '')[-500:]}")
@@ -199,14 +201,13 @@ def main():
     p.add_argument("--input", required=True)
     p.add_argument("--width", type=int, default=1920)
     p.add_argument("--height", type=int, default=1080)
-    p.add_argument("--fps", type=int, default=30)
     p.add_argument("--crf", type=int, default=16)
     p.add_argument("--out", default=None)
     args = p.parse_args()
 
     require_file(args.input)
     out = args.out or args.input.rsplit(".", 1)[0] + "_normalized.mp4"
-    normalize(args.input, out, args.width, args.height, args.fps, args.crf)
+    normalize(args.input, out, args.width, args.height, args.crf)
 
 
 if __name__ == "__main__":

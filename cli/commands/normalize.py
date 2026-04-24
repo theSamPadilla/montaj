@@ -9,7 +9,6 @@ def register(subparsers):
     p.add_argument("input", metavar="INPUT", help="Path to video file")
     p.add_argument("--width", type=int, default=1920)
     p.add_argument("--height", type=int, default=1080)
-    p.add_argument("--fps", type=int, default=30)
     p.add_argument("--crf", type=int, default=16)
     add_global_flags(p)  # adds --out, --json, --quiet
     p.set_defaults(func=handle)
@@ -23,8 +22,8 @@ def handle(args):
     out = args.out or args.input.rsplit(".", 1)[0] + "_normalized.mp4"
 
     info = probe_video(args.input)
-    if info and is_normalized(args.input, info, args.width, args.height, args.fps):
+    if info and is_normalized(args.input, info, args.width, args.height):
         print(args.input)  # already conformant
         return
 
-    normalize(args.input, out, args.width, args.height, args.fps, args.crf)
+    normalize(args.input, out, args.width, args.height, args.crf)

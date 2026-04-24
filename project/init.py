@@ -4,7 +4,7 @@ import argparse, json, os, re, shutil, subprocess, sys, uuid
 from datetime import datetime
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-from lib.common import fail
+from lib.common import fail, get_duration
 from lib.normalize import normalize, is_normalized, probe_video
 from lib.types.project import normalize_project_type
 from lib.types.kling import is_valid_aspect_ratio, ASPECT_RATIOS, ASPECT_RESOLUTIONS, DEFAULT_ASPECT_RATIO
@@ -156,14 +156,20 @@ def main():
     for clip in clips:
         clip_path = clip["src"]
         info = probe_video(clip_path)
-        if info and not is_normalized(clip_path, info, detected_resolution[0], detected_resolution[1], detected_fps):
+        if info and not is_normalized(clip_path, info, detected_resolution[0], detected_resolution[1]):
             normalized_path = clip_path.rsplit(".", 1)[0] + "_normalized.mp4"
             try:
-                normalize(clip_path, normalized_path, detected_resolution[0], detected_resolution[1], detected_fps, crf=16)
+                normalize(clip_path, normalized_path, detected_resolution[0], detected_resolution[1], crf=16)
                 clip["src"] = normalized_path
             except SystemExit:
                 # normalize calls fail() which raises SystemExit — fall back to original
                 print(f"Warning: normalize failed for {clip_path}, using original", file=sys.stderr)
+
+        # Cache source duration so the UI can clamp edits against it
+        try:
+            clip["sourceDuration"] = get_duration(clip["src"])
+        except Exception:
+            pass
 
     assets = [
         {"id": f"asset-{i}", "src": copy_into_workspace(os.path.abspath(a), "asset"), "type": "image", "name": os.path.basename(a)}

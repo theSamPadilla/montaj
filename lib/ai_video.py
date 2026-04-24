@@ -5,7 +5,7 @@ the sys.path that all step scripts set up.
 """
 import json, re, time
 from pathlib import Path
-from common import fail
+from common import fail, get_duration
 from normalize import normalize, is_normalized, probe_video
 
 
@@ -254,13 +254,19 @@ def save_clip_to_project(project_path: Path, project: dict, scene: dict,
     fps = settings.get("fps", 30)
 
     info = probe_video(out_path)
-    if info and not is_normalized(out_path, info, res[0], res[1], fps):
+    if info and not is_normalized(out_path, info, res[0], res[1]):
         normalized_path = out_path.rsplit(".", 1)[0] + "_normalized.mp4"
         try:
-            normalize(out_path, normalized_path, res[0], res[1], fps, crf=16)
+            normalize(out_path, normalized_path, res[0], res[1], crf=16)
             clip["src"] = normalized_path
         except SystemExit:
             clip["src"] = out_path
+
+    # Cache actual file duration so the UI can clamp edits against it
+    try:
+        clip["sourceDuration"] = get_duration(clip["src"])
+    except Exception:
+        clip["sourceDuration"] = scene["duration"]
 
     tracks0.append(clip)
     tracks0.sort(key=lambda c: c.get("start", 0))

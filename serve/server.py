@@ -955,14 +955,14 @@ async def normalize_video(body: dict = Body(...)):
         if info is None:
             raise HTTPException(500, detail={"error": "probe_error", "message": f"Cannot probe {input_path}"})
 
-        if is_normalized(input_path, info, width, height, fps):
+        if is_normalized(input_path, info, width, height):
             return {"path": input_path, "skipped": True}
 
         import io, contextlib
         stdout_capture = io.StringIO()
         try:
             with contextlib.redirect_stdout(stdout_capture):
-                normalize(input_path, out, width, height, fps, crf)
+                normalize(input_path, out, width, height, crf)
         except SystemExit:
             raise HTTPException(500, detail={"error": "normalize_failed", "message": "Normalization failed — check ffmpeg and zscale availability"})
 
