@@ -45,11 +45,20 @@ def main():
         doctor,
     )
 
+    from importlib.metadata import version as pkg_version
+    try:
+        __version__ = pkg_version("montaj")
+    except Exception:
+        __version__ = "dev"
+
     parser = argparse.ArgumentParser(
         prog="montaj",
         description="Video editing toolkit",
         formatter_class=ColorHelpFormatter,
     )
+    from cli.help import bold, cyan
+    parser.add_argument("-v", "--version", action="version",
+                        version=f"{bold('montaj')} {cyan(__version__)}")
     subparsers = parser.add_subparsers(dest="command", required=True, metavar="<command>")
 
     # Individual step commands — available but not listed in top-level help.
