@@ -240,6 +240,7 @@ def _ensure_ffmpeg_zscale() -> bool:
     """Ensure ffmpeg is installed with zscale (libzimg) support.
 
     Steps:
+    0. If ffmpeg is not installed at all, install it via Homebrew
     1. Install zimg via Homebrew
     2. Locate the Homebrew ffmpeg formula file
     3. Patch it to add --enable-libzimg and depends_on "zimg" if not present
@@ -258,6 +259,15 @@ def _ensure_ffmpeg_zscale() -> bool:
     if not shutil.which("brew"):
         print(f"{red('✗')} Homebrew not found. Install from {cyan('https://brew.sh')}")
         return False
+
+    # 0. If ffmpeg is not installed, install it first
+    if not shutil.which("ffmpeg"):
+        print(f"{cyan('→')} ffmpeg not found — installing via Homebrew...")
+        r = subprocess.run(["brew", "install", "ffmpeg"])
+        if r.returncode != 0:
+            print(f"{red('✗')} {dim('brew install ffmpeg')} failed")
+            return False
+        print(f"{green('✓')} ffmpeg installed")
 
     # Check if zscale already works
     r = subprocess.run(["ffmpeg", "-filters"], capture_output=True, text=True, timeout=5)

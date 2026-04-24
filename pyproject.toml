@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "montaj"
-version = "2.0.2"
+version = "2.0.3"
 description = "Video editing toolkit for AI agents — CLI-first, agent-native, open source"
 readme = "README.md"
 license = "MIT"
@@ -36,7 +36,6 @@ dependencies = [
     "watchdog>=4.0",
     "httpx>=0.27",
     "python-multipart>=0.0.9",
-    "static-ffmpeg>=2.5",
 ]
 
 [project.optional-dependencies]
