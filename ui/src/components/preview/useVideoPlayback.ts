@@ -26,6 +26,8 @@ export function useVideoPlayback(
   // Web Audio API: GainNode per audio track allows volume > 1.0 (amplification)
   const audioCtxRef   = useRef<AudioContext | null>(null)
   const gainNodesMap  = useRef<Map<string, GainNode>>(new Map())
+  // Video slot GainNodes — route video element audio through Web Audio API for amplification (volume > 1.0)
+  const videoGainRef  = useRef<[GainNode | null, GainNode | null]>([null, null])
   const [isPlaying, setIsPlaying] = useState(false)
   const isPlayingRef = useRef(false)
   // Keep ref in sync so effects with narrow deps can read current playing state
@@ -62,13 +64,45 @@ export function useVideoPlayback(
     return Math.max(videoEnd, overlayEnd, audioEnd)
   }, [clips, overlayTracks, project.audio?.tracks])
 
-  // Apply video clip volume via native el.volume (0–1 range; doesn't need Web Audio API)
+  // Wire a video slot through a Web Audio GainNode (once per element — createMediaElementSource
+  // can only be called once). After this, video.volume/muted have no audible effect; all volume
+  // control goes through the GainNode, which supports values > 1.0 for amplification.
+  function ensureVideoGain(slot: 0 | 1): GainNode | null {
+    if (videoGainRef.current[slot]) return videoGainRef.current[slot]
+    const video = slot === 0 ? video0Ref.current : video1Ref.current
+    if (!video) return null
+    // createMediaElementSource can only be called ONCE per <video> element,
+    // and source/gain/context must all belong to the same AudioContext.
+    // Cache everything on the element itself so it survives React strict-mode
+    // double-invocation and component remounts.
+    const v = video as any
+    if (!v.__montajGain) {
+      const ctx = new AudioContext()
+      const source = ctx.createMediaElementSource(video)
+      const gain = ctx.createGain()
+      source.connect(gain)
+      gain.connect(ctx.destination)
+      v.__montajCtx = ctx
+      v.__montajGain = gain
+    }
+    videoGainRef.current[slot] = v.__montajGain
+    return v.__montajGain
+  }
+
+  // Set video clip volume via GainNode (supports amplification > 1.0).
+  // Muted clips get gain 0; unmuted clips get the clip's volume value.
+  function applyClipVolume(clip: { muted?: boolean; volume?: number }) {
+    const slot = activeSlotRef.current
+    const gain = ensureVideoGain(slot)
+    if (gain) gain.gain.value = clip.muted ? 0 : (clip.volume ?? 1)
+  }
+
+  // Apply video clip volume via Web Audio GainNode (supports > 1.0 amplification)
   useEffect(() => {
     const idx = activeIdxRef.current
     const clip = clips[idx]
     if (!clip) return
-    const video = getActiveVideo()
-    if (video) video.volume = Math.min(1, clip.volume ?? 1)
+    applyClipVolume(clip)
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [clips, activeSlot])
 
@@ -198,12 +232,14 @@ export function useVideoPlayback(
     const map = audioRefsMap.current
     const srcMap = audioSrcMap.current
     const gains = gainNodesMap.current
+    const vidGains = videoGainRef.current
     const ctx = audioCtxRef.current
     return () => {
       for (const el of map.values()) { el.pause(); el.src = '' }
       map.clear()
       srcMap.clear()
       gains.clear()
+      vidGains[0] = null; vidGains[1] = null
       if (ctx) ctx.close().catch(() => {})
       audioCtxRef.current = null
     }
@@ -308,8 +344,7 @@ export function useVideoPlayback(
     preloadSrcRef.current = ''
     video.src = fileUrl(clips[0].src)
     video.currentTime = clips[0].inPoint ?? 0
-    video.muted = !!(clips[0].muted)
-    video.volume = Math.min(1, clips[0].volume ?? 1)
+    applyClipVolume(clips[0])
     // Clear inactive slot
     const inactive = getInactiveVideo()
     if (inactive) { inactive.pause(); inactive.removeAttribute('src') }
@@ -361,8 +396,8 @@ export function useVideoPlayback(
     if (nv) {
       const src = fileUrl(nc.src)
       if (preloadSrcRef.current !== src) { nv.src = src; nv.currentTime = nc.inPoint ?? 0 }
-      nv.muted = !!(nc.muted)
-      nv.volume = Math.min(1, nc.volume ?? 1)
+      const gain = ensureVideoGain(ns)
+      if (gain) gain.gain.value = nc.muted ? 0 : (nc.volume ?? 1)
       nv.play().catch(() => {})
     }
     ;(activeSlotRef.current === 0 ? video0Ref.current : video1Ref.current)?.pause()
@@ -414,8 +449,7 @@ export function useVideoPlayback(
         const inactive = getInactiveVideo()
         if (inactive) { inactive.pause(); inactive.removeAttribute('src') }
       }
-      video.muted = !!(clip.muted)
-      video.volume = Math.min(1, clip.volume ?? 1)
+      applyClipVolume(clip)
       const inPoint = clip.inPoint ?? 0
       if (clip.loop && clip.outPoint) {
         const loopDur = clip.outPoint - inPoint
@@ -465,8 +499,9 @@ export function useVideoPlayback(
           preloadSrcRef.current = nextSrc
           inactiveVideo.src = nextSrc
           inactiveVideo.currentTime = clips[nextIdx].inPoint ?? 0
-          inactiveVideo.muted = !!(clips[nextIdx].muted)
-          inactiveVideo.volume = Math.min(1, clips[nextIdx].volume ?? 1)
+          const inactiveSlot = (1 - slot) as 0 | 1
+          const nextGain = ensureVideoGain(inactiveSlot)
+          if (nextGain) nextGain.gain.value = clips[nextIdx].muted ? 0 : (clips[nextIdx].volume ?? 1)
         }
       }
     }
@@ -515,8 +550,8 @@ export function useVideoPlayback(
               nextVideo.src = nextSrc
               nextVideo.currentTime = next.inPoint ?? 0
             }
-            nextVideo.muted = !!(next.muted)
-            nextVideo.volume = Math.min(1, next.volume ?? 1)
+            const nextGain = ensureVideoGain(nextSlot)
+            if (nextGain) nextGain.gain.value = next.muted ? 0 : (next.volume ?? 1)
             nextVideo.play().catch(() => {})
           }
 

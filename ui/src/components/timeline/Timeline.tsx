@@ -31,8 +31,11 @@ interface TimelineProps {
 export default function Timeline({ project, currentTime, onTimeUpdate, onProjectChange, onCaptionEdit, onOverlayEdit, selectedOverlayId, onSelectOverlay, onSplit, onCut, onInspectClip, onInspectAudio, onSaveProject, rippleMode = false }: TimelineProps) {
   const allTracks      = project.tracks ?? []
   const captionTrack   = project.captions
-  const snapBoundaries = [...new Set(allTracks.flat().flatMap(c => [c.start, c.end]))]
   const audioTracks    = project.audio?.tracks ?? []
+  const snapBoundaries = [...new Set([
+    ...allTracks.flat().flatMap(c => [c.start, c.end]),
+    ...audioTracks.flatMap(t => [t.start, t.end]),
+  ])]
   const contentDuration = Math.max(
     allTracks.flat().reduce((m, i) => Math.max(m, i.end ?? 0), 0),
     audioTracks.reduce((m, t) => Math.max(m, t.end ?? 0), 0),

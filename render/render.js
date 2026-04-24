@@ -156,10 +156,19 @@ async function main(projectPath, { out, workers, clean }) {
   const segmentSpecs = collectPuppeteerSegments(projectJson, fps, renderWidth, renderHeight, segDir)
   const { imageItems, videoItems } = collectAllItems(projectJson)
 
-  // 3. Run remove_bg on any video items that need it
+  // 3. Normalize non-conformant video items to project format
+  for (const item of videoItems) {
+    const normalizedPath = normalizeIfNeeded(item.src, settings)
+    if (normalizedPath !== item.src) {
+      log(`normalized ${item.src.split('/').pop()} → ${normalizedPath.split('/').pop()}`)
+      item.src = normalizedPath
+    }
+  }
+
+  // 4. Run remove_bg on any video items that need it
   await processVideoItems(videoItems, workspaceDir)
 
-  // 4. Bundle + render all overlay and caption segments
+  // 5. Bundle + render all overlay and caption segments
   log(`rendering ${segmentSpecs.length} segment(s) with Puppeteer...`)
 
   const workDirs = []
@@ -198,7 +207,7 @@ async function main(projectPath, { out, workers, clean }) {
     }
   }
 
-  // 5. Use settings.resolution when explicitly set; otherwise detect from first video item.
+  // 6. Use settings.resolution when explicitly set; otherwise detect from first video item.
   let actualWidth  = settings.resolution?.[0] ?? renderWidth
   let actualHeight = settings.resolution?.[1] ?? renderHeight
   if (!settings.resolution) {
@@ -216,7 +225,7 @@ async function main(projectPath, { out, workers, clean }) {
     rSeg.pixelRatio = pixelRatio
   }
 
-  // 6. Compose final MP4
+  // 7. Compose final MP4
   log('composing final video...')
   await compose({
     projectJson,
@@ -228,7 +237,7 @@ async function main(projectPath, { out, workers, clean }) {
     videoHeight: actualHeight,
   })
 
-  // 7. Cleanup temp bundles (always); intermediate segments only if --clean
+  // 8. Cleanup temp bundles (always); intermediate segments only if --clean
   for (const dir of workDirs) cleanupBundle(dir)
 
   if (clean) {
@@ -485,6 +494,28 @@ function getTotalDurationSeconds(projectJson) {
   const allItems = (projectJson.tracks ?? []).flat()
   if (allItems.length === 0) return 0
   return Math.max(...allItems.map(i => i.end ?? 0))
+}
+
+// ---------------------------------------------------------------------------
+// Normalize pre-pass
+// ---------------------------------------------------------------------------
+
+function normalizeIfNeeded(src, settings) {
+  const [w, h] = settings.resolution ?? [1920, 1080]
+  const fps = settings.fps ?? 30
+  const out = src.replace(/(\.\w+)$/, '_normalized.mp4')
+
+  const result = spawnSync('python3', [
+    '-m', 'lib.normalize',
+    '--input', src,
+    '--width', String(w), '--height', String(h),
+    '--fps', String(fps),
+    '--out', out,
+  ], { encoding: 'utf8', timeout: 600_000, cwd: MONTAJ_ROOT })
+
+  if (result.status !== 0) return src
+  const outputPath = result.stdout.trim()
+  return outputPath || src
 }
 
 // ---------------------------------------------------------------------------

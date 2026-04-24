@@ -178,6 +178,9 @@ def build_cli_args(schema: dict, body: dict) -> list[str]:
     inp = schema.get("input", {})
     if inp.get("multiple"):
         files = body.get("inputs", [])
+        # Also accept singular "input" for convenience (UI sends singular for single-file calls)
+        if not files and "input" in body:
+            files = [body["input"]]
         if len(files) == 1:
             flags += ["--input", str(files[0])]
         elif files:

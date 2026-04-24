@@ -125,13 +125,13 @@ def _build_tonemap_vf(width, height, use_zscale):
     """
     if use_zscale:
         return (f"zscale=t=linear:npl=100,format=gbrpf32le,"
-                f"zscale=p=bt709,tonemap=reinhard:peak=1.5,"
+                f"zscale=p=bt709,tonemap=hable:desat=0,"
                 f"zscale=t=bt709:m=bt709:r=tv,format=yuv420p,"
                 f"scale={width}:{height}")
     else:
         return (f"scale={width}:{height},"
                 f"format=p010le,"
-                f"tonemap=reinhard:peak=1.5:desat=0,"
+                f"tonemap=hable:desat=0,"
                 f"format=yuv420p")
 
 
