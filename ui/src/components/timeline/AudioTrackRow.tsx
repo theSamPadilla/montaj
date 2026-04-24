@@ -91,6 +91,37 @@ export default function AudioTrackRow({
           overlayDraggedRef={overlayDraggedRef}
         />
       ))}
+      {/* Crossfade indicators — shown in the overlap zone between two tracks */}
+      {(() => {
+        const sorted = [...tracks].filter(t => !t.muted).sort((a, b) => a.start - b.start)
+        const indicators = []
+        for (let i = 0; i < sorted.length - 1; i++) {
+          const a = sorted[i], b = sorted[i + 1]
+          if (a.end > b.start) {
+            const overlapStart = b.start
+            const overlapEnd = Math.min(a.end, b.end)
+            indicators.push(
+              <div
+                key={`xfade-${a.id}-${b.id}`}
+                className="absolute top-0 bottom-0 pointer-events-none z-[5] flex items-center justify-center"
+                style={{
+                  left: `${pct(overlapStart, totalDuration)}%`,
+                  width: `${pct(overlapEnd - overlapStart, totalDuration)}%`,
+                }}
+              >
+                {/* Crossfade background highlight */}
+                <div className="absolute inset-0 bg-amber-400/15 border-x border-amber-400/30" />
+                {/* Crossfade icon — two crossing lines */}
+                <svg width="16" height="16" viewBox="0 0 16 16" className="relative text-amber-300/70 drop-shadow-sm">
+                  <line x1="2" y1="12" x2="14" y2="4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+                  <line x1="2" y1="4" x2="14" y2="12" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+                </svg>
+              </div>
+            )
+          }
+        }
+        return indicators
+      })()}
     </div>
   )
 }
@@ -261,6 +292,27 @@ function AudioTrackItem({
     >
       {/* Waveform layer */}
       <AudioWaveformLayer track={track} projectId={project.id} />
+
+      {/* Fade-in gradient */}
+      {(track.fadeIn ?? 0) > 0 && (
+        <div
+          className="absolute top-0 bottom-0 left-0 pointer-events-none z-[2]"
+          style={{
+            width: `${Math.min(100, ((track.fadeIn ?? 0) / (track.end - track.start)) * 100)}%`,
+            background: 'linear-gradient(to right, rgba(0,0,0,0.6), transparent)',
+          }}
+        />
+      )}
+      {/* Fade-out gradient */}
+      {(track.fadeOut ?? 0) > 0 && (
+        <div
+          className="absolute top-0 bottom-0 right-0 pointer-events-none z-[2]"
+          style={{
+            width: `${Math.min(100, ((track.fadeOut ?? 0) / (track.end - track.start)) * 100)}%`,
+            background: 'linear-gradient(to left, rgba(0,0,0,0.6), transparent)',
+          }}
+        />
+      )}
 
       {/* Left resize handle */}
       <div

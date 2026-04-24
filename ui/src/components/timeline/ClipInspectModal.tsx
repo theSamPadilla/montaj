@@ -49,6 +49,8 @@ function AudioInspect({ project, trackId, onClose, onProjectChange, onSave }: {
   const [duckingDepth, setDuckingDepth] = useState(track?.ducking?.depth ?? -12)
   const [duckingAttack, setDuckingAttack] = useState(track?.ducking?.attack ?? 0.3)
   const [duckingRelease, setDuckingRelease] = useState(track?.ducking?.release ?? 0.5)
+  const [fadeIn, setFadeIn] = useState(track?.fadeIn ?? 0)
+  const [fadeOut, setFadeOut] = useState(track?.fadeOut ?? 0)
   const [confirmDelete, setConfirmDelete] = useState(false)
   const [saving, setSaving] = useState(false)
 
@@ -68,6 +70,8 @@ function AudioInspect({ project, trackId, onClose, onProjectChange, onSave }: {
         outPoint,
         volume,
         muted,
+        fadeIn,
+        fadeOut,
         ducking: {
           enabled: duckingEnabled,
           depth: duckingDepth,
@@ -226,6 +230,44 @@ function AudioInspect({ project, trackId, onClose, onProjectChange, onSave }: {
               [&::-webkit-slider-thumb]:bg-blue-400 [&::-webkit-slider-runnable-track]:bg-gray-700
               [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-3 [&::-webkit-slider-thumb]:h-3 [&::-webkit-slider-thumb]:rounded-full"
           />
+        </div>
+
+        {/* Fade In / Fade Out */}
+        <div className="flex gap-4">
+          <div className="flex-1">
+            <label className="text-xs font-medium text-gray-400 mb-1 block">
+              Fade in
+              <span className="ml-2 text-xs font-mono text-gray-500">{fadeIn.toFixed(1)}s</span>
+            </label>
+            <input
+              type="range"
+              min={0}
+              max={Math.min(5, end - start)}
+              step={0.1}
+              value={fadeIn}
+              onChange={e => setFadeIn(parseFloat(e.target.value))}
+              className="w-full h-2 rounded-full appearance-none cursor-pointer
+                [&::-webkit-slider-thumb]:bg-blue-400 [&::-webkit-slider-runnable-track]:bg-gray-700
+                [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-3 [&::-webkit-slider-thumb]:h-3 [&::-webkit-slider-thumb]:rounded-full"
+            />
+          </div>
+          <div className="flex-1">
+            <label className="text-xs font-medium text-gray-400 mb-1 block">
+              Fade out
+              <span className="ml-2 text-xs font-mono text-gray-500">{fadeOut.toFixed(1)}s</span>
+            </label>
+            <input
+              type="range"
+              min={0}
+              max={Math.min(5, end - start)}
+              step={0.1}
+              value={fadeOut}
+              onChange={e => setFadeOut(parseFloat(e.target.value))}
+              className="w-full h-2 rounded-full appearance-none cursor-pointer
+                [&::-webkit-slider-thumb]:bg-blue-400 [&::-webkit-slider-runnable-track]:bg-gray-700
+                [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-3 [&::-webkit-slider-thumb]:h-3 [&::-webkit-slider-thumb]:rounded-full"
+            />
+          </div>
         </div>
 
         {/* Muted */}

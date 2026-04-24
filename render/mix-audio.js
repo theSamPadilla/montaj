@@ -54,16 +54,28 @@ export function buildAudioTrackFilters(audioTracks = [], baseInputIdx, currentAu
       const release = track.ducking.release ?? 0.5
       // Map dB depth → compressor ratio (e.g. -12 dB ≈ ratio 4, -6 dB ≈ ratio 2)
       const ratio   = Math.max(1, Math.round(10 ** (-depthDb / 20)))
+      let fadeFilters = ''
+      const fadeIn = track.fadeIn ?? 0
+      const fadeOut = track.fadeOut ?? 0
+      const trackDur = (track.end ?? 0) - (track.start ?? 0)
+      if (fadeIn > 0) fadeFilters += `,afade=t=in:d=${fadeIn}`
+      if (fadeOut > 0) fadeFilters += `,afade=t=out:st=${Math.max(0, trackDur - fadeOut)}:d=${fadeOut}`
       filterParts.push(
         `${audioIn}asplit=2[speech${offset}][sc${offset}]`,
-        `[${inputIdx}:a]adelay=${delayMs}:all=1,volume=${vol}[mscaled${offset}]`,
+        `[${inputIdx}:a]adelay=${delayMs}:all=1,volume=${vol}${fadeFilters}[mscaled${offset}]`,
         `[mscaled${offset}][sc${offset}]sidechaincompress=threshold=0.02:ratio=${ratio}:attack=${attack * 1000}:release=${release * 1000}[ducked${offset}]`,
         `[speech${offset}][ducked${offset}]amix=inputs=2:duration=first:normalize=0[aout${offset}]`,
       )
       audioLabel = `[aout${offset}]`
     } else {
+      let fadeFilters = ''
+      const fadeIn = track.fadeIn ?? 0
+      const fadeOut = track.fadeOut ?? 0
+      const trackDur = (track.end ?? 0) - (track.start ?? 0)
+      if (fadeIn > 0) fadeFilters += `,afade=t=in:d=${fadeIn}`
+      if (fadeOut > 0) fadeFilters += `,afade=t=out:st=${Math.max(0, trackDur - fadeOut)}:d=${fadeOut}`
       filterParts.push(
-        `[${inputIdx}:a]adelay=${delayMs}:all=1,volume=${vol}[atrack${offset}]`,
+        `[${inputIdx}:a]adelay=${delayMs}:all=1,volume=${vol}${fadeFilters}[atrack${offset}]`,
         `${audioIn}[atrack${offset}]amix=inputs=2:duration=longest:normalize=0[amid${offset}]`,
       )
       audioLabel = `[amid${offset}]`

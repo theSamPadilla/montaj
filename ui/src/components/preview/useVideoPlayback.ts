@@ -279,6 +279,25 @@ export function useVideoPlayback(
 
       if (playing && el.paused) el.play().catch(() => {})
       if (!playing && !el.paused) el.pause()
+
+      // Apply fade-in / fade-out gain envelope
+      const gain = gainNodesMap.current.get(track.id)
+      if (gain) {
+        const fadeIn = track.fadeIn ?? 0
+        const fadeOut = track.fadeOut ?? 0
+        const baseVol = track.volume ?? 1
+        const elapsed = playhead - track.start
+        const remaining = track.end - playhead
+
+        let fadeMul = 1
+        if (fadeIn > 0 && elapsed < fadeIn) {
+          fadeMul = elapsed / fadeIn
+        }
+        if (fadeOut > 0 && remaining < fadeOut) {
+          fadeMul = Math.min(fadeMul, remaining / fadeOut)
+        }
+        gain.gain.value = baseVol * Math.max(0, fadeMul)
+      }
     }
   }, [])
 

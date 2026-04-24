@@ -30,6 +30,8 @@ export interface AudioTrack {
     attack?: number      // seconds, default 0.3
     release?: number     // seconds, default 0.5
   }
+  fadeIn?: number          // fade-in duration in seconds (0 = no fade)
+  fadeOut?: number         // fade-out duration in seconds (0 = no fade)
   sourceDuration?: number  // intrinsic duration of the source file in seconds
   lane?: number            // visual grouping — tracks sharing a lane render in the same row
 }

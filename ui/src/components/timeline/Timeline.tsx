@@ -44,6 +44,46 @@ export default function Timeline({ project, currentTime, onTimeUpdate, onProject
   // dragged or resized further out. Minimum 5s headroom.
   const totalDuration  = contentDuration + Math.max(5, contentDuration * 0.2)
 
+  // Auto-crossfade: when two audio tracks overlap, apply fade-out on the earlier
+  // and fade-in on the later, each equal to the overlap duration.
+  useEffect(() => {
+    if (!audioTracks.length || !onProjectChange) return
+    const sorted = [...audioTracks].sort((a, b) => a.start - b.start)
+    let changed = false
+    const updated = sorted.map(t => ({ ...t }))
+
+    // We only auto-set fades where overlap exists
+    for (let i = 0; i < updated.length - 1; i++) {
+      const a = updated[i]
+      const b = updated[i + 1]
+      if (a.end > b.start && !a.muted && !b.muted) {
+        // Overlap detected
+        const overlap = Math.min(a.end - b.start, a.end - a.start, b.end - b.start)
+        if ((a.fadeOut ?? 0) !== overlap) {
+          a.fadeOut = Math.round(overlap * 10) / 10  // round to 0.1s
+          changed = true
+        }
+        if ((b.fadeIn ?? 0) !== overlap) {
+          b.fadeIn = Math.round(overlap * 10) / 10
+          changed = true
+        }
+      }
+    }
+
+    if (changed) {
+      const trackMap = new Map(updated.map(t => [t.id, t]))
+      const nextProject: typeof project = {
+        ...project,
+        audio: {
+          ...project.audio,
+          tracks: (project.audio?.tracks ?? []).map(t => trackMap.get(t.id) ?? t),
+        },
+      }
+      onProjectChange(nextProject)
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [audioTracks.map(t => `${t.id}:${t.start}:${t.end}:${t.muted}`).join('|')])
+
   const [hoverPct, setHoverPct]               = useState<number | null>(null)
   const [draggingPlayhead, setDraggingPlayhead] = useState(false)
   const [markers, setMarkers]                 = useState<[number | null, number | null]>([null, null])
