@@ -21,6 +21,7 @@ ui/node_modules/
 adaptors/*/package-lock.json
 
 # Build output
+dist/
 render/dist/
 ui/dist/
 
