@@ -168,7 +168,7 @@ def main():
         # Cache source duration so the UI can clamp edits against it
         try:
             clip["sourceDuration"] = get_duration(clip["src"])
-        except Exception:
+        except (Exception, SystemExit):
             pass
 
     assets = [

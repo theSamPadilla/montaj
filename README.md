@@ -98,7 +98,7 @@ montaj render
 montaj fetch https://youtube.com/watch?v=...
 ```
 
-See [docs/CLI.md](docs/CLI.md) for the full reference.
+See the [CLI Reference](https://docs.montaj.ag/cli) for the full documentation.
 
 ## Steps & Workflows
 
@@ -126,7 +126,7 @@ See [docs/CLI.md](docs/CLI.md) for the full reference.
 | `explainer` | Educational/explainer video style |
 | `floating_head` | Speaker overlay on background footage |
 
-Custom steps and workflows are discovered automatically — no registration needed. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for details.
+Custom steps and workflows are discovered automatically — no registration needed. See the [Steps Reference](https://docs.montaj.ag/steps) and [Core Concepts](https://docs.montaj.ag/concepts) for details.
 
 ## Skills
 
@@ -148,7 +148,7 @@ API connectors for external services. Installed via `pip install "montaj[connect
 
 React + Puppeteer + ffmpeg. Reads `project.json [final]`, renders captions and overlays frame-by-frame via headless Chrome, composites with source footage via ffmpeg → final MP4.
 
-See [docs/RENDER.md](docs/RENDER.md) for the full breakdown.
+See the [Render Engine](https://docs.montaj.ag/render) docs for the full breakdown.
 
 ## UI
 
@@ -178,14 +178,25 @@ The single format that flows through the entire pipeline. One file, three states
 
 For AI video projects, the storyboard (scenes, image refs, style refs) lives inside the same `project.json`.
 
-See [docs/schemas/project.md](docs/schemas/project.md) for the full schema.
+See the [Core Concepts](https://docs.montaj.ag/concepts) page and [docs/schemas/project.md](docs/schemas/project.md) for the full schema.
 
 ## Docs
 
-- [Architecture](docs/ARCHITECTURE.md) — how everything fits together
-- [CLI Reference](docs/CLI.md) — full command list
-- [UI Design](docs/UI.md) — browser interface
-- [Project JSON Schema](docs/schemas/project.md) — the core format
+Full documentation at **[docs.montaj.ag](https://docs.montaj.ag)**:
+
+- [Installation](https://docs.montaj.ag/installation) — Homebrew, PyPI, source
+- [Quick Start](https://docs.montaj.ag/quickstart) — first project in 2 minutes
+- [CLI Reference](https://docs.montaj.ag/cli) — full command list
+- [Steps Reference](https://docs.montaj.ag/steps) — all 27+ built-in steps
+- [Core Concepts](https://docs.montaj.ag/concepts) — architecture, project.json, trim specs, workflows
+- [Render Engine](https://docs.montaj.ag/render) — the compositing pipeline
+- [Agent Integration](https://docs.montaj.ag/agents) — MCP, HTTP API, skills
+- [Connectors](https://docs.montaj.ag/connectors) — Kling, Gemini, OpenAI setup
+- [Extending](https://docs.montaj.ag/extending) — custom steps, workflows, connectors
+
+Internal references (for contributors):
+- [Architecture](docs/ARCHITECTURE.md) — deep implementation details
+- [Project JSON Schema](docs/schemas/project.md) — field-level schema reference
 - [Overlay Contract](docs/schemas/overlay.md) — render component spec
 
 ## License

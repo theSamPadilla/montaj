@@ -88,8 +88,8 @@ export function buildAudioTrackFilters(audioTracks = [], baseInputIdx, currentAu
 }
 
 /**
- * Mix audio tracks into a pre-rendered silent/chunk video file.
- * Used by composeChunked() final pass: video stream is copied, audio is re-encoded.
+ * Mix audio tracks into a pre-rendered video file.
+ * Used by compose.js after segment concat: video stream is copied, audio is re-encoded.
  *
  * @param {string} videoPath   — path to the pre-rendered video (no audio or silent)
  * @param {Array}  audioTracks — project.audio.tracks

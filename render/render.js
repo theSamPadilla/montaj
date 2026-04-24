@@ -501,7 +501,7 @@ function getTotalDurationSeconds(projectJson) {
 // ---------------------------------------------------------------------------
 
 function normalizeIfNeeded(src, settings) {
-  const [w, h] = settings.resolution ?? [1920, 1080]
+  const [w, h] = settings.resolution ?? [1080, 1920]
   const out = src.replace(/(\.\w+)$/, '_normalized.mp4')
 
   const result = spawnSync('python3', [

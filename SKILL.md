@@ -211,7 +211,7 @@ If in doubt, **ask your human**.
 
 ## Dependencies
 
-- `ffmpeg` + `ffprobe`
+- `ffmpeg` + `ffprobe` — **strongly recommended**: `zscale` filter (requires libzimg) for accurate HDR→SDR tonemap. Without it, a fallback tonemap runs but with degraded colors. Run `montaj doctor` to check (exit 0 = OK, exit 1 = issues). Fix: `montaj install ffmpeg` (automates zimg install + formula patch + rebuild).
 - `whisper.cpp` (with models in standard location)
 - `Python 3.x`
 - `Node.js` (render engine only)
