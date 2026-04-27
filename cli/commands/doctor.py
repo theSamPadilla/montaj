@@ -7,7 +7,7 @@ Exit codes:
 """
 import os, re, subprocess, sys, shutil
 from cli.main import add_global_flags
-from cli.deps import check_ui
+from cli.deps import check_ui, whisper_bin_path
 from cli.help import bold, green, red, yellow, cyan, dim
 
 
@@ -140,10 +140,10 @@ def handle(args):
         print(f"  {red('✗')} {bold('python3')}: {info}")
         ok = False
 
-    # whisper — check the standard user-level model path
-    # (lib/models.py stores at ~/.local/share/montaj/models/)
-    whisper_path = os.path.expanduser("~/.local/share/montaj/models/whisper/whisper-cli")
-    if os.path.isfile(whisper_path):
+    # whisper — single source of truth via cli.deps.whisper_bin_path()
+    # Checks PATH (brew, apt, manual installs) then legacy local install paths.
+    whisper_path = whisper_bin_path()
+    if whisper_path:
         print(f"  {green('✓')} {bold('whisper-cli')}: {dim(whisper_path)}")
     else:
         print(f"  {yellow('○')} {bold('whisper-cli')}: {dim('not installed (optional — run')} {cyan('montaj install whisper')}{dim(')')}")

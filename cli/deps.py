@@ -23,12 +23,7 @@ def check_deps() -> list[str]:
     if not shutil.which("ffmpeg") or not shutil.which("ffprobe"):
         missing.append("ffmpeg / ffprobe not found")
 
-    whisper_bin = (
-        shutil.which("whisper-cpp")
-        or shutil.which("whisper-cli")
-        or _local_whisper_bin()
-    )
-    if not whisper_bin:
+    if not whisper_bin_path():
         missing.append("whisper.cpp binary not found")
 
     model_path = os.path.join(WHISPER_MODELS_DIR, f"ggml-{WHISPER_MODEL}.bin")
@@ -36,6 +31,27 @@ def check_deps() -> list[str]:
         missing.append(f"whisper model '{WHISPER_MODEL}' not downloaded")
 
     return missing
+
+
+def whisper_bin_path() -> str | None:
+    """Return the whisper-cli/whisper-cpp binary location, or None.
+
+    Checks PATH first (catches `brew install whisper-cpp` on macOS, apt or
+    a manual install on Linux), then montaj's legacy local locations. Used
+    by both `check_deps` and `montaj doctor` so the two never disagree."""
+    # PATH lookup — covers brew (/opt/homebrew/bin/whisper-cli), apt, manual
+    on_path = shutil.which("whisper-cli") or shutil.which("whisper-cpp")
+    if on_path:
+        return on_path
+    # Legacy / pre-2.0.5 install path written by older `montaj install whisper`
+    for legacy in (
+        "~/.local/share/montaj/models/whisper/whisper-cli",
+        "~/.local/bin/whisper-cpp",
+    ):
+        p = os.path.expanduser(legacy)
+        if os.path.isfile(p):
+            return p
+    return None
 
 
 def is_dev_checkout() -> bool:
@@ -92,6 +108,3 @@ def check_ui() -> tuple[str, str | None]:
     return "prod", None
 
 
-def _local_whisper_bin() -> str | None:
-    candidate = os.path.expanduser("~/.local/bin/whisper-cpp")
-    return candidate if os.path.isfile(candidate) else None

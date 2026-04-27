@@ -13,17 +13,13 @@ docs/plans/
 *.pyc
 *.egg-info/
 
-# Dependencies
+# Dependencies — catchall covers montaj_assets/{render,ui,mcp}/node_modules/
 node_modules/
-mcp/node_modules/
-render/node_modules/
-ui/node_modules/
 adaptors/*/package-lock.json
 
-# Build output
+# Build output — catchall covers montaj_assets/ui/dist/ and the wheel build dir
 dist/
-render/dist/
-ui/dist/
+build/
 
 # OS
 .DS_Store

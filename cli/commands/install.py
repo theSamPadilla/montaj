@@ -1,17 +1,11 @@
 #!/usr/bin/env python3
 """montaj install — install optional dependencies (whisper binary + weights, rvm)."""
-import os, platform, subprocess, sys
+import os, platform, shutil, subprocess, sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "lib"))
 import models as _models
 from cli.main import MONTAJ_ROOT
+from cli.deps import whisper_bin_path
 from cli.help import bold, green, red, yellow, cyan, dim
-
-WHISPER_VERSION = "1.7.4"  # update to latest if needed
-WHISPER_BINARY_URLS = {
-    ("Darwin", "arm64"):  (f"https://github.com/ggerganov/whisper.cpp/releases/download/v{WHISPER_VERSION}/whisper-cpp-{WHISPER_VERSION}-macos-arm64.tar.gz", None),
-    ("Darwin", "x86_64"): (f"https://github.com/ggerganov/whisper.cpp/releases/download/v{WHISPER_VERSION}/whisper-cpp-{WHISPER_VERSION}-macos-x86_64.tar.gz", None),
-    ("Linux",  "x86_64"): (f"https://github.com/ggerganov/whisper.cpp/releases/download/v{WHISPER_VERSION}/whisper-cpp-{WHISPER_VERSION}-ubuntu-22.04-x86_64.tar.gz", None),
-}
 
 
 _parser = None
@@ -68,35 +62,19 @@ def handle(args):
 
 
 def _ensure_whisper(model: str = "base.en") -> bool:
+    """Install the whisper-cli binary (via Homebrew on macOS) and download model weights.
+
+    Note: ggerganov/whisper.cpp moved to ggml-org/whisper.cpp and stopped
+    publishing pre-built macOS/Linux tarballs. We delegate the binary install
+    to Homebrew on macOS (`brew install whisper-cpp` — bottled, fast) and
+    instruct the user to build from source on Linux. Model weights are
+    downloaded from HuggingFace in either case (independent of the binary
+    upstream)."""
     from cli.commands.models import is_downloaded, _download as _download_model
-    system  = platform.system()
-    machine = platform.machine()
-    key = (system, machine)
-    if key not in WHISPER_BINARY_URLS:
-        print(f"{red('error:')} no pre-built whisper binary for {dim(f'{system}/{machine}')}", file=sys.stderr)
+
+    if not _ensure_whisper_binary():
         return False
-    url, checksum = WHISPER_BINARY_URLS[key]
-    bin_path = _models.model_path("whisper", "whisper-cli")
-    version_file = bin_path + ".version"
-    installed_version = None
-    if os.path.isfile(version_file):
-        with open(version_file) as f:
-            installed_version = f.read().strip()
-    needs_install = not os.path.isfile(bin_path)
-    needs_upgrade = installed_version and installed_version != WHISPER_VERSION
-    if needs_install or needs_upgrade:
-        if needs_upgrade:
-            print(f"{cyan('→')} upgrading {bold('whisper-cpp')} {installed_version} → {WHISPER_VERSION} {dim(f'({system}/{machine})')}\u2026")
-        else:
-            print(f"{cyan('→')} downloading {bold('whisper-cpp')} binary {dim(f'({system}/{machine})')}\u2026")
-        try:
-            _install_whisper_binary(url, checksum, bin_path)
-            print(f"{green('✓')} whisper-cpp binary installed")
-        except RuntimeError as e:
-            print(str(e), file=sys.stderr)
-            return False
-    else:
-        print(f"{green('✓')} whisper-cpp {WHISPER_VERSION}")
+
     if not is_downloaded(model):
         print(f"{cyan('→')} downloading whisper model {bold(model)}\u2026")
         try:
@@ -109,55 +87,34 @@ def _ensure_whisper(model: str = "base.en") -> bool:
     return True
 
 
-def _install_whisper_binary(url: str, checksum, bin_path: str):
-    import hashlib, shutil, tarfile, tempfile, urllib.request
-    tmp_dir = tempfile.mkdtemp(prefix="montaj_whisper_")
-    archive_path = os.path.join(tmp_dir, "whisper.tar.gz")
-    try:
-        urllib.request.urlretrieve(url, archive_path)
-        os.makedirs(os.path.dirname(bin_path), exist_ok=True)
-        with tarfile.open(archive_path, "r:gz") as tar:
-            target_member = None
-            for member in tar.getmembers():
-                name = member.name
-                if name.endswith("whisper-cli") or name.endswith("/main") or name == "main":
-                    target_member = member
-                    break
-            if target_member is None:
-                import json as _json
-                raise RuntimeError(_json.dumps({
-                    "error": "whisper_binary_not_found",
-                    "message": f"whisper-cli not found in archive: {url}",
-                }))
-            # Extract via file-like object — no path traversal risk
-            part_path = bin_path + ".part"
-            f = tar.extractfile(target_member)
-            if f is None:
-                raise RuntimeError("Could not open whisper-cli member from archive")
-            try:
-                with open(part_path, "wb") as out_f:
-                    shutil.copyfileobj(f, out_f)
-            finally:
-                f.close()
-        # Verify checksum if provided
-        if checksum:
-            h = hashlib.sha256()
-            with open(part_path, "rb") as fh:
-                for chunk in iter(lambda: fh.read(65536), b""):
-                    h.update(chunk)
-            if h.hexdigest() != checksum:
-                os.remove(part_path)
-                raise RuntimeError(
-                    f"SHA-256 mismatch for whisper-cli binary. Expected {checksum}. "
-                    f"The download may be corrupt or the URL has changed. URL: {url}"
-                )
-        os.rename(part_path, bin_path)
-        os.chmod(bin_path, 0o755)
-        # Write version marker so `montaj update` can detect stale installs
-        with open(bin_path + ".version", "w") as vf:
-            vf.write(WHISPER_VERSION)
-    finally:
-        shutil.rmtree(tmp_dir, ignore_errors=True)
+def _ensure_whisper_binary() -> bool:
+    """Resolve the whisper-cli binary: brew on macOS, source build instructions on Linux."""
+    existing = whisper_bin_path()
+    if existing:
+        print(f"{green('✓')} whisper-cli already available {dim(f'({existing})')}")
+        return True
+
+    system = platform.system()
+    if system == "Darwin":
+        if not shutil.which("brew"):
+            print(f"{red('error:')} Homebrew not found. Install from {cyan('https://brew.sh')} and retry.", file=sys.stderr)
+            return False
+        print(f"{cyan('→')} installing {bold('whisper-cpp')} via Homebrew \u2026")
+        r = subprocess.run(["brew", "install", "whisper-cpp"])
+        if r.returncode != 0:
+            print(f"{red('error:')} {dim('brew install whisper-cpp')} failed — see output above", file=sys.stderr)
+            return False
+        print(f"{green('✓')} whisper-cpp installed via Homebrew")
+        return True
+
+    # Linux (and anything else): no reliable pre-built binary upstream. Tell the user.
+    print(f"{yellow('⚠')} pre-built whisper-cpp binaries are no longer published for {system}.", file=sys.stderr)
+    print(f"  Build from source:", file=sys.stderr)
+    print(f"    {cyan('git clone https://github.com/ggml-org/whisper.cpp')}", file=sys.stderr)
+    print(f"    {cyan('cd whisper.cpp && cmake -B build && cmake --build build --config Release -j')}", file=sys.stderr)
+    print(f"    {cyan('sudo cp build/bin/whisper-cli /usr/local/bin/')}", file=sys.stderr)
+    print(f"  Then re-run: {cyan('montaj install whisper')}", file=sys.stderr)
+    return False
 
 
 

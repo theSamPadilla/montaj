@@ -1,12 +1,6 @@
 #!/usr/bin/env python3
 """montaj update — upgrade optional dependencies to latest versions."""
-import os, subprocess, sys
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "lib"))
-import models as _models
-
-from cli.commands.install import (
-    WHISPER_VERSION, WHISPER_BINARY_URLS, _install_whisper_binary,
-)
+import os, platform, shutil, subprocess, sys
 
 _parser = None
 
@@ -18,7 +12,7 @@ def register(subparsers):
         "component", nargs="?",
         choices=["whisper", "pip", "all"],
         default="all",
-        help="whisper — re-download binary if version changed; pip — upgrade Python packages; all — everything (default)",
+        help="whisper — upgrade whisper-cpp via Homebrew (macOS); pip — upgrade montaj's Python deps; all — everything (default)",
     )
     _parser.set_defaults(func=handle)
 
@@ -39,46 +33,34 @@ def handle(args):
 
 
 def _update_whisper() -> bool:
-    import platform
-    system  = platform.system()
-    machine = platform.machine()
-    key = (system, machine)
-    if key not in WHISPER_BINARY_URLS:
-        print(f"error: no pre-built whisper binary for {system}/{machine}", file=sys.stderr)
-        return False
-
-    bin_path     = _models.model_path("whisper", "whisper-cli")
-    version_file = bin_path + ".version"
-
-    installed_version = None
-    if os.path.isfile(version_file):
-        with open(version_file) as f:
-            installed_version = f.read().strip()
-
-    if installed_version == WHISPER_VERSION and os.path.isfile(bin_path):
-        print(f"✓ whisper-cpp {WHISPER_VERSION} (already current)")
+    """Delegate to Homebrew on macOS. Linux users built whisper from source —
+    this command can't help them upgrade automatically, so it prints a hint."""
+    system = platform.system()
+    if system == "Darwin":
+        if not shutil.which("brew"):
+            print("error: Homebrew not found — install from https://brew.sh", file=sys.stderr)
+            return False
+        print("→ brew upgrade whisper-cpp …")
+        r = subprocess.run(["brew", "upgrade", "whisper-cpp"])
+        # `brew upgrade` exits non-zero when already up-to-date on some versions;
+        # treat that as success rather than a hard error.
+        if r.returncode != 0:
+            print("✓ whisper-cpp already current (or brew upgrade reported nothing to do)")
+        else:
+            print("✓ whisper-cpp upgraded")
         return True
 
-    if installed_version:
-        print(f"→ upgrading whisper-cpp {installed_version} → {WHISPER_VERSION}…")
-    else:
-        print(f"→ installing whisper-cpp {WHISPER_VERSION}…")
-
-    url, checksum = WHISPER_BINARY_URLS[key]
-    try:
-        _install_whisper_binary(url, checksum, bin_path)
-        print(f"✓ whisper-cpp {WHISPER_VERSION}")
-        return True
-    except RuntimeError as e:
-        print(str(e), file=sys.stderr)
-        return False
+    print(f"⚠ {system}: no automatic upgrade path. Re-build whisper.cpp from source:", file=sys.stderr)
+    print("    git clone https://github.com/ggml-org/whisper.cpp", file=sys.stderr)
+    print("    cd whisper.cpp && cmake -B build && cmake --build build --config Release -j", file=sys.stderr)
+    print("    sudo cp build/bin/whisper-cli /usr/local/bin/", file=sys.stderr)
+    return False
 
 
 def _update_pip() -> bool:
-    print("→ upgrading Python packages…")
-    r = subprocess.run([
-        sys.executable, "-m", "pip", "install", "--upgrade", "-e", ".[test]"
-    ])
+    """Upgrade montaj itself via the package name (works in any install path)."""
+    print("→ pip install --upgrade montaj …")
+    r = subprocess.run([sys.executable, "-m", "pip", "install", "--upgrade", "montaj"])
     if r.returncode != 0:
         print("error: pip upgrade failed", file=sys.stderr)
         return False
