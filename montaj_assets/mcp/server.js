@@ -24,7 +24,11 @@ import { spawnSync }                            from "child_process";
 import { homedir }                              from "os";
 
 const __dirname       = dirname(fileURLToPath(import.meta.url))
-const MONTAJ_ROOT     = resolve(__dirname, "..")
+// MCP_DIR  = where this server.js lives (montaj_assets/mcp/) — for sibling files like node_modules.
+// MONTAJ_ROOT = the Python project root (where cli/, steps/ live) — set by cli/commands/mcp.py.
+// Fallback for direct `node server.js` invocation: jump two levels up from montaj_assets/mcp/.
+const MCP_DIR         = __dirname
+const MONTAJ_ROOT     = process.env.MONTAJ_ROOT || resolve(__dirname, "..", "..")
 const PYTHON          = process.env.MONTAJ_PYTHON || "python3"
 const PROJECT_DIR     = process.env.MONTAJ_PROJECT_DIR || process.cwd()
 const CLI_TIMEOUT_MS  = 3_600_000   // 1 h — render can be long

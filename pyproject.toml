@@ -53,10 +53,25 @@ Issues = "https://github.com/theSamPadilla/montaj/issues"
 montaj = "cli.main:main"
 mtj    = "cli.main:main"
 
+[tool.setuptools]
+# Defer file selection to MANIFEST.in (graft render/ui, prune node_modules + ui/dist).
+# Without this, only Python files would land in the wheel — render/ and ui/ source
+# would be missing and `montaj install ui` would fail.
+include-package-data = true
+
 [tool.setuptools.packages.find]
-include = ["cli*", "serve*", "engine*", "project*", "lib*", "profiles*", "connectors*"]
+include = [
+    "cli*", "serve*", "engine*", "project*", "lib*", "profiles*", "connectors*",
+    # Bundled non-Python assets (Node render engine, Vite UI source, MCP server).
+    "montaj_assets*",
+    # Other data dirs ride along via include-package-data + MANIFEST.in.
+    "steps*", "skills*", "workflows*", "schema*", "docs*",
+]
 
 [tool.setuptools.package-data]
+# Per-package globs match files at the package root only (not recursively).
+# Keep this broad so future *.json/*.yaml additions ship without a packaging
+# diff. node_modules/ and ui/dist/ are already pruned by MANIFEST.in.
 "*" = ["*.json", "*.yaml"]
 
 [tool.pytest.ini_options]

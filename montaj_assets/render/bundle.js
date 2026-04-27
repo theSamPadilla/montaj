@@ -16,7 +16,9 @@ import { tmpdir } from 'os'
 import { randomBytes } from 'crypto'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
-const MONTAJ_ROOT = process.env.MONTAJ_ROOT || join(__dirname, '..')
+// `core/` and `node_modules/` are siblings of bundle.js — always resolve via
+// __dirname, not via process.env.MONTAJ_ROOT (which points at the Python
+// project root and now sits two levels above us under montaj_assets/render/).
 
 /**
  * Compile a component into a temp directory containing index.html + bundle.js.
@@ -50,9 +52,9 @@ export async function bundleComponent({ componentPath, props, fps, durationFrame
     jsx:         'automatic',
     loader:      { '.jsx': 'jsx', '.js': 'js', '.tsx': 'tsx', '.ts': 'ts' },
     alias: {
-      'montaj/render': join(MONTAJ_ROOT, 'render', 'core', 'index.js'),
+      'montaj/render': join(__dirname, 'core', 'index.js'),
     },
-    nodePaths: [join(MONTAJ_ROOT, 'render', 'node_modules')],
+    nodePaths: [join(__dirname, 'node_modules')],
     define: {
       'process.env.NODE_ENV': '"production"',
     },

@@ -3,6 +3,7 @@
 import os, platform, subprocess, sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "lib"))
 import models as _models
+from cli.main import MONTAJ_ROOT
 from cli.help import bold, green, red, yellow, cyan, dim
 
 WHISPER_VERSION = "1.7.4"  # update to latest if needed
@@ -162,9 +163,11 @@ def _install_whisper_binary(url: str, checksum, bin_path: str):
 
 def _ensure_demucs() -> bool:
     print(f"{cyan('→')} installing {bold('demucs')} deps\u2026")
-    r = subprocess.run([sys.executable, "-m", "pip", "install", "-e", ".[demucs]"])
+    # Resolve extras via the installed package metadata, not via `-e .`, so this
+    # works whether MONTAJ_ROOT is a working tree or site-packages (no pyproject).
+    r = subprocess.run([sys.executable, "-m", "pip", "install", "montaj[demucs]"])
     if r.returncode != 0:
-        print(f"{red('error:')} {dim('pip install .[demucs]')} failed", file=sys.stderr)
+        print(f"{red('error:')} {dim('pip install montaj[demucs]')} failed", file=sys.stderr)
         return False
     print(f"{green('✓')} demucs deps installed")
     # Pre-warm: downloads htdemucs model weights on first use
@@ -180,9 +183,9 @@ def _ensure_demucs() -> bool:
 
 def _ensure_rvm() -> bool:
     print(f"{cyan('→')} installing {bold('rvm')} deps {dim('(torch, torchvision, av)')}\u2026")
-    r = subprocess.run([sys.executable, "-m", "pip", "install", "-e", ".[rvm]"])
+    r = subprocess.run([sys.executable, "-m", "pip", "install", "montaj[rvm]"])
     if r.returncode != 0:
-        print(f"{red('error:')} {dim('pip install .[rvm]')} failed", file=sys.stderr)
+        print(f"{red('error:')} {dim('pip install montaj[rvm]')} failed", file=sys.stderr)
         return False
     print(f"{green('✓')} rvm deps installed")
     # Pre-fetch all model weights so there are no lazy downloads at runtime
@@ -200,39 +203,91 @@ def _ensure_rvm() -> bool:
 
 
 def _ensure_connectors() -> bool:
-    from cli.main import MONTAJ_ROOT
     print(f"{cyan('→')} installing {bold('connector')} deps {dim('(pyjwt, requests, google-genai, openai)')}\u2026")
-    r = subprocess.run([sys.executable, "-m", "pip", "install", "-e", ".[connectors]"],
-                       cwd=MONTAJ_ROOT)
+    r = subprocess.run([sys.executable, "-m", "pip", "install", "montaj[connectors]"])
     if r.returncode != 0:
-        print(f"{red('error:')} {dim('pip install .[connectors]')} failed", file=sys.stderr)
+        print(f"{red('error:')} {dim('pip install montaj[connectors]')} failed", file=sys.stderr)
         return False
     print(f"{green('✓')} connector deps installed")
     return True
 
 
 
+def _cache_is_stale(cache_root: str, current_version: str) -> bool:
+    """True if the cache stamp is missing or doesn't match the installed version."""
+    stamp_path = os.path.join(cache_root, ".version")
+    if not os.path.isfile(stamp_path):
+        return True
+    with open(stamp_path) as f:
+        return f.read().strip() != current_version
+
+
+def _write_stamp(cache_root: str, current_version: str) -> None:
+    """Stamp the cache with the installed package version. Called only after
+    every build step succeeds — partial installs leave the stamp absent so the
+    next run starts from scratch."""
+    with open(os.path.join(cache_root, ".version"), "w") as f:
+        f.write(current_version)
+
+
 def _ensure_ui() -> bool:
     import shutil
+    from importlib.metadata import version as _pkg_version
+    from cli.deps import is_dev_checkout, BUILD_CACHE_DIR
     if not shutil.which("npm"):
         print(f"{red('error:')} npm not found \u2014 install Node.js >=18 first: {cyan('https://nodejs.org')}", file=sys.stderr)
         return False
-    root = os.path.join(os.path.dirname(__file__), "..", "..")
-    for name, directory in [("render engine", "render"), ("UI", "ui")]:
-        path = os.path.normpath(os.path.join(root, directory))
+
+    # Three Node.js bundles ship with montaj: the render engine, the Vite UI,
+    # and the MCP server. All three need `npm install`; only the UI needs build.
+    bundles = [("render engine", "render"), ("UI", "ui"), ("MCP server", "mcp")]
+    src_root = os.path.join(MONTAJ_ROOT, "montaj_assets")
+
+    if is_dev_checkout():
+        # Dev: build in place so Vite HMR works against source.
+        targets = [(name, os.path.join(src_root, sub)) for name, sub in bundles]
+        current = None
+    else:
+        # Prod: copy source → cache, build in cache. Site-packages stays immutable.
+        # `shutil.copytree(..., dirs_exist_ok=True)` overwrites changed files but
+        # never removes deleted ones — version-stamp the cache and clear it on
+        # mismatch so post-upgrade the cache mirrors the new source tree exactly.
+        current = _pkg_version("montaj")
+        if _cache_is_stale(BUILD_CACHE_DIR, current):
+            shutil.rmtree(BUILD_CACHE_DIR, ignore_errors=True)
+        os.makedirs(BUILD_CACHE_DIR, exist_ok=True)
+
+        ignore = shutil.ignore_patterns("node_modules", "__pycache__", "*.pyc")
+        for _, sub in bundles:
+            shutil.copytree(
+                os.path.join(src_root, sub),
+                os.path.join(BUILD_CACHE_DIR, sub),
+                dirs_exist_ok=True,
+                ignore=ignore,
+            )
+        targets = [(name, os.path.join(BUILD_CACHE_DIR, sub)) for name, sub in bundles]
+
+    for name, path in targets:
         print(f"{cyan('→')} npm install ({bold(name)})\u2026")
         r = subprocess.run(["npm", "install", "--prefix", path])
         if r.returncode != 0:
-            print(f"{red('error:')} npm install failed for {dim(directory + '/')}", file=sys.stderr)
+            print(f"{red('error:')} npm install failed for {dim(path)}", file=sys.stderr)
             return False
         print(f"{green('✓')} {name} deps installed")
-    ui_path = os.path.normpath(os.path.join(root, "ui"))
+
+    # UI build (only target needing `npm run build`)
+    ui_target = next(p for n, p in targets if n == "UI")
     print(f"{cyan('→')} npm run build ({bold('UI')})\u2026")
-    r = subprocess.run(["npm", "run", "build", "--prefix", ui_path])
+    r = subprocess.run(["npm", "run", "build", "--prefix", ui_target])
     if r.returncode != 0:
-        print(f"{red('error:')} npm run build failed for {dim('ui/')}", file=sys.stderr)
+        print(f"{red('error:')} npm run build failed for {dim(ui_target)}", file=sys.stderr)
         return False
     print(f"{green('✓')} UI built")
+
+    # Stamp the cache only after every step succeeded — partial installs leave
+    # the stamp absent so the next run starts from scratch.
+    if not is_dev_checkout():
+        _write_stamp(BUILD_CACHE_DIR, current)
     return True
 
 

@@ -801,4 +801,16 @@ See `CONTRIBUTING.md` → "Adding a shared enum" for the developer workflow (edi
 - `montaj doctor` — check all system dependencies (ffmpeg + required filters, ffprobe, node, python3, whisper). Exit 0 = OK, exit 1 = issues. Run after install to verify setup.
 - `montaj install ffmpeg` — rebuild ffmpeg with `zscale` (libzimg) for HDR normalization. macOS/Homebrew only. Automates zimg install, formula patch, and source rebuild.
 
-Install: `brew install montaj` then `montaj doctor` to verify.
+Install: `brew install montaj` (or `pip install montaj`) then `montaj doctor` to verify, and run whatever `doctor` instructs — almost always `montaj install ui` on first launch.
+
+### Asset packaging & build cache
+
+Bundled Node.js assets — the render engine, the Vite UI source, and the MCP server — live under a single private Python namespace package, `montaj_assets/`. The wheel ships these as source only; `node_modules/` and `montaj_assets/ui/dist/` are excluded by `MANIFEST.in` so the installed package stays small and immutable.
+
+On first run, `montaj install ui` copies that source out of site-packages into `~/.cache/montaj/` (XDG cache convention) and runs `npm install` plus `npm run build` there. Site-packages is never written to at runtime, which keeps `pip install montaj` working under read-only install locations (`/usr/local`, `--user`, brew's `Cellar/`).
+
+The cache is keyed by package version: a `.version` stamp at `~/.cache/montaj/.version` is written at the end of a successful `install ui`. The next run compares the stamp against `importlib.metadata.version("montaj")` and wipes the cache on mismatch, so an upgrade automatically forces a clean rebuild. Failed installs leave the stamp absent so the next run starts from scratch.
+
+Dev checkouts skip the cache entirely. `cli/deps.is_dev_checkout()` keys on the presence of `.git` at `MONTAJ_ROOT`; when true, `npm install` and `npm run build` happen in the source tree so Vite HMR works against the same files the developer is editing. Three runtime helpers in `cli/deps.py` — `ui_runtime_dir()`, `render_runtime_dir()`, and `mcp_runtime_dir()` — return the source path in dev and the cache path in prod, and every call site (`serve/server.py`, `cli/commands/mcp.py`) routes through them rather than joining `MONTAJ_ROOT` directly.
+
+Same first-run UX for brew and pip: `montaj doctor` first (it diagnoses what's missing and prints the exact command to fix each piece), then act on its output — almost always `montaj install ui`.

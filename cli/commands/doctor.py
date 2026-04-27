@@ -7,6 +7,7 @@ Exit codes:
 """
 import os, re, subprocess, sys, shutil
 from cli.main import add_global_flags
+from cli.deps import check_ui
 from cli.help import bold, green, red, yellow, cyan, dim
 
 
@@ -146,6 +147,16 @@ def handle(args):
         print(f"  {green('✓')} {bold('whisper-cli')}: {dim(whisper_path)}")
     else:
         print(f"  {yellow('○')} {bold('whisper-cli')}: {dim('not installed (optional — run')} {cyan('montaj install whisper')}{dim(')')}")
+
+    # UI build — required for `montaj serve`
+    ui_mode, ui_error = check_ui()
+    if ui_error is None:
+        label = "ui (dev)" if ui_mode == "dev" else "ui"
+        print(f"  {green('✓')} {bold(label)}: {dim('ready')}")
+    else:
+        print(f"  {red('✗')} {bold('ui')}: {ui_error}")
+        print(f"    Fix: {cyan('montaj install ui')}")
+        ok = False
 
     print()
     if ok:

@@ -8,17 +8,20 @@
 
 ## Install & update
 
-ffmpeg is bundled automatically via pip — no manual step required. Node.js is not — pip users must install it separately before running `montaj install ui`.
+ffmpeg is bundled automatically via pip — no manual step required. Node.js is not — install it separately (any install path) before running `montaj install ui`.
 
 ```bash
 brew install theSamPadilla/montaj/montaj   # or: pip install montaj
-montaj install whisper      # whisper-cpp binary + base.en model weights
-montaj install ui           # npm deps + UI build (pip users only — brew handles this)
-montaj install rvm          # torch/torchvision/av (pip) + RVM model weights
-montaj install connectors   # pyjwt, requests, google-genai, openai (for API steps)
-montaj credentials          # interactive setup for API keys (~/.montaj/credentials.json)
-montaj install all          # everything above
+montaj doctor                              # diagnose what's missing — prints the exact next steps
+montaj install ui                          # build UI bundles into ~/.cache/montaj/ (brew + pip both need this)
+montaj install whisper                     # whisper-cpp binary + base.en model weights
+montaj install rvm                         # torch/torchvision/av (pip) + RVM model weights
+montaj install connectors                  # pyjwt, requests, google-genai, openai (for API steps)
+montaj credentials                         # interactive setup for API keys (~/.montaj/credentials.json)
+montaj install all                         # everything above
 ```
+
+First-run flow is identical for brew and pip: `montaj doctor` first to see what's missing, then act on its output — almost always `montaj install ui`.
 
 `montaj install whisper` is safe to re-run — skips the binary if already at the pinned version, skips weights if already downloaded.
 

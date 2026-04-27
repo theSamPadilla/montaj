@@ -4,7 +4,7 @@ import os
 import sys
 
 from cli.main import add_global_flags
-from cli.deps import check_deps
+from cli.deps import check_deps, check_ui
 from cli.help import bold, green, yellow, cyan, dim, red
 
 
@@ -31,6 +31,12 @@ def handle(args):
         for m in missing:
             print(red(f"  • {m}"), file=sys.stderr)
         print(f"\nRun: {bold('montaj install')}", file=sys.stderr)
+        sys.exit(1)
+
+    _, ui_error = check_ui()
+    if ui_error:
+        print(red(f"error: {ui_error}"), file=sys.stderr)
+        print(f"\nRun: {bold('montaj install ui')}", file=sys.stderr)
         sys.exit(1)
 
     host = "0.0.0.0" if args.network else "127.0.0.1"

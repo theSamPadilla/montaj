@@ -24,6 +24,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from lib.types.project import normalize_project_type
 from lib.types.kling import ASPECT_RATIOS, is_valid_aspect_ratio
 from lib.workflow import read_workflow
+from cli.deps import ui_runtime_dir, render_runtime_dir
 
 MONTAJ_ROOT = Path(__file__).resolve().parent.parent
 PORT      = int(os.environ.get("MONTAJ_SERVE_PORT", "3000"))
@@ -262,35 +263,18 @@ def wrap_output(stdout: str, schema: dict) -> dict:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    ui_src  = MONTAJ_ROOT / "ui"
-    ui_dist = MONTAJ_ROOT / "ui" / "dist"
-
+    # UI readiness is verified up-front by `cli/commands/serve.py` via check_ui().
+    # Dev mode = working tree (.git present, dir or worktree-file). Use the same
+    # helper as deps.check_ui() so the two stay consistent.
+    from cli.deps import is_dev_checkout
     vite_proc = None
-    if (ui_src / "src").exists():
-        # Dev checkout — run Vite dev server for HMR instead of serving dist/
-        if not (ui_src / "node_modules").exists():
-            print("[montaj] Installing UI dependencies…")
-            r = subprocess.run(["npm", "install", "--prefix", str(ui_src)], capture_output=True, text=True)
-            if r.returncode != 0:
-                print(f"[montaj] npm install failed:\n{r.stderr or r.stdout}", flush=True)
-                raise RuntimeError("npm install failed — see output above")
+    if is_dev_checkout():
         print(f"[montaj] Starting Vite dev server on :{VITE_PORT}…")
         vite_proc = subprocess.Popen(
-            ["npm", "run", "dev", "--prefix", str(ui_src)],
+            ["npm", "run", "dev", "--prefix", ui_runtime_dir()],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
-    elif not ui_dist.exists() and (ui_src / "package.json").exists():
-        # Production install, dist missing — build once
-        print("[montaj] Building UI for the first time — this takes ~30s…")
-        r = subprocess.run(["npm", "install", "--prefix", str(ui_src)], capture_output=True, text=True)
-        if r.returncode != 0:
-            print(f"[montaj] npm install failed:\n{r.stderr or r.stdout}", flush=True)
-            raise RuntimeError("UI build failed at npm install — see output above")
-        r = subprocess.run(["npm", "run", "build", "--prefix", str(ui_src)], capture_output=True, text=True)
-        if r.returncode != 0:
-            print(f"[montaj] npm run build failed:\n{r.stderr or r.stdout}", flush=True)
-            raise RuntimeError("UI build failed at npm run build — see output above")
 
     loop = asyncio.get_running_loop()
     workspace = resolve_workspace()
@@ -1048,7 +1032,7 @@ async def get_caption_template(style: str):
     """Serve a built-in caption template JSX file for in-browser preview."""
     if style not in CAPTION_STYLES:
         raise HTTPException(404, detail={"error": "not_found", "message": f"Unknown caption style: {style}"})
-    p = MONTAJ_ROOT / "render" / "templates" / "captions" / f"{style}.jsx"
+    p = Path(render_runtime_dir()) / "templates" / "captions" / f"{style}.jsx"
     if not p.is_file():
         raise HTTPException(404, detail={"error": "not_found", "message": f"Template not found: {p}"})
     return FileResponse(str(p), media_type="text/plain")
@@ -1071,7 +1055,7 @@ async def render_project(project_id: str, request: Request):
     if project_path is None:
         raise HTTPException(404, detail={"error": "not_found", "message": f"Project '{project_id}' not found"})
 
-    render_script = MONTAJ_ROOT / "render" / "render.js"
+    render_script = Path(render_runtime_dir()) / "render.js"
     if not render_script.is_file():
         raise HTTPException(500, detail={"error": "not_found", "message": "render/render.js not found"})
 
@@ -1436,10 +1420,10 @@ async def serve_spa(full_path: str, request: Request):
         # If vite_proc has exited (poll() is not None), fall through to dist/
 
     # Prod mode — serve from dist/
-    ui_dist = MONTAJ_ROOT / "ui" / "dist"
+    ui_dist = Path(ui_runtime_dir()) / "dist"
     if not ui_dist.exists():
         return HTMLResponse(
-            "<h1>UI not built.</h1><p>Run: <code>npm run build --prefix ui/</code></p>",
+            "<h1>UI not built.</h1><p>Run: <code>montaj install ui</code></p>",
             status_code=503,
         )
     target = (ui_dist / full_path).resolve()

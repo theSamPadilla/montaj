@@ -16,3 +16,17 @@ recursive-include schema *.yaml *.json
 
 # Docs (for offline reference)
 recursive-include docs *.md
+
+# Bundled assets — Node render engine, Vite UI, MCP server.
+# Built artifacts (node_modules/, ui/dist/) are NOT shipped — `montaj install ui`
+# builds them into ~/.cache/montaj/ on first run.
+graft montaj_assets
+prune montaj_assets/render/node_modules
+prune montaj_assets/ui/node_modules
+prune montaj_assets/ui/dist
+prune montaj_assets/mcp/node_modules
+
+# Belt & suspenders. global-exclude with bare names matches FILES, not directories,
+# so __pycache__/ is excluded via its contents pattern and via recursive-exclude.
+recursive-exclude * __pycache__
+global-exclude *.pyc *.pyo .DS_Store
