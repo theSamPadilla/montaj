@@ -23,13 +23,13 @@ montaj install all                         # everything above
 
 First-run flow is identical for brew and pip: `montaj doctor` first to see what's missing, then act on its output — almost always `montaj install ui`.
 
-`montaj install whisper` is safe to re-run — skips the binary if already at the pinned version, skips weights if already downloaded.
+`montaj install whisper` is safe to re-run — short-circuits if `whisper-cli` is already on PATH, skips the model download if already cached. On macOS it delegates to `brew install whisper-cpp` (bottled, fast); on Linux it prints build-from-source instructions since upstream stopped publishing pre-built tarballs.
 
 ### Optional dependency groups
 
 | Group | What it installs | Required for |
 |-------|-----------------|--------------|
-| `whisper` | whisper-cpp binary (pinned), base.en model weights | `transcribe`, `rm_fillers`, `rm_nonspeech`, `waveform_trim`, render pipeline |
+| `whisper` | whisper-cli (via `brew install whisper-cpp` on macOS) + base.en model weights | `transcribe`, `rm_fillers`, `rm_nonspeech`, `waveform_trim`, render pipeline |
 | `ui` | npm deps for `render/` and `ui/`; production UI build | `montaj serve`, render engine |
 | `rvm` | torch, torchvision, av (pip) + rvm_mobilenetv3 (~15 MB) + rvm_resnet50 (~103 MB) | `remove_bg` |
 | `connectors` | pyjwt, requests, google-genai, openai | `kling_generate`, `analyze_media`, `generate_image` |
@@ -90,8 +90,8 @@ montaj normalize video.mov --out /tmp/normalized.mp4
 
 ```bash
 montaj update            # upgrade everything (whisper binary, pip packages)
-montaj update whisper    # re-download whisper binary if pinned version changed
-montaj update pip        # pip install --upgrade for all Python packages
+montaj update whisper    # brew upgrade whisper-cpp on macOS; build-from-source hint on Linux
+montaj update pip        # pip install --upgrade montaj
 ```
 
 ---
