@@ -119,17 +119,20 @@ export default function ProjectList() {
           </div>
         )}
 
-        <p className="text-xs text-gray-400 dark:text-gray-500 mt-4">
-          Built with ❤️ and ☕{' '}
-          <a
-            href="https://bycrux.com"
-            target="_blank"
-            rel="noopener noreferrer"
-            className="underline underline-offset-2 hover:text-gray-700 dark:hover:text-gray-300 transition-colors"
-          >
-            By Crux
-          </a>
-        </p>
+        <div className="flex items-center justify-between mt-4 text-xs text-gray-400 dark:text-gray-500">
+          <p>
+            Built with ❤️ and ☕{' '}
+            <a
+              href="https://bycrux.com"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="underline underline-offset-2 hover:text-gray-700 dark:hover:text-gray-300 transition-colors"
+            >
+              By Crux
+            </a>
+          </p>
+          <p className="font-mono">v{__APP_VERSION__}</p>
+        </div>
       </div>
     </div>
   )

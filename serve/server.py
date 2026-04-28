@@ -866,10 +866,11 @@ async def rerun_project(project_id: str, request: Request):
 
 
 def _workflow_dirs() -> list[tuple[str, Path]]:
-    """Return [(scope, dir)] in resolution order: user-global → built-in."""
+    """Return [(scope, dir)] in resolution order: project-local → user-global → built-in."""
     return [
-        ("user",    Path.home() / ".montaj" / "workflows"),
-        ("built-in", Path.cwd() / "workflows"),
+        ("project-local", Path.cwd() / "workflows"),
+        ("user",          Path.home() / ".montaj" / "workflows"),
+        ("built-in",      MONTAJ_ROOT / "workflows"),
     ]
 
 

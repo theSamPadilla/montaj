@@ -99,17 +99,17 @@ export function DropZone({ label, sublabel, icon, accept, files, uploading, onBr
           {files.map(path => (
             <li
               key={path}
-              className="flex items-center gap-2 px-3 py-2 rounded-md border border-gray-200 dark:border-gray-800 bg-gray-50 dark:bg-gray-900 group"
+              className="flex items-center gap-2 px-3 py-2 rounded-md border border-green-200 dark:border-green-900/50 bg-green-50 dark:bg-green-900/20 group"
             >
-              <span className="text-gray-400 dark:text-gray-600 shrink-0">
+              <span className="text-green-500 dark:text-green-500 shrink-0">
                 {fileIcon ?? defaultFileIcon}
               </span>
-              <span className="flex-1 text-xs text-gray-700 dark:text-gray-300 truncate font-mono">
+              <span className="flex-1 text-xs text-green-800 dark:text-green-300 truncate font-mono">
                 {basename(path)}
               </span>
               <button
                 onClick={() => onRemove(path)}
-                className="shrink-0 text-gray-400 hover:text-gray-600 dark:text-gray-700 dark:hover:text-gray-400 transition-colors opacity-0 group-hover:opacity-100"
+                className="shrink-0 text-green-500/60 hover:text-green-700 dark:text-green-700 dark:hover:text-green-400 transition-colors opacity-0 group-hover:opacity-100"
               >
                 <X size={12} />
               </button>
