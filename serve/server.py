@@ -372,6 +372,24 @@ async def run_project(body: dict = Body(...)):
         if not isinstance(target_duration, int) or target_duration <= 0:
             raise HTTPException(400, detail={"error": "invalid_intake", "message": f"targetDurationSeconds must be a positive integer (got {target_duration!r})"})
         intake_setting_args += ["--target-duration", str(target_duration)]
+    resolution = intake.get("resolution")
+    if resolution is not None:
+        if not isinstance(resolution, str) or "x" not in resolution.lower():
+            raise HTTPException(400, detail={
+                "error": "invalid_intake",
+                "message": f"resolution must be a 'WxH' string (got {resolution!r})"
+            })
+        try:
+            w_str, h_str = resolution.lower().split("x", 1)
+            w, h = int(w_str), int(h_str)
+            if w <= 0 or h <= 0:
+                raise ValueError
+        except ValueError:
+            raise HTTPException(400, detail={
+                "error": "invalid_intake",
+                "message": f"resolution must be 'WxH' with positive ints (got {resolution!r})"
+            })
+        intake_setting_args += ["--resolution", resolution]
 
     # Music intake validation
     music = intake.get('music')
@@ -435,21 +453,37 @@ async def run_project(body: dict = Body(...)):
                 }
             )
 
-    # Blocking subprocess inside async handler — acceptable for single-user local
-    # tool but blocks all requests (including SSE keepalives) for the duration.
-    # Fix: asyncio.create_subprocess_exec + await proc.communicate()
+    # Async subprocess so init doesn't block the FastAPI event loop or stall SSE.
+    # 30 min ceiling is a sanity bound, not a real expected duration — with parallel
+    # normalize + audio fast path + resolution preservation, realistic init time is
+    # seconds to a few minutes even on heavy footage.
+    INIT_TIMEOUT_S = 1800
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=60, cwd=str(Path.cwd()))
-    except subprocess.TimeoutExpired:
-        raise HTTPException(504, detail={"error": "timeout", "message": "Project init exceeded 60s"})
-    if result.returncode != 0:
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            cwd=str(Path.cwd()),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
         try:
-            err = json.loads(result.stderr)
+            stdout_b, stderr_b = await asyncio.wait_for(proc.communicate(), timeout=INIT_TIMEOUT_S)
+        except asyncio.TimeoutError:
+            proc.kill()
+            await proc.wait()
+            raise HTTPException(504, detail={"error": "timeout", "message": f"Project init exceeded {INIT_TIMEOUT_S}s"})
+    except FileNotFoundError as e:
+        raise HTTPException(500, detail={"error": "init_failed", "message": str(e)})
+
+    stdout = stdout_b.decode()
+    stderr = stderr_b.decode()
+    if proc.returncode != 0:
+        try:
+            err = json.loads(stderr)
         except Exception:
-            err = {"error": "init_failed", "message": result.stderr.strip()}
+            err = {"error": "init_failed", "message": stderr.strip()}
         raise HTTPException(500, detail=err)
 
-    project_path = Path(result.stdout.strip())
+    project_path = Path(stdout.strip())
     try:
         return json.loads(project_path.read_text())
     except Exception:
@@ -794,14 +828,17 @@ async def restore_version(project_id: str, commit: str, request: Request):
             pass
     if project_path is None:
         raise HTTPException(404, detail={"error": "not_found", "message": f"Project '{project_id}' not found"})
-    result = subprocess.run(
-        ["git", "show", f"{commit}:project.json"],
-        cwd=str(project_dir), capture_output=True, text=True,
+    proc = await asyncio.create_subprocess_exec(
+        "git", "show", f"{commit}:project.json",
+        cwd=str(project_dir),
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
     )
-    if result.returncode != 0:
+    stdout_b, stderr_b = await proc.communicate()
+    if proc.returncode != 0:
         raise HTTPException(404, detail={"error": "not_found", "message": f"Commit '{commit}' not found"})
     try:
-        restored = json.loads(result.stdout)
+        restored = json.loads(stdout_b.decode())
     except Exception:
         raise HTTPException(500, detail={"error": "parse_failed", "message": "Could not parse project.json at that commit"})
     project_path.write_text(json.dumps(restored, indent=2))
@@ -943,15 +980,12 @@ async def normalize_video(body: dict = Body(...)):
         if is_normalized(input_path, info, width, height):
             return {"path": input_path, "skipped": True}
 
-        import io, contextlib
-        stdout_capture = io.StringIO()
         try:
-            with contextlib.redirect_stdout(stdout_capture):
-                normalize(input_path, out, width, height, crf)
+            result_path = normalize(input_path, out, width, height, crf)
         except SystemExit:
             raise HTTPException(500, detail={"error": "normalize_failed", "message": "Normalization failed — check ffmpeg and zscale availability"})
 
-        return {"path": stdout_capture.getvalue().strip() or out, "skipped": False}
+        return {"path": result_path or out, "skipped": False}
 
     return await asyncio.to_thread(_run)
 

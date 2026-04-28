@@ -86,20 +86,49 @@ This corruption happens during `avformat_open_input()`, leaving the demuxer stat
 
 ## Step 6.5 — Normalize pre-pass
 
-After `collectAllItems` (Step 2) and before `processVideoItems` (Step 3), the render engine runs a **normalize pre-pass** on all video items. This is enforcement point 3 — the render pipeline refuses to compose non-normalized sources.
+After `collectAllItems` (Step 2) and before `processVideoItems` (Step 3), the
+render engine runs a **normalize pre-pass** on all video items. This is
+enforcement point 3 — the render pipeline refuses to compose non-normalized
+sources.
 
-Each video clip is checked and, if needed, converted to the project's working format:
+Each video clip is checked and, if needed, converted to the project's working
+format:
 
 - **Codec:** H.264 (`libx264`)
 - **Pixel format:** `yuv420p`
-- **Color space:** BT.709 (HDR sources are tonemapped via `zscale` + `tonemap` if available, with a fallback path if `zscale` is missing)
-- **Resolution:** project resolution (e.g. 1080x1920)
-- **Frame rate:** project fps (e.g. 30)
+- **Color space:** BT.709 (HDR sources are tonemapped via `zscale` + `tonemap`
+  if available, with a fallback path if `zscale` is missing)
 - **Audio:** 48 kHz, AAC
+- **Keyframes:** GOP ≤ 1 second (frequent IDR keyframes — required for accurate
+  segment-encoder seeking)
 
-The normalize step creates `_normalized.mp4` files alongside the originals — originals are never modified and are preserved for potential re-export at different settings. The `lib/normalize.py` module is the shared infrastructure backing this (also used by `project/init.py` for ingest-time normalization and `steps/ai_video.py` for generated clip normalization).
+**Resolution is preserved.** Source clips remain at their native resolution
+through the entire pipeline; the segment encoder scales per-item at compose
+time via the `scale=` filter in `encode-segment.js`. This avoids the permanent
+quality loss of intake-time downscaling and preserves headroom for crops,
+zooms, and re-frames.
 
-After normalization, all sources entering the compose pipeline are guaranteed to share the same codec, pixel format, color space, resolution, and frame rate. This eliminates an entire class of filter graph bugs (mixed HDR/SDR, mismatched resolutions, incompatible pixel formats).
+**Audio-only fast path:** When a source's video stream is fully conformant
+(h264 / yuv420p / SDR / keyframes ≤ 2s) but the audio is missing or at a
+non-target sample rate, normalize uses `-c:v copy` and only re-encodes audio.
+~20–40× faster than full re-encode; produces a bit-identical video stream.
+
+**Parallel execution:** Both init-time and render-time pre-pass normalize
+loops run with concurrency cap of 2 (matching `materialize_cut.py`'s libx264
+cap). Memory-heavy 4K HDR tonemap is the worst case; 2 workers stays within
+bounds on systems with ≥8GB free RAM.
+
+The normalize step creates `_normalized.mp4` files alongside the originals —
+originals are never modified and are preserved for potential re-export. The
+`lib/normalize.py` module is the shared infrastructure backing this (also
+used by `project/init.py` for ingest-time normalization and `steps/ai_video.py`
+for generated clip normalization).
+
+After normalization, all sources entering the compose pipeline are guaranteed
+to share codec, pixel format, color space, and audio sample rate. This
+eliminates an entire class of filter graph bugs (mixed HDR/SDR, mismatched
+pixel formats). Resolution is intentionally NOT unified at intake — the
+segment encoder handles per-item scaling.
 
 ---
 
@@ -126,7 +155,11 @@ Boundary snapping ensures clean cuts — segment boundaries align to frame bound
 
 ### Stage 2 — Segment encoding (encode-segment.js)
 
-Each segment is encoded independently with its own ffmpeg call. The filter graph for a single segment layers items by `trackIdx` (lowest first), then composites overlays and captions on top. Because all sources are pre-normalized to the same format, the per-segment filter graph is simple — no format conversion, no resolution scaling, no HDR handling.
+Each segment is encoded independently with its own ffmpeg call. The filter graph
+for a single segment layers items by `trackIdx` (lowest first), then composites
+overlays and captions on top. Items at non-project resolution are scaled by the
+per-item `scale=` filter — this is what enables source-resolution preservation
+at intake.
 
 Segments are encoded in parallel using the worker pool.
 

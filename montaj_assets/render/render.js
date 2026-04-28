@@ -12,7 +12,7 @@
 import { readFileSync, writeFileSync, existsSync, mkdirSync, rmSync, readdirSync } from 'fs'
 import { resolve, join, dirname, basename, extname } from 'path'
 import { fileURLToPath } from 'url'
-import { spawnSync } from 'child_process'
+import { spawnSync, spawn } from 'child_process'
 
 import { bundleComponent, cleanupBundle } from './bundle.js'
 import { renderAllSegments }              from './renderer.js'
@@ -156,14 +156,18 @@ async function main(projectPath, { out, workers, clean }) {
   const segmentSpecs = collectPuppeteerSegments(projectJson, fps, renderWidth, renderHeight, segDir)
   const { imageItems, videoItems } = collectAllItems(projectJson)
 
-  // 3. Normalize non-conformant video items to project format
-  for (const item of videoItems) {
-    const normalizedPath = normalizeIfNeeded(item.src, settings)
+  // 3. Normalize non-conformant video items to project format (parallel, cap=2)
+  //    Cap matches materialize_cut.py's libx264 worker count — memory-heavy at 4K.
+  //    Requires normalizeIfNeeded to be async (see below) — pMap with a sync mapper
+  //    runs sequentially.
+  const NORMALIZE_WORKERS = 2
+  await pMap(videoItems, async (item) => {
+    const normalizedPath = await normalizeIfNeeded(item.src, settings)
     if (normalizedPath !== item.src) {
       log(`normalized ${item.src.split('/').pop()} → ${normalizedPath.split('/').pop()}`)
       item.src = normalizedPath
     }
-  }
+  }, NORMALIZE_WORKERS)
 
   // 4. Run remove_bg on any video items that need it
   await processVideoItems(videoItems, workspaceDir)
@@ -500,20 +504,67 @@ function getTotalDurationSeconds(projectJson) {
 // Normalize pre-pass
 // ---------------------------------------------------------------------------
 
-function normalizeIfNeeded(src, settings) {
+async function normalizeIfNeeded(src, settings) {
+  // --width/--height are passed for API compat; lib.normalize ignores them after
+  // the resolution-preservation change (see docs/plans/2026-04-28-init-normalize-perf.md).
   const [w, h] = settings.resolution ?? [1080, 1920]
   const out = src.replace(/(\.\w+)$/, '_normalized.mp4')
 
-  const result = spawnSync('python3', [
-    '-m', 'lib.normalize',
-    '--input', src,
-    '--width', String(w), '--height', String(h),
-    '--out', out,
-  ], { encoding: 'utf8', timeout: 600_000, cwd: MONTAJ_ROOT })
+  return new Promise((resolve) => {
+    const proc = spawn('python3', [
+      '-m', 'lib.normalize',
+      '--input', src,
+      '--width', String(w), '--height', String(h),
+      '--out', out,
+    ], { cwd: MONTAJ_ROOT })
 
-  if (result.status !== 0) return src
-  const outputPath = result.stdout.trim()
-  return outputPath || src
+    let stdout = ''
+    let stderr = ''
+    proc.stdout.on('data', (chunk) => { stdout += chunk.toString('utf8') })
+    proc.stderr.on('data', (chunk) => { stderr += chunk.toString('utf8') })
+
+    // Match the original 600s timeout — kill the process if it overruns
+    const timer = setTimeout(() => proc.kill('SIGKILL'), 600_000)
+
+    proc.on('close', (code) => {
+      clearTimeout(timer)
+      // `code` is null when the process was killed by signal (e.g. our SIGKILL on
+      // the 600s timeout). The `code !== 0` check correctly treats null as failure
+      // and falls back to src — do NOT "fix" this to `code != null && code !== 0`,
+      // which would treat a timeout-killed proc as success and resolve with stdout
+      // (likely empty or partial → bogus path).
+      if (code !== 0) {
+        // Preserve original behaviour: on failure, fall back to the source path.
+        // Surface stderr to render's log so the user sees what went wrong.
+        if (stderr.trim()) log(`normalize stderr: ${stderr.trim().slice(-500)}`)
+        resolve(src)
+        return
+      }
+      const outputPath = stdout.trim()
+      resolve(outputPath || src)
+    })
+
+    proc.on('error', (err) => {
+      clearTimeout(timer)
+      log(`normalize spawn error: ${err.message}`)
+      resolve(src)
+    })
+  })
+}
+
+// Bounded-concurrency map. Cap matches materialize_cut.py's libx264 worker pool.
+async function pMap(items, mapper, concurrency) {
+  const results = new Array(items.length)
+  let cursor = 0
+  async function worker() {
+    while (true) {
+      const i = cursor++
+      if (i >= items.length) return
+      results[i] = await mapper(items[i], i)
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(concurrency, items.length) }, worker))
+  return results
 }
 
 // ---------------------------------------------------------------------------

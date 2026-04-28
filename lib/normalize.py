@@ -54,6 +54,7 @@ def probe_video(path):
         "pix_fmt": video.get("pix_fmt"),
         "color_transfer": video.get("color_transfer", "unknown"),
         "fps": fps,
+        "r_frame_rate": fps_str,
         "has_audio": has_audio,
         "audio_sample_rate": audio_sample_rate,
         "max_keyframe_interval": max_kf_interval,
@@ -86,24 +87,55 @@ def _probe_max_keyframe_interval(path):
     return max_gap
 
 
-def is_normalized(path, info, target_w, target_h):
+def is_normalized(path, info, target_w=0, target_h=0, force_probe=False):
     """Returns True if the file already matches the project working format.
-    Shortcut: files ending in _normalized.mp4 are assumed conformant (we produced them).
-    Otherwise probes codec, resolution, pix_fmt, color, audio sample rate,
-    and keyframe interval. FPS is NOT checked — the segment encoder handles
-    fps conversion at render time, preserving source duration."""
-    if path.endswith("_normalized.mp4"):
+
+    Deprecated: `target_w` and `target_h` are inert. Kept for API compatibility.
+    Source resolution is preserved through the pipeline — see Task 3 of
+    docs/plans/2026-04-28-init-normalize-perf.md and the `scale=` filter in
+    montaj_assets/render/encode-segment.js which handles per-item scaling at
+    compose time.
+
+    Shortcut: files ending in _normalized.mp4 are assumed conformant (we produced
+    them). Pass `force_probe=True` to bypass the suffix shortcut and verify the
+    actual stream — needed by the contract regression test, which would otherwise
+    pass purely on filename and never catch a future regression that produces
+    a misnamed-but-non-conformant output.
+
+    Otherwise probes codec, pix_fmt, color, audio sample rate, and keyframe
+    interval. FPS and resolution are NOT checked — both are handled at render time.
+    """
+    if not force_probe and path.endswith("_normalized.mp4"):
         return True
     return (
         info["codec"] == "h264"
-        and info["width"] == target_w
-        and info["height"] == target_h
         and info["pix_fmt"] == "yuv420p"
         and info["color_transfer"] not in ("arib-std-b67", "smpte2084")
         and info["has_audio"]
         and info.get("audio_sample_rate") == 48000
         and info.get("max_keyframe_interval", 999) <= 2.0
     )
+
+
+def _can_use_audio_fast_path(info):
+    """Returns True if the video stream is fully conformant (codec, pix_fmt, color,
+    keyframes) and the ONLY non-conformance is audio (missing or wrong sample rate).
+    In this case we can `-c:v copy` and only re-encode audio — ~20-40x faster.
+
+    NOTE: this does not verify IDR vs non-IDR keyframes. In rare cases (open-GOP
+    sources, professional intermediates), the fast path could produce sub-optimal
+    seek behavior in the segment encoder. Consumer sources (phone, screen recording,
+    OBS) effectively always use IDR keyframes. If a user reports seek glitches on a
+    fast-path-normalized clip, add an `is_idr_keyframe` check here.
+    """
+    video_ok = (
+        info["codec"] == "h264"
+        and info["pix_fmt"] == "yuv420p"
+        and info["color_transfer"] not in ("arib-std-b67", "smpte2084")
+        and info.get("max_keyframe_interval", 999) <= 2.0
+    )
+    audio_bad = (not info["has_audio"]) or info.get("audio_sample_rate") != 48000
+    return video_ok and audio_bad
 
 
 def needs_tonemap(info):
@@ -117,33 +149,91 @@ def _has_zscale():
 
 
 def _build_tonemap_vf(width, height, use_zscale):
-    """Build the HDR→SDR tonemap filter chain.
+    """Build the HDR→SDR tonemap filter chain. Source resolution is preserved.
+
+    Deprecated: `width` and `height` are inert. Kept for API compatibility.
+    Source resolution flows through; the segment encoder scales per-item at
+    compose time.
 
     With zscale (preferred): proper colorspace conversion through linear light.
     Without zscale (fallback): bare tonemap on p010le — colors are less accurate
     but the output is usable. Logs a warning recommending montaj doctor.
     """
     if use_zscale:
-        return (f"zscale=t=linear:npl=100,format=gbrpf32le,"
-                f"zscale=p=bt709,tonemap=hable:desat=0,"
-                f"zscale=t=bt709:m=bt709:r=tv,format=yuv420p,"
-                f"scale={width}:{height}")
+        return ("zscale=t=linear:npl=100,format=gbrpf32le,"
+                "zscale=p=bt709,tonemap=hable:desat=0,"
+                "zscale=t=bt709:m=bt709:r=tv,format=yuv420p")
     else:
-        return (f"scale={width}:{height},"
-                f"format=p010le,"
-                f"tonemap=hable:desat=0,"
-                f"format=yuv420p")
+        return ("format=p010le,"
+                "tonemap=hable:desat=0,"
+                "format=yuv420p")
 
 
-def normalize(input_path, out_path, width, height, crf=16):
-    info = probe_video(input_path)
+def normalize(input_path, out_path, width, height, crf=16, info=None):
+    """Normalize a video clip to the project working format. Returns the output
+    path on success.
+
+    Deprecated: `width` and `height` are inert. Kept for API compatibility.
+    Source resolution is preserved; the segment encoder scales per-item at
+    compose time.
+
+    Optional `info` parameter accepts a pre-probed dict (from probe_video). When
+    provided, skips the internal probe — important for callers like init.py that
+    have already probed during smart-resolution detection. Without this, normalize
+    would re-probe every clip (2 redundant ffprobe calls per clip on heavy footage).
+    """
+    if info is None:
+        info = probe_video(input_path)
     if info is None:
         fail("probe_error", f"Cannot probe {input_path}")
 
     if is_normalized(input_path, info, width, height):
         progress("Already conformant, skipping normalize")
-        print(input_path)
-        return
+        return input_path
+
+    if _can_use_audio_fast_path(info):
+        progress(f"Audio-only fast path: copying video stream, re-encoding audio "
+                 f"({info.get('audio_sample_rate') or 'no audio'} → 48kHz AAC)")
+        # NOTE on input ordering: -fflags +genpts+igndts and -ignore_editlist 1 are
+        # positioned before the FIRST -i, applying only to the source video input.
+        # The anullsrc input (when used) doesn't need any of these flags. If you
+        # ever swap input order or add another input, re-check this still applies
+        # to the right stream.
+        #
+        # Why -ignore_editlist 1: iPhone/iOS sources commonly carry edit list (elst)
+        # atoms with negative PTS / CTTS offsets (sub-frame stabilization padding,
+        # etc). Without ignore_editlist + igndts, -c:v copy preserves the edit list
+        # and downstream consumers that don't expect it produce wrong durations,
+        # off-by-frames seeks, and audio drift.
+        cmd = [
+            "ffmpeg", "-y",
+            "-fflags", "+genpts+igndts",
+            "-ignore_editlist", "1",
+            "-i", input_path,
+        ]
+        if not info["has_audio"]:
+            # Generate silent stereo to match the contract (downstream concat assumes audio)
+            cmd += ["-f", "lavfi", "-i", "anullsrc=cl=stereo:r=48000",
+                    "-shortest", "-map", "0:v:0", "-map", "1:a:0"]
+        else:
+            cmd += ["-map", "0:v:0", "-map", "0:a:0"]
+        cmd += [
+            "-c:v", "copy",
+            "-c:a", "aac", "-b:a", "192k", "-ar", "48000",
+            "-movflags", "+faststart",
+            out_path,
+        ]
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+        if r.returncode != 0:
+            # Fall through to full re-encode below — the fast path is a best-effort
+            # optimization. In practice failures are nearly all <1s (container probe
+            # error, output disk error), so worst-case "failed fast path then full
+            # re-encode" wastes a negligible amount of time vs. the full re-encode
+            # it falls back to. Acceptable.
+            progress(f"Audio fast path failed, falling back to full re-encode: "
+                     f"{(r.stderr or '')[-200:]}")
+        else:
+            return out_path
 
     source_fps = info["fps"] or 30  # use source fps for keyframe interval
 
@@ -158,7 +248,7 @@ def normalize(input_path, out_path, width, height, crf=16):
             progress("To fix: run `montaj doctor` for instructions on installing libzimg.")
         vf = _build_tonemap_vf(width, height, use_zscale)
     else:
-        vf = f"scale={width}:{height},format=yuv420p"
+        vf = "format=yuv420p"
 
     cmd = [
         "ffmpeg", "-y", "-i", input_path,
@@ -193,7 +283,7 @@ def normalize(input_path, out_path, width, height, crf=16):
         progress("Re-normalize after installing zscale for accurate colors.")
         progress("Fix: run `montaj doctor` → follow zscale installation instructions.")
 
-    print(out_path)
+    return out_path
 
 
 def main():
@@ -207,7 +297,12 @@ def main():
 
     require_file(args.input)
     out = args.out or args.input.rsplit(".", 1)[0] + "_normalized.mp4"
-    normalize(args.input, out, args.width, args.height, args.crf)
+    # CLI mode: print the result path so subprocess callers (e.g. render.js's
+    # normalizeIfNeeded) can read it from stdout. The function itself returns
+    # the path; only the CLI entry point prints, so library callers (init.py)
+    # don't pollute their own stdout.
+    result = normalize(args.input, out, args.width, args.height, args.crf)
+    print(result)
 
 
 if __name__ == "__main__":

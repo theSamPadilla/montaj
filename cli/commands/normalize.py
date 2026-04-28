@@ -26,4 +26,5 @@ def handle(args):
         print(args.input)  # already conformant
         return
 
-    normalize(args.input, out, args.width, args.height, args.crf)
+    result = normalize(args.input, out, args.width, args.height, args.crf)
+    print(result)
