@@ -303,11 +303,19 @@ def _ensure_ffmpeg_zscale() -> bool:
     formula_path = os.path.join(brew_prefix, "Library", "Taps", "homebrew",
                                 "homebrew-core", "Formula", "f", "ffmpeg.rb")
     if not os.path.isfile(formula_path):
-        print(f"{cyan('→')} tapping {bold('homebrew/core')} (needed for formula editing)...")
-        subprocess.run(["brew", "tap", "homebrew/core"], capture_output=True)
+        # Homebrew 4.x silently skips `brew tap homebrew/core` unless
+        # HOMEBREW_NO_INSTALL_FROM_API=1 is set — without it, brew prefers the
+        # API and never clones the tap, leaving the formula file absent.
+        print(f"{cyan('→')} tapping {bold('homebrew/core')} {dim('(needed for formula editing — clones ~1GB, may take several minutes)')}...")
+        tap_env = os.environ.copy()
+        tap_env["HOMEBREW_NO_INSTALL_FROM_API"] = "1"
+        r = subprocess.run(["brew", "tap", "homebrew/core"], env=tap_env)
+        if r.returncode != 0:
+            print(f"{red('✗')} {dim('brew tap homebrew/core')} failed", file=sys.stderr)
+            return False
     if not os.path.isfile(formula_path):
         print(f"{red('✗')} ffmpeg formula not found at {dim(formula_path)}")
-        print(f"  Try: {dim('brew tap homebrew/core')}")
+        print(f"  Try: {dim('HOMEBREW_NO_INSTALL_FROM_API=1 brew tap homebrew/core')}")
         return False
 
     # 3. Patch the formula
