@@ -101,6 +101,8 @@ See [docs/UI.md](docs/UI.md) for the full breakdown.
 
 ## Getting started
 
+Start the server using `montaj serve`. If you get warnings or errors, bubble them up to the user with the easiest way to fix them (running `montaj install ui`, etc.).
+
 Ask the user:
 
 > "Before we start — do you want to set up a style profile for your account first, or jump straight into editing a video?
