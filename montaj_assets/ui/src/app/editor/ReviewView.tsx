@@ -642,7 +642,13 @@ export default function ReviewView({ project, onProjectChange }: ReviewViewProps
       {renderOpen && (
         <RenderModal
           projectId={project.id}
+          // Post-render close (Done / Close / Escape after completion or error):
+          // navigate to project root so the user can see the finished output
+          // alongside their other projects.
           onClose={() => { setRenderOpen(false); navigate('/') }}
+          // Mid-render cancel: just dismiss the modal — the user wants to keep
+          // editing, not get yanked away from the project they were working on.
+          onCancel={() => setRenderOpen(false)}
         />
       )}
 

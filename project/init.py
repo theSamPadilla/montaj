@@ -1,15 +1,19 @@
 #!/usr/bin/env python3
 """Initialize a montaj project workspace."""
-import argparse, json, os, re, shutil, subprocess, sys, threading, uuid
+import argparse, json, os, re, shutil, subprocess, sys, threading, time, uuid
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-from lib.common import fail, get_duration
-from lib.normalize import normalize, is_normalized, probe_video, _can_use_audio_fast_path
+from lib.common import fail, get_duration, progress
+from lib.normalize import normalize, is_normalized, probe_video
 from lib.types.project import normalize_project_type
 from lib.types.kling import is_valid_aspect_ratio, ASPECT_RATIOS, ASPECT_RESOLUTIONS, DEFAULT_ASPECT_RATIO
+from lib.types.colorspace import (
+    ALL_COLOR_SPACES, DEFAULT_COLOR_SPACE, ColorSpaceKey,
+    detect_from_transfer, normalize_key, smart_detect,
+)
 from lib.workflow import read_workflow
 
 
@@ -55,6 +59,16 @@ def main():
     parser.add_argument("--resolution", default=None,
                         help="Project output resolution as WxH (e.g. '3840x2160'). "
                              "Overrides the auto-detected default.")
+    parser.add_argument(
+        "--color-space",
+        dest="color_space",
+        choices=("auto",) + ALL_COLOR_SPACES,
+        default="auto",
+        help="Project working color space. 'auto' (default) picks the modal "
+             "(most common) color space across all clips — outliers are converted "
+             "on the fly. Tiebreaks: PQ wins HDR-only ties; SDR wins SDR-vs-HDR ties. "
+             "Override to force a specific color space regardless of source.",
+    )
     parser.add_argument('--music-upload', dest='music_upload', help='Path to uploaded music file')
     parser.add_argument('--music-describe', dest='music_describe', help='Prompt describing the music to generate')
     parser.add_argument('--voiceover-prompt', dest='voiceover_prompt', help='Voiceover script or brief')
@@ -150,14 +164,23 @@ def main():
     # collects (w, h, r_frame_rate) tuples for resolution + fps detection. This loop
     # runs unconditionally when clips are present; the override path (--resolution)
     # ignores the (w, h) data but still benefits from the cache + fps detection.
-    detected_pairs = []  # [(w, h, r_frame_rate)] in clip order, successfully-probed clips only
+    #
+    # IMPORTANT: we feed DISPLAY dimensions (post-rotation) into the modal detector,
+    # not stored sensor dimensions. iPhone vertical clips report stored=1920×1080
+    # with rotation=-90 — players auto-rotate, so the visible frame is 1080×1920.
+    # If we modal-detect on stored dims, an iPhone-vertical-dominant project gets
+    # a landscape canvas and every clip ends up pillarboxed despite the content
+    # being portrait. settings.resolution must reflect the OUTPUT MP4's display
+    # orientation, not the on-disk pixel orientation.
+    detected_pairs = []  # [(display_w, display_h, r_frame_rate)] in clip order
     if clips:
         for clip in clips:
             info = probe_video(clip["src"])
             if info is None:
                 continue
             probe_cache[clip["src"]] = info
-            w, h = info.get("width"), info.get("height")
+            w = info.get("display_width") or info.get("width")
+            h = info.get("display_height") or info.get("height")
             if w and h:
                 detected_pairs.append((w, h, info.get("r_frame_rate", "")))
 
@@ -189,14 +212,45 @@ def main():
             if int(den) > 0:
                 detected_fps = round(int(num) / int(den))
 
-    # Limit concurrent libx264 -preset slow encodes. Fast-path workers (-c:v copy +
-    # audio re-encode) bypass this — they're I/O-bound and don't strain memory.
-    #
-    # Race acknowledged: if a fast-path attempt fails inside lib.normalize and
-    # falls through to the full re-encode (rare — typically <1s container errors),
-    # that re-encode runs WITHOUT the lock. Briefly exceeding HEAVY_ENCODE_LIMIT
-    # by 1-2 jobs in this case is acceptable and self-corrects within seconds.
+    # Smart-detect project color space from probed clips. Each clip's
+    # `color_transfer` maps to a color space key; smart_detect picks the
+    # MODAL (most common) color space — outliers get converted on the fly.
+    detected_per_clip: list[ColorSpaceKey] = [
+        detect_from_transfer(probe_cache[c["src"]].get("color_transfer"))
+        for c in clips if c["src"] in probe_cache
+    ]
+    if args.color_space == "auto":
+        project_color_space = smart_detect(detected_per_clip)
+        # Surface the choice so the creator can see what happened. Especially
+        # useful when there are outliers — they'll get converted on the fly.
+        counts: dict[ColorSpaceKey, int] = {}
+        for k in detected_per_clip:
+            counts[k] = counts.get(k, 0) + 1
+        if len(counts) > 1:
+            total = sum(counts.values())
+            chosen_count = counts.get(project_color_space, 0)
+            outliers = total - chosen_count
+            outlier_summary = ", ".join(
+                f"{n} {k}" for k, n in sorted(counts.items()) if k != project_color_space
+            )
+            progress(
+                f"detected colorSpace={project_color_space} "
+                f"(modal: {chosen_count} of {total} clips). "
+                f"{outliers} outlier(s) will be converted on the fly: {outlier_summary}. "
+                f"Override with --color-space sdr_bt709|hdr_hlg|hdr_pq if needed."
+            )
+    else:
+        project_color_space = normalize_key(args.color_space)
+
+    # Limit concurrent heavy encodes (libx264 OR libx265 — both memory-heavy on 4K).
+    # The semaphore is acquired by every transcode path; outer pool size 4 is fine
+    # because clips that pass is_normalized() bypass the semaphore entirely.
     _heavy_encode_sem = threading.Semaphore(HEAVY_ENCODE_LIMIT)
+
+    # Per-clip path classification stats (collected for the summary log at end).
+    # Thread-safe append-only list; final summary read after pool join.
+    _stats: list[dict] = []
+    _stats_lock = threading.Lock()
 
     # Each thread mutates its OWN clip dict. There is no shared state between workers
     # (no shared lists/dicts, no shared file handles, no shared probe cache). If a
@@ -205,37 +259,76 @@ def main():
     def _normalize_one(clip):
         """Normalize a single clip in place. Mutates clip['src'] and clip['sourceDuration']."""
         clip_path = clip["src"]
+        clip_id = clip["id"]
+        t0 = time.monotonic()
         # Reuse the probe cached during smart-resolution detection above.
         # Falls back to a fresh probe for clips not in cache (e.g., probe failed earlier
         # or this code path is reached from a non-init caller).
         info = probe_cache.get(clip_path) or probe_video(clip_path)
-        if info and not is_normalized(clip_path, info, detected_resolution[0], detected_resolution[1]):
-            normalized_path = clip_path.rsplit(".", 1)[0] + "_normalized.mp4"
-            # Path classification: fast-path workers run uncapped (in the outer pool of 4);
-            # full-encode workers acquire the heavy-encode semaphore (cap=2).
-            will_use_fast_path = _can_use_audio_fast_path(info)
+
+        # 3-way classifier: skip / transcode / probe_failed.
+        if info is None:
+            path_kind = "probe_failed"
+        elif is_normalized(clip_path, info, project_color_space):
+            path_kind = "skip"
+        else:
+            path_kind = "transcode"
+
+        progress(f"[{clip_id}] {path_kind} start "
+                 f"({info['codec'] if info else '?'} "
+                 f"{info.get('color_transfer', '?') if info else '?'} "
+                 f"{info['pix_fmt'] if info else '?'} "
+                 f"audio={info.get('audio_sample_rate') if info else '?'})")
+
+        if path_kind == "transcode":
+            normalized_path = clip_path.rsplit(".", 1)[0] + f"_normalized_{project_color_space}.mp4"
             try:
-                # Pass `info` through so normalize() doesn't re-probe — saves
-                # 2 redundant ffprobe calls per clip on heavy footage.
-                if will_use_fast_path:
-                    normalize(clip_path, normalized_path, detected_resolution[0], detected_resolution[1], crf=16, info=info)
-                else:
-                    with _heavy_encode_sem:
-                        normalize(clip_path, normalized_path, detected_resolution[0], detected_resolution[1], crf=16, info=info)
+                sem_wait_t0 = time.monotonic()
+                with _heavy_encode_sem:
+                    sem_wait_elapsed = time.monotonic() - sem_wait_t0
+                    if sem_wait_elapsed > 0.5:
+                        progress(f"[{clip_id}] transcode waited {sem_wait_elapsed:.1f}s for encoder slot")
+                    # Pass `info` through so normalize() doesn't re-probe — saves
+                    # 2 redundant ffprobe calls per clip on heavy footage.
+                    normalize(clip_path, normalized_path, project_color_space, info=info)
                 clip["src"] = normalized_path
             except SystemExit:
                 # normalize calls fail() which raises SystemExit — fall back to original
-                print(f"Warning: normalize failed for {clip_path}, using original", file=sys.stderr)
+                progress(f"[{clip_id}] normalize FAILED, falling back to original src")
+
         # Cache source duration so the UI can clamp edits against it
         try:
             clip["sourceDuration"] = get_duration(clip["src"])
         except (Exception, SystemExit):
             pass
 
+        elapsed = time.monotonic() - t0
+        progress(f"[{clip_id}] {path_kind} done in {elapsed:.2f}s")
+        with _stats_lock:
+            _stats.append({"id": clip_id, "path": path_kind, "elapsed": elapsed})
+
     if clips:
+        progress(f"normalize: starting {len(clips)} clips "
+                 f"(pool={NORMALIZE_POOL_SIZE}, encoder_cap={HEAVY_ENCODE_LIMIT}, "
+                 f"colorSpace={project_color_space})")
+        _normalize_t0 = time.monotonic()
         with ThreadPoolExecutor(max_workers=NORMALIZE_POOL_SIZE) as pool:
             # list() forces evaluation + propagates exceptions (lazy iterator otherwise swallows them).
             list(pool.map(_normalize_one, clips))
+        _normalize_total = time.monotonic() - _normalize_t0
+
+        # Summary: counts by path, max/avg per-clip time, total wall time.
+        # If parallelism is working, sum(per-clip)/wall ≈ effective concurrency.
+        path_counts = Counter(s["path"] for s in _stats)
+        per_clip_sum = sum(s["elapsed"] for s in _stats)
+        per_clip_max = max((s["elapsed"] for s in _stats), default=0.0)
+        speedup = per_clip_sum / _normalize_total if _normalize_total > 0 else 0
+        progress(
+            f"normalize: done in {_normalize_total:.2f}s wall — "
+            f"{dict(path_counts)} | "
+            f"per-clip max {per_clip_max:.2f}s, sum {per_clip_sum:.2f}s "
+            f"(parallel speedup {speedup:.2f}x)"
+        )
 
     assets = [
         {"id": f"asset-{i}", "src": copy_into_workspace(os.path.abspath(a), "asset"), "type": "image", "name": os.path.basename(a)}
@@ -256,7 +349,8 @@ def main():
         "sources": clips,
         "settings": {
             "resolution": detected_resolution,
-            "fps": detected_fps
+            "fps": detected_fps,
+            "colorSpace": project_color_space,
         },
         "tracks": [[] if args.canvas else clips],
         "assets": assets,

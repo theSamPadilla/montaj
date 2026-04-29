@@ -7,6 +7,7 @@ import json, re, time
 from pathlib import Path
 from common import fail, get_duration
 from normalize import normalize, is_normalized, probe_video
+from lib.types.colorspace import normalize_key, DEFAULT_COLOR_SPACE
 
 
 # Optimal Kling prompt order: camera first (framing context), then subject
@@ -248,16 +249,17 @@ def save_clip_to_project(project_path: Path, project: dict, scene: dict,
             "attempts": [],
         },
     }
-    # Normalize clip to project resolution/fps (e.g. Kling outputs 1280x720).
+    # Normalize clip to project working color space (e.g. Kling outputs SDR; iPhone
+    # HDR projects need libx265 HDR HEVC). Color space is read from settings.colorSpace
+    # (set at init time); falls back to SDR default for projects without the field.
     settings = project.get("settings", {})
-    res = settings.get("resolution", [1920, 1080])
-    fps = settings.get("fps", 30)
+    project_color_space = normalize_key(settings.get("colorSpace"))
 
     info = probe_video(out_path)
-    if info and not is_normalized(out_path, info, res[0], res[1]):
-        normalized_path = out_path.rsplit(".", 1)[0] + "_normalized.mp4"
+    if info and not is_normalized(out_path, info, project_color_space):
+        normalized_path = out_path.rsplit(".", 1)[0] + f"_normalized_{project_color_space}.mp4"
         try:
-            normalize(out_path, normalized_path, res[0], res[1], crf=16)
+            normalize(out_path, normalized_path, project_color_space, info=info)
             clip["src"] = normalized_path
         except SystemExit:
             clip["src"] = out_path

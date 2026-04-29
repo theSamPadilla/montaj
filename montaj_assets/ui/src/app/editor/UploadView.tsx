@@ -162,6 +162,47 @@ export default function UploadView() {
     }
   })()
 
+  // Copy for the loading modal — tailored per project type. Init's wall time
+  // varies hugely with clip count and source format (h264/SDR clips fast-path
+  // through normalize in seconds; HDR or non-h264 sources need full re-encode).
+  // The slowHint kicks in after 15s to acknowledge longer waits without alarming
+  // on the common fast case.
+  const clipCount = (() => {
+    switch (projectType) {
+      case 'music_video': return lyricsData.audio.length
+      case 'ai_video':    return 0
+      case 'editing':
+      default:            return clipData.clips.length
+    }
+  })()
+
+  const loadingTitle = (() => {
+    switch (projectType) {
+      case 'music_video': return 'Preparing your lyrics video'
+      case 'ai_video':    return 'Generating your storyboard'
+      case 'editing':
+      default:            return 'Setting up your project'
+    }
+  })()
+
+  const loadingMessage = (() => {
+    switch (projectType) {
+      case 'music_video':
+        return 'Importing audio and analyzing the track\u2026'
+      case 'ai_video':
+        return 'Composing the storyboard from your references and prompt\u2026'
+      case 'editing':
+      default:
+        if (clipCount === 0) return 'Creating workspace\u2026'
+        if (clipCount === 1) return 'Importing 1 clip and preparing it for editing\u2026'
+        return `Importing ${clipCount} clips and preparing them for editing\u2026`
+    }
+  })()
+
+  const loadingSlowHint = projectType === 'editing'
+    ? 'Long or high-resolution clips may need transcoding. Hang tight \u2014 this only happens once.'
+    : undefined
+
   const promptPlaceholder = (() => {
     switch (projectType) {
       case 'music_video': return 'dark moody vibe, white text, center position\u2026'
@@ -294,6 +335,12 @@ export default function UploadView() {
             {submitLabel}
           </Button>
         </div>
+        <LoadingModal
+          open={running}
+          title={loadingTitle}
+          message={loadingMessage}
+          slowHint={loadingSlowHint}
+        />
       </div>
     )
   }
@@ -382,6 +429,12 @@ export default function UploadView() {
           </Button>
         </div>
       </div>
+      <LoadingModal
+        open={running}
+        title={loadingTitle}
+        message={loadingMessage}
+        slowHint={loadingSlowHint}
+      />
     </div>
   )
 }

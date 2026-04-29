@@ -5,6 +5,7 @@ Outputs ProRes 4444 .mov with alpha channel.
 """
 import json
 import os
+import subprocess
 import sys
 import tempfile
 
@@ -139,6 +140,66 @@ def _load_model(model_name: str, device: str):
 # Core inference for a single file
 # ---------------------------------------------------------------------------
 
+def _probe_source_rotation(input_path: str) -> int:
+    """Read source video rotation (degrees) from displaymatrix side_data.
+
+    Mirrors lib/normalize._probe_rotation but kept local so this step doesn't
+    take a dependency on the normalize module just for the probe.
+
+    Returns 0 when no rotation tag is present (most non-iPhone footage). iPhone
+    vertical recordings come in as -90; landscape iPhone clips have 0.
+    """
+    try:
+        r = subprocess.run([
+            "ffprobe", "-v", "quiet", "-select_streams", "v:0",
+            "-show_entries", "stream_side_data=rotation",
+            "-of", "json", input_path,
+        ], capture_output=True, text=True, timeout=10)
+        if r.returncode != 0:
+            return 0
+        streams = json.loads(r.stdout).get("streams", [])
+        if not streams:
+            return 0
+        for entry in streams[0].get("side_data_list", []) or []:
+            if "rotation" in entry:
+                return int(entry["rotation"])
+        return 0
+    except (json.JSONDecodeError, ValueError, TypeError, subprocess.TimeoutExpired):
+        return 0
+
+
+def _rotation_to_transpose_filter(rotation: int) -> str | None:
+    """Map a source displaymatrix rotation (degrees) to the ffmpeg filter chain
+    that physically rotates the pixels by the same amount.
+
+    Why physical rotation, not metadata: ffmpeg 8.x silently drops
+    `-metadata:s:v:0 rotate=N` on fresh writes (the flag only survives `-c copy`
+    of an already-tagged source). There's no `setdisplaymatrix` filter and no
+    other CLI-accessible way to write displaymatrix side_data on a fresh
+    encode. The reliable fix is to physically rotate the pixels — ProRes 4444
+    is intra-frame, so re-encoding is fast and lossless.
+
+    Maps:
+      rotation=0   → None (caller uses -c:v copy fast path)
+      rotation=-90 → transpose=1  (90° CW; iPhone vertical default)
+      rotation=+90 → transpose=2  (90° CCW)
+      rotation=180 → transpose=1,transpose=1  (180° via two CW quarter turns)
+      ±270         → equivalent to ∓90
+
+    Returns None for rotation=0 OR for unsupported (e.g. fractional) values.
+    """
+    r = ((rotation + 180) % 360) - 180  # normalize to (-180, 180]
+    if r == 0:
+        return None
+    if r == -90:
+        return "transpose=1"
+    if r == 90:
+        return "transpose=2"
+    if abs(r) == 180:
+        return "transpose=1,transpose=1"
+    return None  # arbitrary angles not supported (rare; player will see no rotation)
+
+
 def _process_one(
     input_path: str,
     output_path: str,
@@ -158,6 +219,18 @@ def _process_one(
 
     if model is None:
         model = _load_model(model_name, device)
+
+    # Source rotation must be reflected in the output's pixel orientation.
+    # iPhone vertical clips store landscape pixels with rotation=-90 in their
+    # displaymatrix; players auto-rotate to portrait. PyAV's prores_ks encoder
+    # doesn't copy side_data, and ffmpeg 8.x can't write displaymatrix on a
+    # fresh encode (the `rotate=N` legacy flag silently no-ops), so we
+    # physically rotate the pixels at audio-mux time instead. See
+    # _rotation_to_transpose_filter() for the filter mapping. Without this fix,
+    # the bg-removed clip plays at native landscape orientation while its
+    # source plays portrait — the cutout appears 90° rotated relative to
+    # surrounding clips.
+    source_rotation = _probe_source_rotation(input_path)
 
     # Use a temp file for the video-only pass, then mux audio
     tmp_video_fd, tmp_video_path = tempfile.mkstemp(suffix="_novg.mov")
@@ -233,12 +306,32 @@ def _process_one(
         finally:
             in_container.close()
 
-        # Mux original audio into the output
+        # Mux original audio into the output. If the source had displaymatrix
+        # rotation (e.g. iPhone vertical recording), physically rotate the
+        # bg-removed pixels by the same amount during the mux so the output's
+        # display orientation matches the source's. We can't write displaymatrix
+        # side_data on a fresh encode in ffmpeg 8.x — `-metadata:s:v:0 rotate=N`
+        # only survives `-c copy` of a tagged source, and there's no
+        # setdisplaymatrix filter — so physical rotation is the reliable path.
+        # ProRes 4444 is intra-frame; re-encoding adds ~real-time per minute of
+        # footage and is lossless. When source has no rotation, `-c:v copy`
+        # keeps the mux trivially fast.
+        rotation_filter = _rotation_to_transpose_filter(source_rotation)
+        if rotation_filter:
+            video_args = [
+                "-vf", rotation_filter,
+                "-c:v", "prores_ks",
+                "-profile:v", "4",          # ProRes 4444 (alpha-supporting)
+                "-pix_fmt", "yuva444p10le", # match the temp file's pix_fmt
+            ]
+        else:
+            video_args = ["-c:v", "copy"]
+
         run([
             "ffmpeg", "-y",
             "-i", tmp_video_path,
             "-i", input_path,
-            "-c:v", "copy",
+            *video_args,
             "-c:a", "copy",
             "-map", "0:v:0",
             "-map", "1:a?",

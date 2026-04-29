@@ -9,7 +9,7 @@
  * stderr: progress lines + JSON error on failure
  * exit 0 on success, exit 1 on failure
  */
-import { readFileSync, writeFileSync, existsSync, mkdirSync, rmSync, readdirSync } from 'fs'
+import { readFileSync, writeFileSync, existsSync, mkdirSync, rmSync, readdirSync, statSync } from 'fs'
 import { resolve, join, dirname, basename, extname } from 'path'
 import { fileURLToPath } from 'url'
 import { spawnSync, spawn } from 'child_process'
@@ -17,6 +17,7 @@ import { spawnSync, spawn } from 'child_process'
 import { bundleComponent, cleanupBundle } from './bundle.js'
 import { renderAllSegments }              from './renderer.js'
 import { compose }                        from './compose.js'
+import { requireValidKey, detectFromTransfer, smartDetect, DEFAULT_COLOR_SPACE } from './color-space.js'
 
 const __dirname  = dirname(fileURLToPath(import.meta.url))
 const isMain = resolve(process.argv[1] ?? '') === fileURLToPath(import.meta.url)
@@ -156,13 +157,65 @@ async function main(projectPath, { out, workers, clean }) {
   const segmentSpecs = collectPuppeteerSegments(projectJson, fps, renderWidth, renderHeight, segDir)
   const { imageItems, videoItems } = collectAllItems(projectJson)
 
+  // Pre-probe color_transfer once per unique source so the segment encoder can
+  // build per-item conversion filters without re-probing per segment. A typical
+  // project breaks one clip into many segments — without this cache, a 50-segment
+  // project with 5 items would do 250 ffprobes.
+  const transferCache = new Map()
+  for (const item of videoItems) {
+    if (!transferCache.has(item.src)) {
+      transferCache.set(item.src, probeColorTransfer(item.src))
+    }
+    item.colorTransfer = transferCache.get(item.src) ?? 'unknown'
+  }
+
+  // Project working color space — drives normalize CLI flag, segment encoder
+  // codec/pix_fmt, and per-item conversion filter.
+  //
+  // Resolution order:
+  //   1. settings.colorSpace present → validate strictly (hand-edited bad
+  //      values fail loudly rather than silently coercing).
+  //   2. Missing → smart-detect from probed transfers (modal-wins, mirrors
+  //      init.py). This handles legacy projects predating the colorSpace
+  //      field: without backfill they'd default to SDR and trigger normalize
+  //      on every iPhone-HLG clip. Persist the resolved key back to project.json
+  //      so subsequent renders skip the detection step.
+  //   3. No video items at all (canvas project) → default SDR.
+  let projectColorSpace
+  if (settings.colorSpace != null) {
+    projectColorSpace = requireValidKey(settings.colorSpace)
+  } else if (videoItems.length > 0) {
+    const detectedKeys = videoItems
+      .filter(it => !(it.remove_bg && it.nobg_src && it.src === it.nobg_src))
+      .map(it => detectFromTransfer(it.colorTransfer))
+    projectColorSpace = smartDetect(detectedKeys)
+    log(`colorSpace not set — smart-detected ${projectColorSpace} from ${detectedKeys.length} clip(s); writing back to project.json`)
+    // Re-read the raw JSON to patch settings.colorSpace — projectJson in memory
+    // has been mutated by resolveProjectPaths (relative srcs → absolute), and
+    // serialising that would corrupt the on-disk project.json.
+    const rawProject = JSON.parse(readFileSync(absProjectPath, 'utf8'))
+    rawProject.settings = { ...(rawProject.settings ?? {}), colorSpace: projectColorSpace }
+    writeFileSync(absProjectPath, JSON.stringify(rawProject, null, 2))
+  } else {
+    projectColorSpace = DEFAULT_COLOR_SPACE
+  }
+
   // 3. Normalize non-conformant video items to project format (parallel, cap=2)
   //    Cap matches materialize_cut.py's libx264 worker count — memory-heavy at 4K.
   //    Requires normalizeIfNeeded to be async (see below) — pMap with a sync mapper
   //    runs sequentially.
+  //
+  //    Skip remove_bg outputs (nobg_src). collectAllItems swaps `item.src` to
+  //    `item.nobg_src` for items with remove_bg: true so downstream stages read
+  //    the alpha-channel ProRes file directly. Those nobg files are render-only
+  //    artifacts (yuva* pix_fmt, BT.709 SDR) — running them through the
+  //    HLG/PQ normalize path fails (libx265 can't open with the resulting
+  //    pix_fmt + transfer combination) and would be wrong even if it worked
+  //    (we don't want to lose the alpha channel).
   const NORMALIZE_WORKERS = 2
   await pMap(videoItems, async (item) => {
-    const normalizedPath = await normalizeIfNeeded(item.src, settings)
+    if (item.remove_bg && item.nobg_src && item.src === item.nobg_src) return
+    const normalizedPath = await normalizeIfNeeded(item.src, projectColorSpace)
     if (normalizedPath !== item.src) {
       log(`normalized ${item.src.split('/').pop()} → ${normalizedPath.split('/').pop()}`)
       item.src = normalizedPath
@@ -239,6 +292,7 @@ async function main(projectPath, { out, workers, clean }) {
     outputPath,
     videoWidth:  actualWidth,
     videoHeight: actualHeight,
+    colorSpace:  projectColorSpace,
   })
 
   // 8. Cleanup temp bundles (always); intermediate segments only if --clean
@@ -269,6 +323,25 @@ function probeVideoDimensions(filePath) {
     if (video?.width && video?.height) return [video.width, video.height]
   } catch {}
   return null
+}
+
+/** Return the ffprobe color_transfer string (e.g. 'bt709', 'arib-std-b67',
+ *  'smpte2084') for the first video stream, or null on error / missing tag.
+ *
+ *  Note: `-of csv=p=0` emits a trailing comma even on single-field stream
+ *  queries (e.g. `arib-std-b67,\n`). Strip both whitespace and trailing
+ *  commas before returning, otherwise downstream string equality against
+ *  COLOR_SPACE_SPECS.transferValues silently misses every HDR clip and the
+ *  whole project gets mis-classified as SDR. */
+function probeColorTransfer(filePath) {
+  const result = spawnSync('ffprobe', [
+    '-v', 'quiet', '-select_streams', 'v:0',
+    '-show_entries', 'stream=color_transfer',
+    '-of', 'csv=p=0', filePath,
+  ], { encoding: 'utf8', timeout: 30_000 })
+  if (result.status !== 0) return null
+  const value = (result.stdout || '').trim().replace(/,+$/, '')
+  return value || null
 }
 
 // ---------------------------------------------------------------------------
@@ -504,17 +577,33 @@ function getTotalDurationSeconds(projectJson) {
 // Normalize pre-pass
 // ---------------------------------------------------------------------------
 
-async function normalizeIfNeeded(src, settings) {
-  // --width/--height are passed for API compat; lib.normalize ignores them after
-  // the resolution-preservation change (see docs/plans/2026-04-28-init-normalize-perf.md).
-  const [w, h] = settings.resolution ?? [1080, 1920]
-  const out = src.replace(/(\.\w+)$/, '_normalized.mp4')
+async function normalizeIfNeeded(src, projectColorSpace) {
+  // Output filename is namespaced per color space so SDR-then-HDR re-normalize
+  // doesn't collide. Matches the suffix produced by lib.normalize.main().
+  const out = src.replace(/(\.\w+)$/, `_normalized_${projectColorSpace}.mp4`)
+
+  // Idempotency cache: if the deterministic output already exists and is
+  // fresher than the source, the previous render already paid the cost — skip
+  // the python spawn entirely. Critical for legacy projects whose tracks[0]
+  // srcs point at never-normalized originals: without this, every render
+  // re-encodes every clip from scratch (minutes per clip on a 4K HEVC source).
+  // mtime check (not just existsSync) means re-recording or replacing a source
+  // file correctly invalidates the cached output.
+  if (existsSync(out)) {
+    try {
+      const srcStat = statSync(src)
+      const outStat = statSync(out)
+      if (outStat.mtimeMs >= srcStat.mtimeMs) {
+        return out
+      }
+    } catch { /* fall through to re-encode */ }
+  }
 
   return new Promise((resolve) => {
     const proc = spawn('python3', [
       '-m', 'lib.normalize',
       '--input', src,
-      '--width', String(w), '--height', String(h),
+      '--color-space', projectColorSpace,
       '--out', out,
     ], { cwd: MONTAJ_ROOT })
 

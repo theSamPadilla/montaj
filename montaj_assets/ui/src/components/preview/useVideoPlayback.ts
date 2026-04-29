@@ -2,6 +2,25 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { fileUrl } from '@/lib/api'
 import type { Project } from '@/lib/types/schema'
 
+/**
+ * Resolve the file path the browser should load for previewing this clip.
+ *
+ * For bg-removed clips, prefer `nobg_preview_src` (small WebM with alpha,
+ * browser-friendly) over `src` (the original raw file with bg present), so
+ * the preview pane shows what the final render will composite — not the
+ * un-cut-out source. Mirrors the same pattern used by
+ * `OverlayItemsLayer.tsx:406` for tracks[1+] items; this generalises it to
+ * the main-track preview so bg-removed clips placed on tracks[0] don't show
+ * the wrong layer in preview while rendering correctly. Falls back to `src`
+ * when `nobg_preview_src` is absent (most clips).
+ *
+ * Note: `nobg_src` is the ProRes 4444 render-only artifact and is NEVER
+ * loaded into a `<video>` element — browsers can't decode ProRes.
+ */
+function playbackSrcFor(clip: { src?: string; nobg_preview_src?: string }): string {
+  return clip.nobg_preview_src ?? clip.src ?? ''
+}
+
 export function useVideoPlayback(
   project: Project,
   currentTime: number,
@@ -67,22 +86,60 @@ export function useVideoPlayback(
   // Wire a video slot through a Web Audio GainNode (once per element — createMediaElementSource
   // can only be called once). After this, video.volume/muted have no audible effect; all volume
   // control goes through the GainNode, which supports values > 1.0 for amplification.
+  //
+  // CRITICAL: ALL slots share the SAME AudioContext. Fresh AudioContexts start
+  // suspended and require a user gesture to resume. Creating a per-slot context
+  // lazily (on first applyClipVolume per slot) means slot 1's context is born
+  // mid-playback with no user-gesture activation — it stays suspended → silent.
+  // Symptom: alternating muted/audible playback as the dual-slot loader rotates.
+  // Stash the shared context on `window` so it survives strict-mode remounts
+  // and is reused across renders.
+  function getSharedAudioContext(): AudioContext {
+    const w = window as any
+    if (!w.__montajSharedCtx) {
+      w.__montajSharedCtx = new AudioContext()
+    }
+    return w.__montajSharedCtx
+  }
+
+  /**
+   * MUST be called from inside a user-gesture handler (keydown, click, etc.).
+   * Browsers credit a `resume()` call as gesture-driven only when it happens
+   * synchronously inside a gesture-rooted call stack. Calling resume() from
+   * a useEffect or a setTimeout silently fails — the context stays suspended.
+   *
+   * Symptom of a suspended context with a wired <video>: video appears to
+   * play (paused=false, currentTime advances internally per the DOM clock)
+   * but no frames render and no audio plays — the entire pipeline is gated
+   * on the AudioContext clock running. This bites specifically after a page
+   * refresh, because SPA navigation carries gesture activation across pages
+   * but a hard reload does not.
+   */
+  function resumeAudioContextFromGesture() {
+    const w = window as any
+    const ctx: AudioContext | undefined = w.__montajSharedCtx
+    if (ctx && ctx.state === 'suspended') {
+      // Fire-and-forget; resume() returns a Promise but the gesture-credit
+      // happens at the synchronous call site, not when the promise resolves.
+      ctx.resume().catch(() => {})
+    }
+  }
+
   function ensureVideoGain(slot: 0 | 1): GainNode | null {
     if (videoGainRef.current[slot]) return videoGainRef.current[slot]
     const video = slot === 0 ? video0Ref.current : video1Ref.current
     if (!video) return null
     // createMediaElementSource can only be called ONCE per <video> element,
     // and source/gain/context must all belong to the same AudioContext.
-    // Cache everything on the element itself so it survives React strict-mode
+    // Cache the gain on the element so it survives React strict-mode
     // double-invocation and component remounts.
     const v = video as any
     if (!v.__montajGain) {
-      const ctx = new AudioContext()
+      const ctx = getSharedAudioContext()
       const source = ctx.createMediaElementSource(video)
       const gain = ctx.createGain()
       source.connect(gain)
       gain.connect(ctx.destination)
-      v.__montajCtx = ctx
       v.__montajGain = gain
     }
     videoGainRef.current[slot] = v.__montajGain
@@ -319,15 +376,21 @@ export function useVideoPlayback(
       if (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable) return
       if (e.code === 'Space') {
         e.preventDefault()
+        // GESTURE-ANCHORED: resume the AudioContext synchronously here. After
+        // a hard page refresh, the context was first created in a useEffect
+        // (no gesture) and stays suspended. With <video> wired through
+        // MediaElementSource → GainNode → ctx.destination, a suspended context
+        // also gates video frame production in some browsers (Safari notably).
+        // Resuming inside the keydown handler credits the resume() call as
+        // gesture-driven, unblocking both audio and frame advance.
+        resumeAudioContextFromGesture()
         if (isCanvasProject) { setIsPlaying(prev => !prev); return }
         if (inGapRef.current) {
           if (gapRAFRef.current !== null) {
-            // Playing through gap → pause
             cancelAnimationFrame(gapRAFRef.current)
             gapRAFRef.current = null
             setIsPlaying(false)
           } else {
-            // Paused in gap → resume from current position
             gapFromRef.current = lastTimeRef.current
             gapWallRef.current = performance.now()
             gapRAFRef.current  = requestAnimationFrame(tickGap)
@@ -352,8 +415,13 @@ export function useVideoPlayback(
   useEffect(() => {
     const video = getActiveVideo()
     if (!video || !clips.length || !clips[0].src) return
-    // Only reload if the actual clip sources/trim points changed — not just overlay edits
-    const identity = clips.map(c => `${c.src}|${c.inPoint ?? 0}|${c.outPoint ?? ''}`).join(',')
+    // Only reload if the actual clip sources/trim points changed — not just overlay edits.
+    // Identity includes nobg_preview_src so a bg-removal completing mid-session
+    // (the field appearing on a clip whose src was already loaded) triggers a
+    // reload to swap the preview to the cutout version.
+    const identity = clips
+      .map(c => `${c.nobg_preview_src ?? ''}|${c.src}|${c.inPoint ?? 0}|${c.outPoint ?? ''}`)
+      .join(',')
     if (identity === clipsSourceRef.current) return
     clipsSourceRef.current = identity
     activeIdxRef.current  = 0
@@ -361,7 +429,7 @@ export function useVideoPlayback(
     loopOffsetRef.current = 0
     setActiveSlot(0)
     preloadSrcRef.current = ''
-    video.src = fileUrl(clips[0].src)
+    video.src = fileUrl(playbackSrcFor(clips[0]))
     video.currentTime = clips[0].inPoint ?? 0
     applyClipVolume(clips[0])
     // Clear inactive slot
@@ -413,7 +481,7 @@ export function useVideoPlayback(
     onTimeUpdate(nc.start)
     activeIdxRef.current = ni
     if (nv) {
-      const src = fileUrl(nc.src)
+      const src = fileUrl(playbackSrcFor(nc))
       if (preloadSrcRef.current !== src) { nv.src = src; nv.currentTime = nc.inPoint ?? 0 }
       const gain = ensureVideoGain(ns)
       if (gain) gain.gain.value = nc.muted ? 0 : (nc.volume ?? 1)
@@ -460,7 +528,7 @@ export function useVideoPlayback(
       activeIdxRef.current = clipIdx
       const video = getActiveVideo()
       if (!video) return
-      const targetSrc = fileUrl(clip.src)
+      const targetSrc = fileUrl(playbackSrcFor(clip))
       if (video.src !== targetSrc) {
         video.src = targetSrc
         // Clear preloaded inactive slot — it may no longer be the right next clip
@@ -513,7 +581,7 @@ export function useVideoPlayback(
       const nextIdx = activeIdxRef.current + 1
       if (nextIdx < clips.length && clips[nextIdx].src) {
         const inactiveVideo = slot === 0 ? video1Ref.current : video0Ref.current
-        const nextSrc = fileUrl(clips[nextIdx].src!)
+        const nextSrc = fileUrl(playbackSrcFor(clips[nextIdx]))
         if (inactiveVideo && preloadSrcRef.current !== nextSrc) {
           preloadSrcRef.current = nextSrc
           inactiveVideo.src = nextSrc
@@ -564,7 +632,7 @@ export function useVideoPlayback(
           activeIdxRef.current = nextIdx
 
           if (nextVideo) {
-            const nextSrc = fileUrl(next.src!)
+            const nextSrc = fileUrl(playbackSrcFor(next))
             if (preloadSrcRef.current !== nextSrc) {
               nextVideo.src = nextSrc
               nextVideo.currentTime = next.inPoint ?? 0
@@ -626,6 +694,10 @@ export function useVideoPlayback(
   }, [handleTimeUpdate])
 
   function togglePlay() {
+    // GESTURE-ANCHORED: same rationale as the keydown handler — resume the
+    // AudioContext synchronously inside this user-gesture call so a wired
+    // <video> isn't trapped in a suspended Web Audio graph after page refresh.
+    resumeAudioContextFromGesture()
     if (isCanvasProject) { setIsPlaying(p => !p); return }
     // If current time is in a gap/image section (not inside any video clip), drive via gap clock
     const t = lastTimeRef.current

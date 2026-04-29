@@ -98,7 +98,7 @@ To see all available steps including project-local custom steps: `montaj step -h
 | Step | What it does | Key params |
 |------|-------------|------------|
 | `materialize_cut` | Encode trim spec or raw segment to H.264. **Use `--inputs` for multiple clips** — caps at 2 concurrent encodes by default. Never fan out more than 2–3 instances in parallel; each is a full libx264 encode and will exhaust memory at 4K if over-parallelised. | `--inputs clip0.json clip1.json`, `--workers 2` |
-| `remove_bg` | Remove video background via RVM → ProRes 4444 `.mov` with alpha channel. Store result in `nobg_src`; keep original in `src` (for preview). Set `remove_bg: true` on the item. **Long-running (minutes per clip) — always run in the background with `--progress` so you can monitor status.** Use `--inputs` for multiple clips. | `--inputs clip0.mp4 clip1.mp4`, `--progress`, `--model rvm_mobilenetv3` (or `rvm_resnet50`), `--downsample 0.5` |
+| `remove_bg` | Remove video background via RVM → ProRes 4444 `.mov` with alpha channel **plus** a VP9 WebM preview proxy. Store the ProRes path in `nobg_src` (used by render) and the WebM path in `nobg_preview_src` (used by browser preview — ProRes can't decode in `<video>`); keep the original in `src`. Set `remove_bg: true` on the item. **Long-running (minutes per clip) — always run in the background with `--progress` so you can monitor status.** Use `--inputs` for multiple clips. | `--inputs clip0.mp4 clip1.mp4`, `--progress`, `--model rvm_mobilenetv3` (or `rvm_resnet50`), `--downsample 0.5` |
 
 ### Select Takes (`montaj/select_takes`)
 **REQUIRED SUB-SKILL:** Load `skills/select-takes/SKILL.md` before executing this step.

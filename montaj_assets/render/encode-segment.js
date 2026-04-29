@@ -1,6 +1,6 @@
 // render/encode-segment.js
 /**
- * Encode a single timeline segment to H.264 MP4.
+ * Encode a single timeline segment to MP4 in the project's working color space.
  *
  * Each call composites:
  *   - N visual items: layered by trackIdx (lower = background). Each item has
@@ -14,12 +14,23 @@
  *     independent audio from both tracks is an edge case that can be added later via
  *     amix if needed.
  *
- * All output has uniform format: H.264 yuv420p + AAC 48kHz stereo + bt709 color metadata.
- * This uniformity enables concat with -c:v copy (no re-encode at concat time).
+ * Output codec / pix_fmt / color metadata follow the project's color space:
+ *   - sdr_bt709 → libx264 yuv420p bt709
+ *   - hdr_hlg   → libx265 yuv420p10le bt2020nc / arib-std-b67 (HLG)
+ *   - hdr_pq    → libx265 yuv420p10le bt2020nc / smpte2084 (PQ) + static HDR10 metadata
+ *
+ * All segments from a single render share the project's working codec, so concat
+ * with -c:v copy is safe (uniform format invariant holds, just per-project now).
+ *
+ * Per-item color conversion: when an item's source color space differs from the
+ * project's color space, a conversion filter is injected before the per-item scale
+ * step. The source's color_transfer is read from item.colorTransfer (stamped by
+ * render.js during the videoItems collection pass) — no per-segment ffprobe.
  */
 import { spawnSync } from 'child_process'
 import { mkdirSync } from 'fs'
 import { dirname } from 'path'
+import { specFor, detectFromTransfer, DEFAULT_COLOR_SPACE } from './color-space.js'
 
 const FFMPEG_TIMEOUT_MS = 600_000
 const IMAGE_EXTENSIONS = /\.(jpe?g|png|gif|webp|bmp|tiff?)$/i
@@ -51,8 +62,56 @@ function isImageItem(item) {
   return item.type === 'image' || IMAGE_EXTENSIONS.test(item.src)
 }
 
+// Cache the ffmpeg-has-zscale check across calls — it doesn't change between segments.
+let _zscaleCache = null
+function hasZscale() {
+  if (_zscaleCache !== null) return _zscaleCache
+  const result = spawnSync('ffmpeg', ['-hide_banner', '-filters'], {
+    encoding: 'utf8', timeout: 5000,
+  })
+  _zscaleCache = result.status === 0 && /^[A-Z. ]+ zscale\b/m.test(result.stdout || '')
+  return _zscaleCache
+}
+
 /**
- * @param {object} segment — from planSegments()
+ * Build the ffmpeg filter chain to convert a source's color space to the project's.
+ * Returns an empty string when src === dst (no conversion needed). Mirrors the
+ * Python _build_color_conversion_vf() in lib/normalize.py.
+ *
+ * The hasZscale flag controls the HDR→SDR fallback path — without zscale, the
+ * tonemap is degraded (washed out highlights). The Python loader emits a loud
+ * warning when this fallback runs at intake; segment-encoder usage is more
+ * limited (only kicks in when intake didn't already convert), and warnings here
+ * would spam render logs once per segment, so we silently fall back.
+ */
+export function buildColorConversionFilter(srcKey, dstKey, hasZscaleFlag) {
+  if (srcKey === dstKey) return ''
+  // HDR → SDR
+  if ((srcKey === 'hdr_hlg' || srcKey === 'hdr_pq') && dstKey === 'sdr_bt709') {
+    if (hasZscaleFlag) {
+      return 'zscale=t=linear:npl=100,format=gbrpf32le,'
+           + 'zscale=p=bt709,tonemap=hable:desat=0,'
+           + 'zscale=t=bt709:m=bt709:r=tv'
+    }
+    return 'format=p010le,tonemap=hable:desat=0'
+  }
+  // SDR → HDR
+  if (srcKey === 'sdr_bt709' && (dstKey === 'hdr_hlg' || dstKey === 'hdr_pq')) {
+    const dstTransfer = dstKey === 'hdr_hlg' ? 'arib-std-b67' : 'smpte2084'
+    return `zscale=t=${dstTransfer}:p=bt2020:m=bt2020nc`
+  }
+  // HDR ↔ HDR
+  if ((srcKey === 'hdr_hlg' || srcKey === 'hdr_pq')
+      && (dstKey === 'hdr_hlg' || dstKey === 'hdr_pq')) {
+    const dstTransfer = dstKey === 'hdr_hlg' ? 'arib-std-b67' : 'smpte2084'
+    return `zscale=t=${dstTransfer}`
+  }
+  return ''
+}
+
+/**
+ * @param {object} segment — from planSegments(); may carry a colorSpace key
+ *   (project working color space). Defaults to sdr_bt709 when missing.
  * @param {string} outputPath
  * @param {object} [opts]
  * @param {boolean} [opts._dryRun] — return { inputs, filterParts, args } without executing
@@ -61,6 +120,9 @@ function isImageItem(item) {
 export function encodeSegment(segment, outputPath, opts = {}) {
   const { start, end, items, overlays, vw, vh, fps } = segment
   const duration = end - start
+  const projectColorSpace = segment.colorSpace ?? DEFAULT_COLOR_SPACE
+  const spec = specFor(projectColorSpace)
+  const zscaleAvailable = opts._dryRun ? true : hasZscale()
 
   if (!opts._dryRun) mkdirSync(dirname(outputPath), { recursive: true })
 
@@ -71,9 +133,11 @@ export function encodeSegment(segment, outputPath, opts = {}) {
   let inputIdx = 0
 
   // --- Step 1: Black canvas base (always present — items layer on top) ---
+  // Canvas format follows the project's working pix_fmt so item layers can
+  // composite without forced bit-depth conversion.
   inputs.push('-f', 'lavfi', '-i',
     `color=black:size=${vw}x${vh}:rate=${fps}:duration=${duration}`)
-  filterParts.push(`[0:v]format=yuv420p[canvas]`)
+  filterParts.push(`[0:v]format=${spec.outputPixFmt}[canvas]`)
   videoLabel = '[canvas]'
   inputIdx++
 
@@ -109,8 +173,45 @@ export function encodeSegment(segment, outputPath, opts = {}) {
       // ProRes 4444 (.mov from remove-bg) has alpha — use format=auto
       const ovFmt = item.src.endsWith('.mov') ? ':format=auto' : ':format=yuv420'
 
+      // Per-item color conversion: when the source's color space differs from
+      // the project's, inject the conversion filter (tonemap / inverse-stretch /
+      // HDR cross). item.colorTransfer is stamped during render.js's videoItems
+      // collection pass — no per-segment ffprobe.
+      //
+      // EXCEPTION: skip color conversion for remove_bg items. Their `src` is a
+      // ProRes 4444 alpha file (yuva422p10le / yuva444p10le) and zscale (libzimg)
+      // does not accept alpha pixel formats — the pipeline errors out with
+      // "Generic error in an external library / Could not open encoder before
+      // EOF". Splitting alpha from YUV, converting YUV through zscale, then
+      // recombining is doable but complex; for v1 we accept that bg-removed
+      // SDR content composites into HDR canvas as-is. The segment output is
+      // still tagged HLG/PQ at the container level, so players treat the cutout
+      // pixels as SDR-on-HDR-canvas (slightly lifted highlights but watchable).
+      // Sources that aren't bg-removed go through the normal conversion path.
+      const itemColorSpace = detectFromTransfer(item.colorTransfer)
+      const skipConversionForAlpha = item.remove_bg && item.nobg_src
+      const conversionFilter = skipConversionForAlpha
+        ? ''
+        : buildColorConversionFilter(itemColorSpace, projectColorSpace, zscaleAvailable)
+      const conversionStep = conversionFilter ? `${conversionFilter},` : ''
+
       inputs.push('-ss', String(actualIn), '-t', String(duration), '-i', item.src)
-      filterParts.push(`[${idx}:v]setpts=PTS-STARTPTS,scale=${scaledW}:${scaledH}[vid${idx}]`)
+      // Aspect-preserving fit:
+      //   - scale=...:force_original_aspect_ratio=decrease scales the source so
+      //     it fits WITHIN scaledW × scaledH preserving the source's native
+      //     aspect (so portrait sources don't get squashed into landscape
+      //     canvases or vice versa).
+      //   - pad=...:(ow-iw)/2:(oh-ih)/2 centers the scaled-down result inside
+      //     the item's full scaledW × scaledH box, padding the empty space
+      //     with black. For matching-aspect sources this is a no-op (decrease
+      //     leaves dimensions equal; pad has nothing to add).
+      // Result: portrait clips on landscape canvases pillarbox; landscape clips
+      // on portrait canvases letterbox; matching aspects are unaffected.
+      filterParts.push(
+        `[${idx}:v]setpts=PTS-STARTPTS,${conversionStep}` +
+        `scale=${scaledW}:${scaledH}:force_original_aspect_ratio=decrease,` +
+        `pad=${scaledW}:${scaledH}:(ow-iw)/2:(oh-ih)/2[vid${idx}]`
+      )
       let src = `[vid${idx}]`
       if (Math.abs((item.opacity ?? 1) - 1) > 0.001) {
         filterParts.push(`${src}colorchannelmixer=aa=${item.opacity}[vidop${idx}]`)
@@ -161,8 +262,8 @@ export function encodeSegment(segment, outputPath, opts = {}) {
     inputIdx++
   }
 
-  // --- Step 4: Color metadata (bt709) ---
-  filterParts.push(`${videoLabel}setparams=colorspace=bt709:color_trc=bt709:color_primaries=bt709[vout]`)
+  // --- Step 4: Per-frame color metadata stamping (per project color space) ---
+  filterParts.push(`${videoLabel}${spec.setparams}[vout]`)
   videoLabel = '[vout]'
 
   // --- Step 5: Audio — uniform 48kHz stereo for all segments ---
@@ -178,14 +279,22 @@ export function encodeSegment(segment, outputPath, opts = {}) {
   }
 
   // --- Step 6: Encode ---
+  // Encoder, encoder params, output pix_fmt, and stream-level color metadata
+  // are all driven by the project's color space spec.
   const args = [
     '-y', ...inputs,
     '-filter_complex', filterParts.join(';'),
     '-map', videoLabel,
     '-map', audioLabel,
-    '-c:v', 'libx264', '-preset', 'fast', '-crf', '18', '-pix_fmt', 'yuv420p',
+    '-c:v', spec.encoder, ...spec.encoderArgs, '-pix_fmt', spec.outputPixFmt,
+    ...spec.outputColorArgs,
     '-g', String(fps), '-keyint_min', String(fps),
-    '-c:a', 'aac', '-b:a', '192k', '-ar', '48000',
+    // -ac 2 forces stereo regardless of source channel count. Without this, a
+    // mono source produces 1-channel AAC segments while anullsrc-fed segments
+    // produce 2-channel AAC, and the concat demuxer's -c:v copy path mixes both
+    // channel counts → playback artifacts at segment boundaries. Forcing stereo
+    // matches the silent-track anullsrc=cl=stereo and keeps every segment uniform.
+    '-c:a', 'aac', '-b:a', '192k', '-ar', '48000', '-ac', '2',
     '-t', String(duration),
     '-movflags', '+faststart',
     outputPath,

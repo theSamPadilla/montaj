@@ -38,6 +38,7 @@ export async function compose({
   outputPath,
   videoWidth,
   videoHeight,
+  colorSpace,
 }) {
   // Default resolution is portrait (1080x1920) — montaj's default orientation.
   // render.js always passes explicit dimensions, but direct callers hitting
@@ -45,6 +46,9 @@ export async function compose({
   const vw = videoWidth ?? projectJson.settings?.resolution?.[0] ?? 1080
   const vh = videoHeight ?? projectJson.settings?.resolution?.[1] ?? 1920
   const fps = projectJson.settings?.fps ?? 30
+  // Project working color space — drives segment-encoder codec, pix_fmt, and
+  // color metadata. Falls back to sdr_bt709 for projects predating this field.
+  const projectColorSpace = colorSpace ?? projectJson.settings?.colorSpace ?? 'sdr_bt709'
   const audioTracks = projectJson.audio?.tracks ?? []
   const hasAudio = audioTracks.some(t => !t.muted)
 
@@ -68,6 +72,10 @@ export async function compose({
   const segPaths = []
   for (let i = 0; i < segments.length; i++) {
     const seg = segments[i]
+    // Stamp project color space onto each segment so the encoder knows what
+    // codec/pix_fmt/color metadata to emit. planSegments doesn't know about
+    // color space; that's a project-level concern threaded through here.
+    seg.colorSpace = projectColorSpace
     const segPath = join(segDir, `seg-${String(i).padStart(4, '0')}.mp4`)
 
     clog(`segment ${i + 1}/${segments.length} (${seg.start.toFixed(2)}-${seg.end.toFixed(2)}s): ` +
@@ -102,7 +110,9 @@ function concatSegments(paths, outputPath) {
 
   clog(`concatenating ${paths.length} segment(s)...`)
 
-  // Video: -c:v copy (all segments are H.264 yuv420p, same res/fps — safe).
+  // Video: -c:v copy. All segments from a single render share the project's
+  // working codec — h264 for SDR, hevc for HDR — so stream-copy concat is safe.
+  // Uniform output is now per-project, not pipeline-wide.
   // Audio: -c:a aac re-encode. Even though segments target 48kHz AAC,
   // concat -c:a copy can produce garbled audio at segment boundaries if
   // AAC frame alignment differs. Re-encoding audio is cheap and guarantees

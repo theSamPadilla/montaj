@@ -18,6 +18,13 @@ def register(subparsers):
              "WARNING: exposes the server to all devices on your local network — "
              "only use on trusted networks.",
     )
+    p.add_argument(
+        "--debug",
+        action="store_true",
+        help="Stream subprocess stderr (project init, etc.) live to the server's stderr "
+             "for observability. Default: subprocess stderr is buffered and only surfaced "
+             "on error. Equivalent to setting MONTAJ_DEBUG=1.",
+    )
     add_global_flags(p)
     p.set_defaults(func=handle)
 
@@ -49,6 +56,9 @@ def handle(args):
         )
 
     os.environ["MONTAJ_SERVE_PORT"] = str(args.port)
+    if args.debug:
+        os.environ["MONTAJ_DEBUG"] = "1"
+        print(cyan("debug: streaming subprocess stderr (init progress, etc.) live"), file=sys.stderr)
     uvicorn.run(
         "serve.server:app",
         host=host,

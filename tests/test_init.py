@@ -364,17 +364,24 @@ def test_assets_array_untouched_with_project_type(tmp_path):
 # (require ffmpeg)
 # ---------------------------------------------------------------------------
 
-def _make_clip(path: Path, *, width=640, height=480, sample_rate=48000, duration=1):
-    """Make a small synthetic video clip — used by parallel + modal-resolution tests."""
-    subprocess.run([
+def _make_clip(path: Path, *, width=640, height=480, sample_rate=48000, duration=1, rotation=0):
+    """Make a small synthetic video clip — used by parallel + modal-resolution tests.
+
+    Pass `rotation` (e.g. -90) to simulate iPhone vertical recording — adds a
+    displaymatrix rotation tag without changing the physical pixel dimensions.
+    """
+    cmd = [
         "ffmpeg", "-y",
         "-f", "lavfi", "-i", f"color=red:size={width}x{height}:rate=30:duration={duration}",
         "-f", "lavfi", "-i", f"sine=frequency=440:sample_rate={sample_rate}:duration={duration}",
         "-c:v", "libx264", "-preset", "ultrafast", "-crf", "28",
         "-pix_fmt", "yuv420p", "-g", "30", "-keyint_min", "30",
         "-c:a", "aac", "-ar", str(sample_rate),
-        str(path),
-    ], check=True, capture_output=True, timeout=60)
+    ]
+    if rotation:
+        cmd += ["-metadata:s:v:0", f"rotate={rotation}"]
+    cmd.append(str(path))
+    subprocess.run(cmd, check=True, capture_output=True, timeout=60)
 
 
 @pytest.mark.skipif(not HAS_FFMPEG, reason="ffmpeg not available")
@@ -428,10 +435,11 @@ def test_init_normalizes_clips_in_parallel(tmp_path):
     # generous enough not to be flaky in CI.
     assert elapsed < 30, f"init took {elapsed:.1f}s — likely serialized"
     project = json.loads(_project_path_from_stdout(result.stdout).read_text())
-    # Every clip should have been normalized (44.1kHz audio → fast path)
-    for item in project["tracks"][0]:
-        assert item["src"].endswith("_normalized.mp4"), \
-            f"clip should be normalized: {item['src']}"
+    # Under the new contract: 44.1kHz audio is no longer a normalize trigger
+    # (audio resampled at compose time). Conformant SDR clips with bad audio
+    # rate skip normalize entirely. So we just assert init finished with the
+    # right number of items, not what filename they carry.
+    assert len(project["tracks"][0]) == 4
 
 
 @pytest.mark.skipif(not HAS_FFMPEG, reason="ffmpeg not available")
@@ -441,8 +449,17 @@ def test_init_continues_when_one_clip_fails(tmp_path, monkeypatch):
     to its original src path (per the existing fall-back semantics), the good
     clip gets normalized."""
     good = tmp_path / "good.mp4"
-    # 3s duration → audio fast path engages, mirroring the parallel-normalize tests.
-    _make_clip(good, sample_rate=44100, duration=3)
+    # Use yuv422p so the good clip needs a transcode (yuv422p ≠ yuv420p) — this
+    # exercises the transcode path and produces a _normalized_<cs>.mp4 file.
+    subprocess.run([
+        "ffmpeg", "-y",
+        "-f", "lavfi", "-i", "color=red:size=640x480:rate=30:duration=3",
+        "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000:duration=3",
+        "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv422p",
+        "-g", "30", "-keyint_min", "30",
+        "-c:a", "aac", "-ar", "48000",
+        str(good),
+    ], check=True, capture_output=True, timeout=60)
     bad = tmp_path / "bad.mp4"
     bad.write_bytes(b"not a video")
     ws = tmp_path / "ws"
@@ -453,12 +470,12 @@ def test_init_continues_when_one_clip_fails(tmp_path, monkeypatch):
     project = json.loads(_project_path_from_stdout(result.stdout).read_text())
     track = project["tracks"][0]
     assert len(track) == 2
-    # Good clip: normalized.
-    assert track[0]["src"].endswith("_normalized.mp4")
+    # Good clip: normalized to project color space.
+    assert track[0]["src"].endswith("_normalized_sdr_bt709.mp4")
     # Bad clip: src points at the original (copied-into-workspace) path, NOT
-    # at a _normalized.mp4 — probe failed, normalize was skipped.
+    # at a _normalized_*.mp4 — probe failed, normalize was skipped.
     assert "bad" in track[1]["src"]
-    assert not track[1]["src"].endswith("_normalized.mp4")
+    assert "_normalized_" not in track[1]["src"]
 
 
 @pytest.mark.skipif(not HAS_FFMPEG, reason="ffmpeg not available")
@@ -490,6 +507,19 @@ def test_init_modal_tiebreak_first_appearance(tmp_path):
     assert result.returncode == 0, result.stderr
     project = json.loads(_project_path_from_stdout(result.stdout).read_text())
     assert project["settings"]["resolution"] == [640, 480]
+
+
+# NOTE: The smart-detect display-dims integration test was deliberately omitted.
+# Synthetic ffmpeg fixtures (lavfi sources) can't carry displaymatrix side_data
+# through the write path in ffmpeg 8.x — `-metadata:s:v:0 rotate=...` silently
+# no-ops, and `-display_rotation` is input-only. Real iPhone clips carry the
+# metadata natively. The chain "rotated source → portrait canvas" is provable by:
+#   1. probe_video swap logic — covered by tests in test_normalize.py
+#      (test_probe_video_swaps_dims_for_rotation_minus_90 etc.)
+#   2. init.py reads info["display_width"]/["display_height"] before modal —
+#      one-line code reading verification.
+# A real-iPhone-fixture integration test is filed as a follow-up if rotation
+# regressions become a concern.
 
 
 @pytest.mark.skipif(not HAS_FFMPEG, reason="ffmpeg not available")
@@ -576,8 +606,8 @@ def test_init_preserves_source_resolution_at_intake(tmp_path):
 @pytest.mark.skipif(not HAS_FFMPEG, reason="ffmpeg not available")
 def test_init_contract_every_clip_is_normalized(tmp_path):
     """After init returns, every tracks[0][i].src must satisfy the new contract:
-    is_normalized(force_probe=True) == True. This bypasses the filename shortcut
-    and checks the actual stream content.
+    is_normalized(path, info, project_color_space) == True. The contract checks
+    the actual stream content against the project's working color space.
 
     Uses 3-second clips so the keyframe-interval probe (which inspects the first
     10 seconds and needs ≥2 keyframes to compute a gap) sees enough keyframes."""
@@ -591,10 +621,11 @@ def test_init_contract_every_clip_is_normalized(tmp_path):
                       env_override={"MONTAJ_WORKSPACE_DIR": str(ws)})
     assert result.returncode == 0, result.stderr
     project = json.loads(_project_path_from_stdout(result.stdout).read_text())
+    project_color_space = project["settings"].get("colorSpace", "sdr_bt709")
     for item in project["tracks"][0]:
         info = probe_video(item["src"])
         assert info is not None, f"probe failed for {item['src']}"
-        assert is_normalized(item["src"], info, force_probe=True), \
+        assert is_normalized(item["src"], info, project_color_space), \
             f"clip is not actually conformant: {item['src']}"
 
 
@@ -619,12 +650,15 @@ def test_init_probe_cache_is_consumed_by_normalize_loop(tmp_path):
         _make_clip(c, sample_rate=44100, duration=3)
         clips.append(str(c))
 
-    # Build a counter shim that wraps real ffprobe, increments a counter file,
-    # and forwards. Place it in a temp bin dir, prepend to PATH.
+    # Build a counter shim that wraps real ffprobe and records each call as a
+    # unique file (via mktemp — atomic across concurrent processes). The naive
+    # "read counter, increment, write back" pattern races when init's pool=4
+    # workers call ffprobe concurrently: two workers read the same value, both
+    # write counter+1, and one increment is lost. mktemp sidesteps this entirely.
     shim_dir = tmp_path / "shim_bin"
     shim_dir.mkdir()
-    counter_file = tmp_path / "ffprobe_call_count"
-    counter_file.write_text("0")
+    counter_dir = tmp_path / "ffprobe_calls"
+    counter_dir.mkdir()
 
     real_ffprobe = subprocess.run(["which", "ffprobe"], capture_output=True, text=True).stdout.strip()
     assert real_ffprobe, "could not locate real ffprobe"
@@ -632,8 +666,7 @@ def test_init_probe_cache_is_consumed_by_normalize_loop(tmp_path):
     shim = shim_dir / "ffprobe"
     shim.write_text(
         "#!/bin/sh\n"
-        f'n=$(cat "{counter_file}")\n'
-        f'echo $((n + 1)) > "{counter_file}"\n'
+        f'mktemp "{counter_dir}/call.XXXXXX" >/dev/null\n'
         f'exec "{real_ffprobe}" "$@"\n'
     )
     shim.chmod(0o755)
@@ -649,25 +682,202 @@ def test_init_probe_cache_is_consumed_by_normalize_loop(tmp_path):
     )
     assert result.returncode == 0, result.stderr
 
-    ffprobe_count = int(counter_file.read_text())
+    ffprobe_count = len(list(counter_dir.iterdir()))
     # Per-clip ffprobe call accounting:
-    #   - probe_video()       = 2 ffprobe calls (stream info + keyframe interval)
+    #   - probe_video()       = 3 ffprobe calls (stream info + keyframe interval + rotation)
     #   - get_duration()      = 1 ffprobe call (duration probe after normalize)
     #
-    # Detection runs probe_video for each clip = 2 × n_clips.
+    # Detection runs probe_video for each clip = 3 × n_clips.
     # _normalize_one reads from probe_cache (0 extra) and passes the cached
     # `info` into normalize() (which skips its internal probe = 0 extra).
     # Then get_duration is called once = 1 × n_clips.
-    # Expected total: 3 × n_clips.
+    # Expected total: 4 × n_clips.
     #
     # Without cache OR without info-passthrough, we'd see:
-    #   - cache miss in _normalize_one: +2 × n_clips
-    #   - normalize() internal probe:   +2 × n_clips
-    #   → 7 × n_clips total.
-    expected = 3 * n_clips
-    expected_no_caching = 7 * n_clips
+    #   - cache miss in _normalize_one: +3 × n_clips
+    #   - normalize() internal probe:   +3 × n_clips
+    #   → 10 × n_clips total.
+    expected = 4 * n_clips
+    expected_no_caching = 10 * n_clips
     assert ffprobe_count == expected, (
         f"probe caching appears bypassed: ffprobe ran {ffprobe_count} times for "
         f"{n_clips} clips. Expected {expected} (cache hit + info passthrough), "
         f"would-be-without-caching: {expected_no_caching}."
     )
+
+
+# ---------------------------------------------------------------------------
+# Color-space smart-detect + override tests
+# ---------------------------------------------------------------------------
+
+def _make_hlg_clip(path: Path, *, duration=3):
+    """Make a clip tagged with HLG color metadata (yuv420p10le, arib-std-b67).
+
+    Uses x265-params transfer= to force the value into the HEVC bitstream so
+    ffprobe reports it on read-back. -color_trc alone isn't enough when the
+    source is a synthetic lavfi color filter.
+    """
+    subprocess.run([
+        "ffmpeg", "-y",
+        "-f", "lavfi", "-i", f"color=red:size=640x360:rate=30:duration={duration}",
+        "-f", "lavfi", "-i", f"sine=frequency=440:sample_rate=48000:duration={duration}",
+        "-c:v", "libx265", "-preset", "ultrafast", "-crf", "28",
+        "-pix_fmt", "yuv420p10le",
+        "-x265-params", "transfer=arib-std-b67:colorprim=bt2020:colormatrix=bt2020nc",
+        "-color_trc", "arib-std-b67",
+        "-color_primaries", "bt2020",
+        "-colorspace", "bt2020nc",
+        "-g", "30", "-keyint_min", "30",
+        "-c:a", "aac", "-ar", "48000",
+        str(path),
+    ], check=True, capture_output=True, timeout=60)
+
+
+def _make_pq_clip(path: Path, *, duration=3):
+    """Make a clip tagged with PQ color metadata (yuv420p10le, smpte2084).
+
+    Uses x265-params transfer= to force the value into the HEVC bitstream so
+    ffprobe reports it on read-back.
+    """
+    subprocess.run([
+        "ffmpeg", "-y",
+        "-f", "lavfi", "-i", f"color=red:size=640x360:rate=30:duration={duration}",
+        "-f", "lavfi", "-i", f"sine=frequency=440:sample_rate=48000:duration={duration}",
+        "-c:v", "libx265", "-preset", "ultrafast", "-crf", "28",
+        "-pix_fmt", "yuv420p10le",
+        "-x265-params", "transfer=smpte2084:colorprim=bt2020:colormatrix=bt2020nc",
+        "-color_trc", "smpte2084",
+        "-color_primaries", "bt2020",
+        "-colorspace", "bt2020nc",
+        "-g", "30", "-keyint_min", "30",
+        "-c:a", "aac", "-ar", "48000",
+        str(path),
+    ], check=True, capture_output=True, timeout=60)
+
+
+@pytest.mark.skipif(not HAS_FFMPEG, reason="ffmpeg not available")
+def test_init_smart_detects_hdr_hlg_from_iphone_clips(tmp_path):
+    """All-HLG clips → settings.colorSpace == 'hdr_hlg', no normalize files written."""
+    clips = []
+    for i in range(2):
+        c = tmp_path / f"hlg_{i}.mp4"
+        _make_hlg_clip(c)
+        clips.append(str(c))
+    ws = tmp_path / "ws"; ws.mkdir()
+    result = run_init("--clips", *clips, "--prompt", "test",
+                      env_override={"MONTAJ_WORKSPACE_DIR": str(ws)})
+    assert result.returncode == 0, result.stderr
+    project = json.loads(_project_path_from_stdout(result.stdout).read_text())
+    assert project["settings"]["colorSpace"] == "hdr_hlg"
+    # No clip should have been normalized — sources are conformant for HLG project.
+    for item in project["tracks"][0]:
+        assert "_normalized_" not in item["src"], \
+            f"HLG clip should pass through HLG project unchanged: {item['src']}"
+
+
+@pytest.mark.skipif(not HAS_FFMPEG, reason="ffmpeg not available")
+def test_init_smart_detects_modal_hlg_with_sdr_outlier(tmp_path):
+    """2× HLG + 1× SDR → settings.colorSpace == 'hdr_hlg' (modal wins).
+    The 1 SDR outlier will be inverse-stretched on the fly, not the other 27
+    HDR clips tonemapped down. Critical for iPhone-dominant workflows."""
+    a = tmp_path / "hlg1.mp4"; _make_hlg_clip(a)
+    b = tmp_path / "hlg2.mp4"; _make_hlg_clip(b)
+    c = tmp_path / "sdr.mp4"; _make_clip(c, duration=3)
+    ws = tmp_path / "ws"; ws.mkdir()
+    result = run_init("--clips", str(a), str(b), str(c), "--prompt", "test",
+                      env_override={"MONTAJ_WORKSPACE_DIR": str(ws)})
+    assert result.returncode == 0, result.stderr
+    project = json.loads(_project_path_from_stdout(result.stdout).read_text())
+    assert project["settings"]["colorSpace"] == "hdr_hlg"
+    # Modal-wins progress message should name the chosen space and the count.
+    assert "detected colorSpace=hdr_hlg" in result.stderr
+    assert "modal: 2 of 3 clips" in result.stderr
+
+
+@pytest.mark.skipif(not HAS_FFMPEG, reason="ffmpeg not available")
+def test_init_smart_detects_sdr_on_tie(tmp_path):
+    """1× HLG + 1× SDR (tied at 1 each) → settings.colorSpace == 'sdr_bt709'.
+    Tiebreak rule: SDR wins when tied with HDR (conservative on inverse-stretch)."""
+    a = tmp_path / "hlg.mp4"; _make_hlg_clip(a)
+    b = tmp_path / "sdr.mp4"; _make_clip(b, duration=3)
+    ws = tmp_path / "ws"; ws.mkdir()
+    result = run_init("--clips", str(a), str(b), "--prompt", "test",
+                      env_override={"MONTAJ_WORKSPACE_DIR": str(ws)})
+    assert result.returncode == 0, result.stderr
+    project = json.loads(_project_path_from_stdout(result.stdout).read_text())
+    assert project["settings"]["colorSpace"] == "sdr_bt709"
+
+
+@pytest.mark.skipif(not HAS_FFMPEG, reason="ffmpeg not available")
+def test_init_smart_detects_pq_from_mixed_hdr(tmp_path):
+    """1× HLG + 1× PQ (no SDR, tied) → settings.colorSpace == 'hdr_pq'
+    (PQ wins HDR-only ties; HLG converts cleanly into PQ container)."""
+    a = tmp_path / "hlg.mp4"; _make_hlg_clip(a)
+    b = tmp_path / "pq.mp4"; _make_pq_clip(b)
+    ws = tmp_path / "ws"; ws.mkdir()
+    result = run_init("--clips", str(a), str(b), "--prompt", "test",
+                      env_override={"MONTAJ_WORKSPACE_DIR": str(ws)})
+    assert result.returncode == 0, result.stderr
+    project = json.loads(_project_path_from_stdout(result.stdout).read_text())
+    assert project["settings"]["colorSpace"] == "hdr_pq"
+
+
+@pytest.mark.skipif(not HAS_FFMPEG, reason="ffmpeg not available")
+def test_init_color_space_override_via_cli(tmp_path):
+    """--color-space hdr_hlg forces HLG even when sources are all SDR."""
+    a = tmp_path / "sdr.mp4"; _make_clip(a, duration=3)
+    ws = tmp_path / "ws"; ws.mkdir()
+    result = run_init("--clips", str(a), "--prompt", "test",
+                      "--color-space", "hdr_hlg",
+                      env_override={"MONTAJ_WORKSPACE_DIR": str(ws)})
+    assert result.returncode == 0, result.stderr
+    project = json.loads(_project_path_from_stdout(result.stdout).read_text())
+    assert project["settings"]["colorSpace"] == "hdr_hlg"
+
+
+def test_init_no_clips_uses_default_color_space(tmp_path):
+    """Canvas projects (no clips) get the SDR default color space."""
+    user_wf = Path.home() / ".montaj" / "workflows"
+    user_wf.mkdir(parents=True, exist_ok=True)
+    user_fixture = user_wf / "_test_canvas_cs.json"
+    user_fixture.write_text(json.dumps({
+        "name": "_test_canvas_cs",
+        "description": "test",
+        "project_type": "ai_video",
+        "requires_clips": False,
+        "steps": [{"id": "noop", "uses": "montaj/probe"}]
+    }))
+    ws = tmp_path / "ws"; ws.mkdir()
+    try:
+        result = run_init("--canvas", "--prompt", "test", "--workflow", "_test_canvas_cs",
+                          env_override={"MONTAJ_WORKSPACE_DIR": str(ws)})
+        assert result.returncode == 0, result.stderr
+        project = json.loads(_project_path_from_stdout(result.stdout).read_text())
+        assert project["settings"]["colorSpace"] == "sdr_bt709"
+    finally:
+        user_fixture.unlink(missing_ok=True)
+
+
+def test_init_color_space_override_via_canvas(tmp_path):
+    """--color-space hdr_pq forces PQ on a canvas project (no clips → no smart-detect)."""
+    user_wf = Path.home() / ".montaj" / "workflows"
+    user_wf.mkdir(parents=True, exist_ok=True)
+    user_fixture = user_wf / "_test_canvas_pq.json"
+    user_fixture.write_text(json.dumps({
+        "name": "_test_canvas_pq",
+        "description": "test",
+        "project_type": "ai_video",
+        "requires_clips": False,
+        "steps": [{"id": "noop", "uses": "montaj/probe"}]
+    }))
+    ws = tmp_path / "ws"; ws.mkdir()
+    try:
+        result = run_init("--canvas", "--prompt", "test", "--workflow", "_test_canvas_pq",
+                          "--color-space", "hdr_pq",
+                          env_override={"MONTAJ_WORKSPACE_DIR": str(ws)})
+        assert result.returncode == 0, result.stderr
+        project = json.loads(_project_path_from_stdout(result.stdout).read_text())
+        assert project["settings"]["colorSpace"] == "hdr_pq"
+    finally:
+        user_fixture.unlink(missing_ok=True)
+

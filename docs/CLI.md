@@ -72,15 +72,16 @@ montaj install ffmpeg
 
 ```bash
 montaj normalize video.mov
-# Normalize a video clip to project format:
-# H.264, yuv420p, bt709, project resolution/fps, 48kHz audio.
-# Creates _normalized.mp4 alongside the original.
+# Normalize a video clip to the project's working color space.
+# Default color space is sdr_bt709 (H.264 yuv420p bt709, 48kHz audio).
+# Creates _normalized_<colorSpace>.mp4 alongside the original.
 
-montaj normalize video.mov --width 1080 --height 1920
-# Explicit resolution
+montaj normalize video.mov --color-space hdr_hlg
+# Force HDR HLG output (libx265 yuv420p10le bt2020/HLG).
+# Used when the source is HDR and you want to keep it HDR.
 
-montaj normalize video.mov --crf 18
-# Custom quality setting
+montaj normalize video.mov --color-space hdr_pq
+# Force HDR PQ output (libx265 yuv420p10le bt2020/PQ + HDR10 metadata).
 
 montaj normalize video.mov --out /tmp/normalized.mp4
 # Custom output path
@@ -118,6 +119,11 @@ montaj serve --network
 # Bind to all network interfaces — accessible to other devices on the local network.
 # WARNING: only use on trusted networks (e.g. for agents running on other machines).
 
+montaj serve --debug
+# Stream subprocess stderr (project init, etc.) live to the server's stderr
+# for observability. Default: subprocess stderr is buffered and only surfaced
+# on error. Equivalent to setting MONTAJ_DEBUG=1.
+
 montaj render
 # Render project.json [final] → final.mp4
 # Uses project.json in the current directory by default
@@ -135,9 +141,9 @@ montaj render --clean
 
 `montaj render` runs three stages:
 
-1. **Base video** — trims and concatenates source clips via ffmpeg stream-copy. Canvas projects (no video track) generate a synthetic black base from overlay durations.
+1. **Normalize + base video** — normalize all sources to the project's working color space (`settings.colorSpace`), then trim and prepare source clips. Canvas projects (no video track) generate a synthetic black base from overlay durations.
 2. **Overlay segments** — each JSX overlay is bundled with esbuild, rendered frame-by-frame in headless Chromium (Puppeteer), and encoded to a lossless ffv1/MKV intermediate. Segments are rendered at **design resolution (1080×1920)** regardless of output resolution — the pipeline upscales at compose time.
-3. **Compose** — a single `ffmpeg filter_complex` overlays all segments onto the base. For 4K output (2160×3840) segments are upscaled 2× before compositing. HDR source clips (bt2020/HLG) are composed in 10-bit (`yuv420p10le`) and encoded with full bt2020 color metadata so the signal is preserved end-to-end.
+3. **Compose** — a segment-based pipeline encodes each timeline segment independently, concats them via the ffmpeg concat demuxer (`-c:v copy`), then mixes audio tracks. The codec and color metadata follow the project's color space: `sdr_bt709` projects emit H.264 yuv420p bt709; `hdr_hlg`/`hdr_pq` projects emit HEVC 10-bit yuv420p10le bt2020. For 4K output (2160×3840) segments are upscaled 2× before compositing.
 
 Intermediate files (`render/base.mp4`, `render/segments/`) are kept by default and reused on re-runs. Use `--clean` to delete them after compositing.
 
@@ -339,6 +345,14 @@ montaj fetch --url "https://www.tiktok.com/@handle" --limit 15 --out ./clips/
 montaj init --prompt "tight cuts, remove filler"
 # Create empty project.json in current directory
 
+montaj init --prompt "..." --color-space hdr_hlg
+# Force the project's working color space. Default is `auto`, which picks
+# the MODAL (most common) color space across clips — outliers are
+# converted on the fly. 27 HLG + 1 SDR → hdr_hlg (the SDR clip is stretched).
+# Tiebreaks: PQ wins HDR-only ties; SDR wins SDR-vs-HDR ties.
+# Choices: auto | sdr_bt709 | hdr_hlg | hdr_pq.
+# Peer of --resolution.
+
 montaj status
 # Show current project.json state (pending / draft / final) + step progress
 
@@ -379,7 +393,7 @@ All steps accept `--out <path>` to set the output location. Run `montaj step <na
 | `generate-image` | `--prompt <text>`, `--out <path>`, `--provider <gemini\|openai>`, `--ref-image <img>` (repeatable), `--size <WxH>`, `--aspect-ratio <ratio>` (Gemini only), `--model <id>` |
 | `doctor` | (no params) |
 | `install ffmpeg` | (no params) |
-| `normalize` | `<file>`, `--width <px>`, `--height <px>`, `--crf <n>`, `--out <path>` |
+| `normalize` | `<file>`, `--color-space <sdr_bt709\|hdr_hlg\|hdr_pq>`, `--out <path>` |
 
 ---
 

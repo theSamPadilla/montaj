@@ -84,23 +84,89 @@ This corruption happens during `avformat_open_input()`, leaving the demuxer stat
 
 ---
 
+## Project Color Space
+
+Each project has an explicit working **color space** stored at
+`settings.colorSpace` in `project.json`. This setting drives the codec, pixel
+format, and color metadata the entire render pipeline emits — from the
+normalize pre-pass through the segment encoder to the final concat.
+
+Three color spaces are supported:
+
+| Key | Encoder | Pixel format | Transfer | Typical source |
+|---|---|---|---|---|
+| `sdr_bt709` | `libx264` | `yuv420p` | `bt709` | most non-HDR footage |
+| `hdr_hlg` | `libx265` | `yuv420p10le` | `arib-std-b67` | iPhone "HDR Video" default |
+| `hdr_pq` | `libx265` | `yuv420p10le` | `smpte2084` | iPhone "Dolby Vision", HDR10 |
+
+The taxonomy lives in `docs/schemas/color_space.json` and is loaded by both
+the Python pipeline (`lib/types/colorspace.py`) and the JS render engine
+(`montaj_assets/render/color-space.js`). One file, two loaders — no JS/Python
+drift.
+
+**Smart-detect at init.** When clips are added to a project (`montaj run` or
+`montaj init`), each clip's `color_transfer` is probed and the project color
+space is the **modal** (most common) value across all clips. Outliers get
+converted on the fly: HDR sources in an SDR project are tonemapped per-segment;
+SDR sources in an HDR project are stretched into the HDR container. This
+matches the FCP/Resolve pattern — a single SDR clip in an iPhone-HDR project
+is treated as SDR-graded content shown on an HDR canvas, not a reason to flip
+the entire project down to SDR.
+
+- All clips HLG → `hdr_hlg`.
+- All clips PQ → `hdr_pq`.
+- 27 HLG + 1 SDR → `hdr_hlg` (modal wins; the 1 SDR clip is stretched into HLG).
+- 27 SDR + 1 HLG → `sdr_bt709` (modal wins; the 1 HLG clip is tonemapped).
+- Tied modes — tiebreaks:
+  - HLG + PQ tied (HDR only) → `hdr_pq` (larger gamut; HLG converts cleanly into PQ).
+  - SDR + HDR tied (no clear majority) → `sdr_bt709` (conservative — tonemap-down
+    is well-defined, inverse-stretch is creative when there's no signal of intent).
+- No clips probed → `sdr_bt709` default.
+
+**Override.** Pass `--color-space {sdr_bt709|hdr_hlg|hdr_pq|auto}` to
+`montaj init` (default `auto` runs the smart-detect rules above), or include
+`"colorSpace"` in the HTTP intake JSON, to force a specific working space
+regardless of source detection.
+
+**Per-color-space behavior in the segment encoder.** `encode-segment.js`
+reads `settings.colorSpace` and looks up the spec at compose time. SDR
+projects emit `libx264 yuv420p` with `bt709` color metadata; HDR projects
+emit `libx265 yuv420p10le` with `bt2020nc` colorimetry plus the appropriate
+transfer (`arib-std-b67` for HLG, `smpte2084` for PQ with static HDR10
+mastering metadata). Sources whose color space conflicts with the project
+are converted at the per-item filter chain in the segment encoder
+(zscale-based tonemap for HDR→SDR; stretch into HDR container for SDR→HDR;
+HLG↔PQ via zscale transfer-curve conversion).
+
+---
+
 ## Step 6.5 — Normalize pre-pass
 
 After `collectAllItems` (Step 2) and before `processVideoItems` (Step 3), the
 render engine runs a **normalize pre-pass** on all video items. This is
-enforcement point 3 — the render pipeline refuses to compose non-normalized
-sources.
+enforcement point 3 — the render pipeline refuses to compose sources that
+don't match the project's working color space.
 
-Each video clip is checked and, if needed, converted to the project's working
-format:
+The normalize pre-pass is now **color-space-aware**. A source is conformant
+when its `color_transfer` and bit depth match the project's working color
+space spec, and its keyframe interval is ≤ 2.0s (required for the segment
+encoder's input-level fast seek). When all three hold, the source passes
+through with no transcode — iPhone HDR HLG clips in an `hdr_hlg` project are
+essentially a no-op at intake.
 
-- **Codec:** H.264 (`libx264`)
-- **Pixel format:** `yuv420p`
-- **Color space:** BT.709 (HDR sources are tonemapped via `zscale` + `tonemap`
-  if available, with a fallback path if `zscale` is missing)
-- **Audio:** 48 kHz, AAC
-- **Keyframes:** GOP ≤ 1 second (frequent IDR keyframes — required for accurate
-  segment-encoder seeking)
+When a source conflicts, normalize emits the project's working format using
+the encoder/pix_fmt/color args from the color-space spec:
+
+- **`sdr_bt709` project:** `libx264 -pix_fmt yuv420p` with `bt709` stream
+  metadata. HDR sources are tonemapped via `zscale` + `tonemap` (with a bare
+  tonemap fallback when `zscale` is missing — accompanied by a loud warning).
+- **`hdr_hlg` project:** `libx265 -pix_fmt yuv420p10le` with `bt2020nc` /
+  `arib-std-b67` stream metadata.
+- **`hdr_pq` project:** `libx265 -pix_fmt yuv420p10le` with `bt2020nc` /
+  `smpte2084` stream metadata + static HDR10 mastering metadata.
+
+All paths emit AAC 48 kHz audio and force IDR keyframes every ~1s (`-g <fps>
+-keyint_min <fps>`).
 
 **Resolution is preserved.** Source clips remain at their native resolution
 through the entire pipeline; the segment encoder scales per-item at compose
@@ -108,27 +174,27 @@ time via the `scale=` filter in `encode-segment.js`. This avoids the permanent
 quality loss of intake-time downscaling and preserves headroom for crops,
 zooms, and re-frames.
 
-**Audio-only fast path:** When a source's video stream is fully conformant
-(h264 / yuv420p / SDR / keyframes ≤ 2s) but the audio is missing or at a
-non-target sample rate, normalize uses `-c:v copy` and only re-encodes audio.
-~20–40× faster than full re-encode; produces a bit-identical video stream.
-
 **Parallel execution:** Both init-time and render-time pre-pass normalize
-loops run with concurrency cap of 2 (matching `materialize_cut.py`'s libx264
-cap). Memory-heavy 4K HDR tonemap is the worst case; 2 workers stays within
-bounds on systems with ≥8GB free RAM.
+loops run with concurrency cap of 2. Memory-heavy 4K HDR encodes are the worst
+case; 2 workers stays within bounds on systems with ≥8GB free RAM. The cap
+applies to both libx264 (SDR projects) and libx265 (HDR projects) — both are
+preset-bound CPU encodes.
 
-The normalize step creates `_normalized.mp4` files alongside the originals —
-originals are never modified and are preserved for potential re-export. The
+The normalize step creates `_normalized_<colorSpace>.mp4` files alongside the
+originals (e.g. `clip_normalized_sdr_bt709.mp4` or
+`clip_normalized_hdr_hlg.mp4`) — originals are never modified and are
+preserved for potential re-export. Namespacing by color space lets a project
+flip between SDR and HDR without colliding with cached normalize output. The
 `lib/normalize.py` module is the shared infrastructure backing this (also
 used by `project/init.py` for ingest-time normalization and `steps/ai_video.py`
 for generated clip normalization).
 
-After normalization, all sources entering the compose pipeline are guaranteed
-to share codec, pixel format, color space, and audio sample rate. This
-eliminates an entire class of filter graph bugs (mixed HDR/SDR, mismatched
-pixel formats). Resolution is intentionally NOT unified at intake — the
-segment encoder handles per-item scaling.
+After normalization, every source entering the compose pipeline conforms to
+the project's working color space. The segment encoder still handles per-item
+scaling at compose time, and applies in-line color conversion for any source
+that arrives in a different color space than the project (the render engine
+remains permissive — sources that didn't pass through intake-time normalize
+are converted lazily). Resolution is intentionally NOT unified at intake.
 
 ---
 
@@ -168,11 +234,14 @@ Segments are encoded in parallel using the worker pool.
 All encoded segments are joined using the **ffmpeg concat demuxer** with:
 
 ```
--c:v copy    # no re-encode — segments already share format
+-c:v copy    # no re-encode — segments share the project's working codec
 -c:a aac     # audio re-encoded to ensure consistent stream format
 ```
 
-This is a near-instant operation since the video stream is copied verbatim.
+Because every segment in a single render is encoded to the project's working
+codec (`libx264` for SDR projects, `libx265` for HDR projects), stream-copy
+concat is safe — the concat invariant holds per-project, not globally. This
+is a near-instant operation since the video stream is copied verbatim.
 
 ### Stage 4 — Audio mixing (mix-audio.js)
 
@@ -200,13 +269,20 @@ Each video clip is fed as:
 
 ### Output encoding
 
-Final H.264 MP4:
+Per-segment encoding follows the project's color space (see *Project Color
+Space* above). Within a single render every segment shares one codec and pix
+format, so the concat demuxer can stream-copy video without re-encoding:
 
-```
-libx264 -preset fast -crf 18 -pix_fmt yuv420p
-```
+- **SDR projects (`sdr_bt709`):** `libx264 -preset fast -crf 18 -pix_fmt
+  yuv420p` with `bt709` stream-level color metadata.
+- **HDR projects (`hdr_hlg`, `hdr_pq`):** `libx265 -preset fast -crf 22
+  -pix_fmt yuv420p10le` with `bt2020nc` colorimetry plus the project's
+  transfer curve (`arib-std-b67` for HLG, `smpte2084` + static HDR10
+  mastering metadata for PQ).
 
-Because all sources are normalized to BT.709/SDR before compositing, no color metadata stamping or format conversion is needed in the compose step. The output inherits correct color metadata from the normalized inputs.
+Per-frame `setparams` and per-stream color args come from the color-space
+spec in `docs/schemas/color_space.json`, ensuring downstream players read the
+same colorimetry the encoder produced.
 
 ---
 
@@ -232,5 +308,5 @@ Because all sources are normalized to BT.709/SDR before compositing, no color me
 | `Network.enable timed out` | Chromium failed to launch (memory pressure) | Reduce `--workers`; increase `protocolTimeout` in `renderer.js` |
 | `Unknown-sized element` / `Slice pointer chain broken` | Default MKV Cluster EBML unknown-size encoding under concurrent decode | Fixed by `-cluster_size_limit 2000000` in the MKV muxer (Puppeteer segment encoding) |
 | Clips trimmed short at cut points | Sparse keyframes caused seek overshoot | Fixed by normalize pre-pass (keyframes every 1s) + `-t duration` in segment encoder |
-| Mixed HDR/SDR in compose causes color shifts | HDR and SDR sources with different pixel formats, color spaces, or transfer functions in the same filter graph | Fixed by normalize pre-pass — all sources converted to H.264/yuv420p/bt709 before compose |
+| Mixed HDR/SDR in compose causes color shifts | HDR and SDR sources with different pixel formats, color spaces, or transfer functions in the same filter graph | Fixed by project-color-space contract — every source is converted to the project's working color space (at intake or per-item in the segment encoder) before composing |
 | `no index at the end` / `frame size > 2max_distance and no checksum` / `Invalid data found when processing input` (NUT demux) | NUT muxer fails to write end-of-file seek index for large files; backward timestamp scan hits large frames without checksums, corrupting demuxer state | Fixed by switching Puppeteer segments from NUT to MKV with `-cluster_size_limit 2000000 -reserve_index_space 1000000 -g 1` |

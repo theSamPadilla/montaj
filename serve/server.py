@@ -391,6 +391,21 @@ async def run_project(body: dict = Body(...)):
             })
         intake_setting_args += ["--resolution", resolution]
 
+    # Project working color space — accepts 'auto' (default smart-detect on init.py)
+    # plus any key in ALL_COLOR_SPACES. Mirrors the aspectRatio/resolution validation
+    # pattern.
+    from lib.types.colorspace import ALL_COLOR_SPACES
+    color_space = intake.get("colorSpace")
+    if color_space is not None:
+        if color_space != "auto" and color_space not in ALL_COLOR_SPACES:
+            raise HTTPException(
+                400,
+                detail={"error": "invalid_intake",
+                        "message": f"colorSpace must be 'auto' or one of {ALL_COLOR_SPACES} "
+                                   f"(got {color_space!r})"},
+            )
+        intake_setting_args += ["--color-space", color_space]
+
     # Music intake validation
     music = intake.get('music')
     if music is not None:
@@ -457,7 +472,15 @@ async def run_project(body: dict = Body(...)):
     # 30 min ceiling is a sanity bound, not a real expected duration — with parallel
     # normalize + audio fast path + resolution preservation, realistic init time is
     # seconds to a few minutes even on heavy footage.
+    #
+    # When MONTAJ_DEBUG=1, stderr is streamed live to the server's own stderr so
+    # operators can watch normalize progress in real time. Default (unset): stderr
+    # is buffered via proc.communicate() and only surfaced on non-zero exit, same
+    # as before. Debug mode is opt-in because forwarding subprocess stderr to the
+    # parent process clutters production logs.
     INIT_TIMEOUT_S = 1800
+    debug_log = os.environ.get("MONTAJ_DEBUG") == "1"
+
     try:
         proc = await asyncio.create_subprocess_exec(
             *cmd,
@@ -466,7 +489,45 @@ async def run_project(body: dict = Body(...)):
             stderr=asyncio.subprocess.PIPE,
         )
         try:
-            stdout_b, stderr_b = await asyncio.wait_for(proc.communicate(), timeout=INIT_TIMEOUT_S)
+            if debug_log:
+                # Live-tee stderr to the server's stderr while still collecting
+                # it for error reporting on non-zero exit.
+                stdout_chunks: list[bytes] = []
+                stderr_chunks: list[bytes] = []
+
+                async def _drain_to_stderr(stream, sink):
+                    while True:
+                        line = await stream.readline()
+                        if not line:
+                            return
+                        sink.append(line)
+                        try:
+                            sys.stderr.buffer.write(line)
+                            sys.stderr.buffer.flush()
+                        except Exception:
+                            pass
+
+                async def _read_all(stream, sink):
+                    while True:
+                        chunk = await stream.read(8192)
+                        if not chunk:
+                            return
+                        sink.append(chunk)
+
+                await asyncio.wait_for(
+                    asyncio.gather(
+                        _read_all(proc.stdout, stdout_chunks),
+                        _drain_to_stderr(proc.stderr, stderr_chunks),
+                        proc.wait(),
+                    ),
+                    timeout=INIT_TIMEOUT_S,
+                )
+                stdout_b = b"".join(stdout_chunks)
+                stderr_b = b"".join(stderr_chunks)
+            else:
+                stdout_b, stderr_b = await asyncio.wait_for(
+                    proc.communicate(), timeout=INIT_TIMEOUT_S,
+                )
         except asyncio.TimeoutError:
             proc.kill()
             await proc.wait()
@@ -955,20 +1016,25 @@ async def save_workflow(name: str, body: dict = Body(...)):
 
 @router.post("/normalize")
 async def normalize_video(body: dict = Body(...)):
-    """Normalize a video file to project working format (H.264, yuv420p, bt709, 48kHz).
+    """Normalize a video file to the project's working color space + codec.
 
-    Request:  { "input": "/abs/path/to/video.mp4", "width": 1920, "height": 1080, "fps": 30, "crf": 16, "out": "/abs/path/to/output.mp4" }
+    Request:  { "input": "/abs/path/to/video.mp4", "colorSpace": "sdr_bt709", "out": "/abs/path/to/output.mp4" }
     Response: { "path": "/abs/path/to/output.mp4", "skipped": false }
     """
+    from lib.types.colorspace import ALL_COLOR_SPACES, DEFAULT_COLOR_SPACE
+
     input_path = body.get("input")
     if not input_path or not Path(input_path).is_file():
         raise HTTPException(400, detail={"error": "missing_input", "message": "'input' must be an absolute path to an existing file"})
 
-    width = int(body.get("width", 1920))
-    height = int(body.get("height", 1080))
-    fps = int(body.get("fps", 30))
-    crf = int(body.get("crf", 16))
-    out = body.get("out") or input_path.rsplit(".", 1)[0] + "_normalized.mp4"
+    color_space = body.get("colorSpace", DEFAULT_COLOR_SPACE)
+    if color_space not in ALL_COLOR_SPACES:
+        raise HTTPException(
+            400,
+            detail={"error": "invalid_color_space",
+                    "message": f"colorSpace must be one of {ALL_COLOR_SPACES} (got {color_space!r})"},
+        )
+    out = body.get("out") or f"{input_path.rsplit('.', 1)[0]}_normalized_{color_space}.mp4"
 
     def _run():
         from lib.normalize import normalize, probe_video, is_normalized
@@ -977,11 +1043,11 @@ async def normalize_video(body: dict = Body(...)):
         if info is None:
             raise HTTPException(500, detail={"error": "probe_error", "message": f"Cannot probe {input_path}"})
 
-        if is_normalized(input_path, info, width, height):
+        if is_normalized(input_path, info, color_space):
             return {"path": input_path, "skipped": True}
 
         try:
-            result_path = normalize(input_path, out, width, height, crf)
+            result_path = normalize(input_path, out, color_space, info=info)
         except SystemExit:
             raise HTTPException(500, detail={"error": "normalize_failed", "message": "Normalization failed — check ffmpeg and zscale availability"})
 

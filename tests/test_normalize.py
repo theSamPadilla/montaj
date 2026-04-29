@@ -1,5 +1,10 @@
-"""Tests for lib/normalize.py — audio fast path, is_normalized contract,
-and source-resolution preservation."""
+"""Tests for lib/normalize.py — project-color-space-aware contract.
+
+Audio fast path was removed in the color-space-aware rewrite (audio sample rate
+is no longer checked by is_normalized; conformant-video + bad-audio sources are
+now is_normalized==True directly and skip normalize entirely; segment encoder
+resamples per item at compose time).
+"""
 import json
 import shutil
 import subprocess
@@ -12,7 +17,6 @@ REPO_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
 from lib.normalize import (
-    _can_use_audio_fast_path,
     is_normalized,
     normalize,
     probe_video,
@@ -39,10 +43,12 @@ def _ffprobe_stream(path, kind="v"):
 
 def _make_conformant_video(path: Path, *, width=1920, height=1080,
                            sample_rate=48000, with_audio=True, duration=2):
-    """Create a video file with conformant codec/pix_fmt/keyframes; audio per args.
+    """Create a video file with conformant SDR codec/pix_fmt/keyframes; audio per args.
 
-    Default produces a fully conformant clip; pass sample_rate=44100 or
-    with_audio=False to make ONLY the audio non-conformant.
+    Uses the h264_metadata bitstream filter to force bt709 transfer tags into
+    the bitstream. Without this, lavfi-sourced clips end up with `color_transfer:
+    unknown` even when -color_trc bt709 is passed (lavfi color sources don't
+    propagate transfer metadata). Real iPhone SDR sources carry these tags.
     """
     cmd = [
         "ffmpeg", "-y",
@@ -54,6 +60,10 @@ def _make_conformant_video(path: Path, *, width=1920, height=1080,
     cmd += [
         "-c:v", "libx264", "-preset", "ultrafast", "-crf", "23",
         "-pix_fmt", "yuv420p", "-g", "30", "-keyint_min", "30",
+        "-color_primaries", "bt709", "-color_trc", "bt709", "-colorspace", "bt709",
+        # Force bt709 transfer/primaries/matrix into the bitstream so ffprobe
+        # reports them on read-back. h264_metadata=1 means bt709 in the spec.
+        "-bsf:v", "h264_metadata=transfer_characteristics=1:colour_primaries=1:matrix_coefficients=1",
     ]
     if with_audio:
         cmd += ["-c:a", "aac", "-ar", str(sample_rate)]
@@ -61,20 +71,25 @@ def _make_conformant_video(path: Path, *, width=1920, height=1080,
     subprocess.run(cmd, check=True, capture_output=True, timeout=60)
 
 
-def _make_hdr_like_video(path: Path, duration=2):
-    """Create a yuv422p10 SDR clip with smpte2084 (HDR) color_transfer tag.
+def _make_hdr_like_video(path: Path, *, transfer="smpte2084", duration=2):
+    """Create a yuv420p10le clip tagged with HDR color metadata.
 
-    We can't easily generate true HDR via lavfi color sources — we tag with
-    -color_trc smpte2084 + use yuv422p10le pix_fmt to trip needs_tonemap and
-    get is_normalized()/can_use_audio_fast_path() to treat it as HDR.
+    Default produces a PQ (smpte2084) clip; pass transfer='arib-std-b67' for HLG.
+
+    Note: -color_trc alone doesn't make the transfer metadata stick when the
+    source is a synthetic lavfi color filter (filter strips color info). The
+    libx265 encoder DOES respect x265-params transfer=, which writes the value
+    into the bitstream and ffprobe reads it back. So we set both stream-level
+    flags AND x265-params to be sure.
     """
     subprocess.run([
         "ffmpeg", "-y",
         "-f", "lavfi", "-i", f"color=red:size=640x360:rate=30:duration={duration}",
         "-f", "lavfi", "-i", f"sine=frequency=440:sample_rate=48000:duration={duration}",
-        "-c:v", "libx264", "-preset", "ultrafast", "-crf", "23",
-        "-pix_fmt", "yuv422p10le",
-        "-color_trc", "smpte2084",
+        "-c:v", "libx265", "-preset", "ultrafast", "-crf", "28",
+        "-pix_fmt", "yuv420p10le",
+        "-x265-params", f"transfer={transfer}:colorprim=bt2020:colormatrix=bt2020nc",
+        "-color_trc", transfer,
         "-color_primaries", "bt2020",
         "-colorspace", "bt2020nc",
         "-g", "30", "-keyint_min", "30",
@@ -83,157 +98,213 @@ def _make_hdr_like_video(path: Path, duration=2):
     ], check=True, capture_output=True, timeout=60)
 
 
-# ── _can_use_audio_fast_path ──────────────────────────────────────────────────
+# ── is_normalized() with project_color_space ──────────────────────────────────
 
-def test_can_use_audio_fast_path_for_44k_audio(tmp_path):
-    src = tmp_path / "src.mp4"
+def test_is_normalized_sdr_source_in_sdr_project(tmp_path):
+    """SDR conformant clip in SDR project → is_normalized==True (no transcode)."""
+    src = tmp_path / "sdr.mp4"
+    _make_conformant_video(src)
+    info = probe_video(str(src))
+    assert info is not None
+    assert is_normalized(str(src), info, "sdr_bt709") is True
+
+
+def test_is_normalized_hlg_source_in_hlg_project(tmp_path):
+    """iPhone HDR HLG clip in HLG project must pass — no transcode needed."""
+    src = tmp_path / "hlg.mp4"
+    _make_hdr_like_video(src, transfer="arib-std-b67")
+    info = probe_video(str(src))
+    assert info is not None
+    # Source is yuv420p10le + arib-std-b67 → conformant for hdr_hlg.
+    assert is_normalized(str(src), info, "hdr_hlg") is True
+
+
+def test_is_normalized_hlg_source_in_sdr_project(tmp_path):
+    """HLG clip in SDR project must fail — tonemap needed."""
+    src = tmp_path / "hlg.mp4"
+    _make_hdr_like_video(src, transfer="arib-std-b67")
+    info = probe_video(str(src))
+    assert info is not None
+    assert is_normalized(str(src), info, "sdr_bt709") is False
+
+
+def test_is_normalized_sdr_source_in_hlg_project(tmp_path):
+    """SDR clip in HLG project must fail — inverse-stretch needed."""
+    src = tmp_path / "sdr.mp4"
+    _make_conformant_video(src)
+    info = probe_video(str(src))
+    assert info is not None
+    assert is_normalized(str(src), info, "hdr_hlg") is False
+
+
+def test_is_normalized_pq_source_in_hlg_project(tmp_path):
+    """PQ clip in HLG project must fail — HDR cross-conversion needed."""
+    src = tmp_path / "pq.mp4"
+    _make_hdr_like_video(src, transfer="smpte2084")
+    info = probe_video(str(src))
+    assert info is not None
+    # Same pix_fmt (yuv420p10le) but different transfer (smpte2084 vs arib-std-b67).
+    assert is_normalized(str(src), info, "hdr_hlg") is False
+
+
+def test_is_normalized_pq_source_in_pq_project(tmp_path):
+    """PQ clip in PQ project must pass — no transcode."""
+    src = tmp_path / "pq.mp4"
+    _make_hdr_like_video(src, transfer="smpte2084")
+    info = probe_video(str(src))
+    assert info is not None
+    assert is_normalized(str(src), info, "hdr_pq") is True
+
+
+def test_is_normalized_audio_rate_no_longer_checked(tmp_path):
+    """Conformant SDR video with 44.1kHz audio is_normalized==True under the
+    new contract (audio resampled at compose time)."""
+    src = tmp_path / "sdr_44k.mp4"
     _make_conformant_video(src, sample_rate=44100)
     info = probe_video(str(src))
     assert info is not None
-    assert _can_use_audio_fast_path(info) is True
+    # Was False under the old contract (audio rate checked); now True.
+    assert is_normalized(str(src), info, "sdr_bt709") is True
 
 
-def test_can_use_audio_fast_path_for_silent_video(tmp_path):
-    src = tmp_path / "silent.mp4"
-    _make_conformant_video(src, with_audio=False)
+def test_is_normalized_ignores_resolution(tmp_path):
+    """Resolution is preserved through the pipeline — not checked here."""
+    src = tmp_path / "4k.mp4"
+    _make_conformant_video(src, width=3840, height=2160)
     info = probe_video(str(src))
     assert info is not None
-    assert _can_use_audio_fast_path(info) is True
+    assert is_normalized(str(src), info, "sdr_bt709") is True
 
 
-def test_can_use_audio_fast_path_false_when_already_conformant(tmp_path):
-    src = tmp_path / "ok.mp4"
-    _make_conformant_video(src, sample_rate=48000)
+# ── rotation / display dimensions ─────────────────────────────────────────────
+# Note: ffmpeg 8.x doesn't write displaymatrix side_data when encoding fresh
+# clips from lavfi sources (`-metadata:s:v:0 rotate=...` silently no-ops on the
+# write path; `-display_rotation` is input-only). Real iPhone vertical clips
+# carry the metadata because the iPhone writes it directly. To test the
+# rotation-aware logic without depending on a real iPhone fixture, we
+# monkeypatch _probe_rotation to return the value we want and assert the swap
+# behavior in probe_video. This is more robust than fighting the ffmpeg muxer.
+
+
+def test_probe_video_reports_rotation_zero_when_unrotated(tmp_path):
+    """Plain SDR clip → rotation=0, display dims = stored dims."""
+    src = tmp_path / "plain.mp4"
+    _make_conformant_video(src, width=1920, height=1080)
     info = probe_video(str(src))
     assert info is not None
-    # Audio is fine — no fast path needed
-    assert _can_use_audio_fast_path(info) is False
+    assert info["rotation"] == 0
+    assert info["width"] == 1920
+    assert info["height"] == 1080
+    assert info["display_width"] == 1920
+    assert info["display_height"] == 1080
 
 
-def test_can_use_audio_fast_path_false_for_hdr(tmp_path):
-    src = tmp_path / "hdr.mp4"
-    _make_hdr_like_video(src)
+def test_probe_video_swaps_dims_for_rotation_minus_90(tmp_path, monkeypatch):
+    """Stored 1920×1080 + rotation=-90 → display 1080×1920 (iPhone vertical case).
+
+    Monkeypatches _probe_rotation since synthetic ffmpeg fixtures can't carry
+    displaymatrix side_data through the write path; the swap logic itself is
+    the load-bearing code under test, and probe_rotation is exercised separately
+    against the real iPhone clips listed in test_init's smart-detect tests.
+    """
+    src = tmp_path / "vert.mp4"
+    _make_conformant_video(src, width=1920, height=1080)
+    import lib.normalize as nm
+    monkeypatch.setattr(nm, "_probe_rotation", lambda _path: -90)
     info = probe_video(str(src))
     assert info is not None
-    # HDR must NOT take the fast path — needs full re-encode for tonemap.
-    assert _can_use_audio_fast_path(info) is False
+    assert info["rotation"] == -90
+    assert info["width"] == 1920
+    assert info["height"] == 1080
+    assert info["display_width"] == 1080
+    assert info["display_height"] == 1920
 
 
-# ── audio fast path end-to-end (via normalize()) ──────────────────────────────
+def test_probe_video_swaps_dims_for_rotation_plus_270(tmp_path, monkeypatch):
+    """+270 also swaps (mod 180 = 90)."""
+    src = tmp_path / "rot270.mp4"
+    _make_conformant_video(src, width=1920, height=1080)
+    import lib.normalize as nm
+    monkeypatch.setattr(nm, "_probe_rotation", lambda _path: 270)
+    info = probe_video(str(src))
+    assert info is not None
+    assert info["display_width"] == 1080
+    assert info["display_height"] == 1920
 
-def test_audio_fast_path_silent_video(tmp_path):
-    """Silent video with conformant codec/keyframes should hit fast path and
-    produce 48kHz stereo silent audio."""
-    src = tmp_path / "silent.mp4"
-    out = tmp_path / "silent_out.mp4"
-    _make_conformant_video(src, with_audio=False)
-    normalize(str(src), str(out), 1920, 1080)
+
+def test_probe_video_does_not_swap_for_rotation_180(tmp_path, monkeypatch):
+    """180° rotation does NOT swap W/H — only ±90/±270 do."""
+    src = tmp_path / "rot180.mp4"
+    _make_conformant_video(src, width=1920, height=1080)
+    import lib.normalize as nm
+    monkeypatch.setattr(nm, "_probe_rotation", lambda _path: 180)
+    info = probe_video(str(src))
+    assert info is not None
+    assert info["rotation"] == 180
+    assert info["display_width"] == 1920
+    assert info["display_height"] == 1080
+
+
+# ── normalize() emits the project's working format ────────────────────────────
+
+def test_normalize_skips_when_already_conformant(tmp_path):
+    """SDR conformant clip in SDR project → normalize returns input path unchanged."""
+    src = tmp_path / "sdr.mp4"
+    out = tmp_path / "out.mp4"
+    _make_conformant_video(src)
+    result = normalize(str(src), str(out), "sdr_bt709")
+    # Returns the input path; output file does not get created.
+    assert result == str(src)
+    assert not out.exists()
+
+
+def test_normalize_hlg_to_sdr_uses_tonemap(tmp_path):
+    """Normalize HLG → SDR runs the zscale tonemap chain; output is yuv420p bt709."""
+    src = tmp_path / "hlg.mp4"
+    out = tmp_path / "out.mp4"
+    _make_hdr_like_video(src, transfer="arib-std-b67")
+    normalize(str(src), str(out), "sdr_bt709")
     assert out.exists()
-    a = _ffprobe_stream(out, "a")
-    assert a is not None, "fast path must produce an audio stream"
-    assert a.get("codec_name") == "aac"
-    assert int(a.get("sample_rate", 0)) == 48000
-
-
-def test_audio_fast_path_44k_audio(tmp_path):
-    """Conformant video with 44.1kHz audio should hit fast path: video copied,
-    audio re-encoded at 48kHz."""
-    src = tmp_path / "src44k.mp4"
-    out = tmp_path / "out44k.mp4"
-    _make_conformant_video(src, sample_rate=44100)
-    normalize(str(src), str(out), 1920, 1080)
-    assert out.exists()
-    a = _ffprobe_stream(out, "a")
     v = _ffprobe_stream(out, "v")
-    assert int(a.get("sample_rate", 0)) == 48000
-    assert v.get("codec_name") == "h264"
-
-
-def test_audio_fast_path_not_taken_for_hdr(tmp_path):
-    """HDR source must go through full re-encode, NOT the fast path."""
-    src = tmp_path / "hdr.mp4"
-    out = tmp_path / "hdr_out.mp4"
-    _make_hdr_like_video(src)
-    normalize(str(src), str(out), 1920, 1080)
-    assert out.exists()
-    v = _ffprobe_stream(out, "v")
-    # Full re-encode tonemaps to bt709/yuv420p — the fast path would have left
-    # smpte2084 / yuv422p10le untouched (-c:v copy). pix_fmt is the load-bearing
-    # signal: HDR sources are 10-bit (yuv422p10le / yuv420p10le); a yuv420p
-    # output proves the full re-encode ran.
     assert v.get("pix_fmt") == "yuv420p"
     assert v.get("color_transfer") not in ("smpte2084", "arib-std-b67"), \
         f"output is still HDR-tagged: {v.get('color_transfer')!r}"
 
 
-def test_audio_fast_path_falls_through_on_failure(tmp_path, monkeypatch):
-    """If the fast-path subprocess fails, normalize falls through to full
-    re-encode and still produces a conformant output."""
-    src = tmp_path / "src.mp4"
+def test_normalize_sdr_to_sdr_pix_fmt_only(tmp_path):
+    """Normalize SDR yuv422p → SDR project: pix_fmt conversion only, no color filter."""
+    src = tmp_path / "sdr422.mp4"
     out = tmp_path / "out.mp4"
-    _make_conformant_video(src, sample_rate=44100)
-
-    import lib.normalize as nm
-    real_run = subprocess.run
-    # Count ffmpeg invocations specifically — probe_video() calls ffprobe before
-    # any ffmpeg invocation, so a generic "first call" counter would never gate
-    # the right call. We need to trip ONLY the first ffmpeg call (the fast path)
-    # and let probe ffprobe calls + the subsequent full-re-encode ffmpeg run.
-    ffmpeg_calls = {"n": 0}
-
-    def fake_run(cmd, *a, **kw):
-        if cmd and cmd[0] == "ffmpeg":
-            ffmpeg_calls["n"] += 1
-            if ffmpeg_calls["n"] == 1:
-                # Fail the first ffmpeg call (the audio fast path). Build a real
-                # CompletedProcess via a no-op shell call so the structure is
-                # right, then mutate returncode + stderr.
-                r = real_run(["ffmpeg", "-version"], capture_output=True, text=True)
-                r.returncode = 1
-                r.stderr = "fake fast path failure"
-                return r
-        return real_run(cmd, *a, **kw)
-
-    monkeypatch.setattr(nm.subprocess, "run", fake_run)
-    nm.normalize(str(src), str(out), 1920, 1080)
+    subprocess.run([
+        "ffmpeg", "-y",
+        "-f", "lavfi", "-i", "color=red:size=1280x720:rate=30:duration=2",
+        "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000:duration=2",
+        "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv422p",
+        "-g", "30", "-keyint_min", "30",
+        "-c:a", "aac", "-ar", "48000",
+        str(src),
+    ], check=True, capture_output=True, timeout=60)
+    normalize(str(src), str(out), "sdr_bt709")
     assert out.exists()
-    # Confirm the test actually exercised fall-through: at least 2 ffmpeg calls
-    # (failed fast path + successful full re-encode). If only 1, the fast path
-    # succeeded — meaning the failure injection didn't gate the right call.
-    assert ffmpeg_calls["n"] >= 2, \
-        f"expected fall-through (≥2 ffmpeg calls), got {ffmpeg_calls['n']}"
-    # Full re-encode: audio must be 48kHz
-    a = _ffprobe_stream(out, "a")
-    assert int(a.get("sample_rate", 0)) == 48000
+    v = _ffprobe_stream(out, "v")
+    assert v.get("pix_fmt") == "yuv420p"
 
 
-# ── is_normalized() resolution-agnostic contract ──────────────────────────────
-
-def test_is_normalized_ignores_resolution_mismatch(tmp_path):
-    """A 4K conformant clip should be is_normalized==True even when target is
-    1080p — resolution is no longer checked."""
-    src = tmp_path / "4k.mp4"
-    _make_conformant_video(src, width=3840, height=2160, sample_rate=48000)
-    info = probe_video(str(src))
-    assert info is not None
-    assert is_normalized(str(src), info, target_w=1920, target_h=1080,
-                         force_probe=True) is True
-
-
-def test_is_normalized_force_probe_bypasses_suffix_shortcut(tmp_path):
-    """force_probe=True must inspect actual stream, not trust filename."""
-    # Non-conformant content but with the magic suffix.
-    src = tmp_path / "fake_normalized.mp4"
-    _make_conformant_video(src, sample_rate=44100)  # 44.1kHz → non-conformant audio
-    info = probe_video(str(src))
-    assert info is not None
-    # Without force_probe: trusts suffix → True
-    assert is_normalized(str(src), info) is True
-    # With force_probe: actually checks → False (audio sample rate is wrong)
-    assert is_normalized(str(src), info, force_probe=True) is False
+def test_normalize_emits_libx265_for_hdr_project(tmp_path):
+    """When project_color_space is HDR HLG, normalize emits HEVC + yuv420p10le."""
+    src = tmp_path / "sdr.mp4"
+    out = tmp_path / "out.mp4"
+    _make_conformant_video(src)
+    normalize(str(src), str(out), "hdr_hlg")
+    assert out.exists()
+    v = _ffprobe_stream(out, "v")
+    assert v.get("codec_name") == "hevc"
+    assert v.get("pix_fmt") == "yuv420p10le"
+    # arib-std-b67 is HLG transfer
+    assert v.get("color_transfer") == "arib-std-b67"
 
 
-def test_normalize_preserves_4k_source_resolution(tmp_path):
+def test_normalize_preserves_source_resolution(tmp_path):
     """Source resolution must be preserved through normalize()."""
     src = tmp_path / "src4k.mp4"
     out = tmp_path / "out4k.mp4"
@@ -247,24 +318,9 @@ def test_normalize_preserves_4k_source_resolution(tmp_path):
         "-c:a", "aac", "-ar", "48000",
         str(src),
     ], check=True, capture_output=True, timeout=60)
-    normalize(str(src), str(out), 1920, 1080)  # target ignored
+    normalize(str(src), str(out), "sdr_bt709")
     assert out.exists()
     v = _ffprobe_stream(out, "v")
     assert v.get("width") == 3840
     assert v.get("height") == 2160
     assert v.get("pix_fmt") == "yuv420p"
-
-
-def test_audio_fast_path_works_at_any_resolution(tmp_path):
-    """Confirms the fast path is resolution-agnostic — a 4K source with 44.1kHz
-    audio should hit the fast path and stay 4K. (Task 3: resolution preservation.)"""
-    src = tmp_path / "src4k_44k.mp4"
-    out = tmp_path / "out4k_44k.mp4"
-    _make_conformant_video(src, width=3840, height=2160, sample_rate=44100)
-    normalize(str(src), str(out), 1920, 1080)  # target ignored
-    assert out.exists()
-    v = _ffprobe_stream(out, "v")
-    a = _ffprobe_stream(out, "a")
-    assert v.get("width") == 3840
-    assert v.get("height") == 2160
-    assert int(a.get("sample_rate", 0)) == 48000

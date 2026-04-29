@@ -1,4 +1,5 @@
 """Tests for steps/remove_bg.py"""
+import importlib.util
 import json
 import subprocess
 import sys
@@ -8,6 +9,67 @@ import pytest
 
 REPO_ROOT = Path(__file__).parent.parent
 STEP = REPO_ROOT / "steps" / "transform" / "remove_bg.py"
+
+
+def _import_step_module():
+    """Import remove_bg.py as a module so we can unit-test pure helpers
+    without invoking the CLI / torch / RVM model loading."""
+    spec = importlib.util.spec_from_file_location("_remove_bg_under_test", STEP)
+    mod = importlib.util.module_from_spec(spec)
+    # The script does sys.path.insert at import time to find lib/common — we
+    # need lib/ on sys.path before exec_module().
+    sys.path.insert(0, str(REPO_ROOT / "lib"))
+    spec.loader.exec_module(mod)
+    return mod
+
+
+# ---------------------------------------------------------------------------
+# Pure helper tests — rotation → ffmpeg filter mapping
+# ---------------------------------------------------------------------------
+
+def test_rotation_to_transpose_filter_zero_returns_none():
+    """No rotation → None signals the caller to use -c:v copy fast path."""
+    mod = _import_step_module()
+    assert mod._rotation_to_transpose_filter(0) is None
+
+
+def test_rotation_to_transpose_filter_minus_90_is_transpose_1():
+    """iPhone vertical default. -90° displaymatrix → transpose=1 (90° CW)."""
+    mod = _import_step_module()
+    assert mod._rotation_to_transpose_filter(-90) == "transpose=1"
+
+
+def test_rotation_to_transpose_filter_plus_90_is_transpose_2():
+    """+90° displaymatrix → transpose=2 (90° CCW)."""
+    mod = _import_step_module()
+    assert mod._rotation_to_transpose_filter(90) == "transpose=2"
+
+
+def test_rotation_to_transpose_filter_180_chains_two_transposes():
+    """180° → two CW quarter-turns (lossless; no interpolation)."""
+    mod = _import_step_module()
+    assert mod._rotation_to_transpose_filter(180) == "transpose=1,transpose=1"
+    assert mod._rotation_to_transpose_filter(-180) == "transpose=1,transpose=1"
+
+
+def test_rotation_to_transpose_filter_270_normalizes_to_minus_90():
+    """+270° = -90° after normalization → transpose=1 (90° CW)."""
+    mod = _import_step_module()
+    assert mod._rotation_to_transpose_filter(270) == "transpose=1"
+
+
+def test_rotation_to_transpose_filter_minus_270_normalizes_to_plus_90():
+    """-270° = +90° after normalization → transpose=2 (90° CCW)."""
+    mod = _import_step_module()
+    assert mod._rotation_to_transpose_filter(-270) == "transpose=2"
+
+
+def test_rotation_to_transpose_filter_unsupported_angle_returns_none():
+    """Fractional / unsupported angles fall back to None (skipped silently —
+    very rare in practice; iPhone/Android always emit multiples of 90)."""
+    mod = _import_step_module()
+    assert mod._rotation_to_transpose_filter(45) is None
+    assert mod._rotation_to_transpose_filter(33) is None
 
 
 # ---------------------------------------------------------------------------

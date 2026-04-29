@@ -3,7 +3,14 @@ import { api, fileUrl } from '@/lib/api'
 
 interface RenderModalProps {
   projectId: string
+  /** Fired when the modal closes from a finished or errored state (post-render).
+   *  Callers can use this to navigate away or refresh project state. */
   onClose: () => void
+  /** Fired when the user cancels an in-progress render via the Cancel button.
+   *  Distinct from onClose so callers can dismiss the modal without navigating
+   *  away from the editor — the project is unchanged and the user is likely
+   *  about to keep editing. Defaults to onClose if not provided (back-compat). */
+  onCancel?: () => void
 }
 
 function basename(p: string) { return p.split('/').pop() ?? p }
@@ -28,7 +35,7 @@ function LogLine({ text }: { text: string }) {
   )
 }
 
-export default function RenderModal({ projectId, onClose }: RenderModalProps) {
+export default function RenderModal({ projectId, onClose, onCancel }: RenderModalProps) {
   const [logs, setLogs]         = useState<string[]>([])
   const [status, setStatus]     = useState<'running' | 'done' | 'error'>('running')
   const [outputPath, setOutput] = useState<string | null>(null)
@@ -70,7 +77,11 @@ export default function RenderModal({ projectId, onClose }: RenderModalProps) {
 
   function handleCancel() {
     cancelRef.current?.()
-    onClose()
+    // Use onCancel when provided so the host can dismiss without navigating
+    // (cancelling an in-progress render shouldn't yank the user away from
+    // their editor). Falls back to onClose for back-compat with callers that
+    // haven't been updated.
+    ;(onCancel ?? onClose)()
   }
 
   if (status === 'done' && outputPath) {

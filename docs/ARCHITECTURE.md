@@ -582,15 +582,19 @@ For each item in captions + overlays tracks:
 
 Then:
   Normalize pre-pass:
-    - All video sources → H.264, yuv420p, bt709, project resolution/fps, 48kHz audio
-    - Creates _normalized.mp4 alongside originals (originals preserved)
+    - All video sources → project's working color space (settings.colorSpace):
+        sdr_bt709 → H.264 yuv420p bt709
+        hdr_hlg   → HEVC 10-bit yuv420p10le bt2020/HLG
+        hdr_pq    → HEVC 10-bit yuv420p10le bt2020/PQ + HDR10 metadata
+    - Sources already conformant pass through with no transcode
+    - Creates _normalized_<colorSpace>.mp4 alongside originals (originals preserved)
 
   Segment-based composition:
     - Plan segments at clip/overlay boundaries (segment-plan.js)
     - Encode each segment independently: N layers by trackIdx + overlays + captions (encode-segment.js)
     - Concat via ffmpeg concat demuxer (-c:v copy, -c:a aac re-encode)
     - Mix independent audio tracks in final pass (mix-audio.js)
-    → final MP4 (H.264, CRF 18)
+    → final MP4 (codec/colorimetry follow settings.colorSpace)
 ```
 
 **Overlays are always custom JSX** — the agent writes a React component per overlay, styled to the editing prompt and brand context. There are no built-in overlay templates.
@@ -636,7 +640,7 @@ The pipeline is mostly CPU-bound. GPU applies at one step:
 | Puppeteer frame rendering | CPU | — parallelism is the lever |
 | ffmpeg compositing (filter graph) | CPU | — limited GPU filter support |
 | ffmpeg intermediate encode (PNG → WebM/ProRes) | CPU | — alpha formats lack hwaccel support |
-| **Final H.264 encode** | **GPU** | VideoToolbox (macOS), NVENC (NVIDIA), VAAPI (Intel/Linux) |
+| **Final encode** | **GPU** | VideoToolbox (macOS), NVENC (NVIDIA), VAAPI (Intel/Linux). Codec follows the project's color space — H.264 for SDR projects, HEVC 10-bit for HDR projects. |
 
 **Background-removed video items (`nobg_src`):**
 
@@ -742,13 +746,23 @@ The agent is the editor. It decides the execution order, param values, and wheth
 
 ### Normalize
 
-After clip copy/ingest and before compose, all video sources are **normalized** to a uniform working format (H.264, yuv420p, bt709, project resolution/fps, 48 kHz audio). This runs at three enforcement points:
+After clip copy/ingest and before compose, all video sources are **normalized** to the project's working **color space** (`settings.colorSpace`). The color space is detected from clip metadata at init time (see `docs/RENDER.md` → *Project Color Space*) and may be overridden via `--color-space` (CLI) or `colorSpace` (HTTP intake).
+
+Per color space:
+
+- `sdr_bt709` → `libx264 -pix_fmt yuv420p` with `bt709` color metadata.
+- `hdr_hlg` → `libx265 -pix_fmt yuv420p10le` with `bt2020nc`/`arib-std-b67`.
+- `hdr_pq` → `libx265 -pix_fmt yuv420p10le` with `bt2020nc`/`smpte2084` + static HDR10 mastering metadata.
+
+Sources whose color transfer and bit depth already match the project's working format pass through with no transcode (iPhone HDR HLG in an HLG project, for instance). Sources that conflict are converted at intake (per the color-space spec) or, lazily, in the segment encoder's per-item filter graph.
+
+This runs at three enforcement points:
 
 1. **Ingest** (`project/init.py`) — when clips are added to a project
 2. **AI video** (`steps/ai_video.py`) — when generated clips are downloaded
 3. **Render** (`render/render.js`) — pre-pass before compose (safety net)
 
-The shared implementation lives in `lib/normalize.py` — a single module used by all three call sites. It creates `_normalized.mp4` alongside the original file; originals are never modified.
+The shared implementation lives in `lib/normalize.py` — a single module used by all three call sites. The taxonomy itself lives in `docs/schemas/color_space.json` and is loaded by both Python (`lib/types/colorspace.py`) and JS (`montaj_assets/render/color-space.js`). Normalize creates `_normalized_<colorSpace>.mp4` alongside the original file (e.g. `clip_normalized_hdr_hlg.mp4`); originals are never modified.
 
 ### Render pass
 
@@ -794,7 +808,7 @@ See `CONTRIBUTING.md` → "Adding a shared enum" for the developer workflow (edi
 
 | Module | Purpose |
 |--------|---------|
-| `lib/normalize.py` | Video normalization (H.264, yuv420p, bt709, project resolution/fps, 48 kHz audio). Used by `project/init.py`, `steps/ai_video.py`, and `render/render.js`. |
+| `lib/normalize.py` | Video normalization to the project's working color space (`sdr_bt709` / `hdr_hlg` / `hdr_pq`). Looks up the codec, pixel format, and color args from `docs/schemas/color_space.json` via `lib/types/colorspace.py`. Used by `project/init.py`, `steps/ai_video.py`, and `render/render.js`. |
 
 ### Dependency management
 
