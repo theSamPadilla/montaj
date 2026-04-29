@@ -7,7 +7,7 @@ Exit codes:
 """
 import os, re, subprocess, sys, shutil
 from cli.main import add_global_flags
-from cli.deps import check_ui, whisper_bin_path
+from cli.deps import check_ui, whisper_bin_path, is_dev_checkout, BUILD_CACHE_DIR
 from cli.help import bold, green, red, yellow, cyan, dim
 
 
@@ -152,7 +152,29 @@ def handle(args):
     ui_mode, ui_error = check_ui()
     if ui_error is None:
         label = "ui (dev)" if ui_mode == "dev" else "ui"
-        print(f"  {green('✓')} {bold(label)}: {dim('ready')}")
+        # Prod-only: the cached UI bundle is built once at install time and
+        # bakes the package version into __APP_VERSION__. After `brew upgrade`
+        # bumps the Python package, the cache is left over from the previous
+        # version until `montaj install ui` rewrites it — so the footer shows
+        # a stale version. Compare the cache stamp to the installed package
+        # version and warn on mismatch. Dev checkouts skip this entirely;
+        # they build in-place against source.
+        stale_msg = None
+        if not is_dev_checkout():
+            try:
+                from importlib.metadata import version as _pkg_version
+                installed = _pkg_version("montaj")
+                stamp_path = os.path.join(BUILD_CACHE_DIR, ".version")
+                cached = open(stamp_path).read().strip() if os.path.isfile(stamp_path) else None
+                if cached and cached != installed:
+                    stale_msg = f"cache built for v{cached}, package is v{installed}"
+            except Exception:
+                pass
+        if stale_msg:
+            print(f"  {yellow('○')} {bold(label)}: {dim('ready, but ' + stale_msg)}")
+            print(f"    Fix: {cyan('montaj install ui')} {dim('(rebuilds cache against installed source)')}")
+        else:
+            print(f"  {green('✓')} {bold(label)}: {dim('ready')}")
     else:
         print(f"  {red('✗')} {bold('ui')}: {ui_error}")
         print(f"    Fix: {cyan('montaj install ui')}")
