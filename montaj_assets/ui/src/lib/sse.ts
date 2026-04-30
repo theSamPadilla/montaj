@@ -23,7 +23,6 @@ export function useProjectStream(
     es.onmessage = (e) => {
       try {
         const p = JSON.parse(e.data) as Project
-        console.log('[sse] project update received, visual item count:', (p.tracks ?? []).flat().length)
         onUpdate(p)
       } catch {
         console.warn('[sse] malformed project frame:', e.data)

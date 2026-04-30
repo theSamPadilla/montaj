@@ -42,8 +42,8 @@ export function useVideoPlayback(
   const rafLastMs     = useRef<number | null>(null)
   const audioRefsMap  = useRef<Map<string, HTMLAudioElement>>(new Map())
   const audioSrcMap   = useRef<Map<string, string>>(new Map())
-  // Web Audio API: GainNode per audio track allows volume > 1.0 (amplification)
-  const audioCtxRef   = useRef<AudioContext | null>(null)
+  // Web Audio API: GainNode per audio track allows volume > 1.0 (amplification).
+  // All gain nodes route through the shared window AudioContext (see getSharedAudioContext).
   const gainNodesMap  = useRef<Map<string, GainNode>>(new Map())
   // Video slot GainNodes — route video element audio through Web Audio API for amplification (volume > 1.0)
   const videoGainRef  = useRef<[GainNode | null, GainNode | null]>([null, null])
@@ -87,16 +87,19 @@ export function useVideoPlayback(
   // can only be called once). After this, video.volume/muted have no audible effect; all volume
   // control goes through the GainNode, which supports values > 1.0 for amplification.
   //
-  // CRITICAL: ALL slots share the SAME AudioContext. Fresh AudioContexts start
-  // suspended and require a user gesture to resume. Creating a per-slot context
-  // lazily (on first applyClipVolume per slot) means slot 1's context is born
-  // mid-playback with no user-gesture activation — it stays suspended → silent.
-  // Symptom: alternating muted/audible playback as the dual-slot loader rotates.
-  // Stash the shared context on `window` so it survives strict-mode remounts
-  // and is reused across renders.
+  // CRITICAL: ALL slots AND ALL audio tracks share the SAME AudioContext. Fresh
+  // AudioContexts start suspended and require a user gesture to resume. Creating
+  // separate contexts (one per slot, or a separate one for audio tracks) means
+  // those born inside a useEffect have no user-gesture activation — they stay
+  // suspended → silent. Worse, video frame production is gated on the wired
+  // AudioContext clock running, so a suspended context with a wired <video>
+  // produces "video plays but no frames render" after a hard refresh.
+  // Stash the single shared context on `window` so it survives strict-mode remounts
+  // and is reused across audio tracks, video slots, and re-mounts.
   function getSharedAudioContext(): AudioContext {
     const w = window as any
-    if (!w.__montajSharedCtx) {
+    // If the cached context is closed (shouldn't happen, but defensive), recreate.
+    if (!w.__montajSharedCtx || w.__montajSharedCtx.state === 'closed') {
       w.__montajSharedCtx = new AudioContext()
     }
     return w.__montajSharedCtx
@@ -216,17 +219,6 @@ export function useVideoPlayback(
     [unmutedAudioTracks]
   )
 
-  // Lazily create AudioContext (must happen after user gesture for autoplay policy)
-  function ensureAudioContext(): AudioContext {
-    if (!audioCtxRef.current) {
-      audioCtxRef.current = new AudioContext()
-    }
-    if (audioCtxRef.current.state === 'suspended') {
-      audioCtxRef.current.resume().catch(() => {})
-    }
-    return audioCtxRef.current
-  }
-
   // Create / destroy audio elements when track set changes
   useEffect(() => {
     const map = audioRefsMap.current
@@ -256,7 +248,7 @@ export function useVideoPlayback(
         // Wire through Web Audio API: element → GainNode → destination
         // This allows volume > 1.0 for amplification in preview.
         // createMediaElementSource can only be called once per element.
-        const ctx = ensureAudioContext()
+        const ctx = getSharedAudioContext()
         const source = ctx.createMediaElementSource(el)
         const gain = ctx.createGain()
         gain.gain.value = track.volume ?? 1
@@ -284,21 +276,21 @@ export function useVideoPlayback(
     }
   }, [unmutedAudioTracks])
 
-  // Cleanup on unmount only
+  // Cleanup on unmount only. The shared AudioContext (window.__montajSharedCtx)
+  // is intentionally NOT closed — it's window-scoped and reused across remounts
+  // and across project pages. Audio elements are paused and dropped; their
+  // MediaElementSources and GainNodes are GC'd along with them.
   useEffect(() => {
     const map = audioRefsMap.current
     const srcMap = audioSrcMap.current
     const gains = gainNodesMap.current
     const vidGains = videoGainRef.current
-    const ctx = audioCtxRef.current
     return () => {
       for (const el of map.values()) { el.pause(); el.src = '' }
       map.clear()
       srcMap.clear()
       gains.clear()
       vidGains[0] = null; vidGains[1] = null
-      if (ctx) ctx.close().catch(() => {})
-      audioCtxRef.current = null
     }
   }, [])
 

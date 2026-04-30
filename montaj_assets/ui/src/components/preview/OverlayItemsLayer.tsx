@@ -55,16 +55,9 @@ function OverlayVideo({ src, currentTime, itemStart, inPoint, isPlaying, muted, 
   useEffect(() => {
     const v = ref.current
     if (!v) return
-    const label = src.split('/').pop()
-    console.log('[OverlayVideo] isPlaying=', isPlaying, 'visible=', visible, 'paused=', v.paused,
-      'readyState=', v.readyState, 'currentTime=', v.currentTime.toFixed(3), 'duration=', v.duration?.toFixed(3),
-      'videoW=', v.videoWidth, label)
     if (isPlaying && visible) {
-      v.play().then(() => {
-        console.log('[OverlayVideo] play() resolved', label, 'ct=', v.currentTime.toFixed(3), 'dur=', v.duration?.toFixed(3))
-      }).catch(e => console.warn('[OverlayVideo] play() rejected', label, e))
+      v.play().catch(() => {})
     } else {
-      console.log('[OverlayVideo] pausing', label)
       v.pause()
     }
   }, [isPlaying, visible])
@@ -79,24 +72,10 @@ function OverlayVideo({ src, currentTime, itemStart, inPoint, isPlaying, muted, 
         // After a mid-clip seek the browser may have paused to buffer — restart if we should be playing
         const v = ref.current
         if (!v) return
-        const label = src.split('/').pop()
-        console.log('[OverlayVideo] onSeeked paused=', v.paused, 'ct=', v.currentTime.toFixed(3), 'dur=', v.duration?.toFixed(3), 'readyState=', v.readyState, 'isPlaying=', isPlayingRef.current, 'visible=', visibleRef.current, label)
         if (isPlayingRef.current && visibleRef.current && v.paused) {
           v.play().catch(() => {})
         }
       }}
-      onTimeUpdate={() => {
-        const v = ref.current
-        if (!v) return
-        // Log first few timeupdate events to confirm playback is actually advancing
-        if (!v.dataset.tuCount) v.dataset.tuCount = '0'
-        const n = parseInt(v.dataset.tuCount)
-        if (n < 3) {
-          console.log('[OverlayVideo] timeupdate ct=', v.currentTime.toFixed(3), src.split('/').pop())
-          v.dataset.tuCount = String(n + 1)
-        }
-      }}
-      onEnded={() => console.log('[OverlayVideo] ended ct=', ref.current?.currentTime.toFixed(3), src.split('/').pop())}
       playsInline
       className="absolute inset-0 w-full h-full object-contain pointer-events-none"
       style={{ opacity: visible ? 1 : 0 }}
