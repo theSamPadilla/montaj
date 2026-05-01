@@ -8,11 +8,10 @@
  *   - 0-N overlays: Puppeteer-rendered MKV/WebM with alpha, positioned via
  *     offsetX, offsetY, scale, pixelRatio (matching current compose.js:244-263).
  *     Captions are always last (topmost z-layer) — ensured by planSegments.
- *   - Audio: extracted from the FIRST unmuted video item with audio, otherwise silent.
- *     NOTE: Unlike the old compose.js which mixed ALL unmuted video audio via amix,
- *     this takes only the first. Acceptable simplification — picture-in-picture with
- *     independent audio from both tracks is an edge case that can be added later via
- *     amix if needed.
+ *   - Audio: extracted from ALL unmuted video items with audio and mixed via amix.
+ *     When only one item has audio, it's used directly (no amix overhead).
+ *     When multiple items have audio, they're combined with
+ *     amix=inputs=N:duration=longest:normalize=0 — matching the pattern in mix-audio.js.
  *
  * Output codec / pix_fmt / color metadata follow the project's color space:
  *   - sdr_bt709 → libx264 yuv420p bt709
@@ -129,7 +128,7 @@ export function encodeSegment(segment, outputPath, opts = {}) {
   const inputs = []
   const filterParts = []
   let videoLabel
-  let hasSourceAudio = false
+  const audioLabels = []
   let inputIdx = 0
 
   // --- Step 1: Black canvas base (always present — items layer on top) ---
@@ -220,12 +219,13 @@ export function encodeSegment(segment, outputPath, opts = {}) {
       filterParts.push(`${videoLabel}${src}overlay=x=${xPx}:y=${yPx}${ovFmt}:shortest=0[iv${idx}]`)
       videoLabel = `[iv${idx}]`
 
-      // Audio from first unmuted video item with audio.
+      // Audio from ALL unmuted video items — collected here, mixed in Step 5.
       // In dry-run mode, skip the ffprobe check (file may not exist) and assume audio present.
-      if (!hasSourceAudio && !item.muted && (opts._dryRun || fileHasAudio(item.src))) {
+      if (!item.muted && (opts._dryRun || fileHasAudio(item.src))) {
         const vol = item.volume ?? 1.0
-        filterParts.push(`[${idx}:a]asetpts=PTS-STARTPTS,volume=${vol},aresample=48000[vida]`)
-        hasSourceAudio = true
+        const aLabel = `a${idx}`
+        filterParts.push(`[${idx}:a]asetpts=PTS-STARTPTS,volume=${vol},aresample=48000[${aLabel}]`)
+        audioLabels.push(`[${aLabel}]`)
       }
     }
     inputIdx++
@@ -267,15 +267,23 @@ export function encodeSegment(segment, outputPath, opts = {}) {
   videoLabel = '[vout]'
 
   // --- Step 5: Audio — uniform 48kHz stereo for all segments ---
+  // Mix all collected audio sources. Single source = direct passthrough (no amix
+  // overhead). Multiple sources = amix with normalize=0 to preserve per-item volume.
   let audioLabel
-  if (hasSourceAudio) {
-    audioLabel = '[vida]'
-  } else {
-    // Silent 48kHz stereo — matches normalized clip audio
+  if (audioLabels.length === 0) {
+    // No video items with audio — generate silent 48kHz stereo
     inputs.push('-f', 'lavfi', '-i', `anullsrc=cl=stereo:r=48000`)
     filterParts.push(`[${inputIdx}:a]atrim=0:${duration},asetpts=PTS-STARTPTS[sil]`)
     audioLabel = '[sil]'
     inputIdx++
+  } else if (audioLabels.length === 1) {
+    // Single audio source — use directly
+    audioLabel = audioLabels[0]
+  } else {
+    // Multiple audio sources — mix them together
+    const mixInput = audioLabels.join('')
+    filterParts.push(`${mixInput}amix=inputs=${audioLabels.length}:duration=longest:normalize=0[amixed]`)
+    audioLabel = '[amixed]'
   }
 
   // --- Step 6: Encode ---

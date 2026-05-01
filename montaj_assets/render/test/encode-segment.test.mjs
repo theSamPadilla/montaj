@@ -77,6 +77,71 @@ test('dry-run: .mov input uses format=auto for alpha preservation', () => {
 })
 
 // ---------------------------------------------------------------------------
+// Multi-track audio mixing
+// ---------------------------------------------------------------------------
+
+test('dry-run: two unmuted video items produce amix filter', () => {
+  const seg = {
+    start: 0, end: 5, items: [
+      { type: 'video', src: '/bg.mp4', start: 0, end: 5, inPoint: 0,
+        trackIdx: 0, scale: 1, offsetX: 0, offsetY: 0, opacity: 1, muted: false },
+      { type: 'video', src: '/pip.mp4', start: 0, end: 5, inPoint: 0,
+        trackIdx: 1, scale: 0.3, offsetX: 30, offsetY: 30, opacity: 1, muted: false },
+    ], overlays: [], vw: 1920, vh: 1080, fps: 30,
+  }
+  const result = encodeSegment(seg, '/tmp/test.mp4', { _dryRun: true })
+  // Both items should contribute audio (two aresample filters)
+  const audioFilters = result.filterParts.filter(f => f.includes('aresample=48000'))
+  assert.equal(audioFilters.length, 2, 'both items should extract audio')
+  // Should use amix to combine them
+  assert.ok(
+    result.filterParts.some(f => f.includes('amix=inputs=2')),
+    'two audio sources should be mixed via amix'
+  )
+  // No anullsrc — real audio is present
+  assert.ok(!result.inputs.some(f => f.includes('anullsrc')), 'should not generate silent audio')
+})
+
+test('dry-run: muted item excluded from audio mix', () => {
+  const seg = {
+    start: 0, end: 5, items: [
+      { type: 'video', src: '/bg.mp4', start: 0, end: 5, inPoint: 0,
+        trackIdx: 0, scale: 1, offsetX: 0, offsetY: 0, opacity: 1, muted: true },
+      { type: 'video', src: '/pip.mp4', start: 0, end: 5, inPoint: 0,
+        trackIdx: 1, scale: 0.3, offsetX: 30, offsetY: 30, opacity: 1, muted: false },
+    ], overlays: [], vw: 1920, vh: 1080, fps: 30,
+  }
+  const result = encodeSegment(seg, '/tmp/test.mp4', { _dryRun: true })
+  // Only one audio extraction (the unmuted item)
+  const audioFilters = result.filterParts.filter(f => f.includes('aresample=48000'))
+  assert.equal(audioFilters.length, 1, 'only unmuted item should extract audio')
+  // No amix needed — single source
+  assert.ok(
+    !result.filterParts.some(f => f.includes('amix')),
+    'single audio source should not use amix'
+  )
+})
+
+test('dry-run: per-item volume preserved in multi-audio mix', () => {
+  const seg = {
+    start: 0, end: 3, items: [
+      { type: 'video', src: '/bg.mp4', start: 0, end: 3, inPoint: 0,
+        trackIdx: 0, scale: 1, offsetX: 0, offsetY: 0, opacity: 1, muted: false, volume: 0.5 },
+      { type: 'video', src: '/fg.mp4', start: 0, end: 3, inPoint: 0,
+        trackIdx: 1, scale: 0.4, offsetX: 0, offsetY: 0, opacity: 1, muted: false, volume: 1.0 },
+    ], overlays: [], vw: 1920, vh: 1080, fps: 30,
+  }
+  const result = encodeSegment(seg, '/tmp/test.mp4', { _dryRun: true })
+  assert.ok(result.filterParts.some(f => f.includes('volume=0.5')), 'first item volume=0.5')
+  assert.ok(result.filterParts.some(f => f.includes('volume=1')), 'second item volume=1.0')
+  // normalize=0 preserves individual volumes instead of auto-normalizing
+  assert.ok(
+    result.filterParts.some(f => f.includes('normalize=0')),
+    'amix should use normalize=0 to preserve per-item volumes'
+  )
+})
+
+// ---------------------------------------------------------------------------
 // Color-space-aware encoding (Task 5 of color-space-aware-pipeline plan)
 // ---------------------------------------------------------------------------
 
