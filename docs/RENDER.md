@@ -99,7 +99,7 @@ Three color spaces are supported:
 | `hdr_hlg` | `libx265` | `yuv420p10le` | `arib-std-b67` | iPhone "HDR Video" default |
 | `hdr_pq` | `libx265` | `yuv420p10le` | `smpte2084` | iPhone "Dolby Vision", HDR10 |
 
-The taxonomy lives in `docs/schemas/color_space.json` and is loaded by both
+The taxonomy lives in `montaj_assets/schemas/color_space.json` and is loaded by both
 the Python pipeline (`lib/types/colorspace.py`) and the JS render engine
 (`montaj_assets/render/color-space.js`). One file, two loaders — no JS/Python
 drift.
@@ -281,7 +281,7 @@ format, so the concat demuxer can stream-copy video without re-encoding:
   mastering metadata for PQ).
 
 Per-frame `setparams` and per-stream color args come from the color-space
-spec in `docs/schemas/color_space.json`, ensuring downstream players read the
+spec in `montaj_assets/schemas/color_space.json`, ensuring downstream players read the
 same colorimetry the encoder produced.
 
 ---

@@ -1,6 +1,6 @@
 // render/color-space.js
 /**
- * Project working color space — JS loader for docs/schemas/color_space.json.
+ * Project working color space — JS loader for montaj_assets/schemas/color_space.json.
  *
  * The JSON is the canonical source of truth (loaded by both Python and JS). This
  * module exposes camelCase accessors and detection helpers.
@@ -21,9 +21,10 @@ import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
-// Resolve up to repo root, then into docs/schemas/. Sibling to this file is
-// montaj_assets/render/, so the path is ../../docs/schemas/color_space.json.
-const SCHEMA_PATH = join(__dirname, '..', '..', 'docs', 'schemas', 'color_space.json')
+// Schema lives at montaj_assets/schemas/, sibling to this file's parent
+// (montaj_assets/render/). Co-located so `montaj install` copies it into
+// ~/.cache/montaj/schemas/ alongside the render bundle.
+const SCHEMA_PATH = join(__dirname, '..', 'schemas', 'color_space.json')
 
 const _DATA = JSON.parse(readFileSync(SCHEMA_PATH, 'utf8'))
 

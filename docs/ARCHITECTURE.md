@@ -762,7 +762,7 @@ This runs at three enforcement points:
 2. **AI video** (`steps/ai_video.py`) — when generated clips are downloaded
 3. **Render** (`render/render.js`) — pre-pass before compose (safety net)
 
-The shared implementation lives in `lib/normalize.py` — a single module used by all three call sites. The taxonomy itself lives in `docs/schemas/color_space.json` and is loaded by both Python (`lib/types/colorspace.py`) and JS (`montaj_assets/render/color-space.js`). Normalize creates `_normalized_<colorSpace>.mp4` alongside the original file (e.g. `clip_normalized_hdr_hlg.mp4`); originals are never modified.
+The shared implementation lives in `lib/normalize.py` — a single module used by all three call sites. The taxonomy itself lives in `montaj_assets/schemas/color_space.json` and is loaded by both Python (`lib/types/colorspace.py`) and JS (`montaj_assets/render/color-space.js`). Normalize creates `_normalized_<colorSpace>.mp4` alongside the original file (e.g. `clip_normalized_hdr_hlg.mp4`); originals are never modified.
 
 ### Render pass
 
@@ -808,7 +808,7 @@ See `CONTRIBUTING.md` → "Adding a shared enum" for the developer workflow (edi
 
 | Module | Purpose |
 |--------|---------|
-| `lib/normalize.py` | Video normalization to the project's working color space (`sdr_bt709` / `hdr_hlg` / `hdr_pq`). Looks up the codec, pixel format, and color args from `docs/schemas/color_space.json` via `lib/types/colorspace.py`. Used by `project/init.py`, `steps/ai_video.py`, and `render/render.js`. |
+| `lib/normalize.py` | Video normalization to the project's working color space (`sdr_bt709` / `hdr_hlg` / `hdr_pq`). Looks up the codec, pixel format, and color args from `montaj_assets/schemas/color_space.json` via `lib/types/colorspace.py`. Used by `project/init.py`, `steps/ai_video.py`, and `render/render.js`. |
 
 ### Dependency management
 

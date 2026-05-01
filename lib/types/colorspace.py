@@ -1,4 +1,4 @@
-"""Project working color space — Python loader for docs/schemas/color_space.json.
+"""Project working color space — Python loader for montaj_assets/schemas/color_space.json.
 
 The JSON is the canonical source of truth (loaded by both Python and JS). This
 module exposes typed accessors and detection/smart-pick helpers.
@@ -21,7 +21,7 @@ class ColorSpaceSpec(TypedDict):
     setparams: str
 
 
-_SCHEMA_PATH = Path(__file__).resolve().parent.parent.parent / "docs" / "schemas" / "color_space.json"
+_SCHEMA_PATH = Path(__file__).resolve().parent.parent.parent / "montaj_assets" / "schemas" / "color_space.json"
 _DATA = json.loads(_SCHEMA_PATH.read_text())
 
 ALL_COLOR_SPACES: tuple[ColorSpaceKey, ...] = tuple(_DATA["all"])

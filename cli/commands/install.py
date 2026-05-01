@@ -215,7 +215,9 @@ def _ensure_ui() -> bool:
         os.makedirs(BUILD_CACHE_DIR, exist_ok=True)
 
         ignore = shutil.ignore_patterns("node_modules", "__pycache__", "*.pyc")
-        for _, sub in bundles:
+        # Bundles + the shared schemas/ dir (loaded by render/color-space.js
+        # via ../schemas/color_space.json — must be copied alongside).
+        for sub in [s for _, s in bundles] + ["schemas"]:
             shutil.copytree(
                 os.path.join(src_root, sub),
                 os.path.join(BUILD_CACHE_DIR, sub),

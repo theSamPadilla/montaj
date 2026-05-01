@@ -6,7 +6,7 @@
 
 ## File location
 
-`docs/schemas/color_space.json` (this directory's `*.json` is the data; this `*.md` documents it).
+`montaj_assets/schemas/color_space.json` (the JSON is the data; this `*.md` documents it). The schema lives alongside the render bundle so `montaj install` copies it into `~/.cache/montaj/schemas/` next to `~/.cache/montaj/render/`.
 
 ---
 
@@ -59,10 +59,10 @@
 ## Loaders
 
 ```
-                    ┌────────────────────────────────────┐
-                    │  docs/schemas/color_space.json      │
-                    │  (canonical data — never duplicated)│
-                    └────────┬──────────────────┬─────────┘
+                    ┌────────────────────────────────────────┐
+                    │  montaj_assets/schemas/color_space.json │
+                    │  (canonical data — never duplicated)    │
+                    └────────┬──────────────────┬─────────────┘
                              │                  │
                        loads at runtime    loads at runtime
                              │                  │

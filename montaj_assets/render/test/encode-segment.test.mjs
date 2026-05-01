@@ -164,7 +164,7 @@ test('hdr source in sdr project triggers tonemap in segment filter', () => {
 })
 
 // Parity check between Python and JS loaders. Both read the same JSON schema
-// (docs/schemas/color_space.json), but each applies its own normalization
+// (montaj_assets/schemas/color_space.json), but each applies its own normalization
 // (Python tuples vs JS frozen arrays; snake_case vs camelCase). This test
 // catches drift in either loader — e.g., one freezes nested arrays and the
 // other doesn't, or one drops a field during conversion.
