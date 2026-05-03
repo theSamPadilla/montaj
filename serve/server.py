@@ -38,6 +38,14 @@ _HOP_BY_HOP = frozenset({
 })
 STEP_TIMEOUT_S = int(os.environ.get("MONTAJ_STEP_TIMEOUT", "900"))
 
+# When set, disables embedded UI behaviors. Consumed in two places below:
+#   - lifespan() — gates Vite-dev spawn and webbrowser.open
+#   - module-level SPA catch-all — route is not registered when HEADLESS
+# To find the gates, grep for `if not HEADLESS` (3 hits: 2 inside lifespan,
+# 1 at module scope wrapping the ~40-line `serve_spa` decorator block).
+# See docs/plans/2026-05-02-headless-serve.md.
+HEADLESS = os.environ.get("MONTAJ_HEADLESS") == "1"
+
 _SAFE_NAME = re.compile(r'^[A-Za-z0-9_-]+$')
 
 
@@ -268,7 +276,7 @@ async def lifespan(app: FastAPI):
     # helper as deps.check_ui() so the two stay consistent.
     from cli.deps import is_dev_checkout
     vite_proc = None
-    if is_dev_checkout():
+    if not HEADLESS and is_dev_checkout():
         print(f"[montaj] Starting Vite dev server on :{VITE_PORT}…")
         vite_proc = subprocess.Popen(
             ["npm", "run", "dev", "--prefix", ui_runtime_dir()],
@@ -295,12 +303,14 @@ async def lifespan(app: FastAPI):
     app.state.http_client     = http_client
 
     # Give Vite a moment to start before opening the browser
-    open_delay = 2.5 if vite_proc else 0.5
-    loop.call_later(open_delay, lambda: webbrowser.open(f"http://localhost:{PORT}"))
+    if not HEADLESS:
+        open_delay = 2.5 if vite_proc else 0.5
+        loop.call_later(open_delay, lambda: webbrowser.open(f"http://localhost:{PORT}"))
     yield
     watcher.stop()
     overlay_watcher.stop()
     await http_client.aclose()
+    # Naturally a no-op in headless mode (vite_proc stays None).
     if vite_proc:
         vite_proc.terminate()
         vite_proc.wait()
@@ -1492,42 +1502,44 @@ async def get_profile(name: str):
 app.include_router(router)
 
 
-# SPA catch-all — registered after the API router so /api/* routes are never shadowed.
-# Dev mode:  proxies to the Vite dev server (HMR, instant rebuilds).
-# Prod mode: serves from ui/dist/ (static build).
-@app.get("/{full_path:path}", include_in_schema=False)
-async def serve_spa(full_path: str, request: Request):
-    # Dev mode — proxy to Vite (only while the process is still alive)
-    vite_proc = request.app.state.vite_proc
-    if vite_proc is not None and vite_proc.poll() is None:
-        qs  = f"?{request.url.query}" if request.url.query else ""
-        url = f"{VITE_URL}/{full_path}{qs}"
-        fwd_headers = {k: v for k, v in request.headers.items()
-                       if k.lower() not in _HOP_BY_HOP | {"host"}}
-        try:
-            client: httpx.AsyncClient = request.app.state.http_client
-            vr = await client.get(url, headers=fwd_headers, follow_redirects=True)
-            resp_headers = {k: v for k, v in vr.headers.items()
-                            if k.lower() not in _HOP_BY_HOP}
-            return Response(content=vr.content, status_code=vr.status_code, headers=resp_headers)
-        except (httpx.ConnectError, httpx.TimeoutException):
-            # Vite still starting up — show a self-refreshing splash
-            return HTMLResponse(
-                '<html><head><meta http-equiv="refresh" content="1">'
-                '<style>body{background:#030712;color:#6b7280;font-family:monospace;'
-                'display:flex;align-items:center;justify-content:center;height:100vh;margin:0}'
-                '</style></head><body>Starting dev server…</body></html>'
-            )
-        # If vite_proc has exited (poll() is not None), fall through to dist/
+if not HEADLESS:
+    # SPA catch-all — registered after the API router so /api/* routes are never shadowed.
+    # Dev mode:  proxies to the Vite dev server (HMR, instant rebuilds).
+    # Prod mode: serves from ui/dist/ (static build).
+    # Headless mode: not registered — non-/api paths get FastAPI's default 404.
+    @app.get("/{full_path:path}", include_in_schema=False)
+    async def serve_spa(full_path: str, request: Request):
+        # Dev mode — proxy to Vite (only while the process is still alive)
+        vite_proc = request.app.state.vite_proc
+        if vite_proc is not None and vite_proc.poll() is None:
+            qs  = f"?{request.url.query}" if request.url.query else ""
+            url = f"{VITE_URL}/{full_path}{qs}"
+            fwd_headers = {k: v for k, v in request.headers.items()
+                           if k.lower() not in _HOP_BY_HOP | {"host"}}
+            try:
+                client: httpx.AsyncClient = request.app.state.http_client
+                vr = await client.get(url, headers=fwd_headers, follow_redirects=True)
+                resp_headers = {k: v for k, v in vr.headers.items()
+                                if k.lower() not in _HOP_BY_HOP}
+                return Response(content=vr.content, status_code=vr.status_code, headers=resp_headers)
+            except (httpx.ConnectError, httpx.TimeoutException):
+                # Vite still starting up — show a self-refreshing splash
+                return HTMLResponse(
+                    '<html><head><meta http-equiv="refresh" content="1">'
+                    '<style>body{background:#030712;color:#6b7280;font-family:monospace;'
+                    'display:flex;align-items:center;justify-content:center;height:100vh;margin:0}'
+                    '</style></head><body>Starting dev server…</body></html>'
+                )
+            # If vite_proc has exited (poll() is not None), fall through to dist/
 
-    # Prod mode — serve from dist/
-    ui_dist = Path(ui_runtime_dir()) / "dist"
-    if not ui_dist.exists():
-        return HTMLResponse(
-            "<h1>UI not built.</h1><p>Run: <code>montaj install ui</code></p>",
-            status_code=503,
-        )
-    target = (ui_dist / full_path).resolve()
-    if target.is_file() and ui_dist.resolve() in target.parents:
-        return FileResponse(str(target))
-    return FileResponse(str(ui_dist / "index.html"))
+        # Prod mode — serve from dist/
+        ui_dist = Path(ui_runtime_dir()) / "dist"
+        if not ui_dist.exists():
+            return HTMLResponse(
+                "<h1>UI not built.</h1><p>Run: <code>montaj install ui</code></p>",
+                status_code=503,
+            )
+        target = (ui_dist / full_path).resolve()
+        if target.is_file() and ui_dist.resolve() in target.parents:
+            return FileResponse(str(target))
+        return FileResponse(str(ui_dist / "index.html"))

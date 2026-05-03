@@ -25,6 +25,13 @@ def register(subparsers):
              "for observability. Default: subprocess stderr is buffered and only surfaced "
              "on error. Equivalent to setting MONTAJ_DEBUG=1.",
     )
+    p.add_argument(
+        "--headless",
+        action="store_true",
+        help="Disable embedded UI (no Vite spawn, no browser auto-open, no SPA "
+             "catch-all route). Skips the 'UI is built' check. For sidecar "
+             "deployments where the host product provides its own frontend.",
+    )
     add_global_flags(p)
     p.set_defaults(func=handle)
 
@@ -40,11 +47,14 @@ def handle(args):
         print(f"\nRun: {bold('montaj install')}", file=sys.stderr)
         sys.exit(1)
 
-    _, ui_error = check_ui()
-    if ui_error:
-        print(red(f"error: {ui_error}"), file=sys.stderr)
-        print(f"\nRun: {bold('montaj install ui')}", file=sys.stderr)
-        sys.exit(1)
+    headless = args.headless or os.environ.get("MONTAJ_HEADLESS") == "1"
+
+    if not headless:
+        _, ui_error = check_ui()
+        if ui_error:
+            print(red(f"error: {ui_error}"), file=sys.stderr)
+            print(f"\nRun: {bold('montaj install ui')}", file=sys.stderr)
+            sys.exit(1)
 
     host = "0.0.0.0" if args.network else "127.0.0.1"
 
@@ -59,6 +69,9 @@ def handle(args):
     if args.debug:
         os.environ["MONTAJ_DEBUG"] = "1"
         print(cyan("debug: streaming subprocess stderr (init progress, etc.) live"), file=sys.stderr)
+    if headless:
+        os.environ["MONTAJ_HEADLESS"] = "1"
+        print(cyan("headless: UI disabled (no Vite, no browser, no SPA route)"), file=sys.stderr)
     uvicorn.run(
         "serve.server:app",
         host=host,
