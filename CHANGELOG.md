@@ -12,6 +12,84 @@
 - Default `<date>-<slug>` directory naming is preserved when `--project-path` is absent. Fully backward compatible.
 - Collisions on an explicit `--project-path` are hard errors (not auto-suffixed): `POST /api/run` returns 400 with `{"error": "project_path_exists", ...}`. Validation rejections (leading `/`, `..` segments, special chars) return 400 with `{"error": "invalid_project_path", ...}`.
 
+## v2.1.3
+
+### Render
+- Mix audio from all unmuted video items at compose, not just the first item — multi-track audio in source clips was silently being dropped
+- New test coverage in `montaj_assets/render/test/encode-segment.test.mjs`
+- Credit: Thanks @jazzerkay for PR #1
+
+## v2.1.2
+
+### Render colorspace fix
+- `color_space.json` schema relocated from `docs/schemas/` to `montaj_assets/schemas/` so it ships with the render runtime cache. Previously the schema was excluded from the installed wheel, so PyPI/Homebrew users hit a missing-file error on every render that touched colorspace lookups
+- Python (`lib/types/colorspace.py`) and JS (`montaj_assets/render/color-space.js`) loaders updated to the new path
+- `montaj install` now copies the schemas dir into `~/.cache/montaj/schemas/` alongside the render bundle
+
+## v2.1.1
+
+### UI / preview
+- Audio + video frame freeze after page refresh fixed: all audio tracks AND all video slots now route through a single shared `AudioContext` stashed on `window`. Per-track or per-slot contexts started suspended without a user gesture and silently halted downstream video frame production — symptom was "video plays but no frames render" after a hard refresh
+- Removed leftover `console.log` debug spam from `OverlayVideo`
+
+### Doctor / install
+- `montaj doctor` warns when the cached UI bundle was built for a different package version than what's installed — covers the post-`brew upgrade` window before `montaj install ui` rewrites the cache. Points at the fix command
+- Project list footer now displays the running version (`v{__APP_VERSION__}`)
+
+## v2.0.6
+
+### Install
+- `montaj install ffmpeg` now sets `HOMEBREW_NO_INSTALL_FROM_API=1` when running `brew tap homebrew/core`. Without it, Homebrew 4.x silently skips the tap clone, leaves the formula file absent, and the ffmpeg+zscale custom build path fails with a misleading "formula not found" error
+- Clearer message about the ~1GB tap clone and several-minute duration
+
+### Misc
+- Workflow resolution fix (stale package version references in `montaj_assets/{render,ui,mcp}/package.json`)
+- `.gitignore` updates and docs polish
+
+## v2.0.5
+
+### Whisper install URL breakage
+- `ggerganov/whisper.cpp` moved to `ggml-org/whisper.cpp` and stopped publishing pre-built tarballs, so `WHISPER_BINARY_URLS` in `install.py` was pointing at a 301 → 404 redirect chain. `montaj install whisper` crashed with `HTTPError` on every fresh install
+- `cli/commands/install.py` — replaced the dead URL-download path with `brew install whisper-cpp` on macOS (bottled, fast) and clear build-from-source instructions on Linux. Dropped `WHISPER_VERSION` and `WHISPER_BINARY_URLS` — Homebrew owns the version pin now
+- `cli/deps.py` — new `whisper_bin_path()` helper checks `PATH` first (covers brew, apt, manual installs) then montaj's legacy local paths. `doctor` and `check_deps` share the helper so they can't disagree about whether whisper is installed
+- `cli/commands/update.py` — `montaj update whisper` delegates to `brew upgrade whisper-cpp` on macOS; `montaj update pip` uses `pip install --upgrade montaj` instead of `-e .` (which broke outside source trees)
+
+## v2.0.4
+
+### Asset namespace
+- Move `render/`, `ui/`, `mcp/` → `montaj_assets/{render,ui,mcp}/`. Eliminates the PyPI collision risk (those names would otherwise be top-level Python modules after the `include-package-data` fix)
+- Eight `MONTAJ_ROOT`-relative path references rewritten to prefix `montaj_assets/`
+- `montaj_assets/render/bundle.js` resolves `core/` and `node_modules/` via `__dirname` (siblings of bundle.js) instead of `process.env.MONTAROOT`
+- `montaj_assets/mcp/server.js` renames local `MONTAJ_ROOT` → `MCP_DIR`; reads the Python project root from `process.env.MONTAJ_ROOT` (set by `cli/commands/mcp.py`)
+
+### Build cache
+- `~/.cache/montaj/` now holds the built `node_modules` and `ui/dist`; site-packages stays immutable. Works under `sudo pip` / `pip --user` / `brew`
+- `cli/deps.py` — `BUILD_CACHE_DIR`, `is_dev_checkout()`, and `ui_runtime_dir` / `render_runtime_dir` / `mcp_runtime_dir` helpers; re-exports `MONTAJ_ROOT` from `cli.main` (single source of truth)
+- `cli/commands/install.py:_ensure_ui()` copies render/ui/mcp source from site-packages → cache, runs `npm install` there. Version-stamped at `~/.cache/montaj/.version`, invalidates on `pip install -U`. Dev mode (working tree) still builds in source for Vite HMR. `mcp/` is now also `npm install`-ed at install time
+- `serve/server.py` lifespan, caption-template route, `render_project`, and SPA catch-all all read via runtime helpers. SPA fallback message points at `montaj install ui`. Auto-build inside lifespan removed
+- `cli/commands/serve.py` runs a pre-flight `check_ui()` before `uvicorn.run`
+- `cli/commands/doctor.py` gains a UI readiness section
+
+### Release tooling
+- New `scripts/build.sh` — wraps `python -m build` (the safe no-flag form) and asserts the wheel has 0 `node_modules` / 0 `ui/dist` / 0 `__pycache__` entries before allowing `twine upload`. Colorized, TTY-aware
+
+### Docs
+- `docs/ARCHITECTURE.md` — new "Asset packaging & build cache" subsection
+- `docs/CLI.md` — unified install flow (drops the "brew handles this" carve-out)
+
+## v2.0.3
+
+- Dependency tree cleanup
+- Stop committing `dist/` artifacts; add `dist/` to `.gitignore`
+
+## v2.0.2
+
+- `montaj --version` flag (`cli/main.py`)
+
+## v2.0.1
+
+- Maintenance release — version bump and dist artifact rollover; no behavior changes
+
 ## v2.1.0
 
 ### Color-space-aware pipeline

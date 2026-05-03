@@ -10,6 +10,9 @@
 #   - montaj_assets/ui/package.json         (+ package-lock.json)
 #   - montaj_assets/mcp/package.json        (+ package-lock.json)
 #
+# Also promotes `## Unreleased` → `## v<NEW>` in CHANGELOG.md so that
+# scripts/release.sh can pull release notes from the named section.
+#
 # Usage:
 #   scripts/bump-version.sh                 # show current version
 #   scripts/bump-version.sh 2.1.0           # set everywhere to 2.1.0
@@ -105,10 +108,35 @@ for path in sys.argv[2:]:
         f.write("\n")
 PY
 
+# CHANGELOG.md — promote `## Unreleased` to `## v<NEW>` so release.sh can find
+# the section. If there is no `## Unreleased` line we leave the file alone and
+# warn (the user will have to add the section by hand before releasing).
+CHANGELOG_PROMOTED=0
+if [[ -f CHANGELOG.md ]]; then
+  CHANGELOG_PROMOTED=$(python3 - "$NEW_VERSION" CHANGELOG.md <<'PY'
+import re, sys
+new, path = sys.argv[1], sys.argv[2]
+text = open(path).read()
+new_text, n = re.subn(r'(?m)^## Unreleased\s*$', f'## v{new}', text, count=1)
+if n == 1:
+    open(path, "w").write(new_text)
+    print(1)
+else:
+    print(0)
+PY
+)
+fi
+
 echo "done. files updated:"
 echo "  $PYPROJECT"
 for f in "${PKG_JSONS[@]}" "${LOCK_JSONS[@]}"; do
   [[ -f "$f" ]] && echo "  $f"
 done
+if [[ "$CHANGELOG_PROMOTED" == "1" ]]; then
+  echo "  CHANGELOG.md  (## Unreleased → ## v$NEW_VERSION)"
+elif [[ -f CHANGELOG.md ]]; then
+  echo
+  echo "warning: no '## Unreleased' section in CHANGELOG.md — add a '## v$NEW_VERSION' section by hand before releasing." >&2
+fi
 echo
 echo "next: review the diff (\`git diff\`), then commit."
