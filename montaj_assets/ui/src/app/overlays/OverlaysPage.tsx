@@ -268,7 +268,7 @@ function overlayDisplayName(src: string | undefined, fallback: string): string {
 // ---------------------------------------------------------------------------
 
 function ProjectOverlayList({ project }: { project: Project }) {
-  const items = getVisualItems(project)
+  const items = getVisualItems(project).filter(it => it.type === 'overlay')
   const [selected, setSelected] = useState<VisualItem | null>(null)
 
   if (items.length === 0) {
@@ -365,7 +365,7 @@ export default function OverlaysPage() {
     setNewGroupName('')
   }
 
-  const overlayCount = (p: Project) => getVisualItems(p).length
+  const overlayCount = (p: Project) => getVisualItems(p).filter(it => it.type === 'overlay').length
 
   // Split global overlays into ungrouped + grouped sections
   // Items with empty:true are group sentinels (folder exists but has no overlays yet)

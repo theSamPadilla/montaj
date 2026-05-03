@@ -1,6 +1,12 @@
 #!/usr/bin/env python3
 """Shared helpers for video-toolkit scripts. All scripts import from here."""
-import json, os, shutil, subprocess, sys
+import json, os, re, shutil, subprocess, sys
+
+
+SAFE_NAME = re.compile(r"^[A-Za-z0-9_-]+$")
+"""Filesystem-safe single-segment name. No spaces, no special chars, no
+path separators. Used by serve/server.py reserve-path validation and
+project/init.py --project-path segment validation."""
 
 
 def fail(code: str, message: str):

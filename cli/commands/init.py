@@ -12,6 +12,18 @@ def register(subparsers):
     p.add_argument("--workflow", default="clean_cut", help="Workflow name (default: clean_cut)")
     p.add_argument("--name",     help="Project name label")
     p.add_argument(
+        "--project-path",
+        dest="project_path",
+        default=None,
+        help=(
+            "Relative path (under the workspace root) where this project's "
+            "directory should be created. Single segment for flat layouts "
+            "(e.g. 'my-project'), multi-segment slash-separated for nested "
+            "layouts (e.g. 'teamA/my-project'). When omitted, the directory "
+            "name is generated as '<date>-<slug>' from --name."
+        ),
+    )
+    p.add_argument(
         "--color-space",
         dest="color_space",
         choices=("auto",) + ALL_COLOR_SPACES,
@@ -31,6 +43,8 @@ def handle(args):
     ]
     if args.name:
         cmd += ["--name", args.name]
+    if args.project_path:
+        cmd += ["--project-path", args.project_path]
     # Default 'auto' is omitted to keep CLI invocations clean — init.py also
     # defaults to 'auto', so passing it explicitly is unnecessary noise.
     if args.color_space and args.color_space != "auto":

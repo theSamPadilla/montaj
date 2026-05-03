@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+### Serve hardening
+- Fixed: `GET /api/files` scopes path queries to an allowlist (workspace + `~/.montaj/overlays` + `~/.montaj/profiles`); previously served any readable filesystem path on the host. `~/.montaj/credentials.json` and other root-level files under `~/.montaj/` remain blocked.
+- Added: `montaj serve` honors `MONTAJ_WORKSPACE_DIR` env var (matches the CLI's existing precedence: env > `~/.montaj/config.json` > `~/Montaj`)
+
+### Workspace flexibility
+- Added: `--project-path` flag on `montaj init` (and CLI mirror) lets callers specify the project directory's relative path under the workspace, including multi-segment paths for subnested layouts (e.g. `--project-path=teamA/my-project`). `POST /api/run` accepts the same value as a `projectPath` body field.
+- Added: `montaj serve` discovers projects at any depth under the workspace via recursive globbing — listing, get, stream, delete, update, versions, restore, rerun, and render all work regardless of how deeply a project is nested.
+- Default `<date>-<slug>` directory naming is preserved when `--project-path` is absent. Fully backward compatible.
+- Collisions on an explicit `--project-path` are hard errors (not auto-suffixed): `POST /api/run` returns 400 with `{"error": "project_path_exists", ...}`. Validation rejections (leading `/`, `..` segments, special chars) return 400 with `{"error": "invalid_project_path", ...}`.
+
 ## v2.1.0
 
 ### Color-space-aware pipeline

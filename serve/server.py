@@ -21,6 +21,7 @@ from serve.sse import SSEBroadcaster
 from serve.watcher import GlobalOverlayWatcher, ProjectWatcher
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from lib.common import SAFE_NAME as _SAFE_NAME  # back-compat alias
 from lib.types.project import normalize_project_type
 from lib.types.kling import ASPECT_RATIOS, is_valid_aspect_ratio
 from lib.workflow import read_workflow
@@ -46,16 +47,27 @@ STEP_TIMEOUT_S = int(os.environ.get("MONTAJ_STEP_TIMEOUT", "900"))
 # See docs/plans/2026-05-02-headless-serve.md.
 HEADLESS = os.environ.get("MONTAJ_HEADLESS") == "1"
 
-_SAFE_NAME = re.compile(r'^[A-Za-z0-9_-]+$')
-
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
 def find_project_dir(workspace: Path, project_id: str) -> Path | None:
-    """Find the project directory for a given project id."""
-    for p in workspace.glob("*/project.json"):
+    """Find the project directory for a given project id.
+
+    Walks the workspace recursively (any depth under the workspace root) and
+    matches by the `id` field inside each `project.json`. Tenant-isolation
+    layers (Hub) rely on consumers validating ownership at their API boundary
+    before calling Montaj — Montaj itself is tenant-unaware and finds a project
+    wherever it lives in the workspace tree.
+
+    INVARIANT: exactly one `project.json` per project, at the project's root
+    directory. If a future feature ever writes a `project.json` inside a
+    subdirectory of a project (e.g., per-segment metadata), discovery would
+    silently misbehave because rglob would match both. Either preserve this
+    invariant or move to a depth-capped scan.
+    """
+    for p in workspace.rglob("project.json"):
         try:
             if json.loads(p.read_text()).get("id") == project_id:
                 return p.parent
@@ -81,6 +93,18 @@ def _git_commit_sync(project_dir: Path, message: str) -> None:
 
 
 def resolve_workspace() -> Path:
+    """Resolve the active workspace dir.
+
+    Precedence (matches project/init.py): MONTAJ_WORKSPACE_DIR env var first,
+    then ~/.montaj/config.json's workspaceDir, then ~/Montaj.
+
+    Reads env + Path.home() at call time, not import time. Do not cache at
+    module scope — test_server_workspace.py relies on per-call evaluation
+    so monkeypatch.setenv works without sys.modules surgery.
+    """
+    env_dir = os.environ.get("MONTAJ_WORKSPACE_DIR")
+    if env_dir:
+        return Path(env_dir)
     config_path = Path.home() / ".montaj" / "config.json"
     if config_path.exists():
         try:
@@ -91,6 +115,30 @@ def resolve_workspace() -> Path:
             pass
     return Path.home() / "Montaj"
 
+
+def _allowed_file_roots() -> list[Path]:
+    """Directory roots /api/files is allowed to serve from.
+
+    Ordered: project workspace first (most-common path), then global overlay
+    library, then profile assets. Each is .resolve()'d so symlinked roots
+    compare correctly against a resolved request path. Add new asset roots
+    here, not by introducing a parallel allowlist elsewhere.
+    """
+    return [
+        resolve_workspace().resolve(),
+        (Path.home() / ".montaj" / "overlays").resolve(),
+        (Path.home() / ".montaj" / "profiles").resolve(),
+    ]
+
+
+def _is_under(path: Path, root: Path) -> bool:
+    """True if `path` is `root` or anywhere beneath it. Both must already be
+    .resolve()'d by the caller — pure path comparison, no filesystem I/O."""
+    try:
+        path.relative_to(root)
+        return True
+    except ValueError:
+        return False
 
 
 def scan_overlays(overlays_dir: Path) -> list[dict]:
@@ -331,15 +379,22 @@ router = APIRouter(prefix="/api")
 
 @router.post("/run", status_code=201)
 async def run_project(body: dict = Body(...)):
-    clips    = body.get("clips", [])
-    assets   = body.get("assets", [])
-    prompt   = body.get("prompt")
-    workflow = body.get("workflow", "clean_cut")
-    name     = body.get("name")
-    profile  = body.get("profile")
+    clips        = body.get("clips", [])
+    assets       = body.get("assets", [])
+    prompt       = body.get("prompt")
+    workflow     = body.get("workflow", "clean_cut")
+    name         = body.get("name")
+    profile      = body.get("profile")
+    project_path_arg = body.get("projectPath")
 
     if not prompt:
         raise HTTPException(400, detail={"error": "missing_field", "message": "'prompt' is required"})
+
+    if project_path_arg is not None and not isinstance(project_path_arg, str):
+        raise HTTPException(400, detail={
+            "error": "invalid_field",
+            "message": f"'projectPath' must be a string (got {type(project_path_arg).__name__})",
+        })
 
     for clip in clips:
         if not Path(clip).is_file():
@@ -455,6 +510,8 @@ async def run_project(body: dict = Body(...)):
         cmd += ["--assets"] + [str(a) for a in assets]
     if profile:
         cmd += ["--profile", profile]
+    if project_path_arg:
+        cmd += ["--project-path", project_path_arg]
     cmd += image_ref_args + style_ref_args + intake_setting_args + audio_args
 
     if clips:
@@ -552,7 +609,12 @@ async def run_project(body: dict = Body(...)):
             err = json.loads(stderr)
         except Exception:
             err = {"error": "init_failed", "message": stderr.strip()}
-        raise HTTPException(500, detail=err)
+        # --project-path validation errors map to 400 per the workspace-paths
+        # plan's HTTP contract (see docs/plans/2026-05-02-workspace-paths.md).
+        # Hub's idempotent-retry logic pattern-matches on 400 + error code, so
+        # these must not be 500. All other init.py error codes keep 500.
+        status = 400 if err.get("error") in {"project_path_exists", "invalid_project_path"} else 500
+        raise HTTPException(status, detail=err)
 
     project_path = Path(stdout.strip())
     try:
@@ -565,7 +627,7 @@ async def run_project(body: dict = Body(...)):
 async def list_projects(status: str | None = None):
     workspace = resolve_workspace()
     projects = []
-    for p in sorted(workspace.glob("*/project.json"), key=lambda f: f.stat().st_mtime, reverse=True):
+    for p in sorted(workspace.rglob("project.json"), key=lambda f: f.stat().st_mtime, reverse=True):
         try:
             proj = json.loads(p.read_text())
         except Exception:
@@ -579,14 +641,10 @@ async def list_projects(status: str | None = None):
 @router.get("/projects/{project_id}")
 async def get_project(project_id: str):
     workspace = resolve_workspace()
-    for p in workspace.glob("*/project.json"):
-        try:
-            data = json.loads(p.read_text())
-            if data.get("id") == project_id:
-                return data
-        except Exception:
-            pass
-    raise HTTPException(404, detail={"error": "not_found", "message": f"Project '{project_id}' not found"})
+    project_dir = find_project_dir(workspace, project_id)
+    if project_dir is None:
+        raise HTTPException(404, detail={"error": "not_found", "message": f"Project '{project_id}' not found"})
+    return json.loads((project_dir / "project.json").read_text())
 
 
 @router.get("/projects/{project_id}/stream")
@@ -594,18 +652,10 @@ async def stream_project(project_id: str, request: Request):
     broadcaster: SSEBroadcaster = request.app.state.broadcaster
     workspace = resolve_workspace()
 
-    project_path: Path | None = None
-    for p in workspace.glob("*/project.json"):
-        try:
-            data = json.loads(p.read_text())
-            if data.get("id") == project_id:
-                project_path = p
-                break
-        except Exception:
-            pass
-
-    if project_path is None:
+    project_dir = find_project_dir(workspace, project_id)
+    if project_dir is None:
         raise HTTPException(404, detail={"error": "not_found", "message": f"Project '{project_id}' not found"})
+    project_path = project_dir / "project.json"
 
     queue = broadcaster.subscribe(project_id)
 
@@ -653,17 +703,13 @@ async def reload_project(project_id: str, request: Request):
     Returns {"subscribers": N} so callers can confirm the browser is connected."""
     broadcaster: SSEBroadcaster = request.app.state.broadcaster
     workspace = resolve_workspace()
-    for p in workspace.glob("*/project.json"):
-        try:
-            text = p.read_text()
-            data = json.loads(text)
-            if data.get("id") == project_id:
-                n = len(broadcaster._subscribers.get(project_id, []))
-                broadcaster.publish(project_id, f"data: {text}\n\n")
-                return {"subscribers": n}
-        except Exception:
-            pass
-    raise HTTPException(404, detail={"error": "not_found", "message": f"Project '{project_id}' not found"})
+    project_dir = find_project_dir(workspace, project_id)
+    if project_dir is None:
+        raise HTTPException(404, detail={"error": "not_found", "message": f"Project '{project_id}' not found"})
+    text = (project_dir / "project.json").read_text()
+    n = len(broadcaster._subscribers.get(project_id, []))
+    broadcaster.publish(project_id, f"data: {text}\n\n")
+    return {"subscribers": n}
 
 
 @router.post("/projects/{project_id}/reserve-path")
@@ -807,14 +853,7 @@ async def run_step(name: str, body: dict = Body(default={})):
 async def delete_project(project_id: str):
     import shutil
     workspace = resolve_workspace()
-    project_dir: Path | None = None
-    for p in workspace.glob("*/project.json"):
-        try:
-            if json.loads(p.read_text()).get("id") == project_id:
-                project_dir = p.parent
-                break
-        except Exception:
-            pass
+    project_dir = find_project_dir(workspace, project_id)
     if project_dir is None:
         raise HTTPException(404, detail={"error": "not_found", "message": f"Project '{project_id}' not found"})
     shutil.rmtree(project_dir)
@@ -825,21 +864,11 @@ async def save_project(project_id: str, body: dict = Body(...), request: Request
     if body.get("id") != project_id:
         raise HTTPException(400, detail={"error": "id_mismatch", "message": "Body id must match URL id"})
     workspace = resolve_workspace()
-    project_path: Path | None = None
-    project_dir:  Path | None = None
-    prev_status:  str  | None = None
-    for p in workspace.glob("*/project.json"):
-        try:
-            data = json.loads(p.read_text())
-            if data.get("id") == project_id:
-                project_path = p
-                project_dir  = p.parent
-                prev_status  = data.get("status")
-                break
-        except Exception:
-            pass
-    if project_path is None:
+    project_dir = find_project_dir(workspace, project_id)
+    if project_dir is None:
         raise HTTPException(404, detail={"error": "not_found", "message": f"Project '{project_id}' not found"})
+    project_path = project_dir / "project.json"
+    prev_status = json.loads(project_path.read_text()).get("status")
     text = json.dumps(body, indent=2)
     project_path.write_text(text)
     # Broadcast immediately — before the git commit so the UI update is instant.
@@ -859,14 +888,7 @@ async def save_project(project_id: str, body: dict = Body(...), request: Request
 @router.get("/projects/{project_id}/versions")
 async def list_versions(project_id: str):
     workspace = resolve_workspace()
-    project_dir: Path | None = None
-    for p in workspace.glob("*/project.json"):
-        try:
-            if json.loads(p.read_text()).get("id") == project_id:
-                project_dir = p.parent
-                break
-        except Exception:
-            pass
+    project_dir = find_project_dir(workspace, project_id)
     if project_dir is None:
         raise HTTPException(404, detail={"error": "not_found", "message": f"Project '{project_id}' not found"})
     def _git_log():
@@ -887,18 +909,10 @@ async def list_versions(project_id: str):
 @router.post("/projects/{project_id}/versions/{commit}/restore")
 async def restore_version(project_id: str, commit: str, request: Request):
     workspace = resolve_workspace()
-    project_path: Path | None = None
-    project_dir:  Path | None = None
-    for p in workspace.glob("*/project.json"):
-        try:
-            if json.loads(p.read_text()).get("id") == project_id:
-                project_path = p
-                project_dir  = p.parent
-                break
-        except Exception:
-            pass
-    if project_path is None:
+    project_dir = find_project_dir(workspace, project_id)
+    if project_dir is None:
         raise HTTPException(404, detail={"error": "not_found", "message": f"Project '{project_id}' not found"})
+    project_path = project_dir / "project.json"
     proc = await asyncio.create_subprocess_exec(
         "git", "show", f"{commit}:project.json",
         cwd=str(project_dir),
@@ -927,21 +941,11 @@ async def rerun_project(project_id: str, request: Request):
         pass
 
     workspace = resolve_workspace()
-    project_path: Path | None = None
-    project_dir: Path | None = None
-    project: dict | None = None
-    for p in workspace.glob("*/project.json"):
-        try:
-            data = json.loads(p.read_text())
-            if data.get("id") == project_id:
-                project_path = p
-                project_dir = p.parent
-                project = data
-                break
-        except Exception:
-            pass
-    if project_path is None or project is None:
+    project_dir = find_project_dir(workspace, project_id)
+    if project_dir is None:
         raise HTTPException(404, detail={"error": "not_found", "message": f"Project '{project_id}' not found"})
+    project_path = project_dir / "project.json"
+    project = json.loads(project_path.read_text())
 
     sources = project.get("sources")
     if not sources:
@@ -1154,17 +1158,10 @@ async def render_project(project_id: str, request: Request):
     """Render the project to a final MP4. Streams progress as SSE log/done/error events."""
     import shutil
     workspace = resolve_workspace()
-    project_path: Path | None = None
-    for p in workspace.glob("*/project.json"):
-        try:
-            if json.loads(p.read_text()).get("id") == project_id:
-                project_path = p
-                break
-        except Exception:
-            pass
-
-    if project_path is None:
+    project_dir = find_project_dir(workspace, project_id)
+    if project_dir is None:
         raise HTTPException(404, detail={"error": "not_found", "message": f"Project '{project_id}' not found"})
+    project_path = project_dir / "project.json"
 
     render_script = Path(render_runtime_dir()) / "render.js"
     if not render_script.is_file():
@@ -1234,11 +1231,15 @@ async def render_project(project_id: str, request: Request):
 @router.get("/files")
 async def serve_file(path: str, request: Request):
     """Serve a local file by absolute path with range-request support.
+
     Range support is required for browsers to stream video without downloading
     the entire file first.
-    SECURITY NOTE: This endpoint exposes any readable file on the filesystem to
-    the browser. Acceptable for a localhost-only tool. If montaj ever leaves
-    localhost, scope this to workspace + known clip directories only."""
+
+    Path safety: the resolved (symlink + .. normalized) target must be under
+    one of the roots in `_allowed_file_roots()` — workspace, the global overlay
+    library, or a profile's assets. Anything else returns 403. Suitable for
+    sidecar deploys reached over the network.
+    """
     import mimetypes
     p = Path(path)
     if not p.is_file():
@@ -1253,6 +1254,25 @@ async def serve_file(path: str, request: Request):
                     break
         if not p.is_file():
             raise HTTPException(404, detail={"error": "not_found", "message": f"File not found: {path}"})
+
+    # Scope check — runs after any NBSP-fallback reassignment of p, before any
+    # stat/serve operation. Both p and each allowed root are .resolve()'d so
+    # the comparison is over canonical (symlink-followed, .. -normalized) paths.
+    # TOCTOU: a symlink swap between resolve and open is theoretically race-able,
+    # but not exploitable from the network in the sidecar threat model.
+    try:
+        resolved = p.resolve()
+    except OSError:
+        raise HTTPException(
+            403,
+            detail={"error": "forbidden", "message": "Path is outside the allowed roots"},
+        )
+    if not any(_is_under(resolved, root) for root in _allowed_file_roots()):
+        raise HTTPException(
+            403,
+            detail={"error": "forbidden", "message": "Path is outside the allowed roots"},
+        )
+    p = resolved  # use the canonicalized path for stat/serve below
 
     file_size = p.stat().st_size
     media_type = mimetypes.guess_type(str(p))[0] or "application/octet-stream"

@@ -6,7 +6,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-from lib.common import fail, get_duration, progress
+from lib.common import SAFE_NAME, fail, get_duration, progress
 from lib.normalize import normalize, is_normalized, probe_video
 from lib.types.project import normalize_project_type
 from lib.types.kling import is_valid_aspect_ratio, ASPECT_RATIOS, ASPECT_RESOLUTIONS, DEFAULT_ASPECT_RATIO
@@ -25,6 +25,31 @@ def _read_project_type(workflow_name: str) -> str:
     """Read project_type from the workflow JSON, default 'editing' on any failure."""
     wf = read_workflow(workflow_name)
     return normalize_project_type(wf.get("project_type") if wf else None)
+
+
+def validate_project_path(value: str) -> str:
+    """Raise via fail() if value isn't a safe relative path under workspace.
+
+    Rules: must be non-empty, must not start with '/', must not contain
+    any '..' segment, every segment must match SAFE_NAME (the same regex
+    used by serve/server.py for reserve-path validation), no empty segments.
+    Returns the value unchanged on success.
+    """
+    if not value:
+        fail("invalid_project_path", "--project-path must not be empty")
+    if value.startswith("/"):
+        fail("invalid_project_path", "--project-path must be relative (no leading '/')")
+    parts = value.split("/")
+    for seg in parts:
+        if not seg:
+            fail("invalid_project_path", f"--project-path has empty segment in {value!r}")
+        if seg == "..":
+            fail("invalid_project_path", "--project-path must not contain '..' segments")
+        if not SAFE_NAME.match(seg):
+            fail("invalid_project_path",
+                 f"segment {seg!r} contains disallowed characters; "
+                 "use [A-Za-z0-9_-]+ only")
+    return value
 
 
 def git(args, cwd):
@@ -46,6 +71,19 @@ def main():
     parser.add_argument("--prompt", required=True, help="Editing prompt")
     parser.add_argument("--workflow", default="clean_cut", help="Workflow name")
     parser.add_argument("--name", help="Project name (used as workspace directory suffix)")
+    parser.add_argument(
+        "--project-path",
+        dest="project_path",
+        default=None,
+        help=(
+            "Relative path (under the workspace root) where this project's "
+            "directory should be created. Single segment (e.g. 'my-project') "
+            "for flat layouts, multi-segment slash-separated (e.g. "
+            "'teamA/my-project') for nested layouts. When omitted, the "
+            "directory name is generated as '<date>-<slug>' from --name "
+            "(or '<date>-<HHMMSS>' if --name is also absent)."
+        ),
+    )
     parser.add_argument("--profile", help="Creator profile name to associate with this project")
     parser.add_argument("--canvas", action="store_true", help="Canvas project — no source footage")
     parser.add_argument("--image-ref", dest="image_refs", action="append", default=[],
@@ -95,15 +133,8 @@ def main():
         if not os.path.isfile(asset):
             fail("file_not_found", f"Asset not found: {asset}")
 
-    date = datetime.now().strftime("%Y-%m-%d")
-    if args.name:
-        slug = re.sub(r"[^a-z0-9]+", "-", args.name.lower()).strip("-")
-        base_name = f"{date}-{slug}"
-    else:
-        base_name = datetime.now().strftime("%Y-%m-%d-%H%M%S")
-
-    # Avoid collisions: append -2, -3, ... if the directory already exists
-    workspace_name = base_name
+    # Resolve workspace_root first — both branches below need it.
+    # Precedence: MONTAJ_WORKSPACE_DIR env var > ~/.montaj/config.json's workspaceDir > ~/Montaj.
     config_path = os.path.join(os.path.expanduser("~"), ".montaj", "config.json")
     workspace_root = os.environ.get("MONTAJ_WORKSPACE_DIR") or os.path.join(os.path.expanduser("~"), "Montaj")
     if not os.environ.get("MONTAJ_WORKSPACE_DIR") and os.path.isfile(config_path):
@@ -113,12 +144,29 @@ def main():
                 workspace_root = cfg["workspaceDir"]
         except Exception:
             pass
-    counter = 2
-    while os.path.exists(os.path.join(workspace_root, workspace_name)):
-        workspace_name = f"{base_name}-{counter}"
-        counter += 1
 
-    workspace_dir = os.path.join(workspace_root, workspace_name)
+    if args.project_path is not None:
+        workspace_subpath = validate_project_path(args.project_path)
+        full_dir = os.path.join(workspace_root, workspace_subpath)
+        if os.path.exists(full_dir):
+            fail("project_path_exists",
+                 f"--project-path {workspace_subpath!r} already exists at {full_dir}")
+        workspace_dir = full_dir
+    else:
+        # Existing date-slug generation (unchanged)
+        date = datetime.now().strftime("%Y-%m-%d")
+        if args.name:
+            slug = re.sub(r"[^a-z0-9]+", "-", args.name.lower()).strip("-")
+            base_name = f"{date}-{slug}"
+        else:
+            base_name = datetime.now().strftime("%Y-%m-%d-%H%M%S")
+        workspace_name = base_name
+        counter = 2
+        while os.path.exists(os.path.join(workspace_root, workspace_name)):
+            workspace_name = f"{base_name}-{counter}"
+            counter += 1
+        workspace_dir = os.path.join(workspace_root, workspace_name)
+
     os.makedirs(workspace_dir)
 
     if not os.path.isdir(os.path.join(workspace_dir, ".git")):
