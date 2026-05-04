@@ -1,5 +1,8 @@
 """Per-project SSE broadcaster. One asyncio.Queue per active connection."""
 import asyncio
+from collections.abc import AsyncIterator
+
+from fastapi import Request
 
 
 class SSEBroadcaster:
@@ -28,3 +31,31 @@ class SSEBroadcaster:
         Safe to call from a non-async thread via loop.call_soon_threadsafe."""
         for q in list(self._subscribers.get(project_id, [])):
             q.put_nowait(data)
+
+
+async def sse_stream(
+    request: Request,
+    queue: asyncio.Queue,
+    *,
+    initial_frame: str | None = None,
+) -> AsyncIterator[str]:
+    """SSE event-loop helper.
+
+    Yields `initial_frame` (if provided) once on entry, then drains `queue`
+    with a 25s keepalive timeout. Caller owns subscribe/unsubscribe; this
+    helper only reads from the queue.
+
+    `initial_frame` is precomputed by the caller — the helper does no I/O
+    of its own. This keeps the helper agnostic of where the initial state
+    comes from (e.g. /projects/{id}/stream reads project.json; /files/stream
+    has no initial frame).
+    """
+    if initial_frame is not None:
+        yield initial_frame
+    while True:
+        if await request.is_disconnected():
+            return
+        try:
+            yield await asyncio.wait_for(queue.get(), timeout=25)
+        except asyncio.TimeoutError:
+            yield ": keepalive\n\n"

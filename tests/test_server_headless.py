@@ -15,7 +15,7 @@ def _isolate_headless_env():
     Restoring the cached modules (rather than deleting them) is critical:
     other test files (e.g. test_server_reserve_path.py) import
     `from serve.server import app` at collection time and later
-    `monkeypatch.setattr("serve.server.resolve_workspace", ...)`. If we left
+    `monkeypatch.setattr("serve.routes.projects.resolve_workspace", ...)`. If we left
     sys.modules in a deleted-or-replaced state, monkeypatch would patch a
     fresh module that the held `app` reference doesn't share, and the
     patched routes would 404 against the real workspace.
@@ -30,7 +30,7 @@ def _isolate_headless_env():
         os.environ["MONTAJ_HEADLESS"] = original_env
     # Restore the cached serve.* modules to their pre-test identities so any
     # other test file's already-imported `app` reference stays consistent
-    # with `monkeypatch.setattr("serve.server.<name>", ...)` lookups. We also
+    # with `monkeypatch.setattr("serve.routes.projects.<name>", ...)` lookups. We also
     # restore the parent `serve` package's `server` attribute — `import
     # serve.server` resolves via the parent package's attribute, not just
     # sys.modules, so without this an `import` after our reload still returns

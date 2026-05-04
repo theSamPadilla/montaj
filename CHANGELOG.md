@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### Internal: serve refactor
+- `serve/server.py` reorganized from a single 1565-line file into a `serve/routes/` package (one module per URL prefix: `projects`, `steps`, `workflows`, `overlays`, `profiles`, `files`, `skills`) plus shared `serve/common.py` (workspace + project lookup, `Depends(get_project_dir)`, `run_subprocess`, error builders, `MONTAJ_ROOT`). `serve/server.py` is now 155 lines: imports, lifespan, app construction, `include_router` calls, and the SPA catch-all. No behavior change; same 37 routes, same wire format, same error payloads.
+- Eliminated three repetition patterns: 10× project-id-to-directory lookup with 404 (now a single FastAPI dependency), 2× SSE event-loop with disconnect/keepalive (now `sse_stream` in `serve/sse.py`), 3× async-subprocess-with-timeout (now `run_subprocess` in `serve/common.py`). 57 of 62 `HTTPException` raises switched to `not_found`/`bad_request`/`server_error`/`forbidden` builders; the 5 non-standard shapes stay raw.
+- `restore_version` keeps its untimed `git show` (matches pre-refactor behavior; the helper-wrapped 10s timeout was rejected as a silent behavior change).
+- Tests: 8 monkeypatch targets across 3 test files bumped from `serve.server.<name>` to `serve.routes.<x>.<name>` to follow the consumer's namespace post-split. No assertion changes; full suite remains 427 passed / 1 skipped.
+
 ### Serve hardening
 - Fixed: `GET /api/files` scopes path queries to an allowlist (workspace + `~/.montaj/overlays` + `~/.montaj/profiles`); previously served any readable filesystem path on the host. `~/.montaj/credentials.json` and other root-level files under `~/.montaj/` remain blocked.
 - Added: `montaj serve` honors `MONTAJ_WORKSPACE_DIR` env var (matches the CLI's existing precedence: env > `~/.montaj/config.json` > `~/Montaj`)

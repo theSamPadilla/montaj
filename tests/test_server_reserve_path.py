@@ -33,7 +33,7 @@ def _create_project(workspace: Path) -> str:
 
 def test_reserve_path_valid(tmp_path, monkeypatch):
     monkeypatch.setenv("MONTAJ_WORKSPACE_DIR", str(tmp_path))
-    monkeypatch.setattr("serve.server.resolve_workspace", lambda: tmp_path)
+    monkeypatch.setattr("serve.routes.projects.resolve_workspace", lambda: tmp_path)
     pid = _create_project(tmp_path)
 
     resp = client.post(f"/api/projects/{pid}/reserve-path", json={
@@ -48,7 +48,7 @@ def test_reserve_path_valid(tmp_path, monkeypatch):
 
 
 def test_reserve_path_unknown_project(tmp_path, monkeypatch):
-    monkeypatch.setattr("serve.server.resolve_workspace", lambda: tmp_path)
+    monkeypatch.setattr("serve.routes.projects.resolve_workspace", lambda: tmp_path)
     resp = client.post("/api/projects/nonexistent/reserve-path", json={
         "prefix": "foo",
         "extension": "png",
@@ -58,7 +58,7 @@ def test_reserve_path_unknown_project(tmp_path, monkeypatch):
 
 
 def test_reserve_path_bad_prefix(tmp_path, monkeypatch):
-    monkeypatch.setattr("serve.server.resolve_workspace", lambda: tmp_path)
+    monkeypatch.setattr("serve.routes.projects.resolve_workspace", lambda: tmp_path)
     pid = _create_project(tmp_path)
 
     resp = client.post(f"/api/projects/{pid}/reserve-path", json={
@@ -70,7 +70,7 @@ def test_reserve_path_bad_prefix(tmp_path, monkeypatch):
 
 
 def test_reserve_path_bad_extension(tmp_path, monkeypatch):
-    monkeypatch.setattr("serve.server.resolve_workspace", lambda: tmp_path)
+    monkeypatch.setattr("serve.routes.projects.resolve_workspace", lambda: tmp_path)
     pid = _create_project(tmp_path)
 
     resp = client.post(f"/api/projects/{pid}/reserve-path", json={
@@ -82,7 +82,7 @@ def test_reserve_path_bad_extension(tmp_path, monkeypatch):
 
 
 def test_reserve_path_empty_extension(tmp_path, monkeypatch):
-    monkeypatch.setattr("serve.server.resolve_workspace", lambda: tmp_path)
+    monkeypatch.setattr("serve.routes.projects.resolve_workspace", lambda: tmp_path)
     pid = _create_project(tmp_path)
 
     resp = client.post(f"/api/projects/{pid}/reserve-path", json={
@@ -93,7 +93,7 @@ def test_reserve_path_empty_extension(tmp_path, monkeypatch):
 
 
 def test_reserve_path_distinct_paths(tmp_path, monkeypatch):
-    monkeypatch.setattr("serve.server.resolve_workspace", lambda: tmp_path)
+    monkeypatch.setattr("serve.routes.projects.resolve_workspace", lambda: tmp_path)
     pid = _create_project(tmp_path)
 
     resp1 = client.post(f"/api/projects/{pid}/reserve-path", json={"prefix": "img", "extension": "png"})

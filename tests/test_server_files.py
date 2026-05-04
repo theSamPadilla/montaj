@@ -59,7 +59,7 @@ def roots(tmp_path, monkeypatch):
     # Sensitive sibling — must remain blocked.
     (tmp_path / ".montaj" / "credentials.json").write_text('{"api_key": "secret"}')
 
-    monkeypatch.setattr("serve.server._allowed_file_roots", lambda: [ws, overlays, profiles])
+    monkeypatch.setattr("serve.routes.files._allowed_file_roots", lambda: [ws, overlays, profiles])
     return {
         "workspace": ws,
         "overlays":  overlays,

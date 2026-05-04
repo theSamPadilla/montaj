@@ -33,7 +33,7 @@ def workspace(tmp_path, monkeypatch):
         on teardown so it doesn't bleed across tests.
     """
     monkeypatch.setenv("MONTAJ_WORKSPACE_DIR", str(tmp_path))
-    monkeypatch.setattr("serve.server.resolve_workspace", lambda: tmp_path)
+    monkeypatch.setattr("serve.routes.projects.resolve_workspace", lambda: tmp_path)
 
     if not hasattr(app.state, "broadcaster"):
         app.state.broadcaster = SSEBroadcaster()

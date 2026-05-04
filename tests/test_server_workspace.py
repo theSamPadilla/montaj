@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from serve.server import resolve_workspace
+from serve.common import resolve_workspace
 
 
 @pytest.fixture(autouse=True)

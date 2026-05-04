@@ -109,7 +109,8 @@ for path in sys.argv[2:]:
 PY
 
 # CHANGELOG.md — promote `## Unreleased` to `## v<NEW>` so release.sh can find
-# the section. If there is no `## Unreleased` line we leave the file alone and
+# the section, and seed a fresh empty `## Unreleased` header above it for the
+# next cycle. If there is no `## Unreleased` line we leave the file alone and
 # warn (the user will have to add the section by hand before releasing).
 CHANGELOG_PROMOTED=0
 if [[ -f CHANGELOG.md ]]; then
@@ -117,7 +118,10 @@ if [[ -f CHANGELOG.md ]]; then
 import re, sys
 new, path = sys.argv[1], sys.argv[2]
 text = open(path).read()
-new_text, n = re.subn(r'(?m)^## Unreleased\s*$', f'## v{new}', text, count=1)
+# Match the literal `## Unreleased` line; use [ \t]* (not \s*) so we don't
+# greedily swallow the blank line separating the heading from its body.
+replacement = f"## Unreleased\n\n## v{new}"
+new_text, n = re.subn(r'(?m)^## Unreleased[ \t]*$', replacement, text, count=1)
 if n == 1:
     open(path, "w").write(new_text)
     print(1)
@@ -133,7 +137,7 @@ for f in "${PKG_JSONS[@]}" "${LOCK_JSONS[@]}"; do
   [[ -f "$f" ]] && echo "  $f"
 done
 if [[ "$CHANGELOG_PROMOTED" == "1" ]]; then
-  echo "  CHANGELOG.md  (## Unreleased → ## v$NEW_VERSION)"
+  echo "  CHANGELOG.md  (## Unreleased → ## v$NEW_VERSION; new empty ## Unreleased seeded)"
 elif [[ -f CHANGELOG.md ]]; then
   echo
   echo "warning: no '## Unreleased' section in CHANGELOG.md — add a '## v$NEW_VERSION' section by hand before releasing." >&2
