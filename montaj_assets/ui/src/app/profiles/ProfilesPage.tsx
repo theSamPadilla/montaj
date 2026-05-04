@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { ChevronLeft, Copy, RefreshCw } from 'lucide-react'
 import { api, fileUrl, type GlobalOverlay } from '@/lib/api'
 import type { Profile } from '@/lib/api'
+import { ProfileAssetsTab } from './ProfileAssetsTab'
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -94,7 +95,7 @@ function ProfileCard({ profile, onClick }: { profile: Profile; onClick: () => vo
 function ProfileDetail({ name, onBack }: { name: string; onBack: () => void }) {
   const [profile, setProfile] = useState<Profile | null>(null)
   const [loading, setLoading] = useState(true)
-  const [tab, setTab]         = useState<'style' | 'frames' | 'overlays'>('style')
+  const [tab, setTab]         = useState<'style' | 'frames' | 'overlays' | 'assets'>('style')
   const [profileOverlays, setProfileOverlays] = useState<GlobalOverlay[]>([])
   const [copied, setCopied]   = useState(false)
 
@@ -223,8 +224,7 @@ function ProfileDetail({ name, onBack }: { name: string; onBack: () => void }) {
       )}
 
       {/* Document tabs */}
-      {(profile.style_doc || (profile.sample_frames ?? []).length > 0 || profileOverlays.length > 0) && (
-        <div>
+      <div>
           <div className="flex gap-0.5 mb-4">
             {profile.style_doc && (
               <button
@@ -247,6 +247,12 @@ function ProfileDetail({ name, onBack }: { name: string; onBack: () => void }) {
               className={`px-3 py-1.5 rounded text-sm transition-colors ${tab === 'overlays' ? 'bg-gray-100 dark:bg-gray-700 text-gray-900 dark:text-white' : 'text-gray-500 hover:text-gray-900 dark:text-gray-400 dark:hover:text-white hover:bg-gray-100 dark:hover:bg-gray-800'}`}
             >
               Overlays {profileOverlays.filter(o => !o.empty).length > 0 && <span className="ml-1 text-xs text-gray-400">({profileOverlays.filter(o => !o.empty).length})</span>}
+            </button>
+            <button
+              onClick={() => setTab('assets')}
+              className={`px-3 py-1.5 rounded text-sm transition-colors ${tab === 'assets' ? 'bg-gray-100 dark:bg-gray-700 text-gray-900 dark:text-white' : 'text-gray-500 hover:text-gray-900 dark:text-gray-400 dark:hover:text-white hover:bg-gray-100 dark:hover:bg-gray-800'}`}
+            >
+              Assets
             </button>
           </div>
 
@@ -295,8 +301,9 @@ function ProfileDetail({ name, onBack }: { name: string; onBack: () => void }) {
               </div>
             )
           )}
+
+          {tab === 'assets' && <ProfileAssetsTab name={name} />}
         </div>
-      )}
 
       {/* Profile path */}
       <div className="mt-6 p-3 rounded-lg bg-gray-50 dark:bg-gray-900 border border-gray-200 dark:border-gray-800">

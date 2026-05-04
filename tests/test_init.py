@@ -881,3 +881,183 @@ def test_init_color_space_override_via_canvas(tmp_path):
     finally:
         user_fixture.unlink(missing_ok=True)
 
+
+# ---------------------------------------------------------------------------
+# --profile snapshot tests (Phase 2 of profile-assets feature)
+#
+# All tests redirect HOME → tmp_path so the profile dir resolution
+# (~/.montaj/profiles/{name}) lands inside the test sandbox. The assets
+# manifest helper reads from Path.home() which honors $HOME on Unix.
+# ---------------------------------------------------------------------------
+
+def _write_profile_manifest(home: Path, profile: str, manifest: dict) -> None:
+    """Write a manifest.json under the fake HOME's profile assets dir."""
+    assets_dir = home / ".montaj" / "profiles" / profile / "assets"
+    assets_dir.mkdir(parents=True, exist_ok=True)
+    (assets_dir / "manifest.json").write_text(json.dumps(manifest))
+
+
+def _make_profile_dir(home: Path, profile: str) -> Path:
+    """Create the profile dir but no assets/ subdir — returns the profile dir."""
+    profile_dir = home / ".montaj" / "profiles" / profile
+    profile_dir.mkdir(parents=True, exist_ok=True)
+    return profile_dir
+
+
+def test_profile_snapshot_with_populated_manifest(tmp_path):
+    """--profile <name> with a populated manifest snapshots notes + sorted
+    availableAssets (each with filename, description, tags) into project.json."""
+    home = tmp_path / "home"
+    home.mkdir()
+    _write_profile_manifest(home, "alice", {
+        "notes": "alice's brand kit",
+        "files": {
+            "zebra.png":  {"description": "logo dark",  "tags": ["logo", "dark"]},
+            "alpha.jpg":  {"description": "headshot",   "tags": []},
+            "middle.svg": {"description": "wordmark",   "tags": ["logo"]},
+        },
+    })
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    clip = tmp_path / "clip.mp4"
+    clip.write_bytes(b"fake")
+    result = run_init(
+        "--clips", str(clip), "--prompt", "test", "--profile", "alice",
+        env_override={"MONTAJ_WORKSPACE_DIR": str(ws), "HOME": str(home)},
+    )
+    assert result.returncode == 0, result.stderr
+    project = json.loads(_project_path_from_stdout(result.stdout).read_text())
+
+    assert project["profile"] == "alice"
+    snap = project["profileSnapshot"]
+    assert snap["name"] == "alice"
+    assert snap["notes"] == "alice's brand kit"
+    # availableAssets must be sorted by filename for deterministic output.
+    filenames = [a["filename"] for a in snap["availableAssets"]]
+    assert filenames == ["alpha.jpg", "middle.svg", "zebra.png"]
+    # Each entry has the canonical shape.
+    for entry in snap["availableAssets"]:
+        assert set(entry.keys()) == {"filename", "description", "tags"}
+        assert isinstance(entry["description"], str)
+        assert isinstance(entry["tags"], list)
+    # Spot-check one entry preserves description + tags.
+    by_name = {a["filename"]: a for a in snap["availableAssets"]}
+    assert by_name["zebra.png"]["description"] == "logo dark"
+    assert by_name["zebra.png"]["tags"] == ["logo", "dark"]
+    # Empty-tags case keeps tags as [] (not omitted).
+    assert by_name["alpha.jpg"]["tags"] == []
+
+
+def test_profile_snapshot_byte_identical_across_runs(tmp_path):
+    """Two init runs with identical inputs must yield byte-identical
+    profileSnapshot blocks (sort stability)."""
+    home = tmp_path / "home"
+    home.mkdir()
+    _write_profile_manifest(home, "bob", {
+        "notes": "",
+        "files": {
+            "c.png": {"description": "", "tags": []},
+            "a.png": {"description": "", "tags": []},
+            "b.png": {"description": "", "tags": []},
+        },
+    })
+    snaps = []
+    clip = tmp_path / "clip.mp4"
+    clip.write_bytes(b"fake")
+    for i in range(2):
+        ws = tmp_path / f"ws{i}"
+        ws.mkdir()
+        r = run_init(
+            "--clips", str(clip), "--prompt", "test", "--profile", "bob",
+            env_override={"MONTAJ_WORKSPACE_DIR": str(ws), "HOME": str(home)},
+        )
+        assert r.returncode == 0, r.stderr
+        proj = json.loads(_project_path_from_stdout(r.stdout).read_text())
+        snaps.append(proj["profileSnapshot"])
+    assert snaps[0] == snaps[1]
+    assert [a["filename"] for a in snaps[0]["availableAssets"]] == ["a.png", "b.png", "c.png"]
+
+
+def test_profile_snapshot_no_assets_dir(tmp_path):
+    """--profile <name> with a profile dir but no assets/ subdir → snapshot is
+    present with empty notes + empty availableAssets."""
+    home = tmp_path / "home"
+    home.mkdir()
+    _make_profile_dir(home, "carol")  # no assets/ subdir created
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    clip = tmp_path / "clip.mp4"
+    clip.write_bytes(b"fake")
+    result = run_init(
+        "--clips", str(clip), "--prompt", "test", "--profile", "carol",
+        env_override={"MONTAJ_WORKSPACE_DIR": str(ws), "HOME": str(home)},
+    )
+    assert result.returncode == 0, result.stderr
+    project = json.loads(_project_path_from_stdout(result.stdout).read_text())
+    assert project["profile"] == "carol"
+    assert project["profileSnapshot"] == {
+        "name": "carol", "notes": "", "availableAssets": [],
+    }
+
+
+def test_profile_snapshot_assets_dir_no_manifest(tmp_path):
+    """--profile <name> with assets/ but no manifest.json → snapshot is present
+    with empty notes + empty availableAssets."""
+    home = tmp_path / "home"
+    home.mkdir()
+    assets_dir = home / ".montaj" / "profiles" / "dave" / "assets"
+    assets_dir.mkdir(parents=True)  # no manifest.json
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    clip = tmp_path / "clip.mp4"
+    clip.write_bytes(b"fake")
+    result = run_init(
+        "--clips", str(clip), "--prompt", "test", "--profile", "dave",
+        env_override={"MONTAJ_WORKSPACE_DIR": str(ws), "HOME": str(home)},
+    )
+    assert result.returncode == 0, result.stderr
+    project = json.loads(_project_path_from_stdout(result.stdout).read_text())
+    assert project["profileSnapshot"] == {
+        "name": "dave", "notes": "", "availableAssets": [],
+    }
+
+
+def test_profile_snapshot_corrupt_manifest(tmp_path):
+    """--profile <name> with corrupt manifest.json (invalid JSON) → snapshot is
+    present with empty notes + empty availableAssets (helper handles it)."""
+    home = tmp_path / "home"
+    home.mkdir()
+    assets_dir = home / ".montaj" / "profiles" / "eve" / "assets"
+    assets_dir.mkdir(parents=True)
+    (assets_dir / "manifest.json").write_text("{not valid json")
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    clip = tmp_path / "clip.mp4"
+    clip.write_bytes(b"fake")
+    result = run_init(
+        "--clips", str(clip), "--prompt", "test", "--profile", "eve",
+        env_override={"MONTAJ_WORKSPACE_DIR": str(ws), "HOME": str(home)},
+    )
+    assert result.returncode == 0, result.stderr
+    project = json.loads(_project_path_from_stdout(result.stdout).read_text())
+    assert project["profileSnapshot"] == {
+        "name": "eve", "notes": "", "availableAssets": [],
+    }
+
+
+def test_no_profile_omits_both_fields(tmp_path):
+    """No --profile → both `profile` and `profileSnapshot` absent (existing
+    readers must continue seeing absence as before — no widening)."""
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    clip = tmp_path / "clip.mp4"
+    clip.write_bytes(b"fake")
+    result = run_init(
+        "--clips", str(clip), "--prompt", "test",
+        env_override={"MONTAJ_WORKSPACE_DIR": str(ws)},
+    )
+    assert result.returncode == 0, result.stderr
+    project = json.loads(_project_path_from_stdout(result.stdout).read_text())
+    assert "profile" not in project
+    assert "profileSnapshot" not in project
+

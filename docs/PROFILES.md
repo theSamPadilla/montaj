@@ -16,6 +16,7 @@ A creator profile captures the visual and editorial identity of a single social 
   frames/                 — sample stills extracted during analysis (kept permanently)
   transcripts/            — word-level JSON transcripts, one per analyzed video
   overlays/               — creator-specific overlay assets (.jsx)
+  assets/                 — user-curated reusable file library + JSON manifest with descriptions and profile-wide creative notes
 ```
 
 Source videos are downloaded into `videos/<source>/` during analysis and automatically deleted once analysis completes.

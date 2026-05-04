@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+### Profile assets
+- Added a per-profile asset library at `~/.montaj/profiles/{name}/assets/`. Manage uploads, descriptions, and profile-wide creative notes from the Profiles → Assets tab, or via `montaj profile asset {list,add,rm,notes}`. Attached profiles are snapshotted into project.json at init so the agent sees available assets and notes; a side panel in StoryboardView/LiveView lets you copy specific assets into the active project.
+
 ### Internal: serve refactor
 - `serve/server.py` reorganized from a single 1565-line file into a `serve/routes/` package (one module per URL prefix: `projects`, `steps`, `workflows`, `overlays`, `profiles`, `files`, `skills`) plus shared `serve/common.py` (workspace + project lookup, `Depends(get_project_dir)`, `run_subprocess`, error builders, `MONTAJ_ROOT`). `serve/server.py` is now 155 lines: imports, lifespan, app construction, `include_router` calls, and the SPA catch-all. No behavior change; same 37 routes, same wire format, same error payloads.
 - Eliminated three repetition patterns: 10× project-id-to-directory lookup with 404 (now a single FastAPI dependency), 2× SSE event-loop with disconnect/keepalive (now `sse_stream` in `serve/sse.py`), 3× async-subprocess-with-timeout (now `run_subprocess` in `serve/common.py`). 57 of 62 `HTTPException` raises switched to `not_found`/`bad_request`/`server_error`/`forbidden` builders; the 5 non-standard shapes stay raw.

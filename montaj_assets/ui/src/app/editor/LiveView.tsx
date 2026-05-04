@@ -7,6 +7,7 @@ import VersionPanel from '@/components/VersionPanel'
 import { Button } from '@/components/ui/button'
 import { api } from '@/lib/api'
 import { type Project, type ProjectVersion, type RunSnapshot } from '@/lib/types/schema'
+import { ProfileAssetsPanel } from './ProfileAssetsPanel'
 
 function formatRelativeTime(iso: string): string {
   const diff = Date.now() - new Date(iso).getTime()
@@ -246,6 +247,13 @@ export default function LiveView({ project, logMessage, onProjectChange }: LiveV
 
             />
           </div>
+
+          {/* Profile assets panel — input materials, not project state */}
+          {project.profile && (
+            <div className="shrink-0 border-t border-gray-200 dark:border-gray-800 bg-gray-50 dark:bg-gray-950 p-3">
+              <ProfileAssetsPanel project={project} onProjectChange={onProjectChange} />
+            </div>
+          )}
         </div>
 
         {/* Right sidebar */}

@@ -1,7 +1,9 @@
 """POST /run and all /projects/{id}* endpoints, plus _git_commit_sync helper."""
 import asyncio
 import json
+import mimetypes
 import os
+import re
 import secrets
 import shutil
 import signal
@@ -17,8 +19,9 @@ from serve.common import (
     MONTAJ_ROOT,
     resolve_workspace, find_project_dir, get_project_dir,
     run_subprocess,
-    not_found, bad_request, server_error,
+    not_found, bad_request, forbidden, server_error,
 )
+from project.init import _copy_into_workspace
 from serve.sse import SSEBroadcaster, sse_stream
 
 from lib.common import SAFE_NAME as _SAFE_NAME
@@ -487,6 +490,87 @@ async def rerun_project(project_id: str, request: Request, project_dir: Path = D
     broadcaster: SSEBroadcaster = request.app.state.broadcaster
     broadcaster.publish(project_id, f"data: {text}\n\n")
     return updated
+
+
+_PROFILE_NAME_RE = re.compile(r"^[a-zA-Z0-9_-]+$")
+_ASSET_FILE_RE   = re.compile(r"^[a-zA-Z0-9_][a-zA-Z0-9_.-]*$")
+
+
+@router.post("/projects/{project_id}/assets")
+async def include_profile_asset(project_id: str, body: dict = Body(...), request: Request = None, project_dir: Path = Depends(get_project_dir)):
+    """Copy an asset from a profile's asset library into this project.
+
+    Body: {"from": {"profile": <name>, "filename": <name>}}.
+    Drafts the change in project.json; the user commits separately via PUT.
+    """
+    src_ref = (body or {}).get("from") or {}
+    profile_name = src_ref.get("profile")
+    filename     = src_ref.get("filename")
+
+    if not isinstance(profile_name, str) or not _PROFILE_NAME_RE.match(profile_name):
+        raise bad_request("invalid_name", "Invalid profile name")
+    if not isinstance(filename, str) or not _ASSET_FILE_RE.match(filename):
+        raise bad_request("invalid_filename", "Invalid filename")
+
+    project_path = project_dir / "project.json"
+    project = json.loads(project_path.read_text())
+
+    if not project.get("profile"):
+        raise bad_request("no_profile", "Project has no profile attached")
+    if project.get("profile") != profile_name:
+        raise bad_request(
+            "profile_mismatch",
+            f"Project profile '{project.get('profile')}' does not match requested '{profile_name}'",
+        )
+
+    profile_assets_dir = Path.home() / ".montaj" / "profiles" / profile_name / "assets"
+    src_path = (profile_assets_dir / filename).resolve()
+    try:
+        src_path.relative_to(profile_assets_dir.resolve())
+    except (ValueError, OSError):
+        raise forbidden("traversal", "Path escapes assets dir")
+    if not src_path.is_file():
+        raise not_found("not_found", f"Asset '{filename}' not found in profile '{profile_name}'")
+
+    # Copy into project_dir, reusing the shared helper from project/init.py so
+    # the collision-suffix pattern stays in one place.
+    dest = Path(_copy_into_workspace(str(src_path), str(project_dir), "asset"))
+
+    # Infer asset type from MIME (image / video / audio / file).
+    mime = mimetypes.guess_type(dest.name)[0] or ""
+    if   mime.startswith("image/"): asset_type = "image"
+    elif mime.startswith("video/"): asset_type = "video"
+    elif mime.startswith("audio/"): asset_type = "audio"
+    else:                            asset_type = "file"
+
+    existing = project.get("assets") or []
+    next_idx = 0
+    for a in existing:
+        aid = a.get("id", "")
+        if isinstance(aid, str) and aid.startswith("asset-"):
+            try:
+                n = int(aid.split("-", 1)[1])
+                if n + 1 > next_idx:
+                    next_idx = n + 1
+            except ValueError:
+                pass
+
+    new_entry = {
+        "id":   f"asset-{next_idx}",
+        "src":  str(dest),
+        "type": asset_type,
+        "name": dest.name,
+    }
+    existing.append(new_entry)
+    project["assets"] = existing
+
+    text = json.dumps(project, indent=2)
+    project_path.write_text(text)
+    # Broadcast so SSE-subscribed UIs see the new asset immediately, matching
+    # the pattern in save_project / restore_version / rerun_project.
+    broadcaster: SSEBroadcaster = request.app.state.broadcaster
+    broadcaster.publish(project_id, f"data: {text}\n\n")
+    return project
 
 
 @router.post("/projects/{project_id}/render")

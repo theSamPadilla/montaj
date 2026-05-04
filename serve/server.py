@@ -100,6 +100,7 @@ from serve.routes import skills as _skills_routes
 from serve.routes import workflows as _workflows_routes
 from serve.routes import overlays as _overlays_routes
 from serve.routes import profiles as _profiles_routes
+from serve.routes import profile_assets as _profile_assets_routes
 from serve.routes import steps as _steps_routes
 from serve.routes import files as _files_routes
 from serve.routes import projects as _projects_routes
@@ -107,6 +108,7 @@ app.include_router(_skills_routes.router)
 app.include_router(_workflows_routes.router)
 app.include_router(_overlays_routes.router)
 app.include_router(_profiles_routes.router)
+app.include_router(_profile_assets_routes.router)
 app.include_router(_steps_routes.router)
 app.include_router(_files_routes.router)
 app.include_router(_projects_routes.router)

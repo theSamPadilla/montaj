@@ -8,6 +8,7 @@ import { SceneEditor } from '@/components/storyboard/SceneEditor'
 import { ImageRefsPanel } from '@/components/storyboard/ImageRefsPanel'
 import { StyleRefsPanel } from '@/components/storyboard/StyleRefsPanel'
 import { ApproveAndGenerate } from '@/components/storyboard/ApproveAndGenerate'
+import { ProfileAssetsPanel } from './ProfileAssetsPanel'
 
 interface Props {
   project: Project
@@ -273,6 +274,9 @@ export default function StoryboardView({ project, onProjectChange, logMessage }:
             <ImageRefsPanel project={project} onProjectChange={onProjectChange} />
             <StyleRefsPanel project={project} onProjectChange={onProjectChange} />
           </section>
+
+          {/* Profile assets panel */}
+          <ProfileAssetsPanel project={project} onProjectChange={onProjectChange} />
 
           {/* Scene list */}
           <section className="flex flex-col gap-3">

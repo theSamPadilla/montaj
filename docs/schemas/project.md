@@ -312,6 +312,43 @@ To use an asset in a `tracks[1+]` item, pass its `src` path via `props` (for ove
 
 ---
 
+## Profile
+
+Optional fields that associate a project with a creator style profile. Both are present together when `--profile` is passed at init; both are absent otherwise.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `profile` | string | Optional profile name (e.g., `"thesampadilla"`). When set, the project is associated with the profile at `~/.montaj/profiles/{profile}/`. Live link: changes to the profile dir affect what the agent reads (e.g., `style_profile.md`). |
+| `profileSnapshot` | object | Optional snapshot of the profile's assets manifest at project init time. Pinned — does NOT update if the profile changes after init. Shape described below. |
+
+### `profileSnapshot` shape
+
+```json
+{
+  "profileSnapshot": {
+    "name": "thesampadilla",
+    "notes": "Always end with bumper.mov. Keep color grading warm.",
+    "availableAssets": [
+      { "filename": "bumper.mov", "description": "End-card bumper", "tags": ["branding", "end-card"] },
+      { "filename": "logo.png", "description": "Channel logo", "tags": ["branding"] }
+    ]
+  }
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `name` | string | Same as `profile` — kept for self-containment. |
+| `notes` | string | Profile-wide creative notes written by the user. Hand-curated rules that apply to every project using this profile. |
+| `availableAssets` | object[] | Alpha-sorted list of files in the profile's assets dir at init time, with their manifest descriptions. |
+| `availableAssets[i].filename` | string | Filename of the asset (e.g., `"bumper.mov"`). |
+| `availableAssets[i].description` | string | User-written description from the assets manifest. |
+| `availableAssets[i].tags` | string[] | Optional tags. |
+
+The agent reads `profileSnapshot` as creative context. Notes are explicit rules the user wrote; `availableAssets` is a directory of reusable files the user has curated. Specific assets are included into the project by the user via the editor side panel — included assets land in the top-level `assets[]` array with the standard asset shape.
+
+---
+
 ## Storyboard
 
 All `ai_video`-specific state lives under a single top-level `storyboard` object. Absent for `editing` and `music_video` projects. Distinct from the flat `assets` array (which is unrelated and used by all project types for user-uploaded logos/watermarks).

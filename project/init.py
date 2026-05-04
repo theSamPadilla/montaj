@@ -14,11 +14,37 @@ from lib.types.colorspace import (
     ALL_COLOR_SPACES, DEFAULT_COLOR_SPACE, ColorSpaceKey,
     detect_from_transfer, normalize_key, smart_detect,
 )
+from lib.profile_assets import load_assets_manifest
 from lib.workflow import read_workflow
 
 
 NORMALIZE_POOL_SIZE = 4  # outer pool — fast-path/skip workers don't acquire heavy_encode_sem
 HEAVY_ENCODE_LIMIT = 2   # libx264 -preset slow at 4K is memory-heavy — precedent: materialize_cut.py:22
+
+
+def _copy_into_workspace(src: str, dest_dir: str, prefix: str) -> str:
+    """Copy *src* into *dest_dir*, avoiding name collisions with a numeric suffix.
+
+    On collision the destination is renamed ``<base>_<prefix><N><ext>`` where N
+    starts at 2 (matching the existing init.py / projects.py convention).
+    Returns the absolute path of the copied file.
+
+    This is the shared implementation used by both the ``create_project`` closure
+    (via its thin wrapper) and external callers such as
+    ``serve/routes/projects.py:include_profile_asset``.
+    """
+    name = os.path.basename(src)
+    dest = os.path.join(dest_dir, name)
+    if os.path.abspath(src) == os.path.abspath(dest):
+        return dest  # already in workspace
+    if os.path.exists(dest):
+        base, ext = os.path.splitext(name)
+        counter = 2
+        while os.path.exists(os.path.join(dest_dir, f"{base}_{prefix}{counter}{ext}")):
+            counter += 1
+        dest = os.path.join(dest_dir, f"{base}_{prefix}{counter}{ext}")
+    shutil.copy2(src, dest)
+    return dest
 
 
 def _read_project_type(workflow_name: str) -> str:
@@ -173,19 +199,8 @@ def main():
         git(["init", workspace_dir], cwd=os.getcwd())
 
     def copy_into_workspace(src: str, prefix: str) -> str:
-        """Copy src into workspace_dir, avoiding name collisions with a numeric suffix."""
-        name = os.path.basename(src)
-        dest = os.path.join(workspace_dir, name)
-        if os.path.abspath(src) == os.path.abspath(dest):
-            return dest  # already in workspace
-        if os.path.exists(dest):
-            base, ext = os.path.splitext(name)
-            counter = 2
-            while os.path.exists(os.path.join(workspace_dir, f"{base}_{prefix}{counter}{ext}")):
-                counter += 1
-            dest = os.path.join(workspace_dir, f"{base}_{prefix}{counter}{ext}")
-        shutil.copy2(src, dest)
-        return dest
+        """Thin wrapper around the module-level helper, bound to workspace_dir."""
+        return _copy_into_workspace(src, workspace_dir, prefix)
 
     clips = [
         # start/end are placeholder 0.0 values — the agent sets real values
@@ -385,6 +400,26 @@ def main():
 
     project_type = _read_project_type(args.workflow)
 
+    # Snapshot the profile's asset manifest into project.json so the agent +
+    # editor can reference available assets without re-reading ~/.montaj.
+    # load_assets_manifest always returns {"notes": str, "files": dict} —
+    # missing/empty/corrupt manifests resolve to {"notes": "", "files": {}}.
+    profile_snapshot = None
+    if args.profile:
+        manifest = load_assets_manifest(args.profile)
+        profile_snapshot = {
+            "name": args.profile,
+            "notes": manifest["notes"],
+            "availableAssets": [
+                {
+                    "filename": fn,
+                    "description": entry.get("description", ""),
+                    "tags": entry.get("tags", []),
+                }
+                for fn, entry in sorted(manifest["files"].items())
+            ],
+        }
+
     project = {
         "version": "0.2",
         "id": str(uuid.uuid4()),
@@ -403,7 +438,8 @@ def main():
         "tracks": [[] if args.canvas else clips],
         "assets": assets,
         "audio": {},
-        **({"profile": args.profile} if args.profile else {})
+        **({"profile": args.profile} if args.profile else {}),
+        **({"profileSnapshot": profile_snapshot} if args.profile else {}),
     }
 
     if project_type == "ai_video":

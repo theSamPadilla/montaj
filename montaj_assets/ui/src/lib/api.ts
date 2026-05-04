@@ -54,6 +54,35 @@ export interface GlobalOverlay {
   empty?: boolean
 }
 
+export interface ProfileAssetEntry {
+  description: string
+  tags?: string[]
+}
+
+export interface ProfileAssetFile {
+  filename: string
+  size: number
+  mime: string
+  mtime: number
+  path: string
+}
+
+export interface ProfileAssetsManifest {
+  notes: string
+  files: Record<string, ProfileAssetEntry>
+}
+
+export interface ProfileAssetsDrift {
+  filesWithoutEntry: string[]
+  entriesWithoutFile: string[]
+}
+
+export interface ProfileAssetsResponse {
+  files: ProfileAssetFile[]
+  manifest: ProfileAssetsManifest
+  drift: ProfileAssetsDrift
+}
+
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
   const res = await fetch(url, {
     headers: { 'Content-Type': 'application/json', 'Accept': 'application/json', ...init?.headers },
@@ -161,6 +190,53 @@ export const api = {
 
   createProfileOverlayGroup: (profileName: string, name: string) =>
     request<{ name: string }>(`/api/profiles/${profileName}/overlays/groups`, { method: 'POST', body: JSON.stringify({ name }) }),
+
+  listProfileAssets: (profileName: string) =>
+    request<ProfileAssetsResponse>(`/api/profiles/${profileName}/assets`),
+
+  uploadProfileAsset: (profileName: string, file: File, onProgress?: (loaded: number, total: number) => void) =>
+    new Promise<{ filename: string }>((resolve, reject) => {
+      const xhr = new XMLHttpRequest()
+      xhr.open('POST', `/api/profiles/${profileName}/assets`)
+      xhr.upload.onprogress = (e) => { if (e.lengthComputable && onProgress) onProgress(e.loaded, e.total) }
+      xhr.onload = () => {
+        if (xhr.status >= 200 && xhr.status < 300) {
+          resolve(JSON.parse(xhr.responseText))
+        } else {
+          try {
+            const err = JSON.parse(xhr.responseText)
+            reject(new Error(err.detail?.message ?? err.message ?? xhr.statusText))
+          } catch {
+            reject(new Error(xhr.statusText))
+          }
+        }
+      }
+      xhr.onerror = () => reject(new Error('Network error'))
+      const form = new FormData()
+      form.append('file', file)
+      xhr.send(form)
+    }),
+
+  deleteProfileAsset: (profileName: string, filename: string) =>
+    request<void>(`/api/profiles/${profileName}/assets/${encodeURIComponent(filename)}`, { method: 'DELETE' }),
+
+  updateProfileAssetsNotes: (profileName: string, notes: string) =>
+    request<ProfileAssetsManifest>(`/api/profiles/${profileName}/assets/manifest/notes`, {
+      method: 'PUT',
+      body: JSON.stringify({ notes }),
+    }),
+
+  updateProfileAssetEntry: (profileName: string, filename: string, entry: ProfileAssetEntry) =>
+    request<ProfileAssetEntry>(`/api/profiles/${profileName}/assets/manifest/files/${encodeURIComponent(filename)}`, {
+      method: 'PUT',
+      body: JSON.stringify(entry),
+    }),
+
+  addProfileAssetToProject: (projectId: string, profile: string, filename: string) =>
+    request<Project>(`/api/projects/${projectId}/assets`, {
+      method: 'POST',
+      body: JSON.stringify({ from: { profile, filename } }),
+    }),
 
   reservePath: (projectId: string, body: { prefix: string; extension: string }) =>
     request<{ path: string }>(`/api/projects/${projectId}/reserve-path`, {
