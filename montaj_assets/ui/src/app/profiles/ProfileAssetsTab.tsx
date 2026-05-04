@@ -26,24 +26,24 @@ function MimeIcon({ mime }: { mime: string }) {
 }
 
 // ---------------------------------------------------------------------------
-// Notes textarea (debounced save)
+// Summary textarea (debounced save)
 // ---------------------------------------------------------------------------
 
-function NotesSection({ profileName, initialNotes }: { profileName: string; initialNotes: string }) {
-  const [notes, setNotes] = useState(initialNotes)
+function SummarySection({ profileName, initialSummary }: { profileName: string; initialSummary: string }) {
+  const [summary, setSummary] = useState(initialSummary)
   const [saving, setSaving] = useState(false)
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   // Sync if parent re-fetches and gives us a new initial value
-  useEffect(() => { setNotes(initialNotes) }, [initialNotes])
+  useEffect(() => { setSummary(initialSummary) }, [initialSummary])
 
   function handleChange(e: React.ChangeEvent<HTMLTextAreaElement>) {
     const value = e.target.value
-    setNotes(value)
+    setSummary(value)
     if (timerRef.current) clearTimeout(timerRef.current)
     timerRef.current = setTimeout(() => {
       setSaving(true)
-      api.updateProfileAssetsNotes(profileName, value)
+      api.updateProfileAssetsSummary(profileName, value)
         .catch(console.error)
         .finally(() => setSaving(false))
     }, 500)
@@ -56,19 +56,19 @@ function NotesSection({ profileName, initialNotes }: { profileName: string; init
     <div className="mb-6">
       <div className="flex items-center justify-between mb-1.5">
         <label className="text-sm font-medium text-gray-700 dark:text-gray-300">
-          Profile-wide creative notes
+          Asset library summary
         </label>
         {saving && <span className="text-xs text-gray-400">Saving…</span>}
       </div>
       <textarea
-        value={notes}
+        value={summary}
         onChange={handleChange}
         rows={5}
         className="w-full px-3 py-2 text-sm font-mono rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-800 dark:text-gray-200 placeholder-gray-400 resize-y focus:outline-none focus:ring-2 focus:ring-blue-500/40"
-        placeholder={`Profile-wide rules that don't belong on any single asset.\n\ne.g.\n• All videos open with 2 seconds of black\n• Voiceover always first-person\n• Never use vertical aspect ratios`}
+        placeholder={`How this asset library should be used.\n\ne.g.\n• Always end with bumper.mov\n• Logo bottom-right at 60% opacity\n• Never use the old wordmark variants`}
       />
       <p className="text-xs text-gray-400 mt-1">
-        Cross-cutting creative rules surfaced to the agent at project init. For rules tied to a specific file (&ldquo;use this as the end-card&rdquo;), put them in that file&apos;s description below instead.
+        Library-wide rules surfaced to the agent at project init. For editorial direction analyzed from your content (pacing, palette, tone), see the Style Profile tab. For rules tied to one file, put them in that file&apos;s description below.
       </p>
     </div>
   )
@@ -478,17 +478,17 @@ export function ProfileAssetsTab({ name }: { name: string }) {
 
   return (
     <div>
-      {/* Section 1 — Notes */}
+      {/* Section 1 — Summary */}
       {data && (
-        <NotesSection
+        <SummarySection
           profileName={name}
-          initialNotes={data.manifest.notes}
+          initialSummary={data.manifest.summary}
         />
       )}
       {!data && !loading && (
-        <NotesSection
+        <SummarySection
           profileName={name}
-          initialNotes=""
+          initialSummary=""
         />
       )}
 

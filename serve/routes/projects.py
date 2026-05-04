@@ -3,7 +3,6 @@ import asyncio
 import json
 import mimetypes
 import os
-import re
 import secrets
 import shutil
 import signal
@@ -25,6 +24,7 @@ from project.init import _copy_into_workspace
 from serve.sse import SSEBroadcaster, sse_stream
 
 from lib.common import SAFE_NAME as _SAFE_NAME
+from lib.profile_assets import FILENAME_RE, NAME_RE
 from lib.types.kling import ASPECT_RATIOS, is_valid_aspect_ratio
 from lib.workflow import read_workflow
 from cli.deps import render_runtime_dir
@@ -492,10 +492,6 @@ async def rerun_project(project_id: str, request: Request, project_dir: Path = D
     return updated
 
 
-_PROFILE_NAME_RE = re.compile(r"^[a-zA-Z0-9_-]+$")
-_ASSET_FILE_RE   = re.compile(r"^[a-zA-Z0-9_][a-zA-Z0-9_.-]*$")
-
-
 @router.post("/projects/{project_id}/assets")
 async def include_profile_asset(project_id: str, body: dict = Body(...), request: Request = None, project_dir: Path = Depends(get_project_dir)):
     """Copy an asset from a profile's asset library into this project.
@@ -507,9 +503,9 @@ async def include_profile_asset(project_id: str, body: dict = Body(...), request
     profile_name = src_ref.get("profile")
     filename     = src_ref.get("filename")
 
-    if not isinstance(profile_name, str) or not _PROFILE_NAME_RE.match(profile_name):
+    if not isinstance(profile_name, str) or not NAME_RE.match(profile_name):
         raise bad_request("invalid_name", "Invalid profile name")
-    if not isinstance(filename, str) or not _ASSET_FILE_RE.match(filename):
+    if not isinstance(filename, str) or not FILENAME_RE.match(filename):
         raise bad_request("invalid_filename", "Invalid filename")
 
     project_path = project_dir / "project.json"

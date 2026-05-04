@@ -905,12 +905,12 @@ def _make_profile_dir(home: Path, profile: str) -> Path:
 
 
 def test_profile_snapshot_with_populated_manifest(tmp_path):
-    """--profile <name> with a populated manifest snapshots notes + sorted
+    """--profile <name> with a populated manifest snapshots summary + sorted
     availableAssets (each with filename, description, tags) into project.json."""
     home = tmp_path / "home"
     home.mkdir()
     _write_profile_manifest(home, "alice", {
-        "notes": "alice's brand kit",
+        "summary": "alice's brand kit",
         "files": {
             "zebra.png":  {"description": "logo dark",  "tags": ["logo", "dark"]},
             "alpha.jpg":  {"description": "headshot",   "tags": []},
@@ -931,7 +931,7 @@ def test_profile_snapshot_with_populated_manifest(tmp_path):
     assert project["profile"] == "alice"
     snap = project["profileSnapshot"]
     assert snap["name"] == "alice"
-    assert snap["notes"] == "alice's brand kit"
+    assert snap["summary"] == "alice's brand kit"
     # availableAssets must be sorted by filename for deterministic output.
     filenames = [a["filename"] for a in snap["availableAssets"]]
     assert filenames == ["alpha.jpg", "middle.svg", "zebra.png"]
@@ -954,7 +954,7 @@ def test_profile_snapshot_byte_identical_across_runs(tmp_path):
     home = tmp_path / "home"
     home.mkdir()
     _write_profile_manifest(home, "bob", {
-        "notes": "",
+        "summary": "",
         "files": {
             "c.png": {"description": "", "tags": []},
             "a.png": {"description": "", "tags": []},
@@ -980,7 +980,7 @@ def test_profile_snapshot_byte_identical_across_runs(tmp_path):
 
 def test_profile_snapshot_no_assets_dir(tmp_path):
     """--profile <name> with a profile dir but no assets/ subdir → snapshot is
-    present with empty notes + empty availableAssets."""
+    present with empty summary + empty availableAssets."""
     home = tmp_path / "home"
     home.mkdir()
     _make_profile_dir(home, "carol")  # no assets/ subdir created
@@ -996,13 +996,13 @@ def test_profile_snapshot_no_assets_dir(tmp_path):
     project = json.loads(_project_path_from_stdout(result.stdout).read_text())
     assert project["profile"] == "carol"
     assert project["profileSnapshot"] == {
-        "name": "carol", "notes": "", "availableAssets": [],
+        "name": "carol", "summary": "", "availableAssets": [],
     }
 
 
 def test_profile_snapshot_assets_dir_no_manifest(tmp_path):
     """--profile <name> with assets/ but no manifest.json → snapshot is present
-    with empty notes + empty availableAssets."""
+    with empty summary + empty availableAssets."""
     home = tmp_path / "home"
     home.mkdir()
     assets_dir = home / ".montaj" / "profiles" / "dave" / "assets"
@@ -1018,13 +1018,13 @@ def test_profile_snapshot_assets_dir_no_manifest(tmp_path):
     assert result.returncode == 0, result.stderr
     project = json.loads(_project_path_from_stdout(result.stdout).read_text())
     assert project["profileSnapshot"] == {
-        "name": "dave", "notes": "", "availableAssets": [],
+        "name": "dave", "summary": "", "availableAssets": [],
     }
 
 
 def test_profile_snapshot_corrupt_manifest(tmp_path):
     """--profile <name> with corrupt manifest.json (invalid JSON) → snapshot is
-    present with empty notes + empty availableAssets (helper handles it)."""
+    present with empty summary + empty availableAssets (helper handles it)."""
     home = tmp_path / "home"
     home.mkdir()
     assets_dir = home / ".montaj" / "profiles" / "eve" / "assets"
@@ -1041,7 +1041,7 @@ def test_profile_snapshot_corrupt_manifest(tmp_path):
     assert result.returncode == 0, result.stderr
     project = json.loads(_project_path_from_stdout(result.stdout).read_text())
     assert project["profileSnapshot"] == {
-        "name": "eve", "notes": "", "availableAssets": [],
+        "name": "eve", "summary": "", "availableAssets": [],
     }
 
 
@@ -1060,4 +1060,47 @@ def test_no_profile_omits_both_fields(tmp_path):
     project = json.loads(_project_path_from_stdout(result.stdout).read_text())
     assert "profile" not in project
     assert "profileSnapshot" not in project
+
+
+def test_profile_snapshot_includes_style_profile_path_when_present(tmp_path):
+    """A profile with style_profile.md present at init → snapshot includes
+    `styleProfilePath` pointing at that absolute path. Validates the live
+    pointer the agent uses to read editorial direction."""
+    home = tmp_path / "home"
+    home.mkdir()
+    profile_dir = _make_profile_dir(home, "frank")
+    style_md = profile_dir / "style_profile.md"
+    style_md.write_text("# Frank's analyzed style\n")
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    clip = tmp_path / "clip.mp4"
+    clip.write_bytes(b"fake")
+    result = run_init(
+        "--clips", str(clip), "--prompt", "test", "--profile", "frank",
+        env_override={"MONTAJ_WORKSPACE_DIR": str(ws), "HOME": str(home)},
+    )
+    assert result.returncode == 0, result.stderr
+    project = json.loads(_project_path_from_stdout(result.stdout).read_text())
+    snap = project["profileSnapshot"]
+    assert snap["styleProfilePath"] == str(style_md)
+
+
+def test_profile_snapshot_omits_style_profile_path_when_absent(tmp_path):
+    """No style_profile.md at init → `styleProfilePath` is OMITTED from the
+    snapshot entirely (not present-but-empty). Agents gate on key presence."""
+    home = tmp_path / "home"
+    home.mkdir()
+    _make_profile_dir(home, "grace")  # no style_profile.md created
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    clip = tmp_path / "clip.mp4"
+    clip.write_bytes(b"fake")
+    result = run_init(
+        "--clips", str(clip), "--prompt", "test", "--profile", "grace",
+        env_override={"MONTAJ_WORKSPACE_DIR": str(ws), "HOME": str(home)},
+    )
+    assert result.returncode == 0, result.stderr
+    project = json.loads(_project_path_from_stdout(result.stdout).read_text())
+    snap = project["profileSnapshot"]
+    assert "styleProfilePath" not in snap
 

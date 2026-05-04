@@ -1,7 +1,7 @@
 """Per-profile asset library endpoints — /profiles/{name}/assets*.
 
 Each profile has an independent asset library at ~/.montaj/profiles/{name}/assets/
-with a manifest.json describing notes + per-file metadata. Drift between disk
+with a manifest.json describing summary + per-file metadata. Drift between disk
 and manifest is reported (not auto-healed) so the user stays in control.
 
 Pure manifest I/O (load/save) lives in lib/profile_assets.py so non-HTTP
@@ -10,13 +10,14 @@ reuse it without depending on the serve layer.
 """
 import mimetypes
 import os
-import re
 from pathlib import Path
 
 from fastapi import APIRouter, Body, HTTPException, UploadFile
 
 from lib.profile_assets import (
+    FILENAME_RE,
     MAX_ASSET_BYTES,
+    NAME_RE,
     load_assets_manifest,
     save_assets_manifest,
 )
@@ -24,21 +25,18 @@ from serve.common import bad_request, forbidden, not_found
 
 router = APIRouter(prefix="/api")
 
-_NAME_RE     = re.compile(r"^[a-zA-Z0-9_-]+$")
-_FILENAME_RE = re.compile(r"^[a-zA-Z0-9_][a-zA-Z0-9_.-]*$")
-
 
 # ---------------------------------------------------------------------------
 # Validation helpers
 # ---------------------------------------------------------------------------
 
 def _validate_name(name: str) -> None:
-    if not _NAME_RE.match(name or ""):
+    if not NAME_RE.match(name or ""):
         raise bad_request("invalid_name", "Invalid profile name")
 
 
 def _validate_filename(filename: str) -> None:
-    if not _FILENAME_RE.match(filename or ""):
+    if not FILENAME_RE.match(filename or ""):
         raise bad_request("invalid_filename", "Invalid filename")
 
 
@@ -59,7 +57,7 @@ def _resolve_under_assets(name: str, filename: str) -> Path:
 
     Belt-and-suspenders against any edge case the regex misses (e.g. odd
     Unicode normalization). Caller has already validated `filename` against
-    _FILENAME_RE.
+    FILENAME_RE.
     """
     assets_dir = _assets_dir(name)
     target = (assets_dir / filename).resolve()
@@ -85,7 +83,7 @@ async def list_profile_assets(name: str):
     if not assets_dir.exists():
         return {
             "files":    [],
-            "manifest": {"notes": "", "files": {}},
+            "manifest": {"summary": "", "files": {}},
             "drift":    {"filesWithoutEntry": [], "entriesWithoutFile": []},
         }
 
@@ -139,7 +137,7 @@ async def upload_profile_asset(name: str, file: UploadFile):
         counter += 1
 
     # Post-resolution traversal check on the final dest (in case base sneaks
-    # past _FILENAME_RE somehow — defense in depth).
+    # past FILENAME_RE somehow — defense in depth).
     try:
         dest.resolve().relative_to(assets_dir.resolve())
     except (ValueError, OSError):
@@ -199,22 +197,22 @@ async def delete_profile_asset(name: str, filename: str):
         save_assets_manifest(name, manifest)
 
 
-@router.put("/profiles/{name}/assets/manifest/notes")
-async def update_profile_assets_notes(name: str, body: dict = Body(...)):
+@router.put("/profiles/{name}/assets/manifest/summary")
+async def update_profile_assets_summary(name: str, body: dict = Body(...)):
     _validate_name(name)
 
-    if not isinstance(body, dict) or "notes" not in body:
-        raise bad_request("invalid_body", "Body must contain 'notes'")
-    notes = body["notes"]
-    if not isinstance(notes, str):
-        raise bad_request("invalid_notes", "'notes' must be a string")
+    if not isinstance(body, dict) or "summary" not in body:
+        raise bad_request("invalid_body", "Body must contain 'summary'")
+    summary = body["summary"]
+    if not isinstance(summary, str):
+        raise bad_request("invalid_summary", "'summary' must be a string")
 
     profile_dir = _profile_dir(name)
     if not profile_dir.exists():
         raise not_found("not_found", f"Profile '{name}' not found")
 
     manifest = load_assets_manifest(name)
-    manifest["notes"] = notes
+    manifest["summary"] = summary
     save_assets_manifest(name, manifest)
     return manifest
 

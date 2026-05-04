@@ -3,7 +3,7 @@
 ## Unreleased
 
 ### Profile assets
-- Added a per-profile asset library at `~/.montaj/profiles/{name}/assets/`. Manage uploads, descriptions, and profile-wide creative notes from the Profiles → Assets tab, or via `montaj profile asset {list,add,rm,notes}`. Attached profiles are snapshotted into project.json at init so the agent sees available assets and notes; a side panel in StoryboardView/LiveView lets you copy specific assets into the active project.
+- Added a per-profile asset library at `~/.montaj/profiles/{name}/assets/`. Manage uploads, per-file descriptions, and an asset-library summary from the Profiles → Assets tab, or via `montaj profile asset {list,add,rm,summary}`. Attached profiles are snapshotted into project.json at init: the agent sees `availableAssets`, the hand-written `summary`, and a `styleProfilePath` pointer to the profile's `style_profile.md` for editorial direction. A side panel in StoryboardView/LiveView lets you copy specific assets into the active project.
 
 ### Internal: serve refactor
 - `serve/server.py` reorganized from a single 1565-line file into a `serve/routes/` package (one module per URL prefix: `projects`, `steps`, `workflows`, `overlays`, `profiles`, `files`, `skills`) plus shared `serve/common.py` (workspace + project lookup, `Depends(get_project_dir)`, `run_subprocess`, error builders, `MONTAJ_ROOT`). `serve/server.py` is now 155 lines: imports, lifespan, app construction, `include_router` calls, and the SPA catch-all. No behavior change; same 37 routes, same wire format, same error payloads.

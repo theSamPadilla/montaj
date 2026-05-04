@@ -327,10 +327,11 @@ Optional fields that associate a project with a creator style profile. Both are 
 {
   "profileSnapshot": {
     "name": "thesampadilla",
-    "notes": "Always end with bumper.mov. Keep color grading warm.",
+    "summary": "Always end with bumper.mov. Logo bottom-right at 60% opacity.",
+    "styleProfilePath": "/Users/sam/.montaj/profiles/thesampadilla/style_profile.md",
     "availableAssets": [
       { "filename": "bumper.mov", "description": "End-card bumper", "tags": ["branding", "end-card"] },
-      { "filename": "logo.png", "description": "Channel logo", "tags": ["branding"] }
+      { "filename": "logo.png",   "description": "Channel logo",   "tags": ["branding"] }
     ]
   }
 }
@@ -339,13 +340,14 @@ Optional fields that associate a project with a creator style profile. Both are 
 | Field | Type | Description |
 |-------|------|-------------|
 | `name` | string | Same as `profile` — kept for self-containment. |
-| `notes` | string | Profile-wide creative notes written by the user. Hand-curated rules that apply to every project using this profile. |
-| `availableAssets` | object[] | Alpha-sorted list of files in the profile's assets dir at init time, with their manifest descriptions. |
+| `summary` | string | Hand-written guidance about how to use this asset library. Frozen at project init. Distinct from `style_profile.md` (which is analysis-derived editorial direction); `summary` is hand-curated rules tied to the asset library. When the two conflict, `summary` wins. |
+| `styleProfilePath` | string | Absolute path to the profile's `style_profile.md`. The agent reads this file **live** (not snapshotted) for editorial direction analyzed from the creator's content. **Field is omitted** when `style_profile.md` did not exist at project init time (e.g., a project created before `montaj profile analyze` was run). |
+| `availableAssets` | object[] | Alpha-sorted list of files in the profile's assets dir at init time, with their manifest descriptions. Frozen at project init. |
 | `availableAssets[i].filename` | string | Filename of the asset (e.g., `"bumper.mov"`). |
 | `availableAssets[i].description` | string | User-written description from the assets manifest. |
 | `availableAssets[i].tags` | string[] | Optional tags. |
 
-The agent reads `profileSnapshot` as creative context. Notes are explicit rules the user wrote; `availableAssets` is a directory of reusable files the user has curated. Specific assets are included into the project by the user via the editor side panel — included assets land in the top-level `assets[]` array with the standard asset shape.
+The agent reads `profileSnapshot` as creative context: load `styleProfilePath` for editorial direction (live read), use `summary` for asset-library guidance (frozen), and use `availableAssets` as a directory of reusable files the user has curated. Specific assets are included into the project by the user via the editor side panel — included assets land in the top-level `assets[]` array with the standard asset shape.
 
 ---
 

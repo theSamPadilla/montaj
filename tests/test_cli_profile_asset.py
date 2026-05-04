@@ -91,7 +91,7 @@ class TestAssetList:
         (assets / "logo.png").write_bytes(b"x")
         (assets / "other.txt").write_text("y")
         save_assets_manifest("alpha", {
-            "notes": "",
+            "summary": "",
             "files": {"logo.png": {"description": "primary logo"}},
         })
         profile_cmd.handle_asset_list(_ns(name="alpha"))
@@ -109,27 +109,27 @@ class TestAssetList:
         # Trimmed line is just the filename — no trailing description content
         assert line.strip() == "bare.png"
 
-    def test_notes_section_appears_when_nonempty(self, profile_with_assets, home, capsys):
+    def test_summary_section_appears_when_nonempty(self, profile_with_assets, home, capsys):
         assets = profile_with_assets / "assets"
         (assets / "f.txt").write_text("x")
-        save_assets_manifest("alpha", {"notes": "brand kit v2", "files": {}})
+        save_assets_manifest("alpha", {"summary": "brand kit v2", "files": {}})
         profile_cmd.handle_asset_list(_ns(name="alpha"))
         out = capsys.readouterr().out
-        assert "notes:" in out
+        assert "summary:" in out
         assert "brand kit v2" in out
 
-    def test_notes_section_absent_when_empty(self, profile_with_assets, home, capsys):
+    def test_summary_section_absent_when_empty(self, profile_with_assets, home, capsys):
         assets = profile_with_assets / "assets"
         (assets / "f.txt").write_text("x")
-        save_assets_manifest("alpha", {"notes": "", "files": {}})
+        save_assets_manifest("alpha", {"summary": "", "files": {}})
         profile_cmd.handle_asset_list(_ns(name="alpha"))
         out = capsys.readouterr().out
-        assert "notes:" not in out
+        assert "summary:" not in out
 
     def test_manifest_json_excluded_from_listing(self, profile_with_assets, home, capsys):
         assets = profile_with_assets / "assets"
         (assets / "real.txt").write_text("x")
-        (assets / "manifest.json").write_text('{"notes":"","files":{}}')
+        (assets / "manifest.json").write_text('{"summary":"","files":{}}')
         profile_cmd.handle_asset_list(_ns(name="alpha"))
         out = capsys.readouterr().out
         assert "manifest.json" not in out
@@ -238,7 +238,7 @@ class TestAssetRm:
     def test_remove_file_and_entry(self, profile_with_assets, home, capsys):
         assets = profile_with_assets / "assets"
         (assets / "a.txt").write_text("a")
-        save_assets_manifest("alpha", {"notes": "", "files": {"a.txt": {"description": "x"}}})
+        save_assets_manifest("alpha", {"summary": "", "files": {"a.txt": {"description": "x"}}})
 
         profile_cmd.handle_asset_rm(_ns(name="alpha", filename="a.txt"))
 
@@ -256,7 +256,7 @@ class TestAssetRm:
 
     def test_remove_entry_only_file_already_gone(self, profile_with_assets, home, capsys):
         assets = profile_with_assets / "assets"
-        save_assets_manifest("alpha", {"notes": "", "files": {"ghost.png": {"description": "x"}}})
+        save_assets_manifest("alpha", {"summary": "", "files": {"ghost.png": {"description": "x"}}})
         profile_cmd.handle_asset_rm(_ns(name="alpha", filename="ghost.png"))
         manifest = load_assets_manifest("alpha")
         assert "ghost.png" not in manifest["files"]
@@ -302,47 +302,47 @@ class TestAssetRm:
 
 
 # ---------------------------------------------------------------------------
-# asset notes
+# asset summary
 # ---------------------------------------------------------------------------
 
 class TestAssetNotes:
     def test_get_empty_manifest_prints_empty_string(self, profile, capsys):
-        profile_cmd.handle_asset_notes(_ns(name="alpha", set_value=None))
+        profile_cmd.handle_asset_summary(_ns(name="alpha", set_value=None))
         out = capsys.readouterr().out
         # print("") → one newline character, so .strip() is empty
         assert out.strip() == ""
 
-    def test_get_populated_notes(self, profile, capsys):
-        save_assets_manifest("alpha", {"notes": "brand kit v2", "files": {}})
-        profile_cmd.handle_asset_notes(_ns(name="alpha", set_value=None))
+    def test_get_populated_summary(self, profile, capsys):
+        save_assets_manifest("alpha", {"summary": "brand kit v2", "files": {}})
+        profile_cmd.handle_asset_summary(_ns(name="alpha", set_value=None))
         out = capsys.readouterr().out
         assert out.strip() == "brand kit v2"
 
     def test_set_value(self, profile):
-        profile_cmd.handle_asset_notes(_ns(name="alpha", set_value="new notes"))
+        profile_cmd.handle_asset_summary(_ns(name="alpha", set_value="new summary"))
         manifest = load_assets_manifest("alpha")
-        assert manifest["notes"] == "new notes"
+        assert manifest["summary"] == "new summary"
 
-    def test_set_empty_string_clears_notes(self, profile):
-        save_assets_manifest("alpha", {"notes": "existing", "files": {}})
-        profile_cmd.handle_asset_notes(_ns(name="alpha", set_value=""))
+    def test_set_empty_string_clears_summary(self, profile):
+        save_assets_manifest("alpha", {"summary": "existing", "files": {}})
+        profile_cmd.handle_asset_summary(_ns(name="alpha", set_value=""))
         manifest = load_assets_manifest("alpha")
-        assert manifest["notes"] == ""
+        assert manifest["summary"] == ""
 
     def test_get_after_set(self, profile, capsys):
-        profile_cmd.handle_asset_notes(_ns(name="alpha", set_value="hello world"))
-        profile_cmd.handle_asset_notes(_ns(name="alpha", set_value=None))
+        profile_cmd.handle_asset_summary(_ns(name="alpha", set_value="hello world"))
+        profile_cmd.handle_asset_summary(_ns(name="alpha", set_value=None))
         out = capsys.readouterr().out
         assert out.strip() == "hello world"
 
     def test_nonexistent_profile_errors(self, home):
         with pytest.raises(SystemExit) as exc:
-            profile_cmd.handle_asset_notes(_ns(name="ghost", set_value=None))
+            profile_cmd.handle_asset_summary(_ns(name="ghost", set_value=None))
         assert exc.value.code == 1
 
     def test_invalid_name_errors(self, home, capsys):
         with pytest.raises(SystemExit) as exc:
-            profile_cmd.handle_asset_notes(_ns(name="bad name!", set_value=None))
+            profile_cmd.handle_asset_summary(_ns(name="bad name!", set_value=None))
         assert exc.value.code == 1
         err = json.loads(capsys.readouterr().err)
         assert err["error"] == "invalid_name"

@@ -56,7 +56,7 @@ def test_list_empty_when_assets_dir_missing(client, profile):
     body = resp.json()
     assert body == {
         "files":    [],
-        "manifest": {"notes": "", "files": {}},
+        "manifest": {"summary": "", "files": {}},
         "drift":    {"filesWithoutEntry": [], "entriesWithoutFile": []},
     }
 
@@ -89,7 +89,7 @@ def test_list_excludes_manifest_json_from_files(client, profile):
     assets = profile / "assets"
     assets.mkdir()
     (assets / "a.txt").write_text("a")
-    (assets / "manifest.json").write_text('{"notes":"","files":{}}')
+    (assets / "manifest.json").write_text('{"summary":"","files":{}}')
     resp = client.get("/api/profiles/alpha/assets")
     body = resp.json()
     names = [f["filename"] for f in body["files"]]
@@ -102,7 +102,7 @@ def test_list_drift_both_directions(client, profile):
     (assets / "real.png").write_bytes(b"x")
     (assets / "orphan.txt").write_text("orphan")  # no manifest entry
     manifest = {
-        "notes": "",
+        "summary": "",
         "files": {
             "real.png":  {"description": "ok"},
             "ghost.png": {"description": "missing on disk"},
@@ -123,7 +123,7 @@ def test_list_corrupt_manifest_falls_back_to_default(client, profile):
     (assets / "manifest.json").write_text("{not valid json")
     resp = client.get("/api/profiles/alpha/assets")
     body = resp.json()
-    assert body["manifest"] == {"notes": "", "files": {}}
+    assert body["manifest"] == {"summary": "", "files": {}}
     # drift detection still works
     assert body["drift"]["filesWithoutEntry"] == ["a.txt"]
 
@@ -216,7 +216,7 @@ def test_delete_file_and_entry(client, profile):
     assets.mkdir()
     (assets / "a.txt").write_text("a")
     (assets / "manifest.json").write_text(json.dumps({
-        "notes": "", "files": {"a.txt": {"description": "x"}},
+        "summary": "", "files": {"a.txt": {"description": "x"}},
     }))
     resp = client.delete("/api/profiles/alpha/assets/a.txt")
     assert resp.status_code == 204
@@ -238,7 +238,7 @@ def test_delete_only_entry_present(client, profile):
     assets = profile / "assets"
     assets.mkdir()
     (assets / "manifest.json").write_text(json.dumps({
-        "notes": "", "files": {"ghost.png": {"description": "x"}},
+        "summary": "", "files": {"ghost.png": {"description": "x"}},
     }))
     resp = client.delete("/api/profiles/alpha/assets/ghost.png")
     assert resp.status_code == 204
@@ -254,28 +254,28 @@ def test_delete_neither_returns_404(client, profile):
 
 
 # ---------------------------------------------------------------------------
-# PUT — manifest notes
+# PUT — manifest summary
 # ---------------------------------------------------------------------------
 
-def test_put_notes_updates_manifest(client, profile):
+def test_put_summary_updates_manifest(client, profile):
     resp = client.put(
-        "/api/profiles/alpha/assets/manifest/notes",
-        json={"notes": "Brand assets — keep these aligned with the visual ID."},
+        "/api/profiles/alpha/assets/manifest/summary",
+        json={"summary": "Brand assets — keep these aligned with the visual ID."},
     )
     assert resp.status_code == 200
     body = resp.json()
-    assert body["notes"].startswith("Brand assets")
+    assert body["summary"].startswith("Brand assets")
     on_disk = json.loads((profile / "assets" / "manifest.json").read_text())
-    assert on_disk["notes"] == body["notes"]
+    assert on_disk["summary"] == body["summary"]
 
 
-def test_put_notes_rejects_non_string(client, profile):
+def test_put_summary_rejects_non_string(client, profile):
     resp = client.put(
-        "/api/profiles/alpha/assets/manifest/notes",
-        json={"notes": 123},
+        "/api/profiles/alpha/assets/manifest/summary",
+        json={"summary": 123},
     )
     assert resp.status_code == 400
-    assert resp.json()["detail"]["error"] == "invalid_notes"
+    assert resp.json()["detail"]["error"] == "invalid_summary"
 
 
 # ---------------------------------------------------------------------------

@@ -1,13 +1,10 @@
 #!/usr/bin/env python3
 """montaj profile — creator profile management."""
-import glob, os, re, shutil, subprocess, sys
+import glob, os, shutil, subprocess, sys
 from pathlib import Path
 from cli.main import MONTAJ_ROOT, add_global_flags
 from cli.output import emit, emit_error
-
-# Mirrors regex in serve/routes/profile_assets.py and serve/routes/projects.py — keep in sync.
-_NAME_RE     = re.compile(r"^[a-zA-Z0-9_-]+$")
-_FILENAME_RE = re.compile(r"^[a-zA-Z0-9_][a-zA-Z0-9_.-]*$")
+from lib.profile_assets import FILENAME_RE, NAME_RE
 
 
 def register(subparsers):
@@ -50,13 +47,13 @@ def register(subparsers):
     ast_rm.add_argument("filename", help="Filename to remove")
     ast_rm.set_defaults(func=handle_asset_rm)
 
-    # montaj profile asset notes <name> [--get | --set TEXT]
-    ast_notes = ast_sub.add_parser("notes", help="Get or set the asset library notes")
-    ast_notes.add_argument("name", help="Profile name")
-    grp = ast_notes.add_mutually_exclusive_group()
-    grp.add_argument("--get", action="store_true", default=False, help="Print current notes (default)")
-    grp.add_argument("--set", dest="set_value", metavar="TEXT", default=None, help="Set notes to TEXT")
-    ast_notes.set_defaults(func=handle_asset_notes)
+    # montaj profile asset summary <name> [--get | --set TEXT]
+    ast_summary = ast_sub.add_parser("summary", help="Get or set the asset library summary")
+    ast_summary.add_argument("name", help="Profile name")
+    grp = ast_summary.add_mutually_exclusive_group()
+    grp.add_argument("--get", action="store_true", default=False, help="Print current summary (default)")
+    grp.add_argument("--set", dest="set_value", metavar="TEXT", default=None, help="Set summary to TEXT")
+    ast_summary.set_defaults(func=handle_asset_summary)
 
     ast.set_defaults(func=lambda args: ast.print_help())
     p.set_defaults(func=lambda args: p.print_help())
@@ -138,7 +135,7 @@ from lib.profile_assets import load_assets_manifest, save_assets_manifest
 
 def handle_asset_list(args):
     name       = args.name
-    if not _NAME_RE.match(name or ""):
+    if not NAME_RE.match(name or ""):
         emit_error("invalid_name", "Invalid profile name")
     home       = Path.home()
     profile_dir = home / ".montaj" / "profiles" / name
@@ -160,13 +157,13 @@ def handle_asset_list(args):
         desc_str = f"  {D}{desc}{R}" if desc else ""
         print(f"  {f.name}{desc_str}")
 
-    if manifest["notes"]:
-        print(f"{D}notes: {manifest['notes']}{R}")
+    if manifest["summary"]:
+        print(f"{D}summary: {manifest['summary']}{R}")
 
 
 def handle_asset_add(args):
     name   = args.name
-    if not _NAME_RE.match(name or ""):
+    if not NAME_RE.match(name or ""):
         emit_error("invalid_name", "Invalid profile name")
     src    = Path(args.path)
     home   = Path.home()
@@ -211,9 +208,9 @@ def handle_asset_rm(args):
     filename = args.filename
     home     = Path.home()
 
-    if not _NAME_RE.match(name or ""):
+    if not NAME_RE.match(name or ""):
         emit_error("invalid_name", "Invalid profile name")
-    if not _FILENAME_RE.match(filename or ""):
+    if not FILENAME_RE.match(filename or ""):
         emit_error("invalid_filename", "Invalid filename")
 
     profile_dir = home / ".montaj" / "profiles" / name
@@ -249,9 +246,9 @@ def handle_asset_rm(args):
     print(f"removed: {filename}")
 
 
-def handle_asset_notes(args):
+def handle_asset_summary(args):
     name = args.name
-    if not _NAME_RE.match(name or ""):
+    if not NAME_RE.match(name or ""):
         emit_error("invalid_name", "Invalid profile name")
     home = Path.home()
 
@@ -261,9 +258,9 @@ def handle_asset_notes(args):
 
     if args.set_value is not None:
         manifest = load_assets_manifest(name)
-        manifest["notes"] = args.set_value
+        manifest["summary"] = args.set_value
         save_assets_manifest(name, manifest)
     else:
         # --get or default
         manifest = load_assets_manifest(name)
-        print(manifest["notes"])
+        print(manifest["summary"])

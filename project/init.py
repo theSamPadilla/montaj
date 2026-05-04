@@ -14,7 +14,7 @@ from lib.types.colorspace import (
     ALL_COLOR_SPACES, DEFAULT_COLOR_SPACE, ColorSpaceKey,
     detect_from_transfer, normalize_key, smart_detect,
 )
-from lib.profile_assets import load_assets_manifest
+from lib.profile_assets import build_profile_snapshot
 from lib.workflow import read_workflow
 
 
@@ -400,25 +400,10 @@ def main():
 
     project_type = _read_project_type(args.workflow)
 
-    # Snapshot the profile's asset manifest into project.json so the agent +
-    # editor can reference available assets without re-reading ~/.montaj.
-    # load_assets_manifest always returns {"notes": str, "files": dict} —
-    # missing/empty/corrupt manifests resolve to {"notes": "", "files": {}}.
-    profile_snapshot = None
-    if args.profile:
-        manifest = load_assets_manifest(args.profile)
-        profile_snapshot = {
-            "name": args.profile,
-            "notes": manifest["notes"],
-            "availableAssets": [
-                {
-                    "filename": fn,
-                    "description": entry.get("description", ""),
-                    "tags": entry.get("tags", []),
-                }
-                for fn, entry in sorted(manifest["files"].items())
-            ],
-        }
+    # Snapshot of the profile's asset manifest + style-profile pointer for
+    # the agent. Returns None when --profile is absent. See build_profile_snapshot
+    # in lib/profile_assets.py for the full shape and rationale.
+    profile_snapshot = build_profile_snapshot(args.profile)
 
     project = {
         "version": "0.2",
@@ -439,7 +424,7 @@ def main():
         "assets": assets,
         "audio": {},
         **({"profile": args.profile} if args.profile else {}),
-        **({"profileSnapshot": profile_snapshot} if args.profile else {}),
+        **({"profileSnapshot": profile_snapshot} if profile_snapshot else {}),
     }
 
     if project_type == "ai_video":

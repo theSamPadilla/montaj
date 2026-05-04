@@ -68,7 +68,7 @@ export interface ProfileAssetFile {
 }
 
 export interface ProfileAssetsManifest {
-  notes: string
+  summary: string
   files: Record<string, ProfileAssetEntry>
 }
 
@@ -220,10 +220,10 @@ export const api = {
   deleteProfileAsset: (profileName: string, filename: string) =>
     request<void>(`/api/profiles/${profileName}/assets/${encodeURIComponent(filename)}`, { method: 'DELETE' }),
 
-  updateProfileAssetsNotes: (profileName: string, notes: string) =>
-    request<ProfileAssetsManifest>(`/api/profiles/${profileName}/assets/manifest/notes`, {
+  updateProfileAssetsSummary: (profileName: string, summary: string) =>
+    request<ProfileAssetsManifest>(`/api/profiles/${profileName}/assets/manifest/summary`, {
       method: 'PUT',
-      body: JSON.stringify({ notes }),
+      body: JSON.stringify({ summary }),
     }),
 
   updateProfileAssetEntry: (profileName: string, filename: string, entry: ProfileAssetEntry) =>
