@@ -5,6 +5,9 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "lib"))
 
 from cli.help import c as _c, bold as _bold, dim as _dim, green as _green, yellow as _yellow, blue as _blue, cyan as _cyan, red as _red
 
+_CHECK = "✓"
+_CROSS = "✗"
+_DASH = "–"
 
 _parser = None
 
@@ -44,9 +47,9 @@ def handle(args):
                 print(f"  {_bold(_cyan(display))} {_dim('(' + provider + ')')}")
                 for k, v in keys.items():
                     if v == "set":
-                        print(f"    {_green('\u2713')} {k}")
+                        print(f"    {_green(_CHECK)} {k}")
                     else:
-                        print(f"    {_dim('\u2717')} {k} {_dim('not set')}")
+                        print(f"    {_dim(_CROSS)} {k} {_dim('not set')}")
                 print()
             return
 
@@ -61,7 +64,7 @@ def handle(args):
                       f"Known: {', '.join(KNOWN_PROVIDERS[args.provider])}", file=sys.stderr)
                 sys.exit(1)
             set_credential(args.provider, args.key, args.value)
-            print(f"{_green('\u2713')} Saved {args.provider}.{args.key}")
+            print(f"{_green(_CHECK)} Saved {args.provider}.{args.key}")
             return
 
         # If partial scripted args given, error
@@ -89,7 +92,7 @@ def handle(args):
             # Check current status
             keys = KNOWN_PROVIDERS[p]
             all_set = all(_key_is_set(get_credential, p, k) for k in keys)
-            status = _green(" \u2713 ready") if all_set else ""
+            status = _green(f" {_CHECK} ready") if all_set else ""
 
             print(f"  {_bold(str(i))}  {_bold(_cyan(display))}{status}")
             print(f"     {desc}")
@@ -149,15 +152,15 @@ def handle(args):
                 if value:
                     set_credential(provider, key, value)
                     saved_count += 1
-                    print(f"  {_green('\u2713')} {key} saved")
+                    print(f"  {_green(_CHECK)} {key} saved")
                 elif already_set:
-                    print(f"  {_dim('\u2013 kept existing')}")
+                    print(f"  {_dim(f'{_DASH} kept existing')}")
                 else:
-                    print(f"  {_yellow('\u2013 skipped')}")
+                    print(f"  {_yellow(f'{_DASH} skipped')}")
 
         print()
         if saved_count:
-            print(f"  {_green('\u2713')} Saved to {_dim('~/.montaj/credentials.json')}")
+            print(f"  {_green(_CHECK)} Saved to {_dim('~/.montaj/credentials.json')}")
         else:
             print(f"  {_dim('No changes made.')}")
         print()

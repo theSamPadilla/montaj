@@ -4,9 +4,11 @@ import argparse, json, os, re, shutil, subprocess, sys, threading, time, uuid
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
+from pathlib import Path
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from lib.common import SAFE_NAME, fail, get_duration, progress
+from lib.remote_io import fetch_to_disk, parse_allowed_hosts
 from lib.normalize import normalize, is_normalized, probe_video
 from lib.types.project import normalize_project_type
 from lib.types.kling import is_valid_aspect_ratio, ASPECT_RATIOS, ASPECT_RESOLUTIONS, DEFAULT_ASPECT_RATIO
@@ -136,10 +138,19 @@ def main():
     parser.add_argument('--music-upload', dest='music_upload', help='Path to uploaded music file')
     parser.add_argument('--music-describe', dest='music_describe', help='Prompt describing the music to generate')
     parser.add_argument('--voiceover-prompt', dest='voiceover_prompt', help='Voiceover script or brief')
+    parser.add_argument("--remote-clip", dest="remote_clips", action="append", default=[],
+                        help="JSON object: {url, destPath, contentType, sizeBytes, method?, headers?}. "
+                             "Fetched into the project workspace before init proceeds. Repeatable.")
+    parser.add_argument("--remote-asset", dest="remote_assets", action="append", default=[],
+                        help="JSON object: {url, destPath, contentType, sizeBytes, method?, headers?}. "
+                             "Fetched into the project workspace before init proceeds. Repeatable.")
     args = parser.parse_args()
 
     if args.canvas and args.clips:
         fail("mutually_exclusive", "--canvas and --clips are mutually exclusive")
+
+    if args.canvas and args.remote_clips:
+        fail("mutually_exclusive", "--canvas and --remote-clip are mutually exclusive")
 
     if args.aspect_ratio and not is_valid_aspect_ratio(args.aspect_ratio):
         fail("invalid_aspect_ratio",
@@ -150,6 +161,35 @@ def main():
 
     if args.music_upload and not os.path.isfile(args.music_upload):
         fail('file_not_found', f'Music file not found: {args.music_upload}')
+
+    # --- Parse + validate remote items BEFORE local file checks (spec order) ---
+    # Tuple, not set: ordered iteration → deterministic error message, and aligns
+    # with serve/routes/projects.py:_REMOTE_REQUIRED_KEYS so both surfaces walk the
+    # same key order.
+    _REQUIRED_REMOTE_KEYS = ("url", "destPath", "contentType", "sizeBytes")
+
+    def _parse_remote_item(raw: str, kind: str) -> dict:
+        """Parse and validate a JSON remote-item string. Calls fail() on errors."""
+        try:
+            item = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            fail("invalid_remote_item",
+                 f"--remote-{kind} value is not valid JSON: {exc} (got {raw!r})")
+        for key in _REQUIRED_REMOTE_KEYS:
+            if key not in item:
+                fail("invalid_remote_item",
+                     f"--remote-{kind} item missing required key: {key} (got {raw!r})")
+        return item
+
+    remote_clip_items = [_parse_remote_item(r, "clip") for r in args.remote_clips]
+    remote_asset_items = [_parse_remote_item(r, "asset") for r in args.remote_assets]
+    all_remote_items = remote_clip_items + remote_asset_items
+
+    # Read allowlist — only required when there ARE remote items.
+    allowed_hosts = parse_allowed_hosts()
+    if all_remote_items and not allowed_hosts:
+        fail("allowlist_unset",
+             "MONTAJ_HTTP_ALLOWED_HOSTS is required for remote inputs")
 
     for clip in args.clips:
         if not os.path.isfile(clip):
@@ -194,6 +234,23 @@ def main():
         workspace_dir = os.path.join(workspace_root, workspace_name)
 
     os.makedirs(workspace_dir)
+
+    # --- Fetch remote items into workspace (all-or-nothing) ---
+    if all_remote_items:
+        fetch_results = fetch_to_disk(all_remote_items, Path(workspace_dir), allowed_hosts)
+        for result in fetch_results:
+            if result.get("status") == "error":
+                # Clean up partially-created project dir before failing.
+                shutil.rmtree(workspace_dir, ignore_errors=True)
+                fail(result.get("error", "fetch_error"),
+                     f"Remote fetch failed for {result.get('destPath', '?')}: "
+                     f"{result.get('message', '')}")
+        # Merge fetched clip paths into args.clips (so rest of flow treats them identically).
+        for item in remote_clip_items:
+            args.clips.append(os.path.join(workspace_dir, item["destPath"]))
+        # Merge fetched asset paths into args.assets.
+        for item in remote_asset_items:
+            args.assets.append(os.path.join(workspace_dir, item["destPath"]))
 
     if not os.path.isdir(os.path.join(workspace_dir, ".git")):
         git(["init", workspace_dir], cwd=os.getcwd())

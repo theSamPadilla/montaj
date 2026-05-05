@@ -35,6 +35,7 @@ def main():
         normalize, extract_audio,
         transcribe, caption, lyrics_sync, lyrics_render, stem_separation,
         init, status, approve, regen, mcp, models,
+        upload,
 
         create_step, validate, install, update, credentials,
         remove_bg,
@@ -103,6 +104,7 @@ def main():
     stem_separation.register(subparsers)
     init.register(subparsers)
     status.register(subparsers)
+    upload.register(subparsers)
     approve.register(subparsers)
     regen.register(subparsers)
     mcp.register(subparsers)

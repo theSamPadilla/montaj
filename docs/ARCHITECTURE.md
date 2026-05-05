@@ -96,6 +96,10 @@ Built-in steps cover the common operations (trim, transcribe, remove fillers, re
                         final MP4
 ```
 
+Montaj also supports managed-orchestrator deployments where the caller's compute never touches the bytes. Input clips and assets can be fetched from remote URLs at init time — via `montaj init --remote-clip`/`--remote-asset` flags (repeatable JSON strings) or the `remoteClips`/`remoteAssets` fields on `POST /api/run` — and written directly into the project's workspace directory. Output files can be pushed back to caller-supplied URLs after render via `montaj upload` or `POST /api/projects/{id}/upload`. Both directions use the caller's URLs, methods, and headers verbatim, so S3 pre-signed URLs, R2, GCS, Azure SAS URLs, and custom webhooks all work without provider-specific code.
+
+The entire mechanism is fail-closed: it is dormant unless `MONTAJ_HTTP_ALLOWED_HOSTS` (comma-separated, lowercase) is set in the server or CLI environment. All fetches verify content-type and streamed byte count against declared values and use atomic temp-then-replace writes; all caller-supplied paths are validated against the project directory to prevent traversal. The OS desktop UI is unaffected — it continues using `POST /api/upload` and the existing file-serving routes.
+
 ---
 
 ## Agent Interfaces
@@ -151,6 +155,11 @@ GET  /api/steps             returns: list of available steps with schemas
 All API routes are namespaced under `/api/` so they never collide with React Router paths. The SPA catch-all at `/{path}` serves `index.html` for everything else — no Accept-header heuristics needed.
 
 The server invokes the CLI executable and returns stdout as the response body. Same output convention as CLI — result path or JSON on success, JSON error on failure.
+
+Two additional routes support managed-orchestrator file sync (see "How it fits together" for the full security model):
+
+- `POST /api/run` (extended) accepts `remoteClips` and `remoteAssets` body fields — arrays of `{url, destPath, contentType, sizeBytes, method?, headers?}` objects — to fetch inputs from remote URLs at project-init time.
+- `POST /api/projects/{id}/upload` (new) pushes workspace files to caller-supplied URLs. Body: `{uploads: [{srcPath, url, method?, headers?}]}`. Returns 200 on full success or 207 Multi-Status on partial failure, with per-op results in the response body (per-op failures never surface as request-level 4xx).
 
 ### Summary
 

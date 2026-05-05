@@ -82,6 +82,28 @@ def _is_under(path: Path, root: Path) -> bool:
         return False
 
 
+def validate_project_subpath(project_dir: Path, rel_path: str) -> Path:
+    """Resolve `rel_path` under `project_dir` and reject anything that
+    escapes, is empty, is absolute, or names the project dir itself.
+
+    Used by both fetch (`destPath`) and upload (`srcPath`).
+    Public — sits alongside `find_project_dir`, `resolve_workspace`,
+    `get_project_dir`."""
+    if not isinstance(rel_path, str) or not rel_path.strip():
+        raise bad_request("path_traversal", "path is required")
+    if rel_path.startswith("/"):
+        raise bad_request("path_traversal", f"path must be relative: {rel_path}")
+    if rel_path.strip() in (".", "..", "./", "../"):
+        raise bad_request("path_traversal", f"path must name a file: {rel_path}")
+    candidate = (project_dir / rel_path).resolve()
+    project_root = project_dir.resolve()
+    if not _is_under(candidate, project_root):
+        raise bad_request("path_traversal", f"path escapes project dir: {rel_path}")
+    if candidate == project_root:
+        raise bad_request("path_traversal", f"path must name a file: {rel_path}")
+    return candidate
+
+
 def get_project_dir(project_id: str) -> Path:
     workspace = resolve_workspace()
     project_dir = find_project_dir(workspace, project_id)

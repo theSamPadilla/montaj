@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """montaj init — create an empty project in the current directory."""
-import os, subprocess, sys
+import json, os, subprocess, sys
 from cli.main import MONTAJ_ROOT, add_global_flags
-from cli.output import emit
+from cli.output import emit, emit_error
 from lib.types.colorspace import ALL_COLOR_SPACES
 
 
@@ -30,8 +30,43 @@ def register(subparsers):
         default="auto",
         help="Project working color space. 'auto' (default) detects from clip metadata.",
     )
+    # Local file pass-through flags (project/init.py accepts --clips/--assets;
+    # the CLI now exposes them as --clip/--asset for a nicer UX).
+    p.add_argument("--clip", dest="clips", action="append", default=[],
+                   help="Local clip path (repeatable)")
+    p.add_argument("--asset", dest="assets", action="append", default=[],
+                   help="Local asset path (image, logo, etc.) (repeatable)")
+    # Remote fetch flags (passed verbatim to project/init.py).
+    p.add_argument("--remote-clip", dest="remote_clips", action="append", default=[],
+                   help="Remote clip JSON: {url, destPath, contentType, sizeBytes, method?, headers?}. "
+                        "Repeatable.")
+    p.add_argument("--remote-asset", dest="remote_assets", action="append", default=[],
+                   help="Remote asset JSON: {url, destPath, contentType, sizeBytes, method?, headers?}. "
+                        "Repeatable.")
+    # Convenience file-based flags: JSON array of items, expanded into per-item flags.
+    p.add_argument("--remote-clips-file", dest="remote_clips_file", default=None,
+                   help="Path to a JSON file containing an array of remote-clip objects.")
+    p.add_argument("--remote-assets-file", dest="remote_assets_file", default=None,
+                   help="Path to a JSON file containing an array of remote-asset objects.")
     add_global_flags(p)
     p.set_defaults(func=handle)
+
+
+def _load_remote_file(path: str, kind: str) -> list:
+    """Load a JSON array from *path* for --remote-{kind}s-file. Errors via emit_error."""
+    if not os.path.isfile(path):
+        emit_error("file_not_found",
+                   f"--remote-{kind}s-file: file not found: {path!r}")
+    try:
+        with open(path) as fh:
+            data = json.load(fh)
+    except json.JSONDecodeError as exc:
+        emit_error("invalid_json",
+                   f"--remote-{kind}s-file {path!r} is not valid JSON: {exc}")
+    if not isinstance(data, list):
+        emit_error("invalid_format",
+                   f"--remote-{kind}s-file {path!r} must contain a JSON array, got {type(data).__name__}")
+    return data
 
 
 def handle(args):
@@ -49,5 +84,29 @@ def handle(args):
     # defaults to 'auto', so passing it explicitly is unnecessary noise.
     if args.color_space and args.color_space != "auto":
         cmd += ["--color-space", args.color_space]
+
+    # Local clips and assets (pass each as a separate --clips / --assets value;
+    # project/init.py uses nargs="*" with action=append semantics via multiple flags).
+    if args.clips:
+        cmd += ["--clips"] + args.clips
+    if args.assets:
+        cmd += ["--assets"] + args.assets
+
+    # Remote clips: collect from --remote-clip flags + optional --remote-clips-file.
+    remote_clips = list(args.remote_clips)
+    if args.remote_clips_file:
+        items = _load_remote_file(args.remote_clips_file, "clip")
+        remote_clips += [json.dumps(item) for item in items]
+    for r in remote_clips:
+        cmd += ["--remote-clip", r]
+
+    # Remote assets: collect from --remote-asset flags + optional --remote-assets-file.
+    remote_assets = list(args.remote_assets)
+    if args.remote_assets_file:
+        items = _load_remote_file(args.remote_assets_file, "asset")
+        remote_assets += [json.dumps(item) for item in items]
+    for r in remote_assets:
+        cmd += ["--remote-asset", r]
+
     result = subprocess.run(cmd, capture_output=True, text=True)
     emit(result, as_json=args.json, quiet=args.quiet)

@@ -15,6 +15,16 @@
 - Fixed: `GET /api/files` scopes path queries to an allowlist (workspace + `~/.montaj/overlays` + `~/.montaj/profiles`); previously served any readable filesystem path on the host. `~/.montaj/credentials.json` and other root-level files under `~/.montaj/` remain blocked.
 - Added: `montaj serve` honors `MONTAJ_WORKSPACE_DIR` env var (matches the CLI's existing precedence: env > `~/.montaj/config.json` > `~/Montaj`)
 
+### Remote inputs and outputs
+- Added: callers can now supply remote URLs at init time to fetch clips and assets directly into the project workspace. CLI: `montaj init --remote-clip '<json>'` / `--remote-asset '<json>'` (repeatable) or `--remote-clips-file` / `--remote-assets-file` for batch JSON; API: `remoteClips` / `remoteAssets` body fields on `POST /api/run`. Each item specifies `url`, `destPath`, `contentType`, `sizeBytes`, and optional `method`/`headers`.
+- Added: `montaj upload` command and `POST /api/projects/{id}/upload` endpoint push workspace files to caller-supplied URLs. Body: `{uploads: [{srcPath, url, method?, headers?}]}`. Returns 200 on full success or 207 Multi-Status on partial failure, with per-op results in the response body (per-op failures never surface as request-level 4xx).
+- Added: `GET /api/projects/{id}/outputs` enumerates `<project>/output/` (depth-1) as `{outputs: [{path, sizeBytes, contentType}]}` — used by managed orchestrators to presign per-file upload URLs without guessing what the workflow produced. API-only (OS users have direct filesystem access). Not gated by `MONTAJ_HTTP_ALLOWED_HOSTS` since it makes no outbound HTTP.
+- MCP: both directions are auto-introspected — agents using `montaj mcp` get `upload` and the extended `init` flags as native tools with no extra configuration.
+- Existing `--clips` / `--assets` flags on `montaj init` (previously hidden in the CLI wrapper) are now exposed as `--clip` / `--asset` (repeatable) for consistency.
+- Security: the feature is fail-closed. `MONTAJ_HTTP_ALLOWED_HOSTS` (comma-separated, lowercase) must be set in the server or CLI environment; requests to unlisted hosts return `host_not_allowed` / 403. Unset means no remote I/O at all — OS desktop users running without the env var are unaffected.
+- Fetch side: content-type and streamed byte count are verified against declared values (`content_type_mismatch`, `size_mismatch`); writes are atomic (temp-then-replace). Push side: `Host` and `Content-Length` headers from caller input are stripped; on-disk size is authoritative. All caller-supplied paths are validated against the project directory to prevent traversal.
+- URLs, methods, and headers are caller-supplied and opaque — S3 pre-signed URLs, R2, GCS, Azure SAS URLs, and custom webhooks all work without provider-specific code in Montaj.
+
 ### Workspace flexibility
 - Added: `--project-path` flag on `montaj init` (and CLI mirror) lets callers specify the project directory's relative path under the workspace, including multi-segment paths for subnested layouts (e.g. `--project-path=teamA/my-project`). `POST /api/run` accepts the same value as a `projectPath` body field.
 - Added: `montaj serve` discovers projects at any depth under the workspace via recursive globbing — listing, get, stream, delete, update, versions, restore, rerun, and render all work regardless of how deeply a project is nested.

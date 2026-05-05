@@ -12,7 +12,8 @@ from datetime import datetime
 from pathlib import Path
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Request
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
+from urllib.parse import urlparse
 
 from serve.common import (
     MONTAJ_ROOT,
@@ -20,6 +21,7 @@ from serve.common import (
     run_subprocess,
     not_found, bad_request, forbidden, server_error,
 )
+from lib.remote_io import push_from_disk_async, parse_allowed_hosts
 from project.init import _copy_into_workspace
 from serve.sse import SSEBroadcaster, sse_stream
 
@@ -31,10 +33,37 @@ from cli.deps import render_runtime_dir
 
 router = APIRouter(prefix="/api")
 
+# Required keys for every remote-fetch item (clips and assets share the same shape).
+_REMOTE_REQUIRED_KEYS = ("url", "destPath", "contentType", "sizeBytes")
+
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+def _validate_remote_items(items: list, label: str, allowed_hosts: set[str]) -> None:
+    """Eagerly validate a list of remote-fetch items at request time.
+
+    Raises bad_request on shape errors and on host-not-allowed.
+    Caller is responsible for the allowlist-unset 403 check (different code path).
+    `label` is the field name (e.g. 'remoteClips') used in error messages.
+    """
+    for i, item in enumerate(items):
+        if not isinstance(item, dict):
+            raise bad_request("invalid_remote_item", f"{label}[{i}] must be an object")
+        for key in _REMOTE_REQUIRED_KEYS:
+            if key not in item:
+                raise bad_request("invalid_remote_item", f"{label}[{i}] missing required key: {key}")
+        if not item["url"].startswith("https://"):
+            raise bad_request("invalid_remote_item", f"{label}[{i}].url must be https://")
+    # Host-membership check — only runs when allowed_hosts is non-empty (allowlist-unset
+    # is handled separately by the caller before invoking this function).
+    if allowed_hosts:
+        for i, item in enumerate(items):
+            host = (urlparse(item["url"]).hostname or "").lower()
+            if host not in allowed_hosts:
+                raise bad_request("invalid_remote_item", f"{label}[{i}].url host not allowed: {host}")
+
 
 def _git_commit_sync(project_dir: Path, message: str) -> None:
     """Blocking git commit — call via asyncio.to_thread to avoid blocking the event loop."""
@@ -66,6 +95,8 @@ async def run_project(body: dict = Body(...)):
     name         = body.get("name")
     profile      = body.get("profile")
     project_path_arg = body.get("projectPath")
+    remote_clips = body.get("remoteClips", [])
+    remote_assets = body.get("remoteAssets", [])
 
     if not prompt:
         raise bad_request("missing_field", "'prompt' is required")
@@ -75,6 +106,26 @@ async def run_project(body: dict = Body(...)):
             "invalid_field",
             f"'projectPath' must be a string (got {type(project_path_arg).__name__})",
         )
+
+    # Validate remoteClips / remoteAssets — eager, before local file checks.
+    if not isinstance(remote_clips, list):
+        raise bad_request("invalid_field", "remoteClips must be a list")
+    if not isinstance(remote_assets, list):
+        raise bad_request("invalid_field", "remoteAssets must be a list")
+
+    # Shape + https check (runs before allowlist so missing-key errors are surfaced first).
+    _validate_remote_items(remote_clips, "remoteClips", set())
+    _validate_remote_items(remote_assets, "remoteAssets", set())
+
+    if remote_clips or remote_assets:
+        allowed_hosts = parse_allowed_hosts()
+        if not allowed_hosts:
+            raise forbidden("allowlist_unset", "MONTAJ_HTTP_ALLOWED_HOSTS is required for remote inputs")
+        # Re-run with the real allowlist so host-membership is checked.
+        _validate_remote_items(remote_clips, "remoteClips", allowed_hosts)
+        _validate_remote_items(remote_assets, "remoteAssets", allowed_hosts)
+    else:
+        allowed_hosts = set()
 
     for clip in clips:
         if not Path(clip).is_file():
@@ -191,8 +242,8 @@ async def run_project(body: dict = Body(...)):
 
     if clips:
         cmd += ["--clips"] + [str(c) for c in clips]
-    else:
-        # No clips — check workflow's requires_clips to decide how to proceed
+    elif not remote_clips:
+        # No local clips and no remote clips — check workflow's requires_clips to decide how to proceed
         requires_clips = True  # conservative default
         wf_data = read_workflow(workflow)
         if wf_data is not None:
@@ -206,6 +257,11 @@ async def run_project(body: dict = Body(...)):
                 "clips_required",
                 f"Workflow '{workflow}' requires source footage. Provide clips or use a canvas workflow.",
             )
+
+    for item in remote_clips:
+        cmd += ["--remote-clip", json.dumps(item)]
+    for item in remote_assets:
+        cmd += ["--remote-asset", json.dumps(item)]
 
     # Async subprocess so init doesn't block the FastAPI event loop or stall SSE.
     # 30 min ceiling is a sanity bound, not a real expected duration — with parallel
@@ -567,6 +623,60 @@ async def include_profile_asset(project_id: str, body: dict = Body(...), request
     broadcaster: SSEBroadcaster = request.app.state.broadcaster
     broadcaster.publish(project_id, f"data: {text}\n\n")
     return project
+
+
+@router.get("/projects/{project_id}/outputs")
+async def list_outputs(project_id: str, project_dir: Path = Depends(get_project_dir)):
+    """Depth-1 listing of <project_dir>/output/."""
+    output = project_dir / "output"
+    if not output.is_dir():
+        return {"outputs": []}
+    outputs = []
+    for entry in sorted(output.iterdir()):
+        if not entry.is_file():
+            continue
+        try:
+            size = entry.stat().st_size
+        except OSError:
+            continue
+        ct, _ = mimetypes.guess_type(str(entry))
+        outputs.append({
+            "path": f"output/{entry.name}",
+            "sizeBytes": size,
+            "contentType": ct or "application/octet-stream",
+        })
+    return {"outputs": outputs}
+
+
+@router.post("/projects/{project_id}/upload")
+async def upload_outputs(
+    project_id: str,
+    body: dict = Body(...),
+    project_dir: Path = Depends(get_project_dir),
+):
+    """Push local project output files to remote URLs.
+
+    Body: {"uploads": [{"srcPath": "output/render.mp4", "url": "https://...", "method": "PUT", "headers": {...}}]}
+
+    Returns 200 when all uploads succeed, 207 Multi-Status when any fail.
+    Per-item errors are surfaced in the results list, not as 4xx (per-op failures
+    are never request-level).
+    """
+    uploads = body.get("uploads")
+    if not isinstance(uploads, list) or not uploads:
+        raise bad_request("invalid_body", "'uploads' must be a non-empty list")
+
+    allowed_hosts = parse_allowed_hosts()
+    if not allowed_hosts:
+        raise forbidden("allowlist_unset", "MONTAJ_HTTP_ALLOWED_HOSTS is required")
+
+    results = await push_from_disk_async(uploads, project_dir, allowed_hosts)
+
+    any_error = any(r.get("status") == "error" for r in results)
+    return JSONResponse(
+        status_code=207 if any_error else 200,
+        content={"results": results},
+    )
 
 
 @router.post("/projects/{project_id}/render")

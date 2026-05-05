@@ -91,7 +91,8 @@ def handle(args):
             print(f"      2. {cyan('brew edit ffmpeg')}")
             print(f"         → Find the configure args block (look for '--enable-libx264' etc.)")
             print(f"         → Add: {green('--enable-libzimg')}")
-            print(f"         → Add to the dependencies: {green('depends_on \"zimg\"')}")
+            _depends_on = 'depends_on "zimg"'
+            print(f"         → Add to the dependencies: {green(_depends_on)}")
             print(f"         → Save and close")
             print(f"      3. {cyan('rm ~/Library/Caches/Homebrew/api/formula.jws.json')}")
             print(f"      4. {cyan('HOMEBREW_NO_INSTALL_FROM_API=1 brew reinstall ffmpeg --build-from-source')}")
