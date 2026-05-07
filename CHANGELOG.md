@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v2.2.0
+
 ### Image carousel projects
 - Added `carousel` project type alongside `editing`, `music_video`, `ai_video`. Slide-based design surface with image and overlay elements; renders to N PNGs (`slide_NN.png` + `manifest.json`) in `<project>/render/`.
 - Three aspect-ratio presets at creation: square (1:1, 1080×1080), portrait (4:5, 1080×1350), vertical (9:16, 1080×1920). Locked per project — Instagram and TikTok crop mismatched slides.
