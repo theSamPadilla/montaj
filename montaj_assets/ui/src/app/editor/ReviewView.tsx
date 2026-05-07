@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { X, Image, Plus, HelpCircle, Copy, Magnet, Film, Music, Info, Scissors } from 'lucide-react'
+import { X, Image, HelpCircle, Magnet, Film, Music, Info, Scissors } from 'lucide-react'
 import ClipInspectModal, { type InspectTarget } from '@/components/timeline/ClipInspectModal'
 import PreviewPlayer from '@/components/preview/PreviewPlayer'
 import ProjectHeader from '@/components/ProjectHeader'
@@ -9,20 +9,16 @@ import RenderModal from '@/components/RenderModal'
 import Timeline from '@/components/timeline/Timeline'
 import VersionPanel from '@/components/VersionPanel'
 import { ImagePreviewModal } from '@/components/storyboard/ImagePreviewModal'
+import AssetsPanel from '@/components/AssetsPanel'
 import { Button } from '@/components/ui/button'
 import { api, fileUrl } from '@/lib/api'
 import { applyCutToItem, applyCutToTracks, collapseGaps, splitAtTime } from '@/lib/cuts'
-import { type Asset, type Project, type ProjectVersion } from '@/lib/types/schema'
+import { type Project, type ProjectVersion } from '@/lib/types/schema'
 
 interface ReviewViewProps {
   project: Project
   onProjectChange: (p: Project) => void
 }
-
-function basename(path: string) {
-  return path.split('/').pop() ?? path
-}
-
 
 function RegenTriggerPanel({ project }: { project: Project }) {
   const [copied, setCopied] = useState(false)
@@ -71,17 +67,12 @@ export default function ReviewView({ project, onProjectChange }: ReviewViewProps
   const [dirty, setDirty]                     = useState(false)
   const [canUndo, setCanUndo]                 = useState(false)
   const historyRef = useRef<Project[]>([])
-  const [pickingAssets, setPickingAssets]     = useState(false)
-  const [uploadingAssets, setUploadingAssets] = useState(false)
-  const [dragOverAssets, setDragOverAssets]   = useState(false)
   const [selectedOverlayId, setSelectedOverlayId] = useState<string | null>(null)
   const [versions, setVersions]           = useState<ProjectVersion[]>([])
   const [restoring, setRestoring]         = useState<string | null>(null)
   const [rerunOpen, setRerunOpen]         = useState(false)
   const [showHelp, setShowHelp]           = useState(false)
   const [renderOpen, setRenderOpen]       = useState(false)
-  const [previewAsset, setPreviewAsset]   = useState<Asset | null>(null)
-  const [pathCopied, setPathCopied]       = useState(false)
   const [rippleMode, setRippleMode]       = useState(false)
   const [inspecting, setInspecting] = useState<InspectTarget | null>(null)
   const [refPreview, setRefPreview]       = useState<{ src: string; alt: string } | null>(null)
@@ -122,7 +113,6 @@ export default function ReviewView({ project, onProjectChange }: ReviewViewProps
 
   const clips      = project.tracks?.[0] ?? []
   const hasContent = clips.length > 0 || (project.tracks?.slice(1).flat().length ?? 0) > 0 || (project.captions?.segments?.length ?? 0) > 0
-  const assets     = project.assets ?? []
 
   function pushHistory(prev: Project) {
     historyRef.current = [...historyRef.current.slice(-49), prev]
@@ -237,33 +227,6 @@ export default function ReviewView({ project, onProjectChange }: ReviewViewProps
     }
   }
 
-  async function handleAddAssets() {
-    setPickingAssets(true)
-    try {
-      const { paths } = await api.pickFiles()
-      if (!paths.length) return
-      const existing = new Set(assets.map(a => a.src))
-      const newAssets: Asset[] = paths
-        .filter(p => !existing.has(p))
-        .map((p, i) => ({
-          id: `asset-${Date.now()}-${i}`,
-          src: p,
-          type: 'image' as const,
-          name: basename(p),
-        }))
-      if (!newAssets.length) return
-      const updated = { ...project, assets: [...assets, ...newAssets] }
-      onProjectChange(updated)
-      await api.saveProject(project.id, updated)
-      setDirty(false)
-    } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : String(e)
-      if (!msg.toLowerCase().includes('cancel')) console.error(msg)
-    } finally {
-      setPickingAssets(false)
-    }
-  }
-
   async function handleRestoreVersion(hash: string) {
     setRestoring(hash)
     try {
@@ -274,41 +237,6 @@ export default function ReviewView({ project, onProjectChange }: ReviewViewProps
       console.error(e)
     } finally {
       setRestoring(null)
-    }
-  }
-
-  function handleRemoveAsset(id: string) {
-    const updated = { ...project, assets: assets.filter(a => a.id !== id) }
-    onProjectChange(updated)
-    setDirty(true)
-  }
-
-  async function handleAssetDrop(e: React.DragEvent) {
-    e.preventDefault()
-    setDragOverAssets(false)
-    const files = Array.from(e.dataTransfer.files).filter(f => f.type.startsWith('image/'))
-    if (!files.length) return
-    setUploadingAssets(true)
-    try {
-      const paths = await Promise.all(files.map(f => api.uploadFile(f)))
-      const existing = new Set(assets.map(a => a.src))
-      const newAssets: Asset[] = paths
-        .filter(p => !existing.has(p))
-        .map((p, i) => ({
-          id: `asset-${Date.now()}-${i}`,
-          src: p,
-          type: 'image' as const,
-          name: basename(p),
-        }))
-      if (!newAssets.length) return
-      const updated = { ...project, assets: [...assets, ...newAssets] }
-      onProjectChange(updated)
-      await api.saveProject(project.id, updated)
-      setDirty(false)
-    } catch (e: unknown) {
-      console.error(e instanceof Error ? e.message : String(e))
-    } finally {
-      setUploadingAssets(false)
     }
   }
 
@@ -561,72 +489,15 @@ export default function ReviewView({ project, onProjectChange }: ReviewViewProps
             </div>
           )}
 
-        {/* Assets */}
-        <div className="flex flex-col flex-1 overflow-hidden">
-          <div className="flex items-center justify-between px-3 py-2 border-b border-gray-200 dark:border-gray-800">
-            <span className="text-xs font-medium text-gray-400 uppercase tracking-wide">Assets</span>
-            <button
-              onClick={handleAddAssets}
-              disabled={pickingAssets}
-              className="text-gray-500 hover:text-gray-900 dark:hover:text-white transition-colors"
-              title="Add assets"
-            >
-              <Plus size={14} />
-            </button>
-          </div>
-
-          <div
-            className={`flex-1 overflow-y-auto p-2 flex flex-col gap-1.5 transition-colors ${dragOverAssets ? 'bg-blue-50 dark:bg-blue-950/30' : ''}`}
-            onDragOver={e => { e.preventDefault(); setDragOverAssets(true) }}
-            onDragLeave={e => { if (!e.currentTarget.contains(e.relatedTarget as Node)) setDragOverAssets(false) }}
-            onDrop={handleAssetDrop}
-          >
-            {assets.length === 0 && !dragOverAssets && !uploadingAssets && (
-              <p className="text-xs text-gray-600 text-center mt-4 px-2 leading-relaxed">
-                No assets yet.<br />Add images the agent can use as overlays.
-              </p>
-            )}
-            {dragOverAssets && (
-              <div className="flex-1 flex items-center justify-center">
-                <p className="text-xs text-blue-500 dark:text-blue-400 text-center">Drop to add</p>
-              </div>
-            )}
-            {uploadingAssets && !dragOverAssets && (
-              <p className="text-xs text-gray-500 text-center mt-4">Uploading…</p>
-            )}
-            {assets.map(asset => (
-              <div
-                key={asset.id}
-                className="group relative rounded overflow-hidden border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900"
-              >
-                <div
-                  className="w-full aspect-video bg-gray-800 relative flex items-center justify-center cursor-pointer overflow-hidden"
-                  onClick={() => { setPreviewAsset(asset); setPathCopied(false) }}
-                >
-                  <Image size={16} className="text-gray-600 absolute" />
-                  <img
-                    src={fileUrl(asset.src)}
-                    alt=""
-                    className="absolute inset-0 w-full h-full object-cover"
-                    onError={(e) => { (e.target as HTMLImageElement).style.display = 'none' }}
-                  />
-                </div>
-                <div className="px-2 py-1 flex items-center gap-1">
-                  <Image size={10} className="shrink-0 text-gray-500" />
-                  <span className="text-xs text-gray-400 truncate flex-1">
-                    {asset.name ?? basename(asset.src)}
-                  </span>
-                </div>
-                <button
-                  onClick={() => handleRemoveAsset(asset.id)}
-                  className="absolute top-1 right-1 p-0.5 rounded bg-black/60 text-gray-400 hover:text-white opacity-0 group-hover:opacity-100 transition-opacity"
-                >
-                  <X size={11} />
-                </button>
-              </div>
-            ))}
-          </div>
-        </div>
+        <AssetsPanel
+          assets={project.assets ?? []}
+          onChange={async next => {
+            const updated = { ...project, assets: next }
+            onProjectChange(updated)
+            await api.saveProject(project.id, updated)
+            setDirty(false)
+          }}
+        />
 
         </div> {/* end right sidebar */}
       </div>
@@ -652,43 +523,6 @@ export default function ReviewView({ project, onProjectChange }: ReviewViewProps
         />
       )}
 
-      {previewAsset && (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/80"
-          onClick={() => setPreviewAsset(null)}
-        >
-          <div
-            className="relative flex flex-col bg-gray-900 border border-gray-700 rounded-xl overflow-hidden max-w-3xl w-full mx-6 shadow-2xl"
-            onClick={e => e.stopPropagation()}
-          >
-            <button
-              onClick={() => setPreviewAsset(null)}
-              className="absolute top-2 right-2 p-1 rounded bg-black/60 text-gray-400 hover:text-white transition-colors z-10"
-            >
-              <X size={14} />
-            </button>
-            <img
-              src={fileUrl(previewAsset.src)}
-              alt={previewAsset.name ?? basename(previewAsset.src)}
-              className="w-full object-contain max-h-[70vh]"
-            />
-            <div className="flex items-center justify-between gap-3 px-4 py-3 border-t border-gray-800">
-              <code className="text-xs text-gray-400 font-mono truncate flex-1">{previewAsset.src}</code>
-              <button
-                onClick={() => {
-                  navigator.clipboard.writeText(previewAsset.src)
-                  setPathCopied(true)
-                  setTimeout(() => setPathCopied(false), 1500)
-                }}
-                className="flex items-center gap-1 text-xs text-gray-400 hover:text-white transition-colors shrink-0"
-              >
-                <Copy size={12} />
-                {pathCopied ? 'Copied!' : 'Copy path'}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
       {refPreview && (
         <ImagePreviewModal src={refPreview.src} alt={refPreview.alt} onClose={() => setRefPreview(null)} />
       )}

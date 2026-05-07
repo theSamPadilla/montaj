@@ -14,7 +14,7 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-PROJECT_TYPES: tuple[str, ...] = ("editing", "music_video", "ai_video")
+PROJECT_TYPES: tuple[str, ...] = ("editing", "music_video", "ai_video", "carousel")
 DEFAULT_PROJECT_TYPE: str = "editing"
 
 def is_valid_project_type(value: str) -> bool:
@@ -40,18 +40,3 @@ DEFAULT_PROJECT_STATUS: str = "pending"
 
 def is_valid_project_status(value: str) -> bool:
     return value in PROJECT_STATUSES
-
-
-# ── settings keys (not generated; add new keys here as they're introduced) ────
-# The keys allowed under project.json's `settings` object. Validated by
-# init.py / serve.server / any future schema validator. New keys must be
-# additive (existing projects without the key default to a documented value).
-#
-# Backwards-compat notes:
-#   - resolution: writes [w, h]; older projects default to ASPECT_RESOLUTIONS lookup.
-#   - fps: writes int; older projects default to 30.
-#   - colorSpace: writes one of lib.types.colorspace.ALL_COLOR_SPACES; older
-#     projects without this field default to lib.types.colorspace.DEFAULT_COLOR_SPACE
-#     ('sdr_bt709') on load. Callers should use lib.types.colorspace.normalize_key()
-#     to coerce missing/unknown values to the SDR default.
-ALLOWED_SETTINGS_KEYS: tuple[str, ...] = ("resolution", "fps", "colorSpace", "brandKit")

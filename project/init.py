@@ -12,6 +12,7 @@ from lib.remote_io import fetch_to_disk, parse_allowed_hosts
 from lib.normalize import normalize, is_normalized, probe_video
 from lib.types.project import normalize_project_type
 from lib.types.kling import is_valid_aspect_ratio, ASPECT_RATIOS, ASPECT_RESOLUTIONS, DEFAULT_ASPECT_RATIO
+from lib.types.carousel import CAROUSEL_ASPECTS, CAROUSEL_RESOLUTIONS, DEFAULT_CAROUSEL_ASPECT
 from lib.types.colorspace import (
     ALL_COLOR_SPACES, DEFAULT_COLOR_SPACE, ColorSpaceKey,
     detect_from_transfer, normalize_key, smart_detect,
@@ -92,6 +93,61 @@ def git(args, cwd):
     return result
 
 
+def _validate_carousel_args(args) -> None:
+    """Reject flags that are incompatible with carousel projects. Exits on first violation."""
+    def _reject_if(condition: bool, flag: str) -> None:
+        if condition:
+            fail("invalid_args", f"{flag} not allowed for carousel projects")
+
+    _reject_if(bool(args.clips),              "--clips")
+    _reject_if(bool(args.canvas),             "--canvas")
+    _reject_if(bool(args.music_upload),       "--music-upload")
+    _reject_if(bool(args.music_describe),     "--music-describe")
+    _reject_if(bool(args.voiceover_prompt),   "--voiceover-prompt")
+    _reject_if(bool(args.image_refs),         "--image-ref")
+    _reject_if(bool(args.style_refs),         "--style-ref")
+    _reject_if(args.target_duration is not None, "--target-duration")
+    _reject_if(bool(args.aspect_ratio),       "--aspect-ratio")
+    _reject_if(bool(args.resolution),         "--resolution")
+    _reject_if(bool(args.remote_clips),       "--remote-clip")
+    _reject_if(bool(args.remote_assets),      "--remote-asset")
+    _reject_if(args.color_space != "auto",    "--color-space")
+
+
+def _build_carousel_project(args, workspace_dir: str, assets: list) -> None:
+    """Build, write, and commit a carousel project.json. Prints the project path on success."""
+    aspect = args.carousel_aspect or DEFAULT_CAROUSEL_ASPECT
+    resolution = list(CAROUSEL_RESOLUTIONS[aspect])
+
+    project = {
+        "version": "0.2",
+        "id": str(uuid.uuid4()),
+        "status": "pending",
+        "projectType": "carousel",
+        "name": args.name or None,
+        "workflow": args.workflow,
+        "editingPrompt": args.prompt or "",
+        "runCount": 1,
+        "settings": {
+            "resolution": resolution,
+            "colorSpace": "sdr_bt709",
+        },
+        "carousel": {"aspect": aspect},
+        "slides": [],
+        "assets": assets,
+        **({"profile": args.profile} if args.profile else {}),
+    }
+
+    project_path = os.path.join(workspace_dir, "project.json")
+    with open(project_path, "w") as f:
+        json.dump(project, f, indent=2)
+
+    git(["add", "project.json"], cwd=workspace_dir)
+    git(["commit", "-m", "init: new project"], cwd=workspace_dir)
+
+    print(project_path)
+
+
 def main():
     parser = argparse.ArgumentParser(description="Initialize a montaj project workspace")
     parser.add_argument("--clips", nargs="*", default=[], help="Input clip paths")
@@ -144,7 +200,15 @@ def main():
     parser.add_argument("--remote-asset", dest="remote_assets", action="append", default=[],
                         help="JSON object: {url, destPath, contentType, sizeBytes, method?, headers?}. "
                              "Fetched into the project workspace before init proceeds. Repeatable.")
+    parser.add_argument("--carousel-aspect", dest="carousel_aspect", default=None,
+                        choices=list(CAROUSEL_ASPECTS),
+                        help="carousel only. Aspect ratio for all slides (square, portrait, vertical).")
     args = parser.parse_args()
+
+    # Early carousel detection — validate incompatible args BEFORE any on-disk side effects.
+    early_project_type = _read_project_type(args.workflow)
+    if early_project_type == "carousel":
+        _validate_carousel_args(args)
 
     if args.canvas and args.clips:
         fail("mutually_exclusive", "--canvas and --clips are mutually exclusive")
@@ -456,6 +520,10 @@ def main():
     ]
 
     project_type = _read_project_type(args.workflow)
+
+    if project_type == "carousel":
+        _build_carousel_project(args, workspace_dir, assets)
+        return
 
     # Snapshot of the profile's asset manifest + style-profile pointer for
     # the agent. Returns None when --profile is absent. See build_profile_snapshot

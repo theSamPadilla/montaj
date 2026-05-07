@@ -110,12 +110,13 @@ export const api = {
     }),
 
   createProject: (body: {
-    clips: string[]
+    clips?: string[]
     assets?: string[]
-    prompt: string
+    prompt?: string
     workflow?: string
     name?: string
     profile?: string
+    carouselAspect?: 'square' | 'portrait' | 'vertical'
     aiVideoIntake?: {
       imageRefs: Array<{ label: string; path?: string; text?: string }>
       styleRefs: Array<{ label: string; path: string }>

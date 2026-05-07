@@ -19,3 +19,9 @@ export function normalizeAspectRatio(value: unknown): AspectRatio {
   )
   return DEFAULT_ASPECT_RATIO
 }
+
+export const ASPECT_RESOLUTIONS = {
+  '16:9': [1920, 1080],
+  '9:16': [1080, 1920],
+  '1:1': [1080, 1080],
+} as const satisfies Record<AspectRatio, readonly [number, number]>

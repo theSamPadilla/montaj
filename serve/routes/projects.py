@@ -1,7 +1,9 @@
 """POST /run and all /projects/{id}* endpoints, plus _git_commit_sync helper."""
 import asyncio
+import io
 import json
 import mimetypes
+import zipfile
 import os
 import secrets
 import shutil
@@ -28,6 +30,7 @@ from serve.sse import SSEBroadcaster, sse_stream
 from lib.common import SAFE_NAME as _SAFE_NAME
 from lib.profile_assets import FILENAME_RE, NAME_RE
 from lib.types.kling import ASPECT_RATIOS, is_valid_aspect_ratio
+from lib.types.carousel import CAROUSEL_ASPECTS
 from lib.workflow import read_workflow
 from cli.deps import render_runtime_dir
 
@@ -40,6 +43,21 @@ _REMOTE_REQUIRED_KEYS = ("url", "destPath", "contentType", "sizeBytes")
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+def _sse_data_frame(text: str) -> str:
+    """Wrap a JSON payload in an SSE `data:` frame.
+
+    SSE requires a `data:` prefix on every line of the payload; a multi-line
+    string (e.g. the indent=2 form we write to disk) breaks the parser. Re-dump
+    the parsed object on a single line so the wire format is one `data:` line.
+    Falls back to a per-line prefix if the input is not parseable JSON.
+    """
+    try:
+        return f"data: {json.dumps(json.loads(text))}\n\n"
+    except (ValueError, TypeError):
+        body = "\n".join(f"data: {line}" for line in text.splitlines())
+        return f"{body}\n\n"
+
 
 def _validate_remote_items(items: list, label: str, allowed_hosts: set[str]) -> None:
     """Eagerly validate a list of remote-fetch items at request time.
@@ -82,6 +100,90 @@ def _git_commit_sync(project_dir: Path, message: str) -> None:
                    capture_output=True)
 
 
+async def _run_init_subprocess(cmd: list[str], *, timeout: int = 1800) -> dict:
+    """Spawn project/init.py via subprocess, capture stdout (project path), and
+    return the parsed project.json dict. Raises HTTPException on any failure.
+
+    When MONTAJ_DEBUG=1, stderr is streamed live to the server's own stderr so
+    operators can watch progress in real time. Default (unset): stderr is buffered
+    and only surfaced on non-zero exit.
+    """
+    debug_log = os.environ.get("MONTAJ_DEBUG") == "1"
+
+    try:
+        if debug_log:
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                cwd=str(Path.cwd()),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            try:
+                stdout_chunks: list[bytes] = []
+                stderr_chunks: list[bytes] = []
+
+                async def _drain_to_stderr(stream, sink):
+                    while True:
+                        line = await stream.readline()
+                        if not line:
+                            return
+                        sink.append(line)
+                        try:
+                            sys.stderr.buffer.write(line)
+                            sys.stderr.buffer.flush()
+                        except Exception:
+                            pass
+
+                async def _read_all(stream, sink):
+                    while True:
+                        chunk = await stream.read(8192)
+                        if not chunk:
+                            return
+                        sink.append(chunk)
+
+                await asyncio.wait_for(
+                    asyncio.gather(
+                        _read_all(proc.stdout, stdout_chunks),
+                        _drain_to_stderr(proc.stderr, stderr_chunks),
+                        proc.wait(),
+                    ),
+                    timeout=timeout,
+                )
+                stdout = b"".join(stdout_chunks).decode()
+                stderr = b"".join(stderr_chunks).decode()
+                returncode = proc.returncode
+            except asyncio.TimeoutError:
+                proc.kill()
+                await proc.wait()
+                raise HTTPException(504, detail={"error": "timeout", "message": f"Project init exceeded {timeout}s"})
+        else:
+            stdout, stderr, returncode = await run_subprocess(
+                cmd,
+                timeout=timeout,
+                cwd=str(Path.cwd()),
+            )
+    except FileNotFoundError as e:
+        raise server_error("init_failed", str(e))
+
+    if returncode != 0:
+        try:
+            err = json.loads(stderr)
+        except Exception:
+            err = {"error": "init_failed", "message": stderr.strip()}
+        # --project-path validation errors map to 400 per the workspace-paths
+        # plan's HTTP contract (see docs/plans/2026-05-02-workspace-paths.md).
+        # Hub's idempotent-retry logic pattern-matches on 400 + error code, so
+        # these must not be 500. All other init.py error codes keep 500.
+        status = 400 if err.get("error") in {"project_path_exists", "invalid_project_path"} else 500
+        raise HTTPException(status, detail=err)
+
+    project_path = Path(stdout.strip())
+    try:
+        return json.loads(project_path.read_text())
+    except Exception:
+        raise server_error("read_failed", "Project created but could not be read back")
+
+
 # ---------------------------------------------------------------------------
 # Routes
 # ---------------------------------------------------------------------------
@@ -97,6 +199,43 @@ async def run_project(body: dict = Body(...)):
     project_path_arg = body.get("projectPath")
     remote_clips = body.get("remoteClips", [])
     remote_assets = body.get("remoteAssets", [])
+
+    # --- Carousel fast path — branch before clip/asset/intake validation ---
+    wf_data = read_workflow(workflow)
+    if wf_data is not None and wf_data.get("project_type") == "carousel":
+        carousel_aspect = body.get("carouselAspect")
+        if not carousel_aspect or carousel_aspect not in CAROUSEL_ASPECTS:
+            raise bad_request(
+                "invalid_field",
+                f"'carouselAspect' is required for carousel workflows and must be one of {list(CAROUSEL_ASPECTS)} "
+                f"(got {carousel_aspect!r})",
+            )
+
+        if not prompt:
+            raise bad_request("missing_field", "'prompt' is required")
+
+        init_py = MONTAJ_ROOT / "project" / "init.py"
+        cmd = [
+            sys.executable, str(init_py),
+            "--workflow", workflow,
+            "--carousel-aspect", carousel_aspect,
+            "--prompt", prompt,
+        ]
+        if name:
+            cmd += ["--name", name]
+        if profile:
+            cmd += ["--profile", profile]
+        if project_path_arg:
+            cmd += ["--project-path", project_path_arg]
+        if assets:
+            if not isinstance(assets, list):
+                raise bad_request("invalid_field", "'assets' must be a list of paths")
+            for asset in assets:
+                if not isinstance(asset, str) or not os.path.isfile(asset):
+                    raise bad_request("file_not_found", f"Asset not found: {asset}")
+            cmd += ["--assets"] + [str(a) for a in assets]
+
+        return await _run_init_subprocess(cmd)
 
     if not prompt:
         raise bad_request("missing_field", "'prompt' is required")
@@ -267,89 +406,7 @@ async def run_project(body: dict = Body(...)):
     # 30 min ceiling is a sanity bound, not a real expected duration — with parallel
     # normalize + audio fast path + resolution preservation, realistic init time is
     # seconds to a few minutes even on heavy footage.
-    #
-    # When MONTAJ_DEBUG=1, stderr is streamed live to the server's own stderr so
-    # operators can watch normalize progress in real time. Default (unset): stderr
-    # is buffered via proc.communicate() and only surfaced on non-zero exit, same
-    # as before. Debug mode is opt-in because forwarding subprocess stderr to the
-    # parent process clutters production logs.
-    INIT_TIMEOUT_S = 1800
-    debug_log = os.environ.get("MONTAJ_DEBUG") == "1"
-
-    try:
-        if debug_log:
-            proc = await asyncio.create_subprocess_exec(
-                *cmd,
-                cwd=str(Path.cwd()),
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            try:
-                # Live-tee stderr to the server's stderr while still collecting
-                # it for error reporting on non-zero exit.
-                stdout_chunks: list[bytes] = []
-                stderr_chunks: list[bytes] = []
-
-                async def _drain_to_stderr(stream, sink):
-                    while True:
-                        line = await stream.readline()
-                        if not line:
-                            return
-                        sink.append(line)
-                        try:
-                            sys.stderr.buffer.write(line)
-                            sys.stderr.buffer.flush()
-                        except Exception:
-                            pass
-
-                async def _read_all(stream, sink):
-                    while True:
-                        chunk = await stream.read(8192)
-                        if not chunk:
-                            return
-                        sink.append(chunk)
-
-                await asyncio.wait_for(
-                    asyncio.gather(
-                        _read_all(proc.stdout, stdout_chunks),
-                        _drain_to_stderr(proc.stderr, stderr_chunks),
-                        proc.wait(),
-                    ),
-                    timeout=INIT_TIMEOUT_S,
-                )
-                stdout = b"".join(stdout_chunks).decode()
-                stderr = b"".join(stderr_chunks).decode()
-                returncode = proc.returncode
-            except asyncio.TimeoutError:
-                proc.kill()
-                await proc.wait()
-                raise HTTPException(504, detail={"error": "timeout", "message": f"Project init exceeded {INIT_TIMEOUT_S}s"})
-        else:
-            stdout, stderr, returncode = await run_subprocess(
-                cmd,
-                timeout=INIT_TIMEOUT_S,
-                cwd=str(Path.cwd()),
-            )
-    except FileNotFoundError as e:
-        raise server_error("init_failed", str(e))
-
-    if returncode != 0:
-        try:
-            err = json.loads(stderr)
-        except Exception:
-            err = {"error": "init_failed", "message": stderr.strip()}
-        # --project-path validation errors map to 400 per the workspace-paths
-        # plan's HTTP contract (see docs/plans/2026-05-02-workspace-paths.md).
-        # Hub's idempotent-retry logic pattern-matches on 400 + error code, so
-        # these must not be 500. All other init.py error codes keep 500.
-        status = 400 if err.get("error") in {"project_path_exists", "invalid_project_path"} else 500
-        raise HTTPException(status, detail=err)
-
-    project_path = Path(stdout.strip())
-    try:
-        return json.loads(project_path.read_text())
-    except Exception:
-        raise server_error("read_failed", "Project created but could not be read back")
+    return await _run_init_subprocess(cmd)
 
 
 @router.get("/projects")
@@ -417,7 +474,7 @@ async def reload_project(project_id: str, request: Request, project_dir: Path = 
     broadcaster: SSEBroadcaster = request.app.state.broadcaster
     text = (project_dir / "project.json").read_text()
     n = len(broadcaster._subscribers.get(project_id, []))
-    broadcaster.publish(project_id, f"data: {text}\n\n")
+    broadcaster.publish(project_id, _sse_data_frame(text))
     return {"subscribers": n}
 
 
@@ -457,7 +514,7 @@ async def save_project(project_id: str, body: dict = Body(...), request: Request
     # Broadcast immediately — before the git commit so the UI update is instant.
     # Don't rely on the file watcher which can miss updates during SSE reconnect windows.
     broadcaster: SSEBroadcaster = request.app.state.broadcaster
-    broadcaster.publish(project_id, f"data: {text}\n\n")
+    broadcaster.publish(project_id, _sse_data_frame(text))
     # Auto-commit to git on status transitions — run in a thread so it doesn't block the event loop
     new_status = body.get("status")
     if new_status in ("draft", "final") and new_status != prev_status:
@@ -544,7 +601,7 @@ async def rerun_project(project_id: str, request: Request, project_dir: Path = D
     text = json.dumps(updated, indent=2)
     project_path.write_text(text)
     broadcaster: SSEBroadcaster = request.app.state.broadcaster
-    broadcaster.publish(project_id, f"data: {text}\n\n")
+    broadcaster.publish(project_id, _sse_data_frame(text))
     return updated
 
 
@@ -621,8 +678,40 @@ async def include_profile_asset(project_id: str, body: dict = Body(...), request
     # Broadcast so SSE-subscribed UIs see the new asset immediately, matching
     # the pattern in save_project / restore_version / rerun_project.
     broadcaster: SSEBroadcaster = request.app.state.broadcaster
-    broadcaster.publish(project_id, f"data: {text}\n\n")
+    broadcaster.publish(project_id, _sse_data_frame(text))
     return project
+
+
+@router.get("/projects/{project_id}/render-zip")
+async def render_zip(project_id: str, project_dir: Path = Depends(get_project_dir)):
+    """Zip the contents of <project>/render/ and stream it as a download.
+
+    Used by the carousel render modal so the user can grab all PNG slides in one click.
+    Falls back to 404 if no render dir exists yet (renderer hasn't run, or was cleared).
+    """
+    render_dir = project_dir / "render"
+    if not render_dir.is_dir():
+        raise not_found("not_found", "no render directory")
+
+    # In-memory zip — carousel renders are small (≤ ~10 PNGs at 1080×).
+    # Skip manifest.json: it's a renderer-side output for agent/CLI tooling, not
+    # something the human downloading this archive cares about.
+    EXCLUDE = {"manifest.json"}
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        for entry in sorted(render_dir.iterdir()):
+            if entry.is_file() and entry.name not in EXCLUDE:
+                zf.write(entry, arcname=entry.name)
+    buf.seek(0)
+
+    project_name = project_dir.name
+    return StreamingResponse(
+        buf,
+        media_type="application/zip",
+        headers={
+            "Content-Disposition": f'attachment; filename="{project_name}-slides.zip"',
+        },
+    )
 
 
 @router.get("/projects/{project_id}/outputs")
@@ -681,12 +770,27 @@ async def upload_outputs(
 
 @router.post("/projects/{project_id}/render")
 async def render_project(project_id: str, request: Request, project_dir: Path = Depends(get_project_dir)):
-    """Render the project to a final MP4. Streams progress as SSE log/done/error events."""
+    """Render the project. Streams progress as SSE log/done/error events.
+
+    Dispatches by projectType: carousel projects run render-carousel.js (PNG output),
+    everything else runs render.js (MP4 output). Mirrors project/render.py.
+    """
     project_path = project_dir / "project.json"
 
-    render_script = Path(render_runtime_dir()) / "render.js"
+    try:
+        project_type = json.loads(project_path.read_text()).get("projectType", "")
+    except Exception:
+        project_type = ""
+
+    if project_type == "carousel":
+        render_script = MONTAJ_ROOT / "montaj_assets" / "render" / "render-carousel.js"
+        script_args = ["--project-json", str(project_path)]
+    else:
+        render_script = Path(render_runtime_dir()) / "render.js"
+        script_args = [str(project_path)]
+
     if not render_script.is_file():
-        raise server_error("not_found", "render/render.js not found")
+        raise server_error("not_found", f"{render_script.name} not found")
 
     node_bin = shutil.which("node")
     if not node_bin:
@@ -697,7 +801,7 @@ async def render_project(project_id: str, request: Request, project_dir: Path = 
 
     async def event_stream():
         proc = await asyncio.create_subprocess_exec(
-            node_bin, str(render_script), str(project_path),
+            node_bin, str(render_script), *script_args,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             cwd=str(MONTAJ_ROOT),

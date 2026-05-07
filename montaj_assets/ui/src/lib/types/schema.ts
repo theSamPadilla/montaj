@@ -1,5 +1,6 @@
 import { createContext, useContext } from 'react'
 import type { ProjectType, ProjectStatus } from './project'
+import type { CarouselAspect } from './carousel'
 import type { AspectRatio } from './kling'
 export interface Workflow {
   name: string
@@ -180,6 +181,38 @@ export interface RegenQueueEntry {
   lastError?: { ts: string; message: string }
 }
 
+// ── Carousel types ─────────────────────────────────────────────────────────
+export interface ImageElement {
+  id: string
+  type: 'image'
+  src: string
+  x: number
+  y: number
+  w: number
+  h: number
+  rotation: number
+}
+
+export interface OverlayElement {
+  id: string
+  type: 'overlay'
+  overlay: { template: string; props: Record<string, unknown> }
+  frame: number
+  x: number
+  y: number
+  w: number
+  h: number
+  rotation: number
+}
+
+export type CarouselElement = ImageElement | OverlayElement
+
+export interface Slide {
+  id: string
+  base_color: string
+  elements: CarouselElement[]
+}
+
 export interface Project {
   version: string
   id: string
@@ -190,16 +223,19 @@ export interface Project {
   editingPrompt: string
   runCount?: number
   sources?: VisualItem[]
-  settings: { resolution: [number, number]; fps: number; brandKit?: string }
-  tracks: VisualItem[][]
+  settings: { resolution: [number, number]; fps?: number; brandKit?: string }
+  tracks?: VisualItem[][]
   captions?: Captions
   assets: Asset[]
-  audio: { tracks: AudioTrack[] }
+  audio?: { tracks: AudioTrack[] }
   profile?: string
   renderMode?: 'ffmpeg-drawtext'
   history?: RunSnapshot[]
   storyboard?: Storyboard
   regenQueue?: RegenQueueEntry[]
+  // Carousel-only
+  slides?: Slide[]
+  carousel?: { aspect: CarouselAspect }
 }
 
 export interface StepParam {

@@ -7,9 +7,12 @@ import { api, type Profile } from '@/lib/api'
 import type { Project, Workflow } from '@/lib/types/schema'
 import { normalizeProjectType } from '@/lib/types/project'
 import { ASPECT_RATIOS, DEFAULT_ASPECT_RATIO, type AspectRatio } from '@/lib/types/kling'
+import { CAROUSEL_ASPECTS, DEFAULT_CAROUSEL_ASPECT, type CarouselAspect } from '@/lib/types/carousel'
 import { ClipUploadFields, type ClipUploadData } from '@/components/upload/ClipUploadFields'
 import { LyricsUploadFields, type LyricsUploadData } from '@/components/upload/LyricsUploadFields'
 import { AIVideoUploadFields, type AIVideoUploadData } from '@/components/upload/AIVideoUploadFields'
+import AssetsPanel from '@/components/AssetsPanel'
+import type { Asset } from '@/lib/types/schema'
 
 interface Prefill {
   clips?: string[]
@@ -41,6 +44,24 @@ function AspectRatioIcon({ ratio, className }: { ratio: string; className?: stri
   )
 }
 
+/** SVG rectangles proportioned to carousel aspect ratios. */
+function CarouselAspectIcon({ aspect, className }: { aspect: CarouselAspect; className?: string }) {
+  // All icons fit within a 16×16 viewbox.
+  let w: number, h: number
+  switch (aspect) {
+    case 'square':   w = 12; h = 12; break
+    case 'portrait': w = 12; h = 15; break
+    case 'vertical': w = 9;  h = 16; break
+  }
+  const x = (16 - w) / 2
+  const y = (16 - h) / 2
+  return (
+    <svg width={16} height={16} viewBox="0 0 16 16" className={className}>
+      <rect x={x} y={y} width={w} height={h} rx={1.5} fill="currentColor" />
+    </svg>
+  )
+}
+
 export default function UploadView() {
   const location = useLocation()
   const prefill  = (location.state as { prefill?: Prefill } | null)?.prefill
@@ -62,6 +83,8 @@ export default function UploadView() {
   const [aiVideoData, setAiVideoData] = useState<AIVideoUploadData>(prefill?.aiVideoData ?? { imageRefs: [], styleRefs: [] })
   const [aspectRatio, setAspectRatio] = useState<AspectRatio>(prefill?.aspectRatio ?? DEFAULT_ASPECT_RATIO)
   const [targetDuration, setTargetDuration] = useState<number | null>(prefill?.targetDuration ?? null)
+  const [carouselAspect, setCarouselAspect] = useState<CarouselAspect>(DEFAULT_CAROUSEL_ASPECT)
+  const [carouselAssets, setCarouselAssets] = useState<Asset[]>([])
 
   const selectedWorkflow = workflows.find(w => w.name === workflow)
   const projectType = normalizeProjectType(selectedWorkflow?.project_type)
@@ -130,6 +153,17 @@ export default function UploadView() {
           })
           break
         }
+        case 'carousel': {
+          project = await api.createProject({
+            workflow,
+            name: name.trim() || undefined,
+            profile: profile || undefined,
+            carouselAspect,
+            prompt: prompt.trim(),
+            assets: carouselAssets.length ? carouselAssets.map(a => a.src) : undefined,
+          })
+          break
+        }
         case 'editing':
         default: {
           project = await api.createProject({
@@ -157,6 +191,7 @@ export default function UploadView() {
     switch (projectType) {
       case 'music_video': return 'Generate lyrics video \u2318\u21B5'
       case 'ai_video':    return 'Generate storyboard \u2318\u21B5'
+      case 'carousel':    return 'Create carousel \u2318\u21B5'
       case 'editing':
       default:            return 'Run \u2318\u21B5'
     }
@@ -171,6 +206,7 @@ export default function UploadView() {
     switch (projectType) {
       case 'music_video': return lyricsData.audio.length
       case 'ai_video':    return 0
+      case 'carousel':    return 0
       case 'editing':
       default:            return clipData.clips.length
     }
@@ -180,6 +216,7 @@ export default function UploadView() {
     switch (projectType) {
       case 'music_video': return 'Preparing your lyrics video'
       case 'ai_video':    return 'Generating your storyboard'
+      case 'carousel':    return 'Setting up your carousel'
       case 'editing':
       default:            return 'Setting up your project'
     }
@@ -191,6 +228,8 @@ export default function UploadView() {
         return 'Importing audio and analyzing the track\u2026'
       case 'ai_video':
         return 'Composing the storyboard from your references and prompt\u2026'
+      case 'carousel':
+        return 'Creating workspace\u2026'
       case 'editing':
       default:
         if (clipCount === 0) return 'Creating workspace\u2026'
@@ -207,6 +246,7 @@ export default function UploadView() {
     switch (projectType) {
       case 'music_video': return 'dark moody vibe, white text, center position\u2026'
       case 'ai_video':    return 'Describe the video you want to create\u2026'
+      case 'carousel':    return 'Describe the carousel \u2014 topic, vibe, what each slide should cover\u2026'
       case 'editing':
       default:            return 'tight cuts, remove filler, 9:16 for Reels\u2026'
     }
@@ -216,6 +256,7 @@ export default function UploadView() {
     switch (projectType) {
       case 'music_video': return 'Add your audio and lyrics. Background video is optional.'
       case 'ai_video':    return 'Describe your video, add references, and generate a storyboard.'
+      case 'carousel':    return 'Image carousel for Instagram/TikTok. Pick an aspect ratio and start designing.'
       case 'editing':
       default:            return 'Add clips, write a prompt, hit Run.'
     }
@@ -326,6 +367,127 @@ export default function UploadView() {
               </select>
             </div>
           )}
+
+          <Button
+            onClick={handleRun}
+            disabled={running || !prompt.trim()}
+            className="w-full"
+          >
+            {submitLabel}
+          </Button>
+        </div>
+        <LoadingModal
+          open={running}
+          title={loadingTitle}
+          message={loadingMessage}
+          slowHint={loadingSlowHint}
+        />
+      </div>
+    )
+  }
+
+  // --- Carousel: single-column centered layout ---
+  if (projectType === 'carousel') {
+    const aspectLabels: Record<CarouselAspect, string> = {
+      square:   'Square (1:1)',
+      portrait: 'Portrait (4:5)',
+      vertical: 'Vertical (9:16)',
+    }
+    return (
+      <div className="h-full overflow-y-auto">
+        <div className="max-w-2xl mx-auto p-6 flex flex-col gap-6">
+          <div>
+            <h2 className="text-lg font-semibold text-gray-900 dark:text-white mb-1">New project</h2>
+            <p className="text-sm text-gray-500">{headerDescription}</p>
+          </div>
+
+          {/* Name + Profile */}
+          <div className="flex gap-2">
+            <input
+              type="text"
+              value={name}
+              onChange={e => setName(e.target.value)}
+              placeholder="Project name (optional)"
+              className="flex-1 h-9 rounded-md border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-900 px-3 text-sm text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500"
+            />
+            {profiles.length > 0 && (
+              <select
+                value={profile}
+                onChange={e => setProfile(e.target.value)}
+                className="h-9 rounded-md border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-900 px-2 text-sm text-gray-700 dark:text-gray-300 focus:outline-none focus:ring-2 focus:ring-blue-500"
+              >
+                <option value="">No profile</option>
+                {profiles.map(p => (
+                  <option key={p.name} value={p.name}>
+                    {p.style_meta?.username ?? p.name}
+                  </option>
+                ))}
+              </select>
+            )}
+          </div>
+
+          {/* Prompt */}
+          <div>
+            <p className="text-sm font-medium text-gray-800 dark:text-gray-200 mb-1">Prompt</p>
+            <Textarea
+              className="min-h-[120px] resize-none"
+              placeholder={promptPlaceholder}
+              value={prompt}
+              onChange={(e) => setPrompt(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) handleRun() }}
+            />
+          </div>
+
+          {/* Aspect ratio picker */}
+          <div>
+            <p className="text-xs text-gray-500 mb-1.5">Aspect ratio</p>
+            <div className="flex gap-2">
+              {CAROUSEL_ASPECTS.map(a => (
+                <button
+                  key={a}
+                  onClick={() => setCarouselAspect(a)}
+                  className={`flex items-center gap-1.5 h-9 px-3 rounded-md border text-sm transition-colors ${
+                    carouselAspect === a
+                      ? 'border-blue-500 bg-blue-500/10 text-blue-500'
+                      : 'border-gray-300 dark:border-gray-700 text-gray-600 dark:text-gray-400 hover:border-gray-400 dark:hover:border-gray-600'
+                  }`}
+                >
+                  <CarouselAspectIcon
+                    aspect={a}
+                    className={carouselAspect === a ? 'text-blue-500' : 'text-gray-400 dark:text-gray-500'}
+                  />
+                  {aspectLabels[a]}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Assets — reference images the agent can use as backgrounds or pull from. */}
+          <div>
+            <p className="text-xs text-gray-500 mb-1.5">Assets</p>
+            <div className="rounded-md border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-900 h-48 overflow-hidden flex flex-col">
+              <AssetsPanel
+                assets={carouselAssets}
+                onChange={async next => { setCarouselAssets(next) }}
+              />
+            </div>
+          </div>
+
+          {/* Workflow (only shown when more than one carousel workflow exists) */}
+          {workflows.length > 1 && (
+            <div>
+              <p className="text-xs text-gray-500 mb-1.5">Workflow</p>
+              <select
+                value={workflow}
+                onChange={(e) => setWorkflow(e.target.value)}
+                className="w-full h-9 rounded-md border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-800 px-2 text-sm text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-blue-500"
+              >
+                {workflows.map(w => <option key={w.name} value={w.name}>{w.name}</option>)}
+              </select>
+            </div>
+          )}
+
+          {runError && <p className="text-xs text-red-400">{runError}</p>}
 
           <Button
             onClick={handleRun}

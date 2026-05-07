@@ -705,3 +705,92 @@ The stack is cleared when the human saves (triggering a git commit) or when the 
 - `src` fields are always local file paths — Montaj never reads or writes URLs
 - Filename: `project.json`
 - Encoding: UTF-8
+
+---
+
+## Carousel projects
+
+Carousel projects (`projectType: "carousel"`) share the universal header fields (`version`, `id`, `status`, `projectType`, `name`, `workflow`, `editingPrompt`, `runCount`, `settings.resolution`) but omit `tracks`, `sources`, `audio`, `storyboard`, and `settings.fps`. The render target is a set of PNGs, not a video.
+
+Carousel-specific top-level fields:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `projectType` | `"carousel"` | Identifies this project as a carousel. Set at init; immutable. |
+| `carousel.aspect` | string | One of `square`, `portrait`, `vertical`. Locked at creation. Drives `settings.resolution` — `[1080,1080]`, `[1080,1350]`, `[1080,1920]` respectively. |
+| `slides` | `Slide[]` | Ordered slide deck. Element order within a slide is z-order, bottom → top. |
+
+### `Slide` shape
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | string | UUID v4. Stable identifier. |
+| `base_color` | string | CSS hex color for the slide background. Default `#ffffff`. |
+| `elements` | `Element[]` | Ordered array of elements. Bottom → top z-order. |
+
+### `Element` variants
+
+**`type: "image"`**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | string | UUID v4. |
+| `type` | `"image"` | |
+| `src` | string | Path relative to the project directory. |
+| `x`, `y` | number | Top-left position in pixels at native resolution. |
+| `w`, `h` | number | Width and height in pixels at native resolution. |
+| `rotation` | number | Clockwise rotation in degrees. |
+
+**`type: "overlay"`**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | string | UUID v4. |
+| `type` | `"overlay"` | |
+| `overlay.template` | string | Overlay ID — matches the overlay's id in the global or profile library. |
+| `overlay.props` | object | Per-overlay props (text, color, etc.). `offsetX`/`offsetY`/`scale` inside props are ignored at render time; position is owned by `x/y/w/h/rotation`. |
+| `frame` | number | Frame index passed to the overlay component at render time. Carousels have no time axis; each element renders at exactly one frame. Default = overlay's `staticFrame` export, or `duration - 1`. |
+| `x`, `y` | number | Top-left position in pixels at native resolution. |
+| `w`, `h` | number | Width and height in pixels at native resolution. |
+| `rotation` | number | Clockwise rotation in degrees. |
+
+### Example
+
+```jsonc
+{
+  "version": "0.2",
+  "id": "abc123",
+  "projectType": "carousel",
+  "status": "final",
+  "carousel": { "aspect": "portrait" },
+  "settings": { "resolution": [1080, 1350] },
+  "slides": [
+    {
+      "id": "slide-1",
+      "base_color": "#ffffff",
+      "elements": [
+        {
+          "id": "el-1",
+          "type": "image",
+          "src": "assets/hero.jpg",
+          "x": 0, "y": 0, "w": 1080, "h": 1350,
+          "rotation": 0
+        },
+        {
+          "id": "el-2",
+          "type": "overlay",
+          "overlay": {
+            "template": "lower-third",
+            "props": { "text": "Day one." }
+          },
+          "frame": 60,
+          "x": 0, "y": 1100, "w": 1080, "h": 200,
+          "rotation": 0
+        }
+      ]
+    }
+  ]
+}
+```
+
+Source of truth for the exact contract: `engine/validate.py`.

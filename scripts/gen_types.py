@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 """Generate Python + TypeScript enum modules from schema/enums.yaml."""
+import json
+import re
 import sys
 from pathlib import Path
 
@@ -8,7 +10,7 @@ import yaml  # pyyaml
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SCHEMA = REPO_ROOT / "schema" / "enums.yaml"
 PY_OUT_DIR = REPO_ROOT / "lib" / "types"
-TS_OUT_DIR = REPO_ROOT / "ui" / "src" / "lib" / "types"
+TS_OUT_DIR = REPO_ROOT / "montaj_assets" / "ui" / "src" / "lib" / "types"
 
 HEADER_PY = """\
 # GENERATED FROM schema/enums.yaml — DO NOT EDIT BY HAND.
@@ -39,6 +41,9 @@ def plural(name: str) -> str:
     return upper + "S"
 
 
+_CONST_NAME_RE = re.compile(r"^[A-Z][A-Z0-9_]*$")
+
+
 def validate_schema(enums: list[dict]) -> None:
     seen_names: set[str] = set()
     for e in enums:
@@ -55,6 +60,40 @@ def validate_schema(enums: list[dict]) -> None:
         helpers = e.get("helpers", {})
         if helpers.get("normalize") and "default" not in e:
             sys.exit(f"enum {e['name']}: normalize:true requires a default")
+        extra = e.get("extra")
+        if extra is not None:
+            if not isinstance(extra, dict):
+                sys.exit(f"enum {e['name']}: 'extra' must be a dict")
+            for key, block in extra.items():
+                if not isinstance(block, dict):
+                    sys.exit(f"enum {e['name']}.extra.{key}: must be a dict")
+                if "name" not in block or "values" not in block:
+                    sys.exit(f"enum {e['name']}.extra.{key}: must have 'name' and 'values'")
+                if not isinstance(block["name"], str) or not _CONST_NAME_RE.match(block["name"]):
+                    sys.exit(
+                        f"enum {e['name']}.extra.{key}: 'name' must match [A-Z][A-Z0-9_]*,"
+                        f" got {block['name']!r}"
+                    )
+                if not isinstance(block["values"], dict):
+                    sys.exit(f"enum {e['name']}.extra.{key}: 'values' must be a dict")
+                for vk, vv in block["values"].items():
+                    if isinstance(vv, list):
+                        if len(vv) != 2:
+                            sys.exit(
+                                f"enum {e['name']}.extra.{key}.values[{vk!r}]: "
+                                f"list values must have exactly 2 elements"
+                            )
+                    elif not isinstance(vv, (str, int, float, bool)):
+                        sys.exit(
+                            f"enum {e['name']}.extra.{key}.values[{vk!r}]: "
+                            f"value must be a primitive or 2-element list"
+                        )
+
+
+# NOTE: lib/types/project.py has hand-written content (ALLOWED_SETTINGS_KEYS)
+# appended after the generated section. The generator currently overwrites the
+# whole file; if you regenerate, restore that footer or move it into a separate
+# non-generated module. See lib/types/project.py for the canonical block.
 
 
 def emit_python_module(module: str, enums: list[dict]) -> str:
@@ -119,6 +158,31 @@ def emit_python_module(module: str, enums: list[dict]) -> str:
             lines.append(f"    return {default_name}")
             lines.append("")
 
+        # extra constants
+        extra = e.get("extra")
+        if extra:
+            for block in extra.values():
+                const = block["name"]
+                block_vals = block["values"]
+                # Detect tuple-of-int shape (2-element list values)
+                sample = next(iter(block_vals.values())) if block_vals else None
+                is_tuple_int = isinstance(sample, list) and len(sample) == 2 and all(
+                    isinstance(x, int) for x in sample
+                )
+                if is_tuple_int:
+                    annotation = "dict[str, tuple[int, int]]"
+                else:
+                    annotation = "dict[str, object]"
+                lines.append(f"{const}: {annotation} = {{")
+                for k, v in block_vals.items():
+                    if isinstance(v, list):
+                        py_val = f"({v[0]}, {v[1]})"
+                    else:
+                        py_val = repr(v)
+                    lines.append(f'    "{k}": {py_val},')
+                lines.append("}")
+                lines.append("")
+
     # Ensure file ends with single newline
     return "\n".join(lines).rstrip() + "\n"
 
@@ -166,6 +230,31 @@ def emit_typescript_module(module: str, enums: list[dict]) -> str:
             lines.append(f"  return {default_name}")
             lines.append(f"}}")
             lines.append("")
+
+        # extra constants
+        extra = e.get("extra")
+        if extra:
+            for block in extra.values():
+                const = block["name"]
+                block_vals = block["values"]
+                # Detect tuple-of-int shape (2-element list values)
+                sample = next(iter(block_vals.values())) if block_vals else None
+                is_tuple_int = isinstance(sample, list) and len(sample) == 2 and all(
+                    isinstance(x, int) for x in sample
+                )
+                if is_tuple_int:
+                    satisfies = f" satisfies Record<{type_name}, readonly [number, number]>"
+                else:
+                    satisfies = ""
+                lines.append(f"export const {const} = {{")
+                for k, v in block_vals.items():
+                    if isinstance(v, list):
+                        ts_val = f"[{', '.join(str(x) for x in v)}]"
+                    else:
+                        ts_val = json.dumps(v)
+                    lines.append(f"  '{k}': {ts_val},")
+                lines.append(f"}} as const{satisfies}")
+                lines.append("")
 
     return "\n".join(lines).rstrip() + "\n"
 

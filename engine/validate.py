@@ -5,6 +5,9 @@ import argparse, json, os, re, sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "lib"))
 from common import fail
 
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+from lib.types.carousel import CAROUSEL_ASPECTS, CAROUSEL_RESOLUTIONS
+
 # Re-export existing step validation so tests can import from validate
 from validate_step import validate as validate_step  # noqa: F401
 from validate_step import resolve_step_path  # noqa: F401
@@ -23,6 +26,10 @@ PRIMARY_CLIP_REQUIRED = {"id", "type", "src", "start", "end"}
 VISUAL_ITEM_REQUIRED = {"id", "type", "src", "start", "end"}
 
 
+_BASE_COLOR_RE = re.compile(r"^#[0-9a-fA-F]{6}$|^#[0-9a-fA-F]{8}$")
+_CAROUSEL_FORBIDDEN = ("tracks", "sources", "audio", "storyboard")
+
+
 def validate_project(path):
     if not os.path.isfile(path):
         fail("file_not_found", f"File not found: {path}")
@@ -33,51 +40,132 @@ def validate_project(path):
     except json.JSONDecodeError as e:
         fail("invalid_json", f"Invalid JSON in {path}: {e}")
 
-    for field in ("version", "id", "status", "workflow", "editingPrompt", "settings", "tracks"):
-        if field not in data:
-            fail("missing_field", f"Missing required field: {field}")
+    project_type = data.get("projectType")
 
-    tracks = data["tracks"]
-    if not isinstance(tracks, list):
-        fail("invalid_tracks", "tracks must be an array")
+    if project_type == "carousel":
+        for field in ("version", "id", "status", "workflow", "editingPrompt", "settings", "carousel", "slides"):
+            if field not in data:
+                fail("missing_field", f"Missing required field: {field}")
 
-    for i, track in enumerate(tracks):
-        if not isinstance(track, list):
-            fail("invalid_tracks", f"tracks[{i}] must be an array of items, not an object")
+        for key in _CAROUSEL_FORBIDDEN:
+            if key in data:
+                fail("invalid_carousel_field", f"carousel projects must not have '{key}' field")
 
-        if i == 0:
-            # Primary track: items must be type "video" with start/end.
-            # Overlap is intentionally NOT checked here — primary clips can overlap
-            # on the timeline; compose.js handles rendering order via itsoffset.
-            for item in track:
-                for field in PRIMARY_CLIP_REQUIRED:
-                    if field not in item:
-                        fail("missing_field", f"tracks[0] item missing required field '{field}': {item.get('id', '?')}")
-                if item.get("type") != "video":
-                    fail("invalid_primary_clip", f"tracks[0] item '{item.get('id', '?')}' must have type 'video', got '{item.get('type')}'")
-                s, e = item.get("start"), item.get("end")
-                if isinstance(s, (int, float)) and isinstance(e, (int, float)):
-                    # Permit start == end == 0.0: init.py writes these as placeholders;
-                    # the agent fills real values after probing the source file.
-                    if not (s == 0.0 and e == 0.0) and e < s:
-                        fail("invalid_field", f"tracks[0] item '{item.get('id', '?')}': end ({e}) < start ({s})")
-        else:
-            # Overlay tracks: standard visual item validation + overlap check
-            sorted_items = sorted(track, key=lambda x: x.get("start", 0))
-            prev_end = None
-            for item in sorted_items:
-                for field in VISUAL_ITEM_REQUIRED:
-                    if field not in item:
-                        fail("missing_field", f"tracks[{i}] item missing required field '{field}': {item.get('id', '?')}")
-                if "opaque" in item and not isinstance(item["opaque"], bool):
-                    fail("invalid_field", f"Visual item '{item['id']}': 'opaque' must be boolean")
-                if prev_end is not None and item["start"] < prev_end:
-                    fail(
-                        "visual_track_overlap",
-                        f"Overlap in tracks[{i}]: item '{item['id']}' starts at {item['start']} "
-                        f"but previous item ends at {prev_end}"
-                    )
-                prev_end = item["end"]
+        carousel = data["carousel"]
+        if not isinstance(carousel, dict) or carousel.get("aspect") not in CAROUSEL_ASPECTS:
+            fail("invalid_carousel", f"carousel.aspect must be one of {list(CAROUSEL_ASPECTS)}")
+
+        slides = data["slides"]
+        if not isinstance(slides, list):
+            fail("invalid_slides", "slides must be an array")
+
+        aspect = carousel["aspect"]
+        expected_res = list(CAROUSEL_RESOLUTIONS[aspect])
+        actual_res = list(data["settings"].get("resolution", []))
+        if actual_res != expected_res:
+            fail("invalid_resolution", f"settings.resolution {actual_res} does not match expected {expected_res} for aspect '{aspect}'")
+
+        slide_ids = set()
+        for si, slide in enumerate(slides):
+            slide_id = slide.get("id")
+            if not isinstance(slide_id, str):
+                fail("missing_field", f"slides[{si}].id must be a string")
+            if slide_id in slide_ids:
+                fail("duplicate_slide_id", f"Duplicate slide id '{slide_id}' at slides[{si}]")
+            slide_ids.add(slide_id)
+
+            base_color = slide.get("base_color")
+            if not isinstance(base_color, str) or not _BASE_COLOR_RE.match(base_color):
+                fail("invalid_field", f"slides[{si}].base_color must be a 6- or 8-digit hex color")
+
+            elements = slide.get("elements")
+            if not isinstance(elements, list):
+                fail("missing_field", f"slides[{si}].elements must be an array")
+
+            el_ids = set()
+            for ei, el in enumerate(elements):
+                el_id = el.get("id")
+                if not isinstance(el_id, str):
+                    fail("missing_field", f"slides[{si}].elements[{ei}].id must be a string")
+                if el_id in el_ids:
+                    fail("duplicate_element_id", f"Duplicate element id '{el_id}' in slides[{si}]")
+                el_ids.add(el_id)
+
+                el_type = el.get("type")
+                if el_type not in ("image", "overlay"):
+                    fail("invalid_field", f"slides[{si}].elements[{ei}].type must be 'image' or 'overlay'")
+
+                for coord in ("x", "y", "w", "h", "rotation"):
+                    val = el.get(coord)
+                    if not isinstance(val, (int, float)):
+                        fail("missing_field", f"slides[{si}].elements[{ei}].{coord} must be a number")
+                if el["w"] <= 0:
+                    fail("invalid_field", f"slides[{si}].elements[{ei}].w must be > 0")
+                if el["h"] <= 0:
+                    fail("invalid_field", f"slides[{si}].elements[{ei}].h must be > 0")
+
+                if el_type == "image":
+                    src = el.get("src")
+                    if not isinstance(src, str) or not src:
+                        fail("missing_field", f"slides[{si}].elements[{ei}].src must be a non-empty string")
+                elif el_type == "overlay":
+                    overlay = el.get("overlay")
+                    if not isinstance(overlay, dict):
+                        fail("missing_field", f"slides[{si}].elements[{ei}].overlay must be an object")
+                    if not isinstance(overlay.get("template"), str):
+                        fail("missing_field", f"slides[{si}].elements[{ei}].overlay.template must be a string")
+                    if not isinstance(overlay.get("props"), dict):
+                        fail("missing_field", f"slides[{si}].elements[{ei}].overlay.props must be an object")
+                    frame = el.get("frame")
+                    if not isinstance(frame, (int, float)) or frame < 0:
+                        fail("missing_field", f"slides[{si}].elements[{ei}].frame must be a number >= 0")
+
+    else:
+        for field in ("version", "id", "status", "workflow", "editingPrompt", "settings", "tracks"):
+            if field not in data:
+                fail("missing_field", f"Missing required field: {field}")
+
+        tracks = data["tracks"]
+        if not isinstance(tracks, list):
+            fail("invalid_tracks", "tracks must be an array")
+
+        for i, track in enumerate(tracks):
+            if not isinstance(track, list):
+                fail("invalid_tracks", f"tracks[{i}] must be an array of items, not an object")
+
+            if i == 0:
+                # Primary track: items must be type "video" with start/end.
+                # Overlap is intentionally NOT checked here — primary clips can overlap
+                # on the timeline; compose.js handles rendering order via itsoffset.
+                for item in track:
+                    for field in PRIMARY_CLIP_REQUIRED:
+                        if field not in item:
+                            fail("missing_field", f"tracks[0] item missing required field '{field}': {item.get('id', '?')}")
+                    if item.get("type") != "video":
+                        fail("invalid_primary_clip", f"tracks[0] item '{item.get('id', '?')}' must have type 'video', got '{item.get('type')}'")
+                    s, e = item.get("start"), item.get("end")
+                    if isinstance(s, (int, float)) and isinstance(e, (int, float)):
+                        # Permit start == end == 0.0: init.py writes these as placeholders;
+                        # the agent fills real values after probing the source file.
+                        if not (s == 0.0 and e == 0.0) and e < s:
+                            fail("invalid_field", f"tracks[0] item '{item.get('id', '?')}': end ({e}) < start ({s})")
+            else:
+                # Overlay tracks: standard visual item validation + overlap check
+                sorted_items = sorted(track, key=lambda x: x.get("start", 0))
+                prev_end = None
+                for item in sorted_items:
+                    for field in VISUAL_ITEM_REQUIRED:
+                        if field not in item:
+                            fail("missing_field", f"tracks[{i}] item missing required field '{field}': {item.get('id', '?')}")
+                    if "opaque" in item and not isinstance(item["opaque"], bool):
+                        fail("invalid_field", f"Visual item '{item['id']}': 'opaque' must be boolean")
+                    if prev_end is not None and item["start"] < prev_end:
+                        fail(
+                            "visual_track_overlap",
+                            f"Overlap in tracks[{i}]: item '{item['id']}' starts at {item['start']} "
+                            f"but previous item ends at {prev_end}"
+                        )
+                    prev_end = item["end"]
 
     return {"valid": True}
 

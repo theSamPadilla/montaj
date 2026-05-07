@@ -7,6 +7,7 @@ import UploadView from './UploadView'
 import LiveView from './LiveView'
 import ReviewView from './ReviewView'
 import StoryboardView from './StoryboardView'
+import CarouselEditor from './CarouselEditor'
 
 export default function EditorPage() {
   const { id } = useParams<{ id: string }>()
@@ -41,7 +42,7 @@ export default function EditorPage() {
       api.getProject(id).then(p => { if (p.status !== 'pending') setProject(p) }).catch(() => {})
     }, 10000)
     return () => clearInterval(timer)
-  }, [id, project?.status])
+  }, [id, project?.status, project?.projectType])
 
   if (error) {
     return <div className="p-6 text-red-400 text-sm">{error}</div>
@@ -56,7 +57,9 @@ export default function EditorPage() {
   }
 
   let view
-  if (project.projectType === 'ai_video' && (project.status === 'pending' || project.status === 'storyboard_ready')) {
+  if (project.projectType === 'carousel') {
+    view = <CarouselEditor project={project} onProjectChange={setProject} logMessage={logMessage} />
+  } else if (project.projectType === 'ai_video' && (project.status === 'pending' || project.status === 'storyboard_ready')) {
     view = <StoryboardView project={project} onProjectChange={setProject} logMessage={logMessage} />
   } else if (project.status === 'pending') {
     view = <LiveView project={project} logMessage={logMessage} onProjectChange={setProject} />

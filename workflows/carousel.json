@@ -1,0 +1,9 @@
+{
+  "name": "carousel",
+  "description": "Image carousel for Instagram/TikTok. Slide-based design with image and overlay elements; renders to N PNGs. Build is delegated to the montaj/carousel skill.",
+  "project_type": "carousel",
+  "requires_clips": false,
+  "steps": [
+    { "id": "build", "uses": "montaj/carousel" }
+  ]
+}

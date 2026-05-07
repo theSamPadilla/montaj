@@ -10,7 +10,7 @@
 enums:
   - name: project_type
     module: project
-    values: [editing, music_video, ai_video]
+    values: [editing, music_video, ai_video, carousel]
     default: editing
     description: |
       The project's top-level type. Inherited from the workflow's `project_type`
@@ -41,3 +41,31 @@ enums:
     helpers:
       is_valid: true
       normalize: true
+    extra:
+      resolutions:
+        name: ASPECT_RESOLUTIONS
+        values:
+          "16:9": [1920, 1080]
+          "9:16": [1080, 1920]
+          "1:1":  [1080, 1080]
+
+  - name: carousel_aspect
+    module: carousel
+    values: [square, portrait, vertical]
+    default: square
+    description: |
+      Aspect ratio of an image-carousel project. Locked at project init,
+      applies to every slide. Resolutions:
+        square   = 1080x1080  (Instagram square)
+        portrait = 1080x1350  (Instagram portrait — dominant carousel format in 2026)
+        vertical = 1080x1920  (TikTok photo mode, IG/Threads stories)
+    helpers:
+      is_valid: true
+      normalize: true
+    extra:
+      resolutions:
+        name: CAROUSEL_RESOLUTIONS
+        values:
+          square:   [1080, 1080]
+          portrait: [1080, 1350]
+          vertical: [1080, 1920]

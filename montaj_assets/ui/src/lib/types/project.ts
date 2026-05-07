@@ -1,7 +1,7 @@
 // GENERATED FROM schema/enums.yaml — DO NOT EDIT BY HAND.
 // Run `python3 scripts/gen_types.py` after editing the YAML source.
 
-export const PROJECT_TYPES = ['editing', 'music_video', 'ai_video'] as const
+export const PROJECT_TYPES = ['editing', 'music_video', 'ai_video', 'carousel'] as const
 export type ProjectType = typeof PROJECT_TYPES[number]
 export const DEFAULT_PROJECT_TYPE: ProjectType = 'editing'
 

@@ -66,10 +66,16 @@ export async function compileOverlay(src: string): Promise<OverlayFactory> {
   // Strip any import statements — globals are injected via function params instead.
   const stripped = code.replace(/^\s*import\s[^;]+;?\s*$/gm, '').trim()
 
-  // Rewrite `export default function Foo` / `export default Foo` → `var __Component`
+  // Rewrite `export default function Foo` / `export default Foo` → `var __Component`.
+  // Also strip the `export` keyword from named exports (`export const X`, `export function X`,
+  // `export { X, Y }`) — the function body can't host ESM, and the values themselves are
+  // ignored unless they're assigned to __Component. This makes the compiler tolerant of the
+  // full export syntax authors actually write per skills/write-overlay.
   const normalized = stripped
     .replace(/export\s+default\s+function\s+(\w+)/, 'var __Component = function $1')
     .replace(/export\s+default\s+/, 'var __Component = ')
+    .replace(/^\s*export\s+(?=(?:const|let|var|function|class|async\s))/gm, '')
+    .replace(/^\s*export\s*\{[^}]*\}\s*;?\s*$/gm, '')
 
   // Rewrite hardcoded absolute local file paths (e.g. /Users/Sam/…, /home/…) so the
   // browser fetches them through the /api/files proxy instead of failing with a 404.
