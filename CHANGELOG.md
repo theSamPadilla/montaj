@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## v2.2.1
+
+### Version metadata fix
+- Identical body of work as v2.2.0. The v2.2.0 tag was pushed at the commit immediately before the version-bump commit landed, so `pyproject.toml` in that tarball still read `version = "2.1.3"` and `pip install` reported the wrong version. v2.2.1 re-ships the same code with `pyproject.toml` + the three `montaj_assets/{render,ui,mcp}/package.json` files correctly set to 2.2.1.
+
 ## v2.2.0
 
 ### Image carousel projects
