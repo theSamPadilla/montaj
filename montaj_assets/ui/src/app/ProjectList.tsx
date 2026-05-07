@@ -63,9 +63,16 @@ export default function ProjectList() {
               onClick={() => navigate(`/projects/${p.id}`)}
               className="flex-1 min-w-0 text-left"
             >
-              <p className="text-sm font-medium text-gray-900 dark:text-white truncate">
-                {p.name ?? p.id.slice(0, 8)}
-              </p>
+              <div className="flex items-center gap-2 min-w-0">
+                <p className="text-sm font-medium text-gray-900 dark:text-white truncate">
+                  {p.name ?? p.id.slice(0, 8)}
+                </p>
+                {p.projectType === 'carousel' && (
+                  <span className="shrink-0 inline-flex items-center rounded-full bg-fuchsia-500/[0.06] px-2 py-0.5 text-[10px] font-medium text-fuchsia-400/70 border border-fuchsia-500/15 uppercase tracking-wider">
+                    Carousel
+                  </span>
+                )}
+              </div>
               <p className="text-xs text-gray-500 truncate mt-0.5">{p.editingPrompt}</p>
             </button>
             <StatusBadge status={p.status} />
