@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## v2.2.2
+
+### Packaging fix: root skill ships in the wheel
+- The top-level entry `SKILL.md` lived at the repo root, which meant it never made it into the installed wheel — `MANIFEST.in` only grafted `skills/*.md`, and setuptools wheels don't drop bare top-level non-package files into `site-packages` anyway. In production builds, `GET /api/info` returned a `root_skill_path` pointing at a file that didn't exist, breaking the pending-screen "Send this to your agent" handoff. Moved to `skills/SKILL.md` so the existing `recursive-include skills *.md` picks it up; updated `serve/routes/skills.py` to advertise the new path. Internal sub-skill references inside the file rewritten from `skills/<name>/SKILL.md` to sibling-relative `<name>/SKILL.md` for unambiguous resolution from the new location. `scan_skills()` ignores the new sibling file (it only iterates subdirectories of `skills/`), so the skill list is unchanged.
+
 ## v2.2.1
 
 ### Version metadata fix
