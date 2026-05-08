@@ -112,4 +112,4 @@ Ask the user:
 > **Edit a video:** Tell me the location of your clips or drop them in the UI, and I'll run the full edit pipeline for whatever content style you pick. You can always add a style profile later."
 
 - If **style profile**: load `skills/style-profile/SKILL.md` and follow it.
-- If **edit a video**: load the repo root `SKILL.md` and follow it.
+- If **edit a video**: load `skills/SKILL.md` and follow it.

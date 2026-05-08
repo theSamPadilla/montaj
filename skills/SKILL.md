@@ -10,9 +10,9 @@ Montaj is a video editing toolkit with agent-first tools. Built-in steps cover c
 ## Core Loop
 
 **Detecting which interface to use:**
-Try `GET http://localhost:3000/api/projects?status=pending`. If it responds → **HTTP mode**: load `skills/serve/SKILL.md` before making any API calls, then follow the HTTP loop there. If connection is refused → CLI or MCP mode.
+Try `GET http://localhost:3000/api/projects?status=pending`. If it responds → **HTTP mode**: load `serve/SKILL.md` before making any API calls, then follow the HTTP loop there. If connection is refused → CLI or MCP mode.
 
-**When running as MCP client:** Load `skills/mcp/SKILL.md`.
+**When running as MCP client:** Load `mcp/SKILL.md`.
 
 **When running headless (CLI):**
 ```
@@ -38,11 +38,11 @@ Try `GET http://localhost:3000/api/projects?status=pending`. If it responds → 
 
 **Never invent a step sequence from scratch.** Follow the assigned workflow; deviate only where the prompt explicitly requires it or the workflow fails (see Deviation Rules).
 
-**Multiple clips or workflow has `foreach` steps:** Load `skills/parallel/SKILL.md`.
+**Multiple clips or workflow has `foreach` steps:** Load `parallel/SKILL.md`.
 
 ## Running Steps
 
-**HTTP API:** Load `skills/serve/SKILL.md` — all step calls go through `POST http://localhost:3000/api/steps/:name`. Fire long-running steps with `run_in_background: true` to stay available for conversation.
+**HTTP API:** Load `serve/SKILL.md` — all step calls go through `POST http://localhost:3000/api/steps/:name`. Fire long-running steps with `run_in_background: true` to stay available for conversation.
 
 **CLI — use when serve is NOT running:**
 ```bash
@@ -107,10 +107,10 @@ To see all available steps including project-local custom steps: `montaj step -h
 | `remove_bg` | Remove video background via RVM → ProRes 4444 `.mov` with alpha channel **plus** a VP9 WebM preview proxy. Store the ProRes path in `nobg_src` (used by render) and the WebM path in `nobg_preview_src` (used by browser preview — ProRes can't decode in `<video>`); keep the original in `src`. Set `remove_bg: true` on the item. **Long-running (minutes per clip) — always run in the background with `--progress` so you can monitor status.** Use `--inputs` for multiple clips. | `--inputs clip0.mp4 clip1.mp4`, `--progress`, `--model rvm_mobilenetv3` (or `rvm_resnet50`), `--downsample 0.5` |
 
 ### Select Takes (`montaj/select_takes`)
-**REQUIRED SUB-SKILL:** Load `skills/select-takes/SKILL.md` before executing this step.
+**REQUIRED SUB-SKILL:** Load `select-takes/SKILL.md` before executing this step.
 
 ### Overlays (`montaj/overlay`)
-**REQUIRED SUB-SKILL:** Load `skills/overlay/SKILL.md` before executing. Also load `skills/write-overlay/SKILL.md` before writing JSX.
+**REQUIRED SUB-SKILL:** Load `overlay/SKILL.md` before executing. Also load `write-overlay/SKILL.md` before writing JSX.
 
 ## Trim Spec Architecture
 
@@ -203,17 +203,17 @@ If in doubt, **ask your human**.
 
 | Skill | Path | When to load |
 |-------|------|-------------|
-| `serve` | `skills/serve/SKILL.md` | HTTP mode detected — **load before first API call** |
-| `parallel` | `skills/parallel/SKILL.md` | Multiple clips, or workflow has `foreach` steps |
-| `mcp` | `skills/mcp/SKILL.md` | Running as MCP client |
-| `select-takes` | `skills/select-takes/SKILL.md` | Executing `montaj/select_takes` in a workflow |
-| `overlay` | `skills/overlay/SKILL.md` | Executing `montaj/overlay` in a workflow |
-| `write-overlay` | `skills/write-overlay/SKILL.md` | Writing custom JSX overlay components |
-| `style-profile` | `skills/style-profile/SKILL.md` | Creating or updating a creator style profile |
-| `workflow-builder` | `skills/workflow-builder/SKILL.md` | Creating or editing workflows |
-| `lyrics-video` | `skills/lyrics-video/SKILL.md` | Working on a `lyrics_video` workflow project |
-| `ai-video-plan` | `skills/ai-video-plan/SKILL.md` | Working on an `ai_video` project (Phases 0-2: story clarification, storyboard planning) |
-| `ai-video-generate` | `skills/ai-video-generate/SKILL.md` | Working on an `ai_video` project (Phases 6-7: scene generation, audio assembly, regenQueue) |
+| `serve` | `serve/SKILL.md` | HTTP mode detected — **load before first API call** |
+| `parallel` | `parallel/SKILL.md` | Multiple clips, or workflow has `foreach` steps |
+| `mcp` | `mcp/SKILL.md` | Running as MCP client |
+| `select-takes` | `select-takes/SKILL.md` | Executing `montaj/select_takes` in a workflow |
+| `overlay` | `overlay/SKILL.md` | Executing `montaj/overlay` in a workflow |
+| `write-overlay` | `write-overlay/SKILL.md` | Writing custom JSX overlay components |
+| `style-profile` | `style-profile/SKILL.md` | Creating or updating a creator style profile |
+| `workflow-builder` | `workflow-builder/SKILL.md` | Creating or editing workflows |
+| `lyrics-video` | `lyrics-video/SKILL.md` | Working on a `lyrics_video` workflow project |
+| `ai-video-plan` | `ai-video-plan/SKILL.md` | Working on an `ai_video` project (Phases 0-2: story clarification, storyboard planning) |
+| `ai-video-generate` | `ai-video-generate/SKILL.md` | Working on an `ai_video` project (Phases 6-7: scene generation, audio assembly, regenQueue) |
 
 ## Dependencies
 

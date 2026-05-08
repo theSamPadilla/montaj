@@ -13,7 +13,7 @@ router = APIRouter(prefix="/api")
 async def get_info():
     return {
         "skill_path": str(MONTAJ_ROOT / "skills/onboarding/SKILL.md"),
-        "root_skill_path": str(MONTAJ_ROOT / "SKILL.md"),
+        "root_skill_path": str(MONTAJ_ROOT / "skills" / "SKILL.md"),
         "style_profile_skill_path": str(MONTAJ_ROOT / "skills/style-profile/SKILL.md"),
     }
 
