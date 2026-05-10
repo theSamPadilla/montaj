@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- `POST /api/run` and `python -m project.init` now accept an optional caller-supplied project id (`id` body field / `--id` CLI flag). When provided, the value is parsed via `uuid.UUID()` and stored canonical (lowercase 8-4-4-4-12) as `project.json["id"]`; when absent, the server generates a UUID as before. Enables consumers (e.g. Hub) to maintain a single shared identifier across both systems instead of mapping between Montaj's generated id and their own.
+
 ## v2.2.2
 
 ### Packaging fix: root skill ships in the wheel

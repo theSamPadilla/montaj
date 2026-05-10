@@ -1,5 +1,5 @@
 """Tests for project/init.py project creation — v0.2 unified tracks schema."""
-import json, os, shutil, subprocess, sys
+import json, os, shutil, subprocess, sys, uuid
 from pathlib import Path
 import pytest
 
@@ -1103,4 +1103,99 @@ def test_profile_snapshot_omits_style_profile_path_when_absent(tmp_path):
     project = json.loads(_project_path_from_stdout(result.stdout).read_text())
     snap = project["profileSnapshot"]
     assert "styleProfilePath" not in snap
+
+
+# ---------------------------------------------------------------------------
+# --id flag tests (Task 1 of 2026-05-10-init-id-passthrough plan)
+# ---------------------------------------------------------------------------
+
+CANONICAL_ID = "550e8400-e29b-41d4-a716-446655440000"
+
+
+def test_init_with_explicit_id_uses_supplied_value(tmp_path, monkeypatch):
+    """--id <canonical-uuid> overrides the server-generated UUID in project.json."""
+    monkeypatch.setenv("MONTAJ_WORKSPACE_DIR", str(tmp_path))
+    result = subprocess.run(
+        [sys.executable, "-m", "project.init",
+         "--prompt", "test",
+         "--workflow", "carousel",
+         "--carousel-aspect", "square",
+         "--id", CANONICAL_ID,
+         "--project-path", "explicit-id-test"],
+        capture_output=True, text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    project_json = json.loads((tmp_path / "explicit-id-test" / "project.json").read_text())
+    assert project_json["id"] == CANONICAL_ID
+
+
+@pytest.mark.parametrize("non_canonical", [
+    "550E8400-E29B-41D4-A716-446655440000",                # uppercase hex
+    "550e8400e29b41d4a716446655440000",                    # hex32, no dashes
+    "{550e8400-e29b-41d4-a716-446655440000}",              # braced
+    "urn:uuid:550e8400-e29b-41d4-a716-446655440000",       # urn prefix
+])
+def test_init_with_non_canonical_id_is_canonicalized(tmp_path, monkeypatch, non_canonical):
+    """Non-canonical-but-parseable UUID forms are accepted and stored canonicalized.
+    This is the contract that makes find_project_dir's string-equality match safe
+    against logically-equal-but-textually-different ids."""
+    monkeypatch.setenv("MONTAJ_WORKSPACE_DIR", str(tmp_path))
+    # Use a unique project-path per parametrize case — same canonical id under
+    # different surface forms would otherwise collide on directory creation.
+    safe_subdir = f"non-canon-{abs(hash(non_canonical))}"
+    result = subprocess.run(
+        [sys.executable, "-m", "project.init",
+         "--prompt", "test",
+         "--workflow", "carousel",
+         "--carousel-aspect", "square",
+         "--id", non_canonical,
+         "--project-path", safe_subdir],
+        capture_output=True, text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    project_json = json.loads((tmp_path / safe_subdir / "project.json").read_text())
+    assert project_json["id"] == CANONICAL_ID
+
+
+def test_init_without_id_generates_uuid(tmp_path, monkeypatch):
+    """Absence of --id preserves current behavior — generated UUID, valid format."""
+    monkeypatch.setenv("MONTAJ_WORKSPACE_DIR", str(tmp_path))
+    result = subprocess.run(
+        [sys.executable, "-m", "project.init",
+         "--prompt", "test",
+         "--workflow", "carousel",
+         "--carousel-aspect", "square",
+         "--project-path", "no-id-test"],
+        capture_output=True, text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    project_json = json.loads((tmp_path / "no-id-test" / "project.json").read_text())
+    # Round-trips through uuid.UUID — proves it's a valid canonical UUID string.
+    assert str(uuid.UUID(project_json["id"])) == project_json["id"]
+
+
+@pytest.mark.parametrize("bad_id", [
+    "not-a-uuid",
+    "550e8400-e29b-41d4-a716",                       # truncated
+    "",                                              # empty
+    "550e8400-e29b-41d4-a716-44665544000Z",          # invalid hex character
+    "zzzzzzzz-zzzz-zzzz-zzzz-zzzzzzzzzzzz",          # all non-hex
+])
+def test_init_with_invalid_id_rejected(tmp_path, monkeypatch, bad_id):
+    """Truly malformed --id exits non-zero with invalid_id error, no project created."""
+    monkeypatch.setenv("MONTAJ_WORKSPACE_DIR", str(tmp_path))
+    result = subprocess.run(
+        [sys.executable, "-m", "project.init",
+         "--prompt", "test",
+         "--workflow", "carousel",
+         "--carousel-aspect", "square",
+         "--id", bad_id,
+         "--project-path", "bad-id-test"],
+        capture_output=True, text=True,
+    )
+    assert result.returncode != 0
+    err = json.loads(result.stderr)
+    assert err["error"] == "invalid_id"
+    # No project directory should have been created on validation failure.
+    assert not (tmp_path / "bad-id-test").exists()
 

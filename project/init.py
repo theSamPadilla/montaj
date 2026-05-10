@@ -121,7 +121,7 @@ def _build_carousel_project(args, workspace_dir: str, assets: list) -> None:
 
     project = {
         "version": "0.2",
-        "id": str(uuid.uuid4()),
+        "id": args.project_id or str(uuid.uuid4()),
         "status": "pending",
         "projectType": "carousel",
         "name": args.name or None,
@@ -203,12 +203,30 @@ def main():
     parser.add_argument("--carousel-aspect", dest="carousel_aspect", default=None,
                         choices=list(CAROUSEL_ASPECTS),
                         help="carousel only. Aspect ratio for all slides (square, portrait, vertical).")
+    parser.add_argument("--id", dest="project_id", default=None,
+                        help="Optional project id. If supplied, used as project.json['id'] verbatim. "
+                             "Must be a canonical UUID string (8-4-4-4-12 hex). When absent, a fresh "
+                             "UUID is generated server-side.")
     args = parser.parse_args()
 
     # Early carousel detection — validate incompatible args BEFORE any on-disk side effects.
     early_project_type = _read_project_type(args.workflow)
     if early_project_type == "carousel":
         _validate_carousel_args(args)
+
+    # Parse --id BEFORE any on-disk side effects and canonicalize. uuid.UUID()
+    # raises ValueError on truly malformed input (wrong length, non-hex, empty,
+    # non-string). It also accepts non-canonical forms (hex32, braced,
+    # urn:uuid:..., uppercase) — for those, str(uuid.UUID(raw)) returns the
+    # canonical lowercase 8-4-4-4-12 form, which is what we store. This makes
+    # find_project_dir's string-equality match safe against callers who pass
+    # logically-equal-but-textually-different ids.
+    if args.project_id is not None:
+        try:
+            args.project_id = str(uuid.UUID(args.project_id))
+        except (ValueError, AttributeError):
+            fail("invalid_id",
+                 f"--id must be a parseable UUID (got {args.project_id!r})")
 
     if args.canvas and args.clips:
         fail("mutually_exclusive", "--canvas and --clips are mutually exclusive")
@@ -532,7 +550,7 @@ def main():
 
     project = {
         "version": "0.2",
-        "id": str(uuid.uuid4()),
+        "id": args.project_id or str(uuid.uuid4()),
         "status": "pending",
         "projectType": project_type,
         "name": args.name or None,

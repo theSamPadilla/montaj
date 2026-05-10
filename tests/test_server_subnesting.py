@@ -6,6 +6,7 @@ the full lookup-by-id path through find_project_dir for projects at depth ≥ 2.
 import json
 import os
 import time
+import uuid
 from pathlib import Path
 
 import pytest
@@ -241,3 +242,111 @@ def test_sse_emits_for_nested_project_mutation(workspace):
     # response chunks; TestClient's stream= mode is synchronous and tends to
     # hang waiting for the keepalive loop. Documented as a follow-up.
     pass
+
+
+# ---------------------------------------------------------------------------
+# id passthrough — Task 2 of 2026-05-10-init-id-passthrough
+# ---------------------------------------------------------------------------
+
+CANONICAL_ID_HTTP = "550e8400-e29b-41d4-a716-446655440000"
+
+
+def test_post_run_with_id_uses_supplied_value(workspace):
+    """POST /api/run with body.id=<uuid> produces a project.json whose id matches."""
+    resp = client.post("/api/run", json={
+        "prompt": "test",
+        "workflow": "carousel",
+        "carouselAspect": "square",
+        "id": CANONICAL_ID_HTTP,
+        "projectPath": "explicit-id",
+    })
+    assert resp.status_code == 201, resp.text
+    body = resp.json()
+    assert body["id"] == CANONICAL_ID_HTTP
+    # And the on-disk file matches.
+    on_disk = json.loads((workspace / "explicit-id" / "project.json").read_text())
+    assert on_disk["id"] == CANONICAL_ID_HTTP
+
+
+def test_post_run_with_id_animations_workflow(workspace):
+    """`animations` has requires_clips=false and exercises the general (non-
+    carousel) init path without needing clips. Confirms id passthrough wiring
+    in the general branch of run_project."""
+    fixed_id = "abcdef00-0000-0000-0000-000000000001"
+    resp = client.post("/api/run", json={
+        "prompt": "test",
+        "workflow": "animations",
+        "id": fixed_id,
+        "projectPath": "explicit-id-animations",
+    })
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["id"] == fixed_id
+
+
+def test_post_run_canonicalizes_non_canonical_id(workspace):
+    """Non-canonical-but-parseable forms (hex32, uppercase, braced, urn:uuid:)
+    are accepted and stored canonical. Mirrors the CLI-side contract."""
+    resp = client.post("/api/run", json={
+        "prompt": "test",
+        "workflow": "carousel",
+        "carouselAspect": "square",
+        "id": "550E8400E29B41D4A716446655440000",  # uppercase hex32
+        "projectPath": "non-canon-http",
+    })
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["id"] == CANONICAL_ID_HTTP
+
+
+@pytest.mark.parametrize("bad_id", [
+    "not-a-uuid",
+    "550e8400-e29b-41d4-a716",   # truncated
+    "",                          # empty
+    123,                         # non-string
+])
+def test_post_run_with_invalid_id_returns_400(bad_id):
+    """Truly malformed body.id rejected with 400 invalid_id BEFORE init subprocess fires."""
+    resp = client.post("/api/run", json={
+        "prompt": "test",
+        "workflow": "carousel",
+        "carouselAspect": "square",
+        "id": bad_id,
+        "projectPath": "should-not-exist",
+    })
+    assert resp.status_code == 400
+    assert resp.json()["detail"]["error"] == "invalid_id"
+
+
+def test_post_run_without_id_preserves_current_behavior(workspace):
+    """Absent body.id → server generates a UUID (existing behavior)."""
+    resp = client.post("/api/run", json={
+        "prompt": "test",
+        "workflow": "carousel",
+        "carouselAspect": "square",
+        "projectPath": "no-id-supplied",
+    })
+    assert resp.status_code == 201, resp.text
+    body = resp.json()
+    # Server-generated, but well-formed UUID.
+    assert str(uuid.UUID(body["id"])) == body["id"]
+
+
+def test_post_run_id_round_trips_through_get(workspace):
+    """The supplied id must be addressable on subsequent GET /api/projects/<id>.
+    This is the actual user-facing contract — single shared identity across
+    POST + GET, where today the server generates an unrelated UUID and GET
+    on the caller's id returns 404."""
+    fixed_id = "deadbeef-0000-0000-0000-000000000001"
+    resp = client.post("/api/run", json={
+        "prompt": "test",
+        "workflow": "carousel",
+        "carouselAspect": "square",
+        "id": fixed_id,
+        "projectPath": "round-trip-test",
+    })
+    assert resp.status_code == 201, resp.text
+
+    # The exact failure mode this plan solves: BEFORE this change, the server
+    # would have generated its own UUID, and GET on the caller's id would 404.
+    get_resp = client.get(f"/api/projects/{fixed_id}")
+    assert get_resp.status_code == 200, get_resp.text
+    assert get_resp.json()["id"] == fixed_id

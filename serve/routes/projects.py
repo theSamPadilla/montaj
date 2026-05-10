@@ -3,6 +3,7 @@ import asyncio
 import io
 import json
 import mimetypes
+import uuid
 import zipfile
 import os
 import secrets
@@ -81,6 +82,34 @@ def _validate_remote_items(items: list, label: str, allowed_hosts: set[str]) -> 
             host = (urlparse(item["url"]).hostname or "").lower()
             if host not in allowed_hosts:
                 raise bad_request("invalid_remote_item", f"{label}[{i}].url host not allowed: {host}")
+
+
+def _validate_optional_id(body: dict) -> str | None:
+    """Returns the id field from the body parsed and canonicalized via uuid.UUID,
+    or None when absent. Raises bad_request('invalid_id', ...) on malformed input.
+
+    Validation runs at the HTTP boundary so a bad id never reaches the init.py
+    subprocess. The CLI-level uuid.UUID parse in init.py is the second line of
+    defense for direct CLI use. Canonicalize-on-store: any form uuid.UUID()
+    accepts (canonical, hex32, braced, urn:uuid:..., uppercase) is normalized
+    to lowercase 8-4-4-4-12. Truly malformed input (truncated, non-hex, empty,
+    non-string) is rejected.
+    """
+    raw = body.get("id")
+    if raw is None:
+        return None
+    if not isinstance(raw, str):
+        raise bad_request(
+            "invalid_id",
+            f"'id' must be a string (got {type(raw).__name__}: {raw!r})",
+        )
+    try:
+        return str(uuid.UUID(raw))
+    except ValueError:
+        raise bad_request(
+            "invalid_id",
+            f"'id' must be a parseable UUID (got {raw!r})",
+        )
 
 
 def _git_commit_sync(project_dir: Path, message: str) -> None:
@@ -199,6 +228,7 @@ async def run_project(body: dict = Body(...)):
     project_path_arg = body.get("projectPath")
     remote_clips = body.get("remoteClips", [])
     remote_assets = body.get("remoteAssets", [])
+    project_id_arg = _validate_optional_id(body)
 
     # --- Carousel fast path — branch before clip/asset/intake validation ---
     wf_data = read_workflow(workflow)
@@ -227,6 +257,8 @@ async def run_project(body: dict = Body(...)):
             cmd += ["--profile", profile]
         if project_path_arg:
             cmd += ["--project-path", project_path_arg]
+        if project_id_arg:
+            cmd += ["--id", project_id_arg]
         if assets:
             if not isinstance(assets, list):
                 raise bad_request("invalid_field", "'assets' must be a list of paths")
@@ -377,6 +409,8 @@ async def run_project(body: dict = Body(...)):
         cmd += ["--profile", profile]
     if project_path_arg:
         cmd += ["--project-path", project_path_arg]
+    if project_id_arg:
+        cmd += ["--id", project_id_arg]
     cmd += image_ref_args + style_ref_args + intake_setting_args + audio_args
 
     if clips:
