@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v2.2.4
+
 - `GET /api/info` now includes a `version` field (the installed `montaj` package version, or `"dev"` when running from source). Lets sidecar deployments confirm which version is live without relying on OCI labels or `pip show` inside the container.
 
 ## v2.2.3
