@@ -1,5 +1,6 @@
 """Skills + /info endpoints."""
 import re
+from importlib.metadata import PackageNotFoundError, version as pkg_version
 from pathlib import Path
 
 from fastapi import APIRouter
@@ -9,9 +10,19 @@ from serve.common import MONTAJ_ROOT
 router = APIRouter(prefix="/api")
 
 
+def _montaj_version() -> str:
+    """Resolve the installed Montaj package version. Mirrors cli/main.py's
+    fallback: returns 'dev' when running from source (package not installed)."""
+    try:
+        return pkg_version("montaj")
+    except PackageNotFoundError:
+        return "dev"
+
+
 @router.get("/info")
 async def get_info():
     return {
+        "version": _montaj_version(),
         "skill_path": str(MONTAJ_ROOT / "skills/onboarding/SKILL.md"),
         "root_skill_path": str(MONTAJ_ROOT / "skills" / "SKILL.md"),
         "style_profile_skill_path": str(MONTAJ_ROOT / "skills/style-profile/SKILL.md"),

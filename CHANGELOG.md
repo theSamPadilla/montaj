@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- `GET /api/info` now includes a `version` field (the installed `montaj` package version, or `"dev"` when running from source). Lets sidecar deployments confirm which version is live without relying on OCI labels or `pip show` inside the container.
+
 ## v2.2.3
 
 - `POST /api/run` and `python -m project.init` now accept an optional caller-supplied project id (`id` body field / `--id` CLI flag). When provided, the value is parsed via `uuid.UUID()` and stored canonical (lowercase 8-4-4-4-12) as `project.json["id"]`; when absent, the server generates a UUID as before. Enables consumers (e.g. Hub) to maintain a single shared identifier across both systems instead of mapping between Montaj's generated id and their own.
