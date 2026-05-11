@@ -929,12 +929,12 @@ async def put_project_overlay(
     except UnicodeDecodeError:
         raise bad_request("invalid_encoding", "Overlay body must be UTF-8 text")
 
-    overlays_dir = project_dir / "overlays"
-    overlays_dir.mkdir(parents=True, exist_ok=True)
-
     # Defense in depth: validate the relative path even though the name regex
-    # already excludes traversal characters.
+    # already excludes traversal characters. Runs before mkdir so a future regex
+    # weakening can't cause directory creation outside the project root.
     target = validate_project_subpath(project_dir, f"overlays/{name}.jsx")
+
+    target.parent.mkdir(parents=True, exist_ok=True)
 
     created = not target.exists()
     target.write_text(jsx_text, encoding="utf-8")

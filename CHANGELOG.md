@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v2.3.0
+
 - `PUT /api/projects/{id}/overlays/{name}` — write agent-authored overlay JSX into a project's workspace. Slug-only names (`^[a-zA-Z0-9_-]{1,64}$`), 64KB body cap, plain-text body, idempotent (201 create / 200 overwrite). Closes the HTTP-side gap for the project-scoped overlay model already documented in `skills/carousel/SKILL.md`; HTTP/sidecar callers can now author overlays end-to-end without needing direct filesystem access.
 
 ## v2.2.4
