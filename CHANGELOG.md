@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v2.3.1
+
 - Fix: carousel render dispatcher now resolves `render-carousel.js` from
   `render_runtime_dir()` (the prod install cache dir) instead of
   `MONTAJ_ROOT/montaj_assets/render/`. The hardcoded site-packages path
