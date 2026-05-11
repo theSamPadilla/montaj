@@ -121,6 +121,23 @@ Carousel-specific rules layered on top of `write-overlay`:
 
 Reference: `/Users/Sam/Work/ByCrux/dev/montaj/docs/plans/2026-05-04-image-carousel.md` — Decisions section ("Overlay-coordinate precedence", "Static rendering of frame-driven overlays").
 
+### HTTP / sidecar mode
+
+In CLI / headless mode, you author overlays by writing JSX files directly to
+`<workspace>/overlays/<name>.jsx`. In HTTP / sidecar mode, you don't have
+filesystem access — use the dedicated write endpoint instead:
+
+```
+PUT /api/projects/{id}/overlays/{name}
+Content-Type: text/plain
+Body: <JSX source>
+```
+
+Names are slug-only (`a-z`, `A-Z`, `0-9`, `_`, `-`, up to 64 chars); the server
+appends `.jsx`. PUT is idempotent — re-PUTting the same name overwrites. The
+written file lands at `<workspace>/overlays/{name}.jsx` and is referenceable
+from slide elements exactly as in CLI mode.
+
 ---
 
 ## 6 — Persisting slide edits

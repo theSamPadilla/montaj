@@ -3,6 +3,7 @@ import asyncio
 import io
 import json
 import mimetypes
+import re
 import uuid
 import zipfile
 import os
@@ -23,6 +24,7 @@ from serve.common import (
     resolve_workspace, find_project_dir, get_project_dir,
     run_subprocess,
     not_found, bad_request, forbidden, server_error,
+    validate_project_subpath,
 )
 from lib.remote_io import push_from_disk_async, parse_allowed_hosts
 from project.init import _copy_into_workspace
@@ -39,6 +41,9 @@ router = APIRouter(prefix="/api")
 
 # Required keys for every remote-fetch item (clips and assets share the same shape).
 _REMOTE_REQUIRED_KEYS = ("url", "destPath", "contentType", "sizeBytes")
+
+OVERLAY_NAME_RE = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
+OVERLAY_MAX_BYTES = 65_536  # 64 KB — overlay JSX is small; reject big bodies hard.
 
 
 # ---------------------------------------------------------------------------
@@ -883,4 +888,63 @@ async def render_project(project_id: str, request: Request, project_dir: Path = 
             "X-Accel-Buffering": "no",
             "Connection": "keep-alive",
         },
+    )
+
+
+@router.put("/projects/{project_id}/overlays/{name}")
+async def put_project_overlay(
+    project_id: str,
+    name: str,
+    request: Request,
+    project_dir: Path = Depends(get_project_dir),
+):
+    """Write agent-authored overlay JSX into <project_dir>/overlays/{name}.jsx.
+
+    - Name: slug only (alphanumeric, _, -; 1-64 chars). Server appends `.jsx`.
+    - Body: raw JSX text, UTF-8. Size cap: 64KB. Empty body → 400.
+    - Idempotent PUT: 201 on first create, 200 on overwrite.
+    - Path safety: name regex rules out traversal; validate_project_subpath
+      is a belt-and-suspenders second check.
+    """
+    if not OVERLAY_NAME_RE.match(name):
+        raise bad_request(
+            "invalid_name",
+            f"Overlay name must match {OVERLAY_NAME_RE.pattern} (got {name!r})",
+        )
+
+    body_bytes = await request.body()
+    if len(body_bytes) > OVERLAY_MAX_BYTES:
+        raise HTTPException(
+            413,
+            detail={
+                "error": "payload_too_large",
+                "message": f"Overlay body exceeds {OVERLAY_MAX_BYTES} bytes",
+            },
+        )
+    if not body_bytes:
+        raise bad_request("empty_body", "Overlay JSX body is required")
+
+    try:
+        jsx_text = body_bytes.decode("utf-8")
+    except UnicodeDecodeError:
+        raise bad_request("invalid_encoding", "Overlay body must be UTF-8 text")
+
+    overlays_dir = project_dir / "overlays"
+    overlays_dir.mkdir(parents=True, exist_ok=True)
+
+    # Defense in depth: validate the relative path even though the name regex
+    # already excludes traversal characters.
+    target = validate_project_subpath(project_dir, f"overlays/{name}.jsx")
+
+    created = not target.exists()
+    target.write_text(jsx_text, encoding="utf-8")
+
+    return JSONResponse(
+        content={
+            "name": name,
+            "path": str(target),
+            "bytes": len(body_bytes),
+            "created": created,
+        },
+        status_code=201 if created else 200,
     )
