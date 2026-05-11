@@ -5,11 +5,11 @@ import json, os, sys
 # Import here to avoid circular imports when run standalone
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from cli.output import emit_error
+from cli.deps import render_runtime_dir
+from cli.main import MONTAJ_ROOT as _MONTAJ_ROOT
 
 
 def main(project_path=None, out=None, workers=None, clean=False, montaj_root=None):
-    root = montaj_root or os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-
     # Determine project type so we can dispatch to the correct renderer.
     project_type = None
     if project_path and os.path.isfile(project_path):
@@ -19,13 +19,15 @@ def main(project_path=None, out=None, workers=None, clean=False, montaj_root=Non
         except Exception:
             pass  # Let the node script handle bad JSON
 
+    render_dir = render_runtime_dir()
+
     if project_type == "carousel":
-        render_js = os.path.join(root, "montaj_assets", "render", "render-carousel.js")
+        render_js = os.path.join(render_dir, "render-carousel.js")
         cmd = ["node", render_js, "--project-json", project_path]
         if out:    cmd += ["--out", out]
         if clean:  cmd.append("--clean")
     else:
-        render_js = os.path.join(root, "montaj_assets", "render", "render.js")
+        render_js = os.path.join(render_dir, "render.js")
         cmd = ["node", render_js]
         if project_path: cmd.append(project_path)
         if out:          cmd += ["--out", out]
@@ -33,7 +35,7 @@ def main(project_path=None, out=None, workers=None, clean=False, montaj_root=Non
         if clean:        cmd.append("--clean")
 
     env                = os.environ.copy()
-    env["MONTAJ_ROOT"] = root
+    env["MONTAJ_ROOT"] = str(montaj_root or _MONTAJ_ROOT)
 
     try:
         os.execvpe("node", cmd, env)

@@ -822,7 +822,7 @@ async def render_project(project_id: str, request: Request, project_dir: Path = 
         project_type = ""
 
     if project_type == "carousel":
-        render_script = MONTAJ_ROOT / "montaj_assets" / "render" / "render-carousel.js"
+        render_script = Path(render_runtime_dir()) / "render-carousel.js"
         script_args = ["--project-json", str(project_path)]
     else:
         render_script = Path(render_runtime_dir()) / "render.js"

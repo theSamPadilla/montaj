@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- Fix: carousel render dispatcher now resolves `render-carousel.js` from
+  `render_runtime_dir()` (the prod install cache dir) instead of
+  `MONTAJ_ROOT/montaj_assets/render/`. The hardcoded site-packages path
+  prevented Node from finding `esbuild` (and other render deps installed
+  via `montaj install ui` into `~/.cache/montaj/render/node_modules/`),
+  breaking carousel render in any prod-mode install. Affects every Montaj
+  release since 2.2.0 (when carousel shipped); previously masked because
+  dev-checkout installs keep `node_modules` in-tree.
+
 ## v2.3.0
 
 - `PUT /api/projects/{id}/overlays/{name}` — write agent-authored overlay JSX into a project's workspace. Slug-only names (`^[a-zA-Z0-9_-]{1,64}$`), 64KB body cap, plain-text body, idempotent (201 create / 200 overwrite). Closes the HTTP-side gap for the project-scoped overlay model already documented in `skills/carousel/SKILL.md`; HTTP/sidecar callers can now author overlays end-to-end without needing direct filesystem access.
