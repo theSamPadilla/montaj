@@ -813,6 +813,68 @@ class TestProjectDownload:
         assert len(received_project_dirs) == 1
         assert received_project_dirs[0] == project_dir
 
+    def test_all_fail_returns_207(self, client, monkeypatch, tmp_path):
+        """All downloads failing → still 207 (not 500)."""
+        monkeypatch.setenv("MONTAJ_HTTP_ALLOWED_HOSTS", "cdn.example.com")
+        monkeypatch.setattr("serve.common.resolve_workspace", lambda: tmp_path)
+        self._setup_project(tmp_path)
+
+        async def _fetch_stub(items, project_dir, allowed_hosts, *, transport=None):
+            return [
+                {"destPath": item["destPath"], "status": "error",
+                 "error": "upstream_error", "message": "Upstream returned 404"}
+                for item in items
+            ]
+
+        monkeypatch.setattr("serve.routes.projects.fetch_to_disk_async", _fetch_stub)
+
+        resp = client.post(f"/api/projects/{self.PROJECT_ID}/download", json={
+            "downloads": [{"url": "https://cdn.example.com/missing.png",
+                           "destPath": "assets/missing.png",
+                           "contentType": "image/png", "sizeBytes": 100}],
+        })
+        assert resp.status_code == 207
+        data = resp.json()
+        assert data["results"][0]["status"] == "error"
+
+    def test_unknown_project_with_malformed_body_still_404(self, client, monkeypatch, tmp_path):
+        """Unknown project + malformed body → 404 (project check fires before body validation)."""
+        monkeypatch.setenv("MONTAJ_HTTP_ALLOWED_HOSTS", "cdn.example.com")
+        monkeypatch.setattr("serve.common.resolve_workspace", lambda: tmp_path)
+        # No project in workspace
+
+        resp = client.post("/api/projects/nonexistent-project/download", json={
+            "downloads": [],  # would be 400 if project existed
+        })
+        # FastAPI Depends (get_project_dir) fires before body params are processed
+        # in endpoint logic — project not found → 404 takes priority
+        assert resp.status_code == 404
+
+    def test_allowed_hosts_parsed_from_env(self, client, monkeypatch, tmp_path):
+        """MONTAJ_HTTP_ALLOWED_HOSTS is correctly parsed and forwarded to fetch_to_disk_async."""
+        monkeypatch.setenv("MONTAJ_HTTP_ALLOWED_HOSTS", "cdn.example.com, storage.other.io , backup.net")
+        monkeypatch.setattr("serve.common.resolve_workspace", lambda: tmp_path)
+        self._setup_project(tmp_path)
+
+        received_allowed_hosts = []
+
+        async def _fetch_stub(items, project_dir, allowed_hosts, *, transport=None):
+            received_allowed_hosts.extend(allowed_hosts)
+            return [{"destPath": items[0]["destPath"], "status": "ok", "bytesWritten": 10}]
+
+        monkeypatch.setattr("serve.routes.projects.fetch_to_disk_async", _fetch_stub)
+
+        resp = client.post(f"/api/projects/{self.PROJECT_ID}/download", json={
+            "downloads": [{"url": "https://cdn.example.com/img.png",
+                           "destPath": "assets/img.png",
+                           "contentType": "image/png", "sizeBytes": 10}],
+        })
+        assert resp.status_code == 200
+        # All three hosts should be present (stripped, lowercased)
+        assert "cdn.example.com" in received_allowed_hosts
+        assert "storage.other.io" in received_allowed_hosts
+        assert "backup.net" in received_allowed_hosts
+
 
 # ---------------------------------------------------------------------------
 # GET /api/projects/{id}/outputs tests
