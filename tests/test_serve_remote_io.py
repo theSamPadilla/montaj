@@ -623,6 +623,198 @@ class TestProjectUpload:
 
 
 # ---------------------------------------------------------------------------
+# POST /api/projects/{id}/download tests
+# ---------------------------------------------------------------------------
+
+class TestProjectDownload:
+    """Tests for POST /api/projects/{id}/download.
+
+    Mirrors TestProjectUpload's approach: stub fetch_to_disk_async, assert
+    only route-layer concerns. Helper-layer behavior (path traversal, size
+    mismatch, host preflight, content-type mismatch) is covered in
+    tests/test_remote_io.py against fetch_to_disk_async directly — do NOT
+    re-test it here.
+    """
+
+    PROJECT_ID = "proj-download-api-test"
+
+    def _setup_project(self, workspace: Path) -> Path:
+        return _make_project(workspace, self.PROJECT_ID)
+
+    def test_happy_path_single_download_200(self, client, monkeypatch, tmp_path):
+        """Single download item that succeeds → 200 with results."""
+        monkeypatch.setenv("MONTAJ_HTTP_ALLOWED_HOSTS", "cdn.example.com")
+        monkeypatch.setattr("serve.common.resolve_workspace", lambda: tmp_path)
+        self._setup_project(tmp_path)
+
+        ok_result = [{"destPath": "assets/img.png", "status": "ok",
+                      "bytesWritten": 1234}]
+
+        async def _fetch_stub(items, project_dir, allowed_hosts, *, transport=None):
+            return ok_result
+
+        monkeypatch.setattr("serve.routes.projects.fetch_to_disk_async", _fetch_stub)
+
+        resp = client.post(f"/api/projects/{self.PROJECT_ID}/download", json={
+            "downloads": [{
+                "url": "https://cdn.example.com/img.png",
+                "destPath": "assets/img.png",
+                "contentType": "image/png",
+                "sizeBytes": 1234,
+            }],
+        })
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "results" in data
+        assert len(data["results"]) == 1
+        assert data["results"][0]["status"] == "ok"
+        assert data["results"][0]["destPath"] == "assets/img.png"
+
+    def test_happy_path_multi_download_all_succeed_200(self, client, monkeypatch, tmp_path):
+        """Multiple download items all succeeding → 200."""
+        monkeypatch.setenv("MONTAJ_HTTP_ALLOWED_HOSTS", "cdn.example.com")
+        monkeypatch.setattr("serve.common.resolve_workspace", lambda: tmp_path)
+        self._setup_project(tmp_path)
+
+        async def _fetch_stub(items, project_dir, allowed_hosts, *, transport=None):
+            return [
+                {"destPath": item["destPath"], "status": "ok", "bytesWritten": 100}
+                for item in items
+            ]
+
+        monkeypatch.setattr("serve.routes.projects.fetch_to_disk_async", _fetch_stub)
+
+        resp = client.post(f"/api/projects/{self.PROJECT_ID}/download", json={
+            "downloads": [
+                {"url": "https://cdn.example.com/a.png", "destPath": "assets/a.png",
+                 "contentType": "image/png", "sizeBytes": 100},
+                {"url": "https://cdn.example.com/b.png", "destPath": "assets/b.png",
+                 "contentType": "image/png", "sizeBytes": 100},
+            ],
+        })
+        assert resp.status_code == 200
+        assert len(resp.json()["results"]) == 2
+        assert all(r["status"] == "ok" for r in resp.json()["results"])
+
+    def test_partial_failure_returns_207(self, client, monkeypatch, tmp_path):
+        """One item succeeds, one fails → 207 Multi-Status."""
+        monkeypatch.setenv("MONTAJ_HTTP_ALLOWED_HOSTS", "cdn.example.com")
+        monkeypatch.setattr("serve.common.resolve_workspace", lambda: tmp_path)
+        self._setup_project(tmp_path)
+
+        async def _fetch_stub(items, project_dir, allowed_hosts, *, transport=None):
+            return [
+                {"destPath": "assets/a.png", "status": "ok", "bytesWritten": 100},
+                {"destPath": "assets/b.png", "status": "error",
+                 "error": "upstream_error", "upstreamStatus": 500,
+                 "message": "Upstream returned 500"},
+            ]
+
+        monkeypatch.setattr("serve.routes.projects.fetch_to_disk_async", _fetch_stub)
+
+        resp = client.post(f"/api/projects/{self.PROJECT_ID}/download", json={
+            "downloads": [
+                {"url": "https://cdn.example.com/a.png", "destPath": "assets/a.png",
+                 "contentType": "image/png", "sizeBytes": 100},
+                {"url": "https://cdn.example.com/b.png", "destPath": "assets/b.png",
+                 "contentType": "image/png", "sizeBytes": 100},
+            ],
+        })
+        assert resp.status_code == 207
+        statuses = {r["destPath"]: r["status"] for r in resp.json()["results"]}
+        assert statuses["assets/a.png"] == "ok"
+        assert statuses["assets/b.png"] == "error"
+
+    def test_missing_downloads_field_returns_400(self, client, monkeypatch, tmp_path):
+        """Body missing 'downloads' field → 400 invalid_body."""
+        monkeypatch.setenv("MONTAJ_HTTP_ALLOWED_HOSTS", "cdn.example.com")
+        monkeypatch.setattr("serve.common.resolve_workspace", lambda: tmp_path)
+        self._setup_project(tmp_path)
+
+        resp = client.post(f"/api/projects/{self.PROJECT_ID}/download",
+                           json={"something_else": "value"})
+        assert resp.status_code == 400
+        detail = resp.json()["detail"]
+        assert detail["error"] == "invalid_body"
+        assert "'downloads'" in detail["message"]
+
+    def test_downloads_empty_list_returns_400(self, client, monkeypatch, tmp_path):
+        """Body with 'downloads': [] → 400 invalid_body."""
+        monkeypatch.setenv("MONTAJ_HTTP_ALLOWED_HOSTS", "cdn.example.com")
+        monkeypatch.setattr("serve.common.resolve_workspace", lambda: tmp_path)
+        self._setup_project(tmp_path)
+
+        resp = client.post(f"/api/projects/{self.PROJECT_ID}/download",
+                           json={"downloads": []})
+        assert resp.status_code == 400
+        assert resp.json()["detail"]["error"] == "invalid_body"
+
+    def test_downloads_not_a_list_returns_400(self, client, monkeypatch, tmp_path):
+        """Body with 'downloads': "string" (not a list) → 400 invalid_body."""
+        monkeypatch.setenv("MONTAJ_HTTP_ALLOWED_HOSTS", "cdn.example.com")
+        monkeypatch.setattr("serve.common.resolve_workspace", lambda: tmp_path)
+        self._setup_project(tmp_path)
+
+        resp = client.post(f"/api/projects/{self.PROJECT_ID}/download",
+                           json={"downloads": "not-a-list"})
+        assert resp.status_code == 400
+        assert resp.json()["detail"]["error"] == "invalid_body"
+
+    def test_allowlist_unset_returns_403(self, client, monkeypatch, tmp_path):
+        """MONTAJ_HTTP_ALLOWED_HOSTS not set → 403 allowlist_unset."""
+        monkeypatch.delenv("MONTAJ_HTTP_ALLOWED_HOSTS", raising=False)
+        monkeypatch.setattr("serve.common.resolve_workspace", lambda: tmp_path)
+        self._setup_project(tmp_path)
+
+        resp = client.post(f"/api/projects/{self.PROJECT_ID}/download", json={
+            "downloads": [{"url": "https://cdn.example.com/x.png",
+                           "destPath": "assets/x.png",
+                           "contentType": "image/png", "sizeBytes": 100}],
+        })
+        assert resp.status_code == 403
+        detail = resp.json()["detail"]
+        assert detail["error"] == "allowlist_unset"
+        assert "MONTAJ_HTTP_ALLOWED_HOSTS" in detail["message"]
+
+    def test_unknown_project_id_returns_404(self, client, monkeypatch, tmp_path):
+        """Unknown project_id → 404 from get_project_dir Depends."""
+        monkeypatch.setenv("MONTAJ_HTTP_ALLOWED_HOSTS", "cdn.example.com")
+        monkeypatch.setattr("serve.common.resolve_workspace", lambda: tmp_path)
+        # No project created in tmp_path
+
+        resp = client.post("/api/projects/nonexistent-project/download", json={
+            "downloads": [{"url": "https://cdn.example.com/x.png",
+                           "destPath": "assets/x.png",
+                           "contentType": "image/png", "sizeBytes": 100}],
+        })
+        assert resp.status_code == 404
+        assert resp.json()["detail"]["error"] == "not_found"
+
+    def test_fetch_stub_receives_correct_project_dir(self, client, monkeypatch, tmp_path):
+        """fetch_to_disk_async is called with the resolved project_dir."""
+        monkeypatch.setenv("MONTAJ_HTTP_ALLOWED_HOSTS", "cdn.example.com")
+        monkeypatch.setattr("serve.common.resolve_workspace", lambda: tmp_path)
+        project_dir = self._setup_project(tmp_path)
+
+        received_project_dirs = []
+
+        async def _fetch_stub(items, project_dir_arg, allowed_hosts, *, transport=None):
+            received_project_dirs.append(project_dir_arg)
+            return [{"destPath": items[0]["destPath"], "status": "ok", "bytesWritten": 10}]
+
+        monkeypatch.setattr("serve.routes.projects.fetch_to_disk_async", _fetch_stub)
+
+        resp = client.post(f"/api/projects/{self.PROJECT_ID}/download", json={
+            "downloads": [{"url": "https://cdn.example.com/x.png",
+                           "destPath": "assets/x.png",
+                           "contentType": "image/png", "sizeBytes": 10}],
+        })
+        assert resp.status_code == 200
+        assert len(received_project_dirs) == 1
+        assert received_project_dirs[0] == project_dir
+
+
+# ---------------------------------------------------------------------------
 # GET /api/projects/{id}/outputs tests
 # ---------------------------------------------------------------------------
 

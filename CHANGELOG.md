@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## v2.3.2 — 2026-05-11
+
+### Added
+- `POST /api/projects/:id/download` — pulls remote files into the project workspace on local disk. Symmetric to existing `/upload` (which is the opposite direction). Same Multi-Status envelope, same allowlist + path-traversal guards via the existing `fetch_to_disk_async` helper.
+
 ## v2.3.1
 
 - Fix: carousel render dispatcher now resolves `render-carousel.js` from

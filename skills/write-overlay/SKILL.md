@@ -436,7 +436,7 @@ Common overlay set for a social reel:
 ## Authoring guidelines
 
 - **Use icons, not emojis** — use `Ph.*` or `FaIcon` for visual symbols. Emojis render inconsistently across platforms and look low-effort. Only use emojis if the prompt explicitly asks for them.
-- **Go large** — 96px is the floor, not the ceiling. 120–160px for hooks. Text should feel oversized; if it looks a little too big, it's probably right. Small text gets scrolled past.
+- **Go large — for video.** On 1080×1920 video overlays carrying a short, glanceable hook (3–6 words) over moving footage, 96px is the floor, not the ceiling. 120–160px for hooks. Text should feel oversized; if it looks a little too big, it's probably right. This rule is calibrated to video viewing — a thumb-stop on TikTok/Reels. **Do NOT apply this rule to carousels, story panels, or other static formats** where the text is being *read* rather than *glanced at*, and where headlines run longer than a punchy hook. For carousels see `skills/carousel/SKILL.md` §6 (Typography). For other static formats, default to ~32–48px body, ~52–80px headline, and size down further as line length grows.
 - **No backgrounds by default** — plain text on video with `textShadow` for legibility is the house style. No dark cards, no frosted glass, no semi-transparent boxes unless the prompt asks. A well-placed `textShadow` works on any footage.
 - **Cover the face if needed** — text position and size take priority. Don't shrink or reposition to avoid the speaker.
 - **Tie to transcript** — use word timings from the transcript to sync text appearance with speech. An overlay that appears exactly when the speaker says the word it displays lands much harder.

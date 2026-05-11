@@ -45,10 +45,11 @@ Reference: `/Users/Sam/Work/ByCrux/dev/montaj/lib/types/carousel.py` — `CAROUS
     {
       "id": "uuid",
       "type": "image",
-      "src": "/abs/path/to/project/slide1_bg.png",   // absolute path; file lives in the project workspace
-      "x": 0, "y": 0,                  // absolute pixels from top-left
-      "w": 1080, "h": 1350,
-      "rotation": 0                    // degrees
+      "src": "assets/<mediaId>.png",  // workspace-relative path; required
+      "mediaId": "<uuid>",            // optional metadata, references org Media row
+      "x": 0, "y": 0,
+      "w": 1080, "h": 1080,
+      "rotation": 0
     },
     // Overlay element
     {
@@ -71,6 +72,10 @@ Reference: `/Users/Sam/Work/ByCrux/dev/montaj/lib/types/carousel.py` — `CAROUS
   ]
 }
 ```
+
+`src` is the workspace-relative path the renderer reads from disk. `mediaId` is optional metadata — when present, it lets Hub's editor surface the filename, link back to the Media library row, and reason about provenance. The renderer ignores `mediaId`.
+
+When working from Hub, never write a presigned URL into `src`. The materialization machinery puts a workspace path there; Hub returns the workspace path from `hub.attach_media`.
 
 Key rules:
 - Use `crypto.randomUUID()` for every `id` on slides and elements.
@@ -121,6 +126,29 @@ Carousel-specific rules layered on top of `write-overlay`:
 
 Reference: `/Users/Sam/Work/ByCrux/dev/montaj/docs/plans/2026-05-04-image-carousel.md` — Decisions section ("Overlay-coordinate precedence", "Static rendering of frame-driven overlays").
 
+### Typography for carousels
+
+Carousels carry full sentences and paragraphs — the viewer is *reading*, not glancing past a video frame. **Do NOT apply `write-overlay`'s "Go large / 96px floor" rule.** That rule is calibrated for short hooks (3–6 words) on 1080×1920 video with moving footage; it produces unreadable wall-of-text on a 1080×1080 carousel.
+
+Use these defaults instead, sized to the carousel's `resolution[0]` (1080 for square/portrait, 1080 for vertical):
+
+| Role | Short copy (≤ 40 chars) | Medium (40–80) | Long (80+) |
+|------|-------------------------|----------------|------------|
+| Hook headline (slide 1) | 64–80px | 44–56px | 32–44px |
+| Body / answer text (FAQ, captions in cards) | 28–34px | 24–28px | 22–26px |
+| Eyebrows, kickers, all-caps labels | 18–26px | 18–22px | 18–22px |
+| Footer / sign-off | 26–32px | 22–26px | 20–24px |
+
+Rules of thumb:
+
+- **Measure your headline first.** Long headlines (the typical Idea title — 60–90 chars) need *small* type at carousel sizes, not big type. A 78px headline wrapping to 6+ lines is broken, not bold.
+- **Card-bound body text** (text inside a solid background card with padding) can run smaller — the card provides contrast, so 22–24px reads cleanly. Free-floating text on top of a base color needs more weight — 26–30px.
+- **Line height 1.1–1.25** for headlines, **1.35–1.5** for body. Tight lines compress headlines; loose lines breathe body.
+- **Letter-spacing** stays near `normal` for body, slightly negative (`-0.5px` to `-1.5px`) for large headlines, slightly positive (`2–6px`) for small all-caps labels.
+- **One accent color max** per slide. Inherit accent / primary / fg / cream from the brand palette via overlay props — don't hardcode hex values that drift from `hub.get_brand`.
+
+If a slide's text doesn't fit at these sizes, the copy is too long for that slide — split it, don't shrink past the lower bound. The viewer's eye still has to land.
+
 ### HTTP / sidecar mode
 
 In CLI / headless mode, you author overlays by writing JSX files directly to
@@ -156,7 +184,20 @@ Every save is a whole-project PUT. If streaming live drag/resize updates, deboun
 
 ---
 
-## 7 — Render
+## 7 — Authoring overlays alongside images
+
+When a slide combines an image element with an overlay element, the overlay's transparent root div sits ON TOP of the image (z-order, bottom→top). The image is visible only where the overlay doesn't paint.
+
+The default `hook` overlay's text container has no `max-width`, so a long headline can span the full slide and visually obscure an image element placed on the right. Two rules:
+
+1. Overlays designed to potentially share a slide with images should accept a `textMaxWidth` prop (CSS value, default `'100%'`). The text container applies it as `maxWidth`. When the agent composes a slide with an image, pass `textMaxWidth: '60%'` (or similar) on the overlay's props.
+2. Position image elements on the side opposite the overlay's text alignment. For `align: 'top'` overlays, place images bottom. For left-aligned overlays (the default for hook), place images on the right.
+
+Brand-shipped overlays (`hook`, `faq_card`) follow this pattern. Author new overlays with `textMaxWidth` from day one.
+
+---
+
+## 8 — Render
 
 Set `project.status` to `"final"` via `PUT /api/projects/{id}` before running render — the render command requires it.
 
@@ -172,7 +213,7 @@ Reference: `/Users/Sam/Work/ByCrux/dev/montaj/montaj_assets/render/render-carous
 
 ---
 
-## 8 — Status lifecycle
+## 9 — Status lifecycle
 
 ```
 pending  →  (build slides)  →  final  →  render

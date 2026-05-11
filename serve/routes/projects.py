@@ -26,7 +26,7 @@ from serve.common import (
     not_found, bad_request, forbidden, server_error,
     validate_project_subpath,
 )
-from lib.remote_io import push_from_disk_async, parse_allowed_hosts
+from lib.remote_io import fetch_to_disk_async, push_from_disk_async, parse_allowed_hosts
 from project.init import _copy_into_workspace
 from serve.sse import SSEBroadcaster, sse_stream
 
@@ -799,6 +799,43 @@ async def upload_outputs(
         raise forbidden("allowlist_unset", "MONTAJ_HTTP_ALLOWED_HOSTS is required")
 
     results = await push_from_disk_async(uploads, project_dir, allowed_hosts)
+
+    any_error = any(r.get("status") == "error" for r in results)
+    return JSONResponse(
+        status_code=207 if any_error else 200,
+        content={"results": results},
+    )
+
+
+@router.post("/projects/{project_id}/download")
+async def download_assets(
+    project_id: str,
+    body: dict = Body(...),
+    project_dir: Path = Depends(get_project_dir),
+):
+    """Pull remote files into the project workspace on local disk.
+
+    Body: {"downloads": [{"url": "https://...", "destPath": "assets/img.png",
+                          "contentType": "image/png", "sizeBytes": 12345,
+                          "method": "GET", "headers": {...}}]}
+
+    Returns 200 when all downloads succeed, 207 Multi-Status when any fail.
+    Per-item errors are surfaced in the results list, not as 4xx (per-op failures
+    are never request-level).
+
+    Symmetric to /upload — same envelope shape, same allowlist enforcement,
+    same path-traversal guards, same content-type / size validation. All those
+    guards live in fetch_to_disk_async; this route is wiring only.
+    """
+    downloads = body.get("downloads")
+    if not isinstance(downloads, list) or not downloads:
+        raise bad_request("invalid_body", "'downloads' must be a non-empty list")
+
+    allowed_hosts = parse_allowed_hosts()
+    if not allowed_hosts:
+        raise forbidden("allowlist_unset", "MONTAJ_HTTP_ALLOWED_HOSTS is required")
+
+    results = await fetch_to_disk_async(downloads, project_dir, allowed_hosts)
 
     any_error = any(r.get("status") == "error" for r in results)
     return JSONResponse(
