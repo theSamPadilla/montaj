@@ -8,6 +8,30 @@
  *   overlayRegistry — { [templatePath]: ReactComponent }
  *   resolveAsset    — function(relPath) => URL string (converts relative paths to file://)
  */
+
+// Per-overlay host. Sets `window.props` to THIS overlay's merged props
+// IMMEDIATELY before rendering the overlay component, then renders the
+// component. The video renderer (montaj_assets/render/bundle.js) does the
+// same thing per-segment so the skill-documented bare-`props` pattern
+// (`function Foo() { return props.title }`) works. We do it per-overlay
+// here because a slide can host multiple overlay elements.
+//
+// React rendering is synchronous for the Puppeteer path: when React mounts
+// `OverlayHost`, this function body runs (setting window.props), returns a
+// ReactElement for `Component`, and React then renders `Component` whose
+// body reads `window.props`. The next overlay's `OverlayHost` doesn't run
+// until the previous one has finished mounting, so per-overlay isolation
+// holds even with multiple overlays on a single slide.
+function OverlayHost({ Component, mergedProps, frame, fps, duration }) {
+  if (typeof window !== 'undefined') {
+    window.props    = mergedProps
+    window.frame    = frame
+    window.fps      = fps
+    window.duration = duration
+  }
+  return <Component {...mergedProps} frame={frame} fps={fps} duration={duration} />
+}
+
 export function Slide({ slide, width, height, overlayRegistry, resolveAsset }) {
   const elements = slide.elements ?? []
 
@@ -73,8 +97,9 @@ export function Slide({ slide, width, height, overlayRegistry, resolveAsset }) {
                 overflow:        'hidden',
               }}
             >
-              <OverlayComponent
-                {...mergedProps}
+              <OverlayHost
+                Component={OverlayComponent}
+                mergedProps={mergedProps}
                 frame={frame}
                 fps={fps}
                 duration={duration}

@@ -877,6 +877,225 @@ class TestProjectDownload:
 
 
 # ---------------------------------------------------------------------------
+# DELETE /api/projects/{id}/files tests
+# ---------------------------------------------------------------------------
+
+class TestProjectFilesDelete:
+    """Tests for DELETE /api/projects/{id}/files.
+
+    Uses real temp dirs (not stubs) — the route calls shutil.rmtree /
+    Path.unlink directly. No I/O helper to monkeypatch.
+    """
+
+    PROJECT_ID = "proj-files-delete-test"
+
+    def _setup_project(self, workspace: Path) -> Path:
+        return _make_project(workspace, self.PROJECT_ID)
+
+    def test_delete_single_file(self, client, monkeypatch, tmp_path):
+        monkeypatch.setattr("serve.common.resolve_workspace", lambda: tmp_path)
+        project_dir = self._setup_project(tmp_path)
+        target = project_dir / "assets" / "foo.png"
+        target.parent.mkdir(parents=True)
+        target.write_bytes(b"x")
+
+        r = client.request("DELETE", f"/api/projects/{self.PROJECT_ID}/files",
+                           json={"paths": ["assets/foo.png"]})
+
+        assert r.status_code == 200
+        assert r.json() == {"results": [{"path": "assets/foo.png", "status": "deleted"}]}
+        assert not target.exists()
+        assert target.parent.exists()  # parent dir kept
+
+    def test_delete_directory_recursive(self, client, monkeypatch, tmp_path):
+        monkeypatch.setattr("serve.common.resolve_workspace", lambda: tmp_path)
+        project_dir = self._setup_project(tmp_path)
+        d = project_dir / "render-tmp-abc"
+        d.mkdir()
+        (d / "a.png").write_bytes(b"a")
+        (d / "b.png").write_bytes(b"b")
+        (d / "nested").mkdir()
+        (d / "nested" / "c.png").write_bytes(b"c")
+
+        r = client.request("DELETE", f"/api/projects/{self.PROJECT_ID}/files",
+                           json={"paths": ["render-tmp-abc"]})
+
+        assert r.status_code == 200
+        assert r.json() == {"results": [{"path": "render-tmp-abc", "status": "deleted"}]}
+        assert not d.exists()
+
+    def test_delete_missing_is_success(self, client, monkeypatch, tmp_path):
+        monkeypatch.setattr("serve.common.resolve_workspace", lambda: tmp_path)
+        self._setup_project(tmp_path)
+
+        r = client.request("DELETE", f"/api/projects/{self.PROJECT_ID}/files",
+                           json={"paths": ["does-not-exist.png"]})
+
+        assert r.status_code == 200
+        assert r.json() == {"results": [{"path": "does-not-exist.png", "status": "deleted"}]}
+
+    def test_delete_missing_nested_path_is_success(self, client, monkeypatch, tmp_path):
+        """Locks idempotency for non-trivial paths — neither the parent dir nor
+        the file exist, but the route still reports success."""
+        monkeypatch.setattr("serve.common.resolve_workspace", lambda: tmp_path)
+        self._setup_project(tmp_path)
+
+        r = client.request("DELETE", f"/api/projects/{self.PROJECT_ID}/files",
+                           json={"paths": ["never/created/file.png"]})
+
+        assert r.status_code == 200
+        assert r.json() == {"results": [{"path": "never/created/file.png", "status": "deleted"}]}
+
+    def test_missing_body_paths_field(self, client, monkeypatch, tmp_path):
+        monkeypatch.setattr("serve.common.resolve_workspace", lambda: tmp_path)
+        self._setup_project(tmp_path)
+        r = client.request("DELETE", f"/api/projects/{self.PROJECT_ID}/files", json={})
+        assert r.status_code == 400
+
+    def test_empty_paths_list(self, client, monkeypatch, tmp_path):
+        monkeypatch.setattr("serve.common.resolve_workspace", lambda: tmp_path)
+        self._setup_project(tmp_path)
+        r = client.request("DELETE", f"/api/projects/{self.PROJECT_ID}/files",
+                           json={"paths": []})
+        assert r.status_code == 400
+
+    def test_paths_not_a_list(self, client, monkeypatch, tmp_path):
+        monkeypatch.setattr("serve.common.resolve_workspace", lambda: tmp_path)
+        self._setup_project(tmp_path)
+        r = client.request("DELETE", f"/api/projects/{self.PROJECT_ID}/files",
+                           json={"paths": "render-tmp-abc"})
+        assert r.status_code == 400
+
+    def test_unknown_project(self, client, monkeypatch, tmp_path):
+        monkeypatch.setattr("serve.common.resolve_workspace", lambda: tmp_path)
+        r = client.request("DELETE",
+                           "/api/projects/does-not-exist/files",
+                           json={"paths": ["foo"]})
+        assert r.status_code == 404
+
+    def test_path_traversal_rejected(self, client, monkeypatch, tmp_path):
+        monkeypatch.setattr("serve.common.resolve_workspace", lambda: tmp_path)
+        self._setup_project(tmp_path)
+        # Sibling file that exists outside the project dir
+        (tmp_path / "sibling.png").write_bytes(b"x")
+
+        r = client.request("DELETE", f"/api/projects/{self.PROJECT_ID}/files",
+                           json={"paths": ["../sibling.png"]})
+
+        assert r.status_code == 207
+        body = r.json()
+        assert body["results"][0]["status"] == "error"
+        assert body["results"][0]["error"] == "path_traversal"
+        # Critical: the sibling file is still there
+        assert (tmp_path / "sibling.png").exists()
+
+    def test_absolute_path_rejected(self, client, monkeypatch, tmp_path):
+        monkeypatch.setattr("serve.common.resolve_workspace", lambda: tmp_path)
+        self._setup_project(tmp_path)
+        r = client.request("DELETE", f"/api/projects/{self.PROJECT_ID}/files",
+                           json={"paths": ["/etc/passwd"]})
+        assert r.status_code == 207
+        result = r.json()["results"][0]
+        assert result["status"] == "error"
+        assert result["error"] == "path_traversal"
+
+    def test_mixed_batch_returns_207(self, client, monkeypatch, tmp_path):
+        monkeypatch.setattr("serve.common.resolve_workspace", lambda: tmp_path)
+        project_dir = self._setup_project(tmp_path)
+        target = project_dir / "ok.png"
+        target.write_bytes(b"x")
+
+        r = client.request("DELETE", f"/api/projects/{self.PROJECT_ID}/files",
+                           json={"paths": ["ok.png", "../escape.png", "missing.png"]})
+
+        assert r.status_code == 207
+        results = r.json()["results"]
+        assert results[0] == {"path": "ok.png", "status": "deleted"}
+        assert results[1]["status"] == "error"
+        assert results[2] == {"path": "missing.png", "status": "deleted"}
+        assert not target.exists()
+
+    def test_non_string_path_returns_per_item_error(self, client, monkeypatch, tmp_path):
+        monkeypatch.setattr("serve.common.resolve_workspace", lambda: tmp_path)
+        self._setup_project(tmp_path)
+        r = client.request("DELETE", f"/api/projects/{self.PROJECT_ID}/files",
+                           json={"paths": [123]})
+        assert r.status_code == 207
+        assert r.json()["results"][0]["status"] == "error"
+
+    def test_cannot_delete_project_root_itself(self, client, monkeypatch, tmp_path):
+        # validate_project_subpath rejects "." and "" — verify the route surfaces this.
+        monkeypatch.setattr("serve.common.resolve_workspace", lambda: tmp_path)
+        project_dir = self._setup_project(tmp_path)
+        r = client.request("DELETE", f"/api/projects/{self.PROJECT_ID}/files",
+                           json={"paths": ["."]})
+        assert r.status_code == 207
+        assert r.json()["results"][0]["status"] == "error"
+        # Project dir survives
+        assert project_dir.exists()
+
+    def test_symlink_inside_project_unlinks_link_keeps_target(self, client, monkeypatch, tmp_path):
+        """A symlink whose target is *inside* the project dir passes validation
+        (validate_project_subpath resolves to the target — which is under the
+        project root — so the containment check passes). The route then operates
+        on the resolved path (the real file), so the real file is deleted and
+        the now-dangling symlink survives.
+
+        Note: validate_project_subpath returns `.resolve()`d path, so the route
+        never sees the symlink itself — it operates on the resolved target.
+        """
+        monkeypatch.setattr("serve.common.resolve_workspace", lambda: tmp_path)
+        project_dir = self._setup_project(tmp_path)
+
+        real_file = project_dir / "real.png"
+        real_file.write_bytes(b"keep-me")
+        link = project_dir / "link-to-real"
+        link.symlink_to(real_file)
+
+        r = client.request("DELETE", f"/api/projects/{self.PROJECT_ID}/files",
+                           json={"paths": ["link-to-real"]})
+
+        assert r.status_code == 200
+        assert r.json()["results"][0] == {"path": "link-to-real", "status": "deleted"}
+        # validate_project_subpath resolves the symlink before returning, so the
+        # route deletes the real file (the resolved target). The symlink becomes
+        # dangling but is still present.
+        assert not real_file.exists()
+        assert link.is_symlink()  # dangling symlink remains
+
+    def test_symlink_escaping_project_rejected_at_validation(self, client, monkeypatch, tmp_path):
+        """Security guarantee: a symlink whose target lies *outside* the project
+        dir is rejected by `validate_project_subpath` (because `.resolve()` follows
+        the link, and the resolved target fails the under-project check). The
+        symlink itself survives — the caller never reaches the unlink branch.
+        Outside target is untouched.
+        """
+        monkeypatch.setattr("serve.common.resolve_workspace", lambda: tmp_path)
+        project_dir = self._setup_project(tmp_path)
+
+        outside = tmp_path / "outside-target"
+        outside.mkdir()
+        sentinel = outside / "do-not-delete.txt"
+        sentinel.write_bytes(b"sentinel")
+
+        link = project_dir / "evil-link"
+        link.symlink_to(outside, target_is_directory=True)
+
+        r = client.request("DELETE", f"/api/projects/{self.PROJECT_ID}/files",
+                           json={"paths": ["evil-link"]})
+
+        assert r.status_code == 207
+        result = r.json()["results"][0]
+        assert result["status"] == "error"
+        assert result["error"] == "path_traversal"
+        # The escaping symlink itself survives (validation rejected before delete).
+        assert link.is_symlink()
+        # The outside target is untouched.
+        assert outside.is_dir()
+        assert sentinel.read_bytes() == b"sentinel"
+
+
+# ---------------------------------------------------------------------------
 # GET /api/projects/{id}/outputs tests
 # ---------------------------------------------------------------------------
 

@@ -844,6 +844,72 @@ async def download_assets(
     )
 
 
+@router.delete("/projects/{project_id}/files")
+async def delete_files(
+    project_id: str,
+    body: dict = Body(...),
+    project_dir: Path = Depends(get_project_dir),
+):
+    """Delete files or subdirectories from the project workspace.
+
+    Body: {"paths": ["render-tmp-abc123", "assets/foo.png"]}
+
+    Each path is validated to stay under the project workspace
+    (see validate_project_subpath). Directories are removed recursively
+    (shutil.rmtree); files are unlinked. Missing paths are treated as
+    success — this matches `rm -f` semantics.
+
+    Returns 200 when all deletes succeed, 207 Multi-Status when any fail.
+    Per-item errors are surfaced in the results list, not as 4xx (per-op
+    failures are never request-level — same convention as /upload and
+    /download).
+
+    Symmetric to /upload (push) and /download (pull) — same envelope
+    shape, same path-traversal guards via validate_project_subpath.
+
+    Symlink note: validate_project_subpath .resolve()s the candidate,
+    so symlinks whose target escapes the project are rejected. An
+    in-project symlink resolves to its target — meaning this endpoint
+    deletes the target file and leaves the link dangling, which
+    diverges from POSIX `rm` semantics. Acceptable for current callers.
+    """
+    paths = body.get("paths")
+    if not isinstance(paths, list) or not paths:
+        raise bad_request("invalid_body", "'paths' must be a non-empty list")
+
+    results: list[dict] = []
+    for raw in paths:
+        if not isinstance(raw, str):
+            results.append({"path": raw, "status": "error",
+                            "error": "path must be a string"})
+            continue
+        try:
+            target = validate_project_subpath(project_dir, raw)
+        except HTTPException as e:
+            # bad_request always returns {"error": code, "message": ...} —
+            # extract the code for the per-item result.
+            err_code = e.detail["error"] if isinstance(e.detail, dict) else "validation_error"
+            results.append({"path": raw, "status": "error", "error": err_code})
+            continue
+        try:
+            if target.is_dir() and not target.is_symlink():
+                # rmtree refuses to follow a symlink-to-directory (raises OSError).
+                # We want symmetric refusal — never recurse through a symlink.
+                shutil.rmtree(target)
+            elif target.exists() or target.is_symlink():
+                target.unlink()
+            # else: missing — treat as success (idempotent)
+            results.append({"path": raw, "status": "deleted"})
+        except OSError as e:
+            results.append({"path": raw, "status": "error", "error": str(e)})
+
+    any_error = any(r.get("status") == "error" for r in results)
+    return JSONResponse(
+        status_code=207 if any_error else 200,
+        content={"results": results},
+    )
+
+
 @router.post("/projects/{project_id}/render")
 async def render_project(project_id: str, request: Request, project_dir: Path = Depends(get_project_dir)):
     """Render the project. Streams progress as SSE log/done/error events.
