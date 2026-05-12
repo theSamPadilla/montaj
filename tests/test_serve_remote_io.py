@@ -1016,12 +1016,20 @@ class TestProjectFilesDelete:
         assert not target.exists()
 
     def test_non_string_path_returns_per_item_error(self, client, monkeypatch, tmp_path):
+        """Non-string path entries surface as per-item errors. The `path` field
+        in the result is coerced to str so callers can rely on `results[].path`
+        being a string."""
         monkeypatch.setattr("serve.common.resolve_workspace", lambda: tmp_path)
         self._setup_project(tmp_path)
         r = client.request("DELETE", f"/api/projects/{self.PROJECT_ID}/files",
                            json={"paths": [123]})
         assert r.status_code == 207
-        assert r.json()["results"][0]["status"] == "error"
+        result = r.json()["results"][0]
+        assert result["status"] == "error"
+        assert result["error"] == "path must be a string"
+        # Path field is a string in the response, even though caller sent an int.
+        assert result["path"] == "123"
+        assert isinstance(result["path"], str)
 
     def test_cannot_delete_project_root_itself(self, client, monkeypatch, tmp_path):
         # validate_project_subpath rejects "." and "" — verify the route surfaces this.
@@ -1093,6 +1101,30 @@ class TestProjectFilesDelete:
         # The outside target is untouched.
         assert outside.is_dir()
         assert sentinel.read_bytes() == b"sentinel"
+
+    def test_dangling_in_project_symlink_reports_deleted_link_survives(self, client, monkeypatch, tmp_path):
+        """Corner case: a *dangling* in-project symlink (target missing).
+        `validate_project_subpath` calls `.resolve()` which returns a path
+        whose missing tail is the dangling target — the containment check
+        passes because the lexical path is under the project root, but
+        nothing exists at that path. The route's idempotent missing-path
+        branch fires and reports `deleted`; the actual dangling symlink
+        survives on disk untouched. Locks this slightly-surprising contract.
+        """
+        monkeypatch.setattr("serve.common.resolve_workspace", lambda: tmp_path)
+        project_dir = self._setup_project(tmp_path)
+
+        link = project_dir / "dangling-link"
+        link.symlink_to(project_dir / "never-existed.png")
+        assert link.is_symlink()  # precondition: link exists, target does not
+
+        r = client.request("DELETE", f"/api/projects/{self.PROJECT_ID}/files",
+                           json={"paths": ["dangling-link"]})
+
+        assert r.status_code == 200
+        assert r.json()["results"][0] == {"path": "dangling-link", "status": "deleted"}
+        # The dangling symlink itself is untouched.
+        assert link.is_symlink()
 
 
 # ---------------------------------------------------------------------------

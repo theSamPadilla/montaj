@@ -871,7 +871,10 @@ async def delete_files(
     so symlinks whose target escapes the project are rejected. An
     in-project symlink resolves to its target — meaning this endpoint
     deletes the target file and leaves the link dangling, which
-    diverges from POSIX `rm` semantics. Acceptable for current callers.
+    diverges from POSIX `rm` semantics. A *dangling* in-project symlink
+    (target already missing) resolves to a non-existent path and hits
+    the idempotent "missing → deleted" branch, so the link survives.
+    Acceptable for current callers.
     """
     paths = body.get("paths")
     if not isinstance(paths, list) or not paths:
@@ -880,7 +883,7 @@ async def delete_files(
     results: list[dict] = []
     for raw in paths:
         if not isinstance(raw, str):
-            results.append({"path": raw, "status": "error",
+            results.append({"path": str(raw), "status": "error",
                             "error": "path must be a string"})
             continue
         try:

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v2.4.0
+
 ### Added
 - `DELETE /api/projects/:id/files` — removes files or subdirectories from the project workspace. Body: `{"paths": ["render-tmp-abc", "assets/foo.png"]}`. Completes the triangle with `/upload` (push) and `/download` (pull). Same Multi-Status envelope (`200`/`207`) and same `validate_project_subpath` traversal guards: symlinks whose target escapes the project dir are rejected at validation time. Idempotent — missing paths return `deleted` rather than error (matches `rm -f` semantics). Directories are removed recursively. Note: because validation `.resolve()`s before returning, deleting an in-project symlink removes its *target* (not the link); the link becomes dangling. This is acceptable for today's callers but diverges from POSIX `rm` semantics.
 
