@@ -1,12 +1,15 @@
 """Dependency preflight checks shared across CLI commands."""
 import shutil
 import os
+import sys
 
 # Single source of truth — re-export from cli.main so we don't keep two
 # definitions in sync. install.py and serve/server.py also import from cli.main.
 from cli.main import MONTAJ_ROOT
+sys.path.insert(0, os.path.join(MONTAJ_ROOT, "lib"))
+import models as _models
 
-WHISPER_MODELS_DIR = os.path.expanduser("~/.local/share/whisper.cpp/models")
+LEGACY_WHISPER_MODELS_DIR = os.path.expanduser("~/.local/share/whisper.cpp/models")
 WHISPER_MODEL = "base.en"
 
 # Build cache for Node.js bundles (render engine, Vite UI, MCP server). Keeps
@@ -26,11 +29,28 @@ def check_deps() -> list[str]:
     if not whisper_bin_path():
         missing.append("whisper.cpp binary not found")
 
-    model_path = os.path.join(WHISPER_MODELS_DIR, f"ggml-{WHISPER_MODEL}.bin")
-    if not os.path.isfile(model_path):
+    if not whisper_model_path():
         missing.append(f"whisper model '{WHISPER_MODEL}' not downloaded")
 
     return missing
+
+
+def whisper_model_path(model: str = WHISPER_MODEL) -> str | None:
+    """Return the whisper model path, checking Montaj-managed assets first.
+
+    `montaj install whisper` writes models under Montaj's managed model dir.
+    Older installs may still have whisper.cpp's legacy model directory, so keep
+    that as a fallback for compatibility.
+    """
+    managed = _models.model_path("whisper", f"ggml-{model}.bin")
+    if os.path.isfile(managed):
+        return managed
+
+    legacy = os.path.join(LEGACY_WHISPER_MODELS_DIR, f"ggml-{model}.bin")
+    if os.path.isfile(legacy):
+        return legacy
+
+    return None
 
 
 def whisper_bin_path() -> str | None:
@@ -106,5 +126,4 @@ def check_ui() -> tuple[str, str | None]:
     if not os.path.isfile(ui_index):
         return "prod", "ui/dist/index.html missing — UI has not been built"
     return "prod", None
-
 
