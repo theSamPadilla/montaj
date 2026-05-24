@@ -2,10 +2,8 @@ import { Link, useLocation } from 'react-router-dom'
 import { Moon, Sun } from 'lucide-react'
 
 const TABS = [
-  { path: '/',          label: 'Editor' },
-  { path: '/workflows', label: 'Flows' },     // shortened
-  { path: '/overlays',  label: 'Overlays' },
-  { path: '/profiles',  label: 'Profiles' },
+  { path: '/',         label: 'Editor' },
+  { path: '/profiles', label: 'Profiles' },
 ]
 
 interface Props {
