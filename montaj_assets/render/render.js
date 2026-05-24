@@ -386,11 +386,15 @@ function collectPuppeteerSegments(projectJson, fps, width, height, segDir) {
   const captions = projectJson.captions
   if (captions?.segments?.length > 0 || captions?.style) {
     const frameCount = Math.ceil(totalSecs * fps)
-    const { style: _captStyle, segments: _captSegs, ...captionTheme } = captions
+    // googleFonts is a spec-level field (consumed by bundleComponent), not a
+    // prop on the caption component — pull it out before spreading the rest
+    // into captionTheme.
+    const { style: _captStyle, segments: _captSegs, googleFonts: captionFonts, ...captionTheme } = captions
     specs.push({
       id:            'captions',
       componentPath: captionTemplatePath(captions.style),
       props:         { segments: captions.segments || [], ...captionTheme },
+      googleFonts:   captionFonts ?? [],
       frameCount,
       fps,
       startSeconds:  0,

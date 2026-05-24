@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+### Fixed
+- Google Fonts in overlays and captions actually load now. The `googleFonts` array on overlay items (and on the top-level `captions` object) has been documented for a while, but the render bundler was silently dropping it — `bundleComponent` didn't read the parameter and the generated `<head>` had no font links. The bundler now emits the Google Fonts CSS2 `<link>` (plus the `preconnect` pair) and the shim awaits `document.fonts.ready` on the first frame so frame 0 paints with the requested font instead of a CSS fallback. A 5s timeout guards against network stalls — on timeout the render proceeds with whatever fallback the JSX declared rather than hanging. The captions spec in `render.js` also now forwards `googleFonts` through to the bundler so caption styles can use custom fonts the same way overlays do. Carousel renders (`render-carousel.js`) use a separate bundling path and do not honor `googleFonts` yet — that's a follow-up.
+
 ### Added
 - Mobile-friendly UI. A hard width-gate at the Tailwind `md` breakpoint (768px) routes narrow viewports to dedicated mobile variants of the project list, upload form, project header, top nav, and editor surfaces. Existing desktop components are untouched — mobile and desktop layouts evolve independently.
 - Mobile intake is fully functional: browse projects, create a new project (clip / AI video / carousel / music-video), pick a workflow, and submit — all on a phone.

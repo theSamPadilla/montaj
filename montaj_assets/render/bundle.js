@@ -32,7 +32,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url))
  * @param {number}  opts.height
  * @returns {Promise<{ htmlPath: string, workDir: string }>}
  */
-export async function bundleComponent({ componentPath, props, fps, durationFrames, width, height, offsetX = 0, offsetY = 0, scale = 1, opaque = false }) {
+export async function bundleComponent({ componentPath, props, fps, durationFrames, width, height, offsetX = 0, offsetY = 0, scale = 1, opaque = false, googleFonts = [] }) {
   const id      = randomBytes(8).toString('hex')
   const workDir = join(tmpdir(), `montaj-bundle-${id}`)
   mkdirSync(workDir, { recursive: true })
@@ -61,7 +61,7 @@ export async function bundleComponent({ componentPath, props, fps, durationFrame
     logLevel: 'silent',
   })
 
-  writeFileSync(htmlPath, generateHtml(width, height, opaque))
+  writeFileSync(htmlPath, generateHtml(width, height, opaque, googleFonts))
 
   return { htmlPath, workDir }
 }
@@ -168,7 +168,39 @@ createRoot(document.getElementById('root')).render(<App />)
 // After flushSync, stamp the rendered frame number onto the root element so
 // Puppeteer can use waitForFunction to confirm the DOM reflects the right frame
 // before taking the screenshot (rAF-only waits are unreliable in headless Chrome).
-window.__setFrame = (n) => {
+//
+// Block frame 0 paint on document.fonts.ready so any Google Fonts declared in
+// the page <head> are fully loaded before the first screenshot (otherwise the
+// first frames flash a CSS fallback). 5s timeout so a flaky network can't stall
+// the render; on timeout we proceed and frames paint with whatever fallback the
+// JSX declared. After the first call settles, subsequent calls re-use the same
+// resolved promise (effectively free).
+//
+// __setFrame is defined synchronously — renderer.js does a one-shot
+// \`typeof window.__setFrame === 'function'\` check right after page.goto and
+// gating that on a promise would race. The fonts-ready wait happens inside the
+// function, on the first call only.
+//
+// We read \`document.fonts.ready\` lazily on the first call, not at shim eval
+// time, because the FontFaceSet.ready promise reflects only loads that are
+// pending *when accessed*. If we capture it before React has committed any
+// font-family styles to the DOM, the browser hasn't kicked off the woff2 load
+// yet and ready resolves immediately. By first __setFrame call, React's initial
+// render has committed and any required font fetches are in flight.
+let __fontsReadyPromise
+function __waitForFonts() {
+  if (__fontsReadyPromise) return __fontsReadyPromise
+  __fontsReadyPromise = Promise.race([
+    document.fonts ? document.fonts.ready : Promise.resolve(),
+    new Promise(resolve => setTimeout(() => {
+      console.warn('[montaj] document.fonts.ready timed out after 5s — rendering with fallback')
+      resolve()
+    }, 5000)),
+  ])
+  return __fontsReadyPromise
+}
+window.__setFrame = async (n) => {
+  await __waitForFonts()
   window.frame = n  // update global before React re-renders
   flushSync(() => __setFrame?.(n))
   document.documentElement.dataset.renderedFrame = String(n)
@@ -176,12 +208,21 @@ window.__setFrame = (n) => {
 `
 }
 
-function generateHtml(width, height, opaque = false) {
+function generateHtml(width, height, opaque = false, googleFonts = []) {
   const bgRule = opaque ? '' : 'background: transparent;'
+  // Each entry in googleFonts is appended verbatim as a `family=...` parameter
+  // on the Google Fonts CSS2 API URL. Callers format entries as
+  // "Anton" / "Playfair+Display:ital@1" / "Roboto:wght@400;700" (spaces as +).
+  // We intentionally do NOT URL-encode the entries — Google's API requires
+  // literal '+', ':', '@', ';' which would be percent-encoded otherwise.
+  const fontLinks = googleFonts.length === 0 ? '' : `
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?${googleFonts.map(f => `family=${f}`).join('&')}&display=swap">`
   return `<!DOCTYPE html>
 <html>
 <head>
-<meta charset="utf-8">
+<meta charset="utf-8">${fontLinks}
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
 html, body, #root {

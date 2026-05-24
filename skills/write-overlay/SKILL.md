@@ -282,7 +282,9 @@ Browse at [phosphoricons.com](https://phosphoricons.com). Over 9000 icons, six w
 
 ## Custom fonts (Google Fonts)
 
-System fonts (`Inter`, `Impact`, `Georgia`, `Arial`, etc.) are always available and preferred for performance. To use a Google Font, declare it on the overlay item in `project.json` with a `googleFonts` array:
+The render host's system fonts are always available and preferred for performance — they avoid the network fetch entirely. On macOS render hosts (today's default) you can rely on `Helvetica`, `Arial`, `Georgia`, `Times`, `Courier`, `Impact`, and the `system-ui` / `-apple-system` generic stacks. `Inter` is **not** a macOS system font — use a Google Font declaration for it.
+
+To use a Google Font, declare it on the overlay item in `project.json` with a `googleFonts` array:
 
 ```json
 {
