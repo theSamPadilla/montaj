@@ -1,7 +1,20 @@
 # Changelog
 
 ## Unreleased
-- Mobile-friendly UI: project list, new-project form, and workflow picker are now fully usable on phones. Editor surfaces show a view-only preview with a Render button on narrow viewports; full editing still requires desktop. Render result modals also stack vertically on mobile.
+
+### Added
+- Mobile-friendly UI. A hard width-gate at the Tailwind `md` breakpoint (768px) routes narrow viewports to dedicated mobile variants of the project list, upload form, project header, top nav, and editor surfaces. Existing desktop components are untouched — mobile and desktop layouts evolve independently.
+- Mobile intake is fully functional: browse projects, create a new project (clip / AI video / carousel / music-video), pick a workflow, and submit — all on a phone.
+- Mobile editor surfaces are view-only: video projects show the existing `PreviewPlayer` with a single full-width Render button; carousel projects show a vertically-stacked read-only slide viewer with a Render button; AI-video projects mid-storyboard show a "open on desktop" notice that still surfaces the live agent log line so users can watch progress from their phone.
+- Mobile render modals stack vertically (video on top, info panel below) instead of the desktop side-by-side layout, so output and download controls are reachable on a narrow screen.
+
+### Changed
+- `UploadView` refactored to consume a new `useUploadForm` hook (state, effects, derived values, and `handleRun` extracted). JSX is byte-identical; the hook is shared with the new `MobileUploadView`. No behavior change on desktop.
+- `AspectRatioIcon` and `CarouselAspectIcon` extracted from `UploadView` into a new `uploadConstants.tsx` module so both desktop and mobile forms import them.
+
+### Notes
+- Editing — overlays, clip trimming, slide canvas, storyboard scene editing — still requires desktop. Mobile users can browse, upload, monitor progress, and render.
+- Tablets at ~800px and phones in landscape get the desktop UI by design; revisit if the cramped-tablet UX becomes a real complaint.
 
 ## v2.4.1
 - Adding image cropping support
