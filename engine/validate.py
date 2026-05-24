@@ -108,6 +108,20 @@ def validate_project(path):
                     src = el.get("src")
                     if not isinstance(src, str) or not src:
                         fail("missing_field", f"slides[{si}].elements[{ei}].src must be a non-empty string")
+                    crop = el.get("crop")
+                    if crop is not None:
+                        if not isinstance(crop, dict):
+                            fail("invalid_field", f"slides[{si}].elements[{ei}].crop must be an object")
+                        for k in ("x", "y", "w", "h"):
+                            v = crop.get(k)
+                            if not isinstance(v, (int, float)):
+                                fail("missing_field", f"slides[{si}].elements[{ei}].crop.{k} must be a number")
+                            if v < 0 or v > 1:
+                                fail("invalid_field", f"slides[{si}].elements[{ei}].crop.{k} must be in [0, 1]")
+                        if crop["w"] <= 0 or crop["h"] <= 0:
+                            fail("invalid_field", f"slides[{si}].elements[{ei}].crop w/h must be > 0")
+                        if crop["x"] + crop["w"] > 1 + 1e-6 or crop["y"] + crop["h"] > 1 + 1e-6:
+                            fail("invalid_field", f"slides[{si}].elements[{ei}].crop exceeds source bounds")
                 elif el_type == "overlay":
                     overlay = el.get("overlay")
                     if not isinstance(overlay, dict):

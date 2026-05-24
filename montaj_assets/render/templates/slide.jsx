@@ -45,21 +45,41 @@ export function Slide({ slide, width, height, overlayRegistry, resolveAsset }) {
     }}>
       {elements.map((element) => {
         if (element.type === 'image') {
-          const { x = 0, y = 0, w = width, h = height, rotation = 0 } = element
+          const { x = 0, y = 0, w = width, h = height, rotation = 0, crop } = element
+          const baseStyle = {
+            position:        'absolute',
+            left:            x,
+            top:             y,
+            width:           w,
+            height:          h,
+            transform:       `rotate(${rotation}deg)`,
+            transformOrigin: 'center center',
+          }
+
+          if (crop) {
+            const { x: cx, y: cy, w: cw, h: ch } = crop
+            return (
+              <div key={element.id} style={{ ...baseStyle, overflow: 'hidden' }}>
+                <img
+                  src={resolveAsset(element.src)}
+                  style={{
+                    display:    'block',
+                    width:      `${100 / cw}%`,
+                    height:     `${100 / ch}%`,
+                    marginLeft: `${-cx * 100 / cw}%`,
+                    marginTop:  `${-cy * 100 / ch}%`,
+                    objectFit:  'cover',
+                  }}
+                />
+              </div>
+            )
+          }
+
           return (
             <img
               key={element.id}
               src={resolveAsset(element.src)}
-              style={{
-                position:        'absolute',
-                left:            x,
-                top:             y,
-                width:           w,
-                height:          h,
-                transform:       `rotate(${rotation}deg)`,
-                transformOrigin: 'center center',
-                objectFit:       'cover',
-              }}
+              style={{ ...baseStyle, objectFit: 'cover' }}
             />
           )
         }

@@ -191,6 +191,15 @@ export interface ImageElement {
   w: number
   h: number
   rotation: number
+  /**
+   * Optional non-destructive crop expressed as a sub-rectangle of the source
+   * image in 0–1 fractions. The editor (mission-control) is the sole enforcer
+   * of the aspect-lock invariant (crop pixel aspect == element pixel aspect);
+   * the server validates only bounds. The renderer's object-fit: cover acts as
+   * a graceful-degradation safety net when the invariant is violated by a
+   * manual project.json edit. Absent = no crop = current behavior.
+   */
+  crop?: { x: number; y: number; w: number; h: number }
 }
 
 export interface OverlayElement {
