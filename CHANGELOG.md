@@ -3,6 +3,8 @@
 ## Unreleased
 
 ## v2.4.1
+- Adding image cropping support
+- Minor improvements in install.
 
 ## v2.4.0
 
