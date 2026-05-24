@@ -1,6 +1,7 @@
 # Changelog
 
 ## Unreleased
+- Mobile-friendly UI: project list, new-project form, and workflow picker are now fully usable on phones. Editor surfaces show a view-only preview with a Render button on narrow viewports; full editing still requires desktop. Render result modals also stack vertically on mobile.
 
 ## v2.4.1
 - Adding image cropping support
