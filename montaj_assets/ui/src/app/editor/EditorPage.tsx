@@ -3,11 +3,17 @@ import { useParams, useLocation } from 'react-router-dom'
 import { api } from '@/lib/api'
 import { ProjectContext, type Project } from '@/lib/types/schema'
 import { useProjectStream } from '@/lib/sse'
+import { useIsMobile } from '@/lib/useIsMobile'
 import UploadView from './UploadView'
 import LiveView from './LiveView'
 import ReviewView from './ReviewView'
 import StoryboardView from './StoryboardView'
 import CarouselEditor from './CarouselEditor'
+import MobileUploadView from './MobileUploadView'
+import MobileLiveView from './MobileLiveView'
+import MobileVideoPreview from '@/components/preview/MobileVideoPreview'
+import MobileCarouselPreview from '@/components/preview/MobileCarouselPreview'
+import MobileEditNotice from '@/components/MobileEditNotice'
 
 export default function EditorPage() {
   const { id } = useParams<{ id: string }>()
@@ -44,6 +50,8 @@ export default function EditorPage() {
     return () => clearInterval(timer)
   }, [id, project?.status, project?.projectType])
 
+  const isMobile = useIsMobile()
+
   if (error) {
     return <div className="p-6 text-red-400 text-sm">{error}</div>
   }
@@ -51,20 +59,33 @@ export default function EditorPage() {
   if (!id || id === 'new' || !project) {
     return (
       <ProjectContext.Provider value={{ project, setProject }}>
-        <UploadView />
+        {isMobile ? <MobileUploadView /> : <UploadView />}
       </ProjectContext.Provider>
     )
   }
 
   let view
   if (project.projectType === 'carousel') {
-    view = <CarouselEditor project={project} onProjectChange={setProject} logMessage={logMessage} />
+    view = isMobile
+      ? <MobileCarouselPreview project={project} onProjectChange={setProject} />
+      : <CarouselEditor project={project} onProjectChange={setProject} logMessage={logMessage} />
   } else if (project.projectType === 'ai_video' && (project.status === 'pending' || project.status === 'storyboard_ready')) {
-    view = <StoryboardView project={project} onProjectChange={setProject} logMessage={logMessage} />
+    view = isMobile
+      ? <MobileEditNotice
+          project={project}
+          onProjectChange={setProject}
+          logMessage={logMessage}
+          message="Storyboard editing is desktop-only. Open on a larger screen to review scenes and references."
+        />
+      : <StoryboardView project={project} onProjectChange={setProject} logMessage={logMessage} />
   } else if (project.status === 'pending') {
-    view = <LiveView project={project} logMessage={logMessage} onProjectChange={setProject} />
+    view = isMobile
+      ? <MobileLiveView project={project} logMessage={logMessage} onProjectChange={setProject} />
+      : <LiveView project={project} logMessage={logMessage} onProjectChange={setProject} />
   } else {
-    view = <ReviewView project={project} onProjectChange={setProject} />
+    view = isMobile
+      ? <MobileVideoPreview project={project} onProjectChange={setProject} />
+      : <ReviewView project={project} onProjectChange={setProject} />
   }
 
   return (
