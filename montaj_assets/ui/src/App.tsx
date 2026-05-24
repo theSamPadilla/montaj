@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react'
 import { Link, Outlet, useLocation } from 'react-router-dom'
 import { Moon, Sun } from 'lucide-react'
+import { useIsMobile } from '@/lib/useIsMobile'
+import MobileTopNav from '@/components/MobileTopNav'
 
 function Wordmark() {
   return (
@@ -40,6 +42,8 @@ export default function App() {
     localStorage.setItem('theme', dark ? 'dark' : 'light')
   }, [dark])
 
+  const isMobile = useIsMobile()
+
   function isActive(path: string) {
     if (path === '/') return pathname === '/' || pathname.startsWith('/projects')
     return pathname.startsWith(path)
@@ -47,31 +51,35 @@ export default function App() {
 
   return (
     <div className="flex flex-col h-screen overflow-hidden">
-      <header className="flex items-center gap-6 px-4 h-11 border-b border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-950 shrink-0">
-        <Wordmark />
-        <nav className="flex gap-0.5 flex-1">
-          {TABS.map(({ path, label }) => (
-            <Link
-              key={path}
-              to={path}
-              className={`px-3 py-1 rounded text-sm transition-colors ${
-                isActive(path)
-                  ? 'bg-gray-100 text-gray-900 dark:bg-gray-700 dark:text-white'
-                  : 'text-gray-500 hover:text-gray-900 hover:bg-gray-100 dark:text-gray-400 dark:hover:text-white dark:hover:bg-gray-800'
-              }`}
-            >
-              {label}
-            </Link>
-          ))}
-        </nav>
-        <button
-          onClick={() => setDark(d => !d)}
-          className="p-1.5 rounded text-gray-400 hover:text-gray-700 hover:bg-gray-100 dark:hover:text-gray-200 dark:hover:bg-gray-800 transition-colors"
-          aria-label="Toggle theme"
-        >
-          {dark ? <Sun size={15} /> : <Moon size={15} />}
-        </button>
-      </header>
+      {isMobile ? (
+        <MobileTopNav dark={dark} onToggleDark={() => setDark(d => !d)} />
+      ) : (
+        <header className="flex items-center gap-6 px-4 h-11 border-b border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-950 shrink-0">
+          <Wordmark />
+          <nav className="flex gap-0.5 flex-1">
+            {TABS.map(({ path, label }) => (
+              <Link
+                key={path}
+                to={path}
+                className={`px-3 py-1 rounded text-sm transition-colors ${
+                  isActive(path)
+                    ? 'bg-gray-100 text-gray-900 dark:bg-gray-700 dark:text-white'
+                    : 'text-gray-500 hover:text-gray-900 hover:bg-gray-100 dark:text-gray-400 dark:hover:text-white dark:hover:bg-gray-800'
+                }`}
+              >
+                {label}
+              </Link>
+            ))}
+          </nav>
+          <button
+            onClick={() => setDark(d => !d)}
+            className="p-1.5 rounded text-gray-400 hover:text-gray-700 hover:bg-gray-100 dark:hover:text-gray-200 dark:hover:bg-gray-800 transition-colors"
+            aria-label="Toggle theme"
+          >
+            {dark ? <Sun size={15} /> : <Moon size={15} />}
+          </button>
+        </header>
+      )}
 
       <main className="flex-1 overflow-hidden">
         <Outlet />
