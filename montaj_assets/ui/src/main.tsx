@@ -8,14 +8,20 @@ import WorkflowsPage from './app/WorkflowsPage'
 import OverlaysPage from './app/overlays/OverlaysPage'
 import ProfilesPage from './app/profiles/ProfilesPage'
 import NotFound from './app/NotFound'
+import { useIsMobile } from './lib/useIsMobile'
+import MobileProjectList from './app/MobileProjectList'
 import './index.css'
+
+function ProjectListRoute() {
+  return useIsMobile() ? <MobileProjectList /> : <ProjectList />
+}
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
     <BrowserRouter>
       <Routes>
         <Route path="/" element={<App />}>
-          <Route index element={<ProjectList />} />
+          <Route index element={<ProjectListRoute />} />
           <Route path="projects/:id" element={<EditorPage />} />
           <Route path="workflows" element={<WorkflowsPage />} />
           <Route path="overlays"  element={<OverlaysPage />} />
