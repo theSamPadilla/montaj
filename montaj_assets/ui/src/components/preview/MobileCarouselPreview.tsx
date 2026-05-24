@@ -63,8 +63,8 @@ export default function MobileCarouselPreview({ project, onProjectChange }: Prop
       </div>
 
       <div className="shrink-0 p-3 border-t border-gray-200 dark:border-gray-800">
-        <Button onClick={handleRender} disabled={saving || slides.length === 0} className="w-full h-11 text-base">
-          {saving ? 'Saving…' : 'Render →'}
+        <Button onClick={handleRender} disabled={saving || slides.length === 0 || project.status === 'pending'} className="w-full h-11 text-base">
+          {saving ? 'Saving…' : project.status === 'pending' ? 'Project still processing…' : 'Render →'}
         </Button>
       </div>
 
