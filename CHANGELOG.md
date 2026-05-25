@@ -3,6 +3,7 @@
 ## Unreleased
 
 ## v2.5.1
+- Fixing release cycle
 
 ## v2.5.0
 
