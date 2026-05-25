@@ -25,6 +25,7 @@ prune montaj_assets/render/node_modules
 prune montaj_assets/ui/node_modules
 prune montaj_assets/ui/dist
 prune montaj_assets/mcp/node_modules
+prune montaj_assets/overlay-runtime/node_modules
 
 # Belt & suspenders. global-exclude with bare names matches FILES, not directories,
 # so __pycache__/ is excluded via its contents pattern and via recursive-exclude.
