@@ -555,21 +555,29 @@ async def save_project(project_id: str, body: dict = Body(...), request: Request
     if body.get("id") != project_id:
         raise bad_request("id_mismatch", "Body id must match URL id")
     project_path = project_dir / "project.json"
-    prev_status = json.loads(project_path.read_text()).get("status")
-    text = json.dumps(body, indent=2)
+    existing = json.loads(project_path.read_text())
+    prev_status = existing.get("status")
+    # Top-level shallow merge: preserve fields not present in the body. Agents
+    # (per skills/serve/SKILL.md) routinely PUT a partial body like
+    # {id, status, tracks} when transitioning pending→draft; without this merge
+    # creation-time metadata (name, workflow, editingPrompt, projectType,
+    # runCount, settings, profile, …) gets wiped. To explicitly clear a field,
+    # callers must send it as null in the body.
+    merged = {**existing, **body}
+    text = json.dumps(merged, indent=2)
     project_path.write_text(text)
     # Broadcast immediately — before the git commit so the UI update is instant.
     # Don't rely on the file watcher which can miss updates during SSE reconnect windows.
     broadcaster: SSEBroadcaster = request.app.state.broadcaster
     broadcaster.publish(project_id, _sse_data_frame(text))
     # Auto-commit to git on status transitions — run in a thread so it doesn't block the event loop
-    new_status = body.get("status")
+    new_status = merged.get("status")
     if new_status in ("draft", "final") and new_status != prev_status:
-        run_count = body.get("runCount", 1)
+        run_count = merged.get("runCount", 1)
         asyncio.create_task(asyncio.to_thread(
             _git_commit_sync, project_dir, f"version: run {run_count} — {new_status}"
         ))
-    return body
+    return merged
 
 
 @router.get("/projects/{project_id}/versions")
