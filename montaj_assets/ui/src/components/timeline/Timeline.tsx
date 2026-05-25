@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import AudioTrackRow from './AudioTrackRow'
 import type { Project } from '@/lib/types/schema'
 import SubcutRegenTool from './SubcutRegenTool'
+import { collapseGaps } from '@/lib/cuts'
 import { ratioFromClientX } from './utils'
 import { useTimelineZoom } from './useTimelineZoom'
 import { TimelineContext, type TimelineContextValue } from './TimelineContext'
@@ -137,12 +138,13 @@ export default function Timeline({ project, currentTime, onTimeUpdate, onProject
     if ((e.key === 'Delete' || e.key === 'Backspace') && selectedOverlayId) {
       e.preventDefault()
       if (!onProjectChange) return
-      const updated = {
+      let updated = {
         ...project,
         tracks: (project.tracks ?? [])
           .map(track => track.filter(item => item.id !== selectedOverlayId))
           .filter(track => track.length > 0),
       }
+      if (rippleMode) updated = collapseGaps(updated)
       onProjectChange(updated)
       onOverlayEdit?.(updated)
       onSelectOverlay?.(null)

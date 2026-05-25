@@ -78,12 +78,13 @@ export default function VisualTrackRow({
 
   function handleDeleteOverlay(id: string) {
     if (!onProjectChange) return
-    const updated = {
+    let updated = {
       ...project,
       tracks: (project.tracks ?? [])
         .map(track => track.filter(item => item.id !== id))
         .filter(track => track.length > 0),
     }
+    if (rippleMode) updated = collapseGaps(updated)
     onProjectChange(updated)
     onOverlayEdit?.(updated)
     onSelectOverlay?.(null)
