@@ -8,6 +8,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, Body
 
+from cli.deps import render_runtime_dir
 from serve.common import bad_request
 
 router = APIRouter(prefix="/api")
@@ -65,6 +66,12 @@ def scan_overlays(overlays_dir: Path) -> list[dict]:
 async def list_overlays():
     """List all overlays from the global overlay library (~/.montaj/overlays/)."""
     return scan_overlays(Path.home() / ".montaj" / "overlays")
+
+
+@router.get("/overlays/system")
+async def list_system_overlays():
+    """List shipped overlay templates packaged with Montaj."""
+    return scan_overlays(Path(render_runtime_dir()) / "templates" / "overlays")
 
 
 @router.post("/overlays/groups", status_code=201)

@@ -1,0 +1,12 @@
+{
+  "description": "Static text overlay (no animation). Renders a single styled string.",
+  "props": [
+    { "name": "text",       "type": "string", "default": "Your text here" },
+    { "name": "fontSize",   "type": "string", "default": "80" },
+    { "name": "color",      "type": "string", "default": "#111111", "format": "color" },
+    { "name": "fontFamily", "type": "string", "default": "system-ui, -apple-system, \"Helvetica Neue\", sans-serif" },
+    { "name": "fontWeight", "type": "string", "default": "400" },
+    { "name": "textAlign",  "type": "string", "default": "center", "enum": ["left", "center", "right"] },
+    { "name": "bgColor",    "type": "string", "default": "transparent", "format": "color" }
+  ]
+}

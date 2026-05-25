@@ -28,11 +28,22 @@ def roots(tmp_path, monkeypatch):
                   Title/
                     Title.jsx
             credentials.json   # sibling of allowed roots — must remain 403
+          render/
+            templates/
+              overlays/
+                static-text/
+                  static-text.jsx   # shipped overlay template
+            credentials.json        # sibling outside templates/overlays/ — must remain 403
 
     Patches serve.server._allowed_file_roots to return [workspace, overlays,
-    profiles] from this layout. Using subdirectories of tmp_path (not tmp_path
-    itself) lets traversal tests drop an "outside" file at tmp_path/outside.txt
-    without leaking past pytest's cleanup.
+    profiles, shipped_templates] from this layout. Using subdirectories of
+    tmp_path (not tmp_path itself) lets traversal tests drop an "outside" file
+    at tmp_path/outside.txt without leaking past pytest's cleanup.
+
+    The shipped-templates root is constructed directly here (without patching
+    render_runtime_dir) because _allowed_file_roots is already fully replaced by
+    monkeypatch — the test controls the exact list returned, so there is no need
+    for a second layer of patching.
     """
     ws       = tmp_path / "workspace"
     overlays = tmp_path / ".montaj" / "overlays"
@@ -59,12 +70,27 @@ def roots(tmp_path, monkeypatch):
     # Sensitive sibling — must remain blocked.
     (tmp_path / ".montaj" / "credentials.json").write_text('{"api_key": "secret"}')
 
-    monkeypatch.setattr("serve.routes.files._allowed_file_roots", lambda: [ws, overlays, profiles])
+    # Shipped overlay templates root — mirrors the production path expression
+    # (Path(render_runtime_dir()) / "templates" / "overlays").resolve().
+    shipped_templates = (tmp_path / "render" / "templates" / "overlays").resolve()
+    shipped_templates.mkdir(parents=True)
+    st_overlay_dir = shipped_templates / "static-text"
+    st_overlay_dir.mkdir()
+    (st_overlay_dir / "static-text.jsx").write_text("export const StaticText = () => null")
+
+    # Sensitive sibling outside templates/overlays/ — must remain blocked.
+    (tmp_path / "render" / "credentials.json").write_text('{"api_key": "secret"}')
+
+    monkeypatch.setattr(
+        "serve.routes.files._allowed_file_roots",
+        lambda: [ws, overlays, profiles, shipped_templates],
+    )
     return {
-        "workspace": ws,
-        "overlays":  overlays,
-        "profiles":  profiles,
-        "tmp_path":  tmp_path,
+        "workspace":         ws,
+        "overlays":          overlays,
+        "profiles":          profiles,
+        "shipped_templates": shipped_templates,
+        "tmp_path":          tmp_path,
     }
 
 
@@ -170,3 +196,24 @@ def test_files_nested_project_at_depth_2_returns_200(client, roots):
     resp = client.get("/api/files", params={"path": str(nested / "project.json")})
     assert resp.status_code == 200
     assert resp.json() == {"id": "nested-id", "name": "nested"}
+
+
+def test_files_under_shipped_templates_root_returns_200(client, roots):
+    """A shipped overlay JSX (render/templates/overlays/<name>/<name>.jsx) must
+    be served by /api/files so the frontend can fetch system overlay templates
+    the same way it fetches user-installed overlays (Task 5 of
+    2026-05-24-add-text-overlay)."""
+    jsx = roots["shipped_templates"] / "static-text" / "static-text.jsx"
+    resp = client.get("/api/files", params={"path": str(jsx)})
+    assert resp.status_code == 200
+    assert b"StaticText" in resp.content
+
+
+def test_files_sibling_of_shipped_templates_returns_403(client, roots):
+    """A file that is a sibling of templates/overlays/ inside the render dir
+    (e.g., render/credentials.json) must not be reachable — only the
+    templates/overlays/ subtree is in the allowlist, not the render root."""
+    sibling = roots["tmp_path"] / "render" / "credentials.json"
+    resp = client.get("/api/files", params={"path": str(sibling)})
+    assert resp.status_code == 403
+    assert resp.json()["detail"]["error"] == "forbidden"

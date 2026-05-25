@@ -6,6 +6,8 @@ from pathlib import Path
 
 from fastapi import HTTPException
 
+from cli.deps import render_runtime_dir
+
 MONTAJ_ROOT = Path(__file__).resolve().parent.parent
 
 
@@ -69,6 +71,7 @@ def _allowed_file_roots() -> list[Path]:
         resolve_workspace().resolve(),
         (Path.home() / ".montaj" / "overlays").resolve(),
         (Path.home() / ".montaj" / "profiles").resolve(),
+        (Path(render_runtime_dir()) / "templates" / "overlays").resolve(),
     ]
 
 
