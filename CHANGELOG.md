@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v2.5.4
+
 ### Fixed
 - A broken overlay JSX file no longer crashes the entire editor. Previously, if a compiled overlay returned an element with an undefined component type (e.g. a typo in a Phosphor icon name like `Ph.CircuitBoard` instead of the actual export `Ph.Circuitry`), React would throw minified error #130 during reconciliation — escaping `overlay-eval.ts`'s try/catch (which only wraps the synchronous factory call, not the render phase) and unmounting the whole app tree, producing a blank page with no usable error message. New `montaj_assets/ui/src/components/OverlayErrorBoundary.tsx` is now wrapped around every overlay-eval consumer — `CustomOverlay` in `OverlayItemsLayer` (video editor preview), `OverlayElementView` in `SlideCanvas` (carousel slide editor), and the rendered element in `CaptionPreview` (caption layer). On a render-phase throw the boundary contains the fault and shows a small red box with the broken overlay's filename and the error message; everything else in the editor keeps working. The boundary auto-recovers on file save (subscribes to `/api/files/stream` via the `watchPath` prop, same EventSource the existing live-reload uses) so editing the overlay's source clears the error without a page reload. For non-path-backed sources (caption styles) it accepts a `resetKey` prop that clears the error whenever its value changes.
 
