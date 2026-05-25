@@ -1,0 +1,24 @@
+{
+  "name": "montaj-overlay-runtime",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Shared contract layer between Montaj's render shim and the live UI preview. Owns the overlay JSX globals + their implementations + version pins.",
+  "type": "module",
+  "main": "index.js",
+  "scripts": {
+    "test": "node test.js"
+  },
+  "engines": { "node": ">=18" },
+  "dependencies": {
+    "@fortawesome/free-brands-svg-icons": "7.2.0",
+    "@fortawesome/free-solid-svg-icons": "7.2.0",
+    "@fortawesome/react-fontawesome": "3.3.0",
+    "@phosphor-icons/react": "2.1.10",
+    "@react-three/fiber": "8.15.0",
+    "three": "0.160.0"
+  },
+  "peerDependencies": {
+    "react": "^18.0.0",
+    "react-dom": "^18.0.0"
+  }
+}

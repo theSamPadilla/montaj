@@ -29,19 +29,40 @@ export default function MobileRenderModal({ projectId, onClose, onCancel }: Prop
   const [errorMsg, setError] = useState<string | null>(null)
   const logRef = useRef<HTMLDivElement>(null)
   const cancelRef = useRef<(() => void) | null>(null)
+  const unmountedRef = useRef(false)
+  const cleanupTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   useEffect(() => {
-    let unmounted = false
+    // StrictMode-safe render trigger — see RenderModal.tsx for the long-form
+    // comment. Without the deferred-cancel rescue, dev mode spawns two
+    // render.js processes per render and corrupts segment files.
+    if (cleanupTimerRef.current !== null) {
+      clearTimeout(cleanupTimerRef.current)
+      cleanupTimerRef.current = null
+      unmountedRef.current = false
+      return scheduleCleanup
+    }
+
+    unmountedRef.current = false
     api.renderProject(
       projectId,
-      line => { if (!unmounted) setLogs(l => [...l, line]) },
-      path => { if (!unmounted) { setOutput(path); setStatus('done') } },
-      msg  => { if (!unmounted) { setError(msg); setStatus('error') } },
+      line => { if (!unmountedRef.current) setLogs(l => [...l, line]) },
+      path => { if (!unmountedRef.current) { setOutput(path); setStatus('done') } },
+      msg  => { if (!unmountedRef.current) { setError(msg); setStatus('error') } },
     ).then(cancel => {
-      if (unmounted) cancel()
+      if (unmountedRef.current) cancel()
       else cancelRef.current = cancel
     })
-    return () => { unmounted = true; cancelRef.current?.(); cancelRef.current = null }
+    return scheduleCleanup
+
+    function scheduleCleanup() {
+      cleanupTimerRef.current = setTimeout(() => {
+        cleanupTimerRef.current = null
+        unmountedRef.current = true
+        cancelRef.current?.()
+        cancelRef.current = null
+      }, 0)
+    }
   }, [projectId])
 
   useEffect(() => { if (logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight }, [logs])

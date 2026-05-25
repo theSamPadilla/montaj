@@ -25,6 +25,9 @@ Custom overlay JSX runs in a sandboxed evaluator. All identifiers below are inje
 | `FaIcon` | component | `FontAwesomeIcon` renderer — use with `FaSolid` / `FaBrands` icon objects |
 | `FaSolid` | object | All [FA Free Solid](https://fontawesome.com/icons?s=solid) icon objects — e.g. `FaSolid.faHouse` |
 | `FaBrands` | object | All [FA Free Brands](https://fontawesome.com/icons?s=brands) icons — e.g. `FaBrands.faGithub` |
+| `THREE` | namespace | All [Three.js](https://threejs.org) primitives — `THREE.Vector3`, `THREE.MathUtils`, etc. Only reach for it when you genuinely need 3D — see "3D / Three.js" section. |
+| `Canvas` | component | [@react-three/fiber](https://r3f.docs.pmnd.rs) Canvas. **Always pass `frameloop="never"`** and mount a `useThreeFrame()` child — see "3D / Three.js" section. |
+| `useThreeFrame` | hook | Bridges r3f to Montaj's frame-stepped renderer. Mount exactly once inside any `<Canvas>`. |
 
 **No imports.** All `import` statements are stripped before evaluation. Do not import anything — use the globals above instead.
 
@@ -319,6 +322,96 @@ fontFamily: '"Playfair Display", Georgia, serif'
 | Roboto / Inter | system-ui, sans-serif |
 
 If visual fidelity isn't critical, the system fallback avoids the network fetch entirely.
+
+---
+
+## 3D / Three.js (react-three-fiber)
+
+Overlay JSX can use Three.js for real 3D content via [@react-three/fiber](https://r3f.docs.pmnd.rs). Reach for it when you need depth, particles, shader effects, 3D text, or geometry that can't be faked in 2D. **Do not use it for things 2D HTML can do** — rotations, fades, slides, gradients are all cheaper and simpler in CSS.
+
+**Preview behavior — RAF-driven, not frame-stepped.** Three.js overlays render in both the live UI preview and the final rendered MP4. The two paths share globals and library versions via the `montaj-overlay-runtime` package, so what you see in the editor matches the render output visually. One difference to be aware of: in preview the 3D content animates via r3f's own `requestAnimationFrame` loop (the preview-context `Canvas` wrapper overrides `frameloop="never"` → `"always"` automatically), so motion is smooth but not perfectly frame-accurate to the scrubbed video position. In render, `frameloop="never"` is honored and the shim drives `gl.render()` synchronously each frame.
+
+### Two non-negotiable rules
+
+1. **`<Canvas frameloop="never">`.** The default r3f Canvas runs its own `requestAnimationFrame` loop, which is incompatible with Montaj's frame-stepped renderer — Puppeteer would screenshot arbitrary moments. `frameloop="never"` disables r3f's loop and lets the render shim drive each frame synchronously.
+2. **Mount `useThreeFrame()` exactly once inside the Canvas.** This hook registers the synchronous render trigger the shim calls every frame. Without it, Three never draws.
+
+Convention: put a tiny `<FrameBridge />` child component at the top of the Canvas that calls `useThreeFrame()` and returns `null`.
+
+### Drive everything from `frame`, never `useFrame`
+
+r3f's `useFrame` hook is tied to the internal animation loop we've disabled. **It does not work.** Compute transforms inline from the `frame` global, the same way 2D overlays do:
+
+```jsx
+export default function ThreeCube() {
+  const t      = frame / fps
+  const rotX   = t * Math.PI         // half-turn per second
+  const rotY   = t * Math.PI * 0.7
+  const pulse  = 1 + 0.08 * Math.sin(t * 4)
+
+  return (
+    <Canvas
+      frameloop="never"
+      style={{ position: 'absolute', inset: 0 }}
+      camera={{ position: [0, 0, 5], fov: 50 }}
+      gl={{ preserveDrawingBuffer: true, antialias: true, alpha: true }}
+    >
+      <FrameBridge />
+      <ambientLight intensity={0.6} />
+      <directionalLight position={[5, 5, 5]} intensity={1.2} />
+      <mesh rotation={[rotX, rotY, 0]} scale={[pulse, pulse, pulse]}>
+        <boxGeometry args={[1.6, 1.6, 1.6]} />
+        <meshStandardMaterial color="#3b82f6" metalness={0.3} roughness={0.35} />
+      </mesh>
+    </Canvas>
+  )
+}
+
+function FrameBridge() {
+  useThreeFrame()
+  return null
+}
+```
+
+### No async assets
+
+Textures, GLTFs, and any other resource that r3f loads via Suspense will **not** load in time for frame 0 — the renderer doesn't wait for Suspense the way it waits for `document.fonts.ready`. Stick to:
+
+- Primitive geometries: `<boxGeometry>`, `<sphereGeometry>`, `<planeGeometry>`, `<cylinderGeometry>`, `<torusGeometry>`, `<icosahedronGeometry>`, etc.
+- `<meshStandardMaterial>` / `<meshBasicMaterial>` with `color` (no `map`, `normalMap`, etc.)
+- Lights: `<ambientLight>`, `<directionalLight>`, `<pointLight>`, `<spotLight>`
+- Math helpers from the `THREE` global (`THREE.MathUtils.lerp`, `THREE.Vector3`, etc.)
+
+If you need a texture, render it on a 2D HTML overlay layered above the Canvas track instead.
+
+### Canvas placement and compositing
+
+`<Canvas>` fills its parent. Two patterns work:
+
+**Full-frame Canvas** — apply `style={{ position: 'absolute', inset: 0 }}` directly to `<Canvas>` so it covers the whole 1080×1920 design canvas. Use when 3D content should occupy the entire frame or be anchored relative to the camera (e.g. a particle field).
+
+**Positioned Canvas** — wrap `<Canvas>` in a `position: absolute` div with explicit `top`/`left`/`right`/`height` (or `bottom`), and set `style={{ width: '100%', height: '100%' }}` on the Canvas itself. Use when 3D content should sit in a specific region — e.g. a 3D logo lockup in the lower-third while a font overlay sits up top.
+
+```jsx
+<div style={{ position: 'absolute', top: 1100, left: 0, right: 0, height: 500 }}>
+  <Canvas frameloop="never" style={{ width: '100%', height: '100%' }} ...>
+    <FrameBridge />
+    ...
+  </Canvas>
+</div>
+```
+
+Make sure `gl={{ alpha: true }}` is set — the Canvas DOM element defaults to opaque, which would paint a black or white box over the underlying footage. With `alpha: true` + the renderer's default transparent page background, only the drawn 3D geometry shows up; the rest passes through to whatever is beneath.
+
+For text labels alongside 3D content, render them as a 2D HTML overlay on a separate track rather than as 3D text inside the Canvas. HTML text is sharper, cheaper, and supports the existing Google Fonts pipeline.
+
+### Worked reference
+
+A known-good minimal overlay lives at `tests/fixtures/overlays/three-cube.jsx` — it's the same file the render smoke test (`tests/test_render_three.py`) uses. Copy from it when starting a new 3D overlay; everything in it is checked end-to-end by CI.
+
+### Bundle weight
+
+Three.js + r3f add ~250 KB to an overlay segment's bundle after esbuild tree-shakes. Overlays that don't use `<Canvas>` pay zero cost. Don't reach for Three "just in case" — use it only when the result genuinely needs 3D.
 
 ---
 

@@ -7,12 +7,9 @@
     "node": ">=18"
   },
   "dependencies": {
-    "@fortawesome/free-brands-svg-icons": "^7.2.0",
-    "@fortawesome/free-solid-svg-icons": "^7.2.0",
-    "@fortawesome/react-fontawesome": "^3.3.0",
-    "@phosphor-icons/react": "^2.1.10",
     "esbuild": "^0.20.0",
     "framer-motion": "^11.0.0",
+    "montaj-overlay-runtime": "file:../overlay-runtime",
     "puppeteer": "^22.0.0",
     "react": "^18.0.0",
     "react-dom": "^18.0.0"

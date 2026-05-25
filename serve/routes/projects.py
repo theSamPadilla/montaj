@@ -42,6 +42,14 @@ router = APIRouter(prefix="/api")
 # Required keys for every remote-fetch item (clips and assets share the same shape).
 _REMOTE_REQUIRED_KEYS = ("url", "destPath", "contentType", "sizeBytes")
 
+# In-flight render dedup. The UI can fire the same render twice (double-click,
+# React effect re-run, SSE reconnect retry); without this, two render.js processes
+# spawn against the same workspace and race-corrupt segment files. The render.js
+# lockfile is a secondary defense at the OS layer — this set is the primary
+# defense at the serve layer (single Python process, single asyncio loop, set
+# mutations between awaits are race-free).
+_active_renders: set[str] = set()
+
 OVERLAY_NAME_RE = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
 OVERLAY_MAX_BYTES = 65_536  # 64 KB — overlay JSX is small; reject big bodies hard.
 
@@ -922,6 +930,15 @@ async def render_project(project_id: str, request: Request, project_dir: Path = 
     """
     project_path = project_dir / "project.json"
 
+    # Reject if a render for this project is already in flight. The check-and-add
+    # below is race-free because FastAPI handlers share one asyncio loop and the
+    # set mutation runs between awaits.
+    if project_id in _active_renders:
+        raise HTTPException(409, detail={
+            "error": "concurrent_render",
+            "message": f"A render for project {project_id} is already in progress.",
+        })
+
     try:
         project_type = json.loads(project_path.read_text()).get("projectType", "")
     except Exception:
@@ -944,47 +961,55 @@ async def render_project(project_id: str, request: Request, project_dir: Path = 
     env = os.environ.copy()
     env["MONTAJ_ROOT"] = str(MONTAJ_ROOT)
 
+    # Reserve the slot now. The event_stream coroutine is responsible for
+    # releasing it in its `finally` clause — handles success, error, and
+    # client-disconnect alike.
+    _active_renders.add(project_id)
+
     async def event_stream():
-        proc = await asyncio.create_subprocess_exec(
-            node_bin, str(render_script), *script_args,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            cwd=str(MONTAJ_ROOT),
-            env=env,
-            limit=10 * 1024 * 1024,  # 10MB — ffmpeg config/filter lines exceed the 64KB default
-            start_new_session=True,   # new session → process group leader; killpg reaches ffmpeg grandchildren
-        )
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                node_bin, str(render_script), *script_args,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                cwd=str(MONTAJ_ROOT),
+                env=env,
+                limit=10 * 1024 * 1024,  # 10MB — ffmpeg config/filter lines exceed the 64KB default
+                start_new_session=True,   # new session → process group leader; killpg reaches ffmpeg grandchildren
+            )
 
-        def kill_tree():
-            """Kill the entire process group so orphaned ffmpeg children don't keep writing."""
-            try:
-                os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
-            except (ProcessLookupError, OSError):
+            def kill_tree():
+                """Kill the entire process group so orphaned ffmpeg children don't keep writing."""
                 try:
-                    proc.kill()
-                except Exception:
-                    pass
+                    os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+                except (ProcessLookupError, OSError):
+                    try:
+                        proc.kill()
+                    except Exception:
+                        pass
 
-        # Stream stderr (progress lines) to the client
-        while True:
-            if await request.is_disconnected():
-                kill_tree()
-                return
-            line = await proc.stderr.readline()
-            if not line:
-                break
-            text = line.decode().rstrip()
-            if text:
-                yield f"event: log\ndata: {text}\n\n"
+            # Stream stderr (progress lines) to the client
+            while True:
+                if await request.is_disconnected():
+                    kill_tree()
+                    return
+                line = await proc.stderr.readline()
+                if not line:
+                    break
+                text = line.decode().rstrip()
+                if text:
+                    yield f"event: log\ndata: {text}\n\n"
 
-        stdout = await proc.stdout.read()
-        await proc.wait()
+            stdout = await proc.stdout.read()
+            await proc.wait()
 
-        if proc.returncode == 0:
-            output_path = stdout.decode().strip()
-            yield f"event: done\ndata: {output_path}\n\n"
-        else:
-            yield f"event: error\ndata: Render failed (exit {proc.returncode})\n\n"
+            if proc.returncode == 0:
+                output_path = stdout.decode().strip()
+                yield f"event: done\ndata: {output_path}\n\n"
+            else:
+                yield f"event: error\ndata: Render failed (exit {proc.returncode})\n\n"
+        finally:
+            _active_renders.discard(project_id)
 
     return StreamingResponse(
         event_stream(),

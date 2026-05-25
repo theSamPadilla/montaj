@@ -195,9 +195,28 @@ def _ensure_ui() -> bool:
         print(f"{red('error:')} npm not found \u2014 install Node.js >=18 first: {cyan('https://nodejs.org')}", file=sys.stderr)
         return False
 
-    # Three Node.js bundles ship with montaj: the render engine, the Vite UI,
-    # and the MCP server. All three need `npm install`; only the UI needs build.
-    bundles = [("render engine", "render"), ("UI", "ui"), ("MCP server", "mcp")]
+    # Four Node.js bundles ship with montaj. All four need `npm install`; only
+    # the UI needs build.
+    #
+    # ORDERING IS LOAD-BEARING — overlay-runtime MUST stay first:
+    #   - In prod mode, the copytree loop below iterates `bundles` to copy each
+    #     source dir into BUILD_CACHE_DIR. The runtime must exist on disk
+    #     before render's `npm install` runs (render declares
+    #     `montaj-overlay-runtime: file:../overlay-runtime`).
+    #   - In both dev and prod modes, ui/vite.config.ts hard-codes
+    #     `resolve.alias` entries pointing at `../overlay-runtime/node_modules/*`
+    #     for transitive deps that npm doesn't hoist out of file: symlinks
+    #     (three, r3f, Phosphor, FontAwesome). Those node_modules MUST exist
+    #     before UI's `npm run build` runs.
+    #
+    # If you ever reorder this list, expect either render's install or UI's
+    # build to fail with confusing module-resolution errors.
+    bundles = [
+        ("overlay runtime", "overlay-runtime"),
+        ("render engine", "render"),
+        ("UI", "ui"),
+        ("MCP server", "mcp"),
+    ]
     src_root = os.path.join(MONTAJ_ROOT, "montaj_assets")
 
     if is_dev_checkout():

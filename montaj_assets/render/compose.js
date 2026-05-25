@@ -67,6 +67,14 @@ export async function compose({
   // 2. Encode each segment
   mkdirSync(dirname(outputPath), { recursive: true })
   const segDir = outputPath + '.segments'
+  // WIPE stale segments from a previous (possibly partial) render before
+  // (re)creating the directory. Without this, leftover seg-NNNN.mp4 files from
+  // a prior failed render persist and the segment count from this run won't
+  // always overwrite them — but more importantly, if a previous render produced
+  // segments with the same index from a different timeline configuration, we'd
+  // end up concatenating a mix. Mirror render.js's wipe of `segments/` (overlay
+  // chunks) at the corresponding stage.
+  rmSync(segDir, { recursive: true, force: true })
   mkdirSync(segDir, { recursive: true })
 
   const segPaths = []
@@ -118,8 +126,14 @@ function concatSegments(paths, outputPath) {
   // AAC frame alignment differs. Re-encoding audio is cheap and guarantees
   // clean output. Video stream copy is the big win — no quality loss there.
   const tmpPath = outputPath.replace(/(\.\w+)$/, `.${randomBytes(4).toString('hex')}$1`)
+  // Audio is guaranteed clean by encode-segment.js (each segment outputs
+  // stereo 48kHz AAC from the iPhone clip's AAC stream via [idx:a:0]). No
+  // error-tolerance flags at concat — those would mask real corruption AND
+  // tell the HEVC NAL parser to accept malformed units in stream-copy mode,
+  // producing a final.mp4 with garbage video bitstream. Strict by default.
   const result = spawnSync('ffmpeg', [
-    '-y', '-f', 'concat', '-safe', '0', '-i', listFile,
+    '-y',
+    '-f', 'concat', '-safe', '0', '-i', listFile,
     '-c:v', 'copy',
     '-c:a', 'aac', '-b:a', '192k',
     '-movflags', '+faststart',

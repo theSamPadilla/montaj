@@ -52,7 +52,15 @@ export async function bundleComponent({ componentPath, props, fps, durationFrame
     jsx:         'automatic',
     loader:      { '.jsx': 'jsx', '.js': 'js', '.tsx': 'tsx', '.ts': 'ts' },
     alias: {
-      'montaj/render': join(__dirname, 'core', 'index.js'),
+      'montaj/render':  join(__dirname, 'core', 'index.js'),
+      // Force all transitive imports of React to resolve from render's own
+      // node_modules, not from overlay-runtime's nested copy. montaj-overlay-runtime
+      // is a `file:` symlink, so esbuild follows the symlink and would otherwise
+      // pick up react from overlay-runtime/node_modules, producing two React
+      // instances which breaks r3f's reconciler.
+      'react':          join(__dirname, 'node_modules', 'react'),
+      'react-dom':      join(__dirname, 'node_modules', 'react-dom'),
+      'react-dom/client': join(__dirname, 'node_modules', 'react-dom', 'client'),
     },
     nodePaths: [join(__dirname, 'node_modules')],
     define: {
@@ -119,24 +127,19 @@ function generateShim(componentPath, props, fps, durationFrames, offsetX, offset
 import { useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import { flushSync } from 'react-dom'
-import * as __iconPh__ from '@phosphor-icons/react'
-import { FontAwesomeIcon as __iconFaIcon__ } from '@fortawesome/react-fontawesome'
-import * as __iconFaSolid__ from '@fortawesome/free-solid-svg-icons'
-import * as __iconFaBrands__ from '@fortawesome/free-brands-svg-icons'
-import { interpolate, spring } from 'montaj/render'
+import { makeOverlayGlobals } from 'montaj-overlay-runtime'
 import Component from ${JSON.stringify(componentPath)}
 
 // Overlay components use frame, fps, duration, props, interpolate, spring, Ph, FaIcon,
-// FaSolid, FaBrands as bare globals (no imports, no props destructuring). Inject them
-// onto window so bare-identifier access resolves correctly inside the component.
+// FaSolid, FaBrands, THREE, Canvas, useThreeFrame as bare globals (no imports, no props
+// destructuring). Inject them onto window so bare-identifier access resolves correctly
+// inside the component.
 // NOTE: do NOT use esbuild define for these — define rewrites to the import alias name
 // which esbuild renames during bundling, making the reference undefined at runtime.
-window.interpolate = interpolate
-window.spring      = spring
-window.Ph          = __iconPh__
-window.FaIcon      = __iconFaIcon__
-window.FaSolid     = __iconFaSolid__
-window.FaBrands    = __iconFaBrands__
+const __overlayGlobals = makeOverlayGlobals('render')
+for (const [__k, __v] of Object.entries(__overlayGlobals)) {
+  window[__k] = __v
+}
 window.fps         = ${fps}
 window.duration    = ${durationFrames}
 window.props       = ${JSON.stringify(rewrittenProps)}
@@ -203,6 +206,10 @@ window.__setFrame = async (n) => {
   await __waitForFonts()
   window.frame = n  // update global before React re-renders
   flushSync(() => __setFrame?.(n))
+  // If the overlay mounted a <Canvas> and called useThreeFrame, force Three's
+  // WebGL draw to complete now so Puppeteer's next screenshot reflects this
+  // frame. No-op for overlays that don't use Three (the global is never set).
+  window.__renderThree?.()
   document.documentElement.dataset.renderedFrame = String(n)
 }
 `

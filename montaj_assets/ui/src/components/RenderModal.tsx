@@ -42,22 +42,50 @@ export default function RenderModal({ projectId, onClose, onCancel }: RenderModa
   const [errorMsg, setError]    = useState<string | null>(null)
   const logRef                  = useRef<HTMLDivElement>(null)
   const cancelRef               = useRef<(() => void) | null>(null)
+  const unmountedRef            = useRef(false)
+  const cleanupTimerRef         = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   useEffect(() => {
-    let unmounted = false
+    // React StrictMode in dev fires mount → cleanup → mount synchronously to
+    // catch effects that aren't idempotent. Triggering a render is the textbook
+    // non-idempotent effect (spawns a subprocess), so we have to handle it
+    // explicitly: defer the cancellation in cleanup, and if the next mount
+    // fires within the same tick, rescue the pending cancellation.
+    //
+    // Without this, every render in dev would spawn two render.js processes
+    // against the same workspace, racing on segment files (final.mp4.segments/
+    // seg-NNNN.mp4) and producing corrupted audio bitstream — the bug we just
+    // tracked down.
+    if (cleanupTimerRef.current !== null) {
+      clearTimeout(cleanupTimerRef.current)
+      cleanupTimerRef.current = null
+      unmountedRef.current = false
+      return scheduleCleanup
+    }
+
+    unmountedRef.current = false
     api.renderProject(
       projectId,
-      line => { if (!unmounted) setLogs(l => [...l, line]) },
-      path => { if (!unmounted) { setOutput(path); setStatus('done') } },
-      msg  => { if (!unmounted) { setError(msg);  setStatus('error') } },
+      line => { if (!unmountedRef.current) setLogs(l => [...l, line]) },
+      path => { if (!unmountedRef.current) { setOutput(path); setStatus('done') } },
+      msg  => { if (!unmountedRef.current) { setError(msg);  setStatus('error') } },
     ).then(cancel => {
-      if (unmounted) cancel()  // already cleaned up — kill the process immediately
+      if (unmountedRef.current) cancel()  // already torn down — kill the process immediately
       else cancelRef.current = cancel
     })
-    return () => {
-      unmounted = true
-      cancelRef.current?.()
-      cancelRef.current = null
+    return scheduleCleanup
+
+    function scheduleCleanup() {
+      // Defer the actual cancel. StrictMode's transient unmount fires before
+      // the next mount; setTimeout(0) puts the cancel after both, giving the
+      // next mount a chance to clearTimeout it. On real unmount the timer
+      // fires and the render is cancelled for real.
+      cleanupTimerRef.current = setTimeout(() => {
+        cleanupTimerRef.current = null
+        unmountedRef.current = true
+        cancelRef.current?.()
+        cancelRef.current = null
+      }, 0)
     }
   }, [projectId])
 

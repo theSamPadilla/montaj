@@ -129,6 +129,9 @@ export function encodeSegment(segment, outputPath, opts = {}) {
   const filterParts = []
   let videoLabel
   const audioLabels = []
+  // Items eligible for `-c:a copy` instead of running through the encoder.
+  // Populated in Step 2 (video items loop). Step 5 decides whether to use them.
+  const streamCopyCandidates = []
   let inputIdx = 0
 
   // --- Step 1: Black canvas base (always present — items layer on top) ---
@@ -194,7 +197,17 @@ export function encodeSegment(segment, outputPath, opts = {}) {
         : buildColorConversionFilter(itemColorSpace, projectColorSpace, zscaleAvailable)
       const conversionStep = conversionFilter ? `${conversionFilter},` : ''
 
-      inputs.push('-ss', String(actualIn), '-t', String(duration), '-i', item.src)
+      // -err_detect ignore_err + -max_error_rate 1.0: tolerate broken audio
+      // packets from iPhone .MOV sources, which embed Apple Positional Audio
+      // Codec (apac) but tag it as AAC. ffmpeg's AAC decoder mis-decodes apac
+      // packets and accumulates errors; by default it aborts the encode when
+      // the rate exceeds 0.667. We accept partial audio corruption over a
+      // failed render — the alternative is no output at all.
+      inputs.push(
+        '-err_detect', 'ignore_err',
+        '-max_error_rate', '1.0',
+        '-ss', String(actualIn), '-t', String(duration), '-i', item.src,
+      )
       // Aspect-preserving fit:
       //   - scale=...:force_original_aspect_ratio=decrease scales the source so
       //     it fits WITHIN scaledW × scaledH preserving the source's native
@@ -224,8 +237,17 @@ export function encodeSegment(segment, outputPath, opts = {}) {
       if (!item.muted && (opts._dryRun || fileHasAudio(item.src))) {
         const vol = item.volume ?? 1.0
         const aLabel = `a${idx}`
-        filterParts.push(`[${idx}:a]asetpts=PTS-STARTPTS,volume=${vol},aresample=48000[${aLabel}]`)
+        filterParts.push(`[${idx}:a:0]asetpts=PTS-STARTPTS,volume=${vol},aformat=channel_layouts=stereo:sample_rates=48000[${aLabel}]`)
         audioLabels.push(`[${aLabel}]`)
+        // Track if this source could be stream-copied (single source, vol=1,
+        // came from our audio-strip pre-pass which produces stereo 48k AAC).
+        // If all sources in the segment qualify, Step 5 swaps to stream-copy
+        // mode to avoid running audio through the encoder at all — the native
+        // ffmpeg AAC encoder produces corrupt bitstream output under
+        // concurrent load with libx265 at 4K (see Step 5 comment).
+        if (Math.abs(vol - 1.0) < 0.001 && item.src.endsWith('_audioclean.mp4')) {
+          streamCopyCandidates.push({ inputIdx: idx, audioStreamIdx: 0 })
+        }
       }
     }
     inputIdx++
@@ -266,21 +288,52 @@ export function encodeSegment(segment, outputPath, opts = {}) {
   filterParts.push(`${videoLabel}${spec.setparams}[vout]`)
   videoLabel = '[vout]'
 
-  // --- Step 5: Audio — uniform 48kHz stereo for all segments ---
-  // Mix all collected audio sources. Single source = direct passthrough (no amix
-  // overhead). Multiple sources = amix with normalize=0 to preserve per-item volume.
+  // --- Step 5: Audio ---
+  //
+  // Stream-copy fast path. The ffmpeg native AAC encoder (and even Apple's
+  // aac_at) produces corrupt AAC bitstream output for some users under
+  // concurrent load with libx265 at 4K HEVC — segments encode "successfully"
+  // (ffmpeg exit 0) but the AAC packets fail validation at decode time with
+  // errors like "Reserved bit set", "channel element X.Y is not allocated",
+  // "Number of bands exceeds limit". The concat step at the end of compose
+  // then can't decode them and aborts with "Rematrix is needed between N
+  // channels and stereo".
+  //
+  // When every audio source in this segment came from an `_audioclean.mp4`
+  // file (produced by render.js's audio-strip pre-pass with `-c copy`, so
+  // guaranteed stereo 48kHz AAC) AND volumes are all 1.0, we can bypass the
+  // encoder entirely: map the source's audio stream directly and use
+  // `-c:a copy`. ffmpeg never decodes or re-encodes the audio — it just
+  // demuxes the AAC packets and writes them through. No encoder, no
+  // corruption possible.
+  //
+  // For segments that don't qualify (no audio sources, multiple sources
+  // needing mixing, non-default volumes), fall back to the filter + encoder
+  // path. Concat re-encodes audio uniformly at the end anyway, so the
+  // mixed-mode segments compose cleanly into the final mp4.
   let audioLabel
+  let useAudioStreamCopy = false
+  let audioCopyMap = null
   if (audioLabels.length === 0) {
-    // No video items with audio — generate silent 48kHz stereo
+    // No video items with audio — generate silent 48kHz stereo via anullsrc.
+    // Must encode (no source to copy from).
     inputs.push('-f', 'lavfi', '-i', `anullsrc=cl=stereo:r=48000`)
     filterParts.push(`[${inputIdx}:a]atrim=0:${duration},asetpts=PTS-STARTPTS[sil]`)
     audioLabel = '[sil]'
     inputIdx++
+  } else if (audioLabels.length === 1 && streamCopyCandidates.length === 1) {
+    // Single audio source from an audioclean file — stream-copy fast path.
+    const { inputIdx: srcIdx, audioStreamIdx } = streamCopyCandidates[0]
+    audioCopyMap = `${srcIdx}:a:${audioStreamIdx}`
+    useAudioStreamCopy = true
+    // Drop the audio filter entry we'd added (won't be used)
+    const i = filterParts.findIndex(p => p.endsWith(`[${audioLabels[0].slice(1, -1)}]`))
+    if (i >= 0) filterParts.splice(i, 1)
   } else if (audioLabels.length === 1) {
-    // Single audio source — use directly
+    // Single audio source, but not stream-copyable (volume != 1, or non-audioclean source).
     audioLabel = audioLabels[0]
   } else {
-    // Multiple audio sources — mix them together
+    // Multiple audio sources — mix them together (encoder path).
     const mixInput = audioLabels.join('')
     filterParts.push(`${mixInput}amix=inputs=${audioLabels.length}:duration=longest:normalize=0[amixed]`)
     audioLabel = '[amixed]'
@@ -289,20 +342,17 @@ export function encodeSegment(segment, outputPath, opts = {}) {
   // --- Step 6: Encode ---
   // Encoder, encoder params, output pix_fmt, and stream-level color metadata
   // are all driven by the project's color space spec.
+  const audioArgs = useAudioStreamCopy
+    ? ['-map', audioCopyMap, '-c:a', 'copy']
+    : ['-map', audioLabel, '-c:a', 'aac_at', '-b:a', '192k', '-ar', '48000', '-ac', '2']
   const args = [
     '-y', ...inputs,
     '-filter_complex', filterParts.join(';'),
     '-map', videoLabel,
-    '-map', audioLabel,
+    ...audioArgs,
     '-c:v', spec.encoder, ...spec.encoderArgs, '-pix_fmt', spec.outputPixFmt,
     ...spec.outputColorArgs,
     '-g', String(fps), '-keyint_min', String(fps),
-    // -ac 2 forces stereo regardless of source channel count. Without this, a
-    // mono source produces 1-channel AAC segments while anullsrc-fed segments
-    // produce 2-channel AAC, and the concat demuxer's -c:v copy path mixes both
-    // channel counts → playback artifacts at segment boundaries. Forcing stereo
-    // matches the silent-track anullsrc=cl=stereo and keeps every segment uniform.
-    '-c:a', 'aac', '-b:a', '192k', '-ar', '48000', '-ac', '2',
     '-t', String(duration),
     '-movflags', '+faststart',
     outputPath,

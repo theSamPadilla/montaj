@@ -204,25 +204,24 @@ async function bundleSlide({ slide, width, height, projectDir }) {
 
   const shim = `
 import { createRoot } from 'react-dom/client'
-import { interpolate, spring } from 'montaj/render'
-import * as __iconPh__ from '@phosphor-icons/react'
-import { FontAwesomeIcon as __iconFaIcon__ } from '@fortawesome/react-fontawesome'
-import * as __iconFaSolid__ from '@fortawesome/free-solid-svg-icons'
-import * as __iconFaBrands__ from '@fortawesome/free-brands-svg-icons'
+import { makeOverlayGlobals } from 'montaj-overlay-runtime'
 import { Slide } from ${JSON.stringify(slidePath)}
 ${overlayImports}
 
-// Bare-global fallbacks — overlays that read globals directly won't crash
-window.interpolate = interpolate
-window.spring      = spring
-window.Ph          = __iconPh__
-window.FaIcon      = __iconFaIcon__
-window.FaSolid     = __iconFaSolid__
-window.FaBrands    = __iconFaBrands__
-window.fps         = 30
-window.duration    = 60
-window.frame       = 0
-window.props       = {}
+// Single source of truth for overlay globals — same factory the overlay
+// renderer uses in bundle.js. Carousel is a render context too (offline
+// batch, frame-stepped); use 'render' context.
+const __overlayGlobals = makeOverlayGlobals('render')
+for (const [__k, __v] of Object.entries(__overlayGlobals)) {
+  window[__k] = __v
+}
+
+// Carousel-specific defaults (slide-instance fields, NOT part of the
+// overlay JSX contract — slides set these per-instance externally).
+window.fps      = 30
+window.duration = 60
+window.frame    = 0
+window.props    = {}
 
 const overlayRegistry = {
 ${registryEntries}
@@ -266,7 +265,15 @@ createRoot(document.getElementById('root')).render(
     jsx:         'automatic',
     loader:      { '.jsx': 'jsx', '.js': 'js', '.tsx': 'tsx', '.ts': 'ts' },
     alias: {
-      'montaj/render': join(__dirname, 'core', 'index.js'),
+      'montaj/render':    join(__dirname, 'core', 'index.js'),
+      // Force all transitive imports of React to resolve from render's own
+      // node_modules, not from overlay-runtime's nested copy. montaj-overlay-runtime
+      // is a `file:` symlink, so esbuild follows the symlink and would otherwise
+      // pick up react from overlay-runtime/node_modules, producing two React
+      // instances which breaks r3f's reconciler.
+      'react':            join(__dirname, 'node_modules', 'react'),
+      'react-dom':        join(__dirname, 'node_modules', 'react-dom'),
+      'react-dom/client': join(__dirname, 'node_modules', 'react-dom', 'client'),
     },
     nodePaths: [join(__dirname, 'node_modules')],
     define: {

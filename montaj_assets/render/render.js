@@ -9,7 +9,7 @@
  * stderr: progress lines + JSON error on failure
  * exit 0 on success, exit 1 on failure
  */
-import { readFileSync, writeFileSync, existsSync, mkdirSync, rmSync, readdirSync, statSync } from 'fs'
+import { readFileSync, writeFileSync, existsSync, mkdirSync, rmSync, readdirSync, statSync, openSync, writeSync, closeSync } from 'fs'
 import { resolve, join, dirname, basename, extname } from 'path'
 import { fileURLToPath } from 'url'
 import { spawnSync, spawn } from 'child_process'
@@ -91,6 +91,51 @@ async function main(projectPath, { out, workers, clean }) {
   const workspaceDir = projectDir
   const renderDir    = join(workspaceDir, 'render')
   const segDir       = join(renderDir, 'segments')
+
+  // Concurrent-render guard. The segment wipe below is destructive — if a second
+  // render starts while the first is still encoding, the wipe deletes the first
+  // render's in-progress segment files, producing corrupt output (e.g. two
+  // ffmpeg processes both writing to seg-NNNN.mp4 leave AAC packet payloads as
+  // zeros where one process's faststart-reopen seek crosses the other's writes).
+  //
+  // Acquisition uses openSync('wx') — O_CREAT | O_EXCL — which is atomic at the
+  // OS level. A check-then-write sequence is NOT enough: two processes that
+  // start at nearly the same instant can both observe "no lock present," both
+  // write their PID, and both proceed. EXCL makes the create-or-fail single-step.
+  //
+  // Stale-lock reclamation: if EEXIST and the recorded PID is dead, we delete
+  // the lockfile and retry once. If the retry also EEXISTs, another process
+  // beat us to reclaiming it — bail out.
+  mkdirSync(renderDir, { recursive: true })
+  const lockPath = join(renderDir, '.render.lock')
+  function tryAcquireLock() {
+    try {
+      const fd = openSync(lockPath, 'wx')
+      writeSync(fd, String(process.pid))
+      closeSync(fd)
+      return true
+    } catch (e) {
+      if (e.code === 'EEXIST') return false
+      throw e
+    }
+  }
+  if (!tryAcquireLock()) {
+    let ownerPid = 0
+    try { ownerPid = parseInt(readFileSync(lockPath, 'utf8').trim(), 10) } catch {}
+    let alive = false
+    if (ownerPid > 0) {
+      try { process.kill(ownerPid, 0); alive = true } catch {}
+    }
+    if (alive) {
+      fail('concurrent_render', `another render is in progress (pid ${ownerPid}). Wait for it to finish, or remove ${lockPath} if it's dead.`)
+    }
+    rmSync(lockPath, { force: true })
+    if (!tryAcquireLock()) {
+      fail('concurrent_render', `another render claimed the stale lock`)
+    }
+  }
+  process.on('exit', () => { try { rmSync(lockPath, { force: true }) } catch {} })
+
   // Always wipe segments from previous runs — stale files cause FFV1 decode errors in compose.
   rmSync(segDir, { recursive: true, force: true })
   mkdirSync(segDir, { recursive: true })
@@ -219,6 +264,33 @@ async function main(projectPath, { out, workers, clean }) {
     if (normalizedPath !== item.src) {
       log(`normalized ${item.src.split('/').pop()} → ${normalizedPath.split('/').pop()}`)
       item.src = normalizedPath
+    }
+  }, NORMALIZE_WORKERS)
+
+  // 3b. Strip extra (non-AAC) audio streams via stream-copy. iPhone .MOV files
+  //     ship TWO audio streams: stream 1 = clean stereo AAC, stream 2 = APAC
+  //     (Apple Positional Audio Codec, codec_name=unknown). Even when our
+  //     filter graph only references [idx:a:0] (the AAC), ffmpeg's demuxer
+  //     still reads the apac packets, and under certain timing / memory
+  //     conditions those packets contaminate the AAC decoder context —
+  //     producing AAC bitstream output that decodes with "Prediction is not
+  //     allowed in AAC-LC" / "channel element X.Y is not allocated" /
+  //     "Reserved bit set" errors at concat time, eventually aborting with
+  //     "Rematrix is needed between N channels and stereo". The contamination
+  //     is non-deterministic — sometimes the same input renders cleanly,
+  //     sometimes it produces 400+ decode errors per segment.
+  //
+  //     Defensive fix: produce a `_audioclean.mov` per source that contains
+  //     only video + the first audio stream (`-map 0:v -map 0:a:0 -c copy`).
+  //     Stream-copy, no re-encode, ~1s per clip. After this runs, encode-segment
+  //     reads a file that ffmpeg cannot possibly mis-demux because the apac
+  //     stream literally does not exist in the input. Eliminates the class.
+  await pMap(videoItems, async (item) => {
+    if (item.remove_bg && item.nobg_src && item.src === item.nobg_src) return
+    const cleanPath = await stripExtraAudioStreams(item.src)
+    if (cleanPath !== item.src) {
+      log(`audio-stripped ${item.src.split('/').pop()} → ${cleanPath.split('/').pop()}`)
+      item.src = cleanPath
     }
   }, NORMALIZE_WORKERS)
 
@@ -640,6 +712,69 @@ async function normalizeIfNeeded(src, projectColorSpace) {
     proc.on('error', (err) => {
       clearTimeout(timer)
       log(`normalize spawn error: ${err.message}`)
+      resolve(src)
+    })
+  })
+}
+
+// ---------------------------------------------------------------------------
+// Strip extra audio streams (defensive — see comment at call site for the
+// non-deterministic apac contamination this fixes)
+// ---------------------------------------------------------------------------
+
+async function stripExtraAudioStreams(src) {
+  // Probe: how many audio streams does this file have?
+  const probe = spawnSync('ffprobe', [
+    '-v', 'error', '-select_streams', 'a', '-show_entries', 'stream=index',
+    '-of', 'csv=p=0', src,
+  ], { encoding: 'utf8', timeout: 30_000 })
+
+  if (probe.status !== 0) {
+    // Probe failure — leave the file alone; encode-segment will surface any real issue.
+    return src
+  }
+  const audioStreamCount = probe.stdout.trim().split('\n').filter(Boolean).length
+  if (audioStreamCount <= 1) {
+    // Already has at most one audio stream; nothing to strip.
+    return src
+  }
+
+  // Idempotency: deterministic output path, skip if already fresh.
+  const out = src.replace(/(\.\w+)$/, '_audioclean.mp4')
+  if (existsSync(out)) {
+    try {
+      const srcStat = statSync(src)
+      const outStat = statSync(out)
+      if (outStat.mtimeMs >= srcStat.mtimeMs) return out
+    } catch { /* fall through to re-extract */ }
+  }
+
+  return new Promise((resolve) => {
+    // -map 0:v -map 0:a:0 — copy all video streams plus the FIRST audio stream
+    // only. -c copy keeps everything stream-copy (fast, no re-encode). The
+    // output container is MP4, which doesn't support Apple's mebx data streams
+    // (those would only be needed in a MOV roundtrip anyway).
+    const proc = spawn('ffmpeg', [
+      '-y', '-v', 'error',
+      '-i', src,
+      '-map', '0:v', '-map', '0:a:0',
+      '-c', 'copy',
+      out,
+    ])
+    let stderr = ''
+    proc.stderr.on('data', (chunk) => { stderr += chunk.toString('utf8') })
+    proc.on('close', (code) => {
+      if (code !== 0) {
+        if (stderr.trim()) log(`audio-strip stderr: ${stderr.trim().slice(-500)}`)
+        // Fall back to the original file — encode-segment will still use [a:0]
+        // and may still trip the bug, but no worse than before this fix.
+        resolve(src)
+        return
+      }
+      resolve(out)
+    })
+    proc.on('error', (err) => {
+      log(`audio-strip spawn error: ${err.message}`)
       resolve(src)
     })
   })

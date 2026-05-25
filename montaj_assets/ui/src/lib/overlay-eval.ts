@@ -15,12 +15,11 @@
  */
 
 import React from 'react'
-import * as Ph from '@phosphor-icons/react'
-import { FontAwesomeIcon as FaIcon } from '@fortawesome/react-fontawesome'
-import * as FaSolid from '@fortawesome/free-solid-svg-icons'
-import * as FaBrands from '@fortawesome/free-brands-svg-icons'
-import { interpolate } from './interpolate'
-import { spring } from './spring'
+import { makeOverlayGlobals } from 'montaj-overlay-runtime'
+
+const overlayGlobals = makeOverlayGlobals('preview')
+const globalNames    = Object.keys(overlayGlobals)
+const globalValues   = Object.values(overlayGlobals)
 
 export type OverlayFactory = (
   frame: number,
@@ -95,12 +94,7 @@ export async function compileOverlay(src: string): Promise<OverlayFactory> {
     'fps',
     'duration',
     'props',
-    'interpolate',
-    'spring',
-    'Ph',
-    'FaIcon',
-    'FaSolid',
-    'FaBrands',
+    ...globalNames,
     `"use strict";
 ${proxied}
 if (typeof __Component !== 'function') return null;
@@ -112,7 +106,7 @@ return __Component({ frame, fps, duration, ...props });`,
 
   const factory: OverlayFactory = (frame, fps, durationFrames, overlayProps) => {
     try {
-      return fn(React, frame, fps, durationFrames, overlayProps ?? {}, interpolate, spring, Ph, FaIcon, FaSolid, FaBrands) as React.ReactElement | null
+      return fn(React, frame, fps, durationFrames, overlayProps ?? {}, ...globalValues) as React.ReactElement | null
     } catch (err) {
       console.warn(`[overlay-eval] ${src.split('/').pop()}:`, err)
       return null
