@@ -2,6 +2,7 @@
 name: overlay
 description: "Agent-authored workflow task: decide what overlays to write, author the JSX, and add them to the project's overlay track. Load this when you hit montaj/overlay in a workflow."
 step: true
+subskills: "write-overlay"
 ---
 
 # Overlay
@@ -9,6 +10,14 @@ step: true
 `montaj/overlay` is an agent-authored task — no CLI step, no API call. You decide what overlays the video needs, write the JSX files, and add them to the project's visual tracks in `project.json`.
 
 **Before writing any JSX, load the write-overlay subskill** — it contains the full JSX authoring reference (globals, `interpolate`/`spring` utilities, canvas rules, examples). Load it with `/write-overlay`.
+
+## Sub-skills
+
+| Name | Path | When to load |
+|------|------|--------------|
+| `write-overlay` | `skills/write-overlay/SKILL.md` | Before writing any JSX overlay — globals, `interpolate`/`spring` utilities, canvas rules, examples. |
+
+---
 
 ## Process
 
