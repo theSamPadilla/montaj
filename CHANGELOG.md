@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## v2.5.2
+
+### Fixed
+- UI build (`npm run build` under `montaj install ui`) no longer fails with TS2322 on `Timeline.tsx` and `VisualTrackRow.tsx`. The v2.5.0 ripple-delete fix introduced two `let updated = { ...project, tracks: (project.tracks ?? []).map(...).filter(...) }` literals whose inferred type narrowed `tracks` to non-optional `VisualItem[][]`; reassigning `updated = collapseGaps(updated)` then failed because `collapseGaps` returns the full `Project` shape where `tracks?` is optional. Annotating `let updated: Project = { ... }` at both call sites (the same pattern the existing ripple-aware cut/split handlers use, since those start from helpers that already return `Project`) restores assignment compatibility. The error didn't surface during the v2.5.1 cut because no `tsc` ran between the ripple fix and the tag — `vite` dev mode strips types and the build script (`scripts/build.sh`) only verifies the Python wheel, not the UI bundle. v2.5.0 and v2.5.1 ship a UI that fails to build on the user's machine via `montaj install ui`; this is the patch that makes that command succeed again.
+
 ## v2.5.1
 - Fixing release cycle
 

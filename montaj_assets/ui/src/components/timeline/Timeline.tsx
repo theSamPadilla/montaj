@@ -138,7 +138,7 @@ export default function Timeline({ project, currentTime, onTimeUpdate, onProject
     if ((e.key === 'Delete' || e.key === 'Backspace') && selectedOverlayId) {
       e.preventDefault()
       if (!onProjectChange) return
-      let updated = {
+      let updated: Project = {
         ...project,
         tracks: (project.tracks ?? [])
           .map(track => track.filter(item => item.id !== selectedOverlayId))

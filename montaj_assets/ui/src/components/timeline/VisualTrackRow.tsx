@@ -78,7 +78,7 @@ export default function VisualTrackRow({
 
   function handleDeleteOverlay(id: string) {
     if (!onProjectChange) return
-    let updated = {
+    let updated: Project = {
       ...project,
       tracks: (project.tracks ?? [])
         .map(track => track.filter(item => item.id !== id))
