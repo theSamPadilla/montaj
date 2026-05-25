@@ -6,22 +6,26 @@
  * the position/size box; this template fills inset:0.
  *
  * Props (all values stored as strings for round-trip through PropertyPanel):
- *   text         — string to render (default 'Your text here')
- *   fontSize     — CSS px (default '80'; coerced via Number(), NaN→80)
- *   color        — text color   (default '#111111')
- *   fontFamily   — CSS font-family string (default system-ui stack)
- *   fontWeight   — CSS font-weight (default '400'; numeric or named OK)
- *   textAlign    — 'left' | 'center' | 'right' (default 'center')
- *   bgColor      — backdrop color or 'transparent' (default 'transparent')
+ *   text          — string to render (default 'Your text here')
+ *   fontSize      — CSS px (default '80'; coerced via Number(), NaN→80)
+ *   fontFamily    — CSS font-family string (default system-ui stack)
+ *   fontWeight    — CSS font-weight (default '400'; numeric or named OK)
+ *   fontStyle     — CSS font-style: 'normal' | 'italic' (default 'normal')
+ *   color         — text color (default '#111111')
+ *   textAlign     — 'left' | 'center' | 'right' (default 'center')
+ *   textTransform — CSS text-transform: 'none' | 'uppercase' | 'lowercase' | 'capitalize' (default 'none')
+ *   bgColor       — backdrop color or 'transparent' (default 'transparent')
  */
 export default function StaticText({
-  text       = 'Your text here',
-  fontSize   = '80',
-  color      = '#111111',
-  fontFamily = 'system-ui, -apple-system, "Helvetica Neue", sans-serif',
-  fontWeight = '400',
-  textAlign  = 'center',
-  bgColor    = 'transparent',
+  text          = 'Your text here',
+  fontSize      = '80',
+  fontFamily    = 'system-ui, -apple-system, "Helvetica Neue", sans-serif',
+  fontWeight    = '400',
+  fontStyle     = 'normal',
+  color         = '#111111',
+  textAlign     = 'center',
+  textTransform = 'none',
+  bgColor       = 'transparent',
 }) {
   const sizeNum = Number(fontSize)
   const safeSize = Number.isFinite(sizeNum) && sizeNum > 0 ? sizeNum : 80
@@ -40,11 +44,13 @@ export default function StaticText({
     }}>
       <p style={{
         margin:        0,
-        color,
         fontFamily,
         fontWeight,
+        fontStyle,
+        color,
         fontSize:      safeSize,
         textAlign,
+        textTransform,
         lineHeight:    1.2,
         letterSpacing: '-0.01em',
         width:         '100%',

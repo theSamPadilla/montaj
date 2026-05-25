@@ -18,6 +18,7 @@ export default function MobileUploadView() {
     name, setName, prompt, setPrompt, workflow, setWorkflow, profile, setProfile,
     workflows, profiles, clipData, setClipData, aiVideoData, setAiVideoData,
     lyricsData, setLyricsData, carouselAssets, setCarouselAssets,
+    aiVideoAssets, setAiVideoAssets,
     carouselAspect, setCarouselAspect, aspectRatio, setAspectRatio,
     targetDuration, setTargetDuration, error, setError, runError, running,
     projectType, loadingTitle, loadingMessage, loadingSlowHint,
@@ -107,6 +108,16 @@ export default function MobileUploadView() {
               />
             </div>
             <AIVideoUploadFields data={aiVideoData} onChange={setAiVideoData} onError={setError} />
+            <div>
+              <p className="text-xs text-gray-500 mb-1.5">Assets</p>
+              <div className="rounded-md border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-900 h-48 overflow-hidden flex flex-col">
+                <AssetsPanel
+                  assets={aiVideoAssets}
+                  onChange={async next => setAiVideoAssets(next)}
+                  profileName={profile || undefined}
+                />
+              </div>
+            </div>
           </>
         )}
 
@@ -134,7 +145,11 @@ export default function MobileUploadView() {
             <div>
               <p className="text-xs text-gray-500 mb-1.5">Assets</p>
               <div className="rounded-md border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-900 h-48 overflow-hidden flex flex-col">
-                <AssetsPanel assets={carouselAssets} onChange={async next => setCarouselAssets(next)} />
+                <AssetsPanel
+                  assets={carouselAssets}
+                  onChange={async next => setCarouselAssets(next)}
+                  profileName={profile || undefined}
+                />
               </div>
             </div>
           </>
@@ -145,7 +160,7 @@ export default function MobileUploadView() {
         )}
 
         {projectType === 'editing' && (
-          <ClipUploadFields data={clipData} onChange={setClipData} onError={setError} />
+          <ClipUploadFields data={clipData} onChange={setClipData} onError={setError} profileName={profile || undefined} />
         )}
 
         {workflows.length > 1 && (

@@ -15,6 +15,7 @@ import { useEffect, useRef, useState } from 'react'
 import type { Captions } from '@/lib/types/schema'
 import { compileOverlay } from '@/lib/overlay-eval'
 import type { OverlayFactory } from '@/lib/overlay-eval'
+import OverlayErrorBoundary from '@/components/OverlayErrorBoundary'
 
 const RENDER_W = 1080
 const RENDER_H = 1920
@@ -57,18 +58,20 @@ export default function CaptionPreview({ track, currentTime, fps }: CaptionPrevi
 
   return (
     <div ref={wrapRef} className="absolute inset-0 pointer-events-none overflow-hidden">
-      {element && scale !== null && (
-        <div style={{
-          position:        'absolute',
-          top: 0, left: 0,
-          width:           RENDER_W,
-          height:          RENDER_H,
-          transform:       `scale(${scale})`,
-          transformOrigin: 'top left',
-        }}>
-          {element}
-        </div>
-      )}
+      <OverlayErrorBoundary label={`caption: ${track.style}`} resetKey={track.style}>
+        {element && scale !== null && (
+          <div style={{
+            position:        'absolute',
+            top: 0, left: 0,
+            width:           RENDER_W,
+            height:          RENDER_H,
+            transform:       `scale(${scale})`,
+            transformOrigin: 'top left',
+          }}>
+            {element}
+          </div>
+        )}
+      </OverlayErrorBoundary>
     </div>
   )
 }

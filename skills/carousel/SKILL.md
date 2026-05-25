@@ -2,6 +2,7 @@
 name: carousel
 description: "Agent-authored workflow task: build slides for a carousel project — pick aspect-aware images via generate_image, position image and overlay elements on each slide, set base colors, and render to PNGs. Load this when you hit montaj/carousel in a workflow."
 step: true
+subskills: "editable-text"
 ---
 
 # Carousel Skill
@@ -23,6 +24,14 @@ A carousel is N still slides at one fixed aspect ratio, rendered to `slide_01.pn
 The aspect is **locked at project creation** — Instagram and TikTok enforce uniformity across all slides in a carousel. Read it from `project.carousel.aspect`; read pixel dimensions from `project.settings.resolution` (`[width, height]`). Never attempt to change the aspect after init.
 
 Reference: `/Users/Sam/Work/ByCrux/dev/montaj/lib/types/carousel.py` — `CAROUSEL_ASPECTS`, `CAROUSEL_RESOLUTIONS`.
+
+---
+
+## Sub-skills
+
+| Name | Path | When to load |
+|------|------|--------------|
+| `editable-text` | `skills/editable-text/SKILL.md` | Before authoring any text overlay — defines the 9-prop contract the editor toolbar relies on. |
 
 ---
 
@@ -117,7 +126,12 @@ After generation, store the file under the project workspace (e.g. `<workspace>/
 
 ## 5 — Overlays
 
-Carousel overlays are **custom JSX written per project** — there is no built-in template library. Author each overlay you need (headline, subhead, callout, etc.) by following `skills/write-overlay/SKILL.md`. Save the JSX under the project workspace (e.g. `<workspace>/overlays/headline.jsx`) and reference it by absolute path in `overlay.template`.
+Carousel overlays are **custom JSX written per project** — there is no built-in template library. Author each overlay you need (headline, subhead, callout, etc.) per the rules below.
+
+- For **text overlays** that the operator should be able to restyle from the editor toolbar (font / size / color / weight / case / alignment), follow `skills/editable-text/SKILL.md`. The canonical reference is `montaj_assets/render/templates/overlays/static-text/static-text.jsx`.
+- For **non-text overlays** (logos, decorative shapes, image-based overlays, stylized brand marks), follow `skills/write-overlay/SKILL.md` as before.
+
+Save the JSX under the project workspace (e.g. `<workspace>/overlays/headline.jsx`) and reference it by absolute path in `overlay.template`.
 
 Carousel-specific rules layered on top of `write-overlay`:
 

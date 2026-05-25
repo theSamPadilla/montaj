@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { X, Image, Plus, Copy } from 'lucide-react'
 import { api, fileUrl } from '@/lib/api'
 import type { Asset } from '@/lib/types/schema'
+import { ProfileAssetPicker } from '@/components/upload/ProfileAssetPicker'
 
 function basename(path: string) {
   return path.split('/').pop() ?? path
@@ -10,9 +11,10 @@ function basename(path: string) {
 interface AssetsPanelProps {
   assets: Asset[]
   onChange: (next: Asset[]) => Promise<void>
+  profileName?: string
 }
 
-export default function AssetsPanel({ assets, onChange }: AssetsPanelProps) {
+export default function AssetsPanel({ assets, onChange, profileName }: AssetsPanelProps) {
   const [pickingAssets, setPickingAssets]     = useState(false)
   const [uploadingAssets, setUploadingAssets] = useState(false)
   const [dragOverAssets, setDragOverAssets]   = useState(false)
@@ -81,14 +83,34 @@ export default function AssetsPanel({ assets, onChange }: AssetsPanelProps) {
       <div className="flex flex-col flex-1 overflow-hidden">
         <div className="flex items-center justify-between px-3 py-2 border-b border-gray-200 dark:border-gray-800">
           <span className="text-xs font-medium text-gray-400 uppercase tracking-wide">Assets</span>
-          <button
-            onClick={handleAddAssets}
-            disabled={pickingAssets}
-            className="text-gray-500 hover:text-gray-900 dark:hover:text-white transition-colors"
-            title="Add assets"
-          >
-            <Plus size={14} />
-          </button>
+          <div className="flex items-center gap-2">
+            <ProfileAssetPicker
+              profileName={profileName}
+              existingPaths={assets.map(a => a.src)}
+              onAdd={async file => {
+                if (assets.some(a => a.src === file.path)) return
+                const next: Asset[] = [
+                  ...assets,
+                  {
+                    id: `asset-${Date.now()}`,
+                    src: file.path,
+                    type: 'image' as const,
+                    name: file.filename,
+                  },
+                ]
+                await onChange(next)
+              }}
+              variant="button"
+            />
+            <button
+              onClick={handleAddAssets}
+              disabled={pickingAssets}
+              className="text-gray-500 hover:text-gray-900 dark:hover:text-white transition-colors"
+              title="Add assets"
+            >
+              <Plus size={14} />
+            </button>
+          </div>
         </div>
 
         <div

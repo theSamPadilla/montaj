@@ -33,6 +33,7 @@ export interface UseUploadFormReturn {
   aiVideoData: AIVideoUploadData; setAiVideoData: (v: AIVideoUploadData) => void
   lyricsData: LyricsUploadData; setLyricsData: (v: LyricsUploadData) => void
   carouselAssets: Asset[]; setCarouselAssets: (v: Asset[]) => void
+  aiVideoAssets: Asset[]; setAiVideoAssets: (v: Asset[]) => void
   carouselAspect: CarouselAspect; setCarouselAspect: (v: CarouselAspect) => void
   aspectRatio: AspectRatio; setAspectRatio: (v: AspectRatio) => void
   targetDuration: number | null; setTargetDuration: (v: number | null) => void
@@ -76,6 +77,7 @@ export function useUploadForm(): UseUploadFormReturn {
   const [targetDuration, setTargetDuration] = useState<number | null>(prefill?.targetDuration ?? null)
   const [carouselAspect, setCarouselAspect] = useState<CarouselAspect>(DEFAULT_CAROUSEL_ASPECT)
   const [carouselAssets, setCarouselAssets] = useState<Asset[]>([])
+  const [aiVideoAssets, setAiVideoAssets]   = useState<Asset[]>([])
 
   const selectedWorkflow = workflows.find(w => w.name === workflow)
   const projectType = normalizeProjectType(selectedWorkflow?.project_type)
@@ -116,7 +118,7 @@ export function useUploadForm(): UseUploadFormReturn {
             workflow,
             prompt: prompt.trim(),
             clips: [],
-            assets: [],
+            assets: aiVideoAssets.length ? aiVideoAssets.map(a => a.src) : [],
             name: name.trim() || undefined,
             profile: profile || undefined,
             aiVideoIntake: {
@@ -259,6 +261,7 @@ export function useUploadForm(): UseUploadFormReturn {
     aiVideoData, setAiVideoData,
     lyricsData, setLyricsData,
     carouselAssets, setCarouselAssets,
+    aiVideoAssets, setAiVideoAssets,
     carouselAspect, setCarouselAspect,
     aspectRatio, setAspectRatio,
     targetDuration, setTargetDuration,

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import type { Slide, CarouselElement, OverlayElement } from '@/lib/types/schema'
 import { compileOverlay, type OverlayFactory } from '@/lib/overlay-eval'
+import OverlayErrorBoundary from '@/components/OverlayErrorBoundary'
 
 function resolveAsset(src: string): string {
   if (!src) return src
@@ -582,7 +583,12 @@ export default function SlideCanvas({
                     {editingText}
                   </div>
                 ) : (
-                  <OverlayElementView element={element} />
+                  <OverlayErrorBoundary
+                    label={element.overlay.template.split('/').pop() ?? element.overlay.template}
+                    watchPath={element.overlay.template}
+                  >
+                    <OverlayElementView element={element} />
+                  </OverlayErrorBoundary>
                 )}
                 {isSelected && !isEditing && interactive && onElementChange && (
                   <>

@@ -3,6 +3,7 @@ import { fileUrl } from '@/lib/api'
 import type { Project, VisualItem } from '@/lib/types/schema'
 import { compileOverlay, clearOverlayCache } from '@/lib/overlay-eval'
 import type { OverlayFactory } from '@/lib/overlay-eval'
+import OverlayErrorBoundary from '@/components/OverlayErrorBoundary'
 import type { Corner } from './useDragOverlay'
 import type { useDragOverlay } from './useDragOverlay'
 
@@ -410,13 +411,15 @@ export default function OverlayItemsLayer({
                   transform: `scale(${renderScale})`, transformOrigin: 'top left',
                   pointerEvents: 'none',
                 }}>
-                  <CustomOverlay
-                    src={item.src}
-                    props={item.props ?? {}}
-                    frame={frame}
-                    fps={fps}
-                    durationFrames={durationFrames}
-                  />
+                  <OverlayErrorBoundary label={item.src.split('/').pop() ?? item.src} watchPath={item.src}>
+                    <CustomOverlay
+                      src={item.src}
+                      props={item.props ?? {}}
+                      frame={frame}
+                      fps={fps}
+                      durationFrames={durationFrames}
+                    />
+                  </OverlayErrorBoundary>
                 </div>
                 {handles}
               </div>

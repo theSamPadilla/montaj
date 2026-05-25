@@ -17,9 +17,10 @@ export interface DropZoneProps {
   dropLabel?: string
   fileIcon?: React.ReactNode
   single?: boolean
+  headerAction?: React.ReactNode
 }
 
-export function DropZone({ label, sublabel, icon, accept, files, uploading, onBrowse, onDrop, onRemove, browseLabel, accentClass, dropLabel, fileIcon, single }: DropZoneProps) {
+export function DropZone({ label, sublabel, icon, accept, files, uploading, onBrowse, onDrop, onRemove, browseLabel, accentClass, dropLabel, fileIcon, single, headerAction }: DropZoneProps) {
   const [dragOver, setDragOver] = useState(false)
 
   function handleDragOver(e: React.DragEvent) {
@@ -54,9 +55,12 @@ export function DropZone({ label, sublabel, icon, accept, files, uploading, onBr
 
   return (
     <div className="flex flex-col gap-3">
-      <div>
-        <p className="text-sm font-medium text-gray-800 dark:text-gray-200">{label}</p>
-        <p className="text-xs text-gray-500 mt-0.5">{sublabel}</p>
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <p className="text-sm font-medium text-gray-800 dark:text-gray-200">{label}</p>
+          <p className="text-xs text-gray-500 mt-0.5">{sublabel}</p>
+        </div>
+        {headerAction && <div className="shrink-0 pt-1">{headerAction}</div>}
       </div>
 
       {/* Drop zone */}

@@ -66,6 +66,8 @@ export default function List() {
 
 ## Writing the JSX
 
+> **Carousel text overlays follow a stricter contract.** For carousel projects, every text-bearing overlay must accept its font size, family, weight, style, color, alignment, transform, and background as props with string defaults — see `skills/editable-text/SKILL.md`. The "go large — for video" guidance below, and the hardcoded-style style of the `Hook` example, **do not apply** to carousel editable-text overlays.
+
 The default aesthetic is **plain bold text directly on video** — no card, no background, just a text shadow for legibility. Big text (96–160px) that covers the footage, including the speaker's face if needed.
 
 ```jsx

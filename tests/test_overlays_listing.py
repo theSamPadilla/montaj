@@ -3,7 +3,7 @@
 Tests four cases from the 2026-05-24-add-text-overlay plan (Task 6):
   1. GET /api/overlays/system returns at least the static-text entry.
   2. The entry's jsxPath exists on disk and is readable.
-  3. The entry's props list matches the static-text.json schema (7 named props
+  3. The entry's props list matches the static-text.json schema (9 named props
      with correct defaults).
   4. GET /api/overlays (user-library) does NOT include static-text.
      Path.home is patched to an empty tmp dir to isolate from the developer's
@@ -29,15 +29,16 @@ client = TestClient(app)
 # ── expected props from static-text.json ──────────────────────────────────────
 
 EXPECTED_PROPS = [
-    {"name": "text",       "type": "string", "default": "Your text here"},
-    {"name": "fontSize",   "type": "string", "default": "80"},
-    {"name": "color",      "type": "string", "default": "#111111",     "format": "color"},
-    {"name": "fontFamily", "type": "string",
+    {"name": "text",          "type": "string", "default": "Your text here"},
+    {"name": "fontSize",      "type": "string", "default": "80"},
+    {"name": "fontFamily",    "type": "string",
      "default": 'system-ui, -apple-system, "Helvetica Neue", sans-serif'},
-    {"name": "fontWeight", "type": "string", "default": "400"},
-    {"name": "textAlign",  "type": "string", "default": "center",
-     "enum": ["left", "center", "right"]},
-    {"name": "bgColor",    "type": "string", "default": "transparent", "format": "color"},
+    {"name": "fontWeight",    "type": "string", "default": "400"},
+    {"name": "fontStyle",     "type": "string", "default": "normal",      "enum": ["normal", "italic"]},
+    {"name": "color",         "type": "string", "default": "#111111",     "format": "color"},
+    {"name": "textAlign",     "type": "string", "default": "center",      "enum": ["left", "center", "right"]},
+    {"name": "textTransform", "type": "string", "default": "none",        "enum": ["none", "uppercase", "lowercase", "capitalize"]},
+    {"name": "bgColor",       "type": "string", "default": "transparent", "format": "color"},
 ]
 
 

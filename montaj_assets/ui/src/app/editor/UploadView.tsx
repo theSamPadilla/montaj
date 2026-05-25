@@ -15,6 +15,7 @@ export default function UploadView() {
     name, setName, prompt, setPrompt, workflow, setWorkflow, profile, setProfile,
     workflows, profiles, clipData, setClipData, aiVideoData, setAiVideoData,
     lyricsData, setLyricsData, carouselAssets, setCarouselAssets,
+    aiVideoAssets, setAiVideoAssets,
     carouselAspect, setCarouselAspect, aspectRatio, setAspectRatio,
     targetDuration, setTargetDuration, error, setError, runError, running,
     projectType, loadingTitle, loadingMessage, loadingSlowHint,
@@ -109,6 +110,18 @@ export default function UploadView() {
 
           {/* Image + Style references */}
           <AIVideoUploadFields data={aiVideoData} onChange={setAiVideoData} onError={setError} />
+
+          {/* Assets — extra images the agent can pull in (logos, graphics, etc). */}
+          <div>
+            <p className="text-xs text-gray-500 mb-1.5">Assets</p>
+            <div className="rounded-md border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-900 h-48 overflow-hidden flex flex-col">
+              <AssetsPanel
+                assets={aiVideoAssets}
+                onChange={async next => { setAiVideoAssets(next) }}
+                profileName={profile || undefined}
+              />
+            </div>
+          </div>
 
           {error && <p className="text-xs text-red-400">{error}</p>}
           {runError && <p className="text-xs text-red-400">{runError}</p>}
@@ -228,6 +241,7 @@ export default function UploadView() {
               <AssetsPanel
                 assets={carouselAssets}
                 onChange={async next => { setCarouselAssets(next) }}
+                profileName={profile || undefined}
               />
             </div>
           </div>
@@ -304,7 +318,7 @@ export default function UploadView() {
         {projectType === 'music_video' ? (
           <LyricsUploadFields data={lyricsData} onChange={setLyricsData} onError={setError} />
         ) : (
-          <ClipUploadFields data={clipData} onChange={setClipData} onError={setError} />
+          <ClipUploadFields data={clipData} onChange={setClipData} onError={setError} profileName={profile || undefined} />
         )}
 
         {error && <p className="text-xs text-red-400">{error}</p>}

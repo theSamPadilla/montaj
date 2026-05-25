@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { Film, Image } from 'lucide-react'
 import { api } from '@/lib/api'
 import { DropZone } from './DropZone'
+import { ProfileAssetPicker } from './ProfileAssetPicker'
 
 const VIDEO_EXTENSIONS = ['mp4', 'mov', 'avi', 'mkv', 'webm', 'm4v', 'mts', 'mpg', 'mpeg']
 
@@ -10,10 +11,11 @@ export interface ClipUploadData {
   assets: string[]
 }
 
-export function ClipUploadFields({ data, onChange, onError }: {
+export function ClipUploadFields({ data, onChange, onError, profileName }: {
   data: ClipUploadData
   onChange: (data: ClipUploadData) => void
   onError: (msg: string | null) => void
+  profileName?: string
 }) {
   const [pickingClips, setPickingClips] = useState(false)
   const [pickingAssets, setPickingAssets] = useState(false)
@@ -106,6 +108,17 @@ export function ClipUploadFields({ data, onChange, onError }: {
         onRemove={path => onChange({ ...data, assets: data.assets.filter(p => p !== path) })}
         browseLabel={data.assets.length === 0 ? 'Browse files' : 'Add more'}
         accentClass="border-purple-500 bg-purple-500/10"
+        headerAction={
+          <ProfileAssetPicker
+            profileName={profileName}
+            existingPaths={data.assets}
+            onAdd={file => {
+              if (data.assets.includes(file.path)) return
+              onChange({ ...data, assets: [...data.assets, file.path] })
+            }}
+            variant="link"
+          />
+        }
       />
     </>
   )
