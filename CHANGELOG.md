@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## v2.5.3
+
+### Fixed
+- `montaj_assets/overlay-runtime/` now ships in the wheel. v2.5.0 introduced the shared overlay-runtime bundle (peer to `render/` / `ui/` / `mcp/`, consumed via `"montaj-overlay-runtime": "file:../overlay-runtime"`), but unlike its siblings the directory has a hyphen in its name and no `__init__.py`, so `setuptools.packages.find` skipped it as a subpackage and `include-package-data` only shipped the two files matched by the `*.json` package-data glob — `package.json` and `package-lock.json`. The five `.js` files (`index.js`, `canvas-wrapper.js`, `helpers.js`, `icons.js`, `three-bridge.js`) were absent from `montaj-2.5.{0,1,2}-py3-none-any.whl`, so `pip install montaj==2.5.x && montaj install ui` blew up at the UI `npm run build` step when Vite tried to resolve `montaj-overlay-runtime`'s `main` (`index.js`) and found nothing. Fix: explicit `[tool.setuptools.package-data]` entry — `"montaj_assets" = ["overlay-runtime/**/*"]` — forces the whole subtree into the wheel via the parent package's data globs. `prune montaj_assets/overlay-runtime/node_modules` in MANIFEST.in still keeps the bundle's installed deps out. Verified by inspecting the rebuilt wheel: all five `.js` files are present alongside the two JSON files. The sdist was always fine (MANIFEST.in's `graft montaj_assets` covers it); only the wheel was broken, which is what `pip install` consumes.
+
 ## v2.5.2
 
 ### Fixed

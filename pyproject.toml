@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "montaj"
-version = "2.5.2"
+version = "2.5.3"
 description = "Video editing toolkit for AI agents — CLI-first, agent-native, open source"
 readme = "README.md"
 license = "MIT"
@@ -73,6 +73,11 @@ include = [
 # Keep this broad so future *.json/*.yaml additions ship without a packaging
 # diff. node_modules/ and ui/dist/ are already pruned by MANIFEST.in.
 "*" = ["*.json", "*.yaml"]
+# overlay-runtime is a Node bundle, not a Python package — its dir name has a
+# hyphen and no __init__.py, so setuptools.packages.find skips it and its .js
+# source falls out of the wheel. Force the whole subtree in via the parent
+# package's data globs (node_modules/ is still pruned by MANIFEST.in).
+"montaj_assets" = ["overlay-runtime/**/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
