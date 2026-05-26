@@ -1,13 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { Project } from '@/lib/types/schema'
 import CaptionPreview from '@/components/CaptionPreview'
+import { getOverlayDesignCanvas } from '@/lib/utils'
 import { useDragOverlay } from './useDragOverlay'
 import OverlayItemsLayer from './OverlayItemsLayer'
 import { useVideoPlayback } from './useVideoPlayback'
 import CarouselPreview from './CarouselPreview'
-
-const DEFAULT_RENDER_W = 1080
-const DEFAULT_RENDER_H = 1920
 
 // ---------------------------------------------------------------------------
 
@@ -22,8 +20,7 @@ interface PreviewPlayerProps {
 export default function PreviewPlayer({ project, currentTime, onTimeUpdate, selectedOverlayId, onOverlayChange }: PreviewPlayerProps) {
   if (project.projectType === 'carousel') return <CarouselPreview project={project} />
 
-  const RENDER_W = project.settings?.resolution?.[0] ?? DEFAULT_RENDER_W
-  const RENDER_H = project.settings?.resolution?.[1] ?? DEFAULT_RENDER_H
+  const [RENDER_W, RENDER_H] = getOverlayDesignCanvas(project.settings?.resolution)
 
   const containerRef = useRef<HTMLDivElement>(null)
   const [renderScale, setRenderScale] = useState<number>(1)

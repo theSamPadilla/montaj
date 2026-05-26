@@ -105,7 +105,7 @@ Only add a card or background when the prompt explicitly asks, or when a specifi
 - **Frame-driven** — all animation must derive from `frame`. No `setTimeout`, `setInterval`, CSS `animation`, or `transition`.
 - **Transparent background (default)** — overlays render with a transparent background by default. Do not set `background` on the root element; it will obscure whatever is beneath it.
 - **Opaque overlays** — when `"opaque": true` is set on the item in project.json, the root element's CSS controls the entire frame. You may freely set `background`, gradients, images, or any CSS on the root. Use this for full-frame covers, title cards, and animation sections.
-- **Absolute positioning** — the component fills the full video frame (`1080×1920` CSS pixels regardless of output resolution). Place elements with `position: absolute`.
+- **Absolute positioning** — the component fills the full video frame (1080 on the short edge, aspect of `project.settings.resolution`). The Puppeteer viewport is always 1080-short-edge regardless of output resolution; the renderer upscales to the final video dimensions at compose time. Place elements with `position: absolute`. Author all `fontSize`, padding, and `width` values at 1080-design coordinates — they have one consistent meaning across every resolution the project might render at.
 - **No side effects** — no API calls, no filesystem access, no global state mutations.
 - **`backdropFilter` caution** — `backdrop-filter: blur(...)` causes Chrome to create a separate GPU compositor layer that can be cached and replayed as a stale frame during rendering. Avoid putting `backdrop-filter` on any element whose children animate — the blur container will flash or freeze. See the track-splitting guidance below.
 

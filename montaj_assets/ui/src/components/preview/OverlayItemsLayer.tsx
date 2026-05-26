@@ -4,13 +4,11 @@ import type { Project, VisualItem } from '@/lib/types/schema'
 import { compileOverlay, clearOverlayCache } from '@/lib/overlay-eval'
 import type { OverlayFactory } from '@/lib/overlay-eval'
 import OverlayErrorBoundary from '@/components/OverlayErrorBoundary'
+import { getOverlayDesignCanvas } from '@/lib/utils'
 import type { Corner } from './useDragOverlay'
 import type { useDragOverlay } from './useDragOverlay'
 
 const VIDEO_PRELOAD_S = 0.4  // mount this many seconds before item.start so the frame is ready
-
-const DEFAULT_RENDER_W = 1080
-const DEFAULT_RENDER_H = 1920
 
 // Synced video overlay — seeks to the correct position within the item's inPoint/outPoint range
 function OverlayVideo({ src, currentTime, itemStart, inPoint, isPlaying, muted, visible }: {
@@ -237,8 +235,7 @@ export default function OverlayItemsLayer({
   snapGuides,
   snapRotation,
 }: OverlayItemsLayerProps) {
-  const RENDER_W = project.settings?.resolution?.[0] ?? DEFAULT_RENDER_W
-  const RENDER_H = project.settings?.resolution?.[1] ?? DEFAULT_RENDER_H
+  const [RENDER_W, RENDER_H] = getOverlayDesignCanvas(project.settings?.resolution)
 
   return (
     <>

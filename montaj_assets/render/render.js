@@ -80,11 +80,27 @@ async function main(projectPath, { out, workers, clean }) {
   const settings = projectJson.settings || {}
   const fps    = settings.fps || 30
 
-  // Design resolution — what overlay components are authored for.
-  // Defaults to 1080×1920 (portrait) but respects settings.resolution when set,
-  // so animations-only projects authored at a different resolution render correctly.
-  const renderWidth  = settings.resolution?.[0] ?? 1080
-  const renderHeight = settings.resolution?.[1] ?? 1920
+  // Design resolution for overlay capture — always 1080 on the short edge,
+  // with the aspect ratio of settings.resolution (or 9:16 portrait by default).
+  //
+  // Why "always 1080 short edge" and not settings.resolution itself: overlay
+  // JSX is authored in fixed design-px coordinates (fontSize: 120, top: 350).
+  // If the Puppeteer viewport scaled with settings.resolution (e.g. 2160×3840
+  // for a 4K project), those same hardcoded sizes would be interpreted at the
+  // larger canvas — a 120px headline would only cover ~5% of canvas width
+  // instead of ~11%, and overlays would render small + top-left-cornered.
+  //
+  // Keeping the overlay canvas at 1080 short edge means JSX coordinates have
+  // one consistent meaning regardless of output resolution; the compose step
+  // then upscales the captured frame by pixelRatio = actualWidth / renderWidth
+  // (= 2 at 4K) when overlaying onto the final video.
+  const SHORT_EDGE_TARGET = 1080
+  const aspectW = settings.resolution?.[0] ?? 1080
+  const aspectH = settings.resolution?.[1] ?? 1920
+  const aspectRatio = SHORT_EDGE_TARGET / Math.min(aspectW, aspectH)
+  // Round to even pixels — odd dimensions break some yuv420 encoders.
+  const renderWidth  = Math.round(aspectW * aspectRatio / 2) * 2
+  const renderHeight = Math.round(aspectH * aspectRatio / 2) * 2
 
   // project.json always lives at the workspace root (written there by project/init.py),
   // so projectDir === workspaceDir. Render outputs go to workspace/<name>/render/.

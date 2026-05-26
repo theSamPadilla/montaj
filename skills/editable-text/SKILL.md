@@ -9,7 +9,7 @@ Carousel text overlays must accept a fixed set of editor-facing props so the flo
 
 ## When this applies
 
-This skill applies to carousel projects only. It covers text overlays — specifically, overlays whose default-exported function destructures a prop named `text`. Non-text overlays (logos, decorative shapes, image-based overlays, stylized brand marks where the text is the design and should not be operator-restyleable) are exempt and follow `skills/write-overlay/SKILL.md` instead.
+This skill applies to carousel projects only. It covers every overlay that renders text the operator should be able to edit — including overlays that destructure common text-content prop names (`headline`, `body`, `eyebrow`, `subtitle`, `title`, `copy`, `caption`, `description`, `label`, `lede`, `kicker`) and overlays that hardcode JSX text strings. `hub.write_overlay` treats all of those as text overlays and rejects them unless they implement the 9-prop contract below. Non-text overlays (logos, decorative shapes, image-based overlays, stylized brand marks where the text is *literally* part of the artwork and shouldn't be operator-restyleable) are exempt and follow `skills/write-overlay/SKILL.md` instead.
 
 ## The contract
 
@@ -177,6 +177,58 @@ export default function Headline({ copy }) {
 ```
 
 Rewrite to the contract.
+
+## Referencing this overlay from a slide
+
+Writing the conformant JSX is half the job. The slide element that references the overlay must pass the same prop names the template destructures — otherwise the template silently falls back to its defaults, and the slide renders the placeholder values with no error.
+
+When you compose a slide that uses a text overlay you authored, the slide element's `overlay.props` keys MUST match the JSX's destructured arg names exactly:
+
+```jsonc
+// Correct — keys match the template's destructured args.
+{
+  "type": "overlay",
+  "overlay": {
+    "template": "/abs/path/to/overlays/headline.jsx",
+    "props": {
+      "text":          "What 'best' actually means.",
+      "fontSize":      "72",
+      "fontFamily":    "\"Inter\", system-ui, sans-serif",
+      "fontWeight":    "800",
+      "fontStyle":     "normal",
+      "color":         "#0a0a0a",
+      "textAlign":     "center",
+      "textTransform": "none",
+      "bgColor":       "transparent"
+    }
+  }
+}
+```
+
+```jsonc
+// WRONG — legacy prop names. Every one of these is silently ignored;
+// the template renders 'Your headline' / 64px / system-ui / etc.
+{
+  "type": "overlay",
+  "overlay": {
+    "template": "/abs/path/to/overlays/headline.jsx",
+    "props": {
+      "copy":   "What 'best' actually means.",   // ← should be `text`
+      "size":   58,                              // ← should be `fontSize`, and a string
+      "weight": 700,                             // ← should be `fontWeight`, and a string
+      "accent": "#0a0a0a"                        // ← should be `color`
+    }
+  }
+}
+```
+
+Rules:
+
+- **Prop keys must match the JSX's destructuring exactly.** No `copy` for `text`, no `size` for `fontSize`, no `weight` for `fontWeight`, no `accent` for `color`. The 9 contract props (`text`, `fontSize`, `fontFamily`, `fontWeight`, `fontStyle`, `color`, `textAlign`, `textTransform`, `bgColor`) plus any extra props you declared on the template (like `accentColor` on the eyebrow worked example) are the complete legal key set.
+- **All values are strings**, even numerics. `fontSize: "72"` not `fontSize: 72`. `fontWeight: "700"` not `fontWeight: 700`. The editor's property panel filters props by `typeof === 'string'`; raw numbers won't appear as editable fields and won't round-trip after the operator edits them.
+- **Don't set what you don't need to override.** If you want the template's default for a given prop, just omit the key — the destructured default kicks in. Pass only the props whose value you're customizing for this slide.
+
+Hub validates this at PUT-project time and rejects any slide whose `overlay.props` contains keys the referenced template doesn't accept.
 
 ## Canonical reference
 

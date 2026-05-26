@@ -101,7 +101,7 @@ Persist via `PUT /api/projects/{id}` (HTTP) or write directly to `project.json` 
 
 ## Render Constraints
 
-- Canvas is **1080×1920 CSS pixels** — always, regardless of output resolution. The render pipeline captures segments at design resolution and upscales to the final output resolution (e.g. 2× for 4K) at compose time. All sizing in JSX is authored for 1080×1920.
+- Canvas is **1080 on the short edge** with the aspect ratio of `project.settings.resolution` (default `[1080, 1920]` portrait) — always, regardless of output resolution. The render pipeline captures overlay segments at design resolution (Puppeteer viewport = 1080-short-edge) and upscales to the final output resolution (e.g. 2× for 4K) at compose time. All sizing in JSX is authored for 1080-design coordinates.
 - **Never apply `transform: translate` or `scale` to the root element** — these are applied by the pipeline at compose time. Applying them in JSX pushes content off-canvas.
 - **Animations must complete before the overlay ends** — the last frame is held. If you fade out, opacity must reach 0 before the final frame. No mid-fade endings.
 - **HDR output** — when the project's `settings.colorSpace` is `hdr_hlg` or `hdr_pq`, the pipeline encodes the final output as HEVC 10-bit `yuv420p10le` with bt2020 color metadata (transfer `arib-std-b67` for HLG or `smpte2084` for PQ). Overlay segments are composited into the project's working color space at compose time; no action required in JSX.

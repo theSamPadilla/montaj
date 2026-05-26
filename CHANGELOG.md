@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Fixed
+- Overlay positioning is now stable across output resolutions. Previously, when `project.settings.resolution` was set to a non-default value (e.g. `[2160, 3840]` for 4K vertical), `montaj_assets/render/render.js` derived its overlay Puppeteer viewport from `settings.resolution` directly — so JSX coordinates were interpreted in the project's *output* resolution. Overlays authored at 1080-design coords (the documented baseline) rendered at half size and snapped to the top-left of the canvas; `montaj_assets/ui/src/components/preview/{PreviewPlayer,OverlayItemsLayer}.tsx` had a symmetric bug in preview. The renderer (`render.js:86-87`) now always uses a 1080-short-edge design canvas with the aspect ratio of `settings.resolution`, and `pixelRatio` upscales the captured frame to the final video dimensions at compose time — restoring the architecture the old skill text described. The UI preview mirrors this via a new `getOverlayDesignCanvas(settings.resolution)` helper in `montaj_assets/ui/src/lib/utils.ts` so preview and render agree on the same coordinate space. Net effect for end users: overlays in any project — 1080, 4K vertical, landscape, square — sit dead-center at defaults, hand-tuned `scale`/`offsetX`/`offsetY` values mean the same thing regardless of output resolution, and JSX overlays no longer need a resolution-portable wrapper.
+- Overlay skills (`skills/overlay/SKILL.md`, `skills/write-overlay/SKILL.md`) revert to their original "canvas is always 1080 on the short edge" wording. A recent edit had introduced a "Resolution-portable pattern" section that taught an inner-wrapper workaround for the renderer regression above; that workaround is no longer needed and the section has been removed. The Render Constraints bullet now explicitly states that the Puppeteer viewport is 1080-short-edge regardless of output resolution and that the compose step handles upscaling — so authors continue to write `fontSize: 120`, `bottom: 350`, etc. in fixed 1080-design coordinates.
+
 ## v2.5.4
 
 ### Fixed
