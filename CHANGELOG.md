@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## v2.5.6
+
+### Fixed
+- `static-text` overlay's `fontSize` prop now respects edits from clients that store the value with a `px` suffix (e.g. mission-control's `FontSizePicker` writes `"60px"`). The template was coercing the incoming string via `Number(fontSize)`, which returns `NaN` for any value with a unit suffix and silently fell back to the default `80` — so every operator-driven font-size edit on a static-text overlay was discarded at render time. `montaj_assets/render/templates/overlays/static-text/static-text.jsx` now parses with `parseFloat(String(fontSize))`, which accepts both the legacy unit-less `"80"` and the canonical `"60px"` format. Author-authored overlays (e.g. `lyric-phrase.jsx`) were unaffected because they hand `fontSize` straight to React's inline style, which already tolerates `"60px"`. No schema change; existing project.json values keep working.
+
 ## v2.5.5
 
 ### Fixed

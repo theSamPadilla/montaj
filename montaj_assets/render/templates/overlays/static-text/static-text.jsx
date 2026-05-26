@@ -27,7 +27,11 @@ export default function StaticText({
   textTransform = 'none',
   bgColor       = 'transparent',
 }) {
-  const sizeNum = Number(fontSize)
+  // parseFloat (not Number) so we tolerate both "64" (legacy unit-less) and
+  // "64px" (the canonical FontSizePicker storage format). Number("64px") = NaN
+  // would otherwise fall back to the default 80 and ignore the operator's
+  // chosen size — the symptom would be "fontSize edits do nothing in render."
+  const sizeNum = parseFloat(String(fontSize))
   const safeSize = Number.isFinite(sizeNum) && sizeNum > 0 ? sizeNum : 80
 
   return (
