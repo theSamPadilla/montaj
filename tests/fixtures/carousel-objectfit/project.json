@@ -1,0 +1,28 @@
+{
+  "projectType": "carousel",
+  "id": "carousel-objectfit-fixture",
+  "name": "objectFit regression fixture",
+  "settings": {
+    "resolution": [1080, 1080]
+  },
+  "carousel": {
+    "aspect": "square"
+  },
+  "slides": [
+    {
+      "id": "slide-01",
+      "base_color": "#00ff00",
+      "elements": [
+        {
+          "id": "img-01",
+          "type": "image",
+          "src": "wide-strip.png",
+          "x": 240,
+          "y": 90,
+          "w": 600,
+          "h": 900
+        }
+      ]
+    }
+  ]
+}

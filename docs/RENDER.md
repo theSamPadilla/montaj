@@ -300,6 +300,30 @@ same colorimetry the encoder produced.
 
 ---
 
+## Carousel Rendering
+
+Carousel projects use `render/render-carousel.js` instead of the video pipeline. Puppeteer screenshots each slide at the project's native resolution and writes `slide_NN.png` + `manifest.json` into `<project>/render/`.
+
+### High-DPI output (`--scale`)
+
+Pass `--scale N` (where N is `1`, `2`, or `3`) to rasterize slides at N× the base resolution. Default is `1`.
+
+- `node render/render-carousel.js --project-json project.json --scale 2`
+- `montaj render --scale 2` — carousel projects only; flag is silently ignored for video projects.
+- `POST /api/projects/{id}/render?scale=2` — carousel projects only.
+
+The design canvas and overlay coordinates are unchanged; only the output PNG pixel dimensions scale.
+
+### Manifest fields added by `--scale`
+
+The render manifest gains two top-level fields (`outputResolution`, `scale`) and each `slides[i]` entry exposes both `designWidth`/`designHeight` (always design coords) and `width`/`height` (actual PNG pixel dims). At `scale=1` the two pairs are identical.
+
+### Chart system overlays
+
+Three chart system overlays ship: `bar-chart`, `line-chart`, `pie-chart`. SVG-rendered (Recharts); operators add them via the system-overlay catalog like `static-text`. See the canonical render docs for details.
+
+---
+
 ## Known failure modes
 
 | Error | Cause | Fix |

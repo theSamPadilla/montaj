@@ -133,6 +133,93 @@ class TestServeRenderCarouselPath:
             f"Script path must not reference site-packages montaj_assets/render: {script_arg}"
         )
 
+    def test_carousel_render_passes_scale_query_param(
+        self, carousel_project_dir, tmp_path, monkeypatch
+    ):
+        """POST /render?scale=2 must include '--scale' '2' in the subprocess argv."""
+        from serve.common import get_project_dir
+
+        fake_cache_dir = tmp_path / _FAKE_CACHE_DIR_SUFFIX
+        fake_cache_dir.mkdir(parents=True, exist_ok=True)
+        (fake_cache_dir / "render-carousel.js").touch()
+
+        monkeypatch.setattr(
+            "serve.routes.projects.render_runtime_dir",
+            lambda: str(fake_cache_dir),
+        )
+
+        captured = {}
+
+        async def fake_create_subprocess(*args, **kwargs):
+            captured["args"] = list(args)
+            proc = MagicMock()
+            proc.pid = 99999
+            proc.stdout = AsyncMock()
+            proc.stderr = AsyncMock()
+            proc.stdout.__aiter__ = AsyncMock(return_value=iter([]))
+            proc.stderr.read = AsyncMock(return_value=b"")
+            proc.wait = AsyncMock(return_value=0)
+            proc.returncode = 0
+            return proc
+
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_create_subprocess)
+        app.dependency_overrides[get_project_dir] = lambda: carousel_project_dir
+
+        try:
+            project_id = carousel_project_dir.name
+            with client.stream("POST", f"/api/projects/{project_id}/render?scale=2") as resp:
+                for chunk in resp.iter_bytes():
+                    break
+        except Exception:
+            pass
+        finally:
+            app.dependency_overrides.pop(get_project_dir, None)
+
+        assert captured, "create_subprocess_exec was never called"
+        args = captured["args"]
+        assert "--scale" in args, f"'--scale' not found in subprocess args: {args}"
+        scale_idx = args.index("--scale")
+        assert args[scale_idx + 1] == "2", (
+            f"Expected '2' after '--scale', got: {args[scale_idx + 1]}"
+        )
+
+    def test_carousel_render_rejects_invalid_scale(
+        self, carousel_project_dir, tmp_path, monkeypatch
+    ):
+        """POST /render?scale=5 and ?scale=abc must return HTTP 400."""
+        from serve.common import get_project_dir
+
+        fake_cache_dir = tmp_path / _FAKE_CACHE_DIR_SUFFIX
+        fake_cache_dir.mkdir(parents=True, exist_ok=True)
+        (fake_cache_dir / "render-carousel.js").touch()
+
+        monkeypatch.setattr(
+            "serve.routes.projects.render_runtime_dir",
+            lambda: str(fake_cache_dir),
+        )
+        app.dependency_overrides[get_project_dir] = lambda: carousel_project_dir
+
+        try:
+            project_id = carousel_project_dir.name
+
+            # Out-of-range integer
+            resp = client.post(f"/api/projects/{project_id}/render?scale=5")
+            assert resp.status_code == 400, (
+                f"Expected 400 for scale=5, got {resp.status_code}"
+            )
+            body = resp.json()
+            assert body.get("detail", {}).get("error") == "invalid_argument"
+
+            # Non-integer string
+            resp = client.post(f"/api/projects/{project_id}/render?scale=abc")
+            assert resp.status_code == 400, (
+                f"Expected 400 for scale=abc, got {resp.status_code}"
+            )
+            body = resp.json()
+            assert body.get("detail", {}).get("error") == "invalid_argument"
+        finally:
+            app.dependency_overrides.pop(get_project_dir, None)
+
 
 # ---------------------------------------------------------------------------
 # project/render.py — CLI render dispatcher carousel branch
@@ -176,6 +263,64 @@ class TestCliRenderCarouselPath:
         )
         assert "montaj_assets" not in script_arg, (
             f"Script must not reference site-packages montaj_assets/render: {script_arg}"
+        )
+
+    def test_carousel_render_passes_scale_arg(self, tmp_path, monkeypatch):
+        """render.main(scale=2) must include '--scale' '2' in the execvpe args list."""
+        fake_cache_dir = str(tmp_path / _FAKE_CACHE_DIR_SUFFIX)
+
+        project_json = tmp_path / "project.json"
+        project_json.write_text(json.dumps({"projectType": "carousel"}))
+
+        captured = {}
+
+        def fake_execvpe(file, args, env):
+            captured["args"] = list(args)
+
+        monkeypatch.setattr(os, "execvpe", fake_execvpe)
+
+        from project import render as render_module
+        import importlib
+        importlib.reload(render_module)
+        monkeypatch.setattr(render_module, "render_runtime_dir", lambda: fake_cache_dir)
+        monkeypatch.setattr(os, "execvpe", fake_execvpe)
+
+        render_module.main(project_path=str(project_json), scale=2)
+
+        assert captured, "os.execvpe was never called"
+        args = captured["args"]
+        assert "--scale" in args, f"'--scale' not found in args: {args}"
+        scale_idx = args.index("--scale")
+        assert args[scale_idx + 1] == "2", (
+            f"Expected '2' after '--scale', got: {args[scale_idx + 1]}"
+        )
+
+    def test_carousel_render_omits_scale_when_none(self, tmp_path, monkeypatch):
+        """render.main() with no scale arg must NOT include '--scale' in execvpe args."""
+        fake_cache_dir = str(tmp_path / _FAKE_CACHE_DIR_SUFFIX)
+
+        project_json = tmp_path / "project.json"
+        project_json.write_text(json.dumps({"projectType": "carousel"}))
+
+        captured = {}
+
+        def fake_execvpe(file, args, env):
+            captured["args"] = list(args)
+
+        monkeypatch.setattr(os, "execvpe", fake_execvpe)
+
+        from project import render as render_module
+        import importlib
+        importlib.reload(render_module)
+        monkeypatch.setattr(render_module, "render_runtime_dir", lambda: fake_cache_dir)
+        monkeypatch.setattr(os, "execvpe", fake_execvpe)
+
+        render_module.main(project_path=str(project_json))
+
+        assert captured, "os.execvpe was never called"
+        args = captured["args"]
+        assert "--scale" not in args, (
+            f"'--scale' should not appear in args when scale=None, got: {args}"
         )
 
     def test_non_carousel_cmd_uses_render_runtime_dir(self, tmp_path, monkeypatch):

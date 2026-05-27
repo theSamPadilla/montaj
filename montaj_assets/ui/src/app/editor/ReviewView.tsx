@@ -67,7 +67,11 @@ export default function ReviewView({ project, onProjectChange }: ReviewViewProps
   const [dirty, setDirty]                     = useState(false)
   const [canUndo, setCanUndo]                 = useState(false)
   const historyRef = useRef<Project[]>([])
-  const [selectedOverlayId, setSelectedOverlayId] = useState<string | null>(null)
+  // Multi-select: all currently-selected timeline item ids (visual items + audio
+  // tracks). Single-select consumers (canvas preview, cut/split that operates on
+  // "the" selected item) use selectedIds[0] as the primary.
+  const [selectedIds, setSelectedIds] = useState<string[]>([])
+  const primarySelectedId = selectedIds[0] ?? null
   const [versions, setVersions]           = useState<ProjectVersion[]>([])
   const [restoring, setRestoring]         = useState<string | null>(null)
   const [rerunOpen, setRerunOpen]         = useState(false)
@@ -138,13 +142,13 @@ export default function ReviewView({ project, onProjectChange }: ReviewViewProps
 
   function handleCut(cut: { start: number; end: number }) {
     pushHistory(project)
-    let updated = selectedOverlayId
-      ? applyCutToItem(project, selectedOverlayId, cut)
+    let updated = primarySelectedId
+      ? applyCutToItem(project, primarySelectedId, cut)
       : applyCutToTracks(project, cut)
     if (rippleMode) updated = collapseGaps(updated)
     onProjectChange(updated)
     api.saveProject(updated.id, updated).catch(console.error)
-    setSelectedOverlayId(null)
+    setSelectedIds([])
     setDirty(true)
   }
 
@@ -174,7 +178,7 @@ export default function ReviewView({ project, onProjectChange }: ReviewViewProps
 
 
   function handleSplit(at?: number) {
-    const updated = splitAtTime(project, at ?? currentTime, selectedOverlayId ?? null)
+    const updated = splitAtTime(project, at ?? currentTime, primarySelectedId ?? null)
     if (updated === project) return
     pushHistory(project)
     onProjectChange(updated)
@@ -206,7 +210,7 @@ export default function ReviewView({ project, onProjectChange }: ReviewViewProps
     document.addEventListener('keydown', onKey)
     return () => document.removeEventListener('keydown', onKey)
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [project, currentTime, selectedOverlayId, canUndo])
+  }, [project, currentTime, primarySelectedId, canUndo])
 
   function handleRerunComplete(updated: Project) {
     onProjectChange(updated)
@@ -286,7 +290,7 @@ export default function ReviewView({ project, onProjectChange }: ReviewViewProps
                 project={project}
                 currentTime={currentTime}
                 onTimeUpdate={setCurrentTime}
-                selectedOverlayId={selectedOverlayId ?? undefined}
+                selectedOverlayId={primarySelectedId ?? undefined}
                 onOverlayChange={handleOverlayChange}
               />
             ) : (
@@ -344,6 +348,7 @@ export default function ReviewView({ project, onProjectChange }: ReviewViewProps
                     <div className="flex flex-col gap-2">
                       <p className="text-[9px] font-semibold uppercase tracking-widest text-gray-400 mb-0.5">Clips (all tracks)</p>
                       <div className="flex justify-between gap-4"><span className="text-gray-400 font-mono whitespace-nowrap">click</span><span className="text-gray-600 dark:text-gray-400">select</span></div>
+                      <div className="flex justify-between gap-4"><span className="text-gray-400 font-mono whitespace-nowrap">shift+click</span><span className="text-gray-600 dark:text-gray-400">add to selection (multi-select)</span></div>
                       <div className="flex justify-between gap-4"><span className="text-gray-400 font-mono whitespace-nowrap">drag</span><span className="text-gray-600 dark:text-gray-400">move / change track</span></div>
                       <div className="flex justify-between gap-4"><span className="text-gray-400 font-mono whitespace-nowrap">drag edge</span><span className="text-gray-600 dark:text-gray-400">trim in / out point</span></div>
                       <div className="flex justify-between gap-4"><span className="text-gray-400 font-mono whitespace-nowrap">S</span><span className="text-gray-600 dark:text-gray-400">split at playhead</span></div>
@@ -404,8 +409,8 @@ export default function ReviewView({ project, onProjectChange }: ReviewViewProps
               onProjectChange={handleProjectChange}
               onCaptionEdit={(p) => { onProjectChange(p); api.saveProject(p.id, p).catch(console.error) }}
               onOverlayEdit={(p) => { onProjectChange(p); api.saveProject(p.id, p).catch(console.error) }}
-              selectedOverlayId={selectedOverlayId ?? undefined}
-              onSelectOverlay={setSelectedOverlayId}
+              selectedIds={selectedIds}
+              onSelectIds={setSelectedIds}
               onSplit={handleSplit}
               onCut={handleCut}
               onInspectClip={(id) => setInspecting({ kind: 'clip', id })}

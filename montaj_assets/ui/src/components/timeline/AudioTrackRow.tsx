@@ -13,6 +13,7 @@ import { useTimelineContext } from './TimelineContext'
 import { useItemDragDrop } from './useItemDragDrop'
 import type { Draggable, DragEventContext } from './useItemDragDrop'
 import AudioWaveformLayer from './AudioWaveformLayer'
+import { applyMuteToSelection, applyResizeDeltaToSelection } from './multiSelectOps'
 
 interface AudioTrackRowProps {
   tracks: AudioTrack[]
@@ -21,8 +22,9 @@ interface AudioTrackRowProps {
   project: Project
   onProjectChange?: (p: Project) => void
   onOverlayEdit?: (p: Project) => void
-  selectedTrackId?: string | null
-  onSelect?: (id: string | null) => void
+  /** Unified multi-selection — same array shared across visual + audio rows. */
+  selectedIds: string[]
+  onSelectItem: (id: string | null, additive: boolean) => void
   onInspect?: (id: string) => void
 }
 
@@ -47,8 +49,8 @@ export default function AudioTrackRow({
   project,
   onProjectChange,
   onOverlayEdit,
-  selectedTrackId,
-  onSelect,
+  selectedIds,
+  onSelectItem,
   onInspect,
 }: AudioTrackRowProps) {
   const {
@@ -57,12 +59,14 @@ export default function AudioTrackRow({
     snapBoundaries,
     scrollRef,
     overlayDraggedRef,
+    zoomRef,
   } = useTimelineContext()
 
   const { beginDrag, beginResize } = useItemDragDrop({
     totalDuration,
     snapBoundaries,
     scrollRef,
+    zoomRef,
     draggedFlagRef: overlayDraggedRef,
   })
 
@@ -81,8 +85,9 @@ export default function AudioTrackRow({
           laneCount={laneCount}
           project={project}
           totalDuration={totalDuration}
-          selected={selectedTrackId === track.id}
-          onSelect={onSelect}
+          selected={selectedIds.includes(track.id)}
+          selectedIds={selectedIds}
+          onSelectItem={onSelectItem}
           onInspect={onInspect}
           onProjectChange={onProjectChange}
           onOverlayEdit={onOverlayEdit}
@@ -135,7 +140,8 @@ interface AudioTrackItemProps {
   project: Project
   totalDuration: number
   selected: boolean
-  onSelect?: (id: string | null) => void
+  selectedIds: string[]
+  onSelectItem: (id: string | null, additive: boolean) => void
   onInspect?: (id: string) => void
   onProjectChange?: (p: Project) => void
   onOverlayEdit?: (p: Project) => void
@@ -151,7 +157,8 @@ function AudioTrackItem({
   project,
   totalDuration,
   selected,
-  onSelect,
+  selectedIds,
+  onSelectItem,
   onInspect,
   onProjectChange,
   onOverlayEdit,
@@ -204,6 +211,7 @@ function AudioTrackItem({
     const origInPoint = track.inPoint ?? 0
     const origOutPoint = track.outPoint ?? (origInPoint + (origEnd - origStart))
     const srcDur = track.sourceDuration ?? Infinity
+    const multiTargets = selectedIds.length > 1 && selectedIds.includes(track.id)
 
     beginResize(e, track as Draggable, edge, {
       onLivePreview: ({ item: resized }: DragEventContext) => {
@@ -218,12 +226,17 @@ function AudioTrackItem({
           newOutPoint = Math.max(origInPoint + 0.1, Math.min(origOutPoint + dt, srcDur))
         }
 
-        const next = updateAudioTrack(project, track.id, {
+        let next = updateAudioTrack(project, track.id, {
           start: resized.start,
           end: resized.end,
           inPoint: newInPoint,
           outPoint: newOutPoint,
         })
+        if (multiTargets) {
+          const dStart = edge === 'start' ? resized.start - origStart : 0
+          const dEnd = edge === 'end' ? resized.end - origEnd : 0
+          next = applyResizeDeltaToSelection(next, track.id, selectedIds, edge, { dStart, dEnd })
+        }
         lastUpdated = next
         onProjectChange!(next)
       },
@@ -237,7 +250,10 @@ function AudioTrackItem({
   function handleToggleMute(e: React.MouseEvent) {
     e.stopPropagation()
     if (!onProjectChange) return
-    const updated = updateAudioTrack(project, track.id, { muted: !track.muted })
+    const newMuted = !track.muted
+    // Multi-selection: set every selected item to the new state. Solo: just this.
+    const targetIds = selectedIds.length > 1 && selectedIds.includes(track.id) ? selectedIds : [track.id]
+    const updated = applyMuteToSelection(project, targetIds, newMuted)
     onProjectChange(updated)
     onOverlayEdit?.(updated)
   }
@@ -256,7 +272,7 @@ function AudioTrackItem({
       }
       onProjectChange(updated)
       onOverlayEdit?.(updated)
-      onSelect?.(null)
+      onSelectItem(null, false)
       setConfirmingDelete(false)
     } else {
       setConfirmingDelete(true)
@@ -269,7 +285,8 @@ function AudioTrackItem({
   function handleBarClick(e: React.MouseEvent) {
     e.stopPropagation()
     if (overlayDraggedRef.current) return
-    onSelect?.(selected ? null : track.id)
+    const additive = e.shiftKey || e.metaKey || e.ctrlKey
+    onSelectItem(track.id, additive)
   }
 
   // ── Double-click to open inspector ──

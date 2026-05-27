@@ -9,7 +9,7 @@ from cli.deps import render_runtime_dir
 from cli.main import MONTAJ_ROOT as _MONTAJ_ROOT
 
 
-def main(project_path=None, out=None, workers=None, clean=False, montaj_root=None):
+def main(project_path=None, out=None, workers=None, clean=False, scale=None, montaj_root=None):
     # Determine project type so we can dispatch to the correct renderer.
     project_type = None
     if project_path and os.path.isfile(project_path):
@@ -26,6 +26,7 @@ def main(project_path=None, out=None, workers=None, clean=False, montaj_root=Non
         cmd = ["node", render_js, "--project-json", project_path]
         if out:    cmd += ["--out", out]
         if clean:  cmd.append("--clean")
+        if scale is not None: cmd += ["--scale", str(scale)]
     else:
         render_js = os.path.join(render_dir, "render.js")
         cmd = ["node", render_js]

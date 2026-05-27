@@ -3,7 +3,7 @@
  * render-carousel.js — Render a carousel project.json into per-slide PNGs.
  *
  * Usage:
- *   node render-carousel.js --project-json <path> [--out <dir>] [--clean]
+ *   node render-carousel.js --project-json <path> [--out <dir>] [--clean] [--scale <1|2|3>]
  *
  * stdout: absolute path to the output directory (follows step output convention)
  * stderr: progress lines + JSON error on failure
@@ -42,20 +42,30 @@ function fail(code, message) {
 const argv = process.argv.slice(2)
 
 if (!argv.length || argv[0] === '--help') {
-  process.stderr.write('Usage: render-carousel.js --project-json <path> [--out <dir>] [--clean]\n')
+  process.stderr.write('Usage: render-carousel.js --project-json <path> [--out <dir>] [--clean] [--scale <1|2|3>]\n')
   process.exit(1)
 }
 
 let projectJsonArg = null
 let outArg         = null
 let cleanArg       = false
+let scaleArg       = 1
 
 for (let i = 0; i < argv.length; i++) {
   if (argv[i] === '--project-json') { projectJsonArg = argv[++i]; continue }
   if (argv[i] === '--out')          { outArg         = argv[++i]; continue }
   if (argv[i] === '--clean')        { cleanArg       = true;      continue }
+  if (argv[i] === '--scale') {
+    const raw = argv[++i]
+    const n = Number(raw)
+    if (!Number.isInteger(n) || n < 1 || n > 3) {
+      fail('invalid_argument', `--scale must be one of 1, 2, 3 (got ${JSON.stringify(raw)})`)
+    }
+    scaleArg = n
+    continue
+  }
   process.stderr.write(`Unknown argument: ${argv[i]}\n`)
-  process.stderr.write('Usage: render-carousel.js --project-json <path> [--out <dir>] [--clean]\n')
+  process.stderr.write('Usage: render-carousel.js --project-json <path> [--out <dir>] [--clean] [--scale <1|2|3>]\n')
   process.exit(1)
 }
 
@@ -63,7 +73,7 @@ if (!projectJsonArg) {
   fail('missing_argument', '--project-json is required')
 }
 
-main(projectJsonArg, { out: outArg, clean: cleanArg }).catch(err => {
+main(projectJsonArg, { out: outArg, clean: cleanArg, scale: scaleArg }).catch(err => {
   fail('render_error', err.message ?? String(err))
 })
 
@@ -71,7 +81,7 @@ main(projectJsonArg, { out: outArg, clean: cleanArg }).catch(err => {
 // Main
 // ---------------------------------------------------------------------------
 
-async function main(projectJsonPath, { out, clean }) {
+async function main(projectJsonPath, { out, clean, scale = 1 }) {
   const absProjectPath = resolve(projectJsonPath)
   const projectDir     = dirname(absProjectPath)
 
@@ -132,7 +142,7 @@ async function main(projectJsonPath, { out, clean }) {
           const page     = await browser.newPage()
 
           try {
-            await page.setViewport({ width, height, deviceScaleFactor: 1 })
+            await page.setViewport({ width, height, deviceScaleFactor: scale })
             await page.goto(`file://${htmlPath}`, { waitUntil: 'networkidle0', timeout: 30_000 })
 
             // Belt-and-suspenders: wait for all images to finish loading
@@ -157,7 +167,7 @@ async function main(projectJsonPath, { out, clean }) {
           rmSync(workDir, { recursive: true, force: true })
         }
 
-        manifestSlides.push({ index: i + 1, file: fileName, width, height })
+        manifestSlides.push({ index: i + 1, file: fileName })
         log(`  → ${outFile}`)
       } catch (err) {
         fail('render_error', `slide ${i + 1} (id=${slide.id}): ${err.message}`)
@@ -168,7 +178,20 @@ async function main(projectJsonPath, { out, clean }) {
   }
 
   // 4. Write manifest
-  const manifest = { aspect, resolution: [width, height], slides: manifestSlides }
+  const outputResolution = [width * scale, height * scale]
+  const manifest = {
+    aspect,
+    resolution: [width, height],
+    outputResolution,
+    scale,
+    slides: manifestSlides.map(s => ({
+      ...s,
+      designWidth:  width,
+      designHeight: height,
+      width:        outputResolution[0],
+      height:       outputResolution[1],
+    })),
+  }
   writeFileSync(join(outDir, 'manifest.json'), JSON.stringify(manifest, null, 2))
 
   // Step output convention: output dir on stdout

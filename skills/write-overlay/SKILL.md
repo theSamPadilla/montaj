@@ -417,6 +417,28 @@ Three.js + r3f add ~250 KB to an overlay segment's bundle after esbuild tree-sha
 
 ---
 
+## Charts / Recharts
+
+Overlay JSX can use SVG-based charts via [Recharts](https://recharts.org). Available globals: `BarChart`, `Bar`, `LineChart`, `Line`, `PieChart`, `Pie`, `Cell`, `XAxis`, `YAxis`, `CartesianGrid`, `Tooltip`, `Legend`, `ResponsiveContainer`.
+
+### Carousel-only (for now)
+
+Charts work in carousel slides today. Video overlays don't have a chart story yet — see follow-up plans. The carousel renderer screenshots SVG directly, so no special contract is required.
+
+### Non-negotiable rule: disable animations
+
+Set `isAnimationActive={false}` on every chart primitive (`<Bar>`, `<Line>`, `<Pie>`, etc.). Recharts animates by default; without this, the carousel renderer captures a mid-animation frame and the chart looks half-drawn. If you see fuzzy ticks or a half-faded legend in the rendered PNG, also pass `isAnimationActive={false}` to `<XAxis>` / `<YAxis>` / `<Legend>` defensively.
+
+### Size charts explicitly — don't use `<ResponsiveContainer>`
+
+`<ResponsiveContainer>` measures via `ResizeObserver`, which is asynchronous; the Puppeteer screenshot can fire before the first observer callback, producing a blank chart. Instead, take `boxWidth` / `boxHeight` as props (the slide wrapper passes them in automatically) and use them as explicit `width` / `height` on the chart root: `<BarChart width={innerW} height={innerH} ...>`.
+
+### Stick to bar / line / pie for v1
+
+Three system overlay templates ship today: `bar-chart`, `line-chart`, `pie-chart`. For one-off data viz, write a custom overlay using the same globals. For variants likely to be reused (area, scatter, donut-vs-pie variants beyond `innerRadius`), promote them to system overlays so they show up in the property panel for everyone.
+
+---
+
 ## project.json item shape
 
 Place overlay items in `tracks[1+]` in `project.json`. Each item must have `type: "overlay"` and a `src` path pointing to the JSX file. All custom data goes inside `props`.

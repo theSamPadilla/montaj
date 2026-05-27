@@ -1,0 +1,15 @@
+{
+  "description": "Pie / donut chart overlay. SVG-rendered via Recharts. innerRadius > 0 produces a donut.",
+  "props": [
+    { "name": "labels",       "type": "string", "default": "A, B, C, D",                         "description": "Comma-separated slice labels" },
+    { "name": "values",       "type": "string", "default": "30, 25, 20, 25",                     "description": "Comma-separated numeric values, one per label" },
+    { "name": "colors",       "type": "string", "default": "#3b82f6, #10b981, #f59e0b, #ef4444", "description": "Comma-separated colors; cycles if fewer than slices" },
+    { "name": "innerRadius",  "type": "string", "default": "0",                                  "description": "Percentage (e.g. '50%') or px; 0 = solid pie, >0 = donut" },
+    { "name": "labelColor",   "type": "string", "default": "#111111",                            "format": "color" },
+    { "name": "fontFamily",   "type": "string", "default": "system-ui, -apple-system, \"Helvetica Neue\", sans-serif" },
+    { "name": "fontSize",     "type": "string", "default": "16" },
+    { "name": "showLabels",   "type": "string", "default": "true",                               "enum": ["true", "false"] },
+    { "name": "showLegend",   "type": "string", "default": "false",                              "enum": ["true", "false"] },
+    { "name": "bgColor",      "type": "string", "default": "transparent",                        "format": "color" }
+  ]
+}

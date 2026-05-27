@@ -10,6 +10,7 @@ import Scrubber from './Scrubber'
 import TranscriptPanel from './TranscriptPanel'
 import TranscriptModal from './TranscriptModal'
 import VisualTrackRow from './VisualTrackRow'
+import { deleteSelection, toggleSelection } from './multiSelectOps'
 
 interface TimelineProps {
   project: Project
@@ -18,8 +19,9 @@ interface TimelineProps {
   onProjectChange?: (p: Project) => void
   onCaptionEdit?: (p: Project) => void
   onOverlayEdit?: (p: Project) => void
-  selectedOverlayId?: string
-  onSelectOverlay?: (id: string | null) => void
+  /** Unified selection — covers both visual items and audio tracks. */
+  selectedIds?: string[]
+  onSelectIds?: (ids: string[]) => void
   onSplit?: (at: number) => void
   onCut?: (cut: { start: number; end: number }) => void
   onInspectClip?: (id: string) => void
@@ -29,7 +31,15 @@ interface TimelineProps {
 }
 
 
-export default function Timeline({ project, currentTime, onTimeUpdate, onProjectChange, onCaptionEdit, onOverlayEdit, selectedOverlayId, onSelectOverlay, onSplit, onCut, onInspectClip, onInspectAudio, onSaveProject, rippleMode = false }: TimelineProps) {
+export default function Timeline({ project, currentTime, onTimeUpdate, onProjectChange, onCaptionEdit, onOverlayEdit, selectedIds = [], onSelectIds, onSplit, onCut, onInspectClip, onInspectAudio, onSaveProject, rippleMode = false }: TimelineProps) {
+  const primarySelectedId = selectedIds[0] ?? null
+
+  // Click/shift-click handler — additive selection on shift or meta (cmd/ctrl).
+  function handleSelectItem(id: string | null, additive: boolean) {
+    if (!onSelectIds) return
+    if (id === null) { onSelectIds([]); return }
+    onSelectIds(toggleSelection(selectedIds, id, additive))
+  }
   const allTracks      = project.tracks ?? []
   const captionTrack   = project.captions
   const audioTracks    = project.audio?.tracks ?? []
@@ -96,7 +106,6 @@ export default function Timeline({ project, currentTime, onTimeUpdate, onProject
   const keyNavTimerRef                        = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   const [subcutClipId, setSubcutClipId]       = useState<string | null>(null)
-  const [selectedAudioTrackId, setSelectedAudioTrackId] = useState<string | null>(null)
 
   const { zoom, zoomRef, scrollRef, zoomTo, handleTimelineWheel } = useTimelineZoom(totalDuration)
 
@@ -135,19 +144,14 @@ export default function Timeline({ project, currentTime, onTimeUpdate, onProject
   function handleKeyDown(e: React.KeyboardEvent<HTMLDivElement>) {
     if ((e.target as HTMLElement).isContentEditable) return
 
-    if ((e.key === 'Delete' || e.key === 'Backspace') && selectedOverlayId) {
+    if ((e.key === 'Delete' || e.key === 'Backspace') && selectedIds.length > 0) {
       e.preventDefault()
       if (!onProjectChange) return
-      let updated: Project = {
-        ...project,
-        tracks: (project.tracks ?? [])
-          .map(track => track.filter(item => item.id !== selectedOverlayId))
-          .filter(track => track.length > 0),
-      }
+      let updated = deleteSelection(project, selectedIds)
       if (rippleMode) updated = collapseGaps(updated)
       onProjectChange(updated)
       onOverlayEdit?.(updated)
-      onSelectOverlay?.(null)
+      onSelectIds?.([])
       return
     }
 
@@ -174,8 +178,8 @@ export default function Timeline({ project, currentTime, onTimeUpdate, onProject
     onTimeUpdate(clickedTime)
   }
 
-  const cutButtonLabel = selectedOverlayId
-    ? `Cut ${allTracks.flat().find(i => i.id === selectedOverlayId)?.type ?? 'item'}`
+  const cutButtonLabel = primarySelectedId
+    ? `Cut ${allTracks.flat().find(i => i.id === primarySelectedId)?.type ?? 'item'}`
     : 'Cut primary'
 
   return (
@@ -255,14 +259,11 @@ export default function Timeline({ project, currentTime, onTimeUpdate, onProject
               trackItems={trackItems}
               trackIdx={trackIdx}
               project={project}
-              selectedOverlayId={selectedOverlayId}
+              selectedIds={selectedIds}
               rippleMode={rippleMode}
               onProjectChange={onProjectChange}
               onOverlayEdit={onOverlayEdit}
-              onSelectOverlay={(id) => {
-                onSelectOverlay?.(id)
-                if (id) setSelectedAudioTrackId(null)
-              }}
+              onSelectItem={handleSelectItem}
               onInspectClip={onInspectClip}
               subcutClipId={subcutClipId}
               setSubcutClipId={setSubcutClipId}
@@ -294,11 +295,8 @@ export default function Timeline({ project, currentTime, onTimeUpdate, onProject
               project={project}
               onProjectChange={onProjectChange}
               onOverlayEdit={onOverlayEdit}
-              selectedTrackId={selectedAudioTrackId}
-              onSelect={(id) => {
-                setSelectedAudioTrackId(id)
-                if (id) onSelectOverlay?.(null)
-              }}
+              selectedIds={selectedIds}
+              onSelectItem={handleSelectItem}
               onInspect={onInspectAudio}
             />
           ))

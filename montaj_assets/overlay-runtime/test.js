@@ -59,5 +59,23 @@ assert.ok(isComponentLike(previewGlobals.Canvas), 'preview.Canvas must be compon
 // Sanity — unknown contexts must throw.
 assert.throws(() => makeOverlayGlobals('bogus'), /unknown context/)
 
+// Recharts globals are exposed for both render and preview contexts.
+// Some Recharts components are forwardRef-wrapped (typeof 'object'); use
+// isComponentLike() consistent with the Canvas/FaIcon checks above.
+const requiredChartGlobals = [
+  'BarChart', 'Bar',
+  'LineChart', 'Line',
+  'PieChart', 'Pie',
+  'Cell',
+  'XAxis', 'YAxis',
+  'CartesianGrid',
+  'Tooltip', 'Legend',
+  'ResponsiveContainer',
+]
+for (const name of requiredChartGlobals) {
+  assert.ok(isComponentLike(renderGlobals[name]),  `render context: missing ${name}`)
+  assert.ok(isComponentLike(previewGlobals[name]), `preview context: missing ${name}`)
+}
+
 console.log('overlay-runtime: contract symmetry OK')
 console.log(`  globals: ${renderKeys.join(', ')}`)

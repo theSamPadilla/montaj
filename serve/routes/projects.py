@@ -952,9 +952,21 @@ async def render_project(project_id: str, request: Request, project_dir: Path = 
     except Exception:
         project_type = ""
 
+    scale_raw = request.query_params.get("scale")
+    scale: int | None = None
+    if scale_raw is not None:
+        try:
+            scale = int(scale_raw)
+        except ValueError:
+            raise HTTPException(400, detail={"error": "invalid_argument", "message": "scale must be an integer"})
+        if scale not in (1, 2, 3):
+            raise HTTPException(400, detail={"error": "invalid_argument", "message": "scale must be 1, 2, or 3"})
+
     if project_type == "carousel":
         render_script = Path(render_runtime_dir()) / "render-carousel.js"
         script_args = ["--project-json", str(project_path)]
+        if scale is not None:
+            script_args += ["--scale", str(scale)]
     else:
         render_script = Path(render_runtime_dir()) / "render.js"
         script_args = [str(project_path)]

@@ -1,0 +1,58 @@
+{
+  "version": "0.2",
+  "id": "test-charts",
+  "projectType": "carousel",
+  "status": "final",
+  "carousel": { "aspect": "square" },
+  "settings": { "resolution": [1080, 1080] },
+  "slides": [
+    {
+      "id": "slide-bar",
+      "base_color": "#ffffff",
+      "elements": [
+        {
+          "id": "el-bar",
+          "type": "overlay",
+          "overlay": {
+            "template": "bar-chart",
+            "props": { "labels": "Q1, Q2, Q3, Q4", "values": "100, 120, 90, 140", "barColor": "#3b82f6" }
+          },
+          "x": 100, "y": 100, "w": 880, "h": 880,
+          "rotation": 0
+        }
+      ]
+    },
+    {
+      "id": "slide-line",
+      "base_color": "#ffffff",
+      "elements": [
+        {
+          "id": "el-line",
+          "type": "overlay",
+          "overlay": {
+            "template": "line-chart",
+            "props": { "xLabels": "Jan, Feb, Mar, Apr", "series": "[{\"name\":\"Revenue\",\"color\":\"#3b82f6\",\"values\":\"10, 24, 18, 32\"}]" }
+          },
+          "x": 100, "y": 100, "w": 880, "h": 880,
+          "rotation": 0
+        }
+      ]
+    },
+    {
+      "id": "slide-pie",
+      "base_color": "#ffffff",
+      "elements": [
+        {
+          "id": "el-pie",
+          "type": "overlay",
+          "overlay": {
+            "template": "pie-chart",
+            "props": { "labels": "A, B, C, D", "values": "30, 25, 20, 25" }
+          },
+          "x": 100, "y": 100, "w": 880, "h": 880,
+          "rotation": 0
+        }
+      ]
+    }
+  ]
+}

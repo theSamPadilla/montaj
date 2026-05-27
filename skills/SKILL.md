@@ -185,7 +185,7 @@ If in doubt, **ask your human**.
 - After transcribe + caption: set top-level `captions: { "style": "word-by-word", "segments": [...] }` — do NOT store a file pointer
 - After overlays/images/video: populate `tracks[1+]` — array of arrays; items have `type: "overlay"` (JSX), `type: "image"` (static image), or `type: "video"` (video clip with optional `remove_bg: true`)
 - After all steps: set `status: "draft"`
-- HTTP: persist via `PUT /api/projects/{id}` | CLI: write to `project.json`
+- HTTP: **GET fresh, merge in your delta, then PUT** — the user can edit `project.json` from the UI at any time while the server is running, and a stale PUT silently overwrites their work (Montaj only auto-commits to git on status transitions, so mid-status edits have no recovery path). See `serve/SKILL.md` → "Re-fetch before PUT". CLI: write to `project.json`.
 
 **HEVC clips:** `concat` handles HEVC automatically. Never manually re-encode before editing steps.
 

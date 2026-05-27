@@ -1,0 +1,17 @@
+{
+  "description": "Line chart overlay. Supports 1–N series with per-series color. SVG-rendered via Recharts.",
+  "props": [
+    { "name": "xLabels",     "type": "string", "default": "Jan, Feb, Mar, Apr, May, Jun", "description": "Comma-separated x-axis labels" },
+    { "name": "series",      "type": "string", "format": "json", "default": "[{\"name\":\"Series A\",\"color\":\"#3b82f6\",\"values\":\"10, 24, 18, 32, 28, 40\"}]", "description": "JSON array of series; each is { name, color, values: comma-string }" },
+    { "name": "axisColor",   "type": "string", "default": "#111111", "format": "color" },
+    { "name": "fontFamily",  "type": "string", "default": "system-ui, -apple-system, \"Helvetica Neue\", sans-serif" },
+    { "name": "fontSize",    "type": "string", "default": "16" },
+    { "name": "smoothed",    "type": "string", "default": "false", "enum": ["true", "false"], "description": "Use monotone curve (true) or straight segments (false)" },
+    { "name": "strokeWidth", "type": "string", "default": "3" },
+    { "name": "showGrid",    "type": "string", "default": "true",  "enum": ["true", "false"] },
+    { "name": "showXAxis",   "type": "string", "default": "true",  "enum": ["true", "false"] },
+    { "name": "showYAxis",   "type": "string", "default": "true",  "enum": ["true", "false"] },
+    { "name": "showLegend",  "type": "string", "default": "true",  "enum": ["true", "false"] },
+    { "name": "bgColor",     "type": "string", "default": "transparent", "format": "color" }
+  ]
+}

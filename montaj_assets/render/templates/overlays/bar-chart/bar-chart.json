@@ -1,0 +1,15 @@
+{
+  "description": "Bar chart overlay. Single series, vertical bars. SVG-rendered via Recharts.",
+  "props": [
+    { "name": "labels",       "type": "string", "default": "Jan, Feb, Mar, Apr",        "description": "Comma-separated x-axis labels" },
+    { "name": "values",       "type": "string", "default": "10, 24, 18, 32",            "description": "Comma-separated numeric values, one per label" },
+    { "name": "barColor",     "type": "string", "default": "#3b82f6",                   "format": "color" },
+    { "name": "axisColor",    "type": "string", "default": "#111111",                   "format": "color" },
+    { "name": "fontFamily",   "type": "string", "default": "system-ui, -apple-system, \"Helvetica Neue\", sans-serif" },
+    { "name": "fontSize",     "type": "string", "default": "16" },
+    { "name": "showGrid",     "type": "string", "default": "true",                      "enum": ["true", "false"] },
+    { "name": "showXAxis",    "type": "string", "default": "true",                      "enum": ["true", "false"] },
+    { "name": "showYAxis",    "type": "string", "default": "true",                      "enum": ["true", "false"] },
+    { "name": "bgColor",      "type": "string", "default": "transparent",               "format": "color" }
+  ]
+}

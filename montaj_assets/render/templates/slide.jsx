@@ -79,7 +79,7 @@ export function Slide({ slide, width, height, overlayRegistry, resolveAsset }) {
             <img
               key={element.id}
               src={resolveAsset(element.src)}
-              style={{ ...baseStyle, objectFit: 'cover' }}
+              style={{ ...baseStyle, objectFit: 'contain' }}
             />
           )
         }
@@ -101,6 +101,11 @@ export function Slide({ slide, width, height, overlayRegistry, resolveAsset }) {
             offsetX: 0,
             offsetY: 0,
             scale:   1,
+            // Box dimensions in design-canvas px. Chart overlays use these to size their
+            // Recharts root explicitly, avoiding ResponsiveContainer + ResizeObserver
+            // racing the Puppeteer screenshot.
+            boxWidth:  w,
+            boxHeight: h,
           }
 
           return (

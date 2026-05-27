@@ -5,16 +5,19 @@ import { pct, ratioFromClientX, trackRow, trackRowTall } from './utils'
 import { useTimelineContext } from './TimelineContext'
 import { useItemDragDrop } from './useItemDragDrop'
 import type { Draggable, DragEventContext } from './useItemDragDrop'
+import { applyMuteToSelection, applyResizeDeltaToSelection, deleteSelection } from './multiSelectOps'
 
 interface VisualTrackRowProps {
   trackItems: VisualItem[]
   trackIdx: number
   project: Project
-  selectedOverlayId?: string
+  /** Unified multi-selection. First entry is the primary; isSel checks membership. */
+  selectedIds: string[]
   rippleMode: boolean
   onProjectChange?: (p: Project) => void
   onOverlayEdit?: (p: Project) => void
-  onSelectOverlay?: (id: string | null) => void
+  /** Click handler — additive when shift/meta is held. */
+  onSelectItem: (id: string | null, additive: boolean) => void
   onInspectClip?: (id: string) => void
   subcutClipId: string | null
   setSubcutClipId: (id: string | null) => void
@@ -33,38 +36,52 @@ export default function VisualTrackRow({
   trackItems,
   trackIdx,
   project,
-  selectedOverlayId,
+  selectedIds,
   rippleMode,
   onProjectChange,
   onOverlayEdit,
-  onSelectOverlay,
+  onSelectItem,
   onInspectClip,
   subcutClipId,
   setSubcutClipId,
 }: VisualTrackRowProps) {
-  const { totalDuration, snapBoundaries, scrollRef, scrubberRef, currentTime, onTimeUpdate, markers, setMarkers, selection, overlayDraggedRef } = useTimelineContext()
+  const { totalDuration, snapBoundaries, scrollRef, scrubberRef, currentTime, onTimeUpdate, markers, setMarkers, selection, overlayDraggedRef, zoomRef } = useTimelineContext()
   const tc = trackColors[trackIdx % trackColors.length]
   const markerActive = markers[0] !== null || selection !== null
-  const dimmed = markerActive && selectedOverlayId !== null && !trackItems.some(i => i.id === selectedOverlayId)
+  const primarySelectedId = selectedIds[0] ?? null
+  const dimmed = markerActive && primarySelectedId !== null && !trackItems.some(i => i.id === primarySelectedId)
 
   const { beginDrag, beginResize } = useItemDragDrop({
     totalDuration,
     snapBoundaries,
     scrollRef,
+    zoomRef,
     draggedFlagRef: overlayDraggedRef,
   })
 
   function handleItemResizeStart(e: React.MouseEvent, item: VisualItem, edge: 'start' | 'end') {
     if (!onProjectChange) return
     let lastUpdated = project
+    const origStart = item.start
+    const origEnd = item.end
+    const multiTargets = selectedIds.length > 1 && selectedIds.includes(item.id)
 
     beginResize(e, item as Draggable, edge, {
       onLivePreview: ({ item: resized }: DragEventContext) => {
+        // First: apply the hook's resize (which has clamping, snap, in/outPoint
+        // math) to the originator clip.
         let next: Project = {
           ...project,
           tracks: (project.tracks ?? []).map(track =>
             track.map(ov => ov.id !== item.id ? ov : { ...ov, start: resized.start, end: resized.end, inPoint: resized.inPoint, outPoint: resized.outPoint })
           ),
+        }
+        // Then: propagate the same delta to every other selected item across
+        // visual + audio tracks.
+        if (multiTargets) {
+          const dStart = edge === 'start' ? resized.start - origStart : 0
+          const dEnd = edge === 'end' ? resized.end - origEnd : 0
+          next = applyResizeDeltaToSelection(next, item.id, selectedIds, edge, { dStart, dEnd })
         }
         if (rippleMode) next = collapseGaps(next)
         lastUpdated = next
@@ -78,26 +95,23 @@ export default function VisualTrackRow({
 
   function handleDeleteOverlay(id: string) {
     if (!onProjectChange) return
-    let updated: Project = {
-      ...project,
-      tracks: (project.tracks ?? [])
-        .map(track => track.filter(item => item.id !== id))
-        .filter(track => track.length > 0),
-    }
+    // If part of a multi-selection, delete the whole selection; otherwise just
+    // this item. Matches the Delete-key behavior in Timeline.handleKeyDown.
+    const ids = selectedIds.length > 1 && selectedIds.includes(id) ? selectedIds : [id]
+    let updated = deleteSelection(project, ids)
     if (rippleMode) updated = collapseGaps(updated)
     onProjectChange(updated)
     onOverlayEdit?.(updated)
-    onSelectOverlay?.(null)
+    onSelectItem(null, false)
   }
 
-  function handleToggleMute(id: string) {
+  function handleToggleMute(item: VisualItem) {
     if (!onProjectChange) return
-    const updated = {
-      ...project,
-      tracks: (project.tracks ?? []).map(track =>
-        track.map(item => item.id === id ? { ...item, muted: !item.muted } : item)
-      ),
-    }
+    const newMuted = !item.muted
+    // If clicked item is in a multi-selection, set every selected item's mute
+    // state to the new target (uniform end state, no surprise mixed state).
+    const targetIds = selectedIds.length > 1 && selectedIds.includes(item.id) ? selectedIds : [item.id]
+    const updated = applyMuteToSelection(project, targetIds, newMuted)
     onProjectChange(updated)
     onOverlayEdit?.(updated)
   }
@@ -183,7 +197,7 @@ export default function VisualTrackRow({
   return (
     <div className={`${trackIdx === 0 ? trackRowTall : trackRow} transition-opacity ${dimmed ? 'opacity-30 pointer-events-none' : ''}`} onClick={handleTrackClick} onDoubleClick={handleScrubDoubleClick}>
       {trackItems.map((item) => {
-        const isSel = selectedOverlayId === item.id
+        const isSel = selectedIds.includes(item.id)
         return (
           <div
             key={item.id}
@@ -194,9 +208,11 @@ export default function VisualTrackRow({
             onClick={(e) => {
               e.stopPropagation()
               if (overlayDraggedRef.current) return
-              const selecting = !isSel
-              onSelectOverlay?.(selecting ? item.id : null)
-              if (selecting) onTimeUpdate(ratioFromClientX(e.clientX, scrubberRef.current!.getBoundingClientRect()) * totalDuration)
+              const additive = e.shiftKey || e.metaKey || e.ctrlKey
+              onSelectItem(item.id, additive)
+              // Only seek playhead on a plain single-select click (not on
+              // additive shift-clicks, which shouldn't disrupt scrubbing).
+              if (!additive && !isSel) onTimeUpdate(ratioFromClientX(e.clientX, scrubberRef.current!.getBoundingClientRect()) * totalDuration)
             }}
             onDoubleClick={(e) => {
               e.stopPropagation()
@@ -220,7 +236,7 @@ export default function VisualTrackRow({
             {item.type === 'video' && (
               <button
                 className={`shrink-0 mr-3 z-10 cursor-pointer transition-opacity ${item.muted ? 'opacity-30 hover:opacity-60' : 'opacity-50 hover:opacity-90'} ${tc.text}`}
-                onClick={(e) => { e.stopPropagation(); handleToggleMute(item.id) }}
+                onClick={(e) => { e.stopPropagation(); handleToggleMute(item) }}
                 title={item.muted ? 'Unmute' : 'Mute'}
               >
                 {item.muted ? <VolumeX size={10} /> : <Volume2 size={10} />}

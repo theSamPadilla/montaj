@@ -4,6 +4,16 @@ import { makeUseThreeFrame }            from './three-bridge.js'
 import { makeCanvas }                   from './canvas-wrapper.js'
 import { Ph, FaSolid, FaBrands, FaIcon } from './icons.js'
 import * as THREE                       from 'three'
+import {
+  BarChart, Bar,
+  LineChart, Line,
+  PieChart, Pie,
+  Cell,
+  XAxis, YAxis,
+  CartesianGrid,
+  Tooltip, Legend,
+  ResponsiveContainer,
+} from 'recharts'
 
 // Named exports — allow consumers to import individual primitives directly,
 // e.g. `import { interpolate } from 'montaj-overlay-runtime'`. Used by render's
@@ -16,6 +26,16 @@ export const useThreeFrame = makeUseThreeFrame('render')
 export const Canvas        = makeCanvas('render')
 export { Ph, FaSolid, FaBrands, FaIcon, THREE }
 export { makeUseThreeFrame, makeCanvas }
+export {
+  BarChart, Bar,
+  LineChart, Line,
+  PieChart, Pie,
+  Cell,
+  XAxis, YAxis,
+  CartesianGrid,
+  Tooltip, Legend,
+  ResponsiveContainer,
+}
 
 /**
  * Returns the full set of globals to inject into the overlay JSX evaluation
@@ -49,5 +69,14 @@ export function makeOverlayGlobals(context) {
     FaIcon,
     FaSolid,
     FaBrands,
+    // Charts (SVG, Recharts). Context-invariant: same components for render and preview.
+    BarChart, Bar,
+    LineChart, Line,
+    PieChart, Pie,
+    Cell,
+    XAxis, YAxis,
+    CartesianGrid,
+    Tooltip, Legend,
+    ResponsiveContainer,
   }
 }

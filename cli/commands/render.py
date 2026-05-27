@@ -10,6 +10,13 @@ def register(subparsers):
     p.add_argument("project", nargs="?", metavar="PROJECT", help="Path to project.json (default: ./project.json)")
     p.add_argument("--workers", metavar="N", type=int, help="Puppeteer worker count (default: CPU count)")
     p.add_argument("--clean",   action="store_true",   help="Remove intermediate files after render")
+    p.add_argument(
+        "--scale",
+        type=int,
+        choices=[1, 2, 3],
+        default=None,
+        help="High-DPI multiplier for carousel renders (1, 2, or 3). Ignored for video projects.",
+    )
     add_global_flags(p)  # adds --json, --out, --quiet
     p.set_defaults(func=handle)
 
@@ -27,4 +34,5 @@ def handle(args):
         workers=args.workers,
         clean=args.clean,
         montaj_root=MONTAJ_ROOT,
+        scale=args.scale,
     )

@@ -129,6 +129,7 @@ After generation, store the file under the project workspace (e.g. `<workspace>/
 Carousel overlays are **custom JSX written per project** — there is no built-in template library. Author each overlay you need (headline, subhead, callout, etc.) per the rules below.
 
 - For **text overlays** that the operator should be able to restyle from the editor toolbar (font / size / color / weight / case / alignment), follow `skills/editable-text/SKILL.md`. The canonical reference is `montaj_assets/render/templates/overlays/static-text/static-text.jsx`.
+- For **charts (`bar-chart`, `line-chart`, `pie-chart`)** — single-series bar, multi-series line, pie/donut. SVG-rendered via Recharts. Sized from the overlay element's w/h.
 - For **non-text overlays** (logos, decorative shapes, image-based overlays, stylized brand marks), follow `skills/write-overlay/SKILL.md` as before.
 
 Save the JSX under the project workspace (e.g. `<workspace>/overlays/headline.jsx`) and reference it by absolute path in `overlay.template`.

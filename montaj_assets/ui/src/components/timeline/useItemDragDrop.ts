@@ -25,6 +25,10 @@ export interface UseItemDragDropConfig {
   snapThresholdPx?: number // default 8
   /** Element used for getBoundingClientRect() → pixel-to-time conversion */
   scrollRef: React.RefObject<HTMLDivElement>
+  /** Timeline zoom factor — content width is zoom × scrollRef.width. Required so
+   *  pixel-to-time conversion matches the visible scale (without this, drag/resize
+   *  is `zoom`× too sensitive when zoomed in). */
+  zoomRef?: React.RefObject<number>
   draggedFlagRef?: React.MutableRefObject<boolean> // sets true during drag (click suppression)
 }
 
@@ -34,6 +38,7 @@ export function useItemDragDrop(config: UseItemDragDropConfig) {
     snapBoundaries,
     snapThresholdPx = 8,
     scrollRef,
+    zoomRef,
     draggedFlagRef,
   } = config
 
@@ -55,11 +60,12 @@ export function useItemDragDrop(config: UseItemDragDropConfig) {
     function computeResized(moveE: MouseEvent): Draggable {
       if (!scrollRef.current) return item
       const rect = scrollRef.current.getBoundingClientRect()
-      const dt = ((moveE.clientX - initX) / rect.width) * totalDuration
+      const contentWidth = rect.width * (zoomRef?.current ?? 1)
+      const dt = ((moveE.clientX - initX) / contentWidth) * totalDuration
       const raw = Math.max(0, Math.min(totalDuration, initTime + dt))
 
       // Snap to any boundary within threshold
-      const snapThreshold = (snapThresholdPx / rect.width) * totalDuration
+      const snapThreshold = (snapThresholdPx / contentWidth) * totalDuration
       let t = raw
       let bestDist = snapThreshold
       for (const b of snapBoundaries) {
@@ -131,14 +137,15 @@ export function useItemDragDrop(config: UseItemDragDropConfig) {
       if (draggedFlagRef) draggedFlagRef.current = true
 
       const rect = scrollRef.current?.getBoundingClientRect()
-      const dx = rect ? ((moveE.clientX - initX) / rect.width) * totalDuration : 0
+      const contentWidth = rect ? rect.width * (zoomRef?.current ?? 1) : 0
+      const dx = contentWidth ? ((moveE.clientX - initX) / contentWidth) * totalDuration : 0
       const dy = moveE.clientY - initY
 
       const rawStart = Math.max(0, Math.min(totalDuration - duration, initStart + dx))
       const rawEnd = rawStart + duration
 
       // Snap leading/trailing edge to nearest item edge within threshold
-      const snapThreshold = rect ? (snapThresholdPx / rect.width) * totalDuration : 0
+      const snapThreshold = contentWidth ? (snapThresholdPx / contentWidth) * totalDuration : 0
       let newStart = rawStart
       let newEnd = rawEnd
       let bestDist = snapThreshold
