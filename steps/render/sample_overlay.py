@@ -7,7 +7,14 @@ inline JSON on stdout instead of a bare PNG path.
 import os, sys, argparse, subprocess
 
 MONTAJ_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-SAMPLE_FRAME_JS = os.path.join(MONTAJ_ROOT, "montaj_assets", "render", "sample-frame.js")
+sys.path.insert(0, MONTAJ_ROOT)
+from cli.deps import render_runtime_dir
+
+# Resolve the render bundle at its runtime location, not the site-packages
+# source copy. In prod `montaj install ui` runs `npm install` into the build
+# cache (~/.cache/montaj/render); the site-packages copy has no node_modules,
+# so pointing node at it crashes with "Cannot find package 'puppeteer'".
+SAMPLE_FRAME_JS = os.path.join(render_runtime_dir(), "sample-frame.js")
 
 
 def main():

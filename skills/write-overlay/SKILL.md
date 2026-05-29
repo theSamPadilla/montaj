@@ -542,8 +542,9 @@ Use this tab to validate motion, timing, and asset rendering before committing t
 When a workflow calls for several overlays, write them concurrently — each JSX file is independent.
 
 1. Identify all overlays needed from the editing prompt and transcript
-2. Write each JSX file (parallelisable)
-3. Add all items to the overlay track in a single `project.json` update
+2. Write **every** JSX file first — author the whole set before sampling or persisting anything. Do **not** sample after each file; interleaving a Puppeteer sample between every write is slow and breaks your authoring flow.
+3. **Sample them all in one batch pass at the end** (see "Verify your overlays fit the canvas")
+4. Fix any overflow, then add all items to the overlay track in a single `project.json` update
 
 Common overlay set for a social reel:
 - Opening hook (0–3s) — text statement that earns the watch
@@ -571,13 +572,19 @@ Common overlay set for a social reel:
 
 ---
 
-## Verify your overlay fits the canvas — always sample after writing
+## Verify your overlays fit the canvas — one sample pass at the end
 
-After writing or editing any overlay JSX, run:
+**Write all of your overlay JSX first. Then sample them in a single batch pass — do not sample after each file.** Per-file sampling stalls authoring and spins up a fresh Puppeteer process each time; one pass at the end over the finished set is faster and just as safe, since nothing downstream consumes an overlay until you persist the whole batch to `project.json`.
+
+Once every JSX file is written, loop over them in one pass:
 
 ```
-montaj sample overlay <path-to-jsx> --measure --out /tmp/sample-check.png
+for f in overlays/*.jsx; do
+  montaj sample overlay "$f" --measure --google-fonts "<that overlay's googleFonts>" --out "/tmp/$(basename "$f" .jsx).png"
+done
 ```
+
+Pass each overlay's declared `googleFonts` (and representative `--props`) so the sample measures with the real render-time font — see the Syne case study below.
 
 The command renders the overlay through the same Puppeteer path the production renderer uses and returns a JSON object on stdout:
 
@@ -607,4 +614,4 @@ When the Montaj editor preview shows a layout that fits, but the rendered video 
 
 Display fonts like **Syne 800** are 60–70% wider than typical `sans-serif` fallbacks at the same `px` size. Concrete example: `"RECURSIVE"` at `fontSize: 160` measures ~933 px wide in fallback `sans-serif`, but ~1594 px wide in Syne 800 — 514 px of right-edge overflow on a 1080-wide canvas. The editor looked fine; the render was completely clipped.
 
-**Any time your overlay declares a `googleFonts` entry, run `montaj sample overlay --measure` before adding the item to `project.json`.** The preview cannot tell you whether the text fits in the render. The sample can.
+**Any overlay that declares a `googleFonts` entry must go through the end-of-authoring sample pass with `--measure` and that same `--google-fonts` spec, before you persist the batch to `project.json`.** The preview cannot tell you whether the text fits in the render. The sample can.
