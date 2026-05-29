@@ -91,7 +91,7 @@ test('dry-run: two unmuted video items produce amix filter', () => {
   }
   const result = encodeSegment(seg, '/tmp/test.mp4', { _dryRun: true })
   // Both items should contribute audio (two aresample filters)
-  const audioFilters = result.filterParts.filter(f => f.includes('aresample=48000'))
+  const audioFilters = result.filterParts.filter(f => f.includes('sample_rates=48000'))
   assert.equal(audioFilters.length, 2, 'both items should extract audio')
   // Should use amix to combine them
   assert.ok(
@@ -113,7 +113,7 @@ test('dry-run: muted item excluded from audio mix', () => {
   }
   const result = encodeSegment(seg, '/tmp/test.mp4', { _dryRun: true })
   // Only one audio extraction (the unmuted item)
-  const audioFilters = result.filterParts.filter(f => f.includes('aresample=48000'))
+  const audioFilters = result.filterParts.filter(f => f.includes('sample_rates=48000'))
   assert.equal(audioFilters.length, 1, 'only unmuted item should extract audio')
   // No amix needed — single source
   assert.ok(

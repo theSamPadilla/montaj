@@ -77,6 +77,14 @@ export function requireValidKey(key) {
   return key
 }
 
+/**
+ * Returns true when `key` is an HDR color space (HLG or PQ).
+ * Mirrors lib/types/colorspace.py::is_hdr — keep the two in sync.
+ */
+export function isHdr(key) {
+  return key === 'hdr_hlg' || key === 'hdr_pq'
+}
+
 export function detectFromTransfer(colorTransfer) {
   if (!colorTransfer) return DEFAULT_COLOR_SPACE
   for (const [key, spec] of Object.entries(COLOR_SPACE_SPECS)) {

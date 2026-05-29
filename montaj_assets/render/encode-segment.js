@@ -108,6 +108,174 @@ export function buildColorConversionFilter(srcKey, dstKey, hasZscaleFlag) {
   return ''
 }
 
+// ---------------------------------------------------------------------------
+// Shared filter helpers
+// Extracted so sample-frame.js can import and call them without duplicating
+// the filter-graph logic. Each helper returns { inputArgs, filterParts,
+// newVideoLabel }. Callers append inputArgs to their inputs array and push
+// filterParts into their filterParts array.
+// ---------------------------------------------------------------------------
+
+/**
+ * Build filter-graph parts for one image item.
+ *
+ * @param {object} item       — the image item from segment.items
+ * @param {number} vw         — canvas width  (pixels)
+ * @param {number} vh         — canvas height (pixels)
+ * @param {number} idx        — ffmpeg input index for this item
+ * @param {string} videoLabel — current composite label, e.g. '[canvas]'
+ * @param {number} duration   — segment duration in seconds (used for -t)
+ * @returns {{ inputArgs: string[], filterParts: string[], newVideoLabel: string }}
+ */
+export function buildImageItemFilterParts(item, vw, vh, idx, videoLabel, duration) {
+  const s       = item.scale ?? 1
+  const scaledW = Math.round(vw * s / 2) * 2
+  const scaledH = Math.round(vh * s / 2) * 2
+  const xPx     = Math.round(vw * (0.5 * (1 - s) + (item.offsetX ?? 0) / 100))
+  const yPx     = Math.round(vh * (0.5 * (1 - s) + (item.offsetY ?? 0) / 100))
+
+  const inputArgs = ['-loop', '1', '-t', String(duration), '-i', item.src]
+  const filterParts = []
+
+  filterParts.push(`[${idx}:v]scale=${scaledW}:${scaledH},format=rgba,setpts=PTS-STARTPTS[img${idx}]`)
+  let src = `[img${idx}]`
+  if (Math.abs((item.opacity ?? 1) - 1) > 0.001) {
+    filterParts.push(`${src}colorchannelmixer=aa=${item.opacity}[imgop${idx}]`)
+    src = `[imgop${idx}]`
+  }
+  filterParts.push(`${videoLabel}${src}overlay=x=${xPx}:y=${yPx}:shortest=0[iv${idx}]`)
+  const newVideoLabel = `[iv${idx}]`
+
+  return { inputArgs, filterParts, newVideoLabel }
+}
+
+/**
+ * Build filter-graph parts for one video clip item.
+ * Does NOT include the audio extraction step — that stays in the caller.
+ *
+ * @param {object} item             — the video item from segment.items
+ * @param {number} vw               — canvas width  (pixels)
+ * @param {number} vh               — canvas height (pixels)
+ * @param {number} idx              — ffmpeg input index for this item
+ * @param {string} videoLabel       — current composite label, e.g. '[canvas]'
+ * @param {object} opts
+ * @param {number}  opts.segStart         — segment.start (seconds)
+ * @param {number}  opts.duration         — segment duration (seconds)
+ * @param {string}  opts.projectColorSpace — e.g. 'sdr_bt709'
+ * @param {boolean} opts.zscaleAvailable  — whether ffmpeg has zscale
+ * @returns {{ inputArgs: string[], filterParts: string[], newVideoLabel: string }}
+ */
+export function buildVideoItemFilterParts(item, vw, vh, idx, videoLabel, opts) {
+  const { segStart, duration, projectColorSpace, zscaleAvailable } = opts
+
+  const s       = item.scale ?? 1
+  const scaledW = Math.round(vw * s / 2) * 2
+  const scaledH = Math.round(vh * s / 2) * 2
+  const xPx     = Math.round(vw * (0.5 * (1 - s) + (item.offsetX ?? 0) / 100))
+  const yPx     = Math.round(vh * (0.5 * (1 - s) + (item.offsetY ?? 0) / 100))
+
+  const inPt = item.inPoint ?? 0
+  const seekOffset = Math.max(0, segStart - item.start)
+  const actualIn = inPt + seekOffset
+
+  // ProRes 4444 (.mov from remove-bg) has alpha — use format=auto
+  const ovFmt = item.src.endsWith('.mov') ? ':format=auto' : ':format=yuv420'
+
+  const itemColorSpace = detectFromTransfer(item.colorTransfer)
+  const skipConversionForAlpha = item.remove_bg && item.nobg_src
+  const conversionFilter = skipConversionForAlpha
+    ? ''
+    : buildColorConversionFilter(itemColorSpace, projectColorSpace, zscaleAvailable)
+  const conversionStep = conversionFilter ? `${conversionFilter},` : ''
+
+  // -err_detect ignore_err + -max_error_rate 1.0: tolerate broken audio
+  // packets from iPhone .MOV sources (see encodeSegment for full comment).
+  const inputArgs = [
+    '-err_detect', 'ignore_err',
+    '-max_error_rate', '1.0',
+    '-ss', String(actualIn), '-t', String(duration), '-i', item.src,
+  ]
+  const filterParts = []
+
+  filterParts.push(
+    `[${idx}:v]setpts=PTS-STARTPTS,${conversionStep}` +
+    `scale=${scaledW}:${scaledH}:force_original_aspect_ratio=decrease,` +
+    `pad=${scaledW}:${scaledH}:(ow-iw)/2:(oh-ih)/2[vid${idx}]`
+  )
+  let src = `[vid${idx}]`
+  if (Math.abs((item.opacity ?? 1) - 1) > 0.001) {
+    filterParts.push(`${src}colorchannelmixer=aa=${item.opacity}[vidop${idx}]`)
+    src = `[vidop${idx}]`
+  }
+  filterParts.push(`${videoLabel}${src}overlay=x=${xPx}:y=${yPx}${ovFmt}:shortest=0[iv${idx}]`)
+  const newVideoLabel = `[iv${idx}]`
+
+  return { inputArgs, filterParts, newVideoLabel }
+}
+
+/**
+ * Build filter-graph parts for one JSX overlay (rendered as WebM/MKV with alpha).
+ *
+ * @param {object} ov         — overlay descriptor from segment.overlays
+ * @param {number} vw         — canvas width  (pixels)
+ * @param {number} vh         — canvas height (pixels)
+ * @param {number} ovIdx      — ffmpeg input index for this overlay
+ * @param {string} videoLabel — current composite label
+ * @param {number} segStart   — segment.start (seconds), used to compute seek offset
+ * @param {number} duration   — segment duration (seconds)
+ * @param {object} [opts]
+ * @param {string} [opts.inputFormatFlag='yuva420p'] — pixel-format conversion applied to
+ *   the overlay input before scale/composite. Default `yuva420p` is the production
+ *   render's setting — VP9 decoders may silently drop the alpha plane otherwise.
+ *   Callers operating on already-alpha-bearing inputs (e.g. the `sample-frame.js`
+ *   mini-composer, which feeds PNG screenshots not VP9) should pass `'rgba'`.
+ * @param {string} [opts.compositeFormatFlag='yuv420'] — `format=` flag on the final
+ *   overlay step. Default `yuv420` matches production (output is composited onto a
+ *   yuv420 video chain). Callers building PNG output should pass `'auto'`.
+ * @param {boolean} [opts.loopedInput=false] — when true, emit `-loop 1 -t <duration> -i`
+ *   input args instead of the default `-ss <seek> -t <duration> -i` pair. Use for
+ *   single-frame PNG overlay inputs (sample-frame.js's overlay path); leave false for
+ *   VP9/MKV overlay segments coming from the production renderer chunk pipeline.
+ * @returns {{ inputArgs: string[], filterParts: string[], newVideoLabel: string }}
+ */
+export function buildOverlayFilterParts(ov, vw, vh, ovIdx, videoLabel, segStart, duration, opts = {}) {
+  const inputFormatFlag     = opts.inputFormatFlag     ?? 'yuva420p'
+  const compositeFormatFlag = opts.compositeFormatFlag ?? 'yuv420'
+  const loopedInput         = opts.loopedInput         ?? false
+
+  const inputArgs = loopedInput
+    ? ['-loop', '1', '-t', String(duration), '-i', ov.webmPath]
+    : ['-ss', String(Math.max(0, segStart - ov.startSeconds)), '-t', String(duration), '-i', ov.webmPath]
+  const filterParts = []
+
+  // Overlay positioning: pixelRatio upscaling + user scale + offset
+  // Matches current compose.js:244-263
+  const ovScale    = ov.scale ?? 1
+  const ovPr       = ov.pixelRatio ?? 1
+  const totalScale = ovScale * ovPr
+  const ovXPx      = Math.round(vw * (0.5 * (1 - ovScale) + (ov.offsetX ?? 0) / 100))
+  const ovYPx      = Math.round(vh * (0.5 * (1 - ovScale) + (ov.offsetY ?? 0) / 100))
+
+  // Force yuva420p (or caller-specified format) — VP9 decoders may silently drop
+  // the alpha plane on the production path; PNG-based callers pass 'rgba' to
+  // avoid an unnecessary colorspace bounce.
+  filterParts.push(`[${ovIdx}:v]format=${inputFormatFlag}[ovfmt${ovIdx}]`)
+  let ovSrc = `[ovfmt${ovIdx}]`
+
+  // Apply pixelRatio + scale
+  if (Math.abs(totalScale - 1) > 0.001) {
+    filterParts.push(`${ovSrc}scale=iw*${totalScale}:ih*${totalScale}[ovsc${ovIdx}]`)
+    ovSrc = `[ovsc${ovIdx}]`
+  }
+
+  filterParts.push(
+    `${videoLabel}${ovSrc}overlay=x=${ovXPx}:y=${ovYPx}:format=${compositeFormatFlag}:shortest=0[vov${ovIdx}]`
+  )
+  const newVideoLabel = `[vov${ovIdx}]`
+
+  return { inputArgs, filterParts, newVideoLabel }
+}
+
 /**
  * @param {object} segment — from planSegments(); may carry a colorSpace key
  *   (project working color space). Defaults to sdr_bt709 when missing.
@@ -146,35 +314,16 @@ export function encodeSegment(segment, outputPath, opts = {}) {
   // --- Step 2: Visual items layered in trackIdx order (lower = background) ---
   for (let ii = 0; ii < items.length; ii++) {
     const item = items[ii]
-    const s       = item.scale ?? 1
-    const scaledW = Math.round(vw * s / 2) * 2
-    const scaledH = Math.round(vh * s / 2) * 2
-    const xPx     = Math.round(vw * (0.5 * (1 - s) + (item.offsetX ?? 0) / 100))
-    const yPx     = Math.round(vh * (0.5 * (1 - s) + (item.offsetY ?? 0) / 100))
-    const idx     = inputIdx
+    const idx  = inputIdx
 
     if (isImageItem(item)) {
-      inputs.push('-loop', '1', '-t', String(duration), '-i', item.src)
-      filterParts.push(`[${idx}:v]scale=${scaledW}:${scaledH},format=rgba,setpts=PTS-STARTPTS[img${idx}]`)
-      let src = `[img${idx}]`
-      if (Math.abs((item.opacity ?? 1) - 1) > 0.001) {
-        filterParts.push(`${src}colorchannelmixer=aa=${item.opacity}[imgop${idx}]`)
-        src = `[imgop${idx}]`
-      }
-      filterParts.push(`${videoLabel}${src}overlay=x=${xPx}:y=${yPx}:shortest=0[iv${idx}]`)
-      videoLabel = `[iv${idx}]`
+      const { inputArgs, filterParts: fp, newVideoLabel } =
+        buildImageItemFilterParts(item, vw, vh, idx, videoLabel, duration)
+      inputs.push(...inputArgs)
+      filterParts.push(...fp)
+      videoLabel = newVideoLabel
     } else {
-      // Video clip — seek to correct position within source
-      const inPt = item.inPoint ?? 0
-      const seekOffset = Math.max(0, start - item.start)
-      const actualIn = inPt + seekOffset
-      // Use -t (duration) not -to (absolute timestamp). If the source file is shorter
-      // than the timeline slot (e.g. 24fps clip normalized to 30fps loses ~0.8s),
-      // -to would read past EOF and ffmpeg holds the last frame. -t stops after
-      // reading `duration` seconds of content, or at EOF — whichever comes first.
-      // ProRes 4444 (.mov from remove-bg) has alpha — use format=auto
-      const ovFmt = item.src.endsWith('.mov') ? ':format=auto' : ':format=yuv420'
-
+      // Video clip
       // Per-item color conversion: when the source's color space differs from
       // the project's, inject the conversion filter (tonemap / inverse-stretch /
       // HDR cross). item.colorTransfer is stamped during render.js's videoItems
@@ -190,47 +339,16 @@ export function encodeSegment(segment, outputPath, opts = {}) {
       // still tagged HLG/PQ at the container level, so players treat the cutout
       // pixels as SDR-on-HDR-canvas (slightly lifted highlights but watchable).
       // Sources that aren't bg-removed go through the normal conversion path.
-      const itemColorSpace = detectFromTransfer(item.colorTransfer)
-      const skipConversionForAlpha = item.remove_bg && item.nobg_src
-      const conversionFilter = skipConversionForAlpha
-        ? ''
-        : buildColorConversionFilter(itemColorSpace, projectColorSpace, zscaleAvailable)
-      const conversionStep = conversionFilter ? `${conversionFilter},` : ''
-
-      // -err_detect ignore_err + -max_error_rate 1.0: tolerate broken audio
-      // packets from iPhone .MOV sources, which embed Apple Positional Audio
-      // Codec (apac) but tag it as AAC. ffmpeg's AAC decoder mis-decodes apac
-      // packets and accumulates errors; by default it aborts the encode when
-      // the rate exceeds 0.667. We accept partial audio corruption over a
-      // failed render — the alternative is no output at all.
-      inputs.push(
-        '-err_detect', 'ignore_err',
-        '-max_error_rate', '1.0',
-        '-ss', String(actualIn), '-t', String(duration), '-i', item.src,
-      )
-      // Aspect-preserving fit:
-      //   - scale=...:force_original_aspect_ratio=decrease scales the source so
-      //     it fits WITHIN scaledW × scaledH preserving the source's native
-      //     aspect (so portrait sources don't get squashed into landscape
-      //     canvases or vice versa).
-      //   - pad=...:(ow-iw)/2:(oh-ih)/2 centers the scaled-down result inside
-      //     the item's full scaledW × scaledH box, padding the empty space
-      //     with black. For matching-aspect sources this is a no-op (decrease
-      //     leaves dimensions equal; pad has nothing to add).
-      // Result: portrait clips on landscape canvases pillarbox; landscape clips
-      // on portrait canvases letterbox; matching aspects are unaffected.
-      filterParts.push(
-        `[${idx}:v]setpts=PTS-STARTPTS,${conversionStep}` +
-        `scale=${scaledW}:${scaledH}:force_original_aspect_ratio=decrease,` +
-        `pad=${scaledW}:${scaledH}:(ow-iw)/2:(oh-ih)/2[vid${idx}]`
-      )
-      let src = `[vid${idx}]`
-      if (Math.abs((item.opacity ?? 1) - 1) > 0.001) {
-        filterParts.push(`${src}colorchannelmixer=aa=${item.opacity}[vidop${idx}]`)
-        src = `[vidop${idx}]`
-      }
-      filterParts.push(`${videoLabel}${src}overlay=x=${xPx}:y=${yPx}${ovFmt}:shortest=0[iv${idx}]`)
-      videoLabel = `[iv${idx}]`
+      const { inputArgs, filterParts: fp, newVideoLabel } =
+        buildVideoItemFilterParts(item, vw, vh, idx, videoLabel, {
+          segStart: start,
+          duration,
+          projectColorSpace,
+          zscaleAvailable,
+        })
+      inputs.push(...inputArgs)
+      filterParts.push(...fp)
+      videoLabel = newVideoLabel
 
       // Audio from ALL unmuted video items — collected here, mixed in Step 5.
       // In dry-run mode, skip the ffprobe check (file may not exist) and assume audio present.
@@ -255,32 +373,12 @@ export function encodeSegment(segment, outputPath, opts = {}) {
 
   // --- Step 3: Overlay + caption inputs (captions already sorted last by planSegments) ---
   for (const ov of overlays) {
-    const ovSeekOffset = Math.max(0, start - ov.startSeconds)
-    inputs.push('-ss', String(ovSeekOffset), '-t', String(duration), '-i', ov.webmPath)
     const ovIdx = inputIdx
-
-    // Overlay positioning: pixelRatio upscaling + user scale + offset
-    // Matches current compose.js:244-263
-    const ovScale     = ov.scale ?? 1
-    const ovPr        = ov.pixelRatio ?? 1
-    const totalScale  = ovScale * ovPr
-    const ovXPx       = Math.round(vw * (0.5 * (1 - ovScale) + (ov.offsetX ?? 0) / 100))
-    const ovYPx       = Math.round(vh * (0.5 * (1 - ovScale) + (ov.offsetY ?? 0) / 100))
-
-    // Force yuva420p — VP9 decoders may silently drop the alpha plane
-    filterParts.push(`[${ovIdx}:v]format=yuva420p[ovfmt${ovIdx}]`)
-    let ovSrc = `[ovfmt${ovIdx}]`
-
-    // Apply pixelRatio + scale
-    if (Math.abs(totalScale - 1) > 0.001) {
-      filterParts.push(`${ovSrc}scale=iw*${totalScale}:ih*${totalScale}[ovsc${ovIdx}]`)
-      ovSrc = `[ovsc${ovIdx}]`
-    }
-
-    filterParts.push(
-      `${videoLabel}${ovSrc}overlay=x=${ovXPx}:y=${ovYPx}:format=yuv420:shortest=0[vov${ovIdx}]`
-    )
-    videoLabel = `[vov${ovIdx}]`
+    const { inputArgs, filterParts: fp, newVideoLabel } =
+      buildOverlayFilterParts(ov, vw, vh, ovIdx, videoLabel, start, duration)
+    inputs.push(...inputArgs)
+    filterParts.push(...fp)
+    videoLabel = newVideoLabel
     inputIdx++
   }
 

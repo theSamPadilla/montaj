@@ -30,7 +30,7 @@ def main():
     from cli.commands import (
         run, serve, render, workflow, step,
         fetch, profile,
-        probe, snapshot,
+        probe, snapshot, sample,
         filler, waveform_trim, rm_nonspeech, materialize_cut, resize,
         normalize, extract_audio,
         transcribe, caption, lyrics_sync, lyrics_render, stem_separation,
@@ -86,6 +86,7 @@ def main():
     fetch.register(subparsers)
     profile.register(subparsers)
     render.register(subparsers)
+    sample.register(subparsers)
     workflow.register(subparsers)
     step.register(subparsers)
     probe.register(subparsers)

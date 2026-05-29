@@ -92,9 +92,30 @@ interface CustomOverlayProps {
   frame: number
   fps: number
   durationFrames: number
+  googleFonts?: string[]
 }
 
-function CustomOverlay({ src, props, frame, fps, durationFrames }: CustomOverlayProps) {
+// Track Google Fonts URLs already injected so we don't add the same <link>
+// twice when multiple overlays declare overlapping fonts. Keyed by the full
+// stylesheet URL — the same URL never produces a duplicate fetch from
+// Chromium regardless, but the duplicate <link> tags would still clutter
+// document.head across long editing sessions.
+const __injectedFontUrls = new Set<string>()
+
+function ensureGoogleFontsLoaded(googleFonts: string[] | undefined) {
+  if (!googleFonts?.length) return
+  // Match the format bundle.js uses for the render pipeline so preview and
+  // render fetch identical CSS (and identical glyphs / metrics).
+  const url = `https://fonts.googleapis.com/css2?${googleFonts.map(f => `family=${f}`).join('&')}&display=swap`
+  if (__injectedFontUrls.has(url)) return
+  __injectedFontUrls.add(url)
+  const link = document.createElement('link')
+  link.rel = 'stylesheet'
+  link.href = url
+  document.head.appendChild(link)
+}
+
+function CustomOverlay({ src, props, frame, fps, durationFrames, googleFonts }: CustomOverlayProps) {
   const [factory, setFactory] = useState<OverlayFactory | null>(null)
   const [error, setError]     = useState<string | null>(null)
 
@@ -106,6 +127,12 @@ function CustomOverlay({ src, props, frame, fps, durationFrames }: CustomOverlay
   }, [src])
 
   useEffect(() => { compile() }, [compile])
+
+  // Inject Google Fonts declared on the overlay item so the preview renders
+  // with the same font metrics as the renderer (bundle.js does the same in
+  // generateHtml). Without this, preview falls back to sans-serif and authors
+  // get a misleadingly narrow preview of text that will overflow at render.
+  useEffect(() => { ensureGoogleFontsLoaded(googleFonts) }, [googleFonts])
 
   useEffect(() => {
     const es = new EventSource(`/api/files/stream?path=${encodeURIComponent(src)}`)
@@ -415,6 +442,7 @@ export default function OverlayItemsLayer({
                       frame={frame}
                       fps={fps}
                       durationFrames={durationFrames}
+                      googleFonts={item.googleFonts}
                     />
                   </OverlayErrorBoundary>
                 </div>

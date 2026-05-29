@@ -1,0 +1,32 @@
+{
+  "name": "sample_frame",
+  "description": "Render a fully composited project frame at a given timestamp to PNG (video + image items + active overlay JSXs, no audio).",
+  "input": {
+    "type": "project",
+    "description": "Absolute path to project.json"
+  },
+  "output": {
+    "type": "image",
+    "description": "PNG file at the requested output path (defaults to <project_dir>/render/samples/frame-<at>s.png)"
+  },
+  "params": [
+    {
+      "name": "project",
+      "type": "path",
+      "required": true,
+      "description": "Absolute path to project.json"
+    },
+    {
+      "name": "at",
+      "type": "float",
+      "required": true,
+      "description": "Timestamp in seconds to sample"
+    },
+    {
+      "name": "out",
+      "type": "path",
+      "required": false,
+      "description": "Output PNG path. Defaults to <project_dir>/render/samples/frame-<at>s.png"
+    }
+  ]
+}

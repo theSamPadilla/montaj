@@ -16,7 +16,7 @@ import { spawnSync, spawn } from 'child_process'
 
 import { bundleComponent, cleanupBundle } from './bundle.js'
 import { renderAllSegments }              from './renderer.js'
-import { compose }                        from './compose.js'
+import { compose, embedThumbnail }        from './compose.js'
 import { requireValidKey, detectFromTransfer, smartDetect, DEFAULT_COLOR_SPACE } from './color-space.js'
 
 const __dirname  = dirname(fileURLToPath(import.meta.url))
@@ -156,7 +156,7 @@ async function main(projectPath, { out, workers, clean }) {
   rmSync(segDir, { recursive: true, force: true })
   mkdirSync(segDir, { recursive: true })
 
-  const outputPath = out ? resolve(out) : join(renderDir, 'final.mp4')
+  const outputPath = out ? resolve(out) : join(renderDir, `${safeFilename(projectJson.name)}.mp4`)
 
   // Early exit: ffmpeg drawtext path — bypass Puppeteer, delegate to lyrics_render.py
   if (projectJson.renderMode === 'ffmpeg-drawtext') {
@@ -209,6 +209,10 @@ async function main(projectPath, { out, workers, clean }) {
     if (result.status !== 0) {
       fail('lyrics_render_failed', result.stderr?.trim() || 'lyrics_render.py failed')
     }
+
+    // lyrics_render.py is pure SDR (drawtext over solid colour or SDR bg video);
+    // pass the project's setting if any, helper treats unset as SDR.
+    embedThumbnail(outputPath, settings.colorSpace ?? null)
 
     process.stdout.write(outputPath + '\n')
     return
@@ -337,7 +341,7 @@ async function main(projectPath, { out, workers, clean }) {
     workDirs.push(workDir)
   }
 
-  const renderedSegments = await renderAllSegments(segmentSpecs, { workers })
+  const renderedSegments = await renderAllSegments(segmentSpecs, { workers, colorSpace: projectColorSpace })
 
   // Attach positioning offsets back onto rendered segments so compose.js can apply
   // x/y coordinates. pixelRatio is stamped after base video resolution is detected below.
@@ -814,6 +818,19 @@ async function pMap(items, mapper, concurrency) {
 // ---------------------------------------------------------------------------
 // Utilities
 // ---------------------------------------------------------------------------
+
+// Derive a filesystem-safe basename (no extension) from a project name.
+// Strips path separators, reserved chars, and control chars, collapses
+// whitespace, and trims leading/trailing dots+spaces. Falls back to 'final'
+// when the name is missing or sanitizes to nothing.
+function safeFilename(name) {
+  if (!name) return 'final'
+  const cleaned = String(name)
+    .replace(/[\/\\:*?"<>|\x00-\x1f]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .replace(/^[.\s]+|[.\s]+$/g, '')
+  return cleaned || 'final'
+}
 
 function log(msg) {
   process.stderr.write(`${C.cyan}[montaj render]${C.reset} ${msg}\n`)

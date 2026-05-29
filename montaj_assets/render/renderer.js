@@ -7,12 +7,22 @@
  * then reassembled via ffmpeg concat.
  */
 import puppeteer from 'puppeteer'
-import { mkdirSync, rmSync, writeFileSync, readFileSync, existsSync } from 'fs'
-import { join, dirname } from 'path'
+import { mkdirSync, rmSync, writeFileSync, readFileSync, existsSync, statSync } from 'fs'
+import { join, dirname, basename, extname } from 'path'
+import { fileURLToPath } from 'url'
 import { spawnSync, spawn } from 'child_process'
 import { tmpdir, homedir } from 'os'
 import { randomBytes } from 'crypto'
 import os from 'os'
+import { isHdr } from './color-space.js'
+
+const __dirname = dirname(fileURLToPath(import.meta.url))
+// MONTAJ_ROOT is two levels above montaj_assets/render/ (i.e. the Python project root).
+const MONTAJ_ROOT = process.env.MONTAJ_ROOT || join(__dirname, '..', '..')
+const PYTHON = process.env.MONTAJ_PYTHON || 'python3'
+
+// Deduplicate remote-URL warnings within this module's lifetime.
+const warnedHosts = new Set()
 
 const DEFAULT_CHUNK_SIZE = 1000
 const FFMPEG_TIMEOUT_MS  = 600_000
@@ -42,6 +52,7 @@ export async function renderAllSegments(segments, config = {}) {
   const chunkSize  = config.chunkSize ?? userConfig.render?.chunkSize ?? DEFAULT_CHUNK_SIZE
 
   // Expand segments into per-chunk jobs
+  const colorSpace = config.colorSpace ?? null
   const jobs = []
   for (const seg of segments) {
     const opaque = seg.opaque ?? false
@@ -50,10 +61,10 @@ export async function renderAllSegments(segments, config = {}) {
       for (let i = 0; i < numChunks; i++) {
         const frameStart = i * chunkSize
         const frameEnd   = Math.min(frameStart + chunkSize, seg.frameCount)
-        jobs.push({ ...seg, opaque, frameStart, frameEnd, chunkIndex: i, totalChunks: numChunks })
+        jobs.push({ ...seg, opaque, colorSpace, frameStart, frameEnd, chunkIndex: i, totalChunks: numChunks })
       }
     } else {
-      jobs.push({ ...seg, opaque, frameStart: 0, frameEnd: seg.frameCount, chunkIndex: 0, totalChunks: 1 })
+      jobs.push({ ...seg, opaque, colorSpace, frameStart: 0, frameEnd: seg.frameCount, chunkIndex: 0, totalChunks: 1 })
     }
   }
 
@@ -135,7 +146,7 @@ export async function renderAllSegments(segments, config = {}) {
 // ---------------------------------------------------------------------------
 
 async function renderChunk(browser, job) {
-  const { id, htmlPath, fps, width, height, frameStart, frameEnd, chunkIndex, outputPath } = job
+  const { id, htmlPath, fps, width, height, frameStart, frameEnd, chunkIndex, outputPath, colorSpace } = job
 
   const frameDir = join(tmpdir(), `montaj-frames-${id}-c${chunkIndex}-${randomBytes(4).toString('hex')}`)
   mkdirSync(frameDir, { recursive: true })
@@ -148,7 +159,118 @@ async function renderChunk(browser, job) {
   page.on('pageerror', err => pageErrors.push(err.message))
   page.on('console', msg => { if (msg.type() === 'error') pageErrors.push(msg.text()) })
 
-  // Load the bundled component page (file:// URL)
+  // HDR image interception: rewrite sRGB image fetches to pre-converted HDR versions
+  // so that images embedded in JSX overlays composite correctly against HDR footage.
+  // Only active for HDR projects — SDR renders are byte-identical to v2.5.7.
+  if (isHdr(colorSpace)) {
+    await page.setRequestInterception(true)
+    page.on('request', async (request) => {
+      // Defensive wrapper: a bug here must never deadlock the render.
+      try {
+        const resourceType = request.resourceType()
+        // Pass through non-image resources unchanged.
+        if (resourceType !== 'image') {
+          request.continue()
+          return
+        }
+
+        const url = request.url()
+
+        // SVG: vector, no colour conversion meaningful.
+        // We use URL extension matching because the MIME type isn't known at
+        // request time (only from the response headers we haven't received yet).
+        if (/\.svg$/i.test(url)) {
+          request.continue()
+          return
+        }
+
+        // Remote URLs (not file://): pass through with a one-time per-host warning.
+        if (!url.startsWith('file://')) {
+          try {
+            const host = new URL(url).hostname
+            if (!warnedHosts.has(host)) {
+              warnedHosts.add(host)
+              process.stderr.write(
+                `[montaj render] WARNING: HDR project references remote image from ${host} — `
+                + `passing through unchanged (will render as sRGB reinterpreted as HDR).\n`
+              )
+            }
+          } catch { /* malformed URL — just continue */ }
+          request.continue()
+          return
+        }
+
+        // Local file:// image — decode path (handle percent-encoding).
+        // file:// URLs from bundle.js use encodeURI so decode it back.
+        let srcPath
+        try {
+          srcPath = decodeURIComponent(url.replace(/^file:\/\//, ''))
+        } catch {
+          request.continue()
+          return
+        }
+
+        if (!existsSync(srcPath)) {
+          request.continue()
+          return
+        }
+
+        // Compute deterministic cache path: <stem>_hdr_<colorspace>.png
+        // e.g. /abs/logo.png → /abs/logo_hdr_hlg.png
+        const dir = dirname(srcPath)
+        const stem = basename(srcPath, extname(srcPath))
+        // colorSpace key already starts with 'hdr_' (e.g. 'hdr_hlg'), so the
+        // suffix '_${colorSpace}' produces e.g. 'logo_hdr_hlg.png' as specified.
+        const outPath = join(dir, `${stem}_${colorSpace}.png`)
+
+        // Try cache hit first. We replicate the Python module's mtime check
+        // here rather than spawning Python just to short-circuit — but the
+        // check must compare to the SOURCE mtime, not just check existence,
+        // otherwise replacing the source PNG on disk between renders would
+        // silently serve a stale converted file.
+        if (existsSync(outPath) && statSync(outPath).mtimeMs >= statSync(srcPath).mtimeMs) {
+          const body = readFileSync(outPath)
+          request.respond({ status: 200, contentType: 'image/png', body })
+          return
+        }
+
+        // Cache miss — spawn lib.normalize_image asynchronously (not spawnSync)
+        // so the event loop stays unblocked while ffmpeg runs.
+        const converted = await spawnNormalizeImage(srcPath, colorSpace, outPath)
+        if (converted) {
+          const body = readFileSync(outPath)
+          request.respond({ status: 200, contentType: 'image/png', body })
+        } else {
+          // Conversion failed — degrade to the v2.5.7 reinterpret-as-HDR path
+          // rather than breaking the render.
+          request.continue()
+        }
+      } catch (err) {
+        process.stderr.write(`[montaj render] WARNING: HDR image interceptor threw — falling back: ${err.message}\n`)
+        try { request.continue() } catch { /* page may have closed */ }
+      }
+    })
+  }
+
+  // Load the bundled component page (file:// URL).
+  //
+  // Use 'networkidle0' (not 'load'). The shim's __waitForFonts() inside
+  // __setFrame relies on document.fonts.ready, which only reflects woff2
+  // fetches that are *in flight at the time of access*. Google Fonts woff2
+  // fetches are deferred by Chromium until something in the rendered tree
+  // actually uses the font — i.e. until React has committed its initial
+  // mount. With 'load', the screenshot loop can start (and call __setFrame)
+  // before that commit has flushed, so document.fonts.ready resolves
+  // immediately and the first frames paint with the CSS fallback font
+  // (which has wider metrics — text overflows the viewport).
+  //
+  // 'networkidle0' gives Chromium 500ms of network silence to complete the
+  // CSS link load → font-face registration → react commit → woff2 fetch
+  // → fonts.ready cascade before we touch the page. The interceptor's
+  // request.respond() calls do interact with the network-idle heuristic
+  // but only on file:// image fetches we replace — remote font fetches
+  // (the load-bearing case for networkidle0) go through request.continue()
+  // and are unaffected.
   await page.goto(`file://${htmlPath}`, { waitUntil: 'networkidle0' })
 
   // For transparent overlays, force-clear any background the OS/browser might add.
@@ -268,6 +390,44 @@ function spawnAsync(cmd, args, errorPrefix) {
       else resolve()
     })
     proc.on('error', reject)
+  })
+}
+
+/**
+ * Spawn `lib.normalize_image` to convert a local sRGB PNG to an HDR-encoded PNG.
+ * Returns true on success, false on failure (so the caller can fall back gracefully).
+ * Uses async spawn — does NOT block the event loop.
+ */
+function spawnNormalizeImage(srcPath, colorSpace, outPath) {
+  return new Promise((resolve) => {
+    let stderr = ''
+    let proc
+    try {
+      proc = spawn(PYTHON, [
+        '-m', 'lib.normalize_image',
+        '--input', srcPath,
+        '--color-space', colorSpace,
+        '--out', outPath,
+      ], { cwd: MONTAJ_ROOT })
+    } catch (err) {
+      process.stderr.write(`[montaj render] WARNING: failed to spawn lib.normalize_image: ${err.message}\n`)
+      resolve(false)
+      return
+    }
+    proc.stderr.on('data', d => { stderr += d.toString('utf8') })
+    proc.on('close', (code) => {
+      if (code !== 0) {
+        const detail = stderr.trim().slice(-300)
+        process.stderr.write(`[montaj render] WARNING: lib.normalize_image failed for ${srcPath} — ${detail || 'no stderr'}\n`)
+        resolve(false)
+      } else {
+        resolve(true)
+      }
+    })
+    proc.on('error', (err) => {
+      process.stderr.write(`[montaj render] WARNING: lib.normalize_image spawn error: ${err.message}\n`)
+      resolve(false)
+    })
   })
 }
 

@@ -104,12 +104,86 @@ export async function compose({
     rmSync(preMixPath, { force: true })
   }
 
+  // 5. Embed a poster frame as an MP4 attached_pic stream so Finder, QuickTime,
+  //    iMessage, Slack, and social platforms show a thumbnail instead of a
+  //    black-or-blank placeholder.
+  embedThumbnail(outputPath, projectColorSpace)
+
   // Cleanup segment files
   if (!process.env.MONTAJ_KEEP_SEGMENTS) {
     rmSync(segDir, { recursive: true, force: true })
   }
 
   return outputPath
+}
+
+/**
+ * Embed a poster image (MP4 attached_pic stream) into the final video so
+ * file browsers and social platforms show a thumbnail before playback.
+ *
+ * Two-step: (1) extract one JPEG frame at 1.0s, (2) re-mux video+audio+jpg
+ * with -disposition:v:1 attached_pic. Both passes stream-copy AV; the only
+ * encode cost is the single JPEG. Total runtime ~1s on any sane host.
+ *
+ * Failure is non-fatal: a missing thumbnail is far better than failing an
+ * otherwise-good render. On any error we log and leave outputPath untouched.
+ */
+export function embedThumbnail(outputPath, colorSpace) {
+  const tmpJpg = outputPath + '.thumb.jpg'
+  const tmpMp4 = outputPath.replace(/(\.\w+)$/, `.thumb.${randomBytes(4).toString('hex')}$1`)
+
+  // HDR projects (HLG / PQ) must tonemap before the JPEG encode. JPEG is sRGB
+  // by definition — handing it raw HLG/PQ Y'CbCr produces a washed-out,
+  // colour-skewed poster on every viewer because the gamma assumption is wrong.
+  // zscale (libzimg) is already required for the HDR encode path, so it's safe
+  // to assume present here when colorSpace is HDR.
+  const vf = (colorSpace === 'hdr_hlg' || colorSpace === 'hdr_pq')
+    ? `zscale=t=linear:npl=100,format=gbrpf32le,zscale=p=bt709:t=bt709:m=bt709:r=tv,format=yuv420p`
+    : null
+
+  function extractAt(seekSeconds) {
+    const args = ['-y', '-v', 'error', '-ss', String(seekSeconds), '-i', outputPath, '-frames:v', '1']
+    if (vf) args.push('-vf', vf)
+    args.push('-q:v', '2', tmpJpg)
+    return spawnSync('ffmpeg', args, { encoding: 'utf8', timeout: FFMPEG_TIMEOUT_MS })
+  }
+
+  // Try 1.0s first (past most fade-ins). If that fails (e.g. video shorter
+  // than 1.0s, decoder error), retry at 0 — every valid video has a frame 0.
+  let extract = extractAt(1.0)
+  if (extract.status !== 0) {
+    rmSync(tmpJpg, { force: true })
+    extract = extractAt(0)
+  }
+  if (extract.status !== 0) {
+    clog(`thumbnail extract failed (skipping): ${(extract.stderr || '').trim().slice(-300)}`)
+    rmSync(tmpJpg, { force: true })
+    return
+  }
+
+  // -disposition:v:1 attached_pic flags the JPEG as the cover/poster rather
+  // than a second video track. Without it, players treat the file as having
+  // two video streams and either reject it or autoplay the JPEG as a 1-frame
+  // stuck-frame on a separate track.
+  const mux = spawnSync('ffmpeg', [
+    '-y', '-v', 'error',
+    '-i', outputPath,
+    '-i', tmpJpg,
+    '-map', '0', '-map', '1',
+    '-c', 'copy',
+    '-disposition:v:1', 'attached_pic',
+    '-movflags', '+faststart',
+    tmpMp4,
+  ], { encoding: 'utf8', timeout: FFMPEG_TIMEOUT_MS })
+
+  rmSync(tmpJpg, { force: true })
+  if (mux.status !== 0) {
+    clog(`thumbnail mux failed (skipping): ${(mux.stderr || '').trim().slice(-300)}`)
+    rmSync(tmpMp4, { force: true })
+    return
+  }
+  renameSync(tmpMp4, outputPath)
+  clog('attached poster thumbnail')
 }
 
 function concatSegments(paths, outputPath) {

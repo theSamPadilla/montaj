@@ -723,6 +723,19 @@ Caption data (segments + word timestamps) is always inlined in the track — nev
 
 **For JSX authoring details** (globals, `interpolate`, `spring`, rules, examples) — see `skills/write-overlay/SKILL.md`.
 
+#### HDR image handling in overlay JSX
+
+For HDR projects (`hdr_hlg`, `hdr_pq`), images embedded inside overlay JSX — any `<img src="file://...">`, CSS `background-image: url(...)`, etc. — are intercepted at the Puppeteer layer before the page loads. `renderChunk()` in `montaj_assets/render/renderer.js` enables `page.setRequestInterception(true)` when the project color space is HDR; local `file://` image fetches are caught, the source PNG is converted to an HDR-encoded 8-bit RGBA PNG by `lib/normalize_image.py` (applying a `zscale`-based transfer-curve conversion + 2x linear brightness boost to match overlay text brightness), and the converted bytes are returned in the intercepted response. Converted files are cached alongside the source as `<stem>_<colorspace>.png` and invalidated by mtime, so each unique image only pays the conversion cost on first render.
+
+This split is intentional:
+
+- **Images inside overlay JSX** — converted via the interceptor (this path goes through Puppeteer's screenshot framebuffer, so the converted HDR pixel values reach encode-segment correctly).
+- **Overlay text, shapes, captions, and SVG** — not converted; they stay on the sRGB-reinterpreted-as-HDR path that was deliberately kept in v2.5.7 for its bright, punchy output.
+- **Tracks-level `{type: 'image'}` items** — not converted in v1; they flow through encode-segment's existing image branch. The converter (`lib/normalize_image.py`) is fully reusable for this path if it becomes a real complaint.
+- **SDR projects** — the interceptor is never enabled; no Python subprocess is spawned; render output is byte-identical to v2.5.7.
+
+SVG image references and remote (`https://`) URLs are passed through unchanged (remote URLs emit a one-time per-host stderr warning). On any conversion failure the interceptor degrades gracefully to `request.continue()` rather than aborting the render.
+
 ---
 
 ## Output Convention

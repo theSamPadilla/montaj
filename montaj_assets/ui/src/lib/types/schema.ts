@@ -74,6 +74,7 @@ export interface VisualItem {
   rotation?: number       // degrees, clockwise
   opaque?: boolean        // legacy boolean kept for old overlay items
   props?: Record<string, unknown>  // overlay type only
+  googleFonts?: string[]  // overlay type only — Google Fonts family specs (e.g. ["Syne:wght@800"])
   remove_bg?: boolean     // video type only
   nobg_src?: string         // video type only — ProRes 4444 .mov for final render
   nobg_preview_src?: string // video type only — VP9 WebM with alpha for browser preview

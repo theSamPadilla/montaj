@@ -39,6 +39,11 @@ SPECS: dict[ColorSpaceKey, ColorSpaceSpec] = {
 }
 
 
+def is_hdr(key: str) -> bool:
+    """True if key is an HDR color space (hlg or pq)."""
+    return key in ("hdr_hlg", "hdr_pq")
+
+
 def detect_from_transfer(color_transfer: str | None) -> ColorSpaceKey:
     """Map a ffprobe color_transfer value to its color space key. Unknown/None → SDR."""
     if not color_transfer:

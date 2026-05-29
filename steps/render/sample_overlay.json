@@ -1,0 +1,62 @@
+{
+  "name": "sample_overlay",
+  "description": "Render one frame of an overlay JSX to PNG via Puppeteer; optionally return per-element bounding-box and overflow measurements as JSON.",
+  "input": {
+    "type": "jsx",
+    "description": "Absolute path to the overlay JSX file"
+  },
+  "output": {
+    "type": "image",
+    "description": "PNG file at the requested output path. In --measure mode, stdout is a JSON object with pngPath and measurements keys instead of a bare path."
+  },
+  "params": [
+    {
+      "name": "overlay",
+      "type": "path",
+      "required": true,
+      "description": "Absolute path to the JSX overlay file"
+    },
+    {
+      "name": "frame",
+      "type": "int",
+      "default": 0,
+      "description": "Frame number to render"
+    },
+    {
+      "name": "width",
+      "type": "int",
+      "default": 1080,
+      "description": "Canvas width in pixels"
+    },
+    {
+      "name": "height",
+      "type": "int",
+      "default": 1920,
+      "description": "Canvas height in pixels"
+    },
+    {
+      "name": "props",
+      "type": "string",
+      "default": "{}",
+      "description": "Props JSON string passed to the overlay component"
+    },
+    {
+      "name": "google-fonts",
+      "type": "string",
+      "required": false,
+      "description": "Comma-separated Google Fonts spec (e.g. 'Syne:wght@800')"
+    },
+    {
+      "name": "measure",
+      "type": "bool",
+      "default": false,
+      "description": "When set, return per-element bounding-box and overflow data as inline JSON on stdout"
+    },
+    {
+      "name": "out",
+      "type": "path",
+      "required": true,
+      "description": "Output PNG file path"
+    }
+  ]
+}

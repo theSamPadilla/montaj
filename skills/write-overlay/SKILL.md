@@ -568,3 +568,43 @@ Common overlay set for a social reel:
 - **Style to the prompt** — match font weight, color, and motion to the tone of the edit
 - **Opening hook** — almost always appropriate for social content; fires in the first 0–3s
 - **Persist after writing** — update `project.json` via `PUT /api/projects/{id}` (HTTP mode) or write directly to `project.json` (headless mode)
+
+---
+
+## Verify your overlay fits the canvas — always sample after writing
+
+After writing or editing any overlay JSX, run:
+
+```
+montaj sample overlay <path-to-jsx> --measure --out /tmp/sample-check.png
+```
+
+The command renders the overlay through the same Puppeteer path the production renderer uses and returns a JSON object on stdout:
+
+```json
+{
+  "pngPath": "/tmp/sample-check.png",
+  "measurements": {
+    "anyOverflow": false,
+    "texts": [...],
+    "viewport": { "w": 1080, "h": 1920 }
+  }
+}
+```
+
+**`measurements.anyOverflow` is the go/no-go signal.** If it is `true`, at least one text element extends past the 1080×1920 design canvas and will be visually clipped in the final render. Inspect `measurements.texts[]` for per-element detail: `bbox` gives the element's position and dimensions, and `overflow.{left,right,top,bottom}` gives the pixel overshoot on each edge.
+
+**Two categories of false positives to rule out before fixing:**
+
+- **`transform: rotate()` or `transform: scale()`** — `getBoundingClientRect()` returns the axis-aligned bounding box of the transformed element, which is wider and/or taller than the un-rotated element. A 1000×100 banner rotated 45° reports a ~777×777 bbox and will look like it overflows even when it doesn't. Check the `transform` field on the flagged element. If it's not `matrix(1, 0, 0, 1, 0, 0)` (the identity), the overflow signal is unreliable for that element.
+- **`clippingAncestor`** — an element flagged for overflow may be the child of a container with `overflow: hidden` (animation sections that clip entering/exiting elements use exactly this). If the `clippingAncestor` field is non-null, the element is intentionally clipped. Compute `intersect(elementBbox, clippingAncestor.bbox)` to check effective overflow if you want to be precise.
+
+**Do not ship an overlay JSX until `anyOverflow` is false** — or until you have verified each overflowing element is covered by one of the two false-positive cases above.
+
+### The Syne overflow case study — why the editor preview cannot tell you
+
+When the Montaj editor preview shows a layout that fits, but the rendered video shows clipped text, the cause is almost always a **font-width mismatch**. The editor preview falls back to `sans-serif` when a Google Font is not installed locally. The renderer loads the overlay's declared `googleFonts` faithfully via the Google Fonts CDN before rendering frame 0.
+
+Display fonts like **Syne 800** are 60–70% wider than typical `sans-serif` fallbacks at the same `px` size. Concrete example: `"RECURSIVE"` at `fontSize: 160` measures ~933 px wide in fallback `sans-serif`, but ~1594 px wide in Syne 800 — 514 px of right-edge overflow on a 1080-wide canvas. The editor looked fine; the render was completely clipped.
+
+**Any time your overlay declares a `googleFonts` entry, run `montaj sample overlay --measure` before adding the item to `project.json`.** The preview cannot tell you whether the text fits in the render. The sample can.

@@ -124,7 +124,7 @@ def export():
     """Return list of MCP tool dicts for all usable CLI commands."""
     from cli.commands import (
         run, render, workflow, fetch, profile,
-        probe, snapshot, filler, waveform_trim, rm_nonspeech,
+        probe, snapshot, sample, filler, waveform_trim, rm_nonspeech,
         materialize_cut, resize, normalize, extract_audio,
         transcribe, caption, status, remove_bg, init,
         kling_generate, analyze_media, generate_image, upload,
@@ -135,7 +135,7 @@ def export():
 
     for mod in [
         run, render, workflow, fetch, profile,
-        probe, snapshot, filler, waveform_trim, rm_nonspeech,
+        probe, snapshot, sample, filler, waveform_trim, rm_nonspeech,
         materialize_cut, resize, normalize, extract_audio,
         transcribe, caption, status, remove_bg, init,
         kling_generate, analyze_media, generate_image, upload,
@@ -148,6 +148,17 @@ def export():
     for name, sub in subparsers.choices.items():
         if name not in _SKIP_COMMANDS:
             _collect([name], sub, tools, description=top_help.get(name))
+
+    # sample_overlay requires --out at runtime (enforced in cli/commands/sample.py)
+    # but --out comes from add_global_flags which doesn't set required=True on the
+    # argparse action, so the auto-generated schema omits it from required[].
+    # Mark it required here so MCP callers know to supply it.
+    for tool in tools:
+        if tool['name'] == 'sample_overlay':
+            req = tool['inputSchema'].setdefault('required', [])
+            if 'out' not in req:
+                req.append('out')
+
     return tools
 
 

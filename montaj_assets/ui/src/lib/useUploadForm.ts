@@ -62,7 +62,7 @@ export function useUploadForm(): UseUploadFormReturn {
   const [profile, setProfile]   = useState<string>(prefill?.profile ?? '')
   const [profiles, setProfiles] = useState<Profile[]>([])
   const [prompt, setPrompt]     = useState(prefill?.prompt ?? '')
-  const [workflow, setWorkflow] = useState(prefill?.workflow ?? 'clean_cut')
+  const [workflow, setWorkflow] = useState(prefill?.workflow ?? 'overlays')
   const [workflows, setWorkflows] = useState<Workflow[]>([])
   const [running, setRunning]   = useState(false)
   const [runError, setRunError] = useState<string | null>(null)

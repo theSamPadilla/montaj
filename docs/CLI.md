@@ -217,6 +217,116 @@ montaj step virtual_to_original --input spec.json --inverse 95.483
 # → 47.320  (original-file timestamp → virtual timestamp)
 ```
 
+---
+
+## Sample — fast preview PNG without a full render
+
+Two commands for visual inspection without running a complete render. The production render pipeline is unchanged.
+
+### `montaj sample overlay`
+
+Renders one frame of an overlay JSX through Puppeteer (same path as the production renderer) and writes a PNG. ~3s wall time.
+
+```bash
+montaj sample overlay <overlay.jsx> --out <path.png>
+# Render frame 0 at 1080×1920 (defaults)
+
+montaj sample overlay <overlay.jsx> --frame 30 --out /tmp/frame30.png
+# Render frame 30 (e.g. to check an animated state)
+
+montaj sample overlay <overlay.jsx> --measure --out /tmp/check.png
+# Also return per-element bbox + overflow data as JSON on stdout
+```
+
+**Args:**
+
+| Arg | Default | Description |
+|-----|---------|-------------|
+| `<overlay.jsx>` | — | Path to the JSX overlay file |
+| `--out <path.png>` | required | Output PNG path |
+| `--frame <N>` | 0 | Frame number to render |
+| `--width <W>` | 1080 | Canvas width in pixels |
+| `--height <H>` | 1920 | Canvas height in pixels |
+| `--props <JSON>` | `{}` | Props to pass to the overlay component |
+| `--google-fonts <spec>` | — | Comma-separated Google Fonts spec (e.g. `Syne:wght@800`) |
+| `--measure` | off | Walk the DOM and return per-element bounding-box + overflow data |
+
+**Output (no `--measure`):** the absolute PNG path on stdout.
+
+**Output (`--measure`):** a single JSON object on stdout:
+```json
+{
+  "pngPath": "/tmp/check.png",
+  "measurements": {
+    "anyOverflow": true,
+    "viewport": { "w": 1080, "h": 1920 },
+    "texts": [
+      {
+        "text": "RECURSIVE",
+        "tag": "DIV",
+        "fontFamily": "Syne, sans-serif",
+        "fontSize": "160px",
+        "fontWeight": "800",
+        "position": "static",
+        "transform": "matrix(1, 0, 0, 1, 0, 0)",
+        "bbox": { "x": -257, "y": 740, "w": 1594, "h": 154 },
+        "overflow": { "left": 257, "right": 257, "top": 0, "bottom": 0 },
+        "clippingAncestor": null
+      }
+    ]
+  }
+}
+```
+
+`anyOverflow` is the go/no-go boolean. Any non-zero `overflow.{left,right,top,bottom}` on any element drives it `true`. Check `clippingAncestor` — a non-null value means the element is the child of an `overflow: hidden` parent (intentional for animation sections that clip entering/exiting elements); in that case compute `intersect(elementBbox, clippingAncestor.bbox)` for effective overflow.
+
+**Caching:** results are content-hash cached under `${tmpdir()}/montaj-sample-cache/` (24h GC). Unchanged inputs return immediately; a changed JSX always re-renders.
+
+**Example — check a Google Font overlay before adding it to the project:**
+```bash
+montaj sample overlay ~/.montaj/overlays/headline.jsx \
+  --google-fonts "Syne:wght@800" \
+  --measure \
+  --out /tmp/headline-check.png
+# Read stdout: if measurements.anyOverflow is true, the text overflows at render time.
+```
+
+### `montaj sample frame`
+
+Renders the fully composited frame at a given timestamp: active video clip + active image items + active overlay JSXs, all at project resolution. ~10–30s wall time.
+
+```bash
+montaj sample frame <project.json> --at <seconds>
+# Default output: <project_dir>/render/samples/frame-<t>s.png
+
+montaj sample frame <project.json> --at 5.5 --out /tmp/frame5.5.png
+# Explicit output path
+```
+
+**Args:**
+
+| Arg | Default | Description |
+|-----|---------|-------------|
+| `<project.json>` | — | Path to project.json |
+| `--at <seconds>` | required | Timestamp in seconds to sample |
+| `--out <path.png>` | `<project_dir>/render/samples/frame-<at>s.png` | Output PNG path |
+
+**Output:** the absolute PNG path on stdout.
+
+**Notes:**
+- Video seek is accurate (`-ss` after `-i`), not keyframe seek — the frame you ask for is the frame you get, at the cost of ~5–10s on long HEVC sources.
+- HDR projects produce sRGB BT.709 PNGs (tonemapped). Production renders still emit correctly-tagged HDR output; samples are always display-correct for human/agent inspection.
+- A timestamp that falls in a timeline gap produces an all-black frame (no error). A timestamp past project end returns an error.
+- The command is read-only: no writes to project.json, no changes to render intermediates.
+
+**Example — verify an overlay doesn't cover the speaker's face at t=5.5:**
+```bash
+montaj sample frame ./my-project/project.json --at 5.5 --out /tmp/t5.5.png
+# Inspect /tmp/t5.5.png to see the full composite at that moment.
+```
+
+---
+
 ### Clean
 
 ```bash
