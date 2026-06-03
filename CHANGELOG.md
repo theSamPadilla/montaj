@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v2.5.10
+
 ### Added
 - `POST /api/projects/{id}/upload-asset` — a project-scoped asset upload that streams a browser file drop into the project's own directory (via the new shared `save_upload()` helper in `serve/routes/files.py`), returning the absolute path. The pre-existing workspace-level `POST /upload` (which writes to `~/Montaj/_uploads/`) is retained for the project-creation flow, before a project directory exists.
 
