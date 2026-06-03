@@ -27,30 +27,45 @@
  * @returns {Array<{ start, end, items: object[], opaqueVideo: boolean, overlays: object[], vw, vh, fps }>}
  */
 export function planSegments(allItems, puppeteerSegs, vw, vh, fps) {
-  // Collect all boundary times
+  const frameDur = 1 / fps
+  // Quantize every boundary to the frame grid. Project boundaries come from the
+  // editor as sub-frame floats (e.g. 4.7177s = frame 141.53, not frame 142). If
+  // we feed those raw values through as segment start/end, `end - start` is not
+  // an exact multiple of 1/fps — the encoder gets `-t 2.843` for what should be
+  // 85 frames @ 30fps (2.833s), produces 85 frames of content, but MP4 records
+  // 2.843s of track duration. The trailing ~10ms hangs off the last frame, and
+  // stream-copy concat preserves it: the next segment's first frame lands one
+  // third of a frame past the prior segment's last 30fps tick. Visually that's
+  // a freeze-and-pop at every overlay start/end and clip transition. With 30
+  // boundaries in a 62s render, drift also accumulates (~0.34s overall).
+  // Quantizing here means every segment duration is an exact multiple of 1/fps,
+  // the encoder emits an integer frame count whose pts span equals the declared
+  // duration, and concat boundaries have uniform 1/fps gaps.
+  const quantize = t => Math.round(t * fps) / fps
+
+  // Collect all boundary times, snapped to the frame grid
   const boundaries = new Set()
   for (const item of allItems) {
-    boundaries.add(item.start)
-    boundaries.add(item.end)
+    boundaries.add(quantize(item.start))
+    boundaries.add(quantize(item.end))
   }
   for (const seg of puppeteerSegs) {
-    boundaries.add(seg.startSeconds)
-    boundaries.add(seg.endSeconds)
+    boundaries.add(quantize(seg.startSeconds))
+    boundaries.add(quantize(seg.endSeconds))
   }
 
   if (boundaries.size === 0) return []
-  const frameDur = 1 / fps
 
-  // Snap boundaries that are within one frame of each other to the same value.
-  // The UI allows independent positioning of clips and overlays with float precision,
-  // so "same moment" often lands 1-3ms apart. Without snapping, the planner creates
-  // degenerate micro-segments that corrupt the concat stream.
+  // Quantization above already collapses boundaries within half a frame of each
+  // other onto the same grid point. The proximity pass remains as a defense in
+  // depth: floating-point round-trips could in principle leave two grid points
+  // separated by < frameDur, and the segment-build loop below assumes a strict
+  // ascending sequence with at least frameDur between values.
   const sorted = [...boundaries].sort((a, b) => a - b)
   const snapped = [sorted[0]]
   for (let i = 1; i < sorted.length; i++) {
     const gap = sorted[i] - snapped[snapped.length - 1]
     if (gap > 0 && gap < frameDur) {
-      // Close enough — snap to the earlier boundary (don't add a new one)
       continue
     }
     snapped.push(sorted[i])

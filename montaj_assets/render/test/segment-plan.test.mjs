@@ -87,6 +87,37 @@ test('planSegments: multi-track items all included, sorted by trackIdx', () => {
   assert.equal(segs[2].items[0].id, 'bg')
 })
 
+test('planSegments: sub-frame boundaries are quantized to the frame grid', () => {
+  // Regression: project boundaries arrive as sub-frame floats (e.g. 1.875,
+  // 4.7177, 5.4474 from the editor). Without quantization, segment
+  // durations are not multiples of 1/fps — the encoder gets `-t 2.843`,
+  // produces 85 frames @ 30fps (= 2.833s), but MP4 records 2.843s of track
+  // duration. The trailing ~10ms hangs off the last frame, and stream-copy
+  // concat preserves it. The visible effect is a sub-frame freeze-and-pop
+  // at every overlay start/end and clip transition.
+  const items = [
+    { id: 'c1', type: 'video', start: 0,      end: 1.875,  src: '/a.mp4', inPoint: 0, outPoint: 1.875,   trackIdx: 0 },
+    { id: 'c2', type: 'video', start: 1.875,  end: 4.7177, src: '/b.mp4', inPoint: 0, outPoint: 2.8427,  trackIdx: 0 },
+    { id: 'c3', type: 'video', start: 4.7177, end: 8.0000, src: '/c.mp4', inPoint: 0, outPoint: 3.2823,  trackIdx: 0 },
+  ]
+  const fps = 30
+  const segs = planSegments(items, [], 1920, 1080, fps)
+  for (const seg of segs) {
+    const startFrame = seg.start * fps
+    const endFrame   = seg.end   * fps
+    // Every boundary lands on an integer frame index (within float epsilon).
+    assert.ok(Math.abs(startFrame - Math.round(startFrame)) < 1e-9,
+      `seg.start ${seg.start} not on frame grid (${startFrame})`)
+    assert.ok(Math.abs(endFrame - Math.round(endFrame)) < 1e-9,
+      `seg.end ${seg.end} not on frame grid (${endFrame})`)
+    // Duration is an exact integer multiple of 1/fps → encoder can produce
+    // a clean integer frame count with no trailing remainder.
+    const frames = (seg.end - seg.start) * fps
+    assert.ok(Math.abs(frames - Math.round(frames)) < 1e-9,
+      `seg duration ${seg.end - seg.start} is not a multiple of 1/fps (${frames} frames)`)
+  }
+})
+
 test('planSegments: captions always sorted after overlays', () => {
   const items = [
     { id: 'c1', type: 'video', start: 0, end: 10, src: '/a.mp4', inPoint: 0, outPoint: 10, trackIdx: 0 },

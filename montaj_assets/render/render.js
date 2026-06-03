@@ -442,7 +442,15 @@ function probeColorTransfer(filePath) {
 
 function collectPuppeteerSegments(projectJson, fps, width, height, segDir) {
   const specs = []
-  const totalSecs = getTotalDurationSeconds(projectJson)
+  // Quantize every spec time to the frame grid so it matches the segment
+  // planner's quantization (segment-plan.js). Without this the overlay's
+  // startSeconds/endSeconds disagree with the segment boundaries that display
+  // it, off by up to half a frame — the compose-time seek (`segStart -
+  // ov.startSeconds`) goes negative on the first segment of the overlay and the
+  // frameCount over-shoots by one frame, producing a stray trailing frame the
+  // segment never displays.
+  const quantize = t => Math.round(t * fps) / fps
+  const totalSecs = quantize(getTotalDurationSeconds(projectJson))
 
   // Overlay items live in tracks[1+]; tracks[0] is primary footage
   const overlayTracks = (projectJson.tracks ?? []).slice(1)
@@ -450,7 +458,9 @@ function collectPuppeteerSegments(projectJson, fps, width, height, segDir) {
     const track = overlayTracks[trackIdx]
     for (const item of track ?? []) {
       if (item.type === 'overlay') {
-        const frameCount = Math.ceil((item.end - item.start) * fps)
+        const startSeconds = quantize(item.start)
+        const endSeconds   = quantize(item.end)
+        const frameCount   = Math.round((endSeconds - startSeconds) * fps)
         specs.push({
           id:            `overlay-${trackIdx}--${item.id}`,
           componentPath: overlayTemplatePath(item),
@@ -463,8 +473,8 @@ function collectPuppeteerSegments(projectJson, fps, width, height, segDir) {
           googleFonts:   item.googleFonts ?? [],
           frameCount,
           fps,
-          startSeconds:  item.start,
-          endSeconds:    item.end,
+          startSeconds,
+          endSeconds,
           outputPath:    join(segDir, `overlay-${trackIdx}--${item.id}.mkv`),
           width,
           height,
@@ -477,7 +487,7 @@ function collectPuppeteerSegments(projectJson, fps, width, height, segDir) {
   // Captions: top-level projectJson.captions object (unchanged from v0.1)
   const captions = projectJson.captions
   if (captions?.segments?.length > 0 || captions?.style) {
-    const frameCount = Math.ceil(totalSecs * fps)
+    const frameCount = Math.round(totalSecs * fps)
     // googleFonts is a spec-level field (consumed by bundleComponent), not a
     // prop on the caption component — pull it out before spreading the rest
     // into captionTheme.

@@ -95,7 +95,26 @@ test('collectPuppeteerSegments: picks up overlay items from tracks[1+]', () => {
   assert.equal(specs[0].id, 'overlay-0--ov1')
   assert.equal(specs[0].startSeconds, 1.0)
   assert.equal(specs[0].endSeconds, 4.0)
-  assert.equal(specs[0].frameCount, 90)  // ceil((4.0-1.0)*30)
+  assert.equal(specs[0].frameCount, 90)  // round((4.0-1.0)*30)
+})
+
+test('collectPuppeteerSegments: quantizes overlay times to the frame grid', () => {
+  // Regression: project boundaries arrive as sub-frame floats (e.g. 5.4474 from
+  // the editor). The spec must quantize so the overlay's startSeconds and
+  // frameCount agree with the segment that displays it — otherwise compose
+  // seeks negative on the first frame and frameCount over-shoots by one,
+  // producing a stray trailing frame the segment never renders.
+  const project = {
+    tracks: [
+      [{ id: 'clip1', type: 'video', src: '/foo.mp4', start: 0, end: 10 }],
+      [{ id: 'ov1', type: 'overlay', src: '/abs/ov.jsx', start: 5.4474, end: 8.9474 }],
+    ],
+    settings: { fps: 30 },
+  }
+  const specs = collectPuppeteerSegments(project, 30, 1080, 1920, '/tmp/seg')
+  assert.equal(specs[0].startSeconds, 163 / 30)  // round(5.4474*30) / 30
+  assert.equal(specs[0].endSeconds,   268 / 30)  // round(8.9474*30) / 30
+  assert.equal(specs[0].frameCount,   105)        // 268 - 163
 })
 
 test('collectPuppeteerSegments: ignores non-overlay types in tracks[1+]', () => {
