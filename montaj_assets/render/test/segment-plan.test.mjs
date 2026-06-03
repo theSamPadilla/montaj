@@ -51,7 +51,10 @@ test('planSegments: overlays attached to overlapping segments', () => {
   assert.equal(segs[1].overlays[0].id, 'ov1')
 })
 
-test('planSegments: opaque overlay empties items', () => {
+test('planSegments: opaque overlay keeps items (for audio) and flags opaqueVideo', () => {
+  // Regression: opaque overlays must NOT drop the underlying footage's audio.
+  // The items are retained so the encoder can still source their voiceover; the
+  // opaqueVideo flag tells the encoder to skip only their VIDEO compositing.
   const items = [
     { id: 'c1', type: 'video', start: 0, end: 10, src: '/a.mp4', inPoint: 0, outPoint: 10, trackIdx: 0 },
   ]
@@ -59,8 +62,12 @@ test('planSegments: opaque overlay empties items', () => {
     { id: 'ov1', startSeconds: 0, endSeconds: 3, webmPath: '/ov.mkv', opaque: true, isCaption: false },
   ]
   const segs = planSegments(items, puppeteerSegs, 1920, 1080, 30)
-  assert.equal(segs[0].items.length, 0) // opaque overlay replaces all visuals
+  assert.equal(segs[0].items.length, 1, 'items kept under opaque overlay so audio survives')
+  assert.equal(segs[0].items[0].src, '/a.mp4')
+  assert.equal(segs[0].opaqueVideo, true, 'segment flagged opaqueVideo')
   assert.equal(segs[0].overlays[0].opaque, true)
+  // A segment with no opaque overlay must not be flagged.
+  assert.equal(segs[1].opaqueVideo, false, 'uncovered segment is not opaqueVideo')
 })
 
 test('planSegments: multi-track items all included, sorted by trackIdx', () => {

@@ -20,24 +20,27 @@ router = APIRouter(prefix="/api")
 CAPTION_STYLES = {"word-by-word", "pop", "karaoke", "subtitle"}
 
 
-@router.post("/upload")
-async def upload_file(file: UploadFile):
-    """Accept a browser file drop, save to workspace/_uploads/, return absolute path."""
-    workspace = resolve_workspace()
-    uploads_dir = workspace / "_uploads"
-    uploads_dir.mkdir(parents=True, exist_ok=True)
-
-    dest = uploads_dir / (file.filename or "upload")
+async def save_upload(file: UploadFile, dest_dir: Path) -> Path:
+    """Stream an uploaded file into dest_dir, de-duplicating the filename.
+    Returns the absolute path written. Shared by the workspace-level and
+    project-scoped upload routes."""
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    dest = dest_dir / (file.filename or "upload")
     stem, suffix = dest.stem, dest.suffix
     counter = 1
     while dest.exists():
-        dest = uploads_dir / f"{stem}_{counter}{suffix}"
+        dest = dest_dir / f"{stem}_{counter}{suffix}"
         counter += 1
-
     with open(dest, "wb") as f:
         while chunk := await file.read(1024 * 1024):  # 1 MB chunks
             f.write(chunk)
+    return dest
 
+
+@router.post("/upload")
+async def upload_file(file: UploadFile):
+    """Accept a browser file drop, save to workspace/_uploads/, return absolute path."""
+    dest = await save_upload(file, resolve_workspace() / "_uploads")
     return {"path": str(dest)}
 
 

@@ -147,10 +147,14 @@ export const api = {
     return request<{ paths: string[] }>(`/api/pick-files${qs ? `?${qs}` : ''}`)
   },
 
-  uploadFile: async (file: File): Promise<string> => {
+  uploadFile: async (file: File, projectId?: string): Promise<string> => {
     const form = new FormData()
     form.append('file', file)
-    const res = await fetch('/api/upload', { method: 'POST', body: form })
+    // When a project exists, upload into the project's own directory so it stays
+    // self-contained. Otherwise (e.g. during project creation) fall back to the
+    // shared workspace _uploads/ folder.
+    const url = projectId ? `/api/projects/${projectId}/upload-asset` : '/api/upload'
+    const res = await fetch(url, { method: 'POST', body: form })
     if (!res.ok) {
       const err = await res.json().catch(() => ({ message: res.statusText }))
       throw new Error(err.detail?.message ?? err.message ?? res.statusText)

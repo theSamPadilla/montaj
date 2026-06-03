@@ -559,6 +559,7 @@ export default function CarouselEditor({ project, onProjectChange, logMessage }:
         <div className="border-t border-gray-800 flex flex-col overflow-hidden" style={{ minHeight: 180 }}>
           <AssetsPanel
             assets={project.assets ?? []}
+            projectId={project.id}
             onChange={assetsPanelOnChange}
           />
         </div>

@@ -15,7 +15,7 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-from fastapi import APIRouter, Body, Depends, HTTPException, Request
+from fastapi import APIRouter, Body, Depends, HTTPException, Request, UploadFile
 from fastapi.responses import JSONResponse, StreamingResponse
 from urllib.parse import urlparse
 
@@ -26,6 +26,7 @@ from serve.common import (
     not_found, bad_request, forbidden, server_error,
     validate_project_subpath,
 )
+from serve.routes.files import save_upload
 from lib.remote_io import fetch_to_disk_async, push_from_disk_async, parse_allowed_hosts
 from project.init import _copy_into_workspace
 from serve.sse import SSEBroadcaster, sse_stream
@@ -821,6 +822,19 @@ async def upload_outputs(
         status_code=207 if any_error else 200,
         content={"results": results},
     )
+
+
+@router.post("/projects/{project_id}/upload-asset")
+async def upload_asset_to_project(
+    project_id: str,
+    file: UploadFile,
+    project_dir: Path = Depends(get_project_dir),
+):
+    """Accept a browser file drop scoped to a project, saving it into the
+    project's own directory instead of the shared workspace _uploads/ folder.
+    Keeps each project self-contained and portable."""
+    dest = await save_upload(file, project_dir)
+    return {"path": str(dest)}
 
 
 @router.post("/projects/{project_id}/download")

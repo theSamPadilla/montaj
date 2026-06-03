@@ -286,6 +286,11 @@ export function buildOverlayFilterParts(ov, vw, vh, ovIdx, videoLabel, segStart,
  */
 export function encodeSegment(segment, outputPath, opts = {}) {
   const { start, end, items, overlays, vw, vh, fps } = segment
+  // When an opaque overlay covers this segment, the overlay replaces the frame
+  // but the underlying items still contribute their AUDIO. opaqueVideo gates the
+  // VIDEO compositing of items only — never their audio. Defaults to false so
+  // pre-existing callers/tests (which don't set it) keep their behaviour.
+  const opaqueVideo = segment.opaqueVideo ?? false
   const duration = end - start
   const projectColorSpace = segment.colorSpace ?? DEFAULT_COLOR_SPACE
   const spec = specFor(projectColorSpace)
@@ -317,6 +322,10 @@ export function encodeSegment(segment, outputPath, opts = {}) {
     const idx  = inputIdx
 
     if (isImageItem(item)) {
+      // Under an opaque overlay the frame is fully covered and images carry no
+      // audio, so an image item contributes nothing here — skip it entirely
+      // (no input, no inputIdx bump).
+      if (opaqueVideo) continue
       const { inputArgs, filterParts: fp, newVideoLabel } =
         buildImageItemFilterParts(item, vw, vh, idx, videoLabel, duration)
       inputs.push(...inputArgs)
@@ -346,11 +355,18 @@ export function encodeSegment(segment, outputPath, opts = {}) {
           projectColorSpace,
           zscaleAvailable,
         })
+      // The input (carrying its -ss/-t window) is ALWAYS added so the clip's
+      // audio is available to Step 5. Its VIDEO is composited only when the
+      // frame is NOT covered by an opaque overlay — opaque replaces the picture,
+      // it must not silence the voiceover underneath.
       inputs.push(...inputArgs)
-      filterParts.push(...fp)
-      videoLabel = newVideoLabel
+      if (!opaqueVideo) {
+        filterParts.push(...fp)
+        videoLabel = newVideoLabel
+      }
 
       // Audio from ALL unmuted video items — collected here, mixed in Step 5.
+      // Runs regardless of opaqueVideo so audio survives full-screen animations.
       // In dry-run mode, skip the ffprobe check (file may not exist) and assume audio present.
       if (!item.muted && (opts._dryRun || fileHasAudio(item.src))) {
         const vol = item.volume ?? 1.0

@@ -12,9 +12,11 @@ interface AssetsPanelProps {
   assets: Asset[]
   onChange: (next: Asset[]) => Promise<void>
   profileName?: string
+  /** When set, dropped assets are uploaded into the project's own directory instead of _uploads/. */
+  projectId?: string
 }
 
-export default function AssetsPanel({ assets, onChange, profileName }: AssetsPanelProps) {
+export default function AssetsPanel({ assets, onChange, profileName, projectId }: AssetsPanelProps) {
   const [pickingAssets, setPickingAssets]     = useState(false)
   const [uploadingAssets, setUploadingAssets] = useState(false)
   const [dragOverAssets, setDragOverAssets]   = useState(false)
@@ -58,7 +60,7 @@ export default function AssetsPanel({ assets, onChange, profileName }: AssetsPan
     if (!files.length) return
     setUploadingAssets(true)
     try {
-      const paths = await Promise.all(files.map(f => api.uploadFile(f)))
+      const paths = await Promise.all(files.map(f => api.uploadFile(f, projectId)))
       const existing = new Set(assets.map(a => a.src))
       const newAssets: Asset[] = paths
         .filter(p => !existing.has(p))

@@ -6,6 +6,10 @@
  * Each segment carries:
  *   - items: ALL active visual items sorted ascending by trackIdx (lower = further back).
  *     The encoder composites them in order. Empty array = black canvas.
+ *   - opaqueVideo: true when an opaque overlay covers this segment's frame. The
+ *     encoder then skips compositing the items' VIDEO (the overlay replaces the
+ *     frame) but still sources their AUDIO — opaque means "replace the picture",
+ *     never "drop the voiceover". Items are kept precisely so their audio survives.
  *   - overlays: Puppeteer-rendered overlay + caption segments, with captions
  *     always sorted AFTER overlays (captions are the topmost z-layer).
  *
@@ -20,7 +24,7 @@
  * @param {number} vw — output width
  * @param {number} vh — output height
  * @param {number} fps
- * @returns {Array<{ start, end, items: object[], overlays: object[], vw, vh, fps }>}
+ * @returns {Array<{ start, end, items: object[], opaqueVideo: boolean, overlays: object[], vw, vh, fps }>}
  */
 export function planSegments(allItems, puppeteerSegs, vw, vh, fps) {
   // Collect all boundary times
@@ -74,13 +78,17 @@ export function planSegments(allItems, puppeteerSegs, vw, vh, fps) {
       ...activeOverlays.filter(o => o.isCaption),
     ]
 
-    // Opaque overlay → clear the items stack (overlay replaces all visuals)
+    // Opaque overlay → the overlay replaces the visible frame, but the items are
+    // KEPT so the encoder can still source their audio (the voiceover under a
+    // full-screen animation). The opaqueVideo flag tells the encoder to skip the
+    // items' video compositing only. See encode-segment.js Step 2.
     const hasOpaque = overlays.some(o => o.opaque)
 
     segments.push({
       start,
       end,
-      items: hasOpaque ? [] : items,
+      items,
+      opaqueVideo: hasOpaque,
       overlays,
       vw,
       vh,

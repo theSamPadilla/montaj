@@ -142,6 +142,55 @@ test('dry-run: per-item volume preserved in multi-audio mix', () => {
 })
 
 // ---------------------------------------------------------------------------
+// Opaque overlays preserve underlying audio (regression: full-screen
+// animations silenced the voiceover underneath)
+// ---------------------------------------------------------------------------
+
+test('dry-run: opaqueVideo segment keeps the clip audio but drops its video', () => {
+  // An opaque overlay covers the frame; the underlying clip's voiceover MUST
+  // still be sourced. opaqueVideo gates only the video compositing.
+  const seg = {
+    start: 0, end: 5, opaqueVideo: true, items: [
+      { type: 'video', src: '/vo.mp4', start: 0, end: 5, inPoint: 0,
+        trackIdx: 0, scale: 1, offsetX: 0, offsetY: 0, opacity: 1, muted: false },
+    ], overlays: [
+      { webmPath: '/anim.mkv', startSeconds: 0, endSeconds: 5, isCaption: false, opaque: true },
+    ], vw: 1920, vh: 1080, fps: 30,
+  }
+  const result = encodeSegment(seg, '/tmp/test.mp4', { _dryRun: true })
+  // Audio is extracted from the clip ...
+  assert.ok(
+    result.filterParts.some(f => f.includes('sample_rates=48000')),
+    'clip audio must be extracted under an opaque overlay',
+  )
+  // ... and NOT replaced with silence.
+  assert.ok(
+    !result.inputs.some(f => f.includes('anullsrc')),
+    'opaque segment with an underlying clip must not generate silent audio',
+  )
+  // The clip's input is present (so its audio stream is available) ...
+  assert.ok(result.inputs.includes('/vo.mp4'), 'clip input must be added for audio')
+  // ... but its VIDEO is not composited (no per-item fit/pad filter).
+  assert.ok(
+    !result.filterParts.some(f => f.includes('force_original_aspect_ratio')),
+    'opaque overlay replaces the frame — the clip video must not be composited',
+  )
+  // The opaque overlay itself still composites over the black canvas.
+  assert.ok(result.inputs.includes('/anim.mkv'), 'opaque overlay input present')
+})
+
+test('dry-run: opaqueVideo over a gap (no items) still yields silence', () => {
+  // No underlying clip → nothing to source → silence is correct.
+  const seg = {
+    start: 0, end: 3, opaqueVideo: true, items: [], overlays: [
+      { webmPath: '/anim.mkv', startSeconds: 0, endSeconds: 3, isCaption: false, opaque: true },
+    ], vw: 1920, vh: 1080, fps: 30,
+  }
+  const result = encodeSegment(seg, '/tmp/test.mp4', { _dryRun: true })
+  assert.ok(result.inputs.some(f => f.includes('anullsrc')), 'no underlying clip → silent audio')
+})
+
+// ---------------------------------------------------------------------------
 // Color-space-aware encoding (Task 5 of color-space-aware-pipeline plan)
 // ---------------------------------------------------------------------------
 

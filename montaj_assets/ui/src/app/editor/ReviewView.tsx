@@ -496,6 +496,7 @@ export default function ReviewView({ project, onProjectChange }: ReviewViewProps
 
         <AssetsPanel
           assets={project.assets ?? []}
+          projectId={project.id}
           onChange={async next => {
             const updated = { ...project, assets: next }
             onProjectChange(updated)
