@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """montaj credentials — manage API credentials for connectors."""
-import os, sys
+import contextlib, os, sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "lib"))
 
 from cli.help import c as _c, bold as _bold, dim as _dim, green as _green, yellow as _yellow, blue as _blue, cyan as _cyan, red as _red
@@ -100,26 +100,19 @@ def handle(args):
                 print(f"     {_dim(url)}")
             print()
 
-        # Read directly from sys.stdin instead of input(). Reason: Python's
-        # input() routes the read through `PyOS_Readline`, which on Homebrew's
-        # python@3.12 (the install path montaj ships through) is backed by
-        # libedit, not GNU readline (`import readline; readline.__doc__` reports
-        # "Importing this module enables command line editing using libedit
-        # readline"). libedit preps the tty for arrow-key line editing by
-        # toggling input flags — on enough terminal+pty combos (some tmux
-        # configs, IDE-embedded terminals, Windows Terminal over SSH, fresh
-        # ttys without ONLCR post-processing on echoed CR), it leaves the
-        # echo of the user's Enter keystroke as a bare CR, which the terminal
-        # then displays as `^M`. sys.stdin.readline() bypasses the readline
-        # hook entirely — it's a plain stdio read — so libedit never preps
-        # the tty for this prompt and the `^M` artifact disappears. We lose
-        # arrow-key editing and history for this one prompt, which is fine
-        # for a "pick a number" selector. A prior fix attempt (v2.6.1) wrote
-        # the prompt separately and passed an empty string to input(); it was
-        # wrong about the cause (ANSI prompt width tracking) and didn't help.
-        sys.stdout.write(f"  Which provider? {_dim('(number, comma-separated, or all)')}: ")
-        sys.stdout.flush()
-        choice = sys.stdin.readline().rstrip("\r\n").strip()
+        # Some terminal emulators (notably IDE-integrated terminals) hand us a
+        # tty with ICRNL cleared. With -icrnl the kernel line discipline does
+        # not translate the CR from the Enter key into a newline, so it echoes
+        # as the literal control glyph `^M` instead of moving the cursor down.
+        # This state is set by the environment *before* montaj reads anything —
+        # neither input() nor sys.stdin.readline() touches tty modes, so neither
+        # could fix it (the v2.6.1/v2.6.2 attempts were aimed at the wrong
+        # layer). _normalized_tty() forces ICRNL/ONLCR for the duration of the
+        # prompt and restores the prior state afterward.
+        with _normalized_tty():
+            sys.stdout.write(f"  Which provider? {_dim('(number, comma-separated, or all)')}: ")
+            sys.stdout.flush()
+            choice = sys.stdin.readline().rstrip("\r\n").strip()
         if not choice:
             print(f"\n  {_dim('Nothing selected, exiting.')}")
             return
@@ -233,11 +226,44 @@ def _key_is_set(get_fn, provider: str, key: str) -> bool:
         return False
 
 
+@contextlib.contextmanager
+def _normalized_tty(*, echo=True):
+    """Ensure CR->NL input translation (and NL->CRLF output) for one prompt,
+    then restore. Some terminal emulators hand montaj a tty with ICRNL cleared,
+    which makes the Enter key's CR echo as the literal `^M`. A no-op when stdin
+    is not a tty (e.g. piped input) or when termios is unavailable (Windows)."""
+    saved = None
+    try:
+        import termios
+        if sys.stdin.isatty():
+            fd = sys.stdin.fileno()
+            saved = termios.tcgetattr(fd)
+            new = list(saved)
+            new[0] |= termios.ICRNL
+            new[0] &= ~(termios.INLCR | termios.IGNCR)
+            new[1] |= termios.ONLCR | termios.OPOST
+            if echo:
+                new[3] |= termios.ICANON | termios.ECHO
+            termios.tcsetattr(fd, termios.TCSANOW, new)
+    except Exception:
+        saved = None
+    try:
+        yield
+    finally:
+        if saved is not None:
+            with contextlib.suppress(Exception):
+                import termios
+                termios.tcsetattr(sys.stdin.fileno(), termios.TCSANOW, saved)
+
+
 def _read_secret(prompt: str) -> str:
     """Read a secret from the terminal. Falls back to plain input() if getpass fails."""
     try:
         import getpass
-        return getpass.getpass(prompt).strip()
+        # getpass clears ECHO itself for the hidden read; we only need ICRNL on
+        # so the Enter key submits the line on tty's that arrived with -icrnl.
+        with _normalized_tty(echo=False):
+            return getpass.getpass(prompt).strip()
     except (EOFError, OSError):
         try:
             sys.stderr.write(prompt)
