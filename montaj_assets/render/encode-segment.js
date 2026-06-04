@@ -302,9 +302,6 @@ export function encodeSegment(segment, outputPath, opts = {}) {
   const filterParts = []
   let videoLabel
   const audioLabels = []
-  // Items eligible for `-c:a copy` instead of running through the encoder.
-  // Populated in Step 2 (video items loop). Step 5 decides whether to use them.
-  const streamCopyCandidates = []
   let inputIdx = 0
 
   // --- Step 1: Black canvas base (always present — items layer on top) ---
@@ -371,17 +368,13 @@ export function encodeSegment(segment, outputPath, opts = {}) {
       if (!item.muted && (opts._dryRun || fileHasAudio(item.src))) {
         const vol = item.volume ?? 1.0
         const aLabel = `a${idx}`
-        filterParts.push(`[${idx}:a:0]asetpts=PTS-STARTPTS,volume=${vol},aformat=channel_layouts=stereo:sample_rates=48000[${aLabel}]`)
+        // atrim=0:${duration} makes the per-segment sample count exact and
+        // explicit in the filter chain, rather than implicit in ffmpeg's
+        // -accurate_seek + -t behaviour. Matches the anullsrc path which
+        // already does this, and pairs with the PCM codec (no AAC framing
+        // means no rounding to absorb a stray trailing sample).
+        filterParts.push(`[${idx}:a:0]atrim=0:${duration},asetpts=PTS-STARTPTS,volume=${vol},aformat=channel_layouts=stereo:sample_rates=48000[${aLabel}]`)
         audioLabels.push(`[${aLabel}]`)
-        // Track if this source could be stream-copied (single source, vol=1,
-        // came from our audio-strip pre-pass which produces stereo 48k AAC).
-        // If all sources in the segment qualify, Step 5 swaps to stream-copy
-        // mode to avoid running audio through the encoder at all — the native
-        // ffmpeg AAC encoder produces corrupt bitstream output under
-        // concurrent load with libx265 at 4K (see Step 5 comment).
-        if (Math.abs(vol - 1.0) < 0.001 && item.src.endsWith('_audioclean.mp4')) {
-          streamCopyCandidates.push({ inputIdx: idx, audioStreamIdx: 0 })
-        }
       }
     }
     inputIdx++
@@ -404,50 +397,31 @@ export function encodeSegment(segment, outputPath, opts = {}) {
 
   // --- Step 5: Audio ---
   //
-  // Stream-copy fast path. The ffmpeg native AAC encoder (and even Apple's
-  // aac_at) produces corrupt AAC bitstream output for some users under
-  // concurrent load with libx265 at 4K HEVC — segments encode "successfully"
-  // (ffmpeg exit 0) but the AAC packets fail validation at decode time with
-  // errors like "Reserved bit set", "channel element X.Y is not allocated",
-  // "Number of bands exceeds limit". The concat step at the end of compose
-  // then can't decode them and aborts with "Rematrix is needed between N
-  // channels and stereo".
+  // Build the final audioLabel. Three cases:
+  //   - No video items contributed audio → silent stereo 48kHz via anullsrc.
+  //   - Exactly one source            → use it directly.
+  //   - Multiple sources               → amix them, preserving per-item volumes
+  //                                      (normalize=0).
   //
-  // When every audio source in this segment came from an `_audioclean.mp4`
-  // file (produced by render.js's audio-strip pre-pass with `-c copy`, so
-  // guaranteed stereo 48kHz AAC) AND volumes are all 1.0, we can bypass the
-  // encoder entirely: map the source's audio stream directly and use
-  // `-c:a copy`. ffmpeg never decodes or re-encodes the audio — it just
-  // demuxes the AAC packets and writes them through. No encoder, no
-  // corruption possible.
-  //
-  // For segments that don't qualify (no audio sources, multiple sources
-  // needing mixing, non-default volumes), fall back to the filter + encoder
-  // path. Concat re-encodes audio uniformly at the end anyway, so the
-  // mixed-mode segments compose cleanly into the final mp4.
+  // The encoder always runs (PCM s16le — see Step 6 for the rationale). There
+  // is no stream-copy fast path: the previous fast path bypassed the encoder
+  // for single-audioclean-vol=1 segments and was the source of an audible pop
+  // at every intra-clip segment boundary, because input seek aligned to the
+  // nearest AAC frame (up to ~21ms early) and the concat demuxer dropped the
+  // per-segment edit list when re-encoding audio. Always encoding to PCM here
+  // removes the per-segment AAC framing/priming/edit-list class of artifacts;
+  // any residual seam discontinuity is bounded by the source AAC decoder's
+  // per-process seek precision (empirically ~500-unit sample delta vs ~2400
+  // pre-fix on the same boundaries), not by the encoder/container.
   let audioLabel
-  let useAudioStreamCopy = false
-  let audioCopyMap = null
   if (audioLabels.length === 0) {
-    // No video items with audio — generate silent 48kHz stereo via anullsrc.
-    // Must encode (no source to copy from).
     inputs.push('-f', 'lavfi', '-i', `anullsrc=cl=stereo:r=48000`)
     filterParts.push(`[${inputIdx}:a]atrim=0:${duration},asetpts=PTS-STARTPTS[sil]`)
     audioLabel = '[sil]'
     inputIdx++
-  } else if (audioLabels.length === 1 && streamCopyCandidates.length === 1) {
-    // Single audio source from an audioclean file — stream-copy fast path.
-    const { inputIdx: srcIdx, audioStreamIdx } = streamCopyCandidates[0]
-    audioCopyMap = `${srcIdx}:a:${audioStreamIdx}`
-    useAudioStreamCopy = true
-    // Drop the audio filter entry we'd added (won't be used)
-    const i = filterParts.findIndex(p => p.endsWith(`[${audioLabels[0].slice(1, -1)}]`))
-    if (i >= 0) filterParts.splice(i, 1)
   } else if (audioLabels.length === 1) {
-    // Single audio source, but not stream-copyable (volume != 1, or non-audioclean source).
     audioLabel = audioLabels[0]
   } else {
-    // Multiple audio sources — mix them together (encoder path).
     const mixInput = audioLabels.join('')
     filterParts.push(`${mixInput}amix=inputs=${audioLabels.length}:duration=longest:normalize=0[amixed]`)
     audioLabel = '[amixed]'
@@ -456,9 +430,25 @@ export function encodeSegment(segment, outputPath, opts = {}) {
   // --- Step 6: Encode ---
   // Encoder, encoder params, output pix_fmt, and stream-level color metadata
   // are all driven by the project's color space spec.
-  const audioArgs = useAudioStreamCopy
-    ? ['-map', audioCopyMap, '-c:a', 'copy']
-    : ['-map', audioLabel, '-c:a', 'aac_at', '-b:a', '192k', '-ar', '48000', '-ac', '2']
+  // Per-segment audio is PCM s16le, NOT AAC. AAC framing (~21ms per frame),
+  // encoder priming (~2112 samples per encode), and MP4 edit-list metadata
+  // do not survive ffmpeg's concat demuxer cleanly when audio is decoded for
+  // re-encode at concat — see the audio-pop bug noted in the CHANGELOG. PCM
+  // has none of those per-segment encoder/container properties, so the seam
+  // artifacts collapse into the much smaller residual from the source AAC
+  // decoder's seek precision across independent ffmpeg processes (~10× less
+  // than the prior artifact in measurements). The concat step in compose.js
+  // re-encodes the joined PCM stream to AAC once, end-to-end — that single
+  // AAC encode is the only one in the pipeline now.
+  //
+  // The previous `aac_at`-under-libx265-4K-concurrent-encode corruption issue
+  // (which the deleted stream-copy fast path worked around) is also resolved
+  // by this change in principle: aac_at is no longer invoked at all, and the
+  // end-of-pipeline native-`aac` encode at concat runs after every libx265
+  // process has exited. That claim is asserted, not empirically reverified —
+  // if the corruption pattern recurs at the concat re-encode, it's a separate
+  // follow-up rather than a regression of this fix.
+  const audioArgs = ['-map', audioLabel, '-c:a', 'pcm_s16le', '-ar', '48000', '-ac', '2']
   const args = [
     '-y', ...inputs,
     '-filter_complex', filterParts.join(';'),

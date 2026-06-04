@@ -195,14 +195,15 @@ function concatSegments(paths, outputPath) {
   // Video: -c:v copy. All segments from a single render share the project's
   // working codec — h264 for SDR, hevc for HDR — so stream-copy concat is safe.
   // Uniform output is now per-project, not pipeline-wide.
-  // Audio: -c:a aac re-encode. Even though segments target 48kHz AAC,
-  // concat -c:a copy can produce garbled audio at segment boundaries if
-  // AAC frame alignment differs. Re-encoding audio is cheap and guarantees
-  // clean output. Video stream copy is the big win — no quality loss there.
+  // Audio: -c:a aac re-encode. Segments output stereo 48kHz pcm_s16le (see
+  // encode-segment.js Step 6 — switched from per-segment AAC to PCM to make
+  // segment seams sample-aligned, since AAC framing/priming/edit-list
+  // metadata do not survive the concat demuxer cleanly when audio is
+  // transcoded). The concat pass here decodes the joined PCM stream and
+  // re-encodes to AAC once at end-of-pipeline — this is the only AAC encode
+  // in the render path.
   const tmpPath = outputPath.replace(/(\.\w+)$/, `.${randomBytes(4).toString('hex')}$1`)
-  // Audio is guaranteed clean by encode-segment.js (each segment outputs
-  // stereo 48kHz AAC from the iPhone clip's AAC stream via [idx:a:0]). No
-  // error-tolerance flags at concat — those would mask real corruption AND
+  // No error-tolerance flags at concat — those would mask real corruption AND
   // tell the HEVC NAL parser to accept malformed units in stream-copy mode,
   // producing a final.mp4 with garbage video bitstream. Strict by default.
   const result = spawnSync('ffmpeg', [

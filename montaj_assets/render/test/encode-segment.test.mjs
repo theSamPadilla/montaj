@@ -344,3 +344,128 @@ print(json.dumps(out))
   assert.deepEqual([...ALL_COLOR_SPACES], py.all, 'ALL_COLOR_SPACES drift')
   assert.deepEqual(jsSnake, py.specs, 'COLOR_SPACE_SPECS drift between Python and JS loaders')
 })
+
+// ---------------------------------------------------------------------------
+// PCM per-segment audio (replaces AAC: see CHANGELOG and the comment above
+// Step 5 in encode-segment.js for the audio-pop root cause)
+// ---------------------------------------------------------------------------
+
+// Tight assertion helper: codec_flag is the value immediately after `-c:a`
+// in args — avoids false positives from the string appearing in any other
+// flag, comment, or filter-graph position.
+function audioCodec(args) {
+  const i = args.indexOf('-c:a')
+  return i >= 0 ? args[i + 1] : null
+}
+
+test('segment audio is encoded as pcm_s16le, not aac (single source)', () => {
+  // PCM has no framing, no priming, and no edit-list metadata for the concat
+  // demuxer to mishandle — segment seams stop carrying encoder/container
+  // artifacts. The final concat pass in compose.js still re-encodes to AAC
+  // once at the very end.
+  const seg = {
+    start: 0, end: 5, items: [
+      { type: 'video', src: '/clip.mp4', start: 0, end: 5, inPoint: 0,
+        trackIdx: 0, scale: 1, offsetX: 0, offsetY: 0, opacity: 1, muted: false },
+    ], overlays: [], vw: 1920, vh: 1080, fps: 30,
+  }
+  const result = encodeSegment(seg, '/tmp/test.mp4', { _dryRun: true })
+  assert.equal(audioCodec(result.args), 'pcm_s16le',
+    'segment audio codec must be pcm_s16le')
+})
+
+test('segment audio is pcm_s16le on the anullsrc (silent) path', () => {
+  // Codec change applies uniformly — a segment with no audio sources still
+  // gets pcm_s16le silence, so the concat-time AAC pass sees a consistent
+  // codec across every segment.
+  const seg = {
+    start: 0, end: 3, items: [], overlays: [], vw: 1920, vh: 1080, fps: 30,
+  }
+  const result = encodeSegment(seg, '/tmp/test.mp4', { _dryRun: true })
+  assert.ok(result.inputs.some(f => f.includes('anullsrc')),
+    'silent path is exercised (sanity check on the test setup)')
+  assert.equal(audioCodec(result.args), 'pcm_s16le',
+    'silent-path segment audio codec must be pcm_s16le, not aac')
+})
+
+test('segment audio is pcm_s16le on the multi-source amix path', () => {
+  // Two unmuted sources → amix → encoder. Codec must still be PCM so the
+  // mixed-mode segments compose with single-source segments cleanly.
+  const seg = {
+    start: 0, end: 5, items: [
+      { type: 'video', src: '/bg.mp4', start: 0, end: 5, inPoint: 0,
+        trackIdx: 0, scale: 1, offsetX: 0, offsetY: 0, opacity: 1, muted: false },
+      { type: 'video', src: '/pip.mp4', start: 0, end: 5, inPoint: 0,
+        trackIdx: 1, scale: 0.3, offsetX: 30, offsetY: 30, opacity: 1, muted: false },
+    ], overlays: [], vw: 1920, vh: 1080, fps: 30,
+  }
+  const result = encodeSegment(seg, '/tmp/test.mp4', { _dryRun: true })
+  assert.ok(result.filterParts.some(f => f.includes('amix=inputs=2')),
+    'amix path is exercised (sanity check on the test setup)')
+  assert.equal(audioCodec(result.args), 'pcm_s16le',
+    'amix-path segment audio codec must be pcm_s16le')
+})
+
+test('per-item audio filter includes atrim=0:${duration} for sample-accurate trim', () => {
+  // ffmpeg input seek + -accurate_seek (default on transcode) produces
+  // sample-accurate output, but `atrim` makes the contract explicit in the
+  // filter chain so it survives future filter changes. Without an explicit
+  // trim, a decoder that emits an extra trailing frame (e.g. on flush) would
+  // leak past the segment's declared duration into the concat-built audio.
+  //
+  // Use a frame-aligned fractional duration of the kind the planner actually
+  // emits (after the prior sub-frame quantization fix, segment durations are
+  // multiples of 1/fps — so 21/30 = 0.7s exact float, 22/30 = 0.7333… float).
+  // Pick the latter so the assertion locks in handling of a non-terminating
+  // decimal serialization rather than the friendly 0.7 case.
+  const start = 4 + 22/30        // arbitrary mid-stream
+  const end   = start + 22/30    // 22 frames @ 30fps → 0.7333… seconds
+  const duration = end - start
+  const seg = {
+    start, end, items: [
+      { type: 'video', src: '/clip.mp4', start, end, inPoint: 0,
+        trackIdx: 0, scale: 1, offsetX: 0, offsetY: 0, opacity: 1, muted: false },
+    ], overlays: [], vw: 1920, vh: 1080, fps: 30,
+  }
+  const result = encodeSegment(seg, '/tmp/test.mp4', { _dryRun: true })
+  const audioFilter = result.filterParts.find(f => f.includes('sample_rates=48000'))
+  assert.ok(audioFilter, 'per-item audio filter chain must exist')
+  assert.ok(audioFilter.includes(`atrim=0:${duration}`),
+    `per-item audio filter must include atrim=0:${duration} — got: ${audioFilter}`)
+  // atrim must come BEFORE asetpts=PTS-STARTPTS — the order locks the
+  // sample range against the input PTS (which starts at the seek point),
+  // not the zero-based PTS produced by asetpts.
+  assert.ok(audioFilter.indexOf('atrim=') < audioFilter.indexOf('asetpts='),
+    `atrim must precede asetpts in the per-item filter — got: ${audioFilter}`)
+})
+
+test('single audioclean source with vol=1 still routes through the encoder path', () => {
+  // Regression: the previous stream-copy fast path triggered on exactly this
+  // signature (one item, src ends with _audioclean.mp4, volume==1). It was
+  // the source of the intra-clip audio pop because the input seek landed at
+  // the nearest AAC frame (up to ~21ms early) and the concat demuxer dropped
+  // the per-segment edit list when re-encoding. Removing the fast path means
+  // this segment now runs through the same filter+encode path as everything
+  // else, so the output is sample-accurate PCM.
+  const seg = {
+    start: 4.733, end: 5.433, items: [
+      { type: 'video', src: '/IMG_6201_2_audioclean.mp4',
+        start: 4.733, end: 5.433, inPoint: 0,
+        trackIdx: 0, scale: 1, offsetX: 0, offsetY: 0, opacity: 1,
+        muted: false, volume: 1.0 },
+    ], overlays: [], vw: 1920, vh: 1080, fps: 30,
+  }
+  const result = encodeSegment(seg, '/tmp/test.mp4', { _dryRun: true })
+  // Per-item audio filter chain MUST exist (it is the encoder path).
+  assert.ok(
+    result.filterParts.some(f => f.includes('sample_rates=48000')),
+    'audioclean+vol=1 must still go through the per-item filter chain — stream-copy fast path was the audio-pop bug',
+  )
+  // -c:a copy MUST NOT appear (it was the stream-copy fast path).
+  const cIdx = result.args.indexOf('-c:a')
+  assert.ok(cIdx >= 0, 'args must include -c:a')
+  assert.notEqual(result.args[cIdx + 1], 'copy',
+    'audioclean+vol=1 must not stream-copy audio anymore')
+  assert.equal(result.args[cIdx + 1], 'pcm_s16le',
+    'audioclean+vol=1 must encode to pcm_s16le like every other segment')
+})
