@@ -94,7 +94,17 @@ export default function StoryboardView({ project, onProjectChange, logMessage }:
   }
 
   async function handleBackToSetup() {
-    // Reconstruct draft data from storyboard so refs survive the round-trip
+    // Reconstruct draft data from storyboard so refs survive the round-trip.
+    // Image/style refs were copied INTO the project workspace by
+    // project/init.py during the original create, so the paths captured here
+    // point inside project_dir and would be destroyed by the rmtree below
+    // — leaving the prefill with dangling paths and the next create failing
+    // with `Image ref not found`. To avoid that, the DELETE is called with
+    // `preserveAssets: true`, which makes the server move every referenced
+    // file into <workspace>/_uploads/ (the shared junk drawer that survives
+    // project lifecycles) BEFORE the rmtree, and return the old→new mapping.
+    // We then rewrite the draft paths through that map so the prefill carries
+    // valid paths into the next create.
     const sb = project.storyboard
     const imageRefDrafts = (sb?.imageRefs ?? []).map(r => ({
       id: r.id,
@@ -109,7 +119,17 @@ export default function StoryboardView({ project, onProjectChange, logMessage }:
       path: r.path ?? '',
     }))
 
-    try { await api.deleteProject(project.id) } catch (e) { console.error(e) }
+    let preserved: Record<string, string> = {}
+    try {
+      const res = await api.deleteProject(project.id, { preserveAssets: true })
+      if (res && 'preserved' in res) preserved = res.preserved
+    } catch (e) {
+      console.error(e)
+    }
+    const remap = (p?: string) => (p && preserved[p]) ? preserved[p] : p
+    const remappedImageRefDrafts = imageRefDrafts.map(d => ({ ...d, path: remap(d.path) }))
+    const remappedStyleRefDrafts = styleRefDrafts.map(d => ({ ...d, path: remap(d.path) ?? '' }))
+
     navigate('/projects/new', {
       state: {
         prefill: {
@@ -117,7 +137,7 @@ export default function StoryboardView({ project, onProjectChange, logMessage }:
           prompt:   project.editingPrompt,
           workflow: project.workflow,
           profile:  project.profile ?? '',
-          aiVideoData: { imageRefs: imageRefDrafts, styleRefs: styleRefDrafts },
+          aiVideoData: { imageRefs: remappedImageRefDrafts, styleRefs: remappedStyleRefDrafts },
           aspectRatio: sb?.aspectRatio,
           targetDuration: sb?.targetDurationSeconds,
         },
@@ -130,32 +150,32 @@ export default function StoryboardView({ project, onProjectChange, logMessage }:
       {/* Header */}
       <header className="flex flex-col gap-3">
         <div className="flex items-center gap-3">
-          <h1 className="text-xl font-semibold text-white">{project.name || 'Untitled'}</h1>
+          <h1 className="text-xl font-semibold text-gray-900 dark:text-white">{project.name || 'Untitled'}</h1>
           {isPending && (
-            <span className="inline-flex items-center rounded-full bg-amber-500/20 px-2.5 py-0.5 text-xs font-medium text-amber-400 border border-amber-500/30">
+            <span className="inline-flex items-center rounded-full bg-amber-100 dark:bg-amber-500/20 px-2.5 py-0.5 text-xs font-medium text-amber-700 dark:text-amber-400 border border-amber-300 dark:border-amber-500/30">
               pending
             </span>
           )}
         </div>
-        <p className="text-sm text-gray-400 line-clamp-3">{project.editingPrompt}</p>
+        <p className="text-sm text-gray-600 dark:text-gray-400 line-clamp-3">{project.editingPrompt}</p>
         <div className="flex items-center gap-2">
           {aspectRatio && (
-            <span className="inline-flex items-center rounded-md bg-gray-800 px-2 py-1 text-xs text-gray-300 border border-gray-700">
+            <span className="inline-flex items-center rounded-md bg-gray-100 dark:bg-gray-800 px-2 py-1 text-xs text-gray-700 dark:text-gray-300 border border-gray-300 dark:border-gray-700">
               {aspectRatio}
             </span>
           )}
           {targetDuration && (
-            <span className="inline-flex items-center rounded-md bg-gray-800 px-2 py-1 text-xs text-gray-300 border border-gray-700">
+            <span className="inline-flex items-center rounded-md bg-gray-100 dark:bg-gray-800 px-2 py-1 text-xs text-gray-700 dark:text-gray-300 border border-gray-300 dark:border-gray-700">
               ~{targetDuration}s total
             </span>
           )}
           {(project.storyboard?.imageRefs?.length ?? 0) > 0 && (
-            <span className="inline-flex items-center rounded-md bg-gray-800 px-2 py-1 text-xs text-gray-300 border border-gray-700">
+            <span className="inline-flex items-center rounded-md bg-gray-100 dark:bg-gray-800 px-2 py-1 text-xs text-gray-700 dark:text-gray-300 border border-gray-300 dark:border-gray-700">
               {project.storyboard!.imageRefs.length} image ref{project.storyboard!.imageRefs.length !== 1 ? 's' : ''}
             </span>
           )}
           {(project.storyboard?.styleRefs?.length ?? 0) > 0 && (
-            <span className="inline-flex items-center rounded-md bg-gray-800 px-2 py-1 text-xs text-gray-300 border border-gray-700">
+            <span className="inline-flex items-center rounded-md bg-gray-100 dark:bg-gray-800 px-2 py-1 text-xs text-gray-700 dark:text-gray-300 border border-gray-300 dark:border-gray-700">
               {project.storyboard!.styleRefs.length} style ref{project.storyboard!.styleRefs.length !== 1 ? 's' : ''}
             </span>
           )}
@@ -168,15 +188,15 @@ export default function StoryboardView({ project, onProjectChange, logMessage }:
           {!logMessage ? (
             <>
               <div className="flex flex-col items-center gap-2 text-center">
-                <p className="text-white text-lg font-semibold">Message your agent to start</p>
-                <p className="text-gray-400 text-sm">The agent will build your storyboard — scenes, characters, and style. Copy this and send it.</p>
+                <p className="text-gray-900 dark:text-white text-lg font-semibold">Message your agent to start</p>
+                <p className="text-gray-600 dark:text-gray-400 text-sm">The agent will build your storyboard — scenes, characters, and style. Copy this and send it.</p>
               </div>
 
               {skillPath && (
-                <div className="w-full max-w-lg rounded-xl border-2 border-blue-400/50 bg-gray-900 p-5 flex flex-col gap-3 text-left shadow-lg shadow-blue-400/10">
-                  <p className="text-blue-400 text-xs font-bold uppercase tracking-widest">Send this to your agent</p>
-                  <div className="flex items-start justify-between bg-black/60 border border-transparent rounded-lg px-3 py-3 font-mono gap-3">
-                    <span className="text-gray-200 text-[12px] leading-relaxed break-all">
+                <div className="w-full max-w-lg rounded-xl border-2 border-blue-400/50 bg-white dark:bg-gray-900 p-5 flex flex-col gap-3 text-left shadow-lg shadow-blue-400/10">
+                  <p className="text-blue-600 dark:text-blue-400 text-xs font-bold uppercase tracking-widest">Send this to your agent</p>
+                  <div className="flex items-start justify-between bg-gray-100 dark:bg-black/60 border border-transparent rounded-lg px-3 py-3 font-mono gap-3">
+                    <span className="text-gray-900 dark:text-gray-200 text-[12px] leading-relaxed break-all">
                       There is a new project pending: "{project.name ?? project.id}". Please see @{skillPath} and start. Talk to me if you run into questions.
                     </span>
                     <button
@@ -189,8 +209,8 @@ export default function StoryboardView({ project, onProjectChange, logMessage }:
                       }}
                       className={`shrink-0 flex items-center gap-1.5 text-xs font-medium px-3 py-1.5 rounded-md transition-colors ${
                         copied
-                          ? 'bg-green-700 text-green-200'
-                          : 'bg-white/10 text-gray-300 hover:bg-white/20 hover:text-white'
+                          ? 'bg-green-100 dark:bg-green-700 text-green-800 dark:text-green-200'
+                          : 'bg-gray-200 dark:bg-white/10 text-gray-700 dark:text-gray-300 hover:bg-gray-300 dark:hover:bg-white/20 hover:text-gray-900 dark:hover:text-white'
                       }`}
                     >
                       {copied ? 'Copied' : 'Copy'}
@@ -199,19 +219,19 @@ export default function StoryboardView({ project, onProjectChange, logMessage }:
                 </div>
               )}
 
-              <p className="text-gray-600 text-xs font-mono">project id: {project.id}</p>
+              <p className="text-gray-400 dark:text-gray-600 text-xs font-mono">project id: {project.id}</p>
               <button
                 onClick={handleBackToSetup}
-                className="text-xs text-gray-600 hover:text-gray-400 transition-colors underline underline-offset-2"
+                className="text-xs text-gray-500 dark:text-gray-600 hover:text-gray-700 dark:hover:text-gray-400 transition-colors underline underline-offset-2"
               >
                 &larr; Back to setup
               </button>
             </>
           ) : (
             <>
-              <div className="w-5 h-5 rounded-full border-2 border-gray-700 border-t-gray-400 animate-spin" />
-              <p className="text-gray-300 text-sm">Agent is building your storyboard…</p>
-              <p className="text-blue-400 text-xs font-mono bg-gray-900 rounded px-3 py-1.5 w-full max-w-lg text-left truncate">
+              <div className="w-5 h-5 rounded-full border-2 border-gray-300 dark:border-gray-700 border-t-gray-700 dark:border-t-gray-400 animate-spin" />
+              <p className="text-gray-700 dark:text-gray-300 text-sm">Agent is building your storyboard…</p>
+              <p className="text-blue-600 dark:text-blue-400 text-xs font-mono bg-gray-100 dark:bg-gray-900 rounded px-3 py-1.5 w-full max-w-lg text-left truncate">
                 &rarr; {logMessage}
               </p>
             </>
@@ -223,20 +243,20 @@ export default function StoryboardView({ project, onProjectChange, logMessage }:
       {!isPending && (
         <>
           <ApproveAndGenerate project={project} onProjectChange={onProjectChange} />
-          <p className="text-xs text-gray-500">
+          <p className="text-xs text-gray-500 dark:text-gray-500">
             Scene prompts are editable (pencil icon). For anything else — scene count,
             ordering, durations, characters, style — ask the agent in chat.
             Image references can be regenerated below.
           </p>
 
           {/* Style anchor */}
-          <section className="rounded-lg border border-gray-800 bg-gray-900/50 p-4">
+          <section className="rounded-lg border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900/50 p-4">
             <div className="flex items-center justify-between mb-2">
-              <h2 className="text-sm font-medium text-gray-300">Style</h2>
+              <h2 className="text-sm font-medium text-gray-700 dark:text-gray-300">Style</h2>
               {!editingStyleAnchor && (
                 <button
                   onClick={() => { setStyleAnchorDraft(styleAnchor ?? ''); setEditingStyleAnchor(true) }}
-                  className="p-1 rounded hover:bg-gray-800 text-gray-500 hover:text-gray-300 transition-colors"
+                  className="p-1 rounded hover:bg-gray-100 dark:hover:bg-gray-800 text-gray-400 dark:text-gray-500 hover:text-gray-700 dark:hover:text-gray-300 transition-colors"
                 >
                   <Pencil className="w-3.5 h-3.5" />
                 </button>
@@ -250,22 +270,22 @@ export default function StoryboardView({ project, onProjectChange, logMessage }:
                   onChange={e => setStyleAnchorDraft(e.target.value)}
                   rows={3}
                   autoFocus
-                  className="rounded-md border border-gray-600 bg-gray-800 px-3 py-2 text-sm text-white placeholder:text-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none"
+                  className="rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-3 py-2 text-sm text-gray-900 dark:text-white placeholder:text-gray-400 dark:placeholder:text-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none"
                   placeholder="Describe the visual style for all scenes..."
                 />
                 <div className="flex gap-2 justify-end">
-                  <button onClick={() => setEditingStyleAnchor(false)} className="text-xs text-gray-400 hover:text-gray-200 px-2 py-1">Cancel</button>
+                  <button onClick={() => setEditingStyleAnchor(false)} className="text-xs text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-200 px-2 py-1">Cancel</button>
                   <button
                     onClick={async () => {
                       await saveStyleAnchor(styleAnchorDraft)
                       setEditingStyleAnchor(false)
                     }}
-                    className="text-xs text-blue-400 hover:text-blue-300 font-medium px-2 py-1"
+                    className="text-xs text-blue-600 dark:text-blue-400 hover:text-blue-700 dark:hover:text-blue-300 font-medium px-2 py-1"
                   >Save</button>
                 </div>
               </div>
             ) : (
-              <p className="text-sm text-gray-400">{styleAnchor || <span className="italic text-gray-600">No style anchor set</span>}</p>
+              <p className="text-sm text-gray-700 dark:text-gray-400">{styleAnchor || <span className="italic text-gray-400 dark:text-gray-600">No style anchor set</span>}</p>
             )}
           </section>
 
@@ -280,7 +300,7 @@ export default function StoryboardView({ project, onProjectChange, logMessage }:
 
           {/* Scene list */}
           <section className="flex flex-col gap-3">
-            <h2 className="text-sm font-medium text-gray-300">Scenes ({scenes.length})</h2>
+            <h2 className="text-sm font-medium text-gray-700 dark:text-gray-300">Scenes ({scenes.length})</h2>
             {scenes.map((scene, i) => (
               <SceneCard
                 key={scene.id}
@@ -292,7 +312,7 @@ export default function StoryboardView({ project, onProjectChange, logMessage }:
               />
             ))}
             {scenes.length === 0 && (
-              <p className="text-sm text-gray-500 italic">No scenes yet — the agent is still building the storyboard.</p>
+              <p className="text-sm text-gray-500 dark:text-gray-500 italic">No scenes yet — the agent is still building the storyboard.</p>
             )}
           </section>
 

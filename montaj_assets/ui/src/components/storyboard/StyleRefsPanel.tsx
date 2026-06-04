@@ -34,29 +34,29 @@ export function StyleRefsPanel({ project, onProjectChange }: Props) {
 
   return (
     <section className="flex-1 min-w-0">
-      <h2 className="text-sm font-medium text-gray-300 mb-1">Style references</h2>
-      <p className="text-xs text-gray-500 mb-3">Analyzed by the agent; influenced the style anchor above. Not used in the final video.</p>
+      <h2 className="text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Style references</h2>
+      <p className="text-xs text-gray-500 dark:text-gray-500 mb-3">Analyzed by the agent; influenced the style anchor above. Not used in the final video.</p>
       <div className="flex flex-col gap-2">
         {refs.map(ref => {
           const Icon = kindIcon[ref.kind] ?? Image
           return (
-            <div key={ref.id} className="flex items-center gap-3 rounded-lg border border-gray-800 bg-gray-900/50 p-3">
+            <div key={ref.id} className="flex items-center gap-3 rounded-lg border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900/50 p-3">
               {ref.kind === 'image' ? (
-                <img src={fileUrl(ref.path)} alt={ref.label} className="w-10 h-10 rounded object-cover border border-gray-700" />
+                <img src={fileUrl(ref.path)} alt={ref.label} className="w-10 h-10 rounded object-cover border border-gray-300 dark:border-gray-700" />
               ) : (
-                <div className="w-10 h-10 rounded border border-gray-700 bg-gray-800 flex items-center justify-center">
-                  <Icon className="w-4 h-4 text-gray-500" />
+                <div className="w-10 h-10 rounded border border-gray-300 dark:border-gray-700 bg-gray-100 dark:bg-gray-800 flex items-center justify-center">
+                  <Icon className="w-4 h-4 text-gray-500 dark:text-gray-500" />
                 </div>
               )}
               <div className="flex flex-col min-w-0 flex-1">
-                <span className="text-sm text-gray-300 truncate">{ref.label || ref.path.split('/').pop()}</span>
-                <span className="text-xs text-gray-500">{ref.kind}</span>
+                <span className="text-sm text-gray-800 dark:text-gray-300 truncate">{ref.label || ref.path.split('/').pop()}</span>
+                <span className="text-xs text-gray-500 dark:text-gray-500">{ref.kind}</span>
               </div>
               {onProjectChange && (
                 <button
                   type="button"
                   onClick={() => handleDelete(ref.id)}
-                  className="p-1 rounded text-red-400/40 hover:text-red-400 hover:bg-red-900/20 transition-colors"
+                  className="p-1 rounded text-red-500/50 dark:text-red-400/40 hover:text-red-600 dark:hover:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors"
                   title="Remove style reference"
                 >
                   <Trash2 className="w-3.5 h-3.5" />

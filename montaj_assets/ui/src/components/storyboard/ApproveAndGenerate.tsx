@@ -137,10 +137,10 @@ export function ApproveAndGenerate({ project, onProjectChange }: Props) {
   if (approved) {
     const allDone = doneCount === storyboardScenes.length && storyboardScenes.length > 0
     return (
-      <div className="rounded-lg border border-gray-800 bg-gray-900/50 p-4 flex flex-col gap-3">
-        <p className="text-sm text-gray-300">
-          <span className="font-medium text-green-400">Approved</span>{' '}
-          <span className="text-gray-500">{new Date(approvedAt!).toLocaleString()}</span>
+      <div className="rounded-lg border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900/50 p-4 flex flex-col gap-3">
+        <p className="text-sm text-gray-700 dark:text-gray-300">
+          <span className="font-medium text-green-600 dark:text-green-400">Approved</span>{' '}
+          <span className="text-gray-500 dark:text-gray-500">{new Date(approvedAt!).toLocaleString()}</span>
           {' — '}agent generating {doneCount}/{storyboardScenes.length} scenes.
         </p>
         {storyboardScenes.length > 0 && (
@@ -150,10 +150,10 @@ export function ApproveAndGenerate({ project, onProjectChange }: Props) {
                 key={p.id}
                 className={`text-xs px-2 py-1 rounded border ${
                   p.status === 'done'
-                    ? 'border-green-800 bg-green-900/30 text-green-400'
+                    ? 'border-green-300 dark:border-green-800 bg-green-50 dark:bg-green-900/30 text-green-700 dark:text-green-400'
                     : p.status === 'failed'
-                    ? 'border-red-800 bg-red-900/30 text-red-400'
-                    : 'border-gray-700 bg-gray-800 text-gray-400'
+                    ? 'border-red-300 dark:border-red-800 bg-red-50 dark:bg-red-900/30 text-red-700 dark:text-red-400'
+                    : 'border-gray-300 dark:border-gray-700 bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-400'
                 }`}
               >
                 Scene {i + 1}: {p.status}
@@ -166,7 +166,7 @@ export function ApproveAndGenerate({ project, onProjectChange }: Props) {
           <button
             onClick={retryFailed}
             disabled={submitting}
-            className="flex items-center gap-2 text-sm font-medium text-amber-400 hover:text-amber-300 transition-colors w-fit"
+            className="flex items-center gap-2 text-sm font-medium text-amber-600 dark:text-amber-400 hover:text-amber-700 dark:hover:text-amber-300 transition-colors w-fit"
           >
             <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               <path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/>
@@ -175,7 +175,7 @@ export function ApproveAndGenerate({ project, onProjectChange }: Props) {
               <path d="M16 16h5v5"/>
             </svg>
             {submitting ? 'Clearing errors…' : `Retry ${failedCount} failed scene${failedCount === 1 ? '' : 's'}`}
-            {copied && <span className="text-xs text-green-400">(copied to clipboard)</span>}
+            {copied && <span className="text-xs text-green-600 dark:text-green-400">(copied to clipboard)</span>}
           </button>
         )}
         {/* Re-approve button — lets user write a fresh approval after editing the storyboard */}
@@ -183,7 +183,7 @@ export function ApproveAndGenerate({ project, onProjectChange }: Props) {
           <button
             onClick={onApprove}
             disabled={submitting}
-            className="flex items-center gap-2 text-sm font-medium text-blue-400 hover:text-blue-300 transition-colors w-fit"
+            className="flex items-center gap-2 text-sm font-medium text-blue-600 dark:text-blue-400 hover:text-blue-700 dark:hover:text-blue-300 transition-colors w-fit"
           >
             <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               <path d="M12 20h9"/>
@@ -194,20 +194,20 @@ export function ApproveAndGenerate({ project, onProjectChange }: Props) {
         )}
         {/* Tell-your-agent panel. Hidden once generation is complete. */}
         {!allDone && (
-          <div className="rounded-md border border-gray-700 bg-gray-900 p-3 flex flex-col gap-2">
-            <p className="text-xs text-gray-400">
+          <div className="rounded-md border border-gray-300 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 p-3 flex flex-col gap-2">
+            <p className="text-xs text-gray-600 dark:text-gray-400">
               Your agent doesn't auto-detect approval. Paste this in your chat to start (or resume) generation:
             </p>
             <div className="flex items-start gap-2">
-              <code className="flex-1 text-xs text-gray-300 bg-gray-950 border border-gray-800 rounded px-2 py-1.5 whitespace-pre-wrap break-words font-mono">
+              <code className="flex-1 text-xs text-gray-800 dark:text-gray-300 bg-white dark:bg-gray-950 border border-gray-200 dark:border-gray-800 rounded px-2 py-1.5 whitespace-pre-wrap break-words font-mono">
                 {agentMessage}
               </code>
               <button
                 onClick={copyAgentMessage}
                 className={`shrink-0 text-xs px-2 py-1.5 rounded border transition-colors ${
                   copied
-                    ? 'border-green-700 bg-green-900/40 text-green-300'
-                    : 'border-gray-700 bg-gray-800 text-gray-300 hover:bg-gray-700 hover:text-white'
+                    ? 'border-green-300 dark:border-green-700 bg-green-50 dark:bg-green-900/40 text-green-700 dark:text-green-300'
+                    : 'border-gray-300 dark:border-gray-700 bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700 hover:text-gray-900 dark:hover:text-white'
                 }`}
                 title="Copy to clipboard"
               >
@@ -215,13 +215,13 @@ export function ApproveAndGenerate({ project, onProjectChange }: Props) {
               </button>
             </div>
             {doneCount > 0 && doneCount < storyboardScenes.length && (
-              <p className="text-xs text-gray-500">
+              <p className="text-xs text-gray-500 dark:text-gray-500">
                 If the agent stalls mid-run, paste the same message again — it's idempotent (already-generated scenes are skipped).
               </p>
             )}
           </div>
         )}
-        {error && <p className="text-xs text-red-400">{error}</p>}
+        {error && <p className="text-xs text-red-600 dark:text-red-400">{error}</p>}
       </div>
     )
   }
@@ -237,8 +237,8 @@ export function ApproveAndGenerate({ project, onProjectChange }: Props) {
           ? 'Submitting…'
           : `Approve & Generate ${storyboardScenes.length} scene${storyboardScenes.length === 1 ? '' : 's'}`}
       </Button>
-      {error && <p className="text-xs text-red-400">{error}</p>}
-      <p className="text-xs text-gray-500">
+      {error && <p className="text-xs text-red-600 dark:text-red-400">{error}</p>}
+      <p className="text-xs text-gray-500 dark:text-gray-500">
         Approving records the approval on the project. A message will appear here
         afterward — paste it in your agent's chat to start scene generation.
       </p>

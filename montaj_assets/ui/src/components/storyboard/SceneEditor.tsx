@@ -18,10 +18,10 @@ const SECTION_ORDER = ['camera', 'subject', 'action', 'dialogue'] as const
 type SectionType = typeof SECTION_ORDER[number]
 
 const sectionMeta: Record<SectionType, { label: string; color: string; bg: string; border: string; placeholder: string; optional?: boolean }> = {
-  camera:   { label: 'Camera',   color: 'text-purple-400', bg: 'bg-purple-400/10', border: 'border-purple-400/20', placeholder: 'Shot size + camera motion. One sentence.\ne.g. "Wide shot, camera slowly pushes in."' },
-  subject:  { label: 'Subject',  color: 'text-blue-400',   bg: 'bg-blue-400/10',   border: 'border-blue-400/20',   placeholder: 'Who/what is in the scene. Anchor identity first.\ne.g. "Rennie sits at the top of the yellow slide, gripping the railings."' },
-  action:   { label: 'Action',   color: 'text-cyan-400',   bg: 'bg-cyan-400/10',   border: 'border-cyan-400/20',   placeholder: 'What happens — active verbs, sequential motion.\ne.g. "She stares down frozen. Rosie looks up and wags her tail."' },
-  dialogue: { label: 'Dialogue', color: 'text-green-400',  bg: 'bg-green-400/10',  border: 'border-green-400/20',  placeholder: 'Voice-tagged speech. Leave empty if no dialogue.\ne.g. (female, ~8yo, nervous) Rennie says: "It looks high."', optional: true },
+  camera:   { label: 'Camera',   color: 'text-purple-700 dark:text-purple-400', bg: 'bg-purple-50 dark:bg-purple-400/10', border: 'border-purple-200 dark:border-purple-400/20', placeholder: 'Shot size + camera motion. One sentence.\ne.g. "Wide shot, camera slowly pushes in."' },
+  subject:  { label: 'Subject',  color: 'text-blue-700 dark:text-blue-400',     bg: 'bg-blue-50 dark:bg-blue-400/10',     border: 'border-blue-200 dark:border-blue-400/20',     placeholder: 'Who/what is in the scene. Anchor identity first.\ne.g. "Rennie sits at the top of the yellow slide, gripping the railings."' },
+  action:   { label: 'Action',   color: 'text-cyan-700 dark:text-cyan-400',     bg: 'bg-cyan-50 dark:bg-cyan-400/10',     border: 'border-cyan-200 dark:border-cyan-400/20',     placeholder: 'What happens — active verbs, sequential motion.\ne.g. "She stares down frozen. Rosie looks up and wags her tail."' },
+  dialogue: { label: 'Dialogue', color: 'text-green-700 dark:text-green-400',   bg: 'bg-green-50 dark:bg-green-400/10',   border: 'border-green-200 dark:border-green-400/20',   placeholder: 'Voice-tagged speech. Leave empty if no dialogue.\ne.g. (female, ~8yo, nervous) Rennie says: "It looks high."', optional: true },
 }
 
 /** Parse ## section-formatted prompt into ordered entries. */
@@ -144,38 +144,38 @@ export function SceneEditor({ scene, index, styleAnchor, onClose, onSave, onDele
       onClick={(e) => { if (e.target === e.currentTarget && !saving) onClose() }}
     >
       <aside
-        className="w-full max-w-2xl max-h-[85vh] bg-gray-900 border border-gray-700 rounded-xl shadow-2xl flex flex-col overflow-hidden"
+        className="w-full max-w-2xl max-h-[85vh] bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded-xl shadow-2xl flex flex-col overflow-hidden"
         role="dialog"
         aria-label={`Scene ${index + 1} prompt`}
       >
         {/* Header */}
-        <div className="flex items-center justify-between px-5 py-4 border-b border-gray-800">
+        <div className="flex items-center justify-between px-5 py-4 border-b border-gray-200 dark:border-gray-800">
           <div className="flex items-center gap-3">
-            <h2 className="text-sm font-semibold text-white">Scene {index + 1}</h2>
+            <h2 className="text-sm font-semibold text-gray-900 dark:text-white">Scene {index + 1}</h2>
             {scene.shotScale && (
-              <span className="text-[10px] px-1.5 py-0.5 rounded bg-purple-400/10 text-purple-400 border border-purple-400/20">
+              <span className="text-[10px] px-1.5 py-0.5 rounded bg-purple-100 dark:bg-purple-400/10 text-purple-700 dark:text-purple-400 border border-purple-300 dark:border-purple-400/20">
                 {scene.shotScale}
               </span>
             )}
             {scene.cameraMove && (
-              <span className="text-[10px] px-1.5 py-0.5 rounded bg-purple-400/10 text-purple-400 border border-purple-400/20">
+              <span className="text-[10px] px-1.5 py-0.5 rounded bg-purple-100 dark:bg-purple-400/10 text-purple-700 dark:text-purple-400 border border-purple-300 dark:border-purple-400/20">
                 {scene.cameraMove}
               </span>
             )}
-            <span className="text-[10px] text-gray-500">{scene.duration}s</span>
+            <span className="text-[10px] text-gray-500 dark:text-gray-500">{scene.duration}s</span>
           </div>
           <div className="flex items-center gap-2">
-            <div className="flex rounded-md border border-gray-700 overflow-hidden">
+            <div className="flex rounded-md border border-gray-300 dark:border-gray-700 overflow-hidden">
               <button
                 onClick={switchToStructured}
-                className={`px-2 py-1 text-[10px] transition-colors ${viewMode === 'structured' ? 'bg-gray-700 text-white' : 'text-gray-500 hover:text-gray-300'}`}
+                className={`px-2 py-1 text-[10px] transition-colors ${viewMode === 'structured' ? 'bg-gray-200 dark:bg-gray-700 text-gray-900 dark:text-white' : 'text-gray-500 dark:text-gray-500 hover:text-gray-700 dark:hover:text-gray-300'}`}
               >Structured</button>
               <button
                 onClick={switchToRaw}
-                className={`px-2 py-1 text-[10px] transition-colors ${viewMode === 'raw' ? 'bg-gray-700 text-white' : 'text-gray-500 hover:text-gray-300'}`}
+                className={`px-2 py-1 text-[10px] transition-colors ${viewMode === 'raw' ? 'bg-gray-200 dark:bg-gray-700 text-gray-900 dark:text-white' : 'text-gray-500 dark:text-gray-500 hover:text-gray-700 dark:hover:text-gray-300'}`}
               >Raw</button>
             </div>
-            <button onClick={onClose} className="text-gray-500 hover:text-white transition-colors text-lg leading-none ml-2">×</button>
+            <button onClick={onClose} className="text-gray-500 dark:text-gray-500 hover:text-gray-900 dark:hover:text-white transition-colors text-lg leading-none ml-2">×</button>
           </div>
         </div>
 
@@ -187,7 +187,7 @@ export function SceneEditor({ scene, index, styleAnchor, onClose, onSave, onDele
               onChange={(e) => setRawDraft(e.target.value)}
               rows={16}
               autoFocus
-              className="rounded-md border border-gray-600 bg-gray-800 px-3 py-2 text-sm text-white placeholder:text-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none font-mono"
+              className="rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-3 py-2 text-sm text-gray-900 dark:text-white placeholder:text-gray-400 dark:placeholder:text-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none font-mono"
               placeholder="## Camera&#10;Slow zoom in&#10;&#10;## Subject&#10;A blonde girl at the slide..."
             />
           ) : (
@@ -204,7 +204,7 @@ export function SceneEditor({ scene, index, styleAnchor, onClose, onSave, onDele
                       value={sec.text}
                       onChange={(e) => updateSection(i, e.target.value)}
                       rows={sec.text ? Math.min(Math.max(sec.text.split('\n').length, 2), 5) : 2}
-                      className="mt-1 w-full bg-transparent text-sm text-gray-200 placeholder:text-gray-600 focus:outline-none resize-none leading-relaxed"
+                      className="mt-1 w-full bg-transparent text-sm text-gray-800 dark:text-gray-200 placeholder:text-gray-400 dark:placeholder:text-gray-600 focus:outline-none resize-none leading-relaxed"
                       placeholder={meta.placeholder}
                     />
                   </div>
@@ -212,22 +212,22 @@ export function SceneEditor({ scene, index, styleAnchor, onClose, onSave, onDele
               })}
             </div>
           )}
-          <p className={`text-xs ${over ? 'text-red-400' : 'text-gray-500'}`}>
+          <p className={`text-xs ${over ? 'text-red-600 dark:text-red-400' : 'text-gray-500 dark:text-gray-500'}`}>
             {currentPrompt.length} / {sceneBudget} chars
             {styleAnchor
               ? ` (Kling limit ${KLING_PROMPT_LIMIT} − ${styleAnchorLen} styleAnchor prefix)`
               : ` (Kling limit ${KLING_PROMPT_LIMIT})`}
           </p>
-          {error && <p className="text-xs text-red-400">{error}</p>}
+          {error && <p className="text-xs text-red-600 dark:text-red-400">{error}</p>}
         </div>
 
         {/* Footer */}
-        <div className="flex items-center px-5 py-4 border-t border-gray-800">
+        <div className="flex items-center px-5 py-4 border-t border-gray-200 dark:border-gray-800">
           {onDelete && (
             <button
               onClick={handleDelete}
               disabled={saving}
-              className="text-xs text-red-400 hover:text-red-300 transition-colors disabled:opacity-50"
+              className="text-xs text-red-600 dark:text-red-400 hover:text-red-700 dark:hover:text-red-300 transition-colors disabled:opacity-50"
             >
               Delete scene
             </button>

@@ -163,8 +163,19 @@ export const api = {
     return path
   },
 
-  deleteProject: (id: string) =>
-    request<void>(`/api/projects/${id}`, { method: 'DELETE' }),
+  deleteProject: (id: string, opts?: { preserveAssets?: boolean }) => {
+    // When preserveAssets is set, the server walks the project's storyboard
+    // imageRefs/styleRefs, moves any workspace-resident files into
+    // <workspace>/_uploads/ before rmtree, and returns {preserved: {old: new}}.
+    // Used by the editor's "back to setup" flow so refs survive the round-trip
+    // through the new-project form prefill. Without this, prefill paths point
+    // into a workspace that no longer exists and the next create fails with
+    // `Image ref not found`.
+    const qs = opts?.preserveAssets ? '?preserve_assets=true' : ''
+    return request<{ preserved: Record<string, string> } | void>(
+      `/api/projects/${id}${qs}`, { method: 'DELETE' }
+    )
+  },
 
   rerun: (id: string, params?: { prompt?: string; workflow?: string; versionName?: string }) =>
     request<Project>(`/api/projects/${id}/rerun`, { method: 'POST', body: JSON.stringify(params ?? {}) }),

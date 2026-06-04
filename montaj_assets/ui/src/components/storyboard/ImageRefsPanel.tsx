@@ -48,7 +48,7 @@ export function ImageRefsPanel({ project, onProjectChange }: Props) {
 
   return (
     <section className="flex-1 min-w-0">
-      <h2 className="text-sm font-medium text-gray-300 mb-3">Image references ({refs.length})</h2>
+      <h2 className="text-sm font-medium text-gray-700 dark:text-gray-300 mb-3">Image references ({refs.length})</h2>
       <div className="flex flex-col gap-2">
         {refs.map(ref => (
           <ImageRefCard

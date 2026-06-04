@@ -24,7 +24,7 @@ from serve.common import (
     resolve_workspace, find_project_dir, get_project_dir,
     run_subprocess,
     not_found, bad_request, forbidden, server_error,
-    validate_project_subpath,
+    validate_project_subpath, _is_under,
 )
 from serve.routes.files import save_upload
 from lib.remote_io import fetch_to_disk_async, push_from_disk_async, parse_allowed_hosts
@@ -546,9 +546,93 @@ async def reserve_path(project_id: str, body: dict = Body(...)):
     return {"path": str(path)}
 
 
-@router.delete("/projects/{project_id}", status_code=204)
-async def delete_project(project_id: str, project_dir: Path = Depends(get_project_dir)):
+@router.delete("/projects/{project_id}")
+async def delete_project(
+    project_id: str,
+    preserve_assets: bool = False,
+    project_dir: Path = Depends(get_project_dir),
+):
+    """Delete a project's workspace directory.
+
+    Default: behaviour unchanged — `shutil.rmtree(project_dir)` and 204 No Content.
+
+    With `?preserve_assets=true`: before the rmtree, walk the project's
+    `storyboard.imageRefs[].refImages` and `storyboard.styleRefs[].path`, and
+    for every referenced file that lives **inside** this project_dir, move it
+    into the workspace-level `_uploads/` junk drawer (the same dir the
+    `POST /upload` endpoint writes to). Returns 200 with `{"preserved":
+    {old_path: new_path, ...}}` so the caller can rewrite any UI state that
+    held the doomed paths. Used by the editor's "back to setup" flow, which
+    needs the uploaded image-ref / style-ref files to survive the round-trip
+    through the new-project form prefill (without this, the prefill paths
+    point into a workspace that no longer exists and `project/init.py` fails
+    the next create with `file_not_found: Image ref not found`).
+
+    Files outside this project_dir are left alone (they're either user-owned
+    originals or references into another project). A missing project.json, a
+    parse error, or a `shutil.move` failure on any single file is non-fatal:
+    we still rmtree the project. The preserved map only includes files that
+    were successfully moved.
+    """
+    from fastapi.responses import Response
+    preserved: dict[str, str] = {}
+    if preserve_assets:
+        project_path = project_dir / "project.json"
+        if project_path.is_file():
+            try:
+                proj = json.loads(project_path.read_text())
+                sb = proj.get("storyboard") or {}
+                # Collect every referenced path. imageRefs.refImages is a list
+                # (the schema allows multiple frames per ref, though current
+                # init.py only emits one). styleRefs.path is a single string.
+                paths_to_evict: list[str] = []
+                for ref in sb.get("imageRefs") or []:
+                    for p in ref.get("refImages") or []:
+                        if isinstance(p, str):
+                            paths_to_evict.append(p)
+                for ref in sb.get("styleRefs") or []:
+                    p = ref.get("path")
+                    if isinstance(p, str):
+                        paths_to_evict.append(p)
+
+                if paths_to_evict:
+                    uploads_dir = resolve_workspace() / "_uploads"
+                    uploads_dir.mkdir(parents=True, exist_ok=True)
+                    project_dir_resolved = project_dir.resolve()
+                    for raw in paths_to_evict:
+                        try:
+                            src = Path(raw)
+                            if not src.is_file():
+                                continue
+                            # Only move files that live INSIDE this project's
+                            # workspace dir. Anything else is a foreign reference
+                            # (user-owned original, another project, etc.) and
+                            # must not be touched.
+                            if not _is_under(src.resolve(), project_dir_resolved):
+                                continue
+                            # De-dup the target name in _uploads/ — matches the
+                            # save_upload() helper's naming convention so two
+                            # back-to-setup round-trips don't clobber.
+                            target = uploads_dir / src.name
+                            stem, suffix = target.stem, target.suffix
+                            counter = 1
+                            while target.exists():
+                                target = uploads_dir / f"{stem}_{counter}{suffix}"
+                                counter += 1
+                            shutil.move(str(src), str(target))
+                            preserved[raw] = str(target)
+                        except Exception:
+                            # Best-effort: a single bad file must not block the delete.
+                            pass
+            except Exception:
+                # If project.json is unparseable, fall through to the delete.
+                pass
+
     shutil.rmtree(project_dir)
+
+    if preserve_assets:
+        return {"preserved": preserved}
+    return Response(status_code=204)
 
 
 @router.put("/projects/{project_id}")

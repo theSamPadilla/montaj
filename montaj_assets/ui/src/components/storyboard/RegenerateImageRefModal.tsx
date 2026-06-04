@@ -50,42 +50,42 @@ export function RegenerateImageRefModal({ projectId, imageRef, onClose, onComple
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm"
       onClick={(e) => { if (e.target === e.currentTarget && !generating) onClose() }}
     >
-      <div className="w-full max-w-md bg-gray-900 border border-gray-700 rounded-xl shadow-2xl flex flex-col overflow-hidden">
+      <div className="w-full max-w-md bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded-xl shadow-2xl flex flex-col overflow-hidden">
         {/* Header */}
-        <div className="flex items-center justify-between px-5 py-4 border-b border-gray-800">
-          <h2 className="text-sm font-semibold text-white">Regenerate: {imageRef.label}</h2>
-          <button onClick={onClose} disabled={generating} className="text-gray-500 hover:text-white transition-colors text-lg leading-none">×</button>
+        <div className="flex items-center justify-between px-5 py-4 border-b border-gray-200 dark:border-gray-800">
+          <h2 className="text-sm font-semibold text-gray-900 dark:text-white">Regenerate: {imageRef.label}</h2>
+          <button onClick={onClose} disabled={generating} className="text-gray-500 dark:text-gray-500 hover:text-gray-900 dark:hover:text-white transition-colors text-lg leading-none">×</button>
         </div>
 
         {/* Body */}
         <div className="flex flex-col gap-4 px-5 py-4">
           <div className="flex flex-col gap-1.5">
-            <label className="text-xs font-medium text-gray-400">Prompt</label>
+            <label className="text-xs font-medium text-gray-600 dark:text-gray-400">Prompt</label>
             <textarea
               value={prompt}
               onChange={e => setPrompt(e.target.value)}
               rows={4}
               autoFocus
-              className="rounded-md border border-gray-600 bg-gray-800 px-3 py-2 text-sm text-white placeholder:text-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none"
+              className="rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-3 py-2 text-sm text-gray-900 dark:text-white placeholder:text-gray-400 dark:placeholder:text-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none"
             />
-            <p className="text-[11px] text-gray-500">Editing the prompt here does NOT change the saved anchor text.</p>
+            <p className="text-[11px] text-gray-500 dark:text-gray-500">Editing the prompt here does NOT change the saved anchor text.</p>
           </div>
           <div className="flex flex-col gap-1.5">
-            <label className="text-xs font-medium text-gray-400">Provider</label>
+            <label className="text-xs font-medium text-gray-600 dark:text-gray-400">Provider</label>
             <select
               value={provider}
               onChange={e => setProvider(e.target.value as 'gemini' | 'openai')}
-              className="h-9 rounded-md border border-gray-600 bg-gray-800 px-3 text-sm text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+              className="h-9 rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-3 text-sm text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
             >
               <option value="gemini">Gemini</option>
               <option value="openai">OpenAI</option>
             </select>
           </div>
-          {error && <p className="text-xs text-red-400">{error}</p>}
+          {error && <p className="text-xs text-red-600 dark:text-red-400">{error}</p>}
         </div>
 
         {/* Footer */}
-        <div className="flex items-center justify-end gap-2 px-5 py-4 border-t border-gray-800">
+        <div className="flex items-center justify-end gap-2 px-5 py-4 border-t border-gray-200 dark:border-gray-800">
           <Button variant="secondary" size="sm" onClick={onClose} disabled={generating}>Cancel</Button>
           <Button size="sm" onClick={generate} disabled={generating || !prompt.trim()}>
             {generating ? 'Generating…' : 'Generate'}
