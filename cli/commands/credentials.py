@@ -100,18 +100,26 @@ def handle(args):
                 print(f"     {_dim(url)}")
             print()
 
-        # Write the colored prompt directly, then call input() with an empty
-        # prompt — Python's input() routes the prompt through readline/libedit,
-        # which counts the raw ANSI escape bytes as visible characters when
-        # tracking cursor column. That miscount causes the line-editor to emit
-        # a bare \r when the user presses Enter, which echoes as ^M on
-        # terminal+pty combos where ONLCR isn't translating it back (some
-        # tmux configs, IDE terminals, Windows Terminal over SSH). The
-        # `_read_secret` fallback at the bottom of this file already follows
-        # this pattern for the same reason.
+        # Read directly from sys.stdin instead of input(). Reason: Python's
+        # input() routes the read through `PyOS_Readline`, which on Homebrew's
+        # python@3.12 (the install path montaj ships through) is backed by
+        # libedit, not GNU readline (`import readline; readline.__doc__` reports
+        # "Importing this module enables command line editing using libedit
+        # readline"). libedit preps the tty for arrow-key line editing by
+        # toggling input flags — on enough terminal+pty combos (some tmux
+        # configs, IDE-embedded terminals, Windows Terminal over SSH, fresh
+        # ttys without ONLCR post-processing on echoed CR), it leaves the
+        # echo of the user's Enter keystroke as a bare CR, which the terminal
+        # then displays as `^M`. sys.stdin.readline() bypasses the readline
+        # hook entirely — it's a plain stdio read — so libedit never preps
+        # the tty for this prompt and the `^M` artifact disappears. We lose
+        # arrow-key editing and history for this one prompt, which is fine
+        # for a "pick a number" selector. A prior fix attempt (v2.6.1) wrote
+        # the prompt separately and passed an empty string to input(); it was
+        # wrong about the cause (ANSI prompt width tracking) and didn't help.
         sys.stdout.write(f"  Which provider? {_dim('(number, comma-separated, or all)')}: ")
         sys.stdout.flush()
-        choice = input().strip()
+        choice = sys.stdin.readline().rstrip("\r\n").strip()
         if not choice:
             print(f"\n  {_dim('Nothing selected, exiting.')}")
             return
