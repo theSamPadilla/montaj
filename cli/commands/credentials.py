@@ -100,7 +100,18 @@ def handle(args):
                 print(f"     {_dim(url)}")
             print()
 
-        choice = input(f"  Which provider? {_dim('(number, comma-separated, or all)')}: ").strip()
+        # Write the colored prompt directly, then call input() with an empty
+        # prompt — Python's input() routes the prompt through readline/libedit,
+        # which counts the raw ANSI escape bytes as visible characters when
+        # tracking cursor column. That miscount causes the line-editor to emit
+        # a bare \r when the user presses Enter, which echoes as ^M on
+        # terminal+pty combos where ONLCR isn't translating it back (some
+        # tmux configs, IDE terminals, Windows Terminal over SSH). The
+        # `_read_secret` fallback at the bottom of this file already follows
+        # this pattern for the same reason.
+        sys.stdout.write(f"  Which provider? {_dim('(number, comma-separated, or all)')}: ")
+        sys.stdout.flush()
+        choice = input().strip()
         if not choice:
             print(f"\n  {_dim('Nothing selected, exiting.')}")
             return

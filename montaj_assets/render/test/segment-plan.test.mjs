@@ -118,6 +118,51 @@ test('planSegments: sub-frame boundaries are quantized to the frame grid', () =>
   }
 })
 
+test('planSegments: adjacent grid boundaries survive the proximity-snap pass', () => {
+  // Regression: the proximity-snap pass that runs AFTER quantization used to
+  // compare `boundary[i] - boundary[i-1]` against `1/fps` with float
+  // subtraction. For two adjacent grid points like 143/30 and 144/30 the
+  // mathematical gap is exactly 1/30, but IEEE 754 cancellation made the
+  // subtraction return ~1e-16 below 1/30 — which the `gap < frameDur` test
+  // misread as "duplicates, collapse them." The later boundary was silently
+  // dropped, leaving a segment with empty items between two clips that the
+  // editor renders continuously. Result: a black canvas frame at every clip
+  // change whose quantized end happened to land exactly one frame after
+  // another item's quantized boundary.
+  //
+  // This is the exact configuration from the original bug report
+  // (project 2026-06-03-how-to-edit-videos-with-ai, ~4.8s):
+  //   - clip-1 raw end / clip-2 raw start = 4.8061s → quantize → 4.8s (144/30)
+  //   - ov-url raw end = 4.75s              → quantize → 4.7667s (143/30)
+  //   - 4.8 - 4.7667 in IEEE 754 = 0.033333333333333215 ( < 1/30 by ~1e-16 )
+  // Pre-fix, the segment [4.7667, 5.0] had neither clip and rendered black
+  // for 7 frames.
+  const items = [
+    { id: 'c1', type: 'video', start: 0,       end: 4.8061, src: '/a.mp4', inPoint: 0, outPoint: 4.8061, trackIdx: 0 },
+    { id: 'c2', type: 'video', start: 4.8061,  end: 8.0,    src: '/b.mp4', inPoint: 0, outPoint: 3.1939, trackIdx: 0 },
+  ]
+  const puppeteerSegs = [
+    { id: 'ov-url',   startSeconds: 2.7, endSeconds: 4.75, webmPath: '/ov.mkv', isCaption: false, opaque: false },
+    { id: 'ov-term1', startSeconds: 5.0, endSeconds: 7.0,  webmPath: '/ov.mkv', isCaption: false, opaque: false },
+  ]
+  const segs = planSegments(items, puppeteerSegs, 1920, 1080, 30)
+  // No segment in the rendered timeline may have empty items — both clips
+  // span the entire [0, 8.0] window between them with no gap.
+  for (const seg of segs) {
+    assert.ok(seg.items.length > 0,
+      `segment [${seg.start}, ${seg.end}] has empty items — proximity-snap dropped a clip boundary`)
+  }
+  // And specifically the segment that previously rendered black ([4.7667, 5.0])
+  // must now exist as TWO segments split at 4.8 (the clip-1 → clip-2 boundary),
+  // each with the correct clip active.
+  const seg47 = segs.find(s => Math.abs(s.start - 143/30) < 1e-9)
+  const seg48 = segs.find(s => Math.abs(s.start - 144/30) < 1e-9)
+  assert.ok(seg47, 'segment starting at 143/30 (4.7667s) must exist')
+  assert.ok(seg48, 'segment starting at 144/30 (4.8s) must exist')
+  assert.equal(seg47.items[0].id, 'c1', 'segment at 4.7667s must contain clip-1')
+  assert.equal(seg48.items[0].id, 'c2', 'segment at 4.8s must contain clip-2')
+})
+
 test('planSegments: captions always sorted after overlays', () => {
   const items = [
     { id: 'c1', type: 'video', start: 0, end: 10, src: '/a.mp4', inPoint: 0, outPoint: 10, trackIdx: 0 },

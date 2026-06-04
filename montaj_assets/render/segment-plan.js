@@ -56,19 +56,25 @@ export function planSegments(allItems, puppeteerSegs, vw, vh, fps) {
 
   if (boundaries.size === 0) return []
 
-  // Quantization above already collapses boundaries within half a frame of each
-  // other onto the same grid point. The proximity pass remains as a defense in
-  // depth: floating-point round-trips could in principle leave two grid points
-  // separated by < frameDur, and the segment-build loop below assumes a strict
-  // ascending sequence with at least frameDur between values.
+  // Defense-in-depth proximity pass: deduplicate boundaries that land on the
+  // same frame index. Compared via INTEGER frame indices, not float gaps —
+  // the gap test `(b - a) < frameDur` looks correct but suffers IEEE 754
+  // cancellation when `a` and `b` are adjacent grid points like 143/30 and
+  // 144/30. The mathematical gap is exactly 1/30, but float subtraction can
+  // return a value ~1e-16 below 1/30, which a `gap < frameDur` test
+  // misreads as "collapse them" — silently dropping the boundary at clip
+  // changes and producing a black-canvas segment between two clips that the
+  // editor renders continuously. Integer frame comparison is cancellation-
+  // proof: two boundaries are the same frame iff `round(t * fps)` matches.
+  const frameOf = t => Math.round(t * fps)
   const sorted = [...boundaries].sort((a, b) => a - b)
   const snapped = [sorted[0]]
+  let lastFrame = frameOf(sorted[0])
   for (let i = 1; i < sorted.length; i++) {
-    const gap = sorted[i] - snapped[snapped.length - 1]
-    if (gap > 0 && gap < frameDur) {
-      continue
-    }
+    const f = frameOf(sorted[i])
+    if (f === lastFrame) continue
     snapped.push(sorted[i])
+    lastFrame = f
   }
 
   const segments = []
