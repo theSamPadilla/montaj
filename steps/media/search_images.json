@@ -1,0 +1,33 @@
+{
+  "name": "search_images",
+  "description": "Search for licensed images from Wikimedia Commons or TheSportsDB",
+  "output": {
+    "type": "json",
+    "description": "JSON object with {results: [{title, url, width, height, mime, license, artist, source}]}"
+  },
+  "params": [
+    {
+      "name": "query",
+      "type": "string",
+      "required": true,
+      "description": "Search query string"
+    },
+    {
+      "name": "provider",
+      "type": "enum",
+      "required": false,
+      "default": "commons",
+      "options": ["commons", "sportsdb"],
+      "description": "Image provider: 'commons' (Wikimedia Commons) or 'sportsdb' (TheSportsDB team badges)"
+    },
+    {
+      "name": "limit",
+      "type": "int",
+      "required": false,
+      "default": 10,
+      "min": 1,
+      "max": 30,
+      "description": "Maximum number of results to return"
+    }
+  ]
+}

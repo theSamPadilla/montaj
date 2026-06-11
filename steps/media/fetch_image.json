@@ -1,0 +1,29 @@
+{
+  "name": "fetch_image",
+  "description": "Fetch a licensed image from an allowed HTTPS host to a local path",
+  "output": {
+    "type": "image",
+    "description": "Absolute path to the downloaded image file"
+  },
+  "params": [
+    {
+      "name": "url",
+      "type": "string",
+      "required": true,
+      "description": "HTTPS URL of the image to fetch (must be from an allowed host)"
+    },
+    {
+      "name": "out",
+      "type": "path",
+      "required": true,
+      "description": "Output file path for the downloaded image"
+    },
+    {
+      "name": "max-bytes",
+      "type": "int",
+      "required": false,
+      "default": 26214400,
+      "description": "Maximum allowed file size in bytes (default: 25 MiB)"
+    }
+  ]
+}
