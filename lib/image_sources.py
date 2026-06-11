@@ -269,7 +269,11 @@ def fetch_image_to_path(
     own_client = client is None
     c = _make_client(client)
     try:
-        with c.stream("GET", url, headers={"User-Agent": _UA}) as resp:
+        # follow_redirects=False is forced per-request so an injected client
+        # configured with follow_redirects=True can never silently follow a
+        # redirect (which would bypass the pre-connection host checks).
+        with c.stream("GET", url, headers={"User-Agent": _UA},
+                      follow_redirects=False) as resp:
             if resp.is_redirect:
                 fail("redirect_rejected", f"Redirect not followed: {url}")
             if resp.status_code < 200 or resp.status_code >= 300:

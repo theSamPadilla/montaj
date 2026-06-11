@@ -288,6 +288,24 @@ class TestCommonsSearch:
         results = commons_search("noresults", client=c)
         assert results == []
 
+    def test_gsrlimit_param_sent_to_api(self):
+        """The limit is forwarded to the Commons API as gsrlimit (capped at 50)."""
+        seen = {}
+
+        def handler(request):
+            seen.update(dict(request.url.params))
+            return httpx.Response(
+                200, headers={"content-type": "application/json"},
+                content=json.dumps({}).encode(),
+            )
+
+        c = httpx.Client(transport=httpx.MockTransport(handler))
+        commons_search("test", limit=7, client=c)
+        assert seen["gsrlimit"] == "7"
+
+        commons_search("test", limit=200, client=c)
+        assert seen["gsrlimit"] == "50"
+
 
 # ---------------------------------------------------------------------------
 # sportsdb_badge
@@ -424,3 +442,45 @@ class TestFetchImageToPath:
             "https://upload.wikimedia.org/test.jpg", out, self.HOSTS, client=c
         )
         assert out.exists()
+
+    def test_redirect_rejected(self, tmp_path, monkeypatch, capsys):
+        """A 301 redirect response → fail(redirect_rejected); nothing written."""
+        monkeypatch.setattr(socket, "getaddrinfo", _mock_getaddrinfo("91.198.174.192"))
+        resp = httpx.Response(
+            301,
+            headers={"location": "https://internal.example.com/secret.jpg"},
+        )
+        c = httpx.Client(transport=_make_transport(resp))
+        out = tmp_path / "out.jpg"
+        with pytest.raises(SystemExit):
+            fetch_image_to_path(
+                "https://upload.wikimedia.org/test.jpg", out, self.HOSTS, client=c
+            )
+        err = json.loads(capsys.readouterr().err)
+        assert err["error"] == "redirect_rejected"
+        assert not out.exists()
+
+    def test_injected_client_with_follow_redirects_true_still_rejects(self, tmp_path, monkeypatch, capsys):
+        """follow_redirects=False is forced per-request: even a client built with
+        follow_redirects=True must see the raw 302 and reject it."""
+        monkeypatch.setattr(socket, "getaddrinfo", _mock_getaddrinfo("91.198.174.192"))
+
+        def handler(request):
+            if request.url.host == "upload.wikimedia.org":
+                return httpx.Response(
+                    302, headers={"location": "https://evil.example.com/x.jpg"}
+                )
+            # If the redirect were followed, this would return a "valid" image.
+            return httpx.Response(
+                200, headers={"content-type": "image/jpeg"}, content=b"EVIL"
+            )
+
+        c = httpx.Client(transport=httpx.MockTransport(handler), follow_redirects=True)
+        out = tmp_path / "out.jpg"
+        with pytest.raises(SystemExit):
+            fetch_image_to_path(
+                "https://upload.wikimedia.org/test.jpg", out, self.HOSTS, client=c
+            )
+        err = json.loads(capsys.readouterr().err)
+        assert err["error"] == "redirect_rejected"
+        assert not out.exists()
