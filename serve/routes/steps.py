@@ -162,6 +162,7 @@ async def run_step(name: str, body: dict = Body(default={})):
     # param, leak into argv, or be echoed back in a validation error. The
     # values are secrets: they must not appear in any log or error response.
     env = None
+    secret_values: list[str] = []
     creds = body.pop("credentials", None)
     if creds is not None:
         if not isinstance(creds, dict):
@@ -176,6 +177,7 @@ async def run_step(name: str, body: dict = Body(default={})):
             raise HTTPException(422, detail={"error": "invalid_credentials", "message": str(e)})
         if overlay:
             env = {**os.environ, **overlay}
+            secret_values = list(overlay.values())
 
     validate_params(schema, body)
     cli_args = build_cli_args(schema, body)
@@ -209,9 +211,27 @@ async def run_step(name: str, body: dict = Body(default={})):
                 continue
         if not err:
             err = {"error": "step_failed", "message": stderr_text.strip()}
+        # Passthrough credential values must never leave the server, even when
+        # an upstream provider echoes the caller's own key in its error body
+        # (OpenAI does: "Incorrect API key provided: <key>"). The error detail
+        # transits proxies and logs, so scrub every injected secret value.
+        if secret_values:
+            err = json.loads(_scrub_secrets(json.dumps(err), secret_values))
         raise HTTPException(500, detail=err)
 
     return wrap_output(stdout_text, schema)
+
+
+def _scrub_secrets(text: str, secrets: list[str]) -> str:
+    for value in secrets:
+        if value:
+            text = text.replace(value, "[redacted]")
+            # json.dumps may have escaped characters in the secret; scrub the
+            # JSON-encoded form too (drop the surrounding quotes).
+            encoded = json.dumps(value)[1:-1]
+            if encoded != value:
+                text = text.replace(encoded, "[redacted]")
+    return text
 
 
 @router.post("/normalize")

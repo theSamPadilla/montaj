@@ -203,3 +203,46 @@ def test_overlay_rejects_empty_value():
 def test_overlay_rejects_non_string_value():
     with pytest.raises(CredentialError):
         build_env_overlay({"gemini": {"api_key": 123}})
+
+
+# ── error-path secret redaction ──────────────────────────────────────────────
+
+LEAKY_SRC = textwrap.dedent("""\
+    #!/usr/bin/env python3
+    import json, os, sys
+    # Simulate an upstream provider echoing the caller's own key in its error
+    # body (OpenAI does this: "Incorrect API key provided: <key>").
+    key = os.environ.get("OPENAI_API_KEY") or "<none>"
+    print(json.dumps({"error": "api_error",
+                      "message": "Incorrect API key provided: " + key}),
+          file=sys.stderr)
+    sys.exit(1)
+""")
+
+
+@pytest.fixture()
+def leaky_step(tmp_path, monkeypatch):
+    py_path = tmp_path / "leaky.py"
+    py_path.write_text(LEAKY_SRC)
+    schema = {"name": "leaky", "params": [], "output": {"type": "file"}}
+    monkeypatch.setattr(steps_mod, "scan_steps", lambda: {"leaky": (schema, py_path)})
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    return py_path
+
+
+def test_provider_echoed_secret_is_redacted_from_error(leaky_step):
+    resp = client.post("/api/steps/leaky", json={
+        "credentials": {"openai": {"api_key": "sk-SUPER-SECRET-XYZ"}},
+    })
+    assert resp.status_code == 500
+    assert "sk-SUPER-SECRET-XYZ" not in resp.text
+    assert "[redacted]" in resp.text
+
+
+def test_error_without_credentials_is_not_scrubbed(leaky_step, monkeypatch):
+    # Ambient (non-passthrough) keys are the operator's own local setup; the
+    # scrubber only acts on injected passthrough values.
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-AMBIENT-LOCAL")
+    resp = client.post("/api/steps/leaky", json={})
+    assert resp.status_code == 500
+    assert "[redacted]" not in resp.text
