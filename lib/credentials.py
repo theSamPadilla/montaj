@@ -33,6 +33,41 @@ def _env_var_name(provider: str, key: str) -> str:
     return f"{provider.upper()}_{key.upper()}"
 
 
+def build_env_overlay(credentials: dict) -> dict[str, str]:
+    """Map a per-request `credentials` payload to subprocess env vars.
+
+    Input shape: ``{provider: {key: value}}``. Validates STRICTLY against
+    KNOWN_PROVIDERS — providers and keys must be known, values must be
+    non-empty strings. Returns ``{ENV_VAR_NAME: value}`` using `_env_var_name`.
+
+    Pure: no I/O, no logging. On any violation raises CredentialError whose
+    message names the offending provider/key NAME but NEVER a value — these
+    payloads carry secrets and must not leak into logs or error responses.
+    """
+    if not isinstance(credentials, dict):
+        raise CredentialError("credentials must be an object of {provider: {key: value}}")
+
+    overlay: dict[str, str] = {}
+    for provider, keys in credentials.items():
+        if provider not in KNOWN_PROVIDERS:
+            raise CredentialError(f"unknown credential provider: {provider!r}")
+        if not isinstance(keys, dict):
+            raise CredentialError(f"credentials for provider {provider!r} must be an object")
+        known_keys = KNOWN_PROVIDERS[provider]
+        for key, value in keys.items():
+            if key not in known_keys:
+                raise CredentialError(
+                    f"unknown credential key {key!r} for provider {provider!r} "
+                    f"(known keys: {known_keys})"
+                )
+            if not isinstance(value, str) or not value.strip():
+                raise CredentialError(
+                    f"credential {provider}.{key} must be a non-empty string"
+                )
+            overlay[_env_var_name(provider, key)] = value
+    return overlay
+
+
 def _read_file() -> dict:
     """Return parsed credentials.json, {} if absent. Raises CredentialError on bad file."""
     if not os.path.isfile(CREDENTIALS_PATH):

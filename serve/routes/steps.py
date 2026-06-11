@@ -7,6 +7,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, Body, HTTPException
 
+from lib.credentials import CredentialError, build_env_overlay
 from serve.common import (
     MONTAJ_ROOT,
     run_subprocess,
@@ -154,6 +155,28 @@ async def run_step(name: str, body: dict = Body(default={})):
         raise not_found("not_found", f"Step '{name}' not found")
 
     schema, py_path = steps[name]
+
+    # Reserved field: per-request credentials become env vars for THIS one
+    # subprocess and nothing else. Pop FIRST — before validate_params /
+    # build_cli_args ever see the body — so it can never collide with a schema
+    # param, leak into argv, or be echoed back in a validation error. The
+    # values are secrets: they must not appear in any log or error response.
+    env = None
+    creds = body.pop("credentials", None)
+    if creds is not None:
+        if not isinstance(creds, dict):
+            raise HTTPException(422, detail={
+                "error": "invalid_credentials",
+                "message": "credentials must be an object of {provider: {key: value}}",
+            })
+        try:
+            overlay = build_env_overlay(creds)
+        except CredentialError as e:
+            # CredentialError messages are value-free by construction.
+            raise HTTPException(422, detail={"error": "invalid_credentials", "message": str(e)})
+        if overlay:
+            env = {**os.environ, **overlay}
+
     validate_params(schema, body)
     cli_args = build_cli_args(schema, body)
 
@@ -165,6 +188,7 @@ async def run_step(name: str, body: dict = Body(default={})):
             [sys.executable, str(py_path), *cli_args],
             timeout=STEP_TIMEOUT_S,
             cwd=str(Path.cwd()),
+            env=env,
         )
     except HTTPException:
         raise
