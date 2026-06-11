@@ -31,3 +31,5 @@ CLAUDE.md
 
 # Local
 RELEASE.md
+# Git worktrees
+.worktrees/
