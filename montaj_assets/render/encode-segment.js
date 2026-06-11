@@ -137,7 +137,23 @@ export function buildImageItemFilterParts(item, vw, vh, idx, videoLabel, duratio
   const inputArgs = ['-loop', '1', '-t', String(duration), '-i', item.src]
   const filterParts = []
 
-  filterParts.push(`[${idx}:v]scale=${scaledW}:${scaledH},format=rgba,setpts=PTS-STARTPTS[img${idx}]`)
+  // Fit the source image into its scaledW×scaledH box. Default 'cover' preserves
+  // aspect ratio and fills the box (cropping overflow); 'contain' preserves AR and
+  // letterboxes with transparency; 'fill' is the legacy stretch-to-box behavior
+  // (does NOT preserve AR — kept only for explicit opt-in). Mirrors the AR-safe
+  // treatment the video branch already applies via force_original_aspect_ratio.
+  const fit = item.fit ?? 'cover'
+  let fitChain
+  if (fit === 'contain') {
+    fitChain = `scale=${scaledW}:${scaledH}:force_original_aspect_ratio=decrease,format=rgba,`
+             + `pad=${scaledW}:${scaledH}:(ow-iw)/2:(oh-ih)/2:color=black@0.0`
+  } else if (fit === 'fill') {
+    fitChain = `scale=${scaledW}:${scaledH},format=rgba`
+  } else { // 'cover' (default)
+    fitChain = `scale=${scaledW}:${scaledH}:force_original_aspect_ratio=increase,`
+             + `crop=${scaledW}:${scaledH},format=rgba`
+  }
+  filterParts.push(`[${idx}:v]${fitChain},setpts=PTS-STARTPTS[img${idx}]`)
   let src = `[img${idx}]`
   if (Math.abs((item.opacity ?? 1) - 1) > 0.001) {
     filterParts.push(`${src}colorchannelmixer=aa=${item.opacity}[imgop${idx}]`)

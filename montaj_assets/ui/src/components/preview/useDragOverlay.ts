@@ -25,7 +25,7 @@ interface DragState {
 
 export function useDragOverlay(
   containerRef: React.RefObject<HTMLDivElement | null>,
-  onOverlayChange?: (id: string, changes: { offsetX?: number; offsetY?: number; scale?: number; rotation?: number }) => void,
+  onOverlayChange?: (id: string, changes: { offsetX?: number; offsetY?: number; scale?: number; rotation?: number; fit?: 'cover' | 'contain' | 'fill' }) => void,
 ) {
   const [dragState, setDragState] = useState<DragState | null>(null)
 

@@ -537,7 +537,7 @@ function collectAllItems(projectJson) {
         trackIdx,
       }
       if (item.type === 'image') {
-        imageItems.push(base)
+        imageItems.push({ ...base, fit: item.fit ?? 'cover' })
       } else if (item.type === 'video') {
         videoItems.push({
           ...base,

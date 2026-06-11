@@ -70,6 +70,7 @@ export interface VisualItem {
   offsetY?: number
   scale?: number
   opacity?: number        // 0.0–1.0
+  fit?: 'cover' | 'contain' | 'fill'  // image type only — how the source fills its box. Default 'cover' (AR-preserving fill+crop). 'contain' letterboxes; 'fill' is legacy stretch (no AR).
   volume?: number         // video audio level 0.0–2.0, default 1.0 (ignored for images)
   rotation?: number       // degrees, clockwise
   opaque?: boolean        // legacy boolean kept for old overlay items

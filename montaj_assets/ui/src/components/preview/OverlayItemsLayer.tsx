@@ -222,6 +222,37 @@ function RotateHandle({ scale, onMouseDown }: {
   )
 }
 
+// Segmented control for an image item's object-fit. Appears below the selected
+// image's bounding box; counter-scales so it stays a constant size regardless of
+// the item's scale. 'fill' is the legacy stretch behavior (kept for opt-in).
+const FIT_OPTIONS: Array<'cover' | 'contain' | 'fill'> = ['cover', 'contain', 'fill']
+function FitControl({ value, scale, onChange }: {
+  value: 'cover' | 'contain' | 'fill'
+  scale: number
+  onChange: (fit: 'cover' | 'contain' | 'fill') => void
+}) {
+  return (
+    <div
+      className="absolute bottom-0 left-1/2 z-50 flex gap-px rounded bg-black/70 border border-amber-400/50 overflow-hidden"
+      style={{ transform: `translateX(-50%) translateY(140%) scale(${1 / scale})`, transformOrigin: 'top center' }}
+      onMouseDown={(e) => e.stopPropagation()}
+    >
+      {FIT_OPTIONS.map(opt => (
+        <button
+          key={opt}
+          type="button"
+          onClick={(e) => { e.stopPropagation(); onChange(opt) }}
+          className={`px-2 py-1 text-[11px] font-mono capitalize ${
+            value === opt ? 'bg-amber-400 text-black' : 'text-gray-300 hover:bg-white/10'
+          }`}
+        >
+          {opt}
+        </button>
+      ))}
+    </div>
+  )
+}
+
 // ---------------------------------------------------------------------------
 
 interface OverlayItemsLayerProps {
@@ -233,6 +264,7 @@ interface OverlayItemsLayerProps {
   tracks0NonVideo: VisualItem[]
   renderScale: number
   selectedOverlayId?: string
+  onOverlayChange?: (id: string, changes: { offsetX?: number; offsetY?: number; scale?: number; rotation?: number; fit?: 'cover' | 'contain' | 'fill' }) => void
   containerRef: React.RefObject<HTMLDivElement | null>
   // from useDragOverlay
   dragState: ReturnType<typeof useDragOverlay>['dragState']
@@ -253,6 +285,7 @@ export default function OverlayItemsLayer({
   tracks0NonVideo,
   renderScale,
   selectedOverlayId,
+  onOverlayChange,
   containerRef,
   dragState,
   setDragState,
@@ -317,9 +350,13 @@ export default function OverlayItemsLayer({
             <img
               src={fileUrl(item.src)}
               draggable={false}
-              className="absolute inset-0 w-full h-full object-contain pointer-events-none"
+              className="absolute inset-0 w-full h-full pointer-events-none"
+              style={{ objectFit: item.fit ?? 'cover' }}
             />
             {handles}
+            {isSel && onOverlayChange && (
+              <FitControl value={item.fit ?? 'cover'} scale={scale} onChange={(fit) => onOverlayChange(item.id, { fit })} />
+            )}
           </div>
         )
       })}
@@ -395,9 +432,13 @@ export default function OverlayItemsLayer({
                 <img
                   src={fileUrl(item.src)}
                   draggable={false}
-                  className="absolute inset-0 w-full h-full object-contain pointer-events-none"
+                  className="absolute inset-0 w-full h-full pointer-events-none"
+                  style={{ objectFit: item.fit ?? 'cover' }}
                 />
                 {handles}
+                {isSel && onOverlayChange && (
+                  <FitControl value={item.fit ?? 'cover'} scale={scale} onChange={(fit) => onOverlayChange(item.id, { fit })} />
+                )}
               </div>
             )
           }

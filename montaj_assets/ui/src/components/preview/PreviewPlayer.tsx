@@ -14,7 +14,7 @@ interface PreviewPlayerProps {
   currentTime: number
   onTimeUpdate: (t: number) => void
   selectedOverlayId?: string
-  onOverlayChange?: (id: string, changes: { offsetX?: number; offsetY?: number; scale?: number; rotation?: number }) => void
+  onOverlayChange?: (id: string, changes: { offsetX?: number; offsetY?: number; scale?: number; rotation?: number; fit?: 'cover' | 'contain' | 'fill' }) => void
 }
 
 export default function PreviewPlayer({ project, currentTime, onTimeUpdate, selectedOverlayId, onOverlayChange }: PreviewPlayerProps) {
@@ -128,6 +128,7 @@ export default function PreviewPlayer({ project, currentTime, onTimeUpdate, sele
         tracks0NonVideo={tracks0NonVideo}
         renderScale={renderScale}
         selectedOverlayId={selectedOverlayId}
+        onOverlayChange={onOverlayChange}
         containerRef={containerRef}
         dragState={dragState}
         setDragState={setDragState}

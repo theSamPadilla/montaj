@@ -152,7 +152,7 @@ export default function ReviewView({ project, onProjectChange }: ReviewViewProps
     setDirty(true)
   }
 
-  function handleOverlayChange(id: string, changes: { offsetX?: number; offsetY?: number; scale?: number; rotation?: number }) {
+  function handleOverlayChange(id: string, changes: { offsetX?: number; offsetY?: number; scale?: number; rotation?: number; fit?: 'cover' | 'contain' | 'fill' }) {
     pushHistory(project)
     const updated = {
       ...project,
