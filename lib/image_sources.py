@@ -9,6 +9,7 @@ Provides:
   - preflight_image_url(url, hosts)       — composed pre-flight check
 """
 import ipaddress
+import mimetypes
 import os
 import re
 import socket
@@ -38,6 +39,7 @@ DEFAULT_IMAGE_HOSTS: set[str] = {
 
 _COMMONS_API = "https://commons.wikimedia.org/w/api.php"
 _SPORTSDB_API = "https://www.thesportsdb.com/api/v1/json/3/searchteams.php"
+_SERPAPI_URL = "https://serpapi.com/search.json"
 _UA = "Montaj/1 (image_sources; +https://github.com/bycrux/montaj)"
 
 # Strip HTML tags from artist strings.
@@ -260,6 +262,79 @@ def sportsdb_badge(
             "artist": None,
             "source": "sportsdb",
         })
+    return results
+
+
+# ---------------------------------------------------------------------------
+# Open-web image search (SerpApi / Google Images) — keyed
+# ---------------------------------------------------------------------------
+
+def serpapi_image_search(
+    query: str,
+    api_key: str,
+    limit: int = 10,
+    client: httpx.Client | None = None,
+) -> list[dict]:
+    """Search the open web for images via SerpApi's google_images engine.
+
+    Returns the same dict shape as commons_search (plus a `thumbnail`). License
+    is reported as "unknown" — web results are NOT license-filtered; editorial
+    use is the caller's call (the account pushes licensing downstream to the
+    posting platform). Only HTTPS originals are returned, so the downstream
+    `fetch_image` (HTTPS-only) accepts them.
+
+    The key is never stored on the multi-tenant sidecar — the step reads it
+    from SERPAPI_API_KEY, injected per-request via credential passthrough.
+    Empty key raises ValueError (caller translates to a missing-credentials
+    failure).
+    """
+    if not api_key:
+        raise ValueError("missing_serpapi_key")
+    own_client = client is None
+    c = client or httpx.Client(
+        timeout=_TIMEOUT,
+        follow_redirects=True,   # API endpoint — unlike the image fetch path
+        headers={"User-Agent": _UA},
+    )
+    try:
+        resp = c.get(
+            _SERPAPI_URL,
+            params={
+                "engine": "google_images",
+                "q": query,
+                "ijn": "0",
+                "api_key": api_key,
+            },
+        )
+        resp.raise_for_status()
+        data = resp.json()
+    finally:
+        if own_client:
+            c.close()
+
+    if isinstance(data, dict) and data.get("error"):
+        # SerpApi reports invalid key / blocked query here. Surface it; the
+        # run_step secret scrubber strips the key from the error if echoed.
+        raise ValueError(f"serpapi: {data['error']}")
+
+    results: list[dict] = []
+    for r in (data.get("images_results") or []):
+        url = (r.get("original") or "").strip()
+        if not url.startswith("https://"):
+            continue  # HTTPS-only so the downstream fetch_image will accept it
+        results.append({
+            "title": r.get("title") or "",
+            "url": url,
+            "width": r.get("original_width"),
+            "height": r.get("original_height"),
+            "mime": mimetypes.guess_type(urlparse(url).path)[0],
+            "license": "unknown",
+            "artist": (r.get("source") or None),
+            "source": "web",
+            "thumbnail": r.get("thumbnail"),
+        })
+        if len(results) >= limit:
+            break
     return results
 
 
