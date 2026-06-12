@@ -2,9 +2,12 @@
 
 ## Unreleased
 
-## v2.7.2
+## v2.7.3
 
-## v2.7.1
+> Supersedes v2.7.1 and v2.7.2 — both were published to PyPI but botched (the
+> v2.7.1 git tag landed on the v2.7.0 commit, and neither got a finalized
+> GitHub release). v2.7.3 is the first clean release of this code. Do **not**
+> use the 2.7.1 or 2.7.2 PyPI artifacts.
 
 ### Added
 - `search_images` gains a third provider, `web` — open-web image search via SerpApi's `google_images` engine (`lib/image_sources.py::serpapi_image_search`). Returns the same result shape as the other providers (`title`, `url`, `width`, `height`, `mime`, `license`, `artist`, `source`) plus a `thumbnail`; `source` is `"web"`, `license` is `"unknown"` (web results are not license-filtered — editorial use is the caller's call). Only HTTPS originals are returned, so the now-open `fetch_image` accepts them directly. The provider is **keyed and keyless-on-the-box**: the SerpApi key is supplied per-request through the existing credential passthrough (`credentials.serpapi.api_key` → `SERPAPI_API_KEY`, validated by the new `serpapi` entry in `KNOWN_PROVIDERS`), never read from a file on the multi-tenant sidecar. Missing key → `missing_credentials`; SerpApi auth/blocked-query errors surface as `search_failed` with the key scrubbed by run_step's secret scrubber. `commons` and `sportsdb` remain keyless and unchanged.
