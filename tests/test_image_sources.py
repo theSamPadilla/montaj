@@ -200,7 +200,16 @@ class TestPreflightImageUrl:
     def test_non_url_returns_not_https(self):
         assert preflight_image_url("not a url", self.HOSTS) == "not_https"
 
-    def test_host_not_in_allowlist_returns_host_not_allowed(self, monkeypatch):
+    def test_off_allowlist_public_host_allowed_by_default(self, monkeypatch):
+        # Default (permissive) mode: any public HTTPS host passes — the host
+        # allowlist is no longer a gate. is_public_host is the real guard.
+        monkeypatch.delenv("MONTAJ_IMAGE_HOST_STRICT", raising=False)
+        monkeypatch.setattr(socket, "getaddrinfo", _mock_getaddrinfo("1.2.3.4"))
+        result = preflight_image_url("https://unknown.example.com/img.jpg", self.HOSTS)
+        assert result is None
+
+    def test_host_not_in_allowlist_rejected_in_strict_mode(self, monkeypatch):
+        monkeypatch.setenv("MONTAJ_IMAGE_HOST_STRICT", "1")
         monkeypatch.setattr(socket, "getaddrinfo", _mock_getaddrinfo("1.2.3.4"))
         result = preflight_image_url("https://unknown.example.com/img.jpg", self.HOSTS)
         assert result == "host_not_allowed"
@@ -400,7 +409,9 @@ class TestFetchImageToPath:
         with pytest.raises(SystemExit):
             fetch_image_to_path("http://upload.wikimedia.org/test.jpg", out, self.HOSTS, client=c)
 
-    def test_unlisted_host_rejected(self, tmp_path, monkeypatch):
+    def test_unlisted_host_rejected_in_strict_mode(self, tmp_path, monkeypatch):
+        # Default mode now allows any public host; the allowlist gate is opt-in.
+        monkeypatch.setenv("MONTAJ_IMAGE_HOST_STRICT", "1")
         monkeypatch.setattr(socket, "getaddrinfo", _mock_getaddrinfo("1.2.3.4"))
         c = httpx.Client(transport=self._image_transport())
         out = tmp_path / "out.jpg"
@@ -408,6 +419,17 @@ class TestFetchImageToPath:
             fetch_image_to_path(
                 "https://evil.example.com/test.jpg", out, self.HOSTS, client=c
             )
+
+    def test_unlisted_public_host_allowed_by_default(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("MONTAJ_IMAGE_HOST_STRICT", raising=False)
+        monkeypatch.setattr(socket, "getaddrinfo", _mock_getaddrinfo("1.2.3.4"))
+        c = httpx.Client(transport=self._image_transport())
+        out = tmp_path / "out.jpg"
+        result = fetch_image_to_path(
+            "https://some-news-cdn.example.com/photo.jpg", out, self.HOSTS, client=c
+        )
+        assert result == out
+        assert out.exists() and out.stat().st_size > 0
 
     def test_non_image_content_type_rejected(self, tmp_path, monkeypatch):
         monkeypatch.setattr(socket, "getaddrinfo", _mock_getaddrinfo("91.198.174.192"))

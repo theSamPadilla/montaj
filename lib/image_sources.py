@@ -49,8 +49,28 @@ _TAG_RE = re.compile(r"<[^>]+>")
 # ---------------------------------------------------------------------------
 
 def allowed_image_hosts() -> set[str]:
-    """Return DEFAULT_IMAGE_HOSTS merged with MONTAJ_HTTP_ALLOWED_HOSTS env var."""
+    """Return DEFAULT_IMAGE_HOSTS merged with MONTAJ_HTTP_ALLOWED_HOSTS env var.
+
+    Only consulted when strict mode is on (see host_allowlist_strict). In the
+    default permissive mode the explicit allowlist is irrelevant — any public
+    host is fetchable — so this is kept for strict deployments and tests.
+    """
     return DEFAULT_IMAGE_HOSTS | parse_allowed_hosts()
+
+
+def host_allowlist_strict() -> bool:
+    """Whether to gate fetches on the explicit host allowlist.
+
+    Default OFF: any public HTTPS host is fetchable. The real SSRF protection
+    is is_public_host() (blocks loopback/private/link-local/non-global IPs),
+    plus the HTTPS-only, image-content-type, and size-cap checks downstream —
+    those always apply. The host allowlist was belt-and-suspenders; gating on
+    it kept legitimate press/news/CDN photos out, so it's opt-in now.
+
+    Set MONTAJ_IMAGE_HOST_STRICT=1 (or true/yes) to re-enable the allowlist
+    gate for a locked-down deployment — no code change needed to tighten.
+    """
+    return os.environ.get("MONTAJ_IMAGE_HOST_STRICT", "").strip().lower() in ("1", "true", "yes")
 
 
 def is_public_host(hostname: str) -> bool:
@@ -83,13 +103,16 @@ def preflight_image_url(url: str, hosts: set[str]) -> str | None:
 
     Checks (in order):
       1. HTTPS only
-      2. Hostname in allowlist
-      3. Hostname resolves to public IPs only
+      2. Hostname present (malformed URLs rejected)
+      3. Hostname in allowlist — ONLY in strict mode (host_allowlist_strict)
+      4. Hostname resolves to public IPs only (the real SSRF guard, always on)
     """
     if not isinstance(url, str) or not url.startswith("https://"):
         return "not_https"
     hostname = (urlparse(url).hostname or "").lower()
-    if hostname not in hosts:
+    if not hostname:
+        return "host_not_allowed"
+    if host_allowlist_strict() and hostname not in hosts:
         return "host_not_allowed"
     if not is_public_host(hostname):
         return "host_not_public"

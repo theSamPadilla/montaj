@@ -1,6 +1,6 @@
 {
   "name": "fetch_image",
-  "description": "Fetch a licensed image from an allowed HTTPS host to a local path",
+  "description": "Fetch an image from any public HTTPS host to a local path (private/internal IPs blocked, images only, size-capped)",
   "output": {
     "type": "image",
     "description": "Absolute path to the downloaded image file"
@@ -10,7 +10,7 @@
       "name": "url",
       "type": "string",
       "required": true,
-      "description": "HTTPS URL of the image to fetch (must be from an allowed host)"
+      "description": "HTTPS URL of the image to fetch (any public host; private/internal IPs are blocked)"
     },
     {
       "name": "out",
