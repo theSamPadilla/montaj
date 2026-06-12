@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fetch a licensed image from an allowed host to a local path."""
+"""Fetch an image from any public host to a local path (SSRF/size/content-type guarded)."""
 import os
 import sys
 import argparse

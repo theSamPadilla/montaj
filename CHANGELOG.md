@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+### Changed
+- `fetch_image` no longer gates on the host allowlist by default — any **public** HTTPS host is now fetchable, so press/news/CDN image URLs work directly without operator-extending `MONTAJ_HTTP_ALLOWED_HOSTS`. The substantive SSRF protection is unchanged and always on: HTTPS-only, every resolved IP must be publicly routable (`ipaddress.is_global` — RFC 1918 / loopback / link-local / reserved rejected), redirects not followed, `Content-Type` must be `image/*`, and the streamed 25 MiB size cap. The host allowlist was belt-and-suspenders on top of the public-IP check and was keeping legitimate photos out. A locked-down deployment can re-enable the strict allowlist gate by setting `MONTAJ_IMAGE_HOST_STRICT=1` (truthy) — no code change needed to tighten. New helper `lib/image_sources.py::host_allowlist_strict()`; `preflight_image_url` consults the allowlist only when strict. `allowed_image_hosts()` / `MONTAJ_HTTP_ALLOWED_HOSTS` are still honored in strict mode. This changes **image** fetches only; the video remote-io path (`lib/remote_io.py`, used by `/upload` and `/download`) keeps its allowlist unchanged.
+
 ## v2.7.0
 
 ### Added
