@@ -1,9 +1,9 @@
 {
   "name": "search_images",
-  "description": "Search for licensed images from Wikimedia Commons or TheSportsDB",
+  "description": "Search for images — Wikimedia Commons, TheSportsDB, or the open web (SerpApi/Google Images)",
   "output": {
     "type": "json",
-    "description": "JSON object with {results: [{title, url, width, height, mime, license, artist, source}]}"
+    "description": "JSON object with {results: [{title, url, width, height, mime, license, artist, source, thumbnail?}]}"
   },
   "params": [
     {
@@ -17,8 +17,8 @@
       "type": "enum",
       "required": false,
       "default": "commons",
-      "options": ["commons", "sportsdb"],
-      "description": "Image provider: 'commons' (Wikimedia Commons) or 'sportsdb' (TheSportsDB team badges)"
+      "options": ["commons", "sportsdb", "web"],
+      "description": "Image provider: 'commons' (Wikimedia Commons, keyless), 'sportsdb' (TheSportsDB team badges, keyless), or 'web' (open-web Google Images via SerpApi — requires credentials.serpapi.api_key passthrough)"
     },
     {
       "name": "limit",

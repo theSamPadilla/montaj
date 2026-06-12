@@ -13,9 +13,10 @@ CREDENTIALS_PATH = os.path.expanduser("~/.montaj/credentials.json")
 # which keys each one needs. `montaj install credentials` imports this.
 # Adding a new connector → add it here first.
 KNOWN_PROVIDERS: dict[str, list[str]] = {
-    "kling":  ["access_key", "secret_key"],
-    "gemini": ["api_key"],
-    "openai": ["api_key"],
+    "kling":   ["access_key", "secret_key"],
+    "gemini":  ["api_key"],
+    "openai":  ["api_key"],
+    "serpapi": ["api_key"],
 }
 
 

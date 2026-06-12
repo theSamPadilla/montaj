@@ -23,6 +23,7 @@ from lib.image_sources import (
     fetch_image_to_path,
     is_public_host,
     preflight_image_url,
+    serpapi_image_search,
     sportsdb_badge,
 )
 
@@ -374,6 +375,74 @@ class TestSportsdbBadge:
         c = httpx.Client(transport=transport)
         results = sportsdb_badge("nobody", client=c)
         assert results == []
+
+
+# ---------------------------------------------------------------------------
+# serpapi_image_search (open-web, keyed)
+# ---------------------------------------------------------------------------
+
+SERPAPI_PAYLOAD = {
+    "images_results": [
+        {
+            "title": "James Rodriguez Colombia",
+            "original": "https://cdn.example-news.com/james.jpg",
+            "original_width": 2000,
+            "original_height": 2500,
+            "thumbnail": "https://serpapi.example/thumb1.jpg",
+            "source": "example-news.com",
+        },
+        {
+            "title": "insecure result",
+            "original": "http://insecure.example.com/x.jpg",  # http → dropped
+            "original_width": 800,
+            "original_height": 600,
+            "source": "insecure.example.com",
+        },
+        {
+            "title": "no original url",
+            "thumbnail": "https://serpapi.example/thumb3.jpg",
+            "source": "noimg.example.com",
+        },
+    ]
+}
+
+
+class TestSerpapiImageSearch:
+    def test_maps_results_and_drops_non_https(self):
+        c = httpx.Client(transport=_json_transport(SERPAPI_PAYLOAD))
+        results = serpapi_image_search("james colombia", "KEY123", client=c)
+        # Only the HTTPS-original result survives.
+        assert len(results) == 1
+        r = results[0]
+        assert r["url"] == "https://cdn.example-news.com/james.jpg"
+        assert r["width"] == 2000 and r["height"] == 2500
+        assert r["source"] == "web"
+        assert r["license"] == "unknown"
+        assert r["artist"] == "example-news.com"
+        assert r["mime"] == "image/jpeg"
+        assert r["thumbnail"] == "https://serpapi.example/thumb1.jpg"
+
+    def test_limit_caps_results(self):
+        payload = {"images_results": [
+            {"original": f"https://cdn.example.com/{i}.jpg", "title": str(i)}
+            for i in range(10)
+        ]}
+        c = httpx.Client(transport=_json_transport(payload))
+        results = serpapi_image_search("q", "KEY", limit=3, client=c)
+        assert len(results) == 3
+
+    def test_empty_key_raises(self):
+        with pytest.raises(ValueError):
+            serpapi_image_search("q", "", client=httpx.Client(transport=_json_transport({})))
+
+    def test_serpapi_error_surfaced(self):
+        c = httpx.Client(transport=_json_transport({"error": "Invalid API key"}))
+        with pytest.raises(ValueError):
+            serpapi_image_search("q", "BADKEY", client=c)
+
+    def test_missing_images_results(self):
+        c = httpx.Client(transport=_json_transport({}))
+        assert serpapi_image_search("q", "KEY", client=c) == []
 
 
 # ---------------------------------------------------------------------------
