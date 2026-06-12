@@ -1290,3 +1290,38 @@ class TestProjectOutputs:
         upload_data = upload_resp.json()
         assert upload_data["results"][0]["status"] == "ok"
         assert upload_data["results"][0]["srcPath"] == src_path
+
+
+# ---------------------------------------------------------------------------
+# GET /api/projects/{id}/renders tests
+# ---------------------------------------------------------------------------
+
+class TestProjectRenders:
+    """GET /api/projects/{id}/renders — carousel slide PNG listing (render/)."""
+
+    PROJECT_ID = "proj-renders-test"
+
+    def test_lists_render_dir_with_absolute_paths(self, client, monkeypatch, tmp_path):
+        monkeypatch.setattr("serve.common.resolve_workspace", lambda: tmp_path)
+        project_dir = _make_project(tmp_path, self.PROJECT_ID)
+        render = project_dir / "render"
+        render.mkdir()
+        (render / "slide_01.png").write_bytes(b"a")
+        (render / "slide_02.png").write_bytes(b"bb")
+
+        resp = client.get(f"/api/projects/{self.PROJECT_ID}/renders")
+        assert resp.status_code == 200
+        outputs = resp.json()["outputs"]
+        by_name = {Path(o["path"]).name: o for o in outputs}
+        assert "slide_01.png" in by_name and "slide_02.png" in by_name
+        # Absolute paths so the caller can stream them via GET /files.
+        assert all(Path(o["path"]).is_absolute() for o in outputs)
+        assert by_name["slide_02.png"]["sizeBytes"] == 2
+        assert by_name["slide_01.png"]["contentType"] == "image/png"
+
+    def test_no_render_dir_returns_empty(self, client, monkeypatch, tmp_path):
+        monkeypatch.setattr("serve.common.resolve_workspace", lambda: tmp_path)
+        _make_project(tmp_path, self.PROJECT_ID)
+        resp = client.get(f"/api/projects/{self.PROJECT_ID}/renders")
+        assert resp.status_code == 200
+        assert resp.json() == {"outputs": []}

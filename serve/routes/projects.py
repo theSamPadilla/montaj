@@ -877,6 +877,35 @@ async def list_outputs(project_id: str, project_dir: Path = Depends(get_project_
     return {"outputs": outputs}
 
 
+@router.get("/projects/{project_id}/renders")
+async def list_renders(project_id: str, project_dir: Path = Depends(get_project_dir)):
+    """Depth-1 listing of <project_dir>/render/ — the rendered carousel slide
+    PNGs (slide_NN.png).
+
+    Carousel renders write here, NOT to output/ (the video-workflow staging
+    dir, which is empty for carousels). Returns ABSOLUTE paths so callers can
+    stream each file via GET /files (which serves absolute paths under the
+    workspace root). Same envelope as /outputs."""
+    render = project_dir / "render"
+    if not render.is_dir():
+        return {"outputs": []}
+    outputs = []
+    for entry in sorted(render.iterdir()):
+        if not entry.is_file():
+            continue
+        try:
+            size = entry.stat().st_size
+        except OSError:
+            continue
+        ct, _ = mimetypes.guess_type(str(entry))
+        outputs.append({
+            "path": str(entry),
+            "sizeBytes": size,
+            "contentType": ct or "application/octet-stream",
+        })
+    return {"outputs": outputs}
+
+
 @router.post("/projects/{project_id}/upload")
 async def upload_outputs(
     project_id: str,
