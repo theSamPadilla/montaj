@@ -209,6 +209,7 @@ If in doubt, **ask your human**.
 | `select-takes` | `select-takes/SKILL.md` | Executing `montaj/select_takes` in a workflow |
 | `overlay` | `overlay/SKILL.md` | Executing `montaj/overlay` in a workflow |
 | `write-overlay` | `write-overlay/SKILL.md` | Writing custom JSX overlay components |
+| `image-search` | `image-search/SKILL.md` | Sourcing outside imagery (`search_images` + `fetch_image`) when the prompt asks for photos / logos / B-roll stills |
 | `style-profile` | `style-profile/SKILL.md` | Creating or updating a creator style profile |
 | `workflow-builder` | `workflow-builder/SKILL.md` | Creating or editing workflows |
 | `lyrics-video` | `lyrics-video/SKILL.md` | Working on a `lyrics_video` workflow project |

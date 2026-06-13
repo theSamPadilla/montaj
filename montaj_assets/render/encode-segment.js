@@ -5,9 +5,10 @@
  * Each call composites:
  *   - N visual items: layered by trackIdx (lower = background). Each item has
  *     scale, offsetX, offsetY, opacity. Images loop, videos seek+trim.
- *   - 0-N overlays: Puppeteer-rendered MKV/WebM with alpha, positioned via
- *     offsetX, offsetY, scale, pixelRatio (matching current compose.js:244-263).
- *     Captions are always last (topmost z-layer) — ensured by planSegments.
+ *   - 0-N overlays: Puppeteer-rendered MKV/WebM with alpha, scaled from the
+ *     1080-design canvas to the output resolution and positioned via offsetX,
+ *     offsetY, scale. Captions are always last (topmost z-layer) — ensured by
+ *     planSegments.
  *   - Audio: extracted from ALL unmuted video items with audio and mixed via amix.
  *     When only one item has audio, it's used directly (no amix overhead).
  *     When multiple items have audio, they're combined with
@@ -264,13 +265,22 @@ export function buildOverlayFilterParts(ov, vw, vh, ovIdx, videoLabel, segStart,
     : ['-ss', String(Math.max(0, segStart - ov.startSeconds)), '-t', String(duration), '-i', ov.webmPath]
   const filterParts = []
 
-  // Overlay positioning: pixelRatio upscaling + user scale + offset
-  // Matches current compose.js:244-263
-  const ovScale    = ov.scale ?? 1
-  const ovPr       = ov.pixelRatio ?? 1
-  const totalScale = ovScale * ovPr
-  const ovXPx      = Math.round(vw * (0.5 * (1 - ovScale) + (ov.offsetX ?? 0) / 100))
-  const ovYPx      = Math.round(vh * (0.5 * (1 - ovScale) + (ov.offsetY ?? 0) / 100))
+  // Overlay sizing: scale the overlay from its design canvas (always rendered at
+  // 1080 on the short edge — see render.js) to the actual output canvas (vw×vh),
+  // times the user scale. The target is derived from the OUTPUT dimensions, not
+  // by multiplying the design size by a design→output ratio. This is what lets an
+  // overlay fit ANY output resolution — 4K upscale, sub-1080 downscale, or a
+  // non-integer multiple (e.g. 1440p). The old design→output multiplier assumed
+  // output ≥ 1080 and an integer multiple, so on a smaller canvas it left the
+  // 1080-design overlay at full size and the compositor cropped it instead of
+  // shrinking it. Even-rounded — yuv420/yuva420 encoders reject odd dimensions.
+  // Mirrors the image/video item path (buildImage/VideoItemFilterParts), which
+  // already sizes to round(vw * scale / 2) * 2.
+  const ovScale = ov.scale ?? 1
+  const targetW = Math.round(vw * ovScale / 2) * 2
+  const targetH = Math.round(vh * ovScale / 2) * 2
+  const ovXPx   = Math.round(vw * (0.5 * (1 - ovScale) + (ov.offsetX ?? 0) / 100))
+  const ovYPx   = Math.round(vh * (0.5 * (1 - ovScale) + (ov.offsetY ?? 0) / 100))
 
   // Force yuva420p (or caller-specified format) — VP9 decoders may silently drop
   // the alpha plane on the production path; PNG-based callers pass 'rgba' to
@@ -278,11 +288,11 @@ export function buildOverlayFilterParts(ov, vw, vh, ovIdx, videoLabel, segStart,
   filterParts.push(`[${ovIdx}:v]format=${inputFormatFlag}[ovfmt${ovIdx}]`)
   let ovSrc = `[ovfmt${ovIdx}]`
 
-  // Apply pixelRatio + scale
-  if (Math.abs(totalScale - 1) > 0.001) {
-    filterParts.push(`${ovSrc}scale=iw*${totalScale}:ih*${totalScale}[ovsc${ovIdx}]`)
-    ovSrc = `[ovsc${ovIdx}]`
-  }
+  // Scale design-canvas → output-canvas (× user scale). When the output already
+  // matches the design canvas at scale 1 this is an identity scale (1080→1080),
+  // which ffmpeg fast-paths.
+  filterParts.push(`${ovSrc}scale=${targetW}:${targetH}[ovsc${ovIdx}]`)
+  ovSrc = `[ovsc${ovIdx}]`
 
   filterParts.push(
     `${videoLabel}${ovSrc}overlay=x=${ovXPx}:y=${ovYPx}:format=${compositeFormatFlag}:shortest=0[vov${ovIdx}]`

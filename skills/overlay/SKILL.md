@@ -16,6 +16,7 @@ subskills: "write-overlay"
 | Name | Path | When to load |
 |------|------|--------------|
 | `write-overlay` | `skills/write-overlay/SKILL.md` | Before writing any JSX overlay — globals, `interpolate`/`spring` utilities, canvas rules, examples. |
+| `image-search` | `skills/image-search/SKILL.md` | When the prompt asks to source outside imagery (a photo of a person, a logo, an event/B-roll still) — find via `search_images` + download via `fetch_image`, then place as an image-card overlay. |
 
 ---
 
@@ -33,6 +34,7 @@ Ask: what does this video need that isn't already in the footage? Common answers
 - **Lower-thirds** — speaker name, context, stat callouts. Tied to specific transcript moments.
 - **Logo/watermark** — if assets include a logo, add it as a persistent or bookend overlay.
 - **Stat cards** — when the speaker cites a number ("33 million views"), a card reinforces it visually.
+- **Image cards / B-roll stills** — when the speaker names a person, company, event, or thing the footage doesn't show ("Elon Musk", "the IPO", a specific welder), a real photo synced to that beat lands hard. **If the prompt asks you to source images** ("add a photo of X", "find images of the IPO"), load `/image-search` to find them via `search_images` and download via `fetch_image`, then add each as an image-card overlay (pass the local fetched path via `props`).
 
 If the prompt says "no overlays" — write nothing. Don't add an opening hook anyway.
 

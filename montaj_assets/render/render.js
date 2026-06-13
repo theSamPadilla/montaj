@@ -92,8 +92,9 @@ async function main(projectPath, { out, workers, clean }) {
   //
   // Keeping the overlay canvas at 1080 short edge means JSX coordinates have
   // one consistent meaning regardless of output resolution; the compose step
-  // then upscales the captured frame by pixelRatio = actualWidth / renderWidth
-  // (= 2 at 4K) when overlaying onto the final video.
+  // then scales the captured overlay to the actual output dimensions when
+  // compositing onto the final video (2× up at 4K, fractional down for a
+  // sub-1080 source), so the same JSX fits every output size.
   const SHORT_EDGE_TARGET = 1080
   const aspectW = settings.resolution?.[0] ?? 1080
   const aspectH = settings.resolution?.[1] ?? 1920
@@ -344,7 +345,8 @@ async function main(projectPath, { out, workers, clean }) {
   const renderedSegments = await renderAllSegments(segmentSpecs, { workers, colorSpace: projectColorSpace })
 
   // Attach positioning offsets back onto rendered segments so compose.js can apply
-  // x/y coordinates. pixelRatio is stamped after base video resolution is detected below.
+  // x/y coordinates. Overlay size is derived from the output canvas at compose
+  // time (see encode-segment.js), so no scale factor is stamped here.
   for (const rSeg of renderedSegments) {
     const spec = segmentSpecs.find(s => s.id === rSeg.id)
     if (spec) {
@@ -366,13 +368,12 @@ async function main(projectPath, { out, workers, clean }) {
       if (dims) { [actualWidth, actualHeight] = dims }
     }
   }
-  // pixelRatio: how many actual pixels correspond to one design pixel.
-  const pixelRatio = Math.max(1, Math.round(actualWidth / renderWidth))
-
-  // Re-stamp pixelRatio on rendered segments now that we know the true video dimensions.
-  for (const rSeg of renderedSegments) {
-    rSeg.pixelRatio = pixelRatio
-  }
+  // Overlays are composited by scaling the 1080-design canvas to the actual
+  // output dimensions (actualWidth×actualHeight) at compose time — see
+  // buildOverlayFilterParts in encode-segment.js. No per-segment scale factor is
+  // stamped here; the compositor derives the size from the output canvas
+  // directly, so overlays fit any resolution (4K up, sub-1080 down, non-integer
+  // multiples) instead of being cropped onto smaller canvases.
 
   // 7. Compose final MP4
   log('composing final video...')

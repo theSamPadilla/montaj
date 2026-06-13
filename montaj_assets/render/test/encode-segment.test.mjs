@@ -51,18 +51,38 @@ test('dry-run: multi-item segment layers both items', () => {
   assert.ok(result.filterParts.some(f => f.includes('scale=576:324')))
 })
 
-test('dry-run: overlay positioning uses pixelRatio, offset, scale', () => {
+test('dry-run: overlay scales to output canvas (×scale), offset positioned', () => {
   const seg = {
     start: 0, end: 5, items: [], overlays: [
       { webmPath: '/ov.mkv', startSeconds: 0, endSeconds: 5, isCaption: false,
-        scale: 0.8, pixelRatio: 2, offsetX: 10, offsetY: -5 },
+        scale: 0.8, offsetX: 10, offsetY: -5 },
     ], vw: 1920, vh: 1080, fps: 30,
   }
   const result = encodeSegment(seg, '/tmp/test.mp4', { _dryRun: true })
-  // pixelRatio*scale = 1.6 → scale filter should reference 1.6
-  assert.ok(result.filterParts.some(f => f.includes('scale=iw*1.6:ih*1.6')))
+  // Overlay sizes to the OUTPUT canvas × scale (even-rounded), matching the
+  // image/video item path — 1920*0.8=1536, 1080*0.8=864. Not a design→output
+  // multiplier (the design canvas size is irrelevant to the target dims).
+  assert.ok(result.filterParts.some(f => f.includes('scale=1536:864')))
   // Offset math: x = round(1920 * (0.5*(1-0.8) + 10/100)) = round(1920 * 0.2) = 384
   assert.ok(result.filterParts.some(f => f.includes('overlay=x=384')))
+})
+
+test('dry-run: overlay downscales to a sub-1080 output (regression: 464×832 crop)', () => {
+  // A full-frame overlay (scale 1) is rendered on the 1080-design canvas but the
+  // output here is 464×832. It MUST be scaled down to fill 464×832 — the prior
+  // pixelRatio = max(1, round(464/1080)) = 1 left it at design size, so the
+  // compositor cropped a 464-wide corner out of the 1080 overlay (giant, clipped
+  // text). Even-rounded for yuv420.
+  const seg = {
+    start: 0, end: 5, items: [], overlays: [
+      { webmPath: '/ov.mkv', startSeconds: 0, endSeconds: 5, isCaption: false, scale: 1 },
+    ], vw: 464, vh: 832, fps: 30,
+  }
+  const result = encodeSegment(seg, '/tmp/test.mp4', { _dryRun: true })
+  assert.ok(
+    result.filterParts.some(f => f.includes('scale=464:832')),
+    'overlay must shrink to the sub-1080 output canvas, not stay at design size',
+  )
 })
 
 test('dry-run: .mov input uses format=auto for alpha preservation', () => {

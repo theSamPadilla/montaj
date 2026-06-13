@@ -492,7 +492,6 @@ export async function sampleFrame({
   const renderHeight = Math.round(aspectH * aspectRatio / 2) * 2
   const actualWidth  = settings.resolution?.[0] ?? renderWidth
   const actualHeight = settings.resolution?.[1] ?? renderHeight
-  const pixelRatio   = Math.max(1, Math.round(actualWidth / renderWidth))
 
   // Validate timestamp
   const totalDuration = getTotalDurationSeconds(resolvedProject)
@@ -546,13 +545,12 @@ export async function sampleFrame({
       outPath: tmpOverlayOut,
     })
     return {
-      // Shape expected by buildOverlayFilterParts: webmPath, startSeconds, offsetX, offsetY, scale, pixelRatio
+      // Shape expected by buildOverlayFilterParts: webmPath, startSeconds, offsetX, offsetY, scale
       webmPath:     result.pngPath,
       startSeconds: ov.start,
       offsetX:      ov.offsetX ?? 0,
       offsetY:      ov.offsetY ?? 0,
       scale:        ov.scale   ?? 1,
-      pixelRatio,
       opaque:       ov.opaque  ?? false,
     }
   }, OVERLAY_CONCURRENCY)

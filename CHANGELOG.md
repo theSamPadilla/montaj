@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v2.7.4
+
 ### Added
 - New endpoint `GET /api/projects/{id}/renders` — depth-1 listing of `<project>/render/` (the rendered carousel slide PNGs, `slide_NN.png`), same envelope as `/outputs` (`{"outputs": [{path, sizeBytes, contentType}]}`) but with **absolute** `path` values so callers can stream each file via `GET /files`. Carousel renders write to `render/`, not `output/` (the video-workflow staging dir, empty for carousels), so the existing `/outputs`-based slide lookups never found them; `/renders` is the carousel-correct counterpart. `output/`-based `/outputs` is unchanged.
 
