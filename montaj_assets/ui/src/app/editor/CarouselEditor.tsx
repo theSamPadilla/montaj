@@ -473,6 +473,7 @@ export default function CarouselEditor({ project: initialProject, adapter, onPro
                 onSelect={id => { setSelectedElementId(id); if (id !== cropElementId) setCropElementId(null) }}
                 scale={canvasScale}
                 resolveImageSrc={adapter.resolveImageSrc}
+                compileOverlay={(t) => adapter.compileOverlay(t)}
                 moveElement={state.moveElement}
                 resizeElement={state.resizeElement}
                 rotateElement={state.rotateElement}

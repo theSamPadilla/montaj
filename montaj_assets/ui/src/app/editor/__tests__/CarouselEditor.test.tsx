@@ -72,6 +72,7 @@ function makeFakeAdapter(): FakeAdapter {
       yield { type: 'done', outputPath: '/out.png' }
     },
     resolveImageSrc: (el: ImageElement) => el.src,
+    compileOverlay: vi.fn(async () => () => null),
     saveCalls,
   }
 }

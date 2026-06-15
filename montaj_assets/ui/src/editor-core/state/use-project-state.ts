@@ -19,9 +19,10 @@ import { projectReducer, type Action, type ProjectStatus } from './project-reduc
 import { createMutationQueue } from './mutation-queue'
 import type { Project, Slide, CarouselElement, EditorAdapter } from '../types'
 
-// The adapter's subscribe auto-reconnects (e.g. EventSource) — there's no
-// terminal 'error' state. Callers see 'reconnecting' until the next frame lands.
-export type Connection = 'connecting' | 'live' | 'reconnecting'
+// Connection lifecycle: 'connecting' from mount until the first SSE frame
+// arrives, then 'live'. The adapter's subscribe auto-reconnects on drop —
+// the editor stays 'live' and simply receives the next frame when it comes.
+export type Connection = 'connecting' | 'live'
 
 function isEditable(status: ProjectStatus): boolean {
   return status === 'draft' || status === 'final'
@@ -392,7 +393,7 @@ export function useProjectState(
   )
 
   // Force a fresh load of the project via the adapter and replace local state.
-  // Useful when the subscription is reconnecting or local state has drifted.
+  // Useful when local state has drifted from the server (e.g. after a network gap).
   const refetch = useCallback(async () => {
     try {
       const next = await adapter.loadProject(projectId)

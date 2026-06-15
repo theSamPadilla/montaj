@@ -255,9 +255,9 @@ export default function SlidePropertyPanel({
                 size="sm"
                 variant="outline"
                 className="text-xs flex items-center gap-1.5"
-                disabled={element.rotation !== 0 || !onEnterCrop}
+                disabled={(element.rotation ?? 0) !== 0 || !onEnterCrop}
                 title={
-                  element.rotation !== 0
+                  (element.rotation ?? 0) !== 0
                     ? 'Reset rotation to 0 before cropping'
                     : 'Crop image'
                 }

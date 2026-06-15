@@ -154,7 +154,7 @@ export function CanvasCropOverlay({
               top: windowPx.y,
               width: windowPx.w,
               height: windowPx.h,
-              outline: '2px solid var(--color-accent-pink)',
+              outline: '2px solid var(--editor-selection)',
               pointerEvents: 'none',
             }}
           />
@@ -176,7 +176,7 @@ export function CanvasCropOverlay({
                   width: 12,
                   height: 12,
                   backgroundColor: '#fff',
-                  border: '1.5px solid var(--color-accent-pink)',
+                  border: '1.5px solid var(--editor-selection)',
                   borderRadius: 2,
                   cursor: o.cursor,
                   zIndex: 10,

@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import type { Slide, OverlayElement, ImageElement } from '@/lib/types/schema'
+import type { OverlayFactory } from '@/editor-core/types'
 import OverlayErrorBoundary from '@/components/OverlayErrorBoundary'
 import { OverlayPreview } from '@/editor-core/preview/OverlayPreview'
 import {
@@ -37,11 +38,24 @@ const HANDLES: { id: ResizeHandleId; cursor: string; xPct: number; yPct: number 
 
 // ── OverlayElementView — shared OverlayPreview wrapper ─────────────────────────
 
-function OverlayElementView({ element }: { element: OverlayElement }) {
+// Fallback compiler used when no compiler is injected (e.g. thumbnail previews
+// that don't need live overlay rendering). Always rejects so OverlayPreview
+// shows its errorState rather than a spinner that never resolves.
+const noopCompiler = (): Promise<OverlayFactory> =>
+  Promise.reject(new Error('No overlay compiler provided'))
+
+function OverlayElementView({
+  element,
+  compileOverlay,
+}: {
+  element: OverlayElement
+  compileOverlay?: (template: string) => Promise<OverlayFactory>
+}) {
   const duration = (element.overlay.props.duration as number | undefined) ?? 60
   const mergedProps = { ...element.overlay.props, offsetX: 0, offsetY: 0, scale: 1 }
   return (
     <OverlayPreview
+      compileOverlay={compileOverlay ?? noopCompiler}
       template={element.overlay.template}
       props={mergedProps}
       frame={element.frame}
@@ -65,6 +79,12 @@ interface Props {
   onSelect?: (id: string | null) => void
   scale?: number
   resolveImageSrc?: (element: ImageElement) => string
+  /**
+   * Host-supplied overlay compiler. Injected from the adapter so SlideCanvas
+   * (and OverlayPreview inside it) never import '@/lib/overlay-eval' directly.
+   * When absent, overlay elements render nothing (thumbnail / read-only paths).
+   */
+  compileOverlay?: (template: string) => Promise<OverlayFactory>
 
   // Project-state mutators (editor-core). Required for the interactive path.
   moveElement?: (slideId: string, elementId: string, x: number, y: number) => Promise<void>
@@ -89,6 +109,7 @@ export default function SlideCanvas({
   onSelect,
   scale = 1,
   resolveImageSrc,
+  compileOverlay,
   moveElement,
   resizeElement,
   rotateElement,
@@ -367,7 +388,7 @@ export default function SlideCanvas({
                 label={element.overlay.template.split('/').pop() ?? element.overlay.template}
                 watchPath={element.overlay.template}
               >
-                <OverlayElementView element={element} />
+                <OverlayElementView element={element} compileOverlay={compileOverlay} />
               </OverlayErrorBoundary>
             )
 

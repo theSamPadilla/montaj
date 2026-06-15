@@ -4,7 +4,7 @@
 
 ### Carousel editor
 
-- **Rich-text formatting toolbar** — selected text elements now expose a floating toolbar with bold, italic, uppercase/lowercase/capitalize case-cycle, left/center/right/justify alignment, font-family picker, font-size stepper, and a color swatch. Formatting writes back through the overlay's `onOverlayChange` path so every change is immediately reflected in the preview and persisted to `project.json`.
+- **Rich-text formatting toolbar** — selected text elements now expose a floating toolbar with bold, italic, uppercase/lowercase/capitalize case-cycle, left/center/right/justify alignment, font-family picker, font-size stepper, and a color swatch. Formatting writes back via `updateOverlayProp` so every change is immediately reflected in the preview and persisted to `project.json`.
 - **Double-click inline text editing** — double-clicking any text element on the canvas opens an in-place `contenteditable` editor. Enter commits the edit, Shift+Enter inserts a newline, Escape cancels (restores the prior value), and clicking outside the element commits.
 - **Undo / redo with keyboard shortcuts** — the editor now maintains a snapshot history. Cmd/Ctrl+Z steps back, Cmd/Ctrl+Shift+Z or Cmd/Ctrl+Y steps forward. Undo/Redo buttons in the toolbar reflect availability.
 - **Non-destructive 8-handle image cropping** — selecting an image element and entering crop mode via the panel reveals eight edge and corner handles. Dragging any handle adjusts the visible crop rectangle; confirming (Enter or clicking outside) writes the crop fractions to `project.json`. Cropping is disabled when the element is rotated. Applying a crop also updates the element's bounding box (crop-also-resizes), so the layout reflects the visible area.

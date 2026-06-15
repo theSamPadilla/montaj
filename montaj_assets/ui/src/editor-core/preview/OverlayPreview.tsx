@@ -2,11 +2,9 @@
  * editor-core/preview/OverlayPreview
  *
  * Host-agnostic React component that compiles and renders a JSX overlay
- * template using Montaj's existing overlay-eval pipeline.
- *
- * Prop shape mirrors mission-control's OverlayPreview, but is backed by
- * Montaj's lib/overlay-eval (Babel transpile + per-src cache) instead of
- * MC's fetch-based variant. No network call to MC is made.
+ * template. The overlay compiler is injected via the `compileOverlay` prop so
+ * this component has no dependency on any host module (no import from
+ * '@/lib/overlay-eval'). The host wires in the compiler from its adapter.
  *
  * States:
  *   - Compiling  → `loading` node (default: spinner with role="status").
@@ -15,7 +13,7 @@
  */
 
 import React, { useEffect, useState } from 'react'
-import { compileOverlay, type OverlayFactory } from '@/lib/overlay-eval'
+import type { OverlayFactory } from '../types'
 
 // ── Defaults ─────────────────────────────────────────────────────────────────
 
@@ -109,8 +107,14 @@ function DefaultErrorState(): React.ReactElement {
 
 export interface OverlayPreviewProps {
   /**
-   * Path to the overlay template file. Passed directly to compileOverlay,
-   * which fetches via /api/files?path=… when not already an absolute URL.
+   * Host-supplied compiler. Receives a template path and returns a compiled
+   * OverlayFactory. Injected from the adapter so editor-core never imports
+   * the host's overlay-eval module directly.
+   */
+  compileOverlay: (template: string) => Promise<OverlayFactory>
+
+  /**
+   * Path to the overlay template file. Passed to the injected compileOverlay.
    * Matches OverlayElement.overlay.template from Montaj's schema.
    */
   template: string
@@ -146,6 +150,7 @@ export interface OverlayPreviewProps {
 // ── Component ─────────────────────────────────────────────────────────────────
 
 export function OverlayPreview({
+  compileOverlay,
   template,
   props,
   frame,

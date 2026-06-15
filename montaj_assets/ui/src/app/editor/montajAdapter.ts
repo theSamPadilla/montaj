@@ -20,8 +20,10 @@
  * absence.
  */
 import { api } from '@/lib/api'
+import { compileOverlay as hostCompileOverlay } from '@/lib/overlay-eval'
 import type {
   EditorAdapter,
+  OverlayFactory,
   Project,
   ImageElement,
   RenderEvent,
@@ -127,5 +129,8 @@ export function createMontajAdapter(): EditorAdapter {
     },
 
     resolveImageSrc: resolveMontajImageSrc,
+
+    compileOverlay: (template: string): Promise<OverlayFactory> =>
+      hostCompileOverlay(template),
   }
 }

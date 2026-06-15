@@ -43,6 +43,7 @@ function makeFakeAdapter(): EditorAdapter {
       `/api/files?path=${encodeURIComponent(element.src)}`,
     // Optional method present.
     listMedia: async (_scope: MediaScope): Promise<MediaItem[]> => [],
+    compileOverlay: async (_template: string) => () => null,
   }
 }
 

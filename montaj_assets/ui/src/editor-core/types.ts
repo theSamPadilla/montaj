@@ -11,7 +11,7 @@
  * re-exported from `lib/types/schema.ts` below so consumers import them from
  * `editor-core` and never reach into Montaj internals directly.
  */
-import type { ReactNode } from 'react'
+import type { ReactElement, ReactNode } from 'react'
 import type {
   Project,
   Slide,
@@ -19,6 +19,20 @@ import type {
   ImageElement,
   OverlayElement,
 } from '../lib/types/schema'
+
+// ── Overlay compiler ─────────────────────────────────────────────────────────
+
+/**
+ * A compiled overlay factory: given the current frame/fps/durationFrames and
+ * the overlay's runtime props, returns a React element (or null on error).
+ * Matches the signature produced by `lib/overlay-eval`'s `compileOverlay`.
+ */
+export type OverlayFactory = (
+  frame: number,
+  fps: number,
+  durationFrames: number,
+  props: Record<string, unknown>,
+) => ReactElement | null
 
 // ── Re-exported canonical carousel types ─────────────────────────────────────
 // schema.ts is the single source of truth. Consumers of editor-core import
@@ -116,6 +130,15 @@ export interface EditorAdapter {
    * without a media library omit this; the editor must feature-detect it.
    */
   listMedia?(scope: MediaScope): Promise<MediaItem[]>
+
+  /**
+   * Compile a JSX overlay template file into an `OverlayFactory`.
+   * The host supplies this because the compilation pipeline (Babel, fetch
+   * strategy, caching) is host-specific. The editor-core preview component
+   * receives it as a prop; nothing inside editor-core imports the host's
+   * compiler directly.
+   */
+  compileOverlay(template: string): Promise<OverlayFactory>
 }
 
 // ── Theme ────────────────────────────────────────────────────────────────────

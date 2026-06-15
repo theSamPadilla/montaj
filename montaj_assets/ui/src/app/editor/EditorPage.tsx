@@ -42,7 +42,7 @@ export default function EditorPage() {
   useProjectStream(id !== 'new' ? id : undefined, handleUpdate, handleLog)
 
   // Fallback poll while pending — SSE can miss the draft transition if the connection
-  // drops at the wrong moment. Polls every 5s and stops once no longer pending.
+  // drops at the wrong moment. Polls every 10s and stops once no longer pending.
   useEffect(() => {
     if (!id || id === 'new' || project?.status !== 'pending') return
     const timer = setInterval(() => {
