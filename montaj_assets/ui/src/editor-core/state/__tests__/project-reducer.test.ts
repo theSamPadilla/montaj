@@ -869,3 +869,89 @@ describe('setOverlayFrame', () => {
     expect((prev.slides![0].elements[1] as OverlayElement).frame).toBe(originalFrame)
   })
 })
+
+// ---------------------------------------------------------------------------
+// mediaId passthrough round-trip tests
+// ---------------------------------------------------------------------------
+
+describe('ImageElement mediaId passthrough', () => {
+  it('mediaId survives an sse merge unchanged', () => {
+    // Build a project whose first slide has an ImageElement with mediaId set.
+    const elementWithMedia: ImageElement = {
+      id: 'el-media-0',
+      type: 'image',
+      src: 'https://cdn.example.com/photo.jpg',
+      x: 0,
+      y: 0,
+      w: 200,
+      h: 200,
+      rotation: 0,
+      mediaId: 'hub-media-abc123',
+    }
+
+    const prev: Project = {
+      version: '1',
+      id: 'proj-media',
+      name: 'Media Test',
+      workflow: 'carousel',
+      status: 'pending',
+      editingPrompt: '',
+      settings: { resolution: [1080, 1080] },
+      assets: [],
+      slides: [
+        {
+          id: 'slide-0',
+          base_color: '#ffffff',
+          elements: [elementWithMedia],
+        },
+      ],
+    }
+
+    // Simulate an SSE echo: the server round-trips the same project data back.
+    const echo: Project = JSON.parse(JSON.stringify(prev))
+
+    const result = projectReducer(prev, { type: 'sse', project: echo })
+
+    const resultEl = result.slides![0].elements[0] as ImageElement
+    expect(resultEl.mediaId).toBe('hub-media-abc123')
+  })
+
+  it('ImageElement without mediaId is valid (field is truly optional)', () => {
+    // This is a compile-time check that also runs as a runtime assertion:
+    // constructing an ImageElement without mediaId must be allowed.
+    const el: ImageElement = {
+      id: 'el-no-media',
+      type: 'image',
+      src: 'https://cdn.example.com/other.jpg',
+      x: 10,
+      y: 10,
+      w: 100,
+      h: 100,
+      rotation: 0,
+      // mediaId intentionally omitted
+    }
+
+    expect(el.mediaId).toBeUndefined()
+
+    const proj: Project = {
+      version: '1',
+      id: 'proj-no-media',
+      name: 'No Media Test',
+      workflow: 'carousel',
+      status: 'pending',
+      editingPrompt: '',
+      settings: { resolution: [1080, 1080] },
+      assets: [],
+      slides: [{ id: 'slide-0', base_color: '#ffffff', elements: [el] }],
+    }
+
+    const echo: Project = JSON.parse(JSON.stringify(proj))
+    const result = projectReducer(proj, { type: 'sse', project: echo })
+
+    const resultEl = result.slides![0].elements[0] as ImageElement
+    // After JSON round-trip, undefined fields are absent — not undefined.
+    expect(resultEl.mediaId).toBeUndefined()
+    // Structural equality means the reducer reuses the same reference.
+    expect(result).toBe(proj)
+  })
+})
