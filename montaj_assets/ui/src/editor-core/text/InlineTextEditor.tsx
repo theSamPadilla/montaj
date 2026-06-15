@@ -50,7 +50,7 @@ export function InlineTextEditor({
         // Let the newline insert naturally.
         return
       }
-      // Cmd+Enter or Ctrl+Enter also commits (power-user shortcut).
+      // Bare Enter (without Shift) commits the text.
       e.preventDefault()
       onCommit(value)
     }

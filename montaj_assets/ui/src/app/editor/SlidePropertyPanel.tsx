@@ -239,7 +239,7 @@ export default function SlidePropertyPanel({
             {numInput('Y', element.y, v => onElementChange({ y: v }))}
             {numInput('W', element.w, v => onElementChange({ w: v }), { min: 1 })}
             {numInput('H', element.h, v => onElementChange({ h: v }), { min: 1 })}
-            {numInput('Rotation', element.rotation, v => onElementChange({ rotation: v }), { min: -360, max: 360 })}
+            {numInput('Rotation', element.rotation ?? 0, v => onElementChange({ rotation: v }), { min: -360, max: 360 })}
           </div>
 
           {/* Image-specific */}

@@ -174,3 +174,80 @@ describe('useProjectState — adapter wiring', () => {
     expect(unsub).toHaveBeenCalledTimes(1)
   })
 })
+
+// ---------------------------------------------------------------------------
+// Status gating — slide-CRUD actions are no-ops when project is not editable
+// ---------------------------------------------------------------------------
+
+describe('useProjectState — addSlide is status-gated', () => {
+  it('no-ops addSlide and does not save when project status is "pending"', async () => {
+    const adapter = makeFakeAdapter()
+    // Override loadProject to return a pending project, but we pass initial directly
+    const initial = makeProject({ status: 'pending' })
+    const { result } = renderHook(() => useProjectState(adapter, initial.id, initial))
+
+    await act(async () => {
+      await result.current.addSlide({
+        id: 'slide-new',
+        base_color: '#ff0000',
+        elements: [],
+      })
+    })
+
+    // State must not have gained a slide
+    expect(result.current.project.slides).toHaveLength(initial.slides!.length)
+    // Adapter must not have been asked to save
+    expect(adapter.saveProject).not.toHaveBeenCalled()
+  })
+
+  it('no-ops addSlide when project status is "storyboard_ready"', async () => {
+    const adapter = makeFakeAdapter()
+    const initial = makeProject({ status: 'storyboard_ready' })
+    const { result } = renderHook(() => useProjectState(adapter, initial.id, initial))
+
+    await act(async () => {
+      await result.current.addSlide({
+        id: 'slide-new',
+        base_color: '#0000ff',
+        elements: [],
+      })
+    })
+
+    expect(result.current.project.slides).toHaveLength(initial.slides!.length)
+    expect(adapter.saveProject).not.toHaveBeenCalled()
+  })
+
+  it('allows addSlide when project status is "draft"', async () => {
+    const adapter = makeFakeAdapter()
+    const initial = makeProject({ status: 'draft' })
+    const { result } = renderHook(() => useProjectState(adapter, initial.id, initial))
+
+    await act(async () => {
+      await result.current.addSlide({
+        id: 'slide-new',
+        base_color: '#00ff00',
+        elements: [],
+      })
+    })
+
+    expect(result.current.project.slides).toHaveLength(initial.slides!.length + 1)
+    expect(adapter.saveProject).toHaveBeenCalledTimes(1)
+  })
+
+  it('allows addSlide when project status is "final"', async () => {
+    const adapter = makeFakeAdapter()
+    const initial = makeProject({ status: 'final' })
+    const { result } = renderHook(() => useProjectState(adapter, initial.id, initial))
+
+    await act(async () => {
+      await result.current.addSlide({
+        id: 'slide-new',
+        base_color: '#00ff00',
+        elements: [],
+      })
+    })
+
+    expect(result.current.project.slides).toHaveLength(initial.slides!.length + 1)
+    expect(adapter.saveProject).toHaveBeenCalledTimes(1)
+  })
+})

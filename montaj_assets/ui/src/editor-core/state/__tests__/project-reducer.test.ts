@@ -4,6 +4,24 @@ import { createMutationQueue } from '../mutation-queue'
 import type { Project, Slide, CarouselElement, OverlayElement, ImageElement } from '../../types'
 
 // ---------------------------------------------------------------------------
+// Fixture helpers (shared with slide-CRUD section below)
+// ---------------------------------------------------------------------------
+
+function makeSlide(id: string, overrides: Partial<Slide> = {}): Slide {
+  return {
+    id,
+    base_color: '#ffffff',
+    elements: [] as CarouselElement[],
+    ...overrides,
+  }
+}
+
+function makeImageEl(id: string): ImageElement {
+  return { id, type: 'image', src: 'img.png', x: 0, y: 0, w: 100, h: 100, rotation: 0 }
+}
+
+
+// ---------------------------------------------------------------------------
 // Fixture helpers
 // ---------------------------------------------------------------------------
 //
@@ -468,5 +486,386 @@ describe('sse merge — reference preservation', () => {
     const echoed = JSON.parse(JSON.stringify(aWithUndefined)) as Project
     const result = projectReducer(aWithUndefined, { type: 'sse', project: echoed })
     expect(result).toBe(aWithUndefined)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// addSlide
+// ---------------------------------------------------------------------------
+
+describe('addSlide', () => {
+  it('appends a new slide when afterSlideId is not provided', () => {
+    const prev = makeProject()
+    const newSlide = makeSlide('slide-new')
+    const result = projectReducer(prev, { type: 'addSlide', slide: newSlide })
+
+    expect(result).not.toBe(prev)
+    expect(result.slides).toHaveLength(3)
+    expect(result.slides![2]).toBe(newSlide)
+    // Original slides unchanged (same refs)
+    expect(result.slides![0]).toBe(prev.slides![0])
+    expect(result.slides![1]).toBe(prev.slides![1])
+  })
+
+  it('inserts after the specified slide when afterSlideId is found', () => {
+    const prev = makeProject()
+    const newSlide = makeSlide('slide-new')
+    const result = projectReducer(prev, { type: 'addSlide', slide: newSlide, afterSlideId: 'slide-0' })
+
+    expect(result.slides).toHaveLength(3)
+    expect(result.slides![0].id).toBe('slide-0')
+    expect(result.slides![1].id).toBe('slide-new')
+    expect(result.slides![2].id).toBe('slide-1')
+  })
+
+  it('appends when afterSlideId is not found', () => {
+    const prev = makeProject()
+    const newSlide = makeSlide('slide-new')
+    const result = projectReducer(prev, { type: 'addSlide', slide: newSlide, afterSlideId: 'nonexistent' })
+
+    expect(result.slides).toHaveLength(3)
+    expect(result.slides![2].id).toBe('slide-new')
+  })
+
+  it('does not mutate the original slides array', () => {
+    const prev = makeProject()
+    const originalSlides = prev.slides!.slice()
+    projectReducer(prev, { type: 'addSlide', slide: makeSlide('slide-new') })
+    expect(prev.slides).toEqual(originalSlides)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// removeSlide
+// ---------------------------------------------------------------------------
+
+describe('removeSlide', () => {
+  it('removes the slide with the matching id', () => {
+    const prev = makeProject()
+    const result = projectReducer(prev, { type: 'removeSlide', slideId: 'slide-0' })
+
+    expect(result.slides).toHaveLength(1)
+    expect(result.slides![0].id).toBe('slide-1')
+  })
+
+  it('is a structural no-op when slideId does not exist', () => {
+    const prev = makeProject()
+    const result = projectReducer(prev, { type: 'removeSlide', slideId: 'nonexistent' })
+
+    expect(result.slides).toHaveLength(2)
+    // Both slide refs preserved
+    expect(result.slides![0]).toBe(prev.slides![0])
+    expect(result.slides![1]).toBe(prev.slides![1])
+  })
+
+  it('does not mutate the original slides array', () => {
+    const prev = makeProject()
+    const originalLength = prev.slides!.length
+    projectReducer(prev, { type: 'removeSlide', slideId: 'slide-0' })
+    expect(prev.slides).toHaveLength(originalLength)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// duplicateSlide
+// ---------------------------------------------------------------------------
+
+describe('duplicateSlide', () => {
+  it('inserts newSlide immediately after the source slide', () => {
+    const prev = makeProject()
+    const newSlide = makeSlide('slide-dup')
+    const result = projectReducer(prev, { type: 'duplicateSlide', slideId: 'slide-0', newSlide })
+
+    expect(result.slides).toHaveLength(3)
+    expect(result.slides![0].id).toBe('slide-0')
+    expect(result.slides![1].id).toBe('slide-dup')
+    expect(result.slides![2].id).toBe('slide-1')
+  })
+
+  it('returns the same state when the source slideId is not found', () => {
+    const prev = makeProject()
+    const result = projectReducer(prev, { type: 'duplicateSlide', slideId: 'ghost', newSlide: makeSlide('x') })
+    expect(result).toBe(prev)
+  })
+
+  it('newSlide has a distinct id from the source', () => {
+    const prev = makeProject()
+    const newSlide = makeSlide('slide-dup-new')
+    const result = projectReducer(prev, { type: 'duplicateSlide', slideId: 'slide-0', newSlide })
+    const ids = result.slides!.map((s) => s.id)
+    expect(new Set(ids).size).toBe(ids.length)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// reorderSlides
+// ---------------------------------------------------------------------------
+
+describe('reorderSlides', () => {
+  it('moves a slide from one index to another', () => {
+    const prev = makeProject()
+    // Move slide-1 (index 1) to index 0
+    const result = projectReducer(prev, { type: 'reorderSlides', fromIndex: 1, toIndex: 0 })
+
+    expect(result.slides).toHaveLength(2)
+    expect(result.slides![0].id).toBe('slide-1')
+    expect(result.slides![1].id).toBe('slide-0')
+  })
+
+  it('is a no-op when fromIndex is out of bounds', () => {
+    const prev = makeProject()
+    const result = projectReducer(prev, { type: 'reorderSlides', fromIndex: 5, toIndex: 0 })
+    expect(result).toBe(prev)
+  })
+
+  it('is a no-op when toIndex is out of bounds', () => {
+    const prev = makeProject()
+    const result = projectReducer(prev, { type: 'reorderSlides', fromIndex: 0, toIndex: 99 })
+    expect(result).toBe(prev)
+  })
+
+  it('is a no-op when fromIndex is negative', () => {
+    const prev = makeProject()
+    const result = projectReducer(prev, { type: 'reorderSlides', fromIndex: -1, toIndex: 0 })
+    expect(result).toBe(prev)
+  })
+
+  it('does not mutate the original slides array', () => {
+    const prev = makeProject()
+    const originalFirst = prev.slides![0].id
+    projectReducer(prev, { type: 'reorderSlides', fromIndex: 0, toIndex: 1 })
+    expect(prev.slides![0].id).toBe(originalFirst)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// updateSlide
+// ---------------------------------------------------------------------------
+
+describe('updateSlide', () => {
+  it('shallow-patches the matching slide', () => {
+    const prev = makeProject()
+    const result = projectReducer(prev, {
+      type: 'updateSlide',
+      slideId: 'slide-0',
+      patch: { base_color: '#abcdef' },
+    })
+
+    expect(result.slides![0].base_color).toBe('#abcdef')
+    // Elements untouched (same ref)
+    expect(result.slides![0].elements).toBe(prev.slides![0].elements)
+  })
+
+  it('leaves other slides untouched (same refs)', () => {
+    const prev = makeProject()
+    const result = projectReducer(prev, {
+      type: 'updateSlide',
+      slideId: 'slide-0',
+      patch: { base_color: '#111111' },
+    })
+    expect(result.slides![1]).toBe(prev.slides![1])
+  })
+
+  it('does not mutate the input state', () => {
+    const prev = makeProject()
+    const originalColor = prev.slides![0].base_color
+    projectReducer(prev, { type: 'updateSlide', slideId: 'slide-0', patch: { base_color: '#999' } })
+    expect(prev.slides![0].base_color).toBe(originalColor)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// duplicateElement
+// ---------------------------------------------------------------------------
+
+describe('duplicateElement', () => {
+  it('inserts newElement immediately after the source element', () => {
+    const prev = makeProject()
+    const newEl = makeImageEl('el-new')
+    const result = projectReducer(prev, {
+      type: 'duplicateElement',
+      slideId: 'slide-0',
+      elementId: 'el-0-0',
+      newElement: newEl as CarouselElement,
+    })
+
+    const els = result.slides![0].elements
+    expect(els).toHaveLength(3)
+    expect(els[0].id).toBe('el-0-0')
+    expect(els[1].id).toBe('el-new')
+    expect(els[2].id).toBe('el-0-1')
+  })
+
+  it('is a no-op on the slide when the source elementId does not exist', () => {
+    const prev = makeProject()
+    const result = projectReducer(prev, {
+      type: 'duplicateElement',
+      slideId: 'slide-0',
+      elementId: 'ghost',
+      newElement: makeImageEl('x') as CarouselElement,
+    })
+    expect(result.slides![0].elements).toHaveLength(prev.slides![0].elements.length)
+    expect(result.slides![0]).toBe(prev.slides![0])
+  })
+
+  it('newElement gets a distinct id from the source element', () => {
+    const prev = makeProject()
+    const newEl = makeImageEl('el-0-0-copy')
+    const result = projectReducer(prev, {
+      type: 'duplicateElement',
+      slideId: 'slide-0',
+      elementId: 'el-0-0',
+      newElement: newEl as CarouselElement,
+    })
+    const ids = result.slides![0].elements.map((e) => e.id)
+    expect(new Set(ids).size).toBe(ids.length)
+  })
+
+  it('leaves other slides untouched', () => {
+    const prev = makeProject()
+    const result = projectReducer(prev, {
+      type: 'duplicateElement',
+      slideId: 'slide-0',
+      elementId: 'el-0-0',
+      newElement: makeImageEl('el-dup') as CarouselElement,
+    })
+    expect(result.slides![1]).toBe(prev.slides![1])
+  })
+})
+
+// ---------------------------------------------------------------------------
+// reorderElement
+// ---------------------------------------------------------------------------
+
+describe('reorderElement', () => {
+  it('swaps the element forward (toward end of array)', () => {
+    const prev = makeProject()
+    // el-0-0 is index 0; move forward → should swap with el-0-1 at index 1
+    const result = projectReducer(prev, {
+      type: 'reorderElement',
+      slideId: 'slide-0',
+      elementId: 'el-0-0',
+      direction: 'forward',
+    })
+
+    const els = result.slides![0].elements
+    expect(els[0].id).toBe('el-0-1')
+    expect(els[1].id).toBe('el-0-0')
+  })
+
+  it('swaps the element backward (toward start of array)', () => {
+    const prev = makeProject()
+    // el-0-1 is index 1; move backward → should swap with el-0-0 at index 0
+    const result = projectReducer(prev, {
+      type: 'reorderElement',
+      slideId: 'slide-0',
+      elementId: 'el-0-1',
+      direction: 'backward',
+    })
+
+    const els = result.slides![0].elements
+    expect(els[0].id).toBe('el-0-1')
+    expect(els[1].id).toBe('el-0-0')
+  })
+
+  it('is a no-op when moving the last element forward', () => {
+    const prev = makeProject()
+    // el-0-1 is the last element in slide-0
+    const result = projectReducer(prev, {
+      type: 'reorderElement',
+      slideId: 'slide-0',
+      elementId: 'el-0-1',
+      direction: 'forward',
+    })
+    expect(result.slides![0]).toBe(prev.slides![0])
+  })
+
+  it('is a no-op when moving the first element backward', () => {
+    const prev = makeProject()
+    // el-0-0 is the first element in slide-0
+    const result = projectReducer(prev, {
+      type: 'reorderElement',
+      slideId: 'slide-0',
+      elementId: 'el-0-0',
+      direction: 'backward',
+    })
+    expect(result.slides![0]).toBe(prev.slides![0])
+  })
+
+  it('is a no-op when the elementId does not exist', () => {
+    const prev = makeProject()
+    const result = projectReducer(prev, {
+      type: 'reorderElement',
+      slideId: 'slide-0',
+      elementId: 'ghost',
+      direction: 'forward',
+    })
+    expect(result.slides![0]).toBe(prev.slides![0])
+  })
+
+  it('does not mutate the original elements array', () => {
+    const prev = makeProject()
+    const originalFirst = prev.slides![0].elements[0].id
+    projectReducer(prev, {
+      type: 'reorderElement',
+      slideId: 'slide-0',
+      elementId: 'el-0-0',
+      direction: 'forward',
+    })
+    expect(prev.slides![0].elements[0].id).toBe(originalFirst)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// setOverlayFrame
+// ---------------------------------------------------------------------------
+
+describe('setOverlayFrame', () => {
+  it('updates the frame on the targeted overlay element', () => {
+    const prev = makeProject()
+    const result = projectReducer(prev, {
+      type: 'setOverlayFrame',
+      slideId: 'slide-0',
+      elementId: 'el-0-1',
+      frame: 7,
+    })
+
+    const el = result.slides![0].elements[1] as OverlayElement
+    expect(el.frame).toBe(7)
+  })
+
+  it('is a no-op on image elements (type guard)', () => {
+    const prev = makeProject()
+    // el-0-0 is an image element
+    const result = projectReducer(prev, {
+      type: 'setOverlayFrame',
+      slideId: 'slide-0',
+      elementId: 'el-0-0',
+      frame: 3,
+    })
+    expect(result.slides![0].elements[0]).toBe(prev.slides![0].elements[0])
+  })
+
+  it('leaves other slides untouched', () => {
+    const prev = makeProject()
+    const result = projectReducer(prev, {
+      type: 'setOverlayFrame',
+      slideId: 'slide-0',
+      elementId: 'el-0-1',
+      frame: 2,
+    })
+    expect(result.slides![1]).toBe(prev.slides![1])
+  })
+
+  it('does not mutate the original element', () => {
+    const prev = makeProject()
+    const originalFrame = (prev.slides![0].elements[1] as OverlayElement).frame
+    projectReducer(prev, {
+      type: 'setOverlayFrame',
+      slideId: 'slide-0',
+      elementId: 'el-0-1',
+      frame: 99,
+    })
+    expect((prev.slides![0].elements[1] as OverlayElement).frame).toBe(originalFrame)
   })
 })
