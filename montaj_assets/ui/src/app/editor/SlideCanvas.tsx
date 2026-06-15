@@ -1,98 +1,30 @@
 import { useEffect, useRef, useState } from 'react'
-import type { Slide, CarouselElement, OverlayElement } from '@/lib/types/schema'
-import { compileOverlay, type OverlayFactory } from '@/lib/overlay-eval'
+import type { Slide, OverlayElement, ImageElement } from '@/lib/types/schema'
 import OverlayErrorBoundary from '@/components/OverlayErrorBoundary'
+import { OverlayPreview } from '@/editor-core/preview/OverlayPreview'
+import {
+  useOverlayDrag,
+  useOverlayResize,
+  useOverlayRotate,
+  buildElementTransform,
+  type ResizeHandle as ResizeHandleId,
+  type SnapGuide,
+} from '@/editor-core/gestures'
+import { CanvasCropOverlay } from '@/editor-core/crop/CanvasCropOverlay'
+import { InlineTextEditor } from '@/editor-core/text/InlineTextEditor'
 
-function resolveAsset(src: string): string {
+function resolveAssetDefault(src: string): string {
   if (!src) return src
   if (src.startsWith('http://') || src.startsWith('https://') || src.startsWith('data:')) return src
   return `/api/files?path=${encodeURIComponent(src)}`
 }
 
-// ── OverlayElementView ───────────────────────────────────────────────────────
-
-interface OverlayElementViewProps {
-  element: OverlayElement
-}
-
-function OverlayElementView({ element }: OverlayElementViewProps) {
-  const [factory, setFactory] = useState<OverlayFactory | null>(null)
-  const [compileError, setCompileError] = useState<string | null>(null)
-
-  useEffect(() => {
-    let cancelled = false
-    setCompileError(null)
-    compileOverlay(element.overlay.template).then(f => {
-      if (!cancelled) setFactory(() => f)
-    }).catch(err => {
-      if (!cancelled) setCompileError(err instanceof Error ? err.message : String(err))
-      console.warn('[SlideCanvas] overlay compile error:', err)
-    })
-    return () => { cancelled = true }
-  }, [element.overlay.template])
-
-  if (compileError) {
-    return (
-      <div
-        style={{
-          width: '100%',
-          height: '100%',
-          outline: '1px dashed red',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          padding: 4,
-          overflow: 'hidden',
-          boxSizing: 'border-box',
-        }}
-      >
-        <span style={{ fontSize: 11, color: 'red', wordBreak: 'break-word', textAlign: 'center' }}>
-          {compileError.slice(0, 120)}
-        </span>
-      </div>
-    )
-  }
-
-  if (!factory) return null
-
-  const mergedProps = { ...element.overlay.props, offsetX: 0, offsetY: 0, scale: 1 }
-  const duration = (element.overlay.props.duration as number | undefined) ?? 60
-
-  try {
-    return factory(element.frame, 30, duration, mergedProps) as React.ReactElement | null
-  } catch {
-    return null
-  }
-}
-
-// ── Snap config ─────────────────────────────────────────────────────────────
-
-// Position snap threshold = 2.5% of slide width (matches video preview's useDragOverlay).
-// For a 1080-wide slide that's 27px in native coords.
-const POSITION_SNAP_PCT = 0.025
-// Rotation snap: 90° increments with attract/release hysteresis (matches useDragOverlay).
-const ROT_SNAP_ANGLES = [0, 90, 180, 270]
-const ROT_ATTRACT_DEG = 5
-const ROT_RELEASE_DEG = 8
-
-interface SnapState {
-  centerX: boolean
-  centerY: boolean
-  left: boolean
-  right: boolean
-  top: boolean
-  bottom: boolean
-}
-const SNAP_OFF: SnapState = { centerX: false, centerY: false, left: false, right: false, top: false, bottom: false }
-
-// ── Resize / Rotate handles ──────────────────────────────────────────────────
-
-// 8 resize handle positions: corners + edge midpoints
-type HandleId = 'nw' | 'n' | 'ne' | 'e' | 'se' | 's' | 'sw' | 'w'
+// ── Resize / Rotate handle geometry ────────────────────────────────────────────
 
 const HANDLE_SIZE = 8
+const ROTATE_OFFSET = 20
 
-const HANDLES: { id: HandleId; cursor: string; xPct: number; yPct: number }[] = [
+const HANDLES: { id: ResizeHandleId; cursor: string; xPct: number; yPct: number }[] = [
   { id: 'nw', cursor: 'nwse-resize', xPct: 0,   yPct: 0   },
   { id: 'n',  cursor: 'ns-resize',   xPct: 0.5, yPct: 0   },
   { id: 'ne', cursor: 'nesw-resize', xPct: 1,   yPct: 0   },
@@ -103,327 +35,230 @@ const HANDLES: { id: HandleId; cursor: string; xPct: number; yPct: number }[] = 
   { id: 'w',  cursor: 'ew-resize',   xPct: 0,   yPct: 0.5 },
 ]
 
-interface HandleProps {
-  handle: (typeof HANDLES)[number]
-  element: CarouselElement
-  scale: number
-  onElementChange: (id: string, patch: Partial<CarouselElement>) => void
-}
+// ── OverlayElementView — shared OverlayPreview wrapper ─────────────────────────
 
-function ResizeHandle({ handle, element, scale, onElementChange }: HandleProps) {
-  function onPointerDown(e: React.PointerEvent) {
-    e.preventDefault()
-    e.stopPropagation()
-    ;(e.currentTarget as HTMLElement).setPointerCapture(e.pointerId)
-
-    const startX = e.clientX
-    const startY = e.clientY
-    const startEl = { x: element.x, y: element.y, w: element.w, h: element.h }
-    const shiftHeld = { current: e.shiftKey }
-
-    const onMove = (ev: PointerEvent) => {
-      shiftHeld.current = ev.shiftKey
-      const dx = (ev.clientX - startX) / scale
-      const dy = (ev.clientY - startY) / scale
-      const { id } = handle
-      let { x, y, w, h } = startEl
-
-      // West handles move x and shrink/grow w
-      if (id === 'nw' || id === 'w' || id === 'sw') {
-        x = startEl.x + dx
-        w = Math.max(10, startEl.w - dx)
-      }
-      // East handles grow w
-      if (id === 'ne' || id === 'e' || id === 'se') {
-        w = Math.max(10, startEl.w + dx)
-      }
-      // North handles move y and shrink/grow h
-      if (id === 'nw' || id === 'n' || id === 'ne') {
-        y = startEl.y + dy
-        h = Math.max(10, startEl.h - dy)
-      }
-      // South handles grow h
-      if (id === 'sw' || id === 's' || id === 'se') {
-        h = Math.max(10, startEl.h + dy)
-      }
-
-      // Shift = preserve aspect ratio (corners only)
-      if (shiftHeld.current && (id === 'nw' || id === 'ne' || id === 'se' || id === 'sw')) {
-        const aspect = startEl.w / startEl.h
-        if (Math.abs(dx) > Math.abs(dy)) {
-          h = w / aspect
-          if (id === 'nw' || id === 'sw') y = startEl.y + (startEl.h - h)
-        } else {
-          w = h * aspect
-          if (id === 'nw' || id === 'ne') x = startEl.x + (startEl.w - w)
-        }
-      }
-
-      onElementChange(element.id, {
-        x: Math.round(x),
-        y: Math.round(y),
-        w: Math.round(w),
-        h: Math.round(h),
-      })
-    }
-
-    const onUp = () => {
-      window.removeEventListener('pointermove', onMove)
-      window.removeEventListener('pointerup', onUp)
-    }
-    window.addEventListener('pointermove', onMove)
-    window.addEventListener('pointerup', onUp)
-  }
-
-  // Position handle centered on the corresponding point of the element border
-  // Note: these are in native (pre-scale) element coords, inside the scaled inner div
-  const left = handle.xPct * element.w - HANDLE_SIZE / 2
-  const top  = handle.yPct * element.h - HANDLE_SIZE / 2
-
+function OverlayElementView({ element }: { element: OverlayElement }) {
+  const duration = (element.overlay.props.duration as number | undefined) ?? 60
+  const mergedProps = { ...element.overlay.props, offsetX: 0, offsetY: 0, scale: 1 }
   return (
-    <div
-      onPointerDown={onPointerDown}
-      style={{
-        position: 'absolute',
-        left,
-        top,
-        width:  HANDLE_SIZE,
-        height: HANDLE_SIZE,
-        background: '#3b82f6',
-        border: '1px solid #fff',
-        borderRadius: 1,
-        cursor: handle.cursor,
-        zIndex: 10,
-        boxSizing: 'border-box',
-      }}
+    <OverlayPreview
+      template={element.overlay.template}
+      props={mergedProps}
+      frame={element.frame}
+      fps={30}
+      duration={duration}
     />
-  )
-}
-
-interface RotateHandleProps {
-  element: CarouselElement
-  onElementChange: (id: string, patch: Partial<CarouselElement>) => void
-}
-
-function RotateHandle({ element, onElementChange }: RotateHandleProps) {
-  // The rotate handle sits ~20px above the top-center in scaled display coords.
-  // Because the element div is inside the scaled inner container, we position it
-  // relative to the element div (which is in native px coords already).
-  // We use a small pseudo-line via border-top on the handle itself.
-
-  function onPointerDown(e: React.PointerEvent) {
-    e.preventDefault()
-    e.stopPropagation()
-    ;(e.currentTarget as HTMLElement).setPointerCapture(e.pointerId)
-
-    // Center of the element in display (scaled) coords
-    const rect = (e.currentTarget as HTMLElement)
-      .closest('[data-element-wrapper]')!
-      .getBoundingClientRect()
-    const cx = rect.left + rect.width  / 2
-    const cy = rect.top  + rect.height / 2
-
-    // Rotation snap with attract/release hysteresis (mirrors useDragOverlay).
-    let snappedAngle: number | null = null
-
-    const onMove = (ev: PointerEvent) => {
-      const raw = ((Math.atan2(ev.clientY - cy, ev.clientX - cx) * (180 / Math.PI) + 90) % 360 + 360) % 360
-
-      // If currently snapped, hold until raw escapes the release zone.
-      if (snappedAngle !== null) {
-        const diff = Math.abs(((raw - snappedAngle) + 180) % 360 - 180)
-        if (diff < ROT_RELEASE_DEG) {
-          onElementChange(element.id, { rotation: snappedAngle })
-          return
-        }
-        snappedAngle = null
-      }
-
-      // Look for a new snap target within attract zone.
-      for (const a of ROT_SNAP_ANGLES) {
-        const diff = Math.abs(((raw - a) + 180) % 360 - 180)
-        if (diff < ROT_ATTRACT_DEG) {
-          snappedAngle = a
-          onElementChange(element.id, { rotation: a })
-          return
-        }
-      }
-
-      onElementChange(element.id, { rotation: Math.round(raw) })
-    }
-
-    const onUp = () => {
-      window.removeEventListener('pointermove', onMove)
-      window.removeEventListener('pointerup', onUp)
-    }
-    window.addEventListener('pointermove', onMove)
-    window.addEventListener('pointerup', onUp)
-  }
-
-  // Position: centered horizontally above the element, 20px above top edge (in native px)
-  const ROTATE_OFFSET = 20
-  const left = element.w / 2 - 7
-  const top  = -ROTATE_OFFSET - 14
-
-  return (
-    <>
-      {/* Visual stem line */}
-      <div
-        style={{
-          position: 'absolute',
-          left: element.w / 2 - 0.5,
-          top: -ROTATE_OFFSET,
-          width: 1,
-          height: ROTATE_OFFSET,
-          background: '#3b82f6',
-          pointerEvents: 'none',
-          zIndex: 9,
-        }}
-      />
-      {/* Circular handle */}
-      <div
-        onPointerDown={onPointerDown}
-        title="Drag to rotate"
-        style={{
-          position: 'absolute',
-          left,
-          top,
-          width: 14,
-          height: 14,
-          background: '#3b82f6',
-          border: '2px solid #fff',
-          borderRadius: '50%',
-          cursor: 'crosshair',
-          zIndex: 10,
-          boxSizing: 'border-box',
-        }}
-      />
-    </>
   )
 }
 
 // ── SlideCanvas ───────────────────────────────────────────────────────────────
 
+type CropMode = { elementId: string; localCrop: { x: number; y: number; w: number; h: number } } | null
+
 interface Props {
   slide: Slide
+  slideId?: string
   width: number
   height: number
   interactive?: boolean
   selectedElementId?: string | null
   onSelect?: (id: string | null) => void
-  onElementChange?: (id: string, patch: Partial<CarouselElement>) => void
   scale?: number
+  resolveImageSrc?: (element: ImageElement) => string
+
+  // Project-state mutators (editor-core). Required for the interactive path.
+  moveElement?: (slideId: string, elementId: string, x: number, y: number) => Promise<void>
+  resizeElement?: (slideId: string, elementId: string, box: { x: number; y: number; w: number; h: number }) => Promise<void>
+  rotateElement?: (slideId: string, elementId: string, rotation: number) => Promise<void>
+  commit?: () => Promise<void>
+  updateOverlayProp?: (slideId: string, elementId: string, key: string, value: string) => Promise<void>
+  updateImageCrop?: (slideId: string, elementId: string, crop: { x: number; y: number; w: number; h: number } | undefined) => Promise<void>
+
+  // Crop mode is owned here but the entry trigger lives in the property panel.
+  cropElementId?: string | null
+  onExitCrop?: () => void
 }
 
 export default function SlideCanvas({
   slide,
+  slideId,
   width,
   height,
   interactive = false,
   selectedElementId,
   onSelect,
-  onElementChange,
   scale = 1,
+  resolveImageSrc,
+  moveElement,
+  resizeElement,
+  rotateElement,
+  commit,
+  updateOverlayProp,
+  updateImageCrop,
+  cropElementId,
+  onExitCrop,
 }: Props) {
-  const isDragging = useRef(false)
-  const dragElement = useRef<CarouselElement | null>(null)
-  const dragStart = useRef<{ px: number; py: number; ox: number; oy: number } | null>(null)
+  const sid = slideId ?? slide.id
+  const resolveSrc = resolveImageSrc ?? ((el: ImageElement) => resolveAssetDefault(el.src))
 
-  // Text editing state for overlay elements
+  // Refs to each element wrapper so gesture previews can mutate DOM directly.
+  const wrapperRefs = useRef<Map<string, HTMLDivElement>>(new Map())
+  const setWrapperRef = (id: string) => (el: HTMLDivElement | null) => {
+    if (el) wrapperRefs.current.set(id, el)
+    else wrapperRefs.current.delete(id)
+  }
+
+  // Inline text edit state.
   const [editingId, setEditingId] = useState<string | null>(null)
-  const [editingText, setEditingText] = useState<string>('')
+  const [editRect, setEditRect] = useState<{ left: number; top: number; width: number; height: number } | null>(null)
 
-  // Snap-guide visibility during drag. Re-rendered as overlays inside the slide.
-  const [snap, setSnap] = useState<SnapState>(SNAP_OFF)
+  // Crop mode local state — source fraction window + loaded natural dims.
+  const [cropState, setCropState] = useState<CropMode>(null)
+  const [cropSrcDims, setCropSrcDims] = useState<{ width: number; height: number } | undefined>(undefined)
 
-  function startDrag(e: React.PointerEvent, element: CarouselElement) {
-    if (!interactive) return
-    e.preventDefault()
-    e.stopPropagation()
-    ;(e.currentTarget as HTMLElement).setPointerCapture(e.pointerId)
-    isDragging.current = false
-    dragElement.current = element
-    dragStart.current = { px: e.clientX, py: e.clientY, ox: element.x, oy: element.y }
+  // ── Gesture preview helper: write transform/size directly to the wrapper ──
+  const applyPreviewTransform = (id: string, x: number, y: number, rotation: number) => {
+    const el = wrapperRefs.current.get(id)
+    if (el) el.style.transform = buildElementTransform(x, y, scale, rotation)
+  }
+  const applyPreviewBox = (
+    id: string,
+    box: { x: number; y: number; w: number; h: number },
+    rotation: number,
+  ) => {
+    const el = wrapperRefs.current.get(id)
+    if (!el) return
+    el.style.transform = buildElementTransform(box.x, box.y, scale, rotation)
+    el.style.width = `${box.w * scale}px`
+    el.style.height = `${box.h * scale}px`
+  }
 
-    const threshold = width * POSITION_SNAP_PCT  // native px
+  // ── Gesture hooks ──
+  const drag = useOverlayDrag({
+    scale,
+    slide: { w: width, h: height },
+    onPreview: applyPreviewTransform,
+    onCommit: async (id, x, y) => {
+      await moveElement?.(sid, id, Math.round(x), Math.round(y))
+      await commit?.()
+    },
+  })
 
-    const onMove = (ev: PointerEvent) => {
-      if (!dragStart.current || !dragElement.current) return
-      const dx = (ev.clientX - dragStart.current.px) / scale
-      const dy = (ev.clientY - dragStart.current.py) / scale
-      if (Math.abs(dx) > 2 || Math.abs(dy) > 2) isDragging.current = true
-
-      const w = dragElement.current.w
-      const h = dragElement.current.h
-      const rawX = dragStart.current.ox + dx
-      const rawY = dragStart.current.oy + dy
-
-      // X-axis snap: prefer slide-center, then left/right edges.
-      const centerXTarget = (width - w) / 2
-      const rightXTarget  = width - w
-      const snapCenterX = Math.abs(rawX - centerXTarget) < threshold
-      const snapLeft    = !snapCenterX && Math.abs(rawX) < threshold
-      const snapRight   = !snapCenterX && !snapLeft && Math.abs(rawX - rightXTarget) < threshold
-
-      // Y-axis snap: prefer slide-center, then top/bottom edges.
-      const centerYTarget = (height - h) / 2
-      const bottomYTarget = height - h
-      const snapCenterY = Math.abs(rawY - centerYTarget) < threshold
-      const snapTop     = !snapCenterY && Math.abs(rawY) < threshold
-      const snapBottom  = !snapCenterY && !snapTop && Math.abs(rawY - bottomYTarget) < threshold
-
-      const finalX = snapCenterX ? centerXTarget : snapLeft ? 0 : snapRight  ? rightXTarget  : rawX
-      const finalY = snapCenterY ? centerYTarget : snapTop  ? 0 : snapBottom ? bottomYTarget : rawY
-
-      setSnap({
-        centerX: snapCenterX,
-        centerY: snapCenterY,
-        left: snapLeft,
-        right: snapRight,
-        top: snapTop,
-        bottom: snapBottom,
+  const resize = useOverlayResize({
+    scale,
+    onPreview: applyPreviewBox,
+    onCommit: async (id, box) => {
+      await resizeElement?.(sid, id, {
+        x: Math.round(box.x),
+        y: Math.round(box.y),
+        w: Math.round(box.w),
+        h: Math.round(box.h),
       })
+      await commit?.()
+    },
+  })
 
-      onElementChange?.(dragElement.current.id, {
-        x: Math.round(finalX),
-        y: Math.round(finalY),
-      })
+  const rotate = useOverlayRotate({
+    onPreview: (id, rotation, x, y) => applyPreviewTransform(id, x, y, rotation),
+    onCommit: async (id, rotation) => {
+      await rotateElement?.(sid, id, Math.round(rotation))
+      await commit?.()
+    },
+  })
+
+  // ── Enter / exit crop mode when cropElementId changes ──
+  useEffect(() => {
+    if (!cropElementId) {
+      setCropState(null)
+      setCropSrcDims(undefined)
+      return
     }
+    const el = slide.elements.find((e) => e.id === cropElementId)
+    if (!el || el.type !== 'image') {
+      setCropState(null)
+      return
+    }
+    setCropState({ elementId: cropElementId, localCrop: el.crop ?? { x: 0, y: 0, w: 1, h: 1 } })
+    setCropSrcDims(undefined)
+  }, [cropElementId, slide.elements])
 
+  // Commit crop (also resizes the element box to match the crop's aspect) and exit.
+  const commitCrop = async () => {
+    const cs = cropState
+    if (!cs) return
+    const el = slide.elements.find((e) => e.id === cs.elementId)
+    if (el && el.type === 'image' && cropSrcDims) {
+      // Resize the element box so the cropped pixel aspect matches the box aspect.
+      // The crop window is a sub-rect of the source in fractions; convert its
+      // pixel aspect into a new box height for the current box width.
+      const croppedAspect =
+        (cs.localCrop.w * cropSrcDims.width) / (cs.localCrop.h * cropSrcDims.height)
+      if (Number.isFinite(croppedAspect) && croppedAspect > 0) {
+        const newH = Math.round(el.w / croppedAspect)
+        await resizeElement?.(sid, cs.elementId, { x: el.x, y: el.y, w: el.w, h: newH })
+      }
+      await updateImageCrop?.(sid, cs.elementId, cs.localCrop)
+      await commit?.()
+    }
+    onExitCrop?.()
+  }
+
+  // Escape / click-outside commits the crop.
+  useEffect(() => {
+    if (!cropState) return
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        e.preventDefault()
+        void commitCrop()
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cropState, cropSrcDims])
+
+  // ── Inline text edit ──
+  function beginTextEdit(element: OverlayElement) {
+    if (!interactive || typeof element.overlay.props.text !== 'string') return
+    setEditRect({
+      left: element.x * scale,
+      top: element.y * scale,
+      width: element.w * scale,
+      height: element.h * scale,
+    })
+    setEditingId(element.id)
+  }
+
+  function commitTextEdit(element: OverlayElement, value: string) {
+    void updateOverlayProp?.(sid, element.id, 'text', value)
+    setEditingId(null)
+    setEditRect(null)
+  }
+
+  // ── Pointer wiring shared by drag/resize/rotate ──
+  // We attach window-level move/up listeners while a gesture is active so the
+  // gesture keeps tracking outside the element bounds.
+  const activeGesture = useRef<'drag' | 'resize' | 'rotate' | null>(null)
+  useEffect(() => {
+    const onMove = (e: PointerEvent) => {
+      const cursor = { x: e.clientX, y: e.clientY }
+      if (activeGesture.current === 'drag') drag.onPointerMove(cursor)
+      else if (activeGesture.current === 'resize') resize.onPointerMove(cursor)
+      else if (activeGesture.current === 'rotate') rotate.onPointerMove(cursor)
+    }
     const onUp = () => {
-      dragElement.current = null
-      dragStart.current = null
-      setSnap(SNAP_OFF)
+      if (activeGesture.current === 'drag') drag.onPointerUp()
+      else if (activeGesture.current === 'resize') resize.onPointerUp()
+      else if (activeGesture.current === 'rotate') rotate.onPointerUp()
+      activeGesture.current = null
+    }
+    window.addEventListener('pointermove', onMove)
+    window.addEventListener('pointerup', onUp)
+    return () => {
       window.removeEventListener('pointermove', onMove)
       window.removeEventListener('pointerup', onUp)
     }
-
-    window.addEventListener('pointermove', onMove)
-    window.addEventListener('pointerup', onUp)
-  }
-
-  function handleDoubleClick(element: CarouselElement) {
-    if (!interactive || element.type !== 'overlay') return
-    const textVal = element.overlay.props.text
-    if (typeof textVal !== 'string') return // no text prop — no-op
-    setEditingId(element.id)
-    setEditingText(textVal)
-  }
-
-  function commitTextEdit(element: CarouselElement) {
-    if (!onElementChange) return
-    onElementChange(element.id, {
-      overlay: {
-        ...(element as OverlayElement).overlay,
-        props: {
-          ...(element as OverlayElement).overlay.props,
-          text: editingText,
-        },
-      },
-    } as Partial<CarouselElement>)
-    setEditingId(null)
-    setEditingText('')
-  }
+  }, [drag, resize, rotate])
 
   const displayW = width * scale
   const displayH = height * scale
@@ -439,48 +274,66 @@ export default function SlideCanvas({
       }}
       onClick={interactive ? () => onSelect?.(null) : undefined}
     >
-      {/* Inner native-resolution div, scaled down via transform */}
+      {/* Inner native-resolution layer. Elements are positioned at native coords
+          and the wrapper transform applies translate(...*scale) so gesture
+          previews can mutate the same transform string. */}
       <div
         style={{
-          width,
-          height,
+          width: displayW,
+          height: displayH,
           position: 'absolute',
           top: 0,
           left: 0,
-          transform: `scale(${scale})`,
-          transformOrigin: 'top left',
           backgroundColor: slide.base_color || '#ffffff',
         }}
       >
-        {/* Snap guides — full-slide lines at active snap targets. Native-coord px;
-            rendered above slide bg, below elements is fine but we put above for visibility. */}
-        {(() => {
-          const lineColor = '#ec4899'  // pink-500
-          const t = Math.max(1, 1 / scale)  // ~1px on screen regardless of scale
-          const guides: React.ReactNode[] = []
-          if (snap.centerX) guides.push(<div key="cx" style={{ position: 'absolute', left: width / 2 - t / 2, top: 0,            width: t,     height,        background: lineColor, pointerEvents: 'none', zIndex: 999 }} />)
-          if (snap.left)    guides.push(<div key="lf" style={{ position: 'absolute', left: 0,                  top: 0,            width: t,     height,        background: lineColor, pointerEvents: 'none', zIndex: 999 }} />)
-          if (snap.right)   guides.push(<div key="rt" style={{ position: 'absolute', left: width - t,          top: 0,            width: t,     height,        background: lineColor, pointerEvents: 'none', zIndex: 999 }} />)
-          if (snap.centerY) guides.push(<div key="cy" style={{ position: 'absolute', left: 0,                  top: height / 2 - t / 2, width,  height: t,    background: lineColor, pointerEvents: 'none', zIndex: 999 }} />)
-          if (snap.top)     guides.push(<div key="tp" style={{ position: 'absolute', left: 0,                  top: 0,            width,        height: t,    background: lineColor, pointerEvents: 'none', zIndex: 999 }} />)
-          if (snap.bottom)  guides.push(<div key="bt" style={{ position: 'absolute', left: 0,                  top: height - t,   width,        height: t,    background: lineColor, pointerEvents: 'none', zIndex: 999 }} />)
-          return guides
-        })()}
-        {slide.elements.map(element => {
-          const isSelected = selectedElementId === element.id
-          const isEditing  = editingId === element.id
+        {/* Snap guides — drawn at the drag hook's reported guide axes. */}
+        {interactive && drag.guides.map((g: SnapGuide, i) =>
+          g.axis === 'x' ? (
+            <div
+              key={`gx-${i}`}
+              data-testid="snap-guide-x"
+              style={{
+                position: 'absolute',
+                left: g.at * scale - 0.5,
+                top: 0,
+                width: 1,
+                height: displayH,
+                background: '#ec4899',
+                pointerEvents: 'none',
+                zIndex: 999,
+              }}
+            />
+          ) : (
+            <div
+              key={`gy-${i}`}
+              data-testid="snap-guide-y"
+              style={{
+                position: 'absolute',
+                left: 0,
+                top: g.at * scale - 0.5,
+                width: displayW,
+                height: 1,
+                background: '#ec4899',
+                pointerEvents: 'none',
+                zIndex: 999,
+              }}
+            />
+          ),
+        )}
 
-          // NOTE (v2 limitation): when an element is rotated, the drag handler still moves
-          // x/y in world (unrotated) coords. For small rotations the UX is fine, but for
-          // large rotations the visual tracking is misaligned. Correct fix would be to
-          // decompose pointer delta into the element's local coordinate frame.
-          const commonStyle: React.CSSProperties = {
+        {slide.elements.map((element) => {
+          const isSelected = selectedElementId === element.id
+          const inCrop = cropState?.elementId === element.id
+          const isRotated = (element.rotation ?? 0) !== 0
+
+          const wrapperStyle: React.CSSProperties = {
             position: 'absolute',
-            left: element.x,
-            top: element.y,
-            width: element.w,
-            height: element.h,
-            transform: `rotate(${element.rotation}deg)`,
+            left: 0,
+            top: 0,
+            width: element.w * scale,
+            height: element.h * scale,
+            transform: buildElementTransform(element.x, element.y, scale, element.rotation),
             transformOrigin: 'center center',
             pointerEvents: interactive ? 'auto' : 'none',
             userSelect: 'none',
@@ -488,144 +341,217 @@ export default function SlideCanvas({
             cursor: interactive ? 'grab' : 'default',
           }
 
-          if (element.type === 'image') {
-            return (
-              <div
-                key={element.id}
-                data-element-wrapper
-                style={commonStyle}
-                onClick={interactive ? (e) => { e.stopPropagation(); onSelect?.(element.id) } : undefined}
-                onPointerDown={interactive ? (e) => { onSelect?.(element.id); startDrag(e, element) } : undefined}
-              >
-                <img
-                  src={resolveAsset(element.src)}
-                  draggable={false}
-                  style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
-                  alt=""
-                />
-                {isSelected && interactive && onElementChange && (
-                  <>
-                    {HANDLES.map(h => (
-                      <ResizeHandle
-                        key={h.id}
-                        handle={h}
-                        element={element}
-                        scale={scale}
-                        onElementChange={onElementChange}
-                      />
-                    ))}
-                    <RotateHandle element={element} onElementChange={onElementChange} />
-                  </>
-                )}
-              </div>
+          const handlePointerDownDrag = (e: React.PointerEvent) => {
+            if (!interactive || inCrop || editingId === element.id) return
+            e.preventDefault()
+            e.stopPropagation()
+            onSelect?.(element.id)
+            activeGesture.current = 'drag'
+            drag.onPointerDown(
+              element.id,
+              { x: e.clientX, y: e.clientY },
+              { x: element.x, y: element.y, w: element.w, h: element.h, rotation: element.rotation },
             )
           }
 
-          if (element.type === 'overlay') {
-            const hasTextProp = typeof element.overlay.props.text === 'string'
-            return (
-              <div
-                key={element.id}
-                data-element-wrapper
-                style={commonStyle}
-                onClick={interactive ? (e) => { e.stopPropagation(); onSelect?.(element.id) } : undefined}
-                onPointerDown={interactive ? (e) => {
-                  if (isEditing) return
-                  onSelect?.(element.id)
-                  startDrag(e, element)
-                } : undefined}
-                onDoubleClick={interactive ? (e) => { e.stopPropagation(); handleDoubleClick(element) } : undefined}
+          const innerContent =
+            element.type === 'image' ? (
+              <img
+                src={resolveSrc(element)}
+                draggable={false}
+                style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
+                alt=""
+              />
+            ) : (
+              <OverlayErrorBoundary
+                label={element.overlay.template.split('/').pop() ?? element.overlay.template}
+                watchPath={element.overlay.template}
               >
-                {isEditing ? (
-                  /* Double-click inline text editor */
-                  <div
-                    contentEditable
-                    suppressContentEditableWarning
-                    style={{
-                      width: '100%',
-                      height: '100%',
-                      outline: '2px solid #3b82f6',
-                      background: 'rgba(0,0,0,0.7)',
-                      color: '#fff',
-                      fontSize: 18,
-                      padding: 4,
-                      boxSizing: 'border-box',
-                      whiteSpace: 'pre-wrap',
-                      wordBreak: 'break-word',
-                      cursor: 'text',
-                    }}
-                    onInput={(e) => setEditingText((e.currentTarget as HTMLDivElement).innerText)}
-                    onBlur={() => commitTextEdit(element)}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Escape') {
-                        setEditingId(null)
-                        setEditingText('')
-                      }
-                      if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
-                        commitTextEdit(element)
-                      }
-                      e.stopPropagation()
-                    }}
-                    // eslint-disable-next-line jsx-a11y/no-autofocus
-                    ref={(el) => {
-                      if (el) {
-                        el.focus()
-                        // Place cursor at end
-                        const range = document.createRange()
-                        range.selectNodeContents(el)
-                        range.collapse(false)
-                        const sel = window.getSelection()
-                        sel?.removeAllRanges()
-                        sel?.addRange(range)
-                      }
-                    }}
-                  >
-                    {editingText}
-                  </div>
-                ) : (
-                  <OverlayErrorBoundary
-                    label={element.overlay.template.split('/').pop() ?? element.overlay.template}
-                    watchPath={element.overlay.template}
-                  >
-                    <OverlayElementView element={element} />
-                  </OverlayErrorBoundary>
-                )}
-                {isSelected && !isEditing && interactive && onElementChange && (
-                  <>
-                    {HANDLES.map(h => (
-                      <ResizeHandle
-                        key={h.id}
-                        handle={h}
-                        element={element}
-                        scale={scale}
-                        onElementChange={onElementChange}
-                      />
-                    ))}
-                    <RotateHandle element={element} onElementChange={onElementChange} />
-                    {hasTextProp && (
+                <OverlayElementView element={element} />
+              </OverlayErrorBoundary>
+            )
+
+          return (
+            <div
+              key={element.id}
+              ref={setWrapperRef(element.id)}
+              data-element-wrapper
+              data-element-id={element.id}
+              style={wrapperStyle}
+              onClick={interactive ? (e) => { e.stopPropagation(); onSelect?.(element.id) } : undefined}
+              onPointerDown={handlePointerDownDrag}
+              onDoubleClick={
+                interactive && element.type === 'overlay'
+                  ? (e) => { e.stopPropagation(); beginTextEdit(element) }
+                  : undefined
+              }
+            >
+              {innerContent}
+
+              {/* In-canvas crop overlay for the image being cropped. */}
+              {inCrop && element.type === 'image' && cropState && (
+                <CanvasCropOverlay
+                  element={element}
+                  resolveImageSrc={resolveSrc}
+                  scale={scale}
+                  localCrop={cropState.localCrop}
+                  onLocalCropChange={(next) =>
+                    setCropState((cs) => (cs ? { ...cs, localCrop: next } : cs))
+                  }
+                  onSrcDimsLoaded={setCropSrcDims}
+                  srcDims={cropSrcDims}
+                />
+              )}
+
+              {/* Selection handles (hidden while cropping or rotated-crop guard). */}
+              {isSelected && !inCrop && editingId !== element.id && interactive && (
+                <>
+                  {HANDLES.map((h) => {
+                    const left = h.xPct * element.w * scale - HANDLE_SIZE / 2
+                    const top = h.yPct * element.h * scale - HANDLE_SIZE / 2
+                    return (
                       <div
+                        key={h.id}
+                        data-testid={`resize-handle-${h.id}`}
+                        onPointerDown={(e) => {
+                          e.preventDefault()
+                          e.stopPropagation()
+                          activeGesture.current = 'resize'
+                          resize.onPointerDown(
+                            element.id,
+                            h.id,
+                            { x: e.clientX, y: e.clientY },
+                            { x: element.x, y: element.y, w: element.w, h: element.h, rotation: element.rotation },
+                          )
+                        }}
                         style={{
                           position: 'absolute',
-                          bottom: -20,
-                          left: 0,
-                          fontSize: 10,
-                          color: '#93c5fd',
-                          pointerEvents: 'none',
-                          whiteSpace: 'nowrap',
+                          left,
+                          top,
+                          width: HANDLE_SIZE,
+                          height: HANDLE_SIZE,
+                          background: '#3b82f6',
+                          border: '1px solid #fff',
+                          borderRadius: 1,
+                          cursor: h.cursor,
+                          zIndex: 10,
+                          boxSizing: 'border-box',
+                          touchAction: 'none',
                         }}
-                      >
-                        double-click to edit text
-                      </div>
-                    )}
-                  </>
-                )}
-              </div>
-            )
-          }
-
-          return null
+                      />
+                    )
+                  })}
+                  {/* Rotate handle */}
+                  <div
+                    style={{
+                      position: 'absolute',
+                      left: (element.w * scale) / 2 - 0.5,
+                      top: -ROTATE_OFFSET,
+                      width: 1,
+                      height: ROTATE_OFFSET,
+                      background: '#3b82f6',
+                      pointerEvents: 'none',
+                      zIndex: 9,
+                    }}
+                  />
+                  <div
+                    data-testid="rotate-handle"
+                    title="Drag to rotate"
+                    onPointerDown={(e) => {
+                      e.preventDefault()
+                      e.stopPropagation()
+                      const rect = (e.currentTarget as HTMLElement)
+                        .closest('[data-element-wrapper]')!
+                        .getBoundingClientRect()
+                      const center = { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 }
+                      activeGesture.current = 'rotate'
+                      rotate.onPointerDown(
+                        element.id,
+                        center,
+                        { x: e.clientX, y: e.clientY },
+                        element.rotation ?? 0,
+                        { x: element.x, y: element.y },
+                      )
+                    }}
+                    style={{
+                      position: 'absolute',
+                      left: (element.w * scale) / 2 - 7,
+                      top: -ROTATE_OFFSET - 14,
+                      width: 14,
+                      height: 14,
+                      background: '#3b82f6',
+                      border: '2px solid #fff',
+                      borderRadius: '50%',
+                      cursor: 'crosshair',
+                      zIndex: 10,
+                      boxSizing: 'border-box',
+                      touchAction: 'none',
+                    }}
+                  />
+                  {element.type === 'overlay' && typeof element.overlay.props.text === 'string' && (
+                    <div
+                      style={{
+                        position: 'absolute',
+                        bottom: -20,
+                        left: 0,
+                        fontSize: 10,
+                        color: '#93c5fd',
+                        pointerEvents: 'none',
+                        whiteSpace: 'nowrap',
+                      }}
+                    >
+                      double-click to edit text
+                    </div>
+                  )}
+                  {/* Guard hint: crop disabled while rotated (enforced in panel). */}
+                  {element.type === 'image' && isRotated && (
+                    <div
+                      style={{
+                        position: 'absolute',
+                        bottom: -20,
+                        left: 0,
+                        fontSize: 10,
+                        color: '#fca5a5',
+                        pointerEvents: 'none',
+                        whiteSpace: 'nowrap',
+                      }}
+                    >
+                      reset rotation to crop
+                    </div>
+                  )}
+                </>
+              )}
+            </div>
+          )
         })}
+
+        {/* Inline text editor (positioned in display coords over the element). */}
+        {interactive && editingId && editRect && (() => {
+          const el = slide.elements.find((e) => e.id === editingId)
+          if (!el || el.type !== 'overlay') return null
+          const initial = typeof el.overlay.props.text === 'string' ? el.overlay.props.text : ''
+          return (
+            <InlineTextEditor
+              key={editingId}
+              initialValue={initial}
+              rect={editRect}
+              styleSnapshot={{
+                color: '#ffffff',
+                fontSize: '18px',
+                fontFamily: 'system-ui, sans-serif',
+                whiteSpace: 'pre-wrap',
+                wordBreak: 'break-word',
+              }}
+              onChange={() => {}}
+              onCommit={(value) => commitTextEdit(el, value)}
+              onCancel={() => { setEditingId(null); setEditRect(null) }}
+            />
+          )
+        })()}
       </div>
     </div>
   )
 }
+
+// Re-export the default asset resolver so other modules can reuse it.
+export { resolveAssetDefault as resolveAsset }

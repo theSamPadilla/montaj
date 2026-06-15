@@ -198,6 +198,8 @@ export const api = {
 
   listGlobalOverlays: () => request<GlobalOverlay[]>('/api/overlays'),
 
+  listSystemOverlays: () => request<GlobalOverlay[]>('/api/overlays/system'),
+
   createOverlayGroup: (name: string) =>
     request<{ name: string }>('/api/overlays/groups', { method: 'POST', body: JSON.stringify({ name }) }),
 

@@ -52,6 +52,14 @@ export interface UseProjectState {
   rotateElement: (slideId: string, elementId: string, rotation: number) => Promise<void>
   addElement: (slideId: string, element: CarouselElement) => Promise<void>
   removeElement: (slideId: string, elementId: string) => Promise<void>
+  duplicateElement: (slideId: string, elementId: string, newElement: CarouselElement) => Promise<void>
+  reorderElement: (slideId: string, elementId: string, direction: 'forward' | 'backward') => Promise<void>
+  addSlide: (slide: Slide, afterSlideId?: string) => Promise<void>
+  removeSlide: (slideId: string) => Promise<void>
+  duplicateSlide: (slideId: string, newSlide: Slide) => Promise<void>
+  reorderSlides: (fromIndex: number, toIndex: number) => Promise<void>
+  updateSlide: (slideId: string, patch: Partial<Slide>) => Promise<void>
+  setOverlayFrame: (slideId: string, elementId: string, frame: number) => Promise<void>
   commit: () => Promise<void>
   refetch: () => Promise<void>
   undo: () => void
@@ -157,7 +165,7 @@ export function useProjectState(
       // sequence of mutate calls in the same event tick chain correctly
       // (call N's `next` becomes call N+1's base).
       const base = projectRef.current
-      const editGated = new Set(['updateOverlayProp', 'updateImageCrop', 'setStatus', 'setName', 'moveElement', 'resizeElement', 'rotateElement', 'addElement', 'removeElement'])
+      const editGated = new Set(['updateOverlayProp', 'updateImageCrop', 'setStatus', 'setName', 'moveElement', 'resizeElement', 'rotateElement', 'addElement', 'removeElement', 'addSlide', 'removeSlide', 'duplicateSlide', 'reorderSlides', 'updateSlide', 'duplicateElement', 'reorderElement', 'setOverlayFrame'])
       if (editGated.has(action.type) && !isEditable(base.status)) {
         console.warn(`[useProjectState] dropped ${action.type}: status="${base.status}" not editable`)
         return Promise.resolve()
@@ -335,6 +343,54 @@ export function useProjectState(
     [mutate],
   )
 
+  const duplicateElement = useCallback(
+    (slideId: string, elementId: string, newElement: CarouselElement) =>
+      mutate({ type: 'duplicateElement', slideId, elementId, newElement }),
+    [mutate],
+  )
+
+  const reorderElement = useCallback(
+    (slideId: string, elementId: string, direction: 'forward' | 'backward') =>
+      mutate({ type: 'reorderElement', slideId, elementId, direction }),
+    [mutate],
+  )
+
+  const addSlide = useCallback(
+    (slide: Slide, afterSlideId?: string) =>
+      mutate({ type: 'addSlide', slide, afterSlideId }),
+    [mutate],
+  )
+
+  const removeSlide = useCallback(
+    (slideId: string) =>
+      mutate({ type: 'removeSlide', slideId }),
+    [mutate],
+  )
+
+  const duplicateSlide = useCallback(
+    (slideId: string, newSlide: Slide) =>
+      mutate({ type: 'duplicateSlide', slideId, newSlide }),
+    [mutate],
+  )
+
+  const reorderSlides = useCallback(
+    (fromIndex: number, toIndex: number) =>
+      mutate({ type: 'reorderSlides', fromIndex, toIndex }),
+    [mutate],
+  )
+
+  const updateSlide = useCallback(
+    (slideId: string, patch: Partial<Slide>) =>
+      mutate({ type: 'updateSlide', slideId, patch }),
+    [mutate],
+  )
+
+  const setOverlayFrame = useCallback(
+    (slideId: string, elementId: string, frame: number) =>
+      mutate({ type: 'setOverlayFrame', slideId, elementId, frame }),
+    [mutate],
+  )
+
   // Force a fresh load of the project via the adapter and replace local state.
   // Useful when the subscription is reconnecting or local state has drifted.
   const refetch = useCallback(async () => {
@@ -364,6 +420,14 @@ export function useProjectState(
     rotateElement,
     addElement,
     removeElement,
+    duplicateElement,
+    reorderElement,
+    addSlide,
+    removeSlide,
+    duplicateSlide,
+    reorderSlides,
+    updateSlide,
+    setOverlayFrame,
     commit,
     refetch,
     undo,

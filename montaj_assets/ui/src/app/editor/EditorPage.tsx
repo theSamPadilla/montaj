@@ -1,8 +1,9 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useParams, useLocation } from 'react-router-dom'
 import { api } from '@/lib/api'
 import { ProjectContext, type Project } from '@/lib/types/schema'
 import { useProjectStream } from '@/lib/sse'
+import { createMontajAdapter } from './montajAdapter'
 import { useIsMobile } from '@/lib/useIsMobile'
 import UploadView from './UploadView'
 import LiveView from './LiveView'
@@ -52,6 +53,9 @@ export default function EditorPage() {
 
   const isMobile = useIsMobile()
 
+  // Montaj-native EditorAdapter for the carousel editor. Stable across renders.
+  const adapter = useMemo(() => createMontajAdapter(), [])
+
   if (error) {
     return <div className="p-6 text-red-400 text-sm">{error}</div>
   }
@@ -68,7 +72,7 @@ export default function EditorPage() {
   if (project.projectType === 'carousel') {
     view = isMobile
       ? <MobileCarouselPreview project={project} onProjectChange={setProject} />
-      : <CarouselEditor project={project} onProjectChange={setProject} logMessage={logMessage} />
+      : <CarouselEditor project={project} adapter={adapter} onProjectChange={setProject} logMessage={logMessage} />
   } else if (project.projectType === 'ai_video' && (project.status === 'pending' || project.status === 'storyboard_ready')) {
     view = isMobile
       ? <MobileEditNotice

@@ -37,6 +37,17 @@ export type Action =
   | { type: 'addElement'; slideId: string; element: CarouselElement }
   | { type: 'removeElement'; slideId: string; elementId: string }
   | { type: 'updateImageCrop'; slideId: string; elementId: string; crop: ImageElement['crop'] }
+  // Slide-level structural actions. Added for the Montaj-native editor, which —
+  // unlike mission-control's element-only inspector — owns full slide CRUD.
+  | { type: 'addSlide'; slide: Slide; afterSlideId?: string }
+  | { type: 'removeSlide'; slideId: string }
+  | { type: 'duplicateSlide'; slideId: string; newSlide: Slide }
+  | { type: 'reorderSlides'; fromIndex: number; toIndex: number }
+  | { type: 'updateSlide'; slideId: string; patch: Partial<Slide> }
+  // Element structural actions the editor needs beyond add/remove.
+  | { type: 'duplicateElement'; slideId: string; elementId: string; newElement: CarouselElement }
+  | { type: 'reorderElement'; slideId: string; elementId: string; direction: 'forward' | 'backward' }
+  | { type: 'setOverlayFrame'; slideId: string; elementId: string; frame: number }
 
 // ---------------------------------------------------------------------------
 // SSE merge helpers
@@ -214,6 +225,93 @@ export function projectReducer(state: Project, action: Action): Project {
           if (el.id !== action.elementId) return el
           if (el.type !== 'image') return el
           return { ...el, crop: action.crop }
+        })
+        return { ...slide, elements }
+      })
+      return { ...state, slides }
+    }
+
+    case 'addSlide': {
+      const slides = [...(state.slides ?? [])]
+      if (action.afterSlideId) {
+        const idx = slides.findIndex((s) => s.id === action.afterSlideId)
+        if (idx >= 0) slides.splice(idx + 1, 0, action.slide)
+        else slides.push(action.slide)
+      } else {
+        slides.push(action.slide)
+      }
+      return { ...state, slides }
+    }
+
+    case 'removeSlide': {
+      const slides = (state.slides ?? []).filter((s) => s.id !== action.slideId)
+      return { ...state, slides }
+    }
+
+    case 'duplicateSlide': {
+      const slides = [...(state.slides ?? [])]
+      const idx = slides.findIndex((s) => s.id === action.slideId)
+      if (idx < 0) return state
+      slides.splice(idx + 1, 0, action.newSlide)
+      return { ...state, slides }
+    }
+
+    case 'reorderSlides': {
+      const slides = [...(state.slides ?? [])]
+      if (
+        action.fromIndex < 0 || action.fromIndex >= slides.length ||
+        action.toIndex < 0 || action.toIndex >= slides.length
+      ) {
+        return state
+      }
+      const [moved] = slides.splice(action.fromIndex, 1)
+      slides.splice(action.toIndex, 0, moved)
+      return { ...state, slides }
+    }
+
+    case 'updateSlide': {
+      const slides = (state.slides ?? []).map((slide): Slide =>
+        slide.id === action.slideId ? { ...slide, ...action.patch } : slide,
+      )
+      return { ...state, slides }
+    }
+
+    case 'duplicateElement': {
+      const slides = (state.slides ?? []).map((slide): Slide => {
+        if (slide.id !== action.slideId) return slide
+        const idx = slide.elements.findIndex((el) => el.id === action.elementId)
+        if (idx < 0) return slide
+        const elements = [
+          ...slide.elements.slice(0, idx + 1),
+          action.newElement,
+          ...slide.elements.slice(idx + 1),
+        ]
+        return { ...slide, elements }
+      })
+      return { ...state, slides }
+    }
+
+    case 'reorderElement': {
+      const slides = (state.slides ?? []).map((slide): Slide => {
+        if (slide.id !== action.slideId) return slide
+        const elements = [...slide.elements]
+        const idx = elements.findIndex((el) => el.id === action.elementId)
+        if (idx < 0) return slide
+        const swapIdx = action.direction === 'forward' ? idx + 1 : idx - 1
+        if (swapIdx < 0 || swapIdx >= elements.length) return slide
+        ;[elements[idx], elements[swapIdx]] = [elements[swapIdx], elements[idx]]
+        return { ...slide, elements }
+      })
+      return { ...state, slides }
+    }
+
+    case 'setOverlayFrame': {
+      const slides = (state.slides ?? []).map((slide): Slide => {
+        if (slide.id !== action.slideId) return slide
+        const elements = slide.elements.map((el): CarouselElement => {
+          if (el.id !== action.elementId) return el
+          if (el.type !== 'overlay') return el
+          return { ...el, frame: action.frame }
         })
         return { ...slide, elements }
       })

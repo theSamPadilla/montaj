@@ -1,6 +1,6 @@
 import { useRef, useState } from 'react'
 import { api } from '@/lib/api'
-import type { Project, CarouselElement } from '@/lib/types/schema'
+import type { Project, CarouselElement, OverlayElement } from '@/lib/types/schema'
 import { Button } from '@/components/ui/button'
 import OverlayPicker from './OverlayPicker'
 
@@ -18,8 +18,49 @@ export default function AddElementMenu({ project, selectedSlideId, onAddElement 
   const [showOverlayPicker, setShowOverlayPicker] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const [uploadError, setUploadError] = useState<string | null>(null)
+  const [addingText, setAddingText] = useState(false)
+  const [textError, setTextError] = useState<string | null>(null)
 
   const disabled = selectedSlideId === null
+
+  // Add a static-text overlay at parity with mission-control's "add text".
+  // Resolves the shipped `static-text` system overlay and seeds the standard
+  // text contract props from its declared defaults.
+  async function handleAddText() {
+    if (!selectedSlideId) return
+    setAddingText(true)
+    setTextError(null)
+    try {
+      const system = await api.listSystemOverlays()
+      const tpl = system.find(
+        o => !o.empty && /static-text/.test(o.jsxPath),
+      )
+      if (!tpl) throw new Error('static-text overlay template not found')
+      const props: Record<string, unknown> = Object.fromEntries(
+        tpl.props.filter(p => p.default !== undefined).map(p => [p.name, p.default]),
+      )
+      if (typeof props.text !== 'string') props.text = 'Your text here'
+      const [fullW, fullH] = project.settings.resolution
+      const elementW = Math.round(fullW * 0.7)
+      const elementH = Math.round(fullH * 0.18)
+      const element: OverlayElement = {
+        id: crypto.randomUUID(),
+        type: 'overlay',
+        overlay: { template: tpl.jsxPath, props },
+        frame: 0,
+        x: Math.round(fullW / 2 - elementW / 2),
+        y: Math.round(fullH / 2 - elementH / 2),
+        w: elementW,
+        h: elementH,
+        rotation: 0,
+      }
+      onAddElement(selectedSlideId, element)
+    } catch (e) {
+      setTextError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setAddingText(false)
+    }
+  }
 
   async function handleGenerate() {
     if (!selectedSlideId || !prompt.trim()) return
@@ -117,6 +158,15 @@ export default function AddElementMenu({ project, selectedSlideId, onAddElement 
         <Button
           size="sm"
           variant="outline"
+          disabled={disabled || addingText}
+          onClick={handleAddText}
+          className="text-xs"
+        >
+          {addingText ? 'Adding…' : '+ Text'}
+        </Button>
+        <Button
+          size="sm"
+          variant="outline"
           disabled={disabled}
           onClick={() => setShowOverlayPicker(true)}
           className="text-xs"
@@ -125,6 +175,7 @@ export default function AddElementMenu({ project, selectedSlideId, onAddElement 
         </Button>
       </div>
       {uploadError && <div className="text-xs text-red-400">{uploadError}</div>}
+      {textError && <div className="text-xs text-red-400">{textError}</div>}
 
       {showPrompt && !disabled && (
         <div className="flex flex-col gap-2 p-3 bg-gray-800 border border-gray-700 rounded-lg">
