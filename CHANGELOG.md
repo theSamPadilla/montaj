@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+### Carousel editor
+
+- **Rich-text formatting toolbar** — selected text elements now expose a floating toolbar with bold, italic, uppercase/lowercase/capitalize case-cycle, left/center/right/justify alignment, font-family picker, font-size stepper, and a color swatch. Formatting writes back through the overlay's `onOverlayChange` path so every change is immediately reflected in the preview and persisted to `project.json`.
+- **Double-click inline text editing** — double-clicking any text element on the canvas opens an in-place `contenteditable` editor. Enter commits the edit, Shift+Enter inserts a newline, Escape cancels (restores the prior value), and clicking outside the element commits.
+- **Undo / redo with keyboard shortcuts** — the editor now maintains a snapshot history. Cmd/Ctrl+Z steps back, Cmd/Ctrl+Shift+Z or Cmd/Ctrl+Y steps forward. Undo/Redo buttons in the toolbar reflect availability.
+- **Non-destructive 8-handle image cropping** — selecting an image element and entering crop mode via the panel reveals eight edge and corner handles. Dragging any handle adjusts the visible crop rectangle; confirming (Enter or clicking outside) writes the crop fractions to `project.json`. Cropping is disabled when the element is rotated. Applying a crop also updates the element's bounding box (crop-also-resizes), so the layout reflects the visible area.
+- **`mediaId` passthrough on image elements** — image overlay items may now carry an optional `mediaId` field (for host-side media tracking) that round-trips through the schema without affecting render behavior.
+
+### Editor architecture
+
+- **Host-agnostic `editor-core` module** (`montaj_assets/ui/src/editor-core/`) — all state management (project reducer, undo/redo snapshots), gesture handling (drag, resize, rotate, crop), text editing, formatting toolbar, and the overlay preview live in a host-agnostic boundary. Future client apps consume `editor-core` by supplying an `EditorAdapter` (for persistence and SSE hooks) and an optional theme/slots override, with no coupling to Montaj internals.
+- **`EditorAdapter` + optimistic mutation queue** — mutations are applied to local state immediately and enqueued for the host via the injected adapter. SSE events from the server are deferred while a mutation is in-flight and replayed once the queue drains, preventing server echo from clobbering in-progress edits.
+
+### Dependencies
+
+- **React 19** — upgraded `@xyflow/react` (ReactFlow) from v11 to v12 and `@react-three/fiber` from v8 to v9, both of which require React 19. No user-visible behavior change in the workflow-builder (NodeGraph) or 3D overlay preview; the upgrade resolves a peer-dependency conflict that blocked further library updates.
+
 ## v2.7.4
 
 ### Added
