@@ -6,8 +6,8 @@ export interface TimelineContextValue {
   snapBoundaries: number[]
   zoom: number
   zoomRef: React.RefObject<number>
-  scrollRef: React.RefObject<HTMLDivElement>
-  scrubberRef: React.RefObject<HTMLDivElement>
+  scrollRef: React.RefObject<HTMLDivElement | null>
+  scrubberRef: React.RefObject<HTMLDivElement | null>
   overlayDraggedRef: React.MutableRefObject<boolean>
   currentTime: number
   onTimeUpdate: (t: number) => void

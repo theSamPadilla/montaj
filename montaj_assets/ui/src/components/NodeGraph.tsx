@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useState } from 'react'
-import ReactFlow, {
+import {
+  ReactFlow,
   addEdge,
   Background,
   BaseEdge,
@@ -13,12 +14,32 @@ import ReactFlow, {
   useNodesState,
   useReactFlow,
   type Connection,
-  type Edge,
+  type Edge as FlowEdge,
   type EdgeProps,
-  type Node,
+  type Node as FlowNode,
   type NodeProps,
-} from 'reactflow'
-import 'reactflow/dist/style.css'
+} from '@xyflow/react'
+import '@xyflow/react/dist/style.css'
+
+// ── Node data + typed graph aliases ───────────────────────────────────────────
+// @xyflow/react v12 made Node/Edge generic over their `data` payload. We use one
+// broad record for every custom node type so the existing `data.foo as T` access
+// pattern keeps working; field presence still varies per node `type`.
+interface NodeData extends Record<string, unknown> {
+  label?: string
+  description?: string
+  notes?: string
+  uses?: string
+  schema?: StepSchema | { name: string; description: string }
+  foreach?: string
+  isSkill?: boolean
+  hasSubskills?: boolean
+  stepId?: string
+  parentId?: string
+}
+
+type Node = FlowNode<NodeData>
+type Edge = FlowEdge
 import { api } from '@/lib/api'
 import type { Workflow } from '@/lib/types/schema'
 import type { StepParam, StepSchema } from '@/lib/types/schema'
@@ -41,7 +62,7 @@ const CANVAS_CX  = 300
 
 // ── Custom nodes ──────────────────────────────────────────────────────────────
 
-function StartNode({ data }: NodeProps) {
+function StartNode({ data }: NodeProps<Node>) {
   const [open, setOpen] = useState(false)
   const description = data.description as string | undefined
   const notes       = data.notes       as string | undefined
@@ -142,7 +163,7 @@ function iterationBadgeLabel(foreach: string): string {
   }
 }
 
-function StepNode({ data, selected }: NodeProps) {
+function StepNode({ data, selected }: NodeProps<Node>) {
   const isSkill    = data.isSkill as boolean
                   ?? new Set(_skillsCache.map(s => s.name)).has(data.uses as string)
   const isEncode      = data.schema?.name === 'apply_cuts' || data.uses === 'montaj/apply_cuts'
@@ -221,7 +242,7 @@ function StepNode({ data, selected }: NodeProps) {
   )
 }
 
-function SubskillNode({ data, selected }: NodeProps) {
+function SubskillNode({ data, selected }: NodeProps<Node>) {
   return (
     <div>
       <div style={{
@@ -450,8 +471,8 @@ export default function NodeGraph() {
   const [skills,         setSkills]         = useState<{ name: string; description: string; scope: 'native' | 'custom'; step?: boolean; subskills?: string[] }[]>([])
   const [workflows,      setWorkflows]      = useState<Workflow[]>([])
   const [activeWorkflow, setActiveWorkflow] = useState<string>('')
-  const [nodes, setNodes, onNodesChange]    = useNodesState([])
-  const [edges, setEdges, onEdgesChange]    = useEdgesState([])
+  const [nodes, setNodes, onNodesChange]    = useNodesState<Node>([])
+  const [edges, setEdges, onEdgesChange]    = useEdgesState<Edge>([])
   const [selectedNode,   setSelectedNode]   = useState<Node | null>(null)
   const [paramValues,    setParamValues]    = useState<Record<string, Record<string, unknown>>>({})
   const [workflowName,   setWorkflowName]   = useState('my-workflow')
