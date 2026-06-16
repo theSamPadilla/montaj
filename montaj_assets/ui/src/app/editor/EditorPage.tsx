@@ -67,6 +67,64 @@ export default function EditorPage() {
   // Montaj-native EditorAdapter for the carousel editor. Stable across renders.
   const adapter = useMemo(() => createMontajAdapter(), [])
 
+  // Host-supplied slots for the package CarouselEditor:
+  //  - assetsPanel : Montaj's own assets panel (uploads into the project dir,
+  //                  persists via PUT on change).
+  //  - exportActions: a "Download all (.zip)" link to Montaj's render-zip route,
+  //                  shown in the render modal's done state.
+  //  - pendingStatus: the live agent-progress line (from the SSE log stream),
+  //                  shown in the pending view in place of the empty-state copy.
+  // These hooks MUST run on every render (no early return above them) — declaring
+  // them after the `if (!project)` guard makes the hook count change between the
+  // initial null render and the post-fetch render, which violates the Rules of
+  // Hooks and crashes the editor on every cold load. They are null-safe so they
+  // can run before `project` resolves.
+  const handleAssetsChange = useCallback(
+    async (next: Asset[]) => {
+      // Spread the authoritative latest project (projectRef) rather than the
+      // lagging `project` closure, so an asset save doesn't clobber edits the
+      // editor hook propagated after this callback was created.
+      const base = projectRef.current ?? project
+      if (!base) return
+      const updated = { ...base, assets: next }
+      handleProjectChange(updated)
+      await api.saveProject(base.id, updated)
+    },
+    [project, handleProjectChange],
+  )
+  const carouselSlots: EditorSlots = useMemo(
+    () => ({
+      assetsPanel: (
+        <AssetsPanel
+          assets={project?.assets ?? []}
+          projectId={project?.id ?? ''}
+          onChange={handleAssetsChange}
+        />
+      ),
+      exportActions: (
+        <a
+          href={`/api/projects/${project?.id ?? ''}/render-zip`}
+          download
+          className="w-full text-center text-sm px-4 py-2.5 rounded-lg bg-blue-600 text-white hover:bg-blue-500 transition-colors"
+        >
+          Download all (.zip)
+        </a>
+      ),
+      pendingStatus: logMessage ? (
+        <>
+          <div className="w-5 h-5 rounded-full border-2 border-gray-700 border-t-gray-400 animate-spin" />
+          <p className="text-gray-300 text-sm">
+            {(project?.assets ?? []).length} asset(s) attached. Agent is working:
+          </p>
+          <p className="text-blue-400 text-xs font-mono bg-gray-900 rounded px-3 py-1.5 w-full text-left truncate">
+            → {logMessage}
+          </p>
+        </>
+      ) : undefined,
+    }),
+    [project, handleAssetsChange, logMessage],
+  )
+
   if (error) {
     return <div className="p-6 text-red-400 text-sm">{error}</div>
   }
@@ -78,59 +136,6 @@ export default function EditorPage() {
       </ProjectContext.Provider>
     )
   }
-
-  // Host-supplied slots for the package CarouselEditor:
-  //  - assetsPanel : Montaj's own assets panel (uploads into the project dir,
-  //                  persists via PUT on change).
-  //  - exportActions: a "Download all (.zip)" link to Montaj's render-zip route,
-  //                  shown in the render modal's done state.
-  //  - pendingStatus: the live agent-progress line (from the SSE log stream),
-  //                  shown in the pending view in place of the empty-state copy.
-  const carouselProject = project
-  const handleAssetsChange = useCallback(
-    async (next: Asset[]) => {
-      // Spread the authoritative latest project (projectRef) rather than the
-      // lagging `carouselProject` closure, so an asset save doesn't clobber
-      // edits the editor hook propagated after this callback was created.
-      const base = projectRef.current ?? carouselProject
-      const updated = { ...base, assets: next }
-      handleProjectChange(updated)
-      await api.saveProject(base.id, updated)
-    },
-    [carouselProject, handleProjectChange],
-  )
-  const carouselSlots: EditorSlots = useMemo(
-    () => ({
-      assetsPanel: (
-        <AssetsPanel
-          assets={carouselProject.assets ?? []}
-          projectId={carouselProject.id}
-          onChange={handleAssetsChange}
-        />
-      ),
-      exportActions: (
-        <a
-          href={`/api/projects/${carouselProject.id}/render-zip`}
-          download
-          className="w-full text-center text-sm px-4 py-2.5 rounded-lg bg-blue-600 text-white hover:bg-blue-500 transition-colors"
-        >
-          Download all (.zip)
-        </a>
-      ),
-      pendingStatus: logMessage ? (
-        <>
-          <div className="w-5 h-5 rounded-full border-2 border-gray-700 border-t-gray-400 animate-spin" />
-          <p className="text-gray-300 text-sm">
-            {(carouselProject.assets ?? []).length} asset(s) attached. Agent is working:
-          </p>
-          <p className="text-blue-400 text-xs font-mono bg-gray-900 rounded px-3 py-1.5 w-full text-left truncate">
-            → {logMessage}
-          </p>
-        </>
-      ) : undefined,
-    }),
-    [carouselProject, handleAssetsChange, logMessage],
-  )
 
   let view
   if (project.projectType === 'carousel') {
