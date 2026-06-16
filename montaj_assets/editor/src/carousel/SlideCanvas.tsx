@@ -13,10 +13,13 @@ import { OverlayPreview } from '../preview/OverlayPreview'
 import { CanvasCropOverlay } from '../crop/CanvasCropOverlay'
 import { InlineTextEditor } from '../text/InlineTextEditor'
 
+// Neutral fallback used only when no host `resolveImageSrc` is injected. The
+// package must not synthesize a host-shaped URL (e.g. Montaj's `/api/files`):
+// it returns the `src` unchanged so a host without a resolver gets a passthrough
+// rather than a URL it can't serve. Hosts that need resolution always inject
+// `resolveImageSrc` (Montaj's adapter does).
 function resolveAssetDefault(src: string): string {
-  if (!src) return src
-  if (src.startsWith('http://') || src.startsWith('https://') || src.startsWith('data:')) return src
-  return `/api/files?path=${encodeURIComponent(src)}`
+  return src
 }
 
 // ── Resize / Rotate handle geometry ────────────────────────────────────────────
@@ -85,6 +88,13 @@ interface Props {
    */
   compileOverlay?: (template: string) => Promise<OverlayFactory>
 
+  /**
+   * Host-supplied file watcher. Threaded into OverlayErrorBoundary so editing an
+   * overlay's source on disk auto-recovers its preview. When absent, no watch is
+   * opened — the package never reaches for a host transport directly.
+   */
+  watchFile?: (path: string, onChange: () => void) => () => void
+
   // Project-state mutators (editor-core). Required for the interactive path.
   moveElement?: (slideId: string, elementId: string, x: number, y: number) => Promise<void>
   resizeElement?: (slideId: string, elementId: string, box: { x: number; y: number; w: number; h: number }) => Promise<void>
@@ -109,6 +119,7 @@ export default function SlideCanvas({
   scale = 1,
   resolveImageSrc,
   compileOverlay,
+  watchFile,
   moveElement,
   resizeElement,
   rotateElement,
@@ -385,6 +396,7 @@ export default function SlideCanvas({
               <OverlayErrorBoundary
                 label={element.overlay.template.split('/').pop() ?? element.overlay.template}
                 watchPath={element.overlay.template}
+                watchFile={watchFile}
               >
                 <OverlayElementView element={element} compileOverlay={compileOverlay} />
               </OverlayErrorBoundary>

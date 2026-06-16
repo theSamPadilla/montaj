@@ -226,6 +226,24 @@ export interface EditorAdapter<P extends Project = Project> {
    * without AI image generation omit this; the editor feature-detects it.
    */
   generateImage?(prompt: string, projectId: string): Promise<{ path: string }>
+
+  /**
+   * Optional: watch a host file path for changes, invoking `onChange` whenever
+   * the file is rewritten. Returns an unsubscribe function. The editor uses this
+   * to auto-recover an overlay preview when its source is edited on disk. Hosts
+   * without a file-watch transport omit this; the editor simply doesn't watch
+   * (no fallback EventSource). Montaj wires this to its `/api/files/stream` SSE.
+   */
+  watchFile?(path: string, onChange: () => void): () => void
+
+  /**
+   * Optional: resolve the host's default "static text" overlay template — the
+   * one the editor's "+ Text" button seeds. Returns null when the host has no
+   * such template (the editor then hides "+ Text"). Hosts without any system
+   * text overlay omit this entirely. Montaj implements it over
+   * `listSystemOverlays()` + its `static-text` matcher.
+   */
+  getDefaultTextOverlay?(): Promise<GlobalOverlay | null>
 }
 
 // ── Theme ────────────────────────────────────────────────────────────────────

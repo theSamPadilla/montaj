@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useParams, useLocation } from 'react-router-dom'
 import { api } from '@/lib/api'
 import { ProjectContext, type Asset, type Project } from '@/lib/types/schema'
@@ -24,6 +24,16 @@ export default function EditorPage() {
     (location.state as { project?: Project } | null)?.project ?? null
   )
   const [error, setError] = useState<string | null>(null)
+
+  // Authoritative latest project, updated synchronously alongside setProject so
+  // callbacks (e.g. handleAssetsChange) read fresh project data rather than the
+  // lagging `project` state they closed over. The editor hook owns the canonical
+  // project; this ref captures every frame it propagates via onProjectChange.
+  const projectRef = useRef<Project | null>(project)
+  const handleProjectChange = useCallback((p: Project) => {
+    projectRef.current = p
+    setProject(p)
+  }, [])
 
   // Always fetch on mount to get authoritative server state.
   // location.state is only used as an instant-display hint while the fetch is in flight.
@@ -79,11 +89,15 @@ export default function EditorPage() {
   const carouselProject = project
   const handleAssetsChange = useCallback(
     async (next: Asset[]) => {
-      const updated = { ...carouselProject, assets: next }
-      setProject(updated)
-      await api.saveProject(carouselProject.id, updated)
+      // Spread the authoritative latest project (projectRef) rather than the
+      // lagging `carouselProject` closure, so an asset save doesn't clobber
+      // edits the editor hook propagated after this callback was created.
+      const base = projectRef.current ?? carouselProject
+      const updated = { ...base, assets: next }
+      handleProjectChange(updated)
+      await api.saveProject(base.id, updated)
     },
-    [carouselProject],
+    [carouselProject, handleProjectChange],
   )
   const carouselSlots: EditorSlots = useMemo(
     () => ({
@@ -97,6 +111,7 @@ export default function EditorPage() {
       exportActions: (
         <a
           href={`/api/projects/${carouselProject.id}/render-zip`}
+          download
           className="w-full text-center text-sm px-4 py-2.5 rounded-lg bg-blue-600 text-white hover:bg-blue-500 transition-colors"
         >
           Download all (.zip)
@@ -105,7 +120,9 @@ export default function EditorPage() {
       pendingStatus: logMessage ? (
         <>
           <div className="w-5 h-5 rounded-full border-2 border-gray-700 border-t-gray-400 animate-spin" />
-          <p className="text-gray-300 text-sm">Agent is working:</p>
+          <p className="text-gray-300 text-sm">
+            {(carouselProject.assets ?? []).length} asset(s) attached. Agent is working:
+          </p>
           <p className="text-blue-400 text-xs font-mono bg-gray-900 rounded px-3 py-1.5 w-full text-left truncate">
             → {logMessage}
           </p>
@@ -123,7 +140,7 @@ export default function EditorPage() {
         <CarouselEditor<Project>
           project={project}
           adapter={adapter}
-          onProjectChange={setProject}
+          onProjectChange={handleProjectChange}
           theme={defaultMontajTheme}
           slots={carouselSlots}
         />

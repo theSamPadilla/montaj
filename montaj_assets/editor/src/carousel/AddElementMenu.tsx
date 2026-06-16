@@ -24,17 +24,15 @@ export default function AddElementMenu({ project, selectedSlideId, adapter, onAd
   const disabled = selectedSlideId === null
 
   // Add a static-text overlay at parity with mission-control's "add text".
-  // Resolves the shipped `static-text` system overlay and seeds the standard
-  // text contract props from its declared defaults.
+  // Resolves the host's default text overlay via the adapter (the package does
+  // not know the host's overlay naming) and seeds the standard text contract
+  // props from its declared defaults.
   async function handleAddText() {
-    if (!selectedSlideId) return
+    if (!selectedSlideId || !adapter.getDefaultTextOverlay) return
     setAddingText(true)
     setTextError(null)
     try {
-      const system = await adapter.listSystemOverlays()
-      const tpl = system.find(
-        o => !o.empty && /static-text/.test(o.jsxPath),
-      )
+      const tpl = await adapter.getDefaultTextOverlay()
       if (!tpl) throw new Error('static-text overlay template not found')
       const props: Record<string, unknown> = Object.fromEntries(
         tpl.props.filter(p => p.default !== undefined).map(p => [p.name, p.default]),
@@ -97,7 +95,9 @@ export default function AddElementMenu({ project, selectedSlideId, adapter, onAd
     if (!file || !selectedSlideId) return
     setUploadError(null)
     try {
-      const uploadedPath = await adapter.uploadFile(file, project.id)
+      // Shared upload (no projectId) — matches the pre-extraction carousel
+      // behavior. The adapter stores it in a shared location, not project-local.
+      const uploadedPath = await adapter.uploadFile(file)
       const [fullW, fullH] = project.settings.resolution
       const elementW = Math.round(fullW * 0.8)
       const elementH = elementW
@@ -150,15 +150,17 @@ export default function AddElementMenu({ project, selectedSlideId, adapter, onAd
           className="hidden"
           onChange={handleFileUpload}
         />
-        <Button
-          size="sm"
-          variant="outline"
-          disabled={disabled || addingText}
-          onClick={handleAddText}
-          className="text-xs"
-        >
-          {addingText ? 'Adding…' : '+ Text'}
-        </Button>
+        {adapter.getDefaultTextOverlay && (
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={disabled || addingText}
+            onClick={handleAddText}
+            className="text-xs"
+          >
+            {addingText ? 'Adding…' : '+ Text'}
+          </Button>
+        )}
         <Button
           size="sm"
           variant="outline"

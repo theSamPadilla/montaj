@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { RefreshCw, AlertCircle, Download } from 'lucide-react'
-import type { Project, Slide, CarouselElement, CarouselEditorProps } from '../types'
+import type { Project, Slide, CarouselElement, ImageElement, CarouselEditorProps } from '../types'
 import { applyTheme, defaultMontajTheme } from '../theme'
 import { useProjectState } from '../state/use-project-state'
 import SlideCanvas from './SlideCanvas'
@@ -26,6 +26,7 @@ interface SlideGridProps {
   onDuplicate: (id: string) => void
   onDelete: (id: string) => void
   onReorder: (fromIdx: number, toIdx: number) => void
+  resolveImageSrc?: (element: ImageElement) => string
 }
 
 function SlideGrid({
@@ -37,6 +38,7 @@ function SlideGrid({
   onDuplicate,
   onDelete,
   onReorder,
+  resolveImageSrc,
 }: SlideGridProps) {
   const [w, h] = project.settings.resolution
   const THUMB_W = 200
@@ -89,7 +91,7 @@ function SlideGrid({
             }`}
             style={{ width: THUMB_W, height: thumbH }}
           >
-            <SlideCanvas slide={slide} width={w} height={h} interactive={false} scale={scale} />
+            <SlideCanvas slide={slide} width={w} height={h} interactive={false} scale={scale} resolveImageSrc={resolveImageSrc} />
             <div className="absolute bottom-1 left-1 text-xs text-white bg-black/50 px-1 rounded">
               {idx + 1}
             </div>
@@ -364,6 +366,7 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
         onDuplicate={handleDuplicateSlide}
         onDelete={handleDeleteSlide}
         onReorder={handleReorderSlides}
+        resolveImageSrc={adapter.resolveImageSrc}
       />
 
       <div ref={canvasContainerRef} className="relative flex-1 flex flex-col items-center justify-center gap-4 overflow-hidden p-6">
@@ -405,7 +408,7 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
                 <p className="text-gray-400 text-sm">Nothing will happen automatically. Copy this and send it to your agent.</p>
               </div>
             )}
-            {skillPath && (
+            {!slots?.pendingStatus && skillPath && (
               <div className="w-full rounded-xl border-2 border-blue-400/50 bg-gray-900 p-5 flex flex-col gap-3 text-left shadow-lg shadow-blue-400/10">
                 <p className="text-blue-400 text-xs font-bold uppercase tracking-widest">Send this to your agent</p>
                 <div className="flex items-start justify-between bg-black/60 border border-transparent rounded-lg px-3 py-3 font-mono gap-3">
@@ -446,6 +449,7 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
                 scale={canvasScale}
                 resolveImageSrc={adapter.resolveImageSrc}
                 compileOverlay={(t) => adapter.compileOverlay(t)}
+                watchFile={adapter.watchFile}
                 moveElement={state.moveElement}
                 resizeElement={state.resizeElement}
                 rotateElement={state.rotateElement}

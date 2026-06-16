@@ -9,8 +9,12 @@
  * that fault and shows the broken overlay's filename instead.
  *
  * Auto-recovery:
- *   - `watchPath`: subscribes to /api/files/stream and clears the error on file save,
- *     so editing the overlay's source recovers the preview without a page reload.
+ *   - `watchPath` + `watchFile`: when the host injects a `watchFile` watcher, the
+ *     boundary subscribes to `watchPath` and clears the error on file change, so
+ *     editing the overlay's source recovers the preview without a page reload.
+ *     The package opens NO transport itself — without `watchFile` it simply
+ *     doesn't watch (a non-Montaj host gets a no-op, not an `/api/files/stream`
+ *     EventSource).
  *   - `resetKey`: clears the error whenever this value changes between renders. Use
  *     for non-path-backed sources like caption styles or template ids.
  */
@@ -20,8 +24,13 @@ import { Component, type ErrorInfo, type ReactNode } from 'react'
 interface Props {
   /** Filename or label shown in the fallback UI. */
   label: string
-  /** Optional path to watch via /api/files/stream — clears the error on file change. */
+  /** Optional host path to watch — clears the error on file change (needs `watchFile`). */
   watchPath?: string
+  /**
+   * Optional host file watcher (from the adapter). Subscribes to `watchPath` and
+   * returns an unsubscribe. Absent → no watch is opened.
+   */
+  watchFile?: (path: string, onChange: () => void) => () => void
   /** Optional reset key — clears the error when its value changes between renders. */
   resetKey?: string | number
   children: ReactNode
@@ -32,7 +41,7 @@ interface State {
 }
 
 export default class OverlayErrorBoundary extends Component<Props, State> {
-  private es: EventSource | null = null
+  private unwatch: (() => void) | null = null
   state: State = { error: null }
 
   static getDerivedStateFromError(error: Error): State {
@@ -48,7 +57,7 @@ export default class OverlayErrorBoundary extends Component<Props, State> {
   }
 
   componentDidUpdate(prev: Props) {
-    if (prev.watchPath !== this.props.watchPath) {
+    if (prev.watchPath !== this.props.watchPath || prev.watchFile !== this.props.watchFile) {
       this.closeWatcher()
       this.openWatcher()
     }
@@ -62,17 +71,16 @@ export default class OverlayErrorBoundary extends Component<Props, State> {
   }
 
   private openWatcher() {
-    const { watchPath } = this.props
-    if (!watchPath) return
-    this.es = new EventSource(`/api/files/stream?path=${encodeURIComponent(watchPath)}`)
-    this.es.onmessage = () => {
+    const { watchPath, watchFile } = this.props
+    if (!watchPath || !watchFile) return
+    this.unwatch = watchFile(watchPath, () => {
       if (this.state.error) this.setState({ error: null })
-    }
+    })
   }
 
   private closeWatcher() {
-    this.es?.close()
-    this.es = null
+    this.unwatch?.()
+    this.unwatch = null
   }
 
   render() {

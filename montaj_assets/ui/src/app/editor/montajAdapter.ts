@@ -169,5 +169,23 @@ export function createMontajAdapter(): EditorAdapter<Project> {
       })
       return { path: result.path }
     },
+
+    // Watch a workspace file for changes via Montaj's `/api/files/stream` SSE.
+    // Replicates the EventSource OverlayErrorBoundary used to open directly, so
+    // editing an overlay's source on disk auto-recovers its preview. Returns an
+    // unsubscribe that closes the stream.
+    watchFile: (path: string, onChange: () => void): (() => void) => {
+      const es = new EventSource(`/api/files/stream?path=${encodeURIComponent(path)}`)
+      es.onmessage = () => onChange()
+      return () => es.close()
+    },
+
+    // Resolve Montaj's shipped `static-text` system overlay — the template the
+    // editor's "+ Text" button seeds. The Montaj-specific name and matcher live
+    // here, not in the package. Returns null when no such template exists.
+    getDefaultTextOverlay: async (): Promise<GlobalOverlay | null> => {
+      const system = await api.listSystemOverlays()
+      return system.find(o => !o.empty && /static-text/.test(o.jsxPath)) ?? null
+    },
   }
 }
