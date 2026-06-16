@@ -1,5 +1,5 @@
 {
-  "name": "@bycrux/editor",
+  "name": "@devbycrux/editor",
   "version": "0.1.0",
   "private": false,
   "type": "module",
@@ -41,7 +41,6 @@
     "vitest": "^2"
   },
   "publishConfig": {
-    "registry": "https://npm.pkg.github.com",
-    "access": "restricted"
+    "access": "public"
   }
 }

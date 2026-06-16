@@ -99,6 +99,43 @@ describe('CarouselEditor — editor-core integration', () => {
     await waitFor(() => getByTestId('assets'))
   })
 
+  // Regression: SlideGrid thumbnails must receive `compileOverlay` so overlay
+  // elements render in the left rail. Before the fix the thumbnail used a
+  // noopCompiler that always rejected → a red "overlay error" badge on every
+  // overlay; adapter.compileOverlay was called ONCE (main canvas only). With the
+  // fix the thumbnail (non-interactive SlideCanvas) routes through
+  // adapter.compileOverlay too, so the SAME overlay is compiled twice
+  // (thumbnail + main). We assert the compiler is threaded to the thumbnail
+  // (call count ≥ 2) — the precise fix. (We don't assert the rendered overlay
+  // output: the fake factory can't render in jsdom, which is orthogonal to this
+  // bug; the real render is verified in the browser.)
+  it('threads compileOverlay into slide thumbnails (compiles overlay for thumbnail + main)', async () => {
+    const adapter = makeFakeAdapter()
+    const initial = makeProject({
+      slides: [
+        {
+          id: 'slide-ov',
+          base_color: '#ffffff',
+          elements: [
+            {
+              id: 'el-ov',
+              type: 'overlay',
+              overlay: { template: '/overlays/lp-text.jsx', props: { text: 'Puerta' } },
+              frame: 0,
+              x: 100, y: 800, w: 880, h: 160, rotation: 0,
+            },
+          ],
+        },
+      ],
+    })
+    render(<CarouselEditor project={initial} adapter={adapter} onProjectChange={vi.fn()} />)
+    // ≥2 calls proves the thumbnail uses adapter.compileOverlay (not noopCompiler).
+    // Under the bug this is exactly 1 (main canvas only) and this times out.
+    await waitFor(() =>
+      expect((adapter.compileOverlay as ReturnType<typeof vi.fn>).mock.calls.length).toBeGreaterThanOrEqual(2),
+    )
+  })
+
   it('renders the host-supplied pendingStatus slot in the pending view', async () => {
     const adapter = makeFakeAdapter()
     const initial = makeProject({ status: 'pending', slides: [] })

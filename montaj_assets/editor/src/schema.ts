@@ -1,4 +1,4 @@
-// Editor-facing schema for the @bycrux/editor package.
+// Editor-facing schema for the @devbycrux/editor package.
 //
 // These types describe the slice of a Montaj project the carousel editor reads
 // and writes. They are intentionally self-contained: the package owns no

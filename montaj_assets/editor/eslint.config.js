@@ -22,7 +22,7 @@ export default tseslint.config(
           patterns: [
             {
               group: ['@/*', '@/app/*', '@/lib/*', '@/components/*'],
-              message: '@bycrux/editor must not import from the host app (@/ paths).',
+              message: '@devbycrux/editor must not import from the host app (@/ paths).',
             },
           ],
         },

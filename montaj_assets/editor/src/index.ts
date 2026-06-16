@@ -1,4 +1,4 @@
-// @bycrux/editor — public API.
+// @devbycrux/editor — public API.
 //
 // The package owns the host-agnostic carousel editor: the editor-facing schema,
 // the adapter/theme contracts, and the host-agnostic PIECES (state, gestures,

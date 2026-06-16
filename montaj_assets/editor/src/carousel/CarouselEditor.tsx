@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { RefreshCw, AlertCircle, Download } from 'lucide-react'
-import type { Project, Slide, CarouselElement, ImageElement, CarouselEditorProps } from '../types'
+import type { Project, Slide, CarouselElement, ImageElement, CarouselEditorProps, OverlayFactory } from '../types'
 import { applyTheme, defaultMontajTheme } from '../theme'
 import { useProjectState } from '../state/use-project-state'
 import SlideCanvas from './SlideCanvas'
@@ -27,6 +27,7 @@ interface SlideGridProps {
   onDelete: (id: string) => void
   onReorder: (fromIdx: number, toIdx: number) => void
   resolveImageSrc?: (element: ImageElement) => string
+  compileOverlay?: (template: string) => Promise<OverlayFactory>
 }
 
 function SlideGrid({
@@ -39,6 +40,7 @@ function SlideGrid({
   onDelete,
   onReorder,
   resolveImageSrc,
+  compileOverlay,
 }: SlideGridProps) {
   const [w, h] = project.settings.resolution
   const THUMB_W = 200
@@ -91,7 +93,7 @@ function SlideGrid({
             }`}
             style={{ width: THUMB_W, height: thumbH }}
           >
-            <SlideCanvas slide={slide} width={w} height={h} interactive={false} scale={scale} resolveImageSrc={resolveImageSrc} />
+            <SlideCanvas slide={slide} width={w} height={h} interactive={false} scale={scale} resolveImageSrc={resolveImageSrc} compileOverlay={compileOverlay} />
             <div className="absolute bottom-1 left-1 text-xs text-white bg-black/50 px-1 rounded">
               {idx + 1}
             </div>
@@ -367,6 +369,7 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
         onDelete={handleDeleteSlide}
         onReorder={handleReorderSlides}
         resolveImageSrc={adapter.resolveImageSrc}
+        compileOverlay={(t) => adapter.compileOverlay(t)}
       />
 
       <div ref={canvasContainerRef} className="relative flex-1 flex flex-col items-center justify-center gap-4 overflow-hidden p-6">
