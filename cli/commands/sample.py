@@ -25,6 +25,9 @@ def register(subparsers):
     p_ov.add_argument("overlay", help="Absolute path to the overlay JSX file")
     p_ov.add_argument("--frame",        type=int, default=0,
                       help="Frame number to render (default: 0)")
+    p_ov.add_argument("--duration",     type=int, default=None,
+                      help="Overlay length in frames for the `duration` global. "
+                           "Omit to preview steady state (end-of-life fades won't fire).")
     p_ov.add_argument("--width",        type=int, default=1080,
                       help="Canvas width in pixels (default: 1080)")
     p_ov.add_argument("--height",       type=int, default=1920,
@@ -66,6 +69,8 @@ def _handle_overlay(args):
         "--props", args.props,
         "--out", args.out,
     ]
+    if args.duration is not None:
+        cmd += ["--duration", str(args.duration)]
     if args.google_fonts:
         cmd += ["--google-fonts", args.google_fonts]
     if args.measure:

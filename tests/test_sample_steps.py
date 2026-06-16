@@ -28,11 +28,40 @@ FIXTURE_PROJECT = Path("/Users/Sam/Montaj/2026-05-28-opus-4-8/project.json")
 import shutil
 
 HAS_NODE = shutil.which("node") is not None
+HAS_FFMPEG = shutil.which("ffmpeg") is not None
+
+try:
+    from PIL import Image  # noqa: F401
+    HAS_PIL = True
+except ImportError:
+    HAS_PIL = False
 
 pytestmark = pytest.mark.skipif(
     not HAS_NODE,
     reason="node is required to run sample step tests",
 )
+
+
+# Overlay whose opacity is a pure end-of-life fade keyed to the `duration` global:
+# opaque for most of its life, then fades to 0 over the final 8 frames. Sampling a
+# single frame must NOT catch it mid-fade just because the tool picked a tiny
+# duration — that's the regression these tests guard.
+FADE_JSX = """\
+export default function FadeOverlay() {
+  const out = interpolate(frame, [duration - 8, duration], [1, 0], { extrapolateLeft: 'clamp' });
+  return (
+    <div style={{ position: 'absolute', inset: 0, background: 'white', opacity: out }} />
+  );
+}
+"""
+
+
+def _center_alpha(png_path):
+    """Return the alpha of the center pixel of an RGBA PNG (0-255)."""
+    from PIL import Image
+    im = Image.open(png_path).convert("RGBA")
+    w, h = im.size
+    return im.getpixel((w // 2, h // 2))[3]
 
 
 # ── Fixtures ──────────────────────────────────────────────────────────────────
@@ -62,6 +91,14 @@ def fixture_jsx(tmp_path):
     """Write a tiny self-contained overlay JSX to tmp_path and return the path."""
     jsx_path = tmp_path / "minimal_overlay.jsx"
     jsx_path.write_text(MINIMAL_JSX, encoding="utf-8")
+    return str(jsx_path)
+
+
+@pytest.fixture
+def fixture_fade_jsx(tmp_path):
+    """Write an end-of-life-fade overlay JSX and return its path."""
+    jsx_path = tmp_path / "fade_overlay.jsx"
+    jsx_path.write_text(FADE_JSX, encoding="utf-8")
     return str(jsx_path)
 
 
@@ -195,3 +232,70 @@ def test_sample_frame_exits_zero_and_produces_png(fixture_project, tmp_path):
     assert png_path, "stdout was empty — expected a PNG path"
     assert os.path.isfile(png_path), f"PNG not found at reported path: {png_path!r}"
     assert png_path.endswith(".png"), f"Expected a .png path, got: {png_path!r}"
+
+
+# ── (d) duration default: a single-frame preview shows steady state, not the fade ──
+
+@pytest.mark.skipif(not HAS_PIL, reason="Pillow required to inspect pixel alpha")
+def test_sample_overlay_default_duration_previews_steady_state(fixture_fade_jsx, tmp_path):
+    """Without --duration, sampling an overlay with an end-of-life fade must render
+    it at full opacity (steady state), not mid-fade. Regression: the tool used to
+    set duration = frame + 1, so every sampled frame caught the fade-out."""
+    out = str(tmp_path / "fade_default.png")
+    result = _run_step(
+        "steps.render.sample_overlay",
+        ["--overlay", fixture_fade_jsx, "--frame", "40", "--out", out],
+    )
+    assert result.returncode == 0, (
+        f"exited {result.returncode}\nstdout: {result.stdout}\nstderr: {result.stderr}"
+    )
+    alpha = _center_alpha(result.stdout.strip())
+    assert alpha >= 240, f"expected near-opaque steady state, got center alpha {alpha}/255"
+
+
+@pytest.mark.skipif(not HAS_PIL, reason="Pillow required to inspect pixel alpha")
+def test_sample_overlay_explicit_duration_shows_fade(fixture_fade_jsx, tmp_path):
+    """With --duration matching the sampled frame, the same overlay IS caught mid
+    fade-out — proving the flag drives the `duration` global through to the render."""
+    out = str(tmp_path / "fade_explicit.png")
+    result = _run_step(
+        "steps.render.sample_overlay",
+        ["--overlay", fixture_fade_jsx, "--frame", "40", "--duration", "41", "--out", out],
+    )
+    assert result.returncode == 0, (
+        f"exited {result.returncode}\nstdout: {result.stdout}\nstderr: {result.stderr}"
+    )
+    alpha = _center_alpha(result.stdout.strip())
+    # frame 40 of a 41-frame overlay → ~1/8 through the 8-frame fade → strongly faded
+    assert alpha <= 160, f"expected a faded overlay at the dying edge, got center alpha {alpha}/255"
+
+
+# ── (e) HDR tonemap: the extract filter must apply a real tonemap operator ────
+
+def test_sample_frame_hdr_filter_applies_tonemap_operator():
+    """The HDR (HLG/PQ) → SDR extract filter in sample-frame.js must include a real
+    `tonemap` operator. Regression: it once converted to linear light and back to
+    BT.709 with no tonemap, so HDR highlights above SDR white clipped and the whole
+    frame blew out to near-white.
+
+    Asserted at the source level rather than end-to-end: a synthetic HLG clip is
+    not a reliable fixture across ffmpeg builds (zscale rejects the lavfi source),
+    while the missing-operator bug is unambiguous in the filter string itself.
+    """
+    from cli.deps import render_runtime_dir
+
+    js = Path(render_runtime_dir()) / "sample-frame.js"
+    assert js.exists(), f"sample-frame.js not found at {js}"
+    src = js.read_text(encoding="utf-8")
+
+    # Locate the HDR branch's -vf string.
+    assert "hdrProject" in src, "expected an hdrProject branch in sample-frame.js"
+    line = next((l for l in src.splitlines()
+                 if "zscale=t=linear" in l and "tonemap" in l), None)
+    assert line is not None, (
+        "HDR extract filter must convert to linear light AND apply a tonemap "
+        "operator on the same chain; found no such -vf string"
+    )
+    assert "tonemap=hable" in line, (
+        f"HDR extract filter is missing the Hable tonemap operator: {line.strip()}"
+    )
