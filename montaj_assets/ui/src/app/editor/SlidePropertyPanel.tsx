@@ -1,7 +1,9 @@
 import { useEffect, useState } from 'react'
+import { Crop } from 'lucide-react'
 import { api, type GlobalOverlay, type GlobalOverlayProp } from '@/lib/api'
 import type { Project, Slide, CarouselElement, OverlayElement } from '@/lib/types/schema'
 import { Button } from '@/components/ui/button'
+import { TextFormattingToolbar } from '@/editor-core/text/TextFormattingToolbar'
 
 function parseNumber(v: string): number | null {
   const n = Number(v)
@@ -19,6 +21,10 @@ interface Props {
   onDeleteElement: (slideId: string, elementId: string) => void
   onDuplicateElement: (slideId: string, elementId: string) => void
   onReorderElement: (slideId: string, elementId: string, direction: 'forward' | 'backward') => void
+  // Crop entry: enabled only for unrotated image elements.
+  onEnterCrop?: (slideId: string, elementId: string) => void
+  // editor-core text mutator for the formatting toolbar.
+  updateOverlayProp?: (slideId: string, elementId: string, key: string, value: string) => Promise<void>
 }
 
 function numInput(
@@ -128,6 +134,8 @@ export default function SlidePropertyPanel({
   onDeleteElement,
   onDuplicateElement,
   onReorderElement,
+  onEnterCrop,
+  updateOverlayProp,
 }: Props) {
   // Map of jsxPath → GlobalOverlay for overlay prop schemas
   const [overlaySchemas, setOverlaySchemas] = useState<Map<string, GlobalOverlay>>(new Map())
@@ -231,22 +239,49 @@ export default function SlidePropertyPanel({
             {numInput('Y', element.y, v => onElementChange({ y: v }))}
             {numInput('W', element.w, v => onElementChange({ w: v }), { min: 1 })}
             {numInput('H', element.h, v => onElementChange({ h: v }), { min: 1 })}
-            {numInput('Rotation', element.rotation, v => onElementChange({ rotation: v }), { min: -360, max: 360 })}
+            {numInput('Rotation', element.rotation ?? 0, v => onElementChange({ rotation: v }), { min: -360, max: 360 })}
           </div>
 
           {/* Image-specific */}
           {element.type === 'image' && (
-            <div className="flex flex-col gap-0.5">
-              <span className="text-xs text-gray-500">Source</span>
-              <span className="text-xs text-gray-300 truncate" title={element.src}>
-                {element.src.split('/').pop() || element.src}
-              </span>
+            <div className="flex flex-col gap-1.5">
+              <div className="flex flex-col gap-0.5">
+                <span className="text-xs text-gray-500">Source</span>
+                <span className="text-xs text-gray-300 truncate" title={element.src}>
+                  {element.src.split('/').pop() || element.src}
+                </span>
+              </div>
+              <Button
+                size="sm"
+                variant="outline"
+                className="text-xs flex items-center gap-1.5"
+                disabled={(element.rotation ?? 0) !== 0 || !onEnterCrop}
+                title={
+                  (element.rotation ?? 0) !== 0
+                    ? 'Reset rotation to 0 before cropping'
+                    : 'Crop image'
+                }
+                onClick={() => onEnterCrop?.(slide.id, element.id)}
+              >
+                <Crop className="h-3.5 w-3.5" />
+                Crop
+              </Button>
             </div>
           )}
 
           {/* Overlay-specific */}
           {overlayEl && (
             <div className="flex flex-col gap-2">
+              {/* Rich-text formatting (bold/italic/case/color/align + font family
+                  & size pickers) for overlays exposing the standard text contract. */}
+              {updateOverlayProp && (
+                <TextFormattingToolbar
+                  slideId={slide.id}
+                  element={overlayEl}
+                  updateOverlayProp={updateOverlayProp}
+                />
+              )}
+
               <div className="grid grid-cols-2 gap-2">
                 {numInput('Frame', overlayEl.frame, v => onElementChange({ frame: v }), { min: 0 })}
               </div>

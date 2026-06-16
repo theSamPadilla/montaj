@@ -46,6 +46,15 @@ const CACHE_TTL_MS = 24 * 60 * 60 * 1000  // 24 hours
 const OVERLAY_CONCURRENCY = 4
 const SHORT_EDGE_TARGET = 1080
 
+// When previewing a single overlay frame we don't know the item's real on-screen
+// length. Overlays commonly fade OUT over the final ~15 frames keyed to the
+// `duration` global; if `duration === frame + 1` (the old default) every sampled
+// frame renders at the overlay's dying edge and looks faded/washed out. Default
+// to a generous tail past the sampled frame so end-of-life animations never fire
+// on a standalone preview. Callers that DO know the real length (sampleFrame, and
+// the CLI --duration flag) pass it explicitly for a WYSIWYG result.
+const PREVIEW_TAIL_FRAMES = 600
+
 // ---------------------------------------------------------------------------
 // CLI entry point
 // ---------------------------------------------------------------------------
@@ -58,7 +67,7 @@ if (isMain) {
       'Usage:\n' +
       '  sample-frame.js --mode overlay --component <path> [--frame N] [--fps N]\n' +
       '    [--width W] [--height H] [--props \'...\'] [--google-fonts f1,f2]\n' +
-      '    [--measure] --out <path>\n' +
+      '    [--duration N] [--measure] --out <path>\n' +
       '  sample-frame.js --mode frame --project <path> --at <seconds> --out <path>\n'
     )
     process.exit(1)
@@ -74,6 +83,7 @@ if (isMain) {
   let propsArg      = {}
   let googleFontsArg = []
   let measureArg    = false
+  let durationArg   = null
   // frame args
   let projectArg    = null
   let atArg         = null
@@ -85,6 +95,7 @@ if (isMain) {
     if (a === '--mode')         { mode          = argv[++i]; continue }
     if (a === '--component')    { componentArg  = argv[++i]; continue }
     if (a === '--frame')        { frameArg      = parseInt(argv[++i], 10); continue }
+    if (a === '--duration')     { durationArg   = parseInt(argv[++i], 10); continue }
     if (a === '--fps')          { fpsArg        = parseInt(argv[++i], 10); continue }
     if (a === '--width')        { widthArg      = parseInt(argv[++i], 10); continue }
     if (a === '--height')       { heightArg     = parseInt(argv[++i], 10); continue }
@@ -110,6 +121,7 @@ if (isMain) {
       height: heightArg,
       googleFonts: googleFontsArg,
       measure: measureArg,
+      durationFrames: durationArg,
       outPath: resolve(outArg),
     }).then(result => {
       if (measureArg) {
@@ -171,16 +183,24 @@ export async function sampleOverlay({
   height = 1920,
   googleFonts = [],
   measure = false,
+  durationFrames = null,
   outPath,
 }) {
   if (!outPath) throw Object.assign(new Error('outPath is required'), { sampleError: 'missing_argument' })
   if (!componentPath) throw Object.assign(new Error('componentPath is required'), { sampleError: 'missing_argument' })
 
+  // Resolve the `duration` global handed to the overlay. When the caller knows
+  // the item's real length they pass it (WYSIWYG, incl. fade-in/out); otherwise
+  // default to a tail past the sampled frame so end-of-life fades don't fire.
+  const effectiveDuration = durationFrames != null
+    ? Math.max(1, durationFrames)
+    : frame + PREVIEW_TAIL_FRAMES
+
   // GC cache on every call
   gcCache()
 
   // Build cache key
-  const cacheKey = buildOverlayCacheKey(componentPath, props, frame, width, height, googleFonts, measure)
+  const cacheKey = buildOverlayCacheKey(componentPath, props, frame, width, height, googleFonts, measure, effectiveDuration)
   const cachePng = join(CACHE_DIR, `${cacheKey}.png`)
   const cacheJson = join(CACHE_DIR, `${cacheKey}.json`)
 
@@ -198,12 +218,11 @@ export async function sampleOverlay({
 
   log(`sampling overlay ${basename(componentPath)} at frame ${frame}${measure ? ' (measure)' : ''}`)
 
-  const durationFrames = Math.max(1, frame + 1)
   const { htmlPath, workDir } = await bundleComponent({
     componentPath,
     props,
     fps,
-    durationFrames,
+    durationFrames: effectiveDuration,
     width,
     height,
     googleFonts,
@@ -531,6 +550,9 @@ export async function sampleFrame({
   // Each overlay PNG has transparent background, same design resolution as canvas
   const overlayPngs = await pMap(overlayItems, async (ov) => {
     const overlayFrame = Math.round((atSeconds - ov.start) * fps)
+    // Pass the item's real on-screen length so the composited frame is WYSIWYG —
+    // an overlay sampled near its own start/end shows its true fade-in/out state.
+    const overlayDurationFrames = Math.max(1, Math.round((ov.end - ov.start) * fps))
     const tmpOverlayOut = join(tmpdir(), `montaj-sample-ov-${randomHex()}.png`)
     const ovSrc = ov.src
     const result = await sampleOverlay({
@@ -542,6 +564,7 @@ export async function sampleFrame({
       height: renderHeight,
       googleFonts: ov.googleFonts ?? [],
       measure: false,
+      durationFrames: overlayDurationFrames,
       outPath: tmpOverlayOut,
     })
     return {
@@ -584,9 +607,14 @@ export async function sampleFrame({
       '-ss', String(Math.max(0, seekTime)),
     ]
     if (hdrProject) {
-      // Tonemap HLG/PQ → sRGB BT.709 inline so the PNG lands as a normal SDR image
+      // Tonemap HLG/PQ → sRGB BT.709 inline so the PNG lands as a normal SDR image.
+      // Must apply the Hable tonemap operator in linear light — without it, HDR
+      // highlights above the SDR white point simply clip and the whole frame
+      // blows out to near-white. Mirrors the canonical zscale path in
+      // lib/normalize.py _build_tonemap_vf_to_sdr / encode-segment.js
+      // buildColorConversionFilter.
       ffmpegExtractArgs.push(
-        '-vf', 'zscale=t=linear:npl=100,format=gbrpf32le,zscale=p=bt709:t=bt709:m=bt709:r=tv,format=yuv420p',
+        '-vf', 'zscale=t=linear:npl=100,format=gbrpf32le,zscale=p=bt709,tonemap=hable:desat=0,zscale=t=bt709:m=bt709:r=tv,format=yuv420p',
       )
     }
     ffmpegExtractArgs.push('-frames:v', '1', '-update', '1', framePng)
@@ -773,7 +801,7 @@ function getTotalDurationSeconds(projectJson) {
 }
 
 /** Build a content-hash cache key for sampleOverlay. */
-function buildOverlayCacheKey(componentPath, props, frame, width, height, googleFonts, measure) {
+function buildOverlayCacheKey(componentPath, props, frame, width, height, googleFonts, measure, durationFrames) {
   let mtime = '0'
   try { mtime = String(statSync(componentPath).mtimeMs) } catch {}
   const raw = [
@@ -784,6 +812,7 @@ function buildOverlayCacheKey(componentPath, props, frame, width, height, google
     String(height),
     googleFonts.join(','),
     measure ? 'measure' : '',
+    String(durationFrames),
   ].join('|')
   return createHash('sha256').update(raw).digest('hex')
 }

@@ -2,15 +2,21 @@ import { useEffect, useRef, useState } from 'react'
 import { RefreshCw, AlertCircle, Download } from 'lucide-react'
 import { api } from '@/lib/api'
 import type { Project, Slide, CarouselElement } from '@/lib/types/schema'
+import type { EditorAdapter, EditorTheme } from '@/editor-core/types'
+import { applyTheme, defaultMontajTheme } from '@/editor-core/theme'
+import { useProjectState } from '@/editor-core/state/use-project-state'
 import SlideCanvas from './SlideCanvas'
 import SlidePropertyPanel from './SlidePropertyPanel'
+import AddElementMenu from './AddElementMenu'
 import AssetsPanel from '@/components/AssetsPanel'
 import CarouselRenderModal from '@/components/CarouselRenderModal'
 import { Button } from '@/components/ui/button'
 
 interface Props {
   project: Project
+  adapter: EditorAdapter
   onProjectChange: (p: Project) => void
+  theme?: EditorTheme
   logMessage?: string | null
 }
 
@@ -48,12 +54,10 @@ function SlideGrid({
   function handleDragStart(idx: number) {
     dragIdx.current = idx
   }
-
   function handleDragOver(e: React.DragEvent, idx: number) {
     e.preventDefault()
     setDragOverIdx(idx)
   }
-
   function handleDrop(toIdx: number) {
     if (dragIdx.current !== null && dragIdx.current !== toIdx) {
       onReorder(dragIdx.current, toIdx)
@@ -61,7 +65,6 @@ function SlideGrid({
     dragIdx.current = null
     setDragOverIdx(null)
   }
-
   function handleDragEnd() {
     dragIdx.current = null
     setDragOverIdx(null)
@@ -91,18 +94,10 @@ function SlideGrid({
             }`}
             style={{ width: THUMB_W, height: thumbH }}
           >
-            <SlideCanvas
-              slide={slide}
-              width={w}
-              height={h}
-              interactive={false}
-              scale={scale}
-            />
-            {/* Slide number */}
+            <SlideCanvas slide={slide} width={w} height={h} interactive={false} scale={scale} />
             <div className="absolute bottom-1 left-1 text-xs text-white bg-black/50 px-1 rounded">
               {idx + 1}
             </div>
-            {/* Hover actions */}
             <div className="absolute top-1 right-1 hidden group-hover:flex gap-1">
               <button
                 onClick={e => { e.stopPropagation(); onDuplicate(slide.id) }}
@@ -131,52 +126,82 @@ function SlideGrid({
   )
 }
 
-// ── CarouselEditor ────────────────────────────────────────────────────────────
+// ── helpers ──
 
 function deepCloneElement(el: CarouselElement): CarouselElement {
   if (el.type === 'overlay') {
     return {
       ...el,
       id: crypto.randomUUID(),
-      overlay: {
-        template: el.overlay.template,
-        props: { ...el.overlay.props }, // shallow clone is sufficient — prop values are primitives/strings
-      },
+      overlay: { template: el.overlay.template, props: { ...el.overlay.props } },
     }
   }
   return { ...el, id: crypto.randomUUID() }
 }
 
 function makeSlide(): Slide {
-  return {
-    id: crypto.randomUUID(),
-    base_color: '#ffffff',
-    elements: [],
-  }
+  return { id: crypto.randomUUID(), base_color: '#ffffff', elements: [] }
 }
 
-export default function CarouselEditor({ project, onProjectChange, logMessage }: Props) {
+function isTypingTarget(t: EventTarget | null): boolean {
+  const el = t as HTMLElement | null
+  if (!el) return false
+  const tag = el.tagName
+  return tag === 'INPUT' || tag === 'TEXTAREA' || el.isContentEditable
+}
+
+// ── CarouselEditor ────────────────────────────────────────────────────────────
+
+export default function CarouselEditor({ project: initialProject, adapter, onProjectChange, theme, logMessage }: Props) {
+  const state = useProjectState(adapter, initialProject.id, initialProject)
+  const project = state.project
   const slides = project.slides ?? []
 
-  const [selectedSlideId, setSelectedSlideId] = useState<string | null>(
-    slides[0]?.id ?? null
-  )
+  // Keep EditorPage's ProjectContext in sync with the hook's authoritative state.
+  useEffect(() => {
+    onProjectChange(project)
+  }, [project, onProjectChange])
+
+  const [selectedSlideId, setSelectedSlideId] = useState<string | null>(slides[0]?.id ?? null)
   const [selectedElementId, setSelectedElementId] = useState<string | null>(null)
+  const [cropElementId, setCropElementId] = useState<string | null>(null)
 
   const [skillPath, setSkillPath] = useState<string | null>(null)
   const [copied, setCopied] = useState(false)
-
   const [refreshing, setRefreshing] = useState(false)
   const [refreshState, setRefreshState] = useState<'idle' | 'err'>('idle')
   const [rendering, setRendering] = useState(false)
   const [renderOpen, setRenderOpen] = useState(false)
 
+  // ── Theme: apply tokens onto the editor container. ──
+  const containerRef = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    if (containerRef.current) applyTheme(containerRef.current, theme ?? defaultMontajTheme)
+  }, [theme])
+
+  // ── Keyboard shortcuts: undo / redo. Guarded against text inputs. ──
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (isTypingTarget(e.target)) return
+      const mod = e.metaKey || e.ctrlKey
+      if (!mod) return
+      const key = e.key.toLowerCase()
+      if (key === 'z' && !e.shiftKey) {
+        e.preventDefault()
+        state.undo()
+      } else if ((key === 'z' && e.shiftKey) || key === 'y') {
+        e.preventDefault()
+        state.redo()
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [state])
+
   async function handleRender() {
     setRendering(true)
     try {
-      const final = { ...project, status: 'final' as const }
-      await api.saveProject(project.id, final)
-      onProjectChange(final)
+      await state.setStatus('final')
       setRenderOpen(true)
     } catch (e) {
       alert(`Failed to start render: ${e instanceof Error ? e.message : String(e)}`)
@@ -189,13 +214,11 @@ export default function CarouselEditor({ project, onProjectChange, logMessage }:
     setRefreshing(true)
     setRefreshState('idle')
     const [result] = await Promise.allSettled([
-      api.getProject(project.id),
+      state.refetch(),
       new Promise(r => setTimeout(r, 1000)),
     ])
     setRefreshing(false)
-    if (result.status === 'fulfilled') {
-      onProjectChange(result.value)
-    } else {
+    if (result.status === 'rejected') {
       console.error(result.reason)
       setRefreshState('err')
       setTimeout(() => setRefreshState('idle'), 2500)
@@ -206,183 +229,119 @@ export default function CarouselEditor({ project, onProjectChange, logMessage }:
     api.getInfo().then(info => setSkillPath(info.root_skill_path)).catch(() => {})
   }, [])
 
-  // Auto-select the first slide when:
-  // - the page loaded empty (pending) and slides arrived via SSE, or
-  // - the previously selected slide was deleted / no longer exists in the project.
-  // The initial useState is a one-shot at mount, so we need this to react to live updates.
+  // Auto-select first slide, or re-select when the current one disappears.
   useEffect(() => {
     if (slides.length === 0) return
     const stillExists = selectedSlideId && slides.some(s => s.id === selectedSlideId)
     if (!stillExists) {
       setSelectedSlideId(slides[0].id)
       setSelectedElementId(null)
+      setCropElementId(null)
     }
   }, [slides, selectedSlideId])
 
-  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const pendingProjectRef = useRef<Project | null>(null)
+  // Auto-create a starter slide for a non-pending project that ended up empty.
   const initialSlideCreatedRef = useRef(false)
-
-  // Auto-create first slide if empty — gated by ref to survive StrictMode double-invoke.
-  // Skip while pending so the agent gets to populate slides; we only want to scaffold
-  // a starter slide for non-pending projects that ended up empty.
   useEffect(() => {
     if (initialSlideCreatedRef.current) return
     if (project.status === 'pending') return
-    if ((project.slides ?? []).length === 0) {
+    if (slides.length === 0) {
       initialSlideCreatedRef.current = true
       const slide = makeSlide()
-      const next: Project = { ...project, slides: [slide] }
-      onProjectChange(next)
-      api.saveProject(project.id, next).catch(console.error)
+      void state.addSlide(slide)
       setSelectedSlideId(slide.id)
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
+  }, [project.status, slides.length])
 
-  function saveDebounced(next: Project) {
-    pendingProjectRef.current = next
-    if (debounceRef.current) clearTimeout(debounceRef.current)
-    debounceRef.current = window.setTimeout(() => {
-      api.saveProject(next.id, next).catch(console.error)
-      pendingProjectRef.current = null
-      debounceRef.current = null
-    }, 100)
-  }
-
-  // Flush pending save on unmount
-  useEffect(() => {
-    return () => {
-      if (debounceRef.current) {
-        clearTimeout(debounceRef.current)
-        const pending = pendingProjectRef.current
-        if (pending) {
-          api.saveProject(pending.id, pending).catch(console.error)
-        }
-      }
-    }
-  }, [])
-
-  function saveImmediate(next: Project) {
-    if (debounceRef.current) clearTimeout(debounceRef.current)
-    api.saveProject(next.id, next).catch(console.error)
-  }
-
-  function mutate(nextSlides: Slide[], immediate = false) {
-    const next: Project = { ...project, slides: nextSlides }
-    onProjectChange(next)
-    if (immediate) saveImmediate(next)
-    else saveDebounced(next)
-  }
-
-  // ── Slide handlers ──
-
+  // ── Slide handlers (via project-state mutators) ──
   function handleAddSlide() {
     const slide = makeSlide()
-    const next = [...slides, slide]
-    mutate(next, true)
+    void state.addSlide(slide, selectedSlideId ?? undefined)
     setSelectedSlideId(slide.id)
     setSelectedElementId(null)
   }
-
   function handleDuplicateSlide(id: string) {
     const src = slides.find(s => s.id === id)
     if (!src) return
-    const clone: Slide = {
-      ...src,
-      id: crypto.randomUUID(),
-      elements: src.elements.map(deepCloneElement),
-    }
-    const idx = slides.findIndex(s => s.id === id)
-    const next = [...slides.slice(0, idx + 1), clone, ...slides.slice(idx + 1)]
-    mutate(next, true)
+    const clone: Slide = { ...src, id: crypto.randomUUID(), elements: src.elements.map(deepCloneElement) }
+    void state.duplicateSlide(id, clone)
     setSelectedSlideId(clone.id)
     setSelectedElementId(null)
   }
-
   function handleDeleteSlide(id: string) {
-    const next = slides.filter(s => s.id !== id)
-    mutate(next, true)
+    void state.removeSlide(id)
     if (selectedSlideId === id) {
-      setSelectedSlideId(next[0]?.id ?? null)
       setSelectedElementId(null)
+      setCropElementId(null)
     }
   }
-
   function handleReorderSlides(fromIdx: number, toIdx: number) {
-    const next = [...slides]
-    const [removed] = next.splice(fromIdx, 1)
-    next.splice(toIdx, 0, removed)
-    mutate(next, true)
-  }
-
-  function handleUpdateSlide(id: string, patch: Partial<Slide>) {
-    const next = slides.map(s => s.id === id ? { ...s, ...patch } : s)
-    mutate(next, false)
+    void state.reorderSlides(fromIdx, toIdx)
   }
 
   // ── Element handlers ──
-
-  function handleUpdateElement(slideId: string, elementId: string, patch: Partial<CarouselElement>) {
-    const next = slides.map(s => {
-      if (s.id !== slideId) return s
-      return {
-        ...s,
-        elements: s.elements.map(el =>
-          el.id === elementId ? { ...el, ...patch } as CarouselElement : el
-        ),
-      }
-    })
-    mutate(next, false)
+  function handleAddElement(slideId: string, element: CarouselElement) {
+    void state.addElement(slideId, element)
+    setSelectedElementId(element.id)
   }
-
   function handleDeleteElement(slideId: string, elementId: string) {
-    const next = slides.map(s => {
-      if (s.id !== slideId) return s
-      return { ...s, elements: s.elements.filter(el => el.id !== elementId) }
-    })
-    mutate(next, true)
+    void state.removeElement(slideId, elementId)
     setSelectedElementId(null)
+    if (cropElementId === elementId) setCropElementId(null)
   }
-
   function handleDuplicateElement(slideId: string, elementId: string) {
     const slide = slides.find(s => s.id === slideId)
-    if (!slide) return
-    const src = slide.elements.find(el => el.id === elementId)
+    const src = slide?.elements.find(el => el.id === elementId)
     if (!src) return
-    const baseClone = deepCloneElement(src)
-    const clone: CarouselElement = { ...baseClone, x: src.x + 20, y: src.y + 20 }
-    const next = slides.map(s => {
-      if (s.id !== slideId) return s
-      const idx = s.elements.findIndex(el => el.id === elementId)
-      const elems = [...s.elements.slice(0, idx + 1), clone, ...s.elements.slice(idx + 1)]
-      return { ...s, elements: elems }
-    })
-    mutate(next, true)
+    const clone = { ...deepCloneElement(src), x: src.x + 20, y: src.y + 20 }
+    void state.duplicateElement(slideId, elementId, clone)
     setSelectedElementId(clone.id)
   }
-
   function handleReorderElement(slideId: string, elementId: string, direction: 'forward' | 'backward') {
-    const next = slides.map(s => {
-      if (s.id !== slideId) return s
-      const elems = [...s.elements]
-      const idx = elems.findIndex(el => el.id === elementId)
-      if (idx < 0) return s
-      const swapIdx = direction === 'forward' ? idx + 1 : idx - 1
-      if (swapIdx < 0 || swapIdx >= elems.length) return s
-      ;[elems[idx], elems[swapIdx]] = [elems[swapIdx], elems[idx]]
-      return { ...s, elements: elems }
-    })
-    mutate(next, true)
+    void state.reorderElement(slideId, elementId, direction)
+  }
+
+  // Property-panel transform/frame edits → committed mutators.
+  function handlePanelElementChange(patch: Partial<CarouselElement>) {
+    if (!selectedSlideId || !selectedElementId) return
+    const slide = slides.find(s => s.id === selectedSlideId)
+    const el = slide?.elements.find(e => e.id === selectedElementId)
+    if (!el) return
+    if ('x' in patch || 'y' in patch || 'w' in patch || 'h' in patch) {
+      const box = {
+        x: patch.x ?? el.x,
+        y: patch.y ?? el.y,
+        w: patch.w ?? el.w,
+        h: patch.h ?? el.h,
+      }
+      void state.resizeElement(selectedSlideId, selectedElementId, box).then(() => state.commit())
+    }
+    if ('rotation' in patch && typeof patch.rotation === 'number') {
+      void state.rotateElement(selectedSlideId, selectedElementId, patch.rotation).then(() => state.commit())
+    }
+    if (el.type === 'overlay' && 'overlay' in patch && patch.overlay) {
+      // Prop edits from the generic PropEditor — diff and write per key.
+      const nextProps = (patch.overlay as { props: Record<string, unknown> }).props
+      for (const [k, v] of Object.entries(nextProps)) {
+        if (el.overlay.props[k] !== v) {
+          void state.updateOverlayProp(selectedSlideId, selectedElementId, k, String(v))
+        }
+      }
+    }
+    if (el.type === 'overlay' && 'frame' in patch && typeof patch.frame === 'number') {
+      void state.setOverlayFrame(selectedSlideId, selectedElementId, patch.frame)
+    }
+  }
+
+  function handleSlideChange(patch: Partial<Slide>) {
+    if (selectedSlideId) void state.updateSlide(selectedSlideId, patch)
   }
 
   const selectedSlide = slides.find(s => s.id === selectedSlideId)
   const selectedElement = selectedSlide?.elements.find(el => el.id === selectedElementId)
 
   const [w, h] = project.settings.resolution
-  // Measure the center column so the canvas grows to fill it instead of being capped
-  // at hardcoded constants. Subtract padding (p-6 = 24px each side) and a small
-  // headroom for the hint text below the canvas.
   const canvasContainerRef = useRef<HTMLDivElement>(null)
   const [canvasContainerSize, setCanvasContainerSize] = useState<{ w: number; h: number }>({ w: 600, h: 700 })
   useEffect(() => {
@@ -394,8 +353,8 @@ export default function CarouselEditor({ project, onProjectChange, logMessage }:
     obs.observe(el)
     return () => obs.disconnect()
   }, [])
-  const PADDING = 48          // p-6 on the container
-  const HINT_RESERVE = 36     // gap + hint text below canvas
+  const PADDING = 48
+  const HINT_RESERVE = 36
   const availW = Math.max(0, canvasContainerSize.w - PADDING)
   const availH = Math.max(0, canvasContainerSize.h - PADDING - HINT_RESERVE)
   const canvasScale = Math.min(availW / w, availH / h, 1)
@@ -407,22 +366,19 @@ export default function CarouselEditor({ project, onProjectChange, logMessage }:
   }
 
   return (
-    <div className="flex h-full overflow-hidden bg-gray-950">
-      {/* Left: Slide grid */}
+    <div ref={containerRef} className="flex h-full overflow-hidden bg-gray-950">
       <SlideGrid
         project={project}
         slides={slides}
         selectedSlideId={selectedSlideId}
-        onSelect={id => { setSelectedSlideId(id); setSelectedElementId(null) }}
+        onSelect={id => { setSelectedSlideId(id); setSelectedElementId(null); setCropElementId(null) }}
         onAdd={handleAddSlide}
         onDuplicate={handleDuplicateSlide}
         onDelete={handleDeleteSlide}
         onReorder={handleReorderSlides}
       />
 
-      {/* Center: Canvas — replaced by waiting overlay while pending */}
       <div ref={canvasContainerRef} className="relative flex-1 flex flex-col items-center justify-center gap-4 overflow-hidden p-6">
-        {/* Refresh — top-left of the editing area */}
         <button
           onClick={handleRefresh}
           disabled={refreshing}
@@ -433,21 +389,18 @@ export default function CarouselEditor({ project, onProjectChange, logMessage }:
           }`}
           title={refreshState === 'err' ? 'Refresh failed — check connection' : 'Refresh project'}
         >
-          {refreshState === 'err'
-            ? <AlertCircle size={18} />
-            : <RefreshCw size={18} className={refreshing ? 'animate-spin' : ''} />}
+          {refreshState === 'err' ? <AlertCircle size={18} /> : <RefreshCw size={18} className={refreshing ? 'animate-spin' : ''} />}
           <span className="text-xs font-medium">Refresh</span>
         </button>
 
-        {/* Render — top-right of the editing area */}
         <button
           onClick={handleRender}
-          disabled={rendering || project.status === 'pending' || (project.slides ?? []).length === 0}
+          disabled={rendering || project.status === 'pending' || slides.length === 0}
           className="absolute top-3 right-3 z-30 flex items-center gap-2 px-3 py-2 rounded-md border border-blue-500/50 bg-blue-600/80 text-white hover:bg-blue-600 hover:border-blue-400 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
           title={
             project.status === 'pending'
               ? 'Wait for the agent to finish before rendering'
-              : (project.slides ?? []).length === 0
+              : slides.length === 0
               ? 'Add slides before rendering'
               : 'Render all slides as PNGs'
           }
@@ -459,13 +412,11 @@ export default function CarouselEditor({ project, onProjectChange, logMessage }:
         {project.status === 'pending' ? (
           <div className="flex flex-col items-center gap-6 text-center max-w-lg w-full">
             {!logMessage ? (
-              /* Waiting for the user to kick off the agent */
               <>
                 <div className="flex flex-col items-center gap-2">
                   <p className="text-white text-lg font-semibold">Message your agent to start</p>
                   <p className="text-gray-400 text-sm">Nothing will happen automatically. Copy this and send it to your agent.</p>
                 </div>
-
                 {skillPath && (
                   <div className="w-full rounded-xl border-2 border-blue-400/50 bg-gray-900 p-5 flex flex-col gap-3 text-left shadow-lg shadow-blue-400/10">
                     <p className="text-blue-400 text-xs font-bold uppercase tracking-widest">Send this to your agent</p>
@@ -482,9 +433,7 @@ export default function CarouselEditor({ project, onProjectChange, logMessage }:
                           setTimeout(() => setCopied(false), 2000)
                         }}
                         className={`shrink-0 flex items-center gap-1.5 text-xs font-medium px-3 py-1.5 rounded-md transition-colors ${
-                          copied
-                            ? 'bg-green-700 text-green-200'
-                            : 'bg-white/10 text-gray-300 hover:bg-white/20 hover:text-white'
+                          copied ? 'bg-green-700 text-green-200' : 'bg-white/10 text-gray-300 hover:bg-white/20 hover:text-white'
                         }`}
                         title="Copy prompt"
                       >
@@ -493,11 +442,9 @@ export default function CarouselEditor({ project, onProjectChange, logMessage }:
                     </div>
                   </div>
                 )}
-
                 <p className="text-gray-600 text-xs font-mono">project id: {project.id}</p>
               </>
             ) : (
-              /* Agent is working — show latest log line */
               <>
                 <div className="w-5 h-5 rounded-full border-2 border-gray-700 border-t-gray-400 animate-spin" />
                 <p className="text-gray-300 text-sm">
@@ -518,57 +465,75 @@ export default function CarouselEditor({ project, onProjectChange, logMessage }:
             <div className="flex-shrink-0" style={{ boxShadow: '0 0 0 1px rgba(255,255,255,0.08)' }}>
               <SlideCanvas
                 slide={selectedSlide}
+                slideId={selectedSlide.id}
                 width={w}
                 height={h}
                 interactive
                 selectedElementId={selectedElementId}
-                onSelect={setSelectedElementId}
-                onElementChange={(id, patch) => {
-                  if (selectedSlideId) handleUpdateElement(selectedSlideId, id, patch)
-                }}
+                onSelect={id => { setSelectedElementId(id); if (id !== cropElementId) setCropElementId(null) }}
                 scale={canvasScale}
+                resolveImageSrc={adapter.resolveImageSrc}
+                compileOverlay={(t) => adapter.compileOverlay(t)}
+                moveElement={state.moveElement}
+                resizeElement={state.resizeElement}
+                rotateElement={state.rotateElement}
+                commit={state.commit}
+                updateOverlayProp={state.updateOverlayProp}
+                updateImageCrop={state.updateImageCrop}
+                cropElementId={cropElementId}
+                onExitCrop={() => setCropElementId(null)}
               />
             </div>
             <p className="flex-shrink-0 text-xs text-gray-500 text-center max-w-md">
-              Drag elements to reposition. Ask the agent for any other changes.
+              Drag to reposition, resize/rotate via handles, double-click text to edit. Cmd/Ctrl+Z to undo.
             </p>
           </>
         ) : (
           <div className="text-gray-600 text-sm">No slides yet. Add one in the left panel.</div>
         )}
+
+        {state.lastError && (
+          <div className="absolute bottom-3 left-1/2 -translate-x-1/2 z-30 flex items-center gap-2 px-3 py-2 rounded-md border border-red-500/40 bg-red-950/80 text-red-200 text-xs">
+            <AlertCircle size={14} />
+            <span>{state.lastError}</span>
+            <button onClick={state.clearError} className="ml-2 underline">dismiss</button>
+          </div>
+        )}
       </div>
 
-      {/* Right: Property panel + assets */}
       <div className="flex flex-col overflow-hidden">
+        {selectedSlide && project.status !== 'pending' && (
+          <div className="px-4 py-2 border-l border-b border-gray-800 bg-gray-950">
+            <AddElementMenu
+              project={project}
+              selectedSlideId={selectedSlideId}
+              onAddElement={handleAddElement}
+            />
+          </div>
+        )}
         <SlidePropertyPanel
           project={project}
           slide={selectedSlide}
           element={selectedElement}
-          onSlideChange={patch => { if (selectedSlideId) handleUpdateSlide(selectedSlideId, patch) }}
-          onElementChange={patch => {
-            if (selectedSlideId && selectedElementId) {
-              handleUpdateElement(selectedSlideId, selectedElementId, patch)
-            }
-          }}
+          onSlideChange={handleSlideChange}
+          onElementChange={handlePanelElementChange}
           onDeleteSlide={handleDeleteSlide}
           onDuplicateSlide={handleDuplicateSlide}
           onDeleteElement={handleDeleteElement}
           onDuplicateElement={handleDuplicateElement}
           onReorderElement={handleReorderElement}
+          onEnterCrop={(_slideId, elementId) => { setSelectedElementId(elementId); setCropElementId(elementId) }}
+          updateOverlayProp={state.updateOverlayProp}
         />
         <div className="border-t border-gray-800 flex flex-col overflow-hidden" style={{ minHeight: 180 }}>
-          <AssetsPanel
-            assets={project.assets ?? []}
-            projectId={project.id}
-            onChange={assetsPanelOnChange}
-          />
+          <AssetsPanel assets={project.assets ?? []} projectId={project.id} onChange={assetsPanelOnChange} />
         </div>
       </div>
 
       {renderOpen && (
         <CarouselRenderModal
           projectId={project.id}
-          slidesCount={(project.slides ?? []).length}
+          slidesCount={slides.length}
           resolution={project.settings.resolution as [number, number]}
           onClose={() => setRenderOpen(false)}
           onCancel={() => setRenderOpen(false)}

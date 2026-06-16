@@ -1,8 +1,9 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useParams, useLocation } from 'react-router-dom'
 import { api } from '@/lib/api'
 import { ProjectContext, type Project } from '@/lib/types/schema'
 import { useProjectStream } from '@/lib/sse'
+import { createMontajAdapter } from './montajAdapter'
 import { useIsMobile } from '@/lib/useIsMobile'
 import UploadView from './UploadView'
 import LiveView from './LiveView'
@@ -41,7 +42,7 @@ export default function EditorPage() {
   useProjectStream(id !== 'new' ? id : undefined, handleUpdate, handleLog)
 
   // Fallback poll while pending — SSE can miss the draft transition if the connection
-  // drops at the wrong moment. Polls every 5s and stops once no longer pending.
+  // drops at the wrong moment. Polls every 10s and stops once no longer pending.
   useEffect(() => {
     if (!id || id === 'new' || project?.status !== 'pending') return
     const timer = setInterval(() => {
@@ -51,6 +52,9 @@ export default function EditorPage() {
   }, [id, project?.status, project?.projectType])
 
   const isMobile = useIsMobile()
+
+  // Montaj-native EditorAdapter for the carousel editor. Stable across renders.
+  const adapter = useMemo(() => createMontajAdapter(), [])
 
   if (error) {
     return <div className="p-6 text-red-400 text-sm">{error}</div>
@@ -68,7 +72,7 @@ export default function EditorPage() {
   if (project.projectType === 'carousel') {
     view = isMobile
       ? <MobileCarouselPreview project={project} onProjectChange={setProject} />
-      : <CarouselEditor project={project} onProjectChange={setProject} logMessage={logMessage} />
+      : <CarouselEditor project={project} adapter={adapter} onProjectChange={setProject} logMessage={logMessage} />
   } else if (project.projectType === 'ai_video' && (project.status === 'pending' || project.status === 'storyboard_ready')) {
     view = isMobile
       ? <MobileEditNotice

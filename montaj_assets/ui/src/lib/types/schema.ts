@@ -202,6 +202,13 @@ export interface ImageElement {
    * manual project.json edit. Absent = no crop = current behavior.
    */
   crop?: { x: number; y: number; w: number; h: number }
+  /**
+   * Optional passthrough field used by host apps (e.g. Hub) to link this
+   * image element to an external media record. Montaj preserves the value
+   * through load→save round-trips but never interprets it; the host app's
+   * adapter (e.g. resolveImageSrc) is responsible for resolving the actual URL.
+   */
+  mediaId?: string
 }
 
 export interface OverlayElement {

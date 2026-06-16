@@ -49,13 +49,13 @@ export function makeOverlayGlobals(context) {
   if (context !== 'render' && context !== 'preview') {
     throw new Error(`makeOverlayGlobals: unknown context ${context}`)
   }
-  // Fail-fast guard: r3f's reconciler bindings are React-version-specific. If
-  // either consumer ever bumps to React 19 without us updating r3f, downstream
-  // failures are obscure ("Cannot read property ... of undefined"); catching it
-  // here gives a clear actionable error.
-  if (!React.version?.startsWith('18.')) {
+  // Fail-fast guard: r3f's reconciler bindings are React-version-specific. r3f
+  // v9 binds to React 19. If a consumer ever bumps to React 20 without updating
+  // r3f, downstream failures are obscure ("Cannot read property ... of
+  // undefined"); catching it here gives a clear actionable error.
+  if (!React.version?.startsWith('19.')) {
     throw new Error(
-      `montaj-overlay-runtime: requires React 18.x, got ${React.version}. ` +
+      `montaj-overlay-runtime: requires React 19.x, got ${React.version}. ` +
       `Upgrade @react-three/fiber and revisit r3f compatibility before bumping React.`,
     )
   }

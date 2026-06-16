@@ -24,7 +24,7 @@ export interface UseItemDragDropConfig {
   snapBoundaries: number[]
   snapThresholdPx?: number // default 8
   /** Element used for getBoundingClientRect() → pixel-to-time conversion */
-  scrollRef: React.RefObject<HTMLDivElement>
+  scrollRef: React.RefObject<HTMLDivElement | null>
   /** Timeline zoom factor — content width is zoom × scrollRef.width. Required so
    *  pixel-to-time conversion matches the visible scale (without this, drag/resize
    *  is `zoom`× too sensitive when zoomed in). */
