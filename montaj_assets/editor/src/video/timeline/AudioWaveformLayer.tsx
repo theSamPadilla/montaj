@@ -1,18 +1,29 @@
 import { useEffect, useState } from 'react'
-import { fileUrl } from '@/lib/api'
-import { createMontajAdapter } from '@/app/editor/montajAdapter'
-import type { WaveformChunk } from '@bycrux/editor'
-import type { AudioTrack } from '@/lib/types/schema'
+import type { WaveformChunk } from '../../types'
+import type { AudioTrack } from '../../schema'
 
-// Interim: V1 deleted lib/audio-waveform.ts and folded its cache into the
-// adapter. The timeline (this layer) still lives in ui until V2, so it routes
-// through the adapter's getWaveformChunks. The module-level cache lives in
-// montajAdapter, so this single shared instance keeps the dedup intact.
-const waveformAdapter = createMontajAdapter()
+/**
+ * Fetches the waveform chunks for one audio track. Threaded from the timeline
+ * root (VideoEditor supplies `adapter.getWaveformChunks` in V4). The package is
+ * host-agnostic: it takes the fn as a prop rather than reaching for an adapter.
+ */
+export type GetWaveformChunks = (
+  projectId: string,
+  trackId: string,
+  trackSrc: string,
+  chunkDurationS?: number,
+) => Promise<WaveformChunk[]>
+
+/** Resolves a host-internal chunk path into a displayable URL (e.g. Montaj's
+ *  `/api/files?path=…`). Defaults to identity when the host omits it. */
+export type ResolveFilePath = (path: string) => string
 
 interface Props {
   track: AudioTrack
   projectId: string
+  /** When absent/undefined, no waveform is rendered (graceful fallback). */
+  getWaveformChunks?: GetWaveformChunks
+  resolveFilePath?: ResolveFilePath
 }
 
 function LoadingBar() {
@@ -27,16 +38,17 @@ function PlainFallback() {
   return <div className="w-full h-full rounded bg-emerald-500/40 border border-emerald-500/60" />
 }
 
-export default function AudioWaveformLayer({ track, projectId }: Props) {
+export default function AudioWaveformLayer({ track, projectId, getWaveformChunks, resolveFilePath }: Props) {
   const [chunks, setChunks] = useState<WaveformChunk[] | null>(null)
   const [error, setError] = useState(false)
 
   useEffect(() => {
+    if (!getWaveformChunks) return
     let cancelled = false
     setChunks(null)
     setError(false)
 
-    waveformAdapter.getWaveformChunks!(projectId, track.id, track.src)
+    getWaveformChunks(projectId, track.id, track.src)
       .then((result) => {
         if (!cancelled) setChunks(result)
       })
@@ -47,9 +59,14 @@ export default function AudioWaveformLayer({ track, projectId }: Props) {
     return () => {
       cancelled = true
     }
-  }, [track.id, track.src, projectId])
+  }, [track.id, track.src, projectId, getWaveformChunks])
 
   const isMuted = track.muted ?? false
+
+  // No fetcher supplied → render nothing (graceful: the bar shows its base color).
+  if (!getWaveformChunks) return null
+
+  const resolvePath = resolveFilePath ?? ((p: string) => p)
 
   const content = (() => {
     if (error) return <PlainFallback />
@@ -74,7 +91,7 @@ export default function AudioWaveformLayer({ track, projectId }: Props) {
           return (
             <img
               key={chunk.path}
-              src={fileUrl(chunk.path)}
+              src={resolvePath(chunk.path)}
               alt=""
               draggable={false}
               className="absolute top-0 h-full object-fill"

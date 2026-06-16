@@ -5,7 +5,8 @@
 // Cross-type ops (e.g. resize a video clip + an audio track in one drag) work
 // because every id is globally unique within a Project.
 
-import type { Project, VisualItem, AudioTrack } from '@/lib/types/schema'
+import type { VisualItem, AudioTrack } from '../../schema'
+import type { Project } from '../../types'
 
 const MIN_DURATION = 0.1
 

@@ -1,8 +1,8 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import AudioTrackRow from './AudioTrackRow'
-import type { Project } from '@/lib/types/schema'
-import SubcutRegenTool from './SubcutRegenTool'
-import { collapseGaps } from '@bycrux/editor'
+import type { GetWaveformChunks, ResolveFilePath } from './AudioWaveformLayer'
+import type { Project } from '../../types'
+import { collapseGaps } from '../cuts'
 import { ratioFromClientX } from './utils'
 import { useTimelineZoom } from './useTimelineZoom'
 import { TimelineContext, type TimelineContextValue } from './TimelineContext'
@@ -28,10 +28,29 @@ interface TimelineProps {
   onInspectAudio?: (id: string) => void
   onSaveProject?: (p: Project) => Promise<unknown>
   rippleMode?: boolean
+  /** Audio-waveform fetcher, threaded to every AudioWaveformLayer. In V4 the
+   *  VideoEditor wires this from `adapter.getWaveformChunks`. Absent → no
+   *  waveforms render (graceful). */
+  getWaveformChunks?: GetWaveformChunks
+  /** Resolves a waveform chunk's host path into a displayable URL. */
+  resolveFilePath?: ResolveFilePath
+  /** Host-computed gate for the per-clip subcut-regenerate affordance (Montaj:
+   *  ai_video projects). The package never reads `projectType`. */
+  regenEnabled?: boolean
+  /** Host-computed predicate driving the per-clip "queued" badge (Montaj:
+   *  project.regenQueue membership). The package never reads `regenQueue`. */
+  isClipQueued?: (itemId: string) => boolean
+  /** Render-prop seam for the Montaj-specific subcut-regeneration tool. The
+   *  timeline owns the open/close trigger (the per-clip Scissors button toggles
+   *  `subcutClipId`); when a clip is active it calls this with the clip id and a
+   *  close callback. The host closure supplies the full Montaj project,
+   *  regenQueue, storyboard, and onSave — none of which the package types know.
+   *  Absent → the subcut tool is simply not rendered. */
+  renderSubcutRegen?: (ctx: { clipId: string; onClose: () => void }) => ReactNode
 }
 
 
-export default function Timeline({ project, currentTime, onTimeUpdate, onProjectChange, onCaptionEdit, onOverlayEdit, selectedIds = [], onSelectIds, onSplit, onCut, onInspectClip, onInspectAudio, onSaveProject, rippleMode = false }: TimelineProps) {
+export default function Timeline({ project, currentTime, onTimeUpdate, onProjectChange, onCaptionEdit, onOverlayEdit, selectedIds = [], onSelectIds, onSplit, onCut, onInspectClip, onInspectAudio, rippleMode = false, getWaveformChunks, resolveFilePath, regenEnabled, isClipQueued, renderSubcutRegen }: TimelineProps) {
   const primarySelectedId = selectedIds[0] ?? null
 
   // Click/shift-click handler — additive selection on shift or meta (cmd/ctrl).
@@ -92,7 +111,8 @@ export default function Timeline({ project, currentTime, onTimeUpdate, onProject
       }
       onProjectChange(nextProject)
     }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+  // Intentionally keyed on a stable digest of audio-track timing/mute rather
+  // than the array identity, so the crossfade pass only re-runs on real edits.
   }, [audioTracks.map(t => `${t.id}:${t.start}:${t.end}:${t.muted}`).join('|')])
 
   const [hoverPct, setHoverPct]               = useState<number | null>(null)
@@ -267,6 +287,8 @@ export default function Timeline({ project, currentTime, onTimeUpdate, onProject
               onInspectClip={onInspectClip}
               subcutClipId={subcutClipId}
               setSubcutClipId={setSubcutClipId}
+              regenEnabled={regenEnabled}
+              isClipQueued={isClipQueued}
             />
           )
         })}
@@ -298,6 +320,8 @@ export default function Timeline({ project, currentTime, onTimeUpdate, onProject
               selectedIds={selectedIds}
               onSelectItem={handleSelectItem}
               onInspect={onInspectAudio}
+              getWaveformChunks={getWaveformChunks}
+              resolveFilePath={resolveFilePath}
             />
           ))
         })()}
@@ -308,19 +332,19 @@ export default function Timeline({ project, currentTime, onTimeUpdate, onProject
       </div>{/* end inner zoom div */}
       </div>{/* end scroll container */}
 
-      {/* ── Subcut regen tool ── */}
-      {subcutClipId && (() => {
+      {/* ── Subcut regen tool (host-rendered via render-prop seam) ──
+          The Montaj-specific SubcutRegenTool lives in the host (it reads
+          regenQueue/storyboard). The timeline owns only the open trigger:
+          the per-clip Scissors button sets subcutClipId. We surface a clip
+          that still has frozen generation provenance (in-package field) and
+          let the host decide what to render. */}
+      {subcutClipId && renderSubcutRegen && (() => {
         const subcutClip = allTracks[0]?.find(c => c.id === subcutClipId)
-        if (!subcutClip || !subcutClip.generation || project.projectType !== 'ai_video') return null
-        return (
-          <SubcutRegenTool
-            project={project}
-            clip={subcutClip}
-            onClose={() => setSubcutClipId(null)}
-            onProjectChange={(p) => { onProjectChange?.(p); setSubcutClipId(null) }}
-            onSave={onSaveProject ?? (async () => {})}
-          />
-        )
+        if (!subcutClip || !subcutClip.generation) return null
+        return renderSubcutRegen({
+          clipId: subcutClipId,
+          onClose: () => setSubcutClipId(null),
+        })
       })()}
 
       {/* ── Transcript editor ── */}
