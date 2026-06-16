@@ -1,8 +1,10 @@
-import { useEffect, useRef, useState } from 'react'
-import { api, fileUrl } from '@/lib/api'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
+import type { EditorAdapter, Project } from '../types'
 
 interface CarouselRenderModalProps {
   projectId: string
+  /** Adapter drives the render stream and path→URL resolution. */
+  adapter: EditorAdapter<Project>
   /** Number of slides in the project — drives the gallery row count. */
   slidesCount: number
   /** Slide resolution [width, height] — drives thumbnail aspect ratio. */
@@ -11,6 +13,11 @@ interface CarouselRenderModalProps {
   onClose: () => void
   /** Fired when the user cancels an in-progress render. Falls back to onClose. */
   onCancel?: () => void
+  /**
+   * Host-supplied export controls (e.g. a "Download all (.zip)" link). Rendered
+   * in the done-state info panel. The package no longer hardcodes host URLs.
+   */
+  exportActions?: ReactNode
 }
 
 function slideFile(index: number): string {
@@ -35,13 +42,13 @@ function LogLine({ text }: { text: string }) {
   )
 }
 
-export default function CarouselRenderModal({ projectId, slidesCount, resolution, onClose, onCancel }: CarouselRenderModalProps) {
+export default function CarouselRenderModal({ projectId, adapter, slidesCount, resolution, onClose, onCancel, exportActions }: CarouselRenderModalProps) {
   const [logs, setLogs]         = useState<string[]>([])
   const [status, setStatus]     = useState<'running' | 'done' | 'error'>('running')
   const [outputDir, setOutDir]  = useState<string | null>(null)
   const [errorMsg, setError]    = useState<string | null>(null)
   const logRef                  = useRef<HTMLDivElement>(null)
-  const cancelRef               = useRef<(() => void) | null>(null)
+  const cancelledRef            = useRef(false)
   const unmountedRef            = useRef(false)
   const cleanupTimerRef         = useRef<ReturnType<typeof setTimeout> | null>(null)
 
@@ -56,26 +63,31 @@ export default function CarouselRenderModal({ projectId, slidesCount, resolution
     }
 
     unmountedRef.current = false
-    api.renderProject(
-      projectId,
-      line => { if (!unmountedRef.current) setLogs(l => [...l, line]) },
-      path => { if (!unmountedRef.current) { setOutDir(path); setStatus('done') } },
-      msg  => { if (!unmountedRef.current) { setError(msg); setStatus('error') } },
-    ).then(cancel => {
-      if (unmountedRef.current) cancel()
-      else cancelRef.current = cancel
-    })
+    cancelledRef.current = false
+    ;(async () => {
+      try {
+        for await (const ev of adapter.render(projectId)) {
+          if (cancelledRef.current || unmountedRef.current) break
+          if (ev.type === 'log') setLogs(l => [...l, ev.message])
+          else if (ev.type === 'done') { setOutDir(ev.outputPath); setStatus('done') }
+          else if (ev.type === 'error') { setError(ev.message); setStatus('error') }
+        }
+      } catch (e) {
+        if (!cancelledRef.current && !unmountedRef.current) {
+          setError(String(e)); setStatus('error')
+        }
+      }
+    })()
     return scheduleCleanup
 
     function scheduleCleanup() {
       cleanupTimerRef.current = setTimeout(() => {
         cleanupTimerRef.current = null
         unmountedRef.current = true
-        cancelRef.current?.()
-        cancelRef.current = null
+        cancelledRef.current = true
       }, 0)
     }
-  }, [projectId])
+  }, [projectId, adapter])
 
   useEffect(() => {
     if (logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight
@@ -90,7 +102,7 @@ export default function CarouselRenderModal({ projectId, slidesCount, resolution
   }, [status, onClose])
 
   function handleCancel() {
-    cancelRef.current?.()
+    cancelledRef.current = true
     ;(onCancel ?? onClose)()
   }
 
@@ -108,7 +120,7 @@ export default function CarouselRenderModal({ projectId, slidesCount, resolution
             >
               {Array.from({ length: slidesCount }).map((_, i) => {
                 const file = slideFile(i)
-                const url = fileUrl(`${outputDir}/${file}`)
+                const url = adapter.fileUrl(`${outputDir}/${file}`)
                 return (
                   <a
                     key={i}
@@ -150,13 +162,7 @@ export default function CarouselRenderModal({ projectId, slidesCount, resolution
 
             <div className="flex flex-col gap-3 p-5 flex-1">
               <p className="text-xs font-mono text-gray-500 break-all leading-relaxed">{outputDir}</p>
-              <a
-                href={`/api/projects/${projectId}/render-zip`}
-                download
-                className="w-full text-center text-sm px-4 py-2.5 rounded-lg bg-green-800/60 border border-green-700 text-green-200 hover:bg-green-700/60 transition-colors font-medium"
-              >
-                Download all (.zip)
-              </a>
+              {exportActions}
               <button
                 onClick={onClose}
                 className="w-full text-center text-sm px-4 py-2.5 rounded-lg bg-gray-800 border border-gray-700 text-gray-300 hover:bg-gray-700 transition-colors"

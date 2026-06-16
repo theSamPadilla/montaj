@@ -1,16 +1,16 @@
 import { useRef, useState } from 'react'
-import { api } from '@/lib/api'
-import type { Project, CarouselElement, OverlayElement } from '@/lib/types/schema'
-import { Button } from '@/components/ui/button'
+import type { Project, CarouselElement, OverlayElement, EditorAdapter } from '../types'
+import { Button } from '../ui'
 import OverlayPicker from './OverlayPicker'
 
 interface Props {
   project: Project
   selectedSlideId: string | null
+  adapter: EditorAdapter<Project>
   onAddElement: (slideId: string, element: CarouselElement) => void
 }
 
-export default function AddElementMenu({ project, selectedSlideId, onAddElement }: Props) {
+export default function AddElementMenu({ project, selectedSlideId, adapter, onAddElement }: Props) {
   const [showPrompt, setShowPrompt] = useState(false)
   const [prompt, setPrompt] = useState('')
   const [generating, setGenerating] = useState(false)
@@ -31,7 +31,7 @@ export default function AddElementMenu({ project, selectedSlideId, onAddElement 
     setAddingText(true)
     setTextError(null)
     try {
-      const system = await api.listSystemOverlays()
+      const system = await adapter.listSystemOverlays()
       const tpl = system.find(
         o => !o.empty && /static-text/.test(o.jsxPath),
       )
@@ -63,19 +63,12 @@ export default function AddElementMenu({ project, selectedSlideId, onAddElement 
   }
 
   async function handleGenerate() {
-    if (!selectedSlideId || !prompt.trim()) return
+    if (!selectedSlideId || !prompt.trim() || !adapter.generateImage) return
     setGenerating(true)
     setGenError(null)
     try {
       const [w] = project.settings.resolution
-      const { path: outPath } = await api.reservePath(project.id, {
-        prefix: 'carousel_image',
-        extension: 'png',
-      })
-      const result = await api.runStep<{ path: string }>('generate_image', {
-        prompt: prompt.trim(),
-        out: outPath,
-      })
+      const result = await adapter.generateImage(prompt.trim(), project.id)
       const elementW = Math.round(w * 0.8)
       const elementH = elementW
       const [fullW, fullH] = project.settings.resolution
@@ -104,7 +97,7 @@ export default function AddElementMenu({ project, selectedSlideId, onAddElement 
     if (!file || !selectedSlideId) return
     setUploadError(null)
     try {
-      const uploadedPath = await api.uploadFile(file)
+      const uploadedPath = await adapter.uploadFile(file, project.id)
       const [fullW, fullH] = project.settings.resolution
       const elementW = Math.round(fullW * 0.8)
       const elementH = elementW
@@ -130,15 +123,17 @@ export default function AddElementMenu({ project, selectedSlideId, onAddElement 
   return (
     <div className="flex flex-col gap-2">
       <div className="flex items-center gap-2">
-        <Button
-          size="sm"
-          variant="outline"
-          disabled={disabled}
-          onClick={() => { setShowPrompt(p => !p); setGenError(null) }}
-          className="text-xs"
-        >
-          + AI Image
-        </Button>
+        {adapter.generateImage && (
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={disabled}
+            onClick={() => { setShowPrompt(p => !p); setGenError(null) }}
+            className="text-xs"
+          >
+            + AI Image
+          </Button>
+        )}
         <Button
           size="sm"
           variant="outline"
@@ -204,6 +199,7 @@ export default function AddElementMenu({ project, selectedSlideId, onAddElement 
         open={showOverlayPicker}
         onClose={() => setShowOverlayPicker(false)}
         project={project}
+        adapter={adapter}
         onPick={element => {
           if (selectedSlideId) onAddElement(selectedSlideId, element)
         }}

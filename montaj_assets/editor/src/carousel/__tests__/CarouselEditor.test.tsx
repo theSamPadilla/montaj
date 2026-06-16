@@ -1,30 +1,12 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, act, waitFor, fireEvent } from '@testing-library/react'
-import type { EditorAdapter, ImageElement, RenderEvent } from '@bycrux/editor'
-import type { Project } from '@/lib/types/schema'
-
-// ── Module mocks ────────────────────────────────────────────────────────────
-// CarouselEditor mounts a few child panels that hit Montaj's HTTP API and the
-// overlay compiler. Stub them so the component renders headless.
-vi.mock('@/lib/api', () => ({
-  api: {
-    getInfo: vi.fn(async () => ({ root_skill_path: 'skill', skill_path: '', style_profile_skill_path: '' })),
-    listGlobalOverlays: vi.fn(async () => []),
-    listProfileOverlays: vi.fn(async () => []),
-    listSystemOverlays: vi.fn(async () => []),
-    saveProject: vi.fn(async () => {}),
-    uploadFile: vi.fn(async () => 'x.png'),
-    pickFiles: vi.fn(async () => ({ paths: [] })),
-  },
-}))
-
-vi.mock('@/lib/overlay-eval', () => ({
-  compileOverlay: vi.fn(async () => () => null),
-}))
-
+import type { EditorAdapter, ImageElement, Project, RenderEvent } from '../../types'
 import CarouselEditor from '../CarouselEditor'
 
 // ── Fake adapter (mirrors editor-core's use-project-state test pattern) ───────
+// The package owns the assembled editor now: no host (`@/`) modules are mocked.
+// A full fake `EditorAdapter` drives load/save/render and the overlay-list /
+// upload / fileUrl primitives the assembled editor consumes.
 
 function makeProject(overrides: Partial<Project> = {}): Project {
   return {
@@ -56,7 +38,7 @@ function makeProject(overrides: Partial<Project> = {}): Project {
       },
     ],
     ...overrides,
-  }
+  } as Project
 }
 
 interface FakeAdapter extends EditorAdapter<Project> {
@@ -103,6 +85,20 @@ function findInteractiveWrapper(elementId: string): HTMLElement {
 }
 
 describe('CarouselEditor — editor-core integration', () => {
+  it('renders the host-supplied assetsPanel slot', async () => {
+    const adapter = makeFakeAdapter()
+    const initial = makeProject()
+    const { getByTestId } = render(
+      <CarouselEditor
+        project={initial}
+        adapter={adapter}
+        onProjectChange={vi.fn()}
+        slots={{ assetsPanel: <div data-testid="assets" /> }}
+      />,
+    )
+    await waitFor(() => getByTestId('assets'))
+  })
+
   it('selecting an element, moving it, then undo reverts the position', async () => {
     const adapter = makeFakeAdapter()
     const initial = makeProject()
@@ -111,7 +107,8 @@ describe('CarouselEditor — editor-core integration', () => {
       <CarouselEditor
         project={initial}
         adapter={adapter}
-        onProjectChange={() => {}}
+        onProjectChange={vi.fn()}
+        slots={{ assetsPanel: <div data-testid="assets" /> }}
       />,
     )
 
@@ -157,7 +154,7 @@ describe('CarouselEditor — editor-core integration', () => {
   it('does not fire undo while typing in an input', async () => {
     const adapter = makeFakeAdapter()
     const initial = makeProject()
-    render(<CarouselEditor project={initial} adapter={adapter} onProjectChange={() => {}} />)
+    render(<CarouselEditor project={initial} adapter={adapter} onProjectChange={vi.fn()} />)
 
     await waitFor(() => findInteractiveWrapper('el-img'))
 

@@ -101,3 +101,6 @@ export {
   getSupportedProps,
   readPropAsString,
 } from './overlays/contract'
+
+// ── Assembled carousel editor ───────────────────────────────────────────────
+export { default as CarouselEditor } from './carousel/CarouselEditor'

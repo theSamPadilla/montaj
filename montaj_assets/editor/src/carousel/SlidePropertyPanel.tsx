@@ -1,9 +1,16 @@
 import { useEffect, useState } from 'react'
 import { Crop } from 'lucide-react'
-import { api, type GlobalOverlay, type GlobalOverlayProp } from '@/lib/api'
-import type { Project, Slide, CarouselElement, OverlayElement } from '@/lib/types/schema'
-import { Button } from '@/components/ui/button'
-import { TextFormattingToolbar } from '@bycrux/editor'
+import type {
+  Project,
+  Slide,
+  CarouselElement,
+  OverlayElement,
+  GlobalOverlay,
+  GlobalOverlayProp,
+  EditorAdapter,
+} from '../types'
+import { Button } from '../ui'
+import { TextFormattingToolbar } from '../text/TextFormattingToolbar'
 
 function parseNumber(v: string): number | null {
   const n = Number(v)
@@ -25,6 +32,8 @@ interface Props {
   onEnterCrop?: (slideId: string, elementId: string) => void
   // editor-core text mutator for the formatting toolbar.
   updateOverlayProp?: (slideId: string, elementId: string, key: string, value: string) => Promise<void>
+  // Adapter supplies overlay-schema listing (global + profile-scoped).
+  adapter: EditorAdapter<Project>
 }
 
 function numInput(
@@ -136,6 +145,7 @@ export default function SlidePropertyPanel({
   onReorderElement,
   onEnterCrop,
   updateOverlayProp,
+  adapter,
 }: Props) {
   // Map of jsxPath → GlobalOverlay for overlay prop schemas
   const [overlaySchemas, setOverlaySchemas] = useState<Map<string, GlobalOverlay>>(new Map())
@@ -143,9 +153,9 @@ export default function SlidePropertyPanel({
 
   useEffect(() => {
     setSchemasLoading(true)
-    const promises: Promise<GlobalOverlay[]>[] = [api.listGlobalOverlays()]
+    const promises: Promise<GlobalOverlay[]>[] = [adapter.listGlobalOverlays()]
     if (project.profile) {
-      promises.push(api.listProfileOverlays(project.profile))
+      promises.push(adapter.listProfileOverlays?.(project.profile) ?? Promise.resolve([]))
     }
     Promise.all(promises)
       .then(results => {

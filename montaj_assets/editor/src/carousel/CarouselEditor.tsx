@@ -1,26 +1,15 @@
 import { useEffect, useRef, useState } from 'react'
 import { RefreshCw, AlertCircle, Download } from 'lucide-react'
-import { api } from '@/lib/api'
-import type { Project, Slide, CarouselElement } from '@/lib/types/schema'
-import type { EditorAdapter, EditorTheme } from '@bycrux/editor'
-import { applyTheme, defaultMontajTheme, useProjectState } from '@bycrux/editor'
+import type { Project, Slide, CarouselElement, CarouselEditorProps } from '../types'
+import { applyTheme, defaultMontajTheme } from '../theme'
+import { useProjectState } from '../state/use-project-state'
 import SlideCanvas from './SlideCanvas'
 import SlidePropertyPanel from './SlidePropertyPanel'
 import AddElementMenu from './AddElementMenu'
-import AssetsPanel from '@/components/AssetsPanel'
-import CarouselRenderModal from '@/components/CarouselRenderModal'
-import { Button } from '@/components/ui/button'
+import CarouselRenderModal from './CarouselRenderModal'
+import { Button } from '../ui'
 
-interface Props {
-  project: Project
-  // The editor's adapter is instantiated with Montaj's full Project so the
-  // hook's state stays the host type (with pipeline fields), not the narrower
-  // editor-facing slice.
-  adapter: EditorAdapter<Project>
-  onProjectChange: (p: Project) => void
-  theme?: EditorTheme
-  logMessage?: string | null
-}
+type Props = CarouselEditorProps<Project>
 
 // ── SlideGrid (inline sub-component) ─────────────────────────────────────────
 
@@ -154,14 +143,14 @@ function isTypingTarget(t: EventTarget | null): boolean {
 
 // ── CarouselEditor ────────────────────────────────────────────────────────────
 
-export default function CarouselEditor({ project: initialProject, adapter, onProjectChange, theme, logMessage }: Props) {
+export default function CarouselEditor({ project: initialProject, adapter, onProjectChange, theme, slots }: Props) {
   const state = useProjectState(adapter, initialProject.id, initialProject)
   const project = state.project
   const slides = project.slides ?? []
 
-  // Keep EditorPage's ProjectContext in sync with the hook's authoritative state.
+  // Keep the host's project state in sync with the hook's authoritative state.
   useEffect(() => {
-    onProjectChange(project)
+    onProjectChange?.(project)
   }, [project, onProjectChange])
 
   const [selectedSlideId, setSelectedSlideId] = useState<string | null>(slides[0]?.id ?? null)
@@ -228,8 +217,8 @@ export default function CarouselEditor({ project: initialProject, adapter, onPro
   }
 
   useEffect(() => {
-    api.getInfo().then(info => setSkillPath(info.root_skill_path)).catch(() => {})
-  }, [])
+    adapter.getInfo?.().then(info => setSkillPath(info.root_skill_path ?? null)).catch(() => {})
+  }, [adapter])
 
   // Auto-select first slide, or re-select when the current one disappears.
   useEffect(() => {
@@ -253,7 +242,6 @@ export default function CarouselEditor({ project: initialProject, adapter, onPro
       void state.addSlide(slide)
       setSelectedSlideId(slide.id)
     }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [project.status, slides.length])
 
   // ── Slide handlers (via project-state mutators) ──
@@ -361,12 +349,6 @@ export default function CarouselEditor({ project: initialProject, adapter, onPro
   const availH = Math.max(0, canvasContainerSize.h - PADDING - HINT_RESERVE)
   const canvasScale = Math.min(availW / w, availH / h, 1)
 
-  const assetsPanelOnChange = async (next: import('@/lib/types/schema').Asset[]) => {
-    const updated = { ...project, assets: next }
-    onProjectChange(updated)
-    await api.saveProject(project.id, updated)
-  }
-
   return (
     <div ref={containerRef} className="flex h-full overflow-hidden bg-gray-950">
       <SlideGrid
@@ -413,54 +395,36 @@ export default function CarouselEditor({ project: initialProject, adapter, onPro
 
         {project.status === 'pending' ? (
           <div className="flex flex-col items-center gap-6 text-center max-w-lg w-full">
-            {!logMessage ? (
-              <>
-                <div className="flex flex-col items-center gap-2">
-                  <p className="text-white text-lg font-semibold">Message your agent to start</p>
-                  <p className="text-gray-400 text-sm">Nothing will happen automatically. Copy this and send it to your agent.</p>
+            <div className="flex flex-col items-center gap-2">
+              <p className="text-white text-lg font-semibold">Message your agent to start</p>
+              <p className="text-gray-400 text-sm">Nothing will happen automatically. Copy this and send it to your agent.</p>
+            </div>
+            {skillPath && (
+              <div className="w-full rounded-xl border-2 border-blue-400/50 bg-gray-900 p-5 flex flex-col gap-3 text-left shadow-lg shadow-blue-400/10">
+                <p className="text-blue-400 text-xs font-bold uppercase tracking-widest">Send this to your agent</p>
+                <div className="flex items-start justify-between bg-black/60 border border-transparent rounded-lg px-3 py-3 font-mono gap-3">
+                  <span className="text-gray-200 text-[12px] leading-relaxed break-all">
+                    There is a new project pending: &quot;{project.name ?? project.id}&quot;. Please see @{skillPath} and start. Talk to me if you run into questions.
+                  </span>
+                  <button
+                    onClick={() => {
+                      navigator.clipboard.writeText(
+                        `There is a new project pending: "${project.name ?? project.id}". Please see @${skillPath} and start. Talk to me if you run into questions.`
+                      )
+                      setCopied(true)
+                      setTimeout(() => setCopied(false), 2000)
+                    }}
+                    className={`shrink-0 flex items-center gap-1.5 text-xs font-medium px-3 py-1.5 rounded-md transition-colors ${
+                      copied ? 'bg-green-700 text-green-200' : 'bg-white/10 text-gray-300 hover:bg-white/20 hover:text-white'
+                    }`}
+                    title="Copy prompt"
+                  >
+                    {copied ? '✓ Copied' : 'Copy'}
+                  </button>
                 </div>
-                {skillPath && (
-                  <div className="w-full rounded-xl border-2 border-blue-400/50 bg-gray-900 p-5 flex flex-col gap-3 text-left shadow-lg shadow-blue-400/10">
-                    <p className="text-blue-400 text-xs font-bold uppercase tracking-widest">Send this to your agent</p>
-                    <div className="flex items-start justify-between bg-black/60 border border-transparent rounded-lg px-3 py-3 font-mono gap-3">
-                      <span className="text-gray-200 text-[12px] leading-relaxed break-all">
-                        There is a new project pending: &quot;{project.name ?? project.id}&quot;. Please see @{skillPath} and start. Talk to me if you run into questions.
-                      </span>
-                      <button
-                        onClick={() => {
-                          navigator.clipboard.writeText(
-                            `There is a new project pending: "${project.name ?? project.id}". Please see @${skillPath} and start. Talk to me if you run into questions.`
-                          )
-                          setCopied(true)
-                          setTimeout(() => setCopied(false), 2000)
-                        }}
-                        className={`shrink-0 flex items-center gap-1.5 text-xs font-medium px-3 py-1.5 rounded-md transition-colors ${
-                          copied ? 'bg-green-700 text-green-200' : 'bg-white/10 text-gray-300 hover:bg-white/20 hover:text-white'
-                        }`}
-                        title="Copy prompt"
-                      >
-                        {copied ? '✓ Copied' : 'Copy'}
-                      </button>
-                    </div>
-                  </div>
-                )}
-                <p className="text-gray-600 text-xs font-mono">project id: {project.id}</p>
-              </>
-            ) : (
-              <>
-                <div className="w-5 h-5 rounded-full border-2 border-gray-700 border-t-gray-400 animate-spin" />
-                <p className="text-gray-300 text-sm">
-                  {(project.assets?.length ?? 0) > 0 && (
-                    <><span className="text-white font-medium">{project.assets!.length} asset{project.assets!.length > 1 ? 's' : ''}</span>{' attached. '}</>
-                  )}
-                  Agent is working:
-                </p>
-                <p className="text-blue-400 text-xs font-mono bg-gray-900 rounded px-3 py-1.5 w-full text-left truncate">
-                  → {logMessage}
-                </p>
-                <p className="text-gray-700 text-xs font-mono">project id: {project.id}</p>
-              </>
+              </div>
             )}
+            <p className="text-gray-600 text-xs font-mono">project id: {project.id}</p>
           </div>
         ) : selectedSlide ? (
           <>
@@ -509,6 +473,7 @@ export default function CarouselEditor({ project: initialProject, adapter, onPro
             <AddElementMenu
               project={project}
               selectedSlideId={selectedSlideId}
+              adapter={adapter}
               onAddElement={handleAddElement}
             />
           </div>
@@ -517,6 +482,7 @@ export default function CarouselEditor({ project: initialProject, adapter, onPro
           project={project}
           slide={selectedSlide}
           element={selectedElement}
+          adapter={adapter}
           onSlideChange={handleSlideChange}
           onElementChange={handlePanelElementChange}
           onDeleteSlide={handleDeleteSlide}
@@ -527,16 +493,20 @@ export default function CarouselEditor({ project: initialProject, adapter, onPro
           onEnterCrop={(_slideId, elementId) => { setSelectedElementId(elementId); setCropElementId(elementId) }}
           updateOverlayProp={state.updateOverlayProp}
         />
-        <div className="border-t border-gray-800 flex flex-col overflow-hidden" style={{ minHeight: 180 }}>
-          <AssetsPanel assets={project.assets ?? []} projectId={project.id} onChange={assetsPanelOnChange} />
-        </div>
+        {slots?.assetsPanel && (
+          <div className="border-t border-gray-800 flex flex-col overflow-hidden" style={{ minHeight: 180 }}>
+            {slots.assetsPanel}
+          </div>
+        )}
       </div>
 
       {renderOpen && (
         <CarouselRenderModal
           projectId={project.id}
+          adapter={adapter}
           slidesCount={slides.length}
           resolution={project.settings.resolution as [number, number]}
+          exportActions={slots?.exportActions}
           onClose={() => setRenderOpen(false)}
           onCancel={() => setRenderOpen(false)}
         />

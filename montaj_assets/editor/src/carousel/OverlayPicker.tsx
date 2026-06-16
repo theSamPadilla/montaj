@@ -1,6 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { api, type GlobalOverlay } from '@/lib/api'
-import type { Project, OverlayElement } from '@/lib/types/schema'
+import type { Project, OverlayElement, GlobalOverlay, EditorAdapter } from '../types'
 
 // TODO (v2): live thumbnail rendering for each overlay card
 // TODO (v2): respect overlay staticFrame when rendering thumbnails — requires API extension
@@ -9,10 +8,11 @@ interface Props {
   open: boolean
   onClose: () => void
   project: Project
+  adapter: EditorAdapter<Project>
   onPick: (element: OverlayElement) => void
 }
 
-export default function OverlayPicker({ open, onClose, project, onPick }: Props) {
+export default function OverlayPicker({ open, onClose, project, adapter, onPick }: Props) {
   const [overlays, setOverlays] = useState<GlobalOverlay[]>([])
   const [loaded, setLoaded] = useState(false)
   const [loading, setLoading] = useState(false)
@@ -26,9 +26,9 @@ export default function OverlayPicker({ open, onClose, project, onPick }: Props)
     setLoading(true)
     setError(null)
 
-    const promises: Promise<GlobalOverlay[]>[] = [api.listGlobalOverlays()]
+    const promises: Promise<GlobalOverlay[]>[] = [adapter.listGlobalOverlays()]
     if (project.profile) {
-      promises.push(api.listProfileOverlays(project.profile))
+      promises.push(adapter.listProfileOverlays?.(project.profile) ?? Promise.resolve([]))
     }
 
     Promise.all(promises)

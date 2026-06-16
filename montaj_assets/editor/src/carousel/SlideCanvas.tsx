@@ -1,18 +1,17 @@
 import { useEffect, useRef, useState } from 'react'
-import type { Slide, OverlayElement, ImageElement } from '@/lib/types/schema'
-import OverlayErrorBoundary from '@/components/OverlayErrorBoundary'
+import type { Slide, OverlayElement, ImageElement, OverlayFactory } from '../types'
+import OverlayErrorBoundary from './OverlayErrorBoundary'
 import {
-  type OverlayFactory,
-  OverlayPreview,
   useOverlayDrag,
   useOverlayResize,
   useOverlayRotate,
   buildElementTransform,
   type ResizeHandle as ResizeHandleId,
   type SnapGuide,
-  CanvasCropOverlay,
-  InlineTextEditor,
-} from '@bycrux/editor'
+} from '../gestures'
+import { OverlayPreview } from '../preview/OverlayPreview'
+import { CanvasCropOverlay } from '../crop/CanvasCropOverlay'
+import { InlineTextEditor } from '../text/InlineTextEditor'
 
 function resolveAssetDefault(src: string): string {
   if (!src) return src
@@ -235,7 +234,6 @@ export default function SlideCanvas({
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [cropState, cropSrcDims])
 
   // ── Inline text edit ──
