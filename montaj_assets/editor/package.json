@@ -7,6 +7,11 @@
     ".": "./src/index.ts",
     "./schema": "./src/schema.ts"
   },
+  "files": [
+    "src",
+    "README.md"
+  ],
+  "sideEffects": false,
   "scripts": {
     "test": "vitest run",
     "lint": "eslint src"
@@ -14,10 +19,10 @@
   "dependencies": {
     "class-variance-authority": "^0.7",
     "clsx": "^2",
+    "lucide-react": "^0.400",
     "tailwind-merge": "^2"
   },
   "peerDependencies": {
-    "lucide-react": "^0.400",
     "react": "^19.0.0",
     "react-dom": "^19.0.0"
   },
@@ -29,7 +34,6 @@
     "@vitejs/plugin-react": "^4",
     "eslint": "^9",
     "jsdom": "^26",
-    "lucide-react": "^0.400",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "typescript": "^5",
@@ -37,6 +41,7 @@
     "vitest": "^2"
   },
   "publishConfig": {
+    "registry": "https://npm.pkg.github.com",
     "access": "restricted"
   }
 }
