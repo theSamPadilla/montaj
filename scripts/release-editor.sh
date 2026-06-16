@@ -39,14 +39,18 @@ LEVEL="auto"
 DRY_RUN=0
 ASSUME_YES=0
 RUN_BUILD=0
-for arg in "$@"; do
-  case "$arg" in
-    patch|minor|major) LEVEL="$arg" ;;
+OTP=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    patch|minor|major) LEVEL="$1" ;;
     --dry-run)         DRY_RUN=1 ;;
     --yes|-y)          ASSUME_YES=1 ;;
     --build)           RUN_BUILD=1 ;;
-    *) echo "unknown arg: $arg" >&2; exit 2 ;;
+    --otp)             shift; OTP="${1:-}" ;;
+    --otp=*)           OTP="${1#--otp=}" ;;
+    *) echo "unknown arg: $1" >&2; exit 2 ;;
   esac
+  shift
 done
 
 note() { printf '\033[36m[release-editor]\033[0m %s\n' "$*"; }
@@ -104,16 +108,16 @@ if [ "$LEVEL" = "auto" ]; then
   note "Auto-detected bump: $LEVEL (from commits since $LAST_TAG)."
 fi
 
-# Compute the next version without writing anything yet.
-NEXT_VERSION="$(cd "$PKG_DIR" && npm version "$LEVEL" --no-git-tag-version --dry-run 2>/dev/null | tail -1 | tr -d 'v' || true)"
-# Fallback for npm versions without --dry-run support: compute via node semver-ish.
-if [ -z "$NEXT_VERSION" ]; then
-  NEXT_VERSION="$(node -e '
+# Compute the next version WITHOUT mutating anything. (Do NOT use
+# `npm version --dry-run` here — on some npm builds it ignores --dry-run and
+# actually writes package.json, which then trips the real bump with
+# "Version not changed". Compute purely with node instead.)
+NEXT_VERSION="$(node -e '
     const [maj,min,pat]=require(process.argv[1]).version.split(".").map(Number);
     const l=process.argv[2];
     console.log(l==="major"?`${maj+1}.0.0`:l==="minor"?`${maj}.${min+1}.0`:`${maj}.${min}.${pat+1}`);
   ' "$PKG_DIR/package.json" "$LEVEL")"
-fi
+[ -n "$NEXT_VERSION" ] || die "could not compute next version from $CUR_VERSION ($LEVEL)"
 
 echo
 note "Package : $PKG_NAME"
@@ -150,7 +154,8 @@ git -C "$ROOT" commit -m "release(editor): ${PKG_NAME} v${NEXT_VERSION}"
 git -C "$ROOT" tag "${TAG_PREFIX}${NEXT_VERSION}"
 
 note "Publishing to npm…"
-( cd "$PKG_DIR" && npm publish )   # access:public + default registry from publishConfig
+( cd "$PKG_DIR" && npm publish ${OTP:+--otp="$OTP"} )   # access:public + default registry from publishConfig
+# (2FA: pass --otp <code>, or run interactively and npm will prompt for the OTP)
 
 note "Pushing commit + tag"
 git -C "$ROOT" push origin HEAD
