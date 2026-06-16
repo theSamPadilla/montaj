@@ -44,6 +44,11 @@ function makeFakeAdapter(): EditorAdapter {
     // Optional method present.
     listMedia: async (_scope: MediaScope): Promise<MediaItem[]> => [],
     compileOverlay: async (_template: string) => () => null,
+    // Required contract methods.
+    listGlobalOverlays: async () => [],
+    listSystemOverlays: async () => [],
+    uploadFile: async (_file: File, _projectId?: string) => '/path',
+    fileUrl: (path: string) => path,
   }
 }
 

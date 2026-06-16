@@ -68,6 +68,37 @@ export interface RenderOptions {
   scale?: number
 }
 
+// ── Overlay library types ─────────────────────────────────────────────────────
+// Copied verbatim from Montaj's `ui/src/lib/api.ts` so the package owns the
+// shape the editor consumes. A host's overlay-listing endpoints return these;
+// the adapter wraps whatever transport produces them.
+
+/**
+ * A single declared prop on an overlay template. `type` drives the input
+ * control the editor renders; `default` seeds an unset value.
+ */
+export interface GlobalOverlayProp {
+  name: string
+  type: 'string' | 'int' | 'float' | 'bool' | 'color'
+  default?: unknown
+  description?: string
+}
+
+/**
+ * A reusable overlay template the host exposes (global, system, or
+ * profile-scoped). `jsxPath` is the host-resolvable path to the JSX template
+ * the adapter feeds to `compileOverlay`; `group` is an optional UI grouping;
+ * `empty` flags a placeholder group with no concrete overlay yet.
+ */
+export interface GlobalOverlay {
+  name: string
+  description: string
+  props: GlobalOverlayProp[]
+  jsxPath: string
+  group?: string
+  empty?: boolean
+}
+
 // ── Media (optional capability) ───────────────────────────────────────────────
 
 /**
@@ -148,6 +179,53 @@ export interface EditorAdapter<P extends Project = Project> {
    * compiler directly.
    */
   compileOverlay(template: string): Promise<OverlayFactory>
+
+  /**
+   * List the host's global (workspace-wide) overlay templates. The assembled
+   * editor's overlay picker reads these. Maps to Montaj's `GET /api/overlays`.
+   */
+  listGlobalOverlays(): Promise<GlobalOverlay[]>
+
+  /**
+   * List the host's built-in/system overlay templates. Maps to Montaj's
+   * `GET /api/overlays/system`.
+   */
+  listSystemOverlays(): Promise<GlobalOverlay[]>
+
+  /**
+   * Upload a file and return a host-resolvable path/ref. When `projectId` is
+   * given, the host should store it inside the project (so it stays
+   * self-contained); otherwise a shared/upload location is used. Maps to
+   * Montaj's `POST /api/projects/:id/upload-asset` (or `POST /api/upload`).
+   */
+  uploadFile(file: File, projectId?: string): Promise<string>
+
+  /**
+   * Map a host path to a directly fetchable URL. Synchronous because hosts
+   * derive it by string transform (Montaj: `/api/files?path=...`). Distinct
+   * from `resolveImageSrc`, which takes an `ImageElement` and applies element
+   * resolution rules; `fileUrl` is the raw path→URL primitive.
+   */
+  fileUrl(path: string): string
+
+  /**
+   * Optional: list overlay templates scoped to a named profile. Hosts without
+   * profile-scoped overlays omit this. Maps to Montaj's
+   * `GET /api/profiles/:name/overlays`.
+   */
+  listProfileOverlays?(profileName: string): Promise<GlobalOverlay[]>
+
+  /**
+   * Optional: host environment info the editor may surface (e.g. the root
+   * skill path for authoring overlays). Maps to Montaj's `GET /api/info`.
+   */
+  getInfo?(): Promise<{ root_skill_path?: string }>
+
+  /**
+   * Optional: generate an image from a prompt and return its host path. Hosts
+   * without AI image generation omit this; the editor feature-detects it.
+   */
+  generateImage?(prompt: string, projectId: string): Promise<{ path: string }>
 }
 
 // ── Theme ────────────────────────────────────────────────────────────────────
@@ -202,17 +280,21 @@ export interface EditorSlots {
   toolbarActions?: ReactNode
   /** Rendered into the editor's export/render action area. */
   exportActions?: ReactNode
+  /** Rendered into the editor's assets/media panel area. */
+  assetsPanel?: ReactNode
 }
 
 // ── Top-level component props ──────────────────────────────────────────────────
 
 /**
- * Props for the carousel editor component. The host supplies the project id and
- * an adapter; theme and slots are optional, and `readOnly` disables mutation.
+ * Props for the carousel editor component. Controlled shape: the host owns the
+ * `project` and is notified of edits via `onProjectChange`. The adapter drives
+ * transport; theme and slots are optional, and `readOnly` disables mutation.
  */
 export interface CarouselEditorProps<P extends Project = Project> {
-  projectId: string
+  project: P
   adapter: EditorAdapter<P>
+  onProjectChange?: (p: P) => void
   theme?: EditorTheme
   slots?: EditorSlots
   readOnly?: boolean

@@ -31,6 +31,8 @@ export type {
   RenderOptions,
   MediaScope,
   MediaItem,
+  GlobalOverlay,
+  GlobalOverlayProp,
   EditorAdapter,
   EditorTheme,
   EditorSlots,

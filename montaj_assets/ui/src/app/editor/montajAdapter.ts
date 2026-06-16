@@ -19,7 +19,7 @@
  * AI-generation, not a queryable library. The editor feature-detects its
  * absence.
  */
-import { api } from '@/lib/api'
+import { api, fileUrl } from '@/lib/api'
 import { compileOverlay as hostCompileOverlay } from '@/lib/overlay-eval'
 import type {
   EditorAdapter,
@@ -27,6 +27,7 @@ import type {
   ImageElement,
   RenderEvent,
   RenderOptions,
+  GlobalOverlay,
 } from '@bycrux/editor'
 // Montaj instantiates the editor's generic adapter with its full project type,
 // so loaded/saved/streamed frames keep Montaj's pipeline fields end-to-end.
@@ -134,5 +135,24 @@ export function createMontajAdapter(): EditorAdapter<Project> {
 
     compileOverlay: (template: string): Promise<OverlayFactory> =>
       hostCompileOverlay(template),
+
+    // T4 contract methods — thin wrappers over Montaj's existing api surface.
+    // Full wiring/verification of the assembled editor against these lands in T6.
+    listGlobalOverlays: (): Promise<GlobalOverlay[]> => api.listGlobalOverlays(),
+
+    listSystemOverlays: (): Promise<GlobalOverlay[]> => api.listSystemOverlays(),
+
+    uploadFile: (file: File, projectId?: string): Promise<string> =>
+      api.uploadFile(file, projectId),
+
+    fileUrl: (path: string): string => fileUrl(path),
+
+    listProfileOverlays: (profileName: string): Promise<GlobalOverlay[]> =>
+      api.listProfileOverlays(profileName),
+
+    getInfo: async (): Promise<{ root_skill_path?: string }> => {
+      const info = await api.getInfo()
+      return { root_skill_path: info.root_skill_path }
+    },
   }
 }

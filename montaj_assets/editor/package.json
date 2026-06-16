@@ -11,6 +11,11 @@
     "test": "vitest run",
     "lint": "eslint src"
   },
+  "dependencies": {
+    "class-variance-authority": "^0.7",
+    "clsx": "^2",
+    "tailwind-merge": "^2"
+  },
   "peerDependencies": {
     "lucide-react": "^0.400",
     "react": "^19.0.0",

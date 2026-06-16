@@ -64,6 +64,10 @@ function makeFakeAdapter(opts: { failSave?: boolean } = {}): FakeAdapter {
     },
     resolveImageSrc: (el: ImageElement) => el.src,
     compileOverlay: vi.fn(async () => () => null),
+    listGlobalOverlays: vi.fn(async () => []),
+    listSystemOverlays: vi.fn(async () => []),
+    uploadFile: vi.fn(async () => '/path'),
+    fileUrl: (path: string) => path,
     emit: (p: Project) => onFrame?.(p),
     saveCalls,
   }
