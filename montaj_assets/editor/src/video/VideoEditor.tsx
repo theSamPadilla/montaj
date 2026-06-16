@@ -128,7 +128,13 @@ function PendingSurface<P extends Project>({
   resolveFilePath,
 }: SurfaceProps<P> & { onBackToSetup?: () => void }) {
   const [currentTime, setCurrentTime] = useState(0)
+  const [skillPath, setSkillPath] = useState<string | null>(null)
+  const [copied, setCopied] = useState(false)
   const { versions, restoring, setRestoring } = useVersionHistory(adapter, project)
+
+  useEffect(() => {
+    adapter.getInfo?.().then(info => setSkillPath(info.root_skill_path ?? null)).catch(() => {})
+  }, [adapter])
 
   const clips           = project.tracks?.[0] ?? []
   const hasTrimmedClips = clips.some(c => c.inPoint !== undefined && c.outPoint !== undefined)
@@ -169,12 +175,39 @@ function PendingSurface<P extends Project>({
           ) : (
             <div className="flex flex-col items-center gap-6 text-center max-w-lg w-full">
               {/* Host feeds live agent progress through the pendingStatus slot;
-                  absent → a minimal default. */}
+                  absent → skill-path card (if info available) or a minimal default. */}
               {slots?.pendingStatus ?? (
-                <div className="flex flex-col items-center gap-2">
-                  <p className="text-white text-lg font-semibold">Waiting for your agent</p>
-                  <p className="text-gray-400 text-sm">Nothing happens automatically — message your agent to start.</p>
-                </div>
+                <>
+                  <div className="flex flex-col items-center gap-2">
+                    <p className="text-white text-lg font-semibold">Message your agent to start</p>
+                    <p className="text-gray-400 text-sm">Nothing will happen automatically. Copy this and send it to your agent.</p>
+                  </div>
+                  {skillPath && (
+                    <div className="w-full rounded-xl border-2 border-blue-400/50 bg-gray-900 p-5 flex flex-col gap-3 text-left shadow-lg shadow-blue-400/10">
+                      <p className="text-blue-400 text-xs font-bold uppercase tracking-widest">Send this to your agent</p>
+                      <div className="flex items-start justify-between bg-black/60 border border-transparent rounded-lg px-3 py-3 font-mono gap-3">
+                        <span className="text-gray-200 text-[12px] leading-relaxed break-all">
+                          There is a new project pending: &quot;{project.name ?? project.id}&quot;. Please see @{skillPath} and start. Talk to me if you run into questions.
+                        </span>
+                        <button
+                          onClick={() => {
+                            navigator.clipboard.writeText(
+                              `There is a new project pending: "${project.name ?? project.id}". Please see @${skillPath} and start. Talk to me if you run into questions.`
+                            )
+                            setCopied(true)
+                            setTimeout(() => setCopied(false), 2000)
+                          }}
+                          className={`shrink-0 flex items-center gap-1.5 text-xs font-medium px-3 py-1.5 rounded-md transition-colors ${
+                            copied ? 'bg-green-700 text-green-200' : 'bg-white/10 text-gray-300 hover:bg-white/20 hover:text-white'
+                          }`}
+                          title="Copy prompt"
+                        >
+                          {copied ? '✓ Copied' : 'Copy'}
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </>
               )}
               <p className="text-gray-600 text-xs font-mono">project id: {project.id}</p>
               {canGoBack && (
@@ -403,7 +436,12 @@ function ReviewSurface<P extends Project>({
             <Magnet size={12} />
           </button>
           <button
-            onClick={() => setRenderOpen(true)}
+            onClick={() => {
+              const final = { ...project, status: 'final' } as P
+              onProjectChange(final)
+              save(final)
+              setRenderOpen(true)
+            }}
             className="text-xs px-2.5 py-1 rounded-md bg-blue-600 text-white hover:bg-blue-500 transition-colors"
           >
             Render →

@@ -66,6 +66,7 @@ function makeFakeAdapter(): FakeAdapter {
     restoreVersion: vi.fn(async (_id: string, _hash: string) => makeVideoProject()),
     getWaveformChunks: vi.fn(async (): Promise<WaveformChunk[]> => []),
     resolveCaptionTemplate: (style: string) => `/caption/${style}`,
+    getInfo: vi.fn(async () => ({ root_skill_path: undefined })),
     saveCalls,
   }
 }
@@ -160,5 +161,53 @@ describe('VideoEditor — editor-package integration', () => {
     const back = await findByText(/Back to setup/i)
     back.click()
     expect(onBackToSetup).toHaveBeenCalledTimes(1)
+  })
+
+  it('Render button flips project status to final and persists before opening modal', async () => {
+    const adapter = makeFakeAdapter()
+    const initial = makeVideoProject({ status: 'draft' })
+    const onProjectChange = vi.fn()
+    const { findByText } = render(
+      <VideoEditor
+        project={initial}
+        adapter={adapter}
+        onProjectChange={onProjectChange}
+        slots={{ exportActions: <div /> }}
+      />,
+    )
+
+    const renderBtn = await findByText('Render →')
+    renderBtn.click()
+
+    // onProjectChange should have been called with status: 'final'
+    expect(onProjectChange).toHaveBeenCalledWith(
+      expect.objectContaining({ status: 'final' }),
+    )
+    // saveProject should have been called with status: 'final'
+    await waitFor(() => {
+      expect(adapter.saveProject).toHaveBeenCalledWith(
+        'vid-1',
+        expect.objectContaining({ status: 'final' }),
+      )
+    })
+  })
+
+  it('shows the skill-path card on the pending surface when getInfo returns a path', async () => {
+    const adapter = makeFakeAdapter()
+    adapter.getInfo = vi.fn(async () => ({ root_skill_path: 'skills/video-skill.md' }))
+    const initial = makeVideoProject({ status: 'pending', tracks: [[]] })
+    const { findByText } = render(
+      <VideoEditor
+        project={initial}
+        adapter={adapter}
+        onProjectChange={vi.fn()}
+        // no pendingStatus slot → should show default card
+      />,
+    )
+
+    // The card header should appear
+    await findByText(/Send this to your agent/i)
+    // The copy-able prompt text should include the skill path
+    await findByText(/skills\/video-skill\.md/i)
   })
 })
