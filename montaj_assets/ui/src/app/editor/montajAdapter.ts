@@ -243,5 +243,11 @@ export function createMontajAdapter(): EditorAdapter<Project> {
     clearOverlayCache: (src?: string): void => {
       if (src) hostClearOverlayCache(src)
     },
+
+    // Map a caption style name to the Montaj-specific template path that
+    // compileOverlay understands. The `/api/caption-template/<style>` shape is
+    // Montaj-specific and belongs here, not inside the host-agnostic package.
+    resolveCaptionTemplate: (style: string): string =>
+      `/api/caption-template/${style}`,
   }
 }

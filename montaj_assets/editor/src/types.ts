@@ -310,6 +310,15 @@ export interface EditorAdapter<P extends Project = Project> {
    * full clear. Maps to Montaj's `clearOverlayCache` in `lib/overlay-eval`.
    */
   clearOverlayCache?(src?: string): void
+
+  /**
+   * Optional: resolve the template identifier that `compileOverlay` should
+   * receive for a given caption style name. The mapping is host-specific —
+   * Montaj uses `/api/caption-template/<style>`; other hosts may differ.
+   * When absent the editor renders no captions (graceful no-op). Hosts without
+   * caption support omit this entirely.
+   */
+  resolveCaptionTemplate?(style: string): string
 }
 
 // ── Theme ────────────────────────────────────────────────────────────────────

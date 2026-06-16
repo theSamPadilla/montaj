@@ -21,6 +21,7 @@ interface PreviewPlayerProps {
   clearOverlayCache?: (src?: string) => void
   watchFile?: (path: string, onChange: () => void) => () => void
   fileUrl: (path: string) => string
+  resolveCaptionTemplate?: (style: string) => string
 }
 
 export default function PreviewPlayer({
@@ -33,6 +34,7 @@ export default function PreviewPlayer({
   clearOverlayCache,
   watchFile,
   fileUrl,
+  resolveCaptionTemplate,
 }: PreviewPlayerProps) {
   if (project.projectType === 'carousel') return <CarouselPreview project={project} />
 
@@ -168,6 +170,7 @@ export default function PreviewPlayer({
           currentTime={currentTime}
           fps={project.settings?.fps ?? 30}
           compileOverlay={compileOverlay}
+          resolveCaptionTemplate={resolveCaptionTemplate}
         />
       )}
     </div>

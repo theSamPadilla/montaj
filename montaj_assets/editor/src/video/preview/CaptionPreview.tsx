@@ -21,13 +21,14 @@ const RENDER_W = 1080
 const RENDER_H = 1920
 
 interface CaptionPreviewProps {
-  track:          Captions
-  currentTime:    number
-  fps:            number
-  compileOverlay: (src: string) => Promise<OverlayFactory>
+  track:                    Captions
+  currentTime:              number
+  fps:                      number
+  compileOverlay:           (src: string) => Promise<OverlayFactory>
+  resolveCaptionTemplate?:  (style: string) => string
 }
 
-export default function CaptionPreview({ track, currentTime, fps, compileOverlay }: CaptionPreviewProps) {
+export default function CaptionPreview({ track, currentTime, fps, compileOverlay, resolveCaptionTemplate }: CaptionPreviewProps) {
   const wrapRef            = useRef<HTMLDivElement>(null)
   const [scale, setScale]  = useState<number | null>(null)
   const [factory, setFactory] = useState<OverlayFactory | null>(null)
@@ -43,13 +44,17 @@ export default function CaptionPreview({ track, currentTime, fps, compileOverlay
     return () => obs.disconnect()
   }, [])
 
-  // Load the render-engine template for the active style
+  // Load the render-engine template for the active style.
+  // If the host did not supply resolveCaptionTemplate, render nothing (graceful
+  // no-op — host does not support captions).
   useEffect(() => {
     setFactory(null)
-    compileOverlay(`/api/caption-template/${track.style}`)
+    if (!resolveCaptionTemplate) return
+    const templateSrc = resolveCaptionTemplate(track.style)
+    compileOverlay(templateSrc)
       .then(f  => setFactory(() => f))
       .catch(e => console.warn('[CaptionPreview] failed to load template:', e))
-  }, [track.style, compileOverlay])
+  }, [track.style, compileOverlay, resolveCaptionTemplate])
 
   const frame    = Math.round(currentTime * fps)
   const lastSeg  = track.segments[track.segments.length - 1]
