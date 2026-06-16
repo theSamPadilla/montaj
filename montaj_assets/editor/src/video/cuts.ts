@@ -1,4 +1,5 @@
-import type { Project, VisualItem, AudioTrack, CaptionSegment, Word } from './types/schema'
+import type { Project } from '../types'
+import type { VisualItem, AudioTrack, CaptionSegment, Word } from '../schema'
 
 /** A time range to excise from the timeline. */
 export interface Cut {
@@ -157,7 +158,7 @@ function cutSingleItem(item: VisualItem, cut: Cut): VisualItem[] {
  *
  * Returns a new Project — no re-encoding, pure JSON.
  */
-export function applyCutToTracks(project: Project, cut: Cut): Project {
+export function applyCutToTracks<P extends Project>(project: P, cut: Cut): P {
   if (cut.end <= cut.start) return project
 
   const [primaryTrack = [], ...overlayTracks] = project.tracks ?? []
@@ -180,7 +181,7 @@ export function applyCutToTracks(project: Project, cut: Cut): Project {
  *
  * Returns the same project reference if no gaps exist (safe to call always).
  */
-export function collapseGaps(project: Project): Project {
+export function collapseGaps<P extends Project>(project: P): P {
   const tracks = project.tracks ?? []
 
   const primaryIdx = tracks.findIndex(t => t.some(c => c.type === 'video'))
@@ -251,7 +252,7 @@ export function collapseGaps(project: Project): Project {
  *
  * Returns a new Project — no re-encoding, pure JSON.
  */
-export function applyCutToItem(project: Project, itemId: string, cut: Cut): Project {
+export function applyCutToItem<P extends Project>(project: P, itemId: string, cut: Cut): P {
   if (cut.end <= cut.start) return project
 
   const [primaryTrack = [], ...overlayTracks] = project.tracks ?? []
@@ -337,7 +338,7 @@ function splitAudioTrack(track: AudioTrack, at: number): [AudioTrack, AudioTrack
  * - If `itemId` is null, every clip across all tracks that contains `at` is split.
  * - Returns the same project reference if nothing was split.
  */
-export function splitAtTime(project: Project, at: number, itemId: string | null): Project {
+export function splitAtTime<P extends Project>(project: P, at: number, itemId: string | null): P {
   let changed = false
 
   const newTracks = (project.tracks ?? []).map(track => {

@@ -1,6 +1,15 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { fileUrl } from '@/lib/api'
-import type { Project } from '@/lib/types/schema'
+import type { EditorProject as Project } from '../../schema'
+
+// Typed extension for the shared AudioContext cached on window
+interface MontajWindow {
+  __montajSharedCtx?: AudioContext
+}
+
+// Typed extension for video elements that cache their GainNode
+interface MontajVideoElement extends HTMLVideoElement {
+  __montajGain?: GainNode
+}
 
 /**
  * Resolve the file path the browser should load for previewing this clip.
@@ -25,6 +34,7 @@ export function useVideoPlayback(
   project: Project,
   currentTime: number,
   onTimeUpdate: (t: number) => void,
+  fileUrl: (path: string) => string,
 ) {
   // Double-buffer video elements for seamless clip transitions
   const video0Ref     = useRef<HTMLVideoElement>(null)
@@ -60,6 +70,10 @@ export function useVideoPlayback(
   const gapFromRef    = useRef(0)
   const gapTargetRef  = useRef(0)
   const gapNextIdxRef = useRef(0)
+
+  // Keep fileUrl in a ref so callbacks that captured it early don't go stale
+  const fileUrlRef = useRef(fileUrl)
+  useEffect(() => { fileUrlRef.current = fileUrl }, [fileUrl])
 
   function getActiveVideo() { return activeSlotRef.current === 0 ? video0Ref.current : video1Ref.current }
   function getInactiveVideo() { return activeSlotRef.current === 0 ? video1Ref.current : video0Ref.current }
@@ -97,7 +111,7 @@ export function useVideoPlayback(
   // Stash the single shared context on `window` so it survives strict-mode remounts
   // and is reused across audio tracks, video slots, and re-mounts.
   function getSharedAudioContext(): AudioContext {
-    const w = window as any
+    const w = window as Window & MontajWindow
     // If the cached context is closed (shouldn't happen, but defensive), recreate.
     if (!w.__montajSharedCtx || w.__montajSharedCtx.state === 'closed') {
       w.__montajSharedCtx = new AudioContext()
@@ -119,7 +133,7 @@ export function useVideoPlayback(
    * but a hard reload does not.
    */
   function resumeAudioContextFromGesture() {
-    const w = window as any
+    const w = window as Window & MontajWindow
     const ctx: AudioContext | undefined = w.__montajSharedCtx
     if (ctx && ctx.state === 'suspended') {
       // Fire-and-forget; resume() returns a Promise but the gesture-credit
@@ -136,7 +150,7 @@ export function useVideoPlayback(
     // and source/gain/context must all belong to the same AudioContext.
     // Cache the gain on the element so it survives React strict-mode
     // double-invocation and component remounts.
-    const v = video as any
+    const v = video as MontajVideoElement
     if (!v.__montajGain) {
       const ctx = getSharedAudioContext()
       const source = ctx.createMediaElementSource(video)
@@ -145,8 +159,8 @@ export function useVideoPlayback(
       gain.connect(ctx.destination)
       v.__montajGain = gain
     }
-    videoGainRef.current[slot] = v.__montajGain
-    return v.__montajGain
+    videoGainRef.current[slot] = v.__montajGain ?? null
+    return v.__montajGain ?? null
   }
 
   // Set video clip volume via GainNode (supports amplification > 1.0).
@@ -163,7 +177,6 @@ export function useVideoPlayback(
     const clip = clips[idx]
     if (!clip) return
     applyClipVolume(clip)
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [clips, activeSlot])
 
   useEffect(() => {
@@ -257,15 +270,14 @@ export function useVideoPlayback(
         gains.set(track.id, gain)
       }
       if (srcMap.get(track.id) !== track.src) {
-        el.src = fileUrl(track.src)
-        srcMap.set(track.id, track.src)
+        el.src = fileUrlRef.current(track.src!)
+        srcMap.set(track.id, track.src!)
       }
       // Volume is controlled via GainNode, not el.volume
       const gain = gains.get(track.id)
       if (gain) gain.gain.value = track.volume ?? 1
     }
   // Keyed on identity string — only fires when tracks are added/removed/src changes
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [audioTrackIdentity])
 
   // Update volume in-place on every render via GainNode — cheap, no element churn
@@ -392,12 +404,11 @@ export function useVideoPlayback(
         }
         const video = getActiveVideo()
         if (!video) return
-        video.paused ? video.play().catch(() => {}) : video.pause()
+        if (video.paused) { video.play().catch(() => {}) } else { video.pause() }
       }
     }
     document.addEventListener('keydown', onKeyDown)
     return () => document.removeEventListener('keydown', onKeyDown)
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isCanvasProject])
 
   // Track clip identity to avoid reloading when only overlays change
@@ -421,13 +432,12 @@ export function useVideoPlayback(
     loopOffsetRef.current = 0
     setActiveSlot(0)
     preloadSrcRef.current = ''
-    video.src = fileUrl(playbackSrcFor(clips[0]))
+    video.src = fileUrlRef.current(playbackSrcFor(clips[0]))
     video.currentTime = clips[0].inPoint ?? 0
     applyClipVolume(clips[0])
     // Clear inactive slot
     const inactive = getInactiveVideo()
     if (inactive) { inactive.pause(); inactive.removeAttribute('src') }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [clips])
 
   const handlePause = useCallback(() => {
@@ -473,18 +483,17 @@ export function useVideoPlayback(
     onTimeUpdate(nc.start)
     activeIdxRef.current = ni
     if (nv) {
-      const src = fileUrl(playbackSrcFor(nc))
+      const src = fileUrlRef.current(playbackSrcFor(nc))
       if (preloadSrcRef.current !== src) { nv.src = src; nv.currentTime = nc.inPoint ?? 0 }
       const gain = ensureVideoGain(ns)
       if (gain) gain.gain.value = nc.muted ? 0 : (nc.volume ?? 1)
       nv.play().catch(() => {})
     }
-    ;(activeSlotRef.current === 0 ? video0Ref.current : video1Ref.current)?.pause()
+    void (activeSlotRef.current === 0 ? video0Ref.current : video1Ref.current)?.pause()
     activeSlotRef.current = ns
     setActiveSlot(ns)
     setShowVideo(true)
     preloadSrcRef.current = ''
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [clips, onTimeUpdate])
 
   // Scrub: seek active slot when currentTime jumps externally
@@ -520,7 +529,7 @@ export function useVideoPlayback(
       activeIdxRef.current = clipIdx
       const video = getActiveVideo()
       if (!video) return
-      const targetSrc = fileUrl(playbackSrcFor(clip))
+      const targetSrc = fileUrlRef.current(playbackSrcFor(clip))
       if (video.src !== targetSrc) {
         video.src = targetSrc
         // Clear preloaded inactive slot — it may no longer be the right next clip
@@ -552,7 +561,6 @@ export function useVideoPlayback(
         syncAudioTracks(lastTimeRef.current, !v.paused)
       }, 100)
     }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentTime, clips])
 
   const handleTimeUpdate = useCallback(() => {
@@ -573,7 +581,7 @@ export function useVideoPlayback(
       const nextIdx = activeIdxRef.current + 1
       if (nextIdx < clips.length && clips[nextIdx].src) {
         const inactiveVideo = slot === 0 ? video1Ref.current : video0Ref.current
-        const nextSrc = fileUrl(playbackSrcFor(clips[nextIdx]))
+        const nextSrc = fileUrlRef.current(playbackSrcFor(clips[nextIdx]))
         if (inactiveVideo && preloadSrcRef.current !== nextSrc) {
           preloadSrcRef.current = nextSrc
           inactiveVideo.src = nextSrc
@@ -624,7 +632,7 @@ export function useVideoPlayback(
           activeIdxRef.current = nextIdx
 
           if (nextVideo) {
-            const nextSrc = fileUrl(playbackSrcFor(next))
+            const nextSrc = fileUrlRef.current(playbackSrcFor(next))
             if (preloadSrcRef.current !== nextSrc) {
               nextVideo.src = nextSrc
               nextVideo.currentTime = next.inPoint ?? 0
@@ -729,7 +737,7 @@ export function useVideoPlayback(
     }
     const video = getActiveVideo()
     if (!video) return
-    video.paused ? video.play().catch(() => {}) : video.pause()
+    if (video.paused) { video.play().catch(() => {}) } else { video.pause() }
   }
 
   return {

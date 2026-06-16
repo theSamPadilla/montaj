@@ -3,8 +3,9 @@
  *
  * Loads the exact same JSX template used by the render engine
  * (render/templates/captions/<style>.jsx) so preview and final output
- * are a single source of truth. Uses overlay-eval to fetch + compile the
- * template in the browser.
+ * are a single source of truth. Receives `compileOverlay` as a prop from
+ * PreviewPlayer (sourced from adapter.compileOverlay) so the package has no
+ * direct dependency on the host's overlay-eval module.
  *
  * The caption layer is sized at the native render resolution (1080 × 1920) and
  * scaled down to fit the player via ResizeObserver so pixel values are 1:1 with
@@ -12,21 +13,22 @@
  */
 
 import { useEffect, useRef, useState } from 'react'
-import type { Captions } from '@/lib/types/schema'
-import { compileOverlay } from '@/lib/overlay-eval'
-import type { OverlayFactory } from '@/lib/overlay-eval'
-import { OverlayErrorBoundary } from '@devbycrux/editor'
+import type { Captions } from '../../schema'
+import type { OverlayFactory } from '../../types'
+import OverlayErrorBoundary from '../../carousel/OverlayErrorBoundary'
 
 const RENDER_W = 1080
 const RENDER_H = 1920
 
 interface CaptionPreviewProps {
-  track:       Captions
-  currentTime: number
-  fps:         number
+  track:                    Captions
+  currentTime:              number
+  fps:                      number
+  compileOverlay:           (src: string) => Promise<OverlayFactory>
+  resolveCaptionTemplate?:  (style: string) => string
 }
 
-export default function CaptionPreview({ track, currentTime, fps }: CaptionPreviewProps) {
+export default function CaptionPreview({ track, currentTime, fps, compileOverlay, resolveCaptionTemplate }: CaptionPreviewProps) {
   const wrapRef            = useRef<HTMLDivElement>(null)
   const [scale, setScale]  = useState<number | null>(null)
   const [factory, setFactory] = useState<OverlayFactory | null>(null)
@@ -42,15 +44,19 @@ export default function CaptionPreview({ track, currentTime, fps }: CaptionPrevi
     return () => obs.disconnect()
   }, [])
 
-  // Load the render-engine template for the active style
+  // Load the render-engine template for the active style.
+  // If the host did not supply resolveCaptionTemplate, render nothing (graceful
+  // no-op — host does not support captions).
   useEffect(() => {
     setFactory(null)
-    compileOverlay(`/api/caption-template/${track.style}`)
+    if (!resolveCaptionTemplate) return
+    const templateSrc = resolveCaptionTemplate(track.style)
+    compileOverlay(templateSrc)
       .then(f  => setFactory(() => f))
       .catch(e => console.warn('[CaptionPreview] failed to load template:', e))
-  }, [track.style])
+  }, [track.style, compileOverlay, resolveCaptionTemplate])
 
-  const frame   = Math.round(currentTime * fps)
+  const frame    = Math.round(currentTime * fps)
   const lastSeg  = track.segments[track.segments.length - 1]
   const element  = (factory && scale !== null)
     ? factory(frame, fps, Math.round((lastSeg?.end ?? 0) * fps), { segments: track.segments })

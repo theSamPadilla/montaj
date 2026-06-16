@@ -1,6 +1,7 @@
 import { Volume2, VolumeX, Info, Scissors } from 'lucide-react'
-import type { VisualItem, Project } from '@/lib/types/schema'
-import { collapseGaps } from '@/lib/cuts'
+import type { VisualItem } from '../../schema'
+import type { Project } from '../../types'
+import { collapseGaps } from '../cuts'
 import { pct, ratioFromClientX, trackRow, trackRowTall } from './utils'
 import { useTimelineContext } from './TimelineContext'
 import { useItemDragDrop } from './useItemDragDrop'
@@ -21,6 +22,14 @@ interface VisualTrackRowProps {
   onInspectClip?: (id: string) => void
   subcutClipId: string | null
   setSubcutClipId: (id: string | null) => void
+  /** Host-computed gate for the subcut-regenerate affordance (Montaj: project
+   *  is an ai_video). When false/undefined the Scissors button is hidden — the
+   *  package stays agnostic of Montaj's projectType. */
+  regenEnabled?: boolean
+  /** Host-computed predicate: is this clip already queued for regeneration?
+   *  (Montaj: project.regenQueue has an entry for this clipId.) Drives the
+   *  "queued" badge. */
+  isClipQueued?: (itemId: string) => boolean
 }
 
 const trackColors = [
@@ -44,6 +53,8 @@ export default function VisualTrackRow({
   onInspectClip,
   subcutClipId,
   setSubcutClipId,
+  regenEnabled,
+  isClipQueued,
 }: VisualTrackRowProps) {
   const { totalDuration, snapBoundaries, scrollRef, scrubberRef, currentTime, onTimeUpdate, markers, setMarkers, selection, overlayDraggedRef, zoomRef } = useTimelineContext()
   const tc = trackColors[trackIdx % trackColors.length]
@@ -229,7 +240,7 @@ export default function VisualTrackRow({
               {project.renderMode === 'ffmpeg-drawtext' && trackIdx > 0 && (
                 <span className="ml-1.5 text-amber-400/60">preview</span>
               )}
-              {(project.regenQueue ?? []).some(e => e.clipId === item.id) && (
+              {isClipQueued?.(item.id) && (
                 <span className="ml-1.5 text-amber-300/80 font-medium">queued</span>
               )}
             </span>
@@ -249,7 +260,7 @@ export default function VisualTrackRow({
                 title="Inspect generation"
               ><Info size={10} /></button>
             )}
-            {isSel && project.projectType === 'ai_video' && item.generation && (item.end - item.start) >= 3 && (
+            {isSel && regenEnabled && item.generation && (item.end - item.start) >= 3 && (
               <button
                 className={`shrink-0 ml-1 z-10 cursor-pointer opacity-50 hover:opacity-100 ${tc.text}`}
                 onClick={(e) => { e.stopPropagation(); setSubcutClipId(subcutClipId === item.id ? null : item.id) }}

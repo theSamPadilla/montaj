@@ -99,6 +99,34 @@ export interface GlobalOverlay {
   empty?: boolean
 }
 
+// ── Version history (optional capability) ─────────────────────────────────────
+
+/**
+ * A single entry in a project's version history. The editor-relevant slice of
+ * Montaj's `ProjectVersion` (ui/src/lib/types/schema.ts): a content-addressed
+ * `hash` to restore by, a human-readable `message`, and a `timestamp`. The
+ * adapter maps the host's richer shape down to this.
+ */
+export interface VersionEntry {
+  hash: string
+  message: string
+  timestamp: string
+}
+
+// ── Waveform chunks (optional capability) ─────────────────────────────────────
+
+/**
+ * One rendered waveform-image chunk for an audio track. `path` is a
+ * host-resolvable image path (route through `fileUrl` to display); `start`/`end`
+ * are source-file seconds the chunk covers. Copied verbatim from Montaj's former
+ * `lib/audio-waveform.ts` so the package owns the shape the timeline consumes.
+ */
+export interface WaveformChunk {
+  path: string
+  start: number
+  end: number
+}
+
 // ── Media (optional capability) ───────────────────────────────────────────────
 
 /**
@@ -244,6 +272,53 @@ export interface EditorAdapter<P extends Project = Project> {
    * `listSystemOverlays()` + its `static-text` matcher.
    */
   getDefaultTextOverlay?(): Promise<GlobalOverlay | null>
+
+  // ── Video editor capabilities (optional) ────────────────────────────────────
+  // Hosts driving the video editor implement these; carousel-only hosts omit
+  // them and the editor feature-detects their absence.
+
+  /**
+   * Optional: list the project's version history, newest-first. Maps to
+   * Montaj's `GET /api/projects/:id/versions`, mapped down to `VersionEntry`.
+   */
+  listVersionHistory?(id: string): Promise<VersionEntry[]>
+
+  /**
+   * Optional: restore the project to a prior version by `hash`, returning the
+   * restored project. Maps to Montaj's
+   * `POST /api/projects/:id/versions/:hash/restore`.
+   */
+  restoreVersion?(id: string, hash: string): Promise<P>
+
+  /**
+   * Optional: produce rendered waveform-image chunks for an audio track. The
+   * editor passes the project id, the track id (used to namespace the output
+   * cache), the track's source path, and an optional chunk duration in seconds.
+   * The host renders/caches the chunks and returns their resolvable paths. Maps
+   * to Montaj's `waveform_image` step.
+   */
+  getWaveformChunks?(
+    projectId: string,
+    trackId: string,
+    trackSrc: string,
+    chunkDurationS?: number,
+  ): Promise<WaveformChunk[]>
+
+  /**
+   * Optional: invalidate the host's compiled-overlay cache. When `src` is given,
+   * only that entry is dropped; hosts may treat a missing `src` as a no-op or a
+   * full clear. Maps to Montaj's `clearOverlayCache` in `lib/overlay-eval`.
+   */
+  clearOverlayCache?(src?: string): void
+
+  /**
+   * Optional: resolve the template identifier that `compileOverlay` should
+   * receive for a given caption style name. The mapping is host-specific —
+   * Montaj uses `/api/caption-template/<style>`; other hosts may differ.
+   * When absent the editor renders no captions (graceful no-op). Hosts without
+   * caption support omit this entirely.
+   */
+  resolveCaptionTemplate?(style: string): string
 }
 
 // ── Theme ────────────────────────────────────────────────────────────────────
@@ -306,6 +381,15 @@ export interface EditorSlots {
    * progress (Montaj feeds its SSE log line here); absent → default copy shows.
    */
   pendingStatus?: ReactNode
+  /**
+   * Rendered in the right sidebar below the version-history panel — in the same
+   * position ReviewView showed "Previous runs". The host supplies the concrete
+   * Montaj run-snapshot list (reading `project.history: RunSnapshot[]` and
+   * offering a "Restore this run" action via `onProjectChange`). The package
+   * never reads `project.history` or `RunSnapshot` — those are host-only types.
+   * Absent → nothing is rendered in that slot.
+   */
+  runHistory?: ReactNode
 }
 
 // ── Top-level component props ──────────────────────────────────────────────────
@@ -322,4 +406,61 @@ export interface CarouselEditorProps<P extends Project = Project> {
   theme?: EditorTheme
   slots?: EditorSlots
   readOnly?: boolean
+}
+
+/**
+ * Props for the video editor component. Mirrors `CarouselEditorProps` —
+ * controlled `project` + `onProjectChange`, adapter-driven transport, optional
+ * theme/slots/readOnly — and adds `onBackToSetup`, the host-supplied callback
+ * the editor invokes when the user leaves the editor for the project's setup
+ * view.
+ */
+export interface VideoEditorProps<P extends Project = Project> {
+  project: P
+  adapter: EditorAdapter<P>
+  onProjectChange?: (p: P) => void
+  theme?: EditorTheme
+  slots?: EditorSlots
+  readOnly?: boolean
+  onBackToSetup?: () => void
+
+  // ── Host-supplied Montaj-specific UI (render-prop seams) ──────────────────
+  // The clip/audio inspector and the subcut-regeneration tool read host-only
+  // fields (regenQueue, storyboard, the host's full Project) the package types
+  // don't know. The editor surfaces them as render-props it threads/renders so
+  // those components can stay host-side; the editor stays Montaj-agnostic.
+
+  /**
+   * Render-prop seam for the host's clip/audio inspector (Montaj's
+   * ClipInspectModal). The editor owns the "which item is being inspected"
+   * state — it derives `ctx.item` from the timeline's `onInspectClip` /
+   * `onInspectAudio` callbacks (a Montaj-agnostic `{ kind, id }` selector, not
+   * a project entity) and passes a close callback. Absent → no inspector.
+   */
+  renderClipInspector?: (ctx: {
+    item: { kind: 'clip' | 'audio'; id: string }
+    onClose: () => void
+  }) => ReactNode
+
+  /**
+   * Render-prop seam for the host's subcut-regeneration tool (Montaj's
+   * SubcutRegenTool). Threaded straight through to the timeline, which owns the
+   * open/close trigger (the per-clip Scissors button). Called with the clip id
+   * and a close callback. Absent → the subcut tool isn't rendered.
+   */
+  renderSubcutRegen?: (ctx: { clipId: string; onClose: () => void }) => ReactNode
+
+  /**
+   * Host-computed gate for the per-clip subcut-regenerate affordance (Montaj:
+   * ai_video projects). Threaded to the timeline. The package never reads
+   * `projectType`.
+   */
+  regenEnabled?: boolean
+
+  /**
+   * Host-computed predicate driving the per-clip "queued" badge (Montaj:
+   * project.regenQueue membership). Threaded to the timeline. The package never
+   * reads `regenQueue`.
+   */
+  isClipQueued?: (itemId: string) => boolean
 }

@@ -1,4 +1,4 @@
-import type { Project } from '@/lib/types/schema'
+import type { Project } from '../../types'
 
 export function makeCaptionEdit(
   globalIdx: number,

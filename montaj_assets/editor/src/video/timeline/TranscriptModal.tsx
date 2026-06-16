@@ -1,6 +1,6 @@
 import { useEffect } from 'react'
 import { createPortal } from 'react-dom'
-import type { Project } from '@/lib/types/schema'
+import type { Project } from '../../types'
 import { formatTime } from './utils'
 import { EditableSegment } from './EditableSegment'
 import { makeCaptionEdit } from './makeCaptionEdit'

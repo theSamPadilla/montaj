@@ -20,7 +20,10 @@
  * absence.
  */
 import { api, fileUrl } from '@/lib/api'
-import { compileOverlay as hostCompileOverlay } from '@/lib/overlay-eval'
+import {
+  compileOverlay as hostCompileOverlay,
+  clearOverlayCache as hostClearOverlayCache,
+} from '@/lib/overlay-eval'
 import type {
   EditorAdapter,
   OverlayFactory,
@@ -28,10 +31,21 @@ import type {
   RenderEvent,
   RenderOptions,
   GlobalOverlay,
+  VersionEntry,
+  WaveformChunk,
 } from '@devbycrux/editor'
 // Montaj instantiates the editor's generic adapter with its full project type,
 // so loaded/saved/streamed frames keep Montaj's pipeline fields end-to-end.
 import type { Project } from '@/lib/types/schema'
+
+// Default waveform chunk duration (seconds). Folded in from the former
+// `lib/audio-waveform.ts`; callers may override per-request.
+const WAVEFORM_CHUNK_DURATION_S = 15
+
+// Per (project,track,src,duration) cache of rendered waveform-chunk promises.
+// Folded in from the former `lib/audio-waveform.ts` closure so the adapter owns
+// the dedup. Module-level so it survives across `createMontajAdapter()` calls.
+const waveformCache = new Map<string, Promise<WaveformChunk[]>>()
 
 /** Replicates SlideCanvas's `resolveAsset` so the editor displays the same URL. */
 export function resolveMontajImageSrc(element: ImageElement): string {
@@ -187,5 +201,53 @@ export function createMontajAdapter(): EditorAdapter<Project> {
       const system = await api.listSystemOverlays()
       return system.find(o => !o.empty && /static-text/.test(o.jsxPath)) ?? null
     },
+
+    // ── Video editor capabilities ──────────────────────────────────────────────
+
+    // Version history → `GET /api/projects/:id/versions`, mapped down to the
+    // editor's VersionEntry slice (hash/message/timestamp).
+    listVersionHistory: async (id: string): Promise<VersionEntry[]> => {
+      const versions = await api.listVersions(id)
+      return versions.map(v => ({ hash: v.hash, message: v.message, timestamp: v.timestamp }))
+    },
+
+    // Restore → `POST /api/projects/:id/versions/:hash/restore`, returns the
+    // restored full Montaj project.
+    restoreVersion: (id: string, hash: string): Promise<Project> =>
+      api.restoreVersion(id, hash),
+
+    // Waveform chunks → the `waveform_image` step, with the dedup cache folded
+    // in from the former lib/audio-waveform.ts. The output dir is namespaced by
+    // track id under `.cache/waveforms/` (matches the original ensureWaveformChunks).
+    getWaveformChunks: (
+      projectId: string,
+      trackId: string,
+      trackSrc: string,
+      chunkDurationS: number = WAVEFORM_CHUNK_DURATION_S,
+    ): Promise<WaveformChunk[]> => {
+      const key = `${projectId}:${trackId}:${trackSrc}:${chunkDurationS}`
+      const existing = waveformCache.get(key)
+      if (existing) return existing
+
+      const promise = api.runStep<WaveformChunk[]>('waveform_image', {
+        input: trackSrc,
+        'chunk-duration': chunkDurationS,
+        'out-dir': `.cache/waveforms/${trackId}`,
+      })
+      waveformCache.set(key, promise)
+      return promise
+    },
+
+    // Drop one compiled-overlay cache entry. The host impl requires a src; with
+    // none given there is nothing to clear, so this is a no-op.
+    clearOverlayCache: (src?: string): void => {
+      if (src) hostClearOverlayCache(src)
+    },
+
+    // Map a caption style name to the Montaj-specific template path that
+    // compileOverlay understands. The `/api/caption-template/<style>` shape is
+    // Montaj-specific and belongs here, not inside the host-agnostic package.
+    resolveCaptionTemplate: (style: string): string =>
+      `/api/caption-template/${style}`,
   }
 }

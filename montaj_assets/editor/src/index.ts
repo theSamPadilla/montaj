@@ -33,11 +33,24 @@ export type {
   MediaItem,
   GlobalOverlay,
   GlobalOverlayProp,
+  VersionEntry,
+  WaveformChunk,
   EditorAdapter,
   EditorTheme,
   EditorSlots,
   CarouselEditorProps,
+  VideoEditorProps,
 } from './types'
+
+// ── Video editor pure helpers ─────────────────────────────────────────────────
+export {
+  applyCutToTracks,
+  applyCutToItem,
+  collapseGaps,
+  splitAtTime,
+} from './video/cuts'
+export type { Cut } from './video/cuts'
+export { getOverlayDesignCanvas } from './video/design-canvas'
 
 // ── Theme ─────────────────────────────────────────────────────────────────────
 export { defaultMontajTheme, applyTheme } from './theme'
@@ -95,6 +108,14 @@ export type { TextFormattingToolbarProps } from './text/TextFormattingToolbar'
 export { OverlayPreview } from './preview/OverlayPreview'
 export type { OverlayPreviewProps } from './preview/OverlayPreview'
 
+// ── Video preview ─────────────────────────────────────────────────────────────
+export { default as PreviewPlayer } from './video/preview/PreviewPlayer'
+export { default as CarouselPreview } from './video/preview/CarouselPreview'
+export { default as OverlayItemsLayer } from './video/preview/OverlayItemsLayer'
+export { useVideoPlayback } from './video/preview/useVideoPlayback'
+export { useDragOverlay } from './video/preview/useDragOverlay'
+export type { Corner, DragType } from './video/preview/useDragOverlay'
+
 // ── Overlays ──────────────────────────────────────────────────────────────────
 export {
   STANDARD_TEXT_PROPS,
@@ -102,8 +123,9 @@ export {
   readPropAsString,
 } from './overlays/contract'
 
-// ── Assembled carousel editor ───────────────────────────────────────────────
+// ── Assembled editors ─────────────────────────────────────────────────────────
 export { default as CarouselEditor } from './carousel/CarouselEditor'
+export { default as VideoEditor } from './video/VideoEditor'
 
 // ── Public carousel sub-components ────────────────────────────────────────────
 // Hosts consume these beyond the assembled editor — Montaj's preview/caption

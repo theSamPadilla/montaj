@@ -1,5 +1,10 @@
 import { useState } from 'react'
-import type { ProjectVersion } from '@/lib/types/schema'
+import type { VersionEntry } from '../types'
+
+// VersionPanel reads only the editor-relevant slice of a version — hash,
+// message, timestamp — which is exactly `VersionEntry`. Aliased to the panel's
+// original `ProjectVersion` name so the ported parse/dedup logic is untouched.
+type ProjectVersion = VersionEntry
 
 function formatTime(iso: string): string {
   const d = new Date(iso)

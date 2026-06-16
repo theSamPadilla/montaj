@@ -1,5 +1,5 @@
 import { useRef, type KeyboardEvent } from 'react'
-import type { CaptionSegment } from '@/lib/types/schema'
+import type { CaptionSegment } from '../../schema'
 
 export function EditableSegment({ seg, onEdit }: { seg: CaptionSegment; onEdit: (text: string) => void }) {
   const spanRef = useRef<HTMLSpanElement>(null)

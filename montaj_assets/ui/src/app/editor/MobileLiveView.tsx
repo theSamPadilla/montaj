@@ -1,6 +1,7 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useMemo } from 'react'
 import { useNavigate } from 'react-router-dom'
-import PreviewPlayer from '@/components/preview/PreviewPlayer'
+import { PreviewPlayer } from '@devbycrux/editor'
+import { createMontajAdapter } from './montajAdapter'
 import MobileProjectHeader from '@/components/MobileProjectHeader'
 import MobileRenderModal from '@/components/MobileRenderModal'
 import { Button } from '@/components/ui/button'
@@ -20,6 +21,7 @@ export default function MobileLiveView({ project, logMessage, onProjectChange }:
   const [skillPath, setSkillPath] = useState<string | null>(null)
   const [copied, setCopied] = useState(false)
   const navigate = useNavigate()
+  const adapter = useMemo(() => createMontajAdapter(), [])
 
   const clips = project.tracks?.[0] ?? []
   const hasTrimmedClips = clips.some(c => c.inPoint !== undefined && c.outPoint !== undefined)
@@ -58,7 +60,16 @@ export default function MobileLiveView({ project, logMessage, onProjectChange }:
 
       <div className="flex-1 flex items-center justify-center bg-gray-950 overflow-hidden p-4">
         {hasTrimmedClips ? (
-          <PreviewPlayer project={project} currentTime={currentTime} onTimeUpdate={setCurrentTime} />
+          <PreviewPlayer
+            project={project}
+            currentTime={currentTime}
+            onTimeUpdate={setCurrentTime}
+            fileUrl={adapter.fileUrl}
+            compileOverlay={adapter.compileOverlay}
+            clearOverlayCache={adapter.clearOverlayCache}
+            watchFile={adapter.watchFile}
+            resolveCaptionTemplate={adapter.resolveCaptionTemplate}
+          />
         ) : (
           <div className="flex flex-col items-center gap-4 text-center max-w-sm w-full">
             {!logMessage ? (

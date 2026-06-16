@@ -7,12 +7,14 @@
 
 import { useEffect, useRef, useState } from 'react'
 import { Volume2, VolumeX, Trash2, Info } from 'lucide-react'
-import type { AudioTrack, Project } from '@/lib/types/schema'
+import type { AudioTrack } from '../../schema'
+import type { Project } from '../../types'
 import { pct } from './utils'
 import { useTimelineContext } from './TimelineContext'
 import { useItemDragDrop } from './useItemDragDrop'
 import type { Draggable, DragEventContext } from './useItemDragDrop'
 import AudioWaveformLayer from './AudioWaveformLayer'
+import type { GetWaveformChunks, ResolveFilePath } from './AudioWaveformLayer'
 import { applyMuteToSelection, applyResizeDeltaToSelection } from './multiSelectOps'
 
 interface AudioTrackRowProps {
@@ -26,6 +28,8 @@ interface AudioTrackRowProps {
   selectedIds: string[]
   onSelectItem: (id: string | null, additive: boolean) => void
   onInspect?: (id: string) => void
+  getWaveformChunks?: GetWaveformChunks
+  resolveFilePath?: ResolveFilePath
 }
 
 const LANE_HEIGHT_PX = 40 // must match the h-10 (2.5rem = 40px) on the row container
@@ -52,6 +56,8 @@ export default function AudioTrackRow({
   selectedIds,
   onSelectItem,
   onInspect,
+  getWaveformChunks,
+  resolveFilePath,
 }: AudioTrackRowProps) {
   const {
     totalDuration,
@@ -94,6 +100,8 @@ export default function AudioTrackRow({
           beginDrag={beginDrag}
           beginResize={beginResize}
           overlayDraggedRef={overlayDraggedRef}
+          getWaveformChunks={getWaveformChunks}
+          resolveFilePath={resolveFilePath}
         />
       ))}
       {/* Crossfade indicators — shown in the overlap zone between two tracks */}
@@ -148,6 +156,8 @@ interface AudioTrackItemProps {
   beginDrag: ReturnType<typeof useItemDragDrop>['beginDrag']
   beginResize: ReturnType<typeof useItemDragDrop>['beginResize']
   overlayDraggedRef: React.RefObject<boolean>
+  getWaveformChunks?: GetWaveformChunks
+  resolveFilePath?: ResolveFilePath
 }
 
 function AudioTrackItem({
@@ -165,6 +175,8 @@ function AudioTrackItem({
   beginDrag,
   beginResize,
   overlayDraggedRef,
+  getWaveformChunks,
+  resolveFilePath,
 }: AudioTrackItemProps) {
   const [confirmingDelete, setConfirmingDelete] = useState(false)
   const deleteTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -308,7 +320,12 @@ function AudioTrackItem({
       onMouseDown={handleDragStart}
     >
       {/* Waveform layer */}
-      <AudioWaveformLayer track={track} projectId={project.id} />
+      <AudioWaveformLayer
+        track={track}
+        projectId={project.id}
+        getWaveformChunks={getWaveformChunks}
+        resolveFilePath={resolveFilePath}
+      />
 
       {/* Fade-in gradient */}
       {(track.fadeIn ?? 0) > 0 && (
