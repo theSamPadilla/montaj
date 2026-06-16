@@ -7,18 +7,21 @@
  * like mission-control) supplies an `EditorAdapter` that implements load / save
  * / subscribe / render / image-resolution against whatever transport it owns.
  *
- * The canonical project/slide/element shapes are Montaj's — they are
- * re-exported from `lib/types/schema.ts` below so consumers import them from
- * `editor-core` and never reach into Montaj internals directly.
+ * The canonical project/slide/element shapes live in `./schema` (the package's
+ * own editor-facing schema). Internally we alias `EditorProject` to `Project`
+ * so the ported reducer/hook/tests keep their original naming. These names are
+ * re-exported from this module so the package's internal modules can import
+ * them from `../types`; the public barrel (index.ts) sources the schema types
+ * from `./schema` directly to avoid duplicate-export conflicts.
  */
 import type { ReactElement, ReactNode } from 'react'
 import type {
-  Project,
+  EditorProject as Project,
   Slide,
   CarouselElement,
   ImageElement,
   OverlayElement,
-} from '../lib/types/schema'
+} from './schema'
 
 // ── Overlay compiler ─────────────────────────────────────────────────────────
 
@@ -95,20 +98,26 @@ export interface MediaItem {
  * The contract a host implements to drive the editor. All transport,
  * authentication, and URL-shape concerns live behind this interface; the
  * editor calls only these methods.
+ *
+ * Generic over the host's concrete project type `P` (constrained to the
+ * editor-facing `Project` = EditorProject). Montaj instantiates it with its
+ * full `Project`; a host with no extra fields gets the default `Project`. This
+ * lets the host's pipeline fields survive load→edit→save round-trips at the
+ * type level without casts.
  */
-export interface EditorAdapter {
+export interface EditorAdapter<P extends Project = Project> {
   /** Fetch the full project by id. */
-  loadProject(id: string): Promise<Project>
+  loadProject(id: string): Promise<P>
 
   /** Persist the full project. Mirrors Montaj's `PUT /api/projects/:id`. */
-  saveProject(id: string, project: Project): Promise<void>
+  saveProject(id: string, project: P): Promise<void>
 
   /**
    * Subscribe to live project frames (e.g. an SSE stream). `onFrame` is invoked
    * with each fresh project snapshot. Returns an unsubscribe function the
    * editor calls on teardown.
    */
-  subscribe(id: string, onFrame: (project: Project) => void): () => void
+  subscribe(id: string, onFrame: (project: P) => void): () => void
 
   /**
    * Start a render and stream progress as an async iterable of `RenderEvent`s.
@@ -201,9 +210,9 @@ export interface EditorSlots {
  * Props for the carousel editor component. The host supplies the project id and
  * an adapter; theme and slots are optional, and `readOnly` disables mutation.
  */
-export interface CarouselEditorProps {
+export interface CarouselEditorProps<P extends Project = Project> {
   projectId: string
-  adapter: EditorAdapter
+  adapter: EditorAdapter<P>
   theme?: EditorTheme
   slots?: EditorSlots
   readOnly?: boolean

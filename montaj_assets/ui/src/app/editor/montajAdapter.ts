@@ -24,11 +24,13 @@ import { compileOverlay as hostCompileOverlay } from '@/lib/overlay-eval'
 import type {
   EditorAdapter,
   OverlayFactory,
-  Project,
   ImageElement,
   RenderEvent,
   RenderOptions,
-} from '@/editor-core/types'
+} from '@bycrux/editor'
+// Montaj instantiates the editor's generic adapter with its full project type,
+// so loaded/saved/streamed frames keep Montaj's pipeline fields end-to-end.
+import type { Project } from '@/lib/types/schema'
 
 /** Replicates SlideCanvas's `resolveAsset` so the editor displays the same URL. */
 export function resolveMontajImageSrc(element: ImageElement): string {
@@ -40,7 +42,7 @@ export function resolveMontajImageSrc(element: ImageElement): string {
   return `/api/files?path=${encodeURIComponent(src)}`
 }
 
-export function createMontajAdapter(): EditorAdapter {
+export function createMontajAdapter(): EditorAdapter<Project> {
   return {
     loadProject: (id: string): Promise<Project> => api.getProject(id),
 

@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, act, waitFor, fireEvent } from '@testing-library/react'
-import type { EditorAdapter, Project, ImageElement, RenderEvent } from '@/editor-core/types'
+import type { EditorAdapter, ImageElement, RenderEvent } from '@bycrux/editor'
+import type { Project } from '@/lib/types/schema'
 
 // ── Module mocks ────────────────────────────────────────────────────────────
 // CarouselEditor mounts a few child panels that hit Montaj's HTTP API and the
@@ -58,7 +59,7 @@ function makeProject(overrides: Partial<Project> = {}): Project {
   }
 }
 
-interface FakeAdapter extends EditorAdapter {
+interface FakeAdapter extends EditorAdapter<Project> {
   saveCalls: Array<{ id: string; project: Project }>
 }
 

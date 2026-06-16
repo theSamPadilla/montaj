@@ -2,9 +2,8 @@ import { useEffect, useRef, useState } from 'react'
 import { RefreshCw, AlertCircle, Download } from 'lucide-react'
 import { api } from '@/lib/api'
 import type { Project, Slide, CarouselElement } from '@/lib/types/schema'
-import type { EditorAdapter, EditorTheme } from '@/editor-core/types'
-import { applyTheme, defaultMontajTheme } from '@/editor-core/theme'
-import { useProjectState } from '@/editor-core/state/use-project-state'
+import type { EditorAdapter, EditorTheme } from '@bycrux/editor'
+import { applyTheme, defaultMontajTheme, useProjectState } from '@bycrux/editor'
 import SlideCanvas from './SlideCanvas'
 import SlidePropertyPanel from './SlidePropertyPanel'
 import AddElementMenu from './AddElementMenu'
@@ -14,7 +13,10 @@ import { Button } from '@/components/ui/button'
 
 interface Props {
   project: Project
-  adapter: EditorAdapter
+  // The editor's adapter is instantiated with Montaj's full Project so the
+  // hook's state stays the host type (with pipeline fields), not the narrower
+  // editor-facing slice.
+  adapter: EditorAdapter<Project>
   onProjectChange: (p: Project) => void
   theme?: EditorTheme
   logMessage?: string | null

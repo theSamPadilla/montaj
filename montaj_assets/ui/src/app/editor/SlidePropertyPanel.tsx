@@ -3,7 +3,7 @@ import { Crop } from 'lucide-react'
 import { api, type GlobalOverlay, type GlobalOverlayProp } from '@/lib/api'
 import type { Project, Slide, CarouselElement, OverlayElement } from '@/lib/types/schema'
 import { Button } from '@/components/ui/button'
-import { TextFormattingToolbar } from '@/editor-core/text/TextFormattingToolbar'
+import { TextFormattingToolbar } from '@bycrux/editor'
 
 function parseNumber(v: string): number | null {
   const n = Number(v)

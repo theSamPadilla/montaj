@@ -1,18 +1,18 @@
 import { useEffect, useRef, useState } from 'react'
 import type { Slide, OverlayElement, ImageElement } from '@/lib/types/schema'
-import type { OverlayFactory } from '@/editor-core/types'
 import OverlayErrorBoundary from '@/components/OverlayErrorBoundary'
-import { OverlayPreview } from '@/editor-core/preview/OverlayPreview'
 import {
+  type OverlayFactory,
+  OverlayPreview,
   useOverlayDrag,
   useOverlayResize,
   useOverlayRotate,
   buildElementTransform,
   type ResizeHandle as ResizeHandleId,
   type SnapGuide,
-} from '@/editor-core/gestures'
-import { CanvasCropOverlay } from '@/editor-core/crop/CanvasCropOverlay'
-import { InlineTextEditor } from '@/editor-core/text/InlineTextEditor'
+  CanvasCropOverlay,
+  InlineTextEditor,
+} from '@bycrux/editor'
 
 function resolveAssetDefault(src: string): string {
   if (!src) return src

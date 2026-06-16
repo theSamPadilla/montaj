@@ -12,6 +12,7 @@
     "lint": "eslint src"
   },
   "peerDependencies": {
+    "lucide-react": "^0.400",
     "react": "^19.0.0",
     "react-dom": "^19.0.0"
   },
@@ -23,6 +24,7 @@
     "@vitejs/plugin-react": "^4",
     "eslint": "^9",
     "jsdom": "^26",
+    "lucide-react": "^0.400",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "typescript": "^5",

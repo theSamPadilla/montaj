@@ -8,7 +8,7 @@
 import React from 'react'
 import { render, screen, waitFor } from '@testing-library/react'
 import { vi, describe, it, expect, beforeEach, afterEach } from 'vitest'
-import type { OverlayFactory } from '@/editor-core/types'
+import type { OverlayFactory } from '../../types'
 
 // ── Import component under test ──────────────────────────────────────────────
 

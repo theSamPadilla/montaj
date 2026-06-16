@@ -17,20 +17,27 @@ import type {
   CarouselElement,
 } from '../types'
 
-// Status values from Montaj's canonical schema. Duplicated as a value here so
-// the hook can gate edits without importing project.ts directly.
+// The reducer/Action are generic over the host's concrete project type `P`,
+// constrained to the editor-facing `Project` (= EditorProject) slice. A host can
+// pass its full project (e.g. Montaj's `Project` with pipeline fields) and get
+// the same concrete type back: every reducer branch spreads `state`, so host-
+// only fields round-trip at both the type level and at runtime. The editor only
+// ever reads/writes the editor-facing fields.
+
+// Status values from the editor-facing schema. Duplicated as a value here so
+// the hook can gate edits without importing the host's project types directly.
 export type ProjectStatus = Project['status']
 
 // ---------------------------------------------------------------------------
 // Action discriminated union
 // ---------------------------------------------------------------------------
 
-export type Action =
-  | { type: 'sse'; project: Project }
+export type Action<P extends Project = Project> =
+  | { type: 'sse'; project: P }
   | { type: 'updateOverlayProp'; slideId: string; elementId: string; key: string; value: string }
   | { type: 'setStatus'; status: ProjectStatus }
   | { type: 'setName'; name: string }
-  | { type: 'rollback'; snapshot: Project }
+  | { type: 'rollback'; snapshot: P }
   | { type: 'moveElement'; slideId: string; elementId: string; x: number; y: number }
   | { type: 'resizeElement'; slideId: string; elementId: string; x: number; y: number; w: number; h: number }
   | { type: 'rotateElement'; slideId: string; elementId: string; rotation: number }
@@ -107,7 +114,7 @@ function mergeSlide(prev: Slide, next: Slide): Slide {
   }
 }
 
-function mergeProject(prev: Project, next: Project): Project {
+function mergeProject<P extends Project>(prev: P, next: P): P {
   if (prev === next || deepEqual(prev, next)) return prev
   const prevSlides = prev.slides ?? []
   const nextSlides = next.slides ?? []
@@ -130,7 +137,7 @@ function mergeProject(prev: Project, next: Project): Project {
 // Pure reducer
 // ---------------------------------------------------------------------------
 
-export function projectReducer(state: Project, action: Action): Project {
+export function projectReducer<P extends Project>(state: P, action: Action<P>): P {
   switch (action.type) {
     case 'sse':
       return mergeProject(state, action.project)

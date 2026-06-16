@@ -38,8 +38,8 @@ function findElementType(
   return el?.type ?? null
 }
 
-export interface UseProjectState {
-  project: Project
+export interface UseProjectState<P extends Project = Project> {
+  project: P
   connection: Connection
   isEditingAllowed: boolean
   lastError: string | null
@@ -69,18 +69,21 @@ export interface UseProjectState {
   canRedo: boolean
 }
 
-export function useProjectState(
-  adapter: EditorAdapter,
+export function useProjectState<P extends Project = Project>(
+  adapter: EditorAdapter<P>,
   projectId: string,
-  initial: Project,
-): UseProjectState {
-  const [project, dispatch] = useReducer(projectReducer, initial)
+  initial: P,
+): UseProjectState<P> {
+  const [project, dispatch] = useReducer(
+    projectReducer as (state: P, action: Action<P>) => P,
+    initial,
+  )
   const [connection, setConnection] = useState<Connection>('connecting')
   const [lastError, setLastError] = useState<string | null>(null)
   const queue = useRef(createMutationQueue())
   // Snapshot taken before the first transient mutation in the current gesture.
   // Reset to null after a successful commit or rollback.
-  const transientBaseline = useRef<Project | null>(null)
+  const transientBaseline = useRef<P | null>(null)
   // Synchronously-updated mirror of the reducer state. Written in three places:
   //   1. Render phase, from `project` (covers SSE, rollback, refetch — paths
   //      that go through dispatch directly without computing `next` here).
@@ -90,7 +93,7 @@ export function useProjectState(
   // immediately after `moveElement` from the gesture's onCommit handler) reads
   // this ref to get the post-dispatch state without waiting for a re-render.
   // Without (2)/(3), the ref lags by one render and save bodies are stale.
-  const projectRef = useRef<Project>(project)
+  const projectRef = useRef<P>(project)
   projectRef.current = project
 
   // Latest deferred SSE payload. Held while there are in-flight saves because
@@ -98,18 +101,18 @@ export function useProjectState(
   // mid-flight — applying them would regress the optimistic state to the older
   // value (visible as jitter on the canvas while the operator is typing).
   // Last-write-wins: only the most recent SSE is kept.
-  const deferredSseRef = useRef<Project | null>(null)
+  const deferredSseRef = useRef<P | null>(null)
 
   // Undo/redo: snapshot-based stacks of full project state. Each committed
   // local action pushes the pre-action snapshot to undoStack and clears the
   // redoStack. undo() pops undo→redo; redo() pops redo→undo. SSE updates do
   // NOT touch the stacks — external changes stay opaque to local history.
   const MAX_HISTORY = 50
-  const undoStackRef = useRef<Project[]>([])
-  const redoStackRef = useRef<Project[]>([])
+  const undoStackRef = useRef<P[]>([])
+  const redoStackRef = useRef<P[]>([])
   const [historyVersion, setHistoryVersion] = useState(0)
   const bumpHistory = useCallback(() => setHistoryVersion((v) => v + 1), [])
-  const pushUndo = useCallback((snapshot: Project) => {
+  const pushUndo = useCallback((snapshot: P) => {
     undoStackRef.current.push(snapshot)
     if (undoStackRef.current.length > MAX_HISTORY) undoStackRef.current.shift()
     redoStackRef.current = []
@@ -144,7 +147,7 @@ export function useProjectState(
 
   // Internal: persist the full project via the adapter; rollback on failure.
   const save = useCallback(
-    async (next: Project, snapshot: Project) => {
+    async (next: P, snapshot: P) => {
       try {
         await adapter.saveProject(projectId, next)
       } catch (err) {
@@ -161,7 +164,7 @@ export function useProjectState(
   // console. `next` is computed synchronously via the same reducer so the save
   // gets the correct shape without waiting for a re-render.
   const mutate = useCallback(
-    (action: Action) => {
+    (action: Action<P>) => {
       // Read base state from the live ref, not the `project` closure, so a
       // sequence of mutate calls in the same event tick chain correctly
       // (call N's `next` becomes call N+1's base).
@@ -203,7 +206,7 @@ export function useProjectState(
   // Records the pre-gesture baseline on the first call so commit() can roll
   // back to it on failure.
   const mutateTransient = useCallback(
-    (action: Action) => {
+    (action: Action<P>) => {
       const base = projectRef.current
       const editGated = new Set(['moveElement', 'resizeElement', 'rotateElement'])
       if (!editGated.has(action.type) || !isEditable(base.status)) {
