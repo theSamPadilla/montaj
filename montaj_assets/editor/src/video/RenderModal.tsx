@@ -1,8 +1,10 @@
-import { useEffect, useRef, useState } from 'react'
-import { api, fileUrl } from '@/lib/api'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
+import type { EditorAdapter, Project } from '../types'
 
-interface RenderModalProps {
+interface RenderModalProps<P extends Project = Project> {
   projectId: string
+  /** Adapter driving the render stream + file-URL resolution. */
+  adapter: EditorAdapter<P>
   /** Fired when the modal closes from a finished or errored state (post-render).
    *  Callers can use this to navigate away or refresh project state. */
   onClose: () => void
@@ -11,6 +13,9 @@ interface RenderModalProps {
    *  away from the editor — the project is unchanged and the user is likely
    *  about to keep editing. Defaults to onClose if not provided (back-compat). */
   onCancel?: () => void
+  /** Host-supplied export controls (e.g. a "Download all (.zip)" link) rendered
+   *  in the done state's action area, mirroring the carousel render modal. */
+  exportActions?: ReactNode
 }
 
 function basename(p: string) { return p.split('/').pop() ?? p }
@@ -35,13 +40,13 @@ function LogLine({ text }: { text: string }) {
   )
 }
 
-export default function RenderModal({ projectId, onClose, onCancel }: RenderModalProps) {
+export default function RenderModal<P extends Project = Project>({ projectId, adapter, onClose, onCancel, exportActions }: RenderModalProps<P>) {
   const [logs, setLogs]         = useState<string[]>([])
   const [status, setStatus]     = useState<'running' | 'done' | 'error'>('running')
   const [outputPath, setOutput] = useState<string | null>(null)
   const [errorMsg, setError]    = useState<string | null>(null)
   const logRef                  = useRef<HTMLDivElement>(null)
-  const cancelRef               = useRef<(() => void) | null>(null)
+  const cancelledRef            = useRef(false)
   const unmountedRef            = useRef(false)
   const cleanupTimerRef         = useRef<ReturnType<typeof setTimeout> | null>(null)
 
@@ -49,45 +54,58 @@ export default function RenderModal({ projectId, onClose, onCancel }: RenderModa
     // React StrictMode in dev fires mount → cleanup → mount synchronously to
     // catch effects that aren't idempotent. Triggering a render is the textbook
     // non-idempotent effect (spawns a subprocess), so we have to handle it
-    // explicitly: defer the cancellation in cleanup, and if the next mount
-    // fires within the same tick, rescue the pending cancellation.
+    // explicitly: defer the teardown in cleanup, and if the next mount fires
+    // within the same tick, rescue the pending teardown.
     //
-    // Without this, every render in dev would spawn two render.js processes
-    // against the same workspace, racing on segment files (final.mp4.segments/
-    // seg-NNNN.mp4) and producing corrupted audio bitstream — the bug we just
-    // tracked down.
+    // Without this, every render in dev would consume two render streams against
+    // the same workspace, racing on segment files and producing corrupted output
+    // — the bug we tracked down.
     if (cleanupTimerRef.current !== null) {
       clearTimeout(cleanupTimerRef.current)
       cleanupTimerRef.current = null
       unmountedRef.current = false
+      cancelledRef.current = false
       return scheduleCleanup
     }
 
     unmountedRef.current = false
-    api.renderProject(
-      projectId,
-      line => { if (!unmountedRef.current) setLogs(l => [...l, line]) },
-      path => { if (!unmountedRef.current) { setOutput(path); setStatus('done') } },
-      msg  => { if (!unmountedRef.current) { setError(msg);  setStatus('error') } },
-    ).then(cancel => {
-      if (unmountedRef.current) cancel()  // already torn down — kill the process immediately
-      else cancelRef.current = cancel
-    })
+    cancelledRef.current = false
+
+    void (async () => {
+      try {
+        for await (const ev of adapter.render(projectId)) {
+          if (unmountedRef.current || cancelledRef.current) break
+          if (ev.type === 'log') {
+            setLogs(l => [...l, ev.message])
+          } else if (ev.type === 'done') {
+            setOutput(ev.outputPath)
+            setStatus('done')
+          } else {
+            setError(ev.message)
+            setStatus('error')
+          }
+        }
+      } catch (e) {
+        if (!unmountedRef.current && !cancelledRef.current) {
+          setError(e instanceof Error ? e.message : String(e))
+          setStatus('error')
+        }
+      }
+    })()
+
     return scheduleCleanup
 
     function scheduleCleanup() {
-      // Defer the actual cancel. StrictMode's transient unmount fires before
-      // the next mount; setTimeout(0) puts the cancel after both, giving the
-      // next mount a chance to clearTimeout it. On real unmount the timer
-      // fires and the render is cancelled for real.
+      // Defer the actual teardown. StrictMode's transient unmount fires before
+      // the next mount; setTimeout(0) puts the teardown after both, giving the
+      // next mount a chance to clearTimeout it. On real unmount the timer fires
+      // and the render stream is abandoned for real.
       cleanupTimerRef.current = setTimeout(() => {
         cleanupTimerRef.current = null
         unmountedRef.current = true
-        cancelRef.current?.()
-        cancelRef.current = null
       }, 0)
     }
-  }, [projectId])
+  }, [projectId, adapter])
 
   // Auto-scroll logs
   useEffect(() => {
@@ -104,7 +122,7 @@ export default function RenderModal({ projectId, onClose, onCancel }: RenderModa
   }, [status, onClose])
 
   function handleCancel() {
-    cancelRef.current?.()
+    cancelledRef.current = true
     // Use onCancel when provided so the host can dismiss without navigating
     // (cancelling an in-progress render shouldn't yank the user away from
     // their editor). Falls back to onClose for back-compat with callers that
@@ -120,7 +138,7 @@ export default function RenderModal({ projectId, onClose, onCancel }: RenderModa
           {/* Left — video */}
           <div className="flex-1 bg-black flex items-center justify-center overflow-hidden">
             <video
-              src={fileUrl(outputPath)}
+              src={adapter.fileUrl(outputPath)}
               controls
               autoPlay
               playsInline
@@ -143,8 +161,10 @@ export default function RenderModal({ projectId, onClose, onCancel }: RenderModa
 
             <div className="flex flex-col gap-3 p-5 flex-1">
               <p className="text-xs font-mono text-gray-500 break-all leading-relaxed">{outputPath}</p>
+              {/* Host-supplied export controls (e.g. download-all .zip). */}
+              {exportActions}
               <a
-                href={fileUrl(outputPath)}
+                href={adapter.fileUrl(outputPath)}
                 download={basename(outputPath)}
                 className="w-full text-center text-sm px-4 py-2.5 rounded-lg bg-green-800/60 border border-green-700 text-green-200 hover:bg-green-700/60 transition-colors font-medium"
               >

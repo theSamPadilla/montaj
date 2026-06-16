@@ -110,6 +110,7 @@ export type { OverlayPreviewProps } from './preview/OverlayPreview'
 
 // ── Video preview ─────────────────────────────────────────────────────────────
 export { default as PreviewPlayer } from './video/preview/PreviewPlayer'
+export { default as CarouselPreview } from './video/preview/CarouselPreview'
 export { default as OverlayItemsLayer } from './video/preview/OverlayItemsLayer'
 export { useVideoPlayback } from './video/preview/useVideoPlayback'
 export { useDragOverlay } from './video/preview/useDragOverlay'
@@ -122,8 +123,9 @@ export {
   readPropAsString,
 } from './overlays/contract'
 
-// ── Assembled carousel editor ───────────────────────────────────────────────
+// ── Assembled editors ─────────────────────────────────────────────────────────
 export { default as CarouselEditor } from './carousel/CarouselEditor'
+export { default as VideoEditor } from './video/VideoEditor'
 
 // ── Public carousel sub-components ────────────────────────────────────────────
 // Hosts consume these beyond the assembled editor — Montaj's preview/caption

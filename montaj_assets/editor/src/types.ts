@@ -414,4 +414,44 @@ export interface VideoEditorProps<P extends Project = Project> {
   slots?: EditorSlots
   readOnly?: boolean
   onBackToSetup?: () => void
+
+  // ── Host-supplied Montaj-specific UI (render-prop seams) ──────────────────
+  // The clip/audio inspector and the subcut-regeneration tool read host-only
+  // fields (regenQueue, storyboard, the host's full Project) the package types
+  // don't know. The editor surfaces them as render-props it threads/renders so
+  // those components can stay host-side; the editor stays Montaj-agnostic.
+
+  /**
+   * Render-prop seam for the host's clip/audio inspector (Montaj's
+   * ClipInspectModal). The editor owns the "which item is being inspected"
+   * state — it derives `ctx.item` from the timeline's `onInspectClip` /
+   * `onInspectAudio` callbacks (a Montaj-agnostic `{ kind, id }` selector, not
+   * a project entity) and passes a close callback. Absent → no inspector.
+   */
+  renderClipInspector?: (ctx: {
+    item: { kind: 'clip' | 'audio'; id: string }
+    onClose: () => void
+  }) => ReactNode
+
+  /**
+   * Render-prop seam for the host's subcut-regeneration tool (Montaj's
+   * SubcutRegenTool). Threaded straight through to the timeline, which owns the
+   * open/close trigger (the per-clip Scissors button). Called with the clip id
+   * and a close callback. Absent → the subcut tool isn't rendered.
+   */
+  renderSubcutRegen?: (ctx: { clipId: string; onClose: () => void }) => ReactNode
+
+  /**
+   * Host-computed gate for the per-clip subcut-regenerate affordance (Montaj:
+   * ai_video projects). Threaded to the timeline. The package never reads
+   * `projectType`.
+   */
+  regenEnabled?: boolean
+
+  /**
+   * Host-computed predicate driving the per-clip "queued" badge (Montaj:
+   * project.regenQueue membership). Threaded to the timeline. The package never
+   * reads `regenQueue`.
+   */
+  isClipQueued?: (itemId: string) => boolean
 }
