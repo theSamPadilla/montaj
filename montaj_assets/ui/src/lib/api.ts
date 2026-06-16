@@ -42,7 +42,7 @@ export interface Profile {
 // Montaj re-exports them so callers (OverlaysPage/ProfilesPage/montajAdapter)
 // and the adapter contract refer to the same type. Imported locally too so the
 // request<…> generics below can name them.
-import type { GlobalOverlay, GlobalOverlayProp } from '@bycrux/editor'
+import type { GlobalOverlay, GlobalOverlayProp } from '@devbycrux/editor'
 export type { GlobalOverlay, GlobalOverlayProp }
 
 export interface ProfileAssetEntry {

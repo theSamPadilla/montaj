@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import MobileProjectHeader from '@/components/MobileProjectHeader'
-import { SlideCanvas } from '@bycrux/editor'
+import { SlideCanvas } from '@devbycrux/editor'
 import MobileCarouselRenderModal from '@/components/MobileCarouselRenderModal'
 import { Button } from '@/components/ui/button'
 import { api } from '@/lib/api'

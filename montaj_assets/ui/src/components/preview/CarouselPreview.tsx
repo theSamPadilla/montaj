@@ -1,5 +1,5 @@
 import type { Project } from '@/lib/types/schema'
-import { SlideCanvas } from '@bycrux/editor'
+import { SlideCanvas } from '@devbycrux/editor'
 
 interface Props {
   project: Project

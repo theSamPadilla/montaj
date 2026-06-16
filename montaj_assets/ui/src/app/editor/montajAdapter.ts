@@ -28,7 +28,7 @@ import type {
   RenderEvent,
   RenderOptions,
   GlobalOverlay,
-} from '@bycrux/editor'
+} from '@devbycrux/editor'
 // Montaj instantiates the editor's generic adapter with its full project type,
 // so loaded/saved/streamed frames keep Montaj's pipeline fields end-to-end.
 import type { Project } from '@/lib/types/schema'
