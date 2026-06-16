@@ -19,6 +19,7 @@
     "class-variance-authority": "^0.7",
     "clsx": "^2",
     "lucide-react": "^0.400",
+    "@bycrux/editor": "file:../editor",
     "montaj-overlay-runtime": "file:../overlay-runtime",
     "react": "^19",
     "react-dom": "^19",

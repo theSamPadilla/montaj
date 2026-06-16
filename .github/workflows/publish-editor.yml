@@ -1,0 +1,57 @@
+# publish-editor.yml
+#
+# MANUAL / TAG-GATED — this workflow is NOT part of normal CI.
+# It runs only when a tag matching `editor-v*` is pushed (e.g. `editor-v0.1.0`).
+# It publishes @bycrux/editor to the ByCrux GitHub Packages registry.
+#
+# To publish a new version:
+#   1. Bump the version in montaj_assets/editor/package.json.
+#   2. Commit and push the bump.
+#   3. Tag the commit: git tag editor-v<version> && git push origin editor-v<version>
+#   4. This workflow triggers automatically on that tag push.
+#
+# No manual dispatch is wired up intentionally — publishing requires a clean tag.
+
+name: Publish @bycrux/editor
+
+on:
+  push:
+    tags:
+      - 'editor-v*'
+
+jobs:
+  publish:
+    name: Publish to GitHub Packages
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          registry-url: 'https://npm.pkg.github.com'
+          scope: '@bycrux'
+
+      - name: Install dependencies
+        working-directory: montaj_assets/editor
+        run: npm ci
+
+      - name: Run tests
+        working-directory: montaj_assets/editor
+        run: npm test
+
+      - name: Run lint
+        working-directory: montaj_assets/editor
+        run: npm run lint
+
+      - name: Publish
+        working-directory: montaj_assets/editor
+        run: npm publish
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

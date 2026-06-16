@@ -26,7 +26,7 @@ export default defineConfig({
     dedupe: ['react', 'react-dom', '@react-three/fiber', 'three'],
   },
   optimizeDeps: {
-    include: ['montaj-overlay-runtime'],
+    include: ['montaj-overlay-runtime', '@bycrux/editor'],
   },
   server: {
     port: 5173,

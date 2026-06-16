@@ -19,16 +19,19 @@
  * AI-generation, not a queryable library. The editor feature-detects its
  * absence.
  */
-import { api } from '@/lib/api'
+import { api, fileUrl } from '@/lib/api'
 import { compileOverlay as hostCompileOverlay } from '@/lib/overlay-eval'
 import type {
   EditorAdapter,
   OverlayFactory,
-  Project,
   ImageElement,
   RenderEvent,
   RenderOptions,
-} from '@/editor-core/types'
+  GlobalOverlay,
+} from '@bycrux/editor'
+// Montaj instantiates the editor's generic adapter with its full project type,
+// so loaded/saved/streamed frames keep Montaj's pipeline fields end-to-end.
+import type { Project } from '@/lib/types/schema'
 
 /** Replicates SlideCanvas's `resolveAsset` so the editor displays the same URL. */
 export function resolveMontajImageSrc(element: ImageElement): string {
@@ -40,7 +43,7 @@ export function resolveMontajImageSrc(element: ImageElement): string {
   return `/api/files?path=${encodeURIComponent(src)}`
 }
 
-export function createMontajAdapter(): EditorAdapter {
+export function createMontajAdapter(): EditorAdapter<Project> {
   return {
     loadProject: (id: string): Promise<Project> => api.getProject(id),
 
@@ -132,5 +135,57 @@ export function createMontajAdapter(): EditorAdapter {
 
     compileOverlay: (template: string): Promise<OverlayFactory> =>
       hostCompileOverlay(template),
+
+    // T4 contract methods — thin wrappers over Montaj's existing api surface.
+    // Full wiring/verification of the assembled editor against these lands in T6.
+    listGlobalOverlays: (): Promise<GlobalOverlay[]> => api.listGlobalOverlays(),
+
+    listSystemOverlays: (): Promise<GlobalOverlay[]> => api.listSystemOverlays(),
+
+    uploadFile: (file: File, projectId?: string): Promise<string> =>
+      api.uploadFile(file, projectId),
+
+    fileUrl: (path: string): string => fileUrl(path),
+
+    listProfileOverlays: (profileName: string): Promise<GlobalOverlay[]> =>
+      api.listProfileOverlays(profileName),
+
+    getInfo: async (): Promise<{ root_skill_path?: string }> => {
+      const info = await api.getInfo()
+      return { root_skill_path: info.root_skill_path }
+    },
+
+    // Composes Montaj's two-step AI image flow (matches the original
+    // AddElementMenu): reserve a workspace path inside the project, then run the
+    // `generate_image` step writing to it. Returns the produced path.
+    generateImage: async (prompt: string, projectId: string): Promise<{ path: string }> => {
+      const { path: outPath } = await api.reservePath(projectId, {
+        prefix: 'carousel_image',
+        extension: 'png',
+      })
+      const result = await api.runStep<{ path: string }>('generate_image', {
+        prompt,
+        out: outPath,
+      })
+      return { path: result.path }
+    },
+
+    // Watch a workspace file for changes via Montaj's `/api/files/stream` SSE.
+    // Replicates the EventSource OverlayErrorBoundary used to open directly, so
+    // editing an overlay's source on disk auto-recovers its preview. Returns an
+    // unsubscribe that closes the stream.
+    watchFile: (path: string, onChange: () => void): (() => void) => {
+      const es = new EventSource(`/api/files/stream?path=${encodeURIComponent(path)}`)
+      es.onmessage = () => onChange()
+      return () => es.close()
+    },
+
+    // Resolve Montaj's shipped `static-text` system overlay — the template the
+    // editor's "+ Text" button seeds. The Montaj-specific name and matcher live
+    // here, not in the package. Returns null when no such template exists.
+    getDefaultTextOverlay: async (): Promise<GlobalOverlay | null> => {
+      const system = await api.listSystemOverlays()
+      return system.find(o => !o.empty && /static-text/.test(o.jsxPath)) ?? null
+    },
   }
 }
