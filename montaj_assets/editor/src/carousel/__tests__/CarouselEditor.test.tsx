@@ -99,6 +99,31 @@ describe('CarouselEditor — editor-core integration', () => {
     await waitFor(() => getByTestId('assets'))
   })
 
+  it('renders the host-supplied pendingStatus slot in the pending view', async () => {
+    const adapter = makeFakeAdapter()
+    const initial = makeProject({ status: 'pending', slides: [] })
+    const { getByTestId, queryByText } = render(
+      <CarouselEditor
+        project={initial}
+        adapter={adapter}
+        onProjectChange={vi.fn()}
+        slots={{ pendingStatus: <div data-testid="pending-status">Agent is working: → step 2</div> }}
+      />,
+    )
+    await waitFor(() => getByTestId('pending-status'))
+    // The slot replaces the default empty-state copy.
+    expect(queryByText('Message your agent to start')).toBeNull()
+  })
+
+  it('shows the default empty-state copy when pendingStatus slot is absent', async () => {
+    const adapter = makeFakeAdapter()
+    const initial = makeProject({ status: 'pending', slides: [] })
+    const { getByText } = render(
+      <CarouselEditor project={initial} adapter={adapter} onProjectChange={vi.fn()} />,
+    )
+    await waitFor(() => getByText('Message your agent to start'))
+  })
+
   it('selecting an element, moving it, then undo reverts the position', async () => {
     const adapter = makeFakeAdapter()
     const initial = makeProject()

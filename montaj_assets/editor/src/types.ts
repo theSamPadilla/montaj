@@ -282,6 +282,12 @@ export interface EditorSlots {
   exportActions?: ReactNode
   /** Rendered into the editor's assets/media panel area. */
   assetsPanel?: ReactNode
+  /**
+   * Rendered in the pending/empty view in place of the default
+   * "Message your agent to start" copy. Hosts use this to surface live agent
+   * progress (Montaj feeds its SSE log line here); absent → default copy shows.
+   */
+  pendingStatus?: ReactNode
 }
 
 // ── Top-level component props ──────────────────────────────────────────────────

@@ -104,3 +104,9 @@ export {
 
 // ── Assembled carousel editor ───────────────────────────────────────────────
 export { default as CarouselEditor } from './carousel/CarouselEditor'
+
+// ── Public carousel sub-components ────────────────────────────────────────────
+// Hosts consume these beyond the assembled editor — Montaj's preview/caption
+// components render SlideCanvas thumbnails and wrap overlays in the boundary.
+export { default as SlideCanvas, resolveAsset } from './carousel/SlideCanvas'
+export { default as OverlayErrorBoundary } from './carousel/OverlayErrorBoundary'

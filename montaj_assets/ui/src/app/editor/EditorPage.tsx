@@ -1,15 +1,16 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useParams, useLocation } from 'react-router-dom'
 import { api } from '@/lib/api'
-import { ProjectContext, type Project } from '@/lib/types/schema'
+import { ProjectContext, type Asset, type Project } from '@/lib/types/schema'
 import { useProjectStream } from '@/lib/sse'
 import { createMontajAdapter } from './montajAdapter'
 import { useIsMobile } from '@/lib/useIsMobile'
+import { CarouselEditor, defaultMontajTheme, type EditorSlots } from '@bycrux/editor'
+import AssetsPanel from '@/components/AssetsPanel'
 import UploadView from './UploadView'
 import LiveView from './LiveView'
 import ReviewView from './ReviewView'
 import StoryboardView from './StoryboardView'
-import CarouselEditor from './CarouselEditor'
 import MobileUploadView from './MobileUploadView'
 import MobileLiveView from './MobileLiveView'
 import MobileVideoPreview from '@/components/preview/MobileVideoPreview'
@@ -68,11 +69,65 @@ export default function EditorPage() {
     )
   }
 
+  // Host-supplied slots for the package CarouselEditor:
+  //  - assetsPanel : Montaj's own assets panel (uploads into the project dir,
+  //                  persists via PUT on change).
+  //  - exportActions: a "Download all (.zip)" link to Montaj's render-zip route,
+  //                  shown in the render modal's done state.
+  //  - pendingStatus: the live agent-progress line (from the SSE log stream),
+  //                  shown in the pending view in place of the empty-state copy.
+  const carouselProject = project
+  const handleAssetsChange = useCallback(
+    async (next: Asset[]) => {
+      const updated = { ...carouselProject, assets: next }
+      setProject(updated)
+      await api.saveProject(carouselProject.id, updated)
+    },
+    [carouselProject],
+  )
+  const carouselSlots: EditorSlots = useMemo(
+    () => ({
+      assetsPanel: (
+        <AssetsPanel
+          assets={carouselProject.assets ?? []}
+          projectId={carouselProject.id}
+          onChange={handleAssetsChange}
+        />
+      ),
+      exportActions: (
+        <a
+          href={`/api/projects/${carouselProject.id}/render-zip`}
+          className="w-full text-center text-sm px-4 py-2.5 rounded-lg bg-blue-600 text-white hover:bg-blue-500 transition-colors"
+        >
+          Download all (.zip)
+        </a>
+      ),
+      pendingStatus: logMessage ? (
+        <>
+          <div className="w-5 h-5 rounded-full border-2 border-gray-700 border-t-gray-400 animate-spin" />
+          <p className="text-gray-300 text-sm">Agent is working:</p>
+          <p className="text-blue-400 text-xs font-mono bg-gray-900 rounded px-3 py-1.5 w-full text-left truncate">
+            → {logMessage}
+          </p>
+        </>
+      ) : undefined,
+    }),
+    [carouselProject, handleAssetsChange, logMessage],
+  )
+
   let view
   if (project.projectType === 'carousel') {
     view = isMobile
       ? <MobileCarouselPreview project={project} onProjectChange={setProject} />
-      : <CarouselEditor project={project} adapter={adapter} onProjectChange={setProject} logMessage={logMessage} />
+      : (
+        <CarouselEditor<Project>
+          project={project}
+          adapter={adapter}
+          onProjectChange={setProject}
+          theme={defaultMontajTheme}
+          slots={carouselSlots}
+        />
+      )
   } else if (project.projectType === 'ai_video' && (project.status === 'pending' || project.status === 'storyboard_ready')) {
     view = isMobile
       ? <MobileEditNotice

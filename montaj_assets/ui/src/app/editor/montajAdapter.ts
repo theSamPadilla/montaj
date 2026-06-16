@@ -154,5 +154,20 @@ export function createMontajAdapter(): EditorAdapter<Project> {
       const info = await api.getInfo()
       return { root_skill_path: info.root_skill_path }
     },
+
+    // Composes Montaj's two-step AI image flow (matches the original
+    // AddElementMenu): reserve a workspace path inside the project, then run the
+    // `generate_image` step writing to it. Returns the produced path.
+    generateImage: async (prompt: string, projectId: string): Promise<{ path: string }> => {
+      const { path: outPath } = await api.reservePath(projectId, {
+        prefix: 'carousel_image',
+        extension: 'png',
+      })
+      const result = await api.runStep<{ path: string }>('generate_image', {
+        prompt,
+        out: outPath,
+      })
+      return { path: result.path }
+    },
   }
 }

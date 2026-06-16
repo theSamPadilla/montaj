@@ -9,7 +9,11 @@ import AddElementMenu from './AddElementMenu'
 import CarouselRenderModal from './CarouselRenderModal'
 import { Button } from '../ui'
 
-type Props = CarouselEditorProps<Project>
+// Generic over the host's concrete project type `P` (default = the package's
+// own `Project`). Montaj passes its richer Project; the index signature on
+// EditorProject absorbs the host-only pipeline fields, so a full host Project
+// round-trips through load→edit→save (and `onProjectChange`) without casts.
+type Props<P extends Project = Project> = CarouselEditorProps<P>
 
 // ── SlideGrid (inline sub-component) ─────────────────────────────────────────
 
@@ -143,7 +147,7 @@ function isTypingTarget(t: EventTarget | null): boolean {
 
 // ── CarouselEditor ────────────────────────────────────────────────────────────
 
-export default function CarouselEditor({ project: initialProject, adapter, onProjectChange, theme, slots }: Props) {
+export default function CarouselEditor<P extends Project = Project>({ project: initialProject, adapter, onProjectChange, theme, slots }: Props<P>) {
   const state = useProjectState(adapter, initialProject.id, initialProject)
   const project = state.project
   const slides = project.slides ?? []
@@ -395,10 +399,12 @@ export default function CarouselEditor({ project: initialProject, adapter, onPro
 
         {project.status === 'pending' ? (
           <div className="flex flex-col items-center gap-6 text-center max-w-lg w-full">
-            <div className="flex flex-col items-center gap-2">
-              <p className="text-white text-lg font-semibold">Message your agent to start</p>
-              <p className="text-gray-400 text-sm">Nothing will happen automatically. Copy this and send it to your agent.</p>
-            </div>
+            {slots?.pendingStatus ?? (
+              <div className="flex flex-col items-center gap-2">
+                <p className="text-white text-lg font-semibold">Message your agent to start</p>
+                <p className="text-gray-400 text-sm">Nothing will happen automatically. Copy this and send it to your agent.</p>
+              </div>
+            )}
             {skillPath && (
               <div className="w-full rounded-xl border-2 border-blue-400/50 bg-gray-900 p-5 flex flex-col gap-3 text-left shadow-lg shadow-blue-400/10">
                 <p className="text-blue-400 text-xs font-bold uppercase tracking-widest">Send this to your agent</p>

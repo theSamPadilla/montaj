@@ -15,7 +15,7 @@ import { useEffect, useRef, useState } from 'react'
 import type { Captions } from '@/lib/types/schema'
 import { compileOverlay } from '@/lib/overlay-eval'
 import type { OverlayFactory } from '@/lib/overlay-eval'
-import OverlayErrorBoundary from '@/components/OverlayErrorBoundary'
+import { OverlayErrorBoundary } from '@bycrux/editor'
 
 const RENDER_W = 1080
 const RENDER_H = 1920

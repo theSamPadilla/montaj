@@ -38,21 +38,12 @@ export interface Profile {
   style_profile_path?: string
 }
 
-export interface GlobalOverlayProp {
-  name: string
-  type: 'string' | 'int' | 'float' | 'bool' | 'color'
-  default?: unknown
-  description?: string
-}
-
-export interface GlobalOverlay {
-  name: string
-  description: string
-  props: GlobalOverlayProp[]
-  jsxPath: string
-  group?: string
-  empty?: boolean
-}
+// Single type identity for overlay shapes: the editor package owns these, and
+// Montaj re-exports them so callers (OverlaysPage/ProfilesPage/montajAdapter)
+// and the adapter contract refer to the same type. Imported locally too so the
+// request<…> generics below can name them.
+import type { GlobalOverlay, GlobalOverlayProp } from '@bycrux/editor'
+export type { GlobalOverlay, GlobalOverlayProp }
 
 export interface ProfileAssetEntry {
   description: string
