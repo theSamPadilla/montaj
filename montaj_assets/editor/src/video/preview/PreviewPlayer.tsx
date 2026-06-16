@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import type { Project } from '@/lib/types/schema'
-import CaptionPreview from '@/components/CaptionPreview'
-import { getOverlayDesignCanvas } from '@bycrux/editor'
+import type { EditorProject as Project } from '../../schema'
+import type { OverlayFactory } from '../../types'
+import CaptionPreview from './CaptionPreview'
+import { getOverlayDesignCanvas } from '../design-canvas'
 import { useDragOverlay } from './useDragOverlay'
 import OverlayItemsLayer from './OverlayItemsLayer'
 import { useVideoPlayback } from './useVideoPlayback'
@@ -15,9 +16,24 @@ interface PreviewPlayerProps {
   onTimeUpdate: (t: number) => void
   selectedOverlayId?: string
   onOverlayChange?: (id: string, changes: { offsetX?: number; offsetY?: number; scale?: number; rotation?: number; fit?: 'cover' | 'contain' | 'fill' }) => void
+  // Adapter-injected capabilities
+  compileOverlay: (src: string) => Promise<OverlayFactory>
+  clearOverlayCache?: (src?: string) => void
+  watchFile?: (path: string, onChange: () => void) => () => void
+  fileUrl: (path: string) => string
 }
 
-export default function PreviewPlayer({ project, currentTime, onTimeUpdate, selectedOverlayId, onOverlayChange }: PreviewPlayerProps) {
+export default function PreviewPlayer({
+  project,
+  currentTime,
+  onTimeUpdate,
+  selectedOverlayId,
+  onOverlayChange,
+  compileOverlay,
+  clearOverlayCache,
+  watchFile,
+  fileUrl,
+}: PreviewPlayerProps) {
   if (project.projectType === 'carousel') return <CarouselPreview project={project} />
 
   const [RENDER_W, RENDER_H] = getOverlayDesignCanvas(project.settings?.resolution)
@@ -59,7 +75,7 @@ export default function PreviewPlayer({ project, currentTime, onTimeUpdate, sele
     clips,
     tracks0NonVideo,
     overlayTracks,
-  } = useVideoPlayback(project, currentTime, onTimeUpdate)
+  } = useVideoPlayback(project, currentTime, onTimeUpdate, fileUrl)
 
   const captionTrack = useMemo(() => project.captions, [project])
 
@@ -137,6 +153,10 @@ export default function PreviewPlayer({ project, currentTime, onTimeUpdate, sele
         liveRotation={liveRotation}
         snapGuides={snapGuides}
         snapRotation={snapRotation}
+        compileOverlay={compileOverlay}
+        clearOverlayCache={clearOverlayCache}
+        watchFile={watchFile}
+        fileUrl={fileUrl}
       />
 
       {/* Audio elements are managed programmatically in useVideoPlayback */}
@@ -147,6 +167,7 @@ export default function PreviewPlayer({ project, currentTime, onTimeUpdate, sele
           track={captionTrack}
           currentTime={currentTime}
           fps={project.settings?.fps ?? 30}
+          compileOverlay={compileOverlay}
         />
       )}
     </div>

@@ -1,10 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { fileUrl } from '@/lib/api'
-import type { Project, VisualItem } from '@/lib/types/schema'
-import { compileOverlay, clearOverlayCache } from '@/lib/overlay-eval'
-import type { OverlayFactory } from '@/lib/overlay-eval'
-import { OverlayErrorBoundary } from '@bycrux/editor'
-import { getOverlayDesignCanvas } from '@bycrux/editor'
+import type { EditorProject as Project, VisualItem } from '../../schema'
+import type { OverlayFactory } from '../../types'
+import OverlayErrorBoundary from '../../carousel/OverlayErrorBoundary'
+import { getOverlayDesignCanvas } from '../design-canvas'
 import type { Corner } from './useDragOverlay'
 import type { useDragOverlay } from './useDragOverlay'
 
@@ -31,7 +29,6 @@ function OverlayVideo({ src, currentTime, itemStart, inPoint, isPlaying, muted, 
     if (!v) return
     const target = Math.max(inPoint, inPoint + (currentTime - itemStart))
     v.currentTime = target
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   // On scrub (large jump): re-seek — but only once the video has data.
@@ -84,6 +81,14 @@ function OverlayVideo({ src, currentTime, itemStart, inPoint, isPlaying, muted, 
 
 // ---------------------------------------------------------------------------
 // CustomOverlay: fetches, compiles, and renders a custom JSX overlay file
+//
+// Live overlay-edit reload behavior (Montaj host):
+//   - When `watchFile` is provided, it opens a watch subscription on the
+//     template's `src` path. On change: calls `clearOverlayCache?.(src)` then
+//     recompiles via `compileOverlay(src)`.
+//   - When `watchFile` is absent (non-Montaj host), the component only compiles
+//     once on `src` change (static preview — graceful, no error).
+//   - No raw /api/files/stream EventSource is ever opened in this package.
 // ---------------------------------------------------------------------------
 
 interface CustomOverlayProps {
@@ -93,6 +98,10 @@ interface CustomOverlayProps {
   fps: number
   durationFrames: number
   googleFonts?: string[]
+  compileOverlay: (src: string) => Promise<OverlayFactory>
+  clearOverlayCache?: (src?: string) => void
+  watchFile?: (path: string, onChange: () => void) => () => void
+  fileUrl: (path: string) => string
 }
 
 // Track Google Fonts URLs already injected so we don't add the same <link>
@@ -115,16 +124,27 @@ function ensureGoogleFontsLoaded(googleFonts: string[] | undefined) {
   document.head.appendChild(link)
 }
 
-function CustomOverlay({ src, props, frame, fps, durationFrames, googleFonts }: CustomOverlayProps) {
+function CustomOverlay({
+  src,
+  props,
+  frame,
+  fps,
+  durationFrames,
+  googleFonts,
+  compileOverlay,
+  clearOverlayCache,
+  watchFile,
+  fileUrl,
+}: CustomOverlayProps) {
   const [factory, setFactory] = useState<OverlayFactory | null>(null)
   const [error, setError]     = useState<string | null>(null)
 
   const compile = useCallback(() => {
-    clearOverlayCache(src)
+    clearOverlayCache?.(src)
     compileOverlay(src)
       .then((f) => setFactory(() => f))
       .catch((e) => setError(String(e)))
-  }, [src])
+  }, [src, compileOverlay, clearOverlayCache])
 
   useEffect(() => { compile() }, [compile])
 
@@ -134,11 +154,13 @@ function CustomOverlay({ src, props, frame, fps, durationFrames, googleFonts }: 
   // get a misleadingly narrow preview of text that will overflow at render.
   useEffect(() => { ensureGoogleFontsLoaded(googleFonts) }, [googleFonts])
 
+  // Live overlay-edit reload via injected watchFile (Montaj host).
+  // When watchFile is absent (non-Montaj), this effect is a no-op — static preview.
   useEffect(() => {
-    const es = new EventSource(`/api/files/stream?path=${encodeURIComponent(src)}`)
-    es.onmessage = () => compile()
-    return () => es.close()
-  }, [src, compile])
+    if (!watchFile) return
+    const unwatch = watchFile(src, () => compile())
+    return () => unwatch()
+  }, [src, watchFile, compile])
 
   if (error) {
     return (
@@ -156,7 +178,7 @@ function CustomOverlay({ src, props, frame, fps, durationFrames, googleFonts }: 
     Object.entries(props).map(([k, v]) => [
       k,
       typeof v === 'string' && v.startsWith('/') && !v.startsWith('/api/')
-        ? `/api/files?path=${encodeURIComponent(v)}`
+        ? fileUrl(v)
         : v,
     ]),
   )
@@ -274,6 +296,11 @@ interface OverlayItemsLayerProps {
   liveRotation: ReturnType<typeof useDragOverlay>['liveRotation']
   snapGuides: ReturnType<typeof useDragOverlay>['snapGuides']
   snapRotation: ReturnType<typeof useDragOverlay>['snapRotation']
+  // Adapter-injected overlay capabilities
+  compileOverlay: (src: string) => Promise<OverlayFactory>
+  clearOverlayCache?: (src?: string) => void
+  watchFile?: (path: string, onChange: () => void) => () => void
+  fileUrl: (path: string) => string
 }
 
 export default function OverlayItemsLayer({
@@ -294,6 +321,10 @@ export default function OverlayItemsLayer({
   liveRotation,
   snapGuides,
   snapRotation,
+  compileOverlay,
+  clearOverlayCache,
+  watchFile,
+  fileUrl,
 }: OverlayItemsLayerProps) {
   const [RENDER_W, RENDER_H] = getOverlayDesignCanvas(project.settings?.resolution)
 
@@ -476,7 +507,11 @@ export default function OverlayItemsLayer({
                   transform: `scale(${renderScale})`, transformOrigin: 'top left',
                   pointerEvents: 'none',
                 }}>
-                  <OverlayErrorBoundary label={item.src.split('/').pop() ?? item.src} watchPath={item.src}>
+                  <OverlayErrorBoundary
+                    label={item.src.split('/').pop() ?? item.src}
+                    watchPath={item.src}
+                    watchFile={watchFile}
+                  >
                     <CustomOverlay
                       src={item.src}
                       props={item.props ?? {}}
@@ -484,6 +519,10 @@ export default function OverlayItemsLayer({
                       fps={fps}
                       durationFrames={durationFrames}
                       googleFonts={item.googleFonts}
+                      compileOverlay={compileOverlay}
+                      clearOverlayCache={clearOverlayCache}
+                      watchFile={watchFile}
+                      fileUrl={fileUrl}
                     />
                   </OverlayErrorBoundary>
                 </div>

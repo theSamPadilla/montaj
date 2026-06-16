@@ -157,7 +157,6 @@ export function useDragOverlay(
       document.removeEventListener('mousemove', onMove)
       document.removeEventListener('mouseup', onUp)
     }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [dragState])
 
   return {

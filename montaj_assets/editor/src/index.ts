@@ -108,6 +108,13 @@ export type { TextFormattingToolbarProps } from './text/TextFormattingToolbar'
 export { OverlayPreview } from './preview/OverlayPreview'
 export type { OverlayPreviewProps } from './preview/OverlayPreview'
 
+// ── Video preview ─────────────────────────────────────────────────────────────
+export { default as PreviewPlayer } from './video/preview/PreviewPlayer'
+export { default as OverlayItemsLayer } from './video/preview/OverlayItemsLayer'
+export { useVideoPlayback } from './video/preview/useVideoPlayback'
+export { useDragOverlay } from './video/preview/useDragOverlay'
+export type { Corner, DragType } from './video/preview/useDragOverlay'
+
 // ── Overlays ──────────────────────────────────────────────────────────────────
 export {
   STANDARD_TEXT_PROPS,
