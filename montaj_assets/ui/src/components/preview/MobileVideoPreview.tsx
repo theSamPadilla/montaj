@@ -1,7 +1,8 @@
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import MobileProjectHeader from '@/components/MobileProjectHeader'
-import PreviewPlayer from '@/components/preview/PreviewPlayer'
+import { PreviewPlayer } from '@bycrux/editor'
+import { createMontajAdapter } from '@/app/editor/montajAdapter'
 import MobileRenderModal from '@/components/MobileRenderModal'
 import { Button } from '@/components/ui/button'
 import { api } from '@/lib/api'
@@ -14,6 +15,7 @@ interface Props {
 
 export default function MobileVideoPreview({ project, onProjectChange }: Props) {
   const [currentTime, setCurrentTime] = useState(0)
+  const adapter = useMemo(() => createMontajAdapter(), [])
   const [renderOpen, setRenderOpen] = useState(false)
   const [saving, setSaving] = useState(false)
   const navigate = useNavigate()
@@ -49,6 +51,11 @@ export default function MobileVideoPreview({ project, onProjectChange }: Props) 
           project={project}
           currentTime={currentTime}
           onTimeUpdate={setCurrentTime}
+          fileUrl={adapter.fileUrl}
+          compileOverlay={adapter.compileOverlay}
+          clearOverlayCache={adapter.clearOverlayCache}
+          watchFile={adapter.watchFile}
+          resolveCaptionTemplate={adapter.resolveCaptionTemplate}
         />
       </div>
 
