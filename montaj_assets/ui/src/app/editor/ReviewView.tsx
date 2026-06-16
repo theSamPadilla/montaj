@@ -12,7 +12,7 @@ import { ImagePreviewModal } from '@/components/storyboard/ImagePreviewModal'
 import AssetsPanel from '@/components/AssetsPanel'
 import { Button } from '@/components/ui/button'
 import { api, fileUrl } from '@/lib/api'
-import { applyCutToItem, applyCutToTracks, collapseGaps, splitAtTime } from '@/lib/cuts'
+import { applyCutToItem, applyCutToTracks, collapseGaps, splitAtTime } from '@bycrux/editor'
 import { type Project, type ProjectVersion } from '@/lib/types/schema'
 
 interface ReviewViewProps {

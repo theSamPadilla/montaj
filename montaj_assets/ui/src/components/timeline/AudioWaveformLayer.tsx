@@ -1,7 +1,14 @@
 import { useEffect, useState } from 'react'
 import { fileUrl } from '@/lib/api'
-import { ensureWaveformChunks, type WaveformChunk } from '@/lib/audio-waveform'
+import { createMontajAdapter } from '@/app/editor/montajAdapter'
+import type { WaveformChunk } from '@bycrux/editor'
 import type { AudioTrack } from '@/lib/types/schema'
+
+// Interim: V1 deleted lib/audio-waveform.ts and folded its cache into the
+// adapter. The timeline (this layer) still lives in ui until V2, so it routes
+// through the adapter's getWaveformChunks. The module-level cache lives in
+// montajAdapter, so this single shared instance keeps the dedup intact.
+const waveformAdapter = createMontajAdapter()
 
 interface Props {
   track: AudioTrack
@@ -29,7 +36,7 @@ export default function AudioWaveformLayer({ track, projectId }: Props) {
     setChunks(null)
     setError(false)
 
-    ensureWaveformChunks(track, projectId)
+    waveformAdapter.getWaveformChunks!(projectId, track.id, track.src)
       .then((result) => {
         if (!cancelled) setChunks(result)
       })

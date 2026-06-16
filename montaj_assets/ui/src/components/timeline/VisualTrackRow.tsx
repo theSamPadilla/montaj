@@ -1,6 +1,6 @@
 import { Volume2, VolumeX, Info, Scissors } from 'lucide-react'
 import type { VisualItem, Project } from '@/lib/types/schema'
-import { collapseGaps } from '@/lib/cuts'
+import { collapseGaps } from '@bycrux/editor'
 import { pct, ratioFromClientX, trackRow, trackRowTall } from './utils'
 import { useTimelineContext } from './TimelineContext'
 import { useItemDragDrop } from './useItemDragDrop'

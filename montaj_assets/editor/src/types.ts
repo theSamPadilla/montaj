@@ -99,6 +99,34 @@ export interface GlobalOverlay {
   empty?: boolean
 }
 
+// ── Version history (optional capability) ─────────────────────────────────────
+
+/**
+ * A single entry in a project's version history. The editor-relevant slice of
+ * Montaj's `ProjectVersion` (ui/src/lib/types/schema.ts): a content-addressed
+ * `hash` to restore by, a human-readable `message`, and a `timestamp`. The
+ * adapter maps the host's richer shape down to this.
+ */
+export interface VersionEntry {
+  hash: string
+  message: string
+  timestamp: string
+}
+
+// ── Waveform chunks (optional capability) ─────────────────────────────────────
+
+/**
+ * One rendered waveform-image chunk for an audio track. `path` is a
+ * host-resolvable image path (route through `fileUrl` to display); `start`/`end`
+ * are source-file seconds the chunk covers. Copied verbatim from Montaj's former
+ * `lib/audio-waveform.ts` so the package owns the shape the timeline consumes.
+ */
+export interface WaveformChunk {
+  path: string
+  start: number
+  end: number
+}
+
 // ── Media (optional capability) ───────────────────────────────────────────────
 
 /**
@@ -244,6 +272,44 @@ export interface EditorAdapter<P extends Project = Project> {
    * `listSystemOverlays()` + its `static-text` matcher.
    */
   getDefaultTextOverlay?(): Promise<GlobalOverlay | null>
+
+  // ── Video editor capabilities (optional) ────────────────────────────────────
+  // Hosts driving the video editor implement these; carousel-only hosts omit
+  // them and the editor feature-detects their absence.
+
+  /**
+   * Optional: list the project's version history, newest-first. Maps to
+   * Montaj's `GET /api/projects/:id/versions`, mapped down to `VersionEntry`.
+   */
+  listVersionHistory?(id: string): Promise<VersionEntry[]>
+
+  /**
+   * Optional: restore the project to a prior version by `hash`, returning the
+   * restored project. Maps to Montaj's
+   * `POST /api/projects/:id/versions/:hash/restore`.
+   */
+  restoreVersion?(id: string, hash: string): Promise<P>
+
+  /**
+   * Optional: produce rendered waveform-image chunks for an audio track. The
+   * editor passes the project id, the track id (used to namespace the output
+   * cache), the track's source path, and an optional chunk duration in seconds.
+   * The host renders/caches the chunks and returns their resolvable paths. Maps
+   * to Montaj's `waveform_image` step.
+   */
+  getWaveformChunks?(
+    projectId: string,
+    trackId: string,
+    trackSrc: string,
+    chunkDurationS?: number,
+  ): Promise<WaveformChunk[]>
+
+  /**
+   * Optional: invalidate the host's compiled-overlay cache. When `src` is given,
+   * only that entry is dropped; hosts may treat a missing `src` as a no-op or a
+   * full clear. Maps to Montaj's `clearOverlayCache` in `lib/overlay-eval`.
+   */
+  clearOverlayCache?(src?: string): void
 }
 
 // ── Theme ────────────────────────────────────────────────────────────────────
@@ -322,4 +388,21 @@ export interface CarouselEditorProps<P extends Project = Project> {
   theme?: EditorTheme
   slots?: EditorSlots
   readOnly?: boolean
+}
+
+/**
+ * Props for the video editor component. Mirrors `CarouselEditorProps` —
+ * controlled `project` + `onProjectChange`, adapter-driven transport, optional
+ * theme/slots/readOnly — and adds `onBackToSetup`, the host-supplied callback
+ * the editor invokes when the user leaves the editor for the project's setup
+ * view.
+ */
+export interface VideoEditorProps<P extends Project = Project> {
+  project: P
+  adapter: EditorAdapter<P>
+  onProjectChange?: (p: P) => void
+  theme?: EditorTheme
+  slots?: EditorSlots
+  readOnly?: boolean
+  onBackToSetup?: () => void
 }

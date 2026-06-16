@@ -4,7 +4,7 @@ import type { Project, VisualItem } from '@/lib/types/schema'
 import { compileOverlay, clearOverlayCache } from '@/lib/overlay-eval'
 import type { OverlayFactory } from '@/lib/overlay-eval'
 import { OverlayErrorBoundary } from '@bycrux/editor'
-import { getOverlayDesignCanvas } from '@/lib/utils'
+import { getOverlayDesignCanvas } from '@bycrux/editor'
 import type { Corner } from './useDragOverlay'
 import type { useDragOverlay } from './useDragOverlay'
 

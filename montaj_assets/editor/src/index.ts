@@ -33,11 +33,24 @@ export type {
   MediaItem,
   GlobalOverlay,
   GlobalOverlayProp,
+  VersionEntry,
+  WaveformChunk,
   EditorAdapter,
   EditorTheme,
   EditorSlots,
   CarouselEditorProps,
+  VideoEditorProps,
 } from './types'
+
+// ── Video editor pure helpers ─────────────────────────────────────────────────
+export {
+  applyCutToTracks,
+  applyCutToItem,
+  collapseGaps,
+  splitAtTime,
+} from './video/cuts'
+export type { Cut } from './video/cuts'
+export { getOverlayDesignCanvas } from './video/design-canvas'
 
 // ── Theme ─────────────────────────────────────────────────────────────────────
 export { defaultMontajTheme, applyTheme } from './theme'

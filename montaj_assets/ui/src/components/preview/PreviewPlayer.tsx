@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { Project } from '@/lib/types/schema'
 import CaptionPreview from '@/components/CaptionPreview'
-import { getOverlayDesignCanvas } from '@/lib/utils'
+import { getOverlayDesignCanvas } from '@bycrux/editor'
 import { useDragOverlay } from './useDragOverlay'
 import OverlayItemsLayer from './OverlayItemsLayer'
 import { useVideoPlayback } from './useVideoPlayback'
