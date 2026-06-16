@@ -17,7 +17,7 @@
 
 ### Dependencies
 
-- **React 19** — upgraded `@xyflow/react` (ReactFlow) from v11 to v12 and `@react-three/fiber` from v8 to v9, both of which require React 19. No user-visible behavior change in the workflow-builder (NodeGraph) or 3D overlay preview; the upgrade resolves a peer-dependency conflict that blocked further library updates.
+- **React 19** — upgraded `@xyflow/react` (ReactFlow) from v11 to v12 and `@react-three/fiber` from v8 to v9, both of which require React 19. All three consumers of `montaj-overlay-runtime` were moved to React 19 in lockstep — the UI (`montaj_assets/ui`), the runtime package itself, and the render engine (`montaj_assets/render`) — because the shared runtime's r3f-v9 globals only bind under React 19; leaving the render engine on React 18 broke `window.__setFrame` initialization for every overlay bundle (2D and 3D alike). No user-visible behavior change in the workflow-builder (NodeGraph) or overlay rendering/preview; the upgrade resolves a peer-dependency conflict that blocked further library updates.
 
 ## v2.7.4
 
