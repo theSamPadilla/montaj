@@ -381,6 +381,15 @@ export interface EditorSlots {
    * progress (Montaj feeds its SSE log line here); absent → default copy shows.
    */
   pendingStatus?: ReactNode
+  /**
+   * Rendered in the right sidebar below the version-history panel — in the same
+   * position ReviewView showed "Previous runs". The host supplies the concrete
+   * Montaj run-snapshot list (reading `project.history: RunSnapshot[]` and
+   * offering a "Restore this run" action via `onProjectChange`). The package
+   * never reads `project.history` or `RunSnapshot` — those are host-only types.
+   * Absent → nothing is rendered in that slot.
+   */
+  runHistory?: ReactNode
 }
 
 // ── Top-level component props ──────────────────────────────────────────────────

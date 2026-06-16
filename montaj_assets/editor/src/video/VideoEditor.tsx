@@ -3,6 +3,7 @@ import { Magnet } from 'lucide-react'
 import type { Project, VideoEditorProps } from '../types'
 import { applyTheme, defaultMontajTheme } from '../theme'
 import { applyCutToItem, applyCutToTracks, collapseGaps, splitAtTime } from './cuts'
+import { repairCaptionWords } from './captionRepair'
 import Timeline from './timeline/Timeline'
 import PreviewPlayer from './preview/PreviewPlayer'
 import VersionPanel from './VersionPanel'
@@ -245,6 +246,19 @@ function ReviewSurface<P extends Project>({
 
   const { versions, restoring, setRestoring } = useVersionHistory(adapter, project)
 
+  // Repair caption segments whose words[] text has diverged from edited seg.text.
+  // Inline caption edits update seg.text but not seg.words; this normalizes the
+  // data so PreviewPlayer's word-level timing is correct. Runs once per project.id.
+  useEffect(() => {
+    const captions = project.captions
+    if (!captions?.segments?.length) return
+    const repaired = repairCaptionWords(captions)
+    if (!repaired) return
+    const next = { ...project, captions: repaired } as P
+    onProjectChange(next)
+    void adapter.saveProject(next.id, next)
+  }, [project.id]) // intentionally keyed on project.id only — runs once per project load
+
   const clips      = project.tracks?.[0] ?? []
   const hasContent = clips.length > 0 || (project.tracks?.slice(1).flat().length ?? 0) > 0 || (project.captions?.segments?.length ?? 0) > 0
 
@@ -421,12 +435,16 @@ function ReviewSurface<P extends Project>({
         </div>
       </div>
 
-      {/* Right sidebar — version history + host-supplied assets panel */}
-      {(adapter.listVersionHistory || slots?.assetsPanel) && (
+      {/* Right sidebar — version history + run history slot + host-supplied assets panel */}
+      {(adapter.listVersionHistory || slots?.assetsPanel || slots?.runHistory) && (
         <div className="w-48 shrink-0 border-l border-gray-200 dark:border-gray-800 bg-gray-50 dark:bg-gray-950 flex flex-col overflow-hidden">
           {adapter.listVersionHistory && (
             <VersionPanel versions={versions} restoring={restoring} onRestore={handleRestoreVersion} />
           )}
+          {/* Host injects the Montaj-flavored "Previous runs" snapshot list here.
+              RunSnapshot / project.history are host-only types — the package never
+              reads them. When absent nothing is rendered. */}
+          {slots?.runHistory}
           {slots?.assetsPanel}
         </div>
       )}
