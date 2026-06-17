@@ -8,11 +8,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Carousel editor
 
+- Controls/inspector polish: the right-hand property panel was restyled into a
+  clean inspector — one consistent themed input style (`inspectorInputClass`)
+  across all fields, a real color swatch + hex for Background color (was a blank
+  box), a tidy X/Y/W/H transform grid, a segmented/grouped text-formatting
+  toolbar, and consistent themed buttons (secondary/danger). Styling only — no
+  behavior changes.
+
+## 0.4.4
+
+### Carousel editor
+
 - Layout: the slide editor (add-element toolbar + property panel) sits to the
   RIGHT of the canvas again (widened to 24rem) — stacking it below the canvas
   made it require too much scrolling. Project media (`assetsPanel`) stays as a
-  full-width region at the bottom. Canvas height tuned down (~62vh) so it's
-  prominent without dominating.
+  full-width region at the bottom. Canvas height tuned down (~62vh).
 
 ## 0.4.3
 

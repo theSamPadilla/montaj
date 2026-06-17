@@ -96,15 +96,16 @@ export function TextFormattingToolbar({
   const rawColor = readPropAsString(element, 'color')
   const colorValue = HEX_PATTERN.test(rawColor) && rawColor.length === 7 ? rawColor : '#111111'
 
-  // Themed button styles: surface base, accent-tinted hover/active, accent ring.
-  const toolbarBtnBase = 'flex items-center justify-center rounded px-1.5 py-1 text-sm transition-colors hover:bg-[var(--editor-accent)]/20 focus:outline-none focus:ring-1 focus:ring-[var(--editor-accent)]'
-  const toolbarBtnActive = 'bg-[var(--editor-accent)]/20 text-[var(--editor-text)]'
-  const toolbarBtnInactive = 'text-[var(--editor-text)]/60'
+  // Themed toggle styles: consistent square buttons. Active = solid accent fill
+  // with accent-foreground text; inactive = themed surface + border that hovers
+  // toward the surface tone. One look for B / I / case / align across the bar.
+  const toolbarBtnBase = 'flex h-7 min-w-[1.75rem] items-center justify-center rounded-md border px-1.5 text-sm transition-colors focus:outline-none focus:ring-1 focus:ring-[var(--editor-accent)]'
+  const toolbarBtnActive = 'border-[var(--editor-accent)] bg-[var(--editor-accent)] text-[var(--editor-accent-foreground)]'
+  const toolbarBtnInactive = 'border-[var(--editor-border)] bg-[var(--editor-surface)] text-[var(--editor-text)]/70 hover:text-[var(--editor-text)] hover:border-[var(--editor-accent)]'
 
-  // Divider visibility helpers
+  // Segment visibility helpers — group toggles vs size/font vs alignment.
   const hasLeftGroup = supported.has('fontWeight') || supported.has('fontStyle') || supported.has('textTransform') || supported.has('color')
   const hasMidGroup = supported.has('fontSize') || supported.has('fontFamily')
-  const hasRightGroup = supported.has('textAlign')
 
   return (
     <div
@@ -116,88 +117,91 @@ export function TextFormattingToolbar({
       <div
         role="toolbar"
         aria-label="Text formatting"
-        className="flex items-center gap-0.5 p-1.5"
+        className="flex flex-wrap items-center gap-x-3 gap-y-2 p-2"
       >
-        {supported.has('fontWeight') && (
-          <button
-            type="button"
-            aria-label="Bold"
-            aria-pressed={boldActive}
-            onClick={handleBoldClick}
-            className={`${toolbarBtnBase} ${boldActive ? toolbarBtnActive : toolbarBtnInactive}`}
-          >
-            <Bold className="h-3.5 w-3.5" />
-          </button>
+        {/* Segment 1: B / I / case / color toggles */}
+        {hasLeftGroup && (
+          <div className="flex items-center gap-1">
+            {supported.has('fontWeight') && (
+              <button
+                type="button"
+                aria-label="Bold"
+                aria-pressed={boldActive}
+                onClick={handleBoldClick}
+                className={`${toolbarBtnBase} ${boldActive ? toolbarBtnActive : toolbarBtnInactive}`}
+              >
+                <Bold className="h-3.5 w-3.5" />
+              </button>
+            )}
+
+            {supported.has('fontStyle') && (
+              <button
+                type="button"
+                aria-label="Italic"
+                aria-pressed={italicActive}
+                onClick={handleItalicClick}
+                className={`${toolbarBtnBase} ${italicActive ? toolbarBtnActive : toolbarBtnInactive}`}
+              >
+                <Italic className="h-3.5 w-3.5" />
+              </button>
+            )}
+
+            {supported.has('textTransform') && (
+              <button
+                type="button"
+                aria-label={`Text case (currently ${textTransformDisplay})`}
+                onClick={handleCaseClick}
+                className={`${toolbarBtnBase} font-mono text-xs ${caseActive ? toolbarBtnActive : toolbarBtnInactive}`}
+              >
+                {caseLabel(props.textTransform)}
+              </button>
+            )}
+
+            {supported.has('color') && (
+              <label
+                className={`${toolbarBtnBase} ${toolbarBtnInactive} relative cursor-pointer`}
+                title="Text color"
+              >
+                <span
+                  className="block h-4 w-4 rounded-sm border border-[var(--editor-border)]"
+                  style={{ backgroundColor: colorValue }}
+                  aria-hidden
+                />
+                <input
+                  type="color"
+                  value={colorValue}
+                  onChange={(e) => handleColorChange(e.target.value)}
+                  className="absolute inset-0 h-full w-full cursor-pointer opacity-0"
+                  aria-label="Text color"
+                />
+              </label>
+            )}
+          </div>
         )}
 
-        {supported.has('fontStyle') && (
-          <button
-            type="button"
-            aria-label="Italic"
-            aria-pressed={italicActive}
-            onClick={handleItalicClick}
-            className={`${toolbarBtnBase} ${italicActive ? toolbarBtnActive : toolbarBtnInactive}`}
-          >
-            <Italic className="h-3.5 w-3.5" />
-          </button>
+        {/* Segment 2: size + font */}
+        {hasMidGroup && (
+          <div className="flex items-center gap-1.5">
+            {supported.has('fontSize') && (
+              <FontSizePicker
+                value={fontSizeValue}
+                onChange={handleFontSizeChange}
+              />
+            )}
+
+            {supported.has('fontFamily') && (
+              <FontFamilyPicker
+                value={fontFamilyValue}
+                onChange={handleFontFamilyChange}
+                className="w-32"
+              />
+            )}
+          </div>
         )}
 
-        {supported.has('textTransform') && (
-          <button
-            type="button"
-            aria-label={`Text case (currently ${textTransformDisplay})`}
-            onClick={handleCaseClick}
-            className={`${toolbarBtnBase} min-w-[2rem] font-mono text-xs ${caseActive ? toolbarBtnActive : toolbarBtnInactive}`}
-          >
-            {caseLabel(props.textTransform)}
-          </button>
-        )}
-
-        {supported.has('color') && (
-          <label
-            className={`${toolbarBtnBase} ${toolbarBtnInactive} relative cursor-pointer`}
-            title="Text color"
-          >
-            <span
-              className="block h-3.5 w-3.5 rounded-sm border border-[var(--editor-border)]"
-              style={{ backgroundColor: colorValue }}
-              aria-hidden
-            />
-            <input
-              type="color"
-              value={colorValue}
-              onChange={(e) => handleColorChange(e.target.value)}
-              className="absolute inset-0 h-full w-full cursor-pointer opacity-0"
-              aria-label="Text color"
-            />
-          </label>
-        )}
-
-        {hasLeftGroup && hasMidGroup && (
-          <div className="mx-1 h-4 w-px bg-[var(--editor-border)]" aria-hidden />
-        )}
-
-        {supported.has('fontSize') && (
-          <FontSizePicker
-            value={fontSizeValue}
-            onChange={handleFontSizeChange}
-          />
-        )}
-
-        {supported.has('fontFamily') && (
-          <FontFamilyPicker
-            value={fontFamilyValue}
-            onChange={handleFontFamilyChange}
-            className="w-32"
-          />
-        )}
-
-        {hasMidGroup && hasRightGroup && (
-          <div className="mx-1 h-4 w-px bg-[var(--editor-border)]" aria-hidden />
-        )}
-
+        {/* Segment 3: alignment */}
         {supported.has('textAlign') && (
-          <div role="radiogroup" aria-label="Text alignment" className="flex items-center gap-0.5">
+          <div role="radiogroup" aria-label="Text alignment" className="flex items-center gap-1">
             {(
               [
                 { value: 'left', Icon: AlignLeft, label: 'Align left' },
@@ -224,23 +228,20 @@ export function TextFormattingToolbar({
         )}
 
         {!hasAnyControlProp && (
-          <span className="px-2 py-1 text-xs text-[var(--editor-text)]/60">
+          <span className="px-1 py-1 text-xs text-[var(--editor-text)]/55">
             Edit via property panel
           </span>
         )}
 
         {onDelete && (
-          <>
-            {hasAnyControlProp && <div className="mx-1 h-4 w-px bg-[var(--editor-border)]" aria-hidden />}
-            <button
-              type="button"
-              aria-label="Delete text overlay"
-              onClick={onDelete}
-              className={`${toolbarBtnBase} text-[var(--editor-text)]/60 hover:bg-red-900/30 hover:text-red-400`}
-            >
-              <Trash2 className="h-3.5 w-3.5" />
-            </button>
-          </>
+          <button
+            type="button"
+            aria-label="Delete text overlay"
+            onClick={onDelete}
+            className={`${toolbarBtnBase} border-[var(--editor-border)] bg-[var(--editor-surface)] text-[var(--editor-text)]/60 hover:border-red-500/50 hover:bg-red-900/30 hover:text-red-400`}
+          >
+            <Trash2 className="h-3.5 w-3.5" />
+          </button>
         )}
       </div>
     </div>

@@ -4,7 +4,7 @@
 export { cn } from './utils'
 export { Button } from './button'
 export type { ButtonProps } from './button'
-export { Input } from './input'
+export { Input, inspectorInputClass } from './input'
 export type { InputProps } from './input'
 export { Label } from './label'
 export { Select } from './select'

@@ -9,13 +9,20 @@ import type {
   GlobalOverlayProp,
   EditorAdapter,
 } from '../types'
-import { Button, cn } from '../ui'
+import { Button, cn, inspectorInputClass } from '../ui'
 import { TextFormattingToolbar } from '../text/TextFormattingToolbar'
 
 function parseNumber(v: string): number | null {
   const n = Number(v)
   return Number.isFinite(n) ? n : null
 }
+
+// Shared small muted label that sits just above an inspector control.
+const fieldLabelClass = 'text-[11px] uppercase tracking-wide text-[var(--editor-text)]/55'
+
+// Section header: SLIDE / OVERLAY / IMAGE.
+const sectionHeaderClass =
+  'text-xs font-semibold uppercase tracking-wider text-[var(--editor-text)]/70'
 
 interface Props {
   project: Project
@@ -64,7 +71,7 @@ function HideToggle({
       title={isHidden ? 'Show in editor' : 'Hide from editor'}
       aria-label={isHidden ? 'Show in editor' : 'Hide from editor'}
       aria-pressed={isHidden}
-      className="text-[var(--editor-text)]/60 hover:text-[var(--editor-text)] px-1"
+      className="flex h-7 w-7 items-center justify-center rounded text-[var(--editor-text)]/60 hover:bg-[var(--editor-surface)] hover:text-[var(--editor-text)]"
     >
       {isHidden ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
     </button>
@@ -78,8 +85,8 @@ function numInput(
   opts?: { min?: number; max?: number; step?: number }
 ) {
   return (
-    <label className="flex flex-col gap-0.5">
-      <span className="text-xs text-[var(--editor-text)]/60">{label}</span>
+    <label className="flex flex-col gap-1">
+      <span className={fieldLabelClass}>{label}</span>
       <input
         type="number"
         value={value}
@@ -90,7 +97,7 @@ function numInput(
           const parsed = parseNumber(e.target.value)
           if (parsed !== null) onChange(parsed)
         }}
-        className="bg-[var(--editor-surface)] border border-[var(--editor-border)] rounded px-2 py-1 text-xs text-[var(--editor-text)] focus:outline-none focus:border-[var(--editor-accent)] w-full"
+        className={cn(inspectorInputClass, 'text-right')}
       />
     </label>
   )
@@ -109,36 +116,35 @@ function PropEditor({
 
   if (type === 'bool') {
     return (
-      <label className="flex items-center gap-2 cursor-pointer" title={description}>
+      <label className="flex cursor-pointer items-center gap-2" title={description}>
         <input
           type="checkbox"
           checked={Boolean(value)}
           onChange={e => onChange(e.target.checked)}
-          className="accent-[var(--editor-accent)]"
+          className="h-4 w-4 accent-[var(--editor-accent)]"
         />
-        <span className="text-xs text-[var(--editor-text)]">{name}</span>
+        <span className="text-sm text-[var(--editor-text)]">{name}</span>
       </label>
     )
   }
 
   if (type === 'color') {
     return (
-      <label className="flex flex-col gap-0.5" title={description}>
-        <span className="text-xs text-[var(--editor-text)]/60">{name}</span>
-        <input
-          type="color"
+      <div className="flex flex-col gap-1" title={description}>
+        <span className={fieldLabelClass}>{name}</span>
+        <SwatchInput
           value={String(value ?? '#000000')}
-          onChange={e => onChange(e.target.value)}
-          className="w-full h-7 bg-[var(--editor-surface)] border border-[var(--editor-border)] rounded cursor-pointer"
+          onChange={v => onChange(v)}
+          ariaLabel={name}
         />
-      </label>
+      </div>
     )
   }
 
   if (type === 'int' || type === 'float') {
     return (
-      <label className="flex flex-col gap-0.5" title={description}>
-        <span className="text-xs text-[var(--editor-text)]/60">{name}</span>
+      <label className="flex flex-col gap-1" title={description}>
+        <span className={fieldLabelClass}>{name}</span>
         <input
           type="number"
           value={Number(value ?? 0)}
@@ -147,7 +153,7 @@ function PropEditor({
             const parsed = parseNumber(e.target.value)
             if (parsed !== null) onChange(parsed)
           }}
-          className="bg-[var(--editor-surface)] border border-[var(--editor-border)] rounded px-2 py-1 text-xs text-[var(--editor-text)] focus:outline-none focus:border-[var(--editor-accent)] w-full"
+          className={cn(inspectorInputClass, 'text-right')}
         />
       </label>
     )
@@ -155,15 +161,49 @@ function PropEditor({
 
   // string fallback
   return (
-    <label className="flex flex-col gap-0.5" title={description}>
-      <span className="text-xs text-[var(--editor-text)]/60">{name}</span>
+    <label className="flex flex-col gap-1" title={description}>
+      <span className={fieldLabelClass}>{name}</span>
       <input
         type="text"
         value={String(value ?? '')}
         onChange={e => onChange(e.target.value)}
-        className="bg-[var(--editor-surface)] border border-[var(--editor-border)] rounded px-2 py-1 text-xs text-[var(--editor-text)] focus:outline-none focus:border-[var(--editor-accent)] w-full"
+        className={inspectorInputClass}
       />
     </label>
+  )
+}
+
+// Color control that actually reads as one: a filled rounded swatch (the live
+// value) sitting next to the hex string, the whole row clickable to open the
+// native color picker. The transparent <input type="color"> overlays the
+// swatch so the OS picker anchors there.
+function SwatchInput({
+  value,
+  onChange,
+  ariaLabel,
+}: {
+  value: string
+  onChange: (v: string) => void
+  ariaLabel: string
+}) {
+  return (
+    <div className="flex items-center gap-2.5">
+      <label className="relative h-7 w-7 shrink-0 cursor-pointer">
+        <span
+          className="block h-full w-full rounded-md border border-[var(--editor-border)] shadow-sm"
+          style={{ backgroundColor: value }}
+          aria-hidden
+        />
+        <input
+          type="color"
+          value={value}
+          onChange={e => onChange(e.target.value)}
+          className="absolute inset-0 h-full w-full cursor-pointer opacity-0"
+          aria-label={ariaLabel}
+        />
+      </label>
+      <span className="font-mono text-sm uppercase text-[var(--editor-text)]/80">{value}</span>
+    </div>
   )
 }
 
@@ -222,48 +262,45 @@ export default function SlidePropertyPanel({
 
   return (
     <div className={cn('w-80 flex-shrink-0 border-l border-[var(--editor-border)] flex flex-col overflow-y-auto bg-[var(--editor-bg)]', className)}>
-      {/* Slide header */}
-      <div className="px-4 py-3 border-b border-[var(--editor-border)]">
-        <div className="text-xs font-semibold text-[var(--editor-text)]/60 uppercase tracking-wider mb-2">Slide</div>
-        <div className="flex flex-col gap-2">
-          <label className="flex flex-col gap-0.5">
-            <span className="text-xs text-[var(--editor-text)]/60">Background color</span>
-            <input
-              type="color"
-              value={slide.base_color || '#ffffff'}
-              onChange={e => onSlideChange({ base_color: e.target.value })}
-              className="w-full h-7 bg-[var(--editor-surface)] border border-[var(--editor-border)] rounded cursor-pointer"
-            />
-          </label>
-          <div className="flex gap-2">
-            <Button
-              size="sm"
-              variant="outline"
-              className="flex-1 text-xs"
-              onClick={() => onDuplicateSlide(slide.id)}
-            >
-              Duplicate
-            </Button>
-            <Button
-              size="sm"
-              variant="outline"
-              className="flex-1 text-xs text-red-400 hover:text-red-300"
-              onClick={() => onDeleteSlide(slide.id)}
-            >
-              Delete
-            </Button>
-          </div>
+      {/* Slide section */}
+      <div className="flex flex-col gap-4 p-4">
+        <div className={sectionHeaderClass}>Slide</div>
+        <div className="flex flex-col gap-1">
+          <span className={fieldLabelClass}>Background color</span>
+          <SwatchInput
+            value={slide.base_color || '#ffffff'}
+            onChange={v => onSlideChange({ base_color: v })}
+            ariaLabel="Background color"
+          />
+        </div>
+        <div className="flex gap-2">
+          <Button
+            size="sm"
+            variant="secondary"
+            className="flex-1"
+            onClick={() => onDuplicateSlide(slide.id)}
+          >
+            Duplicate
+          </Button>
+          <Button
+            size="sm"
+            variant="danger"
+            className="flex-1"
+            onClick={() => onDeleteSlide(slide.id)}
+          >
+            Delete
+          </Button>
         </div>
       </div>
 
       {/* Element section */}
       {element && (
-        <div className="px-4 py-3 flex flex-col gap-3">
+        <div className="flex flex-col gap-4 border-t border-[var(--editor-border)] p-4">
           <div className="flex items-center justify-between">
-            <span className="text-xs font-semibold text-[var(--editor-text)]/60 uppercase tracking-wider">
+            <span className={sectionHeaderClass}>
               {element.type === 'image' ? 'Image' : 'Overlay'}
             </span>
-            <div className="flex items-center gap-1">
+            <div className="flex items-center gap-0.5">
               <HideToggle
                 elementId={element.id}
                 isHidden={hiddenElementIds?.includes(element.id) ?? false}
@@ -271,14 +308,14 @@ export default function SlidePropertyPanel({
               />
               <button
                 onClick={() => onReorderElement(slide.id, element.id, 'forward')}
-                className="text-xs text-[var(--editor-text)]/60 hover:text-[var(--editor-text)] px-1"
+                className="flex h-7 w-7 items-center justify-center rounded text-[var(--editor-text)]/60 hover:bg-[var(--editor-surface)] hover:text-[var(--editor-text)]"
                 title="Bring forward"
               >
                 ↑
               </button>
               <button
                 onClick={() => onReorderElement(slide.id, element.id, 'backward')}
-                className="text-xs text-[var(--editor-text)]/60 hover:text-[var(--editor-text)] px-1"
+                className="flex h-7 w-7 items-center justify-center rounded text-[var(--editor-text)]/60 hover:bg-[var(--editor-surface)] hover:text-[var(--editor-text)]"
                 title="Send backward"
               >
                 ↓
@@ -287,27 +324,29 @@ export default function SlidePropertyPanel({
           </div>
 
           {/* Transform */}
-          <div className="grid grid-cols-2 gap-2">
-            {numInput('X', element.x, v => onElementChange({ x: v }))}
-            {numInput('Y', element.y, v => onElementChange({ y: v }))}
-            {numInput('W', element.w, v => onElementChange({ w: v }), { min: 1 })}
-            {numInput('H', element.h, v => onElementChange({ h: v }), { min: 1 })}
+          <div className="flex flex-col gap-3">
+            <div className="grid grid-cols-2 gap-3">
+              {numInput('X', element.x, v => onElementChange({ x: v }))}
+              {numInput('Y', element.y, v => onElementChange({ y: v }))}
+              {numInput('W', element.w, v => onElementChange({ w: v }), { min: 1 })}
+              {numInput('H', element.h, v => onElementChange({ h: v }), { min: 1 })}
+            </div>
             {numInput('Rotation', element.rotation ?? 0, v => onElementChange({ rotation: v }), { min: -360, max: 360 })}
           </div>
 
           {/* Image-specific */}
           {element.type === 'image' && (
-            <div className="flex flex-col gap-1.5">
-              <div className="flex flex-col gap-0.5">
-                <span className="text-xs text-[var(--editor-text)]/60">Source</span>
-                <span className="text-xs text-[var(--editor-text)] truncate" title={element.src}>
+            <div className="flex flex-col gap-2">
+              <div className="flex flex-col gap-1">
+                <span className={fieldLabelClass}>Source</span>
+                <span className="truncate text-sm text-[var(--editor-text)]" title={element.src}>
                   {element.src.split('/').pop() || element.src}
                 </span>
               </div>
               <Button
                 size="sm"
-                variant="outline"
-                className="text-xs flex items-center gap-1.5"
+                variant="secondary"
+                className="flex items-center gap-1.5"
                 disabled={(element.rotation ?? 0) !== 0 || !onEnterCrop}
                 title={
                   (element.rotation ?? 0) !== 0
@@ -324,7 +363,7 @@ export default function SlidePropertyPanel({
 
           {/* Overlay-specific */}
           {overlayEl && (
-            <div className="flex flex-col gap-2">
+            <div className="flex flex-col gap-4">
               {/* Rich-text formatting (bold/italic/case/color/align + font family
                   & size pickers) for overlays exposing the standard text contract. */}
               {updateOverlayProp && (
@@ -335,17 +374,17 @@ export default function SlidePropertyPanel({
                 />
               )}
 
-              <div className="grid grid-cols-2 gap-2">
+              <div className="grid grid-cols-2 gap-3">
                 {numInput('Frame', overlayEl.frame, v => onElementChange({ frame: v }), { min: 0 })}
               </div>
 
               {schemasLoading && (
-                <div className="text-xs text-[var(--editor-text)]/60">Loading overlay props…</div>
+                <div className="text-xs text-[var(--editor-text)]/55">Loading overlay props…</div>
               )}
 
               {!schemasLoading && overlaySchema && overlaySchema.props.length > 0 && (
-                <div className="flex flex-col gap-2">
-                  <span className="text-xs text-[var(--editor-text)]/60 font-medium">Props</span>
+                <div className="flex flex-col gap-3">
+                  <span className={fieldLabelClass}>Props</span>
                   {overlaySchema.props.map(prop => (
                     <PropEditor
                       key={prop.name}
@@ -367,19 +406,19 @@ export default function SlidePropertyPanel({
           )}
 
           {/* Element actions */}
-          <div className="flex gap-2 pt-1">
+          <div className="flex gap-2">
             <Button
               size="sm"
-              variant="outline"
-              className="flex-1 text-xs"
+              variant="secondary"
+              className="flex-1"
               onClick={() => onDuplicateElement(slide.id, element.id)}
             >
               Duplicate
             </Button>
             <Button
               size="sm"
-              variant="outline"
-              className="flex-1 text-xs text-red-400 hover:text-red-300"
+              variant="danger"
+              className="flex-1"
               onClick={() => onDeleteElement(slide.id, element.id)}
             >
               Delete

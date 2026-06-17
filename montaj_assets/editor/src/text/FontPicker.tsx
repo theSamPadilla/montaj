@@ -95,7 +95,7 @@ export function FontFamilyPicker({ value, onChange, disabled, className, buttonC
         onClick={() => setOpen((o) => !o)}
         className={
           buttonClassName ??
-          'flex w-full items-center gap-1 rounded-md border border-[var(--editor-border)] bg-[var(--editor-surface)] px-2 py-1 text-sm text-[var(--editor-text)] hover:opacity-90 focus:outline-none focus:ring-1 focus:ring-[var(--editor-accent)] disabled:opacity-50'
+          'flex h-8 w-full items-center gap-1 rounded-md border border-[var(--editor-border)] bg-[var(--editor-surface)] px-2.5 text-sm text-[var(--editor-text)] hover:border-[var(--editor-accent)] focus:outline-none focus:ring-1 focus:ring-[var(--editor-accent)] disabled:opacity-50'
         }
         style={displayStyle}
         aria-haspopup="listbox"
@@ -210,7 +210,7 @@ export function FontSizePicker({ value, onChange, disabled, min = 8, max = 9999,
       }}
       className={
         className ??
-        'w-14 rounded-md border border-[var(--editor-border)] bg-[var(--editor-surface)] px-2 py-1 text-sm text-[var(--editor-text)] focus:outline-none focus:ring-1 focus:ring-[var(--editor-accent)] disabled:opacity-50'
+        'h-8 w-14 rounded-md border border-[var(--editor-border)] bg-[var(--editor-surface)] px-2.5 text-sm text-[var(--editor-text)] focus:outline-none focus:border-[var(--editor-accent)] focus:ring-1 focus:ring-[var(--editor-accent)] disabled:opacity-50'
       }
       aria-label="Font size"
     />
