@@ -17,6 +17,13 @@
 #   scripts/release-editor.sh --yes          # skip the confirmation prompt
 #   scripts/release-editor.sh --build        # also run the full Montaj `ui` vite build (slow)
 #
+# Auth (publishing):
+#   - Preferred: export NPM_TOKEN=<npm automation/granular token>. Automation
+#     tokens bypass 2FA, so no OTP code is ever needed. The token is written to
+#     a throwaway npmrc for the publish and removed immediately after.
+#     Create one at npmjs.com → Access Tokens → Generate → "Automation".
+#   - Fallback: pass --otp <code> for interactive 2FA, or rely on `npm login`.
+#
 # Bump auto-detection (commits touching montaj_assets/editor since the last tag):
 #   - any `BREAKING CHANGE` or `type!:` subject  → major
 #   - any `feat:` / `feat(...):` subject          → minor
@@ -25,7 +32,8 @@
 # Notes:
 #   - npm versions are IMMUTABLE — a bad publish means bumping again.
 #   - Publishing is independent of Montaj's own version (do NOT use version-bump.sh).
-#   - Requires a clean working tree and that you're logged in to the `devbycrux` npm org.
+#   - Requires a clean working tree and either NPM_TOKEN (preferred) or an npm
+#     login with publish rights to the `devbycrux` org.
 
 set -euo pipefail
 
@@ -153,9 +161,19 @@ git -C "$ROOT" add montaj_assets/editor/package.json montaj_assets/editor/packag
 git -C "$ROOT" commit -m "release(editor): ${PKG_NAME} v${NEXT_VERSION}"
 git -C "$ROOT" tag "${TAG_PREFIX}${NEXT_VERSION}"
 
+# Auth precedence: NPM_TOKEN (automation token, bypasses 2FA) → --otp → npm login.
+# access:public + default registry come from the package's publishConfig.
 note "Publishing to npm…"
-( cd "$PKG_DIR" && npm publish ${OTP:+--otp="$OTP"} )   # access:public + default registry from publishConfig
-# (2FA: pass --otp <code>, or run interactively and npm will prompt for the OTP)
+if [ -n "${NPM_TOKEN:-}" ]; then
+  note "Authenticating with NPM_TOKEN (automation token — no OTP needed)."
+  TMP_NPMRC="$(mktemp)"
+  trap 'rm -f "$TMP_NPMRC"' EXIT
+  printf '//registry.npmjs.org/:_authToken=%s\n' "$NPM_TOKEN" > "$TMP_NPMRC"
+  ( cd "$PKG_DIR" && npm publish --userconfig "$TMP_NPMRC" )
+  rm -f "$TMP_NPMRC"; trap - EXIT
+else
+  ( cd "$PKG_DIR" && npm publish ${OTP:+--otp="$OTP"} )
+fi
 
 note "Pushing commit + tag"
 git -C "$ROOT" push origin HEAD
