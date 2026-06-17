@@ -8,6 +8,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Carousel editor
 
+- Snap/alignment guides are more visible: thicker (2px), brighter, and glow so
+  they're easy to see against any slide background.
+
+## 0.4.6
+
+### Carousel editor
+
 - The editor controls (refresh / toolbar actions / render) now sit in a proper
   toolbar row at the top of the canvas column instead of floating over the slide.
 - Add-element buttons (`+ AI Image` / `+ Upload Image` / `+ Text` / `+ Overlay`)

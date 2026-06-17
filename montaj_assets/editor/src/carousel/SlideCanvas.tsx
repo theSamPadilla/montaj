@@ -342,11 +342,12 @@ export default function SlideCanvas({
               data-testid="snap-guide-x"
               style={{
                 position: 'absolute',
-                left: g.at * scale - 0.5,
+                left: g.at * scale - 1,
                 top: 0,
-                width: 1,
+                width: 2,
                 height: displayH,
-                background: '#ec4899',
+                background: '#ff2d88',
+                boxShadow: '0 0 6px 1px rgba(255,45,136,0.9)',
                 pointerEvents: 'none',
                 zIndex: 999,
               }}
@@ -358,10 +359,11 @@ export default function SlideCanvas({
               style={{
                 position: 'absolute',
                 left: 0,
-                top: g.at * scale - 0.5,
+                top: g.at * scale - 1,
                 width: displayW,
-                height: 1,
-                background: '#ec4899',
+                height: 2,
+                background: '#ff2d88',
+                boxShadow: '0 0 6px 1px rgba(255,45,136,0.9)',
                 pointerEvents: 'none',
                 zIndex: 999,
               }}
