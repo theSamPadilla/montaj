@@ -49,6 +49,22 @@ function buildFixtureProject(n = 1) {
 }
 
 /**
+ * Build a minimal portrait 1080×1350 carousel project.json with n solid slides.
+ */
+function buildPortraitFixtureProject(n = 1) {
+  return {
+    projectType: 'carousel',
+    settings:    { resolution: [1080, 1350] },
+    carousel:    { aspect: 'portrait' },
+    slides: Array.from({ length: n }, (_, i) => ({
+      id:         `slide-${i + 1}`,
+      base_color: '#3a86ff',
+      elements:   [],
+    })),
+  }
+}
+
+/**
  * Write a fixture project.json to a temp dir and return the dir path.
  */
 function writeTempProject(project) {
@@ -154,7 +170,7 @@ test('--scale abc exits non-zero with JSON error on stderr', () => {
 // Rendering tests (launch Puppeteer — ~10–20 s each)
 // ---------------------------------------------------------------------------
 
-test('default scale=1: PNG is 1080×1080 and manifest is correct', { timeout: 120_000 }, () => {
+test('explicit --scale 1: PNG is 1080×1080 and manifest is correct', { timeout: 120_000 }, () => {
   const project = buildFixtureProject(1)
   const dir     = writeTempProject(project)
   const outDir  = join(dir, 'render')
@@ -162,6 +178,7 @@ test('default scale=1: PNG is 1080×1080 and manifest is correct', { timeout: 12
     const { status, stdout, stderr } = runRenderer([
       '--project-json', join(dir, 'project.json'),
       '--out', outDir,
+      '--scale', '1',
     ])
     assert.equal(status, 0, `render failed:\n${stderr}`)
 
@@ -182,6 +199,39 @@ test('default scale=1: PNG is 1080×1080 and manifest is correct', { timeout: 12
     assert.equal(s.designHeight, 1080)
     assert.equal(s.width,        1080)
     assert.equal(s.height,       1080)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('default (no --scale): portrait 1080×1350 renders at 2× → 2160×2700', { timeout: 120_000 }, () => {
+  const project = buildPortraitFixtureProject(1)
+  const dir     = writeTempProject(project)
+  const outDir  = join(dir, 'render')
+  try {
+    const { status, stderr } = runRenderer([
+      '--project-json', join(dir, 'project.json'),
+      '--out', outDir,
+    ])
+    assert.equal(status, 0, `render failed:\n${stderr}`)
+
+    // PNG dimensions: 2× the 1080×1350 design canvas.
+    const pngPath = join(outDir, 'slide_01.png')
+    assert.ok(existsSync(pngPath), 'slide_01.png should exist')
+    const { width, height } = readPngDimensions(pngPath)
+    assert.equal(width,  2160, 'default PNG width should be 2160 (2× of 1080)')
+    assert.equal(height, 2700, 'default PNG height should be 2700 (2× of 1350)')
+
+    // Manifest: scale 2, design coords unchanged, output coords doubled.
+    const manifest = JSON.parse(readFileSync(join(outDir, 'manifest.json'), 'utf8'))
+    assert.equal(manifest.scale, 2, 'default scale should be 2')
+    assert.deepEqual(manifest.resolution, [1080, 1350], 'design resolution unchanged')
+    assert.deepEqual(manifest.outputResolution, [2160, 2700])
+    const s = manifest.slides[0]
+    assert.equal(s.designWidth,  1080)
+    assert.equal(s.designHeight, 1350)
+    assert.equal(s.width,        2160)
+    assert.equal(s.height,       2700)
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }

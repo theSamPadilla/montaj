@@ -60,10 +60,14 @@ def test_uncropped_image_is_letterboxed(tmp_path):
     node_bin = shutil.which("node")
     assert node_bin, "node binary required"
 
+    # Pin --scale 1 explicitly: this test asserts fixed 1080×1080 dims and samples
+    # absolute pixel coordinates, so it must state its intended 1× raster rather
+    # than rely on the renderer's ambient default (now 2×).
     result = subprocess.run(
         [node_bin, str(RENDER_SCRIPT),
          "--project-json", str(FIXTURE_DIR / "project.json"),
-         "--out", str(tmp_path)],
+         "--out", str(tmp_path),
+         "--scale", "1"],
         capture_output=True,
         text=True,
         timeout=120,
@@ -81,7 +85,7 @@ def test_uncropped_image_is_letterboxed(tmp_path):
     img = Image.open(slide_png).convert("RGB")
     w, h = img.size
 
-    # The slide should be 1080×1080 (scale=1 default)
+    # The slide should be 1080×1080 (explicit --scale 1)
     assert w == 1080 and h == 1080, f"Expected 1080×1080 slide, got {w}×{h}"
 
     # Sample point: horizontally centred in the element box, near the top of the box.

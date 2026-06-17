@@ -5,6 +5,12 @@
  * Usage:
  *   node render-carousel.js --project-json <path> [--out <dir>] [--clean] [--scale <1|2|3>]
  *
+ * --scale defaults to 2 (high-DPI): slides rasterize at 2× the design canvas
+ * (e.g. portrait 1080×1350 → 2160×2700 PNGs) so they stay crisp on desktop /
+ * Retina. deviceScaleFactor scales only the raster — the logical viewport stays
+ * at the design resolution, so layout/coordinates are pixel-identical to 1×.
+ * Pass --scale 1 to opt back into 1× (design-resolution) output.
+ *
  * stdout: absolute path to the output directory (follows step output convention)
  * stderr: progress lines + JSON error on failure
  * exit 0 on success, exit 1 on failure
@@ -35,6 +41,13 @@ function fail(code, message) {
   process.exit(1)
 }
 
+// Single source of truth for the carousel raster scale. 2× by default so slides
+// export at high-DPI (e.g. 1080×1350 → 2160×2700) without any caller needing to
+// pass --scale. The CLI (`montaj render`) and HTTP (`POST /render`) layers both
+// omit the flag when scale is unspecified, so they inherit this default. An
+// explicitly passed --scale (1, 3) still wins.
+const DEFAULT_SCALE = 2
+
 // ---------------------------------------------------------------------------
 // CLI argument parsing
 // ---------------------------------------------------------------------------
@@ -49,7 +62,7 @@ if (!argv.length || argv[0] === '--help') {
 let projectJsonArg = null
 let outArg         = null
 let cleanArg       = false
-let scaleArg       = 1
+let scaleArg       = DEFAULT_SCALE
 
 for (let i = 0; i < argv.length; i++) {
   if (argv[i] === '--project-json') { projectJsonArg = argv[++i]; continue }
@@ -81,7 +94,7 @@ main(projectJsonArg, { out: outArg, clean: cleanArg, scale: scaleArg }).catch(er
 // Main
 // ---------------------------------------------------------------------------
 
-async function main(projectJsonPath, { out, clean, scale = 1 }) {
+async function main(projectJsonPath, { out, clean, scale = DEFAULT_SCALE }) {
   const absProjectPath = resolve(projectJsonPath)
   const projectDir     = dirname(absProjectPath)
 

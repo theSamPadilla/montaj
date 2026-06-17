@@ -15,7 +15,7 @@ def register(subparsers):
         type=int,
         choices=[1, 2, 3],
         default=None,
-        help="High-DPI multiplier for carousel renders (1, 2, or 3). Ignored for video projects.",
+        help="High-DPI multiplier for carousel renders (1, 2, or 3; default 2). Pass 1 for design-resolution output. Ignored for video projects.",
     )
     add_global_flags(p)  # adds --json, --out, --quiet
     p.set_defaults(func=handle)

@@ -46,8 +46,10 @@ def test_chart_overlays_render_to_pngs(tmp_path):
     project_path = _materialize_project(tmp_path)
     out_dir = tmp_path / "render"
 
+    # Pin --scale 1: the pixel-grid check crops by absolute design-coord overlay
+    # boxes, so the raster must stay at 1× rather than the renderer's 2× default.
     result = subprocess.run(
-        ["node", str(RENDER_JS), "--project-json", str(project_path), "--out", str(out_dir)],
+        ["node", str(RENDER_JS), "--project-json", str(project_path), "--out", str(out_dir), "--scale", "1"],
         capture_output=True, text=True, timeout=120,
     )
     assert result.returncode == 0, f"render failed: stderr={result.stderr}"

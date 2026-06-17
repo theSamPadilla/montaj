@@ -306,17 +306,17 @@ Carousel projects use `render/render-carousel.js` instead of the video pipeline.
 
 ### High-DPI output (`--scale`)
 
-Pass `--scale N` (where N is `1`, `2`, or `3`) to rasterize slides at N× the base resolution. Default is `1`.
+Pass `--scale N` (where N is `1`, `2`, or `3`) to rasterize slides at N× the base resolution. **Default is `2`** — slides export at 2× device pixels (e.g. portrait 1080×1350 → 2160×2700) so they stay crisp on desktop/Retina without any flag. Pass `--scale 1` for design-resolution (1×) output. This default applies end-to-end, including the auto-render triggered when a project reaches `status: final`.
 
-- `node render/render-carousel.js --project-json project.json --scale 2`
-- `montaj render --scale 2` — carousel projects only; flag is silently ignored for video projects.
-- `POST /api/projects/{id}/render?scale=2` — carousel projects only.
+- `node render/render-carousel.js --project-json project.json` — 2× by default
+- `montaj render` — carousel projects render at 2×; `--scale 1` opts back to 1×; flag is silently ignored for video projects.
+- `POST /api/projects/{id}/render` — 2× by default; `?scale=1` for 1×. Carousel projects only.
 
 The design canvas and overlay coordinates are unchanged; only the output PNG pixel dimensions scale.
 
 ### Manifest fields added by `--scale`
 
-The render manifest gains two top-level fields (`outputResolution`, `scale`) and each `slides[i]` entry exposes both `designWidth`/`designHeight` (always design coords) and `width`/`height` (actual PNG pixel dims). At `scale=1` the two pairs are identical.
+The render manifest gains two top-level fields (`outputResolution`, `scale`) and each `slides[i]` entry exposes both `designWidth`/`designHeight` (always design coords) and `width`/`height` (actual PNG pixel dims). At `scale=1` the two pairs are identical; at the default `scale=2` `width`/`height` are double the design coords.
 
 ### Chart system overlays
 
