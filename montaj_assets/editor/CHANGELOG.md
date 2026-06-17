@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+### Video editor
+
+- Layout brought in line with the carousel editor: the host-supplied assets
+  panel (`slots.assetsPanel`) now renders as a **full-width region stacked below
+  the editor** instead of crammed into the narrow right rail. The editor body
+  (preview + timeline + captions) gets the full width; the right rail now carries
+  only version history / run-history. Mirrors `CarouselEditor`'s stacked layout.
+
 ### Carousel editor
 
 - Snap/alignment guides are more visible: thicker (2px), brighter, and glow so

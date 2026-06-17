@@ -388,7 +388,9 @@ function ReviewSurface<P extends Project>({
   }
 
   return (
-    <div className="flex flex-1 overflow-hidden">
+    <div className="flex flex-col flex-1 overflow-hidden">
+      {/* Work area — editor body + version rail, side by side */}
+      <div className="flex flex-1 overflow-hidden min-h-0">
       {/* Main: preview + timeline */}
       <div className="flex flex-col flex-1 overflow-hidden">
         <div className="flex-1 flex items-center justify-center bg-black overflow-hidden p-2">
@@ -473,8 +475,8 @@ function ReviewSurface<P extends Project>({
         </div>
       </div>
 
-      {/* Right sidebar — version history + run history slot + host-supplied assets panel */}
-      {(adapter.listVersionHistory || slots?.assetsPanel || slots?.runHistory) && (
+      {/* Right rail — version history + run history slot */}
+      {(adapter.listVersionHistory || slots?.runHistory) && (
         <div className="w-48 shrink-0 border-l border-gray-200 dark:border-gray-800 bg-gray-50 dark:bg-gray-950 flex flex-col overflow-hidden">
           {adapter.listVersionHistory && (
             <VersionPanel versions={versions} restoring={restoring} onRestore={handleRestoreVersion} />
@@ -483,7 +485,16 @@ function ReviewSurface<P extends Project>({
               RunSnapshot / project.history are host-only types — the package never
               reads them. When absent nothing is rendered. */}
           {slots?.runHistory}
-          {slots?.assetsPanel}
+        </div>
+      )}
+      </div>
+
+      {/* Project media / assets — full-width region stacked BELOW the editor,
+          mirroring CarouselEditor's layout (was previously crammed into the
+          narrow right rail). The host's panel manages its own scroll. */}
+      {slots?.assetsPanel && (
+        <div className="shrink-0 border-t border-gray-200 dark:border-gray-800 w-full flex flex-col max-h-[45%] overflow-hidden">
+          {slots.assetsPanel}
         </div>
       )}
 
