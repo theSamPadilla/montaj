@@ -8,22 +8,37 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Carousel editor
 
-- Layout: the property panel, add-element toolbar, and `assetsPanel` slot now
-  render in a full-width region BELOW the canvas (vertical stack: slide rail +
-  canvas on top, panels beneath) instead of a right sidebar. The editor controls
+- Canvas is significantly larger: the editor uses a tall, vertically-scrolling
+  layout so the slide preview renders much bigger; controls stay on the canvas.
+- Left-rail slide thumbnails now show the entire slide (no vertical trim) — fixed
+  a flex-compression that clipped portrait thumbnails.
+- Buttons stay legible on any host theme: non-primary buttons use a themed
+  surface, full-strength text, and a visible border (no more faint low-contrast
+  controls on dark skins).
+- Below-canvas panels are stacked full-width: add-element toolbar → slide/element
+  property panel → Project media (`assetsPanel`) at the very bottom.
+
+## 0.4.2
+
+### Carousel editor
+
+- Layout: the property panel, add-element toolbar, and `assetsPanel` slot render
+  in a region BELOW the canvas instead of a right sidebar. Editor controls
   (refresh / toolbar actions / render) stay on the canvas.
-- Fix: overlays no longer render oversized/overlapping in the canvas. Overlay
-  elements are authored in native slide pixels, so they're now rendered at native
-  size and CSS-scaled to the canvas scale (matching the renderer) instead of
-  overflowing the shrunk element box.
-- Editor chrome now honors the host `theme`: threaded the `--editor-*` CSS
-  variables through the carousel editor chrome (shell, panels, toolbars,
-  buttons, selection) so a host theme actually re-skins the editor. Added an
-  `accentForeground` color token so accent-colored controls get a readable
-  paired foreground (e.g. dark text on a light accent).
-- Fix: bound the `assetsPanel` slot to the sidebar width (`w-80`) with vertical
-  scroll. Without a width cap, a wide host panel (e.g. a full media-library card)
-  blew out the right column and crushed the `flex-1` editing canvas to a sliver.
+- Fix: overlays no longer render oversized/overlapping — overlay elements are
+  authored in native slide pixels, so they're rendered at native size and
+  CSS-scaled to the canvas scale (matching the renderer).
+- Editor chrome honors the host `theme` via the `--editor-*` CSS variables
+  (shell, panels, toolbars, buttons, selection). Added an `accentForeground`
+  color token so accent-colored controls get a readable paired foreground.
+
+## 0.4.1
+
+### Carousel editor
+
+- Fix: bound the `assetsPanel` slot width so a wide host panel couldn't blow out
+  the right column and crush the canvas (superseded by the 0.4.2 below-canvas
+  layout).
 
 ## 0.4.0
 

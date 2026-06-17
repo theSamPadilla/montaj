@@ -9,7 +9,7 @@ import type {
   GlobalOverlayProp,
   EditorAdapter,
 } from '../types'
-import { Button } from '../ui'
+import { Button, cn } from '../ui'
 import { TextFormattingToolbar } from '../text/TextFormattingToolbar'
 
 function parseNumber(v: string): number | null {
@@ -39,6 +39,10 @@ interface Props {
   // selected element; `hiddenElementIds` reflects the current hidden set.
   hiddenElementIds?: string[]
   onToggleElementVisibility?: (elementId: string) => void
+  // Override the panel's root container classes. Hosts that stack the panel
+  // full-width (e.g. below the canvas) pass this to drop the default `w-80`
+  // sidebar constraint.
+  className?: string
 }
 
 // Small eye toggle to hide/show the selected element in the editor preview only
@@ -179,6 +183,7 @@ export default function SlidePropertyPanel({
   adapter,
   hiddenElementIds,
   onToggleElementVisibility,
+  className,
 }: Props) {
   // Map of jsxPath → GlobalOverlay for overlay prop schemas
   const [overlaySchemas, setOverlaySchemas] = useState<Map<string, GlobalOverlay>>(new Map())
@@ -206,7 +211,7 @@ export default function SlidePropertyPanel({
 
   if (!slide) {
     return (
-      <div className="w-80 flex-shrink-0 flex items-center justify-center text-[var(--editor-text)]/40 text-xs p-4">
+      <div className={cn('w-80 flex-shrink-0 flex items-center justify-center text-[var(--editor-text)]/40 text-xs p-4', className)}>
         Select a slide
       </div>
     )
@@ -216,7 +221,7 @@ export default function SlidePropertyPanel({
   const overlaySchema = overlayEl ? overlaySchemas.get(overlayEl.overlay.template) : null
 
   return (
-    <div className="w-80 flex-shrink-0 border-l border-[var(--editor-border)] flex flex-col overflow-y-auto bg-[var(--editor-bg)]">
+    <div className={cn('w-80 flex-shrink-0 border-l border-[var(--editor-border)] flex flex-col overflow-y-auto bg-[var(--editor-bg)]', className)}>
       {/* Slide header */}
       <div className="px-4 py-3 border-b border-[var(--editor-border)]">
         <div className="text-xs font-semibold text-[var(--editor-text)]/60 uppercase tracking-wider mb-2">Slide</div>

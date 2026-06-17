@@ -7,10 +7,10 @@ const buttonVariants = cva(
     variants: {
       variant: {
         default:   'bg-[var(--editor-accent)] text-[var(--editor-accent-foreground)] hover:opacity-90',
-        secondary: 'bg-gray-100 text-gray-700 hover:bg-gray-200 dark:bg-[var(--editor-surface)] dark:text-[var(--editor-text)] dark:hover:opacity-90',
-        ghost:     'text-gray-500 hover:bg-gray-100 hover:text-gray-900 dark:text-[var(--editor-text)]/60 dark:hover:bg-[var(--editor-surface)] dark:hover:text-[var(--editor-text)]',
+        secondary: 'bg-[var(--editor-surface)] text-[var(--editor-text)] border border-[var(--editor-border)] hover:border-[var(--editor-accent)]',
+        ghost:     'text-[var(--editor-text)] hover:bg-[var(--editor-surface)] hover:text-[var(--editor-text)]',
         danger:    'bg-red-600 text-white hover:bg-red-700',
-        outline:   'border border-gray-300 dark:border-[var(--editor-border)] text-gray-700 dark:text-[var(--editor-text)] hover:bg-gray-100 dark:hover:bg-[var(--editor-surface)]',
+        outline:   'bg-[var(--editor-surface)] text-[var(--editor-text)] border border-[var(--editor-border)] hover:border-[var(--editor-accent)]',
       },
       size: {
         default: 'h-9 px-4 py-2',

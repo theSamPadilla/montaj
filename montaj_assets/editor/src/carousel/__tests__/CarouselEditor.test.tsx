@@ -97,11 +97,11 @@ describe('CarouselEditor — editor-core integration', () => {
       />,
     )
     await waitFor(() => getByTestId('assets'))
-    // The assets slot now lives in the below-canvas region and fills the remaining
-    // width (flex-1) rather than being capped to a 320px sidebar — so a wide host
-    // panel uses its full share of the row without crushing the canvas above.
+    // The assets slot lives in the below-canvas region, stacked full-width at the
+    // very bottom (no longer capped to a 320px sidebar) so the host panel spans
+    // the editor width beneath the property panel.
     const wrapper = getByTestId('assets').parentElement
-    expect(wrapper?.className).toContain('flex-1')
+    expect(wrapper?.className).toContain('w-full')
     expect(wrapper?.className).not.toContain('w-80')
   })
 

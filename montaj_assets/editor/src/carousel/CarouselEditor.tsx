@@ -84,7 +84,7 @@ function SlideGrid({
             onDrop={() => handleDrop(idx)}
             onDragEnd={handleDragEnd}
             onClick={() => onSelect(slide.id)}
-            className={`group relative cursor-pointer rounded overflow-hidden border transition-colors ${
+            className={`group relative flex-shrink-0 cursor-pointer rounded overflow-hidden border transition-colors ${
               selectedSlideId === slide.id
                 ? 'border-[var(--editor-accent)]'
                 : dragOverIdx === idx
@@ -357,16 +357,18 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
     obs.observe(el)
     return () => obs.disconnect()
   }, [])
-  const PADDING = 48
-  const HINT_RESERVE = 36
+  const PADDING = 32
+  const HINT_RESERVE = 28
   const availW = Math.max(0, canvasContainerSize.w - PADDING)
   const availH = Math.max(0, canvasContainerSize.h - PADDING - HINT_RESERVE)
   const canvasScale = Math.min(availW / w, availH / h, 1)
 
   return (
-    <div ref={containerRef} className="flex flex-col h-full overflow-hidden bg-[var(--editor-bg)]">
-      {/* TOP: slide rail + canvas, fills remaining height */}
-      <div className="flex flex-1 min-h-0 overflow-hidden">
+    <div ref={containerRef} className="flex flex-col h-full overflow-y-auto bg-[var(--editor-bg)]">
+      {/* TOP: slide rail + canvas. Given a generous viewport-relative height so
+          the slide renders large; the below-panels region flows beneath and the
+          whole editor scrolls vertically. */}
+      <div className="flex flex-shrink-0 min-h-[80vh] overflow-hidden">
       <SlideGrid
         project={project}
         slides={slides}
@@ -380,7 +382,7 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
         compileOverlay={(t) => adapter.compileOverlay(t)}
       />
 
-      <div ref={canvasContainerRef} className="relative flex-1 flex flex-col items-center justify-center gap-4 overflow-hidden p-6">
+      <div ref={canvasContainerRef} className="relative flex-1 flex flex-col items-center justify-center gap-4 overflow-hidden p-4">
         <button
           onClick={handleRefresh}
           disabled={refreshing}
@@ -493,9 +495,11 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
         </div>
       </div>
 
-      {/* BELOW: the panels, full width under the canvas. Bounded height with
-          internal scrolling so it never crushes the canvas above. */}
-      <div className="flex-shrink-0 border-t border-[var(--editor-border)] bg-[var(--editor-bg)] overflow-hidden flex flex-col" style={{ maxHeight: '40%' }}>
+      {/* BELOW: the slide editor, stacked vertically full-width under the canvas.
+          Flows beneath the tall canvas region and scrolls with the page (the root
+          is overflow-y-auto). Order: add-element toolbar → property panel →
+          project media (assets) at the very bottom. */}
+      <div className="flex-shrink-0 border-t border-[var(--editor-border)] bg-[var(--editor-bg)] flex flex-col">
         {selectedSlide && project.status !== 'pending' && (
           <div className="px-4 py-2 border-b border-[var(--editor-border)] bg-[var(--editor-bg)]">
             <AddElementMenu
@@ -506,35 +510,31 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
             />
           </div>
         )}
-        <div className="flex flex-1 min-h-0 overflow-hidden">
-          <div className="w-80 flex-shrink-0 overflow-y-auto border-r border-[var(--editor-border)]">
-            <SlidePropertyPanel
-              project={project}
-              slide={selectedSlide}
-              element={selectedElement}
-              adapter={adapter}
-              onSlideChange={handleSlideChange}
-              onElementChange={handlePanelElementChange}
-              onDeleteSlide={handleDeleteSlide}
-              onDuplicateSlide={handleDuplicateSlide}
-              onDeleteElement={handleDeleteElement}
-              onDuplicateElement={handleDuplicateElement}
-              onReorderElement={handleReorderElement}
-              onEnterCrop={(_slideId, elementId) => { setSelectedElementId(elementId); setCropElementId(elementId) }}
-              updateOverlayProp={state.updateOverlayProp}
-              hiddenElementIds={hiddenElementIds}
-              onToggleElementVisibility={onToggleElementVisibility}
-            />
+        <SlidePropertyPanel
+          project={project}
+          slide={selectedSlide}
+          element={selectedElement}
+          adapter={adapter}
+          onSlideChange={handleSlideChange}
+          onElementChange={handlePanelElementChange}
+          onDeleteSlide={handleDeleteSlide}
+          onDuplicateSlide={handleDuplicateSlide}
+          onDeleteElement={handleDeleteElement}
+          onDuplicateElement={handleDuplicateElement}
+          onReorderElement={handleReorderElement}
+          onEnterCrop={(_slideId, elementId) => { setSelectedElementId(elementId); setCropElementId(elementId) }}
+          updateOverlayProp={state.updateOverlayProp}
+          hiddenElementIds={hiddenElementIds}
+          onToggleElementVisibility={onToggleElementVisibility}
+          // Stacked full-width here (drop the default w-80 sidebar + left border).
+          className="w-full border-l-0 border-b border-[var(--editor-border)]"
+        />
+        {slots?.assetsPanel && (
+          // Project media — at the very bottom, full width.
+          <div className="w-full flex flex-col">
+            {slots.assetsPanel}
           </div>
-          {slots?.assetsPanel && (
-            // Below the canvas the assets slot fills the remaining width (no longer
-            // capped to a 320px sidebar) and scrolls vertically within the bounded
-            // below-canvas region.
-            <div className="flex-1 min-w-0 flex flex-col overflow-y-auto overflow-x-hidden">
-              {slots.assetsPanel}
-            </div>
-          )}
-        </div>
+        )}
       </div>
 
       {renderOpen && (
