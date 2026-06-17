@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v3.0.0
+
 ### Carousel editor
 
 - **Rich-text formatting toolbar** — selected text elements now expose a floating toolbar with bold, italic, uppercase/lowercase/capitalize case-cycle, left/center/right/justify alignment, font-family picker, font-size stepper, and a color swatch. Formatting writes back via `updateOverlayProp` so every change is immediately reflected in the preview and persisted to `project.json`.
