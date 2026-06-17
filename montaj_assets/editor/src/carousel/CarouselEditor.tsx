@@ -197,6 +197,24 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
     return () => window.removeEventListener('keydown', onKey)
   }, [state])
 
+  // ── Keyboard shortcut: Delete / Backspace removes the selected element. ──
+  // Guarded against text inputs (so editing an overlay's text or a panel field
+  // never deletes the element) and against crop mode (Backspace there belongs to
+  // the crop UI). Deleting mutates project state, so the canvas + thumbnails
+  // re-render without the element immediately.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (isTypingTarget(e.target)) return
+      if (e.key !== 'Delete' && e.key !== 'Backspace') return
+      if (!selectedSlideId || !selectedElementId || cropElementId) return
+      e.preventDefault()
+      void state.removeElement(selectedSlideId, selectedElementId)
+      setSelectedElementId(null)
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [state, selectedSlideId, selectedElementId, cropElementId])
+
   async function handleRender() {
     setRendering(true)
     try {

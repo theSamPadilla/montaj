@@ -439,7 +439,12 @@ export default function SlideCanvas({
                 <img
                   src={resolveSrc(element)}
                   draggable={false}
-                  style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
+                  // Uncropped images use `contain` to mirror the renderer
+                  // (render/templates/slide.jsx: no-crop branch → objectFit
+                  // 'contain'). Logos/escudos placed in a fixed box must keep
+                  // their aspect (letterboxed) in BOTH paths; `cover` here would
+                  // crop them in the preview and diverge from the final PNG.
+                  style={{ width: '100%', height: '100%', objectFit: 'contain', display: 'block' }}
                   alt=""
                 />
               )

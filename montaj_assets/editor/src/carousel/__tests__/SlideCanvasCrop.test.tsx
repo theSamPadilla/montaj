@@ -61,7 +61,7 @@ describe('SlideCanvas crop display', () => {
     expect(wrapper.style.overflow).toBe('hidden')
   })
 
-  it('renders plain cover (no crop wrapper) when element.crop is absent', async () => {
+  it('renders plain contain (no crop wrapper) when element.crop is absent', async () => {
     const el: ImageElement = {
       id: 'el-img',
       type: 'image',
@@ -88,7 +88,9 @@ describe('SlideCanvas crop display', () => {
       if (!found) throw new Error('img not rendered')
       return found
     })
-    expect(img.style.objectFit).toBe('cover')
+    // Uncropped images use `contain` to mirror the renderer (no-crop branch in
+    // render/templates/slide.jsx) so logos/escudos keep aspect in both paths.
+    expect(img.style.objectFit).toBe('contain')
     expect(img.style.width).toBe('100%')
     expect(img.style.height).toBe('100%')
   })

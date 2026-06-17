@@ -290,4 +290,43 @@ describe('CarouselEditor — editor-core integration', () => {
       expect(lastSelection()).toBeNull()
     })
   })
+
+  // Delete / Backspace removes the selected element and persists the removal.
+  it('deletes the selected element on Delete keypress', async () => {
+    const adapter = makeFakeAdapter()
+    const initial = makeProject()
+    render(<CarouselEditor project={initial} adapter={adapter} onProjectChange={vi.fn()} />)
+
+    const wrapper = await waitFor(() => findInteractiveWrapper('el-img'))
+    await act(async () => { fireEvent.click(wrapper) })
+
+    await act(async () => { fireEvent.keyDown(window, { key: 'Delete' }) })
+
+    // The removal is persisted: the latest saved project has no elements.
+    await waitFor(() => {
+      expect(adapter.saveCalls.length).toBeGreaterThan(0)
+      const saved = adapter.saveCalls[adapter.saveCalls.length - 1].project
+      expect(saved.slides![0].elements.find(e => e.id === 'el-img')).toBeUndefined()
+    })
+  })
+
+  // Guard: Delete/Backspace must not delete while typing (e.g. editing text or a
+  // panel field), or Backspace in a field would wipe the element.
+  it('does not delete the selected element while typing in an input', async () => {
+    const adapter = makeFakeAdapter()
+    const initial = makeProject()
+    render(<CarouselEditor project={initial} adapter={adapter} onProjectChange={vi.fn()} />)
+
+    const wrapper = await waitFor(() => findInteractiveWrapper('el-img'))
+    await act(async () => { fireEvent.click(wrapper) })
+
+    const input = document.createElement('input')
+    document.body.appendChild(input)
+    input.focus()
+
+    const before = adapter.saveCalls.length
+    await act(async () => { fireEvent.keyDown(input, { key: 'Backspace' }) })
+    expect(adapter.saveCalls.length).toBe(before)
+    document.body.removeChild(input)
+  })
 })
