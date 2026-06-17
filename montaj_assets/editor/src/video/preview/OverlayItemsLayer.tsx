@@ -3,6 +3,7 @@ import type { EditorProject as Project, VisualItem } from '../../schema'
 import type { OverlayFactory } from '../../types'
 import OverlayErrorBoundary from '../../carousel/OverlayErrorBoundary'
 import { getOverlayDesignCanvas } from '../design-canvas'
+import { ensureGoogleFontsLoaded } from '../../lib/google-fonts'
 import type { Corner } from './useDragOverlay'
 import type { useDragOverlay } from './useDragOverlay'
 
@@ -102,26 +103,6 @@ interface CustomOverlayProps {
   clearOverlayCache?: (src?: string) => void
   watchFile?: (path: string, onChange: () => void) => () => void
   fileUrl: (path: string) => string
-}
-
-// Track Google Fonts URLs already injected so we don't add the same <link>
-// twice when multiple overlays declare overlapping fonts. Keyed by the full
-// stylesheet URL — the same URL never produces a duplicate fetch from
-// Chromium regardless, but the duplicate <link> tags would still clutter
-// document.head across long editing sessions.
-const __injectedFontUrls = new Set<string>()
-
-function ensureGoogleFontsLoaded(googleFonts: string[] | undefined) {
-  if (!googleFonts?.length) return
-  // Match the format bundle.js uses for the render pipeline so preview and
-  // render fetch identical CSS (and identical glyphs / metrics).
-  const url = `https://fonts.googleapis.com/css2?${googleFonts.map(f => `family=${f}`).join('&')}&display=swap`
-  if (__injectedFontUrls.has(url)) return
-  __injectedFontUrls.add(url)
-  const link = document.createElement('link')
-  link.rel = 'stylesheet'
-  link.href = url
-  document.head.appendChild(link)
 }
 
 function CustomOverlay({

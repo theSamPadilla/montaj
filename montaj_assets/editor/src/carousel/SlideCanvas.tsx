@@ -12,6 +12,7 @@ import {
 import { OverlayPreview } from '../preview/OverlayPreview'
 import { CanvasCropOverlay } from '../crop/CanvasCropOverlay'
 import { InlineTextEditor } from '../text/InlineTextEditor'
+import { ensureGoogleFontsLoaded } from '../lib/google-fonts'
 
 // Neutral fallback used only when no host `resolveImageSrc` is injected. The
 // package must not synthesize a host-shaped URL (e.g. Montaj's `/api/files`):
@@ -55,6 +56,12 @@ function OverlayElementView({
 }) {
   const duration = (element.overlay.props.duration as number | undefined) ?? 60
   const mergedProps = { ...element.overlay.props, offsetX: 0, offsetY: 0, scale: 1 }
+  // Inject any Google Fonts the overlay declares so the carousel preview renders
+  // with the same glyphs/metrics as the renderer. Resilient: the helper only
+  // appends a <link>; a font-fetch failure never breaks the overlay render.
+  useEffect(() => {
+    ensureGoogleFontsLoaded(element.googleFonts)
+  }, [element.googleFonts])
   return (
     <OverlayPreview
       compileOverlay={compileOverlay ?? noopCompiler}
@@ -398,12 +405,42 @@ export default function SlideCanvas({
 
           const innerContent =
             element.type === 'image' ? (
-              <img
-                src={resolveSrc(element)}
-                draggable={false}
-                style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
-                alt=""
-              />
+              // While actively cropping this element, the CanvasCropOverlay draws
+              // the full source with a draggable window on top — so show the plain
+              // (uncropped) base beneath it. Otherwise honor the committed crop.
+              element.crop && !inCrop ? (
+                // Cropped display: render the crop sub-rect [cx,cx+cw]×[cy,cy+ch]
+                // (fractions of the source) scaled to cover the element box. This
+                // mirrors Montaj's renderer (render/templates/slide.jsx): an
+                // overflow-hidden wrapper + an oversized cover image positioned by
+                // the crop rect. `maxWidth/maxHeight: 'none'` defeats Tailwind
+                // preflight's `img { max-width: 100% }`, which would otherwise
+                // clamp the oversized image and collapse offset crops to a sliver.
+                <div style={{ width: '100%', height: '100%', overflow: 'hidden' }}>
+                  <img
+                    src={resolveSrc(element)}
+                    draggable={false}
+                    style={{
+                      display: 'block',
+                      width: `${100 / element.crop.w}%`,
+                      height: `${100 / element.crop.h}%`,
+                      maxWidth: 'none',
+                      maxHeight: 'none',
+                      marginLeft: `${(-element.crop.x * 100) / element.crop.w}%`,
+                      marginTop: `${(-element.crop.y * 100) / element.crop.h}%`,
+                      objectFit: 'cover',
+                    }}
+                    alt=""
+                  />
+                </div>
+              ) : (
+                <img
+                  src={resolveSrc(element)}
+                  draggable={false}
+                  style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
+                  alt=""
+                />
+              )
             ) : (
               <OverlayErrorBoundary
                 label={element.overlay.template.split('/').pop() ?? element.overlay.template}

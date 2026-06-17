@@ -157,6 +157,13 @@ export interface OverlayElement {
   w: number
   h: number
   rotation: number
+  /**
+   * Optional Google Fonts family specs (e.g. ["Syne:wght@800"]) the overlay
+   * renders with. Mirrors the video-side `VisualItem.googleFonts`. The carousel
+   * overlay render path injects these so the preview uses the same glyphs and
+   * metrics as the renderer; absent = no custom fonts loaded.
+   */
+  googleFonts?: string[]
 }
 
 export type CarouselElement = ImageElement | OverlayElement

@@ -132,3 +132,5 @@ export { default as VideoEditor } from './video/VideoEditor'
 // components render SlideCanvas thumbnails and wrap overlays in the boundary.
 export { default as SlideCanvas, resolveAsset } from './carousel/SlideCanvas'
 export { default as OverlayErrorBoundary } from './carousel/OverlayErrorBoundary'
+export { default as ReadOnlySlide } from './carousel/ReadOnlySlide'
+export type { ReadOnlySlideProps } from './carousel/ReadOnlySlide'
