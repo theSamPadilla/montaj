@@ -2,7 +2,17 @@
 
 ## Unreleased
 
+## v3.0.2
+
+### Packaging
+
+- **Fixed the bundled UI failing to build in the published package.** `montaj install ui` (prod mode) copies the Node bundles into a build cache and `npm install`s there, but the staged-bundle list (`cli/commands/install.py`) omitted `editor` — so the UI's `@bycrux/editor: file:../editor` dependency dangled and `npm run build` failed with `TS2307: Cannot find module '@bycrux/editor'`. Added `editor` to the staged list (before `ui`), mirroring how `overlay-runtime` is staged for render's `file:` link. This first bit when building a sidecar/container against a Montaj whose UI consumes the extracted `@bycrux/editor` package (3.0.0+).
+
 ## v3.0.1
+
+### Packaging
+
+- **Fixed `node_modules` leaking into the published wheel.** The `@bycrux/editor` package (`montaj_assets/editor/`) added in 3.0.0 was missing from `MANIFEST.in`'s prune list, so `python -m build` bundled its `node_modules` into the wheel (3.0.0 shipped ~335 stray entries, inflating it to 4.4 MB). Added `prune montaj_assets/editor/node_modules`; the wheel is back to source-only (2.8 MB). Any new node package directory under `montaj_assets/` needs a matching `prune` line — `scripts/build.sh`'s verify step catches a leak and now also `rm -rf dist/` on any build/verify failure, so a rejected wheel can no longer be left in `dist/` for an accidental `twine upload`.
 
 ## v3.0.0
 
