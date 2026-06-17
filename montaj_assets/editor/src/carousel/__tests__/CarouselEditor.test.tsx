@@ -232,4 +232,56 @@ describe('CarouselEditor — editor-core integration', () => {
     expect(adapter.saveCalls.length).toBe(before)
     document.body.removeChild(input)
   })
+
+  // Visibility toggle: ids in `hiddenElementIds` are omitted from the interactive
+  // canvas (editor-only; the thumbnail and `saveProject` are untouched).
+  it('omits hidden elements from the interactive canvas', async () => {
+    const adapter = makeFakeAdapter()
+    const initial = makeProject({
+      slides: [
+        {
+          id: 'slide-0',
+          base_color: '#ffffff',
+          elements: [
+            { id: 'el-a', type: 'image', src: 'a.png', x: 0, y: 0, w: 100, h: 100, rotation: 0 },
+            { id: 'el-b', type: 'image', src: 'b.png', x: 10, y: 10, w: 100, h: 100, rotation: 0 },
+          ],
+        },
+      ],
+    })
+    const { container } = render(
+      <CarouselEditor project={initial} adapter={adapter} onProjectChange={vi.fn()} hiddenElementIds={['el-b']} />,
+    )
+    // Visible element renders in the interactive canvas; hidden one does not.
+    await waitFor(() => expect(container.querySelector('[data-interactive] [data-element-id="el-a"]')).not.toBeNull())
+    expect(container.querySelector('[data-interactive] [data-element-id="el-b"]')).toBeNull()
+  })
+
+  // onSelectionChange fires with the selected element, and with null on deselect.
+  it('fires onSelectionChange on select and deselect', async () => {
+    const adapter = makeFakeAdapter()
+    const initial = makeProject()
+    const onSelectionChange = vi.fn()
+    const { container } = render(
+      <CarouselEditor project={initial} adapter={adapter} onProjectChange={vi.fn()} onSelectionChange={onSelectionChange} />,
+    )
+
+    const lastSelection = () => {
+      const calls = onSelectionChange.mock.calls
+      return calls[calls.length - 1]?.[0]
+    }
+
+    const wrapper = await waitFor(() => findInteractiveWrapper('el-img'))
+    await act(async () => { fireEvent.click(wrapper) })
+    await waitFor(() => {
+      expect(lastSelection()?.id).toBe('el-img')
+    })
+
+    // Click the interactive canvas background to clear selection.
+    const root = container.querySelector('[data-interactive]') as HTMLElement
+    await act(async () => { fireEvent.click(root) })
+    await waitFor(() => {
+      expect(lastSelection()).toBeNull()
+    })
+  })
 })

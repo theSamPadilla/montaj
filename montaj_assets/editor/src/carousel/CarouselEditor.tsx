@@ -151,7 +151,7 @@ function isTypingTarget(t: EventTarget | null): boolean {
 
 // ── CarouselEditor ────────────────────────────────────────────────────────────
 
-export default function CarouselEditor<P extends Project = Project>({ project: initialProject, adapter, onProjectChange, theme, slots }: Props<P>) {
+export default function CarouselEditor<P extends Project = Project>({ project: initialProject, adapter, onProjectChange, theme, slots, hiddenElementIds, onToggleElementVisibility, onSelectionChange }: Props<P>) {
   const state = useProjectState(adapter, initialProject.id, initialProject)
   const project = state.project
   const slides = project.slides ?? []
@@ -339,6 +339,12 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
   const selectedSlide = slides.find(s => s.id === selectedSlideId)
   const selectedElement = selectedSlide?.elements.find(el => el.id === selectedElementId)
 
+  // Notify the host of selection changes so it can drive selection-aware chrome
+  // (e.g. a regen action in a toolbar slot). Fires with the element or null.
+  useEffect(() => {
+    onSelectionChange?.(selectedElement ?? null)
+  }, [selectedElement, onSelectionChange])
+
   const [w, h] = project.settings.resolution
   const canvasContainerRef = useRef<HTMLDivElement>(null)
   const [canvasContainerSize, setCanvasContainerSize] = useState<{ w: number; h: number }>({ w: 600, h: 700 })
@@ -387,21 +393,24 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
           <span className="text-xs font-medium">Refresh</span>
         </button>
 
-        <button
-          onClick={handleRender}
-          disabled={rendering || project.status === 'pending' || slides.length === 0}
-          className="absolute top-3 right-3 z-30 flex items-center gap-2 px-3 py-2 rounded-md border border-blue-500/50 bg-blue-600/80 text-white hover:bg-blue-600 hover:border-blue-400 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-          title={
-            project.status === 'pending'
-              ? 'Wait for the agent to finish before rendering'
-              : slides.length === 0
-              ? 'Add slides before rendering'
-              : 'Render all slides as PNGs'
-          }
-        >
-          <Download size={18} />
-          <span className="text-xs font-medium">{rendering ? 'Starting…' : 'Render'}</span>
-        </button>
+        <div className="absolute top-3 right-3 z-30 flex items-center gap-2">
+          {slots?.toolbarActions}
+          <button
+            onClick={handleRender}
+            disabled={rendering || project.status === 'pending' || slides.length === 0}
+            className="flex items-center gap-2 px-3 py-2 rounded-md border border-blue-500/50 bg-blue-600/80 text-white hover:bg-blue-600 hover:border-blue-400 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+            title={
+              project.status === 'pending'
+                ? 'Wait for the agent to finish before rendering'
+                : slides.length === 0
+                ? 'Add slides before rendering'
+                : 'Render all slides as PNGs'
+            }
+          >
+            <Download size={18} />
+            <span className="text-xs font-medium">{rendering ? 'Starting…' : 'Render'}</span>
+          </button>
+        </div>
 
         {project.status === 'pending' ? (
           <div className="flex flex-col items-center gap-6 text-center max-w-lg w-full">
@@ -461,6 +470,7 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
                 updateImageCrop={state.updateImageCrop}
                 cropElementId={cropElementId}
                 onExitCrop={() => setCropElementId(null)}
+                hiddenElementIds={hiddenElementIds}
               />
             </div>
             <p className="flex-shrink-0 text-xs text-gray-500 text-center max-w-md">
@@ -505,6 +515,8 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
           onReorderElement={handleReorderElement}
           onEnterCrop={(_slideId, elementId) => { setSelectedElementId(elementId); setCropElementId(elementId) }}
           updateOverlayProp={state.updateOverlayProp}
+          hiddenElementIds={hiddenElementIds}
+          onToggleElementVisibility={onToggleElementVisibility}
         />
         {slots?.assetsPanel && (
           <div className="border-t border-gray-800 flex flex-col overflow-hidden" style={{ minHeight: 180 }}>

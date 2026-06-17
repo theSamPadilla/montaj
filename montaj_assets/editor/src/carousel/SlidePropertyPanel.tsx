@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Crop } from 'lucide-react'
+import { Crop, Eye, EyeOff } from 'lucide-react'
 import type {
   Project,
   Slide,
@@ -34,6 +34,37 @@ interface Props {
   updateOverlayProp?: (slideId: string, elementId: string, key: string, value: string) => Promise<void>
   // Adapter supplies overlay-schema listing (global + profile-scoped).
   adapter: EditorAdapter<Project>
+  // Editor-only element visibility (host-owned, non-persisted). When
+  // `onToggleElementVisibility` is supplied, an eye toggle is shown for the
+  // selected element; `hiddenElementIds` reflects the current hidden set.
+  hiddenElementIds?: string[]
+  onToggleElementVisibility?: (elementId: string) => void
+}
+
+// Small eye toggle to hide/show the selected element in the editor preview only
+// (never persisted). Absent host callback → not rendered.
+function HideToggle({
+  elementId,
+  isHidden,
+  onToggle,
+}: {
+  elementId: string
+  isHidden: boolean
+  onToggle?: (elementId: string) => void
+}) {
+  if (!onToggle) return null
+  return (
+    <button
+      type="button"
+      onClick={e => { e.stopPropagation(); onToggle(elementId) }}
+      title={isHidden ? 'Show in editor' : 'Hide from editor'}
+      aria-label={isHidden ? 'Show in editor' : 'Hide from editor'}
+      aria-pressed={isHidden}
+      className="text-gray-500 hover:text-white px-1"
+    >
+      {isHidden ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
+    </button>
+  )
 }
 
 function numInput(
@@ -146,6 +177,8 @@ export default function SlidePropertyPanel({
   onEnterCrop,
   updateOverlayProp,
   adapter,
+  hiddenElementIds,
+  onToggleElementVisibility,
 }: Props) {
   // Map of jsxPath → GlobalOverlay for overlay prop schemas
   const [overlaySchemas, setOverlaySchemas] = useState<Map<string, GlobalOverlay>>(new Map())
@@ -225,7 +258,12 @@ export default function SlidePropertyPanel({
             <span className="text-xs font-semibold text-gray-400 uppercase tracking-wider">
               {element.type === 'image' ? 'Image' : 'Overlay'}
             </span>
-            <div className="flex gap-1">
+            <div className="flex items-center gap-1">
+              <HideToggle
+                elementId={element.id}
+                isHidden={hiddenElementIds?.includes(element.id) ?? false}
+                onToggle={onToggleElementVisibility}
+              />
               <button
                 onClick={() => onReorderElement(slide.id, element.id, 'forward')}
                 className="text-xs text-gray-500 hover:text-white px-1"

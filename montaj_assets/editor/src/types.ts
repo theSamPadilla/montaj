@@ -406,6 +406,26 @@ export interface CarouselEditorProps<P extends Project = Project> {
   theme?: EditorTheme
   slots?: EditorSlots
   readOnly?: boolean
+  /**
+   * Editor-only set of element ids to hide from the interactive canvas. The host
+   * owns this state; the package never persists it (hidden elements are omitted
+   * from the canvas render only, never from `saveProject`). Lets a host
+   * temporarily hide a scrim/background to position overlays beneath it.
+   */
+  hiddenElementIds?: string[]
+  /**
+   * Invoked when the user toggles the selected element's editor-visibility via
+   * the property-panel eye button. The host updates its hidden-set and reflects
+   * it back through `hiddenElementIds`. Absent → no eye toggle is rendered.
+   */
+  onToggleElementVisibility?: (elementId: string) => void
+  /**
+   * Invoked whenever the selected element changes — with the element, or `null`
+   * when selection clears. Lets a host drive selection-aware chrome (e.g. a
+   * "regenerate image" action in a toolbar slot that targets the current
+   * selection). The package keeps owning selection state.
+   */
+  onSelectionChange?: (element: CarouselElement | null) => void
 }
 
 /**

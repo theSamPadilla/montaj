@@ -106,6 +106,13 @@ interface Props {
   // Crop mode is owned here but the entry trigger lives in the property panel.
   cropElementId?: string | null
   onExitCrop?: () => void
+
+  /**
+   * Editor-only element ids to omit from this canvas (non-persisted). Used by
+   * the host's visibility toggle to hide a scrim/background while positioning
+   * overlays beneath it. Absent → all elements render.
+   */
+  hiddenElementIds?: string[]
 }
 
 export default function SlideCanvas({
@@ -128,9 +135,11 @@ export default function SlideCanvas({
   updateImageCrop,
   cropElementId,
   onExitCrop,
+  hiddenElementIds,
 }: Props) {
   const sid = slideId ?? slide.id
   const resolveSrc = resolveImageSrc ?? ((el: ImageElement) => resolveAssetDefault(el.src))
+  const hiddenSet = hiddenElementIds && hiddenElementIds.length ? new Set(hiddenElementIds) : null
 
   // Refs to each element wrapper so gesture previews can mutate DOM directly.
   const wrapperRefs = useRef<Map<string, HTMLDivElement>>(new Map())
@@ -295,6 +304,7 @@ export default function SlideCanvas({
 
   return (
     <div
+      data-interactive={interactive ? 'true' : undefined}
       style={{
         width: displayW,
         height: displayH,
@@ -353,6 +363,8 @@ export default function SlideCanvas({
         )}
 
         {slide.elements.map((element) => {
+          // Editor-only visibility: omit hidden elements from this canvas.
+          if (hiddenSet?.has(element.id)) return null
           const isSelected = selectedElementId === element.id
           const inCrop = cropState?.elementId === element.id
           const isRotated = (element.rotation ?? 0) !== 0

@@ -9,6 +9,8 @@
 - **Undo / redo with keyboard shortcuts** — the editor now maintains a snapshot history. Cmd/Ctrl+Z steps back, Cmd/Ctrl+Shift+Z or Cmd/Ctrl+Y steps forward. Undo/Redo buttons in the toolbar reflect availability.
 - **Non-destructive 8-handle image cropping** — selecting an image element and entering crop mode via the panel reveals eight edge and corner handles. Dragging any handle adjusts the visible crop rectangle; confirming (Enter or clicking outside) writes the crop fractions to `project.json`. Cropping is disabled when the element is rotated. Applying a crop also updates the element's bounding box (crop-also-resizes), so the layout reflects the visible area.
 - **`mediaId` passthrough on image elements** — image overlay items may now carry an optional `mediaId` field (for host-side media tracking) that round-trips through the schema without affecting render behavior.
+- **Element visibility toggle** — the property panel now shows an eye toggle for the selected element. Hidden ids are passed in via the new `hiddenElementIds` prop and omitted from the interactive canvas only (editor-only, never persisted); the host owns the hidden-set and flips it via the `onToggleElementVisibility` callback. Lets you temporarily hide a scrim/background to position overlays beneath it.
+- **`onSelectionChange` callback + `toolbarActions` slot** — `<CarouselEditor>` now reports the selected element (or `null`) via `onSelectionChange`, and renders the host-injected `slots.toolbarActions` in the canvas toolbar (previously declared but unrendered). Together these let a host drive selection-aware chrome (e.g. a "regenerate image" action targeting the current selection).
 
 ### Video editor
 
