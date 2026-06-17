@@ -27,14 +27,18 @@ ok()    { printf '%b✓%b %s\n'   "$GREEN" "$RESET" "$1"; }
 warn()  { printf '%b⚠%b %s\n'   "$YELLOW" "$RESET" "$1"; }
 fail()  { printf '%b✗ %s%b\n'   "$RED"   "$1" "$RESET" >&2; exit 1; }
 
-trap 'fail "build failed — see output above"' ERR
+# On any failure, remove dist/ so a broken/partial build can never be picked up
+# by a subsequent `twine upload dist/*`. The verify step below is the common
+# trip-wire: it fails AFTER `python -m build` has produced a (bad) wheel, so
+# without this the rejected wheel would linger in dist/, publishable by mistake.
+trap 'rm -rf dist/; fail "build failed — see output above (dist/ removed so it cannot be published)"' ERR
 
 step "cleaning ${BOLD}dist/${RESET}, ${BOLD}build/${RESET}, ${BOLD}*.egg-info${RESET}"
 rm -rf dist/ build/ *.egg-info
 
 step "running ${BOLD}python -m build${RESET} ${DIM}(sdist + wheel; do NOT pass --wheel)${RESET}"
 .venv/bin/python -m build > /tmp/montaj-build.log 2>&1 \
-  || { cat /tmp/montaj-build.log; fail "python -m build failed"; }
+  || { cat /tmp/montaj-build.log; rm -rf dist/; fail "python -m build failed"; }
 ok   "sdist + wheel built ${DIM}(log: /tmp/montaj-build.log)${RESET}"
 
 step "verifying wheel contents"
