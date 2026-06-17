@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v3.0.1
+
 ## v3.0.0
 
 ### Carousel editor
