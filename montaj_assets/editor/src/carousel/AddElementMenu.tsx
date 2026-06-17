@@ -122,14 +122,14 @@ export default function AddElementMenu({ project, selectedSlideId, adapter, onAd
 
   return (
     <div className="flex flex-col gap-2">
-      <div className="flex items-center gap-2">
+      <div className="grid grid-cols-2 gap-2">
         {adapter.generateImage && (
           <Button
             size="sm"
             variant="outline"
             disabled={disabled}
             onClick={() => { setShowPrompt(p => !p); setGenError(null) }}
-            className="text-xs"
+            className="text-xs w-full justify-center whitespace-nowrap"
           >
             + AI Image
           </Button>
@@ -139,7 +139,7 @@ export default function AddElementMenu({ project, selectedSlideId, adapter, onAd
           variant="outline"
           disabled={disabled}
           onClick={() => fileInputRef.current?.click()}
-          className="text-xs"
+          className="text-xs w-full justify-center whitespace-nowrap"
         >
           + Upload Image
         </Button>
@@ -156,7 +156,7 @@ export default function AddElementMenu({ project, selectedSlideId, adapter, onAd
             variant="outline"
             disabled={disabled || addingText}
             onClick={handleAddText}
-            className="text-xs"
+            className="text-xs w-full justify-center whitespace-nowrap"
           >
             {addingText ? 'Adding…' : '+ Text'}
           </Button>
@@ -166,7 +166,7 @@ export default function AddElementMenu({ project, selectedSlideId, adapter, onAd
           variant="outline"
           disabled={disabled}
           onClick={() => setShowOverlayPicker(true)}
-          className="text-xs"
+          className="text-xs w-full justify-center whitespace-nowrap"
         >
           + Overlay
         </Button>

@@ -70,7 +70,7 @@ function SlideGrid({
   }
 
   return (
-    <div className="w-56 flex-shrink-0 flex flex-col border-r border-[var(--editor-border)] bg-[var(--editor-bg)] overflow-y-auto">
+    <div className="w-56 flex-shrink-0 flex flex-col border-r border-[var(--editor-border)] bg-[var(--editor-bg)] overflow-y-auto min-h-0 h-full">
       <div className="px-3 py-2 border-b border-[var(--editor-border)]">
         <span className="text-xs font-semibold text-[var(--editor-text)]/60 uppercase tracking-wider">Slides</span>
       </div>
@@ -365,10 +365,11 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
 
   return (
     <div ref={containerRef} className="flex flex-col h-full overflow-y-auto bg-[var(--editor-bg)]">
-      {/* TOP: slide rail | canvas | editing panel (right). Given a generous
-          viewport-relative height so the slide renders large; the project-media
-          region flows beneath and the whole editor scrolls vertically. */}
-      <div className="flex flex-shrink-0 min-h-[62vh] overflow-hidden">
+      {/* TOP: slide rail | canvas | editing panel (right). Fixed viewport-relative
+          height with min-h-0 so each of the three columns establishes its own
+          independent scroll context; the project-media region flows beneath and
+          the whole editor scrolls vertically. */}
+      <div className="flex flex-shrink-0 h-[78vh] min-h-0 overflow-hidden">
       <SlideGrid
         project={project}
         slides={slides}
@@ -382,40 +383,49 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
         compileOverlay={(t) => adapter.compileOverlay(t)}
       />
 
-      <div ref={canvasContainerRef} className="relative flex-1 flex flex-col items-center justify-center gap-4 overflow-hidden p-4">
-        <button
-          onClick={handleRefresh}
-          disabled={refreshing}
-          className={`absolute top-3 left-3 z-30 flex items-center gap-2 px-3 py-2 rounded-md border transition-colors ${
-            refreshState === 'err'
-              ? 'text-red-300 border-red-500/40 bg-red-950/60 hover:bg-red-900/70'
-              : 'text-[var(--editor-text)] border-[var(--editor-border)] bg-[var(--editor-surface)]/80 hover:text-[var(--editor-text)] hover:border-[var(--editor-accent)] hover:bg-[var(--editor-surface)]'
-          }`}
-          title={refreshState === 'err' ? 'Refresh failed — check connection' : 'Refresh project'}
-        >
-          {refreshState === 'err' ? <AlertCircle size={18} /> : <RefreshCw size={18} className={refreshing ? 'animate-spin' : ''} />}
-          <span className="text-xs font-medium">Refresh</span>
-        </button>
-
-        <div className="absolute top-3 right-3 z-30 flex items-center gap-2">
-          {slots?.toolbarActions}
+      {/* CANVAS COLUMN: a pinned toolbar row on top, then the independently
+          scrolling slide-rendering area below it. */}
+      <div className="relative flex-1 flex flex-col min-h-0 overflow-hidden">
+        {/* TOOLBAR ROW: Refresh on the left; host toolbar actions + Render on the
+            right. Pinned (shrink-0) above the scrolling canvas area. */}
+        <div className="flex-shrink-0 flex items-center justify-between gap-2 px-4 py-3 border-b border-[var(--editor-border)]">
           <button
-            onClick={handleRender}
-            disabled={rendering || project.status === 'pending' || slides.length === 0}
-            className="flex items-center gap-2 px-3 py-2 rounded-md border border-[var(--editor-accent)] bg-[var(--editor-accent)] text-[var(--editor-accent-foreground)] hover:opacity-90 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-            title={
-              project.status === 'pending'
-                ? 'Wait for the agent to finish before rendering'
-                : slides.length === 0
-                ? 'Add slides before rendering'
-                : 'Render all slides as PNGs'
-            }
+            onClick={handleRefresh}
+            disabled={refreshing}
+            className={`flex items-center gap-2 px-3 py-2 rounded-md border transition-colors ${
+              refreshState === 'err'
+                ? 'text-red-300 border-red-500/40 bg-red-950/60 hover:bg-red-900/70'
+                : 'text-[var(--editor-text)] border-[var(--editor-border)] bg-[var(--editor-surface)]/80 hover:text-[var(--editor-text)] hover:border-[var(--editor-accent)] hover:bg-[var(--editor-surface)]'
+            }`}
+            title={refreshState === 'err' ? 'Refresh failed — check connection' : 'Refresh project'}
           >
-            <Download size={18} />
-            <span className="text-xs font-medium">{rendering ? 'Starting…' : 'Render'}</span>
+            {refreshState === 'err' ? <AlertCircle size={18} /> : <RefreshCw size={18} className={refreshing ? 'animate-spin' : ''} />}
+            <span className="text-xs font-medium">Refresh</span>
           </button>
+
+          <div className="flex items-center gap-2">
+            {slots?.toolbarActions}
+            <button
+              onClick={handleRender}
+              disabled={rendering || project.status === 'pending' || slides.length === 0}
+              className="flex items-center gap-2 px-3 py-2 rounded-md border border-[var(--editor-accent)] bg-[var(--editor-accent)] text-[var(--editor-accent-foreground)] hover:opacity-90 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+              title={
+                project.status === 'pending'
+                  ? 'Wait for the agent to finish before rendering'
+                  : slides.length === 0
+                  ? 'Add slides before rendering'
+                  : 'Render all slides as PNGs'
+              }
+            >
+              <Download size={18} />
+              <span className="text-xs font-medium">{rendering ? 'Starting…' : 'Render'}</span>
+            </button>
+          </div>
         </div>
 
+        {/* SCROLL AREA: the slide viewport. ResizeObserver lives here so
+            canvasScale measures the slide-rendering area, not the toolbar. */}
+        <div ref={canvasContainerRef} className="relative flex-1 flex flex-col items-center justify-center gap-4 overflow-y-auto min-h-0 p-4">
         {project.status === 'pending' ? (
           <div className="flex flex-col items-center gap-6 text-center max-w-lg w-full">
             {slots?.pendingStatus ?? (
@@ -493,10 +503,11 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
           </div>
         )}
         </div>
+      </div>
 
         {/* RIGHT: the slide editor (add-element toolbar + property panel),
-            beside the canvas with its own vertical scroll. */}
-        <div className="w-[24rem] flex-shrink-0 border-l border-[var(--editor-border)] flex flex-col overflow-y-auto bg-[var(--editor-bg)]">
+            beside the canvas with its own independent vertical scroll. */}
+        <div className="w-[24rem] flex-shrink-0 border-l border-[var(--editor-border)] flex flex-col overflow-y-auto min-h-0 h-full bg-[var(--editor-bg)]">
           {selectedSlide && project.status !== 'pending' && (
             <div className="px-4 py-2 border-b border-[var(--editor-border)]">
               <AddElementMenu

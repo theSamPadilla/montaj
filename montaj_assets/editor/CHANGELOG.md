@@ -8,12 +8,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Carousel editor
 
-- Controls/inspector polish: the right-hand property panel was restyled into a
-  clean inspector — one consistent themed input style (`inspectorInputClass`)
-  across all fields, a real color swatch + hex for Background color (was a blank
-  box), a tidy X/Y/W/H transform grid, a segmented/grouped text-formatting
-  toolbar, and consistent themed buttons (secondary/danger). Styling only — no
-  behavior changes.
+- The editor controls (refresh / toolbar actions / render) now sit in a proper
+  toolbar row at the top of the canvas column instead of floating over the slide.
+- Add-element buttons (`+ AI Image` / `+ Upload Image` / `+ Text` / `+ Overlay`)
+  render in a 2×2 grid with no mid-label wrapping.
+- The three work-area columns (slides rail · canvas · controls) scroll
+  independently — scrolling one no longer moves the others.
+
+## 0.4.5
+
+### Carousel editor
+
+- Controls/inspector polish: the right-hand property panel restyled into a clean
+  inspector — one consistent themed input style across all fields, a real color
+  swatch + hex for Background color (was a blank box), a tidy X/Y/W/H transform
+  grid, a segmented text-formatting toolbar, and consistent themed buttons.
 
 ## 0.4.4
 
