@@ -154,6 +154,17 @@ async function main(projectJsonPath, { out, clean, scale = 1 }) {
               )
             )
 
+            // Wait for declared web fonts to be ready so text paints with the
+            // real family (e.g. Archivo Black) rather than a fallback — matching
+            // the editor preview. Raced against a 5s cap: a slow/blocked font
+            // fetch must never hang the render (it proceeds with the fallback).
+            await page.evaluate(() =>
+              Promise.race([
+                document.fonts ? document.fonts.ready : Promise.resolve(),
+                new Promise(r => setTimeout(r, 5000)),
+              ])
+            )
+
             await page.screenshot({
               path:            outFile,
               type:            'png',
@@ -211,6 +222,14 @@ async function bundleSlide({ slide, width, height, projectDir }) {
   const elements        = slide.elements ?? []
   const overlayElements = elements.filter(el => el.type === 'overlay' && el.overlay?.template)
   const uniqueTemplates = [...new Set(overlayElements.map(el => el.overlay.template))]
+
+  // Collect the Google Fonts every element on this slide declares. Mirrors the
+  // video renderer (bundle.js) and the editor preview (SlideCanvas →
+  // ensureGoogleFontsLoaded): inject the SAME font stylesheet so the headless
+  // Chromium render resolves identical glyphs/metrics to the on-device preview.
+  // Without this, heavy display families (e.g. "Archivo Black") fall through to
+  // whatever each platform's fallback chain has, so preview and final PNG drift.
+  const googleFonts = [...new Set(elements.flatMap(el => el.googleFonts ?? []))]
 
   // Build import lines + registry entries for each unique overlay
   const overlayImports  = uniqueTemplates.map((tpl, idx) =>
@@ -305,7 +324,7 @@ createRoot(document.getElementById('root')).render(
     logLevel: 'silent',
   })
 
-  writeFileSync(htmlPath, generateHtml(width, height))
+  writeFileSync(htmlPath, generateHtml(width, height, googleFonts))
 
   return workDir
 }
@@ -314,11 +333,20 @@ createRoot(document.getElementById('root')).render(
 // HTML page template
 // ---------------------------------------------------------------------------
 
-function generateHtml(width, height) {
+function generateHtml(width, height, googleFonts = []) {
+  // Each entry is appended verbatim as a `family=...` parameter on the Google
+  // Fonts CSS2 API URL (entries are pre-formatted, e.g. "Archivo+Black" /
+  // "Inter:wght@400;600;700;800" — spaces as '+'). We intentionally do NOT
+  // URL-encode: the API requires literal '+', ':', '@', ';'. Same shape the
+  // video renderer (bundle.js) and the editor preview emit.
+  const fontLinks = googleFonts.length === 0 ? '' : `
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?${googleFonts.map(f => `family=${f}`).join('&')}&display=swap">`
   return `<!DOCTYPE html>
 <html>
 <head>
-<meta charset="utf-8">
+<meta charset="utf-8">${fontLinks}
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
 html, body, #root {
