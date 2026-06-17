@@ -195,25 +195,31 @@ def _ensure_ui() -> bool:
         print(f"{red('error:')} npm not found \u2014 install Node.js >=18 first: {cyan('https://nodejs.org')}", file=sys.stderr)
         return False
 
-    # Four Node.js bundles ship with montaj. All four need `npm install`; only
-    # the UI needs build.
+    # Five Node.js bundles ship with montaj. All need `npm install`; only the
+    # UI needs build.
     #
-    # ORDERING IS LOAD-BEARING — overlay-runtime MUST stay first:
-    #   - In prod mode, the copytree loop below iterates `bundles` to copy each
-    #     source dir into BUILD_CACHE_DIR. The runtime must exist on disk
-    #     before render's `npm install` runs (render declares
+    # ORDERING IS LOAD-BEARING — each file: dependency must be staged before the
+    # bundle that links it:
+    #   - overlay-runtime MUST stay first: in prod mode the copytree loop below
+    #     copies each source dir into BUILD_CACHE_DIR, and the runtime must exist
+    #     on disk before render's `npm install` runs (render declares
     #     `montaj-overlay-runtime: file:../overlay-runtime`).
+    #   - editor MUST precede ui: the UI declares `@bycrux/editor: file:../editor`,
+    #     so `cache/editor` has to exist before ui's `npm install` resolves it.
+    #     (Omitting it makes ui's build fail with `TS2307: Cannot find module
+    #     '@bycrux/editor'` — the editor source never lands in the cache.)
     #   - In both dev and prod modes, ui/vite.config.ts hard-codes
     #     `resolve.alias` entries pointing at `../overlay-runtime/node_modules/*`
     #     for transitive deps that npm doesn't hoist out of file: symlinks
     #     (three, r3f, Phosphor, FontAwesome). Those node_modules MUST exist
     #     before UI's `npm run build` runs.
     #
-    # If you ever reorder this list, expect either render's install or UI's
-    # build to fail with confusing module-resolution errors.
+    # If you ever reorder this list, expect a file: dependency's install or the
+    # UI build to fail with confusing module-resolution errors.
     bundles = [
         ("overlay runtime", "overlay-runtime"),
         ("render engine", "render"),
+        ("editor", "editor"),
         ("UI", "ui"),
         ("MCP server", "mcp"),
     ]
