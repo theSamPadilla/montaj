@@ -148,6 +148,9 @@ describe('applyTheme', () => {
     expect(el.style.getPropertyValue('--editor-accent')).toBe(
       defaultMontajTheme.colors.accent,
     )
+    expect(el.style.getPropertyValue('--editor-accent-foreground')).toBe(
+      defaultMontajTheme.colors.accentForeground,
+    )
     expect(el.style.getPropertyValue('--editor-text')).toBe(
       defaultMontajTheme.colors.text,
     )
@@ -159,6 +162,18 @@ describe('applyTheme', () => {
     )
     expect(el.style.getPropertyValue('--editor-font-sans')).toBe(
       defaultMontajTheme.fonts.sans,
+    )
+  })
+
+  it('falls back accent-foreground to text when the theme omits it', () => {
+    const el = document.createElement('div')
+    const { accentForeground: _omit, ...colorsWithoutAccentFg } = defaultMontajTheme.colors
+    applyTheme(el, {
+      ...defaultMontajTheme,
+      colors: colorsWithoutAccentFg,
+    })
+    expect(el.style.getPropertyValue('--editor-accent-foreground')).toBe(
+      defaultMontajTheme.colors.text,
     )
   })
 

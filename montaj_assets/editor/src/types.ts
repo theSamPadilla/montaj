@@ -337,6 +337,11 @@ export interface EditorTheme {
     surface: string
     /** Primary interactive/brand accent. */
     accent: string
+    /**
+     * Readable foreground to pair with `accent` — e.g. dark text on a yellow
+     * accent button. Optional; when absent, `applyTheme` falls back to `text`.
+     */
+    accentForeground?: string
     /** Default text color. */
     text: string
     /** Hairline/divider color. */

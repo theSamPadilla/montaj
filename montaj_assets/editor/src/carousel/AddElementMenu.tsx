@@ -175,9 +175,9 @@ export default function AddElementMenu({ project, selectedSlideId, adapter, onAd
       {textError && <div className="text-xs text-red-400">{textError}</div>}
 
       {showPrompt && !disabled && (
-        <div className="flex flex-col gap-2 p-3 bg-gray-800 border border-gray-700 rounded-lg">
+        <div className="flex flex-col gap-2 p-3 bg-[var(--editor-surface)] border border-[var(--editor-border)] rounded-lg">
           <textarea
-            className="w-full bg-gray-900 border border-gray-700 rounded px-2 py-1.5 text-xs text-white placeholder-gray-500 resize-none focus:outline-none focus:border-gray-500"
+            className="w-full bg-[var(--editor-surface)] border border-[var(--editor-border)] rounded px-2 py-1.5 text-xs text-[var(--editor-text)] placeholder-[var(--editor-text)]/60 resize-none focus:outline-none focus:border-[var(--editor-accent)]"
             rows={3}
             placeholder="Describe the image to generate…"
             value={prompt}

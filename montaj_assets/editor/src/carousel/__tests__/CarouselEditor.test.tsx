@@ -97,10 +97,12 @@ describe('CarouselEditor — editor-core integration', () => {
       />,
     )
     await waitFor(() => getByTestId('assets'))
-    // Regression: the assets slot must be width-bounded to the sidebar (w-80) so a
-    // wide host panel can't blow out the right column and crush the flex-1 canvas.
+    // The assets slot now lives in the below-canvas region and fills the remaining
+    // width (flex-1) rather than being capped to a 320px sidebar — so a wide host
+    // panel uses its full share of the row without crushing the canvas above.
     const wrapper = getByTestId('assets').parentElement
-    expect(wrapper?.className).toContain('w-80')
+    expect(wrapper?.className).toContain('flex-1')
+    expect(wrapper?.className).not.toContain('w-80')
   })
 
   // Regression: SlideGrid thumbnails must receive `compileOverlay` so overlay

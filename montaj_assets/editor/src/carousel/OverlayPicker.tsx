@@ -98,12 +98,12 @@ export default function OverlayPicker({ open, onClose, project, adapter, onPick 
       className="fixed inset-0 bg-black/50 flex items-center justify-center z-50"
       onClick={(e) => { if (e.target === e.currentTarget) onClose() }}
     >
-      <div className="bg-gray-900 border border-gray-700 rounded-xl shadow-2xl w-full max-w-2xl max-h-[80vh] flex flex-col overflow-hidden">
-        <div className="flex items-center justify-between px-5 py-4 border-b border-gray-800">
-          <h2 className="text-sm font-semibold text-white">Add Overlay</h2>
+      <div className="bg-[var(--editor-surface)] border border-[var(--editor-border)] rounded-xl shadow-2xl w-full max-w-2xl max-h-[80vh] flex flex-col overflow-hidden">
+        <div className="flex items-center justify-between px-5 py-4 border-b border-[var(--editor-border)]">
+          <h2 className="text-sm font-semibold text-[var(--editor-text)]">Add Overlay</h2>
           <button
             onClick={onClose}
-            className="text-gray-500 hover:text-white transition-colors text-lg leading-none"
+            className="text-[var(--editor-text)]/60 hover:text-[var(--editor-text)] transition-colors text-lg leading-none"
           >
             ×
           </button>
@@ -111,13 +111,13 @@ export default function OverlayPicker({ open, onClose, project, adapter, onPick 
 
         <div className="flex-1 overflow-y-auto p-4">
           {loading && (
-            <div className="text-center text-gray-500 text-sm py-8">Loading overlays…</div>
+            <div className="text-center text-[var(--editor-text)]/60 text-sm py-8">Loading overlays…</div>
           )}
           {error && (
             <div className="text-center text-red-400 text-sm py-8">{error}</div>
           )}
           {!loading && !error && overlays.length === 0 && (
-            <div className="text-center text-gray-500 text-sm py-8">No overlays available</div>
+            <div className="text-center text-[var(--editor-text)]/60 text-sm py-8">No overlays available</div>
           )}
           {!loading && !error && overlays.length > 0 && (
             <div className="grid grid-cols-3 gap-3">
@@ -125,14 +125,14 @@ export default function OverlayPicker({ open, onClose, project, adapter, onPick 
                 <button
                   key={overlay.jsxPath}
                   onClick={() => handlePick(overlay)}
-                  className="text-left p-3 bg-gray-800 hover:bg-gray-700 border border-gray-700 hover:border-gray-500 rounded-lg transition-colors"
+                  className="text-left p-3 bg-[var(--editor-surface)] hover:opacity-90 border border-[var(--editor-border)] hover:border-[var(--editor-accent)] rounded-lg transition-colors"
                 >
-                  <div className="text-sm font-medium text-white truncate">{overlay.name}</div>
+                  <div className="text-sm font-medium text-[var(--editor-text)] truncate">{overlay.name}</div>
                   {overlay.group && (
-                    <div className="text-xs text-blue-400 mt-0.5 truncate">{overlay.group}</div>
+                    <div className="text-xs text-[var(--editor-accent)] mt-0.5 truncate">{overlay.group}</div>
                   )}
                   {overlay.description && (
-                    <div className="text-xs text-gray-400 mt-1 line-clamp-2">{overlay.description}</div>
+                    <div className="text-xs text-[var(--editor-text)]/60 mt-1 line-clamp-2">{overlay.description}</div>
                   )}
                 </button>
               ))}

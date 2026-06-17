@@ -386,7 +386,7 @@ export default function SlideCanvas({
             transformOrigin: 'center center',
             pointerEvents: interactive ? 'auto' : 'none',
             userSelect: 'none',
-            outline: isSelected ? '1px solid #3b82f6' : 'none',
+            outline: isSelected ? '1px solid var(--editor-selection)' : 'none',
             cursor: interactive ? 'grab' : 'default',
           }
 
@@ -442,13 +442,28 @@ export default function SlideCanvas({
                 />
               )
             ) : (
-              <OverlayErrorBoundary
-                label={element.overlay.template.split('/').pop() ?? element.overlay.template}
-                watchPath={element.overlay.template}
-                watchFile={watchFile}
+              // Overlays are authored in NATIVE slide pixels (fixed font sizes sized
+              // for element.w×element.h at full resolution). The wrapper is already
+              // shrunk to element.w*scale, so render the overlay at native size and
+              // CSS-scale it to fit — mirroring the renderer. Without this the
+              // native-size text overflows the shrunk box and overlaps (the box
+              // sizing only auto-fits resolution-independent content like <img>).
+              <div
+                style={{
+                  width: element.w,
+                  height: element.h,
+                  transform: `scale(${scale})`,
+                  transformOrigin: 'top left',
+                }}
               >
-                <OverlayElementView element={element} compileOverlay={compileOverlay} />
-              </OverlayErrorBoundary>
+                <OverlayErrorBoundary
+                  label={element.overlay.template.split('/').pop() ?? element.overlay.template}
+                  watchPath={element.overlay.template}
+                  watchFile={watchFile}
+                >
+                  <OverlayElementView element={element} compileOverlay={compileOverlay} />
+                </OverlayErrorBoundary>
+              </div>
             )
 
           return (
@@ -510,7 +525,7 @@ export default function SlideCanvas({
                           top,
                           width: HANDLE_SIZE,
                           height: HANDLE_SIZE,
-                          background: '#3b82f6',
+                          background: 'var(--editor-selection)',
                           border: '1px solid #fff',
                           borderRadius: 1,
                           cursor: h.cursor,
@@ -529,7 +544,7 @@ export default function SlideCanvas({
                       top: -ROTATE_OFFSET,
                       width: 1,
                       height: ROTATE_OFFSET,
-                      background: '#3b82f6',
+                      background: 'var(--editor-selection)',
                       pointerEvents: 'none',
                       zIndex: 9,
                     }}
@@ -559,7 +574,7 @@ export default function SlideCanvas({
                       top: -ROTATE_OFFSET - 14,
                       width: 14,
                       height: 14,
-                      background: '#3b82f6',
+                      background: 'var(--editor-selection)',
                       border: '2px solid #fff',
                       borderRadius: '50%',
                       cursor: 'crosshair',
@@ -575,7 +590,7 @@ export default function SlideCanvas({
                         bottom: -20,
                         left: 0,
                         fontSize: 10,
-                        color: '#93c5fd',
+                        color: 'var(--editor-selection)',
                         pointerEvents: 'none',
                         whiteSpace: 'nowrap',
                       }}

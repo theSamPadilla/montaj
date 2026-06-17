@@ -60,7 +60,7 @@ function HideToggle({
       title={isHidden ? 'Show in editor' : 'Hide from editor'}
       aria-label={isHidden ? 'Show in editor' : 'Hide from editor'}
       aria-pressed={isHidden}
-      className="text-gray-500 hover:text-white px-1"
+      className="text-[var(--editor-text)]/60 hover:text-[var(--editor-text)] px-1"
     >
       {isHidden ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
     </button>
@@ -75,7 +75,7 @@ function numInput(
 ) {
   return (
     <label className="flex flex-col gap-0.5">
-      <span className="text-xs text-gray-500">{label}</span>
+      <span className="text-xs text-[var(--editor-text)]/60">{label}</span>
       <input
         type="number"
         value={value}
@@ -86,7 +86,7 @@ function numInput(
           const parsed = parseNumber(e.target.value)
           if (parsed !== null) onChange(parsed)
         }}
-        className="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs text-white focus:outline-none focus:border-gray-500 w-full"
+        className="bg-[var(--editor-surface)] border border-[var(--editor-border)] rounded px-2 py-1 text-xs text-[var(--editor-text)] focus:outline-none focus:border-[var(--editor-accent)] w-full"
       />
     </label>
   )
@@ -110,9 +110,9 @@ function PropEditor({
           type="checkbox"
           checked={Boolean(value)}
           onChange={e => onChange(e.target.checked)}
-          className="accent-blue-500"
+          className="accent-[var(--editor-accent)]"
         />
-        <span className="text-xs text-gray-300">{name}</span>
+        <span className="text-xs text-[var(--editor-text)]">{name}</span>
       </label>
     )
   }
@@ -120,12 +120,12 @@ function PropEditor({
   if (type === 'color') {
     return (
       <label className="flex flex-col gap-0.5" title={description}>
-        <span className="text-xs text-gray-500">{name}</span>
+        <span className="text-xs text-[var(--editor-text)]/60">{name}</span>
         <input
           type="color"
           value={String(value ?? '#000000')}
           onChange={e => onChange(e.target.value)}
-          className="w-full h-7 bg-gray-800 border border-gray-700 rounded cursor-pointer"
+          className="w-full h-7 bg-[var(--editor-surface)] border border-[var(--editor-border)] rounded cursor-pointer"
         />
       </label>
     )
@@ -134,7 +134,7 @@ function PropEditor({
   if (type === 'int' || type === 'float') {
     return (
       <label className="flex flex-col gap-0.5" title={description}>
-        <span className="text-xs text-gray-500">{name}</span>
+        <span className="text-xs text-[var(--editor-text)]/60">{name}</span>
         <input
           type="number"
           value={Number(value ?? 0)}
@@ -143,7 +143,7 @@ function PropEditor({
             const parsed = parseNumber(e.target.value)
             if (parsed !== null) onChange(parsed)
           }}
-          className="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs text-white focus:outline-none focus:border-gray-500 w-full"
+          className="bg-[var(--editor-surface)] border border-[var(--editor-border)] rounded px-2 py-1 text-xs text-[var(--editor-text)] focus:outline-none focus:border-[var(--editor-accent)] w-full"
         />
       </label>
     )
@@ -152,12 +152,12 @@ function PropEditor({
   // string fallback
   return (
     <label className="flex flex-col gap-0.5" title={description}>
-      <span className="text-xs text-gray-500">{name}</span>
+      <span className="text-xs text-[var(--editor-text)]/60">{name}</span>
       <input
         type="text"
         value={String(value ?? '')}
         onChange={e => onChange(e.target.value)}
-        className="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs text-white focus:outline-none focus:border-gray-500 w-full"
+        className="bg-[var(--editor-surface)] border border-[var(--editor-border)] rounded px-2 py-1 text-xs text-[var(--editor-text)] focus:outline-none focus:border-[var(--editor-accent)] w-full"
       />
     </label>
   )
@@ -206,7 +206,7 @@ export default function SlidePropertyPanel({
 
   if (!slide) {
     return (
-      <div className="w-80 flex-shrink-0 flex items-center justify-center text-gray-600 text-xs p-4">
+      <div className="w-80 flex-shrink-0 flex items-center justify-center text-[var(--editor-text)]/40 text-xs p-4">
         Select a slide
       </div>
     )
@@ -216,18 +216,18 @@ export default function SlidePropertyPanel({
   const overlaySchema = overlayEl ? overlaySchemas.get(overlayEl.overlay.template) : null
 
   return (
-    <div className="w-80 flex-shrink-0 border-l border-gray-800 flex flex-col overflow-y-auto bg-gray-950">
+    <div className="w-80 flex-shrink-0 border-l border-[var(--editor-border)] flex flex-col overflow-y-auto bg-[var(--editor-bg)]">
       {/* Slide header */}
-      <div className="px-4 py-3 border-b border-gray-800">
-        <div className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">Slide</div>
+      <div className="px-4 py-3 border-b border-[var(--editor-border)]">
+        <div className="text-xs font-semibold text-[var(--editor-text)]/60 uppercase tracking-wider mb-2">Slide</div>
         <div className="flex flex-col gap-2">
           <label className="flex flex-col gap-0.5">
-            <span className="text-xs text-gray-500">Background color</span>
+            <span className="text-xs text-[var(--editor-text)]/60">Background color</span>
             <input
               type="color"
               value={slide.base_color || '#ffffff'}
               onChange={e => onSlideChange({ base_color: e.target.value })}
-              className="w-full h-7 bg-gray-800 border border-gray-700 rounded cursor-pointer"
+              className="w-full h-7 bg-[var(--editor-surface)] border border-[var(--editor-border)] rounded cursor-pointer"
             />
           </label>
           <div className="flex gap-2">
@@ -255,7 +255,7 @@ export default function SlidePropertyPanel({
       {element && (
         <div className="px-4 py-3 flex flex-col gap-3">
           <div className="flex items-center justify-between">
-            <span className="text-xs font-semibold text-gray-400 uppercase tracking-wider">
+            <span className="text-xs font-semibold text-[var(--editor-text)]/60 uppercase tracking-wider">
               {element.type === 'image' ? 'Image' : 'Overlay'}
             </span>
             <div className="flex items-center gap-1">
@@ -266,14 +266,14 @@ export default function SlidePropertyPanel({
               />
               <button
                 onClick={() => onReorderElement(slide.id, element.id, 'forward')}
-                className="text-xs text-gray-500 hover:text-white px-1"
+                className="text-xs text-[var(--editor-text)]/60 hover:text-[var(--editor-text)] px-1"
                 title="Bring forward"
               >
                 ↑
               </button>
               <button
                 onClick={() => onReorderElement(slide.id, element.id, 'backward')}
-                className="text-xs text-gray-500 hover:text-white px-1"
+                className="text-xs text-[var(--editor-text)]/60 hover:text-[var(--editor-text)] px-1"
                 title="Send backward"
               >
                 ↓
@@ -294,8 +294,8 @@ export default function SlidePropertyPanel({
           {element.type === 'image' && (
             <div className="flex flex-col gap-1.5">
               <div className="flex flex-col gap-0.5">
-                <span className="text-xs text-gray-500">Source</span>
-                <span className="text-xs text-gray-300 truncate" title={element.src}>
+                <span className="text-xs text-[var(--editor-text)]/60">Source</span>
+                <span className="text-xs text-[var(--editor-text)] truncate" title={element.src}>
                   {element.src.split('/').pop() || element.src}
                 </span>
               </div>
@@ -335,12 +335,12 @@ export default function SlidePropertyPanel({
               </div>
 
               {schemasLoading && (
-                <div className="text-xs text-gray-500">Loading overlay props…</div>
+                <div className="text-xs text-[var(--editor-text)]/60">Loading overlay props…</div>
               )}
 
               {!schemasLoading && overlaySchema && overlaySchema.props.length > 0 && (
                 <div className="flex flex-col gap-2">
-                  <span className="text-xs text-gray-500 font-medium">Props</span>
+                  <span className="text-xs text-[var(--editor-text)]/60 font-medium">Props</span>
                   {overlaySchema.props.map(prop => (
                     <PropEditor
                       key={prop.name}

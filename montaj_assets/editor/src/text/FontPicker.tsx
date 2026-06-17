@@ -95,7 +95,7 @@ export function FontFamilyPicker({ value, onChange, disabled, className, buttonC
         onClick={() => setOpen((o) => !o)}
         className={
           buttonClassName ??
-          'flex w-full items-center gap-1 rounded-md border border-gray-600 bg-gray-800 px-2 py-1 text-sm text-gray-100 hover:bg-gray-700 focus:outline-none focus:ring-1 focus:ring-blue-500 disabled:opacity-50'
+          'flex w-full items-center gap-1 rounded-md border border-[var(--editor-border)] bg-[var(--editor-surface)] px-2 py-1 text-sm text-[var(--editor-text)] hover:opacity-90 focus:outline-none focus:ring-1 focus:ring-[var(--editor-accent)] disabled:opacity-50'
         }
         style={displayStyle}
         aria-haspopup="listbox"
@@ -109,7 +109,7 @@ export function FontFamilyPicker({ value, onChange, disabled, className, buttonC
       {open && (
         <div
           role="listbox"
-          className="absolute right-0 z-50 mt-1 max-h-80 w-60 overflow-y-auto rounded-md border border-gray-600 bg-gray-800 shadow-xl ring-1 ring-black/20"
+          className="absolute right-0 z-50 mt-1 max-h-80 w-60 overflow-y-auto rounded-md border border-[var(--editor-border)] bg-[var(--editor-surface)] shadow-xl ring-1 ring-black/20"
         >
           <ul className="py-1">
             {FONT_OPTIONS.map((opt) => {
@@ -125,14 +125,14 @@ export function FontFamilyPicker({ value, onChange, disabled, className, buttonC
                       setOpen(false)
                     }}
                     style={{ fontFamily: opt.value }}
-                    className={`flex w-full items-center justify-between px-3 py-2 text-left text-[15px] leading-tight text-gray-100 hover:bg-gray-700 focus:bg-gray-700 focus:outline-none ${
-                      isActive ? 'bg-gray-700 font-medium' : ''
+                    className={`flex w-full items-center justify-between px-3 py-2 text-left text-[15px] leading-tight text-[var(--editor-text)] hover:bg-[var(--editor-accent)]/20 focus:bg-[var(--editor-accent)]/20 focus:outline-none ${
+                      isActive ? 'bg-[var(--editor-accent)]/20 font-medium' : ''
                     }`}
                   >
                     <span className="truncate">{opt.label}</span>
                     {isActive && (
                       <span
-                        className="ml-2 shrink-0 text-xs text-gray-400"
+                        className="ml-2 shrink-0 text-xs text-[var(--editor-text)]/60"
                         style={{ fontFamily: 'system-ui, sans-serif' }}
                       >
                         ✓
@@ -210,7 +210,7 @@ export function FontSizePicker({ value, onChange, disabled, min = 8, max = 9999,
       }}
       className={
         className ??
-        'w-14 rounded-md border border-gray-600 bg-gray-800 px-2 py-1 text-sm text-gray-100 focus:outline-none focus:ring-1 focus:ring-blue-500 disabled:opacity-50'
+        'w-14 rounded-md border border-[var(--editor-border)] bg-[var(--editor-surface)] px-2 py-1 text-sm text-[var(--editor-text)] focus:outline-none focus:ring-1 focus:ring-[var(--editor-accent)] disabled:opacity-50'
       }
       aria-label="Font size"
     />

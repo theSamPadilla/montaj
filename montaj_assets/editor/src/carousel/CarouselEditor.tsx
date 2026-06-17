@@ -70,9 +70,9 @@ function SlideGrid({
   }
 
   return (
-    <div className="w-56 flex-shrink-0 flex flex-col border-r border-gray-800 bg-gray-950 overflow-y-auto">
-      <div className="px-3 py-2 border-b border-gray-800">
-        <span className="text-xs font-semibold text-gray-400 uppercase tracking-wider">Slides</span>
+    <div className="w-56 flex-shrink-0 flex flex-col border-r border-[var(--editor-border)] bg-[var(--editor-bg)] overflow-y-auto">
+      <div className="px-3 py-2 border-b border-[var(--editor-border)]">
+        <span className="text-xs font-semibold text-[var(--editor-text)]/60 uppercase tracking-wider">Slides</span>
       </div>
       <div className="flex-1 overflow-y-auto py-2 flex flex-col gap-2 px-2">
         {slides.map((slide, idx) => (
@@ -86,10 +86,10 @@ function SlideGrid({
             onClick={() => onSelect(slide.id)}
             className={`group relative cursor-pointer rounded overflow-hidden border transition-colors ${
               selectedSlideId === slide.id
-                ? 'border-blue-500'
+                ? 'border-[var(--editor-accent)]'
                 : dragOverIdx === idx
-                ? 'border-blue-400 opacity-70'
-                : 'border-gray-700 hover:border-gray-500'
+                ? 'border-[var(--editor-accent)] opacity-70'
+                : 'border-[var(--editor-border)] hover:border-[var(--editor-accent)]'
             }`}
             style={{ width: THUMB_W, height: thumbH }}
           >
@@ -116,7 +116,7 @@ function SlideGrid({
           </div>
         ))}
       </div>
-      <div className="p-2 border-t border-gray-800">
+      <div className="p-2 border-t border-[var(--editor-border)]">
         <Button size="sm" variant="outline" onClick={onAdd} className="w-full text-xs">
           + Add Slide
         </Button>
@@ -364,7 +364,9 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
   const canvasScale = Math.min(availW / w, availH / h, 1)
 
   return (
-    <div ref={containerRef} className="flex h-full overflow-hidden bg-gray-950">
+    <div ref={containerRef} className="flex flex-col h-full overflow-hidden bg-[var(--editor-bg)]">
+      {/* TOP: slide rail + canvas, fills remaining height */}
+      <div className="flex flex-1 min-h-0 overflow-hidden">
       <SlideGrid
         project={project}
         slides={slides}
@@ -385,7 +387,7 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
           className={`absolute top-3 left-3 z-30 flex items-center gap-2 px-3 py-2 rounded-md border transition-colors ${
             refreshState === 'err'
               ? 'text-red-300 border-red-500/40 bg-red-950/60 hover:bg-red-900/70'
-              : 'text-gray-200 border-gray-700 bg-gray-900/80 hover:text-white hover:border-gray-500 hover:bg-gray-800'
+              : 'text-[var(--editor-text)] border-[var(--editor-border)] bg-[var(--editor-surface)]/80 hover:text-[var(--editor-text)] hover:border-[var(--editor-accent)] hover:bg-[var(--editor-surface)]'
           }`}
           title={refreshState === 'err' ? 'Refresh failed — check connection' : 'Refresh project'}
         >
@@ -398,7 +400,7 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
           <button
             onClick={handleRender}
             disabled={rendering || project.status === 'pending' || slides.length === 0}
-            className="flex items-center gap-2 px-3 py-2 rounded-md border border-blue-500/50 bg-blue-600/80 text-white hover:bg-blue-600 hover:border-blue-400 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+            className="flex items-center gap-2 px-3 py-2 rounded-md border border-[var(--editor-accent)] bg-[var(--editor-accent)] text-[var(--editor-accent-foreground)] hover:opacity-90 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
             title={
               project.status === 'pending'
                 ? 'Wait for the agent to finish before rendering'
@@ -416,15 +418,15 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
           <div className="flex flex-col items-center gap-6 text-center max-w-lg w-full">
             {slots?.pendingStatus ?? (
               <div className="flex flex-col items-center gap-2">
-                <p className="text-white text-lg font-semibold">Message your agent to start</p>
-                <p className="text-gray-400 text-sm">Nothing will happen automatically. Copy this and send it to your agent.</p>
+                <p className="text-[var(--editor-text)] text-lg font-semibold">Message your agent to start</p>
+                <p className="text-[var(--editor-text)]/60 text-sm">Nothing will happen automatically. Copy this and send it to your agent.</p>
               </div>
             )}
             {!slots?.pendingStatus && skillPath && (
-              <div className="w-full rounded-xl border-2 border-blue-400/50 bg-gray-900 p-5 flex flex-col gap-3 text-left shadow-lg shadow-blue-400/10">
-                <p className="text-blue-400 text-xs font-bold uppercase tracking-widest">Send this to your agent</p>
+              <div className="w-full rounded-xl border-2 border-[var(--editor-accent)] bg-[var(--editor-surface)] p-5 flex flex-col gap-3 text-left shadow-lg shadow-[var(--editor-accent)]/10">
+                <p className="text-[var(--editor-accent)] text-xs font-bold uppercase tracking-widest">Send this to your agent</p>
                 <div className="flex items-start justify-between bg-black/60 border border-transparent rounded-lg px-3 py-3 font-mono gap-3">
-                  <span className="text-gray-200 text-[12px] leading-relaxed break-all">
+                  <span className="text-[var(--editor-text)] text-[12px] leading-relaxed break-all">
                     There is a new project pending: &quot;{project.name ?? project.id}&quot;. Please see @{skillPath} and start. Talk to me if you run into questions.
                   </span>
                   <button
@@ -436,7 +438,7 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
                       setTimeout(() => setCopied(false), 2000)
                     }}
                     className={`shrink-0 flex items-center gap-1.5 text-xs font-medium px-3 py-1.5 rounded-md transition-colors ${
-                      copied ? 'bg-green-700 text-green-200' : 'bg-white/10 text-gray-300 hover:bg-white/20 hover:text-white'
+                      copied ? 'bg-green-700 text-green-200' : 'bg-white/10 text-[var(--editor-text)] hover:bg-white/20 hover:text-[var(--editor-text)]'
                     }`}
                     title="Copy prompt"
                   >
@@ -445,7 +447,7 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
                 </div>
               </div>
             )}
-            <p className="text-gray-600 text-xs font-mono">project id: {project.id}</p>
+            <p className="text-[var(--editor-text)]/40 text-xs font-mono">project id: {project.id}</p>
           </div>
         ) : selectedSlide ? (
           <>
@@ -473,12 +475,12 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
                 hiddenElementIds={hiddenElementIds}
               />
             </div>
-            <p className="flex-shrink-0 text-xs text-gray-500 text-center max-w-md">
+            <p className="flex-shrink-0 text-xs text-[var(--editor-text)]/60 text-center max-w-md">
               Drag to reposition, resize/rotate via handles, double-click text to edit. Cmd/Ctrl+Z to undo.
             </p>
           </>
         ) : (
-          <div className="text-gray-600 text-sm">No slides yet. Add one in the left panel.</div>
+          <div className="text-[var(--editor-text)]/40 text-sm">No slides yet. Add one in the left panel.</div>
         )}
 
         {state.lastError && (
@@ -488,11 +490,14 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
             <button onClick={state.clearError} className="ml-2 underline">dismiss</button>
           </div>
         )}
+        </div>
       </div>
 
-      <div className="flex-shrink-0 flex flex-col overflow-hidden">
+      {/* BELOW: the panels, full width under the canvas. Bounded height with
+          internal scrolling so it never crushes the canvas above. */}
+      <div className="flex-shrink-0 border-t border-[var(--editor-border)] bg-[var(--editor-bg)] overflow-hidden flex flex-col" style={{ maxHeight: '40%' }}>
         {selectedSlide && project.status !== 'pending' && (
-          <div className="px-4 py-2 border-l border-b border-gray-800 bg-gray-950">
+          <div className="px-4 py-2 border-b border-[var(--editor-border)] bg-[var(--editor-bg)]">
             <AddElementMenu
               project={project}
               selectedSlideId={selectedSlideId}
@@ -501,32 +506,35 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
             />
           </div>
         )}
-        <SlidePropertyPanel
-          project={project}
-          slide={selectedSlide}
-          element={selectedElement}
-          adapter={adapter}
-          onSlideChange={handleSlideChange}
-          onElementChange={handlePanelElementChange}
-          onDeleteSlide={handleDeleteSlide}
-          onDuplicateSlide={handleDuplicateSlide}
-          onDeleteElement={handleDeleteElement}
-          onDuplicateElement={handleDuplicateElement}
-          onReorderElement={handleReorderElement}
-          onEnterCrop={(_slideId, elementId) => { setSelectedElementId(elementId); setCropElementId(elementId) }}
-          updateOverlayProp={state.updateOverlayProp}
-          hiddenElementIds={hiddenElementIds}
-          onToggleElementVisibility={onToggleElementVisibility}
-        />
-        {slots?.assetsPanel && (
-          // Bound the assets slot to the sidebar width (matches SlidePropertyPanel's
-          // w-80) and scroll vertically. Without a width cap, a wide host panel
-          // (e.g. a full media-library card) blows out this column and crushes the
-          // flex-1 canvas. Host content lays out within the 320px sidebar.
-          <div className="w-80 flex-shrink-0 border-t border-gray-800 flex flex-col overflow-y-auto overflow-x-hidden" style={{ minHeight: 180 }}>
-            {slots.assetsPanel}
+        <div className="flex flex-1 min-h-0 overflow-hidden">
+          <div className="w-80 flex-shrink-0 overflow-y-auto border-r border-[var(--editor-border)]">
+            <SlidePropertyPanel
+              project={project}
+              slide={selectedSlide}
+              element={selectedElement}
+              adapter={adapter}
+              onSlideChange={handleSlideChange}
+              onElementChange={handlePanelElementChange}
+              onDeleteSlide={handleDeleteSlide}
+              onDuplicateSlide={handleDuplicateSlide}
+              onDeleteElement={handleDeleteElement}
+              onDuplicateElement={handleDuplicateElement}
+              onReorderElement={handleReorderElement}
+              onEnterCrop={(_slideId, elementId) => { setSelectedElementId(elementId); setCropElementId(elementId) }}
+              updateOverlayProp={state.updateOverlayProp}
+              hiddenElementIds={hiddenElementIds}
+              onToggleElementVisibility={onToggleElementVisibility}
+            />
           </div>
-        )}
+          {slots?.assetsPanel && (
+            // Below the canvas the assets slot fills the remaining width (no longer
+            // capped to a 320px sidebar) and scrolls vertically within the bounded
+            // below-canvas region.
+            <div className="flex-1 min-w-0 flex flex-col overflow-y-auto overflow-x-hidden">
+              {slots.assetsPanel}
+            </div>
+          )}
+        </div>
       </div>
 
       {renderOpen && (
