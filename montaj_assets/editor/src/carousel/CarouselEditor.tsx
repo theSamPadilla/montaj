@@ -490,7 +490,7 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
         )}
       </div>
 
-      <div className="flex flex-col overflow-hidden">
+      <div className="flex-shrink-0 flex flex-col overflow-hidden">
         {selectedSlide && project.status !== 'pending' && (
           <div className="px-4 py-2 border-l border-b border-gray-800 bg-gray-950">
             <AddElementMenu
@@ -519,7 +519,11 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
           onToggleElementVisibility={onToggleElementVisibility}
         />
         {slots?.assetsPanel && (
-          <div className="border-t border-gray-800 flex flex-col overflow-hidden" style={{ minHeight: 180 }}>
+          // Bound the assets slot to the sidebar width (matches SlidePropertyPanel's
+          // w-80) and scroll vertically. Without a width cap, a wide host panel
+          // (e.g. a full media-library card) blows out this column and crushes the
+          // flex-1 canvas. Host content lays out within the 320px sidebar.
+          <div className="w-80 flex-shrink-0 border-t border-gray-800 flex flex-col overflow-y-auto overflow-x-hidden" style={{ minHeight: 180 }}>
             {slots.assetsPanel}
           </div>
         )}

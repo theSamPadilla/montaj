@@ -8,6 +8,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Carousel editor
 
+- Fix: bound the `assetsPanel` slot to the sidebar width (`w-80`) with vertical
+  scroll. Without a width cap, a wide host panel (e.g. a full media-library card)
+  blew out the right column and crushed the `flex-1` editing canvas to a sliver.
+
+## 0.4.0
+
+### Carousel editor
+
 - New public `ReadOnlySlide` read-only renderer (with optional auto-fit): a thin
   wrapper over the non-interactive `SlideCanvas` exposing only read-only props,
   optionally measuring its sized parent to fit the slide.
