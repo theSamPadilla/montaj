@@ -33,7 +33,7 @@ import type {
   GlobalOverlay,
   VersionEntry,
   WaveformChunk,
-} from '@devbycrux/editor'
+} from '@bycrux/editor'
 // Montaj instantiates the editor's generic adapter with its full project type,
 // so loaded/saved/streamed frames keep Montaj's pipeline fields end-to-end.
 import type { Project } from '@/lib/types/schema'

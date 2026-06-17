@@ -9,9 +9,9 @@ import type {
   Asset,
   Slide,
   EditorProject,
-} from '@devbycrux/editor'
+} from '@bycrux/editor'
 
-// Editor-facing types now live in @devbycrux/editor. Re-exported here so existing
+// Editor-facing types now live in @bycrux/editor. Re-exported here so existing
 // `@/lib/types/schema` importers keep resolving them unchanged.
 export type {
   Word,
@@ -25,7 +25,7 @@ export type {
   CarouselElement,
   Slide,
   EditorProject,
-} from '@devbycrux/editor'
+} from '@bycrux/editor'
 
 export interface Workflow {
   name: string

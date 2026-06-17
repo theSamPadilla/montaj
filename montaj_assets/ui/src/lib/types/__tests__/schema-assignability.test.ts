@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import type { EditorProject } from '@devbycrux/editor'
+import type { EditorProject } from '@bycrux/editor'
 import type { Project } from '../schema'
 
 // A full Montaj Project — including pipeline/agent-only fields — must remain

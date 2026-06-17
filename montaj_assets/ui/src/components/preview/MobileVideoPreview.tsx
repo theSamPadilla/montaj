@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import MobileProjectHeader from '@/components/MobileProjectHeader'
-import { PreviewPlayer } from '@devbycrux/editor'
+import { PreviewPlayer } from '@bycrux/editor'
 import { createMontajAdapter } from '@/app/editor/montajAdapter'
 import MobileRenderModal from '@/components/MobileRenderModal'
 import { Button } from '@/components/ui/button'

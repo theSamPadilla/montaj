@@ -5,7 +5,7 @@ import { ProjectContext, type Asset, type Project, type RunSnapshot } from '@/li
 import { useProjectStream } from '@/lib/sse'
 import { createMontajAdapter } from './montajAdapter'
 import { useIsMobile } from '@/lib/useIsMobile'
-import { CarouselEditor, VideoEditor, defaultMontajTheme, type EditorSlots } from '@devbycrux/editor'
+import { CarouselEditor, VideoEditor, defaultMontajTheme, type EditorSlots } from '@bycrux/editor'
 import AssetsPanel from '@/components/AssetsPanel'
 import ProjectHeader from '@/components/ProjectHeader'
 import RerunModal from '@/components/RerunModal'

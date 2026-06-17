@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# release-editor.sh — version + publish @devbycrux/editor (montaj_assets/editor).
+# release-editor.sh — version + publish @bycrux/editor (montaj_assets/editor).
 #
 # Wraps the editor-package release flow documented in RELEASE.md:
 #   1. Detects whether the package changed since the last `editor-v*` tag.
@@ -33,14 +33,14 @@
 #   - npm versions are IMMUTABLE — a bad publish means bumping again.
 #   - Publishing is independent of Montaj's own version (do NOT use version-bump.sh).
 #   - Requires a clean working tree and either NPM_TOKEN (preferred) or an npm
-#     login with publish rights to the `devbycrux` org.
+#     login with publish rights to the `bycrux` org.
 
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PKG_DIR="$ROOT/montaj_assets/editor"
 UI_DIR="$ROOT/montaj_assets/ui"
-PKG_NAME="@devbycrux/editor"
+PKG_NAME="@bycrux/editor"
 TAG_PREFIX="editor-v"
 
 LEVEL="auto"

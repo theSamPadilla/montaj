@@ -1,4 +1,4 @@
-# @devbycrux/editor
+# @bycrux/editor
 
 Host-agnostic carousel editor for the ByCrux platform. Ships raw TypeScript/TSX source — the consuming application is responsible for transpilation.
 
@@ -14,10 +14,10 @@ The package owns:
 
 ## Install
 
-The package is published publicly to the npm registry under the `@devbycrux` org.
+The package is published publicly to the npm registry under the `@bycrux` org.
 
 ```bash
-npm install @devbycrux/editor
+npm install @bycrux/editor
 ```
 
 ---
@@ -35,7 +35,7 @@ Add the package source to your Tailwind `content` array so utility classes are n
 export default {
   content: [
     './src/**/*.{ts,tsx}',
-    'node_modules/@devbycrux/editor/src/**/*.{ts,tsx}', // required
+    'node_modules/@bycrux/editor/src/**/*.{ts,tsx}', // required
   ],
   // ...
 }
@@ -52,7 +52,7 @@ export default defineConfig({
     dedupe: ['react', 'react-dom'],
   },
   optimizeDeps: {
-    include: ['@devbycrux/editor'],
+    include: ['@bycrux/editor'],
   },
 })
 ```
@@ -64,7 +64,7 @@ For Next.js consumers, add the package to `transpilePackages` so Next's compiler
 ```ts
 // next.config.ts
 const nextConfig = {
-  transpilePackages: ['@devbycrux/editor'],
+  transpilePackages: ['@bycrux/editor'],
 }
 export default nextConfig
 ```
@@ -104,8 +104,8 @@ The editor is host-agnostic. You supply an `EditorAdapter` that wires up your tr
 ### Rendering the editor
 
 ```tsx
-import { CarouselEditor } from '@devbycrux/editor'
-import type { EditorAdapter, EditorProject } from '@devbycrux/editor'
+import { CarouselEditor } from '@bycrux/editor'
+import type { EditorAdapter, EditorProject } from '@bycrux/editor'
 
 // Your adapter wired to your host's transport
 const adapter: EditorAdapter = { /* ... */ }
@@ -162,4 +162,4 @@ Your extra fields survive the edit cycle without casts.
 ## Notes
 
 - `compileOverlay` is **always host-supplied**. The package carries no overlay runtime, no Three.js, and no Babel compiler. Montaj provides its own `lib/overlay-eval` implementation; Hub-side consumers will supply their own.
-- The `./schema` export (`import ... from '@devbycrux/editor/schema'`) is the single source of truth for project/slide/element shapes and can be imported independently of the React components.
+- The `./schema` export (`import ... from '@bycrux/editor/schema'`) is the single source of truth for project/slide/element shapes and can be imported independently of the React components.

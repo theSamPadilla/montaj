@@ -27,10 +27,10 @@ export default defineConfig({
   },
   optimizeDeps: {
     include: ['montaj-overlay-runtime'],
-    // @devbycrux/editor is a file:-linked workspace package under active development —
+    // @bycrux/editor is a file:-linked workspace package under active development —
     // serve it from source (not a pre-bundled dep) so edits to editor/src apply via
     // HMR instead of requiring a Vite .vite cache clear.
-    exclude: ['@devbycrux/editor'],
+    exclude: ['@bycrux/editor'],
   },
   server: {
     port: 5173,
