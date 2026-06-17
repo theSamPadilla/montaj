@@ -8,15 +8,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Carousel editor
 
-- Canvas is significantly larger: the editor uses a tall, vertically-scrolling
-  layout so the slide preview renders much bigger; controls stay on the canvas.
-- Left-rail slide thumbnails now show the entire slide (no vertical trim) — fixed
-  a flex-compression that clipped portrait thumbnails.
+- Layout: the slide editor (add-element toolbar + property panel) sits to the
+  RIGHT of the canvas again (widened to 24rem) — stacking it below the canvas
+  made it require too much scrolling. Project media (`assetsPanel`) stays as a
+  full-width region at the bottom. Canvas height tuned down (~62vh) so it's
+  prominent without dominating.
+
+## 0.4.3
+
+### Carousel editor
+
+- Canvas significantly larger via a tall vertically-scrolling layout.
+- Left-rail slide thumbnails show the entire slide (no vertical trim) — fixed a
+  flex-compression that clipped portrait thumbnails.
 - Buttons stay legible on any host theme: non-primary buttons use a themed
-  surface, full-strength text, and a visible border (no more faint low-contrast
-  controls on dark skins).
-- Below-canvas panels are stacked full-width: add-element toolbar → slide/element
-  property panel → Project media (`assetsPanel`) at the very bottom.
+  surface, full-strength text, and a visible border.
+- (Superseded by Unreleased) below-canvas panels were stacked full-width.
 
 ## 0.4.2
 
