@@ -29,6 +29,8 @@ export type {
   OverlayFactory,
   RenderEvent,
   RenderOptions,
+  CaptionEvent,
+  GenerateCaptionsOptions,
   MediaScope,
   MediaItem,
   GlobalOverlay,

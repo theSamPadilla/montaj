@@ -10,9 +10,12 @@ interface TranscriptPanelProps {
   onCaptionEdit?: (project: Project) => void
   onProjectChange?: (project: Project) => void
   onExpand: () => void
+  /** Opens the caption-regeneration modal. Provided only when the host adapter
+   *  supports `generateCaptions`; absent → the "Regenerate" button is hidden. */
+  onRegenerateCaptions?: () => void
 }
 
-export default function TranscriptPanel({ project, captionTrack, currentTime, onCaptionEdit, onProjectChange, onExpand }: TranscriptPanelProps) {
+export default function TranscriptPanel({ project, captionTrack, currentTime, onCaptionEdit, onProjectChange, onExpand, onRegenerateCaptions }: TranscriptPanelProps) {
   const segs = captionTrack?.segments ?? []
   // Find active segment index
   const activeIdx = segs.findIndex(s => currentTime >= s.start && currentTime < s.end)
@@ -49,6 +52,14 @@ export default function TranscriptPanel({ project, captionTrack, currentTime, on
               </button>
             )
           })}
+          {onRegenerateCaptions && (
+            <button
+              className="text-[10px] text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white border border-gray-300 dark:border-gray-700 hover:border-gray-400 dark:hover:border-gray-500 bg-gray-100 dark:bg-gray-800 hover:bg-gray-200 dark:hover:bg-gray-700 rounded px-2 py-0.5 transition-all"
+              onClick={() => onRegenerateCaptions?.()}
+            >
+              Regenerate
+            </button>
+          )}
           {segs.length > 0 && (
             <button
               className="text-[10px] text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white border border-gray-300 dark:border-gray-700 hover:border-gray-400 dark:hover:border-gray-500 bg-gray-100 dark:bg-gray-800 hover:bg-gray-200 dark:hover:bg-gray-700 rounded px-2 py-0.5 transition-all"

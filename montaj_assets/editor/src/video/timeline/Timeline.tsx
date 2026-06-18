@@ -47,10 +47,14 @@ interface TimelineProps {
    *  regenQueue, storyboard, and onSave — none of which the package types know.
    *  Absent → the subcut tool is simply not rendered. */
   renderSubcutRegen?: (ctx: { clipId: string; onClose: () => void }) => ReactNode
+  /** Opens the caption-regeneration modal. Threaded down to TranscriptPanel.
+   *  Provided only when the host adapter supports `generateCaptions`; absent →
+   *  the "Regenerate" button is hidden. */
+  onRegenerateCaptions?: () => void
 }
 
 
-export default function Timeline({ project, currentTime, onTimeUpdate, onProjectChange, onCaptionEdit, onOverlayEdit, selectedIds = [], onSelectIds, onSplit, onCut, onInspectClip, onInspectAudio, rippleMode = false, getWaveformChunks, resolveFilePath, regenEnabled, isClipQueued, renderSubcutRegen }: TimelineProps) {
+export default function Timeline({ project, currentTime, onTimeUpdate, onProjectChange, onCaptionEdit, onOverlayEdit, selectedIds = [], onSelectIds, onSplit, onCut, onInspectClip, onInspectAudio, rippleMode = false, getWaveformChunks, resolveFilePath, regenEnabled, isClipQueued, renderSubcutRegen, onRegenerateCaptions }: TimelineProps) {
   const primarySelectedId = selectedIds[0] ?? null
 
   // Click/shift-click handler — additive selection on shift or meta (cmd/ctrl).
@@ -355,6 +359,7 @@ export default function Timeline({ project, currentTime, onTimeUpdate, onProject
         onCaptionEdit={onCaptionEdit}
         onProjectChange={onProjectChange}
         onExpand={() => setTranscriptModalOpen(true)}
+        onRegenerateCaptions={onRegenerateCaptions}
       />
 
       {/* ── Transcript modal ── */}

@@ -8,6 +8,7 @@ import Timeline from './timeline/Timeline'
 import PreviewPlayer from './preview/PreviewPlayer'
 import VersionPanel from './VersionPanel'
 import RenderModal from './RenderModal'
+import CaptionRegenModal from './CaptionRegenModal'
 
 // Generic over the host's concrete project type `P` (default = the package's
 // own `Project`). Montaj passes its richer Project; the index signature on
@@ -273,6 +274,7 @@ function ReviewSurface<P extends Project>({
   const primarySelectedId = selectedIds[0] ?? null
   const [rippleMode, setRippleMode]   = useState(false)
   const [renderOpen, setRenderOpen]   = useState(false)
+  const [regenCaptionsOpen, setRegenCaptionsOpen] = useState(false)
   // The clip/audio inspector target — derived from the timeline's inspect
   // callbacks. A Montaj-agnostic { kind, id } selector, not a project entity.
   const [inspecting, setInspecting]   = useState<{ kind: 'clip' | 'audio'; id: string } | null>(null)
@@ -471,6 +473,7 @@ function ReviewSurface<P extends Project>({
             regenEnabled={regenEnabled}
             isClipQueued={isClipQueued}
             renderSubcutRegen={renderSubcutRegen}
+            onRegenerateCaptions={adapter.generateCaptions ? () => setRegenCaptionsOpen(true) : undefined}
           />
         </div>
       </div>
@@ -506,6 +509,23 @@ function ReviewSurface<P extends Project>({
           exportActions={slots?.exportActions}
           onClose={() => setRenderOpen(false)}
           onCancel={() => setRenderOpen(false)}
+        />
+      )}
+
+      {/* Caption regen modal — adapter.generateCaptions stream. On done we patch
+          project.captions via onProjectChange only. We deliberately do NOT call
+          save(): montaj persists the regenerated captions server-side and the
+          SSE subscribe frame reconciles, so a saveProject here would double-write. */}
+      {regenCaptionsOpen && adapter.generateCaptions && (
+        <CaptionRegenModal
+          adapter={adapter}
+          projectId={project.id}
+          onClose={() => setRegenCaptionsOpen(false)}
+          onDone={(captions) => {
+            const next = { ...project, captions } as P
+            onProjectChange(next)
+            setRegenCaptionsOpen(false)
+          }}
         />
       )}
 

@@ -21,6 +21,7 @@ import type {
   CarouselElement,
   ImageElement,
   OverlayElement,
+  Captions,
 } from './schema'
 
 // ── Overlay compiler ─────────────────────────────────────────────────────────
@@ -66,6 +67,35 @@ export type RenderEvent =
 export interface RenderOptions {
   /** Output scale multiplier (1 = native resolution). */
   scale?: number
+}
+
+// ── Caption regeneration ─────────────────────────────────────────────────────
+
+/**
+ * A single frame of caption-regeneration progress. Discriminated on `type`:
+ *  - 'log'   — a human-readable progress line.
+ *  - 'done'  — terminal success; `captions` is the freshly transcribed caption
+ *              track to patch onto the project.
+ *  - 'error' — terminal failure; `message` describes what went wrong (the host
+ *              route may emit `multi_source`/`no_clips`/`empty_keeps` — shown
+ *              verbatim).
+ */
+export type CaptionEvent =
+  | { type: 'log'; message: string }
+  | { type: 'done'; captions: Captions }
+  | { type: 'error'; message: string }
+
+/**
+ * Options for a caption-regeneration request. All optional — the host fills in
+ * sensible defaults (multilingual whisper model + auto-detected language).
+ */
+export interface GenerateCaptionsOptions {
+  /** Whisper model to run (e.g. 'large'). */
+  model?: string
+  /** Source-language hint (e.g. 'es'); omit to auto-detect. */
+  language?: string
+  /** Caption style to seed the regenerated track with. */
+  style?: string
 }
 
 // ── Overlay library types ─────────────────────────────────────────────────────
@@ -319,6 +349,17 @@ export interface EditorAdapter<P extends Project = Project> {
    * caption support omit this entirely.
    */
   resolveCaptionTemplate?(style: string): string
+
+  /**
+   * Optional: regenerate the project's caption track by re-running multilingual
+   * transcription on the host's sidecar, streaming progress as an async iterable
+   * of `CaptionEvent`s. The iterable completes after a terminal 'done' (carrying
+   * the fresh `Captions`) or 'error'. The host persists the captions server-side;
+   * the editor patches `project.captions` from the 'done' event. Hosts without a
+   * transcription pipeline omit this; the editor feature-detects its absence and
+   * hides the "Regenerate captions" control.
+   */
+  generateCaptions?(id: string, opts?: GenerateCaptionsOptions): AsyncIterable<CaptionEvent>
 }
 
 // ── Theme ────────────────────────────────────────────────────────────────────
