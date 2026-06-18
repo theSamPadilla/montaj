@@ -33,3 +33,5 @@ CLAUDE.md
 RELEASE.md
 # Git worktrees
 .worktrees/
+
+.playwright-mcp/
