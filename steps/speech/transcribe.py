@@ -15,7 +15,7 @@ def main():
     parser.add_argument("--model", default="base.en",
                         choices=["tiny.en", "base.en", "medium.en", "large"],
                         help="Whisper model. Larger = slower + more accurate.")
-    parser.add_argument("--language", default="en", help="Language code (e.g. en, fr, de)")
+    parser.add_argument("--language", default="en", help="Language code (e.g. en, fr, de), or 'auto' for whisper-cli language auto-detection")
     args = parser.parse_args()
 
     require_file(args.input)
