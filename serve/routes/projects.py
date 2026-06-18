@@ -26,6 +26,7 @@ from serve.common import (
     not_found, bad_request, forbidden, server_error,
     validate_project_subpath, _is_under,
 )
+from serve.caption_job import extract_keeps
 from serve.routes.files import save_upload
 from lib.remote_io import fetch_to_disk_async, push_from_disk_async, parse_allowed_hosts
 from project.init import _copy_into_workspace
@@ -50,6 +51,11 @@ _REMOTE_REQUIRED_KEYS = ("url", "destPath", "contentType", "sizeBytes")
 # defense at the serve layer (single Python process, single asyncio loop, set
 # mutations between awaits are race-free).
 _active_renders: set[str] = set()
+
+# In-flight caption-generation dedup. Same rationale as _active_renders: the UI
+# (or an SSE reconnect) can fire the same caption job twice, and two concurrent
+# jobs would race on the shared _caption_* scratch files in the project dir.
+_active_caption_jobs: set[str] = set()
 
 OVERLAY_NAME_RE = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
 OVERLAY_MAX_BYTES = 65_536  # 64 KB — overlay JSX is small; reject big bodies hard.
@@ -1157,6 +1163,165 @@ async def render_project(project_id: str, request: Request, project_dir: Path = 
                 yield f"event: error\ndata: Render failed (exit {proc.returncode})\n\n"
         finally:
             _active_renders.discard(project_id)
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+        },
+    )
+
+
+@router.post("/projects/{project_id}/captions")
+async def generate_captions(
+    project_id: str,
+    request: Request,
+    body: dict = Body(default={}),
+    project_dir: Path = Depends(get_project_dir),
+):
+    """Regenerate the project's captions over the trimmed timeline. Streams
+    progress as SSE log/done/error events.
+
+    Pipeline (all subprocesses, stderr streamed as `log` events):
+      1. extract_keeps  — derive the single-source cut from the primary track.
+      2. materialize_cut — render the trimmed timeline to a plain MP4.
+      3. transcribe      — multilingual, language-auto-detecting, OUTPUT-time
+                           word timings (plain video in, NOT a trim spec).
+      4. caption         — group words into styled caption segments.
+    On success, writes project["captions"], persists project.json, broadcasts
+    the update, and emits a `done` event carrying the caption track JSON.
+
+    Mirrors the render route's streaming shape so it survives the ~100s
+    Cloudflare tunnel wall.
+    """
+    project_path = project_dir / "project.json"
+
+    # Reject if a caption job for this project is already in flight. Check-and-add
+    # is race-free: one asyncio loop, set mutation runs between awaits.
+    if project_id in _active_caption_jobs:
+        raise HTTPException(409, detail={
+            "error": "concurrent_caption_job",
+            "message": f"A caption job for project {project_id} is already in progress.",
+        })
+
+    try:
+        project = json.loads(project_path.read_text())
+    except Exception:
+        raise not_found("project_not_found", f"project.json for {project_id} not found")
+
+    model = body.get("model") or "large"
+    language = body.get("language") or "auto"
+    style = body.get("style") or (project.get("captions") or {}).get("style") or "pop"
+
+    materialize_cut_py = MONTAJ_ROOT / "steps" / "transform" / "materialize_cut.py"
+    transcribe_py = MONTAJ_ROOT / "steps" / "speech" / "transcribe.py"
+    caption_py = MONTAJ_ROOT / "steps" / "lyrics" / "caption.py"
+
+    cut_spec_path = project_dir / "_caption_cut.json"
+    cut_mp4_path = project_dir / "_caption_cut.mp4"
+    words_prefix = project_dir / "_caption_words"
+    words_json_path = project_dir / "_caption_words.json"
+    track_path = project_dir / "_caption_track.json"
+
+    env = os.environ.copy()
+    env["MONTAJ_ROOT"] = str(MONTAJ_ROOT)
+
+    # Reserve the slot now; the generator's `finally` releases it (covers
+    # success, error, and client-disconnect alike).
+    _active_caption_jobs.add(project_id)
+
+    async def event_stream():
+        try:
+            # 1. Derive the cut from the primary track.
+            try:
+                source, keeps = extract_keeps(project)
+            except ValueError as e:
+                yield f"event: error\ndata: {str(e)}\n\n"
+                return
+
+            # 2. Write the trim spec.
+            cut_spec_path.write_text(json.dumps({"input": source, "keeps": keeps}))
+
+            # Each step is run as a subprocess with its stderr streamed as `log`
+            # events. The loop is inlined (not a helper) because an inner
+            # generator can't yield to the outer StreamingResponse.
+            steps = [
+                (
+                    "materialize_cut",
+                    [str(materialize_cut_py), "--input", str(cut_spec_path),
+                     "--out", str(cut_mp4_path)],
+                ),
+                (
+                    "transcribe",
+                    [str(transcribe_py), "--input", str(cut_mp4_path),
+                     "--model", model, "--language", language,
+                     "--out", str(words_prefix)],
+                ),
+                (
+                    "caption",
+                    [str(caption_py), "--input", str(words_json_path),
+                     "--style", style, "--out", str(track_path)],
+                ),
+            ]
+
+            for label, args in steps:
+                proc = await asyncio.create_subprocess_exec(
+                    sys.executable, *args,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                    cwd=str(MONTAJ_ROOT),
+                    env=env,
+                    limit=10 * 1024 * 1024,
+                    start_new_session=True,
+                )
+
+                def kill_tree(p=proc):
+                    try:
+                        os.killpg(os.getpgid(p.pid), signal.SIGTERM)
+                    except (ProcessLookupError, OSError):
+                        try:
+                            p.kill()
+                        except Exception:
+                            pass
+
+                disconnected = False
+                while True:
+                    if await request.is_disconnected():
+                        kill_tree()
+                        disconnected = True
+                        break
+                    line = await proc.stderr.readline()
+                    if not line:
+                        break
+                    text = line.decode().rstrip()
+                    if text:
+                        yield f"event: log\ndata: [{label}] {text}\n\n"
+
+                if disconnected:
+                    return
+
+                await proc.stdout.read()
+                await proc.wait()
+
+                if proc.returncode != 0:
+                    yield f"event: error\ndata: {label} failed (exit {proc.returncode})\n\n"
+                    return
+
+            # 6. Persist the caption track onto the project and broadcast.
+            track = json.loads(track_path.read_text())
+            project["captions"] = track
+            text = json.dumps(project, indent=2)
+            project_path.write_text(text)
+            broadcaster: SSEBroadcaster = request.app.state.broadcaster
+            broadcaster.publish(project_id, _sse_data_frame(text))
+
+            # 7. Done — carry the caption track in the payload.
+            yield f"event: done\ndata: {json.dumps(track)}\n\n"
+        finally:
+            _active_caption_jobs.discard(project_id)
 
     return StreamingResponse(
         event_stream(),
