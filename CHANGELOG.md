@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## v3.0.4
+
+### Added
+
+- **serve: `POST /api/projects/{id}/captions` — SSE-streaming caption regeneration.** Materializes the trimmed cut, transcribes it (multilingual `large` model, `--language auto`), runs the caption step, writes `project.captions`, and broadcasts the update. Streams `log`/`done`/`error` events so it isn't bound by proxy/tunnel request timeouts.
+
 ## v3.0.3
 
 ### Packaging
