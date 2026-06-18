@@ -50,6 +50,10 @@ export function useVideoPlayback(
   const loopOffsetRef = useRef(0)
   const rafRef        = useRef<number | null>(null)
   const rafLastMs     = useRef<number | null>(null)
+  // rAF clock for VIDEO projects — drives clip-boundary detection at ~60Hz
+  // instead of the <video> element's coarse `timeupdate` event (~4Hz). See the
+  // effect below for why.
+  const videoRafRef   = useRef<number | null>(null)
   const audioRefsMap  = useRef<Map<string, HTMLAudioElement>>(new Map())
   const audioSrcMap   = useRef<Map<string, string>>(new Map())
   // Web Audio API: GainNode per audio track allows volume > 1.0 (amplification).
@@ -692,6 +696,39 @@ export function useVideoPlayback(
     // Just call handleTimeUpdate to ensure the transition fires even if timeupdate didn't catch it.
     handleTimeUpdate()
   }, [handleTimeUpdate])
+
+  // ── Video boundary clock ─────────────────────────────────────────────────
+  // Drive clip-boundary detection from requestAnimationFrame (~60Hz) rather
+  // than relying on the <video> element's `timeupdate` event, which only fires
+  // ~every 250ms. Under timeupdate-gating the active clip plays up to a full
+  // ~250ms PAST its outPoint before the swap fires; on a silence-trimmed
+  // single-source timeline that overshoot is trimmed-out footage playing past
+  // the cut — the "underlying video keeps playing in the background" bug.
+  // Polling currentTime every frame tightens the boundary to ~16ms.
+  // handleTimeUpdate is idempotent (preload + swap are guarded), so the
+  // timeupdate event firing in addition to this is harmless. Canvas projects
+  // advance time via their own rAF above and are excluded here.
+  useEffect(() => {
+    if (isCanvasProject || !isPlaying) {
+      if (videoRafRef.current !== null) {
+        cancelAnimationFrame(videoRafRef.current)
+        videoRafRef.current = null
+      }
+      return
+    }
+    function pump() {
+      // The gap clock owns time during gaps; handleTimeUpdate no-ops then.
+      if (!inGapRef.current) handleTimeUpdate()
+      videoRafRef.current = requestAnimationFrame(pump)
+    }
+    videoRafRef.current = requestAnimationFrame(pump)
+    return () => {
+      if (videoRafRef.current !== null) {
+        cancelAnimationFrame(videoRafRef.current)
+        videoRafRef.current = null
+      }
+    }
+  }, [isPlaying, isCanvasProject, handleTimeUpdate])
 
   function togglePlay() {
     // GESTURE-ANCHORED: same rationale as the keydown handler — resume the

@@ -19,6 +19,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Snap/alignment guides are more visible: thicker (2px), brighter, and glow so
   they're easy to see against any slide background.
 
+## 0.5.2
+
+### Video editor
+
+- **Fix laggy playback / clips overrunning their cut.** Clip-boundary detection
+  for video projects now runs on a `requestAnimationFrame` clock (~60Hz) instead
+  of riding the `<video>` element's `timeupdate` event (~4Hz). Previously the
+  active clip could play up to ~250ms past its `outPoint` before the swap fired
+  — on a silence-trimmed single-source timeline that overshoot was trimmed-out
+  footage playing past the cut ("the underlying video keeps playing"). The rAF
+  clock tightens the boundary to ~1 frame (≤~16ms); measured overshoot dropped
+  from ~250ms to ≤9ms. `handleTimeUpdate` is idempotent, so the coarse
+  `timeupdate` event remains a harmless fallback.
+
 ## 0.4.6
 
 ### Carousel editor
