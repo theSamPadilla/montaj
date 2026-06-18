@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "montaj"
-version = "3.0.2"
+version = "3.0.3"
 description = "Video editing toolkit for AI agents — CLI-first, agent-native, open source"
 readme = "README.md"
 license = "MIT"
@@ -73,11 +73,15 @@ include = [
 # Keep this broad so future *.json/*.yaml additions ship without a packaging
 # diff. node_modules/ and ui/dist/ are already pruned by MANIFEST.in.
 "*" = ["*.json", "*.yaml"]
-# overlay-runtime is a Node bundle, not a Python package — its dir name has a
-# hyphen and no __init__.py, so setuptools.packages.find skips it and its .js
-# source falls out of the wheel. Force the whole subtree in via the parent
-# package's data globs (node_modules/ is still pruned by MANIFEST.in).
-"montaj_assets" = ["overlay-runtime/**/*"]
+# overlay-runtime and editor are Node bundles, not Python packages — no
+# __init__.py (and overlay-runtime's dir name is hyphenated), so
+# setuptools.packages.find skips them and their source falls out of the wheel.
+# Force the whole subtree in via the parent package's data globs (node_modules/
+# is still pruned by MANIFEST.in). NOTE: editor was added in 3.0.0 but its glob
+# was missed until 3.0.3 — without it the wheel shipped editor/package.json but
+# not editor/src, so the UI's `@bycrux/editor: file:../editor` dep resolved to a
+# package with no source and `montaj install ui` failed with TS2307.
+"montaj_assets" = ["overlay-runtime/**/*", "editor/**/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## v3.0.3
+
+### Packaging
+
+- **Ship the `editor` bundle's source in the wheel.** The `[tool.setuptools.package-data]` glob listed `overlay-runtime/**/*` but not `editor/**/*`, so the wheel shipped `montaj_assets/editor/package.json` (+ tsconfig/lock) but **none of `editor/src`**. `pip install montaj` prefers the wheel, so the UI's `@bycrux/editor: file:../editor` dependency resolved to a package with no source and `montaj install ui` failed with `TS2307: Cannot find module '@bycrux/editor'` — even after 3.0.2 fixed `montaj install ui` to stage the editor bundle (the staged bundle was itself sourceless). Added `editor/**/*` to the package-data glob, mirroring `overlay-runtime`. Verified against the built wheel: `editor/src` ships (87 files) and a prod-cache `montaj install ui` resolves the editor under node 20. (3.0.2's wheel was missing the source; PyPI is immutable, so this lands in 3.0.3.)
+
 ## v3.0.2
 
 ### Packaging
