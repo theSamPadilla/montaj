@@ -1312,6 +1312,10 @@ async def generate_captions(
 
             # 6. Persist the caption track onto the project and broadcast.
             track = json.loads(track_path.read_text())
+            prev = project.get("captions") or {}
+            for k in ("position", "color", "fontsize", "bgColor"):
+                if k in prev and k not in track:
+                    track[k] = prev[k]
             project["captions"] = track
             text = json.dumps(project, indent=2)
             project_path.write_text(text)
@@ -1322,6 +1326,17 @@ async def generate_captions(
             yield f"event: done\ndata: {json.dumps(track)}\n\n"
         finally:
             _active_caption_jobs.discard(project_id)
+            for _tmp in (
+                cut_spec_path,
+                cut_mp4_path,
+                words_json_path,
+                project_dir / "_caption_words.srt",
+                track_path,
+            ):
+                try:
+                    _tmp.unlink(missing_ok=True)
+                except OSError:
+                    pass
 
     return StreamingResponse(
         event_stream(),
