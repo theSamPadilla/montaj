@@ -19,6 +19,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Snap/alignment guides are more visible: thicker (2px), brighter, and glow so
   they're easy to see against any slide background.
 
+## 0.5.3
+
+### Video editor
+
+- **Regenerate captions.** New `generateCaptions` adapter method
+  (`AsyncIterable<CaptionEvent>`) + a "Regenerate captions" button in the
+  caption panel. Streams multilingual transcription progress and replaces
+  `project.captions` with project-time-aligned segments when done. Requires a
+  host adapter that implements `generateCaptions` (mel-hub) and montaj ≥ 3.0.4
+  on the sidecar.
+
 ## 0.5.2
 
 ### Video editor
