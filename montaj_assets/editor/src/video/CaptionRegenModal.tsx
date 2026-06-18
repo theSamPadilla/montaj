@@ -15,16 +15,15 @@ interface CaptionRegenModalProps<P extends Project = Project> {
 }
 
 function LogLine({ text }: { text: string }) {
-  const t = text.replace(/^\[montaj captions\]\s*/, '')
   let color = 'text-gray-400'
-  if (/ready|complete|done|transcribed/i.test(t))      color = 'text-green-400'
-  else if (/transcrib|detecting|loading|model/i.test(t)) color = 'text-sky-400'
-  else if (/extract|building|composing/i.test(t))      color = 'text-amber-400'
-  else if (/error|fail|warn/i.test(t))                 color = 'text-red-400'
+  if (/ready|complete|done|transcribed/i.test(text))      color = 'text-green-400'
+  else if (/transcrib|detecting|loading|model/i.test(text)) color = 'text-sky-400'
+  else if (/extract|building|composing/i.test(text))      color = 'text-amber-400'
+  else if (/error|fail|warn/i.test(text))                 color = 'text-red-400'
 
   return (
     <span className={`leading-relaxed whitespace-pre-wrap break-all ${color}`}>
-      {t}
+      {text}
     </span>
   )
 }
