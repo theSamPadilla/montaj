@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **Skills transport/domain split (Phase 1).** Domain skills (`select-takes`, `overlay`, `write-overlay`, `image-search`) are now transport-agnostic; a new `skills/native/SKILL.md` owns the Montaj-specific CLI + HTTP interface; and `skills/_contract/SKILL.md` defines the shared vocabulary contract all skills reference by name (`load skill \`x\``). The root `skills/SKILL.md` is a thin dispatcher (detects MCP / HTTP / CLI context); `skills/serve/SKILL.md` was folded into `native` and removed. A new `@bycrux/montaj-skills` npm package (`montaj_assets/montaj-skills`) publishes the transport-agnostic domain skills + contract for external consumers; release via `scripts/release-montaj-skills.sh` (tags `montaj-skills-v*`).
+
 ## v3.0.4
 
 ### Added

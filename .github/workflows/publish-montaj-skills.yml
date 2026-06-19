@@ -1,0 +1,65 @@
+# publish-montaj-skills.yml
+#
+# MANUAL / TAG-GATED — this workflow is NOT part of normal CI.
+# It runs only when a tag matching `montaj-skills-v*` is pushed
+# (e.g. `montaj-skills-v0.1.0`).
+# It publishes @bycrux/montaj-skills to the public npm registry.
+#
+# To publish a new version:
+#   1. Bump the version in montaj_assets/montaj-skills/package.json.
+#   2. Commit and push the bump.
+#   3. Tag the commit:
+#        git tag montaj-skills-v<version> && git push origin montaj-skills-v<version>
+#   4. This workflow triggers automatically on that tag push.
+#
+# The package is *derived*: `npm publish` runs the `prepack` script
+# (scripts/stage.mjs), which copies the agnostic domain skills + contract out of
+# /skills into the package before packing. We also run the stage script
+# explicitly first so a staging failure surfaces clearly.
+#
+# No manual dispatch is wired up intentionally — publishing requires a clean tag.
+#
+# NODE_AUTH_TOKEN must be set to an npm automation token (generated at
+# https://www.npmjs.com/settings/<user>/tokens) stored as a repo secret named
+# NPM_TOKEN. Do NOT use GITHUB_TOKEN here — that only works for GitHub Packages.
+
+name: Publish @bycrux/montaj-skills
+
+on:
+  push:
+    tags:
+      - 'montaj-skills-v*'
+
+jobs:
+  publish:
+    name: Publish to npm
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          registry-url: 'https://registry.npmjs.org'
+          scope: '@bycrux'
+
+      - name: Stage domain skills
+        working-directory: montaj_assets/montaj-skills
+        run: node scripts/stage.mjs
+
+      - name: Publish (idempotent — skips if the version is already on npm)
+        working-directory: montaj_assets/montaj-skills
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          if npm view "@bycrux/montaj-skills@$VERSION" version >/dev/null 2>&1; then
+            echo "@bycrux/montaj-skills@$VERSION is already published — skipping."
+          else
+            npm publish
+          fi
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

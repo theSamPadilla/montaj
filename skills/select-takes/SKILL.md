@@ -88,52 +88,31 @@ For each selected take, load the trim spec JSON produced by the preceding `wavef
 
 **Never call the `trim` step.** That encodes an intermediate video file and breaks the single-encode chain. Cropping the spec keeps the original source file all the way through to `concat`.
 
-```bash
-# HTTP API — single window
-POST /api/steps/crop_spec
-{"input": "/path/IMG_4893_spec.json", "keeps": [[8.5, 34.1]]}
-→ {"path": "/path/IMG_4893_spec_cropped.json"}
+Run step `crop_spec` with `{"input": "/path/IMG_4893_spec.json", "keeps": [[8.5, 34.1]]}` → returns `{"path": "/path/IMG_4893_spec_cropped.json"}` (single window).
 
-# HTTP API — multiple windows (skip rejected content in between)
-POST /api/steps/crop_spec
-{"input": "/path/IMG_4893_spec.json", "keeps": [[0, 2.4], [13.84, 18.33]]}
-→ {"path": "/path/IMG_4893_spec_cropped.json"}
+Run step `crop_spec` with `{"input": "/path/IMG_4893_spec.json", "keeps": [[0, 2.4], [13.84, 18.33]]}` → returns `{"path": "/path/IMG_4893_spec_cropped.json"}` (multiple windows — skip rejected content in between).
 
-# Open-ended: keep from virtual 40.28s to end of clip
-POST /api/steps/crop_spec
-{"input": "/path/IMG_4893_spec.json", "keeps": [[40.28, null]]}
-```
+Run step `crop_spec` with `{"input": "/path/IMG_4893_spec.json", "keeps": [[40.28, null]]}` (open-ended: keep from virtual 40.28s to end of clip).
 
 The `keeps` field is a **native JSON array** of `[start, end]` pairs — not a string. Use `null` for an open-ended window.
 
 **Important:** the timestamps you pass to `crop_spec` are **virtual-timeline timestamps** — time within the waveform_trim spec's kept audio, not original-file timestamps. If your reference points come from an SRT transcript (which uses original-file timestamps), use `virtual_to_original --inverse` to convert them first (see below).
 
-Write each cropped spec to `<original>_selected.json` by saving the returned path or passing `--out` explicitly.
+Write each cropped spec to `<original>_selected.json` by saving the path returned by the step.
 
 ### 9a. Timestamps — SRT is already virtual; use virtual_to_original for seam debugging only
 
 **SRT timestamps are virtual-timeline timestamps.** The `transcribe` step runs on the extracted audio (the waveform_trim keeps played back-to-back), so its timestamps are relative to that extracted audio — i.e., the virtual timeline. Pass them directly to `crop_spec` without any conversion.
 
-```bash
-# SRT shows the best take at 8.5s–34.1s → pass directly
-POST /api/steps/crop_spec
-{"input": "/path/IMG_4893_spec.json", "keeps": [[8.5, 34.1]]}
-```
+SRT shows the best take at 8.5s–34.1s → run step `crop_spec` with `{"input": "/path/IMG_4893_spec.json", "keeps": [[8.5, 34.1]]}` and pass the result directly.
 
 `virtual_to_original` is a **debugging tool**, not a conversion step in the normal workflow. Use it when you need to verify that a virtual timestamp maps to the right spot in the original file — for example, to check why a cut looks off:
 
-```bash
-# "Why does the seam at virtual 47.32 look wrong?"
-montaj step virtual_to_original --input spec.json --verbose 47.32
-# → 47.32 → 95.483  (keep 10: [93.295, 96.166])
-```
+Run step `virtual_to_original` with `{"input": "spec.json", "verbose": true, "timestamp": 47.32}` → returns something like `47.32 → 95.483 (keep 10: [93.295, 96.166])`.
 
-The `--inverse` flag goes the other direction (original-file → virtual). Use it when you have an original-file timestamp from somewhere else (e.g., ffprobe output, manual note) and need to know where it falls in the virtual timeline:
+The `inverse` option goes the other direction (original-file → virtual). Use it when you have an original-file timestamp from somewhere else (e.g., ffprobe output, manual note) and need to know where it falls in the virtual timeline:
 
-```bash
-montaj step virtual_to_original --input spec.json --inverse 95.483
-# → 47.320
-```
+Run step `virtual_to_original` with `{"input": "spec.json", "inverse": true, "timestamp": 95.483}` → returns `47.320`.
 
 ### 10. Output
 

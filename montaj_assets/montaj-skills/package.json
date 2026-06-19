@@ -1,0 +1,17 @@
+{
+  "name": "@bycrux/montaj-skills",
+  "version": "0.0.0",
+  "private": false,
+  "type": "module",
+  "files": [
+    "skills",
+    "contract.md",
+    "README.md"
+  ],
+  "scripts": {
+    "prepack": "node scripts/stage.mjs"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

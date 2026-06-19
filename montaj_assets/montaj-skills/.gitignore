@@ -1,0 +1,4 @@
+# Staged output — derived from /skills at pack time by scripts/stage.mjs.
+# /skills is the single source of truth; never commit the copies.
+/skills/
+/contract.md

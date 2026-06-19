@@ -649,7 +649,7 @@ async def save_project(project_id: str, body: dict = Body(...), request: Request
     existing = json.loads(project_path.read_text())
     prev_status = existing.get("status")
     # Top-level shallow merge: preserve fields not present in the body. Agents
-    # (per skills/serve/SKILL.md) routinely PUT a partial body like
+    # (per skills/native/SKILL.md) routinely PUT a partial body like
     # {id, status, tracks} when transitioning pending→draft; without this merge
     # creation-time metadata (name, workflow, editingPrompt, projectType,
     # runCount, settings, profile, …) gets wiped. To explicitly clear a field,

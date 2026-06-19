@@ -9,18 +9,24 @@ Montaj is a video editing toolkit with agent-first tools. Built-in steps cover c
 
 ## Core Loop
 
-**Detecting which interface to use:**
-Try `GET http://localhost:3000/api/projects?status=pending`. If it responds → **HTTP mode**: load `serve/SKILL.md` before making any API calls, then follow the HTTP loop there. If connection is refused → CLI or MCP mode.
+This root skill is the **dispatcher**. It detects which interface Montaj is reached through, loads the matching interface skill, then loads the domain skills the workflow needs. It owns orchestration — the project state machine and workflow loading — not transport mechanics. The interface skill (`native` or `mcp`) owns how each `_contract` verb is actually performed.
 
-**When running as MCP client:** Load `mcp/SKILL.md`.
+**Detecting which interface to use** (three-way; if you were already told the context, honor it):
 
-**When running headless (CLI):**
+1. **MCP client** (e.g. Claude Desktop) → load skill `mcp`.
+2. Else, **local server up** — `GET http://localhost:3000/api/projects?status=pending` responds → **HTTP mode**.
+3. Else → **CLI mode**.
+
+For HTTP and CLI, **load skill `native`** — it defines how every `_contract` verb (run step, read/save the project, write/read a file, log) is performed in each mode. Then load the domain skills you need for the workflow (see Sub-skills below). Do not perform transport directly from this skill; `native` owns it.
+
+**The loop, once your interface is loaded:**
 ```
 1. The location of the clips, the prompt, and preferred workflow should have been given to you by your human. If not provided, ask. Don't guess.
+   (HTTP: pick the first pending project via `read the project`. MCP: clips/prompt/workflow arrive as tool-call params.)
 2. Read the workflow from workflows/{name}.json
 3. Apply editorial judgment (select/order/trim clips via probe + transcribe)
-4. Execute workflow steps following the dependency graph
-5. Write/update project.json in the project directory as you go
+4. Execute workflow steps following the dependency graph; log before each step
+5. Save the project (delta) as you go — GET fresh, merge your delta, save (see Project JSON)
 6. Probe the final output → set inPoint: 0, outPoint: <duration>
 7. Mark project as draft (status: "draft") when complete
 8. Notify your human or ask questions if you run into issues.
@@ -38,32 +44,11 @@ Try `GET http://localhost:3000/api/projects?status=pending`. If it responds → 
 
 **Never invent a step sequence from scratch.** Follow the assigned workflow; deviate only where the prompt explicitly requires it or the workflow fails (see Deviation Rules).
 
-**Multiple clips or workflow has `foreach` steps:** Load `parallel/SKILL.md`.
+**Multiple clips or workflow has `foreach` steps:** Load skill `parallel`.
 
 ## Running Steps
 
-**HTTP API:** Load `serve/SKILL.md` — all step calls go through `POST http://localhost:3000/api/steps/:name`. Fire long-running steps with `run_in_background: true` to stay available for conversation.
-
-**CLI — use when serve is NOT running:**
-```bash
-montaj probe clip.mp4
-montaj snapshot clip.mp4
-montaj trim clip.mp4 --start 2.5 --end 8.3
-montaj cut clip.mp4 --start 3.0 --end 7.5
-montaj cut clip.mp4 --cuts '[[0,1.2],[5.3,7.8]]'   # multiple cuts, one ffmpeg pass
-montaj cut clip.mp4 --cuts '[[3.0,7.5]]' --spec     # write trim spec instead of encoding
-montaj materialize-cut clip.mp4 --inpoint 2.0 --outpoint 8.0
-montaj materialize-cut spec.json
-montaj waveform-trim clip.mp4 --threshold -30 --min-silence 0.3
-montaj rm-nonspeech clip_spec.json --model base
-montaj transcribe clip.mp4 --model base.en
-montaj caption clip.mp4 --style word-by-word
-montaj crop-spec --input spec.json --keep 8.5:14.8 --keep 40.0:end
-montaj virtual-to-original --input spec.json 47.32
-montaj normalize clip.mp4 --target youtube
-montaj resize clip.mp4 --ratio 9:16
-```
-To see all available steps including project-local custom steps: `montaj step -h`
+**Running a step is a `_contract` verb** — "run step `<name>` with `<args>`". The `native` skill (loaded by the dispatcher) defines how that resolves: `POST /api/steps/:name` in HTTP mode, `montaj <step> …` in CLI mode. Fire long-running steps in the background to stay available for conversation. The catalog of steps and their params is below.
 
 ## Available Steps
 
@@ -107,10 +92,10 @@ To see all available steps including project-local custom steps: `montaj step -h
 | `remove_bg` | Remove video background via RVM → ProRes 4444 `.mov` with alpha channel **plus** a VP9 WebM preview proxy. Store the ProRes path in `nobg_src` (used by render) and the WebM path in `nobg_preview_src` (used by browser preview — ProRes can't decode in `<video>`); keep the original in `src`. Set `remove_bg: true` on the item. **Long-running (minutes per clip) — always run in the background with `--progress` so you can monitor status.** Use `--inputs` for multiple clips. | `--inputs clip0.mp4 clip1.mp4`, `--progress`, `--model rvm_mobilenetv3` (or `rvm_resnet50`), `--downsample 0.5` |
 
 ### Select Takes (`montaj/select_takes`)
-**REQUIRED SUB-SKILL:** Load `select-takes/SKILL.md` before executing this step.
+**REQUIRED SUB-SKILL:** Load skill `select-takes` before executing this step.
 
 ### Overlays (`montaj/overlay`)
-**REQUIRED SUB-SKILL:** Load `overlay/SKILL.md` before executing. Also load `write-overlay/SKILL.md` before writing JSX.
+**REQUIRED SUB-SKILL:** Load skill `overlay` before executing. Also load skill `write-overlay` before writing JSX.
 
 ## Trim Spec Architecture
 
@@ -185,7 +170,7 @@ If in doubt, **ask your human**.
 - After transcribe + caption: set top-level `captions: { "style": "word-by-word", "segments": [...] }` — do NOT store a file pointer
 - After overlays/images/video: populate `tracks[1+]` — array of arrays; items have `type: "overlay"` (JSX), `type: "image"` (static image), or `type: "video"` (video clip with optional `remove_bg: true`)
 - After all steps: set `status: "draft"`
-- HTTP: **GET fresh, merge in your delta, then PUT** — the user can edit `project.json` from the UI at any time while the server is running, and a stale PUT silently overwrites their work (Montaj only auto-commits to git on status transitions, so mid-status edits have no recovery path). See `serve/SKILL.md` → "Re-fetch before PUT". CLI: write to `project.json`.
+- **Saving is always GET-fresh → merge your delta → save** — the user can edit the project from the UI while the server is running, and a stale save silently overwrites their work (Montaj only auto-commits to git on status transitions, so mid-status edits have no recovery path). The `native` skill defines how the save resolves per mode (PUT in HTTP, file write in CLI) and carries the full discipline.
 
 **HEVC clips:** `concat` handles HEVC automatically. Never manually re-encode before editing steps.
 
@@ -201,20 +186,22 @@ If in doubt, **ask your human**.
 
 ## Sub-skills
 
-| Skill | Path | When to load |
-|-------|------|-------------|
-| `serve` | `serve/SKILL.md` | HTTP mode detected — **load before first API call** |
-| `parallel` | `parallel/SKILL.md` | Multiple clips, or workflow has `foreach` steps |
-| `mcp` | `mcp/SKILL.md` | Running as MCP client |
-| `select-takes` | `select-takes/SKILL.md` | Executing `montaj/select_takes` in a workflow |
-| `overlay` | `overlay/SKILL.md` | Executing `montaj/overlay` in a workflow |
-| `write-overlay` | `write-overlay/SKILL.md` | Writing custom JSX overlay components |
-| `image-search` | `image-search/SKILL.md` | Sourcing outside imagery (`search_images` + `fetch_image`) when the prompt asks for photos / logos / B-roll stills |
-| `style-profile` | `style-profile/SKILL.md` | Creating or updating a creator style profile |
-| `workflow-builder` | `workflow-builder/SKILL.md` | Creating or editing workflows |
-| `lyrics-video` | `lyrics-video/SKILL.md` | Working on a `lyrics_video` workflow project |
-| `ai-video-plan` | `ai-video-plan/SKILL.md` | Working on an `ai_video` project (Phases 0-2: story clarification, storyboard planning) |
-| `ai-video-generate` | `ai-video-generate/SKILL.md` | Working on an `ai_video` project (Phases 6-7: scene generation, audio assembly, regenQueue) |
+Refer to sub-skills by name; the reader resolves the name to a path.
+
+| Skill | When to load |
+|-------|-------------|
+| `native` | HTTP or CLI mode — the native interface; **load before any step / project interaction** |
+| `mcp` | Running as MCP client |
+| `parallel` | Multiple clips, or workflow has `foreach` steps |
+| `select-takes` | Executing `montaj/select_takes` in a workflow |
+| `overlay` | Executing `montaj/overlay` in a workflow |
+| `write-overlay` | Writing custom JSX overlay components |
+| `image-search` | Sourcing outside imagery (`search_images` + `fetch_image`) when the prompt asks for photos / logos / B-roll stills |
+| `style-profile` | Creating or updating a creator style profile |
+| `workflow-builder` | Creating or editing workflows |
+| `lyrics-video` | Working on a `lyrics_video` workflow project |
+| `ai-video-plan` | Working on an `ai_video` project (Phases 0-2: story clarification, storyboard planning) |
+| `ai-video-generate` | Working on an `ai_video` project (Phases 6-7: scene generation, audio assembly, regenQueue) |
 
 ## Dependencies
 

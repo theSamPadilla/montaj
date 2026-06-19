@@ -7,16 +7,16 @@ subskills: "write-overlay"
 
 # Overlay
 
-`montaj/overlay` is an agent-authored task — no CLI step, no API call. You decide what overlays the video needs, write the JSX files, and add them to the project's visual tracks in `project.json`.
+`montaj/overlay` is an agent-authored task — no CLI step, no API call. You decide what overlays the video needs, write the JSX files, and add them to the project's visual tracks.
 
-**Before writing any JSX, load the write-overlay subskill** — it contains the full JSX authoring reference (globals, `interpolate`/`spring` utilities, canvas rules, examples). Load it with `/write-overlay`.
+**Before writing any JSX, load skill `write-overlay`** — it contains the full JSX authoring reference (globals, `interpolate`/`spring` utilities, canvas rules, examples).
 
 ## Sub-skills
 
-| Name | Path | When to load |
-|------|------|--------------|
-| `write-overlay` | `skills/write-overlay/SKILL.md` | Before writing any JSX overlay — globals, `interpolate`/`spring` utilities, canvas rules, examples. |
-| `image-search` | `skills/image-search/SKILL.md` | When the prompt asks to source outside imagery (a photo of a person, a logo, an event/B-roll still) — find via `search_images` + download via `fetch_image`, then place as an image-card overlay. |
+| Name | When to load |
+|------|--------------|
+| `write-overlay` | Before writing any JSX overlay — globals, `interpolate`/`spring` utilities, canvas rules, examples. |
+| `image-search` | When the prompt asks to source outside imagery (a photo of a person, a logo, an event/B-roll still) — find via `search_images` + download via `fetch_image`, then place as an image-card overlay. |
 
 ---
 
@@ -34,7 +34,7 @@ Ask: what does this video need that isn't already in the footage? Common answers
 - **Lower-thirds** — speaker name, context, stat callouts. Tied to specific transcript moments.
 - **Logo/watermark** — if assets include a logo, add it as a persistent or bookend overlay.
 - **Stat cards** — when the speaker cites a number ("33 million views"), a card reinforces it visually.
-- **Image cards / B-roll stills** — when the speaker names a person, company, event, or thing the footage doesn't show ("Elon Musk", "the IPO", a specific welder), a real photo synced to that beat lands hard. **If the prompt asks you to source images** ("add a photo of X", "find images of the IPO"), load `/image-search` to find them via `search_images` and download via `fetch_image`, then add each as an image-card overlay (pass the local fetched path via `props`).
+- **Image cards / B-roll stills** — when the speaker names a person, company, event, or thing the footage doesn't show ("Elon Musk", "the IPO", a specific welder), a real photo synced to that beat lands hard. **If the prompt asks you to source images** ("add a photo of X", "find images of the IPO"), load skill `image-search` to find them via `search_images` and download via `fetch_image`, then add each as an image-card overlay (pass the local fetched path via `props`).
 
 If the prompt says "no overlays" — write nothing. Don't add an opening hook anyway.
 
@@ -60,9 +60,9 @@ One JSX file per overlay component. Save to `overlays/<name>.jsx` in the project
 
 **There are no built-in templates.** Every overlay is custom JSX. Style it to match the editing prompt — a "dark, cinematic" prompt gets different typography than "energetic TikTok vibes."
 
-See `/write-overlay` for the full authoring reference.
+See skill `write-overlay` for the full authoring reference.
 
-### 5. Add overlays to project.json
+### 5. Save overlays to the project
 
 Overlays live in `tracks[1+]` — overlay tracks in the unified tracks array. Each inner array is one track. Items in the same track cannot overlap in time; items in different tracks are z-ordered (higher indexes render on top). `tracks[0]` is always the primary footage track.
 
@@ -86,7 +86,7 @@ Overlays live in `tracks[1+]` — overlay tracks in the unified tracks array. Ea
 
 For multiple non-overlapping overlays, add them to the same track. For simultaneous overlays at different z-levels, add them to separate tracks.
 
-Persist via `PUT /api/projects/{id}` (HTTP) or write directly to `project.json` (headless).
+Follow save discipline: **read the project**, merge the updated `tracks` array into the fresh state, then **save the project (delta)**.
 
 ## Rules
 
@@ -107,4 +107,4 @@ Persist via `PUT /api/projects/{id}` (HTTP) or write directly to `project.json` 
 - **Never apply `transform: translate` or `scale` to the root element** — these are applied by the pipeline at compose time. Applying them in JSX pushes content off-canvas.
 - **Animations must complete before the overlay ends** — the last frame is held. If you fade out, opacity must reach 0 before the final frame. No mid-fade endings.
 - **HDR output** — when the project's `settings.colorSpace` is `hdr_hlg` or `hdr_pq`, the pipeline encodes the final output as HEVC 10-bit `yuv420p10le` with bt2020 color metadata (transfer `arib-std-b67` for HLG or `smpte2084` for PQ). Overlay segments are composited into the project's working color space at compose time; no action required in JSX.
-- **Split background from animated content** — never put `backdrop-filter: blur()` on a container whose children animate. It creates a GPU compositor layer that Chrome caches, producing stale/flashing frames in the rendered output. Put the frosted-glass card on its own lower track (where it can safely be cached — it's static), and put animated content on a higher track with no `backdrop-filter`. See `/write-overlay` for the full split pattern and when to skip backdrop-filter entirely.
+- **Split background from animated content** — never put `backdrop-filter: blur()` on a container whose children animate. It creates a GPU compositor layer that Chrome caches, producing stale/flashing frames in the rendered output. Put the frosted-glass card on its own lower track (where it can safely be cached — it's static), and put animated content on a higher track with no `backdrop-filter`. See skill `write-overlay` for the full split pattern and when to skip backdrop-filter entirely.

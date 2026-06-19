@@ -66,7 +66,7 @@ export default function List() {
 
 ## Writing the JSX
 
-> **Carousel text overlays follow a stricter contract.** For carousel projects, every text-bearing overlay must accept its font size, family, weight, style, color, alignment, transform, and background as props with string defaults — see `skills/editable-text/SKILL.md`. The "go large — for video" guidance below, and the hardcoded-style style of the `Hook` example, **do not apply** to carousel editable-text overlays.
+> **Carousel text overlays follow a stricter contract.** For carousel projects, every text-bearing overlay must accept its font size, family, weight, style, color, alignment, transform, and background as props with string defaults — see skill `editable-text`. The "go large — for video" guidance below, and the hardcoded-style style of the `Hook` example, **do not apply** to carousel editable-text overlays.
 
 The default aesthetic is **plain bold text directly on video** — no card, no background, just a text shadow for legibility. Big text (96–160px) that covers the footage, including the speaker's face if needed.
 
@@ -519,7 +519,7 @@ export default function Logo() {
 }
 ```
 
-In the browser preview, `/abs/path/...` asset paths are automatically rewritten to `/api/files?path=...` by the UI — the component receives the rewritten URL.
+Reference assets by their workspace path (e.g. `/abs/path/to/project/assets/logo.png`). How that path is resolved for preview or render is the interface's concern — the component always receives a usable URL for the path it was given.
 
 ---
 
@@ -544,7 +544,7 @@ When a workflow calls for several overlays, write them concurrently — each JSX
 1. Identify all overlays needed from the editing prompt and transcript
 2. Write **every** JSX file first — author the whole set before sampling or persisting anything. Do **not** sample after each file; interleaving a Puppeteer sample between every write is slow and breaks your authoring flow.
 3. **Sample them all in one batch pass at the end** (see "Verify your overlays fit the canvas")
-4. Fix any overflow, then add all items to the overlay track in a single `project.json` update
+4. Fix any overflow, then save the project (delta) adding all items to the overlay track in one update
 
 Common overlay set for a social reel:
 - Opening hook (0–3s) — text statement that earns the watch
@@ -556,7 +556,7 @@ Common overlay set for a social reel:
 ## Authoring guidelines
 
 - **Use icons, not emojis** — use `Ph.*` or `FaIcon` for visual symbols. Emojis render inconsistently across platforms and look low-effort. Only use emojis if the prompt explicitly asks for them.
-- **Go large — for video.** On 1080×1920 video overlays carrying a short, glanceable hook (3–6 words) over moving footage, 96px is the floor, not the ceiling. 120–160px for hooks. Text should feel oversized; if it looks a little too big, it's probably right. This rule is calibrated to video viewing — a thumb-stop on TikTok/Reels. **Do NOT apply this rule to carousels, story panels, or other static formats** where the text is being *read* rather than *glanced at*, and where headlines run longer than a punchy hook. For carousels see `skills/carousel/SKILL.md` §6 (Typography). For other static formats, default to ~32–48px body, ~52–80px headline, and size down further as line length grows.
+- **Go large — for video.** On 1080×1920 video overlays carrying a short, glanceable hook (3–6 words) over moving footage, 96px is the floor, not the ceiling. 120–160px for hooks. Text should feel oversized; if it looks a little too big, it's probably right. This rule is calibrated to video viewing — a thumb-stop on TikTok/Reels. **Do NOT apply this rule to carousels, story panels, or other static formats** where the text is being *read* rather than *glanced at*, and where headlines run longer than a punchy hook. For carousels see skill `carousel` §6 (Typography). For other static formats, default to ~32–48px body, ~52–80px headline, and size down further as line length grows.
 - **No backgrounds by default** — plain text on video with `textShadow` for legibility is the house style. No dark cards, no frosted glass, no semi-transparent boxes unless the prompt asks. A well-placed `textShadow` works on any footage.
 - **Cover the face if needed** — text position and size take priority. Don't shrink or reposition to avoid the speaker.
 - **Tie to transcript** — use word timings from the transcript to sync text appearance with speech. An overlay that appears exactly when the speaker says the word it displays lands much harder.
@@ -568,25 +568,19 @@ Common overlay set for a social reel:
 - **Don't overlap** — avoid two overlays occupying the same screen region at the same time
 - **Style to the prompt** — match font weight, color, and motion to the tone of the edit
 - **Opening hook** — almost always appropriate for social content; fires in the first 0–3s
-- **Persist after writing** — update `project.json` via `PUT /api/projects/{id}` (HTTP mode) or write directly to `project.json` (headless mode)
+- **Persist after writing** — save the project (delta) with the new overlay items added to the track
 
 ---
 
 ## Verify your overlays fit the canvas — one sample pass at the end
 
-**Write all of your overlay JSX first. Then sample them in a single batch pass — do not sample after each file.** Per-file sampling stalls authoring and spins up a fresh Puppeteer process each time; one pass at the end over the finished set is faster and just as safe, since nothing downstream consumes an overlay until you persist the whole batch to `project.json`.
+**Write all of your overlay JSX first. Then sample them in a single batch pass — do not sample after each file.** Per-file sampling stalls authoring and spins up a fresh Puppeteer process each time; one pass at the end over the finished set is faster and just as safe, since nothing downstream consumes an overlay until you save the project with the whole batch.
 
-Once every JSX file is written, loop over them in one pass:
+Once every JSX file is written, loop over them in one pass — for each JSX file, **run step `sample_overlay`** with args `{ path, measure: true, googleFonts, props }`:
 
-```
-for f in overlays/*.jsx; do
-  montaj sample overlay "$f" --measure --google-fonts "<that overlay's googleFonts>" --out "/tmp/$(basename "$f" .jsx).png"
-done
-```
+Pass each overlay's declared `googleFonts` (and representative `props`) so the step measures with the real render-time font — see the Syne case study below.
 
-Pass each overlay's declared `googleFonts` (and representative `--props`) so the sample measures with the real render-time font — see the Syne case study below.
-
-The command renders the overlay through the same Puppeteer path the production renderer uses and returns a JSON object on stdout:
+The step renders the overlay through the same Puppeteer path the production renderer uses and returns:
 
 ```json
 {
@@ -614,4 +608,4 @@ When the Montaj editor preview shows a layout that fits, but the rendered video 
 
 Display fonts like **Syne 800** are 60–70% wider than typical `sans-serif` fallbacks at the same `px` size. Concrete example: `"RECURSIVE"` at `fontSize: 160` measures ~933 px wide in fallback `sans-serif`, but ~1594 px wide in Syne 800 — 514 px of right-edge overflow on a 1080-wide canvas. The editor looked fine; the render was completely clipped.
 
-**Any overlay that declares a `googleFonts` entry must go through the end-of-authoring sample pass with `--measure` and that same `--google-fonts` spec, before you persist the batch to `project.json`.** The preview cannot tell you whether the text fits in the render. The sample can.
+**Any overlay that declares a `googleFonts` entry must go through the end-of-authoring sample pass with `measure: true` and that same `googleFonts` spec, before you save the project with the batch.** The preview cannot tell you whether the text fits in the render. The sample can.
