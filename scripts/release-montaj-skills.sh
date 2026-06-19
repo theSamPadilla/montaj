@@ -47,6 +47,7 @@ LEVEL="auto"
 DRY_RUN=0
 ASSUME_YES=0
 OTP=""
+FIRST_RELEASE=0
 while [ $# -gt 0 ]; do
   case "$1" in
     patch|minor|major) LEVEL="$1" ;;
@@ -84,34 +85,47 @@ git -C "$ROOT" fetch --tags --quiet || true
 CUR_VERSION="$(node -p "require('$PKG_DIR/package.json').version")"
 LAST_TAG="$(git -C "$ROOT" tag -l "${TAG_PREFIX}*" | sort -V | tail -1)"
 
-# ── Bootstrap: no prior tag → tag the current published version as the baseline ─
+# ── Bootstrap: no prior tag ───────────────────────────────────────────────────
+# Two cases when there's no `montaj-skills-v*` tag:
+#   - The package is ALREADY on npm (e.g. published out-of-band): just plant the
+#     baseline tag so future runs can diff against it — no bump, no publish.
+#   - The package is NOT on npm yet: this is the first-ever release. Publishing a
+#     baseline-then-rerun would dead-end ("no changes since the tag"), so do a
+#     real first release here. Default to a `minor` (0.0.0 → 0.1.0) unless an
+#     explicit level was passed.
 if [ -z "$LAST_TAG" ]; then
-  note "No '${TAG_PREFIX}*' tag found. Baselining the current published version ${PKG_NAME}@${CUR_VERSION}."
-  note "This run only sets the baseline tag (no bump, no publish). Make changes, then re-run."
-  if [ "$DRY_RUN" -eq 1 ]; then note "[dry-run] would: git tag ${TAG_PREFIX}${CUR_VERSION} && git push origin ${TAG_PREFIX}${CUR_VERSION}"; exit 0; fi
-  git -C "$ROOT" tag "${TAG_PREFIX}${CUR_VERSION}"
-  git -C "$ROOT" push origin "${TAG_PREFIX}${CUR_VERSION}"
-  note "Tagged ${TAG_PREFIX}${CUR_VERSION}. Re-run after committing package changes."
-  exit 0
-fi
-
-# ── Detect changes to the package since the last tag ──────────────────────────
-if git -C "$ROOT" diff --quiet "$LAST_TAG" HEAD -- montaj_assets/montaj-skills; then
-  note "No changes to montaj_assets/montaj-skills since $LAST_TAG — nothing to publish."
-  exit 0
-fi
-
-SUBJECTS="$(git -C "$ROOT" log "$LAST_TAG"..HEAD --format='%s%n%b' -- montaj_assets/montaj-skills)"
-
-if [ "$LEVEL" = "auto" ]; then
-  if echo "$SUBJECTS" | grep -qiE '(BREAKING CHANGE|^[a-z]+(\([^)]*\))?!:)'; then
-    LEVEL="major"
-  elif echo "$SUBJECTS" | grep -qiE '^feat(\([^)]*\))?:'; then
-    LEVEL="minor"
-  else
-    LEVEL="patch"
+  if npm view "$PKG_NAME" version >/dev/null 2>&1; then
+    note "No '${TAG_PREFIX}*' tag, but ${PKG_NAME} is already on npm. Baselining (no bump, no publish)."
+    if [ "$DRY_RUN" -eq 1 ]; then note "[dry-run] would: git tag ${TAG_PREFIX}${CUR_VERSION} && git push origin ${TAG_PREFIX}${CUR_VERSION}"; exit 0; fi
+    git -C "$ROOT" tag "${TAG_PREFIX}${CUR_VERSION}"
+    git -C "$ROOT" push origin "${TAG_PREFIX}${CUR_VERSION}"
+    note "Tagged ${TAG_PREFIX}${CUR_VERSION}. Re-run after committing package changes."
+    exit 0
   fi
-  note "Auto-detected bump: $LEVEL (from commits since $LAST_TAG)."
+  note "No '${TAG_PREFIX}*' tag and ${PKG_NAME} is not on npm yet — publishing the FIRST release."
+  FIRST_RELEASE=1
+  [ "$LEVEL" = "auto" ] && LEVEL="minor"
+fi
+
+# ── Detect changes to the package since the last tag (skip on first release) ──
+if [ "$FIRST_RELEASE" -ne 1 ]; then
+  if git -C "$ROOT" diff --quiet "$LAST_TAG" HEAD -- montaj_assets/montaj-skills; then
+    note "No changes to montaj_assets/montaj-skills since $LAST_TAG — nothing to publish."
+    exit 0
+  fi
+
+  SUBJECTS="$(git -C "$ROOT" log "$LAST_TAG"..HEAD --format='%s%n%b' -- montaj_assets/montaj-skills)"
+
+  if [ "$LEVEL" = "auto" ]; then
+    if echo "$SUBJECTS" | grep -qiE '(BREAKING CHANGE|^[a-z]+(\([^)]*\))?!:)'; then
+      LEVEL="major"
+    elif echo "$SUBJECTS" | grep -qiE '^feat(\([^)]*\))?:'; then
+      LEVEL="minor"
+    else
+      LEVEL="patch"
+    fi
+    note "Auto-detected bump: $LEVEL (from commits since $LAST_TAG)."
+  fi
 fi
 
 # Compute the next version WITHOUT mutating anything. (Do NOT use
@@ -128,8 +142,12 @@ NEXT_VERSION="$(node -e '
 echo
 note "Package : $PKG_NAME"
 note "Current : $CUR_VERSION  →  Next: $NEXT_VERSION  ($LEVEL)"
-note "Commits since $LAST_TAG touching the package:"
-git -C "$ROOT" log "$LAST_TAG"..HEAD --oneline -- montaj_assets/montaj-skills | sed 's/^/    /'
+if [ "$FIRST_RELEASE" -eq 1 ]; then
+  note "First release of ${PKG_NAME} (not previously on npm)."
+else
+  note "Commits since $LAST_TAG touching the package:"
+  git -C "$ROOT" log "$LAST_TAG"..HEAD --oneline -- montaj_assets/montaj-skills | sed 's/^/    /'
+fi
 echo
 
 if [ "$DRY_RUN" -eq 1 ]; then
