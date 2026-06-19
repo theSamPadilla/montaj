@@ -77,6 +77,9 @@ export interface VisualItem {
   nobg_src?: string         // video type only — ProRes 4444 .mov for final render
   nobg_preview_src?: string // video type only — VP9 WebM with alpha for browser preview
   muted?: boolean         // video type only — suppress audio in preview and render
+  sourceCrop?: { x: number; y: number; w: number; h: number }  // video type only — non-destructive crop of the source clip (0–1 fractions)
+  sourceWidth?: number    // video type only — intrinsic width of the source clip in pixels
+  sourceHeight?: number   // video type only — intrinsic height of the source clip in pixels
   generation?: {            // ai_video only — frozen provenance from Kling generation
     // Single-shot fields (present when multiShot is falsy).
     sceneId?: string
@@ -196,6 +199,7 @@ export interface EditorProject {
   assets?: Asset[]
   carousel?: { aspect: string }
   profile?: string
+  derivedFrom?: string  // ID of the source project this was derived from (e.g. clips workflow)
   // Host-only / pipeline fields pass through at the type level.
   [key: string]: unknown
 }

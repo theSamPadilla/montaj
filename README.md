@@ -125,6 +125,7 @@ See the [CLI Reference](https://docs.montaj.ag/cli) for the full documentation.
 | `animations` | Custom JSX animation compositions |
 | `explainer` | Educational/explainer video style |
 | `floating_head` | Speaker overlay on background footage |
+| `clips` | Long-form horizontal source → series of short vertical clips with overlays |
 
 Custom steps and workflows are discovered automatically — no registration needed. See the [Steps Reference](https://docs.montaj.ag/steps) and [Core Concepts](https://docs.montaj.ag/concepts) for details.
 

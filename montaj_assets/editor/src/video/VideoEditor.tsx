@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
-import { Magnet } from 'lucide-react'
+import { Crop, Magnet } from 'lucide-react'
 import type { Project, VideoEditorProps } from '../types'
+import { VideoSourceCropOverlay } from '../crop/VideoSourceCropOverlay'
+import { getOverlayDesignCanvas } from './design-canvas'
 import { applyTheme, defaultMontajTheme } from '../theme'
 import { applyCutToItem, applyCutToTracks, collapseGaps, splitAtTime } from './cuts'
 import { repairCaptionWords } from './captionRepair'
@@ -273,6 +275,9 @@ function ReviewSurface<P extends Project>({
   const [selectedIds, setSelectedIds] = useState<string[]>([])
   const primarySelectedId = selectedIds[0] ?? null
   const [rippleMode, setRippleMode]   = useState(false)
+  // Source-crop mode: when on, a VideoSourceCropOverlay is mounted over the
+  // preview for the selected tracks[0] video item. Cleared when selection changes.
+  const [cropMode, setCropMode]       = useState(false)
   const [renderOpen, setRenderOpen]   = useState(false)
   const [regenCaptionsOpen, setRegenCaptionsOpen] = useState(false)
   // The clip/audio inspector target — derived from the timeline's inspect
@@ -280,6 +285,21 @@ function ReviewSurface<P extends Project>({
   const [inspecting, setInspecting]   = useState<{ kind: 'clip' | 'audio'; id: string } | null>(null)
 
   const { versions, restoring, setRestoring } = useVersionHistory(adapter, project)
+
+  // Measured pixel size of the preview's rendered video rect — fed to the crop
+  // overlay as its wrapper dims so renderedSourceRect letterboxes correctly.
+  const previewBoxRef = useRef<HTMLDivElement>(null)
+  const [previewBox, setPreviewBox] = useState<{ w: number; h: number }>({ w: 0, h: 0 })
+  useEffect(() => {
+    if (!cropMode) return
+    const el = previewBoxRef.current
+    if (!el) return
+    const obs = new ResizeObserver(([entry]) => {
+      setPreviewBox({ w: entry.contentRect.width, h: entry.contentRect.height })
+    })
+    obs.observe(el)
+    return () => obs.disconnect()
+  }, [cropMode])
 
   // Repair caption segments whose words[] text has diverged from edited seg.text.
   // Inline caption edits update seg.text but not seg.words; this normalizes the
@@ -296,6 +316,18 @@ function ReviewSurface<P extends Project>({
 
   const clips      = project.tracks?.[0] ?? []
   const hasContent = clips.length > 0 || (project.tracks?.slice(1).flat().length ?? 0) > 0 || (project.captions?.segments?.length ?? 0) > 0
+
+  // The selected tracks[0] video item, if any — the only thing source-crop mode
+  // can target. Source crop is a tracks[0]-video primitive (the renderer applies
+  // it to the original clip before compositing).
+  const cropTarget = primarySelectedId
+    ? clips.find(c => c.id === primarySelectedId && c.type === 'video' && !!c.src) ?? null
+    : null
+
+  // Selecting a different item (or nothing croppable) exits crop mode.
+  useEffect(() => {
+    if (!cropTarget && cropMode) setCropMode(false)
+  }, [cropTarget, cropMode])
 
   function pushHistory(prev: P) {
     historyRef.current = [...historyRef.current.slice(-49), prev]
@@ -331,7 +363,7 @@ function ReviewSurface<P extends Project>({
     setSelectedIds([])
   }
 
-  function handleOverlayChange(id: string, changes: { offsetX?: number; offsetY?: number; scale?: number; rotation?: number; fit?: 'cover' | 'contain' | 'fill' }) {
+  function handleOverlayChange(id: string, changes: { offsetX?: number; offsetY?: number; scale?: number; rotation?: number; fit?: 'cover' | 'contain' | 'fill'; sourceCrop?: { x: number; y: number; w: number; h: number }; sourceWidth?: number; sourceHeight?: number }) {
     pushHistory(project)
     const updated = {
       ...project,
@@ -397,18 +429,48 @@ function ReviewSurface<P extends Project>({
       <div className="flex flex-col flex-1 overflow-hidden">
         <div className="flex-1 flex items-center justify-center bg-black overflow-hidden p-2">
           {hasContent ? (
-            <PreviewPlayer
-              project={project}
-              currentTime={currentTime}
-              onTimeUpdate={setCurrentTime}
-              selectedOverlayId={primarySelectedId ?? undefined}
-              onOverlayChange={handleOverlayChange}
-              compileOverlay={adapter.compileOverlay}
-              clearOverlayCache={adapter.clearOverlayCache}
-              watchFile={adapter.watchFile}
-              fileUrl={adapter.fileUrl}
-              resolveCaptionTemplate={adapter.resolveCaptionTemplate}
-            />
+            <div
+              ref={previewBoxRef}
+              className="relative h-full max-w-full"
+              style={{ aspectRatio: (() => { const [w, h] = getOverlayDesignCanvas(project.settings?.resolution); return `${w} / ${h}` })() }}
+            >
+              <PreviewPlayer
+                project={project}
+                currentTime={currentTime}
+                onTimeUpdate={setCurrentTime}
+                selectedOverlayId={primarySelectedId ?? undefined}
+                onOverlayChange={handleOverlayChange}
+                compileOverlay={adapter.compileOverlay}
+                clearOverlayCache={adapter.clearOverlayCache}
+                watchFile={adapter.watchFile}
+                fileUrl={adapter.fileUrl}
+                resolveCaptionTemplate={adapter.resolveCaptionTemplate}
+              />
+              {/* Source-crop overlay — mounted over the preview for the selected
+                  tracks[0] video. Persists sourceCrop through handleOverlayChange. */}
+              {cropMode && cropTarget && (
+                <div className="absolute inset-0" style={{ zIndex: 200 }}>
+                  <VideoSourceCropOverlay
+                    item={cropTarget}
+                    resolveSrc={(it) => adapter.fileUrl(it.nobg_preview_src ?? it.src ?? '')}
+                    wrapperWidth={previewBox.w}
+                    wrapperHeight={previewBox.h}
+                    onChange={(next) => handleOverlayChange(cropTarget.id, {
+                      sourceCrop: {
+                        x: Math.min(1, Math.max(0, next.x)),
+                        y: Math.min(1, Math.max(0, next.y)),
+                        w: Math.min(1, Math.max(0, next.w)),
+                        h: Math.min(1, Math.max(0, next.h)),
+                      },
+                    })}
+                    onSrcDimsLoaded={(dims) => {
+                      if (cropTarget.sourceWidth && cropTarget.sourceHeight) return
+                      handleOverlayChange(cropTarget.id, { sourceWidth: dims.width, sourceHeight: dims.height })
+                    }}
+                  />
+                </div>
+              )}
+            </div>
           ) : (
             <p className="text-gray-600 text-sm">No clips</p>
           )}
@@ -438,6 +500,23 @@ function ReviewSurface<P extends Project>({
             }`}
           >
             <Magnet size={12} />
+          </button>
+          <button
+            onClick={() => setCropMode(m => !m)}
+            disabled={!cropTarget}
+            title={
+              !cropTarget
+                ? 'Select a video clip to crop its source'
+                : cropMode ? 'Exit source crop' : 'Crop source — non-destructively crop the selected clip'
+            }
+            aria-pressed={cropMode}
+            className={`flex items-center justify-center w-5 h-5 rounded transition-colors disabled:opacity-30 disabled:cursor-not-allowed ${
+              cropMode
+                ? 'text-amber-400 bg-amber-400/15 hover:bg-amber-400/25'
+                : 'text-gray-500 bg-transparent hover:text-gray-400'
+            }`}
+          >
+            <Crop size={12} />
           </button>
           <button
             onClick={() => {

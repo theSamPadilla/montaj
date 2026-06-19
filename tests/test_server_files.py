@@ -209,6 +209,23 @@ def test_files_under_shipped_templates_root_returns_200(client, roots):
     assert b"StaticText" in resp.content
 
 
+def test_files_serves_symlinked_source_under_workspace(roots, client):
+    """Clips-workflow shared source: a child clip project references the
+    original source via a symlink. The editor previews it through /api/files.
+    The symlink RESOLVES under the workspace root, so it is intentionally
+    servable — containment is unchanged because the resolved target is still
+    in-scope (cf. test_files_symlink_outside_allowlist_returns_403)."""
+    # source project holds the real file; a sibling child project symlinks to it
+    ws = roots["workspace"]
+    source = ws / "src-proj" / "clips" / "big.mp4"
+    source.parent.mkdir(parents=True); source.write_bytes(b"\x00" * 2048)
+    child_dir = ws / "child-proj" / "clips"; child_dir.mkdir(parents=True)
+    link = child_dir / "big.mp4"; link.symlink_to(source)
+    r = client.get("/api/files", params={"path": str(link)})
+    assert r.status_code == 200
+    assert len(r.content) == 2048
+
+
 def test_files_sibling_of_shipped_templates_returns_403(client, roots):
     """A file that is a sibling of templates/overlays/ inside the render dir
     (e.g., render/credentials.json) must not be reachable — only the

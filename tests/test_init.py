@@ -1199,3 +1199,41 @@ def test_init_with_invalid_id_rejected(tmp_path, monkeypatch, bad_id):
     # No project directory should have been created on validation failure.
     assert not (tmp_path / "bad-id-test").exists()
 
+
+# ---------------------------------------------------------------------------
+# --symlink-clips and --derived-from tests
+# ---------------------------------------------------------------------------
+
+def test_symlink_clips_creates_symlink(tmp_path):
+    """--symlink-clips stages the clip as a symlink instead of a copy."""
+    ws = tmp_path / "ws"; ws.mkdir()
+    src = tmp_path / "source.mp4"; src.write_bytes(b"\x00" * 1024)
+    result = run_init(
+        "--prompt", "p", "--workflow", "clean_cut",
+        "--clips", str(src),
+        "--symlink-clips",
+        "--project-path", "proj",
+        env_override={"MONTAJ_WORKSPACE_DIR": str(ws)},
+    )
+    assert result.returncode == 0, result.stderr
+    proj_json = _project_path_from_stdout(result.stdout)
+    staged = proj_json.parent / "source.mp4"
+    assert staged.is_symlink(), "clip should be symlinked, not copied"
+    assert staged.resolve() == src.resolve()
+
+
+def test_derived_from_written(tmp_path):
+    """--derived-from writes derivedFrom into project.json."""
+    ws = tmp_path / "ws"; ws.mkdir()
+    src = tmp_path / "source.mp4"; src.write_bytes(b"\x00" * 1024)
+    result = run_init(
+        "--prompt", "p", "--workflow", "clean_cut",
+        "--clips", str(src),
+        "--derived-from", "src-123",
+        "--project-path", "proj2",
+        env_override={"MONTAJ_WORKSPACE_DIR": str(ws)},
+    )
+    assert result.returncode == 0, result.stderr
+    proj_json = _project_path_from_stdout(result.stdout)
+    data = json.loads(proj_json.read_text())
+    assert data["derivedFrom"] == "src-123"

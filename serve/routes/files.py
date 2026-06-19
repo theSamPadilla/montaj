@@ -133,6 +133,10 @@ async def serve_file(path: str, request: Request):
     # Scope check — runs after any NBSP-fallback reassignment of p, before any
     # stat/serve operation. Both p and each allowed root are .resolve()'d so
     # the comparison is over canonical (symlink-followed, .. -normalized) paths.
+    # Because p.resolve() follows symlinks, a symlinked source whose RESOLVED
+    # target is still under the workspace root is intentionally servable — this
+    # is how clips-workflow child projects preview a shared source they link to.
+    # A symlink whose target escapes the roots still 403s (resolve catches it).
     # TOCTOU: a symlink swap between resolve and open is theoretically race-able,
     # but not exploitable from the network in the sidecar threat model.
     try:

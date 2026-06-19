@@ -379,6 +379,35 @@ def test_validate_project_primary_clip_passes_full_valid(tmp_path):
     assert result["valid"] is True
 
 
+def test_validate_project_accepts_derived_from(tmp_path):
+    data = {**VALID_PROJECT, "tracks": [[{**VALID_PRIMARY_CLIP}]], "derivedFrom": "src-proj-123"}
+    path = _write_project(tmp_path, "project.json", data)
+    assert v.validate_project(path)["valid"] is True
+
+
+def test_validate_project_rejects_non_string_derived_from(tmp_path):
+    data = {**VALID_PROJECT, "tracks": [[{**VALID_PRIMARY_CLIP}]], "derivedFrom": 123}
+    path = _write_project(tmp_path, "project.json", data)
+    with pytest.raises(SystemExit):
+        v.validate_project(path)
+
+
+def test_validate_project_accepts_valid_source_crop(tmp_path):
+    clip = {**VALID_PRIMARY_CLIP, "sourceCrop": {"x": 0.25, "y": 0.0, "w": 0.5, "h": 1.0},
+            "sourceWidth": 1920, "sourceHeight": 1080}
+    data = {**VALID_PROJECT, "tracks": [[clip]]}
+    path = _write_project(tmp_path, "project.json", data)
+    assert v.validate_project(path)["valid"] is True
+
+
+def test_validate_project_rejects_out_of_range_source_crop(tmp_path):
+    clip = {**VALID_PRIMARY_CLIP, "sourceCrop": {"x": -0.1, "y": 0.0, "w": 0.5, "h": 1.0}}
+    data = {**VALID_PROJECT, "tracks": [[clip]]}
+    path = _write_project(tmp_path, "project.json", data)
+    with pytest.raises(SystemExit):
+        v.validate_project(path)
+
+
 # ---------------------------------------------------------------------------
 # validate_workflow
 # ---------------------------------------------------------------------------

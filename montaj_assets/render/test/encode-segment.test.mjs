@@ -1,7 +1,7 @@
 // render/test/encode-segment.test.mjs
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { encodeSegment } from '../encode-segment.js'
+import { encodeSegment, buildVideoItemFilterParts } from '../encode-segment.js'
 import {
   COLOR_SPACE_SPECS,
   ALL_COLOR_SPACES,
@@ -94,6 +94,45 @@ test('dry-run: .mov input uses format=auto for alpha preservation', () => {
   }
   const result = encodeSegment(seg, '/tmp/test.mp4', { _dryRun: true })
   assert.ok(result.filterParts.some(f => f.includes('format=auto')))
+})
+
+// ---------------------------------------------------------------------------
+// sourceCrop crop/zoom primitive (clips workflow vertical reframe)
+// ---------------------------------------------------------------------------
+
+// Helper: the full filter string for the first video item
+function videoFilter(parts) { return parts.join(';') }
+
+test('sourceCrop inserts a crop filter sized from source dims, before scale', () => {
+  const item = {
+    type: 'video', src: '/src.mp4', start: 0, end: 5, inPoint: 0,
+    scale: 1, offsetX: 0, offsetY: 0, opacity: 1,
+    sourceCrop: { x: 0.25, y: 0.0, w: 0.5, h: 1.0 },
+    sourceWidth: 1920, sourceHeight: 1080,
+  }
+  const { filterParts } = buildVideoItemFilterParts(item, 1080, 1920, 0, '[base]',
+    { segStart: 0, duration: 5, projectColorSpace: 'sdr_bt709', zscaleAvailable: false })
+  const f = videoFilter(filterParts)
+  // 0.5*1920=960 wide, 1080 tall, x=0.25*1920=480, y=0
+  assert.match(f, /crop=960:1080:480:0/, 'crop sized/positioned from source dims')
+  assert.ok(f.indexOf('crop=960:1080:480:0') < f.indexOf('scale='), 'crop precedes scale')
+})
+
+test('no sourceCrop → no crop filter (unchanged behavior)', () => {
+  const item = { type: 'video', src: '/src.mp4', start: 0, end: 5, inPoint: 0,
+    scale: 1, offsetX: 0, offsetY: 0, opacity: 1 }
+  const { filterParts } = buildVideoItemFilterParts(item, 1080, 1920, 0, '[base]',
+    { segStart: 0, duration: 5, projectColorSpace: 'sdr_bt709', zscaleAvailable: false })
+  assert.doesNotMatch(videoFilter(filterParts), /crop=/)
+})
+
+test('sourceCrop without source dims is a no-op (cannot compute pixels)', () => {
+  const item = { type: 'video', src: '/src.mp4', start: 0, end: 5, inPoint: 0,
+    scale: 1, offsetX: 0, offsetY: 0, opacity: 1,
+    sourceCrop: { x: 0.25, y: 0, w: 0.5, h: 1.0 } }  // no sourceWidth/Height
+  const { filterParts } = buildVideoItemFilterParts(item, 1080, 1920, 0, '[base]',
+    { segStart: 0, duration: 5, projectColorSpace: 'sdr_bt709', zscaleAvailable: false })
+  assert.doesNotMatch(videoFilter(filterParts), /crop=/)
 })
 
 // ---------------------------------------------------------------------------

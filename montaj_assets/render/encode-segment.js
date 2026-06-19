@@ -214,8 +214,20 @@ export function buildVideoItemFilterParts(item, vw, vh, idx, videoLabel, opts) {
   ]
   const filterParts = []
 
+  // Optional source crop (clips workflow vertical reframe). Needs source pixel
+  // dims; no-op without them. Even dims keep ffmpeg/x264 happy.
+  let cropStep = ''
+  const sc = item.sourceCrop
+  if (sc && item.sourceWidth && item.sourceHeight) {
+    const cw = Math.round(item.sourceWidth  * sc.w / 2) * 2  // even: x264 needs even dims
+    const ch = Math.round(item.sourceHeight * sc.h / 2) * 2  // even: x264 needs even dims
+    const cx = Math.round(item.sourceWidth  * sc.x)          // origin NOT even-rounded (offsets don't require it)
+    const cy = Math.round(item.sourceHeight * sc.y)          // origin NOT even-rounded
+    cropStep = `crop=${cw}:${ch}:${cx}:${cy},`
+  }
+
   filterParts.push(
-    `[${idx}:v]setpts=PTS-STARTPTS,${conversionStep}` +
+    `[${idx}:v]setpts=PTS-STARTPTS,${conversionStep}${cropStep}` +
     `scale=${scaledW}:${scaledH}:force_original_aspect_ratio=decrease,` +
     `pad=${scaledW}:${scaledH}:(ow-iw)/2:(oh-ih)/2[vid${idx}]`
   )

@@ -25,12 +25,15 @@ NORMALIZE_POOL_SIZE = 4  # outer pool — fast-path/skip workers don't acquire h
 HEAVY_ENCODE_LIMIT = 2   # libx264 -preset slow at 4K is memory-heavy — precedent: materialize_cut.py:22
 
 
-def _copy_into_workspace(src: str, dest_dir: str, prefix: str) -> str:
-    """Copy *src* into *dest_dir*, avoiding name collisions with a numeric suffix.
+def _copy_into_workspace(src: str, dest_dir: str, prefix: str, link: bool = False) -> str:
+    """Copy (or symlink) *src* into *dest_dir*, avoiding name collisions with a numeric suffix.
 
     On collision the destination is renamed ``<base>_<prefix><N><ext>`` where N
     starts at 2 (matching the existing init.py / projects.py convention).
-    Returns the absolute path of the copied file.
+    Returns the absolute path of the copied/linked file.
+
+    When *link* is True, an absolute symlink is created instead of a copy so
+    that the staged file survives cwd changes.
 
     This is the shared implementation used by both the ``create_project`` closure
     (via its thin wrapper) and external callers such as
@@ -46,7 +49,10 @@ def _copy_into_workspace(src: str, dest_dir: str, prefix: str) -> str:
         while os.path.exists(os.path.join(dest_dir, f"{base}_{prefix}{counter}{ext}")):
             counter += 1
         dest = os.path.join(dest_dir, f"{base}_{prefix}{counter}{ext}")
-    shutil.copy2(src, dest)
+    if link:
+        os.symlink(os.path.abspath(src), dest)
+    else:
+        shutil.copy2(src, dest)
     return dest
 
 
@@ -207,6 +213,11 @@ def main():
                         help="Optional project id. If supplied, used as project.json['id'] verbatim. "
                              "Must be a canonical UUID string (8-4-4-4-12 hex). When absent, a fresh "
                              "UUID is generated server-side.")
+    parser.add_argument("--symlink-clips", action="store_true",
+                        help="Stage clips as symlinks instead of copies — the standard path for clips-workflow fan-out so a multi-GB source is not copied per child project.")
+    parser.add_argument("--derived-from", dest="derived_from", default=None,
+                        help="Source project or asset id that this project was derived from "
+                             "(e.g. a source-clip project id in the clips workflow).")
     args = parser.parse_args()
 
     # Early carousel detection — validate incompatible args BEFORE any on-disk side effects.
@@ -337,15 +348,16 @@ def main():
     if not os.path.isdir(os.path.join(workspace_dir, ".git")):
         git(["init", workspace_dir], cwd=os.getcwd())
 
-    def copy_into_workspace(src: str, prefix: str) -> str:
+    def copy_into_workspace(src: str, prefix: str, link: bool = False) -> str:
         """Thin wrapper around the module-level helper, bound to workspace_dir."""
-        return _copy_into_workspace(src, workspace_dir, prefix)
+        return _copy_into_workspace(src, workspace_dir, prefix, link=link)
 
     clips = [
         # start/end are placeholder 0.0 values — the agent sets real values
         # after running probe. Zero-duration is technically valid under the
         # validator (which only requires the fields exist, not that end > start).
-        {"id": f"clip-{i}", "type": "video", "src": copy_into_workspace(os.path.abspath(clip), "clip"),
+        {"id": f"clip-{i}", "type": "video",
+         "src": copy_into_workspace(os.path.abspath(clip), "clip", link=args.symlink_clips),
          "start": 0.0, "end": 0.0}
         for i, clip in enumerate(args.clips)
     ]
@@ -569,6 +581,9 @@ def main():
         **({"profile": args.profile} if args.profile else {}),
         **({"profileSnapshot": profile_snapshot} if profile_snapshot else {}),
     }
+
+    if args.derived_from:
+        project["derivedFrom"] = args.derived_from
 
     if project_type == "ai_video":
         image_refs_stub = []

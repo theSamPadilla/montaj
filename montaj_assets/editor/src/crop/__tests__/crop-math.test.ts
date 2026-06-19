@@ -55,6 +55,21 @@ describe('wrapperPxToFraction', () => {
   })
 })
 
+describe('video-source round-trip (regression lock: helpers are element-agnostic)', () => {
+  it('12. round-trips a CropFraction through fractionToWrapperPx → wrapperPxToFraction for a 1920×1080 source in a 1080×1920 wrapper', () => {
+    // 1920×1080 landscape video rendered inside a 1080×1920 portrait wrapper.
+    // Source is much wider than the wrapper, so it letterboxes left/right.
+    const rendered = renderedSourceRect({ wrapperW: 1080, wrapperH: 1920, srcWidth: 1920, srcHeight: 1080 })
+    const orig: import('../crop-math').CropFraction = { x: 0.1, y: 0.2, w: 0.6, h: 0.5 }
+    const px = fractionToWrapperPx({ crop: orig, rendered })
+    const back = wrapperPxToFraction({ px, rendered })
+    expect(back.x).toBeCloseTo(orig.x)
+    expect(back.y).toBeCloseTo(orig.y)
+    expect(back.w).toBeCloseTo(orig.w)
+    expect(back.h).toBeCloseTo(orig.h)
+  })
+})
+
 import { applyCropHandleDrag } from '../crop-math'
 
 // Standard fixture: 400x500 element, 800x1000 source — aspect-matched so the

@@ -49,6 +49,7 @@ The agent writes project.json as it works — every write pushes to the browser 
 | `tracks` | array | Array of track arrays. `tracks[0]` is the primary footage track. `tracks[1+]` are overlay tracks. Higher-index tracks render on top. May contain one empty track `[[]]` for animation-only projects. |
 | `captions` | object | Caption configuration. Always rendered topmost, above all tracks. |
 | `audio` | object | Music and ducking config |
+| `derivedFrom` | string | Optional. Set on clip projects fanned out from a source by the `clips` workflow; the source project's id. |
 
 ---
 
@@ -120,6 +121,9 @@ Items in `tracks[0]` are always `type: "video"`. They have explicit `start`/`end
 | `inPoint` | number | Start time in the source file (seconds). Set by clean/trim steps. |
 | `outPoint` | number | End time in the source file (seconds). Set by clean/trim steps. |
 | `transition` | object | Transition into this clip. Omit for hard cut. |
+| `sourceCrop` | object | Optional. `{x, y, w, h}` as fractions of the source's natural dimensions (`[0, 1]`). Defines the visible region for vertical reframing (e.g. auto-reframe from landscape to portrait). All four keys required when present. |
+| `sourceWidth` | number | Optional. Source pixel width. Written by the agent from a probe; required for `sourceCrop` to render correctly. |
+| `sourceHeight` | number | Optional. Source pixel height. Written by the agent from a probe; required for `sourceCrop` to render correctly. |
 
 **Transition types:** `cut` (default), `crossfade`, `flash-white`, `flash-black`
 

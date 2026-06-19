@@ -30,6 +30,24 @@ _BASE_COLOR_RE = re.compile(r"^#[0-9a-fA-F]{6}$|^#[0-9a-fA-F]{8}$")
 _CAROUSEL_FORBIDDEN = ("tracks", "sources", "audio", "storyboard")
 
 
+def _validate_clip_extensions(data):
+    """Optional clips-workflow fields: derivedFrom (top-level) + sourceCrop on video items."""
+    df = data.get("derivedFrom")
+    if df is not None and not isinstance(df, str):
+        fail("invalid_field", "derivedFrom must be a string")
+    for ti, track in enumerate(data.get("tracks", [])):
+        for item in track:
+            sc = item.get("sourceCrop")
+            if sc is None:
+                continue
+            if not isinstance(sc, dict):
+                fail("invalid_field", f"tracks[{ti}] item '{item.get('id','?')}': sourceCrop must be an object")
+            for k in ("x", "y", "w", "h"):
+                val = sc.get(k)
+                if not isinstance(val, (int, float)) or not (0.0 <= float(val) <= 1.0):
+                    fail("invalid_field", f"tracks[{ti}] item '{item.get('id','?')}': sourceCrop.{k} must be a number in [0,1]")
+
+
 def validate_project(path):
     if not os.path.isfile(path):
         fail("file_not_found", f"File not found: {path}")
@@ -180,6 +198,8 @@ def validate_project(path):
                             f"but previous item ends at {prev_end}"
                         )
                     prev_end = item["end"]
+
+        _validate_clip_extensions(data)
 
     return {"valid": True}
 

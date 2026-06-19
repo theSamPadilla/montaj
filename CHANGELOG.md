@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **`clips` workflow: long-form horizontal source → series of short vertical (9:16) clip projects.** The `find_clips` agent task transcribes and samples the source video to identify the best moments, then fans each moment out into its own project. A new `sourceCrop` primitive on video items handles vertical reframing — choose from `zoom` (center crop filling the frame), `thirds` (source floated in the top portion of the 9:16 canvas over a background fill, preserving spatial context), or `mix` (cropped source at ~50% scale occupying the top half, leaving the bottom for captions or overlays) — and is configurable in the editor. For local fan-out the source file is shared by symlink rather than copied, so disk usage stays flat.
+
 - **Skills transport/domain split (Phase 1).** Domain skills (`select-takes`, `overlay`, `write-overlay`, `image-search`) are now transport-agnostic; a new `skills/native/SKILL.md` owns the Montaj-specific CLI + HTTP interface; and `skills/_contract/SKILL.md` defines the shared vocabulary contract all skills reference by name (`load skill \`x\``). The root `skills/SKILL.md` is a thin dispatcher (detects MCP / HTTP / CLI context); `skills/serve/SKILL.md` was folded into `native` and removed. A new `@bycrux/montaj-skills` npm package (`montaj_assets/montaj-skills`) publishes the transport-agnostic domain skills + contract for external consumers; release via `scripts/release-montaj-skills.sh` (tags `montaj-skills-v*`).
 
 ## v3.0.4
