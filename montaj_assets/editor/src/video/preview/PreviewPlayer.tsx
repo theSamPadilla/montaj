@@ -6,6 +6,7 @@ import { getOverlayDesignCanvas } from '../design-canvas'
 import { useDragOverlay } from './useDragOverlay'
 import OverlayItemsLayer from './OverlayItemsLayer'
 import { useVideoPlayback } from './useVideoPlayback'
+import { sourceCropVideoStyle } from './sourceCropStyle'
 import CarouselPreview from './CarouselPreview'
 
 // ---------------------------------------------------------------------------
@@ -42,6 +43,12 @@ export default function PreviewPlayer({
 
   const containerRef = useRef<HTMLDivElement>(null)
   const [renderScale, setRenderScale] = useState<number>(1)
+  // Frame pixel size — used to compute the sourceCrop CSS transform that mirrors
+  // render's crop→contain. Tracked alongside renderScale from the same observer.
+  const [frameSize, setFrameSize] = useState<{ w: number; h: number }>({ w: 0, h: 0 })
+  // Intrinsic dims of the loaded source <video>, captured on loadedmetadata.
+  // Falls back to a clip's own sourceWidth/sourceHeight when present.
+  const [videoDims, setVideoDims] = useState<{ w: number; h: number } | null>(null)
 
   // Track container size to scale overlay components from 1080×1920 → preview size
   useEffect(() => {
@@ -49,6 +56,7 @@ export default function PreviewPlayer({
     if (!el) return
     const obs = new ResizeObserver(([entry]) => {
       setRenderScale(entry.contentRect.width / RENDER_W)
+      setFrameSize({ w: entry.contentRect.width, h: entry.contentRect.height })
     })
     obs.observe(el)
     return () => obs.disconnect()
@@ -81,6 +89,36 @@ export default function PreviewPlayer({
 
   const captionTrack = useMemo(() => project.captions, [project])
 
+  // ── sourceCrop reflection ───────────────────────────────────────────────────
+  // Mirror render's crop→contain so the preview frames the clip the way the
+  // final output will. The active clip is the one whose [start, end) contains the
+  // playhead (same selection the playback hook uses internally). Only the active
+  // <video> slot is opaque, so applying the active clip's crop to both slots is
+  // safe — the inactive slot is invisible.
+  const activeClip = useMemo(
+    () => clips.find(c => currentTime >= c.start && currentTime < c.end) ?? clips[clips.length - 1],
+    [clips, currentTime],
+  )
+  const cropStyle = useMemo(() => {
+    const crop = activeClip?.sourceCrop
+    if (!crop) return null
+    const sw = activeClip?.sourceWidth ?? videoDims?.w
+    const sh = activeClip?.sourceHeight ?? videoDims?.h
+    if (!sw || !sh || !frameSize.w || !frameSize.h) return null
+    return sourceCropVideoStyle({
+      crop,
+      sourceWidth: sw,
+      sourceHeight: sh,
+      frameWidth: frameSize.w,
+      frameHeight: frameSize.h,
+    })
+  }, [activeClip, videoDims, frameSize])
+
+  // The default full-frame style (no crop). object-contain letterboxes the source.
+  const baseVideoStyle = cropStyle
+    ? { ...cropStyle }
+    : { position: 'absolute' as const, inset: 0, width: '100%', height: '100%', objectFit: 'contain' as const }
+
   return (
     <div ref={containerRef} className="relative bg-black h-full max-w-full overflow-hidden rounded" style={{ aspectRatio: `${RENDER_W} / ${RENDER_H}`, isolation: 'isolate' }}>
       {isCanvasProject ? (
@@ -94,24 +132,24 @@ export default function PreviewPlayer({
           {/* Slot 0 */}
           <video
             ref={video0Ref}
-            className="absolute inset-0 w-full h-full object-contain"
+            onLoadedMetadata={(e) => { const v = e.currentTarget; if (v.videoWidth && v.videoHeight) setVideoDims({ w: v.videoWidth, h: v.videoHeight }) }}
             onTimeUpdate={() => { if (activeSlotRef.current === 0) handleTimeUpdate() }}
             onEnded={() => { if (activeSlotRef.current === 0) handleEnded() }}
             onPlay={() => { if (activeSlotRef.current === 0) setIsPlaying(true) }}
             onPause={() => { if (activeSlotRef.current === 0) handlePause() }}
             playsInline
-            style={{ opacity: showVideo && activeSlot === 0 ? 1 : 0, pointerEvents: activeSlot === 0 ? 'auto' : 'none', zIndex: activeSlot === 0 ? 1 : 0 }}
+            style={{ ...baseVideoStyle, opacity: showVideo && activeSlot === 0 ? 1 : 0, pointerEvents: activeSlot === 0 ? 'auto' : 'none', zIndex: activeSlot === 0 ? 1 : 0 }}
           />
           {/* Slot 1 */}
           <video
             ref={video1Ref}
-            className="absolute inset-0 w-full h-full object-contain"
+            onLoadedMetadata={(e) => { const v = e.currentTarget; if (v.videoWidth && v.videoHeight) setVideoDims({ w: v.videoWidth, h: v.videoHeight }) }}
             onTimeUpdate={() => { if (activeSlotRef.current === 1) handleTimeUpdate() }}
             onEnded={() => { if (activeSlotRef.current === 1) handleEnded() }}
             onPlay={() => { if (activeSlotRef.current === 1) setIsPlaying(true) }}
             onPause={() => { if (activeSlotRef.current === 1) handlePause() }}
             playsInline
-            style={{ opacity: showVideo && activeSlot === 1 ? 1 : 0, pointerEvents: activeSlot === 1 ? 'auto' : 'none', zIndex: activeSlot === 1 ? 1 : 0 }}
+            style={{ ...baseVideoStyle, opacity: showVideo && activeSlot === 1 ? 1 : 0, pointerEvents: activeSlot === 1 ? 'auto' : 'none', zIndex: activeSlot === 1 ? 1 : 0 }}
           />
         </>
       )}

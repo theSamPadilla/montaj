@@ -76,6 +76,7 @@ export interface VisualItem {
   remove_bg?: boolean     // video type only
   nobg_src?: string         // video type only — ProRes 4444 .mov for final render
   nobg_preview_src?: string // video type only — VP9 WebM with alpha for browser preview
+  normalizedSrc?: string    // derived per-window normalized cache; render/preview prefer it; src stays original
   muted?: boolean         // video type only — suppress audio in preview and render
   sourceCrop?: { x: number; y: number; w: number; h: number }  // video type only — non-destructive crop of the source clip (0–1 fractions)
   sourceWidth?: number    // video type only — intrinsic width of the source clip in pixels
@@ -189,7 +190,7 @@ export interface Slide {
 export interface EditorProject {
   id: string
   status: 'pending' | 'storyboard_ready' | 'draft' | 'final'
-  settings: { resolution: [number, number]; fps?: number; brandKit?: string }
+  settings: { resolution: [number, number]; fps?: number; brandKit?: string; normalize?: 'eager' | 'lazy' }
   name?: string | null
   editingPrompt?: string
   slides?: Slide[]

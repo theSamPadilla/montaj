@@ -374,6 +374,7 @@ export default function EditorPage() {
             onProjectChange={handleProjectChange}
             theme={defaultMontajTheme}
             slots={videoSlots}
+            assetsPlacement="right"
             onBackToSetup={handleBackToSetup}
             regenEnabled={project.projectType === 'ai_video'}
             isClipQueued={(itemId) => (project.regenQueue ?? []).some(e => e.clipId === itemId)}

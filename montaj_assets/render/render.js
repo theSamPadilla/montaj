@@ -281,6 +281,10 @@ async function main(projectPath, { out, workers, clean }) {
   const NORMALIZE_WORKERS = 2
   await pMap(videoItems, async (item) => {
     if (item.remove_bg && item.nobg_src && item.src === item.nobg_src) return
+    // Lazy normalize: a pre-built normalizedSrc cache already conforms — skip the
+    // python spawn. collectAllItems already substituted it as item.src and
+    // rebased inPoint. Without a cache (lazy or eager), fall through to normalize.
+    if (shouldSkipNormalize(settings, item)) return
     const normalizedPath = await normalizeIfNeeded(item.src, projectColorSpace)
     if (normalizedPath !== item.src) {
       log(`normalized ${item.src.split('/').pop()} → ${normalizedPath.split('/').pop()}`)
@@ -540,12 +544,22 @@ function collectAllItems(projectJson) {
       if (item.type === 'image') {
         imageItems.push({ ...base, fit: item.fit ?? 'cover' })
       } else if (item.type === 'video') {
+        // Prefer the normalizedSrc cache when present (and not on the nobg
+        // path). A normalizedSrc file covers [inPoint, outPoint] of the
+        // original and STARTS AT 0, so when we substitute it we must rebase
+        // inPoint to 0 — encode-segment computes actualIn = inPoint +
+        // seekOffset, and a non-zero inPoint would seek past the start of the
+        // short cache (→ EOF/garbage). The nobg_src path is NOT a normalized
+        // cache and must keep the original inPoint.
+        const chosenSrc = item.nobg_src && item.remove_bg ? item.nobg_src : (item.normalizedSrc ?? item.src)
+        const usedNormalized = chosenSrc === item.normalizedSrc
         videoItems.push({
           ...base,
-          src:       item.nobg_src && item.remove_bg ? item.nobg_src : item.src,
-          nobg_src:  item.nobg_src,
-          inPoint:   item.inPoint,
-          outPoint:  item.outPoint,
+          src:          chosenSrc,
+          nobg_src:     item.nobg_src,
+          normalizedSrc: item.normalizedSrc,
+          inPoint:      usedNormalized ? 0 : item.inPoint,
+          outPoint:     item.outPoint,
           remove_bg: item.remove_bg ?? false,
           muted:     item.muted ?? false,
           volume:    item.volume,
@@ -555,6 +569,16 @@ function collectAllItems(projectJson) {
   }
 
   return { imageItems, videoItems }
+}
+
+// Whether the normalize pre-pass can skip this item. Under lazy normalization a
+// pre-built normalizedSrc cache already conforms to the project color space, so
+// re-running normalize would be wasted work (and collectAllItems has already
+// substituted it as item.src). When lazy but no cache exists, we must NOT skip
+// — fall through to normalizeIfNeeded so the source still gets conformed. Eager
+// mode (settings.normalize absent) never skips: behaviour is identical to before.
+function shouldSkipNormalize(settings, item) {
+  return settings.normalize === 'lazy' && !!item.normalizedSrc
 }
 
 // ---------------------------------------------------------------------------
@@ -852,4 +876,4 @@ function fail(code, message) {
   process.exit(1)
 }
 
-export { getTotalDurationSeconds, collectPuppeteerSegments, collectAllItems, resolveFilePath }
+export { getTotalDurationSeconds, collectPuppeteerSegments, collectAllItems, resolveFilePath, shouldSkipNormalize }

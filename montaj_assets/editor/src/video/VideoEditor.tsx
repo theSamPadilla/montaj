@@ -40,6 +40,7 @@ export default function VideoEditor<P extends Project = Project>({
   theme,
   slots,
   onBackToSetup,
+  assetsPlacement = 'right',
   renderClipInspector,
   renderSubcutRegen,
   regenEnabled,
@@ -62,7 +63,7 @@ export default function VideoEditor<P extends Project = Project>({
 
   if (isPending) {
     return (
-      <div ref={containerRef} className="flex flex-col h-full bg-white dark:bg-gray-950">
+      <div ref={containerRef} className="flex flex-col h-full bg-[var(--editor-bg)]">
         <PendingSurface
           project={project}
           adapter={adapter}
@@ -84,6 +85,7 @@ export default function VideoEditor<P extends Project = Project>({
         adapter={adapter}
         onProjectChange={emit}
         slots={slots}
+        assetsPlacement={assetsPlacement}
         getWaveformChunks={getWaveformChunks}
         resolveFilePath={resolveFilePath}
         save={save}
@@ -116,6 +118,7 @@ interface SurfaceProps<P extends Project> {
   adapter: VideoEditorProps<P>['adapter']
   onProjectChange: (p: P) => void
   slots?: VideoEditorProps<P>['slots']
+  assetsPlacement?: VideoEditorProps<P>['assetsPlacement']
   getWaveformChunks?: VideoEditorProps<P>['adapter']['getWaveformChunks']
   resolveFilePath: (path: string) => string
   save: (p: P) => void
@@ -163,7 +166,7 @@ function PendingSurface<P extends Project>({
     <div className="flex flex-1 overflow-hidden">
       {/* Main */}
       <div className="flex flex-col flex-1 overflow-hidden">
-        <div className="flex-1 flex items-center justify-center bg-gray-950 overflow-hidden p-4">
+        <div className="flex-1 flex items-center justify-center bg-black overflow-hidden p-4">
           {hasTrimmedClips ? (
             <PreviewPlayer
               project={project}
@@ -182,12 +185,12 @@ function PendingSurface<P extends Project>({
               {slots?.pendingStatus ?? (
                 <>
                   <div className="flex flex-col items-center gap-2">
-                    <p className="text-white text-lg font-semibold">Message your agent to start</p>
-                    <p className="text-gray-400 text-sm">Nothing will happen automatically. Copy this and send it to your agent.</p>
+                    <p className="text-[var(--editor-text)] text-lg font-semibold">Message your agent to start</p>
+                    <p className="text-[var(--editor-text)]/60 text-sm">Nothing will happen automatically. Copy this and send it to your agent.</p>
                   </div>
                   {skillPath && (
-                    <div className="w-full rounded-xl border-2 border-blue-400/50 bg-gray-900 p-5 flex flex-col gap-3 text-left shadow-lg shadow-blue-400/10">
-                      <p className="text-blue-400 text-xs font-bold uppercase tracking-widest">Send this to your agent</p>
+                    <div className="w-full rounded-xl border-2 border-[var(--editor-accent)]/50 bg-[var(--editor-surface)] p-5 flex flex-col gap-3 text-left shadow-lg shadow-[var(--editor-accent)]/10">
+                      <p className="text-[var(--editor-accent)] text-xs font-bold uppercase tracking-widest">Send this to your agent</p>
                       <div className="flex items-start justify-between bg-black/60 border border-transparent rounded-lg px-3 py-3 font-mono gap-3">
                         <span className="text-gray-200 text-[12px] leading-relaxed break-all">
                           There is a new project pending: &quot;{project.name ?? project.id}&quot;. Please see @{skillPath} and start. Talk to me if you run into questions.
@@ -201,7 +204,7 @@ function PendingSurface<P extends Project>({
                             setTimeout(() => setCopied(false), 2000)
                           }}
                           className={`shrink-0 flex items-center gap-1.5 text-xs font-medium px-3 py-1.5 rounded-md transition-colors ${
-                            copied ? 'bg-green-700 text-green-200' : 'bg-white/10 text-gray-300 hover:bg-white/20 hover:text-white'
+                            copied ? 'bg-green-700 text-green-200' : 'bg-[var(--editor-text)]/10 text-[var(--editor-text)]/80 hover:bg-[var(--editor-text)]/20 hover:text-[var(--editor-text)]'
                           }`}
                           title="Copy prompt"
                         >
@@ -212,11 +215,11 @@ function PendingSurface<P extends Project>({
                   )}
                 </>
               )}
-              <p className="text-gray-600 text-xs font-mono">project id: {project.id}</p>
+              <p className="text-[var(--editor-text)]/40 text-xs font-mono">project id: {project.id}</p>
               {canGoBack && (
                 <button
                   onClick={onBackToSetup}
-                  className="text-xs text-gray-600 hover:text-gray-400 transition-colors underline underline-offset-2"
+                  className="text-xs text-[var(--editor-text)]/60 hover:text-[var(--editor-text)] transition-colors underline underline-offset-2"
                 >
                   ← Back to setup
                 </button>
@@ -225,7 +228,7 @@ function PendingSurface<P extends Project>({
           )}
         </div>
 
-        <div className="shrink-0 border-t border-gray-200 dark:border-gray-800 bg-gray-100 dark:bg-gray-950">
+        <div className="shrink-0 border-t border-[var(--editor-border)] bg-[var(--editor-surface)]">
           <Timeline
             project={project}
             currentTime={currentTime}
@@ -239,7 +242,7 @@ function PendingSurface<P extends Project>({
 
       {/* Right sidebar — version history (hidden when the capability is absent) */}
       {adapter.listVersionHistory && (
-        <div className="w-48 shrink-0 border-l border-gray-200 dark:border-gray-800 bg-gray-50 dark:bg-gray-950 flex flex-col overflow-hidden">
+        <div className="w-48 shrink-0 border-l border-[var(--editor-border)] bg-[var(--editor-surface)] flex flex-col overflow-hidden">
           <VersionPanel versions={versions} restoring={restoring} onRestore={handleRestoreVersion} />
         </div>
       )}
@@ -254,6 +257,7 @@ function ReviewSurface<P extends Project>({
   adapter,
   onProjectChange,
   slots,
+  assetsPlacement = 'right',
   getWaveformChunks,
   resolveFilePath,
   save,
@@ -472,16 +476,16 @@ function ReviewSurface<P extends Project>({
               )}
             </div>
           ) : (
-            <p className="text-gray-600 text-sm">No clips</p>
+            <p className="text-[var(--editor-text)]/60 text-sm">No clips</p>
           )}
         </div>
 
         {/* Track controls bar — split + ripple + render */}
-        <div className="shrink-0 flex items-center justify-end gap-1.5 px-3 py-1 border-t border-gray-200 dark:border-gray-800 bg-gray-100 dark:bg-gray-950">
+        <div className="shrink-0 flex items-center justify-end gap-1.5 px-3 py-1 border-t border-[var(--editor-border)] bg-[var(--editor-surface)]">
           <button
             onClick={() => handleSplit()}
             title="Split at playhead (S) — selected item or all clips"
-            className="flex items-center justify-center w-5 h-5 rounded transition-colors text-gray-500 bg-transparent hover:text-gray-400"
+            className="flex items-center justify-center w-5 h-5 rounded transition-colors text-[var(--editor-text)]/60 bg-transparent hover:text-[var(--editor-text)]"
           >
             <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.5">
               <line x1="6" y1="0" x2="6" y2="12" />
@@ -496,7 +500,7 @@ function ReviewSurface<P extends Project>({
             className={`flex items-center justify-center w-5 h-5 rounded transition-colors ${
               rippleMode
                 ? 'text-teal-400 bg-teal-400/15 hover:bg-teal-400/25'
-                : 'text-gray-500 bg-transparent hover:text-gray-400'
+                : 'text-[var(--editor-text)]/60 bg-transparent hover:text-[var(--editor-text)]'
             }`}
           >
             <Magnet size={12} />
@@ -513,7 +517,7 @@ function ReviewSurface<P extends Project>({
             className={`flex items-center justify-center w-5 h-5 rounded transition-colors disabled:opacity-30 disabled:cursor-not-allowed ${
               cropMode
                 ? 'text-amber-400 bg-amber-400/15 hover:bg-amber-400/25'
-                : 'text-gray-500 bg-transparent hover:text-gray-400'
+                : 'text-[var(--editor-text)]/60 bg-transparent hover:text-[var(--editor-text)]'
             }`}
           >
             <Crop size={12} />
@@ -525,13 +529,13 @@ function ReviewSurface<P extends Project>({
               save(final)
               setRenderOpen(true)
             }}
-            className="text-xs px-2.5 py-1 rounded-md bg-blue-600 text-white hover:bg-blue-500 transition-colors"
+            className="text-xs px-2.5 py-1 rounded-md bg-[var(--editor-accent)] text-[var(--editor-accent-foreground)] hover:opacity-90 transition-colors"
           >
             Render →
           </button>
         </div>
 
-        <div className="shrink-0 border-t border-gray-200 dark:border-gray-800 bg-gray-100 dark:bg-gray-950">
+        <div className="shrink-0 border-t border-[var(--editor-border)] bg-[var(--editor-surface)]">
           <Timeline
             project={project}
             currentTime={currentTime}
@@ -557,9 +561,17 @@ function ReviewSurface<P extends Project>({
         </div>
       </div>
 
+      {/* Assets — right sidebar column (assetsPlacement: 'right', the default /
+          Montaj-local layout). The host's panel manages its own scroll. */}
+      {assetsPlacement === 'right' && slots?.assetsPanel && (
+        <div className="w-72 shrink-0 border-l border-[var(--editor-border)] bg-[var(--editor-surface)] flex flex-col overflow-hidden">
+          {slots.assetsPanel}
+        </div>
+      )}
+
       {/* Right rail — version history + run history slot */}
       {(adapter.listVersionHistory || slots?.runHistory) && (
-        <div className="w-48 shrink-0 border-l border-gray-200 dark:border-gray-800 bg-gray-50 dark:bg-gray-950 flex flex-col overflow-hidden">
+        <div className="w-48 shrink-0 border-l border-[var(--editor-border)] bg-[var(--editor-surface)] flex flex-col overflow-hidden">
           {adapter.listVersionHistory && (
             <VersionPanel versions={versions} restoring={restoring} onRestore={handleRestoreVersion} />
           )}
@@ -571,11 +583,11 @@ function ReviewSurface<P extends Project>({
       )}
       </div>
 
-      {/* Project media / assets — full-width region stacked BELOW the editor,
-          mirroring CarouselEditor's layout (was previously crammed into the
-          narrow right rail). The host's panel manages its own scroll. */}
-      {slots?.assetsPanel && (
-        <div className="shrink-0 border-t border-gray-200 dark:border-gray-800 w-full flex flex-col max-h-[45%] overflow-hidden">
+      {/* Project media / assets — full-width region stacked BELOW the editor
+          (assetsPlacement: 'bottom'). Preferred by width-constrained hosts (Hub).
+          The host's panel manages its own scroll. */}
+      {assetsPlacement === 'bottom' && slots?.assetsPanel && (
+        <div className="shrink-0 border-t border-[var(--editor-border)] w-full flex flex-col max-h-[45%] overflow-hidden">
           {slots.assetsPanel}
         </div>
       )}

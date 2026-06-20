@@ -15,7 +15,7 @@ interface CaptionRegenModalProps<P extends Project = Project> {
 }
 
 function LogLine({ text }: { text: string }) {
-  let color = 'text-gray-400'
+  let color = 'text-[var(--editor-text)]/60'
   if (/ready|complete|done|transcribed/i.test(text))      color = 'text-green-400'
   else if (/transcrib|detecting|loading|model/i.test(text)) color = 'text-sky-400'
   else if (/extract|building|composing/i.test(text))      color = 'text-amber-400'
@@ -107,16 +107,16 @@ export default function CaptionRegenModal<P extends Project = Project>({ project
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm">
-      <div className="w-full max-w-3xl bg-gray-900 border border-gray-700 rounded-xl shadow-2xl flex flex-col overflow-hidden">
+      <div className="w-full max-w-3xl bg-[var(--editor-surface)] border border-[var(--editor-border)] rounded-xl shadow-2xl flex flex-col overflow-hidden">
 
         {/* Header */}
-        <div className="flex items-center justify-between px-5 py-4 border-b border-gray-800">
+        <div className="flex items-center justify-between px-5 py-4 border-b border-[var(--editor-border)]">
           <div className="flex items-center gap-2.5">
             {status === 'running' && <span className="w-2 h-2 rounded-full bg-amber-400 animate-pulse" />}
             {status === 'done'    && <span className="w-2 h-2 rounded-full bg-green-400" />}
             {status === 'error'   && <span className="w-2 h-2 rounded-full bg-red-400" />}
             <div className="flex flex-col gap-0.5">
-              <h2 className="text-sm font-semibold text-white">
+              <h2 className="text-sm font-semibold text-[var(--editor-text)]">
                 {status === 'running' ? 'Regenerating captions…'
                   : status === 'done' ? 'Captions regenerated'
                   : 'Caption regeneration failed'}
@@ -124,7 +124,7 @@ export default function CaptionRegenModal<P extends Project = Project>({ project
             </div>
           </div>
           {status !== 'running' && (
-            <button onClick={onClose} className="text-gray-500 hover:text-white transition-colors text-lg leading-none">×</button>
+            <button onClick={onClose} className="text-[var(--editor-text)]/55 hover:text-[var(--editor-text)] transition-colors text-lg leading-none">×</button>
           )}
         </div>
 
@@ -132,17 +132,17 @@ export default function CaptionRegenModal<P extends Project = Project>({ project
         <div className="relative">
           <button
             onClick={() => navigator.clipboard.writeText(logs.join('\n') + (errorMsg ? '\n' + errorMsg : ''))}
-            className="absolute top-2 right-2 z-10 text-[10px] px-2 py-0.5 rounded bg-gray-800 border border-gray-700 text-gray-400 hover:text-white hover:border-gray-500 transition-colors"
+            className="absolute top-2 right-2 z-10 text-[10px] px-2 py-0.5 rounded bg-[var(--editor-surface)] border border-[var(--editor-border)] text-[var(--editor-text)]/60 hover:text-[var(--editor-text)] hover:border-[var(--editor-border)] transition-colors"
             title="Copy logs"
           >
             Copy
           </button>
           <div
             ref={logRef}
-            className="h-96 overflow-y-auto px-4 py-3 font-mono text-[11px] text-gray-300 bg-gray-950 flex flex-col gap-0.5"
+            className="h-96 overflow-y-auto px-4 py-3 font-mono text-[11px] text-[var(--editor-text)]/80 bg-[var(--editor-surface)] flex flex-col gap-0.5"
           >
             {logs.length === 0 && status === 'running' && (
-              <span className="text-gray-600 italic">Starting transcription…</span>
+              <span className="text-[var(--editor-text)]/40 italic">Starting transcription…</span>
             )}
             {logs.map((line, i) => (
               <LogLine key={i} text={line} />
@@ -154,18 +154,18 @@ export default function CaptionRegenModal<P extends Project = Project>({ project
         </div>
 
         {/* Footer */}
-        <div className="flex items-center justify-end gap-2 px-5 py-3 border-t border-gray-800">
+        <div className="flex items-center justify-end gap-2 px-5 py-3 border-t border-[var(--editor-border)]">
           {status === 'running' ? (
             <button
               onClick={handleCancel}
-              className="text-sm px-4 py-1.5 rounded-md bg-gray-800 border border-gray-700 text-gray-300 hover:bg-red-900/40 hover:border-red-700 hover:text-red-300 transition-colors"
+              className="text-sm px-4 py-1.5 rounded-md bg-[var(--editor-surface)] border border-[var(--editor-border)] text-[var(--editor-text)]/80 hover:bg-red-900/40 hover:border-red-700 hover:text-red-300 transition-colors"
             >
               Cancel
             </button>
           ) : (
             <button
               onClick={onClose}
-              className="text-sm px-4 py-1.5 rounded-md bg-gray-800 border border-gray-700 text-white hover:bg-gray-700 transition-colors"
+              className="text-sm px-4 py-1.5 rounded-md bg-[var(--editor-surface)] border border-[var(--editor-border)] text-[var(--editor-text)] hover:opacity-90 transition-colors"
             >
               Close
             </button>

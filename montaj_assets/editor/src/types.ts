@@ -489,6 +489,15 @@ export interface VideoEditorProps<P extends Project = Project> {
   slots?: EditorSlots
   readOnly?: boolean
   onBackToSetup?: () => void
+  /**
+   * Where the host's `slots.assetsPanel` is placed in the review layout:
+   * - `'right'` (default) — a sidebar column to the right of the preview/timeline.
+   *   The historical Montaj-local layout; preferred when horizontal space is ample.
+   * - `'bottom'` — a full-width region stacked below the editor. Used by hosts with
+   *   constrained width (e.g. the Hub editor) where vertical stacking reads better.
+   * The host chooses per deployment; the package defaults to `'right'`.
+   */
+  assetsPlacement?: 'right' | 'bottom'
 
   // ── Host-supplied Montaj-specific UI (render-prop seams) ──────────────────
   // The clip/audio inspector and the subcut-regeneration tool read host-only

@@ -26,8 +26,47 @@ interface MontajVideoElement extends HTMLVideoElement {
  * Note: `nobg_src` is the ProRes 4444 render-only artifact and is NEVER
  * loaded into a `<video>` element — browsers can't decode ProRes.
  */
-function playbackSrcFor(clip: { src?: string; nobg_preview_src?: string }): string {
-  return clip.nobg_preview_src ?? clip.src ?? ''
+function playbackSrcFor(clip: { src?: string; nobg_preview_src?: string; normalizedSrc?: string }): string {
+  return clip.nobg_preview_src ?? clip.normalizedSrc ?? clip.src ?? ''
+}
+
+/**
+ * The inPoint the preview should SEEK to for this clip, accounting for the
+ * normalizedSrc cache rebase.
+ *
+ * A `normalizedSrc` cache covers exactly [inPoint, outPoint] of the original
+ * and STARTS AT 0 (it is only `outPoint - inPoint` seconds long). When
+ * `playbackSrcFor` chooses that cache as the playback src, seeking to the
+ * original `clip.inPoint` (e.g. 496.92) would land far past the end of the
+ * short file → the browser clamps to EOF and the preview freezes on the last
+ * frame. So when the cache is the chosen src, the effective inPoint is 0 and
+ * the window maps to [0, outPoint - inPoint].
+ *
+ * This mirrors render's `collectAllItems` (montaj_assets/render/render.js),
+ * which substitutes `item.normalizedSrc` as the src AND rebases inPoint to 0.
+ *
+ * The rebase applies ONLY when the cache is actually the chosen src.
+ * `nobg_preview_src` takes precedence in `playbackSrcFor` and is NOT a window
+ * cache (it covers the full source), so it keeps the original inPoint — exactly
+ * as render's nobg path does.
+ */
+export function effectiveInPoint(clip: { inPoint?: number; nobg_preview_src?: string; normalizedSrc?: string; src?: string }): number {
+  const usingNormalizedCache = !clip.nobg_preview_src && !!clip.normalizedSrc
+  return usingNormalizedCache ? 0 : (clip.inPoint ?? 0)
+}
+
+/**
+ * The outPoint in the loaded src's own timeline. For a normalizedSrc cache the
+ * stored `clip.outPoint` is in ORIGINAL-source coordinates (e.g. 514.92) while
+ * the cache plays in [0, outPoint - inPoint]; the boundary/loop checks compare
+ * against `video.currentTime` (cache time), so the outPoint must be rebased to
+ * the window length. Returns undefined when no outPoint is stored, so callers
+ * keep their existing fallback (clip.end - clip.start + effectiveInPoint).
+ */
+export function effectiveOutPoint(clip: { inPoint?: number; outPoint?: number; nobg_preview_src?: string; normalizedSrc?: string; src?: string }): number | undefined {
+  if (clip.outPoint == null) return undefined
+  const usingNormalizedCache = !clip.nobg_preview_src && !!clip.normalizedSrc
+  return usingNormalizedCache ? clip.outPoint - (clip.inPoint ?? 0) : clip.outPoint
 }
 
 export function useVideoPlayback(
@@ -437,7 +476,7 @@ export function useVideoPlayback(
     setActiveSlot(0)
     preloadSrcRef.current = ''
     video.src = fileUrlRef.current(playbackSrcFor(clips[0]))
-    video.currentTime = clips[0].inPoint ?? 0
+    video.currentTime = effectiveInPoint(clips[0])
     applyClipVolume(clips[0])
     // Clear inactive slot
     const inactive = getInactiveVideo()
@@ -488,7 +527,7 @@ export function useVideoPlayback(
     activeIdxRef.current = ni
     if (nv) {
       const src = fileUrlRef.current(playbackSrcFor(nc))
-      if (preloadSrcRef.current !== src) { nv.src = src; nv.currentTime = nc.inPoint ?? 0 }
+      if (preloadSrcRef.current !== src) { nv.src = src; nv.currentTime = effectiveInPoint(nc) }
       const gain = ensureVideoGain(ns)
       if (gain) gain.gain.value = nc.muted ? 0 : (nc.volume ?? 1)
       nv.play().catch(() => {})
@@ -542,9 +581,10 @@ export function useVideoPlayback(
         if (inactive) { inactive.pause(); inactive.removeAttribute('src') }
       }
       applyClipVolume(clip)
-      const inPoint = clip.inPoint ?? 0
-      if (clip.loop && clip.outPoint) {
-        const loopDur = clip.outPoint - inPoint
+      const inPoint = effectiveInPoint(clip)
+      const clipOutPoint = effectiveOutPoint(clip)
+      if (clip.loop && clipOutPoint != null) {
+        const loopDur = clipOutPoint - inPoint
         const elapsed = currentTime - clip.start
         const loops   = Math.floor(elapsed / loopDur)
         loopOffsetRef.current = loops * loopDur
@@ -577,7 +617,8 @@ export function useVideoPlayback(
     const clip = clips[activeIdxRef.current]
     if (!clip) return
 
-    const outPoint = clip.outPoint ?? clip.end - clip.start + (clip.inPoint ?? 0)
+    const clipInPoint = effectiveInPoint(clip)
+    const outPoint = effectiveOutPoint(clip) ?? clip.end - clip.start + clipInPoint
 
     // Preload next clip into inactive slot ~1s before end
     const timeLeft = outPoint - video.currentTime
@@ -589,7 +630,7 @@ export function useVideoPlayback(
         if (inactiveVideo && preloadSrcRef.current !== nextSrc) {
           preloadSrcRef.current = nextSrc
           inactiveVideo.src = nextSrc
-          inactiveVideo.currentTime = clips[nextIdx].inPoint ?? 0
+          inactiveVideo.currentTime = effectiveInPoint(clips[nextIdx])
           const inactiveSlot = (1 - slot) as 0 | 1
           const nextGain = ensureVideoGain(inactiveSlot)
           if (nextGain) nextGain.gain.value = clips[nextIdx].muted ? 0 : (clips[nextIdx].volume ?? 1)
@@ -599,12 +640,12 @@ export function useVideoPlayback(
 
     if (video.currentTime >= outPoint) {
       if (clip.loop) {
-        const projectT = clip.start + loopOffsetRef.current + (video.currentTime - (clip.inPoint ?? 0))
+        const projectT = clip.start + loopOffsetRef.current + (video.currentTime - clipInPoint)
         if (projectT < clip.end) {
           // Still within the clip's project window — loop the source video
-          const loopDur = outPoint - (clip.inPoint ?? 0)
+          const loopDur = outPoint - clipInPoint
           loopOffsetRef.current += loopDur
-          video.currentTime = clip.inPoint ?? 0
+          video.currentTime = clipInPoint
           return
         }
         // Project end reached — fall through to the stop/next-clip logic below
@@ -639,7 +680,7 @@ export function useVideoPlayback(
             const nextSrc = fileUrlRef.current(playbackSrcFor(next))
             if (preloadSrcRef.current !== nextSrc) {
               nextVideo.src = nextSrc
-              nextVideo.currentTime = next.inPoint ?? 0
+              nextVideo.currentTime = effectiveInPoint(next)
             }
             const nextGain = ensureVideoGain(nextSlot)
             if (nextGain) nextGain.gain.value = next.muted ? 0 : (next.volume ?? 1)
@@ -674,7 +715,7 @@ export function useVideoPlayback(
       return
     }
 
-    const t = clip.start + loopOffsetRef.current + (video.currentTime - (clip.inPoint ?? 0))
+    const t = clip.start + loopOffsetRef.current + (video.currentTime - clipInPoint)
 
     // For looping clips, stop when project time reaches clip.end mid-loop
     if (clip.loop && t >= clip.end) {

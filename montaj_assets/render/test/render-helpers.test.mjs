@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
-import { getTotalDurationSeconds, collectAllItems, collectPuppeteerSegments, resolveFilePath } from '../render.js'
+import { getTotalDurationSeconds, collectAllItems, collectPuppeteerSegments, resolveFilePath, shouldSkipNormalize } from '../render.js'
 
 test('getTotalDurationSeconds: returns 0 for empty tracks', () => {
   assert.equal(getTotalDurationSeconds({ tracks: [[]] }), 0)
@@ -68,6 +68,59 @@ test('collectAllItems: tracks[0] items are included (no special-casing)', () => 
   assert.equal(videoItems.length, 1)
   assert.equal(videoItems[0].id, 'primary')
   assert.equal(videoItems[0].trackIdx, 0)
+})
+
+test('collectAllItems: normalizedSrc is substituted as src and inPoint is rebased to 0', () => {
+  // A normalizedSrc cache covers [inPoint, outPoint] of the original and STARTS
+  // AT 0. encode-segment computes actualIn = inPoint + seekOffset, so inPoint
+  // must be rebased to 0 or ffmpeg seeks past the start of the short cache.
+  const project = {
+    tracks: [
+      [{ id: 'primary', type: 'video', src: '/orig.mp4', normalizedSrc: '/orig_normalized_hdr.mp4', start: 0, end: 5, inPoint: 3.5, outPoint: 8.5 }],
+    ],
+  }
+  const { videoItems } = collectAllItems(project)
+  assert.equal(videoItems.length, 1)
+  assert.equal(videoItems[0].src, '/orig_normalized_hdr.mp4')
+  assert.equal(videoItems[0].inPoint, 0)
+  assert.equal(videoItems[0].outPoint, 8.5)  // outPoint untouched
+})
+
+test('collectAllItems: without normalizedSrc, src and inPoint are unchanged', () => {
+  const project = {
+    tracks: [
+      [{ id: 'primary', type: 'video', src: '/orig.mp4', start: 0, end: 5, inPoint: 3.5, outPoint: 8.5 }],
+    ],
+  }
+  const { videoItems } = collectAllItems(project)
+  assert.equal(videoItems.length, 1)
+  assert.equal(videoItems[0].src, '/orig.mp4')
+  assert.equal(videoItems[0].inPoint, 3.5)
+})
+
+test('collectAllItems: nobg_src path is NOT rebased even if normalizedSrc present', () => {
+  // The nobg alpha clip is a render-only artifact; it is not a normalized cache
+  // and its seek must use the original inPoint.
+  const project = {
+    tracks: [
+      [{ id: 'v', type: 'video', src: '/orig.mp4', nobg_src: '/orig_nobg.mov', remove_bg: true, normalizedSrc: '/orig_normalized_hdr.mp4', start: 0, end: 5, inPoint: 2.0, outPoint: 7.0 }],
+    ],
+  }
+  const { videoItems } = collectAllItems(project)
+  assert.equal(videoItems[0].src, '/orig_nobg.mov')
+  assert.equal(videoItems[0].inPoint, 2.0)
+})
+
+test('shouldSkipNormalize: lazy + normalizedSrc → skip (cache already conforms)', () => {
+  assert.equal(shouldSkipNormalize({ normalize: 'lazy' }, { normalizedSrc: '/orig_normalized_hdr.mp4' }), true)
+})
+
+test('shouldSkipNormalize: lazy + no normalizedSrc → do not skip (fallback to normalize)', () => {
+  assert.equal(shouldSkipNormalize({ normalize: 'lazy' }, { src: '/orig.mp4' }), false)
+})
+
+test('shouldSkipNormalize: eager (normalize absent) → never skip even with normalizedSrc', () => {
+  assert.equal(shouldSkipNormalize({}, { normalizedSrc: '/orig_normalized_hdr.mp4' }), false)
 })
 
 test('collectAllItems: overlay items are ignored (not image or video)', () => {

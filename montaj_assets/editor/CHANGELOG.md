@@ -8,11 +8,34 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Video editor
 
+- **Fixed: lazy-normalize preview no longer freezes on clips with a
+  `normalizedSrc` window cache.** The preview loads the per-window cache (which
+  starts at 0 and is only `outPoint - inPoint` seconds long) but was still
+  seeking to the original `inPoint` (e.g. 496s) — the browser clamped to EOF and
+  the clip showed a frozen last frame with no playback. The preview now rebases
+  the seek/window math to the cache timeline (effective inPoint 0, outPoint =
+  `outPoint - inPoint`), mirroring render's `collectAllItems`. `nobg_preview_src`
+  (full-source, takes precedence) is unaffected and keeps the original inPoint.
+- **Fixed: preview now reflects `sourceCrop`.** Clips with a `sourceCrop`
+  (clips-workflow vertical reframe) showed the full letterboxed source in
+  preview while render applied the crop/zoom. The preview `<video>` now
+  crop→contain-fits the sub-rect into the frame, matching render's ffmpeg
+  `crop` + `scale(decrease)` + `pad` pipeline. Clips without `sourceCrop` keep
+  the existing `object-contain` behavior.
+
 - Layout brought in line with the carousel editor: the host-supplied assets
   panel (`slots.assetsPanel`) now renders as a **full-width region stacked below
   the editor** instead of crammed into the narrow right rail. The editor body
   (preview + timeline + captions) gets the full width; the right rail now carries
   only version history / run-history. Mirrors `CarouselEditor`'s stacked layout.
+- Video editor chrome is now **theme-compliant**: `VersionPanel`, `VideoEditor`,
+  `RenderModal`, and `CaptionRegenModal` consume the `--editor-*` theme tokens
+  (via `applyTheme`) exactly like the carousel chrome, instead of hardcoding
+  fixed grays + `dark:` variants. The video editor now re-skins per tenant and
+  renders correctly in light-mode hubs. Brand accents (Render button, agent
+  handoff, version Restore) follow `--editor-accent`; semantic colors
+  (error/success/status, Ripple/Crop mode indicators) and the black video
+  letterbox are unchanged. Version-history cards realigned for cleaner rows.
 
 ### Carousel editor
 
