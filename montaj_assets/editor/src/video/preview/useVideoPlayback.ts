@@ -214,6 +214,18 @@ export function useVideoPlayback(
     }
   }
 
+  // Start playback on a slot during an automated clip-boundary switch (context
+  // already running — no gesture needed). If the slot isn't buffered yet (a slow
+  // non-faststart HEVC tail-moov fetch can still be in flight), play() may reject
+  // with AbortError; retry on `canplay` so the switch never dead-stops at the cut.
+  function playSoon(video: HTMLVideoElement) {
+    const p = video.play()
+    if (p) p.catch(() => {
+      const onCanPlay = () => { video.removeEventListener('canplay', onCanPlay); video.play().catch(() => {}) }
+      video.addEventListener('canplay', onCanPlay)
+    })
+  }
+
   function ensureVideoGain(slot: 0 | 1): GainNode | null {
     if (videoGainRef.current[slot]) return videoGainRef.current[slot]
     const video = slot === 0 ? video0Ref.current : video1Ref.current
@@ -569,7 +581,7 @@ export function useVideoPlayback(
       if (preloadSrcRef.current !== src) { nv.src = src; nv.currentTime = effectiveInPoint(nc) }
       const gain = ensureVideoGain(ns)
       if (gain) gain.gain.value = nc.muted ? 0 : (nc.volume ?? 1)
-      nv.play().catch(() => {})
+      playSoon(nv)
     }
     void (activeSlotRef.current === 0 ? video0Ref.current : video1Ref.current)?.pause()
     activeSlotRef.current = ns
@@ -659,21 +671,26 @@ export function useVideoPlayback(
     const clipInPoint = effectiveInPoint(clip)
     const outPoint = effectiveOutPoint(clip) ?? clip.end - clip.start + clipInPoint
 
-    // Preload next clip into inactive slot ~1s before end
-    const timeLeft = outPoint - video.currentTime
-    if (timeLeft < 1.0) {
-      const nextIdx = activeIdxRef.current + 1
-      if (nextIdx < clips.length && clips[nextIdx].src) {
-        const inactiveVideo = slot === 0 ? video1Ref.current : video0Ref.current
-        const nextSrc = fileUrlRef.current(playbackSrcFor(clips[nextIdx]))
-        if (inactiveVideo && preloadSrcRef.current !== nextSrc) {
-          preloadSrcRef.current = nextSrc
-          inactiveVideo.src = nextSrc
-          inactiveVideo.currentTime = effectiveInPoint(clips[nextIdx])
-          const inactiveSlot = (1 - slot) as 0 | 1
-          const nextGain = ensureVideoGain(inactiveSlot)
-          if (nextGain) nextGain.gain.value = clips[nextIdx].muted ? 0 : (clips[nextIdx].volume ?? 1)
-        }
+    // Preload the next clip into the inactive slot as early as possible. The
+    // source files are large 4K 10-bit HEVC with the moov atom at the END of the
+    // file (not web-faststart), so the browser needs a slow tail range-fetch to
+    // index and seek before it can decode. The old "~1s before end" lead was far
+    // too short: at a cross-source cut the next slot wasn't ready and play()
+    // stalled, freezing playback at the boundary. (Same-source cuts hid the bug —
+    // the moov was already cached from the active slot.) Give the load the whole
+    // current clip as runway instead; the preloadSrcRef guard keeps it idempotent
+    // and a scrub clears it.
+    const nextIdx = activeIdxRef.current + 1
+    if (nextIdx < clips.length && clips[nextIdx].src) {
+      const inactiveVideo = slot === 0 ? video1Ref.current : video0Ref.current
+      const nextSrc = fileUrlRef.current(playbackSrcFor(clips[nextIdx]))
+      if (inactiveVideo && preloadSrcRef.current !== nextSrc) {
+        preloadSrcRef.current = nextSrc
+        inactiveVideo.src = nextSrc
+        inactiveVideo.currentTime = effectiveInPoint(clips[nextIdx])
+        const inactiveSlot = (1 - slot) as 0 | 1
+        const nextGain = ensureVideoGain(inactiveSlot)
+        if (nextGain) nextGain.gain.value = clips[nextIdx].muted ? 0 : (clips[nextIdx].volume ?? 1)
       }
     }
 
@@ -723,7 +740,7 @@ export function useVideoPlayback(
             }
             const nextGain = ensureVideoGain(nextSlot)
             if (nextGain) nextGain.gain.value = next.muted ? 0 : (next.volume ?? 1)
-            nextVideo.play().catch(() => {})
+            playSoon(nextVideo)
           }
 
           activeSlotRef.current = nextSlot
