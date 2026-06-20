@@ -196,6 +196,12 @@ export function useVideoPlayback(
    * deferred play() is not autoplay-blocked.
    */
   function playFromGesture(video: HTMLVideoElement) {
+    // Wire this slot to Web Audio on the first play (not at load) so the paused
+    // poster frame can render. This also creates the shared AudioContext inside
+    // the gesture, so the resume() below is gesture-credited.
+    ensureVideoGain(activeSlotRef.current)
+    const cur = clips[activeIdxRef.current]
+    if (cur) applyClipVolume(cur)
     const w = window as Window & MontajWindow
     const ctx = w.__montajSharedCtx
     if (ctx && ctx.state === 'suspended') {
@@ -229,11 +235,21 @@ export function useVideoPlayback(
     return v.__montajGain ?? null
   }
 
-  // Set video clip volume via GainNode (supports amplification > 1.0).
-  // Muted clips get gain 0; unmuted clips get the clip's volume value.
+  // Existing gain for a slot WITHOUT wiring it. Wiring (createMediaElementSource)
+  // is deferred to the first play gesture so the paused poster frame can render —
+  // a <video> wired to a suspended AudioContext produces no frames at all.
+  function getVideoGain(slot: 0 | 1): GainNode | null {
+    const v = (slot === 0 ? video0Ref.current : video1Ref.current) as MontajVideoElement | null
+    return (v && v.__montajGain) ?? null
+  }
+
+  // Set video clip volume via GainNode (supports amplification > 1.0). Muted clips
+  // get gain 0; unmuted clips get the clip's volume value. No-op until the slot is
+  // wired (first play) — there's no audio to control on a paused poster, and
+  // wiring here would gate the poster frame on the suspended context.
   function applyClipVolume(clip: { muted?: boolean; volume?: number }) {
     const slot = activeSlotRef.current
-    const gain = ensureVideoGain(slot)
+    const gain = getVideoGain(slot)
     if (gain) gain.gain.value = clip.muted ? 0 : (clip.volume ?? 1)
   }
 
