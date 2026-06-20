@@ -185,6 +185,29 @@ export function useVideoPlayback(
     }
   }
 
+  /**
+   * Start playback on a wired <video> from a user gesture. Video frame
+   * production is gated on the shared AudioContext clock running, and the
+   * context is created suspended inside a useEffect — so the FIRST play after a
+   * hard refresh fires while resume() is still pending and renders no frames
+   * until the next seek. resume() is gesture-credited at the synchronous call
+   * site here, so wait for it to actually resolve to 'running' before calling
+   * play(); the page already has sticky activation from the click, so the
+   * deferred play() is not autoplay-blocked.
+   */
+  function playFromGesture(video: HTMLVideoElement) {
+    const w = window as Window & MontajWindow
+    const ctx = w.__montajSharedCtx
+    if (ctx && ctx.state === 'suspended') {
+      ctx.resume().then(
+        () => { void video.play().catch(() => {}) },
+        () => { void video.play().catch(() => {}) },
+      )
+    } else {
+      void video.play().catch(() => {})
+    }
+  }
+
   function ensureVideoGain(slot: 0 | 1): GainNode | null {
     if (videoGainRef.current[slot]) return videoGainRef.current[slot]
     const video = slot === 0 ? video0Ref.current : video1Ref.current
@@ -447,7 +470,7 @@ export function useVideoPlayback(
         }
         const video = getActiveVideo()
         if (!video) return
-        if (video.paused) { video.play().catch(() => {}) } else { video.pause() }
+        if (video.paused) { playFromGesture(video) } else { video.pause() }
       }
     }
     document.addEventListener('keydown', onKeyDown)
@@ -815,7 +838,7 @@ export function useVideoPlayback(
     }
     const video = getActiveVideo()
     if (!video) return
-    if (video.paused) { video.play().catch(() => {}) } else { video.pause() }
+    if (video.paused) { playFromGesture(video) } else { video.pause() }
   }
 
   return {
