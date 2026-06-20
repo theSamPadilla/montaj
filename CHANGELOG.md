@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v3.1.0
+
 - **Configurable source normalization (`eager`/`lazy`).** The clips workflow imports lazily — instead of re-encoding the entire source up front, each clip's window is normalized on demand (new `montaj step normalize_window`, a `normalizedSrc` per-window cache on `tracks[0]` items, and a `--normalize eager|lazy` flag / workflow-recipe field). `eager` (default) preserves the existing behavior: full-source re-encode at import. `lazy` skips it; render and preview resolve `normalizedSrc` first, falling back to `src`.
 
 - **Lazy-normalize preview fixes + source-project cleanup (clips).** Three corrections: (1) the editor **preview now rebases `inPoint`→0 when it plays a `normalizedSrc` window cache** (mirroring the render path) — previously it seeked to the original-source timestamp in the short cache and froze on the last frame, so clips wouldn't play; (2) the **preview now applies `sourceCrop`** so it reflects the final zoom/thirds framing instead of the full letterboxed source; (3) **`find_clips` no longer leaves a source "index" project** — on completion it relocates the source into a shared store (`~/Montaj/.sources/<id>/`), repoints each child's symlink, and deletes the source project, so only the N vertical clips remain. `find_clips` now also **ends by asking** whether to run the per-clip `overlays` pass now or hand off — and for hand-off emits a ready-to-paste prompt per clip (modeled on Montaj's pending-project UI prompt) for a fresh agent.

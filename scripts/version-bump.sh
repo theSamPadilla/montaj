@@ -143,4 +143,8 @@ elif [[ -f CHANGELOG.md ]]; then
   echo "warning: no '## Unreleased' section in CHANGELOG.md — add a '## v$NEW_VERSION' section by hand before releasing." >&2
 fi
 echo
-echo "next: review the diff (\`git diff\`), then commit."
+echo "next: review the diff (\`git diff\`), then commit + push:"
+echo
+echo "git add -A"
+echo "git commit -m \"Bump to $NEW_VERSION\""
+echo "git push origin main"
