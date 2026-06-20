@@ -22,8 +22,13 @@ def main(project_path=None, out=None, workers=None, clean=False, scale=None, mon
     render_dir = render_runtime_dir()
 
     if project_type == "carousel":
+        # Transcode any .webp image bed to a sibling .png and render a normalized
+        # copy of project.json — the render Chromium can't decode .webp. Returns the
+        # original path unchanged when there's nothing to normalize.
+        from project.carousel_normalize import normalize_carousel_assets
+        render_input = str(normalize_carousel_assets(project_path))
         render_js = os.path.join(render_dir, "render-carousel.js")
-        cmd = ["node", render_js, "--project-json", project_path]
+        cmd = ["node", render_js, "--project-json", render_input]
         if out:    cmd += ["--out", out]
         if clean:  cmd.append("--clean")
         if scale is not None: cmd += ["--scale", str(scale)]
