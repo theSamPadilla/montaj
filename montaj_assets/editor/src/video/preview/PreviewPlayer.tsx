@@ -132,6 +132,10 @@ export default function PreviewPlayer({
           {/* Slot 0 */}
           <video
             ref={video0Ref}
+            // Clips load cross-origin from R2; without this the media is CORS-tainted
+            // and the Web Audio createMediaElementSource graph outputs silence. R2
+            // sends Access-Control-Allow-Origin, so anonymous CORS keeps it audible.
+            crossOrigin="anonymous"
             onLoadedMetadata={(e) => { const v = e.currentTarget; if (v.videoWidth && v.videoHeight) setVideoDims({ w: v.videoWidth, h: v.videoHeight }) }}
             onTimeUpdate={() => { if (activeSlotRef.current === 0) handleTimeUpdate() }}
             onEnded={() => { if (activeSlotRef.current === 0) handleEnded() }}
@@ -143,6 +147,9 @@ export default function PreviewPlayer({
           {/* Slot 1 */}
           <video
             ref={video1Ref}
+            // See slot 0: anonymous CORS so R2 cross-origin clips aren't tainted
+            // (which would mute the Web Audio graph).
+            crossOrigin="anonymous"
             onLoadedMetadata={(e) => { const v = e.currentTarget; if (v.videoWidth && v.videoHeight) setVideoDims({ w: v.videoWidth, h: v.videoHeight }) }}
             onTimeUpdate={() => { if (activeSlotRef.current === 1) handleTimeUpdate() }}
             onEnded={() => { if (activeSlotRef.current === 1) handleEnded() }}

@@ -62,6 +62,9 @@ function OverlayVideo({ src, currentTime, itemStart, inPoint, isPlaying, muted, 
   return (
     <video
       ref={ref}
+      // Anonymous CORS so cross-origin R2 clips aren't tainted (would mute the
+      // Web Audio graph). crossOrigin must be set before src. R2 sends ACAO.
+      crossOrigin="anonymous"
       src={src}
       muted={muted}
       preload="auto"
