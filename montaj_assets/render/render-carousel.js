@@ -137,6 +137,11 @@ async function main(projectJsonPath, { out, clean, scale = DEFAULT_SCALE }) {
   })
 
   const manifestSlides = []
+  // Per-slide failures are recorded here and the loop CONTINUES — one bad slide
+  // (e.g. an undecodable asset or a missing overlay template) must never abort the
+  // whole batch and silently hand back a truncated carousel. The run still exits
+  // non-zero (below) so callers know the output is partial.
+  const failures = []
 
   try {
     for (let i = 0; i < slides.length; i++) {
@@ -194,7 +199,9 @@ async function main(projectJsonPath, { out, clean, scale = DEFAULT_SCALE }) {
         manifestSlides.push({ index: i + 1, file: fileName })
         log(`  → ${outFile}`)
       } catch (err) {
-        fail('render_error', `slide ${i + 1} (id=${slide.id}): ${err.message}`)
+        const message = err?.message ?? String(err)
+        log(`  ✗ slide ${i + 1} (id=${slide.id ?? i}) failed: ${message}`)
+        failures.push({ index: i + 1, id: slide.id ?? null, error: message })
       }
     }
   } finally {
@@ -215,11 +222,23 @@ async function main(projectJsonPath, { out, clean, scale = DEFAULT_SCALE }) {
       width:        outputResolution[0],
       height:       outputResolution[1],
     })),
+    // Empty on a fully successful run. Populated (with the original slide index +
+    // id + error) for any slide that failed — callers should treat a non-empty
+    // failures[] as a partial render.
+    failures,
   }
   writeFileSync(join(outDir, 'manifest.json'), JSON.stringify(manifest, null, 2))
 
-  // Step output convention: output dir on stdout
+  // Step output convention: output dir on stdout. Written even on a partial run so
+  // tooling can still locate the slides that DID render.
   process.stdout.write(outDir + '\n')
+
+  // Signal partiality through the exit code without aborting (good slides + manifest
+  // are already on disk). Use exitCode rather than process.exit() so stdout flushes.
+  if (failures.length > 0) {
+    log(`render completed with ${failures.length} failed slide(s) of ${slides.length}`)
+    process.exitCode = 1
+  }
 }
 
 // ---------------------------------------------------------------------------

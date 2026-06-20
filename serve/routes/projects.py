@@ -38,6 +38,7 @@ from lib.types.kling import ASPECT_RATIOS, is_valid_aspect_ratio
 from lib.types.carousel import CAROUSEL_ASPECTS
 from lib.workflow import read_workflow
 from cli.deps import render_runtime_dir
+from project.carousel_normalize import normalize_carousel_assets
 
 router = APIRouter(prefix="/api")
 
@@ -641,6 +642,51 @@ async def delete_project(
     return Response(status_code=204)
 
 
+async def _run_carousel_render_detached(project_id: str, project_dir: Path, scale: int | None = None):
+    """Fire-and-forget carousel render used by auto-render-on-`final`.
+
+    Unlike `render_project`'s SSE handler, this is NOT bound to an HTTP request, so
+    a disconnecting client can never kill it (the SSE path kills the render tree on
+    `request.is_disconnected()`). The caller MUST have already reserved the
+    `_active_renders` slot; this coroutine releases it in `finally` and cleans up the
+    normalized temp project.json.
+    """
+    project_path = project_dir / "project.json"
+    render_input = project_path
+    try:
+        render_input = normalize_carousel_assets(project_path)
+        render_script = Path(render_runtime_dir()) / "render-carousel.js"
+        node_bin = shutil.which("node")
+        if not node_bin or not render_script.is_file():
+            return
+        args = [node_bin, str(render_script), "--project-json", str(render_input)]
+        if scale is not None:
+            args += ["--scale", str(scale)]
+        env = os.environ.copy()
+        env["MONTAJ_ROOT"] = str(MONTAJ_ROOT)
+        proc = await asyncio.create_subprocess_exec(
+            *args,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            cwd=str(MONTAJ_ROOT),
+            env=env,
+            start_new_session=True,
+        )
+        # Drain pipes so the child never blocks on a full stderr buffer; output is
+        # advisory here (no client is listening). A non-zero exit (partial render)
+        # is intentionally not raised — the good slides are already on disk.
+        await proc.communicate()
+    except Exception:
+        pass
+    finally:
+        _active_renders.discard(project_id)
+        if render_input != project_path:
+            try:
+                Path(render_input).unlink()
+            except OSError:
+                pass
+
+
 @router.put("/projects/{project_id}")
 async def save_project(project_id: str, body: dict = Body(...), request: Request = None, project_dir: Path = Depends(get_project_dir)):
     if body.get("id") != project_id:
@@ -668,6 +714,17 @@ async def save_project(project_id: str, body: dict = Body(...), request: Request
         asyncio.create_task(asyncio.to_thread(
             _git_commit_sync, project_dir, f"version: run {run_count} — {new_status}"
         ))
+    # Auto-render carousels the moment they reach `final` so the rendered PNGs exist
+    # without a separate manual POST /render. Fire-and-forget and deduped against any
+    # in-flight render. Only carousels: video projects render on an explicit action.
+    if (
+        new_status == "final"
+        and prev_status != "final"
+        and merged.get("projectType") == "carousel"
+        and project_id not in _active_renders
+    ):
+        _active_renders.add(project_id)
+        asyncio.create_task(_run_carousel_render_detached(project_id, project_dir))
     return merged
 
 
@@ -1095,9 +1152,16 @@ async def render_project(project_id: str, request: Request, project_dir: Path = 
         if scale not in (1, 2, 3):
             raise HTTPException(400, detail={"error": "invalid_argument", "message": "scale must be 1, 2, or 3"})
 
+    # Carousel renders go through asset normalization first: any .webp image bed
+    # is transcoded to a sibling .png and the renderer is handed a normalized copy
+    # of project.json (the sidecar Chromium can't decode .webp). render_input ==
+    # project_path when nothing needed normalizing; otherwise it's a throwaway temp
+    # file cleaned up in the event_stream finally.
+    render_input = project_path
     if project_type == "carousel":
+        render_input = normalize_carousel_assets(project_path)
         render_script = Path(render_runtime_dir()) / "render-carousel.js"
-        script_args = ["--project-json", str(project_path)]
+        script_args = ["--project-json", str(render_input)]
         if scale is not None:
             script_args += ["--scale", str(scale)]
     else:
@@ -1163,6 +1227,11 @@ async def render_project(project_id: str, request: Request, project_dir: Path = 
                 yield f"event: error\ndata: Render failed (exit {proc.returncode})\n\n"
         finally:
             _active_renders.discard(project_id)
+            if render_input != project_path:
+                try:
+                    Path(render_input).unlink()
+                except OSError:
+                    pass
 
     return StreamingResponse(
         event_stream(),
