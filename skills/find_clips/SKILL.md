@@ -85,7 +85,8 @@ python /path/to/montaj/project/init.py \
   --prompt "<per-clip prompt — framing mode + any user instructions>" \
   --symlink-clips \
   --derived-from <source_project_id> \
-  --resolution 1080x1920
+  --resolution 1080x1920 \
+  --normalize lazy
 ```
 
 - `--clips`: the original source video path (from the source project's `tracks[0][0].src` — always the original .MOV/.mp4, never a derived file)
@@ -94,6 +95,7 @@ python /path/to/montaj/project/init.py \
 - `--symlink-clips`: stage the source as a symlink, not a copy (source files are large; this is required for clips workflow children)
 - `--derived-from <source_project_id>`: the id of the parent source project (read from the source project's `project.json` field `id`)
 - `--resolution 1080x1920`: target resolution for the child project
+- `--normalize lazy`: suppress the eager full-source normalize that `overlays` would otherwise run at init. The child project only normalizes the per-clip window (done in step 6 below), not the entire symlinked source file.
 
 `project/init.py` prints the path to the created `project.json` on stdout. Read it back to get the child project's `id`.
 
@@ -106,19 +108,19 @@ Example (three clips from source project `abc-123`):
 python $MONTAJ_ROOT/project/init.py \
   --clips /workspace/proj-abc/source.mp4 \
   --workflow overlays --prompt "zoom: solo speaker hook" \
-  --symlink-clips --derived-from abc-123 --resolution 1080x1920
+  --symlink-clips --derived-from abc-123 --resolution 1080x1920 --normalize lazy
 
 # Clip 2: 2:34–3:18
 python $MONTAJ_ROOT/project/init.py \
   --clips /workspace/proj-abc/source.mp4 \
   --workflow overlays --prompt "thirds: demo showing both speaker and screen" \
-  --symlink-clips --derived-from abc-123 --resolution 1080x1920
+  --symlink-clips --derived-from abc-123 --resolution 1080x1920 --normalize lazy
 
 # Clip 3: 5:01–5:45
 python $MONTAJ_ROOT/project/init.py \
   --clips /workspace/proj-abc/source.mp4 \
   --workflow overlays --prompt "zoom: CTA close-up" \
-  --symlink-clips --derived-from abc-123 --resolution 1080x1920
+  --symlink-clips --derived-from abc-123 --resolution 1080x1920 --normalize lazy
 ```
 
 ### 6. Set the clip window and sourceCrop in each child project
@@ -147,17 +149,84 @@ curl -s -X PUT http://localhost:3000/api/projects/<child_id> \
 
 Set `sourceWidth` and `sourceHeight` from the probe output on each `tracks[0][0]` item so the renderer has the original dimensions for crop math.
 
-### 7. Note for the user
-
-After creating all child projects, log a summary to the source project:
+**After setting inPoint/outPoint, run the window-normalize step and record the cache:**
 
 ```bash
-curl -s -X POST http://localhost:3000/api/projects/<source_id>/log \
-  -H "Content-Type: application/json" \
-  -d '{"message": "Created 3 child clip projects (IDs: <id1>, <id2>, <id3>). Each is pending in the overlays workflow."}'
+# Run normalize_window for the clip window
+montaj step normalize_window \
+  --input <original_source_path> \
+  --inpoint <inPoint> \
+  --outpoint <outPoint> \
+  --color-space <settings.colorSpace>  \
+  --out <child_project_dir>/window_normalized.mp4
 ```
 
-Tell the user how many clips were created, their IDs, and that they can review each in the editor. Note that framing can be adjusted per clip in the editor after the agent finishes.
+The command prints the cache path to stdout. Capture it, then write it into `tracks[0][0].normalizedSrc` in the child project (either in the same PUT that sets inPoint/outPoint, or as a follow-up PUT):
+
+```bash
+# Example: capture the cache path and merge it into the PUT
+cache_path=$(montaj step normalize_window \
+  --input /workspace/proj-abc/source.mp4 \
+  --inpoint 12.0 --outpoint 62.0 \
+  --color-space sdr_bt709 \
+  --out /workspace/proj-xyz/window_normalized.mp4)
+
+curr=$(curl -s http://localhost:3000/api/projects/<child_id>)
+new=$(echo "$curr" | jq \
+  --argjson ip 12.0 --argjson op 62.0 \
+  --arg ns "$cache_path" \
+  '.tracks[0][0].inPoint = $ip | .tracks[0][0].outPoint = $op | .tracks[0][0].normalizedSrc = $ns')
+curl -s -X PUT http://localhost:3000/api/projects/<child_id> \
+  -H "Content-Type: application/json" -d "$new"
+```
+
+Key invariants:
+- `tracks[0][0].src` **stays the original source path** (the symlink to the .MOV/.mp4). Never replace it.
+- `tracks[0][0].normalizedSrc` is the derived per-window cache that render and preview prefer when available.
+- `tracks[0][0].inPoint` and `tracks[0][0].outPoint` remain the **original-source timestamps** in seconds. When the renderer uses `normalizedSrc` (which starts at time 0), it rebases automatically — inPoint/outPoint do not change.
+
+### 7. Finalize — remove the source project
+
+The source project is scaffolding: it exists only so this skill can probe, transcribe, and sample. Once the child clips exist, the user should **not** be left with a project for the raw source. After all child projects and their `normalizedSrc` window caches are created and verified, relocate the source out of the source-project directory and delete the source project.
+
+1. **Relocate the source file to the shared source store** so it survives deletion of the source project (each child symlinks to it):
+   ```bash
+   SHARED="$HOME/Montaj/.sources/<source_project_id>"
+   mkdir -p "$SHARED"
+   mv "<source_project_dir>/<source_filename>" "$SHARED/<source_filename>"
+   ```
+2. **Repoint each child's symlinked `tracks[0][0].src`** to the relocated file:
+   ```bash
+   for child_dir in <child1_dir> <child2_dir> <child3_dir>; do
+     ln -sf "$SHARED/<source_filename>" "$child_dir/<source_filename>"
+   done
+   ```
+   Only the symlink target moves — each child's `src`/`inPoint`/`outPoint` in `project.json` are unchanged, and the per-window `normalizedSrc` caches live inside the child dirs (unaffected). Verify each `src` still resolves before continuing.
+3. **Delete the source project:**
+   ```bash
+   curl -s -X DELETE http://localhost:3000/api/projects/<source_project_id>
+   ```
+   The children keep `derivedFrom: <source_project_id>` as a provenance tag (grouping), even though the source project no longer exists. Render and preview of the current windows depend only on `normalizedSrc`; the symlinked `src` is needed only for later re-windowing, which is why it must be repointed to the shared store before deletion.
+
+After this, **only the N vertical clip projects remain** — the user never has to manage a project for the raw source.
+
+### 8. Report and hand off — ALWAYS ask before finishing the clips
+
+The child clips are created **pending** in the `overlays` workflow — they are **not finished videos yet**. Each still needs its own editing pass (clean-cut → transcribe → captions → graphic overlays). `find_clips` ends at the fan-out boundary: **do not silently stop, and do not auto-run the `overlays` pass without asking.** End the run by giving the user the choice:
+
+1. **Report** what you created — for each clip: name/ID, its window (`inPoint`–`outPoint`), and framing mode (zoom/thirds/mix) — and that each is **pending the `overlays` pass**.
+
+2. **Ask the user which they want** (this is the required hand-off question):
+   - **(a) Finish now** — you continue and run the `overlays` workflow on each clip (clean-cut → transcribe → captions → overlays), advancing each `pending → draft`. Only do this when the user explicitly says yes.
+   - **(b) Hand off** — they (or a separate agent) finish later.
+
+3. **For hand-off, give a ready-to-paste prompt per clip**, modeled on the pending-project prompt Montaj surfaces in the UI. For each clip:
+   ```
+   There is a new project pending: "<clip_name>". Please see @<montaj_root>/skills/SKILL.md and start. Talk to me if you run into questions.
+   ```
+   `<montaj_root>/skills/SKILL.md` is the root dispatcher; a fresh agent handed this prompt picks up that pending clip and runs its `overlays` workflow. This is the same prompt the Montaj UI shows for any new pending project — reuse it verbatim with the clip's name substituted, so the hand-off matches what the user already sees in the app.
+
+Never run the overlays pass without an explicit yes (option a).
 
 ## What to Log
 

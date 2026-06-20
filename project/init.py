@@ -218,7 +218,18 @@ def main():
     parser.add_argument("--derived-from", dest="derived_from", default=None,
                         help="Source project or asset id that this project was derived from "
                              "(e.g. a source-clip project id in the clips workflow).")
+    parser.add_argument(
+        "--normalize",
+        choices=("eager", "lazy"),
+        default=None,
+        help="Normalize mode. 'eager' (default) transcodes non-conformant clips at init time. "
+             "'lazy' skips all transcoding — clips are left as-is and normalized on demand at "
+             "compose time. Overrides the workflow's normalize setting when provided.",
+    )
     args = parser.parse_args()
+
+    # Normalize mode: CLI flag overrides workflow JSON; workflow JSON overrides default "eager".
+    normalize_mode = args.normalize or (read_workflow(args.workflow) or {}).get("normalize", "eager")
 
     # Early carousel detection — validate incompatible args BEFORE any on-disk side effects.
     early_project_type = _read_project_type(args.workflow)
@@ -474,6 +485,18 @@ def main():
         """Normalize a single clip in place. Mutates clip['src'] and clip['sourceDuration']."""
         clip_path = clip["src"]
         clip_id = clip["id"]
+
+        # Lazy mode: skip all probing and transcoding. sourceDuration is still
+        # set so the UI can clamp edits; src is left pointing at the original
+        # staged file.
+        if normalize_mode == "lazy":
+            try:
+                clip["sourceDuration"] = get_duration(clip["src"])
+            except (Exception, SystemExit):
+                pass
+            progress(f"[{clip_id}] lazy skip")
+            return
+
         t0 = time.monotonic()
         # Reuse the probe cached during smart-resolution detection above.
         # Falls back to a fresh probe for clips not in cache (e.g., probe failed earlier
@@ -581,6 +604,9 @@ def main():
         **({"profile": args.profile} if args.profile else {}),
         **({"profileSnapshot": profile_snapshot} if profile_snapshot else {}),
     }
+
+    if normalize_mode == "lazy":
+        project["settings"]["normalize"] = "lazy"
 
     if args.derived_from:
         project["derivedFrom"] = args.derived_from

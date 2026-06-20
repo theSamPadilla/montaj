@@ -109,7 +109,7 @@ See the [CLI Reference](https://docs.montaj.ag/cli) for the full documentation.
 | **Inspect** | `probe`, `snapshot`, `analyze_media` |
 | **Clean** | `waveform_trim`, `rm_fillers`, `rm_nonspeech` |
 | **Edit** | `materialize_cut`, `resize`, `extract_audio`, `crop_spec` |
-| **Enrich** | `transcribe`, `caption`, `normalize`, `lyrics_sync`, `lyrics_render` |
+| **Enrich** | `transcribe`, `caption`, `normalize` (full-source, eager default), `normalize_window` (per clip-window, lazy), `lyrics_sync`, `lyrics_render` |
 | **Generate** | `kling_generate`, `generate_image`, `eval_scene` |
 | **VFX** | `remove_bg`, `stem_separation` |
 | **Acquire** | `fetch` — download from any URL via yt-dlp |
@@ -125,7 +125,7 @@ See the [CLI Reference](https://docs.montaj.ag/cli) for the full documentation.
 | `animations` | Custom JSX animation compositions |
 | `explainer` | Educational/explainer video style |
 | `floating_head` | Speaker overlay on background footage |
-| `clips` | Long-form horizontal source → series of short vertical clips with overlays |
+| `clips` | Long-form horizontal source → series of short vertical clips with overlays; imports lazily (`settings.normalize: "lazy"`) so each clip-window is normalized on demand rather than re-encoding the entire source |
 
 Custom steps and workflows are discovered automatically — no registration needed. See the [Steps Reference](https://docs.montaj.ag/steps) and [Core Concepts](https://docs.montaj.ag/concepts) for details.
 

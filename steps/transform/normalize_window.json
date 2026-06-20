@@ -1,0 +1,45 @@
+{
+  "name": "normalize_window",
+  "description": "Normalize a windowed segment [inpoint, outpoint) of a video clip to the project's working color space + codec. Uses input-level fast seek (-ss/-t before -i) so only the requested window is decoded — the output starts at time 0 and is dense-keyframe conformant (same GOP contract as the full normalize step). Handles SDR↔HDR colorspace conversion via zscale when needed.",
+  "input": {
+    "type": "video",
+    "description": "Source video file (any codec/color space; probed automatically)"
+  },
+  "output": {
+    "type": "video",
+    "description": "Normalized segment clip conformant to the project color space, starting at time 0"
+  },
+  "params": [
+    {
+      "name": "input",
+      "type": "string",
+      "required": true,
+      "description": "Path to the source video file"
+    },
+    {
+      "name": "inpoint",
+      "type": "float",
+      "required": true,
+      "description": "Start of the window to extract (seconds into the source)"
+    },
+    {
+      "name": "outpoint",
+      "type": "float",
+      "required": true,
+      "description": "End of the window to extract (seconds into the source)"
+    },
+    {
+      "name": "color-space",
+      "type": "string",
+      "required": false,
+      "default": "sdr_bt709",
+      "description": "Project color space key: sdr_bt709, hdr_hlg, or hdr_pq (default: sdr_bt709)"
+    },
+    {
+      "name": "out",
+      "type": "string",
+      "required": true,
+      "description": "Output path for the normalized windowed segment"
+    }
+  ]
+}

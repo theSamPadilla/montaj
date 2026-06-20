@@ -3,6 +3,7 @@
   "description": "One long-form horizontal source → a series of short vertical (9:16) clips. Transcribe-and-sample the source to find the best moments, then fan each out into its own vertical clip project with overlays. Build is delegated to the montaj/find_clips skill.",
   "project_type": "editing",
   "requires_clips": true,
+  "normalize": "lazy",
   "agent_notes": "The source pass only transcribes — do not clean/trim the source. find_clips creates child projects; per-clip cleaning/captioning happens in those child projects.",
   "steps": [
     { "id": "probe",      "uses": "montaj/probe" },

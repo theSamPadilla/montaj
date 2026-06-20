@@ -1237,3 +1237,42 @@ def test_derived_from_written(tmp_path):
     proj_json = _project_path_from_stdout(result.stdout)
     data = json.loads(proj_json.read_text())
     assert data["derivedFrom"] == "src-123"
+
+
+# ---------------------------------------------------------------------------
+# --normalize flag tests
+# ---------------------------------------------------------------------------
+
+@pytest.mark.skipif(not HAS_FFMPEG, reason="ffmpeg not available")
+def test_normalize_lazy_skips_transcode(tmp_path):
+    """--normalize lazy must record normalize=lazy in settings, leave src
+    pointing at the original staged file, and write no _normalized_* file."""
+    src = tmp_path / "src.mp4"
+    _make_clip(src, duration=1)
+    result = run_init(
+        "--prompt", "p", "--workflow", "clean_cut", "--clips", str(src),
+        "--normalize", "lazy",
+        env_override={"MONTAJ_WORKSPACE_DIR": str(tmp_path)},
+    )
+    assert result.returncode == 0, result.stderr
+    proj_json = _project_path_from_stdout(result.stdout)
+    data = json.loads(proj_json.read_text())
+    assert data["settings"].get("normalize") == "lazy"
+    assert "_normalized_" not in data["tracks"][0][0]["src"]
+    proj_dir = proj_json.parent
+    assert not list(proj_dir.glob("*_normalized_*.mp4"))
+
+
+@pytest.mark.skipif(not HAS_FFMPEG, reason="ffmpeg not available")
+def test_normalize_default_eager_unchanged(tmp_path):
+    """Without --normalize, settings must NOT include a normalize key (eager
+    projects remain byte-identical to today)."""
+    src = tmp_path / "src.mp4"
+    _make_clip(src, duration=1)
+    result = run_init(
+        "--prompt", "p", "--workflow", "clean_cut", "--clips", str(src),
+        env_override={"MONTAJ_WORKSPACE_DIR": str(tmp_path)},
+    )
+    assert result.returncode == 0, result.stderr
+    data = json.loads(_project_path_from_stdout(result.stdout).read_text())
+    assert "normalize" not in data["settings"]

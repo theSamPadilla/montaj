@@ -60,10 +60,18 @@ The agent writes project.json as it works — every write pushes to the browser 
   "settings": {
     "resolution": [1080, 1920],
     "fps": 30,
-    "brandKit": "default"
+    "brandKit": "default",
+    "normalize": "eager"
   }
 }
 ```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `resolution` | number[2] | Output resolution `[width, height]` in pixels. |
+| `fps` | number | Output frame rate. |
+| `brandKit` | string | Brand kit name. |
+| `normalize` | string | Source normalization strategy. `"eager"` (default) — re-encodes the full source to a dense-keyframe, conformant file at import time. `"lazy"` — skips full-source normalization; instead each clip's `[inPoint, outPoint]` window is normalized on demand and cached as `normalizedSrc` on the track item. The `clips` workflow imports with `lazy` so large sources are not re-encoded up front. |
 
 ---
 
@@ -124,6 +132,7 @@ Items in `tracks[0]` are always `type: "video"`. They have explicit `start`/`end
 | `sourceCrop` | object | Optional. `{x, y, w, h}` as fractions of the source's natural dimensions (`[0, 1]`). Defines the visible region for vertical reframing (e.g. auto-reframe from landscape to portrait). All four keys required when present. |
 | `sourceWidth` | number | Optional. Source pixel width. Written by the agent from a probe; required for `sourceCrop` to render correctly. |
 | `sourceHeight` | number | Optional. Source pixel height. Written by the agent from a probe; required for `sourceCrop` to render correctly. |
+| `normalizedSrc` | string | Optional. Path to a per-window normalized cache produced by `montaj step normalize_window`. Covers exactly `[inPoint, outPoint]` of the original source — dense-keyframe, conformant. Render and preview prefer `normalizedSrc` over `src` when present; `src` always stays the original file. `inPoint`/`outPoint` remain original-source timestamps; the render engine rebases them automatically when reading from the cache (cache always starts at 0). Written by the `clips` workflow under `settings.normalize: "lazy"`. |
 
 **Transition types:** `cut` (default), `crossfade`, `flash-white`, `flash-black`
 

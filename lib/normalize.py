@@ -264,6 +264,81 @@ def _build_hdr_cross(src: ColorSpaceKey, dst: ColorSpaceKey) -> str:
     return f"zscale=t={dst_t}"
 
 
+def _build_ffmpeg_cmd(
+    input_path,
+    out_path,
+    project_color_space: ColorSpaceKey,
+    info: dict,
+    pre_input_args: list | None = None,
+) -> tuple[list, bool]:
+    """Build the ffmpeg command list for a normalize encode.
+
+    `pre_input_args`: optional list inserted immediately before ``["-i", input_path]``.
+    Used by normalize_window() to add ``-ss``/``-t`` input-seek args; normalize()
+    passes nothing (or an empty list) so its command is byte-identical to before.
+
+    Returns (cmd, used_fallback_tonemap).  Callers that don't need the flag can
+    ignore the second element.
+    """
+    if pre_input_args is None:
+        pre_input_args = []
+
+    spec = SPECS[project_color_space]
+
+    # Determine source color space to know what conversion is needed.
+    source_color_space = detect_from_transfer(info.get("color_transfer"))
+    needs_color_conversion = source_color_space != project_color_space
+
+    used_fallback_tonemap = False
+    vf_parts: list[str] = []
+    if needs_color_conversion:
+        conv_filter, used_fallback_tonemap = _build_color_conversion_vf(
+            source_color_space, project_color_space
+        )
+        vf_parts.append(conv_filter)
+    vf_parts.append(f"format={spec['output_pix_fmt']}")
+    vf = ",".join(vf_parts)
+
+    # GOP enforcement — load-bearing for the segment encoder's input-level fast
+    # seek (-ss before -i). Source fps from probe; default 30. Output keyframe
+    # every ~1s. This is the same contract is_normalized() checks for at intake.
+    source_fps = info.get("fps") or 30
+
+    # Build encoder args from the spec.
+    enc_args = ["-c:v", spec["encoder"]]
+    for k, v in spec["encoder_params"].items():
+        enc_args.extend([f"-{k}", v])
+
+    cmd = [
+        "ffmpeg", "-y",
+        *pre_input_args,
+        "-i", input_path,
+        "-vf", vf,
+        # Stream-level color metadata flags — written to the container so
+        # downstream consumers (segment encoder, players) read the right color.
+        # These complement the per-frame setparams stamping that the segment
+        # encoder applies on its outputs.
+        *spec["output_color_args"],
+        *enc_args,
+        "-pix_fmt", spec["output_pix_fmt"],
+        # Force IDR keyframes every ~1s so segment encoder fast seek lands accurately.
+        "-g", str(source_fps),
+        "-keyint_min", str(source_fps),
+        # Audio is always 48kHz AAC stereo. Segment encoder also resamples per item;
+        # we still emit conformant audio here to match the working-format contract.
+        "-c:a", "aac", "-b:a", "192k", "-ar", "48000",
+        "-movflags", "+faststart",
+        out_path,
+    ]
+    if not info["has_audio"]:
+        cmd = [x for x in cmd if x not in ("-c:a", "aac", "-b:a", "192k", "-ar", "48000")]
+        idx = cmd.index(out_path)
+        cmd[idx:idx] = ["-f", "lavfi", "-i", "anullsrc=cl=stereo:r=48000",
+                        "-shortest", "-c:a", "aac", "-b:a", "192k", "-ar", "48000"]
+
+    return cmd, used_fallback_tonemap
+
+
 def normalize(input_path, out_path, project_color_space: ColorSpaceKey, info=None):
     """Normalize a video clip to the project's working color space + codec.
 
@@ -303,61 +378,14 @@ def normalize(input_path, out_path, project_color_space: ColorSpaceKey, info=Non
         failures.append(f"max_keyframe_interval={src_kf:.2f}s > 2.0s")
     progress(f"normalize triggered: {'; '.join(failures) if failures else 'unknown reason'}")
 
-    # Determine source color space to know what conversion is needed.
-    source_color_space = detect_from_transfer(info.get("color_transfer"))
-    needs_color_conversion = source_color_space != project_color_space
-
-    # Build conversion filter; the helper returns a (filter, used_fallback) tuple
-    # so we can preserve the v1 zscale-missing warning UX (loud start/end pair).
-    used_fallback_tonemap = False
-    vf_parts: list[str] = []
-    if needs_color_conversion:
-        conv_filter, used_fallback_tonemap = _build_color_conversion_vf(
-            source_color_space, project_color_space
-        )
-        vf_parts.append(conv_filter)
-    vf_parts.append(f"format={spec['output_pix_fmt']}")
-    vf = ",".join(vf_parts)
+    cmd, used_fallback_tonemap = _build_ffmpeg_cmd(
+        input_path, out_path, project_color_space, info, pre_input_args=[]
+    )
 
     if used_fallback_tonemap:
         progress("⚠⚠⚠ WARNING: zscale filter NOT AVAILABLE — falling back to bare tonemap ⚠⚠⚠")
         progress("HDR→SDR colors WILL be less accurate (washed out highlights, shifted colors).")
         progress("To fix: run `montaj doctor` for instructions on installing libzimg.")
-
-    # GOP enforcement — load-bearing for the segment encoder's input-level fast
-    # seek (-ss before -i). Source fps from probe; default 30. Output keyframe
-    # every ~1s. This is the same contract is_normalized() checks for at intake.
-    source_fps = info.get("fps") or 30
-
-    # Build encoder args from the spec.
-    enc_args = ["-c:v", spec["encoder"]]
-    for k, v in spec["encoder_params"].items():
-        enc_args.extend([f"-{k}", v])
-
-    cmd = [
-        "ffmpeg", "-y", "-i", input_path,
-        "-vf", vf,
-        # Stream-level color metadata flags — written to the container so
-        # downstream consumers (segment encoder, players) read the right color.
-        # These complement the per-frame setparams stamping that the segment
-        # encoder applies on its outputs.
-        *spec["output_color_args"],
-        *enc_args,
-        "-pix_fmt", spec["output_pix_fmt"],
-        # Force IDR keyframes every ~1s so segment encoder fast seek lands accurately.
-        "-g", str(source_fps),
-        "-keyint_min", str(source_fps),
-        # Audio is always 48kHz AAC stereo. Segment encoder also resamples per item;
-        # we still emit conformant audio here to match the working-format contract.
-        "-c:a", "aac", "-b:a", "192k", "-ar", "48000",
-        "-movflags", "+faststart",
-        out_path,
-    ]
-    if not info["has_audio"]:
-        cmd = [x for x in cmd if x not in ("-c:a", "aac", "-b:a", "192k", "-ar", "48000")]
-        idx = cmd.index(out_path)
-        cmd[idx:idx] = ["-f", "lavfi", "-i", "anullsrc=cl=stereo:r=48000",
-                        "-shortest", "-c:a", "aac", "-b:a", "192k", "-ar", "48000"]
 
     progress(
         f"Normalizing {input_path}: "
@@ -374,6 +402,65 @@ def normalize(input_path, out_path, project_color_space: ColorSpaceKey, info=Non
         progress("The HDR→SDR conversion used a bare tonemap without proper colorspace conversion.")
         progress("Re-normalize after installing zscale for accurate colors.")
         progress("Fix: run `montaj doctor` → follow zscale installation instructions.")
+
+    return out_path
+
+
+def normalize_window(
+    input_path,
+    out_path,
+    project_color_space: ColorSpaceKey,
+    in_point: float,
+    out_point: float,
+    info=None,
+):
+    """Normalize a windowed segment [in_point, out_point) of a video clip.
+
+    Uses input-level fast seek (-ss before -i) so the output starts at time 0
+    and is dense-keyframe (re-encode resets GOP via the same -g/-keyint_min args
+    as normalize()). All conformance args (codec, pix_fmt, color, GOP) are
+    identical to normalize().
+
+    `in_point` / `out_point`: seconds into the source. Duration is clamped to
+    max(0.0, out_point - in_point) — reversed windows produce a zero-duration
+    encode rather than an error.
+
+    Returns the output path on success; raises SystemExit (via fail()) on error.
+    """
+    require_valid_key(project_color_space)
+    if info is None:
+        info = probe_video(input_path)
+    if info is None:
+        fail("probe_error", f"Cannot probe {input_path}")
+
+    duration = max(0.0, out_point - in_point)
+    pre_input_args = [
+        "-ss", f"{in_point:.4f}",
+        "-t", f"{duration:.4f}",
+    ]
+
+    cmd, used_fallback_tonemap = _build_ffmpeg_cmd(
+        input_path, out_path, project_color_space, info, pre_input_args=pre_input_args
+    )
+
+    if used_fallback_tonemap:
+        progress("⚠⚠⚠ WARNING: zscale filter NOT AVAILABLE — falling back to bare tonemap ⚠⚠⚠")
+        progress("HDR→SDR colors WILL be less accurate (washed out highlights, shifted colors).")
+        progress("To fix: run `montaj doctor` for instructions on installing libzimg.")
+
+    progress(
+        f"normalize_window {input_path} [{in_point:.4f}s → {out_point:.4f}s]: "
+        f"{info['codec']} {info.get('color_transfer', '?')} {info['pix_fmt']} "
+        f"→ {SPECS[project_color_space]['encoder']} {SPECS[project_color_space]['output_pix_fmt']} "
+        f"({project_color_space})"
+    )
+    r = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+    if r.returncode != 0:
+        fail("encode_error", f"ffmpeg normalize_window failed:\n{(r.stderr or '')[-500:]}")
+
+    if used_fallback_tonemap:
+        progress("⚠⚠⚠ FALLBACK TONEMAP WAS USED — OUTPUT COLORS ARE DEGRADED ⚠⚠⚠")
+        progress(f"File: {out_path}")
 
     return out_path
 
