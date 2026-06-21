@@ -6,6 +6,7 @@ import sys
 from pathlib import Path
 
 from fastapi import APIRouter, Body, HTTPException
+from fastapi.responses import JSONResponse
 
 from lib.credentials import CredentialError, build_env_overlay
 from serve.common import (
@@ -13,6 +14,7 @@ from serve.common import (
     run_subprocess,
     not_found, bad_request, server_error,
 )
+from serve.jobs import create_job, set_done, set_error, get_job
 
 router = APIRouter(prefix="/api")
 
@@ -148,14 +150,13 @@ async def list_steps():
     return [schema for schema, _ in scan_steps().values()]
 
 
-@router.post("/steps/{name}")
-async def run_step(name: str, body: dict = Body(default={})):
-    steps = scan_steps()
-    if name not in steps:
-        raise not_found("not_found", f"Step '{name}' not found")
+async def _execute_step(name: str, schema: dict, py_path: Path, body: dict) -> dict:
+    """Run one step subprocess and return its wrap_output payload.
 
-    schema, py_path = steps[name]
-
+    Raises HTTPException on credential/validation/subprocess error exactly as
+    the sync route always has. The secret-scrub lives HERE (not in the caller)
+    so both the sync 500 path and the async error-job path get scrubbed output.
+    """
     # Reserved field: per-request credentials become env vars for THIS one
     # subprocess and nothing else. Pop FIRST — before validate_params /
     # build_cli_args ever see the body — so it can never collide with a schema
@@ -220,6 +221,42 @@ async def run_step(name: str, body: dict = Body(default={})):
         raise HTTPException(500, detail=err)
 
     return wrap_output(stdout_text, schema)
+
+
+async def _run_to_job(job_id: str, name: str, schema: dict, py_path: Path, body: dict) -> None:
+    """Background driver: run a step and record its result/error on the job."""
+    try:
+        result = await _execute_step(name, schema, py_path, body)
+        set_done(job_id, result)
+    except HTTPException as e:
+        set_error(job_id, e.detail)
+    except Exception as e:
+        set_error(job_id, {"error": "step_failed", "message": str(e)})
+
+
+@router.post("/steps/{name}")
+async def run_step(name: str, body: dict = Body(default={})):
+    steps = scan_steps()
+    if name not in steps:
+        raise not_found("not_found", f"Step '{name}' not found")
+
+    schema, py_path = steps[name]
+
+    is_async = bool(body.pop("_async", False))
+    if not is_async:
+        return await _execute_step(name, schema, py_path, body)
+
+    job_id = create_job()
+    asyncio.create_task(_run_to_job(job_id, name, schema, py_path, body))
+    return JSONResponse({"job_id": job_id, "status": "running"}, status_code=202)
+
+
+@router.get("/steps/jobs/{job_id}")
+async def get_step_job(job_id: str):
+    job = get_job(job_id)
+    if job is None:
+        raise not_found("job_not_found", f"Job '{job_id}' not found")
+    return job
 
 
 def _scrub_secrets(text: str, secrets: list[str]) -> str:
