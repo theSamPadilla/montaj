@@ -234,6 +234,13 @@ async def _run_to_job(job_id: str, name: str, schema: dict, py_path: Path, body:
         set_error(job_id, {"error": "step_failed", "message": str(e)})
 
 
+# asyncio only holds a WEAK reference to a bare create_task() result, so a
+# fire-and-forget background job can be garbage-collected mid-run ("Task was
+# destroyed but it is pending") — the exact failure mode for a 60-90s whisper
+# job. Keep a strong reference until the task finishes.
+_BACKGROUND_TASKS: set[asyncio.Task] = set()
+
+
 @router.post("/steps/{name}")
 async def run_step(name: str, body: dict = Body(default={})):
     steps = scan_steps()
@@ -247,7 +254,9 @@ async def run_step(name: str, body: dict = Body(default={})):
         return await _execute_step(name, schema, py_path, body)
 
     job_id = create_job()
-    asyncio.create_task(_run_to_job(job_id, name, schema, py_path, body))
+    task = asyncio.create_task(_run_to_job(job_id, name, schema, py_path, body))
+    _BACKGROUND_TASKS.add(task)
+    task.add_done_callback(_BACKGROUND_TASKS.discard)
     return JSONResponse({"job_id": job_id, "status": "running"}, status_code=202)
 
 

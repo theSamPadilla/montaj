@@ -28,10 +28,11 @@ def client():
     """Persistent client.
 
     Entered as a context manager so Starlette runs ONE long-lived event-loop
-    portal for the whole module. The async route schedules its work with
-    asyncio.create_task; that task only survives between the POST and the
-    polling GETs if the loop outlives a single request — which the context
-    manager guarantees and a bare TestClient() does not.
+    portal for the whole module — a bare TestClient() tears the loop down when
+    the POST returns, so the background task would never run. (Task *survival*
+    against GC is handled in the route by the module-level _BACKGROUND_TASKS
+    strong-reference set, independent of this; the context manager only keeps
+    the loop alive across the POST→poll GETs.)
     """
     with TestClient(app, raise_server_exceptions=False) as c:
         yield c
