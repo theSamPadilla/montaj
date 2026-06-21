@@ -52,13 +52,10 @@ def main():
         output_prefix = args.out or os.path.splitext(args.input)[0]
 
     try:
-        # SRT: segment-level (readable)
+        # Single pass: word-level JSON + SRT in one decode
         run([whisper_bin, "-m", model_path, "-f", audio_input, "-l", args.language,
-             "--output-srt", "--output-file", output_prefix])
-        # JSON: word-level via --split-on-word --max-len 1 (canonical format for downstream steps)
-        run([whisper_bin, "-m", model_path, "-f", audio_input, "-l", args.language,
-             "--split-on-word", "--max-len", "1", "--output-json", "--output-file", output_prefix],
-            check=False)
+             "--split-on-word", "--max-len", "1", "--output-srt", "--output-json",
+             "--output-file", output_prefix])
     finally:
         if tmp_audio and os.path.exists(tmp_audio):
             os.unlink(tmp_audio)
