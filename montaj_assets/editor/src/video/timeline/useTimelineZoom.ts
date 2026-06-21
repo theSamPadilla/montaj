@@ -1,4 +1,4 @@
-import { useLayoutEffect, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 
 export function useTimelineZoom(totalDuration: number) {
   const [zoom, setZoom] = useState(1)
@@ -31,7 +31,14 @@ export function useTimelineZoom(totalDuration: number) {
     setZoom(clamped)
   }
 
-  function handleTimelineWheel(e: React.WheelEvent) {
+  // ⌘/Ctrl + wheel = zoom; Alt + wheel = horizontal scroll. Both call
+  // preventDefault, so the listener MUST be non-passive. React's onWheel prop is
+  // registered passive at the root, which makes preventDefault a no-op and spams
+  // "Unable to preventDefault inside passive event listener" — so attach a native
+  // listener with { passive: false } instead. A ref to the latest handler keeps
+  // it current without re-binding on every render.
+  const wheelHandlerRef = useRef<(e: WheelEvent) => void>(() => {})
+  wheelHandlerRef.current = (e: WheelEvent) => {
     if (e.ctrlKey || e.metaKey) {
       e.preventDefault()
       // Multiplicative step so perceived speed is consistent across zoom levels.
@@ -44,5 +51,13 @@ export function useTimelineZoom(totalDuration: number) {
     }
   }
 
-  return { zoom, zoomRef, scrollRef, pendingScrollRef, zoomTo, handleTimelineWheel }
+  useEffect(() => {
+    const el = scrollRef.current
+    if (!el) return
+    const onWheel = (e: WheelEvent) => wheelHandlerRef.current(e)
+    el.addEventListener('wheel', onWheel, { passive: false })
+    return () => el.removeEventListener('wheel', onWheel)
+  }, [])
+
+  return { zoom, zoomRef, scrollRef, pendingScrollRef, zoomTo }
 }

@@ -131,7 +131,7 @@ export default function Timeline({ project, currentTime, onTimeUpdate, onProject
 
   const [subcutClipId, setSubcutClipId]       = useState<string | null>(null)
 
-  const { zoom, zoomRef, scrollRef, zoomTo, handleTimelineWheel } = useTimelineZoom(totalDuration)
+  const { zoom, zoomRef, scrollRef, zoomTo } = useTimelineZoom(totalDuration)
 
   useEffect(() => {
     if (totalDuration === 0) return
@@ -245,7 +245,7 @@ export default function Timeline({ project, currentTime, onTimeUpdate, onProject
       )}
 
       {/* Scroll container for zoomed tracks */}
-      <div ref={scrollRef} className="overflow-x-auto" onWheel={handleTimelineWheel}>
+      <div ref={scrollRef} className="overflow-x-auto">
       <div style={{ width: zoom > 1 ? `${zoom * 100}%` : '100%' }} className="min-w-full">
 
       {/* Scrubber + tracks wrapped in a relative container so the hover indicator spans the full height */}
