@@ -1,5 +1,5 @@
 /// <reference types="vitest/globals" />
-import { renderedSourceRect } from '../crop-math'
+import { renderedSourceRect, translateCropPx, cropForAspect, maxZoomForAspect, aspectLockedCornerResize } from '../crop-math'
 import { fractionToWrapperPx, wrapperPxToFraction } from '../crop-math'
 
 describe('renderedSourceRect', () => {
@@ -185,5 +185,98 @@ describe('applyCropHandleDrag', () => {
     // dx=-20 px in 400-px-wide rendered = -0.05 in fractions
     expect(next.w).toBeCloseTo(0.45)
     expect(next.h).toBeCloseTo(0.5)
+  })
+})
+
+describe('translateCropPx (pan)', () => {
+  const SRC = { wrapperW: 400, wrapperH: 400, srcWidth: 1000, srcHeight: 1000 } // square, no letterbox
+
+  it('moves the crop by the pixel delta in fractions', () => {
+    const next = translateCropPx({
+      crop: { x: 0.2, y: 0.2, w: 0.4, h: 0.4 },
+      deltaPx: { x: 40, y: -20 }, // 40/400 = +0.1 x, -20/400 = -0.05 y
+      ...SRC,
+    })
+    expect(next.x).toBeCloseTo(0.3)
+    expect(next.y).toBeCloseTo(0.15)
+    expect(next.w).toBeCloseTo(0.4)
+    expect(next.h).toBeCloseTo(0.4)
+  })
+
+  it('clamps so the crop stays fully inside the source (no size change)', () => {
+    const next = translateCropPx({
+      crop: { x: 0.7, y: 0.7, w: 0.4, h: 0.4 }, // right/bottom edge at 1.1 — already overflowing intent
+      deltaPx: { x: 1000, y: 1000 },
+      ...SRC,
+    })
+    // pinned to the far corner: x = 1 - w, y = 1 - h
+    expect(next.x).toBeCloseTo(0.6)
+    expect(next.y).toBeCloseTo(0.6)
+    expect(next.w).toBeCloseTo(0.4)
+    expect(next.h).toBeCloseTo(0.4)
+  })
+})
+
+describe('cropForAspect + maxZoomForAspect', () => {
+  it('9:16 crop from a 16:9 source → full height, narrow centered width', () => {
+    // source 1920x1080 (aspect 1.778), target 9/16=0.5625 < srcAspect → full height
+    const c = cropForAspect({ aspect: 9 / 16, zoom: 1, srcWidth: 1920, srcHeight: 1080 })
+    expect(c.h).toBeCloseTo(1)
+    // w = aspect/srcAspect = 0.5625 / 1.7778 = 0.3164
+    expect(c.w).toBeCloseTo((9 / 16) / (1920 / 1080), 3)
+    expect(c.x).toBeCloseTo((1 - c.w) / 2) // centered
+    expect(c.y).toBeCloseTo(0)
+  })
+
+  it('16:9 crop from a 16:9 source → the whole frame at zoom 1', () => {
+    const c = cropForAspect({ aspect: 16 / 9, zoom: 1, srcWidth: 1920, srcHeight: 1080 })
+    expect(c.w).toBeCloseTo(1)
+    expect(c.h).toBeCloseTo(1)
+  })
+
+  it('zoom shrinks the crop around its center', () => {
+    const c1 = cropForAspect({ aspect: 1, zoom: 1, srcWidth: 1000, srcHeight: 1000 })
+    const c2 = cropForAspect({ aspect: 1, zoom: 2, srcWidth: 1000, srcHeight: 1000 })
+    expect(c1.w).toBeCloseTo(1)
+    expect(c2.w).toBeCloseTo(0.5) // half size at 2×
+    expect(c2.x).toBeCloseTo(0.25) // still centered
+    expect(c2.y).toBeCloseTo(0.25)
+  })
+
+  it('maxZoomForAspect keeps the crop at/above the 2% floor', () => {
+    // 1:1 on a square source: base w=h=1, floor 0.02 → max zoom 50
+    const z = maxZoomForAspect({ aspect: 1, srcWidth: 1000, srcHeight: 1000 })
+    expect(z).toBeCloseTo(50)
+  })
+})
+
+describe('aspectLockedCornerResize', () => {
+  it('keeps the locked pixel aspect and anchors the opposite corner (se drag)', () => {
+    // square source 1000x1000 in a 400x400 frame → rendered fills the frame.
+    const next = aspectLockedCornerResize({
+      handle: 'se',
+      initialCrop: { x: 0.2, y: 0.2, w: 0.2, h: 0.2 }, // nw corner anchored at (0.2,0.2)
+      deltaPx: { x: 100, y: 0 },                        // drag se corner right
+      wrapperW: 400, wrapperH: 400, srcWidth: 1000, srcHeight: 1000,
+      aspect: 16 / 9,
+    })
+    expect(next.x).toBeCloseTo(0.2) // anchor held
+    expect(next.y).toBeCloseTo(0.2)
+    const pixelAspect = (next.w * 1000) / (next.h * 1000)
+    expect(pixelAspect).toBeCloseTo(16 / 9, 2)
+  })
+
+  it('shrinks to fit when the locked box would overflow the source bounds', () => {
+    const next = aspectLockedCornerResize({
+      handle: 'se',
+      initialCrop: { x: 0.1, y: 0.1, w: 0.2, h: 0.2 },
+      deltaPx: { x: 100000, y: 0 }, // absurd outward drag
+      wrapperW: 400, wrapperH: 400, srcWidth: 1000, srcHeight: 1000,
+      aspect: 16 / 9,
+    })
+    // stays within [0,1] and keeps the aspect
+    expect(next.x + next.w).toBeLessThanOrEqual(1.0001)
+    expect(next.y + next.h).toBeLessThanOrEqual(1.0001)
+    expect((next.w * 1000) / (next.h * 1000)).toBeCloseTo(16 / 9, 2)
   })
 })

@@ -63,7 +63,13 @@ export default function CaptionPreview({ track, currentTime, fps, compileOverlay
     : null
 
   return (
-    <div ref={wrapRef} className="absolute inset-0 pointer-events-none overflow-hidden">
+    // zIndex 45 keeps captions above the active <video> (z 1) and overlay items
+    // (z `trackIdx + 12`, ≈12–20) — mirroring the final render, where the caption
+    // track composites on top — while staying below the editing affordances
+    // (selection handles z 50, play button z 100). Without an explicit z-index the
+    // root sits at `auto`, so the opaque active video paints over it and captions
+    // never appear in the preview.
+    <div ref={wrapRef} className="absolute inset-0 pointer-events-none overflow-hidden" style={{ zIndex: 45 }}>
       <OverlayErrorBoundary label={`caption: ${track.style}`} resetKey={track.style}>
         {element && scale !== null && (
           <div style={{

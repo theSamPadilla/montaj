@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent, type WheelEvent as ReactWheelEvent } from 'react'
+import { videoTransformContainerStyle, videoTransformBoxPct, type VideoTransform } from './transformStyle'
 import type { EditorProject as Project } from '../../schema'
 import type { OverlayFactory } from '../../types'
 import CaptionPreview from './CaptionPreview'
@@ -119,6 +120,71 @@ export default function PreviewPlayer({
     ? { ...cropStyle }
     : { position: 'absolute' as const, inset: 0, width: '100%', height: '100%', objectFit: 'contain' as const }
 
+  // ── Base-video on-canvas transform (position + zoom) ─────────────────────────
+  // The selected tracks[0] video shows drag/resize handles like an overlay: drag
+  // to move (offsetX/offsetY), corner-drag or scroll to scale. Live during a
+  // pointer drag, committed on pointer-up via onOverlayChange; scroll commits
+  // directly. The <video> container reflects it (WYSIWYG with the renderer).
+  const selectedClip = useMemo(
+    () => clips.find(c => c.id === selectedOverlayId) ?? null,
+    [clips, selectedOverlayId],
+  )
+  const showVideoTransform = !isCanvasProject && !!selectedClip && selectedClip.id === activeClip?.id
+  const [liveXf, setLiveXf] = useState<VideoTransform | null>(null)
+  const xfDragRef = useRef<
+    | { kind: 'move'; startClient: { x: number; y: number }; start: VideoTransform }
+    | { kind: 'scale'; center: { x: number; y: number }; startDist: number; start: VideoTransform }
+    | null
+  >(null)
+  const baseXf: VideoTransform = {
+    scale: activeClip?.scale ?? 1,
+    offsetX: activeClip?.offsetX ?? 0,
+    offsetY: activeClip?.offsetY ?? 0,
+  }
+  const xf = liveXf ?? baseXf
+  const transformContainerStyle = videoTransformContainerStyle(xf)
+  const xfBox = videoTransformBoxPct(xf)
+
+  const onXfMoveDown = (e: ReactPointerEvent) => {
+    e.stopPropagation(); e.currentTarget.setPointerCapture?.(e.pointerId)
+    xfDragRef.current = { kind: 'move', startClient: { x: e.clientX, y: e.clientY }, start: baseXf }
+  }
+  const onXfScaleDown = (e: ReactPointerEvent) => {
+    e.stopPropagation(); e.currentTarget.setPointerCapture?.(e.pointerId)
+    const r = containerRef.current?.getBoundingClientRect()
+    if (!r) return
+    const center = { x: r.left + r.width / 2, y: r.top + r.height / 2 }
+    const startDist = Math.hypot(e.clientX - center.x, e.clientY - center.y) || 1
+    xfDragRef.current = { kind: 'scale', center, startDist, start: baseXf }
+  }
+  const onXfMove = (e: ReactPointerEvent) => {
+    const d = xfDragRef.current
+    if (!d) return
+    if (d.kind === 'move') {
+      const ox = (d.start.offsetX ?? 0) + ((e.clientX - d.startClient.x) / (frameSize.w || 1)) * 100
+      const oy = (d.start.offsetY ?? 0) + ((e.clientY - d.startClient.y) / (frameSize.h || 1)) * 100
+      setLiveXf({ ...d.start, offsetX: ox, offsetY: oy })
+    } else {
+      const dist = Math.hypot(e.clientX - d.center.x, e.clientY - d.center.y)
+      const s = Math.min(8, Math.max(0.2, (d.start.scale ?? 1) * (dist / d.startDist)))
+      setLiveXf({ ...d.start, scale: s })
+    }
+  }
+  const onXfUp = () => {
+    const live = liveXf
+    xfDragRef.current = null
+    setLiveXf(null)
+    if (live && selectedClip && onOverlayChange) {
+      onOverlayChange(selectedClip.id, { offsetX: live.offsetX, offsetY: live.offsetY, scale: live.scale })
+    }
+  }
+  const onXfWheel = (e: ReactWheelEvent) => {
+    if (!showVideoTransform || !selectedClip || !onOverlayChange) return
+    const factor = e.deltaY < 0 ? 1.06 : 1 / 1.06
+    const s = Math.min(8, Math.max(0.2, (activeClip?.scale ?? 1) * factor))
+    onOverlayChange(selectedClip.id, { scale: s })
+  }
+
   return (
     <div ref={containerRef} className="relative bg-black h-full max-w-full overflow-hidden rounded" style={{ aspectRatio: `${RENDER_W} / ${RENDER_H}`, isolation: 'isolate' }}>
       {isCanvasProject ? (
@@ -128,7 +194,10 @@ export default function PreviewPlayer({
           No clips
         </div>
       ) : (
-        <>
+        // Transform container — applies the active clip's scale/offset to both
+        // slots (the inactive one is invisible). The frame's overflow-hidden clips
+        // anything pushed outside. Mirrors the renderer's crop→scale→position.
+        <div className="absolute inset-0" style={transformContainerStyle}>
           {/* Slot 0 */}
           <video
             ref={video0Ref}
@@ -161,7 +230,45 @@ export default function PreviewPlayer({
             playsInline
             style={{ ...baseVideoStyle, opacity: showVideo && activeSlot === 1 ? 1 : 0, pointerEvents: activeSlot === 1 ? 'auto' : 'none', zIndex: activeSlot === 1 ? 1 : 0 }}
           />
-        </>
+        </div>
+      )}
+
+      {/* Base-video transform handles — drag to move, corner-drag or scroll to
+          zoom. Shown only when the on-screen clip is selected. Above the
+          play-toggle (z 10), below overlays (z 12+). */}
+      {showVideoTransform && (
+        <div className="absolute inset-0 pointer-events-none" style={{ zIndex: 11 }}>
+          <div
+            onPointerDown={onXfMoveDown}
+            onPointerMove={onXfMove}
+            onPointerUp={onXfUp}
+            onWheel={onXfWheel}
+            style={{
+              position: 'absolute',
+              left: `${xfBox.left}%`, top: `${xfBox.top}%`, width: `${xfBox.width}%`, height: `${xfBox.height}%`,
+              outline: '2px solid var(--editor-selection)', cursor: 'move', pointerEvents: 'auto', touchAction: 'none',
+            }}
+          />
+          {([['nw', 0, 0], ['ne', 1, 0], ['sw', 0, 1], ['se', 1, 1]] as const).map(([k, dx, dy]) => (
+            <div
+              key={k}
+              onPointerDown={onXfScaleDown}
+              onPointerMove={onXfMove}
+              onPointerUp={onXfUp}
+              style={{
+                position: 'absolute',
+                // Clamp into the frame so corners stay grabbable even when the box
+                // is scaled beyond the frame (scale uses pointer-distance, not the
+                // handle's position, so a clamped grab still scales correctly).
+                left: `calc(${Math.min(98, Math.max(2, xfBox.left + dx * xfBox.width))}% - 6px)`,
+                top: `calc(${Math.min(98, Math.max(2, xfBox.top + dy * xfBox.height))}% - 6px)`,
+                width: 12, height: 12, backgroundColor: '#fff',
+                border: '1.5px solid var(--editor-selection)', borderRadius: 2,
+                cursor: 'nwse-resize', pointerEvents: 'auto', touchAction: 'none',
+              }}
+            />
+          ))}
+        </div>
       )}
 
 

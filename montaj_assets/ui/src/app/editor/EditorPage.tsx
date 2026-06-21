@@ -140,6 +140,9 @@ export default function EditorPage() {
   // pipeline re-run. Inspector/subcut state is owned by VideoEditor (render-prop
   // seams); only the Re-run modal toggle is host-local here.
   const [rerunOpen, setRerunOpen] = useState(false)
+  // VideoEditor hands us a stable `openRender()` trigger (it owns the RenderModal);
+  // we host the Render button in the ProjectHeader instead of the package toolbar.
+  const [openRender, setOpenRender] = useState<(() => void) | null>(null)
 
   // Host-supplied slots for the package editors:
   //  - assetsPanel : Montaj's own assets panel (uploads into the project dir,
@@ -364,6 +367,14 @@ export default function EditorPage() {
                   Re-run
                 </Button>
               )}
+              {/* Render lives in the header for the local OS editor (the package's
+                  toolbar button is suppressed via onProvideRenderTrigger below).
+                  Shown once the package hands us the trigger (review mode only). */}
+              {openRender && (
+                <Button size="sm" onClick={openRender}>
+                  Render →
+                </Button>
+              )}
             </>
           }
         />
@@ -374,7 +385,8 @@ export default function EditorPage() {
             onProjectChange={handleProjectChange}
             theme={defaultMontajTheme}
             slots={videoSlots}
-            assetsPlacement="right"
+            assetsPlacement="sidebar"
+            onProvideRenderTrigger={(fn) => setOpenRender(() => fn)}
             onBackToSetup={handleBackToSetup}
             regenEnabled={project.projectType === 'ai_video'}
             isClipQueued={(itemId) => (project.regenQueue ?? []).some(e => e.clipId === itemId)}

@@ -610,6 +610,14 @@ export function useVideoPlayback(
           gapNextIdxRef.current = nextIdx
           getActiveVideo()?.pause()
           gapRAFRef.current     = requestAnimationFrame(tickGap)
+        } else {
+          // Scrubbed PAST the last clip into trailing empty space — there is no
+          // next clip to advance to. Without this the active <video> keeps
+          // playing under the hidden (showVideo=false) frame: the picture goes
+          // dark but its audio keeps going. Stop playback outright.
+          getActiveVideo()?.pause()
+          setIsPlaying(false)
+          syncAudioTracks(currentTime, false)
         }
       }
       return

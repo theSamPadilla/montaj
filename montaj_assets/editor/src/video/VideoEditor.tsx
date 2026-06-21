@@ -1,7 +1,7 @@
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { Crop, Magnet } from 'lucide-react'
 import type { Project, VideoEditorProps } from '../types'
-import { VideoSourceCropOverlay } from '../crop/VideoSourceCropOverlay'
+import { VideoSourceCropModal } from '../crop/VideoSourceCropModal'
 import { getOverlayDesignCanvas } from './design-canvas'
 import { applyTheme, defaultMontajTheme } from '../theme'
 import { applyCutToItem, applyCutToTracks, collapseGaps, splitAtTime } from './cuts'
@@ -45,6 +45,7 @@ export default function VideoEditor<P extends Project = Project>({
   renderSubcutRegen,
   regenEnabled,
   isClipQueued,
+  onProvideRenderTrigger,
 }: Props<P>) {
   const emit = onProjectChange ?? (() => {})
 
@@ -93,6 +94,7 @@ export default function VideoEditor<P extends Project = Project>({
         renderSubcutRegen={renderSubcutRegen}
         regenEnabled={regenEnabled}
         isClipQueued={isClipQueued}
+        onProvideRenderTrigger={onProvideRenderTrigger}
       />
     </div>
   )
@@ -122,6 +124,7 @@ interface SurfaceProps<P extends Project> {
   getWaveformChunks?: VideoEditorProps<P>['adapter']['getWaveformChunks']
   resolveFilePath: (path: string) => string
   save: (p: P) => void
+  onProvideRenderTrigger?: VideoEditorProps<P>['onProvideRenderTrigger']
 }
 
 function PendingSurface<P extends Project>({
@@ -265,6 +268,7 @@ function ReviewSurface<P extends Project>({
   renderSubcutRegen,
   regenEnabled,
   isClipQueued,
+  onProvideRenderTrigger,
 }: SurfaceProps<P> & {
   renderClipInspector?: VideoEditorProps<P>['renderClipInspector']
   renderSubcutRegen?: VideoEditorProps<P>['renderSubcutRegen']
@@ -279,8 +283,8 @@ function ReviewSurface<P extends Project>({
   const [selectedIds, setSelectedIds] = useState<string[]>([])
   const primarySelectedId = selectedIds[0] ?? null
   const [rippleMode, setRippleMode]   = useState(false)
-  // Source-crop mode: when on, a VideoSourceCropOverlay is mounted over the
-  // preview for the selected tracks[0] video item. Cleared when selection changes.
+  // Source-crop mode: when on, the VideoSourceCropModal opens for the selected
+  // tracks[0] video item. Cleared when selection changes.
   const [cropMode, setCropMode]       = useState(false)
   const [renderOpen, setRenderOpen]   = useState(false)
   const [regenCaptionsOpen, setRegenCaptionsOpen] = useState(false)
@@ -288,22 +292,22 @@ function ReviewSurface<P extends Project>({
   // callbacks. A Montaj-agnostic { kind, id } selector, not a project entity.
   const [inspecting, setInspecting]   = useState<{ kind: 'clip' | 'audio'; id: string } | null>(null)
 
-  const { versions, restoring, setRestoring } = useVersionHistory(adapter, project)
+  // Render trigger — marks the project final, saves, and opens the RenderModal.
+  // Kept stable (latest project/onChange/save read via refs) so a host that
+  // places Render in its own header (onProvideRenderTrigger) can store the
+  // callback once without it going stale.
+  const projectRef         = useRef(project);         projectRef.current = project
+  const onProjectChangeRef = useRef(onProjectChange); onProjectChangeRef.current = onProjectChange
+  const saveRef            = useRef(save);            saveRef.current = save
+  const openRender = useCallback(() => {
+    const final = { ...projectRef.current, status: 'final' } as P
+    onProjectChangeRef.current(final)
+    saveRef.current(final)
+    setRenderOpen(true)
+  }, [])
+  useEffect(() => { onProvideRenderTrigger?.(openRender) }, [onProvideRenderTrigger, openRender])
 
-  // Measured pixel size of the preview's rendered video rect — fed to the crop
-  // overlay as its wrapper dims so renderedSourceRect letterboxes correctly.
-  const previewBoxRef = useRef<HTMLDivElement>(null)
-  const [previewBox, setPreviewBox] = useState<{ w: number; h: number }>({ w: 0, h: 0 })
-  useEffect(() => {
-    if (!cropMode) return
-    const el = previewBoxRef.current
-    if (!el) return
-    const obs = new ResizeObserver(([entry]) => {
-      setPreviewBox({ w: entry.contentRect.width, h: entry.contentRect.height })
-    })
-    obs.observe(el)
-    return () => obs.disconnect()
-  }, [cropMode])
+  const { versions, restoring, setRestoring } = useVersionHistory(adapter, project)
 
   // Repair caption segments whose words[] text has diverged from edited seg.text.
   // Inline caption edits update seg.text but not seg.words; this normalizes the
@@ -434,7 +438,6 @@ function ReviewSurface<P extends Project>({
         <div className="flex-1 flex items-center justify-center bg-black overflow-hidden p-2">
           {hasContent ? (
             <div
-              ref={previewBoxRef}
               className="relative h-full max-w-full"
               style={{ aspectRatio: (() => { const [w, h] = getOverlayDesignCanvas(project.settings?.resolution); return `${w} / ${h}` })() }}
             >
@@ -450,30 +453,6 @@ function ReviewSurface<P extends Project>({
                 fileUrl={adapter.fileUrl}
                 resolveCaptionTemplate={adapter.resolveCaptionTemplate}
               />
-              {/* Source-crop overlay — mounted over the preview for the selected
-                  tracks[0] video. Persists sourceCrop through handleOverlayChange. */}
-              {cropMode && cropTarget && (
-                <div className="absolute inset-0" style={{ zIndex: 200 }}>
-                  <VideoSourceCropOverlay
-                    item={cropTarget}
-                    resolveSrc={(it) => adapter.fileUrl(it.nobg_preview_src ?? it.src ?? '')}
-                    wrapperWidth={previewBox.w}
-                    wrapperHeight={previewBox.h}
-                    onChange={(next) => handleOverlayChange(cropTarget.id, {
-                      sourceCrop: {
-                        x: Math.min(1, Math.max(0, next.x)),
-                        y: Math.min(1, Math.max(0, next.y)),
-                        w: Math.min(1, Math.max(0, next.w)),
-                        h: Math.min(1, Math.max(0, next.h)),
-                      },
-                    })}
-                    onSrcDimsLoaded={(dims) => {
-                      if (cropTarget.sourceWidth && cropTarget.sourceHeight) return
-                      handleOverlayChange(cropTarget.id, { sourceWidth: dims.width, sourceHeight: dims.height })
-                    }}
-                  />
-                </div>
-              )}
             </div>
           ) : (
             <p className="text-[var(--editor-text)]/60 text-sm">No clips</p>
@@ -522,17 +501,16 @@ function ReviewSurface<P extends Project>({
           >
             <Crop size={12} />
           </button>
-          <button
-            onClick={() => {
-              const final = { ...project, status: 'final' } as P
-              onProjectChange(final)
-              save(final)
-              setRenderOpen(true)
-            }}
-            className="text-xs px-2.5 py-1 rounded-md bg-[var(--editor-accent)] text-[var(--editor-accent-foreground)] hover:opacity-90 transition-colors"
-          >
-            Render →
-          </button>
+          {/* Default placement. A host that sets onProvideRenderTrigger renders
+              Render in its own chrome instead, so the toolbar button is hidden. */}
+          {!onProvideRenderTrigger && (
+            <button
+              onClick={openRender}
+              className="text-xs px-2.5 py-1 rounded-md bg-[var(--editor-accent)] text-[var(--editor-accent-foreground)] hover:opacity-90 transition-colors"
+            >
+              Render →
+            </button>
+          )}
         </div>
 
         <div className="shrink-0 border-t border-[var(--editor-border)] bg-[var(--editor-surface)]">
@@ -561,17 +539,23 @@ function ReviewSurface<P extends Project>({
         </div>
       </div>
 
-      {/* Assets — right sidebar column (assetsPlacement: 'right', the default /
-          Montaj-local layout). The host's panel manages its own scroll. */}
+      {/* Assets — dedicated separate column to the LEFT of the version rail
+          (assetsPlacement: 'right', two distinct columns). The Montaj-local OS
+          layout uses 'sidebar' instead (stacked into the version rail below).
+          The host's panel manages its own scroll. */}
       {assetsPlacement === 'right' && slots?.assetsPanel && (
         <div className="w-72 shrink-0 border-l border-[var(--editor-border)] bg-[var(--editor-surface)] flex flex-col overflow-hidden">
           {slots.assetsPanel}
         </div>
       )}
 
-      {/* Right rail — version history + run history slot */}
-      {(adapter.listVersionHistory || slots?.runHistory) && (
-        <div className="w-48 shrink-0 border-l border-[var(--editor-border)] bg-[var(--editor-surface)] flex flex-col overflow-hidden">
+      {/* Right rail — version history + run history slot, and (in 'sidebar'
+          placement) the assets panel stacked beneath them in the SAME column.
+          This is the historical Montaj-local OS layout: versions on top, assets
+          right below, one column — not a separate assets column. */}
+      {(adapter.listVersionHistory || slots?.runHistory ||
+        (assetsPlacement === 'sidebar' && slots?.assetsPanel)) && (
+        <div className={`${assetsPlacement === 'sidebar' ? 'w-56' : 'w-48'} shrink-0 border-l border-[var(--editor-border)] bg-[var(--editor-surface)] flex flex-col overflow-hidden`}>
           {adapter.listVersionHistory && (
             <VersionPanel versions={versions} restoring={restoring} onRestore={handleRestoreVersion} />
           )}
@@ -579,6 +563,14 @@ function ReviewSurface<P extends Project>({
               RunSnapshot / project.history are host-only types — the package never
               reads them. When absent nothing is rendered. */}
           {slots?.runHistory}
+          {/* Assets stacked below versions/runs (assetsPlacement: 'sidebar'). The
+              host's panel manages its own scroll; flex-1 lets it take the
+              remaining rail height. A top border separates it from the runs. */}
+          {assetsPlacement === 'sidebar' && slots?.assetsPanel && (
+            <div className="flex-1 min-h-0 overflow-hidden border-t border-[var(--editor-border)] flex flex-col">
+              {slots.assetsPanel}
+            </div>
+          )}
         </div>
       )}
       </div>
@@ -590,6 +582,31 @@ function ReviewSurface<P extends Project>({
         <div className="shrink-0 border-t border-[var(--editor-border)] w-full flex flex-col max-h-[45%] overflow-hidden">
           {slots.assetsPanel}
         </div>
+      )}
+
+      {/* Source-crop modal — drag-to-pan, aspect presets, zoom. Commits
+          sourceCrop (+ source dims) to the selected tracks[0] video on Apply. */}
+      {cropMode && cropTarget && (
+        <VideoSourceCropModal
+          item={cropTarget}
+          // Prefer the conformed per-window cache (short, starts at the clip's
+          // first frame → loads instantly and shows a representative frame).
+          // Falls back to the bg-removed proxy, then the raw source.
+          resolveSrc={(it) => adapter.fileUrl(it.nobg_preview_src ?? it.normalizedSrc ?? it.src ?? '')}
+          onApply={(next) => handleOverlayChange(cropTarget.id, {
+            sourceCrop: {
+              x: Math.min(1, Math.max(0, next.x)),
+              y: Math.min(1, Math.max(0, next.y)),
+              w: Math.min(1, Math.max(0, next.w)),
+              h: Math.min(1, Math.max(0, next.h)),
+            },
+          })}
+          onSrcDimsLoaded={(dims) => {
+            if (cropTarget.sourceWidth && cropTarget.sourceHeight) return
+            handleOverlayChange(cropTarget.id, { sourceWidth: dims.width, sourceHeight: dims.height })
+          }}
+          onClose={() => setCropMode(false)}
+        />
       )}
 
       {/* Render modal — adapter.render stream + host export controls */}
