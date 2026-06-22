@@ -560,6 +560,14 @@ function collectAllItems(projectJson) {
           normalizedSrc: item.normalizedSrc,
           inPoint:      usedNormalized ? 0 : item.inPoint,
           outPoint:     item.outPoint,
+          // Source crop (clips workflow vertical reframe) — applied at encode
+          // time by buildVideoItemFilterParts. normalizeIfNeeded/normalize_window
+          // does NOT bake the crop into normalizedSrc (the cache stays at full
+          // source dimensions), so these MUST be forwarded or the crop is lost
+          // and the full frame is letterboxed into the output canvas instead.
+          sourceCrop:   item.sourceCrop,
+          sourceWidth:  item.sourceWidth,
+          sourceHeight: item.sourceHeight,
           remove_bg: item.remove_bg ?? false,
           muted:     item.muted ?? false,
           volume:    item.volume,

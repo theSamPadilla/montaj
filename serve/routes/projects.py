@@ -88,6 +88,74 @@ def _supersede_active_render(project_id: str) -> bool:
     return project_id not in _active_renders
 
 
+class _RenderJob:
+    """Live state of a detached render, polled by SSE log viewers. The render runs
+    to completion independent of any client connection — a dropped SSE (e.g. the
+    Cloudflare tunnel's ~100s wall on a multi-minute render, or a closed tab) must
+    NOT abort it. An explicit stop goes through POST /render/cancel."""
+    __slots__ = ("lines", "status", "result")
+
+    def __init__(self) -> None:
+        self.lines: list[str] = []      # accumulated stderr log lines
+        self.status: str = "running"    # running | done | error
+        self.result: str = ""           # output path (done) or message (error)
+
+
+_render_jobs: dict[str, _RenderJob] = {}
+
+# Strong refs to in-flight detached render tasks. asyncio only weakly tracks
+# fire-and-forget tasks, so without this a render task could be GC'd mid-run.
+_render_task_refs: set = set()
+
+
+async def _run_render_detached(project_id: str, cmd: list[str], env: dict,
+                               render_input: "Path", project_path: "Path",
+                               job: _RenderJob) -> None:
+    """Run a render subprocess to completion regardless of any client. Owns the
+    `_render_procs` / `_active_renders` slot until the render actually finishes, so
+    a dropped SSE connection can't strand or abort it."""
+    proc = None
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            cwd=str(MONTAJ_ROOT),
+            env=env,
+            limit=10 * 1024 * 1024,  # ffmpeg config/filter lines exceed the 64KB default
+            start_new_session=True,   # process-group leader so killpg reaches ffmpeg grandchildren
+        )
+        _render_procs[project_id] = proc  # register so a later render can supersede / cancel can kill
+        while True:
+            line = await proc.stderr.readline()
+            if not line:
+                break
+            text = line.decode().rstrip()
+            if text:
+                job.lines.append(text)
+        stdout = await proc.stdout.read()
+        await proc.wait()
+        if proc.returncode == 0:
+            job.status, job.result = "done", stdout.decode().strip()
+        else:
+            job.status, job.result = "error", f"Render failed (exit {proc.returncode})"
+    except Exception as e:  # surface any spawn/IO failure to the viewer
+        job.status, job.result = "error", str(e)
+    finally:
+        # Only release if we're still the tracked render — a later request may have
+        # superseded us and taken the slot, and must not have its entry clobbered.
+        if _render_procs.get(project_id) is proc:
+            _render_procs.pop(project_id, None)
+            _active_renders.discard(project_id)
+        if _render_jobs.get(project_id) is job:
+            _render_jobs.pop(project_id, None)
+        if render_input != project_path:
+            try:
+                Path(render_input).unlink()
+            except OSError:
+                pass
+
+
 # In-flight caption-generation dedup. Same rationale as _active_renders: the UI
 # (or an SSE reconnect) can fire the same caption job twice, and two concurrent
 # jobs would race on the shared _caption_* scratch files in the project dir.
@@ -1216,59 +1284,42 @@ async def render_project(project_id: str, request: Request, project_dir: Path = 
     env = os.environ.copy()
     env["MONTAJ_ROOT"] = str(MONTAJ_ROOT)
 
-    # Reserve the slot now. The event_stream coroutine is responsible for
-    # releasing it in its `finally` clause — handles success, error, and
-    # client-disconnect alike.
+    # Reserve the slot and kick the render off DETACHED, so it runs to completion
+    # even if this SSE connection drops. A multi-minute render streamed through the
+    # Hub proxy + Cloudflare tunnel will exceed the tunnel's ~100s wall; the tunnel
+    # cuts the long-lived stream, and a render tied to the request lifecycle would
+    # be killed mid-flight (the old kill-on-disconnect behaviour). Now the SSE below
+    # is a pure *viewer* — a disconnect just stops viewing; the render keeps going,
+    # the output lands, and clients reconnect / poll /outputs for it. An actual stop
+    # goes through POST /render/cancel.
     _active_renders.add(project_id)
+    cmd = [node_bin, str(render_script), *script_args]
+    job = _RenderJob()
+    _render_jobs[project_id] = job
+    task = asyncio.create_task(
+        _run_render_detached(project_id, cmd, env, render_input, project_path, job)
+    )
+    _render_task_refs.add(task)
+    task.add_done_callback(_render_task_refs.discard)
 
     async def event_stream():
-        proc = None
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                node_bin, str(render_script), *script_args,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                cwd=str(MONTAJ_ROOT),
-                env=env,
-                limit=10 * 1024 * 1024,  # 10MB — ffmpeg config/filter lines exceed the 64KB default
-                start_new_session=True,   # new session → process group leader; killpg reaches ffmpeg grandchildren
-            )
-            _render_procs[project_id] = proc   # register so a later render request can kill+supersede us
-
-            def kill_tree():
-                _kill_render_proc(proc)
-
-            # Stream stderr (progress lines) to the client
-            while True:
-                if await request.is_disconnected():
-                    kill_tree()
-                    return
-                line = await proc.stderr.readline()
-                if not line:
-                    break
-                text = line.decode().rstrip()
-                if text:
-                    yield f"event: log\ndata: {text}\n\n"
-
-            stdout = await proc.stdout.read()
-            await proc.wait()
-
-            if proc.returncode == 0:
-                output_path = stdout.decode().strip()
-                yield f"event: done\ndata: {output_path}\n\n"
-            else:
-                yield f"event: error\ndata: Render failed (exit {proc.returncode})\n\n"
-        finally:
-            # Only release if we're still the tracked render — a later request may
-            # have killed us and taken the slot, and must not have its entry clobbered.
-            if _render_procs.get(project_id) is proc:
-                _render_procs.pop(project_id, None)
-                _active_renders.discard(project_id)
-            if render_input != project_path:
-                try:
-                    Path(render_input).unlink()
-                except OSError:
-                    pass
+        # Pure viewer over the detached job: replay the log buffer, stream new lines
+        # as they arrive, and emit the terminal event when the render finishes.
+        # Crucially, a client disconnect just returns — it does NOT kill the render.
+        idx = 0
+        while True:
+            while idx < len(job.lines):
+                yield f"event: log\ndata: {job.lines[idx]}\n\n"
+                idx += 1
+            if job.status == "done":
+                yield f"event: done\ndata: {job.result}\n\n"
+                return
+            if job.status == "error":
+                yield f"event: error\ndata: {job.result}\n\n"
+                return
+            if await request.is_disconnected():
+                return
+            await asyncio.sleep(0.4)
 
     return StreamingResponse(
         event_stream(),
@@ -1279,6 +1330,19 @@ async def render_project(project_id: str, request: Request, project_dir: Path = 
             "Connection": "keep-alive",
         },
     )
+
+
+@router.post("/projects/{project_id}/render/cancel")
+async def cancel_render(project_id: str):
+    """Explicitly stop an in-flight render. Since a dropped SSE no longer kills a
+    render (it runs detached now), this is the *only* way to abort one — the Cancel
+    button calls it. Kills the tracked process group; the detached task's `finally`
+    then releases the slot. Idempotent: a no-op `cancelled: false` if nothing runs."""
+    proc = _render_procs.get(project_id)
+    if proc is not None:
+        _kill_render_proc(proc)
+        return {"cancelled": True}
+    return {"cancelled": False}
 
 
 @router.post("/projects/{project_id}/captions")
