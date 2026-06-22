@@ -53,6 +53,41 @@ _REMOTE_REQUIRED_KEYS = ("url", "destPath", "contentType", "sizeBytes")
 # mutations between awaits are race-free).
 _active_renders: set[str] = set()
 
+# Per-project handle on the in-flight MANUAL render subprocess. Lets a new render
+# request terminate a previous one that hung or whose SSE stream was abandoned —
+# the `_active_renders` set alone can't self-heal, because a wedged render never
+# reaches the `finally` that releases its slot. Render-only.
+_render_procs: dict[str, "asyncio.subprocess.Process"] = {}
+
+
+def _kill_render_proc(proc: "asyncio.subprocess.Process") -> None:
+    """Kill a render's whole process group so orphaned ffmpeg/browser children die too."""
+    try:
+        os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+    except (ProcessLookupError, OSError):
+        try:
+            proc.kill()
+        except Exception:
+            pass
+
+
+def _supersede_active_render(project_id: str) -> bool:
+    """Decide whether a new manual render may proceed for ``project_id``.
+
+    If a prior manual render is still tracked (it hung, or its SSE stream was
+    abandoned so its ``finally`` never released the slot), kill it, free the
+    slot, and return True. If the slot is held by a non-render job (e.g. a
+    carousel auto-render), return False so the caller rejects with 409.
+    Otherwise return True.
+    """
+    prev = _render_procs.pop(project_id, None)
+    if prev is not None:
+        _kill_render_proc(prev)
+        _active_renders.discard(project_id)
+        return True
+    return project_id not in _active_renders
+
+
 # In-flight caption-generation dedup. Same rationale as _active_renders: the UI
 # (or an SSE reconnect) can fire the same caption job twice, and two concurrent
 # jobs would race on the shared _caption_* scratch files in the project dir.
@@ -1131,7 +1166,10 @@ async def render_project(project_id: str, request: Request, project_dir: Path = 
     # Reject if a render for this project is already in flight. The check-and-add
     # below is race-free because FastAPI handlers share one asyncio loop and the
     # set mutation runs between awaits.
-    if project_id in _active_renders:
+    # A prior MANUAL render still tracked → it hung or its SSE stream was abandoned;
+    # kill it and take over (re-clicking Render should always work). A non-render
+    # holder of the slot (e.g. a carousel auto-render) still blocks with 409.
+    if not _supersede_active_render(project_id):
         raise HTTPException(409, detail={
             "error": "concurrent_render",
             "message": f"A render for project {project_id} is already in progress.",
@@ -1184,6 +1222,7 @@ async def render_project(project_id: str, request: Request, project_dir: Path = 
     _active_renders.add(project_id)
 
     async def event_stream():
+        proc = None
         try:
             proc = await asyncio.create_subprocess_exec(
                 node_bin, str(render_script), *script_args,
@@ -1194,16 +1233,10 @@ async def render_project(project_id: str, request: Request, project_dir: Path = 
                 limit=10 * 1024 * 1024,  # 10MB — ffmpeg config/filter lines exceed the 64KB default
                 start_new_session=True,   # new session → process group leader; killpg reaches ffmpeg grandchildren
             )
+            _render_procs[project_id] = proc   # register so a later render request can kill+supersede us
 
             def kill_tree():
-                """Kill the entire process group so orphaned ffmpeg children don't keep writing."""
-                try:
-                    os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
-                except (ProcessLookupError, OSError):
-                    try:
-                        proc.kill()
-                    except Exception:
-                        pass
+                _kill_render_proc(proc)
 
             # Stream stderr (progress lines) to the client
             while True:
@@ -1226,7 +1259,11 @@ async def render_project(project_id: str, request: Request, project_dir: Path = 
             else:
                 yield f"event: error\ndata: Render failed (exit {proc.returncode})\n\n"
         finally:
-            _active_renders.discard(project_id)
+            # Only release if we're still the tracked render — a later request may
+            # have killed us and taken the slot, and must not have its entry clobbered.
+            if _render_procs.get(project_id) is proc:
+                _render_procs.pop(project_id, None)
+                _active_renders.discard(project_id)
             if render_input != project_path:
                 try:
                     Path(render_input).unlink()
