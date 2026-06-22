@@ -702,7 +702,13 @@ export function useVideoPlayback(
       }
     }
 
-    if (video.currentTime >= outPoint) {
+    // A normalized cache can encode a few ms SHORTER than its computed window
+    // (outPoint − inPoint), so the <video> reaches its natural end (`ended`)
+    // before currentTime ever reaches outPoint. Treat EOF as reaching the
+    // boundary too — otherwise the clip switch never fires and playback stalls
+    // at that clip's end (raw full-length sources never hit this; trimmed
+    // window caches can).
+    if (video.currentTime >= outPoint || video.ended) {
       if (clip.loop) {
         const projectT = clip.start + loopOffsetRef.current + (video.currentTime - clipInPoint)
         if (projectT < clip.end) {
