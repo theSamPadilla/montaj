@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import type { EditorAdapter, Project } from '../types'
 import type { Captions } from '../schema'
 
@@ -105,7 +106,9 @@ export default function CaptionRegenModal<P extends Project = Project>({ project
     onClose()
   }
 
-  return (
+  // Portal to document.body so a transformed host ancestor can't trap this
+  // `fixed` overlay and push the panel off-screen (see RenderModal).
+  return createPortal(
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm">
       <div className="w-full max-w-3xl bg-[var(--editor-surface)] border border-[var(--editor-border)] rounded-xl shadow-2xl flex flex-col overflow-hidden">
 
@@ -172,6 +175,7 @@ export default function CaptionRegenModal<P extends Project = Project>({ project
           )}
         </div>
       </div>
-    </div>
+    </div>,
+    document.body,
   )
 }

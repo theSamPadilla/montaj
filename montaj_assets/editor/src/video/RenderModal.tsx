@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
+import { createPortal } from 'react-dom'
 import type { EditorAdapter, Project } from '../types'
 
 interface RenderModalProps<P extends Project = Project> {
@@ -131,7 +132,11 @@ export default function RenderModal<P extends Project = Project>({ projectId, ad
   }
 
   if (status === 'done' && outputPath) {
-    return (
+    // Portal to document.body: a transformed/filtered host ancestor (e.g. the
+    // Los Parceros app-shell wrapper) would otherwise become the containing
+    // block for this `fixed` overlay, sizing it to the scrolled page height and
+    // centering the panel off-screen below the fold.
+    return createPortal(
       <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/90 backdrop-blur-md">
         <div className="w-[96vw] h-[96vh] bg-[var(--editor-surface)] border border-[var(--editor-border)] rounded-2xl shadow-2xl flex overflow-hidden">
 
@@ -179,11 +184,12 @@ export default function RenderModal<P extends Project = Project>({ projectId, ad
             </div>
           </div>
         </div>
-      </div>
+      </div>,
+      document.body,
     )
   }
 
-  return (
+  return createPortal(
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm">
       <div className="w-full max-w-3xl bg-[var(--editor-surface)] border border-[var(--editor-border)] rounded-xl shadow-2xl flex flex-col overflow-hidden">
 
@@ -247,6 +253,7 @@ export default function RenderModal<P extends Project = Project>({ projectId, ad
           )}
         </div>
       </div>
-    </div>
+    </div>,
+    document.body,
   )
 }

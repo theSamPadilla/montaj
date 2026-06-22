@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
+import { createPortal } from 'react-dom'
 import type { EditorAdapter, Project } from '../types'
 
 interface CarouselRenderModalProps {
@@ -108,7 +109,9 @@ export default function CarouselRenderModal({ projectId, adapter, slidesCount, r
 
   // ── Done state — gallery + zip download ─────────────────────────────────
   if (status === 'done' && outputDir) {
-    return (
+    // Portal to document.body (see RenderModal): a transformed host ancestor
+    // would otherwise trap this `fixed` overlay and center the panel off-screen.
+    return createPortal(
       <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/90 backdrop-blur-md">
         <div className="w-[96vw] h-[96vh] bg-[var(--editor-bg)] border border-[var(--editor-border)] rounded-2xl shadow-2xl flex overflow-hidden">
 
@@ -172,12 +175,13 @@ export default function CarouselRenderModal({ projectId, adapter, slidesCount, r
             </div>
           </div>
         </div>
-      </div>
+      </div>,
+      document.body,
     )
   }
 
   // ── Running / error state — log readout ─────────────────────────────────
-  return (
+  return createPortal(
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm">
       <div className="w-full max-w-3xl bg-[var(--editor-surface)] border border-[var(--editor-border)] rounded-xl shadow-2xl flex flex-col overflow-hidden">
 
@@ -238,6 +242,7 @@ export default function CarouselRenderModal({ projectId, adapter, slidesCount, r
           )}
         </div>
       </div>
-    </div>
+    </div>,
+    document.body,
   )
 }
