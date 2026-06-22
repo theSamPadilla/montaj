@@ -36,3 +36,5 @@ RELEASE.md
 .worktrees/
 
 .playwright-mcp/
+
+scripts/
