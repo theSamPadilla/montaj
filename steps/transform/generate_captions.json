@@ -1,0 +1,39 @@
+{
+  "name": "generate_captions",
+  "description": "Generate a project's caption track over its trimmed timeline and write project[\"captions\"]. Derives the single-source cut from the primary track, materialises the trimmed MP4, transcribes it (multilingual, output-time word timings), groups words into styled caption segments, and merges any prior caption theme (position/color/fontsize/bgColor). CLI-subprocess equivalent of the /projects/{id}/captions SSE route. Run async (montaj_step async:true) — transcription with the 'large' model is slow — and poll montaj_step_status. Takes a project id, not a file input.",
+  "input": {
+    "type": "none",
+    "description": "No file input — operates on a project by id (see project-id param)."
+  },
+  "output": {
+    "type": "json",
+    "description": "The caption track JSON ({\"style\", \"segments\":[...]}) that was written to project[\"captions\"]."
+  },
+  "params": [
+    {
+      "name": "project-id",
+      "type": "string",
+      "required": true,
+      "description": "Project id whose captions to (re)generate."
+    },
+    {
+      "name": "model",
+      "type": "enum",
+      "default": "large",
+      "options": ["tiny.en", "base.en", "medium.en", "large"],
+      "description": "Whisper model. Larger = slower + more accurate. Use 'large' for non-English."
+    },
+    {
+      "name": "language",
+      "type": "string",
+      "default": "auto",
+      "description": "Language code (e.g. en, es, fr), or 'auto' for language auto-detection."
+    },
+    {
+      "name": "style",
+      "type": "enum",
+      "options": ["word-by-word", "karaoke", "subtitle", "pop"],
+      "description": "Caption animation style. Defaults to the prior caption track's style, then 'pop'."
+    }
+  ]
+}
