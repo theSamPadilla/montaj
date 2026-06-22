@@ -89,7 +89,11 @@ export async function renderAllSegments(segments, config = {}) {
   async function launchBrowser() {
     return puppeteer.launch({
       headless: 'new',
-      args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-web-security', '--allow-file-access-from-files'],
+      // --disable-dev-shm-usage: write Chromium's shared memory to /tmp instead of
+      // /dev/shm. The sidecar container's /dev/shm is the 64MB Docker default, which
+      // a 4K (2160x3840) render overruns -> Chromium crashes mid-render. /tmp is
+      // disk-backed and effectively unbounded, so renders survive any container shm.
+      args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-web-security', '--allow-file-access-from-files'],
       protocolTimeout: 300000,
     })
   }

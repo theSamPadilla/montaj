@@ -133,7 +133,9 @@ async function main(projectJsonPath, { out, clean, scale = DEFAULT_SCALE }) {
   log('launching browser...')
   const browser = await puppeteer.launch({
     headless:  'new',
-    args:      ['--no-sandbox', '--disable-setuid-sandbox', '--allow-file-access-from-files'],
+    // --disable-dev-shm-usage: use /tmp instead of the container's 64MB /dev/shm
+    // (Docker default) so heavy renders don't crash Chromium on shm exhaustion.
+    args:      ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--allow-file-access-from-files'],
   })
 
   const manifestSlides = []

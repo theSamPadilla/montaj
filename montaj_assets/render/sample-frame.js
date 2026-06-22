@@ -234,7 +234,9 @@ export async function sampleOverlay({
   try {
     browser = await puppeteer.launch({
       headless: 'new',
-      args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-web-security', '--allow-file-access-from-files'],
+      // --disable-dev-shm-usage: use /tmp instead of the container's 64MB /dev/shm
+      // (Docker default) so heavy renders don't crash Chromium on shm exhaustion.
+      args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-web-security', '--allow-file-access-from-files'],
       protocolTimeout: 300000,
     })
 
