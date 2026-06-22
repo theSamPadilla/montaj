@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v3.2.4
+
 - **Render: Chromium no longer crashes on heavy (4K) renders from a small `/dev/shm`.** The Puppeteer launch args (`renderer.js`, `render-carousel.js`, `sample-frame.js`) now include `--disable-dev-shm-usage`, which routes Chromium's shared-memory scratch to `/tmp` (disk-backed, effectively unbounded) instead of `/dev/shm`. The Montaj sidecar container ships the Docker default 64MB `/dev/shm`, which a 4K (2160×3840) render overruns — Chromium exhausts it and crashes mid-render, so the render dies with no output (and leaks zombie `chrome_crashpad` processes). This makes renders independent of the container's `/dev/shm` size; no Docker/compose change is required.
 
 ## v3.2.3
