@@ -109,7 +109,7 @@ export default function CaptionRegenModal<P extends Project = Project>({ project
   // Portal to document.body so a transformed host ancestor can't trap this
   // `fixed` overlay and push the panel off-screen (see RenderModal).
   return createPortal(
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black">
       <div className="w-full max-w-3xl bg-[var(--editor-surface)] border border-[var(--editor-border)] rounded-xl shadow-2xl flex flex-col overflow-hidden">
 
         {/* Header */}

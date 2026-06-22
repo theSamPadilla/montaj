@@ -112,7 +112,7 @@ export default function CarouselRenderModal({ projectId, adapter, slidesCount, r
     // Portal to document.body (see RenderModal): a transformed host ancestor
     // would otherwise trap this `fixed` overlay and center the panel off-screen.
     return createPortal(
-      <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/90 backdrop-blur-md">
+      <div className="fixed inset-0 z-50 flex items-center justify-center bg-black">
         <div className="w-[96vw] h-[96vh] bg-[var(--editor-bg)] border border-[var(--editor-border)] rounded-2xl shadow-2xl flex overflow-hidden">
 
           {/* Left — slide gallery */}
@@ -138,7 +138,7 @@ export default function CarouselRenderModal({ projectId, adapter, slidesCount, r
                       className="block w-full h-auto"
                       style={{ aspectRatio: `${resolution[0]} / ${resolution[1]}` }}
                     />
-                    <div className="absolute bottom-0 left-0 right-0 px-2 py-1.5 bg-black/70 backdrop-blur-sm text-[11px] text-[var(--editor-text)] font-mono flex justify-between">
+                    <div className="absolute bottom-0 left-0 right-0 px-2 py-1.5 bg-black text-[11px] text-[var(--editor-text)] font-mono flex justify-between">
                       <span>#{String(i + 1).padStart(2, '0')}</span>
                       <span className="text-[var(--editor-text)]/60">{file}</span>
                     </div>
@@ -182,7 +182,7 @@ export default function CarouselRenderModal({ projectId, adapter, slidesCount, r
 
   // ── Running / error state — log readout ─────────────────────────────────
   return createPortal(
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black">
       <div className="w-full max-w-3xl bg-[var(--editor-surface)] border border-[var(--editor-border)] rounded-xl shadow-2xl flex flex-col overflow-hidden">
 
         <div className="flex items-center justify-between px-5 py-4 border-b border-[var(--editor-border)]">

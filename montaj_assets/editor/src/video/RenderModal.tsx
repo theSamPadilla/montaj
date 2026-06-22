@@ -137,7 +137,7 @@ export default function RenderModal<P extends Project = Project>({ projectId, ad
     // block for this `fixed` overlay, sizing it to the scrolled page height and
     // centering the panel off-screen below the fold.
     return createPortal(
-      <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/90 backdrop-blur-md">
+      <div className="fixed inset-0 z-50 flex items-center justify-center bg-black">
         <div className="w-[96vw] h-[96vh] bg-[var(--editor-surface)] border border-[var(--editor-border)] rounded-2xl shadow-2xl flex overflow-hidden">
 
           {/* Left — video */}
@@ -190,7 +190,7 @@ export default function RenderModal<P extends Project = Project>({ projectId, ad
   }
 
   return createPortal(
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black">
       <div className="w-full max-w-3xl bg-[var(--editor-surface)] border border-[var(--editor-border)] rounded-xl shadow-2xl flex flex-col overflow-hidden">
 
         {/* Header */}
