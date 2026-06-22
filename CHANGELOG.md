@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v3.2.2
+
 - **Render: a hung or abandoned render no longer wedges a project's render slot.** A manual render is guarded by an in-memory `_active_renders` set in the serve layer, released in a `finally` when the SSE stream ends. But if the render subprocess hangs (produces no more output and never exits) or its stream is abandoned mid-flight (the Hub proxy / Cloudflare tunnel cut the connection while the generator was blocked on `readline()`), that `finally` never runs — the slot stays occupied and every subsequent `POST /projects/{id}/render` returns HTTP 409 `concurrent_render` until the sidecar process restarts. (The `render.js` lockfile self-heals via dead-PID reclamation; the in-memory serve guard did not.) A new manual render now **supersedes** a tracked previous one: it kills the previous render's whole process group via `killpg` (so orphaned ffmpeg / headless-browser children die too) and takes over, so re-clicking Render always works. A slot held by a non-render job (e.g. a carousel auto-render) still blocks with 409. The render's `finally` releases the slot only if it's still the tracked process, so a superseding render isn't clobbered. New `_render_procs` registry + `_supersede_active_render` helper; covered by `tests/test_render_supersede.py`.
 
 - **New `generate_captions` step (CLI + registry).** Orchestrates the full caption pipeline in a single async step: `extract_keeps` → `materialize_cut` → `transcribe` → `caption`. Writes the final caption data to `project.captions`, making it available for render and the editor preview. Lets agents generate captions via `montaj_step` without hitting the SSE proxy wall — the step runs server-side and can be polled for completion like any other registered step.
