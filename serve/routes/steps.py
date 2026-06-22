@@ -113,6 +113,8 @@ def validate_params(schema: dict, body: dict) -> None:
         ptype = param.get("type")
 
         if val is None:
+            val = body.get(name.replace("-", "_"))
+        if val is None:
             if param.get("required"):
                 errors.append(f"'{name}' is required")
             continue
