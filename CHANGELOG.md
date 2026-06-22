@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## v3.2.1
+
+- **New `generate_captions` step (CLI + registry).** Orchestrates the full caption pipeline in a single async step: `extract_keeps` → `materialize_cut` → `transcribe` → `caption`. Writes the final caption data to `project.captions`, making it available for render and the editor preview. Lets agents generate captions via `montaj_step` without hitting the SSE proxy wall — the step runs server-side and can be polled for completion like any other registered step.
+
 - **Editor: a stray string `googleFonts` no longer breaks the whole overlay layer.** `ensureGoogleFontsLoaded` (shared by the video overlay layer and the carousel overlay render path) guarded with `if (!googleFonts?.length) return` and then called `.map`. If an item's `googleFonts` was persisted as a bare string (e.g. `"Anton"`) instead of the typed `string[]` (`["Anton"]`), the non-empty string passed the `.length` guard and `.map` threw `n.map is not a function` — surfacing as a cryptic `overlay error: <file>.jsx` that broke the entire `OverlayItemsLayer` at the playhead. The helper now coerces a string into a family list (splitting comma-separated values) and bails on anything that isn't a non-empty array; proper-array behavior is unchanged. Covered by new unit tests in `montaj_assets/editor/src/lib/__tests__/google-fonts.test.ts`.
 
 ## v3.2.0
