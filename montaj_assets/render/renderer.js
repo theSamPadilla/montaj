@@ -15,6 +15,7 @@ import { tmpdir, homedir } from 'os'
 import { randomBytes } from 'crypto'
 import os from 'os'
 import { isHdr } from './color-space.js'
+import { adaptiveChunkSize, workerCap } from './chunk-plan.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 // MONTAJ_ROOT is two levels above montaj_assets/render/ (i.e. the Python project root).
@@ -24,7 +25,6 @@ const PYTHON = process.env.MONTAJ_PYTHON || 'python3'
 // Deduplicate remote-URL warnings within this module's lifetime.
 const warnedHosts = new Set()
 
-const DEFAULT_CHUNK_SIZE = 1000
 const FFMPEG_TIMEOUT_MS  = 600_000
 
 
@@ -48,8 +48,10 @@ const FFMPEG_TIMEOUT_MS  = 600_000
 export async function renderAllSegments(segments, config = {}) {
   if (segments.length === 0) return []
 
-  const userConfig = readMontajConfig()
-  const chunkSize  = config.chunkSize ?? userConfig.render?.chunkSize ?? DEFAULT_CHUNK_SIZE
+  const userConfig    = readMontajConfig()
+  const longest       = segments.reduce((m, s) => Math.max(m, s.frameCount), 0)
+  const targetWorkers = config.workers ?? userConfig.render?.workers ?? os.cpus().length
+  const chunkSize     = config.chunkSize ?? userConfig.render?.chunkSize ?? adaptiveChunkSize(longest, targetWorkers)
 
   // Expand segments into per-chunk jobs
   const colorSpace = config.colorSpace ?? null
@@ -68,7 +70,7 @@ export async function renderAllSegments(segments, config = {}) {
     }
   }
 
-  const workerCount = Math.min(config.workers ?? userConfig.render?.workers ?? os.cpus().length, jobs.length)
+  const workerCount = Math.min(workerCap(targetWorkers, os.totalmem()), jobs.length)
 
   log(`launching ${workerCount} browser worker(s) for ${jobs.length} job(s)...`)
 
