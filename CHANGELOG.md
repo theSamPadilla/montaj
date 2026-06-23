@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v3.4.1
+
 - **Fixed: `rm_nonspeech` could emit an outpoint past the source duration.** On the raw-video branch the last speech region's end was `last_word_end + sentence_edge` with no clamp — whisper word offsets can land at/just past true EOF, so a 16.97s clip produced keeps ending at e.g. 17.25s (physically impossible downstream). Every keep is now clamped to `[0, get_duration(input)]` and zero-length keeps are dropped. The trim-spec branch was already bounded by the input keeps and is unchanged. (`steps/speech/rm_nonspeech.py`)
 
 - **Fixed: `rm_nonspeech` (and any `transcribe_words` caller) always transcribed in English, ignoring the requested language.** `lib/common.py:transcribe_words` hardcoded `-l en`, so Spanish detection silently ran as English regardless of model. It now takes a `language` arg (default `en`, backward-compatible), and `rm_nonspeech` exposes a `--language` flag / `language` step param (also threaded through the CLI command). `*.en` models still ignore it; use a multilingual model (`large`) for non-English. `transcribe` already wired `--language` correctly and is unchanged; `rm_fillers` keeps the `en` default. (`lib/common.py`, `steps/speech/rm_nonspeech.py`, `steps/speech/rm_nonspeech.json`, `cli/commands/rm_nonspeech.py`)
