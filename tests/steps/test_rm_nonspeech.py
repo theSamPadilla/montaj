@@ -41,3 +41,27 @@ def test_rm_nonspeech_accepts_trim_spec(tmp_path, test_video, fake_whisper_env):
     assert "input" in result
     assert "keeps" in result
     assert result["input"] == str(test_video)
+
+
+def test_rm_nonspeech_clamps_outpoint_to_duration(test_video, fake_whisper_env):
+    """Raw-video branch must never emit an outpoint past the source duration.
+
+    The fake whisper's last word ends at 2.8s over a 3.0s test video. With a
+    0.5s sentence-edge the unclamped outpoint would be 3.3s (> duration); the
+    clamp must keep every keep end within the source.
+    """
+    proc = run_step_env("rm_nonspeech.py", fake_whisper_env,
+                        "--input", str(test_video), "--model", "base",
+                        "--sentence-edge", "0.5")
+    assert proc.returncode == 0, f"stderr: {proc.stderr}"
+    result = json.loads(proc.stdout)
+    last_out = max(e for _, e in result["keeps"])
+    assert last_out <= 3.05, f"outpoint {last_out} exceeds ~3.0s source duration"
+
+
+def test_rm_nonspeech_accepts_language_flag(test_video, fake_whisper_env):
+    """--language is a recognized arg and the step still runs (large = multilingual)."""
+    proc = run_step_env("rm_nonspeech.py", fake_whisper_env,
+                        "--input", str(test_video), "--model", "base",
+                        "--language", "es")
+    assert proc.returncode == 0, f"stderr: {proc.stderr}"

@@ -118,11 +118,14 @@ def find_whisper_bin() -> str:
          "whisper.cpp not found. Install with: montaj install whisper")
 
 
-def transcribe_words(input_path: str, model: str = "base.en", work_dir: str = None) -> list:
+def transcribe_words(input_path: str, model: str = "base.en", work_dir: str = None,
+                     language: str = "en") -> list:
     """Transcribe audio or video with whisper.cpp.
 
     Returns a flat list of {"text": str, "start": float, "end": float} dicts (seconds).
     Uses --split-on-word --max-len 1 to get one entry per word.
+    ``language`` is the whisper language code (e.g. "es"), or "auto" for
+    whisper-cli language auto-detection. English-only models (``*.en``) ignore it.
     """
     import mimetypes, tempfile
     own_work = work_dir is None
@@ -148,7 +151,7 @@ def transcribe_words(input_path: str, model: str = "base.en", work_dir: str = No
         whisper_bin = find_whisper_bin()
 
         prefix = os.path.join(work_dir, "out")
-        run([whisper_bin, "-m", model_file, "-f", audio, "-l", "en",
+        run([whisper_bin, "-m", model_file, "-f", audio, "-l", language,
              "--split-on-word", "--max-len", "1", "--output-json", "--output-file", prefix],
             check=False)
 

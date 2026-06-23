@@ -32,6 +32,12 @@
       "min": 0.0,
       "max": 0.5,
       "description": "Padding to keep before and after each speech region in seconds"
+    },
+    {
+      "name": "language",
+      "type": "string",
+      "default": "en",
+      "description": "Whisper language code (e.g. es), or 'auto' to detect. English-only (*.en) models ignore it; use a multilingual model (large) for non-English."
     }
   ]
 }
