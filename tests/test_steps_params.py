@@ -77,6 +77,39 @@ class TestValidateParamsNumericConstraints:
         assert "my-count" in exc_info.value.detail["message"]
 
 
+class TestValidateParamsUnknownFields:
+    """Unknown body fields are rejected (fail-loud), not silently dropped.
+
+    This is the rm_nonspeech footgun: a caller passed `keeps`/`language` to a
+    step that didn't declare them; build_cli_args dropped them and the step ran
+    full-file detection instead of refining the intended window.
+    """
+
+    SCHEMA = _schema([
+        {"name": "model", "type": "string"},
+        {"name": "max-word-gap", "type": "float"},
+    ])
+
+    def test_unknown_field_raises(self):
+        with pytest.raises(HTTPException) as exc_info:
+            validate_params(self.SCHEMA, {"model": "large", "keeps": [[0, 1]]})
+        assert exc_info.value.status_code == 422
+        assert "keeps" in exc_info.value.detail["message"]
+
+    def test_multiple_unknown_fields_listed(self):
+        with pytest.raises(HTTPException) as exc_info:
+            validate_params(self.SCHEMA, {"keeps": [[0, 1]], "language": "es"})
+        msg = exc_info.value.detail["message"]
+        assert "keeps" in msg and "language" in msg
+
+    def test_declared_param_and_alias_pass(self):
+        validate_params(self.SCHEMA, {"model": "large", "max_word_gap": 0.1})  # no raise
+
+    def test_reserved_keys_allowed(self):
+        # input/inputs/out and underscore-prefixed control fields are recognized.
+        validate_params(self.SCHEMA, {"input": "/a.mov", "out": "/b.json", "_async": True})
+
+
 # ── build_cli_args ────────────────────────────────────────────────────────────
 
 class TestBuildCliArgsUnderscoreAlias:

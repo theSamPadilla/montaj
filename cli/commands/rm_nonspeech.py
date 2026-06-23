@@ -15,6 +15,8 @@ def register(subparsers):
                    help="Max gap between words to bridge in seconds (default: 0.18)")
     p.add_argument("--sentence-edge", type=float, default=0.10,
                    help="Padding to keep before/after each speech region in seconds (default: 0.10)")
+    p.add_argument("--language", default="en",
+                   help="Whisper language code (e.g. es), or 'auto' to detect (default: en)")
     add_global_flags(p)
     p.set_defaults(func=handle)
 
@@ -30,6 +32,7 @@ def handle(args):
         "--model", args.model,
         "--max-word-gap", str(args.max_word_gap),
         "--sentence-edge", str(args.sentence_edge),
+        "--language", args.language,
     ]
     if args.out:
         cmd += ["--out", args.out]

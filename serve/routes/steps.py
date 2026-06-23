@@ -107,6 +107,30 @@ def build_cli_args(schema: dict, body: dict) -> list[str]:
 def validate_params(schema: dict, body: dict) -> None:
     """Validate body params against schema constraints. Raises HTTPException 422 on failure."""
     errors = []
+
+    # Reject unknown fields. Silently dropping an unrecognized arg is the footgun
+    # that let rm_nonspeech run full-file detection: a caller passed `keeps`
+    # (and `language`) on a step that didn't declare them, build_cli_args
+    # quietly skipped them, and the step ignored the intended trim window.
+    # Fail loud instead so a mis-driven call is obvious. Recognized keys:
+    # input/inputs/out, every declared param (canonical + underscore alias),
+    # and reserved control fields (leading underscore, e.g. _async) plus
+    # `credentials` — both are popped before this runs on the real route, but
+    # allow them so direct callers/tests don't trip on them.
+    recognized = {"input", "inputs", "out", "credentials"}
+    for param in schema.get("params", []):
+        recognized.add(param["name"])
+        recognized.add(param["name"].replace("-", "_"))
+    unknown = sorted(k for k in body if k not in recognized and not k.startswith("_"))
+    if unknown:
+        allowed = sorted(p["name"] for p in schema.get("params", []))
+        errors.append(
+            f"unknown field(s): {', '.join(unknown)} — this step accepts "
+            f"{allowed} plus input/inputs/out. "
+            f"(A trim window must be embedded in a trim-spec .json passed as 'input', "
+            f"not sent as a 'keeps' field.)"
+        )
+
     for param in schema.get("params", []):
         name  = param["name"]
         val   = body.get(name)

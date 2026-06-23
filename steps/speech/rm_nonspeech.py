@@ -15,6 +15,8 @@ def main():
                         help="Max gap between words to bridge in seconds (default: 0.18)")
     parser.add_argument("--sentence-edge", type=float, default=0.10,
                         help="Padding around sentence edges in seconds (default: 0.10)")
+    parser.add_argument("--language", default="en",
+                        help="Whisper language code (e.g. es), or 'auto' to detect. *.en models ignore it.")
     args = parser.parse_args()
 
     require_file(args.input)
@@ -30,7 +32,7 @@ def main():
             tmp_wav = os.path.join(work, "extracted.wav")
             run(audio_extract_cmd(source, keeps, tmp_wav))
 
-            words = transcribe_words(tmp_wav, args.model, work_dir=work)
+            words = transcribe_words(tmp_wav, args.model, work_dir=work, language=args.language)
 
             # Build speech regions in the extracted-audio timeline, then remap
             seg_regions = []
@@ -83,7 +85,7 @@ def main():
     # ── Raw video path ────────────────────────────────────────────────────────
     work = tempfile.mkdtemp(prefix="nonspeech_")
     try:
-        words = transcribe_words(args.input, args.model, work_dir=work)
+        words = transcribe_words(args.input, args.model, work_dir=work, language=args.language)
 
         seg_regions = []
         for w in words:
@@ -103,12 +105,17 @@ def main():
     finally:
         shutil.rmtree(work, ignore_errors=True)
 
+    duration = get_duration(args.input)
+
     if not seg_regions:
-        duration = get_duration(args.input)
         print(json.dumps({"input": args.input, "keeps": [[0.0, duration]]}))
         return
 
-    keeps = [[r["start"], r["end"]] for r in seg_regions]
+    # Whisper word offsets (plus sentence-edge padding) can land at or past true
+    # EOF, which would emit an outpoint > source duration (physically impossible
+    # downstream). Clamp every keep to [0, duration] and drop any that collapse.
+    keeps = [[max(0.0, r["start"]), min(r["end"], duration)] for r in seg_regions]
+    keeps = [[s, e] for s, e in keeps if e > s]
     print(json.dumps({"input": args.input, "keeps": keeps}))
 
 if __name__ == "__main__":
