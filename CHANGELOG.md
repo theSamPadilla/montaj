@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v3.3.0
+
 - **Render: chunk size now adapts to the worker pool instead of a fixed 1000 frames, so long segments parallelize across all cores.** A caption segment spans the whole video and was split at a fixed `DEFAULT_CHUNK_SIZE` of 1000 frames → only ~3 chunks for a ~68s/30fps video → render parallelism capped at ~3 regardless of how many cores the box has (so a bigger/burst-rescaled machine didn't help). The default chunk size is now `adaptiveChunkSize(longestSegmentFrames, workers)` ≈ `ceil(longest / workers)`, floored at `MIN_CHUNK_FRAMES` (120, ~4s @ 30fps) to bound per-chunk browser overhead — so the longest segment splits into roughly one chunk per worker (4 cores → ~4 chunks, 16 → ~16) and burst-rescaling cores now shortens the render ~linearly. Worker count is additionally capped by available RAM (`workerCap(cores, os.totalmem())` at ~1.5GB per 4K Chrome worker) to avoid OOM on large boxes. Explicit `render.chunkSize` / `render.workers` config (and `--workers`) overrides are unchanged; the frame tiling is untouched so output is byte-identical. New `montaj_assets/render/chunk-plan.js` (pure helpers, covered by `chunk-plan.test.js`).
 
 ## v3.2.5
