@@ -69,6 +69,31 @@ export interface RenderOptions {
   scale?: number
 }
 
+/**
+ * Coarse phase of an async render pipeline. Ordered roughly by execution order;
+ * hosts may skip phases that don't apply to their pipeline.
+ */
+export type RenderPhase = 'preparing' | 'rendering' | 'captions' | 'encoding' | 'saving' | 'done'
+
+/**
+ * Point-in-time snapshot of an async render's progress. Returned by
+ * `EditorAdapter.getRenderStatus`; safe to poll on any cadence.
+ *
+ *  - `'idle'`    — no render has been kicked off (or results were cleared).
+ *  - `'running'` — render is in progress; `phase` indicates where in the
+ *                  pipeline it currently is.
+ *  - `'done'`    — render completed successfully; `media` carries the promoted
+ *                  outputs.
+ *  - `'error'`   — render failed; `error` carries a human-readable message.
+ */
+export interface RenderStatus {
+  status: 'idle' | 'running' | 'done' | 'error'
+  phase?: RenderPhase
+  /** Promoted render outputs as directly-fetchable (R2 presigned) media. */
+  media?: Array<{ id: string; filename: string; contentType: string; url: string }>
+  error?: string
+}
+
 // ── Caption regeneration ─────────────────────────────────────────────────────
 
 /**
@@ -213,6 +238,22 @@ export interface EditorAdapter<P extends Project = Project> {
    * The iterable completes after a terminal 'done' or 'error' event.
    */
   render(id: string, opts?: RenderOptions): AsyncIterable<RenderEvent>
+
+  /**
+   * Optional: kick an async render and return immediately. Hosts that support
+   * poll-based renders implement this; streaming-only hosts omit it. Poll
+   * `getRenderStatus` for progress and completion. Hosts without poll support
+   * omit this and the editor falls back to `render`.
+   */
+  renderAsync?(id: string, opts?: RenderOptions): Promise<{ status: string }>
+
+  /**
+   * Optional: poll the status of an async render kicked off by `renderAsync`.
+   * Safe to call at any cadence — returns the latest `RenderStatus` snapshot
+   * without side-effects. Hosts without poll support omit this; the editor
+   * feature-detects its absence and falls back to `render`.
+   */
+  getRenderStatus?(id: string): Promise<RenderStatus>
 
   /**
    * Resolve an `ImageElement` to a directly displayable URL. This is the host's
