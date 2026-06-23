@@ -1,6 +1,6 @@
 {
   "name": "@bycrux/editor",
-  "version": "0.7.4",
+  "version": "0.8.0",
   "private": false,
   "type": "module",
   "exports": {
