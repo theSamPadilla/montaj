@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v3.4.0
+
 - **New `POST /api/files` write endpoint — agents can now write text files into the project workspace.** Agents had `GET /api/files` for reading but no write path; this blocked the select-takes flow because `waveform_trim` returns its keep-spec inline (stdout) while `crop_spec` requires the spec on disk via `--input <file>`. The new endpoint accepts `{ "path": "<absolute path>", "content": "<text>" }`, resolves the path, creates parent directories as needed, and writes the content as UTF-8. Path safety mirrors the read endpoint's discipline: the resolved parent must be under the workspace root — the overlay/profile/template library roots are read-only and rejected. Paths that are not absolute, that escape the workspace via `..`, or that resolve outside the workspace root return 403. Returns `{ path, bytes }`. Covered by `tests/test_server_files.py` (happy write, traversal reject, outside-workspace reject).
 
 - **`medium` (multilingual) model added to `transcribe` and `rm_fillers` `--model` choices.** Previously only `large` was a multilingual option in those choice lists — `tiny.en`/`base.en`/`medium.en` are English-only, so Spanish runs were forced onto `large` even when a faster option would suffice. Adding `medium` gives a faster multilingual path: on the sidecar it resolves to `ggml-medium.bin`, which the Hub Dockerfile bakes from the quantized `ggml-medium-q5_0` weights (~514MB, roughly half large's parameter count) — the same quantize-and-rename trick used for `large`. Default remains `base.en`; the `medium` choice is opt-in via `--model medium`.
