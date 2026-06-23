@@ -154,6 +154,24 @@ describe('RenderModal (poll-driven)', () => {
     expect(screen.getByText('sidecar exploded')).toBeTruthy()
     expect(screen.getByText('Close')).toBeTruthy()
   })
+
+  it('surfaces an interrupted render when the server reports idle after kicking', async () => {
+    vi.useFakeTimers()
+    const adapter = baseAdapter()
+    adapter.renderAsync = vi.fn(async () => ({ status: 'running' }))
+    // Job lost server-side (e.g. sidecar restart mid-render) → status flips to idle.
+    adapter.getRenderStatus = vi.fn(async () => ({ status: 'idle' } as RenderStatus))
+
+    render(<RenderModal adapter={adapter} projectId="vid-1" onClose={vi.fn()} />)
+
+    await act(async () => {
+      await Promise.resolve()
+      await vi.advanceTimersByTimeAsync(2500)
+    })
+
+    expect(screen.getByText(/interrupted on the server/i)).toBeTruthy()
+    expect(screen.getByText('Close')).toBeTruthy()
+  })
 })
 
 // ── Component (SSE fallback when poll methods absent) ──────────────────────────

@@ -190,6 +190,7 @@ function concatSegments(paths, outputPath) {
   const listFile = outputPath + '.concat.txt'
   writeFileSync(listFile, paths.map(p => `file '${p}'`).join('\n'))
 
+  // PHASE MARKER: "concatenating" → encoding in serve's _render_phase_for (projects.py).
   clog(`concatenating ${paths.length} segment(s)...`)
 
   // Video: -c:v copy. All segments from a single render share the project's

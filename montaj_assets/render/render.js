@@ -323,6 +323,9 @@ async function main(projectPath, { out, workers, clean }) {
   await processVideoItems(videoItems, workspaceDir)
 
   // 5. Bundle + render all overlay and caption segments
+  // PHASE MARKERS: serve's `_render_phase_for` (serve/routes/projects.py) maps
+  // "with Puppeteer" + "bundling segment" → rendering, and a `(captions)` segment
+  // id → captions. Keep these substrings in sync if you reword these log lines.
   log(`rendering ${segmentSpecs.length} segment(s) with Puppeteer...`)
 
   const workDirs = []
@@ -380,6 +383,7 @@ async function main(projectPath, { out, workers, clean }) {
   // multiples) instead of being cropped onto smaller canvases.
 
   // 7. Compose final MP4
+  // PHASE MARKER: "composing final video" → encoding in serve's _render_phase_for.
   log('composing final video...')
   await compose({
     projectJson,

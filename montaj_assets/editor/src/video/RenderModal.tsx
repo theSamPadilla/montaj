@@ -169,6 +169,13 @@ export default function RenderModal<P extends Project = Project>({ projectId, ad
               stopPolling()
               setError(snap.error ?? 'Render failed.')
               setStatus('error')
+            } else if (snap.status === 'idle') {
+              // We just kicked the render, so a job exists server-side; an 'idle'
+              // reply means the sidecar lost it (e.g. restarted mid-render).
+              // Without this we'd poll forever with the stepper frozen.
+              stopPolling()
+              setError('The render was interrupted on the server. Please try again.')
+              setStatus('error')
             }
           }
 
