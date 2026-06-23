@@ -86,10 +86,11 @@ def test_detached_render_completes_with_no_viewer_attached(monkeypatch, tmp_path
     assert job.result == "/scratch/output/render.mp4"
     assert job.lines == ["[render] bundling 1/2", "[render] bundling 2/2"]
     assert proc.waited
-    # slot + registries released on completion
+    # slot + proc registry released on completion
     assert PID not in projects_mod._active_renders
     assert PID not in projects_mod._render_procs
-    assert PID not in projects_mod._render_jobs
+    # the terminal job PERSISTS for post-completion /render/status polling
+    assert projects_mod._render_jobs.get(PID) is job
 
 
 def test_detached_render_records_nonzero_exit_as_error(monkeypatch, tmp_path):

@@ -93,12 +93,27 @@ class _RenderJob:
     to completion independent of any client connection — a dropped SSE (e.g. the
     Cloudflare tunnel's ~100s wall on a multi-minute render, or a closed tab) must
     NOT abort it. An explicit stop goes through POST /render/cancel."""
-    __slots__ = ("lines", "status", "result")
+    __slots__ = ("lines", "status", "result", "phase")
 
     def __init__(self) -> None:
         self.lines: list[str] = []      # accumulated stderr log lines
         self.status: str = "running"    # running | done | error
         self.result: str = ""           # output path (done) or message (error)
+        self.phase: str = "preparing"   # preparing | captions | rendering | encoding | done
+
+
+def _render_phase_for(line: str) -> str | None:
+    """Map a render stderr line to a coarse progress phase, or None if it carries
+    no phase signal. Markers below are the VERIFIED stderr strings emitted by
+    render.js / compose.js. Captions is checked FIRST because a captions segment
+    line also matches the generic "bundling segment" marker."""
+    if "bundling segment" in line and "(captions)" in line:
+        return "captions"
+    if "bundling segment" in line or "with Puppeteer" in line:
+        return "rendering"
+    if "composing final video" in line or "concatenating" in line:
+        return "encoding"
+    return None
 
 
 _render_jobs: dict[str, _RenderJob] = {}
@@ -133,10 +148,13 @@ async def _run_render_detached(project_id: str, cmd: list[str], env: dict,
             text = line.decode().rstrip()
             if text:
                 job.lines.append(text)
+                p = _render_phase_for(text)
+                if p:
+                    job.phase = p
         stdout = await proc.stdout.read()
         await proc.wait()
         if proc.returncode == 0:
-            job.status, job.result = "done", stdout.decode().strip()
+            job.status, job.result, job.phase = "done", stdout.decode().strip(), "done"
         else:
             job.status, job.result = "error", f"Render failed (exit {proc.returncode})"
     except Exception as e:  # surface any spawn/IO failure to the viewer
@@ -147,8 +165,10 @@ async def _run_render_detached(project_id: str, cmd: list[str], env: dict,
         if _render_procs.get(project_id) is proc:
             _render_procs.pop(project_id, None)
             _active_renders.discard(project_id)
-        if _render_jobs.get(project_id) is job:
-            _render_jobs.pop(project_id, None)
+        # NOTE: the terminal job is intentionally NOT popped from _render_jobs —
+        # it persists so a post-completion GET /render/status can still read it.
+        # A new render overwrites _render_jobs[project_id] after
+        # _supersede_active_render, keeping this bounded to one entry per project.
         if render_input != project_path:
             try:
                 Path(render_input).unlink()
@@ -1272,7 +1292,12 @@ async def render_project(project_id: str, request: Request, project_dir: Path = 
             script_args += ["--scale", str(scale)]
     else:
         render_script = Path(render_runtime_dir()) / "render.js"
-        script_args = [str(project_path)]
+        # Write the MP4 into the project's output/ dir (the video-workflow staging
+        # dir that /outputs lists) instead of render.js's default render/<name>.mp4.
+        output_dir = project_dir / "output"
+        output_dir.mkdir(exist_ok=True)
+        output_path = output_dir / f"{project_dir.name}.mp4"
+        script_args = [str(project_path), "--out", str(output_path)]
 
     if not render_script.is_file():
         raise server_error("not_found", f"{render_script.name} not found")
@@ -1301,6 +1326,13 @@ async def render_project(project_id: str, request: Request, project_dir: Path = 
     )
     _render_task_refs.add(task)
     task.add_done_callback(_render_task_refs.discard)
+
+    # Async mode: don't hold an SSE stream open — kick the detached render and
+    # return immediately. Clients poll GET /render/status to follow progress and
+    # collect the output path / error. Default (no async flag) keeps the SSE viewer
+    # for back-compat with the CLI/agent.
+    if request.query_params.get("async") in ("1", "true"):
+        return JSONResponse({"projectId": project_id, "status": "running"}, status_code=202)
 
     async def event_stream():
         # Pure viewer over the detached job: replay the log buffer, stream new lines
@@ -1343,6 +1375,23 @@ async def cancel_render(project_id: str):
         _kill_render_proc(proc)
         return {"cancelled": True}
     return {"cancelled": False}
+
+
+@router.get("/projects/{project_id}/render/status")
+async def render_status(project_id: str, project_dir: Path = Depends(get_project_dir)):
+    """Poll the state of the current/last render for this project. Pairs with the
+    async kick (POST /render?async=1): clients hit this to follow progress
+    (phase) and pick up the output path or error once terminal. Returns idle when
+    no render has run for this project this process lifetime."""
+    job = _render_jobs.get(project_id)
+    if job is None:
+        return {"status": "idle"}
+    out = {"status": job.status, "phase": job.phase}
+    if job.status == "done":
+        out["outputPath"] = job.result
+    elif job.status == "error":
+        out["error"] = job.result
+    return out
 
 
 @router.post("/projects/{project_id}/captions")
