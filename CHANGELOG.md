@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **Render: async kick + status polling, written to `output/` for delivery.** The video render now accepts `POST /projects/{id}/render?async=1`, which kicks the detached render and returns `202 {projectId, status:"running"}` immediately instead of holding the SSE stream — clients poll the new `GET /projects/{id}/render/status` (`{status, phase, outputPath?, error?}`) for completion, surviving the Cloudflare tunnel's ~100s wall. The status carries a coarse, user-facing `phase` (`preparing` → `rendering` → `captions` → `encoding` → `done`) mapped from the render's progress markers, so hosts can show honest progress instead of raw ffmpeg logs. The terminal job state persists for polling after completion (no longer evicted on finish). The video output is now written to `output/<name>.mp4` (via `--out`) instead of `render/`, so Montaj's `/outputs` listing and Hub's `promoteOutputs` (R2 + Media row) actually see it. The plain SSE `POST /render` path is unchanged for CLI/agent use. Covered by `tests/test_render_async.py`.
+
 ## v3.2.4
 
 - **Render: Chromium no longer crashes on heavy (4K) renders from a small `/dev/shm`.** The Puppeteer launch args (`renderer.js`, `render-carousel.js`, `sample-frame.js`) now include `--disable-dev-shm-usage`, which routes Chromium's shared-memory scratch to `/tmp` (disk-backed, effectively unbounded) instead of `/dev/shm`. The Montaj sidecar container ships the Docker default 64MB `/dev/shm`, which a 4K (2160×3840) render overruns — Chromium exhausts it and crashes mid-render, so the render dies with no output (and leaks zombie `chrome_crashpad` processes). This makes renders independent of the container's `/dev/shm` size; no Docker/compose change is required.
