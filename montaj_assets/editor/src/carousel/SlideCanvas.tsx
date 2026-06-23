@@ -122,6 +122,69 @@ interface Props {
   hiddenElementIds?: string[]
 }
 
+// Plain default for the inline editor when we can't read the rendered text's
+// real style (e.g. no matching node found).
+const FALLBACK_EDIT_STYLE: Partial<CSSStyleDeclaration> = {
+  color: '#ffffff',
+  fontSize: '18px',
+  fontFamily: 'system-ui, sans-serif',
+  whiteSpace: 'pre-wrap',
+  wordBreak: 'break-word',
+}
+
+// Find the innermost element under `root` whose full text equals `text` — the
+// overlay's text container. Used to copy its computed style onto the editor.
+function findTextNode(root: HTMLElement, text: string): HTMLElement | null {
+  const want = text.trim()
+  if (!want) return null
+  const matches: HTMLElement[] = []
+  const walk = (el: HTMLElement) => {
+    if ((el.textContent ?? '').trim() === want) matches.push(el)
+    for (const child of Array.from(el.children)) {
+      if (child instanceof HTMLElement) walk(child)
+    }
+  }
+  walk(root)
+  if (matches.length === 0) return null
+  // Innermost match = the one with the fewest descendant elements.
+  return matches.reduce((best, el) =>
+    el.querySelectorAll('*').length < best.querySelectorAll('*').length ? el : best,
+  )
+}
+
+// Snapshot the rendered overlay text's computed style so the inline editor
+// matches it instead of a generic stub. Overlays are authored at native slide
+// pixels then CSS-scaled by `scale`; the editor is positioned in already-scaled
+// display coords with no transform, so px metrics must be multiplied by `scale`.
+// Returns null when no text node is found (caller falls back).
+function captureTextStyle(
+  wrapper: HTMLElement | undefined,
+  text: string,
+  scale: number,
+): Partial<CSSStyleDeclaration> | null {
+  if (!wrapper || typeof window === 'undefined') return null
+  const target = findTextNode(wrapper, text)
+  if (!target) return null
+  const cs = window.getComputedStyle(target)
+  const scalePx = (v: string) => {
+    const n = parseFloat(v)
+    return Number.isFinite(n) ? `${n * scale}px` : v
+  }
+  return {
+    color: cs.color,
+    fontFamily: cs.fontFamily,
+    fontWeight: cs.fontWeight,
+    fontStyle: cs.fontStyle,
+    textAlign: cs.textAlign,
+    textTransform: cs.textTransform,
+    fontSize: scalePx(cs.fontSize),
+    lineHeight: cs.lineHeight === 'normal' ? 'normal' : scalePx(cs.lineHeight),
+    letterSpacing: cs.letterSpacing === 'normal' ? 'normal' : scalePx(cs.letterSpacing),
+    whiteSpace: 'pre-wrap',
+    wordBreak: 'break-word',
+  } as Partial<CSSStyleDeclaration>
+}
+
 export default function SlideCanvas({
   slide,
   slideId,
@@ -158,6 +221,7 @@ export default function SlideCanvas({
   // Inline text edit state.
   const [editingId, setEditingId] = useState<string | null>(null)
   const [editRect, setEditRect] = useState<{ left: number; top: number; width: number; height: number } | null>(null)
+  const [editStyle, setEditStyle] = useState<Partial<CSSStyleDeclaration> | null>(null)
 
   // Crop mode local state — source fraction window + loaded natural dims.
   const [cropState, setCropState] = useState<CropMode>(null)
@@ -266,6 +330,10 @@ export default function SlideCanvas({
   // ── Inline text edit ──
   function beginTextEdit(element: OverlayElement) {
     if (!interactive || typeof element.overlay.props.text !== 'string') return
+    // Snapshot the live text's style BEFORE we hide it / re-render.
+    setEditStyle(
+      captureTextStyle(wrapperRefs.current.get(element.id), element.overlay.props.text, scale),
+    )
     setEditRect({
       left: element.x * scale,
       top: element.y * scale,
@@ -275,10 +343,15 @@ export default function SlideCanvas({
     setEditingId(element.id)
   }
 
-  function commitTextEdit(element: OverlayElement, value: string) {
-    void updateOverlayProp?.(sid, element.id, 'text', value)
+  function endTextEdit() {
     setEditingId(null)
     setEditRect(null)
+    setEditStyle(null)
+  }
+
+  function commitTextEdit(element: OverlayElement, value: string) {
+    void updateOverlayProp?.(sid, element.id, 'text', value)
+    endTextEdit()
   }
 
   // ── Pointer wiring shared by drag/resize/rotate ──
@@ -461,6 +534,9 @@ export default function SlideCanvas({
                   height: element.h,
                   transform: `scale(${scale})`,
                   transformOrigin: 'top left',
+                  // Hide the live text while it's being edited in place so the
+                  // InlineTextEditor isn't doubled over it.
+                  visibility: editingId === element.id ? 'hidden' : undefined,
                 }}
               >
                 <OverlayErrorBoundary
@@ -637,16 +713,10 @@ export default function SlideCanvas({
               key={editingId}
               initialValue={initial}
               rect={editRect}
-              styleSnapshot={{
-                color: '#ffffff',
-                fontSize: '18px',
-                fontFamily: 'system-ui, sans-serif',
-                whiteSpace: 'pre-wrap',
-                wordBreak: 'break-word',
-              }}
+              styleSnapshot={editStyle ?? FALLBACK_EDIT_STYLE}
               onChange={() => {}}
               onCommit={(value) => commitTextEdit(el, value)}
-              onCancel={() => { setEditingId(null); setEditRect(null) }}
+              onCancel={endTextEdit}
             />
           )
         })()}
