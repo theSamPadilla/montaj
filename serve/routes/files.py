@@ -104,6 +104,56 @@ async def get_caption_template(style: str):
     return FileResponse(str(p), media_type="text/plain")
 
 
+@router.post("/files")
+async def write_file(request: Request):
+    """Write a text file to an absolute path inside the workspace root.
+
+    Body: { "path": "<absolute path>", "content": "<text>" }
+
+    Path safety: the resolved parent directory must be under the workspace root
+    only — NOT under the overlay/profile/template library roots (those are
+    read-only). Rejects paths that are not absolute, that contain .. escaping
+    the workspace, or that resolve outside the workspace root.
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        raise bad_request("bad_request", "Request body must be JSON")
+
+    raw_path = body.get("path", "")
+    content = body.get("content", "")
+
+    if not raw_path:
+        raise bad_request("bad_request", "path is required")
+    if not isinstance(raw_path, str) or not raw_path.startswith("/"):
+        raise bad_request("bad_request", f"path must be absolute: {raw_path!r}")
+    if not isinstance(content, str):
+        raise bad_request("bad_request", "content must be a string")
+
+    p = Path(raw_path)
+    workspace_root = resolve_workspace().resolve()
+
+    # Resolve the parent directory — we check the parent (not the file itself,
+    # which may not exist yet) so new files in an existing subdir are accepted.
+    try:
+        resolved_parent = p.parent.resolve()
+    except OSError:
+        raise forbidden("forbidden", "Path is outside the workspace root")
+
+    if not _is_under(resolved_parent, workspace_root):
+        raise forbidden("forbidden", "Path is outside the workspace root")
+
+    # Use the canonical absolute path derived from the parent so we don't
+    # resolve a non-existent file (which would silently keep the raw path).
+    resolved = resolved_parent / p.name
+
+    # Create parent dirs (a spec may be the first file in a subdir)
+    resolved.parent.mkdir(parents=True, exist_ok=True)
+    encoded = content.encode("utf-8")
+    resolved.write_bytes(encoded)
+    return {"path": str(resolved), "bytes": len(encoded)}
+
+
 @router.get("/files")
 async def serve_file(path: str, request: Request):
     """Serve a local file by absolute path with range-request support.

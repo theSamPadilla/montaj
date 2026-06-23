@@ -13,7 +13,7 @@ def main():
     parser.add_argument("--input", required=True, help="Audio or video file to transcribe")
     parser.add_argument("--out", help="Output file prefix (default: input without extension)")
     parser.add_argument("--model", default="base.en",
-                        choices=["tiny.en", "base.en", "medium.en", "large"],
+                        choices=["tiny.en", "base.en", "medium.en", "medium", "large"],
                         help="Whisper model. Larger = slower + more accurate.")
     parser.add_argument("--language", default="en", help="Language code (e.g. en, fr, de), or 'auto' for whisper-cli language auto-detection")
     args = parser.parse_args()

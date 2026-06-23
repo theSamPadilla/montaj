@@ -234,3 +234,93 @@ def test_files_sibling_of_shipped_templates_returns_403(client, roots):
     resp = client.get("/api/files", params={"path": str(sibling)})
     assert resp.status_code == 403
     assert resp.json()["detail"]["error"] == "forbidden"
+
+
+# ── POST /api/files write-endpoint tests ──────────────────────────────────────
+
+@pytest.fixture
+def write_client(roots, monkeypatch):
+    """TestClient whose workspace is the synthetic roots["workspace"] dir.
+
+    Patches both the _allowed_file_roots (for GET) and resolve_workspace (for
+    POST /api/files) so both endpoints see the same synthetic layout.
+    """
+    ws = roots["workspace"]
+    monkeypatch.setattr("serve.routes.files.resolve_workspace", lambda: ws)
+    return TestClient(app, raise_server_exceptions=False)
+
+
+def test_write_file_happy_path(write_client, roots):
+    """POST /api/files writes a new file under the workspace and returns
+    {path, bytes} with the correct byte count."""
+    ws = roots["workspace"]
+    target = ws / "2026-05-02-test" / "spec.json"
+    payload = {"path": str(target), "content": '{"keeps": []}'}
+
+    resp = write_client.post("/api/files", json=payload)
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["path"] == str(target)
+    assert body["bytes"] == len('{"keeps": []}'.encode("utf-8"))
+    assert target.read_text() == '{"keeps": []}'
+
+
+def test_write_file_creates_parent_dirs(write_client, roots):
+    """POST /api/files creates intermediate directories that don't exist yet."""
+    ws = roots["workspace"]
+    target = ws / "new-project" / "subdir" / "data.json"
+
+    resp = write_client.post("/api/files", json={"path": str(target), "content": "hello"})
+
+    assert resp.status_code == 200
+    assert target.exists()
+    assert target.read_text() == "hello"
+
+
+def test_write_file_traversal_rejected(write_client, roots):
+    """A path whose resolved parent escapes the workspace via .. returns 403."""
+    ws = roots["workspace"]
+    # Build a path that starts inside the workspace but escapes via ..
+    traversal = str(ws / "2026-05-02-test" / ".." / ".." / "evil.txt")
+
+    resp = write_client.post("/api/files", json={"path": traversal, "content": "bad"})
+
+    assert resp.status_code == 403
+    assert resp.json()["detail"]["error"] == "forbidden"
+
+
+def test_write_file_outside_workspace_rejected(write_client):
+    """An absolute path outside the workspace (e.g. /tmp or /etc) returns 403."""
+    for evil_path in ["/tmp/evil.txt", "/etc/x"]:
+        resp = write_client.post("/api/files", json={"path": evil_path, "content": "bad"})
+        assert resp.status_code == 403, f"Expected 403 for {evil_path}, got {resp.status_code}"
+        assert resp.json()["detail"]["error"] == "forbidden"
+
+
+def test_write_file_readonly_library_root_rejected(write_client, roots):
+    """The write endpoint confines to the WORKSPACE root only — the read-only
+    library roots that GET /api/files serves from (overlays, profiles) are NOT
+    writable. A path under the overlay library returns 403. This is the
+    confinement that distinguishes write from the GET allowlist."""
+    for root_key in ("overlays", "profiles"):
+        target = roots[root_key] / "injected.jsx"
+        resp = write_client.post("/api/files", json={"path": str(target), "content": "x"})
+        assert resp.status_code == 403, f"Expected 403 under {root_key} root, got {resp.status_code}"
+        assert resp.json()["detail"]["error"] == "forbidden"
+
+
+def test_write_file_missing_path_rejected(write_client):
+    """A request with no path returns 400."""
+    resp = write_client.post("/api/files", json={"content": "x"})
+    assert resp.status_code == 400
+    assert resp.json()["detail"]["error"] == "bad_request"
+
+
+def test_write_file_non_string_content_rejected(write_client, roots):
+    """A non-string content returns 400 (no file is written)."""
+    target = roots["workspace"] / "bad.json"
+    resp = write_client.post("/api/files", json={"path": str(target), "content": {"not": "a string"}})
+    assert resp.status_code == 400
+    assert resp.json()["detail"]["error"] == "bad_request"
+    assert not target.exists()

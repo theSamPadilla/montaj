@@ -576,7 +576,12 @@ Common overlay set for a social reel:
 
 **Write all of your overlay JSX first. Then sample them in a single batch pass — do not sample after each file.** Per-file sampling stalls authoring and spins up a fresh Puppeteer process each time; one pass at the end over the finished set is faster and just as safe, since nothing downstream consumes an overlay until you save the project with the whole batch.
 
-Once every JSX file is written, loop over them in one pass — for each JSX file, **run step `sample_overlay`** with args `{ path, measure: true, googleFonts, props }`:
+Once every JSX file is written, loop over them in one pass — for each JSX file, **run step `sample_overlay`** with args `{ overlay, out, measure: true, google_fonts, props }`:
+
+- `overlay` — absolute path to the JSX file
+- `out` — absolute path where the step writes the sample PNG (required)
+- `google_fonts` — the overlay's declared `googleFonts` value (snake_case step arg)
+- `props` — representative props for the overlay
 
 Pass each overlay's declared `googleFonts` (and representative `props`) so the step measures with the real render-time font — see the Syne case study below.
 

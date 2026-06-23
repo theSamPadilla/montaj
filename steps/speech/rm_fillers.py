@@ -15,7 +15,7 @@ def main():
     parser = argparse.ArgumentParser(description="Remove filler words from a clip")
     parser.add_argument("--input", required=True, help="Source video file")
     parser.add_argument("--model", default="base.en",
-                        choices=["tiny.en", "base.en", "medium.en", "large"],
+                        choices=["tiny.en", "base.en", "medium.en", "medium", "large"],
                         help="Whisper model for filler detection")
     args = parser.parse_args()
 

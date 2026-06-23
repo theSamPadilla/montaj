@@ -84,9 +84,13 @@ For each flagged seam, fix it by trimming the crop window of whichever section i
 
 ### 9. Crop the trim specs — do NOT call `trim`
 
-For each selected take, load the trim spec JSON produced by the preceding `waveform_trim` step for that clip. Crop it to the selected take's virtual-timeline window using the `crop_spec` step.
+For each selected take, the trim spec JSON comes back **inline** (on stdout / in the step result) from the preceding `waveform_trim` step — it is NOT written to disk automatically. The `crop_spec` step requires an on-disk file (its `--input` argument). Before calling `crop_spec`, write the inline spec to the project scratch dir using the `write_file` tool (e.g. save it as `<clip>_spec.json`), then pass that path as `crop_spec`'s `input`.
+
+Crop the written spec to the selected take's virtual-timeline window using the `crop_spec` step.
 
 **Never call the `trim` step.** That encodes an intermediate video file and breaks the single-encode chain. Cropping the spec keeps the original source file all the way through to `concat`.
+
+**Note:** the `input` path in all `crop_spec` calls below must point to a spec file you've written to disk via `write_file` first (see above).
 
 Run step `crop_spec` with `{"input": "/path/IMG_4893_spec.json", "keeps": [[8.5, 34.1]]}` → returns `{"path": "/path/IMG_4893_spec_cropped.json"}` (single window).
 
