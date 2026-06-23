@@ -6,6 +6,7 @@ export interface Draggable {
   end: number
   inPoint?: number
   outPoint?: number
+  normalizedInPoint?: number
   type?: string
   sourceDuration?: number
 }

@@ -8,7 +8,8 @@ import { effectiveInPoint, effectiveOutPoint } from '../useVideoPlayback'
 // and must NOT rebase.
 
 describe('effectiveInPoint', () => {
-  it('rebases to 0 when normalizedSrc is the chosen src', () => {
+  it('rebases to 0 when normalizedSrc is the chosen src (legacy: no normalizedInPoint)', () => {
+    // Legacy: no normalizedInPoint → origin defaults to inPoint → effectiveInPoint = 0
     expect(effectiveInPoint({ inPoint: 496.92, normalizedSrc: '/cache/window.mp4' })).toBe(0)
   })
 
@@ -26,10 +27,25 @@ describe('effectiveInPoint', () => {
   it('defaults to 0 when inPoint is absent and no cache', () => {
     expect(effectiveInPoint({ src: '/orig.mov' })).toBe(0)
   })
+
+  // Regression: trim-after-cache — cache origin 0, inPoint trimmed to 0.9157
+  it('rebases by normalizedInPoint=0 after a start-trim (cache origin 0, inPoint 0.9157)', () => {
+    // Cache was built at origin 0. User trimmed the start to 0.9157.
+    // effectiveInPoint should be 0.9157 - 0 = 0.9157, NOT 0.
+    expect(
+      effectiveInPoint({ inPoint: 0.9157, normalizedInPoint: 0, normalizedSrc: '/cache/window.mp4' }),
+    ).toBeCloseTo(0.9157, 5)
+  })
+
+  it('rebases by a non-zero normalizedInPoint (cache origin 5, inPoint 6)', () => {
+    expect(
+      effectiveInPoint({ inPoint: 6, normalizedInPoint: 5, normalizedSrc: '/cache/window.mp4' }),
+    ).toBeCloseTo(1, 5)
+  })
 })
 
 describe('effectiveOutPoint', () => {
-  it('rebases to the window length (outPoint - inPoint) for a normalizedSrc cache', () => {
+  it('rebases to the window length (outPoint - inPoint) for a normalizedSrc cache (legacy: no normalizedInPoint)', () => {
     // original inPoint 496.92, outPoint 514.92 → 18s window cache
     expect(
       effectiveOutPoint({ inPoint: 496.92, outPoint: 514.92, normalizedSrc: '/cache/window.mp4' }),
@@ -48,5 +64,20 @@ describe('effectiveOutPoint', () => {
 
   it('returns undefined when no outPoint is stored', () => {
     expect(effectiveOutPoint({ inPoint: 496.92, normalizedSrc: '/cache/window.mp4' })).toBeUndefined()
+  })
+
+  // Regression: trim-after-cache — cache origin 0, inPoint 0.9157, outPoint 16.97
+  it('rebases outPoint by normalizedInPoint=0 after a start-trim', () => {
+    // Cache was built at origin 0. User trimmed start to 0.9157.
+    // effectiveOutPoint = 16.97 - 0 = 16.97, NOT 16.97 - 0.9157.
+    expect(
+      effectiveOutPoint({ inPoint: 0.9157, outPoint: 16.97, normalizedInPoint: 0, normalizedSrc: '/cache/window.mp4' }),
+    ).toBeCloseTo(16.97, 5)
+  })
+
+  it('rebases outPoint by a non-zero normalizedInPoint (cache origin 5, outPoint 20)', () => {
+    expect(
+      effectiveOutPoint({ inPoint: 6, outPoint: 20, normalizedInPoint: 5, normalizedSrc: '/cache/window.mp4' }),
+    ).toBeCloseTo(15, 5)
   })
 })

@@ -175,7 +175,7 @@ curr=$(curl -s http://localhost:3000/api/projects/<child_id>)
 new=$(echo "$curr" | jq \
   --argjson ip 12.0 --argjson op 62.0 \
   --arg ns "$cache_path" \
-  '.tracks[0][0].inPoint = $ip | .tracks[0][0].outPoint = $op | .tracks[0][0].normalizedSrc = $ns')
+  '.tracks[0][0].inPoint = $ip | .tracks[0][0].outPoint = $op | .tracks[0][0].normalizedSrc = $ns | .tracks[0][0].normalizedInPoint = $ip')
 curl -s -X PUT http://localhost:3000/api/projects/<child_id> \
   -H "Content-Type: application/json" -d "$new"
 ```
@@ -183,7 +183,8 @@ curl -s -X PUT http://localhost:3000/api/projects/<child_id> \
 Key invariants:
 - `tracks[0][0].src` **stays the original source path** (the symlink to the .MOV/.mp4). Never replace it.
 - `tracks[0][0].normalizedSrc` is the derived per-window cache that render and preview prefer when available.
-- `tracks[0][0].inPoint` and `tracks[0][0].outPoint` remain the **original-source timestamps** in seconds. When the renderer uses `normalizedSrc` (which starts at time 0), it rebases automatically — inPoint/outPoint do not change.
+- `tracks[0][0].normalizedInPoint` is the **cache origin** — the source-time (original coordinates) at which the cache starts. Set it to the same value as `inPoint` when the cache is built (because `normalize_window` builds the cache for the current window). Render and preview rebase inPoint/outPoint by this origin so they seek to the correct position inside the cache. If a user later trims the clip's start inward, the cache still covers the new (narrower) window and the rebased seek still lands correctly, because `effectiveInPoint = inPoint - normalizedInPoint`.
+- `tracks[0][0].inPoint` and `tracks[0][0].outPoint` remain the **original-source timestamps** in seconds. When the renderer uses `normalizedSrc`, it rebases by `normalizedInPoint` automatically — inPoint/outPoint do not change.
 
 ### 7. Finalize — remove the source project
 

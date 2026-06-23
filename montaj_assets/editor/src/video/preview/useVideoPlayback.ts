@@ -32,41 +32,59 @@ function playbackSrcFor(clip: { src?: string; nobg_preview_src?: string; normali
 
 /**
  * The inPoint the preview should SEEK to for this clip, accounting for the
- * normalizedSrc cache rebase.
+ * normalizedSrc cache origin.
  *
- * A `normalizedSrc` cache covers exactly [inPoint, outPoint] of the original
- * and STARTS AT 0 (it is only `outPoint - inPoint` seconds long). When
- * `playbackSrcFor` chooses that cache as the playback src, seeking to the
- * original `clip.inPoint` (e.g. 496.92) would land far past the end of the
- * short file → the browser clamps to EOF and the preview freezes on the last
- * frame. So when the cache is the chosen src, the effective inPoint is 0 and
- * the window maps to [0, outPoint - inPoint].
+ * A `normalizedSrc` cache is a trimmed file that covers exactly
+ * [normalizedInPoint, normalizedInPoint + duration] of the original source and
+ * plays starting at time 0. When `playbackSrcFor` chooses the cache as the
+ * playback src, we must rebase by the cache origin so the seek position is
+ * relative to the cache's own timeline.
+ *
+ * The origin is `clip.normalizedInPoint ?? clip.inPoint ?? 0`:
+ * - When `normalizedInPoint` is set, the cache was built for a specific window
+ *   that may differ from the current inPoint (e.g. after a start-trim): the
+ *   cache still covers the new window, but we must subtract the origin so the
+ *   seek lands at the right position inside the cache.
+ * - When `normalizedInPoint` is absent (legacy), the cache was built assuming
+ *   it starts at the clip's inPoint → origin = inPoint → effectiveInPoint = 0
+ *   (reproduces the old rebase-to-0 behavior).
  *
  * This mirrors render's `collectAllItems` (montaj_assets/render/render.js),
- * which substitutes `item.normalizedSrc` as the src AND rebases inPoint to 0.
+ * which rebases inPoint by the same origin.
  *
  * The rebase applies ONLY when the cache is actually the chosen src.
  * `nobg_preview_src` takes precedence in `playbackSrcFor` and is NOT a window
  * cache (it covers the full source), so it keeps the original inPoint — exactly
  * as render's nobg path does.
  */
-export function effectiveInPoint(clip: { inPoint?: number; nobg_preview_src?: string; normalizedSrc?: string; src?: string }): number {
+export function effectiveInPoint(clip: { inPoint?: number; normalizedInPoint?: number; nobg_preview_src?: string; normalizedSrc?: string; src?: string }): number {
   const usingNormalizedCache = !clip.nobg_preview_src && !!clip.normalizedSrc
-  return usingNormalizedCache ? 0 : (clip.inPoint ?? 0)
+  if (!usingNormalizedCache) return clip.inPoint ?? 0
+  const origin = clip.normalizedInPoint ?? clip.inPoint ?? 0
+  return (clip.inPoint ?? 0) - origin
 }
 
 /**
  * The outPoint in the loaded src's own timeline. For a normalizedSrc cache the
- * stored `clip.outPoint` is in ORIGINAL-source coordinates (e.g. 514.92) while
- * the cache plays in [0, outPoint - inPoint]; the boundary/loop checks compare
- * against `video.currentTime` (cache time), so the outPoint must be rebased to
- * the window length. Returns undefined when no outPoint is stored, so callers
- * keep their existing fallback (clip.end - clip.start + effectiveInPoint).
+ * stored `clip.outPoint` is in ORIGINAL-source coordinates while the cache
+ * plays from its own time origin; the boundary/loop checks compare against
+ * `video.currentTime` (cache time), so the outPoint must be rebased by the
+ * cache origin.
+ *
+ * The origin is `clip.normalizedInPoint ?? clip.inPoint ?? 0` (same as
+ * effectiveInPoint). Legacy clips without `normalizedInPoint` default the
+ * origin to inPoint, reproducing the old (outPoint - inPoint) window-length
+ * behavior.
+ *
+ * Returns undefined when no outPoint is stored, so callers keep their existing
+ * fallback (clip.end - clip.start + effectiveInPoint).
  */
-export function effectiveOutPoint(clip: { inPoint?: number; outPoint?: number; nobg_preview_src?: string; normalizedSrc?: string; src?: string }): number | undefined {
+export function effectiveOutPoint(clip: { inPoint?: number; outPoint?: number; normalizedInPoint?: number; nobg_preview_src?: string; normalizedSrc?: string; src?: string }): number | undefined {
   if (clip.outPoint == null) return undefined
   const usingNormalizedCache = !clip.nobg_preview_src && !!clip.normalizedSrc
-  return usingNormalizedCache ? clip.outPoint - (clip.inPoint ?? 0) : clip.outPoint
+  if (!usingNormalizedCache) return clip.outPoint
+  const origin = clip.normalizedInPoint ?? clip.inPoint ?? 0
+  return clip.outPoint - origin
 }
 
 export function useVideoPlayback(

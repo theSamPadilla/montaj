@@ -77,6 +77,8 @@ export interface VisualItem {
   nobg_src?: string         // video type only — ProRes 4444 .mov for final render
   nobg_preview_src?: string // video type only — VP9 WebM with alpha for browser preview
   normalizedSrc?: string    // derived per-window normalized cache; render/preview prefer it; src stays original
+  /** Source-time (original coords) the normalizedSrc cache starts at; the cache covers [normalizedInPoint, normalizedInPoint + duration]. Absent ⇒ assume it starts at the clip's inPoint (legacy rebase-to-0). */
+  normalizedInPoint?: number
   muted?: boolean         // video type only — suppress audio in preview and render
   sourceCrop?: { x: number; y: number; w: number; h: number }  // video type only — non-destructive crop of the source clip (0–1 fractions)
   sourceWidth?: number    // video type only — intrinsic width of the source clip in pixels
