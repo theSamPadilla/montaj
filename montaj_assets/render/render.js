@@ -549,21 +549,24 @@ function collectAllItems(projectJson) {
         imageItems.push({ ...base, fit: item.fit ?? 'cover' })
       } else if (item.type === 'video') {
         // Prefer the normalizedSrc cache when present (and not on the nobg
-        // path). A normalizedSrc file covers [inPoint, outPoint] of the
-        // original and STARTS AT 0, so when we substitute it we must rebase
-        // inPoint to 0 — encode-segment computes actualIn = inPoint +
-        // seekOffset, and a non-zero inPoint would seek past the start of the
-        // short cache (→ EOF/garbage). The nobg_src path is NOT a normalized
-        // cache and must keep the original inPoint.
+        // path). A normalizedSrc cache covers [normalizedInPoint, normalizedInPoint + duration]
+        // of the original and plays from time 0. When we substitute it we must
+        // rebase inPoint and outPoint by the cache origin so encode-segment seeks
+        // to the right position inside the short cache file (actualIn = inPoint +
+        // seekOffset). The cache origin is `item.normalizedInPoint ?? item.inPoint`
+        // (legacy clips without normalizedInPoint assumed origin == inPoint → rebase
+        // to 0, which is reproduced here by the fallback). The nobg_src path is NOT
+        // a normalized cache and must keep the original inPoint/outPoint unchanged.
         const chosenSrc = item.nobg_src && item.remove_bg ? item.nobg_src : (item.normalizedSrc ?? item.src)
         const usedNormalized = chosenSrc === item.normalizedSrc
+        const normOrigin = item.normalizedInPoint ?? item.inPoint
         videoItems.push({
           ...base,
           src:          chosenSrc,
           nobg_src:     item.nobg_src,
           normalizedSrc: item.normalizedSrc,
-          inPoint:      usedNormalized ? 0 : item.inPoint,
-          outPoint:     item.outPoint,
+          inPoint:      usedNormalized ? (item.inPoint - normOrigin) : item.inPoint,
+          outPoint:     usedNormalized ? (item.outPoint != null ? item.outPoint - normOrigin : item.outPoint) : item.outPoint,
           // Source crop (clips workflow vertical reframe) — applied at encode
           // time by buildVideoItemFilterParts. normalizeIfNeeded/normalize_window
           // does NOT bake the crop into normalizedSrc (the cache stays at full

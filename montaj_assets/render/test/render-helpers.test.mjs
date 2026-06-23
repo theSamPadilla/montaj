@@ -70,10 +70,11 @@ test('collectAllItems: tracks[0] items are included (no special-casing)', () => 
   assert.equal(videoItems[0].trackIdx, 0)
 })
 
-test('collectAllItems: normalizedSrc is substituted as src and inPoint is rebased to 0', () => {
-  // A normalizedSrc cache covers [inPoint, outPoint] of the original and STARTS
-  // AT 0. encode-segment computes actualIn = inPoint + seekOffset, so inPoint
-  // must be rebased to 0 or ffmpeg seeks past the start of the short cache.
+test('collectAllItems: normalizedSrc is substituted as src and inPoint/outPoint are rebased by the cache origin', () => {
+  // A normalizedSrc cache covers [normalizedInPoint, normalizedInPoint+duration] of
+  // the original and plays from time 0. encode-segment computes actualIn = inPoint +
+  // seekOffset, so both inPoint and outPoint must be rebased by the cache origin.
+  // When normalizedInPoint is absent, origin defaults to inPoint (legacy rebase-to-0).
   const project = {
     tracks: [
       [{ id: 'primary', type: 'video', src: '/orig.mp4', normalizedSrc: '/orig_normalized_hdr.mp4', start: 0, end: 5, inPoint: 3.5, outPoint: 8.5 }],
@@ -82,8 +83,22 @@ test('collectAllItems: normalizedSrc is substituted as src and inPoint is rebase
   const { videoItems } = collectAllItems(project)
   assert.equal(videoItems.length, 1)
   assert.equal(videoItems[0].src, '/orig_normalized_hdr.mp4')
+  // No normalizedInPoint → origin = inPoint (3.5) → rebased inPoint = 0, outPoint = 5.0
   assert.equal(videoItems[0].inPoint, 0)
-  assert.equal(videoItems[0].outPoint, 8.5)  // outPoint untouched
+  assert.equal(videoItems[0].outPoint, 5.0)
+})
+
+test('collectAllItems: normalizedSrc with normalizedInPoint rebases by origin (trim-after-cache)', () => {
+  // Cache was built at origin 0 (normalizedInPoint=0). User trimmed start to 0.9157.
+  // effectiveInPoint = 0.9157 - 0 = 0.9157; effectiveOutPoint = 16.97 - 0 = 16.97.
+  const project = {
+    tracks: [
+      [{ id: 'v', type: 'video', src: '/orig.mp4', normalizedSrc: '/orig_norm.mp4', normalizedInPoint: 0, start: 0, end: 16.0543, inPoint: 0.9157, outPoint: 16.97 }],
+    ],
+  }
+  const { videoItems } = collectAllItems(project)
+  assert.ok(Math.abs(videoItems[0].inPoint  - 0.9157) < 0.0001)
+  assert.ok(Math.abs(videoItems[0].outPoint - 16.97)  < 0.0001)
 })
 
 test('collectAllItems: without normalizedSrc, src and inPoint are unchanged', () => {
