@@ -4,8 +4,11 @@ These tests deliberately avoid running materialize_cut/transcribe/caption
 end-to-end (those need real media + whisper). They cover the unit-testable
 caption-theme merge and style-default logic, plus the scan_steps discovery.
 """
+import asyncio
 import importlib.util
+import json
 import os
+from pathlib import Path
 
 import pytest
 
@@ -102,3 +105,63 @@ def test_resolve_style_defaults_to_pop():
 def test_scan_steps_discovers_generate_captions():
     from serve.routes.steps import scan_steps
     assert "generate_captions" in scan_steps()
+
+
+# ── stderr-tail regression test ──────────────────────────────────────────────
+
+class _FakeBroadcaster:
+    """Minimal broadcaster stub: records every published frame."""
+    def __init__(self):
+        self.frames: list[str] = []
+
+    def publish(self, project_id: str, frame: str) -> None:
+        self.frames.append(frame)
+
+
+def test_caption_pipeline_stderr_tail_in_error(tmp_path):
+    """When materialize_cut exits 1 (missing src), CaptionPipelineError.message
+    carries the stderr tail and the fake broadcaster records it too."""
+    from serve.routes.projects import _run_caption_pipeline, CaptionPipelineError
+
+    project_dir = tmp_path / "proj"
+    project_dir.mkdir()
+
+    # Minimal project: one video clip pointing at a non-existent file.
+    # build_cut_spec will produce a single-source {"input", "keeps"} spec.
+    project = {
+        "tracks": [[
+            {
+                "type": "video",
+                "src": "/nonexistent/none.mov",
+                "start": 0.0,
+                "inPoint": 0.0,
+                "outPoint": 2.0,
+            }
+        ]]
+    }
+
+    broadcaster = _FakeBroadcaster()
+
+    with pytest.raises(CaptionPipelineError) as exc_info:
+        asyncio.run(_run_caption_pipeline(
+            "test-project-id",
+            project_dir,
+            project,
+            model="base.en",
+            language="auto",
+            style="pop",
+            broadcaster=broadcaster,
+            on_log=None,
+            is_disconnected=None,
+        ))
+
+    msg = exc_info.value.message
+    assert "materialize_cut failed (exit 1)" in msg, f"unexpected message: {msg!r}"
+    assert "--- stderr tail ---" in msg, f"stderr tail header missing: {msg!r}"
+    assert "file_not_found" in msg, f"file_not_found error missing: {msg!r}"
+
+    # The broadcaster must have recorded at least the error frame containing the tail.
+    combined = "\n".join(broadcaster.frames)
+    assert "--- stderr tail ---" in combined, (
+        f"broadcaster did not record the tail. frames: {broadcaster.frames!r}"
+    )

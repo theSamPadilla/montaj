@@ -12,6 +12,7 @@ import shutil
 import signal
 import subprocess
 import sys
+from collections import deque
 from datetime import datetime
 from pathlib import Path
 
@@ -1574,6 +1575,7 @@ async def _run_caption_pipeline(
                 except Exception:
                     pass
 
+        tail = deque(maxlen=40)
         disconnected = False
         while True:
             if is_disconnected is not None and await is_disconnected():
@@ -1584,8 +1586,10 @@ async def _run_caption_pipeline(
             if not line:
                 break
             text = line.decode().rstrip()
-            if text and on_log is not None:
-                on_log(label, text)
+            if text:
+                tail.append(text)
+                if on_log is not None:
+                    on_log(label, text)
 
         if disconnected:
             return None
@@ -1594,7 +1598,12 @@ async def _run_caption_pipeline(
         await proc.wait()
 
         if proc.returncode != 0:
-            raise CaptionPipelineError(f"{label} failed (exit {proc.returncode})")
+            tail_text = "\n".join(tail)
+            msg = f"{label} failed (exit {proc.returncode})"
+            if tail_text:
+                msg = f"{msg}\n--- stderr tail ---\n{tail_text}"
+            broadcaster.publish(project_id, f"event: log\ndata: {json.dumps({'message': msg})}\n\n")
+            raise CaptionPipelineError(msg)
 
     # Persist the caption track onto the project and broadcast.
     track = json.loads(track_path.read_text())

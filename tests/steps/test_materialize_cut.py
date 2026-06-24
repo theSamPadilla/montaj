@@ -9,7 +9,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).parent.parent.parent / "steps" / "transform"))
 from materialize_cut import build_ffmpeg_args, compute_keeps
 
-from tests.conftest import assert_error, assert_file_output, run_step
+from tests.conftest import assert_error, assert_file_output, run_step, HAS_FFMPEG
 
 
 # ── build_ffmpeg_args unit tests ──────────────────────────────────────────────
@@ -195,3 +195,104 @@ def test_materialize_inpoint_and_cuts_combined(tmp_path, test_video):
 def test_materialize_missing_input():
     proc = run_step("materialize_cut.py", "--input", "/no/such.mp4")
     assert_error(proc)
+
+
+# ── concat normalisation unit tests ──────────────────────────────────────────
+
+def test_concat_inputs_are_conformed():
+    """Multi-segment spec → every input has yuv420p, setsar=1, aformat conforming."""
+    spec = {"input": "/v.mp4", "keeps": [[0.0, 1.0], [2.0, 3.0]]}
+    _, fc = build_ffmpeg_args(spec)
+    assert "format=yuv420p" in fc
+    assert "setsar=1" in fc
+    assert "aformat=sample_rates=48000" in fc
+
+
+def test_concat_inputs_are_conformed_multi_source():
+    """Multi-source segments spec also conforms every input."""
+    spec = {"segments": [
+        {"src": "/a.mp4", "in": 0.0, "out": 1.0},
+        {"src": "/b.mp4", "in": 0.5, "out": 1.5},
+    ]}
+    _, fc = build_ffmpeg_args(spec)
+    assert "format=yuv420p" in fc
+    assert "setsar=1" in fc
+    assert "aformat=sample_rates=48000" in fc
+
+
+def test_scale_spec_scales_and_pads_each_input():
+    """scale key → scale+pad appear once per input segment."""
+    spec = {"segments": [
+        {"src": "/a.mp4", "in": 0.0, "out": 1.0},
+        {"src": "/b.mp4", "in": 0.5, "out": 1.5},
+    ], "scale": [360, 640]}
+    _, fc = build_ffmpeg_args(spec)
+    assert fc.count("scale=360:640:force_original_aspect_ratio=decrease") == 2
+    assert fc.count("pad=360:640:") == 2
+
+
+def test_no_scale_key_means_no_scale_filter():
+    """Without scale key, scale= and pad= are absent; conforming still happens."""
+    spec = {"segments": [
+        {"src": "/a.mp4", "in": 0.0, "out": 1.0},
+        {"src": "/b.mp4", "in": 0.5, "out": 1.5},
+    ]}
+    _, fc = build_ffmpeg_args(spec)
+    assert "scale=" not in fc
+    assert "pad=" not in fc
+    # Conforming without resize must still be present
+    assert "format=yuv420p" in fc
+    assert "setsar=1" in fc
+
+
+# ── concat normalisation integration test ────────────────────────────────────
+
+def test_materialize_differing_sar_and_pixfmt(tmp_path, test_video):
+    """Two clips with different SAR / pixel format must concat cleanly (exit 0).
+
+    This is the regression test for the "Input link parameters do not match"
+    ffmpeg error that previously caused materialize_cut to exit 1.
+    """
+    if not HAS_FFMPEG:
+        pytest.skip("ffmpeg not available")
+
+    import subprocess as sp
+
+    # clip_a: yuv422p, SAR 4:3, 44100 Hz mono audio
+    # (unusual pixel format, non-square SAR, non-standard sample rate)
+    clip_a = tmp_path / "clip_a.mp4"
+    sp.run([
+        "ffmpeg", "-y",
+        "-f", "lavfi", "-i", "color=c=blue:s=640x480:r=30",
+        "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=44100",
+        "-t", "1",
+        "-vf", "setsar=4/3",
+        "-c:v", "libx264", "-pix_fmt", "yuv422p",
+        "-c:a", "aac",
+        str(clip_a),
+    ], check=True, capture_output=True)
+
+    # clip_b: default yuv420p, SAR 1:1, 48000 Hz stereo audio
+    # Same display resolution as clip_a (640x480) — only SAR/pixfmt/audio differ.
+    clip_b = tmp_path / "clip_b.mp4"
+    sp.run([
+        "ffmpeg", "-y",
+        "-f", "lavfi", "-i", "color=c=red:s=640x480:r=30",
+        "-f", "lavfi", "-i", "sine=frequency=880:sample_rate=48000",
+        "-t", "1",
+        "-c:v", "libx264", "-pix_fmt", "yuv420p",
+        "-c:a", "aac",
+        str(clip_b),
+    ], check=True, capture_output=True)
+
+    spec = {"segments": [
+        {"src": str(clip_a), "in": 0.0, "out": 1.0},
+        {"src": str(clip_b), "in": 0.0, "out": 1.0},
+    ]}
+    spec_path = tmp_path / "cut.json"
+    spec_path.write_text(json.dumps(spec))
+    out = tmp_path / "out.mp4"
+
+    proc = run_step("materialize_cut.py", "--input", str(spec_path), "--out", str(out))
+    assert proc.returncode == 0, f"materialize_cut failed (exit {proc.returncode}):\n{proc.stderr}"
+    assert_file_output(proc)

@@ -44,7 +44,7 @@ def run(cmd: list[str], timeout: int = 300, check: bool = True) -> subprocess.Co
     """Run a command without a shell, capture output."""
     r = subprocess.run(cmd, shell=False, capture_output=True, text=True, timeout=timeout)
     if check and r.returncode != 0:
-        fail("unexpected_error", f"Command failed: {' '.join(cmd)}\n{r.stderr[:500]}")
+        fail("unexpected_error", f"Command failed: {' '.join(cmd)}\n{r.stderr[:4000]}")
     return r
 
 

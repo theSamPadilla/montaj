@@ -47,24 +47,52 @@ def build_ffmpeg_args(spec: dict) -> tuple:
     (multi-source reaction/compilation cut); either way the segments are
     normalised and concatenated, in order, in the filter graph.
 
+    Every segment is conformed before concat: fps=30, setsar=1, format=yuv420p
+    (video) and aformat sample_rates=48000:channel_layouts=stereo:sample_fmts=fltp
+    (audio).  This guarantees that inputs from different source files —
+    potentially with different resolutions, SAR, pixel formats, or audio layouts
+    — are compatible with ffmpeg's concat filter ("Input link parameters do not
+    match" errors are eliminated).
+
+    An optional ``scale`` key in the spec — a 2-element [W, H] list of even ints
+    — scales each segment down (preserving aspect ratio, pillar/letterboxed) to
+    the requested dimensions before concat.  Useful for caption-only cuts where
+    small, uniform dimensions reduce transcode time without affecting audio quality.
+
     This avoids the trim/split filter pattern which forces a full file decode
     regardless of the requested segment position.
     """
-    segs = _spec_segments(spec)
-    n    = len(segs)
+    segs  = _spec_segments(spec)
+    n     = len(segs)
+    scale = spec.get("scale")  # None or [W, H]
 
     input_args = []
     for src, s, e in segs:
         input_args += ["-ss", f"{s:.4f}", "-t", f"{e - s:.4f}", "-i", src]
 
+    def _vchain(idx):
+        parts = [f"[{idx}:v]setpts=PTS-STARTPTS", "fps=30"]
+        if scale:
+            W, H = int(scale[0]), int(scale[1])
+            parts.append(f"scale={W}:{H}:force_original_aspect_ratio=decrease")
+            parts.append(f"pad={W}:{H}:(ow-iw)/2:(oh-ih)/2")
+        parts.append("setsar=1")
+        parts.append("format=yuv420p")
+        return ",".join(parts) + f"[vc{idx}]"
+
+    def _achain(idx):
+        return (f"[{idx}:a]asetpts=PTS-STARTPTS,"
+                "aformat=sample_rates=48000:channel_layouts=stereo:sample_fmts=fltp"
+                f"[ac{idx}]")
+
     filter_parts = []
     if n == 1:
-        filter_parts.append("[0:v]setpts=PTS-STARTPTS,fps=30[vout]")
-        filter_parts.append("[0:a]asetpts=PTS-STARTPTS[aout_raw]")
+        filter_parts.append(_vchain(0).replace("[vc0]", "[vout]"))
+        filter_parts.append(_achain(0).replace("[ac0]", "[aout_raw]"))
     else:
         for i in range(n):
-            filter_parts.append(f"[{i}:v]setpts=PTS-STARTPTS,fps=30[vc{i}]")
-            filter_parts.append(f"[{i}:a]asetpts=PTS-STARTPTS[ac{i}]")
+            filter_parts.append(_vchain(i))
+            filter_parts.append(_achain(i))
         seg_in = "".join(f"[vc{i}][ac{i}]" for i in range(n))
         filter_parts.append(f"{seg_in}concat=n={n}:v=1:a=1[vout][aout_raw]")
 
