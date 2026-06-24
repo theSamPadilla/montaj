@@ -84,6 +84,31 @@ function OverlayVideo({ src, currentTime, itemStart, inPoint, isPlaying, muted, 
 }
 
 // ---------------------------------------------------------------------------
+// Recursively rewrite absolute workspace path strings in overlay props to
+// servable proxy URLs (via fileUrl), so <img src> resolves in the browser
+// preview. Mirrors the render-side rewritePathsToFileUrls (bundle.js), which
+// already recurses — without this, image paths nested in array/object props
+// (e.g. players[].src, items[].src) reach <img> raw as /var/hub-scratch/... and
+// render blank in preview even though they render correctly in the final MP4.
+// Already-proxied /api/ URLs are left untouched (idempotent).
+export function resolveOverlayPropPaths(
+  value: unknown,
+  fileUrl: (path: string) => string,
+): unknown {
+  if (typeof value === 'string') {
+    return value.startsWith('/') && !value.startsWith('/api/') ? fileUrl(value) : value
+  }
+  if (Array.isArray(value)) {
+    return value.map((v) => resolveOverlayPropPaths(v, fileUrl))
+  }
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(
+      Object.entries(value).map(([k, v]) => [k, resolveOverlayPropPaths(v, fileUrl)]),
+    )
+  }
+  return value
+}
+
 // CustomOverlay: fetches, compiles, and renders a custom JSX overlay file
 //
 // Live overlay-edit reload behavior (Montaj host):
@@ -158,14 +183,7 @@ function CustomOverlay({
 
   if (!factory) return null
 
-  const resolvedProps = Object.fromEntries(
-    Object.entries(props).map(([k, v]) => [
-      k,
-      typeof v === 'string' && v.startsWith('/') && !v.startsWith('/api/')
-        ? fileUrl(v)
-        : v,
-    ]),
-  )
+  const resolvedProps = resolveOverlayPropPaths(props, fileUrl) as Record<string, unknown>
 
   const element = factory(frame, fps, durationFrames, resolvedProps)
   if (!element) return null
