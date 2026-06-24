@@ -61,6 +61,16 @@ const STEPPER_PHASES: RenderPhase[] = RENDER_PHASES.filter(p => p !== 'done')
 
 const POLL_INTERVAL_MS = 2500
 
+/**
+ * Consecutive status-poll failures tolerated before the modal declares the
+ * render failed. A multi-minute 4K render polls many times; a transient network
+ * blip (a Cloudflare-tunnel hiccup, a backend redeploy, a flaky hop) must not be
+ * mistaken for a render failure — the render keeps running server-side. ~12 ×
+ * 2.5s ≈ 30s of continuous unreachability before giving up. An explicit backend
+ * `error` status is still terminal immediately.
+ */
+const MAX_POLL_FAILURES = 12
+
 // ── Stepper ───────────────────────────────────────────────────────────────────
 
 function PhaseStepper({ current }: { current: RenderPhase }) {
@@ -144,16 +154,28 @@ export default function RenderModal<P extends Project = Project>({ projectId, ad
           await adapter.renderAsync!(projectId)
           if (unmountedRef.current || cancelledRef.current) return
 
+          let pollFailures = 0
           const tick = async () => {
             if (unmountedRef.current || cancelledRef.current) return
             let snap: RenderStatus
             try {
               snap = await adapter.getRenderStatus!(projectId)
+              pollFailures = 0
             } catch (e) {
               if (unmountedRef.current || cancelledRef.current) return
-              stopPolling()
-              setError(e instanceof Error ? e.message : String(e))
-              setStatus('error')
+              // A transient network blip (Cloudflare-tunnel hiccup, a backend
+              // redeploy, a flaky hop) must NOT be mistaken for a render
+              // failure — the render is still running server-side. This is what
+              // surfaced as "Render failed: Failed to fetch" while the render
+              // actually completed and was delivered. Keep polling; only give
+              // up after MAX_POLL_FAILURES consecutive failures. An explicit
+              // { status: 'error' } reply is still terminal (handled below).
+              pollFailures += 1
+              if (pollFailures >= MAX_POLL_FAILURES) {
+                stopPolling()
+                setError(e instanceof Error ? e.message : String(e))
+                setStatus('error')
+              }
               return
             }
             if (unmountedRef.current || cancelledRef.current) return

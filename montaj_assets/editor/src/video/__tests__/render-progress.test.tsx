@@ -172,6 +172,56 @@ describe('RenderModal (poll-driven)', () => {
     expect(screen.getByText(/interrupted on the server/i)).toBeTruthy()
     expect(screen.getByText('Close')).toBeTruthy()
   })
+
+  it('tolerates a transient poll failure and still completes', async () => {
+    vi.useFakeTimers()
+    // poll #1 throws (network blip), then it recovers and finishes. The modal
+    // must NOT flip to "Render failed" on the transient throw — the render is
+    // still running server-side.
+    const steps: Array<() => RenderStatus> = [
+      () => { throw new Error('Failed to fetch') },
+      () => ({ status: 'running', phase: 'rendering' } as RenderStatus),
+      () => ({ status: 'done', phase: 'done', media: [DONE_MEDIA] } as RenderStatus),
+    ]
+    let call = 0
+    const adapter = baseAdapter()
+    adapter.renderAsync = vi.fn(async () => ({ status: 'running' }))
+    adapter.getRenderStatus = vi.fn(async () => steps[Math.min(call++, steps.length - 1)]())
+
+    render(<RenderModal adapter={adapter} projectId="vid-1" onClose={vi.fn()} />)
+
+    // Kick + the first poll (which throws) — still "Rendering…", not failed.
+    await act(async () => { for (let i = 0; i < 10; i++) await Promise.resolve() })
+    expect(screen.queryByText('Render failed')).toBeNull()
+    expect(screen.getByText('Rendering…')).toBeTruthy()
+
+    // Subsequent polls recover → running → done.
+    await act(async () => { await vi.advanceTimersByTimeAsync(2500) })
+    await act(async () => { await vi.advanceTimersByTimeAsync(2500) })
+
+    vi.useRealTimers()
+    await waitFor(() => {
+      expect(document.querySelector('video')?.getAttribute('src')).toBe('https://r2/x.mp4')
+    })
+  })
+
+  it('gives up only after sustained consecutive poll failures', async () => {
+    vi.useFakeTimers()
+    const adapter = baseAdapter()
+    adapter.renderAsync = vi.fn(async () => ({ status: 'running' }))
+    adapter.getRenderStatus = vi.fn(async () => { throw new Error('Failed to fetch') })
+
+    render(<RenderModal adapter={adapter} projectId="vid-1" onClose={vi.fn()} />)
+
+    // First poll throws — still running, NOT failed (one blip is tolerated).
+    await act(async () => { for (let i = 0; i < 10; i++) await Promise.resolve() })
+    expect(screen.queryByText('Render failed')).toBeNull()
+
+    // Keep failing past MAX_POLL_FAILURES (~12 × 2.5s) → terminal error.
+    await act(async () => { await vi.advanceTimersByTimeAsync(2500 * 15) })
+    expect(screen.getByText('Render failed')).toBeTruthy()
+    expect(screen.getByText('Failed to fetch')).toBeTruthy()
+  })
 })
 
 // ── Component (SSE fallback when poll methods absent) ──────────────────────────
