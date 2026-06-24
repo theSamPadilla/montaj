@@ -128,6 +128,24 @@ _EN_TO_MULTILINGUAL = {
     "tiny.en": "tiny", "base.en": "base", "small.en": "small", "medium.en": "medium",
 }
 
+# Whisper weights live in the Montaj-managed model dir; older installs may still
+# have whisper.cpp's legacy directory, so both are checked. Module-level so tests
+# can point it at a scratch dir.
+LEGACY_WHISPER_DIR = os.path.expanduser("~/.local/share/whisper.cpp/models")
+
+
+def whisper_weight_path(name: str):
+    """Path to ``ggml-<name>.bin`` (managed dir first, then the legacy
+    whisper.cpp dir), or None if the weight is not installed."""
+    import models as _models
+    managed = _models.model_path("whisper", f"ggml-{name}.bin")
+    if os.path.isfile(managed):
+        return managed
+    legacy = os.path.join(LEGACY_WHISPER_DIR, f"ggml-{name}.bin")
+    if os.path.isfile(legacy):
+        return legacy
+    return None
+
 
 def resolve_whisper_model(model: str, language: str) -> str:
     """Pick the right whisper model for *language*.
@@ -135,9 +153,11 @@ def resolve_whisper_model(model: str, language: str) -> str:
     English (or unspecified) → *model* unchanged. For any other language (or
     ``auto``), an English-only ``*.en`` model is swapped for a multilingual one:
     its same-size sibling when present, else the best installed multilingual
-    weight. Already-multilingual models pass through untouched.
+    weight. If the audio is non-English but no multilingual weight is installed,
+    fail with an actionable message (instead of returning a model whose file is
+    missing, which would surface later as a cryptic file-not-found). Already-
+    multilingual models pass through untouched.
     """
-    import models as _models
     lang = (language or "en").strip().lower()
     if lang in ("en", "english"):
         return model
@@ -147,9 +167,12 @@ def resolve_whisper_model(model: str, language: str) -> str:
     # Prefer the same-size sibling, then progressively more capable installed
     # weights. dict.fromkeys dedups when the sibling already appears in the chain.
     for cand in dict.fromkeys([sibling, "medium", "large-v3", "large", "base"]):
-        if os.path.isfile(_models.model_path("whisper", f"ggml-{cand}.bin")):
+        if whisper_weight_path(cand) is not None:
             return cand
-    return sibling  # nothing installed — let the caller's require_file raise clearly
+    fail("missing_multilingual_model",
+         f"language={language!r} needs a multilingual whisper model, but only "
+         f"English-only (*.en) weights are installed. Install one with: "
+         f"montaj models download {sibling}")
 
 
 def transcribe_words(input_path: str, model: str = "base.en", work_dir: str = None,
@@ -177,13 +200,9 @@ def transcribe_words(input_path: str, model: str = "base.en", work_dir: str = No
 
         import models as _models
         model = resolve_whisper_model(model, language)
-        model_file = _models.model_path("whisper", f"ggml-{model}.bin")
-        # Fall back to old brew-installed path for existing users
-        if not os.path.isfile(model_file):
-            old_path = os.path.expanduser(f"~/.local/share/whisper.cpp/models/ggml-{model}.bin")
-            if os.path.isfile(old_path):
-                model_file = old_path
-        require_file(model_file)  # fails with clear error if neither path works
+        # Managed dir first, then the legacy whisper.cpp dir for older installs.
+        model_file = whisper_weight_path(model) or _models.model_path("whisper", f"ggml-{model}.bin")
+        require_file(model_file)  # fails with a clear error if the model isn't installed
         whisper_bin = find_whisper_bin()
 
         prefix = os.path.join(work_dir, "out")

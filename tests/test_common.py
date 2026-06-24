@@ -134,9 +134,13 @@ def test_find_whisper_bin_falls_back_to_path(tmp_path, monkeypatch):
 
 @pytest.fixture
 def fake_models(tmp_path, monkeypatch):
-    """Point the model registry at a tmp dir; create the given whisper weights."""
+    """Point the model registry at a tmp dir; create the given whisper weights.
+
+    Also redirects the legacy whisper.cpp dir to a nonexistent path so resolution
+    is deterministic regardless of what's installed on the host."""
     import models
     monkeypatch.setattr(models, "MONTAJ_MODELS_DIR", str(tmp_path))
+    monkeypatch.setattr(common, "LEGACY_WHISPER_DIR", str(tmp_path / "no-legacy"))
     wdir = tmp_path / "whisper"
     wdir.mkdir()
     def _install(*names):
@@ -169,3 +173,27 @@ def test_resolve_falls_back_when_sibling_missing(fake_models):
     # medium (multilingual) not installed → fall back to an installed multilingual weight
     fake_models("medium.en", "large")
     assert common.resolve_whisper_model("medium.en", "es") == "large"
+
+
+def test_resolve_fails_clearly_when_no_multilingual_installed(fake_models, capsys):
+    # Only the English-only weight is present; a non-English request must fail with
+    # an actionable message instead of returning a missing model name.
+    fake_models("base.en")
+    with pytest.raises(SystemExit) as exc:
+        common.resolve_whisper_model("base.en", "es")
+    assert exc.value.code == 1
+    err = json.loads(capsys.readouterr().err)
+    assert err["error"] == "missing_multilingual_model"
+    assert "montaj models download base" in err["message"]
+
+
+def test_resolve_finds_weight_in_legacy_dir(tmp_path, monkeypatch):
+    # A multilingual weight present only in the legacy whisper.cpp dir still counts.
+    import models
+    monkeypatch.setattr(models, "MONTAJ_MODELS_DIR", str(tmp_path / "managed"))
+    (tmp_path / "managed" / "whisper").mkdir(parents=True)
+    legacy = tmp_path / "legacy"
+    legacy.mkdir()
+    (legacy / "ggml-base.bin").write_bytes(b"x")
+    monkeypatch.setattr(common, "LEGACY_WHISPER_DIR", str(legacy))
+    assert common.resolve_whisper_model("base.en", "es") == "base"

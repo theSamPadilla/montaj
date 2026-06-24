@@ -20,7 +20,8 @@ def register(subparsers):
 
     whisper_p = sub.add_parser("whisper", help="whisper-cpp binary + model weights")
     whisper_p.add_argument("--model", default="base.en",
-                           help="Whisper model to download (default: base.en)")
+                           help="English model to download (default: base.en). The multilingual "
+                                "'base' weight is always added too, for non-English audio.")
 
     sub.add_parser("rvm",    help="torch/torchvision/av + RVM weights")
     sub.add_parser("demucs", help="Demucs stem separation + htdemucs model weights")
@@ -38,7 +39,7 @@ def handle(args):
         return
     ok = True
     if args.component == "all":
-        ok &= _ensure_whisper("base.en")
+        ok &= _ensure_whisper(["base.en", "base"])
         ok &= _ensure_rvm()
         ok &= _ensure_demucs()
         ok &= _ensure_connectors()
@@ -61,8 +62,15 @@ def handle(args):
         sys.exit(1)
 
 
-def _ensure_whisper(model: str = "base.en") -> bool:
+def _ensure_whisper(models="base.en") -> bool:
     """Install the whisper-cli binary (via Homebrew on macOS) and download model weights.
+
+    *models* is a model name or a list of names. The multilingual ``base`` weight
+    is always included alongside whatever is requested: the speech steps
+    (transcribe / rm_nonspeech / rm_fillers) auto-upgrade an English-only ``*.en``
+    model to its multilingual sibling for non-English audio, and ``base`` is that
+    sibling for the default ``base.en``. Without it, the first non-English clip
+    fails with "model not installed".
 
     Note: ggerganov/whisper.cpp moved to ggml-org/whisper.cpp and stopped
     publishing pre-built macOS/Linux tarballs. We delegate the binary install
@@ -75,16 +83,23 @@ def _ensure_whisper(model: str = "base.en") -> bool:
     if not _ensure_whisper_binary():
         return False
 
-    if not is_downloaded(model):
-        print(f"{cyan('→')} downloading whisper model {bold(model)}\u2026")
-        try:
-            _download_model(model)
+    if isinstance(models, str):
+        models = [models]
+    # Always guarantee the multilingual base weight so non-English audio works.
+    wanted = list(dict.fromkeys([*models, "base"]))
+
+    ok = True
+    for model in wanted:
+        if not is_downloaded(model):
+            print(f"{cyan('→')} downloading whisper model {bold(model)}…")
+            try:
+                _download_model(model)
+                print(f"{green('✓')} whisper model {bold(model)}")
+            except (Exception, SystemExit):
+                ok = False
+        else:
             print(f"{green('✓')} whisper model {bold(model)}")
-        except (Exception, SystemExit):
-            return False
-    else:
-        print(f"{green('✓')} whisper model {bold(model)}")
-    return True
+    return ok
 
 
 def _ensure_whisper_binary() -> bool:

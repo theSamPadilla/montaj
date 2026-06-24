@@ -7,7 +7,7 @@ Exit codes:
 """
 import os, re, subprocess, sys, shutil
 from cli.main import add_global_flags
-from cli.deps import check_ui, whisper_bin_path, is_dev_checkout, BUILD_CACHE_DIR
+from cli.deps import check_ui, whisper_bin_path, whisper_model_path, is_dev_checkout, BUILD_CACHE_DIR
 from cli.help import bold, green, red, yellow, cyan, dim
 
 
@@ -146,6 +146,18 @@ def handle(args):
     whisper_path = whisper_bin_path()
     if whisper_path:
         print(f"  {green('✓')} {bold('whisper-cli')}: {dim(whisper_path)}")
+        # Model weights. base.en is the English default; the multilingual `base`
+        # is what the speech steps auto-upgrade to for non-English audio — without
+        # it, the first non-English clip fails. Both are recommendations, not hard
+        # requirements (English-only setups don't need `base`), so neither flips `ok`.
+        if whisper_model_path("base.en"):
+            print(f"    {green('✓')} model: base.en {dim('(English default)')}")
+        else:
+            print(f"    {yellow('○')} model: base.en {dim('— not downloaded; run')} {cyan('montaj install whisper')}")
+        if whisper_model_path("base"):
+            print(f"    {green('✓')} model: base {dim('(multilingual)')}")
+        else:
+            print(f"    {yellow('○')} model: base {dim('(multilingual) — needed for non-English audio; run')} {cyan('montaj models download base')}")
     else:
         print(f"  {yellow('○')} {bold('whisper-cli')}: {dim('not installed (optional — run')} {cyan('montaj install whisper')}{dim(')')}")
 
