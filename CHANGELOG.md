@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v3.5.1
+
 - **Install wizard provisions multilingual whisper by default, so non-English audio works out of the box.** v3.5.0's auto-upgrade (`base.en` → multilingual `base` for non-English) silently assumed a multilingual weight was installed — but `montaj install` only laid down the English-only `base.en`, so a fresh install would fail on the first non-English clip. `montaj install` (and `install whisper`) now always download the multilingual `base` (74 MB, same size as `base.en`) alongside the requested English model. (`cli/commands/install.py`)
 - **`resolve_whisper_model` fails with an actionable message when non-English audio is requested but no multilingual weight is installed** — `"language='es' needs a multilingual whisper model… run: montaj models download base"` — instead of returning a missing model name that later surfaced as a cryptic file-not-found. Resolution and `transcribe_words` now share a `whisper_weight_path()` helper that checks the managed dir then the legacy whisper.cpp dir. (`lib/common.py`)
 - **`montaj doctor` reports whisper model status** — `base.en` (English) and `base` (multilingual) — as recommendations (non-blocking, since English-only setups don't need the multilingual weight), pointing at `montaj models download base` when it's missing. (`cli/commands/doctor.py`)
