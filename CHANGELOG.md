@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- docs(image-search): note Hub `ingest_media` as the way to register a fetched image into Media.
+- Captions: support multi-source timelines. Caption generation (the
+  `POST /api/projects/{id}/captions` route and the `generate_captions` step) no
+  longer aborts with `multi_source` when `tracks[0]` concatenates several source
+  files (a normal reaction/compilation cut). The cut is composed from all
+  primary-track clips, in order, into one MP4 (`materialize_cut` now accepts a
+  `{"segments":[{"src","in","out"}]}` spec alongside the single-source
+  `{"input","keeps"}` shape); transcription runs over that output, so word
+  timings map 1:1 to the final timeline. Single-source behaviour is unchanged.
+
 ## v3.4.1
 
 - **Fixed: `rm_nonspeech` could emit an outpoint past the source duration.** On the raw-video branch the last speech region's end was `last_word_end + sentence_edge` with no clamp — whisper word offsets can land at/just past true EOF, so a 16.97s clip produced keeps ending at e.g. 17.25s (physically impossible downstream). Every keep is now clamped to `[0, get_duration(input)]` and zero-length keeps are dropped. The trim-spec branch was already bounded by the input keeps and is unchanged. (`steps/speech/rm_nonspeech.py`)

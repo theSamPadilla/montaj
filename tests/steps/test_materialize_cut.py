@@ -47,6 +47,26 @@ def test_filter_string_terminates_with_aresample():
     assert "aresample=async=1000" in fc
 
 
+def test_multi_source_segments_open_distinct_inputs():
+    # Multi-source spec → one -i per segment, each its OWN src, concatenated.
+    spec = {"segments": [
+        {"src": "/a.mp4", "in": 0.0, "out": 2.0},
+        {"src": "/b.mp4", "in": 1.0, "out": 3.0},
+    ]}
+    args, fc = build_ffmpeg_args(spec)
+    assert args.count("-i") == 2
+    assert "/a.mp4" in args and "/b.mp4" in args
+    assert "concat=n=2" in fc
+    assert fc.endswith("[aout]")
+
+
+def test_single_segment_spec_no_concat():
+    spec = {"segments": [{"src": "/a.mp4", "in": 0.0, "out": 2.0}]}
+    _, fc = build_ffmpeg_args(spec)
+    assert "concat" not in fc
+    assert "[vout]" in fc
+
+
 # ── compute_keeps unit tests ───────────────────────────────────────────────────
 
 def test_compute_keeps_basic():
@@ -83,6 +103,36 @@ def test_materialize_from_trim_spec(tmp_path, test_video):
     proc = run_step("materialize_cut.py", "--input", str(p), "--out", str(out))
     assert proc.returncode == 0, proc.stderr
     assert_file_output(proc)
+
+
+def test_materialize_multi_source_segments(tmp_path, test_video):
+    # A multi-source cut (two distinct files) composes into one mp4.
+    import shutil
+    second = tmp_path / "second.mp4"
+    shutil.copy(test_video, second)
+    spec = {"segments": [
+        {"src": str(test_video), "in": 0.0, "out": 1.0},
+        {"src": str(second),     "in": 0.5, "out": 1.5},
+    ]}
+    p = tmp_path / "cut.json"
+    p.write_text(json.dumps(spec))
+    out = tmp_path / "out.mp4"
+
+    proc = run_step("materialize_cut.py", "--input", str(p), "--out", str(out))
+    assert proc.returncode == 0, proc.stderr
+    assert_file_output(proc)
+
+
+def test_materialize_missing_segment_source_errors(tmp_path, test_video):
+    # A segment pointing at a missing file fails cleanly (require_file).
+    spec = {"segments": [
+        {"src": str(test_video), "in": 0.0, "out": 1.0},
+        {"src": "/no/such/file.mp4", "in": 0.0, "out": 1.0},
+    ]}
+    p = tmp_path / "cut.json"
+    p.write_text(json.dumps(spec))
+    proc = run_step("materialize_cut.py", "--input", str(p), "--out", str(tmp_path / "o.mp4"))
+    assert_error(proc)
 
 
 def test_materialize_trims_to_duration(tmp_path, test_video):

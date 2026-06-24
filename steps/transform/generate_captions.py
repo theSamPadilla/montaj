@@ -2,8 +2,9 @@
 """Generate a project's caption track server-side, writing project["captions"].
 
 CLI-subprocess equivalent of the /projects/{id}/captions SSE route. Given a
-project id, it derives the single-source cut from the primary track, then runs
-the full pipeline as subprocesses:
+project id, it derives the cut spec from the primary track (single- or
+multi-source — a multi-source timeline composes all tracks[0] clips, in order,
+into one MP4), then runs the full pipeline as subprocesses:
 
   1. materialize_cut — render the trimmed timeline to a plain MP4.
   2. transcribe      — multilingual, output-time word timings (plain video in,
@@ -30,7 +31,7 @@ from common import fail, run  # noqa: E402
 
 sys.path.insert(0, MONTAJ_ROOT)
 from serve.common import get_project_dir  # noqa: E402
-from serve.caption_job import extract_keeps  # noqa: E402
+from serve.caption_job import build_cut_spec  # noqa: E402
 
 # Caption-theme keys carried forward from a prior caption track. Mirrors the
 # SSE route's merge in serve/routes/projects.py.
@@ -87,7 +88,7 @@ def main():
         fail("project_not_found", f"project.json for {args.project_id} not found")
 
     try:
-        source, keeps = extract_keeps(project)
+        cut_spec = build_cut_spec(project)
     except ValueError as e:
         fail("extract_keeps_failed", str(e))
 
@@ -106,9 +107,9 @@ def main():
     track_path = os.path.join(d, "_caption_track.json")
 
     try:
-        # 1. Write the trim spec.
+        # 1. Write the cut spec (single- or multi-source).
         with open(cut_spec_path, "w") as f:
-            json.dump({"input": source, "keeps": keeps}, f)
+            json.dump(cut_spec, f)
 
         # 2. Materialise the trimmed timeline to a plain MP4.
         run([sys.executable, materialize_cut_py,

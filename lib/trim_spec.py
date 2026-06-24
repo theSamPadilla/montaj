@@ -21,6 +21,25 @@ def is_trim_spec(path: str) -> bool:
         return False
 
 
+def is_cut_spec(path: str) -> bool:
+    """Return True if path is a JSON cut spec — either the single-source
+    ``{"input", "keeps"}`` trim-spec shape or the multi-source
+    ``{"segments": [{"src", "in", "out"}, ...]}`` shape.
+
+    Broader than ``is_trim_spec``; use where multi-source concatenation is
+    supported (e.g. the caption cut). ``is_trim_spec`` is deliberately left
+    narrow so single-source-only callers (transcribe, rm_fillers, rm_nonspeech)
+    keep rejecting the multi-source shape."""
+    if not isinstance(path, str) or not path.endswith(".json"):
+        return False
+    try:
+        with open(path, "r") as f:
+            data = json.load(f)
+        return ("input" in data and "keeps" in data) or "segments" in data
+    except Exception:
+        return False
+
+
 def merge(keeps: list, cuts: list) -> list:
     """Remove cut ranges from keeps. All timestamps are in original source timeline."""
     MIN_SEGMENT = 0.02

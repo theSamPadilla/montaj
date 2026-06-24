@@ -44,6 +44,10 @@ Run step `fetch_image` with the following args. Downloads one HTTPS URL to a wor
 
 Output: `{ "path": "/abs/path/to/file.jpg" }`. Some hosts return `403` to non-browser fetches — if one fails, run step `fetch_image` with the next candidate instead of fighting it.
 
+> To register a fetched image into Hub Media (R2-backed, survives in the library), call
+> `hub.ingest_media({ projectId, items: [{ workspacePath: "<absolute fetch_image out path>" }] })`.
+> Do not hand-roll `create_media` + presigned PUT.
+
 ## Picking the right image
 
 Search returns more than you need. Before committing:

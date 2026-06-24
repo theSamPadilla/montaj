@@ -26,7 +26,7 @@ from serve.common import (
     not_found, bad_request, forbidden, server_error,
     validate_project_subpath, _is_under,
 )
-from serve.caption_job import extract_keeps
+from serve.caption_job import build_cut_spec
 from serve.routes.files import save_upload
 from lib.remote_io import fetch_to_disk_async, push_from_disk_async, parse_allowed_hosts
 from project.init import _copy_into_workspace
@@ -1405,7 +1405,9 @@ async def generate_captions(
     progress as SSE log/done/error events.
 
     Pipeline (all subprocesses, stderr streamed as `log` events):
-      1. extract_keeps  — derive the single-source cut from the primary track.
+      1. build_cut_spec  — derive the cut spec from the primary track
+                           (single- or multi-source; multi-source composes all
+                           tracks[0] clips, in order, into one MP4).
       2. materialize_cut — render the trimmed timeline to a plain MP4.
       3. transcribe      — multilingual, language-auto-detecting, OUTPUT-time
                            word timings (plain video in, NOT a trim spec).
@@ -1454,15 +1456,17 @@ async def generate_captions(
 
     async def event_stream():
         try:
-            # 1. Derive the cut from the primary track.
+            # 1. Derive the cut spec from the primary track (single- or
+            #    multi-source). Multi-source composes all tracks[0] clips into
+            #    one MP4; output-time word timings then map 1:1 to the timeline.
             try:
-                source, keeps = extract_keeps(project)
+                cut_spec = build_cut_spec(project)
             except ValueError as e:
                 yield f"event: error\ndata: {str(e)}\n\n"
                 return
 
-            # 2. Write the trim spec.
-            cut_spec_path.write_text(json.dumps({"input": source, "keeps": keeps}))
+            # 2. Write the cut spec.
+            cut_spec_path.write_text(json.dumps(cut_spec))
 
             # Each step is run as a subprocess with its stderr streamed as `log`
             # events. The loop is inlined (not a helper) because an inner

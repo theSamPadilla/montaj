@@ -15,32 +15,47 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "lib"))
 from common import fail, require_file, check_output, run, get_duration
-from trim_spec import is_trim_spec, load as load_spec, merge as merge_keeps
+from trim_spec import is_trim_spec, is_cut_spec, load as load_spec, merge as merge_keeps
 
 
 EDGE_THRESHOLD = 0.05  # seconds — cuts within 50ms of edges are treated as edge cuts
 DEFAULT_WORKERS = 2    # max concurrent encodes — each libx264 pass is memory-heavy at 4K
 
 
+def _spec_segments(spec: dict) -> list:
+    """Normalise a cut spec to an ordered ``[(src, start, end), ...]`` list.
+
+    Single-source ``{"input", "keeps"}`` → every segment reuses the same src.
+    Multi-source  ``{"segments": [{"src", "in", "out"}, ...]}`` → each segment
+    carries its own src. The downstream filter graph is identical either way —
+    it concatenates by input index and is agnostic to which file each came from.
+    """
+    if "segments" in spec:
+        return [(s["src"], float(s["in"]), float(s["out"])) for s in spec["segments"]]
+    source = spec["input"]
+    return [(source, float(s), float(e)) for s, e in spec["keeps"]]
+
+
 def build_ffmpeg_args(spec: dict) -> tuple:
     """
     Build (input_args, filter_complex_string) using input-level seeking.
 
-    Each keep segment gets its own -ss/-t/-i triple placed before the input flag.
+    Each kept segment gets its own -ss/-t/-i triple placed before the input flag.
     ffmpeg seeks at the container level — only the requested segment is decoded.
-    For multi-keep, the same source file is opened N times with different seek
-    windows; streams are normalised and concatenated in the filter graph.
+    Segments may come from the SAME source (single-source trim: the file is
+    opened N times with different seek windows) or from DIFFERENT sources
+    (multi-source reaction/compilation cut); either way the segments are
+    normalised and concatenated, in order, in the filter graph.
 
     This avoids the trim/split filter pattern which forces a full file decode
     regardless of the requested segment position.
     """
-    source = spec["input"]
-    keeps  = spec["keeps"]
-    n      = len(keeps)
+    segs = _spec_segments(spec)
+    n    = len(segs)
 
     input_args = []
-    for s, e in keeps:
-        input_args += ["-ss", f"{s:.4f}", "-t", f"{e - s:.4f}", "-i", source]
+    for src, s, e in segs:
+        input_args += ["-ss", f"{s:.4f}", "-t", f"{e - s:.4f}", "-i", src]
 
     filter_parts = []
     if n == 1:
@@ -75,9 +90,9 @@ def compute_keeps(duration: float, cuts: list) -> list:
     return keeps
 
 
-def _encode_one(source: str, keeps: list, out_path: str) -> str:
-    """Encode a single clip. Returns out_path on success, raises on failure."""
-    spec = {"input": source, "keeps": keeps}
+def _encode_one(spec: dict, out_path: str) -> str:
+    """Encode a single cut spec (single- or multi-source). Returns out_path on
+    success, raises on failure."""
     input_args, filter_str = build_ffmpeg_args(spec)
     encode_flags = [
         "-c:v", "libx264", "-preset", "fast", "-crf", "18",
@@ -135,11 +150,15 @@ def main():
     if args.input:
         require_file(args.input)
 
-        if is_trim_spec(args.input):
+        if is_cut_spec(args.input):
             spec = load_spec(args.input)
-            require_file(spec["input"])
-            keeps  = spec["keeps"]
-            source = spec["input"]
+            if "segments" in spec:
+                for seg in spec["segments"]:
+                    require_file(seg["src"])
+                ref_src = spec["segments"][0]["src"]
+            else:
+                require_file(spec["input"])
+                ref_src = spec["input"]
         else:
             source   = args.input
             duration = get_duration(source)
@@ -160,11 +179,14 @@ def main():
                 if not keeps:
                     fail("invalid_range", "Cuts cover the entire window — nothing would remain")
 
-        if not args.out:
-            base     = os.path.splitext(os.path.basename(source))[0]
-            args.out = os.path.join(os.path.dirname(source), f"{base}_cut.mp4")
+            spec    = {"input": source, "keeps": keeps}
+            ref_src = source
 
-        print(_encode_one(source, keeps, args.out))
+        if not args.out:
+            base     = os.path.splitext(os.path.basename(ref_src))[0]
+            args.out = os.path.join(os.path.dirname(ref_src), f"{base}_cut.mp4")
+
+        print(_encode_one(spec, args.out))
 
     # ── Batch input ───────────────────────────────────────────────────────────
     else:
@@ -180,7 +202,7 @@ def main():
 
         results = [None] * len(jobs)
         with ThreadPoolExecutor(max_workers=args.workers) as pool:
-            futures = {pool.submit(_encode_one, src, keeps, out): i for i, (src, keeps, out) in enumerate(jobs)}
+            futures = {pool.submit(_encode_one, {"input": src, "keeps": keeps}, out): i for i, (src, keeps, out) in enumerate(jobs)}
             for future in as_completed(futures):
                 idx = futures[future]
                 results[idx] = future.result()  # raises on encode failure
