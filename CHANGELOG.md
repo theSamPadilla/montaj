@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v3.5.2
+
 - **Caption generation works on multi-source 4K HDR projects (no more `materialize_cut failed (exit 1)`).** The caption cut used to be built from each clip's original HEVC/HDR `.MOV` and concatenated with no pixel-format/SAR/audio normalization, so a multi-clip 4K cut died in one ffmpeg pass (HDR decode + concat parameter mismatch). Now, when every primary-track clip has a `normalizedSrc` cache, the cut is materialized from those SDR bt709 caches (rebased by `normalizedInPoint`, matching the editor/render playback path) and encoded at a caption-sized resolution — transcription only reads audio, so pixels are downscaled for free. Falls back to the originals when any cache is absent. (`serve/caption_job.py`)
 - **`materialize_cut` conforms every segment before concat.** Each input chain now applies `fps=30,setsar=1,format=yuv420p` (and an optional `scale`+`pad` from the cut spec) for video and `aformat=...` for audio, so differing-SAR / differing-pixfmt / differing-sample-rate sources concatenate cleanly instead of failing with "Input link parameters do not match". (`steps/transform/materialize_cut.py`)
 - **Caption-pipeline step failures are now diagnosable headless.** A failing step's stderr tail (last ~40 lines) is captured into the raised error message (so it reaches `GET /captions/status` `error` and the SSE `event: error`) and broadcast as a project `log` frame. `lib/common.run()` widened its failed-command stderr slice 500→4000 chars so ffmpeg's real error survives. (`serve/routes/projects.py`, `lib/common.py`)
