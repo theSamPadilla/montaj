@@ -181,6 +181,76 @@ async def _run_render_detached(project_id: str, cmd: list[str], env: dict,
 # jobs would race on the shared _caption_* scratch files in the project dir.
 _active_caption_jobs: set[str] = set()
 
+
+class _CaptionJob:
+    """Live state of a detached caption job, polled by GET /captions/status. The
+    pipeline runs to completion independent of any client connection — a dropped
+    request must NOT abort it."""
+    __slots__ = ("status", "result", "error")
+
+    def __init__(self) -> None:
+        self.status: str = "running"   # running | done | error
+        self.result: dict | None = None  # caption track dict (done)
+        self.error: str | None = None    # error message (error)
+
+
+_caption_jobs: dict[str, _CaptionJob] = {}
+
+# Strong refs to in-flight detached caption tasks. asyncio only weakly tracks
+# fire-and-forget tasks, so without this a caption task could be GC'd mid-run.
+_caption_task_refs: set = set()
+
+
+async def _run_caption_detached(
+    project_id: str,
+    project_dir: "Path",
+    project: dict,
+    model: str,
+    language: str,
+    style: str,
+    broadcaster: "SSEBroadcaster",
+    job: _CaptionJob,
+) -> None:
+    """Run the caption pipeline to completion regardless of any client. Owns the
+    `_active_caption_jobs` slot until the pipeline actually finishes, so a dropped
+    request can't strand or abort it."""
+    try:
+        track = await _run_caption_pipeline(
+            project_id,
+            project_dir,
+            project,
+            model,
+            language,
+            style,
+            broadcaster=broadcaster,
+            on_log=None,
+            is_disconnected=None,
+        )
+        job.status, job.result = "done", track
+    except CaptionPipelineError as e:
+        job.status, job.error = "error", e.message
+    except Exception as e:
+        job.status, job.error = "error", str(e)
+    finally:
+        # Release the slot so a later request may proceed.
+        # NOTE: the terminal job is intentionally NOT popped from _caption_jobs —
+        # it persists so a post-completion GET /captions/status can still read it.
+        # A new job overwrites _caption_jobs[project_id] after the 409 check clears.
+        _active_caption_jobs.discard(project_id)
+        # Clean up temp files (mirrors the SSE path's finally).
+        for _tmp in (
+            project_dir / "_caption_cut.json",
+            project_dir / "_caption_cut.mp4",
+            project_dir / "_caption_words.json",
+            project_dir / "_caption_words.srt",
+            project_dir / "_caption_track.json",
+        ):
+            try:
+                _tmp.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+
 OVERLAY_NAME_RE = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
 OVERLAY_MAX_BYTES = 65_536  # 64 KB — overlay JSX is small; reject big bodies hard.
 
@@ -1394,6 +1464,152 @@ async def render_status(project_id: str, project_dir: Path = Depends(get_project
     return out
 
 
+class CaptionPipelineError(Exception):
+    """A caption pipeline step exited non-zero. `message` is the human-readable
+    text the SSE path surfaces as an `event: error` frame (and a detached caller
+    can record as the job's error)."""
+
+    def __init__(self, message: str):
+        super().__init__(message)
+        self.message = message
+
+
+async def _run_caption_pipeline(
+    project_id: str,
+    project_dir: Path,
+    project: dict,
+    model: str,
+    language: str,
+    style: str,
+    *,
+    broadcaster: "SSEBroadcaster",
+    on_log=None,
+    is_disconnected=None,
+):
+    """Core caption pipeline, shared by the SSE route and (later) a detached
+    async caller. Runs build_cut_spec → write cut spec → materialize_cut →
+    transcribe → caption, then persists project["captions"] (carrying prior
+    theme keys forward), writes project.json, and broadcasts the update.
+
+    Returns the final caption `track` dict on success.
+
+    Responsibility split: this coroutine owns ONLY the pipeline work. It does
+    NOT reserve/release the `_active_caption_jobs` slot and does NOT unlink the
+    temp files — those stay with each caller's surrounding scope (the SSE route
+    keeps them in its `finally` for byte-for-byte identical browser behavior;
+    M2's detached caller will manage its own slot + cleanup). This keeps the
+    coroutine free of caller-specific lifecycle concerns.
+
+    Logging: for each subprocess stderr line, calls `on_log(label, text)` if
+    provided (plain callable) instead of yielding.
+
+    Disconnect: when `is_disconnected` (an async predicate) is provided — the
+    SSE path — it is polled per step and the process tree is killed on
+    disconnect, returning None as a sentinel so the caller can stop quietly.
+    When NOT provided — the detached path — no polling happens and the job runs
+    to completion regardless of any client.
+
+    Step failure raises CaptionPipelineError so the caller can surface
+    `event: error` vs. a recorded job error.
+    """
+    project_path = project_dir / "project.json"
+
+    materialize_cut_py = MONTAJ_ROOT / "steps" / "transform" / "materialize_cut.py"
+    transcribe_py = MONTAJ_ROOT / "steps" / "speech" / "transcribe.py"
+    caption_py = MONTAJ_ROOT / "steps" / "lyrics" / "caption.py"
+
+    cut_spec_path = project_dir / "_caption_cut.json"
+    cut_mp4_path = project_dir / "_caption_cut.mp4"
+    words_prefix = project_dir / "_caption_words"
+    words_json_path = project_dir / "_caption_words.json"
+    track_path = project_dir / "_caption_track.json"
+
+    env = os.environ.copy()
+    env["MONTAJ_ROOT"] = str(MONTAJ_ROOT)
+
+    # 1. Derive the cut spec from the primary track (single- or multi-source).
+    #    Multi-source composes all tracks[0] clips into one MP4; output-time
+    #    word timings then map 1:1 to the timeline.
+    cut_spec = build_cut_spec(project)
+
+    # 2. Write the cut spec.
+    cut_spec_path.write_text(json.dumps(cut_spec))
+
+    steps = [
+        (
+            "materialize_cut",
+            [str(materialize_cut_py), "--input", str(cut_spec_path),
+             "--out", str(cut_mp4_path)],
+        ),
+        (
+            "transcribe",
+            [str(transcribe_py), "--input", str(cut_mp4_path),
+             "--model", model, "--language", language,
+             "--out", str(words_prefix)],
+        ),
+        (
+            "caption",
+            [str(caption_py), "--input", str(words_json_path),
+             "--style", style, "--out", str(track_path)],
+        ),
+    ]
+
+    for label, args in steps:
+        proc = await asyncio.create_subprocess_exec(
+            sys.executable, *args,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            cwd=str(MONTAJ_ROOT),
+            env=env,
+            limit=10 * 1024 * 1024,
+            start_new_session=True,
+        )
+
+        def kill_tree(p=proc):
+            try:
+                os.killpg(os.getpgid(p.pid), signal.SIGTERM)
+            except (ProcessLookupError, OSError):
+                try:
+                    p.kill()
+                except Exception:
+                    pass
+
+        disconnected = False
+        while True:
+            if is_disconnected is not None and await is_disconnected():
+                kill_tree()
+                disconnected = True
+                break
+            line = await proc.stderr.readline()
+            if not line:
+                break
+            text = line.decode().rstrip()
+            if text and on_log is not None:
+                on_log(label, text)
+
+        if disconnected:
+            return None
+
+        await proc.stdout.read()
+        await proc.wait()
+
+        if proc.returncode != 0:
+            raise CaptionPipelineError(f"{label} failed (exit {proc.returncode})")
+
+    # Persist the caption track onto the project and broadcast.
+    track = json.loads(track_path.read_text())
+    prev = project.get("captions") or {}
+    for k in ("position", "color", "fontsize", "bgColor"):
+        if k in prev and k not in track:
+            track[k] = prev[k]
+    project["captions"] = track
+    text = json.dumps(project, indent=2)
+    project_path.write_text(text)
+    broadcaster.publish(project_id, _sse_data_frame(text))
+
+    return track
+
+
 @router.post("/projects/{project_id}/captions")
 async def generate_captions(
     project_id: str,
@@ -1437,18 +1653,28 @@ async def generate_captions(
     language = body.get("language") or "auto"
     style = body.get("style") or (project.get("captions") or {}).get("style") or "pop"
 
-    materialize_cut_py = MONTAJ_ROOT / "steps" / "transform" / "materialize_cut.py"
-    transcribe_py = MONTAJ_ROOT / "steps" / "speech" / "transcribe.py"
-    caption_py = MONTAJ_ROOT / "steps" / "lyrics" / "caption.py"
-
+    # Temp paths the pipeline writes; mirrored here so the generator's `finally`
+    # can unlink them (kept identical to the pipeline's own paths).
     cut_spec_path = project_dir / "_caption_cut.json"
     cut_mp4_path = project_dir / "_caption_cut.mp4"
-    words_prefix = project_dir / "_caption_words"
     words_json_path = project_dir / "_caption_words.json"
     track_path = project_dir / "_caption_track.json"
 
-    env = os.environ.copy()
-    env["MONTAJ_ROOT"] = str(MONTAJ_ROOT)
+    broadcaster: SSEBroadcaster = request.app.state.broadcaster
+
+    # Async mode: kick a detached job and return 202 immediately. Clients poll
+    # GET /captions/status to follow progress and pick up the track or error once
+    # terminal. Default (no async flag) keeps the SSE stream for back-compat.
+    if request.query_params.get("async") in ("1", "true"):
+        _active_caption_jobs.add(project_id)
+        job = _CaptionJob()
+        _caption_jobs[project_id] = job
+        task = asyncio.create_task(
+            _run_caption_detached(project_id, project_dir, project, model, language, style, broadcaster, job)
+        )
+        _caption_task_refs.add(task)
+        task.add_done_callback(_caption_task_refs.discard)
+        return JSONResponse({"projectId": project_id, "status": "running"}, status_code=202)
 
     # Reserve the slot now; the generator's `finally` releases it (covers
     # success, error, and client-disconnect alike).
@@ -1456,96 +1682,60 @@ async def generate_captions(
 
     async def event_stream():
         try:
-            # 1. Derive the cut spec from the primary track (single- or
-            #    multi-source). Multi-source composes all tracks[0] clips into
-            #    one MP4; output-time word timings then map 1:1 to the timeline.
+            # Bridge the pipeline's on_log callback to `event: log` frames over a
+            # queue, so each stderr line is yielded the instant it's read (same
+            # real-time streaming as the old inline loop). The pipeline runs as a
+            # task; we drain the queue concurrently and surface the result/error
+            # once it finishes. The pipeline polls request.is_disconnected and
+            # kills the process tree on disconnect, returning None as the
+            # sentinel.
+            queue: "asyncio.Queue[str]" = asyncio.Queue()
+
+            def on_log(label, text):
+                queue.put_nowait(f"event: log\ndata: [{label}] {text}\n\n")
+
+            task = asyncio.ensure_future(_run_caption_pipeline(
+                project_id,
+                project_dir,
+                project,
+                model,
+                language,
+                style,
+                broadcaster=broadcaster,
+                on_log=on_log,
+                is_disconnected=request.is_disconnected,
+            ))
+
+            # Drain log frames until the pipeline task completes, then flush any
+            # remaining queued frames.
+            while not task.done() or not queue.empty():
+                if not queue.empty():
+                    yield queue.get_nowait()
+                    continue
+                getter = asyncio.ensure_future(queue.get())
+                done, _ = await asyncio.wait(
+                    {getter, task}, return_when=asyncio.FIRST_COMPLETED
+                )
+                if getter in done:
+                    yield getter.result()
+                else:
+                    getter.cancel()
+
             try:
-                cut_spec = build_cut_spec(project)
+                track = task.result()
             except ValueError as e:
+                # build_cut_spec rejected the project.
                 yield f"event: error\ndata: {str(e)}\n\n"
                 return
+            except CaptionPipelineError as e:
+                yield f"event: error\ndata: {e.message}\n\n"
+                return
 
-            # 2. Write the cut spec.
-            cut_spec_path.write_text(json.dumps(cut_spec))
+            # None sentinel = client disconnected mid-pipeline; stop quietly.
+            if track is None:
+                return
 
-            # Each step is run as a subprocess with its stderr streamed as `log`
-            # events. The loop is inlined (not a helper) because an inner
-            # generator can't yield to the outer StreamingResponse.
-            steps = [
-                (
-                    "materialize_cut",
-                    [str(materialize_cut_py), "--input", str(cut_spec_path),
-                     "--out", str(cut_mp4_path)],
-                ),
-                (
-                    "transcribe",
-                    [str(transcribe_py), "--input", str(cut_mp4_path),
-                     "--model", model, "--language", language,
-                     "--out", str(words_prefix)],
-                ),
-                (
-                    "caption",
-                    [str(caption_py), "--input", str(words_json_path),
-                     "--style", style, "--out", str(track_path)],
-                ),
-            ]
-
-            for label, args in steps:
-                proc = await asyncio.create_subprocess_exec(
-                    sys.executable, *args,
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
-                    cwd=str(MONTAJ_ROOT),
-                    env=env,
-                    limit=10 * 1024 * 1024,
-                    start_new_session=True,
-                )
-
-                def kill_tree(p=proc):
-                    try:
-                        os.killpg(os.getpgid(p.pid), signal.SIGTERM)
-                    except (ProcessLookupError, OSError):
-                        try:
-                            p.kill()
-                        except Exception:
-                            pass
-
-                disconnected = False
-                while True:
-                    if await request.is_disconnected():
-                        kill_tree()
-                        disconnected = True
-                        break
-                    line = await proc.stderr.readline()
-                    if not line:
-                        break
-                    text = line.decode().rstrip()
-                    if text:
-                        yield f"event: log\ndata: [{label}] {text}\n\n"
-
-                if disconnected:
-                    return
-
-                await proc.stdout.read()
-                await proc.wait()
-
-                if proc.returncode != 0:
-                    yield f"event: error\ndata: {label} failed (exit {proc.returncode})\n\n"
-                    return
-
-            # 6. Persist the caption track onto the project and broadcast.
-            track = json.loads(track_path.read_text())
-            prev = project.get("captions") or {}
-            for k in ("position", "color", "fontsize", "bgColor"):
-                if k in prev and k not in track:
-                    track[k] = prev[k]
-            project["captions"] = track
-            text = json.dumps(project, indent=2)
-            project_path.write_text(text)
-            broadcaster: SSEBroadcaster = request.app.state.broadcaster
-            broadcaster.publish(project_id, _sse_data_frame(text))
-
-            # 7. Done — carry the caption track in the payload.
+            # Done — carry the caption track in the payload.
             yield f"event: done\ndata: {json.dumps(track)}\n\n"
         finally:
             _active_caption_jobs.discard(project_id)
@@ -1629,3 +1819,20 @@ async def put_project_overlay(
         },
         status_code=201 if created else 200,
     )
+
+
+@router.get("/projects/{project_id}/captions/status")
+async def captions_status(project_id: str, project_dir: Path = Depends(get_project_dir)):
+    """Poll the state of the current/last detached caption job for this project.
+    Pairs with the async kick (POST /captions?async=1): clients hit this to follow
+    progress and pick up the caption track or error once terminal. Returns idle when
+    no caption job has run for this project this process lifetime."""
+    job = _caption_jobs.get(project_id)
+    if job is None:
+        return {"status": "idle"}
+    out: dict = {"status": job.status}
+    if job.status == "done":
+        out["captions"] = job.result
+    elif job.status == "error":
+        out["error"] = job.error
+    return out

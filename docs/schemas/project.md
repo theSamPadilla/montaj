@@ -259,7 +259,57 @@ The `captions` field is a top-level object (not a track). It always renders abov
 
 `start` and `end` are timestamps in the **output video** — after trim and concat. The `words` array comes from Whisper and is required for animated styles.
 
+**Segment end is explicit.** Each segment carries its own `end`; the next segment's `start` does NOT imply the previous segment's `end`. The editor's active-segment test is `currentTime >= start && currentTime < end`.
+
 **Caption styles:** `word-by-word`, `pop`, `karaoke`, `subtitle`
+
+Each style maps to a built-in JSX template served at `GET /api/caption-template/:style`. An unknown style value renders no captions. `words` is optional in the schema but required for animated styles (`word-by-word`, `karaoke`).
+
+**ffmpeg-only fields.** The following optional fields may appear on the top-level `captions` object. They are consumed only by the ffmpeg `drawtext` render branch and are ignored by the JSX browser preview. The caption generation route preserves them across regeneration.
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `position` | string | — | `center`, `top-left`, or `bottom-left` |
+| `color` | string | — | CSS-style hex or named color for caption text |
+| `fontsize` | number | — | Font size in pixels for drawtext render |
+| `bgColor` | string | — | Background box color for drawtext render |
+
+**Hand-authorable.** `project.captions` is a first-class field: an agent that holds word-level transcripts can write captions directly via `PUT /api/projects/:id` without going through the generation pipeline. The Hub proxy validates the shape on PUT (when captions are written through Hub) and rejects malformed captions before forwarding (style must be a known enum value; each segment must have `text`, `start`, and `end`; `words`, if present, must be well-formed); Montaj itself stores whatever it receives. Agents writing captions by hand should include `words` whenever using an animated style.
+
+### HTTP endpoints
+
+```
+POST /api/projects/:id/captions
+```
+
+SSE stream (default). Runs the materialize → transcribe → caption pipeline and streams `log` / `done` / `error` events. Writes `project.captions` on success.
+
+Optional body fields: `model` (Whisper model, default `"large"`), `language` (default `"auto"`), `style` (default: existing `captions.style`, or `"pop"`).
+
+Returns `409` if a caption job for the project is already in flight.
+
+```
+POST /api/projects/:id/captions?async=1
+```
+
+Async kick. Launches the same pipeline detached and returns immediately:
+
+```json
+HTTP 202
+{ "projectId": "<id>", "status": "running" }
+```
+
+```
+GET /api/projects/:id/captions/status
+```
+
+Poll the state of the current or last detached caption job. Returns `idle` when no job has run since the server started.
+
+```json
+{ "status": "idle | running | done | error", "captions": { ... }, "error": "..." }
+```
+
+`captions` is present only when `status` is `done`. `error` is present only when `status` is `error`.
 
 ---
 
