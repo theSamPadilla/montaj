@@ -61,3 +61,30 @@ def test_rm_fillers_output_keeps_within_input_keeps(tmp_path, test_video, fake_w
     for ks, ke in result["keeps"]:
         assert ks >= 0.0
         assert ke <= 3.0
+
+
+def _load_rm_fillers_module():
+    """Import steps/speech/rm_fillers.py directly for pure-function tests."""
+    import importlib.util, pathlib, sys
+    root = pathlib.Path(__file__).resolve().parents[2]
+    sys.path.insert(0, str(root / "lib"))
+    spec = importlib.util.spec_from_file_location(
+        "rm_fillers_mod", root / "steps" / "speech" / "rm_fillers.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def test_filler_matcher_is_language_aware():
+    mod = _load_rm_fillers_module()
+    en = mod._filler_matcher("en")
+    es = mod._filler_matcher("es")
+    # English hesitations match the English matcher, not the Spanish one
+    assert en.match("um") and en.match("uh")
+    assert not es.match("um")
+    # Spanish hesitations match the Spanish matcher
+    assert es.match("eh") and es.match("mmm")
+    # Real Spanish words are never treated as fillers (no false cuts)
+    assert not es.match("este") and not es.match("pues")
+    # Unknown language falls back to the English set
+    assert mod._filler_matcher("xx").match("um")

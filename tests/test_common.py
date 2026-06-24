@@ -128,3 +128,44 @@ def test_find_whisper_bin_falls_back_to_path(tmp_path, monkeypatch):
     monkeypatch.setattr(common.shutil, "which", lambda name: f"/usr/bin/{name}" if name == "whisper-cli" else None)
     result = common.find_whisper_bin()
     assert result == "/usr/bin/whisper-cli"
+
+
+# ── resolve_whisper_model() ──────────────────────────────────────────────────
+
+@pytest.fixture
+def fake_models(tmp_path, monkeypatch):
+    """Point the model registry at a tmp dir; create the given whisper weights."""
+    import models
+    monkeypatch.setattr(models, "MONTAJ_MODELS_DIR", str(tmp_path))
+    wdir = tmp_path / "whisper"
+    wdir.mkdir()
+    def _install(*names):
+        for n in names:
+            (wdir / f"ggml-{n}.bin").write_bytes(b"x")
+    return _install
+
+
+def test_resolve_english_passthrough(fake_models):
+    fake_models("base.en", "base")
+    assert common.resolve_whisper_model("base.en", "en") == "base.en"
+    assert common.resolve_whisper_model("base.en", "english") == "base.en"
+    assert common.resolve_whisper_model("base.en", "") == "base.en"
+
+
+def test_resolve_swaps_en_to_multilingual_sibling(fake_models):
+    fake_models("base.en", "base")
+    assert common.resolve_whisper_model("base.en", "es") == "base"
+    # 'auto' is treated as non-English so a multilingual model can detect the language
+    assert common.resolve_whisper_model("base.en", "auto") == "base"
+
+
+def test_resolve_multilingual_passthrough(fake_models):
+    fake_models("base", "large")
+    assert common.resolve_whisper_model("base", "es") == "base"
+    assert common.resolve_whisper_model("large", "es") == "large"
+
+
+def test_resolve_falls_back_when_sibling_missing(fake_models):
+    # medium (multilingual) not installed → fall back to an installed multilingual weight
+    fake_models("medium.en", "large")
+    assert common.resolve_whisper_model("medium.en", "es") == "large"

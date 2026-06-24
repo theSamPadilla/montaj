@@ -118,6 +118,40 @@ def find_whisper_bin() -> str:
          "whisper.cpp not found. Install with: montaj install whisper")
 
 
+# English-only (".en") whisper models cannot decode other languages — they emit
+# sparse/garbage word timestamps, which downstream steps (e.g. rm_nonspeech) then
+# treat as silence and cut, silently deleting most of the speech. When the caller
+# asks for a non-English language we transparently swap the ".en" model for its
+# multilingual sibling (same size → same speed), falling back to whatever
+# multilingual weights are actually installed.
+_EN_TO_MULTILINGUAL = {
+    "tiny.en": "tiny", "base.en": "base", "small.en": "small", "medium.en": "medium",
+}
+
+
+def resolve_whisper_model(model: str, language: str) -> str:
+    """Pick the right whisper model for *language*.
+
+    English (or unspecified) → *model* unchanged. For any other language (or
+    ``auto``), an English-only ``*.en`` model is swapped for a multilingual one:
+    its same-size sibling when present, else the best installed multilingual
+    weight. Already-multilingual models pass through untouched.
+    """
+    import models as _models
+    lang = (language or "en").strip().lower()
+    if lang in ("en", "english"):
+        return model
+    if not model.endswith(".en"):
+        return model
+    sibling = _EN_TO_MULTILINGUAL.get(model, model[:-3])
+    # Prefer the same-size sibling, then progressively more capable installed
+    # weights. dict.fromkeys dedups when the sibling already appears in the chain.
+    for cand in dict.fromkeys([sibling, "medium", "large-v3", "large", "base"]):
+        if os.path.isfile(_models.model_path("whisper", f"ggml-{cand}.bin")):
+            return cand
+    return sibling  # nothing installed — let the caller's require_file raise clearly
+
+
 def transcribe_words(input_path: str, model: str = "base.en", work_dir: str = None,
                      language: str = "en") -> list:
     """Transcribe audio or video with whisper.cpp.
@@ -125,7 +159,8 @@ def transcribe_words(input_path: str, model: str = "base.en", work_dir: str = No
     Returns a flat list of {"text": str, "start": float, "end": float} dicts (seconds).
     Uses --split-on-word --max-len 1 to get one entry per word.
     ``language`` is the whisper language code (e.g. "es"), or "auto" for
-    whisper-cli language auto-detection. English-only models (``*.en``) ignore it.
+    whisper-cli language auto-detection. A non-English ``language`` automatically
+    upgrades an English-only ``*.en`` ``model`` to a multilingual one.
     """
     import mimetypes, tempfile
     own_work = work_dir is None
@@ -141,6 +176,7 @@ def transcribe_words(input_path: str, model: str = "base.en", work_dir: str = No
             audio = input_path
 
         import models as _models
+        model = resolve_whisper_model(model, language)
         model_file = _models.model_path("whisper", f"ggml-{model}.bin")
         # Fall back to old brew-installed path for existing users
         if not os.path.isfile(model_file):

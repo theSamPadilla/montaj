@@ -7,19 +7,38 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "lib"))
 from common import require_file, run, get_duration, transcribe_words
 from trim_spec import is_trim_spec, load as load_spec, merge as merge_keeps, audio_extract_cmd, remap_timestamp
 
-FILLERS = re.compile(r"^(um|uh|uhh|umm|hmm|hm|ah|ahh|er|erm|mhm|uh-huh)$", re.IGNORECASE)
+# Hesitation-sound fillers per language. Kept conservative: only non-lexical
+# hesitations (never real words like Spanish "este"/"pues") so we don't cut
+# meaningful speech. Falls back to the English set for unlisted languages.
+_FILLERS_BY_LANG = {
+    "en": r"^(um|uh|uhh|umm|hmm|hm|ah|ahh|er|erm|mhm|uh-huh)$",
+    "es": r"^(eh|ehh|em|emm|mmm|mm|aam|am)$",
+    "pt": r"^(eh|ehh|hum|hmm|né|aam|am)$",
+    "fr": r"^(euh|heu|hum|hmm|ben|bah)$",
+    "de": r"^(äh|ähm|öhm|hm|mhm)$",
+}
 HEAD_PAD = 0.05   # seconds to keep before first word
+
+
+def _filler_matcher(language: str):
+    lang = (language or "en").strip().lower().split("-")[0]
+    return re.compile(_FILLERS_BY_LANG.get(lang, _FILLERS_BY_LANG["en"]), re.IGNORECASE)
 
 
 def main():
     parser = argparse.ArgumentParser(description="Remove filler words from a clip")
     parser.add_argument("--input", required=True, help="Source video file")
     parser.add_argument("--model", default="base.en",
-                        choices=["tiny.en", "base.en", "medium.en", "medium", "large"],
-                        help="Whisper model for filler detection")
+                        choices=["tiny.en", "base.en", "medium.en", "tiny", "base", "medium", "large", "large-v3"],
+                        help="Whisper model for filler detection. English-only (*.en) models are "
+                             "auto-upgraded to a multilingual sibling when --language is non-English.")
+    parser.add_argument("--language", default="en",
+                        help="Language code (e.g. es) for transcription and filler matching, or 'auto'.")
     args = parser.parse_args()
 
     require_file(args.input)
+
+    fillers = _filler_matcher(args.language)
 
     # ── Trim spec path ────────────────────────────────────────────────────────
     if is_trim_spec(args.input):
@@ -32,7 +51,7 @@ def main():
         os.close(fd)
         try:
             run(audio_extract_cmd(source, keeps, tmp_wav))
-            words = transcribe_words(tmp_wav, args.model)
+            words = transcribe_words(tmp_wav, args.model, language=args.language)
         finally:
             if os.path.exists(tmp_wav):
                 os.unlink(tmp_wav)
@@ -51,7 +70,7 @@ def main():
         non_filler_words = []
         for w in remapped:
             text = w["text"].strip(".,!?")
-            if FILLERS.match(text):
+            if fillers.match(text):
                 filler_cuts.append([w["start"], w["end"]])
             else:
                 non_filler_words.append(w)
@@ -69,13 +88,13 @@ def main():
 
     # ── Raw video path ────────────────────────────────────────────────────────
     duration = get_duration(args.input)
-    words = transcribe_words(args.input, args.model)
+    words = transcribe_words(args.input, args.model, language=args.language)
 
     filler_cuts = []
     non_filler_words = []
     for w in words:
         text = w["text"].strip(".,!?")
-        if FILLERS.match(text):
+        if fillers.match(text):
             filler_cuts.append([w["start"], w["end"]])
         else:
             non_filler_words.append(w)

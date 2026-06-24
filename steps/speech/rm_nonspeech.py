@@ -16,7 +16,9 @@ def main():
     parser.add_argument("--sentence-edge", type=float, default=0.10,
                         help="Padding around sentence edges in seconds (default: 0.10)")
     parser.add_argument("--language", default="en",
-                        help="Whisper language code (e.g. es), or 'auto' to detect. *.en models ignore it.")
+                        help="Whisper language code (e.g. es), or 'auto' to detect. A non-English "
+                             "value auto-upgrades an *.en model to its multilingual sibling, so "
+                             "pass it for non-English audio (otherwise speech is mis-detected and cut).")
     args = parser.parse_args()
 
     require_file(args.input)

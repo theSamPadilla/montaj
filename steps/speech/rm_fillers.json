@@ -14,8 +14,14 @@
       "name": "model",
       "type": "enum",
       "default": "base.en",
-      "options": ["tiny.en", "base.en", "medium.en", "large"],
-      "description": "Whisper model for filler detection. Larger = slower + more accurate."
+      "options": ["tiny.en", "base.en", "medium.en", "tiny", "base", "medium", "large", "large-v3"],
+      "description": "Whisper model for filler detection. Larger = slower + more accurate. English-only (*.en) models are auto-upgraded to a multilingual sibling when language is non-English."
+    },
+    {
+      "name": "language",
+      "type": "string",
+      "default": "en",
+      "description": "Language code (e.g. es) for transcription and filler matching, or 'auto'. Selects the per-language hesitation-filler set and upgrades *.en models to multilingual."
     }
   ]
 }

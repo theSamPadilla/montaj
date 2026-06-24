@@ -226,6 +226,13 @@ def main():
              "'lazy' skips all transcoding — clips are left as-is and normalized on demand at "
              "compose time. Overrides the workflow's normalize setting when provided.",
     )
+    parser.add_argument(
+        "--language", default="en",
+        help="Spoken language of the footage as a whisper code (e.g. 'es', 'pt', 'fr'), or "
+             "'auto' to detect. Stored in settings.language and passed to the speech steps "
+             "(transcribe, rm_nonspeech, rm_fillers); non-English values auto-select a "
+             "multilingual whisper model. Default 'en'.",
+    )
     args = parser.parse_args()
 
     # Normalize mode: CLI flag overrides workflow JSON; workflow JSON overrides default "eager".
@@ -597,6 +604,7 @@ def main():
             "resolution": detected_resolution,
             "fps": detected_fps,
             "colorSpace": project_color_space,
+            "language": args.language,
         },
         "tracks": [[] if args.canvas else clips],
         "assets": assets,

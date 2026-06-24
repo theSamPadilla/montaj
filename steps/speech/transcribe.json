@@ -14,14 +14,19 @@
       "name": "model",
       "type": "enum",
       "default": "base.en",
-      "options": ["tiny.en", "base.en", "medium.en", "large"],
-      "description": "Whisper model. Larger = slower + more accurate."
+      "options": ["tiny.en", "base.en", "medium.en", "tiny", "base", "medium", "large", "large-v3"],
+      "description": "Whisper model. Larger = slower + more accurate. English-only (*.en) models are auto-upgraded to a multilingual sibling when language is non-English."
     },
     {
       "name": "language",
       "type": "string",
       "default": "en",
-      "description": "Language code (e.g. en, fr, de)"
+      "description": "Language code (e.g. en, fr, de, es), or 'auto' for whisper-cli language auto-detection. A non-English value upgrades an *.en model to its multilingual sibling."
+    },
+    {
+      "name": "max-context",
+      "type": "int",
+      "description": "Cap on prior-text tokens carried between windows (whisper.cpp -mc). Set 0 to disable cross-window context — the reliable fix for the repetition-loop hallucination on long audio (especially non-English). Omit for the whisper default."
     }
   ]
 }

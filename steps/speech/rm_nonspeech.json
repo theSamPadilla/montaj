@@ -37,7 +37,7 @@
       "name": "language",
       "type": "string",
       "default": "en",
-      "description": "Whisper language code (e.g. es), or 'auto' to detect. English-only (*.en) models ignore it; use a multilingual model (large) for non-English."
+      "description": "Whisper language code (e.g. es), or 'auto' to detect. A non-English value auto-upgrades an *.en model to its multilingual sibling — pass it for non-English audio, otherwise speech is mis-detected and cut as silence."
     }
   ]
 }

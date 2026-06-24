@@ -120,3 +120,66 @@ def test_transcribe_single_whisper_invocation(transcribe_module, monkeypatch, tm
     argv = calls[0]
     assert "--output-srt" in argv, "--output-srt missing from whisper call"
     assert "--output-json" in argv, "--output-json missing from whisper call"
+
+
+def _capture_whisper_cmd(transcribe_module, monkeypatch, tmp_path, argv):
+    """Run transcribe.main() in-process with whisper stubbed; return the whisper command.
+
+    model_path is stubbed to tmp_path/<name> and require_file is a no-op, so the
+    test never depends on real whisper weights being installed.
+    """
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        prefix = None
+        for i, a in enumerate(cmd):
+            if a == "--output-file" and i + 1 < len(cmd):
+                prefix = cmd[i + 1]
+        if prefix:
+            Path(prefix + ".srt").write_text("1\n00:00:00,000 --> 00:00:00,500\nHello\n")
+            Path(prefix + ".json").write_text(
+                '{"transcription": [{"text": "Hello", "offsets": {"from": 0, "to": 500}}]}')
+
+    monkeypatch.setattr(transcribe_module, "run", fake_run)
+    monkeypatch.setattr(transcribe_module, "find_whisper_bin", lambda: "whisper-cli")
+    monkeypatch.setattr(transcribe_module._models, "model_path",
+                        lambda family, name: str(tmp_path / name))
+    monkeypatch.setattr(transcribe_module, "require_file", lambda path: None)
+
+    audio = tmp_path / "audio.wav"
+    audio.write_bytes(b"\x00" * 16)
+    monkeypatch.setattr(sys, "argv",
+                        ["transcribe.py", "--input", str(audio),
+                         "--out", str(tmp_path / "out"), *argv])
+    transcribe_module.main()
+    assert len(calls) == 1, f"expected 1 whisper call, got {calls}"
+    return calls[0]
+
+
+def test_transcribe_max_context_forwarded(transcribe_module, monkeypatch, tmp_path):
+    cmd = _capture_whisper_cmd(transcribe_module, monkeypatch, tmp_path, ["--max-context", "0"])
+    assert "-mc" in cmd and cmd[cmd.index("-mc") + 1] == "0"
+
+
+def test_transcribe_no_max_context_by_default(transcribe_module, monkeypatch, tmp_path):
+    cmd = _capture_whisper_cmd(transcribe_module, monkeypatch, tmp_path, [])
+    assert "-mc" not in cmd
+
+
+def test_transcribe_non_english_upgrades_en_model(transcribe_module, monkeypatch, tmp_path):
+    # Install the multilingual sibling so resolve_whisper_model's file-existence
+    # loop actually finds it (not just the bare-sibling fallback) — model_path is
+    # stubbed to tmp_path/<name> by the helper.
+    (tmp_path / "ggml-base.bin").write_bytes(b"x")
+    cmd = _capture_whisper_cmd(transcribe_module, monkeypatch, tmp_path,
+                               ["--model", "base.en", "--language", "es"])
+    model_path = cmd[cmd.index("-m") + 1]
+    assert os.path.basename(model_path) == "ggml-base.bin"  # base.en -> base (multilingual)
+
+
+def test_transcribe_english_keeps_en_model(transcribe_module, monkeypatch, tmp_path):
+    cmd = _capture_whisper_cmd(transcribe_module, monkeypatch, tmp_path,
+                               ["--model", "base.en", "--language", "en"])
+    model_path = cmd[cmd.index("-m") + 1]
+    assert os.path.basename(model_path) == "ggml-base.en.bin"

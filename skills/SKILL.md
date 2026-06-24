@@ -85,6 +85,10 @@ For HTTP and CLI, **load skill `native`** — it defines how every `_contract` v
 
 **`caption` produces a data track, not pixels.** Rendered at review/final render time by the UI and render engine.
 
+**Language — non-English footage.** The speech steps (`transcribe`, `rm_nonspeech`, `rm_fillers`) default to the English-only `base.en` model. On non-English audio an English-only model emits sparse/garbage word timestamps — and `rm_nonspeech` then deletes the gaps as "silence", silently cutting most of the speech. **Always pass `--language <code>` to every speech step** (e.g. `--language es`), taken from `project.settings.language`. A non-English code auto-upgrades the `*.en` model to its multilingual sibling (`base.en` → `base`, same speed), so keep `--model base.en` and just set the language. Set the project language at init with `--language es` (stored in `settings.language`); if a project predates this field and the audio clearly isn't English, pass `--language` explicitly anyway. `rm_fillers` also switches to that language's hesitation-filler set.
+
+**Transcribing a long source (e.g. the `clips` workflow source pass)?** whisper can fall into a repetition-loop hallucination — one phrase repeated to EOF after a hard-to-decode stretch (music, a goal replay). Pass `--max-context 0` to `transcribe` to disable cross-window context, which reliably prevents the loop. Recommended for any multi-minute and/or non-English source transcription.
+
 ### VFX
 | Step | What it does | Key params |
 |------|-------------|------------|
