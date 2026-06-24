@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v3.4.2
+
 - docs(image-search): note Hub `ingest_media` as the way to register a fetched image into Media.
 - Captions: support multi-source timelines. Caption generation (the
   `POST /api/projects/{id}/captions` route and the `generate_captions` step) no
