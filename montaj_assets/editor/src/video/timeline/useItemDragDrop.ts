@@ -33,6 +33,13 @@ export interface UseItemDragDropConfig {
   draggedFlagRef?: React.MutableRefObject<boolean> // sets true during drag (click suppression)
 }
 
+/** A press must travel at least this many pixels before it becomes a drag.
+ *  Below it the gesture stays a click. Without this threshold, a single pixel of
+ *  pointer drift during a click flips the drag flag, and the timeline suppresses
+ *  click-to-select — so clips/overlays can't be selected (or deleted), which
+ *  bites constantly on trackpads and touchscreens where clicks always jitter. */
+const DRAG_THRESHOLD_PX = 4
+
 export function useItemDragDrop(config: UseItemDragDropConfig) {
   const {
     totalDuration,
@@ -133,8 +140,17 @@ export function useItemDragDrop(config: UseItemDragDropConfig) {
     const initStart = item.start
     const initEnd = item.end
     const duration = initEnd - initStart
+    let dragStarted = false
 
     function onMove(moveE: MouseEvent) {
+      // Ignore sub-threshold pointer drift — it's a click, not a drag. Only once
+      // the press travels past DRAG_THRESHOLD_PX do we set the drag flag (which
+      // suppresses click-to-select) and start moving the item.
+      if (!dragStarted) {
+        const moved = Math.hypot(moveE.clientX - initX, moveE.clientY - initY)
+        if (moved < DRAG_THRESHOLD_PX) return
+        dragStarted = true
+      }
       if (draggedFlagRef) draggedFlagRef.current = true
 
       const rect = scrollRef.current?.getBoundingClientRect()
