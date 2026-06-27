@@ -163,6 +163,35 @@ test('planSegments: adjacent grid boundaries survive the proximity-snap pass', (
   assert.equal(seg48.items[0].id, 'c2', 'segment at 4.8s must contain clip-2')
 })
 
+test('planSegments: negative item start is floored to 0 (no pre-zero black gap)', () => {
+  // Regression (project 2026-06-26-cruces-objetivo-ultimo-dia): a full-source
+  // background reel overlay was authored at start = -(firstClipInPoint) = -0.5,
+  // while the video clip is correctly anchored at 0. Pre-fix, the earliest
+  // boundary was -0.5, so the whole output shifted +0.5s and the video track
+  // rendered BLACK for the first 0.5s (the overlay filled from frame 0). The
+  // timeline origin must be floored at 0 so the video is active from frame 0
+  // and there is no leading black segment.
+  const items = [
+    { id: 'c1', type: 'video', start: 0, end: 5, src: '/a.mp4', inPoint: 0.5, outPoint: 5.5, trackIdx: 0 },
+  ]
+  const puppeteerSegs = [
+    { id: 'reel', startSeconds: -0.5, endSeconds: 5, webmPath: '/reel.mkv', isCaption: false, opaque: false },
+  ]
+  const segs = planSegments(items, puppeteerSegs, 1920, 1080, 30)
+  // No segment may begin before 0.
+  for (const seg of segs) {
+    assert.ok(seg.start >= 0, `segment start ${seg.start} precedes the timeline origin`)
+  }
+  // The first segment starts exactly at 0 and the video clip is active in it —
+  // i.e. no black head gap.
+  assert.equal(segs[0].start, 0)
+  assert.equal(segs[0].items.length, 1, 'video clip active from frame 0 (no black gap)')
+  assert.equal(segs[0].items[0].id, 'c1')
+  // The negative-start overlay is also active in the first segment.
+  assert.equal(segs[0].overlays.length, 1)
+  assert.equal(segs[0].overlays[0].id, 'reel')
+})
+
 test('planSegments: captions always sorted after overlays', () => {
   const items = [
     { id: 'c1', type: 'video', start: 0, end: 10, src: '/a.mp4', inPoint: 0, outPoint: 10, trackIdx: 0 },

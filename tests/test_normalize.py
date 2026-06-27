@@ -6,6 +6,7 @@ now is_normalized==True directly and skip normalize entirely; segment encoder
 resamples per item at compose time).
 """
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -16,7 +17,12 @@ import pytest
 REPO_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
+import lib.normalize as nm
+
 from lib.normalize import (
+    _run_atomic_encode,
+    _sweep_stale_temps,
+    _tmp_for,
     is_normalized,
     normalize,
     probe_video,
@@ -324,3 +330,108 @@ def test_normalize_preserves_source_resolution(tmp_path):
     assert v.get("width") == 3840
     assert v.get("height") == 2160
     assert v.get("pix_fmt") == "yuv420p"
+
+
+# ── atomic write: a failed/interrupted encode never poisons the cache path ─────
+#
+# Regression for the corrupt `*_normalized_<cs>.mp4` cache that crashed renders
+# with "Invalid NAL unit size" / "missing picture in access unit": a killed or
+# concurrent ffmpeg run used to write its bytes straight to the final cache path,
+# leaving a half-written file that downstream consumers trusted. normalize() now
+# writes to a per-pid temp and os.replace()s it onto the cache only on success.
+# These exercise the helper directly (no ffmpeg needed) so they're fast and
+# deterministic.
+
+class _FakeCompleted:
+    def __init__(self, returncode, stderr=""):
+        self.returncode = returncode
+        self.stderr = stderr
+
+
+def test_run_atomic_encode_success_replaces(tmp_path, monkeypatch):
+    out = tmp_path / "cache.mp4"
+    tmp = _tmp_for(str(out))
+
+    def fake_run(cmd, **kw):
+        with open(tmp, "w") as f:
+            f.write("good-bytes")
+        return _FakeCompleted(0)
+
+    monkeypatch.setattr(nm.subprocess, "run", fake_run)
+    _run_atomic_encode(["ffmpeg"], tmp, str(out), label="x")
+    assert out.read_text() == "good-bytes"
+    assert not list(tmp_path.glob("*.tmp.*"))  # temp cleaned up
+
+
+def test_run_atomic_encode_failure_leaves_no_cache(tmp_path, monkeypatch):
+    """ffmpeg exits non-zero after writing a partial file → cache path stays absent."""
+    out = tmp_path / "cache.mp4"
+    tmp = _tmp_for(str(out))
+
+    def fake_run(cmd, **kw):
+        with open(tmp, "w") as f:
+            f.write("half-written-garbage")  # the corruption we used to ship
+        return _FakeCompleted(1, "ffmpeg boom")
+
+    monkeypatch.setattr(nm.subprocess, "run", fake_run)
+    with pytest.raises(SystemExit):
+        _run_atomic_encode(["ffmpeg"], tmp, str(out), label="x")
+    assert not out.exists()                   # the cache was never poisoned
+    assert not list(tmp_path.glob("*.tmp.*")) # partial temp dropped
+
+
+def test_run_atomic_encode_failure_preserves_prior_good_cache(tmp_path, monkeypatch):
+    """A failed re-encode must not destroy an existing good cache."""
+    out = tmp_path / "cache.mp4"
+    out.write_text("previous-good")
+    tmp = _tmp_for(str(out))
+
+    def fake_run(cmd, **kw):
+        with open(tmp, "w") as f:
+            f.write("partial")
+        return _FakeCompleted(1, "boom")
+
+    monkeypatch.setattr(nm.subprocess, "run", fake_run)
+    with pytest.raises(SystemExit):
+        _run_atomic_encode(["ffmpeg"], tmp, str(out), label="x")
+    assert out.read_text() == "previous-good"
+    assert not list(tmp_path.glob("*.tmp.*"))
+
+
+def test_run_atomic_encode_timeout_leaves_no_cache(tmp_path, monkeypatch):
+    """A killed (timed-out) encode leaves only an orphan temp, never the cache file."""
+    out = tmp_path / "cache.mp4"
+    tmp = _tmp_for(str(out))
+
+    def fake_run(cmd, **kw):
+        with open(tmp, "w") as f:
+            f.write("partial-on-kill")
+        raise subprocess.TimeoutExpired(cmd, 600)
+
+    monkeypatch.setattr(nm.subprocess, "run", fake_run)
+    with pytest.raises(subprocess.TimeoutExpired):
+        _run_atomic_encode(["ffmpeg"], tmp, str(out), label="x")
+    assert not out.exists()
+    assert not list(tmp_path.glob("*.tmp.*"))
+
+
+def test_sweep_stale_temps_reaps_dead_keeps_live_and_own(tmp_path):
+    """Sweep reaps temps from dead pids but never our own or a live sibling's."""
+    out = tmp_path / "cache.mp4"
+
+    # A definitely-dead pid: spawn `true`, reap it, then reuse its (now-free) pid.
+    p = subprocess.Popen(["true"])
+    p.wait()
+    dead_pid = p.pid
+
+    dead_temp = tmp_path / f"cache.mp4.tmp.{dead_pid}.mp4"
+    own_temp = tmp_path / f"cache.mp4.tmp.{os.getpid()}.mp4"
+    unparseable = tmp_path / "cache.mp4.tmp.notapid.mp4"
+    for f in (dead_temp, own_temp, unparseable):
+        f.write_text("x")
+
+    _sweep_stale_temps(str(out))
+
+    assert not dead_temp.exists()    # orphan from a dead encode → reaped
+    assert own_temp.exists()         # our own in-progress temp → preserved
+    assert unparseable.exists()      # non-pid suffix → left alone

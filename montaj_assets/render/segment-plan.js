@@ -43,15 +43,31 @@ export function planSegments(allItems, puppeteerSegs, vw, vh, fps) {
   // duration, and concat boundaries have uniform 1/fps gaps.
   const quantize = t => Math.round(t * fps) / fps
 
+  // Floor every boundary at 0: the rendered timeline origin is t=0, never
+  // earlier. An item may carry a NEGATIVE start — the interactive editor clamps
+  // drags/trims to >=0, but programmatic authors (e.g. the overlays workflow
+  // placing a full-source background reel at `-firstClipInPoint` to stay aligned
+  // to source time) can persist a start < 0. Without this floor the earliest
+  // boundary becomes that negative value, so the whole output shifts later by
+  // |minStart|: tracks anchored at 0 (the video clips) get a black head gap for
+  // |minStart| seconds while the negative-start overlay fills from frame 0 —
+  // exactly the "black top for the first ~0.3s" bug, and the render disagrees
+  // with the editor preview (which already treats t<0 as t=0). Flooring here
+  // drops any pre-0 segment; encode-segment's existing `max(0, segStart - start)`
+  // seek then advances each item into its pre-0 portion, matching the preview's
+  // `playhead - start` convention. Items entirely before 0 collapse to a single
+  // 0 boundary and produce no segment.
+  const boundary = t => Math.max(0, quantize(t))
+
   // Collect all boundary times, snapped to the frame grid
   const boundaries = new Set()
   for (const item of allItems) {
-    boundaries.add(quantize(item.start))
-    boundaries.add(quantize(item.end))
+    boundaries.add(boundary(item.start))
+    boundaries.add(boundary(item.end))
   }
   for (const seg of puppeteerSegs) {
-    boundaries.add(quantize(seg.startSeconds))
-    boundaries.add(quantize(seg.endSeconds))
+    boundaries.add(boundary(seg.startSeconds))
+    boundaries.add(boundary(seg.endSeconds))
   }
 
   if (boundaries.size === 0) return []

@@ -16,7 +16,7 @@ Invocation modes:
   - Module: python3 -m lib.normalize (Node subprocess — project root on sys.path)
 The sys.path.insert below adds lib/ itself so `from common import ...` works in both.
 """
-import sys, os, json, subprocess, argparse
+import sys, os, json, subprocess, argparse, glob, re
 
 sys.path.insert(0, os.path.dirname(__file__))  # add lib/ so `from common` works in all invocation modes
 from common import fail, require_file, progress
@@ -339,6 +339,76 @@ def _build_ffmpeg_cmd(
     return cmd, used_fallback_tonemap
 
 
+def _tmp_for(out_path: str) -> str:
+    """Per-pid sibling temp path for an atomic encode.
+
+    Keeps a ``.mp4`` extension so ffmpeg infers the mp4 muxer — a bare
+    ``.tmp.<pid>`` suffix has no recognised extension and the encode (with
+    ``+faststart``) would fail to choose a muxer.
+    """
+    return f"{out_path}.tmp.{os.getpid()}.mp4"
+
+
+def _pid_alive(pid: int) -> bool:
+    """True if a process with this pid currently exists (best-effort)."""
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True  # exists but owned by another user
+    except OSError:
+        return True  # be conservative — don't reap on an ambiguous error
+    return True
+
+
+def _sweep_stale_temps(out_path: str) -> None:
+    """Remove orphaned ``{out_path}.tmp.<pid>.mp4`` files left by dead encodes.
+
+    Concurrency-safe: only reaps temps whose owning pid is no longer alive (and
+    never our own), so a sibling encode writing the same cache path concurrently
+    is left untouched. Orphans come from killed / timed-out / crashed runs.
+    """
+    mypid = os.getpid()
+    for stale in glob.glob(f"{glob.escape(out_path)}.tmp.*"):
+        m = re.search(r"\.tmp\.(\d+)\.mp4$", stale)
+        if not m:
+            continue
+        pid = int(m.group(1))
+        if pid == mypid or _pid_alive(pid):
+            continue
+        try:
+            os.unlink(stale)
+        except OSError:
+            pass
+
+
+def _run_atomic_encode(cmd, tmp_path: str, out_path: str, *, label: str) -> None:
+    """Run an ffmpeg encode that writes ``tmp_path`` then atomically renames it
+    onto ``out_path``.
+
+    Guarantees ``out_path`` is only ever the previous good file or absent: a
+    killed, timed-out, or non-zero-exit encode leaves at most the orphaned temp,
+    never a half-written file at the cache path that downstream consumers trust.
+    On the same filesystem ``os.replace`` is atomic, so concurrent encoders of
+    the same path serialise on the rename (last writer wins) instead of
+    interleaving bytes into one corrupt file.
+    """
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+        if r.returncode != 0:
+            fail("encode_error", f"{label} failed:\n{(r.stderr or '')[-500:]}")
+        os.replace(tmp_path, out_path)
+    finally:
+        # On success the temp was renamed away (FileNotFoundError); on any
+        # failure path (non-zero exit raises SystemExit, timeout raises
+        # TimeoutExpired) this drops the partial temp before propagating.
+        try:
+            os.unlink(tmp_path)
+        except FileNotFoundError:
+            pass
+
+
 def normalize(input_path, out_path, project_color_space: ColorSpaceKey, info=None):
     """Normalize a video clip to the project's working color space + codec.
 
@@ -378,8 +448,13 @@ def normalize(input_path, out_path, project_color_space: ColorSpaceKey, info=Non
         failures.append(f"max_keyframe_interval={src_kf:.2f}s > 2.0s")
     progress(f"normalize triggered: {'; '.join(failures) if failures else 'unknown reason'}")
 
+    out_path = os.path.abspath(out_path)
+    os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
+    _sweep_stale_temps(out_path)
+    tmp_path = _tmp_for(out_path)
+
     cmd, used_fallback_tonemap = _build_ffmpeg_cmd(
-        input_path, out_path, project_color_space, info, pre_input_args=[]
+        input_path, tmp_path, project_color_space, info, pre_input_args=[]
     )
 
     if used_fallback_tonemap:
@@ -392,9 +467,7 @@ def normalize(input_path, out_path, project_color_space: ColorSpaceKey, info=Non
         f"{info['codec']} {info.get('color_transfer', '?')} {info['pix_fmt']} "
         f"→ {spec['encoder']} {spec['output_pix_fmt']} ({project_color_space})"
     )
-    r = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
-    if r.returncode != 0:
-        fail("encode_error", f"ffmpeg normalize failed:\n{(r.stderr or '')[-500:]}")
+    _run_atomic_encode(cmd, tmp_path, out_path, label="ffmpeg normalize")
 
     if used_fallback_tonemap:
         progress("⚠⚠⚠ FALLBACK TONEMAP WAS USED — OUTPUT COLORS ARE DEGRADED ⚠⚠⚠")
@@ -439,8 +512,13 @@ def normalize_window(
         "-t", f"{duration:.4f}",
     ]
 
+    out_path = os.path.abspath(out_path)
+    os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
+    _sweep_stale_temps(out_path)
+    tmp_path = _tmp_for(out_path)
+
     cmd, used_fallback_tonemap = _build_ffmpeg_cmd(
-        input_path, out_path, project_color_space, info, pre_input_args=pre_input_args
+        input_path, tmp_path, project_color_space, info, pre_input_args=pre_input_args
     )
 
     if used_fallback_tonemap:
@@ -454,9 +532,7 @@ def normalize_window(
         f"→ {SPECS[project_color_space]['encoder']} {SPECS[project_color_space]['output_pix_fmt']} "
         f"({project_color_space})"
     )
-    r = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
-    if r.returncode != 0:
-        fail("encode_error", f"ffmpeg normalize_window failed:\n{(r.stderr or '')[-500:]}")
+    _run_atomic_encode(cmd, tmp_path, out_path, label="ffmpeg normalize_window")
 
     if used_fallback_tonemap:
         progress("⚠⚠⚠ FALLBACK TONEMAP WAS USED — OUTPUT COLORS ARE DEGRADED ⚠⚠⚠")
