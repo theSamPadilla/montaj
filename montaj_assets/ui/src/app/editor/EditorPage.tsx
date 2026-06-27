@@ -386,6 +386,7 @@ export default function EditorPage() {
             theme={defaultMontajTheme}
             slots={videoSlots}
             assetsPlacement="sidebar"
+            renderProgressView="logs"
             onProvideRenderTrigger={(fn) => setOpenRender(() => fn)}
             onBackToSetup={handleBackToSetup}
             regenEnabled={project.projectType === 'ai_video'}

@@ -41,6 +41,7 @@ export default function VideoEditor<P extends Project = Project>({
   slots,
   onBackToSetup,
   assetsPlacement = 'right',
+  renderProgressView = 'phases',
   renderClipInspector,
   renderSubcutRegen,
   regenEnabled,
@@ -87,6 +88,7 @@ export default function VideoEditor<P extends Project = Project>({
         onProjectChange={emit}
         slots={slots}
         assetsPlacement={assetsPlacement}
+        renderProgressView={renderProgressView}
         getWaveformChunks={getWaveformChunks}
         resolveFilePath={resolveFilePath}
         save={save}
@@ -121,6 +123,7 @@ interface SurfaceProps<P extends Project> {
   onProjectChange: (p: P) => void
   slots?: VideoEditorProps<P>['slots']
   assetsPlacement?: VideoEditorProps<P>['assetsPlacement']
+  renderProgressView?: VideoEditorProps<P>['renderProgressView']
   getWaveformChunks?: VideoEditorProps<P>['adapter']['getWaveformChunks']
   resolveFilePath: (path: string) => string
   save: (p: P) => void
@@ -261,6 +264,7 @@ function ReviewSurface<P extends Project>({
   onProjectChange,
   slots,
   assetsPlacement = 'right',
+  renderProgressView = 'phases',
   getWaveformChunks,
   resolveFilePath,
   save,
@@ -615,6 +619,7 @@ function ReviewSurface<P extends Project>({
           projectId={project.id}
           adapter={adapter}
           exportActions={slots?.exportActions}
+          progressView={renderProgressView}
           onClose={() => setRenderOpen(false)}
           onCancel={() => setRenderOpen(false)}
         />

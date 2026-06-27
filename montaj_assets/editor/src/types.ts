@@ -545,6 +545,21 @@ export interface VideoEditorProps<P extends Project = Project> {
   assetsPlacement?: 'sidebar' | 'right' | 'bottom'
 
   /**
+   * Which progress UI the RenderModal shows while a render runs:
+   * - `'phases'` — the compact phase stepper (Preparing → Rendering → … →
+   *   Saving). Works on any transport: poll-based hosts drive it from the
+   *   status `phase`; SSE hosts park it on "Rendering". This is the universal
+   *   default and what Hub clients use.
+   * - `'logs'` — the full scrolling render-log panel (colorized lines + Copy).
+   *   REQUIRES the SSE `adapter.render()` transport, which streams per-line
+   *   logs; this is the historical montaj-native desktop view. On a poll-based
+   *   host (no log lines) this panel would sit empty, so only pass `'logs'`
+   *   from a host whose adapter implements the streaming `render()` path.
+   * The host chooses per deployment; the package defaults to `'phases'`.
+   */
+  renderProgressView?: 'phases' | 'logs'
+
+  /**
    * Opt a host OUT of the package's built-in toolbar Render button so it can
    * place Render in its own chrome (e.g. the desktop OS editor's top header).
    * When provided, the package: (a) hides the toolbar Render button, and (b)

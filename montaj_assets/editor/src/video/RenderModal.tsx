@@ -17,6 +17,16 @@ interface RenderModalProps<P extends Project = Project> {
   /** Host-supplied export controls (e.g. a "Download all (.zip)" link) rendered
    *  in the done state's action area, mirroring the carousel render modal. */
   exportActions?: ReactNode
+  /**
+   * Which progress UI to show while the render runs:
+   *   'phases' — the compact phase stepper (Preparing → … → Saving). Works on
+   *              any transport; the default when omitted.
+   *   'logs'   — the full scrolling render-log panel. Requires the SSE
+   *              `adapter.render()` transport (which streams per-line logs);
+   *              on a poll-based host it would sit empty.
+   * Threaded down from the host as a flag (montaj-native → 'logs', Hub clients
+   * → 'phases'), mirroring `VideoEditorProps.renderProgressView`. */
+  progressView?: 'phases' | 'logs'
 }
 
 /** Promoted render output (R2-presigned), as carried by `RenderStatus.media`. */
@@ -113,16 +123,48 @@ function PhaseStepper({ current }: { current: RenderPhase }) {
   )
 }
 
-export default function RenderModal<P extends Project = Project>({ projectId, adapter, onClose, onCancel, exportActions }: RenderModalProps<P>) {
+// ── Log line (SSE / log-panel view) ───────────────────────────────────────────
+
+function LogLine({ text }: { text: string }) {
+  const t = text.replace(/^\[montaj render\]\s*/, '')
+  let color = 'text-[var(--editor-text)]/60'
+  if (/ready|complete|done|encoded|assembled/i.test(t))  color = 'text-green-400'
+  else if (/rendering|bundling|launching|browsers/i.test(t)) color = 'text-sky-400'
+  else if (/trimming|building|composing/i.test(t))       color = 'text-amber-400'
+  else if (/frame\s+\d+\/\d+/i.test(t))                  color = 'text-[var(--editor-text)]/55'
+  else if (/error|fail|warn/i.test(t))                   color = 'text-red-400'
+
+  const prefix = text.startsWith('[montaj render]')
+    ? <span className="text-[var(--editor-text)]/40">[render] </span>
+    : null
+
+  return (
+    <span className={`leading-relaxed whitespace-pre-wrap break-all ${color}`}>
+      {prefix}{t}
+    </span>
+  )
+}
+
+export default function RenderModal<P extends Project = Project>({ projectId, adapter, onClose, onCancel, exportActions, progressView }: RenderModalProps<P>) {
   const [status, setStatus]     = useState<'running' | 'done' | 'error'>('running')
   const [phase, setPhase]       = useState<RenderPhase>('preparing')
+  const [logs, setLogs]         = useState<string[]>([])
   const [media, setMedia]       = useState<RenderMedia[] | null>(null)
   const [outputPath, setOutput] = useState<string | null>(null)
   const [errorMsg, setError]    = useState<string | null>(null)
+  const logRef                  = useRef<HTMLDivElement>(null)
   const cancelledRef            = useRef(false)
   const unmountedRef            = useRef(false)
   const cleanupTimerRef         = useRef<ReturnType<typeof setTimeout> | null>(null)
   const pollTimerRef            = useRef<ReturnType<typeof setInterval> | null>(null)
+
+  // `usePolling` is the data-transport decision (does this adapter expose the
+  // poll-based render API?) — independent of which progress UI we show.
+  const usePolling = !!(adapter.renderAsync && adapter.getRenderStatus)
+  // `view` is the host's UI choice, threaded down as a flag (montaj-native →
+  // 'logs', Hub clients → 'phases'). Defaults to the universally-safe stepper;
+  // 'logs' only renders content on the SSE transport, which streams log lines.
+  const view = progressView ?? 'phases'
 
   useEffect(() => {
     // React StrictMode in dev fires mount → cleanup → mount synchronously to
@@ -144,8 +186,6 @@ export default function RenderModal<P extends Project = Project>({ projectId, ad
 
     unmountedRef.current = false
     cancelledRef.current = false
-
-    const usePolling = !!(adapter.renderAsync && adapter.getRenderStatus)
 
     void (async () => {
       try {
@@ -210,8 +250,10 @@ export default function RenderModal<P extends Project = Project>({ projectId, ad
           for await (const ev of adapter.render(projectId)) {
             if (unmountedRef.current || cancelledRef.current) break
             if (ev.type === 'log') {
-              // Streaming hosts have no phase signal — keep the stepper on
-              // "rendering" as an honest mid-pipeline indicator.
+              // Streaming hosts have no phase signal. Accumulate the line for
+              // the log panel, and keep the stepper (if shown) on "rendering"
+              // as an honest mid-pipeline indicator.
+              setLogs(l => [...l, ev.message])
               setPhase('rendering')
             } else if (ev.type === 'done') {
               setOutput(ev.outputPath)
@@ -251,6 +293,11 @@ export default function RenderModal<P extends Project = Project>({ projectId, ad
       }, 0)
     }
   }, [projectId, adapter])
+
+  // Auto-scroll the log panel as lines stream in.
+  useEffect(() => {
+    if (logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight
+  }, [logs])
 
   // Escape to close only when done/error
   useEffect(() => {
@@ -341,7 +388,7 @@ export default function RenderModal<P extends Project = Project>({ projectId, ad
 
   return createPortal(
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black">
-      <div className="w-full max-w-md bg-[var(--editor-surface)] border border-[var(--editor-border)] rounded-xl shadow-2xl flex flex-col overflow-hidden">
+      <div className={`w-full ${view === 'logs' ? 'max-w-3xl' : 'max-w-md'} bg-[var(--editor-surface)] border border-[var(--editor-border)] rounded-xl shadow-2xl flex flex-col overflow-hidden`}>
 
         {/* Header */}
         <div className="flex items-center justify-between px-5 py-4 border-b border-[var(--editor-border)]">
@@ -359,21 +406,47 @@ export default function RenderModal<P extends Project = Project>({ projectId, ad
           )}
         </div>
 
-        {/* Body */}
-        <div className="px-5 py-5">
-          {status === 'running' ? (
-            <>
-              <PhaseStepper current={phase} />
-              <p className="mt-5 text-xs text-[var(--editor-text)]/50">
-                This can take a few minutes for longer videos.
+        {/* Body — full log panel (montaj-native / SSE) or phase stepper (Hub) */}
+        {view === 'logs' ? (
+          <div className="relative">
+            <button
+              onClick={() => navigator.clipboard.writeText(logs.join('\n') + (errorMsg ? '\n' + errorMsg : ''))}
+              className="absolute top-2 right-2 z-10 text-[10px] px-2 py-0.5 rounded bg-[var(--editor-surface)] border border-[var(--editor-border)] text-[var(--editor-text)]/60 hover:text-[var(--editor-text)] hover:border-[var(--editor-border)] transition-colors"
+              title="Copy logs"
+            >
+              Copy
+            </button>
+            <div
+              ref={logRef}
+              className="h-96 overflow-y-auto px-4 py-3 font-mono text-[11px] text-[var(--editor-text)]/80 bg-[var(--editor-surface)] flex flex-col gap-0.5"
+            >
+              {logs.length === 0 && status === 'running' && (
+                <span className="text-[var(--editor-text)]/40 italic">Starting render engine…</span>
+              )}
+              {logs.map((line, i) => (
+                <LogLine key={i} text={line} />
+              ))}
+              {status === 'error' && errorMsg && (
+                <span className="text-red-400 mt-1">{errorMsg}</span>
+              )}
+            </div>
+          </div>
+        ) : (
+          <div className="px-5 py-5">
+            {status === 'running' ? (
+              <>
+                <PhaseStepper current={phase} />
+                <p className="mt-5 text-xs text-[var(--editor-text)]/50">
+                  This can take a few minutes for longer videos.
+                </p>
+              </>
+            ) : (
+              <p className="text-sm text-red-400 whitespace-pre-wrap break-words">
+                {errorMsg ?? 'Render failed.'}
               </p>
-            </>
-          ) : (
-            <p className="text-sm text-red-400 whitespace-pre-wrap break-words">
-              {errorMsg ?? 'Render failed.'}
-            </p>
-          )}
-        </div>
+            )}
+          </div>
+        )}
 
         {/* Footer */}
         <div className="flex items-center justify-end gap-2 px-5 py-3 border-t border-[var(--editor-border)]">

@@ -6,7 +6,32 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+## 0.8.7 — 2026-06-26
+
+### Carousel editor
+
+- **Fixed: the carousel render modal no longer hangs forever on "Starting render
+  engine…".** The Hub render backend is async-only (`POST …/render` returns
+  `{status:'running'}` and the render runs detached — it no longer streams SSE),
+  but `CarouselRenderModal` still consumed the dead SSE `adapter.render()`
+  stream, so it waited forever for a `done` event that never arrived while the
+  render actually completed server-side. It now mirrors `video/RenderModal`:
+  kick `renderAsync`, poll `getRenderStatus` until terminal (tolerating up to 12
+  consecutive transient poll failures so a tunnel hiccup isn't mistaken for a
+  failure), and build the done-state gallery from the promoted R2 `media`
+  (filtered to `slide_NN.png` and sorted). The SSE `adapter.render()` path is
+  preserved as a fallback for hosts without the poll API (montaj-native
+  desktop). (`src/carousel/CarouselRenderModal.tsx`)
+
 ### Video editor
+
+- **Render modal progress UI is now a host-chosen flag
+  (`VideoEditorProps.renderProgressView?: 'phases' | 'logs'`, default
+  `'phases'`).** montaj-native passes `'logs'` and gets the full scrolling
+  render-log panel (colorized lines + Copy) back; Hub clients keep the compact
+  Preparing → … → Saving stepper. The SSE render path accumulates log lines
+  again for the panel. (`src/types.ts`, `src/video/RenderModal.tsx`,
+  `src/video/VideoEditor.tsx`)
 
 - **Fixed: lazy-normalize preview no longer freezes on clips with a
   `normalizedSrc` window cache.** The preview loads the per-window cache (which
