@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { RefreshCw, AlertCircle, Download } from 'lucide-react'
+import { RefreshCw, AlertCircle, Download, Info } from 'lucide-react'
 import type { Project, Slide, CarouselElement, ImageElement, CarouselEditorProps, OverlayFactory } from '../types'
 import { applyTheme, defaultMontajTheme } from '../theme'
 import { useProjectState } from '../state/use-project-state'
@@ -7,6 +7,7 @@ import SlideCanvas from './SlideCanvas'
 import SlidePropertyPanel from './SlidePropertyPanel'
 import AddElementMenu from './AddElementMenu'
 import CarouselRenderModal from './CarouselRenderModal'
+import ControlsInfoModal, { CAROUSEL_CONTROLS } from '../ControlsInfoModal'
 import { Button } from '../ui'
 
 // Generic over the host's concrete project type `P` (default = the package's
@@ -167,6 +168,7 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
 
   const [skillPath, setSkillPath] = useState<string | null>(null)
   const [copied, setCopied] = useState(false)
+  const [showControls, setShowControls] = useState(false)
   const [refreshing, setRefreshing] = useState(false)
   const [refreshState, setRefreshState] = useState<'idle' | 'err'>('idle')
   const [rendering, setRendering] = useState(false)
@@ -505,9 +507,20 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
                 hiddenElementIds={hiddenElementIds}
               />
             </div>
-            <p className="flex-shrink-0 text-xs text-[var(--editor-text)]/60 text-center max-w-md">
-              Drag to reposition, resize/rotate via handles, double-click text to edit. Cmd/Ctrl+Z to undo.
-            </p>
+            <div className="flex-shrink-0 flex items-center justify-center gap-1.5 text-xs text-[var(--editor-text)]/60 max-w-md">
+              <span className="text-center">
+                Drag to reposition, resize/rotate via handles, double-click text to edit. Cmd/Ctrl+Z to undo.
+              </span>
+              <button
+                type="button"
+                onClick={() => setShowControls(true)}
+                title="Editor controls & shortcuts"
+                aria-label="Editor controls & shortcuts"
+                className="shrink-0 cursor-pointer opacity-60 transition-opacity hover:opacity-100"
+              >
+                <Info size={13} />
+              </button>
+            </div>
           </>
         ) : (
           <div className="text-[var(--editor-text)]/40 text-sm">No slides yet. Add one in the left panel.</div>
@@ -564,6 +577,14 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
         <div className="flex-shrink-0 border-t border-[var(--editor-border)] w-full flex flex-col">
           {slots.assetsPanel}
         </div>
+      )}
+
+      {showControls && (
+        <ControlsInfoModal
+          title="Editor controls"
+          sections={CAROUSEL_CONTROLS}
+          onClose={() => setShowControls(false)}
+        />
       )}
 
       {renderOpen && (

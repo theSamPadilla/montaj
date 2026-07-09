@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { Crop, Magnet } from 'lucide-react'
+import { Crop, Info, Magnet } from 'lucide-react'
 import type { Project, VideoEditorProps } from '../types'
 import { VideoSourceCropModal } from '../crop/VideoSourceCropModal'
+import ControlsInfoModal, { VIDEO_CONTROLS } from '../ControlsInfoModal'
 import { getOverlayDesignCanvas } from './design-canvas'
 import { applyTheme, defaultMontajTheme } from '../theme'
 import { applyCutToItem, applyCutToTracks, collapseGaps, splitAtTime } from './cuts'
@@ -287,6 +288,7 @@ function ReviewSurface<P extends Project>({
   const [selectedIds, setSelectedIds] = useState<string[]>([])
   const primarySelectedId = selectedIds[0] ?? null
   const [rippleMode, setRippleMode]   = useState(false)
+  const [showControls, setShowControls] = useState(false)
   // Source-crop mode: when on, the VideoSourceCropModal opens for the selected
   // tracks[0] video item. Cleared when selection changes.
   const [cropMode, setCropMode]       = useState(false)
@@ -463,8 +465,16 @@ function ReviewSurface<P extends Project>({
           )}
         </div>
 
-        {/* Track controls bar — split + ripple + render */}
+        {/* Track controls bar — info + split + ripple + render */}
         <div className="shrink-0 flex items-center justify-end gap-1.5 px-3 py-1 border-t border-[var(--editor-border)] bg-[var(--editor-surface)]">
+          <button
+            onClick={() => setShowControls(true)}
+            title="Editor controls & shortcuts"
+            aria-label="Editor controls & shortcuts"
+            className="flex items-center justify-center w-5 h-5 rounded transition-colors text-[var(--editor-text)]/60 bg-transparent hover:text-[var(--editor-text)] mr-auto"
+          >
+            <Info size={12} />
+          </button>
           <button
             onClick={() => handleSplit()}
             title="Split at playhead (S) — selected item or all clips"
@@ -610,6 +620,15 @@ function ReviewSurface<P extends Project>({
             handleOverlayChange(cropTarget.id, { sourceWidth: dims.width, sourceHeight: dims.height })
           }}
           onClose={() => setCropMode(false)}
+        />
+      )}
+
+      {/* Controls & shortcuts reference */}
+      {showControls && (
+        <ControlsInfoModal
+          title="Editor controls"
+          sections={VIDEO_CONTROLS}
+          onClose={() => setShowControls(false)}
         />
       )}
 

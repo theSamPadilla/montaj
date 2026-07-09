@@ -6,6 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+## 0.8.8 — 2026-07-09
+
+### Both editors
+
+- **Added: an "ⓘ" controls & shortcuts reference.** A small info button in the
+  video editor's toolbar and beside the carousel editor's hint line opens a
+  themed modal (`ControlsInfoModal`) listing the real gestures and keyboard
+  shortcuts for that editor — preview drag/scale/rotate, timeline trim, Split
+  (`S`), undo/redo, `Delete`, etc. Content is sourced from the editors' actual
+  handlers so it can't drift into fiction. Dismisses on backdrop-click or `Esc`.
+
 ## 0.8.7 — 2026-06-26
 
 ### Carousel editor
