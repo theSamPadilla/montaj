@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## v3.5.4
+
+- **Three new caption styles: `highlight-box`, `outline`, `clean`.** `highlight-box` shows the whole phrase with the spoken word in a colored rounded box; `outline` is all-caps with a heavy black stroke and only the spoken word filled with the accent color; `clean` is a plain sentence-case line with no background box (Figtree 700). (`montaj_assets/render/templates/captions/highlight-box.jsx`, `outline.jsx`, `clean.jsx`, `montaj_assets/render/render.js`)
+- **Caption `fontsize` is now honored by the JSX (Puppeteer) render path and the editor preview**, not just the legacy ffmpeg path — the size slider actually changes rendered/previewed caption size. (`montaj_assets/render/render.js`, `montaj_assets/editor/src/video/preview/CaptionPreview.tsx`)
+- **`accentColor` joins the persisted caption theme keys**, used by the active-word fill in `highlight-box` and `outline`. (`steps/transform/generate_captions.py`, `serve/routes/projects.py`, `montaj_assets/editor/src/schema.ts`)
+- **Editor caption panel: font-size slider and a two-step "Remove captions" button.** The slider adjusts `fontsize` live against the preview; Remove clears the caption track from the project (with an inline confirm, since regenerating costs a transcription run). (`montaj_assets/editor/src/video/timeline/TranscriptPanel.tsx`)
+
 ## v3.5.3
 
 - **Render: the timeline origin is floored at t=0, so a clip/overlay with a negative `start` no longer shifts the whole video and leaves a black head gap.** An item may carry a negative `start` — the interactive editor clamps drags/trims to `>=0`, but a programmatic author can persist `start < 0` (e.g. the overlays workflow placing a full-source background reel at `-firstClipInPoint` to stay aligned to source time). The segment planner seeded its first boundary at the earliest item start with no zero-floor, so a negative value became the timeline origin: the entire output shifted later by `|minStart|`, tracks correctly anchored at 0 (the source clips) rendered **black for `|minStart|` seconds** while the negative-start overlay filled from frame 0, and the render disagreed with the editor preview (which already treats `t<0` as `t=0`). `planSegments` now floors every boundary at 0 (`Math.max(0, quantize(t))`); `encode-segment`'s existing `max(0, segStart - start)` seek then advances each item into its pre-0 portion, matching the preview's `playhead - start` convention. Items entirely before 0 collapse to a single 0 boundary and produce no segment. Repro: `2026-06-26-cruces-objetivo-ultimo-dia` (reel overlay at `start=-0.335` → 0.335s black top, render 32.3s vs timeline 31.98s). (`montaj_assets/render/segment-plan.js`, `montaj_assets/render/test/segment-plan.test.mjs`)

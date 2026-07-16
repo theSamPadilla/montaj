@@ -17,7 +17,7 @@ from cli.deps import render_runtime_dir
 
 router = APIRouter(prefix="/api")
 
-CAPTION_STYLES = {"word-by-word", "pop", "karaoke", "subtitle"}
+CAPTION_STYLES = {"word-by-word", "pop", "karaoke", "subtitle", "highlight-box", "outline", "clean"}
 
 
 async def save_upload(file: UploadFile, dest_dir: Path) -> Path:

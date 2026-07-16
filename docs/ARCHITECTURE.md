@@ -716,8 +716,11 @@ Built-in caption styles:
 | `pop` | Segment-at-a-time with scale entry |
 | `karaoke` | Words highlight as they're spoken |
 | `subtitle` | Static line at bottom, segments replace sequentially |
+| `highlight-box` | Whole phrase visible; the spoken word sits in a colored rounded box |
+| `outline` | All-caps, heavy black stroke; only the spoken word fills with the accent color |
+| `clean` | Plain sentence-case line, no background box, Figtree 700 |
 
-Caption data (segments + word timestamps) is always inlined in the track — never a `src` pointer.
+Caption data (segments + word timestamps) is always inlined in the track — never a `src` pointer. Theme keys carried on the caption track/props include `fontsize`/`fontSize`, `color`, and `accentColor` (used by `highlight-box`/`outline` for the active-word fill); `fontsize` now applies to both the ffmpeg and the Puppeteer/JSX render paths, not just ffmpeg.
 
 **Preview pipeline** — when `montaj serve` is running, the UI previews overlays and captions live in the browser via `ui/src/lib/overlay-eval.ts`. The JSX file is fetched, transpiled in-browser by `@babel/standalone`, and called directly on every animation frame. It is an approximation — font rendering and CSS compositing differ slightly from the Puppeteer environment. The render output is what matters.
 

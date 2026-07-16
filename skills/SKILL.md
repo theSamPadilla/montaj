@@ -80,7 +80,7 @@ For HTTP and CLI, **load skill `native`** — it defines how every `_contract` v
 | Step | What it does | Key params |
 |------|-------------|------------|
 | `transcribe` | Word-level transcript (whisper.cpp) → SRT + JSON | `--model base.en --language en` |
-| `caption` | Transcript → animated caption track (data, not pixels) | `--style word-by-word` (or `karaoke`, `pop`, `subtitle`) |
+| `caption` | Transcript → animated caption track (data, not pixels) | `--style word-by-word` (or `karaoke`, `pop`, `subtitle`, `highlight-box`, `outline`, `clean`) |
 | `normalize` | Loudness normalization (LUFS) | `--target youtube` (or `podcast`, `broadcast`) |
 
 **`caption` produces a data track, not pixels.** Rendered at review/final render time by the UI and render engine.

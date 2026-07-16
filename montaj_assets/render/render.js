@@ -500,7 +500,20 @@ function collectPuppeteerSegments(projectJson, fps, width, height, segDir) {
     // googleFonts is a spec-level field (consumed by bundleComponent), not a
     // prop on the caption component — pull it out before spreading the rest
     // into captionTheme.
-    const { style: _captStyle, segments: _captSegs, googleFonts: captionFonts, ...captionTheme } = captions
+    let { style: _captStyle, segments: _captSegs, googleFonts: captionFonts, ...captionTheme } = captions
+    // Normalise the legacy lowercase `fontsize` key (used by the old ffmpeg
+    // path / editor) to the camelCase `fontSize` prop the JSX templates
+    // expect. Never send both.
+    if (captionTheme.fontsize != null) {
+      captionTheme.fontSize = captionTheme.fontsize
+      delete captionTheme.fontsize
+    }
+    // The 'clean' style is built around Figtree — default its google font
+    // when the caller hasn't specified one, so the render isn't silently
+    // falling back to a system font.
+    if (captions.style === 'clean' && (captionFonts == null || captionFonts.length === 0)) {
+      captionFonts = ['Figtree:wght@700']
+    }
     specs.push({
       id:            'captions',
       componentPath: captionTemplatePath(captions.style),
@@ -630,10 +643,13 @@ async function processVideoItems(videoItems, workspaceDir) {
 
 function captionTemplatePath(style) {
   const styleMap = {
-    'word-by-word': 'word-by-word.jsx',
-    'pop':          'pop.jsx',
-    'karaoke':      'karaoke.jsx',
-    'subtitle':     'subtitle.jsx',
+    'word-by-word':  'word-by-word.jsx',
+    'pop':           'pop.jsx',
+    'karaoke':       'karaoke.jsx',
+    'subtitle':      'subtitle.jsx',
+    'highlight-box': 'highlight-box.jsx',
+    'outline':       'outline.jsx',
+    'clean':         'clean.jsx',
   }
   const file = styleMap[style] ?? 'subtitle.jsx'
   return join(__dirname, 'templates', 'captions', file)

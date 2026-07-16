@@ -1608,7 +1608,7 @@ async def _run_caption_pipeline(
     # Persist the caption track onto the project and broadcast.
     track = json.loads(track_path.read_text())
     prev = project.get("captions") or {}
-    for k in ("position", "color", "fontsize", "bgColor"):
+    for k in ("position", "color", "fontsize", "bgColor", "accentColor"):
         if k in prev and k not in track:
             track[k] = prev[k]
     project["captions"] = track

@@ -14,7 +14,7 @@
       "name": "style",
       "type": "enum",
       "default": "word-by-word",
-      "options": ["word-by-word", "karaoke", "subtitle", "pop"],
+      "options": ["word-by-word", "karaoke", "subtitle", "pop", "highlight-box", "outline", "clean"],
       "description": "Caption animation style"
     }
   ]

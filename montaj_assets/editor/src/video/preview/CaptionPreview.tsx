@@ -58,8 +58,17 @@ export default function CaptionPreview({ track, currentTime, fps, compileOverlay
 
   const frame    = Math.round(currentTime * fps)
   const lastSeg  = track.segments[track.segments.length - 1]
+
+  // Theme props for the template: everything on the track except style/segments
+  // (handled separately) and googleFonts (a render-time font-loading hint, not
+  // a template prop). Normalize the legacy lowercase `fontsize` key to the
+  // camelCase `fontSize` templates actually read.
+  const { style: _style, segments: _segments, googleFonts: _googleFonts, fontsize, ...theme } = track
+  const themeProps: Record<string, unknown> = { ...theme }
+  if (fontsize != null) themeProps.fontSize = fontsize
+
   const element  = (factory && scale !== null)
-    ? factory(frame, fps, Math.round((lastSeg?.end ?? 0) * fps), { segments: track.segments })
+    ? factory(frame, fps, Math.round((lastSeg?.end ?? 0) * fps), { segments: track.segments, ...themeProps })
     : null
 
   return (

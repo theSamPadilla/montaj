@@ -138,7 +138,12 @@ export default function Timeline({ project, currentTime, onTimeUpdate, onProject
     const fps = project.settings?.fps ?? 30
     const frame = 1 / fps
     const onKey = (e: globalThis.KeyboardEvent) => {
+      // While the transcript modal is open, or the caret is in editable text
+      // (caption segments are contentEditable), arrows move the text cursor —
+      // never the playhead.
+      if (transcriptModalOpen) return
       if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return
+      if ((e.target as HTMLElement).isContentEditable) return
       if (e.key === 'Escape') { setMarkers([null, null]); return }
       if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return
       e.preventDefault()
@@ -152,7 +157,7 @@ export default function Timeline({ project, currentTime, onTimeUpdate, onProject
     }
     document.addEventListener('keydown', onKey)
     return () => document.removeEventListener('keydown', onKey)
-  }, [totalDuration, currentTime, onTimeUpdate, project.settings?.fps])
+  }, [totalDuration, currentTime, onTimeUpdate, project.settings?.fps, transcriptModalOpen])
 
   // Derive selection from two placed markers
   const selection = markers[0] !== null && markers[1] !== null

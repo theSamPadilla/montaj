@@ -35,7 +35,7 @@ from serve.caption_job import build_cut_spec  # noqa: E402
 
 # Caption-theme keys carried forward from a prior caption track. Mirrors the
 # SSE route's merge in serve/routes/projects.py.
-THEME_KEYS = ("position", "color", "fontsize", "bgColor")
+THEME_KEYS = ("position", "color", "fontsize", "bgColor", "accentColor")
 
 
 def resolve_style(args_style, project: dict) -> str:

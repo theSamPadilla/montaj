@@ -494,7 +494,7 @@ All steps accept `--out <path>` to set the output location. Run `montaj step <na
 | `crop_spec` | `--keep <start:end>` (repeatable), `--out <path>` |
 | `virtual_to_original` | `--inverse` |
 | `transcribe` | `--model <base.en\|medium.en>`, `--language <code>` |
-| `caption` | `--style <word-by-word\|pop\|karaoke\|subtitle>` |
+| `caption` | `--style <word-by-word\|pop\|karaoke\|subtitle\|highlight-box\|outline\|clean>` |
 | `stem-separation` | `--stems <vocals\|drums\|bass\|other>`, `--out-dir <path>` |
 | `lyrics-sync` | `--lyrics <txt>`, `--model <base.en\|medium.en>`, `--out <path>`, `--start <s>`, `--end <s>` |
 | `lyrics-render` | `--captions <json>`, `--audio <mp3>`, `--input <video>`, `--position <center\|top-left\|bottom-left>`, `--color <str>`, `--fontsize <px>`, `--preview-duration <s>` |

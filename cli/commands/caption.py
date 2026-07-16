@@ -9,7 +9,7 @@ def register(subparsers):
     p = subparsers.add_parser("caption", help="Prepare caption track from a transcript")
     p.add_argument("input", help="Word-level transcript JSON from montaj transcribe")
     p.add_argument("--style", default="word-by-word",
-                   choices=["word-by-word", "pop", "karaoke", "subtitle"],
+                   choices=["word-by-word", "pop", "karaoke", "subtitle", "highlight-box", "outline", "clean"],
                    help="Caption style (default: word-by-word)")
     add_global_flags(p)
     p.set_defaults(func=handle)

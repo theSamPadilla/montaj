@@ -11,7 +11,7 @@ def main():
     parser.add_argument("--input", required=True,
                         help="Word-level JSON transcript from the transcribe step")
     parser.add_argument("--style", default="word-by-word",
-                        choices=["word-by-word", "karaoke", "subtitle", "pop"],
+                        choices=["word-by-word", "karaoke", "subtitle", "pop", "highlight-box", "outline", "clean"],
                         help="Caption animation style")
     parser.add_argument("--out", help="Output caption track JSON path")
     args = parser.parse_args()

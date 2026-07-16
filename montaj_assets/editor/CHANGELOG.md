@@ -6,6 +6,30 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+### Video editor
+
+- **Fixed: arrow keys no longer scrub the video while editing caption text.**
+  The timeline's global ←/→ frame-step handler only ignored `<input>`/
+  `<textarea>` targets, so with the caret inside a caption segment (they're
+  `contentEditable` spans) arrows moved the playhead as well as the text
+  cursor. It now also bails when the target is contentEditable, and is
+  disabled entirely while the transcript modal is open — arrows just move the
+  text cursor there. Timeline scrubbing is unchanged everywhere else.
+
+- **Added: caption style picker gains 3 styles** (`highlight-box`, `outline`,
+  `clean`) alongside the existing `word-by-word`/`karaoke`/`pop`/`subtitle`.
+
+- **Added: a font-size slider** in the caption panel — adjusts `fontsize` on
+  the caption track live against the preview.
+
+- **Added: a "Remove captions" button** with a two-step inline confirm, to
+  clear the caption track from the project without hand-editing
+  `project.json`.
+
+- **`CaptionPreview` now passes theme props** (not just `segments`) through to
+  the caption template factory, so style/color/size edits are reflected live
+  in the preview.
+
 ## 0.8.8 — 2026-07-09
 
 ### Both editors

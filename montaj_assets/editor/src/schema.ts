@@ -43,13 +43,15 @@ export interface CaptionSegment {
 }
 
 export interface Captions {
-  style: 'word-by-word' | 'pop' | 'karaoke' | 'subtitle'
+  style: 'word-by-word' | 'pop' | 'karaoke' | 'subtitle' | 'highlight-box' | 'outline' | 'clean'
   segments: CaptionSegment[]
   // ffmpeg-drawtext render params — ignored by JSX preview, used by render.js ffmpeg branch
   position?: 'center' | 'top-left' | 'bottom-left'
   color?: string
   fontsize?: number
   bgColor?: string
+  accentColor?: string    // active-word/box accent color — highlight-box, outline
+  googleFonts?: string[]  // Google Fonts family specs for the caption template (e.g. ["Figtree:wght@700"])
 }
 
 export interface VisualItem {
