@@ -1,5 +1,7 @@
 import json
 
+from common import ffmpeg_bin
+
 
 def load(src) -> dict:
     """Load a trim spec from a dict or a JSON file path."""
@@ -105,7 +107,7 @@ def audio_extract_cmd(input_path: str, keeps: list, out_wav: str) -> list:
     filter_complex = ";".join(filter_parts)
 
     return [
-        "ffmpeg", "-y",
+        ffmpeg_bin(), "-y",
         "-i", input_path,
         "-filter_complex", filter_complex,
         "-map", "[aout]",

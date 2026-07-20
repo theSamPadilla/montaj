@@ -5,6 +5,7 @@
  * Video item audio (muted flag on VisualItems) is handled inline in compose.js.
  */
 import { spawnSync } from 'child_process'
+import { FFMPEG } from './ffmpeg-bin.js'
 
 const FFMPEG_TIMEOUT_MS = 600_000
 
@@ -100,7 +101,7 @@ export function mixAudioIntoVideo(videoPath, audioTracks, outputPath) {
   // count here for the early-exit branch and to avoid an empty filter graph.
   const unmuted = (audioTracks ?? []).filter(t => !t.muted)
   if (unmuted.length === 0) {
-    const result = spawnSync('ffmpeg', [
+    const result = spawnSync(FFMPEG, [
       '-y', '-i', videoPath, '-c', 'copy', outputPath,
     ], { encoding: 'utf8', timeout: FFMPEG_TIMEOUT_MS })
     if (result.status !== 0) throw new Error(`ffmpeg copy failed:\n${result.stderr}`)
@@ -114,7 +115,7 @@ export function mixAudioIntoVideo(videoPath, audioTracks, outputPath) {
   // always produces a silent audio stream via anullsrc in compose.js)
   const { filterParts, audioLabel } = buildAudioTrackFilters(unmuted, 1, '[0:a]')
 
-  const result = spawnSync('ffmpeg', [
+  const result = spawnSync(FFMPEG, [
     '-y', ...inputs,
     '-filter_complex', filterParts.join(';'),
     '-map', '0:v',

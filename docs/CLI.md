@@ -8,17 +8,18 @@
 
 ## Install & update
 
-ffmpeg is bundled automatically via pip — no manual step required. Node.js is not — install it separately (any install path) before running `montaj install ui`.
+Node.js is not installed automatically — install it separately (any install path) before running `montaj install ui`.
 
 ```bash
 brew install theSamPadilla/montaj/montaj   # or: pip install montaj
 montaj doctor                              # diagnose what's missing — prints the exact next steps
 montaj install ui                          # build UI bundles into ~/.cache/montaj/ (brew + pip both need this)
 montaj install whisper                     # whisper-cpp binary + base.en model weights
+montaj install ffmpeg                      # pinned static ffmpeg/ffprobe with zscale (libzimg) for HDR
 montaj install rvm                         # torch/torchvision/av (pip) + RVM model weights
 montaj install connectors                  # pyjwt, requests, google-genai, openai (for API steps)
 montaj credentials                         # interactive setup for API keys (~/.montaj/credentials.json)
-montaj install all                         # everything above
+montaj install all                         # everything above, including ffmpeg
 ```
 
 First-run flow is identical for brew and pip: `montaj doctor` first to see what's missing, then act on its output — almost always `montaj install ui`.
@@ -31,6 +32,7 @@ First-run flow is identical for brew and pip: `montaj doctor` first to see what'
 |-------|-----------------|--------------|
 | `whisper` | whisper-cli (via `brew install whisper-cpp` on macOS) + base.en model weights | `transcribe`, `rm_fillers`, `rm_nonspeech`, `waveform_trim`, render pipeline |
 | `ui` | npm deps for `render/` and `ui/`; production UI build | `montaj serve`, render engine |
+| `ffmpeg` | pinned static ffmpeg + ffprobe (8.1.2, with libzimg/zscale) into the managed models dir | HDR normalization (`zscale`), all ffmpeg-backed steps, render engine |
 | `rvm` | torch, torchvision, av (pip) + rvm_mobilenetv3 (~15 MB) + rvm_resnet50 (~103 MB) | `remove_bg` |
 | `connectors` | pyjwt, requests, google-genai, openai | `kling_generate`, `analyze_media`, `generate_image` |
 
@@ -58,15 +60,20 @@ montaj doctor
 # Recommended ffmpeg filters: sidechaincompress (audio ducking)
 ```
 
-### Rebuild ffmpeg with zscale
+### Managed ffmpeg
 
 ```bash
 montaj install ffmpeg
-# Rebuild ffmpeg with zscale (libzimg) for HDR normalization.
-# macOS/Homebrew only. Steps: install zimg, patch local Homebrew formula
-# to add --enable-libzimg, clear API cache, rebuild from source.
-# Not included in `montaj install all` — always an explicit opt-in.
+# Downloads the pinned, checksum-verified static ffmpeg/ffprobe build
+# (8.1.2, with libzimg/zscale) into ~/.local/share/montaj/models/ffmpeg/.
+# Included in `montaj install all`.
 ```
+
+Every step and the render engine resolve the ffmpeg/ffprobe binary via a fixed
+precedence: `MONTAJ_FFMPEG`/`MONTAJ_FFPROBE` env override → the managed build
+above → whatever `ffmpeg`/`ffprobe` is on `PATH`. `montaj doctor` reports which
+one is actually in use (e.g. `(managed: ~/.local/share/montaj/models/ffmpeg/ffmpeg)`)
+and, if `zscale` is missing, points at `montaj install ffmpeg` as the fix.
 
 ### Normalize a video clip
 

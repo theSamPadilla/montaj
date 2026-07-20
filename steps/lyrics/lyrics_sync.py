@@ -15,7 +15,7 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "lib"))
 import models as _models
-from common import fail, require_file, check_output, run, find_whisper_bin
+from common import fail, require_file, check_output, run, find_whisper_bin, ffmpeg_bin
 
 
 WHISPER_MODEL      = "base.en"
@@ -197,7 +197,7 @@ def main():
         tmp = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
         tmp.close()
         tmp_audio = tmp.name
-        run(["ffmpeg", "-y", "-i", args.input, "-vn", "-acodec", "pcm_s16le",
+        run([ffmpeg_bin(), "-y", "-i", args.input, "-vn", "-acodec", "pcm_s16le",
              "-ar", "16000", "-ac", "1", tmp_audio])
         audio_in = tmp_audio
 

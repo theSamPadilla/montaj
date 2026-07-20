@@ -9,6 +9,7 @@ import os, sys, argparse, subprocess
 MONTAJ_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 sys.path.insert(0, MONTAJ_ROOT)
 from cli.deps import render_runtime_dir
+from lib.common import ffmpeg_bin, ffprobe_bin
 
 # Resolve the render bundle at its runtime location, not the site-packages
 # source copy. In prod `montaj install ui` runs `npm install` into the build
@@ -46,7 +47,11 @@ def main():
         "--out", out,
     ]
 
-    result = subprocess.run(cmd, check=False, capture_output=True)
+    env = os.environ.copy()
+    env["MONTAJ_FFMPEG"] = ffmpeg_bin()
+    env["MONTAJ_FFPROBE"] = ffprobe_bin()
+
+    result = subprocess.run(cmd, check=False, capture_output=True, env=env)
     sys.stdout.write(result.stdout.decode("utf-8", errors="replace"))
     sys.stdout.flush()
     sys.stderr.write(result.stderr.decode("utf-8", errors="replace"))

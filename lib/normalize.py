@@ -19,7 +19,7 @@ The sys.path.insert below adds lib/ itself so `from common import ...` works in 
 import sys, os, json, subprocess, argparse, glob, re
 
 sys.path.insert(0, os.path.dirname(__file__))  # add lib/ so `from common` works in all invocation modes
-from common import fail, require_file, progress
+from common import fail, require_file, progress, ffmpeg_bin, ffprobe_bin
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))  # add repo root so `from lib.types.colorspace` works
 from lib.types.colorspace import (
@@ -45,7 +45,7 @@ def probe_video(path):
     when reasoning about output orientation (e.g., picking project canvas size).
     """
     cmd = [
-        "ffprobe", "-v", "quiet",
+        ffprobe_bin(), "-v", "quiet",
         "-show_entries", "stream=codec_type,codec_name,width,height,pix_fmt,color_transfer,r_frame_rate,sample_rate",
         "-of", "json", path,
     ]
@@ -104,7 +104,7 @@ def _probe_rotation(path):
     by default, so the file appears portrait. Returns 0 on failure or absence.
     """
     cmd = [
-        "ffprobe", "-v", "quiet", "-select_streams", "v:0",
+        ffprobe_bin(), "-v", "quiet", "-select_streams", "v:0",
         "-show_entries", "stream_side_data=rotation",
         "-of", "json", path,
     ]
@@ -127,7 +127,7 @@ def _probe_max_keyframe_interval(path):
     """Return the max gap (seconds) between keyframes in the first 10s of the file.
     Returns 999 if probing fails (treat as non-conformant)."""
     cmd = [
-        "ffprobe", "-v", "quiet", "-select_streams", "v:0",
+        ffprobe_bin(), "-v", "quiet", "-select_streams", "v:0",
         "-show_entries", "packet=pts_time,flags",
         "-read_intervals", "%+10",
         "-of", "csv=p=0", path,
@@ -190,7 +190,7 @@ def is_normalized(path, info, project_color_space: ColorSpaceKey) -> bool:
 
 def _has_zscale():
     """Check if ffmpeg has the zscale filter (requires libzimg)."""
-    r = subprocess.run(["ffmpeg", "-filters"], capture_output=True, text=True, timeout=5)
+    r = subprocess.run([ffmpeg_bin(), "-filters"], capture_output=True, text=True, timeout=5)
     return "zscale" in (r.stdout or "")
 
 
@@ -310,7 +310,7 @@ def _build_ffmpeg_cmd(
         enc_args.extend([f"-{k}", v])
 
     cmd = [
-        "ffmpeg", "-y",
+        ffmpeg_bin(), "-y",
         *pre_input_args,
         "-i", input_path,
         "-vf", vf,

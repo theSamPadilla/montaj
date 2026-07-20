@@ -674,6 +674,7 @@ def test_init_probe_cache_is_consumed_by_normalize_loop(tmp_path):
     ws = tmp_path / "ws"; ws.mkdir()
     env = os.environ.copy()
     env["PATH"] = f"{shim_dir}:{env['PATH']}"
+    env["MONTAJ_FFPROBE"] = str(shim)
     env["MONTAJ_WORKSPACE_DIR"] = str(ws)
 
     result = subprocess.run(

@@ -17,6 +17,7 @@ import { spawnSync, spawn } from 'child_process'
 import { bundleComponent, cleanupBundle } from './bundle.js'
 import { renderAllSegments }              from './renderer.js'
 import { compose, embedThumbnail }        from './compose.js'
+import { FFMPEG, FFPROBE }                from './ffmpeg-bin.js'
 import { requireValidKey, detectFromTransfer, smartDetect, DEFAULT_COLOR_SPACE } from './color-space.js'
 
 const __dirname  = dirname(fileURLToPath(import.meta.url))
@@ -414,7 +415,7 @@ async function main(projectPath, { out, workers, clean }) {
 
 /** Return [width, height] of the first video stream in a file, or null on error. */
 function probeVideoDimensions(filePath) {
-  const result = spawnSync('ffprobe', [
+  const result = spawnSync(FFPROBE, [
     '-v', 'quiet', '-print_format', 'json', '-show_streams', filePath,
   ], { encoding: 'utf8', timeout: 30_000 })
   if (result.status !== 0) return null
@@ -435,7 +436,7 @@ function probeVideoDimensions(filePath) {
  *  COLOR_SPACE_SPECS.transferValues silently misses every HDR clip and the
  *  whole project gets mis-classified as SDR. */
 function probeColorTransfer(filePath) {
-  const result = spawnSync('ffprobe', [
+  const result = spawnSync(FFPROBE, [
     '-v', 'quiet', '-select_streams', 'v:0',
     '-show_entries', 'stream=color_transfer',
     '-of', 'csv=p=0', filePath,
@@ -810,7 +811,7 @@ async function normalizeIfNeeded(src, projectColorSpace) {
 
 async function stripExtraAudioStreams(src) {
   // Probe: how many audio streams does this file have?
-  const probe = spawnSync('ffprobe', [
+  const probe = spawnSync(FFPROBE, [
     '-v', 'error', '-select_streams', 'a', '-show_entries', 'stream=index',
     '-of', 'csv=p=0', src,
   ], { encoding: 'utf8', timeout: 30_000 })
@@ -840,7 +841,7 @@ async function stripExtraAudioStreams(src) {
     // only. -c copy keeps everything stream-copy (fast, no re-encode). The
     // output container is MP4, which doesn't support Apple's mebx data streams
     // (those would only be needed in a MOV roundtrip anyway).
-    const proc = spawn('ffmpeg', [
+    const proc = spawn(FFMPEG, [
       '-y', '-v', 'error',
       '-i', src,
       '-map', '0:v', '-map', '0:a:0',

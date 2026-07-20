@@ -28,6 +28,7 @@ import { tmpdir } from 'os'
 import { createHash } from 'crypto'
 
 import { bundleComponent, cleanupBundle } from './bundle.js'
+import { FFMPEG } from './ffmpeg-bin.js'
 import { isHdr } from './color-space.js'
 import {
   buildImageItemFilterParts,
@@ -621,7 +622,7 @@ export async function sampleFrame({
     }
     ffmpegExtractArgs.push('-frames:v', '1', '-update', '1', framePng)
 
-    const result = spawnSync('ffmpeg', ffmpegExtractArgs, { encoding: 'utf8', timeout: 60_000 })
+    const result = spawnSync(FFMPEG, ffmpegExtractArgs, { encoding: 'utf8', timeout: 60_000 })
 
     if (result.status !== 0) {
       throw new Error(`ffmpeg video frame extract failed: ${result.stderr?.slice(-300)}`)
@@ -717,7 +718,7 @@ export async function sampleFrame({
   ]
 
   log(`compositing frame (${actualWidth}×${actualHeight})`)
-  const compResult = spawnSync('ffmpeg', ffmpegArgs, {
+  const compResult = spawnSync(FFMPEG, ffmpegArgs, {
     encoding: 'utf8',
     timeout: 120_000,
   })

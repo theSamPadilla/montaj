@@ -48,14 +48,44 @@ def run(cmd: list[str], timeout: int = 300, check: bool = True) -> subprocess.Co
     return r
 
 
+def _managed_ffmpeg_dir():
+    """Directory of the montaj-managed static ffmpeg build (may not exist).
+
+    Resolves via lib/models.py's canonical MONTAJ_MODELS_DIR (same as
+    find_whisper_bin) so env/test overrides of the models dir are honored
+    consistently between the downloader and this resolver.
+    """
+    import models as _models
+    return _models.models_dir("ffmpeg")
+
+
+def _resolve_av_bin(name, env_var):
+    """Resolver: env override -> managed static build -> bare PATH name."""
+    env = os.environ.get(env_var)
+    if env:
+        return env
+    managed = os.path.join(_managed_ffmpeg_dir(), name)
+    if os.access(managed, os.X_OK):
+        return managed
+    return name
+
+
+def ffmpeg_bin():
+    return _resolve_av_bin("ffmpeg", "MONTAJ_FFMPEG")
+
+
+def ffprobe_bin():
+    return _resolve_av_bin("ffprobe", "MONTAJ_FFPROBE")
+
+
 def run_ffmpeg(args: list[str], timeout: int = 300):
     """Run ffmpeg, suppress output."""
-    return run(["ffmpeg"] + args, timeout=timeout)
+    return run([ffmpeg_bin()] + args, timeout=timeout)
 
 
 def ffprobe_value(path: str, entries: str, stream_select: str = "") -> str:
     """Get a single value from ffprobe."""
-    cmd = ["ffprobe", "-v", "quiet"]
+    cmd = [ffprobe_bin(), "-v", "quiet"]
     if stream_select:
         cmd += ["-select_streams", stream_select]
     cmd += ["-show_entries", entries, "-of", "csv=p=0", path]
@@ -193,7 +223,7 @@ def transcribe_words(input_path: str, model: str = "base.en", work_dir: str = No
         mime = mimetypes.guess_type(input_path)[0] or ""
         if mime.startswith("video/") or not mime.startswith("audio/"):
             audio = os.path.join(work_dir, "audio.wav")
-            run(["ffmpeg", "-y", "-i", input_path, "-vn", "-acodec", "pcm_s16le",
+            run([ffmpeg_bin(), "-y", "-i", input_path, "-vn", "-acodec", "pcm_s16le",
                  "-ar", "16000", "-ac", "1", audio])
         else:
             audio = input_path

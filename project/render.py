@@ -7,6 +7,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from cli.output import emit_error
 from cli.deps import render_runtime_dir
 from cli.main import MONTAJ_ROOT as _MONTAJ_ROOT
+from lib.common import ffmpeg_bin, ffprobe_bin
 
 
 def main(project_path=None, out=None, workers=None, clean=False, scale=None, montaj_root=None):
@@ -42,6 +43,8 @@ def main(project_path=None, out=None, workers=None, clean=False, scale=None, mon
 
     env                = os.environ.copy()
     env["MONTAJ_ROOT"] = str(montaj_root or _MONTAJ_ROOT)
+    env["MONTAJ_FFMPEG"]  = ffmpeg_bin()
+    env["MONTAJ_FFPROBE"] = ffprobe_bin()
 
     try:
         os.execvpe("node", cmd, env)

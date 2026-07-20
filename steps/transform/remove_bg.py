@@ -10,7 +10,7 @@ import sys
 import tempfile
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "lib"))
-from common import fail, require_file, check_output, run
+from common import fail, require_file, check_output, run, ffmpeg_bin, ffprobe_bin
 
 # ---------------------------------------------------------------------------
 # Dependency check at import time (not inside main)
@@ -151,7 +151,7 @@ def _probe_source_rotation(input_path: str) -> int:
     """
     try:
         r = subprocess.run([
-            "ffprobe", "-v", "quiet", "-select_streams", "v:0",
+            ffprobe_bin(), "-v", "quiet", "-select_streams", "v:0",
             "-show_entries", "stream_side_data=rotation",
             "-of", "json", input_path,
         ], capture_output=True, text=True, timeout=10)
@@ -328,7 +328,7 @@ def _process_one(
             video_args = ["-c:v", "copy"]
 
         run([
-            "ffmpeg", "-y",
+            ffmpeg_bin(), "-y",
             "-i", tmp_video_path,
             "-i", input_path,
             *video_args,
@@ -357,7 +357,7 @@ def _make_webm_preview(mov_path: str, emit_progress: bool = False) -> str:
     webm_path = f"{stem}_preview.webm"
 
     cmd = [
-        "ffmpeg", "-y",
+        ffmpeg_bin(), "-y",
         "-i", mov_path,
         "-c:v", "libvpx-vp9",
         "-pix_fmt", "yuva420p",
@@ -376,7 +376,7 @@ def _make_webm_preview(mov_path: str, emit_progress: bool = False) -> str:
     total_frames = 0
     try:
         r = _sp.run(
-            ["ffprobe", "-v", "quiet", "-select_streams", "v:0",
+            [ffprobe_bin(), "-v", "quiet", "-select_streams", "v:0",
              "-show_entries", "stream=nb_frames", "-of", "csv=p=0", mov_path],
             capture_output=True, text=True,
         )

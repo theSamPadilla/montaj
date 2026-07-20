@@ -33,7 +33,7 @@ from lib.remote_io import fetch_to_disk_async, push_from_disk_async, parse_allow
 from project.init import _copy_into_workspace
 from serve.sse import SSEBroadcaster, sse_stream
 
-from lib.common import SAFE_NAME as _SAFE_NAME
+from lib.common import SAFE_NAME as _SAFE_NAME, ffmpeg_bin, ffprobe_bin
 from lib.profile_assets import FILENAME_RE, NAME_RE
 from lib.types.kling import ASPECT_RATIOS, is_valid_aspect_ratio
 from lib.types.carousel import CAROUSEL_ASPECTS
@@ -858,6 +858,8 @@ async def _run_carousel_render_detached(project_id: str, project_dir: Path, scal
             args += ["--scale", str(scale)]
         env = os.environ.copy()
         env["MONTAJ_ROOT"] = str(MONTAJ_ROOT)
+        env["MONTAJ_FFMPEG"] = ffmpeg_bin()
+        env["MONTAJ_FFPROBE"] = ffprobe_bin()
         proc = await asyncio.create_subprocess_exec(
             *args,
             stdout=asyncio.subprocess.PIPE,
@@ -1379,6 +1381,8 @@ async def render_project(project_id: str, request: Request, project_dir: Path = 
 
     env = os.environ.copy()
     env["MONTAJ_ROOT"] = str(MONTAJ_ROOT)
+    env["MONTAJ_FFMPEG"] = ffmpeg_bin()
+    env["MONTAJ_FFPROBE"] = ffprobe_bin()
 
     # Reserve the slot and kick the render off DETACHED, so it runs to completion
     # even if this SSE connection drops. A multi-minute render streamed through the

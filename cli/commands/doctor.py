@@ -9,6 +9,7 @@ import os, re, subprocess, sys, shutil
 from cli.main import add_global_flags
 from cli.deps import check_ui, whisper_bin_path, whisper_model_path, is_dev_checkout, BUILD_CACHE_DIR
 from cli.help import bold, green, red, yellow, cyan, dim
+from lib.common import ffmpeg_bin, ffprobe_bin
 
 
 REQUIRED_FFMPEG_FILTERS = ["zscale", "tonemap", "overlay", "scale", "format", "amix", "adelay"]
@@ -32,6 +33,31 @@ def _check_binary(name):
         return path, version_line
     except Exception as e:
         return path, f"found but version check failed: {e}"
+
+
+def _resolve_source(resolved: str, env_var: str) -> str:
+    """Human-readable origin of the resolved av binary."""
+    if os.environ.get(env_var):
+        return f"{env_var} override"
+    if os.path.isabs(resolved):
+        return f"managed: {resolved}"
+    return "system PATH"
+
+
+def _check_av_binary(name: str, resolved: str):
+    """Like _check_binary but honors an absolute resolved path. Returns
+    (path, version_first_line) or None."""
+    path = resolved if os.path.isabs(resolved) else shutil.which(resolved)
+    if not path or not os.access(path, os.X_OK):
+        return None
+    try:
+        r = subprocess.run([path, "-version"], capture_output=True, text=True, timeout=5)
+    except (subprocess.TimeoutExpired, OSError):
+        return None
+    if r.returncode != 0:
+        return None
+    first_line = (r.stdout or "").splitlines()[0] if r.stdout else name
+    return path, first_line
 
 
 def _check_ffmpeg_filters(ffmpeg_path):
@@ -64,9 +90,12 @@ def handle(args):
     print(bold("montaj doctor") + "\n")
 
     # ffmpeg
-    path, info = _check_binary("ffmpeg")
-    if path:
-        print(f"  {green('✓')} {bold('ffmpeg')}: {dim(info)}")
+    ffmpeg_resolved = ffmpeg_bin()
+    check = _check_av_binary("ffmpeg", ffmpeg_resolved)
+    if check:
+        path, info = check
+        source = _resolve_source(ffmpeg_resolved, "MONTAJ_FFMPEG")
+        print(f"  {green('✓')} {bold('ffmpeg')}: {dim(info)} {dim('(' + source + ')')}")
         avail, missing, rec_missing = _check_ffmpeg_filters(path)
         for f in avail:
             print(f"    {green('✓')} filter: {f}")
@@ -77,51 +106,23 @@ def handle(args):
             print(f"    {yellow('○')} filter: {f} — {dim('recommended (audio ducking)')}")
         if "zscale" in missing:
             print()
-            print(f"    {yellow('⚠')} zscale requires libzimg (the z.lib image processing library).")
-            print(f"    Without it, HDR video normalization uses a fallback with degraded colors.")
-            print()
-            print(f"    {bold('Easiest fix:')}")
-            print(f"      {cyan('montaj install ffmpeg')}")
-            print(f"    {dim('This installs zimg, patches the Homebrew formula, and rebuilds ffmpeg.')}")
-            print()
-            print(f"    {bold('Manual alternatives:')}")
-            print()
-            print(f"    {bold('Option A')} — Edit your local Homebrew formula:")
-            print(f"      1. {cyan('brew install zimg')}")
-            print(f"      2. {cyan('brew edit ffmpeg')}")
-            print(f"         → Find the configure args block (look for '--enable-libx264' etc.)")
-            print(f"         → Add: {green('--enable-libzimg')}")
-            _depends_on = 'depends_on "zimg"'
-            print(f"         → Add to the dependencies: {green(_depends_on)}")
-            print(f"         → Save and close")
-            print(f"      3. {cyan('rm ~/Library/Caches/Homebrew/api/formula.jws.json')}")
-            print(f"      4. {cyan('HOMEBREW_NO_INSTALL_FROM_API=1 brew reinstall ffmpeg --build-from-source')}")
-            print()
-            print(f"    {bold('Option B')} — Use the homebrew-ffmpeg third-party tap:")
-            print(f"      1. {cyan('brew uninstall ffmpeg')}")
-            print(f"      2. {cyan('brew tap homebrew-ffmpeg/ffmpeg')}")
-            print(f"      3. {cyan('brew install homebrew-ffmpeg/ffmpeg/ffmpeg --with-zimg')}")
-            print(f"      {dim('This tap restores --with-* options removed from core Homebrew.')}")
-            print()
-            print(f"    {bold('Option C')} — Build ffmpeg from source (full control):")
-            print(f"      1. {cyan('brew install zimg')}")
-            print(f"      2. {cyan('git clone https://git.ffmpeg.org/ffmpeg.git && cd ffmpeg')}")
-            print(f"      3. {cyan('./configure --enable-libzimg --enable-libx264 --enable-gpl ...')}")
-            print(f"      4. {cyan('make -j$(nproc) && make install')}")
-            print()
-            print(f"    After fixing, verify: {cyan('ffmpeg -filters 2>/dev/null | grep zscale')}")
+            print(f"    {yellow('⚠')} zscale requires libzimg. Fix: {cyan('montaj install ffmpeg')}")
+            print(f"      {dim('(downloads a pinned static build with zscale into the managed dir)')}")
             print()
     else:
-        print(f"  {red('✗')} {bold('ffmpeg')}: {info}")
-        print(f"    Fix: {cyan('brew install ffmpeg')}")
+        print(f"  {red('✗')} {bold('ffmpeg')}: not found or not executable")
+        print(f"    Fix: {cyan('montaj install ffmpeg')}")
         ok = False
 
     # ffprobe
-    path, info = _check_binary("ffprobe")
-    if path:
-        print(f"  {green('✓')} {bold('ffprobe')}: {dim(info)}")
+    ffprobe_resolved = ffprobe_bin()
+    check = _check_av_binary("ffprobe", ffprobe_resolved)
+    if check:
+        path, info = check
+        source = _resolve_source(ffprobe_resolved, "MONTAJ_FFPROBE")
+        print(f"  {green('✓')} {bold('ffprobe')}: {dim(info)} {dim('(' + source + ')')}")
     else:
-        print(f"  {red('✗')} {bold('ffprobe')}: {info}")
+        print(f"  {red('✗')} {bold('ffprobe')}: not found or not executable")
         ok = False
 
     # node

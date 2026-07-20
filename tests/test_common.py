@@ -197,3 +197,32 @@ def test_resolve_finds_weight_in_legacy_dir(tmp_path, monkeypatch):
     (legacy / "ggml-base.bin").write_bytes(b"x")
     monkeypatch.setattr(common, "LEGACY_WHISPER_DIR", str(legacy))
     assert common.resolve_whisper_model("base.en", "es") == "base"
+
+
+# ── ffmpeg/ffprobe resolver ──────────────────────────────────────────────────
+
+class TestFfmpegResolver:
+    def test_env_override_wins(self, monkeypatch, tmp_path):
+        fake = tmp_path / "myffmpeg"
+        fake.write_text("#!/bin/sh\n")
+        fake.chmod(0o755)
+        monkeypatch.setenv("MONTAJ_FFMPEG", str(fake))
+        assert common.ffmpeg_bin() == str(fake)
+
+    def test_managed_binary_preferred_over_path(self, monkeypatch, tmp_path):
+        monkeypatch.delenv("MONTAJ_FFMPEG", raising=False)
+        managed = tmp_path / "ffmpeg"
+        managed.write_text("#!/bin/sh\n")
+        managed.chmod(0o755)
+        monkeypatch.setattr(common, "_managed_ffmpeg_dir", lambda: str(tmp_path))
+        assert common.ffmpeg_bin() == str(managed)
+
+    def test_falls_back_to_path_name(self, monkeypatch, tmp_path):
+        monkeypatch.delenv("MONTAJ_FFMPEG", raising=False)
+        monkeypatch.setattr(common, "_managed_ffmpeg_dir", lambda: str(tmp_path / "absent"))
+        assert common.ffmpeg_bin() == "ffmpeg"
+
+    def test_ffprobe_mirrors(self, monkeypatch, tmp_path):
+        monkeypatch.delenv("MONTAJ_FFPROBE", raising=False)
+        monkeypatch.setattr(common, "_managed_ffmpeg_dir", lambda: str(tmp_path / "absent"))
+        assert common.ffprobe_bin() == "ffprobe"

@@ -3,17 +3,17 @@
 import json, os, sys, argparse
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "lib"))
-from common import fail, require_file, require_cmd, run
+from common import fail, require_file, require_cmd, run, ffprobe_bin
 
 def main():
     parser = argparse.ArgumentParser(description="Extract metadata from a video file")
     parser.add_argument("--input", required=True, help="Video file to probe")
     args = parser.parse_args()
 
-    require_cmd("ffprobe")
+    require_cmd(ffprobe_bin())
     require_file(args.input)
 
-    r = run(["ffprobe", "-v", "quiet", "-print_format", "json",
+    r = run([ffprobe_bin(), "-v", "quiet", "-print_format", "json",
              "-show_format", "-show_streams", args.input])
     data = json.loads(r.stdout)
 

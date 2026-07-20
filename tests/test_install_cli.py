@@ -101,3 +101,22 @@ def test_handle_no_component_does_nothing(mock_ensure, monkeypatch):
     # No component → prints help, no installers called
     whisper.assert_not_called()
     rvm.assert_not_called()
+
+
+def test_ffmpeg_dispatch_calls_managed_download(monkeypatch):
+    called = {}
+    monkeypatch.setattr(install_cmd, "_ensure_ffmpeg_managed", lambda: called.setdefault("hit", True) or True)
+    args = _make_args(component="ffmpeg")
+    install_cmd.handle(args)
+    assert called.get("hit")
+
+
+def test_all_includes_ffmpeg(monkeypatch):
+    called = []
+    for name in ("_ensure_whisper", "_ensure_rvm", "_ensure_demucs",
+                 "_ensure_connectors", "_ensure_ui"):
+        monkeypatch.setattr(install_cmd, name, lambda *a, name=name: called.append(name) or True)
+    monkeypatch.setattr(install_cmd, "_ensure_ffmpeg_managed", lambda: called.append("ffmpeg") or True)
+    args = _make_args(component="all")
+    install_cmd.handle(args)
+    assert "ffmpeg" in called

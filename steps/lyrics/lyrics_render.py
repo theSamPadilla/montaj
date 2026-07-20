@@ -8,7 +8,7 @@ import json, os, sys, argparse, subprocess
 from pathlib import Path
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "lib"))
-from common import fail, require_file, check_output, run, run_ffmpeg, get_duration
+from common import fail, require_file, check_output, run, run_ffmpeg, get_duration, ffmpeg_bin, ffprobe_bin
 
 try:
     import static_ffmpeg
@@ -49,7 +49,7 @@ def _detect_text_color(video_path: str) -> str:
     try:
         # Get duration
         probe = subprocess.run(
-            ["ffprobe", "-v", "quiet", "-show_entries", "format=duration",
+            [ffprobe_bin(), "-v", "quiet", "-show_entries", "format=duration",
              "-of", "csv=p=0", video_path],
             capture_output=True, text=True, timeout=10,
         )
@@ -60,7 +60,7 @@ def _detect_text_color(video_path: str) -> str:
         for i in range(5):
             seek = dur * (i + 0.5) / 5
             res = subprocess.run(
-                ["ffmpeg", "-ss", str(seek), "-i", video_path,
+                [ffmpeg_bin(), "-ss", str(seek), "-i", video_path,
                  "-vf", "scale=16:16", "-frames:v", "1",
                  "-f", "rawvideo", "-pix_fmt", "gray", "pipe:1"],
                 capture_output=True, timeout=10,

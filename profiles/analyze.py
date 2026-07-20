@@ -15,6 +15,9 @@ MONTAJ_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 STEPS_DIR   = os.path.join(MONTAJ_ROOT, "steps")
 PYTHON      = sys.executable
 
+sys.path.insert(0, os.path.join(MONTAJ_ROOT, "lib"))
+from common import ffmpeg_bin
+
 
 def _step(category, name):
     """Resolve a step executable path: steps/<category>/<name>.py"""
@@ -89,7 +92,7 @@ def count_cuts(video_path: str) -> int:
     tmp_stats.close()
     try:
         subprocess.run(
-            ["ffmpeg", "-y", "-i", video_path,
+            [ffmpeg_bin(), "-y", "-i", video_path,
              "-vf", f"select=gt(scene\\,0.3),metadata=mode=print:file={tmp_stats.name}",
              "-vsync", "vfr", "-f", "null", "-"],
             capture_output=True, timeout=120,
@@ -118,7 +121,7 @@ def extract_colors(video_path: str, n: int = 8) -> list[str]:
     try:
         palette_path = os.path.join(tmp_dir, "palette.png")
         subprocess.run(
-            ["ffmpeg", "-y", "-i", video_path,
+            [ffmpeg_bin(), "-y", "-i", video_path,
              "-vf", f"palettegen=max_colors={n}:reserve_transparent=0:stats_mode=diff",
              palette_path],
             capture_output=True, timeout=60,

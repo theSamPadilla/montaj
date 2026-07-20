@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **Managed ffmpeg**: `montaj install ffmpeg` now downloads a pinned, checksum-verified static ffmpeg/ffprobe build (8.1.2, with libzimg/zscale) into the managed models dir instead of patching and rebuilding Homebrew's ffmpeg. All steps and the render engine resolve the binary via `MONTAJ_FFMPEG`/managed-dir/PATH precedence, so `brew upgrade` can no longer break HDR rendering. `montaj install all` now includes ffmpeg; `montaj doctor` reports which binary is in use.
+
 ## v3.5.4
 
 - **Three new caption styles: `highlight-box`, `outline`, `clean`.** `highlight-box` shows the whole phrase with the spoken word in a colored rounded box; `outline` is all-caps with a heavy black stroke and only the spoken word filled with the accent color; `clean` is a plain sentence-case line with no background box (Figtree 700). (`montaj_assets/render/templates/captions/highlight-box.jsx`, `outline.jsx`, `clean.jsx`, `montaj_assets/render/render.js`)

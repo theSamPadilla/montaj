@@ -26,9 +26,10 @@ montaj install whisper   # whisper-cpp binary + model weights
 montaj install ui        # npm deps + UI build
 ```
 
-**Homebrew (macOS)** — installs Node.js and all Python deps including bundled ffmpeg:
+**Homebrew (macOS)** — installs Node.js and all Python deps:
 ```bash
 brew install theSamPadilla/montaj/montaj
+montaj install ffmpeg   # pinned static ffmpeg/ffprobe (with zscale for HDR); also in `install all`
 ```
 
 **From source:**

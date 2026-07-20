@@ -8,6 +8,7 @@ import sys
 from cli.main import MONTAJ_ROOT
 sys.path.insert(0, os.path.join(MONTAJ_ROOT, "lib"))
 import models as _models
+from common import ffmpeg_bin, ffprobe_bin
 
 LEGACY_WHISPER_MODELS_DIR = os.path.expanduser("~/.local/share/whisper.cpp/models")
 WHISPER_MODEL = "base.en"
@@ -19,11 +20,21 @@ WHISPER_MODEL = "base.en"
 BUILD_CACHE_DIR = os.path.expanduser("~/.cache/montaj")
 
 
+def _av_ok(resolved: str) -> bool:
+    """True when a resolved ffmpeg/ffprobe target is an executable file.
+
+    `resolved` is either an absolute path (managed static build or an
+    MONTAJ_FFMPEG/MONTAJ_FFPROBE override) or a bare command name to look
+    up on PATH."""
+    path = resolved if os.path.isabs(resolved) else shutil.which(resolved)
+    return bool(path) and os.access(path, os.X_OK)
+
+
 def check_deps() -> list[str]:
     """Return a list of missing dependency descriptions. Empty = all good."""
     missing = []
 
-    if not shutil.which("ffmpeg") or not shutil.which("ffprobe"):
+    if not (_av_ok(ffmpeg_bin()) and _av_ok(ffprobe_bin())):
         missing.append("ffmpeg / ffprobe not found")
 
     if not whisper_bin_path():

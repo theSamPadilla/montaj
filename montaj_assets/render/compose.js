@@ -14,6 +14,7 @@ import { spawnSync } from 'child_process'
 import { mkdirSync, writeFileSync, rmSync, renameSync } from 'fs'
 import { dirname, join } from 'path'
 import { randomBytes } from 'crypto'
+import { FFMPEG } from './ffmpeg-bin.js'
 import { planSegments } from './segment-plan.js'
 import { encodeSegment } from './encode-segment.js'
 import { mixAudioIntoVideo } from './mix-audio.js'
@@ -145,7 +146,7 @@ export function embedThumbnail(outputPath, colorSpace) {
     const args = ['-y', '-v', 'error', '-ss', String(seekSeconds), '-i', outputPath, '-frames:v', '1']
     if (vf) args.push('-vf', vf)
     args.push('-q:v', '2', tmpJpg)
-    return spawnSync('ffmpeg', args, { encoding: 'utf8', timeout: FFMPEG_TIMEOUT_MS })
+    return spawnSync(FFMPEG, args, { encoding: 'utf8', timeout: FFMPEG_TIMEOUT_MS })
   }
 
   // Try 1.0s first (past most fade-ins). If that fails (e.g. video shorter
@@ -165,7 +166,7 @@ export function embedThumbnail(outputPath, colorSpace) {
   // than a second video track. Without it, players treat the file as having
   // two video streams and either reject it or autoplay the JPEG as a 1-frame
   // stuck-frame on a separate track.
-  const mux = spawnSync('ffmpeg', [
+  const mux = spawnSync(FFMPEG, [
     '-y', '-v', 'error',
     '-i', outputPath,
     '-i', tmpJpg,
@@ -207,7 +208,7 @@ function concatSegments(paths, outputPath) {
   // No error-tolerance flags at concat — those would mask real corruption AND
   // tell the HEVC NAL parser to accept malformed units in stream-copy mode,
   // producing a final.mp4 with garbage video bitstream. Strict by default.
-  const result = spawnSync('ffmpeg', [
+  const result = spawnSync(FFMPEG, [
     '-y',
     '-f', 'concat', '-safe', '0', '-i', listFile,
     '-c:v', 'copy',

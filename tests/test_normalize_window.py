@@ -22,6 +22,7 @@ from lib.normalize import (
     normalize_window,
     probe_video,
 )
+import common
 
 HAS_FFMPEG = shutil.which("ffmpeg") is not None
 pytestmark = pytest.mark.skipif(not HAS_FFMPEG, reason="ffmpeg not available")
@@ -72,8 +73,8 @@ def test_build_ffmpeg_cmd_no_pre_input_args(tmp_path):
     assert info is not None
 
     cmd, _ = _build_ffmpeg_cmd(str(src), str(out), "sdr_bt709", info=info, pre_input_args=[])
-    # Should be: ["ffmpeg", "-y", "-i", src, ...]
-    assert cmd[0] == "ffmpeg"
+    # Should be: [ffmpeg_bin(), "-y", "-i", src, ...]
+    assert cmd[0] == common.ffmpeg_bin()
     assert cmd[1] == "-y"
     assert cmd[2] == "-i"
     assert cmd[3] == str(src)
@@ -141,7 +142,7 @@ def test_normalize_window_ss_and_t_before_input(tmp_path):
     original_run = subprocess.run
 
     def fake_run(cmd, **kwargs):
-        if cmd and cmd[0] == "ffmpeg":
+        if cmd and cmd[0] == common.ffmpeg_bin():
             captured["cmd"] = list(cmd)
             # Return a fake successful result
             class FakeResult:
@@ -244,7 +245,7 @@ def test_normalize_window_zero_duration_clamp(tmp_path):
     original_run = subprocess.run
 
     def fake_run(cmd, **kwargs):
-        if cmd and cmd[0] == "ffmpeg":
+        if cmd and cmd[0] == common.ffmpeg_bin():
             captured["cmd"] = list(cmd)
             class FakeResult:
                 returncode = 0

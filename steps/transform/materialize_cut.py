@@ -14,7 +14,7 @@ import json, os, sys, argparse, tempfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "lib"))
-from common import fail, require_file, check_output, run, get_duration
+from common import fail, require_file, check_output, run, get_duration, ffmpeg_bin
 from trim_spec import is_trim_spec, is_cut_spec, load as load_spec, merge as merge_keeps
 
 
@@ -131,7 +131,7 @@ def _encode_one(spec: dict, out_path: str) -> str:
         with os.fdopen(fd, "w") as f:
             f.write(filter_str)
         run([
-            "ffmpeg", "-y", *input_args,
+            ffmpeg_bin(), "-y", *input_args,
             "-/filter_complex", fc_path,
             "-map", "[vout]", "-map", "[aout]",
             *encode_flags, out_path,

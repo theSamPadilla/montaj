@@ -28,7 +28,7 @@ both invocation modes.
 import sys, os, json, subprocess, argparse
 
 sys.path.insert(0, os.path.dirname(__file__))  # add lib/ so `from common` works in all invocation modes
-from common import fail, require_file, progress
+from common import fail, require_file, progress, ffmpeg_bin, ffprobe_bin
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))  # add repo root so `from lib.types.colorspace` works
 from lib.types.colorspace import SPECS, is_hdr
@@ -44,7 +44,7 @@ def _probe_image_stream(path: str) -> dict:
     Returns an empty dict on ffprobe failure.
     """
     cmd = [
-        "ffprobe", "-v", "quiet",
+        ffprobe_bin(), "-v", "quiet",
         "-show_entries", "stream=color_transfer,pix_fmt",
         "-of", "json", path,
     ]
@@ -172,7 +172,7 @@ def convert_image(src: str, dst_color_space: str, *, out_path: str) -> str:
     if has_alpha:
         filter_graph = _build_filter_complex_with_alpha(dst_color_space)
         cmd = [
-            "ffmpeg", "-y",
+            ffmpeg_bin(), "-y",
             "-i", src,
             "-filter_complex", filter_graph,
             "-map", "[vout]",
@@ -191,7 +191,7 @@ def convert_image(src: str, dst_color_space: str, *, out_path: str) -> str:
     else:
         vf_chain = _build_vf_no_alpha(dst_color_space)
         cmd = [
-            "ffmpeg", "-y",
+            ffmpeg_bin(), "-y",
             "-i", src,
             "-vf", vf_chain,
             "-pix_fmt", "rgba",

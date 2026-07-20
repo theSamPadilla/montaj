@@ -6,7 +6,7 @@ import json, mimetypes, os, sys, tempfile, argparse
 from pathlib import Path
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "lib"))
-from common import fail, require_file, check_output, run
+from common import fail, require_file, check_output, run, ffmpeg_bin
 
 
 STEM_NAMES = ["vocals", "drums", "bass", "other"]
@@ -91,7 +91,7 @@ def main():
         tmp = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
         tmp.close()
         tmp_audio = tmp.name
-        run(["ffmpeg", "-y", "-i", args.input, "-vn", "-acodec", "pcm_s16le",
+        run([ffmpeg_bin(), "-y", "-i", args.input, "-vn", "-acodec", "pcm_s16le",
              "-ar", "44100", "-ac", "2", tmp_audio])
         audio_in = tmp_audio
 

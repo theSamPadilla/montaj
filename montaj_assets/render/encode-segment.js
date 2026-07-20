@@ -30,6 +30,7 @@
 import { spawnSync } from 'child_process'
 import { mkdirSync } from 'fs'
 import { dirname } from 'path'
+import { FFMPEG, FFPROBE } from './ffmpeg-bin.js'
 import { specFor, detectFromTransfer, DEFAULT_COLOR_SPACE } from './color-space.js'
 
 const FFMPEG_TIMEOUT_MS = 600_000
@@ -50,7 +51,7 @@ function logFfmpegStderr(stderr) {
 
 /** Returns true if the file has at least one audio stream. */
 function fileHasAudio(filePath) {
-  const result = spawnSync('ffprobe', [
+  const result = spawnSync(FFPROBE, [
     '-v', 'quiet', '-select_streams', 'a:0',
     '-show_entries', 'stream=codec_type',
     '-of', 'csv=p=0', filePath,
@@ -66,7 +67,7 @@ function isImageItem(item) {
 let _zscaleCache = null
 function hasZscale() {
   if (_zscaleCache !== null) return _zscaleCache
-  const result = spawnSync('ffmpeg', ['-hide_banner', '-filters'], {
+  const result = spawnSync(FFMPEG, ['-hide_banner', '-filters'], {
     encoding: 'utf8', timeout: 5000,
   })
   _zscaleCache = result.status === 0 && /^[A-Z. ]+ zscale\b/m.test(result.stdout || '')
@@ -502,7 +503,7 @@ export function encodeSegment(segment, outputPath, opts = {}) {
 
   if (opts._dryRun) return { inputs, filterParts, args }
 
-  const result = spawnSync('ffmpeg', args, {
+  const result = spawnSync(FFMPEG, args, {
     encoding: 'utf8', timeout: FFMPEG_TIMEOUT_MS,
   })
 

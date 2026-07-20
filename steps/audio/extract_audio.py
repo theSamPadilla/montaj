@@ -3,7 +3,7 @@
 import os, sys, argparse
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "lib"))
-from common import fail, require_file, check_output, run
+from common import fail, require_file, check_output, run, ffmpeg_bin
 
 def main():
     parser = argparse.ArgumentParser(description="Extract audio track from a video file")
@@ -21,7 +21,7 @@ def main():
         "mp3": ["-vn", "-acodec", "libmp3lame", "-q:a", "2"],
         "aac": ["-vn", "-acodec", "aac", "-b:a", "192k"],
     }
-    run(["ffmpeg", "-y", "-i", args.input, *codecs[args.format], out])
+    run([ffmpeg_bin(), "-y", "-i", args.input, *codecs[args.format], out])
 
     check_output(out)
     print(out)

@@ -5,7 +5,7 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "lib"))
 import models as _models
-from common import fail, require_file, check_output, run, find_whisper_bin, resolve_whisper_model
+from common import fail, require_file, check_output, run, find_whisper_bin, resolve_whisper_model, ffmpeg_bin
 from trim_spec import is_trim_spec, load as load_spec, audio_extract_cmd, remap_timestamp
 
 def main():
@@ -54,7 +54,7 @@ def main():
             tmp = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
             tmp.close()
             tmp_audio = tmp.name
-            run(["ffmpeg", "-y", "-i", args.input, "-vn", "-acodec", "pcm_s16le",
+            run([ffmpeg_bin(), "-y", "-i", args.input, "-vn", "-acodec", "pcm_s16le",
                  "-ar", "16000", "-ac", "1", tmp_audio])
             audio_input = tmp_audio
         output_prefix = args.out or os.path.splitext(args.input)[0]

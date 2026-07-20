@@ -27,8 +27,8 @@ def register(subparsers):
     sub.add_parser("demucs", help="Demucs stem separation + htdemucs model weights")
     sub.add_parser("connectors", help="pyjwt + requests + google-genai for external API steps")
     sub.add_parser("ui",     help="npm deps + UI build")
-    sub.add_parser("ffmpeg", help="Install/upgrade ffmpeg with zscale (libzimg) for HDR video support")
-    sub.add_parser("all",    help="Everything above (except ffmpeg — run separately)")
+    sub.add_parser("ffmpeg", help="Download the pinned static ffmpeg/ffprobe with zscale (libzimg) support")
+    sub.add_parser("all",    help="Everything above, including ffmpeg")
 
     _parser.set_defaults(func=handle)
 
@@ -44,6 +44,7 @@ def handle(args):
         ok &= _ensure_demucs()
         ok &= _ensure_connectors()
         ok &= _ensure_ui()
+        ok &= _ensure_ffmpeg_managed()
     elif args.component == "whisper":
         ok &= _ensure_whisper(getattr(args, "model", "base.en"))
     elif args.component == "rvm":
@@ -55,7 +56,7 @@ def handle(args):
     elif args.component == "ui":
         ok &= _ensure_ui()
     elif args.component == "ffmpeg":
-        ok = _ensure_ffmpeg_zscale()
+        ok = _ensure_ffmpeg_managed()
     if ok:
         print(f"\n{green('Done.')}")
     else:
@@ -290,131 +291,23 @@ def _ensure_ui() -> bool:
     return True
 
 
-def _ensure_ffmpeg_zscale() -> bool:
-    """Ensure ffmpeg is installed with zscale (libzimg) support.
-
-    Steps:
-    0. If ffmpeg is not installed at all, install it via Homebrew
-    1. Install zimg via Homebrew
-    2. Locate the Homebrew ffmpeg formula file
-    3. Patch it to add --enable-libzimg and depends_on "zimg" if not present
-    4. Clear Homebrew API cache (prevents brew from ignoring local edits)
-    5. Rebuild ffmpeg from source
-    6. Verify zscale is available
-    """
-    import shutil, re, platform
-    # Note: os, subprocess already imported at module level in install.py.
-
-    if platform.system() != "Darwin":
-        print(f"{yellow('⚠')} montaj install ffmpeg currently supports macOS (Homebrew) only.")
-        print(f"  On Linux, install ffmpeg with {bold('libzimg')} from your package manager or build from source.")
-        return False
-
-    if not shutil.which("brew"):
-        print(f"{red('✗')} Homebrew not found. Install from {cyan('https://brew.sh')}")
-        return False
-
-    # 0. If ffmpeg is not installed, install it first
-    if not shutil.which("ffmpeg"):
-        print(f"{cyan('→')} ffmpeg not found — installing via Homebrew...")
-        r = subprocess.run(["brew", "install", "ffmpeg"])
-        if r.returncode != 0:
-            print(f"{red('✗')} {dim('brew install ffmpeg')} failed")
+def _ensure_ffmpeg_managed() -> bool:
+    """Download the pinned static ffmpeg/ffprobe (with zscale) into the managed dir."""
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "lib"))
+    import ffmpeg_static
+    try:
+        if ffmpeg_static.is_installed():
+            print(f"{green('✓')} managed ffmpeg already installed {dim(f'({ffmpeg_static.bin_dir()})')}")
+            return True
+        print(f"{cyan('→')} downloading static ffmpeg {bold(ffmpeg_static.PINNED_BUILDS[ffmpeg_static._platform_key()]['build_id'])} …")
+        paths = ffmpeg_static.ensure_ffmpeg()
+        r = subprocess.run([paths["ffmpeg"], "-hide_banner", "-filters"],
+                           capture_output=True, text=True, timeout=10)
+        if "zscale" not in (r.stdout or ""):
+            print(f"{red('✗')} downloaded ffmpeg lacks zscale — unexpected; report this", file=sys.stderr)
             return False
-        print(f"{green('✓')} ffmpeg installed")
-
-    # Check if zscale already works
-    r = subprocess.run(["ffmpeg", "-filters"], capture_output=True, text=True, timeout=5)
-    if r.returncode == 0 and re.search(r'\bzscale\b', r.stdout or ""):
-        print(f"{green('✓')} ffmpeg already has zscale \u2014 nothing to do")
+        print(f"{green('✓')} ffmpeg + ffprobe installed with zscale {dim(f'({ffmpeg_static.bin_dir()})')}")
         return True
-
-    # 1. Install zimg
-    print(f"{cyan('→')} installing {bold('zimg')}...")
-    r = subprocess.run(["brew", "install", "zimg"])
-    if r.returncode != 0:
-        print(f"{red('✗')} {dim('brew install zimg')} failed")
-        return False
-    print(f"{green('✓')} zimg installed")
-
-    # 2. Find the ffmpeg formula file
-    # Homebrew 4.x uses the API by default and may not have homebrew-core tapped locally.
-    # Tap it first to ensure the formula file exists on disk.
-    r = subprocess.run(["brew", "--prefix"], capture_output=True, text=True)
-    brew_prefix = r.stdout.strip()
-    formula_path = os.path.join(brew_prefix, "Library", "Taps", "homebrew",
-                                "homebrew-core", "Formula", "f", "ffmpeg.rb")
-    if not os.path.isfile(formula_path):
-        # Homebrew 4.x silently skips `brew tap homebrew/core` unless
-        # HOMEBREW_NO_INSTALL_FROM_API=1 is set — without it, brew prefers the
-        # API and never clones the tap, leaving the formula file absent.
-        print(f"{cyan('→')} tapping {bold('homebrew/core')} {dim('(needed for formula editing — clones ~1GB, may take several minutes)')}...")
-        tap_env = os.environ.copy()
-        tap_env["HOMEBREW_NO_INSTALL_FROM_API"] = "1"
-        r = subprocess.run(["brew", "tap", "homebrew/core"], env=tap_env)
-        if r.returncode != 0:
-            print(f"{red('✗')} {dim('brew tap homebrew/core')} failed", file=sys.stderr)
-            return False
-    if not os.path.isfile(formula_path):
-        print(f"{red('✗')} ffmpeg formula not found at {dim(formula_path)}")
-        print(f"  Try: {dim('HOMEBREW_NO_INSTALL_FROM_API=1 brew tap homebrew/core')}")
-        return False
-
-    # 3. Patch the formula
-    print(f"{cyan('→')} patching {dim(formula_path)}...")
-    with open(formula_path) as f:
-        content = f.read()
-    patched = False
-
-    if '--enable-libzimg' not in content:
-        # Add --enable-libzimg after --enable-libx264 (or any existing --enable- line)
-        content = re.sub(
-            r'(--enable-libx264)',
-            r'\1\n      --enable-libzimg',
-            content, count=1
-        )
-        patched = True
-
-    if 'depends_on "zimg"' not in content:
-        # Add depends_on "zimg" after depends_on "x264"
-        content = re.sub(
-            r'(depends_on "x264")',
-            r'\1\n  depends_on "zimg"',
-            content, count=1
-        )
-        patched = True
-
-    if patched:
-        with open(formula_path, "w") as f:
-            f.write(content)
-        print(f"{green('✓')} formula patched")
-    else:
-        print(f"{green('✓')} formula already has libzimg")
-
-    # 4. Clear API cache
-    cache_file = os.path.expanduser("~/Library/Caches/Homebrew/api/formula.jws.json")
-    if os.path.isfile(cache_file):
-        os.remove(cache_file)
-        print(f"{green('✓')} cleared Homebrew API cache")
-
-    # 5. Rebuild ffmpeg from source
-    print(f"{cyan('→')} rebuilding {bold('ffmpeg')} from source {dim('(this takes 1-3 minutes)')}...")
-    env = os.environ.copy()
-    env["HOMEBREW_NO_INSTALL_FROM_API"] = "1"
-    env["HOMEBREW_NO_AUTO_UPDATE"] = "1"
-    r = subprocess.run(
-        ["brew", "reinstall", "--formula", formula_path, "--build-from-source"],
-        env=env
-    )
-    if r.returncode != 0:
-        print(f"{red('✗')} ffmpeg rebuild failed")
-        return False
-
-    # 6. Verify
-    r = subprocess.run(["ffmpeg", "-filters"], capture_output=True, text=True, timeout=5)
-    if r.returncode == 0 and re.search(r'\bzscale\b', r.stdout or ""):
-        print(f"{green('✓')} ffmpeg rebuilt with zscale support")
-        return True
-    else:
-        print(f"{red('✗')} ffmpeg rebuilt but zscale still not found \u2014 check build output above")
+    except ffmpeg_static.UnsupportedPlatform as e:
+        print(f"{yellow('⚠')} {e} — falling back to system ffmpeg; install one with libzimg manually", file=sys.stderr)
         return False

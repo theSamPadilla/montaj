@@ -3,7 +3,7 @@
 import json, mimetypes, os, sys, argparse
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "lib"))
-from common import fail, require_file, check_output, run
+from common import fail, require_file, check_output, run, ffmpeg_bin
 
 PRESETS = {
     "youtube":   -14,
@@ -32,7 +32,7 @@ def main():
     is_audio_only = mime.startswith("audio/")
 
     # First pass: measure loudness
-    r = run(["ffmpeg", "-i", args.input,
+    r = run([ffmpeg_bin(), "-i", args.input,
              "-af", f"loudnorm=I={target_lufs}:TP=-1.5:LRA=11:print_format=json",
              "-f", "null", "-"], check=False)
 
@@ -55,7 +55,7 @@ def main():
         f":offset={stats['target_offset']}:linear=true:print_format=summary"
     )
     video_flag = [] if is_audio_only else ["-c:v", "copy"]
-    run(["ffmpeg", "-y", "-i", args.input, "-af", loudnorm_filter, *video_flag, out])
+    run([ffmpeg_bin(), "-y", "-i", args.input, "-af", loudnorm_filter, *video_flag, out])
 
     check_output(out)
     print(out)

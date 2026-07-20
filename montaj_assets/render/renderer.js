@@ -14,6 +14,7 @@ import { spawnSync, spawn } from 'child_process'
 import { tmpdir, homedir } from 'os'
 import { randomBytes } from 'crypto'
 import os from 'os'
+import { FFMPEG } from './ffmpeg-bin.js'
 import { isHdr } from './color-space.js'
 import { adaptiveChunkSize, workerCap } from './chunk-plan.js'
 
@@ -344,7 +345,7 @@ async function renderChunk(browser, job) {
   mkdirSync(dirname(chunkMkv), { recursive: true })
 
   const pixFmt = job.opaque ? 'yuv420p' : 'yuva420p'
-  await spawnAsync('ffmpeg', [
+  await spawnAsync(FFMPEG, [
     '-y',
     '-framerate',           String(fps),
     '-i',                   join(frameDir, 'frame-%06d.png'),
@@ -452,7 +453,7 @@ function concatChunks(chunkPaths, outputPath) {
   const listFile  = mkvOutput + '.chunks.txt'
   writeFileSync(listFile, chunkPaths.map(p => `file '${p}'`).join('\n'))
 
-  const result = spawnSync('ffmpeg', [
+  const result = spawnSync(FFMPEG, [
     '-y', '-f', 'concat', '-safe', '0', '-i', listFile,
     '-c', 'copy',
     '-cluster_size_limit',  '2000000',
