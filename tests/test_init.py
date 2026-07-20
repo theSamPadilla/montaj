@@ -1277,3 +1277,66 @@ def test_normalize_default_eager_unchanged(tmp_path):
     assert result.returncode == 0, result.stderr
     data = json.loads(_project_path_from_stdout(result.stdout).read_text())
     assert "normalize" not in data["settings"]
+
+
+# ---------------------------------------------------------------------------
+# Staged-upload cleanup: init deletes sources it consumed from _uploads/
+# ---------------------------------------------------------------------------
+
+def test_init_removes_consumed_uploads(tmp_path):
+    """Clips/assets staged in the workspace-level _uploads/ junk drawer are
+    deleted after a successful init; unconsumed neighbours are left alone."""
+    uploads = tmp_path / "_uploads"
+    uploads.mkdir()
+    clip = uploads / "clip.mp4"
+    clip.write_bytes(b"fake")
+    asset = uploads / "logo.png"
+    asset.write_bytes(b"fakepng")
+    bystander = uploads / "unrelated.mp4"
+    bystander.write_bytes(b"fake")
+
+    result = run_init("--clips", str(clip), "--assets", str(asset),
+                      "--prompt", "test",
+                      env_override={"MONTAJ_WORKSPACE_DIR": str(tmp_path)})
+    assert result.returncode == 0, result.stderr
+    project = json.loads(_project_path_from_stdout(result.stdout).read_text())
+
+    # Copies live in the project dir and are what the project references.
+    assert Path(project["tracks"][0][0]["src"]).is_file()
+    assert Path(project["assets"][0]["src"]).is_file()
+    # Consumed staged sources are gone; the bystander survives.
+    assert not clip.exists()
+    assert not asset.exists()
+    assert bystander.exists()
+
+
+def test_init_keeps_sources_outside_uploads(tmp_path):
+    """Sources that don't live in _uploads/ (user-owned originals) are never
+    deleted."""
+    src_dir = tmp_path / "my_footage"
+    src_dir.mkdir()
+    clip = src_dir / "clip.mp4"
+    clip.write_bytes(b"fake")
+
+    result = run_init("--clips", str(clip), "--prompt", "test",
+                      env_override={"MONTAJ_WORKSPACE_DIR": str(tmp_path)})
+    assert result.returncode == 0, result.stderr
+    assert clip.exists()
+
+
+def test_init_symlink_clips_keeps_staged_upload(tmp_path):
+    """With --symlink-clips the project points at the staged file via symlink,
+    so the staged source must NOT be deleted."""
+    uploads = tmp_path / "_uploads"
+    uploads.mkdir()
+    clip = uploads / "clip.mp4"
+    clip.write_bytes(b"fake")
+
+    result = run_init("--clips", str(clip), "--symlink-clips",
+                      "--prompt", "test",
+                      env_override={"MONTAJ_WORKSPACE_DIR": str(tmp_path)})
+    assert result.returncode == 0, result.stderr
+    project = json.loads(_project_path_from_stdout(result.stdout).read_text())
+    assert clip.exists()
+    # The project's clip src resolves back to the staged file.
+    assert Path(project["tracks"][0][0]["src"]).resolve() == clip.resolve()

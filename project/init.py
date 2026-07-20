@@ -56,6 +56,25 @@ def _copy_into_workspace(src: str, dest_dir: str, prefix: str, link: bool = Fals
     return dest
 
 
+def _cleanup_staged_uploads(staged: set) -> None:
+    """Best-effort removal of staged browser uploads consumed by this init.
+
+    Files dropped into the workspace-level ``_uploads/`` junk drawer (by the
+    ``POST /upload`` endpoint, or by the delete-with-``preserve_assets``
+    eviction flow) are *copied* into the project dir by
+    ``copy_into_workspace`` — after a successful init the staged original is
+    dead weight that nothing references and nothing ever garbage-collects.
+    Remove each consumed source here. Failures are non-fatal: a locked or
+    already-missing file must never fail a project that was just created.
+    """
+    for path in staged:
+        try:
+            os.unlink(path)
+            progress(f"init: removed consumed upload {path}")
+        except OSError:
+            pass
+
+
 def _read_project_type(workflow_name: str) -> str:
     """Read project_type from the workflow JSON, default 'editing' on any failure."""
     wf = read_workflow(workflow_name)
@@ -366,9 +385,24 @@ def main():
     if not os.path.isdir(os.path.join(workspace_dir, ".git")):
         git(["init", workspace_dir], cwd=os.getcwd())
 
+    # Staged-upload tracking: sources consumed out of the workspace-level
+    # _uploads/ junk drawer are recorded here and deleted after a successful
+    # init (see _cleanup_staged_uploads). Deleting only at the end keeps a
+    # mid-init failure from destroying the user's staged files.
+    uploads_dir = os.path.realpath(os.path.join(workspace_root, "_uploads"))
+    staged_uploads: set = set()
+
     def copy_into_workspace(src: str, prefix: str, link: bool = False) -> str:
         """Thin wrapper around the module-level helper, bound to workspace_dir."""
-        return _copy_into_workspace(src, workspace_dir, prefix, link=link)
+        dest = _copy_into_workspace(src, workspace_dir, prefix, link=link)
+        # Track for post-init cleanup: real copies only (a symlink still
+        # points at the source), and only files sitting directly inside the
+        # workspace-level _uploads/ junk drawer.
+        if not link:
+            src_real = os.path.realpath(src)
+            if os.path.dirname(src_real) == uploads_dir and os.path.isfile(src_real):
+                staged_uploads.add(src_real)
+        return dest
 
     clips = [
         # start/end are placeholder 0.0 values — the agent sets real values
@@ -583,6 +617,7 @@ def main():
 
     if project_type == "carousel":
         _build_carousel_project(args, workspace_dir, assets)
+        _cleanup_staged_uploads(staged_uploads)
         return
 
     # Snapshot of the profile's asset manifest + style-profile pointer for
@@ -684,6 +719,8 @@ def main():
 
     git(["add", "project.json"], cwd=workspace_dir)
     git(["commit", "-m", "init: new project"], cwd=workspace_dir)
+
+    _cleanup_staged_uploads(staged_uploads)
 
     print(project_path)
 

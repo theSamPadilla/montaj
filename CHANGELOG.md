@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **Staged uploads are cleaned up after project creation.** Files dropped into the browser's new-project form land in the workspace-level `_uploads/` staging dir and were copied — never moved — into the project, leaving the staged original behind forever (this silently accumulated ~18GB of dead footage). `project/init.py` now deletes each staged source it consumed after a successful init: real copies only (`--symlink-clips` sources are kept, since the symlink points at them), only files directly inside `_uploads/`, deletion deferred to the end so a failed init never destroys staged files, and always best-effort. Existing accumulated files in `_uploads/` are not touched — clear them manually once.
+
 ## v3.6.0
 
 - **Managed ffmpeg**: `montaj install ffmpeg` now downloads a pinned, checksum-verified static ffmpeg/ffprobe build (8.1.2, with libzimg/zscale) into the managed models dir instead of patching and rebuilding Homebrew's ffmpeg. All steps and the render engine resolve the binary via `MONTAJ_FFMPEG`/managed-dir/PATH precedence, so `brew upgrade` can no longer break HDR rendering. `montaj install all` now includes ffmpeg; `montaj doctor` reports which binary is in use.
