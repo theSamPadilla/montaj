@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v3.6.0
+
 - **Managed ffmpeg**: `montaj install ffmpeg` now downloads a pinned, checksum-verified static ffmpeg/ffprobe build (8.1.2, with libzimg/zscale) into the managed models dir instead of patching and rebuilding Homebrew's ffmpeg. All steps and the render engine resolve the binary via `MONTAJ_FFMPEG`/managed-dir/PATH precedence, so `brew upgrade` can no longer break HDR rendering. `montaj install all` now includes ffmpeg; `montaj doctor` reports which binary is in use.
 
 ## v3.5.4
