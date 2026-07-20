@@ -45,12 +45,20 @@ export interface CaptionSegment {
 export interface Captions {
   style: 'word-by-word' | 'pop' | 'karaoke' | 'subtitle' | 'highlight-box' | 'outline' | 'clean'
   segments: CaptionSegment[]
-  // ffmpeg-drawtext render params — ignored by JSX preview, used by render.js ffmpeg branch
+  // `color` and `fontsize` are read by BOTH paths: the JSX browser preview /
+  // Puppeteer render (spread into the caption template props; `fontsize`→`fontSize`)
+  // and the ffmpeg-drawtext render branch. `position` and `bgColor` are consumed
+  // only by the ffmpeg-drawtext branch and ignored by the JSX preview.
   position?: 'center' | 'top-left' | 'bottom-left'
-  color?: string
+  color?: string          // base caption text color
   fontsize?: number
   bgColor?: string
-  accentColor?: string    // active-word/box accent color — highlight-box, outline
+  // Per-style accent color fields, each read by the matching JSX caption template.
+  // A single UI control writes whichever one the active style uses (see TranscriptPanel).
+  accentColor?: string    // active-word/box accent — highlight-box, outline
+  highlightColor?: string // active word — karaoke
+  activeColor?: string    // active word — pop
+  backgroundColor?: string// text box background — subtitle
   googleFonts?: string[]  // Google Fonts family specs for the caption template (e.g. ["Figtree:wght@700"])
 }
 

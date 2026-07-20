@@ -9,7 +9,7 @@ import type {
   GlobalOverlayProp,
   EditorAdapter,
 } from '../types'
-import { Button, cn, inspectorInputClass } from '../ui'
+import { Button, cn, inspectorInputClass, SwatchInput } from '../ui'
 import { TextFormattingToolbar } from '../text/TextFormattingToolbar'
 
 function parseNumber(v: string): number | null {
@@ -170,40 +170,6 @@ function PropEditor({
         className={inspectorInputClass}
       />
     </label>
-  )
-}
-
-// Color control that actually reads as one: a filled rounded swatch (the live
-// value) sitting next to the hex string, the whole row clickable to open the
-// native color picker. The transparent <input type="color"> overlays the
-// swatch so the OS picker anchors there.
-function SwatchInput({
-  value,
-  onChange,
-  ariaLabel,
-}: {
-  value: string
-  onChange: (v: string) => void
-  ariaLabel: string
-}) {
-  return (
-    <div className="flex items-center gap-2.5">
-      <label className="relative h-7 w-7 shrink-0 cursor-pointer">
-        <span
-          className="block h-full w-full rounded-md border border-[var(--editor-border)] shadow-sm"
-          style={{ backgroundColor: value }}
-          aria-hidden
-        />
-        <input
-          type="color"
-          value={value}
-          onChange={e => onChange(e.target.value)}
-          className="absolute inset-0 h-full w-full cursor-pointer opacity-0"
-          aria-label={ariaLabel}
-        />
-      </label>
-      <span className="font-mono text-sm uppercase text-[var(--editor-text)]/80">{value}</span>
-    </div>
   )
 }
 

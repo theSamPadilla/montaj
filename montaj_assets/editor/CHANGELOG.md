@@ -4,6 +4,27 @@ All notable changes to `@bycrux/editor` are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## 0.8.10 — 2026-07-20
+
+### Video editor
+
+- **Added: caption color controls** in the caption panel, next to the style
+  picker and font-size slider. A **Text** swatch sets the base caption color
+  (`captions.color`, honored by every style), and a second **accent** swatch
+  sets the highlighted/active color. The accent swatch is style-aware — it
+  writes whichever field the active style's render template actually reads
+  (`karaoke`→`highlightColor`, `pop`→`activeColor`, `highlight-box`/`outline`→
+  `accentColor`, `subtitle`→`backgroundColor`) and relabels itself to match. It
+  is hidden for `clean` and `word-by-word`, which have no accent. Colors preview
+  live while picking and persist on the picker's close, mirroring the font-size
+  slider. Both the browser preview and the render engine already read these
+  fields, so preview and export stay in sync.
+  - The native OS color picker is hex-only, so partial transparency (e.g.
+    karaoke's translucent unsung words) can't be set from the UI.
+- **Internal: extracted `SwatchInput`** into `src/ui/` as a shared primitive
+  (gaining an `onCommit` blur hook + compact `size`/`showValue` options); the
+  carousel slide panel now consumes it instead of its private copy.
+
 ## 0.8.9 — 2026-07-16
 
 ### Video editor

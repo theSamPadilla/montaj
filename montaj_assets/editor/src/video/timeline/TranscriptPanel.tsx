@@ -3,6 +3,27 @@ import type { Project } from '../../types'
 import { formatTime } from './utils'
 import { EditableSegment } from './EditableSegment'
 import { makeCaptionEdit } from './makeCaptionEdit'
+import { SwatchInput } from '../../ui'
+
+// Each caption style reads a different accent-color prop in its render template
+// (see render/templates/captions/*.jsx). The color control writes whichever field
+// the active style uses; `clean` and `word-by-word` have no accent (omitted here).
+type CaptionStyle = NonNullable<Project['captions']>['style']
+type AccentField = 'accentColor' | 'highlightColor' | 'activeColor' | 'backgroundColor'
+const ACCENT: Partial<Record<CaptionStyle, { field: AccentField; label: string; def: string }>> = {
+  karaoke:         { field: 'highlightColor',  label: 'Highlight', def: '#ffffff' },
+  pop:             { field: 'activeColor',     label: 'Active',    def: '#ffe600' },
+  'highlight-box': { field: 'accentColor',     label: 'Accent',    def: '#fbbf24' },
+  outline:         { field: 'accentColor',     label: 'Accent',    def: '#fbbf24' },
+  subtitle:        { field: 'backgroundColor', label: 'Box',       def: '#000000' },
+}
+
+// The native <input type="color"> only accepts #rrggbb. Stored values are always
+// hex once picked; fall back to the style default for unset / non-hex (e.g. an
+// rgba() template default) so the swatch never gets an invalid value.
+const HEX = /^#[0-9a-f]{6}$/i
+const toHex = (v: unknown, fallback: string): string =>
+  typeof v === 'string' && HEX.test(v) ? v : fallback
 
 interface TranscriptPanelProps {
   project: Project
@@ -100,6 +121,42 @@ export default function TranscriptPanel({ project, captionTrack, currentTime, on
               </span>
             </div>
           )}
+          {captionTrack && (() => {
+            const accent = ACCENT[captionTrack.style]
+            // onChange = live preview only (cheap, no PUT); onBlur commits one save.
+            const live = (patch: Record<string, string>) => {
+              if (!project.captions) return
+              onProjectChange?.({ ...project, captions: { ...project.captions, ...patch } })
+            }
+            const commit = (patch: Record<string, string>) => {
+              if (!project.captions) return
+              onCaptionEdit?.({ ...project, captions: { ...project.captions, ...patch } })
+            }
+            return (
+              <div className="flex items-center gap-1.5">
+                <SwatchInput
+                  size="sm"
+                  showValue={false}
+                  title="Caption text color"
+                  ariaLabel="Caption text color"
+                  value={toHex(captionTrack.color, '#ffffff')}
+                  onChange={v => live({ color: v })}
+                  onCommit={v => commit({ color: v })}
+                />
+                {accent && (
+                  <SwatchInput
+                    size="sm"
+                    showValue={false}
+                    title={`Caption ${accent.label.toLowerCase()} color`}
+                    ariaLabel={`Caption ${accent.label.toLowerCase()} color`}
+                    value={toHex(captionTrack[accent.field], accent.def)}
+                    onChange={v => live({ [accent.field]: v })}
+                    onCommit={v => commit({ [accent.field]: v })}
+                  />
+                )}
+              </div>
+            )
+          })()}
           {onRegenerateCaptions && (
             <button
               className="text-[10px] text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white border border-gray-300 dark:border-gray-700 hover:border-gray-400 dark:hover:border-gray-500 bg-gray-100 dark:bg-gray-800 hover:bg-gray-200 dark:hover:bg-gray-700 rounded px-2 py-0.5 transition-all"
