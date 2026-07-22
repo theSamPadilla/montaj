@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { RefreshCw, AlertCircle, Download, Info } from 'lucide-react'
+import { RefreshCw, AlertCircle, Download, Info, Undo2, Redo2 } from 'lucide-react'
 import type { Project, Slide, CarouselElement, ImageElement, CarouselEditorProps, OverlayFactory } from '../types'
 import { applyTheme, defaultMontajTheme } from '../theme'
 import { useProjectState } from '../state/use-project-state'
@@ -409,19 +409,39 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
         {/* TOOLBAR ROW: Refresh on the left; host toolbar actions + Render on the
             right. Pinned (shrink-0) above the scrolling canvas area. */}
         <div className="flex-shrink-0 flex items-center justify-between gap-2 px-4 py-3 border-b border-[var(--editor-border)]">
-          <button
-            onClick={handleRefresh}
-            disabled={refreshing}
-            className={`flex items-center gap-2 px-3 py-2 rounded-md border transition-colors ${
-              refreshState === 'err'
-                ? 'text-red-300 border-red-500/40 bg-red-950/60 hover:bg-red-900/70'
-                : 'text-[var(--editor-text)] border-[var(--editor-border)] bg-[var(--editor-surface)]/80 hover:text-[var(--editor-text)] hover:border-[var(--editor-accent)] hover:bg-[var(--editor-surface)]'
-            }`}
-            title={refreshState === 'err' ? 'Refresh failed — check connection' : 'Refresh project'}
-          >
-            {refreshState === 'err' ? <AlertCircle size={18} /> : <RefreshCw size={18} className={refreshing ? 'animate-spin' : ''} />}
-            <span className="text-xs font-medium">Refresh</span>
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={handleRefresh}
+              disabled={refreshing}
+              className={`flex items-center gap-2 px-3 py-2 rounded-md border transition-colors ${
+                refreshState === 'err'
+                  ? 'text-red-300 border-red-500/40 bg-red-950/60 hover:bg-red-900/70'
+                  : 'text-[var(--editor-text)] border-[var(--editor-border)] bg-[var(--editor-surface)]/80 hover:text-[var(--editor-text)] hover:border-[var(--editor-accent)] hover:bg-[var(--editor-surface)]'
+              }`}
+              title={refreshState === 'err' ? 'Refresh failed — check connection' : 'Refresh project'}
+            >
+              {refreshState === 'err' ? <AlertCircle size={18} /> : <RefreshCw size={18} className={refreshing ? 'animate-spin' : ''} />}
+              <span className="text-xs font-medium">Refresh</span>
+            </button>
+            <button
+              onClick={() => state.undo()}
+              disabled={!state.canUndo}
+              className="flex items-center justify-center p-2 rounded-md border border-[var(--editor-border)] bg-[var(--editor-surface)]/80 text-[var(--editor-text)] transition-colors hover:border-[var(--editor-accent)] hover:bg-[var(--editor-surface)] disabled:opacity-40 disabled:cursor-not-allowed"
+              title="Undo (Cmd/Ctrl+Z)"
+              aria-label="Undo"
+            >
+              <Undo2 size={18} />
+            </button>
+            <button
+              onClick={() => state.redo()}
+              disabled={!state.canRedo}
+              className="flex items-center justify-center p-2 rounded-md border border-[var(--editor-border)] bg-[var(--editor-surface)]/80 text-[var(--editor-text)] transition-colors hover:border-[var(--editor-accent)] hover:bg-[var(--editor-surface)] disabled:opacity-40 disabled:cursor-not-allowed"
+              title="Redo (Cmd/Ctrl+Shift+Z)"
+              aria-label="Redo"
+            >
+              <Redo2 size={18} />
+            </button>
+          </div>
 
           <div className="flex items-center gap-2">
             {slots?.toolbarActions}

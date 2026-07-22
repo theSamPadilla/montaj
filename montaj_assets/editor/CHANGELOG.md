@@ -4,6 +4,19 @@ All notable changes to `@bycrux/editor` are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## Unreleased
+
+### Both editors
+
+- **Added: visible Undo (and Redo) toolbar buttons.** Undo/redo was previously
+  keyboard-only (`Cmd/Ctrl+Z`, `Cmd/Ctrl+Shift+Z`) and only advertised in the
+  canvas hint line + ⓘ modal. The carousel editor now shows **Undo** and
+  **Redo** buttons in the left toolbar group beside Refresh, wired to the
+  project-state hook's `undo`/`redo` and disabled via `canUndo`/`canRedo`. The
+  video editor gains an **Undo** button in the track-controls bar, wired to the
+  existing `handleUndo`/`canUndo` (video has no redo stack, so no Redo button).
+  Keyboard shortcuts are unchanged.
+
 ## 0.8.10 — 2026-07-20
 
 ### Video editor

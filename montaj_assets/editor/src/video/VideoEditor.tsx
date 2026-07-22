@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { Crop, Info, Magnet } from 'lucide-react'
+import { Crop, Info, Magnet, Undo2 } from 'lucide-react'
 import type { Project, VideoEditorProps } from '../types'
 import { VideoSourceCropModal } from '../crop/VideoSourceCropModal'
 import ControlsInfoModal, { VIDEO_CONTROLS } from '../ControlsInfoModal'
@@ -474,6 +474,15 @@ function ReviewSurface<P extends Project>({
             className="flex items-center justify-center w-5 h-5 rounded transition-colors text-[var(--editor-text)]/60 bg-transparent hover:text-[var(--editor-text)] mr-auto"
           >
             <Info size={12} />
+          </button>
+          <button
+            onClick={handleUndo}
+            disabled={!canUndo}
+            title="Undo (Cmd/Ctrl+Z)"
+            aria-label="Undo"
+            className="flex items-center justify-center w-5 h-5 rounded transition-colors text-[var(--editor-text)]/60 bg-transparent hover:text-[var(--editor-text)] disabled:opacity-30 disabled:cursor-not-allowed"
+          >
+            <Undo2 size={12} />
           </button>
           <button
             onClick={() => handleSplit()}
