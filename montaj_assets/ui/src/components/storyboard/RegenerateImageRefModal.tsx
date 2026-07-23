@@ -31,7 +31,7 @@ export function RegenerateImageRefModal({ projectId, imageRef, onClose, onComple
         prefix: `imageref_${imageRef.id}`,
         extension: 'png',
       })
-      const result = await api.runStep<{ path: string }>('generate_image', {
+      const result = await api.runStepAsync<{ path: string }>('generate_image', {
         prompt,
         out: outPath,
         provider,

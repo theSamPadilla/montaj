@@ -35,6 +35,7 @@ vi.mock('@/lib/api', () => ({
     uploadFile: vi.fn(async () => '/path'),
     reservePath: vi.fn(async () => ({ path: '/p.png' })),
     runStep: vi.fn(async () => ({ path: '/p.png' })),
+    runStepAsync: vi.fn(async () => ({ path: '/p.png' })),
     renderProject: vi.fn(async () => () => {}),
   },
   fileUrl: (p: string) => `/api/files?path=${encodeURIComponent(p)}`,

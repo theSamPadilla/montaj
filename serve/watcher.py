@@ -6,7 +6,7 @@ from pathlib import Path
 from watchdog.events import FileSystemEventHandler
 from watchdog.observers import Observer
 
-from serve.sse import SSEBroadcaster
+from serve.sse import SSEBroadcaster, JSX_GLOBAL_CHANNEL
 
 
 class _Handler(FileSystemEventHandler):
@@ -37,9 +37,12 @@ class _Handler(FileSystemEventHandler):
             except Exception:
                 pass
         elif path.endswith(".jsx"):
-            data = json.dumps({"path": path})
+            frame = f"data: {json.dumps({'path': path})}\n\n"
             self._loop.call_soon_threadsafe(
-                self._broadcaster.publish, f"jsx:{path}", f"data: {data}\n\n"
+                self._broadcaster.publish, f"jsx:{path}", frame
+            )
+            self._loop.call_soon_threadsafe(
+                self._broadcaster.publish, JSX_GLOBAL_CHANNEL, frame
             )
 
 

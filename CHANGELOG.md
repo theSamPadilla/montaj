@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## v3.6.2
+
+- **Editor no longer freezes on overlay-dense projects (browser connection-pool exhaustion).** The editor used to open one SSE connection per watched overlay JSX file (two per active overlay item) and hold a fetch open for the full duration of long steps like waveform generation — overflowing the browser's 6-connections-per-origin HTTP/1.1 limit, which stalled every request to the server until a restart force-closed the sockets. All file-watching now multiplexes over a single shared SSE connection (`GET /api/files/stream` with no `path` subscribes to a new global `jsx:*` channel; the per-path form still works), and editor-triggered `waveform_image` / `generate_image` runs use the async job flow (`_async: true` + job polling) instead of a pinned synchronous fetch. (serve/sse.py, serve/watcher.py, serve/routes/files.py, montaj_assets/ui/src/lib/file-watch.ts, montaj_assets/ui/src/lib/api.ts, montaj_assets/ui/src/app/editor/montajAdapter.ts, montaj_assets/ui/src/app/overlays/OverlaysPage.tsx, montaj_assets/ui/src/components/storyboard/RegenerateImageRefModal.tsx)
+
 ## v3.6.1
 
 - **Staged uploads are cleaned up after project creation.** Files dropped into the browser's new-project form land in the workspace-level `_uploads/` staging dir and were copied — never moved — into the project, leaving the staged original behind forever (this silently accumulated ~18GB of dead footage). `project/init.py` now deletes each staged source it consumed after a successful init: real copies only (`--symlink-clips` sources are kept, since the symlink points at them), only files directly inside `_uploads/`, deletion deferred to the end so a failed init never destroys staged files, and always best-effort. Existing accumulated files in `_uploads/` are not touched — clear them manually once.

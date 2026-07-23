@@ -12,7 +12,7 @@ from serve.common import (
     resolve_workspace, _is_under, _allowed_file_roots,
     not_found, bad_request, server_error, forbidden,
 )
-from serve.sse import sse_stream, SSEBroadcaster
+from serve.sse import sse_stream, SSEBroadcaster, JSX_GLOBAL_CHANNEL
 from cli.deps import render_runtime_dir
 
 router = APIRouter(prefix="/api")
@@ -251,11 +251,18 @@ async def serve_file(path: str, request: Request):
 
 
 @router.get("/files/stream")
-async def stream_file(path: str, request: Request):
-    """SSE stream that fires whenever a specific local file changes.
-    Used by the Overlays page to get live updates when an agent edits a JSX file."""
+async def stream_file(request: Request, path: str | None = None):
+    """SSE stream of file-change events.
+
+    With ?path=<abs path>: fires only when that one file changes (legacy
+    per-file channel — kept for external consumers, e.g. the Overlays page's
+    single-file preview).
+    Without ?path=: fires on every watched .jsx change; each frame carries
+    {"path": ...} so the client filters. One connection serves every watcher
+    in a tab — see docs/plans/2026-07-22-editor-connection-pool.md.
+    """
     broadcaster: SSEBroadcaster = request.app.state.broadcaster
-    channel = f"jsx:{path}"
+    channel = f"jsx:{path}" if path else JSX_GLOBAL_CHANNEL
     queue = broadcaster.subscribe(channel)
 
     async def event_stream():

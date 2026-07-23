@@ -4,6 +4,12 @@ from collections.abc import AsyncIterator
 
 from fastapi import Request
 
+# Global file-watch channel. The watcher publishes every .jsx change here in
+# addition to the per-path `jsx:{path}` channel, so one SSE connection can
+# watch every overlay file and filter client-side by the frame's `path` field
+# (avoids the browser's 6-connections-per-origin HTTP/1.1 limit).
+JSX_GLOBAL_CHANNEL = "jsx:*"
+
 
 class SSEBroadcaster:
     def __init__(self):

@@ -183,6 +183,7 @@ ui/
     lib/
       project.ts                # Read/write project.json (via API route to montaj serve)
       sse.ts                    # SSE client — subscribe to project.json changes
+      file-watch.ts             # shared file-change watcher — one SSE connection per tab (global jsx:* channel), ref-counted per-path callbacks
       overlay-eval.ts           # Compile + cache JSX overlay components
   package.json                  # Vite + React
 ```

@@ -127,6 +127,44 @@ export const api = {
   runStep: <T = unknown>(name: string, params: Record<string, unknown>) =>
     request<T>(`/api/steps/${name}`, { method: 'POST', body: JSON.stringify(params) }),
 
+  /**
+   * Run a step via the server's async job flow: POST with `_async: true`
+   * (202 + job_id), then poll GET /api/steps/jobs/{id} until done/error.
+   *
+   * Use this instead of runStep for anything that can take more than a few
+   * seconds (waveform_image, generate_image): a pending fetch pins one of the
+   * browser's 6 HTTP/1.1 connections to the server for its whole duration,
+   * and long sync steps were a major contributor to editor freezes.
+   */
+  runStepAsync: async <T = unknown>(
+    name: string,
+    params: Record<string, unknown>,
+    opts?: { pollMs?: number; timeoutMs?: number },
+  ): Promise<T> => {
+    const pollMs    = opts?.pollMs ?? 1500
+    const timeoutMs = opts?.timeoutMs ?? 15 * 60_000  // matches MONTAJ_STEP_TIMEOUT's magnitude
+    const { job_id } = await request<{ job_id: string }>(`/api/steps/${name}`, {
+      method: 'POST',
+      body: JSON.stringify({ ...params, _async: true }),
+    })
+    const deadline = Date.now() + timeoutMs
+    for (;;) {
+      await new Promise((r) => setTimeout(r, pollMs))
+      const job = await request<{
+        status: 'running' | 'done' | 'error'
+        result?: T
+        error?: { error?: string; message?: string }
+      }>(`/api/steps/jobs/${job_id}`)
+      if (job.status === 'done') return job.result as T
+      if (job.status === 'error') {
+        throw new Error(job.error?.message ?? job.error?.error ?? `step ${name} failed`)
+      }
+      if (Date.now() >= deadline) {
+        throw new Error(`step ${name} timed out after ${Math.round(timeoutMs / 1000)}s`)
+      }
+    }
+  },
+
   saveWorkflow: (name: string, workflow: Record<string, unknown>) =>
     request<unknown>(`/api/workflows/${name}`, { method: 'PUT', body: JSON.stringify(workflow) }),
 

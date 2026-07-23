@@ -3,6 +3,7 @@ import type { Project, VisualItem } from '@/lib/types/schema'
 import { getVisualItems } from '@/lib/types/schema'
 import { compileOverlay, clearOverlayCache, type OverlayFactory } from '@/lib/overlay-eval'
 import { api, type GlobalOverlay, type Profile } from '@/lib/api'
+import { watchWorkspaceFile } from '@/lib/file-watch'
 
 // ---------------------------------------------------------------------------
 // Hook — compile overlay and re-compile on SSE file-change events
@@ -26,9 +27,7 @@ function useOverlayPreview(jsxPath: string | undefined) {
   useEffect(() => {
     if (!jsxPath) { setFactory(null); setError(null); return }
     compile(jsxPath)
-    const es = new EventSource(`/api/files/stream?path=${encodeURIComponent(jsxPath)}`)
-    es.onmessage = () => compile(jsxPath)
-    return () => es.close()
+    return watchWorkspaceFile(jsxPath, () => compile(jsxPath))
   }, [jsxPath, compile])
 
   return { factory, error }

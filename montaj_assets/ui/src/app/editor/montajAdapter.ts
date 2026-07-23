@@ -24,6 +24,7 @@ import {
   compileOverlay as hostCompileOverlay,
   clearOverlayCache as hostClearOverlayCache,
 } from '@/lib/overlay-eval'
+import { watchWorkspaceFile } from '@/lib/file-watch'
 import type {
   EditorAdapter,
   OverlayFactory,
@@ -177,22 +178,19 @@ export function createMontajAdapter(): EditorAdapter<Project> {
         prefix: 'carousel_image',
         extension: 'png',
       })
-      const result = await api.runStep<{ path: string }>('generate_image', {
+      const result = await api.runStepAsync<{ path: string }>('generate_image', {
         prompt,
         out: outPath,
       })
       return { path: result.path }
     },
 
-    // Watch a workspace file for changes via Montaj's `/api/files/stream` SSE.
-    // Replicates the EventSource OverlayErrorBoundary used to open directly, so
-    // editing an overlay's source on disk auto-recovers its preview. Returns an
-    // unsubscribe that closes the stream.
-    watchFile: (path: string, onChange: () => void): (() => void) => {
-      const es = new EventSource(`/api/files/stream?path=${encodeURIComponent(path)}`)
-      es.onmessage = () => onChange()
-      return () => es.close()
-    },
+    // Watch a workspace file for changes via the SHARED global file-watch
+    // stream (one EventSource per tab, ref-counted per path) instead of one
+    // EventSource per watcher — overlay-dense timelines used to exhaust the
+    // browser's 6-connections-per-origin pool and freeze the editor.
+    watchFile: (path: string, onChange: () => void): (() => void) =>
+      watchWorkspaceFile(path, onChange),
 
     // Resolve Montaj's shipped `static-text` system overlay — the template the
     // editor's "+ Text" button seeds. The Montaj-specific name and matcher live
@@ -229,10 +227,16 @@ export function createMontajAdapter(): EditorAdapter<Project> {
       const existing = waveformCache.get(key)
       if (existing) return existing
 
-      const promise = api.runStep<WaveformChunk[]>('waveform_image', {
+      const promise = api.runStepAsync<WaveformChunk[]>('waveform_image', {
         input: trackSrc,
         'chunk-duration': chunkDurationS,
         'out-dir': `.cache/waveforms/${trackId}`,
+      })
+      // Evict on failure so a transient error (async job timeout, or a
+      // job_not_found after a mid-job server restart) doesn't poison the
+      // cache with a permanently-rejected promise — the next call retries.
+      promise.catch(() => {
+        if (waveformCache.get(key) === promise) waveformCache.delete(key)
       })
       waveformCache.set(key, promise)
       return promise
