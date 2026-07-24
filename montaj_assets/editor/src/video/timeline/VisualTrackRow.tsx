@@ -1,4 +1,4 @@
-import { Volume2, VolumeX, Info, Scissors } from 'lucide-react'
+import { Volume2, VolumeX, Info, Scissors, Pencil } from 'lucide-react'
 import type { VisualItem } from '../../schema'
 import type { Project } from '../../types'
 import { collapseGaps } from '../cuts'
@@ -17,6 +17,8 @@ interface VisualTrackRowProps {
   rippleMode: boolean
   onProjectChange?: (p: Project) => void
   onOverlayEdit?: (p: Project) => void
+  /** Open the overlay props dialog for an overlay item (VideoEditor owns it). */
+  onEditOverlay?: (id: string) => void
   /** Click handler — additive when shift/meta is held. */
   onSelectItem: (id: string | null, additive: boolean) => void
   onInspectClip?: (id: string) => void
@@ -49,6 +51,7 @@ export default function VisualTrackRow({
   rippleMode,
   onProjectChange,
   onOverlayEdit,
+  onEditOverlay,
   onSelectItem,
   onInspectClip,
   subcutClipId,
@@ -266,6 +269,13 @@ export default function VisualTrackRow({
                 onClick={(e) => { e.stopPropagation(); setSubcutClipId(subcutClipId === item.id ? null : item.id) }}
                 title="Subcut regenerate"
               ><Scissors size={10} /></button>
+            )}
+            {isSel && onEditOverlay && item.type === 'overlay' && !!item.src && (
+              <button
+                className={`shrink-0 ml-1 z-10 cursor-pointer opacity-60 hover:opacity-100 ${tc.text}`}
+                onClick={(e) => { e.stopPropagation(); onEditOverlay(item.id) }}
+                title="Edit overlay"
+              ><Pencil size={10} /></button>
             )}
             {isSel && (
               <button

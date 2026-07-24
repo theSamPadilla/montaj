@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { Crop, Info, Magnet, Undo2 } from 'lucide-react'
+import { Crop, Info, Magnet, Pencil, Undo2 } from 'lucide-react'
 import type { Project, VideoEditorProps } from '../types'
 import { VideoSourceCropModal } from '../crop/VideoSourceCropModal'
 import ControlsInfoModal, { VIDEO_CONTROLS } from '../ControlsInfoModal'
@@ -9,9 +9,11 @@ import { applyCutToItem, applyCutToTracks, collapseGaps, splitAtTime } from './c
 import { repairCaptionWords } from './captionRepair'
 import Timeline from './timeline/Timeline'
 import PreviewPlayer from './preview/PreviewPlayer'
+import type { OverlayChanges } from './preview/useDragOverlay'
 import VersionPanel from './VersionPanel'
 import RenderModal from './RenderModal'
 import CaptionRegenModal from './CaptionRegenModal'
+import OverlayPropsModal from './preview/OverlayPropsModal'
 
 // Generic over the host's concrete project type `P` (default = the package's
 // own `Project`). Montaj passes its richer Project; the index signature on
@@ -343,6 +345,55 @@ function ReviewSurface<P extends Project>({
     if (!cropTarget && cropMode) setCropMode(false)
   }, [cropTarget, cropMode])
 
+  // Overlay props dialog — opened from the preview (double-click), the controls
+  // bar, or the timeline block. VideoEditor owns the state so all three surfaces
+  // share one modal. Edits ride handleOverlayChange (history + save for free).
+  const [editingOverlayId, setEditingOverlayId] = useState<string | null>(null)
+  // Project snapshot taken when the dialog opens, so history/undo and Cancel
+  // revert to the pre-edit state even though edits preview live in between.
+  const editOriginalRef = useRef<P | null>(null)
+  const requestEditOverlay = useCallback((id: string) => {
+    editOriginalRef.current = projectRef.current
+    setEditingOverlayId(id)
+  }, [])
+  const allVisualItems = (project.tracks ?? []).flat()
+  const editingOverlayItem = editingOverlayId
+    ? allVisualItems.find(i => i.id === editingOverlayId) ?? null
+    : null
+
+  function withItemProps(id: string, nextProps: Record<string, unknown>): P {
+    return {
+      ...project,
+      tracks: (project.tracks ?? []).map(track =>
+        track.map(item => (item.id !== id ? item : { ...item, props: nextProps })),
+      ),
+    } as P
+  }
+  // Live preview: reflect the in-progress edit via onProjectChange only — no
+  // history push, no save — so the overlay re-renders as the operator tweaks.
+  function previewOverlayProps(id: string, nextProps: Record<string, unknown>) {
+    onProjectChange(withItemProps(id, nextProps))
+  }
+  // Commit on Save: snapshot the pre-edit project for undo, then persist.
+  function commitOverlayEdit(id: string, nextProps: Record<string, unknown>) {
+    if (editOriginalRef.current) pushHistory(editOriginalRef.current)
+    const updated = withItemProps(id, nextProps)
+    onProjectChange(updated)
+    save(updated)
+    editOriginalRef.current = null
+    setEditingOverlayId(null)
+  }
+  // Cancel/Esc/close: discard the live preview by restoring the snapshot.
+  function cancelOverlayEdit() {
+    if (editOriginalRef.current) onProjectChange(editOriginalRef.current)
+    editOriginalRef.current = null
+    setEditingOverlayId(null)
+  }
+  // The primary-selected JSX overlay, if any — drives the controls-bar edit button.
+  const selectedOverlayItem = primarySelectedId
+    ? allVisualItems.find(i => i.id === primarySelectedId && i.type === 'overlay' && !!i.src) ?? null
+    : null
+
   function pushHistory(prev: P) {
     historyRef.current = [...historyRef.current.slice(-49), prev]
     setCanUndo(true)
@@ -377,7 +428,7 @@ function ReviewSurface<P extends Project>({
     setSelectedIds([])
   }
 
-  function handleOverlayChange(id: string, changes: { offsetX?: number; offsetY?: number; scale?: number; rotation?: number; fit?: 'cover' | 'contain' | 'fill'; sourceCrop?: { x: number; y: number; w: number; h: number }; sourceWidth?: number; sourceHeight?: number }) {
+  function handleOverlayChange(id: string, changes: OverlayChanges) {
     pushHistory(project)
     const updated = {
       ...project,
@@ -453,6 +504,7 @@ function ReviewSurface<P extends Project>({
                 onTimeUpdate={setCurrentTime}
                 selectedOverlayId={primarySelectedId ?? undefined}
                 onOverlayChange={handleOverlayChange}
+                onEditOverlay={requestEditOverlay}
                 compileOverlay={adapter.compileOverlay}
                 clearOverlayCache={adapter.clearOverlayCache}
                 watchFile={adapter.watchFile}
@@ -524,6 +576,16 @@ function ReviewSurface<P extends Project>({
           >
             <Crop size={12} />
           </button>
+          {selectedOverlayItem && (
+            <button
+              onClick={() => requestEditOverlay(selectedOverlayItem.id)}
+              title="Edit overlay — text, colors, and other properties"
+              aria-label="Edit overlay"
+              className="flex items-center justify-center w-5 h-5 rounded transition-colors text-[var(--editor-text)]/60 bg-transparent hover:text-[var(--editor-text)]"
+            >
+              <Pencil size={12} />
+            </button>
+          )}
           {/* Default placement. A host that sets onProvideRenderTrigger renders
               Render in its own chrome instead, so the toolbar button is hidden. */}
           {!onProvideRenderTrigger && (
@@ -544,6 +606,7 @@ function ReviewSurface<P extends Project>({
             onProjectChange={handleProjectChange}
             onCaptionEdit={(p) => { onProjectChange(p as P); save(p as P) }}
             onOverlayEdit={(p) => { onProjectChange(p as P); save(p as P) }}
+            onEditOverlay={requestEditOverlay}
             selectedIds={selectedIds}
             onSelectIds={setSelectedIds}
             onSplit={handleSplit}
@@ -667,6 +730,21 @@ function ReviewSurface<P extends Project>({
             onProjectChange(next)
             setRegenCaptionsOpen(false)
           }}
+        />
+      )}
+
+      {/* Overlay props dialog — edits the selected overlay's primitive props
+          (text, colors, numbers, toggles). Opened from the preview double-click,
+          the controls bar, or a timeline block. Rides handleOverlayChange, so
+          edits preview live and undo like any other change. */}
+      {editingOverlayItem && (
+        <OverlayPropsModal
+          itemProps={editingOverlayItem.props ?? {}}
+          fileUrl={adapter.fileUrl}
+          uploadFile={(file) => adapter.uploadFile(file, project.id)}
+          onPreview={(next) => previewOverlayProps(editingOverlayItem.id, next)}
+          onSave={(next) => commitOverlayEdit(editingOverlayItem.id, next)}
+          onClose={cancelOverlayEdit}
         />
       )}
 

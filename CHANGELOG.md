@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **Editor: native overlay editing** — edit an overlay's properties (text, colors, numbers, toggles, images) in the video editor without an AI round-trip. Select an overlay and open its editor dialog three ways: the pencil in the controls bar, the pencil on its timeline block, or a double-click on the overlay in the preview. The dialog is a movable, non-blocking panel — colors get a swatch picker, images a thumbnail + file picker — and edits preview live on the overlay as you tweak; Save persists, Cancel reverts, all undoable.
+
 ## v3.6.2
 
 - **Editor no longer freezes on overlay-dense projects (browser connection-pool exhaustion).** The editor used to open one SSE connection per watched overlay JSX file (two per active overlay item) and hold a fetch open for the full duration of long steps like waveform generation — overflowing the browser's 6-connections-per-origin HTTP/1.1 limit, which stalled every request to the server until a restart force-closed the sockets. All file-watching now multiplexes over a single shared SSE connection (`GET /api/files/stream` with no `path` subscribes to a new global `jsx:*` channel; the per-path form still works), and editor-triggered `waveform_image` / `generate_image` runs use the async job flow (`_async: true` + job polling) instead of a pinned synchronous fetch. (serve/sse.py, serve/watcher.py, serve/routes/files.py, montaj_assets/ui/src/lib/file-watch.ts, montaj_assets/ui/src/lib/api.ts, montaj_assets/ui/src/app/editor/montajAdapter.ts, montaj_assets/ui/src/app/overlays/OverlaysPage.tsx, montaj_assets/ui/src/components/storyboard/RegenerateImageRefModal.tsx)

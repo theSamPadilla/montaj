@@ -5,6 +5,7 @@ import type { OverlayFactory } from '../../types'
 import CaptionPreview from './CaptionPreview'
 import { getOverlayDesignCanvas } from '../design-canvas'
 import { useDragOverlay } from './useDragOverlay'
+import type { OverlayChanges } from './useDragOverlay'
 import OverlayItemsLayer from './OverlayItemsLayer'
 import { useVideoPlayback } from './useVideoPlayback'
 import { sourceCropVideoStyle } from './sourceCropStyle'
@@ -17,7 +18,8 @@ interface PreviewPlayerProps {
   currentTime: number
   onTimeUpdate: (t: number) => void
   selectedOverlayId?: string
-  onOverlayChange?: (id: string, changes: { offsetX?: number; offsetY?: number; scale?: number; rotation?: number; fit?: 'cover' | 'contain' | 'fill' }) => void
+  onOverlayChange?: (id: string, changes: OverlayChanges) => void
+  onEditOverlay?: (id: string) => void
   // Adapter-injected capabilities
   compileOverlay: (src: string) => Promise<OverlayFactory>
   clearOverlayCache?: (src?: string) => void
@@ -32,6 +34,7 @@ export default function PreviewPlayer({
   onTimeUpdate,
   selectedOverlayId,
   onOverlayChange,
+  onEditOverlay,
   compileOverlay,
   clearOverlayCache,
   watchFile,
@@ -302,6 +305,7 @@ export default function PreviewPlayer({
         renderScale={renderScale}
         selectedOverlayId={selectedOverlayId}
         onOverlayChange={onOverlayChange}
+        onEditOverlay={onEditOverlay}
         containerRef={containerRef}
         dragState={dragState}
         setDragState={setDragState}

@@ -1,7 +1,27 @@
 import { useEffect, useRef, useState } from 'react'
+import type { VisualItem } from '../../schema'
 
 export type Corner = 'nw' | 'ne' | 'sw' | 'se'
 export type DragType = 'move' | `resize-${Corner}` | 'rotate'
+
+// Shared shape for `onOverlayChange` across the preview layer: drag/resize/rotate
+// gestures (useDragOverlay) only ever populate the geometric subset; content-editing
+// callers (crop modal, future props/text editors) populate the rest. Callers pass a
+// partial — VideoEditor.handleOverlayChange merges whatever arrives into the item.
+export interface OverlayChanges {
+  offsetX?: number
+  offsetY?: number
+  scale?: number
+  rotation?: number
+  fit?: 'cover' | 'contain' | 'fill'
+  sourceCrop?: VisualItem['sourceCrop']
+  sourceWidth?: number
+  sourceHeight?: number
+  /** Full replacement for item.props (content editing). */
+  props?: Record<string, unknown>
+  /** Legacy text overlay items only. */
+  text?: string
+}
 
 const SNAP_THRESHOLD = 2.5  // % of container
 const ROT_SNAP_ANGLES = [0, 90, 180, 270]
@@ -25,7 +45,7 @@ interface DragState {
 
 export function useDragOverlay(
   containerRef: React.RefObject<HTMLDivElement | null>,
-  onOverlayChange?: (id: string, changes: { offsetX?: number; offsetY?: number; scale?: number; rotation?: number; fit?: 'cover' | 'contain' | 'fill' }) => void,
+  onOverlayChange?: (id: string, changes: OverlayChanges) => void,
 ) {
   const [dragState, setDragState] = useState<DragState | null>(null)
 

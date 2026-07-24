@@ -4,7 +4,7 @@ import type { OverlayFactory } from '../../types'
 import OverlayErrorBoundary from '../../carousel/OverlayErrorBoundary'
 import { getOverlayDesignCanvas } from '../design-canvas'
 import { ensureGoogleFontsLoaded } from '../../lib/google-fonts'
-import type { Corner } from './useDragOverlay'
+import type { Corner, OverlayChanges } from './useDragOverlay'
 import type { useDragOverlay } from './useDragOverlay'
 
 const VIDEO_PRELOAD_S = 0.4  // mount this many seconds before item.start so the frame is ready
@@ -288,7 +288,9 @@ interface OverlayItemsLayerProps {
   tracks0NonVideo: VisualItem[]
   renderScale: number
   selectedOverlayId?: string
-  onOverlayChange?: (id: string, changes: { offsetX?: number; offsetY?: number; scale?: number; rotation?: number; fit?: 'cover' | 'contain' | 'fill' }) => void
+  onOverlayChange?: (id: string, changes: OverlayChanges) => void
+  /** Open the props dialog for an overlay (owned by VideoEditor). */
+  onEditOverlay?: (id: string) => void
   containerRef: React.RefObject<HTMLDivElement | null>
   // from useDragOverlay
   dragState: ReturnType<typeof useDragOverlay>['dragState']
@@ -315,6 +317,7 @@ export default function OverlayItemsLayer({
   renderScale,
   selectedOverlayId,
   onOverlayChange,
+  onEditOverlay,
   containerRef,
   dragState,
   setDragState,
@@ -329,6 +332,9 @@ export default function OverlayItemsLayer({
   fileUrl,
 }: OverlayItemsLayerProps) {
   const [RENDER_W, RENDER_H] = getOverlayDesignCanvas(project.settings?.resolution)
+
+  // Interactive tracks — in canvas mode this includes track 0; otherwise overlays only.
+  const interactiveTracks = isCanvasProject ? project.tracks ?? [] : overlayTracks
 
   return (
     <>
@@ -395,7 +401,7 @@ export default function OverlayItemsLayer({
       })}
 
       {/* All interactive tracks — in canvas mode this includes track 0; otherwise overlays only */}
-      {(isCanvasProject ? project.tracks ?? [] : overlayTracks).map((trackItems, trackIdx) =>
+      {interactiveTracks.map((trackItems, trackIdx) =>
         trackItems.map((item) => {
           const visible  = currentTime >= item.start && currentTime < item.end
           // Pre-mount video items slightly before their start so the frame is ready (no flash)
@@ -431,6 +437,14 @@ export default function OverlayItemsLayer({
             const cy = rect.top  + rect.height * (0.5 + offsetY / 100)
             const initAngle = Math.atan2(e.clientY - cy, e.clientX - cx)
             setDragState({ id: item.id, type: 'rotate', initX: e.clientX, initY: e.clientY, initOffsetX: offsetX, initOffsetY: offsetY, initScale: scale, initRotation: rotation, cx, cy, initAngle })
+          }
+
+          // Double-click a selected JSX overlay opens the props dialog (owned by
+          // VideoEditor). stopPropagation keeps it from re-triggering startMove.
+          function handleDoubleClick(e: React.MouseEvent) {
+            if (!isSel) return
+            e.stopPropagation()
+            if (item.type === 'overlay' && item.src) onEditOverlay?.(item.id)
           }
 
           // zIndex: canvas mode track 0 sits just above the play-toggle div (10), others stack above
@@ -501,14 +515,16 @@ export default function OverlayItemsLayer({
             const frame = Math.round((currentTime - item.start) * fps)
             const durationFrames = Math.round((item.end - item.start) * fps)
             return (
-              <div key={item.id} className={wrapperClass} style={wrapperStyle} onMouseDown={startMove}>
+              <div key={item.id} className={wrapperClass} style={wrapperStyle} onMouseDown={startMove} onDoubleClick={handleDoubleClick}>
                 {/* Render at native 1080×1920 then scale down to match container */}
-                <div style={{
-                  position: 'absolute', top: 0, left: 0,
-                  width: RENDER_W, height: RENDER_H,
-                  transform: `scale(${renderScale})`, transformOrigin: 'top left',
-                  pointerEvents: 'none',
-                }}>
+                <div
+                  style={{
+                    position: 'absolute', top: 0, left: 0,
+                    width: RENDER_W, height: RENDER_H,
+                    transform: `scale(${renderScale})`, transformOrigin: 'top left',
+                    pointerEvents: 'none',
+                  }}
+                >
                   <OverlayErrorBoundary
                     label={item.src.split('/').pop() ?? item.src}
                     watchPath={item.src}
@@ -600,6 +616,7 @@ export default function OverlayItemsLayer({
           </svg>
         </div>
       )}
+
     </>
   )
 }

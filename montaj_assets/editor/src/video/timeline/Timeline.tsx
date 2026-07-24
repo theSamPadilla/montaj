@@ -19,6 +19,9 @@ interface TimelineProps {
   onProjectChange?: (p: Project) => void
   onCaptionEdit?: (p: Project) => void
   onOverlayEdit?: (p: Project) => void
+  /** Open the overlay props dialog (owned by VideoEditor). Threaded to each
+   *  VisualTrackRow so a selected overlay block can offer an edit button. */
+  onEditOverlay?: (id: string) => void
   /** Unified selection — covers both visual items and audio tracks. */
   selectedIds?: string[]
   onSelectIds?: (ids: string[]) => void
@@ -54,7 +57,7 @@ interface TimelineProps {
 }
 
 
-export default function Timeline({ project, currentTime, onTimeUpdate, onProjectChange, onCaptionEdit, onOverlayEdit, selectedIds = [], onSelectIds, onSplit, onCut, onInspectClip, onInspectAudio, rippleMode = false, getWaveformChunks, resolveFilePath, regenEnabled, isClipQueued, renderSubcutRegen, onRegenerateCaptions }: TimelineProps) {
+export default function Timeline({ project, currentTime, onTimeUpdate, onProjectChange, onCaptionEdit, onOverlayEdit, onEditOverlay, selectedIds = [], onSelectIds, onSplit, onCut, onInspectClip, onInspectAudio, rippleMode = false, getWaveformChunks, resolveFilePath, regenEnabled, isClipQueued, renderSubcutRegen, onRegenerateCaptions }: TimelineProps) {
   const primarySelectedId = selectedIds[0] ?? null
 
   // Click/shift-click handler — additive selection on shift or meta (cmd/ctrl).
@@ -292,6 +295,7 @@ export default function Timeline({ project, currentTime, onTimeUpdate, onProject
               rippleMode={rippleMode}
               onProjectChange={onProjectChange}
               onOverlayEdit={onOverlayEdit}
+              onEditOverlay={onEditOverlay}
               onSelectItem={handleSelectItem}
               onInspectClip={onInspectClip}
               subcutClipId={subcutClipId}

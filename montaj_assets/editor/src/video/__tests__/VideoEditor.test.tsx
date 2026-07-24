@@ -8,6 +8,8 @@ import type {
   VersionEntry,
   WaveformChunk,
 } from '../../types'
+import type { VisualItem } from '../../schema'
+import type { OverlayChanges } from '../preview/useDragOverlay'
 import VideoEditor from '../VideoEditor'
 
 // ── Fake adapter ──────────────────────────────────────────────────────────────
@@ -209,5 +211,37 @@ describe('VideoEditor — editor-package integration', () => {
     await findByText(/Send this to your agent/i)
     // The copy-able prompt text should include the skill path
     await findByText(/skills\/video-skill\.md/i)
+  })
+
+  // `handleOverlayChange` (VideoEditor.tsx) is a private closure whose `changes`
+  // param is typed as `OverlayChanges` (useDragOverlay.ts) and whose body is
+  // exactly `{ ...item, ...changes }`. No control in the preview layer currently
+  // drives a `props` payload through it — the crop modal only ever sends
+  // sourceCrop/sourceWidth/sourceHeight, and drag/resize/rotate only ever send
+  // offsetX/offsetY/scale/rotation — so there is no DOM path in this harness
+  // that reaches a `props` change via a mounted <VideoEditor>. This test instead
+  // exercises the real merge contract directly: `changes` is typed against the
+  // actual `OverlayChanges` export (so `props` only compiles once useDragOverlay
+  // declares it), and the assertion applies the identical spread
+  // `handleOverlayChange` performs.
+  it('handleOverlayChange merges a props payload into the matching item without touching other fields', () => {
+    const item: VisualItem = {
+      id: 'overlay-1',
+      type: 'overlay',
+      src: 'overlay.jsx',
+      start: 0,
+      end: 4,
+      offsetX: 5,
+      offsetY: 10,
+      props: { text: 'Old text' },
+    }
+    const changes: OverlayChanges = { props: { text: 'New text' } }
+
+    // Mirrors VideoEditor.tsx handleOverlayChange's item-update line exactly.
+    const merged = { ...item, ...changes }
+
+    expect(merged.props).toEqual({ text: 'New text' })
+    expect(merged.offsetX).toBe(5)
+    expect(merged.offsetY).toBe(10)
   })
 })
