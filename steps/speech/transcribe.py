@@ -5,7 +5,7 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "lib"))
 import models as _models
-from common import fail, require_file, check_output, run, find_whisper_bin, resolve_whisper_model, ffmpeg_bin
+from common import fail, require_file, check_output, run, find_whisper_bin, resolve_whisper_model, ffmpeg_bin, whisper_weight_path
 from trim_spec import is_trim_spec, load as load_spec, audio_extract_cmd, remap_timestamp
 
 def main():
@@ -28,7 +28,9 @@ def main():
     require_file(args.input)
 
     model = resolve_whisper_model(args.model, args.language)
-    model_path = _models.model_path("whisper", f"ggml-{model}.bin")
+    # Managed dir first, then the legacy whisper.cpp dir for older installs —
+    # same chain as lib/common.transcribe_words().
+    model_path = whisper_weight_path(model) or _models.model_path("whisper", f"ggml-{model}.bin")
     require_file(model_path)
 
     whisper_bin = find_whisper_bin()

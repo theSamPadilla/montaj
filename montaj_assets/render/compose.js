@@ -18,8 +18,15 @@ import { FFMPEG } from './ffmpeg-bin.js'
 import { planSegments } from './segment-plan.js'
 import { encodeSegment } from './encode-segment.js'
 import { mixAudioIntoVideo } from './mix-audio.js'
+import { pMap } from './p-map.js'
 
 const FFMPEG_TIMEOUT_MS = 600_000
+
+// Segments encode independently, so a bounded pool overlaps them. ffmpeg/x264
+// already multithreads, so 2 concurrent encodes saturate most machines without
+// thrashing; power users tune MONTAJ_SEGMENT_WORKERS. Floor of 1 keeps a bad
+// value (0, NaN, negative) from disabling encoding entirely.
+const SEGMENT_WORKERS = Math.max(1, parseInt(process.env.MONTAJ_SEGMENT_WORKERS ?? '', 10) || 2)
 
 const TTY = process.stderr.isTTY
 const C = {
@@ -78,9 +85,10 @@ export async function compose({
   rmSync(segDir, { recursive: true, force: true })
   mkdirSync(segDir, { recursive: true })
 
-  const segPaths = []
-  for (let i = 0; i < segments.length; i++) {
-    const seg = segments[i]
+  // Encode up to SEGMENT_WORKERS segments concurrently. pMap returns results in
+  // input order, so concatSegments below still joins them in timeline order; each
+  // segment writes a distinct seg-NNNN.mp4, so concurrent encodes never collide.
+  const segPaths = await pMap(segments, async (seg, i) => {
     // Stamp project color space onto each segment so the encoder knows what
     // codec/pix_fmt/color metadata to emit. planSegments doesn't know about
     // color space; that's a project-level concern threaded through here.
@@ -90,9 +98,9 @@ export async function compose({
     clog(`segment ${i + 1}/${segments.length} (${seg.start.toFixed(2)}-${seg.end.toFixed(2)}s): ` +
          `${seg.items.length} item(s), ${seg.overlays.length} overlay(s)`)
 
-    encodeSegment(seg, segPath)
-    segPaths.push(segPath)
-  }
+    await encodeSegment(seg, segPath)
+    return segPath
+  }, SEGMENT_WORKERS)
 
   // 3. Concat all segments
   const preMixPath = hasAudio ? outputPath.replace(/(\.\w+)$/, '_premix$1') : outputPath

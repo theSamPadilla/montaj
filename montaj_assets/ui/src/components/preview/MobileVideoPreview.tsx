@@ -1,7 +1,7 @@
-import { useMemo, useState } from 'react'
+import { useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import MobileProjectHeader from '@/components/MobileProjectHeader'
-import { PreviewPlayer } from '@bycrux/editor'
+import { PreviewPlayer, createPlaybackClock, type PlaybackClock } from '@bycrux/editor'
 import { createMontajAdapter } from '@/app/editor/montajAdapter'
 import MobileRenderModal from '@/components/MobileRenderModal'
 import { Button } from '@/components/ui/button'
@@ -14,7 +14,8 @@ interface Props {
 }
 
 export default function MobileVideoPreview({ project, onProjectChange }: Props) {
-  const [currentTime, setCurrentTime] = useState(0)
+  const clockRef = useRef<PlaybackClock | null>(null)
+  if (!clockRef.current) clockRef.current = createPlaybackClock()
   const adapter = useMemo(() => createMontajAdapter(), [])
   const [renderOpen, setRenderOpen] = useState(false)
   const [saving, setSaving] = useState(false)
@@ -49,8 +50,7 @@ export default function MobileVideoPreview({ project, onProjectChange }: Props) 
       <div className="flex-1 flex items-center justify-center bg-black overflow-hidden p-3">
         <PreviewPlayer
           project={project}
-          currentTime={currentTime}
-          onTimeUpdate={setCurrentTime}
+          clock={clockRef.current}
           fileUrl={adapter.fileUrl}
           compileOverlay={adapter.compileOverlay}
           clearOverlayCache={adapter.clearOverlayCache}

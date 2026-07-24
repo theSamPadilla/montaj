@@ -19,11 +19,15 @@ import { renderAllSegments }              from './renderer.js'
 import { compose, embedThumbnail }        from './compose.js'
 import { FFMPEG, FFPROBE }                from './ffmpeg-bin.js'
 import { requireValidKey, detectFromTransfer, smartDetect, DEFAULT_COLOR_SPACE } from './color-space.js'
+import { pMap }                           from './p-map.js'
+import { fileHasAudio }                   from './encode-segment.js'
 
 const __dirname  = dirname(fileURLToPath(import.meta.url))
 const isMain = resolve(process.argv[1] ?? '') === fileURLToPath(import.meta.url)
-const MONTAJ_ROOT = process.env.MONTAJ_ROOT || join(__dirname, '..')
+// MONTAJ_ROOT is two levels above montaj_assets/render/ (i.e. the Python project root).
+const MONTAJ_ROOT = process.env.MONTAJ_ROOT || join(__dirname, '..', '..')
 const PYTHON = process.env.MONTAJ_PYTHON || 'python3'
+export const REMOVE_BG_SCRIPT = join(MONTAJ_ROOT, 'steps', 'transform', 'remove_bg.py')
 
 const TTY = process.stderr.isTTY
 const C = { cyan: TTY ? '\x1b[96m' : '', reset: TTY ? '\x1b[0m' : '' }
@@ -234,6 +238,17 @@ async function main(projectPath, { out, workers, clean }) {
       transferCache.set(item.src, probeColorTransfer(item.src))
     }
     item.colorTransfer = transferCache.get(item.src) ?? 'unknown'
+  }
+
+  // Pre-probe audio presence once per unique source, same rationale as
+  // transferCache above — without it, a 50-segment project with 5 items
+  // would run fileHasAudio's ffprobe up to 250 times instead of 5.
+  const audioCache = new Map()
+  for (const item of videoItems) {
+    if (!audioCache.has(item.src)) {
+      audioCache.set(item.src, fileHasAudio(item.src))
+    }
+    item.hasAudio = audioCache.get(item.src)
   }
 
   // Project working color space — drives normalize CLI flag, segment encoder
@@ -626,7 +641,7 @@ async function processVideoItems(videoItems, workspaceDir) {
       const stem    = join(workspaceDir, 'render', basename(item.src, extname(item.src)))
       const nobgPath = `${stem}_nobg.mov`
       const result = spawnSync(PYTHON, [
-        join(MONTAJ_ROOT, 'steps', 'remove_bg.py'),
+        REMOVE_BG_SCRIPT,
         '--input', item.src,
         '--out',   nobgPath,
       ], { encoding: 'utf8', timeout: 600_000 })
@@ -763,7 +778,7 @@ async function normalizeIfNeeded(src, projectColorSpace) {
   }
 
   return new Promise((resolve) => {
-    const proc = spawn('python3', [
+    const proc = spawn(PYTHON, [
       '-m', 'lib.normalize',
       '--input', src,
       '--color-space', projectColorSpace,
@@ -865,21 +880,6 @@ async function stripExtraAudioStreams(src) {
       resolve(src)
     })
   })
-}
-
-// Bounded-concurrency map. Cap matches materialize_cut.py's libx264 worker pool.
-async function pMap(items, mapper, concurrency) {
-  const results = new Array(items.length)
-  let cursor = 0
-  async function worker() {
-    while (true) {
-      const i = cursor++
-      if (i >= items.length) return
-      results[i] = await mapper(items[i], i)
-    }
-  }
-  await Promise.all(Array.from({ length: Math.min(concurrency, items.length) }, worker))
-  return results
 }
 
 // ---------------------------------------------------------------------------

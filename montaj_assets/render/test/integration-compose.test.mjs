@@ -67,3 +67,43 @@ test('compose: multiple clips concat without corruption', async () => {
 
   rmSync(outputPath, { force: true })
 })
+
+test('compose encodes segments concurrently when MONTAJ_SEGMENT_WORKERS>1', async () => {
+  // Three adjacent clips → >= 3 segments, so a 2-worker pool actually overlaps
+  // encodes. compose reads MONTAJ_SEGMENT_WORKERS at module load (default 2),
+  // so setting it here documents intent and pins the concurrent path; the
+  // final-mp4 assertions match the single/multi-clip tests above.
+  const clipA = '/tmp/montaj-test-clip-v2-c1.mp4'
+  const clipB = '/tmp/montaj-test-clip-v2-c2.mp4'
+  const clipC = '/tmp/montaj-test-clip-v2-c3.mp4'
+  const outputPath = '/tmp/montaj-compose-concurrent.mp4'
+  ensureTestClip(clipA, 2, 1920, 1080)
+  ensureTestClip(clipB, 2, 1920, 1080)
+  ensureTestClip(clipC, 2, 1920, 1080)
+  rmSync(outputPath, { force: true })
+
+  const prevWorkers = process.env.MONTAJ_SEGMENT_WORKERS
+  process.env.MONTAJ_SEGMENT_WORKERS = '2'
+  try {
+    await compose({
+      projectJson: { settings: { resolution: [1920, 1080], fps: 30 }, audio: { tracks: [] } },
+      puppeteerSegments: [],
+      imageItems: [],
+      videoItems: [
+        { id: 'a', type: 'video', trackIdx: 0, src: clipA, start: 0, end: 2, inPoint: 0, outPoint: 2, offsetX: 0, offsetY: 0, scale: 1, opacity: 1, muted: false },
+        { id: 'b', type: 'video', trackIdx: 0, src: clipB, start: 2, end: 4, inPoint: 0, outPoint: 2, offsetX: 0, offsetY: 0, scale: 1, opacity: 1, muted: false },
+        { id: 'c', type: 'video', trackIdx: 0, src: clipC, start: 4, end: 6, inPoint: 0, outPoint: 2, offsetX: 0, offsetY: 0, scale: 1, opacity: 1, muted: false },
+      ],
+      outputPath,
+    })
+  } finally {
+    if (prevWorkers === undefined) delete process.env.MONTAJ_SEGMENT_WORKERS
+    else process.env.MONTAJ_SEGMENT_WORKERS = prevWorkers
+  }
+
+  assert.ok(existsSync(outputPath), 'output file should exist')
+  const probe = spawnSync('ffprobe', ['-v', 'error', outputPath], { encoding: 'utf8' })
+  assert.equal(probe.status, 0, 'no ffprobe errors on concurrent segment encode')
+
+  rmSync(outputPath, { force: true })
+})

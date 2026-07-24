@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { EditorProject as Project, VisualItem } from '../../schema'
 import type { OverlayFactory } from '../../types'
 import OverlayErrorBoundary from '../../carousel/OverlayErrorBoundary'
@@ -171,6 +171,14 @@ function CustomOverlay({
     return () => unwatch()
   }, [src, watchFile, compile])
 
+  // Deep-clone/rewrite the props once per props change instead of every frame.
+  // Live prop edits (OverlayPropsModal → VideoEditor.withItemProps) always
+  // produce a new `props` object reference, so this recomputes on every edit.
+  const resolvedProps = useMemo(
+    () => resolveOverlayPropPaths(props, fileUrl) as Record<string, unknown>,
+    [props, fileUrl],
+  )
+
   if (error) {
     return (
       <div className="absolute bottom-4 left-4 right-4 pointer-events-none">
@@ -182,8 +190,6 @@ function CustomOverlay({
   }
 
   if (!factory) return null
-
-  const resolvedProps = resolveOverlayPropPaths(props, fileUrl) as Record<string, unknown>
 
   const element = factory(frame, fps, durationFrames, resolvedProps)
   if (!element) return null

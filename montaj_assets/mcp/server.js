@@ -22,6 +22,7 @@ import { resolve, join, dirname }               from "path";
 import { fileURLToPath }                        from "url";
 import { spawnSync }                            from "child_process";
 import { homedir }                              from "os";
+import { runCli }                               from "./run-cli.js";
 
 const __dirname       = dirname(fileURLToPath(import.meta.url))
 // MCP_DIR  = where this server.js lives (montaj_assets/mcp/) — for sibling files like node_modules.
@@ -199,13 +200,12 @@ async function main() {
       ? `${MONTAJ_ROOT}:${process.env.PYTHONPATH}`
       : MONTAJ_ROOT
 
-    const result = spawnSync(
+    const result = await runCli(
       PYTHON,
       ["-m", "cli.main", ...tool._cli_tokens, ...cliArgs],
       {
-        encoding: "utf8",
-        timeout:  CLI_TIMEOUT_MS,
-        cwd:      PROJECT_DIR,
+        timeoutMs: CLI_TIMEOUT_MS,
+        cwd:       PROJECT_DIR,
         env: { ...process.env, PYTHONPATH: pythonPath, MONTAJ_ROOT, MONTAJ_PROJECT_DIR: PROJECT_DIR },
       }
     )

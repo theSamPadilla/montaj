@@ -5,12 +5,13 @@
 // cross-lane drag, edge trim, mute toggle, inline volume, delete,
 // click-to-select, and inspect button.
 
-import { useEffect, useRef, useState } from 'react'
+import { memo, useEffect, useRef, useState } from 'react'
 import { Volume2, VolumeX, Trash2, Info } from 'lucide-react'
 import type { AudioTrack } from '../../schema'
 import type { Project } from '../../types'
 import { pct } from './utils'
 import { useTimelineContext } from './TimelineContext'
+import PlayheadLine from './PlayheadLine'
 import { useItemDragDrop } from './useItemDragDrop'
 import type { Draggable, DragEventContext } from './useItemDragDrop'
 import AudioWaveformLayer from './AudioWaveformLayer'
@@ -46,7 +47,7 @@ function updateAudioTrack(project: Project, trackId: string, changes: Partial<Au
   }
 }
 
-export default function AudioTrackRow({
+function AudioTrackRow({
   tracks,
   laneIndex,
   laneCount,
@@ -61,7 +62,6 @@ export default function AudioTrackRow({
 }: AudioTrackRowProps) {
   const {
     totalDuration,
-    currentTime,
     snapBoundaries,
     scrollRef,
     overlayDraggedRef,
@@ -78,11 +78,7 @@ export default function AudioTrackRow({
 
   return (
     <div className="relative h-10 bg-gray-100 dark:bg-gray-900 rounded overflow-hidden cursor-pointer">
-      {/* Playhead line */}
-      <div
-        className="absolute top-0 bottom-0 w-[2px] bg-red-500 pointer-events-none z-10"
-        style={{ left: `${pct(currentTime, totalDuration)}%` }}
-      />
+      <PlayheadLine />
       {tracks.map(track => (
         <AudioTrackItem
           key={track.id}
@@ -138,6 +134,8 @@ export default function AudioTrackRow({
     </div>
   )
 }
+
+export default memo(AudioTrackRow)
 
 // ── Single audio item within a lane ──────────────────────────────────────────
 

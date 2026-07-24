@@ -8,6 +8,21 @@ export default defineConfig({
   define: {
     __APP_VERSION__: JSON.stringify(pkg.version),
   },
+  build: {
+    rollupOptions: {
+      output: {
+        manualChunks(id) {
+          if (id.includes('node_modules/three') || id.includes('@react-three')) return 'three'
+          if (id.includes('@xyflow')) return 'xyflow'
+          // Without an explicit react bucket, Rollup's automatic chunking merges the
+          // react/react-dom modules into the 'xyflow' chunk (since @xyflow/react is
+          // their only other consumer here), which then forces 'xyflow' to be eagerly
+          // modulepreloaded from the entry HTML — defeating the split above.
+          if (id.includes('node_modules/react/') || id.includes('node_modules/react-dom')) return 'vendor-react'
+        },
+      },
+    },
+  },
   resolve: {
     alias: {
       '@': path.resolve(__dirname, './src'),

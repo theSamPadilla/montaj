@@ -9,6 +9,7 @@ import { applyCutToItem, applyCutToTracks, collapseGaps, splitAtTime } from './c
 import { repairCaptionWords } from './captionRepair'
 import Timeline from './timeline/Timeline'
 import PreviewPlayer from './preview/PreviewPlayer'
+import { createPlaybackClock, type PlaybackClock } from './playback-clock'
 import type { OverlayChanges } from './preview/useDragOverlay'
 import VersionPanel from './VersionPanel'
 import RenderModal from './RenderModal'
@@ -142,7 +143,11 @@ function PendingSurface<P extends Project>({
   getWaveformChunks,
   resolveFilePath,
 }: SurfaceProps<P> & { onBackToSetup?: () => void }) {
-  const [currentTime, setCurrentTime] = useState(0)
+  // The playhead lives in an external store (not useState) so ~60Hz ticks only
+  // re-render the leaves that display time — not this whole surface.
+  const clockRef = useRef<PlaybackClock | null>(null)
+  if (!clockRef.current) clockRef.current = createPlaybackClock()
+  const clock = clockRef.current
   const [skillPath, setSkillPath] = useState<string | null>(null)
   const [copied, setCopied] = useState(false)
   const { versions, restoring, setRestoring } = useVersionHistory(adapter, project)
@@ -179,8 +184,7 @@ function PendingSurface<P extends Project>({
           {hasTrimmedClips ? (
             <PreviewPlayer
               project={project}
-              currentTime={currentTime}
-              onTimeUpdate={setCurrentTime}
+              clock={clock}
               compileOverlay={adapter.compileOverlay}
               clearOverlayCache={adapter.clearOverlayCache}
               watchFile={adapter.watchFile}
@@ -240,8 +244,7 @@ function PendingSurface<P extends Project>({
         <div className="shrink-0 border-t border-[var(--editor-border)] bg-[var(--editor-surface)]">
           <Timeline
             project={project}
-            currentTime={currentTime}
-            onTimeUpdate={setCurrentTime}
+            clock={clock}
             getWaveformChunks={getWaveformChunks}
             resolveFilePath={resolveFilePath}
             onSaveProject={(p) => adapter.saveProject(p.id, p as P)}
@@ -282,7 +285,12 @@ function ReviewSurface<P extends Project>({
   regenEnabled?: boolean
   isClipQueued?: (itemId: string) => boolean
 }) {
-  const [currentTime, setCurrentTime] = useState(0)
+  // Playhead in an external store, not useState — ~60Hz ticks re-render only the
+  // leaves that display time (preview, scrubber, transcript) instead of the whole
+  // review surface (toolbar + timeline + every context consumer).
+  const clockRef = useRef<PlaybackClock | null>(null)
+  if (!clockRef.current) clockRef.current = createPlaybackClock()
+  const clock = clockRef.current
   const [canUndo, setCanUndo]         = useState(false)
   const historyRef = useRef<P[]>([])
   // Multi-select: all currently-selected timeline item ids. Single-select
@@ -441,7 +449,7 @@ function ReviewSurface<P extends Project>({
   }
 
   function handleSplit(at?: number) {
-    const updated = splitAtTime(project, at ?? currentTime, primarySelectedId ?? null)
+    const updated = splitAtTime(project, at ?? clock.get(), primarySelectedId ?? null)
     if (updated === project) return
     pushHistory(project)
     onProjectChange(updated as P)
@@ -471,7 +479,7 @@ function ReviewSurface<P extends Project>({
     }
     document.addEventListener('keydown', onKey)
     return () => document.removeEventListener('keydown', onKey)
-  }, [project, currentTime, primarySelectedId, canUndo])
+  }, [project, primarySelectedId, canUndo])
 
   async function handleRestoreVersion(hash: string) {
     if (!adapter.restoreVersion) return
@@ -500,8 +508,7 @@ function ReviewSurface<P extends Project>({
             >
               <PreviewPlayer
                 project={project}
-                currentTime={currentTime}
-                onTimeUpdate={setCurrentTime}
+                clock={clock}
                 selectedOverlayId={primarySelectedId ?? undefined}
                 onOverlayChange={handleOverlayChange}
                 onEditOverlay={requestEditOverlay}
@@ -601,8 +608,7 @@ function ReviewSurface<P extends Project>({
         <div className="shrink-0 border-t border-[var(--editor-border)] bg-[var(--editor-surface)]">
           <Timeline
             project={project}
-            currentTime={currentTime}
-            onTimeUpdate={setCurrentTime}
+            clock={clock}
             onProjectChange={handleProjectChange}
             onCaptionEdit={(p) => { onProjectChange(p as P); save(p as P) }}
             onOverlayEdit={(p) => { onProjectChange(p as P); save(p as P) }}

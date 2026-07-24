@@ -291,15 +291,24 @@ export function useVideoPlayback(
     applyClipVolume(clip)
   }, [clips, activeSlot])
 
+  // maxEnd for the canvas rAF clock — the furthest overlay/caption end. Kept in
+  // a ref, updated by its own cheap effect, so the rAF effect below doesn't tear
+  // down and rebuild on every project spread (only isPlaying/onTimeUpdate matter
+  // to it). onTimeUpdate is the stable clock.set identity.
+  const canvasMaxEndRef = useRef(0)
   useEffect(() => {
-    if (!isCanvasProject) return
     const captionEnd = (project.captions?.segments ?? []).reduce((m: number, s) => Math.max(m, s.end), 0)
-    const maxEnd = Math.max(
+    canvasMaxEndRef.current = Math.max(
       overlayTracks.flat().reduce((m, i) => Math.max(m, i.end), 0),
       captionEnd,
     )
+  }, [overlayTracks, project.captions])
+
+  useEffect(() => {
+    if (!isCanvasProject) return
 
     function tick(ms: number) {
+      const maxEnd = canvasMaxEndRef.current
       if (rafLastMs.current !== null) {
         const dt   = (ms - rafLastMs.current) / 1000
         const next = Math.min(lastTimeRef.current + dt, maxEnd)
@@ -327,7 +336,7 @@ export function useVideoPlayback(
     return () => {
       if (rafRef.current) cancelAnimationFrame(rafRef.current)
     }
-  }, [isPlaying, isCanvasProject, overlayTracks, project, onTimeUpdate])
+  }, [isPlaying, isCanvasProject, onTimeUpdate])
 
   // ── Multi-track audio management ───────────────────────────────────────────
   // Derive unmuted tracks. The full tracks array is a new reference on every

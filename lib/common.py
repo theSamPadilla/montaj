@@ -236,24 +236,28 @@ def transcribe_words(input_path: str, model: str = "base.en", work_dir: str = No
         whisper_bin = find_whisper_bin()
 
         prefix = os.path.join(work_dir, "out")
-        run([whisper_bin, "-m", model_file, "-f", audio, "-l", language,
-             "--split-on-word", "--max-len", "1", "--output-json", "--output-file", prefix],
-            check=False)
+        r = run([whisper_bin, "-m", model_file, "-f", audio, "-l", language,
+                 "--split-on-word", "--max-len", "1", "--output-json", "--output-file", prefix],
+                check=False)
 
         words = []
         json_path = f"{prefix}.json"
-        if os.path.exists(json_path):
-            data = json.loads(open(json_path).read())
-            for entry in data.get("transcription", []):
-                text = entry.get("text", "").strip()
-                if not text:
-                    continue
-                offsets = entry.get("offsets", {})
-                words.append({
-                    "text":  text,
-                    "start": offsets.get("from", 0) / 1000.0,
-                    "end":   offsets.get("to",   0) / 1000.0,
-                })
+        if not os.path.exists(json_path):
+            # whisper.cpp writes its JSON output even for silent clips; a missing
+            # file means the transcription itself failed — never "no speech".
+            fail("transcription_failed",
+                 f"whisper.cpp exited {r.returncode} without producing output: {r.stderr[-2000:]}")
+        data = json.loads(open(json_path).read())
+        for entry in data.get("transcription", []):
+            text = entry.get("text", "").strip()
+            if not text:
+                continue
+            offsets = entry.get("offsets", {})
+            words.append({
+                "text":  text,
+                "start": offsets.get("from", 0) / 1000.0,
+                "end":   offsets.get("to",   0) / 1000.0,
+            })
         return words
     finally:
         if own_work:

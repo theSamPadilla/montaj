@@ -112,6 +112,10 @@ export type { TextFormattingToolbarProps } from './text/TextFormattingToolbar'
 export { OverlayPreview } from './preview/OverlayPreview'
 export type { OverlayPreviewProps } from './preview/OverlayPreview'
 
+// ── Playback clock (external playhead store) ──────────────────────────────────
+export { createPlaybackClock, usePlaybackTime } from './video/playback-clock'
+export type { PlaybackClock } from './video/playback-clock'
+
 // ── Video preview ─────────────────────────────────────────────────────────────
 export { default as PreviewPlayer } from './video/preview/PreviewPlayer'
 export { default as CarouselPreview } from './video/preview/CarouselPreview'

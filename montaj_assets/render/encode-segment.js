@@ -27,7 +27,7 @@
  * step. The source's color_transfer is read from item.colorTransfer (stamped by
  * render.js during the videoItems collection pass) — no per-segment ffprobe.
  */
-import { spawnSync } from 'child_process'
+import { spawn, spawnSync } from 'child_process'
 import { mkdirSync } from 'fs'
 import { dirname } from 'path'
 import { FFMPEG, FFPROBE } from './ffmpeg-bin.js'
@@ -49,8 +49,29 @@ function logFfmpegStderr(stderr) {
   }
 }
 
+/**
+ * Async ffmpeg runner shaped like spawnSync's result so call sites keep their
+ * checks. Resolves (never rejects) with { status, signal, stderr, error? }. Used
+ * for the per-segment encode so a bounded pool (compose.js) can drive several
+ * encodes at once without blocking the event loop the way spawnSync would.
+ */
+function runFfmpeg(args, timeoutMs) {
+  return new Promise((resolve) => {
+    const proc = spawn(FFMPEG, args)
+    let stderr = ''
+    let timedOut = false
+    const timer = setTimeout(() => { timedOut = true; proc.kill('SIGKILL') }, timeoutMs)
+    proc.stderr.on('data', (d) => { stderr += d.toString('utf8') })
+    proc.on('error', (err) => { clearTimeout(timer); resolve({ status: null, signal: null, stderr, error: err }) })
+    proc.on('close', (status, signal) => {
+      clearTimeout(timer)
+      resolve({ status, signal: timedOut ? 'SIGKILL' : signal, stderr })
+    })
+  })
+}
+
 /** Returns true if the file has at least one audio stream. */
-function fileHasAudio(filePath) {
+export function fileHasAudio(filePath) {
   const result = spawnSync(FFPROBE, [
     '-v', 'quiet', '-select_streams', 'a:0',
     '-show_entries', 'stream=codec_type',
@@ -323,7 +344,7 @@ export function buildOverlayFilterParts(ov, vw, vh, ovIdx, videoLabel, segStart,
  * @param {boolean} [opts._dryRun] — return { inputs, filterParts, args } without executing
  * @returns {string | object} outputPath, or dry-run result
  */
-export function encodeSegment(segment, outputPath, opts = {}) {
+export async function encodeSegment(segment, outputPath, opts = {}) {
   const { start, end, items, overlays, vw, vh, fps } = segment
   // When an opaque overlay covers this segment, the overlay replaces the frame
   // but the underlying items still contribute their AUDIO. opaqueVideo gates the
@@ -403,8 +424,11 @@ export function encodeSegment(segment, outputPath, opts = {}) {
 
       // Audio from ALL unmuted video items — collected here, mixed in Step 5.
       // Runs regardless of opaqueVideo so audio survives full-screen animations.
-      // In dry-run mode, skip the ffprobe check (file may not exist) and assume audio present.
-      if (!item.muted && (opts._dryRun || fileHasAudio(item.src))) {
+      // item.hasAudio, when stamped (render.js pre-probes once per unique
+      // source — see the audioCache loop), wins over the per-segment check.
+      // Otherwise: in dry-run mode, skip the ffprobe check (file may not
+      // exist) and assume audio present.
+      if (!item.muted && (item.hasAudio ?? (opts._dryRun || fileHasAudio(item.src)))) {
         const vol = item.volume ?? 1.0
         const aLabel = `a${idx}`
         // atrim=0:${duration} makes the per-segment sample count exact and
@@ -503,9 +527,7 @@ export function encodeSegment(segment, outputPath, opts = {}) {
 
   if (opts._dryRun) return { inputs, filterParts, args }
 
-  const result = spawnSync(FFMPEG, args, {
-    encoding: 'utf8', timeout: FFMPEG_TIMEOUT_MS,
-  })
+  const result = await runFfmpeg(args, FFMPEG_TIMEOUT_MS)
 
   if (result.stderr) logFfmpegStderr(result.stderr)
 

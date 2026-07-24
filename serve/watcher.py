@@ -61,15 +61,13 @@ class GlobalOverlayWatcher:
         overlays_dir.mkdir(parents=True, exist_ok=True)
         self._observer.schedule(handler, str(overlays_dir), recursive=True)
 
-        # Watch overlay dirs for any existing profiles
+        # Watch the profiles root recursively so profiles created after startup
+        # (CLI `profile analyze`, or POST /profiles/{name}/overlays/groups) still
+        # emit .jsx change events. _Handler ignores non-.jsx paths, so watching
+        # the whole tree (assets/, frames/, transcripts/) is just filtered noise.
         profiles_dir = montaj_dir / "profiles"
-        if profiles_dir.exists():
-            for profile_dir in profiles_dir.iterdir():
-                if not profile_dir.is_dir():
-                    continue
-                profile_overlays = profile_dir / "overlays"
-                profile_overlays.mkdir(parents=True, exist_ok=True)
-                self._observer.schedule(handler, str(profile_overlays), recursive=True)
+        profiles_dir.mkdir(parents=True, exist_ok=True)
+        self._observer.schedule(handler, str(profiles_dir), recursive=True)
 
         self._observer.start()
 

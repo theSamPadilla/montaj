@@ -3,6 +3,23 @@
 ## Unreleased
 
 - **Editor: native overlay editing** — edit an overlay's properties (text, colors, numbers, toggles, images) in the video editor without an AI round-trip. Select an overlay and open its editor dialog three ways: the pencil in the controls bar, the pencil on its timeline block, or a double-click on the overlay in the preview. The dialog is a movable, non-blocking panel — colors get a swatch picker, images a thumbnail + file picker — and edits preview live on the overlay as you tweak; Save persists, Cancel reverts, all undoable.
+- **Fixed remove_bg renders** — `render.js` pointed at `steps/remove_bg.py`, which moved to `steps/transform/`; every `remove_bg: true` render failed. Also fixed the `MONTAJ_ROOT` fallback (resolved one directory too shallow) and `normalizeIfNeeded` ignoring `MONTAJ_PYTHON`.
+- **Fixed silent transcription failures** — `transcribe_words` now fails with `transcription_failed` (whisper exit code + stderr) instead of returning an empty word list when whisper.cpp crashes; previously `rm_nonspeech` could interpret a crash as "no speech" and cut the entire clip.
+- **Fixed legacy whisper weights in `montaj transcribe`** — the step now finds weights in the legacy `~/.local/share/whisper.cpp/models` dir, matching `rm_nonspeech`/`rm_fillers`.
+- **Fixed overlay live-reload for new profiles** — profiles created while the server is running now get live `.jsx` overlay reload; previously only profiles existing at startup were watched.
+- **Connectors: transient-failure retries** — new shared `connectors/_http.py` gives all connector HTTP bounded retry with exponential backoff. Kling status polls now tolerate up to 5 consecutive failed checks instead of abandoning an in-flight *paid* generation on the first network blip; paid POSTs (task create, TTS) retry only on 429 — never on ambiguous timeouts/5xx that might double-bill. Downloads are streamed + retried; Gemini file-cleanup failures are now logged instead of silently leaking uploads against the Files API quota.
+- **CI** — new `ci.yml` runs on every push/PR: the Python suite (fast markers), all five Node package suites (render, mcp, overlay-runtime, editor incl. lint, ui incl. typecheck/build), and a wheel-packaging job that fails the build if `node_modules` or internal docs ever leak into the wheel/sdist again.
+- **Dependency hygiene** — `npm audit fix` across render/mcp/ui cleared all high-severity advisories (remaining moderates are dev-server-only or Windows-only code paths Montaj never executes, blocked on upstream majors — Dependabot will propose those through CI). Removed `framer-motion` from the render engine (declared since the initial commit, never imported by any overlay, template, or source file). Added weekly Dependabot coverage for pip, GitHub Actions, and the five npm packages with dependencies (minor/patch grouped, majors individual).
+- **Packaging: internal docs no longer ship** — published wheels/sdists included `docs/plans/`, `docs/ideas/`, and `docs/fullsend/` (gitignore doesn't apply to sdist builds; `docs/` is a package so `include-package-data` swept its whole tree). MANIFEST.in now prunes them and ships only the six reference docs. Also added `.cache/` to `.gitignore` and pruned `montaj-skills/node_modules` from the wheel.
+
+### Performance
+- **Serve** — project lookups use a validated in-memory index instead of re-scanning the whole workspace per request; file streaming moved to `FileResponse` (native range requests, reads off the event loop).
+- **Render** — timeline segments encode in parallel (default 2 workers, `MONTAJ_SEGMENT_WORKERS` to tune); audio-presence probed once per source instead of once per segment.
+- **Overlays** — `spring()` memoizes its integration steps (identical output, no more per-frame re-simulation).
+- **MCP** — tool calls no longer block the server's event loop; concurrent requests are serviced during long renders.
+- **Editor** — playhead time moved to a subscription store: playback no longer re-renders the whole editor 60×/s; timeline derived state memoized; custom-overlay props no longer deep-cloned per frame.
+- **UI** — routes are code-split; three.js/ReactFlow load only on pages that use them.
+- **CLI** — `mtj <command>` imports only that command's module (faster startup).
 
 ## v3.6.2
 

@@ -226,3 +226,33 @@ class TestFfmpegResolver:
         monkeypatch.delenv("MONTAJ_FFPROBE", raising=False)
         monkeypatch.setattr(common, "_managed_ffmpeg_dir", lambda: str(tmp_path / "absent"))
         assert common.ffprobe_bin() == "ffprobe"
+
+
+# ── transcribe_words() ───────────────────────────────────────────────────────
+
+def test_transcribe_words_fails_when_whisper_errors(tmp_path, monkeypatch, capsys):
+    import subprocess as _sp
+    import models
+    monkeypatch.setattr(models, "MONTAJ_MODELS_DIR", str(tmp_path))
+    monkeypatch.setattr(common, "LEGACY_WHISPER_DIR", str(tmp_path / "no-legacy"))
+    wdir = tmp_path / "whisper"
+    wdir.mkdir()
+    (wdir / "ggml-base.en.bin").write_bytes(b"x")
+    monkeypatch.setattr(common, "find_whisper_bin", lambda: "/fake/whisper-cpp")
+
+    def fake_run(cmd, timeout=300, check=True):
+        # Simulate whisper crashing: non-zero exit, no JSON written.
+        return _sp.CompletedProcess(cmd, returncode=1, stdout="", stderr="ggml: CUDA boom")
+
+    monkeypatch.setattr(common, "run", fake_run)
+
+    wav = tmp_path / "a.wav"
+    wav.write_bytes(b"RIFF....WAVE")
+    work = tmp_path / "work"
+    work.mkdir()
+
+    with pytest.raises(SystemExit):
+        common.transcribe_words(str(wav), "base.en", work_dir=str(work))
+    err = capsys.readouterr().err
+    assert "transcription_failed" in err
+    assert "CUDA boom" in err

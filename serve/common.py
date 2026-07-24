@@ -11,6 +11,12 @@ from cli.deps import render_runtime_dir
 MONTAJ_ROOT = Path(__file__).resolve().parent.parent
 
 
+# id -> project dir. Validated on every hit (cheap single read) so it can never
+# go stale: a moved/deleted project misses validation and falls through to a
+# rescan. Populated opportunistically during scans.
+_project_dir_cache: dict[str, Path] = {}
+
+
 def find_project_dir(workspace: Path, project_id: str) -> Path | None:
     """Find the project directory for a given project id.
 
@@ -20,18 +26,37 @@ def find_project_dir(workspace: Path, project_id: str) -> Path | None:
     before calling Montaj — Montaj itself is tenant-unaware and finds a project
     wherever it lives in the workspace tree.
 
+    A module-level id -> dir cache backs this (it's behind a Depends() used by
+    ~22 routes, and the full rglob + per-file JSON parse is the dominant cost
+    on every request). The cached entry is re-validated on every hit with a
+    single read of that project's project.json, so a moved/deleted project
+    just falls through to a full rescan instead of returning stale data.
+
     INVARIANT: exactly one `project.json` per project, at the project's root
     directory. If a future feature ever writes a `project.json` inside a
     subdirectory of a project (e.g., per-segment metadata), discovery would
     silently misbehave because rglob would match both. Either preserve this
     invariant or move to a depth-capped scan.
     """
+    cached = _project_dir_cache.get(project_id)
+    if cached is not None:
+        try:
+            if cached.is_relative_to(workspace) and \
+                    json.loads((cached / "project.json").read_text()).get("id") == project_id:
+                return cached
+        except (OSError, ValueError, AttributeError):
+            pass
+        del _project_dir_cache[project_id]
+
     for p in workspace.rglob("project.json"):
         try:
-            if json.loads(p.read_text()).get("id") == project_id:
-                return p.parent
-        except Exception:
-            pass
+            pid = json.loads(p.read_text()).get("id")
+        except (OSError, ValueError, AttributeError):
+            continue
+        if pid:
+            _project_dir_cache[pid] = p.parent
+        if pid == project_id:
+            return p.parent
     return None
 
 

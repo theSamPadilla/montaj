@@ -13,37 +13,37 @@ import { fileURLToPath } from 'node:url'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
-test('encodeSegment is a function', () => {
+test('encodeSegment is a function', async () => {
   assert.equal(typeof encodeSegment, 'function')
 })
 
-test('dry-run: black canvas when no items', () => {
+test('dry-run: black canvas when no items', async () => {
   const seg = { start: 0, end: 5, items: [], overlays: [], vw: 1920, vh: 1080, fps: 30 }
-  const result = encodeSegment(seg, '/tmp/test.mp4', { _dryRun: true })
+  const result = await encodeSegment(seg, '/tmp/test.mp4', { _dryRun: true })
   assert.ok(result.inputs.some(f => f.includes('color=black')))
   assert.ok(result.inputs.some(f => f.includes('anullsrc')))
   assert.ok(result.filterParts.some(f => f.includes('setparams=colorspace=bt709')))
 })
 
-test('dry-run: item opacity applies colorchannelmixer', () => {
+test('dry-run: item opacity applies colorchannelmixer', async () => {
   const seg = {
     start: 0, end: 3, items: [
       { type: 'video', src: '/a.mp4', start: 0, end: 3, inPoint: 0, trackIdx: 0,
         scale: 1, offsetX: 0, offsetY: 0, opacity: 0.5, muted: false },
     ], overlays: [], vw: 1920, vh: 1080, fps: 30,
   }
-  const result = encodeSegment(seg, '/tmp/test.mp4', { _dryRun: true })
+  const result = await encodeSegment(seg, '/tmp/test.mp4', { _dryRun: true })
   assert.ok(result.filterParts.some(f => f.includes('colorchannelmixer=aa=0.5')))
 })
 
-test('dry-run: multi-item segment layers both items', () => {
+test('dry-run: multi-item segment layers both items', async () => {
   const seg = {
     start: 0, end: 5, items: [
       { type: 'image', src: '/bg.jpg', start: 0, end: 5, trackIdx: 0, scale: 1, offsetX: 0, offsetY: 0, opacity: 1 },
       { type: 'video', src: '/pip.mp4', start: 0, end: 5, inPoint: 0, trackIdx: 1, scale: 0.3, offsetX: 30, offsetY: 30, opacity: 1, muted: false },
     ], overlays: [], vw: 1920, vh: 1080, fps: 30,
   }
-  const result = encodeSegment(seg, '/tmp/test.mp4', { _dryRun: true })
+  const result = await encodeSegment(seg, '/tmp/test.mp4', { _dryRun: true })
   // Both items produce overlay filters
   const overlayFilters = result.filterParts.filter(f => f.includes('overlay='))
   assert.equal(overlayFilters.length, 2)
@@ -51,14 +51,14 @@ test('dry-run: multi-item segment layers both items', () => {
   assert.ok(result.filterParts.some(f => f.includes('scale=576:324')))
 })
 
-test('dry-run: overlay scales to output canvas (×scale), offset positioned', () => {
+test('dry-run: overlay scales to output canvas (×scale), offset positioned', async () => {
   const seg = {
     start: 0, end: 5, items: [], overlays: [
       { webmPath: '/ov.mkv', startSeconds: 0, endSeconds: 5, isCaption: false,
         scale: 0.8, offsetX: 10, offsetY: -5 },
     ], vw: 1920, vh: 1080, fps: 30,
   }
-  const result = encodeSegment(seg, '/tmp/test.mp4', { _dryRun: true })
+  const result = await encodeSegment(seg, '/tmp/test.mp4', { _dryRun: true })
   // Overlay sizes to the OUTPUT canvas × scale (even-rounded), matching the
   // image/video item path — 1920*0.8=1536, 1080*0.8=864. Not a design→output
   // multiplier (the design canvas size is irrelevant to the target dims).
@@ -67,7 +67,7 @@ test('dry-run: overlay scales to output canvas (×scale), offset positioned', ()
   assert.ok(result.filterParts.some(f => f.includes('overlay=x=384')))
 })
 
-test('dry-run: overlay downscales to a sub-1080 output (regression: 464×832 crop)', () => {
+test('dry-run: overlay downscales to a sub-1080 output (regression: 464×832 crop)', async () => {
   // A full-frame overlay (scale 1) is rendered on the 1080-design canvas but the
   // output here is 464×832. It MUST be scaled down to fill 464×832 — the prior
   // pixelRatio = max(1, round(464/1080)) = 1 left it at design size, so the
@@ -78,21 +78,21 @@ test('dry-run: overlay downscales to a sub-1080 output (regression: 464×832 cro
       { webmPath: '/ov.mkv', startSeconds: 0, endSeconds: 5, isCaption: false, scale: 1 },
     ], vw: 464, vh: 832, fps: 30,
   }
-  const result = encodeSegment(seg, '/tmp/test.mp4', { _dryRun: true })
+  const result = await encodeSegment(seg, '/tmp/test.mp4', { _dryRun: true })
   assert.ok(
     result.filterParts.some(f => f.includes('scale=464:832')),
     'overlay must shrink to the sub-1080 output canvas, not stay at design size',
   )
 })
 
-test('dry-run: .mov input uses format=auto for alpha preservation', () => {
+test('dry-run: .mov input uses format=auto for alpha preservation', async () => {
   const seg = {
     start: 0, end: 3, items: [
       { type: 'video', src: '/nobg.mov', start: 0, end: 3, inPoint: 0, trackIdx: 0,
         scale: 1, offsetX: 0, offsetY: 0, opacity: 1, muted: false },
     ], overlays: [], vw: 1920, vh: 1080, fps: 30,
   }
-  const result = encodeSegment(seg, '/tmp/test.mp4', { _dryRun: true })
+  const result = await encodeSegment(seg, '/tmp/test.mp4', { _dryRun: true })
   assert.ok(result.filterParts.some(f => f.includes('format=auto')))
 })
 
@@ -103,7 +103,7 @@ test('dry-run: .mov input uses format=auto for alpha preservation', () => {
 // Helper: the full filter string for the first video item
 function videoFilter(parts) { return parts.join(';') }
 
-test('sourceCrop inserts a crop filter sized from source dims, before scale', () => {
+test('sourceCrop inserts a crop filter sized from source dims, before scale', async () => {
   const item = {
     type: 'video', src: '/src.mp4', start: 0, end: 5, inPoint: 0,
     scale: 1, offsetX: 0, offsetY: 0, opacity: 1,
@@ -118,7 +118,7 @@ test('sourceCrop inserts a crop filter sized from source dims, before scale', ()
   assert.ok(f.indexOf('crop=960:1080:480:0') < f.indexOf('scale='), 'crop precedes scale')
 })
 
-test('no sourceCrop → no crop filter (unchanged behavior)', () => {
+test('no sourceCrop → no crop filter (unchanged behavior)', async () => {
   const item = { type: 'video', src: '/src.mp4', start: 0, end: 5, inPoint: 0,
     scale: 1, offsetX: 0, offsetY: 0, opacity: 1 }
   const { filterParts } = buildVideoItemFilterParts(item, 1080, 1920, 0, '[base]',
@@ -126,7 +126,7 @@ test('no sourceCrop → no crop filter (unchanged behavior)', () => {
   assert.doesNotMatch(videoFilter(filterParts), /crop=/)
 })
 
-test('sourceCrop without source dims is a no-op (cannot compute pixels)', () => {
+test('sourceCrop without source dims is a no-op (cannot compute pixels)', async () => {
   const item = { type: 'video', src: '/src.mp4', start: 0, end: 5, inPoint: 0,
     scale: 1, offsetX: 0, offsetY: 0, opacity: 1,
     sourceCrop: { x: 0.25, y: 0, w: 0.5, h: 1.0 } }  // no sourceWidth/Height
@@ -139,7 +139,7 @@ test('sourceCrop without source dims is a no-op (cannot compute pixels)', () => 
 // Multi-track audio mixing
 // ---------------------------------------------------------------------------
 
-test('dry-run: two unmuted video items produce amix filter', () => {
+test('dry-run: two unmuted video items produce amix filter', async () => {
   const seg = {
     start: 0, end: 5, items: [
       { type: 'video', src: '/bg.mp4', start: 0, end: 5, inPoint: 0,
@@ -148,7 +148,7 @@ test('dry-run: two unmuted video items produce amix filter', () => {
         trackIdx: 1, scale: 0.3, offsetX: 30, offsetY: 30, opacity: 1, muted: false },
     ], overlays: [], vw: 1920, vh: 1080, fps: 30,
   }
-  const result = encodeSegment(seg, '/tmp/test.mp4', { _dryRun: true })
+  const result = await encodeSegment(seg, '/tmp/test.mp4', { _dryRun: true })
   // Both items should contribute audio (two aresample filters)
   const audioFilters = result.filterParts.filter(f => f.includes('sample_rates=48000'))
   assert.equal(audioFilters.length, 2, 'both items should extract audio')
@@ -161,7 +161,7 @@ test('dry-run: two unmuted video items produce amix filter', () => {
   assert.ok(!result.inputs.some(f => f.includes('anullsrc')), 'should not generate silent audio')
 })
 
-test('dry-run: muted item excluded from audio mix', () => {
+test('dry-run: muted item excluded from audio mix', async () => {
   const seg = {
     start: 0, end: 5, items: [
       { type: 'video', src: '/bg.mp4', start: 0, end: 5, inPoint: 0,
@@ -170,7 +170,7 @@ test('dry-run: muted item excluded from audio mix', () => {
         trackIdx: 1, scale: 0.3, offsetX: 30, offsetY: 30, opacity: 1, muted: false },
     ], overlays: [], vw: 1920, vh: 1080, fps: 30,
   }
-  const result = encodeSegment(seg, '/tmp/test.mp4', { _dryRun: true })
+  const result = await encodeSegment(seg, '/tmp/test.mp4', { _dryRun: true })
   // Only one audio extraction (the unmuted item)
   const audioFilters = result.filterParts.filter(f => f.includes('sample_rates=48000'))
   assert.equal(audioFilters.length, 1, 'only unmuted item should extract audio')
@@ -181,7 +181,7 @@ test('dry-run: muted item excluded from audio mix', () => {
   )
 })
 
-test('dry-run: per-item volume preserved in multi-audio mix', () => {
+test('dry-run: per-item volume preserved in multi-audio mix', async () => {
   const seg = {
     start: 0, end: 3, items: [
       { type: 'video', src: '/bg.mp4', start: 0, end: 3, inPoint: 0,
@@ -190,7 +190,7 @@ test('dry-run: per-item volume preserved in multi-audio mix', () => {
         trackIdx: 1, scale: 0.4, offsetX: 0, offsetY: 0, opacity: 1, muted: false, volume: 1.0 },
     ], overlays: [], vw: 1920, vh: 1080, fps: 30,
   }
-  const result = encodeSegment(seg, '/tmp/test.mp4', { _dryRun: true })
+  const result = await encodeSegment(seg, '/tmp/test.mp4', { _dryRun: true })
   assert.ok(result.filterParts.some(f => f.includes('volume=0.5')), 'first item volume=0.5')
   assert.ok(result.filterParts.some(f => f.includes('volume=1')), 'second item volume=1.0')
   // normalize=0 preserves individual volumes instead of auto-normalizing
@@ -205,7 +205,7 @@ test('dry-run: per-item volume preserved in multi-audio mix', () => {
 // animations silenced the voiceover underneath)
 // ---------------------------------------------------------------------------
 
-test('dry-run: opaqueVideo segment keeps the clip audio but drops its video', () => {
+test('dry-run: opaqueVideo segment keeps the clip audio but drops its video', async () => {
   // An opaque overlay covers the frame; the underlying clip's voiceover MUST
   // still be sourced. opaqueVideo gates only the video compositing.
   const seg = {
@@ -216,7 +216,7 @@ test('dry-run: opaqueVideo segment keeps the clip audio but drops its video', ()
       { webmPath: '/anim.mkv', startSeconds: 0, endSeconds: 5, isCaption: false, opaque: true },
     ], vw: 1920, vh: 1080, fps: 30,
   }
-  const result = encodeSegment(seg, '/tmp/test.mp4', { _dryRun: true })
+  const result = await encodeSegment(seg, '/tmp/test.mp4', { _dryRun: true })
   // Audio is extracted from the clip ...
   assert.ok(
     result.filterParts.some(f => f.includes('sample_rates=48000')),
@@ -238,14 +238,14 @@ test('dry-run: opaqueVideo segment keeps the clip audio but drops its video', ()
   assert.ok(result.inputs.includes('/anim.mkv'), 'opaque overlay input present')
 })
 
-test('dry-run: opaqueVideo over a gap (no items) still yields silence', () => {
+test('dry-run: opaqueVideo over a gap (no items) still yields silence', async () => {
   // No underlying clip → nothing to source → silence is correct.
   const seg = {
     start: 0, end: 3, opaqueVideo: true, items: [], overlays: [
       { webmPath: '/anim.mkv', startSeconds: 0, endSeconds: 3, isCaption: false, opaque: true },
     ], vw: 1920, vh: 1080, fps: 30,
   }
-  const result = encodeSegment(seg, '/tmp/test.mp4', { _dryRun: true })
+  const result = await encodeSegment(seg, '/tmp/test.mp4', { _dryRun: true })
   assert.ok(result.inputs.some(f => f.includes('anullsrc')), 'no underlying clip → silent audio')
 })
 
@@ -253,12 +253,12 @@ test('dry-run: opaqueVideo over a gap (no items) still yields silence', () => {
 // Color-space-aware encoding (Task 5 of color-space-aware-pipeline plan)
 // ---------------------------------------------------------------------------
 
-test('segment encoder emits libx264 for sdr_bt709 project', () => {
+test('segment encoder emits libx264 for sdr_bt709 project', async () => {
   const seg = {
     start: 0, end: 5, items: [], overlays: [], vw: 1920, vh: 1080, fps: 30,
     colorSpace: 'sdr_bt709',
   }
-  const result = encodeSegment(seg, '/tmp/test.mp4', { _dryRun: true })
+  const result = await encodeSegment(seg, '/tmp/test.mp4', { _dryRun: true })
   assert.ok(result.args.includes('libx264'), 'args should include libx264')
   assert.ok(result.args.includes('yuv420p'), 'args should include yuv420p')
   // Stream-level color metadata for SDR
@@ -270,12 +270,12 @@ test('segment encoder emits libx264 for sdr_bt709 project', () => {
   )
 })
 
-test('segment encoder emits libx265 for hdr_hlg project', () => {
+test('segment encoder emits libx265 for hdr_hlg project', async () => {
   const seg = {
     start: 0, end: 5, items: [], overlays: [], vw: 1920, vh: 1080, fps: 30,
     colorSpace: 'hdr_hlg',
   }
-  const result = encodeSegment(seg, '/tmp/test.mp4', { _dryRun: true })
+  const result = await encodeSegment(seg, '/tmp/test.mp4', { _dryRun: true })
   assert.ok(result.args.includes('libx265'), 'args should include libx265')
   assert.ok(result.args.includes('yuv420p10le'), 'args should include yuv420p10le')
   // HLG uses arib-std-b67 transfer; expect it surfaced via x265-params (encoder
@@ -293,7 +293,7 @@ test('segment encoder emits libx265 for hdr_hlg project', () => {
   assert.ok(result.args.includes('bt2020nc'), 'args should include bt2020nc colorspace')
 })
 
-test('per-item filter preserves source aspect via decrease-fit + center pad', () => {
+test('per-item filter preserves source aspect via decrease-fit + center pad', async () => {
   // The per-item video filter must apply force_original_aspect_ratio=decrease
   // followed by a centered pad. Without this, mismatched-aspect sources
   // (e.g. a 720x1280 portrait clip dropped into a 1920x1080 landscape canvas)
@@ -305,7 +305,7 @@ test('per-item filter preserves source aspect via decrease-fit + center pad', ()
     ], overlays: [], vw: 1920, vh: 1080, fps: 30,
     colorSpace: 'sdr_bt709',
   }
-  const result = encodeSegment(seg, '/tmp/test.mp4', { _dryRun: true })
+  const result = await encodeSegment(seg, '/tmp/test.mp4', { _dryRun: true })
   const filterStr = result.filterParts.join(';')
   assert.ok(
     filterStr.includes('force_original_aspect_ratio=decrease'),
@@ -317,7 +317,7 @@ test('per-item filter preserves source aspect via decrease-fit + center pad', ()
   )
 })
 
-test('hdr source in sdr project triggers tonemap in segment filter', () => {
+test('hdr source in sdr project triggers tonemap in segment filter', async () => {
   // HLG source (color_transfer = 'arib-std-b67') in an SDR project must inject
   // the zscale tonemap chain into the per-item filter graph.
   const seg = {
@@ -328,7 +328,7 @@ test('hdr source in sdr project triggers tonemap in segment filter', () => {
     ], overlays: [], vw: 1920, vh: 1080, fps: 30,
     colorSpace: 'sdr_bt709',
   }
-  const result = encodeSegment(seg, '/tmp/test.mp4', { _dryRun: true })
+  const result = await encodeSegment(seg, '/tmp/test.mp4', { _dryRun: true })
   // Tonemap chain: zscale t=linear → format=gbrpf32le → zscale p=bt709 → tonemap=hable → zscale t=bt709
   const filterStr = result.filterParts.join(';')
   assert.ok(filterStr.includes('zscale=t=linear'), 'filter should include zscale=t=linear')
@@ -341,7 +341,7 @@ test('hdr source in sdr project triggers tonemap in segment filter', () => {
 // (Python tuples vs JS frozen arrays; snake_case vs camelCase). This test
 // catches drift in either loader — e.g., one freezes nested arrays and the
 // other doesn't, or one drops a field during conversion.
-test('JS and Python loaders agree on the schema', () => {
+test('JS and Python loaders agree on the schema', async () => {
   const repoRoot = path.resolve(__dirname, '..', '..', '..')
 
   // Dump Python SPECS as snake_case JSON. `default` is dumped separately to
@@ -417,7 +417,7 @@ function audioCodec(args) {
   return i >= 0 ? args[i + 1] : null
 }
 
-test('segment audio is encoded as pcm_s16le, not aac (single source)', () => {
+test('segment audio is encoded as pcm_s16le, not aac (single source)', async () => {
   // PCM has no framing, no priming, and no edit-list metadata for the concat
   // demuxer to mishandle — segment seams stop carrying encoder/container
   // artifacts. The final concat pass in compose.js still re-encodes to AAC
@@ -428,26 +428,26 @@ test('segment audio is encoded as pcm_s16le, not aac (single source)', () => {
         trackIdx: 0, scale: 1, offsetX: 0, offsetY: 0, opacity: 1, muted: false },
     ], overlays: [], vw: 1920, vh: 1080, fps: 30,
   }
-  const result = encodeSegment(seg, '/tmp/test.mp4', { _dryRun: true })
+  const result = await encodeSegment(seg, '/tmp/test.mp4', { _dryRun: true })
   assert.equal(audioCodec(result.args), 'pcm_s16le',
     'segment audio codec must be pcm_s16le')
 })
 
-test('segment audio is pcm_s16le on the anullsrc (silent) path', () => {
+test('segment audio is pcm_s16le on the anullsrc (silent) path', async () => {
   // Codec change applies uniformly — a segment with no audio sources still
   // gets pcm_s16le silence, so the concat-time AAC pass sees a consistent
   // codec across every segment.
   const seg = {
     start: 0, end: 3, items: [], overlays: [], vw: 1920, vh: 1080, fps: 30,
   }
-  const result = encodeSegment(seg, '/tmp/test.mp4', { _dryRun: true })
+  const result = await encodeSegment(seg, '/tmp/test.mp4', { _dryRun: true })
   assert.ok(result.inputs.some(f => f.includes('anullsrc')),
     'silent path is exercised (sanity check on the test setup)')
   assert.equal(audioCodec(result.args), 'pcm_s16le',
     'silent-path segment audio codec must be pcm_s16le, not aac')
 })
 
-test('segment audio is pcm_s16le on the multi-source amix path', () => {
+test('segment audio is pcm_s16le on the multi-source amix path', async () => {
   // Two unmuted sources → amix → encoder. Codec must still be PCM so the
   // mixed-mode segments compose with single-source segments cleanly.
   const seg = {
@@ -458,14 +458,14 @@ test('segment audio is pcm_s16le on the multi-source amix path', () => {
         trackIdx: 1, scale: 0.3, offsetX: 30, offsetY: 30, opacity: 1, muted: false },
     ], overlays: [], vw: 1920, vh: 1080, fps: 30,
   }
-  const result = encodeSegment(seg, '/tmp/test.mp4', { _dryRun: true })
+  const result = await encodeSegment(seg, '/tmp/test.mp4', { _dryRun: true })
   assert.ok(result.filterParts.some(f => f.includes('amix=inputs=2')),
     'amix path is exercised (sanity check on the test setup)')
   assert.equal(audioCodec(result.args), 'pcm_s16le',
     'amix-path segment audio codec must be pcm_s16le')
 })
 
-test('per-item audio filter includes atrim=0:${duration} for sample-accurate trim', () => {
+test('per-item audio filter includes atrim=0:${duration} for sample-accurate trim', async () => {
   // ffmpeg input seek + -accurate_seek (default on transcode) produces
   // sample-accurate output, but `atrim` makes the contract explicit in the
   // filter chain so it survives future filter changes. Without an explicit
@@ -486,7 +486,7 @@ test('per-item audio filter includes atrim=0:${duration} for sample-accurate tri
         trackIdx: 0, scale: 1, offsetX: 0, offsetY: 0, opacity: 1, muted: false },
     ], overlays: [], vw: 1920, vh: 1080, fps: 30,
   }
-  const result = encodeSegment(seg, '/tmp/test.mp4', { _dryRun: true })
+  const result = await encodeSegment(seg, '/tmp/test.mp4', { _dryRun: true })
   const audioFilter = result.filterParts.find(f => f.includes('sample_rates=48000'))
   assert.ok(audioFilter, 'per-item audio filter chain must exist')
   assert.ok(audioFilter.includes(`atrim=0:${duration}`),
@@ -498,7 +498,66 @@ test('per-item audio filter includes atrim=0:${duration} for sample-accurate tri
     `atrim must precede asetpts in the per-item filter — got: ${audioFilter}`)
 })
 
-test('single audioclean source with vol=1 still routes through the encoder path', () => {
+// ---------------------------------------------------------------------------
+// item.hasAudio stamping (render.js pre-probes audio presence per unique
+// source once and stamps it onto every item sharing that src — see the
+// audioCache loop in render.js). A stamped value must win over the
+// per-segment fileHasAudio ffprobe / the dry-run "assume audio present"
+// default; an unstamped item must keep exactly the previous behavior.
+// ---------------------------------------------------------------------------
+
+test('encodeSegment honors a stamped item.hasAudio=false', async () => {
+  const seg = {
+    start: 0, end: 5, items: [
+      { type: 'video', src: '/silent.mp4', start: 0, end: 5, inPoint: 0,
+        trackIdx: 0, scale: 1, offsetX: 0, offsetY: 0, opacity: 1, muted: false,
+        hasAudio: false },
+    ], overlays: [], vw: 1920, vh: 1080, fps: 30,
+  }
+  const result = await encodeSegment(seg, '/tmp/test.mp4', { _dryRun: true })
+  // No per-item audio filter chain — hasAudio:false overrides the dry-run
+  // "assume audio present" default.
+  assert.ok(
+    !result.filterParts.some(f => f.includes('sample_rates=48000')),
+    'stamped hasAudio:false must suppress the per-item audio filter even in dry-run',
+  )
+  // No real audio source → falls back to silence.
+  assert.ok(result.inputs.some(f => f.includes('anullsrc')), 'no audio source → silent path')
+})
+
+test('encodeSegment honors a stamped item.hasAudio=true', async () => {
+  const seg = {
+    start: 0, end: 5, items: [
+      { type: 'video', src: '/withaudio.mp4', start: 0, end: 5, inPoint: 0,
+        trackIdx: 0, scale: 1, offsetX: 0, offsetY: 0, opacity: 1, muted: false,
+        hasAudio: true },
+    ], overlays: [], vw: 1920, vh: 1080, fps: 30,
+  }
+  const result = await encodeSegment(seg, '/tmp/test.mp4', { _dryRun: true })
+  assert.ok(
+    result.filterParts.some(f => f.includes('sample_rates=48000')),
+    'stamped hasAudio:true must produce the per-item audio filter',
+  )
+  assert.ok(!result.inputs.some(f => f.includes('anullsrc')), 'audio source present → no silent path')
+})
+
+test('encodeSegment without a stamped hasAudio keeps current dry-run behavior', async () => {
+  const seg = {
+    start: 0, end: 5, items: [
+      { type: 'video', src: '/unstamped.mp4', start: 0, end: 5, inPoint: 0,
+        trackIdx: 0, scale: 1, offsetX: 0, offsetY: 0, opacity: 1, muted: false },
+    ], overlays: [], vw: 1920, vh: 1080, fps: 30,
+  }
+  const result = await encodeSegment(seg, '/tmp/test.mp4', { _dryRun: true })
+  // Unstamped item in dry-run mode still assumes audio present — matches
+  // the pre-existing `opts._dryRun || fileHasAudio(...)` fallback.
+  assert.ok(
+    result.filterParts.some(f => f.includes('sample_rates=48000')),
+    'unstamped item in dry-run mode should still assume audio present (unchanged behavior)',
+  )
+})
+
+test('single audioclean source with vol=1 still routes through the encoder path', async () => {
   // Regression: the previous stream-copy fast path triggered on exactly this
   // signature (one item, src ends with _audioclean.mp4, volume==1). It was
   // the source of the intra-clip audio pop because the input seek landed at
@@ -514,7 +573,7 @@ test('single audioclean source with vol=1 still routes through the encoder path'
         muted: false, volume: 1.0 },
     ], overlays: [], vw: 1920, vh: 1080, fps: 30,
   }
-  const result = encodeSegment(seg, '/tmp/test.mp4', { _dryRun: true })
+  const result = await encodeSegment(seg, '/tmp/test.mp4', { _dryRun: true })
   // Per-item audio filter chain MUST exist (it is the encoder path).
   assert.ok(
     result.filterParts.some(f => f.includes('sample_rates=48000')),

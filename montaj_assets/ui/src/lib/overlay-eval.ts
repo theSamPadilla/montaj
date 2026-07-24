@@ -15,11 +15,17 @@
  */
 
 import React from 'react'
-import { makeOverlayGlobals } from 'montaj-overlay-runtime'
 
-const overlayGlobals = makeOverlayGlobals('preview')
-const globalNames    = Object.keys(overlayGlobals)
-const globalValues   = Object.values(overlayGlobals)
+// Lazy overlay-runtime load — the runtime (three.js, @react-three/fiber, etc.) is only
+// pulled in when a custom overlay is first compiled, mirroring the Babel deferral below.
+let globalsPromise: Promise<Record<string, unknown>> | null = null
+
+function getOverlayGlobals(): Promise<Record<string, unknown>> {
+  if (!globalsPromise) {
+    globalsPromise = import('montaj-overlay-runtime').then((m) => m.makeOverlayGlobals('preview'))
+  }
+  return globalsPromise
+}
 
 export type OverlayFactory = (
   frame: number,
@@ -49,13 +55,16 @@ export async function compileOverlay(src: string): Promise<OverlayFactory> {
   if (cache.has(src)) return cache.get(src)!
 
   const fetchUrl = src.startsWith('/api/') ? src : `/api/files?path=${encodeURIComponent(src)}`
-  const [jsxText, Babel] = await Promise.all([
+  const [jsxText, Babel, overlayGlobals] = await Promise.all([
     fetch(fetchUrl, { cache: 'no-store' }).then((r) => {
       if (!r.ok) throw new Error(`Could not load overlay: ${src}`)
       return r.text()
     }),
     getBabel(),
+    getOverlayGlobals(),
   ])
+  const globalNames  = Object.keys(overlayGlobals)
+  const globalValues = Object.values(overlayGlobals)
 
   const { code } = Babel.transform(jsxText, {
     presets: ['react'],

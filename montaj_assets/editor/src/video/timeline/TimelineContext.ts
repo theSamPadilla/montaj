@@ -1,4 +1,5 @@
 import { createContext, useContext } from 'react'
+import type { PlaybackClock } from '../playback-clock'
 
 export interface TimelineContextValue {
   totalDuration: number
@@ -9,8 +10,7 @@ export interface TimelineContextValue {
   scrollRef: React.RefObject<HTMLDivElement | null>
   scrubberRef: React.RefObject<HTMLDivElement | null>
   overlayDraggedRef: React.MutableRefObject<boolean>
-  currentTime: number
-  onTimeUpdate: (t: number) => void
+  clock: PlaybackClock
   markers: [number | null, number | null]
   setMarkers: (m: [number | null, number | null] | ((prev: [number | null, number | null]) => [number | null, number | null])) => void
   selection: { start: number; end: number } | null

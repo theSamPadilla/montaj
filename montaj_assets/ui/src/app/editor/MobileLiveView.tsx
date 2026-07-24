@@ -1,6 +1,6 @@
-import { useState, useEffect, useMemo } from 'react'
+import { useState, useEffect, useMemo, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { PreviewPlayer } from '@bycrux/editor'
+import { PreviewPlayer, createPlaybackClock, type PlaybackClock } from '@bycrux/editor'
 import { createMontajAdapter } from './montajAdapter'
 import MobileProjectHeader from '@/components/MobileProjectHeader'
 import MobileRenderModal from '@/components/MobileRenderModal'
@@ -15,7 +15,8 @@ interface Props {
 }
 
 export default function MobileLiveView({ project, logMessage, onProjectChange }: Props) {
-  const [currentTime, setCurrentTime] = useState(0)
+  const clockRef = useRef<PlaybackClock | null>(null)
+  if (!clockRef.current) clockRef.current = createPlaybackClock()
   const [renderOpen, setRenderOpen] = useState(false)
   const [saving, setSaving] = useState(false)
   const [skillPath, setSkillPath] = useState<string | null>(null)
@@ -62,8 +63,7 @@ export default function MobileLiveView({ project, logMessage, onProjectChange }:
         {hasTrimmedClips ? (
           <PreviewPlayer
             project={project}
-            currentTime={currentTime}
-            onTimeUpdate={setCurrentTime}
+            clock={clockRef.current}
             fileUrl={adapter.fileUrl}
             compileOverlay={adapter.compileOverlay}
             clearOverlayCache={adapter.clearOverlayCache}

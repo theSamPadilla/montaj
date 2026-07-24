@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { Suspense, useEffect, useState } from 'react'
 import { Link, Outlet, useLocation } from 'react-router-dom'
 import { Moon, Sun } from 'lucide-react'
 import { useIsMobile } from '@/lib/useIsMobile'
@@ -82,7 +82,9 @@ export default function App() {
       )}
 
       <main className="flex-1 overflow-hidden">
-        <Outlet />
+        <Suspense fallback={null}>
+          <Outlet />
+        </Suspense>
       </main>
     </div>
   )

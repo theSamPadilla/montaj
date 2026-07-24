@@ -236,6 +236,34 @@ def test_files_sibling_of_shipped_templates_returns_403(client, roots):
     assert resp.json()["detail"]["error"] == "forbidden"
 
 
+# ── GET /api/files Range-request tests ─────────────────────────────────────────
+
+def test_files_range_request_returns_206(client, roots):
+    proj = roots["workspace"] / "2026-05-02-test"
+    range_file = proj / "range.bin"
+    range_file.write_bytes(b"abcdefghij")
+
+    resp = client.get(
+        "/api/files", params={"path": str(range_file)}, headers={"Range": "bytes=2-5"}
+    )
+
+    assert resp.status_code == 206
+    assert resp.content == b"cdef"
+    assert resp.headers["content-range"] == "bytes 2-5/10"
+
+
+def test_files_unsatisfiable_range_returns_416(client, roots):
+    proj = roots["workspace"] / "2026-05-02-test"
+    range_file = proj / "range416.bin"
+    range_file.write_bytes(b"abc")
+
+    resp = client.get(
+        "/api/files", params={"path": str(range_file)}, headers={"Range": "bytes=99-"}
+    )
+
+    assert resp.status_code == 416
+
+
 # ── POST /api/files write-endpoint tests ──────────────────────────────────────
 
 @pytest.fixture

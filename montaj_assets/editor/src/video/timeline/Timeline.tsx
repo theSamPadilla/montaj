@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { useEffect, useMemo, useRef, useState, type ComponentProps, type ReactNode } from 'react'
 import AudioTrackRow from './AudioTrackRow'
 import type { GetWaveformChunks, ResolveFilePath } from './AudioWaveformLayer'
 import type { Project } from '../../types'
@@ -6,6 +6,7 @@ import { collapseGaps } from '../cuts'
 import { ratioFromClientX } from './utils'
 import { useTimelineZoom } from './useTimelineZoom'
 import { TimelineContext, type TimelineContextValue } from './TimelineContext'
+import { usePlaybackTime, type PlaybackClock } from '../playback-clock'
 import Scrubber from './Scrubber'
 import TranscriptPanel from './TranscriptPanel'
 import TranscriptModal from './TranscriptModal'
@@ -14,8 +15,7 @@ import { deleteSelection, toggleSelection } from './multiSelectOps'
 
 interface TimelineProps {
   project: Project
-  currentTime: number
-  onTimeUpdate: (t: number) => void
+  clock: PlaybackClock
   onProjectChange?: (p: Project) => void
   onCaptionEdit?: (p: Project) => void
   onOverlayEdit?: (p: Project) => void
@@ -57,7 +57,7 @@ interface TimelineProps {
 }
 
 
-export default function Timeline({ project, currentTime, onTimeUpdate, onProjectChange, onCaptionEdit, onOverlayEdit, onEditOverlay, selectedIds = [], onSelectIds, onSplit, onCut, onInspectClip, onInspectAudio, rippleMode = false, getWaveformChunks, resolveFilePath, regenEnabled, isClipQueued, renderSubcutRegen, onRegenerateCaptions }: TimelineProps) {
+export default function Timeline({ project, clock, onProjectChange, onCaptionEdit, onOverlayEdit, onEditOverlay, selectedIds = [], onSelectIds, onSplit, onCut, onInspectClip, onInspectAudio, rippleMode = false, getWaveformChunks, resolveFilePath, regenEnabled, isClipQueued, renderSubcutRegen, onRegenerateCaptions }: TimelineProps) {
   const primarySelectedId = selectedIds[0] ?? null
 
   // Click/shift-click handler — additive selection on shift or meta (cmd/ctrl).
@@ -69,17 +69,24 @@ export default function Timeline({ project, currentTime, onTimeUpdate, onProject
   const allTracks      = project.tracks ?? []
   const captionTrack   = project.captions
   const audioTracks    = project.audio?.tracks ?? []
-  const snapBoundaries = [...new Set([
-    ...allTracks.flat().flatMap(c => [c.start, c.end]),
-    ...audioTracks.flatMap(t => [t.start, t.end]),
-  ])]
-  const contentDuration = Math.max(
-    allTracks.flat().reduce((m, i) => Math.max(m, i.end ?? 0), 0),
-    audioTracks.reduce((m, t) => Math.max(m, t.end ?? 0), 0),
-  )
-  // Add 20% padding beyond content so the rightmost item can always be
-  // dragged or resized further out. Minimum 5s headroom.
-  const totalDuration  = contentDuration + Math.max(5, contentDuration * 0.2)
+
+  // Memoized so playback ticks (which re-render Timeline via the ctx useMemo's
+  // clock dependency) don't recompute these on every frame — they only change
+  // when the underlying tracks/audio actually change.
+  const { snapBoundaries, contentDuration, totalDuration } = useMemo(() => {
+    const snapBoundaries = [...new Set([
+      ...allTracks.flat().flatMap(c => [c.start, c.end]),
+      ...audioTracks.flatMap(t => [t.start, t.end]),
+    ])]
+    const contentDuration = Math.max(
+      allTracks.flat().reduce((m, i) => Math.max(m, i.end ?? 0), 0),
+      audioTracks.reduce((m, t) => Math.max(m, t.end ?? 0), 0),
+    )
+    // Add 20% padding beyond content so the rightmost item can always be
+    // dragged or resized further out. Minimum 5s headroom.
+    const totalDuration = contentDuration + Math.max(5, contentDuration * 0.2)
+    return { snapBoundaries, contentDuration, totalDuration }
+  }, [project.tracks, project.audio])
 
   // Auto-crossfade: when two audio tracks overlap, apply fade-out on the earlier
   // and fade-in on the later, each equal to the overlap duration.
@@ -152,15 +159,15 @@ export default function Timeline({ project, currentTime, onTimeUpdate, onProject
       e.preventDefault()
       const step = e.shiftKey ? 1 : frame
       const dir  = e.key === 'ArrowRight' ? 1 : -1
-      const next = Math.max(0, Math.min(totalDuration, currentTime + dir * step))
-      onTimeUpdate(next)
+      const next = Math.max(0, Math.min(totalDuration, clock.get() + dir * step))
+      clock.set(next)
       setKeyNavTime(next)
       if (keyNavTimerRef.current) clearTimeout(keyNavTimerRef.current)
       keyNavTimerRef.current = setTimeout(() => setKeyNavTime(null), 1500)
     }
     document.addEventListener('keydown', onKey)
     return () => document.removeEventListener('keydown', onKey)
-  }, [totalDuration, currentTime, onTimeUpdate, project.settings?.fps, transcriptModalOpen])
+  }, [totalDuration, clock, project.settings?.fps, transcriptModalOpen])
 
   // Derive selection from two placed markers
   const selection = markers[0] !== null && markers[1] !== null
@@ -169,9 +176,9 @@ export default function Timeline({ project, currentTime, onTimeUpdate, onProject
 
   const ctx = useMemo<TimelineContextValue>(() => ({
     totalDuration, contentDuration, snapBoundaries, zoom, zoomRef, scrollRef, scrubberRef,
-    overlayDraggedRef, currentTime, onTimeUpdate, markers, setMarkers, selection,
+    overlayDraggedRef, clock, markers, setMarkers, selection,
   }), [totalDuration, contentDuration, snapBoundaries, zoom, zoomRef, scrollRef, scrubberRef,
-    overlayDraggedRef, currentTime, onTimeUpdate, markers, setMarkers, selection])
+    overlayDraggedRef, clock, markers, setMarkers, selection])
 
   function handleKeyDown(e: React.KeyboardEvent<HTMLDivElement>) {
     if ((e.target as HTMLElement).isContentEditable) return
@@ -189,10 +196,11 @@ export default function Timeline({ project, currentTime, onTimeUpdate, onProject
 
     if (e.key !== 'Enter' || totalDuration === 0) return
     e.preventDefault()
+    const t = clock.get()
     setMarkers(([a, b]) => {
-      if (a === null) return [currentTime, null]
-      if (b === null) return [a, currentTime]
-      return [currentTime, null]
+      if (a === null) return [t, null]
+      if (b === null) return [a, t]
+      return [t, null]
     })
   }
 
@@ -205,9 +213,9 @@ export default function Timeline({ project, currentTime, onTimeUpdate, onProject
     const snapThreshold = (8 / rect.width) * totalDuration
     const boundaries = snapBoundaries
     for (const b of boundaries) {
-      if (Math.abs(clickedTime - b) < snapThreshold) { onTimeUpdate(b); return }
+      if (Math.abs(clickedTime - b) < snapThreshold) { clock.set(b); return }
     }
-    onTimeUpdate(clickedTime)
+    clock.set(clickedTime)
   }
 
   const cutButtonLabel = primarySelectedId
@@ -361,10 +369,13 @@ export default function Timeline({ project, currentTime, onTimeUpdate, onProject
       })()}
 
       {/* ── Transcript editor ── */}
-      <TranscriptPanel
+      {/* Wrapped in a clock-subscribing child so the active-segment highlight
+          tracks the playhead WITHOUT Timeline (and its track rows) re-rendering
+          every tick. */}
+      <TranscriptPanelWithClock
+        clock={clock}
         project={project}
         captionTrack={captionTrack}
-        currentTime={currentTime}
         onCaptionEdit={onCaptionEdit}
         onProjectChange={onProjectChange}
         onExpand={() => setTranscriptModalOpen(true)}
@@ -373,10 +384,10 @@ export default function Timeline({ project, currentTime, onTimeUpdate, onProject
 
       {/* ── Transcript modal ── */}
       {transcriptModalOpen && (
-        <TranscriptModal
+        <TranscriptModalWithClock
+          clock={clock}
           project={project}
           captionTrack={captionTrack}
-          currentTime={currentTime}
           onProjectChange={onProjectChange}
           onCaptionEdit={onCaptionEdit}
           onClose={() => setTranscriptModalOpen(false)}
@@ -386,4 +397,24 @@ export default function Timeline({ project, currentTime, onTimeUpdate, onProject
     </div>
     </TimelineContext.Provider>
   )
+}
+
+// The transcript views highlight the active caption segment, so they genuinely
+// display time and must re-render every tick. Subscribing HERE (rather than in
+// Timeline) keeps the per-tick re-render scoped to these leaves — Timeline and
+// the track rows are unaffected.
+function TranscriptPanelWithClock({
+  clock,
+  ...rest
+}: { clock: PlaybackClock } & Omit<ComponentProps<typeof TranscriptPanel>, 'currentTime'>) {
+  const currentTime = usePlaybackTime(clock)
+  return <TranscriptPanel currentTime={currentTime} {...rest} />
+}
+
+function TranscriptModalWithClock({
+  clock,
+  ...rest
+}: { clock: PlaybackClock } & Omit<ComponentProps<typeof TranscriptModal>, 'currentTime'>) {
+  const currentTime = usePlaybackTime(clock)
+  return <TranscriptModal currentTime={currentTime} {...rest} />
 }

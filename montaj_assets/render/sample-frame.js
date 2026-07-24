@@ -28,6 +28,7 @@ import { tmpdir } from 'os'
 import { createHash } from 'crypto'
 
 import { bundleComponent, cleanupBundle } from './bundle.js'
+import { pMap } from './p-map.js'
 import { FFMPEG } from './ffmpeg-bin.js'
 import { isHdr } from './color-space.js'
 import {
@@ -848,21 +849,6 @@ function gcCache() {
       } catch { /* skip */ }
     }
   } catch { /* permissions issue — don't break sampling */ }
-}
-
-/** Bounded-concurrency map. */
-async function pMap(items, mapper, concurrency) {
-  const results = new Array(items.length)
-  let cursor = 0
-  async function worker() {
-    while (true) {
-      const i = cursor++
-      if (i >= items.length) return
-      results[i] = await mapper(items[i], i)
-    }
-  }
-  await Promise.all(Array.from({ length: Math.min(concurrency, items.length || 1) }, worker))
-  return results
 }
 
 /** Deep-clone a JSON-serializable object. */

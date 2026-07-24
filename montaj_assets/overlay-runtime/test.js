@@ -8,6 +8,7 @@
 // Run via `npm test` from the package directory, or directly via `node test.js`.
 import assert from 'node:assert/strict'
 import { makeOverlayGlobals } from './index.js'
+import { spring } from './helpers.js'
 
 const renderGlobals  = makeOverlayGlobals('render')
 const previewGlobals = makeOverlayGlobals('preview')
@@ -79,3 +80,44 @@ for (const name of requiredChartGlobals) {
 
 console.log('overlay-runtime: contract symmetry OK')
 console.log(`  globals: ${renderKeys.join(', ')}`)
+
+// spring() parity — the memoized implementation must be bit-identical to the
+// original O(frame) Euler-integration loop it replaced.
+// Reference implementation: the original O(frame) loop, for parity checks.
+function springReference({ frame, fps, mass = 1, stiffness = 100, damping = 10, initialVelocity = 0 }) {
+  const dt = 1 / fps
+  let x = 0, v = initialVelocity
+  for (let f = 0; f < frame; f++) {
+    const force = -stiffness * (x - 1) - damping * v
+    v += (force / mass) * dt
+    x += v * dt
+  }
+  return x
+}
+
+const springCases = [0, 1, 7, 30, 7, 300, 2.5, 299]
+for (const params of [{ fps: 30 }, { fps: 60, stiffness: 220, damping: 16 }]) {
+  for (const frame of springCases) {
+    const got = spring({ frame, ...params })
+    const want = springReference({ frame, ...params })
+    assert.ok(Object.is(got, want), `spring(${frame}, ${JSON.stringify(params)}): ${got} !== ${want}`)
+  }
+}
+
+// Perf sanity: after one priming call, repeated calls at a large frame are
+// memoized (O(1)). Timing ONLY the repeats isolates the amortized property:
+// unmemoized, each repeat would re-integrate ~500k Euler steps and blow far
+// past the (deliberately generous) budget; memoized, they are array lookups.
+{
+  const params = { frame: 500_000, fps: 30 }
+  spring(params) // prime: the single O(frame) integration
+  const want = springReference(params)
+  const start = process.hrtime.bigint()
+  let got
+  for (let i = 0; i < 2000; i++) got = spring(params)
+  const elapsedMs = Number(process.hrtime.bigint() - start) / 1e6
+  assert.ok(Object.is(got, want), `spring(500_000): ${got} !== ${want}`)
+  assert.ok(elapsedMs < 100, `spring() not amortizing repeated calls: ${elapsedMs}ms for 2000 memoized calls`)
+}
+
+console.log('overlay-runtime: spring() parity OK')

@@ -5,7 +5,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException, Request, UploadFile
+from fastapi import APIRouter, Request, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
 
 from serve.common import (
@@ -197,57 +197,10 @@ async def serve_file(path: str, request: Request):
         raise forbidden("forbidden", "Path is outside the allowed roots")
     p = resolved  # use the canonicalized path for stat/serve below
 
-    file_size = p.stat().st_size
+    # FileResponse handles Range (206/416), Content-Length, ETag, and does its
+    # reads off the event loop — replacing the hand-rolled sync-read generators.
     media_type = mimetypes.guess_type(str(p))[0] or "application/octet-stream"
-    range_header = request.headers.get("range")
-
-    if not range_header:
-        # No range requested — stream the whole file
-        async def full_stream():
-            with open(p, "rb") as f:
-                while chunk := f.read(1 << 16):
-                    yield chunk
-        return StreamingResponse(full_stream(), media_type=media_type, headers={
-            "Accept-Ranges": "bytes",
-            "Content-Length": str(file_size),
-        })
-
-    # Parse "bytes=start-end"
-    try:
-        byte_range = range_header.removeprefix("bytes=")
-        start_str, end_str = byte_range.split("-", 1)
-        start = int(start_str) if start_str else 0
-        end   = int(end_str)   if end_str   else file_size - 1
-    except Exception:
-        raise HTTPException(416, detail="Invalid Range header")
-
-    end = min(end, file_size - 1)
-    if start > end or start >= file_size:
-        raise HTTPException(416, headers={"Content-Range": f"bytes */{file_size}"})
-
-    chunk_size = end - start + 1
-
-    async def range_stream():
-        with open(p, "rb") as f:
-            f.seek(start)
-            remaining = chunk_size
-            while remaining > 0:
-                data = f.read(min(1 << 16, remaining))
-                if not data:
-                    break
-                remaining -= len(data)
-                yield data
-
-    return StreamingResponse(
-        range_stream(),
-        status_code=206,
-        media_type=media_type,
-        headers={
-            "Content-Range":  f"bytes {start}-{end}/{file_size}",
-            "Accept-Ranges":  "bytes",
-            "Content-Length": str(chunk_size),
-        },
-    )
+    return FileResponse(p, media_type=media_type)
 
 
 @router.get("/files/stream")

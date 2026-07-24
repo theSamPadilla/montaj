@@ -1,9 +1,11 @@
+import { memo } from 'react'
 import { Volume2, VolumeX, Info, Scissors, Pencil } from 'lucide-react'
 import type { VisualItem } from '../../schema'
 import type { Project } from '../../types'
 import { collapseGaps } from '../cuts'
 import { pct, ratioFromClientX, trackRow, trackRowTall } from './utils'
 import { useTimelineContext } from './TimelineContext'
+import PlayheadLine from './PlayheadLine'
 import { useItemDragDrop } from './useItemDragDrop'
 import type { Draggable, DragEventContext } from './useItemDragDrop'
 import { applyMuteToSelection, applyResizeDeltaToSelection, deleteSelection } from './multiSelectOps'
@@ -43,7 +45,7 @@ const trackColors = [
   { bg: 'bg-amber-700/60',  bgHov: 'hover:bg-amber-700/80',  bgSel: 'bg-amber-600/80',  ring: 'ring-amber-400/80',  border: 'border-amber-500/50',  text: 'text-amber-200',  resHov: 'hover:bg-amber-300/40'  },
 ]
 
-export default function VisualTrackRow({
+function VisualTrackRow({
   trackItems,
   trackIdx,
   project,
@@ -59,7 +61,7 @@ export default function VisualTrackRow({
   regenEnabled,
   isClipQueued,
 }: VisualTrackRowProps) {
-  const { totalDuration, snapBoundaries, scrollRef, scrubberRef, currentTime, onTimeUpdate, markers, setMarkers, selection, overlayDraggedRef, zoomRef } = useTimelineContext()
+  const { totalDuration, snapBoundaries, scrollRef, scrubberRef, clock, markers, setMarkers, selection, overlayDraggedRef, zoomRef } = useTimelineContext()
   const tc = trackColors[trackIdx % trackColors.length]
   const markerActive = markers[0] !== null || selection !== null
   const primarySelectedId = selectedIds[0] ?? null
@@ -196,17 +198,10 @@ export default function VisualTrackRow({
     const snapThreshold = rect ? (8 / rect.width) * totalDuration : 0
     const boundaries = snapBoundaries
     for (const b of boundaries) {
-      if (Math.abs(clickedTime - b) < snapThreshold) { onTimeUpdate(b); return }
+      if (Math.abs(clickedTime - b) < snapThreshold) { clock.set(b); return }
     }
-    onTimeUpdate(clickedTime)
+    clock.set(clickedTime)
   }
-
-  const playheadLine = (
-    <div
-      className="absolute top-0 bottom-0 w-[2px] bg-red-500 pointer-events-none z-10"
-      style={{ left: `${pct(currentTime, totalDuration)}%` }}
-    />
-  )
 
   return (
     <div className={`${trackIdx === 0 ? trackRowTall : trackRow} transition-opacity ${dimmed ? 'opacity-30 pointer-events-none' : ''}`} onClick={handleTrackClick} onDoubleClick={handleScrubDoubleClick}>
@@ -226,7 +221,7 @@ export default function VisualTrackRow({
               onSelectItem(item.id, additive)
               // Only seek playhead on a plain single-select click (not on
               // additive shift-clicks, which shouldn't disrupt scrubbing).
-              if (!additive && !isSel) onTimeUpdate(ratioFromClientX(e.clientX, scrubberRef.current!.getBoundingClientRect()) * totalDuration)
+              if (!additive && !isSel) clock.set(ratioFromClientX(e.clientX, scrubberRef.current!.getBoundingClientRect()) * totalDuration)
             }}
             onDoubleClick={(e) => {
               e.stopPropagation()
@@ -291,7 +286,7 @@ export default function VisualTrackRow({
           </div>
         )
       })}
-      {playheadLine}
+      <PlayheadLine />
       {selection && (
         <div
           className="absolute inset-y-0 bg-red-500/20 pointer-events-none"
@@ -301,3 +296,5 @@ export default function VisualTrackRow({
     </div>
   )
 }
+
+export default memo(VisualTrackRow)

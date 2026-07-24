@@ -144,6 +144,11 @@ def test_normalize_window_ss_and_t_before_input(tmp_path):
     def fake_run(cmd, **kwargs):
         if cmd and cmd[0] == common.ffmpeg_bin():
             captured["cmd"] = list(cmd)
+            # _run_atomic_encode renames the ffmpeg output (cmd's last arg, a
+            # .tmp file) onto out_path, so the mock must actually create it —
+            # otherwise the os.replace crashes with FileNotFoundError.
+            with open(cmd[-1], "wb"):
+                pass
             # Return a fake successful result
             class FakeResult:
                 returncode = 0
@@ -247,6 +252,10 @@ def test_normalize_window_zero_duration_clamp(tmp_path):
     def fake_run(cmd, **kwargs):
         if cmd and cmd[0] == common.ffmpeg_bin():
             captured["cmd"] = list(cmd)
+            # _run_atomic_encode renames the ffmpeg output (cmd's last arg, a
+            # .tmp file) onto out_path, so the mock must actually create it.
+            with open(cmd[-1], "wb"):
+                pass
             class FakeResult:
                 returncode = 0
                 stderr = ""

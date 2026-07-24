@@ -8,6 +8,7 @@ import { useDragOverlay } from './useDragOverlay'
 import type { OverlayChanges } from './useDragOverlay'
 import OverlayItemsLayer from './OverlayItemsLayer'
 import { useVideoPlayback } from './useVideoPlayback'
+import { usePlaybackTime, type PlaybackClock } from '../playback-clock'
 import { sourceCropVideoStyle } from './sourceCropStyle'
 import CarouselPreview from './CarouselPreview'
 
@@ -15,8 +16,7 @@ import CarouselPreview from './CarouselPreview'
 
 interface PreviewPlayerProps {
   project: Project
-  currentTime: number
-  onTimeUpdate: (t: number) => void
+  clock: PlaybackClock
   selectedOverlayId?: string
   onOverlayChange?: (id: string, changes: OverlayChanges) => void
   onEditOverlay?: (id: string) => void
@@ -30,8 +30,7 @@ interface PreviewPlayerProps {
 
 export default function PreviewPlayer({
   project,
-  currentTime,
-  onTimeUpdate,
+  clock,
   selectedOverlayId,
   onOverlayChange,
   onEditOverlay,
@@ -42,6 +41,11 @@ export default function PreviewPlayer({
   resolveCaptionTemplate,
 }: PreviewPlayerProps) {
   if (project.projectType === 'carousel') return <CarouselPreview project={project} />
+
+  // Subscribe to the playhead store. PreviewPlayer legitimately re-renders per
+  // tick — activeClip/cropStyle memos and the video/overlay/caption children all
+  // depend on the current time.
+  const currentTime = usePlaybackTime(clock)
 
   const [RENDER_W, RENDER_H] = getOverlayDesignCanvas(project.settings?.resolution)
 
@@ -89,7 +93,7 @@ export default function PreviewPlayer({
     clips,
     tracks0NonVideo,
     overlayTracks,
-  } = useVideoPlayback(project, currentTime, onTimeUpdate, fileUrl)
+  } = useVideoPlayback(project, currentTime, clock.set, fileUrl)
 
   const captionTrack = useMemo(() => project.captions, [project])
 

@@ -1,5 +1,6 @@
 import { formatTime, pct, ratioFromClientX } from './utils'
 import { useTimelineContext } from './TimelineContext'
+import { usePlaybackTime } from '../playback-clock'
 
 interface ScrubberProps {
   hoverPct: number | null
@@ -20,12 +21,13 @@ export default function Scrubber({
   onCut,
   cutButtonLabel,
 }: ScrubberProps) {
-  const { currentTime, totalDuration, contentDuration, markers, setMarkers, snapBoundaries, onTimeUpdate, scrubberRef, selection } = useTimelineContext()
+  const { clock, totalDuration, contentDuration, markers, setMarkers, snapBoundaries, scrubberRef, selection } = useTimelineContext()
+  const currentTime = usePlaybackTime(clock)
 
   function handleScrubClick(e: React.MouseEvent<HTMLDivElement>) {
     e.stopPropagation()
     if (totalDuration === 0) return
-    onTimeUpdate(ratioFromClientX(e.clientX, scrubberRef.current!.getBoundingClientRect()) * totalDuration)
+    clock.set(ratioFromClientX(e.clientX, scrubberRef.current!.getBoundingClientRect()) * totalDuration)
   }
 
   function handleScrubDoubleClick(e: React.MouseEvent<HTMLDivElement>) {
@@ -96,14 +98,14 @@ export default function Scrubber({
               const rawT = ratioFromClientX(me.clientX, scrubberRef.current!.getBoundingClientRect()) * totalDuration
               // Already snapped — hold until cursor escapes release radius
               if (snappedTo !== null) {
-                if (Math.abs(rawT - snappedTo) < release) { onTimeUpdate(snappedTo); return }
+                if (Math.abs(rawT - snappedTo) < release) { clock.set(snappedTo); return }
                 snappedTo = null
               }
               // Scan for attraction
               for (const b of boundaries) {
-                if (Math.abs(rawT - b) < attract) { snappedTo = b; onTimeUpdate(b); return }
+                if (Math.abs(rawT - b) < attract) { snappedTo = b; clock.set(b); return }
               }
-              onTimeUpdate(rawT)
+              clock.set(rawT)
             }
             function onUp() {
               setDraggingPlayhead(false)
