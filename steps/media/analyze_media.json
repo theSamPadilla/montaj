@@ -10,10 +10,9 @@
     "description": "Model response (plain text or JSON if --json-output)"
   },
   "params": [
-    {"name": "input", "type": "path", "required": true, "description": "Media file (video, audio, or image)"},
     {"name": "prompt", "type": "string", "required": true, "description": "Question or instruction"},
     {"name": "model", "type": "string", "required": false, "default": "gemini-2.5-flash", "description": "Gemini model ID"},
-    {"name": "json-output", "type": "boolean", "required": false, "description": "Request structured JSON output from the model"},
+    {"name": "json-output", "type": "bool", "required": false, "description": "Request structured JSON output from the model"},
     {"name": "out", "type": "path", "required": false, "description": "Write response to file instead of stdout"}
   ]
 }

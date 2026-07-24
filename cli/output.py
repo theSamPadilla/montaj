@@ -6,13 +6,13 @@ import json, sys
 def emit(result, as_json=False, quiet=False):
     """Relay a subprocess result to stdout/stderr, respecting the output convention.
 
-    - On failure: write stderr to sys.stderr, exit 1
+    - On failure: write stderr to sys.stderr, propagate the step's exit code
     - On success: write stdout to sys.stdout (optionally wrapped as JSON)
     - quiet=True: suppress stderr on success
     """
     if result.returncode != 0:
         sys.stderr.write(result.stderr)
-        sys.exit(1)
+        sys.exit(result.returncode)
 
     output = result.stdout.rstrip("\n")
 

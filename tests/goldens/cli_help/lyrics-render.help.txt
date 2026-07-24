@@ -1,0 +1,49 @@
+usage: montaj lyrics-render [-h] [--input INPUT] --captions CAPTIONS --audio
+                            AUDIO [--bg-color BG_COLOR] [--width WIDTH]
+                            [--height HEIGHT] [--fps FPS]
+                            [--fontsize FONTSIZE] [--color COLOR]
+                            [--position {center,top-left,bottom-left}]
+                            [--duration DURATION]
+                            [--preview-duration PREVIEW_DURATION] [--box]
+                            [--accumulate] [--window-size WINDOW_SIZE]
+                            [--words-per-line WORDS_PER_LINE]
+                            [--audio-inpoint AUDIO_INPOINT] [--json]
+                            [--out PATH] [--quiet]
+
+options:
+  -h, --help            show this help message and exit
+  --input INPUT         Optional background video to loop. If omitted, a solid
+                        color background is used.
+  --captions CAPTIONS   Path to caption track JSON from lyrics_sync or caption
+                        step
+  --audio AUDIO         Song audio file path
+  --bg-color BG_COLOR   Background color when no input video is provided
+                        (default: black)
+  --width WIDTH         Output width in pixels (default: 720)
+  --height HEIGHT       Output height in pixels (default: 1280)
+  --fps FPS             Output frame rate (default: 30)
+  --fontsize FONTSIZE   Caption font size in pixels (default: 72)
+  --color COLOR         Caption text color, or 'auto' to detect from video
+                        (default: auto)
+  --position {center,top-left,bottom-left}
+                        Caption position: center, top-left, or bottom-left
+                        (default: center)
+  --duration DURATION   Output duration in seconds (overrides full audio
+                        duration)
+  --preview-duration PREVIEW_DURATION
+                        Only render this many seconds — useful for quick
+                        previews (overrides duration)
+  --box                 Draw a semi-transparent box behind caption text
+  --accumulate          Accumulate all words so far; default is word-by-word
+  --window-size WINDOW_SIZE
+                        Sliding window: show last N words, one per line
+                        (default: 1)
+  --words-per-line WORDS_PER_LINE
+                        Show full segment at once, N words per line (default:
+                        3)
+  --audio-inpoint AUDIO_INPOINT
+                        Seek position in the audio file (seconds). Overrides
+                        audioInPoint in captions JSON for the ffmpeg seek.
+  --json                Output result as JSON
+  --out PATH            Output file path
+  --quiet               Suppress progress output

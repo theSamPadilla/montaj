@@ -49,27 +49,64 @@
     },
     {
       "name": "fontsize",
-      "type": "integer",
+      "type": "int",
       "default": 72,
       "description": "Caption font size in pixels (default: 72)"
     },
     {
       "name": "color",
       "type": "string",
-      "default": "white",
-      "description": "Caption text color (default: white)"
+      "default": "auto",
+      "description": "Caption text color, or 'auto' to detect from video (default: auto)"
     },
     {
       "name": "position",
-      "type": "string",
+      "type": "enum",
       "default": "center",
+      "options": ["center", "top-left", "bottom-left"],
       "description": "Caption position: center, top-left, or bottom-left (default: center)"
     },
     {
-      "name": "preview-duration",
-      "type": "number",
+      "name": "duration",
+      "type": "float",
       "required": false,
-      "description": "Only render this many seconds — useful for quick previews"
+      "description": "Output duration in seconds (overrides full audio duration)"
+    },
+    {
+      "name": "preview-duration",
+      "type": "float",
+      "required": false,
+      "description": "Only render this many seconds — useful for quick previews (overrides duration)"
+    },
+    {
+      "name": "box",
+      "type": "bool",
+      "default": false,
+      "description": "Draw a semi-transparent box behind caption text"
+    },
+    {
+      "name": "accumulate",
+      "type": "bool",
+      "default": false,
+      "description": "Accumulate all words so far; default is word-by-word"
+    },
+    {
+      "name": "window-size",
+      "type": "int",
+      "default": 1,
+      "description": "Sliding window: show last N words, one per line (default: 1)"
+    },
+    {
+      "name": "words-per-line",
+      "type": "int",
+      "default": 3,
+      "description": "Show full segment at once, N words per line (default: 3)"
+    },
+    {
+      "name": "audio-inpoint",
+      "type": "float",
+      "required": false,
+      "description": "Seek position in the audio file (seconds). Overrides audioInPoint in captions JSON for the ffmpeg seek."
     }
   ]
 }

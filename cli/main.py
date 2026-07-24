@@ -26,50 +26,58 @@ def add_global_flags(parser):
     parser.add_argument("--quiet", action="store_true", help="Suppress progress output")
 
 
-# Command name (as typed on the CLI) -> module import path. 1:1 with the
-# former bulk `from cli.commands import (...)`, alphabetical.
+# Hand-written commands: command name (as typed on the CLI) -> module import
+# path. The 16 pure single-step commands moved to _STEP_COMMANDS below (they are
+# generated from their step JSON schema instead of a hand-written module).
 _COMMANDS = {
-    "analyze-media":      "cli.commands.analyze_media",
     "approve":            "cli.commands.approve",
-    "caption":            "cli.commands.caption",
     "create-step":        "cli.commands.create_step",
     "credentials":        "cli.commands.credentials",
     "doctor":             "cli.commands.doctor",
-    "extract-audio":      "cli.commands.extract_audio",
     "fetch":              "cli.commands.fetch",
-    "filler":             "cli.commands.filler",
-    "generate-image":     "cli.commands.generate_image",
-    "generate-music":     "cli.commands.generate_music",
-    "generate-voiceover": "cli.commands.generate_voiceover",
     "init":               "cli.commands.init",
     "install":            "cli.commands.install",
-    "kling-generate":     "cli.commands.kling_generate",
-    "lyrics-render":      "cli.commands.lyrics_render",
-    "lyrics-sync":        "cli.commands.lyrics_sync",
     "materialize-cut":    "cli.commands.materialize_cut",
     "mcp":                "cli.commands.mcp",
     "models":             "cli.commands.models",
     "normalize":          "cli.commands.normalize",
-    "probe":              "cli.commands.probe",
     "profile":            "cli.commands.profile",
     "regen":              "cli.commands.regen",
     "remove-bg":          "cli.commands.remove_bg",
     "render":             "cli.commands.render",
-    "resize":             "cli.commands.resize",
-    "rm-nonspeech":       "cli.commands.rm_nonspeech",
     "run":                "cli.commands.run",
     "sample":             "cli.commands.sample",
     "serve":              "cli.commands.serve",
-    "snapshot":           "cli.commands.snapshot",
     "status":             "cli.commands.status",
-    "stem-separation":    "cli.commands.stem_separation",
     "step":               "cli.commands.step",
-    "transcribe":         "cli.commands.transcribe",
     "update":             "cli.commands.update",
     "upload":             "cli.commands.upload",
     "validate":           "cli.commands.validate",
     "waveform-trim":      "cli.commands.waveform_trim",
     "workflow":           "cli.commands.workflow",
+}
+
+# Schema-driven single-step commands: command name -> per-command quirks dict
+# passed to register_step_command (the canonical parity table). The command
+# NAMES and their order/visibility are preserved in _REGISTRATION_ORDER and
+# _HIDDEN below exactly as before (filler keeps its name→rm_fillers step remap).
+_STEP_COMMANDS = {
+    "analyze-media":      {},
+    "caption":            {},
+    "extract-audio":      {},
+    "filler":             {"step_name": "rm_fillers"},
+    "generate-image":     {"required_out": True},
+    "generate-music":     {"required_out": True, "forward_json": True},
+    "generate-voiceover": {"required_out": True, "forward_json": True, "xor": ("text", "text_file")},
+    "kling-generate":     {"required_out": True},
+    "lyrics-render":      {"emit_json": False, "file_prechecks": ["captions", "audio"]},
+    "lyrics-sync":        {"emit_json": False, "file_prechecks": ["lyrics"]},
+    "probe":              {},
+    "resize":             {},
+    "rm-nonspeech":       {},
+    "snapshot":           {},
+    "stem-separation":    {"emit_json": False},
+    "transcribe":         {"emit_json": False},
 }
 
 # Order commands were registered in before this change — preserved so that a
@@ -85,6 +93,30 @@ _REGISTRATION_ORDER = (
     "remove-bg", "kling-generate", "analyze-media", "generate-image",
     "generate-voiceover", "generate-music",
 )
+
+
+def _load(modpath):
+    # __import__() (not importlib.import_module): on the dotted-module path used
+    # here, import_module() doesn't get its own "-X importtime" trace line (only
+    # its dependencies do), which makes lazy-loading unverifiable from outside.
+    # __import__() does.
+    __import__(modpath)
+    return sys.modules[modpath]
+
+
+def register_command(name, subparsers):
+    """Register one command's subparser onto ``subparsers``.
+
+    Migrated single-step commands are generated from their step JSON schema via
+    ``cli.step_command`` (imported lazily, so a single-command invocation never
+    pulls it in unless that command is the one invoked); every other command is
+    a hand-written module exposing ``register(subparsers)``.
+    """
+    if name in _STEP_COMMANDS:
+        from cli.step_command import register_step_command
+        register_step_command(subparsers, name, quirks=_STEP_COMMANDS[name])
+    else:
+        _load(_COMMANDS[name]).register(subparsers)
 
 
 def main():
@@ -134,24 +166,15 @@ def main():
         print(f"{bold('montaj')} {cyan(__version__)}")
         return
 
-    # Import only the invoked command's module. Anything else (no command,
-    # unknown command, -h/--help) falls back to registering everything so
-    # argparse's own help/error output is unchanged.
-    #
-    # Uses __import__() rather than importlib.import_module(): on the
-    # dotted-module path used here, import_module() doesn't get its own
-    # "-X importtime" trace line (only its dependencies do), which makes
-    # lazy-loading unverifiable from the outside. __import__() does.
-    def _load(modpath):
-        __import__(modpath)
-        return sys.modules[modpath]
-
+    # Register only the invoked command. Anything else (no command, unknown
+    # command, -h/--help) falls back to registering everything so argparse's own
+    # help/error output is unchanged.
     cmd = next((a for a in argv if not a.startswith("-")), None)
-    if cmd in _COMMANDS:
-        _load(_COMMANDS[cmd]).register(subparsers)
+    if cmd in _COMMANDS or cmd in _STEP_COMMANDS:
+        register_command(cmd, subparsers)
     else:
         for name in _REGISTRATION_ORDER:
-            _load(_COMMANDS[name]).register(subparsers)
+            register_command(name, subparsers)
 
     args = parser.parse_args()
     args.func(args)

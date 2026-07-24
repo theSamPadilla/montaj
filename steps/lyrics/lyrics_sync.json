@@ -13,6 +13,7 @@
     {
       "name": "lyrics",
       "type": "string",
+      "required": true,
       "description": "Path to lyrics text file. One phrase per line. Blank lines ignored."
     },
     {
@@ -23,13 +24,19 @@
       "description": "Whisper model. medium.en gives more word matches and tighter timestamps. base.en is faster."
     },
     {
+      "name": "language",
+      "type": "string",
+      "default": "en",
+      "description": "Language code passed to Whisper (default: en)"
+    },
+    {
       "name": "start",
-      "type": "number",
+      "type": "float",
       "description": "Optional: override start time in seconds (skips auto-detection). Use when auto-detection is off."
     },
     {
       "name": "end",
-      "type": "number",
+      "type": "float",
       "description": "Optional: override end time in seconds (skips auto-detection)."
     }
   ]

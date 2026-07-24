@@ -1,0 +1,22 @@
+usage: montaj filler [-h]
+                     [--model {tiny.en,base.en,medium.en,tiny,base,medium,large,large-v3}]
+                     [--language LANGUAGE] [--json] [--out PATH] [--quiet]
+                     input
+
+positional arguments:
+  input                 Source video file or trim spec JSON from a prior step
+
+options:
+  -h, --help            show this help message and exit
+  --model {tiny.en,base.en,medium.en,tiny,base,medium,large,large-v3}
+                        Whisper model for filler detection. Larger = slower +
+                        more accurate. English-only (*.en) models are auto-
+                        upgraded to a multilingual sibling when language is
+                        non-English.
+  --language LANGUAGE   Language code (e.g. es) for transcription and filler
+                        matching, or 'auto'. Selects the per-language
+                        hesitation-filler set and upgrades *.en models to
+                        multilingual.
+  --json                Output result as JSON
+  --out PATH            Output file path
+  --quiet               Suppress progress output

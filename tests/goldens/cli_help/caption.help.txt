@@ -1,0 +1,15 @@
+usage: montaj caption [-h]
+                      [--style {word-by-word,karaoke,subtitle,pop,highlight-box,outline,clean}]
+                      [--json] [--out PATH] [--quiet]
+                      input
+
+positional arguments:
+  input                 Word-level JSON transcript from the transcribe step
+
+options:
+  -h, --help            show this help message and exit
+  --style {word-by-word,karaoke,subtitle,pop,highlight-box,outline,clean}
+                        Caption animation style
+  --json                Output result as JSON
+  --out PATH            Output file path
+  --quiet               Suppress progress output

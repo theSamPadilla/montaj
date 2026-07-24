@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { Crop, Info, Magnet, Pencil, Undo2 } from 'lucide-react'
+import { Crop, Info, Magnet, Pencil, Redo2, Undo2 } from 'lucide-react'
 import type { Project, VideoEditorProps } from '../types'
+import { useProjectSync, type UseProjectSync } from '../state/use-project-sync'
 import { VideoSourceCropModal } from '../crop/VideoSourceCropModal'
 import ControlsInfoModal, { VIDEO_CONTROLS } from '../ControlsInfoModal'
 import { getOverlayDesignCanvas } from './design-canvas'
@@ -27,11 +28,15 @@ type Props<P extends Project = Project> = VideoEditorProps<P>
  *
  * Absorbs Montaj's former LiveView (pending/processing surface) and ReviewView
  * (draft/final surface) into one component driven by the `EditorAdapter`.
- * Controlled like `<CarouselEditor>`: the host owns `project` and is notified of
- * edits via `onProjectChange`; persistence flows through `adapter.saveProject`.
- * It does NOT own a `useProjectState` reducer — it preserves the original
- * Live/Review save model exactly (mutate → onProjectChange → adapter.saveProject
- * fire-and-forget), so the host's pipeline fields survive untouched.
+ * Controlled like `<CarouselEditor>`: the host owns the initial `project` and is
+ * notified of edits via `onProjectChange`; persistence flows through the shared
+ * `useProjectSync` core (queued saves, SSE echo protection, undo/redo).
+ *
+ * The sync core is created ONCE here (not per-surface) so it owns a single SSE
+ * subscription and so `sync.project.status` drives the Pending↔Review switch —
+ * the editor now subscribes to live frames itself instead of receiving them as a
+ * prop, so a status transition (agent finishes → 'draft') must come from the
+ * core's own stream, not the host re-rendering with a new prop.
  *
  * ProjectHeader is lifted out (the host renders it in its shell). This component
  * renders: timeline + preview + version panel + render modal + the host-supplied
@@ -54,31 +59,45 @@ export default function VideoEditor<P extends Project = Project>({
 }: Props<P>) {
   const emit = onProjectChange ?? (() => {})
 
+  // Shared save/undo/SSE core. Created once at the top so there is exactly one
+  // subscription per editor and `sync.project` is the single source of truth for
+  // both the surface switch and the surface contents. `project` (the prop) is
+  // only the initial value — after mount the core owns state and reconciles live
+  // frames itself (video-shaped → default plain-replace reconcile).
+  const sync = useProjectSync<P>(adapter, project.id, project)
+
+  // Notify the host of every authoritative change — edits, undo/redo, and SSE
+  // frames — so its non-editor chrome (title, status pill) stays in sync. Mirrors
+  // CarouselEditor. `emit` is read via a ref so the effect only fires on state
+  // change, not when the host passes a new `onProjectChange` identity.
+  const emitRef = useRef(emit)
+  emitRef.current = emit
+  useEffect(() => {
+    emitRef.current(sync.project)
+  }, [sync.project])
+
   // ── Theme: apply tokens onto the editor container. ──
   const containerRef = useRef<HTMLDivElement>(null)
   useEffect(() => {
     if (containerRef.current) applyTheme(containerRef.current, theme ?? defaultMontajTheme)
   }, [theme])
 
-  const isPending = project.status === 'pending'
+  const isPending = sync.project.status === 'pending'
 
   // ── Shared injected adapter fns, threaded to Timeline + PreviewPlayer. ──
   const getWaveformChunks = adapter.getWaveformChunks
   const resolveFilePath   = adapter.fileUrl
-  const save = (p: P) => { void adapter.saveProject(p.id, p) }
 
   if (isPending) {
     return (
       <div ref={containerRef} className="flex flex-col h-full bg-[var(--editor-bg)]">
         <PendingSurface
-          project={project}
+          sync={sync}
           adapter={adapter}
-          onProjectChange={emit}
           slots={slots}
           onBackToSetup={onBackToSetup}
           getWaveformChunks={getWaveformChunks}
           resolveFilePath={resolveFilePath}
-          save={save}
         />
       </div>
     )
@@ -87,15 +106,14 @@ export default function VideoEditor<P extends Project = Project>({
   return (
     <div ref={containerRef} className="flex flex-col h-full">
       <ReviewSurface
-        project={project}
+        sync={sync}
+        emit={emit}
         adapter={adapter}
-        onProjectChange={emit}
         slots={slots}
         assetsPlacement={assetsPlacement}
         renderProgressView={renderProgressView}
         getWaveformChunks={getWaveformChunks}
         resolveFilePath={resolveFilePath}
-        save={save}
         renderClipInspector={renderClipInspector}
         renderSubcutRegen={renderSubcutRegen}
         regenEnabled={regenEnabled}
@@ -122,27 +140,25 @@ function useVersionHistory<P extends Project>(adapter: VideoEditorProps<P>['adap
 // ── Pending / processing surface (former LiveView) ───────────────────────────
 
 interface SurfaceProps<P extends Project> {
-  project: P
+  sync: UseProjectSync<P>
   adapter: VideoEditorProps<P>['adapter']
-  onProjectChange: (p: P) => void
   slots?: VideoEditorProps<P>['slots']
   assetsPlacement?: VideoEditorProps<P>['assetsPlacement']
   renderProgressView?: VideoEditorProps<P>['renderProgressView']
   getWaveformChunks?: VideoEditorProps<P>['adapter']['getWaveformChunks']
   resolveFilePath: (path: string) => string
-  save: (p: P) => void
   onProvideRenderTrigger?: VideoEditorProps<P>['onProvideRenderTrigger']
 }
 
 function PendingSurface<P extends Project>({
-  project,
+  sync,
   adapter,
-  onProjectChange,
   slots,
   onBackToSetup,
   getWaveformChunks,
   resolveFilePath,
 }: SurfaceProps<P> & { onBackToSetup?: () => void }) {
+  const project = sync.project
   // The playhead lives in an external store (not useState) so ~60Hz ticks only
   // re-render the leaves that display time — not this whole surface.
   const clockRef = useRef<PlaybackClock | null>(null)
@@ -168,7 +184,8 @@ function PendingSurface<P extends Project>({
     setRestoring(hash)
     try {
       const restored = await adapter.restoreVersion(project.id, hash)
-      onProjectChange(restored)
+      // Server-authored, already persisted — apply without a save or undo push.
+      sync.applyExternal(restored)
     } catch (e) {
       console.error(e)
     } finally {
@@ -247,7 +264,7 @@ function PendingSurface<P extends Project>({
             clock={clock}
             getWaveformChunks={getWaveformChunks}
             resolveFilePath={resolveFilePath}
-            onSaveProject={(p) => adapter.saveProject(p.id, p as P)}
+            onSaveProject={(p) => sync.mutate(() => p as P)}
           />
         </div>
       </div>
@@ -265,34 +282,33 @@ function PendingSurface<P extends Project>({
 // ── Draft / final surface (former ReviewView) ────────────────────────────────
 
 function ReviewSurface<P extends Project>({
-  project,
+  sync,
+  emit,
   adapter,
-  onProjectChange,
   slots,
   assetsPlacement = 'right',
   renderProgressView = 'phases',
   getWaveformChunks,
   resolveFilePath,
-  save,
   renderClipInspector,
   renderSubcutRegen,
   regenEnabled,
   isClipQueued,
   onProvideRenderTrigger,
 }: SurfaceProps<P> & {
+  emit: (p: P) => void
   renderClipInspector?: VideoEditorProps<P>['renderClipInspector']
   renderSubcutRegen?: VideoEditorProps<P>['renderSubcutRegen']
   regenEnabled?: boolean
   isClipQueued?: (itemId: string) => boolean
 }) {
+  const project = sync.project
   // Playhead in an external store, not useState — ~60Hz ticks re-render only the
   // leaves that display time (preview, scrubber, transcript) instead of the whole
   // review surface (toolbar + timeline + every context consumer).
   const clockRef = useRef<PlaybackClock | null>(null)
   if (!clockRef.current) clockRef.current = createPlaybackClock()
   const clock = clockRef.current
-  const [canUndo, setCanUndo]         = useState(false)
-  const historyRef = useRef<P[]>([])
   // Multi-select: all currently-selected timeline item ids. Single-select
   // consumers (canvas preview, cut/split) use selectedIds[0] as the primary.
   const [selectedIds, setSelectedIds] = useState<string[]>([])
@@ -309,18 +325,19 @@ function ReviewSurface<P extends Project>({
   const [inspecting, setInspecting]   = useState<{ kind: 'clip' | 'audio'; id: string } | null>(null)
 
   // Render trigger — marks the project final, saves, and opens the RenderModal.
-  // Kept stable (latest project/onChange/save read via refs) so a host that
-  // places Render in its own header (onProvideRenderTrigger) can store the
-  // callback once without it going stale.
-  const projectRef         = useRef(project);         projectRef.current = project
-  const onProjectChangeRef = useRef(onProjectChange); onProjectChangeRef.current = onProjectChange
-  const saveRef            = useRef(save);            saveRef.current = save
+  // Kept stable (the sync mutators/ref are stable; `emit` read via ref) so a host
+  // that places Render in its own header (onProvideRenderTrigger) can store the
+  // callback once without it going stale. `emit(final)` fires synchronously so
+  // the host's chrome flips to "final" immediately; the queued `mutate` makes it
+  // canonical and persists it.
+  const { mutate: syncMutate, projectRef: syncProjectRef } = sync
+  const emitRef = useRef(emit); emitRef.current = emit
   const openRender = useCallback(() => {
-    const final = { ...projectRef.current, status: 'final' } as P
-    onProjectChangeRef.current(final)
-    saveRef.current(final)
+    const final = { ...syncProjectRef.current, status: 'final' } as P
+    emitRef.current(final)
+    void syncMutate(() => final)
     setRenderOpen(true)
-  }, [])
+  }, [syncMutate, syncProjectRef])
   useEffect(() => { onProvideRenderTrigger?.(openRender) }, [onProvideRenderTrigger, openRender])
 
   const { versions, restoring, setRestoring } = useVersionHistory(adapter, project)
@@ -328,14 +345,16 @@ function ReviewSurface<P extends Project>({
   // Repair caption segments whose words[] text has diverged from edited seg.text.
   // Inline caption edits update seg.text but not seg.words; this normalizes the
   // data so PreviewPlayer's word-level timing is correct. Runs once per project.id.
+  // Applied via `applyExternal` (no save, no undo push): it's a local
+  // reconciliation, not a user edit — pushing an undo entry on load would make the
+  // operator's first Cmd-Z undo the repair, and the normalized captions persist on
+  // the next real save anyway.
   useEffect(() => {
     const captions = project.captions
     if (!captions?.segments?.length) return
     const repaired = repairCaptionWords(captions)
     if (!repaired) return
-    const next = { ...project, captions: repaired } as P
-    onProjectChange(next)
-    void adapter.saveProject(next.id, next)
+    sync.applyExternal({ ...project, captions: repaired } as P)
   }, [project.id]) // intentionally keyed on project.id only — runs once per project load
 
   const clips      = project.tracks?.[0] ?? []
@@ -355,45 +374,46 @@ function ReviewSurface<P extends Project>({
 
   // Overlay props dialog — opened from the preview (double-click), the controls
   // bar, or the timeline block. VideoEditor owns the state so all three surfaces
-  // share one modal. Edits ride handleOverlayChange (history + save for free).
+  // share one modal. Edits ride the sync core's transient/commit gesture path
+  // (live preview + one undo step on Save).
   const [editingOverlayId, setEditingOverlayId] = useState<string | null>(null)
-  // Project snapshot taken when the dialog opens, so history/undo and Cancel
-  // revert to the pre-edit state even though edits preview live in between.
+  // Project snapshot taken when the dialog opens, so Cancel reverts to the
+  // pre-edit state even though edits preview live in between.
   const editOriginalRef = useRef<P | null>(null)
   const requestEditOverlay = useCallback((id: string) => {
-    editOriginalRef.current = projectRef.current
+    editOriginalRef.current = syncProjectRef.current
     setEditingOverlayId(id)
-  }, [])
+  }, [syncProjectRef])
   const allVisualItems = (project.tracks ?? []).flat()
   const editingOverlayItem = editingOverlayId
     ? allVisualItems.find(i => i.id === editingOverlayId) ?? null
     : null
 
-  function withItemProps(id: string, nextProps: Record<string, unknown>): P {
+  function withItemProps(base: P, id: string, nextProps: Record<string, unknown>): P {
     return {
-      ...project,
-      tracks: (project.tracks ?? []).map(track =>
+      ...base,
+      tracks: (base.tracks ?? []).map(track =>
         track.map(item => (item.id !== id ? item : { ...item, props: nextProps })),
       ),
     } as P
   }
-  // Live preview: reflect the in-progress edit via onProjectChange only — no
-  // history push, no save — so the overlay re-renders as the operator tweaks.
+  // Live preview: reflect the in-progress edit locally (transient — no save, no
+  // undo push) so the overlay re-renders as the operator tweaks. `commit()` on
+  // Save persists the accumulated transient state as one undo step.
   function previewOverlayProps(id: string, nextProps: Record<string, unknown>) {
-    onProjectChange(withItemProps(id, nextProps))
+    sync.mutateTransient(p => withItemProps(p, id, nextProps))
   }
-  // Commit on Save: snapshot the pre-edit project for undo, then persist.
-  function commitOverlayEdit(id: string, nextProps: Record<string, unknown>) {
-    if (editOriginalRef.current) pushHistory(editOriginalRef.current)
-    const updated = withItemProps(id, nextProps)
-    onProjectChange(updated)
-    save(updated)
+  // Commit on Save: the last preview already applied the final props transiently,
+  // so committing persists them and records one undo step (the pre-edit baseline).
+  function commitOverlayEdit() {
+    void sync.commit()
     editOriginalRef.current = null
     setEditingOverlayId(null)
   }
-  // Cancel/Esc/close: discard the live preview by restoring the snapshot.
+  // Cancel/Esc/close: discard the live preview by restoring the pre-edit snapshot
+  // (no save, no undo push).
   function cancelOverlayEdit() {
-    if (editOriginalRef.current) onProjectChange(editOriginalRef.current)
+    if (editOriginalRef.current) sync.applyExternal(editOriginalRef.current)
     editOriginalRef.current = null
     setEditingOverlayId(null)
   }
@@ -402,91 +422,73 @@ function ReviewSurface<P extends Project>({
     ? allVisualItems.find(i => i.id === primarySelectedId && i.type === 'overlay' && !!i.src) ?? null
     : null
 
-  function pushHistory(prev: P) {
-    historyRef.current = [...historyRef.current.slice(-49), prev]
-    setCanUndo(true)
-  }
-
-  // Edits coming from the timeline (drag/move/track changes): snapshot for undo,
-  // notify host, persist.
+  // Edits coming from the timeline (drag/move/track changes): route through the
+  // sync core — one undo step + queued save + rollback-on-failure.
   function handleProjectChange(p: Project) {
-    pushHistory(project)
-    onProjectChange(p as P)
-    save(p as P)
-  }
-
-  function handleUndo() {
-    const hist = historyRef.current
-    if (!hist.length) return
-    const prev = hist[hist.length - 1]
-    historyRef.current = hist.slice(0, -1)
-    setCanUndo(hist.length > 1)
-    onProjectChange(prev)
-    save(prev)
+    void sync.mutate(() => p as P)
   }
 
   function handleCut(cut: { start: number; end: number }) {
-    pushHistory(project)
-    let updated = primarySelectedId
-      ? applyCutToItem(project, primarySelectedId, cut)
-      : applyCutToTracks(project, cut)
-    if (rippleMode) updated = collapseGaps(updated)
-    onProjectChange(updated as P)
-    save(updated as P)
+    void sync.mutate(p => {
+      let updated = primarySelectedId
+        ? applyCutToItem(p, primarySelectedId, cut)
+        : applyCutToTracks(p, cut)
+      if (rippleMode) updated = collapseGaps(updated)
+      return updated as P
+    })
     setSelectedIds([])
   }
 
   function handleOverlayChange(id: string, changes: OverlayChanges) {
-    pushHistory(project)
-    const updated = {
-      ...project,
-      tracks: (project.tracks ?? []).map(track =>
+    void sync.mutate(p => ({
+      ...p,
+      tracks: (p.tracks ?? []).map(track =>
         track.map(item => item.id !== id ? item : { ...item, ...changes })
       ),
-    } as P
-    onProjectChange(updated)
-    save(updated)
+    } as P))
   }
 
   function handleSplit(at?: number) {
-    const updated = splitAtTime(project, at ?? clock.get(), primarySelectedId ?? null)
-    if (updated === project) return
-    pushHistory(project)
-    onProjectChange(updated as P)
-    save(updated as P)
+    const base = syncProjectRef.current
+    const updated = splitAtTime(base, at ?? clock.get(), primarySelectedId ?? null)
+    if (updated === base) return
+    void sync.mutate(() => updated as P)
   }
 
   function handleRippleToggle() {
     const next = !rippleMode
     setRippleMode(next)
     if (next) {
-      const collapsed = collapseGaps(project)
-      if (collapsed !== project) {
-        pushHistory(project)
-        onProjectChange(collapsed as P)
-        save(collapsed as P)
-      }
+      const base = syncProjectRef.current
+      const collapsed = collapseGaps(base)
+      if (collapsed !== base) void sync.mutate(() => collapsed as P)
     }
   }
 
-  // Keyboard: split (S) and undo (cmd/ctrl-Z). Guarded against text inputs.
+  // Keyboard: split (S), undo (cmd/ctrl-Z), redo (cmd/ctrl-shift-Z or cmd/ctrl-Y).
+  // Guarded against text inputs.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const el = e.target as HTMLElement
       if (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable) return
-      if (e.key === 's' || e.key === 'S') { e.preventDefault(); handleSplit() }
-      if ((e.metaKey || e.ctrlKey) && e.key === 'z') { e.preventDefault(); handleUndo() }
+      if (e.key === 's' || e.key === 'S') { e.preventDefault(); handleSplit(); return }
+      const mod = e.metaKey || e.ctrlKey
+      if (!mod) return
+      const key = e.key.toLowerCase()
+      if (key === 'z' && !e.shiftKey) { e.preventDefault(); sync.undo() }
+      else if ((key === 'z' && e.shiftKey) || key === 'y') { e.preventDefault(); sync.redo() }
     }
     document.addEventListener('keydown', onKey)
     return () => document.removeEventListener('keydown', onKey)
-  }, [project, primarySelectedId, canUndo])
+  }, [project, primarySelectedId, sync])
 
   async function handleRestoreVersion(hash: string) {
     if (!adapter.restoreVersion) return
     setRestoring(hash)
     try {
       const restored = await adapter.restoreVersion(project.id, hash)
-      onProjectChange(restored)
+      // Server-authored, already persisted — apply without a save or undo push.
+      sync.applyExternal(restored)
     } catch (e) {
       console.error(e)
     } finally {
@@ -524,7 +526,7 @@ function ReviewSurface<P extends Project>({
           )}
         </div>
 
-        {/* Track controls bar — info + split + ripple + render */}
+        {/* Track controls bar — info + undo/redo + split + ripple + render */}
         <div className="shrink-0 flex items-center justify-end gap-1.5 px-3 py-1 border-t border-[var(--editor-border)] bg-[var(--editor-surface)]">
           <button
             onClick={() => setShowControls(true)}
@@ -535,13 +537,22 @@ function ReviewSurface<P extends Project>({
             <Info size={12} />
           </button>
           <button
-            onClick={handleUndo}
-            disabled={!canUndo}
+            onClick={sync.undo}
+            disabled={!sync.canUndo}
             title="Undo (Cmd/Ctrl+Z)"
             aria-label="Undo"
             className="flex items-center justify-center w-5 h-5 rounded transition-colors text-[var(--editor-text)]/60 bg-transparent hover:text-[var(--editor-text)] disabled:opacity-30 disabled:cursor-not-allowed"
           >
             <Undo2 size={12} />
+          </button>
+          <button
+            onClick={sync.redo}
+            disabled={!sync.canRedo}
+            title="Redo (Cmd/Ctrl+Shift+Z)"
+            aria-label="Redo"
+            className="flex items-center justify-center w-5 h-5 rounded transition-colors text-[var(--editor-text)]/60 bg-transparent hover:text-[var(--editor-text)] disabled:opacity-30 disabled:cursor-not-allowed"
+          >
+            <Redo2 size={12} />
           </button>
           <button
             onClick={() => handleSplit()}
@@ -610,8 +621,8 @@ function ReviewSurface<P extends Project>({
             project={project}
             clock={clock}
             onProjectChange={handleProjectChange}
-            onCaptionEdit={(p) => { onProjectChange(p as P); save(p as P) }}
-            onOverlayEdit={(p) => { onProjectChange(p as P); save(p as P) }}
+            onCaptionEdit={(p) => void sync.mutate(() => p as P)}
+            onOverlayEdit={(p) => void sync.mutate(() => p as P)}
             onEditOverlay={requestEditOverlay}
             selectedIds={selectedIds}
             onSelectIds={setSelectedIds}
@@ -619,7 +630,7 @@ function ReviewSurface<P extends Project>({
             onCut={handleCut}
             onInspectClip={(id) => setInspecting({ kind: 'clip', id })}
             onInspectAudio={(id) => setInspecting({ kind: 'audio', id })}
-            onSaveProject={(p) => adapter.saveProject(p.id, p as P)}
+            onSaveProject={(p) => sync.mutate(() => p as P)}
             rippleMode={rippleMode}
             getWaveformChunks={getWaveformChunks}
             resolveFilePath={resolveFilePath}
@@ -723,17 +734,17 @@ function ReviewSurface<P extends Project>({
       )}
 
       {/* Caption regen modal — adapter.generateCaptions stream. On done we patch
-          project.captions via onProjectChange only. We deliberately do NOT call
-          save(): montaj persists the regenerated captions server-side and the
-          SSE subscribe frame reconciles, so a saveProject here would double-write. */}
+          project.captions via applyExternal only. We deliberately do NOT save:
+          montaj persists the regenerated captions server-side and the SSE frame
+          reconciles, so a saveProject here would double-write. applyExternal keeps
+          it out of the undo stack (server-authored, not a user edit). */}
       {regenCaptionsOpen && adapter.generateCaptions && (
         <CaptionRegenModal
           adapter={adapter}
           projectId={project.id}
           onClose={() => setRegenCaptionsOpen(false)}
           onDone={(captions) => {
-            const next = { ...project, captions } as P
-            onProjectChange(next)
+            sync.applyExternal({ ...syncProjectRef.current, captions } as P)
             setRegenCaptionsOpen(false)
           }}
         />
@@ -741,15 +752,15 @@ function ReviewSurface<P extends Project>({
 
       {/* Overlay props dialog — edits the selected overlay's primitive props
           (text, colors, numbers, toggles). Opened from the preview double-click,
-          the controls bar, or a timeline block. Rides handleOverlayChange, so
-          edits preview live and undo like any other change. */}
+          the controls bar, or a timeline block. Edits preview live (transient) and
+          undo as one step on Save. */}
       {editingOverlayItem && (
         <OverlayPropsModal
           itemProps={editingOverlayItem.props ?? {}}
           fileUrl={adapter.fileUrl}
           uploadFile={(file) => adapter.uploadFile(file, project.id)}
           onPreview={(next) => previewOverlayProps(editingOverlayItem.id, next)}
-          onSave={(next) => commitOverlayEdit(editingOverlayItem.id, next)}
+          onSave={() => commitOverlayEdit()}
           onClose={cancelOverlayEdit}
         />
       )}

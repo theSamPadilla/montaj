@@ -1,0 +1,37 @@
+{
+  "name": "resize",
+  "description": "Reframe a video to a standard aspect ratio with letterboxing",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "input": {
+        "description": "Source video file",
+        "type": "string"
+      },
+      "ratio": {
+        "description": "Target aspect ratio",
+        "type": "string",
+        "enum": [
+          "9:16",
+          "1:1",
+          "16:9"
+        ]
+      },
+      "out": {
+        "description": "Output file path",
+        "type": "string"
+      }
+    },
+    "required": [
+      "input",
+      "ratio"
+    ]
+  },
+  "_cli_tokens": [
+    "resize"
+  ],
+  "_positionals": [
+    "input"
+  ],
+  "_has_json": true
+}

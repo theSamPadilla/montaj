@@ -1,0 +1,54 @@
+{
+  "name": "snapshot",
+  "description": "Extract frames from a video: grid contact sheet (default), all frames (--frames all), or single frame at a timestamp (--at <sec>).",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "input": {
+        "description": "Source video file",
+        "type": "string"
+      },
+      "cols": {
+        "description": "Grid columns (grid mode)",
+        "type": "integer",
+        "default": 3
+      },
+      "rows": {
+        "description": "Grid rows (grid mode)",
+        "type": "integer",
+        "default": 3
+      },
+      "start": {
+        "description": "Window start in seconds (grid / all-frames mode)",
+        "type": "number",
+        "default": 0.0
+      },
+      "end": {
+        "description": "Window end in seconds (grid / all-frames mode)",
+        "type": "number"
+      },
+      "frames": {
+        "description": "Number of frames to sample (grid mode), or 'all' to extract every frame in the window",
+        "type": "string"
+      },
+      "at": {
+        "description": "Extract a single full-resolution frame at this timestamp (seconds). Mutually exclusive with --frames, --cols, --rows, --start, --end. Used for boundary-frame extraction: scene continuity (Kling --first-frame / --last-frame) and regen stitching",
+        "type": "number"
+      },
+      "out": {
+        "description": "Output file path",
+        "type": "string"
+      }
+    },
+    "required": [
+      "input"
+    ]
+  },
+  "_cli_tokens": [
+    "snapshot"
+  ],
+  "_positionals": [
+    "input"
+  ],
+  "_has_json": true
+}

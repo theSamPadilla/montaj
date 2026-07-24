@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { render, waitFor } from '@testing-library/react'
+import { render, waitFor, act, fireEvent } from '@testing-library/react'
 import type {
   EditorAdapter,
   ImageElement,
@@ -47,14 +47,30 @@ function makeVideoProject(overrides: Partial<Project> = {}): Project {
 
 interface FakeAdapter extends EditorAdapter<Project> {
   saveCalls: Array<{ id: string; project: Project }>
+  /** Push a server-authored SSE frame to every active subscriber. */
+  emit: (project: Project) => void
+  /** When true, saveProject() blocks until flushSaves() so a save stays pending. */
+  setHoldSaves: (hold: boolean) => void
+  /** Resolve every held saveProject() promise. */
+  flushSaves: () => void
 }
 
 function makeFakeAdapter(): FakeAdapter {
   const saveCalls: Array<{ id: string; project: Project }> = []
+  let subscribers: Array<(project: Project) => void> = []
+  let holdSaves = false
+  let saveResolvers: Array<() => void> = []
   return {
     loadProject: vi.fn(async () => makeVideoProject()),
-    saveProject: vi.fn(async (id: string, project: Project) => { saveCalls.push({ id, project }) }),
-    subscribe: () => () => {},
+    saveProject: vi.fn(async (id: string, project: Project) => {
+      saveCalls.push({ id, project })
+      if (holdSaves) await new Promise<void>((resolve) => saveResolvers.push(resolve))
+    }),
+    // Capture the sync core's frame callback so a test can drive SSE frames.
+    subscribe: (_id: string, onFrame: (project: Project) => void) => {
+      subscribers.push(onFrame)
+      return () => { subscribers = subscribers.filter((s) => s !== onFrame) }
+    },
     render: async function* (): AsyncIterable<RenderEvent> {
       yield { type: 'done', outputPath: '/out.mp4' }
     },
@@ -70,6 +86,9 @@ function makeFakeAdapter(): FakeAdapter {
     resolveCaptionTemplate: (style: string) => `/caption/${style}`,
     getInfo: vi.fn(async () => ({ root_skill_path: undefined })),
     saveCalls,
+    emit: (project: Project) => { for (const s of [...subscribers]) s(project) },
+    setHoldSaves: (hold: boolean) => { holdSaves = hold },
+    flushSaves: () => { const r = saveResolvers; saveResolvers = []; r.forEach((res) => res()) },
   }
 }
 
@@ -243,5 +262,180 @@ describe('VideoEditor — editor-package integration', () => {
     expect(merged.props).toEqual({ text: 'New text' })
     expect(merged.offsetX).toBe(5)
     expect(merged.offsetY).toBe(10)
+  })
+
+  // ── Sync core adoption: undo/redo + SSE echo protection ──────────────────────
+  // These drive the one reliable DOM-triggerable mutation (the Render button,
+  // which flips status draft→final through sync.mutate) and then exercise the
+  // shared save/undo core the editor now routes through.
+
+  it('undo restores the pre-mutation project and re-persists it', async () => {
+    const adapter = makeFakeAdapter()
+    const onProjectChange = vi.fn()
+    const { findByText } = render(
+      <VideoEditor
+        project={makeVideoProject({ status: 'draft' })}
+        adapter={adapter}
+        onProjectChange={onProjectChange}
+        slots={{ exportActions: <div /> }}
+      />,
+    )
+
+    // Mutation: Render flips status draft → final and persists via the queue.
+    const renderBtn = await findByText('Render →')
+    await act(async () => { renderBtn.click() })
+    await waitFor(() => expect(adapter.saveCalls[adapter.saveCalls.length - 1]?.project.status).toBe('final'))
+
+    // Undo (Cmd+Z): restores 'draft' AND enqueues a save of the restored state.
+    await act(async () => {
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'z', metaKey: true }))
+    })
+    await waitFor(() => expect(adapter.saveCalls[adapter.saveCalls.length - 1]?.project.status).toBe('draft'))
+    // Host is notified of the restored (draft) authoritative state.
+    expect(onProjectChange).toHaveBeenLastCalledWith(expect.objectContaining({ status: 'draft' }))
+  })
+
+  it('redo re-applies an undone mutation and re-persists it', async () => {
+    const adapter = makeFakeAdapter()
+    const { findByText } = render(
+      <VideoEditor
+        project={makeVideoProject({ status: 'draft' })}
+        adapter={adapter}
+        onProjectChange={vi.fn()}
+        slots={{ exportActions: <div /> }}
+      />,
+    )
+
+    const renderBtn = await findByText('Render →')
+    await act(async () => { renderBtn.click() })
+    await waitFor(() => expect(adapter.saveCalls[adapter.saveCalls.length - 1]?.project.status).toBe('final'))
+
+    // Undo back to draft…
+    await act(async () => {
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'z', metaKey: true }))
+    })
+    await waitFor(() => expect(adapter.saveCalls[adapter.saveCalls.length - 1]?.project.status).toBe('draft'))
+
+    // …then Redo (Cmd+Shift+Z) re-applies 'final'.
+    await act(async () => {
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'z', metaKey: true, shiftKey: true }))
+    })
+    await waitFor(() => expect(adapter.saveCalls[adapter.saveCalls.length - 1]?.project.status).toBe('final'))
+  })
+
+  it('does not clobber an optimistic edit with an SSE frame that arrives mid-save', async () => {
+    const adapter = makeFakeAdapter()
+    adapter.setHoldSaves(true) // saves hang so the mutation queue stays pending
+    const onProjectChange = vi.fn()
+    const { findByText } = render(
+      <VideoEditor
+        project={makeVideoProject({ status: 'draft', name: 'Original' })}
+        adapter={adapter}
+        onProjectChange={onProjectChange}
+        slots={{ exportActions: <div /> }}
+      />,
+    )
+
+    // Optimistic mutation: status → final. Its save is now in-flight (held).
+    const renderBtn = await findByText('Render →')
+    await act(async () => { renderBtn.click() })
+    await waitFor(() =>
+      expect(onProjectChange).toHaveBeenLastCalledWith(expect.objectContaining({ status: 'final' })),
+    )
+
+    // A stale server frame arrives WHILE the save is pending. It must be deferred,
+    // not applied — otherwise it would regress the optimistic 'final' edit.
+    await act(async () => {
+      adapter.emit(makeVideoProject({ status: 'draft', name: 'StaleServerFrame' }))
+    })
+    // Optimistic edit intact: still 'final', and the stale frame never reached the host.
+    expect(onProjectChange).toHaveBeenLastCalledWith(expect.objectContaining({ status: 'final' }))
+    expect(onProjectChange).not.toHaveBeenCalledWith(expect.objectContaining({ name: 'StaleServerFrame' }))
+
+    // Once the save drains, the deferred frame is applied (last-write-wins).
+    await act(async () => { adapter.flushSaves() })
+    await waitFor(() =>
+      expect(onProjectChange).toHaveBeenLastCalledWith(expect.objectContaining({ name: 'StaleServerFrame' })),
+    )
+  })
+
+  // Regression: cancelOverlayEdit routes through sync.applyExternal (see
+  // use-project-sync.ts) to revert the live preview. applyExternal used to leave
+  // the sync core's transient-gesture baseline pointing at the pre-edit snapshot;
+  // if a real external frame then arrived before the *next* gesture, that next
+  // gesture would see a non-null baseline and skip re-baselining, so its commit
+  // pushed the STALE pre-first-gesture snapshot as the undo target — a later
+  // Undo would silently discard the external change. Drives the actual DOM path
+  // (select overlay → open dialog → live preview → Cancel) rather than the core
+  // directly, to prove the fix holds through VideoEditor's wiring too.
+  it('Cancel after previewing an overlay-props edit reverts the project, and a later gesture is not corrupted by the stale pre-edit baseline', async () => {
+    const adapter = makeFakeAdapter()
+    const onProjectChange = vi.fn()
+    const initial = makeVideoProject({
+      name: 'Original',
+      tracks: [
+        [{ id: 'clip-0', type: 'video', src: 'a.mp4', start: 0, end: 4, inPoint: 0, outPoint: 4 }],
+        [{ id: 'overlay-1', type: 'overlay', src: 'overlay.jsx', start: 0, end: 4, props: { text: 'Old text' } }],
+      ],
+    })
+    const { findByText, findByTitle, findByLabelText, getByText } = render(
+      <VideoEditor
+        project={initial}
+        adapter={adapter}
+        onProjectChange={onProjectChange}
+        slots={{ exportActions: <div /> }}
+      />,
+    )
+
+    // Select the overlay item — additive (metaKey) click sidesteps the plain-
+    // click playhead-seek branch, which needs real layout metrics jsdom doesn't
+    // provide — then open its props dialog via the timeline's Pencil button.
+    const overlayBlock = await findByText('▪ overlay')
+    fireEvent.click(overlayBlock, { metaKey: true })
+    const editBtn = await findByTitle('Edit overlay')
+    fireEvent.click(editBtn)
+
+    // Preview an edit — mutateTransient baselines against the pre-gesture state.
+    const textField = await findByLabelText('text')
+    fireEvent.change(textField, { target: { value: 'Live preview' } })
+    await waitFor(() => expect(onProjectChange).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        tracks: expect.arrayContaining([
+          expect.arrayContaining([expect.objectContaining({ id: 'overlay-1', props: { text: 'Live preview' } })]),
+        ]),
+      }),
+    ))
+
+    // Cancel — routes through applyExternal, reverting to the pre-edit snapshot.
+    fireEvent.click(getByText('Cancel'))
+    await waitFor(() => expect(onProjectChange).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        name: 'Original',
+        tracks: expect.arrayContaining([
+          expect.arrayContaining([expect.objectContaining({ id: 'overlay-1', props: { text: 'Old text' } })]),
+        ]),
+      }),
+    ))
+
+    // A real external frame now arrives (SSE echo / caption regen / restoreVersion)
+    // — an authoritative change that must survive whatever the cancelled gesture
+    // left behind in the sync core.
+    await act(async () => { adapter.emit({ ...initial, name: 'FromServer' }) })
+    await waitFor(() => expect(onProjectChange).toHaveBeenLastCalledWith(expect.objectContaining({ name: 'FromServer' })))
+
+    // A second overlay-props gesture must baseline against THIS state, not a
+    // stale pre-first-gesture snapshot left behind if Cancel failed to clear it.
+    const editBtn2 = await findByTitle('Edit overlay')
+    fireEvent.click(editBtn2)
+    const textField2 = await findByLabelText('text')
+    fireEvent.change(textField2, { target: { value: 'Second edit' } })
+    fireEvent.click(getByText('Save'))
+
+    // Undo should remove only the second gesture, landing back on the external
+    // ('FromServer') state — not the stale first-gesture baseline ('Original').
+    await act(async () => {
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'z', metaKey: true }))
+    })
+    await waitFor(() => expect(onProjectChange).toHaveBeenLastCalledWith(expect.objectContaining({ name: 'FromServer' })))
   })
 })

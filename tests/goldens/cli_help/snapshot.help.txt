@@ -1,0 +1,24 @@
+usage: montaj snapshot [-h] [--cols COLS] [--rows ROWS] [--start START]
+                       [--end END] [--frames FRAMES] [--at AT] [--json]
+                       [--out PATH] [--quiet]
+                       input
+
+positional arguments:
+  input            Source video file
+
+options:
+  -h, --help       show this help message and exit
+  --cols COLS      Grid columns (grid mode)
+  --rows ROWS      Grid rows (grid mode)
+  --start START    Window start in seconds (grid / all-frames mode)
+  --end END        Window end in seconds (grid / all-frames mode)
+  --frames FRAMES  Number of frames to sample (grid mode), or 'all' to extract
+                   every frame in the window
+  --at AT          Extract a single full-resolution frame at this timestamp
+                   (seconds). Mutually exclusive with --frames, --cols,
+                   --rows, --start, --end. Used for boundary-frame extraction:
+                   scene continuity (Kling --first-frame / --last-frame) and
+                   regen stitching.
+  --json           Output result as JSON
+  --out PATH       Output file path
+  --quiet          Suppress progress output

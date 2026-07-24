@@ -1,0 +1,37 @@
+{
+  "name": "extract_audio",
+  "description": "Extract the audio track from a video as a standalone audio file",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "input": {
+        "description": "Source video file",
+        "type": "string"
+      },
+      "format": {
+        "description": "Output audio format",
+        "type": "string",
+        "enum": [
+          "wav",
+          "mp3",
+          "aac"
+        ],
+        "default": "wav"
+      },
+      "out": {
+        "description": "Output file path",
+        "type": "string"
+      }
+    },
+    "required": [
+      "input"
+    ]
+  },
+  "_cli_tokens": [
+    "extract-audio"
+  ],
+  "_positionals": [
+    "input"
+  ],
+  "_has_json": true
+}

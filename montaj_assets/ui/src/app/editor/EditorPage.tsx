@@ -84,6 +84,14 @@ function RunHistorySidebar({ history, onRestore }: { history: RunSnapshot[]; onR
   )
 }
 
+// True for an ai_video project still on the storyboard stage (pending generation
+// or awaiting storyboard review) — the one desktop project shape that renders
+// StoryboardView instead of a package editor. Shared by packageEditorMounted and
+// the view-selection branch below so the two stay in lockstep by construction.
+function isStoryboardStage(project: Project): boolean {
+  return project.projectType === 'ai_video' && (project.status === 'pending' || project.status === 'storyboard_ready')
+}
+
 export default function EditorPage() {
   const { id } = useParams<{ id: string }>()
   const location = useLocation()
@@ -116,7 +124,20 @@ export default function EditorPage() {
   // EventSource opens immediately without waiting for the first fetch to resolve,
   // avoiding a create/destroy cycle on the first non-null transition.
   const [logMessage, setLogMessage] = useState<string | null>(null)
-  const handleUpdate = useCallback((p: Project) => setProject(p), [])
+  // The desktop package editors (Carousel/Video) own their own SSE subscription
+  // (via the adapter, over the shared per-project stream pool) and are
+  // authoritative — they apply frames with echo protection and propagate every
+  // change through onProjectChange. Pushing the raw frame into `project` here too
+  // would bypass that echo protection and fight the editor's optimistic state.
+  // So only feed SSE frames into `project` for views that own NO subscription
+  // (mobile previews, storyboard, upload); when a package editor is mounted its
+  // onProjectChange keeps this chrome copy fresh. Kept in a ref because
+  // handleUpdate must stay stable (useProjectStream omits it from its deps).
+  const packageEditorMountedRef = useRef(false)
+  const handleUpdate = useCallback((p: Project) => {
+    if (packageEditorMountedRef.current) return
+    setProject(p)
+  }, [])
   const handleLog    = useCallback((msg: string) => setLogMessage(msg), [])
   useProjectStream(id !== 'new' ? id : undefined, handleUpdate, handleLog)
 
@@ -131,6 +152,17 @@ export default function EditorPage() {
   }, [id, project?.status, project?.projectType])
 
   const isMobile = useIsMobile()
+
+  // True while a desktop package editor (Carousel/Video) is mounted — mirror the
+  // render branches below: every desktop project renders a package editor EXCEPT
+  // the ai_video storyboard stage (StoryboardView) and every mobile view. Those
+  // exceptions own no SSE subscription, so they still need frames pushed into
+  // `project` via handleUpdate. Written every render into the ref handleUpdate reads.
+  const packageEditorMounted =
+    !isMobile &&
+    !!project &&
+    !isStoryboardStage(project)
+  packageEditorMountedRef.current = packageEditorMounted
 
   // Montaj-native EditorAdapter for the package editors. Stable across renders.
   const adapter = useMemo(() => createMontajAdapter(), [])
@@ -322,7 +354,7 @@ export default function EditorPage() {
           slots={carouselSlots}
         />
       )
-  } else if (project.projectType === 'ai_video' && (project.status === 'pending' || project.status === 'storyboard_ready')) {
+  } else if (isStoryboardStage(project)) {
     view = isMobile
       ? <MobileEditNotice
           project={project}

@@ -30,6 +30,7 @@
       "name": "start",
       "type": "float",
       "required": false,
+      "default": 0.0,
       "description": "Window start in seconds (grid / all-frames mode)"
     },
     {

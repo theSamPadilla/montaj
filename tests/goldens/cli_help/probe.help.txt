@@ -1,0 +1,10 @@
+usage: montaj probe [-h] [--json] [--out PATH] [--quiet] input
+
+positional arguments:
+  input       Video file to probe
+
+options:
+  -h, --help  show this help message and exit
+  --json      Output result as JSON
+  --out PATH  Output file path
+  --quiet     Suppress progress output

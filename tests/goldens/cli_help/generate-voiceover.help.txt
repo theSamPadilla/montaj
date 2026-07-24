@@ -1,0 +1,27 @@
+usage: montaj generate-voiceover [-h] [--text TEXT] [--text-file TEXT_FILE]
+                                 --voice VOICE [--vendor {kling,gemini}]
+                                 [--model MODEL] [--speed SPEED]
+                                 [--language LANGUAGE] [--json] [--out PATH]
+                                 [--quiet]
+
+options:
+  -h, --help            show this help message and exit
+  --text TEXT           Script text (inline). Mutually exclusive with --text-
+                        file.
+  --text-file TEXT_FILE
+                        Path to a file containing the script. Mutually
+                        exclusive with --text.
+  --voice VOICE         Voice identifier (vendor-specific). For Kling:
+                        voice_id or alias from TTS_VOICES. For Gemini:
+                        prebuilt voice name (e.g. 'Kore', 'Puck').
+  --vendor {kling,gemini}
+                        TTS vendor to use
+  --model MODEL         Override the connector's default model for the chosen
+                        vendor
+  --speed SPEED         Playback speed multiplier. Kling only; ignored for
+                        Gemini.
+  --language LANGUAGE   Language hint (e.g. 'en', 'zh'). Kling only; ignored
+                        for Gemini.
+  --json                Output result as JSON
+  --out PATH            Output file path
+  --quiet               Suppress progress output

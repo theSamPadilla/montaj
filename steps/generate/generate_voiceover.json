@@ -1,10 +1,6 @@
 {
   "name": "generate_voiceover",
   "description": "Synthesise a voiceover audio file from text via Kling or Gemini TTS. Generation step — produces a file on disk; composition happens at render time.",
-  "input": {
-    "type": "any",
-    "description": "Text (via --text or --text-file)"
-  },
   "output": {
     "type": "audio",
     "description": "Path to the generated voiceover audio file (plus duration metadata when --json)"

@@ -1,0 +1,47 @@
+{
+  "name": "filler",
+  "description": "Remove filler words (um, uh, hmm) and surrounding silence from a clip",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "input": {
+        "description": "Source video file or trim spec JSON from a prior step",
+        "type": "string"
+      },
+      "model": {
+        "description": "Whisper model for filler detection. Larger = slower + more accurate. English-only (*.en) models are auto-upgraded to a multilingual sibling when language is non-English",
+        "type": "string",
+        "enum": [
+          "tiny.en",
+          "base.en",
+          "medium.en",
+          "tiny",
+          "base",
+          "medium",
+          "large",
+          "large-v3"
+        ],
+        "default": "base.en"
+      },
+      "language": {
+        "description": "Language code (e.g. es) for transcription and filler matching, or 'auto'. Selects the per-language hesitation-filler set and upgrades *.en models to multilingual",
+        "type": "string",
+        "default": "en"
+      },
+      "out": {
+        "description": "Output file path",
+        "type": "string"
+      }
+    },
+    "required": [
+      "input"
+    ]
+  },
+  "_cli_tokens": [
+    "filler"
+  ],
+  "_positionals": [
+    "input"
+  ],
+  "_has_json": true
+}

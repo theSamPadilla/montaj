@@ -1,0 +1,27 @@
+{
+  "name": "probe",
+  "description": "Extract metadata from a video file: duration, resolution, fps, codec, audio",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "input": {
+        "description": "Video file to probe",
+        "type": "string"
+      },
+      "out": {
+        "description": "Output file path",
+        "type": "string"
+      }
+    },
+    "required": [
+      "input"
+    ]
+  },
+  "_cli_tokens": [
+    "probe"
+  ],
+  "_positionals": [
+    "input"
+  ],
+  "_has_json": true
+}

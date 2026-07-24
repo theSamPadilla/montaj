@@ -1,0 +1,25 @@
+usage: montaj lyrics-sync [-h] --lyrics LYRICS
+                          [--model {tiny.en,base.en,medium.en,large}]
+                          [--language LANGUAGE] [--start START] [--end END]
+                          [--json] [--out PATH] [--quiet]
+                          input
+
+positional arguments:
+  input                 Vocals WAV from stem_separation (--stems vocals), or
+                        any audio/video file
+
+options:
+  -h, --help            show this help message and exit
+  --lyrics LYRICS       Path to lyrics text file. One phrase per line. Blank
+                        lines ignored.
+  --model {tiny.en,base.en,medium.en,large}
+                        Whisper model. medium.en gives more word matches and
+                        tighter timestamps. base.en is faster.
+  --language LANGUAGE   Language code passed to Whisper (default: en)
+  --start START         Optional: override start time in seconds (skips auto-
+                        detection). Use when auto-detection is off.
+  --end END             Optional: override end time in seconds (skips auto-
+                        detection).
+  --json                Output result as JSON
+  --out PATH            Output file path
+  --quiet               Suppress progress output

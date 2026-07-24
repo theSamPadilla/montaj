@@ -1,0 +1,105 @@
+{
+  "name": "kling_generate",
+  "description": "Generate video via Kling v3 Omni. Standalone mode: pass --prompt and --ref-image directly. Project-aware mode: pass --project-id and --scene-id and the step reads the project, composes the prompt (styleAnchor + ref clause + inline tokens), generates, and saves the clip to tracks[0]. Also supports multi-shot (up to 6 scenes in one API call).",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "prompt": {
+        "description": "Scene description (max 2500 chars). Required in single-shot mode and in multi-shot intelligence mode; invalid in multi-shot customize mode",
+        "type": "string"
+      },
+      "first_frame": {
+        "description": "Starting image. Not supported in multi-shot mode",
+        "type": "string"
+      },
+      "last_frame": {
+        "description": "Ending image (requires --first-frame). Not supported in multi-shot mode",
+        "type": "string"
+      },
+      "ref_image": {
+        "description": "Reference image (max 7)",
+        "type": "string",
+        "default": []
+      },
+      "duration": {
+        "description": "Clip length in seconds (3-15). Ignored in multi-shot customize mode (derived from sum of multi_prompt durations)",
+        "type": "integer",
+        "default": 5
+      },
+      "negative_prompt": {
+        "description": "Things to avoid",
+        "type": "string"
+      },
+      "sound": {
+        "description": "on|off",
+        "type": "string",
+        "enum": [
+          "on",
+          "off"
+        ],
+        "default": "on"
+      },
+      "aspect_ratio": {
+        "description": "16:9|9:16|1:1",
+        "type": "string",
+        "default": "16:9"
+      },
+      "mode": {
+        "description": "std|pro",
+        "type": "string",
+        "enum": [
+          "std",
+          "pro"
+        ],
+        "default": "std"
+      },
+      "model": {
+        "description": "kling-v3-omni (flexible durations, multi-shot) | kling-video-o1 (newer, 5s/10s only, no multi-shot)",
+        "type": "string",
+        "enum": [
+          "kling-v3-omni",
+          "kling-video-o1"
+        ],
+        "default": "kling-v3-omni"
+      },
+      "external_task_id": {
+        "description": "Caller correlation ID echoed back by Kling on queries",
+        "type": "string"
+      },
+      "multi_shot": {
+        "description": "Enable multi-shot mode (up to 6 scenes in one API call)",
+        "type": "boolean",
+        "default": false
+      },
+      "shot_type": {
+        "description": "customize|intelligence. Required when --multi-shot is set. customize = caller defines each shot via --multi-prompt; intelligence = Kling splits a single --prompt into shots",
+        "type": "string",
+        "enum": [
+          "customize",
+          "intelligence"
+        ]
+      },
+      "multi_prompt": {
+        "description": "JSON array of storyboard entries: [{\"index\":1,\"prompt\":\"...\",\"duration\":\"3\"}, ...]. 1-6 entries, per-prompt cap 512 chars. Required when --shot-type=customize",
+        "type": "string"
+      },
+      "project_id": {
+        "description": "Project ID. When set with --scene-id, enables project-aware mode: step reads project, composes prompt, generates, and saves clip to tracks[0]",
+        "type": "string"
+      },
+      "scene_id": {
+        "description": "Scene ID within the storyboard. Requires --project-id",
+        "type": "string"
+      },
+      "out": {
+        "description": "Output file path",
+        "type": "string"
+      }
+    }
+  },
+  "_cli_tokens": [
+    "kling-generate"
+  ],
+  "_positionals": [],
+  "_has_json": true
+}

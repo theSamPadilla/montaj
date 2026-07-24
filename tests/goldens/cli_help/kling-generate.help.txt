@@ -1,0 +1,61 @@
+usage: montaj kling-generate [-h] [--prompt PROMPT]
+                             [--first-frame FIRST_FRAME]
+                             [--last-frame LAST_FRAME] [--ref-image REF_IMAGE]
+                             [--duration DURATION]
+                             [--negative-prompt NEGATIVE_PROMPT]
+                             [--sound {on,off}] [--aspect-ratio ASPECT_RATIO]
+                             [--mode {std,pro}]
+                             [--model {kling-v3-omni,kling-video-o1}]
+                             [--external-task-id EXTERNAL_TASK_ID]
+                             [--multi-shot]
+                             [--shot-type {customize,intelligence}]
+                             [--multi-prompt MULTI_PROMPT]
+                             [--project-id PROJECT_ID] [--scene-id SCENE_ID]
+                             [--json] [--out PATH] [--quiet]
+
+options:
+  -h, --help            show this help message and exit
+  --prompt PROMPT       Scene description (max 2500 chars). Required in
+                        single-shot mode and in multi-shot intelligence mode;
+                        invalid in multi-shot customize mode.
+  --first-frame FIRST_FRAME
+                        Starting image. Not supported in multi-shot mode.
+  --last-frame LAST_FRAME
+                        Ending image (requires --first-frame). Not supported
+                        in multi-shot mode.
+  --ref-image REF_IMAGE
+                        Reference image (max 7)
+  --duration DURATION   Clip length in seconds (3-15). Ignored in multi-shot
+                        customize mode (derived from sum of multi_prompt
+                        durations).
+  --negative-prompt NEGATIVE_PROMPT
+                        Things to avoid
+  --sound {on,off}      on|off
+  --aspect-ratio ASPECT_RATIO
+                        16:9|9:16|1:1
+  --mode {std,pro}      std|pro
+  --model {kling-v3-omni,kling-video-o1}
+                        kling-v3-omni (flexible durations, multi-shot) |
+                        kling-video-o1 (newer, 5s/10s only, no multi-shot)
+  --external-task-id EXTERNAL_TASK_ID
+                        Caller correlation ID echoed back by Kling on queries
+  --multi-shot          Enable multi-shot mode (up to 6 scenes in one API
+                        call)
+  --shot-type {customize,intelligence}
+                        customize|intelligence. Required when --multi-shot is
+                        set. customize = caller defines each shot via --multi-
+                        prompt; intelligence = Kling splits a single --prompt
+                        into shots.
+  --multi-prompt MULTI_PROMPT
+                        JSON array of storyboard entries:
+                        [{"index":1,"prompt":"...","duration":"3"}, ...]. 1-6
+                        entries, per-prompt cap 512 chars. Required when
+                        --shot-type=customize.
+  --project-id PROJECT_ID
+                        Project ID. When set with --scene-id, enables project-
+                        aware mode: step reads project, composes prompt,
+                        generates, and saves clip to tracks[0].
+  --scene-id SCENE_ID   Scene ID within the storyboard. Requires --project-id.
+  --json                Output result as JSON
+  --out PATH            Output file path
+  --quiet               Suppress progress output

@@ -1,0 +1,42 @@
+{
+  "name": "analyze_media",
+  "description": "Analyze a media file (video, audio, or image) with Gemini Flash. Ask questions, extract structured data, describe content.",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "input": {
+        "description": "Video, audio, or image file to analyze",
+        "type": "string"
+      },
+      "prompt": {
+        "description": "Question or instruction",
+        "type": "string"
+      },
+      "model": {
+        "description": "Gemini model ID",
+        "type": "string",
+        "default": "gemini-2.5-flash"
+      },
+      "json_output": {
+        "description": "Request structured JSON output from the model",
+        "type": "boolean",
+        "default": false
+      },
+      "out": {
+        "description": "Output file path",
+        "type": "string"
+      }
+    },
+    "required": [
+      "input",
+      "prompt"
+    ]
+  },
+  "_cli_tokens": [
+    "analyze-media"
+  ],
+  "_positionals": [
+    "input"
+  ],
+  "_has_json": true
+}

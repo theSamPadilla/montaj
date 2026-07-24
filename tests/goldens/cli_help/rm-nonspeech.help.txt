@@ -1,0 +1,26 @@
+usage: montaj rm-nonspeech [-h] [--model MODEL] [--max-word-gap MAX_WORD_GAP]
+                           [--sentence-edge SENTENCE_EDGE]
+                           [--language LANGUAGE] [--json] [--out PATH]
+                           [--quiet]
+                           input
+
+positional arguments:
+  input                 Source video file or trim spec JSON from a prior step
+
+options:
+  -h, --help            show this help message and exit
+  --model MODEL         Whisper model for speech detection. Larger = slower +
+                        more accurate.
+  --max-word-gap MAX_WORD_GAP
+                        Maximum gap between words to bridge in seconds. Larger
+                        = fewer cuts.
+  --sentence-edge SENTENCE_EDGE
+                        Padding to keep before and after each speech region in
+                        seconds
+  --language LANGUAGE   Whisper language code (e.g. es), or 'auto' to detect.
+                        A non-English value auto-upgrades an *.en model to its
+                        multilingual sibling — pass it for non-English audio,
+                        otherwise speech is mis-detected and cut as silence.
+  --json                Output result as JSON
+  --out PATH            Output file path
+  --quiet               Suppress progress output

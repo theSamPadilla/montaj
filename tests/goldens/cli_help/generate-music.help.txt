@@ -1,0 +1,17 @@
+usage: montaj generate-music [-h] --prompt PROMPT [--model MODEL]
+                             [--seed SEED] [--with-vocals] [--json]
+                             [--out PATH] [--quiet]
+
+options:
+  -h, --help       show this help message and exit
+  --prompt PROMPT  Text description of the music (genre, mood,
+                   instrumentation, BPM)
+  --model MODEL    Override the Lyria model (default: lyria-3-clip-preview,
+                   ~30s clips)
+  --seed SEED      RNG seed for reproducible outputs
+  --with-vocals    Allow vocals in the output. Omit (default) for
+                   instrumental-only — recommended for background music under
+                   narration.
+  --json           Output result as JSON
+  --out PATH       Output file path
+  --quiet          Suppress progress output

@@ -1,0 +1,22 @@
+usage: montaj stem-separation [-h] [--stems STEMS]
+                              [--model {htdemucs,htdemucs_ft,mdx_extra}]
+                              [--out-dir OUT_DIR] [--json] [--out PATH]
+                              [--quiet]
+                              input
+
+positional arguments:
+  input                 Audio or video file to separate
+
+options:
+  -h, --help            show this help message and exit
+  --stems STEMS         Comma-separated stems to output: vocals, drums, bass,
+                        other, or 'all'. For lyrics_sync, use 'vocals'.
+  --model {htdemucs,htdemucs_ft,mdx_extra}
+                        Demucs model. htdemucs is the default hybrid
+                        transformer model. htdemucs_ft is fine-tuned (slower,
+                        slightly better). mdx_extra is an alternative
+                        architecture.
+  --out-dir OUT_DIR     Directory for stem WAV files (default: <input>_stems/)
+  --json                Output result as JSON
+  --out PATH            Output file path
+  --quiet               Suppress progress output

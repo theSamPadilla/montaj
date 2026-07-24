@@ -1,10 +1,6 @@
 {
   "name": "generate_music",
   "description": "Generate a music clip from a text prompt via Gemini Lyria 3 Clip. Generation step — produces a file on disk; composition happens at render time.",
-  "input": {
-    "type": "any",
-    "description": "Text prompt (via --prompt)"
-  },
   "output": {
     "type": "audio",
     "description": "Path to the generated music clip (plus duration metadata when --json)"

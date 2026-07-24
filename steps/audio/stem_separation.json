@@ -22,6 +22,11 @@
       "default": "htdemucs",
       "options": ["htdemucs", "htdemucs_ft", "mdx_extra"],
       "description": "Demucs model. htdemucs is the default hybrid transformer model. htdemucs_ft is fine-tuned (slower, slightly better). mdx_extra is an alternative architecture."
+    },
+    {
+      "name": "out-dir",
+      "type": "string",
+      "description": "Directory for stem WAV files (default: <input>_stems/)"
     }
   ]
 }

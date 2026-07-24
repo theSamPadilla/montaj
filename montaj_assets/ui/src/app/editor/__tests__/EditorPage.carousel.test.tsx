@@ -43,6 +43,9 @@ vi.mock('@/lib/api', () => ({
 
 vi.mock('@/lib/sse', () => ({
   useProjectStream: vi.fn(),
+  // The montaj adapter's `subscribe` (used by the package editor) multiplexes
+  // over this shared pool; stub it to a no-op unsubscribe.
+  subscribeProjectStream: vi.fn(() => () => {}),
 }))
 
 vi.mock('@/lib/useIsMobile', () => ({

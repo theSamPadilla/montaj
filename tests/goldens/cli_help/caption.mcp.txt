@@ -1,0 +1,41 @@
+{
+  "name": "caption",
+  "description": "Convert word-level transcript JSON to a caption track for the render engine",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "input": {
+        "description": "Word-level JSON transcript from the transcribe step",
+        "type": "string"
+      },
+      "style": {
+        "description": "Caption animation style",
+        "type": "string",
+        "enum": [
+          "word-by-word",
+          "karaoke",
+          "subtitle",
+          "pop",
+          "highlight-box",
+          "outline",
+          "clean"
+        ],
+        "default": "word-by-word"
+      },
+      "out": {
+        "description": "Output file path",
+        "type": "string"
+      }
+    },
+    "required": [
+      "input"
+    ]
+  },
+  "_cli_tokens": [
+    "caption"
+  ],
+  "_positionals": [
+    "input"
+  ],
+  "_has_json": true
+}

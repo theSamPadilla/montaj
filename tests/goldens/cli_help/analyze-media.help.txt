@@ -1,0 +1,15 @@
+usage: montaj analyze-media [-h] --prompt PROMPT [--model MODEL]
+                            [--json-output] [--json] [--out PATH] [--quiet]
+                            input
+
+positional arguments:
+  input            Video, audio, or image file to analyze
+
+options:
+  -h, --help       show this help message and exit
+  --prompt PROMPT  Question or instruction
+  --model MODEL    Gemini model ID
+  --json-output    Request structured JSON output from the model
+  --json           Output result as JSON
+  --out PATH       Output file path
+  --quiet          Suppress progress output

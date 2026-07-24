@@ -120,27 +120,36 @@ def _collect(tokens, parser, out, description=None):
     })
 
 
+# Explicit allowlist of top-level commands exported as MCP tools. A conscious
+# surface choice, NOT registry drift: this is exactly the set the previous
+# hardcoded import list registered. Notably it OMITS the 5 step commands
+# (stem-separation, lyrics-sync, lyrics-render, generate-music,
+# generate-voiceover) — expanding MCP's surface is a separate decision. Commands
+# with subcommands (workflow, sample, profile) flatten into multiple tools.
+_EXPORTED_COMMANDS = frozenset({
+    'run', 'render', 'workflow', 'fetch', 'profile',
+    'probe', 'snapshot', 'sample', 'filler', 'waveform-trim', 'rm-nonspeech',
+    'materialize-cut', 'resize', 'normalize', 'extract-audio',
+    'transcribe', 'caption', 'status', 'remove-bg', 'init',
+    'kling-generate', 'analyze-media', 'generate-image', 'upload',
+})
+
+
 def export():
-    """Return list of MCP tool dicts for all usable CLI commands."""
-    from cli.commands import (
-        run, render, workflow, fetch, profile,
-        probe, snapshot, sample, filler, waveform_trim, rm_nonspeech,
-        materialize_cut, resize, normalize, extract_audio,
-        transcribe, caption, status, remove_bg, init,
-        kling_generate, analyze_media, generate_image, upload,
-    )
+    """Return list of MCP tool dicts for the allowlisted CLI commands.
+
+    Builds each command's parser through ``cli.main``'s command registry (so
+    migrated single-step commands come from their schema-driven generator and
+    hand-written commands from their modules), rather than a hardcoded import
+    list. The exported tool set is fixed by ``_EXPORTED_COMMANDS``.
+    """
+    from cli.main import register_command
 
     parser     = argparse.ArgumentParser(prog='montaj')
     subparsers = parser.add_subparsers(dest='command')
 
-    for mod in [
-        run, render, workflow, fetch, profile,
-        probe, snapshot, sample, filler, waveform_trim, rm_nonspeech,
-        materialize_cut, resize, normalize, extract_audio,
-        transcribe, caption, status, remove_bg, init,
-        kling_generate, analyze_media, generate_image, upload,
-    ]:
-        mod.register(subparsers)
+    for name in sorted(_EXPORTED_COMMANDS):
+        register_command(name, subparsers)
 
     top_help = {a.dest: a.help for a in subparsers._choices_actions}
 

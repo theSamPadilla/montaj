@@ -25,6 +25,7 @@ import {
   clearOverlayCache as hostClearOverlayCache,
 } from '@/lib/overlay-eval'
 import { watchWorkspaceFile } from '@/lib/file-watch'
+import { subscribeProjectStream } from '@/lib/sse'
 import type {
   EditorAdapter,
   OverlayFactory,
@@ -66,23 +67,14 @@ export function createMontajAdapter(): EditorAdapter<Project> {
       await api.saveProject(id, project)
     },
 
-    subscribe: (id: string, onFrame: (project: Project) => void): (() => void) => {
-      // Mirrors `useProjectStream`'s default-event parsing — the unnamed SSE
-      // event carries the full project.json frame. 'log' events are ignored
-      // here; CarouselEditor surfaces those via its own useProjectStream.
-      const es = new EventSource(`/api/projects/${id}/stream`)
-      es.onmessage = (e) => {
-        try {
-          onFrame(JSON.parse(e.data) as Project)
-        } catch {
-          console.warn('[montajAdapter] malformed project frame:', e.data)
-        }
-      }
-      es.onerror = () => {
-        // EventSource retries automatically; nothing to do.
-      }
-      return () => es.close()
-    },
+    subscribe: (id: string, onFrame: (project: Project) => void): (() => void) =>
+      // Multiplex over the shared per-project SSE pool (lib/sse) rather than
+      // opening a dedicated EventSource: the host page's `useProjectStream` and
+      // this editor subscription would otherwise be two connections to the same
+      // `/api/projects/:id/stream` URL (the pool exists to avoid the browser
+      // connection-pool exhaustion that froze the editor — CHANGELOG v3.6.2).
+      // 'log' events are ignored here; the host consumes those via useProjectStream.
+      subscribeProjectStream(id, { onFrame }),
 
     render: (id: string, _opts?: RenderOptions): AsyncIterable<RenderEvent> => {
       // Bridge api.renderProject's callback SSE into an async iterable. Events

@@ -12,9 +12,8 @@
   "params": [
     {
       "name": "model",
-      "type": "enum",
-      "default": "base.en",
-      "options": ["tiny", "base", "base.en", "medium", "large"],
+      "type": "string",
+      "default": "base",
       "description": "Whisper model for speech detection. Larger = slower + more accurate."
     },
     {

@@ -1,0 +1,14 @@
+usage: montaj resize [-h] --ratio {9:16,1:1,16:9} [--json] [--out PATH]
+                     [--quiet]
+                     input
+
+positional arguments:
+  input                 Source video file
+
+options:
+  -h, --help            show this help message and exit
+  --ratio {9:16,1:1,16:9}
+                        Target aspect ratio
+  --json                Output result as JSON
+  --out PATH            Output file path
+  --quiet               Suppress progress output

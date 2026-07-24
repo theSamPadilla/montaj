@@ -1,0 +1,14 @@
+usage: montaj extract-audio [-h] [--format {wav,mp3,aac}] [--json]
+                            [--out PATH] [--quiet]
+                            input
+
+positional arguments:
+  input                 Source video file
+
+options:
+  -h, --help            show this help message and exit
+  --format {wav,mp3,aac}
+                        Output audio format
+  --json                Output result as JSON
+  --out PATH            Output file path
+  --quiet               Suppress progress output

@@ -1,0 +1,47 @@
+{
+  "name": "rm_nonspeech",
+  "description": "Remove all non-speech regions using whisper word-level timestamps",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "input": {
+        "description": "Source video file or trim spec JSON from a prior step",
+        "type": "string"
+      },
+      "model": {
+        "description": "Whisper model for speech detection. Larger = slower + more accurate",
+        "type": "string",
+        "default": "base"
+      },
+      "max_word_gap": {
+        "description": "Maximum gap between words to bridge in seconds. Larger = fewer cuts",
+        "type": "number",
+        "default": 0.18
+      },
+      "sentence_edge": {
+        "description": "Padding to keep before and after each speech region in seconds",
+        "type": "number",
+        "default": 0.1
+      },
+      "language": {
+        "description": "Whisper language code (e.g. es), or 'auto' to detect. A non-English value auto-upgrades an *.en model to its multilingual sibling \u2014 pass it for non-English audio, otherwise speech is mis-detected and cut as silence",
+        "type": "string",
+        "default": "en"
+      },
+      "out": {
+        "description": "Output file path",
+        "type": "string"
+      }
+    },
+    "required": [
+      "input"
+    ]
+  },
+  "_cli_tokens": [
+    "rm-nonspeech"
+  ],
+  "_positionals": [
+    "input"
+  ],
+  "_has_json": true
+}

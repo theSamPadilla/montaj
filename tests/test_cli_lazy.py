@@ -12,11 +12,23 @@ def _run(*args):
 
 
 def test_single_command_does_not_import_siblings():
+    # render is a still-hand-written command (probe is now schema-generated).
+    r = _run("render", "--help")
+    assert r.returncode == 0
+    assert "cli.commands.render" in r.stderr
+    assert "cli.commands.upload" not in r.stderr
+    # the deleted per-command modules must not be imported (or exist).
+    assert "cli.commands.probe" not in r.stderr
+
+
+def test_migrated_command_uses_generator_and_imports_no_siblings():
+    # A migrated single-step command is built from its schema via
+    # cli.step_command; invoking it must not import any sibling command module.
     r = _run("probe", "--help")
     assert r.returncode == 0
-    assert "cli.commands.probe" in r.stderr
+    assert "cli.step_command" in r.stderr          # went through the generator
     assert "cli.commands.render" not in r.stderr
-    assert "cli.commands.upload" not in r.stderr
+    assert "cli.commands.transcribe" not in r.stderr
 
 
 def test_global_help_lists_all_commands():

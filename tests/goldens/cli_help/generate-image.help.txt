@@ -1,0 +1,20 @@
+usage: montaj generate-image [-h] --prompt PROMPT [--provider {gemini,openai}]
+                             [--ref-image REF_IMAGE] [--size SIZE]
+                             [--aspect-ratio ASPECT_RATIO] [--model MODEL]
+                             [--json] [--out PATH] [--quiet]
+
+options:
+  -h, --help            show this help message and exit
+  --prompt PROMPT       Text description of the image
+  --provider {gemini,openai}
+                        Which vendor to use
+  --ref-image REF_IMAGE
+                        Reference image(s) for conditioned generation
+  --size SIZE           Image dimensions (vendor-dependent)
+  --aspect-ratio ASPECT_RATIO
+                        Gemini only. E.g. '9:16', '1:1'. Ignored by OpenAI.
+  --model MODEL         Override the connector's default model for the chosen
+                        provider
+  --json                Output result as JSON
+  --out PATH            Output file path
+  --quiet               Suppress progress output
