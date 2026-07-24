@@ -11,7 +11,7 @@ Library code — raises ConnectorError, never calls fail() or sys.exit.
 Step scripts catch ConnectorError and translate to fail().
 """
 import base64, os
-from connectors import ConnectorError
+from connectors import ConnectorError, _http
 from lib.credentials import get_credential
 
 DEFAULT_IMAGE_MODEL = "gpt-image-1"
@@ -89,22 +89,12 @@ def generate_image(
     b64 = getattr(item, "b64_json", None)
     if b64:
         img_bytes = base64.b64decode(b64)
-    else:
-        url = getattr(item, "url", None)
-        if not url:
-            raise ConnectorError("OpenAI response has neither b64_json nor url")
-        try:
-            import requests
-        except ImportError:
-            raise ConnectorError("Missing connector dependencies. Run: montaj install connectors")
-        try:
-            r = requests.get(url, timeout=60)
-            r.raise_for_status()
-            img_bytes = r.content
-        except requests.RequestException as e:
-            raise ConnectorError(f"Failed to download OpenAI image: {e}") from e
+        os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
+        with open(out_path, "wb") as f:
+            f.write(img_bytes)
+        return out_path
 
-    os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
-    with open(out_path, "wb") as f:
-        f.write(img_bytes)
-    return out_path
+    url = getattr(item, "url", None)
+    if not url:
+        raise ConnectorError("OpenAI response has neither b64_json nor url")
+    return _http.download_file(url, out_path, timeout=60)

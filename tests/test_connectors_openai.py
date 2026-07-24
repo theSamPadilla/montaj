@@ -130,13 +130,16 @@ class TestResponseHandling:
         client = _make_mock_client(b64_json=None, url="https://example.com/img.png")
         monkeypatch.setattr("connectors.openai._client", lambda: client)
 
-        # Mock requests.get
+        # URL downloads now go through the shared _http helper (streamed,
+        # retried) — fake the requests module it lazily imports.
         mock_response = MagicMock()
-        mock_response.content = img_data
+        mock_response.status_code = 200
+        mock_response.iter_content.return_value = iter([img_data])
         mock_requests = MagicMock()
-        mock_requests.get.return_value = mock_response
+        mock_requests.request.return_value = mock_response
         mock_requests.RequestException = Exception
-        monkeypatch.setitem(__import__("sys").modules, "requests", mock_requests)
+        from connectors import _http
+        monkeypatch.setattr(_http, "_require_requests", lambda: mock_requests)
 
         import connectors.openai as mod
         out = str(tmp_path / "out.png")

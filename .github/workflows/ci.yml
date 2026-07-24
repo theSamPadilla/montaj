@@ -1,0 +1,149 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  python:
+    name: Python tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+      - name: Install ffmpeg
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+      - name: Install montaj
+        run: pip install -e ".[test]"
+      - name: Run tests (fast suite)
+        run: pytest -m "not slow" --timeout=300
+
+  render:
+    name: Render engine tests (node)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: montaj_assets/render/package-lock.json
+      - name: Install ffmpeg
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+      - run: npm ci
+        working-directory: montaj_assets/render
+      - run: node --test
+        working-directory: montaj_assets/render
+
+  mcp:
+    name: MCP server tests (node)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: montaj_assets/mcp/package-lock.json
+      - run: npm ci
+        working-directory: montaj_assets/mcp
+      - run: node --test
+        working-directory: montaj_assets/mcp
+
+  overlay-runtime:
+    name: Overlay runtime tests (node)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: montaj_assets/overlay-runtime/package-lock.json
+      - run: npm ci
+        working-directory: montaj_assets/overlay-runtime
+      - run: npm test
+        working-directory: montaj_assets/overlay-runtime
+
+  editor:
+    name: Editor package tests + lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: montaj_assets/editor/package-lock.json
+      - run: npm ci
+        working-directory: montaj_assets/editor
+      - run: npm run lint
+        working-directory: montaj_assets/editor
+      - run: npm test
+        working-directory: montaj_assets/editor
+
+  ui:
+    name: UI tests + typecheck/build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: montaj_assets/ui/package-lock.json
+      # file: deps (../editor, ../overlay-runtime) need their trees installed too
+      - run: npm ci
+        working-directory: montaj_assets/ui
+      - run: npm run test:run
+        working-directory: montaj_assets/ui
+      - run: npm run build
+        working-directory: montaj_assets/ui
+
+  wheel:
+    name: Wheel packaging check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install build
+      # sdist + wheel (NOT --wheel alone): the wheel-only form bypasses
+      # MANIFEST.in pruning — see the warning at the top of scripts/build.sh.
+      - run: python -m build
+      - name: Verify wheel contents
+        run: |
+          set -euo pipefail
+          whl=$(ls dist/*.whl)
+          echo "Checking $whl"
+          listing=$(unzip -l "$whl")
+          # node_modules must never ship (MANIFEST.in prune regression guard)
+          if echo "$listing" | grep -q node_modules; then
+            echo "::error::node_modules leaked into the wheel"
+            echo "$listing" | grep node_modules | head
+            exit 1
+          fi
+          # internal docs (plans/ideas/fullsend) must never ship
+          if echo "$listing" | grep -qE "docs/(plans|ideas|fullsend)/"; then
+            echo "::error::internal docs leaked into the wheel"
+            echo "$listing" | grep -E "docs/(plans|ideas|fullsend)/" | head
+            exit 1
+          fi
+          # sanity: the render engine and step schemas must be present
+          echo "$listing" | grep -q "montaj_assets/render/render.js"
+          echo "$listing" | grep -q "steps/media/probe.json"
+          # the sdist ships to PyPI too — same gates
+          sdist_listing=$(tar tzf dist/*.tar.gz)
+          if echo "$sdist_listing" | grep -qE "docs/(plans|ideas|fullsend)/.|node_modules"; then
+            echo "::error::internal docs or node_modules leaked into the sdist"
+            exit 1
+          fi

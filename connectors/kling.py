@@ -12,7 +12,7 @@ Library code — raises ConnectorError, never calls fail() or sys.exit.
 Step scripts catch ConnectorError and translate to fail().
 """
 import base64, os, time
-from connectors import ConnectorError
+from connectors import ConnectorError, _http
 from lib.credentials import get_credential
 
 BASE_URL = "https://api-singapore.klingai.com"
@@ -113,14 +113,6 @@ def _require_jwt():
     try:
         import jwt
         return jwt
-    except ImportError:
-        raise ConnectorError("Missing connector dependencies. Run: montaj install connectors")
-
-
-def _require_requests():
-    try:
-        import requests
-        return requests
     except ImportError:
         raise ConnectorError("Missing connector dependencies. Run: montaj install connectors")
 
@@ -347,12 +339,14 @@ def build_payload(
 
 def create_task(body: dict) -> dict:
     """POST /v1/videos/omni-video. Returns response data."""
-    requests = _require_requests()
     url = f"{BASE_URL}/v1/videos/omni-video"
-    try:
-        r = requests.post(url, json=body, headers=_auth_headers(), timeout=120)
-    except requests.RequestException as e:
-        raise ConnectorError(f"Kling API request failed: {e}") from e
+    # 429 is safe to retry (request was rejected, no task created). Network
+    # errors and 5xx are NOT retried here: a timed-out/ambiguous POST may have
+    # created a paid task server-side, and a duplicate submission costs money.
+    r = _http.request_with_retry(
+        "POST", url, json=body, headers=_auth_headers(), timeout=120,
+        retry_statuses=frozenset({429}), retry_exceptions=False,
+    )
     # Capture response body before raising on HTTP errors — Kling returns
     # useful error details in JSON even on 4xx/5xx responses.
     if r.status_code >= 400:
@@ -369,31 +363,45 @@ def create_task(body: dict) -> dict:
 
 
 def query_task(task_id: str, path_template: str = VIDEO_QUERY_PATH) -> dict:
-    """GET task status by ID."""
-    requests = _require_requests()
+    """GET task status by ID. Idempotent — transient failures are retried."""
     url = f"{BASE_URL}{path_template.format(task_id=task_id)}"
-    try:
-        r = requests.get(url, headers=_auth_headers(), timeout=30)
-        r.raise_for_status()
-    except requests.RequestException as e:
-        raise ConnectorError(f"Kling API request failed: {e}") from e
+    r = _http.request_with_retry("GET", url, headers=_auth_headers(), timeout=30)
+    if r.status_code >= 400:
+        raise ConnectorError(f"Kling API error (HTTP {r.status_code}): {r.text[:500]}")
     data = r.json()
     if data.get("code") != 0:
         raise ConnectorError(f"Kling API error: {data.get('message', 'unknown error')}")
     return data["data"]
 
 
+# A transient error mid-poll must not abandon the task: generation is already
+# paid for. Tolerate up to this many CONSECUTIVE failed status checks (each of
+# which already retried transports internally) before giving up.
+MAX_CONSECUTIVE_POLL_FAILURES = 5
+
+
 def poll_until_done(task_id: str, path_template: str = VIDEO_QUERY_PATH) -> dict:
     """Poll task until succeed/failed. Returns task data on success."""
     elapsed = 0.0
+    failures = 0
     while elapsed < MAX_POLL_S:
-        task_data = query_task(task_id, path_template)
-        status = task_data.get("task_status")
-        if status == "succeed":
-            return task_data
-        if status == "failed":
-            msg = task_data.get("task_status_msg", "unknown error")
-            raise ConnectorError(f"Kling task {task_id} failed: {msg}")
+        try:
+            task_data = query_task(task_id, path_template)
+        except ConnectorError as e:
+            failures += 1
+            if failures >= MAX_CONSECUTIVE_POLL_FAILURES:
+                raise ConnectorError(
+                    f"Kling task {task_id}: {failures} consecutive status-check "
+                    f"failures, giving up. Last error: {e}"
+                ) from e
+        else:
+            failures = 0
+            status = task_data.get("task_status")
+            if status == "succeed":
+                return task_data
+            if status == "failed":
+                msg = task_data.get("task_status_msg", "unknown error")
+                raise ConnectorError(f"Kling task {task_id} failed: {msg}")
         time.sleep(POLL_INTERVAL_S)
         elapsed += POLL_INTERVAL_S
     raise ConnectorError(f"Kling task {task_id} did not complete within {MAX_POLL_S}s")
@@ -401,17 +409,7 @@ def poll_until_done(task_id: str, path_template: str = VIDEO_QUERY_PATH) -> dict
 
 def _download_file(url: str, out_path: str) -> str:
     """Download file from URL to out_path."""
-    requests = _require_requests()
-    try:
-        r = requests.get(url, stream=True, timeout=120)
-        r.raise_for_status()
-    except requests.RequestException as e:
-        raise ConnectorError(f"Download failed: {e}") from e
-    os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
-    with open(out_path, "wb") as f:
-        for chunk in r.iter_content(chunk_size=8192):
-            f.write(chunk)
-    return out_path
+    return _http.download_file(url, out_path, timeout=120)
 
 
 def generate(
@@ -490,15 +488,15 @@ def generate_speech(
         "voice_speed": speed,
     }
 
-    requests = _require_requests()
     url = f"{BASE_URL}{TTS_CREATE_PATH}"
-    try:
-        # TTS is synchronous — the API blocks and returns the audio in the
-        # create response. No separate query/poll endpoint exists.
-        # Use a longer timeout since the API may block for the full synthesis.
-        r = requests.post(url, json=body, headers=_auth_headers(), timeout=120)
-    except requests.RequestException as e:
-        raise ConnectorError(f"Kling TTS request failed: {e}") from e
+    # TTS is synchronous — the API blocks and returns the audio in the
+    # create response. No separate query/poll endpoint exists.
+    # Longer timeout since the API may block for the full synthesis. Like
+    # create_task: only 429 retried (a timed-out POST may have been billed).
+    r = _http.request_with_retry(
+        "POST", url, json=body, headers=_auth_headers(), timeout=120,
+        retry_statuses=frozenset({429}), retry_exceptions=False,
+    )
 
     if r.status_code >= 400:
         try:

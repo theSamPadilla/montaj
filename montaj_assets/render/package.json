@@ -1,14 +1,13 @@
 {
   "name": "montaj-render",
   "version": "3.6.2",
-  "description": "Render engine for montaj \u2014 React + Puppeteer + ffmpeg",
+  "description": "Render engine for montaj — React + Puppeteer + ffmpeg",
   "type": "module",
   "engines": {
     "node": ">=18"
   },
   "dependencies": {
     "esbuild": "^0.20.0",
-    "framer-motion": "^11.0.0",
     "montaj-overlay-runtime": "file:../overlay-runtime",
     "puppeteer": "^22.0.0",
     "react": "^19.0.0",

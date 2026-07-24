@@ -1,0 +1,62 @@
+version: 2
+updates:
+  # Python (pyproject.toml)
+  - package-ecosystem: pip
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      python-minor-patch:
+        update-types: [minor, patch]
+
+  # GitHub Actions
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+
+  # Node packages — one entry per lockfile. Minor/patch updates are grouped
+  # into a single PR per package to keep noise down; majors arrive individually
+  # so CI can judge each breaking change on its own (e.g. the pending
+  # esbuild 0.28 / vite 8 majors that clear GHSA-67mh-4wv8-2f99).
+  - package-ecosystem: npm
+    directory: /montaj_assets/render
+    schedule:
+      interval: weekly
+    groups:
+      render-minor-patch:
+        update-types: [minor, patch]
+
+  - package-ecosystem: npm
+    directory: /montaj_assets/mcp
+    schedule:
+      interval: weekly
+    groups:
+      mcp-minor-patch:
+        update-types: [minor, patch]
+
+  - package-ecosystem: npm
+    directory: /montaj_assets/overlay-runtime
+    schedule:
+      interval: weekly
+    groups:
+      overlay-runtime-minor-patch:
+        update-types: [minor, patch]
+
+  - package-ecosystem: npm
+    directory: /montaj_assets/editor
+    schedule:
+      interval: weekly
+    groups:
+      editor-minor-patch:
+        update-types: [minor, patch]
+
+  - package-ecosystem: npm
+    directory: /montaj_assets/ui
+    schedule:
+      interval: weekly
+    groups:
+      ui-minor-patch:
+        update-types: [minor, patch]
+
+  # montaj_assets/montaj-skills intentionally omitted: zero dependencies, no lockfile.

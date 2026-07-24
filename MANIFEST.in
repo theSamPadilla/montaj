@@ -14,8 +14,15 @@ recursive-include skills *.md
 # Schema definitions
 recursive-include schema *.yaml *.json
 
-# Docs (for offline reference)
-recursive-include docs *.md
+# Docs (for offline reference) — explicit list ONLY. A recursive include here
+# previously swept gitignored internals (docs/plans/, docs/ideas/, docs/fullsend/)
+# into published wheels: MANIFEST.in reads the working tree, not the git index.
+include docs/ARCHITECTURE.md
+include docs/CLI.md
+include docs/CONNECTORS.md
+include docs/PROFILES.md
+include docs/RENDER.md
+include docs/UI.md
 
 # Bundled assets — Node render engine, Vite UI, MCP server.
 # Built artifacts (node_modules/, ui/dist/) are NOT shipped — `montaj install ui`
@@ -27,6 +34,17 @@ prune montaj_assets/ui/dist
 prune montaj_assets/mcp/node_modules
 prune montaj_assets/overlay-runtime/node_modules
 prune montaj_assets/editor/node_modules
+prune montaj_assets/montaj-skills/node_modules
+# NOTE: adding a new node package under montaj_assets/? Add its prune here.
+# CI's wheel job fails the build if node_modules ever leaks (ci.yml).
+
+# Internal docs must NEVER ship (gitignored locally, but MANIFEST/include-package-data
+# read the working tree, not the git index — these leaked into published wheels once).
+# docs/ is a package (has __init__.py), so include-package-data sweeps its whole tree
+# into the sdist; these prunes are the actual gate. CI's wheel job enforces this.
+prune docs/plans
+prune docs/ideas
+prune docs/fullsend
 
 # Belt & suspenders. global-exclude with bare names matches FILES, not directories,
 # so __pycache__/ is excluded via its contents pattern and via recursive-exclude.

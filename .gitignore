@@ -1,6 +1,7 @@
 .env
 *.tmp
 *.log
+.cache/
 **/credentials.json
 workspace/
 workflows/*

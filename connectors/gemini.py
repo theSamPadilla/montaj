@@ -25,7 +25,8 @@ Private helpers:
 Library code — raises ConnectorError, never calls fail() or sys.exit.
 Step scripts catch ConnectorError and translate to fail().
 """
-import os, re, time, wave
+import json as _json
+import os, re, sys, time, wave
 from connectors import ConnectorError
 from lib.credentials import get_credential
 
@@ -180,11 +181,13 @@ def analyze_media(
     except Exception as e:
         raise ConnectorError(f"Gemini generate_content failed: {e}") from e
     finally:
-        # Best-effort cleanup
+        # Best-effort cleanup — but log failures: silently leaked uploads
+        # accumulate against the account's Files API quota.
         try:
             client.files.delete(name=media_file.name)
-        except Exception:
-            pass
+        except Exception as e:
+            print(_json.dumps({"progress": f"gemini: failed to delete uploaded file {media_file.name}: {e}"}),
+                  file=sys.stderr, flush=True)
 
     text = response.text
     return _strip_markdown_fences(text) if json_output else text
