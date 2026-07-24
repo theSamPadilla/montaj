@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v3.7.0
+
 - **Editor: native overlay editing** — edit an overlay's properties (text, colors, numbers, toggles, images) in the video editor without an AI round-trip. Select an overlay and open its editor dialog three ways: the pencil in the controls bar, the pencil on its timeline block, or a double-click on the overlay in the preview. The dialog is a movable, non-blocking panel — colors get a swatch picker, images a thumbnail + file picker — and edits preview live on the overlay as you tweak; Save persists, Cancel reverts, all undoable.
 - **Fixed remove_bg renders** — `render.js` pointed at `steps/remove_bg.py`, which moved to `steps/transform/`; every `remove_bg: true` render failed. Also fixed the `MONTAJ_ROOT` fallback (resolved one directory too shallow) and `normalizeIfNeeded` ignoring `MONTAJ_PYTHON`.
 - **Fixed silent transcription failures** — `transcribe_words` now fails with `transcription_failed` (whisper exit code + stderr) instead of returning an empty word list when whisper.cpp crashes; previously `rm_nonspeech` could interpret a crash as "no speech" and cut the entire clip.

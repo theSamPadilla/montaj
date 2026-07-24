@@ -1,7 +1,7 @@
 {
   "name": "montaj-render",
-  "version": "3.6.2",
-  "description": "Render engine for montaj — React + Puppeteer + ffmpeg",
+  "version": "3.7.0",
+  "description": "Render engine for montaj \u2014 React + Puppeteer + ffmpeg",
   "type": "module",
   "engines": {
     "node": ">=18"
