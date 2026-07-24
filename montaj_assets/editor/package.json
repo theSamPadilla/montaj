@@ -20,7 +20,7 @@
     "class-variance-authority": "^0.7",
     "clsx": "^2",
     "lucide-react": "^0.400",
-    "tailwind-merge": "^2"
+    "tailwind-merge": "^3"
   },
   "peerDependencies": {
     "react": "^19.0.0",
