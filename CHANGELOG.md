@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v3.8.0
+
 - **`broll` workflow — voiceover-driven B-roll editing.** New native workflow and `broll` project type. The voiceover (audio file or video, audio only) runs through the existing clean-cut chain and becomes the audio spine; the footage library is indexed at shot granularity by two new pure-ffmpeg steps (`detect_shots`, `shot_sheet`) requiring no credentials; the `broll` skill segments the narration into beats, assigns shots, and emits an ordinary draft — muted footage on `tracks[0]`, cleaned voiceover on `audio.tracks[0]`, and a `broll_coverage.md` report naming every weakly-matched beat. Overlays are left to the existing `montaj/overlay` skill, which runs last and takes its direction from the editing prompt. Horizontal sources are centre-cropped via the existing `sourceCrop` primitive. `materialize_cut` gains an `--audio` mode. Renderer and editor are unchanged.
 
 ## v3.7.0
