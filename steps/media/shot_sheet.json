@@ -1,0 +1,22 @@
+{
+  "name": "shot_sheet",
+  "description": "Sample N frames per detected shot and tile them into contact sheets, with a tile index mapping every tile back to its shot. Pure ffmpeg. Feeds the B-roll footage index — multiple frames per shot make action and camera motion legible where a single frame cannot.",
+  "input": {
+    "type": "video",
+    "description": "Source video file"
+  },
+  "output": {
+    "type": "json",
+    "description": "{input, frames_per_shot, sheets:[{path, cols, rows, tiles:[{shot_index, frame_index, t, row, col}]}]}"
+  },
+  "params": [
+    { "name": "shots", "type": "path", "required": true, "description": "Path to this video's detect_shots JSON" },
+    { "name": "out-dir", "type": "string", "required": true, "description": "Directory to write sheet images into" },
+    { "name": "frames-per-shot", "type": "int", "default": 3, "min": 1, "max": 12, "description": "Frames sampled per shot. 3 is enough to read action; 1 gives subject only." },
+    { "name": "cols", "type": "int", "default": 6, "min": 1, "max": 12, "description": "Tiles per row" },
+    { "name": "width", "type": "int", "default": 200, "min": 64, "max": 800, "description": "Tile width in pixels" },
+    { "name": "max-tiles", "type": "int", "default": 48, "min": 1, "description": "Tiles per sheet before splitting into another sheet" },
+    { "name": "timeout", "type": "int", "default": 600, "description": "Per-ffmpeg-call timeout in seconds" },
+    { "name": "out", "type": "path", "required": false, "description": "Write the index JSON here instead of stdout" }
+  ]
+}

@@ -443,6 +443,7 @@ async def run_project(body: dict = Body(...)):
     project_path_arg = body.get("projectPath")
     remote_clips = body.get("remoteClips", [])
     remote_assets = body.get("remoteAssets", [])
+    voiceover_asset = body.get("voiceoverAsset")
     project_id_arg = _validate_optional_id(body)
 
     # --- Carousel fast path — branch before clip/asset/intake validation ---
@@ -520,6 +521,9 @@ async def run_project(body: dict = Body(...)):
     for asset in assets:
         if not Path(asset).is_file():
             raise bad_request("file_not_found", f"Asset not found: {asset}")
+
+    if voiceover_asset and not Path(voiceover_asset).is_file():
+        raise bad_request("file_not_found", f"voiceoverAsset not found: {voiceover_asset}")
 
     # ai_video intake — structured image/style refs + intake settings forwarded to init.py
     intake = body.get("aiVideoIntake") or {}
@@ -620,6 +624,8 @@ async def run_project(body: dict = Body(...)):
         cmd += ["--name", name]
     if assets:
         cmd += ["--assets"] + [str(a) for a in assets]
+    if voiceover_asset:
+        cmd += ["--voiceover-asset", voiceover_asset]
     if profile:
         cmd += ["--profile", profile]
     if project_path_arg:

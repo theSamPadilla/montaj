@@ -41,7 +41,7 @@ The agent writes project.json as it works — every write pushes to the browser 
 | `version` | string | Schema version — `"0.2"` |
 | `id` | string | UUID v4. Stable unique identifier for this project. Never changes. |
 | `status` | string | Pipeline state: `pending`, `storyboard_ready`, `draft`, `final` |
-| `projectType` | string | Inherited from the workflow's `project_type` at init time. One of `"editing"`, `"music_video"`, `"ai_video"`. Default: `"editing"`. Never changes after creation. |
+| `projectType` | string | Inherited from the workflow's `project_type` at init time. One of `"editing"`, `"music_video"`, `"ai_video"`, `"carousel"`, `"broll"`. Default: `"editing"`. Never changes after creation. |
 | `name` | string \| null | Human-readable label set at init time. Optional. Does not need to be unique. |
 | `workflow` | string | Workflow used to produce this edit |
 | `editingPrompt` | string | The free-form prompt passed in |
@@ -315,24 +315,58 @@ Poll the state of the current or last detached caption job. Returns `idle` when 
 
 ## Audio
 
+Independent audio tracks, mixed into the video in a final pass. Every audio source — music bed, voiceover spine, sound effect — is a track in this array. There is no separate `music` block.
+
 ```json
 {
   "audio": {
-    "music": {
-      "src": "/tmp/audio/track.mp3",
-      "volume": 0.15,
-      "ducking": {
-        "enabled": true,
-        "depth": -12,
-        "attack": 0.3,
-        "release": 0.5
+    "tracks": [
+      {
+        "src": "/tmp/audio/track.mp3",
+        "volume": 0.15,
+        "ducking": { "enabled": true, "depth": -12, "attack": 0.3, "release": 0.5 }
       }
-    }
+    ]
   }
 }
 ```
 
-**Ducking** auto-lowers music under speech and raises it in pauses. `depth` is in dB (negative). `attack` and `release` are in seconds.
+| field | type | meaning |
+|---|---|---|
+| `src` | string | Absolute path to the audio (or video — only its audio is read) file. Required. |
+| `muted` | bool | When true the track is skipped entirely. |
+| `volume` | number | Linear gain. Defaults to `1.0`. |
+| `start` | number | Where the track begins on the output timeline, in seconds. Implemented as a delay; defaults to `0`. |
+| `end` | number | Where the track stops on the output timeline, in seconds. |
+| `inPoint` / `outPoint` | number | Slice of the **source** file to use. Optional. |
+| `fadeIn` / `fadeOut` | number | Fade durations in seconds. |
+| `ducking` | object | `{ enabled, depth, attack, release }` — see below. |
+
+**One track is one contiguous slice of one file.** There is no multi-segment cut list for audio; a track carries a single `inPoint`/`outPoint` pair. A voiceover that has been cut down (silence, non-speech, and fillers removed) is therefore materialized to a single file first — see `materialize_cut --audio` — rather than emitted as one track per surviving segment.
+
+**Ducking** auto-lowers a track under speech and raises it in pauses. `depth` is in dB (negative). `attack` and `release` are in seconds.
+
+---
+
+## Voiceover
+
+Present only on `broll` projects — `engine/validate.py` requires this block (with a non-empty `src`) whenever `projectType` is `"broll"`.
+
+```json
+{
+  "voiceover": {
+    "src": "/abs/path/to/workspace/narration.mp4",
+    "cleanedSrc": "/abs/path/to/workspace/narration_cut.wav"
+  }
+}
+```
+
+| Field | Type | Description |
+|-------|------|--------------|
+| `src` | string | Required. Absolute path to the voiceover source file in the workspace — audio or video. Only its audio is used; a video file's picture is never placed on a visual track unless the editing prompt explicitly asks for it. Written by `project/init.py` from `--voiceover-asset` (CLI) or `voiceoverAsset` (HTTP `POST /api/run`). Immutable after init. |
+| `cleanedSrc` | string | Optional. Absolute path to the cleaned voiceover, written by the `broll` skill after running `materialize_cut --audio` on the clean-cut chain. Present once the skill has produced its draft; absent before. |
+
+The footage index the `broll` skill builds while assembling the draft is written to `broll_index.json` in the project workspace — a working artifact for the skill, not part of `project.json`.
 
 ---
 

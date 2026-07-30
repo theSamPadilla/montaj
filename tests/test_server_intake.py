@@ -1,9 +1,46 @@
 """Tests for /api/run aiVideoIntake validation in serve/server.py."""
+import json
+
+import pytest
 from starlette.testclient import TestClient
 
+import serve.routes.projects as projects_mod
 from serve.server import app
 
 client = TestClient(app, raise_server_exceptions=False)
+
+
+class _CapturedProc:
+    """Minimal stand-in for the init subprocess: succeeds, emits a project path."""
+    def __init__(self, project_json):
+        self.returncode = 0
+        self._out = f"{project_json}\n".encode()
+
+    async def communicate(self):
+        return self._out, b""
+
+    async def wait(self):
+        return 0
+
+    def kill(self):  # only reached on the timeout path; present so it can't AttributeError
+        pass
+
+
+@pytest.fixture
+def init_spy(monkeypatch, tmp_path):
+    """Capture the argv that /api/run would hand to project/init.py."""
+    project_json = tmp_path / "proj" / "project.json"
+    project_json.parent.mkdir(parents=True, exist_ok=True)
+    project_json.write_text(json.dumps({"version": "0.2", "id": "x", "status": "pending"}))
+
+    captured = {}
+
+    async def _fake_exec(*args, **kwargs):
+        captured["cmd"] = list(args)
+        return _CapturedProc(project_json)
+
+    monkeypatch.setattr(projects_mod.asyncio, "create_subprocess_exec", _fake_exec)
+    return captured
 
 
 def test_image_ref_missing_both_path_and_text():
@@ -64,3 +101,52 @@ def test_too_many_style_refs():
     })
     assert resp.status_code == 400
     assert "at most 2" in resp.json()["detail"]["message"]
+
+
+def test_run_forwards_voiceover_asset(tmp_path, init_spy):
+    # broll is requires_clips:true — a real clip is required to get past that
+    # gate before the voiceoverAsset forwarding logic under test even runs.
+    clip = tmp_path / "clip.mp4"
+    clip.write_bytes(b"fake")
+    vo = tmp_path / "vo.wav"
+    vo.write_bytes(b"RIFF....WAVEfake")
+    resp = client.post("/api/run", json={
+        "workflow": "broll",
+        "prompt": "make a b-roll cut",
+        "clips": [str(clip)],
+        "voiceoverAsset": str(vo),
+    })
+    assert resp.status_code == 201, resp.text
+    cmd = init_spy["cmd"]
+    assert "--voiceover-asset" in cmd
+    assert cmd[cmd.index("--voiceover-asset") + 1] == str(vo)
+
+
+def test_run_rejects_missing_voiceover_file(tmp_path, init_spy):
+    # A real clip is provided so the request would otherwise sail through to
+    # the (mocked) init subprocess — without it, this 400 could come from the
+    # unrelated clips_required gate and would prove nothing about voiceoverAsset
+    # validation. The assertion pins the rejection to voiceoverAsset specifically.
+    clip = tmp_path / "clip.mp4"
+    clip.write_bytes(b"fake")
+    resp = client.post("/api/run", json={
+        "workflow": "broll",
+        "prompt": "make a b-roll cut",
+        "clips": [str(clip)],
+        "voiceoverAsset": "/nonexistent/vo.wav",
+    })
+    assert resp.status_code == 400
+    detail = resp.json()["detail"]
+    assert detail["error"] != "clips_required"
+    assert "voiceoverAsset" in detail["message"]
+    assert "cmd" not in init_spy  # rejected before the init subprocess was ever spawned
+
+
+def test_run_without_voiceover_asset_is_unchanged(tmp_path, init_spy):
+    clip = tmp_path / "clip.mp4"
+    clip.write_bytes(b"fake")
+    resp = client.post("/api/run", json={
+        "workflow": "clean_cut", "prompt": "clean it", "clips": [str(clip)],
+    })
+    assert resp.status_code == 201, resp.text
+    assert "--voiceover-asset" not in init_spy["cmd"]

@@ -177,6 +177,9 @@ def main():
     parser = argparse.ArgumentParser(description="Initialize a montaj project workspace")
     parser.add_argument("--clips", nargs="*", default=[], help="Input clip paths")
     parser.add_argument("--assets", nargs="*", default=[], help="Asset file paths (images, logos, etc.)")
+    parser.add_argument("--voiceover-asset",
+                        help="Audio or video file supplying the voiceover. "
+                             "For broll projects only. Only its audio is used.")
     parser.add_argument("--prompt", required=True, help="Editing prompt")
     parser.add_argument("--workflow", default="clean_cut", help="Workflow name")
     parser.add_argument("--name", help="Project name (used as workspace directory suffix)")
@@ -328,6 +331,17 @@ def main():
     for asset in args.assets:
         if not os.path.isfile(asset):
             fail("file_not_found", f"Asset not found: {asset}")
+
+    # Voiceover is required by (and exclusive to) broll projects. Checked here,
+    # before makedirs below, so a rejected init leaves no partial workspace.
+    if args.voiceover_asset and early_project_type != "broll":
+        fail("invalid_argument",
+             "--voiceover-asset is only valid for broll workflows")
+    if early_project_type == "broll" and not args.voiceover_asset:
+        fail("missing_argument",
+             "broll projects require --voiceover-asset")
+    if args.voiceover_asset and not os.path.isfile(args.voiceover_asset):
+        fail("file_not_found", f"File not found: {args.voiceover_asset}")
 
     # Resolve workspace_root first — both branches below need it.
     # Precedence: MONTAJ_WORKSPACE_DIR env var > ~/.montaj/config.json's workspaceDir > ~/Montaj.
@@ -613,6 +627,9 @@ def main():
         for i, a in enumerate(args.assets)
     ]
 
+    voiceover_path = (copy_into_workspace(os.path.abspath(args.voiceover_asset), "voiceover")
+                      if args.voiceover_asset else None)
+
     project_type = _read_project_type(args.workflow)
 
     if project_type == "carousel":
@@ -650,6 +667,9 @@ def main():
 
     if normalize_mode == "lazy":
         project["settings"]["normalize"] = "lazy"
+
+    if voiceover_path:
+        project["voiceover"] = {"src": voiceover_path}
 
     if args.derived_from:
         project["derivedFrom"] = args.derived_from

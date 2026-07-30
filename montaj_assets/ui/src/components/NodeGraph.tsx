@@ -150,6 +150,12 @@ function StartNode({ data }: NodeProps<Node>) {
 // Derive a short "per X" badge label from a foreach path.
 // `clips` → `per clip`, `storyboard.scenes` → `per scene`, etc.
 // Unknown shapes fall back to the last path segment with naive plural strip.
+// `voiceover.src` → `voiceover`, `clips` → `clips`. Names the project field a step reads,
+// for steps whose input isn't already implied by `foreach`.
+function inputBadgeLabel(input: string): string {
+  return input.split('.')[0]
+}
+
 function iterationBadgeLabel(foreach: string): string {
   switch (foreach) {
     case 'clips':                return 'per clip'
@@ -168,11 +174,18 @@ function StepNode({ data, selected }: NodeProps<Node>) {
                   ?? new Set(_skillsCache.map(s => s.name)).has(data.uses as string)
   const isEncode      = data.schema?.name === 'apply_cuts' || data.uses === 'montaj/apply_cuts'
   const isMaterialize = data.schema?.name === 'materialize_cut' || data.uses === 'montaj/materialize_cut'
+  // `materialize_cut --audio` writes a bare audio file, not an H.264 clip. Surface that on the
+  // node — otherwise the graph reads as a video encode wherever it's used as an audio spine.
+  const isAudioMode   = isMaterialize && (data.params as Record<string, unknown> | undefined)?.audio === true
   // Any `foreach` value marks this as an iterated step — not just `clips`.
   // The agent/engine iterates whatever the path points to (clips, scenes, refs, …).
   const foreachValue = typeof data.foreach === 'string' && data.foreach ? data.foreach : null
   const isIterated   = foreachValue !== null
   const iterLabel    = foreachValue ? iterationBadgeLabel(foreachValue) : null
+  // `input` names the project field a step reads. Redundant when `foreach` already says it,
+  // so only badge it when the step isn't iterated.
+  const inputValue   = typeof data.input === 'string' && data.input ? data.input : null
+  const inputLabel   = inputValue && !isIterated ? inputBadgeLabel(inputValue) : null
   const bg        = selected
     ? (isEncode ? '#292304' : isMaterialize ? '#1e1608' : isSkill ? '#1e1b4b' : '#1e293b')
     : (isEncode ? '#1c1a03' : isMaterialize ? '#161008' : isSkill ? '#1a1740' : '#1f2937')
@@ -204,10 +217,14 @@ function StepNode({ data, selected }: NodeProps<Node>) {
             }}>encode</span>
           )}
           {isMaterialize && (
-            <span style={{
-              fontSize: 9, fontWeight: 700, letterSpacing: '0.05em', textTransform: 'uppercase',
-              background: '#3d2408', color: '#c9973a', borderRadius: 4, padding: '1px 5px',
-            }}>writes</span>
+            <span
+              title={isAudioMode
+                ? 'materialize_cut --audio: writes an audio-only file, no video stream'
+                : 'materialize_cut: writes an H.264 clip'}
+              style={{
+                fontSize: 9, fontWeight: 700, letterSpacing: '0.05em', textTransform: 'uppercase',
+                background: '#3d2408', color: '#c9973a', borderRadius: 4, padding: '1px 5px',
+              }}>{isAudioMode ? 'writes audio' : 'writes'}</span>
           )}
           {isSkill && (
             <span style={{
@@ -222,6 +239,14 @@ function StepNode({ data, selected }: NodeProps<Node>) {
                 fontSize: 9, fontWeight: 700, letterSpacing: '0.05em', textTransform: 'uppercase',
                 background: '#1e3a2e', color: '#6ee7b7', borderRadius: 4, padding: '1px 5px',
               }}>{iterLabel}</span>
+          )}
+          {inputLabel && (
+            <span
+              title={`input: ${inputValue}`}
+              style={{
+                fontSize: 9, fontWeight: 700, letterSpacing: '0.05em', textTransform: 'uppercase',
+                background: '#3a1e33', color: '#f0abfc', borderRadius: 4, padding: '1px 5px',
+              }}>{inputLabel}</span>
           )}
         </div>
         {data.schema?.description && (
@@ -440,6 +465,7 @@ interface WorkflowStep {
   uses: string
   needs?: string[]
   foreach?: string
+  input?: string
   params?: Record<string, unknown>
 }
 
@@ -597,7 +623,9 @@ export default function NodeGraph() {
           schema: schema ?? skills.find(s => s.name === step.uses) ?? { name: step.uses, description: step.uses },
           uses: step.uses,
           foreach: step.foreach,
+          input: step.input,
           stepId: step.id,
+          params: step.params,
           isSkill: skillNameSet.has(step.uses),
         },
       })
@@ -716,9 +744,15 @@ export default function NodeGraph() {
             const src = nodes.find(n => n.id === e.source)
             return (src?.data.stepId as string) ?? (src?.data.schema as StepSchema)?.name ?? e.source
           })
+        // `foreach` and `input` must survive the round-trip — dropping them silently turns a
+        // per-clip step into a single-run one, and loses which project field a step reads.
+        const foreach = node.data.foreach as string | undefined
+        const input   = node.data.input   as string | undefined
         return {
           id: stepId,
           uses: `montaj/${schema?.name ?? node.id}`,
+          ...(foreach ? { foreach } : {}),
+          ...(input ? { input } : {}),
           ...(needs.length ? { needs } : {}),
           ...(params && Object.keys(params).length ? { params } : {}),
         }

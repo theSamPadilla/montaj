@@ -10,7 +10,7 @@
 enums:
   - name: project_type
     module: project
-    values: [editing, music_video, ai_video, carousel]
+    values: [editing, music_video, ai_video, carousel, broll]
     default: editing
     description: |
       The project's top-level type. Inherited from the workflow's `project_type`

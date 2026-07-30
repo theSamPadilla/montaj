@@ -108,6 +108,7 @@ export const api = {
     name?: string
     profile?: string
     carouselAspect?: 'square' | 'portrait' | 'vertical'
+    voiceoverAsset?: string
     aiVideoIntake?: {
       imageRefs: Array<{ label: string; path?: string; text?: string }>
       styleRefs: Array<{ label: string; path: string }>

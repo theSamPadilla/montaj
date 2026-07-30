@@ -1,0 +1,41 @@
+{
+  "name": "detect_shots",
+  "description": "Detect shot boundaries in a video from ffmpeg scene scores, with per-shot motion statistics. Pure ffmpeg — no model or credentials required. The unit of the B-roll footage index.",
+  "input": {
+    "type": "video",
+    "description": "Source video file"
+  },
+  "output": {
+    "type": "json",
+    "description": "{input, duration, shots:[{index, start, end, duration, motion_mean, motion_peak}]}"
+  },
+  "params": [
+    {
+      "name": "threshold",
+      "type": "float",
+      "default": 0.25,
+      "min": 0.0,
+      "max": 1.0,
+      "description": "Scene score above which a frame starts a new shot. Lower finds more cuts."
+    },
+    {
+      "name": "min-shot",
+      "type": "float",
+      "default": 0.4,
+      "min": 0.0,
+      "description": "Minimum shot duration in seconds. Boundaries that would create a shorter shot are dropped."
+    },
+    {
+      "name": "timeout",
+      "type": "int",
+      "default": 1800,
+      "description": "ffmpeg timeout in seconds"
+    },
+    {
+      "name": "out",
+      "type": "path",
+      "required": false,
+      "description": "Write JSON here instead of stdout"
+    }
+  ]
+}

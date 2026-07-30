@@ -1,6 +1,6 @@
 {
   "name": "materialize_cut",
-  "description": "Encode a trim spec or raw video segment into an H.264 clip. Uses input-level seeking (-ss/-t before -i) so only the requested segment is decoded — no full file decode regardless of position. Used in workflows that require an actual video file before a subsequent step (e.g. remove_bg). CONCURRENCY WARNING: each instance is a full libx264 encode — memory-intensive at 4K. Use --inputs (batch mode) which caps concurrency at 2 workers by default. Never fan out more than 2–3 instances in parallel; unlike analysis steps (waveform_trim, rm_nonspeech) this step has a hard concurrency ceiling.",
+  "description": "Encode a trim spec or raw segment into a real media file. Video mode (default) emits an H.264 clip; --audio emits an audio-only file with no video stream (pcm_s16le for .wav, otherwise aac). Uses input-level seeking (-ss/-t before -i) so only the requested segment is decoded — no full file decode regardless of position. Used where a subsequent step needs an actual file rather than a trim spec: remove_bg needs a video, and a cleaned voiceover needs an audio file to sit on audio.tracks[] and to give transcribe an output-timeline coordinate space. CONCURRENCY WARNING (video mode only): each instance is a full libx264 encode — memory-intensive at 4K. Use --inputs (batch mode) which caps concurrency at 2 workers by default. Never fan out more than 2–3 instances in parallel; unlike analysis steps (waveform_trim, rm_nonspeech) this step has a hard concurrency ceiling. Audio mode is far cheaper and not subject to that ceiling.",
   "input": {
     "type": "any",
     "description": "Trim spec JSON (from waveform_trim / rm_fillers / etc.) or raw video file"
@@ -51,7 +51,13 @@
       "name": "out",
       "type": "string",
       "required": false,
-      "description": "Output path (default: {original_stem}_cut.mp4 next to source). --input only."
+      "description": "Output path (default: {original_stem}_cut.mp4 next to source, or {original_stem}_cut.wav with --audio). --input only."
+    },
+    {
+      "name": "audio",
+      "type": "bool",
+      "default": false,
+      "description": "Audio-only output — no video stream. Extension of --out selects the codec (.wav → pcm_s16le, otherwise aac). Defaults to .wav when --out is omitted."
     }
   ]
 }

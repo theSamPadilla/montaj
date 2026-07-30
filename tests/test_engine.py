@@ -409,6 +409,66 @@ def test_validate_project_rejects_out_of_range_source_crop(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# validate_project — broll
+# ---------------------------------------------------------------------------
+
+VALID_BROLL_PROJECT = {
+    **VALID_PROJECT,
+    "projectType": "broll",
+    "voiceover": {"src": "/abs/path/vo.wav"},
+}
+
+
+def test_broll_is_a_valid_project_type():
+    from lib.types.project import PROJECT_TYPES, is_valid_project_type
+    assert "broll" in PROJECT_TYPES
+    assert is_valid_project_type("broll")
+
+
+def test_validate_broll_project_passes(tmp_path):
+    path = _write_project(tmp_path, "project.json", VALID_BROLL_PROJECT)
+    assert v.validate_project(path)["valid"] is True
+
+
+def test_validate_broll_requires_voiceover(tmp_path):
+    data = {**VALID_BROLL_PROJECT}
+    del data["voiceover"]
+    path = _write_project(tmp_path, "project.json", data)
+    with pytest.raises(SystemExit):
+        v.validate_project(path)
+
+
+def test_validate_broll_voiceover_must_be_object(tmp_path):
+    data = {**VALID_BROLL_PROJECT, "voiceover": "/abs/path/vo.wav"}
+    path = _write_project(tmp_path, "project.json", data)
+    with pytest.raises(SystemExit):
+        v.validate_project(path)
+
+
+def test_validate_broll_voiceover_requires_src(tmp_path):
+    data = {**VALID_BROLL_PROJECT, "voiceover": {"cleanedSrc": "/abs/x.wav"}}
+    path = _write_project(tmp_path, "project.json", data)
+    with pytest.raises(SystemExit):
+        v.validate_project(path)
+
+
+def test_validate_broll_still_enforces_track_rules(tmp_path):
+    """broll uses the standard video validator, so tracks[0] rules still apply."""
+    data = {**VALID_BROLL_PROJECT}
+    del data["tracks"]
+    path = _write_project(tmp_path, "project.json", data)
+    with pytest.raises(SystemExit):
+        v.validate_project(path)
+
+
+def test_voiceover_ignored_on_non_broll_projects(tmp_path):
+    """A stray voiceover block on an editing project is not validated."""
+    data = {**VALID_PROJECT, "voiceover": "whatever"}
+    path = _write_project(tmp_path, "project.json", data)
+    assert v.validate_project(path)["valid"] is True
+
+
+# ---------------------------------------------------------------------------
 # validate_workflow
 # ---------------------------------------------------------------------------
 
@@ -515,3 +575,45 @@ def test_validate_workflow_foreach_rejects_bad_shape(tmp_path, value):
     path = _write_workflow(tmp_path, "my_workflow", data)
     with pytest.raises(SystemExit):
         v.validate_workflow(path)
+
+
+@pytest.mark.parametrize("value", [
+    "clips",
+    "voiceover.src",
+    "assets",
+    "foo.bar.baz",
+])
+def test_validate_workflow_input_accepts_dotted_paths(tmp_path, value):
+    data = {**VALID_WORKFLOW, "steps": [
+        {"id": "x", "uses": "montaj/probe", "input": value}
+    ]}
+    path = _write_workflow(tmp_path, "my_workflow", data)
+    assert v.validate_workflow(path)["valid"] is True
+
+
+@pytest.mark.parametrize("value", [
+    "",
+    "a b c",
+    ".leading.dot",
+    "trailing.",
+    "has-dash",
+    "1startsWithDigit",
+    42,
+    None,
+])
+def test_validate_workflow_input_rejects_bad_shape(tmp_path, value):
+    data = {**VALID_WORKFLOW, "steps": [
+        {"id": "x", "uses": "montaj/probe", "input": value}
+    ]}
+    path = _write_workflow(tmp_path, "my_workflow", data)
+    with pytest.raises(SystemExit):
+        v.validate_workflow(path)
+
+
+def test_validate_workflow_input_is_optional(tmp_path):
+    """Every pre-existing workflow omits `input` — it must stay optional."""
+    data = {**VALID_WORKFLOW, "steps": [
+        {"id": "x", "uses": "montaj/probe", "foreach": "clips"}
+    ]}
+    path = _write_workflow(tmp_path, "my_workflow", data)
+    assert v.validate_workflow(path)["valid"] is True

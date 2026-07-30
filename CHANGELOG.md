@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **`broll` workflow — voiceover-driven B-roll editing.** New native workflow and `broll` project type. The voiceover (audio file or video, audio only) runs through the existing clean-cut chain and becomes the audio spine; the footage library is indexed at shot granularity by two new pure-ffmpeg steps (`detect_shots`, `shot_sheet`) requiring no credentials; the `broll` skill segments the narration into beats, assigns shots, and emits an ordinary draft — muted footage on `tracks[0]`, cleaned voiceover on `audio.tracks[0]`, and a `broll_coverage.md` report naming every weakly-matched beat. Overlays are left to the existing `montaj/overlay` skill, which runs last and takes its direction from the editing prompt. Horizontal sources are centre-cropped via the existing `sourceCrop` primitive. `materialize_cut` gains an `--audio` mode. Renderer and editor are unchanged.
+
 ## v3.7.0
 
 - **Editor: native overlay editing** — edit an overlay's properties (text, colors, numbers, toggles, images) in the video editor without an AI round-trip. Select an overlay and open its editor dialog three ways: the pencil in the controls bar, the pencil on its timeline block, or a double-click on the overlay in the preview. The dialog is a movable, non-blocking panel — colors get a swatch picker, images a thumbnail + file picker — and edits preview live on the overlay as you tweak; Save persists, Cancel reverts, all undoable.

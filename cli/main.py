@@ -64,6 +64,7 @@ _COMMANDS = {
 _STEP_COMMANDS = {
     "analyze-media":      {},
     "caption":            {},
+    "detect-shots":       {},
     "extract-audio":      {},
     "filler":             {"step_name": "rm_fillers"},
     "generate-image":     {"required_out": True},
@@ -75,6 +76,7 @@ _STEP_COMMANDS = {
     "probe":              {},
     "resize":             {},
     "rm-nonspeech":       {},
+    "shot-sheet":         {},
     "snapshot":           {},
     "stem-separation":    {"emit_json": False},
     "transcribe":         {"emit_json": False},
@@ -91,8 +93,21 @@ _REGISTRATION_ORDER = (
     "status", "upload", "approve", "regen", "mcp", "models", "doctor",
     "create-step", "validate", "install", "credentials", "update",
     "remove-bg", "kling-generate", "analyze-media", "generate-image",
-    "generate-voiceover", "generate-music",
+    "generate-voiceover", "generate-music", "detect-shots", "shot-sheet",
 )
+
+# Individual step commands — available but not listed in top-level help.
+# Discover them via `montaj step --list`. Module-level (not local to main())
+# so it's introspectable the same way _STEP_COMMANDS/_REGISTRATION_ORDER are.
+_HIDDEN = {
+    "probe", "snapshot",
+    "filler", "waveform-trim", "rm-nonspeech",
+    "materialize-cut", "resize", "normalize", "extract-audio",
+    "transcribe", "caption", "lyrics-sync", "lyrics-render", "stem-separation",
+    "remove-bg",
+    "kling-generate", "analyze-media", "generate-image", "generate-voiceover",
+    "generate-music", "detect-shots", "shot-sheet",
+}
 
 
 def _load(modpath):
@@ -135,18 +150,6 @@ def main():
     parser.add_argument("-v", "--version", action="version",
                         version=f"{bold('montaj')} {cyan(__version__)}")
     subparsers = parser.add_subparsers(dest="command", required=True, metavar="<command>")
-
-    # Individual step commands — available but not listed in top-level help.
-    # Discover them via `montaj step --list`.
-    _HIDDEN = {
-        "probe", "snapshot",
-        "filler", "waveform-trim", "rm-nonspeech",
-        "materialize-cut", "resize", "normalize", "extract-audio",
-        "transcribe", "caption", "lyrics-sync", "lyrics-render", "stem-separation",
-        "remove-bg",
-        "kling-generate", "analyze-media", "generate-image", "generate-voiceover",
-        "generate-music",
-    }
 
     # Inject formatter into every subcommand without touching each command file
     _orig_add_parser = subparsers.add_parser

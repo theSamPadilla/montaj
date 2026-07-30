@@ -9,6 +9,7 @@ import { DEFAULT_CAROUSEL_ASPECT, type CarouselAspect } from '@/lib/types/carous
 import { type ClipUploadData } from '@/components/upload/ClipUploadFields'
 import { type LyricsUploadData } from '@/components/upload/LyricsUploadFields'
 import { type AIVideoUploadData } from '@/components/upload/AIVideoUploadFields'
+import { type VoiceoverFile } from '@/components/upload/BrollUploadFields'
 
 interface Prefill {
   clips?: string[]
@@ -34,6 +35,7 @@ export interface UseUploadFormReturn {
   lyricsData: LyricsUploadData; setLyricsData: (v: LyricsUploadData) => void
   carouselAssets: Asset[]; setCarouselAssets: (v: Asset[]) => void
   aiVideoAssets: Asset[]; setAiVideoAssets: (v: Asset[]) => void
+  voiceover: VoiceoverFile | null; setVoiceover: (v: VoiceoverFile | null) => void
   carouselAspect: CarouselAspect; setCarouselAspect: (v: CarouselAspect) => void
   aspectRatio: AspectRatio; setAspectRatio: (v: AspectRatio) => void
   targetDuration: number | null; setTargetDuration: (v: number | null) => void
@@ -78,6 +80,7 @@ export function useUploadForm(): UseUploadFormReturn {
   const [carouselAspect, setCarouselAspect] = useState<CarouselAspect>(DEFAULT_CAROUSEL_ASPECT)
   const [carouselAssets, setCarouselAssets] = useState<Asset[]>([])
   const [aiVideoAssets, setAiVideoAssets]   = useState<Asset[]>([])
+  const [voiceover, setVoiceover] = useState<VoiceoverFile | null>(null)
 
   const selectedWorkflow = workflows.find(w => w.name === workflow)
   const projectType = normalizeProjectType(selectedWorkflow?.project_type)
@@ -157,6 +160,18 @@ export function useUploadForm(): UseUploadFormReturn {
           })
           break
         }
+        case 'broll': {
+          project = await api.createProject({
+            clips: clipData.clips,
+            assets: clipData.assets.length ? clipData.assets : undefined,
+            name: name.trim() || undefined,
+            prompt: prompt.trim(),
+            workflow,
+            profile: profile || undefined,
+            voiceoverAsset: voiceover?.path,
+          })
+          break
+        }
         case 'editing':
         default: {
           project = await api.createProject({
@@ -185,6 +200,7 @@ export function useUploadForm(): UseUploadFormReturn {
       case 'music_video': return 'Generate lyrics video ⌘↵'
       case 'ai_video':    return 'Generate storyboard ⌘↵'
       case 'carousel':    return 'Create carousel ⌘↵'
+      case 'broll':       return 'Assemble b-roll ⌘↵'
       case 'editing':
       default:            return 'Run ⌘↵'
     }
@@ -205,6 +221,7 @@ export function useUploadForm(): UseUploadFormReturn {
       case 'music_video': return 'Preparing your lyrics video'
       case 'ai_video':    return 'Generating your storyboard'
       case 'carousel':    return 'Setting up your carousel'
+      case 'broll':       return 'Assembling your b-roll edit'
       case 'editing':
       default:            return 'Setting up your project'
     }
@@ -218,6 +235,8 @@ export function useUploadForm(): UseUploadFormReturn {
         return 'Composing the storyboard from your references and prompt…'
       case 'carousel':
         return 'Creating workspace…'
+      case 'broll':
+        return 'Importing footage and syncing shots to your voiceover…'
       case 'editing':
       default:
         if (clipCount === 0) return 'Creating workspace…'
@@ -226,7 +245,9 @@ export function useUploadForm(): UseUploadFormReturn {
     }
   })()
 
-  const loadingSlowHint = projectType === 'editing'
+  // broll ingests raw footage through the same clipData.clips path as editing,
+  // so it incurs the same transcoding latency and needs the same hint.
+  const loadingSlowHint = projectType === 'editing' || projectType === 'broll'
     ? 'Long or high-resolution clips may need transcoding. Hang tight — this only happens once.'
     : undefined
 
@@ -235,6 +256,7 @@ export function useUploadForm(): UseUploadFormReturn {
       case 'music_video': return 'dark moody vibe, white text, center position…'
       case 'ai_video':    return 'Describe the video you want to create…'
       case 'carousel':    return 'Describe the carousel — topic, vibe, what each slide should cover…'
+      case 'broll':       return 'pacing, mood, which shots to favor…'
       case 'editing':
       default:            return 'tight cuts, remove filler, 9:16 for Reels…'
     }
@@ -245,6 +267,7 @@ export function useUploadForm(): UseUploadFormReturn {
       case 'music_video': return 'Add your audio and lyrics. Background video is optional.'
       case 'ai_video':    return 'Describe your video, add references, and generate a storyboard.'
       case 'carousel':    return 'Image carousel for Instagram/TikTok. Pick an aspect ratio and start designing.'
+      case 'broll':       return 'Add raw footage and a voiceover. The agent selects and times the shots.'
       case 'editing':
       default:            return 'Add clips, write a prompt, hit Run.'
     }
@@ -262,6 +285,7 @@ export function useUploadForm(): UseUploadFormReturn {
     lyricsData, setLyricsData,
     carouselAssets, setCarouselAssets,
     aiVideoAssets, setAiVideoAssets,
+    voiceover, setVoiceover,
     carouselAspect, setCarouselAspect,
     aspectRatio, setAspectRatio,
     targetDuration, setTargetDuration,

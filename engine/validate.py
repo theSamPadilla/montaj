@@ -157,6 +157,15 @@ def validate_project(path):
             if field not in data:
                 fail("missing_field", f"Missing required field: {field}")
 
+        if project_type == "broll":
+            vo = data.get("voiceover")
+            if vo is None:
+                fail("missing_field", "broll projects require a 'voiceover' object")
+            if not isinstance(vo, dict):
+                fail("invalid_field", "'voiceover' must be an object")
+            if not isinstance(vo.get("src"), str) or not vo["src"]:
+                fail("invalid_field", "'voiceover.src' must be a non-empty string")
+
         tracks = data["tracks"]
         if not isinstance(tracks, list):
             fail("invalid_tracks", "tracks must be an array")
@@ -245,6 +254,14 @@ def validate_workflow(path):
                     "invalid_foreach",
                     f"Step '{step['id']}': foreach must be a dotted identifier path "
                     f"(e.g. 'clips', 'storyboard.scenes'); got {value!r}",
+                )
+        if "input" in step:
+            value = step["input"]
+            if not isinstance(value, str) or not FOREACH_PATH_RE.match(value):
+                fail(
+                    "invalid_input",
+                    f"Step '{step['id']}': input must be a dotted identifier path "
+                    f"(e.g. 'clips', 'voiceover.src'); got {value!r}",
                 )
         step_ids.add(step["id"])
 

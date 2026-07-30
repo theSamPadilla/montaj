@@ -6,6 +6,7 @@ import { CAROUSEL_ASPECTS, type CarouselAspect } from '@/lib/types/carousel'
 import { ClipUploadFields } from '@/components/upload/ClipUploadFields'
 import { LyricsUploadFields } from '@/components/upload/LyricsUploadFields'
 import { AIVideoUploadFields } from '@/components/upload/AIVideoUploadFields'
+import BrollUploadFields from '@/components/upload/BrollUploadFields'
 import AssetsPanel from '@/components/AssetsPanel'
 import { useUploadForm } from '@/lib/useUploadForm'
 import { AspectRatioIcon, CarouselAspectIcon } from '@/app/editor/uploadConstants'
@@ -15,7 +16,7 @@ export default function UploadView() {
     name, setName, prompt, setPrompt, workflow, setWorkflow, profile, setProfile,
     workflows, profiles, clipData, setClipData, aiVideoData, setAiVideoData,
     lyricsData, setLyricsData, carouselAssets, setCarouselAssets,
-    aiVideoAssets, setAiVideoAssets,
+    aiVideoAssets, setAiVideoAssets, voiceover, setVoiceover,
     carouselAspect, setCarouselAspect, aspectRatio, setAspectRatio,
     targetDuration, setTargetDuration, error, setError, runError, running,
     projectType, loadingTitle, loadingMessage, loadingSlowHint,
@@ -317,6 +318,13 @@ export default function UploadView() {
 
         {projectType === 'music_video' ? (
           <LyricsUploadFields data={lyricsData} onChange={setLyricsData} onError={setError} />
+        ) : projectType === 'broll' ? (
+          <BrollUploadFields
+            clips={clipData.clips} setClips={clips => setClipData({ ...clipData, clips })}
+            assets={clipData.assets} setAssets={assets => setClipData({ ...clipData, assets })}
+            voiceover={voiceover} setVoiceover={setVoiceover}
+            onError={setError}
+          />
         ) : (
           <ClipUploadFields data={clipData} onChange={setClipData} onError={setError} profileName={profile || undefined} />
         )}

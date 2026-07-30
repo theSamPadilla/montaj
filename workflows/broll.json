@@ -1,0 +1,23 @@
+{
+  "name": "broll",
+  "description": "Voiceover-driven B-roll edit. The narration is the spine: clean the voiceover, index the footage library at shot granularity, then assemble visuals that illustrate what is being said. Produces a normal draft with muted footage on tracks[0] and the cleaned voiceover on audio.tracks[0].",
+  "project_type": "broll",
+  "requires_clips": true,
+  "notes": "TWO INDEPENDENT PATHS that meet at `assemble`. (1) The AUDIO path — every vo_* step declares input: voiceover.src and touches ONLY the voiceover. Never run them over the footage clips. It runs on project.voiceover.src directly, audio file or video, with no audio-extraction step: waveform_trim takes the file, every step after it takes the previous step's trim spec, and materialize_cut --audio emits the cleaned spine at the source's native rate and channel count, discarding the picture if the voiceover was a video. (2) The FOOTAGE path — probe, detect_shots and shot_sheet are foreach: clips and touch ONLY the footage. Never run them over the voiceover. There are two transcripts and they are not interchangeable: vo_script is pre-cut, in original-source time, and exists so select-takes can compare takes; vo_transcribe is post-cut, in output-timeline time, and is what the broll skill reads for beat segmentation and word-onset cut placement — and what montaj/overlay reads to sync overlays to speech. The voiceover contributes AUDIO ONLY: do not place project.voiceover.src on any visual track unless the editing prompt explicitly asks for it. All tracks[0] items are muted. Horizontal sources are centre-cropped via sourceCrop, never letterboxed. The broll skill writes tracks[0] and audio only; montaj/overlay runs last and owns tracks[1+], deciding overlays from the editing prompt.",
+  "steps": [
+    { "id": "vo_silence",     "uses": "montaj/waveform_trim",   "input": "voiceover.src",                                 "params": { "threshold": "-30", "min-silence": 0.3 } },
+    { "id": "vo_nonspeech",   "uses": "montaj/rm_nonspeech",    "input": "voiceover.src", "needs": ["vo_silence"],        "params": { "model": "base.en", "max-word-gap": 0.10, "sentence-edge": 0.05 } },
+    { "id": "vo_script",      "uses": "montaj/transcribe",      "input": "voiceover.src", "needs": ["vo_nonspeech"],      "params": { "model": "base.en" } },
+    { "id": "vo_takes",       "uses": "montaj/select-takes",    "input": "voiceover.src", "needs": ["vo_script"] },
+    { "id": "vo_fillers",     "uses": "montaj/rm_fillers",      "input": "voiceover.src", "needs": ["vo_takes"],          "params": { "model": "base.en" } },
+    { "id": "vo_materialize", "uses": "montaj/materialize_cut", "input": "voiceover.src", "needs": ["vo_fillers"],        "params": { "audio": true } },
+    { "id": "vo_transcribe",  "uses": "montaj/transcribe",      "input": "voiceover.src", "needs": ["vo_materialize"],    "params": { "model": "base.en" } },
+
+    { "id": "probe",          "uses": "montaj/probe",           "foreach": "clips" },
+    { "id": "shots",          "uses": "montaj/detect_shots",    "foreach": "clips",       "needs": ["probe"],             "params": { "threshold": 0.25, "min-shot": 0.4 } },
+    { "id": "sheets",         "uses": "montaj/shot_sheet",      "foreach": "clips",       "needs": ["shots"],             "params": { "frames-per-shot": 3, "cols": 6 } },
+
+    { "id": "assemble",       "uses": "montaj/broll",                                     "needs": ["vo_transcribe", "sheets"] },
+    { "id": "overlays",       "uses": "montaj/overlay",                                   "needs": ["assemble", "vo_transcribe"] }
+  ]
+}

@@ -36,7 +36,11 @@ def _spec_segments(spec: dict) -> list:
     return [(source, float(s), float(e)) for s, e in spec["keeps"]]
 
 
-def build_ffmpeg_args(spec: dict) -> tuple:
+def _default_out(base: str, audio_only: bool) -> str:
+    return f"{base}_cut.wav" if audio_only else f"{base}_cut.mp4"
+
+
+def build_ffmpeg_args(spec: dict, audio_only: bool = False) -> tuple:
     """
     Build (input_args, filter_complex_string) using input-level seeking.
 
@@ -87,14 +91,20 @@ def build_ffmpeg_args(spec: dict) -> tuple:
 
     filter_parts = []
     if n == 1:
-        filter_parts.append(_vchain(0).replace("[vc0]", "[vout]"))
+        if not audio_only:
+            filter_parts.append(_vchain(0).replace("[vc0]", "[vout]"))
         filter_parts.append(_achain(0).replace("[ac0]", "[aout_raw]"))
     else:
         for i in range(n):
-            filter_parts.append(_vchain(i))
+            if not audio_only:
+                filter_parts.append(_vchain(i))
             filter_parts.append(_achain(i))
-        seg_in = "".join(f"[vc{i}][ac{i}]" for i in range(n))
-        filter_parts.append(f"{seg_in}concat=n={n}:v=1:a=1[vout][aout_raw]")
+        if audio_only:
+            seg_in = "".join(f"[ac{i}]" for i in range(n))
+            filter_parts.append(f"{seg_in}concat=n={n}:v=0:a=1[aout_raw]")
+        else:
+            seg_in = "".join(f"[vc{i}][ac{i}]" for i in range(n))
+            filter_parts.append(f"{seg_in}concat=n={n}:v=1:a=1[vout][aout_raw]")
 
     filter_parts.append("[aout_raw]aresample=async=1000[aout]")
     return input_args, ";".join(filter_parts)
@@ -118,14 +128,22 @@ def compute_keeps(duration: float, cuts: list) -> list:
     return keeps
 
 
-def _encode_one(spec: dict, out_path: str) -> str:
+def _encode_one(spec: dict, out_path: str, audio_only: bool = False) -> str:
     """Encode a single cut spec (single- or multi-source). Returns out_path on
     success, raises on failure."""
-    input_args, filter_str = build_ffmpeg_args(spec)
-    encode_flags = [
-        "-c:v", "libx264", "-preset", "fast", "-crf", "18",
-        "-c:a", "aac", "-b:a", "192k",
-    ]
+    input_args, filter_str = build_ffmpeg_args(spec, audio_only=audio_only)
+    if audio_only:
+        ext = os.path.splitext(out_path)[1].lower()
+        if ext == ".wav":
+            encode_flags = ["-vn", "-c:a", "pcm_s16le"]
+        else:
+            encode_flags = ["-vn", "-c:a", "aac", "-b:a", "192k"]
+    else:
+        encode_flags = [
+            "-c:v", "libx264", "-preset", "fast", "-crf", "18",
+            "-c:a", "aac", "-b:a", "192k",
+        ]
+    map_flags = ["-map", "[aout]"] if audio_only else ["-map", "[vout]", "-map", "[aout]"]
     fd, fc_path = tempfile.mkstemp(suffix=".txt", prefix="materialize_fc_")
     try:
         with os.fdopen(fd, "w") as f:
@@ -133,7 +151,7 @@ def _encode_one(spec: dict, out_path: str) -> str:
         run([
             ffmpeg_bin(), "-y", *input_args,
             "-/filter_complex", fc_path,
-            "-map", "[vout]", "-map", "[aout]",
+            *map_flags,
             *encode_flags, out_path,
         ])
     finally:
@@ -166,12 +184,15 @@ def main():
     parser.add_argument("--inpoint",  type=float, help="Keep from this source time (seconds). --input only.")
     parser.add_argument("--outpoint", type=float, help="Keep to this source time (seconds). --input only.")
     parser.add_argument("--cuts",                 help='JSON [[start,end],...] — ranges to remove. --input only.')
-    parser.add_argument("--out",                  help="Output path (default: {stem}_cut.mp4). --input only.")
+    parser.add_argument("--out",                  help="Output path (default: {stem}_cut.mp4, or {stem}_cut.wav with --audio). --input only.")
     parser.add_argument(
         "--workers", type=int, default=DEFAULT_WORKERS,
         help=f"Max concurrent encodes in batch mode (default: {DEFAULT_WORKERS}). "
              "Each libx264 pass is memory-heavy — do not raise above 3 for 4K footage.",
     )
+    parser.add_argument("--audio", action="store_true",
+                         help="Audio-only output. Emits .wav (pcm_s16le) or .m4a (aac) "
+                              "depending on --out's extension; defaults to .wav.")
     args = parser.parse_args()
 
     # ── Single input ──────────────────────────────────────────────────────────
@@ -212,9 +233,9 @@ def main():
 
         if not args.out:
             base     = os.path.splitext(os.path.basename(ref_src))[0]
-            args.out = os.path.join(os.path.dirname(ref_src), f"{base}_cut.mp4")
+            args.out = os.path.join(os.path.dirname(ref_src), _default_out(base, args.audio))
 
-        print(_encode_one(spec, args.out))
+        print(_encode_one(spec, args.out, audio_only=args.audio))
 
     # ── Batch input ───────────────────────────────────────────────────────────
     else:
@@ -225,12 +246,12 @@ def main():
         for path in args.inputs:
             source, keeps = _resolve_input(path)
             base     = os.path.splitext(os.path.basename(source))[0]
-            out_path = os.path.join(os.path.dirname(source), f"{base}_cut.mp4")
+            out_path = os.path.join(os.path.dirname(source), _default_out(base, args.audio))
             jobs.append((source, keeps, out_path))
 
         results = [None] * len(jobs)
         with ThreadPoolExecutor(max_workers=args.workers) as pool:
-            futures = {pool.submit(_encode_one, {"input": src, "keeps": keeps}, out): i for i, (src, keeps, out) in enumerate(jobs)}
+            futures = {pool.submit(_encode_one, {"input": src, "keeps": keeps}, out, args.audio): i for i, (src, keeps, out) in enumerate(jobs)}
             for future in as_completed(futures):
                 idx = futures[future]
                 results[idx] = future.result()  # raises on encode failure

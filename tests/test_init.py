@@ -1340,3 +1340,72 @@ def test_init_symlink_clips_keeps_staged_upload(tmp_path):
     assert clip.exists()
     # The project's clip src resolves back to the staged file.
     assert Path(project["tracks"][0][0]["src"]).resolve() == clip.resolve()
+
+
+# ---------------------------------------------------------------------------
+# --voiceover-asset intake (broll projects)
+# ---------------------------------------------------------------------------
+
+def test_init_copies_voiceover_into_workspace(tmp_path):
+    clip = tmp_path / "clip.mp4"
+    clip.write_bytes(b"fake")
+    vo = tmp_path / "narration.wav"
+    vo.write_bytes(b"RIFF....WAVEfake")
+    result = run_init("--workflow", "broll", "--clips", str(clip), "--prompt", "test",
+                      "--voiceover-asset", str(vo),
+                      env_override={"MONTAJ_WORKSPACE_DIR": str(tmp_path)})
+    assert result.returncode == 0, result.stderr
+
+    project_json = _project_path_from_stdout(result.stdout)
+    data = json.loads(project_json.read_text())
+    assert data["projectType"] == "broll"
+
+    copied = Path(data["voiceover"]["src"])
+    assert copied.exists()
+    assert copied.parent == project_json.parent, "voiceover must land in the project workspace"
+    assert copied.read_bytes() == vo.read_bytes()
+    assert str(copied) != str(vo), "the original must not be referenced in place"
+
+
+def test_init_voiceover_accepts_a_video_file(tmp_path):
+    clip = tmp_path / "clip.mp4"
+    clip.write_bytes(b"fake")
+    vo = tmp_path / "talking.mp4"
+    vo.write_bytes(b"\x00\x00\x00\x18ftypmp42fake")
+    result = run_init("--workflow", "broll", "--clips", str(clip), "--prompt", "test",
+                      "--voiceover-asset", str(vo),
+                      env_override={"MONTAJ_WORKSPACE_DIR": str(tmp_path)})
+    assert result.returncode == 0, result.stderr
+    data = json.loads(_project_path_from_stdout(result.stdout).read_text())
+    assert Path(data["voiceover"]["src"]).suffix == ".mp4"
+
+
+def test_init_broll_without_voiceover_fails(tmp_path):
+    clip = tmp_path / "clip.mp4"
+    clip.write_bytes(b"fake")
+    result = run_init("--workflow", "broll", "--clips", str(clip), "--prompt", "test",
+                      env_override={"MONTAJ_WORKSPACE_DIR": str(tmp_path)})
+    assert result.returncode == 1
+    assert json.loads(result.stderr.strip().splitlines()[-1])["error"] == "missing_argument"
+
+
+def test_init_voiceover_missing_file_fails(tmp_path):
+    clip = tmp_path / "clip.mp4"
+    clip.write_bytes(b"fake")
+    result = run_init("--workflow", "broll", "--clips", str(clip), "--prompt", "test",
+                      "--voiceover-asset", "/nonexistent/vo.wav",
+                      env_override={"MONTAJ_WORKSPACE_DIR": str(tmp_path)})
+    assert result.returncode == 1
+    assert json.loads(result.stderr.strip().splitlines()[-1])["error"] == "file_not_found"
+
+
+def test_voiceover_asset_rejected_for_non_broll_workflow(tmp_path):
+    clip = tmp_path / "clip.mp4"
+    clip.write_bytes(b"fake")
+    vo = tmp_path / "narration.wav"
+    vo.write_bytes(b"RIFF....WAVEfake")
+    result = run_init("--workflow", "clean_cut", "--clips", str(clip), "--prompt", "test",
+                      "--voiceover-asset", str(vo),
+                      env_override={"MONTAJ_WORKSPACE_DIR": str(tmp_path)})
+    assert result.returncode == 1
+    assert json.loads(result.stderr.strip().splitlines()[-1])["error"] == "invalid_argument"
