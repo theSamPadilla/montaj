@@ -23,6 +23,7 @@ import type {
   OverlayElement,
   Captions,
 } from './schema'
+import type { ImageTone } from './video/imageTone'
 
 // ── Overlay compiler ─────────────────────────────────────────────────────────
 
@@ -572,6 +573,20 @@ export interface VideoEditorProps<P extends Project = Project> {
    * unaffected.
    */
   onProvideRenderTrigger?: (openRender: () => void) => void
+
+  /**
+   * Opt a host OUT of the package's built-in toolbar image-tone button so it
+   * can surface the setting in its own chrome (e.g. the top-of-page header).
+   * Mirrors `onProvideRenderTrigger`: when provided, the package (a) hides its
+   * toolbar control and (b) calls this callback with the current state
+   * whenever it changes. The host renders its own control (the package exports
+   * `ImageToneMenu` with `variant="header"` for exactly this) and calls
+   * `set(tone)` to persist a choice; the editor owns the save path.
+   *
+   * Called with `null` when the control should not be shown (SDR project: the
+   * tone only affects HDR renders). Hosts must render nothing in that case.
+   */
+  onProvideImageTone?: (api: { value: ImageTone; set: (tone: ImageTone) => void } | null) => void
 
   // ── Host-supplied Montaj-specific UI (render-prop seams) ──────────────────
   // The clip/audio inspector and the subcut-regeneration tool read host-only

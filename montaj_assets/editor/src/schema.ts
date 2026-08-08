@@ -215,7 +215,18 @@ export interface Slide {
 export interface EditorProject {
   id: string
   status: 'pending' | 'storyboard_ready' | 'draft' | 'final'
-  settings: { resolution: [number, number]; fps?: number; brandKit?: string; normalize?: 'eager' | 'lazy' }
+  settings: {
+    resolution: [number, number]
+    fps?: number
+    brandKit?: string
+    normalize?: 'eager' | 'lazy'
+    /** Project working color space (e.g. 'sdr_bt709', 'hdr_hlg'). Written by
+     *  the render pipeline's smart-detect; read here to gate HDR-only UI. */
+    colorSpace?: string
+    /** Color mapping for overlay images in HDR renders — see video/imageTone.ts.
+     *  Absent → the render default ('vivid'). No effect on SDR projects. */
+    imageTone?: 'vivid' | 'broadcast' | 'punchy' | 'raw'
+  }
   name?: string | null
   editingPrompt?: string
   slides?: Slide[]

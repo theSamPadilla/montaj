@@ -17,6 +17,19 @@ def register(subparsers):
         default=None,
         help="High-DPI multiplier for carousel renders (1, 2, or 3; default 2). Pass 1 for design-resolution output. Ignored for video projects.",
     )
+    p.add_argument(
+        "--image-tone",
+        choices=["vivid", "broadcast", "punchy", "raw"],
+        default=None,
+        help=(
+            "Color mapping for overlay images in HDR renders. "
+            "vivid: true colors at full graphics brightness (default); "
+            "broadcast: BT.2408 203-nit graphics white (dimmer, TV-standard); "
+            "punchy: legacy contrast with corrected color; "
+            "raw: no conversion (legacy oversaturated look). "
+            "Overrides settings.imageTone in project.json. Ignored for SDR projects."
+        ),
+    )
     add_global_flags(p)  # adds --json, --out, --quiet
     p.set_defaults(func=handle)
 
@@ -35,4 +48,5 @@ def handle(args):
         clean=args.clean,
         montaj_root=MONTAJ_ROOT,
         scale=args.scale,
+        image_tone=args.image_tone,
     )

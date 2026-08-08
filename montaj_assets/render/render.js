@@ -40,34 +40,55 @@ if (isMain) {
   const argv = process.argv.slice(2)
 
   if (!argv.length || argv[0] === '--help') {
-    process.stderr.write('Usage: render.js <project.json> [--out <path>] [--workers <n>] [--clean]\n')
+    process.stderr.write('Usage: render.js <project.json> [--out <path>] [--workers <n>] [--clean] [--image-tone <vivid|broadcast|punchy|raw>]\n')
     process.exit(1)
   }
 
-  let projectArg = null
-  let outArg     = null
-  let workersArg = null
-  let cleanArg   = false
+  let projectArg   = null
+  let outArg       = null
+  let workersArg   = null
+  let cleanArg     = false
+  let imageToneArg = null
 
   for (let i = 0; i < argv.length; i++) {
-    if (argv[i] === '--out')     { outArg     = argv[++i]; continue }
-    if (argv[i] === '--workers') { workersArg = parseInt(argv[++i], 10); continue }
-    if (argv[i] === '--clean')   { cleanArg   = true; continue }
+    if (argv[i] === '--out')        { outArg       = argv[++i]; continue }
+    if (argv[i] === '--workers')    { workersArg   = parseInt(argv[++i], 10); continue }
+    if (argv[i] === '--clean')      { cleanArg     = true; continue }
+    if (argv[i] === '--image-tone') { imageToneArg = argv[++i]; continue }
     if (!projectArg) projectArg = argv[i]
   }
 
   if (!projectArg) fail('missing_argument', 'No project.json path provided')
 
-  main(projectArg, { out: outArg, workers: workersArg, clean: cleanArg }).catch(err => {
+  main(projectArg, { out: outArg, workers: workersArg, clean: cleanArg, imageTone: imageToneArg }).catch(err => {
     fail('render_error', err.message)
   })
+}
+
+// Image tone modes for HDR overlay-image conversion. Keep in sync with
+// lib/normalize_image.py::TONE_MODES and the editor's imageTone.ts.
+const IMAGE_TONE_MODES = ['vivid', 'broadcast', 'punchy', 'raw']
+const DEFAULT_IMAGE_TONE = 'vivid'
+
+/**
+ * Resolve the effective image tone: CLI flag > project settings > default.
+ * Fails fast on an invalid value from either source — a typo silently falling
+ * back to the default would be a color bug nobody can see in the logs.
+ */
+function resolveImageTone(cliValue, settings) {
+  const chosen = cliValue ?? settings?.imageTone ?? DEFAULT_IMAGE_TONE
+  if (!IMAGE_TONE_MODES.includes(chosen)) {
+    fail('invalid_argument',
+      `Unknown image tone ${JSON.stringify(chosen)} — expected one of ${IMAGE_TONE_MODES.join(', ')}`)
+  }
+  return chosen
 }
 
 // ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
 
-async function main(projectPath, { out, workers, clean }) {
+async function main(projectPath, { out, workers, clean, imageTone }) {
   // 1. Validate + resolve paths
   const absProjectPath = resolve(projectPath)
   if (!existsSync(absProjectPath)) fail('file_not_found', `project.json not found: ${absProjectPath}`)
@@ -365,7 +386,8 @@ async function main(projectPath, { out, workers, clean }) {
     workDirs.push(workDir)
   }
 
-  const renderedSegments = await renderAllSegments(segmentSpecs, { workers, colorSpace: projectColorSpace })
+  const effectiveImageTone = resolveImageTone(imageTone, settings)
+  const renderedSegments = await renderAllSegments(segmentSpecs, { workers, colorSpace: projectColorSpace, imageTone: effectiveImageTone })
 
   // Attach positioning offsets back onto rendered segments so compose.js can apply
   // x/y coordinates. Overlay size is derived from the output canvas at compose

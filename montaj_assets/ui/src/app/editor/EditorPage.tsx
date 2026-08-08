@@ -5,7 +5,7 @@ import { ProjectContext, type Asset, type Project, type RunSnapshot } from '@/li
 import { useProjectStream } from '@/lib/sse'
 import { createMontajAdapter } from './montajAdapter'
 import { useIsMobile } from '@/lib/useIsMobile'
-import { CarouselEditor, VideoEditor, defaultMontajTheme, type EditorSlots } from '@bycrux/editor'
+import { CarouselEditor, VideoEditor, ImageToneMenu, defaultMontajTheme, type EditorSlots, type ImageTone } from '@bycrux/editor'
 import AssetsPanel from '@/components/AssetsPanel'
 import ProjectHeader from '@/components/ProjectHeader'
 import RerunModal from '@/components/RerunModal'
@@ -172,6 +172,9 @@ export default function EditorPage() {
   // pipeline re-run. Inspector/subcut state is owned by VideoEditor (render-prop
   // seams); only the Re-run modal toggle is host-local here.
   const [rerunOpen, setRerunOpen] = useState(false)
+  // VideoEditor pushes the image-tone state up so the setting lives in the page
+  // header (null when the project is SDR and the control should not appear).
+  const [imageToneApi, setImageToneApi] = useState<{ value: ImageTone; set: (tone: ImageTone) => void } | null>(null)
   // VideoEditor hands us a stable `openRender()` trigger (it owns the RenderModal);
   // we host the Render button in the ProjectHeader instead of the package toolbar.
   const [openRender, setOpenRender] = useState<(() => void) | null>(null)
@@ -394,6 +397,16 @@ export default function EditorPage() {
                   ← Storyboard
                 </Button>
               )}
+              {/* HDR image color mapping, surfaced as a page-header setting.
+                  VideoEditor owns the state + save path and hands it up via
+                  onProvideImageTone; null means SDR project (no control). */}
+              {imageToneApi && (
+                <ImageToneMenu
+                  variant="header"
+                  value={imageToneApi.value}
+                  onChange={imageToneApi.set}
+                />
+              )}
               {project.status !== 'pending' && (
                 <Button variant="outline" size="sm" onClick={() => setRerunOpen(true)}>
                   Re-run
@@ -420,6 +433,7 @@ export default function EditorPage() {
             assetsPlacement="sidebar"
             renderProgressView="logs"
             onProvideRenderTrigger={(fn) => setOpenRender(() => fn)}
+            onProvideImageTone={setImageToneApi}
             onBackToSetup={handleBackToSetup}
             regenEnabled={project.projectType === 'ai_video'}
             isClipQueued={(itemId) => (project.regenQueue ?? []).some(e => e.clipId === itemId)}

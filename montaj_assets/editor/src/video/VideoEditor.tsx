@@ -15,6 +15,8 @@ import { createPlaybackClock, type PlaybackClock } from './playback-clock'
 import type { OverlayChanges } from './preview/useDragOverlay'
 import VersionPanel from './VersionPanel'
 import RenderModal from './RenderModal'
+import ImageToneMenu from './ImageToneMenu'
+import type { ImageTone } from './imageTone'
 import CaptionRegenModal from './CaptionRegenModal'
 import OverlayPropsModal from './preview/OverlayPropsModal'
 
@@ -96,6 +98,7 @@ export default function VideoEditor<P extends Project = Project>({
   regenEnabled,
   isClipQueued,
   onProvideRenderTrigger,
+  onProvideImageTone,
 }: Props<P>) {
   const emit = onProjectChange ?? (() => {})
 
@@ -192,6 +195,7 @@ export default function VideoEditor<P extends Project = Project>({
         regenEnabled={regenEnabled}
         isClipQueued={isClipQueued}
         onProvideRenderTrigger={onProvideRenderTrigger}
+        onProvideImageTone={onProvideImageTone}
       />
     </div>
   )
@@ -221,6 +225,7 @@ interface SurfaceProps<P extends Project> {
   getWaveformChunks?: VideoEditorProps<P>['adapter']['getWaveformChunks']
   resolveFilePath: (path: string) => string
   onProvideRenderTrigger?: VideoEditorProps<P>['onProvideRenderTrigger']
+  onProvideImageTone?: VideoEditorProps<P>['onProvideImageTone']
 }
 
 function PendingSurface<P extends Project>({
@@ -368,6 +373,7 @@ function ReviewSurface<P extends Project>({
   regenEnabled,
   isClipQueued,
   onProvideRenderTrigger,
+  onProvideImageTone,
 }: SurfaceProps<P> & {
   emit: (p: P) => void
   renderClipInspector?: VideoEditorProps<P>['renderClipInspector']
@@ -411,6 +417,26 @@ function ReviewSurface<P extends Project>({
   // canonical and persists it.
   const { mutate: syncMutate, projectRef: syncProjectRef } = sync
   const emitRef = useRef(emit); emitRef.current = emit
+
+  // Persist the HDR image color mapping into project settings. A real user
+  // edit: goes through sync.mutate so it saves and participates in undo.
+  const handleImageToneChange = useCallback((tone: ImageTone) => {
+    void syncMutate(() => {
+      const cur = syncProjectRef.current
+      return { ...cur, settings: { ...cur.settings, imageTone: tone } } as P
+    })
+  }, [syncMutate, syncProjectRef])
+
+  // Host-chrome placement of the image-tone setting (mirrors
+  // onProvideRenderTrigger): push the current state up whenever it changes,
+  // and null for SDR projects so the host hides the control.
+  const isHdrProject = !!project.settings?.colorSpace?.startsWith('hdr')
+  const currentImageTone = project.settings?.imageTone
+  useEffect(() => {
+    if (!onProvideImageTone) return
+    onProvideImageTone(isHdrProject ? { value: currentImageTone ?? 'vivid', set: handleImageToneChange } : null)
+  }, [onProvideImageTone, isHdrProject, currentImageTone, handleImageToneChange])
+
   const openRender = useCallback(() => {
     const final = { ...syncProjectRef.current, status: 'final' } as P
     emitRef.current(final)
@@ -725,6 +751,15 @@ function ReviewSurface<P extends Project>({
             >
               <Pencil size={12} />
             </button>
+          )}
+          {/* Image color mapping. HDR projects only (the tone has no effect on
+              SDR renders). Hidden when the host surfaces the setting in its own
+              chrome via onProvideImageTone, mirroring the Render button. */}
+          {!onProvideImageTone && isHdrProject && (
+            <ImageToneMenu
+              value={currentImageTone}
+              onChange={handleImageToneChange}
+            />
           )}
           {/* Default placement. A host that sets onProvideRenderTrigger renders
               Render in its own chrome instead, so the toolbar button is hidden. */}

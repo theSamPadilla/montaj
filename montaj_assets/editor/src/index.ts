@@ -56,6 +56,14 @@ export {
 export type { Cut } from './video/cuts'
 export { getOverlayDesignCanvas } from './video/design-canvas'
 
+// ── Image tone (HDR image color mapping) ─────────────────────────────────────
+// The picker component is exported so hosts using `onProvideImageTone` can
+// render the same control (variant="header") in their own chrome.
+export { default as ImageToneMenu } from './video/ImageToneMenu'
+export type { ImageToneMenuProps } from './video/ImageToneMenu'
+export { IMAGE_TONES, DEFAULT_IMAGE_TONE } from './video/imageTone'
+export type { ImageTone, ImageToneInfo } from './video/imageTone'
+
 // ── Theme ─────────────────────────────────────────────────────────────────────
 export { defaultMontajTheme, applyTheme } from './theme'
 

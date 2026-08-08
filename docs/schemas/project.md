@@ -72,6 +72,7 @@ The agent writes project.json as it works — every write pushes to the browser 
 | `fps` | number | Output frame rate. |
 | `brandKit` | string | Brand kit name. |
 | `normalize` | string | Source normalization strategy. `"eager"` (default) — re-encodes the full source to a dense-keyframe, conformant file at import time. `"lazy"` — skips full-source normalization; instead each clip's `[inPoint, outPoint]` window is normalized on demand and cached as `normalizedSrc` on the track item. The `clips` workflow imports with `lazy` so large sources are not re-encoded up front. |
+| `imageTone` | string | Optional. Color mapping for overlay images in HDR renders — one of `"vivid"` (default: true colors at full graphics brightness), `"broadcast"` (BT.2408 203-nit graphics white; accurate but dimmer than the raster graphics), `"punchy"` (legacy contrast with corrected color), `"raw"` (no conversion — the legacy oversaturated look). Ignored for SDR projects. The `montaj render --image-tone` flag overrides it per run. Cached conversions live next to each asset as `<stem>_<colorSpace>_<tone>.png`. |
 
 ---
 

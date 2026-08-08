@@ -56,6 +56,7 @@ export async function renderAllSegments(segments, config = {}) {
 
   // Expand segments into per-chunk jobs
   const colorSpace = config.colorSpace ?? null
+  const imageTone  = config.imageTone ?? 'vivid'
   const jobs = []
   for (const seg of segments) {
     const opaque = seg.opaque ?? false
@@ -64,10 +65,10 @@ export async function renderAllSegments(segments, config = {}) {
       for (let i = 0; i < numChunks; i++) {
         const frameStart = i * chunkSize
         const frameEnd   = Math.min(frameStart + chunkSize, seg.frameCount)
-        jobs.push({ ...seg, opaque, colorSpace, frameStart, frameEnd, chunkIndex: i, totalChunks: numChunks })
+        jobs.push({ ...seg, opaque, colorSpace, imageTone, frameStart, frameEnd, chunkIndex: i, totalChunks: numChunks })
       }
     } else {
-      jobs.push({ ...seg, opaque, colorSpace, frameStart: 0, frameEnd: seg.frameCount, chunkIndex: 0, totalChunks: 1 })
+      jobs.push({ ...seg, opaque, colorSpace, imageTone, frameStart: 0, frameEnd: seg.frameCount, chunkIndex: 0, totalChunks: 1 })
     }
   }
 
@@ -153,7 +154,7 @@ export async function renderAllSegments(segments, config = {}) {
 // ---------------------------------------------------------------------------
 
 async function renderChunk(browser, job) {
-  const { id, htmlPath, fps, width, height, frameStart, frameEnd, chunkIndex, outputPath, colorSpace } = job
+  const { id, htmlPath, fps, width, height, frameStart, frameEnd, chunkIndex, outputPath, colorSpace, imageTone } = job
 
   const frameDir = join(tmpdir(), `montaj-frames-${id}-c${chunkIndex}-${randomBytes(4).toString('hex')}`)
   mkdirSync(frameDir, { recursive: true })
@@ -222,13 +223,14 @@ async function renderChunk(browser, job) {
           return
         }
 
-        // Compute deterministic cache path: <stem>_hdr_<colorspace>.png
-        // e.g. /abs/logo.png → /abs/logo_hdr_hlg.png
+        // Compute deterministic cache path: <stem>_<colorspace>_<tone>.png
+        // e.g. /abs/logo.png → /abs/logo_hdr_hlg_vivid.png. The tone suffix
+        // keeps the four tone modes from ever sharing a cache file, and
+        // orphans any pre-tone `<stem>_hdr_hlg.png` caches (which carried
+        // cICP chunks and must not be served — see lib/normalize_image.py).
         const dir = dirname(srcPath)
         const stem = basename(srcPath, extname(srcPath))
-        // colorSpace key already starts with 'hdr_' (e.g. 'hdr_hlg'), so the
-        // suffix '_${colorSpace}' produces e.g. 'logo_hdr_hlg.png' as specified.
-        const outPath = join(dir, `${stem}_${colorSpace}.png`)
+        const outPath = join(dir, `${stem}_${colorSpace}_${imageTone}.png`)
 
         // Try cache hit first. We replicate the Python module's mtime check
         // here rather than spawning Python just to short-circuit — but the
@@ -243,7 +245,7 @@ async function renderChunk(browser, job) {
 
         // Cache miss — spawn lib.normalize_image asynchronously (not spawnSync)
         // so the event loop stays unblocked while ffmpeg runs.
-        const converted = await spawnNormalizeImage(srcPath, colorSpace, outPath)
+        const converted = await spawnNormalizeImage(srcPath, colorSpace, outPath, imageTone)
         if (converted) {
           const body = readFileSync(outPath)
           request.respond({ status: 200, contentType: 'image/png', body })
@@ -405,7 +407,7 @@ function spawnAsync(cmd, args, errorPrefix) {
  * Returns true on success, false on failure (so the caller can fall back gracefully).
  * Uses async spawn — does NOT block the event loop.
  */
-function spawnNormalizeImage(srcPath, colorSpace, outPath) {
+function spawnNormalizeImage(srcPath, colorSpace, outPath, imageTone) {
   return new Promise((resolve) => {
     let stderr = ''
     let proc
@@ -414,6 +416,7 @@ function spawnNormalizeImage(srcPath, colorSpace, outPath) {
         '-m', 'lib.normalize_image',
         '--input', srcPath,
         '--color-space', colorSpace,
+        '--tone', imageTone ?? 'vivid',
         '--out', outPath,
       ], { cwd: MONTAJ_ROOT })
     } catch (err) {

@@ -10,7 +10,7 @@ from cli.main import MONTAJ_ROOT as _MONTAJ_ROOT
 from lib.common import ffmpeg_bin, ffprobe_bin
 
 
-def main(project_path=None, out=None, workers=None, clean=False, scale=None, montaj_root=None):
+def main(project_path=None, out=None, workers=None, clean=False, scale=None, montaj_root=None, image_tone=None):
     # Determine project type so we can dispatch to the correct renderer.
     project_type = None
     if project_path and os.path.isfile(project_path):
@@ -40,6 +40,7 @@ def main(project_path=None, out=None, workers=None, clean=False, scale=None, mon
         if out:          cmd += ["--out", out]
         if workers:      cmd += ["--workers", str(workers)]
         if clean:        cmd.append("--clean")
+        if image_tone:   cmd += ["--image-tone", image_tone]
 
     env                = os.environ.copy()
     env["MONTAJ_ROOT"] = str(montaj_root or _MONTAJ_ROOT)
