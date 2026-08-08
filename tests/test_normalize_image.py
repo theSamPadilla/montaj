@@ -1,8 +1,11 @@
 """Tests for lib/normalize_image.py — sRGB→HDR image conversion.
 
 Tests cover:
-  1. Happy path HLG: sRGB PNG → HDR HLG PNG with correct color_transfer metadata
-     and pixel values different from the sRGB source (confirms conversion ran).
+  1. Happy path HLG/PQ: sRGB PNG → HDR PNG that is deliberately UNTAGGED (no
+     color_transfer), with pixel values different from the sRGB source (confirms
+     the conversion ran) and different between HLG and PQ (confirms the requested
+     transfer curve actually took effect). The output must stay untagged so
+     Chromium does not color-manage it back into the sRGB page raster.
   2. Idempotency: second call with fresh cache returns instantly (mtime unchanged).
   3. Atomic rename: successful conversion leaves only the final file (no .tmp.*
      siblings). A failed conversion (bad input) must not create the out_path.
@@ -135,19 +138,40 @@ def _read_center_pixel(path: Path) -> tuple[int, int, int]:
 
 # ── test 1: happy path HLG ─────────────────────────────────────────────────────
 
-def test_convert_image_hlg_produces_correct_transfer(tmp_path):
-    """sRGB PNG input → convert_image hdr_hlg → output tagged arib-std-b67."""
+def test_convert_image_hlg_produces_untagged_output(tmp_path):
+    """sRGB PNG input → convert_image hdr_hlg → HDR-encoded but *untagged* PNG.
+
+    The output deliberately carries NO color metadata: the filter graph's final
+    `setparams=color_trc=unknown:...` strips it. This is load-bearing rather than
+    incidental — a cICP chunk tagging the file BT.2020/HLG makes Chromium
+    color-manage the image into the sRGB page raster, destroying the pre-encoded
+    HDR values the renderer's interceptor relies on passing through untouched.
+    So the correct assertion is the *absence* of a transfer tag, not its presence.
+
+    Because the tag is gone, it can no longer serve as evidence the conversion
+    ran — the pixel check below carries that weight instead, and
+    `test_hlg_and_pq_produce_different_pixels` carries the "the requested
+    transfer actually took effect" half that the tag used to prove.
+    """
     src = tmp_path / "srgb.png"
     out = tmp_path / "out_hlg.png"
-    _make_srgb_png(src)
+    _make_srgb_png(src, color="0x800010")
 
     result = convert_image(str(src), "hdr_hlg", out_path=str(out))
 
     assert result == str(out)
     assert out.exists()
     transfer = _probe_transfer(out)
-    assert transfer == "arib-std-b67", (
-        f"Expected arib-std-b67 transfer on HLG output, got {transfer!r}"
+    assert transfer is None, (
+        f"HLG output must be untagged so Chromium does not color-manage it, "
+        f"got color_transfer={transfer!r}"
+    )
+    # The conversion must still have actually run.
+    src_px = _read_center_pixel(src)
+    out_px = _read_center_pixel(out)
+    assert any(abs(o - s) > 5 for o, s in zip(out_px, src_px)), (
+        f"Pixel values unchanged after HLG conversion: src={src_px} out={out_px} "
+        "— conversion may be a no-op"
     )
 
 
@@ -178,19 +202,56 @@ def test_convert_image_hlg_pixel_values_differ_from_source(tmp_path):
     )
 
 
-def test_convert_image_pq_produces_correct_transfer(tmp_path):
-    """sRGB PNG input → convert_image hdr_pq → output tagged smpte2084."""
+def test_convert_image_pq_produces_untagged_output(tmp_path):
+    """sRGB PNG input → convert_image hdr_pq → HDR-encoded but *untagged* PNG.
+
+    Same contract as the HLG case above — see that docstring for why untagged
+    output is the requirement rather than a smpte2084 tag.
+    """
     src = tmp_path / "srgb.png"
     out = tmp_path / "out_pq.png"
-    _make_srgb_png(src)
+    _make_srgb_png(src, color="0x800010")
 
     result = convert_image(str(src), "hdr_pq", out_path=str(out))
 
     assert result == str(out)
     assert out.exists()
     transfer = _probe_transfer(out)
-    assert transfer == "smpte2084", (
-        f"Expected smpte2084 transfer on PQ output, got {transfer!r}"
+    assert transfer is None, (
+        f"PQ output must be untagged so Chromium does not color-manage it, "
+        f"got color_transfer={transfer!r}"
+    )
+    src_px = _read_center_pixel(src)
+    out_px = _read_center_pixel(out)
+    assert any(abs(o - s) > 5 for o, s in zip(out_px, src_px)), (
+        f"Pixel values unchanged after PQ conversion: src={src_px} out={out_px} "
+        "— conversion may be a no-op"
+    )
+
+
+def test_hlg_and_pq_produce_different_pixels(tmp_path):
+    """hdr_hlg and hdr_pq must encode the same source to different pixel values.
+
+    This replaces the discriminating power the old color_transfer assertions
+    provided. Now that both outputs are deliberately untagged, "is it untagged?"
+    and "did pixels change?" would BOTH still pass if `hdr_pq` silently ran the
+    HLG chain (or vice versa) — the transfer curve is the only thing that
+    differs between them, and nothing else in the suite would notice. Comparing
+    the two encodings against each other is what keeps `dst_transfer` honest.
+    """
+    src = tmp_path / "srgb.png"
+    hlg = tmp_path / "out_hlg.png"
+    pq  = tmp_path / "out_pq.png"
+    _make_srgb_png(src, color="0x800010")
+
+    convert_image(str(src), "hdr_hlg", out_path=str(hlg))
+    convert_image(str(src), "hdr_pq",  out_path=str(pq))
+
+    hlg_px = _read_center_pixel(hlg)
+    pq_px  = _read_center_pixel(pq)
+    assert hlg_px != pq_px, (
+        f"HLG and PQ produced identical pixels ({hlg_px}) — the requested "
+        "transfer curve is not reaching the zscale chain"
     )
 
 

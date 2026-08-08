@@ -2,8 +2,11 @@
 """Convert an sRGB image to an HDR-encoded PNG (HLG or PQ).
 
 Applies the same zscale colorspace conversion chain that the render pipeline
-uses for video — extended with an alphaextract/alphamerge split so PNG sources
-with transparency are handled correctly (zscale rejects alpha pixel formats).
+uses for video. Every source is first normalised to rgba (full-resolution RGB
++ alpha) so one filter graph handles all decoder pixel formats — including
+odd-dimension 4:2:0 JPEGs and palette PNGs, which break zscale when fed to it
+directly — with an alphaextract/alphamerge split around the zscale chain
+because zscale rejects alpha pixel formats.
 A 2x linear brightness boost (colorchannelmixer rr=2:gg=2:bb=2) is baked in so
 composited images visually match the brightness of text/shape overlays, which
 land at ~203 nits when reinterpreted as HLG.
@@ -40,12 +43,12 @@ _VALID_DST = ("hdr_hlg", "hdr_pq")
 def _probe_image_stream(path: str) -> dict:
     """Return stream metadata for the first video stream of an image via ffprobe.
 
-    Keys include 'color_transfer' (str|None) and 'pix_fmt' (str|None).
+    Keys include 'color_transfer' (str|None).
     Returns an empty dict on ffprobe failure.
     """
     cmd = [
         ffprobe_bin(), "-v", "quiet",
-        "-show_entries", "stream=color_transfer,pix_fmt",
+        "-show_entries", "stream=color_transfer",
         "-of", "json", path,
     ]
     r = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
@@ -53,14 +56,6 @@ def _probe_image_stream(path: str) -> dict:
         return {}
     streams = json.loads(r.stdout).get("streams", [])
     return streams[0] if streams else {}
-
-
-def _has_alpha_pix_fmt(pix_fmt: str | None) -> bool:
-    """Return True if the pixel format includes an alpha channel."""
-    if not pix_fmt:
-        return False
-    # Common alpha-capable formats: rgba, argb, bgra, yuva*, gbrap*
-    return "a" in pix_fmt.lower() and pix_fmt.lower() not in ("ya8",)
 
 
 def _build_core_hdr_chain(dst_color_space: str) -> str:
@@ -85,40 +80,45 @@ def _build_core_hdr_chain(dst_color_space: str) -> str:
     )
 
 
-def _build_vf_no_alpha(dst_color_space: str) -> str:
-    """Return -vf filter chain for sources with no alpha channel.
+def _build_filter_complex(dst_color_space: str) -> str:
+    """Return the -filter_complex graph used for every source image.
 
-    Uses setparams to declare sRGB/bt709 input before handing to zscale, so
-    zscale can find the colorspace conversion path regardless of whether the
-    source PNG carries embedded color metadata.
-    """
-    core = _build_core_hdr_chain(dst_color_space)
-    return (
-        f"setparams=color_trc=iec61966-2-1:color_primaries=bt709:colorspace=bt709,"
-        f"{core}"
-    )
+    The graph starts with format=rgba so the rest of the chain never sees the
+    decoder's native pixel format. Downloaded images arrive in formats that
+    break zscale when fed to it directly:
+      - 4:2:0 JPEGs with an odd width or height — zimg rejects subsampled
+        frames whose dimensions aren't divisible by the subsampling factor
+      - palette PNGs (pal8) — crash ffmpeg inside the alpha handling
+    rgba is full-resolution (no subsampling) and always carries a real alpha
+    plane (opaque for sources without one), so one path handles all inputs.
 
-
-def _build_filter_complex_with_alpha(dst_color_space: str) -> str:
-    """Return -filter_complex graph for sources that contain an alpha channel.
-
-    zscale cannot process pixel formats that contain an alpha plane (it errors
-    with "Generic error in an external library"). The workaround:
-      1. setparams: declare sRGB input colorspace so zscale can find the path.
-      2. split: fork the stream into [rgb] and [a_src].
-      3. alphaextract: pull the alpha plane out of [a_src] into [a].
-      4. Run the HDR conversion chain on [rgb] only → [rgb_hdr].
-      5. alphamerge: re-combine [rgb_hdr] + [a] → [vout].
+    zscale itself cannot process alpha pixel formats (it errors with "Generic
+    error in an external library"), hence the split/alphaextract/alphamerge
+    detour around the core chain:
+      1. format=rgba: normalise to full-resolution RGB + alpha.
+      2. setparams: declare sRGB input colorspace so zscale can find the path.
+      3. split: fork the stream into [rgb] and [a_src].
+      4. alphaextract: pull the alpha plane out of [a_src] into [a].
+      5. Run the HDR conversion chain on [rgb] only → [rgb_hdr].
+      6. alphamerge: re-combine [rgb_hdr] + [a] → [vout].
+      7. setparams … unknown: wipe the stream's color metadata so the PNG
+         encoder writes NO cICP/cHRM/gAMA chunks. This is load-bearing: a
+         cICP chunk tagging the file BT.2020/HLG makes Chromium color-manage
+         the image into the sRGB page raster, destroying the pre-encoded HDR
+         values the renderer's interceptor relies on passing through
+         untouched. The converted PNG must be untagged bytes.
 
     The final output is mapped via -map "[vout]".
     """
     core = _build_core_hdr_chain(dst_color_space)
     return (
-        f"[0:v]setparams=color_trc=iec61966-2-1:color_primaries=bt709:colorspace=bt709,"
+        f"[0:v]format=rgba,"
+        f"setparams=color_trc=iec61966-2-1:color_primaries=bt709:colorspace=bt709,"
         f"split=2[rgb][a_src];"
         f"[a_src]alphaextract[a];"
         f"[rgb]{core}[rgb_hdr];"
-        f"[rgb_hdr][a]alphamerge[vout]"
+        f"[rgb_hdr][a]alphamerge,"
+        f"setparams=color_trc=unknown:color_primaries=unknown:colorspace=unknown[vout]"
     )
 
 
@@ -161,45 +161,27 @@ def convert_image(src: str, dst_color_space: str, *, out_path: str) -> str:
         _atomic_copy(src, out_path)
         return out_path
 
-    # ── Choose filter strategy based on whether source has alpha ──────────────
-    # alphaextract fails if the source has no alpha plane, so we must branch.
-    has_alpha = _has_alpha_pix_fmt(stream_info.get("pix_fmt"))
-
     # ── FFmpeg conversion ──────────────────────────────────────────────────────
     os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
     tmp_path = f"{out_path}.tmp.{os.getpid()}"
 
-    if has_alpha:
-        filter_graph = _build_filter_complex_with_alpha(dst_color_space)
-        cmd = [
-            ffmpeg_bin(), "-y",
-            "-i", src,
-            "-filter_complex", filter_graph,
-            "-map", "[vout]",
-            "-pix_fmt", "rgba",
-            # Force PNG encoder. Without -c:v png the image2 muxer infers the
-            # codec from the output filename extension; the tmp file has no
-            # .png extension, so ffmpeg falls back to MJPEG (yuvj444p) and
-            # silently ignores -pix_fmt rgba.
-            "-c:v", "png",
-            "-update", "1",
-            # Explicitly declare output format so ffmpeg doesn't try to infer
-            # it from the .tmp.<pid> filename (no recognisable extension).
-            "-f", "image2",
-            tmp_path,
-        ]
-    else:
-        vf_chain = _build_vf_no_alpha(dst_color_space)
-        cmd = [
-            ffmpeg_bin(), "-y",
-            "-i", src,
-            "-vf", vf_chain,
-            "-pix_fmt", "rgba",
-            "-c:v", "png",
-            "-update", "1",
-            "-f", "image2",
-            tmp_path,
-        ]
+    cmd = [
+        ffmpeg_bin(), "-y",
+        "-i", src,
+        "-filter_complex", _build_filter_complex(dst_color_space),
+        "-map", "[vout]",
+        "-pix_fmt", "rgba",
+        # Force PNG encoder. Without -c:v png the image2 muxer infers the
+        # codec from the output filename extension; the tmp file has no
+        # .png extension, so ffmpeg falls back to MJPEG (yuvj444p) and
+        # silently ignores -pix_fmt rgba.
+        "-c:v", "png",
+        "-update", "1",
+        # Explicitly declare output format so ffmpeg doesn't try to infer
+        # it from the .tmp.<pid> filename (no recognisable extension).
+        "-f", "image2",
+        tmp_path,
+    ]
 
     progress(
         f"normalize_image: converting {src} → {dst_color_space} PNG at {out_path}"
