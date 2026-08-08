@@ -117,6 +117,32 @@ describe('repairCaptionWords', () => {
     expect(repairCaptionWords(captions)).toBeNull()
   })
 
+  // Regression: VideoEditor's caption-repair effect re-invokes repairCaptionWords
+  // on every applyExternal it triggers (so it also catches mid-session caption
+  // regeneration, not just the initial project load). That only terminates if
+  // repairing a segment once produces something that repairs to "nothing to do"
+  // (null) on the very next pass — otherwise the effect applyExternals forever.
+  // A naive comparison of the rejoined (single-spaced) words against a
+  // non-whitespace-collapsed seg.text never reaches that fixed point whenever
+  // seg.text has a double space, tab, etc. between words.
+  it('reaches a fixed point on the pass after repairing text with irregular internal whitespace', () => {
+    const captions = makeCaptions([
+      {
+        id: 's1',
+        text: 'hello  world', // double space between words; words[] absent
+        start: 0,
+        end: 2,
+      },
+    ])
+    const once = repairCaptionWords(captions)
+    expect(once).not.toBeNull()
+    expect(once!.segments[0].words!.map(w => w.word)).toEqual(['hello', 'world'])
+
+    // Re-running on the repaired result must be a true no-op.
+    const twice = repairCaptionWords(once!)
+    expect(twice).toBeNull()
+  })
+
   it('handles a single-word segment with correct timing', () => {
     const captions = makeCaptions([
       {

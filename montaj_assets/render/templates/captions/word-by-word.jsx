@@ -1,4 +1,4 @@
-import { interpolate, spring } from 'montaj/render'
+import { interpolate, spring, captionOuterStyle, captionInnerStyle } from 'montaj/render'
 
 /**
  * One word visible at a time. Each word pops in with a spring scale.
@@ -29,28 +29,32 @@ export default function WordByWord({
   const opacity = interpolate(wordFrame, [0, 4], [0, 1])
 
   return (
-    <div style={{
-      position: 'fixed',
-      bottom: '18%',
-      left: 0,
-      right: 0,
-      textAlign: 'center',
-      padding: '0 8%',
-    }}>
-      <span style={{
-        display: 'inline-block',
-        fontSize,
-        fontWeight: 800,
-        fontFamily: 'system-ui, -apple-system, sans-serif',
-        color,
-        textShadow: '0 2px 12px rgba(0,0,0,0.85)',
-        letterSpacing: '-0.02em',
-        opacity,
-        transform: `scale(${sc})`,
-        transformOrigin: 'center bottom',
-      }}>
-        {activeWord.word}
-      </span>
+    <div style={captionOuterStyle(seg)}>
+      {/* Segment scale lives on this middle anchor box, not the word <span> below —
+          that span already carries its own spring pop-in `transform: scale(...)`, and
+          merging the two transforms would corrupt the pop animation. */}
+      <div style={captionInnerStyle(seg, {
+        bottom: '18%',
+        left: 0,
+        right: 0,
+        textAlign: 'center',
+        padding: '0 8%',
+      })}>
+        <span style={{
+          display: 'inline-block',
+          fontSize,
+          fontWeight: 800,
+          fontFamily: 'system-ui, -apple-system, sans-serif',
+          color,
+          textShadow: '0 2px 12px rgba(0,0,0,0.85)',
+          letterSpacing: '-0.02em',
+          opacity,
+          transform: `scale(${sc})`,
+          transformOrigin: 'center bottom',
+        }}>
+          {activeWord.word}
+        </span>
+      </div>
     </div>
   )
 }

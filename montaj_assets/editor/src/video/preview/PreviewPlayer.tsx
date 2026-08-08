@@ -6,6 +6,7 @@ import CaptionPreview from './CaptionPreview'
 import { getOverlayDesignCanvas } from '../design-canvas'
 import { useDragOverlay } from './useDragOverlay'
 import type { OverlayChanges } from './useDragOverlay'
+import type { CaptionEditPatch } from '../timeline/makeCaptionEdit'
 import OverlayItemsLayer from './OverlayItemsLayer'
 import { useVideoPlayback } from './useVideoPlayback'
 import { usePlaybackTime, type PlaybackClock } from '../playback-clock'
@@ -26,6 +27,12 @@ interface PreviewPlayerProps {
   watchFile?: (path: string, onChange: () => void) => () => void
   fileUrl: (path: string) => string
   resolveCaptionTemplate?: (style: string) => string
+  // Caption selection/positioning — pass-through to CaptionPreview. All optional:
+  // a host that omits them (PendingSurface) gets the historical passive,
+  // click-through caption layer.
+  selectedCaptionId?: string
+  onSelectCaption?: (id: string | null) => void
+  onCaptionSegmentChange?: (segmentId: string, patch: CaptionEditPatch) => void
 }
 
 export default function PreviewPlayer({
@@ -39,6 +46,9 @@ export default function PreviewPlayer({
   watchFile,
   fileUrl,
   resolveCaptionTemplate,
+  selectedCaptionId,
+  onSelectCaption,
+  onCaptionSegmentChange,
 }: PreviewPlayerProps) {
   if (project.projectType === 'carousel') return <CarouselPreview project={project} />
 
@@ -334,6 +344,9 @@ export default function PreviewPlayer({
           fps={project.settings?.fps ?? 30}
           compileOverlay={compileOverlay}
           resolveCaptionTemplate={resolveCaptionTemplate}
+          selectedCaptionId={selectedCaptionId}
+          onSelectCaption={onSelectCaption}
+          onCaptionSegmentChange={onCaptionSegmentChange}
         />
       )}
     </div>

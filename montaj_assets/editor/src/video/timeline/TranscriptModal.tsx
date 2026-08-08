@@ -9,12 +9,17 @@ interface TranscriptModalProps {
   captionTrack: Project['captions'] | undefined
   currentTime: number
   project: Project
-  onProjectChange?: (project: Project) => void
+  // `onProjectChange` deliberately NOT accepted here: `makeCaptionEdit` fires
+  // both callbacks it's given with the same updated project (see
+  // makeCaptionEdit.ts), and a text edit only fires once (on blur), so there is
+  // no live-preview gesture to route through a second channel — only
+  // `onCaptionEdit` (the commit path) is needed. Accepting-but-ignoring it would
+  // invite a future call site to re-introduce the double-commit bug this fixed.
   onCaptionEdit?: (project: Project) => void
   onClose: () => void
 }
 
-export default function TranscriptModal({ captionTrack, currentTime, project, onProjectChange, onCaptionEdit, onClose }: TranscriptModalProps) {
+export default function TranscriptModal({ captionTrack, currentTime, project, onCaptionEdit, onClose }: TranscriptModalProps) {
   useEffect(() => {
     const onKey = (e: globalThis.KeyboardEvent) => { if (e.key === 'Escape') onClose() }
     document.addEventListener('keydown', onKey)
@@ -50,7 +55,9 @@ export default function TranscriptModal({ captionTrack, currentTime, project, on
               >
                 <span className="text-gray-600 text-[10px] font-mono shrink-0 w-12 pt-px">{formatTime(seg.start)}</span>
                 <span className={`text-sm leading-snug ${isActive ? 'text-white' : 'text-gray-300'}`}>
-                  <EditableSegment seg={seg} onEdit={makeCaptionEdit(i, project, onProjectChange, onCaptionEdit)} />
+                  {/* Commit-only — see the file-header note on why `onProjectChange`
+                      isn't accepted/passed here. */}
+                  <EditableSegment seg={seg} onEdit={makeCaptionEdit(i, project, undefined, onCaptionEdit)} />
                 </span>
               </div>
             )

@@ -1,5 +1,6 @@
 import * as React                       from 'react'
 import { interpolate, spring }          from './helpers.js'
+import { captionOuterStyle, captionInnerStyle } from './position.js'
 import { makeUseThreeFrame }            from './three-bridge.js'
 import { makeCanvas }                   from './canvas-wrapper.js'
 import { Ph, FaSolid, FaBrands, FaIcon } from './icons.js'
@@ -22,6 +23,7 @@ import {
 // refactor. The render-context useThreeFrame is the default named export here
 // because that's what existing overlay JSX expects.
 export { interpolate, spring }
+export { captionOuterStyle, captionInnerStyle }
 export const useThreeFrame = makeUseThreeFrame('render')
 export const Canvas        = makeCanvas('render')
 export { Ph, FaSolid, FaBrands, FaIcon, THREE }
@@ -62,6 +64,11 @@ export function makeOverlayGlobals(context) {
   return {
     interpolate,
     spring,
+    // Caption segment positioner. Pure style math, no render/preview
+    // divergence — unlike useThreeFrame/Canvas below, no make*(context)
+    // factory needed.
+    captionOuterStyle,
+    captionInnerStyle,
     useThreeFrame: makeUseThreeFrame(context),
     Canvas:        makeCanvas(context),
     THREE,

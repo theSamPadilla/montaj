@@ -11,7 +11,9 @@ import Scrubber from './Scrubber'
 import TranscriptPanel from './TranscriptPanel'
 import TranscriptModal from './TranscriptModal'
 import VisualTrackRow from './VisualTrackRow'
+import CaptionTrackRow from './CaptionTrackRow'
 import { deleteSelection, toggleSelection } from './multiSelectOps'
+import type { CaptionEditPatch } from './makeCaptionEdit'
 
 interface TimelineProps {
   project: Project
@@ -25,6 +27,13 @@ interface TimelineProps {
   /** Unified selection — covers both visual items and audio tracks. */
   selectedIds?: string[]
   onSelectIds?: (ids: string[]) => void
+  /** Selected caption segment id — shared with the preview's selection box.
+   *  Mutually exclusive with `selectedIds` (see CaptionTrackRow). */
+  selectedCaptionId?: string | null
+  onSelectCaption?: (id: string | null) => void
+  /** Commit a caption segment patch — text edit or edge-drag retime. Threaded
+   *  straight to CaptionTrackRow (see makeCaptionEdit.ts). */
+  onCaptionSegmentChange?: (segmentId: string, patch: CaptionEditPatch) => void
   onSplit?: (at: number) => void
   onCut?: (cut: { start: number; end: number }) => void
   onInspectClip?: (id: string) => void
@@ -57,12 +66,22 @@ interface TimelineProps {
 }
 
 
-export default function Timeline({ project, clock, onProjectChange, onCaptionEdit, onOverlayEdit, onEditOverlay, selectedIds = [], onSelectIds, onSplit, onCut, onInspectClip, onInspectAudio, rippleMode = false, getWaveformChunks, resolveFilePath, regenEnabled, isClipQueued, renderSubcutRegen, onRegenerateCaptions }: TimelineProps) {
+export default function Timeline({ project, clock, onProjectChange, onCaptionEdit, onOverlayEdit, onEditOverlay, selectedIds = [], onSelectIds, selectedCaptionId = null, onSelectCaption, onCaptionSegmentChange, onSplit, onCut, onInspectClip, onInspectAudio, rippleMode = false, getWaveformChunks, resolveFilePath, regenEnabled, isClipQueued, renderSubcutRegen, onRegenerateCaptions }: TimelineProps) {
   const primarySelectedId = selectedIds[0] ?? null
 
   // Click/shift-click handler — additive selection on shift or meta (cmd/ctrl).
+  // Also enforces the item→caption half of the two selection models' mutual
+  // exclusivity: selecting a real item clears `selectedCaptionId`, and so does
+  // clicking empty track space (id === null) — otherwise a "deselect all" click
+  // would clear the item handles but leave the caption's preview handles up,
+  // and since nothing else clears caption selection there would be no way to
+  // put a caption down at all. The other half (caption select clears
+  // `selectedIds`) lives in VideoEditor's wrapped `onSelectCaption`, since a
+  // caption can be selected from the preview too — outside Timeline entirely —
+  // not just from CaptionTrackRow.
   function handleSelectItem(id: string | null, additive: boolean) {
     if (!onSelectIds) return
+    onSelectCaption?.(null)
     if (id === null) { onSelectIds([]); return }
     onSelectIds(toggleSelection(selectedIds, id, additive))
   }
@@ -291,6 +310,17 @@ export default function Timeline({ project, clock, onProjectChange, onCaptionEdi
             <span>ffmpeg render — overlays are preview only, final text is burned by ffmpeg</span>
           </div>
         )}
+        {/* ── Caption track — its own row above the visual tracks. NOT part of
+            tracks[]; reads/writes project.captions directly (see
+            CaptionTrackRow's file header for the special-track rationale). ── */}
+        <CaptionTrackRow
+          captionTrack={captionTrack}
+          fps={project.settings?.fps ?? 30}
+          selectedCaptionId={selectedCaptionId}
+          onSelectCaption={onSelectCaption}
+          onCaptionSegmentChange={onCaptionSegmentChange}
+        />
+
         {[...allTracks].reverse().map((trackItems, reversedIdx) => {
           const trackIdx = allTracks.length - 1 - reversedIdx
           return (
@@ -388,7 +418,6 @@ export default function Timeline({ project, clock, onProjectChange, onCaptionEdi
           clock={clock}
           project={project}
           captionTrack={captionTrack}
-          onProjectChange={onProjectChange}
           onCaptionEdit={onCaptionEdit}
           onClose={() => setTranscriptModalOpen(false)}
         />

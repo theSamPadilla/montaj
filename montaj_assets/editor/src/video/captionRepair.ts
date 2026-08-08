@@ -12,9 +12,21 @@
  */
 import type { Captions, CaptionSegment } from '../schema'
 
+// Collapses any run of whitespace to a single space, in addition to trim +
+// case-fold, before the two sides are compared. `newWords` below is always
+// rejoined with single spaces, so comparing against a non-collapsed `seg.text`
+// would forever "diverge" whenever the segment's text contains a double space,
+// tab, or newline between words: repairSegment would re-repair on every call,
+// producing a same-content but referentially-new `words` array each time. A
+// caller that re-invokes this after every repair (VideoEditor's caption-repair
+// effect does, to catch mid-session caption regeneration) depends on repairing
+// converging to a true no-op on the very next pass — without this
+// normalization it never would, and that caller would applyExternal forever.
+const normalizeForCompare = (s: string) => s.trim().toLowerCase().replace(/\s+/g, ' ')
+
 function repairSegment(seg: CaptionSegment): CaptionSegment {
   const wordsText = (seg.words ?? []).map(w => w.word).join(' ')
-  if (wordsText.trim().toLowerCase() === seg.text.trim().toLowerCase()) return seg
+  if (normalizeForCompare(wordsText) === normalizeForCompare(seg.text)) return seg
 
   const newWords = seg.text.split(/\s+/).filter(Boolean)
   const segDur = seg.end - seg.start

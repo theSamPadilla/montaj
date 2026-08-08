@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, waitFor, act, fireEvent } from '@testing-library/react'
 import type {
+  CaptionEvent,
   EditorAdapter,
   ImageElement,
   Project,
@@ -437,5 +438,52 @@ describe('VideoEditor — editor-package integration', () => {
       document.dispatchEvent(new KeyboardEvent('keydown', { key: 'z', metaKey: true }))
     })
     await waitFor(() => expect(onProjectChange).toHaveBeenLastCalledWith(expect.objectContaining({ name: 'FromServer' })))
+  })
+
+  // Regression: the caption-repair effect (VideoEditor.tsx, near backfillCaptionIds)
+  // used to be keyed on project.id ONLY, so it ran once per project load and never
+  // again. CaptionRegenModal's onDone replaces project.captions via applyExternal
+  // WITHOUT changing project.id, so a mid-session regeneration used to skip word
+  // repair entirely until a remount. The effect is now also keyed on
+  // project.captions.
+  it('regenerating captions mid-session (no project.id change) re-runs word repair, and the effect settles instead of looping', async () => {
+    const adapter = makeFakeAdapter()
+    // Text has a double space between words and no words[] at all — this
+    // exercises both "needs a repair pass" AND (via captionRepair.ts's
+    // whitespace-normalized comparison) "the repair reaches a fixed point on
+    // the very next pass", which is what stops the widened effect from
+    // applyExternal-ing forever.
+    adapter.generateCaptions = async function* (): AsyncIterable<CaptionEvent> {
+      yield {
+        type: 'done',
+        captions: { style: 'clean', segments: [{ id: 's1', text: 'brand  new text', start: 0, end: 3 }] },
+      }
+    }
+    const onProjectChange = vi.fn()
+    const { findByText } = render(
+      <VideoEditor
+        project={makeVideoProject({ status: 'draft' })}
+        adapter={adapter}
+        onProjectChange={onProjectChange}
+        slots={{ exportActions: <div /> }}
+      />,
+    )
+
+    const regenBtn = await findByText('Regenerate')
+    await act(async () => { regenBtn.click() })
+
+    // Repair fired for a captions-only replacement — words[] derived from the
+    // (whitespace-collapsed) text, not left stale/absent.
+    await waitFor(() => {
+      const last = onProjectChange.mock.calls[onProjectChange.mock.calls.length - 1][0] as Project
+      expect(last.captions?.segments[0]?.words?.map((w) => w.word)).toEqual(['brand', 'new', 'text'])
+    })
+
+    // Settles: once repaired, flushing further ticks must produce no additional
+    // onProjectChange calls — proves the effect reached its fixed point instead
+    // of looping.
+    const settledCallCount = onProjectChange.mock.calls.length
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)) })
+    expect(onProjectChange.mock.calls.length).toBe(settledCallCount)
   })
 })

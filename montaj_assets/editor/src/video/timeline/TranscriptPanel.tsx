@@ -213,7 +213,13 @@ export default function TranscriptPanel({ project, captionTrack, currentTime, on
                 {vi > 0 && ' '}
                 <span className="text-gray-500 text-[10px] font-mono mr-1">{formatTime(seg.start)}</span>
                 <span className={isActive ? 'text-gray-900 dark:text-white' : 'text-gray-500 dark:text-gray-400'}>
-                  <EditableSegment seg={seg} onEdit={makeCaptionEdit(i, project, onProjectChange, onCaptionEdit)} />
+                  {/* Commit-only: `onProjectChange` is this component's LIVE-preview
+                      channel (see the fontsize/color controls above) — but a text
+                      edit fires once, on blur, and is already a complete, discrete
+                      change, not a continuous gesture. Passing both callbacks here
+                      would double-fire `sync.mutate` for one edit (two undo entries,
+                      two queued saves); `onCaptionEdit` is the single commit path. */}
+                  <EditableSegment seg={seg} onEdit={makeCaptionEdit(i, project, undefined, onCaptionEdit)} />
                 </span>
               </span>
             )

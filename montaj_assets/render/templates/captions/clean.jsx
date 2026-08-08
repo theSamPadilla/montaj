@@ -1,4 +1,4 @@
-import { interpolate } from 'montaj/render'
+import { interpolate, captionOuterStyle, captionInnerStyle } from 'montaj/render'
 
 /**
  * Plain sentence-case subtitle. Full segment text visible at once, no
@@ -28,28 +28,29 @@ export default function Clean({
   )
 
   return (
-    <div style={{
-      position: 'fixed',
-      bottom: '10%',
-      left: 0,
-      right: 0,
-      display: 'flex',
-      justifyContent: 'center',
-      padding: '0 7%',
-      opacity,
-    }}>
-      <div style={{
-        color,
-        fontSize,
-        fontFamily: '"Figtree", system-ui, sans-serif',
-        fontWeight: 700,
-        lineHeight: 1.3,
-        textAlign: 'center',
-        maxWidth: '92%',
-        letterSpacing: '0.01em',
-        textShadow: '0 2px 10px rgba(0,0,0,0.75), 0 0 34px rgba(0,0,0,0.45)',
-      }}>
-        {seg.text}
+    <div style={captionOuterStyle(seg)}>
+      <div style={captionInnerStyle(seg, {
+        bottom: '10%',
+        left: 0,
+        right: 0,
+        display: 'flex',
+        justifyContent: 'center',
+        padding: '0 7%',
+        opacity,
+      })}>
+        <div style={{
+          color,
+          fontSize,
+          fontFamily: '"Figtree", system-ui, sans-serif',
+          fontWeight: 700,
+          lineHeight: 1.3,
+          textAlign: 'center',
+          maxWidth: '92%',
+          letterSpacing: '0.01em',
+          textShadow: '0 2px 10px rgba(0,0,0,0.75), 0 0 34px rgba(0,0,0,0.45)',
+        }}>
+          {seg.text}
+        </div>
       </div>
     </div>
   )

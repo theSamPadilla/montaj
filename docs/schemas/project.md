@@ -265,6 +265,15 @@ The `captions` field is a top-level object (not a track). It always renders abov
 
 Each style maps to a built-in JSX template served at `GET /api/caption-template/:style`. An unknown style value renders no captions. `words` is optional in the schema but required for animated styles (`word-by-word`, `karaoke`).
 
+**Per-segment positioning.** Each entry in `segments[]` may carry its own `offsetX`, `offsetY`, and `scale`, letting one segment be moved or resized independently of the rest — e.g. to clear a beat that puts something else (a whiteboard card, a lower-third) at the bottom of the frame. These are consumed only by the JSX browser preview and the Puppeteer render path; the ffmpeg `drawtext` render branch does not read them and continues to honour only the track-level `position` field below.
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `id` | string | — | Stable identifier for the segment, used for selection in the editor (drag in preview, click in timeline). Optional in hand-authored captions — the editor backfills a `cap-<n>` id for any segment missing one, both on load and after caption regeneration. Ids are minted against those already in use, so a track mixing identified and unidentified segments never gets a duplicate. |
+| `offsetX` | number | 0 | Horizontal offset as % of frame width. `0` or absent = the style's default anchor (e.g. `bottom: 18%`, which varies per style). |
+| `offsetY` | number | 0 | Vertical offset as % of frame height. `0` or absent = the style's default anchor. |
+| `scale` | number | 1 | Visual scale of the whole caption block, about its own centre. This is a CSS transform, not a font-size change: it scales the background box (`subtitle`) and text stroke (`outline`) along with the text, and it does **not** re-wrap the text — a scaled-up caption keeps its original line breaks and can overflow the frame. |
+
 **ffmpeg-only fields.** The following optional fields may appear on the top-level `captions` object. They are consumed only by the ffmpeg `drawtext` render branch and are ignored by the JSX browser preview. The caption generation route preserves them across regeneration.
 
 | Field | Type | Default | Description |

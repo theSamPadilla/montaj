@@ -1,4 +1,4 @@
-import { interpolate } from 'montaj/render'
+import { interpolate, captionOuterStyle, captionInnerStyle } from 'montaj/render'
 
 /**
  * Full segment text visible at once. The currently-spoken word is highlighted
@@ -24,24 +24,25 @@ export default function HighlightBox({
     const segStartFrame = Math.round(seg.start * fps)
     const opacity = interpolate(frame, [segStartFrame, segStartFrame + 5], [0, 1])
     return (
-      <div style={{
-        position: 'fixed',
-        bottom: '18%',
-        left: 0,
-        right: 0,
-        textAlign: 'center',
-        padding: '0 6%',
-        opacity,
-      }}>
-        <span style={{
-          fontSize,
-          fontWeight: 900,
-          fontFamily: 'system-ui, -apple-system, sans-serif',
-          color,
-          textShadow: '0 2px 12px rgba(0,0,0,0.85)',
-        }}>
-          {seg.text}
-        </span>
+      <div style={captionOuterStyle(seg)}>
+        <div style={captionInnerStyle(seg, {
+          bottom: '18%',
+          left: 0,
+          right: 0,
+          textAlign: 'center',
+          padding: '0 6%',
+          opacity,
+        })}>
+          <span style={{
+            fontSize,
+            fontWeight: 900,
+            fontFamily: 'system-ui, -apple-system, sans-serif',
+            color,
+            textShadow: '0 2px 12px rgba(0,0,0,0.85)',
+          }}>
+            {seg.text}
+          </span>
+        </div>
       </div>
     )
   }
@@ -57,45 +58,46 @@ export default function HighlightBox({
   }
 
   return (
-    <div style={{
-      position: 'fixed',
-      bottom: '18%',
-      left: 0,
-      right: 0,
-      textAlign: 'center',
-      padding: '0 6%',
-    }}>
-      <div style={{
-        display: 'inline-flex',
-        flexWrap: 'wrap',
-        justifyContent: 'center',
-        alignItems: 'center',
-        gap: '0.3em',
-        fontSize,
-        fontWeight: 900,
-        fontFamily: 'system-ui, -apple-system, sans-serif',
-        lineHeight: 1.25,
-      }}>
-        {words.map((w, i) => {
-          const active = i === activeIndex
-          return (
-            <span
-              key={i}
-              style={active ? {
-                background: accentColor,
-                color: '#111111',
-                borderRadius: 14,
-                padding: '4px 18px',
-                transform: 'scale(1.08)',
-              } : {
-                color,
-                textShadow: '0 2px 12px rgba(0,0,0,0.85)',
-              }}
-            >
-              {w.word}
-            </span>
-          )
-        })}
+    <div style={captionOuterStyle(seg)}>
+      <div style={captionInnerStyle(seg, {
+        bottom: '18%',
+        left: 0,
+        right: 0,
+        textAlign: 'center',
+        padding: '0 6%',
+      })}>
+        <div style={{
+          display: 'inline-flex',
+          flexWrap: 'wrap',
+          justifyContent: 'center',
+          alignItems: 'center',
+          gap: '0.3em',
+          fontSize,
+          fontWeight: 900,
+          fontFamily: 'system-ui, -apple-system, sans-serif',
+          lineHeight: 1.25,
+        }}>
+          {words.map((w, i) => {
+            const active = i === activeIndex
+            return (
+              <span
+                key={i}
+                style={active ? {
+                  background: accentColor,
+                  color: '#111111',
+                  borderRadius: 14,
+                  padding: '4px 18px',
+                  transform: 'scale(1.08)',
+                } : {
+                  color,
+                  textShadow: '0 2px 12px rgba(0,0,0,0.85)',
+                }}
+              >
+                {w.word}
+              </span>
+            )
+          })}
+        </div>
       </div>
     </div>
   )

@@ -9,6 +9,7 @@ import { applyTheme, defaultMontajTheme } from '../theme'
 import { applyCutToItem, applyCutToTracks, collapseGaps, splitAtTime } from './cuts'
 import { repairCaptionWords } from './captionRepair'
 import Timeline from './timeline/Timeline'
+import { makeCaptionEdit, type CaptionEditPatch } from './timeline/makeCaptionEdit'
 import PreviewPlayer from './preview/PreviewPlayer'
 import { createPlaybackClock, type PlaybackClock } from './playback-clock'
 import type { OverlayChanges } from './preview/useDragOverlay'
@@ -22,6 +23,45 @@ import OverlayPropsModal from './preview/OverlayPropsModal'
 // EditorProject absorbs host-only pipeline fields so a full host Project
 // round-trips through edit→save (and `onProjectChange`) without casts.
 type Props<P extends Project = Project> = VideoEditorProps<P>
+
+// Fills in a stable `cap-<n>` id for any caption segment that doesn't already
+// have one (id was added to the schema after captions already existed on saved
+// projects, and `steps/lyrics/caption.py` still writes segments without one).
+// Never overwrites an existing id.
+//
+// Ids are minted against the ids already in use, NOT from the array index. A
+// track can hold a mix of already-backfilled segments and fresh id-less ones —
+// caption regeneration produces exactly that — so a literal `cap-1` sitting at
+// index 4 would make an index-derived mint hand out `cap-1` a second time. Ids
+// are the selection key for the preview drag and the timeline caption row, so a
+// duplicate means clicking one segment highlights and moves a different one.
+// The counter only ever moves forward, so the result is deterministic (a pure
+// function of the input segments) and, for the common all-id-less track, is
+// still exactly `cap-<index>`.
+//
+// Returns the same project reference when every segment already has an id, so
+// callers can skip applying a no-op update — the property the backfill effect's
+// loop-safety rests on.
+export function backfillCaptionIds<P extends Project>(project: P): P {
+  const captions = project.captions
+  if (!captions) return project
+  const { segments } = captions
+  if (!segments.length || segments.every((seg) => seg.id)) return project
+
+  const used = new Set(segments.map((seg) => seg.id).filter((id): id is string => !!id))
+  let counter = 0
+  const mint = () => {
+    let id = `cap-${counter++}`
+    while (used.has(id)) id = `cap-${counter++}`
+    used.add(id)
+    return id
+  }
+
+  return {
+    ...project,
+    captions: { ...captions, segments: segments.map((seg) => (seg.id ? seg : { ...seg, id: mint() })) },
+  }
+}
 
 /**
  * `<VideoEditor>` — the assembled, host-agnostic video editor.
@@ -65,6 +105,39 @@ export default function VideoEditor<P extends Project = Project>({
   // only the initial value — after mount the core owns state and reconciles live
   // frames itself (video-shaped → default plain-replace reconcile).
   const sync = useProjectSync<P>(adapter, project.id, project)
+
+  // Every caption segment needs a stable `id` for selection (preview drag,
+  // clickable timeline row). Segments saved before `id` existed on the schema
+  // are missing it, and `steps/lyrics/caption.py` still writes segments without
+  // one, so backfill `cap-<index>` whenever the caption track changes identity.
+  //
+  // Keyed on `sync.project.id` AND `sync.project.captions` so it covers every
+  // entry point a caption track reaches state through:
+  //   - the `initial` value seeded into useProjectSync's reducer above (only
+  //     consulted on this component's first mount — React ignores later changes
+  //     to a useReducer initial arg);
+  //   - a same-mounted-instance swap to a different project id, which arrives
+  //     via the SSE subscription's `applyExternal` (e.g. client-side navigation
+  //     between two projects without VideoEditor unmounting);
+  //   - a caption REGENERATION inside a live session (CaptionRegenModal →
+  //     applyExternal with a whole new, id-less `captions` object). The project
+  //     id does not change there, so an id-keyed effect would not re-fire and
+  //     every segment would silently become unselectable.
+  //
+  // Loop-proof: `backfillCaptionIds` returns the *same* project reference when
+  // every segment already has an id, so the pass that follows our own
+  // `applyExternal` (which necessarily produces a new `captions` reference, and
+  // therefore re-fires this effect exactly once) finds nothing to do and stops.
+  // Every other re-fire — one per caption edit — is a cheap `.every()` no-op.
+  //
+  // `applyExternal` — no save, no undo push: this is normalization of loaded
+  // data, not a user edit, so it must not dirty the project or contend with the
+  // undo stack; the ids persist naturally the next time the operator makes a
+  // real edit.
+  useEffect(() => {
+    const backfilled = backfillCaptionIds(sync.project)
+    if (backfilled !== sync.project) sync.applyExternal(backfilled)
+  }, [sync.project.id, sync.project.captions])
 
   // Notify the host of every authoritative change — edits, undo/redo, and SSE
   // frames — so its non-editor chrome (title, status pill) stays in sync. Mirrors
@@ -313,6 +386,12 @@ function ReviewSurface<P extends Project>({
   // consumers (canvas preview, cut/split) use selectedIds[0] as the primary.
   const [selectedIds, setSelectedIds] = useState<string[]>([])
   const primarySelectedId = selectedIds[0] ?? null
+  // Selected caption segment id. Deliberately owned here rather than inside the
+  // preview: it is shared selection state. The preview draws the selection box /
+  // drag handles for it, and the timeline's caption row (later task) highlights
+  // and seeks to the same segment — that sibling only needs `selectedCaptionId`
+  // and `setSelectedCaptionId` passed down, no lifting required.
+  const [selectedCaptionId, setSelectedCaptionId] = useState<string | null>(null)
   const [rippleMode, setRippleMode]   = useState(false)
   const [showControls, setShowControls] = useState(false)
   // Source-crop mode: when on, the VideoSourceCropModal opens for the selected
@@ -344,18 +423,35 @@ function ReviewSurface<P extends Project>({
 
   // Repair caption segments whose words[] text has diverged from edited seg.text.
   // Inline caption edits update seg.text but not seg.words; this normalizes the
-  // data so PreviewPlayer's word-level timing is correct. Runs once per project.id.
+  // data so PreviewPlayer's word-level timing is correct.
+  //
+  // Keyed on BOTH project.id and project.captions — mirrors the id-backfill
+  // effect above for the identical reason: `CaptionRegenModal`'s `onDone`
+  // replaces project.captions via applyExternal WITHOUT changing project.id, so
+  // an id-keyed-only effect would miss mid-session caption regeneration and
+  // freshly regenerated captions would skip repair until a remount.
+  //
   // Applied via `applyExternal` (no save, no undo push): it's a local
   // reconciliation, not a user edit — pushing an undo entry on load would make the
   // operator's first Cmd-Z undo the repair, and the normalized captions persist on
   // the next real save anyway.
+  //
+  // Loop-proof: `repairCaptionWords` returns `null` (a true no-op) once every
+  // segment's words[] already matches its text — see captionRepair.ts, which
+  // whitespace-normalizes the comparison specifically so this holds even when
+  // the edited/regenerated text itself contains irregular internal spacing
+  // (without that normalization, repairing never reaches a fixed point and this
+  // effect would applyExternal forever). The pass that follows our own
+  // applyExternal (which necessarily produces a new `captions` reference, and
+  // therefore re-fires this effect exactly once) finds nothing left to repair
+  // and stops. Every other re-fire — one per caption edit — is a cheap no-op scan.
   useEffect(() => {
     const captions = project.captions
     if (!captions?.segments?.length) return
     const repaired = repairCaptionWords(captions)
     if (!repaired) return
     sync.applyExternal({ ...project, captions: repaired } as P)
-  }, [project.id]) // intentionally keyed on project.id only — runs once per project load
+  }, [project.id, project.captions])
 
   const clips      = project.tracks?.[0] ?? []
   const hasContent = clips.length > 0 || (project.tracks?.slice(1).flat().length ?? 0) > 0 || (project.captions?.segments?.length ?? 0) > 0
@@ -448,6 +544,29 @@ function ReviewSurface<P extends Project>({
     } as P))
   }
 
+  // Commit a per-segment caption change (preview drag → offsetX/offsetY/scale).
+  // Routed through `makeCaptionEdit` so there is exactly one project-mutation
+  // path for caption edits — it addresses the segment by id and leaves the
+  // fields the patch omits alone — and through `sync.mutate` so a finished drag
+  // lands as one undo step plus a queued save, same as a timeline caption edit.
+  // Only ONE of makeCaptionEdit's two callbacks is supplied: both are invoked
+  // with the same updated project, so passing both would mutate twice.
+  const handleCaptionSegmentChange = useCallback((segmentId: string, patch: CaptionEditPatch) => {
+    makeCaptionEdit(segmentId, syncProjectRef.current, (p) => void syncMutate(() => p as P))(patch)
+  }, [syncProjectRef, syncMutate])
+
+  // Selecting a caption segment and selecting a normal timeline item are
+  // mutually exclusive selection models — never show both sets of handles at
+  // once (see CaptionTrackRow's file header). A caption can be selected from
+  // either the preview (click the selection box) or the timeline's caption
+  // row, so this wrapper — not Timeline — is the one place that must clear
+  // `selectedIds` on every caption selection; Timeline's own
+  // `handleSelectItem` handles the reverse (selecting an item clears this).
+  const handleSelectCaption = useCallback((id: string | null) => {
+    setSelectedCaptionId(id)
+    if (id !== null) setSelectedIds([])
+  }, [])
+
   function handleSplit(at?: number) {
     const base = syncProjectRef.current
     const updated = splitAtTime(base, at ?? clock.get(), primarySelectedId ?? null)
@@ -519,6 +638,9 @@ function ReviewSurface<P extends Project>({
                 watchFile={adapter.watchFile}
                 fileUrl={adapter.fileUrl}
                 resolveCaptionTemplate={adapter.resolveCaptionTemplate}
+                selectedCaptionId={selectedCaptionId ?? undefined}
+                onSelectCaption={handleSelectCaption}
+                onCaptionSegmentChange={handleCaptionSegmentChange}
               />
             </div>
           ) : (
@@ -626,6 +748,9 @@ function ReviewSurface<P extends Project>({
             onEditOverlay={requestEditOverlay}
             selectedIds={selectedIds}
             onSelectIds={setSelectedIds}
+            selectedCaptionId={selectedCaptionId}
+            onSelectCaption={handleSelectCaption}
+            onCaptionSegmentChange={handleCaptionSegmentChange}
             onSplit={handleSplit}
             onCut={handleCut}
             onInspectClip={(id) => setInspecting({ kind: 'clip', id })}

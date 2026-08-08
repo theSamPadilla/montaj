@@ -1,0 +1,375 @@
+// render/test/caption-position.test.mjs
+//
+// Tests the shared caption positioner (montaj_assets/overlay-runtime/position.js)
+// and the "no-offset equivalence" gate that is the whole point of this feature:
+// a caption segment that never touches offsetX/offsetY/scale must render
+// pixel-identically to the pre-feature templates (see plan task 2 — the
+// original wrapper style, minus `position: 'fixed'`, is now built by
+// captionInnerStyle/captionOuterStyle instead of being inlined per template).
+//
+// Two parts:
+//   1. Direct unit tests of captionOuterStyle/captionInnerStyle — the maths,
+//      key presence/absence, and seg?. null-safety.
+//   2. Anchor fidelity, per real template. Each of the 7 templates under
+//      render/templates/captions/ is compiled with esbuild (same alias trick
+//      bundle.js uses for the real render pipeline: 'montaj/render' resolves
+//      to the actual captionOuterStyle/captionInnerStyle in overlay-runtime)
+//      and its default-exported component is called AS A PLAIN FUNCTION — no
+//      react-dom/server needed, since JSX under the automatic runtime just
+//      builds plain `{ type, props }` element objects, and none of these
+//      templates use hooks. That gives direct access to the exact style
+//      OBJECTS (not serialized CSS text) the template hands to
+//      captionOuterStyle/captionInnerStyle.
+//
+// Anchor-assertion strategy (see the task report for the fuller version):
+// the EXPECTED anchor for each template/branch is hardcoded here (verified
+// against `git diff HEAD` when this feature was implemented — the previous
+// wrapper's inline style, minus `position: 'fixed'`). But the ACTUAL value
+// under test is read off a genuine execution of the CURRENT template source
+// via the esbuild pipeline above — not a re-typed copy, and not a text-level
+// parse of the .jsx file. So this is neither pure "hardcode" nor pure
+// "extract-and-eval": if a template's anchor object literal changes, the next
+// `node --test` run recompiles and re-executes the CHANGED source, producing
+// a different actual value, which fails against the still-hardcoded
+// expectation below. That's strictly more faithful than hardcoding alone
+// (which never touches the .jsx files at all) and avoids the brittleness of
+// regexing/evaling an object literal out of source text (anchors embed live
+// variables like `opacity` that don't exist standalone).
+
+import { test, describe, before, after } from 'node:test'
+import assert from 'node:assert/strict'
+import { writeFileSync, unlinkSync } from 'node:fs'
+import { dirname, join } from 'node:path'
+import { fileURLToPath, pathToFileURL } from 'node:url'
+import esbuild from 'esbuild'
+import { captionOuterStyle, captionInnerStyle } from '../../overlay-runtime/position.js'
+
+const __dirname       = dirname(fileURLToPath(import.meta.url))
+const TEMPLATES_DIR   = join(__dirname, '..', 'templates', 'captions')
+const OVERLAY_RUNTIME_DIR = join(__dirname, '..', '..', 'overlay-runtime')
+
+// ---------------------------------------------------------------------------
+// Part 1 — captionOuterStyle / captionInnerStyle: direct unit tests
+// ---------------------------------------------------------------------------
+
+describe('captionOuterStyle', () => {
+  test('no offsets: frame-sized wrapper with no transform key at all', () => {
+    const style = captionOuterStyle({ offsetX: 0, offsetY: 0 })
+    assert.deepEqual(style, {
+      position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, pointerEvents: 'none',
+    })
+    assert.ok(!('transform' in style), 'a 0/0 offset must not add even an identity transform')
+  })
+
+  test('absent offsets (undefined seg) default to 0/0, no transform', () => {
+    for (const seg of [undefined, null, {}]) {
+      const style = captionOuterStyle(seg)
+      assert.ok(!('transform' in style), `seg=${JSON.stringify(seg)} must not carry transform`)
+    }
+  })
+
+  test('both offsets set: translate(ox%, oy%)', () => {
+    const style = captionOuterStyle({ offsetX: 12.5, offsetY: -4 })
+    assert.equal(style.transform, 'translate(12.5%, -4%)')
+  })
+
+  test('only offsetX set: offsetY defaults to 0 in the transform', () => {
+    const style = captionOuterStyle({ offsetX: 7 })
+    assert.equal(style.transform, 'translate(7%, 0%)')
+  })
+
+  test('only offsetY set: offsetX defaults to 0 in the transform', () => {
+    const style = captionOuterStyle({ offsetY: -9 })
+    assert.equal(style.transform, 'translate(0%, -9%)')
+  })
+
+  test('a negative-zero-shaped offset (explicit 0) still counts as "no offset"', () => {
+    // -0 is falsy just like 0 — captionOuterStyle's `ox || oy` guard must not
+    // add a transform for either.
+    const style = captionOuterStyle({ offsetX: -0, offsetY: 0 })
+    assert.ok(!('transform' in style))
+  })
+})
+
+describe('captionInnerStyle', () => {
+  const anchor = { bottom: '10%', left: 0, right: 0, padding: '0 7%' }
+
+  test('scale 1 (explicit or defaulted): anchor preserved verbatim, no transform keys', () => {
+    for (const seg of [undefined, null, {}, { scale: 1 }]) {
+      const style = captionInnerStyle(seg, anchor)
+      assert.deepEqual(style, { position: 'absolute', ...anchor })
+      assert.ok(!('transform' in style), `seg=${JSON.stringify(seg)}`)
+      assert.ok(!('transformOrigin' in style), `seg=${JSON.stringify(seg)}`)
+    }
+  })
+
+  test('scale !== 1 produces scale(sc) + transformOrigin center center', () => {
+    const style = captionInnerStyle({ scale: 1.5 }, anchor)
+    assert.equal(style.transform, 'scale(1.5)')
+    assert.equal(style.transformOrigin, 'center center')
+  })
+
+  test('a fractional scale renders verbatim (no rounding)', () => {
+    const style = captionInnerStyle({ scale: 0.333 }, anchor)
+    assert.equal(style.transform, 'scale(0.333)')
+  })
+
+  test('key order: position, then the anchor as given, then transform/transformOrigin last', () => {
+    const style = captionInnerStyle({ scale: 2 }, anchor)
+    assert.deepEqual(Object.keys(style), [
+      'position', 'bottom', 'left', 'right', 'padding', 'transform', 'transformOrigin',
+    ])
+  })
+
+  test('seg?. null-safety: undefined/null does not throw and behaves like scale 1', () => {
+    assert.doesNotThrow(() => captionInnerStyle(undefined, anchor))
+    assert.doesNotThrow(() => captionInnerStyle(null, anchor))
+    assert.deepEqual(captionInnerStyle(undefined, anchor), { position: 'absolute', ...anchor })
+    assert.deepEqual(captionInnerStyle(null, anchor), { position: 'absolute', ...anchor })
+  })
+
+  test('an empty anchor object still gets position: absolute', () => {
+    assert.deepEqual(captionInnerStyle({}, {}), { position: 'absolute' })
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Part 2 — anchor fidelity against the real, compiled template source
+// ---------------------------------------------------------------------------
+
+/**
+ * esbuild plugin: resolve the templates' `from 'montaj/render'` import to a
+ * tiny virtual module that re-exports the REAL interpolate/spring/
+ * captionOuterStyle/captionInnerStyle straight from overlay-runtime — the
+ * exact same functions the production render/preview pipelines use (see
+ * render/core/index.js and montaj_assets/overlay-runtime/index.js). Deliberately
+ * bypasses overlay-runtime's index.js (which also pulls in three/recharts for
+ * unrelated globals) — captions only ever need these four exports.
+ */
+function montajRenderShimPlugin() {
+  return {
+    name: 'montaj-render-shim',
+    setup(build) {
+      build.onResolve({ filter: /^montaj\/render$/ }, () => ({
+        path: 'montaj-render-shim', namespace: 'shim',
+      }))
+      build.onLoad({ filter: /.*/, namespace: 'shim' }, () => ({
+        resolveDir: OVERLAY_RUNTIME_DIR,
+        contents: `
+          export { interpolate, spring } from './helpers.js'
+          export { captionOuterStyle, captionInnerStyle } from './position.js'
+        `,
+      }))
+    },
+  }
+}
+
+/**
+ * Compile templates/captions/<name>.jsx with esbuild — bundled exactly like
+ * bundle.js compiles it for the real Puppeteer render (jsx: 'automatic',
+ * 'montaj/render' resolved to the real positioner) — then write the output to
+ * a throwaway .mjs file inside this test dir (so the bare `react`/
+ * `react/jsx-runtime` imports the automatic JSX runtime injects resolve
+ * against render's own node_modules) and import it. Returns the
+ * default-exported component function.
+ *
+ * The component is called directly as a plain function below (not via
+ * React.createElement/react-dom) — none of the caption templates use hooks,
+ * so invoking them outside a React render pass is safe, and it hands back
+ * the exact `{ type, props }` element objects the JSX produced, with real
+ * style OBJECTS (not serialized CSS text) attached to `.props.style`.
+ */
+async function loadTemplate(name) {
+  const entry = join(TEMPLATES_DIR, `${name}.jsx`)
+  // esbuild plugins are only supported by the async `build()` API, not `buildSync`.
+  const result = await esbuild.build({
+    entryPoints: [entry],
+    bundle: true,
+    format: 'esm',
+    jsx: 'automatic',
+    external: ['react', 'react/jsx-runtime', 'react-dom', 'react-dom/server'],
+    plugins: [montajRenderShimPlugin()],
+    write: false,
+    logLevel: 'silent',
+  })
+  const tmpPath = join(__dirname, `__tmp-caption-${name}.mjs`)
+  writeFileSync(tmpPath, result.outputFiles[0].text)
+  try {
+    const mod = await import(pathToFileURL(tmpPath).href)
+    return mod.default
+  } finally {
+    unlinkSync(tmpPath)
+  }
+}
+
+const STYLE_NAMES = ['clean', 'subtitle', 'karaoke', 'outline', 'highlight-box', 'word-by-word', 'pop']
+
+const templates = {}
+before(async () => {
+  for (const name of STYLE_NAMES) templates[name] = await loadTemplate(name)
+})
+
+// Shared timing: seg.start=1, seg.end=5, fps=30, frame=40 → t≈1.333s, well
+// past every template's fade-in window (checked per template below) so every
+// opacity that exists clamps to a fixed, known value (1) — the anchor shape
+// is what's under test here, not the fade curve.
+const FPS = 30
+const FRAME = 40
+const SEG_BASE = { start: 1, end: 5 }
+const WORDS = [{ word: 'hi', start: 1, end: 2 }] // active at t≈1.333
+
+/** Render `templates[name]` with a no-offset, scale-1 segment and return { outerEl, innerEl }. */
+function renderNoOffset(name, extraSeg = {}) {
+  const seg = { ...SEG_BASE, text: 'hi', ...extraSeg }
+  const outerEl = templates[name]({ frame: FRAME, fps: FPS, segments: [seg] })
+  assert.ok(outerEl, `${name}: expected an element, got ${outerEl} (segment/frame out of range?)`)
+  const innerEl = outerEl.props.children
+  assert.ok(innerEl, `${name}: expected an inner element`)
+  return { outerEl, innerEl }
+}
+
+// word-by-word/pop return null with zero words (no fallback branch); the
+// others render fine either way, but pass words here too for uniformity.
+const NEEDS_WORDS = new Set(['karaoke', 'outline', 'highlight-box', 'word-by-word', 'pop'])
+
+describe('no-offset equivalence gate — outer wrapper (all 7 templates)', () => {
+  for (const name of STYLE_NAMES) {
+    test(`${name}: outer wrapper is frame-sized with no transform key`, () => {
+      const { outerEl } = renderNoOffset(name, NEEDS_WORDS.has(name) ? { words: WORDS } : {})
+      assert.equal(outerEl.type, 'div')
+      assert.deepEqual(outerEl.props.style, {
+        position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, pointerEvents: 'none',
+      })
+      assert.ok(!('transform' in outerEl.props.style))
+    })
+  }
+})
+
+describe('no-offset equivalence gate — inner anchor, historical values (10 wrapper blocks)', () => {
+  test('clean: bottom 10%, padding 0 7%, flex+justifyContent, opacity', () => {
+    const { innerEl } = renderNoOffset('clean')
+    assert.equal(innerEl.type, 'div')
+    assert.deepEqual(innerEl.props.style, {
+      position: 'absolute',
+      bottom: '10%', left: 0, right: 0,
+      display: 'flex', justifyContent: 'center',
+      padding: '0 7%',
+      opacity: 1,
+    })
+  })
+
+  test('subtitle: bottom 8%, padding 0 6%, flex+justifyContent, opacity', () => {
+    const { innerEl } = renderNoOffset('subtitle')
+    assert.deepEqual(innerEl.props.style, {
+      position: 'absolute',
+      bottom: '8%', left: 0, right: 0,
+      display: 'flex', justifyContent: 'center',
+      padding: '0 6%',
+      opacity: 1,
+    })
+  })
+
+  test('karaoke — no-words fallback branch: bottom 18%, padding 0 8%, textAlign center, opacity', () => {
+    const { innerEl } = renderNoOffset('karaoke', { words: [] })
+    assert.deepEqual(innerEl.props.style, {
+      position: 'absolute',
+      bottom: '18%', left: 0, right: 0,
+      textAlign: 'center', padding: '0 8%',
+      opacity: 1,
+    })
+  })
+
+  test('karaoke — main (words) branch: bottom 18%, padding 0 8%, textAlign center, opacity: fadeOpacity', () => {
+    const { innerEl } = renderNoOffset('karaoke', { words: WORDS })
+    assert.deepEqual(innerEl.props.style, {
+      position: 'absolute',
+      bottom: '18%', left: 0, right: 0,
+      textAlign: 'center', padding: '0 8%',
+      opacity: 1,
+    })
+  })
+
+  test('outline — no-words fallback branch: bottom 18%, padding 0 6%, textAlign center, opacity', () => {
+    const { innerEl } = renderNoOffset('outline', { words: [] })
+    assert.deepEqual(innerEl.props.style, {
+      position: 'absolute',
+      bottom: '18%', left: 0, right: 0,
+      textAlign: 'center', padding: '0 6%',
+      opacity: 1,
+    })
+  })
+
+  // Asymmetry preserved on purpose (per the plan): the outline MAIN branch's
+  // anchor never carried an opacity key, unlike its own fallback branch above
+  // and unlike every other template's main branch. Do not "fix" this here.
+  test('outline — main (words) branch: bottom 18%, padding 0 6%, textAlign center, NO opacity key', () => {
+    const { innerEl } = renderNoOffset('outline', { words: WORDS })
+    assert.deepEqual(innerEl.props.style, {
+      position: 'absolute',
+      bottom: '18%', left: 0, right: 0,
+      textAlign: 'center', padding: '0 6%',
+    })
+    assert.ok(!('opacity' in innerEl.props.style))
+  })
+
+  test('highlight-box — no-words fallback branch: bottom 18%, padding 0 6%, textAlign center, opacity', () => {
+    const { innerEl } = renderNoOffset('highlight-box', { words: [] })
+    assert.deepEqual(innerEl.props.style, {
+      position: 'absolute',
+      bottom: '18%', left: 0, right: 0,
+      textAlign: 'center', padding: '0 6%',
+      opacity: 1,
+    })
+  })
+
+  // Same asymmetry as outline — main branch never had an opacity key.
+  test('highlight-box — main (words) branch: bottom 18%, padding 0 6%, textAlign center, NO opacity key', () => {
+    const { innerEl } = renderNoOffset('highlight-box', { words: WORDS })
+    assert.deepEqual(innerEl.props.style, {
+      position: 'absolute',
+      bottom: '18%', left: 0, right: 0,
+      textAlign: 'center', padding: '0 6%',
+    })
+    assert.ok(!('opacity' in innerEl.props.style))
+  })
+
+  test('word-by-word: bottom 18%, padding 0 8%, textAlign center, no wrapper opacity', () => {
+    const { innerEl } = renderNoOffset('word-by-word', { words: WORDS })
+    assert.deepEqual(innerEl.props.style, {
+      position: 'absolute',
+      bottom: '18%', left: 0, right: 0,
+      textAlign: 'center', padding: '0 8%',
+    })
+  })
+
+  test('pop: bottom 18%, padding 0 8%, textAlign center, no wrapper opacity', () => {
+    const { innerEl } = renderNoOffset('pop', { words: WORDS })
+    assert.deepEqual(innerEl.props.style, {
+      position: 'absolute',
+      bottom: '18%', left: 0, right: 0,
+      textAlign: 'center', padding: '0 8%',
+    })
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Wiring sanity — every template threads the ACTUAL active segment (not a
+// stray reference) into captionOuterStyle/captionInnerStyle, so a real
+// offset/scale on a real segment shows up in what the template renders. The
+// maths itself is Part 1's job; this only guards the plumbing between
+// `segments.find(...)` and the two calls.
+// ---------------------------------------------------------------------------
+
+describe('offset/scale wiring — real segment reaches the positioner (all 7 templates)', () => {
+  for (const name of STYLE_NAMES) {
+    test(`${name}: a segment with offsetX/offsetY/scale set reaches both style calls`, () => {
+      const { outerEl, innerEl } = renderNoOffset(name, {
+        offsetX: 15, offsetY: -8, scale: 2,
+        ...(NEEDS_WORDS.has(name) ? { words: WORDS } : {}),
+      })
+      assert.equal(outerEl.props.style.transform, 'translate(15%, -8%)', `${name}: outer transform`)
+      assert.equal(innerEl.props.style.transform, 'scale(2)', `${name}: inner transform`)
+      assert.equal(innerEl.props.style.transformOrigin, 'center center', `${name}: inner transformOrigin`)
+    })
+  }
+})

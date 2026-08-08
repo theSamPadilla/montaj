@@ -1,4 +1,4 @@
-import { interpolate } from 'montaj/render'
+import { interpolate, captionOuterStyle, captionInnerStyle } from 'montaj/render'
 
 /**
  * All words in the segment shown at once. Words change from unhighlighted to highlighted
@@ -26,24 +26,25 @@ export default function Karaoke({
       [0, 1],
     )
     return (
-      <div style={{
-        position: 'fixed',
-        bottom: '18%',
-        left: 0,
-        right: 0,
-        textAlign: 'center',
-        padding: '0 8%',
-        opacity,
-      }}>
-        <span style={{
-          fontSize,
-          fontWeight: 700,
-          fontFamily: 'system-ui, -apple-system, sans-serif',
-          color: highlightColor,
-          textShadow: '0 2px 12px rgba(0,0,0,0.85)',
-        }}>
-          {seg.text}
-        </span>
+      <div style={captionOuterStyle(seg)}>
+        <div style={captionInnerStyle(seg, {
+          bottom: '18%',
+          left: 0,
+          right: 0,
+          textAlign: 'center',
+          padding: '0 8%',
+          opacity,
+        })}>
+          <span style={{
+            fontSize,
+            fontWeight: 700,
+            fontFamily: 'system-ui, -apple-system, sans-serif',
+            color: highlightColor,
+            textShadow: '0 2px 12px rgba(0,0,0,0.85)',
+          }}>
+            {seg.text}
+          </span>
+        </div>
       </div>
     )
   }
@@ -53,47 +54,48 @@ export default function Karaoke({
   const fadeOpacity = interpolate(frameInSeg, [0, 6], [0, 1])
 
   return (
-    <div style={{
-      position: 'fixed',
-      bottom: '18%',
-      left: 0,
-      right: 0,
-      textAlign: 'center',
-      padding: '0 8%',
-      opacity: fadeOpacity,
-    }}>
-      <div style={{
-        display: 'inline',
-        fontSize,
-        fontWeight: 700,
-        fontFamily: 'system-ui, -apple-system, sans-serif',
-        textShadow: '0 2px 12px rgba(0,0,0,0.85)',
-      }}>
-        {words.map((w, i) => {
-          const spoken = t >= w.end
-          const active = t >= w.start && t < w.end
-          // Smooth reveal within the active word — use frames, not seconds
-          const wordStartFrame = Math.round(w.start * fps)
-          const wordEndFrame   = Math.round(w.end   * fps)
-          const progress = active
-            ? interpolate(frame, [wordStartFrame, wordEndFrame], [0, 1])
-            : spoken ? 1 : 0
-          const wordColor = spoken || active ? highlightColor : color
-          return (
-            <span
-              key={i}
-              style={{
-                color: wordColor,
-                opacity: spoken ? 1 : active ? 0.6 + 0.4 * progress : 1,
-                marginRight: '0.28em',
-                display: 'inline-block',
-                transition: 'none',
-              }}
-            >
-              {w.word}
-            </span>
-          )
-        })}
+    <div style={captionOuterStyle(seg)}>
+      <div style={captionInnerStyle(seg, {
+        bottom: '18%',
+        left: 0,
+        right: 0,
+        textAlign: 'center',
+        padding: '0 8%',
+        opacity: fadeOpacity,
+      })}>
+        <div style={{
+          display: 'inline',
+          fontSize,
+          fontWeight: 700,
+          fontFamily: 'system-ui, -apple-system, sans-serif',
+          textShadow: '0 2px 12px rgba(0,0,0,0.85)',
+        }}>
+          {words.map((w, i) => {
+            const spoken = t >= w.end
+            const active = t >= w.start && t < w.end
+            // Smooth reveal within the active word — use frames, not seconds
+            const wordStartFrame = Math.round(w.start * fps)
+            const wordEndFrame   = Math.round(w.end   * fps)
+            const progress = active
+              ? interpolate(frame, [wordStartFrame, wordEndFrame], [0, 1])
+              : spoken ? 1 : 0
+            const wordColor = spoken || active ? highlightColor : color
+            return (
+              <span
+                key={i}
+                style={{
+                  color: wordColor,
+                  opacity: spoken ? 1 : active ? 0.6 + 0.4 * progress : 1,
+                  marginRight: '0.28em',
+                  display: 'inline-block',
+                  transition: 'none',
+                }}
+              >
+                {w.word}
+              </span>
+            )
+          })}
+        </div>
       </div>
     </div>
   )

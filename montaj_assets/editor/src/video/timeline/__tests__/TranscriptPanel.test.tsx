@@ -83,3 +83,25 @@ describe('TranscriptPanel caption color controls', () => {
     expect((screen.getByLabelText('Caption highlight color') as HTMLInputElement).value).toBe('#00ff00')
   })
 })
+
+describe('TranscriptPanel caption text edits', () => {
+  // Regression: makeCaptionEdit fires every callback it's given with the same
+  // updated project. TranscriptPanel used to pass BOTH onProjectChange and
+  // onCaptionEdit into makeCaptionEdit for a text edit, and — at this
+  // component's real call site (VideoEditor's ReviewSurface) — both land on
+  // sync.mutate, so one text edit produced two undo entries and two queued
+  // saves. Only onCaptionEdit (the commit channel) should fire.
+  it('a completed text edit produces exactly one commit, not two', () => {
+    const { onCaptionEdit, onProjectChange } = renderPanel('karaoke', {
+      segments: [{ id: 'cap-0', text: 'hello world', start: 0, end: 2 }],
+    })
+
+    const span = screen.getByText('hello world')
+    span.textContent = 'hello there'
+    fireEvent.blur(span)
+
+    expect(onCaptionEdit).toHaveBeenCalledTimes(1)
+    expect(onCaptionEdit.mock.calls[0][0].captions.segments[0].text).toBe('hello there')
+    expect(onProjectChange).not.toHaveBeenCalled()
+  })
+})

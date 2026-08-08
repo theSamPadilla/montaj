@@ -40,6 +40,12 @@ export interface CaptionSegment {
   start: number
   end: number
   words?: Word[]
+  offsetX?: number   // percent of frame width,  0/absent = default anchor
+  offsetY?: number   // percent of frame height, 0/absent = default anchor
+  // Visual scale of the whole caption block about its own centre — a CSS
+  // transform, not a font-size change, so it scales the background box and
+  // text stroke too and does NOT re-wrap the text. Default 1.
+  scale?: number
 }
 
 export interface Captions {
