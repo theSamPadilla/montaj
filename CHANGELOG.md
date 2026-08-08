@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v3.9.1
+
 - **Fixed: dragging a caption segment did not snap to the frame's centre or middle.** Every other draggable thing in the preview settles onto the centre lines with an amber guide; caption segments were the one exception, so a caption could only be eyeballed onto centre and would sit a fraction of a percent off. `captionDragGeometry`'s `move` branch was a pure translate with no snap at all. The omission came from the (correct) observation that `useDragOverlay`'s **edge** snap does not transfer — its `edgeX = (0.5 - s/2) * 100` geometry assumes an `inset-0` box scaled from its centre, whereas a caption's `scale` multiplies a small content-sized anchor box, so the same formula would compute snap positions that mean nothing — but the **centre** snap is geometry-independent: `offsetX: 0` is the frame's horizontal centre and `offsetY: 0` its vertical middle for a caption exactly as for an overlay. Centre/middle snap is restored with `CAPTION_SNAP_THRESHOLD` pinned to the same 2.5%-of-frame radius `useDragOverlay` uses (a test asserts the boundary from both sides so the two gestures cannot drift apart), the snapped value is what gets committed rather than the raw pointer position, and `CaptionPreview` now draws the same amber centre/middle hairlines under the same `drag.type === 'move'` gate the overlay layer uses. Edge snap remains deliberately unimplemented for captions, and resize gestures stay unsnapped and never move the segment. (`montaj_assets/editor/src/video/preview/captionDragState.ts`, `montaj_assets/editor/src/video/preview/CaptionPreview.tsx`, `montaj_assets/editor/src/video/__tests__/captionSnap.test.ts`)
 
 ## v3.9.0
