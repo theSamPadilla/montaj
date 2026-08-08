@@ -93,9 +93,14 @@ describe('captionDragGeometry — move', () => {
   })
 
   it('is a no-op at the starting pointer position', () => {
+    // 12/34 are both well outside the centre-snap radius, so the geometry is
+    // the untouched starting offsets. The move branch also reports whether each
+    // axis is currently snapped (see captionSnap.test.ts) — asserted here as
+    // false so this stays a genuine no-op check rather than an assertion about
+    // the return shape.
     const d = drag({ initOffsetX: 12, initOffsetY: 34, initScale: 1.5 })
     expect(captionDragGeometry(d, d.initX, d.initY, metrics(540)))
-      .toEqual({ offsetX: 12, offsetY: 34, scale: 1.5 })
+      .toEqual({ offsetX: 12, offsetY: 34, scale: 1.5, snapX: false, snapY: false })
   })
 })
 

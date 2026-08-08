@@ -60,7 +60,17 @@ export interface CaptionGeometry {
   offsetX: number
   offsetY: number
   scale: number
+  /** True while the move gesture is snapped to the frame's horizontal centre. */
+  snapX?: boolean
+  /** True while the move gesture is snapped to the frame's vertical middle. */
+  snapY?: boolean
 }
+
+/**
+ * Centre/middle snap radius, in percent of frame. Matches `SNAP_THRESHOLD` in
+ * `useDragOverlay` so dragging a caption and dragging an overlay feel the same.
+ */
+export const CAPTION_SNAP_THRESHOLD = 2.5
 
 /**
  * The preview's design-resolution mapping.
@@ -145,7 +155,23 @@ export function captionDragGeometry(
   const { dx, dy } = screenDeltaToFramePercent(clientX - drag.initX, clientY - drag.initY, metrics)
 
   if (drag.type === 'move') {
-    return { offsetX: drag.initOffsetX + dx, offsetY: drag.initOffsetY + dy, scale: drag.initScale }
+    // Centre/middle snap. Unlike the overlay hook's EDGE snap — whose
+    // `(0.5 - s/2) * 100` geometry genuinely does not transfer to a caption's
+    // content-sized anchor box (see the file header) — the centre snap is
+    // geometry-independent: offsetX 0 is the frame's horizontal centre and
+    // offsetY 0 its vertical middle, for a caption exactly as for an overlay.
+    // Same threshold as useDragOverlay so both gestures feel identical.
+    const rawX = drag.initOffsetX + dx
+    const rawY = drag.initOffsetY + dy
+    const snapX = Math.abs(rawX) < CAPTION_SNAP_THRESHOLD
+    const snapY = Math.abs(rawY) < CAPTION_SNAP_THRESHOLD
+    return {
+      offsetX: snapX ? 0 : rawX,
+      offsetY: snapY ? 0 : rawY,
+      scale: drag.initScale,
+      snapX,
+      snapY,
+    }
   }
 
   // Resize from a corner: project the pointer delta onto the corner's outward

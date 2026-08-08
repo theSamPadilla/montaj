@@ -345,6 +345,18 @@ export default function CaptionPreview({
         )}
       </OverlayErrorBoundary>
 
+      {/* Centre/middle snap guides. Same amber hairlines, same z 50, and the
+          same `drag.type === 'move'` gate the overlay layer uses, so a snapped
+          caption reads identically to a snapped overlay. Only the centre pair
+          exists here — caption edge snap is deliberately not implemented (its
+          geometry does not transfer; see captionDragState.ts). */}
+      {drag?.type === 'move' && live?.snapX && (
+        <div className="absolute top-0 bottom-0 left-1/2 w-px bg-amber-400 pointer-events-none" style={{ zIndex: 50 }} />
+      )}
+      {drag?.type === 'move' && live?.snapY && (
+        <div className="absolute left-0 right-0 top-1/2 h-px bg-amber-400 pointer-events-none" style={{ zIndex: 50 }} />
+      )}
+
       {/* Selection box — the only interactive part of the caption layer. z 50
           matches the overlay selection handles (see the layering note above);
           the wrapper stays click-through so only the box itself catches events. */}
