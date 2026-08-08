@@ -373,3 +373,115 @@ describe('offset/scale wiring — real segment reaches the positioner (all 7 tem
     })
   }
 })
+
+// ---------------------------------------------------------------------------
+// Part 3 — per-segment color override: `seg.color ?? color`, BASE text color
+// only. Mirrors the offset/scale sections above: real segments through the
+// real compiled template source, reading the actual style object handed to
+// the DOM node that carries the base text color (never the per-style accent
+// field — karaoke's highlightColor, highlight-box/outline's accentColor —
+// which stays wired to the track-level accent prop untouched by this feature).
+// ---------------------------------------------------------------------------
+
+/**
+ * Render `templates[name]` with an optional per-segment `color`, an optional
+ * track-level `color` prop, and an optional `words` array, returning the same
+ * { outerEl, innerEl } shape as renderNoOffset.
+ */
+function renderForColor(name, { segColor, trackColor, words } = {}) {
+  const seg = {
+    ...SEG_BASE, text: 'hi',
+    ...(words ? { words } : {}),
+    ...(segColor !== undefined ? { color: segColor } : {}),
+  }
+  const props = { frame: FRAME, fps: FPS, segments: [seg] }
+  if (trackColor !== undefined) props.color = trackColor
+  const outerEl = templates[name](props)
+  assert.ok(outerEl, `${name}: expected an element, got ${outerEl}`)
+  const innerEl = outerEl.props.children
+  assert.ok(innerEl, `${name}: expected an inner element`)
+  return { outerEl, innerEl }
+}
+
+// word-by-word/subtitle/clean, and the no-words fallback of highlight-box/
+// outline, all render ONE styled node directly under the inner anchor box.
+const directColor = (innerEl) => innerEl.props.children.props.style.color
+
+// karaoke/highlight-box/outline's main (words) branch renders a wrapping div
+// whose children are the per-word spans — index 1 is never the active/spoken
+// word for WORDS2 below, so it's always styled with the base color.
+const WORDS2 = [
+  { word: 'hi',    start: 1, end: 2 }, // active/spoken at t≈1.333
+  { word: 'there', start: 2, end: 3 }, // not yet started — base color applies
+]
+const secondWordColor = (innerEl) => innerEl.props.children.props.children[1].props.style.color
+
+describe('per-segment color override — seg.color ?? color (base text color)', () => {
+  // { name, words, extract, default }: templates whose base text color is a
+  // single directly-styled node (no active/spoken split to worry about).
+  const DIRECT_CASES = [
+    { name: 'word-by-word', words: WORDS, extract: directColor, def: '#ffffff' },
+    { name: 'subtitle',     words: null,  extract: directColor, def: '#ffffff' },
+    { name: 'clean',        words: null,  extract: directColor, def: '#ffffff' },
+    // no-words fallback branch — a single span with no active/spoken word.
+    { name: 'highlight-box', words: [], extract: directColor, def: '#ffffff' },
+    { name: 'outline',       words: [], extract: directColor, def: '#ffffff' },
+  ]
+
+  for (const { name, words, extract, def } of DIRECT_CASES) {
+    describe(name, () => {
+      test('a segment with color renders its base text with that color', () => {
+        const { innerEl } = renderForColor(name, { segColor: '#123456', words })
+        assert.equal(extract(innerEl), '#123456')
+      })
+      test('a segment without color uses the track-level color prop', () => {
+        const { innerEl } = renderForColor(name, { trackColor: '#abcdef', words })
+        assert.equal(extract(innerEl), '#abcdef')
+      })
+      test('with neither set, the template default is unchanged', () => {
+        const { innerEl } = renderForColor(name, { words })
+        assert.equal(extract(innerEl), def)
+      })
+    })
+  }
+
+  // karaoke/highlight-box/outline's main (words) branch: the active/spoken
+  // word keeps its own accent color (highlightColor/accentColor) — untouched
+  // by this feature — while every other word is the one that must honor
+  // seg.color ?? color.
+  const WORD_BRANCH_CASES = [
+    { name: 'karaoke',       def: 'rgba(255,255,255,0.55)' },
+    { name: 'highlight-box', def: '#ffffff' },
+    { name: 'outline',       def: '#ffffff' },
+  ]
+
+  for (const { name, def } of WORD_BRANCH_CASES) {
+    describe(`${name} (words branch, unspoken word)`, () => {
+      test('a segment with color renders the unspoken word with that color', () => {
+        const { innerEl } = renderForColor(name, { segColor: '#123456', words: WORDS2 })
+        assert.equal(secondWordColor(innerEl), '#123456')
+      })
+      test('a segment without color uses the track-level color prop', () => {
+        const { innerEl } = renderForColor(name, { trackColor: '#abcdef', words: WORDS2 })
+        assert.equal(secondWordColor(innerEl), '#abcdef')
+      })
+      test('with neither set, the template default is unchanged', () => {
+        const { innerEl } = renderForColor(name, { words: WORDS2 })
+        assert.equal(secondWordColor(innerEl), def)
+      })
+    })
+  }
+
+  // pop is the one style with no rendered "base" text color: only the active
+  // word is ever shown, and it is always styled with `activeColor` (an accent
+  // field, matching karaoke/highlight-box/outline's naming) — the `color`
+  // prop is destructured but never applied anywhere in the template, same as
+  // before this feature. seg.color is therefore correctly a no-op here: it
+  // would be inconsistent to make the per-segment override reach a place the
+  // track-level color has never reached.
+  test('pop: base color has no rendered effect (only activeColor is used) — seg.color is a no-op, matching track-level color today', () => {
+    const withoutSegColor = renderForColor('pop', { words: WORDS })
+    const withSegColor    = renderForColor('pop', { segColor: '#123456', words: WORDS })
+    assert.equal(directColor(withSegColor.innerEl), directColor(withoutSegColor.innerEl))
+  })
+})

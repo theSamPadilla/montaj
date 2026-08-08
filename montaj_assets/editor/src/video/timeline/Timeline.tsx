@@ -410,6 +410,8 @@ export default function Timeline({ project, clock, onProjectChange, onCaptionEdi
         onProjectChange={onProjectChange}
         onExpand={() => setTranscriptModalOpen(true)}
         onRegenerateCaptions={onRegenerateCaptions}
+        selectedCaptionId={selectedCaptionId}
+        onCaptionSegmentChange={onCaptionSegmentChange}
       />
 
       {/* ── Transcript modal ── */}

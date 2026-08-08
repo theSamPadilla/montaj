@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import type { Project } from '../../types'
 import { formatTime } from './utils'
 import { EditableSegment } from './EditableSegment'
-import { makeCaptionEdit } from './makeCaptionEdit'
+import { makeCaptionEdit, type CaptionEditPatch } from './makeCaptionEdit'
 import { SwatchInput } from '../../ui'
 
 // Each caption style reads a different accent-color prop in its render template
@@ -35,9 +35,18 @@ interface TranscriptPanelProps {
   /** Opens the caption-regeneration modal. Provided only when the host adapter
    *  supports `generateCaptions`; absent → the "Regenerate" button is hidden. */
   onRegenerateCaptions?: () => void
+  /** Selected caption segment id (shared with the preview's selection box —
+   *  see CaptionPreview/CaptionTrackRow). When set and it resolves to a real
+   *  segment, the base color swatch below targets that segment's `color`
+   *  instead of the track-level `color`. */
+  selectedCaptionId?: string | null
+  /** Commit a single-segment patch — the same channel CaptionTrackRow's
+   *  edge-drag and text edits use (see makeCaptionEdit.ts). Used here as the
+   *  per-segment color swatch's commit path. */
+  onCaptionSegmentChange?: (segmentId: string, patch: CaptionEditPatch) => void
 }
 
-export default function TranscriptPanel({ project, captionTrack, currentTime, onCaptionEdit, onProjectChange, onExpand, onRegenerateCaptions }: TranscriptPanelProps) {
+export default function TranscriptPanel({ project, captionTrack, currentTime, onCaptionEdit, onProjectChange, onExpand, onRegenerateCaptions, selectedCaptionId, onCaptionSegmentChange }: TranscriptPanelProps) {
   const segs = captionTrack?.segments ?? []
   const [confirmRemove, setConfirmRemove] = useState(false)
   const removeTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -132,16 +141,48 @@ export default function TranscriptPanel({ project, captionTrack, currentTime, on
               if (!project.captions) return
               onCaptionEdit?.({ ...project, captions: { ...project.captions, ...patch } })
             }
+
+            // Per-segment color: when a real segment is selected, the base
+            // swatch below targets ITS color instead of the track's. Live
+            // preview still flows through `onProjectChange` — a locally
+            // patched project, exactly the channel every other control on
+            // this panel already uses for live preview — but the commit
+            // goes through `onCaptionSegmentChange`, the single-segment
+            // patch channel (see makeCaptionEdit.ts), instead of rewriting
+            // the whole captions object through `onCaptionEdit`. Each is
+            // fired from exactly one of SwatchInput's onChange/onCommit, so
+            // (as with the track-level swatch above) one gesture produces
+            // exactly one commit — never both channels for the same value.
+            const selectedSeg = selectedCaptionId
+              ? segs.find(s => s.id === selectedCaptionId)
+              : undefined
+            const liveSegColor = (v: string) => {
+              if (!project.captions || !selectedSeg) return
+              onProjectChange?.({
+                ...project,
+                captions: {
+                  ...project.captions,
+                  segments: project.captions.segments.map(s =>
+                    s.id === selectedSeg.id ? { ...s, color: v } : s,
+                  ),
+                },
+              })
+            }
+            const commitSegColor = (v: string) => {
+              if (!selectedSeg) return
+              onCaptionSegmentChange?.(selectedSeg.id!, { color: v })
+            }
+
             return (
               <div className="flex items-center gap-1.5">
                 <SwatchInput
                   size="sm"
                   showValue={false}
-                  title="Caption text color"
-                  ariaLabel="Caption text color"
-                  value={toHex(captionTrack.color, '#ffffff')}
-                  onChange={v => live({ color: v })}
-                  onCommit={v => commit({ color: v })}
+                  title={selectedSeg ? 'Selected segment text color' : 'Caption text color'}
+                  ariaLabel={selectedSeg ? 'Selected segment text color' : 'Caption text color'}
+                  value={toHex(selectedSeg ? (selectedSeg.color ?? captionTrack.color) : captionTrack.color, '#ffffff')}
+                  onChange={v => selectedSeg ? liveSegColor(v) : live({ color: v })}
+                  onCommit={v => selectedSeg ? commitSegColor(v) : commit({ color: v })}
                 />
                 {accent && (
                   <SwatchInput

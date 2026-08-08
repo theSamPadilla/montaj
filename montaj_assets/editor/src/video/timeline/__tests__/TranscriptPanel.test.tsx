@@ -10,9 +10,14 @@ function makeProject(style: Captions['style'], extra: Partial<Captions> = {}): P
   return { id: 'p1', captions: { style, segments: [], ...extra } } as unknown as Project
 }
 
-function renderPanel(style: Captions['style'], extra: Partial<Captions> = {}) {
+function renderPanel(
+  style: Captions['style'],
+  extra: Partial<Captions> = {},
+  opts: { selectedCaptionId?: string | null } = {},
+) {
   const onCaptionEdit = vi.fn()
   const onProjectChange = vi.fn()
+  const onCaptionSegmentChange = vi.fn()
   const project = makeProject(style, extra)
   render(
     <TranscriptPanel
@@ -21,10 +26,12 @@ function renderPanel(style: Captions['style'], extra: Partial<Captions> = {}) {
       currentTime={0}
       onCaptionEdit={onCaptionEdit}
       onProjectChange={onProjectChange}
+      onCaptionSegmentChange={onCaptionSegmentChange}
+      selectedCaptionId={opts.selectedCaptionId ?? null}
       onExpand={() => {}}
     />,
   )
-  return { onCaptionEdit, onProjectChange }
+  return { onCaptionEdit, onProjectChange, onCaptionSegmentChange }
 }
 
 describe('TranscriptPanel caption color controls', () => {
@@ -81,6 +88,76 @@ describe('TranscriptPanel caption color controls', () => {
     renderPanel('karaoke', { color: '#abcdef', highlightColor: '#00ff00' })
     expect((screen.getByLabelText('Caption text color') as HTMLInputElement).value).toBe('#abcdef')
     expect((screen.getByLabelText('Caption highlight color') as HTMLInputElement).value).toBe('#00ff00')
+  })
+})
+
+describe('TranscriptPanel per-segment caption color', () => {
+  it('no selection: base swatch is unchanged — still previews/commits the track-level color', () => {
+    const { onCaptionEdit, onProjectChange } = renderPanel('karaoke', {
+      segments: [{ id: 'cap-0', text: 'hi', start: 0, end: 2 }],
+    })
+    const input = screen.getByLabelText('Caption text color') as HTMLInputElement
+
+    fireEvent.change(input, { target: { value: '#76b900' } })
+    expect(onProjectChange).toHaveBeenCalledTimes(1)
+    expect(onProjectChange.mock.calls[0][0].captions.color).toBe('#76b900')
+
+    fireEvent.blur(input, { target: { value: '#76b900' } })
+    expect(onCaptionEdit).toHaveBeenCalledTimes(1)
+    expect(onCaptionEdit.mock.calls[0][0].captions.color).toBe('#76b900')
+  })
+
+  it('a selected segment: swatch previews live via onProjectChange (only that segment patched) and commits via onCaptionSegmentChange — never onCaptionEdit', () => {
+    const { onCaptionEdit, onProjectChange, onCaptionSegmentChange } = renderPanel('karaoke', {
+      color: '#ffffff',
+      segments: [
+        { id: 'cap-0', text: 'hi', start: 0, end: 2 },
+        { id: 'cap-1', text: 'there', start: 2, end: 4 },
+      ],
+    }, { selectedCaptionId: 'cap-1' })
+
+    const input = screen.getByLabelText('Selected segment text color') as HTMLInputElement
+
+    // Live preview — onChange fires on every pick.
+    fireEvent.change(input, { target: { value: '#123456' } })
+    expect(onProjectChange).toHaveBeenCalledTimes(1)
+    const previewed = onProjectChange.mock.calls[0][0]
+    expect(previewed.captions.segments[1].color).toBe('#123456')
+    expect(previewed.captions.segments[0].color).toBeUndefined() // only the selected segment changes
+    expect(previewed.captions.color).toBe('#ffffff')             // track-level color untouched
+    expect(onCaptionSegmentChange).not.toHaveBeenCalled()
+    expect(onCaptionEdit).not.toHaveBeenCalled()
+
+    // Commit — onBlur fires once, through the segment-patch channel, not
+    // the whole-track onCaptionEdit channel. One commit per gesture.
+    fireEvent.blur(input, { target: { value: '#123456' } })
+    expect(onCaptionSegmentChange).toHaveBeenCalledTimes(1)
+    expect(onCaptionSegmentChange).toHaveBeenCalledWith('cap-1', { color: '#123456' })
+    expect(onCaptionEdit).not.toHaveBeenCalled()
+  })
+
+  it("the swatch reflects the selected segment's own color when it has one", () => {
+    renderPanel('karaoke', {
+      color: '#abcdef',
+      segments: [{ id: 'cap-0', text: 'hi', start: 0, end: 2, color: '#00ff00' }],
+    }, { selectedCaptionId: 'cap-0' })
+    expect((screen.getByLabelText('Selected segment text color') as HTMLInputElement).value).toBe('#00ff00')
+  })
+
+  it('the swatch falls back to the track color when the selected segment has none of its own', () => {
+    renderPanel('karaoke', {
+      color: '#abcdef',
+      segments: [{ id: 'cap-0', text: 'hi', start: 0, end: 2 }],
+    }, { selectedCaptionId: 'cap-0' })
+    expect((screen.getByLabelText('Selected segment text color') as HTMLInputElement).value).toBe('#abcdef')
+  })
+
+  it('a selectedCaptionId that matches no segment falls back to track-level behavior', () => {
+    renderPanel('karaoke', {
+      segments: [{ id: 'cap-0', text: 'hi', start: 0, end: 2 }],
+    }, { selectedCaptionId: 'cap-does-not-exist' })
+    expect(screen.getByLabelText('Caption text color')).toBeTruthy()
+    expect(screen.queryByLabelText('Selected segment text color')).toBeNull()
   })
 })
 

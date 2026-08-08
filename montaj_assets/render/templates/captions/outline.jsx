@@ -37,7 +37,7 @@ export default function Outline({
             fontSize,
             fontWeight: 900,
             fontFamily: 'system-ui, -apple-system, sans-serif',
-            color,
+            color: seg.color ?? color,
             textShadow: '0 2px 12px rgba(0,0,0,0.85)',
           }}>
             {seg.text}
@@ -76,7 +76,7 @@ export default function Outline({
               style={{
                 display: 'inline-block',
                 marginRight: i === words.length - 1 ? 0 : '0.35em',
-                color: i === activeIndex ? accentColor : color,
+                color: i === activeIndex ? accentColor : (seg.color ?? color),
               }}
             >
               {w.word}

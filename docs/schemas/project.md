@@ -273,6 +273,7 @@ Each style maps to a built-in JSX template served at `GET /api/caption-template/
 | `offsetX` | number | 0 | Horizontal offset as % of frame width. `0` or absent = the style's default anchor (e.g. `bottom: 18%`, which varies per style). |
 | `offsetY` | number | 0 | Vertical offset as % of frame height. `0` or absent = the style's default anchor. |
 | `scale` | number | 1 | Visual scale of the whole caption block, about its own centre. This is a CSS transform, not a font-size change: it scales the background box (`subtitle`) and text stroke (`outline`) along with the text, and it does **not** re-wrap the text — a scaled-up caption keeps its original line breaks and can overflow the frame. |
+| `color` | string | — | Per-segment override of the base text color, overriding the track-level `color` below for this segment only (per-style accent colors — e.g. `highlightColor`, `accentColor` — are not overridable per segment). Absent = inherit the track-level `color` → the style's own default. Like `offsetX`/`offsetY`/`scale`, this is consumed only by the JSX browser preview and the Puppeteer render path; the ffmpeg `drawtext` render branch has no per-segment concept and continues to honour only the track-level `color` field below. |
 
 **ffmpeg-only fields.** The following optional fields may appear on the top-level `captions` object. They are consumed only by the ffmpeg `drawtext` render branch and are ignored by the JSX browser preview. The caption generation route preserves them across regeneration.
 

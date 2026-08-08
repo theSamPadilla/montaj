@@ -39,7 +39,7 @@ export default function Subtitle({
       })}>
         <div style={{
           background: backgroundColor,
-          color,
+          color: seg.color ?? color,
           fontSize,
           fontFamily: 'system-ui, -apple-system, sans-serif',
           fontWeight: 600,

@@ -39,7 +39,7 @@ export default function Clean({
         opacity,
       })}>
         <div style={{
-          color,
+          color: seg.color ?? color,
           fontSize,
           fontFamily: '"Figtree", system-ui, sans-serif',
           fontWeight: 700,

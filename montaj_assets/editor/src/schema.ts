@@ -46,6 +46,13 @@ export interface CaptionSegment {
   // transform, not a font-size change, so it scales the background box and
   // text stroke too and does NOT re-wrap the text. Default 1.
   scale?: number
+  // Per-segment override of the track-level `Captions.color` (base text color
+  // only — not the per-style accent fields below). CSS color (hex or named).
+  // Absent → inherits the track-level color → the template's own default.
+  // Honored only by the JSX browser preview / Puppeteer render path; the
+  // ffmpeg `drawtext` render branch has no per-segment concept and keeps
+  // reading only the track-level `color`.
+  color?: string
 }
 
 export interface Captions {

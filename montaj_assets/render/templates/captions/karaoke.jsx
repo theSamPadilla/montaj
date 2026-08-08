@@ -79,7 +79,7 @@ export default function Karaoke({
             const progress = active
               ? interpolate(frame, [wordStartFrame, wordEndFrame], [0, 1])
               : spoken ? 1 : 0
-            const wordColor = spoken || active ? highlightColor : color
+            const wordColor = spoken || active ? highlightColor : (seg.color ?? color)
             return (
               <span
                 key={i}

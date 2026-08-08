@@ -37,7 +37,7 @@ export default function HighlightBox({
             fontSize,
             fontWeight: 900,
             fontFamily: 'system-ui, -apple-system, sans-serif',
-            color,
+            color: seg.color ?? color,
             textShadow: '0 2px 12px rgba(0,0,0,0.85)',
           }}>
             {seg.text}
@@ -89,7 +89,7 @@ export default function HighlightBox({
                   padding: '4px 18px',
                   transform: 'scale(1.08)',
                 } : {
-                  color,
+                  color: seg.color ?? color,
                   textShadow: '0 2px 12px rgba(0,0,0,0.85)',
                 }}
               >

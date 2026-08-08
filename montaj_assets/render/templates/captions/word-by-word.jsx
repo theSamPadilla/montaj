@@ -45,7 +45,7 @@ export default function WordByWord({
           fontSize,
           fontWeight: 800,
           fontFamily: 'system-ui, -apple-system, sans-serif',
-          color,
+          color: seg.color ?? color,
           textShadow: '0 2px 12px rgba(0,0,0,0.85)',
           letterSpacing: '-0.02em',
           opacity,
