@@ -1,0 +1,161 @@
+{
+  "planBoundaries": {
+    "24": [
+      0,
+      6
+    ],
+    "30": [
+      0,
+      6
+    ],
+    "60": [
+      0,
+      6
+    ]
+  },
+  "durations": {
+    "visualDuration": 6,
+    "projectEnd": 0
+  },
+  "resolveAt": {
+    "timestamps": [
+      0,
+      3,
+      6,
+      7
+    ],
+    "preview": [
+      {
+        "t": 0,
+        "items": [
+          {
+            "itemId": "bgImage",
+            "trackIdx": 0,
+            "kind": "image",
+            "window": null,
+            "seek": 0,
+            "geometry": {
+              "scale": 1,
+              "offsetX": 0,
+              "offsetY": 0,
+              "opacity": 1,
+              "fit": "cover",
+              "rotation": 0
+            }
+          }
+        ]
+      },
+      {
+        "t": 3,
+        "items": [
+          {
+            "itemId": "bgImage",
+            "trackIdx": 0,
+            "kind": "image",
+            "window": null,
+            "seek": 3,
+            "geometry": {
+              "scale": 1,
+              "offsetX": 0,
+              "offsetY": 0,
+              "opacity": 1,
+              "fit": "cover",
+              "rotation": 0
+            }
+          }
+        ]
+      },
+      {
+        "t": 6,
+        "items": []
+      },
+      {
+        "t": 7,
+        "items": []
+      }
+    ],
+    "render": [
+      {
+        "t": 0,
+        "items": [
+          {
+            "itemId": "bgImage",
+            "trackIdx": 0,
+            "kind": "image",
+            "window": null,
+            "seek": 0,
+            "geometry": {
+              "scale": 1,
+              "offsetX": 0,
+              "offsetY": 0,
+              "opacity": 1,
+              "fit": "cover",
+              "rotation": 0
+            }
+          }
+        ]
+      },
+      {
+        "t": 3,
+        "items": [
+          {
+            "itemId": "bgImage",
+            "trackIdx": 0,
+            "kind": "image",
+            "window": null,
+            "seek": 3,
+            "geometry": {
+              "scale": 1,
+              "offsetX": 0,
+              "offsetY": 0,
+              "opacity": 1,
+              "fit": "cover",
+              "rotation": 0
+            }
+          }
+        ]
+      },
+      {
+        "t": 6,
+        "items": []
+      },
+      {
+        "t": 7,
+        "items": []
+      }
+    ]
+  },
+  "resolveSegment": {
+    "fps": 30,
+    "segments": [
+      {
+        "segStart": 0,
+        "segEnd": 6,
+        "scene": {
+          "t": 0,
+          "items": [
+            {
+              "itemId": "bgImage",
+              "trackIdx": 0,
+              "kind": "image",
+              "window": null,
+              "seek": 0,
+              "geometry": {
+                "scale": 1,
+                "offsetX": 0,
+                "offsetY": 0,
+                "opacity": 1,
+                "fit": "cover",
+                "rotation": 0
+              }
+            }
+          ]
+        }
+      }
+    ]
+  },
+  "sourceWindow": {},
+  "seekTime": {},
+  "synthesizedOutPoint": {},
+  "audioWindow": {}
+}

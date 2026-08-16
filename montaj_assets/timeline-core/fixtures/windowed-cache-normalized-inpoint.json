@@ -1,0 +1,23 @@
+{
+  "version": "0.2",
+  "id": "sp2-corpus-windowed-cache-normalized-inpoint",
+  "status": "draft",
+  "projectType": "editing",
+  "settings": { "fps": 30, "resolution": [1080, 1920], "colorSpace": "sdr_bt709" },
+  "tracks": [
+    [
+      {
+        "id": "bugA",
+        "type": "video",
+        "src": "/corpus/bugA_orig.mp4",
+        "normalizedSrc": "/corpus/bugA_normalized.mp4",
+        "normalizedInPoint": 0,
+        "start": 0,
+        "end": 16.0543,
+        "inPoint": 0.9157,
+        "outPoint": 16.97
+      }
+    ]
+  ],
+  "audio": { "tracks": [] }
+}

@@ -1,0 +1,21 @@
+{
+  "version": "0.2",
+  "id": "sp2-corpus-nan-case",
+  "status": "draft",
+  "projectType": "editing",
+  "settings": { "fps": 30, "resolution": [1080, 1920], "colorSpace": "sdr_bt709" },
+  "tracks": [
+    [
+      {
+        "id": "nanItem",
+        "type": "video",
+        "src": "/corpus/nan_orig.mp4",
+        "normalizedSrc": "/corpus/nan_norm.mp4",
+        "start": 0,
+        "end": 4,
+        "outPoint": 4.5
+      }
+    ]
+  ],
+  "audio": { "tracks": [] }
+}

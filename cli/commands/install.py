@@ -212,7 +212,9 @@ def _ensure_ui() -> bool:
         return False
 
     # Five Node.js bundles ship with montaj. All need `npm install`; only the
-    # UI needs build.
+    # UI needs build. A sixth directory, timeline-core, is a `file:` dependency
+    # of two of these bundles but is not itself a bundle — see its own note
+    # below, and the copytree loop further down.
     #
     # ORDERING IS LOAD-BEARING — each file: dependency must be staged before the
     # bundle that links it:
@@ -229,6 +231,14 @@ def _ensure_ui() -> bool:
     #     for transitive deps that npm doesn't hoist out of file: symlinks
     #     (three, r3f, Phosphor, FontAwesome). Those node_modules MUST exist
     #     before UI's `npm run build` runs.
+    #   - render AND editor both declare `@bycrux/timeline-core: file:../timeline-core`
+    #     (SP2). Unlike the file: deps above, timeline-core has zero runtime
+    #     dependencies and no build step (its only devDependency, typescript,
+    #     is for local typechecking, not install/build), so it never needs its
+    #     own `npm install` and isn't in `bundles` at all — it's copied into
+    #     the cache alongside "schemas" below, which already runs before ANY
+    #     bundle's `npm install`. It still needs to exist on disk first, same
+    #     failure mode as the other file: deps if that copy is ever skipped.
     #
     # If you ever reorder this list, expect a file: dependency's install or the
     # UI build to fail with confusing module-resolution errors.
@@ -257,8 +267,11 @@ def _ensure_ui() -> bool:
 
         ignore = shutil.ignore_patterns("node_modules", "__pycache__", "*.pyc")
         # Bundles + the shared schemas/ dir (loaded by render/color-space.js
-        # via ../schemas/color_space.json — must be copied alongside).
-        for sub in [s for _, s in bundles] + ["schemas"]:
+        # via ../schemas/color_space.json — must be copied alongside) + the
+        # shared timeline-core/ package (SP2; render and editor both declare
+        # `file:../timeline-core` — see the ordering note above for why it's
+        # copied here instead of added to `bundles`).
+        for sub in [s for _, s in bundles] + ["schemas", "timeline-core"]:
             shutil.copytree(
                 os.path.join(src_root, sub),
                 os.path.join(BUILD_CACHE_DIR, sub),

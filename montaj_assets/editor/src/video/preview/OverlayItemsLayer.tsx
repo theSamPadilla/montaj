@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { containsTime, geometryFor } from '@bycrux/timeline-core'
 import type { EditorProject as Project, VisualItem } from '../../schema'
 import type { OverlayFactory } from '../../types'
 import OverlayErrorBoundary from '../../carousel/OverlayErrorBoundary'
@@ -7,7 +8,15 @@ import { ensureGoogleFontsLoaded } from '../../lib/google-fonts'
 import type { Corner, OverlayChanges } from './useDragOverlay'
 import type { useDragOverlay } from './useDragOverlay'
 
-const VIDEO_PRELOAD_S = 0.4  // mount this many seconds before item.start so the frame is ready
+// Mount video items this many seconds before item.start so the frame is ready.
+//
+// This pre-mount window is deliberately NOT part of @bycrux/timeline-core's
+// activation predicate: a pre-mounted item is rendered at opacity 0 and is not
+// "on screen" in any sense the renderer or sample-frame would agree with. It
+// exists purely to give the browser time to decode the first frame so the item
+// doesn't flash in — presentation, not activation. `containsTime` (the shared
+// predicate) still decides `visible`; see timeline-core/index.d.ts.
+const VIDEO_PRELOAD_S = 0.4
 
 // Synced video overlay — seeks to the correct position within the item's inPoint/outPoint range
 function OverlayVideo({ src, currentTime, itemStart, inPoint, isPlaying, muted, visible }: {
@@ -347,19 +356,25 @@ export default function OverlayItemsLayer({
       {/* tracks[0] non-video items (background images) — rendered with drag support at base z-level */}
       {!isCanvasProject && tracks0NonVideo.map((item) => {
         if (item.type !== 'image' || !item.src) return null
-        const visible = currentTime >= item.start && currentTime < item.end
+        const visible = containsTime(item.start, item.end, currentTime)
         if (!visible) return null
         const isSel    = selectedOverlayId === item.id
-        const offsetX  = (liveOffset?.id   === item.id ? liveOffset.x       : null) ?? item.offsetX  ?? 0
-        const offsetY  = (liveOffset?.id   === item.id ? liveOffset.y       : null) ?? item.offsetY  ?? 0
-        const scale    = (liveScale?.id    === item.id ? liveScale.scale    : null) ?? item.scale    ?? 1
-        const rotation = (liveRotation?.id === item.id ? liveRotation.rotation : null) ?? item.rotation ?? 0
+        // Persisted geometry from the resolver; live drag state layered on top.
+        // The resolver only ever sees the SAVED project, so it cannot know about
+        // an in-flight drag — `liveOffset`/`liveScale`/`liveRotation` must keep
+        // winning, with `geometryFor` supplying the base each falls back to.
+        const g        = geometryFor(item, 'image')
+        const fit      = g.fit ?? 'cover'
+        const offsetX  = (liveOffset?.id   === item.id ? liveOffset.x       : null) ?? g.offsetX
+        const offsetY  = (liveOffset?.id   === item.id ? liveOffset.y       : null) ?? g.offsetY
+        const scale    = (liveScale?.id    === item.id ? liveScale.scale    : null) ?? g.scale
+        const rotation = (liveRotation?.id === item.id ? liveRotation.rotation : null) ?? g.rotation
         const wrapperStyle: React.CSSProperties = {
           transform: `translate(${offsetX}%, ${offsetY}%) rotate(${rotation}deg) scale(${scale})`,
           transformOrigin: 'center center',
           // Raise above play/pause div (z=10) when selected so pointer events land here
           zIndex: isSel ? 11 : 2,
-          opacity: item.opacity ?? 1,
+          opacity: g.opacity,
         }
         const wrapperClass = `absolute inset-0 ${
           isSel
@@ -396,11 +411,11 @@ export default function OverlayItemsLayer({
               src={fileUrl(item.src)}
               draggable={false}
               className="absolute inset-0 w-full h-full pointer-events-none"
-              style={{ objectFit: item.fit ?? 'cover' }}
+              style={{ objectFit: fit }}
             />
             {handles}
             {isSel && onOverlayChange && (
-              <FitControl value={item.fit ?? 'cover'} scale={scale} onChange={(fit) => onOverlayChange(item.id, { fit })} />
+              <FitControl value={fit} scale={scale} onChange={(next) => onOverlayChange(item.id, { fit: next })} />
             )}
           </div>
         )
@@ -409,18 +424,25 @@ export default function OverlayItemsLayer({
       {/* All interactive tracks — in canvas mode this includes track 0; otherwise overlays only */}
       {interactiveTracks.map((trackItems, trackIdx) =>
         trackItems.map((item) => {
-          const visible  = currentTime >= item.start && currentTime < item.end
-          // Pre-mount video items slightly before their start so the frame is ready (no flash)
+          // Activation: the shared half-open `start <= t < end` predicate.
+          const visible  = containsTime(item.start, item.end, currentTime)
+          // Presentation-only pre-mount window — see VIDEO_PRELOAD_S above for
+          // why it is not (and must not be) a resolver concern. A pre-mounted
+          // item still renders at opacity 0 until `visible` flips true.
           const mounted  = item.type === 'video'
-            ? currentTime >= item.start - VIDEO_PRELOAD_S && currentTime < item.end
+            ? containsTime(item.start - VIDEO_PRELOAD_S, item.end, currentTime)
             : visible
           if (!mounted) return null
 
           const isSel    = selectedOverlayId === item.id
-          const offsetX  = (liveOffset?.id   === item.id ? liveOffset.x       : null) ?? item.offsetX  ?? 0
-          const offsetY  = (liveOffset?.id   === item.id ? liveOffset.y       : null) ?? item.offsetY  ?? 0
-          const scale    = (liveScale?.id    === item.id ? liveScale.scale    : null) ?? item.scale    ?? 1
-          const rotation = (liveRotation?.id === item.id ? liveRotation.rotation : null) ?? item.rotation ?? 0
+          // Persisted geometry from the resolver; live drag state layered on top
+          // (see the tracks[0] block above for why the override has to win).
+          const g        = geometryFor(item, item.type)
+          const fit      = g.fit ?? 'cover'
+          const offsetX  = (liveOffset?.id   === item.id ? liveOffset.x       : null) ?? g.offsetX
+          const offsetY  = (liveOffset?.id   === item.id ? liveOffset.y       : null) ?? g.offsetY
+          const scale    = (liveScale?.id    === item.id ? liveScale.scale    : null) ?? g.scale
+          const rotation = (liveRotation?.id === item.id ? liveRotation.rotation : null) ?? g.rotation
 
           function startMove(e: React.MouseEvent) {
             if (!isSel) return
@@ -453,14 +475,20 @@ export default function OverlayItemsLayer({
             if (item.type === 'overlay' && item.src) onEditOverlay?.(item.id)
           }
 
-          // zIndex: canvas mode track 0 sits just above the play-toggle div (10), others stack above
+          // zIndex derives from the same back-to-front ordering the resolver
+          // defines (`byTrackIdx`: lower trackIdx = further back = composited
+          // first), but the mapping onto CSS stacking contexts stays local —
+          // `trackIdx` here indexes `interactiveTracks`, which in non-canvas mode
+          // is `project.tracks.slice(1)`, and the base offsets exist only to clear
+          // the play-toggle div (z=10). Canvas mode track 0 sits just above it,
+          // others stack above.
           const zIndex = isCanvasProject ? trackIdx + 11 : trackIdx + 12
 
           const wrapperStyle: React.CSSProperties = {
             transform: `translate(${offsetX}%, ${offsetY}%) rotate(${rotation}deg) scale(${scale})`,
             transformOrigin: 'center center',
             zIndex,
-            opacity: item.opacity ?? 1,
+            opacity: g.opacity,
           }
 
           const wrapperClass = `absolute inset-0 ${
@@ -486,11 +514,11 @@ export default function OverlayItemsLayer({
                   src={fileUrl(item.src)}
                   draggable={false}
                   className="absolute inset-0 w-full h-full pointer-events-none"
-                  style={{ objectFit: item.fit ?? 'cover' }}
+                  style={{ objectFit: fit }}
                 />
                 {handles}
                 {isSel && onOverlayChange && (
-                  <FitControl value={item.fit ?? 'cover'} scale={scale} onChange={(fit) => onOverlayChange(item.id, { fit })} />
+                  <FitControl value={fit} scale={scale} onChange={(next) => onOverlayChange(item.id, { fit: next })} />
                 )}
               </div>
             )
@@ -501,6 +529,16 @@ export default function OverlayItemsLayer({
             return (
               <div key={item.id} className={wrapperClass} style={wrapperStyle} onMouseDown={startMove}>
                 <OverlayVideo
+                  // This is a THIRD src-precedence chain, deliberately not
+                  // @bycrux/timeline-core's `playbackSrcFor` (see
+                  // PreviewPlayer.tsx / useVideoPlayback.ts for that one): an
+                  // overlay-track video loads the ORIGINAL src (skipping
+                  // `normalizedSrc` entirely) and pairs it with a raw,
+                  // un-rebased `inPoint`. Switching this to
+                  // `playbackSrcFor(item, 'preview')` would add the
+                  // `normalizedSrc` tier and require rebasing `inPoint` to
+                  // match — an unbudgeted behavior change for this item
+                  // class. Out of scope for SP2; owned by SP4.
                   src={fileUrl(item.nobg_preview_src ?? item.src)}
                   currentTime={currentTime}
                   itemStart={item.start}

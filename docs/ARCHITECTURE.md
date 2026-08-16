@@ -573,6 +573,79 @@ concat({inputs: [spec1.json, spec2.json, ...]})
 
 ---
 
+### Timeline resolver (`montaj_assets/timeline-core/`)
+
+`@bycrux/timeline-core` is the single implementation of "what is on screen at
+time T" — plain JS ESM with JSDoc types (`// @ts-check`, strict `tsc --noEmit`,
+a committed hand-written `index.d.ts`), zero runtime dependencies, no build
+step. It answers the questions every consumer of `project.json` timing was
+independently re-deriving: which items are active at a timestamp, where their
+source window seeks to, where they sit in frame, which caption segment is
+speaking, and how long the project runs.
+
+**Four implementations, one of them out of band.** Three JS runtimes import
+the package directly:
+
+- **Editor preview** — `useVideoPlayback`'s `effectiveInPoint`/`effectiveOutPoint`/
+  `playbackSrcFor` are thin wrappers over the resolver; `PreviewPlayer.activeClip`
+  and `OverlayItemsLayer` call its activation predicates and `geometryFor`.
+- **Render engine** — `segment-plan.js` and `render.js`'s `collectAllItems`
+  delegate their boundary/activation math to it.
+- **`sample-frame.js`** — the diagnostic frame-sampling tool adopts it too, so
+  what an engineer inspects offline matches what actually renders.
+
+Python's `serve/caption_job.py` is a **fourth, independent implementation** —
+TypeScript-shaped code can't run inside the Python server process, so its
+timeline arithmetic is hand-ported rather than imported. It's kept honest
+against the other three by a pytest pinned to the same fixture corpus (see
+below), not by sharing code.
+
+**The variant model.** The resolver is variant-aware, not silently unified:
+every function whose answer legitimately differs between preview and render
+takes an explicit `Variant = 'preview' | 'render'` argument (an unrecognized
+value throws rather than defaulting). Preview and render really do disagree
+in places — src precedence when a normalized cache or a background-removal
+artifact is present, which items are "active" at a boundary, whether `opaque`
+hides underlying video, whether `rotation` is honored — and the resolver's job
+is to reproduce each side's actual behavior under its own variant, not to
+invent a single "correct" answer and quietly change what ships. Where the two
+variants are supposed to agree, they call the same variant-agnostic primitive.
+
+**The shared fixture corpus.** `fixtures/*.json` (project-shaped test inputs)
+and `expected/*.json` (committed golden output) live in the package and are
+read by all three JS suites plus the Python pytest — one corpus, four readers,
+so "does runtime X agree with runtime Y" is a fixture-by-fixture diff instead
+of a claim. `fixtures/README.md` documents the corpus's own ground rules
+(never depend on real files, never author a genuinely malformed or
+unreachable-in-production fixture).
+
+**The divergence registry.** Porting three independently-evolved codebases
+into one resolver surfaced places where they already disagreed with each
+other in production, before the resolver existed. `KNOWN-DIVERGENCES.md`
+documents each one it found: what diverges, the exact `file:line` on both
+sides, the user-visible consequence, an **owning SP** for the eventual fix,
+and a fixture pointer where one exists. The resolver **reproduces** whichever
+behavior each consumer currently gets — it does not fix any of these; fixing
+is out of scope for the package that just extracted the shared math. New
+divergences discovered after the initial port are appended to a "Discovered
+during SP2" section rather than folded into the original numbered list.
+
+**Permanent gates.** Two tests exist specifically to keep future edits to the
+resolver (or to render's delegation to it) from silently changing what ships:
+
+- `render/test/resolver-parity.test.mjs` — compares a frozen, verbatim,
+  pre-adoption copy of `segment-plan.js`'s algorithm against both the
+  resolver's composed primitives and the shipped `planSegments`. All three
+  must agree; a change to the resolver that alters segment planning fails
+  here.
+- `render/test/encode-args-golden.test.mjs` — runs the real, fully-swapped
+  `collectAllItems` → `planSegments` → `encodeSegment(..., {_dryRun:true})`
+  pipeline over the fixture corpus and compares the resulting ffmpeg
+  arguments against goldens captured from the pre-resolver pipeline. This is
+  the end-to-end "the bytes ffmpeg is asked to produce did not change" proof.
+
+---
+
 ### Render Engine (`render/`)
 
 Turns project.json into a final MP4. Reads the `captions` and `overlays` tracks, renders each item as a transparent video segment via React + Puppeteer, then composites everything with the source footage via ffmpeg.

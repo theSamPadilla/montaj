@@ -1,4 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import {
+  sourceWindow,
+  playbackSrcFor as resolvePlaybackSrc,
+} from '@bycrux/timeline-core'
 import type { EditorProject as Project } from '../../schema'
 
 // Typed extension for the shared AudioContext cached on window
@@ -11,80 +15,62 @@ interface MontajVideoElement extends HTMLVideoElement {
   __montajGain?: GainNode
 }
 
+// ── Source-window helpers ───────────────────────────────────────────────────
+//
+// The three functions below are thin wrappers over @bycrux/timeline-core with
+// the variant pinned to 'preview'. The canonical implementation — and the full
+// reasoning, with both the editor and render originals quoted verbatim next to
+// the branch that reproduces them — lives in
+// `montaj_assets/timeline-core/src/source-window.js`. Read that module's header
+// before changing anything here; the same math also drives the render engine,
+// and preview/render differences are deliberate, not accidental.
+//
+// The short version of why these exist at all:
+//
+//   • `normalizedSrc` is a per-WINDOW normalized cache: it covers exactly
+//     [normalizedInPoint, normalizedInPoint + duration] of the original source
+//     and plays from its own time 0. Items always store inPoint/outPoint in
+//     ORIGINAL-source coordinates, so whenever the cache is the loaded src the
+//     points must be rebased by the cache origin
+//     (`normalizedInPoint ?? inPoint ?? 0`) or every seek lands in the wrong
+//     place. When `normalizedInPoint` is absent (legacy caches) the origin
+//     collapses to `inPoint`, reproducing the old rebase-to-0 behavior.
+//
+//   • `nobg_preview_src` (VP9 WebM with alpha) covers the FULL source, not a
+//     window, so it is NOT rebased — and it takes precedence over the cache.
+//     `nobg_src` is the ProRes 4444 render-only artifact and is never loaded
+//     into a <video> element; browsers can't decode ProRes.
+
 /**
  * Resolve the file path the browser should load for previewing this clip.
  *
- * For bg-removed clips, prefer `nobg_preview_src` (small WebM with alpha,
- * browser-friendly) over `src` (the original raw file with bg present), so
- * the preview pane shows what the final render will composite — not the
- * un-cut-out source. Mirrors the same pattern used by
- * `OverlayItemsLayer.tsx:406` for tracks[1+] items; this generalises it to
- * the main-track preview so bg-removed clips placed on tracks[0] don't show
- * the wrong layer in preview while rendering correctly. Falls back to `src`
- * when `nobg_preview_src` is absent (most clips).
- *
- * Note: `nobg_src` is the ProRes 4444 render-only artifact and is NEVER
- * loaded into a `<video>` element — browsers can't decode ProRes.
+ * `'preview'` always yields a string (`''` when the clip has no src field at
+ * all) — the `?? ''` below is a type narrowing, not a runtime fallback; see the
+ * `src` note on `SourceWindow` in timeline-core's index.d.ts.
  */
 function playbackSrcFor(clip: { src?: string; nobg_preview_src?: string; normalizedSrc?: string }): string {
-  return clip.nobg_preview_src ?? clip.normalizedSrc ?? clip.src ?? ''
+  return resolvePlaybackSrc(clip, 'preview') ?? ''
 }
 
 /**
  * The inPoint the preview should SEEK to for this clip, accounting for the
- * normalizedSrc cache origin.
- *
- * A `normalizedSrc` cache is a trimmed file that covers exactly
- * [normalizedInPoint, normalizedInPoint + duration] of the original source and
- * plays starting at time 0. When `playbackSrcFor` chooses the cache as the
- * playback src, we must rebase by the cache origin so the seek position is
- * relative to the cache's own timeline.
- *
- * The origin is `clip.normalizedInPoint ?? clip.inPoint ?? 0`:
- * - When `normalizedInPoint` is set, the cache was built for a specific window
- *   that may differ from the current inPoint (e.g. after a start-trim): the
- *   cache still covers the new window, but we must subtract the origin so the
- *   seek lands at the right position inside the cache.
- * - When `normalizedInPoint` is absent (legacy), the cache was built assuming
- *   it starts at the clip's inPoint → origin = inPoint → effectiveInPoint = 0
- *   (reproduces the old rebase-to-0 behavior).
- *
- * This mirrors render's `collectAllItems` (montaj_assets/render/render.js),
- * which rebases inPoint by the same origin.
- *
- * The rebase applies ONLY when the cache is actually the chosen src.
- * `nobg_preview_src` takes precedence in `playbackSrcFor` and is NOT a window
- * cache (it covers the full source), so it keeps the original inPoint — exactly
- * as render's nobg path does.
+ * normalizedSrc cache origin. `sourceWindow(clip, 'preview').inPoint`.
  */
 export function effectiveInPoint(clip: { inPoint?: number; normalizedInPoint?: number; nobg_preview_src?: string; normalizedSrc?: string; src?: string }): number {
-  const usingNormalizedCache = !clip.nobg_preview_src && !!clip.normalizedSrc
-  if (!usingNormalizedCache) return clip.inPoint ?? 0
-  const origin = clip.normalizedInPoint ?? clip.inPoint ?? 0
-  return (clip.inPoint ?? 0) - origin
+  return sourceWindow(clip, 'preview').inPoint
 }
 
 /**
- * The outPoint in the loaded src's own timeline. For a normalizedSrc cache the
- * stored `clip.outPoint` is in ORIGINAL-source coordinates while the cache
- * plays from its own time origin; the boundary/loop checks compare against
- * `video.currentTime` (cache time), so the outPoint must be rebased by the
- * cache origin.
- *
- * The origin is `clip.normalizedInPoint ?? clip.inPoint ?? 0` (same as
- * effectiveInPoint). Legacy clips without `normalizedInPoint` default the
- * origin to inPoint, reproducing the old (outPoint - inPoint) window-length
- * behavior.
+ * The outPoint in the loaded src's own timeline, rebased by the cache origin
+ * when the normalizedSrc cache is what's actually loaded (the boundary/loop
+ * checks below compare against `video.currentTime`, i.e. cache time).
+ * `sourceWindow(clip, 'preview').outPoint`.
  *
  * Returns undefined when no outPoint is stored, so callers keep their existing
  * fallback (clip.end - clip.start + effectiveInPoint).
  */
 export function effectiveOutPoint(clip: { inPoint?: number; outPoint?: number; normalizedInPoint?: number; nobg_preview_src?: string; normalizedSrc?: string; src?: string }): number | undefined {
-  if (clip.outPoint == null) return undefined
-  const usingNormalizedCache = !clip.nobg_preview_src && !!clip.normalizedSrc
-  if (!usingNormalizedCache) return clip.outPoint
-  const origin = clip.normalizedInPoint ?? clip.inPoint ?? 0
-  return clip.outPoint - origin
+  return sourceWindow(clip, 'preview').outPoint
 }
 
 export function useVideoPlayback(

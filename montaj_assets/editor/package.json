@@ -17,6 +17,7 @@
     "lint": "eslint src"
   },
   "dependencies": {
+    "@bycrux/timeline-core": "file:../timeline-core",
     "class-variance-authority": "^0.7",
     "clsx": "^2",
     "lucide-react": "^0.400",

@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent, type WheelEvent as ReactWheelEvent } from 'react'
+import { containsTime } from '@bycrux/timeline-core'
 import { videoTransformContainerStyle, videoTransformBoxPct, type VideoTransform } from './transformStyle'
 import type { EditorProject as Project } from '../../schema'
 import type { OverlayFactory } from '../../types'
@@ -113,8 +114,19 @@ export default function PreviewPlayer({
   // playhead (same selection the playback hook uses internally). Only the active
   // <video> slot is opaque, so applying the active clip's crop to both slots is
   // safe — the inactive slot is invisible.
+  //
+  // Activation is `containsTime` from @bycrux/timeline-core — the shared
+  // half-open `start <= t < end` predicate, so at an exact cut the LATER clip
+  // wins here exactly as it does in the renderer.
+  //
+  // The `?? clips[clips.length - 1]` tail is deliberately NOT part of the
+  // resolver: `resolveAt` returns an EMPTY Scene inside a gap or past the end of
+  // the timeline. Falling back to the last clip is editor-side PRESENTATION —
+  // it keeps the trailing frame's crop/transform on screen instead of snapping
+  // to an untransformed frame — so it stays local. See the `containsTime` note
+  // in timeline-core/index.d.ts.
   const activeClip = useMemo(
-    () => clips.find(c => currentTime >= c.start && currentTime < c.end) ?? clips[clips.length - 1],
+    () => clips.find(c => containsTime(c.start, c.end, currentTime)) ?? clips[clips.length - 1],
     [clips, currentTime],
   )
   const cropStyle = useMemo(() => {

@@ -1,0 +1,219 @@
+{
+  "planBoundaries": {
+    "24": [
+      0,
+      10
+    ],
+    "30": [
+      0,
+      10
+    ],
+    "60": [
+      0,
+      10
+    ]
+  },
+  "durations": {
+    "visualDuration": 10,
+    "projectEnd": 10
+  },
+  "resolveAt": {
+    "timestamps": [
+      0,
+      5,
+      10,
+      11
+    ],
+    "preview": [
+      {
+        "t": 0,
+        "items": [
+          {
+            "itemId": "loopedClip",
+            "trackIdx": 0,
+            "kind": "video",
+            "window": {
+              "src": "/corpus/loopedClip.mp4",
+              "inPoint": 0,
+              "outPoint": 2,
+              "usedNormalizedCache": false
+            },
+            "seek": 0,
+            "geometry": {
+              "scale": 1,
+              "offsetX": 0,
+              "offsetY": 0,
+              "opacity": 1,
+              "fit": "contain",
+              "rotation": 0
+            }
+          }
+        ]
+      },
+      {
+        "t": 5,
+        "items": [
+          {
+            "itemId": "loopedClip",
+            "trackIdx": 0,
+            "kind": "video",
+            "window": {
+              "src": "/corpus/loopedClip.mp4",
+              "inPoint": 0,
+              "outPoint": 2,
+              "usedNormalizedCache": false
+            },
+            "seek": 5,
+            "geometry": {
+              "scale": 1,
+              "offsetX": 0,
+              "offsetY": 0,
+              "opacity": 1,
+              "fit": "contain",
+              "rotation": 0
+            }
+          }
+        ]
+      },
+      {
+        "t": 10,
+        "items": []
+      },
+      {
+        "t": 11,
+        "items": []
+      }
+    ],
+    "render": [
+      {
+        "t": 0,
+        "items": [
+          {
+            "itemId": "loopedClip",
+            "trackIdx": 0,
+            "kind": "video",
+            "window": {
+              "src": "/corpus/loopedClip.mp4",
+              "inPoint": 0,
+              "outPoint": 2,
+              "usedNormalizedCache": false
+            },
+            "seek": 0,
+            "geometry": {
+              "scale": 1,
+              "offsetX": 0,
+              "offsetY": 0,
+              "opacity": 1,
+              "fit": "contain",
+              "rotation": 0
+            }
+          }
+        ]
+      },
+      {
+        "t": 5,
+        "items": [
+          {
+            "itemId": "loopedClip",
+            "trackIdx": 0,
+            "kind": "video",
+            "window": {
+              "src": "/corpus/loopedClip.mp4",
+              "inPoint": 0,
+              "outPoint": 2,
+              "usedNormalizedCache": false
+            },
+            "seek": 5,
+            "geometry": {
+              "scale": 1,
+              "offsetX": 0,
+              "offsetY": 0,
+              "opacity": 1,
+              "fit": "contain",
+              "rotation": 0
+            }
+          }
+        ]
+      },
+      {
+        "t": 10,
+        "items": []
+      },
+      {
+        "t": 11,
+        "items": []
+      }
+    ]
+  },
+  "resolveSegment": {
+    "fps": 30,
+    "segments": [
+      {
+        "segStart": 0,
+        "segEnd": 10,
+        "scene": {
+          "t": 0,
+          "items": [
+            {
+              "itemId": "loopedClip",
+              "trackIdx": 0,
+              "kind": "video",
+              "window": {
+                "src": "/corpus/loopedClip.mp4",
+                "inPoint": 0,
+                "outPoint": 2,
+                "usedNormalizedCache": false
+              },
+              "seek": 0,
+              "geometry": {
+                "scale": 1,
+                "offsetX": 0,
+                "offsetY": 0,
+                "opacity": 1,
+                "fit": "contain",
+                "rotation": 0
+              }
+            }
+          ]
+        }
+      }
+    ]
+  },
+  "sourceWindow": {
+    "loopedClip": {
+      "preview": {
+        "src": "/corpus/loopedClip.mp4",
+        "inPoint": 0,
+        "outPoint": 2,
+        "usedNormalizedCache": false
+      },
+      "render": {
+        "src": "/corpus/loopedClip.mp4",
+        "inPoint": 0,
+        "outPoint": 2,
+        "usedNormalizedCache": false
+      }
+    }
+  },
+  "seekTime": {
+    "loopedClip": {
+      "preview": {
+        "0": 0,
+        "5": 5,
+        "10": 10
+      },
+      "render": {
+        "0": 0,
+        "5": 5,
+        "10": 10
+      }
+    }
+  },
+  "synthesizedOutPoint": {
+    "loopedClip": {
+      "preview": 2,
+      "render": 2
+    }
+  },
+  "audioWindow": {}
+}

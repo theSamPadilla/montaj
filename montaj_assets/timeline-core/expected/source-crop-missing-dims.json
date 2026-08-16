@@ -1,0 +1,249 @@
+{
+  "planBoundaries": {
+    "24": [
+      0,
+      4
+    ],
+    "30": [
+      0,
+      4
+    ],
+    "60": [
+      0,
+      4
+    ]
+  },
+  "durations": {
+    "visualDuration": 4,
+    "projectEnd": 4
+  },
+  "resolveAt": {
+    "timestamps": [
+      0,
+      2,
+      4,
+      5
+    ],
+    "preview": [
+      {
+        "t": 0,
+        "items": [
+          {
+            "itemId": "croppedNoDims",
+            "trackIdx": 0,
+            "kind": "video",
+            "window": {
+              "src": "/corpus/cropNoDims.mp4",
+              "inPoint": 0,
+              "outPoint": 4,
+              "usedNormalizedCache": false
+            },
+            "seek": 0,
+            "geometry": {
+              "scale": 1,
+              "offsetX": 0,
+              "offsetY": 0,
+              "opacity": 1,
+              "fit": "contain",
+              "sourceCrop": {
+                "x": 0.2,
+                "y": 0.1,
+                "w": 0.6,
+                "h": 0.7
+              },
+              "rotation": 0
+            }
+          }
+        ]
+      },
+      {
+        "t": 2,
+        "items": [
+          {
+            "itemId": "croppedNoDims",
+            "trackIdx": 0,
+            "kind": "video",
+            "window": {
+              "src": "/corpus/cropNoDims.mp4",
+              "inPoint": 0,
+              "outPoint": 4,
+              "usedNormalizedCache": false
+            },
+            "seek": 2,
+            "geometry": {
+              "scale": 1,
+              "offsetX": 0,
+              "offsetY": 0,
+              "opacity": 1,
+              "fit": "contain",
+              "sourceCrop": {
+                "x": 0.2,
+                "y": 0.1,
+                "w": 0.6,
+                "h": 0.7
+              },
+              "rotation": 0
+            }
+          }
+        ]
+      },
+      {
+        "t": 4,
+        "items": []
+      },
+      {
+        "t": 5,
+        "items": []
+      }
+    ],
+    "render": [
+      {
+        "t": 0,
+        "items": [
+          {
+            "itemId": "croppedNoDims",
+            "trackIdx": 0,
+            "kind": "video",
+            "window": {
+              "src": "/corpus/cropNoDims.mp4",
+              "inPoint": 0,
+              "outPoint": 4,
+              "usedNormalizedCache": false
+            },
+            "seek": 0,
+            "geometry": {
+              "scale": 1,
+              "offsetX": 0,
+              "offsetY": 0,
+              "opacity": 1,
+              "fit": "contain",
+              "sourceCrop": {
+                "x": 0.2,
+                "y": 0.1,
+                "w": 0.6,
+                "h": 0.7
+              },
+              "rotation": 0
+            }
+          }
+        ]
+      },
+      {
+        "t": 2,
+        "items": [
+          {
+            "itemId": "croppedNoDims",
+            "trackIdx": 0,
+            "kind": "video",
+            "window": {
+              "src": "/corpus/cropNoDims.mp4",
+              "inPoint": 0,
+              "outPoint": 4,
+              "usedNormalizedCache": false
+            },
+            "seek": 2,
+            "geometry": {
+              "scale": 1,
+              "offsetX": 0,
+              "offsetY": 0,
+              "opacity": 1,
+              "fit": "contain",
+              "sourceCrop": {
+                "x": 0.2,
+                "y": 0.1,
+                "w": 0.6,
+                "h": 0.7
+              },
+              "rotation": 0
+            }
+          }
+        ]
+      },
+      {
+        "t": 4,
+        "items": []
+      },
+      {
+        "t": 5,
+        "items": []
+      }
+    ]
+  },
+  "resolveSegment": {
+    "fps": 30,
+    "segments": [
+      {
+        "segStart": 0,
+        "segEnd": 4,
+        "scene": {
+          "t": 0,
+          "items": [
+            {
+              "itemId": "croppedNoDims",
+              "trackIdx": 0,
+              "kind": "video",
+              "window": {
+                "src": "/corpus/cropNoDims.mp4",
+                "inPoint": 0,
+                "outPoint": 4,
+                "usedNormalizedCache": false
+              },
+              "seek": 0,
+              "geometry": {
+                "scale": 1,
+                "offsetX": 0,
+                "offsetY": 0,
+                "opacity": 1,
+                "fit": "contain",
+                "sourceCrop": {
+                  "x": 0.2,
+                  "y": 0.1,
+                  "w": 0.6,
+                  "h": 0.7
+                },
+                "rotation": 0
+              }
+            }
+          ]
+        }
+      }
+    ]
+  },
+  "sourceWindow": {
+    "croppedNoDims": {
+      "preview": {
+        "src": "/corpus/cropNoDims.mp4",
+        "inPoint": 0,
+        "outPoint": 4,
+        "usedNormalizedCache": false
+      },
+      "render": {
+        "src": "/corpus/cropNoDims.mp4",
+        "inPoint": 0,
+        "outPoint": 4,
+        "usedNormalizedCache": false
+      }
+    }
+  },
+  "seekTime": {
+    "croppedNoDims": {
+      "preview": {
+        "0": 0,
+        "2": 2,
+        "4": 4
+      },
+      "render": {
+        "0": 0,
+        "2": 2,
+        "4": 4
+      }
+    }
+  },
+  "synthesizedOutPoint": {
+    "croppedNoDims": {
+      "preview": 4,
+      "render": 4
+    }
+  },
+  "audioWindow": {}
+}

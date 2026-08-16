@@ -2,21 +2,38 @@
 #
 # MANUAL / TAG-GATED — this workflow is NOT part of normal CI.
 # It runs only when a tag matching `editor-v*` is pushed (e.g. `editor-v0.1.0`).
-# It publishes @devbycrux/editor to the public npm registry.
+# It publishes @bycrux/editor to the public npm registry — and, first,
+# @bycrux/timeline-core if the version currently in its package.json isn't on
+# npm yet (SP2: @bycrux/editor's first internal dependency).
 #
 # To publish a new version:
-#   1. Bump the version in montaj_assets/editor/package.json.
+#   1. Bump the version in montaj_assets/editor/package.json (and, if it also
+#      changed, montaj_assets/timeline-core/package.json).
 #   2. Commit and push the bump.
 #   3. Tag the commit: git tag editor-v<version> && git push origin editor-v<version>
 #   4. This workflow triggers automatically on that tag push.
 #
 # No manual dispatch is wired up intentionally — publishing requires a clean tag.
 #
+# @bycrux/timeline-core has no tag convention of its own yet — this workflow's
+# idempotent "publish if not already on npm" step is currently the only way
+# it ships. A timeline-core-only change (no editor bump) will sit unpublished
+# until the next editor-v* tag. Fine today (editor is its only dependent);
+# worth a dedicated timeline-core-v* tag + release script if that changes.
+#
 # NODE_AUTH_TOKEN must be set to an npm automation token (generated at
 # https://www.npmjs.com/settings/<user>/tokens) stored as a repo secret named
 # NPM_TOKEN. Do NOT use GITHUB_TOKEN here — that only works for GitHub Packages.
+#
+# Published manifests can't carry a `file:` dependency — only this repo's
+# sibling checkout resolves that. @bycrux/editor's committed package.json
+# declares "@bycrux/timeline-core": "file:../timeline-core" (required for
+# local dev, CI, and the ui/vite.config.ts alias to all resolve the same
+# source); the "editor — publish" step below rewrites that to a semver range
+# with `npm pkg set` immediately before `npm publish`, in the runner's
+# disposable workspace only — nothing is committed or pushed back.
 
-name: Publish @devbycrux/editor
+name: Publish @bycrux/editor
 
 on:
   push:
@@ -39,27 +56,66 @@ jobs:
         with:
           node-version: '20'
           registry-url: 'https://registry.npmjs.org'
-          scope: '@devbycrux'
+          # Was '@devbycrux' — a leftover from an old package name. The
+          # published package is @bycrux/editor (montaj_assets/editor/package.json)
+          # and scripts/release-editor.sh's PKG_NAME agrees; '@devbycrux' matched
+          # neither. setup-node's registry-url already sets a scope-independent
+          # default registry line, so publishing likely worked anyway, but the
+          # "already published" check below queries the package by name
+          # directly and a wrong scope there is a real bug, not cosmetic — see
+          # that step.
+          scope: '@bycrux'
 
-      - name: Install dependencies
+      - name: timeline-core — install
+        working-directory: montaj_assets/timeline-core
+        run: npm ci
+
+      - name: timeline-core — test + typecheck
+        working-directory: montaj_assets/timeline-core
+        run: |
+          npm test
+          npm run typecheck
+
+      - name: timeline-core — publish (idempotent — skips if the version is already on npm)
+        working-directory: montaj_assets/timeline-core
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          if npm view "@bycrux/timeline-core@$VERSION" version >/dev/null 2>&1; then
+            echo "@bycrux/timeline-core@$VERSION is already published — skipping."
+          else
+            npm publish
+          fi
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: editor — install dependencies
         working-directory: montaj_assets/editor
         run: npm ci
 
-      - name: Run tests
+      - name: editor — run tests
         working-directory: montaj_assets/editor
         run: npm test
 
-      - name: Run lint
+      - name: editor — run lint
         working-directory: montaj_assets/editor
         run: npm run lint
 
-      - name: Publish (idempotent — skips if the version is already on npm)
+      - name: editor — publish (idempotent — skips if the version is already on npm)
         working-directory: montaj_assets/editor
         run: |
           VERSION=$(node -p "require('./package.json').version")
-          if npm view "@devbycrux/editor@$VERSION" version >/dev/null 2>&1; then
-            echo "@devbycrux/editor@$VERSION is already published — skipping (likely released via scripts/release-editor.sh)."
+          # Fixed alongside the scope above: this used to check
+          # "@devbycrux/editor@$VERSION" — a package name that was never
+          # published, so this check could never find a hit and would attempt
+          # `npm publish` on every run, including re-runs after a version
+          # already released via scripts/release-editor.sh (which npm then
+          # rejects, since published versions are immutable).
+          if npm view "@bycrux/editor@$VERSION" version >/dev/null 2>&1; then
+            echo "@bycrux/editor@$VERSION is already published — skipping (likely released via scripts/release-editor.sh)."
           else
+            TC_VERSION=$(node -p "require('../timeline-core/package.json').version")
+            echo "Rewriting @bycrux/timeline-core dependency from file:../timeline-core to ^$TC_VERSION for publish."
+            npm pkg set "dependencies.@bycrux/timeline-core=^$TC_VERSION"
             npm publish
           fi
         env:

@@ -126,6 +126,111 @@ test('collectAllItems: nobg_src path is NOT rebased even if normalizedSrc presen
   assert.equal(videoItems[0].inPoint, 2.0)
 })
 
+// ---------------------------------------------------------------------------
+// collectAllItems — the output whitelist (SP2 T8)
+//
+// `collectAllItems` builds each video item from an explicit field whitelist
+// rather than spreading the source item. That is deliberate (the renderer's
+// items are mutated in place downstream, and a spread would drag editor-only
+// fields into the encoder), but it means every field the encoder reads has to
+// be listed by hand — and a field that is NOT listed is dropped silently, with
+// no type error and no failing test. Both cases below are real shipped bugs of
+// exactly that shape. They are pinned here so the T8 swap onto
+// `@bycrux/timeline-core`'s `sourceWindow` cannot reintroduce them.
+// ---------------------------------------------------------------------------
+
+test('collectAllItems: sourceCrop / sourceWidth / sourceHeight survive the whitelist verbatim (Bug B regression)', () => {
+  // SHIPPED BUG (CHANGELOG "Render: sourceCrop is applied again"): these three
+  // fields were absent from the whitelist, so `buildVideoItemFilterParts`'s crop
+  // gate — which requires ALL THREE — never fired and the clips-workflow
+  // vertical reframe was silently a no-op: the full 16:9 source got letterboxed
+  // into the portrait canvas instead of being cropped to its 9:16 slice.
+  // `normalize_window` keeps the cache at full source dimensions, so the crop
+  // MUST survive to encode time whichever src is chosen.
+  const crop = { x: 0.1, y: 0.05, w: 0.8, h: 0.9 }
+  const project = {
+    tracks: [
+      [{
+        id: 'cropped', type: 'video', src: '/orig.mp4', start: 0, end: 5, inPoint: 0, outPoint: 5,
+        sourceCrop: crop, sourceWidth: 1920, sourceHeight: 1080,
+      }],
+    ],
+  }
+  const { videoItems } = collectAllItems(project)
+  assert.deepEqual(videoItems[0].sourceCrop, crop)
+  assert.equal(videoItems[0].sourceCrop, crop, 'forwarded by reference, not cloned')
+  assert.equal(videoItems[0].sourceWidth, 1920)
+  assert.equal(videoItems[0].sourceHeight, 1080)
+})
+
+test('collectAllItems: sourceCrop survives even when the normalized cache is substituted (Bug B + rebase together)', () => {
+  // The two fixes interact: substituting `normalizedSrc` rebases in/outPoint,
+  // and the crop still has to ride along. `sourceWidth`/`sourceHeight` describe
+  // the cache too (normalize_window does not resize), so the crop math holds.
+  const crop = { x: 0.2, y: 0, w: 0.5625, h: 1 }
+  const project = {
+    tracks: [
+      [{
+        id: 'v', type: 'video', src: '/orig.mp4', normalizedSrc: '/orig_norm.mp4', normalizedInPoint: 5,
+        start: 0, end: 5, inPoint: 6, outPoint: 11,
+        sourceCrop: crop, sourceWidth: 3840, sourceHeight: 2160,
+      }],
+    ],
+  }
+  const { videoItems } = collectAllItems(project)
+  assert.equal(videoItems[0].src, '/orig_norm.mp4')
+  assert.equal(videoItems[0].inPoint, 1)
+  assert.equal(videoItems[0].outPoint, 6)
+  assert.deepEqual(videoItems[0].sourceCrop, crop)
+  assert.equal(videoItems[0].sourceWidth, 3840)
+  assert.equal(videoItems[0].sourceHeight, 2160)
+})
+
+test('collectAllItems: sourceCrop with NO sourceWidth/sourceHeight is still forwarded — the drop happens downstream [registry: sourcecrop-missing-dims-silent-drop]', () => {
+  // KNOWN-DIVERGENCES.md `sourcecrop-missing-dims-silent-drop`. This documents
+  // TODAY'S behavior as expected-for-now, not as desirable. collectAllItems has
+  // no opinion on the combination — it forwards `sourceCrop` and forwards the
+  // two `undefined` dimensions. One layer down, `buildVideoItemFilterParts`'s
+  // gate (encode-segment.js:243) needs all three, so it emits no crop= step at
+  // all and the reframe vanishes with no warning. Owner of the actual fix: SP4.
+  // Mirrored by fixtures/source-crop-missing-dims.json, whose committed
+  // encode-args golden contains no crop filter — see encode-args-golden.test.mjs.
+  const crop = { x: 0.2, y: 0.1, w: 0.6, h: 0.7 }
+  const project = {
+    tracks: [
+      [{ id: 'croppedNoDims', type: 'video', src: '/orig.mp4', start: 0, end: 4, inPoint: 0, outPoint: 4, sourceCrop: crop }],
+    ],
+  }
+  const { videoItems } = collectAllItems(project)
+  assert.deepEqual(videoItems[0].sourceCrop, crop)
+  assert.equal(videoItems[0].sourceWidth, undefined)
+  assert.equal(videoItems[0].sourceHeight, undefined)
+  assert.ok('sourceWidth' in videoItems[0], 'the key is present-but-undefined, not absent — the whitelist always sets it')
+})
+
+test('collectAllItems: a normalizedSrc item with neither normalizedInPoint nor inPoint rebases to 0, not NaN (the ONE sanctioned SP2 behavior change)', () => {
+  // SANCTIONED BEHAVIOR CHANGE (SP2 T2/T8 — the only one in the whole swap).
+  // Legacy render.js:613 read `item.normalizedInPoint ?? item.inPoint` with NO
+  // `?? 0` tail, so an item carrying neither field made the rebase arithmetic
+  // `undefined - undefined` = NaN, and that NaN travelled all the way to
+  // ffmpeg's `-ss` (encode-segment.js:216's `item.inPoint ?? 0` does NOT catch
+  // it — NaN is not nullish). The editor's copy of this math always had the
+  // tail; adopting `sourceWindow(item, 'render')` is how render finally gets it.
+  // A missing origin means "origin 0", never NaN.
+  // Corpus twin: timeline-core fixtures/nan-case.json.
+  const project = {
+    tracks: [
+      [{ id: 'nanItem', type: 'video', src: '/nan_orig.mp4', normalizedSrc: '/nan_norm.mp4', start: 0, end: 4, outPoint: 4.5 }],
+    ],
+  }
+  const { videoItems } = collectAllItems(project)
+  assert.equal(videoItems[0].src, '/nan_norm.mp4')
+  assert.ok(!Number.isNaN(videoItems[0].inPoint), 'inPoint must not be NaN')
+  assert.ok(!Number.isNaN(videoItems[0].outPoint), 'outPoint must not be NaN')
+  assert.equal(videoItems[0].inPoint, 0)
+  assert.equal(videoItems[0].outPoint, 4.5)
+})
+
 test('shouldSkipNormalize: lazy + normalizedSrc → skip (cache already conforms)', () => {
   assert.equal(shouldSkipNormalize({ normalize: 'lazy' }, { normalizedSrc: '/orig_normalized_hdr.mp4' }), true)
 })

@@ -1,0 +1,383 @@
+{
+  "planBoundaries": {
+    "24": [
+      0,
+      5,
+      10
+    ],
+    "30": [
+      0,
+      5,
+      10
+    ],
+    "60": [
+      0,
+      5,
+      10
+    ]
+  },
+  "durations": {
+    "visualDuration": 10,
+    "projectEnd": 10
+  },
+  "resolveAt": {
+    "timestamps": [
+      0,
+      2.5,
+      5,
+      7.5,
+      10,
+      11
+    ],
+    "preview": [
+      {
+        "t": 0,
+        "items": [
+          {
+            "itemId": "trimLegacy",
+            "trackIdx": 0,
+            "kind": "video",
+            "window": {
+              "src": "/corpus/trimLegacy_norm.mp4",
+              "inPoint": 0,
+              "outPoint": 5,
+              "usedNormalizedCache": true
+            },
+            "seek": 0,
+            "geometry": {
+              "scale": 1,
+              "offsetX": 0,
+              "offsetY": 0,
+              "opacity": 1,
+              "fit": "contain",
+              "rotation": 0
+            }
+          }
+        ]
+      },
+      {
+        "t": 2.5,
+        "items": [
+          {
+            "itemId": "trimLegacy",
+            "trackIdx": 0,
+            "kind": "video",
+            "window": {
+              "src": "/corpus/trimLegacy_norm.mp4",
+              "inPoint": 0,
+              "outPoint": 5,
+              "usedNormalizedCache": true
+            },
+            "seek": 2.5,
+            "geometry": {
+              "scale": 1,
+              "offsetX": 0,
+              "offsetY": 0,
+              "opacity": 1,
+              "fit": "contain",
+              "rotation": 0
+            }
+          }
+        ]
+      },
+      {
+        "t": 5,
+        "items": [
+          {
+            "itemId": "trimNonZero",
+            "trackIdx": 0,
+            "kind": "video",
+            "window": {
+              "src": "/corpus/trimNonZero_norm.mp4",
+              "inPoint": 1,
+              "outPoint": 6,
+              "usedNormalizedCache": true
+            },
+            "seek": 1,
+            "geometry": {
+              "scale": 1,
+              "offsetX": 0,
+              "offsetY": 0,
+              "opacity": 1,
+              "fit": "contain",
+              "rotation": 0
+            }
+          }
+        ]
+      },
+      {
+        "t": 7.5,
+        "items": [
+          {
+            "itemId": "trimNonZero",
+            "trackIdx": 0,
+            "kind": "video",
+            "window": {
+              "src": "/corpus/trimNonZero_norm.mp4",
+              "inPoint": 1,
+              "outPoint": 6,
+              "usedNormalizedCache": true
+            },
+            "seek": 3.5,
+            "geometry": {
+              "scale": 1,
+              "offsetX": 0,
+              "offsetY": 0,
+              "opacity": 1,
+              "fit": "contain",
+              "rotation": 0
+            }
+          }
+        ]
+      },
+      {
+        "t": 10,
+        "items": []
+      },
+      {
+        "t": 11,
+        "items": []
+      }
+    ],
+    "render": [
+      {
+        "t": 0,
+        "items": [
+          {
+            "itemId": "trimLegacy",
+            "trackIdx": 0,
+            "kind": "video",
+            "window": {
+              "src": "/corpus/trimLegacy_norm.mp4",
+              "inPoint": 0,
+              "outPoint": 5,
+              "usedNormalizedCache": true
+            },
+            "seek": 0,
+            "geometry": {
+              "scale": 1,
+              "offsetX": 0,
+              "offsetY": 0,
+              "opacity": 1,
+              "fit": "contain",
+              "rotation": 0
+            }
+          }
+        ]
+      },
+      {
+        "t": 2.5,
+        "items": [
+          {
+            "itemId": "trimLegacy",
+            "trackIdx": 0,
+            "kind": "video",
+            "window": {
+              "src": "/corpus/trimLegacy_norm.mp4",
+              "inPoint": 0,
+              "outPoint": 5,
+              "usedNormalizedCache": true
+            },
+            "seek": 2.5,
+            "geometry": {
+              "scale": 1,
+              "offsetX": 0,
+              "offsetY": 0,
+              "opacity": 1,
+              "fit": "contain",
+              "rotation": 0
+            }
+          }
+        ]
+      },
+      {
+        "t": 5,
+        "items": [
+          {
+            "itemId": "trimNonZero",
+            "trackIdx": 0,
+            "kind": "video",
+            "window": {
+              "src": "/corpus/trimNonZero_norm.mp4",
+              "inPoint": 1,
+              "outPoint": 6,
+              "usedNormalizedCache": true
+            },
+            "seek": 1,
+            "geometry": {
+              "scale": 1,
+              "offsetX": 0,
+              "offsetY": 0,
+              "opacity": 1,
+              "fit": "contain",
+              "rotation": 0
+            }
+          }
+        ]
+      },
+      {
+        "t": 7.5,
+        "items": [
+          {
+            "itemId": "trimNonZero",
+            "trackIdx": 0,
+            "kind": "video",
+            "window": {
+              "src": "/corpus/trimNonZero_norm.mp4",
+              "inPoint": 1,
+              "outPoint": 6,
+              "usedNormalizedCache": true
+            },
+            "seek": 3.5,
+            "geometry": {
+              "scale": 1,
+              "offsetX": 0,
+              "offsetY": 0,
+              "opacity": 1,
+              "fit": "contain",
+              "rotation": 0
+            }
+          }
+        ]
+      },
+      {
+        "t": 10,
+        "items": []
+      },
+      {
+        "t": 11,
+        "items": []
+      }
+    ]
+  },
+  "resolveSegment": {
+    "fps": 30,
+    "segments": [
+      {
+        "segStart": 0,
+        "segEnd": 5,
+        "scene": {
+          "t": 0,
+          "items": [
+            {
+              "itemId": "trimLegacy",
+              "trackIdx": 0,
+              "kind": "video",
+              "window": {
+                "src": "/corpus/trimLegacy_norm.mp4",
+                "inPoint": 0,
+                "outPoint": 5,
+                "usedNormalizedCache": true
+              },
+              "seek": 0,
+              "geometry": {
+                "scale": 1,
+                "offsetX": 0,
+                "offsetY": 0,
+                "opacity": 1,
+                "fit": "contain",
+                "rotation": 0
+              }
+            }
+          ]
+        }
+      },
+      {
+        "segStart": 5,
+        "segEnd": 10,
+        "scene": {
+          "t": 5,
+          "items": [
+            {
+              "itemId": "trimNonZero",
+              "trackIdx": 0,
+              "kind": "video",
+              "window": {
+                "src": "/corpus/trimNonZero_norm.mp4",
+                "inPoint": 1,
+                "outPoint": 6,
+                "usedNormalizedCache": true
+              },
+              "seek": 1,
+              "geometry": {
+                "scale": 1,
+                "offsetX": 0,
+                "offsetY": 0,
+                "opacity": 1,
+                "fit": "contain",
+                "rotation": 0
+              }
+            }
+          ]
+        }
+      }
+    ]
+  },
+  "sourceWindow": {
+    "trimLegacy": {
+      "preview": {
+        "src": "/corpus/trimLegacy_norm.mp4",
+        "inPoint": 0,
+        "outPoint": 5,
+        "usedNormalizedCache": true
+      },
+      "render": {
+        "src": "/corpus/trimLegacy_norm.mp4",
+        "inPoint": 0,
+        "outPoint": 5,
+        "usedNormalizedCache": true
+      }
+    },
+    "trimNonZero": {
+      "preview": {
+        "src": "/corpus/trimNonZero_norm.mp4",
+        "inPoint": 1,
+        "outPoint": 6,
+        "usedNormalizedCache": true
+      },
+      "render": {
+        "src": "/corpus/trimNonZero_norm.mp4",
+        "inPoint": 1,
+        "outPoint": 6,
+        "usedNormalizedCache": true
+      }
+    }
+  },
+  "seekTime": {
+    "trimLegacy": {
+      "preview": {
+        "0": 0,
+        "5": 5,
+        "2.5": 2.5
+      },
+      "render": {
+        "0": 0,
+        "5": 5,
+        "2.5": 2.5
+      }
+    },
+    "trimNonZero": {
+      "preview": {
+        "5": 1,
+        "10": 6,
+        "7.5": 3.5
+      },
+      "render": {
+        "5": 1,
+        "10": 6,
+        "7.5": 3.5
+      }
+    }
+  },
+  "synthesizedOutPoint": {
+    "trimLegacy": {
+      "preview": 5,
+      "render": 5
+    },
+    "trimNonZero": {
+      "preview": 6,
+      "render": 6
+    }
+  },
+  "audioWindow": {}
+}

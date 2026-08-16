@@ -34,6 +34,27 @@
 #   - Publishing is independent of Montaj's own version (do NOT use version-bump.sh).
 #   - Requires a clean working tree and either NPM_TOKEN (preferred) or an npm
 #     login with publish rights to the `bycrux` org.
+#   - package.json declares "@bycrux/timeline-core": "file:../timeline-core" —
+#     required for local dev/CI to resolve the sibling package, but a published
+#     manifest can't carry a file: dependency (only this checkout has that
+#     sibling directory). This script rewrites it to a semver range with
+#     `npm pkg set` right before `npm publish`, then restores file:../timeline-core
+#     afterward via `git checkout` — the commit/tag made earlier keeps the
+#     file: form, which is what dev checkouts and CI both need. See "Bump,
+#     commit, tag, publish, push" below.
+#   - publish-editor.yml (triggered by the `editor-v*` tag this script pushes
+#     at the end) is currently the ONLY thing that publishes
+#     @bycrux/timeline-core — it runs an idempotent "publish if not already on
+#     npm" step for timeline-core before publishing @bycrux/editor. But that
+#     CI publish happens AFTER this script's own `npm publish` of
+#     @bycrux/editor below, so the Gate below checks that
+#     @bycrux/timeline-core is already on npm before this script uploads an
+#     editor tarball that depends on it — otherwise a CI failure (or just the
+#     race before CI even runs) leaves that @bycrux/editor version
+#     permanently uninstallable (npm versions are immutable). A dedicated
+#     scripts/release-timeline-core.sh that publishes timeline-core on its own
+#     schedule, ahead of any editor release, is the eventual fix — not built
+#     here.
 
 set -euo pipefail
 
@@ -152,6 +173,10 @@ if [ "$RUN_BUILD" -eq 1 ]; then
   note "Gate: Montaj ui build"
   ( cd "$UI_DIR" && npm run build )
 fi
+note "Gate: @bycrux/timeline-core is published"
+TC_VERSION="$(node -p "require('$ROOT/montaj_assets/timeline-core/package.json').version")"
+npm view "@bycrux/timeline-core@^${TC_VERSION}" version >/dev/null 2>&1 \
+  || die "@bycrux/timeline-core@^${TC_VERSION} is not on npm. Publish it first — otherwise the ${PKG_NAME} tarball this script uploads is uninstallable, permanently."
 
 # ── Bump, commit, tag, publish, push ─────────────────────────────────────────
 note "Bumping package.json → $NEXT_VERSION"
@@ -161,16 +186,35 @@ git -C "$ROOT" add montaj_assets/editor/package.json montaj_assets/editor/packag
 git -C "$ROOT" commit -m "release(editor): ${PKG_NAME} v${NEXT_VERSION}"
 git -C "$ROOT" tag "${TAG_PREFIX}${NEXT_VERSION}"
 
+# The published manifest can't carry a file: dependency — only this checkout
+# has the sibling timeline-core directory. Rewrite it to a semver range for
+# the publish only; the commit and tag just created keep file:../timeline-core,
+# which dev checkouts and CI both need. Restored by the trap below no matter
+# how the publish goes, so a failed publish never leaves the working tree
+# dirty for the next run's clean-tree preflight.
+#
+# Trap is armed BEFORE the rewrite below, not after — the guarantee that
+# package.json gets restored must not depend on nothing failing in between.
+# `git checkout` is a no-op if the file is already clean, so arming this early
+# is harmless on every path where the rewrite is never reached.
+TMP_NPMRC=""
+cleanup() {
+  [ -n "$TMP_NPMRC" ] && rm -f "$TMP_NPMRC"
+  git -C "$ROOT" checkout -- "$PKG_DIR/package.json"
+}
+trap cleanup EXIT
+
+note "Rewriting @bycrux/timeline-core dependency to ^${TC_VERSION} for publish (working tree only, not committed)"
+( cd "$PKG_DIR" && npm pkg set "dependencies.@bycrux/timeline-core=^${TC_VERSION}" )
+
 # Auth precedence: NPM_TOKEN (automation token, bypasses 2FA) → --otp → npm login.
 # access:public + default registry come from the package's publishConfig.
 note "Publishing to npm…"
 if [ -n "${NPM_TOKEN:-}" ]; then
   note "Authenticating with NPM_TOKEN (automation token — no OTP needed)."
   TMP_NPMRC="$(mktemp)"
-  trap 'rm -f "$TMP_NPMRC"' EXIT
   printf '//registry.npmjs.org/:_authToken=%s\n' "$NPM_TOKEN" > "$TMP_NPMRC"
   ( cd "$PKG_DIR" && npm publish --userconfig "$TMP_NPMRC" )
-  rm -f "$TMP_NPMRC"; trap - EXIT
 else
   ( cd "$PKG_DIR" && npm publish ${OTP:+--otp="$OTP"} )
 fi

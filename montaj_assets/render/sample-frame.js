@@ -36,6 +36,7 @@ import {
   buildVideoItemFilterParts,
   buildOverlayFilterParts,
 } from './encode-segment.js'
+import { resolveAt, RESOLVER_VERSION } from '@bycrux/timeline-core'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const isMain = resolve(process.argv[1] ?? '') === fileURLToPath(import.meta.url)
@@ -526,41 +527,52 @@ export async function sampleFrame({
 
   log(`sampling frame at t=${atSeconds}s (${actualWidth}×${actualHeight}, colorSpace=${projectColorSpace})`)
 
-  // Collect active items at atSeconds
-  // Convention: start <= atSeconds < end. Handles clip boundary tiebreak: the LATER clip wins.
-  const videoItems   = []
-  const imageItems   = []
-  const overlayItems = []
+  // Collect active items via the shared resolver — the single source of truth
+  // for "what's on screen at time T", also used by render.js/segment-plan.js and
+  // the editor preview. The 'render' variant matches production exactly:
+  // normalizedSrc rebase, nobg_src precedence, and the sourceCrop/fit forwarding
+  // below all key off `resolveAt`'s per-item `window`/`geometry`. `containsTime`
+  // (start <= atSeconds < end) is the same half-open predicate this file always
+  // used — the LATER clip wins an exact boundary tie.
+  const scene = resolveAt(resolvedProject, atSeconds, { variant: 'render' })
 
-  for (let trackIdx = 0; trackIdx < (resolvedProject.tracks ?? []).length; trackIdx++) {
-    const track = resolvedProject.tracks[trackIdx]
-    for (const item of track ?? []) {
-      if (item.start <= atSeconds && atSeconds < item.end) {
-        if (item.type === 'video') {
-          videoItems.push({ ...item, trackIdx })
-        } else if (item.type === 'image') {
-          imageItems.push({ ...item, trackIdx })
-        } else if (item.type === 'overlay') {
-          overlayItems.push({ ...item, trackIdx })
-        }
-        // audio items skipped — sample is silent
-      }
-    }
-  }
+  // Video and image items composite together, back-to-front by trackIdx (ties
+  // keep document order) — this replaces the old video-group-then-image-group
+  // order, which drew every video before every image regardless of their
+  // relative trackIdx. Overlays are collected separately and always composited
+  // LAST, on top regardless of trackIdx — that matches encode-segment.js's own
+  // split (Step 2 items, then Step 3 overlays, unconditionally), a
+  // consumer-side compositing rule the resolver itself does not encode (see
+  // @bycrux/timeline-core/src/geometry.js's z-order note).
+  const visualItems  = scene.items.filter(ri => ri.kind === 'video' || ri.kind === 'image')
+  const overlayItems = scene.items.filter(ri => ri.kind === 'overlay')
+  const videoCount = visualItems.filter(ri => ri.kind === 'video').length
+  const imageCount = visualItems.length - videoCount
 
-  log(`active items: ${videoItems.length} video, ${imageItems.length} image, ${overlayItems.length} overlay`)
+  // An opaque overlay replaces the picture underneath it. Production
+  // (segment-plan.js/encode-segment.js) keeps the covered items around anyway so
+  // their AUDIO still reaches the mix — irrelevant for a still frame, so the
+  // analogue here is simpler: don't composite ANY video/image item while an
+  // opaque overlay is active. See KNOWN-DIVERGENCES.md "opaque-in-preview".
+  const hasOpaque = overlayItems.some(ri => ri.item.opaque)
+
+  log(`active items: ${videoCount} video, ${imageCount} image` +
+      `${hasOpaque ? ' (hidden by opaque overlay)' : ''}, ${overlayItems.length} overlay`)
 
   // --- Step 1: Render overlay PNGs in parallel (cap=4) ---
   // Each overlay PNG has transparent background, same design resolution as canvas
-  const overlayPngs = await pMap(overlayItems, async (ov) => {
-    const overlayFrame = Math.round((atSeconds - ov.start) * fps)
+  const overlayPngs = await pMap(overlayItems, async (ri) => {
+    const ov = ri.item
+    // ri.seek is the resolver's elapsed-since-start for a non-video item —
+    // max(0, atSeconds - ov.start) — identical to the frame math this file
+    // always used, just computed once by the resolver instead of by hand.
+    const overlayFrame = Math.round(ri.seek * fps)
     // Pass the item's real on-screen length so the composited frame is WYSIWYG —
     // an overlay sampled near its own start/end shows its true fade-in/out state.
     const overlayDurationFrames = Math.max(1, Math.round((ov.end - ov.start) * fps))
     const tmpOverlayOut = join(tmpdir(), `montaj-sample-ov-${randomHex()}.png`)
-    const ovSrc = ov.src
     const result = await sampleOverlay({
-      componentPath: ovSrc,
+      componentPath: ov.src,
       props: ov.props ?? {},
       frame: overlayFrame,
       fps,
@@ -575,10 +587,10 @@ export async function sampleFrame({
       // Shape expected by buildOverlayFilterParts: webmPath, startSeconds, offsetX, offsetY, scale
       webmPath:     result.pngPath,
       startSeconds: ov.start,
-      offsetX:      ov.offsetX ?? 0,
-      offsetY:      ov.offsetY ?? 0,
-      scale:        ov.scale   ?? 1,
-      opaque:       ov.opaque  ?? false,
+      offsetX:      ri.geometry.offsetX,
+      offsetY:      ri.geometry.offsetY,
+      scale:        ri.geometry.scale,
+      opaque:       ov.opaque ?? false,
     }
   }, OVERLAY_CONCURRENCY)
 
@@ -594,42 +606,82 @@ export async function sampleFrame({
   const workDir = join(tmpdir(), `montaj-sample-frame-${randomHex()}`)
   mkdirSync(workDir, { recursive: true })
 
-  const videoFramePaths = []
-  for (let i = 0; i < videoItems.length; i++) {
-    const item = videoItems[i]
-    // Use normalized/audioclean cached file if present and fresh (read-only)
-    const src = resolveVideoSource(item)
-    const seekTime = atSeconds - item.start + (item.inPoint ?? 0)
-    const framePng = join(workDir, `video-${i}.png`)
+  // ResolvedItem -> extracted-frame PNG path, so Step 3 can look up each video
+  // item's frame while walking visualItems in trackIdx order. Skipped entirely
+  // under an opaque overlay — nothing composites these frames anyway (see
+  // hasOpaque above), so there's no point paying for the ffmpeg extraction.
+  const videoFramePaths = new Map()
 
-    log(`extracting video frame at t=${seekTime.toFixed(3)}s from ${basename(src)}`)
+  if (!hasOpaque) {
+    let vi = 0
+    for (const ri of visualItems) {
+      if (ri.kind !== 'video') continue
+      // window = sourceWindow(item, 'render') — src is already the resolver's
+      // choice (normalizedSrc/nobg_src/original) with in/outPoint rebased for a
+      // normalizedSrc cache. Use normalized/audioclean cached file if present and
+      // fresh on top of that (read-only — never triggers normalization).
+      const window = ri.window
+      const src = resolveVideoSource(window.src)
+      // ri.seek === window.inPoint + max(0, atSeconds - item.start) — the
+      // resolver's seekTime(item, atSeconds, 'render'), replacing this file's old
+      // hand-rolled `atSeconds - item.start + (item.inPoint ?? 0)`, which never
+      // rebased for a normalizedSrc cache.
+      const seekTime = ri.seek
+      const framePng = join(workDir, `video-${vi}.png`)
 
-    // Accurate seek: -ss AFTER -i (slow but frame-accurate, ~5–10s on long HEVC clips)
-    const ffmpegExtractArgs = [
-      '-y', '-v', 'error',
-      '-i', src,
-      '-ss', String(Math.max(0, seekTime)),
-    ]
-    if (hdrProject) {
-      // Tonemap HLG/PQ → sRGB BT.709 inline so the PNG lands as a normal SDR image.
-      // Must apply the Hable tonemap operator in linear light — without it, HDR
-      // highlights above the SDR white point simply clip and the whole frame
-      // blows out to near-white. Mirrors the canonical zscale path in
-      // lib/normalize.py _build_tonemap_vf_to_sdr / encode-segment.js
-      // buildColorConversionFilter.
-      ffmpegExtractArgs.push(
-        '-vf', 'zscale=t=linear:npl=100,format=gbrpf32le,zscale=p=bt709,tonemap=hable:desat=0,zscale=t=bt709:m=bt709:r=tv,format=yuv420p',
-      )
+      log(`extracting video frame at t=${seekTime.toFixed(3)}s from ${src ? basename(src) : '(no src)'}`)
+
+      // Accurate seek: -ss AFTER -i (slow but frame-accurate, ~5–10s on long HEVC clips)
+      const ffmpegExtractArgs = [
+        '-y', '-v', 'error',
+        '-i', src,
+        '-ss', String(Math.max(0, seekTime)),
+      ]
+
+      // Filter chain: HDR tonemap (if applicable) THEN the optional source crop
+      // (clips workflow vertical reframe) — same order and math as
+      // encode-segment.js's buildVideoItemFilterParts (conversion step before
+      // crop step). No-op without both sourceWidth/sourceHeight, matching that
+      // function's own gate — see KNOWN-DIVERGENCES.md
+      // "sourcecrop-missing-dims-silent-drop".
+      const vfParts = []
+      if (hdrProject) {
+        // Tonemap HLG/PQ → sRGB BT.709 inline so the PNG lands as a normal SDR image.
+        // Must apply the Hable tonemap operator in linear light — without it, HDR
+        // highlights above the SDR white point simply clip and the whole frame
+        // blows out to near-white. Mirrors the canonical zscale path in
+        // lib/normalize.py _build_tonemap_vf_to_sdr / encode-segment.js
+        // buildColorConversionFilter. Ends in rgb24, NOT yuv420p — this frame is
+        // encoded straight to PNG (`-frames:v 1 ... framePng` below), and
+        // ffmpeg's png encoder only accepts rgb24/rgba/gray/pal8-family pixel
+        // formats (confirmed via `ffmpeg -h encoder=png`); yuv420p made the
+        // encoder fail outright ("Could not open encoder before EOF"). This was
+        // a pre-existing bug in this exact filter string, never caught because
+        // FIXTURE_PROJECT_EXISTS always skipped this path before T9 — see
+        // test (j)'s migration.
+        vfParts.push('zscale=t=linear:npl=100,format=gbrpf32le,zscale=p=bt709,tonemap=hable:desat=0,zscale=t=bt709:m=bt709:r=tv,format=rgb24')
+      }
+      const sc = ri.geometry.sourceCrop
+      if (sc && ri.geometry.sourceWidth && ri.geometry.sourceHeight) {
+        const cw = Math.round(ri.geometry.sourceWidth  * sc.w / 2) * 2  // even: x264 needs even dims
+        const ch = Math.round(ri.geometry.sourceHeight * sc.h / 2) * 2  // even: x264 needs even dims
+        const cx = Math.round(ri.geometry.sourceWidth  * sc.x)          // origin NOT even-rounded
+        const cy = Math.round(ri.geometry.sourceHeight * sc.y)          // origin NOT even-rounded
+        vfParts.push(`crop=${cw}:${ch}:${cx}:${cy}`)
+      }
+      if (vfParts.length) ffmpegExtractArgs.push('-vf', vfParts.join(','))
+
+      ffmpegExtractArgs.push('-frames:v', '1', '-update', '1', framePng)
+
+      const result = spawnSync(FFMPEG, ffmpegExtractArgs, { encoding: 'utf8', timeout: 60_000 })
+
+      if (result.status !== 0) {
+        throw new Error(`ffmpeg video frame extract failed: ${result.stderr?.slice(-300)}`)
+      }
+
+      videoFramePaths.set(ri, framePng)
+      vi++
     }
-    ffmpegExtractArgs.push('-frames:v', '1', '-update', '1', framePng)
-
-    const result = spawnSync(FFMPEG, ffmpegExtractArgs, { encoding: 'utf8', timeout: 60_000 })
-
-    if (result.status !== 0) {
-      throw new Error(`ffmpeg video frame extract failed: ${result.stderr?.slice(-300)}`)
-    }
-
-    videoFramePaths.push(framePng)
   }
 
   // --- Step 3: Build composite ffmpeg command ---
@@ -650,35 +702,50 @@ export async function sampleFrame({
   videoLabel = '[canvas]'
   inputIdx++
 
-  // Video items (using their extracted PNG frames as image inputs)
-  for (let i = 0; i < videoItems.length; i++) {
-    const item = videoItems[i]
-    const framePng = videoFramePaths[i]
-    // Treat extracted video frame as an image item — it's a PNG at this point
-    const pseudoImageItem = {
-      src:     framePng,
-      scale:   item.scale   ?? 1,
-      offsetX: item.offsetX ?? 0,
-      offsetY: item.offsetY ?? 0,
-      opacity: item.opacity ?? 1,
+  // Video + image items, back-to-front in trackIdx order (see the ordering note
+  // above collectScene/`scene`). Both composite through buildImageItemFilterParts
+  // — a video's extracted frame is a PNG by this point, same as an image item's
+  // own file. Skipped entirely under an opaque overlay (hasOpaque).
+  if (!hasOpaque) {
+    for (const ri of visualItems) {
+      let pseudoItem
+      if (ri.kind === 'video') {
+        const framePng = videoFramePaths.get(ri)
+        if (!framePng) continue // defensive — every video RI got a frame extracted above
+        // Treat the extracted video frame as an image item — it's a PNG at this point.
+        pseudoItem = {
+          src:     framePng,
+          scale:   ri.geometry.scale,
+          offsetX: ri.geometry.offsetX,
+          offsetY: ri.geometry.offsetY,
+          opacity: ri.geometry.opacity,
+          // TRAP: buildImageItemFilterParts defaults to 'cover' when fit is
+          // omitted, which CROPS the frame to fill its box. Production video is
+          // ALWAYS contain-fit — buildVideoItemFilterParts' own scale step uses
+          // force_original_aspect_ratio=decrease unconditionally, never reading
+          // item.fit at all (see @bycrux/timeline-core/src/geometry.js's fit
+          // note). Forwarding sourceCrop above without ALSO forcing 'contain'
+          // here would silently drag the wrong (image) fit rule onto a video
+          // frame and crop content the crop step didn't already remove.
+          fit: 'contain',
+        }
+      } else {
+        pseudoItem = {
+          src:     ri.item.src,
+          scale:   ri.geometry.scale,
+          offsetX: ri.geometry.offsetX,
+          offsetY: ri.geometry.offsetY,
+          opacity: ri.geometry.opacity,
+          fit:     ri.geometry.fit, // image's own tri-state, default 'cover'
+        }
+      }
+      const { inputArgs, filterParts: fp, newVideoLabel } =
+        buildImageItemFilterParts(pseudoItem, actualWidth, actualHeight, inputIdx, videoLabel, duration)
+      inputs.push(...inputArgs)
+      filterParts.push(...fp)
+      videoLabel = newVideoLabel
+      inputIdx++
     }
-    const { inputArgs, filterParts: fp, newVideoLabel } =
-      buildImageItemFilterParts(pseudoImageItem, actualWidth, actualHeight, inputIdx, videoLabel, duration)
-    inputs.push(...inputArgs)
-    filterParts.push(...fp)
-    videoLabel = newVideoLabel
-    inputIdx++
-  }
-
-  // Image items (use file directly)
-  for (let i = 0; i < imageItems.length; i++) {
-    const item = imageItems[i]
-    const { inputArgs, filterParts: fp, newVideoLabel } =
-      buildImageItemFilterParts(item, actualWidth, actualHeight, inputIdx, videoLabel, duration)
-    inputs.push(...inputArgs)
-    filterParts.push(...fp)
-    videoLabel = newVideoLabel
-    inputIdx++
   }
 
   // Overlay PNGs — call the shared buildOverlayFilterParts helper with PNG-tuned opts.
@@ -749,9 +816,15 @@ export async function sampleFrame({
 // Helpers
 // ---------------------------------------------------------------------------
 
-/** Resolve the best available source file for a video item (audioclean > original). */
-function resolveVideoSource(item) {
-  const src = item.src
+/**
+ * Resolve the best available cached file for `src` (audioclean > normalized >
+ * as-is). `src` is whatever @bycrux/timeline-core's `sourceWindow` already
+ * chose (original / normalizedSrc / nobg_src) — this layers a further,
+ * sample-frame-only, read-only cache-freshness check on top of that choice; it
+ * never triggers normalization itself.
+ */
+function resolveVideoSource(src) {
+  if (!src) return src
   // Check for _audioclean variant (read-only — don't trigger normalization)
   const audiocleanPath = src.replace(/(\.\w+)$/, '_audioclean.mp4')
   if (existsSync(audiocleanPath)) {
@@ -830,7 +903,10 @@ function buildFrameCacheKey(projectPath, project, atSeconds) {
     mtime = JSON.stringify(project)
   }
   const colorSpace = project?.settings?.colorSpace ?? 'sdr_bt709'
-  const raw = [mtime, String(atSeconds), colorSpace].join('|')
+  // Salted with the resolver's own version so a semantic change in
+  // @bycrux/timeline-core (e.g. this T9 alignment) invalidates any frame cached
+  // by the pre-alignment logic instead of silently serving it back.
+  const raw = [RESOLVER_VERSION, mtime, String(atSeconds), colorSpace].join('|')
   return createHash('sha256').update(raw).digest('hex')
 }
 

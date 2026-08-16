@@ -1,0 +1,1367 @@
+{
+  "planBoundaries": {
+    "24": [
+      0,
+      2,
+      4,
+      6,
+      8,
+      10,
+      12,
+      14,
+      16
+    ],
+    "30": [
+      0,
+      2,
+      4,
+      6,
+      8,
+      10,
+      12,
+      14,
+      16
+    ],
+    "60": [
+      0,
+      2,
+      4,
+      6,
+      8,
+      10,
+      12,
+      14,
+      16
+    ]
+  },
+  "durations": {
+    "visualDuration": 16,
+    "projectEnd": 16
+  },
+  "resolveAt": {
+    "timestamps": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11,
+      12,
+      13,
+      14,
+      15,
+      16,
+      17
+    ],
+    "preview": [
+      {
+        "t": 0,
+        "items": [
+          {
+            "itemId": "nobg-000",
+            "trackIdx": 0,
+            "kind": "video",
+            "window": {
+              "src": "/corpus/nobg-000_norm.mp4",
+              "inPoint": 2,
+              "outPoint": 8,
+              "usedNormalizedCache": true
+            },
+            "seek": 2,
+            "geometry": {
+              "scale": 1,
+              "offsetX": 0,
+              "offsetY": 0,
+              "opacity": 1,
+              "fit": "contain",
+              "rotation": 0
+            }
+          }
+        ]
+      },
+      {
+        "t": 1,
+        "items": [
+          {
+            "itemId": "nobg-000",
+            "trackIdx": 0,
+            "kind": "video",
+            "window": {
+              "src": "/corpus/nobg-000_norm.mp4",
+              "inPoint": 2,
+              "outPoint": 8,
+              "usedNormalizedCache": true
+            },
+            "seek": 3,
+            "geometry": {
+              "scale": 1,
+              "offsetX": 0,
+              "offsetY": 0,
+              "opacity": 1,
+              "fit": "contain",
+              "rotation": 0
+            }
+          }
+        ]
+      },
+      {
+        "t": 2,
+        "items": [
+          {
+            "itemId": "nobg-001",
+            "trackIdx": 0,
+            "kind": "video",
+            "window": {
+              "src": "/corpus/nobg-001_alpha_preview.webm",
+              "inPoint": 3,
+              "outPoint": 9,
+              "usedNormalizedCache": false
+            },
+            "seek": 3,
+            "geometry": {
+              "scale": 1,
+              "offsetX": 0,
+              "offsetY": 0,
+              "opacity": 1,
+              "fit": "contain",
+              "rotation": 0
+            }
+          }
+        ]
+      },
+      {
+        "t": 3,
+        "items": [
+          {
+            "itemId": "nobg-001",
+            "trackIdx": 0,
+            "kind": "video",
+            "window": {
+              "src": "/corpus/nobg-001_alpha_preview.webm",
+              "inPoint": 3,
+              "outPoint": 9,
+              "usedNormalizedCache": false
+            },
+            "seek": 4,
+            "geometry": {
+              "scale": 1,
+              "offsetX": 0,
+              "offsetY": 0,
+              "opacity": 1,
+              "fit": "contain",
+              "rotation": 0
+            }
+          }
+        ]
+      },
+      {
+        "t": 4,
+        "items": [
+          {
+            "itemId": "nobg-010",
+            "trackIdx": 0,
+            "kind": "video",
+            "window": {
+              "src": "/corpus/nobg-010_norm.mp4",
+              "inPoint": 2,
+              "outPoint": 8,
+              "usedNormalizedCache": true
+            },
+            "seek": 2,
+            "geometry": {
+              "scale": 1,
+              "offsetX": 0,
+              "offsetY": 0,
+              "opacity": 1,
+              "fit": "contain",
+              "rotation": 0
+            }
+          }
+        ]
+      },
+      {
+        "t": 5,
+        "items": [
+          {
+            "itemId": "nobg-010",
+            "trackIdx": 0,
+            "kind": "video",
+            "window": {
+              "src": "/corpus/nobg-010_norm.mp4",
+              "inPoint": 2,
+              "outPoint": 8,
+              "usedNormalizedCache": true
+            },
+            "seek": 3,
+            "geometry": {
+              "scale": 1,
+              "offsetX": 0,
+              "offsetY": 0,
+              "opacity": 1,
+              "fit": "contain",
+              "rotation": 0
+            }
+          }
+        ]
+      },
+      {
+        "t": 6,
+        "items": [
+          {
+            "itemId": "nobg-011",
+            "trackIdx": 0,
+            "kind": "video",
+            "window": {
+              "src": "/corpus/nobg-011_alpha_preview.webm",
+              "inPoint": 3,
+              "outPoint": 9,
+              "usedNormalizedCache": false
+            },
+            "seek": 3,
+            "geometry": {
+              "scale": 1,
+              "offsetX": 0,
+              "offsetY": 0,
+              "opacity": 1,
+              "fit": "contain",
+              "rotation": 0
+            }
+          }
+        ]
+      },
+      {
+        "t": 7,
+        "items": [
+          {
+            "itemId": "nobg-011",
+            "trackIdx": 0,
+            "kind": "video",
+            "window": {
+              "src": "/corpus/nobg-011_alpha_preview.webm",
+              "inPoint": 3,
+              "outPoint": 9,
+              "usedNormalizedCache": false
+            },
+            "seek": 4,
+            "geometry": {
+              "scale": 1,
+              "offsetX": 0,
+              "offsetY": 0,
+              "opacity": 1,
+              "fit": "contain",
+              "rotation": 0
+            }
+          }
+        ]
+      },
+      {
+        "t": 8,
+        "items": [
+          {
+            "itemId": "nobg-100",
+            "trackIdx": 0,
+            "kind": "video",
+            "window": {
+              "src": "/corpus/nobg-100_norm.mp4",
+              "inPoint": 2,
+              "outPoint": 8,
+              "usedNormalizedCache": true
+            },
+            "seek": 2,
+            "geometry": {
+              "scale": 1,
+              "offsetX": 0,
+              "offsetY": 0,
+              "opacity": 1,
+              "fit": "contain",
+              "rotation": 0
+            }
+          }
+        ]
+      },
+      {
+        "t": 9,
+        "items": [
+          {
+            "itemId": "nobg-100",
+            "trackIdx": 0,
+            "kind": "video",
+            "window": {
+              "src": "/corpus/nobg-100_norm.mp4",
+              "inPoint": 2,
+              "outPoint": 8,
+              "usedNormalizedCache": true
+            },
+            "seek": 3,
+            "geometry": {
+              "scale": 1,
+              "offsetX": 0,
+              "offsetY": 0,
+              "opacity": 1,
+              "fit": "contain",
+              "rotation": 0
+            }
+          }
+        ]
+      },
+      {
+        "t": 10,
+        "items": [
+          {
+            "itemId": "nobg-101",
+            "trackIdx": 0,
+            "kind": "video",
+            "window": {
+              "src": "/corpus/nobg-101_alpha_preview.webm",
+              "inPoint": 3,
+              "outPoint": 9,
+              "usedNormalizedCache": false
+            },
+            "seek": 3,
+            "geometry": {
+              "scale": 1,
+              "offsetX": 0,
+              "offsetY": 0,
+              "opacity": 1,
+              "fit": "contain",
+              "rotation": 0
+            }
+          }
+        ]
+      },
+      {
+        "t": 11,
+        "items": [
+          {
+            "itemId": "nobg-101",
+            "trackIdx": 0,
+            "kind": "video",
+            "window": {
+              "src": "/corpus/nobg-101_alpha_preview.webm",
+              "inPoint": 3,
+              "outPoint": 9,
+              "usedNormalizedCache": false
+            },
+            "seek": 4,
+            "geometry": {
+              "scale": 1,
+              "offsetX": 0,
+              "offsetY": 0,
+              "opacity": 1,
+              "fit": "contain",
+              "rotation": 0
+            }
+          }
+        ]
+      },
+      {
+        "t": 12,
+        "items": [
+          {
+            "itemId": "nobg-110",
+            "trackIdx": 0,
+            "kind": "video",
+            "window": {
+              "src": "/corpus/nobg-110_norm.mp4",
+              "inPoint": 2,
+              "outPoint": 8,
+              "usedNormalizedCache": true
+            },
+            "seek": 2,
+            "geometry": {
+              "scale": 1,
+              "offsetX": 0,
+              "offsetY": 0,
+              "opacity": 1,
+              "fit": "contain",
+              "rotation": 0
+            }
+          }
+        ]
+      },
+      {
+        "t": 13,
+        "items": [
+          {
+            "itemId": "nobg-110",
+            "trackIdx": 0,
+            "kind": "video",
+            "window": {
+              "src": "/corpus/nobg-110_norm.mp4",
+              "inPoint": 2,
+              "outPoint": 8,
+              "usedNormalizedCache": true
+            },
+            "seek": 3,
+            "geometry": {
+              "scale": 1,
+              "offsetX": 0,
+              "offsetY": 0,
+              "opacity": 1,
+              "fit": "contain",
+              "rotation": 0
+            }
+          }
+        ]
+      },
+      {
+        "t": 14,
+        "items": [
+          {
+            "itemId": "nobg-111",
+            "trackIdx": 0,
+            "kind": "video",
+            "window": {
+              "src": "/corpus/nobg-111_alpha_preview.webm",
+              "inPoint": 3,
+              "outPoint": 9,
+              "usedNormalizedCache": false
+            },
+            "seek": 3,
+            "geometry": {
+              "scale": 1,
+              "offsetX": 0,
+              "offsetY": 0,
+              "opacity": 1,
+              "fit": "contain",
+              "rotation": 0
+            }
+          }
+        ]
+      },
+      {
+        "t": 15,
+        "items": [
+          {
+            "itemId": "nobg-111",
+            "trackIdx": 0,
+            "kind": "video",
+            "window": {
+              "src": "/corpus/nobg-111_alpha_preview.webm",
+              "inPoint": 3,
+              "outPoint": 9,
+              "usedNormalizedCache": false
+            },
+            "seek": 4,
+            "geometry": {
+              "scale": 1,
+              "offsetX": 0,
+              "offsetY": 0,
+              "opacity": 1,
+              "fit": "contain",
+              "rotation": 0
+            }
+          }
+        ]
+      },
+      {
+        "t": 16,
+        "items": []
+      },
+      {
+        "t": 17,
+        "items": []
+      }
+    ],
+    "render": [
+      {
+        "t": 0,
+        "items": [
+          {
+            "itemId": "nobg-000",
+            "trackIdx": 0,
+            "kind": "video",
+            "window": {
+              "src": "/corpus/nobg-000_norm.mp4",
+              "inPoint": 2,
+              "outPoint": 8,
+              "usedNormalizedCache": true
+            },
+            "seek": 2,
+            "geometry": {
+              "scale": 1,
+              "offsetX": 0,
+              "offsetY": 0,
+              "opacity": 1,
+              "fit": "contain",
+              "rotation": 0
+            }
+          }
+        ]
+      },
+      {
+        "t": 1,
+        "items": [
+          {
+            "itemId": "nobg-000",
+            "trackIdx": 0,
+            "kind": "video",
+            "window": {
+              "src": "/corpus/nobg-000_norm.mp4",
+              "inPoint": 2,
+              "outPoint": 8,
+              "usedNormalizedCache": true
+            },
+            "seek": 3,
+            "geometry": {
+              "scale": 1,
+              "offsetX": 0,
+              "offsetY": 0,
+              "opacity": 1,
+              "fit": "contain",
+              "rotation": 0
+            }
+          }
+        ]
+      },
+      {
+        "t": 2,
+        "items": [
+          {
+            "itemId": "nobg-001",
+            "trackIdx": 0,
+            "kind": "video",
+            "window": {
+              "src": "/corpus/nobg-001_norm.mp4",
+              "inPoint": 2,
+              "outPoint": 8,
+              "usedNormalizedCache": true
+            },
+            "seek": 2,
+            "geometry": {
+              "scale": 1,
+              "offsetX": 0,
+              "offsetY": 0,
+              "opacity": 1,
+              "fit": "contain",
+              "rotation": 0
+            }
+          }
+        ]
+      },
+      {
+        "t": 3,
+        "items": [
+          {
+            "itemId": "nobg-001",
+            "trackIdx": 0,
+            "kind": "video",
+            "window": {
+              "src": "/corpus/nobg-001_norm.mp4",
+              "inPoint": 2,
+              "outPoint": 8,
+              "usedNormalizedCache": true
+            },
+            "seek": 3,
+            "geometry": {
+              "scale": 1,
+              "offsetX": 0,
+              "offsetY": 0,
+              "opacity": 1,
+              "fit": "contain",
+              "rotation": 0
+            }
+          }
+        ]
+      },
+      {
+        "t": 4,
+        "items": [
+          {
+            "itemId": "nobg-010",
+            "trackIdx": 0,
+            "kind": "video",
+            "window": {
+              "src": "/corpus/nobg-010_norm.mp4",
+              "inPoint": 2,
+              "outPoint": 8,
+              "usedNormalizedCache": true
+            },
+            "seek": 2,
+            "geometry": {
+              "scale": 1,
+              "offsetX": 0,
+              "offsetY": 0,
+              "opacity": 1,
+              "fit": "contain",
+              "rotation": 0
+            }
+          }
+        ]
+      },
+      {
+        "t": 5,
+        "items": [
+          {
+            "itemId": "nobg-010",
+            "trackIdx": 0,
+            "kind": "video",
+            "window": {
+              "src": "/corpus/nobg-010_norm.mp4",
+              "inPoint": 2,
+              "outPoint": 8,
+              "usedNormalizedCache": true
+            },
+            "seek": 3,
+            "geometry": {
+              "scale": 1,
+              "offsetX": 0,
+              "offsetY": 0,
+              "opacity": 1,
+              "fit": "contain",
+              "rotation": 0
+            }
+          }
+        ]
+      },
+      {
+        "t": 6,
+        "items": [
+          {
+            "itemId": "nobg-011",
+            "trackIdx": 0,
+            "kind": "video",
+            "window": {
+              "src": "/corpus/nobg-011_norm.mp4",
+              "inPoint": 2,
+              "outPoint": 8,
+              "usedNormalizedCache": true
+            },
+            "seek": 2,
+            "geometry": {
+              "scale": 1,
+              "offsetX": 0,
+              "offsetY": 0,
+              "opacity": 1,
+              "fit": "contain",
+              "rotation": 0
+            }
+          }
+        ]
+      },
+      {
+        "t": 7,
+        "items": [
+          {
+            "itemId": "nobg-011",
+            "trackIdx": 0,
+            "kind": "video",
+            "window": {
+              "src": "/corpus/nobg-011_norm.mp4",
+              "inPoint": 2,
+              "outPoint": 8,
+              "usedNormalizedCache": true
+            },
+            "seek": 3,
+            "geometry": {
+              "scale": 1,
+              "offsetX": 0,
+              "offsetY": 0,
+              "opacity": 1,
+              "fit": "contain",
+              "rotation": 0
+            }
+          }
+        ]
+      },
+      {
+        "t": 8,
+        "items": [
+          {
+            "itemId": "nobg-100",
+            "trackIdx": 0,
+            "kind": "video",
+            "window": {
+              "src": "/corpus/nobg-100_norm.mp4",
+              "inPoint": 2,
+              "outPoint": 8,
+              "usedNormalizedCache": true
+            },
+            "seek": 2,
+            "geometry": {
+              "scale": 1,
+              "offsetX": 0,
+              "offsetY": 0,
+              "opacity": 1,
+              "fit": "contain",
+              "rotation": 0
+            }
+          }
+        ]
+      },
+      {
+        "t": 9,
+        "items": [
+          {
+            "itemId": "nobg-100",
+            "trackIdx": 0,
+            "kind": "video",
+            "window": {
+              "src": "/corpus/nobg-100_norm.mp4",
+              "inPoint": 2,
+              "outPoint": 8,
+              "usedNormalizedCache": true
+            },
+            "seek": 3,
+            "geometry": {
+              "scale": 1,
+              "offsetX": 0,
+              "offsetY": 0,
+              "opacity": 1,
+              "fit": "contain",
+              "rotation": 0
+            }
+          }
+        ]
+      },
+      {
+        "t": 10,
+        "items": [
+          {
+            "itemId": "nobg-101",
+            "trackIdx": 0,
+            "kind": "video",
+            "window": {
+              "src": "/corpus/nobg-101_norm.mp4",
+              "inPoint": 2,
+              "outPoint": 8,
+              "usedNormalizedCache": true
+            },
+            "seek": 2,
+            "geometry": {
+              "scale": 1,
+              "offsetX": 0,
+              "offsetY": 0,
+              "opacity": 1,
+              "fit": "contain",
+              "rotation": 0
+            }
+          }
+        ]
+      },
+      {
+        "t": 11,
+        "items": [
+          {
+            "itemId": "nobg-101",
+            "trackIdx": 0,
+            "kind": "video",
+            "window": {
+              "src": "/corpus/nobg-101_norm.mp4",
+              "inPoint": 2,
+              "outPoint": 8,
+              "usedNormalizedCache": true
+            },
+            "seek": 3,
+            "geometry": {
+              "scale": 1,
+              "offsetX": 0,
+              "offsetY": 0,
+              "opacity": 1,
+              "fit": "contain",
+              "rotation": 0
+            }
+          }
+        ]
+      },
+      {
+        "t": 12,
+        "items": [
+          {
+            "itemId": "nobg-110",
+            "trackIdx": 0,
+            "kind": "video",
+            "window": {
+              "src": "/corpus/nobg-110_alpha.mov",
+              "inPoint": 3,
+              "outPoint": 9,
+              "usedNormalizedCache": false
+            },
+            "seek": 3,
+            "geometry": {
+              "scale": 1,
+              "offsetX": 0,
+              "offsetY": 0,
+              "opacity": 1,
+              "fit": "contain",
+              "rotation": 0
+            }
+          }
+        ]
+      },
+      {
+        "t": 13,
+        "items": [
+          {
+            "itemId": "nobg-110",
+            "trackIdx": 0,
+            "kind": "video",
+            "window": {
+              "src": "/corpus/nobg-110_alpha.mov",
+              "inPoint": 3,
+              "outPoint": 9,
+              "usedNormalizedCache": false
+            },
+            "seek": 4,
+            "geometry": {
+              "scale": 1,
+              "offsetX": 0,
+              "offsetY": 0,
+              "opacity": 1,
+              "fit": "contain",
+              "rotation": 0
+            }
+          }
+        ]
+      },
+      {
+        "t": 14,
+        "items": [
+          {
+            "itemId": "nobg-111",
+            "trackIdx": 0,
+            "kind": "video",
+            "window": {
+              "src": "/corpus/nobg-111_alpha.mov",
+              "inPoint": 3,
+              "outPoint": 9,
+              "usedNormalizedCache": false
+            },
+            "seek": 3,
+            "geometry": {
+              "scale": 1,
+              "offsetX": 0,
+              "offsetY": 0,
+              "opacity": 1,
+              "fit": "contain",
+              "rotation": 0
+            }
+          }
+        ]
+      },
+      {
+        "t": 15,
+        "items": [
+          {
+            "itemId": "nobg-111",
+            "trackIdx": 0,
+            "kind": "video",
+            "window": {
+              "src": "/corpus/nobg-111_alpha.mov",
+              "inPoint": 3,
+              "outPoint": 9,
+              "usedNormalizedCache": false
+            },
+            "seek": 4,
+            "geometry": {
+              "scale": 1,
+              "offsetX": 0,
+              "offsetY": 0,
+              "opacity": 1,
+              "fit": "contain",
+              "rotation": 0
+            }
+          }
+        ]
+      },
+      {
+        "t": 16,
+        "items": []
+      },
+      {
+        "t": 17,
+        "items": []
+      }
+    ]
+  },
+  "resolveSegment": {
+    "fps": 30,
+    "segments": [
+      {
+        "segStart": 0,
+        "segEnd": 2,
+        "scene": {
+          "t": 0,
+          "items": [
+            {
+              "itemId": "nobg-000",
+              "trackIdx": 0,
+              "kind": "video",
+              "window": {
+                "src": "/corpus/nobg-000_norm.mp4",
+                "inPoint": 2,
+                "outPoint": 8,
+                "usedNormalizedCache": true
+              },
+              "seek": 2,
+              "geometry": {
+                "scale": 1,
+                "offsetX": 0,
+                "offsetY": 0,
+                "opacity": 1,
+                "fit": "contain",
+                "rotation": 0
+              }
+            }
+          ]
+        }
+      },
+      {
+        "segStart": 2,
+        "segEnd": 4,
+        "scene": {
+          "t": 2,
+          "items": [
+            {
+              "itemId": "nobg-001",
+              "trackIdx": 0,
+              "kind": "video",
+              "window": {
+                "src": "/corpus/nobg-001_norm.mp4",
+                "inPoint": 2,
+                "outPoint": 8,
+                "usedNormalizedCache": true
+              },
+              "seek": 2,
+              "geometry": {
+                "scale": 1,
+                "offsetX": 0,
+                "offsetY": 0,
+                "opacity": 1,
+                "fit": "contain",
+                "rotation": 0
+              }
+            }
+          ]
+        }
+      },
+      {
+        "segStart": 4,
+        "segEnd": 6,
+        "scene": {
+          "t": 4,
+          "items": [
+            {
+              "itemId": "nobg-010",
+              "trackIdx": 0,
+              "kind": "video",
+              "window": {
+                "src": "/corpus/nobg-010_norm.mp4",
+                "inPoint": 2,
+                "outPoint": 8,
+                "usedNormalizedCache": true
+              },
+              "seek": 2,
+              "geometry": {
+                "scale": 1,
+                "offsetX": 0,
+                "offsetY": 0,
+                "opacity": 1,
+                "fit": "contain",
+                "rotation": 0
+              }
+            }
+          ]
+        }
+      },
+      {
+        "segStart": 6,
+        "segEnd": 8,
+        "scene": {
+          "t": 6,
+          "items": [
+            {
+              "itemId": "nobg-011",
+              "trackIdx": 0,
+              "kind": "video",
+              "window": {
+                "src": "/corpus/nobg-011_norm.mp4",
+                "inPoint": 2,
+                "outPoint": 8,
+                "usedNormalizedCache": true
+              },
+              "seek": 2,
+              "geometry": {
+                "scale": 1,
+                "offsetX": 0,
+                "offsetY": 0,
+                "opacity": 1,
+                "fit": "contain",
+                "rotation": 0
+              }
+            }
+          ]
+        }
+      },
+      {
+        "segStart": 8,
+        "segEnd": 10,
+        "scene": {
+          "t": 8,
+          "items": [
+            {
+              "itemId": "nobg-100",
+              "trackIdx": 0,
+              "kind": "video",
+              "window": {
+                "src": "/corpus/nobg-100_norm.mp4",
+                "inPoint": 2,
+                "outPoint": 8,
+                "usedNormalizedCache": true
+              },
+              "seek": 2,
+              "geometry": {
+                "scale": 1,
+                "offsetX": 0,
+                "offsetY": 0,
+                "opacity": 1,
+                "fit": "contain",
+                "rotation": 0
+              }
+            }
+          ]
+        }
+      },
+      {
+        "segStart": 10,
+        "segEnd": 12,
+        "scene": {
+          "t": 10,
+          "items": [
+            {
+              "itemId": "nobg-101",
+              "trackIdx": 0,
+              "kind": "video",
+              "window": {
+                "src": "/corpus/nobg-101_norm.mp4",
+                "inPoint": 2,
+                "outPoint": 8,
+                "usedNormalizedCache": true
+              },
+              "seek": 2,
+              "geometry": {
+                "scale": 1,
+                "offsetX": 0,
+                "offsetY": 0,
+                "opacity": 1,
+                "fit": "contain",
+                "rotation": 0
+              }
+            }
+          ]
+        }
+      },
+      {
+        "segStart": 12,
+        "segEnd": 14,
+        "scene": {
+          "t": 12,
+          "items": [
+            {
+              "itemId": "nobg-110",
+              "trackIdx": 0,
+              "kind": "video",
+              "window": {
+                "src": "/corpus/nobg-110_alpha.mov",
+                "inPoint": 3,
+                "outPoint": 9,
+                "usedNormalizedCache": false
+              },
+              "seek": 3,
+              "geometry": {
+                "scale": 1,
+                "offsetX": 0,
+                "offsetY": 0,
+                "opacity": 1,
+                "fit": "contain",
+                "rotation": 0
+              }
+            }
+          ]
+        }
+      },
+      {
+        "segStart": 14,
+        "segEnd": 16,
+        "scene": {
+          "t": 14,
+          "items": [
+            {
+              "itemId": "nobg-111",
+              "trackIdx": 0,
+              "kind": "video",
+              "window": {
+                "src": "/corpus/nobg-111_alpha.mov",
+                "inPoint": 3,
+                "outPoint": 9,
+                "usedNormalizedCache": false
+              },
+              "seek": 3,
+              "geometry": {
+                "scale": 1,
+                "offsetX": 0,
+                "offsetY": 0,
+                "opacity": 1,
+                "fit": "contain",
+                "rotation": 0
+              }
+            }
+          ]
+        }
+      }
+    ]
+  },
+  "sourceWindow": {
+    "nobg-000": {
+      "preview": {
+        "src": "/corpus/nobg-000_norm.mp4",
+        "inPoint": 2,
+        "outPoint": 8,
+        "usedNormalizedCache": true
+      },
+      "render": {
+        "src": "/corpus/nobg-000_norm.mp4",
+        "inPoint": 2,
+        "outPoint": 8,
+        "usedNormalizedCache": true
+      }
+    },
+    "nobg-001": {
+      "preview": {
+        "src": "/corpus/nobg-001_alpha_preview.webm",
+        "inPoint": 3,
+        "outPoint": 9,
+        "usedNormalizedCache": false
+      },
+      "render": {
+        "src": "/corpus/nobg-001_norm.mp4",
+        "inPoint": 2,
+        "outPoint": 8,
+        "usedNormalizedCache": true
+      }
+    },
+    "nobg-010": {
+      "preview": {
+        "src": "/corpus/nobg-010_norm.mp4",
+        "inPoint": 2,
+        "outPoint": 8,
+        "usedNormalizedCache": true
+      },
+      "render": {
+        "src": "/corpus/nobg-010_norm.mp4",
+        "inPoint": 2,
+        "outPoint": 8,
+        "usedNormalizedCache": true
+      }
+    },
+    "nobg-011": {
+      "preview": {
+        "src": "/corpus/nobg-011_alpha_preview.webm",
+        "inPoint": 3,
+        "outPoint": 9,
+        "usedNormalizedCache": false
+      },
+      "render": {
+        "src": "/corpus/nobg-011_norm.mp4",
+        "inPoint": 2,
+        "outPoint": 8,
+        "usedNormalizedCache": true
+      }
+    },
+    "nobg-100": {
+      "preview": {
+        "src": "/corpus/nobg-100_norm.mp4",
+        "inPoint": 2,
+        "outPoint": 8,
+        "usedNormalizedCache": true
+      },
+      "render": {
+        "src": "/corpus/nobg-100_norm.mp4",
+        "inPoint": 2,
+        "outPoint": 8,
+        "usedNormalizedCache": true
+      }
+    },
+    "nobg-101": {
+      "preview": {
+        "src": "/corpus/nobg-101_alpha_preview.webm",
+        "inPoint": 3,
+        "outPoint": 9,
+        "usedNormalizedCache": false
+      },
+      "render": {
+        "src": "/corpus/nobg-101_norm.mp4",
+        "inPoint": 2,
+        "outPoint": 8,
+        "usedNormalizedCache": true
+      }
+    },
+    "nobg-110": {
+      "preview": {
+        "src": "/corpus/nobg-110_norm.mp4",
+        "inPoint": 2,
+        "outPoint": 8,
+        "usedNormalizedCache": true
+      },
+      "render": {
+        "src": "/corpus/nobg-110_alpha.mov",
+        "inPoint": 3,
+        "outPoint": 9,
+        "usedNormalizedCache": false
+      }
+    },
+    "nobg-111": {
+      "preview": {
+        "src": "/corpus/nobg-111_alpha_preview.webm",
+        "inPoint": 3,
+        "outPoint": 9,
+        "usedNormalizedCache": false
+      },
+      "render": {
+        "src": "/corpus/nobg-111_alpha.mov",
+        "inPoint": 3,
+        "outPoint": 9,
+        "usedNormalizedCache": false
+      }
+    }
+  },
+  "seekTime": {
+    "nobg-000": {
+      "preview": {
+        "0": 2,
+        "1": 3,
+        "2": 4
+      },
+      "render": {
+        "0": 2,
+        "1": 3,
+        "2": 4
+      }
+    },
+    "nobg-001": {
+      "preview": {
+        "2": 3,
+        "3": 4,
+        "4": 5
+      },
+      "render": {
+        "2": 2,
+        "3": 3,
+        "4": 4
+      }
+    },
+    "nobg-010": {
+      "preview": {
+        "4": 2,
+        "5": 3,
+        "6": 4
+      },
+      "render": {
+        "4": 2,
+        "5": 3,
+        "6": 4
+      }
+    },
+    "nobg-011": {
+      "preview": {
+        "6": 3,
+        "7": 4,
+        "8": 5
+      },
+      "render": {
+        "6": 2,
+        "7": 3,
+        "8": 4
+      }
+    },
+    "nobg-100": {
+      "preview": {
+        "8": 2,
+        "9": 3,
+        "10": 4
+      },
+      "render": {
+        "8": 2,
+        "9": 3,
+        "10": 4
+      }
+    },
+    "nobg-101": {
+      "preview": {
+        "10": 3,
+        "11": 4,
+        "12": 5
+      },
+      "render": {
+        "10": 2,
+        "11": 3,
+        "12": 4
+      }
+    },
+    "nobg-110": {
+      "preview": {
+        "12": 2,
+        "13": 3,
+        "14": 4
+      },
+      "render": {
+        "12": 3,
+        "13": 4,
+        "14": 5
+      }
+    },
+    "nobg-111": {
+      "preview": {
+        "14": 3,
+        "15": 4,
+        "16": 5
+      },
+      "render": {
+        "14": 3,
+        "15": 4,
+        "16": 5
+      }
+    }
+  },
+  "synthesizedOutPoint": {
+    "nobg-000": {
+      "preview": 8,
+      "render": 8
+    },
+    "nobg-001": {
+      "preview": 9,
+      "render": 8
+    },
+    "nobg-010": {
+      "preview": 8,
+      "render": 8
+    },
+    "nobg-011": {
+      "preview": 9,
+      "render": 8
+    },
+    "nobg-100": {
+      "preview": 8,
+      "render": 8
+    },
+    "nobg-101": {
+      "preview": 9,
+      "render": 8
+    },
+    "nobg-110": {
+      "preview": 8,
+      "render": 9
+    },
+    "nobg-111": {
+      "preview": 9,
+      "render": 9
+    }
+  },
+  "audioWindow": {}
+}

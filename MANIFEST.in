@@ -35,6 +35,7 @@ prune montaj_assets/mcp/node_modules
 prune montaj_assets/overlay-runtime/node_modules
 prune montaj_assets/editor/node_modules
 prune montaj_assets/montaj-skills/node_modules
+prune montaj_assets/timeline-core/node_modules
 # NOTE: adding a new node package under montaj_assets/? Add its prune here.
 # CI's wheel job fails the build if node_modules ever leaks (ci.yml).
 

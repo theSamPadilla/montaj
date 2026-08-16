@@ -21,6 +21,7 @@ import { FFMPEG, FFPROBE }                from './ffmpeg-bin.js'
 import { requireValidKey, detectFromTransfer, smartDetect, DEFAULT_COLOR_SPACE } from './color-space.js'
 import { pMap }                           from './p-map.js'
 import { fileHasAudio }                   from './encode-segment.js'
+import { sourceWindow }                   from '@bycrux/timeline-core'
 
 const __dirname  = dirname(fileURLToPath(import.meta.url))
 const isMain = resolve(process.argv[1] ?? '') === fileURLToPath(import.meta.url)
@@ -604,25 +605,75 @@ function collectAllItems(projectJson) {
         // of the original and plays from time 0. When we substitute it we must
         // rebase inPoint and outPoint by the cache origin so encode-segment seeks
         // to the right position inside the short cache file (actualIn = inPoint +
-        // seekOffset). The cache origin is `item.normalizedInPoint ?? item.inPoint`
+        // seekOffset). The cache origin is `normalizedInPoint ?? inPoint ?? 0`
         // (legacy clips without normalizedInPoint assumed origin == inPoint → rebase
-        // to 0, which is reproduced here by the fallback). The nobg_src path is NOT
+        // to 0, which is reproduced by the fallback). The nobg_src path is NOT
         // a normalized cache and must keep the original inPoint/outPoint unchanged.
-        const chosenSrc = item.nobg_src && item.remove_bg ? item.nobg_src : (item.normalizedSrc ?? item.src)
-        const usedNormalized = chosenSrc === item.normalizedSrc
-        const normOrigin = item.normalizedInPoint ?? item.inPoint
+        //
+        // ── SP2 T8: the arithmetic above moved ───────────────────────────────
+        //
+        // That whole computation now lives once, in `@bycrux/timeline-core`'s
+        // `sourceWindow(item, 'render')` (src/source-window.js), shared with the
+        // editor preview so the two engines can no longer drift apart — this used
+        // to be duplicated by hand in useVideoPlayback.ts and the copies had
+        // already diverged. The comment above stays because it records a real
+        // production bug (Bug A: a start-trim after the cache was built), and the
+        // resolver reproduces the reasoning verbatim next to the branch that
+        // implements it. Two copies of a bug's history is cheap; zero is how the
+        // bug comes back.
+        //
+        // The `'render'` variant is load-bearing. Preview and render legitimately
+        // disagree on src precedence — render never loads `nobg_preview_src` and
+        // only loads `nobg_src` when `remove_bg` is actually on — so the resolver
+        // is variant-aware rather than unifying them, which would change render
+        // output. See KNOWN-DIVERGENCES.md `nobg-precedence`.
+        //
+        // SANCTIONED BEHAVIOR CHANGE (the only one in this swap): the origin's
+        // `?? 0` tail. The line this replaced read `item.normalizedInPoint ??
+        // item.inPoint` with no tail, so an item carrying a normalizedSrc but
+        // NEITHER origin field computed `undefined - undefined` = NaN and sent it
+        // to ffmpeg's `-ss` (encode-segment.js:216's `?? 0` does not catch it —
+        // NaN is not nullish). A missing origin means origin 0. The editor always
+        // had the tail; render now matches. Pinned by render-helpers.test.mjs and
+        // by timeline-core's fixtures/nan-case.json.
+        //
+        // NOT changed, deliberately: `src` may still be `undefined` here for an
+        // item with neither `src` nor `normalizedSrc`. The render variant has no
+        // `?? ''` tail (preview does), because `''` and `undefined` fail
+        // DIFFERENTLY downstream and such an item is unrenderable either way.
+        // Same for the `undefined === undefined` quirk that makes that item count
+        // as "using the cache". Both are ported verbatim; making render total is a
+        // behavior change with its own plan.
+        //
+        // Guarded permanently by test/encode-args-golden.test.mjs, which runs this
+        // function + planSegments + encodeSegment(...,{_dryRun:true}) over the
+        // shared corpus and deep-equals the result against goldens captured from
+        // the pre-SP2 pipeline.
+        const { src, inPoint, outPoint } = sourceWindow(item, 'render')
         videoItems.push({
           ...base,
-          src:          chosenSrc,
+          // The whitelist below is exhaustive by design — these objects are what
+          // encode-segment.js reads (and mutates), so a field omitted here is
+          // dropped silently, with no type error. That has shipped as a bug twice:
+          // once for `sourceCrop` & friends (see below) and once for image `fit`.
+          src,
           nobg_src:     item.nobg_src,
           normalizedSrc: item.normalizedSrc,
-          inPoint:      usedNormalized ? (item.inPoint - normOrigin) : item.inPoint,
-          outPoint:     usedNormalized ? (item.outPoint != null ? item.outPoint - normOrigin : item.outPoint) : item.outPoint,
+          // `inPoint` is already in the CHOSEN src's coordinates. Paired with
+          // `start` (from `base`) it is exactly the input encode-segment.js:216-218
+          // needs: `actualIn = inPoint + max(0, segStart - start)`, which is the
+          // resolver's `seekTime(item, segStart, 'render')` written out by hand.
+          inPoint,
+          // null normalizes to undefined here (source-window.js:221); no render
+          // consumer reads this field today.
+          outPoint,
           // Source crop (clips workflow vertical reframe) — applied at encode
           // time by buildVideoItemFilterParts. normalizeIfNeeded/normalize_window
           // does NOT bake the crop into normalizedSrc (the cache stays at full
           // source dimensions), so these MUST be forwarded or the crop is lost
           // and the full frame is letterboxed into the output canvas instead.
+          // The resolver has no opinion on them (they are geometry, not source
+          // window), so they stay hand-forwarded here, by reference.
           sourceCrop:   item.sourceCrop,
           sourceWidth:  item.sourceWidth,
           sourceHeight: item.sourceHeight,
