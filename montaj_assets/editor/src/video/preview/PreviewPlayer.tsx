@@ -99,6 +99,7 @@ export default function PreviewPlayer({
     handleTimeUpdate,
     handlePause,
     handleEnded,
+    handleVideoError,
     togglePlay,
     isCanvasProject,
     clips,
@@ -239,6 +240,7 @@ export default function PreviewPlayer({
             onLoadedMetadata={(e) => { const v = e.currentTarget; if (v.videoWidth && v.videoHeight) setVideoDims({ w: v.videoWidth, h: v.videoHeight }) }}
             onTimeUpdate={() => { if (activeSlotRef.current === 0) handleTimeUpdate() }}
             onEnded={() => { if (activeSlotRef.current === 0) handleEnded() }}
+            onError={() => handleVideoError(0)}
             onPlay={() => { if (activeSlotRef.current === 0) setIsPlaying(true) }}
             onPause={() => { if (activeSlotRef.current === 0) handlePause() }}
             playsInline
@@ -254,6 +256,7 @@ export default function PreviewPlayer({
             onLoadedMetadata={(e) => { const v = e.currentTarget; if (v.videoWidth && v.videoHeight) setVideoDims({ w: v.videoWidth, h: v.videoHeight }) }}
             onTimeUpdate={() => { if (activeSlotRef.current === 1) handleTimeUpdate() }}
             onEnded={() => { if (activeSlotRef.current === 1) handleEnded() }}
+            onError={() => handleVideoError(1)}
             onPlay={() => { if (activeSlotRef.current === 1) setIsPlaying(true) }}
             onPause={() => { if (activeSlotRef.current === 1) handlePause() }}
             playsInline

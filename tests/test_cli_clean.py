@@ -20,7 +20,10 @@ def _ns(**kwargs):
     """Build a Namespace with clean's defaults, overridden by kwargs."""
     defaults = {
         "proxies": True, "project": None, "all_projects": False,
-        "dry_run": False, "json": False, "out": None, "quiet": False,
+        # yes=True here so the pre-existing delete-behavior tests keep their
+        # meaning; the SP3-fix-S6 safe default (bare command = list only) has
+        # its own explicit tests in TestYesGate below.
+        "dry_run": False, "yes": True, "json": False, "out": None, "quiet": False,
     }
     defaults.update(kwargs)
     return Namespace(**defaults)
@@ -134,6 +137,7 @@ class TestScope:
         monkeypatch.chdir(tmp_path)  # cwd itself has no project.json
         other = home / "Montaj" / "other"
         other.mkdir(parents=True)
+        (other / "project.json").write_text("{}")  # S4: --project requires a real project dir
         target = other / "clip_proxy_hable1.mp4"
         target.write_bytes(b"x")
 
@@ -194,6 +198,10 @@ class TestScope:
         proxy = workspace_root / ".sources" / "abc123" / "clip_proxy_hable1.mp4"
         proxy.parent.mkdir(parents=True)
         proxy.write_bytes(b"x" * 1024)
+        # S4 requires --project to be a real project dir; a project.json AT the
+        # workspace root is the (unusual but legal) layout that still produces
+        # the ancestor-overlap this test exists to cover.
+        (workspace_root / "project.json").write_text("{}")
 
         clean_cmd.handle(_ns(project=str(workspace_root), json=True))
 
@@ -209,6 +217,7 @@ class TestScope:
         proxy = workspace_root / ".sources" / "abc123" / "clip_proxy_hable1.mp4"
         proxy.parent.mkdir(parents=True)
         proxy.write_bytes(b"x" * 1024)
+        (workspace_root / "project.json").write_text("{}")  # satisfy the S4 guard
 
         clean_cmd.handle(_ns(project=str(workspace_root), dry_run=True, json=True))
 
@@ -302,6 +311,48 @@ def _run(*args):
 
 
 class TestArgparseWiring:
+    def test_bare_command_without_yes_lists_but_does_not_delete(self, project_dir, capsys):
+        """SP3 fix S6: deletion requires an explicit --yes; the bare command is
+        a safe listing."""
+        proxy = project_dir / "clip_proxy_hable1.mp4"
+        proxy.write_bytes(b"x" * 1024)
+        clean_cmd.handle(_ns(yes=False))
+        assert proxy.exists()
+        out = capsys.readouterr().out
+        assert "pass --yes to delete" in out
+
+    def test_dry_run_beats_yes(self, project_dir):
+        proxy = project_dir / "clip_proxy_hable1.mp4"
+        proxy.write_bytes(b"x" * 1024)
+        clean_cmd.handle(_ns(yes=True, dry_run=True))
+        assert proxy.exists()
+
+    def test_unknown_look_tags_and_user_proxy_names_survive(self, project_dir):
+        """SP3 fix S5: only KNOWN look tags are deleted — user files that merely
+        contain '_proxy_' and unknown-tagged files all survive."""
+        keep = [
+            project_dir / "reverse_proxy_demo.mp4",   # user file, matches old loose glob
+            project_dir / "nginx_proxy_test.mp4",     # user file
+            project_dir / "_proxy_.mp4",              # empty look tag
+            project_dir / "clip_proxy_unknownlook99x.mp4",  # not in KNOWN_LOOKS
+        ]
+        goner = project_dir / "clip_proxy_hable1.mp4"
+        for f in keep + [goner]:
+            f.write_bytes(b"x" * 1024)
+        clean_cmd.handle(_ns())
+        assert not goner.exists()
+        for f in keep:
+            assert f.exists(), f.name
+
+    def test_project_without_project_json_errors(self, home, tmp_path, monkeypatch):
+        """SP3 fix S4: --project must point at a real project dir, not any
+        directory — prevents recursive delete walks over e.g. $HOME."""
+        arbitrary = tmp_path / "not-a-project"
+        arbitrary.mkdir()
+        monkeypatch.chdir(tmp_path)
+        with pytest.raises(SystemExit):
+            clean_cmd.handle(_ns(project=str(arbitrary)))
+
     def test_proxies_flag_is_required(self):
         r = _run("clean")
         assert r.returncode != 0

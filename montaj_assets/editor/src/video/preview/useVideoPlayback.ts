@@ -3,6 +3,7 @@ import {
   sourceWindow,
   playbackSrcFor as resolvePlaybackSrc,
 } from '@bycrux/timeline-core'
+import { gateProxy, isProxyUsable, markProxyFailed } from './proxySupport'
 import type { EditorProject as Project } from '../../schema'
 
 // Typed extension for the shared AudioContext cached on window
@@ -59,7 +60,10 @@ interface MontajVideoElement extends HTMLVideoElement {
  * `src` note on `SourceWindow` in timeline-core's index.d.ts.
  */
 function playbackSrcFor(clip: { src?: string; nobg_preview_src?: string; normalizedSrc?: string; proxySrc?: string }): string {
-  return resolvePlaybackSrc(clip, 'preview') ?? ''
+  // gateProxy (SP3 fix B2): strip an unsupported/failed proxy BEFORE the tier
+  // chain runs, so unsupported browsers fall through to normalizedSrc/src
+  // instead of a silently-black <video>.
+  return resolvePlaybackSrc(gateProxy(clip), 'preview') ?? ''
 }
 
 /**
@@ -67,7 +71,7 @@ function playbackSrcFor(clip: { src?: string; nobg_preview_src?: string; normali
  * normalizedSrc cache origin. `sourceWindow(clip, 'preview').inPoint`.
  */
 export function effectiveInPoint(clip: { inPoint?: number; normalizedInPoint?: number; nobg_preview_src?: string; normalizedSrc?: string; proxySrc?: string; src?: string }): number {
-  return sourceWindow(clip, 'preview').inPoint
+  return sourceWindow(gateProxy(clip), 'preview').inPoint
 }
 
 /**
@@ -80,7 +84,7 @@ export function effectiveInPoint(clip: { inPoint?: number; normalizedInPoint?: n
  * fallback (clip.end - clip.start + effectiveInPoint).
  */
 export function effectiveOutPoint(clip: { inPoint?: number; outPoint?: number; normalizedInPoint?: number; nobg_preview_src?: string; normalizedSrc?: string; proxySrc?: string; src?: string }): number | undefined {
-  return sourceWindow(clip, 'preview').outPoint
+  return sourceWindow(gateProxy(clip), 'preview').outPoint
 }
 
 export function useVideoPlayback(
@@ -119,6 +123,10 @@ export function useVideoPlayback(
   // Keep ref in sync so effects with narrow deps can read current playing state
   useEffect(() => { isPlayingRef.current = isPlaying }, [isPlaying])
   const [showVideo, setShowVideo] = useState(true)
+  // Bumped when a proxy fails to decode (SP3 fix B2) — the clip-identity
+  // effect depends on it, so the bump forces the reload that drops the
+  // now-suppressed proxy tier.
+  const [proxyFailTick, setProxyFailTick] = useState(0)
 
   // Gap clock — advances time through lift-style gaps between primary clips
   const gapRAFRef     = useRef<number | null>(null)
@@ -543,8 +551,12 @@ export function useVideoPlayback(
     // on a clip already loaded from its original src) must also trigger a
     // reload, or the <video> element keeps playing the pre-proxy source until
     // the next unrelated identity change happens to flush it.
+    // The proxy component is GATED (SP3 fix B2): an unsupported or
+    // failed-this-session proxy contributes '' — so marking a proxy failed
+    // (proxyFailTick bump) changes the identity and triggers the reload that
+    // swaps the clip back to its master.
     const identity = clips
-      .map(c => `${c.nobg_preview_src ?? ''}|${c.proxySrc ?? ''}|${c.src}|${c.inPoint ?? 0}|${c.outPoint ?? ''}`)
+      .map(c => `${c.nobg_preview_src ?? ''}|${isProxyUsable(c.proxySrc) ? c.proxySrc : ''}|${c.src}|${c.inPoint ?? 0}|${c.outPoint ?? ''}`)
       .join(',')
     if (identity === clipsSourceRef.current) return
     clipsSourceRef.current = identity
@@ -559,7 +571,7 @@ export function useVideoPlayback(
     // Clear inactive slot
     const inactive = getInactiveVideo()
     if (inactive) { inactive.pause(); inactive.removeAttribute('src') }
-  }, [clips])
+  }, [clips, proxyFailTick])
 
   const handlePause = useCallback(() => {
     // Ignore pause events while the gap clock owns playback state
@@ -828,6 +840,32 @@ export function useVideoPlayback(
     onTimeUpdate(t)
   }, [clips, onTimeUpdate])
 
+  /**
+   * SP3 fix B2 — decode-failure fallback. Wired to both <video> slots'
+   * onError. If the failing element was playing a clip's proxy, suppress that
+   * proxy for the session and force a reload (via proxyFailTick → the
+   * clip-identity effect), which re-selects src without the proxy tier.
+   * Non-proxy errors keep the legacy behavior (logged, nothing else — there
+   * is no better source to fall back to).
+   */
+  const handleVideoError = useCallback((slot: 0 | 1) => {
+    const el = (slot === 0 ? video0Ref : video1Ref).current
+    const current = el?.currentSrc || el?.src || ''
+    // fileUrl() builds `/api/files?path=<encodeURIComponent(abs)>`, so the
+    // encoded proxy path appearing in the element's src identifies the proxy
+    // as what failed, regardless of URL absolutization.
+    const clip = clips.find(c => c.proxySrc && isProxyUsable(c.proxySrc)
+      && current.includes(encodeURIComponent(c.proxySrc)))
+    if (clip?.proxySrc) {
+      console.warn(
+        `[montaj] proxy failed to decode — falling back to the master for this session: ${clip.proxySrc}`)
+      markProxyFailed(clip.proxySrc)
+      setProxyFailTick(t => t + 1)
+      return
+    }
+    console.warn(`[montaj] video error on slot ${slot} (src: ${current || 'none'})`)
+  }, [clips])
+
   const handleEnded = useCallback(() => {
     // For looping clips the ended event fires when the source video reaches its natural end.
     // handleTimeUpdate already handles the loop/stop decision via outPoint + clip.end checks.
@@ -926,6 +964,7 @@ export function useVideoPlayback(
     handleTimeUpdate,
     handlePause,
     handleEnded,
+    handleVideoError,
     togglePlay,
     isCanvasProject,
     clips,

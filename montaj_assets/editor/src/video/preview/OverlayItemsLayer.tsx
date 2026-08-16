@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react'
 import { containsTime, geometryFor } from '@bycrux/timeline-core'
+import { isProxyUsable, markProxyFailed } from './proxySupport'
 import type { EditorProject as Project, VisualItem } from '../../schema'
 import type { OverlayFactory } from '../../types'
 import OverlayErrorBoundary from '../../carousel/OverlayErrorBoundary'
@@ -19,9 +20,9 @@ import type { useDragOverlay } from './useDragOverlay'
 const VIDEO_PRELOAD_S = 0.4
 
 // Synced video overlay — seeks to the correct position within the item's inPoint/outPoint range
-function OverlayVideo({ src, currentTime, itemStart, inPoint, isPlaying, muted, visible }: {
+function OverlayVideo({ src, currentTime, itemStart, inPoint, isPlaying, muted, visible, onSrcError }: {
   src: string; currentTime: number; itemStart: number; inPoint: number
-  isPlaying: boolean; muted?: boolean; visible: boolean
+  isPlaying: boolean; muted?: boolean; visible: boolean; onSrcError?: () => void
 }) {
   const ref = useRef<HTMLVideoElement>(null)
   // Refs so the onSeeked handler can read current playback intent without stale closures
@@ -77,6 +78,7 @@ function OverlayVideo({ src, currentTime, itemStart, inPoint, isPlaying, muted, 
       src={src}
       muted={muted}
       preload="auto"
+      onError={onSrcError}
       onSeeked={() => {
         // After a mid-clip seek the browser may have paused to buffer — restart if we should be playing
         const v = ref.current
@@ -347,6 +349,10 @@ export default function OverlayItemsLayer({
   fileUrl,
 }: OverlayItemsLayerProps) {
   const [RENDER_W, RENDER_H] = getOverlayDesignCanvas(project.settings?.resolution)
+  // SP3 fix B2: re-render trigger for proxy decode failures — marking a proxy
+  // failed flips isProxyUsable() below, swapping the overlay video back to its
+  // master src on the forced re-render.
+  const [, bumpProxyFail] = useReducer((x: number) => x + 1, 0)
 
   // Interactive tracks — in canvas mode this includes track 0; otherwise overlays only.
   const interactiveTracks = isCanvasProject ? project.tracks ?? [] : overlayTracks
@@ -545,8 +551,18 @@ export default function OverlayItemsLayer({
                   // the main chain. `proxySrc` is full-source like `src`
                   // itself — no window, no rebase — so it slots in without
                   // disturbing the raw, un-rebased `inPoint` this chain
-                  // already passes through.
-                  src={fileUrl(item.nobg_preview_src ?? item.proxySrc ?? item.src)}
+                  // already passes through. The tier is capability/failure
+                  // gated (SP3 fix B2) exactly like the main chain's.
+                  src={fileUrl(item.nobg_preview_src
+                    ?? (isProxyUsable(item.proxySrc) ? item.proxySrc : undefined)
+                    ?? item.src)}
+                  onSrcError={() => {
+                    if (!item.nobg_preview_src && isProxyUsable(item.proxySrc) && item.proxySrc) {
+                      console.warn(`[montaj] overlay proxy failed to decode — falling back to the master: ${item.proxySrc}`)
+                      markProxyFailed(item.proxySrc)
+                      bumpProxyFail()
+                    }
+                  }}
                   currentTime={currentTime}
                   itemStart={item.start}
                   inPoint={item.inPoint ?? 0}

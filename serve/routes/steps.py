@@ -372,7 +372,10 @@ async def proxy_video(body: dict = Body(...)):
     """Encode the full-source, 720p, all-intra AV1+Opus editing proxy for `input`.
 
     Request:  { "input": "/abs/path/to/video.mp4", "out": "/abs/path/to/video_proxy_hable1.mp4", "tonemap": false }
-    ("out" defaults to lib.proxy.proxy_path_for(input); "tonemap" defaults to false.)
+    ("out" defaults to lib.proxy.proxy_path_for(input). "tonemap" defaults to a
+    PROBE of the source's transfer function — HDR in, tonemap on — so backfilling
+    a lazy HDR project can't silently produce an un-tone-mapped proxy; passing an
+    explicit true/false overrides the probe. SP3 fix S3.)
 
     Proxy encodes run for minutes, so — unlike /api/normalize's blocking
     asyncio.to_thread shape — this is the async job pattern: a fresh proxy
@@ -407,8 +410,21 @@ async def proxy_video(body: dict = Body(...)):
         raise server_error("not_found", "Step 'proxy' not found")
     schema, py_path = steps["proxy"]
     step_body = {"input": input_path, "out": out}
-    if body.get("tonemap"):
-        step_body["tonemap"] = True
+    # tonemap (SP3 fix S3): explicit body value (true OR false) wins; otherwise
+    # derive from the source's transfer function exactly like init.py's lazy
+    # arm — HDR source ⇒ tonemap on.
+    if "tonemap" in body:
+        if body.get("tonemap"):
+            step_body["tonemap"] = True
+    else:
+        from lib.normalize import probe_video
+        from lib.types.colorspace import detect_from_transfer, is_hdr
+        try:
+            info = probe_video(input_path)
+        except (Exception, SystemExit):
+            info = None
+        if info is not None and is_hdr(detect_from_transfer(info.get("color_transfer"))):
+            step_body["tonemap"] = True
 
     # lib/proxy.py's own timeout (max(900, duration * 2)) is duration-scaled so
     # a long-form source doesn't get killed mid-encode — but that math only

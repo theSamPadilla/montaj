@@ -119,11 +119,15 @@ def test_proxy_endpoint_job_lifecycle(client, test_video, tmp_path):
     assert out.exists() and out.stat().st_size > 0
 
 
-def test_proxy_endpoint_fresh_skip_returns_200_no_job(client, test_video, tmp_path):
+def test_proxy_endpoint_fresh_skip_returns_200_no_job(client, test_video, tmp_path, monkeypatch):
     """A pre-existing, source-fresher proxy short-circuits synchronously (200,
     no job started) — the endpoint's idempotent fast path."""
     from lib.proxy import proxy_path_for
 
+    # S7 routes outside-workspace sources to .sources/_proxycache; declare
+    # tmp_path as the workspace so the sibling path this test pre-creates is
+    # the one the endpoint computes.
+    monkeypatch.setenv("MONTAJ_WORKSPACE_DIR", str(tmp_path))
     src_copy = tmp_path / "clip.mp4"
     shutil.copyfile(test_video, src_copy)
     out = proxy_path_for(str(src_copy))

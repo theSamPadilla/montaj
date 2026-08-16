@@ -148,18 +148,33 @@ underneath — a new preview/render divergence on top of this one. See
 `fixtures/proxy-matrix.json` for the corpus coverage.
 
 For an item with `remove_bg: true` + `nobg_src` present but NO
-`nobg_preview_src`, preview falls through past the (absent) preview alpha
-artifact straight to `normalizedSrc` — which, if present, IS a window cache
-and gets rebased. Render picks `nobg_src` directly — which is NOT a window
-cache (it covers the full source) and is never rebased. The two variants can
-end up playing/encoding different in/out points for the same item.
+`nobg_preview_src`, the two variants pick different files — and which files
+depends on whether an SP3 proxy is present (post-SP3, import writes one on
+essentially every video item, so the WITH-proxy case is the norm):
 
-`fixtures/nobg-matrix.json` row `nobg-110` is the headline case (the full 2×2×2
-matrix is also in that fixture for completeness): preview resolves to
+- **With `proxySrc` (the post-SP3 norm):** preview falls through past the
+  (absent) preview alpha artifact to the PROXY — full-source, unrebased
+  (`usedNormalizedCache: false`, raw `inPoint`/`outPoint`). Render picks
+  `nobg_src` — also full-source, also unrebased. **Both variants are
+  unrebased**, so the in/out-point mismatch half of this divergence
+  disappears; what remains is preview showing the un-cut-out proxy pixels
+  where render composites the alpha cutout (visual-content divergence only).
+- **Without `proxySrc`** (proxy failed/deferred/cleaned, or `--no-proxy`):
+  the original drift applies — preview falls to `normalizedSrc`, which IS a
+  window cache and gets rebased, while render's `nobg_src` is never rebased.
+  The two variants can play/encode different in/out points for the same item.
+
+Fixture coverage: `fixtures/nobg-matrix.json` rows carry NO `proxySrc`, so its
+`nobg-110` encodes the WITHOUT-proxy drift: preview resolves to
 `{src: normalizedSrc, inPoint: 2, outPoint: 8, usedNormalizedCache: true}`;
-render resolves to `{src: nobg_src, inPoint: 3, outPoint: 9,
-usedNormalizedCache: false}` — verified against both formulas independently
-during T5's audit (see the T5 report).
+render to `{src: nobg_src, inPoint: 3, outPoint: 9, usedNormalizedCache:
+false}` — verified during SP2 T5's audit. The WITH-proxy norm's combination
+(`remove_bg` + `nobg_src` + `proxySrc`, no `nobg_preview_src`) has **no
+fixture row yet** — `proxy-matrix.json` covers proxy × `nobg_preview_src`
+only. **Corpus gap, flagged for SP4's fixture additions.** (Entry rewritten
+post-SP3 — fix S8: the pre-SP3 text presented the rebase drift as the
+universal case, which stopped being true for real imports the moment proxies
+shipped on every item.)
 
 **Owner: SP4.**
 

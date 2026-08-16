@@ -1,13 +1,16 @@
 #!/usr/bin/env python3
 """montaj clean — remove disposable derived files (editing proxies)."""
-import fnmatch, json, os, sys
+import json, os, re, sys
 from cli.main import add_global_flags
 from cli.output import emit_error
+from lib.proxy import PROXY_LOOK
 
-# Matches `<stem>_proxy_<LOOK>.mp4` (lib/proxy.py's proxy_path_for naming) and
-# nothing else: `clip_normalized.mp4`, `proxy.mp4`, and `clip_proxy_hable1.mov`
-# (wrong extension) must all survive a clean.
-PROXY_GLOB = "*_proxy_*.mp4"
+# Only files carrying a KNOWN look tag are ever deleted (SP3 fix S5) — the loose
+# `*_proxy_*.mp4` glob also matched user files like `reverse_proxy_demo.mp4`.
+# APPEND (never remove) old tags here when lib/proxy.py's PROXY_LOOK bumps, so
+# the previous look's files stay cleanable after a regeneration.
+KNOWN_LOOKS = tuple(dict.fromkeys(("hable1", PROXY_LOOK)))
+PROXY_RE = re.compile(r"_proxy_(%s)\.mp4$" % "|".join(re.escape(look) for look in KNOWN_LOOKS))
 
 
 def register(subparsers):
@@ -19,8 +22,11 @@ def register(subparsers):
                         help="Limit to one project directory (default: auto-discover from cwd)")
     scope.add_argument("--all-projects", action="store_true",
                         help="Scan the whole workspace instead of just the current project")
+    p.add_argument("--yes", action="store_true",
+                   help="Actually delete. Without --yes, clean only LISTS what it would "
+                        "remove — the safe default for a recursive destructive command. (SP3 fix S6)")
     p.add_argument("--dry-run", action="store_true",
-                   help="List matching files without deleting them")
+                   help="Explicit alias for the default list-only behavior (overrides --yes)")
     add_global_flags(p)
     p.set_defaults(func=handle)
 
@@ -81,6 +87,14 @@ def _scan_roots(args):
     elif args.project:
         if not os.path.isdir(args.project):
             emit_error("not_found", f"Directory not found: {args.project}")
+        if not os.path.isfile(os.path.join(args.project, "project.json")):
+            # SP3 fix S4: the same rule auto-discovery applies. Without this,
+            # `--project ~` is a valid recursive delete-and-rewrite walk over
+            # an arbitrary directory tree. Whole-workspace cleans go through
+            # --all-projects instead.
+            emit_error("not_a_project",
+                       f"--project must point at a project directory (no project.json in "
+                       f"{args.project}). Use --all-projects for a whole-workspace clean.")
         roots = [args.project, sources_dir]
     else:
         project_dir = _find_project_dir()
@@ -112,7 +126,7 @@ def _scan_roots(args):
 def _find_proxy_files(root):
     for dirpath, _dirnames, filenames in os.walk(root):
         for name in sorted(filenames):
-            if fnmatch.fnmatch(name, PROXY_GLOB):
+            if PROXY_RE.search(name):
                 yield os.path.join(dirpath, name)
 
 
@@ -143,7 +157,10 @@ def handle(args):
             seen_paths.add(real)
             matches.append({"path": path, "bytes": os.path.getsize(path)})
 
-    if not args.dry_run:
+    # SP3 fix S6: deleting requires an explicit --yes; the bare command (and
+    # --dry-run) only lists. --dry-run beats --yes when both are passed.
+    will_delete = args.yes and not args.dry_run
+    if will_delete:
         for match in matches:
             try:
                 os.remove(match["path"])
@@ -177,8 +194,13 @@ def handle(args):
                         del item["proxySrc"]
                         changed = True
             if changed:
-                with open(pj, "w") as f:
+                # Atomic rewrite (SP3 fix S6): truncate-then-dump destroys the
+                # project file on a crash or full disk. Same tmp+os.replace
+                # pattern as lib/credentials.py.
+                tmp = pj + ".tmp"
+                with open(tmp, "w") as f:
                     json.dump(data, f, indent=2)
+                os.replace(tmp, pj)
                 projects_updated += 1
 
     if args.json:
@@ -198,3 +220,5 @@ def handle(args):
         print(f"{_human_size(match['bytes']):>8}  {match['path']}")
     if projects_updated:
         print(f"cleared proxySrc from {projects_updated} project.json file(s)")
+    if matches and not will_delete:
+        print("(nothing deleted — pass --yes to delete)")

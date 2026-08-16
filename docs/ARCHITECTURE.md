@@ -890,7 +890,11 @@ In both cases the proxy encode is scheduled inside `project/init.py`'s `_normali
 
 **Cleanup.** `montaj clean --proxies` (`cli/commands/clean.py`) scans the current project directory (or `--project <dir>` / `--all-projects` for the whole workspace) plus `~/Montaj/.sources/` — which it always includes, since shared lazy-workflow proxies live there — for `*_proxy_*.mp4`, prints each with its size, and deletes them unless `--dry-run`. Proxies are disposable by design: deleting one just means the editor falls back to playing the master until the proxy is regenerated (at next import, or via `POST /api/proxy`).
 
-**Cost.** Proxies are optional insurance for scrub speed, not free: import takes roughly +30s per minute of source footage on the reference machine, and proxies use about 2GB of disk per hour of footage. Both are reclaimable at any time via `montaj clean --proxies`.
+**Cost.** Proxies are optional insurance for scrub speed, not free: import takes roughly +30s per minute of source footage on the reference machine (a macOS/videotoolbox number — the encode uses `-hwaccel auto`, which silently falls back to software decode on machines without a hardware decoder, so budget more there), and proxies use about 2GB of disk per hour of footage. Both are reclaimable at any time via `montaj clean --proxies --yes`.
+
+**Bounded import time (SP3 fix B1).** The inline proxy encode is duration-gated: sources longer than ~8 minutes (`--proxy-inline-max` to override) log `proxy deferred` and leave `proxySrc` absent instead of blocking project creation — critical for the lazy/clips path, whose sources are long-form by definition and whose import must stay a no-re-encode operation. Deferred proxies are backfilled via `POST /api/proxy` (async job) or `montaj step proxy`, then written onto the item with a normal project save. Proxies can be disabled outright with `montaj init --no-proxy` or a workflow's `"proxy": false` (persisted as `settings.proxy: false`).
+
+**Unsupported browsers (SP3 fix B2).** AV1+Opus-in-MP4 isn't universally decodable (notably Safari on pre-M3 Macs). The editor probes decode support once per session and, when unsupported — or when a specific proxy fails to decode mid-session (e.g. a dangling `proxySrc` after an out-of-band delete) — strips the proxy tier for the affected clips and falls back to the master, logging a console warning instead of showing a silent black preview.
 
 ### Render pass
 

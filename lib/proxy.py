@@ -17,6 +17,8 @@ Two arms, selected by the caller via `tonemap`:
 Reuses lib/normalize.py's tonemap filter builder and atomic-write/temp-file
 machinery rather than reinventing either.
 """
+import hashlib
+import json
 import os
 import sys
 
@@ -31,18 +33,59 @@ PROXY_LOOK = "hable1"
 """Look-version tag stamped into every proxy filename. Bumping this (e.g. when
 Montaj Vivid ships) changes the filename, so is_proxy_fresh() naturally treats
 every existing proxy as stale and regenerates it under the new look — no
-migration step needed."""
+migration step needed. When bumping: APPEND the old tag to
+cli/commands/clean.py's KNOWN_LOOKS so the previous look's files stay
+cleanable (clean only deletes known-tagged files, SP3 fix S5)."""
+
+
+def _workspace_root() -> str:
+    """Global workspace root: MONTAJ_WORKSPACE_DIR env var > ~/.montaj/config.json's
+    workspaceDir > ~/Montaj. Mirrors project/init.py / cli/commands/clean.py's
+    resolution (duplicated per existing precedent — no shared helper importable
+    from lib/ without a circular pull)."""
+    env = os.environ.get("MONTAJ_WORKSPACE_DIR")
+    if env:
+        return env
+    config_path = os.path.join(os.path.expanduser("~"), ".montaj", "config.json")
+    if os.path.isfile(config_path):
+        try:
+            cfg = json.loads(open(config_path).read())
+            if "workspaceDir" in cfg:
+                return cfg["workspaceDir"]
+        except Exception:
+            pass
+    return os.path.join(os.path.expanduser("~"), "Montaj")
 
 
 def proxy_path_for(src: str) -> str:
-    """Sibling proxy path for `src`: ``<stem>_proxy_<PROXY_LOOK>.mp4``.
+    """Proxy path for `src`: ``<stem>_proxy_<PROXY_LOOK>.mp4``.
 
-    For lazy shared sources (``~/Montaj/.sources/<id>/original.mov``), this
-    places the proxy alongside the shared original — one proxy serves every
-    child clip derived from it.
+    Placement (SP3 fix S7):
+      - Sources under the workspace root (project dirs, ``.sources/<id>/``
+        shared lazy originals): the proxy is a SIBLING of the source — one
+        proxy beside ``~/Montaj/.sources/<id>/original.mov`` serves every
+        child clip derived from it.
+      - Sources OUTSIDE the workspace (ad-hoc ``--clips <path> --symlink-clips``
+        against a user's own footage folder): the proxy must NOT litter the
+        user's footage directory, and must stay findable by
+        ``montaj clean --proxies``. It goes to
+        ``<workspace>/.sources/_proxycache/<realpath-sha1[:16]>/<name>`` —
+        inside ``.sources/``, which clean always scans.
+
+    The realpath hash keys the cache dir, so two different outside files with
+    the same basename never collide, and the same file always maps to the same
+    proxy regardless of which symlink reached it.
     """
-    head, tail = os.path.split(src)
-    return os.path.join(head, f"{tail.rsplit('.', 1)[0]}_proxy_{PROXY_LOOK}.mp4")
+    real = os.path.realpath(src)
+    head, tail = os.path.split(real)
+    name = f"{tail.rsplit('.', 1)[0]}_proxy_{PROXY_LOOK}.mp4"
+
+    ws_real = os.path.realpath(_workspace_root())
+    if head == ws_real or head.startswith(ws_real + os.sep):
+        return os.path.join(head, name)
+
+    digest = hashlib.sha1(real.encode("utf-8")).hexdigest()[:16]
+    return os.path.join(ws_real, ".sources", "_proxycache", digest, name)
 
 
 def is_proxy_fresh(proxy: str, src: str) -> bool:

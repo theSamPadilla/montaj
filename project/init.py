@@ -25,6 +25,13 @@ from lib.workflow import read_workflow
 NORMALIZE_POOL_SIZE = 4  # outer pool — fast-path/skip workers don't acquire heavy_encode_sem
 HEAVY_ENCODE_LIMIT = 2   # libx264 -preset slow at 4K is memory-heavy — precedent: materialize_cut.py:22
 PROXY_ENCODE_LIMIT = 2   # av1 proxy encodes are their own CPU-heavy pool, separate from libx264/265 masters so proxies never queue behind normalize
+# Inline-proxy duration gate (SP3 fix B1). init runs inside serve's project-creation
+# subprocess with a hard 1800s budget (serve/routes/projects.py); at ~0.5x-realtime
+# encode speed a source longer than this defers its proxy to the POST /api/proxy
+# backfill job instead of blocking (and 504ing) project creation. Override per-run
+# with --proxy-inline-max; disable proxies entirely with --no-proxy or a workflow's
+# "proxy": false.
+PROXY_INLINE_MAX_SEC = 480.0
 
 
 def _copy_into_workspace(src: str, dest_dir: str, prefix: str, link: bool = False) -> str:
@@ -251,6 +258,18 @@ def main():
              "compose time. Overrides the workflow's normalize setting when provided.",
     )
     parser.add_argument(
+        "--no-proxy", dest="no_proxy", action="store_true",
+        help="Skip editing-proxy generation entirely (SP3). The editor falls back to "
+             "playing masters; proxies can be backfilled later via POST /api/proxy or "
+             "`montaj step proxy`. Also settable per-workflow with \"proxy\": false.",
+    )
+    parser.add_argument(
+        "--proxy-inline-max", dest="proxy_inline_max", type=float, default=None,
+        help=f"Max source duration (seconds) proxied inline during init; longer sources "
+             f"defer to the backfill job so project creation never blocks on a long encode. "
+             f"Default {PROXY_INLINE_MAX_SEC:.0f}.",
+    )
+    parser.add_argument(
         "--language", default="en",
         help="Spoken language of the footage as a whisper code (e.g. 'es', 'pt', 'fr'), or "
              "'auto' to detect. Stored in settings.language and passed to the speech steps "
@@ -260,7 +279,14 @@ def main():
     args = parser.parse_args()
 
     # Normalize mode: CLI flag overrides workflow JSON; workflow JSON overrides default "eager".
-    normalize_mode = args.normalize or (read_workflow(args.workflow) or {}).get("normalize", "eager")
+    _workflow_json = read_workflow(args.workflow) or {}
+    normalize_mode = args.normalize or _workflow_json.get("normalize", "eager")
+
+    # Proxy policy (SP3 fix B1): --no-proxy beats the workflow's "proxy" setting,
+    # which beats the default (enabled). The inline-duration gate follows the same
+    # CLI-over-default rule.
+    proxy_enabled = (not args.no_proxy) and _workflow_json.get("proxy", True) is not False
+    proxy_inline_max = args.proxy_inline_max if args.proxy_inline_max is not None else PROXY_INLINE_MAX_SEC
 
     # Early carousel detection — validate incompatible args BEFORE any on-disk side effects.
     early_project_type = _read_project_type(args.workflow)
@@ -555,7 +581,8 @@ def main():
                 _proxy_locks[path] = lock
             return lock
 
-    def _schedule_proxy(clip: dict, clip_id: str, src: str, *, tonemap: bool, info: dict) -> None:
+    def _schedule_proxy(clip: dict, clip_id: str, src: str, *, tonemap: bool, info: dict,
+                        duration: float | None = None) -> None:
         """Encode (or reuse) the full-source editing proxy for `src`, writing
         `clip["proxySrc"]` on success.
 
@@ -563,14 +590,33 @@ def main():
         reported via progress() and swallowed — the clip simply keeps no
         proxySrc and the editor falls back to playing the master.
 
+        SP3 fix B1: two gates run BEFORE any encode. Proxies disabled
+        (--no-proxy / workflow "proxy": false) → silent no-op. Source longer
+        than the inline gate → defer with a progress line; the proxy is
+        backfilled later via POST /api/proxy (which reuses the same freshness
+        check, so an already-fresh proxy from a previous run still gets
+        adopted below regardless of duration).
+
         The freshness check + encode is fully serialized per-path via
         _proxy_lock_for, so N concurrent children of one shared lazy source
         only encode once — a thread that loses the race blocks on the lock,
         then finds the proxy already fresh once it acquires it and skips
         straight to writing proxySrc.
         """
+        if not proxy_enabled:
+            return
         proxy_out = proxy_path_for(src)
         try:
+            if not is_proxy_fresh(proxy_out, src):
+                if duration is None:
+                    try:
+                        duration = get_duration(src)
+                    except (Exception, SystemExit):
+                        duration = None
+                if duration is not None and duration > proxy_inline_max:
+                    progress(f"[{clip_id}] proxy deferred (source {duration:.0f}s > inline gate "
+                             f"{proxy_inline_max:.0f}s) — backfill via POST /api/proxy or `montaj step proxy`")
+                    return
             with _proxy_lock_for(proxy_out):
                 if not is_proxy_fresh(proxy_out, src):
                     with _proxy_encode_sem:
@@ -635,17 +681,15 @@ def main():
                 # — cosmetically different string, same physical file/dir,
                 # no behavior change either way.)
                 #
-                # Placement caveat: "sibling of the encoded-from file" means
-                # the proxy lands beside whatever `clip_path` resolves to. In
-                # the real clips workflow that's `~/Montaj/.sources/<id>/`,
-                # which `montaj clean --proxies` always scans. But for an
-                # ad-hoc `--clips <path outside the workspace> --symlink-clips`
-                # call, the proxy lands next to the user's ORIGINAL footage,
-                # outside the workspace root and outside .sources/ — outside
-                # every root `montaj clean --proxies` scans (see
-                # cli/commands/clean.py:_scan_roots). Not solved here; the
-                # operator has been notified separately.
-                _schedule_proxy(clip, clip_id, os.path.realpath(clip_path), tonemap=tonemap, info=info)
+                # Placement: proxy_path_for() routes in-workspace sources to a
+                # sibling path (the shared `.sources/<id>/` case) and
+                # OUTSIDE-workspace sources into
+                # `<workspace>/.sources/_proxycache/<realpath-hash>/` so an
+                # ad-hoc `--clips <outside path> --symlink-clips` call never
+                # litters the user's own footage folders and clean --proxies
+                # can always find the artifact (SP3 fix S7).
+                _schedule_proxy(clip, clip_id, os.path.realpath(clip_path), tonemap=tonemap,
+                                info=info, duration=clip.get("sourceDuration"))
             return
 
         t0 = time.monotonic()
@@ -695,14 +739,18 @@ def main():
         # SDR project yields an un-tone-mapped proxy — sanctioned by the SP3
         # plan; render still conforms at render time.
         # Skipped when probing failed (no info to build the encode from).
-        if info is not None:
-            _schedule_proxy(clip, clip_id, clip["src"], tonemap=False, info=info)
 
-        # Cache source duration so the UI can clamp edits against it
+        # Cache source duration so the UI can clamp edits against it (computed
+        # BEFORE the proxy so the B1 inline-duration gate reuses it instead of
+        # a second ffprobe).
         try:
             clip["sourceDuration"] = get_duration(clip["src"])
         except (Exception, SystemExit):
             pass
+
+        if info is not None:
+            _schedule_proxy(clip, clip_id, clip["src"], tonemap=False, info=info,
+                            duration=clip.get("sourceDuration"))
 
         elapsed = time.monotonic() - t0
         progress(f"[{clip_id}] {path_kind} done in {elapsed:.2f}s")
@@ -777,6 +825,11 @@ def main():
 
     if normalize_mode == "lazy":
         project["settings"]["normalize"] = "lazy"
+
+    if not proxy_enabled:
+        # Record the opt-out so backfill tooling and future sessions can see the
+        # intent (SP3 fix B1); absent means proxies are on (the default).
+        project["settings"]["proxy"] = False
 
     if voiceover_path:
         project["voiceover"] = {"src": voiceover_path}

@@ -1367,6 +1367,43 @@ def test_init_eager_proxy_written_to_sources_and_tracks(tmp_path):
     assert proxy_path.exists() and proxy_path.stat().st_size > 0
 
 
+def test_init_proxy_inline_duration_gate_defers_long_sources(tmp_path):
+    """SP3 fix B1: a source longer than --proxy-inline-max is NOT proxied
+    inline — init logs 'proxy deferred', leaves proxySrc absent, and exits 0
+    fast (the /api/proxy backfill job owns it later). Gate forced to ~0 so
+    even the 1s fixture counts as 'long'."""
+    src = tmp_path / "clip.mp4"
+    _make_clip(src, duration=1)
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    result = run_init("--clips", str(src), "--prompt", "test",
+                      "--proxy-inline-max", "0.001",
+                      env_override={"MONTAJ_WORKSPACE_DIR": str(ws)})
+    assert result.returncode == 0, result.stderr
+    project = json.loads(_project_path_from_stdout(result.stdout).read_text())
+    assert "proxySrc" not in project["tracks"][0][0]
+    assert "proxy deferred" in (result.stderr + result.stdout)
+    # Nothing was encoded.
+    assert not list(ws.rglob("*_proxy_*.mp4"))
+
+
+def test_init_no_proxy_flag_skips_and_persists_setting(tmp_path):
+    """SP3 fix B1: --no-proxy skips proxy generation entirely and records the
+    opt-out as settings.proxy: false (a workflow's "proxy": false takes the
+    same proxy_enabled path)."""
+    src = tmp_path / "clip.mp4"
+    _make_clip(src, duration=1)
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    result = run_init("--clips", str(src), "--prompt", "test", "--no-proxy",
+                      env_override={"MONTAJ_WORKSPACE_DIR": str(ws)})
+    assert result.returncode == 0, result.stderr
+    project = json.loads(_project_path_from_stdout(result.stdout).read_text())
+    assert "proxySrc" not in project["tracks"][0][0]
+    assert project["settings"].get("proxy") is False
+    assert not list(ws.rglob("*_proxy_*.mp4"))
+
+
 @pytest.mark.skipif(not HAS_FFMPEG, reason="ffmpeg not available")
 def test_init_eager_proxy_command_is_plain_scale_no_tonemap(tmp_path):
     """Eager clips are always encoded with tonemap=False — the (possibly

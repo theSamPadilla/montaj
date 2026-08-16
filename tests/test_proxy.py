@@ -37,6 +37,47 @@ HAS_FFMPEG = shutil.which("ffmpeg") is not None
 pytestmark = pytest.mark.skipif(not HAS_FFMPEG, reason="ffmpeg not available")
 
 
+@pytest.fixture(autouse=True)
+def _workspace_is_tmp(tmp_path, monkeypatch):
+    """SP3 fix S7 made proxy placement workspace-aware: in-workspace sources
+    get sibling proxies, outside-workspace sources are routed to
+    <workspace>/.sources/_proxycache/. Declare each test's tmp_path as the
+    workspace so the naming/encode tests keep exercising the sibling path;
+    the outside-workspace routing has its own dedicated tests below."""
+    monkeypatch.setenv("MONTAJ_WORKSPACE_DIR", str(tmp_path))
+
+
+def test_proxy_path_for_outside_workspace_routes_to_sources_proxycache(tmp_path, monkeypatch):
+    """SP3 fix S7: an outside-workspace source must not get a proxy written
+    next to the user's own footage — it goes to .sources/_proxycache/<hash>/,
+    which `montaj clean --proxies` always scans."""
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    monkeypatch.setenv("MONTAJ_WORKSPACE_DIR", str(workspace))
+    outside = tmp_path / "user-footage" / "clip.mov"
+    outside.parent.mkdir()
+    outside.write_bytes(b"x")
+
+    out = proxy_path_for(str(outside))
+    cache_root = workspace / ".sources" / "_proxycache"
+    assert Path(out).name == f"clip_proxy_{PROXY_LOOK}.mp4"
+    assert str(cache_root) in out
+    # Deterministic: same source → same path; the hash dir keys the realpath.
+    assert proxy_path_for(str(outside)) == out
+
+
+def test_proxy_path_for_outside_workspace_distinct_files_same_basename_do_not_collide(tmp_path, monkeypatch):
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    monkeypatch.setenv("MONTAJ_WORKSPACE_DIR", str(workspace))
+    a = tmp_path / "a" / "clip.mov"
+    b = tmp_path / "b" / "clip.mov"
+    for f in (a, b):
+        f.parent.mkdir()
+        f.write_bytes(b"x")
+    assert proxy_path_for(str(a)) != proxy_path_for(str(b))
+
+
 # ── helpers ───────────────────────────────────────────────────────────────────
 
 def _ffprobe_streams(path):
@@ -61,26 +102,30 @@ def _ffprobe_key_frame_flags(path):
 
 # ── proxy_path_for() naming ─────────────────────────────────────────────────
 
-def test_proxy_path_for_appends_look_suffix():
+def test_proxy_path_for_appends_look_suffix(monkeypatch):
+    monkeypatch.setenv("MONTAJ_WORKSPACE_DIR", "/a")  # in-workspace ⇒ sibling naming
     assert proxy_path_for("/a/b/clip.mp4") == f"/a/b/clip_proxy_{PROXY_LOOK}.mp4"
 
 
-def test_proxy_path_for_strips_only_the_last_extension():
+def test_proxy_path_for_strips_only_the_last_extension(monkeypatch):
+    monkeypatch.setenv("MONTAJ_WORKSPACE_DIR", "/a")
     assert proxy_path_for("/a/b/my.clip.mov") == f"/a/b/my.clip_proxy_{PROXY_LOOK}.mp4"
 
 
-def test_proxy_path_for_is_sibling_of_source():
+def test_proxy_path_for_is_sibling_of_source(monkeypatch):
     # Shared lazy sources live in ~/Montaj/.sources/<id>/; the proxy must land
     # next to the encoded-from file, not in some other directory.
+    monkeypatch.setenv("MONTAJ_WORKSPACE_DIR", "/Users/x/Montaj")
     src = "/Users/x/Montaj/.sources/abc123/original.mov"
     out = proxy_path_for(src)
     assert os.path.dirname(out) == os.path.dirname(src)
 
 
-def test_proxy_path_for_extensionless_source_under_dotted_directory():
+def test_proxy_path_for_extensionless_source_under_dotted_directory(monkeypatch):
     # rsplit('.', 1) on the WHOLE path (not just the basename) would treat the
     # dotted ".sources" directory segment as the "extension" for an
     # extension-less source, landing the proxy in the wrong directory.
+    monkeypatch.setenv("MONTAJ_WORKSPACE_DIR", "/Users/x/Montaj")
     assert proxy_path_for("/Users/x/Montaj/.sources/abc/original") == (
         "/Users/x/Montaj/.sources/abc/original_proxy_hable1.mp4"
     )
