@@ -149,12 +149,60 @@ The agent writes directly to disk. `montaj serve` watches. Every write immediate
 
 ## Preview player
 
-Native `<video>` element with CSS-positioned overlays. No canvas, no WebGL.
+Native `<video>` element with CSS-positioned overlays, by default. No canvas,
+no WebGL — unless the experimental playback engine below is switched on.
 
 - Captions rendered as absolutely positioned divs, shown/hidden by `currentTime`
 - Overlays (title cards, lower thirds) same approach
 - Timeline scrubber synced to `video.currentTime`
 - Preview is an **approximation** — CSS overlays are close but not pixel-perfect to the final render burn-in. The render is what matters.
+
+### Playback engine (experimental, flag-gated, off by default)
+
+A WebCodecs-based playback engine (`montaj_assets/editor/src/engine/`) exists
+as an opt-in alternative to the `<video>` player above — it decodes the
+editing proxy directly and paints to a canvas instead. It ships entirely
+behind a flag and changes nothing about the default experience; see
+`docs/ARCHITECTURE.md`'s "Playback engine" section for how it works
+internally, and `docs/plans/SP4-PARITY-CHECKLIST.md` for the manual
+verification pass gating any future default change.
+
+- **The prop.** `VideoEditor` takes an optional `engine?: {enabled: boolean;
+  debugHud?: boolean}`. Absent or `{enabled: false}` (the default): unchanged
+  `<video>` preview, and the engine's eligibility check never even runs.
+  `{enabled: true}` asks the editor to try the engine — it does not force it
+  on for every project (see eligibility below). `debugHud: true` additionally
+  renders a small fps/dropped/buffered/clock readout; it has no effect while
+  `enabled` is false.
+- **montaj ui's dev toggle.** No in-app switch yet. In devtools, on the editor
+  tab: `localStorage.setItem('montaj-engine', '1')`, then reload — `EditorPage.tsx`
+  reads `localStorage['montaj-engine']` once per page load and passes
+  `engine={{ enabled: engineFlagEnabled }}` down. Remove the key (or set it to
+  anything else) and reload to go back to the `<video>` player. `debugHud`
+  isn't wired to a toggle here — enabling it for measurement means a
+  temporary source edit to that one line.
+- **Eligibility.** Evaluated once per project **load**, never re-evaluated on
+  an edit: the browser must support WebCodecs decode of the editing proxy's
+  codecs (av01 video + Opus audio), every track-0 video item must already
+  carry a `proxySrc`, and none may need `nobg_preview_src` (the WebM alpha
+  preview for background-removed clips — the engine's demuxer is MP4-only). A
+  project that fails stays on the `<video>` player for its whole session even
+  if it becomes eligible moments later (a proxy finishes encoding); a project
+  that passes stays on the engine for its whole session even if a clip added
+  afterward has no proxy yet.
+- **Automatic fallback.** Whenever eligibility fails, the console prints one
+  line — `[montaj] playback engine unavailable for this project — using the
+  legacy player (<reason>)` — and playback is otherwise indistinguishable from
+  the engine never having existed. This is designed behavior, not a fault.
+- **Preparing placeholder.** A clip that loses its proxy after the engine
+  already took over a session — still encoding, failed to load, or failed to
+  decode — shows a small spinner and "Preparing preview…" over just that
+  clip's range (after ~200ms of it being sustained, so an ordinary clip-cut
+  never flashes it), while the rest of the project keeps playing.
+- **Debug HUD.** `fps` / `dropped` / `buffered` / `clock` (`audio` or
+  `fallback`), polled twice a second, drawn bottom-left of the preview. An
+  operator/engineering affordance for confirming the engine is keeping up —
+  not end-user copy.
 
 ---
 

@@ -646,6 +646,115 @@ resolver (or to render's delegation to it) from silently changing what ships:
 
 ---
 
+### Playback engine (`montaj_assets/editor/src/engine/`) — experimental, flag-gated
+
+**Status: off by default, opt-in, zero behavior change unless a host asks for
+it.** SP4 replaces the editor preview's double-buffered `<video>` machinery
+(`useVideoPlayback.ts`, three independent rAF clocks) with a WebCodecs
+demux→decode→paint pipeline, but ships it entirely behind a `VideoEditor`
+`engine?: {enabled, debugHud?}` prop (plan decision 3: feature-flagged
+parallel rollout — the old path stays until a parity pass clears it, and
+removal is a later, separate change). See `docs/UI.md` for the operator-facing
+surface (the flag, eligibility, fallback, Preparing placeholder, debug HUD)
+and `docs/plans/SP4-PARITY-CHECKLIST.md` for the manual verification pass that
+gates ever flipping the default.
+
+**Module map:**
+
+| Module | What it does |
+|---|---|
+| `eligibility.ts` | Pure project-shape check (every track-0 video item proxied, none needing WebM alpha) + an async, session-cached WebCodecs capability probe (`VideoDecoder`/`AudioDecoder.isConfigSupported`). `evaluateEngineEligibility` composes both. |
+| `media-loader.ts` | `loadBytes` — a host-injected `FileUrlResolver` (`EditorAdapter.fileUrl`, unchanged) mapped to a whole-file `fetch`. |
+| `demux.ts` | mp4box.js MP4 parse → a flat, codec-agnostic sample table. Samples stay in **decode order** (a `presIndex` answers presentation-time questions separately) — WebCodecs requires decode order, and the source footage's B-frames make the two orders differ. `demuxBytes` is synchronous (mp4box's callback API isn't actually async when handed a whole file at once). |
+| `batch-planner.ts` | Pure decode-ahead planning: pipelined batches (≥1 request queued on the worker so it never idles waiting for main), batches floored at a quarter of the decode-ahead budget so a `decoder.flush()` amortizes over many frames, batch pre-roll targets computed from the batch's minimum presentation time (not its first decode-order sample), and a 1µs pre-roll epsilon reconciling integer-µs `EncodedVideoChunk` timestamps against the demuxer's float sample times. |
+| `frame-server.ts` + `decode-worker-source.ts` | Main-side decode-ahead orchestration, plus the actual decoder: a classic `Worker` loaded from an inlined source **string** via a Blob URL, running one `VideoDecoder` behind a supersession-by-request-id queue (never `decoder.reset()`). |
+| `audio-clock.ts` + `audio-worklet-source.ts` | The master clock. An `AudioWorkletProcessor`, also an inlined Blob-URL source string, renders PCM from a ring buffer and reports its actual output-frame count (`samplesConsumed`) back at ~10Hz; that count — not decode progress, not wall time — is the clock. Includes PCM resampling (the page's shared `AudioContext` rate need not match Opus's 48kHz decode rate), per-clip volume scaling at ring-enqueue time, and a wall-clock fallback for everything with nothing to sync to. |
+| `scheduler.ts` | The single synchronous tick / state machine. Two orthogonal axes — `transport` (idle/paused/playing/ended) and `picture` (video/black/opaque/preparing) — reproduce every legacy behavior (gaps, loop wrap/stop, end-of-project, `sourceCrop` framing) from one master clock instead of three. |
+| `index.ts` | The `createEngine` facade: resource lifecycle (`EngineSourceHost` — one `FrameServer` per `src`, refcounted by clip; one `MasterClock` per clip; a small demux LRU), the rAF loop (runs only while playing), the canvas painter, and `EngineStats` for the debug HUD. |
+| `debug-hud.tsx` | The fps/dropped/buffered/clock readout, rendered only when `engine.debugHud` is true. |
+
+**Data flow.** Video: proxy fetch (via the host's `fileUrl`, whole file) →
+mp4box demux (main thread, decode order preserved) → batch planning (main
+thread, pure functions) → decode (a Blob-URL classic `Worker` running one
+`VideoDecoder`, fed by structured-cloned sample bytes, `VideoFrame`s returned
+by transfer) → paint (canvas 2D `drawImage` of one `VideoFrame` per tick).
+Audio: Opus packets → `AudioDecoder` (main thread) → volume-scaled,
+resampled PCM → an `AudioWorklet` ring buffer (postMessage chunks, deliberately
+**not** `SharedArrayBuffer` — cross-origin isolation is unavailable in Hub's
+serving context) → `samplesConsumed` reported back ~10Hz, which **is** the
+master clock (wall-clock-extrapolated between reports, bounded so a suspended
+`AudioContext` presents as a stalled clock rather than a runaway one). Frames
+paint according to that clock; video drops rather than blocking decode when it
+falls behind — the inverse of the legacy path's audio nudging toward video.
+Wherever there's nothing to derive a clock from — gaps, canvas (image/
+overlay-only) projects, muted clips, undecodable/absent audio, or any failure
+building the real clock — `createMasterClock` resolves (never throws or
+rejects) to a wall-clock fallback with a human-readable reason, surfaced by the
+HUD's `clock: 'fallback'`.
+
+**Flag + eligibility + fallback + Preparing-state design.** `engine` absent or
+`{enabled: false}` (the default): the legacy `<video>`-slot player renders
+exactly as before, and the eligibility probe never even runs — this is SP4's
+non-regression guarantee, checked by keeping the full editor test suite green
+with the prop untouched. `{enabled: true}` only asks the editor to *try*:
+per-project eligibility (every track-0 video item already `proxySrc`'d, none
+needing `nobg_preview_src`, plus the WebCodecs capability probe) is evaluated
+once per project **load** (`PreviewPlayer.tsx`'s `useEngineMode`) and never
+re-run on an edit — a project that fails stays on the legacy player, with a
+one-line console reason, for its whole session even if it becomes eligible a
+minute later; a project that passes stays on the engine for its whole session
+even if a clip added afterward isn't proxied yet. That one clip alone shows
+the **Preparing** picture state instead — `scheduler.ts`'s `picture` state
+machine has a value distinct from `video`/`black`/`opaque` that covers a proxy
+not yet encoded, a proxy that failed to load, and a proxy that failed to
+*decode* mid-session, all through the same path
+(`EngineSourceHost.onDecodeError`) — while the rest of the project (other
+clips, audio) keeps playing. The UI shows a spinner + "Preparing preview…"
+only after 200ms of sustained Preparing, so an ordinary prewarm-covered clip
+boundary never flashes it.
+
+**One deliberate preview/render unification, engine-path only.** An overlay's
+`opaque: true` now hides the underlying video on the engine path (audio keeps
+running) — matching what render has always done — where the legacy `<video>`
+path still shows the video underneath, a pre-existing preview/render
+divergence. See `montaj_assets/timeline-core/KNOWN-DIVERGENCES.md`'s
+`opaque-in-preview` entry for the full disposition; it is closed for the
+engine path and stays open for legacy until that player is retired.
+
+**The inline-string worker/worklet portability decision.** Both the decode
+worker and the `AudioWorkletProcessor` ship as plain-JS **source strings**,
+loaded via `URL.createObjectURL(new Blob([source], {type:
+'text/javascript'}))` and `new Worker(url)` / `audioWorklet.addModule(url)` —
+not as separate asset files. `@bycrux/editor` is a published package consumed
+by hosts with different bundlers (montaj's own `ui/`, Hub); a Vite-only `?raw`
+import or a `new Worker(new URL(...))` asset reference can only be verified
+against the bundlers actually present in this repo and would silently break
+for a host on a different one. The Blob-URL form needs nothing from the
+consumer's build tooling. Consequence: both strings are plain ES5-ish JS with
+no `import`, so they are kept deliberately thin — the worker does queueing,
+request-id supersession, and the pre-roll drop; the worklet does the ring
+buffer, underrun-as-silence, and the report cadence. Every actual *decision*
+(batch sizing, the pre-roll epsilon, the resample ratio, PCM volume scaling,
+the project↔media time mapping) lives in `batch-planner.ts` / `audio-clock.ts`
+— real, type-checked, unit-tested modules — and is injected into the string at
+construction time (`init` / `processorOptions`) rather than duplicated inside
+it.
+
+**One `FrameServer` per source, not per clip.** A silence-trimmed timeline
+that is fifty clips cut from one proxy shares a single decoder session,
+refcounted by clip; a small (3-entry) LRU keeps recently-demuxed sample tables
+around across a scrub back-and-forth even after the last clip referencing them
+drops its live session. Decode *workers* still terminate on every source
+boundary (the SP1 spike's rule: "terminate and respawn, never
+`decoder.reset()` a live worker") — only the parsed bytes linger.
+
+**Testing.** The whole engine down through the scheduler is unit-tested with
+injected seams (a fake `Painter`, a fake `SourceHost`, a fake rAF pair, a fake
+decode-worker port) in jsdom, which has none of `WebCodecs`, `Worker`, or a
+real canvas — see `montaj_assets/editor/src/engine/__tests__/`.
+
+---
+
 ### Render Engine (`render/`)
 
 Turns project.json into a final MP4. Reads the `captions` and `overlays` tracks, renders each item as a transparent video segment via React + Puppeteer, then composites everything with the source footage via ffmpeg.

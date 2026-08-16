@@ -2,14 +2,16 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   sourceWindow,
   playbackSrcFor as resolvePlaybackSrc,
+  projectEnd as timelineProjectEnd,
+  audioWindow,
 } from '@bycrux/timeline-core'
 import { gateProxy, isProxyUsable, markProxyFailed } from './proxySupport'
+import {
+  getSharedAudioContext,
+  resumeAudioContextFromGesture,
+  type MontajWindow,
+} from './audio-context'
 import type { EditorProject as Project } from '../../schema'
-
-// Typed extension for the shared AudioContext cached on window
-interface MontajWindow {
-  __montajSharedCtx?: AudioContext
-}
 
 // Typed extension for video elements that cache their GainNode
 interface MontajVideoElement extends HTMLVideoElement {
@@ -155,57 +157,25 @@ export function useVideoPlayback(
 
   // Total project end — includes opaque overlays and audio that extend beyond video clips.
   // Used to decide whether to keep playing after the last video clip ends.
-  const projectEnd = useMemo(() => {
-    const videoEnd = clips.length > 0 ? clips[clips.length - 1].end : 0
-    const overlayEnd = overlayTracks.flat().reduce((m, i) => Math.max(m, i.end), 0)
-    const audioEnd = (project.audio?.tracks ?? []).reduce((m, t) => Math.max(m, t.end ?? 0), 0)
-    return Math.max(videoEnd, overlayEnd, audioEnd)
-  }, [clips, overlayTracks, project.audio?.tracks])
+  //
+  // SP4 T8: this VIDEO-mode formula is `@bycrux/timeline-core`'s `projectEnd`
+  // (`src/durations.js`) ported verbatim FROM this exact memo — the two are
+  // byte-identical for every well-formed project, so calling the shared
+  // implementation here is a no-op substitution, not a behavior change. This
+  // is deliberately NOT shared with the CANVAS-mode ceiling below
+  // (`canvasMaxEndRef`, which excludes audio) — the two ends are legitimately
+  // different formulas (see `durations.js`'s module header) and only this one
+  // has a shared home.
+  const projectEnd = useMemo(() => timelineProjectEnd(project), [project])
 
   // Wire a video slot through a Web Audio GainNode (once per element — createMediaElementSource
   // can only be called once). After this, video.volume/muted have no audible effect; all volume
   // control goes through the GainNode, which supports values > 1.0 for amplification.
   //
-  // CRITICAL: ALL slots AND ALL audio tracks share the SAME AudioContext. Fresh
-  // AudioContexts start suspended and require a user gesture to resume. Creating
-  // separate contexts (one per slot, or a separate one for audio tracks) means
-  // those born inside a useEffect have no user-gesture activation — they stay
-  // suspended → silent. Worse, video frame production is gated on the wired
-  // AudioContext clock running, so a suspended context with a wired <video>
-  // produces "video plays but no frames render" after a hard refresh.
-  // Stash the single shared context on `window` so it survives strict-mode remounts
-  // and is reused across audio tracks, video slots, and re-mounts.
-  function getSharedAudioContext(): AudioContext {
-    const w = window as Window & MontajWindow
-    // If the cached context is closed (shouldn't happen, but defensive), recreate.
-    if (!w.__montajSharedCtx || w.__montajSharedCtx.state === 'closed') {
-      w.__montajSharedCtx = new AudioContext()
-    }
-    return w.__montajSharedCtx
-  }
-
-  /**
-   * MUST be called from inside a user-gesture handler (keydown, click, etc.).
-   * Browsers credit a `resume()` call as gesture-driven only when it happens
-   * synchronously inside a gesture-rooted call stack. Calling resume() from
-   * a useEffect or a setTimeout silently fails — the context stays suspended.
-   *
-   * Symptom of a suspended context with a wired <video>: video appears to
-   * play (paused=false, currentTime advances internally per the DOM clock)
-   * but no frames render and no audio plays — the entire pipeline is gated
-   * on the AudioContext clock running. This bites specifically after a page
-   * refresh, because SPA navigation carries gesture activation across pages
-   * but a hard reload does not.
-   */
-  function resumeAudioContextFromGesture() {
-    const w = window as Window & MontajWindow
-    const ctx: AudioContext | undefined = w.__montajSharedCtx
-    if (ctx && ctx.state === 'suspended') {
-      // Fire-and-forget; resume() returns a Promise but the gesture-credit
-      // happens at the synchronous call site, not when the promise resolves.
-      ctx.resume().catch(() => {})
-    }
-  }
+  // `getSharedAudioContext` / `resumeAudioContextFromGesture` used to live here as
+  // private helpers; SP4 T4 MOVED them to `./audio-context` (unchanged) so the
+  // WebCodecs engine consumes the same context and the same gesture rule instead
+  // of growing a second copy. Their full rationale lives in that module's header.
 
   /**
    * Start playback on a wired <video> from a user gesture. Video frame
@@ -436,54 +406,33 @@ export function useVideoPlayback(
   const unmutedAudioTracksRef = useRef(unmutedAudioTracks)
   useEffect(() => { unmutedAudioTracksRef.current = unmutedAudioTracks }, [unmutedAudioTracks])
 
+  // SP4 T8: the window/gain arithmetic is routed through timeline-core's
+  // `audioWindow` (`src/audio.js`) — the pure port of exactly this logic,
+  // derived-outPoint rule included — the same way `useEnginePlayback.ts`
+  // already does for the WebCodecs engine path. The 0.3s re-seek threshold
+  // and all other imperative behavior (play/pause calls, gain writes) are
+  // kept exactly; only the pure MATH moved to the shared implementation.
   const syncAudioTracks = useCallback(function syncAudioTracks(playhead: number, playing: boolean) {
     for (const track of unmutedAudioTracksRef.current) {
       const el = audioRefsMap.current.get(track.id)
       if (!el) continue
 
-      const inPt = track.inPoint ?? 0
-      const trackTime = (playhead - track.start) + inPt
-      // Derive outPoint from the timeline span — the stored outPoint can drift
-      // out of sync with start/end during trim operations, causing premature silence.
-      // The HTML audio element naturally stops at end-of-file, so sourceDuration
-      // acts as an implicit ceiling without needing an explicit check here.
-      const outPoint = inPt + (track.end - track.start)
-      const outsideWindow =
-        playhead < track.start ||
-        playhead >= track.end ||
-        trackTime < 0 ||
-        trackTime >= outPoint
-
-      if (outsideWindow) {
+      const win = audioWindow(track, playhead)
+      if (!win.active) {
         if (!el.paused) el.pause()
         continue
       }
 
-      if (Math.abs(el.currentTime - trackTime) > 0.3) {
-        el.currentTime = Math.max(0, trackTime)
+      if (Math.abs(el.currentTime - win.trackTime) > 0.3) {
+        el.currentTime = Math.max(0, win.trackTime)
       }
 
       if (playing && el.paused) el.play().catch(() => {})
       if (!playing && !el.paused) el.pause()
 
-      // Apply fade-in / fade-out gain envelope
+      // `audioWindow.gain` is already `baseVolume * max(0, fadeMul)`.
       const gain = gainNodesMap.current.get(track.id)
-      if (gain) {
-        const fadeIn = track.fadeIn ?? 0
-        const fadeOut = track.fadeOut ?? 0
-        const baseVol = track.volume ?? 1
-        const elapsed = playhead - track.start
-        const remaining = track.end - playhead
-
-        let fadeMul = 1
-        if (fadeIn > 0 && elapsed < fadeIn) {
-          fadeMul = elapsed / fadeIn
-        }
-        if (fadeOut > 0 && remaining < fadeOut) {
-          fadeMul = Math.min(fadeMul, remaining / fadeOut)
-        }
-        gain.gain.value = baseVol * Math.max(0, fadeMul)
-      }
+      if (gain) gain.gain.value = win.gain
     }
   }, [])
 
@@ -970,6 +919,5 @@ export function useVideoPlayback(
     clips,
     tracks0NonVideo,
     overlayTracks,
-    unmutedAudioTracks,
   }
 }

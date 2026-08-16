@@ -8,6 +8,12 @@ export default defineConfig({
   define: {
     __APP_VERSION__: JSON.stringify(pkg.version),
   },
+  // SP4 — harmless future-proofing for the playback engine's decode worker.
+  // The engine loads its worker/worklet from inline source strings via Blob
+  // URLs (decision 6), which this setting doesn't affect at all; it only
+  // matters if a later task ever adds a real `new Worker(new URL(...))`
+  // asset-based worker, which this SP explicitly does not do.
+  worker: { format: 'es' },
   build: {
     rollupOptions: {
       output: {

@@ -2,6 +2,7 @@ import { describe, it, expect, vi, afterEach } from 'vitest'
 import { renderHook } from '@testing-library/react'
 import { containsTime, resolveAt, sourceWindow } from '@bycrux/timeline-core'
 import { useVideoPlayback } from '../useVideoPlayback'
+import { engineSrcFor } from '../../../engine/scheduler'
 import type { EditorProject, VisualItem } from '../../../schema'
 
 // The fixture is imported by RELATIVE path, not as `@bycrux/timeline-core/fixtures/…`:
@@ -189,6 +190,47 @@ describe('useVideoPlayback derived collections vs. resolveAt (proxy-matrix corpu
     for (const clip of clips) {
       expect(sourceWindow(clip, 'preview')).toEqual(proxyMatrixGolden.sourceWindow[clip.id].preview)
     }
+  })
+
+  // ── SP4 T6: the ENGINE path reads the same window ──────────────────────────
+  //
+  // The engine cannot open every src the preview chain can — the masters are
+  // 4K 10-bit HEVC and `nobg_preview_src` is VP9 WebM, while its demuxer is
+  // MP4-only and its decoder is configured for AV1 — so `engineSrcFor` narrows
+  // the chain's answer down to "the proxy, or nothing". What must NOT differ is
+  // the INPUT: both paths ask `sourceWindow(clip, 'preview')`, one shared
+  // resolver call, never a second copy of the precedence chain. This asserts
+  // that at the pure level, per clip, over the same corpus fixture:
+  //
+  //   • whenever the engine accepts a clip, the src it accepts is bit-identical
+  //     to the src the legacy player would load (the golden's `.src`);
+  //   • whenever it declines, it declines because the SHARED window chose
+  //     something other than the proxy — never because it disagreed about what
+  //     the window is.
+  //
+  // proxy-11 is the case that matters: `nobg_preview_src` outranks the proxy in
+  // the chain, so the legacy player loads the alpha preview and the engine must
+  // decline rather than quietly decode the proxy (which still has the
+  // background the user just removed in it).
+  it('selects the engine-path src from the same sourceWindow results as the legacy path', () => {
+    const { clips } = derivedAt(TIMESTAMPS_PROXY[0], proxyMatrixProject)
+    const verdicts: Record<string, { src: string; blocked?: string }> = {}
+    for (const clip of clips) {
+      const golden = proxyMatrixGolden.sourceWindow[clip.id].preview as { src: string }
+      const window = sourceWindow(clip, 'preview')
+      // Same input as the legacy path, and as the committed golden.
+      expect(window.src).toBe(golden.src)
+      const verdict = engineSrcFor(clip, window)
+      // Accepted ⇒ identical to what legacy would load. Declined ⇒ empty.
+      expect(verdict.src === '' || verdict.src === golden.src).toBe(true)
+      verdicts[clip.id] = verdict
+    }
+    expect(verdicts).toEqual({
+      'proxy-00': { src: '', blocked: 'no editing proxy yet' },
+      'proxy-01': { src: (proxyMatrixGolden.sourceWindow['proxy-01'].preview as { src: string }).src },
+      'proxy-10': { src: '', blocked: 'no editing proxy yet' },
+      'proxy-11': { src: '', blocked: 'a higher-precedence preview source the engine cannot decode' },
+    })
   })
 })
 

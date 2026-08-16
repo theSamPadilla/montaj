@@ -627,4 +627,30 @@ export interface VideoEditorProps<P extends Project = Project> {
    * reads `regenQueue`.
    */
   isClipQueued?: (itemId: string) => boolean
+
+  /**
+   * SP4 — opt into the WebCodecs playback engine for the video preview.
+   * Follows the `assetsPlacement`/`regenEnabled` host-knob precedent: an
+   * optional prop, absent by default, that a host passes to change editor
+   * behavior. Threaded straight through to `PreviewPlayer`'s own `engine`
+   * prop (see `video/preview/PreviewPlayer.tsx`).
+   *
+   * Default (prop omitted) or `{ enabled: false }`: the legacy `<video>`-slot
+   * player, completely unchanged — this is the non-regression guarantee the
+   * SP4 plan tests against (the entire editor suite stays green with this
+   * prop untouched).
+   *
+   * `{ enabled: true }` does not itself force engine mode: the editor
+   * evaluates per-project eligibility (`engine/eligibility.ts` — WebCodecs
+   * av01/opus decode support, plus every track-0 video item proxied and none
+   * requiring the WebM `nobg_preview_src` alpha path) once per project load,
+   * and falls back to the legacy player, reasoned via console, whenever a
+   * project doesn't pass. `debugHud` additionally renders the
+   * fps/drops/buffer/clock-kind readout; it has no effect while `enabled` is
+   * false.
+   *
+   * No flag mechanism existed before this — hosts opt in explicitly. The
+   * montaj ui app's dev toggle reads `localStorage['montaj-engine']`.
+   */
+  engine?: { enabled: boolean; debugHud?: boolean }
 }

@@ -99,6 +99,7 @@ export default function VideoEditor<P extends Project = Project>({
   isClipQueued,
   onProvideRenderTrigger,
   onProvideImageTone,
+  engine,
 }: Props<P>) {
   const emit = onProjectChange ?? (() => {})
 
@@ -174,6 +175,7 @@ export default function VideoEditor<P extends Project = Project>({
           onBackToSetup={onBackToSetup}
           getWaveformChunks={getWaveformChunks}
           resolveFilePath={resolveFilePath}
+          engine={engine}
         />
       </div>
     )
@@ -196,6 +198,7 @@ export default function VideoEditor<P extends Project = Project>({
         isClipQueued={isClipQueued}
         onProvideRenderTrigger={onProvideRenderTrigger}
         onProvideImageTone={onProvideImageTone}
+        engine={engine}
       />
     </div>
   )
@@ -226,6 +229,7 @@ interface SurfaceProps<P extends Project> {
   resolveFilePath: (path: string) => string
   onProvideRenderTrigger?: VideoEditorProps<P>['onProvideRenderTrigger']
   onProvideImageTone?: VideoEditorProps<P>['onProvideImageTone']
+  engine?: VideoEditorProps<P>['engine']
 }
 
 function PendingSurface<P extends Project>({
@@ -235,6 +239,7 @@ function PendingSurface<P extends Project>({
   onBackToSetup,
   getWaveformChunks,
   resolveFilePath,
+  engine,
 }: SurfaceProps<P> & { onBackToSetup?: () => void }) {
   const project = sync.project
   // The playhead lives in an external store (not useState) so ~60Hz ticks only
@@ -285,6 +290,7 @@ function PendingSurface<P extends Project>({
               watchFile={adapter.watchFile}
               fileUrl={adapter.fileUrl}
               resolveCaptionTemplate={adapter.resolveCaptionTemplate}
+              engine={engine}
             />
           ) : (
             <div className="flex flex-col items-center gap-6 text-center max-w-lg w-full">
@@ -374,6 +380,7 @@ function ReviewSurface<P extends Project>({
   isClipQueued,
   onProvideRenderTrigger,
   onProvideImageTone,
+  engine,
 }: SurfaceProps<P> & {
   emit: (p: P) => void
   renderClipInspector?: VideoEditorProps<P>['renderClipInspector']
@@ -667,6 +674,7 @@ function ReviewSurface<P extends Project>({
                 selectedCaptionId={selectedCaptionId ?? undefined}
                 onSelectCaption={handleSelectCaption}
                 onCaptionSegmentChange={handleCaptionSegmentChange}
+                engine={engine}
               />
             </div>
           ) : (

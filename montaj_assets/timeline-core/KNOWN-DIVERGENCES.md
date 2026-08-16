@@ -25,24 +25,26 @@ file; they are called out here only so a reader doesn't go looking for them.
 | id | what | preview | render | owner | fixture |
 | --- | --- | --- | --- | --- | --- |
 | `rotation` | An overlay/image's `rotation` field | Applied to the on-canvas transform | NEVER read anywhere in the encode path — exports un-rotated | backlog / SP7 | none (documented in `src/geometry.js`'s module header; `Geometry.rotation` is carried but `toPixelBox` refuses to consume it) |
-| `opaque-in-preview` | An overlay's `opaque` flag | Never read — the video underneath stays visible | Gates video COMPOSITING only (audio still sourced) via the segment-level `opaqueVideo` flag | SP4 | `fixtures/opaque-overlay.json` |
-| `dead-render-outpoint` | A video item's stored `outPoint` when it has drifted from `end - start` | N/A (preview derives its own effective outPoint) | See `audio-outpoint-not-derived` below — render mirrors this same "trust the stored value" pattern for the AUDIO track case; the VISUAL item case is the base entry here | SP4 | `fixtures/trim-after-cache.json` (rebase math), `fixtures/audio-outlasts-video.json` (companion audio-track case) |
-| `audio-duration-mismatch` | Project "duration" | `projectEnd` — `max(videoEnd, overlayEnd, audioEnd)`, AUDIO INCLUDED | `visualDuration` — max `end` over every VISUAL item, AUDIO EXCLUDED | SP4 | `fixtures/audio-outlasts-video.json` |
+| `opaque-in-preview` | An overlay's `opaque` flag | SP4 engine: unified to render semantics by construction (picture suppressed, audio kept). Legacy `<video>` path: never read — the video underneath stays visible | Gates video COMPOSITING only (audio still sourced) via the segment-level `opaqueVideo` flag | SP4 — engine unified (T5); legacy path open until removed | `fixtures/opaque-overlay.json` |
+| `dead-render-outpoint` | A video item's stored `outPoint` when it has drifted from `end - start` | N/A (preview derives its own effective outPoint) | See `audio-outpoint-not-derived` below — render mirrors this same "trust the stored value" pattern for the AUDIO track case; the VISUAL item case is the base entry here | SP4 (visual-item case) / render backlog (audio case — `mix-audio.js`, see D1) | `fixtures/trim-after-cache.json` (rebase math), `fixtures/audio-outlasts-video.json` (companion audio-track case) |
+| `audio-duration-mismatch` | Project "duration" | `projectEnd` — `max(videoEnd, overlayEnd, audioEnd)`, AUDIO INCLUDED | `visualDuration` — max `end` over every VISUAL item, AUDIO EXCLUDED | SP4 — preview half CLOSED (T8: `projectEnd` adopted in both the legacy hook and the engine); render/truncation half open, see follow-up in the entry | `fixtures/audio-outlasts-video.json` |
 | `caption-1080x1920-hardcode` | The caption PAINT layer's render resolution | `CaptionPreview.tsx:40-41` hardcodes `RENDER_W=1080`/`RENDER_H=1920` regardless of the project's actual resolution | N/A (render's caption Puppeteer segment already uses the project's real canvas) | SP5 | none — no fixture in this corpus exercises caption painting (out of scope for `activeCaptionSegment`, which is SELECTION not sizing; see `src/captions.js`'s module header) |
 | `nobg-precedence` | Which src an item with `remove_bg` + `nobg_src` but no `nobg_preview_src` plays | Falls through to `normalizedSrc` (rebased) | Uses `nobg_src` (un-rebased, full source) | SP4 | `fixtures/nobg-matrix.json` (row `nobg-110`) |
-| `loop-not-rendered-transition-dead-field` | A video item's `loop` and `transition` fields | `loop` is honored (`useVideoPlayback.ts:672/739/818`); `transition` is read NOWHERE in the editor either | Neither field is read anywhere under `montaj_assets/render/*.js` (grepped — zero hits) | SP4 / schema-cleanup backlog | `fixtures/loop-item.json` |
-| `sourcecrop-missing-dims-silent-drop` | A `sourceCrop` with no `sourceWidth`/`sourceHeight` | `sourceCropVideoStyle` (`sourceCropStyle.ts:33`) returns `null` early (`!sourceWidth \|\| !sourceHeight`) — falls back to full-frame, same as render | `buildVideoItemFilterParts`'s gate (`encode-segment.js:243`, `if (sc && item.sourceWidth && item.sourceHeight)`) silently skips the crop filter step entirely | SP3 / SP4 | `fixtures/source-crop-missing-dims.json` + `expected/encode-args.source-crop-missing-dims.json` (no `crop=` filter step present — verified empirically) |
+| `loop-not-rendered-transition-dead-field` | A video item's `loop` and `transition` fields | `loop` is honored (`useVideoPlayback.ts:633/700/779`); `transition` is read NOWHERE in the editor either. SP4's engine reimplements `loop` (`engine/scheduler.ts`'s `placeInSource`/`endsOnLoopBoundary`); dropping loop support entirely was considered and rejected — it stays flagged as an operator option, not defaulted | Neither field is read anywhere under `montaj_assets/render/*.js` (grepped — zero hits) | SP4 / schema-cleanup backlog | `fixtures/loop-item.json` |
+| `sourcecrop-missing-dims-silent-drop` | A `sourceCrop` with no `sourceWidth`/`sourceHeight` | `sourceCropVideoStyle` (`sourceCropStyle.ts:32`) returns `null` early (`!sourceWidth \|\| !sourceHeight`) — falls back to full-frame, same as render. SP4's engine (`engine/scheduler.ts`'s `sourceCropDrawPlan`) keeps the same parity-safe no-dims→no-crop guard rather than the `PreviewPlayer.tsx` call-site fallback that would have made the divergence worse | `buildVideoItemFilterParts`'s gate (`encode-segment.js:243`, `if (sc && item.sourceWidth && item.sourceHeight)`) silently skips the crop filter step entirely | SP3 / SP4 | `fixtures/source-crop-missing-dims.json` + `expected/encode-args.source-crop-missing-dims.json` (no `crop=` filter step present — verified empirically) |
 
 ## 1. `rotation`
 
-Preview (`OverlayItemsLayer.tsx:423/460`) reads `item.rotation ?? 0` and
-applies `rotate(${rotation}deg)` to the on-canvas CSS transform. Render
-(`encode-segment.js`'s `buildImageItemFilterParts`, `buildVideoItemFilterParts`,
+Preview (`OverlayItemsLayer.tsx:377/451` read `g.rotation`, falling back from
+any live drag state; `:379/494` apply `rotate(${rotation}deg)` to the on-canvas
+CSS transform — two call sites, one for track-0 canvas items, one for overlay
+tracks) ultimately reads `item.rotation ?? 0` via `geometryFor` (see below).
+Render (`encode-segment.js`'s `buildImageItemFilterParts`, `buildVideoItemFilterParts`,
 `buildOverlayFilterParts`) has no rotation handling anywhere — grepped, zero
 hits. An overlay or image rotated in the editor exports un-rotated.
 
-`geometryFor` (`src/geometry.js:245-256`) carries `item.rotation ?? 0` on the
-returned `Geometry` so a future fix has somewhere to read it from, but
+`geometryFor` (`src/geometry.js:264-276`) carries `item.rotation ?? 0` (line 274)
+on the returned `Geometry` so a future fix has somewhere to read it from, but
 `toPixelBox` (the render pixel adapter) deliberately does not consume it —
 see `test/geometry.test.mjs` for the assertion that pins that boundary.
 
@@ -50,18 +52,41 @@ see `test/geometry.test.mjs` for the assertion that pins that boundary.
 
 ## 2. `opaque-in-preview`
 
+**STATUS CHANGED IN SP4 T5 — unified for the ENGINE path; the LEGACY `<video>`
+path still diverges.**
+
 An overlay item's `opaque: true` means "this overlay replaces the picture
 underneath, but the underlying item's audio must still be heard" — the doc
-comment at `segment-plan.js:118-121` states this explicitly. Render honors it:
+comment at `segment-plan.js:9-12` states this explicitly. Render honors it:
 `planSegments` computes `opaqueVideo = overlays.some(o => o.opaque)` per
 segment, and `encode-segment.js` Step 2 skips VIDEO compositing for every item
 in an opaque segment while still extracting its audio (Step 2's `if
 (!item.muted && ...)` audio branch runs unconditionally regardless of
 `opaqueVideo`).
 
-Preview never reads `item.opaque` anywhere in `OverlayItemsLayer.tsx` or
-`useVideoPlayback.ts` (grepped — zero hits) — the video underneath an opaque
-overlay stays fully visible in the editor.
+**SP4's WebCodecs engine unifies preview onto RENDER semantics, by
+construction, now that there is a compositing stage to make the choice in.**
+`engine/scheduler.ts`'s `planTick` sets `TickPlan.opaque` from any active
+OVERLAY item's `item.opaque === true` (matching render's `overlays.some(o =>
+o.opaque)`), and `SchedulerImpl.apply`'s picture-selection step (§4) sets
+`picture = 'opaque'` when `plan.opaque` is true — the canvas paints black
+(`pullFrame` still PULLS the frame off the active clip's decoder to keep the
+buffer from stalling, then closes it unpainted) while the clip's audio, and the
+master clock derived from it, keep running. See `scheduler.ts`'s own module
+header ("MAPPING FROM THE LEGACY HOOK", the `opaque` row) for the explicit
+disposition: "NOT a legacy behavior... the registry disposition... is to unify
+on RENDER semantics now that there is a compositing stage: skip the paint,
+keep the audio."
+
+**The LEGACY `<video>` path is UNCHANGED and keeps the old divergent
+behavior for as long as it exists**: `item.opaque` is still never read
+anywhere in `OverlayItemsLayer.tsx` or `useVideoPlayback.ts` (grepped — zero
+hits) — the video underneath an opaque overlay stays fully visible when the
+legacy player is in use. The divergence is therefore now LEGACY-PATH-ONLY: a
+project played through the SP4 engine sees render-accurate opaque behavior in
+preview; the same project played through the legacy `<video>` player (still
+the fallback for engine-ineligible projects, per `engine/eligibility.ts`) does
+not.
 
 **The resolver itself is variant-agnostic here by design**: `resolveAt` and
 `resolveSegment` return the SAME `Scene.items` (both the video and the opaque
@@ -75,35 +100,44 @@ activation rule — which is exactly why this is a documented divergence and not
 a resolver bug: the resolver reports what's ON THE TIMELINE, not how each
 consumer chooses to composite it.
 
-**Owner: SP4.**
+**Owner: SP4 — CLOSED for the engine path (T5 unified it onto render
+semantics); OPEN for the legacy `<video>` path until that player is retired.**
 
 ## 3. `dead-render-outpoint` (and its audio-track sibling)
 
 Visual items: after a trim, a video item's stored `outPoint` can drift out of
 sync with the `start`/`end` span it now actually occupies. Preview never
 trusts the stored value for the ACTIVE WINDOW — `synthesizedOutPoint`
-(`src/source-window.js`, porting `useVideoPlayback.ts:707`) falls back to
+(`src/source-window.js`, porting `useVideoPlayback.ts:683`) falls back to
 `effectiveInPoint + (end - start)` whenever the stored value is absent, and
 even when present, the stored `outPoint` is only used to know where to STOP —
 not to define the active window, which `containsTime`/`coversSegment` compute
 from `start`/`end` regardless. `fixtures/trim-after-cache.json` pins the
-rebase math this depends on.
+rebase math this depends on. SP4's engine inherits this unchanged — `scheduler.ts`'s
+`placeInSource` is driven entirely by `SourceWindow.inPoint`/`.outPoint` as
+returned by `resolveAt`, never by a raw stored field.
 
 Audio tracks have the SAME underlying failure mode but in the opposite
 direction — see the newly-discovered `audio-outpoint-not-derived` entry below,
 which is the sharper, independently-confirmed version of this issue for
-`project.audio.tracks`. Both are filed under one owner because the fix is the
-same shape: stop trusting a stored `outPoint` that can drift, derive it from
-`start`/`end` instead.
+`project.audio.tracks`. Both used to be filed under one owner because the fix
+is the same shape: stop trusting a stored `outPoint` that can drift, derive it
+from `start`/`end` instead.
 
-**Owner: SP4.**
+**Per decision 7 (SP4 T8): the two halves now have different owners.** The
+VISUAL-item case above is preview/engine-observable behavior and stays
+**Owner: SP4**. The AUDIO-track case (the `mix-audio.js` half — see D1 below)
+is a render/Python-side fix (`mix-audio.js`'s `buildAudioTrackInputs`, not
+anything under `editor/src/engine/`), so it is reassigned to **render/backlog**
+— fixing it is not engine work, and SP4's scope ends at the preview/engine
+boundary.
 
 ## 4. `audio-duration-mismatch`
 
-`visualDuration(project)` (render semantics, `render.js:770-774`
+`visualDuration(project)` (render semantics, `render.js:821-825`
 `getTotalDurationSeconds`) is the max `end` over every VISUAL item on every
 track. `project.audio` is never read. `projectEnd(project)` (editor semantics,
-`useVideoPlayback.ts:154-159`) is `max(videoEnd, overlayEnd, audioEnd)`, and
+`useVideoPlayback.ts:158-163`) is `max(videoEnd, overlayEnd, audioEnd)`, and
 `audioEnd` folds in `project.audio.tracks`.
 
 A project whose music bed outlasts its picture previews longer than it
@@ -112,7 +146,42 @@ track. `visualDuration` = 5 (what the renderer actually encodes to and what
 `sample-frame.js:520-525` range-checks against); `projectEnd` = 8 (what the
 editor uses to decide whether to keep the transport running).
 
-**Owner: SP4.**
+**This entry asks for two things; SP4 T8 lands one half and files the other.**
+
+**Half 1 — PREVIEW-SIDE CONSISTENCY: CLOSED.** `timeline-core`'s
+`projectEnd` (`src/durations.js`) is now the single source both preview
+surfaces defer to, rather than each hand-rolling the same `max(videoEnd,
+overlayEnd, audioEnd)` arithmetic. The legacy hook's video-mode `projectEnd`
+memo (`useVideoPlayback.ts:158-163`) now calls `timelineProjectEnd(project)`
+directly — this is the formula `src/durations.js` was ported FROM, so the
+substitution is a no-op by construction, verified by the full editor suite
+staying green with no expectation edits. The engine's `transportEndFor`
+(`engine/scheduler.ts:433-444`) already called `timelineProjectEnd` for the
+video-project branch since T5. Both preview surfaces and `sample-frame.js`'s
+`getTotalDurationSeconds` (render semantics) now agree with each other WITHIN
+their own variant; the preview/render VARIANT mismatch this entry is about is
+unchanged (see next paragraph) — this closes the "two hand-written copies of
+the same editor-semantics formula" hazard, not the divergence itself.
+
+**Half 2 — THE ACTUAL PREVIEW/RENDER MISMATCH: still open, filed as a named
+follow-up so it does not silently drop.** A project whose audio outlasts its
+picture still previews 8s and renders 5s — `projectEnd` (preview) and
+`visualDuration` (render) are DELIBERATELY different formulas (audio
+included vs. excluded), and nothing in T8 changes that. Two possible fixes,
+neither implemented here:
+
+  1. **Surface the truncation in the UI** — warn the author when
+     `projectEnd(project) > visualDuration(project)` (e.g. "your audio track
+     extends 3s past your last clip; the render will be shorter than the
+     preview"), so the mismatch is visible before export rather than
+     discovered in the output file.
+  2. **Fix render-side** — make `visualDuration`/the render pipeline account
+     for trailing audio the way `projectEnd` does, closing the gap instead of
+     just naming it.
+
+**Owner: SP4** (preview-side half CLOSED by T8; the UI-surfacing/render-fix
+follow-up above is unassigned — flagged for a future SP to pick one of the two
+options).
 
 ## 5. `caption-1080x1920-hardcode`
 
@@ -132,8 +201,14 @@ exercises caption painting; this entry exists so the finding isn't lost.
 
 ## 6. `nobg-precedence`
 
-`sourceWindow`'s src-selection chain (`src/source-window.js`, mirroring
-`useVideoPlayback.ts:29-31` and `render.js:611`) differs by variant:
+`sourceWindow`'s src-selection chain (`src/source-window.js`'s `chooseSrcRaw`)
+differs by variant. Both original call sites this was extracted FROM (SP2 T8)
+now just delegate to it rather than carrying the formula inline:
+`useVideoPlayback.ts`'s `playbackSrcFor` (line 66, `resolvePlaybackSrc(gateProxy(clip),
+'preview')`) — the precedence order itself is documented at `useVideoPlayback.ts:52-53`
+(`// SP3 precedence, most to least specific: nobg_preview_src > proxySrc >
+normalizedSrc > src.`) — and `render.js:652`'s `sourceWindow(item, 'render')`
+call. The variant-aware logic these two delegate to:
 
     preview: nobg_preview_src ?? proxySrc ?? normalizedSrc ?? src
     render:  (nobg_src && remove_bg) ? nobg_src : (normalizedSrc ?? src)
@@ -184,10 +259,25 @@ Two VisualItem schema fields (`montaj_assets/editor/src/schema.ts:87-88`),
 video-type only:
 
 - `loop?: boolean` — "loop source clip within project window." Preview honors
-  it (`useVideoPlayback.ts:672`, `:739`, `:818`). `montaj_assets/render/*.js`
+  it (`useVideoPlayback.ts:633`, `:700`, `:779` — the scrub-into-loop, wrap-at-
+  outPoint, and stop-at-clip.end sites respectively). `montaj_assets/render/*.js`
   never reads `.loop` anywhere (grepped — zero hits): a looped clip in the
   editor freezes on its last decoded frame (or worse) once rendered past its
   actual source duration, instead of looping.
+
+  **SP4 note (decision 7):** the WebCodecs engine REIMPLEMENTS loop rather than
+  dropping it — `engine/scheduler.ts`'s `placeInSource` (the three legacy sites'
+  arithmetic made total, with the loop offset DERIVED from project time instead
+  of accumulated across three mutable-ref writers) and `endsOnLoopBoundary`
+  (which reproduces the legacy "stop mid-loop rather than fall through to the
+  next clip" behavior verbatim — see that function's own doc comment for why
+  this looks like a bug and is kept anyway). Dropping loop support in the
+  engine was considered during planning and rejected: per decision 7 it stays
+  an operator-facing option to turn off, not something the engine silently
+  defaults away. This entry's divergence (render never honors `loop` at all) is
+  therefore UNCHANGED by SP4 — the engine now matches legacy preview more
+  faithfully, which if anything widens the preview-vs-render gap this entry
+  tracks until render's own owner picks it up.
 - `transition?: { type: string; duration: number }` — "transition into next
   clip." Grepped across `montaj_assets/editor/src` and `montaj_assets/render`:
   zero non-CSS hits. The field is round-tripped through the schema and read by
@@ -225,13 +315,23 @@ step at all — compare against `expected/encode-args.source-crop.json` (same
 pipeline, same fixture shape, but WITH dims), whose filter chain has
 `crop=1536:972:192:54,` as the first step of the video filter chain.
 
-Editor-side, `sourceCropStyle.ts:33`'s own guard (`if (!sourceWidth ||
+Editor-side, `sourceCropStyle.ts:32`'s own guard (`if (!sourceWidth ||
 !sourceHeight || !frameWidth || !frameHeight) return null`) makes the SAME
 choice — fall back to full-frame — so this is not a preview/render
 disagreement so much as a shared "we can't crop without dims" fallback that
 both sides reach independently. Filed here anyway because it's a real
 information-loss point or authors can lose data silently (a crop set without
 its dims companion just vanishes, with no error, on both sides).
+
+**SP4 note (decision 7):** the WebCodecs engine's `sourceCropDrawPlan`
+(`engine/scheduler.ts:220-229`) keeps this SAME no-dims guard — a deliberate
+parity-safe choice, not an oversight. `PreviewPlayer.tsx`'s `<video>`-based
+call site falls back to the loaded element's intrinsic dims
+(`activeClip?.sourceWidth ?? videoDims?.w`) when the item itself carries none,
+which would make the LEGACY preview crop something render does not; the engine
+does not reproduce that fallback, so it stays exactly as parity-safe as
+render, not more permissive. See `sourceCropDrawPlan`'s own doc comment ("The
+no-dims guard (a parity decision, not an oversight)") for the full reasoning.
 
 **Owner: SP3 / SP4.**
 
@@ -254,12 +354,16 @@ STORED `track.outPoint` directly:
     const outPt = track.outPoint ?? null
     if (outPt !== null) args.push('-to', String(outPt))
 
-while the preview's `syncAudioTracks` (`useVideoPlayback.ts:440-446`)
-DELIBERATELY DERIVES `outPoint = inPt + (track.end - track.start)`, with the
-comment: "Derive outPoint from the timeline span — the stored outPoint can
-drift out of sync with start/end during trim operations, causing premature
-silence." `src/audio.js`'s `audioWindow` ports exactly that derived rule
-(no stored-`outPoint` read at all).
+while the preview's `syncAudioTracks` DELIBERATELY DERIVES
+`outPoint = inPt + (end - start)` (`src/audio.js:98`, inside `audioWindow` —
+`useVideoPlayback.ts` no longer computes this inline as of SP4 T8; the hook's
+`syncAudioTracks` now calls `audioWindow(track, playhead)` for this exact
+arithmetic, same as `useEnginePlayback.ts` already did), with the comment:
+"Derived, not stored — see the module header," `audio.js`'s module header
+carrying the original "the stored outPoint can drift out of sync with
+start/end during trim operations, causing premature silence" reasoning in
+full. `audioWindow` therefore ports exactly that derived rule (no stored-
+`outPoint` read at all).
 
 Consequence: a trimmed audio track can preview at full length (correctly,
 because the editor never trusts the stale stored value) but export TRUNCATED
@@ -268,28 +372,42 @@ sharper than — and distinct from — entry 4 (`audio-duration-mismatch`), whic
 is about the whole-PROJECT duration figure; this is about a single audio
 TRACK's own trim staying in sync with itself.
 
-**Owner: SP4.** No fixture in `fixtures/` targets `mix-audio.js` directly
-(it's outside `src/audio.js`'s pure-arithmetic scope — see that module's
-header); `fixtures/audio-outlasts-video.json`'s audio track is a plain
-non-trimmed case and does not exercise the stale-outPoint path. Flagging here
-so SP4 knows to add a dedicated fixture when it fixes `mix-audio.js`.
+**Owner: render/backlog** (reassigned from SP4 per decision 7, SP4 T8 —
+`mix-audio.js` is render/Python-side JS, not `editor/src/engine/` work, so
+fixing it does not belong to the playback-engine sprint). No fixture in
+`fixtures/` targets `mix-audio.js` directly (it's outside `src/audio.js`'s
+pure-arithmetic scope — see that module's header); `fixtures/audio-outlasts-video.json`'s
+audio track is a plain non-trimmed case and does not exercise the
+stale-outPoint path. Flagging here so whoever picks this up from render/backlog
+knows to add a dedicated fixture when fixing `mix-audio.js`.
 
 ## D2. `mix-audio-afade-curve-unverified`
 
-**Unverified — flagged honestly, not confirmed.** The preview computes a
-LINEAR fade ramp (`elapsed / fadeIn`, `useVideoPlayback.ts:460-466`;
-`src/audio.js`'s `audioWindow` ports this verbatim). `mix-audio.js` emits
-`afade=t=in:d=${fadeIn}` (line 62) / `afade=t=out:...` (line 63) with no
-explicit `curve=` parameter, which means ffmpeg's `afade` filter uses its OWN
-DEFAULT curve. Whether that default is linear (`tri`) was never empirically
-checked against a running ffmpeg in this task — no ffmpeg process was
-executed as part of T5 (only `_dryRun: true` paths, which return before
-invoking ffmpeg). **The check someone should run:** `ffmpeg -h filter=afade`
-and read the documented default `curve` value, or render a short fade and
-sample its envelope. Recording this as unverified rather than asserting either
-way.
+**RESOLVED — CHECKED IN SP4 T8. NOT a live divergence: both sides are linear.**
 
-**Owner: SP4.**
+The preview computes a LINEAR fade ramp (`elapsed / fadeIn`,
+`src/audio.js:105-110`, inside `audioWindow` — `useVideoPlayback.ts` no longer
+computes this inline as of SP4 T8; the hook's `syncAudioTracks` now calls
+`audioWindow` for the gain envelope, same as `useEnginePlayback.ts` already
+did). `mix-audio.js` emits `afade=t=in:d=${fadeIn}` (line 62) /
+`afade=t=out:...` (line 63) with no explicit `curve=` parameter, which means
+ffmpeg's `afade` filter uses its OWN DEFAULT curve.
+
+**The check:** `ffmpeg -h filter=afade` (ffmpeg 8.1.2, this machine) documents:
+
+    curve             <int>        ..F.A....T. set fade curve type (from -1 to 22) (default tri)
+      tri             0            ..F.A....T. linear slope
+
+`tri` — ffmpeg's own name for "linear slope" — is the DEFAULT `curve`, and it
+is exactly the linear ramp the preview computes. `mix-audio.js`'s bare
+`afade=t=in:d=...` / `afade=t=out:...` (no `curve=` override) therefore
+renders a linear fade, matching preview's `elapsed / fadeIn` /
+`remaining / fadeOut` ramp. No divergence exists here; this was an honestly-
+flagged unknown that resolved in the "they already agree" direction once
+checked.
+
+**Owner: SP4 — CLOSED (T8, verified via `ffmpeg -h filter=afade`; no code
+change needed since there is nothing to fix).**
 
 ## D3. `mix-audio-duplicated-fade-formula`
 
@@ -310,7 +428,9 @@ to one without the other silently reintroduces a divergence. Not something
 `src/audio.js` can guard against — it's an internal `mix-audio.js` code-health
 issue, not a preview/render behavior difference.
 
-**Owner: schema-cleanup / SP4 backlog.**
+**Owner: render/backlog** (reassigned from `schema-cleanup / SP4 backlog` per
+decision 7, SP4 T8 — this is internal `mix-audio.js` code health, not
+`editor/src/engine/` work; SP4's scope ends at the preview/engine boundary).
 
 ## D4. `boundary-totality-guard` — ADOPTED BY RENDER IN T7 (was: resolver vs. legacy)
 
@@ -353,25 +473,52 @@ fixture exercises it, which is exactly why that test exists.
 
 **Owner: SP2 — CLOSED by T7 (render adopted the guard).**
 
+**SP4 note on D5/D6/D7/D10 (decision 7, the last sentence):** these four
+entries are all about the project-shaped `resolveAt`/`activation.js` API
+disagreeing with render's flat, pre-split legacy pipeline
+(`collectAllItems`/`collectPuppeteerSegments`/`compose.js`'s tie order/the
+pre-T7 `trackIdx` comparator). Until now that API had exactly one live
+consumer to speak of (tests, plus `sample-frame.js`'s own recent adoption —
+see D5 above). **SP4's WebCodecs engine is now a second, PREVIEW-FACING
+consumer**: `engine/scheduler.ts`'s `planTick` calls `resolveAt(project, t,
+{variant:'preview'})` (the `previewResolver` default) every tick. The engine
+therefore inherits `resolveAt`'s 'preview' semantics — including D5's
+uniform per-track walk, D6's single consistent quantization, and D7's
+document-order (not image-then-video) tie order — wherever they differ from
+what `collectAllItems`/`compose.js`/legacy `segment-plan.js` still do on the
+RENDER side. This does not create a NEW divergence (the engine's preview
+answers still agree with the legacy `<video>` player, since both are
+'preview'-variant consumers of the same project), but it DOES widen the
+existing preview-vs-legacy-render distance these four entries track: two
+preview surfaces now agree with the resolver's project-shaped semantics while
+render's legacy pipeline has not adopted them, until render's own
+project-shaped adoption (tracked separately per-entry above) closes the gap.
+
 ## D5. `track-0-overlay-items`
 
-**Verified.** `collectAllItems` (`render.js:581-638`) only collects `type ===
+**Verified.** `collectAllItems` (`render.js:582-688`) only collects `type ===
 'image'` / `type === 'video'` items, from EVERY track including track 0.
-`collectPuppeteerSegments` (`render.js:503`, `overlayTracks =
+`collectPuppeteerSegments` (`render.js:504`, `overlayTracks =
 (projectJson.tracks ?? []).slice(1)`) only looks at tracks 1+. The combined
 effect: an `overlay`-type item placed on track 0 contributes NO boundary and
-NEVER RENDERS today. `sample-frame.js:535-545` has no such track-0 exclusion —
-it walks every track uniformly and honors a track-0 overlay. The resolver's
-project-shaped `collectScene` (`activation.js`) follows sample-frame: it walks
-every track uniformly, so a track-0 overlay is a first-class item.
+NEVER RENDERS today. `sample-frame.js` has no such track-0 exclusion — it now
+calls the shared resolver directly (`resolveAt(resolvedProject, atSeconds,
+{variant:'render'})`, `sample-frame.js:537`) rather than hand-walking tracks,
+so it inherits the resolver's uniform per-track walk and honors a track-0
+overlay. The resolver's project-shaped `collectScene` (`activation.js`) is
+exactly that walk: every track uniformly, so a track-0 overlay is a
+first-class item.
 
 No fixture in this corpus places an overlay on track 0 specifically (all
 overlay-bearing fixtures here use track 1, matching the common case); this is
-inert for T7 (whose parity harness is fed by `compose.js`'s pre-split
+inert for T7's `planSegments`/`collectAllItems`/`collectPuppeteerSegments` path
+(whose parity harness is fed by `compose.js`'s pre-split
 `imageItems`/`videoItems`/`puppeteerSegs` arrays, which already have this
-exclusion baked in before the resolver ever sees them) but real for any future
-consumer of the project-shaped API. Pinned instead by `test/activation.test.mjs`
-per that module's own header.
+exclusion baked in before the resolver ever sees them) but is REAL for any
+consumer of the project-shaped API — which now concretely includes
+`sample-frame.js` (see above) and SP4's engine (`planTick`, next entry's note),
+not just a hypothetical future one. Pinned instead by
+`test/activation.test.mjs` per that module's own header.
 
 **Owner: SP4.**
 
@@ -424,15 +571,17 @@ distinct tracks specifically to avoid this ambiguity — see
 ## D8. `render-src-undefined-equals-undefined-quirk`
 
 **Verified — preserved verbatim, not a resolver bug.** For a RENDER-variant
-item with neither `src` nor `normalizedSrc` set, `render.js:612`'s
-`usedNormalized = chosenSrc === item.normalizedSrc` evaluates `undefined ===
-undefined`, which is `true` — so render treats such an item as "using the
-normalized cache" and rebases its `inPoint`/`outPoint` to 0, even though there
-is no cache. `src/source-window.js`'s `usedNormalizedCacheFor` reproduces the
-render branch's comparison exactly (`chosenSrcRaw === item.normalizedSrc`), so
-the resolver inherits this quirk on purpose — "fixing" it here would change
-render's dry-run/encode output, which T8's encode-args golden is specifically
-built to catch.
+item with neither `src` nor `normalizedSrc` set, the comparison `usedNormalized
+= chosenSrc === item.normalizedSrc` evaluates `undefined === undefined`, which
+is `true` — so render treats such an item as "using the normalized cache" and
+rebases its `inPoint`/`outPoint` to 0, even though there is no cache. This
+comparison used to live inline in `render.js`; SP2's own T8 already extracted
+it (see `render.js:652`'s comment "the arithmetic above moved") into
+`src/source-window.js`'s `usedNormalizedCacheFor` (`source-window.js:213-214`,
+`chosenSrcRaw === item.normalizedSrc`), which `render.js:652` now calls via
+`sourceWindow(item, 'render')`. The resolver inherits this quirk on purpose —
+"fixing" it here would change render's dry-run/encode output, which T8's
+encode-args golden is specifically built to catch.
 
 **CLOSED BY SP3 — both variants now share this quirk.** Preview's old check
 (`!clip.nobg_preview_src && !!clip.normalizedSrc`) was guarded on
@@ -468,7 +617,7 @@ edit to one copy without the other silently introduces a real divergence,
 with no test to catch it until editor/render output actually shifts.
 
 **(a) `designCanvas` — the 1080-short-edge formula.** `editor/src/video/design-canvas.ts:5-11`
-(`getOverlayDesignCanvas`) and `render/render.js:124-131` (inline in `render()`,
+(`getOverlayDesignCanvas`) and `render/render.js:125-131` (inline in `render()`,
 no named export) implement the identical formula:
 
     ratio = 1080 / min(w, h)
@@ -480,7 +629,7 @@ finding, not a divergence.
 
 **(b) `toPixelBox`/`toCssBoxPct` — the scale/offset transform box.**
 `editor/src/video/preview/transformStyle.ts` (`videoTransformBoxPct`) and
-`render/encode-segment.js:154-159` (`buildImageItemFilterParts`) /
+`render/encode-segment.js:154-158` (`buildImageItemFilterParts`) /
 `:210-214` (`buildVideoItemFilterParts`) implement the identical scale/offset
 box formula — see `src/geometry.js`'s module header for the side-by-side.
 Confirmed algebraically identical (`test/geometry.test.mjs`'s cross-check
@@ -516,7 +665,7 @@ comparator and `byTrackIdx` order differently.
   Call(comparefn, …)). If v is NaN, return +0𝔽."* — a `NaN` result is coerced
   to `+0`, i.e. the pair is treated as EQUAL, and `Array.prototype.sort`'s
   stability leaves them in input order.
-- **Resolver** (`src/activation.js:506`, `byTrackIdx`):
+- **Resolver** (`src/activation.js:508`, `byTrackIdx`):
   `(a.trackIdx ?? 0) - (b.trackIdx ?? 0)`. The missing `trackIdx` reads as
   track 0, so the item sorts to the BACK of the stack (composited first).
 
@@ -524,7 +673,7 @@ Confirmed by direct execution rather than from the spec alone: sorting
 `[{id:'x', trackIdx:5}, {id:'y'}]` yields `x,y` with the legacy comparator and
 `y,x` with `byTrackIdx`.
 
-**Unreachable in production.** `collectAllItems` (`render.js:597`) stamps
+**Unreachable in production.** `collectAllItems` (`render.js:598`) stamps
 `trackIdx` on every item it emits, unconditionally, and it is the only producer
 of the array `compose.js` hands to `planSegments`. The difference is therefore
 reachable only by a direct caller or a test that omits the field.
@@ -574,7 +723,9 @@ a corpus gap; T10 constructed the mixed case inline in
 `tests/test_caption_job.py` (`test_all_or_nothing_cache_selection_diverges_from_ts_per_item`)
 instead.
 
-**Owner: SP4.**
+**Owner: render/backlog** (reassigned from SP4 per decision 7, SP4 T8 —
+`serve/caption_job.py` is the Python captioning pipeline, not `editor/src/engine/`
+work; SP4's scope ends at the preview/engine boundary).
 
 ### D12. `python-negative-inpoint-clamp`
 
@@ -597,7 +748,9 @@ another corpus gap; T10 constructed this inline too
 (`test_cache_rebase_negative_in_point_clamped_to_zero`,
 `test_outpoint_fallback_uses_unclamped_in_point_internally`).
 
-**Owner: SP4.**
+**Owner: render/backlog** (reassigned from SP4 per decision 7, SP4 T8 —
+`serve/caption_job.py` is the Python captioning pipeline, not `editor/src/engine/`
+work; SP4's scope ends at the preview/engine boundary).
 
 ### D13. `python-outpoint-null-vs-absent`
 
@@ -609,7 +762,7 @@ explicit `"outPoint": null` makes `.get()` return `None`, and the surrounding
 `float(...)` call raises `TypeError: float() argument must be a string or a
 real number, not 'NoneType'` — reproduced by T10's review rather than merely
 asserted. `src/source-window.js`'s `sourceWindow` handles the same input via
-`item.outPoint ?? undefined` (`source-window.js:221`), which treats `null` and
+`item.outPoint ?? undefined` (`source-window.js:253`), which treats `null` and
 `undefined` identically and falls through to the derived-outPoint path with no
 error.
 
@@ -620,4 +773,70 @@ bypassing the schema. No fixture in this corpus authors an explicit `null`
 outPoint (every cache-related fixture either sets a real number or omits the
 key), so this is unexercised in the golden suite too.
 
-**Owner: SP4.**
+**Owner: render/backlog** (reassigned from SP4 per decision 7, SP4 T8 —
+`serve/caption_job.py` is the Python captioning pipeline, not `editor/src/engine/`
+work; SP4's scope ends at the preview/engine boundary).
+
+---
+
+# Discovered during SP4
+
+SP4 T8's registry audit (decision 7) surfaced one further divergence, not
+previously registered anywhere: preview never simulates audio ducking, while
+render actually applies it. Same treatment as the SP2 finds above: what
+diverges, exact `file:line` on both sides, user-visible consequence, owner,
+fixture pointer.
+
+## D14. `ducking-not-simulated-in-preview`
+
+**Verified — an UNREGISTERED preview/render divergence, both sides read
+directly.** `project.audio.tracks[].ducking` (`editor/src/schema.ts:25-30`,
+`{ enabled: boolean, depth?: number, attack?: number, release?: number }`) is
+authored in the operator UI — `montaj_assets/ui/src/components/timeline/ClipInspectModal.tsx:47-51`
+seeds the panel's open state and its four fields from the track, `:75-79` writes them back into
+`track.ducking` on save, and `:284-342` is the collapsible "Ducking" panel
+itself, whose own help text (`:342`) states the intent plainly: "this track
+automatically lowers in volume whenever a louder track is playing. Typical
+use: enable on music so it ducks under voiceover."
+
+**Render applies it for real.** `mix-audio.js`'s `buildAudioTrackFilters`
+(`mix-audio.js:52-70`) branches on `track.ducking?.enabled`: it `asplit`s the
+running mix into a `speech` copy and a sidechain-detector copy, applies the
+track's own volume/fade to a scaled copy of itself, and feeds both through
+ffmpeg's `sidechaincompress` filter (`mix-audio.js:67`) — `depth` (dB) is
+mapped to a compressor `ratio`, `attack`/`release` pass straight through in
+milliseconds — so the ducked track's volume genuinely drops whenever the rest
+of the mix ("speech") is loud, then recovers.
+
+**Preview never reads `ducking` anywhere.** Grepped across the whole editor
+package (`montaj_assets/editor/src`, both the legacy `useVideoPlayback.ts`
+audio lanes and SP4's own `useEnginePlayback.ts`) — zero hits outside
+`schema.ts`'s type declaration. `timeline-core`'s `audioWindow`
+(`src/audio.js`), which BOTH preview surfaces now call for their per-tick
+audio-lane sync (legacy `useVideoPlayback.ts` as of this same T8; the engine
+path since T6), computes `gain = baseVolume * max(0, fadeMul)` from
+`volume`/`fadeIn`/`fadeOut` only — `AudioTrack`'s own JSDoc typedef
+(`src/audio.js:57-67`) does not even list a `ducking` field. A track with
+ducking enabled previews at its flat fade-envelope volume for the whole
+timeline; the sidechain drop only appears in the rendered output, the first
+time the author hears it.
+
+**Consequence:** an author previewing a project with ducking enabled cannot
+hear (or see, via any level meter) the effect they configured until they
+render — the preview is silently wrong about what the final mix will sound
+like, in the opposite direction from most of this file's entries (here render
+has the extra behavior, not preview).
+
+No fixture in this corpus exercises `ducking` (it is outside `src/audio.js`'s
+pure per-tick-window scope the way `mix-audio.js`'s sidechain graph as a whole
+is — see that module's own "not part of the pure arithmetic" framing used for
+D1/D3 above).
+
+**Owner: backlog** (genuinely unclear — simulating a real-time sidechain
+compressor in the Web Audio graph is audio-DSP feature work, not something any
+currently-scoped SP task claims. It is NOT SP4: plan decision 5 keeps
+`project.audio.tracks` on plain `<audio>` elements with volume/fade only, and
+adding a compressor node would be new engine scope beyond "WebCodecs video
+playback," not a bookkeeping fix. Flagged here, matching how entry 1
+(`rotation`) is flagged, so it isn't lost rather than assigned to a sprint that
+isn't actually going to build it.)
