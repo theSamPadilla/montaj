@@ -447,7 +447,9 @@ def test_init_continues_when_one_clip_fails(tmp_path, monkeypatch):
     """If a clip can't be probed (corrupt file), init should still finish other
     clips' work without silently swallowing the error. The bad clip falls back
     to its original src path (per the existing fall-back semantics), the good
-    clip gets normalized."""
+    clip gets normalized. Also: proxy scheduling is skipped (not attempted)
+    for the unprobeable clip — there's no info to build the encode from — but
+    the good clip still gets its proxy."""
     good = tmp_path / "good.mp4"
     # Use yuv422p so the good clip needs a transcode (yuv422p ≠ yuv420p) — this
     # exercises the transcode path and produces a _normalized_<cs>.mp4 file.
@@ -476,6 +478,9 @@ def test_init_continues_when_one_clip_fails(tmp_path, monkeypatch):
     # at a _normalized_*.mp4 — probe failed, normalize was skipped.
     assert "bad" in track[1]["src"]
     assert "_normalized_" not in track[1]["src"]
+    # Good clip still gets a proxy; bad clip (no probe info) gets none — no crash either way.
+    assert "proxySrc" in track[0]
+    assert "proxySrc" not in track[1]
 
 
 @pytest.mark.skipif(not HAS_FFMPEG, reason="ffmpeg not available")
@@ -687,19 +692,24 @@ def test_init_probe_cache_is_consumed_by_normalize_loop(tmp_path):
     # Per-clip ffprobe call accounting:
     #   - probe_video()       = 3 ffprobe calls (stream info + keyframe interval + rotation)
     #   - get_duration()      = 1 ffprobe call (duration probe after normalize)
+    #   - make_proxy()        = 1 ffprobe call (probe_video()'s info dict carries
+    #                           no duration, so make_proxy's timeout sizing does
+    #                           its own cheap get_duration() — accepted per SP3
+    #                           T1 review rather than reshaping probe_cache)
     #
     # Detection runs probe_video for each clip = 3 × n_clips.
     # _normalize_one reads from probe_cache (0 extra) and passes the cached
     # `info` into normalize() (which skips its internal probe = 0 extra).
-    # Then get_duration is called once = 1 × n_clips.
-    # Expected total: 4 × n_clips.
+    # Then get_duration is called once = 1 × n_clips, and the proxy encode's
+    # own duration probe adds another 1 × n_clips.
+    # Expected total: 5 × n_clips.
     #
     # Without cache OR without info-passthrough, we'd see:
     #   - cache miss in _normalize_one: +3 × n_clips
     #   - normalize() internal probe:   +3 × n_clips
-    #   → 10 × n_clips total.
-    expected = 4 * n_clips
-    expected_no_caching = 10 * n_clips
+    #   → 11 × n_clips total.
+    expected = 5 * n_clips
+    expected_no_caching = 11 * n_clips
     assert ffprobe_count == expected, (
         f"probe caching appears bypassed: ffprobe ran {ffprobe_count} times for "
         f"{n_clips} clips. Expected {expected} (cache hit + info passthrough), "
@@ -1277,6 +1287,267 @@ def test_normalize_default_eager_unchanged(tmp_path):
     assert result.returncode == 0, result.stderr
     data = json.loads(_project_path_from_stdout(result.stdout).read_text())
     assert "normalize" not in data["settings"]
+
+
+# ---------------------------------------------------------------------------
+# Editing proxy scheduling (SP3) — full-source AV1 preview asset
+# ---------------------------------------------------------------------------
+
+def _make_ffmpeg_spy(tmp_path: Path, *, fail: bool) -> tuple:
+    """Write an ffmpeg wrapper that appends its argv (one arg per line, a lone
+    '---' line between invocations) to a log file.
+
+    `fail=False` execs the real ffmpeg afterwards — the encode actually runs
+    (safe for the plain-scale/SDR arm, which never touches zscale).
+    `fail=True` exits 1 immediately without running anything — deterministic,
+    used for the HDR/tonemap arm: per tests/test_proxy.py's own policy, the
+    tonemap arm is asserted at the command level rather than run end-to-end,
+    since a real HDR encode depends on the box having libzimg/zscale
+    installed (a known-fragile dependency).
+
+    Only MONTAJ_FFMPEG is overridden — ffprobe (probing) is untouched, so
+    color-space detection and is_normalized() checks behave normally.
+    """
+    log = tmp_path / "ffmpeg_calls.log"
+    wrapper = tmp_path / "fake_ffmpeg.sh"
+    real_ffmpeg = subprocess.run(["which", "ffmpeg"], capture_output=True, text=True).stdout.strip()
+    assert real_ffmpeg, "could not locate real ffmpeg"
+    body = (
+        "#!/bin/bash\n"
+        "{\n"
+        '  for a in "$@"; do printf \'%s\\n\' "$a"; done\n'
+        "  echo '---'\n"
+        f'}} >> "{log}"\n'
+        # _has_zscale()'s own capability probe (`ffmpeg -filters`) must always
+        # answer truthfully, even in fail=True mode — otherwise it sees the
+        # spy "fail" and concludes zscale is unavailable, silently swapping
+        # in the degraded fallback vf instead of the real tonemap chain.
+        'if [ "$1" = "-filters" ]; then\n'
+        f'  exec "{real_ffmpeg}" "$@"\n'
+        "fi\n"
+    )
+    body += "exit 1\n" if fail else f'exec "{real_ffmpeg}" "$@"\n'
+    wrapper.write_text(body)
+    wrapper.chmod(0o755)
+    return wrapper, log
+
+
+def _last_ffmpeg_vf(log: Path) -> str:
+    """Parse an ffmpeg-spy log (see _make_ffmpeg_spy) and return the -vf
+    value of the LAST logged invocation."""
+    blocks = [b for b in log.read_text().split("---\n") if b.strip()]
+    args = blocks[-1].strip("\n").split("\n")
+    return args[args.index("-vf") + 1]
+
+
+@pytest.mark.skipif(not HAS_FFMPEG, reason="ffmpeg not available")
+def test_init_eager_proxy_written_to_sources_and_tracks(tmp_path):
+    """Eager (default) mode: a full-source AV1 proxy is encoded and
+    clip["proxySrc"] lands on BOTH project['sources'] and
+    project['tracks'][0] — the two arrays share the same dict objects."""
+    sys.path.insert(0, str(REPO_ROOT))
+    from lib.proxy import PROXY_LOOK
+
+    src = tmp_path / "clip.mp4"
+    _make_clip(src, duration=1)
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    result = run_init("--clips", str(src), "--prompt", "test",
+                      env_override={"MONTAJ_WORKSPACE_DIR": str(ws)})
+    assert result.returncode == 0, result.stderr
+    project = json.loads(_project_path_from_stdout(result.stdout).read_text())
+    track_item = project["tracks"][0][0]
+    source_item = project["sources"][0]
+
+    assert "proxySrc" in track_item
+    assert track_item["proxySrc"] == source_item["proxySrc"]
+
+    proxy_path = Path(track_item["proxySrc"])
+    assert proxy_path.name.endswith(f"_proxy_{PROXY_LOOK}.mp4")
+    assert proxy_path.exists() and proxy_path.stat().st_size > 0
+
+
+@pytest.mark.skipif(not HAS_FFMPEG, reason="ffmpeg not available")
+def test_init_eager_proxy_command_is_plain_scale_no_tonemap(tmp_path):
+    """Eager clips are always encoded with tonemap=False — the (possibly
+    just-normalized) master is already SDR-conformed, so the proxy's -vf is
+    plain scale, no zscale chain."""
+    wrapper, log = _make_ffmpeg_spy(tmp_path, fail=False)
+    src = tmp_path / "clip.mp4"
+    _make_clip(src, duration=1)  # yuv420p/48k → conformant "skip" path, no normalize ffmpeg call
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    result = run_init(
+        "--clips", str(src), "--prompt", "test",
+        env_override={"MONTAJ_WORKSPACE_DIR": str(ws), "MONTAJ_FFMPEG": str(wrapper)},
+    )
+    assert result.returncode == 0, result.stderr
+    vf = _last_ffmpeg_vf(log)
+    assert vf == "scale='if(gt(iw,ih),-2,720)':'if(gt(iw,ih),720,-2)'"
+    assert "zscale" not in vf
+
+
+@pytest.mark.skipif(not HAS_FFMPEG, reason="ffmpeg not available")
+def test_init_eager_proxy_failure_does_not_block_import(tmp_path):
+    """A proxy encode failure must never fail the import — proxies are an
+    enhancement, never a blocker. The clip keeps no proxySrc; the rest of
+    import (including normalize, through the SAME wrapper) proceeds
+    normally."""
+    wrapper = tmp_path / "fake_ffmpeg.sh"
+    real_ffmpeg = subprocess.run(["which", "ffmpeg"], capture_output=True, text=True).stdout.strip()
+    assert real_ffmpeg, "could not locate real ffmpeg"
+    wrapper.write_text(
+        "#!/bin/bash\n"
+        'for a in "$@"; do\n'
+        '  if [ "$a" = "libsvtav1" ]; then\n'
+        "    echo 'fake proxy encoder failure' >&2\n"
+        "    exit 1\n"
+        "  fi\n"
+        "done\n"
+        f'exec "{real_ffmpeg}" "$@"\n'
+    )
+    wrapper.chmod(0o755)
+
+    # yuv422p forces a real transcode, so this also proves normalize's libx264
+    # call succeeds through the SAME wrapper — only the libsvtav1 call fails.
+    src = tmp_path / "clip.mp4"
+    subprocess.run([
+        "ffmpeg", "-y",
+        "-f", "lavfi", "-i", "color=red:size=640x480:rate=30:duration=1",
+        "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000:duration=1",
+        "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv422p",
+        "-g", "30", "-keyint_min", "30",
+        "-c:a", "aac", "-ar", "48000",
+        str(src),
+    ], check=True, capture_output=True, timeout=60)
+
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    result = run_init(
+        "--clips", str(src), "--prompt", "test",
+        env_override={"MONTAJ_WORKSPACE_DIR": str(ws), "MONTAJ_FFMPEG": str(wrapper)},
+    )
+    assert result.returncode == 0, result.stderr
+    project = json.loads(_project_path_from_stdout(result.stdout).read_text())
+    track_item = project["tracks"][0][0]
+    assert "proxySrc" not in track_item
+    assert track_item["src"].endswith("_normalized_sdr_bt709.mp4")  # normalize still succeeded
+    assert "proxy FAILED" in result.stderr
+
+
+@pytest.mark.skipif(not HAS_FFMPEG, reason="ffmpeg not available")
+def test_init_lazy_proxy_written_for_sdr_source(tmp_path):
+    """Lazy mode: a full-source AV1 proxy is encoded from the ORIGINAL (lazy
+    never conforms a master), and proxySrc lands on both sources and
+    tracks[0] (same dict)."""
+    sys.path.insert(0, str(REPO_ROOT))
+    from lib.proxy import PROXY_LOOK
+
+    src = tmp_path / "clip.mp4"
+    _make_clip(src, duration=1)
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    result = run_init(
+        "--clips", str(src), "--prompt", "test", "--normalize", "lazy",
+        env_override={"MONTAJ_WORKSPACE_DIR": str(ws)},
+    )
+    assert result.returncode == 0, result.stderr
+    project = json.loads(_project_path_from_stdout(result.stdout).read_text())
+    track_item = project["tracks"][0][0]
+    source_item = project["sources"][0]
+
+    assert "_normalized_" not in track_item["src"]  # lazy: src stays the original
+    assert "proxySrc" in track_item
+    assert track_item["proxySrc"] == source_item["proxySrc"]
+
+    proxy_path = Path(track_item["proxySrc"])
+    assert proxy_path.name.endswith(f"_proxy_{PROXY_LOOK}.mp4")
+    assert proxy_path.exists() and proxy_path.stat().st_size > 0
+
+
+@pytest.mark.skipif(not HAS_FFMPEG, reason="ffmpeg not available")
+def test_init_lazy_proxy_command_is_plain_scale_for_sdr(tmp_path):
+    """Lazy SDR source → tonemap=False, plain scale, no zscale chain."""
+    wrapper, log = _make_ffmpeg_spy(tmp_path, fail=False)
+    src = tmp_path / "clip.mp4"
+    _make_clip(src, duration=1)
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    result = run_init(
+        "--clips", str(src), "--prompt", "test", "--normalize", "lazy",
+        env_override={"MONTAJ_WORKSPACE_DIR": str(ws), "MONTAJ_FFMPEG": str(wrapper)},
+    )
+    assert result.returncode == 0, result.stderr
+    vf = _last_ffmpeg_vf(log)
+    assert vf == "scale='if(gt(iw,ih),-2,720)':'if(gt(iw,ih),720,-2)'"
+    assert "zscale" not in vf
+
+
+@pytest.mark.skipif(not HAS_FFMPEG, reason="ffmpeg not available")
+def test_init_lazy_proxy_command_uses_tonemap_for_hdr_source(tmp_path):
+    """Lazy HLG-tagged source → tonemap=True: scale composed AHEAD of the
+    zscale tonemap chain (scale-first ordering). Command-level assertion
+    only (see _make_ffmpeg_spy) — the spy exits 1 immediately so this never
+    depends on the box actually having zscale, and doubles as a second proof
+    that a proxy failure never blocks import (lazy arm this time)."""
+    wrapper, log = _make_ffmpeg_spy(tmp_path, fail=True)
+    src = tmp_path / "clip.mp4"
+    _make_hlg_clip(src, duration=1)
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    result = run_init(
+        "--clips", str(src), "--prompt", "test", "--normalize", "lazy",
+        env_override={"MONTAJ_WORKSPACE_DIR": str(ws), "MONTAJ_FFMPEG": str(wrapper)},
+    )
+    assert result.returncode == 0, result.stderr  # proxy failure is non-blocking
+    project = json.loads(_project_path_from_stdout(result.stdout).read_text())
+    assert "proxySrc" not in project["tracks"][0][0]  # the spy's exit 1 forced a failure
+    assert "proxy FAILED" in result.stderr
+
+    vf = _last_ffmpeg_vf(log)
+    scale_idx = vf.index("scale=")
+    zscale_idx = vf.index("zscale=")
+    assert scale_idx < zscale_idx, f"scale must precede the zscale chain: {vf!r}"
+    assert "tonemap=hable" in vf
+
+
+@pytest.mark.skipif(not HAS_FFMPEG, reason="ffmpeg not available")
+def test_init_lazy_proxy_concurrent_children_freshness_short_circuits(tmp_path):
+    """Two clip items that resolve (via --symlink-clips) to the SAME real
+    source file — simulating concurrent children of one shared lazy source —
+    must not both encode a proxy. _copy_into_workspace's collision-avoidance
+    gives each clip its own local symlink name (shared.mp4, shared_clip2.mp4),
+    but init.py resolves clip_path to its realpath before naming the proxy, so
+    both worker threads compute the SAME proxy_out and race on it: the
+    freshness check re-verified under _proxy_lock_for's per-path lock lets the
+    loser skip straight to writing proxySrc once the winner's encode has
+    landed."""
+    wrapper, log = _make_ffmpeg_spy(tmp_path, fail=False)
+    shared = tmp_path / "shared.mp4"
+    _make_clip(shared, duration=1)
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    result = run_init(
+        "--clips", str(shared), str(shared),
+        "--symlink-clips", "--normalize", "lazy", "--prompt", "test",
+        env_override={"MONTAJ_WORKSPACE_DIR": str(ws), "MONTAJ_FFMPEG": str(wrapper)},
+    )
+    assert result.returncode == 0, result.stderr
+    project = json.loads(_project_path_from_stdout(result.stdout).read_text())
+    track = project["tracks"][0]
+    assert len(track) == 2
+    assert track[0]["src"] != track[1]["src"]  # distinct local symlinks...
+    assert "proxySrc" in track[0] and "proxySrc" in track[1]
+    assert track[0]["proxySrc"] == track[1]["proxySrc"]  # ...but ONE shared proxy
+    assert Path(track[0]["proxySrc"]).exists()
+
+    # Exactly ONE real encode happened — the freshness short-circuit caught
+    # the loser of the race before it called make_proxy a second time.
+    encode_blocks = [b for b in log.read_text().split("---\n") if "libsvtav1" in b]
+    assert len(encode_blocks) == 1, (
+        f"expected exactly 1 proxy encode for the shared source, got {len(encode_blocks)} "
+        f"— freshness short-circuit did not dedupe concurrent children"
+    )
 
 
 # ---------------------------------------------------------------------------

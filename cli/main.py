@@ -31,6 +31,7 @@ def add_global_flags(parser):
 # generated from their step JSON schema instead of a hand-written module).
 _COMMANDS = {
     "approve":            "cli.commands.approve",
+    "clean":              "cli.commands.clean",
     "create-step":        "cli.commands.create_step",
     "credentials":        "cli.commands.credentials",
     "doctor":             "cli.commands.doctor",
@@ -90,7 +91,7 @@ _REGISTRATION_ORDER = (
     "probe", "snapshot", "filler", "waveform-trim", "rm-nonspeech",
     "materialize-cut", "resize", "normalize", "extract-audio", "transcribe",
     "caption", "lyrics-sync", "lyrics-render", "stem-separation", "init",
-    "status", "upload", "approve", "regen", "mcp", "models", "doctor",
+    "status", "upload", "approve", "clean", "regen", "mcp", "models", "doctor",
     "create-step", "validate", "install", "credentials", "update",
     "remove-bg", "kling-generate", "analyze-media", "generate-image",
     "generate-voiceover", "generate-music", "detect-shots", "shot-sheet",

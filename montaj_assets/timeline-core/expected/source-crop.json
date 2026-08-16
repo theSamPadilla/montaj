@@ -33,7 +33,7 @@
             "trackIdx": 0,
             "kind": "video",
             "window": {
-              "src": "/corpus/cropVideo.mp4",
+              "src": "/corpus/cropVideo_proxy.mp4",
               "inPoint": 0,
               "outPoint": 5,
               "usedNormalizedCache": false
@@ -66,7 +66,7 @@
             "trackIdx": 0,
             "kind": "video",
             "window": {
-              "src": "/corpus/cropVideo.mp4",
+              "src": "/corpus/cropVideo_proxy.mp4",
               "inPoint": 0,
               "outPoint": 5,
               "usedNormalizedCache": false
@@ -222,7 +222,7 @@
   "sourceWindow": {
     "cropped": {
       "preview": {
-        "src": "/corpus/cropVideo.mp4",
+        "src": "/corpus/cropVideo_proxy.mp4",
         "inPoint": 0,
         "outPoint": 5,
         "usedNormalizedCache": false

@@ -386,6 +386,43 @@ describe('nobg cases mirrored from the legacy suites', () => {
 })
 
 // ---------------------------------------------------------------------------
+// 7b. SP3 — proxySrc is PREVIEW-ONLY. `proxySrc` is a full-source 720p
+//     AV1+Opus editing proxy; render needs the original (or nobg) full-quality
+//     source, so it must never see it. This guard is PERMANENT — it must keep
+//     passing across any future change to the preview chain (see
+//     chooseSrcRaw's module comment in src/source-window.js).
+// ---------------------------------------------------------------------------
+
+const PROXY_RENDER_GUARD = fixture('sp3-proxy-render-guard', {
+  id: 'v',
+  type: 'video',
+  src: '/orig.mp4',
+  proxySrc: '/corpus/proxy_720p_av1.mp4',
+  start: 0,
+  end: 5,
+  inPoint: 1,
+  outPoint: 4,
+})
+
+describe('SP3: proxySrc is preview-only — render must never choose it', () => {
+  test("playbackSrcFor(item, 'render') ignores proxySrc and returns src", () => {
+    assert.equal(playbackSrcFor(PROXY_RENDER_GUARD, 'render'), PROXY_RENDER_GUARD.src)
+  })
+
+  test("sourceWindow(item, 'render').src agrees — also ignores proxySrc", () => {
+    const w = sourceWindow(PROXY_RENDER_GUARD, 'render')
+    assert.equal(w.src, PROXY_RENDER_GUARD.src)
+    assert.notEqual(w.src, PROXY_RENDER_GUARD.proxySrc)
+  })
+
+  test('preview DOES choose proxySrc for the same item (contrast case)', () => {
+    const w = sourceWindow(PROXY_RENDER_GUARD, 'preview')
+    assert.equal(w.src, PROXY_RENDER_GUARD.proxySrc)
+    assert.equal(playbackSrcFor(PROXY_RENDER_GUARD, 'preview'), PROXY_RENDER_GUARD.proxySrc)
+  })
+})
+
+// ---------------------------------------------------------------------------
 // 8. THE NaN FIX — the single sanctioned behavior change in T2.
 //    Today render.js:613 computes `item.normalizedInPoint ?? item.inPoint` with
 //    no `?? 0` tail, so a normalizedSrc item carrying NEITHER origin field sends
@@ -425,11 +462,18 @@ describe('NaN fix: normalizedSrc with neither normalizedInPoint nor inPoint', ()
 })
 
 // ---------------------------------------------------------------------------
-// 8b. Preserved legacy quirk: an item with NO src at all.
-//     render.js:612 is `chosenSrc === item.normalizedSrc`; when both are
-//     undefined that comparison is TRUE, so render rebases (to 0) while preview
-//     (guarded on `!!normalizedSrc`) does not. Ported verbatim on purpose — the
-//     item is already unrenderable, and T8's encode-args golden must not shift.
+// 8b. Preserved legacy quirk: an item with NO src at all — SP3 UNIFIED this
+//     across variants. render.js:612 is `chosenSrc === item.normalizedSrc`;
+//     when both are undefined that comparison is TRUE, so render rebases (to
+//     0) even though there is no cache. Before SP3, preview's OWN shortcut
+//     (`!item.nobg_preview_src && !!item.normalizedSrc`) was guarded on
+//     `!!normalizedSrc` and did NOT rebase here. T4 replaced that shortcut
+//     with the render form verbatim — see `usedNormalizedCacheFor`'s module
+//     comment: the shortcut broke once `proxySrc` could also precede
+//     `normalizedSrc` in the preview chain — so preview now inherits the same
+//     quirk. Still ported on purpose: the item is already unrenderable either
+//     way (no playable source at all), and T8's encode-args golden only
+//     depends on the render side, which is byte-for-byte unchanged.
 // ---------------------------------------------------------------------------
 
 const NO_SRC_AT_ALL = fixture('degenerate-no-src-at-all', {
@@ -441,7 +485,7 @@ const NO_SRC_AT_ALL = fixture('degenerate-no-src-at-all', {
   end: 5,
 })
 
-describe('Degenerate item with no src, no normalizedSrc (locks in the preview/render split)', () => {
+describe('Degenerate item with no src, no normalizedSrc (SP3: both variants now rebase to 0 alike)', () => {
   test("render: 'undefined === undefined' makes usedNormalizedCache true → rebases to 0, and src stays undefined (render.js:611 has no '?? \"\"' tail)", () => {
     const w = sourceWindow(NO_SRC_AT_ALL, 'render')
     assert.equal(w.usedNormalizedCache, true)
@@ -454,11 +498,11 @@ describe('Degenerate item with no src, no normalizedSrc (locks in the preview/re
     assert.equal(playbackSrcFor(NO_SRC_AT_ALL, 'render'), undefined)
   })
 
-  test("preview: guard is '!!normalizedSrc', so no rebase — inPoint passes through, and src is '' (useVideoPlayback.ts:30 tail)", () => {
+  test("preview (SP3): 'undefined === undefined' now ALSO makes usedNormalizedCache true → rebases to 0, but src still totals to '' (useVideoPlayback.ts:30 tail is preview-only and survives)", () => {
     const w = sourceWindow(NO_SRC_AT_ALL, 'preview')
-    assert.equal(w.usedNormalizedCache, false)
-    assert.equal(w.inPoint, 4)
-    assert.equal(w.outPoint, 9)
+    assert.equal(w.usedNormalizedCache, true)
+    assert.equal(w.inPoint, 0)
+    assert.equal(w.outPoint, 5)
     assert.equal(w.src, '')
     assert.equal(playbackSrcFor(NO_SRC_AT_ALL, 'preview'), '')
   })

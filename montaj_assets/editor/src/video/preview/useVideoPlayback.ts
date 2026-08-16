@@ -40,6 +40,16 @@ interface MontajVideoElement extends HTMLVideoElement {
 //     window, so it is NOT rebased — and it takes precedence over the cache.
 //     `nobg_src` is the ProRes 4444 render-only artifact and is never loaded
 //     into a <video> element; browsers can't decode ProRes.
+//
+//   • `proxySrc` (SP3) is the full-source, all-intra 720p AV1+Opus editing
+//     proxy generated automatically at import. It also covers the FULL
+//     source, so it is NOT rebased either — same shape as `nobg_preview_src`.
+//     It sits AFTER `nobg_preview_src` in the precedence chain (an alpha
+//     preview always wins over the plain proxy), and is preview-only: render
+//     never reads it, and it is never written into project.json by render.
+
+// SP3 precedence, most to least specific: nobg_preview_src > proxySrc >
+// normalizedSrc (rebased) > src.
 
 /**
  * Resolve the file path the browser should load for previewing this clip.
@@ -48,7 +58,7 @@ interface MontajVideoElement extends HTMLVideoElement {
  * all) — the `?? ''` below is a type narrowing, not a runtime fallback; see the
  * `src` note on `SourceWindow` in timeline-core's index.d.ts.
  */
-function playbackSrcFor(clip: { src?: string; nobg_preview_src?: string; normalizedSrc?: string }): string {
+function playbackSrcFor(clip: { src?: string; nobg_preview_src?: string; normalizedSrc?: string; proxySrc?: string }): string {
   return resolvePlaybackSrc(clip, 'preview') ?? ''
 }
 
@@ -56,7 +66,7 @@ function playbackSrcFor(clip: { src?: string; nobg_preview_src?: string; normali
  * The inPoint the preview should SEEK to for this clip, accounting for the
  * normalizedSrc cache origin. `sourceWindow(clip, 'preview').inPoint`.
  */
-export function effectiveInPoint(clip: { inPoint?: number; normalizedInPoint?: number; nobg_preview_src?: string; normalizedSrc?: string; src?: string }): number {
+export function effectiveInPoint(clip: { inPoint?: number; normalizedInPoint?: number; nobg_preview_src?: string; normalizedSrc?: string; proxySrc?: string; src?: string }): number {
   return sourceWindow(clip, 'preview').inPoint
 }
 
@@ -69,7 +79,7 @@ export function effectiveInPoint(clip: { inPoint?: number; normalizedInPoint?: n
  * Returns undefined when no outPoint is stored, so callers keep their existing
  * fallback (clip.end - clip.start + effectiveInPoint).
  */
-export function effectiveOutPoint(clip: { inPoint?: number; outPoint?: number; normalizedInPoint?: number; nobg_preview_src?: string; normalizedSrc?: string; src?: string }): number | undefined {
+export function effectiveOutPoint(clip: { inPoint?: number; outPoint?: number; normalizedInPoint?: number; nobg_preview_src?: string; normalizedSrc?: string; proxySrc?: string; src?: string }): number | undefined {
   return sourceWindow(clip, 'preview').outPoint
 }
 
@@ -528,9 +538,13 @@ export function useVideoPlayback(
     // Only reload if the actual clip sources/trim points changed — not just overlay edits.
     // Identity includes nobg_preview_src so a bg-removal completing mid-session
     // (the field appearing on a clip whose src was already loaded) triggers a
-    // reload to swap the preview to the cutout version.
+    // reload to swap the preview to the cutout version. Same reasoning covers
+    // proxySrc: an SP3 proxy arriving via SSE mid-session (the field appearing
+    // on a clip already loaded from its original src) must also trigger a
+    // reload, or the <video> element keeps playing the pre-proxy source until
+    // the next unrelated identity change happens to flush it.
     const identity = clips
-      .map(c => `${c.nobg_preview_src ?? ''}|${c.src}|${c.inPoint ?? 0}|${c.outPoint ?? ''}`)
+      .map(c => `${c.nobg_preview_src ?? ''}|${c.proxySrc ?? ''}|${c.src}|${c.inPoint ?? 0}|${c.outPoint ?? ''}`)
       .join(',')
     if (identity === clipsSourceRef.current) return
     clipsSourceRef.current = identity

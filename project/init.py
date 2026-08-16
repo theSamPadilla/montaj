@@ -10,12 +10,13 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from lib.common import SAFE_NAME, fail, get_duration, progress
 from lib.remote_io import fetch_to_disk, parse_allowed_hosts
 from lib.normalize import normalize, is_normalized, probe_video
+from lib.proxy import is_proxy_fresh, make_proxy, proxy_path_for
 from lib.types.project import normalize_project_type
 from lib.types.kling import is_valid_aspect_ratio, ASPECT_RATIOS, ASPECT_RESOLUTIONS, DEFAULT_ASPECT_RATIO
 from lib.types.carousel import CAROUSEL_ASPECTS, CAROUSEL_RESOLUTIONS, DEFAULT_CAROUSEL_ASPECT
 from lib.types.colorspace import (
     ALL_COLOR_SPACES, DEFAULT_COLOR_SPACE, ColorSpaceKey,
-    detect_from_transfer, normalize_key, smart_detect,
+    detect_from_transfer, is_hdr, normalize_key, smart_detect,
 )
 from lib.profile_assets import build_profile_snapshot
 from lib.workflow import read_workflow
@@ -23,6 +24,7 @@ from lib.workflow import read_workflow
 
 NORMALIZE_POOL_SIZE = 4  # outer pool — fast-path/skip workers don't acquire heavy_encode_sem
 HEAVY_ENCODE_LIMIT = 2   # libx264 -preset slow at 4K is memory-heavy — precedent: materialize_cut.py:22
+PROXY_ENCODE_LIMIT = 2   # av1 proxy encodes are their own CPU-heavy pool, separate from libx264/265 masters so proxies never queue behind normalize
 
 
 def _copy_into_workspace(src: str, dest_dir: str, prefix: str, link: bool = False) -> str:
@@ -527,15 +529,67 @@ def main():
     # because clips that pass is_normalized() bypass the semaphore entirely.
     _heavy_encode_sem = threading.Semaphore(HEAVY_ENCODE_LIMIT)
 
+    # Proxies are their own encoder pool (av1, hardware-decoded source) —
+    # separate from _heavy_encode_sem so proxy encodes never queue behind
+    # libx264/libx265 master transcodes. Capacity 2, so this alone does NOT
+    # serialize same-path racers (2 threads can hold it at once) — that's
+    # _proxy_locks_guard's job below.
+    _proxy_encode_sem = threading.Semaphore(PROXY_ENCODE_LIMIT)
+
+    # Per-proxy-path mutual exclusion for the "is it fresh, and if not, claim
+    # the encode" decision. Concurrent children of one shared lazy source
+    # compute the SAME proxy_out (see the lazy branch's realpath resolution
+    # below) and must fully serialize on THAT check — a semaphore with
+    # capacity > 1 does not provide this (two racers can both pass a
+    # capacity-2 semaphore at once and both encode). Different proxy paths
+    # use different locks, so unrelated clips never block on each other here;
+    # _proxy_encode_sem still separately caps how many encodes run at once.
+    _proxy_locks_guard = threading.Lock()
+    _proxy_locks: dict[str, threading.Lock] = {}
+
+    def _proxy_lock_for(path: str) -> threading.Lock:
+        with _proxy_locks_guard:
+            lock = _proxy_locks.get(path)
+            if lock is None:
+                lock = threading.Lock()
+                _proxy_locks[path] = lock
+            return lock
+
+    def _schedule_proxy(clip: dict, clip_id: str, src: str, *, tonemap: bool, info: dict) -> None:
+        """Encode (or reuse) the full-source editing proxy for `src`, writing
+        `clip["proxySrc"]` on success.
+
+        Proxies are an enhancement, never a blocker: any failure here is
+        reported via progress() and swallowed — the clip simply keeps no
+        proxySrc and the editor falls back to playing the master.
+
+        The freshness check + encode is fully serialized per-path via
+        _proxy_lock_for, so N concurrent children of one shared lazy source
+        only encode once — a thread that loses the race blocks on the lock,
+        then finds the proxy already fresh once it acquires it and skips
+        straight to writing proxySrc.
+        """
+        proxy_out = proxy_path_for(src)
+        try:
+            with _proxy_lock_for(proxy_out):
+                if not is_proxy_fresh(proxy_out, src):
+                    with _proxy_encode_sem:
+                        make_proxy(src, proxy_out, tonemap=tonemap, info=info)
+            clip["proxySrc"] = proxy_out
+        except (Exception, SystemExit):
+            progress(f"[{clip_id}] proxy FAILED — editor will play the master")
+
     # Per-clip path classification stats (collected for the summary log at end).
     # Thread-safe append-only list; final summary read after pool join.
     _stats: list[dict] = []
     _stats_lock = threading.Lock()
 
-    # Each thread mutates its OWN clip dict. There is no shared state between workers
-    # (no shared lists/dicts, no shared file handles, no shared probe cache). If a
-    # future change ever has multiple threads operating on the same clip dict or
-    # the same source file, this needs reconsideration.
+    # Each thread mutates its OWN clip dict. The only shared state is the proxy
+    # bookkeeping above (`_proxy_locks` / `_proxy_locks_guard`, both guarded) —
+    # SP3 deliberately has N lazy children converge on ONE proxy output path via
+    # realpath, and `_proxy_lock_for` serializes the freshness-check-and-encode
+    # for that path. No shared lists, file handles, or probe-cache writes beyond
+    # that. Any NEW cross-thread write needs the same treatment.
     def _normalize_one(clip):
         """Normalize a single clip in place. Mutates clip['src'] and clip['sourceDuration']."""
         clip_path = clip["src"]
@@ -550,6 +604,48 @@ def main():
             except (Exception, SystemExit):
                 pass
             progress(f"[{clip_id}] lazy skip")
+
+            # Full-source editing proxy from the original — lazy mode never
+            # conforms a master, so there's no post-normalize src to encode
+            # from. Reuse the unconditional probe pass above (init.py's single
+            # ffprobe-per-clip contract); only re-probe on an earlier probe
+            # failure (cache miss), same idiom as the eager path below.
+            info = probe_cache.get(clip_path) or probe_video(clip_path)
+            if info is not None:
+                tonemap = is_hdr(detect_from_transfer(info.get("color_transfer")))
+                # Lazy clips are commonly --symlink-clips'd into a shared
+                # source (clips-workflow fan-out — see skills/find_clips):
+                # each child project stages its OWN local symlink under its
+                # own basename-collision-avoided name, so clip_path differs
+                # per child even though the underlying file is identical.
+                # Resolve to the real file so every child names (and races
+                # on) the SAME proxy path — that's what lets is_proxy_fresh()
+                # + make_proxy()'s atomic os.replace (see lib/proxy.py)
+                # converge on ONE shared proxy instead of one redundant proxy
+                # per child, per the one-proxy-serves-every-child contract on
+                # lib/proxy.proxy_path_for. _proxy_encode_sem/_proxy_locks
+                # only dedupe within this one process; cross-process races
+                # (separate init.py calls for separate children) are safe by
+                # construction via that same freshness check + atomic write.
+                # For a non-symlinked (copied) clip under the real ~/Montaj
+                # workspace root this is a no-op — the copy already lives at
+                # its own realpath, so proxy naming/behavior is unchanged.
+                # (The ONLY exception is a path with a symlinked ANCESTOR
+                # directory, e.g. tests running under macOS's /tmp → /private/tmp
+                # — cosmetically different string, same physical file/dir,
+                # no behavior change either way.)
+                #
+                # Placement caveat: "sibling of the encoded-from file" means
+                # the proxy lands beside whatever `clip_path` resolves to. In
+                # the real clips workflow that's `~/Montaj/.sources/<id>/`,
+                # which `montaj clean --proxies` always scans. But for an
+                # ad-hoc `--clips <path outside the workspace> --symlink-clips`
+                # call, the proxy lands next to the user's ORIGINAL footage,
+                # outside the workspace root and outside .sources/ — outside
+                # every root `montaj clean --proxies` scans (see
+                # cli/commands/clean.py:_scan_roots). Not solved here; the
+                # operator has been notified separately.
+                _schedule_proxy(clip, clip_id, os.path.realpath(clip_path), tonemap=tonemap, info=info)
             return
 
         t0 = time.monotonic()
@@ -587,6 +683,20 @@ def main():
             except SystemExit:
                 # normalize calls fail() which raises SystemExit — fall back to original
                 progress(f"[{clip_id}] normalize FAILED, falling back to original src")
+
+        # Full-source editing proxy, encoded from the current (post-normalize)
+        # clip["src"] — the already-conformed master when normalize ran, so
+        # there's no second color decision. tonemap=False regardless of the
+        # project's color space: for an HDR project the master is HLG/PQ and the
+        # plain-scale path carries its color tags through verbatim (verified:
+        # AV1 out keeps bt2020/arib-std-b67), so tone-mapping here would be the
+        # second decision we're avoiding. Caveat: if normalize FAILED above,
+        # clip["src"] is still the untouched original, so an HDR original in an
+        # SDR project yields an un-tone-mapped proxy — sanctioned by the SP3
+        # plan; render still conforms at render time.
+        # Skipped when probing failed (no info to build the encode from).
+        if info is not None:
+            _schedule_proxy(clip, clip_id, clip["src"], tonemap=False, info=info)
 
         # Cache source duration so the UI can clamp edits against it
         try:

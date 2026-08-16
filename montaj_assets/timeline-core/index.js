@@ -57,4 +57,4 @@ export * from './src/audio.js'
  * or new function with no effect on existing outputs does not need a bump.
  * @type {string}
  */
-export const RESOLVER_VERSION = '1'
+export const RESOLVER_VERSION = '2'

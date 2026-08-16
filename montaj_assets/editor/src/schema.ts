@@ -102,6 +102,13 @@ export interface VisualItem {
   normalizedSrc?: string    // derived per-window normalized cache; render/preview prefer it; src stays original
   /** Source-time (original coords) the normalizedSrc cache starts at; the cache covers [normalizedInPoint, normalizedInPoint + duration]. Absent ⇒ assume it starts at the clip's inPoint (legacy rebase-to-0). */
   normalizedInPoint?: number
+  /** Full-source, all-intra 720p AV1+Opus editing proxy for instant-scrub preview (SP3). Never windowed —
+   * no `proxyInPoint` — so one proxy can serve every clip sharing a lazy source. Preview-only: render never
+   * reads this field. Preview's src precedence, alpha-safe, is
+   * `nobg_preview_src ?? proxySrc ?? normalizedSrc ?? src`. Filename carries a look-version tag
+   * (`<stem>_proxy_<PROXY_LOOK>.mp4`); bumping `PROXY_LOOK` (e.g. when Montaj Vivid ships) invalidates every
+   * existing proxy by construction — the freshness check sees a different filename and regenerates lazily. */
+  proxySrc?: string         // video type only
   muted?: boolean         // video type only — suppress audio in preview and render
   sourceCrop?: { x: number; y: number; w: number; h: number }  // video type only — non-destructive crop of the source clip (0–1 fractions)
   sourceWidth?: number    // video type only — intrinsic width of the source clip in pixels

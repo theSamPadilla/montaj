@@ -36,6 +36,12 @@ export interface SourceWindowItem {
   normalizedSrc?: string
   /** Source-time the normalized cache starts at. Absent ⇒ assume the item's `inPoint`. */
   normalizedInPoint?: number
+  /**
+   * Full-source 720p AV1+Opus editing proxy (SP3). Preview-only, and — like
+   * the `nobg_*` artifacts below — covers the WHOLE source, never a window,
+   * so it is never rebased. Render must never choose it.
+   */
+  proxySrc?: string
   /** ProRes 4444 alpha artifact — render only, covers the FULL source (not a window cache). */
   nobg_src?: string
   /** VP9 WebM alpha artifact — preview only, covers the FULL source (not a window cache). */

@@ -539,7 +539,14 @@ export default function OverlayItemsLayer({
                   // `normalizedSrc` tier and require rebasing `inPoint` to
                   // match — an unbudgeted behavior change for this item
                   // class. Out of scope for SP2; owned by SP4.
-                  src={fileUrl(item.nobg_preview_src ?? item.src)}
+                  //
+                  // SP3 adds `proxySrc` as a middle tier (between
+                  // `nobg_preview_src` and `src`), same precedence order as
+                  // the main chain. `proxySrc` is full-source like `src`
+                  // itself — no window, no rebase — so it slots in without
+                  // disturbing the raw, un-rebased `inPoint` this chain
+                  // already passes through.
+                  src={fileUrl(item.nobg_preview_src ?? item.proxySrc ?? item.src)}
                   currentTime={currentTime}
                   itemStart={item.start}
                   inPoint={item.inPoint ?? 0}

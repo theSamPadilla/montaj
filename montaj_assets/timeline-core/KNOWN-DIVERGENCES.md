@@ -135,8 +135,17 @@ exercises caption painting; this entry exists so the finding isn't lost.
 `sourceWindow`'s src-selection chain (`src/source-window.js`, mirroring
 `useVideoPlayback.ts:29-31` and `render.js:611`) differs by variant:
 
-    preview: nobg_preview_src ?? normalizedSrc ?? src
+    preview: nobg_preview_src ?? proxySrc ?? normalizedSrc ?? src
     render:  (nobg_src && remove_bg) ? nobg_src : (normalizedSrc ?? src)
+
+**Alpha-ordering note (SP3):** `proxySrc` — a full-source 720p AV1+Opus
+editing proxy — sits AFTER `nobg_preview_src` in the preview chain, never
+ahead of it, and never appears in the render chain at all. `nobg_preview_src`
+is VP9-with-alpha; an opaque proxy ahead of it would resurrect a removed
+background in preview while render still composites the alpha artifact
+underneath — a new preview/render divergence on top of this one. See
+`src/source-window.js`'s `chooseSrcRaw` for the full rationale and
+`fixtures/proxy-matrix.json` for the corpus coverage.
 
 For an item with `remove_bg: true` + `nobg_src` present but NO
 `nobg_preview_src`, preview falls through past the (absent) preview alpha
@@ -404,23 +413,34 @@ item with neither `src` nor `normalizedSrc` set, `render.js:612`'s
 `usedNormalized = chosenSrc === item.normalizedSrc` evaluates `undefined ===
 undefined`, which is `true` — so render treats such an item as "using the
 normalized cache" and rebases its `inPoint`/`outPoint` to 0, even though there
-is no cache. Preview's equivalent check (`useVideoPlayback.ts:61/84`,
-`!clip.nobg_preview_src && !!clip.normalizedSrc`) is guarded on `normalizedSrc`
-truthiness and does NOT rebase in this case. `src/source-window.js`'s
-`usedNormalizedCacheFor` reproduces the render branch's comparison exactly
-(`chosenSrcRaw === item.normalizedSrc`), so the resolver inherits this quirk
-on purpose — "fixing" it here would change render's dry-run/encode output,
-which T8's encode-args golden is specifically built to catch.
+is no cache. `src/source-window.js`'s `usedNormalizedCacheFor` reproduces the
+render branch's comparison exactly (`chosenSrcRaw === item.normalizedSrc`), so
+the resolver inherits this quirk on purpose — "fixing" it here would change
+render's dry-run/encode output, which T8's encode-args golden is specifically
+built to catch.
+
+**CLOSED BY SP3 — both variants now share this quirk.** Preview's old check
+(`!clip.nobg_preview_src && !!clip.normalizedSrc`) was guarded on
+`normalizedSrc` truthiness and did NOT rebase in this case, which is what made
+this a divergence. SP3 inserted the `proxySrc` tier ahead of `normalizedSrc`,
+breaking that shortcut's "exactly one tier precedes `normalizedSrc`"
+assumption, so `usedNormalizedCacheFor` collapsed to render's unconditional
+`chosenSrcRaw === item.normalizedSrc` for BOTH variants — preview now inherits
+the rebase-to-0 behavior too. See `src/source-window.js`'s "PRESERVED LEGACY
+QUIRK, NOW SHARED BY BOTH VARIANTS" comment. The entry is retained because the
+underlying render-side behavior is still deliberately preserved.
 
 Such an item is already unrenderable (no playable source at all), so the
 quirk has no independent user-visible consequence beyond the malformed-item
 case D4 already covers. Pinned by `test/source-window.test.mjs`'s "Degenerate
-item with no src, no normalizedSrc" describe block (line 444) — no dedicated
+item with no src, no normalizedSrc" describe block (line 488, updated in SP3
+to assert both variants alike) — no dedicated
 corpus fixture (deliberately: this corpus's fixtures all carry a real `src`,
 per `fixtures/README.md`'s "never depend on real files" framing extended to
 "never author a genuinely unplayable fixture item").
 
-**Owner: SP4 / backlog.**
+**Owner: SP4 — CLOSED by SP3 T4 (preview adopted render's unconditional
+comparison; the two variants no longer diverge).**
 
 ## D9. `geometry-duplication-hazard` (was: `designcanvas-duplication-hazard`)
 

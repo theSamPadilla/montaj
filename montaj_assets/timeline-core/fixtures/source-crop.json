@@ -10,6 +10,7 @@
         "id": "cropped",
         "type": "video",
         "src": "/corpus/cropVideo.mp4",
+        "proxySrc": "/corpus/cropVideo_proxy.mp4",
         "start": 0,
         "end": 5,
         "inPoint": 0,

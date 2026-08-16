@@ -69,6 +69,11 @@
  * @property {string} [src]               Original source file (never replaced on the item itself).
  * @property {string} [normalizedSrc]     Per-window normalized cache; plays from its own time 0.
  * @property {number} [normalizedInPoint] Source-time the cache starts at. Absent ⇒ assume `inPoint`.
+ * @property {string} [proxySrc]          Full-source 720p AV1+Opus editing proxy (SP3). Like the
+ *                                        `nobg_*` artifacts, covers the WHOLE source — never a
+ *                                        window, so never rebased. Preview-only: render must never
+ *                                        choose it (see the render-guard test in
+ *                                        test/source-window.test.mjs).
  * @property {string} [nobg_src]          ProRes 4444 alpha artifact — render only, full source.
  * @property {string} [nobg_preview_src]  VP9 WebM alpha artifact — preview only, full source.
  * @property {boolean} [remove_bg]        Whether background removal is active for this item.
@@ -134,12 +139,18 @@ function assertVariant(variant) {
  */
 function chooseSrcRaw(item, variant) {
   if (variant === 'preview') {
-    // FORWARD-COMPAT (SP3): a `proxySrc` tier is inserted at the head of this
-    // chain, ahead of nobg_preview_src — i.e. exactly one more `item.proxySrc ??`
-    // on the line below, plus a field on SourceWindowItem. Nothing else in this
-    // module changes: proxies are full-source like the nobg artifacts, so the
-    // cache guard below already refuses to rebase them. Do NOT implement it here.
-    return item.nobg_preview_src ?? item.normalizedSrc ?? item.src
+    // SP3: `proxySrc` — a full-source 720p AV1+Opus editing proxy — is
+    // inserted here, AFTER `nobg_preview_src`, not at the head of the chain.
+    // `nobg_preview_src` is VP9-with-alpha; an opaque proxy ahead of it would
+    // resurrect a removed background in preview while render (which never
+    // reads `proxySrc` at all — see chooseSrcRaw's render branch below and
+    // the render-guard test) still composites the alpha artifact underneath.
+    // That would be a NEW preview/render divergence of exactly the class this
+    // module exists to eliminate, so the ordering is load-bearing, not
+    // cosmetic. Like the nobg artifacts, `proxySrc` is full-source — no
+    // `proxyInPoint`, no window — so the cache guard below already refuses to
+    // rebase it.
+    return item.nobg_preview_src ?? item.proxySrc ?? item.normalizedSrc ?? item.src
   }
   // Render never loads nobg_preview_src (it wants the ProRes) and never loads
   // nobg_src unless remove_bg is actually on — a stale nobg artifact on an item
@@ -149,16 +160,31 @@ function chooseSrcRaw(item, variant) {
 
 /**
  * Whether the normalized cache is the chosen src, and therefore whether the
- * in/outPoint rebase applies. The two originals express this differently and
- * the difference is load-bearing, so both are reproduced exactly.
- *
- * Preview, verbatim from useVideoPlayback.ts:61 / :84:
- *
- *     const usingNormalizedCache = !clip.nobg_preview_src && !!clip.normalizedSrc
+ * in/outPoint rebase applies.
  *
  * Render, verbatim from render.js:612:
  *
  *     const usedNormalized = chosenSrc === item.normalizedSrc
+ *
+ * SP3: preview now uses this SAME expression instead of its own shortcut.
+ * Before `proxySrc` existed, preview's check was, verbatim from
+ * useVideoPlayback.ts:61 / :84:
+ *
+ *     const usingNormalizedCache = !clip.nobg_preview_src && !!clip.normalizedSrc
+ *
+ * That shortcut only worked because exactly one tier (`nobg_preview_src`)
+ * could precede `normalizedSrc` in the preview chain — "nothing preferred
+ * normalizedSrc" and "normalizedSrc IS the chosen src" were the same fact.
+ * Inserting `proxySrc` between them broke that equivalence: an item carrying
+ * BOTH `proxySrc` and `normalizedSrc` (a real case — lazy clips get an
+ * import-time proxy while `normalize_window` later writes `normalizedSrc` on
+ * the same items) still satisfies the old shortcut (no `nobg_preview_src`,
+ * `normalizedSrc` present) and would rebase by `normalizedInPoint` even
+ * though the chosen src is the full-source proxy — seeking the wrong time
+ * silently. Comparing `chosenSrcRaw` directly, like render always has, asks
+ * "is the cache literally what got picked" instead of "did nothing else win
+ * first", so it stays correct no matter how many tiers precede
+ * `normalizedSrc` in the future.
  *
  * KNOWN DIVERGENCE — "nobg precedence" (registry: KNOWN-DIVERGENCES.md, created
  * in T5; owner SP4). For an item with `remove_bg` + `nobg_src` but NO
@@ -167,12 +193,17 @@ function chooseSrcRaw(item, variant) {
  * documents it and does not fix it. See the matrix test in
  * test/source-window.test.mjs.
  *
- * PRESERVED LEGACY QUIRK — for the render variant, an item with neither `src`
- * nor `normalizedSrc` compares `undefined === undefined`, which is TRUE, so
- * render "uses the cache" and rebases to 0 while preview (guarded on
- * `!!normalizedSrc`) does not. Such an item is already unrenderable; the quirk
- * is ported verbatim so T8's encode-args golden cannot shift. Do not "fix" it
- * here — that is a behavior change and belongs to its own plan.
+ * PRESERVED LEGACY QUIRK, NOW SHARED BY BOTH VARIANTS — an item with neither
+ * `src` nor `normalizedSrc` (nor `proxySrc` nor `nobg_preview_src`) compares
+ * `undefined === undefined`, which is TRUE, so `usedNormalizedCache` is true
+ * and in/outPoint rebase to 0 even though there is no cache at all. Before
+ * SP3 this was render-only (preview's old shortcut was guarded on
+ * `!!normalizedSrc` and did not rebase here); unifying the two expressions
+ * means preview now inherits it too. Such an item is already unrenderable —
+ * no playable source at all — so the quirk has no independent user-visible
+ * consequence. See test/source-window.test.mjs's "Degenerate item with no
+ * src, no normalizedSrc" describe block, updated in T4 to assert both
+ * variants alike.
  *
  * @param {SourceWindowItem} item
  * @param {Variant} variant
@@ -180,7 +211,6 @@ function chooseSrcRaw(item, variant) {
  * @returns {boolean}
  */
 function usedNormalizedCacheFor(item, variant, chosenSrcRaw) {
-  if (variant === 'preview') return !item.nobg_preview_src && !!item.normalizedSrc
   return chosenSrcRaw === item.normalizedSrc
 }
 

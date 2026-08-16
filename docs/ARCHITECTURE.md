@@ -862,6 +862,36 @@ This runs at three enforcement points:
 
 The shared implementation lives in `lib/normalize.py` — a single module used by all three call sites. The taxonomy itself lives in `montaj_assets/schemas/color_space.json` and is loaded by both Python (`lib/types/colorspace.py`) and JS (`montaj_assets/render/color-space.js`). Normalize creates `_normalized_<colorSpace>.mp4` alongside the original file (e.g. `clip_normalized_hdr_hlg.mp4`); originals are never modified.
 
+### Editing proxies
+
+Every imported video also gets a lightweight editing copy for instant scrubbing in the editor preview: a full-source, all-intra, 720p AV1+Opus proxy (`av1-crf35-fast`), recorded as `proxySrc` on the track item. It sits alongside the other per-clip derivative artifacts:
+
+| Derivative | Naming | Produced by | Consumed by |
+|---|---|---|---|
+| `_normalized_<colorSpace>.mp4` | sibling of the original | `lib/normalize.py`, at the three enforcement points above | Render (always, safety net); preview when present (`normalizedSrc`) |
+| `_nobg.mov` / `_nobg_preview.webm` | sibling of the source | `remove_bg` step | Render uses `nobg_src` (ProRes 4444, alpha); preview uses `nobg_preview_src` (VP9 WebM, alpha) |
+| `_proxy_<PROXY_LOOK>.mp4` | sibling of the file it's encoded **from** | `lib/proxy.py`, at import (`project/init.py`) or via `POST /api/proxy` backfill | Preview only (`proxySrc`) — **render never reads it** |
+
+**Naming and freshness.** `proxy_path_for(src)` names the proxy `<stem>_proxy_<PROXY_LOOK>.mp4`, a sibling of whatever file it was encoded from — not necessarily the item's original `src`. `is_proxy_fresh(proxy, src)` is the same mtime-invalidation precedent normalize/image-tone caching already use: exists and `mtime(proxy) >= mtime(src)`.
+
+**Two encode paths.** Which file a proxy is encoded from, and whether it needs a tone-map, depends on the project's normalize mode:
+- **Eager projects** (`settings.normalize` absent or `"eager"`) — the proxy encodes from the already-normalized master (the post-`normalize()` `src`), `tonemap=False`. The master already made the one HDR→SDR color decision the project gets; the proxy is a plain hardware-decode + scale + SVT-AV1 encode, no second tone-map.
+- **Lazy projects** (`settings.normalize: "lazy"`, used by the `clips` workflow) — there is no normalized master to start from, so the proxy encodes from the original file, with the scale-first HDR→SDR tone-map chain composed ahead of the encode when the source is HDR (`tonemap=True`).
+
+In both cases the proxy encode is scheduled inside `project/init.py`'s `_normalize_one`, under a separate `PROXY_ENCODE_LIMIT = 2` semaphore so proxy encodes never queue behind the heavier libx264/libx265 normalize pool. A proxy failure is never fatal to import — it's logged (`"proxy FAILED — editor will play the master"`) and the item simply keeps no `proxySrc`.
+
+**Shared proxies for shared sources.** The `clips` workflow fans one long source out into N per-clip child projects via `--symlink-clips`, all pointing at the same underlying file (`~/Montaj/.sources/<id>/`). Because a lazy proxy is named after `os.path.realpath()` of the file it's encoded from, every child converges on the same proxy path — the first child to reach it encodes, later children find it already fresh and skip straight to writing `proxySrc`. One caveat worth stating plainly: this sibling-of-the-encoded-from-file naming means an ad-hoc `montaj init --clips <path outside the workspace> --symlink-clips` places the proxy next to the user's original footage, outside `~/Montaj/.sources/` and outside the current project directory — outside every root `montaj clean --proxies` scans by default (see below). The real clips workflow doesn't hit this, since its shared sources always live under `~/Montaj/.sources/`.
+
+**The alpha-ordering rule.** Preview's source precedence (in `@bycrux/timeline-core`) is `nobg_preview_src ?? proxySrc ?? normalizedSrc ?? src`. `proxySrc` is deliberately inserted *after* `nobg_preview_src`, not at the head of the chain: `nobg_preview_src` is VP9-with-alpha, and an opaque MP4 proxy ahead of it would resurrect a removed background in preview while render still composites the alpha channel — exactly the preview/render divergence the resolver exists to prevent.
+
+**Preview-only, provably.** Render's own precedence (`nobg_src ?? normalizedSrc ?? src` when `remove_bg`, else `normalizedSrc ?? src`) never mentions `proxySrc` — the field doesn't exist as a concept on the render side. This is enforced by a permanent guard test (`playbackSrcFor({proxySrc, src}, 'render') === src`) plus the render engine's own encode-args goldens, which stay byte-identical with `proxySrc` present on fixtures.
+
+**Look-version regeneration.** The proxy's encode parameters (scale, codec, tone-map) are frozen behind a look tag, `PROXY_LOOK` (currently `"hable1"`), baked into the filename. When a future look ships (e.g. Montaj Vivid, SP6a) and `PROXY_LOOK` changes, every existing proxy's filename no longer matches what `proxy_path_for()` computes for that clip — the freshness check sees a file that doesn't exist under the new name and regenerates lazily, on the clip's next import-time or backfill pass. No migration step is needed; `montaj clean --proxies` reclaims the old look's now-orphaned files on request (see below).
+
+**Cleanup.** `montaj clean --proxies` (`cli/commands/clean.py`) scans the current project directory (or `--project <dir>` / `--all-projects` for the whole workspace) plus `~/Montaj/.sources/` — which it always includes, since shared lazy-workflow proxies live there — for `*_proxy_*.mp4`, prints each with its size, and deletes them unless `--dry-run`. Proxies are disposable by design: deleting one just means the editor falls back to playing the master until the proxy is regenerated (at next import, or via `POST /api/proxy`).
+
+**Cost.** Proxies are optional insurance for scrub speed, not free: import takes roughly +30s per minute of source footage on the reference machine, and proxies use about 2GB of disk per hour of footage. Both are reclaimable at any time via `montaj clean --proxies`.
+
 ### Render pass
 
 ```

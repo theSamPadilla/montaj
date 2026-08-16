@@ -176,12 +176,16 @@ async def list_steps():
     return [schema for schema, _ in scan_steps().values()]
 
 
-async def _execute_step(name: str, schema: dict, py_path: Path, body: dict) -> dict:
+async def _execute_step(name: str, schema: dict, py_path: Path, body: dict, *, timeout: int = STEP_TIMEOUT_S) -> dict:
     """Run one step subprocess and return its wrap_output payload.
 
     Raises HTTPException on credential/validation/subprocess error exactly as
     the sync route always has. The secret-scrub lives HERE (not in the caller)
     so both the sync 500 path and the async error-job path get scrubbed output.
+
+    `timeout` defaults to STEP_TIMEOUT_S for every caller except the proxy job
+    driver, which forwards a duration-scaled timeout (see proxy_video) so a
+    long-form source doesn't get killed mid-encode.
     """
     # Reserved field: per-request credentials become env vars for THIS one
     # subprocess and nothing else. Pop FIRST — before validate_params /
@@ -215,7 +219,7 @@ async def _execute_step(name: str, schema: dict, py_path: Path, body: dict) -> d
     try:
         stdout_text, stderr_text, returncode = await run_subprocess(
             [sys.executable, str(py_path), *cli_args],
-            timeout=STEP_TIMEOUT_S,
+            timeout=timeout,
             cwd=str(Path.cwd()),
             env=env,
         )
@@ -345,3 +349,83 @@ async def normalize_video(body: dict = Body(...)):
         return {"path": result_path or out, "skipped": False}
 
     return await asyncio.to_thread(_run)
+
+
+async def _run_proxy_to_job(job_id: str, schema: dict, py_path: Path, body: dict, *, timeout: int = STEP_TIMEOUT_S) -> None:
+    """Background driver for /api/proxy: run the proxy step and record its
+    result/error on the job — same shape as _run_to_job, plus a `skipped:
+    false` field so a completed job's result matches the fresh-skip response
+    (both are `{"path": ..., "skipped": ...}`)."""
+    try:
+        result = await _execute_step("proxy", schema, py_path, body, timeout=timeout)
+        if isinstance(result, dict):
+            result.setdefault("skipped", False)
+        set_done(job_id, result)
+    except HTTPException as e:
+        set_error(job_id, e.detail)
+    except Exception as e:
+        set_error(job_id, {"error": "step_failed", "message": str(e)})
+
+
+@router.post("/proxy")
+async def proxy_video(body: dict = Body(...)):
+    """Encode the full-source, 720p, all-intra AV1+Opus editing proxy for `input`.
+
+    Request:  { "input": "/abs/path/to/video.mp4", "out": "/abs/path/to/video_proxy_hable1.mp4", "tonemap": false }
+    ("out" defaults to lib.proxy.proxy_path_for(input); "tonemap" defaults to false.)
+
+    Proxy encodes run for minutes, so — unlike /api/normalize's blocking
+    asyncio.to_thread shape — this is the async job pattern: a fresh proxy
+    short-circuits synchronously (200, no job), otherwise the encode runs in
+    a background job (202 + job_id), polled via the existing
+    GET /api/steps/jobs/{job_id}.
+
+    Responses:
+      - fresh cache hit:  200 {"path": ..., "skipped": true} — no job started
+      - encode needed:    202 {"job_id": ..., "status": "running"}
+      - job completion:   GET /api/steps/jobs/{job_id} -> {"status": "done",
+                           "result": {"path": ..., "skipped": false}}
+
+    This endpoint only produces the proxy file and returns its path — it does
+    NOT write proxySrc into project.json. The caller does that separately via
+    PUT /api/projects/{id} (read-modify-write; SSE then delivers it to any
+    open editor).
+    """
+    from lib.proxy import is_proxy_fresh, proxy_path_for
+
+    input_path = body.get("input")
+    if not input_path or not Path(input_path).is_file():
+        raise bad_request("missing_input", "'input' must be an absolute path to an existing file")
+
+    out = body.get("out") or proxy_path_for(input_path)
+
+    if is_proxy_fresh(out, input_path):
+        return {"path": out, "skipped": True}
+
+    steps = scan_steps()
+    if "proxy" not in steps:
+        raise server_error("not_found", "Step 'proxy' not found")
+    schema, py_path = steps["proxy"]
+    step_body = {"input": input_path, "out": out}
+    if body.get("tonemap"):
+        step_body["tonemap"] = True
+
+    # lib/proxy.py's own timeout (max(900, duration * 2)) is duration-scaled so
+    # a long-form source doesn't get killed mid-encode — but that math only
+    # applies once ffmpeg is already running. The subprocess wrapper here needs
+    # its OWN timeout sized the same way, or run_subprocess kills the encode at
+    # the flat STEP_TIMEOUT_S (900s) regardless. get_duration() can raise
+    # SystemExit (this repo's fail() convention), which a bare `except
+    # Exception` would NOT catch — probe failures degrade to the flat default
+    # instead of taking down the request.
+    from lib.common import get_duration
+    try:
+        proxy_timeout = max(STEP_TIMEOUT_S, int(get_duration(input_path) * 3))
+    except (Exception, SystemExit):
+        proxy_timeout = STEP_TIMEOUT_S
+
+    job_id = create_job()
+    task = asyncio.create_task(_run_proxy_to_job(job_id, schema, py_path, step_body, timeout=proxy_timeout))
+    _BACKGROUND_TASKS.add(task)
+    task.add_done_callback(_BACKGROUND_TASKS.discard)
+    return JSONResponse({"job_id": job_id, "status": "running"}, status_code=202)

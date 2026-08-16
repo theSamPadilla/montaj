@@ -383,7 +383,7 @@ def _sweep_stale_temps(out_path: str) -> None:
             pass
 
 
-def _run_atomic_encode(cmd, tmp_path: str, out_path: str, *, label: str) -> None:
+def _run_atomic_encode(cmd, tmp_path: str, out_path: str, *, label: str, timeout: float = 600) -> None:
     """Run an ffmpeg encode that writes ``tmp_path`` then atomically renames it
     onto ``out_path``.
 
@@ -393,9 +393,13 @@ def _run_atomic_encode(cmd, tmp_path: str, out_path: str, *, label: str) -> None
     On the same filesystem ``os.replace`` is atomic, so concurrent encoders of
     the same path serialise on the rename (last writer wins) instead of
     interleaving bytes into one corrupt file.
+
+    ``timeout`` (seconds, default 600): callers with longer expected encodes
+    (e.g. lib/proxy.py's full-source proxy pass) pass a larger, duration-scaled
+    value. Default is unchanged from the original hardcoded 600s.
     """
     try:
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
         if r.returncode != 0:
             fail("encode_error", f"{label} failed:\n{(r.stderr or '')[-500:]}")
         os.replace(tmp_path, out_path)

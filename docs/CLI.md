@@ -485,6 +485,19 @@ montaj approve
 # storyboard.approval). Prints the message to paste into your agent's
 # chat to trigger Phase 6 scene generation. Use --project PATH for an
 # explicit location; --force to refresh an existing approval.
+
+montaj clean --proxies --dry-run
+# List every editing proxy (*_proxy_*.mp4) for the current project plus the
+# shared source store (~/Montaj/.sources/), with sizes. Nothing is deleted.
+
+montaj clean --proxies
+# Delete them, and clear the now-stale proxySrc pointers from project.json so
+# the editor falls back to the full-quality master. Proxies are disposable —
+# they regenerate at next import or via POST /api/proxy.
+
+montaj clean --proxies --project ./workspace/2026-08-14-my-edit
+montaj clean --proxies --all-projects
+# Scope to one project directory, or the whole workspace root.
 ```
 
 ---

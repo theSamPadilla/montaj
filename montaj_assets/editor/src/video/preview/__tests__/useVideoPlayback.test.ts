@@ -51,6 +51,10 @@ describe('effectiveInPoint', () => {
       effectiveInPoint({ inPoint: 6, normalizedInPoint: 5, normalizedSrc: '/cache/window.mp4' }),
     ).toBeCloseTo(1, 5)
   })
+
+  it('does NOT rebase when a full-source proxy outranks the window cache (SP3)', () => {
+    expect(effectiveInPoint({ inPoint: 6, normalizedInPoint: 5, normalizedSrc: '/cache/window.mp4', proxySrc: '/p.mp4' })).toBe(6)
+  })
 })
 
 describe('effectiveOutPoint', () => {

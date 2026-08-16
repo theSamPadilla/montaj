@@ -326,6 +326,25 @@ def _video_clips_by_start(project):
     return sorted((c for c in track0 if c.get("type") == "video"), key=lambda c: c.get("start", 0.0))
 
 
+def _assert_variants_agree(gw, clip, name):
+    """Both golden variants must describe the same source window.
+
+    SP3 exception: a clip carrying ``proxySrc`` resolves preview to the 720p
+    editing proxy while render keeps the master — a sanctioned, preview-only
+    divergence (the proxy is never allowed to reach ffmpeg). Caption jobs are
+    render-side and deliberately never learn about proxies (a 96k Opus proxy
+    would degrade transcription input), so ``src`` may differ there. Every
+    OTHER window field must still agree exactly: a proxy is full-source, so it
+    must not shift in/outPoint or flip usedNormalizedCache.
+    """
+    if clip.get("proxySrc"):
+        preview = {k: v for k, v in gw["preview"].items() if k != "src"}
+        render = {k: v for k, v in gw["render"].items() if k != "src"}
+        assert preview == render, (name, clip["id"])
+    else:
+        assert gw["preview"] == gw["render"], (name, clip["id"])
+
+
 # Fixtures where EVERY tracks[0] video clip carries a normalizedSrc: Python's
 # ALL-OR-NOTHING cache switch (extract_segments, serve/caption_job.py:47)
 # coincides with the TS resolver's PER-ITEM choice (source-window.js's
@@ -339,7 +358,11 @@ _CACHE_COINCIDE_FIXTURES = [
 
 # Fixtures where NO tracks[0] video clip carries a normalizedSrc: Python's
 # all-or-nothing rule coincides trivially with the TS per-item choice (both
-# sides fall back to raw src for every clip).
+# sides fall back to raw src for every clip) -- EXCEPT `source-crop`, which
+# now carries a preview-only `proxySrc` (SP3): preview resolves to the proxy
+# while render still resolves to raw src. That's why the equality assertion
+# below goes through `_assert_variants_agree` rather than a bare `==` -- it
+# excludes `src` from the comparison for any clip carrying `proxySrc`.
 _NOCACHE_COINCIDE_FIXTURES = [
     "gaps",
     "audio-outlasts-video",
@@ -379,7 +402,7 @@ def test_cache_coincide_fixtures_match_corpus_golden():
         assert len(segments) == len(clips) > 0, name
         for clip, seg in zip(clips, segments):
             gw = golden["sourceWindow"][clip["id"]]
-            assert gw["preview"] == gw["render"], (name, clip["id"])
+            _assert_variants_agree(gw, clip, name)
             expected = gw["render"]
             assert expected["usedNormalizedCache"] is True, (name, clip["id"])
             assert seg["src"] == expected["src"], (name, clip["id"])
@@ -389,8 +412,9 @@ def test_cache_coincide_fixtures_match_corpus_golden():
 
 def test_nocache_coincide_fixtures_match_corpus_golden():
     """No-clips-cached fixtures: Python's all-or-nothing rule coincides
-    trivially (both sides fall back to raw src), so Python's per-clip in/out
-    must equal both corpus golden variants exactly."""
+    trivially (both sides fall back to raw src, except `source-crop`'s
+    preview-only `proxySrc` -- see `_assert_variants_agree`), so Python's
+    per-clip in/out must equal both corpus golden variants exactly."""
     assert _NOCACHE_COINCIDE_FIXTURES, "no fixtures exercised"
     for name in _NOCACHE_COINCIDE_FIXTURES:
         project = _load_fixture(name)
@@ -400,7 +424,7 @@ def test_nocache_coincide_fixtures_match_corpus_golden():
         assert len(segments) == len(clips) > 0, name
         for clip, seg in zip(clips, segments):
             gw = golden["sourceWindow"][clip["id"]]
-            assert gw["preview"] == gw["render"], (name, clip["id"])
+            _assert_variants_agree(gw, clip, name)
             expected = gw["render"]
             assert expected["usedNormalizedCache"] is False, (name, clip["id"])
             assert seg["src"] == expected["src"], (name, clip["id"])

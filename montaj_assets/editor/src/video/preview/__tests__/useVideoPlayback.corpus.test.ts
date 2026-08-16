@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi, afterEach } from 'vitest'
 import { renderHook } from '@testing-library/react'
 import { containsTime, resolveAt, sourceWindow } from '@bycrux/timeline-core'
 import { useVideoPlayback } from '../useVideoPlayback'
@@ -9,6 +9,16 @@ import type { EditorProject, VisualItem } from '../../../schema'
 // not part of its public API and T6 does not get to widen it. Everything else in this
 // file goes through the package's real barrel.
 import negativeStart from '../../../../../timeline-core/fixtures/negative-start.json'
+// SP3: T4's proxySrc-tier fixture — four tracks[0] clips spanning every
+// combination of {proxySrc, nobg_preview_src} presence (proxy-00 neither,
+// proxy-01 proxySrc only, proxy-10 nobg_preview_src only, proxy-11 both, where
+// nobg wins). Its resolver golden lives at
+// timeline-core/expected/proxy-matrix.json and is exercised end-to-end by
+// timeline-core's own corpus.test.mjs; what's checked HERE is the same parity
+// contract as negative-start above — that the editor hook's derived `clips`
+// collection agrees with `resolveAt`/`sourceWindow` — now covering the new tier.
+import proxyMatrix from '../../../../../timeline-core/fixtures/proxy-matrix.json'
+import proxyMatrixExpected from '../../../../../timeline-core/expected/proxy-matrix.json'
 
 // ── Corpus parity: useVideoPlayback's derived collections vs. the resolver ────
 //
@@ -65,8 +75,10 @@ function editorSceneAt(
   return flat.sort((a, b) => a.trackIdx - b.trackIdx)
 }
 
-function resolverSceneAt(t: number): FlatItem[] {
-  return resolveAt(project, t, { variant: 'preview' }).items.map((r) => ({
+// `proj` defaults to the negative-start fixture so every existing call site
+// below is unchanged; the proxy-matrix block passes its own project explicitly.
+function resolverSceneAt(t: number, proj: EditorProject = project): FlatItem[] {
+  return resolveAt(proj, t, { variant: 'preview' }).items.map((r) => ({
     id: r.item.id as string,
     trackIdx: r.trackIdx,
     kind: r.kind,
@@ -75,8 +87,8 @@ function resolverSceneAt(t: number): FlatItem[] {
 
 // Testing Library auto-cleans between tests, so the hook is mounted fresh per
 // case at the timestamp under test rather than reused and re-rendered.
-function derivedAt(t: number) {
-  return renderHook(() => useVideoPlayback(project, t, () => {}, (p) => p)).result.current
+function derivedAt(t: number, proj: EditorProject = project) {
+  return renderHook(() => useVideoPlayback(proj, t, () => {}, (p) => p)).result.current
 }
 
 describe('useVideoPlayback derived collections vs. resolveAt (negative-start corpus fixture)', () => {
@@ -113,5 +125,146 @@ describe('useVideoPlayback derived collections vs. resolveAt (negative-start cor
     // The resolver has no fallback; PreviewPlayer's `?? clips[clips.length - 1]`
     // is editor-side presentation and lives there, not here.
     expect(resolverSceneAt(6.5)).toEqual([])
+  })
+})
+
+// ── Corpus parity: same contract, proxy-matrix fixture (SP3) ──────────────────
+//
+// proxy-matrix.json is four tracks[0] clips, one per combination of
+// {proxySrc, nobg_preview_src}: proxy-00 has neither (falls through to
+// normalizedSrc), proxy-01 has proxySrc only, proxy-10 has nobg_preview_src
+// only, proxy-11 has both (nobg wins — see chooseSrcRaw in
+// timeline-core/src/source-window.js). No overlay tracks, so this fixture
+// complements negative-start rather than replacing it: it exercises the new
+// tier through the SAME `clips` → `sourceWindow` path production code uses,
+// while negative-start keeps covering the partition/overlay-track side.
+const proxyMatrixProject = proxyMatrix as unknown as EditorProject
+
+interface ProxyMatrixGolden {
+  sourceWindow: Record<string, { preview: unknown; render: unknown }>
+}
+const proxyMatrixGolden = proxyMatrixExpected as unknown as ProxyMatrixGolden
+
+// One timestamp per clip (each clip spans 2s: [0,2), [2,4), [4,6), [6,8)),
+// matching timeline-core/expected/proxy-matrix.json's resolveAt.preview.
+const TIMESTAMPS_PROXY = [0, 2, 4, 6]
+
+describe('useVideoPlayback derived collections vs. resolveAt (proxy-matrix corpus fixture)', () => {
+  it.each(TIMESTAMPS_PROXY)('agrees on what is on screen at t=%s', (t) => {
+    const { clips, tracks0NonVideo, overlayTracks } = derivedAt(t, proxyMatrixProject)
+    expect(editorSceneAt({ clips, tracks0NonVideo, overlayTracks }, t)).toEqual(resolverSceneAt(t, proxyMatrixProject))
+  })
+
+  it('splits the fixture the way the resolver labels it (four clips, no overlay tracks)', () => {
+    const { clips, tracks0NonVideo, overlayTracks } = derivedAt(TIMESTAMPS_PROXY[0], proxyMatrixProject)
+    expect(clips.map((c) => c.id)).toEqual(['proxy-00', 'proxy-01', 'proxy-10', 'proxy-11'])
+    expect(tracks0NonVideo).toEqual([])
+    expect(overlayTracks).toEqual([])
+  })
+
+  it.each(TIMESTAMPS_PROXY)('seeks the active clip where the resolver says, at t=%s', (t) => {
+    const { clips } = derivedAt(t, proxyMatrixProject)
+    const scene = resolveAt(proxyMatrixProject, t, { variant: 'preview' })
+    const videos = scene.items.filter((r) => r.kind === 'video')
+    // Every fixture timestamp lands inside exactly one clip's [start, end) —
+    // assert that so a fixture edit that empties this loop can't go unnoticed.
+    expect(videos.length).toBe(1)
+    for (const resolved of videos) {
+      const clip = clips.find((c) => c.id === resolved.item.id)!
+      const inPoint = sourceWindow(clip, 'preview').inPoint
+      expect(Math.max(inPoint, inPoint + (t - clip.start))).toBeCloseTo(resolved.seek, 10)
+      expect(resolved.window).toEqual(sourceWindow(clip, 'preview'))
+    }
+  })
+
+  it('resolves the proxySrc/nobg_preview_src tier per clip the same way the resolver golden does', () => {
+    // Direct tier-selection check, independent of any timestamp: each clip's
+    // `sourceWindow(clip, 'preview').src` — reached through `clips`, the same
+    // collection `playbackSrcFor` consumes in useVideoPlayback.ts — must match
+    // the committed golden. This is what actually pins proxy-01 to its
+    // proxySrc and proxy-11 to nobg_preview_src (proxy over it) rather than
+    // just "some src or other".
+    const { clips } = derivedAt(TIMESTAMPS_PROXY[0], proxyMatrixProject)
+    expect(clips).toHaveLength(4)
+    for (const clip of clips) {
+      expect(sourceWindow(clip, 'preview')).toEqual(proxyMatrixGolden.sourceWindow[clip.id].preview)
+    }
+  })
+})
+
+// ── Reload effect: the clip-identity memo key must include proxySrc ───────────
+//
+// useVideoPlayback.ts:522-536 tracks clip identity (nobg_preview_src|proxySrc|
+// src|inPoint|outPoint per clip) in a ref, and only reloads the active <video>
+// element when that string changes — otherwise overlay-only edits would tear
+// down and restart playback on every keystroke. SP3's proxySrc arrives via SSE
+// mid-session: the proxy step finishes AFTER the project is already loaded and
+// playing, so the field appears on a clip whose src the <video> element already
+// has loaded. Without proxySrc in the identity string, that arrival is
+// invisible to the effect and the preview never picks up the proxy.
+//
+// Fixtures can't exercise this — it's about the SAME logical clip gaining a
+// field BETWEEN renders — so this uses renderHook's own rerender with two
+// hand-built projects instead of a corpus fixture. And because this file is
+// `.ts`, not `.tsx`, there's no JSX to mount a real `<video ref={...}>`
+// through the render tree; the ref is attached directly to a detached
+// `<video>` element after the first render instead. That's a legitimate way to
+// drive this specific effect: it only ever reads `video0Ref.current` /
+// `video1Ref.current`, never the DOM position of the element.
+describe('useVideoPlayback reload effect — proxySrc identity (SP3 mid-session arrival)', () => {
+  // jsdom doesn't implement HTMLMediaElement.pause — the identity effect calls
+  // it on the inactive slot as part of a load. Stub it so the test exercises
+  // the effect without jsdom's "not implemented" console noise (same pattern
+  // as captionPositioning.test.tsx / VideoEditor.test.tsx, minus `play` and
+  // `AudioContext`: this test never calls play() or wires audio).
+  const pauseSpy = vi.spyOn(HTMLMediaElement.prototype, 'pause').mockImplementation(() => {})
+  afterEach(() => { pauseSpy.mockClear() })
+
+  const baseClip = { id: 'c1', type: 'video' as const, start: 0, end: 10, inPoint: 0, outPoint: 10, src: '/corpus/orig.mp4' }
+  const projectWith = (clip: VisualItem): EditorProject => ({
+    id: 'reload-test',
+    status: 'draft',
+    settings: { resolution: [1080, 1920] },
+    tracks: [[clip]],
+  })
+
+  it('reloads only when proxySrc actually changes, not on every re-render', () => {
+    const { result, rerender } = renderHook(
+      ({ project }: { project: EditorProject }) => useVideoPlayback(project, 0, () => {}, (p) => p),
+      { initialProps: { project: projectWith({ ...baseClip }) } },
+    )
+
+    const active   = document.createElement('video')
+    const inactive = document.createElement('video')
+    result.current.video0Ref.current = active
+    result.current.video1Ref.current = inactive
+
+    // Step 1 — warm-up load: the initial mount ran with video0Ref still null
+    // (attached above, after render), so its effect early-returned without
+    // recording an identity. This rerender is the first one the effect can
+    // actually act on; it must load the clip's src into the active slot.
+    inactive.setAttribute('src', 'sentinel')
+    rerender({ project: projectWith({ ...baseClip }) })
+    expect(active.src).toContain('/corpus/orig.mp4')
+    expect(inactive.hasAttribute('src')).toBe(false) // cleared as part of the load
+
+    // Step 2 — control: a brand-new project/clip object with IDENTICAL fields
+    // (same src, same in/outPoint, still no proxySrc) must produce the SAME
+    // identity string and skip the reload entirely. Re-arm the sentinel and
+    // confirm it survives untouched — proving the effect body did not run.
+    inactive.setAttribute('src', 'sentinel')
+    rerender({ project: projectWith({ ...baseClip }) })
+    expect(inactive.getAttribute('src')).toBe('sentinel')
+
+    // Step 3 — the fix under test: proxySrc appears on the SAME clip (id,
+    // src, in/outPoint all unchanged) — exactly what an SSE proxy-ready event
+    // looks like against an already-loaded project. This must be recognized
+    // as an identity change: the sentinel gets cleared again (the effect body
+    // ran) and the active slot reloads onto the proxy path. Without proxySrc
+    // in the identity string this step is indistinguishable from step 2 — the
+    // sentinel would survive and `active.src` would stay on the original file.
+    rerender({ project: projectWith({ ...baseClip, proxySrc: '/corpus/proxy.mp4' }) })
+    expect(inactive.hasAttribute('src')).toBe(false)
+    expect(active.src).toContain('/corpus/proxy.mp4')
   })
 })
