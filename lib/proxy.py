@@ -27,15 +27,20 @@ from common import ffmpeg_bin, get_duration, progress
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))  # add repo root so `from lib.types.colorspace` works
 from lib.normalize import _build_tonemap_vf_to_sdr, _run_atomic_encode, _sweep_stale_temps, _tmp_for
+from lib.look import MASTER_LOOK
 from lib.types.colorspace import detect_from_transfer
 
-PROXY_LOOK = "hable1"
-"""Look-version tag stamped into every proxy filename. Bumping this (e.g. when
-Montaj Vivid ships) changes the filename, so is_proxy_fresh() naturally treats
+PROXY_LOOK = MASTER_LOOK
+"""Look-version tag stamped into every proxy filename. Re-exports lib/look.py's
+MASTER_LOOK (montaj_assets/luts/looks.json's "masterLook") — that manifest is
+the canonical source of truth for the active look; this name just gives
+lib/proxy.py's own naming contract a stable, locally-scoped alias. Bumping the
+manifest's masterLook changes this value, so is_proxy_fresh() naturally treats
 every existing proxy as stale and regenerates it under the new look — no
-migration step needed. When bumping: APPEND the old tag to
+migration step needed. When bumping: APPEND the previous look id to
 cli/commands/clean.py's KNOWN_LOOKS so the previous look's files stay
-cleanable (clean only deletes known-tagged files, SP3 fix S5)."""
+cleanable (clean only deletes known-tagged files, SP3 fix S5). "hable1" is the
+historical value from before the Montaj Vivid LUT (SP6b) shipped."""
 
 
 def _workspace_root() -> str:

@@ -270,8 +270,11 @@ def _ensure_ui() -> bool:
         # via ../schemas/color_space.json — must be copied alongside) + the
         # shared timeline-core/ package (SP2; render and editor both declare
         # `file:../timeline-core` — see the ordering note above for why it's
-        # copied here instead of added to `bundles`).
-        for sub in [s for _, s in bundles] + ["schemas", "timeline-core"]:
+        # copied here instead of added to `bundles`) + the shared luts/ dir
+        # (SP6b; render/look.js resolves ../luts/<file>.cube the same way
+        # color-space.js resolves ../schemas/color_space.json, so it has to
+        # exist in the cache alongside the render bundle in prod mode).
+        for sub in [s for _, s in bundles] + ["schemas", "timeline-core", "luts"]:
             shutil.copytree(
                 os.path.join(src_root, sub),
                 os.path.join(BUILD_CACHE_DIR, sub),

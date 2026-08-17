@@ -32,24 +32,66 @@
 // without touching ffmpeg or the disk. Verified line by line against
 // encode-segment.js — those are the only four side-effecting paths in the
 // function:
-//   :357  `const zscaleAvailable = opts._dryRun ? true : hasZscale()`
-//         — pins the HDR→SDR filter choice; no `ffmpeg -filters` subprocess.
-//   :359  `if (!opts._dryRun) mkdirSync(dirname(outputPath), ...)`
+//   `const zscaleAvailable = opts._dryRun ? true : hasZscale()` and the
+//   `lut3dAvailable` line beside it
+//         — pin the HDR→SDR filter choice; no `ffmpeg -filters` subprocess.
+//   `if (!opts._dryRun) mkdirSync(dirname(outputPath), ...)`
 //         — outputPath is a fixed `/corpus/...` literal and is never created;
 //           it only appears as a string at the tail of `args`.
-//   :431  `item.hasAudio ?? (opts._dryRun || fileHasAudio(item.src))`
+//   `item.hasAudio ?? (opts._dryRun || fileHasAudio(item.src))`
 //         — assumes audio present; no ffprobe subprocess.
-//   :530  `runFfmpeg(...)` — unreachable: :528 returns first under _dryRun.
+//   `runFfmpeg(...)` — unreachable: the dry-run branch returns first.
 // Every `src` in the corpus is a plausible-but-nonexistent `/corpus/...` path,
 // and `item.colorTransfer` is never stamped by collectAllItems (render.js does
 // that in a separate ffprobe pass), so `detectFromTransfer(undefined)` always
 // yields the project's own default color space. Nothing machine-specific can
 // leak in — the determinism test below asserts that rather than assuming it.
 //
+// ONE STANDING HAZARD, if a future fixture is ever added to the corpus: an
+// HDR-source fixture WOULD leak a machine-specific string. Its conversion step
+// is the Montaj Vivid chain, which embeds `lut3d=file=<absolute path to
+// montaj_assets/luts/*.cube>` — a path that differs on every checkout. Adding
+// an HDR fixture therefore needs the golden to normalize that path first. The
+// determinism test below will not catch it (the path is stable within one
+// machine); a second machine would be the one to find out.
+//
 // IF THIS FAILS: render output changed. That is the alarm this file exists to
 // raise. Do NOT regenerate the goldens to make it green — regenerating destroys
 // the signal forever (see the freeze banner at the bottom of this file). Find
 // what changed in collectAllItems / planSegments / encode-segment.js first.
+//
+// ── 2026-08-17 · SP6b (Vivid pipeline integration) — deliberate render change,
+//    goldens legitimately UNCHANGED ────────────────────────────────────────────
+// SP6b changed the segment encoder's HDR→SDR behavior on purpose, in two ways:
+//
+//   1. LUT migration. `buildColorConversionFilter`'s HDR→SDR arm no longer
+//      emits `zscale=t=linear…tonemap=hable:desat=0…`; it emits the Montaj
+//      Vivid chain (`zscale=matrixin=2020_ncl:rangein=limited:range=full,
+//      format=rgb48le,lut3d=file=<cube>:interp=tetrahedral,zscale=t=bt709:
+//      m=bt709:p=bt709:rin=full:r=tv`), with a PQ→HLG pre-step for PQ sources.
+//      The old chains survive only as fallbacks for builds missing lut3d/zscale.
+//
+//   2. Step reordering in `buildVideoItemFilterParts`. The conversion moved
+//      from the head of the per-item chain to between scale and pad, so
+//      tone-mapping runs on canvas-sized frames instead of full-resolution
+//      ones (a 4K source feeding a 1080 canvas was paying ~9× the pixels).
+//
+// Either would normally trip this gate. Neither did, and that is the correct
+// outcome rather than a missed alarm: BOTH corpus fixtures are `sdr_bt709`
+// projects whose items carry no `colorTransfer`, so `buildColorConversionFilter`
+// returns `''` for every item and there has never been a conversion step in
+// these goldens to change. With an empty conversion step the reorder is a
+// no-op on the emitted string — `setpts,crop,scale,pad` either way.
+//
+// Verified, not assumed: post-change the gate passed untouched, and the
+// compare-only regenerator (`MONTAJ_UNFREEZE_ENCODE_ARGS_GOLDENS=1 node
+// test/encode-args-golden.test.mjs --regen`) reported both files `unchanged —
+// already current, not rewritten`, with `git diff` on expected/ empty. No
+// fixture was regenerated and no mtime moved. The HDR behavior this SP actually
+// changed is covered where it can be exercised for real instead: the chain and
+// ordering assertions in encode-segment.test.mjs, and the aspect-mismatched HLG
+// integration fixture in sample-frame.test.mjs, which proves letterbox bars
+// still come out black through the new order.
 
 import { test, describe } from 'node:test'
 import assert from 'node:assert/strict'

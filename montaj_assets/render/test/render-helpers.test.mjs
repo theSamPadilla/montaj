@@ -3,7 +3,8 @@ import assert from 'node:assert/strict'
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
-import { getTotalDurationSeconds, collectAllItems, collectPuppeteerSegments, resolveFilePath, shouldSkipNormalize } from '../render.js'
+import { getTotalDurationSeconds, collectAllItems, collectPuppeteerSegments, resolveFilePath, shouldSkipNormalize, buildNormalizedOutputPath } from '../render.js'
+import { MASTER_LOOK } from '../look.js'
 
 test('getTotalDurationSeconds: returns 0 for empty tracks', () => {
   assert.equal(getTotalDurationSeconds({ tracks: [[]] }), 0)
@@ -334,4 +335,43 @@ test('resolveFilePath: \u202f in filename resolved to actual file', () => {
 
 test('resolveFilePath: missing file returns null', () => {
   assert.equal(resolveFilePath('/nonexistent/path/file.mp4'), null)
+})
+
+// ---------------------------------------------------------------------------
+// buildNormalizedOutputPath (SP6b Task T3 — look-tagged master naming)
+// ---------------------------------------------------------------------------
+
+test('buildNormalizedOutputPath: untagged when not tonemapped', () => {
+  assert.equal(
+    buildNormalizedOutputPath('/videos/clip.mp4', 'sdr_bt709', false),
+    '/videos/clip_normalized_sdr_bt709.mp4'
+  )
+})
+
+test('buildNormalizedOutputPath: appends the master look when tonemapped', () => {
+  assert.equal(
+    buildNormalizedOutputPath('/videos/clip.mp4', 'sdr_bt709', true),
+    `/videos/clip_normalized_sdr_bt709_${MASTER_LOOK}.mp4`
+  )
+})
+
+test('buildNormalizedOutputPath: trusts the tonemapped flag verbatim, even for an HDR target', () => {
+  // Not a real call shape render.js would produce (tonemapped is only ever
+  // computed true for an HDR source + SDR target) but pins that the helper
+  // itself just does what it's told — namespacing by color space, tagging by
+  // the boolean, no re-derivation of "is this really a tonemap" inside it.
+  // Mirrors Python's test_hdr_target_gets_tagged_when_told_tonemapped.
+  assert.equal(
+    buildNormalizedOutputPath('/videos/clip.mp4', 'hdr_hlg', false),
+    '/videos/clip_normalized_hdr_hlg.mp4'
+  )
+  assert.equal(
+    buildNormalizedOutputPath('/videos/clip.mp4', 'hdr_hlg', true),
+    `/videos/clip_normalized_hdr_hlg_${MASTER_LOOK}.mp4`
+  )
+})
+
+test('buildNormalizedOutputPath: preserves directory and swaps only the trailing extension segment', () => {
+  const out = buildNormalizedOutputPath('/a/b/c/my.clip.mov', 'sdr_bt709', true)
+  assert.equal(out, `/a/b/c/my.clip_normalized_sdr_bt709_${MASTER_LOOK}.mp4`)
 })

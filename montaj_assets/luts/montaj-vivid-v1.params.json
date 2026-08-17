@@ -1,0 +1,27 @@
+{
+  "name": "montaj-vivid-v1",
+  "date": "2026-08-15",
+  "winner_of": "SP6a operator flip-test, 8 rounds",
+  "generator": "spikes/tone-mapping/generate_luts.py (fn=vivid, round8 c24-pop-wide)",
+  "lut_size": 65,
+  "input": "full-range HLG-encoded BT.2020 RGB [0,1] (zscale matrixin=2020_ncl rangein=limited range=full)",
+  "output": "sRGB-encoded (IEC 61966-2-1) BT.709 RGB [0,1]",
+  "params": {
+    "fn": "vivid",
+    "gain": 2.7,
+    "knee": 0.3,
+    "domain": "maxrgb",
+    "end_slope": 0.18,
+    "sat": 1.04,
+    "hl_sat": 1.0,
+    "vib": 1.1,
+    "contrast": 1.08,
+    "hk_pop": 1.35,
+    "hk_darken": 0.1,
+    "hk_skin": "wide"
+  },
+  "runner_up": {
+    "name": "c17-detail-max (no-pop variant)",
+    "params_delta": "drop hk_pop/hk_darken/hk_skin"
+  }
+}

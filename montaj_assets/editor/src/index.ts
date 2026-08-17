@@ -29,6 +29,8 @@ export type {
   OverlayFactory,
   RenderEvent,
   RenderOptions,
+  RenderExport,
+  SampleFrameOptions,
   RenderStatus,
   RenderPhase,
   CaptionEvent,
@@ -73,6 +75,13 @@ export { default as ImageToneMenu } from './video/ImageToneMenu'
 export type { ImageToneMenuProps } from './video/ImageToneMenu'
 export { IMAGE_TONES, DEFAULT_IMAGE_TONE } from './video/imageTone'
 export type { ImageTone, ImageToneInfo } from './video/imageTone'
+
+// ── SDR tone curves (HDR→SDR export look) ────────────────────────────────────
+// Descriptors + the modal's honesty copy. Exported so a host can label its own
+// chrome with the same curve names it sends as `RenderOptions.sdrCurve`.
+export { SDR_CURVES, DEFAULT_SDR_CURVE, sdrCurveInfo, honestyLine } from './video/sdrCurves'
+export type { SdrCurve, SdrCurveInfo } from './video/sdrCurves'
+export type { PreRenderOptions } from './video/RenderModal'
 
 // ── Theme ─────────────────────────────────────────────────────────────────────
 export { defaultMontajTheme, applyTheme } from './theme'

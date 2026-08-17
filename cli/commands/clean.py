@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
-"""montaj clean — remove disposable derived files (editing proxies)."""
+"""montaj clean — remove disposable derived files (editing proxies, superseded
+look-tagged normalized masters)."""
 import json, os, re, sys
+from itertools import chain
 from cli.main import add_global_flags
 from cli.output import emit_error
 from lib.proxy import PROXY_LOOK
@@ -12,11 +14,23 @@ from lib.proxy import PROXY_LOOK
 KNOWN_LOOKS = tuple(dict.fromkeys(("hable1", PROXY_LOOK)))
 PROXY_RE = re.compile(r"_proxy_(%s)\.mp4$" % "|".join(re.escape(look) for look in KNOWN_LOOKS))
 
+# Superseded normalized masters (SP6b Task T5). lib/normalize.py's
+# normalized_output_path() only ever look-tags a tone-mapped HDR→SDR master
+# (`*_normalized_sdr_bt709_<look>.mp4`, see its docstring) — a plain
+# `*_normalized_sdr_bt709.mp4` is either an SDR-native source's untagged
+# conformance master (still live, never delete) or, once the SAME source has
+# been re-graded and gained a look-tagged sibling, a stale leftover from
+# before that look existed. Only the latter — untagged file WITH a tagged
+# sibling present — is ever listed here. Reuses KNOWN_LOOKS so a bumped
+# PROXY_LOOK/MASTER_LOOK is picked up automatically, same as PROXY_RE above.
+UNTAGGED_MASTER_RE = re.compile(r"^(.+)_normalized_sdr_bt709\.mp4$")
+
 
 def register(subparsers):
     p = subparsers.add_parser("clean", help="Remove disposable derived files")
     p.add_argument("--proxies", action="store_true", required=True,
-                   help="Clean editing proxies (*_proxy_*.mp4). The only supported mode today.")
+                   help="Clean editing proxies (*_proxy_*.mp4) and superseded look-tagged "
+                        "normalized masters. The only supported mode today.")
     scope = p.add_mutually_exclusive_group()
     scope.add_argument("--project", metavar="DIR",
                         help="Limit to one project directory (default: auto-discover from cwd)")
@@ -130,6 +144,21 @@ def _find_proxy_files(root):
                 yield os.path.join(dirpath, name)
 
 
+def _find_superseded_masters(root):
+    for dirpath, _dirnames, filenames in os.walk(root):
+        names = set(filenames)
+        for name in sorted(filenames):
+            m = UNTAGGED_MASTER_RE.match(name)
+            if not m:
+                continue
+            prefix = m.group(1)
+            has_tagged_sibling = any(
+                f"{prefix}_normalized_sdr_bt709_{look}.mp4" in names for look in KNOWN_LOOKS
+            )
+            if has_tagged_sibling:
+                yield os.path.join(dirpath, name)
+
+
 def _human_size(num_bytes):
     size = float(num_bytes)
     for unit in ("B", "KB", "MB", "GB"):
@@ -144,7 +173,7 @@ def handle(args):
     matches = []
     seen_paths = set()
     for root in roots:
-        for path in _find_proxy_files(root):
+        for path in chain(_find_proxy_files(root), _find_superseded_masters(root)):
             real = os.path.realpath(path)
             if real in seen_paths:
                 # A scan root can be an ancestor of another root (e.g.

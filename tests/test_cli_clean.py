@@ -300,6 +300,94 @@ class TestProxySrcStripping:
 
 
 # ---------------------------------------------------------------------------
+# superseded normalized masters — an untagged tone-mapped master
+# (*_normalized_sdr_bt709.mp4) that has gained a look-tagged sibling
+# (*_normalized_sdr_bt709_<look>.mp4) is a stale leftover from before that
+# look existed. Without a tagged sibling it's a live master and must survive.
+# ---------------------------------------------------------------------------
+
+class TestSupersededMasters:
+    def test_untagged_master_with_tagged_sibling_is_deleted(self, project_dir):
+        untagged = project_dir / "clip_normalized_sdr_bt709.mp4"
+        tagged = project_dir / f"clip_normalized_sdr_bt709_{clean_cmd.PROXY_LOOK}.mp4"
+        untagged.write_bytes(b"x" * 1024)
+        tagged.write_bytes(b"y" * 1024)
+
+        clean_cmd.handle(_ns())
+
+        assert not untagged.exists()
+        assert tagged.exists()
+
+    def test_untagged_master_without_tagged_sibling_survives(self, project_dir):
+        """CAREFUL case: a plain *_normalized_sdr_bt709.mp4 with no tagged
+        sibling is a legitimate current SDR-source conformance master —
+        it must never be listed, let alone deleted."""
+        untagged = project_dir / "clip_normalized_sdr_bt709.mp4"
+        untagged.write_bytes(b"x" * 1024)
+
+        clean_cmd.handle(_ns())
+
+        assert untagged.exists()
+
+    def test_untagged_master_with_only_hable1_tagged_sibling_is_deleted(self, project_dir):
+        """The historical hable1 tag also counts as a superseding sibling —
+        KNOWN_LOOKS covers every look that's ever shipped, not just the
+        current one."""
+        untagged = project_dir / "clip_normalized_sdr_bt709.mp4"
+        tagged = project_dir / "clip_normalized_sdr_bt709_hable1.mp4"
+        untagged.write_bytes(b"x" * 1024)
+        tagged.write_bytes(b"y" * 1024)
+
+        clean_cmd.handle(_ns())
+
+        assert not untagged.exists()
+        assert tagged.exists()
+
+    def test_untagged_master_dry_run_lists_but_does_not_delete(self, project_dir, capsys):
+        untagged = project_dir / "clip_normalized_sdr_bt709.mp4"
+        tagged = project_dir / f"clip_normalized_sdr_bt709_{clean_cmd.PROXY_LOOK}.mp4"
+        untagged.write_bytes(b"x" * 1024)
+        tagged.write_bytes(b"y" * 1024)
+
+        clean_cmd.handle(_ns(dry_run=True, json=True))
+
+        out = json.loads(capsys.readouterr().out)
+        assert len(out) == 1
+        assert out[0]["path"] == str(untagged)
+        assert out[0]["deleted"] is False
+        assert untagged.exists()
+
+    def test_untagged_master_bare_command_without_yes_lists_only(self, project_dir):
+        """SP3 fix S6's safe default applies equally to superseded masters:
+        no --yes, no deletion."""
+        untagged = project_dir / "clip_normalized_sdr_bt709.mp4"
+        tagged = project_dir / f"clip_normalized_sdr_bt709_{clean_cmd.PROXY_LOOK}.mp4"
+        untagged.write_bytes(b"x" * 1024)
+        tagged.write_bytes(b"y" * 1024)
+
+        clean_cmd.handle(_ns(yes=False))
+
+        assert untagged.exists()
+
+    def test_unrelated_normalized_files_are_never_matched(self, project_dir):
+        """Other color spaces / other normalize outputs never match — the
+        pattern is scoped to *_normalized_sdr_bt709.mp4 specifically, since
+        that's the only master lib/normalize.py ever look-tags."""
+        keep = [
+            project_dir / "clip_normalized_hdr_hlg.mp4",
+            project_dir / "clip_normalized_sdr_bt709_vivid1-neutral.mp4",  # tagged, not untagged
+            project_dir / "clip.mp4",
+        ]
+        for f in keep:
+            f.write_bytes(b"x" * 1024)
+
+        clean_cmd.handle(_ns())
+
+        for f in keep:
+            assert f.exists(), f.name
+
+
+# ---------------------------------------------------------------------------
 # argparse wiring
 # ---------------------------------------------------------------------------
 

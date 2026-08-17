@@ -18,10 +18,12 @@ import { bundleComponent, cleanupBundle } from './bundle.js'
 import { renderAllSegments }              from './renderer.js'
 import { compose, embedThumbnail }        from './compose.js'
 import { FFMPEG, FFPROBE }                from './ffmpeg-bin.js'
-import { requireValidKey, detectFromTransfer, smartDetect, DEFAULT_COLOR_SPACE } from './color-space.js'
+import { requireValidKey, detectFromTransfer, smartDetect, isHdr, DEFAULT_COLOR_SPACE } from './color-space.js'
 import { pMap }                           from './p-map.js'
 import { fileHasAudio }                   from './encode-segment.js'
+import { deriveSdr, probeColorTransfer }  from './derive-sdr.js'
 import { sourceWindow }                   from '@bycrux/timeline-core'
+import { MASTER_LOOK, curveIds }          from './look.js'
 
 const __dirname  = dirname(fileURLToPath(import.meta.url))
 const isMain = resolve(process.argv[1] ?? '') === fileURLToPath(import.meta.url)
@@ -34,6 +36,22 @@ const TTY = process.stderr.isTTY
 const C = { cyan: TTY ? '\x1b[96m' : '', reset: TTY ? '\x1b[0m' : '' }
 
 // ---------------------------------------------------------------------------
+// Export modes (SP6b Task T7)
+//
+// auto — render the project at its own working color space. Exactly the
+//        pre-SP6b behavior, and the default: one file, no derive pass.
+// sdr  — emit only a Rec.709 SDR file. An HDR project still renders its HDR
+//        master first (that's the only way to get the edit), but the master is
+//        scratch: it lands on a temp name and is deleted once derived.
+// both — emit the HDR master AND an SDR sibling derived from it.
+//
+// Declared above the CLI block rather than beside its resolvers below because
+// the flag is validated during module evaluation — a `const` further down the
+// file is still in its temporal dead zone at that point.
+// ---------------------------------------------------------------------------
+const EXPORT_MODES = ['auto', 'sdr', 'both']
+
+// ---------------------------------------------------------------------------
 // CLI argument parsing
 // ---------------------------------------------------------------------------
 
@@ -41,7 +59,8 @@ if (isMain) {
   const argv = process.argv.slice(2)
 
   if (!argv.length || argv[0] === '--help') {
-    process.stderr.write('Usage: render.js <project.json> [--out <path>] [--workers <n>] [--clean] [--image-tone <vivid|broadcast|punchy|raw>]\n')
+    process.stderr.write('Usage: render.js <project.json> [--out <path>] [--workers <n>] [--clean] '
+      + '[--image-tone <vivid|broadcast|punchy|raw>] [--export <auto|sdr|both>] [--sdr-curve <id>]\n')
     process.exit(1)
   }
 
@@ -50,18 +69,38 @@ if (isMain) {
   let workersArg   = null
   let cleanArg     = false
   let imageToneArg = null
+  let exportArg    = null
+  let sdrCurveArg  = null
 
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === '--out')        { outArg       = argv[++i]; continue }
     if (argv[i] === '--workers')    { workersArg   = parseInt(argv[++i], 10); continue }
     if (argv[i] === '--clean')      { cleanArg     = true; continue }
     if (argv[i] === '--image-tone') { imageToneArg = argv[++i]; continue }
+    if (argv[i] === '--export')     { exportArg    = argv[++i]; continue }
+    if (argv[i] === '--sdr-curve')  { sdrCurveArg  = argv[++i]; continue }
     if (!projectArg) projectArg = argv[i]
   }
 
   if (!projectArg) fail('missing_argument', 'No project.json path provided')
 
-  main(projectArg, { out: outArg, workers: workersArg, clean: cleanArg, imageTone: imageToneArg }).catch(err => {
+  // Both resolvers throw rather than exiting so they stay unit-testable; the
+  // CLI is the layer that turns a bad flag into the JSON-on-stderr + exit 1
+  // convention. Validated here, before any work starts, so a typo costs
+  // nothing instead of surfacing after a 10-minute render.
+  let exportMode = 'auto'
+  let sdrCurve   = null
+  try {
+    exportMode = resolveExportMode(exportArg)
+    sdrCurve   = resolveSdrCurve(sdrCurveArg)
+  } catch (err) {
+    fail('invalid_argument', err.message)
+  }
+
+  main(projectArg, {
+    out: outArg, workers: workersArg, clean: cleanArg, imageTone: imageToneArg,
+    exportMode, sdrCurve,
+  }).catch(err => {
     fail('render_error', err.message)
   })
 }
@@ -85,11 +124,109 @@ function resolveImageTone(cliValue, settings) {
   return chosen
 }
 
+/** Validate `--export`. Returns the mode ('auto' when omitted); throws on an unknown value. */
+function resolveExportMode(value) {
+  const chosen = value ?? 'auto'
+  if (!EXPORT_MODES.includes(chosen)) {
+    throw new Error(`Unknown export mode ${JSON.stringify(chosen)} — expected one of ${EXPORT_MODES.join(', ')}`)
+  }
+  return chosen
+}
+
+/**
+ * Validate `--sdr-curve` against the look registry. Returns null when omitted
+ * (meaning "the master look"); throws listing the valid ids on an unknown one.
+ * A silent fallback to the master look would be a color bug the user can only
+ * find by eye, so this is a hard error.
+ */
+function resolveSdrCurve(value) {
+  if (value == null) return null
+  const ids = curveIds()
+  if (!ids.includes(value)) {
+    throw new Error(
+      `Unknown sdr curve ${JSON.stringify(value)} — expected one of ${ids.join(', ')}. `
+      + `Check montaj_assets/luts/looks.json.`)
+  }
+  return value
+}
+
+/**
+ * Decide what this render emits and where the compose pass writes.
+ *
+ * @param {object} args
+ * @param {string} args.exportMode          'auto' | 'sdr' | 'both'
+ * @param {string} args.projectColorSpace   the project's working color space
+ * @param {string} args.outputPath          the file the user asked for
+ * @returns {{
+ *   mode: string,            effective mode — 'auto' once an SDR project downgrades
+ *   composePath: string,     where compose writes the render
+ *   derivePath: string|null, the SDR rendition to derive, or null for no derive
+ *   tempMaster: string|null, composePath when it is scratch to delete afterwards
+ *   outputs: string[],       files this render emits, primary first
+ *   notice: string|null,     one-line explanation of a downgraded request
+ * }}
+ */
+/**
+ * `<name>.mp4` + '-sdr' → `<name>-sdr.mp4`, the compose.js `.replace(/(\.\w+)$/,…)`
+ * idiom. Falls back to plain appending when the path has no extension (`--out
+ * /tmp/clip`): the point of a sibling name is that it is a DIFFERENT file, and
+ * a no-op replace would hand ffmpeg the same path to read and write.
+ */
+function siblingPath(path, suffix) {
+  return /(\.\w+)$/.test(path)
+    ? path.replace(/(\.\w+)$/, `${suffix}$1`)
+    : `${path}${suffix}`
+}
+
+function planExport({ exportMode, projectColorSpace, outputPath }) {
+  // An SDR project's render already IS the SDR rendition — there is no HDR
+  // master to derive from and nothing to convert. Say so once, then behave
+  // exactly like auto rather than emitting a pointless second identical file.
+  if (exportMode === 'auto' || !isHdr(projectColorSpace)) {
+    const notice = exportMode === 'auto' ? null
+      : `--export ${exportMode}: this project is already SDR (${projectColorSpace}) — `
+        + `its render is the SDR rendition; emitting one file`
+    return {
+      mode: 'auto',
+      composePath: outputPath,
+      derivePath: null,
+      tempMaster: null,
+      outputs: [outputPath],
+      notice,
+    }
+  }
+
+  if (exportMode === 'both') {
+    const derivePath = siblingPath(outputPath, '-sdr')
+    return {
+      mode: 'both',
+      composePath: outputPath,
+      derivePath,
+      tempMaster: null,
+      outputs: [outputPath, derivePath],
+      notice: null,
+    }
+  }
+
+  // 'sdr' on an HDR project: the user's name belongs to the SDR file, so the
+  // HDR master renders to a temp sibling (same directory — compose writes its
+  // scratch beside its output) and is removed once the derive succeeds.
+  const tempMaster = siblingPath(outputPath, '-hdrmaster.tmp')
+  return {
+    mode: 'sdr',
+    composePath: tempMaster,
+    derivePath: outputPath,
+    tempMaster,
+    outputs: [outputPath],
+    notice: null,
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
 
-async function main(projectPath, { out, workers, clean, imageTone }) {
+async function main(projectPath, { out, workers, clean, imageTone, exportMode = 'auto', sdrCurve = null }) {
   // 1. Validate + resolve paths
   const absProjectPath = resolve(projectPath)
   if (!existsSync(absProjectPath)) fail('file_not_found', `project.json not found: ${absProjectPath}`)
@@ -232,6 +369,13 @@ async function main(projectPath, { out, workers, clean, imageTone }) {
     if (captions.accumulate)       lyricsRenderArgs.push('--accumulate')
     if (captions.box)              lyricsRenderArgs.push('--box')
 
+    // lyrics_render.py emits SDR h264 whatever settings.colorSpace claims, so
+    // there is no HDR master here to derive an SDR rendition from.
+    if (exportMode !== 'auto') {
+      log(`--export ${exportMode} has no effect for renderMode ffmpeg-drawtext — `
+        + `its output is always SDR; emitting one file`)
+    }
+
     log('rendering via ffmpeg drawtext (skipping Puppeteer)...')
     const result = spawnSync(PYTHON, lyricsRenderArgs, { encoding: 'utf8', timeout: 600_000 })
     if (result.status !== 0) {
@@ -304,6 +448,13 @@ async function main(projectPath, { out, workers, clean, imageTone }) {
     projectColorSpace = DEFAULT_COLOR_SPACE
   }
 
+  // 2b. Export plan — what this render emits, and where compose writes. Resolved
+  //     as soon as the working color space is known so a downgraded request
+  //     ("--export sdr on an already-SDR project") is reported before the
+  //     expensive work rather than after it.
+  const exportPlan = planExport({ exportMode, projectColorSpace, outputPath })
+  if (exportPlan.notice) log(exportPlan.notice)
+
   // 3. Normalize non-conformant video items to project format (parallel, cap=2)
   //    Cap matches materialize_cut.py's libx264 worker count — memory-heavy at 4K.
   //    Requires normalizeIfNeeded to be async (see below) — pMap with a sync mapper
@@ -323,7 +474,12 @@ async function main(projectPath, { out, workers, clean, imageTone }) {
     // python spawn. collectAllItems already substituted it as item.src and
     // rebased inPoint. Without a cache (lazy or eager), fall through to normalize.
     if (shouldSkipNormalize(settings, item)) return
-    const normalizedPath = await normalizeIfNeeded(item.src, projectColorSpace)
+    // tonemapped: this item's own probed transfer is HDR and the project is
+    // SDR — the one case normalizeIfNeeded's ffmpeg chain (via lib.normalize)
+    // actually runs the HDR→SDR Montaj Vivid LUT. Mirrors the Python sites'
+    // `is_hdr(detect_from_transfer(...)) and color_space == "sdr_bt709"` check.
+    const tonemapped = isHdr(detectFromTransfer(item.colorTransfer)) && projectColorSpace === 'sdr_bt709'
+    const normalizedPath = await normalizeIfNeeded(item.src, projectColorSpace, tonemapped)
     if (normalizedPath !== item.src) {
       log(`normalized ${item.src.split('/').pop()} → ${normalizedPath.split('/').pop()}`)
       item.src = normalizedPath
@@ -429,11 +585,34 @@ async function main(projectPath, { out, workers, clean, imageTone }) {
     puppeteerSegments: renderedSegments,
     imageItems,
     videoItems,
-    outputPath,
+    outputPath: exportPlan.composePath,
     videoWidth:  actualWidth,
     videoHeight: actualHeight,
     colorSpace:  projectColorSpace,
+    sdrCurve,
   })
+
+  // 7b. Derive the SDR rendition from the finished HDR master — one ffmpeg pass
+  //     through the Montaj Vivid LUT, audio stream-copied, not a second render.
+  //     Only reached for an HDR project under --export sdr|both; auto skips it
+  //     entirely and this whole block is a no-op.
+  if (exportPlan.derivePath) {
+    // PHASE MARKER: "deriving SDR rendition" → `sdr_derive` in serve's
+    // _render_phase_for (serve/routes/projects.py); the editor's render stepper
+    // keys off that phase name. Keep this substring in sync if you reword.
+    log(`deriving SDR rendition → ${basename(exportPlan.derivePath)}...`)
+    await deriveSdr(exportPlan.composePath, exportPlan.derivePath, { sdrCurve })
+    // The derived file is Rec.709 already, so its poster needs no tone-map —
+    // passing sdr_bt709 (not the project's HDR key) is what keeps the extract
+    // from running the LUT a second time over already-graded pixels.
+    embedThumbnail(exportPlan.derivePath, 'sdr_bt709')
+    if (exportPlan.tempMaster) {
+      // --export sdr: the HDR master was scaffolding. Removed only on success —
+      // if the derive threw, the master is the one salvageable artifact of a
+      // long render and is worth more on disk than a tidy directory.
+      rmSync(exportPlan.tempMaster, { force: true })
+    }
+  }
 
   // 8. Cleanup temp bundles (always); intermediate segments only if --clean
   for (const dir of workDirs) cleanupBundle(dir)
@@ -443,8 +622,11 @@ async function main(projectPath, { out, workers, clean, imageTone }) {
     log('intermediate files cleaned')
   }
 
-  // Step output convention: final path on stdout
-  process.stdout.write(outputPath + '\n')
+  // Step output convention: final path on stdout. --export both emits two files;
+  // the master keeps line 1 so every single-path reader (montaj render, Hub,
+  // serve's job.result) still sees the same thing it always has, and the derived
+  // SDR sibling follows on line 2.
+  process.stdout.write(exportPlan.outputs.join('\n') + '\n')
 }
 
 // ---------------------------------------------------------------------------
@@ -465,24 +647,9 @@ function probeVideoDimensions(filePath) {
   return null
 }
 
-/** Return the ffprobe color_transfer string (e.g. 'bt709', 'arib-std-b67',
- *  'smpte2084') for the first video stream, or null on error / missing tag.
- *
- *  Note: `-of csv=p=0` emits a trailing comma even on single-field stream
- *  queries (e.g. `arib-std-b67,\n`). Strip both whitespace and trailing
- *  commas before returning, otherwise downstream string equality against
- *  COLOR_SPACE_SPECS.transferValues silently misses every HDR clip and the
- *  whole project gets mis-classified as SDR. */
-function probeColorTransfer(filePath) {
-  const result = spawnSync(FFPROBE, [
-    '-v', 'quiet', '-select_streams', 'v:0',
-    '-show_entries', 'stream=color_transfer',
-    '-of', 'csv=p=0', filePath,
-  ], { encoding: 'utf8', timeout: 30_000 })
-  if (result.status !== 0) return null
-  const value = (result.stdout || '').trim().replace(/,+$/, '')
-  return value || null
-}
+// probeColorTransfer lives in derive-sdr.js — the derive pass needs the same
+// "what color space is this file, really" read, and one implementation beats
+// two copies of the trailing-comma workaround its doc comment explains.
 
 // ---------------------------------------------------------------------------
 // Segment collection: Puppeteer segments (overlay + captions)
@@ -828,10 +995,21 @@ function getTotalDurationSeconds(projectJson) {
 // Normalize pre-pass
 // ---------------------------------------------------------------------------
 
-async function normalizeIfNeeded(src, projectColorSpace) {
-  // Output filename is namespaced per color space so SDR-then-HDR re-normalize
-  // doesn't collide. Matches the suffix produced by lib.normalize.main().
-  const out = src.replace(/(\.\w+)$/, `_normalized_${projectColorSpace}.mp4`)
+/**
+ * Build the deterministic normalized-master output path for `src`, mirroring
+ * lib.normalize.normalized_output_path() (the one place the Python side
+ * builds this name). Namespaced per color space so SDR-then-HDR re-normalize
+ * doesn't collide. When `tonemapped` is true (this item's own probed
+ * transfer is HDR and the project is SDR — the HDR→SDR Montaj Vivid LUT
+ * chain runs) the current master look is appended (SP6b Task T3).
+ */
+function buildNormalizedOutputPath(src, projectColorSpace, tonemapped) {
+  const lookSuffix = tonemapped ? `_${MASTER_LOOK}` : ''
+  return src.replace(/(\.\w+)$/, `_normalized_${projectColorSpace}${lookSuffix}.mp4`)
+}
+
+async function normalizeIfNeeded(src, projectColorSpace, tonemapped) {
+  const out = buildNormalizedOutputPath(src, projectColorSpace, tonemapped)
 
   // Idempotency cache: if the deterministic output already exists and is
   // fresher than the source, the previous render already paid the cost — skip
@@ -981,4 +1159,5 @@ function fail(code, message) {
   process.exit(1)
 }
 
-export { getTotalDurationSeconds, collectPuppeteerSegments, collectAllItems, resolveFilePath, shouldSkipNormalize }
+export { getTotalDurationSeconds, collectPuppeteerSegments, collectAllItems, resolveFilePath, shouldSkipNormalize, buildNormalizedOutputPath,
+         EXPORT_MODES, resolveExportMode, resolveSdrCurve, planExport }

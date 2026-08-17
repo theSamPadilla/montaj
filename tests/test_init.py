@@ -809,6 +809,9 @@ def test_init_smart_detects_modal_hlg_with_sdr_outlier(tmp_path):
 def test_init_smart_detects_sdr_on_tie(tmp_path):
     """1× HLG + 1× SDR (tied at 1 each) → settings.colorSpace == 'sdr_bt709'.
     Tiebreak rule: SDR wins when tied with HDR (conservative on inverse-stretch)."""
+    sys.path.insert(0, str(REPO_ROOT))
+    from lib.look import MASTER_LOOK
+
     a = tmp_path / "hlg.mp4"; _make_hlg_clip(a)
     b = tmp_path / "sdr.mp4"; _make_clip(b, duration=3)
     ws = tmp_path / "ws"; ws.mkdir()
@@ -817,6 +820,16 @@ def test_init_smart_detects_sdr_on_tie(tmp_path):
     assert result.returncode == 0, result.stderr
     project = json.loads(_project_path_from_stdout(result.stdout).read_text())
     assert project["settings"]["colorSpace"] == "sdr_bt709"
+    track = project["tracks"][0]
+    # Clip order follows --clips arg order (a=hlg, b=sdr) — see
+    # test_init_normalize_preserves_clip_order. The HLG clip is tone-mapped
+    # down into the SDR project (transcode through the Montaj Vivid LUT), so
+    # its master carries the look tag (SP6b Task T3, normalized_output_path).
+    # The SDR clip is already conformant (unknown-transfer passes sdr_bt709's
+    # transfer_values) — it never goes through normalize, so it keeps its
+    # original, untagged filename entirely.
+    assert track[0]["src"].endswith(f"_normalized_sdr_bt709_{MASTER_LOOK}.mp4"), track[0]["src"]
+    assert "_normalized_" not in track[1]["src"], track[1]["src"]
 
 
 @pytest.mark.skipif(not HAS_FFMPEG, reason="ffmpeg not available")
@@ -1406,9 +1419,10 @@ def test_init_no_proxy_flag_skips_and_persists_setting(tmp_path):
 
 @pytest.mark.skipif(not HAS_FFMPEG, reason="ffmpeg not available")
 def test_init_eager_proxy_command_is_plain_scale_no_tonemap(tmp_path):
-    """Eager clips are always encoded with tonemap=False — the (possibly
-    just-normalized) master is already SDR-conformed, so the proxy's -vf is
-    plain scale, no zscale chain."""
+    """Eager clips in an SDR project are encoded with tonemap=False — the
+    (possibly just-normalized) master is already SDR-conformed, so the proxy's
+    -vf is plain scale, no zscale chain. (HDR-project eager clips DO tonemap
+    since SP6b — see test_init_eager_proxy_command_tonemaps_for_hdr_project.)"""
     wrapper, log = _make_ffmpeg_spy(tmp_path, fail=False)
     src = tmp_path / "clip.mp4"
     _make_clip(src, duration=1)  # yuv420p/48k → conformant "skip" path, no normalize ffmpeg call
@@ -1422,6 +1436,40 @@ def test_init_eager_proxy_command_is_plain_scale_no_tonemap(tmp_path):
     vf = _last_ffmpeg_vf(log)
     assert vf == "scale='if(gt(iw,ih),-2,720)':'if(gt(iw,ih),720,-2)'"
     assert "zscale" not in vf
+
+
+@pytest.mark.skipif(not HAS_FFMPEG, reason="ffmpeg not available")
+def test_init_eager_proxy_command_tonemaps_for_hdr_project(tmp_path):
+    """Policy v3 (SP6b Task T5): an EAGER-HDR project (all-HLG import, no SDR
+    outlier — smart-detect picks hdr_hlg, the HLG clip is already conformant
+    so it takes the "skip" path, no normalize() call) previously got an
+    un-tone-mapped HDR AV1 proxy, leaving the browser to improvise its own
+    tone-mapping for preview. The eager arm must now tone-map whenever the
+    master feeding the proxy is HDR, regardless of the project's own working
+    color space. Command-level assertion only (spy exits 1 immediately, same
+    rationale as test_init_lazy_proxy_command_uses_tonemap_for_hdr_source
+    above — a real HDR encode depends on the box having zscale)."""
+    wrapper, log = _make_ffmpeg_spy(tmp_path, fail=True)
+    src = tmp_path / "clip.mp4"
+    _make_hlg_clip(src, duration=1)
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    result = run_init(
+        "--clips", str(src), "--prompt", "test",
+        env_override={"MONTAJ_WORKSPACE_DIR": str(ws), "MONTAJ_FFMPEG": str(wrapper)},
+    )
+    assert result.returncode == 0, result.stderr  # proxy failure is non-blocking
+    project = json.loads(_project_path_from_stdout(result.stdout).read_text())
+    assert project["settings"]["colorSpace"] == "hdr_hlg"
+    assert project["tracks"][0][0]["src"].endswith("clip.mp4")  # skip path: no _normalized_ master
+    assert "proxySrc" not in project["tracks"][0][0]  # the spy's exit 1 forced a failure
+    assert "proxy FAILED" in result.stderr
+
+    vf = _last_ffmpeg_vf(log)
+    scale_idx = vf.index("scale=")
+    zscale_idx = vf.index("zscale=")
+    assert scale_idx < zscale_idx, f"scale must precede the zscale chain: {vf!r}"
+    assert vf.index("format=rgb48le") < vf.index("lut3d=")
 
 
 @pytest.mark.skipif(not HAS_FFMPEG, reason="ffmpeg not available")
@@ -1523,10 +1571,16 @@ def test_init_lazy_proxy_command_is_plain_scale_for_sdr(tmp_path):
 @pytest.mark.skipif(not HAS_FFMPEG, reason="ffmpeg not available")
 def test_init_lazy_proxy_command_uses_tonemap_for_hdr_source(tmp_path):
     """Lazy HLG-tagged source → tonemap=True: scale composed AHEAD of the
-    zscale tonemap chain (scale-first ordering). Command-level assertion
+    zscale/LUT tonemap chain (scale-first ordering). Command-level assertion
     only (see _make_ffmpeg_spy) — the spy exits 1 immediately so this never
     depends on the box actually having zscale, and doubles as a second proof
-    that a proxy failure never blocks import (lazy arm this time)."""
+    that a proxy failure never blocks import (lazy arm this time).
+
+    SP6b T2 swapped the bare-tonemap chain for the Montaj Vivid LUT chain in
+    the shared _build_tonemap_vf_to_sdr builder (lib/normalize.py) — this
+    lazy proxy path inherits it automatically. Assertion updated to match
+    (the "tonemap=hable" substring only appears in the degraded fallback arm
+    now, not the real LUT arm this spy exercises)."""
     wrapper, log = _make_ffmpeg_spy(tmp_path, fail=True)
     src = tmp_path / "clip.mp4"
     _make_hlg_clip(src, duration=1)
@@ -1545,7 +1599,9 @@ def test_init_lazy_proxy_command_uses_tonemap_for_hdr_source(tmp_path):
     scale_idx = vf.index("scale=")
     zscale_idx = vf.index("zscale=")
     assert scale_idx < zscale_idx, f"scale must precede the zscale chain: {vf!r}"
-    assert "tonemap=hable" in vf
+    # decision-8a regression: format=rgb48le must land before lut3d.
+    assert vf.index("format=rgb48le") < vf.index("lut3d=")
+    assert "interp=tetrahedral" in vf
 
 
 @pytest.mark.skipif(not HAS_FFMPEG, reason="ffmpeg not available")

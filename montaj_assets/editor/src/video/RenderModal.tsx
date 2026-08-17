@@ -1,6 +1,43 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
-import type { EditorAdapter, Project, RenderPhase, RenderStatus } from '../types'
+import { ChevronDown, ChevronRight } from 'lucide-react'
+import type {
+  EditorAdapter,
+  Project,
+  RenderExport,
+  RenderOptions,
+  RenderPhase,
+  RenderStatus,
+} from '../types'
+import type { ImageTone } from './imageTone'
+import ImageToneMenu from './ImageToneMenu'
+import { SDR_CURVES, DEFAULT_SDR_CURVE, honestyLine, type SdrCurve } from './sdrCurves'
+
+/**
+ * Host-supplied inputs for the pre-render options state. Absent (or `isHdr:
+ * false`) → the modal keeps its zero-friction behavior: it fires the render on
+ * mount with no inputs at all. Present with `isHdr: true` → it opens on the
+ * options panel instead and only renders once the user hits Start render,
+ * because an HDR project now has an export decision to make.
+ */
+export interface PreRenderOptions {
+  /** True when this project renders HDR, which is the only case with a choice. */
+  isHdr: boolean
+  /**
+   * Windows on the project timeline (seconds) the curve thumbnails may sample
+   * from — the kept segments of track 0. The modal picks one at random and
+   * samples a single timestamp inside it, so both curves are compared on the
+   * same frame. Empty/absent → no thumbnails, just labels.
+   */
+  keeps?: Array<{ start: number; end: number }>
+  /**
+   * Current HDR image color mapping plus its setter, so the Advanced section
+   * can surface the same `ImageToneMenu` the toolbar shows. The setter is the
+   * host's normal persistence path (an editor mutation that saves and undoes).
+   * Absent → the menu is not rendered.
+   */
+  imageTone?: { value: ImageTone; set: (tone: ImageTone) => void }
+}
 
 interface RenderModalProps<P extends Project = Project> {
   projectId: string
@@ -27,6 +64,12 @@ interface RenderModalProps<P extends Project = Project> {
    * Threaded down from the host as a flag (montaj-native → 'logs', Hub clients
    * → 'phases'), mirroring `VideoEditorProps.renderProgressView`. */
   progressView?: 'phases' | 'logs'
+  /**
+   * Opens the modal on a pre-render options panel instead of firing the render
+   * on mount. Only HDR projects have anything to choose, so hosts pass this
+   * with `isHdr: true` for those and omit it (or pass `isHdr: false`)
+   * everywhere else, which preserves the fire-on-mount behavior exactly. */
+  preRenderOptions?: PreRenderOptions
 }
 
 /** Promoted render output (R2-presigned), as carried by `RenderStatus.media`. */
@@ -45,6 +88,7 @@ export const RENDER_PHASES: RenderPhase[] = [
   'rendering',
   'captions',
   'encoding',
+  'sdr_derive',
   'saving',
   'done',
 ]
@@ -52,12 +96,13 @@ export const RENDER_PHASES: RenderPhase[] = [
 /** User-facing label for a render phase. Honest, plain-English, no jargon. */
 export function phaseLabel(phase: RenderPhase): string {
   switch (phase) {
-    case 'preparing': return 'Preparing'
-    case 'rendering': return 'Rendering graphics'
-    case 'captions':  return 'Adding captions'
-    case 'encoding':  return 'Encoding video'
-    case 'saving':    return 'Saving to your library'
-    case 'done':      return 'Done'
+    case 'preparing':  return 'Preparing'
+    case 'rendering':  return 'Rendering graphics'
+    case 'captions':   return 'Adding captions'
+    case 'encoding':   return 'Encoding video'
+    case 'sdr_derive': return 'Deriving SDR'
+    case 'saving':     return 'Saving to your library'
+    case 'done':       return 'Done'
   }
 }
 
@@ -66,8 +111,44 @@ export function phaseIndex(phase: RenderPhase): number {
   return RENDER_PHASES.indexOf(phase)
 }
 
-/** The five phases shown in the running stepper (terminal `done` excluded). */
+/** The phases shown in the running stepper (terminal `done` excluded). */
 const STEPPER_PHASES: RenderPhase[] = RENDER_PHASES.filter(p => p !== 'done')
+
+/**
+ * The stepper rows for a given render. `sdr_derive` only runs when an HDR
+ * project asked for an SDR file, so listing it on every render would promise a
+ * step that never happens.
+ */
+export function stepperPhases(opts?: RenderOptions): RenderPhase[] {
+  const derives = opts?.export === 'sdr' || opts?.export === 'both'
+  return derives ? STEPPER_PHASES : STEPPER_PHASES.filter(p => p !== 'sdr_derive')
+}
+
+/**
+ * Pick one timestamp (project-timeline seconds) to sample the curve thumbnails
+ * at: a random point inside a random keep, kept away from the segment edges so
+ * the frame doesn't land on a transition or a black first frame. Returns null
+ * when there is nothing worth sampling, which is the caller's signal to render
+ * the picker without thumbnails. `rand` is injectable for tests.
+ */
+export function pickSampleTime(
+  keeps: Array<{ start: number; end: number }> | undefined,
+  rand: () => number = Math.random,
+): number | null {
+  const usable = (keeps ?? []).filter(k => k.end - k.start > 0.2)
+  if (usable.length === 0) return null
+  const keep = usable[Math.min(usable.length - 1, Math.floor(rand() * usable.length))]
+  const span = keep.end - keep.start
+  // Middle 60% of the keep.
+  return keep.start + span * (0.2 + rand() * 0.6)
+}
+
+/** The three export choices, in the order they read best: safest first. */
+const EXPORT_CHOICES: Array<{ id: RenderExport; label: string; blurb: string }> = [
+  { id: 'auto', label: 'Match footage (HDR)', blurb: 'One HDR file, the way it was shot.' },
+  { id: 'sdr',  label: 'SDR',                 blurb: 'One standard file. Plays the same everywhere.' },
+  { id: 'both', label: 'Both',                blurb: 'The HDR file plus an SDR copy beside it.' },
+]
 
 const POLL_INTERVAL_MS = 2500
 
@@ -83,11 +164,11 @@ const MAX_POLL_FAILURES = 12
 
 // ── Stepper ───────────────────────────────────────────────────────────────────
 
-function PhaseStepper({ current }: { current: RenderPhase }) {
+function PhaseStepper({ current, phases }: { current: RenderPhase; phases: RenderPhase[] }) {
   const currentIdx = phaseIndex(current)
   return (
     <div className="flex flex-col gap-3">
-      {STEPPER_PHASES.map((phase) => {
+      {phases.map((phase) => {
         const idx = phaseIndex(phase)
         // `done` sits past every stepper phase, so a done status marks them all complete.
         const complete = idx < currentIdx
@@ -145,18 +226,42 @@ function LogLine({ text }: { text: string }) {
   )
 }
 
-export default function RenderModal<P extends Project = Project>({ projectId, adapter, onClose, onCancel, exportActions, progressView }: RenderModalProps<P>) {
+export default function RenderModal<P extends Project = Project>({ projectId, adapter, onClose, onCancel, exportActions, progressView, preRenderOptions }: RenderModalProps<P>) {
   const [status, setStatus]     = useState<'running' | 'done' | 'error'>('running')
   const [phase, setPhase]       = useState<RenderPhase>('preparing')
   const [logs, setLogs]         = useState<string[]>([])
   const [media, setMedia]       = useState<RenderMedia[] | null>(null)
   const [outputPath, setOutput] = useState<string | null>(null)
+  // Extra files beyond the primary (a `both` export's derived SDR sibling).
+  const [extraOutputs, setExtraOutputs] = useState<string[]>([])
   const [errorMsg, setError]    = useState<string | null>(null)
   const logRef                  = useRef<HTMLDivElement>(null)
   const cancelledRef            = useRef(false)
   const unmountedRef            = useRef(false)
   const cleanupTimerRef         = useRef<ReturnType<typeof setTimeout> | null>(null)
   const pollTimerRef            = useRef<ReturnType<typeof setInterval> | null>(null)
+
+  // ── Pre-render options (HDR projects only) ─────────────────────────────────
+  // `started` gates the render effect. SDR projects (no preRenderOptions, or
+  // isHdr: false) start true, so the render still fires on mount exactly as it
+  // always has; HDR projects start false and wait for "Start render".
+  const showOptions = !!preRenderOptions?.isHdr
+  const [started, setStarted]         = useState(!showOptions)
+  const [exportChoice, setExport]     = useState<RenderExport>('auto')
+  const [sdrCurve, setSdrCurve]       = useState<SdrCurve>(DEFAULT_SDR_CURVE)
+  const [advancedOpen, setAdvanced]   = useState(false)
+  const [thumbs, setThumbs]           = useState<Record<string, string>>({})
+  const [thumbsPending, setPending]   = useState(false)
+  // Chosen once per mount so both curves are sampled on the same frame.
+  const [sampleAt] = useState<number | null>(() =>
+    showOptions ? pickSampleTime(preRenderOptions?.keeps) : null)
+  const thumbsRequestedRef = useRef(false)
+
+  // The options the render was started with. Read through a ref inside the
+  // render effect (which must not re-fire when unrelated state changes) and
+  // held in state for the stepper, which needs to re-render on it.
+  const [renderOpts, setRenderOpts] = useState<RenderOptions | undefined>(undefined)
+  const renderOptsRef = useRef<RenderOptions | undefined>(undefined)
 
   // `usePolling` is the data-transport decision (does this adapter expose the
   // poll-based render API?) — independent of which progress UI we show.
@@ -166,7 +271,36 @@ export default function RenderModal<P extends Project = Project>({ projectId, ad
   // 'logs' only renders content on the SSE transport, which streams log lines.
   const view = progressView ?? 'phases'
 
+  // Curve thumbnails: one sample of the SAME frame per curve, fetched in
+  // parallel and folded in as they land. Deliberately fire-and-forget — the
+  // options UI is already on screen, an absent `getSampleFrame` or a failed
+  // call just leaves the picker showing labels, and nothing here can block or
+  // fail the render.
   useEffect(() => {
+    if (started || sampleAt === null) return
+    const getSampleFrame = adapter.getSampleFrame
+    if (!getSampleFrame) return
+    // Guard StrictMode's double-mount so dev doesn't sample every frame twice.
+    if (thumbsRequestedRef.current) return
+    thumbsRequestedRef.current = true
+
+    let alive = true
+    let outstanding = SDR_CURVES.length
+    setPending(true)
+    const settle = () => { if (--outstanding === 0 && alive) setPending(false) }
+
+    for (const curve of SDR_CURVES) {
+      getSampleFrame(projectId, sampleAt, { sdrCurve: curve.id })
+        .then(({ url }) => { if (alive) setThumbs(t => ({ ...t, [curve.id]: url })) })
+        .catch(() => {})
+        .finally(settle)
+    }
+    return () => { alive = false }
+  }, [started, sampleAt, adapter, projectId])
+
+  useEffect(() => {
+    if (!started) return
+
     // React StrictMode in dev fires mount → cleanup → mount synchronously to
     // catch effects that aren't idempotent. Triggering a render is the textbook
     // non-idempotent effect (spawns a subprocess), so we have to handle it
@@ -191,7 +325,7 @@ export default function RenderModal<P extends Project = Project>({ projectId, ad
       try {
         if (usePolling) {
           // Async, poll-based render: kick once, then poll status until terminal.
-          await adapter.renderAsync!(projectId)
+          await adapter.renderAsync!(projectId, renderOptsRef.current)
           if (unmountedRef.current || cancelledRef.current) return
 
           let pollFailures = 0
@@ -247,7 +381,7 @@ export default function RenderModal<P extends Project = Project>({ projectId, ad
           pollTimerRef.current = setInterval(() => { void tick() }, POLL_INTERVAL_MS)
         } else {
           // Fallback for older hosts: consume the SSE render stream.
-          for await (const ev of adapter.render(projectId)) {
+          for await (const ev of adapter.render(projectId, renderOptsRef.current)) {
             if (unmountedRef.current || cancelledRef.current) break
             if (ev.type === 'log') {
               // Streaming hosts have no phase signal. Accumulate the line for
@@ -257,6 +391,7 @@ export default function RenderModal<P extends Project = Project>({ projectId, ad
               setPhase('rendering')
             } else if (ev.type === 'done') {
               setOutput(ev.outputPath)
+              setExtraOutputs(ev.outputPaths?.slice(1) ?? [])
               setStatus('done')
             } else {
               setError(ev.message)
@@ -292,21 +427,24 @@ export default function RenderModal<P extends Project = Project>({ projectId, ad
         stopPolling()
       }, 0)
     }
-  }, [projectId, adapter])
+  }, [projectId, adapter, started])
 
   // Auto-scroll the log panel as lines stream in.
   useEffect(() => {
     if (logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight
   }, [logs])
 
-  // Escape to close only when done/error
+  // Escape to close when done/error, and from the options panel — nothing has
+  // been started there, so backing out is free.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape' && status !== 'running') onClose()
+      if (e.key !== 'Escape') return
+      if (!started) (onCancel ?? onClose)()
+      else if (status !== 'running') onClose()
     }
     document.addEventListener('keydown', onKey)
     return () => document.removeEventListener('keydown', onKey)
-  }, [status, onClose])
+  }, [status, started, onClose, onCancel])
 
   function handleCancel() {
     cancelledRef.current = true
@@ -315,6 +453,179 @@ export default function RenderModal<P extends Project = Project>({ projectId, ad
     // their editor). Falls back to onClose for back-compat with callers that
     // haven't been updated.
     ;(onCancel ?? onClose)()
+  }
+
+  function handleStart() {
+    const opts: RenderOptions = { export: exportChoice, sdrCurve }
+    // The ref is what the render effect reads (it must not re-fire on unrelated
+    // state); the state copy drives the stepper's phase list.
+    renderOptsRef.current = opts
+    setRenderOpts(opts)
+    setStarted(true)
+  }
+
+  // ── Pre-render options panel ────────────────────────────────────────────────
+  if (!started) {
+    const curveInfo = SDR_CURVES.find(c => c.id === sdrCurve) ?? SDR_CURVES[0]
+    return createPortal(
+      <div className="fixed inset-0 z-50 flex items-center justify-center bg-black">
+        <div className="w-full max-w-lg bg-[var(--editor-surface)] border border-[var(--editor-border)] rounded-xl shadow-2xl flex flex-col overflow-hidden">
+
+          {/* Header */}
+          <div className="flex items-center justify-between px-5 py-4 border-b border-[var(--editor-border)]">
+            <div className="flex flex-col gap-0.5">
+              <h2 className="text-sm font-semibold text-[var(--editor-text)]">Render options</h2>
+              <p className="text-xs text-[var(--editor-text)]/55">
+                This project renders in HDR, so you have an export choice to make.
+              </p>
+            </div>
+            <button
+              onClick={handleCancel}
+              aria-label="Close"
+              className="text-[var(--editor-text)]/55 hover:text-[var(--editor-text)] transition-colors text-lg leading-none"
+            >
+              ×
+            </button>
+          </div>
+
+          <div className="px-5 py-4 flex flex-col gap-4 max-h-[70vh] overflow-y-auto">
+            {/* Export choice */}
+            <div className="flex flex-col gap-2">
+              <p className="text-[11px] font-semibold uppercase tracking-wide text-[var(--editor-text)]/50">Export</p>
+              <div role="radiogroup" aria-label="Export" className="grid grid-cols-3 gap-2">
+                {EXPORT_CHOICES.map(choice => {
+                  const active = choice.id === exportChoice
+                  return (
+                    <button
+                      key={choice.id}
+                      role="radio"
+                      aria-checked={active}
+                      onClick={() => setExport(choice.id)}
+                      className={`flex flex-col gap-1 rounded-lg border p-2.5 text-left transition-colors ${
+                        active
+                          ? 'border-violet-400/60 bg-violet-400/10'
+                          : 'border-[var(--editor-border)] hover:bg-[var(--editor-text)]/5'
+                      }`}
+                    >
+                      <span className="text-xs font-semibold text-[var(--editor-text)]">{choice.label}</span>
+                      <span className="text-[10px] leading-snug text-[var(--editor-text)]/55">{choice.blurb}</span>
+                    </button>
+                  )
+                })}
+              </div>
+            </div>
+
+            {/* Advanced disclosure */}
+            <div className="flex flex-col gap-3 border-t border-[var(--editor-border)] pt-3">
+              <button
+                onClick={() => setAdvanced(o => !o)}
+                aria-expanded={advancedOpen}
+                className="flex items-center gap-1.5 self-start text-xs text-[var(--editor-text)]/70 hover:text-[var(--editor-text)] transition-colors"
+              >
+                {advancedOpen ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
+                Advanced
+              </button>
+
+              {advancedOpen && (
+                <div className="flex flex-col gap-3">
+                  <div className="flex flex-col gap-2">
+                    <p className="text-[11px] font-semibold uppercase tracking-wide text-[var(--editor-text)]/50">
+                      Tone curve for SDR
+                    </p>
+                    <div role="radiogroup" aria-label="Tone curve for SDR" className="grid grid-cols-2 gap-2">
+                      {SDR_CURVES.map(curve => {
+                        const active = curve.id === sdrCurve
+                        const thumb = thumbs[curve.id]
+                        return (
+                          <button
+                            key={curve.id}
+                            role="radio"
+                            aria-checked={active}
+                            onClick={() => setSdrCurve(curve.id)}
+                            className={`flex flex-col gap-1.5 rounded-lg border p-2 text-left transition-colors ${
+                              active
+                                ? 'border-violet-400/60 bg-violet-400/10'
+                                : 'border-[var(--editor-border)] hover:bg-[var(--editor-text)]/5'
+                            }`}
+                          >
+                            {thumb ? (
+                              <img
+                                src={thumb}
+                                alt={`${curve.label} sample frame`}
+                                className="w-full aspect-video rounded object-cover border border-[var(--editor-border)]"
+                              />
+                            ) : thumbsPending ? (
+                              <span className="w-full aspect-video rounded border border-[var(--editor-border)] bg-[var(--editor-text)]/5 flex items-center justify-center text-[10px] text-[var(--editor-text)]/40">
+                                Sampling a frame…
+                              </span>
+                            ) : null}
+                            <span className="text-xs font-semibold text-[var(--editor-text)] flex items-center gap-1.5">
+                              {curve.label}
+                              {curve.id === DEFAULT_SDR_CURVE && (
+                                <span className="text-[9px] font-normal px-1 py-px rounded bg-[var(--editor-text)]/10 text-[var(--editor-text)]/55">default</span>
+                              )}
+                            </span>
+                            <span className="text-[10px] leading-snug text-[var(--editor-text)]/60">{curve.blurb}</span>
+                          </button>
+                        )
+                      })}
+                    </div>
+                    <p
+                      data-testid="sdr-honesty-line"
+                      className={`text-[11px] leading-snug ${
+                        sdrCurve === DEFAULT_SDR_CURVE
+                          ? 'text-[var(--editor-text)]/55'
+                          : 'text-amber-400/90'
+                      }`}
+                    >
+                      {honestyLine(sdrCurve)}
+                    </p>
+                  </div>
+
+                  {/* Image color mapping — the same control the toolbar shows,
+                      persisting through the host's normal settings path. */}
+                  {preRenderOptions?.imageTone && (
+                    <div className="flex items-center justify-between gap-3 border-t border-[var(--editor-border)] pt-3">
+                      <span className="text-[11px] text-[var(--editor-text)]/55">
+                        How photos and logos are converted for the HDR render.
+                      </span>
+                      <ImageToneMenu
+                        variant="header"
+                        value={preRenderOptions.imageTone.value}
+                        onChange={preRenderOptions.imageTone.set}
+                      />
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {!advancedOpen && (
+                <p className="text-[11px] text-[var(--editor-text)]/45">
+                  SDR files use the {curveInfo.label} look. Open Advanced to compare curves.
+                </p>
+              )}
+            </div>
+          </div>
+
+          {/* Footer */}
+          <div className="flex items-center justify-end gap-2 px-5 py-3 border-t border-[var(--editor-border)]">
+            <button
+              onClick={handleCancel}
+              className="text-sm px-4 py-1.5 rounded-md bg-[var(--editor-surface)] border border-[var(--editor-border)] text-[var(--editor-text)]/80 hover:opacity-90 transition-colors"
+            >
+              Cancel
+            </button>
+            <button
+              onClick={handleStart}
+              className="text-sm px-4 py-1.5 rounded-md bg-[var(--editor-accent)] text-[var(--editor-accent-foreground)] font-medium hover:opacity-90 transition-colors"
+            >
+              Start render
+            </button>
+          </div>
+        </div>
+      </div>,
+      document.body,
+    )
   }
 
   if (status === 'done') {
@@ -369,9 +680,20 @@ export default function RenderModal<P extends Project = Project>({ projectId, ad
                   download={downloadName}
                   className="w-full text-center text-sm px-4 py-2.5 rounded-lg bg-green-800/60 border border-green-700 text-green-200 hover:bg-green-700/60 transition-colors font-medium"
                 >
-                  Download
+                  {extraOutputs.length > 0 ? 'Download HDR master' : 'Download'}
                 </a>
               )}
+              {/* A `both` export's extra files (the derived SDR sibling). */}
+              {extraOutputs.map((p) => (
+                <a
+                  key={p}
+                  href={adapter.fileUrl(p)}
+                  download={basename(p)}
+                  className="w-full text-center text-sm px-4 py-2.5 rounded-lg bg-[var(--editor-surface)] border border-green-800 text-green-200/90 hover:bg-green-900/40 transition-colors font-medium"
+                >
+                  Download SDR version
+                </a>
+              ))}
               <button
                 onClick={onClose}
                 className="w-full text-center text-sm px-4 py-2.5 rounded-lg bg-[var(--editor-surface)] border border-[var(--editor-border)] text-[var(--editor-text)]/80 hover:opacity-90 transition-colors"
@@ -435,7 +757,7 @@ export default function RenderModal<P extends Project = Project>({ projectId, ad
           <div className="px-5 py-5">
             {status === 'running' ? (
               <>
-                <PhaseStepper current={phase} />
+                <PhaseStepper current={phase} phases={stepperPhases(renderOpts)} />
                 <p className="mt-5 text-xs text-[var(--editor-text)]/50">
                   This can take a few minutes for longer videos.
                 </p>

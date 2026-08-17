@@ -2,7 +2,9 @@ import { describe, it, expect } from 'vitest'
 import type {
   EditorAdapter,
   RenderEvent,
+  RenderExport,
   RenderOptions,
+  SampleFrameOptions,
   VersionEntry,
   WaveformChunk,
   PeaksData,
@@ -11,11 +13,12 @@ import type {
 import type { EditorProject, ImageElement } from '../schema'
 
 // ── Video adapter contract ────────────────────────────────────────────────────
-// The video editor adds six OPTIONAL adapter methods: listVersionHistory,
+// The video editor adds seven OPTIONAL adapter methods: listVersionHistory,
 // restoreVersion, getWaveformChunks, clearOverlayCache, getWaveformPeaks,
-// getFilmstrip. This file fails to compile if those methods are mistyped, and
-// verifies that (a) an adapter implementing them type-checks and (b) one
-// omitting them still type-checks.
+// getFilmstrip, getSampleFrame. This file fails to compile if those methods are
+// mistyped, and verifies that (a) an adapter implementing them type-checks and
+// (b) one omitting them still type-checks. It also pins the `RenderOptions`
+// shape both `render` and `renderAsync` accept.
 
 const project: EditorProject = {
   version: '1',
@@ -70,6 +73,11 @@ function makeVideoAdapter(): EditorAdapter<EditorProject> {
       interval: 1,
       tileWidth: 160,
     }),
+    getSampleFrame: async (
+      _projectId: string,
+      at: number,
+      opts?: SampleFrameOptions,
+    ): Promise<{ url: string }> => ({ url: `/files?at=${at}&curve=${opts?.sdrCurve ?? ''}` }),
   }
 }
 
@@ -106,6 +114,12 @@ describe('EditorAdapter video methods', () => {
     const filmstrip = await a.getFilmstrip!({ projectId: 'p1', src: 'a.mp4' })
     expect(filmstrip.sheets[0]).toMatchObject({ path: '/fs/sheet_01.jpg', cols: 10, rows: 1 })
     expect(filmstrip.sheets[0].tiles[0]).toMatchObject({ t: 0, row: 0, col: 0 })
+
+    // A directly displayable URL: the modal puts it straight into an <img>.
+    const sample = await a.getSampleFrame!('p1', 4.5, { sdrCurve: 'vivid1-neutral' })
+    expect(sample.url).toBe('/files?at=4.5&curve=vivid1-neutral')
+    // Options are optional; the host falls back to its default curve.
+    expect((await a.getSampleFrame!('p1', 4.5)).url).toBe('/files?at=4.5&curve=')
   })
 
   it('an adapter omitting the new optional methods still type-checks', () => {
@@ -116,5 +130,32 @@ describe('EditorAdapter video methods', () => {
     expect(a.clearOverlayCache).toBeUndefined()
     expect(a.getWaveformPeaks).toBeUndefined()
     expect(a.getFilmstrip).toBeUndefined()
+    expect(a.getSampleFrame).toBeUndefined()
+  })
+})
+
+// ── Render options shape ──────────────────────────────────────────────────────
+// `export` selects the deliverables for an HDR project; `sdrCurve` names the
+// HDR→SDR tone curve (ids live in montaj_assets/luts/looks.json). Both optional,
+// so an empty object and an omitted argument stay valid calls.
+
+describe('RenderOptions', () => {
+  it('accepts every export mode plus a curve id, and stays fully optional', async () => {
+    const modes: RenderExport[] = ['auto', 'sdr', 'both']
+    const opts: RenderOptions[] = [
+      {},
+      { scale: 2 },
+      ...modes.map(m => ({ export: m, sdrCurve: 'vivid1' })),
+    ]
+    expect(opts.map(o => o.export)).toEqual([undefined, undefined, 'auto', 'sdr', 'both'])
+
+    // Both render entry points take the same options object.
+    const a = makeVideoAdapter()
+    for await (const ev of a.render('p1', { export: 'both', sdrCurve: 'vivid1-neutral' })) {
+      expect(ev.type).toBe('done')
+    }
+
+    const sampleOpts: SampleFrameOptions = { sdrCurve: 'vivid1' }
+    expect(sampleOpts.sdrCurve).toBe('vivid1')
   })
 })

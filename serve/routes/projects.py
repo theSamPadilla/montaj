@@ -34,6 +34,7 @@ from project.init import _copy_into_workspace
 from serve.sse import SSEBroadcaster, sse_stream
 
 from lib.common import SAFE_NAME as _SAFE_NAME, ffmpeg_bin, ffprobe_bin
+from lib.look import curve_ids
 from lib.profile_assets import FILENAME_RE, NAME_RE
 from lib.types.kling import ASPECT_RATIOS, is_valid_aspect_ratio
 from lib.types.carousel import CAROUSEL_ASPECTS
@@ -114,6 +115,8 @@ def _render_phase_for(line: str) -> str | None:
         return "rendering"
     if "composing final video" in line or "concatenating" in line:
         return "encoding"
+    if "deriving SDR rendition" in line:
+        return "sdr_derive"
     return None
 
 
@@ -679,9 +682,368 @@ async def list_projects(status: str | None = None):
     return projects
 
 
+# ---------------------------------------------------------------------------
+# Look migration at project open (SP6b T9)
+#
+# Look-version tags in artifact FILENAMES (lib/proxy.py's PROXY_LOOK,
+# lib/normalize.py's normalized_output_path) make a stale artifact detectable
+# by name alone — but only for code that recomputes the name. project.json
+# items don't: they carry `normalizedSrc`/`proxySrc` POINTING AT the old-look
+# file, which still exists on disk, so every filename-based freshness check
+# short-circuits on a path that is fresh by mtime and wrong by look. That
+# field-level staleness is what this pass heals.
+#
+# Shape: GET /projects/{id} runs the pass, repoints or clears the stale fields,
+# writes project.json once, and returns the migrated body immediately. The
+# re-encodes run in the background and land in project.json as they finish —
+# the same "artifacts arrive after the response" UX imports already have.
+# ---------------------------------------------------------------------------
+
+class _LookMigrationUnit:
+    """One background re-encode, plus every project.json field waiting on it.
+
+    `targets` holds (project_id, project_dir, field, item_id, item_src,
+    broadcaster) per waiting field — the fields this pass CLEARED and will
+    repoint once the encode lands. One unit can serve several: the clips
+    workflow fans N child projects out over one shared lazy source, so opening
+    all N asks for the same proxy path.
+    """
+    __slots__ = ("kind", "src", "out", "color_space", "targets", "job_id")
+
+    def __init__(self, kind: str, src: str, out: str, color_space: str) -> None:
+        self.kind = kind                  # "proxy" | "normalize"
+        self.src = src                    # encode input
+        self.out = out                    # artifact this unit produces
+        self.color_space = color_space
+        self.targets: list[tuple] = []
+        self.job_id: str | None = None
+
+
+# Pending units (FIFO) and the one currently encoding. Together these are the
+# in-flight guard: a unit is scheduled only when no queued/running unit already
+# produces the same artifact, so opening a project twice — or opening five
+# children of one shared source — never starts a duplicate encode. It also
+# bounds concurrency: ONE worker drains the queue, so a project with 20 stale
+# items runs 20 encodes back to back, never 20 at once. That is stricter than
+# project/init.py's capacity-2 pools by design — this is background housekeeping
+# that must not compete with a user-initiated render.
+_look_migration_queue: list[_LookMigrationUnit] = []
+_look_migration_current: _LookMigrationUnit | None = None
+_look_migration_worker: "asyncio.Task | None" = None
+
+
+def _look_migration_pending(kind: str, out: str) -> _LookMigrationUnit | None:
+    """The queued-or-running unit producing `out`, if any."""
+    if _look_migration_current is not None and \
+            _look_migration_current.kind == kind and _look_migration_current.out == out:
+        return _look_migration_current
+    for unit in _look_migration_queue:
+        if unit.kind == kind and unit.out == out:
+            return unit
+    return None
+
+
+def _look_migration_enqueue(unit: _LookMigrationUnit) -> None:
+    """Queue `unit` and make sure a worker is draining."""
+    global _look_migration_worker
+    _look_migration_queue.append(unit)
+    if _look_migration_worker is None or _look_migration_worker.done():
+        _look_migration_worker = asyncio.create_task(_look_migration_drain())
+
+
+async def _look_migration_drain() -> None:
+    """Run queued migration encodes one at a time, writing each result back into
+    project.json as it lands."""
+    global _look_migration_current, _look_migration_worker
+    try:
+        while _look_migration_queue:
+            unit = _look_migration_queue.pop(0)
+            _look_migration_current = unit
+            try:
+                path = await _run_look_migration_unit(unit)
+            except Exception:
+                path = None
+            finally:
+                _look_migration_current = None
+            if path:
+                _apply_look_migration_result(unit, path)
+    finally:
+        _look_migration_worker = None
+
+
+async def _run_look_migration_unit(unit: _LookMigrationUnit) -> str | None:
+    """Drive one unit's encode through the shared step-job machinery. Returns the
+    produced path, or None if the encode failed or produced something other than
+    the artifact we asked for (e.g. normalize's already-conformant short-circuit,
+    which returns the INPUT path — repointing a field at that would undo the
+    migration instead of completing it)."""
+    from serve.jobs import create_job, get_job
+    from serve.routes.steps import run_normalize_job, run_proxy_job
+
+    unit.job_id = create_job()
+    if unit.kind == "proxy":
+        # tonemap=None: the proxy driver probes the source and tone-maps HDR,
+        # exactly as a fresh import would — this pass must not second-guess it.
+        await run_proxy_job(unit.job_id, unit.src, out=unit.out, tonemap=None)
+    else:
+        await run_normalize_job(unit.job_id, unit.src, unit.color_space, out=unit.out)
+
+    job = get_job(unit.job_id) or {}
+    if job.get("status") != "done":
+        return None
+    path = (job.get("result") or {}).get("path")
+    return path if path == unit.out else None
+
+
+def _apply_project_edits(project_path: Path, edits: list[tuple]) -> tuple[dict, str] | None:
+    """Apply `(item_id, item_src, field, value)` edits to a project.json — a
+    `None` value deletes the field. Returns the updated (project, json text), or
+    None when nothing changed or the file can't be read.
+
+    Serialization: read-modify-write with NO await between the read and the
+    write, so under the single asyncio loop that serves this process it cannot
+    interleave with PUT /projects/{id} (save_project above uses the same
+    discipline) or with another unit's write-back. Re-reading rather than
+    dumping a dict held across an await is what keeps a concurrent PUT from
+    being clobbered. The rewrite is tmp+os.replace so a crash mid-write can't
+    truncate the project (SP3 fix S6's reasoning, as cli/commands/clean.py).
+
+    The project may have changed since the edits were computed: items are
+    matched by (id, src), and an item that no longer exists is simply skipped.
+    """
+    try:
+        project = json.loads(project_path.read_text())
+    except (OSError, ValueError):
+        return None  # project deleted, or unreadable — nothing to heal
+    changed = False
+    for item in _look_migration_items(project):
+        for item_id, item_src, field, value in edits:
+            if item.get("src") != item_src or item.get("id") != item_id:
+                continue
+            if value is None:
+                if field in item:
+                    del item[field]
+                    changed = True
+            elif item.get(field) != value:
+                item[field] = value
+                changed = True
+    if not changed:
+        return None
+    text = json.dumps(project, indent=2)
+    try:
+        tmp = str(project_path) + ".tmp"
+        Path(tmp).write_text(text)
+        os.replace(tmp, project_path)
+    except OSError:
+        return None
+    return project, text
+
+
+def _apply_look_migration_result(unit: _LookMigrationUnit, path: str) -> None:
+    """Write `path` back into every project.json waiting on this unit."""
+    for project_id, project_dir, field, item_id, item_src, broadcaster in unit.targets:
+        result = _apply_project_edits(
+            Path(project_dir) / "project.json", [(item_id, item_src, field, path)]
+        )
+        if result is not None and broadcaster is not None:
+            broadcaster.publish(project_id, _sse_data_frame(result[1]))
+
+
+def _look_migration_items(project: dict):
+    """Every video item in the project, across all tracks plus the `sources`
+    mirror — the same two groups cli/commands/clean.py walks when it strips
+    dangling proxySrc pointers. Overlay/image/caption items carry no video
+    artifacts and are skipped."""
+    groups = list(project.get("tracks") or []) + [project.get("sources") or []]
+    for group in groups:
+        for item in group or []:
+            if isinstance(item, dict) and item.get("type") == "video" and item.get("src"):
+                yield item
+
+
+async def migrate_project_look(
+    project_id: str,
+    project_dir: Path,
+    project: dict,
+    broadcaster: "SSEBroadcaster | None" = None,
+) -> dict:
+    """Repoint or clear look-stale artifact fields, schedule the re-encodes that
+    heal the cleared ones, and return the project to serve — `project` itself
+    when nothing was stale, otherwise the committed post-migration copy.
+
+    Never raises and never blocks on an encode: the caller's response body is
+    the migrated project, and the background queue delivers the rest over SSE.
+
+    Per video item, with the item's source file present and absolute:
+
+    * `proxySrc` whose filename lacks `_proxy_<PROXY_LOOK>` (an old-look proxy
+      such as `_proxy_hable1`), or that names a file no longer on disk. The
+      current-look proxy is adopted when it already exists and is fresher than
+      the source; otherwise the field is cleared and an encode queued.
+    * `normalizedSrc` naming THIS item's full-source master under the untagged
+      legacy name (`<stem>_normalized_sdr_bt709.mp4`) when the source probes as
+      HDR — i.e. a tone-mapped master built by a pre-vivid1 look. An untagged
+      master of an SDR source is a live colour-conformance master carrying no
+      look and is left alone; anything else in the field (a `normalize_window`
+      window cache, a hand-written path) is NOT this item's master and is left
+      alone too, because a full-source re-encode would break the window's
+      `normalizedInPoint` rebase. A field already naming the tagged master is
+      migrated only when that file has gone missing (`montaj clean` can delete
+      a superseded master out from under a live pointer).
+
+    A cleared field is safe on its own: preview and render both fall back to
+    `src`, and render's own `normalizeIfNeeded` rebuilds the tagged master. So a
+    failed background encode degrades to "no cache", never to a broken project.
+    """
+    try:
+        return await _migrate_project_look(project_id, project_dir, project, broadcaster) or project
+    except Exception:
+        # A project must always open. Migration is best-effort housekeeping.
+        return project
+
+
+async def _migrate_project_look(
+    project_id: str,
+    project_dir: Path,
+    project: dict,
+    broadcaster: "SSEBroadcaster | None",
+) -> dict | None:
+    from lib.normalize import normalized_output_path, probe_video
+    from lib.proxy import PROXY_LOOK, is_proxy_fresh, proxy_path_for
+    from lib.types.colorspace import DEFAULT_COLOR_SPACE, detect_from_transfer, is_hdr
+
+    settings = project.get("settings") or {}
+    color_space = settings.get("colorSpace") or DEFAULT_COLOR_SPACE
+    proxies_enabled = settings.get("proxy") is not False
+
+    items = list(_look_migration_items(project))
+    if not items:
+        return None
+
+    # Pass 1 — name-only triage. Everything here is string work plus a stat, so
+    # a migrated (or SDR-source, or carousel) project reaches the return below
+    # having touched neither ffprobe nor the disk beyond a few isfile() calls.
+    proxy_stale: list[dict] = []
+    master_candidates: list[dict] = []
+    for item in items:
+        src = item["src"]
+        # Relative srcs (overlay items may use them) can't be resolved against
+        # the same base the artifact names were built from — out of scope.
+        # A missing source is the plan's bound: nothing to re-encode from.
+        if not os.path.isabs(src) or not os.path.isfile(src):
+            continue
+
+        proxy_src = item.get("proxySrc")
+        if proxies_enabled and proxy_src and (
+            f"_proxy_{PROXY_LOOK}" not in os.path.basename(proxy_src)
+            or not os.path.isfile(proxy_src)
+        ):
+            proxy_stale.append(item)
+
+        normalized_src = item.get("normalizedSrc")
+        if normalized_src and color_space == "sdr_bt709":
+            tagged = normalized_output_path(src, color_space, tonemapped=True)
+            untagged = normalized_output_path(src, color_space, tonemapped=False)
+            if normalized_src == tagged and not os.path.isfile(tagged):
+                # Already the current look, just deleted — no probe needed, the
+                # tag itself is the proof it was tone-mapped.
+                master_candidates.append(item)
+            elif normalized_src == untagged:
+                master_candidates.append(item)
+
+    if not proxy_stale and not master_candidates:
+        return None
+
+    # Pass 2 — one ffprobe per unique src (project/init.py:489's discipline),
+    # and only for the untagged-master candidates: untagged means "tone-mapped
+    # under the old look OR a plain SDR conformance master", and only the
+    # source's transfer function tells those apart. Off the event loop so the
+    # probes can't stall SSE or another request.
+    transfer_cache: dict[str, bool] = {}
+
+    def _probe_is_hdr(path: str) -> bool:
+        try:
+            info = probe_video(path)
+        except (Exception, SystemExit):
+            return False
+        if info is None:
+            return False
+        return is_hdr(detect_from_transfer(info.get("color_transfer")))
+
+    to_probe = sorted({
+        item["src"] for item in master_candidates
+        if item.get("normalizedSrc") == normalized_output_path(item["src"], color_space, tonemapped=False)
+    })
+    for src in to_probe:
+        transfer_cache[src] = await asyncio.to_thread(_probe_is_hdr, src)
+
+    # Pass 3 — repoint what already exists, clear + queue what doesn't. Both maps
+    # are keyed so the `tracks` item and its `sources` twin (same id, same src)
+    # collapse to ONE edit and ONE encode instead of doing everything twice.
+    units: dict[tuple, _LookMigrationUnit] = {}
+    edits: dict[tuple, str | None] = {}
+
+    def _schedule(kind: str, key: tuple, src: str, out: str) -> None:
+        edits[key] = None  # clear the pointer; the write-back repoints it
+        unit = units.get((kind, out))
+        if unit is None:
+            unit = _look_migration_pending(kind, out) or _LookMigrationUnit(kind, src, out, color_space)
+            units[(kind, out)] = unit
+        unit.targets.append((project_id, str(project_dir), key[2], key[0], key[1], broadcaster))
+
+    for item in proxy_stale:
+        key = (item.get("id"), item["src"], "proxySrc")
+        if key in edits:
+            continue
+        # realpath so every child of a shared lazy source names — and races on —
+        # the ONE proxy that serves them all (project/init.py's lazy arm does the
+        # same before calling proxy_path_for).
+        real_src = os.path.realpath(item["src"])
+        out = proxy_path_for(real_src)
+        if is_proxy_fresh(out, real_src):
+            edits[key] = out  # already encoded — just repoint
+        else:
+            _schedule("proxy", key, real_src, out)
+
+    for item in master_candidates:
+        src = item["src"]
+        key = (item.get("id"), src, "normalizedSrc")
+        if key in edits:
+            continue
+        untagged = normalized_output_path(src, color_space, tonemapped=False)
+        if item.get("normalizedSrc") == untagged and not transfer_cache.get(src):
+            continue  # SDR source: the untagged master carries no look, leave it
+        out = normalized_output_path(src, color_space, tonemapped=True)
+        if os.path.isfile(out):
+            edits[key] = out  # already encoded — just repoint
+        else:
+            _schedule("normalize", key, src, out)
+
+    result = None
+    if edits:
+        result = _apply_project_edits(
+            project_dir / "project.json",
+            [(item_id, item_src, field, value) for (item_id, item_src, field), value in edits.items()],
+        )
+        if result is not None and broadcaster is not None:
+            broadcaster.publish(project_id, _sse_data_frame(result[1]))
+
+    for (kind, out), unit in units.items():
+        if _look_migration_pending(kind, out) is unit:
+            continue  # already queued/running — this open only added targets
+        _look_migration_enqueue(unit)
+
+    return result[0] if result is not None else None
+
+
 @router.get("/projects/{project_id}")
-async def get_project(project_id: str, project_dir: Path = Depends(get_project_dir)):
-    return json.loads((project_dir / "project.json").read_text())
+async def get_project(project_id: str, request: Request = None, project_dir: Path = Depends(get_project_dir)):
+    project = json.loads((project_dir / "project.json").read_text())
+    # Heal look-stale artifact pointers before handing the project over. The
+    # response is the MIGRATED body — the pass only ever does name/stat work
+    # plus a bounded ffprobe pass; every re-encode is queued, never awaited.
+    broadcaster = getattr(request.app.state, "broadcaster", None) if request is not None else None
+    return await migrate_project_look(project_id, project_dir, project, broadcaster)
 
 
 @router.get("/projects/{project_id}/stream")
@@ -1357,6 +1719,29 @@ async def render_project(project_id: str, request: Request, project_dir: Path = 
         if scale not in (1, 2, 3):
             raise HTTPException(400, detail={"error": "invalid_argument", "message": "scale must be 1, 2, or 3"})
 
+    # Optional JSON body: { "export": "auto"|"sdr"|"both", "sdrCurve": <curve id> }.
+    # Absent/empty body → today's behavior (render.js's own defaults). Mirrors the
+    # rerun route's tolerant-parse pattern above; a GET-style POST with no body is
+    # not an error here.
+    body = {}
+    try:
+        body = await request.json()
+    except Exception:
+        pass
+
+    export = body.get("export")
+    if export is not None and export not in ("auto", "sdr", "both"):
+        raise HTTPException(422, detail={
+            "error": "invalid_argument",
+            "message": f"export must be one of auto, sdr, both (got {export!r})",
+        })
+    sdr_curve = body.get("sdrCurve")
+    if sdr_curve is not None and sdr_curve not in curve_ids():
+        raise HTTPException(422, detail={
+            "error": "invalid_argument",
+            "message": f"sdrCurve must be one of {curve_ids()} (got {sdr_curve!r})",
+        })
+
     # Carousel renders go through asset normalization first: any .webp image bed
     # is transcoded to a sibling .png and the renderer is handed a normalized copy
     # of project.json (the sidecar Chromium can't decode .webp). render_input ==
@@ -1377,6 +1762,10 @@ async def render_project(project_id: str, request: Request, project_dir: Path = 
         output_dir.mkdir(exist_ok=True)
         output_path = output_dir / f"{project_dir.name}.mp4"
         script_args = [str(project_path), "--out", str(output_path)]
+        if export:
+            script_args += ["--export", export]
+        if sdr_curve:
+            script_args += ["--sdr-curve", sdr_curve]
 
     if not render_script.is_file():
         raise server_error("not_found", f"{render_script.name} not found")
@@ -1425,7 +1814,13 @@ async def render_project(project_id: str, request: Request, project_dir: Path = 
                 yield f"event: log\ndata: {job.lines[idx]}\n\n"
                 idx += 1
             if job.status == "done":
-                yield f"event: done\ndata: {job.result}\n\n"
+                # --export both makes job.result a two-line blob (master path,
+                # then the derived SDR sibling). The SSE 'done' frame carries only
+                # the first (master) line — same outputPath compat contract as
+                # the status route below — rather than an unescaped multi-line
+                # value that would corrupt the wire format's line-oriented framing.
+                first_path = job.result.splitlines()[0] if job.result else job.result
+                yield f"event: done\ndata: {first_path}\n\n"
                 return
             if job.status == "error":
                 yield f"event: error\ndata: {job.result}\n\n"
@@ -1469,7 +1864,12 @@ async def render_status(project_id: str, project_dir: Path = Depends(get_project
         return {"status": "idle"}
     out = {"status": job.status, "phase": job.phase}
     if job.status == "done":
-        out["outputPath"] = job.result
+        # --export both prints two stdout lines (master, then derived SDR
+        # sibling); outputPaths carries the full list, outputPath stays the
+        # first line for back-compat with every existing single-path reader.
+        paths = job.result.splitlines() or [job.result]
+        out["outputPath"] = paths[0]
+        out["outputPaths"] = paths
     elif job.status == "error":
         out["error"] = job.result
     return out

@@ -32,6 +32,7 @@ import type {
   ImageElement,
   RenderEvent,
   RenderOptions,
+  SampleFrameOptions,
   GlobalOverlay,
   VersionEntry,
   WaveformChunk,
@@ -78,6 +79,16 @@ function srcCacheKey(src: string): string {
   return (h >>> 0).toString(36)
 }
 
+/**
+ * Directory a reserved workspace path sits in — the project directory, since
+ * `reserve-path` always allocates inside it. Handles both separators so a
+ * Windows-hosted workspace resolves the same way.
+ */
+function projectDirOf(reservedPath: string): string {
+  const cut = Math.max(reservedPath.lastIndexOf('/'), reservedPath.lastIndexOf('\\'))
+  return cut === -1 ? '.' : reservedPath.slice(0, cut)
+}
+
 /** Replicates SlideCanvas's `resolveAsset` so the editor displays the same URL. */
 export function resolveMontajImageSrc(element: ImageElement): string {
   const src = element.src
@@ -105,7 +116,11 @@ export function createMontajAdapter(): EditorAdapter<Project> {
       // 'log' events are ignored here; the host consumes those via useProjectStream.
       subscribeProjectStream(id, { onFrame }),
 
-    render: (id: string, _opts?: RenderOptions): AsyncIterable<RenderEvent> => {
+    // `opts` (the RenderModal's export choice + SDR curve) rides on the POST
+    // that opens the SSE stream — this host implements only the streaming
+    // `render`, never `renderAsync`, so this is the one place render options
+    // can reach the backend.
+    render: (id: string, opts?: RenderOptions): AsyncIterable<RenderEvent> => {
       // Bridge api.renderProject's callback SSE into an async iterable. Events
       // are buffered and handed off through a promise-resolver queue so the
       // consumer's `for await` paces naturally.
@@ -141,8 +156,26 @@ export function createMontajAdapter(): EditorAdapter<Project> {
             .renderProject(
               id,
               (line) => push({ type: 'log', message: line }),
-              (outputPath) => push({ type: 'done', outputPath }),
+              (outputPath) => {
+                // The SSE done frame carries one path by contract. A `both`
+                // export produced a second file (the derived SDR sibling) —
+                // pick the full list up from the status snapshot, best-effort:
+                // any failure just emits the single-path event as before.
+                if (opts?.export === 'both') {
+                  api.renderStatus(id)
+                    .then((snap) => {
+                      const paths = snap.outputPaths
+                      push(paths && paths.length > 1
+                        ? { type: 'done', outputPath, outputPaths: paths }
+                        : { type: 'done', outputPath })
+                    })
+                    .catch(() => push({ type: 'done', outputPath }))
+                } else {
+                  push({ type: 'done', outputPath })
+                }
+              },
               (message) => push({ type: 'error', message }),
+              { export: opts?.export, sdrCurve: opts?.sdrCurve },
             )
             .then((c) => { cancel = c })
             .catch((err) => {
@@ -318,6 +351,35 @@ export function createMontajAdapter(): EditorAdapter<Project> {
       })
       filmstripCache.set(key, promise)
       return promise
+    },
+
+    // Sample frame → the `sample_frame` step, composited at project resolution
+    // and tone-mapped through `sdrCurve` when the project is HDR. Composes the
+    // same two-step flow as `generateImage`: reserve a path inside the project
+    // (each curve gets its own file, so two samples of the same timestamp don't
+    // collide), then run the step writing to it. The reserved path also tells
+    // us the project directory, which is how we address the project.json the
+    // step wants — the editor only ever knows the project id.
+    getSampleFrame: async (
+      projectId: string,
+      at: number,
+      opts?: SampleFrameOptions,
+    ): Promise<{ url: string }> => {
+      const { path: outPath } = await api.reservePath(projectId, {
+        prefix: 'sdr_sample',
+        extension: 'png',
+      })
+      const stepArgs: Record<string, unknown> = {
+        project: `${projectDirOf(outPath)}/project.json`,
+        at,
+        out: outPath,
+      }
+      // Kebab-case: the step server matches body keys to the step schema's
+      // declared param names (`--sdr-curve`), rejecting anything unrecognized.
+      if (opts?.sdrCurve) stepArgs['sdr-curve'] = opts.sdrCurve
+
+      const result = await api.runStepAsync<{ path: string }>('sample_frame', stepArgs)
+      return { url: fileUrl(result?.path ?? outPath) }
     },
 
     // Drop one compiled-overlay cache entry. The host impl requires a src; with

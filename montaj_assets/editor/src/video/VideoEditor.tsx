@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Crop, Info, Magnet, Pencil, Redo2, Undo2 } from 'lucide-react'
 import type { Project, VideoEditorProps } from '../types'
 import { useProjectSync, type UseProjectSync } from '../state/use-project-sync'
@@ -508,6 +508,23 @@ function ReviewSurface<P extends Project>({
     if (!onProvideImageTone) return
     onProvideImageTone(isHdrProject ? { value: currentImageTone ?? 'vivid', set: handleImageToneChange } : null)
   }, [onProvideImageTone, isHdrProject, currentImageTone, handleImageToneChange])
+
+  // Pre-render options for the RenderModal. HDR projects open on an options
+  // panel (export choice + tone curve); SDR projects get `isHdr: false`, which
+  // keeps the modal's fire-on-mount behavior. `keeps` are the track-0 video
+  // windows the modal samples one thumbnail frame from — memoized so the modal
+  // sees a stable list, and capped because it only ever picks one of them.
+  const renderKeeps = useMemo(
+    () => (project.tracks?.[0] ?? [])
+      .filter(item => item.type === 'video')
+      .map(item => ({ start: item.start, end: item.end })),
+    [project.tracks],
+  )
+  const preRenderOptions = useMemo(() => ({
+    isHdr: isHdrProject,
+    keeps: renderKeeps,
+    imageTone: { value: currentImageTone ?? 'vivid', set: handleImageToneChange },
+  }), [isHdrProject, renderKeeps, currentImageTone, handleImageToneChange])
 
   const openRender = useCallback(() => {
     const final = { ...syncProjectRef.current, status: 'final' } as P
@@ -1091,6 +1108,7 @@ function ReviewSurface<P extends Project>({
           adapter={adapter}
           exportActions={slots?.exportActions}
           progressView={renderProgressView}
+          preRenderOptions={preRenderOptions}
           onClose={() => setRenderOpen(false)}
           onCancel={() => setRenderOpen(false)}
         />

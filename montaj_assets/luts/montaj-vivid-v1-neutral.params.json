@@ -1,0 +1,22 @@
+{
+  "name": "montaj-vivid-v1-neutral",
+  "date": "2026-08-17",
+  "winner_of": "SP6a operator flip-test, 8 rounds (runner_up variant: c17-detail-max, \"no-pop\")",
+  "generator": "spikes/tone-mapping/generate_luts.py (fn=vivid, round8 c17-detail-max)",
+  "provenance": "cd spikes/tone-mapping && python3 generate_luts.py --round round8 --size 65; cube copied byte-for-byte from luts/round8/c17-detail-max.cube (title line re-stamped, data rows unchanged — same pattern used to promote the round8 c24-pop-wide.cube to montaj-vivid-v1.cube)",
+  "lut_size": 65,
+  "input": "full-range HLG-encoded BT.2020 RGB [0,1] (zscale matrixin=2020_ncl rangein=limited range=full)",
+  "output": "sRGB-encoded (IEC 61966-2-1) BT.709 RGB [0,1]",
+  "params": {
+    "fn": "vivid",
+    "gain": 2.7,
+    "knee": 0.3,
+    "domain": "maxrgb",
+    "end_slope": 0.18,
+    "sat": 1.04,
+    "hl_sat": 1.0,
+    "vib": 1.1,
+    "contrast": 1.08
+  },
+  "params_delta": "montaj-vivid-v1 params (see montaj-vivid-v1.params.json) minus hk_pop/hk_darken/hk_skin — the Helmholtz-Kohlrausch chroma-pop components. Base tone curve, saturation and contrast are otherwise identical to the master look."
+}

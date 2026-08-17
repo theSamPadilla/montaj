@@ -16,7 +16,7 @@ Invocation modes:
   - Module: python3 -m lib.normalize (Node subprocess — project root on sys.path)
 The sys.path.insert below adds lib/ itself so `from common import ...` works in both.
 """
-import sys, os, json, subprocess, argparse, glob, re
+import sys, os, json, subprocess, argparse, glob, re, functools
 
 sys.path.insert(0, os.path.dirname(__file__))  # add lib/ so `from common` works in all invocation modes
 from common import fail, require_file, progress, ffmpeg_bin, ffprobe_bin
@@ -28,8 +28,18 @@ from lib.types.colorspace import (
     SPECS,
     ColorSpaceKey,
     detect_from_transfer,
+    is_hdr,
     require_valid_key,
 )
+from lib.look import MASTER_LOOK, lut_path
+
+HDR_TO_SDR_DENOISE_VF = "hqdn3d=1.5:1.5:3:3"
+"""Light source-domain denoise paired with the HDR→SDR Vivid LUT (decision
+8b, SP6b Task T4): the curve brightens midtones, which measurably amplifies
+iPhone shadow noise. Applied only in `_build_ffmpeg_cmd`'s master tonemap
+arm — never in proxy encodes or the hable fallback arm. A module-level
+constant (not inlined) so tests can isolate its effect without forking the
+real filter-chain assembly."""
 
 
 def probe_video(path):
@@ -188,10 +198,61 @@ def is_normalized(path, info, project_color_space: ColorSpaceKey) -> bool:
     )
 
 
+def normalized_output_path(input_path: str, color_space: ColorSpaceKey, *, tonemapped: bool) -> str:
+    """Build the deterministic normalized-master output path for `input_path`.
+
+    Base name is ``<stem>_normalized_<color_space>.mp4`` — namespaced per color
+    space so SDR-then-HDR re-normalize doesn't collide. Every call site used to
+    build this string independently; this is the one place left that does it
+    (SP6b Task T3).
+
+    When `tonemapped` is True, the current master look (MASTER_LOOK, see
+    lib/look.py) is appended: ``..._<color_space>_<look>.mp4``. `tonemapped`
+    means this encode ran (or will run) the HDR→SDR
+    `_build_tonemap_vf_to_sdr` LUT chain — i.e. the source's detected color
+    space is HDR (hlg/pq) and `color_space` is "sdr_bt709", the one branch of
+    `_build_color_conversion_vf` that actually applies the Montaj Vivid LUT.
+    Callers determine this from their own probe (`is_hdr(detect_from_transfer(
+    info["color_transfer"])) and color_space == "sdr_bt709"`) and pass it in —
+    this function does no probing itself.
+
+    Tagging mirrors lib/proxy.py's PROXY_LOOK filename contract: bumping the
+    look changes MASTER_LOOK, which changes this suffix, so a stale
+    tone-mapped master becomes detectable (and cleanable — see
+    cli/commands/clean.py's KNOWN_LOOKS) by filename alone, no re-probing or
+    pixel inspection required.
+
+    `tonemapped=False` masters (a source already SDR, or an HDR<->HDR /
+    SDR->HDR conversion — no LUT involved) stay untagged: their pixels carry
+    no look, so tagging them would only churn every existing SDR project's
+    cache for nothing (SP6b decision 7). `is_normalized()` is unaffected by
+    any of this — it checks probed content, never the filename.
+    """
+    stem = input_path.rsplit(".", 1)[0]
+    look_suffix = f"_{MASTER_LOOK}" if tonemapped else ""
+    return f"{stem}_normalized_{color_space}{look_suffix}.mp4"
+
+
+@functools.lru_cache(maxsize=None)
 def _has_zscale():
-    """Check if ffmpeg has the zscale filter (requires libzimg)."""
+    """Check if ffmpeg has the zscale filter (requires libzimg).
+
+    Memoized — ffmpeg's capability set doesn't change mid-process, and this
+    used to re-spawn ffmpeg -filters on every call (every clip, every HDR
+    conversion decision).
+    """
     r = subprocess.run([ffmpeg_bin(), "-filters"], capture_output=True, text=True, timeout=5)
     return "zscale" in (r.stdout or "")
+
+
+@functools.lru_cache(maxsize=None)
+def _has_lut3d():
+    """Check if ffmpeg has the lut3d filter (applies the Montaj Vivid .cube LUT).
+
+    Memoized for the same reason as _has_zscale().
+    """
+    r = subprocess.run([ffmpeg_bin(), "-filters"], capture_output=True, text=True, timeout=5)
+    return "lut3d" in (r.stdout or "")
 
 
 def _build_color_conversion_vf(
@@ -216,18 +277,49 @@ def _build_color_conversion_vf(
 
 
 def _build_tonemap_vf_to_sdr(src: ColorSpaceKey) -> tuple[str, bool]:
-    """HDR (HLG or PQ) → SDR Rec.709. Uses zscale + Hable tonemap.
+    """HDR (HLG or PQ) → SDR Rec.709. Uses the Montaj Vivid LUT chain (zscale +
+    lut3d, see montaj_assets/luts/ and lib/look.py) when available; falls back
+    to a bare Hable tonemap otherwise.
 
-    Falls back to a non-zscale path on systems without libzimg. The fallback
-    path is degraded (washed-out highlights, shifted colors); callers are
-    expected to emit a loud warning when used_fallback=True. This preserves
-    the v1 _used_fallback_tonemap UX.
+    The LUT is graded for full-range HLG-encoded BT.2020 RGB input (SP6a
+    decision). PQ sources get a zscale PQ→HLG pre-step — at the LUT's design
+    white of 1000 nit, the same parameter SP6a's generator OOTF used — before
+    the shared chain runs.
+
+    Chain (decision 8a, SP6a/SP6b — verbatim, do not reorder): the
+    `format=rgb48le` pin BEFORE `lut3d` is load-bearing. Without it ffmpeg
+    feeds 8-bit into the LUT and quantizes. After the LUT the pixels are
+    full-range RGB; the trailing zscale tags them back to limited-range
+    Rec.709 YUV for the encoder (RGB→YUV709 tagging is ours to add, on top of
+    the LUT vendor's chain).
+
+    The trailing zscale explicitly sets t=/m=/p= (not just r=/rin=) —
+    verified against the managed ffmpeg 8.1.2: zscale only overrides an axis
+    it's explicitly given; an omitted axis passes the frame's existing tag
+    through, and that explicit frame tag wins over the blanket
+    `-color_trc`/`-color_primaries`/`-colorspace` output flags in
+    output_color_args below. Without t=/p= here the encoded file kept
+    reporting the HDR source's transfer/primaries (arib-std-b67/bt2020)
+    despite those output flags asking for bt709 — caught by this task's
+    ffprobe-based functional tests.
+
+    Falls back to the pre-LUT bare-tonemap path (degraded: washed-out
+    highlights, shifted colors) when zscale OR lut3d is missing from the
+    ffmpeg build. Callers are expected to emit a loud warning when
+    used_fallback=True. This preserves the v1 _used_fallback_tonemap UX.
     """
-    if _has_zscale():
+    if _has_zscale() and _has_lut3d():
+        prestep = ""
+        if src == "hdr_pq":
+            # PQ → HLG at the LUT's design white (1000 nit) before the LUT's
+            # native HLG input chain — the LUT itself is only graded for HLG.
+            prestep = "zscale=tin=smpte2084:t=arib-std-b67:npl=1000,"
         return (
-            "zscale=t=linear:npl=100,format=gbrpf32le,"
-            "zscale=p=bt709,tonemap=hable:desat=0,"
-            "zscale=t=bt709:m=bt709:r=tv",
+            f"{prestep}"
+            "zscale=matrixin=2020_ncl:rangein=limited:range=full,"
+            "format=rgb48le,"
+            f"lut3d=file={lut_path()}:interp=tetrahedral,"
+            "zscale=t=bt709:m=bt709:p=bt709:rin=full:r=tv",
             False,
         )
     # Fallback: scale to p010le first, then bare tonemap. Less accurate; caller warns.
@@ -289,12 +381,29 @@ def _build_ffmpeg_cmd(
     source_color_space = detect_from_transfer(info.get("color_transfer"))
     needs_color_conversion = source_color_space != project_color_space
 
+    # HDR→SDR only: the Vivid LUT brightens midtones, which measurably
+    # amplifies iPhone shadow noise (decision 8b). Pair the curve with a
+    # light source-domain denoise, prepended ahead of the conversion chain
+    # (pre-LUT — denoising before the curve amplifies is the point). The
+    # hable fallback arm (used_fallback_tonemap) is a degraded-capability
+    # path with no curve of its own to amplify anything — it stays exactly
+    # as today, no denoise. Proxy encodes and SDR-source conformance runs
+    # never go through this branch (proxy has its own _build_proxy_cmd;
+    # SDR sources hit no color conversion at all, or the SDR→HDR/HDR↔HDR
+    # arms, none of which apply the curve).
+    is_hdr_to_sdr = source_color_space in ("hdr_hlg", "hdr_pq") and project_color_space == "sdr_bt709"
+
     used_fallback_tonemap = False
     vf_parts: list[str] = []
     if needs_color_conversion:
         conv_filter, used_fallback_tonemap = _build_color_conversion_vf(
             source_color_space, project_color_space
         )
+        # Guarded on truthiness (not just is_hdr_to_sdr/used_fallback_tonemap) so
+        # a test can monkeypatch HDR_TO_SDR_DENOISE_VF to "" to isolate the
+        # denoise's effect without leaving a dangling empty vf_parts entry.
+        if is_hdr_to_sdr and not used_fallback_tonemap and HDR_TO_SDR_DENOISE_VF:
+            vf_parts.append(HDR_TO_SDR_DENOISE_VF)
         vf_parts.append(conv_filter)
     vf_parts.append(f"format={spec['output_pix_fmt']}")
     vf = ",".join(vf_parts)
@@ -331,10 +440,17 @@ def _build_ffmpeg_cmd(
         out_path,
     ]
     if not info["has_audio"]:
-        cmd = [x for x in cmd if x not in ("-c:a", "aac", "-b:a", "192k", "-ar", "48000")]
+        # The anullsrc INPUT must sit with the inputs (right after the primary
+        # -i), not on the output side — every option between an -i and the next
+        # -i/output binds to what follows, so splicing a new input after `-vf`
+        # made ffmpeg try to apply -vf to the lavfi source and reject the whole
+        # command ("Option vf ... cannot be applied to input url anullsrc").
+        # `-shortest` stays output-side so the silent track ends with the video.
+        idx = cmd.index("-i")
+        assert cmd[idx + 1] == input_path
+        cmd[idx + 2:idx + 2] = ["-f", "lavfi", "-i", "anullsrc=cl=stereo:r=48000"]
         idx = cmd.index(out_path)
-        cmd[idx:idx] = ["-f", "lavfi", "-i", "anullsrc=cl=stereo:r=48000",
-                        "-shortest", "-c:a", "aac", "-b:a", "192k", "-ar", "48000"]
+        cmd[idx:idx] = ["-shortest"]
 
     return cmd, used_fallback_tonemap
 
@@ -553,15 +669,25 @@ def main():
     args = p.parse_args()
 
     require_file(args.input)
-    # Default output filename is namespaced per color space so SDR-then-HDR
-    # re-normalize doesn't collide. Matches the suffix render.js's
-    # normalizeIfNeeded uses (Task 5 Step 2).
-    out = args.out or f"{args.input.rsplit('.', 1)[0]}_normalized_{args.color_space}.mp4"
+    # Probe up front (not just inside normalize()) so the default output path
+    # can carry the look tag when this encode will tone-map HDR → SDR.
+    # normalize() accepts the pre-probed info below, so this isn't a second
+    # ffprobe on the success path. render.js's normalizeIfNeeded always passes
+    # --out explicitly (built by its own buildNormalizedOutputPath using
+    # render/look.js's MASTER_LOOK), so this default-out branch only matters
+    # for direct/bare CLI invocations.
+    info = probe_video(args.input)
+    tonemapped = (
+        info is not None
+        and is_hdr(detect_from_transfer(info.get("color_transfer")))
+        and args.color_space == "sdr_bt709"
+    )
+    out = args.out or normalized_output_path(args.input, args.color_space, tonemapped=tonemapped)
     # CLI mode: print the result path so subprocess callers (e.g. render.js's
     # normalizeIfNeeded) can read it from stdout. The function itself returns
     # the path; only the CLI entry point prints, so library callers (init.py)
     # don't pollute their own stdout.
-    result = normalize(args.input, out, args.color_space)
+    result = normalize(args.input, out, args.color_space, info=info)
     print(result)
 
 

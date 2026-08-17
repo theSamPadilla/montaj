@@ -31,10 +31,14 @@ import { bundleComponent, cleanupBundle } from './bundle.js'
 import { pMap } from './p-map.js'
 import { FFMPEG } from './ffmpeg-bin.js'
 import { isHdr } from './color-space.js'
+import { curveIds, lutPath, MASTER_LOOK } from './look.js'
 import {
   buildImageItemFilterParts,
   buildVideoItemFilterParts,
   buildOverlayFilterParts,
+  buildVividLutChain,
+  hasZscale,
+  hasLut3d,
 } from './encode-segment.js'
 import { resolveAt, RESOLVER_VERSION } from '@bycrux/timeline-core'
 
@@ -71,7 +75,8 @@ if (isMain) {
       '  sample-frame.js --mode overlay --component <path> [--frame N] [--fps N]\n' +
       '    [--width W] [--height H] [--props \'...\'] [--google-fonts f1,f2]\n' +
       '    [--duration N] [--measure] --out <path>\n' +
-      '  sample-frame.js --mode frame --project <path> --at <seconds> --out <path>\n'
+      '  sample-frame.js --mode frame --project <path> --at <seconds> [--sdr-curve <id>]\n' +
+      '    --out <path>\n'
     )
     process.exit(1)
   }
@@ -90,6 +95,7 @@ if (isMain) {
   // frame args
   let projectArg    = null
   let atArg         = null
+  let sdrCurveArg   = null
   // shared
   let outArg        = null
 
@@ -107,11 +113,21 @@ if (isMain) {
     if (a === '--measure')      { measureArg    = true; continue }
     if (a === '--project')      { projectArg    = argv[++i]; continue }
     if (a === '--at')           { atArg         = parseFloat(argv[++i]); continue }
+    if (a === '--sdr-curve')    { sdrCurveArg   = argv[++i]; continue }
     if (a === '--out')          { outArg        = argv[++i]; continue }
   }
 
   if (!mode) fail('missing_argument', '--mode overlay|frame is required')
   if (!outArg) fail('missing_argument', '--out <path> is required')
+
+  // Validate against the manifest here rather than letting look.js throw deep
+  // inside the extract: a typo'd curve id should be a clean CLI error, not a
+  // stack trace half a pipeline in.
+  if (sdrCurveArg !== null && !curveIds().includes(sdrCurveArg)) {
+    fail('invalid_sdr_curve',
+      `--sdr-curve '${sdrCurveArg}' is not a known look curve. `
+      + `Expected one of ${JSON.stringify(curveIds())}.`)
+  }
 
   if (mode === 'overlay') {
     if (!componentArg) fail('missing_argument', '--component <path> is required for --mode overlay')
@@ -147,6 +163,7 @@ if (isMain) {
       projectJson: resolve(projectArg),
       atSeconds: atArg,
       outPath: resolve(outArg),
+      sdrCurve: sdrCurveArg,
     }).then(result => {
       process.stdout.write(result.pngPath + '\n')
     }).catch(err => {
@@ -462,12 +479,15 @@ export async function sampleOverlay({
  * @param {object|string} opts.projectJson  Parsed project.json or absolute path to it
  * @param {number}        opts.atSeconds    Timestamp to sample
  * @param {string}        opts.outPath      Where to write the output PNG
+ * @param {string|null}   [opts.sdrCurve]   Look curve id for the HDR→SDR grade;
+ *   null uses the master look. Ignored on SDR projects (nothing is converted).
  * @returns {Promise<{ pngPath: string }>}
  */
 export async function sampleFrame({
   projectJson,
   atSeconds,
   outPath,
+  sdrCurve = null,
 }) {
   if (!outPath) throw new Error('outPath is required')
   if (atSeconds == null) throw new Error('atSeconds is required')
@@ -487,7 +507,7 @@ export async function sampleFrame({
   }
 
   // Cache key
-  const cacheKey = buildFrameCacheKey(projectPath, project, atSeconds)
+  const cacheKey = buildFrameCacheKey(projectPath, project, atSeconds, sdrCurve)
   const cachePng = join(CACHE_DIR, `${cacheKey}.png`)
 
   if (existsSync(cachePng)) {
@@ -638,29 +658,19 @@ export async function sampleFrame({
         '-ss', String(Math.max(0, seekTime)),
       ]
 
-      // Filter chain: HDR tonemap (if applicable) THEN the optional source crop
-      // (clips workflow vertical reframe) — same order and math as
-      // encode-segment.js's buildVideoItemFilterParts (conversion step before
-      // crop step). No-op without both sourceWidth/sourceHeight, matching that
-      // function's own gate — see KNOWN-DIVERGENCES.md
-      // "sourcecrop-missing-dims-silent-drop".
+      // Filter chain: the optional source crop (clips workflow vertical reframe)
+      // THEN the HDR→SDR conversion — the geometry-first order
+      // encode-segment.js's buildVideoItemFilterParts uses, and for its reason
+      // (see the step-order note there): cropping first means the conversion
+      // only pays for pixels that survive. The crop is a no-op without both
+      // sourceWidth/sourceHeight, matching that function's own gate — see
+      // KNOWN-DIVERGENCES.md "sourcecrop-missing-dims-silent-drop".
+      //
+      // There is no scale/pad step here: this extract produces one full-size
+      // source frame, and buildImageItemFilterParts does the canvas fit when the
+      // frame is composited (Step 3). So nothing is ever padded before the
+      // conversion, which is the property encode-segment's ordering protects.
       const vfParts = []
-      if (hdrProject) {
-        // Tonemap HLG/PQ → sRGB BT.709 inline so the PNG lands as a normal SDR image.
-        // Must apply the Hable tonemap operator in linear light — without it, HDR
-        // highlights above the SDR white point simply clip and the whole frame
-        // blows out to near-white. Mirrors the canonical zscale path in
-        // lib/normalize.py _build_tonemap_vf_to_sdr / encode-segment.js
-        // buildColorConversionFilter. Ends in rgb24, NOT yuv420p — this frame is
-        // encoded straight to PNG (`-frames:v 1 ... framePng` below), and
-        // ffmpeg's png encoder only accepts rgb24/rgba/gray/pal8-family pixel
-        // formats (confirmed via `ffmpeg -h encoder=png`); yuv420p made the
-        // encoder fail outright ("Could not open encoder before EOF"). This was
-        // a pre-existing bug in this exact filter string, never caught because
-        // FIXTURE_PROJECT_EXISTS always skipped this path before T9 — see
-        // test (j)'s migration.
-        vfParts.push('zscale=t=linear:npl=100,format=gbrpf32le,zscale=p=bt709,tonemap=hable:desat=0,zscale=t=bt709:m=bt709:r=tv,format=rgb24')
-      }
       const sc = ri.geometry.sourceCrop
       if (sc && ri.geometry.sourceWidth && ri.geometry.sourceHeight) {
         const cw = Math.round(ri.geometry.sourceWidth  * sc.w / 2) * 2  // even: x264 needs even dims
@@ -668,6 +678,40 @@ export async function sampleFrame({
         const cx = Math.round(ri.geometry.sourceWidth  * sc.x)          // origin NOT even-rounded
         const cy = Math.round(ri.geometry.sourceHeight * sc.y)          // origin NOT even-rounded
         vfParts.push(`crop=${cw}:${ch}:${cx}:${cy}`)
+      }
+      if (hdrProject) {
+        // Grade HLG/PQ → SDR BT.709 inline so the PNG lands as a normal SDR
+        // image, through the same Montaj Vivid LUT the render and the proxies
+        // use — that shared LUT is what lets the preview claim to match the SDR
+        // export. Mirrors lib/normalize.py's _build_tonemap_vf_to_sdr and
+        // encode-segment.js's buildColorConversionFilter; buildVividLutChain is
+        // literally the same builder the segment encoder calls.
+        //
+        // The chain ends in rgb24, NOT yuv420p: this frame is encoded straight
+        // to PNG (`-frames:v 1 ... framePng` below) and ffmpeg's png encoder
+        // only accepts rgb24/rgba/gray/pal8-family pixel formats (confirmed via
+        // `ffmpeg -h encoder=png`); yuv420p made the encoder fail outright
+        // ("Could not open encoder before EOF"). The t=/m=/p=/r= flags on the
+        // step before it are still worth setting even though a PNG carries no
+        // meaningful transfer tag — they are what makes the RGB→BT.709
+        // conversion math right, not just the metadata.
+        //
+        // Which source transfer to feed the chain comes from the PROJECT's color
+        // space, not a per-item probe: this file has no ffprobe pass (render.js
+        // stamps item.colorTransfer, sample-frame never does), and an HDR
+        // project's video sources are in that project's HDR space by
+        // construction — masters are normalized into it at intake.
+        //
+        // lut3d can be missing from an older ffmpeg build (`montaj doctor` asks
+        // for it, but this must not hard-fail a preview), so fall back to the
+        // pre-SP6b Hable chain and say so once per extract.
+        if (hasZscale() && hasLut3d()) {
+          vfParts.push(`${buildVividLutChain(projectColorSpace, sdrCurve)},format=rgb24`)
+        } else {
+          log('WARNING: ffmpeg lacks zscale and/or lut3d — sampling with the legacy '
+            + 'Hable tonemap; this frame will NOT match the render. Run `montaj doctor`.')
+          vfParts.push('zscale=t=linear:npl=100,format=gbrpf32le,zscale=p=bt709,tonemap=hable:desat=0,zscale=t=bt709:m=bt709:r=tv,format=rgb24')
+        }
       }
       if (vfParts.length) ffmpegExtractArgs.push('-vf', vfParts.join(','))
 
@@ -834,24 +878,39 @@ function resolveVideoSource(src) {
       if (outStat.mtimeMs >= srcStat.mtimeMs) return audiocleanPath
     } catch { /* fall through */ }
   }
-  // Check for _normalized_<colorSpace> variant
-  // We don't know the colorSpace here, so check for any normalized file
-  // by pattern: <stem>_normalized_*.mp4
+  // Check for _normalized_<colorSpace>[_<look>] variants. We don't know the
+  // project's colorSpace here, so match by pattern: <stem>_normalized_*.mp4.
+  //
+  // When a look-tagged sibling (SP6b Task T3 — this master was produced by
+  // tone-mapping an HDR source through the Montaj Vivid LUT, see
+  // lib.normalize.normalized_output_path) and an untagged one are BOTH fresh,
+  // prefer the tagged one. That's the newer naming scheme's output and
+  // reflects the current graded master; an untagged sibling passing the same
+  // freshness check is exactly the stale-leftover case (pre-T3 file, or a
+  // color-space re-detect) this preference exists to route around.
   const srcDir  = dirname(src)
   const srcBase = basename(src, extname(src))
+  const knownLooks = curveIds()
+  let bestPath = null
+  let bestTagged = false
   try {
     for (const name of readdirSync(srcDir)) {
-      if (name.startsWith(srcBase + '_normalized_') && name.endsWith('.mp4')) {
-        const normPath = join(srcDir, name)
-        try {
-          const srcStat  = statSync(src)
-          const outStat  = statSync(normPath)
-          if (outStat.mtimeMs >= srcStat.mtimeMs) return normPath
-        } catch { /* skip */ }
+      if (!name.startsWith(srcBase + '_normalized_') || !name.endsWith('.mp4')) continue
+      const normPath = join(srcDir, name)
+      try {
+        const srcStat = statSync(src)
+        const outStat = statSync(normPath)
+        if (outStat.mtimeMs < srcStat.mtimeMs) continue
+      } catch { continue /* skip: stat failed */ }
+      const stem = name.slice(0, -'.mp4'.length)
+      const tagged = knownLooks.some((look) => stem.endsWith(`_${look}`))
+      if (bestPath === null || (tagged && !bestTagged)) {
+        bestPath = normPath
+        bestTagged = tagged
       }
     }
   } catch { /* directory not readable — fall through */ }
-  return src
+  return bestPath ?? src
 }
 
 /** Resolve relative src paths to absolute, mirroring render.js::resolveProjectPaths. */
@@ -895,7 +954,7 @@ function buildOverlayCacheKey(componentPath, props, frame, width, height, google
 }
 
 /** Build a content-hash cache key for sampleFrame. */
-function buildFrameCacheKey(projectPath, project, atSeconds) {
+function buildFrameCacheKey(projectPath, project, atSeconds, sdrCurve = null) {
   let mtime = '0'
   if (projectPath) {
     try { mtime = String(statSync(projectPath).mtimeMs) } catch {}
@@ -906,7 +965,15 @@ function buildFrameCacheKey(projectPath, project, atSeconds) {
   // Salted with the resolver's own version so a semantic change in
   // @bycrux/timeline-core (e.g. this T9 alignment) invalidates any frame cached
   // by the pre-alignment logic instead of silently serving it back.
-  const raw = [RESOLVER_VERSION, mtime, String(atSeconds), colorSpace].join('|')
+  //
+  // MASTER_LOOK and the requested curve are in the key for the same reason
+  // (SP6b decision 10): the PNG's colors come out of a .cube, so a look bump —
+  // or two curves sampled at the same timestamp for the RenderModal's
+  // side-by-side thumbnails — must not collide. Without them a LUT change would
+  // serve the pre-change frame back forever, since nothing else in the key
+  // moves when the manifest does.
+  const raw = [RESOLVER_VERSION, mtime, String(atSeconds), colorSpace,
+               MASTER_LOOK, sdrCurve ?? MASTER_LOOK].join('|')
   return createHash('sha256').update(raw).digest('hex')
 }
 
@@ -945,3 +1012,11 @@ function fail(code, message) {
   process.stderr.write(JSON.stringify({ error: code, message }) + '\n')
   process.exit(1)
 }
+
+// Exported purely for unit testing (no ffmpeg/puppeteer involved) — mirrors
+// render.js's bottom export list for its own filesystem-only helpers.
+// buildFrameCacheKey is here so the look/curve components (SP6b decision 10)
+// can be asserted directly: proving it through rendered pixels only works for
+// colors where two cubes happen to disagree, which is not a property a cache
+// test should depend on.
+export { resolveVideoSource, buildFrameCacheKey }

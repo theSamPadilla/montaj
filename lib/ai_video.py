@@ -6,8 +6,8 @@ the sys.path that all step scripts set up.
 import json, re, time
 from pathlib import Path
 from common import fail, get_duration
-from normalize import normalize, is_normalized, probe_video
-from lib.types.colorspace import normalize_key, DEFAULT_COLOR_SPACE
+from normalize import normalize, normalized_output_path, is_normalized, probe_video
+from lib.types.colorspace import normalize_key, DEFAULT_COLOR_SPACE, detect_from_transfer, is_hdr
 
 
 # Optimal Kling prompt order: camera first (framing context), then subject
@@ -257,7 +257,11 @@ def save_clip_to_project(project_path: Path, project: dict, scene: dict,
 
     info = probe_video(out_path)
     if info and not is_normalized(out_path, info, project_color_space):
-        normalized_path = out_path.rsplit(".", 1)[0] + f"_normalized_{project_color_space}.mp4"
+        tonemapped = (
+            is_hdr(detect_from_transfer(info.get("color_transfer")))
+            and project_color_space == "sdr_bt709"
+        )
+        normalized_path = normalized_output_path(out_path, project_color_space, tonemapped=tonemapped)
         try:
             normalize(out_path, normalized_path, project_color_space, info=info)
             clip["src"] = normalized_path

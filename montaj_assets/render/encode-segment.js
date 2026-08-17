@@ -23,15 +23,19 @@
  * with -c:v copy is safe (uniform format invariant holds, just per-project now).
  *
  * Per-item color conversion: when an item's source color space differs from the
- * project's color space, a conversion filter is injected before the per-item scale
- * step. The source's color_transfer is read from item.colorTransfer (stamped by
- * render.js during the videoItems collection pass) — no per-segment ffprobe.
+ * project's color space, a conversion filter is injected between the per-item
+ * scale and pad steps (see the step-order note in buildVideoItemFilterParts —
+ * geometry first so the conversion runs on canvas-sized frames, pad last so its
+ * bars are synthesized in the destination color space). The source's
+ * color_transfer is read from item.colorTransfer (stamped by render.js during
+ * the videoItems collection pass) — no per-segment ffprobe.
  */
 import { spawn, spawnSync } from 'child_process'
 import { mkdirSync } from 'fs'
 import { dirname } from 'path'
 import { FFMPEG, FFPROBE } from './ffmpeg-bin.js'
 import { specFor, detectFromTransfer, DEFAULT_COLOR_SPACE } from './color-space.js'
+import { lutPath } from './look.js'
 
 const FFMPEG_TIMEOUT_MS = 600_000
 const IMAGE_EXTENSIONS = /\.(jpe?g|png|gif|webp|bmp|tiff?)$/i
@@ -84,15 +88,67 @@ function isImageItem(item) {
   return item.type === 'image' || IMAGE_EXTENSIONS.test(item.src)
 }
 
-// Cache the ffmpeg-has-zscale check across calls — it doesn't change between segments.
-let _zscaleCache = null
-function hasZscale() {
-  if (_zscaleCache !== null) return _zscaleCache
+// Cache the `ffmpeg -filters` listing across calls — a build's filter set can't
+// change mid-process, and both probes below read the same listing so this costs
+// one spawn total, not one per filter. Mirrors the functools.lru_cache on
+// lib/normalize.py's _has_zscale/_has_lut3d.
+let _filtersCache = null
+function filterList() {
+  if (_filtersCache !== null) return _filtersCache
   const result = spawnSync(FFMPEG, ['-hide_banner', '-filters'], {
     encoding: 'utf8', timeout: 5000,
   })
-  _zscaleCache = result.status === 0 && /^[A-Z. ]+ zscale\b/m.test(result.stdout || '')
-  return _zscaleCache
+  _filtersCache = result.status === 0 ? (result.stdout || '') : ''
+  return _filtersCache
+}
+
+/** True when this ffmpeg build has zscale (requires libzimg). */
+export function hasZscale() {
+  return /^[A-Z. ]+ zscale\b/m.test(filterList())
+}
+
+/** True when this ffmpeg build has lut3d — the filter that applies the Montaj Vivid .cube. */
+export function hasLut3d() {
+  return /^[A-Z. ]+ lut3d\b/m.test(filterList())
+}
+
+/**
+ * The Montaj Vivid HDR→SDR chain (SP6b decision 8a). VERBATIM — do not reorder.
+ *
+ * Byte-for-byte the same shape lib/normalize.py's `_build_tonemap_vf_to_sdr`
+ * produces, and for the same reasons; both suites assert these literals so the
+ * two runtimes can't drift. Like the Python one, this returns the chain with NO
+ * terminal `format=` — the caller appends whatever its encoder needs
+ * (`yuv420p` for video, `rgb24` for a PNG).
+ *
+ * The `format=rgb48le` pin BEFORE `lut3d` is load-bearing: without it ffmpeg
+ * hands 8-bit to the LUT and quantizes the grade. After the LUT the pixels are
+ * full-range RGB, and the trailing zscale converts them back to limited-range
+ * Rec.709 YUV.
+ *
+ * That trailing zscale sets t=/m=/p= explicitly, not just r=/rin=: zscale only
+ * retags an axis it is explicitly given, and an axis it passes through keeps
+ * the HDR source's tag — which then beats the encoder's own
+ * -color_trc/-color_primaries/-colorspace flags. Omitting t=/p= here produced
+ * files still reporting arib-std-b67/bt2020 over bt709 pixels (verified against
+ * the managed ffmpeg 8.1.2 during T2).
+ *
+ * The LUT is graded for HLG input, so PQ sources get a PQ→HLG pre-step at the
+ * LUT's 1000-nit design white — the same value SP6a's generator OOTF used.
+ *
+ * @param {string} srcKey     'hdr_hlg' or 'hdr_pq'
+ * @param {string|null} [sdrCurve]  curve id from looks.json; null → MASTER_LOOK
+ * @returns {string}
+ */
+export function buildVividLutChain(srcKey, sdrCurve = null) {
+  const prestep = srcKey === 'hdr_pq'
+    ? 'zscale=tin=smpte2084:t=arib-std-b67:npl=1000,'
+    : ''
+  return prestep
+       + 'zscale=matrixin=2020_ncl:rangein=limited:range=full,'
+       + 'format=rgb48le,'
+       + `lut3d=file=${lutPath(sdrCurve)}:interp=tetrahedral,`
+       + 'zscale=t=bt709:m=bt709:p=bt709:rin=full:r=tv'
 }
 
 /**
@@ -100,16 +156,32 @@ function hasZscale() {
  * Returns an empty string when src === dst (no conversion needed). Mirrors the
  * Python _build_color_conversion_vf() in lib/normalize.py.
  *
- * The hasZscale flag controls the HDR→SDR fallback path — without zscale, the
- * tonemap is degraded (washed out highlights). The Python loader emits a loud
- * warning when this fallback runs at intake; segment-encoder usage is more
+ * The two capability flags control the HDR→SDR arm, in descending fidelity:
+ * zscale + lut3d gives the Montaj Vivid LUT; zscale alone falls back to the
+ * pre-SP6b Hable chain; neither falls back to the bare tonemap. Both fallbacks
+ * are degraded (washed-out highlights, shifted colors). The Python loader emits
+ * a loud warning when it takes them at intake; segment-encoder usage is more
  * limited (only kicks in when intake didn't already convert), and warnings here
  * would spam render logs once per segment, so we silently fall back.
+ *
+ * @param {string} srcKey
+ * @param {string} dstKey
+ * @param {boolean} hasZscaleFlag
+ * @param {object} [opts]
+ * @param {string|null} [opts.sdrCurve]  curve id for the LUT; null → MASTER_LOOK.
+ *   T7 threads `--sdr-curve` down to here for derived SDR renditions.
+ * @param {boolean} [opts.hasLut3d]  defaults to the real probe, so a caller that
+ *   forgets it gets a chain this ffmpeg can actually run rather than one naming
+ *   a missing filter. Deterministic callers (dry-run) pass it explicitly.
  */
-export function buildColorConversionFilter(srcKey, dstKey, hasZscaleFlag) {
+export function buildColorConversionFilter(srcKey, dstKey, hasZscaleFlag, opts = {}) {
   if (srcKey === dstKey) return ''
+  const { sdrCurve = null, hasLut3d: hasLut3dFlag = hasLut3d() } = opts
   // HDR → SDR
   if ((srcKey === 'hdr_hlg' || srcKey === 'hdr_pq') && dstKey === 'sdr_bt709') {
+    if (hasZscaleFlag && hasLut3dFlag) {
+      return buildVividLutChain(srcKey, sdrCurve)
+    }
     if (hasZscaleFlag) {
       return 'zscale=t=linear:npl=100,format=gbrpf32le,'
            + 'zscale=p=bt709,tonemap=hable:desat=0,'
@@ -202,10 +274,13 @@ export function buildImageItemFilterParts(item, vw, vh, idx, videoLabel, duratio
  * @param {number}  opts.duration         — segment duration (seconds)
  * @param {string}  opts.projectColorSpace — e.g. 'sdr_bt709'
  * @param {boolean} opts.zscaleAvailable  — whether ffmpeg has zscale
+ * @param {boolean} [opts.lut3dAvailable] — whether ffmpeg has lut3d; omitted → probed
+ * @param {string|null} [opts.sdrCurve]   — look curve id for the HDR→SDR LUT
  * @returns {{ inputArgs: string[], filterParts: string[], newVideoLabel: string }}
  */
 export function buildVideoItemFilterParts(item, vw, vh, idx, videoLabel, opts) {
-  const { segStart, duration, projectColorSpace, zscaleAvailable } = opts
+  const { segStart, duration, projectColorSpace, zscaleAvailable,
+          lut3dAvailable, sdrCurve } = opts
 
   const s       = item.scale ?? 1
   const scaledW = Math.round(vw * s / 2) * 2
@@ -224,7 +299,8 @@ export function buildVideoItemFilterParts(item, vw, vh, idx, videoLabel, opts) {
   const skipConversionForAlpha = item.remove_bg && item.nobg_src
   const conversionFilter = skipConversionForAlpha
     ? ''
-    : buildColorConversionFilter(itemColorSpace, projectColorSpace, zscaleAvailable)
+    : buildColorConversionFilter(itemColorSpace, projectColorSpace, zscaleAvailable,
+        { sdrCurve, hasLut3d: lut3dAvailable })
   const conversionStep = conversionFilter ? `${conversionFilter},` : ''
 
   // -err_detect ignore_err + -max_error_rate 1.0: tolerate broken audio
@@ -248,9 +324,35 @@ export function buildVideoItemFilterParts(item, vw, vh, idx, videoLabel, opts) {
     cropStep = `crop=${cw}:${ch}:${cx}:${cy},`
   }
 
+  // STEP ORDER IS LOAD-BEARING: crop → scale → convert → pad (SP6b T6).
+  //
+  // Geometry first. The conversion used to run at the head of this chain, which
+  // meant tone-mapping every source pixel in float before throwing most of them
+  // away — a 4K clip feeding a 1080 canvas paid ~9× the pixels it needed. crop
+  // and scale are pure geometry (they resample, they don't reinterpret color),
+  // so doing them first is color-neutral and the conversion then runs on canvas
+  // -sized frames.
+  //
+  // pad stays AFTER the conversion, exactly as before. Its bars are synthesized
+  // black, and synthesizing them post-conversion keeps them in the final SDR
+  // domain — black in, black out. Move pad ahead of the conversion and those
+  // bars get pushed through the LUT with everything else, which maps them to
+  // whatever the grade does to 0,0,0 and tints the letterbox.
+  //
+  // force_divisible_by=2, and ONLY when a conversion follows: decrease-fit
+  // computes the un-pinned dimension from the aspect ratio and will happily
+  // return an odd one (a 320x180 source into a 360x640 box fits to 360x203).
+  // zscale rejects odd dimensions on subsampled formats outright — "code 1027:
+  // image dimensions must be divisible by subsampling factor" — and the whole
+  // encode dies. This never bit before because the conversion ran ahead of
+  // scale, on the decoder's always-even frame. Rounding is at most one pixel
+  // and only on items that are being converted, which keeps every SDR render
+  // (and the frozen encode-args goldens) byte-identical.
+  const divisibleBy = conversionStep ? ':force_divisible_by=2' : ''
   filterParts.push(
-    `[${idx}:v]setpts=PTS-STARTPTS,${conversionStep}${cropStep}` +
-    `scale=${scaledW}:${scaledH}:force_original_aspect_ratio=decrease,` +
+    `[${idx}:v]setpts=PTS-STARTPTS,${cropStep}` +
+    `scale=${scaledW}:${scaledH}:force_original_aspect_ratio=decrease${divisibleBy},` +
+    `${conversionStep}` +
     `pad=${scaledW}:${scaledH}:(ow-iw)/2:(oh-ih)/2[vid${idx}]`
   )
   let src = `[vid${idx}]`
@@ -342,6 +444,8 @@ export function buildOverlayFilterParts(ov, vw, vh, ovIdx, videoLabel, segStart,
  * @param {string} outputPath
  * @param {object} [opts]
  * @param {boolean} [opts._dryRun] — return { inputs, filterParts, args } without executing
+ * @param {string|null} [opts.sdrCurve] — look curve id for any HDR→SDR item
+ *   conversion in this segment; null/omitted uses the master look.
  * @returns {string | object} outputPath, or dry-run result
  */
 export async function encodeSegment(segment, outputPath, opts = {}) {
@@ -354,7 +458,11 @@ export async function encodeSegment(segment, outputPath, opts = {}) {
   const duration = end - start
   const projectColorSpace = segment.colorSpace ?? DEFAULT_COLOR_SPACE
   const spec = specFor(projectColorSpace)
+  // Dry-run pins both probes to true so the golden capture never depends on the
+  // host's ffmpeg build (see encode-args-golden.test.mjs's determinism note).
   const zscaleAvailable = opts._dryRun ? true : hasZscale()
+  const lut3dAvailable  = opts._dryRun ? true : hasLut3d()
+  const sdrCurve = opts.sdrCurve ?? null
 
   if (!opts._dryRun) mkdirSync(dirname(outputPath), { recursive: true })
 
@@ -411,6 +519,8 @@ export async function encodeSegment(segment, outputPath, opts = {}) {
           duration,
           projectColorSpace,
           zscaleAvailable,
+          lut3dAvailable,
+          sdrCurve,
         })
       // The input (carrying its -ss/-t window) is ALWAYS added so the clip's
       // audio is available to Step 5. Its VIDEO is composited only when the

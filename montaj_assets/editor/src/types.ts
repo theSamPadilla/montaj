@@ -56,25 +56,66 @@ export type { Project, Slide, CarouselElement, ImageElement, OverlayElement }
  */
 export type RenderEvent =
   | { type: 'log'; message: string }
-  | { type: 'done'; outputPath: string }
+  /**
+   * `outputPath` is always the primary (master) file. `outputPaths` is present
+   * only when the render emitted more than one file (an `--export both` HDR
+   * render: master first, derived SDR sibling second) AND the host was able to
+   * learn the full list — hosts that can't simply omit it.
+   */
+  | { type: 'done'; outputPath: string; outputPaths?: string[] }
   | { type: 'error'; message: string }
 
 /**
- * Options for a render request. Kept intentionally minimal — Montaj's render
- * endpoint (`POST /api/projects/:id/render`) takes no body today, so `scale`
- * is the only forward-looking knob and is optional. Hosts ignore fields they
- * don't support.
+ * Which file(s) a render produces for an HDR project:
+ *  - 'auto' — one master in the project's own color space (an HDR project stays
+ *             HDR). The historical behavior and the default.
+ *  - 'sdr'  — one standard-range file, tone-mapped through `sdrCurve`.
+ *  - 'both' — the HDR master plus an SDR sibling derived from it.
+ * SDR projects are unaffected: every value renders the same single SDR file.
+ */
+export type RenderExport = 'auto' | 'sdr' | 'both'
+
+/**
+ * Options for a render request. Hosts ignore fields they don't support, and
+ * omitting the whole object keeps a host's default behavior.
  */
 export interface RenderOptions {
   /** Output scale multiplier (1 = native resolution). */
   scale?: number
+  /** Which file(s) an HDR project exports. Defaults to 'auto' host-side. */
+  export?: RenderExport
+  /**
+   * Id of the HDR→SDR tone curve used for any SDR output (see
+   * `video/sdrCurves.ts` for the descriptors, and the `curves` keys in
+   * montaj_assets/luts/looks.json for what a host validates against). Typed as
+   * `string` so a host can ship curves the package doesn't know about; ignored
+   * when the render produces no SDR file.
+   */
+  sdrCurve?: string
+}
+
+/**
+ * Options for a sample-frame request. Only the SDR curve for now — the frame
+ * itself is identified by the project id and timestamp.
+ */
+export interface SampleFrameOptions {
+  /** Tone curve to map an HDR project's frame through (see `RenderOptions.sdrCurve`). */
+  sdrCurve?: string
 }
 
 /**
  * Coarse phase of an async render pipeline. Ordered roughly by execution order;
- * hosts may skip phases that don't apply to their pipeline.
+ * hosts may skip phases that don't apply to their pipeline — `sdr_derive` in
+ * particular only runs when an HDR project exports SDR (`export: 'sdr' | 'both'`).
  */
-export type RenderPhase = 'preparing' | 'rendering' | 'captions' | 'encoding' | 'saving' | 'done'
+export type RenderPhase =
+  | 'preparing'
+  | 'rendering'
+  | 'captions'
+  | 'encoding'
+  | 'sdr_derive'
+  | 'saving'
+  | 'done'
 
 /**
  * Point-in-time snapshot of an async render's progress. Returned by
@@ -480,6 +521,25 @@ export interface EditorAdapter<P extends Project = Project> {
    * timeline omit this; the editor feature-detects its absence.
    */
   getFilmstrip?(args: GetFilmstripArgs): Promise<FilmstripIndex>
+
+  /**
+   * Optional: render one fully composited project frame at `at` (project
+   * timeline seconds) and return a directly displayable URL for it — a still
+   * the editor can put straight into an `<img>`. `opts.sdrCurve` picks the
+   * HDR→SDR tone curve so the same frame can be sampled through each curve for
+   * a side-by-side comparison (the RenderModal's curve picker).
+   *
+   * URL rather than a host path because the resolution rule is the host's:
+   * Montaj returns its `/api/files?path=` URL for the produced PNG, a Hub
+   * client would return a presigned one. Hosts without a frame sampler omit
+   * this; the editor feature-detects its absence and shows the picker without
+   * thumbnails. Maps to Montaj's `sample_frame` step.
+   */
+  getSampleFrame?(
+    projectId: string,
+    at: number,
+    opts?: SampleFrameOptions,
+  ): Promise<{ url: string }>
 
   /**
    * Optional: invalidate the host's compiled-overlay cache. When `src` is given,

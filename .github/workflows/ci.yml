@@ -171,6 +171,14 @@ jobs:
           # `npm install` with an unresolvable dependency.
           echo "$listing" | grep -q "montaj_assets/timeline-core/index.js"
           echo "$listing" | grep -q "montaj_assets/timeline-core/src/source-window.js"
+          # luts/ must ship: `.cube` matches neither the `"*" = ["*.json"]`
+          # package-data glob nor (pre-SP6b) any "montaj_assets" glob in
+          # pyproject.toml, so it's the exact failure mode above — present in
+          # the sdist, silently missing from the wheel. lib/look.py and
+          # render/look.js both load these at runtime with no fallback.
+          echo "$listing" | grep -q "montaj_assets/luts/montaj-vivid-v1.cube"
+          echo "$listing" | grep -q "montaj_assets/luts/montaj-vivid-v1-neutral.cube"
+          echo "$listing" | grep -q "montaj_assets/luts/looks.json"
           # the sdist ships to PyPI too — same gates
           sdist_listing=$(tar tzf dist/*.tar.gz)
           if echo "$sdist_listing" | grep -qE "docs/(plans|ideas|fullsend)/.|node_modules"; then

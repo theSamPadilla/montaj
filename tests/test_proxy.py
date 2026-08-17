@@ -100,6 +100,20 @@ def _ffprobe_key_frame_flags(path):
     return [line.strip() for line in r.stdout.strip().split("\n") if line.strip()]
 
 
+# ── PROXY_LOOK ───────────────────────────────────────────────────────────────
+
+def test_proxy_look_is_sourced_from_the_look_manifest():
+    """PROXY_LOOK is a re-export of lib/look.py's MASTER_LOOK (SP6b Task T5) —
+    not an independently-maintained constant — so bumping
+    montaj_assets/luts/looks.json's masterLook is the only place a look bump
+    needs to happen. Currently "vivid1" (montaj-vivid-v1.cube); "hable1" is
+    the historical pre-Vivid value, still pinned in cli/commands/clean.py's
+    KNOWN_LOOKS so old proxies stay cleanable."""
+    from lib.look import MASTER_LOOK
+    assert PROXY_LOOK == MASTER_LOOK
+    assert PROXY_LOOK == "vivid1"
+
+
 # ── proxy_path_for() naming ─────────────────────────────────────────────────
 
 def test_proxy_path_for_appends_look_suffix(monkeypatch):
@@ -127,7 +141,7 @@ def test_proxy_path_for_extensionless_source_under_dotted_directory(monkeypatch)
     # extension-less source, landing the proxy in the wrong directory.
     monkeypatch.setenv("MONTAJ_WORKSPACE_DIR", "/Users/x/Montaj")
     assert proxy_path_for("/Users/x/Montaj/.sources/abc/original") == (
-        "/Users/x/Montaj/.sources/abc/original_proxy_hable1.mp4"
+        f"/Users/x/Montaj/.sources/abc/original_proxy_{PROXY_LOOK}.mp4"
     )
 
 
@@ -172,10 +186,17 @@ def test_build_proxy_cmd_eager_arm_is_plain_scale_no_tonemap():
 
 
 def test_build_proxy_cmd_lazy_arm_scale_composed_ahead_of_tonemap(monkeypatch):
-    """Lazy (HDR original): scale must come BEFORE the zscale tonemap chain
+    """Lazy (HDR original): scale must come BEFORE the zscale/LUT tonemap chain
     (the SP1 scale-first finding — tonemapping a smaller frame is cheaper and
-    equivalent)."""
+    equivalent).
+
+    SP6b T2 swapped the bare-tonemap chain for the Montaj Vivid LUT chain in
+    the shared `_build_tonemap_vf_to_sdr` builder (lib/normalize.py) — this
+    proxy build inherits it automatically. Chain-string assertions updated to
+    match (sanctioned cross-file touch per the T2 task scope: proxy.py itself
+    is untouched, only this assertion)."""
     monkeypatch.setattr(nm, "_has_zscale", lambda: True)
+    monkeypatch.setattr(nm, "_has_lut3d", lambda: True)
     cmd, used_fallback = _build_proxy_cmd(
         "original.mov", "out.mp4", tonemap=True,
         info={"has_audio": True, "color_transfer": "arib-std-b67"},
@@ -186,8 +207,9 @@ def test_build_proxy_cmd_lazy_arm_scale_composed_ahead_of_tonemap(monkeypatch):
     zscale_idx = vf.index("zscale=")
     assert scale_idx < zscale_idx, f"scale must precede zscale chain: {vf!r}"
     assert vf.startswith("scale='if(gt(iw,ih),-2,720)':'if(gt(iw,ih),720,-2)',")
-    assert "zscale=t=linear:npl=100,format=gbrpf32le" in vf
-    assert "tonemap=hable:desat=0" in vf
+    # decision-8a regression: format=rgb48le must land before lut3d.
+    assert vf.index("format=rgb48le") < vf.index("lut3d=")
+    assert "interp=tetrahedral" in vf
     assert vf.endswith("format=yuv420p")
 
 

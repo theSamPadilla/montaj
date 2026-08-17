@@ -295,13 +295,38 @@ export const api = {
   logStatus: (projectId: string, message: string) =>
     request<void>(`/api/projects/${projectId}/log`, { method: 'POST', body: JSON.stringify({ message }) }),
 
+  /**
+   * One-shot render status snapshot. The SSE `done` event carries only the
+   * primary path; a `both` export's full file list (`outputPaths`) lives here.
+   */
+  renderStatus: (projectId: string) =>
+    request<{ status: string; outputPath?: string; outputPaths?: string[]; error?: string }>(
+      `/api/projects/${projectId}/render/status`,
+    ),
+
+  /**
+   * Start a render and stream its SSE progress.
+   *
+   * `opts` becomes the request body the render route reads: `export` picks the
+   * deliverables an HDR project produces (auto | sdr | both) and `sdrCurve`
+   * names the HDR→SDR tone curve. Omitted → no body, which the route treats as
+   * the historical defaults (`auto`, default curve).
+   */
   renderProject: (
     projectId: string,
     onLog:   (line: string) => void,
     onDone:  (outputPath: string) => void,
     onError: (msg: string) => void,
-  ): Promise<() => void> =>
-    fetch(`/api/projects/${projectId}/render`, { method: 'POST' }).then(res => {
+    opts?: { export?: string; sdrCurve?: string },
+  ): Promise<() => void> => {
+    const body: Record<string, string> = {}
+    if (opts?.export) body.export = opts.export
+    if (opts?.sdrCurve) body.sdrCurve = opts.sdrCurve
+    const init: RequestInit = Object.keys(body).length > 0
+      ? { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }
+      : { method: 'POST' }
+
+    return fetch(`/api/projects/${projectId}/render`, init).then(res => {
       if (!res.ok) return res.json().catch(() => ({})).then(err => { throw new Error(err.detail?.message ?? res.statusText) })
       const reader  = res.body!.getReader()
       const decoder = new TextDecoder()
@@ -337,7 +362,8 @@ export const api = {
       })()
 
       return () => { cancelled = true; reader.cancel() }
-    }),
+    })
+  },
 }
 
 /** Build a URL that serves a local file through montaj serve. */

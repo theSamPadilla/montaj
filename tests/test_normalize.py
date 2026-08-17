@@ -20,6 +20,7 @@ sys.path.insert(0, str(REPO_ROOT))
 import lib.normalize as nm
 
 from lib.normalize import (
+    _build_tonemap_vf_to_sdr,
     _run_atomic_encode,
     _sweep_stale_temps,
     _tmp_for,
@@ -27,6 +28,7 @@ from lib.normalize import (
     normalize,
     probe_video,
 )
+from lib.look import lut_path
 
 HAS_FFMPEG = shutil.which("ffmpeg") is not None
 pytestmark = pytest.mark.skipif(not HAS_FFMPEG, reason="ffmpeg not available")
@@ -435,3 +437,417 @@ def test_sweep_stale_temps_reaps_dead_keeps_live_and_own(tmp_path):
     assert not dead_temp.exists()    # orphan from a dead encode → reaped
     assert own_temp.exists()         # our own in-progress temp → preserved
     assert unparseable.exists()      # non-pid suffix → left alone
+
+
+# ── Vivid LUT tonemap chain (SP6b decision 8) ──────────────────────────────────
+#
+# The production chain is verbatim per decision 8a: `zscale=matrixin=2020_ncl:
+# rangein=limited:range=full,format=rgb48le,lut3d=file=<cube>:interp=tetrahedral`.
+# The `format=rgb48le` pin BEFORE `lut3d` is load-bearing — without it ffmpeg
+# feeds 8-bit into the LUT and quantizes. These tests assert the built filter
+# string directly (no ffmpeg run needed) so they're fast and deterministic;
+# see the `slow`-marked functional tests below for an end-to-end ffprobe check.
+
+def test_tonemap_hlg_arm_pins_rgb48le_before_lut3d(monkeypatch):
+    """Decision-8a regression: format=rgb48le must land before lut3d."""
+    monkeypatch.setattr(nm, "_has_zscale", lambda: True)
+    monkeypatch.setattr(nm, "_has_lut3d", lambda: True)
+    vf, used_fallback = _build_tonemap_vf_to_sdr("hdr_hlg")
+    assert used_fallback is False
+    assert vf.index("format=rgb48le") < vf.index("lut3d=")
+
+
+def test_tonemap_hlg_arm_uses_tetrahedral_interp(monkeypatch):
+    monkeypatch.setattr(nm, "_has_zscale", lambda: True)
+    monkeypatch.setattr(nm, "_has_lut3d", lambda: True)
+    vf, _ = _build_tonemap_vf_to_sdr("hdr_hlg")
+    assert "interp=tetrahedral" in vf
+
+
+def test_tonemap_hlg_arm_uses_manifest_default_lut(monkeypatch):
+    """The LUT file referenced is the manifest's default cube via lib/look.py."""
+    monkeypatch.setattr(nm, "_has_zscale", lambda: True)
+    monkeypatch.setattr(nm, "_has_lut3d", lambda: True)
+    vf, _ = _build_tonemap_vf_to_sdr("hdr_hlg")
+    assert f"lut3d=file={lut_path()}:interp=tetrahedral" in vf
+
+
+def test_tonemap_hlg_arm_has_no_pq_prestep(monkeypatch):
+    """HLG is the LUT's native input — no PQ→HLG pre-step should be added."""
+    monkeypatch.setattr(nm, "_has_zscale", lambda: True)
+    monkeypatch.setattr(nm, "_has_lut3d", lambda: True)
+    vf, _ = _build_tonemap_vf_to_sdr("hdr_hlg")
+    assert "smpte2084" not in vf
+    assert not vf.startswith("zscale=tin=")
+
+
+def test_tonemap_pq_arm_prepends_pq_to_hlg_prestep(monkeypatch):
+    """PQ sources need a PQ→HLG pre-step (at the LUT's design white of 1000 nit)
+    before the shared LUT chain — the LUT itself is graded for HLG input."""
+    monkeypatch.setattr(nm, "_has_zscale", lambda: True)
+    monkeypatch.setattr(nm, "_has_lut3d", lambda: True)
+    vf, used_fallback = _build_tonemap_vf_to_sdr("hdr_pq")
+    assert used_fallback is False
+    assert vf.startswith("zscale=tin=smpte2084:t=arib-std-b67:npl=1000,")
+    assert vf.index("tin=smpte2084") < vf.index("lut3d=")
+
+
+def test_tonemap_yuv709_tag_appended_after_lut(monkeypatch):
+    """After the LUT the pixels are full-range RGB; the trailing zscale tags
+    them back to limited-range Rec.709 YUV for the encoder.
+
+    t=/m=/p= must all be explicit here (not just r=/rin=): zscale only
+    overrides an axis it's given, and an omitted axis passes the frame's
+    existing tag through — which then wins over the blanket
+    -color_trc/-color_primaries/-colorspace output flags. Regression for a
+    real bug caught by the ffprobe functional tests below: without t=/p=
+    here, HDR→SDR outputs kept reporting the source's HDR transfer/primaries."""
+    monkeypatch.setattr(nm, "_has_zscale", lambda: True)
+    monkeypatch.setattr(nm, "_has_lut3d", lambda: True)
+    vf, _ = _build_tonemap_vf_to_sdr("hdr_hlg")
+    assert vf.endswith("zscale=t=bt709:m=bt709:p=bt709:rin=full:r=tv")
+    assert vf.index("lut3d=") < vf.rindex("zscale=t=bt709")
+
+
+def test_tonemap_fallback_when_zscale_missing(monkeypatch):
+    """No zscale → today's bare Hable tonemap fallback, loudly warned by callers."""
+    monkeypatch.setattr(nm, "_has_zscale", lambda: False)
+    monkeypatch.setattr(nm, "_has_lut3d", lambda: True)
+    vf, used_fallback = _build_tonemap_vf_to_sdr("hdr_hlg")
+    assert used_fallback is True
+    assert vf == "format=p010le,tonemap=hable:desat=0"
+
+
+def test_tonemap_fallback_when_lut3d_missing(monkeypatch):
+    """zscale present but no lut3d → same fallback (can't run the LUT chain)."""
+    monkeypatch.setattr(nm, "_has_zscale", lambda: True)
+    monkeypatch.setattr(nm, "_has_lut3d", lambda: False)
+    vf, used_fallback = _build_tonemap_vf_to_sdr("hdr_hlg")
+    assert used_fallback is True
+    assert vf == "format=p010le,tonemap=hable:desat=0"
+
+
+def test_tonemap_fallback_pq_arm_same_as_hlg(monkeypatch):
+    """Fallback path doesn't distinguish HLG/PQ — both degrade the same way."""
+    monkeypatch.setattr(nm, "_has_zscale", lambda: False)
+    monkeypatch.setattr(nm, "_has_lut3d", lambda: False)
+    vf, used_fallback = _build_tonemap_vf_to_sdr("hdr_pq")
+    assert used_fallback is True
+    assert vf == "format=p010le,tonemap=hable:desat=0"
+
+
+def test_has_zscale_is_memoized(monkeypatch):
+    """_has_zscale must not re-spawn ffmpeg on every call."""
+    calls = []
+    real_run = subprocess.run
+
+    def counting_run(cmd, **kw):
+        calls.append(cmd)
+        return real_run(cmd, **kw)
+
+    monkeypatch.setattr(nm.subprocess, "run", counting_run)
+    nm._has_zscale.cache_clear()
+    nm._has_zscale()
+    nm._has_zscale()
+    nm._has_zscale()
+    assert len(calls) == 1
+    nm._has_zscale.cache_clear()
+
+
+def test_has_lut3d_is_memoized(monkeypatch):
+    """_has_lut3d must not re-spawn ffmpeg on every call."""
+    calls = []
+    real_run = subprocess.run
+
+    def counting_run(cmd, **kw):
+        calls.append(cmd)
+        return real_run(cmd, **kw)
+
+    monkeypatch.setattr(nm.subprocess, "run", counting_run)
+    nm._has_lut3d.cache_clear()
+    nm._has_lut3d()
+    nm._has_lut3d()
+    assert len(calls) == 1
+    nm._has_lut3d.cache_clear()
+
+
+# ── Denoise pairing with the master tonemap arm (SP6b decision 8b) ────────────
+#
+# The Vivid curve brightens midtones, which measurably amplifies iPhone shadow
+# noise. Master creation (HDR→SDR normalize) pairs the curve with a light
+# source-domain denoise (hqdn3d=1.5:1.5:3:3), prepended ahead of the conversion
+# chain so it runs before the curve amplifies. It must NOT appear in: the hable
+# fallback arm (degraded-capability path, no curve to amplify), proxy encodes
+# (proxies inherit the master's pixels or tone-map separately at proxy quality),
+# or SDR-source conformance runs (no curve → no amplification → no denoise).
+
+def _minimal_info(color_transfer, *, codec="hevc", pix_fmt="yuv420p10le", has_audio=True):
+    """Bare info dict shape _build_ffmpeg_cmd needs — no real probe required
+    for these filter-string-assembly tests."""
+    return {
+        "codec": codec,
+        "pix_fmt": pix_fmt,
+        "color_transfer": color_transfer,
+        "fps": 30,
+        "has_audio": has_audio,
+    }
+
+
+def _vf_from_cmd(cmd):
+    return cmd[cmd.index("-vf") + 1]
+
+
+def test_denoise_prepended_in_master_hdr_to_sdr_tonemap_arm(monkeypatch):
+    """Real LUT chain (not the fallback): hqdn3d lands source-domain, BEFORE
+    the tonemap/LUT chain in the -vf assembly."""
+    monkeypatch.setattr(nm, "_has_zscale", lambda: True)
+    monkeypatch.setattr(nm, "_has_lut3d", lambda: True)
+    info = _minimal_info("arib-std-b67")
+    cmd, used_fallback = nm._build_ffmpeg_cmd("in.mp4", "out.mp4", "sdr_bt709", info)
+    assert used_fallback is False
+    vf = _vf_from_cmd(cmd)
+    assert nm.HDR_TO_SDR_DENOISE_VF in vf
+    assert vf.index(nm.HDR_TO_SDR_DENOISE_VF) < vf.index("zscale=")
+
+
+def test_denoise_prepended_for_pq_source_too(monkeypatch):
+    """PQ→SDR also goes through the master tonemap arm — same denoise pairing."""
+    monkeypatch.setattr(nm, "_has_zscale", lambda: True)
+    monkeypatch.setattr(nm, "_has_lut3d", lambda: True)
+    info = _minimal_info("smpte2084")
+    cmd, used_fallback = nm._build_ffmpeg_cmd("in.mp4", "out.mp4", "sdr_bt709", info)
+    assert used_fallback is False
+    vf = _vf_from_cmd(cmd)
+    assert nm.HDR_TO_SDR_DENOISE_VF in vf
+    assert vf.index(nm.HDR_TO_SDR_DENOISE_VF) < vf.index("zscale=")
+
+
+def test_denoise_absent_from_fallback_hable_arm(monkeypatch):
+    """No zscale/lut3d → hable fallback. Decision 8b: the fallback has no
+    curve of its own to amplify — it stays exactly as today, no denoise."""
+    monkeypatch.setattr(nm, "_has_zscale", lambda: False)
+    monkeypatch.setattr(nm, "_has_lut3d", lambda: False)
+    info = _minimal_info("arib-std-b67")
+    cmd, used_fallback = nm._build_ffmpeg_cmd("in.mp4", "out.mp4", "sdr_bt709", info)
+    assert used_fallback is True
+    vf = _vf_from_cmd(cmd)
+    assert "hqdn3d" not in vf
+
+
+def test_denoise_absent_from_sdr_source_conformance_run(monkeypatch):
+    """SDR source into an SDR project needing only a pix_fmt fix: no color
+    conversion filter at all, so no curve and no denoise."""
+    monkeypatch.setattr(nm, "_has_zscale", lambda: True)
+    monkeypatch.setattr(nm, "_has_lut3d", lambda: True)
+    info = _minimal_info("bt709", codec="h264", pix_fmt="yuv422p")
+    cmd, used_fallback = nm._build_ffmpeg_cmd("in.mp4", "out.mp4", "sdr_bt709", info)
+    assert used_fallback is False
+    vf = _vf_from_cmd(cmd)
+    assert "hqdn3d" not in vf
+
+
+def test_denoise_absent_from_sdr_to_hdr_stretch(monkeypatch):
+    """SDR → HDR stretch (no creative curve involved) must not get the denoise."""
+    monkeypatch.setattr(nm, "_has_zscale", lambda: True)
+    info = _minimal_info("bt709", codec="h264", pix_fmt="yuv420p")
+    cmd, used_fallback = nm._build_ffmpeg_cmd("in.mp4", "out.mp4", "hdr_hlg", info)
+    assert used_fallback is False
+    vf = _vf_from_cmd(cmd)
+    assert "hqdn3d" not in vf
+
+
+def test_denoise_absent_from_hdr_cross_conversion(monkeypatch):
+    """HLG <-> PQ cross-conversion (no curve involved) must not get the denoise."""
+    monkeypatch.setattr(nm, "_has_zscale", lambda: True)
+    info = _minimal_info("smpte2084")
+    cmd, used_fallback = nm._build_ffmpeg_cmd("in.mp4", "out.mp4", "hdr_hlg", info)
+    assert used_fallback is False
+    vf = _vf_from_cmd(cmd)
+    assert "hqdn3d" not in vf
+
+
+def test_denoise_absent_from_proxy_cmd(monkeypatch):
+    """Proxy encodes must never inherit the master's denoise — they inherit
+    the master's already-denoised pixels (eager) or tone-map separately at
+    proxy quality (lazy), neither of which pairs with hqdn3d. Imports and
+    calls lib.proxy._build_proxy_cmd directly; proxy source/tests untouched."""
+    import lib.proxy as proxy
+
+    monkeypatch.setattr(nm, "_has_zscale", lambda: True)
+    monkeypatch.setattr(nm, "_has_lut3d", lambda: True)
+    info = _minimal_info("arib-std-b67")
+    cmd, used_fallback = proxy._build_proxy_cmd("in.mp4", "out.mp4", tonemap=True, info=info)
+    assert used_fallback is False
+    vf = _vf_from_cmd(cmd)
+    assert "hqdn3d" not in vf
+
+
+# ── Functional: real ffmpeg encode reports color_transfer=bt709 ───────────────
+#
+# Slow (spawns real ffmpeg HDR encodes + the LUT pass) and gated on the managed
+# ffmpeg actually shipping zscale + lut3d, per doctor's REQUIRED_FFMPEG_FILTERS.
+# Skipped by default; run explicitly with `pytest tests/test_normalize.py -m slow`.
+
+def _ffmpeg_has_filters(*names) -> bool:
+    """Checks the SAME ffmpeg binary normalize() will actually invoke
+    (nm.ffmpeg_bin() — managed static build when present, else bare PATH)."""
+    r = subprocess.run([nm.ffmpeg_bin(), "-filters"], capture_output=True, text=True, timeout=5)
+    out = r.stdout or ""
+    return all(name in out for name in names)
+
+
+@pytest.mark.slow
+def test_normalize_hlg_lut_chain_reports_bt709_transfer(tmp_path):
+    """Synthetic HLG source through normalize() → ffprobe reports color_transfer
+    bt709 on the output (the LUT chain's trailing zscale RGB→YUV709 tag)."""
+    if not _ffmpeg_has_filters("zscale", "lut3d"):
+        pytest.skip("managed ffmpeg missing zscale/lut3d")
+    src = tmp_path / "hlg.mp4"
+    out = tmp_path / "out.mp4"
+    _make_hdr_like_video(src, transfer="arib-std-b67")
+    normalize(str(src), str(out), "sdr_bt709")
+    assert out.exists()
+    v = _ffprobe_stream(out, "v")
+    print(f"HLG→SDR output color_transfer: {v.get('color_transfer')!r}")
+    assert v.get("color_transfer") == "bt709"
+
+
+@pytest.mark.slow
+def test_normalize_pq_lut_chain_reports_bt709_transfer(tmp_path):
+    """Synthetic PQ source through normalize() → PQ→HLG pre-step + shared LUT
+    chain → ffprobe reports color_transfer bt709 on the output."""
+    if not _ffmpeg_has_filters("zscale", "lut3d"):
+        pytest.skip("managed ffmpeg missing zscale/lut3d")
+    src = tmp_path / "pq.mp4"
+    out = tmp_path / "out.mp4"
+    _make_hdr_like_video(src, transfer="smpte2084")
+    normalize(str(src), str(out), "sdr_bt709")
+    assert out.exists()
+    v = _ffprobe_stream(out, "v")
+    print(f"PQ→SDR output color_transfer: {v.get('color_transfer')!r}")
+    assert v.get("color_transfer") == "bt709"
+
+
+@pytest.mark.slow
+def test_normalize_hdr_to_sdr_denoise_reduces_flat_patch_variance(tmp_path):
+    """Decision 8b functional check: hqdn3d measurably reduces noise carried
+    into the master tonemap arm. Fixture is a flat gray HLG source with
+    synthetic per-frame grain (ffmpeg `noise` filter, temporal) — a center
+    patch should read uniform gray but for the injected noise, so per-pixel
+    variance across frames in that patch is a direct proxy for noise level.
+
+    Normalizes the fixture twice: once through the real code path (denoise
+    applied), once with HDR_TO_SDR_DENOISE_VF monkeypatched to "" — the
+    least-invasive bypass that drops just the denoise filter from the -vf
+    chain while exercising the exact same LUT/encode path otherwise (see
+    _build_ffmpeg_cmd's truthiness guard, added for this purpose). Asserts
+    the denoised output's variance is at least 20% below the un-denoised
+    output's, and prints both numbers.
+    """
+    if not _ffmpeg_has_filters("zscale", "lut3d"):
+        pytest.skip("managed ffmpeg missing zscale/lut3d")
+    import numpy as np
+
+    src = tmp_path / "hlg_noisy.mp4"
+    subprocess.run([
+        nm.ffmpeg_bin(), "-y",
+        "-f", "lavfi", "-i", "color=gray:size=640x360:rate=30:duration=2",
+        "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000:duration=2",
+        # Light per-frame (temporal) grain over a flat field — stands in for
+        # iPhone shadow noise without depending on a real HDR camera fixture.
+        "-vf", "noise=alls=4:allf=t",
+        "-c:v", "libx265", "-preset", "ultrafast", "-crf", "18", "-pix_fmt", "yuv420p10le",
+        "-x265-params", "transfer=arib-std-b67:colorprim=bt2020:colormatrix=bt2020nc",
+        "-color_trc", "arib-std-b67", "-color_primaries", "bt2020", "-colorspace", "bt2020nc",
+        "-g", "30", "-keyint_min", "30", "-c:a", "aac", "-ar", "48000",
+        str(src),
+    ], check=True, capture_output=True, timeout=60)
+
+    out_denoised = tmp_path / "out_denoised.mp4"
+    out_raw = tmp_path / "out_raw.mp4"
+
+    normalize(str(src), str(out_denoised), "sdr_bt709")
+
+    orig_denoise_vf = nm.HDR_TO_SDR_DENOISE_VF
+    nm.HDR_TO_SDR_DENOISE_VF = ""
+    try:
+        normalize(str(src), str(out_raw), "sdr_bt709")
+    finally:
+        nm.HDR_TO_SDR_DENOISE_VF = orig_denoise_vf
+
+    def flat_patch_variance(path, *, w=640, h=360, patch=100):
+        """Mean per-pixel variance across frames, over a centered patch."""
+        x0, y0 = (w - patch) // 2, (h - patch) // 2
+        cmd = [
+            nm.ffmpeg_bin(), "-y", "-i", str(path),
+            "-vf", f"crop={patch}:{patch}:{x0}:{y0},format=gray",
+            "-f", "rawvideo", "-",
+        ]
+        r = subprocess.run(cmd, capture_output=True, timeout=30)
+        data = np.frombuffer(r.stdout, dtype=np.uint8).astype(np.float64)
+        nframes = len(data) // (patch * patch)
+        data = data[: nframes * patch * patch].reshape(nframes, patch * patch)
+        return float(np.mean(np.var(data, axis=0)))
+
+    var_denoised = flat_patch_variance(out_denoised)
+    var_raw = flat_patch_variance(out_raw)
+    reduction_pct = (1 - var_denoised / var_raw) * 100
+    print(f"flat-patch variance: raw={var_raw:.4f} denoised={var_denoised:.4f} reduction={reduction_pct:.1f}%")
+    assert var_denoised < var_raw * 0.8, (
+        f"expected >=20% variance reduction from hqdn3d; got {reduction_pct:.1f}% "
+        f"(raw={var_raw:.4f}, denoised={var_denoised:.4f})"
+    )
+
+
+# ── silent-source anullsrc placement (pre-existing bug, fixed post-SP6b) ─────
+
+def test_silent_source_anullsrc_is_an_input_not_an_output_option(monkeypatch):
+    """has_audio=False: the anullsrc INPUT must sit with the inputs (right
+    after the primary -i), never after output-side options like -vf — ffmpeg
+    binds options positionally and rejects `-vf` applied to a lavfi input
+    ("Option vf ... cannot be applied to input url anullsrc")."""
+    monkeypatch.setattr(nm, "_has_zscale", lambda: True)
+    monkeypatch.setattr(nm, "_has_lut3d", lambda: True)
+    info = _minimal_info("arib-std-b67", has_audio=False)
+    cmd, _ = nm._build_ffmpeg_cmd("in.mp4", "out.mp4", "sdr_bt709", info)
+
+    i_primary = cmd.index("-i")
+    assert cmd[i_primary + 1] == "in.mp4"
+    i_lavfi = cmd.index("anullsrc=cl=stereo:r=48000")
+    assert cmd[i_lavfi - 1] == "-i" and cmd[i_lavfi - 2] == "lavfi"
+    # The lavfi input is declared BEFORE any output option.
+    assert i_lavfi < cmd.index("-vf")
+    # Output side keeps -shortest (caps the infinite anullsrc) + audio encode.
+    assert "-shortest" in cmd and cmd.index("-shortest") > cmd.index("-vf")
+    assert "-c:a" in cmd and cmd[cmd.index("-c:a") + 1] == "aac"
+
+
+@pytest.mark.slow
+def test_normalize_silent_hdr_source_succeeds_with_silent_audio_track(tmp_path):
+    """A video-only (no audio stream) HLG source normalizes successfully and
+    the output carries the contract's conformant AAC track (from anullsrc).
+    This exact input made normalize() fail outright before the fix."""
+    if not _ffmpeg_has_filters("zscale", "lut3d"):
+        pytest.skip("managed ffmpeg missing zscale/lut3d")
+    src = tmp_path / "silent_hlg.mp4"
+    out = tmp_path / "out.mp4"
+    subprocess.run([
+        "ffmpeg", "-y",
+        "-f", "lavfi", "-i", "color=red:size=640x360:rate=30:duration=2",
+        "-c:v", "libx265", "-preset", "ultrafast", "-crf", "28",
+        "-pix_fmt", "yuv420p10le",
+        "-x265-params", "transfer=arib-std-b67:colorprim=bt2020:colormatrix=bt2020nc",
+        "-color_trc", "arib-std-b67",
+        "-color_primaries", "bt2020",
+        "-colorspace", "bt2020nc",
+        "-an",
+        str(src),
+    ], check=True, capture_output=True, timeout=60)
+    assert _ffprobe_stream(src, "a") is None  # genuinely silent fixture
+
+    normalize(str(src), str(out), "sdr_bt709")
+    assert out.exists()
+    v = _ffprobe_stream(out, "v")
+    assert v.get("color_transfer") == "bt709"
+    a = _ffprobe_stream(out, "a")
+    assert a is not None and a.get("codec_name") == "aac"

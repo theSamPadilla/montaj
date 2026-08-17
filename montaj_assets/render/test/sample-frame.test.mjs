@@ -32,7 +32,8 @@ import { tmpdir } from 'node:os'
 import { fileURLToPath } from 'node:url'
 import { spawnSync } from 'node:child_process'
 
-import { sampleOverlay, sampleFrame } from '../sample-frame.js'
+import { sampleOverlay, sampleFrame, buildFrameCacheKey } from '../sample-frame.js'
+import { MASTER_LOOK } from '../look.js'
 import { resolveAt } from '@bycrux/timeline-core'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
@@ -46,6 +47,12 @@ const MONTAJ_ROOT = join(__dirname, '..', '..', '..')
 function hasZscale() {
   const r = spawnSync('ffmpeg', ['-hide_banner', '-filters'], { encoding: 'utf8', timeout: 10_000 })
   return r.status === 0 && /zscale/m.test(r.stdout || '')
+}
+
+/** Returns true if ffmpeg has lut3d — the filter that applies the Montaj Vivid cube. */
+function hasLut3d() {
+  const r = spawnSync('ffmpeg', ['-hide_banner', '-filters'], { encoding: 'utf8', timeout: 10_000 })
+  return r.status === 0 && /^[A-Z. ]+ lut3d\b/m.test(r.stdout || '')
 }
 
 /** Read a single pixel (R,G,B,A) from a PNG using ffmpeg rawvideo. */
@@ -88,7 +95,7 @@ function pngDimensions(pngPath) {
  * `node --test` invocation of this file, so cost matters.
  *
  * @param {string} dir
- * @param {{ colorSpace?: string, resolution?: [number, number] }} [opts]
+ * @param {{ colorSpace?: string, resolution?: [number, number], colors?: [string, string] }} [opts]
  * @returns {{ project: object, clipARaw: string, clipBRaw: string } | null}
  *   `null` when ffmpeg couldn't synthesize the sources — callers should skip
  *   the test rather than fail it (this is an environment-capability check,
@@ -96,7 +103,11 @@ function pngDimensions(pngPath) {
  *   test file already, via readPixelRgba/pngDimensions/hasZscale above).
  */
 function makeSyntheticFixture(dir, opts = {}) {
-  const { colorSpace = 'sdr_bt709', resolution = [480, 854] } = opts
+  // `colors` exists for the curve tests: the default primaries are gamut-edge
+  // colors that every look curve clamps identically, so a test asking "did the
+  // curve change anything?" needs a tone the curves actually treat differently.
+  const { colorSpace = 'sdr_bt709', resolution = [480, 854],
+          colors = ['red', 'blue'] } = opts
   const clipARaw = join(dir, 'clip-a.mp4')
   const clipBRaw = join(dir, 'clip-b.mp4')
   const overlayJsx = join(dir, 'overlay.jsx')
@@ -114,7 +125,7 @@ function makeSyntheticFixture(dir, opts = {}) {
     ? ['-c:v', 'libx264', '-x264-params', 'colorprim=bt2020:transfer=arib-std-b67:colormatrix=bt2020nc']
     : []
 
-  for (const [color, out] of [['red', clipARaw], ['blue', clipBRaw]]) {
+  for (const [color, out] of [[colors[0], clipARaw], [colors[1], clipBRaw]]) {
     const r = spawnSync('ffmpeg', [
       '-y', '-f', 'lavfi', '-i', `color=c=${color}:size=64x64:rate=30:duration=3`,
       '-pix_fmt', 'yuv420p', ...hdrArgs, out,
@@ -561,20 +572,20 @@ test('(i) sampleFrame: overlay active at timestamp produces larger file than vid
 // ---------------------------------------------------------------------------
 // (j) sampleFrame on HDR project produces sRGB-displayable PNG (tonemap applied)
 // ---------------------------------------------------------------------------
-test('(j) sampleFrame: HDR project sample is tonemapped to sRGB', { timeout: 120_000 }, async (t) => {
-  if (!hasZscale()) {
-    t.skip('zscale not available in ffmpeg — skipping HDR tonemap test')
+test('(j) sampleFrame: HDR project sample is graded to SDR', { timeout: 120_000 }, async (t) => {
+  if (!hasZscale() || !hasLut3d()) {
+    t.skip('ffmpeg lacks zscale and/or lut3d — skipping the HDR grade test')
     return
   }
   const dir = mkdtempSync(join(tmpdir(), 'montaj-sf-test-j-'))
   try {
-    // sample-frame.js's HDR tonemap branch is gated on project.settings.colorSpace
-    // alone (isHdr(projectColorSpace)) — it doesn't inspect the source file's own
-    // tagged transfer characteristic, so a plain SDR-encoded synthetic clip run
-    // through an 'hdr_hlg' project genuinely exercises the same zscale/tonemap
-    // ffmpeg chain production HDR sources hit. What this proves: the filter chain
-    // is syntactically valid and ffmpeg accepts it, and the resulting PNG is not
-    // left tagged HDR — exactly what this test always asserted.
+    // sample-frame.js's HDR branch is gated on project.settings.colorSpace alone
+    // (isHdr(projectColorSpace)) — it doesn't inspect the source file's own
+    // tagged transfer characteristic. makeSyntheticFixture still tags the source
+    // HLG for real, because the chain's first zscale declares matrixin=2020_ncl
+    // and needs a plausible source to convert FROM. What this proves: the
+    // Montaj Vivid chain is syntactically valid, ffmpeg accepts it, and the
+    // resulting PNG is a normal SDR image rather than one left tagged HDR.
     const fixture = makeSyntheticFixture(dir, { colorSpace: 'hdr_hlg' })
     if (!fixture) { t.skip('ffmpeg synthetic source generation failed'); return }
 
@@ -591,17 +602,146 @@ test('(j) sampleFrame: HDR project sample is tonemapped to sRGB', { timeout: 120
     // Probe the output PNG's transfer characteristic
     const probe = spawnSync('ffprobe', [
       '-v', 'quiet', '-select_streams', 'v:0',
-      '-show_entries', 'stream=color_transfer',
+      '-show_entries', 'stream=color_transfer,pix_fmt',
       '-of', 'csv=p=0', result.pngPath,
     ], { encoding: 'utf8', timeout: 10_000 })
 
-    const transfer = (probe.stdout || '').trim().replace(/,+$/, '')
-    // After tonemap, the PNG should be BT.709 or untagged (sRGB default),
-    // NOT arib-std-b67 (HLG) or smpte2084 (PQ)
+    const fields = (probe.stdout || '').trim().split(',')
+    const pixFmt = fields[0] ?? ''
+    const transfer = (fields[1] ?? '').trim()
+    // After the grade the PNG must be an ordinary SDR image: BT.709 or untagged
+    // (sRGB default), NOT arib-std-b67 (HLG) or smpte2084 (PQ), and in an
+    // RGB pixel format the png encoder actually accepts.
     const isHlgOrPq = transfer === 'arib-std-b67' || transfer === 'smpte2084'
     assert.ok(
       !isHlgOrPq,
-      `sample PNG should NOT have HDR transfer tag after tonemap, got: '${transfer}'`
+      `sample PNG should NOT have HDR transfer tag after the grade, got: '${transfer}'`
+    )
+    assert.match(pixFmt, /^rgb/, `sample PNG should be RGB, got pix_fmt '${pixFmt}'`)
+
+    // The frame is a solid-color clip, so a center pixel is the whole picture:
+    // it must be neither black (extraction silently failed) nor blown to white
+    // (what happens when HDR highlights are clipped instead of tone-mapped).
+    const px = readPixelRgba(result.pngPath, 240, 427)
+    const sum = px.r + px.g + px.b
+    assert.ok(sum > 30 && sum < 720,
+      `graded frame should be a real mid-tone, got rgb(${px.r}, ${px.g}, ${px.b})`)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+// ---------------------------------------------------------------------------
+// (p) Aspect-mismatched HDR source: letterbox bars stay black through the grade
+// ---------------------------------------------------------------------------
+test('(p) sampleFrame: aspect-mismatched HDR source letterboxes to black, not tint',
+  { timeout: 120_000 }, async (t) => {
+  if (!hasZscale() || !hasLut3d()) {
+    t.skip('ffmpeg lacks zscale and/or lut3d — skipping the HDR letterbox test')
+    return
+  }
+  // The synthetic clips are 64x64 square; asking for a wide 854x480 canvas
+  // makes the fit pillarbox them, so most of the frame is bar. Bars are the
+  // canvas showing through a contain-fit composite — they are generated after
+  // the grade and must be pure black. Tinted bars mean something started
+  // pushing synthesized pixels through the cube.
+  const dir = mkdtempSync(join(tmpdir(), 'montaj-sf-test-p-'))
+  try {
+    const fixture = makeSyntheticFixture(dir, {
+      colorSpace: 'hdr_hlg',
+      resolution: [854, 480],
+    })
+    if (!fixture) { t.skip('ffmpeg synthetic source generation failed'); return }
+
+    const outPath = join(dir, 'hdr-letterbox.png')
+    const result = await sampleFrame({
+      projectJson: fixture.project,
+      atSeconds: 4.5, // inside clip-1 (blue), past the overlay's 0-1s window
+      outPath,
+    })
+    assert.ok(existsSync(result.pngPath))
+
+    const dims = pngDimensions(result.pngPath)
+    assert.deepEqual(dims, { w: 854, h: 480 })
+
+    // 64x64 contain-fit into 854x480 → a 480x480 picture centered at x 187-667.
+    for (const x of [20, 830]) {
+      const px = readPixelRgba(result.pngPath, x, 240)
+      assert.ok(px.r <= 4 && px.g <= 4 && px.b <= 4,
+        `pillarbox at x=${x} should be black, got rgb(${px.r}, ${px.g}, ${px.b}) — `
+        + 'tinted bars mean synthesized pixels are being graded')
+    }
+    // And the picture itself is still there, graded, in the middle.
+    const mid = readPixelRgba(result.pngPath, 427, 240)
+    assert.ok(mid.r + mid.g + mid.b > 30,
+      `picture area should carry the graded clip, got rgb(${mid.r}, ${mid.g}, ${mid.b})`)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+// ---------------------------------------------------------------------------
+// (q) The look/curve components of the frame cache key (SP6b decision 10)
+// ---------------------------------------------------------------------------
+test('(q) buildFrameCacheKey: the requested curve is part of the key', () => {
+  // Without this, a frame sampled under one curve is served back for another —
+  // the RenderModal's side-by-side thumbnails would show the same image twice —
+  // and a LUT change would serve pre-change frames forever, since nothing else
+  // in the key moves when the manifest does.
+  //
+  // Asserted on the key itself rather than on rendered pixels: two cubes only
+  // disagree on some colors (both clamp the gamut edge identically), so a
+  // pixel-level version of this test passes or fails on the fixture's color
+  // rather than on the cache logic. The pixel side is covered by (r).
+  const project = { settings: { colorSpace: 'hdr_hlg' } }
+  const base = buildFrameCacheKey(null, project, 1.5)
+  const neutral = buildFrameCacheKey(null, project, 1.5, 'vivid1-neutral')
+
+  assert.notEqual(base, neutral, 'a different curve must produce a different cache key')
+  assert.equal(buildFrameCacheKey(null, project, 1.5, MASTER_LOOK), base,
+    'explicitly naming the master look must match the default')
+  assert.equal(buildFrameCacheKey(null, project, 1.5, null), base, 'null curve → master look')
+  // Sanity: the key still discriminates on everything it used to.
+  assert.notEqual(buildFrameCacheKey(null, project, 2.5), base)
+  assert.notEqual(buildFrameCacheKey(null, { settings: { colorSpace: 'sdr_bt709' } }, 1.5), base)
+})
+
+// ---------------------------------------------------------------------------
+// (r) The curve actually reaches ffmpeg
+// ---------------------------------------------------------------------------
+test('(r) sampleFrame: --sdr-curve changes the graded pixels', { timeout: 120_000 }, async (t) => {
+  if (!hasZscale() || !hasLut3d()) {
+    t.skip('ffmpeg lacks zscale and/or lut3d — skipping the curve grade test')
+    return
+  }
+  // (q) proves the two curves get separate cache entries; this proves the curve
+  // is threaded all the way into the filter chain rather than being accepted
+  // and dropped. Needs a color the two cubes treat differently — vivid1-neutral
+  // is vivid1 minus the Helmholtz-Kohlrausch pop/skin terms, so a warm
+  // skin-adjacent tone separates them where a saturated primary does not (both
+  // clamp those to the same gamut edge).
+  const dir = mkdtempSync(join(tmpdir(), 'montaj-sf-test-r-'))
+  try {
+    const fixture = makeSyntheticFixture(dir, {
+      colorSpace: 'hdr_hlg',
+      colors: ['0xc0a080', '0xc0a080'],
+    })
+    if (!fixture) { t.skip('ffmpeg synthetic source generation failed'); return }
+
+    const defaultPath = join(dir, 'curve-default.png')
+    const neutralPath = join(dir, 'curve-neutral.png')
+    await sampleFrame({ projectJson: fixture.project, atSeconds: 1.5, outPath: defaultPath })
+    await sampleFrame({
+      projectJson: fixture.project, atSeconds: 1.5, outPath: neutralPath,
+      sdrCurve: 'vivid1-neutral',
+    })
+
+    const a = readPixelRgba(defaultPath, 240, 427)
+    const b = readPixelRgba(neutralPath, 240, 427)
+    assert.notDeepEqual(
+      a, b,
+      `both curves produced rgb(${a.r}, ${a.g}, ${a.b}) — sdrCurve is not reaching the LUT `
+      + '(or the two cubes stopped differing on this tone, in which case pick another)',
     )
   } finally {
     rmSync(dir, { recursive: true, force: true })

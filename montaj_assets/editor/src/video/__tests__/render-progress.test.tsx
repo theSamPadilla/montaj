@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
 import { render, screen, waitFor, act, cleanup } from '@testing-library/react'
 import type { EditorAdapter, ImageElement, Project, RenderStatus } from '../../types'
-import RenderModal, { phaseLabel, phaseIndex, RENDER_PHASES } from '../RenderModal'
+import RenderModal, { phaseLabel, phaseIndex, RENDER_PHASES, stepperPhases } from '../RenderModal'
 
 afterEach(() => {
   cleanup()
@@ -16,18 +16,20 @@ describe('phaseLabel', () => {
     expect(phaseLabel('rendering')).toBe('Rendering graphics')
     expect(phaseLabel('captions')).toBe('Adding captions')
     expect(phaseLabel('encoding')).toBe('Encoding video')
+    expect(phaseLabel('sdr_derive')).toBe('Deriving SDR')
     expect(phaseLabel('saving')).toBe('Saving to your library')
     expect(phaseLabel('done')).toBe('Done')
   })
 })
 
 describe('phaseIndex / RENDER_PHASES', () => {
-  it('orders the phases preparing → done', () => {
+  it('orders the phases preparing → done, with sdr_derive after encoding', () => {
     expect(RENDER_PHASES).toEqual([
       'preparing',
       'rendering',
       'captions',
       'encoding',
+      'sdr_derive',
       'saving',
       'done',
     ])
@@ -38,8 +40,22 @@ describe('phaseIndex / RENDER_PHASES', () => {
     expect(phaseIndex('rendering')).toBe(1)
     expect(phaseIndex('captions')).toBe(2)
     expect(phaseIndex('encoding')).toBe(3)
-    expect(phaseIndex('saving')).toBe(4)
-    expect(phaseIndex('done')).toBe(5)
+    expect(phaseIndex('sdr_derive')).toBe(4)
+    expect(phaseIndex('saving')).toBe(5)
+    expect(phaseIndex('done')).toBe(6)
+  })
+})
+
+describe('stepperPhases', () => {
+  it('hides sdr_derive unless the render actually derives an SDR file', () => {
+    expect(stepperPhases()).not.toContain('sdr_derive')
+    expect(stepperPhases({ export: 'auto' })).not.toContain('sdr_derive')
+    expect(stepperPhases({ export: 'sdr' })).toContain('sdr_derive')
+    expect(stepperPhases({ export: 'both' })).toContain('sdr_derive')
+  })
+
+  it('never lists the terminal done phase', () => {
+    expect(stepperPhases({ export: 'both' })).not.toContain('done')
   })
 })
 

@@ -9,7 +9,7 @@ from pathlib import Path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from lib.common import SAFE_NAME, fail, get_duration, progress
 from lib.remote_io import fetch_to_disk, parse_allowed_hosts
-from lib.normalize import normalize, is_normalized, probe_video
+from lib.normalize import normalize, normalized_output_path, is_normalized, probe_video
 from lib.proxy import is_proxy_fresh, make_proxy, proxy_path_for
 from lib.types.project import normalize_project_type
 from lib.types.kling import is_valid_aspect_ratio, ASPECT_RATIOS, ASPECT_RESOLUTIONS, DEFAULT_ASPECT_RATIO
@@ -712,8 +712,22 @@ def main():
                  f"{info['pix_fmt'] if info else '?'} "
                  f"audio={info.get('audio_sample_rate') if info else '?'})")
 
+        # The color space of whatever clip["src"] ends up pointing at below —
+        # used to decide the preview proxy's tonemap arm. In the normal
+        # "skip"/"transcode" cases this equals project_color_space by
+        # construction: is_normalized() only lets "skip" through when the
+        # source already matches the project's color space, and normalize()
+        # conforms a "transcode" source to it. Only the transcode-FAILED
+        # fallback below (still the untouched original) can disagree, so it's
+        # corrected there.
+        master_color_space = project_color_space
+
         if path_kind == "transcode":
-            normalized_path = clip_path.rsplit(".", 1)[0] + f"_normalized_{project_color_space}.mp4"
+            tonemapped = (
+                is_hdr(detect_from_transfer(info.get("color_transfer")))
+                and project_color_space == "sdr_bt709"
+            )
+            normalized_path = normalized_output_path(clip_path, project_color_space, tonemapped=tonemapped)
             try:
                 sem_wait_t0 = time.monotonic()
                 with _heavy_encode_sem:
@@ -727,17 +741,20 @@ def main():
             except SystemExit:
                 # normalize calls fail() which raises SystemExit — fall back to original
                 progress(f"[{clip_id}] normalize FAILED, falling back to original src")
+                master_color_space = detect_from_transfer(info.get("color_transfer"))
 
         # Full-source editing proxy, encoded from the current (post-normalize)
-        # clip["src"] — the already-conformed master when normalize ran, so
-        # there's no second color decision. tonemap=False regardless of the
-        # project's color space: for an HDR project the master is HLG/PQ and the
-        # plain-scale path carries its color tags through verbatim (verified:
-        # AV1 out keeps bt2020/arib-std-b67), so tone-mapping here would be the
-        # second decision we're avoiding. Caveat: if normalize FAILED above,
-        # clip["src"] is still the untouched original, so an HDR original in an
-        # SDR project yields an un-tone-mapped proxy — sanctioned by the SP3
-        # plan; render still conforms at render time.
+        # clip["src"]. Policy v3: the editor preview must ALWAYS show montaj's
+        # own SDR curve, never the browser's own ad-hoc HDR tone-mapping — so
+        # the proxy tone-maps whenever the master feeding it is HDR, regardless
+        # of the project's own working color space. Previously this was
+        # unconditionally tonemap=False, which left an EAGER-HDR project (an
+        # HDR-native master, e.g. all-iPhone-HLG import) with an un-tone-mapped
+        # HDR AV1 proxy, leaving the browser to improvise its own tone-mapping
+        # for preview. Mirrors the lazy arm's tonemap decision above — just
+        # derived from master_color_space instead of a fresh probe, since the
+        # master here may be the post-normalize conformed file rather than the
+        # original.
         # Skipped when probing failed (no info to build the encode from).
 
         # Cache source duration so the UI can clamp edits against it (computed
@@ -749,7 +766,7 @@ def main():
             pass
 
         if info is not None:
-            _schedule_proxy(clip, clip_id, clip["src"], tonemap=False, info=info,
+            _schedule_proxy(clip, clip_id, clip["src"], tonemap=is_hdr(master_color_space), info=info,
                             duration=clip.get("sourceDuration"))
 
         elapsed = time.monotonic() - t0

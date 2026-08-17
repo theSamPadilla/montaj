@@ -12,7 +12,7 @@ from cli.help import bold, green, red, yellow, cyan, dim
 from lib.common import ffmpeg_bin, ffprobe_bin
 
 
-REQUIRED_FFMPEG_FILTERS = ["zscale", "tonemap", "overlay", "scale", "format", "amix", "adelay"]
+REQUIRED_FFMPEG_FILTERS = ["zscale", "tonemap", "overlay", "scale", "format", "amix", "adelay", "lut3d"]
 RECOMMENDED_FFMPEG_FILTERS = ["sidechaincompress"]  # for audio ducking
 
 

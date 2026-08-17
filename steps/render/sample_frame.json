@@ -23,6 +23,12 @@
       "description": "Timestamp in seconds to sample"
     },
     {
+      "name": "sdr-curve",
+      "type": "string",
+      "required": false,
+      "description": "Look curve id for the HDR-to-SDR grade (see montaj_assets/luts/looks.json, e.g. 'vivid1'). Meaningless on SDR projects: ignored with a stderr warning, not an error. Omit to use the project's master look."
+    },
+    {
       "name": "out",
       "type": "path",
       "required": false,

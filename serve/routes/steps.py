@@ -329,26 +329,58 @@ async def normalize_video(body: dict = Body(...)):
             "invalid_color_space",
             f"colorSpace must be one of {ALL_COLOR_SPACES} (got {color_space!r})",
         )
-    out = body.get("out") or f"{input_path.rsplit('.', 1)[0]}_normalized_{color_space}.mp4"
+    explicit_out = body.get("out")
 
-    def _run():
-        from lib.normalize import normalize, probe_video, is_normalized
+    return await asyncio.to_thread(_normalize_sync, input_path, color_space, explicit_out)
 
-        info = probe_video(input_path)
-        if info is None:
-            raise server_error("probe_error", f"Cannot probe {input_path}")
 
-        if is_normalized(input_path, info, color_space):
-            return {"path": input_path, "skipped": True}
+def _normalize_sync(input_path: str, color_space: str, explicit_out: str | None) -> dict:
+    """Blocking normalize — probe, freshness short-circuit, encode.
 
-        try:
-            result_path = normalize(input_path, out, color_space, info=info)
-        except SystemExit:
-            raise server_error("normalize_failed", "Normalization failed — check ffmpeg and zscale availability")
+    Split out of `normalize_video` so the look-migration job wrapper below can
+    drive the exact same work off the event loop without going through the
+    (synchronous) HTTP route. Returns the route's `{"path", "skipped"}` payload;
+    raises HTTPException on probe/encode failure exactly as the route always has.
+    """
+    from lib.normalize import normalize, normalized_output_path, probe_video, is_normalized
+    from lib.types.colorspace import detect_from_transfer, is_hdr
 
-        return {"path": result_path or out, "skipped": False}
+    info = probe_video(input_path)
+    if info is None:
+        raise server_error("probe_error", f"Cannot probe {input_path}")
 
-    return await asyncio.to_thread(_run)
+    if is_normalized(input_path, info, color_space):
+        return {"path": input_path, "skipped": True}
+
+    tonemapped = is_hdr(detect_from_transfer(info.get("color_transfer"))) and color_space == "sdr_bt709"
+    out = explicit_out or normalized_output_path(input_path, color_space, tonemapped=tonemapped)
+
+    try:
+        result_path = normalize(input_path, out, color_space, info=info)
+    except SystemExit:
+        raise server_error("normalize_failed", "Normalization failed — check ffmpeg and zscale availability")
+
+    return {"path": result_path or out, "skipped": False}
+
+
+async def run_normalize_job(job_id: str, input_path: str, color_space: str, *, out: str | None = None) -> None:
+    """Background driver for a master re-encode: run `_normalize_sync` off the
+    event loop and record its result/error on `job_id` — the same job shape
+    `_run_proxy_to_job` produces (`{"path": ..., "skipped": ...}`).
+
+    POST /api/normalize is deliberately SYNCHRONOUS (see its docstring above):
+    it blocks the caller for the length of the encode. The project-open look
+    migration (serve/routes/projects.py) can't block a GET on a multi-minute
+    ffmpeg run, so it schedules this wrapper instead — same registry, same
+    GET /api/steps/jobs/{job_id} polling surface as every other async step.
+    """
+    try:
+        result = await asyncio.to_thread(_normalize_sync, input_path, color_space, out)
+        set_done(job_id, result)
+    except HTTPException as e:
+        set_error(job_id, e.detail)
+    except Exception as e:
+        set_error(job_id, {"error": "normalize_failed", "message": str(e)})
 
 
 async def _run_proxy_to_job(job_id: str, schema: dict, py_path: Path, body: dict, *, timeout: int = STEP_TIMEOUT_S) -> None:
@@ -371,7 +403,7 @@ async def _run_proxy_to_job(job_id: str, schema: dict, py_path: Path, body: dict
 async def proxy_video(body: dict = Body(...)):
     """Encode the full-source, 720p, all-intra AV1+Opus editing proxy for `input`.
 
-    Request:  { "input": "/abs/path/to/video.mp4", "out": "/abs/path/to/video_proxy_hable1.mp4", "tonemap": false }
+    Request:  { "input": "/abs/path/to/video.mp4", "out": "/abs/path/to/video_proxy_vivid1.mp4", "tonemap": false }
     ("out" defaults to lib.proxy.proxy_path_for(input). "tonemap" defaults to a
     PROBE of the source's transfer function — HDR in, tonemap on — so backfilling
     a lazy HDR project can't silently produce an un-tone-mapped proxy; passing an
@@ -405,43 +437,69 @@ async def proxy_video(body: dict = Body(...)):
     if is_proxy_fresh(out, input_path):
         return {"path": out, "skipped": True}
 
-    steps = scan_steps()
-    if "proxy" not in steps:
-        raise server_error("not_found", "Step 'proxy' not found")
-    schema, py_path = steps["proxy"]
-    step_body = {"input": input_path, "out": out}
-    # tonemap (SP3 fix S3): explicit body value (true OR false) wins; otherwise
-    # derive from the source's transfer function exactly like init.py's lazy
-    # arm — HDR source ⇒ tonemap on.
-    if "tonemap" in body:
-        if body.get("tonemap"):
-            step_body["tonemap"] = True
-    else:
-        from lib.normalize import probe_video
-        from lib.types.colorspace import detect_from_transfer, is_hdr
-        try:
-            info = probe_video(input_path)
-        except (Exception, SystemExit):
-            info = None
-        if info is not None and is_hdr(detect_from_transfer(info.get("color_transfer"))):
-            step_body["tonemap"] = True
-
-    # lib/proxy.py's own timeout (max(900, duration * 2)) is duration-scaled so
-    # a long-form source doesn't get killed mid-encode — but that math only
-    # applies once ffmpeg is already running. The subprocess wrapper here needs
-    # its OWN timeout sized the same way, or run_subprocess kills the encode at
-    # the flat STEP_TIMEOUT_S (900s) regardless. get_duration() can raise
-    # SystemExit (this repo's fail() convention), which a bare `except
-    # Exception` would NOT catch — probe failures degrade to the flat default
-    # instead of taking down the request.
-    from lib.common import get_duration
-    try:
-        proxy_timeout = max(STEP_TIMEOUT_S, int(get_duration(input_path) * 3))
-    except (Exception, SystemExit):
-        proxy_timeout = STEP_TIMEOUT_S
-
     job_id = create_job()
-    task = asyncio.create_task(_run_proxy_to_job(job_id, schema, py_path, step_body, timeout=proxy_timeout))
+    task = asyncio.create_task(
+        run_proxy_job(job_id, input_path, out=out,
+                      tonemap=body.get("tonemap") if "tonemap" in body else None)
+    )
     _BACKGROUND_TASKS.add(task)
     task.add_done_callback(_BACKGROUND_TASKS.discard)
     return JSONResponse({"job_id": job_id, "status": "running"}, status_code=202)
+
+
+async def run_proxy_job(job_id: str, input_path: str, *, out: str, tonemap: bool | None = None) -> None:
+    """Drive one proxy encode to completion on `job_id`: resolve the step, decide
+    the tonemap arm, size the timeout, then hand off to `_run_proxy_to_job`.
+
+    Split out of `proxy_video` so a caller that needs to OWN the scheduling can
+    reuse the exact same encode. The project-open look migration
+    (serve/routes/projects.py) does: it bounds how many encodes run at once and
+    awaits completion so it can write the fresh path back into project.json,
+    neither of which the route's fire-and-forget 202 shape allows.
+
+    `tonemap=None` means "probe and decide" (the route's default); True/False is
+    an explicit override.
+    """
+    try:
+        steps = scan_steps()
+        if "proxy" not in steps:
+            raise server_error("not_found", "Step 'proxy' not found")
+        schema, py_path = steps["proxy"]
+        step_body = {"input": input_path, "out": out}
+        # tonemap (SP3 fix S3): an explicit value (true OR false) wins; otherwise
+        # derive from the source's transfer function exactly like init.py's lazy
+        # arm — HDR source ⇒ tonemap on.
+        if tonemap is not None:
+            if tonemap:
+                step_body["tonemap"] = True
+        else:
+            from lib.normalize import probe_video
+            from lib.types.colorspace import detect_from_transfer, is_hdr
+            try:
+                info = probe_video(input_path)
+            except (Exception, SystemExit):
+                info = None
+            if info is not None and is_hdr(detect_from_transfer(info.get("color_transfer"))):
+                step_body["tonemap"] = True
+
+        # lib/proxy.py's own timeout (max(900, duration * 2)) is duration-scaled so
+        # a long-form source doesn't get killed mid-encode — but that math only
+        # applies once ffmpeg is already running. The subprocess wrapper here needs
+        # its OWN timeout sized the same way, or run_subprocess kills the encode at
+        # the flat STEP_TIMEOUT_S (900s) regardless. get_duration() can raise
+        # SystemExit (this repo's fail() convention), which a bare `except
+        # Exception` would NOT catch — probe failures degrade to the flat default
+        # instead of taking down the request.
+        from lib.common import get_duration
+        try:
+            proxy_timeout = max(STEP_TIMEOUT_S, int(get_duration(input_path) * 3))
+        except (Exception, SystemExit):
+            proxy_timeout = STEP_TIMEOUT_S
+    except HTTPException as e:
+        set_error(job_id, e.detail)
+        return
+    except Exception as e:
+        set_error(job_id, {"error": "step_failed", "message": str(e)})
+        return
+
+    await _run_proxy_to_job(job_id, schema, py_path, step_body, timeout=proxy_timeout)
