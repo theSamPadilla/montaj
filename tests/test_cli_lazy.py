@@ -1,7 +1,17 @@
 """CLI must import only the invoked command's module (startup latency)."""
 import subprocess
 import sys
-from importlib.metadata import version as pkg_version
+from importlib.metadata import version as _pkg_version
+
+
+def pkg_version(name):
+    """Mirror cli.main's fallback: a dev checkout that isn't pip-installed has
+    no dist-info, and the CLI prints "dev" there — the test must expect the
+    same instead of crashing on PackageNotFoundError."""
+    try:
+        return _pkg_version(name)
+    except Exception:
+        return "dev"
 
 from tests.conftest import REPO_ROOT
 

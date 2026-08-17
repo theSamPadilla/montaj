@@ -21,7 +21,6 @@ function Harness({ bindings, modalOpen }: { bindings: KeyBinding[]; modalOpen?: 
     <div>
       <input data-testid="input" />
       <textarea data-testid="textarea" />
-      {/* eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions */}
       <div data-testid="editable" contentEditable suppressContentEditableWarning>text</div>
       <div data-testid="plain">plain</div>
     </div>

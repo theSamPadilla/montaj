@@ -46,7 +46,7 @@ describe('gateProxy', () => {
 
   it('leaves proxy-less items alone regardless of support', () => {
     __setProxySupportForTests(false)
-    const plain = { id: 'c2', src: '/b/orig.mov' }
+    const plain: { id: string; src: string; proxySrc?: string } = { id: 'c2', src: '/b/orig.mov' }
     expect(gateProxy(plain)).toBe(plain)
   })
 })
