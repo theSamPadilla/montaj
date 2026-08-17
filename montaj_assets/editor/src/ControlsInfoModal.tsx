@@ -99,9 +99,10 @@ export default function ControlsInfoModal({ title, sections, onClose }: Controls
   )
 }
 
-/** Controls reference for the video/timeline editor. Sourced from VideoEditor's
- *  key handler (S / ⌘Z), the track-controls toolbar, and PreviewPlayer's
- *  on-canvas transform (drag / corner-drag / scroll / rotate). */
+/** Controls reference for the video/timeline editor. Sourced from the shared
+ *  keymap (`video/keymap.ts`, mounted by VideoEditor's ReviewSurface and
+ *  Timeline), the track-controls toolbar, and PreviewPlayer's on-canvas
+ *  transform (drag / corner-drag / scroll / rotate). */
 export const VIDEO_CONTROLS: ControlSection[] = [
   {
     heading: 'Preview',
@@ -117,6 +118,7 @@ export const VIDEO_CONTROLS: ControlSection[] = [
       { label: 'Drag a clip to reposition it' },
       { label: "Drag a clip's edge to trim it" },
       { label: 'Select a clip, then click ⓘ to inspect it' },
+      { label: 'Click the time readout to go to a timecode' },
     ],
   },
   {
@@ -130,7 +132,14 @@ export const VIDEO_CONTROLS: ControlSection[] = [
     heading: 'Keyboard',
     entries: [
       { keys: ['S'], label: 'Split at the playhead' },
+      { keys: ['⇧', 'Delete'], label: 'Ripple-delete the selection' },
       { keys: ['⌘/Ctrl', 'Z'], label: 'Undo' },
+      { keys: ['⌘/Ctrl', '⇧', 'Z'], label: 'Redo' },
+      { keys: ['⌘/Ctrl', 'K'], label: 'Command palette' },
+      { keys: ['J', 'K', 'L'], label: 'Shuttle backward / stop / forward' },
+      { keys: ['←', '→'], label: 'Step one frame (⇧ for one second)' },
+      { keys: ['Enter'], label: 'Set a marker at the playhead' },
+      { keys: ['Esc'], label: 'Clear markers' },
     ],
   },
 ]

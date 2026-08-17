@@ -1,0 +1,40 @@
+{
+  "name": "waveform_peaks",
+  "description": "Emit min/max audio peak pairs at a fixed samples-per-second resolution, for a scrubbable waveform view. Mono mixdown; total pairs clamped to 500k per call.",
+  "input": {
+    "type": "video",
+    "description": "Source video or audio file (use 'inputs' for batch parallel processing)",
+    "multiple": true
+  },
+  "output": {
+    "type": "json",
+    "description": "{samplesPerSecond, start, duration, peaks:[min,max,min,max,...]}. Batch mode returns an array of these."
+  },
+  "params": [
+    {
+      "name": "samples-per-second",
+      "type": "enum",
+      "default": 200,
+      "options": [50, 200, 800],
+      "description": "Peak-pair resolution per second. Stepped down automatically (and reported in the output) if the requested resolution x window duration would exceed the 500k-pair clamp."
+    },
+    {
+      "name": "start",
+      "type": "float",
+      "min": 0,
+      "description": "Window start in seconds within the source (default: 0)"
+    },
+    {
+      "name": "duration",
+      "type": "float",
+      "min": 0,
+      "description": "Window duration in seconds within the source (default: rest of the file)"
+    },
+    {
+      "name": "timeout",
+      "type": "int",
+      "default": 300,
+      "description": "ffmpeg decode timeout in seconds"
+    }
+  ]
+}

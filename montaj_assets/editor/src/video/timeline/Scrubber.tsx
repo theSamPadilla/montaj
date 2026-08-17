@@ -10,6 +10,9 @@ interface ScrubberProps {
   onSplit?: (at: number) => void
   onCut?: (cut: { start: number; end: number }) => void
   cutButtonLabel: string
+  /** SP5 T9 — opens the command palette's "go to time" input. Absent →
+   *  the time readout stays plain, non-interactive text. */
+  onOpenGoToTime?: () => void
 }
 
 export default function Scrubber({
@@ -20,6 +23,7 @@ export default function Scrubber({
   onSplit,
   onCut,
   cutButtonLabel,
+  onOpenGoToTime,
 }: ScrubberProps) {
   const { clock, totalDuration, contentDuration, markers, setMarkers, snapBoundaries, scrubberRef, selection } = useTimelineContext()
   const currentTime = usePlaybackTime(clock)
@@ -140,7 +144,18 @@ export default function Scrubber({
 
       {/* Time readout + marker / selection range */}
       <div className="flex items-center justify-between text-[10px] font-mono text-gray-600 -mt-1">
-        <span>{formatTime(currentTime)}</span>
+        {onOpenGoToTime ? (
+          <button
+            type="button"
+            title="Go to time"
+            onClick={(e) => { e.stopPropagation(); onOpenGoToTime() }}
+            className="hover:text-gray-300 transition-colors"
+          >
+            {formatTime(currentTime)}
+          </button>
+        ) : (
+          <span>{formatTime(currentTime)}</span>
+        )}
         {markers[0] !== null && markers[1] === null && (
           <span className="flex items-center gap-2 text-amber-400/80">
             {onSplit && (

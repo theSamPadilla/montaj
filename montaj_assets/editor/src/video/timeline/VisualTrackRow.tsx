@@ -9,6 +9,7 @@ import PlayheadLine from './PlayheadLine'
 import { useItemDragDrop } from './useItemDragDrop'
 import type { Draggable, DragEventContext } from './useItemDragDrop'
 import { applyMuteToSelection, applyResizeDeltaToSelection, deleteSelection } from './multiSelectOps'
+import { moveItemAcrossTracks } from './timeline-model'
 
 interface VisualTrackRowProps {
   trackItems: VisualItem[]
@@ -136,40 +137,21 @@ function VisualTrackRow({
     if ((e.target as HTMLElement).classList.contains('cursor-ew-resize')) return
     if (!onProjectChange) return
     const projectChange = onProjectChange
-    const ROW_HEIGHT_PX = 24
     let lastUpdated = project
 
     beginDrag(e, item as Draggable, {
       onLivePreview: ({ item: moved, dy }: DragEventContext) => {
-        const trackDelta = Math.round(dy / ROW_HEIGHT_PX)
-        const targetIdx = Math.max(0, sourceTrackIdx - trackDelta)
-        const duration = moved.end - moved.start
-        const overlapMin = duration * 0.3
-
-        function hasOverlap(track: VisualItem[]): boolean {
-          return track.some(ov => {
-            if (ov.id === item.id) return false
-            return Math.min(moved.end, ov.end) - Math.max(moved.start, ov.start) > overlapMin
-          })
+        const next = {
+          ...lastUpdated,
+          tracks: moveItemAcrossTracks({
+            tracks: lastUpdated.tracks ?? [],
+            item,
+            start: moved.start,
+            end: moved.end,
+            sourceTrackIdx,
+            dy,
+          }),
         }
-
-        const tracks = lastUpdated.tracks ?? []
-        let bestIdx = targetIdx
-        outer: for (let delta = 0; delta <= tracks.length; delta++) {
-          for (const i of delta === 0 ? [targetIdx] : [targetIdx - delta, targetIdx + delta]) {
-            if (i < 0) continue
-            const candidateTrack = i < tracks.length ? tracks[i] : []
-            if (!hasOverlap(candidateTrack)) { bestIdx = i; break outer }
-          }
-        }
-
-        const removed = tracks.map(t => t.filter(ov => ov.id !== item.id))
-        const movedItem = { ...item, start: moved.start, end: moved.end }
-        const final = bestIdx >= removed.length
-          ? [...removed, [movedItem]]
-          : removed.map((t, i) => i === bestIdx ? [...t, movedItem] : t)
-
-        const next = { ...lastUpdated, tracks: final.filter(t => t.length > 0) }
         projectChange(next)
         lastUpdated = next
       },

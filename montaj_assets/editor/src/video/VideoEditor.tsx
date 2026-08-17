@@ -6,11 +6,12 @@ import { VideoSourceCropModal } from '../crop/VideoSourceCropModal'
 import ControlsInfoModal, { VIDEO_CONTROLS } from '../ControlsInfoModal'
 import { getOverlayDesignCanvas } from './design-canvas'
 import { applyTheme, defaultMontajTheme } from '../theme'
-import { applyCutToItem, applyCutToTracks, collapseGaps, splitAtTime } from './cuts'
+import { applyCutToItem, applyCutToTracks, collapseGaps, rippleDelete, splitAtTime } from './cuts'
 import { repairCaptionWords } from './captionRepair'
-import Timeline from './timeline/Timeline'
+import Timeline, { type TimelineActions } from './timeline/Timeline'
+import { computeDerivedTiming } from './timeline/timeline-model'
 import { makeCaptionEdit, type CaptionEditPatch } from './timeline/makeCaptionEdit'
-import PreviewPlayer from './preview/PreviewPlayer'
+import PreviewPlayer, { type TransportHandle } from './preview/PreviewPlayer'
 import { createPlaybackClock, type PlaybackClock } from './playback-clock'
 import type { OverlayChanges } from './preview/useDragOverlay'
 import VersionPanel from './VersionPanel'
@@ -19,6 +20,9 @@ import ImageToneMenu from './ImageToneMenu'
 import type { ImageTone } from './imageTone'
 import CaptionRegenModal from './CaptionRegenModal'
 import OverlayPropsModal from './preview/OverlayPropsModal'
+import CommandPalette, { type PaletteCommand } from './CommandPalette'
+import { createShuttleController } from './shuttle'
+import { useKeymap, matchesKey, matchesModKey, matchesPlainKey, matchesRedo, matchesShiftDelete, matchesUndo } from './keymap'
 
 // Generic over the host's concrete project type `P` (default = the package's
 // own `Project`). Montaj passes its richer Project; the index signature on
@@ -100,6 +104,7 @@ export default function VideoEditor<P extends Project = Project>({
   onProvideRenderTrigger,
   onProvideImageTone,
   engine,
+  timeline,
 }: Props<P>) {
   const emit = onProjectChange ?? (() => {})
 
@@ -164,6 +169,10 @@ export default function VideoEditor<P extends Project = Project>({
   // ── Shared injected adapter fns, threaded to Timeline + PreviewPlayer. ──
   const getWaveformChunks = adapter.getWaveformChunks
   const resolveFilePath   = adapter.fileUrl
+  // T6 — canvas-timeline waveforms; absent → Timeline renders none (graceful).
+  const getWaveformPeaks  = adapter.getWaveformPeaks
+  // T7 — canvas-timeline filmstrips + hover-scrub; absent → Timeline renders none (graceful).
+  const getFilmstrip      = adapter.getFilmstrip
 
   if (isPending) {
     return (
@@ -175,7 +184,10 @@ export default function VideoEditor<P extends Project = Project>({
           onBackToSetup={onBackToSetup}
           getWaveformChunks={getWaveformChunks}
           resolveFilePath={resolveFilePath}
+          getWaveformPeaks={getWaveformPeaks}
+          getFilmstrip={getFilmstrip}
           engine={engine}
+          timeline={timeline}
         />
       </div>
     )
@@ -192,6 +204,8 @@ export default function VideoEditor<P extends Project = Project>({
         renderProgressView={renderProgressView}
         getWaveformChunks={getWaveformChunks}
         resolveFilePath={resolveFilePath}
+        getWaveformPeaks={getWaveformPeaks}
+        getFilmstrip={getFilmstrip}
         renderClipInspector={renderClipInspector}
         renderSubcutRegen={renderSubcutRegen}
         regenEnabled={regenEnabled}
@@ -199,6 +213,7 @@ export default function VideoEditor<P extends Project = Project>({
         onProvideRenderTrigger={onProvideRenderTrigger}
         onProvideImageTone={onProvideImageTone}
         engine={engine}
+        timeline={timeline}
       />
     </div>
   )
@@ -227,9 +242,12 @@ interface SurfaceProps<P extends Project> {
   renderProgressView?: VideoEditorProps<P>['renderProgressView']
   getWaveformChunks?: VideoEditorProps<P>['adapter']['getWaveformChunks']
   resolveFilePath: (path: string) => string
+  getWaveformPeaks?: VideoEditorProps<P>['adapter']['getWaveformPeaks']
+  getFilmstrip?: VideoEditorProps<P>['adapter']['getFilmstrip']
   onProvideRenderTrigger?: VideoEditorProps<P>['onProvideRenderTrigger']
   onProvideImageTone?: VideoEditorProps<P>['onProvideImageTone']
   engine?: VideoEditorProps<P>['engine']
+  timeline?: VideoEditorProps<P>['timeline']
 }
 
 function PendingSurface<P extends Project>({
@@ -239,7 +257,10 @@ function PendingSurface<P extends Project>({
   onBackToSetup,
   getWaveformChunks,
   resolveFilePath,
+  getWaveformPeaks,
+  getFilmstrip,
   engine,
+  timeline,
 }: SurfaceProps<P> & { onBackToSetup?: () => void }) {
   const project = sync.project
   // The playhead lives in an external store (not useState) so ~60Hz ticks only
@@ -348,7 +369,9 @@ function PendingSurface<P extends Project>({
             clock={clock}
             getWaveformChunks={getWaveformChunks}
             resolveFilePath={resolveFilePath}
-            onSaveProject={(p) => sync.mutate(() => p as P)}
+            getWaveformPeaks={getWaveformPeaks}
+            getFilmstrip={getFilmstrip}
+            timeline={timeline}
           />
         </div>
       </div>
@@ -374,6 +397,8 @@ function ReviewSurface<P extends Project>({
   renderProgressView = 'phases',
   getWaveformChunks,
   resolveFilePath,
+  getWaveformPeaks,
+  getFilmstrip,
   renderClipInspector,
   renderSubcutRegen,
   regenEnabled,
@@ -381,6 +406,7 @@ function ReviewSurface<P extends Project>({
   onProvideRenderTrigger,
   onProvideImageTone,
   engine,
+  timeline,
 }: SurfaceProps<P> & {
   emit: (p: P) => void
   renderClipInspector?: VideoEditorProps<P>['renderClipInspector']
@@ -415,6 +441,45 @@ function ReviewSurface<P extends Project>({
   // The clip/audio inspector target — derived from the timeline's inspect
   // callbacks. A Montaj-agnostic { kind, id } selector, not a project entity.
   const [inspecting, setInspecting]   = useState<{ kind: 'clip' | 'audio'; id: string } | null>(null)
+  // SP5 T9 — command palette (Cmd/Ctrl+K). `'goto'` opens straight into the
+  // timecode input (the scrubber's time-readout click); `'list'` opens the
+  // filtered command list.
+  const [paletteOpen, setPaletteOpen] = useState<false | 'list' | 'goto'>(false)
+
+  // ── T9 keymap plumbing (continued after `editingOverlayItem`, below) ──
+  // The transport seam — filled by PreviewPlayer from whichever playback path
+  // (legacy or engine) is active. The keymap and palette use it for play/
+  // pause; the shuttle polls `isPlaying()` to detect a real transport change.
+  const transportRef = useRef<TransportHandle | null>(null)
+  // Marker/zoom actions Timeline exposes for the palette, mirroring
+  // `transportRef`'s shape.
+  const timelineActionsRef = useRef<TimelineActions | null>(null)
+
+  // Duration for shuttle clamping and the palette's "go to time" clamp —
+  // read fresh off the sync core's project ref rather than captured once, so
+  // neither goes stale across edits.
+  const getTotalDuration = useCallback(
+    () => computeDerivedTiming(sync.projectRef.current).totalDuration,
+    [sync.projectRef],
+  )
+
+  // J/K/L shuttle. Created once (lazy ref init) — its deps are all stable
+  // (clock, transportRef, the duration getter above), so there's nothing to
+  // recreate it over. See shuttle.ts for the rate-stepping/cancellation design.
+  const shuttleRef = useRef<ReturnType<typeof createShuttleController> | null>(null)
+  if (!shuttleRef.current) {
+    shuttleRef.current = createShuttleController({
+      clock,
+      getDuration: getTotalDuration,
+      isPlaying: () => transportRef.current?.isPlaying() ?? false,
+      pause: () => { if (transportRef.current?.isPlaying()) transportRef.current.togglePlay() },
+    })
+  }
+  const shuttle = shuttleRef.current
+  // The loop is rAF-driven and neither of its cancellation guards fires after
+  // unmount (nothing is playing, and nothing else writes the clock), so stop it
+  // explicitly rather than let it run out the timeline against a dead clock.
+  useEffect(() => () => shuttle.stop(), [shuttle])
 
   // Render trigger — marks the project final, saves, and opens the RenderModal.
   // Kept stable (the sync mutators/ref are stable; `emit` read via ref) so a host
@@ -518,6 +583,18 @@ function ReviewSurface<P extends Project>({
     ? allVisualItems.find(i => i.id === editingOverlayId) ?? null
     : null
 
+  // T9 keymap plumbing: every dialog/panel this surface can have open, ORed
+  // into one flag so the keymap (and Timeline's own arrows/delete/enter/
+  // escape keymap, via the `modalOpen` prop passed to it below) suppresses
+  // every binding while any of them is up — including the palette itself, so
+  // typing in a filter field elsewhere can't leak into a single-key
+  // shortcut. There is no general "is a modal open" concept anywhere else in
+  // the codebase (today's handlers didn't check this at all); this derives
+  // it from state ReviewSurface already owns rather than inventing new
+  // cross-file plumbing.
+  const anyModalOpen = renderOpen || regenCaptionsOpen || !!editingOverlayItem
+    || showControls || cropMode || !!inspecting || !!paletteOpen
+
   function withItemProps(base: P, id: string, nextProps: Record<string, unknown>): P {
     return {
       ...base,
@@ -617,22 +694,123 @@ function ReviewSurface<P extends Project>({
     }
   }
 
-  // Keyboard: split (S), undo (cmd/ctrl-Z), redo (cmd/ctrl-shift-Z or cmd/ctrl-Y).
-  // Guarded against text inputs.
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      const el = e.target as HTMLElement
-      if (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable) return
-      if (e.key === 's' || e.key === 'S') { e.preventDefault(); handleSplit(); return }
-      const mod = e.metaKey || e.ctrlKey
-      if (!mod) return
-      const key = e.key.toLowerCase()
-      if (key === 'z' && !e.shiftKey) { e.preventDefault(); sync.undo() }
-      else if ((key === 'z' && e.shiftKey) || key === 'y') { e.preventDefault(); sync.redo() }
-    }
-    document.addEventListener('keydown', onKey)
-    return () => document.removeEventListener('keydown', onKey)
-  }, [project, primarySelectedId, sync])
+  // Ripple-delete the primary selection (T8's `rippleDelete`) — Shift+Delete
+  // and the palette's "Ripple-delete selection" entry. Goes through
+  // `sync.mutate` directly (one undo step, one queued save), the same commit
+  // path every other destructive edit in this surface uses (handleSplit,
+  // handleCut, handleRippleToggle above).
+  function handleRippleDelete() {
+    if (!primarySelectedId) return
+    const base = syncProjectRef.current
+    const updated = rippleDelete(base, primarySelectedId)
+    if (updated === base) return
+    void sync.mutate(() => updated as P)
+    setSelectedIds([])
+  }
+
+  const openPalette = useCallback(() => setPaletteOpen('list'), [])
+  const openGoToTime = useCallback(() => setPaletteOpen('goto'), [])
+  const closePalette = useCallback(() => setPaletteOpen(false), [])
+
+  // Command palette. Bindings for split/undo/redo/ripple-delete/palette-open
+  // double as their own registry entries here; a few are palette-only
+  // (zoom-fit, go-to-time, marker set/clear) — see `paletteCommands` below.
+  // Cmd/Ctrl+K, and the J/K/L shuttle, are new to T9 and only ever lived at
+  // this ReviewSurface level (same scope split/undo/redo already had — the
+  // pending surface has no editing chrome).
+  useKeymap([
+    {
+      id: 'video.split',
+      description: 'Split at playhead',
+      keyHint: ['S'],
+      matches: matchesKey('s'),
+      action: () => handleSplit(),
+    },
+    {
+      id: 'video.undo',
+      description: 'Undo',
+      keyHint: ['⌘', 'Z'],
+      matches: matchesUndo,
+      action: () => sync.undo(),
+    },
+    {
+      id: 'video.redo',
+      description: 'Redo',
+      keyHint: ['⌘', '⇧', 'Z'],
+      matches: matchesRedo,
+      action: () => sync.redo(),
+    },
+    {
+      id: 'video.ripple-delete',
+      description: 'Ripple-delete selection',
+      keyHint: ['⇧', 'Delete'],
+      matches: matchesShiftDelete,
+      guard: () => !!primarySelectedId,
+      action: () => handleRippleDelete(),
+    },
+    {
+      id: 'video.open-palette',
+      description: 'Open command palette',
+      keyHint: ['⌘', 'K'],
+      matches: matchesModKey('k'),
+      guard: () => !paletteOpen,
+      action: () => openPalette(),
+      paletteHidden: true,
+    },
+    {
+      id: 'video.shuttle-forward',
+      description: 'Shuttle forward',
+      keyHint: ['L'],
+      matches: matchesPlainKey('l'),
+      action: () => shuttle.press(1),
+      paletteHidden: true,
+    },
+    {
+      id: 'video.shuttle-backward',
+      description: 'Shuttle backward',
+      keyHint: ['J'],
+      matches: matchesPlainKey('j'),
+      action: () => shuttle.press(-1),
+      paletteHidden: true,
+    },
+    {
+      id: 'video.shuttle-stop',
+      description: 'Stop shuttle',
+      keyHint: ['K'],
+      matches: matchesPlainKey('k'),
+      action: () => shuttle.stop(),
+      paletteHidden: true,
+    },
+  // No `modalOpen` gating here — split/undo/redo never had a modal guard
+  // (see the file-header note above `anyModalOpen`), and RenderModal being
+  // open mid-render is a real flow that still needs Cmd+Z to work (the
+  // existing "undo restores the pre-mutation project" test drives exactly
+  // that: click Render → RenderModal opens → Cmd+Z must still undo). The
+  // typing-surface guard alone (shared by every binding, unconditionally)
+  // already keeps these from firing while the palette's own filter input has
+  // focus — modal-gating would only add protection for the edge case of a
+  // dialog open with focus OUTSIDE it, which isn't worth the regression risk.
+  ])
+
+  // The palette's command list — split/undo/redo/ripple-delete/play-pause
+  // read live state so entries only appear when they'd actually do
+  // something (no selection → no ripple-delete row; nothing to undo → no
+  // undo row). Zoom-fit and the marker ops route through `timelineActionsRef`
+  // (Timeline-local state — see Timeline.tsx's `TimelineActions`). Roll/slip/
+  // slide are drag gestures and deliberately have no palette variant.
+  const paletteCommands: PaletteCommand[] = [
+    { id: 'play-pause', label: 'Play/Pause', keyHint: ['Space'], run: () => transportRef.current?.togglePlay() },
+    { id: 'split', label: 'Split at playhead', keyHint: ['S'], run: () => handleSplit() },
+  ]
+  if (primarySelectedId) {
+    paletteCommands.push({ id: 'ripple-delete', label: 'Ripple-delete selection', keyHint: ['⇧', 'Delete'], run: () => handleRippleDelete() })
+  }
+  if (sync.canUndo) paletteCommands.push({ id: 'undo', label: 'Undo', keyHint: ['⌘', 'Z'], run: () => sync.undo() })
+  if (sync.canRedo) paletteCommands.push({ id: 'redo', label: 'Redo', keyHint: ['⌘', '⇧', 'Z'], run: () => sync.redo() })
+  paletteCommands.push({ id: 'zoom-fit', label: 'Zoom to fit', run: () => timelineActionsRef.current?.zoomFit() })
+  paletteCommands.push({ id: 'goto', label: 'Go to time…', run: () => openGoToTime() })
+  paletteCommands.push({ id: 'set-marker', label: 'Set marker at playhead', run: () => timelineActionsRef.current?.setMarkerAtPlayhead() })
+  paletteCommands.push({ id: 'clear-markers', label: 'Clear markers', run: () => timelineActionsRef.current?.clearMarkers() })
 
   async function handleRestoreVersion(hash: string) {
     if (!adapter.restoreVersion) return
@@ -675,6 +853,7 @@ function ReviewSurface<P extends Project>({
                 onSelectCaption={handleSelectCaption}
                 onCaptionSegmentChange={handleCaptionSegmentChange}
                 engine={engine}
+                transportRef={transportRef}
               />
             </div>
           ) : (
@@ -798,14 +977,19 @@ function ReviewSurface<P extends Project>({
             onCut={handleCut}
             onInspectClip={(id) => setInspecting({ kind: 'clip', id })}
             onInspectAudio={(id) => setInspecting({ kind: 'audio', id })}
-            onSaveProject={(p) => sync.mutate(() => p as P)}
             rippleMode={rippleMode}
             getWaveformChunks={getWaveformChunks}
             resolveFilePath={resolveFilePath}
+            getWaveformPeaks={getWaveformPeaks}
+            getFilmstrip={getFilmstrip}
             regenEnabled={regenEnabled}
             isClipQueued={isClipQueued}
             renderSubcutRegen={renderSubcutRegen}
             onRegenerateCaptions={adapter.generateCaptions ? () => setRegenCaptionsOpen(true) : undefined}
+            timeline={timeline}
+            modalOpen={anyModalOpen}
+            onOpenGoToTime={openGoToTime}
+            actionsRef={timelineActionsRef}
           />
         </div>
       </div>
@@ -886,6 +1070,17 @@ function ReviewSurface<P extends Project>({
           title="Editor controls"
           sections={VIDEO_CONTROLS}
           onClose={() => setShowControls(false)}
+        />
+      )}
+
+      {/* Command palette — Cmd/Ctrl+K, or the scrubber's time-readout click
+          (opens straight into "go to time"). */}
+      {paletteOpen && (
+        <CommandPalette
+          commands={paletteCommands}
+          initialMode={paletteOpen === 'goto' ? 'goto' : 'list'}
+          onGoToTime={(seconds) => clock.set(Math.max(0, Math.min(getTotalDuration(), seconds)))}
+          onClose={closePalette}
         />
       )}
 

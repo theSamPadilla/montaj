@@ -7,6 +7,14 @@ export interface Cut {
   end: number
 }
 
+/** Shortest a clip may be left by a trim op. Mirrors the timeline drag clamp in
+ *  `timeline/multiSelectOps.ts`, which owns the same constant module-privately. */
+const MIN_DURATION = 0.1
+
+/** Float slop for adjacency and no-op checks — matches the tolerance already
+ *  used when deciding whether a collapse fragment is worth keeping. */
+const EPSILON = 0.001
+
 // ── ID generation ───────────────────────────────────────────────────────────
 
 function uniqueId(base: string): string {
@@ -365,5 +373,303 @@ export function splitAtTime<P extends Project>(project: P, at: number, itemId: s
     ...project,
     tracks: newTracks,
     audio: { ...project.audio, tracks: newAudioTracks },
+  }
+}
+
+// ── Trim ops (ripple / roll / slip / slide) ─────────────────────────────────
+//
+// Four pure editing ops over the same data the cut engine above works on. Rules
+// shared by all four, matching the ops above:
+//
+//   • in/outPoints are ORIGINAL SOURCE coordinates; `normalizedInPoint` is a
+//     cache origin and is never rewritten here (see schema.ts).
+//   • Source points are written only when the item already carries them, so an
+//     op never invents an inPoint/outPoint on an item that had none.
+//   • Timeline durations map 1:1 onto source-window durations (no speed ramps),
+//     so a MIN_DURATION clamp on the timeline is also the source-window clamp.
+//   • `sourceDuration` absent ⇒ the source end is unknown ⇒ no upper clamp,
+//     the same `?? Infinity` convention `timeline/multiSelectOps.ts` uses.
+//   • Every op returns the SAME project reference when it would change nothing.
+//
+// AUDIO COUPLING: `project.audio.tracks` is never moved by these ops, matching
+// `collapseGaps` — music beds and voiceover are timed independently of the
+// visual track, so rippling video must not desync them. `splitAtTime` is the
+// only op in this file that reaches into audio, and it splits rather than
+// shifts. Ripple targets are visual items only; an audio-track id is a no-op.
+
+function findItem(tracks: VisualItem[][], itemId: string): { ti: number; ii: number } | null {
+  for (let ti = 0; ti < tracks.length; ti++) {
+    const ii = tracks[ti].findIndex(item => item.id === itemId)
+    if (ii !== -1) return { ti, ii }
+  }
+  return null
+}
+
+/** Source window of an item in original-source coordinates, defaulted the same
+ *  way `cutSingleItem` defaults it. */
+function sourceWindow(item: VisualItem): { inPoint: number; outPoint: number } {
+  const inPoint = item.inPoint ?? 0
+  return { inPoint, outPoint: item.outPoint ?? (inPoint + (item.end - item.start)) }
+}
+
+/** Shift the segments whose midpoint falls inside `window` by `delta`, leaving
+ *  every other segment at the same reference. Midpoint ownership is the rule
+ *  `collapseGaps` already uses to decide which clip a caption belongs to. */
+function shiftCaptionsInWindow(
+  segments: CaptionSegment[],
+  window: { start: number; end: number },
+  delta: number,
+): CaptionSegment[] {
+  return segments.map(seg => {
+    const mid = (seg.start + seg.end) / 2
+    if (mid < window.start || mid >= window.end) return seg
+    return {
+      ...seg,
+      start: seg.start + delta,
+      end: seg.end + delta,
+      words: seg.words?.map(w => ({ ...w, start: w.start + delta, end: w.end + delta })),
+    }
+  })
+}
+
+/**
+ * Delete an item and close the gap it leaves by pulling later timeline content
+ * earlier by its duration.
+ *
+ * Contrast with `collapseGaps`, which normalizes EVERY gap in the primary track:
+ * ripple-delete shifts only content that starts at or after the deletion point,
+ * so gaps the editor placed deliberately earlier in the timeline survive.
+ *
+ * - Items in every track (primary and overlay) whose `start` is at/after the
+ *   deleted item's `end` shift earlier; items overlapping the deleted window are
+ *   not "subsequent" and stay put. Shifted items move on the timeline only —
+ *   their source windows are untouched.
+ * - Captions are remapped with the same `applyCutToCaptions` rules the lift cut
+ *   uses: segments inside the deleted window are dropped, partials are trimmed,
+ *   and later segments (and their words) shift by the deleted duration.
+ * - Audio tracks are untouched (see AUDIO COUPLING above).
+ * - Empty tracks are kept, as everywhere else in this file.
+ * - Returns the same project reference if `itemId` names no visual item.
+ */
+export function rippleDelete<P extends Project>(project: P, itemId: string): P {
+  const tracks = project.tracks ?? []
+  const found = findItem(tracks, itemId)
+  if (!found) return project
+
+  const item = tracks[found.ti][found.ii]
+  const duration = item.end - item.start
+
+  const newTracks = tracks.map(track =>
+    track
+      .filter(other => other.id !== itemId)
+      .map(other =>
+        duration > EPSILON && other.start >= item.end - EPSILON
+          ? { ...other, start: other.start - duration, end: other.end - duration }
+          : other,
+      ),
+  )
+
+  const newCaptions = project.captions && duration > EPSILON
+    ? {
+        ...project.captions,
+        segments: applyCutToCaptions(project.captions.segments, { start: item.start, end: item.end }),
+      }
+    : project.captions
+
+  return { ...project, tracks: newTracks, captions: newCaptions }
+}
+
+/**
+ * Move the boundary shared by two adjacent clips: the left clip's outPoint and
+ * the right clip's inPoint travel together, so the pair's combined duration and
+ * every other item on the timeline stay exactly where they are.
+ *
+ * `delta` is the boundary movement in seconds (positive = later) and is clamped,
+ * not rejected, so a drag past a limit parks the boundary at that limit:
+ *   - neither clip may drop below MIN_DURATION;
+ *   - the left clip may not run past the end of its source media;
+ *   - the right clip may not start before the start of its source media.
+ * Source clamps apply to video items only; images/overlays roll geometrically.
+ *
+ * Captions and audio are untouched — a roll swaps which source frames play at
+ * the boundary without moving anything on the timeline.
+ *
+ * Returns the same project reference when either id is missing, the two clips
+ * are on different tracks, they are not adjacent (which is also what a reversed
+ * argument pair looks like), or the clamped movement is zero.
+ */
+export function rollEdit<P extends Project>(
+  project: P,
+  leftItemId: string,
+  rightItemId: string,
+  delta: number,
+): P {
+  const tracks = project.tracks ?? []
+  const l = findItem(tracks, leftItemId)
+  const r = findItem(tracks, rightItemId)
+  if (!l || !r) return project
+  if (l.ti !== r.ti) return project              // a boundary only exists within one track
+
+  const left  = tracks[l.ti][l.ii]
+  const right = tracks[r.ti][r.ii]
+  if (Math.abs(left.end - right.start) > EPSILON) return project   // not adjacent
+
+  const { outPoint: leftOut } = sourceWindow(left)
+  const { inPoint: rightIn }  = sourceWindow(right)
+
+  let minDelta = left.start + MIN_DURATION - left.end
+  let maxDelta = right.end - MIN_DURATION - right.start
+  if (left.type === 'video')  maxDelta = Math.min(maxDelta, (left.sourceDuration ?? Infinity) - leftOut)
+  if (right.type === 'video') minDelta = Math.max(minDelta, -rightIn)
+  if (minDelta > maxDelta) return project        // already past both limits — nothing safe to do
+
+  const d = Math.max(minDelta, Math.min(delta, maxDelta))
+  if (Math.abs(d) <= EPSILON) return project
+
+  const newLeft: VisualItem = {
+    ...left,
+    end: left.end + d,
+    ...(left.outPoint !== undefined ? { outPoint: left.outPoint + d } : {}),
+  }
+  const newRight: VisualItem = {
+    ...right,
+    start: right.start + d,
+    ...(right.inPoint !== undefined ? { inPoint: right.inPoint + d } : {}),
+  }
+  const newTrack = tracks[l.ti].map(item =>
+    item.id === left.id ? newLeft : item.id === right.id ? newRight : item,
+  )
+
+  return { ...project, tracks: tracks.map((t, i) => (i === l.ti ? newTrack : t)) }
+}
+
+/**
+ * Slide an item's source window through its media while the item keeps its exact
+ * timeline position: `inPoint` and `outPoint` both move by `delta`, `start` and
+ * `end` do not. The window length never changes, so MIN_DURATION cannot bind —
+ * only the source-media bounds do (`inPoint` >= 0, `outPoint` <= sourceDuration).
+ *
+ * Nothing else on the timeline is affected, so captions and audio are untouched.
+ *
+ * Returns the same project reference when the item is missing, is not a video
+ * clip, carries no source window to slip, or the clamped movement is zero.
+ */
+export function slipItem<P extends Project>(project: P, itemId: string, delta: number): P {
+  const tracks = project.tracks ?? []
+  const found = findItem(tracks, itemId)
+  if (!found) return project
+
+  const item = tracks[found.ti][found.ii]
+  if (item.type !== 'video') return project                                  // no source media
+  if (item.inPoint === undefined && item.outPoint === undefined) return project
+
+  const { inPoint, outPoint } = sourceWindow(item)
+  const minDelta = -inPoint
+  const maxDelta = (item.sourceDuration ?? Infinity) - outPoint
+  if (minDelta > maxDelta) return project
+
+  const d = Math.max(minDelta, Math.min(delta, maxDelta))
+  if (Math.abs(d) <= EPSILON) return project
+
+  const newItem: VisualItem = {
+    ...item,
+    ...(item.inPoint  !== undefined ? { inPoint:  item.inPoint  + d } : {}),
+    ...(item.outPoint !== undefined ? { outPoint: item.outPoint + d } : {}),
+  }
+  const newTrack = tracks[found.ti].map(other => (other.id === item.id ? newItem : other))
+
+  return { ...project, tracks: tracks.map((t, i) => (i === found.ti ? newTrack : t)) }
+}
+
+/**
+ * Move an item along the timeline with its source window unchanged, letting its
+ * adjacent neighbors absorb the movement: the previous neighbor's outPoint
+ * extends or shrinks to meet the item's new start, and the next neighbor's
+ * inPoint does the same at its new end. The three-clip span therefore keeps its
+ * total duration and nothing outside it moves.
+ *
+ * `delta` is clamped rather than rejected:
+ *   - neither neighbor may drop below MIN_DURATION;
+ *   - the previous neighbor may not extend past the end of its source media;
+ *   - the next neighbor may not extend before the start of its source media;
+ *   - the item may not cross the timeline origin.
+ * A neighbor that is absent or separated by a gap absorbs nothing and imposes no
+ * limit — the item simply moves through the empty space.
+ *
+ * Captions whose midpoint sits over the item's OLD window travel with it, the
+ * same midpoint-ownership rule `collapseGaps` uses; captions over the neighbors
+ * do not move, because the neighbors' existing content does not move either.
+ * Audio is untouched.
+ *
+ * Returns the same project reference when the item is missing or the clamped
+ * movement is zero.
+ */
+export function slideItem<P extends Project>(project: P, itemId: string, delta: number): P {
+  const tracks = project.tracks ?? []
+  const found = findItem(tracks, itemId)
+  if (!found) return project
+
+  const track = tracks[found.ti]
+  const item  = track[found.ii]
+
+  // Neighbors are the items either side of this one in TIMELINE order, which is
+  // not necessarily array order.
+  const sorted = [...track].sort((a, b) => a.start - b.start)
+  const pos    = sorted.findIndex(other => other.id === itemId)
+  const before = pos > 0 ? sorted[pos - 1] : undefined
+  const after  = pos < sorted.length - 1 ? sorted[pos + 1] : undefined
+  const prev   = before && Math.abs(before.end - item.start) <= EPSILON ? before : undefined
+  const next   = after  && Math.abs(after.start - item.end)  <= EPSILON ? after  : undefined
+
+  let minDelta = -item.start
+  let maxDelta = Infinity
+  if (prev) {
+    minDelta = Math.max(minDelta, MIN_DURATION - (prev.end - prev.start))
+    if (prev.type === 'video') {
+      maxDelta = Math.min(maxDelta, (prev.sourceDuration ?? Infinity) - sourceWindow(prev).outPoint)
+    }
+  }
+  if (next) {
+    maxDelta = Math.min(maxDelta, (next.end - next.start) - MIN_DURATION)
+    if (next.type === 'video') minDelta = Math.max(minDelta, -sourceWindow(next).inPoint)
+  }
+  if (minDelta > maxDelta) return project
+
+  const d = Math.max(minDelta, Math.min(delta, maxDelta))
+  if (Math.abs(d) <= EPSILON) return project
+
+  const moved = new Map<string, VisualItem>()
+  moved.set(item.id, { ...item, start: item.start + d, end: item.end + d })
+  if (prev) {
+    moved.set(prev.id, {
+      ...prev,
+      end: prev.end + d,
+      ...(prev.outPoint !== undefined ? { outPoint: prev.outPoint + d } : {}),
+    })
+  }
+  if (next) {
+    moved.set(next.id, {
+      ...next,
+      start: next.start + d,
+      ...(next.inPoint !== undefined ? { inPoint: next.inPoint + d } : {}),
+    })
+  }
+  const newTrack = track.map(other => moved.get(other.id) ?? other)
+
+  const newCaptions = project.captions
+    ? {
+        ...project.captions,
+        segments: shiftCaptionsInWindow(
+          project.captions.segments,
+          { start: item.start, end: item.end },
+          d,
+        ),
+      }
+    : project.captions
+
+  return {
+    ...project,
+    tracks: tracks.map((t, i) => (i === found.ti ? newTrack : t)),
+    captions: newCaptions,
   }
 }

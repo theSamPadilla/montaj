@@ -183,6 +183,89 @@ export interface WaveformChunk {
   end: number
 }
 
+// ── Waveform peaks & filmstrips (optional capability) ─────────────────────────
+
+/**
+ * Zoom-bucketed audio peak data for a scrubbable waveform view — the
+ * canvas-rendered replacement for `WaveformChunk`'s fixed PNGs. `peaks` is
+ * interleaved `[min, max, min, max, ...]`, one pair per sample bucket, values
+ * in int16 range. `samplesPerSecond` is normally one of the requested
+ * resolution buckets (50 | 200 | 800) but may come back as a lower,
+ * non-bucketed number when the host's total-samples clamp forced a step-down
+ * for a long window — the actual resolution used, never silently truncated,
+ * hence `number` rather than a literal union. `start`/`duration` echo the
+ * decoded source-time window in seconds. Maps to Montaj's `waveform_peaks`
+ * step.
+ */
+export interface PeaksData {
+  samplesPerSecond: number
+  start: number
+  duration: number
+  peaks: number[]
+}
+
+/** The three bucketed resolutions `getWaveformPeaks` may request. */
+export type PeaksResolution = 50 | 200 | 800
+
+/**
+ * Args for `EditorAdapter.getWaveformPeaks`. `projectId` scopes the host's
+ * output cache (mirrors `getWaveformChunks`'s explicit `projectId`, since a
+ * single adapter instance isn't itself project-scoped); `src` is the
+ * source-identity path — a proxy or original file, per the caller's
+ * input-selection policy (see the Montaj adapter implementation comment);
+ * `samplesPerSecond` is the requested resolution bucket; `start`/`duration`
+ * optionally window the request to part of the source (omit for the whole
+ * file).
+ */
+export interface GetWaveformPeaksArgs {
+  projectId: string
+  src: string
+  samplesPerSecond: PeaksResolution
+  start?: number
+  duration?: number
+}
+
+/**
+ * One tiled contact sheet in a `FilmstripIndex`. `path` is a host-resolvable
+ * image path (route through `fileUrl` to display — same convention as
+ * `WaveformChunk.path`). `tiles` maps each cell to its source timestamp `t`
+ * (seconds) and its `row`/`col` position in the sheet's `cols` x `rows` grid.
+ */
+export interface FilmstripSheet {
+  path: string
+  cols: number
+  rows: number
+  tiles: Array<{ t: number; row: number; col: number }>
+}
+
+/**
+ * A video's uniform time-grid thumbnail strip, tiled across one or more
+ * `FilmstripSheet`s. `interval` is the seconds between consecutive tiles
+ * (uniform across the whole filmstrip); `tileWidth` is the pixel width every
+ * tile was scaled to. Maps to Montaj's `filmstrip` step.
+ */
+export interface FilmstripIndex {
+  sheets: FilmstripSheet[]
+  interval: number
+  tileWidth: number
+}
+
+/**
+ * Args for `EditorAdapter.getFilmstrip`. `projectId` scopes the host's output
+ * cache; `src` is the source-identity path (proxy-only, per the video
+ * timeline's filmstrip policy — see the Montaj adapter implementation
+ * comment). The grid params mirror the `filmstrip` step's own knobs and are
+ * optional — omit to use the step's defaults (`max-tiles=100`,
+ * `min-interval=1.0`, `tile-width=160`).
+ */
+export interface GetFilmstripArgs {
+  projectId: string
+  src: string
+  maxTiles?: number
+  minInterval?: number
+  tileWidth?: number
+}
+
 // ── Media (optional capability) ───────────────────────────────────────────────
 
 /**
@@ -375,6 +458,28 @@ export interface EditorAdapter<P extends Project = Project> {
     trackSrc: string,
     chunkDurationS?: number,
   ): Promise<WaveformChunk[]>
+
+  /**
+   * Optional: produce zoom-bucketed audio peak data for a scrubbable
+   * waveform view — the canvas-timeline sibling of `getWaveformChunks`, used
+   * instead of it when the host renders waveforms zoom-responsively rather
+   * than as fixed PNG chunks. Input-selection policy is the *caller's*
+   * responsibility, not this method's: `item.proxySrc` (proxy only — no
+   * fallback to the original) for per-clip waveforms on visual tracks,
+   * `track.src` for audio lanes (see the Montaj adapter implementation
+   * comment). Maps to Montaj's
+   * `waveform_peaks` step. Hosts without a canvas timeline omit this; the
+   * editor feature-detects its absence.
+   */
+  getWaveformPeaks?(args: GetWaveformPeaksArgs): Promise<PeaksData>
+
+  /**
+   * Optional: produce a uniform time-grid filmstrip (thumbnail strip) for a
+   * video source, tiled into one or more contact sheets with a timestamp
+   * index. Maps to Montaj's `filmstrip` step. Hosts without a canvas
+   * timeline omit this; the editor feature-detects its absence.
+   */
+  getFilmstrip?(args: GetFilmstripArgs): Promise<FilmstripIndex>
 
   /**
    * Optional: invalidate the host's compiled-overlay cache. When `src` is given,
@@ -653,4 +758,28 @@ export interface VideoEditorProps<P extends Project = Project> {
    * montaj ui app's dev toggle reads `localStorage['montaj-engine']`.
    */
   engine?: { enabled: boolean; debugHud?: boolean }
+
+  /**
+   * SP5 — opt into the canvas timeline surface, replacing the DOM
+   * track-row area (visual tracks + audio lanes) with a `<canvas>`-rendered
+   * view. Follows the `engine` (SP4) host-knob precedent: an optional prop,
+   * absent by default, that a host passes to change editor behavior.
+   * Threaded straight through to `Timeline`'s own `timeline` prop (see
+   * `video/timeline/Timeline.tsx`).
+   *
+   * Default (prop omitted) or `{ canvas: false }`: the existing DOM timeline
+   * rows, completely unchanged — this is the non-regression guarantee SP5
+   * tests against (the entire editor suite stays green with this prop
+   * untouched). The timeline's chrome (zoom controls, marker state,
+   * transcript panel/modal, scrubber) and its caption row (`CaptionTrackRow`,
+   * which owns inline contentEditable editing and cannot move to canvas) are
+   * unaffected by this flag either way.
+   *
+   * `{ canvas: true }` swaps only the track-row area (visual tracks + audio
+   * lanes) for the canvas surface; the caption row still mounts as DOM,
+   * below it.
+   *
+   * The montaj ui app's dev toggle reads `localStorage['montaj-timeline']`.
+   */
+  timeline?: { canvas: boolean }
 }

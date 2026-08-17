@@ -1,0 +1,21 @@
+{
+  "name": "filmstrip",
+  "description": "Tile a uniform time-grid of frames into filmstrip contact sheets, with an index JSON mapping every tile to its timestamp. Pure ffmpeg. Feeds a timeline scrubber thumbnail strip — unlike shot_sheet this samples on a fixed time grid, not per detected shot.",
+  "input": {
+    "type": "video",
+    "description": "Source video file (all-intra proxy expected for cheap per-tile seeking)"
+  },
+  "output": {
+    "type": "json",
+    "description": "{sheets:[{path, cols, rows, tiles:[{t, row, col}]}], interval, tileWidth}"
+  },
+  "params": [
+    { "name": "out-dir", "type": "string", "required": true, "description": "Directory to write sheet images into" },
+    { "name": "max-tiles", "type": "int", "default": 100, "min": 1, "description": "Total tile budget across the whole filmstrip; bounds interval = max(duration/max-tiles, min-interval)" },
+    { "name": "min-interval", "type": "float", "default": 1.0, "min": 0.01, "description": "Minimum seconds between tiles" },
+    { "name": "cols", "type": "int", "default": 10, "min": 1, "max": 20, "description": "Tiles per row per sheet" },
+    { "name": "tile-width", "type": "int", "default": 160, "min": 32, "max": 800, "description": "Tile width in pixels" },
+    { "name": "tiles-per-sheet", "type": "int", "default": 100, "min": 1, "description": "Tiles per sheet before splitting into another sheet" },
+    { "name": "timeout", "type": "int", "default": 600, "description": "Per-ffmpeg-call timeout in seconds" }
+  ]
+}

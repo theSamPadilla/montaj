@@ -183,6 +183,9 @@ export default function EditorPage() {
   // read; unlike theme this never changes without a reload, so a plain read is
   // enough — no state/setter needed.
   const engineFlagEnabled = localStorage.getItem('montaj-engine') === '1'
+  // SP5 — operator dev toggle for the canvas timeline surface, no in-app UI
+  // (flip via devtools + reload). Mirrors the montaj-engine toggle above.
+  const timelineFlagEnabled = localStorage.getItem('montaj-timeline') === '1'
 
   // Host-supplied slots for the package editors:
   //  - assetsPanel : Montaj's own assets panel (uploads into the project dir,
@@ -442,6 +445,7 @@ export default function EditorPage() {
             onBackToSetup={handleBackToSetup}
             regenEnabled={project.projectType === 'ai_video'}
             engine={{ enabled: engineFlagEnabled }}
+            timeline={{ canvas: timelineFlagEnabled }}
             isClipQueued={(itemId) => (project.regenQueue ?? []).some(e => e.clipId === itemId)}
             renderClipInspector={({ item, onClose }) => (
               <ClipInspectModal

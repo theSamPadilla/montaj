@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent, type WheelEvent as ReactWheelEvent } from 'react'
+import { useEffect, useMemo, useRef, useState, type MutableRefObject, type PointerEvent as ReactPointerEvent, type WheelEvent as ReactWheelEvent } from 'react'
 import { containsTime } from '@bycrux/timeline-core'
 import { videoTransformContainerStyle, videoTransformBoxPct, type VideoTransform } from './transformStyle'
 import type { EditorProject as Project } from '../../schema'
@@ -18,6 +18,18 @@ import { sourceCropVideoStyle } from './sourceCropStyle'
 import CarouselPreview from './CarouselPreview'
 
 // ---------------------------------------------------------------------------
+
+/**
+ * SP5 T9 — the transport seam. The ONE cross-component API a host-level
+ * keymap needs to drive play/pause without knowing which playback path
+ * (legacy `<video>` slots or the WebCodecs engine) is actually running.
+ * `PreviewPlayer` fills it from whichever hook is active; see
+ * `PreviewSurface` below.
+ */
+export interface TransportHandle {
+  togglePlay: () => void
+  isPlaying: () => boolean
+}
 
 interface PreviewPlayerProps {
   project: Project
@@ -45,6 +57,12 @@ interface PreviewPlayerProps {
    * actually gets it is decided by `useEngineMode` below.
    */
   engine?: { enabled: boolean; debugHud?: boolean }
+  /**
+   * SP5 T9 — imperative play/pause handle for a host-level keymap/command
+   * palette. Filled from whichever playback hook is active (legacy or
+   * engine). Absent → no-op; nothing reads or writes it.
+   */
+  transportRef?: MutableRefObject<TransportHandle | null>
 }
 
 export default function PreviewPlayer(props: PreviewPlayerProps) {
@@ -175,6 +193,7 @@ function PreviewSurface({
   onSelectCaption,
   onCaptionSegmentChange,
   engine,
+  transportRef,
 }: SurfaceProps & { playback: PlaybackBinding }) {
   const [RENDER_W, RENDER_H] = getOverlayDesignCanvas(project.settings?.resolution)
 
@@ -215,6 +234,18 @@ function PreviewSurface({
     tracks0NonVideo,
     overlayTracks,
   } = playback
+
+  // The transport seam (SP5 T9): fill the host's ref with the ACTIVE path's
+  // togglePlay/isPlaying, identically shaped for both legacy and engine
+  // playback — a host-level keymap never needs to know which one is running.
+  // `isPlaying` is exposed as a getter (not the boolean itself) so a poller
+  // (the J/K/L shuttle) always reads the current value, not a stale closure
+  // from the render that last wrote the ref.
+  useEffect(() => {
+    if (!transportRef) return
+    transportRef.current = { togglePlay, isPlaying: () => isPlaying }
+    return () => { transportRef.current = null }
+  }, [transportRef, togglePlay, isPlaying])
 
   const captionTrack = useMemo(() => project.captions, [project])
 

@@ -206,6 +206,88 @@ verification pass gating any future default change.
 
 ---
 
+## Timeline
+
+Clip, caption, and overlay tracks, plus a scrubber and zoom controls. Native
+`<div>`-per-item rows by default.
+
+### Canvas timeline (experimental, flag-gated, off by default)
+
+A `<canvas>`-rendered alternative to the DOM track rows (visual tracks +
+audio lanes) exists as an opt-in — it draws clips and audio bars on a canvas
+instead of positioning one DOM element per item, which is what makes
+panning/zooming stay smooth regardless of project size. It ships entirely
+behind a flag and changes nothing about the default experience; see
+`docs/ARCHITECTURE.md`'s "Canvas timeline" section for how it works
+internally, and `docs/plans/SP5-PARITY-CHECKLIST.md` for the manual
+verification pass gating any future default change.
+
+- **The prop.** `VideoEditor` takes an optional `timeline?: {canvas:
+  boolean}`. Absent or `{canvas: false}` (the default): the existing DOM
+  track rows, unchanged. `{canvas: true}`: the track-row area (visual tracks
+  + audio lanes) renders on canvas instead — the timeline's chrome (zoom
+  controls, marker state, the scrubber, the transcript panel/modal) and the
+  caption row are unaffected either way; the caption row always stays a real
+  DOM component (it hosts inline `contentEditable` text editing, which a
+  canvas can't do), only its position in the stack changes — below the
+  canvas in canvas mode, above the visual tracks in DOM mode.
+- **montaj ui's dev toggle.** No in-app switch yet, same pattern as the
+  playback engine flag above: `localStorage.setItem('montaj-timeline', '1')`
+  in devtools on the editor tab, then reload — `EditorPage.tsx` reads
+  `localStorage['montaj-timeline']` once per page load and passes
+  `timeline={{canvas: timelineFlagEnabled}}` down. Remove the key (or set it
+  to anything else) and reload to go back to the DOM rows.
+- **No eligibility gate.** Unlike the playback engine flag, there is no
+  capability probe and no per-project fallback — `{canvas: true}` always
+  takes effect, on every project, in every browser the editor runs in.
+- **What's new when it's on.** Per-clip waveforms on visual tracks (clips
+  never showed a waveform before this), zoom-responsive audio-lane
+  waveforms replacing fixed-resolution PNG chunks, hover-scrub filmstrip
+  thumbnails once zoomed in past a threshold, one unified magnetic-snap feel
+  across every drag/trim gesture, and four new trim tools — ripple-delete,
+  roll, slip, and slide — bound to modifier-key drags. One deliberate
+  display change: the zoom badge reports a fit-relative multiple rather than
+  the DOM path's old zoom number, and can now show a value below 1× (zooming
+  out past "fit the whole project" is newly possible). The full list of
+  what's new versus what's an accepted difference lives in the parity
+  checklist.
+
+---
+
+## Keyboard shortcuts
+
+Live for every user — **not** behind the canvas-timeline flag above. One
+shared keymap (`video/keymap.ts`) owns every binding below; it declines
+Space entirely (Space always toggles play/pause via the active playback
+path, exactly as before) and suppresses everything else while typing in a
+caption/overlay text field. Timeline-scoped keys (arrows, Delete, Enter,
+Escape) additionally stand down while a dialog is open; the editing keys
+(Split, Undo/Redo, ripple-delete, the palette, J/K/L) stay live so undo works
+with a dialog up.
+
+| Keys | Action |
+|------|--------|
+| `S` | Split at the playhead |
+| `⌘/Ctrl` + `Z` | Undo |
+| `⌘/Ctrl` + `⇧` + `Z` (or `⌘/Ctrl` + `Y`) | Redo |
+| `Delete` / `Backspace` | Delete the selection |
+| `⇧` + `Delete` / `⇧` + `Backspace` | Ripple-delete the selection — items after the deletion point shift to close the gap |
+| `←` / `→` | Step one frame (`⇧` + arrow steps one second) |
+| `Enter` | Place a marker at the playhead (cycles A → B → a fresh A) |
+| `Escape` | Clear markers |
+| `J` / `K` / `L` | Shuttle backward / stop / forward, seek-loop style at 1×/2×/4× (doubling on repeated presses in the same direction) — works identically whether the legacy `<video>` player or the experimental playback engine is active |
+| `⌘/Ctrl` + `K` | Open the command palette |
+| Click the time readout | Open the command palette straight into "go to time" (accepts bare seconds, `mm:ss`, or `hh:mm:ss`) |
+
+The command palette (`⌘/Ctrl+K`) is a filterable list — type to narrow,
+arrow keys to move the highlight, Enter to run, Escape to close. Its command
+set is state-aware: Ripple-delete only appears with a selection, Undo/Redo
+only appear when there's something to undo/redo. Always present: Play/Pause,
+Split at playhead, Zoom to fit, Go to time…, Set marker at playhead, Clear
+markers.
+
+---
+
 ## Structure
 
 ```

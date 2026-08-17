@@ -39,6 +39,12 @@ export type {
   GlobalOverlayProp,
   VersionEntry,
   WaveformChunk,
+  PeaksData,
+  PeaksResolution,
+  GetWaveformPeaksArgs,
+  FilmstripSheet,
+  FilmstripIndex,
+  GetFilmstripArgs,
   EditorAdapter,
   EditorTheme,
   EditorSlots,
@@ -52,6 +58,10 @@ export {
   applyCutToItem,
   collapseGaps,
   splitAtTime,
+  rippleDelete,
+  rollEdit,
+  slipItem,
+  slideItem,
 } from './video/cuts'
 export type { Cut } from './video/cuts'
 export { getOverlayDesignCanvas } from './video/design-canvas'

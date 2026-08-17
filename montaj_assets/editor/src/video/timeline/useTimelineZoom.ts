@@ -59,5 +59,8 @@ export function useTimelineZoom(totalDuration: number) {
     return () => el.removeEventListener('wheel', onWheel)
   }, [])
 
-  return { zoom, zoomRef, scrollRef, pendingScrollRef, zoomTo }
+  // `pendingScrollRef` stays internal: it's the mechanism that makes zoom
+  // pivot-preserving (the scrollLeft write has to land in the same layout pass
+  // as the new width), not something a caller can meaningfully use.
+  return { zoom, zoomRef, scrollRef, zoomTo }
 }

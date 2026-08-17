@@ -17,6 +17,7 @@ import type { Draggable, DragEventContext } from './useItemDragDrop'
 import AudioWaveformLayer from './AudioWaveformLayer'
 import type { GetWaveformChunks, ResolveFilePath } from './AudioWaveformLayer'
 import { applyMuteToSelection, applyResizeDeltaToSelection } from './multiSelectOps'
+import { AUDIO_LANE_HEIGHT_PX, updateAudioTrack } from './timeline-model'
 
 interface AudioTrackRowProps {
   tracks: AudioTrack[]
@@ -31,20 +32,6 @@ interface AudioTrackRowProps {
   onInspect?: (id: string) => void
   getWaveformChunks?: GetWaveformChunks
   resolveFilePath?: ResolveFilePath
-}
-
-const LANE_HEIGHT_PX = 40 // must match the h-10 (2.5rem = 40px) on the row container
-
-function updateAudioTrack(project: Project, trackId: string, changes: Partial<AudioTrack>): Project {
-  return {
-    ...project,
-    audio: {
-      ...project.audio,
-      tracks: (project.audio?.tracks ?? []).map(t =>
-        t.id === trackId ? { ...t, ...changes } : t,
-      ),
-    },
-  }
 }
 
 function AudioTrackRow({
@@ -194,7 +181,7 @@ function AudioTrackItem({
       onLivePreview: ({ item: moved, dy }: DragEventContext) => {
         // Cross-lane: compute target lane from vertical drag.
         // Positive dy = dragged down = higher lane index.
-        const laneDelta = Math.round(dy / LANE_HEIGHT_PX)
+        const laneDelta = Math.round(dy / AUDIO_LANE_HEIGHT_PX)
         const targetLane = Math.max(0, laneIndex + laneDelta)
 
         const next = updateAudioTrack(project, track.id, {

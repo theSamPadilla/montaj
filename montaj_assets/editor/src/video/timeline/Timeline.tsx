@@ -1,7 +1,7 @@
-import { useEffect, useMemo, useRef, useState, type ComponentProps, type ReactNode } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type ComponentProps, type MutableRefObject, type ReactNode } from 'react'
 import AudioTrackRow from './AudioTrackRow'
 import type { GetWaveformChunks, ResolveFilePath } from './AudioWaveformLayer'
-import type { Project } from '../../types'
+import type { FilmstripIndex, GetFilmstripArgs, GetWaveformPeaksArgs, PeaksData, Project } from '../../types'
 import { collapseGaps } from '../cuts'
 import { ratioFromClientX } from './utils'
 import { useTimelineZoom } from './useTimelineZoom'
@@ -14,6 +14,20 @@ import VisualTrackRow from './VisualTrackRow'
 import CaptionTrackRow from './CaptionTrackRow'
 import { deleteSelection, toggleSelection } from './multiSelectOps'
 import type { CaptionEditPatch } from './makeCaptionEdit'
+import { computeAutoCrossfade, computeDerivedTiming, groupAudioLanes } from './timeline-model'
+import TimelineCanvas, { useCanvasZoomControls, type ZoomControls } from './canvas/TimelineCanvas'
+import { useViewportStore } from './canvas/viewport'
+import { useKeymap, matchesArrowLeft, matchesArrowRight, matchesDelete, matchesEnter, matchesEscape } from '../keymap'
+
+/** Imperative actions a host-level command palette can trigger on markers/
+ *  zoom without lifting Timeline's local state up. Filled via `actionsRef`
+ *  (SP5 T9) — mirrors `transportRef`'s "ref threaded down, written by the
+ *  owner" shape used for PreviewPlayer. */
+export interface TimelineActions {
+  clearMarkers: () => void
+  setMarkerAtPlayhead: () => void
+  zoomFit: () => void
+}
 
 interface TimelineProps {
   project: Project
@@ -38,14 +52,33 @@ interface TimelineProps {
   onCut?: (cut: { start: number; end: number }) => void
   onInspectClip?: (id: string) => void
   onInspectAudio?: (id: string) => void
-  onSaveProject?: (p: Project) => Promise<unknown>
   rippleMode?: boolean
+  /**
+   * SP5 — opt into the canvas track-row area. Mirrors the `engine` (SP4)
+   * host-knob precedent. Absent or `{ canvas: false }`: the existing DOM
+   * track rows (visual tracks + audio lanes), unchanged — this is the
+   * non-regression guarantee SP5 tests against. `{ canvas: true }`: the DOM
+   * track rows are replaced by one `TimelineCanvas` surface with its own
+   * px-per-second viewport; the caption row stays DOM either way (inline
+   * contentEditable editing can't move to canvas) and mounts below it.
+   */
+  timeline?: { canvas: boolean }
   /** Audio-waveform fetcher, threaded to every AudioWaveformLayer. In V4 the
    *  VideoEditor wires this from `adapter.getWaveformChunks`. Absent → no
    *  waveforms render (graceful). */
   getWaveformChunks?: GetWaveformChunks
   /** Resolves a waveform chunk's host path into a displayable URL. */
   resolveFilePath?: ResolveFilePath
+  /** Zoom-bucketed peaks fetcher for the canvas timeline's waveforms (T6),
+   *  threaded from `adapter.getWaveformPeaks`. Canvas-mode only — passed to
+   *  `TimelineCanvas` and ignored by the DOM track rows. Absent → no
+   *  waveforms anywhere (graceful). */
+  getWaveformPeaks?: (args: GetWaveformPeaksArgs) => Promise<PeaksData>
+  /** Filmstrip-index fetcher for the canvas timeline's tile strips + hover-
+   *  scrub thumb (T7), threaded from `adapter.getFilmstrip`. Canvas-mode
+   *  only — passed to `TimelineCanvas` and ignored by the DOM track rows.
+   *  Absent → no filmstrips or thumbs anywhere (graceful). */
+  getFilmstrip?: (args: GetFilmstripArgs) => Promise<FilmstripIndex>
   /** Host-computed gate for the per-clip subcut-regenerate affordance (Montaj:
    *  ai_video projects). The package never reads `projectType`. */
   regenEnabled?: boolean
@@ -63,10 +96,24 @@ interface TimelineProps {
    *  Provided only when the host adapter supports `generateCaptions`; absent →
    *  the "Regenerate" button is hidden. */
   onRegenerateCaptions?: () => void
+  /**
+   * SP5 T9 — true while a HOST-level dialog (RenderModal, the command
+   * palette, etc.) is open, so Timeline's own keymap (arrows/delete/enter/
+   * escape) doesn't fire underneath it. ORed with Timeline's own
+   * `transcriptModalOpen`, which already guarded arrows/escape before T9.
+   * Absent (PendingSurface today has no such dialogs) → only the local
+   * transcript-modal check applies, unchanged.
+   */
+  modalOpen?: boolean
+  /** Opens the command palette's "go to time" input directly. Wired to the
+   *  scrubber's time readout; absent → the readout is plain text. */
+  onOpenGoToTime?: () => void
+  /** Imperative marker/zoom actions for a host-level command palette. */
+  actionsRef?: MutableRefObject<TimelineActions | null>
 }
 
 
-export default function Timeline({ project, clock, onProjectChange, onCaptionEdit, onOverlayEdit, onEditOverlay, selectedIds = [], onSelectIds, selectedCaptionId = null, onSelectCaption, onCaptionSegmentChange, onSplit, onCut, onInspectClip, onInspectAudio, rippleMode = false, getWaveformChunks, resolveFilePath, regenEnabled, isClipQueued, renderSubcutRegen, onRegenerateCaptions }: TimelineProps) {
+export default function Timeline({ project, clock, onProjectChange, onCaptionEdit, onOverlayEdit, onEditOverlay, selectedIds = [], onSelectIds, selectedCaptionId = null, onSelectCaption, onCaptionSegmentChange, onSplit, onCut, onInspectClip, onInspectAudio, rippleMode = false, getWaveformChunks, resolveFilePath, getWaveformPeaks, getFilmstrip, regenEnabled, isClipQueued, renderSubcutRegen, onRegenerateCaptions, timeline, modalOpen = false, onOpenGoToTime, actionsRef }: TimelineProps) {
   const primarySelectedId = selectedIds[0] ?? null
 
   // Click/shift-click handler — additive selection on shift or meta (cmd/ctrl).
@@ -91,59 +138,23 @@ export default function Timeline({ project, clock, onProjectChange, onCaptionEdi
 
   // Memoized so playback ticks (which re-render Timeline via the ctx useMemo's
   // clock dependency) don't recompute these on every frame — they only change
-  // when the underlying tracks/audio actually change.
-  const { snapBoundaries, contentDuration, totalDuration } = useMemo(() => {
-    const snapBoundaries = [...new Set([
-      ...allTracks.flat().flatMap(c => [c.start, c.end]),
-      ...audioTracks.flatMap(t => [t.start, t.end]),
-    ])]
-    const contentDuration = Math.max(
-      allTracks.flat().reduce((m, i) => Math.max(m, i.end ?? 0), 0),
-      audioTracks.reduce((m, t) => Math.max(m, t.end ?? 0), 0),
-    )
-    // Add 20% padding beyond content so the rightmost item can always be
-    // dragged or resized further out. Minimum 5s headroom.
-    const totalDuration = contentDuration + Math.max(5, contentDuration * 0.2)
-    return { snapBoundaries, contentDuration, totalDuration }
-  }, [project.tracks, project.audio])
+  // when the underlying tracks/audio actually change. Both the DOM and canvas
+  // (T4) track-row areas import this from timeline-model.ts, so timing can't
+  // drift between the two.
+  const { snapBoundaries, contentDuration, totalDuration } = useMemo(
+    () => computeDerivedTiming(project),
+    [project.tracks, project.audio],
+  )
 
-  // Auto-crossfade: when two audio tracks overlap, apply fade-out on the earlier
-  // and fade-in on the later, each equal to the overlap duration.
+  // Auto-crossfade: when two audio tracks overlap, apply fade-out on the
+  // earlier and fade-in on the later, each equal to the overlap duration. The
+  // decision logic lives in timeline-model.ts (computeAutoCrossfade) so both
+  // the DOM and canvas (T4) track-row areas share it; this effect is a thin
+  // shell that applies the result.
   useEffect(() => {
-    if (!audioTracks.length || !onProjectChange) return
-    const sorted = [...audioTracks].sort((a, b) => a.start - b.start)
-    let changed = false
-    const updated = sorted.map(t => ({ ...t }))
-
-    // We only auto-set fades where overlap exists
-    for (let i = 0; i < updated.length - 1; i++) {
-      const a = updated[i]
-      const b = updated[i + 1]
-      if (a.end > b.start && !a.muted && !b.muted) {
-        // Overlap detected
-        const overlap = Math.min(a.end - b.start, a.end - a.start, b.end - b.start)
-        if ((a.fadeOut ?? 0) !== overlap) {
-          a.fadeOut = Math.round(overlap * 10) / 10  // round to 0.1s
-          changed = true
-        }
-        if ((b.fadeIn ?? 0) !== overlap) {
-          b.fadeIn = Math.round(overlap * 10) / 10
-          changed = true
-        }
-      }
-    }
-
-    if (changed) {
-      const trackMap = new Map(updated.map(t => [t.id, t]))
-      const nextProject: typeof project = {
-        ...project,
-        audio: {
-          ...project.audio,
-          tracks: (project.audio?.tracks ?? []).map(t => trackMap.get(t.id) ?? t),
-        },
-      }
-      onProjectChange(nextProject)
-    }
+    if (!onProjectChange) return
+    const next = computeAutoCrossfade(project)
+    if (next) onProjectChange(next)
   // Intentionally keyed on a stable digest of audio-track timing/mute rather
   // than the array identity, so the crossfade pass only re-runs on real edits.
   }, [audioTracks.map(t => `${t.id}:${t.start}:${t.end}:${t.muted}`).join('|')])
@@ -153,6 +164,11 @@ export default function Timeline({ project, clock, onProjectChange, onCaptionEdi
   const [markers, setMarkers]                 = useState<[number | null, number | null]>([null, null])
   const [transcriptModalOpen, setTranscriptModalOpen] = useState(false)
 
+  // The tabIndex={0} root below — Delete/Enter's guards below check focus is
+  // inside it before firing (see the useKeymap block), restoring the pre-T9
+  // scoping those two bindings had (arrows/Escape were already document-level
+  // pre-SP5 and stay that way — see the useKeymap block's own comment).
+  const rootRef                               = useRef<HTMLDivElement>(null)
   const scrubberRef                           = useRef<HTMLDivElement>(null)
   const overlayDraggedRef                     = useRef(false)
   const [keyNavTime, setKeyNavTime]           = useState<number | null>(null)
@@ -162,31 +178,115 @@ export default function Timeline({ project, clock, onProjectChange, onCaptionEdi
 
   const { zoom, zoomRef, scrollRef, zoomTo } = useTimelineZoom(totalDuration)
 
+  // ── Zoom chrome, one control set over two models ──
+  // The DOM path zooms a scroll container by a multiplier; the canvas path
+  // pans/zooms a px-per-second viewport. Both feed the same three buttons via
+  // this adapter, so the chrome below doesn't branch and legacy mode renders
+  // exactly what it rendered before.
+  const canvasMode = timeline?.canvas === true
+  const viewportStore = useViewportStore()
+  const canvasZoom = useCanvasZoomControls(viewportStore, totalDuration)
+  const zoomControls: ZoomControls = canvasMode ? canvasZoom : {
+    badge: <span className="text-[10px] font-mono text-gray-500 w-7 text-center tabular-nums select-none">{zoom}×</span>,
+    zoomIn:  () => zoomTo(zoomRef.current + 1),
+    zoomOut: () => zoomTo(zoomRef.current - 1),
+    fit:     () => zoomTo(1),
+    showFit: zoom > 1,
+  }
+
+  // Place (or extend/reset) the two-marker selection at the current playhead —
+  // the original Enter handler's exact three-way branch. Shared with the
+  // Enter binding below and with `actionsRef`'s palette-facing action, so
+  // there is exactly one place that encodes the marker state machine.
+  const setMarkerAtPlayhead = useCallback(() => {
+    const t = clock.get()
+    setMarkers(([a, b]) => {
+      if (a === null) return [t, null]
+      if (b === null) return [a, t]
+      return [t, null]
+    })
+  }, [clock])
+
+  const clearMarkers = useCallback(() => setMarkers([null, null]), [])
+
+  // ── Timeline's own keymap — arrows (frame-step), delete (two-step:
+  // deleteSelection + conditional collapseGaps), enter (place marker),
+  // escape (clear markers). SP5 T9: these four bindings replace Timeline's
+  // old ad hoc document listener (arrows/escape, gated on totalDuration>0 by
+  // not registering at all) and its container-scoped onKeyDown (delete/enter)
+  // with the shared registry — one guarded document listener instead of two
+  // different attachment mechanisms with two different guard sets.
+  //
+  // Mounted HERE, not lifted into VideoEditor's keymap: this instance runs in
+  // BOTH the pending and review surfaces (PendingSurface and ReviewSurface
+  // each render their own `<Timeline>` with their own `PlaybackClock`), same
+  // as the listeners it replaces. `modalOpen` ORs the host's dialogs
+  // (ReviewSurface's RenderModal/palette/etc — absent in PendingSurface) with
+  // Timeline's own `transcriptModalOpen`, which already guarded arrows/escape
+  // pre-T9.
+  const fps = project.settings?.fps ?? 30
+  const frameStep = 1 / fps
+  useKeymap([
+    {
+      id: 'timeline.frame-step',
+      description: 'Step one frame',
+      matches: (e) => matchesArrowLeft(e) || matchesArrowRight(e),
+      guard: () => totalDuration > 0,
+      action: (e) => {
+        const step = e.shiftKey ? 1 : frameStep
+        const dir  = matchesArrowRight(e) ? 1 : -1
+        const next = Math.max(0, Math.min(totalDuration, clock.get() + dir * step))
+        clock.set(next)
+        setKeyNavTime(next)
+        if (keyNavTimerRef.current) clearTimeout(keyNavTimerRef.current)
+        keyNavTimerRef.current = setTimeout(() => setKeyNavTime(null), 1500)
+      },
+    },
+    {
+      id: 'timeline.clear-markers',
+      description: 'Clear markers',
+      matches: matchesEscape,
+      guard: () => totalDuration > 0,
+      // The original Escape handler never called preventDefault — kept exact.
+      preventDefault: false,
+      action: clearMarkers,
+    },
+    {
+      id: 'timeline.delete-selection',
+      description: 'Delete selection',
+      matches: matchesDelete,
+      // Focus-scoped (unlike arrows/Escape below): pre-SP5, delete lived on
+      // the container's own onKeyDown, so it only ever fired with the
+      // timeline focused. Restored here so a Backspace pressed elsewhere on
+      // the page (e.g. typing in the preview's overlay panel) can't delete
+      // the selected clip out from under the operator.
+      guard: () => selectedIds.length > 0 && !!rootRef.current?.contains(document.activeElement),
+      action: () => {
+        if (!onProjectChange) return
+        let updated = deleteSelection(project, selectedIds)
+        if (rippleMode) updated = collapseGaps(updated)
+        onProjectChange(updated)
+        onOverlayEdit?.(updated)
+        onSelectIds?.([])
+      },
+    },
+    {
+      id: 'timeline.set-marker',
+      description: 'Set marker at playhead',
+      matches: matchesEnter,
+      // Focus-scoped, same rationale as delete-selection above — pre-SP5 this
+      // lived on the container's own onKeyDown too.
+      guard: () => totalDuration > 0 && !!rootRef.current?.contains(document.activeElement),
+      action: setMarkerAtPlayhead,
+    },
+  ], { modalOpen: transcriptModalOpen || modalOpen })
+
+  // Hand the marker/zoom actions up to a host-level command palette.
   useEffect(() => {
-    if (totalDuration === 0) return
-    const fps = project.settings?.fps ?? 30
-    const frame = 1 / fps
-    const onKey = (e: globalThis.KeyboardEvent) => {
-      // While the transcript modal is open, or the caret is in editable text
-      // (caption segments are contentEditable), arrows move the text cursor —
-      // never the playhead.
-      if (transcriptModalOpen) return
-      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return
-      if ((e.target as HTMLElement).isContentEditable) return
-      if (e.key === 'Escape') { setMarkers([null, null]); return }
-      if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return
-      e.preventDefault()
-      const step = e.shiftKey ? 1 : frame
-      const dir  = e.key === 'ArrowRight' ? 1 : -1
-      const next = Math.max(0, Math.min(totalDuration, clock.get() + dir * step))
-      clock.set(next)
-      setKeyNavTime(next)
-      if (keyNavTimerRef.current) clearTimeout(keyNavTimerRef.current)
-      keyNavTimerRef.current = setTimeout(() => setKeyNavTime(null), 1500)
-    }
-    document.addEventListener('keydown', onKey)
-    return () => document.removeEventListener('keydown', onKey)
-  }, [totalDuration, clock, project.settings?.fps, transcriptModalOpen])
+    if (!actionsRef) return
+    actionsRef.current = { clearMarkers, setMarkerAtPlayhead, zoomFit: zoomControls.fit }
+    return () => { actionsRef.current = null }
+  })
 
   // Derive selection from two placed markers
   const selection = markers[0] !== null && markers[1] !== null
@@ -198,30 +298,6 @@ export default function Timeline({ project, clock, onProjectChange, onCaptionEdi
     overlayDraggedRef, clock, markers, setMarkers, selection,
   }), [totalDuration, contentDuration, snapBoundaries, zoom, zoomRef, scrollRef, scrubberRef,
     overlayDraggedRef, clock, markers, setMarkers, selection])
-
-  function handleKeyDown(e: React.KeyboardEvent<HTMLDivElement>) {
-    if ((e.target as HTMLElement).isContentEditable) return
-
-    if ((e.key === 'Delete' || e.key === 'Backspace') && selectedIds.length > 0) {
-      e.preventDefault()
-      if (!onProjectChange) return
-      let updated = deleteSelection(project, selectedIds)
-      if (rippleMode) updated = collapseGaps(updated)
-      onProjectChange(updated)
-      onOverlayEdit?.(updated)
-      onSelectIds?.([])
-      return
-    }
-
-    if (e.key !== 'Enter' || totalDuration === 0) return
-    e.preventDefault()
-    const t = clock.get()
-    setMarkers(([a, b]) => {
-      if (a === null) return [t, null]
-      if (b === null) return [a, t]
-      return [t, null]
-    })
-  }
 
   function handleContainerClick(e: React.MouseEvent) {
     if ((e.target as HTMLElement).closest('button, input, [contenteditable]')) return
@@ -241,12 +317,27 @@ export default function Timeline({ project, clock, onProjectChange, onCaptionEdi
     ? `Cut ${allTracks.flat().find(i => i.id === primarySelectedId)?.type ?? 'item'}`
     : 'Cut primary'
 
+  // ── Caption track — its own row, NOT part of tracks[]; reads/writes
+  // project.captions directly (see CaptionTrackRow's file header for the
+  // special-track rationale). Stays DOM in BOTH timeline modes — inline
+  // contentEditable editing can't move to canvas — so it's shared between
+  // the two track-row-area branches below rather than duplicated.
+  const captionRow = (
+    <CaptionTrackRow
+      captionTrack={captionTrack}
+      fps={project.settings?.fps ?? 30}
+      selectedCaptionId={selectedCaptionId}
+      onSelectCaption={onSelectCaption}
+      onCaptionSegmentChange={onCaptionSegmentChange}
+    />
+  )
+
   return (
     <TimelineContext.Provider value={ctx}>
     <div
+      ref={rootRef}
       className="flex flex-col gap-2 px-3 py-3 select-none outline-none"
       tabIndex={0}
-      onKeyDown={handleKeyDown}
       onMouseMove={(e) => {
         const rect = scrubberRef.current?.getBoundingClientRect()
         if (rect) setHoverPct(ratioFromClientX(e.clientX, rect) * 100)
@@ -261,19 +352,19 @@ export default function Timeline({ project, clock, onProjectChange, onCaptionEdi
           <button
             className="text-[11px] leading-none text-gray-500 hover:text-gray-300 w-5 h-5 flex items-center justify-center rounded hover:bg-gray-800 transition-colors"
             title="Zoom out"
-            onClick={(e) => { e.stopPropagation(); zoomTo(zoomRef.current - 1) }}
+            onClick={(e) => { e.stopPropagation(); zoomControls.zoomOut() }}
           >−</button>
-          <span className="text-[10px] font-mono text-gray-500 w-7 text-center tabular-nums select-none">{zoom}×</span>
+          {zoomControls.badge}
           <button
             className="text-[11px] leading-none text-gray-500 hover:text-gray-300 w-5 h-5 flex items-center justify-center rounded hover:bg-gray-800 transition-colors"
             title="Zoom in"
-            onClick={(e) => { e.stopPropagation(); zoomTo(zoomRef.current + 1) }}
+            onClick={(e) => { e.stopPropagation(); zoomControls.zoomIn() }}
           >+</button>
-          {zoom > 1 && (
+          {zoomControls.showFit && (
             <button
               className="text-[10px] text-gray-500 hover:text-gray-300 px-1.5 h-5 rounded hover:bg-gray-800 transition-colors ml-0.5"
               title="Fit to view"
-              onClick={(e) => { e.stopPropagation(); zoomTo(1) }}
+              onClick={(e) => { e.stopPropagation(); zoomControls.fit() }}
             >fit</button>
           )}
         </div>
@@ -300,6 +391,7 @@ export default function Timeline({ project, clock, onProjectChange, onCaptionEdi
         onSplit={onSplit}
         onCut={onCut}
         cutButtonLabel={cutButtonLabel}
+        onOpenGoToTime={onOpenGoToTime}
       />
 
       {/* ── Tracks ── */}
@@ -310,72 +402,85 @@ export default function Timeline({ project, clock, onProjectChange, onCaptionEdi
             <span>ffmpeg render — overlays are preview only, final text is burned by ffmpeg</span>
           </div>
         )}
-        {/* ── Caption track — its own row above the visual tracks. NOT part of
-            tracks[]; reads/writes project.captions directly (see
-            CaptionTrackRow's file header for the special-track rationale). ── */}
-        <CaptionTrackRow
-          captionTrack={captionTrack}
-          fps={project.settings?.fps ?? 30}
-          selectedCaptionId={selectedCaptionId}
-          onSelectCaption={onSelectCaption}
-          onCaptionSegmentChange={onCaptionSegmentChange}
-        />
-
-        {[...allTracks].reverse().map((trackItems, reversedIdx) => {
-          const trackIdx = allTracks.length - 1 - reversedIdx
-          return (
-            <VisualTrackRow
-              key={trackIdx}
-              trackItems={trackItems}
-              trackIdx={trackIdx}
+        {canvasMode ? (
+          <>
+            {/* ── Canvas track-row area — one surface in place of the visual
+                tracks + audio lanes the DOM branch renders below. It owns its
+                own zoom/scroll (px-per-second), so the scrubber above it stays
+                a whole-project overview rather than tracking canvas zoom. ── */}
+            <TimelineCanvas
               project={project}
+              clock={clock}
+              store={viewportStore}
+              totalDuration={totalDuration}
               selectedIds={selectedIds}
+              markers={markers}
+              snapBoundaries={snapBoundaries}
               rippleMode={rippleMode}
+              onSelectItem={handleSelectItem}
               onProjectChange={onProjectChange}
               onOverlayEdit={onOverlayEdit}
-              onEditOverlay={onEditOverlay}
-              onSelectItem={handleSelectItem}
               onInspectClip={onInspectClip}
-              subcutClipId={subcutClipId}
-              setSubcutClipId={setSubcutClipId}
-              regenEnabled={regenEnabled}
-              isClipQueued={isClipQueued}
-            />
-          )
-        })}
-
-        {/* Audio tracks — grouped by lane */}
-        {(() => {
-          // Group audio tracks by lane. Tracks without a lane get auto-assigned.
-          const laneMap = new Map<number, typeof audioTracks>()
-          let nextAutoLane = 0
-          for (const t of audioTracks) {
-            if (t.lane != null && t.lane >= nextAutoLane) nextAutoLane = t.lane + 1
-          }
-          for (const t of audioTracks) {
-            const lane = t.lane ?? nextAutoLane++
-            if (!laneMap.has(lane)) laneMap.set(lane, [])
-            laneMap.get(lane)!.push(t)
-          }
-          const lanes = [...laneMap.entries()].sort((a, b) => a[0] - b[0])
-
-          return lanes.map(([laneIdx, laneTracks]) => (
-            <AudioTrackRow
-              key={`audio-lane-${laneIdx}`}
-              tracks={laneTracks}
-              laneIndex={laneIdx}
-              laneCount={lanes.length}
-              project={project}
-              onProjectChange={onProjectChange}
-              onOverlayEdit={onOverlayEdit}
-              selectedIds={selectedIds}
-              onSelectItem={handleSelectItem}
-              onInspect={onInspectAudio}
-              getWaveformChunks={getWaveformChunks}
+              onInspectAudio={onInspectAudio}
+              setMarkers={setMarkers}
+              getWaveformPeaks={getWaveformPeaks}
+              getFilmstrip={getFilmstrip}
               resolveFilePath={resolveFilePath}
             />
-          ))
-        })()}
+            {captionRow}
+          </>
+        ) : (
+          <>
+            {captionRow}
+
+            {[...allTracks].reverse().map((trackItems, reversedIdx) => {
+              const trackIdx = allTracks.length - 1 - reversedIdx
+              return (
+                <VisualTrackRow
+                  key={trackIdx}
+                  trackItems={trackItems}
+                  trackIdx={trackIdx}
+                  project={project}
+                  selectedIds={selectedIds}
+                  rippleMode={rippleMode}
+                  onProjectChange={onProjectChange}
+                  onOverlayEdit={onOverlayEdit}
+                  onEditOverlay={onEditOverlay}
+                  onSelectItem={handleSelectItem}
+                  onInspectClip={onInspectClip}
+                  subcutClipId={subcutClipId}
+                  setSubcutClipId={setSubcutClipId}
+                  regenEnabled={regenEnabled}
+                  isClipQueued={isClipQueued}
+                />
+              )
+            })}
+
+            {/* Audio tracks — grouped by lane. The grouping lives in
+                timeline-model so the canvas painter puts each track in the
+                same row this branch does. */}
+            {(() => {
+              const lanes = groupAudioLanes(audioTracks)
+
+              return lanes.map(({ laneIndex: laneIdx, tracks: laneTracks }) => (
+                <AudioTrackRow
+                  key={`audio-lane-${laneIdx}`}
+                  tracks={laneTracks}
+                  laneIndex={laneIdx}
+                  laneCount={lanes.length}
+                  project={project}
+                  onProjectChange={onProjectChange}
+                  onOverlayEdit={onOverlayEdit}
+                  selectedIds={selectedIds}
+                  onSelectItem={handleSelectItem}
+                  onInspect={onInspectAudio}
+                  getWaveformChunks={getWaveformChunks}
+                  resolveFilePath={resolveFilePath}
+                />
+              ))
+            })()}
+          </>
+        )}
 
       </div>
 

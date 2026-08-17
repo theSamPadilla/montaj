@@ -35,6 +35,10 @@ import type {
   GlobalOverlay,
   VersionEntry,
   WaveformChunk,
+  PeaksData,
+  GetWaveformPeaksArgs,
+  FilmstripIndex,
+  GetFilmstripArgs,
 } from '@bycrux/editor'
 // Montaj instantiates the editor's generic adapter with its full project type,
 // so loaded/saved/streamed frames keep Montaj's pipeline fields end-to-end.
@@ -48,6 +52,31 @@ const WAVEFORM_CHUNK_DURATION_S = 15
 // Folded in from the former `lib/audio-waveform.ts` closure so the adapter owns
 // the dedup. Module-level so it survives across `createMontajAdapter()` calls.
 const waveformCache = new Map<string, Promise<WaveformChunk[]>>()
+
+// Per (projectId, src, window, samplesPerSecond) cache of pending peaks
+// fetches. The canvas timeline (T6) re-fetches at a higher resolution bucket
+// as zoom crosses each bucket's px/s ceiling, so the key includes the bucket:
+// each distinct (src, window, bucket) tuple is fetched at most once.
+const peaksCache = new Map<string, Promise<PeaksData>>()
+
+// Per (projectId, src, grid params) cache of pending filmstrip fetches.
+const filmstripCache = new Map<string, Promise<FilmstripIndex>>()
+
+/**
+ * Deterministic, filesystem-safe short hash of a source path — used to give
+ * each source its own subfolder under a project-scoped filmstrip cache dir
+ * (a project's proxied clips/tracks each need their own sheet set, unlike
+ * `getWaveformPeaks`, which returns its JSON result inline with nothing
+ * written to disk). Not cryptographic; only needs to avoid collisions across
+ * the handful of sources a single project has.
+ */
+function srcCacheKey(src: string): string {
+  let h = 0
+  for (let i = 0; i < src.length; i++) {
+    h = (Math.imul(31, h) + src.charCodeAt(i)) | 0
+  }
+  return (h >>> 0).toString(36)
+}
 
 /** Replicates SlideCanvas's `resolveAsset` so the editor displays the same URL. */
 export function resolveMontajImageSrc(element: ImageElement): string {
@@ -231,6 +260,63 @@ export function createMontajAdapter(): EditorAdapter<Project> {
         if (waveformCache.get(key) === promise) waveformCache.delete(key)
       })
       waveformCache.set(key, promise)
+      return promise
+    },
+
+    // Waveform peaks → the `waveform_peaks` step, the canvas-timeline sibling
+    // of `getWaveformChunks`. Input-selection policy is the CALLER's job, not
+    // this method's: `item.proxySrc` (proxy only, no fallback to the original)
+    // for per-clip waveforms on visual tracks, `track.src` for audio lanes
+    // (SP5 plan decision 5, proxy-only as resolved in T6). The
+    // step returns its `{samplesPerSecond, start, duration, peaks}` JSON
+    // inline — no `--out-dir`, nothing is written to the workspace.
+    getWaveformPeaks: (args: GetWaveformPeaksArgs): Promise<PeaksData> => {
+      const { projectId, src, samplesPerSecond, start, duration } = args
+      const key = `${projectId}:${src}:${start ?? ''}:${duration ?? ''}:${samplesPerSecond}`
+      const existing = peaksCache.get(key)
+      if (existing) return existing
+
+      const stepArgs: Record<string, unknown> = {
+        input: src,
+        'samples-per-second': samplesPerSecond,
+      }
+      if (start !== undefined) stepArgs.start = start
+      if (duration !== undefined) stepArgs.duration = duration
+
+      const promise = api.runStepAsync<PeaksData>('waveform_peaks', stepArgs)
+      // Evict on failure so a transient error doesn't poison the cache with a
+      // permanently-rejected promise — the next call retries (same pattern as
+      // getWaveformChunks above).
+      promise.catch(() => {
+        if (peaksCache.get(key) === promise) peaksCache.delete(key)
+      })
+      peaksCache.set(key, promise)
+      return promise
+    },
+
+    // Filmstrip → the `filmstrip` step. PROJECT-SCOPED and per-source (unlike
+    // the waveform PNG cache's workspace-global by-trackId shape): a
+    // project's proxied clips/tracks each get their own sheet set under
+    // `.cache/filmstrips/<projectId>/<hash of src>/`.
+    getFilmstrip: (args: GetFilmstripArgs): Promise<FilmstripIndex> => {
+      const { projectId, src, maxTiles, minInterval, tileWidth } = args
+      const key = `${projectId}:${src}:${maxTiles ?? ''}:${minInterval ?? ''}:${tileWidth ?? ''}`
+      const existing = filmstripCache.get(key)
+      if (existing) return existing
+
+      const stepArgs: Record<string, unknown> = {
+        input: src,
+        'out-dir': `.cache/filmstrips/${projectId}/${srcCacheKey(src)}`,
+      }
+      if (maxTiles !== undefined) stepArgs['max-tiles'] = maxTiles
+      if (minInterval !== undefined) stepArgs['min-interval'] = minInterval
+      if (tileWidth !== undefined) stepArgs['tile-width'] = tileWidth
+
+      const promise = api.runStepAsync<FilmstripIndex>('filmstrip', stepArgs)
+      promise.catch(() => {
+        if (filmstripCache.get(key) === promise) filmstripCache.delete(key)
+      })
+      filmstripCache.set(key, promise)
       return promise
     },
 

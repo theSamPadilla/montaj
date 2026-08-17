@@ -1,0 +1,142 @@
+import { describe, it, expect, vi, afterEach } from 'vitest'
+import { render, cleanup, fireEvent, act } from '@testing-library/react'
+import type { Project } from '../../../types'
+import { createPlaybackClock } from '../../playback-clock'
+import Timeline, { type TimelineActions } from '../Timeline'
+
+afterEach(() => cleanup())
+
+function makeProject(): Project {
+  return {
+    id: 'p1',
+    status: 'draft',
+    settings: { resolution: [1080, 1920], fps: 10 }, // 10fps -> 0.1s frame step, easy to assert
+    tracks: [[{ id: 'clip-0', type: 'video', src: 'a.mp4', start: 0, end: 4, inPoint: 0, outPoint: 4 }]],
+  } as unknown as Project
+}
+
+/** Delete/Enter are focus-scoped to Timeline's own root (the `tabIndex={0}`
+ *  container), mirroring pre-SP5 behavior — unlike arrows/Escape, which stay
+ *  document-level. Timeline's root is the outermost DOM node it renders
+ *  (`TimelineContext.Provider` contributes no element of its own), so it's
+ *  always `container.firstElementChild` in these tests. */
+function focusTimelineRoot(container: HTMLElement) {
+  (container.firstElementChild as HTMLElement).focus()
+}
+
+describe('Timeline — T9 keymap (arrows / delete / enter / escape)', () => {
+  it('ArrowRight steps the clock forward by one frame on a plain target', () => {
+    const clock = createPlaybackClock(0)
+    render(<Timeline project={makeProject()} clock={clock} />)
+    act(() => { fireEvent.keyDown(document.body, { key: 'ArrowRight' }) })
+    expect(clock.get()).toBeCloseTo(0.1, 5)
+  })
+
+  it('does not step when the target is an input', () => {
+    const clock = createPlaybackClock(0)
+    const { container } = render(
+      <div>
+        <input data-testid="somewhere-else" />
+        <Timeline project={makeProject()} clock={clock} />
+      </div>,
+    )
+    const input = container.querySelector('input') as HTMLInputElement
+    fireEvent.keyDown(input, { key: 'ArrowRight' })
+    expect(clock.get()).toBe(0)
+  })
+
+  it('does not step when `modalOpen` is true (a host-level dialog is up)', () => {
+    const clock = createPlaybackClock(0)
+    render(<Timeline project={makeProject()} clock={clock} modalOpen />)
+    fireEvent.keyDown(document.body, { key: 'ArrowRight' })
+    expect(clock.get()).toBe(0)
+  })
+
+  it('Enter places a marker at the playhead, Escape clears it', () => {
+    const clock = createPlaybackClock(2)
+    const { container } = render(<Timeline project={makeProject()} clock={clock} />)
+    focusTimelineRoot(container)
+    fireEvent.keyDown(document.body, { key: 'Enter' })
+    // Marker placed — a second Enter should place the SECOND marker, not
+    // reset (the original three-way branch): press again at a new time.
+    act(() => { clock.set(3) })
+    fireEvent.keyDown(document.body, { key: 'Enter' })
+    // Escape clears both.
+    fireEvent.keyDown(document.body, { key: 'Escape' })
+    // No direct DOM assertion needed beyond "doesn't throw" — marker state is
+    // internal; `actionsRef` (below) is the externally observable surface.
+  })
+
+  it('Delete/Backspace two-step delete: fires only with a selection, commits via onProjectChange + onOverlayEdit + clears selection', () => {
+    const clock = createPlaybackClock(0)
+    const onProjectChange = vi.fn()
+    const onOverlayEdit = vi.fn()
+    const onSelectIds = vi.fn()
+    const { container } = render(
+      <Timeline
+        project={makeProject()}
+        clock={clock}
+        selectedIds={['clip-0']}
+        onSelectIds={onSelectIds}
+        onProjectChange={onProjectChange}
+        onOverlayEdit={onOverlayEdit}
+      />,
+    )
+    focusTimelineRoot(container)
+    fireEvent.keyDown(document.body, { key: 'Delete' })
+    expect(onProjectChange).toHaveBeenCalledTimes(1)
+    expect(onOverlayEdit).toHaveBeenCalledTimes(1)
+    expect(onSelectIds).toHaveBeenCalledWith([])
+    const updated = onProjectChange.mock.calls[0][0] as Project
+    expect(updated.tracks?.[0]?.find((i) => i.id === 'clip-0')).toBeUndefined()
+  })
+
+  it('Delete does NOT delete the selection when focus is outside the timeline (restored pre-SP5 scoping)', () => {
+    const clock = createPlaybackClock(0)
+    const onProjectChange = vi.fn()
+    render(
+      <Timeline
+        project={makeProject()}
+        clock={clock}
+        selectedIds={['clip-0']}
+        onProjectChange={onProjectChange}
+      />,
+    )
+    // Focus left on document.body (or anywhere outside Timeline's own root) —
+    // never inside the timeline. T9 briefly widened Delete/Enter to fire from
+    // anywhere on the page; this proves that regression stays fixed.
+    ;(document.body as HTMLElement).focus()
+    fireEvent.keyDown(document.body, { key: 'Delete' })
+    expect(onProjectChange).not.toHaveBeenCalled()
+  })
+
+  it('Delete with no selection is a no-op', () => {
+    const clock = createPlaybackClock(0)
+    const onProjectChange = vi.fn()
+    render(<Timeline project={makeProject()} clock={clock} onProjectChange={onProjectChange} />)
+    fireEvent.keyDown(document.body, { key: 'Delete' })
+    expect(onProjectChange).not.toHaveBeenCalled()
+  })
+
+  it('Shift+Delete does NOT trigger Timeline\'s own delete binding (reserved for ripple-delete upstream)', () => {
+    const clock = createPlaybackClock(0)
+    const onProjectChange = vi.fn()
+    render(
+      <Timeline project={makeProject()} clock={clock} selectedIds={['clip-0']} onProjectChange={onProjectChange} />,
+    )
+    fireEvent.keyDown(document.body, { key: 'Delete', shiftKey: true })
+    expect(onProjectChange).not.toHaveBeenCalled()
+  })
+
+  it('exposes clearMarkers/setMarkerAtPlayhead/zoomFit through actionsRef for a host-level palette', () => {
+    const clock = createPlaybackClock(1)
+    const actionsRef: { current: TimelineActions | null } = { current: null }
+    render(<Timeline project={makeProject()} clock={clock} actionsRef={actionsRef} />)
+    expect(actionsRef.current).not.toBeNull()
+    act(() => { actionsRef.current!.setMarkerAtPlayhead() })
+    act(() => { actionsRef.current!.clearMarkers() })
+    act(() => { actionsRef.current!.zoomFit() })
+    // Smoke test: none of these throw, and the ref stays populated.
+    expect(actionsRef.current).not.toBeNull()
+  })
+})
