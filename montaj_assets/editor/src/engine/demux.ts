@@ -411,6 +411,29 @@ export function demuxBytes(bytes: ArrayBuffer, label = 'media'): DemuxedSource {
   if (videoTrackId === null) {
     throw new Error(`demux: no video track in ${label}`)
   }
+  // A described track that hands out no samples means the moov parsed but the
+  // media data is not there — a truncated file, or one whose `mdat` header
+  // declares bytes the file does not contain. mp4box reports no error for
+  // this: `onReady` fires off the sample table in the moov, and `onSamples`
+  // simply never comes.
+  //
+  // Failing here is load-bearing. An empty table is not a degraded source, it
+  // is an unplayable one, and every downstream helper tolerates it silently
+  // (`sampleAtOrBefore`/`keyframeAtOrBefore`/`firstPresentationTsUs` all
+  // return 0 for an empty table). Left unchecked it built a "valid" source,
+  // `EngineSourceHost` marked the session `ready`, and the scheduler's
+  // `!source` branch never fired — so the clip's range stayed on
+  // `picture: 'video'` and playback froze holding the PREVIOUS clip's last
+  // frame while project time advanced. Showing the wrong clip's picture with
+  // no error surfaced is the outcome the SP4 checklist §A.14 rules out.
+  // Throwing routes the clip into the existing failure path, which already
+  // does the right thing: Preparing placeholder, scoped to that clip, with a
+  // reason attached.
+  if (videoSamples.length === 0) {
+    throw new Error(
+      `demux: ${label} — video track has no sample data (truncated or missing mdat)`,
+    )
+  }
 
   const buildTrack = (
     kind: 'video' | 'audio',
