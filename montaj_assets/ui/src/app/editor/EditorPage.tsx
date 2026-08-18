@@ -178,15 +178,6 @@ export default function EditorPage() {
   // VideoEditor hands us a stable `openRender()` trigger (it owns the RenderModal);
   // we host the Render button in the ProjectHeader instead of the package toolbar.
   const [openRender, setOpenRender] = useState<(() => void) | null>(null)
-  // SP4 — operator dev toggle for the WebCodecs playback engine, no in-app UI
-  // (flip via devtools + reload). Mirrors App.tsx's `localStorage.getItem('theme')`
-  // read; unlike theme this never changes without a reload, so a plain read is
-  // enough — no state/setter needed.
-  const engineFlagEnabled = localStorage.getItem('montaj-engine') === '1'
-  // SP5 — operator dev toggle for the canvas timeline surface, no in-app UI
-  // (flip via devtools + reload). Mirrors the montaj-engine toggle above.
-  const timelineFlagEnabled = localStorage.getItem('montaj-timeline') === '1'
-
   // Host-supplied slots for the package editors:
   //  - assetsPanel : Montaj's own assets panel (uploads into the project dir,
   //                  persists via PUT on change).
@@ -444,8 +435,8 @@ export default function EditorPage() {
             onProvideImageTone={setImageToneApi}
             onBackToSetup={handleBackToSetup}
             regenEnabled={project.projectType === 'ai_video'}
-            engine={{ enabled: engineFlagEnabled }}
-            timeline={{ canvas: timelineFlagEnabled }}
+            engine={{ enabled: true }}
+            timeline={{ canvas: true }}
             isClipQueued={(itemId) => (project.regenQueue ?? []).some(e => e.clipId === itemId)}
             renderClipInspector={({ item, onClose }) => (
               <ClipInspectModal

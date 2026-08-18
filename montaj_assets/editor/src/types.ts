@@ -814,8 +814,10 @@ export interface VideoEditorProps<P extends Project = Project> {
    * fps/drops/buffer/clock-kind readout; it has no effect while `enabled` is
    * false.
    *
-   * No flag mechanism existed before this — hosts opt in explicitly. The
-   * montaj ui app's dev toggle reads `localStorage['montaj-engine']`.
+   * No flag mechanism existed before this — hosts opt in explicitly, and this
+   * prop stays absent-by-default for every consumer of the package. The montaj
+   * ui app passes `enabled: true` unconditionally; other hosts are unaffected
+   * and must still opt in.
    */
   engine?: { enabled: boolean; debugHud?: boolean }
 
@@ -839,7 +841,10 @@ export interface VideoEditorProps<P extends Project = Project> {
    * lanes) for the canvas surface; the caption row still mounts as DOM,
    * below it.
    *
-   * The montaj ui app's dev toggle reads `localStorage['montaj-timeline']`.
+   * This prop stays absent-by-default for every consumer of the package. The
+   * montaj ui app passes `{ canvas: true }` unconditionally. Unlike `engine`
+   * there is no eligibility gate behind this prop — it is total, so a host
+   * that passes `true` gets the canvas surface for every project.
    */
   timeline?: { canvas: boolean }
 }
