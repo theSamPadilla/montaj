@@ -11,6 +11,7 @@ venv/
 .venv/
 __pycache__/
 docs/plans/
+docs/qa/
 docs/fullsend/
 *.pyc
 *.egg-info/
