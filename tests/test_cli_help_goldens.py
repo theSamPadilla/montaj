@@ -10,6 +10,7 @@ Regenerate after a deliberate, reviewed change:
     python -m tests.test_cli_help_goldens --update-goldens
 """
 import json
+import re
 import subprocess
 import sys
 
@@ -61,6 +62,30 @@ def _capture_mcp(cmd: str) -> str:
     return json.dumps(tool, indent=2) + "\n"
 
 
+# The leading `usage: ...` block, up to the first blank line.
+_USAGE_BLOCK = re.compile(r"\Ausage:.*?(?=\n\n|\Z)", re.DOTALL)
+
+
+def _normalize_usage(text: str) -> str:
+    """Collapse whitespace inside the leading `usage:` block only.
+
+    argparse's usage-line wrapping is Python-version dependent: 3.13+ breaks
+    lines by option+metavar pairs where 3.11 packed them tighter, so the same
+    CLI surface renders differently under different interpreters (CI runs
+    3.11; local venvs are on 3.13). Only `lyrics-render` is long enough to
+    cross the boundary today, but any command could.
+
+    Collapsing runs of whitespace to single spaces *inside the usage block*
+    makes the comparison wrap-insensitive while every other line — option
+    names, help text, indentation, blank-line structure — stays byte-exact,
+    so the golden keeps its value as a tripwire on real CLI changes. Applied
+    to both sides, so it holds whichever interpreter captured the golden.
+    """
+    return _USAGE_BLOCK.sub(
+        lambda m: re.sub(r"\s+", " ", m.group(0)).strip(), text, count=1
+    )
+
+
 def _help_path(cmd: str):
     return GOLDENS_DIR / f"{cmd}.help.txt"
 
@@ -71,7 +96,9 @@ def _mcp_path(cmd: str):
 
 @pytest.mark.parametrize("cmd", COMMANDS)
 def test_help_golden(cmd):
-    assert _capture_help(cmd) == _help_path(cmd).read_text()
+    assert _normalize_usage(_capture_help(cmd)) == _normalize_usage(
+        _help_path(cmd).read_text()
+    )
 
 
 @pytest.mark.parametrize("cmd", COMMANDS)
