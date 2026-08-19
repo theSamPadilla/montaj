@@ -293,7 +293,15 @@ export default function TimelineCanvas({
     })
   }, [])
 
-  useEffect(() => () => { if (frameRef.current !== null) cancelFrame(frameRef.current) }, [])
+  // The latch must be reset here too, or a StrictMode remount (cleanup runs
+  // on the same instance before the effect re-fires) deadlocks every future
+  // `requestRedraw` behind a stale non-null handle.
+  useEffect(() => () => {
+    if (frameRef.current !== null) {
+      cancelFrame(frameRef.current)
+      frameRef.current = null
+    }
+  }, [])
 
   // ── Surface: CSS size, DPR, backing stores ──
   useEffect(() => {
@@ -414,6 +422,10 @@ export default function TimelineCanvas({
   // drag hook's pattern) so ordinary mouse movement over the page costs nothing.
   const releaseGestureRef = useRef<(() => void) | null>(null)
 
+  // The surface rect, frozen for the duration of a gesture — see
+  // `surfacePoint`'s comment for why. Null while idle.
+  const gestureRectRef = useRef<DOMRect | null>(null)
+
   const handlersRef = useRef({
     down: (_e: MouseEvent) => {},
     hover: (_e: MouseEvent) => {},
@@ -426,7 +438,11 @@ export default function TimelineCanvas({
   function surfacePoint(e: MouseEvent): Point | null {
     const el = containerRef.current
     if (!el) return null
-    const rect = el.getBoundingClientRect()
+    // A gesture's own live edit can resize the surface and shift its rect mid-
+    // drag (a cross-track move adds/removes a row under the moving cursor); the
+    // press-time rect is that gesture's fixed frame of reference, matching the
+    // DOM drag hooks' raw-delta math. Idle reads (hover, no gesture) stay live.
+    const rect = gestureRectRef.current ?? el.getBoundingClientRect()
     return { x: e.clientX - rect.left, y: e.clientY - rect.top }
   }
 
@@ -462,6 +478,10 @@ export default function TimelineCanvas({
   handlersRef.current = {
     down(e) {
       if (e.button !== 0) return
+      // A stale gesture whose mouseup never fired (focus loss, etc.) must not
+      // leave its frozen rect and listeners behind for this new one.
+      releaseGestureRef.current?.()
+      gestureRectRef.current = containerRef.current?.getBoundingClientRect() ?? null
       const point = surfacePoint(e)
       if (!point) return
       // A gesture is starting — no thumb during a drag/trim.
@@ -476,7 +496,6 @@ export default function TimelineCanvas({
       e.preventDefault()
       runEffects(machine.dispatch({ type: 'pointerDown', point, modifiers: modifiersOf(e), ctx: buildContext() }))
 
-      releaseGestureRef.current?.()
       const onMove = (ev: MouseEvent) => handlersRef.current.move(ev)
       const onUp = (ev: MouseEvent) => handlersRef.current.up(ev)
       document.addEventListener('mousemove', onMove)
@@ -484,6 +503,7 @@ export default function TimelineCanvas({
       releaseGestureRef.current = () => {
         document.removeEventListener('mousemove', onMove)
         document.removeEventListener('mouseup', onUp)
+        gestureRectRef.current = null
         releaseGestureRef.current = null
       }
     },
@@ -503,8 +523,10 @@ export default function TimelineCanvas({
       runEffects(machine.dispatch({ type: 'pointerMove', point, modifiers: modifiersOf(e), ctx: buildContext() }))
     },
     up(e) {
-      releaseGestureRef.current?.()
+      // Point first, then release — the point must still see this gesture's
+      // frozen rect, not the live one the teardown below reverts to.
       const point = surfacePoint(e)
+      releaseGestureRef.current?.()
       if (!point) { runEffects(machine.dispatch({ type: 'cancel' })); return }
       runEffects(machine.dispatch({ type: 'pointerUp', point, modifiers: modifiersOf(e), ctx: buildContext() }))
     },

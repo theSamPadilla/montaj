@@ -817,6 +817,91 @@ describe('cancel', () => {
   })
 })
 
+// ── Press-time snap boundaries (self-snap regression) ────────────────────
+
+describe('press-time snap boundaries — echoed-project self-snap', () => {
+  // Live bug: VideoEditor echoes every `projectChange` back through Timeline's
+  // re-render, and Timeline's `computeDerivedTiming` memo recomputes
+  // `snapBoundaries` from THAT echoed project. Mid-gesture the boundary list
+  // therefore contains the dragged item's own CURRENT (moved) edges, not just
+  // the edges it started from. If a gesture read `ctx.snapBoundaries` live it
+  // would find its last position back in its own magnet list and snap to
+  // itself — repeatedly, since every subsequent move re-derives the same
+  // trap. These tests drive the machine exactly the way Timeline does: apply
+  // each `projectChange` to a running project and rebuild `snapBoundaries`
+  // from it before the next move, the way the real memo would.
+  function threeClipProject(): Project {
+    return {
+      id: 'p3',
+      tracks: [
+        [
+          { id: 'x0', type: 'video', src: 'a.mp4', start: 0, end: 3, inPoint: 0, outPoint: 3, sourceDuration: 20 },
+          { id: 'x1', type: 'video', src: 'b.mp4', start: 3, end: 6, inPoint: 0, outPoint: 3, sourceDuration: 20 },
+          { id: 'x2', type: 'video', src: 'c.mp4', start: 6, end: 9, inPoint: 0, outPoint: 3, sourceDuration: 20 },
+        ],
+      ],
+    } as unknown as Project
+  }
+
+  /** Timeline's live memo, reproduced: fold the latest `projectChange` into a
+   *  running project and rebuild `snapBoundaries` (and `totalDuration`) from
+   *  it, exactly as `computeDerivedTiming` would on the next render. */
+  function echoProjectChange(ctx: PointerContext, effects: PointerEffect[]): PointerContext {
+    const changes = of(effects, 'projectChange')
+    if (changes.length === 0) return ctx
+    const project = changes[changes.length - 1].project
+    const derived = computeDerivedTiming(project)
+    return { ...ctx, project, snapBoundaries: derived.snapBoundaries, totalDuration: derived.totalDuration }
+  }
+
+  it('tracks the cursor through a body drag instead of magnetizing to its own echoed position', () => {
+    const project = threeClipProject()
+    const layout = computeTimelineLayout(project)
+    const row = layout.rows.find(r => r.trackIdx === 0)!
+    const y = row.y + row.height / 2
+    const bodyX = 4 * VIEWPORT.pxPerSecond // inside x1's body (3s–6s), clear of both edge handles
+
+    const d = new Driver(makeContext({ project }))
+    d.down(bodyX, y)
+
+    const starts: number[] = []
+    for (let i = 1; i <= 12; i++) {
+      const effects = d.move(bodyX + i * 4, y)
+      d.ctx = echoProjectChange(d.ctx, effects)
+      starts.push(visual(lastProjectChange(effects), 'x1').start)
+    }
+
+    // Must track the cursor — not plateau at an echoed position and jump.
+    for (let i = 1; i < starts.length; i++) {
+      expect(starts[i]).toBeGreaterThanOrEqual(starts[i - 1] - 1e-9)
+    }
+    expect(new Set(starts.map(s => s.toFixed(6))).size).toBeGreaterThanOrEqual(10)
+    expect(starts[starts.length - 1]).toBeCloseTo(3 + 48 / VIEWPORT.pxPerSecond, 6)
+  })
+
+  it('tracks the cursor through an edge trim instead of freezing at its own echoed position', () => {
+    const project = threeClipProject()
+    const layout = computeTimelineLayout(project)
+    const row = layout.rows.find(r => r.trackIdx === 0)!
+    const y = row.y + row.height / 2
+    const endEdgeX = 6 * VIEWPORT.pxPerSecond - 2 // inside x1's out-edge handle (end = 6s)
+
+    const d = new Driver(makeContext({ project }))
+    d.down(endEdgeX, y)
+
+    const ends: number[] = []
+    for (let i = 1; i <= 5; i++) {
+      const effects = d.move(endEdgeX - i * 4, y)
+      d.ctx = echoProjectChange(d.ctx, effects)
+      ends.push(visual(lastProjectChange(effects), 'x1').end)
+    }
+
+    // Must not freeze at the first applied position.
+    expect(new Set(ends.map(e => e.toFixed(6))).size).toBeGreaterThanOrEqual(5)
+    expect(ends[ends.length - 1]).toBeCloseTo(6 - 20 / VIEWPORT.pxPerSecond, 6)
+  })
+})
+
 describe('degenerate context', () => {
   it('edits nothing before the surface has a scale', () => {
     const unscaled: Viewport = { pxPerSecond: 0, scrollSeconds: 0, widthPx: 0 }

@@ -159,6 +159,15 @@ export interface Press {
   /** Was the pressed item already selected? Drives the DOM's conditional seek
    *  on a plain click. */
   wasSelected: boolean
+  /** `ctx.snapBoundaries` as they stood when the press began. The host echoes
+   *  every `projectChange` back through Timeline's re-render, and that re-render
+   *  recomputes `ctx.snapBoundaries` from the echoed project — so mid-gesture the
+   *  live boundary list contains the dragged item's own CURRENT edges, not just
+   *  its press-time ones. `itemSnapPoints` only excludes the press-time pair, so
+   *  a gesture that read `ctx.snapBoundaries` live would find its own last
+   *  position back in the magnet list and snap to itself. Capturing the list
+   *  once, here, is what makes that exclusion complete. */
+  snapBoundaries: readonly number[]
 }
 
 export type MachineState =
@@ -255,9 +264,16 @@ export function cycleMarkers(
 
 /** Snap targets for a gesture that moves an item: clip and audio boundaries,
  *  both markers, and the playhead — minus whatever the gesture is itself
- *  dragging, which would otherwise pin it to where it started. */
-function itemSnapPoints(ctx: PointerContext, exclude: readonly number[]): number[] {
-  const points: number[] = [...ctx.snapBoundaries]
+ *  dragging, which would otherwise pin it to where it started.
+ *
+ *  Boundaries come from `press.snapBoundaries`, captured once at press time,
+ *  NOT `ctx.snapBoundaries`. The host re-derives `ctx.snapBoundaries` from
+ *  every echoed `projectChange`, so a live read would put the item's own
+ *  moving edges back into the magnet list mid-gesture (see the `Press.
+ *  snapBoundaries` doc). Markers and the playhead are read from `ctx` because
+ *  neither can change during an item gesture. */
+function itemSnapPoints(ctx: PointerContext, press: Press, exclude: readonly number[]): number[] {
+  const points: number[] = [...press.snapBoundaries]
   for (const marker of ctx.markers) if (marker !== null) points.push(marker)
   points.push(ctx.playheadTime)
   return snapPointsExcluding(points, exclude)
@@ -347,7 +363,7 @@ function applyMove(ctx: PointerContext, press: Press, point: Point, snap: SnapSt
   const dt = (point.x - press.origin.x) / ctx.viewport.pxPerSecond
   const rawStart = clamp(item.start + dt, 0, Math.max(0, ctx.totalDuration - duration))
 
-  const points = snapPointsForSpan(itemSnapPoints(ctx, [item.start, item.end]), duration)
+  const points = snapPointsForSpan(itemSnapPoints(ctx, press, [item.start, item.end]), duration)
   const snapped = applySnap(rawStart, points, ctx.viewport, snap, ctx.snapConfig)
   const start = clamp(snapped.time, 0, Math.max(0, ctx.totalDuration - duration))
 
@@ -374,7 +390,7 @@ function applyTrim(ctx: PointerContext, press: Press, point: Point, snap: SnapSt
   const dt = (point.x - press.origin.x) / ctx.viewport.pxPerSecond
   const raw = clamp(initTime + dt, 0, ctx.totalDuration)
 
-  const snapped = applySnap(raw, itemSnapPoints(ctx, [item.start, item.end]), ctx.viewport, snap, ctx.snapConfig)
+  const snapped = applySnap(raw, itemSnapPoints(ctx, press, [item.start, item.end]), ctx.viewport, snap, ctx.snapConfig)
   const resized = computeResizedItem(item as Draggable, edge, snapped.time)
 
   // Trims always rebuild from the pressed-at project, never from the running
@@ -411,7 +427,7 @@ function applyRoll(ctx: PointerContext, press: Press, point: Point, snap: SnapSt
   const dt = (point.x - press.origin.x) / ctx.viewport.pxPerSecond
   const snapped = applySnap(
     clamp(boundary + dt, 0, ctx.totalDuration),
-    itemSnapPoints(ctx, [left.start, left.end, right.start, right.end]),
+    itemSnapPoints(ctx, press, [left.start, left.end, right.start, right.end]),
     ctx.viewport,
     snap,
     ctx.snapConfig,
@@ -440,7 +456,7 @@ function applySlide(ctx: PointerContext, press: Press, point: Point, snap: SnapS
   const dt = (point.x - press.origin.x) / ctx.viewport.pxPerSecond
   const snapped = applySnap(
     clamp(item.start + dt, 0, ctx.totalDuration),
-    itemSnapPoints(ctx, [item.start, item.end]),
+    itemSnapPoints(ctx, press, [item.start, item.end]),
     ctx.viewport,
     snap,
     ctx.snapConfig,
@@ -457,7 +473,7 @@ function applyAudioMove(ctx: PointerContext, press: Press, point: Point, snap: S
   const dt = (point.x - press.origin.x) / ctx.viewport.pxPerSecond
   const rawStart = clamp(track.start + dt, 0, Math.max(0, ctx.totalDuration - duration))
 
-  const points = snapPointsForSpan(itemSnapPoints(ctx, [track.start, track.end]), duration)
+  const points = snapPointsForSpan(itemSnapPoints(ctx, press, [track.start, track.end]), duration)
   const snapped = applySnap(rawStart, points, ctx.viewport, snap, ctx.snapConfig)
   const start = clamp(snapped.time, 0, Math.max(0, ctx.totalDuration - duration))
 
@@ -480,7 +496,7 @@ function applyAudioTrim(ctx: PointerContext, press: Press, point: Point, snap: S
   const initTime = edge === 'start' ? track.start : track.end
   const dt = (point.x - press.origin.x) / ctx.viewport.pxPerSecond
   const raw = clamp(initTime + dt, 0, ctx.totalDuration)
-  const snapped = applySnap(raw, itemSnapPoints(ctx, [track.start, track.end]), ctx.viewport, snap, ctx.snapConfig)
+  const snapped = applySnap(raw, itemSnapPoints(ctx, press, [track.start, track.end]), ctx.viewport, snap, ctx.snapConfig)
 
   // Audio tracks are never type 'video', so `computeResizedItem` only moves the
   // timeline edge; the source window is AudioTrackRow's own math, reproduced.
@@ -583,7 +599,14 @@ export function pointerReducer(state: MachineState, event: PointerMachineEvent):
         const next: MachineState = {
           kind: 'dragging',
           cursor: state.cursor,
-          press: { origin: point, modifiers, hit, baseProject: ctx.project, wasSelected: false },
+          press: {
+            origin: point,
+            modifiers,
+            hit,
+            baseProject: ctx.project,
+            wasSelected: false,
+            snapBoundaries: ctx.snapBoundaries,
+          },
           gesture: 'scrub',
           snap: applied.snap,
           lastProject: ctx.project,
@@ -599,6 +622,7 @@ export function pointerReducer(state: MachineState, event: PointerMachineEvent):
         hit,
         baseProject: ctx.project,
         wasSelected: hit.itemId !== undefined && ctx.selectedIds.includes(hit.itemId),
+        snapBoundaries: ctx.snapBoundaries,
       }
       return withCursor({ kind: 'pressed', cursor: state.cursor, press }, cursorForHit(hit), [])
     }

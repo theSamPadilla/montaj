@@ -247,6 +247,42 @@ describe('TimelineCanvas — pointer wiring', () => {
     expect(clock.get()).toBe(seeked)
   })
 
+  it('freezes the surface rect for a gesture, so a mid-drag reflow cannot shift its own points', () => {
+    // Simulates the real bug: the drag's own `projectChange` echo adds a new
+    // track row, which reflows the page and shifts the container's rect
+    // (here, up by one row's worth — 44px — via scroll anchoring). A live
+    // re-read of the rect on every move would make the SAME physical cursor
+    // travel compute a different surface delta partway through the gesture.
+    const { surface, onOverlayEdit } = mount()
+
+    // Rect at press: top 0. Rect for every read after that: top -44. Installed
+    // only now, after `mount()` — mounting itself does one rect read (surface
+    // setup) that must not consume the "at mousedown" slot below.
+    let reads = 0
+    Element.prototype.getBoundingClientRect = function (this: Element) {
+      reads += 1
+      const top = reads === 1 ? 0 : -44
+      return { x: 0, y: top, top, left: 0, right: 1000, bottom: top + 100, width: 1000, height: 100, toJSON: () => ({}) } as DOMRect
+    }
+
+    // c0 is on the sole video track (row y 0–56). Press its body, then drag
+    // straight up 44px in PAGE coordinates — one row's worth — well past the
+    // drag threshold, to a new top track.
+    act(() => { surface.dispatchEvent(mouse('mousedown', 200, 20)) })
+    act(() => { document.dispatchEvent(mouse('mousemove', 200, 4)) })
+    act(() => { document.dispatchEvent(mouse('mousemove', 200, -24)) })
+    act(() => { document.dispatchEvent(mouse('mouseup', 200, -24)) })
+
+    expect(onOverlayEdit).toHaveBeenCalledTimes(1)
+    const committed = onOverlayEdit.mock.calls[0][0] as Project
+    const tracks = committed.tracks ?? []
+    // The true 44px upward travel must land c0 on a NEW track above its
+    // source track, not undo the drag back onto the track it started on.
+    expect(tracks).toHaveLength(2)
+    expect(tracks[0].some(i => i.id === 'c0')).toBe(false)
+    expect(tracks[1].some(i => i.id === 'c0')).toBe(true)
+  })
+
   it('does nothing when the host supplies no edit callbacks', () => {
     const { surface } = mount({ onProjectChange: undefined, onOverlayEdit: undefined, onSelectItem: undefined })
     expect(() => {

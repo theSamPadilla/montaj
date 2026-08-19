@@ -8,6 +8,7 @@
  * component's own scheduling, subscriptions and layer split are what's under
  * test, not the rasterizer.
  */
+import { StrictMode } from 'react'
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { render, act, cleanup } from '@testing-library/react'
 import { createPlaybackClock } from '../../../playback-clock'
@@ -183,6 +184,32 @@ describe('TimelineCanvas', () => {
 
     const edited = { ...project, tracks: [[{ id: 'c0', type: 'video', src: 'a.mp4', start: 2, end: 9 }]] } as unknown as Project
     rerender(<TimelineCanvas project={edited} clock={clock} store={store} totalDuration={20} selectedIds={[]} markers={[null, null]} />)
+    act(() => { vi.advanceTimersByTime(32) })
+
+    expect(content.some(c => c.method === 'clearRect')).toBe(true)
+  })
+
+  it('keeps redrawing after a StrictMode mount/cleanup/remount cycle', () => {
+    // Dev-only regression: StrictMode runs mount → cleanup → mount on the
+    // same instance. If the unmount cleanup cancels the pending frame
+    // without resetting `frameRef`, every redraw after the replay is
+    // silently dropped — the canvas never paints again.
+    const store = createViewportStore()
+    const clock = createPlaybackClock()
+    const { rerender, container } = render(
+      <StrictMode>
+        <TimelineCanvas project={project} clock={clock} store={store} totalDuration={20} selectedIds={[]} markers={[null, null]} />
+      </StrictMode>,
+    )
+    act(() => { vi.advanceTimersByTime(32) })
+    const content = recorderFor(container.querySelectorAll('canvas')[0] as HTMLCanvasElement)
+    content.length = 0
+
+    rerender(
+      <StrictMode>
+        <TimelineCanvas project={project} clock={clock} store={store} totalDuration={20} selectedIds={['c0']} markers={[null, null]} />
+      </StrictMode>,
+    )
     act(() => { vi.advanceTimersByTime(32) })
 
     expect(content.some(c => c.method === 'clearRect')).toBe(true)
