@@ -58,7 +58,7 @@ test('buildDeriveSdrArgs: HLG master — full argv, exactly', () => {
     'zscale=matrixin=2020_ncl:rangein=limited:range=full,'
     + 'format=rgb48le,'
     + `lut3d=file=${lutPath()}:interp=tetrahedral,`
-    + 'zscale=t=bt709:m=bt709:p=bt709:rin=full:r=tv,'
+    + 'zscale=tin=bt709:t=bt709:pin=bt709:p=bt709:m=bt709:rin=full:r=tv,'
     + 'format=yuv420p',
     '-c:v', SPEC.encoder, ...SPEC.encoderArgs, '-pix_fmt', SPEC.outputPixFmt,
     ...SPEC.outputColorArgs,
@@ -88,7 +88,7 @@ test('buildDeriveSdrArgs: the LUT is pinned to 16-bit RGB and tetrahedral interp
 
 test('buildDeriveSdrArgs: the chain ends yuv420p, after the bt709 retag', () => {
   const vf = vfOf(buildDeriveSdrArgs('/m.mp4', '/o.mp4', { srcColorSpace: 'hdr_hlg', ...CAPABLE }))
-  assert.ok(vf.endsWith('zscale=t=bt709:m=bt709:p=bt709:rin=full:r=tv,format=yuv420p'),
+  assert.ok(vf.endsWith('zscale=tin=bt709:t=bt709:pin=bt709:p=bt709:m=bt709:rin=full:r=tv,format=yuv420p'),
     `chain must retag to bt709 before the pixel format, got: ${vf}`)
 })
 

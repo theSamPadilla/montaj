@@ -67,8 +67,9 @@
 //   1. LUT migration. `buildColorConversionFilter`'s HDR→SDR arm no longer
 //      emits `zscale=t=linear…tonemap=hable:desat=0…`; it emits the Montaj
 //      Vivid chain (`zscale=matrixin=2020_ncl:rangein=limited:range=full,
-//      format=rgb48le,lut3d=file=<cube>:interp=tetrahedral,zscale=t=bt709:
-//      m=bt709:p=bt709:rin=full:r=tv`), with a PQ→HLG pre-step for PQ sources.
+//      format=rgb48le,lut3d=file=<cube>:interp=tetrahedral,zscale=tin=bt709:
+//      t=bt709:pin=bt709:p=bt709:m=bt709:rin=full:r=tv`), with a PQ→HLG
+//      pre-step for PQ sources.
 //      The old chains survive only as fallbacks for builds missing lut3d/zscale.
 //
 //   2. Step reordering in `buildVideoItemFilterParts`. The conversion moved

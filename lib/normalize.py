@@ -303,6 +303,20 @@ def _build_tonemap_vf_to_sdr(src: ColorSpaceKey) -> tuple[str, bool]:
     despite those output flags asking for bt709 — caught by this task's
     ffprobe-based functional tests.
 
+    `tin=`/`pin=` are just as load-bearing, and for the opposite reason.
+    zscale does not merely relabel an axis it is given — it *converts* to it,
+    from whatever the frame is currently tagged. The frame arriving here is
+    still tagged with the source's HDR transfer/primaries (the LUT changes
+    pixels, not tags), so `t=bt709:p=bt709` alone made zscale run a real
+    HLG→709 transfer conversion and a real BT.2020→709 gamut map over pixels
+    the LUT had *already* tone-mapped to display-referred Rec.709. Highlights
+    then clipped per channel and shifted hue — a warm white wall went pure
+    yellow, a window went cyan. Pinning `tin=bt709:pin=bt709` declares the
+    post-LUT truth, which collapses both conversions to no-ops and leaves
+    exactly the retag this step was added for. Measured on real HLG footage:
+    SSIM against the LUT's own output was 0.785 without the pins, 0.990 with
+    them.
+
     Falls back to the pre-LUT bare-tonemap path (degraded: washed-out
     highlights, shifted colors) when zscale OR lut3d is missing from the
     ffmpeg build. Callers are expected to emit a loud warning when
@@ -319,7 +333,7 @@ def _build_tonemap_vf_to_sdr(src: ColorSpaceKey) -> tuple[str, bool]:
             "zscale=matrixin=2020_ncl:rangein=limited:range=full,"
             "format=rgb48le,"
             f"lut3d=file={lut_path()}:interp=tetrahedral,"
-            "zscale=t=bt709:m=bt709:p=bt709:rin=full:r=tv",
+            "zscale=tin=bt709:t=bt709:pin=bt709:p=bt709:m=bt709:rin=full:r=tv",
             False,
         )
     # Fallback: scale to p010le first, then bare tonemap. Less accurate; caller warns.

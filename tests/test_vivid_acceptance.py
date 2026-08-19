@@ -22,7 +22,12 @@ from pathlib import Path
 
 import pytest
 
-from lib.normalize import _has_lut3d, _has_zscale, probe_video
+from lib.normalize import (
+    _build_tonemap_vf_to_sdr,
+    _has_lut3d,
+    _has_zscale,
+    probe_video,
+)
 from lib.proxy import _build_proxy_cmd
 
 HAS_FFMPEG = shutil.which("ffmpeg") is not None
@@ -131,6 +136,63 @@ def test_vivid_preview_matches_derived_sdr_render(tmp_path):
     score = _ssim(proxy_png, derived_png)
     print(f"vivid acceptance SSIM (proxy vs derived SDR): {score:.4f}")
     assert score >= 0.93
+
+
+@pytest.mark.slow
+def test_tonemap_chain_output_matches_the_lut_grade(tmp_path):
+    """The chain's tail must not re-grade what the LUT already graded.
+
+    The test above compares the proxy against the derived SDR export — both
+    run this same chain, so it measures self-consistency and is structurally
+    blind to any defect the two sides share. This one is absolute: it pins the
+    chain's *output* against the LUT's own output, which is the grade Sam
+    signed off on.
+
+    The bug this exists for: the trailing zscale was given `t=bt709:p=bt709`
+    without `tin=`/`pin=`, so it converted rather than retagged — re-running
+    HLG→709 and BT.2020→709 over already-tone-mapped pixels. Highlights
+    clipped per channel and hue shifted; a warm white wall rendered pure
+    yellow and a window cyan, in every vivid1 proxy and every derived SDR
+    export.
+
+    Threshold note: on this saturated-bars fixture the broken chain still
+    scored 0.938 — it sits above the sibling test's 0.93 tolerance, so that
+    gate could not have caught this even had it been absolute. Real footage
+    separates far harder (0.785 broken vs 0.990 fixed); bars understate the
+    damage because their primaries already sit near the gamut corners. The
+    fixed chain is a bit-exact 1.000 here, since a correct tail is a pure
+    retag, so 0.99 is a wide margin rather than a tight fit.
+    """
+    if not (_has_zscale() and _has_lut3d()):
+        pytest.skip("ffmpeg lacks zscale/lut3d")
+
+    master = tmp_path / "bars.mp4"
+    _make_hlg_bars(master, duration=1)
+
+    vf, used_fallback = _build_tonemap_vf_to_sdr("hdr_hlg")
+    assert not used_fallback
+
+    # Reference = the chain truncated just before its trailing retag, i.e. the
+    # LUT's own output. Derived from the production builder rather than a
+    # copy, so the two sides cannot drift apart.
+    graded, _, tail = vf.rpartition(",")
+    assert tail.startswith("zscale="), f"chain must end with the retag, got: {tail}"
+
+    ref_png = tmp_path / "ref.png"
+    out_png = tmp_path / "out.png"
+    for png, chain in ((ref_png, graded), (out_png, vf)):
+        subprocess.run([
+            "ffmpeg", "-y", "-v", "error", "-i", str(master),
+            "-frames:v", "1", "-update", "1",
+            "-vf", f"{chain},format=rgb24", str(png),
+        ], check=True, capture_output=True, timeout=120)
+
+    score = _ssim(ref_png, out_png)
+    print(f"vivid chain fidelity SSIM (chain output vs LUT grade): {score:.4f}")
+    assert score >= 0.99, (
+        f"the chain's tail altered the LUT grade (SSIM {score:.4f}) — it must "
+        f"retag, not re-convert. Check tin=/pin= on: {tail}"
+    )
 
 
 def test_zscale_absent_path_still_falls_back_loudly(monkeypatch):

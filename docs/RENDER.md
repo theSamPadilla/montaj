@@ -155,13 +155,19 @@ character-identical in both runtimes (regression-tested cross-runtime):
 ```
 zscale=matrixin=2020_ncl:rangein=limited:range=full,format=rgb48le,
 lut3d=file=<cube>:interp=tetrahedral,
-zscale=t=bt709:m=bt709:p=bt709:rin=full:r=tv
+zscale=tin=bt709:t=bt709:pin=bt709:p=bt709:m=bt709:rin=full:r=tv
 ```
 
 The `format=rgb48le` pin BEFORE `lut3d` is load-bearing (8-bit quantization
 otherwise); the explicit `t=/m=/p=` on the trailing zscale is too (zscale
 passes stale HDR transfer/primaries tags through unless explicitly
-overridden). PQ sources prepend `zscale=tin=smpte2084:t=arib-std-b67:npl=1000`
+overridden). The matching `tin=/pin=` are load-bearing for the opposite
+reason: zscale *converts* to the axes it is handed rather than relabelling
+them, and post-LUT frames still carry the source's HDR tags, so without the
+pins it re-ran HLG→709 and BT.2020→709 over pixels the LUT had already
+tone-mapped — clipping highlights per channel and shifting hue. Pinning the
+post-LUT truth turns both conversions into no-ops and leaves only the retag.
+PQ sources prepend `zscale=tin=smpte2084:t=arib-std-b67:npl=1000`
 (PQ→HLG at the LUT's 1000-nit design white). Builds without zscale or lut3d
 fall back to the legacy `tonemap=hable:desat=0` chain with loud warnings;
 `montaj doctor` checks for `lut3d`.

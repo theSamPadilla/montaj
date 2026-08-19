@@ -355,7 +355,7 @@ test('hdr source in sdr project applies the Vivid LUT in the segment filter', as
     'filter should open the conversion with the 2020→full-range unpack')
   assert.ok(filterStr.includes(`lut3d=file=${lutPath()}:interp=tetrahedral`),
     'filter should apply the master-look cube with tetrahedral interpolation')
-  assert.ok(filterStr.includes('zscale=t=bt709:m=bt709:p=bt709:rin=full:r=tv'),
+  assert.ok(filterStr.includes('zscale=tin=bt709:t=bt709:pin=bt709:p=bt709:m=bt709:rin=full:r=tv'),
     'filter should retag to limited-range Rec.709 after the LUT')
   assert.ok(!filterStr.includes('tonemap=hable'),
     'the Hable tonemap is a fallback now — it must not appear when lut3d is available')
@@ -380,7 +380,7 @@ test('vivid chain: HLG arm is the verbatim production chain with no PQ pre-step'
     'zscale=matrixin=2020_ncl:rangein=limited:range=full,'
     + 'format=rgb48le,'
     + `lut3d=file=${lutPath()}:interp=tetrahedral,`
-    + 'zscale=t=bt709:m=bt709:p=bt709:rin=full:r=tv',
+    + 'zscale=tin=bt709:t=bt709:pin=bt709:p=bt709:m=bt709:rin=full:r=tv',
   )
   assert.ok(!vf.includes('smpte2084'), 'an HLG source needs no PQ conversion')
 })
@@ -402,10 +402,26 @@ test('vivid chain: the trailing retag sets t=/m=/p= explicitly, not just range',
   // reporting arib-std-b67/bt2020 over bt709 pixels (found during T2).
   for (const src of ['hdr_hlg', 'hdr_pq']) {
     const vf = buildVividLutChain(src)
-    assert.ok(vf.endsWith('zscale=t=bt709:m=bt709:p=bt709:rin=full:r=tv'),
+    assert.ok(vf.endsWith('zscale=tin=bt709:t=bt709:pin=bt709:p=bt709:m=bt709:rin=full:r=tv'),
       `${src}: chain must end with the full retag, got: ${vf}`)
-    assert.ok(vf.indexOf('lut3d=') < vf.lastIndexOf('zscale=t=bt709'),
+    assert.ok(vf.indexOf('lut3d=') < vf.lastIndexOf('zscale=tin=bt709'),
       `${src}: the retag must come after the LUT`)
+  }
+})
+
+test('vivid chain: the trailing zscale retags, it does not re-convert', () => {
+  // zscale converts to the axes it is handed, starting from whatever the frame
+  // claims. Post-LUT frames still carry the source's HDR tags, so a bare
+  // t=bt709:p=bt709 re-ran HLG→709 and BT.2020→709 over already-tone-mapped
+  // pixels — highlights clipped per channel and hue shifted (warm wall → pure
+  // yellow, window → cyan). Every vivid1 proxy and derived SDR export shipped
+  // that way until it was spotted by eye. tin=/pin= declare the post-LUT truth
+  // so both conversions collapse to no-ops.
+  for (const src of ['hdr_hlg', 'hdr_pq']) {
+    const vf = buildVividLutChain(src)
+    const tail = vf.slice(vf.lastIndexOf('zscale='))
+    assert.ok(tail.includes('tin=bt709'), `${src}: trailing zscale must pin tin=bt709`)
+    assert.ok(tail.includes('pin=bt709'), `${src}: trailing zscale must pin pin=bt709`)
   }
 })
 

@@ -133,6 +133,16 @@ export function hasLut3d() {
  * files still reporting arib-std-b67/bt2020 over bt709 pixels (verified against
  * the managed ffmpeg 8.1.2 during T2).
  *
+ * `tin=`/`pin=` are equally load-bearing, for the opposite reason: zscale does
+ * not relabel an axis, it CONVERTS to it from whatever the frame currently
+ * claims. Arriving frames still carry the source's HDR tags (the LUT rewrites
+ * pixels, not tags), so `t=bt709:p=bt709` alone ran a real HLG→709 transfer
+ * conversion plus a BT.2020→709 gamut map on pixels the LUT had already
+ * tone-mapped — highlights clipped per channel and shifted hue (warm wall →
+ * yellow, window → cyan). Pinning the post-LUT truth makes both conversions
+ * no-ops and leaves only the retag. See lib/normalize.py's twin for the
+ * measured numbers.
+ *
  * The LUT is graded for HLG input, so PQ sources get a PQ→HLG pre-step at the
  * LUT's 1000-nit design white — the same value SP6a's generator OOTF used.
  *
@@ -148,7 +158,7 @@ export function buildVividLutChain(srcKey, sdrCurve = null) {
        + 'zscale=matrixin=2020_ncl:rangein=limited:range=full,'
        + 'format=rgb48le,'
        + `lut3d=file=${lutPath(sdrCurve)}:interp=tetrahedral,`
-       + 'zscale=t=bt709:m=bt709:p=bt709:rin=full:r=tv'
+       + 'zscale=tin=bt709:t=bt709:pin=bt709:p=bt709:m=bt709:rin=full:r=tv'
 }
 
 /**

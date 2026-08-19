@@ -505,8 +505,32 @@ def test_tonemap_yuv709_tag_appended_after_lut(monkeypatch):
     monkeypatch.setattr(nm, "_has_zscale", lambda: True)
     monkeypatch.setattr(nm, "_has_lut3d", lambda: True)
     vf, _ = _build_tonemap_vf_to_sdr("hdr_hlg")
-    assert vf.endswith("zscale=t=bt709:m=bt709:p=bt709:rin=full:r=tv")
-    assert vf.index("lut3d=") < vf.rindex("zscale=t=bt709")
+    assert vf.endswith(
+        "zscale=tin=bt709:t=bt709:pin=bt709:p=bt709:m=bt709:rin=full:r=tv"
+    )
+    assert vf.index("lut3d=") < vf.rindex("zscale=tin=bt709")
+
+
+def test_tonemap_trailing_zscale_pins_its_input_as_bt709(monkeypatch):
+    """The trailing zscale must RETAG, never re-convert.
+
+    zscale converts to the axes it is given, starting from whatever the frame
+    is tagged. Post-LUT frames still carry the source's HDR tags, so a bare
+    `t=bt709:p=bt709` re-ran HLG→709 and BT.2020→709 over already-tone-mapped
+    pixels: highlights clipped per channel and hue shifted (warm wall → pure
+    yellow, window → cyan). Every vivid1 proxy and every derived SDR export
+    shipped that way until it was caught by eye in the editor.
+
+    `tin=`/`pin=` declare the post-LUT truth, collapsing both conversions to
+    no-ops. This is a string-level guard; the pixel-level one lives in
+    tests/test_vivid_acceptance.py."""
+    monkeypatch.setattr(nm, "_has_zscale", lambda: True)
+    monkeypatch.setattr(nm, "_has_lut3d", lambda: True)
+    for src in ("hdr_hlg", "hdr_pq"):
+        vf, _ = _build_tonemap_vf_to_sdr(src)
+        tail = vf[vf.rindex("zscale="):]
+        assert "tin=bt709" in tail, f"{src}: trailing zscale must pin tin=bt709"
+        assert "pin=bt709" in tail, f"{src}: trailing zscale must pin pin=bt709"
 
 
 def test_tonemap_fallback_when_zscale_missing(monkeypatch):
