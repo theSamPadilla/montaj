@@ -1,0 +1,25 @@
+{
+  "name": "search_news",
+  "description": "Search Google News RSS for recent articles — returns {items: [{title, link, pubDate, source, snippet}]}",
+  "output": {
+    "type": "json",
+    "description": "JSON object with {items: [{title, link, pubDate, source, snippet}]}"
+  },
+  "params": [
+    {
+      "name": "query",
+      "type": "string",
+      "required": true,
+      "description": "Search query string"
+    },
+    {
+      "name": "limit",
+      "type": "int",
+      "required": false,
+      "default": 25,
+      "min": 1,
+      "max": 50,
+      "description": "Maximum number of articles to return"
+    }
+  ]
+}
