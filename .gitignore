@@ -40,3 +40,9 @@ RELEASE.md
 
 scripts/
 docs/ideas/
+docs/qa/
+
+# Local render-quality experiments — multi-GB raw HDR dumps. Untracked and
+# unignored here, these got swept into a release commit by RELEASE.md's
+# `git add -A` (1.34GB pack, stalled push). Already ignored on the v4 branch.
+spikes/
