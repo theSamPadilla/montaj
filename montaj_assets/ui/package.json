@@ -14,7 +14,7 @@
   "dependencies": {
     "@babel/standalone": "^7.29.2",
     "@dnd-kit/core": "^6",
-    "@dnd-kit/sortable": "^7",
+    "@dnd-kit/sortable": "^10",
     "@dnd-kit/utilities": "^3",
     "class-variance-authority": "^0.7",
     "clsx": "^2",
