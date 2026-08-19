@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v3.10.1
+
 - **Added: a `search_news` step — Google News RSS search, fetched from the sidecar rather than from the caller.** Hub's `search_news` had been failing in production with `502 "News upstream returned 503"`; the cause was not an outage but an egress block. Google News refuses requests from Google Cloud IP space, which is exactly where Hub's backend runs, while returning 200 to the sidecar's Hetzner egress for the identical URL — verified from inside the running container on two different queries. The step fetches `news.google.com/rss/search`, parses the feed, and returns `{items: [{title, link, pubDate, source, snippet}]}`, matching the shape Hub already publishes to agents so nothing downstream has to change. `pubDate` is normalized from RFC-2822 to ISO-8601 UTC; `source` falls back through `<source>` → `dc:creator` → the link's domain; items without a title are dropped (Hub's contract marks it non-nullable). Snippets are stripped of markup before truncation at 280 characters — Google News wraps every `<description>` in an `<a href>` blob around a 300-500 character redirect URL, so truncating the raw body yields a snippet made entirely of href. A non-XML body — what Google returns when it throttles rather than blocks — fails as `upstream_unavailable` instead of surfacing a parser error. (`steps/media/search_news.py`, `steps/media/search_news.json`, `tests/steps/test_search_news.py`)
 
 ## v3.10.0
