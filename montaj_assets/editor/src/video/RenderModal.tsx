@@ -280,22 +280,30 @@ export default function RenderModal<P extends Project = Project>({ projectId, ad
     if (started || sampleAt === null) return
     const getSampleFrame = adapter.getSampleFrame
     if (!getSampleFrame) return
-    // Guard StrictMode's double-mount so dev doesn't sample every frame twice.
+    // Fetch each curve's thumbnail once. The ref guard dedups StrictMode's
+    // mount→cleanup→mount so dev doesn't sample every frame twice.
+    //
+    // Delivery is deliberately NOT gated on a per-invocation `alive` flag. Under
+    // StrictMode mount #1 fires the fetches and its cleanup would flip that flag
+    // to false, while mount #2 hits this dedup guard and returns without ever
+    // re-arming it — so the in-flight results land in a dead closure and no
+    // thumbnail ever paints (dev-only; production has no double-invoke). Because
+    // setThumbs/setPending are functional-merge updates they are safe to call
+    // from whichever mount owns the fetches; on a genuine unmount React 18 makes
+    // the setState a harmless no-op. So we just deliver.
     if (thumbsRequestedRef.current) return
     thumbsRequestedRef.current = true
 
-    let alive = true
     let outstanding = SDR_CURVES.length
     setPending(true)
-    const settle = () => { if (--outstanding === 0 && alive) setPending(false) }
+    const settle = () => { if (--outstanding === 0) setPending(false) }
 
     for (const curve of SDR_CURVES) {
       getSampleFrame(projectId, sampleAt, { sdrCurve: curve.id })
-        .then(({ url }) => { if (alive) setThumbs(t => ({ ...t, [curve.id]: url })) })
+        .then(({ url }) => setThumbs(t => ({ ...t, [curve.id]: url })))
         .catch(() => {})
         .finally(settle)
     }
-    return () => { alive = false }
   }, [started, sampleAt, adapter, projectId])
 
   useEffect(() => {

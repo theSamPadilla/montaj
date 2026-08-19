@@ -1,3 +1,4 @@
+import { StrictMode } from 'react'
 import { describe, it, expect, vi, afterEach } from 'vitest'
 import { render, screen, waitFor, fireEvent, cleanup } from '@testing-library/react'
 import type { EditorAdapter, ImageElement, Project } from '../../types'
@@ -273,6 +274,40 @@ describe('RenderModal — curve thumbnails', () => {
     expect(calls[0][1]).toBe(calls[1][1])
     expect(calls[0][1]).toBeGreaterThan(0)
     expect(calls[0][1]).toBeLessThan(12)
+
+    fireEvent.click(screen.getByText('Advanced'))
+    await waitFor(() => {
+      const srcs = Array.from(document.querySelectorAll('img')).map(i => i.getAttribute('src'))
+      expect(srcs).toContain('/files?path=/sample-vivid1.png')
+      expect(srcs).toContain('/files?path=/sample-vivid1-neutral.png')
+    })
+  })
+
+  it('still paints thumbnails under StrictMode double-mount (M3 regression)', async () => {
+    // StrictMode fires mount→cleanup→mount in dev. The old effect flipped a
+    // per-invocation `alive` flag false in mount #1's cleanup, while mount #2
+    // hit the dedup ref-guard and returned without re-arming it — so the fetched
+    // thumbnails resolved into a dead closure and never painted. Sampling still
+    // ran once (the dedup), which is why it looked like it "worked" everywhere
+    // but the screen. Production has no double-invoke, so this was dev-only.
+    const adapter = pollAdapter()
+    adapter.getSampleFrame = vi.fn(async (_id: string, _at: number, opts?: { sdrCurve?: string }) => ({
+      url: `/files?path=/sample-${opts?.sdrCurve}.png`,
+    }))
+
+    render(
+      <StrictMode>
+        <RenderModal
+          adapter={adapter}
+          projectId="vid-1"
+          onClose={vi.fn()}
+          preRenderOptions={{ isHdr: true, keeps: KEEPS }}
+        />
+      </StrictMode>,
+    )
+
+    // Dedup still holds: exactly one sample per curve despite the double-mount.
+    await waitFor(() => expect(adapter.getSampleFrame).toHaveBeenCalledTimes(2))
 
     fireEvent.click(screen.getByText('Advanced'))
     await waitFor(() => {
