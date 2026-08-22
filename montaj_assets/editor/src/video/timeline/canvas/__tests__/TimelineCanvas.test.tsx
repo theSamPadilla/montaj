@@ -83,7 +83,12 @@ const project = {
 // React state here, which has exactly this stability.
 const NO_SELECTION: string[] = []
 
-function mount(store: ViewportStore, clock = createPlaybackClock(), onRender?: () => void) {
+function mount(
+  store: ViewportStore,
+  clock = createPlaybackClock(),
+  onRender?: () => void,
+  selectedIds: string[] = NO_SELECTION,
+) {
   function Sibling() { onRender?.(); return null }
   function Surface({ previewAxis = false }: { previewAxis?: boolean }) {
     return (
@@ -93,7 +98,7 @@ function mount(store: ViewportStore, clock = createPlaybackClock(), onRender?: (
           clock={clock}
           store={store}
           totalDuration={20}
-          selectedIds={NO_SELECTION}
+          selectedIds={selectedIds}
           previewAxis={previewAxis}
         />
         <Sibling />
@@ -165,6 +170,76 @@ describe('TimelineCanvas', () => {
     expect(overlay.some(c => c.method === 'set:fillStyle' && c.args[0] === TIMELINE_COLORS.cursor)).toBe(true)
     expect(overlay.filter(c => c.method === 'clearRect')).toHaveLength(1)
     expect(content.length).toBe(contentCallsBefore)
+  })
+
+  // ── Trim-handle hover: the one part of the affordance that needs a mount ──
+  //
+  // `drawTrimHandle` is covered as a pure unit in draw.test.ts. What only a
+  // mounted surface can show is that resting the pointer on a handle reaches
+  // the painter at all — the hit-test, the change-detection and the content
+  // repaint are three separate places this can silently not happen.
+
+  it('lights the handle under the pointer, repainting the content once', () => {
+    const store = createViewportStore()
+    const { content, container } = mount(store, createPlaybackClock(), undefined, ['c0'])
+    const surface = container.querySelector('[data-timeline-canvas]') as HTMLElement
+    content.length = 0
+
+    // c0 ends at 8s; at 50px/s that is x=400, so x=395 is inside its out handle.
+    act(() => {
+      surface.dispatchEvent(new MouseEvent('mousemove', { clientX: 395, clientY: 60, bubbles: true }))
+    })
+    act(() => { vi.advanceTimersByTime(32) })
+
+    expect(content.some(c => c.method === 'set:fillStyle' && c.args[0] === TIMELINE_COLORS.handleFillHovered)).toBe(true)
+    // The other handle stays at its resting fill — only one is ever lit.
+    expect(content.filter(c => c.method === 'set:fillStyle' && c.args[0] === TIMELINE_COLORS.handleFill)).toHaveLength(1)
+    expect(content.filter(c => c.method === 'clearRect')).toHaveLength(1)
+  })
+
+  it('takes the light off again when the pointer moves onto the clip body', () => {
+    const store = createViewportStore()
+    const { content, container } = mount(store, createPlaybackClock(), undefined, ['c0'])
+    const surface = container.querySelector('[data-timeline-canvas]') as HTMLElement
+
+    act(() => { surface.dispatchEvent(new MouseEvent('mousemove', { clientX: 395, clientY: 60, bubbles: true })) })
+    act(() => { vi.advanceTimersByTime(32) })
+    content.length = 0
+
+    act(() => { surface.dispatchEvent(new MouseEvent('mousemove', { clientX: 200, clientY: 60, bubbles: true })) })
+    act(() => { vi.advanceTimersByTime(32) })
+
+    expect(content.some(c => c.method === 'set:fillStyle' && c.args[0] === TIMELINE_COLORS.handleFillHovered)).toBe(false)
+    expect(content.filter(c => c.method === 'set:fillStyle' && c.args[0] === TIMELINE_COLORS.handleFill)).toHaveLength(2)
+  })
+
+  it('costs no content repaint at all when nothing is selected', () => {
+    // Handles are drawn on selected items only, so with an empty selection
+    // there is nothing to light and hovering must stay as cheap as it was.
+    const store = createViewportStore()
+    const { content, container } = mount(store)
+    const surface = container.querySelector('[data-timeline-canvas]') as HTMLElement
+    const before = content.length
+
+    act(() => { surface.dispatchEvent(new MouseEvent('mousemove', { clientX: 395, clientY: 60, bubbles: true })) })
+    act(() => { vi.advanceTimersByTime(32) })
+
+    expect(content.length).toBe(before)
+  })
+
+  it('never rings itself when the pointer focuses it and the keyboard drives it', () => {
+    // The surface is focused by mouse (so Delete/Enter reach Timeline's root
+    // guard) and then driven by keyboard — space to play/pause — which is the
+    // exact sequence `:focus-visible` exists to catch. Left alone, the first
+    // keypress drew a focus ring around every track at once.
+    const store = createViewportStore()
+    const { container } = mount(store)
+    const surface = container.querySelector('[data-timeline-canvas]') as HTMLElement
+
+    expect(surface.className).toContain('outline-none')
+    // And it stays unreachable by tab, which is what makes suppressing the
+    // ring free rather than a keyboard-navigation regression.
+    expect(surface.getAttribute('tabindex')).toBe('-1')
   })
 
   it('coalesces a burst of clock ticks into a single frame', () => {

@@ -27,6 +27,7 @@ import {
   normalizeTracks,
   trackItems,
 } from '../timeline-model'
+import type { SnapStrength } from './snap'
 import { timeToX, visibleRange, type Viewport } from './viewport'
 import { drawAudioLaneWaveform, drawClipWaveform, type WaveformSceneLookup } from './waveforms'
 import { drawFilmstripTiles, type FilmstripSceneLookup } from './filmstrips'
@@ -106,9 +107,36 @@ export const TIMELINE_COLORS = {
   /** Fade in/out gradients: `linear-gradient(to right, rgba(0,0,0,0.6), transparent)`. */
   fadeShadow: 'rgba(0,0,0,0.6)',
   fadeTransparent: 'rgba(0,0,0,0)',
-  /** The overlap band AudioTrackRow marks with a crossfade glyph. */
-  crossfadeFill: 'rgba(251,191,36,0.15)',
-  crossfadeBorder: 'rgba(251,191,36,0.3)',
+  /** Where two items on the same row overlap in time.
+   *
+   *  These were 0.15 amber fill / 0.3 amber border. Two things were wrong with
+   *  that. It was invisible over filmstrip frames — legible back when a clip
+   *  was a flat colour block, gone the moment clips filled with picture. And
+   *  amber was the wrong thing to say: yellow on a timeline reads as a
+   *  warning, and an overlap is a fact about the edit, not a fault in it. It
+   *  was also all but the same hue as the preview-axis cursor.
+   *
+   *  Deliberately colourless now. White stripes over a dark under-stroke are
+   *  the barber-pole "this region is special" pattern, and carry no status.
+   *  The hatching is what does the work — a wash of any strength competes with
+   *  the picture underneath, and diagonals do not. */
+  // 0.12, not the 0.1 that would read most naturally here: `audioMutedFill` is
+  // already exactly `rgba(255,255,255,0.1)`, and two different meanings sharing
+  // one literal is a trap for anything reasoning about the paint — a muted bar
+  // and an overlap band would have been indistinguishable by colour alone.
+  overlapFill: 'rgba(255,255,255,0.12)',
+  overlapHatch: 'rgba(255,255,255,0.75)',
+  /** Laid under each hatch line, a little wider, so the white has something to
+   *  read against. White on a bright sky is nearly invisible and white on a
+   *  dark frame is fine; a dark outline makes one treatment work on both, the
+   *  same trick the clip labels use to survive an arbitrary frame. */
+  overlapHatchShadow: 'rgba(0,0,0,0.45)',
+  /** Translucent and thin, unlike the solid amber rules this replaces. White
+   *  is already the selection vocabulary (the outline and the trim handles),
+   *  and a hard white rule down each side of a band made an overlap read as a
+   *  selected clip. Thin enough to bound the span, faint enough not to be
+   *  mistaken for a border. */
+  overlapEdge: 'rgba(255,255,255,0.55)',
   /** `bg-red-500` — the playhead, i.e. where playback/preview actually is. */
   playhead: '#ef4444',
   /** The selected clip's outline. White rather than the track's own hue: it is
@@ -119,6 +147,27 @@ export const TIMELINE_COLORS = {
    *  red playback line it moves independently of; it inherits the colour of
    *  the DOM hover indicator it replaces (Timeline.tsx's `bg-yellow-400/80`). */
   cursor: '#facc15',
+  /** The trim-handle pill on a selected clip's in/out edge. Same white as the
+   *  selection outline, deliberately: the handles read as thickenings of that
+   *  border rather than as separate furniture. */
+  handleFill: 'rgba(255,255,255,0.92)',
+  /** The handle under the pointer. Opaque, so "this is the one you'd grab"
+   *  survives a bright filmstrip frame behind it. */
+  handleFillHovered: '#ffffff',
+  /** The grip ticks inside the pill — dark on white, the universal
+   *  drag-me-sideways glyph. */
+  handleGrip: 'rgba(15,23,42,0.55)',
+  handleGripHovered: 'rgba(15,23,42,0.9)',
+  /** The snap guide: the line marking the boundary a gesture is magnetized to.
+   *  Cyan because every other line on this surface is spoken for — red is the
+   *  playhead, yellow the preview axis, emerald the audio bars — and a guide
+   *  that could be confused with the playhead would be worse than none. */
+  snapGuide: '#22d3ee',
+  /** A guide for a boundary on some OTHER track. Same hue so it is obviously
+   *  the same idea, but faint and capless: a cross-track alignment is a hint,
+   *  not the thing you were aiming at, and at full strength these were
+   *  indistinguishable from the alignment that actually matters. */
+  snapGuideWeak: 'rgba(34,211,238,0.4)',
 } as const
 
 export const ROW_RADIUS_PX = 4           // Tailwind `rounded`
@@ -130,6 +179,40 @@ export const CLIP_RADIUS_PX = 4
 /** Weight of the selected-clip outline. Thick on purpose: it has to read over
  *  filmstrip frames of any brightness. */
 export const CLIP_SELECTED_BORDER_PX = 3
+/** Drawn width of a visual clip's trim handle. Equal to
+ *  `VISUAL_EDGE_TOLERANCE_PX` in hit-test.ts ON PURPOSE — the pill you see is
+ *  exactly the strip that trims, so aiming at it is never a guess. Change one
+ *  and change the other. */
+export const CLIP_HANDLE_WIDTH_PX = 10
+/** Same contract against `AUDIO_EDGE_TOLERANCE_PX`. */
+export const AUDIO_HANDLE_WIDTH_PX = 6
+/** Grip ticks per handle, their width, and the gap between them. */
+export const HANDLE_GRIP_COUNT = 2
+export const HANDLE_GRIP_WIDTH_PX = 1.5
+export const HANDLE_GRIP_GAP_PX = 2.5
+/** Fraction of the handle's height the ticks span, and the cap that keeps them
+ *  from becoming a full-height stripe on the tall base video row. */
+export const HANDLE_GRIP_HEIGHT_RATIO = 0.4
+export const HANDLE_GRIP_MAX_HEIGHT_PX = 16
+/** Below this the pill is thinner than its own grip and draws as a smear, so a
+ *  very narrow clip gets no handles — the white selection outline is still
+ *  there to say it's selected. */
+export const MIN_HANDLE_WIDTH_PX = 3
+export const SNAP_GUIDE_WIDTH_PX = 2
+/** The weak guide is a hairline. Half the width and no caps — visible if you
+ *  look for it, invisible if you aren't. */
+export const SNAP_GUIDE_WEAK_WIDTH_PX = 1
+/** The arrowheads at the guide's ends. They are what make it read as "this
+ *  boundary", not as another playhead. */
+export const SNAP_GUIDE_CAP_HALF_WIDTH_PX = 5
+export const SNAP_GUIDE_CAP_HEIGHT_PX = 7
+/** Gap between the diagonal hatch lines in an overlap band, their weight, and
+ *  the weight of the solid rule down each side of it. */
+export const OVERLAP_HATCH_SPACING_PX = 9
+export const OVERLAP_HATCH_WIDTH_PX = 1.5
+/** How much wider the shadow pass is than the amber it sits under. */
+export const OVERLAP_HATCH_SHADOW_WIDTH_PX = 3
+export const OVERLAP_EDGE_WIDTH_PX = 1.5
 export const AUDIO_ITEM_RADIUS_PX = 4    // Tailwind `rounded` on the bar
 export const AUDIO_ITEM_INSET_PX = 4     // `top-1 bottom-1` on the bar
 export const PLAYHEAD_WIDTH_PX = 2       // `w-[2px]`
@@ -294,6 +377,91 @@ export function clipBodyRect(rect: Rect): Rect {
   }
 }
 
+export interface TrimHandleDrawArgs {
+  /** The BODY rect of the clip or bar — the rectangle actually painted, not
+   *  the full time span. A handle drawn against the span would hang two pixels
+   *  out over the gutter and touch its neighbour. */
+  rect: Rect
+  edge: 'in' | 'out'
+  /** Nominal width; narrowed automatically so two handles can never overlap on
+   *  a short clip. */
+  width: number
+  hovered?: boolean
+  radius?: number
+}
+
+/**
+ * A trim handle: the grabbable pill on one end of a selected clip.
+ *
+ * This exists because canvas mode inherited the DOM path's *invisible* resize
+ * strips — a 10px zone with nothing drawn in it. That was survivable when a
+ * clip was a flat colour block with a visible 1px border; once clips filled
+ * with filmstrip frames there was no way to see where trimming started, and
+ * the only feedback was the cursor changing after you were already there.
+ *
+ * The drawn width is `VISUAL_EDGE_TOLERANCE_PX` (or the audio one), so the
+ * pill is a picture of the hit zone rather than a decoration near it.
+ *
+ * Handles are drawn for SELECTED items only. Trimming an unselected clip still
+ * works — hit-testing never consulted the selection and still doesn't — but
+ * showing a pair of pills on every clip on the timeline would bury the one
+ * thing selection is for.
+ */
+export function drawTrimHandle(ctx: DrawContext, args: TrimHandleDrawArgs): void {
+  const { rect, edge, hovered = false } = args
+  if (rect.width <= 0 || rect.height <= 0) return
+
+  // Two handles must never meet in the middle: on a clip narrower than twice
+  // the nominal width they each take half and stop.
+  const width = Math.min(args.width, rect.width / 2)
+  if (width < MIN_HANDLE_WIDTH_PX) return
+
+  const x = edge === 'in' ? rect.x : rect.x + rect.width - width
+  const radius = Math.min(args.radius ?? CLIP_RADIUS_PX, width / 2, rect.height / 2)
+
+  ctx.save()
+  ctx.fillStyle = hovered ? TIMELINE_COLORS.handleFillHovered : TIMELINE_COLORS.handleFill
+  roundRectPath(ctx, x, rect.y, width, rect.height, radius)
+  ctx.fill()
+
+  // Grip ticks, centred in the pill. Skipped when the pill has narrowed to the
+  // point where they'd fill it edge to edge and read as one solid block.
+  const gripSpan = HANDLE_GRIP_COUNT * HANDLE_GRIP_WIDTH_PX + (HANDLE_GRIP_COUNT - 1) * HANDLE_GRIP_GAP_PX
+  if (gripSpan <= width - 2) {
+    const gripHeight = Math.min(rect.height * HANDLE_GRIP_HEIGHT_RATIO, HANDLE_GRIP_MAX_HEIGHT_PX)
+    const gripY = rect.y + (rect.height - gripHeight) / 2
+    let gripX = x + (width - gripSpan) / 2
+    ctx.fillStyle = hovered ? TIMELINE_COLORS.handleGripHovered : TIMELINE_COLORS.handleGrip
+    for (let i = 0; i < HANDLE_GRIP_COUNT; i++) {
+      ctx.fillRect(gripX, gripY, HANDLE_GRIP_WIDTH_PX, gripHeight)
+      gripX += HANDLE_GRIP_WIDTH_PX + HANDLE_GRIP_GAP_PX
+    }
+  }
+  ctx.restore()
+}
+
+/**
+ * Both trim handles for one selected item.
+ *
+ * Split out of the item painters so the row painter can run it as a LAST pass,
+ * after every clip in the row is down. Handles are an affordance, not content:
+ * where two clips overlap, the one on top owns the picture, but the selected
+ * clip still owns its own edges and has to be able to show them. Painting them
+ * in stacking order meant a clip whose end was overlapped had a handle you
+ * could neither see nor — before the hit-test learned about this — grab.
+ */
+export function drawItemHandles(
+  ctx: DrawContext,
+  rect: Rect,
+  width: number,
+  hoveredEdge?: 'in' | 'out' | null,
+  radius?: number,
+): void {
+  for (const edge of ['in', 'out'] as const) {
+    drawTrimHandle(ctx, { rect, edge, width, hovered: hoveredEdge === edge, radius })
+  }
+}
+
 export function drawClipRect(ctx: DrawContext, args: ClipDrawArgs): void {
   const { rect, palette, selected, label, dimmed, drawContent } = args
   if (rect.width <= 0) return
@@ -333,6 +501,13 @@ export function drawClipRect(ctx: DrawContext, args: ClipDrawArgs): void {
     ctx.stroke()
   }
 
+  // The handles themselves are NOT drawn here — the row painter puts them on
+  // in a pass of its own once every clip is down (see `drawTimelineContent`),
+  // because a clip that overlaps this one would otherwise bury them. Their
+  // width still matters here: the label has to indent past where they will
+  // land, or a pill drops onto the first glyph of a short overlay name.
+  const handleWidth = selected ? Math.min(CLIP_HANDLE_WIDTH_PX, body.width / 2) : 0
+
   // An empty label draws nothing at all — video clips carry none now that the
   // track rail names the row.
   if (label !== '' && body.width >= MIN_LABEL_WIDTH_PX) {
@@ -350,7 +525,7 @@ export function drawClipRect(ctx: DrawContext, args: ClipDrawArgs): void {
     // `restore()` below drops it before anything else paints.
     ctx.shadowColor = LABEL_SHADOW_COLOR
     ctx.shadowBlur = LABEL_SHADOW_BLUR_PX
-    ctx.fillText(label, body.x + LABEL_PAD_PX, body.y + LABEL_TOP_OFFSET_PX)
+    ctx.fillText(label, body.x + LABEL_PAD_PX + handleWidth, body.y + LABEL_TOP_OFFSET_PX)
     ctx.restore()
   }
 
@@ -373,6 +548,7 @@ export interface AudioItemDrawArgs {
 
 export function drawAudioItem(ctx: DrawContext, args: AudioItemDrawArgs): void {
   const { rect, selected, muted, label, fadeInPx = 0, fadeOutPx = 0, drawContent } = args
+  const handleWidth = selected ? Math.min(AUDIO_HANDLE_WIDTH_PX, rect.width / 2) : 0
   if (rect.width <= 0) return
   ctx.save()
 
@@ -415,7 +591,7 @@ export function drawAudioItem(ctx: DrawContext, args: AudioItemDrawArgs): void {
     ctx.fillStyle = TIMELINE_COLORS.audioText
     ctx.font = LABEL_FONT
     ctx.textBaseline = 'middle'
-    ctx.fillText(label, rect.x + LABEL_PAD_PX, rect.y + rect.height / 2)
+    ctx.fillText(label, rect.x + LABEL_PAD_PX + handleWidth, rect.y + rect.height / 2)
   }
   ctx.restore()
 
@@ -424,24 +600,141 @@ export function drawAudioItem(ctx: DrawContext, args: AudioItemDrawArgs): void {
     ctx.lineWidth = 1
     roundRectPath(ctx, rect.x + 0.5, rect.y + 0.5, Math.max(0, rect.width - 1), Math.max(0, rect.height - 1), AUDIO_ITEM_RADIUS_PX)
     ctx.stroke()
+    // Handles come later, in the lane painter's own pass — crossfaded bars
+    // overlap by design, so burying them here would be the normal case rather
+    // than the exception.
   }
 
   ctx.restore()
 }
 
-/** The amber band AudioTrackRow shows where two audio bars overlap. */
-export function drawCrossfadeBand(ctx: DrawContext, rect: Rect): void {
-  if (rect.width <= 0) return
-  ctx.fillStyle = TIMELINE_COLORS.crossfadeFill
+/**
+ * The span where two items on one row sit on top of each other.
+ *
+ * On an audio lane that is a crossfade and usually deliberate. On a video
+ * track it usually is not: within a track the later clip simply wins, so an
+ * overlap means one clip is invisible for that stretch — worth shouting about
+ * rather than whispering.
+ *
+ * Neutral wash, diagonal hatching, and a thin rule down each side. The hatch
+ * is the load-bearing part: a translucent wash strong enough to see over a
+ * bright filmstrip frame is strong enough to hide the frame, whereas diagonals
+ * stay legible over anything without obscuring what is underneath them. It is
+ * also the convention — every NLE marks a transition region with stripes.
+ */
+export function drawOverlapBand(ctx: DrawContext, rect: Rect): void {
+  if (rect.width <= 0 || rect.height <= 0) return
+
+  ctx.save()
+  // Clip first: the diagonals run past the band's corners by design, and the
+  // clip is what turns them into a contained patch of hatching.
+  ctx.beginPath()
+  ctx.rect(rect.x, rect.y, rect.width, rect.height)
+  ctx.clip()
+
+  ctx.fillStyle = TIMELINE_COLORS.overlapFill
   ctx.fillRect(rect.x, rect.y, rect.width, rect.height)
-  ctx.fillStyle = TIMELINE_COLORS.crossfadeBorder
-  ctx.fillRect(rect.x, rect.y, 1, rect.height)
-  ctx.fillRect(rect.x + rect.width - 1, rect.y, 1, rect.height)
+
+  // Leaning the same way as a fade: bottom-left to top-right. Start far enough
+  // left that the first line still crosses the band's bottom-left corner.
+  ctx.beginPath()
+  for (let offset = 0; offset <= rect.width + rect.height; offset += OVERLAP_HATCH_SPACING_PX) {
+    ctx.moveTo(rect.x + offset, rect.y + rect.height)
+    ctx.lineTo(rect.x + offset - rect.height, rect.y)
+  }
+  // One path, stroked twice: a wide dark pass, then the amber inside it.
+  ctx.strokeStyle = TIMELINE_COLORS.overlapHatchShadow
+  ctx.lineWidth = OVERLAP_HATCH_SHADOW_WIDTH_PX
+  ctx.stroke()
+  ctx.strokeStyle = TIMELINE_COLORS.overlapHatch
+  ctx.lineWidth = OVERLAP_HATCH_WIDTH_PX
+  ctx.stroke()
+  ctx.restore()
+
+  // Edges last and unclipped: they are what says exactly where the overlap
+  // starts and stops, which is the number an editor is actually trying to read
+  // off the screen. Kept thin and translucent so the band never reads as the
+  // white outline that means "selected".
+  const edge = Math.min(OVERLAP_EDGE_WIDTH_PX, rect.width / 2)
+  ctx.fillStyle = TIMELINE_COLORS.overlapEdge
+  ctx.fillRect(rect.x, rect.y, edge, rect.height)
+  ctx.fillRect(rect.x + rect.width - edge, rect.y, edge, rect.height)
+}
+
+/**
+ * Time spans where consecutive items on one row overlap.
+ *
+ * Consecutive in START order, which is what a crossfade is; a clip buried
+ * under a much longer neighbour two positions along is a different problem and
+ * not one a band can usefully describe. Pure so both row kinds can share it —
+ * the visual rows had no overlap marking at all before this, and duplicating
+ * the arithmetic is how they would drift apart again.
+ */
+export function overlapBands(items: readonly { start: number; end: number }[]): Array<{ start: number; end: number }> {
+  const sorted = [...items].sort((a, b) => a.start - b.start)
+  const out: Array<{ start: number; end: number }> = []
+  for (let i = 0; i < sorted.length - 1; i++) {
+    const a = sorted[i]
+    const b = sorted[i + 1]
+    if (a.end <= b.start) continue
+    out.push({ start: b.start, end: Math.min(a.end, b.end) })
+  }
+  return out
 }
 
 export function drawPlayhead(ctx: DrawContext, x: number, top: number, bottom: number): void {
   ctx.fillStyle = TIMELINE_COLORS.playhead
   ctx.fillRect(x - PLAYHEAD_WIDTH_PX / 2, top, PLAYHEAD_WIDTH_PX, bottom - top)
+}
+
+/**
+ * The snap guide: the boundary a running gesture is currently magnetized to.
+ *
+ * A line plus an arrowhead at each end, pointing inward. The caps are load-
+ * bearing, not decoration — a bare vertical line on this surface is already
+ * two other things (the red playhead, the yellow preview axis), and the whole
+ * job of this mark is to say "you are held HERE, and here is a real edge".
+ *
+ * Drawn last of everything on the overlay so it survives whatever it lands on.
+ * When a gesture snaps to the playhead the cyan sits directly over the red,
+ * which is exactly the right picture: that IS what happened.
+ */
+export function drawSnapGuide(
+  ctx: DrawContext,
+  x: number,
+  top: number,
+  bottom: number,
+  strength: SnapStrength = 'strong',
+): void {
+  ctx.save()
+
+  if (strength === 'weak') {
+    ctx.fillStyle = TIMELINE_COLORS.snapGuideWeak
+    ctx.fillRect(x - SNAP_GUIDE_WEAK_WIDTH_PX / 2, top, SNAP_GUIDE_WEAK_WIDTH_PX, bottom - top)
+    ctx.restore()
+    return
+  }
+
+  ctx.fillStyle = TIMELINE_COLORS.snapGuide
+  ctx.fillRect(x - SNAP_GUIDE_WIDTH_PX / 2, top, SNAP_GUIDE_WIDTH_PX, bottom - top)
+
+  const half = SNAP_GUIDE_CAP_HALF_WIDTH_PX
+  const cap = SNAP_GUIDE_CAP_HEIGHT_PX
+
+  ctx.beginPath()
+  ctx.moveTo(x - half, top)
+  ctx.lineTo(x + half, top)
+  ctx.lineTo(x, top + cap)
+  ctx.closePath()
+  ctx.fill()
+
+  ctx.beginPath()
+  ctx.moveTo(x - half, bottom)
+  ctx.lineTo(x + half, bottom)
+  ctx.lineTo(x, bottom - cap)
+  ctx.closePath()
+  ctx.fill()
+  ctx.restore()
 }
 
 /** The preview-axis cursor. Drawn BEFORE the playhead by `drawTimelineOverlay`
@@ -460,6 +753,9 @@ export interface TimelineScene {
   layout: TimelineLayout
   /** Unified selection (visual items + audio tracks), as Timeline holds it. */
   selectedIds: string[]
+  /** The trim handle the pointer is resting on, if any. Only ever set for a
+   *  SELECTED item, since unselected ones draw no handles to highlight. */
+  hoveredHandle?: { itemId: string; edge: 'in' | 'out' } | null
   surfaceWidth: number
   surfaceHeight: number
   /** T6 waveform content-layer provider. Absent → no waveforms drawn (DOM
@@ -493,7 +789,7 @@ function intersectsRange(start: number, end: number, range: { start: number; end
  * screen, not by how big the project is. Returned stats make that assertable.
  */
 export function drawTimelineContent(ctx: DrawContext, scene: TimelineScene): DrawStats {
-  const { viewport, layout, selectedIds, surfaceWidth, surfaceHeight } = scene
+  const { viewport, layout, selectedIds, surfaceWidth, surfaceHeight, hoveredHandle } = scene
   const range = visibleRange(viewport)
   const stats: DrawStats = { visualItemsDrawn: 0, audioItemsDrawn: 0, itemsCulled: 0 }
 
@@ -507,6 +803,9 @@ export function drawTimelineContent(ctx: DrawContext, scene: TimelineScene): Dra
     // editable; only playback and export leave it out.
     const dimmed = row.disabled === true
     const palette = TRACK_PALETTE[row.trackIdx % TRACK_PALETTE.length]
+    // Bodies of the selected clips in this row, queued for the handle pass at
+    // the bottom of the loop.
+    const handleRects: Array<{ body: Rect; hoveredEdge: 'in' | 'out' | null }> = []
 
     for (const item of row.items) {
       if (!intersectsRange(item.start, item.end, range)) { stats.itemsCulled++; continue }
@@ -542,12 +841,40 @@ export function drawTimelineContent(ctx: DrawContext, scene: TimelineScene): Dra
         dimmed,
         drawContent,
       })
+      if (selectedIds.includes(item.id)) {
+        handleRects.push({ body, hoveredEdge: hoveredHandle?.itemId === item.id ? hoveredHandle.edge : null })
+      }
       stats.visualItemsDrawn++
     }
+
+    // Overlaps on a visual row, drawn over the clips they span. New here: the
+    // DOM timeline never marked these, and on canvas the only sign of one was
+    // the clip band's dark wash landing twice — a faintly lighter box that
+    // read as a rendering quirk rather than as two clips on top of each other.
+    // A skipped row's band fades with the rest of it.
+    ctx.save()
+    if (dimmed) ctx.globalAlpha = 0.3
+    for (const band of overlapBands(row.items)) {
+      if (!intersectsRange(band.start, band.end, range)) continue
+      drawOverlapBand(ctx, clampRectToSurface(
+        { x: timeToX(band.start, viewport), y: row.y, width: (band.end - band.start) * viewport.pxPerSecond, height: row.height },
+        surfaceWidth,
+      ))
+    }
+
+    // Handles last of all, over the clips AND over any overlap band. They are
+    // the control, so nothing gets to sit on top of them: a selected clip
+    // whose end is buried under an overlapping neighbour still shows the edge
+    // you can grab, which is what the hit-test now hands you there.
+    for (const { body, hoveredEdge } of handleRects) {
+      drawItemHandles(ctx, body, CLIP_HANDLE_WIDTH_PX, hoveredEdge, Math.min(CLIP_RADIUS_PX, body.width / 2, body.height / 2))
+    }
+    ctx.restore()
   }
 
   for (const lane of layout.lanes) {
     drawRowBackground(ctx, { x: 0, y: lane.y, width: surfaceWidth, height: lane.height })
+    const laneHandleRects: Array<{ rect: Rect; hoveredEdge: 'in' | 'out' | null }> = []
 
     for (const track of lane.tracks) {
       if (!intersectsRange(track.start, track.end, range)) { stats.itemsCulled++; continue }
@@ -572,22 +899,26 @@ export function drawTimelineContent(ctx: DrawContext, scene: TimelineScene): Dra
         fadeOutPx: (track.fadeOut ?? 0) * viewport.pxPerSecond,
         drawContent: audioWaveform ? (c) => drawAudioLaneWaveform(c, audioWaveform.rect, audioWaveform.columns) : undefined,
       })
+      if (selectedIds.includes(track.id)) {
+        laneHandleRects.push({ rect, hoveredEdge: hoveredHandle?.itemId === track.id ? hoveredHandle.edge : null })
+      }
       stats.audioItemsDrawn++
     }
 
-    // Overlap bands between consecutive unmuted bars in the lane.
-    const sorted = lane.tracks.filter(t => !t.muted).sort((a, b) => a.start - b.start)
-    for (let i = 0; i < sorted.length - 1; i++) {
-      const a = sorted[i]
-      const b = sorted[i + 1]
-      if (a.end <= b.start) continue
-      const start = b.start
-      const end = Math.min(a.end, b.end)
-      if (!intersectsRange(start, end, range)) continue
-      drawCrossfadeBand(ctx, clampRectToSurface(
-        { x: timeToX(start, viewport), y: lane.y, width: (end - start) * viewport.pxPerSecond, height: lane.height },
+    // Overlap bands between consecutive unmuted bars in the lane. A muted bar
+    // is not crossfading with anything, so it is left out of the pairing.
+    for (const band of overlapBands(lane.tracks.filter(t => !t.muted))) {
+      if (!intersectsRange(band.start, band.end, range)) continue
+      drawOverlapBand(ctx, clampRectToSurface(
+        { x: timeToX(band.start, viewport), y: lane.y, width: (band.end - band.start) * viewport.pxPerSecond, height: lane.height },
         surfaceWidth,
       ))
+    }
+
+    // As the visual rows: last, over everything. Crossfaded bars overlap by
+    // design, so on a lane this is the normal case rather than the exception.
+    for (const { rect, hoveredEdge } of laneHandleRects) {
+      drawItemHandles(ctx, rect, AUDIO_HANDLE_WIDTH_PX, hoveredEdge, AUDIO_ITEM_RADIUS_PX)
     }
   }
 
@@ -604,6 +935,13 @@ export interface OverlayScene {
    *  is on the preview follows THIS while the playhead stays put, which is the
    *  entire point of the toggle. */
   cursorTime?: number | null
+  /** The boundary a running gesture is snapped to, or null when it is running
+   *  free (or no gesture is running). Emitted by the pointer machine, which is
+   *  the only thing that knows which edge of a dragged span actually caught. */
+  snapTime?: number | null
+  /** Which tier is holding it — a same-track magnet draws boldly, a
+   *  cross-track one as a hairline. Defaults to strong. */
+  snapStrength?: SnapStrength | null
 }
 
 /** Paint the playhead layer. Kept separate from the content so playback — which
@@ -611,7 +949,7 @@ export interface OverlayScene {
  *  whole timeline. The preview-axis cursor rides here for the same reason:
  *  tracking the pointer must not force a content repaint. */
 export function drawTimelineOverlay(ctx: DrawContext, scene: OverlayScene): void {
-  const { viewport, currentTime, surfaceWidth, surfaceHeight, cursorTime } = scene
+  const { viewport, currentTime, surfaceWidth, surfaceHeight, cursorTime, snapTime, snapStrength } = scene
   ctx.clearRect(0, 0, surfaceWidth, surfaceHeight)
   if (cursorTime !== undefined && cursorTime !== null) {
     const cx = timeToX(cursorTime, viewport)
@@ -622,6 +960,14 @@ export function drawTimelineOverlay(ctx: DrawContext, scene: OverlayScene): void
   const x = timeToX(currentTime, viewport)
   if (!(x < -PLAYHEAD_WIDTH_PX || x > surfaceWidth + PLAYHEAD_WIDTH_PX)) {
     drawPlayhead(ctx, x, 0, surfaceHeight)
+  }
+  // Last, so it wins over both lines. A gesture snapped to the playhead should
+  // look snapped, not hidden behind the thing it snapped to.
+  if (snapTime !== undefined && snapTime !== null) {
+    const sx = timeToX(snapTime, viewport)
+    if (!(sx < -SNAP_GUIDE_CAP_HALF_WIDTH_PX || sx > surfaceWidth + SNAP_GUIDE_CAP_HALF_WIDTH_PX)) {
+      drawSnapGuide(ctx, sx, 0, surfaceHeight, snapStrength ?? 'strong')
+    }
   }
 }
 

@@ -8,8 +8,8 @@
 import type { VisualItem, AudioTrack } from '../../schema'
 import type { Project } from '../../types'
 import { mapTrackItems } from './timeline-model'
+import { computeResizedItem, resizeWindowedItem, type Draggable } from './useItemDragDrop'
 
-const MIN_DURATION = 0.1
 
 export interface ResizeDeltas {
   /** Delta in seconds applied to start-edge resizes. 0 if edge !== 'start'. */
@@ -46,54 +46,28 @@ export function applyResizeDeltaToSelection(
   }
 }
 
+/** Delegates to `computeResizedItem` so the span/window invariant is enforced
+ *  in ONE place. This used to hand-roll the same arithmetic with the same
+ *  independent clamps on the edge and the window, and therefore the same bug:
+ *  propagating a trim to the rest of a multi-selection could stretch a clip's
+ *  timeline span past the source it actually has. The only thing added here is
+ *  the timeline floor at t=0, applied to the REQUESTED time so the shared
+ *  function still does all the clamping that matters. */
 function resizeVisualItem(item: VisualItem, edge: 'start' | 'end', { dStart, dEnd }: ResizeDeltas): VisualItem {
-  if (edge === 'start') {
-    const newStart = Math.max(0, Math.min(item.start + dStart, item.end - MIN_DURATION))
-    if (item.type !== 'video') return { ...item, start: newStart }
-    const inP = item.inPoint ?? 0
-    const outP = item.outPoint ?? (inP + (item.end - item.start))
-    const dActual = newStart - item.start
-    return {
-      ...item,
-      start: newStart,
-      inPoint: Math.max(0, Math.min(inP + dActual, outP - MIN_DURATION)),
-    }
-  } else {
-    const newEnd = Math.max(item.start + MIN_DURATION, item.end + dEnd)
-    if (item.type !== 'video') return { ...item, end: newEnd }
-    const inP = item.inPoint ?? 0
-    const outP = item.outPoint ?? (inP + (item.end - item.start))
-    const dActual = newEnd - item.end
-    return {
-      ...item,
-      end: newEnd,
-      outPoint: Math.max(inP + MIN_DURATION, Math.min(outP + dActual, item.sourceDuration ?? Infinity)),
-    }
-  }
+  const requested = edge === 'start'
+    ? Math.max(0, item.start + dStart)
+    : item.end + dEnd
+  return computeResizedItem(item as Draggable, edge, requested) as VisualItem
 }
 
+/** As `resizeVisualItem`, but an audio track is always source-windowed — there
+ *  is no "no window" case to fall through to, so it goes straight to
+ *  `resizeWindowedItem` rather than through the video/non-video branch. */
 function resizeAudioTrack(track: AudioTrack, edge: 'start' | 'end', { dStart, dEnd }: ResizeDeltas): AudioTrack {
-  const inP = track.inPoint ?? 0
-  const outP = track.outPoint ?? (inP + (track.end - track.start))
-  const srcDur = track.sourceDuration ?? Infinity
-
-  if (edge === 'start') {
-    const newStart = Math.max(0, Math.min(track.start + dStart, track.end - MIN_DURATION))
-    const dActual = newStart - track.start
-    return {
-      ...track,
-      start: newStart,
-      inPoint: Math.max(0, Math.min(inP + dActual, outP - MIN_DURATION)),
-    }
-  } else {
-    const newEnd = Math.max(track.start + MIN_DURATION, track.end + dEnd)
-    const dActual = newEnd - track.end
-    return {
-      ...track,
-      end: newEnd,
-      outPoint: Math.max(inP + MIN_DURATION, Math.min(outP + dActual, srcDur)),
-    }
-  }
+  const requested = edge === 'start'
+    ? Math.max(0, track.start + dStart)
+    : track.end + dEnd
+  return resizeWindowedItem(track as unknown as Draggable, edge, requested) as unknown as AudioTrack
 }
 
 /** Set `muted` on every selected item to the given target value. Both visual

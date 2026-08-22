@@ -90,6 +90,52 @@ function spanZone(x: number, x0: number, x1: number, tolerance: number): 'body' 
   return 'body'
 }
 
+/** One row's worth of hit resolution, shared by the visual and audio scans.
+ *
+ * Edges beat bodies ACROSS the whole row, and the nearest edge wins.
+ *
+ * The obvious rule — topmost item wins, and within it an edge beats its own
+ * body — is what this replaces, and it made the trailing edge of an
+ * overlapped clip completely ungrabbable. Where clip B overlaps the end of
+ * clip A, every point near A's out edge is also inside B, and B is on top, so
+ * the scan returned B's body and stopped. You could see A's edge; you could
+ * not trim it. Crossfaded audio bars had the same hole, permanently.
+ *
+ * Nearest-edge-wins fixes it without disturbing the ordinary case: a point is
+ * only ever a candidate for items whose span actually contains it, and for
+ * clips that merely touch, the shared boundary is equidistant, so the tie
+ * falls to the topmost item exactly as before. Ties resolve to the topmost
+ * because the scan runs back-to-front and only a STRICTLY nearer edge
+ * displaces the incumbent.
+ */
+function resolveRow<T extends { id: string; start: number; end: number }>(
+  x: number,
+  items: readonly T[],
+  viewport: Viewport,
+  tolerance: number,
+): { item: T; edge: 'in' | 'out' } | { item: T; edge: null } | null {
+  let bestEdge: { item: T; edge: 'in' | 'out'; dist: number } | null = null
+  let topBody: T | null = null
+
+  for (let i = items.length - 1; i >= 0; i--) {
+    const item = items[i]
+    const x0 = timeToX(item.start, viewport)
+    const x1 = timeToX(item.end, viewport)
+    const zone = spanZone(x, x0, x1, tolerance)
+    if (zone === null) continue
+    if (zone === 'body') {
+      if (topBody === null) topBody = item
+      continue
+    }
+    const dist = zone === 'in' ? x - x0 : x1 - x
+    if (bestEdge === null || dist < bestEdge.dist) bestEdge = { item, edge: zone, dist }
+  }
+
+  if (bestEdge !== null) return { item: bestEdge.item, edge: bestEdge.edge }
+  if (topBody !== null) return { item: topBody, edge: null }
+  return null
+}
+
 /**
  * Resolve a surface-space point to what sits under it.
  *
@@ -110,14 +156,10 @@ export function hitTest(
 
   for (const row of layout.rows) {
     if (point.y < row.y || point.y >= row.y + row.height) continue
-    for (let i = row.items.length - 1; i >= 0; i--) {
-      const item = row.items[i]
-      const zone = spanZone(point.x, timeToX(item.start, viewport), timeToX(item.end, viewport), visualTolerance)
-      if (zone === null) continue
-      if (zone === 'body') return { kind: 'item-body', t, itemId: item.id, trackIdx: row.trackIdx, item }
-      return { kind: 'item-edge', t, itemId: item.id, edge: zone, trackIdx: row.trackIdx, item }
-    }
-    return { kind: 'empty-row', t, trackIdx: row.trackIdx }
+    const hit = resolveRow(point.x, row.items, viewport, visualTolerance)
+    if (hit === null) return { kind: 'empty-row', t, trackIdx: row.trackIdx }
+    if (hit.edge === null) return { kind: 'item-body', t, itemId: hit.item.id, trackIdx: row.trackIdx, item: hit.item }
+    return { kind: 'item-edge', t, itemId: hit.item.id, edge: hit.edge, trackIdx: row.trackIdx, item: hit.item }
   }
 
   for (const lane of layout.lanes) {
@@ -127,12 +169,10 @@ export function hitTest(
     const barTop = lane.y + AUDIO_ITEM_INSET_PX
     const barBottom = lane.y + lane.height - AUDIO_ITEM_INSET_PX
     if (point.y >= barTop && point.y < barBottom) {
-      for (let i = lane.tracks.length - 1; i >= 0; i--) {
-        const track = lane.tracks[i]
-        const zone = spanZone(point.x, timeToX(track.start, viewport), timeToX(track.end, viewport), audioTolerance)
-        if (zone === null) continue
-        if (zone === 'body') return { kind: 'audio-body', t, itemId: track.id, laneIdx: lane.laneIndex, track }
-        return { kind: 'audio-edge', t, itemId: track.id, edge: zone, laneIdx: lane.laneIndex, track }
+      const hit = resolveRow(point.x, lane.tracks, viewport, audioTolerance)
+      if (hit !== null) {
+        if (hit.edge === null) return { kind: 'audio-body', t, itemId: hit.item.id, laneIdx: lane.laneIndex, track: hit.item }
+        return { kind: 'audio-edge', t, itemId: hit.item.id, edge: hit.edge, laneIdx: lane.laneIndex, track: hit.item }
       }
     }
     return { kind: 'empty-lane', t, laneIdx: lane.laneIndex }

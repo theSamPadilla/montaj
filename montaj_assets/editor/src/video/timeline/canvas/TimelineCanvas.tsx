@@ -39,13 +39,14 @@ import type { PlaybackClock } from '../../playback-clock'
 import type { ResolveFilePath } from '../AudioWaveformLayer'
 import { VISUAL_ROW_RENDER_HEIGHT_PX } from '../timeline-model'
 import { computeTimelineLayout, drawTimelineContent, drawTimelineOverlay } from './draw'
-import type { Point } from './hit-test'
+import { hitTest, isEdgeHit, type Point } from './hit-test'
 import {
   createPointerMachine,
   type Modifiers,
   type PointerContext,
   type PointerEffect,
 } from './pointer-machine'
+import type { SnapStrength } from './snap'
 import { WaveformPeaksStore, type WaveformSceneLookup } from './waveforms'
 import { FilmstripStore, type FilmstripSceneLookup } from './filmstrips'
 import {
@@ -180,6 +181,19 @@ export default function TimelineCanvas({
   // nodes to move a 2px line. Read fresh at overlay-paint time.
   const cursorTimeRef = useRef<number | null>(null)
 
+  // The snap guide, tracked the same imperative way and for the same reason:
+  // it moves during a drag, and a React state write per pointer move would
+  // re-render the whole timeline to place a 2px line. The machine emits a
+  // `snapGuide` effect only when the guide MOVES, so this is written a couple
+  // of times per gesture rather than per event.
+  const snapGuideRef = useRef<{ time: number; strength: SnapStrength } | null>(null)
+
+  // The trim handle under the resting pointer, so the painter can light it up.
+  // Held as a ref for the usual reason, but redrawn through `requestRedraw`
+  // only when the identity changes — crossing into or out of a handle, which
+  // happens a handful of times a session, not per mousemove.
+  const hoveredHandleRef = useRef<{ itemId: string; edge: 'in' | 'out' } | null>(null)
+
   // Hover-scrub emissions, coalesced to one per animation frame.
   //
   // The LINE is cheap — `requestRedraw` already folds it into one rAF. The
@@ -249,6 +263,7 @@ export default function TimelineCanvas({
           viewport,
           layout: scene.layout,
           selectedIds: scene.selectedIds,
+          hoveredHandle: hoveredHandleRef.current,
           surfaceWidth: cssWidth,
           surfaceHeight: cssHeight,
           waveforms,
@@ -266,6 +281,8 @@ export default function TimelineCanvas({
           viewport,
           currentTime: clock.get(),
           cursorTime: cursorTimeRef.current,
+          snapTime: snapGuideRef.current?.time ?? null,
+          snapStrength: snapGuideRef.current?.strength ?? null,
           surfaceWidth: cssWidth,
           surfaceHeight: cssHeight,
         })
@@ -418,6 +435,14 @@ export default function TimelineCanvas({
         // Cursor is written straight to the node: an affordance that changes on
         // every hover must not cost a React render.
         case 'cursor':        if (containerRef.current) containerRef.current.style.cursor = effect.cursor; break
+        // Overlay-only: the guide is gesture feedback, not content, so putting
+        // it up or taking it down never costs a filmstrip repaint.
+        case 'snapGuide':
+          snapGuideRef.current = effect.time === null || effect.strength === null
+            ? null
+            : { time: effect.time, strength: effect.strength }
+          requestRedraw('overlay')
+          break
       }
     }
     // The edit reaches the surface as a new `project` prop, which schedules a
@@ -456,6 +481,40 @@ export default function TimelineCanvas({
 
   function modifiersOf(e: MouseEvent): Modifiers {
     return { shift: e.shiftKey, alt: e.altKey, meta: e.metaKey, ctrl: e.ctrlKey }
+  }
+
+  // ── Trim-handle hover ──
+  //
+  // A second hit-test per hover event, on top of the one the machine does
+  // internally. It is gated on there BEING a selection, because handles are
+  // only drawn on selected items: with nothing selected — the common state
+  // while just moving the pointer around — this costs a length check and
+  // returns.
+  //
+  // The alternative was another remembered value in the machine and an effect
+  // per hover; a hit-test over the visible rows is cheaper than that, and it
+  // keeps the machine about gestures rather than about paint.
+
+  function hoveredHandleAt(point: Point): { itemId: string; edge: 'in' | 'out' } | null {
+    const p = pointerRef.current
+    if (p.selectedIds.length === 0) return null
+    const hit = hitTest(point, p.layout, store.get())
+    if (!isEdgeHit(hit) || hit.itemId === undefined || hit.edge === undefined) return null
+    return p.selectedIds.includes(hit.itemId) ? { itemId: hit.itemId, edge: hit.edge } : null
+  }
+
+  function updateHoveredHandle(point: Point) {
+    const next = hoveredHandleAt(point)
+    const prev = hoveredHandleRef.current
+    if (prev?.itemId === next?.itemId && prev?.edge === next?.edge) return
+    hoveredHandleRef.current = next
+    requestRedraw('content')
+  }
+
+  function clearHoveredHandle() {
+    if (hoveredHandleRef.current === null) return
+    hoveredHandleRef.current = null
+    requestRedraw('content')
   }
 
   // ── Preview axis: the cursor line, and the frame it asks the host to show ──
@@ -548,6 +607,7 @@ export default function TimelineCanvas({
       const point = surfacePoint(e)
       if (!point) return
       runEffects(machine.dispatch({ type: 'pointerMove', point, modifiers: modifiersOf(e), ctx: buildContext() }))
+      updateHoveredHandle(point)
       updateAxisCursor(point)
     },
     move(e) {
@@ -573,6 +633,10 @@ export default function TimelineCanvas({
     // arrive to naturally age the cursor out, so drop it explicitly.
     leave() {
       clearAxisCursor()
+      // A gesture owns the highlight until it ends: during a trim the pointer
+      // routinely leaves the surface, and dropping the lit handle then would
+      // un-light the very edge being dragged.
+      if (machine.state.kind === 'idle') clearHoveredHandle()
     },
   }
 
@@ -605,7 +669,19 @@ export default function TimelineCanvas({
       // Timeline's root-focus guard for Delete/Enter without adding this
       // surface to the tab order.
       tabIndex={-1}
-      className="relative w-full select-none"
+      // `outline-none` because this surface is focused by MOUSE and then
+      // driven by KEYBOARD, which is exactly the sequence that turns
+      // `:focus-visible` on. Pressing space to pause put a focus ring around
+      // the entire timeline — pointer-down focuses the surface silently, then
+      // the first keypress makes the browser decide the focus is now worth
+      // showing, and it draws a box round every track at once.
+      //
+      // Suppressing it costs nothing here: `tabIndex={-1}` keeps this out of
+      // the tab order, so there is no keyboard route to it and no keyboard
+      // user who needs the ring to know where they are. Timeline's own
+      // `tabIndex={0}` root — the one a keyboard user CAN reach — keeps its
+      // own affordance decision separately.
+      className="relative w-full select-none outline-none"
       style={{ height: surfaceHeight, cursor: 'pointer' }}
       // Timeline's container click seeks by percentage of `totalDuration`,
       // which is only the canvas' own time axis at fit zoom. The pointer

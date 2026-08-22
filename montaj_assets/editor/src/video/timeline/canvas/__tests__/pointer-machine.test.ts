@@ -276,10 +276,10 @@ describe('click-seek on empty timeline', () => {
     const d = new Driver(makeContext())
     d.down(505, 20)
     expect(of(d.effects, 'seek')[0].time).toBe(5)
-    // 5.25s: past attract but inside release, so it stays stuck on the cut.
+    // 5.25s: past attract but well inside release, so it stays stuck on the cut.
     expect(of(d.move(525, 20), 'seek')).toEqual([{ type: 'seek', time: 5 }])
-    // 5.4s clears release and the playhead comes free.
-    expect(of(d.move(540, 20), 'seek')[0].time).toBeCloseTo(5.4)
+    // 5.6s clears release and the playhead comes free.
+    expect(of(d.move(560, 20), 'seek')[0].time).toBeCloseTo(5.6)
   })
 
   it('clamps the playhead to the timeline', () => {
@@ -929,6 +929,140 @@ describe('press-time snap boundaries — echoed-project self-snap', () => {
     // Must not freeze at the first applied position.
     expect(new Set(ends.map(e => e.toFixed(6))).size).toBeGreaterThanOrEqual(5)
     expect(ends[ends.length - 1]).toBeCloseTo(6 - 20 / VIEWPORT.pxPerSecond, 6)
+  })
+})
+
+// ── The snap guide ───────────────────────────────────────────────────────
+//
+// The magnet is deliberately hard to escape (44px of release against 20px of
+// attract), which is only usable because the guide says where you are held.
+// These tests are the contract between the two: the machine reports the
+// BOUNDARY and its tier, once per change, and takes it down the moment the
+// gesture ends.
+
+const guide = (time: number | null, strength: 'strong' | 'weak' | null) =>
+  [{ type: 'snapGuide', time, strength }]
+
+describe('snap guide', () => {
+  it('raises a guide on capture and drops it on release, once each', () => {
+    const d = new Driver(makeContext())
+
+    // Pressing at 5.05s captures the cut at 5. A scrub tiers everything
+    // strong: the playhead belongs to no row, so it has no "own track".
+    d.down(505, 20)
+    expect(of(d.effects, 'snapGuide')).toEqual(guide(5, 'strong'))
+
+    // Still held at 5.25s — past attract, well inside release. The guide has
+    // not MOVED, so nothing is emitted: a drag held against one boundary must
+    // not spray an effect per pointer event.
+    expect(of(d.move(525, 20), 'snapGuide')).toEqual([])
+
+    // 5.6s clears release.
+    expect(of(d.move(560, 20), 'snapGuide')).toEqual(guide(null, null))
+    // …and stays down without re-announcing itself.
+    expect(of(d.move(580, 20), 'snapGuide')).toEqual([])
+  })
+
+  it('takes the guide down when a gesture ends still snapped', () => {
+    const d = new Driver(makeContext())
+    d.down(505, 20)
+    expect(of(d.up(505, 20), 'snapGuide')).toEqual(guide(null, null))
+  })
+
+  it('takes the guide down on a cancelled gesture', () => {
+    const d = new Driver(makeContext())
+    d.down(505, 20)
+    expect(of(d.cancel(), 'snapGuide')).toEqual(guide(null, null))
+  })
+
+  it('marks the boundary a dragged clip\'s TAIL caught, not its start', () => {
+    // o0 is 2s–4s on track 1. Dragged one second right its END lands exactly
+    // on track 0's cut at 5 — the magnet's snap point is the START it implies
+    // (3), which is a whole clip away from the edge the user is watching.
+    const d = new Driver(makeContext())
+    d.down(300, OVERLAY_Y)
+    expect(of(d.move(400, OVERLAY_Y), 'snapGuide')).toEqual(guide(5, 'weak'))
+  })
+
+  it('marks the boundary a dragged clip\'s HEAD caught', () => {
+    // Same clip one second left: its start lands on the audio bar's start at 1.
+    const d = new Driver(makeContext())
+    d.down(300, OVERLAY_Y)
+    expect(of(d.move(200, OVERLAY_Y), 'snapGuide')).toEqual(guide(1, 'weak'))
+  })
+
+  it('marks a same-track trim as strong', () => {
+    // c0's out edge pulled all the way out to c1's end at 10 — the same row,
+    // so the full magnet and a bold guide.
+    const d = new Driver(makeContext())
+    d.down(C0_OUT_EDGE.x, C0_OUT_EDGE.y)
+    expect(of(d.move(995, C0_OUT_EDGE.y), 'snapGuide')).toEqual(guide(10, 'strong'))
+  })
+
+  it('marks a cross-track trim as weak', () => {
+    // Same gesture, aimed instead at o0's end at 4 — one row up. It still
+    // catches, because 4.05 is 5px away and the weak radius is 6, but it
+    // announces itself as the hint it is.
+    const d = new Driver(makeContext())
+    d.down(C0_OUT_EDGE.x, C0_OUT_EDGE.y)
+    expect(of(d.move(400, C0_OUT_EDGE.y), 'snapGuide')).toEqual(guide(4, 'weak'))
+  })
+
+  it('lets a cross-track boundary go by at a distance a same-track one would hold', () => {
+    // 4.10 is 10px from o0's end: inside the strong radius, outside the weak
+    // one. Before the tiers this snapped, and dragging the base video track
+    // past a busy overlay row was a fight.
+    const d = new Driver(makeContext())
+    d.down(C0_OUT_EDGE.x, C0_OUT_EDGE.y)
+    expect(of(d.move(410, C0_OUT_EDGE.y), 'snapGuide')).toEqual([])
+  })
+
+  it('shows no guide when the op refuses to put the edge where the magnet asked', () => {
+    // o0's out edge dragged back past its own start: the magnet catches t=0,
+    // but a clip cannot be shorter than 0.1s, so the edge lands at 2.1 and the
+    // alignment never happens. A guide at 0 would be pointing at nothing.
+    const d = new Driver(makeContext())
+    d.down(397, OVERLAY_Y)
+    expect(of(d.move(2, OVERLAY_Y), 'snapGuide')).toEqual([])
+  })
+
+  it('tiers audio by LANE, so two bars sharing a lane pull on each other', () => {
+    // Lanes, not tracks: a lane can hold several bars and reads as one row, and
+    // a bar with no explicit `lane` gets an auto-assigned one. Reading
+    // `track.lane ?? 0` instead of grouping would file every unlabelled bar
+    // under lane 0 and call them all same-lane.
+    const project = {
+      id: 'p',
+      tracks: [{ id: 'trk-0', items: [{ id: 'c0', type: 'video', src: 'a.mp4', start: 0, end: 12, inPoint: 0, outPoint: 12, sourceDuration: 20 }] }],
+      audio: {
+        tracks: [
+          { id: 'a0', src: 'v.mp3', start: 1, end: 6, lane: 0 },
+          { id: 'a1', src: 'w.mp3', start: 8, end: 11, lane: 0 },
+          { id: 'b0', src: 'm.mp3', start: 3, end: 4, lane: 1 },
+        ],
+      },
+    } as unknown as Project
+    const ctx = makeContext({ project })
+    const lane0 = ctx.layout.lanes.find(l => l.laneIndex === 0)!
+    const y = Math.round(lane0.y + lane0.height / 2)
+
+    // a0's out edge (t=6, x=600) dragged to 8.1 — a1's start, same lane. 10px
+    // out, so only the strong radius can reach it.
+    const strongDrag = new Driver(ctx)
+    strongDrag.down(597, y)
+    expect(of(strongDrag.move(810, y), 'snapGuide')).toEqual(guide(8, 'strong'))
+
+    // The same edge dragged to 4.04 — b0's end, one lane down, 4px out. It
+    // catches, but only just, and announces itself as the hint it is.
+    const weakDrag = new Driver(ctx)
+    weakDrag.down(597, y)
+    expect(of(weakDrag.move(401, y), 'snapGuide')).toEqual(guide(4, 'weak'))
+  })
+
+  it('never guides a slip, which has no timeline snap points at all', () => {
+    const d = new Driver(makeContext())
+    d.down(C0_BODY.x, C0_BODY.y, mods({ alt: true }))
+    expect(of(d.move(C0_BODY.x + 100, C0_BODY.y, mods({ alt: true })), 'snapGuide')).toEqual([])
   })
 })
 

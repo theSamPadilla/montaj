@@ -9,7 +9,15 @@ export interface Draggable {
   normalizedInPoint?: number
   type?: string
   sourceDuration?: number
+  /** Per-clip playback speed S (video only). A clip at S consumes S source
+   *  seconds per timeline second, so every timeline↔source conversion here
+   *  carries it. Absent/1 is a strict no-op. */
+  speed?: number
 }
+
+/** The floor on an item's timeline duration. At speed S the source window
+ *  floor follows from it (`MIN_DURATION · S`), so only this one is needed. */
+export const MIN_DURATION = 0.1
 
 export interface DragEventContext {
   /** The item with updated start/end (and inPoint/outPoint for resize) */
@@ -99,41 +107,87 @@ export function snapMovedSpan(
   return { start, end }
 }
 
+/** A clip's speed, defended against a project carrying 0, a negative, or a
+ *  non-finite value — every conversion below divides by it. */
+function speedOf(item: Draggable): number {
+  const s = item.speed ?? 1
+  return Number.isFinite(s) && s > 0 ? s : 1
+}
+
+function clamp(v: number, lo: number, hi: number): number {
+  // `hi` last, so a degenerate lo > hi keeps the min-duration constraint
+  // rather than inverting the item.
+  return Math.min(Math.max(v, lo), hi)
+}
+
+/**
+ * Move one edge of a source-windowed item to time `t`.
+ *
+ * THE INVARIANT: the timeline span and the source window stay in lockstep —
+ * `outPoint − inPoint === (end − start) · speed` — for every input, always.
+ * That is what lets the frames, the waveform, the preview and the export all
+ * agree about what a clip is showing.
+ *
+ * The way it is kept is the whole point of this function. The timeline edge is
+ * clamped FIRST, against every limit there is (the item's minimum duration and
+ * the media actually available past the window), and the source window is then
+ * DERIVED from how far the edge really travelled. There is exactly one clamp,
+ * on one value.
+ *
+ * The previous version clamped the two independently — `newStart` against
+ * `end − 0.1`, `inPoint` against `[0, outPoint − 0.1]` — and whichever limit
+ * bit first left the other free to keep going. Drag the in edge of a clip that
+ * already starts at the head of its media and `start` slid left while
+ * `inPoint` stayed pinned at 0; drag the out edge of a clip that already runs
+ * to the end of its media and `end` grew while `outPoint` stayed at
+ * `sourceDuration`. Either way the clip ended up claiming more timeline than
+ * it had source for, silently. Downstream, the filmstrip walked off the end of
+ * the media and froze on the last frame it could find while the waveform,
+ * which windows to inPoint..outPoint, drew the real (shorter) window stretched
+ * across the whole clip — two halves of one clip disagreeing, with no error
+ * anywhere. Trimming past the media now simply stops at the media.
+ */
+export function resizeWindowedItem<T extends Draggable>(item: T, edge: 'start' | 'end', t: number): T {
+  const s = speedOf(item)
+  const inPoint = item.inPoint ?? 0
+  const outPoint = item.outPoint ?? inPoint + (item.end - item.start) * s
+
+  // BOTH window bounds come back written out, even the one this edge did not
+  // move. They were implicit before (an end-trim wrote `outPoint` and left
+  // `inPoint` undefined), and an implicit half of the window is what made this
+  // class of bug invisible: you cannot check `outPoint − inPoint === span · S`
+  // against a field that isn't there.
+  if (edge === 'start') {
+    // Leftward travel is limited by the source ahead of `inPoint`: that is
+    // `inPoint` seconds of media, which is `inPoint / s` of timeline.
+    const newStart = clamp(t, item.start - inPoint / s, item.end - MIN_DURATION)
+    return { ...item, start: newStart, inPoint: inPoint + (newStart - item.start) * s, outPoint }
+  }
+
+  // Rightward travel is limited by the source after `outPoint`. With no
+  // `sourceDuration` there is no known tail, so the edge stays unbounded —
+  // the same benefit of the doubt the old code gave it.
+  const tail = item.sourceDuration == null ? Infinity : item.sourceDuration - outPoint
+  const newEnd = clamp(t, item.start + MIN_DURATION, item.end + tail / s)
+  return { ...item, end: newEnd, inPoint, outPoint: outPoint + (newEnd - item.end) * s }
+}
+
 /**
  * Move one edge of an item to time `t`, keeping its source window consistent.
  *
  * `t` is expected to be already clamped to the timeline and already snapped —
- * this function only enforces the item's own invariants: a minimum 0.1s
- * duration, and for video clips an in/outPoint that travels with the edge and
- * stays inside the source media. Non-video items (images, overlays) carry no
- * source window and only move their timeline edge.
+ * this function only enforces the item's own invariants. Non-video items
+ * (images, overlays) carry no source window and only move their timeline edge;
+ * video clips go through `resizeWindowedItem`, which holds the span/window
+ * invariant documented there.
  */
 export function computeResizedItem(item: Draggable, edge: 'start' | 'end', t: number): Draggable {
-  if (edge === 'start') {
-    const newStart = Math.min(t, item.end - 0.1)
-    if (item.type !== 'video') return { ...item, start: newStart }
-    const dtActual = newStart - item.start
-    return {
-      ...item,
-      start: newStart,
-      inPoint: Math.min(
-        Math.max(0, (item.inPoint ?? 0) + dtActual),
-        (item.outPoint ?? (item.inPoint ?? 0) + (item.end - item.start)) - 0.1,
-      ),
-    }
+  if (item.type !== 'video') {
+    return edge === 'start'
+      ? { ...item, start: Math.min(t, item.end - MIN_DURATION) }
+      : { ...item, end: Math.max(t, item.start + MIN_DURATION) }
   }
-  const newEnd = Math.max(t, item.start + 0.1)
-  if (item.type !== 'video') return { ...item, end: newEnd }
-  const origOut = item.outPoint ?? (item.inPoint ?? 0) + (item.end - item.start)
-  const dtActual = newEnd - item.end
-  return {
-    ...item,
-    end: newEnd,
-    outPoint: Math.max(
-      (item.inPoint ?? 0) + 0.1,
-      Math.min(origOut + dtActual, item.sourceDuration ?? Infinity),
-    ),
-  }
+  return resizeWindowedItem(item, edge, t)
 }
 
 export function useItemDragDrop(config: UseItemDragDropConfig) {

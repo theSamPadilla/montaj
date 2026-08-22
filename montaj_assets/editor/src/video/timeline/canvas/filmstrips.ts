@@ -71,11 +71,25 @@ const MIN_CELL_PX = 4
  * time. Filmstrip tiles are indexed by absolute source time (the whole proxy,
  * unwindowed), so — unlike `waveforms.ts`'s `clipSourceWindow`, which can
  * return "no window" — this is always defined: `item.inPoint ?? 0` anchors
- * the clip's own start, and every other timeline time offsets from it 1:1.
+ * the clip's own start, and the speed factor carries every other timeline time
+ * out from there.
+ *
+ * `·(item.speed ?? 1)` converts elapsed TIMELINE-seconds into SOURCE-seconds:
+ * a clip at speed S consumes S× the source per project second. This mirrors
+ * `timeline-core`'s `seekTime`, the canonical form the playback engine and the
+ * renderer both apply. Strict no-op at S=1, so a project with no speeds set
+ * draws exactly as it did.
+ *
+ * It was 1:1 before, which was correct only while speed did not exist. Once it
+ * did, the filmstrip and the per-clip waveform told two different stories
+ * about the same clip: the waveform windows to `inPoint..outPoint`, which is
+ * speed-correct by construction, while the frames marched through the source
+ * at 1× — running off the end of a slowed clip and freezing on the last tile
+ * it could find, or repeating themselves on a sped-up one.
  */
 export function clipTimeToSourceTime(item: VisualItem, timelineTime: number): number {
   const inPoint = item.inPoint ?? 0
-  return inPoint + (timelineTime - item.start)
+  return inPoint + (item.speed ?? 1) * (timelineTime - item.start)
 }
 
 // ── Tile selection ───────────────────────────────────────────────────────

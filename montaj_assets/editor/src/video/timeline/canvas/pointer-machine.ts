@@ -56,8 +56,8 @@ import type { AudioTrack, VisualItem } from '../../../schema'
 import type { Project } from '../../../types'
 import { collapseGaps, rollEdit, slideItem, slipItem } from '../../cuts'
 import { applyResizeDeltaToSelection } from '../multiSelectOps'
-import { AUDIO_LANE_HEIGHT_PX, mapTrackItems, moveItemAcrossTracks, normalizeTracks, trackItems, updateAudioTrack } from '../timeline-model'
-import { DRAG_THRESHOLD_PX, computeResizedItem, type Draggable } from '../useItemDragDrop'
+import { AUDIO_LANE_HEIGHT_PX, groupAudioLanes, mapTrackItems, moveItemAcrossTracks, normalizeTracks, trackItems, updateAudioTrack } from '../timeline-model'
+import { DRAG_THRESHOLD_PX, computeResizedItem, resizeWindowedItem, type Draggable } from '../useItemDragDrop'
 import type { TimelineLayout } from './draw'
 import { hitTest, isEmptyHit, type HitResult, type HitTestOptions, type Point } from './hit-test'
 import {
@@ -66,7 +66,10 @@ import {
   snapPointsExcluding,
   snapPointsForSpan,
   type SnapConfig,
+  type SnapPoint,
+  type SnapResult,
   type SnapState,
+  type SnapStrength,
 } from './snap'
 import { xToTime, type Viewport } from './viewport'
 
@@ -131,6 +134,10 @@ export type PointerEffect =
   | { type: 'inspect'; target: 'visual' | 'audio'; id: string }
   /** The surface's CSS cursor. Emitted only when it changes. */
   | { type: 'cursor'; cursor: Cursor }
+  /** Where to draw the snap guide and how hard it is holding, or nulls to take
+   *  it down. Emitted only when it CHANGES — a drag held against one boundary
+   *  emits once on capture and once on release, not sixty times a second. */
+  | { type: 'snapGuide'; time: number | null; strength: SnapStrength | null }
 
 // ── State ────────────────────────────────────────────────────────────────
 
@@ -156,15 +163,18 @@ export interface Press {
   /** Was the pressed item already selected? Drives the DOM's conditional seek
    *  on a plain click. */
   wasSelected: boolean
-  /** `ctx.snapBoundaries` as they stood when the press began. The host echoes
-   *  every `projectChange` back through Timeline's re-render, and that re-render
-   *  recomputes `ctx.snapBoundaries` from the echoed project — so mid-gesture the
-   *  live boundary list contains the dragged item's own CURRENT edges, not just
-   *  its press-time ones. `itemSnapPoints` only excludes the press-time pair, so
-   *  a gesture that read `ctx.snapBoundaries` live would find its own last
-   *  position back in the magnet list and snap to itself. Capturing the list
-   *  once, here, is what makes that exclusion complete. */
-  snapBoundaries: readonly number[]
+  /** The project's boundaries as they stood when the press began, already
+   *  tiered by `tieredBoundaries` against the row pressed on.
+   *
+   *  Captured, never read live. The host echoes every `projectChange` back
+   *  through Timeline's re-render, and that re-render recomputes the boundary
+   *  set from the echoed project — so mid-gesture the live list contains the
+   *  dragged item's own CURRENT edges, not just its press-time ones.
+   *  `itemSnapPoints` only excludes the press-time pair, so a gesture reading
+   *  live boundaries would find its own last position back in the magnet list
+   *  and snap to itself. Capturing once, here, is what makes that exclusion
+   *  complete. */
+  snapBoundaries: readonly SnapPoint[]
 }
 
 export type MachineState =
@@ -176,6 +186,11 @@ export type MachineState =
       press: Press
       gesture: GestureKind
       snap: SnapState
+      /** The boundary the guide is currently drawn on, or null. Held here (not
+       *  derived from `snap`) because for a span gesture `snap.snappedTo` is a
+       *  candidate START, which is not where the guide belongs — see
+       *  `spanSnapGuide`. */
+      guide: SnapGuide | null
       /** The most recent project this gesture emitted — what a commit persists. */
       lastProject: Project
     }
@@ -254,15 +269,54 @@ export function resolveGesture(hit: HitResult, modifiers: Modifiers): GestureKin
  *  moving edges back into the magnet list mid-gesture (see the `Press.
  *  snapBoundaries` doc). The playhead is read from `ctx` because it cannot
  *  change during an item gesture. */
-function itemSnapPoints(ctx: PointerContext, press: Press, exclude: readonly number[]): number[] {
-  const points: number[] = [...press.snapBoundaries]
-  points.push(ctx.playheadTime)
+function itemSnapPoints(ctx: PointerContext, press: Press, exclude: readonly number[]): SnapPoint[] {
+  // The playhead is STRONG regardless of tier: it belongs to no track, and
+  // parking a cut on it is always a deliberate act rather than an accident of
+  // what happens to be on the row above.
+  const points: SnapPoint[] = [...press.snapBoundaries, { time: ctx.playheadTime, strength: 'strong' }]
   return snapPointsExcluding(points, exclude)
 }
 
-/** Snap targets for dragging the playhead itself: the clip/audio boundaries. */
-function playheadSnapPoints(ctx: PointerContext): number[] {
-  return snapPointsExcluding([...ctx.snapBoundaries], [])
+/**
+ * Every boundary in the project, tiered against the row the gesture is working
+ * on. Captured once per press (see `Press.snapBoundaries`).
+ *
+ * "Own track" is the row the press LANDED on, and it stays that row even if a
+ * cross-track move later carries the item somewhere else. Re-tiering mid-drag
+ * would re-rank the magnets under the cursor at the moment it crosses a row
+ * boundary, which reads as the clip lurching; a fixed frame of reference for
+ * the whole gesture is both calmer and easier to reason about.
+ *
+ * Audio lanes tier against the LANE, matching how `hitTest` addresses them: a
+ * lane can hold several tracks, and to an editor they are one row.
+ */
+function tieredBoundaries(project: Project, trackIdx?: number, laneIdx?: number): SnapPoint[] {
+  const points: SnapPoint[] = []
+  trackItems(project).forEach((items, idx) => {
+    const strength: SnapStrength = idx === trackIdx ? 'strong' : 'weak'
+    for (const item of items) {
+      points.push({ time: item.start, strength }, { time: item.end, strength })
+    }
+  })
+  // Grouped, not read off `track.lane` directly: a track with no `lane` gets
+  // an auto-assigned one, so a raw `track.lane ?? 0` would file every
+  // unlabelled track under lane 0 and call them all same-lane. `hitTest`
+  // addresses lanes through this same grouping, and the two have to agree or
+  // the tier is assigned against a row the gesture isn't on.
+  for (const lane of groupAudioLanes(project.audio?.tracks ?? [])) {
+    const strength: SnapStrength = lane.laneIndex === laneIdx ? 'strong' : 'weak'
+    for (const track of lane.tracks) {
+      points.push({ time: track.start, strength }, { time: track.end, strength })
+    }
+  }
+  return points
+}
+
+/** Snap targets for dragging the playhead itself: the clip/audio boundaries.
+ *  All STRONG — the playhead belongs to no track, so there is no "own row" to
+ *  rank against, and parking it on a cut is the point of the gesture. */
+function playheadSnapPoints(ctx: PointerContext): SnapPoint[] {
+  return snapPointsExcluding(ctx.snapBoundaries.map(time => ({ time, strength: 'strong' as const })), [])
 }
 
 function replaceVisualItem(project: Project, id: string, patch: Partial<VisualItem>): Project {
@@ -290,23 +344,71 @@ function adjacentOnTrack(project: Project, item: VisualItem): { prev?: VisualIte
   }
 }
 
+/** Where a guide line goes, and how hard the magnet holding it pulls. */
+export interface SnapGuide {
+  time: number
+  strength: SnapStrength
+}
+
 // ── Gesture application ──────────────────────────────────────────────────
 
 interface Applied {
   effects: PointerEffect[]
   snap: SnapState
   lastProject: Project
+  /** Where the guide belongs after this move, or null for none. Never an
+   *  effect on its own — the reducer diffs it against the last one and emits
+   *  only on a change. */
+  guide: SnapGuide | null
 }
 
 function noChange(snap: SnapState, lastProject: Project): Applied {
-  return { effects: [], snap, lastProject }
+  return { effects: [], snap, lastProject, guide: null }
 }
 
 /** Emit a live edit, unless the op clamped to a no-op and handed back the same
  *  project reference (which `rollEdit`/`slipItem`/`slideItem` all do). */
-function change(next: Project, previous: Project, snap: SnapState): Applied {
-  if (next === previous) return noChange(snap, previous)
-  return { effects: [{ type: 'projectChange', project: next }], snap, lastProject: next }
+function change(next: Project, previous: Project, snap: SnapState, guide: SnapGuide | null): Applied {
+  if (next === previous) return { effects: [], snap, lastProject: previous, guide }
+  return { effects: [{ type: 'projectChange', project: next }], snap, lastProject: next, guide }
+}
+
+/**
+ * Which boundary a SPAN gesture actually landed on.
+ *
+ * `snapPointsForSpan` makes both edges of a dragged item magnetic by offering
+ * two candidate start positions per boundary — `p` (leading edge lands on it)
+ * and `p - duration` (trailing edge does). That is the right shape for the
+ * magnet and the wrong one for the guide: `snap.snappedTo` is a start, and
+ * drawing a line there when the item's TAIL is what caught puts the mark a
+ * whole clip away from the edge the user is looking at.
+ *
+ * The recovery is a membership test against the un-expanded boundary list: a
+ * snapped start that is itself a boundary means the head caught, anything else
+ * means the tail did and the boundary is one duration later.
+ */
+function spanSnapGuide(snapped: SnapResult, duration: number, points: readonly SnapPoint[]): SnapGuide | null {
+  const { snappedTo, strength } = snapped
+  if (snappedTo === null || strength === null) return null
+  const head = points.some(p => Math.abs(p.time - snappedTo) <= EPSILON)
+  return { time: head ? snappedTo : snappedTo + duration, strength }
+}
+
+/** The guide for an EDGE gesture, suppressed when the op refused to put the
+ *  edge where the magnet asked. Trims clamp to a 0.1s minimum duration and to
+ *  the source window; a guide left drawn through a clamp would claim an
+ *  alignment that isn't on screen. */
+function edgeSnapGuide(snapped: SnapResult, landed: number): SnapGuide | null {
+  const { snappedTo, strength, time } = snapped
+  if (snappedTo === null || strength === null) return null
+  return Math.abs(landed - time) <= EPSILON ? { time: snappedTo, strength } : null
+}
+
+/** `snapped.snappedTo` as a guide, for the gestures whose snap value IS the
+ *  boundary (roll, slide, scrub). */
+function directSnapGuide(snapped: SnapResult): SnapGuide | null {
+  if (snapped.snappedTo === null || snapped.strength === null) return null
+  return { time: snapped.snappedTo, strength: snapped.strength }
 }
 
 function applyMove(ctx: PointerContext, press: Press, point: Point, snap: SnapState, lastProject: Project): Applied {
@@ -317,9 +419,15 @@ function applyMove(ctx: PointerContext, press: Press, point: Point, snap: SnapSt
   const dt = (point.x - press.origin.x) / ctx.viewport.pxPerSecond
   const rawStart = clamp(item.start + dt, 0, Math.max(0, ctx.totalDuration - duration))
 
-  const points = snapPointsForSpan(itemSnapPoints(ctx, press, [item.start, item.end]), duration)
+  const boundaries = itemSnapPoints(ctx, press, [item.start, item.end])
+  const points = snapPointsForSpan(boundaries, duration)
   const snapped = applySnap(rawStart, points, ctx.viewport, snap, ctx.snapConfig)
   const start = clamp(snapped.time, 0, Math.max(0, ctx.totalDuration - duration))
+  // Clamped against t=0 or the end of the timeline the item is NOT where the
+  // magnet put it, so there is nothing to mark.
+  const guide = Math.abs(start - snapped.time) <= EPSILON
+    ? spanSnapGuide(snapped, duration, boundaries)
+    : null
 
   const next: Project = {
     ...lastProject,
@@ -337,7 +445,7 @@ function applyMove(ctx: PointerContext, press: Press, point: Point, snap: SnapSt
       dy: point.y - press.origin.y,
     }),
   }
-  return { effects: [{ type: 'projectChange', project: next }], snap: snapped.state, lastProject: next }
+  return { effects: [{ type: 'projectChange', project: next }], snap: snapped.state, lastProject: next, guide }
 }
 
 function applyTrim(ctx: PointerContext, press: Press, point: Point, snap: SnapState, lastProject: Project): Applied {
@@ -368,7 +476,8 @@ function applyTrim(ctx: PointerContext, press: Press, point: Point, snap: SnapSt
   }
   if (ctx.rippleMode) next = collapseGaps(next)
 
-  return { effects: [{ type: 'projectChange', project: next }], snap: snapped.state, lastProject: next }
+  const guide = edgeSnapGuide(snapped, edge === 'start' ? resized.start : resized.end)
+  return { effects: [{ type: 'projectChange', project: next }], snap: snapped.state, lastProject: next, guide }
 }
 
 function applyRoll(ctx: PointerContext, press: Press, point: Point, snap: SnapState, lastProject: Project): Applied {
@@ -393,7 +502,7 @@ function applyRoll(ctx: PointerContext, press: Press, point: Point, snap: SnapSt
   )
 
   const rolled = rollEdit(press.baseProject, left.id, right.id, snapped.time - boundary)
-  return change(rolled, lastProject, snapped.state)
+  return change(rolled, lastProject, snapped.state, directSnapGuide(snapped))
 }
 
 function applySlip(ctx: PointerContext, press: Press, point: Point, snap: SnapState, lastProject: Project): Applied {
@@ -405,7 +514,7 @@ function applySlip(ctx: PointerContext, press: Press, point: Point, snap: SnapSt
   // the sign flip. No snapping: the delta is source time, and every snap point
   // the timeline knows about is timeline time.
   const dt = (point.x - press.origin.x) / ctx.viewport.pxPerSecond
-  return change(slipItem(press.baseProject, item.id, -dt), lastProject, snap)
+  return change(slipItem(press.baseProject, item.id, -dt), lastProject, snap, null)
 }
 
 function applySlide(ctx: PointerContext, press: Press, point: Point, snap: SnapState, lastProject: Project): Applied {
@@ -421,7 +530,7 @@ function applySlide(ctx: PointerContext, press: Press, point: Point, snap: SnapS
     ctx.snapConfig,
   )
   const slid = slideItem(press.baseProject, item.id, snapped.time - item.start)
-  return change(slid, lastProject, snapped.state)
+  return change(slid, lastProject, snapped.state, directSnapGuide(snapped))
 }
 
 function applyAudioMove(ctx: PointerContext, press: Press, point: Point, snap: SnapState, lastProject: Project): Applied {
@@ -432,9 +541,13 @@ function applyAudioMove(ctx: PointerContext, press: Press, point: Point, snap: S
   const dt = (point.x - press.origin.x) / ctx.viewport.pxPerSecond
   const rawStart = clamp(track.start + dt, 0, Math.max(0, ctx.totalDuration - duration))
 
-  const points = snapPointsForSpan(itemSnapPoints(ctx, press, [track.start, track.end]), duration)
+  const boundaries = itemSnapPoints(ctx, press, [track.start, track.end])
+  const points = snapPointsForSpan(boundaries, duration)
   const snapped = applySnap(rawStart, points, ctx.viewport, snap, ctx.snapConfig)
   const start = clamp(snapped.time, 0, Math.max(0, ctx.totalDuration - duration))
+  const guide = Math.abs(start - snapped.time) <= EPSILON
+    ? spanSnapGuide(snapped, duration, boundaries)
+    : null
 
   // Positive dy is downward, which in the audio stack means a HIGHER lane index
   // (lanes ascend downward) — the opposite of visual tracks.
@@ -444,7 +557,7 @@ function applyAudioMove(ctx: PointerContext, press: Press, point: Point, snap: S
     end: start + duration,
     lane: Math.max(0, press.hit.laneIdx + laneDelta),
   })
-  return { effects: [{ type: 'projectChange', project: next }], snap: snapped.state, lastProject: next }
+  return { effects: [{ type: 'projectChange', project: next }], snap: snapped.state, lastProject: next, guide }
 }
 
 function applyAudioTrim(ctx: PointerContext, press: Press, point: Point, snap: SnapState, lastProject: Project): Applied {
@@ -457,19 +570,19 @@ function applyAudioTrim(ctx: PointerContext, press: Press, point: Point, snap: S
   const raw = clamp(initTime + dt, 0, ctx.totalDuration)
   const snapped = applySnap(raw, itemSnapPoints(ctx, press, [track.start, track.end]), ctx.viewport, snap, ctx.snapConfig)
 
-  // Audio tracks are never type 'video', so `computeResizedItem` only moves the
-  // timeline edge; the source window is AudioTrackRow's own math, reproduced.
-  const resized = computeResizedItem(track as Draggable, edge, snapped.time)
-  const inPoint = track.inPoint ?? 0
-  const outPoint = track.outPoint ?? inPoint + (track.end - track.start)
-  const changes: Partial<AudioTrack> = { start: resized.start, end: resized.end, inPoint, outPoint }
-  if (edge === 'start') {
-    changes.inPoint = Math.max(0, Math.min(inPoint + (resized.start - track.start), outPoint - 0.1))
-  } else {
-    changes.outPoint = Math.max(
-      inPoint + 0.1,
-      Math.min(outPoint + (resized.end - track.end), track.sourceDuration ?? Infinity),
-    )
+  // An audio track is always source-windowed, so it goes straight to
+  // `resizeWindowedItem` — `computeResizedItem` would take its non-video
+  // branch and move the timeline edge alone. This used to reproduce
+  // AudioTrackRow's window arithmetic by hand, with the edge and the window
+  // clamped independently; that is the bug documented on `resizeWindowedItem`,
+  // and a bar trimmed past its media ended up claiming more timeline than it
+  // had audio for.
+  const resized = resizeWindowedItem(track as unknown as Draggable, edge, snapped.time)
+  const changes: Partial<AudioTrack> = {
+    start: resized.start,
+    end: resized.end,
+    inPoint: resized.inPoint,
+    outPoint: resized.outPoint,
   }
 
   let next = updateAudioTrack(press.baseProject, track.id, changes)
@@ -479,13 +592,19 @@ function applyAudioTrim(ctx: PointerContext, press: Press, point: Point, snap: S
       dEnd: edge === 'end' ? resized.end - track.end : 0,
     })
   }
-  return { effects: [{ type: 'projectChange', project: next }], snap: snapped.state, lastProject: next }
+  const guide = edgeSnapGuide(snapped, edge === 'start' ? resized.start : resized.end)
+  return { effects: [{ type: 'projectChange', project: next }], snap: snapped.state, lastProject: next, guide }
 }
 
 function applyScrub(ctx: PointerContext, point: Point, snap: SnapState, lastProject: Project): Applied {
   const raw = clamp(xToTime(point.x, ctx.viewport), 0, ctx.totalDuration)
   const snapped = applySnap(raw, playheadSnapPoints(ctx), ctx.viewport, snap, ctx.snapConfig)
-  return { effects: [{ type: 'seek', time: snapped.time }], snap: snapped.state, lastProject }
+  return {
+    effects: [{ type: 'seek', time: snapped.time }],
+    snap: snapped.state,
+    lastProject,
+    guide: directSnapGuide(snapped),
+  }
 }
 
 function applyGesture(
@@ -517,6 +636,20 @@ export interface Transition {
   effects: PointerEffect[]
 }
 
+/** The guide the surface is currently showing. Only a running gesture has one. */
+function currentGuide(state: MachineState): SnapGuide | null {
+  return state.kind === 'dragging' ? state.guide : null
+}
+
+/** Append a snap-guide effect when, and only when, the guide actually moves —
+ *  or changes tier, which changes how it is drawn.
+ *  Same contract as `withCursor`: the host holds the last value, so a silent
+ *  transition means "unchanged", never "unknown". */
+function guideEffects(previous: SnapGuide | null, next: SnapGuide | null, effects: PointerEffect[]): PointerEffect[] {
+  if (previous?.time === next?.time && previous?.strength === next?.strength) return effects
+  return [...effects, { type: 'snapGuide', time: next?.time ?? null, strength: next?.strength ?? null }]
+}
+
 /** Append a cursor effect when, and only when, the cursor actually changes. */
 function withCursor(state: MachineState, cursor: Cursor, effects: PointerEffect[]): Transition {
   if (state.cursor === cursor) return { state, effects }
@@ -528,7 +661,11 @@ export function pointerReducer(state: MachineState, event: PointerMachineEvent):
     // Carry the current cursor into the idle state first, so `withCursor` sees
     // the change it has to undo — a cancelled drag must not leave the surface
     // showing a grabbing hand.
-    return withCursor({ kind: 'idle', cursor: state.cursor }, initialMachineState().cursor, [])
+    return withCursor(
+      { kind: 'idle', cursor: state.cursor },
+      initialMachineState().cursor,
+      guideEffects(currentGuide(state), null, []),
+    )
   }
 
   const { point, modifiers, ctx } = event
@@ -539,8 +676,8 @@ export function pointerReducer(state: MachineState, event: PointerMachineEvent):
   if (event.type === 'pointerMove' && state.kind === 'dragging') {
     const applied = applyGesture(state.gesture, ctx, state.press, point, state.snap, state.lastProject)
     return {
-      state: { ...state, snap: applied.snap, lastProject: applied.lastProject },
-      effects: applied.effects,
+      state: { ...state, snap: applied.snap, guide: applied.guide, lastProject: applied.lastProject },
+      effects: guideEffects(state.guide, applied.guide, applied.effects),
     }
   }
 
@@ -572,13 +709,16 @@ export function pointerReducer(state: MachineState, event: PointerMachineEvent):
             hit,
             baseProject: ctx.project,
             wasSelected: false,
-            snapBoundaries: ctx.snapBoundaries,
+            // A scrub never reads these (it uses `playheadSnapPoints`), but a
+            // Press without them would be a Press with a hole in it.
+            snapBoundaries: tieredBoundaries(ctx.project, hit.trackIdx, hit.laneIdx),
           },
           gesture: 'scrub',
           snap: applied.snap,
+          guide: applied.guide,
           lastProject: ctx.project,
         }
-        return withCursor(next, cursorForGesture('scrub'), cleared)
+        return withCursor(next, cursorForGesture('scrub'), guideEffects(currentGuide(state), applied.guide, cleared))
       }
 
       // On an item: nothing happens yet. Whether this is a click (select) or a
@@ -589,7 +729,7 @@ export function pointerReducer(state: MachineState, event: PointerMachineEvent):
         hit,
         baseProject: ctx.project,
         wasSelected: hit.itemId !== undefined && ctx.selectedIds.includes(hit.itemId),
-        snapBoundaries: ctx.snapBoundaries,
+        snapBoundaries: tieredBoundaries(ctx.project, hit.trackIdx, hit.laneIdx),
       }
       return withCursor({ kind: 'pressed', cursor: state.cursor, press }, cursorForHit(hit), [])
     }
@@ -611,9 +751,10 @@ export function pointerReducer(state: MachineState, event: PointerMachineEvent):
         press: state.press,
         gesture,
         snap: applied.snap,
+        guide: applied.guide,
         lastProject: applied.lastProject,
       }
-      return withCursor(next, cursorForGesture(gesture), applied.effects)
+      return withCursor(next, cursorForGesture(gesture), guideEffects(null, applied.guide, applied.effects))
     }
 
     case 'pointerUp': {
@@ -641,7 +782,11 @@ export function pointerReducer(state: MachineState, event: PointerMachineEvent):
         if (state.gesture !== 'scrub' && state.lastProject !== state.press.baseProject) {
           effects.push({ type: 'commit', project: state.lastProject })
         }
-        return withCursor({ kind: 'idle', cursor: state.cursor }, cursorForHit(hit), effects)
+        return withCursor(
+          { kind: 'idle', cursor: state.cursor },
+          cursorForHit(hit),
+          guideEffects(state.guide, null, effects),
+        )
       }
 
       return withCursor(state, cursorForHit(hit), [])

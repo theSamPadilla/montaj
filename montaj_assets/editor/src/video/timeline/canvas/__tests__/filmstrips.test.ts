@@ -160,6 +160,36 @@ describe('clipTimeToSourceTime', () => {
   it('anchors at inPoint when present, offsetting 1:1 from there', () => {
     expect(clipTimeToSourceTime(clip({ start: 2, inPoint: 10 }), 5)).toBe(13)
   })
+
+  // ── Per-clip speed ──
+  //
+  // A clip at speed S eats S× the source per project second. Without this the
+  // frames and the per-clip waveform described the same clip differently: the
+  // waveform windows to inPoint..outPoint, which is speed-correct by
+  // construction, while the frames walked the source at 1×.
+
+  it('eats source faster on a sped-up clip', () => {
+    // 3s into a 2x clip is 6s into the source.
+    expect(clipTimeToSourceTime(clip({ start: 2, inPoint: 10, speed: 2 }), 5)).toBe(16)
+  })
+
+  it('eats source slower on a slowed clip', () => {
+    // 3s into a 0.5x clip is only 1.5s of source.
+    expect(clipTimeToSourceTime(clip({ start: 2, inPoint: 10, speed: 0.5 }), 5)).toBe(11.5)
+  })
+
+  it('is a strict no-op at speed 1 and at no speed at all', () => {
+    expect(clipTimeToSourceTime(clip({ start: 2, inPoint: 10, speed: 1 }), 5))
+      .toBe(clipTimeToSourceTime(clip({ start: 2, inPoint: 10 }), 5))
+  })
+
+  it('lands on outPoint at the clip\'s end, which is what makes it agree with the waveform', () => {
+    // The invariant the two renderers share: at the last frame of the clip,
+    // the frames have consumed exactly the window the waveform drew. A clip
+    // slowed to 0.5x runs 4s of timeline off 2s of source.
+    const item = clip({ start: 2, end: 6, inPoint: 10, outPoint: 12, speed: 0.5 })
+    expect(clipTimeToSourceTime(item, item.end)).toBe(item.outPoint)
+  })
 })
 
 // ── Tile selection ───────────────────────────────────────────────────────

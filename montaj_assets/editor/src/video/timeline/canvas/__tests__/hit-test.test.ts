@@ -129,6 +129,84 @@ describe('hitTest — visual items', () => {
   })
 })
 
+describe('hitTest — overlapping items', () => {
+  // `a` runs 0–5 and `b` 3–9 on one track, so b covers a's whole trailing
+  // second. b is later in the array, i.e. drawn on top.
+  const overlapped = {
+    id: 'p',
+    tracks: [[
+      { id: 'a', type: 'video', src: 'a.mp4', start: 0, end: 5 },
+      { id: 'b', type: 'video', src: 'b.mp4', start: 3, end: 9 },
+    ]],
+    audio: { tracks: [
+      { id: 'x', src: 'x.mp3', start: 0, end: 5, lane: 0 },
+      { id: 'y', src: 'y.mp3', start: 3, end: 9, lane: 0 },
+    ] },
+  } as unknown as Project
+  const olay = computeTimelineLayout(overlapped)
+  const row = olay.rows.find(r => r.trackIdx === 0)!
+  const rowY = Math.round(row.y + row.height / 2)
+  const lane = olay.lanes[0]
+  const laneY = Math.round(lane.y + lane.height / 2)
+  const hit = (x: number, y: number) => hitTest({ x, y }, olay, VIEWPORT)
+
+  it('reaches the buried out edge of the clip underneath', () => {
+    // THE BUG: x=498 is 2px from a's end and 198px into b. Topmost-wins
+    // returned b's body and stopped, so a's trailing edge was unreachable —
+    // you could see it and not trim it.
+    const r = hit(498, rowY)
+    expect(r.kind).toBe('item-edge')
+    expect(r.itemId).toBe('a')
+    expect(r.edge).toBe('out')
+  })
+
+  it('still gives the overlapping clip its own body away from any edge', () => {
+    // 6.5s: past a entirely, and 150px from either of b's edges.
+    expect(hit(650, rowY)).toMatchObject({ kind: 'item-body', itemId: 'b' })
+  })
+
+  it('gives the overlapping clip its in edge where that is the nearer one', () => {
+    // x=302 is 2px from b's start and 198px from a's end.
+    expect(hit(302, rowY)).toMatchObject({ kind: 'item-edge', itemId: 'b', edge: 'in' })
+  })
+
+  it('takes the nearest edge, not the topmost, when BOTH are in range', () => {
+    // A 5px overlap puts a's end (500px) and b's start (495px) inside one
+    // another's tolerance, so every point between them is a candidate for
+    // both and the tie-break is the whole rule.
+    const tiny = {
+      id: 'p',
+      tracks: [[
+        { id: 'a', type: 'video', src: 'a.mp4', start: 0, end: 5 },
+        { id: 'b', type: 'video', src: 'b.mp4', start: 4.95, end: 9 },
+      ]],
+    } as unknown as Project
+    const tinyLayout = computeTimelineLayout(tiny)
+    const y = Math.round(tinyLayout.rows[0].y + tinyLayout.rows[0].height / 2)
+    const probe = (x: number) => hitTest({ x, y }, tinyLayout, VIEWPORT)
+
+    // 2px from b's start, 3px from a's end.
+    expect(probe(497)).toMatchObject({ itemId: 'b', edge: 'in' })
+    // 1px from a's end, 4px from b's start — topmost would still say b.
+    expect(probe(499)).toMatchObject({ itemId: 'a', edge: 'out' })
+  })
+
+  it('falls back to the body when no edge is within tolerance', () => {
+    // 4.0s: 100px from a's end, 100px from b's start. Neither edge is close,
+    // so the topmost body wins, exactly as it always did.
+    expect(hit(400, rowY)).toMatchObject({ kind: 'item-body', itemId: 'b' })
+  })
+
+  it('reaches a crossfaded audio bar\'s buried out edge too', () => {
+    // The permanent version of the same hole: bars in a lane overlap BY
+    // DESIGN, so the earlier bar's out edge was never reachable at all.
+    const r = hit(498, laneY)
+    expect(r.kind).toBe('audio-edge')
+    expect(r.itemId).toBe('x')
+    expect(r.edge).toBe('out')
+  })
+})
+
 describe('hitTest — audio lanes', () => {
   it('finds a bar body and its lane', () => {
     expect(at(300, LANE_Y)).toMatchObject({ kind: 'audio-body', itemId: 'a0', laneIdx: 0 })

@@ -11,7 +11,9 @@ import { describe, it, expect } from 'vitest'
 import type { AudioTrack, VisualItem } from '../../../../schema'
 import type { Project } from '../../../../types'
 import {
+  AUDIO_HANDLE_WIDTH_PX,
   AUDIO_ITEM_INSET_PX,
+  CLIP_HANDLE_WIDTH_PX,
   CURSOR_WIDTH_PX,
   LABEL_TOP_OFFSET_PX,
   CLIP_GUTTER_PX,
@@ -22,9 +24,20 @@ import {
   TRACK_PALETTE,
   clampRectToSurface,
   computeTimelineLayout,
+  overlapBands,
   drawAudioItem,
   drawClipRect,
+  drawTrimHandle,
+  SNAP_GUIDE_CAP_HALF_WIDTH_PX,
+  SNAP_GUIDE_WEAK_WIDTH_PX,
+  SNAP_GUIDE_WIDTH_PX,
+  OVERLAP_EDGE_WIDTH_PX,
+  OVERLAP_HATCH_SHADOW_WIDTH_PX,
+  OVERLAP_HATCH_WIDTH_PX,
+  drawItemHandles,
+  drawOverlapBand,
   drawPlayhead,
+  drawSnapGuide,
   drawTimelineContent,
   drawTimelineOverlay,
   type DrawContext,
@@ -227,10 +240,93 @@ describe('drawClipRect', () => {
     expect(r.calls).toHaveLength(0)
   })
 
+  // ── Trim handles: the affordance selection is FOR ──
+  //
+  // The handles themselves are the row painter's job now (a clip stacked on
+  // top of this one would bury them), so `drawClipRect` must NOT draw them —
+  // only leave room for them.
+
+  it('leaves the handles to the row painter', () => {
+    const r = recordingContext()
+    drawClipRect(r.ctx, { rect: { x: 0, y: 0, width: 200, height: 40 }, palette: TRACK_PALETTE[0], selected: true, label: '' })
+    expect(r.of('set:fillStyle').some(c => c.args[0] === TIMELINE_COLORS.handleFill)).toBe(false)
+  })
+
+  it('indents a selected clip\'s label past its in handle', () => {
+    const free = recordingContext()
+    drawClipRect(free.ctx, { rect: { x: 0, y: 0, width: 200, height: 40 }, palette: TRACK_PALETTE[0], selected: false, label: 'title' })
+    const picked = recordingContext()
+    drawClipRect(picked.ctx, { rect: { x: 0, y: 0, width: 200, height: 40 }, palette: TRACK_PALETTE[0], selected: true, label: 'title' })
+    // Without the indent the pill would sit on top of the first glyph.
+    expect(Number(picked.of('fillText')[0].args[1]) - Number(free.of('fillText')[0].args[1]))
+      .toBe(CLIP_HANDLE_WIDTH_PX)
+  })
+
   it('dims a row unrelated to the primary selection', () => {
     const r = recordingContext()
     drawClipRect(r.ctx, { rect: { x: 0, y: 0, width: 80, height: 40 }, palette: TRACK_PALETTE[0], selected: false, label: 'x', dimmed: true })
     expect(r.calls.some(c => c.method === 'set:globalAlpha' && c.args[0] === 0.3)).toBe(true)
+  })
+})
+
+describe('drawTrimHandle', () => {
+  // 2 ticks of 1.5px with a 2.5px gap; a 40px-tall row gives the capped 16px
+  // tick height, centred, so the grip sits at y=12.
+  const GRIP_SPAN = 5.5
+
+  it('pins the in handle to the left edge and the out handle to the right', () => {
+    const left = recordingContext()
+    drawTrimHandle(left.ctx, { rect: { x: 0, y: 0, width: 100, height: 40 }, edge: 'in', width: 10 })
+    expect(left.of('fillRect').map(c => c.args)).toEqual([
+      [(10 - GRIP_SPAN) / 2, 12, 1.5, 16],
+      [(10 - GRIP_SPAN) / 2 + 4, 12, 1.5, 16],
+    ])
+
+    const right = recordingContext()
+    drawTrimHandle(right.ctx, { rect: { x: 0, y: 0, width: 100, height: 40 }, edge: 'out', width: 10 })
+    // 100 - 10 = 90 is the pill's left edge; the grip is centred in it.
+    expect(right.of('fillRect')[0].args[0]).toBe(90 + (10 - GRIP_SPAN) / 2)
+  })
+
+  it('draws the pill in the handle white, and its grip dark', () => {
+    const r = recordingContext()
+    drawTrimHandle(r.ctx, { rect: { x: 0, y: 0, width: 100, height: 40 }, edge: 'in', width: 10 })
+    expect(r.of('set:fillStyle').map(c => c.args[0])).toEqual([
+      TIMELINE_COLORS.handleFill,
+      TIMELINE_COLORS.handleGrip,
+    ])
+  })
+
+  it('goes opaque under the pointer, so the grabbable edge is unambiguous', () => {
+    const r = recordingContext()
+    drawTrimHandle(r.ctx, { rect: { x: 0, y: 0, width: 100, height: 40 }, edge: 'in', width: 10, hovered: true })
+    expect(r.of('set:fillStyle').map(c => c.args[0])).toEqual([
+      TIMELINE_COLORS.handleFillHovered,
+      TIMELINE_COLORS.handleGripHovered,
+    ])
+  })
+
+  it('halves itself on a short clip, so two handles can never meet', () => {
+    const r = recordingContext()
+    // 12px of clip, 10px of nominal handle: each takes 6 and the grip, which
+    // no longer fits with a margin, drops out rather than filling the pill.
+    drawTrimHandle(r.ctx, { rect: { x: 0, y: 0, width: 12, height: 40 }, edge: 'out', width: 10 })
+    expect(r.count('fill')).toBe(1)
+    expect(r.count('fillRect')).toBe(0)
+    // The pill starts halfway across, not 10px from the right edge.
+    expect(r.of('moveTo')[0].args[0]).toBeGreaterThanOrEqual(6)
+  })
+
+  it('draws nothing at all once the pill is thinner than its own outline', () => {
+    const r = recordingContext()
+    drawTrimHandle(r.ctx, { rect: { x: 0, y: 0, width: 5, height: 40 }, edge: 'in', width: 10 })
+    expect(r.calls).toHaveLength(0)
+  })
+
+  it('draws nothing for an empty rect', () => {
+    const r = recordingContext()
+    drawTrimHandle(r.ctx, { rect: { x: 0, y: 0, width: 0, height: 0 }, edge: 'in', width: 10 })
+    expect(r.calls).toHaveLength(0)
   })
 })
 
@@ -240,7 +336,15 @@ describe('drawAudioItem', () => {
     drawAudioItem(r.ctx, { rect: { x: 10, y: 4, width: 300, height: 32 }, selected: true, muted: false, label: 'Voiceover' })
     expect(r.calls.some(c => c.method === 'set:fillStyle' && c.args[0] === TIMELINE_COLORS.audioFill)).toBe(true)
     expect(r.calls.some(c => c.method === 'set:strokeStyle' && c.args[0] === TIMELINE_COLORS.audioRing)).toBe(true)
-    expect(r.of('fillText')[0].args).toEqual(['Voiceover', 16, 20])
+    // Indented past the in-handle: a selected bar grows a 6px pill on each
+    // end, and a label starting under one would lose its first glyph.
+    expect(r.of('fillText')[0].args).toEqual(['Voiceover', 16 + AUDIO_HANDLE_WIDTH_PX, 20])
+  })
+
+  it('leaves its handles to the lane painter too', () => {
+    const r = recordingContext()
+    drawAudioItem(r.ctx, { rect: { x: 0, y: 0, width: 300, height: 32 }, selected: true, muted: false, label: '' })
+    expect(r.of('set:fillStyle').some(c => c.args[0] === TIMELINE_COLORS.handleFill)).toBe(false)
   })
 
   it('uses the muted fill and drops the border', () => {
@@ -276,6 +380,149 @@ describe('drawPlayhead', () => {
 })
 
 // ── Scene composition ────────────────────────────────────────────────────
+
+describe('drawSnapGuide', () => {
+  it('centres the line on its x and points both caps inward', () => {
+    const r = recordingContext()
+    drawSnapGuide(r.ctx, 300, 0, 120)
+    expect(r.of('fillRect')[0].args).toEqual([300 - SNAP_GUIDE_WIDTH_PX / 2, 0, SNAP_GUIDE_WIDTH_PX, 120])
+    // Each cap's apex sits INSIDE the span — an arrowhead aimed at the
+    // boundary, not away from it.
+    const apexes = r.of('lineTo').filter((_, i) => i % 2 === 1).map(c => c.args)
+    expect(apexes).toEqual([[300, 7], [300, 113]])
+  })
+})
+
+describe('drawItemHandles', () => {
+  it('draws one handle on each end', () => {
+    const r = recordingContext()
+    drawItemHandles(r.ctx, { x: 0, y: 0, width: 200, height: 40 }, CLIP_HANDLE_WIDTH_PX)
+    expect(r.of('set:fillStyle').filter(c => c.args[0] === TIMELINE_COLORS.handleFill)).toHaveLength(2)
+  })
+
+  it('lights only the handle the pointer is on', () => {
+    const r = recordingContext()
+    drawItemHandles(r.ctx, { x: 0, y: 0, width: 200, height: 40 }, CLIP_HANDLE_WIDTH_PX, 'out')
+    const fills = r.of('set:fillStyle').map(c => c.args[0])
+    expect(fills.filter(f => f === TIMELINE_COLORS.handleFill)).toHaveLength(1)
+    expect(fills.filter(f => f === TIMELINE_COLORS.handleFillHovered)).toHaveLength(1)
+  })
+})
+
+describe('overlapBands', () => {
+  it('returns the intersection of each overlapping consecutive pair', () => {
+    expect(overlapBands([{ start: 0, end: 5 }, { start: 4, end: 9 }])).toEqual([{ start: 4, end: 5 }])
+  })
+
+  it('sorts by start first, so array order cannot hide an overlap', () => {
+    expect(overlapBands([{ start: 4, end: 9 }, { start: 0, end: 5 }])).toEqual([{ start: 4, end: 5 }])
+  })
+
+  it('clamps to the shorter item when one is contained in the other', () => {
+    expect(overlapBands([{ start: 0, end: 9 }, { start: 2, end: 4 }])).toEqual([{ start: 2, end: 4 }])
+  })
+
+  it('ignores items that only touch, and gaps', () => {
+    expect(overlapBands([{ start: 0, end: 5 }, { start: 5, end: 9 }])).toEqual([])
+    expect(overlapBands([{ start: 0, end: 4 }, { start: 5, end: 9 }])).toEqual([])
+  })
+
+  it('finds every overlap in a run, not just the first', () => {
+    expect(overlapBands([{ start: 0, end: 3 }, { start: 2, end: 6 }, { start: 5, end: 8 }]))
+      .toEqual([{ start: 2, end: 3 }, { start: 5, end: 6 }])
+  })
+
+  it('has nothing to say about zero or one item', () => {
+    expect(overlapBands([])).toEqual([])
+    expect(overlapBands([{ start: 0, end: 5 }])).toEqual([])
+  })
+})
+
+describe('drawOverlapBand', () => {
+  it('does not share a literal with the muted-audio fill', () => {
+    // Both are near-transparent white. If they ever converge, a muted bar and
+    // an overlap band become indistinguishable by colour, and every test that
+    // keys on one of them starts matching the other.
+    expect(TIMELINE_COLORS.overlapFill).not.toBe(TIMELINE_COLORS.audioMutedFill)
+  })
+
+  it('washes, hatches and rules both edges', () => {
+    const r = recordingContext()
+    drawOverlapBand(r.ctx, { x: 100, y: 0, width: 60, height: 40 })
+    const fills = r.of('set:fillStyle').map(c => c.args[0])
+    expect(fills).toEqual([TIMELINE_COLORS.overlapFill, TIMELINE_COLORS.overlapEdge])
+    // The wash, then a hard rule down each side.
+    const rects = r.of('fillRect').map(c => c.args)
+    expect(rects[0]).toEqual([100, 0, 60, 40])
+    expect(rects[1]).toEqual([100, 0, OVERLAP_EDGE_WIDTH_PX, 40])
+    expect(rects[2]).toEqual([100 + 60 - OVERLAP_EDGE_WIDTH_PX, 0, OVERLAP_EDGE_WIDTH_PX, 40])
+    // The hatch is stroked twice off one path: a wide dark pass, then amber
+    // inside it, so it reads over a bright frame and a dark one alike.
+    expect(r.of('set:strokeStyle').map(c => c.args[0])).toEqual([
+      TIMELINE_COLORS.overlapHatchShadow,
+      TIMELINE_COLORS.overlapHatch,
+    ])
+    expect(r.of('set:lineWidth').map(c => c.args[0])).toEqual([
+      OVERLAP_HATCH_SHADOW_WIDTH_PX,
+      OVERLAP_HATCH_WIDTH_PX,
+    ])
+    expect(r.count('stroke')).toBe(2)
+    expect(r.count('beginPath')).toBe(2)   // the clip rect, then the one hatch path
+  })
+
+  it('clips the hatching so the diagonals stop at the band', () => {
+    const r = recordingContext()
+    drawOverlapBand(r.ctx, { x: 100, y: 0, width: 60, height: 40 })
+    const clipAt = r.calls.findIndex(c => c.method === 'clip')
+    const strokeAt = r.calls.findIndex(c => c.method === 'stroke')
+    expect(clipAt).toBeGreaterThanOrEqual(0)
+    expect(clipAt).toBeLessThan(strokeAt)
+    // …and the edges are painted after the clip is released, so they stay full
+    // weight right up to the band's boundary.
+    expect(r.calls.findIndex(c => c.method === 'restore')).toBeLessThan(
+      r.calls.map(c => c.method === 'set:fillStyle' ? c.args[0] : null).indexOf(TIMELINE_COLORS.overlapEdge),
+    )
+  })
+
+  it('leans its hatching one way, evenly spaced', () => {
+    const r = recordingContext()
+    drawOverlapBand(r.ctx, { x: 0, y: 0, width: 18, height: 10 })
+    // Bottom-left to top-right, every OVERLAP_HATCH_SPACING_PX across a span
+    // of width + height.
+    expect(r.of('moveTo').map(c => c.args)).toEqual([[0, 10], [9, 10], [18, 10], [27, 10]])
+    expect(r.of('lineTo').map(c => c.args)).toEqual([[-10, 0], [-1, 0], [8, 0], [17, 0]])
+  })
+
+  it('never lets the two edge rules cross on a hairline overlap', () => {
+    const r = recordingContext()
+    drawOverlapBand(r.ctx, { x: 100, y: 0, width: 3, height: 40 })
+    const rects = r.of('fillRect').map(c => c.args as number[])
+    expect(rects[1][2]).toBe(1.5)
+    expect(rects[2][0]).toBe(101.5)
+  })
+
+  it('draws nothing for an empty band', () => {
+    const r = recordingContext()
+    drawOverlapBand(r.ctx, { x: 10, y: 0, width: 0, height: 40 })
+    expect(r.calls).toHaveLength(0)
+  })
+})
+
+describe('drawSnapGuide — weak', () => {
+  it('draws a capless hairline for a cross-track boundary', () => {
+    const r = recordingContext()
+    drawSnapGuide(r.ctx, 300, 0, 120, 'weak')
+    expect(r.of('fillRect')[0].args).toEqual([300 - SNAP_GUIDE_WEAK_WIDTH_PX / 2, 0, SNAP_GUIDE_WEAK_WIDTH_PX, 120])
+    expect(r.of('set:fillStyle')[0].args[0]).toBe(TIMELINE_COLORS.snapGuideWeak)
+    // No arrowheads: the caps are what make the strong guide shout, and this
+    // one is meant to be barely there.
+    expect(r.count('closePath')).toBe(0)
+  })
+
+  it('is thinner than the strong guide it sits alongside', () => {
+    expect(SNAP_GUIDE_WEAK_WIDTH_PX).toBeLessThan(SNAP_GUIDE_WIDTH_PX)
+  })
+})
 
 describe('drawTimelineContent', () => {
   it('places clips from the viewport, not from a percentage of the project', () => {
@@ -314,7 +561,63 @@ describe('drawTimelineContent', () => {
     } as unknown as Partial<Project>)
     const r = recordingContext()
     drawTimelineContent(r.ctx, scene({ project: p, layout: computeTimelineLayout(p), viewport: viewport({ pxPerSecond: 10 }) }))
-    expect(r.calls.some(c => c.method === 'set:fillStyle' && c.args[0] === TIMELINE_COLORS.crossfadeFill)).toBe(true)
+    expect(r.calls.some(c => c.method === 'set:strokeStyle' && c.args[0] === TIMELINE_COLORS.overlapHatch)).toBe(true)
+  })
+
+  it('leaves a muted bar out of the pairing — it is crossfading with nothing', () => {
+    const p = project({
+      audio: { tracks: [audio({ id: 'a', start: 0, end: 5, lane: 0 }), audio({ id: 'b', start: 4, end: 9, lane: 0, muted: true })] },
+    } as unknown as Partial<Project>)
+    const r = recordingContext()
+    drawTimelineContent(r.ctx, scene({ project: p, layout: computeTimelineLayout(p), viewport: viewport({ pxPerSecond: 10 }) }))
+    expect(r.calls.some(c => c.method === 'set:strokeStyle' && c.args[0] === TIMELINE_COLORS.overlapHatch)).toBe(false)
+  })
+
+  // ── Overlaps on a VISUAL row: previously not marked at all ──
+
+  it('marks two overlapping clips on a video track', () => {
+    // The bug this fixes: within a track the later clip simply wins, so this
+    // span is one second of clip `a` that will never be seen — and the only
+    // sign of it was the clip band's wash landing twice.
+    const p = project({ tracks: [[clip({ id: 'a', start: 0, end: 5 }), clip({ id: 'b', start: 4, end: 9 })]] } as unknown as Partial<Project>)
+    const r = recordingContext()
+    drawTimelineContent(r.ctx, scene({ project: p, layout: computeTimelineLayout(p), viewport: viewport({ pxPerSecond: 10 }) }))
+    expect(r.calls.some(c => c.method === 'set:strokeStyle' && c.args[0] === TIMELINE_COLORS.overlapHatch)).toBe(true)
+  })
+
+  it('draws no band for clips that merely touch', () => {
+    // Butted-up clips are the normal case and must stay unmarked, or every
+    // cut on the timeline would be hatched.
+    const p = project({ tracks: [[clip({ id: 'a', start: 0, end: 5 }), clip({ id: 'b', start: 5, end: 9 })]] } as unknown as Partial<Project>)
+    const r = recordingContext()
+    drawTimelineContent(r.ctx, scene({ project: p, layout: computeTimelineLayout(p), viewport: viewport({ pxPerSecond: 10 }) }))
+    expect(r.calls.some(c => c.method === 'set:strokeStyle' && c.args[0] === TIMELINE_COLORS.overlapHatch)).toBe(false)
+  })
+
+  it('draws the band over the clips it spans, not under them', () => {
+    const p = project({ tracks: [[clip({ id: 'a', start: 0, end: 5 }), clip({ id: 'b', start: 4, end: 9 })]] } as unknown as Partial<Project>)
+    const r = recordingContext()
+    drawTimelineContent(r.ctx, scene({ project: p, layout: computeTimelineLayout(p), viewport: viewport({ pxPerSecond: 10 }) }))
+    const lastClipFill = r.calls.map(c => c.method === 'set:fillStyle' ? c.args[0] : null).lastIndexOf(TRACK_PALETTE[0].fill)
+    const bandAt = r.calls.findIndex(c => c.method === 'set:strokeStyle' && c.args[0] === TIMELINE_COLORS.overlapHatch)
+    expect(bandAt).toBeGreaterThan(lastClipFill)
+  })
+
+  it('draws a selected clip\'s handles after every clip in the row', () => {
+    // The bug: clip `b` overlaps the end of the selected clip `a`, so painting
+    // handles in stacking order buried a's out handle under b. You could see
+    // the clip was selected and had no way to see — or reach — its trailing
+    // edge.
+    const p = project({ tracks: [[clip({ id: 'a', start: 0, end: 5 }), clip({ id: 'b', start: 4, end: 9 })]] } as unknown as Partial<Project>)
+    const r = recordingContext()
+    drawTimelineContent(r.ctx, scene({ project: p, layout: computeTimelineLayout(p), selectedIds: ['a'], viewport: viewport({ pxPerSecond: 30 }) }))
+
+    const handleAt = r.calls.map(c => c.method === 'set:fillStyle' ? c.args[0] : null).lastIndexOf(TIMELINE_COLORS.handleFill)
+    const lastClipFill = r.calls.map(c => c.method === 'set:fillStyle' ? c.args[0] : null).lastIndexOf(TRACK_PALETTE[0].fill)
+    expect(handleAt).toBeGreaterThan(lastClipFill)
+    // …and over the overlap hatching as well, since the handle is the control.
+    const bandAt = r.calls.findIndex(c => c.method === 'set:strokeStyle' && c.args[0] === TIMELINE_COLORS.overlapHatch)
+    expect(handleAt).toBeGreaterThan(bandAt)
   })
 
   it('never draws the playhead — that is the overlay layer', () => {
@@ -414,6 +717,86 @@ describe('drawTimelineOverlay', () => {
     const rects = r.of('fillRect')
     expect(rects[0].args[0]).toBe(120 - CURSOR_WIDTH_PX / 2)
     expect(rects[1].args[0]).toBe(0 - PLAYHEAD_WIDTH_PX / 2)
+  })
+
+  // ── The snap guide: what makes a strong magnet legible ──
+
+  it('draws no guide when no gesture is snapped', () => {
+    const r = recordingContext()
+    drawTimelineOverlay(r.ctx, {
+      viewport: viewport({ pxPerSecond: 40, scrollSeconds: 0 }),
+      currentTime: 5,
+      snapTime: null,
+      surfaceWidth: 1000,
+      surfaceHeight: 160,
+    })
+    expect(r.of('set:fillStyle').some(c => c.args[0] === TIMELINE_COLORS.snapGuide)).toBe(false)
+  })
+
+  it('marks the snapped boundary in cyan, with an arrowhead at each end', () => {
+    const r = recordingContext()
+    drawTimelineOverlay(r.ctx, {
+      viewport: viewport({ pxPerSecond: 40, scrollSeconds: 0 }),
+      currentTime: 5,
+      snapTime: 2,
+      surfaceWidth: 1000,
+      surfaceHeight: 160,
+    })
+    const rects = r.of('fillRect')
+    // Playhead first (5s × 40 = 200), then the guide at 2s × 40 = 80.
+    expect(rects).toHaveLength(2)
+    expect(rects[1].args).toEqual([80 - SNAP_GUIDE_WIDTH_PX / 2, 0, SNAP_GUIDE_WIDTH_PX, 160])
+    // Two triangles — the caps are what stop this reading as a third playhead.
+    expect(r.of('closePath')).toHaveLength(2)
+    expect(r.of('moveTo').map(c => c.args)).toEqual([
+      [80 - SNAP_GUIDE_CAP_HALF_WIDTH_PX, 0],
+      [80 - SNAP_GUIDE_CAP_HALF_WIDTH_PX, 160],
+    ])
+  })
+
+  it('draws the guide LAST, so snapping to the playhead still looks snapped', () => {
+    const r = recordingContext()
+    drawTimelineOverlay(r.ctx, {
+      viewport: viewport({ pxPerSecond: 40, scrollSeconds: 0 }),
+      currentTime: 3,
+      cursorTime: 1,
+      snapTime: 3,
+      surfaceWidth: 1000,
+      surfaceHeight: 160,
+    })
+    expect(r.of('set:fillStyle').map(c => c.args[0])).toEqual([
+      TIMELINE_COLORS.cursor,
+      TIMELINE_COLORS.playhead,
+      TIMELINE_COLORS.snapGuide,
+    ])
+  })
+
+  it('carries the tier through to the painter', () => {
+    const r = recordingContext()
+    drawTimelineOverlay(r.ctx, {
+      viewport: viewport({ pxPerSecond: 40, scrollSeconds: 0 }),
+      currentTime: 5,
+      snapTime: 2,
+      snapStrength: 'weak',
+      surfaceWidth: 1000,
+      surfaceHeight: 160,
+    })
+    expect(r.of('set:fillStyle').map(c => c.args[0])).toEqual([
+      TIMELINE_COLORS.playhead,
+      TIMELINE_COLORS.snapGuideWeak,
+    ])
+  })
+
+  it('culls the guide when it scrolls off-screen', () => {
+    const r = recordingContext()
+    drawTimelineOverlay(r.ctx, {
+      viewport: viewport({ pxPerSecond: 40, scrollSeconds: 0 }),
+      currentTime: 5,
+      snapTime: 400,
+      surfaceWidth: 1000,
+      surfaceHeight: 160,
+    })
+    expect(r.count('fillRect')).toBe(1)
   })
 })
 
