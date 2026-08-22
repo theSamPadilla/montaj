@@ -29,9 +29,11 @@ import TrackSettingsPopover from './TrackSettingsPopover'
 // only need once; the icon carries it and the word is a hover away. But 34px —
 // icon alone, hard against both edges — was too tight to read and left nowhere
 // for the skip control to live.
-// Fits the type glyph, the settings gear, the skip eye, and — only when it
-// applies — the muted indicator.
-const GUTTER_WIDTH_PX = 84
+// Type glyph plus ONE column of stacked controls. Side-by-side controls forced
+// the rail to 84px and still crowded; stacking them uses the height these rows
+// already have — the base track is 120px tall and was showing a single row of
+// icons in the top 16px of it.
+const GUTTER_WIDTH_PX = 46
 
 /** Caption row height — the `h-10` on `trackRow` (utils.ts). */
 const CAPTION_ROW_HEIGHT_PX = 40
@@ -97,7 +99,7 @@ interface RailCellProps {
 function RailCell({ height, accent, icon, label, action, dimmed, settingsButton }: RailCellProps) {
   return (
     <div
-      className={`flex items-start gap-1 rounded overflow-hidden bg-[var(--editor-surface)] border border-[var(--editor-border)] px-1.5 py-1.5 select-none transition-opacity ${dimmed ? 'opacity-40' : ''}`}
+      className={`flex items-start gap-1 rounded overflow-hidden bg-[var(--editor-surface)] border border-[var(--editor-border)] px-1 py-1 select-none transition-opacity ${dimmed ? 'opacity-40' : ''}`}
       style={{ height, borderLeft: accent ? `2px solid ${accent}` : undefined }}
     >
       {/* The type icon identifies the row and is NOT interactive. It used to
@@ -109,26 +111,31 @@ function RailCell({ height, accent, icon, label, action, dimmed, settingsButton 
           {icon}
         </span>
       </Tooltip>
-      {settingsButton && (
-        <Tooltip label={settingsButton.label}>
-          <button
-            ref={settingsButton.buttonRef}
-            type="button"
-            aria-label={settingsButton.label}
-            aria-haspopup="dialog"
-            aria-expanded={settingsButton.open}
-            onClick={settingsButton.onClick}
-            className={`flex h-4 w-4 items-center justify-center rounded transition-colors ${
-              settingsButton.open
-                ? 'text-[var(--editor-text)]/90 bg-[var(--editor-text)]/10'
-                : 'text-[var(--editor-text)]/40 hover:text-[var(--editor-text)]/90 hover:bg-[var(--editor-text)]/10'
-            }`}
-          >
-            <Settings2 size={14} />
-          </button>
-        </Tooltip>
-      )}
-      {action}
+      {/* One COLUMN of controls, not a row: the rows are 40-120px tall and were
+          wasting all of that height on a single line of icons, which forced the
+          rail wide enough to crowd the timeline. */}
+      <div className="flex min-w-0 flex-col gap-0.5">
+        {settingsButton && (
+          <Tooltip label={settingsButton.label}>
+            <button
+              ref={settingsButton.buttonRef}
+              type="button"
+              aria-label={settingsButton.label}
+              aria-haspopup="dialog"
+              aria-expanded={settingsButton.open}
+              onClick={settingsButton.onClick}
+              className={`flex h-3.5 w-3.5 items-center justify-center rounded transition-colors ${
+                settingsButton.open
+                  ? 'text-[var(--editor-text)]/90 bg-[var(--editor-text)]/10'
+                  : 'text-[var(--editor-text)]/40 hover:text-[var(--editor-text)]/90 hover:bg-[var(--editor-text)]/10'
+              }`}
+            >
+              <Settings2 size={13} />
+            </button>
+          </Tooltip>
+        )}
+        {action}
+      </div>
     </div>
   )
 }
@@ -152,7 +159,7 @@ function MuteToggle({ muted, onToggle, trackLabel }: { muted: boolean; onToggle:
         aria-label={`Mute ${trackLabel}`}
         aria-pressed={muted}
         onClick={onToggle}
-        className={`flex h-4 w-4 items-center justify-center rounded transition-colors ${
+        className={`flex h-3.5 w-3.5 items-center justify-center rounded transition-colors ${
           muted
             ? 'text-amber-400/90 hover:text-amber-300'
             : 'text-[var(--editor-text)]/35 hover:text-[var(--editor-text)]/80'
@@ -174,7 +181,7 @@ function SkipToggle({ enabled, onToggle, trackLabel }: { enabled: boolean; onTog
         aria-label={`Skip ${trackLabel} track`}
         aria-pressed={!enabled}
         onClick={onToggle}
-        className={`flex h-4 w-4 items-center justify-center rounded transition-colors ${
+        className={`flex h-3.5 w-3.5 items-center justify-center rounded transition-colors ${
           enabled
             ? 'text-[var(--editor-text)]/35 hover:text-[var(--editor-text)]/80'
             : 'text-amber-400/80 hover:text-amber-300'
