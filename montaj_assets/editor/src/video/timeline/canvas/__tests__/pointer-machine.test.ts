@@ -6,24 +6,26 @@
  * tests are the real coverage for pointer behaviour: no canvas, no jsdom
  * events, no timers. `TimelineCanvas.test.tsx` covers only the wiring.
  *
- * Fixture (100px/second, no scroll → x = t × 100):
+ * Fixture (100px/second, no scroll → x = t × 100). Row Y's are derived from
+ * `computeTimelineLayout` rather than written out, so a change to the rendered
+ * row heights (as the frames/waveform split brought) retargets these gestures
+ * instead of silently aiming them at the gaps between rows:
  *
- *   row y   0– 40   track 1 — o0 (overlay) 2s–4s
- *   row y  44–100   track 0 — c0 0s–5s, c1 5s–10s (both video, 20s sources)
- *   lane  104–144   audio a0 1s–6s, bar inset to y 108–140
+ *   row  track 1 — o0 (overlay) 2s–4s
+ *   row  track 0 — c0 0s–5s, c1 5s–10s (both video, 20s sources)
+ *   lane audio a0 1s–6s, the bar inset inside the lane
  *
  * Snap boundaries therefore are {0, 5, 10, 2, 4, 1, 6}, and a gesture's own two
  * boundaries are excluded from its magnets.
  */
 import { describe, it, expect } from 'vitest'
 import type { Project } from '../../../../types'
-import { computeDerivedTiming } from '../../timeline-model'
+import { VISUAL_ROW_HEIGHT_PX, computeDerivedTiming, trackItems } from '../../timeline-model'
 import { computeTimelineLayout } from '../draw'
 import {
   NO_MODIFIERS,
   createPointerMachine,
   cursorForHit,
-  cycleMarkers,
   initialMachineState,
   isAdditive,
   pointerReducer,
@@ -38,6 +40,29 @@ import type { Viewport } from '../viewport'
 const VIEWPORT: Viewport = { pxPerSecond: 100, scrollSeconds: 0, widthPx: 1000 }
 
 function baseProject(): Project {
+  return {
+    id: 'p',
+    tracks: [
+      {
+        id: 'trk-0',
+        items: [
+          { id: 'c0', type: 'video', src: 'a.mp4', start: 0, end: 5, inPoint: 0, outPoint: 5, sourceDuration: 20 },
+          { id: 'c1', type: 'video', src: 'b.mp4', start: 5, end: 10, inPoint: 2, outPoint: 7, sourceDuration: 20 },
+        ],
+      },
+      { id: 'trk-1', items: [{ id: 'o0', type: 'overlay', start: 2, end: 4 }] },
+    ],
+    audio: { tracks: [{ id: 'a0', src: 'v.mp3', start: 1, end: 6, lane: 0 }] },
+  } as unknown as Project
+}
+
+/** Same layout as `baseProject`, but `tracks` in the pre-T6 legacy shape (a
+ *  bare array of item arrays, no track ids). Every reader in the package
+ *  tolerates this — but `moveItemAcrossTracks`'s two callers used to pass
+ *  `project.tracks` straight through, so this is what an editor genuinely
+ *  reaches for when server-side shape normalization hasn't run yet (e.g. the
+ *  SSE stream's initial frame reads project.json off disk unmigrated). */
+function legacyProject(): Project {
   return {
     id: 'p',
     tracks: [
@@ -59,7 +84,6 @@ function makeContext(overrides: Partial<PointerContext> = {}): PointerContext {
     layout: computeTimelineLayout(project),
     viewport: VIEWPORT,
     selectedIds: [],
-    markers: [null, null],
     snapBoundaries,
     totalDuration,
     rippleMode: false,
@@ -111,7 +135,7 @@ function lastProjectChange(effects: PointerEffect[]): Project {
 }
 
 function visual(project: Project, id: string) {
-  return (project.tracks ?? []).flat().find(i => i.id === id)!
+  return trackItems(project).flat().find(i => i.id === id)!
 }
 
 function audio(project: Project, id: string) {
@@ -119,17 +143,27 @@ function audio(project: Project, id: string) {
 }
 
 function trackIndexOf(project: Project, id: string): number {
-  return (project.tracks ?? []).findIndex(t => t.some(i => i.id === id))
+  return trackItems(project).findIndex(t => t.some(i => i.id === id))
 }
 
-// Coordinates the fixture makes meaningful.
-const C0_BODY = { x: 250, y: 60 }
-const C0_OUT_EDGE = { x: 495, y: 60 }
-const C1_BODY = { x: 750, y: 60 }
-const C1_IN_EDGE = { x: 505, y: 60 }
-const A0_BODY = { x: 300, y: 120 }
-const A0_OUT_EDGE = { x: 597, y: 120 }
-const EMPTY = { x: 700, y: 20 }
+// Coordinates the fixture makes meaningful. The Y of each row comes from the
+// layout the painter itself computes, so these stay on target at any row height.
+const LAYOUT = computeTimelineLayout(baseProject())
+const rowMidY = (trackIdx: number) => {
+  const row = LAYOUT.rows.find(r => r.trackIdx === trackIdx)!
+  return Math.round(row.y + row.height / 2)
+}
+const BASE_Y = rowMidY(0)      // track 0, the tall base row
+const OVERLAY_Y = rowMidY(1)   // track 1, stacked above it
+const LANE_Y = Math.round(LAYOUT.lanes[0].y + LAYOUT.lanes[0].height / 2)
+
+const C0_BODY = { x: 250, y: BASE_Y }
+const C0_OUT_EDGE = { x: 495, y: BASE_Y }
+const C1_BODY = { x: 750, y: BASE_Y }
+const C1_IN_EDGE = { x: 505, y: BASE_Y }
+const A0_BODY = { x: 300, y: LANE_Y }
+const A0_OUT_EDGE = { x: 597, y: LANE_Y }
+const EMPTY = { x: 700, y: OVERLAY_Y }
 
 // ── Building blocks ──────────────────────────────────────────────────────
 
@@ -179,14 +213,6 @@ describe('isAdditive — the DOM selection modifier test', () => {
   })
 })
 
-describe('cycleMarkers — the DOM double-click cycle', () => {
-  it('places A, then B, then starts over', () => {
-    expect(cycleMarkers([null, null], 3)).toEqual([3, null])
-    expect(cycleMarkers([3, null], 7)).toEqual([3, 7])
-    expect(cycleMarkers([3, 7], 9)).toEqual([9, null])
-  })
-})
-
 describe('cursorForHit', () => {
   const ctx = makeContext()
   it('matches the DOM affordances', () => {
@@ -228,6 +254,18 @@ describe('click-seek on empty timeline', () => {
     expect(d.machine.state.kind).toBe('dragging')
   })
 
+  it('clears the selection, so a click off a clip deselects it', () => {
+    // Otherwise a clip stayed selected while you scrubbed somewhere else, and
+    // the next split or ripple-delete hit an item nowhere near the playhead.
+    const d = new Driver(makeContext())
+    expect(of(d.down(EMPTY.x, EMPTY.y), 'select')).toEqual([{ type: 'select', id: null, additive: false }])
+  })
+
+  it('leaves the selection alone on an ADDITIVE press — shift builds a selection', () => {
+    const d = new Driver(makeContext())
+    expect(of(d.down(EMPTY.x, EMPTY.y, mods({ shift: true })), 'select')).toEqual([])
+  })
+
   it('magnetizes to a nearby boundary', () => {
     const d = new Driver(makeContext())
     // 5.1s is 10px from the c0/c1 cut — inside the 18px attract radius.
@@ -261,7 +299,7 @@ describe('click-seek on empty timeline', () => {
 
   it('scrubs from an empty audio lane too', () => {
     const d = new Driver(makeContext())
-    expect(of(d.down(800, 120), 'seek')).toEqual([{ type: 'seek', time: 8 }])
+    expect(of(d.down(800, LANE_Y), 'seek')).toEqual([{ type: 'seek', time: 8 }])
   })
 })
 
@@ -395,8 +433,8 @@ describe('body drag — move', () => {
   it('accumulates across moves so the cross-track search sees its own work', () => {
     const d = new Driver(makeContext())
     d.down(C1_BODY.x, C1_BODY.y)
-    d.move(C1_BODY.x, C1_BODY.y - 24)          // up one track
-    const after = lastProjectChange(d.move(C1_BODY.x, C1_BODY.y - 24))
+    d.move(C1_BODY.x, C1_BODY.y - VISUAL_ROW_HEIGHT_PX)          // up one track
+    const after = lastProjectChange(d.move(C1_BODY.x, C1_BODY.y - VISUAL_ROW_HEIGHT_PX))
     expect(trackIndexOf(after, 'c1')).toBe(1)
   })
 
@@ -413,7 +451,7 @@ describe('cross-track move', () => {
     d.down(C1_BODY.x, C1_BODY.y)
     // 24px of upward travel is one track; c1 (5s–10s) doesn't collide with the
     // overlay o0 (2s–4s), so it lands on track 1.
-    const after = lastProjectChange(d.move(C1_BODY.x, C1_BODY.y - 24))
+    const after = lastProjectChange(d.move(C1_BODY.x, C1_BODY.y - VISUAL_ROW_HEIGHT_PX))
     expect(trackIndexOf(after, 'c1')).toBe(1)
     expect(visual(after, 'c1').start).toBeCloseTo(5)
   })
@@ -423,7 +461,7 @@ describe('cross-track move', () => {
     d.down(C0_BODY.x, C0_BODY.y)
     // c0 (0s–5s) would overlap o0 (2s–4s) by 2s, past the 30%-of-duration
     // tolerance, so the outward search falls back to its own track.
-    const after = lastProjectChange(d.move(C0_BODY.x, C0_BODY.y - 24))
+    const after = lastProjectChange(d.move(C0_BODY.x, C0_BODY.y - VISUAL_ROW_HEIGHT_PX))
     expect(trackIndexOf(after, 'c0')).toBe(0)
   })
 
@@ -432,7 +470,7 @@ describe('cross-track move', () => {
     // it overlaps o0 (2s–4s) by only 1s.
     const d = new Driver(makeContext())
     d.down(C1_BODY.x, C1_BODY.y)
-    const after = lastProjectChange(d.move(C1_BODY.x - 200, C1_BODY.y - 24))
+    const after = lastProjectChange(d.move(C1_BODY.x - 200, C1_BODY.y - VISUAL_ROW_HEIGHT_PX))
     expect(visual(after, 'c1').start).toBeCloseTo(3)
     expect(trackIndexOf(after, 'c1')).toBe(1)
   })
@@ -440,7 +478,7 @@ describe('cross-track move', () => {
   it('creates a new top track past the end of the stack', () => {
     const d = new Driver(makeContext())
     d.down(C0_BODY.x, C0_BODY.y)
-    const after = lastProjectChange(d.move(C0_BODY.x, C0_BODY.y - 48))
+    const after = lastProjectChange(d.move(C0_BODY.x, C0_BODY.y - VISUAL_ROW_HEIGHT_PX * 2))
     expect(after.tracks).toHaveLength(3)
     expect(trackIndexOf(after, 'c0')).toBe(2)
   })
@@ -454,6 +492,18 @@ describe('cross-track move', () => {
     expect(visual(after, 'o0').start).toBeCloseTo(11)
     expect(after.tracks).toHaveLength(1)
     expect(trackIndexOf(after, 'o0')).toBe(0)
+  })
+
+  it('survives a cross-track drag on a legacy-shape project (T6 regression)', () => {
+    // Before the T6 fix, applyMove passed `lastProject.tracks` straight to
+    // moveItemAcrossTracks, which does `t.items.filter(...)` on every track —
+    // a crash on a bare array. The call site now normalizes defensively, so
+    // this must behave identically to the object-shape test above.
+    const d = new Driver(makeContext({ project: legacyProject() }))
+    d.down(C1_BODY.x, C1_BODY.y)
+    const after = lastProjectChange(d.move(C1_BODY.x, C1_BODY.y - VISUAL_ROW_HEIGHT_PX))
+    expect(trackIndexOf(after, 'c1')).toBe(1)
+    expect(visual(after, 'c1').start).toBeCloseTo(5)
   })
 })
 
@@ -700,8 +750,8 @@ describe('audio bar trim', () => {
 
   it('walks the inPoint on an in-edge trim', () => {
     const d = new Driver(makeContext())
-    d.down(103, 120)
-    const trimmed = audio(lastProjectChange(d.move(203, 120)), 'a0')
+    d.down(103, LANE_Y)
+    const trimmed = audio(lastProjectChange(d.move(203, LANE_Y)), 'a0')
     expect(trimmed.start).toBeCloseTo(2)
     expect(trimmed.inPoint).toBeCloseTo(1)
   })
@@ -714,30 +764,28 @@ describe('audio bar trim', () => {
   })
 })
 
-// ── Markers and inspection ───────────────────────────────────────────────
+// ── Inspection ───────────────────────────────────────────────────────────
 
 describe('double-click', () => {
-  it('cycles the markers from empty timeline', () => {
+  // Double-clicking bare timeline used to place the A/B range markers. That
+  // feature is gone: background double-clicks now emit nothing at all, and a
+  // clip or audio bar still opens its inspector.
+  it('does nothing on empty timeline', () => {
     const d = new Driver(makeContext())
-    expect(of(d.doubleClick(700, 20), 'markers')).toEqual([{ type: 'markers', markers: [7, null] }])
+    expect(d.doubleClick(700, 20)).toEqual([])
   })
 
-  it('cycles the markers from an empty audio lane, which the DOM left inert', () => {
+  it('does nothing on an empty audio lane', () => {
     const d = new Driver(makeContext())
-    expect(of(d.doubleClick(800, 120), 'markers')).toEqual([{ type: 'markers', markers: [8, null] }])
+    expect(d.doubleClick(800, LANE_Y)).toEqual([])
   })
 
-  it('completes a range on the second double-click', () => {
-    const d = new Driver(makeContext({ markers: [3, null] }))
-    expect(of(d.doubleClick(700, 20), 'markers')).toEqual([{ type: 'markers', markers: [3, 7] }])
+  it('does nothing past the end of the timeline', () => {
+    const d = new Driver(makeContext())
+    expect(d.doubleClick(-100, 20)).toEqual([])
   })
 
-  it('starts over once a range exists', () => {
-    const d = new Driver(makeContext({ markers: [3, 7] }))
-    expect(of(d.doubleClick(900, 20), 'markers')).toEqual([{ type: 'markers', markers: [9, null] }])
-  })
-
-  it('opens the clip inspector on a clip, without touching markers', () => {
+  it('opens the clip inspector on a clip', () => {
     const d = new Driver(makeContext())
     const effects = d.doubleClick(C0_BODY.x, C0_BODY.y)
     expect(effects).toEqual([{ type: 'inspect', target: 'visual', id: 'c0' }])
@@ -747,48 +795,27 @@ describe('double-click', () => {
     const d = new Driver(makeContext())
     expect(d.doubleClick(A0_BODY.x, A0_BODY.y)).toEqual([{ type: 'inspect', target: 'audio', id: 'a0' }])
   })
-
-  it('clamps a marker to the timeline', () => {
-    const d = new Driver(makeContext())
-    expect(of(d.doubleClick(-100, 20), 'markers')).toEqual([{ type: 'markers', markers: [0, null] }])
-  })
 })
 
-describe('dimmed rows during a marker flow', () => {
-  // With a marker down and a clip selected, the DOM fades every OTHER row and
-  // makes it `pointer-events-none`. The canvas paints the same fade, so it has
-  // to ignore the same clicks.
-  const dimming = { markers: [3, null] as [number | null, number | null], selectedIds: ['c0'] }
-
-  it('lets clicks fall through a faded row to the timeline underneath', () => {
-    const d = new Driver(makeContext(dimming))
-    // o0 lives on track 1, which holds no part of the selection → faded.
-    const effects = d.down(300, 20)
-    expect(of(effects, 'seek')).toEqual([{ type: 'seek', time: 3 }])
-    expect(d.machine.state.kind).toBe('dragging')
-    expect(of(d.up(300, 20), 'select')).toEqual([])
+describe('no row is ever inert', () => {
+  // Rows used to fade and go `pointer-events-none` on every track that didn't
+  // hold the selection while a marker was down. With markers gone, nothing
+  // dims for selection reasons and every row stays clickable.
+  it('selects a clip on a track that holds none of the selection', () => {
+    const d = new Driver(makeContext({ selectedIds: ['c0'] }))
+    // o0 lives on track 1, which holds no part of the selection.
+    d.down(300, 20)
+    expect(of(d.up(300, 20), 'select')).toEqual([{ type: 'select', id: 'o0', additive: false }])
   })
 
   it('keeps the row holding the selection live', () => {
-    const d = new Driver(makeContext(dimming))
+    const d = new Driver(makeContext({ selectedIds: ['c0'] }))
     d.down(C0_BODY.x, C0_BODY.y)
     expect(of(d.up(C0_BODY.x, C0_BODY.y), 'select')).toEqual([{ type: 'select', id: 'c0', additive: false }])
   })
 
-  it('fades nothing when no marker is down', () => {
+  it('keeps audio lanes live', () => {
     const d = new Driver(makeContext({ selectedIds: ['c0'] }))
-    d.down(300, 20)
-    expect(of(d.up(300, 20), 'select')).toEqual([{ type: 'select', id: 'o0', additive: false }])
-  })
-
-  it('fades nothing when nothing is selected', () => {
-    const d = new Driver(makeContext({ markers: [3, null] }))
-    d.down(300, 20)
-    expect(of(d.up(300, 20), 'select')).toEqual([{ type: 'select', id: 'o0', additive: false }])
-  })
-
-  it('never fades an audio lane', () => {
-    const d = new Driver(makeContext(dimming))
     d.down(A0_BODY.x, A0_BODY.y)
     expect(of(d.up(A0_BODY.x, A0_BODY.y), 'select')).toEqual([{ type: 'select', id: 'a0', additive: false }])
   })
@@ -834,11 +861,14 @@ describe('press-time snap boundaries — echoed-project self-snap', () => {
     return {
       id: 'p3',
       tracks: [
-        [
-          { id: 'x0', type: 'video', src: 'a.mp4', start: 0, end: 3, inPoint: 0, outPoint: 3, sourceDuration: 20 },
-          { id: 'x1', type: 'video', src: 'b.mp4', start: 3, end: 6, inPoint: 0, outPoint: 3, sourceDuration: 20 },
-          { id: 'x2', type: 'video', src: 'c.mp4', start: 6, end: 9, inPoint: 0, outPoint: 3, sourceDuration: 20 },
-        ],
+        {
+          id: 'trk-0',
+          items: [
+            { id: 'x0', type: 'video', src: 'a.mp4', start: 0, end: 3, inPoint: 0, outPoint: 3, sourceDuration: 20 },
+            { id: 'x1', type: 'video', src: 'b.mp4', start: 3, end: 6, inPoint: 0, outPoint: 3, sourceDuration: 20 },
+            { id: 'x2', type: 'video', src: 'c.mp4', start: 6, end: 9, inPoint: 0, outPoint: 3, sourceDuration: 20 },
+          ],
+        },
       ],
     } as unknown as Project
   }
@@ -934,3 +964,4 @@ describe('degenerate context', () => {
     expect(JSON.stringify(ctx.project)).toBe(before)
   })
 })
+

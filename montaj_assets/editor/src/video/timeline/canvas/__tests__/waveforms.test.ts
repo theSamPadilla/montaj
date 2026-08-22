@@ -34,6 +34,7 @@ import {
   type TimelineScene,
 } from '../draw'
 import type { Viewport } from '../viewport'
+import { clipBands } from '../clip-bands'
 
 // ── Recording context (mirrors draw.test.ts's convention) ────────────────
 
@@ -253,13 +254,19 @@ describe('drawWaveformBars', () => {
 })
 
 describe('clipWaveformBand', () => {
-  it('sits as a thin strip at the bottom of the clip rect, inset from the edge', () => {
-    const r = rect({ x: 0, y: 0, width: 80, height: 40 })
+  it('takes the LOWER HALF of the clip, not the thin bottom strip it started as', () => {
+    const r = rect({ x: 0, y: 0, width: 80, height: 120 })
     const band = clipWaveformBand(r)
+    expect(band.height).toBe(59) // (120 - 2px inset) / 2
     expect(band.y + band.height).toBeLessThanOrEqual(r.y + r.height)
-    expect(band.y + band.height).toBeGreaterThan(r.y + r.height - 4) // within the 2px inset + rounding
-    expect(band.height).toBeLessThanOrEqual(10)
     expect(band.width).toBe(r.width)
+  })
+
+  it('is exactly the band `clip-bands.ts` hands the filmstrip the other half of', () => {
+    // Same source of truth for both painters — this is what keeps the waveform
+    // from creeping up over the frames.
+    const r = rect({ height: 120 })
+    expect(clipWaveformBand(r)).toEqual(clipBands(r).waveform)
   })
 
   it('shrinks (never grows past) a very short row so the band stays inside it', () => {
@@ -285,7 +292,8 @@ describe('drawClipRect content hook', () => {
     })
 
     const fills = r.of('fillRect')
-    // [0]=main fill, [1]=border, then N waveform bar fillRects.
+    // [0]=the clip body fill, [1]=the darkened waveform band, then N bars. The
+    // clip's outline is a stroked path now, not a fillRect.
     const waveformFills = fills.slice(2)
     expect(waveformFills.length).toBe(columns.length)
     for (const call of waveformFills) {
@@ -303,8 +311,8 @@ describe('drawClipRect content hook', () => {
       selected: false,
       label: 'video',
     })
-    // fill + border only.
-    expect(r.of('fillRect')).toHaveLength(2)
+    // The body fill only — the outline is stroked, not filled.
+    expect(r.of('fillRect')).toHaveLength(1)
   })
 })
 
@@ -534,8 +542,6 @@ function scene(over: Partial<TimelineScene> = {}): TimelineScene {
     viewport: viewport(),
     layout: computeTimelineLayout(p),
     selectedIds: [],
-    markerSelection: null,
-    markers: [null, null],
     surfaceWidth: 1000,
     surfaceHeight: 200,
     ...over,
@@ -544,7 +550,7 @@ function scene(over: Partial<TimelineScene> = {}): TimelineScene {
 
 describe('drawTimelineContent waveform wiring', () => {
   it('emits waveform draw calls within a clip′s rect bounds when the lookup has ready columns', () => {
-    const p = project({ tracks: [[clip({ id: 'c0', start: 0, end: 4 })]] })
+    const p = project({ tracks: [{ id: 'trk-0', items: [clip({ id: 'c0', start: 0, end: 4 })] }] })
     const r = recordingContext()
     const columns: WaveformColumn[] = [{ min: -1, max: 1 }, { min: -0.5, max: 0.5 }]
     const stats = drawTimelineContent(r.ctx, scene({
@@ -569,7 +575,7 @@ describe('drawTimelineContent waveform wiring', () => {
   })
 
   it('emits no waveform draw calls when the lookup returns null (no proxy yet)', () => {
-    const p = project({ tracks: [[clip({ id: 'c0', start: 0, end: 4 })]] })
+    const p = project({ tracks: [{ id: 'trk-0', items: [clip({ id: 'c0', start: 0, end: 4 })] }] })
     const withLookup = recordingContext()
     drawTimelineContent(withLookup.ctx, scene({
       project: p,

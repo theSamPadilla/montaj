@@ -77,25 +77,36 @@ const project = {
   audio: { tracks: [{ id: 'a0', src: 'v.mp3', start: 1, end: 5 }] },
 } as unknown as Project
 
+// Stable identity: the content layer's redraw effect keys on the `selectedIds`
+// prop, so a fresh literal on every rerender would repaint the content and
+// make the guide's layer-isolation assertion meaningless. Timeline passes
+// React state here, which has exactly this stability.
+const NO_SELECTION: string[] = []
+
 function mount(store: ViewportStore, clock = createPlaybackClock(), onRender?: () => void) {
   function Sibling() { onRender?.(); return null }
-  const utils = render(
-    <>
-      <TimelineCanvas
-        project={project}
-        clock={clock}
-        store={store}
-        totalDuration={20}
-        selectedIds={[]}
-        markers={[null, null]}
-      />
-      <Sibling />
-    </>,
-  )
+  function Surface({ previewAxis = false }: { previewAxis?: boolean }) {
+    return (
+      <>
+        <TimelineCanvas
+          project={project}
+          clock={clock}
+          store={store}
+          totalDuration={20}
+          selectedIds={NO_SELECTION}
+          previewAxis={previewAxis}
+        />
+        <Sibling />
+      </>
+    )
+  }
+  const utils = render(<Surface />)
   act(() => { vi.advanceTimersByTime(32) })
   const canvases = utils.container.querySelectorAll('canvas')
   return {
     ...utils,
+    container: utils.container,
+    setAxis: (on: boolean) => utils.rerender(<Surface previewAxis={on} />),
     clock,
     content: recorderFor(canvases[0] as HTMLCanvasElement),
     overlay: recorderFor(canvases[1] as HTMLCanvasElement),
@@ -130,6 +141,30 @@ describe('TimelineCanvas', () => {
     expect(overlay.some(c => c.method === 'set:fillStyle' && c.args[0] === TIMELINE_COLORS.playhead)).toBe(true)
     expect(content.length).toBe(contentCallsBefore)
     expect(renders.mock.calls.length).toBe(rendersBefore)
+  })
+
+  it('repaints only the overlay when the axis cursor moves — it shares the playhead layer', () => {
+    // Tracking the pointer must cost what moving the playhead costs: one
+    // overlay repaint, no content repaint. A cursor line on the content layer
+    // would repaint every clip on every mousemove, which is the exact cost this
+    // surface exists to avoid — this is the test that would catch it.
+    const store = createViewportStore()
+    const { content, overlay, container, setAxis } = mount(store)
+    act(() => { setAxis(true) })
+    act(() => { vi.advanceTimersByTime(32) })
+
+    const surface = container.querySelector('[data-timeline-canvas]') as HTMLElement
+    const contentCallsBefore = content.length
+    overlay.length = 0
+
+    act(() => {
+      surface.dispatchEvent(new MouseEvent('mousemove', { clientX: 400, clientY: 20, bubbles: true }))
+    })
+    act(() => { vi.advanceTimersByTime(32) })
+
+    expect(overlay.some(c => c.method === 'set:fillStyle' && c.args[0] === TIMELINE_COLORS.cursor)).toBe(true)
+    expect(overlay.filter(c => c.method === 'clearRect')).toHaveLength(1)
+    expect(content.length).toBe(contentCallsBefore)
   })
 
   it('coalesces a burst of clock ticks into a single frame', () => {
@@ -176,14 +211,14 @@ describe('TimelineCanvas', () => {
     const store = createViewportStore()
     const clock = createPlaybackClock()
     const { rerender, container } = render(
-      <TimelineCanvas project={project} clock={clock} store={store} totalDuration={20} selectedIds={[]} markers={[null, null]} />,
+      <TimelineCanvas project={project} clock={clock} store={store} totalDuration={20} selectedIds={[]} />,
     )
     act(() => { vi.advanceTimersByTime(32) })
     const content = recorderFor(container.querySelectorAll('canvas')[0] as HTMLCanvasElement)
     content.length = 0
 
     const edited = { ...project, tracks: [[{ id: 'c0', type: 'video', src: 'a.mp4', start: 2, end: 9 }]] } as unknown as Project
-    rerender(<TimelineCanvas project={edited} clock={clock} store={store} totalDuration={20} selectedIds={[]} markers={[null, null]} />)
+    rerender(<TimelineCanvas project={edited} clock={clock} store={store} totalDuration={20} selectedIds={[]} />)
     act(() => { vi.advanceTimersByTime(32) })
 
     expect(content.some(c => c.method === 'clearRect')).toBe(true)
@@ -198,7 +233,7 @@ describe('TimelineCanvas', () => {
     const clock = createPlaybackClock()
     const { rerender, container } = render(
       <StrictMode>
-        <TimelineCanvas project={project} clock={clock} store={store} totalDuration={20} selectedIds={[]} markers={[null, null]} />
+        <TimelineCanvas project={project} clock={clock} store={store} totalDuration={20} selectedIds={[]} />
       </StrictMode>,
     )
     act(() => { vi.advanceTimersByTime(32) })
@@ -207,7 +242,7 @@ describe('TimelineCanvas', () => {
 
     rerender(
       <StrictMode>
-        <TimelineCanvas project={project} clock={clock} store={store} totalDuration={20} selectedIds={['c0']} markers={[null, null]} />
+        <TimelineCanvas project={project} clock={clock} store={store} totalDuration={20} selectedIds={['c0']} />
       </StrictMode>,
     )
     act(() => { vi.advanceTimersByTime(32) })

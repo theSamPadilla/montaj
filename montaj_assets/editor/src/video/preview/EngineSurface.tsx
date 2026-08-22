@@ -39,6 +39,7 @@
 import { useEffect, useState } from 'react'
 import type { EngineStats, Picture } from '../../engine'
 import DebugHud from '../../engine/debug-hud'
+import { Loader } from '../../ui/Loader'
 
 /**
  * How long `picture` must stay `preparing` before the placeholder shows.
@@ -92,10 +93,7 @@ export default function EngineSurface({ attach, picture, reason, debugHud, getSt
           style={{ zIndex: 2 }}
           title={reason}
         >
-          <span
-            className="h-6 w-6 rounded-full border-2 border-white/30 border-t-white/80 animate-spin"
-            aria-hidden="true"
-          />
+          <Loader size="md" />
           <span className="text-sm">Preparing preview…</span>
         </div>
       )}

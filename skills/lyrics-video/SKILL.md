@@ -159,8 +159,8 @@ Verify the burned-in text looks correct, then trigger the full render with `mont
   "workflow": "lyrics_video",
   "settings": { "resolution": [720, 1280], "fps": 30 },
   "tracks": [
-    [],
-    []
+    { "id": "trk-0", "items": [] },
+    { "id": "trk-1", "items": [] }
   ],
   "audio": {
     "tracks": [
@@ -171,14 +171,14 @@ Verify the burned-in text looks correct, then trigger the full render with `mont
 }
 ```
 
-`tracks[0]` = background video loop OR empty array
-`tracks[1]` = lyric phrase overlays (one per segment from lyrics_sync)
+`tracks[0].items` = background video loop OR empty array
+`tracks[1].items` = lyric phrase overlays (one per segment from lyrics_sync)
 
 ### Preview (mandatory)
 
 After setting up `project.json`, **open the project in the montaj UI and preview before rendering.** The PreviewPlayer scrubs through the overlay timing in real time — verify word sync looks correct and adjust any `start`/`end` values in the overlay entries if needed. Only trigger a full render once the preview looks right.
 
-### tracks[0] — With background video
+### tracks[0].items — With background video
 
 ```json
 [
@@ -195,7 +195,7 @@ After setting up `project.json`, **open the project in the montaj UI and preview
 ]
 ```
 
-### tracks[0] — Without background video
+### tracks[0].items — Without background video
 
 ```json
 []
@@ -203,7 +203,7 @@ After setting up `project.json`, **open the project in the montaj UI and preview
 
 `lyric-phrase.jsx` renders its own full-screen colored background automatically.
 
-### tracks[1] — Overlay entries
+### tracks[1].items — Overlay entries
 
 One entry per segment from the lyrics_sync output. The `src` must be an **absolute path** to the template:
 

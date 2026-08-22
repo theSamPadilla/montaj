@@ -89,7 +89,7 @@ python /path/to/montaj/project/init.py \
   --normalize lazy
 ```
 
-- `--clips`: the original source video path (from the source project's `tracks[0][0].src` — always the original .MOV/.mp4, never a derived file)
+- `--clips`: the original source video path (from the source project's `tracks[0].items[0].src` — always the original .MOV/.mp4, never a derived file)
 - `--workflow overlays`: the downstream workflow for the child project
 - `--prompt`: carry forward the user's original prompt plus framing mode (`zoom`, `thirds`, or `mix`)
 - `--symlink-clips`: stage the source as a symlink, not a copy (source files are large; this is required for clips workflow children)
@@ -125,7 +125,7 @@ python $MONTAJ_ROOT/project/init.py \
 
 ### 6. Set the clip window and sourceCrop in each child project
 
-After creating each child project, read its `project.json`, update `tracks[0][0]` with the window and framing, then PUT it back.
+After creating each child project, read its `project.json`, update `tracks[0].items[0]` with the window and framing, then PUT it back.
 
 **For zoom mode:**
 
@@ -137,7 +137,7 @@ curr=$(curl -s http://localhost:3000/api/projects/<child_id>)
 new=$(echo "$curr" | jq \
   --argjson ip 12.0 --argjson op 62.0 \
   --argjson sc '{"x": 0.3418, "y": 0.0, "w": 0.3164, "h": 1.0}' \
-  '.tracks[0][0].inPoint = $ip | .tracks[0][0].outPoint = $op | .tracks[0][0].sourceCrop = $sc')
+  '.tracks[0].items[0].inPoint = $ip | .tracks[0].items[0].outPoint = $op | .tracks[0].items[0].sourceCrop = $sc')
 
 curl -s -X PUT http://localhost:3000/api/projects/<child_id> \
   -H "Content-Type: application/json" -d "$new"
@@ -145,9 +145,9 @@ curl -s -X PUT http://localhost:3000/api/projects/<child_id> \
 
 **For thirds mode:** add the source as an overlay-track video item with `offsetY` into the top region (e.g. `y: 0`, `h: 0.5` in canvas-fraction terms) over a solid background. Set `sourceCrop` on the overlay item only if you want to crop within the visible portion. The primary `tracks[0]` item still carries `inPoint`/`outPoint`; the overlay item references the same src.
 
-**For mix mode:** add the source as a scaled overlay item (`scale: ~0.5`) anchored to the top of the canvas, with `sourceCrop` applied to trim the horizontal edges. `inPoint`/`outPoint` stay on `tracks[0][0]`.
+**For mix mode:** add the source as a scaled overlay item (`scale: ~0.5`) anchored to the top of the canvas, with `sourceCrop` applied to trim the horizontal edges. `inPoint`/`outPoint` stay on `tracks[0].items[0]`.
 
-Set `sourceWidth` and `sourceHeight` from the probe output on each `tracks[0][0]` item so the renderer has the original dimensions for crop math.
+Set `sourceWidth` and `sourceHeight` from the probe output on each `tracks[0].items[0]` item so the renderer has the original dimensions for crop math.
 
 **After setting inPoint/outPoint, run the window-normalize step and record the cache:**
 
@@ -161,7 +161,7 @@ montaj step normalize_window \
   --out <child_project_dir>/window_normalized.mp4
 ```
 
-The command prints the cache path to stdout. Capture it, then write it into `tracks[0][0].normalizedSrc` in the child project (either in the same PUT that sets inPoint/outPoint, or as a follow-up PUT):
+The command prints the cache path to stdout. Capture it, then write it into `tracks[0].items[0].normalizedSrc` in the child project (either in the same PUT that sets inPoint/outPoint, or as a follow-up PUT):
 
 ```bash
 # Example: capture the cache path and merge it into the PUT
@@ -175,16 +175,16 @@ curr=$(curl -s http://localhost:3000/api/projects/<child_id>)
 new=$(echo "$curr" | jq \
   --argjson ip 12.0 --argjson op 62.0 \
   --arg ns "$cache_path" \
-  '.tracks[0][0].inPoint = $ip | .tracks[0][0].outPoint = $op | .tracks[0][0].normalizedSrc = $ns | .tracks[0][0].normalizedInPoint = $ip')
+  '.tracks[0].items[0].inPoint = $ip | .tracks[0].items[0].outPoint = $op | .tracks[0].items[0].normalizedSrc = $ns | .tracks[0].items[0].normalizedInPoint = $ip')
 curl -s -X PUT http://localhost:3000/api/projects/<child_id> \
   -H "Content-Type: application/json" -d "$new"
 ```
 
 Key invariants:
-- `tracks[0][0].src` **stays the original source path** (the symlink to the .MOV/.mp4). Never replace it.
-- `tracks[0][0].normalizedSrc` is the derived per-window cache that render and preview prefer when available.
-- `tracks[0][0].normalizedInPoint` is the **cache origin** — the source-time (original coordinates) at which the cache starts. Set it to the same value as `inPoint` when the cache is built (because `normalize_window` builds the cache for the current window). Render and preview rebase inPoint/outPoint by this origin so they seek to the correct position inside the cache. If a user later trims the clip's start inward, the cache still covers the new (narrower) window and the rebased seek still lands correctly, because `effectiveInPoint = inPoint - normalizedInPoint`.
-- `tracks[0][0].inPoint` and `tracks[0][0].outPoint` remain the **original-source timestamps** in seconds. When the renderer uses `normalizedSrc`, it rebases by `normalizedInPoint` automatically — inPoint/outPoint do not change.
+- `tracks[0].items[0].src` **stays the original source path** (the symlink to the .MOV/.mp4). Never replace it.
+- `tracks[0].items[0].normalizedSrc` is the derived per-window cache that render and preview prefer when available.
+- `tracks[0].items[0].normalizedInPoint` is the **cache origin** — the source-time (original coordinates) at which the cache starts. Set it to the same value as `inPoint` when the cache is built (because `normalize_window` builds the cache for the current window). Render and preview rebase inPoint/outPoint by this origin so they seek to the correct position inside the cache. If a user later trims the clip's start inward, the cache still covers the new (narrower) window and the rebased seek still lands correctly, because `effectiveInPoint = inPoint - normalizedInPoint`.
+- `tracks[0].items[0].inPoint` and `tracks[0].items[0].outPoint` remain the **original-source timestamps** in seconds. When the renderer uses `normalizedSrc`, it rebases by `normalizedInPoint` automatically — inPoint/outPoint do not change.
 
 ### 7. Finalize — remove the source project
 
@@ -196,7 +196,7 @@ The source project is scaffolding: it exists only so this skill can probe, trans
    mkdir -p "$SHARED"
    mv "<source_project_dir>/<source_filename>" "$SHARED/<source_filename>"
    ```
-2. **Repoint each child's symlinked `tracks[0][0].src`** to the relocated file:
+2. **Repoint each child's symlinked `tracks[0].items[0].src`** to the relocated file:
    ```bash
    for child_dir in <child1_dir> <child2_dir> <child3_dir>; do
      ln -sf "$SHARED/<source_filename>" "$child_dir/<source_filename>"

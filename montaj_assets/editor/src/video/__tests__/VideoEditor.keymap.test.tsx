@@ -188,7 +188,7 @@ describe('VideoEditor — T9 command palette', () => {
     render(<VideoEditor project={makeVideoProject()} adapter={adapter} onProjectChange={vi.fn()} slots={{ exportActions: <div /> }} />)
     await screen.findByText('▪ overlay')
 
-    const readout = await screen.findByTitle('Go to time')
+    const readout = await screen.findByLabelText('Go to time')
     fireEvent.click(readout)
     expect(await screen.findByPlaceholderText(/mm:ss/)).toBeTruthy()
     // The list view's search box must NOT also be present — it opened
@@ -211,5 +211,92 @@ describe('VideoEditor — T9 keymap does not race Space', () => {
     // No palette opened, no split committed as a side effect of Space.
     expect(screen.queryByPlaceholderText('Type a command…')).toBeNull()
     expect(onProjectChange).not.toHaveBeenCalled()
+  })
+})
+
+// ── The preview-axis toggle ──────────────────────────────────────────────
+//
+// The gesture RULES are covered as pure data in `pointer-machine.test.ts`.
+// What's only observable at this level is the chrome: the toggle exists, it
+// starts off, and the toolbar button / Cmd+S / the palette all drive the same
+// piece of state.
+
+describe('VideoEditor — preview axis toggle', () => {
+  it('starts OFF, so clicking the timeline does not scrub by default', async () => {
+    const adapter = makeFakeAdapter()
+    render(<VideoEditor project={makeVideoProject()} adapter={adapter} onProjectChange={vi.fn()} slots={{ exportActions: <div /> }} />)
+    await screen.findByText('▪ overlay')
+
+    expect(screen.getByLabelText('Preview axis').getAttribute('aria-pressed')).toBe('false')
+  })
+
+  it('the toolbar button toggles it', async () => {
+    const adapter = makeFakeAdapter()
+    render(<VideoEditor project={makeVideoProject()} adapter={adapter} onProjectChange={vi.fn()} slots={{ exportActions: <div /> }} />)
+    await screen.findByText('▪ overlay')
+
+    const button = screen.getByLabelText('Preview axis')
+    fireEvent.click(button)
+    expect(button.getAttribute('aria-pressed')).toBe('true')
+    fireEvent.click(button)
+    expect(button.getAttribute('aria-pressed')).toBe('false')
+  })
+
+  it('Cmd+A and Ctrl+A both toggle it — A for Axis', async () => {
+    const adapter = makeFakeAdapter()
+    render(<VideoEditor project={makeVideoProject()} adapter={adapter} onProjectChange={vi.fn()} slots={{ exportActions: <div /> }} />)
+    await screen.findByText('▪ overlay')
+
+    const button = screen.getByLabelText('Preview axis')
+    await act(async () => {
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'a', metaKey: true }))
+    })
+    expect(button.getAttribute('aria-pressed')).toBe('true')
+
+    await act(async () => {
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'a', ctrlKey: true }))
+    })
+    expect(button.getAttribute('aria-pressed')).toBe('false')
+  })
+
+  it('leaves Cmd+A alone inside a typing surface, so Select All still works there', async () => {
+    // The chord shadows the browser's Select All everywhere EXCEPT text entry.
+    // `isTypingTarget` is what draws that line, and a caption row is a real
+    // contentEditable in this surface — regressing the guard would make it
+    // impossible to select the text of a caption you are editing.
+    const adapter = makeFakeAdapter()
+    render(<VideoEditor project={makeVideoProject()} adapter={adapter} onProjectChange={vi.fn()} slots={{ exportActions: <div /> }} />)
+    await screen.findByText('▪ overlay')
+
+    const input = document.createElement('input')
+    document.body.appendChild(input)
+    await act(async () => {
+      input.dispatchEvent(new KeyboardEvent('keydown', { key: 'a', metaKey: true, bubbles: true }))
+    })
+    expect(screen.getByLabelText('Preview axis').getAttribute('aria-pressed')).toBe('false')
+    input.remove()
+  })
+
+  it('bare A does nothing — the toggle is the chord, not the letter', async () => {
+    const adapter = makeFakeAdapter()
+    render(<VideoEditor project={makeVideoProject()} adapter={adapter} onProjectChange={vi.fn()} slots={{ exportActions: <div /> }} />)
+    await screen.findByText('▪ overlay')
+
+    await act(async () => {
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'a' }))
+    })
+    expect(screen.getByLabelText('Preview axis').getAttribute('aria-pressed')).toBe('false')
+  })
+
+  it('offers the toggle in the command palette, labelled by what it will do', async () => {
+    const adapter = makeFakeAdapter()
+    render(<VideoEditor project={makeVideoProject()} adapter={adapter} onProjectChange={vi.fn()} slots={{ exportActions: <div /> }} />)
+    await screen.findByText('▪ overlay')
+
+    await act(async () => {
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'k', metaKey: true }))
+    })
+    fireEvent.click(await screen.findByText('Preview axis: turn on'))
+    expect(screen.getByLabelText('Preview axis').getAttribute('aria-pressed')).toBe('true')
   })
 })

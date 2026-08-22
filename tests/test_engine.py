@@ -303,8 +303,89 @@ def test_validate_project_fails_missing_tracks(tmp_path):
         v.validate_project(path)
 
 
-def test_validate_project_tracks_must_be_list_of_lists(tmp_path):
+def test_validate_project_track_object_requires_an_items_array(tmp_path):
     data = {**VALID_PROJECT, "tracks": [{"id": "x"}]}
+    path = _write_project(tmp_path, "project.json", data)
+    with pytest.raises(SystemExit):
+        v.validate_project(path)
+
+
+# ── both track shapes ─────────────────────────────────────────────────────────
+
+def test_validate_project_accepts_object_shape_tracks(tmp_path):
+    data = {**VALID_PROJECT, "tracks": [
+        {"id": "trk-0", "items": [VALID_PRIMARY_CLIP]},
+        {"id": "trk-1", "items": [], "volume": 0.8, "muted": False, "enabled": True},
+    ]}
+    path = _write_project(tmp_path, "project.json", data)
+    assert v.validate_project(path)["valid"] is True
+
+
+def test_validate_project_still_accepts_legacy_list_of_lists(tmp_path):
+    data = {**VALID_PROJECT, "tracks": [[VALID_PRIMARY_CLIP], []]}
+    path = _write_project(tmp_path, "project.json", data)
+    assert v.validate_project(path)["valid"] is True
+
+
+def test_validate_project_accepts_the_two_shapes_mixed(tmp_path):
+    data = {**VALID_PROJECT, "tracks": [[VALID_PRIMARY_CLIP], {"id": "trk-1", "items": []}]}
+    path = _write_project(tmp_path, "project.json", data)
+    assert v.validate_project(path)["valid"] is True
+
+
+@pytest.mark.parametrize("track", ["nope", 7, None, True])
+def test_validate_project_rejects_a_track_that_is_neither_shape(tmp_path, track):
+    data = {**VALID_PROJECT, "tracks": [track]}
+    path = _write_project(tmp_path, "project.json", data)
+    with pytest.raises(SystemExit):
+        v.validate_project(path)
+
+
+def test_validate_project_track_object_items_must_be_a_list(tmp_path):
+    data = {**VALID_PROJECT, "tracks": [{"id": "trk-0", "items": {"a": 1}}]}
+    path = _write_project(tmp_path, "project.json", data)
+    with pytest.raises(SystemExit):
+        v.validate_project(path)
+
+
+@pytest.mark.parametrize("settings", [
+    {"id": 7},
+    {"volume": "loud"},
+    {"volume": True},
+    {"muted": "yes"},
+    {"enabled": 1},
+])
+def test_validate_project_rejects_bad_track_settings(tmp_path, settings):
+    track = {"id": "trk-0", "items": [], **settings}
+    data = {**VALID_PROJECT, "tracks": [track]}
+    path = _write_project(tmp_path, "project.json", data)
+    with pytest.raises(SystemExit):
+        v.validate_project(path)
+
+
+def test_validate_project_accepts_integer_volume(tmp_path):
+    data = {**VALID_PROJECT, "tracks": [{"id": "trk-0", "items": [], "volume": 1}]}
+    path = _write_project(tmp_path, "project.json", data)
+    assert v.validate_project(path)["valid"] is True
+
+
+def test_validate_project_overlap_still_fires_on_object_shape_overlay_track(tmp_path):
+    items = [
+        {"id": "v1", "type": "overlay", "src": "./a.jsx", "start": 0.0, "end": 3.0},
+        {"id": "v2", "type": "overlay", "src": "./b.jsx", "start": 2.0, "end": 5.0},
+    ]
+    data = {**VALID_PROJECT, "tracks": [
+        {"id": "trk-0", "items": []},
+        {"id": "trk-1", "items": items},
+    ]}
+    path = _write_project(tmp_path, "project.json", data)
+    with pytest.raises(SystemExit):
+        v.validate_project(path)
+
+
+def test_validate_project_source_crop_is_checked_on_object_shape(tmp_path):
+    clip = {**VALID_PRIMARY_CLIP, "sourceCrop": {"x": 0.0, "y": 0.0, "w": 2.0, "h": 1.0}}
+    data = {**VALID_PROJECT, "tracks": [{"id": "trk-0", "items": [clip]}]}
     path = _write_project(tmp_path, "project.json", data)
     with pytest.raises(SystemExit):
         v.validate_project(path)

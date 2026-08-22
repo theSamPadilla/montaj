@@ -41,6 +41,7 @@ import {
   hasLut3d,
 } from './encode-segment.js'
 import { resolveAt, RESOLVER_VERSION } from '@bycrux/timeline-core'
+import { enabledTrackItems, trackItems, withEnabledItemTracks } from './project-tracks.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const isMain = resolve(process.argv[1] ?? '') === fileURLToPath(import.meta.url)
@@ -554,7 +555,7 @@ export async function sampleFrame({
   // below all key off `resolveAt`'s per-item `window`/`geometry`. `containsTime`
   // (start <= atSeconds < end) is the same half-open predicate this file always
   // used — the LATER clip wins an exact boundary tie.
-  const scene = resolveAt(resolvedProject, atSeconds, { variant: 'render' })
+  const scene = resolveAt(withEnabledItemTracks(resolvedProject), atSeconds, { variant: 'render' })
 
   // Video and image items composite together, back-to-front by trackIdx (ties
   // keep document order) — this replaces the old video-group-then-image-group
@@ -915,7 +916,7 @@ function resolveVideoSource(src) {
 
 /** Resolve relative src paths to absolute, mirroring render.js::resolveProjectPaths. */
 function resolveProjectPaths(projectJson, projectDir) {
-  for (const track of projectJson.tracks ?? []) {
+  for (const track of trackItems(projectJson)) {
     for (const item of track ?? []) {
       if (item.src && !item.src.startsWith('/')) {
         item.src = resolve(projectDir, item.src)
@@ -931,7 +932,9 @@ function resolveProjectPaths(projectJson, projectDir) {
 
 /** Total project duration in seconds. */
 function getTotalDurationSeconds(projectJson) {
-  const allItems = (projectJson.tracks ?? []).flat()
+  // Enabled tracks only, matching render.js — a sampled frame must agree with
+  // the export about where the project ends.
+  const allItems = enabledTrackItems(projectJson).flat()
   if (allItems.length === 0) return 0
   return Math.max(...allItems.map(i => i.end ?? 0))
 }

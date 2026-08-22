@@ -531,6 +531,101 @@ describe('planTick', () => {
   })
 })
 
+describe('track audio folds into the source requests', () => {
+  // `project()` above builds the legacy array-of-arrays shape, which has
+  // nowhere to put track settings — these cases need the object shape.
+  function tracked(items: VisualItem[], track: { volume?: number; muted?: boolean } = {}): Project {
+    return {
+      id: 'p1',
+      status: 'draft',
+      settings: { resolution: [1080, 1920], fps: 30 },
+      tracks: [{ id: 'trk-0', items, ...track }],
+    } as Project
+  }
+
+  /** The retained request for `clipId` on the last tick. */
+  function requested(h: Harness, clipId: string): SourceRequest {
+    const found = h.host.lastRetain().find((r) => r.clipId === clipId)
+    if (!found) throw new Error(`no request for ${clipId}`)
+    return found
+  }
+
+  it('multiplies the track volume into the clip volume, keeping the mix between clips', () => {
+    // a and b are a 2:1 mix apart. Pulling the track down must move both by the
+    // same factor — replacing rather than multiplying would flatten them onto
+    // one level and throw away the per-clip work.
+    const h = harness(tracked([clip('a', 0, 2, { volume: 0.8 }), clip('b', 2, 4, { volume: 0.4 })], { volume: 0.5 }))
+    h.scheduler.play()
+    step(h, 1.5) // inside the prewarm lead, so both clips are retained at once
+
+    expect(requested(h, 'a').item.volume).toBeCloseTo(0.4, 10)
+    expect(requested(h, 'b').item.volume).toBeCloseTo(0.2, 10)
+  })
+
+  it('mutes every clip on a muted track, whatever their own volume', () => {
+    const h = harness(tracked([clip('a', 0, 2, { volume: 2 })], { muted: true }))
+    h.scheduler.play()
+    step(h, 1)
+    expect(requested(h, 'a').item.muted).toBe(true)
+  })
+
+  it('keeps a muted clip muted on an unmuted track', () => {
+    const h = harness(tracked([clip('a', 0, 2, { muted: true })], { volume: 1 }))
+    h.scheduler.play()
+    step(h, 1)
+    expect(requested(h, 'a').item.muted).toBe(true)
+  })
+
+  it('passes the clip through untouched when the track carries no settings', () => {
+    const h = harness(tracked([clip('a', 0, 2, { volume: 0.8, muted: false })]))
+    h.scheduler.play()
+    step(h, 1)
+    expect(requested(h, 'a').item.volume).toBeCloseTo(0.8, 10)
+    expect(requested(h, 'a').item.muted).toBe(false)
+  })
+
+  it('defaults to unity for a clip and track that set nothing', () => {
+    const h = harness(tracked([clip('a', 0, 2)]))
+    h.scheduler.play()
+    step(h, 1)
+    expect(requested(h, 'a').item.volume).toBe(1)
+    expect(requested(h, 'a').item.muted).toBe(false)
+  })
+
+  it('DERIVES the request item — the project\'s own clip is never written to', () => {
+    // The accessors share item objects by reference all the way from
+    // project.json; `resolveProjectPaths` (renderer) and `_apply_project_edits`
+    // (server) both mutate them in place. Folding by assignment would corrupt
+    // the stored project with every tick and break nothing visible until export.
+    const item = clip('a', 0, 2, { volume: 0.8 })
+    const p = tracked([item], { volume: 0.5, muted: true })
+    const h = harness(p)
+    h.scheduler.play()
+    step(h, 1)
+
+    expect(requested(h, 'a').item).not.toBe(item)
+    expect(item.volume).toBe(0.8)
+    expect(item.muted).toBeUndefined()
+    // Everything the fold does not own rides along, or the host would rebuild
+    // the session against a clip with no trim and no src.
+    expect(requested(h, 'a').item).toMatchObject({ id: 'a', start: 0, inPoint: 0, outPoint: 2 })
+  })
+
+  it('re-folds after setProject, so a track edit reaches the next retain', () => {
+    const items = [clip('a', 0, 2, { volume: 0.8 })]
+    const h = harness(tracked(items, { volume: 0.5 }))
+    h.scheduler.play()
+    step(h, 1)
+    expect(requested(h, 'a').item.volume).toBeCloseTo(0.4, 10)
+
+    // Same clip object, new track settings — the only thing that changed is the
+    // track, so nothing but the fold can carry it through.
+    h.scheduler.setProject(tracked(items, { volume: 0.25, muted: true }))
+    expect(requested(h, 'a').item.volume).toBeCloseTo(0.2, 10)
+    expect(requested(h, 'a').item.muted).toBe(true)
+  })
+})
+
 // ── Transitions ─────────────────────────────────────────────────────────────
 
 describe('transition: play into a gap and out the other side', () => {

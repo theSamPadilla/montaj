@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import type { Project, OverlayElement, GlobalOverlay, EditorAdapter } from '../types'
+import { Loader } from '../ui/Loader'
 
 // TODO (v2): live thumbnail rendering for each overlay card
 // TODO (v2): respect overlay staticFrame when rendering thumbnails — requires API extension
@@ -111,7 +112,9 @@ export default function OverlayPicker({ open, onClose, project, adapter, onPick 
 
         <div className="flex-1 overflow-y-auto p-4">
           {loading && (
-            <div className="text-center text-[var(--editor-text)]/60 text-sm py-8">Loading overlays…</div>
+            <div className="flex justify-center py-8">
+              <Loader size="md" label="Loading overlays" />
+            </div>
           )}
           {error && (
             <div className="text-center text-red-400 text-sm py-8">{error}</div>

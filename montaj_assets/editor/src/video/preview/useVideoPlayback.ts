@@ -11,7 +11,8 @@ import {
   resumeAudioContextFromGesture,
   type MontajWindow,
 } from './audio-context'
-import type { EditorProject as Project } from '../../schema'
+import type { EditorProject as Project, VisualItem, VisualTrack } from '../../schema'
+import { effectiveItemAudio, enabledTrackItems, enabledTracks, withEnabledItemTracks } from '../timeline/timeline-model'
 
 // Typed extension for video elements that cache their GainNode
 interface MontajVideoElement extends HTMLVideoElement {
@@ -89,6 +90,31 @@ export function effectiveOutPoint(clip: { inPoint?: number; outPoint?: number; n
   return sourceWindow(gateProxy(clip), 'preview').outPoint
 }
 
+/**
+ * The GainNode value for one clip on `track` — the ONLY place this hook turns
+ * audio settings into a number.
+ *
+ * Track settings fold into the clip's own via `effectiveItemAudio`: volume
+ * MULTIPLIES (a clip the editor already turned down stays proportionally
+ * quieter when its track is pulled down) and mute is either/or. `track` is
+ * `undefined` for a project with no tracks at all, and its `volume`/`muted` are
+ * absent on every track nobody has touched — both reduce to the clip's own
+ * values, which is what every project got before track settings existed.
+ *
+ * The four gain-setting sites below all route through this rather than reading
+ * `clip.muted`/`clip.volume` themselves. Folding by writing the effective
+ * values ONTO the clip is not an option: `clips` holds the project's own item
+ * objects by reference (see `enabledTrackItems`), and the renderer and the
+ * server both mutate those in place.
+ */
+export function clipGain(
+  track: Pick<VisualTrack, 'volume' | 'muted'> | undefined,
+  clip: Pick<VisualItem, 'volume' | 'muted'>,
+): number {
+  const { volume, muted } = effectiveItemAudio(track, clip)
+  return muted ? 0 : volume
+}
+
 export function useVideoPlayback(
   project: Project,
   currentTime: number,
@@ -148,9 +174,16 @@ export function useVideoPlayback(
   // ── Video timeline ─────────────────────────────────────────────────────────
   // Only video items drive the double-buffer player; non-video items (images, etc.)
   // in tracks[0] are exposed separately for the preview to render as a background layer.
-  const clips           = useMemo(() => (project.tracks?.[0] ?? []).filter(c => c.type === 'video').sort((a, b) => a.start - b.start), [project])
-  const tracks0NonVideo = useMemo(() => (project.tracks?.[0] ?? []).filter(c => c.type !== 'video'), [project])
-  const overlayTracks   = useMemo(() => project.tracks?.slice(1) ?? [], [project])
+  const clips           = useMemo(() => (enabledTrackItems(project)[0] ?? []).filter(c => c.type === 'video').sort((a, b) => a.start - b.start), [project])
+  const tracks0NonVideo = useMemo(() => (enabledTrackItems(project)[0] ?? []).filter(c => c.type !== 'video'), [project])
+  const overlayTracks   = useMemo(() => enabledTrackItems(project).slice(1), [project])
+
+  // The track `clips` came out of, kept alongside them because its own
+  // volume/mute fold into every clip on it (see `clipGain`).
+  // `enabledTrackItems(project)[0]` hands back items and drops the track object
+  // that carries those settings; `enabledTracks` is the same filter in the same
+  // order, so `[0]` here is `[0]` there by construction.
+  const videoTrack      = useMemo(() => enabledTracks(project)[0], [project])
 
   // Canvas project: no primary video in tracks[0] (e.g. image-only background track)
   const isCanvasProject = clips.length === 0
@@ -166,7 +199,7 @@ export function useVideoPlayback(
   // (`canvasMaxEndRef`, which excludes audio) — the two ends are legitimately
   // different formulas (see `durations.js`'s module header) and only this one
   // has a shared home.
-  const projectEnd = useMemo(() => timelineProjectEnd(project), [project])
+  const projectEnd = useMemo(() => timelineProjectEnd(withEnabledItemTracks(project)), [project])
 
   // Wire a video slot through a Web Audio GainNode (once per element — createMediaElementSource
   // can only be called once). After this, video.volume/muted have no audible effect; all volume
@@ -248,22 +281,25 @@ export function useVideoPlayback(
   }
 
   // Set video clip volume via GainNode (supports amplification > 1.0). Muted clips
-  // get gain 0; unmuted clips get the clip's volume value. No-op until the slot is
+  // — or clips on a muted track — get gain 0; the rest get the clip's volume
+  // scaled by its track's (`clipGain`). No-op until the slot is
   // wired (first play) — there's no audio to control on a paused poster, and
   // wiring here would gate the poster frame on the suspended context.
   function applyClipVolume(clip: { muted?: boolean; volume?: number }) {
     const slot = activeSlotRef.current
     const gain = getVideoGain(slot)
-    if (gain) gain.gain.value = clip.muted ? 0 : (clip.volume ?? 1)
+    if (gain) gain.gain.value = clipGain(videoTrack, clip)
   }
 
-  // Apply video clip volume via Web Audio GainNode (supports > 1.0 amplification)
+  // Apply video clip volume via Web Audio GainNode (supports > 1.0 amplification).
+  // `videoTrack` is a dep in its own right: pulling the TRACK's fader while the
+  // clips themselves are untouched has to reach the live gain node too.
   useEffect(() => {
     const idx = activeIdxRef.current
     const clip = clips[idx]
     if (!clip) return
     applyClipVolume(clip)
-  }, [clips, activeSlot])
+  }, [clips, videoTrack, activeSlot])
 
   // maxEnd for the canvas rAF clock — the furthest overlay/caption end. Kept in
   // a ref, updated by its own cheap effect, so the rAF effect below doesn't tear
@@ -568,7 +604,7 @@ export function useVideoPlayback(
       const src = fileUrlRef.current(playbackSrcFor(nc))
       if (preloadSrcRef.current !== src) { nv.src = src; nv.currentTime = effectiveInPoint(nc) }
       const gain = ensureVideoGain(ns)
-      if (gain) gain.gain.value = nc.muted ? 0 : (nc.volume ?? 1)
+      if (gain) gain.gain.value = clipGain(videoTrack, nc)
       playSoon(nv)
     }
     void (activeSlotRef.current === 0 ? video0Ref.current : video1Ref.current)?.pause()
@@ -576,7 +612,7 @@ export function useVideoPlayback(
     setActiveSlot(ns)
     setShowVideo(true)
     preloadSrcRef.current = ''
-  }, [clips, onTimeUpdate])
+  }, [clips, videoTrack, onTimeUpdate])
 
   // Scrub: seek active slot when currentTime jumps externally
   useEffect(() => {
@@ -686,7 +722,7 @@ export function useVideoPlayback(
         inactiveVideo.currentTime = effectiveInPoint(clips[nextIdx])
         const inactiveSlot = (1 - slot) as 0 | 1
         const nextGain = ensureVideoGain(inactiveSlot)
-        if (nextGain) nextGain.gain.value = clips[nextIdx].muted ? 0 : (clips[nextIdx].volume ?? 1)
+        if (nextGain) nextGain.gain.value = clipGain(videoTrack, clips[nextIdx])
       }
     }
 
@@ -741,7 +777,7 @@ export function useVideoPlayback(
               nextVideo.currentTime = effectiveInPoint(next)
             }
             const nextGain = ensureVideoGain(nextSlot)
-            if (nextGain) nextGain.gain.value = next.muted ? 0 : (next.volume ?? 1)
+            if (nextGain) nextGain.gain.value = clipGain(videoTrack, next)
             playSoon(nextVideo)
           }
 
@@ -787,7 +823,7 @@ export function useVideoPlayback(
 
     lastTimeRef.current = t
     onTimeUpdate(t)
-  }, [clips, onTimeUpdate])
+  }, [clips, videoTrack, onTimeUpdate])
 
   /**
    * SP3 fix B2 — decode-failure fallback. Wired to both <video> slots'

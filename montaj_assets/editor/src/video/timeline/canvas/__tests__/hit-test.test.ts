@@ -3,14 +3,14 @@
  * SP5 T5 — hit-testing. Pure arithmetic over the painter's own layout, so the
  * whole surface is covered here without a canvas or a browser.
  *
- * The fixture is laid out so every coordinate in the assertions is legible:
- * 100px per second and no scroll, which makes x exactly `t * 100`.
+ * The fixture runs at 100px per second with no scroll, so x is exactly
+ * `t * 100`. The Y of each row is taken from the layout rather than written
+ * out — the rows are tall enough now to hold a filmstrip over a waveform, and
+ * hardcoded Y's would aim these probes at the gaps between them.
  *
- *   row y   0– 40   track 1 (overlays) — o0 spans x 200–400
- *   gap     40– 44
- *   row y  44–100   track 0 (base, taller) — c0 x 0–500, c1 x 500–1000
- *   gap    100–104
- *   lane  104–144   audio a0 x 100–600, bar inset to y 108–140
+ *   row  track 1 (overlays) — o0 spans x 200–400
+ *   row  track 0 (base, taller) — c0 x 0–500, c1 x 500–1000
+ *   lane audio a0 x 100–600, the bar inset inside the lane
  */
 import { describe, it, expect } from 'vitest'
 import type { Project } from '../../../../types'
@@ -24,6 +24,12 @@ import {
   isItemHit,
 } from '../hit-test'
 import type { Viewport } from '../viewport'
+import {
+  AUDIO_LANE_HEIGHT_PX,
+  BASE_VISUAL_ROW_RENDER_HEIGHT_PX,
+  ROW_GAP_PX,
+  VISUAL_ROW_RENDER_HEIGHT_PX,
+} from '../../timeline-model'
 
 const VIEWPORT: Viewport = { pxPerSecond: 100, scrollSeconds: 0, widthPx: 1000 }
 
@@ -41,20 +47,36 @@ const project = {
 
 const layout = computeTimelineLayout(project)
 
+const overlayRow = layout.rows.find(r => r.trackIdx === 1)!
+const baseRow = layout.rows.find(r => r.trackIdx === 0)!
+const lane0 = layout.lanes[0]
+
+const OVERLAY_Y = Math.round(overlayRow.y + overlayRow.height / 2)
+const BASE_Y = Math.round(baseRow.y + baseRow.height / 2)
+const LANE_Y = Math.round(lane0.y + lane0.height / 2)
+/** Inside the gap between two rows. */
+const ROW_GAP_Y = overlayRow.y + overlayRow.height + 1
+/** Inside the lane but above/below the inset audio bar. */
+const LANE_ABOVE_BAR_Y = lane0.y + 1
+const LANE_BELOW_BAR_Y = lane0.y + lane0.height - 2
+
 function at(x: number, y: number) {
   return hitTest({ x, y }, layout, VIEWPORT)
 }
 
 describe('hitTest — geometry sanity', () => {
   it('the fixture lays out where the assertions below assume', () => {
-    expect(layout.rows.map(r => [r.trackIdx, r.y, r.height])).toEqual([[1, 0, 40], [0, 44, 56]])
-    expect(layout.lanes.map(l => [l.laneIndex, l.y, l.height])).toEqual([[0, 104, 40]])
+    expect(layout.rows.map(r => [r.trackIdx, r.y, r.height])).toEqual([
+      [1, 0, VISUAL_ROW_RENDER_HEIGHT_PX],
+      [0, VISUAL_ROW_RENDER_HEIGHT_PX + ROW_GAP_PX, BASE_VISUAL_ROW_RENDER_HEIGHT_PX],
+    ])
+    expect(layout.lanes.map(l => [l.laneIndex, l.y, l.height])).toEqual([[baseRow.y + baseRow.height + ROW_GAP_PX, AUDIO_LANE_HEIGHT_PX]].map(([y, h]) => [0, y, h]))
   })
 })
 
 describe('hitTest — visual items', () => {
   it('finds a clip body and reports its track', () => {
-    const hit = at(250, 60)
+    const hit = at(250, BASE_Y)
     expect(hit.kind).toBe('item-body')
     expect(hit.itemId).toBe('c0')
     expect(hit.trackIdx).toBe(0)
@@ -63,20 +85,20 @@ describe('hitTest — visual items', () => {
   })
 
   it('finds the in and out trim handles', () => {
-    expect(at(5, 60)).toMatchObject({ kind: 'item-edge', itemId: 'c0', edge: 'in' })
-    expect(at(495, 60)).toMatchObject({ kind: 'item-edge', itemId: 'c0', edge: 'out' })
+    expect(at(5, BASE_Y)).toMatchObject({ kind: 'item-edge', itemId: 'c0', edge: 'in' })
+    expect(at(495, BASE_Y)).toMatchObject({ kind: 'item-edge', itemId: 'c0', edge: 'out' })
   })
 
   it('honours the handle width exactly at its boundaries', () => {
     // The handles are 10px wide and sit inside the clip: 0–10 and 490–500.
-    expect(at(10, 60).edge).toBe('in')
-    expect(at(10.5, 60).kind).toBe('item-body')
-    expect(at(490, 60).edge).toBe('out')
-    expect(at(489.5, 60).kind).toBe('item-body')
+    expect(at(10, BASE_Y).edge).toBe('in')
+    expect(at(10.5, BASE_Y).kind).toBe('item-body')
+    expect(at(490, BASE_Y).edge).toBe('out')
+    expect(at(489.5, BASE_Y).kind).toBe('item-body')
   })
 
   it('takes the tolerance from options when given', () => {
-    const hit = hitTest({ x: 30, y: 60 }, layout, VIEWPORT, { visualEdgeTolerancePx: 40 })
+    const hit = hitTest({ x: 30, y: BASE_Y }, layout, VIEWPORT, { visualEdgeTolerancePx: 40 })
     expect(hit).toMatchObject({ kind: 'item-edge', edge: 'in' })
     expect(VISUAL_EDGE_TOLERANCE_PX).toBe(10)
   })
@@ -95,45 +117,45 @@ describe('hitTest — visual items', () => {
   it('resolves a shared boundary to the clip painted on top', () => {
     // c0 ends and c1 starts at t=5 → x=500. The later item in the array wins,
     // and the point lands in its in-handle.
-    expect(at(500, 60)).toMatchObject({ kind: 'item-edge', itemId: 'c1', edge: 'in' })
+    expect(at(500, BASE_Y)).toMatchObject({ kind: 'item-edge', itemId: 'c1', edge: 'in' })
   })
 
   it('finds an overlay on the row above the base track', () => {
-    expect(at(300, 20)).toMatchObject({ kind: 'item-body', itemId: 'o0', trackIdx: 1 })
+    expect(at(300, OVERLAY_Y)).toMatchObject({ kind: 'item-body', itemId: 'o0', trackIdx: 1 })
   })
 
   it('reports empty track area with the row it belongs to', () => {
-    expect(at(700, 20)).toMatchObject({ kind: 'empty-row', trackIdx: 1 })
+    expect(at(700, OVERLAY_Y)).toMatchObject({ kind: 'empty-row', trackIdx: 1 })
   })
 })
 
 describe('hitTest — audio lanes', () => {
   it('finds a bar body and its lane', () => {
-    expect(at(300, 120)).toMatchObject({ kind: 'audio-body', itemId: 'a0', laneIdx: 0 })
-    expect(at(300, 120).track?.id).toBe('a0')
+    expect(at(300, LANE_Y)).toMatchObject({ kind: 'audio-body', itemId: 'a0', laneIdx: 0 })
+    expect(at(300, LANE_Y).track?.id).toBe('a0')
   })
 
   it('finds the bar trim handles at the narrower audio tolerance', () => {
     expect(AUDIO_EDGE_TOLERANCE_PX).toBe(6)
-    expect(at(103, 120)).toMatchObject({ kind: 'audio-edge', edge: 'in' })
-    expect(at(597, 120)).toMatchObject({ kind: 'audio-edge', edge: 'out' })
+    expect(at(103, LANE_Y)).toMatchObject({ kind: 'audio-edge', edge: 'in' })
+    expect(at(597, LANE_Y)).toMatchObject({ kind: 'audio-edge', edge: 'out' })
     // 8px in from the start is past the 6px handle — that's bar body.
-    expect(at(108, 120).kind).toBe('audio-body')
+    expect(at(108, LANE_Y).kind).toBe('audio-body')
   })
 
   it('treats the lane inset above and below the bar as lane background', () => {
-    expect(at(300, 105).kind).toBe('empty-lane')
-    expect(at(300, 142).kind).toBe('empty-lane')
+    expect(at(300, LANE_ABOVE_BAR_Y).kind).toBe('empty-lane')
+    expect(at(300, LANE_BELOW_BAR_Y).kind).toBe('empty-lane')
   })
 
   it('reports empty lane area', () => {
-    expect(at(800, 120)).toMatchObject({ kind: 'empty-lane', laneIdx: 0 })
+    expect(at(800, LANE_Y)).toMatchObject({ kind: 'empty-lane', laneIdx: 0 })
   })
 })
 
 describe('hitTest — outside the rows', () => {
   it('treats the gap between rows as background', () => {
-    expect(at(300, 42).kind).toBe('background')
+    expect(at(300, ROW_GAP_Y).kind).toBe('background')
   })
 
   it('treats anything below the last lane as background', () => {
@@ -145,16 +167,16 @@ describe('hitTest — outside the rows', () => {
   })
 
   it('still reports a time for points off either end of the surface', () => {
-    expect(at(-50, 60)).toMatchObject({ kind: 'empty-row', t: -0.5 })
-    expect(at(5000, 60)).toMatchObject({ kind: 'empty-row', t: 50 })
+    expect(at(-50, BASE_Y)).toMatchObject({ kind: 'empty-row', t: -0.5 })
+    expect(at(5000, BASE_Y)).toMatchObject({ kind: 'empty-row', t: 50 })
   })
 })
 
 describe('hitTest — time', () => {
   it('always reports the time under x, whatever was hit', () => {
-    expect(at(250, 60).t).toBeCloseTo(2.5)
-    expect(at(250, 42).t).toBeCloseTo(2.5)
-    expect(at(250, 120).t).toBeCloseTo(2.5)
+    expect(at(250, BASE_Y).t).toBeCloseTo(2.5)
+    expect(at(250, ROW_GAP_Y).t).toBeCloseTo(2.5)
+    expect(at(250, LANE_Y).t).toBeCloseTo(2.5)
   })
 
   it('accounts for scroll', () => {
@@ -165,15 +187,15 @@ describe('hitTest — time', () => {
 
 describe('hitTest — predicates', () => {
   it('classifies each kind', () => {
-    expect(isEdgeHit(at(5, 60))).toBe(true)
-    expect(isEdgeHit(at(250, 60))).toBe(false)
-    expect(isItemHit(at(250, 60))).toBe(true)
-    expect(isItemHit(at(300, 120))).toBe(true)
-    expect(isItemHit(at(700, 20))).toBe(false)
-    expect(isEmptyHit(at(700, 20))).toBe(true)
-    expect(isEmptyHit(at(300, 42))).toBe(true)
-    expect(isEmptyHit(at(800, 120))).toBe(true)
-    expect(isEmptyHit(at(250, 60))).toBe(false)
+    expect(isEdgeHit(at(5, BASE_Y))).toBe(true)
+    expect(isEdgeHit(at(250, BASE_Y))).toBe(false)
+    expect(isItemHit(at(250, BASE_Y))).toBe(true)
+    expect(isItemHit(at(300, LANE_Y))).toBe(true)
+    expect(isItemHit(at(700, OVERLAY_Y))).toBe(false)
+    expect(isEmptyHit(at(700, OVERLAY_Y))).toBe(true)
+    expect(isEmptyHit(at(300, ROW_GAP_Y))).toBe(true)
+    expect(isEmptyHit(at(800, LANE_Y))).toBe(true)
+    expect(isEmptyHit(at(250, BASE_Y))).toBe(false)
   })
 })
 

@@ -52,19 +52,20 @@ describe('Timeline — T9 keymap (arrows / delete / enter / escape)', () => {
     expect(clock.get()).toBe(0)
   })
 
-  it('Enter places a marker at the playhead, Escape clears it', () => {
+  // Enter and Escape used to place and clear the A/B range markers. That
+  // feature is gone, so the timeline binds neither: pressing them with the
+  // timeline focused must not move the playhead or touch the project.
+  it('Enter and Escape are not bound', () => {
     const clock = createPlaybackClock(2)
-    const { container } = render(<Timeline project={makeProject()} clock={clock} />)
+    const onProjectChange = vi.fn()
+    const { container } = render(
+      <Timeline project={makeProject()} clock={clock} onProjectChange={onProjectChange} />,
+    )
     focusTimelineRoot(container)
     fireEvent.keyDown(document.body, { key: 'Enter' })
-    // Marker placed — a second Enter should place the SECOND marker, not
-    // reset (the original three-way branch): press again at a new time.
-    act(() => { clock.set(3) })
-    fireEvent.keyDown(document.body, { key: 'Enter' })
-    // Escape clears both.
     fireEvent.keyDown(document.body, { key: 'Escape' })
-    // No direct DOM assertion needed beyond "doesn't throw" — marker state is
-    // internal; `actionsRef` (below) is the externally observable surface.
+    expect(clock.get()).toBe(2)
+    expect(onProjectChange).not.toHaveBeenCalled()
   })
 
   it('Delete/Backspace two-step delete: fires only with a selection, commits via onProjectChange + onOverlayEdit + clears selection', () => {
@@ -88,7 +89,7 @@ describe('Timeline — T9 keymap (arrows / delete / enter / escape)', () => {
     expect(onOverlayEdit).toHaveBeenCalledTimes(1)
     expect(onSelectIds).toHaveBeenCalledWith([])
     const updated = onProjectChange.mock.calls[0][0] as Project
-    expect(updated.tracks?.[0]?.find((i) => i.id === 'clip-0')).toBeUndefined()
+    expect(updated.tracks?.[0]?.items.find((i) => i.id === 'clip-0')).toBeUndefined()
   })
 
   it('Delete does NOT delete the selection when focus is outside the timeline (restored pre-SP5 scoping)', () => {
@@ -128,15 +129,13 @@ describe('Timeline — T9 keymap (arrows / delete / enter / escape)', () => {
     expect(onProjectChange).not.toHaveBeenCalled()
   })
 
-  it('exposes clearMarkers/setMarkerAtPlayhead/zoomFit through actionsRef for a host-level palette', () => {
+  it('exposes zoomFit through actionsRef for a host-level palette', () => {
     const clock = createPlaybackClock(1)
     const actionsRef: { current: TimelineActions | null } = { current: null }
     render(<Timeline project={makeProject()} clock={clock} actionsRef={actionsRef} />)
     expect(actionsRef.current).not.toBeNull()
-    act(() => { actionsRef.current!.setMarkerAtPlayhead() })
-    act(() => { actionsRef.current!.clearMarkers() })
     act(() => { actionsRef.current!.zoomFit() })
-    // Smoke test: none of these throw, and the ref stays populated.
+    // Smoke test: it doesn't throw, and the ref stays populated.
     expect(actionsRef.current).not.toBeNull()
   })
 })

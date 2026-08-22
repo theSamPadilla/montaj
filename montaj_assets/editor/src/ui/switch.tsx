@@ -5,13 +5,18 @@ interface SwitchProps {
   onCheckedChange: (v: boolean) => void
   className?: string
   disabled?: boolean
+  /** Passed straight through to the underlying button — this component has no
+   *  visible text of its own, so a caller placing the switch beside a text
+   *  label (rather than wrapping it in one) needs this for an accessible name. */
+  'aria-label'?: string
 }
 
-export function Switch({ checked, onCheckedChange, className, disabled }: SwitchProps) {
+export function Switch({ checked, onCheckedChange, className, disabled, 'aria-label': ariaLabel }: SwitchProps) {
   return (
     <button
       role="switch"
       aria-checked={checked}
+      aria-label={ariaLabel}
       disabled={disabled}
       onClick={() => onCheckedChange(!checked)}
       className={cn(

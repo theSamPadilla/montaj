@@ -162,7 +162,7 @@ If in doubt, **ask your human**.
   "version": "0.2", "id": "<uuid>", "status": "pending",
   "workflow": "overlays", "editingPrompt": "...",
   "settings": {"resolution": [1080, 1920], "fps": 30},
-  "tracks": [[{"id": "clip-0", "type": "video", "src": "/abs/path/clip.mp4", "start": 0.0, "end": 0.0}]],
+  "tracks": [{"id": "trk-0", "items": [{"id": "clip-0", "type": "video", "src": "/abs/path/clip.mp4", "start": 0.0, "end": 0.0}]}],
   "assets": [], "audio": {}
 }
 ```
@@ -170,9 +170,9 @@ If in doubt, **ask your human**.
 **Assets** — image files (logos, watermarks). Each has `id`, absolute `src`, `type: "image"`, optional `name`. Pass at creation: `--assets logo.png` (CLI) or `"assets": ["/path/logo.png"]` (HTTP `/api/run`).
 
 **Update as you work:**
-- After trim/clean: update `tracks[0]` clip `src`; set `inPoint`/`outPoint` and `start`/`end` (seconds)
+- After trim/clean: update `tracks[0].items` clip `src`; set `inPoint`/`outPoint` and `start`/`end` (seconds)
 - After transcribe + caption: set top-level `captions: { "style": "word-by-word", "segments": [...] }` — do NOT store a file pointer
-- After overlays/images/video: populate `tracks[1+]` — array of arrays; items have `type: "overlay"` (JSX), `type: "image"` (static image), or `type: "video"` (video clip with optional `remove_bg: true`)
+- After overlays/images/video: populate `tracks[1+]` — each track is an object (`{id, items, ...}`); its `items` array holds `type: "overlay"` (JSX), `type: "image"` (static image), or `type: "video"` (video clip with optional `remove_bg: true`)
 - After all steps: set `status: "draft"`
 - **Saving is always GET-fresh → merge your delta → save** — the user can edit the project from the UI while the server is running, and a stale save silently overwrites their work (Montaj only auto-commits to git on status transitions, so mid-status edits have no recovery path). The `native` skill defines how the save resolves per mode (PUT in HTTP, file write in CLI) and carries the full discipline.
 

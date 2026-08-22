@@ -55,33 +55,36 @@ See `/write-overlay` for the JSX authoring reference (globals, `interpolate`, `s
 
 ### 3. Place items in tracks
 
-**`tracks[0]` is always `[]` for animation projects.** The schema enforces that `tracks[0]` items must be `type: "video"` (primary footage). Animation projects have no footage, so `tracks[0]` stays empty.
+**`tracks[0].items` is always `[]` for animation projects.** The schema enforces that `tracks[0]`'s items must be `type: "video"` (primary footage). Animation projects have no footage, so `tracks[0]`'s items stay empty.
 
 Use `tracks[1]` for the primary visual layer — opaque backgrounds and section slides:
 
 ```json
 {
   "tracks": [
-    [],
-    [
-      {
-        "id": "title-card",
-        "type": "overlay",
-        "src": "/abs/path/to/project/overlays/title-card.jsx",
-        "start": 0.0,
-        "end": 3.0,
-        "opaque": true
-      },
-      {
-        "id": "stat-card",
-        "type": "overlay",
-        "src": "/abs/path/to/project/overlays/stat-card.jsx",
-        "start": 5.0,
-        "end": 9.0,
-        "opaque": true,
-        "props": { "value": "33M", "label": "monthly views" }
-      }
-    ]
+    { "id": "trk-0", "items": [] },
+    {
+      "id": "trk-1",
+      "items": [
+        {
+          "id": "title-card",
+          "type": "overlay",
+          "src": "/abs/path/to/project/overlays/title-card.jsx",
+          "start": 0.0,
+          "end": 3.0,
+          "opaque": true
+        },
+        {
+          "id": "stat-card",
+          "type": "overlay",
+          "src": "/abs/path/to/project/overlays/stat-card.jsx",
+          "start": 5.0,
+          "end": 9.0,
+          "opaque": true,
+          "props": { "value": "33M", "label": "monthly views" }
+        }
+      ]
+    }
   ]
 }
 ```

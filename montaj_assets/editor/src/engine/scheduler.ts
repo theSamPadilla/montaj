@@ -80,9 +80,10 @@ import {
   sourceWindow,
 } from '@bycrux/timeline-core'
 import type { Scene, SourceWindow } from '@bycrux/timeline-core'
-import type { EditorProject as Project, VisualItem } from '../schema'
+import type { EditorProject as Project, VisualItem, VisualTrack } from '../schema'
 import type { ClipTimebase, MasterClock } from './audio-clock'
 import type { FrameServer } from './frame-server'
+import { effectiveItemAudio, enabledTrackItems, enabledTracks, withEnabledItemTracks } from '../video/timeline/timeline-model'
 
 // ── Tuning constants ────────────────────────────────────────────────────────
 
@@ -403,14 +404,51 @@ export interface TickPlan {
 
 /**
  * Track-0 video items, filtered and start-sorted — the legacy hook's `clips`
- * memo verbatim (`(project.tracks?.[0] ?? []).filter(c => c.type === 'video')
+ * memo verbatim (`(trackItems(project)[0] ?? []).filter(c => c.type === 'video')
  * .sort((a, b) => a.start - b.start)`).
  */
 export function track0VideoItems(project: Project): VisualItem[] {
-  return (project.tracks?.[0] ?? [])
+  // Enabled tracks only — this feeds playback, so a skipped base track yields
+  // no clips and the preview falls through to its no-primary-video path.
+  return (enabledTrackItems(project)[0] ?? [])
     .filter((c) => c.type === 'video')
     .slice()
     .sort((a, b) => a.start - b.start)
+}
+
+/**
+ * The track `track0VideoItems` drew its clips from — the object that carries
+ * the `volume`/`muted` those clips inherit. `undefined` when the project has no
+ * enabled tracks at all, which folds to the clip's own settings.
+ *
+ * `enabledTracks` applies `enabledTrackItems`' same skip test and preserves
+ * the same positions, so `[0]` here is the track `[0]` there came out of.
+ */
+export function track0Track(project: Project): VisualTrack | undefined {
+  return enabledTracks(project)[0]
+}
+
+/**
+ * One clip as the HOST should see it: its own audio settings with its track's
+ * already folded in (`effectiveItemAudio` — volume multiplies, mute is
+ * either/or).
+ *
+ * A DERIVED object, never a write to the item. `SourceRequest` is built fresh
+ * per source every tick and nothing downstream reads `item` by identity (the
+ * host compares `start`, the source window's `inPoint`, `muted` and `volume`
+ * by value), so a spread is safe here — whereas assigning onto the item would
+ * hit the project's own object, which the renderer's `resolveProjectPaths` and
+ * the server's `_apply_project_edits` both mutate in place.
+ *
+ * Folding HERE, before the request exists, is what makes a TRACK mute behave
+ * exactly like a clip mute downstream: `retain`'s drop test reads
+ * `want.item.muted`, so the session respawns onto a wall clock the same way,
+ * and a track VOLUME change goes down the same live `setVolume` path a clip
+ * volume change does. Neither branch had to learn about tracks.
+ */
+function withTrackAudio(track: VisualTrack | undefined, item: VisualItem): VisualItem {
+  const { volume, muted } = effectiveItemAudio(track, item)
+  return { ...item, volume, muted }
 }
 
 /**
@@ -432,8 +470,8 @@ export function track0VideoItems(project: Project): VisualItem[] {
  */
 export function transportEndFor(project: Project): number {
   const clips = track0VideoItems(project)
-  if (clips.length > 0) return timelineProjectEnd(project)
-  const overlayEnd = (project.tracks?.slice(1) ?? [])
+  if (clips.length > 0) return timelineProjectEnd(withEnabledItemTracks(project))
+  const overlayEnd = enabledTrackItems(project).slice(1)
     .flat()
     .reduce((m, i) => Math.max(m, i?.end ?? 0), 0)
   const captionEnd = (project.captions?.segments ?? []).reduce(
@@ -479,7 +517,7 @@ export type SceneResolver = (project: Project, t: number) => Scene
 
 /** The production resolver: timeline-core's preview variant, no wrapper semantics. */
 export const previewResolver: SceneResolver = (project, t) =>
-  resolveAt(project, t, { variant: 'preview' })
+  resolveAt(withEnabledItemTracks(project), t, { variant: 'preview' })
 
 /**
  * What the timeline says at `t`. Pure: no clock, no host, no painter.
@@ -557,6 +595,12 @@ export type SourceState =
 /** What the scheduler asks the host to have ready. */
 export interface SourceRequest {
   clipId: string
+  /**
+   * The clip, with its track's volume/mute already folded into its own
+   * (`withTrackAudio`) — a derived object, not the project's item. The host
+   * reads `volume`/`muted` off it as the EFFECTIVE values and never needs to
+   * know a track was involved.
+   */
   item: VisualItem
   /** The resolved preview src — the host does not re-derive it. */
   src: string
@@ -712,6 +756,8 @@ class SchedulerImpl implements Scheduler {
   private lastLoopClip: ActiveClip | null = null
 
   private clips: VisualItem[]
+  /** The track `clips` came from — its `volume`/`muted` fold into each request. */
+  private clipsTrack: VisualTrack | undefined
   private transportEnd: number
   private applied: AppliedSnapshot | null = null
   private lastStatusKey = ''
@@ -727,6 +773,7 @@ class SchedulerImpl implements Scheduler {
     this.prewarmLeadS = deps.prewarmLeadS ?? PREWARM_LEAD_S
     this.painter = deps.painter ?? null
     this.clips = track0VideoItems(deps.project)
+    this.clipsTrack = track0Track(deps.project)
     this.transportEnd = transportEndFor(deps.project)
     this.clock = this.host.fallbackClock(deps.startProjectS ?? 0)
   }
@@ -809,6 +856,7 @@ class SchedulerImpl implements Scheduler {
     if (this.disposed) return
     this.project = project
     this.clips = track0VideoItems(project)
+    this.clipsTrack = track0Track(project)
     this.transportEnd = transportEndFor(project)
     // This is how a `preparing` clip resolves: the SSE that delivered
     // `proxySrc` produced a new project object, `retain` reports a different
@@ -1044,13 +1092,18 @@ class SchedulerImpl implements Scheduler {
    * Declare the live-session set: the active clip, plus the next one once its
    * boundary is inside the prewarm lead. Everything else the host disposes —
    * terminate-and-respawn stated as a set difference.
+   *
+   * Every request's `item` carries its TRACK's volume/mute already folded in
+   * (`withTrackAudio`). The plan's own items are untouched — only what crosses
+   * into the host is derived — so the picture side keeps reading the project's
+   * real objects.
    */
   private retainFor(plan: TickPlan, t: number): void {
     const requests: SourceRequest[] = []
     if (plan.active && plan.active.src) {
       requests.push({
         clipId: plan.active.clipId,
-        item: plan.active.item,
+        item: withTrackAudio(this.clipsTrack, plan.active.item),
         src: plan.active.src,
         anchorProjectS: t,
       })
@@ -1063,7 +1116,7 @@ class SchedulerImpl implements Scheduler {
       if (src) {
         requests.push({
           clipId: plan.next.clipId,
-          item: plan.next.item,
+          item: withTrackAudio(this.clipsTrack, plan.next.item),
           src,
           anchorProjectS: plan.next.start,
         })

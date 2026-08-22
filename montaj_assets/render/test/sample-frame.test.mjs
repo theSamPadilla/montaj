@@ -34,6 +34,7 @@ import { spawnSync } from 'node:child_process'
 
 import { sampleOverlay, sampleFrame, buildFrameCacheKey } from '../sample-frame.js'
 import { MASTER_LOOK } from '../look.js'
+import { normalizeTracks } from '../project-tracks.js'
 import { resolveAt } from '@bycrux/timeline-core'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
@@ -519,6 +520,102 @@ test('(h) sampleFrame: single video item produces a non-black frame', { timeout:
     assert.ok(
       centerPx.r > 150 && centerPx.g < 100 && centerPx.b < 100,
       `center pixel should be red-ish (clip-0), got R=${centerPx.r} G=${centerPx.g} B=${centerPx.b}`
+    )
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+// ---------------------------------------------------------------------------
+// (s) sampleFrame: object-shape tracks (VisualTrack[]) resolve, not throw
+// ---------------------------------------------------------------------------
+test('(s) sampleFrame: object-shape tracks produce a frame, not a throw', { timeout: 120_000 }, async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), 'montaj-sf-test-s-'))
+  try {
+    const fixture = makeSyntheticFixture(dir)
+    if (!fixture) { t.skip('ffmpeg synthetic source generation failed'); return }
+
+    // `makeSyntheticFixture` builds the legacy VisualItem[][] shape, like every
+    // other test in this file. `normalizeTracks` is the exact function
+    // `project/init.py`-created and PUT-normalized projects are converged
+    // through in production, so running the fixture through it here produces a
+    // real object-shape project, not a hand-rolled stand-in.
+    //
+    // This is the regression test for the bug where sampleFrame's `resolveAt`
+    // call took the raw project straight from disk: @bycrux/timeline-core's
+    // resolver reads `project.tracks` as bare item arrays, so an un-adapted
+    // object-shape project threw `TypeError: object is not iterable` deep
+    // inside the resolver. sample-frame.js now routes through
+    // `withEnabledItemTracks()` before calling `resolveAt` — this test would
+    // have failed before that fix.
+    const objectProject = normalizeTracks(fixture.project)
+    assert.ok(!Array.isArray(objectProject.tracks[0]), 'fixture sanity: tracks are objects here, not bare arrays')
+
+    const outPath = join(dir, 'frame.png')
+    const result = await sampleFrame({
+      projectJson: objectProject,
+      atSeconds: 1.5,
+      outPath,
+    })
+
+    assert.ok(existsSync(result.pngPath), 'PNG should exist')
+    const dims = pngDimensions(result.pngPath)
+    assert.ok(dims, 'should be readable PNG')
+
+    // Same scene as (h): at t=1.5 only clip-0 (red, 0-3s) is active. Asserting
+    // the actual pixel (not just "didn't throw") proves the object-shape
+    // project resolved the SAME scene the legacy-shape fixture does.
+    const centerPx = readPixelRgba(result.pngPath, dims.w >> 1, dims.h >> 1)
+    assert.ok(
+      centerPx.r > 150 && centerPx.g < 100 && centerPx.b < 100,
+      `center pixel should be red-ish (clip-0), got R=${centerPx.r} G=${centerPx.g} B=${centerPx.b}`
+    )
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+// ---------------------------------------------------------------------------
+// (t) sampleFrame: a skipped track's clip does not appear in the sampled frame
+// ---------------------------------------------------------------------------
+test('(t) sampleFrame: a skipped track\'s clip does not appear in the sampled frame', { timeout: 120_000 }, async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), 'montaj-sf-test-t-'))
+  try {
+    const fixture = makeSyntheticFixture(dir)
+    if (!fixture) { t.skip('ffmpeg synthetic source generation failed'); return }
+
+    // Same scene as (h)/(s), but track 0 — the red/blue video track — is
+    // skipped. This is the regression test for the sample-frame half of the
+    // A2 fix: the duration check used `enabledTrackItems` (enabled tracks
+    // only) while the `resolveAt` compositing call used the ALL-tracks
+    // `withItemTracks` adapter, so the two halves of this file disagreed
+    // about which tracks were "in" — a skipped track's clip kept compositing
+    // into the sampled frame even though the duration calc had already
+    // dropped it.
+    const project = {
+      ...fixture.project,
+      tracks: [
+        { id: 't0', items: fixture.project.tracks[0], enabled: false },
+        { id: 't1', items: fixture.project.tracks[1] },
+      ],
+    }
+
+    const outPath = join(dir, 'frame.png')
+    // t=0.5: ov-intro (track 1, 0-1s) is still active, so the timestamp stays
+    // within the enabled-tracks duration even though clip-0 (track 0, red) is
+    // skipped and must not composite.
+    const result = await sampleFrame({ projectJson: project, atSeconds: 0.5, outPath })
+
+    assert.ok(existsSync(result.pngPath), 'PNG should exist')
+    const dims = pngDimensions(result.pngPath)
+    assert.ok(dims, 'should be readable PNG')
+
+    // clip-0 is red. If the skipped track's clip still composited (the bug),
+    // the center pixel would be red-dominant, same as (h)/(s). It must not be.
+    const centerPx = readPixelRgba(result.pngPath, dims.w >> 1, dims.h >> 1)
+    assert.ok(
+      !(centerPx.r > 150 && centerPx.g < 100 && centerPx.b < 100),
+      `skipped track's clip-0 must not composite into the frame, got R=${centerPx.r} G=${centerPx.g} B=${centerPx.b}`
     )
   } finally {
     rmSync(dir, { recursive: true, force: true })

@@ -27,10 +27,10 @@ pending → storyboard_ready → draft → final
 
 | Transition | Writer | Precondition |
 |------------|--------|--------------|
-| `pending → storyboard_ready` | **you** (agent) | Phase 1 writes complete: imageRefs anchors+images filled, styleAnchor written, scenes[] populated. `tracks[0]` still `[]`. |
+| `pending → storyboard_ready` | **you** (agent) | Phase 1 writes complete: imageRefs anchors+images filled, styleAnchor written, scenes[] populated. `tracks[0].items` still `[]`. |
 | `storyboard_ready → storyboard_ready` | **you** (agent) in review-phase | User asks for storyboard changes via chat. Mutate `project.json`; status stays `storyboard_ready`. |
 | `(implicit, UI-driven)` | **UI** | User clicks Approve. UI writes `storyboard.approval = {approvedAt: <ISO8601>}`. Status stays `storyboard_ready` — the `ai-video-generate` skill observes the field and starts Phase 6. |
-| `storyboard_ready → draft` | **ai-video-generate** | Every `storyboard.scenes[i]` has a matching clip in `tracks[0]` (either `generation.sceneId === scene.id` OR a `batchShots[]` entry for it). |
+| `storyboard_ready → draft` | **ai-video-generate** | Every `storyboard.scenes[i]` has a matching clip in `tracks[0].items` (either `generation.sceneId === scene.id` OR a `batchShots[]` entry for it). |
 | `draft → final` | **human** (via UI) | Manual review. Out of scope for this skill. |
 
 ---
@@ -45,7 +45,7 @@ pending → storyboard_ready → draft → final
 - `project.storyboard.imageRefs[]` — pre-seeded from the upload form. Each entry has `{id, label, source, refImages, anchor?, status}`.
 - `project.storyboard.styleRefs[]` — pre-seeded. Each `{id, kind: "video"|"audio"|"image", path, label?}`.
 - `project.storyboard.scenes[]` — **empty at intake**. Your job in Phase 1 is to populate this.
-- `project.tracks[0]` — empty. Stays empty until Phase 6 generation.
+- `project.tracks[0].items` — empty. Stays empty until Phase 6 generation.
 
 ### Audio intake fields
 
@@ -235,7 +235,7 @@ Given `T = targetDurationSeconds` and `N = intended scene count`:
 
 ### Tracks + status
 
-- `tracks[0]` is STILL `[]`. Scenes are not put on `tracks[0]` during pending — that happens in Phase 6 after approval.
+- `tracks[0].items` is STILL `[]`. Scenes are not put on `tracks[0].items` during pending — that happens in Phase 6 after approval.
 - Set `status: "storyboard_ready"`.
 - **DO NOT** call `kling_generate` during this phase.
 
@@ -276,7 +276,7 @@ One table of every field you write, grouped by phase.
 | `project.storyboard.imageRefs[i].status` | pending | Flip to `"ready"` when anchor + refImages are both set. |
 | `project.storyboard.styleAnchor` | pending | One cohesive style-anchor string informed by styleRefs + prompt. |
 | `project.storyboard.scenes[i].*` | pending | Per-scene editorial plan `{id, prompt, duration, refImages}`. User may edit `.prompt` directly via the UI. |
-| `project.status` → `storyboard_ready` | end of Phase 1 | scenes[] populated, refs ready, styleAnchor written, `tracks[0]` still `[]`. |
+| `project.status` → `storyboard_ready` | end of Phase 1 | scenes[] populated, refs ready, styleAnchor written, `tracks[0].items` still `[]`. |
 
 ---
 

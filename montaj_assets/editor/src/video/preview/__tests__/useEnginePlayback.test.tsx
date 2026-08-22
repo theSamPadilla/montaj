@@ -169,7 +169,7 @@ function makeProject(overrides: Partial<Project> = {}): Project {
     id: 'engine-project',
     status: 'draft',
     settings: { resolution: [1080, 1920], fps: 30 },
-    tracks: [[{ id: 'c0', type: 'video', src: 'a.mp4', proxySrc: 'a_proxy.mp4', start: 0, end: 10 }]],
+    tracks: [{ id: 'trk-0', items: [{ id: 'c0', type: 'video', src: 'a.mp4', proxySrc: 'a_proxy.mp4', start: 0, end: 10 }] }],
     ...overrides,
   } as Project
 }
@@ -286,7 +286,7 @@ describe('useEnginePlayback engine lifecycle', () => {
     // The project the engine was constructed with is already applied.
     expect(engine.updates).toEqual([])
 
-    const edited = { ...project, tracks: [[...(project.tracks![0]), { id: 'c1', type: 'video', src: 'b.mp4', start: 10, end: 12 }]] } as Project
+    const edited = { ...project, tracks: [{ id: 'trk-0', items: [...project.tracks![0].items, { id: 'c1', type: 'video', src: 'b.mp4', start: 10, end: 12 }] }] } as Project
     act(() => { view.rerender({ p: edited }) })
     expect(engines).toHaveLength(1)
     expect(engine.updates).toEqual([edited])
@@ -300,12 +300,15 @@ describe('useEnginePlayback engine lifecycle', () => {
   it('exposes the legacy-shaped derived collections', () => {
     const project = makeProject({
       tracks: [
-        [
-          { id: 'later', type: 'video', src: 'b.mp4', start: 5, end: 8 },
-          { id: 'first', type: 'video', src: 'a.mp4', start: 0, end: 5 },
-          { id: 'img', type: 'image', src: 'i.png', start: 0, end: 2 },
-        ],
-        [{ id: 'ov', type: 'overlay', src: 'o.jsx', start: 0, end: 3 }],
+        {
+          id: 'trk-0',
+          items: [
+            { id: 'later', type: 'video', src: 'b.mp4', start: 5, end: 8 },
+            { id: 'first', type: 'video', src: 'a.mp4', start: 0, end: 5 },
+            { id: 'img', type: 'image', src: 'i.png', start: 0, end: 2 },
+          ],
+        },
+        { id: 'trk-1', items: [{ id: 'ov', type: 'overlay', src: 'o.jsx', start: 0, end: 3 }] },
       ],
     } as Partial<Project>)
     const { view } = setup(project)
@@ -316,7 +319,7 @@ describe('useEnginePlayback engine lifecycle', () => {
   })
 
   it('reports a canvas project the way the legacy hook does', () => {
-    const { view } = setup(makeProject({ tracks: [[{ id: 'img', type: 'image', src: 'i.png', start: 0, end: 2 }]] } as Partial<Project>))
+    const { view } = setup(makeProject({ tracks: [{ id: 'trk-0', items: [{ id: 'img', type: 'image', src: 'i.png', start: 0, end: 2 }] }] } as Partial<Project>))
     expect(view.result.current.isCanvasProject).toBe(true)
   })
 

@@ -1,18 +1,21 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Crop, Info, Magnet, Pencil, Redo2, Undo2 } from 'lucide-react'
+import { Crop, HelpCircle, Magnet, Pencil, Redo2, SeparatorVertical, Undo2 } from 'lucide-react'
 import type { Project, VideoEditorProps } from '../types'
 import { useProjectSync, type UseProjectSync } from '../state/use-project-sync'
 import { VideoSourceCropModal } from '../crop/VideoSourceCropModal'
 import ControlsInfoModal, { VIDEO_CONTROLS } from '../ControlsInfoModal'
+import { Tooltip } from '../ui/Tooltip'
+import { reviveNumberInRange, usePersistentState } from '../ui/usePersistentState'
 import { getOverlayDesignCanvas } from './design-canvas'
 import { applyTheme, defaultMontajTheme } from '../theme'
-import { applyCutToItem, applyCutToTracks, collapseGaps, rippleDelete, splitAtTime } from './cuts'
+import { collapseGaps, rippleDelete, splitAtTime } from './cuts'
 import { repairCaptionWords } from './captionRepair'
 import Timeline, { type TimelineActions } from './timeline/Timeline'
-import { computeDerivedTiming } from './timeline/timeline-model'
+import { computeDerivedTiming, enabledTrackItems, mapTrackItems, trackItems } from './timeline/timeline-model'
 import { makeCaptionEdit, type CaptionEditPatch } from './timeline/makeCaptionEdit'
 import PreviewPlayer, { type TransportHandle } from './preview/PreviewPlayer'
 import { createPlaybackClock, type PlaybackClock } from './playback-clock'
+import { createHoverScrub } from './hover-scrub'
 import type { OverlayChanges } from './preview/useDragOverlay'
 import VersionPanel from './VersionPanel'
 import RenderModal from './RenderModal'
@@ -23,6 +26,34 @@ import OverlayPropsModal from './preview/OverlayPropsModal'
 import CommandPalette, { type PaletteCommand } from './CommandPalette'
 import { createShuttleController } from './shuttle'
 import { useKeymap, matchesKey, matchesModKey, matchesPlainKey, matchesRedo, matchesShiftDelete, matchesUndo } from './keymap'
+
+// ── Layout preferences ───────────────────────────────────────────────────
+// Persisted per browser (not per project): how tall the timeline pane is, and
+// whether the caption row is shown. Keys are namespaced so they can't collide
+// with a host's own localStorage.
+
+const TIMELINE_PANE_STORAGE_KEY = 'montaj.editor.timelinePaneHeight'
+
+/** Starting height of the timeline pane — roughly the base track, one overlay
+ *  row, an audio lane and the caption row, which is what the fixed layout used
+ *  to come out at. */
+const DEFAULT_TIMELINE_PANE_PX = 300
+/** Floor: the toolbar plus enough of the scrubber to still aim at. Below this
+ *  the pane stops being a timeline. */
+const MIN_TIMELINE_PANE_PX = 140
+/** Ceiling, so a stored height from a much taller window can't open the editor
+ *  with the preview pushed off-screen. */
+const MAX_TIMELINE_PANE_PX = 1200
+/** Always left to the preview, so the divider can never strand the picture at
+ *  zero height. */
+const MIN_PREVIEW_PANE_PX = 160
+
+const RAIL_WIDTH_STORAGE_KEY = 'montaj.editor.railWidth'
+/** Floor/ceiling for the right rail, and the width always left to the editor
+ *  beside it — the vertical counterpart of the timeline pane's clamps. */
+const MIN_RAIL_PX = 150
+const MAX_RAIL_PX = 720
+const MIN_MAIN_PX = 320
 
 // Generic over the host's concrete project type `P` (default = the package's
 // own `Project`). Montaj passes its richer Project; the index signature on
@@ -276,7 +307,7 @@ function PendingSurface<P extends Project>({
     adapter.getInfo?.().then(info => setSkillPath(info.root_skill_path ?? null)).catch(() => {})
   }, [adapter])
 
-  const clips           = project.tracks?.[0] ?? []
+  const clips           = trackItems(project)[0] ?? []
   const hasTrimmedClips = clips.some(c => c.inPoint !== undefined && c.outPoint !== undefined)
   // The back-to-setup affordance is gated on the host supplying it AND the
   // project being safe to discard (no manual trims yet). Mirrors LiveView's
@@ -432,6 +463,112 @@ function ReviewSurface<P extends Project>({
   // and `setSelectedCaptionId` passed down, no lifting required.
   const [selectedCaptionId, setSelectedCaptionId] = useState<string | null>(null)
   const [rippleMode, setRippleMode]   = useState(false)
+  // CapCut's "preview axis", off by default. Off changes nothing: clicking the
+  // timeline moves the red playhead and the preview follows it, as always. On,
+  // a yellow cursor line tracks the pointer across the timeline and the preview
+  // shows THAT frame while the playhead stays put — hover to look around, click
+  // to actually go there.
+  const [previewAxis, setPreviewAxis] = useState(false)
+
+  // ── Preview / timeline split ───────────────────────────────────────────
+  // The timeline pane owns an explicit height and the preview takes the rest,
+  // so one number describes the whole split. Persisted per browser, not per
+  // project: it's a property of the screen you're working on.
+  const splitRef = useRef<HTMLDivElement | null>(null)
+  const [timelinePaneHeight, setTimelinePaneHeight] = usePersistentState(
+    TIMELINE_PANE_STORAGE_KEY,
+    DEFAULT_TIMELINE_PANE_PX,
+    reviveNumberInRange(MIN_TIMELINE_PANE_PX, MAX_TIMELINE_PANE_PX),
+  )
+  // The right rail's width, same deal on the other axis.
+  const workAreaRef = useRef<HTMLDivElement | null>(null)
+  const [railWidth, setRailWidth] = usePersistentState(
+    RAIL_WIDTH_STORAGE_KEY,
+    assetsPlacement === 'sidebar' ? 224 : 192,
+    reviveNumberInRange(MIN_RAIL_PX, MAX_RAIL_PX),
+  )
+
+  /** Drag the rail divider. Mirrors `startSplitDrag` on the horizontal axis;
+   *  dragging LEFT widens the rail, hence the inverted delta. */
+  const startRailDrag = useCallback((e: React.MouseEvent) => {
+    e.preventDefault()
+    const startX = e.clientX
+    const startWidth = railWidth
+    const available = workAreaRef.current?.getBoundingClientRect().width ?? 0
+    const max = Math.max(MIN_RAIL_PX, Math.min(MAX_RAIL_PX, available - MIN_MAIN_PX))
+
+    let latest = startWidth
+    const onMove = (ev: MouseEvent) => {
+      latest = Math.max(MIN_RAIL_PX, Math.min(max, startWidth - (ev.clientX - startX)))
+      setRailWidth(latest, { persist: false })
+    }
+    const onUp = () => {
+      document.removeEventListener('mousemove', onMove)
+      document.removeEventListener('mouseup', onUp)
+      document.body.style.cursor = ''
+      document.body.style.userSelect = ''
+      setRailWidth(latest)
+    }
+    document.addEventListener('mousemove', onMove)
+    document.addEventListener('mouseup', onUp)
+    document.body.style.cursor = 'col-resize'
+    document.body.style.userSelect = 'none'
+  }, [railWidth, setRailWidth])
+
+  /**
+   * Drag the divider. Bound to `document` rather than the handle so the drag
+   * survives the pointer outrunning a 5px target — the same reason the timeline's
+   * own gestures listen on the document.
+   *
+   * The clamp has two jobs: keep the timeline usable (`MIN_TIMELINE_PANE_PX`),
+   * and always leave the preview a real area to draw in, so the divider can
+   * never be dragged to the top of the window and strand the picture at zero
+   * height. `document.body.style.cursor` holds the resize cursor for the whole
+   * drag, otherwise it flickers back whenever the pointer crosses a child that
+   * sets its own.
+   */
+  const startSplitDrag = useCallback((e: React.MouseEvent) => {
+    e.preventDefault()
+    const startY = e.clientY
+    const startHeight = timelinePaneHeight
+    const available = splitRef.current?.getBoundingClientRect().height ?? 0
+    const max = Math.max(MIN_TIMELINE_PANE_PX, Math.min(MAX_TIMELINE_PANE_PX, available - MIN_PREVIEW_PANE_PX))
+
+    let latest = startHeight
+    const onMove = (ev: MouseEvent) => {
+      latest = Math.max(MIN_TIMELINE_PANE_PX, Math.min(max, startHeight - (ev.clientY - startY)))
+      setTimelinePaneHeight(latest, { persist: false })
+    }
+    const onUp = () => {
+      document.removeEventListener('mousemove', onMove)
+      document.removeEventListener('mouseup', onUp)
+      document.body.style.cursor = ''
+      document.body.style.userSelect = ''
+      setTimelinePaneHeight(latest) // the write that actually persists
+    }
+    document.addEventListener('mousemove', onMove)
+    document.addEventListener('mouseup', onUp)
+    document.body.style.cursor = 'row-resize'
+    document.body.style.userSelect = 'none'
+  }, [timelinePaneHeight, setTimelinePaneHeight])
+
+  // The hovered frame, in an external store so a mousemove repaints the preview
+  // and nothing else — see `hover-scrub.ts` for why this is not the clock.
+  const hoverScrubRef = useRef(createHoverScrub())
+  const hoverScrub = hoverScrubRef.current
+
+  // Any real playhead movement cancels the hover preview: a playback tick, an
+  // arrow-key step, a scrubber drag, a click that seeks. Without this a hover
+  // left standing would pin the preview to a frame the playhead has since left,
+  // and pressing Space would play audio against a frozen picture.
+  useEffect(() => clock.subscribe(() => hoverScrub.set(null)), [clock, hoverScrub])
+
+  const handleHoverScrub = useCallback((time: number | null) => {
+    // Never while playing: the playback hooks drive the frame themselves, and
+    // an override would fight them for the <video>/engine's seek position.
+    if (time !== null && transportRef.current?.isPlaying()) return
+    hoverScrub.set(time)
+  }, [hoverScrub])
   const [showControls, setShowControls] = useState(false)
   // Source-crop mode: when on, the VideoSourceCropModal opens for the selected
   // tracks[0] video item. Cleared when selection changes.
@@ -472,6 +609,7 @@ function ReviewSurface<P extends Project>({
       clock,
       getDuration: getTotalDuration,
       isPlaying: () => transportRef.current?.isPlaying() ?? false,
+      play: () => { if (!transportRef.current?.isPlaying()) transportRef.current?.togglePlay() },
       pause: () => { if (transportRef.current?.isPlaying()) transportRef.current.togglePlay() },
     })
   }
@@ -509,13 +647,20 @@ function ReviewSurface<P extends Project>({
     onProvideImageTone(isHdrProject ? { value: currentImageTone ?? 'vivid', set: handleImageToneChange } : null)
   }, [onProvideImageTone, isHdrProject, currentImageTone, handleImageToneChange])
 
-  // Pre-render options for the RenderModal. HDR projects open on an options
-  // panel (export choice + tone curve); SDR projects get `isHdr: false`, which
-  // keeps the modal's fire-on-mount behavior. `keeps` are the track-0 video
-  // windows the modal samples one thumbnail frame from — memoized so the modal
-  // sees a stable list, and capped because it only ever picks one of them.
+  // Pre-render options for the export dialog (RenderModal). `keeps` are the
+  // track-0 video windows the modal samples cover/thumbnail frames from —
+  // memoized so the modal sees a stable list. `name`/`durationSec` seed the
+  // dialog's Name field and duration footer (duration = the video spine's last
+  // frame, which defines the render length). `isHdr` gates the HDR-only controls
+  // (export format, image color, SDR tone curve); the dialog itself now opens for
+  // every project the montaj editor renders.
+  //
+  // Enabled tracks only (`enabledTrackItems`, not `trackItems`): render.js
+  // computes the exported duration and poster frames from the same enabled
+  // family, so a skipped base track must not leave this dialog advertising a
+  // duration or cover/thumbnail windows the exported file won't actually have.
   const renderKeeps = useMemo(
-    () => (project.tracks?.[0] ?? [])
+    () => (enabledTrackItems(project)[0] ?? [])
       .filter(item => item.type === 'video')
       .map(item => ({ start: item.start, end: item.end })),
     [project.tracks],
@@ -524,7 +669,13 @@ function ReviewSurface<P extends Project>({
     isHdr: isHdrProject,
     keeps: renderKeeps,
     imageTone: { value: currentImageTone ?? 'vivid', set: handleImageToneChange },
-  }), [isHdrProject, renderKeeps, currentImageTone, handleImageToneChange])
+    name: project.name?.trim() || undefined,
+    durationSec: renderKeeps.reduce((m, k) => Math.max(m, k.end), 0),
+    aspectRatio: (() => {
+      const r = project.settings?.resolution
+      return r && r[0] > 0 && r[1] > 0 ? r[0] / r[1] : undefined
+    })(),
+  }), [isHdrProject, renderKeeps, currentImageTone, handleImageToneChange, project.name, project.settings?.resolution])
 
   const openRender = useCallback(() => {
     const final = { ...syncProjectRef.current, status: 'final' } as P
@@ -568,8 +719,8 @@ function ReviewSurface<P extends Project>({
     sync.applyExternal({ ...project, captions: repaired } as P)
   }, [project.id, project.captions])
 
-  const clips      = project.tracks?.[0] ?? []
-  const hasContent = clips.length > 0 || (project.tracks?.slice(1).flat().length ?? 0) > 0 || (project.captions?.segments?.length ?? 0) > 0
+  const clips      = trackItems(project)[0] ?? []
+  const hasContent = clips.length > 0 || (trackItems(project).slice(1).flat().length ?? 0) > 0 || (project.captions?.segments?.length ?? 0) > 0
 
   // The selected tracks[0] video item, if any — the only thing source-crop mode
   // can target. Source crop is a tracks[0]-video primitive (the renderer applies
@@ -595,7 +746,7 @@ function ReviewSurface<P extends Project>({
     editOriginalRef.current = syncProjectRef.current
     setEditingOverlayId(id)
   }, [syncProjectRef])
-  const allVisualItems = (project.tracks ?? []).flat()
+  const allVisualItems = trackItems(project).flat()
   const editingOverlayItem = editingOverlayId
     ? allVisualItems.find(i => i.id === editingOverlayId) ?? null
     : null
@@ -615,8 +766,8 @@ function ReviewSurface<P extends Project>({
   function withItemProps(base: P, id: string, nextProps: Record<string, unknown>): P {
     return {
       ...base,
-      tracks: (base.tracks ?? []).map(track =>
-        track.map(item => (item.id !== id ? item : { ...item, props: nextProps })),
+      tracks: mapTrackItems(base, items =>
+        items.map(item => (item.id !== id ? item : { ...item, props: nextProps })),
       ),
     } as P
   }
@@ -647,26 +798,40 @@ function ReviewSurface<P extends Project>({
 
   // Edits coming from the timeline (drag/move/track changes): route through the
   // sync core — one undo step + queued save + rollback-on-failure.
+  /**
+   * A LIVE, uncommitted edit — one per mousemove of a timeline gesture (and per
+   * tick of the caption font slider). Transient: applied locally, but no save
+   * and no undo entry.
+   *
+   * This used to be a full `mutate`, which pushed an undo entry per move. A
+   * single drag across the timeline therefore recorded dozens of them, and undo
+   * walked the clip back a few pixels at a time instead of putting it where it
+   * started. `commitTimelineEdit` closes the gesture with ONE entry covering
+   * the whole motion.
+   */
   function handleProjectChange(p: Project) {
-    void sync.mutate(() => p as P)
+    sync.mutateTransient(() => p as P)
   }
 
-  function handleCut(cut: { start: number; end: number }) {
-    void sync.mutate(p => {
-      let updated = primarySelectedId
-        ? applyCutToItem(p, primarySelectedId, cut)
-        : applyCutToTracks(p, cut)
-      if (rippleMode) updated = collapseGaps(updated)
-      return updated as P
-    })
-    setSelectedIds([])
+  /**
+   * The end of a gesture: persist the accumulated transient state as one save
+   * and one undo step, taken from the snapshot before the gesture's first move.
+   *
+   * Applies `p` transiently first rather than trusting the last preview to have
+   * been identical — a few callers (ripple delete, auto-crossfade) compute the
+   * final project themselves and hand it straight here, and a caller that DID
+   * already preview it lands a no-op.
+   */
+  function commitTimelineEdit(p: Project) {
+    sync.mutateTransient(() => p as P)
+    void sync.commit()
   }
 
   function handleOverlayChange(id: string, changes: OverlayChanges) {
     void sync.mutate(p => ({
       ...p,
-      tracks: (p.tracks ?? []).map(track =>
-        track.map(item => item.id !== id ? item : { ...item, ...changes })
+      tracks: mapTrackItems(p, items =>
+        items.map(item => item.id !== id ? item : { ...item, ...changes })
       ),
     } as P))
   }
@@ -715,7 +880,7 @@ function ReviewSurface<P extends Project>({
   // and the palette's "Ripple-delete selection" entry. Goes through
   // `sync.mutate` directly (one undo step, one queued save), the same commit
   // path every other destructive edit in this surface uses (handleSplit,
-  // handleCut, handleRippleToggle above).
+  // handleRippleToggle above).
   function handleRippleDelete() {
     if (!primarySelectedId) return
     const base = syncProjectRef.current
@@ -766,6 +931,23 @@ function ReviewSurface<P extends Project>({
       action: () => handleRippleDelete(),
     },
     {
+      // A for Axis. CapCut binds this to plain `S`, which Split owns here —
+      // and `video.split` is `matchesKey('s')`, a bare key test with no
+      // modifier check (deliberately: it reproduces the pre-keymap split
+      // handler verbatim), so any S-based chord would be swallowed by it.
+      //
+      // `matchesModKey` is meta-OR-ctrl (keymap.ts's `mod`), so this is Cmd+A
+      // and Ctrl+A alike. That shadows the browser's Select All, which this
+      // surface has no use for — and only outside a typing surface: every
+      // binding sits behind `isTypingTarget`, so Cmd+A in a caption, an input,
+      // or a textarea still selects text natively.
+      id: 'video.preview-axis',
+      description: 'Toggle preview axis',
+      keyHint: ['⌘', 'A'],
+      matches: matchesModKey('a'),
+      action: () => setPreviewAxis(v => !v),
+    },
+    {
       id: 'video.open-palette',
       description: 'Open command palette',
       keyHint: ['⌘', 'K'],
@@ -812,8 +994,8 @@ function ReviewSurface<P extends Project>({
   // The palette's command list — split/undo/redo/ripple-delete/play-pause
   // read live state so entries only appear when they'd actually do
   // something (no selection → no ripple-delete row; nothing to undo → no
-  // undo row). Zoom-fit and the marker ops route through `timelineActionsRef`
-  // (Timeline-local state — see Timeline.tsx's `TimelineActions`). Roll/slip/
+  // undo row). Zoom-fit routes through `timelineActionsRef` (Timeline-local
+  // state — see Timeline.tsx's `TimelineActions`). Roll/slip/
   // slide are drag gestures and deliberately have no palette variant.
   const paletteCommands: PaletteCommand[] = [
     { id: 'play-pause', label: 'Play/Pause', keyHint: ['Space'], run: () => transportRef.current?.togglePlay() },
@@ -824,10 +1006,14 @@ function ReviewSurface<P extends Project>({
   }
   if (sync.canUndo) paletteCommands.push({ id: 'undo', label: 'Undo', keyHint: ['⌘', 'Z'], run: () => sync.undo() })
   if (sync.canRedo) paletteCommands.push({ id: 'redo', label: 'Redo', keyHint: ['⌘', '⇧', 'Z'], run: () => sync.redo() })
+  paletteCommands.push({
+    id: 'preview-axis',
+    label: previewAxis ? 'Preview axis: turn off' : 'Preview axis: turn on',
+    keyHint: ['⌘', 'A'],
+    run: () => setPreviewAxis(v => !v),
+  })
   paletteCommands.push({ id: 'zoom-fit', label: 'Zoom to fit', run: () => timelineActionsRef.current?.zoomFit() })
   paletteCommands.push({ id: 'goto', label: 'Go to time…', run: () => openGoToTime() })
-  paletteCommands.push({ id: 'set-marker', label: 'Set marker at playhead', run: () => timelineActionsRef.current?.setMarkerAtPlayhead() })
-  paletteCommands.push({ id: 'clear-markers', label: 'Clear markers', run: () => timelineActionsRef.current?.clearMarkers() })
 
   async function handleRestoreVersion(hash: string) {
     if (!adapter.restoreVersion) return
@@ -846,10 +1032,12 @@ function ReviewSurface<P extends Project>({
   return (
     <div className="flex flex-col flex-1 overflow-hidden">
       {/* Work area — editor body + version rail, side by side */}
-      <div className="flex flex-1 overflow-hidden min-h-0">
-      {/* Main: preview + timeline */}
-      <div className="flex flex-col flex-1 overflow-hidden">
-        <div className="flex-1 flex items-center justify-center bg-black overflow-hidden p-2">
+      <div ref={workAreaRef} className="flex flex-1 overflow-hidden min-h-0">
+      {/* Main: preview + timeline, split by a draggable divider. The preview
+          takes whatever the timeline pane does not — so dragging the divider up
+          trades preview area for timeline area and vice versa. */}
+      <div ref={splitRef} className="flex flex-col flex-1 overflow-hidden">
+        <div className="flex-1 min-h-0 flex items-center justify-center bg-black overflow-hidden p-2">
           {hasContent ? (
             <div
               className="relative h-full max-w-full"
@@ -871,6 +1059,7 @@ function ReviewSurface<P extends Project>({
                 onCaptionSegmentChange={handleCaptionSegmentChange}
                 engine={engine}
                 transportRef={transportRef}
+                hoverScrub={hoverScrub}
               />
             </div>
           ) : (
@@ -878,83 +1067,124 @@ function ReviewSurface<P extends Project>({
           )}
         </div>
 
-        {/* Track controls bar — info + undo/redo + split + ripple + render */}
+        {/* The divider. `row-resize` plus a hairline that lights up on hover is
+            the whole affordance — a 5px hit area is comfortable to grab without
+            stealing a visible row from either pane. Double-click restores the
+            default split. */}
+        <div
+          role="separator"
+          aria-orientation="horizontal"
+          aria-label="Resize timeline"
+          onMouseDown={startSplitDrag}
+          onDoubleClick={() => setTimelinePaneHeight(DEFAULT_TIMELINE_PANE_PX)}
+          className="group shrink-0 h-[5px] cursor-row-resize bg-transparent"
+        >
+          <div className="h-px w-full bg-[var(--editor-border)] transition-colors group-hover:bg-[var(--editor-accent)]" />
+        </div>
+
+        {/* Timeline pane — the half the divider sizes. */}
+        <div className="shrink-0 flex flex-col overflow-hidden" style={{ height: timelinePaneHeight }}>
+
+        {/* Track controls bar — controls + undo/redo + preview axis + ripple +
+            crop + render. Split is deliberately NOT here: it is a one-key verb
+            (S, listed in the controls modal), and a glyph for it only crowded a
+            row whose other buttons are modes you can't type your way into.
+            Every button carries a styled `Tooltip` instead of a native `title=`:
+            the native one is delayed ~1s and rendered in OS chrome, which on a
+            row of 12px glyphs meant the affordances were effectively unlabelled.
+            `aria-label` stays on each button — the tooltip is a hover affordance,
+            not an accessible name. Disabled buttons get `pointer-events-none` so
+            hover still reaches the wrapper and can explain WHY they're disabled,
+            and fade to 50% rather than 30%: at 30% a 12px glyph on this surface
+            reads as ABSENT, and Crop is disabled whenever no clip is selected —
+            which is most of the time, so the control looked like it had been
+            removed rather than like it was waiting on a selection. */}
         <div className="shrink-0 flex items-center justify-end gap-1.5 px-3 py-1 border-t border-[var(--editor-border)] bg-[var(--editor-surface)]">
-          <button
-            onClick={() => setShowControls(true)}
-            title="Editor controls & shortcuts"
-            aria-label="Editor controls & shortcuts"
-            className="flex items-center justify-center w-5 h-5 rounded transition-colors text-[var(--editor-text)]/60 bg-transparent hover:text-[var(--editor-text)] mr-auto"
-          >
-            <Info size={12} />
-          </button>
-          <button
-            onClick={sync.undo}
-            disabled={!sync.canUndo}
-            title="Undo (Cmd/Ctrl+Z)"
-            aria-label="Undo"
-            className="flex items-center justify-center w-5 h-5 rounded transition-colors text-[var(--editor-text)]/60 bg-transparent hover:text-[var(--editor-text)] disabled:opacity-30 disabled:cursor-not-allowed"
-          >
-            <Undo2 size={12} />
-          </button>
-          <button
-            onClick={sync.redo}
-            disabled={!sync.canRedo}
-            title="Redo (Cmd/Ctrl+Shift+Z)"
-            aria-label="Redo"
-            className="flex items-center justify-center w-5 h-5 rounded transition-colors text-[var(--editor-text)]/60 bg-transparent hover:text-[var(--editor-text)] disabled:opacity-30 disabled:cursor-not-allowed"
-          >
-            <Redo2 size={12} />
-          </button>
-          <button
-            onClick={() => handleSplit()}
-            title="Split at playhead (S) — selected item or all clips"
-            className="flex items-center justify-center w-5 h-5 rounded transition-colors text-[var(--editor-text)]/60 bg-transparent hover:text-[var(--editor-text)]"
-          >
-            <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.5">
-              <line x1="6" y1="0" x2="6" y2="12" />
-              <polyline points="3,3 6,6 9,3" />
-              <polyline points="3,9 6,6 9,9" />
-            </svg>
-          </button>
-          <button
-            onClick={handleRippleToggle}
-            title={rippleMode ? 'Ripple mode on — edits close the gap' : 'Ripple mode off — edits leave a gap'}
-            aria-pressed={rippleMode}
-            className={`flex items-center justify-center w-5 h-5 rounded transition-colors ${
-              rippleMode
-                ? 'text-teal-400 bg-teal-400/15 hover:bg-teal-400/25'
-                : 'text-[var(--editor-text)]/60 bg-transparent hover:text-[var(--editor-text)]'
-            }`}
-          >
-            <Magnet size={12} />
-          </button>
-          <button
-            onClick={() => setCropMode(m => !m)}
-            disabled={!cropTarget}
-            title={
-              !cropTarget
-                ? 'Select a video clip to crop its source'
-                : cropMode ? 'Exit source crop' : 'Crop source — non-destructively crop the selected clip'
-            }
-            aria-pressed={cropMode}
-            className={`flex items-center justify-center w-5 h-5 rounded transition-colors disabled:opacity-30 disabled:cursor-not-allowed ${
-              cropMode
-                ? 'text-amber-400 bg-amber-400/15 hover:bg-amber-400/25'
-                : 'text-[var(--editor-text)]/60 bg-transparent hover:text-[var(--editor-text)]'
-            }`}
-          >
-            <Crop size={12} />
-          </button>
-          {selectedOverlayItem && (
+          <Tooltip label="Controls & shortcuts" className="mr-auto">
             <button
-              onClick={() => requestEditOverlay(selectedOverlayItem.id)}
-              title="Edit overlay — text, colors, and other properties"
-              aria-label="Edit overlay"
-              className="flex items-center justify-center w-5 h-5 rounded transition-colors text-[var(--editor-text)]/60 bg-transparent hover:text-[var(--editor-text)]"
+              onClick={() => setShowControls(true)}
+              aria-label="Editor controls & shortcuts"
+              className="flex items-center gap-1 px-1.5 h-5 rounded transition-colors text-[var(--editor-text)]/75 bg-transparent hover:text-[var(--editor-text)] hover:bg-[var(--editor-text)]/10"
             >
-              <Pencil size={12} />
+              <HelpCircle size={14} />
+              <span className="text-[10px] leading-none">Controls</span>
             </button>
+          </Tooltip>
+          <Tooltip label="Undo" keys={['⌘', 'Z']}>
+            <button
+              onClick={sync.undo}
+              disabled={!sync.canUndo}
+              aria-label="Undo"
+              className="flex items-center justify-center w-5 h-5 rounded transition-colors text-[var(--editor-text)]/60 bg-transparent hover:text-[var(--editor-text)] disabled:opacity-50 disabled:pointer-events-none"
+            >
+              <Undo2 size={12} />
+            </button>
+          </Tooltip>
+          <Tooltip label="Redo" keys={['⌘', '⇧', 'Z']}>
+            <button
+              onClick={sync.redo}
+              disabled={!sync.canRedo}
+              aria-label="Redo"
+              className="flex items-center justify-center w-5 h-5 rounded transition-colors text-[var(--editor-text)]/60 bg-transparent hover:text-[var(--editor-text)] disabled:opacity-50 disabled:pointer-events-none"
+            >
+              <Redo2 size={12} />
+            </button>
+          </Tooltip>
+          <Tooltip label={previewAxis ? 'Preview axis on — hover to preview' : 'Preview axis off'} keys={['⌘', 'A']}>
+            <button
+              onClick={() => setPreviewAxis(v => !v)}
+              aria-label="Preview axis"
+              aria-pressed={previewAxis}
+              className={`flex items-center justify-center w-5 h-5 rounded transition-colors ${
+                previewAxis
+                  ? 'text-yellow-400 bg-yellow-400/15 hover:bg-yellow-400/25'
+                  : 'text-[var(--editor-text)]/60 bg-transparent hover:text-[var(--editor-text)]'
+              }`}
+            >
+              <SeparatorVertical size={12} />
+            </button>
+          </Tooltip>
+          <Tooltip label={rippleMode ? 'Ripple on — gaps close' : 'Ripple: close the gap'}>
+            <button
+              onClick={handleRippleToggle}
+              aria-label="Ripple mode"
+              aria-pressed={rippleMode}
+              className={`flex items-center justify-center w-5 h-5 rounded transition-colors ${
+                rippleMode
+                  ? 'text-teal-400 bg-teal-400/15 hover:bg-teal-400/25'
+                  : 'text-[var(--editor-text)]/60 bg-transparent hover:text-[var(--editor-text)]'
+              }`}
+            >
+              <Magnet size={12} />
+            </button>
+          </Tooltip>
+          <Tooltip
+            label={!cropTarget ? 'Select a clip to crop' : cropMode ? 'Exit crop' : 'Crop source'}
+          >
+            <button
+              onClick={() => setCropMode(m => !m)}
+              disabled={!cropTarget}
+              aria-label="Crop source"
+              aria-pressed={cropMode}
+              className={`flex items-center justify-center w-5 h-5 rounded transition-colors disabled:opacity-50 disabled:pointer-events-none ${
+                cropMode
+                  ? 'text-amber-400 bg-amber-400/15 hover:bg-amber-400/25'
+                  : 'text-[var(--editor-text)]/60 bg-transparent hover:text-[var(--editor-text)]'
+              }`}
+            >
+              <Crop size={12} />
+            </button>
+          </Tooltip>
+          {selectedOverlayItem && (
+            <Tooltip label="Edit overlay">
+              <button
+                onClick={() => requestEditOverlay(selectedOverlayItem.id)}
+                aria-label="Edit overlay"
+                className="flex items-center justify-center w-5 h-5 rounded transition-colors text-[var(--editor-text)]/60 bg-transparent hover:text-[var(--editor-text)]"
+              >
+                <Pencil size={12} />
+              </button>
+            </Tooltip>
           )}
           {/* Image color mapping. HDR projects only (the tone has no effect on
               SDR renders). Hidden when the host surfaces the setting in its own
@@ -977,21 +1207,21 @@ function ReviewSurface<P extends Project>({
           )}
         </div>
 
-        <div className="shrink-0 border-t border-[var(--editor-border)] bg-[var(--editor-surface)]">
+        <div className="flex-1 min-h-0 overflow-y-auto border-t border-[var(--editor-border)] bg-[var(--editor-surface)]">
           <Timeline
             project={project}
             clock={clock}
             onProjectChange={handleProjectChange}
             onCaptionEdit={(p) => void sync.mutate(() => p as P)}
-            onOverlayEdit={(p) => void sync.mutate(() => p as P)}
+            onOverlayEdit={commitTimelineEdit}
             onEditOverlay={requestEditOverlay}
+            previewAxis={previewAxis}
+            onHoverScrub={handleHoverScrub}
             selectedIds={selectedIds}
             onSelectIds={setSelectedIds}
             selectedCaptionId={selectedCaptionId}
             onSelectCaption={handleSelectCaption}
             onCaptionSegmentChange={handleCaptionSegmentChange}
-            onSplit={handleSplit}
-            onCut={handleCut}
             onInspectClip={(id) => setInspecting({ kind: 'clip', id })}
             onInspectAudio={(id) => setInspecting({ kind: 'audio', id })}
             rippleMode={rippleMode}
@@ -1008,6 +1238,7 @@ function ReviewSurface<P extends Project>({
             onOpenGoToTime={openGoToTime}
             actionsRef={timelineActionsRef}
           />
+        </div>
         </div>
       </div>
 
@@ -1027,7 +1258,23 @@ function ReviewSurface<P extends Project>({
           right below, one column — not a separate assets column. */}
       {(adapter.listVersionHistory || slots?.runHistory ||
         (assetsPlacement === 'sidebar' && slots?.assetsPanel)) && (
-        <div className={`${assetsPlacement === 'sidebar' ? 'w-56' : 'w-48'} shrink-0 border-l border-[var(--editor-border)] bg-[var(--editor-surface)] flex flex-col overflow-hidden`}>
+      <>
+        {/* Vertical divider, the same affordance as the preview/timeline one. */}
+        <div
+          role="separator"
+          aria-orientation="vertical"
+          aria-label="Resize sidebar"
+          onMouseDown={startRailDrag}
+          onDoubleClick={() => setRailWidth(assetsPlacement === 'sidebar' ? 224 : 192)}
+          className="group shrink-0 w-[5px] cursor-col-resize bg-transparent"
+        >
+          <div className="w-px h-full bg-[var(--editor-border)] transition-colors group-hover:bg-[var(--editor-accent)]" />
+        </div>
+
+        <div
+          style={{ width: railWidth }}
+          className="shrink-0 border-l border-[var(--editor-border)] bg-[var(--editor-surface)] flex flex-col overflow-hidden"
+        >
           {adapter.listVersionHistory && (
             <VersionPanel versions={versions} restoring={restoring} onRestore={handleRestoreVersion} />
           )}
@@ -1044,6 +1291,7 @@ function ReviewSurface<P extends Project>({
             </div>
           )}
         </div>
+      </>
       )}
       </div>
 

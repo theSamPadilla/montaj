@@ -246,7 +246,7 @@ def _setup_video_project(tmp_path, monkeypatch):
     # Never actually spawn — capture the cmd and leave a never-resolving job.
     captured = {}
 
-    async def _fake_detached(project_id, cmd, env, render_input, project_path, job):
+    async def _fake_detached(project_id, cmd, env, render_input, project_path, job, **kwargs):
         captured["cmd"] = cmd
         # leave job running (simulates an in-flight render)
 

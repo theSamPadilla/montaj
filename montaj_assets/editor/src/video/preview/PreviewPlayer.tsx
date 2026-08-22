@@ -14,6 +14,7 @@ import { useEnginePlayback, type EnginePlayback } from './useEnginePlayback'
 import EngineSurface from './EngineSurface'
 import { evaluateEngineEligibility } from '../../engine/eligibility'
 import { usePlaybackTime, type PlaybackClock } from '../playback-clock'
+import { gateTimeSink, handOverToHover, useHoverScrubTime, type HoverScrub } from '../hover-scrub'
 import { sourceCropVideoStyle } from './sourceCropStyle'
 import CarouselPreview from './CarouselPreview'
 
@@ -63,6 +64,18 @@ interface PreviewPlayerProps {
    * engine). Absent → no-op; nothing reads or writes it.
    */
   transportRef?: MutableRefObject<TransportHandle | null>
+  /**
+   * The preview-axis override: while the pointer is over the timeline with the
+   * axis on, this holds the time under it and the preview paints THAT frame
+   * instead of the playhead's. Null (or the store absent) → the playhead's
+   * frame, which is every other moment and every other host.
+   *
+   * Deliberately not folded into `clock`: the playhead must not follow the
+   * pointer, or the red line and the scrubber handle would chase the mouse and
+   * Space would start playing from wherever it happened to rest. See
+   * `../hover-scrub.ts`.
+   */
+  hoverScrub?: HoverScrub
 }
 
 export default function PreviewPlayer(props: PreviewPlayerProps) {
@@ -132,8 +145,20 @@ function VideoPreviewPlayer(props: PreviewPlayerProps) {
   // Subscribe to the playhead store. PreviewPlayer legitimately re-renders per
   // tick — activeClip/cropStyle memos and the video/overlay/caption children all
   // depend on the current time.
-  const currentTime = usePlaybackTime(clock)
+  const playheadTime = usePlaybackTime(clock)
+  // Hover-scrub wins while it is set. Everything downstream — the playback
+  // hooks' seeking, the active-clip memo, the overlay and caption layers —
+  // reads this one number, so the previewed frame, the overlays drawn on it and
+  // the highlighted caption all describe the same instant.
+  const hoverTime = useHoverScrubTime(props.hoverScrub)
+  const currentTime = hoverTime ?? playheadTime
   const mode = useEngineMode(engine, project)
+
+  // See `gateTimeSink` — never hand the hooks `clock.set` directly, or seeking
+  // to show a hovered frame writes that position back and the red playhead
+  // chases the yellow cursor.
+  const hoverScrub = props.hoverScrub
+  const timeSink = useMemo(() => gateTimeSink(clock, hoverScrub), [clock, hoverScrub])
 
   const [RENDER_W, RENDER_H] = getOverlayDesignCanvas(project.settings?.resolution)
 
@@ -152,8 +177,8 @@ function VideoPreviewPlayer(props: PreviewPlayerProps) {
   }
 
   return mode === 'engine'
-    ? <EnginePreview {...props} currentTime={currentTime} />
-    : <LegacyPreview {...props} currentTime={currentTime} />
+    ? <EnginePreview {...props} currentTime={currentTime} timeSink={timeSink} />
+    : <LegacyPreview {...props} currentTime={currentTime} timeSink={timeSink} />
 }
 
 /**
@@ -165,20 +190,27 @@ type PlaybackBinding =
   | ({ mode: 'legacy' } & ReturnType<typeof useVideoPlayback>)
   | ({ mode: 'engine' } & EnginePlayback)
 
-type SurfaceProps = PreviewPlayerProps & { currentTime: number }
+type SurfaceProps = PreviewPlayerProps & {
+  currentTime: number
+  /** `clock.set`, gated on hover-preview — see `timeSink` above. Never pass
+   *  `clock.set` directly here, or hover-seeking writes back into the clock. */
+  timeSink: (t: number) => void
+}
 
 function LegacyPreview(props: SurfaceProps) {
-  const playback = useVideoPlayback(props.project, props.currentTime, props.clock.set, props.fileUrl)
+  const playback = useVideoPlayback(props.project, props.currentTime, props.timeSink, props.fileUrl)
   return <PreviewSurface {...props} playback={{ mode: 'legacy', ...playback }} />
 }
 
 function EnginePreview(props: SurfaceProps) {
-  const playback = useEnginePlayback(props.project, props.currentTime, props.clock.set, props.fileUrl)
+  const playback = useEnginePlayback(props.project, props.currentTime, props.timeSink, props.fileUrl)
   return <PreviewSurface {...props} playback={{ mode: 'engine', ...playback }} />
 }
 
 function PreviewSurface({
   project,
+  clock,
+  hoverScrub,
   currentTime,
   playback,
   selectedOverlayId,
@@ -196,6 +228,12 @@ function PreviewSurface({
   transportRef,
 }: SurfaceProps & { playback: PlaybackBinding }) {
   const [RENDER_W, RENDER_H] = getOverlayDesignCanvas(project.settings?.resolution)
+
+  // Play from the yellow line, and bring the red one with it — see
+  // `handOverToHover`. No-op on every ordinary press of play.
+  useEffect(() => {
+    if (playback.isPlaying) handOverToHover(clock, hoverScrub)
+  }, [playback.isPlaying, hoverScrub, clock])
 
   const containerRef = useRef<HTMLDivElement>(null)
   const [renderScale, setRenderScale] = useState<number>(1)

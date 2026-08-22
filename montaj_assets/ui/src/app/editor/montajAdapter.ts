@@ -175,7 +175,7 @@ export function createMontajAdapter(): EditorAdapter<Project> {
                 }
               },
               (message) => push({ type: 'error', message }),
-              { export: opts?.export, sdrCurve: opts?.sdrCurve },
+              { export: opts?.export, sdrCurve: opts?.sdrCurve, name: opts?.name, cover: opts?.cover },
             )
             .then((c) => { cancel = c })
             .catch((err) => {

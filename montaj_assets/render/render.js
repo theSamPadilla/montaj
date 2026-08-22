@@ -24,6 +24,7 @@ import { fileHasAudio }                   from './encode-segment.js'
 import { deriveSdr, probeColorTransfer }  from './derive-sdr.js'
 import { sourceWindow }                   from '@bycrux/timeline-core'
 import { MASTER_LOOK, curveIds }          from './look.js'
+import { effectiveItemAudio, enabledTrackItems, enabledTracks, trackItems } from './project-tracks.js'
 
 const __dirname  = dirname(fileURLToPath(import.meta.url))
 const isMain = resolve(process.argv[1] ?? '') === fileURLToPath(import.meta.url)
@@ -342,7 +343,7 @@ async function main(projectPath, { out, workers, clean, imageTone, exportMode = 
     writeFileSync(captionsPath, JSON.stringify(captionsWithOffset))
 
     // Optional background video: first video item in tracks[0]
-    const bgItem = (projectJson.tracks?.[0] ?? []).find(i => i.type === 'video')
+    const bgItem = (enabledTrackItems(projectJson)[0] ?? []).find(i => i.type === 'video')
 
     const projectDuration = getTotalDurationSeconds(projectJson)
     const lyricsRenderArgs = [
@@ -668,7 +669,7 @@ function collectPuppeteerSegments(projectJson, fps, width, height, segDir) {
   const totalSecs = quantize(getTotalDurationSeconds(projectJson))
 
   // Overlay items live in tracks[1+]; tracks[0] is primary footage
-  const overlayTracks = (projectJson.tracks ?? []).slice(1)
+  const overlayTracks = enabledTrackItems(projectJson).slice(1)
   for (let trackIdx = 0; trackIdx < overlayTracks.length; trackIdx++) {
     const track = overlayTracks[trackIdx]
     for (const item of track ?? []) {
@@ -737,7 +738,8 @@ function collectPuppeteerSegments(projectJson, fps, width, height, segDir) {
   }
 
   // NOTE: The old schema had a tracks[type=caption] fallback block here. It has been
-  // removed — in v0.2, projectJson.tracks is always an array of arrays, never typed objects.
+  // removed — `tracks` may be on disk in either the legacy array-of-arrays shape
+  // or the object shape; `trackItems()` absorbs the difference.
 
   return specs
 }
@@ -750,9 +752,10 @@ function collectAllItems(projectJson) {
   const imageItems = []
   const videoItems = []
 
-  for (let trackIdx = 0; trackIdx < (projectJson.tracks ?? []).length; trackIdx++) {
-    const track = projectJson.tracks[trackIdx]
-    for (const item of track ?? []) {
+  const tracks = enabledTracks(projectJson)
+  for (let trackIdx = 0; trackIdx < tracks.length; trackIdx++) {
+    const track = tracks[trackIdx]
+    for (const item of track.items ?? []) {
       const base = {
         id:      item.id,
         src:     item.src,
@@ -817,6 +820,15 @@ function collectAllItems(projectJson) {
         // shared corpus and deep-equals the result against goldens captured from
         // the pre-SP2 pipeline.
         const { src, inPoint, outPoint } = sourceWindow(item, 'render')
+        // Track-wide volume/mute folded in here — the one fold point the
+        // render path needs. `effectiveItemAudio` multiplies volume (never
+        // replaces, so a clip an editor already turned down stays
+        // proportionally quieter under a track pulled down too) and ORs mute
+        // (either one silences it). Formula and rationale:
+        // project-tracks.js's effectiveItemAudio; feature background:
+        // docs/plans/2026-08-21-track-skip.md ("F1 · Track-wide volume and
+        // mute").
+        const { volume, muted } = effectiveItemAudio(track, item)
         videoItems.push({
           ...base,
           // The whitelist below is exhaustive by design — these objects are what
@@ -845,8 +857,8 @@ function collectAllItems(projectJson) {
           sourceWidth:  item.sourceWidth,
           sourceHeight: item.sourceHeight,
           remove_bg: item.remove_bg ?? false,
-          muted:     item.muted ?? false,
-          volume:    item.volume,
+          muted,
+          volume,
         })
       }
     }
@@ -921,8 +933,11 @@ function overlayTemplatePath(item) {
 // ---------------------------------------------------------------------------
 
 function resolveProjectPaths(projectJson, projectDir) {
-  // v0.2: tracks is an array of arrays; every item in every track may have a src
-  for (const track of projectJson.tracks ?? []) {
+  // EVERY track, including skipped ones: this mutates `item.src` in place, and
+  // resolving a path for an item we then don't render costs nothing, whereas
+  // leaving a skipped track's paths unresolved would surprise anything that
+  // reads them later.
+  for (const track of trackItems(projectJson)) {
     for (const item of track ?? []) {
       if (item.src && !item.src.startsWith('/')) {
         item.src = resolve(projectDir, item.src)
@@ -965,8 +980,9 @@ function resolveFilePath(p) {
 function validateProjectFiles(projectJson) {
   const missing = []
 
-  // v0.2: tracks is an array of arrays; check src existence on every item in every track
-  for (const track of projectJson.tracks ?? []) {
+  // Only the tracks that will actually be rendered: a missing source file on a
+  // SKIPPED track must not fail the render — leaving it out is the whole point.
+  for (const track of enabledTrackItems(projectJson)) {
     for (const item of track ?? []) {
       if (item.src && !resolveFilePath(item.src)) missing.push(item.src)
     }
@@ -986,7 +1002,9 @@ function validateProjectFiles(projectJson) {
 // ---------------------------------------------------------------------------
 
 function getTotalDurationSeconds(projectJson) {
-  const allItems = (projectJson.tracks ?? []).flat()
+  // Enabled tracks only: skipping the track that held the last clip shortens the
+  // output rather than padding it with blank tail. See docs/plans/2026-08-21-track-skip.md.
+  const allItems = enabledTrackItems(projectJson).flat()
   if (allItems.length === 0) return 0
   return Math.max(...allItems.map(i => i.end ?? 0))
 }

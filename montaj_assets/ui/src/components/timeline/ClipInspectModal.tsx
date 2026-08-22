@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { X, RefreshCw, ChevronDown, ChevronRight, Trash2 } from 'lucide-react'
 import type { Project, AudioTrack, RegenQueueEntry } from '@/lib/types/schema'
+import { mapTrackItems, trackItems } from '@/lib/types/schema'
 
 export type InspectTarget =
   | { kind: 'clip'; id: string }
@@ -404,7 +405,7 @@ function ClipInspect({ project, clipId, onClose, onProjectChange, onSave }: {
   onProjectChange: (p: Project) => void
   onSave: (p: Project) => Promise<unknown>
 }) {
-  const clip = (project.tracks?.[0] ?? []).find(c => c.id === clipId)
+  const clip = (trackItems(project)[0] ?? []).find(c => c.id === clipId)
   const gen = clip?.generation
   const scene = project.storyboard?.scenes?.find(s => s.id === gen?.sceneId)
   const isAiVideo = project.projectType === 'ai_video'
@@ -444,8 +445,8 @@ function ClipInspect({ project, clipId, onClose, onProjectChange, onSave }: {
     try {
       const nextProject: Project = {
         ...project,
-        tracks: (project.tracks ?? []).map(track =>
-          track.map(item => item.id === clipId ? { ...item, volume: clipVolume, muted: clipMuted } : item)
+        tracks: mapTrackItems(project, items =>
+          items.map(item => item.id === clipId ? { ...item, volume: clipVolume, muted: clipMuted } : item)
         ),
       }
       onProjectChange(nextProject)
@@ -732,7 +733,7 @@ function ClipInspect({ project, clipId, onClose, onProjectChange, onSave }: {
 export default function ClipInspectModal({ project, target, onClose, onProjectChange, onSave }: Props) {
   // Gate check: don't render the modal shell if the target doesn't exist.
   if (target.kind === 'clip') {
-    const clip = (project.tracks?.[0] ?? []).find(c => c.id === target.id)
+    const clip = (trackItems(project)[0] ?? []).find(c => c.id === target.id)
     if (!clip) return null
   }
   if (target.kind === 'audio') {

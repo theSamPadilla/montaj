@@ -56,7 +56,7 @@ import type { AudioTrack, VisualItem } from '../../../schema'
 import type { Project } from '../../../types'
 import { collapseGaps, rollEdit, slideItem, slipItem } from '../../cuts'
 import { applyResizeDeltaToSelection } from '../multiSelectOps'
-import { AUDIO_LANE_HEIGHT_PX, moveItemAcrossTracks, updateAudioTrack } from '../timeline-model'
+import { AUDIO_LANE_HEIGHT_PX, mapTrackItems, moveItemAcrossTracks, normalizeTracks, trackItems, updateAudioTrack } from '../timeline-model'
 import { DRAG_THRESHOLD_PX, computeResizedItem, type Draggable } from '../useItemDragDrop'
 import type { TimelineLayout } from './draw'
 import { hitTest, isEmptyHit, type HitResult, type HitTestOptions, type Point } from './hit-test'
@@ -93,7 +93,6 @@ export interface PointerContext {
   layout: TimelineLayout
   viewport: Viewport
   selectedIds: readonly string[]
-  markers: readonly [number | null, number | null]
   /** Clip/audio boundaries — `computeDerivedTiming(project).snapBoundaries`. */
   snapBoundaries: readonly number[]
   /** Content duration plus the timeline's drag headroom. */
@@ -128,8 +127,6 @@ export type PointerEffect =
   | { type: 'projectChange'; project: Project }
   /** `onOverlayEdit` — the gesture is finished, persist it. */
   | { type: 'commit'; project: Project }
-  /** `setMarkers` with the next A/B tuple. */
-  | { type: 'markers'; markers: [number | null, number | null] }
   /** Double-click on a clip or audio bar — `onInspectClip` / `onInspectAudio`. */
   | { type: 'inspect'; target: 'visual' | 'audio'; id: string }
   /** The surface's CSS cursor. Emitted only when it changes. */
@@ -247,75 +244,32 @@ export function resolveGesture(hit: HitResult, modifiers: Modifiers): GestureKin
   }
 }
 
-/**
- * The DOM's marker cycle, lifted from `handleScrubDoubleClick`: first
- * double-click places A, the second places B and completes the range, a third
- * starts over from a fresh A.
- */
-export function cycleMarkers(
-  markers: readonly [number | null, number | null],
-  t: number,
-): [number | null, number | null] {
-  const [a, b] = markers
-  if (a === null) return [t, null]
-  if (b === null) return [a, t]
-  return [t, null]
-}
-
-/** Snap targets for a gesture that moves an item: clip and audio boundaries,
- *  both markers, and the playhead — minus whatever the gesture is itself
- *  dragging, which would otherwise pin it to where it started.
+/** Snap targets for a gesture that moves an item: clip and audio boundaries
+ *  and the playhead — minus whatever the gesture is itself dragging, which
+ *  would otherwise pin it to where it started.
  *
  *  Boundaries come from `press.snapBoundaries`, captured once at press time,
  *  NOT `ctx.snapBoundaries`. The host re-derives `ctx.snapBoundaries` from
  *  every echoed `projectChange`, so a live read would put the item's own
  *  moving edges back into the magnet list mid-gesture (see the `Press.
- *  snapBoundaries` doc). Markers and the playhead are read from `ctx` because
- *  neither can change during an item gesture. */
+ *  snapBoundaries` doc). The playhead is read from `ctx` because it cannot
+ *  change during an item gesture. */
 function itemSnapPoints(ctx: PointerContext, press: Press, exclude: readonly number[]): number[] {
   const points: number[] = [...press.snapBoundaries]
-  for (const marker of ctx.markers) if (marker !== null) points.push(marker)
   points.push(ctx.playheadTime)
   return snapPointsExcluding(points, exclude)
 }
 
-/** Snap targets for dragging the playhead itself: boundaries and markers. */
+/** Snap targets for dragging the playhead itself: the clip/audio boundaries. */
 function playheadSnapPoints(ctx: PointerContext): number[] {
-  const points: number[] = [...ctx.snapBoundaries]
-  for (const marker of ctx.markers) if (marker !== null) points.push(marker)
-  return snapPointsExcluding(points, [])
-}
-
-/**
- * Is this visual row one the painter has faded out?
- *
- * With a marker placed and a primary selection somewhere, the DOM row carries
- * `opacity-30 pointer-events-none` — every OTHER row is both dimmed and inert,
- * so the marker flow can't be derailed by a stray click. `drawTimelineContent`
- * already reproduces the fade; this reproduces the inertness, using the same
- * predicate (draw.ts's `dimmed`) so the picture and the pointer agree. Audio
- * lanes are never dimmed — AudioTrackRow has no such class.
- */
-function isDimmedRow(ctx: PointerContext, trackIdx: number | undefined): boolean {
-  if (trackIdx === undefined) return false
-  const primarySelectedId = ctx.selectedIds[0] ?? null
-  if (primarySelectedId === null || ctx.markers[0] === null) return false
-  const row = ctx.layout.rows.find(r => r.trackIdx === trackIdx)
-  return row !== undefined && !row.items.some(item => item.id === primarySelectedId)
-}
-
-/** Downgrade a hit on an inert row to bare track area, so it seeks instead. */
-function throughDimmedRows(hit: HitResult, ctx: PointerContext): HitResult {
-  if (hit.kind !== 'item-body' && hit.kind !== 'item-edge') return hit
-  if (!isDimmedRow(ctx, hit.trackIdx)) return hit
-  return { kind: 'empty-row', t: hit.t, trackIdx: hit.trackIdx }
+  return snapPointsExcluding([...ctx.snapBoundaries], [])
 }
 
 function replaceVisualItem(project: Project, id: string, patch: Partial<VisualItem>): Project {
   return {
     ...project,
-    tracks: (project.tracks ?? []).map(track =>
-      track.map(item => (item.id === id ? { ...item, ...patch } : item)),
+    tracks: mapTrackItems(project, items =>
+      items.map(item => (item.id === id ? { ...item, ...patch } : item)),
     ),
   }
 }
@@ -324,7 +278,7 @@ function replaceVisualItem(project: Project, id: string, patch: Partial<VisualIt
  *  only when they actually touch it — a gap means there is no shared boundary
  *  to roll. Same adjacency rule `slideItem` uses in cuts.ts. */
 function adjacentOnTrack(project: Project, item: VisualItem): { prev?: VisualItem; next?: VisualItem } {
-  const track = (project.tracks ?? []).find(t => t.some(other => other.id === item.id))
+  const track = trackItems(project).find(t => t.some(other => other.id === item.id))
   if (!track) return {}
   const sorted = [...track].sort((a, b) => a.start - b.start)
   const pos = sorted.findIndex(other => other.id === item.id)
@@ -370,7 +324,12 @@ function applyMove(ctx: PointerContext, press: Press, point: Point, snap: SnapSt
   const next: Project = {
     ...lastProject,
     tracks: moveItemAcrossTracks({
-      tracks: lastProject.tracks ?? [],
+      // Server-side shape normalization is best-effort (a project must always
+      // open even if migration throws), and the SSE stream's initial frame
+      // reads project.json straight off disk with no migration at all — so a
+      // legacy-shape project genuinely can reach here. Normalize defensively
+      // rather than assume `.tracks` is already `VisualTrack[]`.
+      tracks: normalizeTracks(lastProject).tracks ?? [],
       item,
       start,
       end: start + duration,
@@ -585,7 +544,7 @@ export function pointerReducer(state: MachineState, event: PointerMachineEvent):
     }
   }
 
-  const hit = throughDimmedRows(hitTest(point, ctx.layout, ctx.viewport, ctx.hitTestOptions), ctx)
+  const hit = hitTest(point, ctx.layout, ctx.viewport, ctx.hitTestOptions)
 
   switch (event.type) {
     case 'pointerDown': {
@@ -596,6 +555,14 @@ export function pointerReducer(state: MachineState, event: PointerMachineEvent):
       // same destination one event earlier, and it makes the drag continuous.
       if (isEmptyHit(hit)) {
         const applied = applyScrub(ctx, point, createSnapState(), ctx.project)
+        // Pressing bare timeline clears the selection. Without this a clip
+        // stayed selected while you scrubbed somewhere else entirely, so the
+        // next keyboard action (split, ripple-delete) hit an item nowhere near
+        // where you were looking. Additive presses are exempt — shift is how
+        // you build a multi-selection, not how you drop one.
+        const cleared: PointerEffect[] = isAdditive(modifiers)
+          ? applied.effects
+          : [{ type: 'select', id: null, additive: false }, ...applied.effects]
         const next: MachineState = {
           kind: 'dragging',
           cursor: state.cursor,
@@ -611,7 +578,7 @@ export function pointerReducer(state: MachineState, event: PointerMachineEvent):
           snap: applied.snap,
           lastProject: ctx.project,
         }
-        return withCursor(next, cursorForGesture('scrub'), applied.effects)
+        return withCursor(next, cursorForGesture('scrub'), cleared)
       }
 
       // On an item: nothing happens yet. Whether this is a click (select) or a
@@ -681,19 +648,13 @@ export function pointerReducer(state: MachineState, event: PointerMachineEvent):
     }
 
     case 'doubleClick': {
-      // A clip or bar opens its inspector (the DOM item's own dblclick handler,
-      // which stopped propagation so no marker was placed). Everything else is
-      // timeline background and cycles the A/B markers — including empty audio
-      // lanes, which the DOM left inert only because no handler happened to be
-      // bound there.
+      // A clip or bar opens its inspector. Timeline background does nothing:
+      // double-clicking it used to place the A/B range markers, which are gone.
       if (hit.itemId !== undefined) {
         const target = hit.kind === 'item-body' || hit.kind === 'item-edge' ? 'visual' : 'audio'
         return { state, effects: [{ type: 'inspect', target, id: hit.itemId }] }
       }
-      return {
-        state,
-        effects: [{ type: 'markers', markers: cycleMarkers(ctx.markers, clamp(hit.t, 0, ctx.totalDuration)) }],
-      }
+      return { state, effects: [] }
     }
   }
 }

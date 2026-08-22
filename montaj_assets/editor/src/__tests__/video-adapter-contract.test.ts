@@ -29,7 +29,7 @@ const project: EditorProject = {
   editingPrompt: '',
   settings: { resolution: [1080, 1920] },
   assets: [],
-  tracks: [[]],
+  tracks: [{ id: 'trk-0', items: [] }],
 }
 
 const baseRequired = {

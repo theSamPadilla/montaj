@@ -1,5 +1,6 @@
 import type { Project } from '../types'
 import type { VisualItem, AudioTrack, CaptionSegment, Word } from '../schema'
+import { mapTrackItems, trackItems } from './timeline/timeline-model'
 
 /** A time range to excise from the timeline. */
 export interface Cut {
@@ -169,14 +170,15 @@ function cutSingleItem(item: VisualItem, cut: Cut): VisualItem[] {
 export function applyCutToTracks<P extends Project>(project: P, cut: Cut): P {
   if (cut.end <= cut.start) return project
 
-  const [primaryTrack = [], ...overlayTracks] = project.tracks ?? []
-  const newPrimaryTrack = primaryTrack.flatMap(item => applyCutToBaseClip(item, cut))
+  const newTracks = mapTrackItems(project, (items, i) =>
+    i === 0 ? items.flatMap(item => applyCutToBaseClip(item, cut)) : items,
+  )
 
   const newCaptions = project.captions
     ? { ...project.captions, segments: applyCutToCaptions(project.captions.segments, cut) }
     : project.captions
 
-  return { ...project, tracks: [newPrimaryTrack, ...overlayTracks], captions: newCaptions }
+  return { ...project, tracks: newTracks, captions: newCaptions }
 }
 
 /**
@@ -190,7 +192,7 @@ export function applyCutToTracks<P extends Project>(project: P, cut: Cut): P {
  * Returns the same project reference if no gaps exist (safe to call always).
  */
 export function collapseGaps<P extends Project>(project: P): P {
-  const tracks = project.tracks ?? []
+  const tracks = trackItems(project)
 
   const primaryIdx = tracks.findIndex(t => t.some(c => c.type === 'video'))
   const effectiveIdx = primaryIdx >= 0 ? primaryIdx : 0
@@ -222,9 +224,9 @@ export function collapseGaps<P extends Project>(project: P): P {
     return entry?.delta ?? 0
   }
 
-  const newTracks = tracks.map((track, i) => {
+  const newTracks = mapTrackItems(project, (items, i) => {
     if (i === effectiveIdx) return compacted
-    return track.map(clip => {
+    return items.map(clip => {
       const d = applyShift(clip.start, clip.end)
       if (d === 0) return clip
       return { ...clip, start: clip.start + d, end: clip.end + d }
@@ -263,7 +265,8 @@ export function collapseGaps<P extends Project>(project: P): P {
 export function applyCutToItem<P extends Project>(project: P, itemId: string, cut: Cut): P {
   if (cut.end <= cut.start) return project
 
-  const [primaryTrack = [], ...overlayTracks] = project.tracks ?? []
+  const tracks = trackItems(project)
+  const primaryTrack = tracks[0] ?? []
 
   // ── Primary track ──
   const primaryIdx = primaryTrack.findIndex(item => item.id === itemId)
@@ -291,12 +294,19 @@ export function applyCutToItem<P extends Project>(project: P, itemId: string, cu
       newCaptions = { ...newCaptions, segments: merged }
     }
 
-    return { ...project, tracks: [newPrimary, ...overlayTracks], captions: newCaptions }
+    return {
+      ...project,
+      tracks: mapTrackItems(project, (items, i) => (i === 0 ? newPrimary : items)),
+      captions: newCaptions,
+    }
   }
 
   // ── Overlay tracks ──
-  for (let ti = 0; ti < overlayTracks.length; ti++) {
-    const track   = overlayTracks[ti]
+  // `ti` is an ABSOLUTE track index (the loop starts at 1, just above the
+  // primary track), so the rebuild below addresses the same track the item was
+  // found on without an off-by-one.
+  for (let ti = 1; ti < tracks.length; ti++) {
+    const track   = tracks[ti]
     const itemIdx = track.findIndex(item => item.id === itemId)
     if (itemIdx === -1) continue
 
@@ -311,8 +321,7 @@ export function applyCutToItem<P extends Project>(project: P, itemId: string, cu
       ...cutSingleItem(item, clamped),
       ...track.slice(itemIdx + 1),
     ]
-    const newOverlays = overlayTracks.map((t, i) => (i === ti ? newTrack : t))
-    return { ...project, tracks: [primaryTrack, ...newOverlays] }
+    return { ...project, tracks: mapTrackItems(project, (items, i) => (i === ti ? newTrack : items)) }
   }
 
   return project  // itemId not found
@@ -349,15 +358,14 @@ function splitAudioTrack(track: AudioTrack, at: number): [AudioTrack, AudioTrack
 export function splitAtTime<P extends Project>(project: P, at: number, itemId: string | null): P {
   let changed = false
 
-  const newTracks = (project.tracks ?? []).map(track => {
-    const next = track.flatMap(item => {
+  const newTracks = mapTrackItems(project, items =>
+    items.flatMap(item => {
       if (itemId !== null && item.id !== itemId) return [item]
       if (at <= item.start || at >= item.end) return [item]      // playhead not inside this clip
       changed = true
       return splitClip(item, { start: at, end: at })
-    })
-    return next
-  })
+    }),
+  )
 
   // Also split audio tracks
   const audioTracks = project.audio?.tracks ?? []
@@ -397,6 +405,10 @@ export function splitAtTime<P extends Project>(project: P, at: number, itemId: s
 // only op in this file that reaches into audio, and it splits rather than
 // shifts. Ripple targets are visual items only; an audio-track id is a no-op.
 
+/** Locate an item by id in a project's ITEMS — the `trackItems(project)` view,
+ *  not `project.tracks` — so `{ti, ii}` indexes straight back into that view.
+ *  `ti` is also the track's index in `project.tracks`: `trackItems` preserves
+ *  track order, so a `mapTrackItems` rebuild addresses the same track. */
 function findItem(tracks: VisualItem[][], itemId: string): { ti: number; ii: number } | null {
   for (let ti = 0; ti < tracks.length; ti++) {
     const ii = tracks[ti].findIndex(item => item.id === itemId)
@@ -452,15 +464,15 @@ function shiftCaptionsInWindow(
  * - Returns the same project reference if `itemId` names no visual item.
  */
 export function rippleDelete<P extends Project>(project: P, itemId: string): P {
-  const tracks = project.tracks ?? []
+  const tracks = trackItems(project)
   const found = findItem(tracks, itemId)
   if (!found) return project
 
   const item = tracks[found.ti][found.ii]
   const duration = item.end - item.start
 
-  const newTracks = tracks.map(track =>
-    track
+  const newTracks = mapTrackItems(project, items =>
+    items
       .filter(other => other.id !== itemId)
       .map(other =>
         duration > EPSILON && other.start >= item.end - EPSILON
@@ -504,7 +516,7 @@ export function rollEdit<P extends Project>(
   rightItemId: string,
   delta: number,
 ): P {
-  const tracks = project.tracks ?? []
+  const tracks = trackItems(project)
   const l = findItem(tracks, leftItemId)
   const r = findItem(tracks, rightItemId)
   if (!l || !r) return project
@@ -540,7 +552,7 @@ export function rollEdit<P extends Project>(
     item.id === left.id ? newLeft : item.id === right.id ? newRight : item,
   )
 
-  return { ...project, tracks: tracks.map((t, i) => (i === l.ti ? newTrack : t)) }
+  return { ...project, tracks: mapTrackItems(project, (items, i) => (i === l.ti ? newTrack : items)) }
 }
 
 /**
@@ -555,7 +567,7 @@ export function rollEdit<P extends Project>(
  * clip, carries no source window to slip, or the clamped movement is zero.
  */
 export function slipItem<P extends Project>(project: P, itemId: string, delta: number): P {
-  const tracks = project.tracks ?? []
+  const tracks = trackItems(project)
   const found = findItem(tracks, itemId)
   if (!found) return project
 
@@ -578,7 +590,7 @@ export function slipItem<P extends Project>(project: P, itemId: string, delta: n
   }
   const newTrack = tracks[found.ti].map(other => (other.id === item.id ? newItem : other))
 
-  return { ...project, tracks: tracks.map((t, i) => (i === found.ti ? newTrack : t)) }
+  return { ...project, tracks: mapTrackItems(project, (items, i) => (i === found.ti ? newTrack : items)) }
 }
 
 /**
@@ -605,7 +617,7 @@ export function slipItem<P extends Project>(project: P, itemId: string, delta: n
  * movement is zero.
  */
 export function slideItem<P extends Project>(project: P, itemId: string, delta: number): P {
-  const tracks = project.tracks ?? []
+  const tracks = trackItems(project)
   const found = findItem(tracks, itemId)
   if (!found) return project
 
@@ -669,7 +681,7 @@ export function slideItem<P extends Project>(project: P, itemId: string, delta: 
 
   return {
     ...project,
-    tracks: tracks.map((t, i) => (i === found.ti ? newTrack : t)),
+    tracks: mapTrackItems(project, (items, i) => (i === found.ti ? newTrack : items)),
     captions: newCaptions,
   }
 }

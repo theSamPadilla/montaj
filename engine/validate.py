@@ -7,6 +7,7 @@ from common import fail
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from lib.types.carousel import CAROUSEL_ASPECTS, CAROUSEL_RESOLUTIONS
+from lib.project_tracks import track_items
 
 # Re-export existing step validation so tests can import from validate
 from validate_step import validate as validate_step  # noqa: F401
@@ -35,8 +36,8 @@ def _validate_clip_extensions(data):
     df = data.get("derivedFrom")
     if df is not None and not isinstance(df, str):
         fail("invalid_field", "derivedFrom must be a string")
-    for ti, track in enumerate(data.get("tracks", [])):
-        for item in track:
+    for ti, items in enumerate(track_items(data)):
+        for item in items:
             sc = item.get("sourceCrop")
             if sc is None:
                 continue
@@ -171,14 +172,29 @@ def validate_project(path):
             fail("invalid_tracks", "tracks must be an array")
 
         for i, track in enumerate(tracks):
-            if not isinstance(track, list):
-                fail("invalid_tracks", f"tracks[{i}] must be an array of items, not an object")
+            # Both shapes are legal: a bare array of items (legacy) or a track
+            # object carrying an `items` array plus optional track settings.
+            if isinstance(track, list):
+                items = track
+            elif isinstance(track, dict):
+                items = track.get("items")
+                if not isinstance(items, list):
+                    fail("invalid_tracks", f"tracks[{i}] must be an array of items, or an object with an 'items' array")
+                if "id" in track and not isinstance(track["id"], str):
+                    fail("invalid_field", f"tracks[{i}]: 'id' must be a string")
+                if "volume" in track and (isinstance(track["volume"], bool) or not isinstance(track["volume"], (int, float))):
+                    fail("invalid_field", f"tracks[{i}]: 'volume' must be a number")
+                for key in ("muted", "enabled"):
+                    if key in track and not isinstance(track[key], bool):
+                        fail("invalid_field", f"tracks[{i}]: '{key}' must be a boolean")
+            else:
+                fail("invalid_tracks", f"tracks[{i}] must be an array of items, or an object with an 'items' array")
 
             if i == 0:
                 # Primary track: items must be type "video" with start/end.
                 # Overlap is intentionally NOT checked here — primary clips can overlap
                 # on the timeline; compose.js handles rendering order via itsoffset.
-                for item in track:
+                for item in items:
                     for field in PRIMARY_CLIP_REQUIRED:
                         if field not in item:
                             fail("missing_field", f"tracks[0] item missing required field '{field}': {item.get('id', '?')}")
@@ -192,7 +208,7 @@ def validate_project(path):
                             fail("invalid_field", f"tracks[0] item '{item.get('id', '?')}': end ({e}) < start ({s})")
             else:
                 # Overlay tracks: standard visual item validation + overlap check
-                sorted_items = sorted(track, key=lambda x: x.get("start", 0))
+                sorted_items = sorted(items, key=lambda x: x.get("start", 0))
                 prev_end = None
                 for item in sorted_items:
                     for field in VISUAL_ITEM_REQUIRED:

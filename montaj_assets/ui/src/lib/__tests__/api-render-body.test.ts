@@ -60,4 +60,19 @@ describe('api.renderProject', () => {
     await api.renderProject('proj-1', () => {}, () => {}, () => {}, { export: 'sdr' })
     expect(JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string)).toEqual({ export: 'sdr' })
   })
+
+  it('threads the export dialog name and cover into the body', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(sseResponse())
+    vi.stubGlobal('fetch', fetchMock)
+
+    await api.renderProject('proj-1', () => {}, () => {}, () => {}, { name: 'my-clip', cover: 3.5 })
+    expect(JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string)).toEqual({
+      name: 'my-clip',
+      cover: 3.5,
+    })
+
+    // cover: 0 is a real choice (frame 0), not an absent field.
+    await api.renderProject('proj-1', () => {}, () => {}, () => {}, { cover: 0 })
+    expect(JSON.parse((fetchMock.mock.calls[1][1] as RequestInit).body as string)).toEqual({ cover: 0 })
+  })
 })

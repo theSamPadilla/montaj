@@ -12,6 +12,10 @@ import type { AudioTrack, VisualItem } from '../../../../schema'
 import type { Project } from '../../../../types'
 import {
   AUDIO_ITEM_INSET_PX,
+  CURSOR_WIDTH_PX,
+  LABEL_TOP_OFFSET_PX,
+  CLIP_GUTTER_PX,
+  CLIP_SELECTED_BORDER_PX,
   MIN_LABEL_WIDTH_PX,
   PLAYHEAD_WIDTH_PX,
   TIMELINE_COLORS,
@@ -21,7 +25,6 @@ import {
   drawAudioItem,
   drawClipRect,
   drawPlayhead,
-  drawSelectionTint,
   drawTimelineContent,
   drawTimelineOverlay,
   type DrawContext,
@@ -103,8 +106,6 @@ function scene(over: Partial<TimelineScene> = {}): TimelineScene {
     viewport: viewport(),
     layout: computeTimelineLayout(p),
     selectedIds: [],
-    markerSelection: null,
-    markers: [null, null],
     surfaceWidth: 1000,
     surfaceHeight: 200,
     ...over,
@@ -151,7 +152,7 @@ describe('clampRectToSurface', () => {
 // ── Element painters ─────────────────────────────────────────────────────
 
 describe('drawClipRect', () => {
-  it('fills the rect it is handed, in the track colour, with a right border', () => {
+  it('insets the body from the clip\'s span, leaving a gutter between touching clips', () => {
     const r = recordingContext()
     drawClipRect(r.ctx, {
       rect: { x: 120, y: 40, width: 200, height: 40 },
@@ -160,24 +161,55 @@ describe('drawClipRect', () => {
       label: '▪ video',
     })
 
+    // Inset by CLIP_GUTTER_PX per side — two touching clips therefore show
+    // twice that as dark row background, which is what makes a cut visible
+    // once filmstrip frames run edge to edge.
     const fills = r.of('fillRect')
-    expect(fills[0].args).toEqual([120, 40, 200, 40])
-    expect(fills[1].args).toEqual([319, 40, 1, 40]) // `border-r`
+    expect(fills[0].args).toEqual([120 + CLIP_GUTTER_PX, 40, 200 - CLIP_GUTTER_PX * 2, 40])
     expect(r.calls.some(c => c.method === 'set:fillStyle' && c.args[0] === TRACK_PALETTE[1].fill)).toBe(true)
-    expect(r.count('strokeRect')).toBe(0)
-    expect(r.of('fillText')[0].args).toEqual(['▪ video', 126, 60])
+    // Top-left, not vertically centred: the centre of a clip is now the seam
+    // between its frames band and its waveform band.
+    expect(r.of('fillText')[0].args).toEqual(['▪ video', 120 + CLIP_GUTTER_PX + 6, 40 + LABEL_TOP_OFFSET_PX])
   })
 
-  it('adds an inset ring only when selected', () => {
+  it('outlines every clip, and a selected one in thick white', () => {
     const plain = recordingContext()
     drawClipRect(plain.ctx, { rect: { x: 0, y: 0, width: 100, height: 40 }, palette: TRACK_PALETTE[0], selected: false, label: 'x' })
-    expect(plain.count('strokeRect')).toBe(0)
+    expect(plain.calls.some(c => c.method === 'set:strokeStyle' && c.args[0] === TRACK_PALETTE[0].border)).toBe(true)
+    expect(plain.calls.some(c => c.method === 'set:lineWidth' && c.args[0] === 1)).toBe(true)
 
     const picked = recordingContext()
     drawClipRect(picked.ctx, { rect: { x: 0, y: 0, width: 100, height: 40 }, palette: TRACK_PALETTE[0], selected: true, label: 'x' })
-    expect(picked.of('strokeRect')[0].args).toEqual([0.5, 0.5, 99, 39])
-    expect(picked.calls.some(c => c.method === 'set:strokeStyle' && c.args[0] === TRACK_PALETTE[0].ring)).toBe(true)
+    // White, not the track's own hue — the only treatment that reads over an
+    // arbitrary video frame.
+    expect(picked.calls.some(c => c.method === 'set:strokeStyle' && c.args[0] === TIMELINE_COLORS.clipSelectedOutline)).toBe(true)
+    expect(picked.calls.some(c => c.method === 'set:lineWidth' && c.args[0] === CLIP_SELECTED_BORDER_PX)).toBe(true)
     expect(picked.calls.some(c => c.method === 'set:fillStyle' && c.args[0] === TRACK_PALETTE[0].fillSelected)).toBe(true)
+  })
+
+  it('clips its content to the rounded body, so frames stop at the corners', () => {
+    const r = recordingContext()
+    drawClipRect(r.ctx, {
+      rect: { x: 0, y: 0, width: 100, height: 40 },
+      palette: TRACK_PALETTE[0], selected: false, label: 'x',
+      drawContent: (c, body) => c.fillRect(body.x, body.y, body.width, body.height),
+    })
+    // A clip path is established before the content paints.
+    const clipAt = r.calls.findIndex(c => c.method === 'clip')
+    const contentAt = r.calls.findIndex(c => c.method === 'fillRect' && (c.args as number[])[2] === 100 - CLIP_GUTTER_PX * 2)
+    expect(clipAt).toBeGreaterThanOrEqual(0)
+    expect(clipAt).toBeLessThan(contentAt)
+  })
+
+  it('hands drawContent the inset body, not the full span', () => {
+    let handed: { x: number; width: number } | null = null
+    const r = recordingContext()
+    drawClipRect(r.ctx, {
+      rect: { x: 120, y: 40, width: 200, height: 40 },
+      palette: TRACK_PALETTE[0], selected: false, label: 'x',
+      drawContent: (_c, body) => { handed = { x: body.x, width: body.width } },
+    })
+    expect(handed).toEqual({ x: 120 + CLIP_GUTTER_PX, width: 200 - CLIP_GUTTER_PX * 2 })
   })
 
   it('skips the label on a clip too narrow to read it', () => {
@@ -234,19 +266,12 @@ describe('drawAudioItem', () => {
   })
 })
 
-describe('drawPlayhead / drawSelectionTint', () => {
+describe('drawPlayhead', () => {
   it('centres the playhead on its time', () => {
     const r = recordingContext()
     drawPlayhead(r.ctx, 400, 0, 160)
     expect(r.of('fillRect')[0].args).toEqual([400 - PLAYHEAD_WIDTH_PX / 2, 0, PLAYHEAD_WIDTH_PX, 160])
     expect(r.calls.some(c => c.method === 'set:fillStyle' && c.args[0] === TIMELINE_COLORS.playhead)).toBe(true)
-  })
-
-  it('washes the marker range', () => {
-    const r = recordingContext()
-    drawSelectionTint(r.ctx, { x: 20, y: 0, width: 100, height: 88 })
-    expect(r.of('fillRect')[0].args).toEqual([20, 0, 100, 88])
-    expect(r.calls.some(c => c.method === 'set:fillStyle' && c.args[0] === TIMELINE_COLORS.markerSelectionTint)).toBe(true)
   })
 })
 
@@ -262,9 +287,10 @@ describe('drawTimelineContent', () => {
       viewport: viewport({ pxPerSecond: 25, scrollSeconds: 8 }),
     }))
 
-    // (10 - 8) * 25 = 50px from the left, 4s * 25 = 100px wide.
+    // (10 - 8) * 25 = 50px from the left, 4s * 25 = 100px wide — then inset by
+    // the gutter each side, which is paint only and does not move the clip in time.
     const clipFill = r.of('fillRect')[0]
-    expect(clipFill.args).toEqual([50, 0, 100, BASE_VISUAL_ROW_RENDER_HEIGHT_PX])
+    expect(clipFill.args).toEqual([50 + CLIP_GUTTER_PX, 0, 100 - CLIP_GUTTER_PX * 2, BASE_VISUAL_ROW_RENDER_HEIGHT_PX])
   })
 
   it('insets audio bars inside their lane', () => {
@@ -289,27 +315,6 @@ describe('drawTimelineContent', () => {
     const r = recordingContext()
     drawTimelineContent(r.ctx, scene({ project: p, layout: computeTimelineLayout(p), viewport: viewport({ pxPerSecond: 10 }) }))
     expect(r.calls.some(c => c.method === 'set:fillStyle' && c.args[0] === TIMELINE_COLORS.crossfadeFill)).toBe(true)
-  })
-
-  it('tints the marker range over the visual rows and draws both marker lines', () => {
-    const p = project({
-      tracks: [[clip({ start: 0, end: 20 })]],
-      audio: { tracks: [audio({ start: 0, end: 20 })] },
-    } as unknown as Partial<Project>)
-    const layout = computeTimelineLayout(p)
-    const r = recordingContext()
-    drawTimelineContent(r.ctx, scene({
-      project: p, layout,
-      viewport: viewport({ pxPerSecond: 10 }),
-      markers: [2, 6],
-      markerSelection: { start: 2, end: 6 },
-    }))
-    // Stops at the bottom of the visual rows — audio lanes are never tinted,
-    // matching the DOM (the tint lives inside VisualTrackRow).
-    const tint = r.of('fillRect').find(c => c.args[0] === 20 && c.args[2] === 40)
-    expect(tint?.args).toEqual([20, 0, 40, BASE_VISUAL_ROW_RENDER_HEIGHT_PX])
-    expect(layout.height).toBeGreaterThan(BASE_VISUAL_ROW_RENDER_HEIGHT_PX)
-    expect(r.calls.filter(c => c.method === 'set:fillStyle' && c.args[0] === TIMELINE_COLORS.marker)).toHaveLength(2)
   })
 
   it('never draws the playhead — that is the overlay layer', () => {
@@ -349,6 +354,66 @@ describe('drawTimelineOverlay', () => {
     })
     expect(r.count('clearRect')).toBe(1)
     expect(r.count('fillRect')).toBe(0)
+  })
+
+  // ── The preview-axis cursor, on the same layer as the playhead ──
+
+  it('draws nothing extra when the axis is off (no cursor time)', () => {
+    const r = recordingContext()
+    drawTimelineOverlay(r.ctx, {
+      viewport: viewport({ pxPerSecond: 40, scrollSeconds: 0 }),
+      currentTime: 5,
+      cursorTime: null,
+      surfaceWidth: 1000,
+      surfaceHeight: 160,
+    })
+    expect(r.count('fillRect')).toBe(1)
+  })
+
+  it('draws the cursor in yellow, before the playhead', () => {
+    const r = recordingContext()
+    drawTimelineOverlay(r.ctx, {
+      viewport: viewport({ pxPerSecond: 40, scrollSeconds: 0 }),
+      currentTime: 5,
+      cursorTime: 2,
+      surfaceWidth: 1000,
+      surfaceHeight: 160,
+    })
+    const rects = r.of('fillRect')
+    expect(rects.length).toBe(2)
+    // Cursor first (2s × 40px/s = 80), so the red playhead wins any overlap.
+    expect(rects[0].args).toEqual([80 - CURSOR_WIDTH_PX / 2, 0, CURSOR_WIDTH_PX, 160])
+    expect(rects[1].args).toEqual([200 - PLAYHEAD_WIDTH_PX / 2, 0, PLAYHEAD_WIDTH_PX, 160])
+    const fills = r.of('set:fillStyle').map(c => c.args[0])
+    expect(fills).toEqual([TIMELINE_COLORS.cursor, TIMELINE_COLORS.playhead])
+  })
+
+  it('culls the cursor when it scrolls off-screen, keeping the playhead', () => {
+    const r = recordingContext()
+    drawTimelineOverlay(r.ctx, {
+      viewport: viewport({ pxPerSecond: 40, scrollSeconds: 0 }),
+      currentTime: 5,
+      cursorTime: 400,
+      surfaceWidth: 1000,
+      surfaceHeight: 160,
+    })
+    expect(r.count('fillRect')).toBe(1)
+    expect(r.of('fillRect')[0].args).toEqual([200 - PLAYHEAD_WIDTH_PX / 2, 0, PLAYHEAD_WIDTH_PX, 160])
+  })
+
+  it('draws the cursor independently of the playhead — the two diverge by design', () => {
+    // This is the whole feature: the pointer is at 3s, playback is still at 0.
+    const r = recordingContext()
+    drawTimelineOverlay(r.ctx, {
+      viewport: viewport({ pxPerSecond: 40, scrollSeconds: 0 }),
+      currentTime: 0,
+      cursorTime: 3,
+      surfaceWidth: 1000,
+      surfaceHeight: 160,
+    })
+    const rects = r.of('fillRect')
+    expect(rects[0].args[0]).toBe(120 - CURSOR_WIDTH_PX / 2)
+    expect(rects[1].args[0]).toBe(0 - PLAYHEAD_WIDTH_PX / 2)
   })
 })
 
@@ -424,5 +489,36 @@ describe('draw culling', () => {
     }))
     expect(stats.visualItemsDrawn + stats.audioItemsDrawn).toBe(100)
     expect(stats.itemsCulled).toBe(0)
+  })
+})
+
+describe('skipped tracks', () => {
+  it('marks a disabled track\'s row so the painter dims it', () => {
+    const p = {
+      id: 'p',
+      tracks: [
+        { id: 't0', items: [clip({ id: 'c0' })] },
+        { id: 't1', items: [clip({ id: 'o0', type: 'overlay' })], enabled: false },
+      ],
+    } as unknown as Project
+    const layout = computeTimelineLayout(p)
+    expect(layout.rows.find(r => r.trackIdx === 1)?.disabled).toBe(true)
+    expect(layout.rows.find(r => r.trackIdx === 0)?.disabled).toBe(false)
+  })
+
+  it('keeps a skipped row at full height and in place — it stays editable', () => {
+    // Dimmed, not collapsed: you have to be able to see a skipped track and
+    // click its clips to turn it back on.
+    const enabled = { id: 'p', tracks: [{ id: 't0', items: [clip({ id: 'c0' })] }] } as unknown as Project
+    const skipped = { id: 'p', tracks: [{ id: 't0', items: [clip({ id: 'c0' })], enabled: false }] } as unknown as Project
+    expect(computeTimelineLayout(skipped).rows[0].height).toBe(computeTimelineLayout(enabled).rows[0].height)
+    expect(computeTimelineLayout(skipped).height).toBe(computeTimelineLayout(enabled).height)
+  })
+
+  it('draws a skipped row at reduced alpha', () => {
+    const p = { id: 'p', tracks: [{ id: 't0', items: [clip({ id: 'c0', start: 0, end: 2 })], enabled: false }] } as unknown as Project
+    const r = recordingContext()
+    drawTimelineContent(r.ctx, scene({ project: p, layout: computeTimelineLayout(p) }))
+    expect(r.calls.some(c => c.method === 'set:globalAlpha' && c.args[0] === 0.3)).toBe(true)
   })
 })

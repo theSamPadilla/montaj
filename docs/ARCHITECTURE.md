@@ -769,7 +769,7 @@ user) and `docs/plans/SP5-PARITY-CHECKLIST.md` for the manual verification
 pass that gates ever flipping the default.
 
 **Two-mode architecture, one chrome.** `Timeline.tsx` owns the surface either
-way — zoom controls, marker state, the scrubber, the transcript panel/modal,
+way — zoom controls, the scrubber, the transcript panel/modal,
 and the `TimelineContext` provider are unchanged by the flag. Only the
 track-row area (visual tracks + audio lanes) swaps: `{canvas: false}` (or the
 prop absent) renders the existing `VisualTrackRow`/`AudioTrackRow` DOM rows;
@@ -963,22 +963,25 @@ ffmpeg detects and uses available hardware encoders automatically. 5–10x speed
 
 Both are React components rendered frame-by-frame by Puppeteer and composited into the video by ffmpeg. They differ in how they're stored and who authors them.
 
-**Overlays** are custom JSX files written by the agent. They live in `tracks` — a top-level array of arrays (`tracks[0]` is the primary video track; overlay tracks start at index 1). Each item points to a JSX file and a time window:
+**Overlays** are custom JSX files written by the agent. They live in `tracks` — a top-level array of track objects (`{id, items, ...}`); `tracks[0]` is the primary video track, overlay tracks start at index 1, and each track's `items` array holds its clips/overlays. Each item points to a JSX file and a time window:
 
 ```json
 {
   "tracks": [
-    [],
-    [
-      {
-        "id": "ov-hook",
-        "type": "overlay",
-        "src": "/abs/path/to/project/overlays/hook.jsx",
-        "props": { "text": "She built an AI employee" },
-        "start": 0.0,
-        "end": 3.0
-      }
-    ]
+    { "id": "trk-0", "items": [] },
+    {
+      "id": "trk-1",
+      "items": [
+        {
+          "id": "ov-hook",
+          "type": "overlay",
+          "src": "/abs/path/to/project/overlays/hook.jsx",
+          "props": { "text": "She built an AI employee" },
+          "start": 0.0,
+          "end": 3.0
+        }
+      ]
+    }
   ]
 }
 ```

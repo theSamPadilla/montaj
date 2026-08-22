@@ -9,7 +9,7 @@ import PlayheadLine from './PlayheadLine'
 import { useItemDragDrop } from './useItemDragDrop'
 import type { Draggable, DragEventContext } from './useItemDragDrop'
 import { applyMuteToSelection, applyResizeDeltaToSelection, deleteSelection } from './multiSelectOps'
-import { moveItemAcrossTracks } from './timeline-model'
+import { mapTrackItems, moveItemAcrossTracks, normalizeTracks } from './timeline-model'
 
 interface VisualTrackRowProps {
   trackItems: VisualItem[]
@@ -62,11 +62,8 @@ function VisualTrackRow({
   regenEnabled,
   isClipQueued,
 }: VisualTrackRowProps) {
-  const { totalDuration, snapBoundaries, scrollRef, scrubberRef, clock, markers, setMarkers, selection, overlayDraggedRef, zoomRef } = useTimelineContext()
+  const { totalDuration, snapBoundaries, scrollRef, scrubberRef, clock, overlayDraggedRef, zoomRef } = useTimelineContext()
   const tc = trackColors[trackIdx % trackColors.length]
-  const markerActive = markers[0] !== null || selection !== null
-  const primarySelectedId = selectedIds[0] ?? null
-  const dimmed = markerActive && primarySelectedId !== null && !trackItems.some(i => i.id === primarySelectedId)
 
   const { beginDrag, beginResize } = useItemDragDrop({
     totalDuration,
@@ -89,8 +86,8 @@ function VisualTrackRow({
         // math) to the originator clip.
         let next: Project = {
           ...project,
-          tracks: (project.tracks ?? []).map(track =>
-            track.map(ov => ov.id !== item.id ? ov : { ...ov, start: resized.start, end: resized.end, inPoint: resized.inPoint, outPoint: resized.outPoint })
+          tracks: mapTrackItems(project, items =>
+            items.map(ov => ov.id !== item.id ? ov : { ...ov, start: resized.start, end: resized.end, inPoint: resized.inPoint, outPoint: resized.outPoint })
           ),
         }
         // Then: propagate the same delta to every other selected item across
@@ -144,7 +141,13 @@ function VisualTrackRow({
         const next = {
           ...lastUpdated,
           tracks: moveItemAcrossTracks({
-            tracks: lastUpdated.tracks ?? [],
+            // Server-side shape normalization is best-effort (a project must
+            // always open even if migration throws), and the SSE stream's
+            // initial frame reads project.json straight off disk with no
+            // migration at all — so a legacy-shape project genuinely can reach
+            // here. Normalize defensively rather than assume `.tracks` is
+            // already `VisualTrack[]`.
+            tracks: normalizeTracks(lastUpdated).tracks ?? [],
             item,
             start: moved.start,
             end: moved.end,
@@ -158,17 +161,6 @@ function VisualTrackRow({
       onCommit: () => {
         onOverlayEdit?.(lastUpdated)
       },
-    })
-  }
-
-  function handleScrubDoubleClick(e: React.MouseEvent<HTMLDivElement>) {
-    if (totalDuration === 0) return
-    e.preventDefault()
-    const t = ratioFromClientX(e.clientX, scrubberRef.current!.getBoundingClientRect()) * totalDuration
-    setMarkers(([a, b]) => {
-      if (a === null) return [t, null]       // place first marker
-      if (b === null) return [a, t]          // place second → selection complete
-      return [t, null]                       // reset: start fresh with new first marker
     })
   }
 
@@ -186,7 +178,7 @@ function VisualTrackRow({
   }
 
   return (
-    <div className={`${trackIdx === 0 ? trackRowTall : trackRow} transition-opacity ${dimmed ? 'opacity-30 pointer-events-none' : ''}`} onClick={handleTrackClick} onDoubleClick={handleScrubDoubleClick}>
+    <div className={trackIdx === 0 ? trackRowTall : trackRow} onClick={handleTrackClick}>
       {trackItems.map((item) => {
         const isSel = selectedIds.includes(item.id)
         return (
@@ -269,12 +261,6 @@ function VisualTrackRow({
         )
       })}
       <PlayheadLine />
-      {selection && (
-        <div
-          className="absolute inset-y-0 bg-red-500/20 pointer-events-none"
-          style={{ left: `${pct(selection.start, totalDuration)}%`, width: `${pct(selection.end - selection.start, totalDuration)}%` }}
-        />
-      )}
     </div>
   )
 }

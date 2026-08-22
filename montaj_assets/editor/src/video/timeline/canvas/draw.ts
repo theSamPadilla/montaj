@@ -20,13 +20,16 @@ import type { Project } from '../../../types'
 import {
   AUDIO_LANE_HEIGHT_PX,
   BASE_VISUAL_ROW_RENDER_HEIGHT_PX,
+  visualItemLabel,
   ROW_GAP_PX,
   VISUAL_ROW_RENDER_HEIGHT_PX,
   groupAudioLanes,
+  normalizeTracks,
+  trackItems,
 } from '../timeline-model'
 import { timeToX, visibleRange, type Viewport } from './viewport'
 import { drawAudioLaneWaveform, drawClipWaveform, type WaveformSceneLookup } from './waveforms'
-import { drawFilmstripHoverThumb, drawFilmstripTiles, type FilmstripHoverThumb, type FilmstripSceneLookup } from './filmstrips'
+import { drawFilmstripTiles, type FilmstripSceneLookup } from './filmstrips'
 
 // ── The context surface the painter needs ────────────────────────────────
 // A structural subset of CanvasRenderingContext2D: a real context satisfies it,
@@ -63,6 +66,10 @@ export interface DrawContext {
   font: string
   textBaseline: CanvasTextBaseline
   globalAlpha: number
+  /** Set only around clip labels, which sit over filmstrip frames; `restore()`
+   *  clears it so no shape painter inherits a shadow. */
+  shadowColor: string
+  shadowBlur: number
 }
 
 // ── Palette ──────────────────────────────────────────────────────────────
@@ -102,22 +109,42 @@ export const TIMELINE_COLORS = {
   /** The overlap band AudioTrackRow marks with a crossfade glyph. */
   crossfadeFill: 'rgba(251,191,36,0.15)',
   crossfadeBorder: 'rgba(251,191,36,0.3)',
-  /** `bg-red-500/20` — the two-marker range tint drawn across the rows. */
-  markerSelectionTint: 'rgba(239,68,68,0.2)',
-  /** `bg-amber-400` — marker A/B lines. */
-  marker: '#fbbf24',
-  /** `bg-red-500` — the playhead. */
+  /** `bg-red-500` — the playhead, i.e. where playback/preview actually is. */
   playhead: '#ef4444',
+  /** The selected clip's outline. White rather than the track's own hue: it is
+   *  the one colour that stays obvious over an arbitrary video frame. */
+  clipSelectedOutline: '#ffffff',
+  /** `bg-yellow-400` — the preview-axis cursor: the line that tracks the
+   *  pointer while the axis is on. Yellow so it can never be mistaken for the
+   *  red playback line it moves independently of; it inherits the colour of
+   *  the DOM hover indicator it replaces (Timeline.tsx's `bg-yellow-400/80`). */
+  cursor: '#facc15',
 } as const
 
 export const ROW_RADIUS_PX = 4           // Tailwind `rounded`
+/** Horizontal inset per side between a clip's time span and its drawn body —
+ *  two touching clips therefore show twice this as a dark gutter. */
+export const CLIP_GUTTER_PX = 2
+/** Corner radius on a clip body. */
+export const CLIP_RADIUS_PX = 4
+/** Weight of the selected-clip outline. Thick on purpose: it has to read over
+ *  filmstrip frames of any brightness. */
+export const CLIP_SELECTED_BORDER_PX = 3
 export const AUDIO_ITEM_RADIUS_PX = 4    // Tailwind `rounded` on the bar
 export const AUDIO_ITEM_INSET_PX = 4     // `top-1 bottom-1` on the bar
 export const PLAYHEAD_WIDTH_PX = 2       // `w-[2px]`
+export const CURSOR_WIDTH_PX = 2         // matches the playhead's weight
 export const LABEL_FONT = '10px ui-sans-serif, system-ui, sans-serif'
 export const LABEL_PAD_PX = 6
 /** Below this width a label is more smear than information, so it is skipped. */
 export const MIN_LABEL_WIDTH_PX = 28
+/** Middle-baseline offset from a clip's top edge — half the font's 10px plus a
+ *  4px margin, so the label rides just inside the clip's top border. */
+export const LABEL_TOP_OFFSET_PX = 9
+/** Drop shadow behind a clip label, so it stays readable over a filmstrip
+ *  frame of any brightness without needing a solid plate behind it. */
+export const LABEL_SHADOW_COLOR = 'rgba(0,0,0,0.85)'
+export const LABEL_SHADOW_BLUR_PX = 3
 
 // ── Row layout ───────────────────────────────────────────────────────────
 
@@ -126,6 +153,10 @@ export interface VisualRowLayout {
   items: VisualItem[]
   y: number
   height: number
+  /** The track's `enabled === false` — the row still lays out and still takes
+   *  its full height (you have to be able to see and re-enable it); the painter
+   *  just dims it. */
+  disabled?: boolean
 }
 
 export interface AudioLaneLayout {
@@ -153,14 +184,24 @@ export interface TimelineLayout {
  * geometry — one layout, two readers.
  */
 export function computeTimelineLayout(project: Project): TimelineLayout {
-  const allTracks = project.tracks ?? []
+  const allTracks = trackItems(project)
+  // Settings live on the track object; `trackItems` deliberately returns only
+  // items, so read `enabled` off the normalized tracks alongside it. A
+  // legacy-shaped project has no settings, so every row is enabled.
+  const trackSettings = normalizeTracks(project).tracks ?? []
   const rows: VisualRowLayout[] = []
   let y = 0
 
   for (let reversedIdx = 0; reversedIdx < allTracks.length; reversedIdx++) {
     const trackIdx = allTracks.length - 1 - reversedIdx
     const height = trackIdx === 0 ? BASE_VISUAL_ROW_RENDER_HEIGHT_PX : VISUAL_ROW_RENDER_HEIGHT_PX
-    rows.push({ trackIdx, items: allTracks[trackIdx], y, height })
+    rows.push({
+      trackIdx,
+      items: allTracks[trackIdx],
+      y,
+      height,
+      disabled: trackSettings[trackIdx]?.enabled === false,
+    })
     y += height + ROW_GAP_PX
   }
 
@@ -216,8 +257,7 @@ export interface ClipDrawArgs {
   palette: TrackPalette
   selected: boolean
   label: string
-  /** Rows unrelated to the primary selection dim while markers are placed —
-   *  the DOM path's `opacity-30`. */
+  /** A skipped track's clips are faded — the DOM path's `opacity-30`. */
   dimmed?: boolean
   /** Content layer drawn between the fill/border and the label — the T6
    *  per-clip waveform hooks in here (filmstrip, T7, will too). Receives the
@@ -231,37 +271,86 @@ export interface ClipDrawArgs {
  * label. Content layers (waveform T6, filmstrip T7) draw between the fill and
  * the label — pass through here once they exist.
  */
+/**
+ * The drawn body of a clip: inset from its true time span, so two clips that
+ * touch on the timeline are separated by a real gutter of row background
+ * rather than a 1px line. That line was legible while a clip was a flat
+ * colour; against a continuous ribbon of filmstrip frames it vanished, and
+ * twelve clips read as one.
+ *
+ * Hit-testing still uses the full span — the gutter is paint, not a dead zone.
+ * Exported because the content lookups (`clipColumns`, `clipTiles`) must size
+ * themselves to the SAME rect the painter will draw them into, or a filmstrip
+ * lays out its cells against a width two pixels wider than the clip it lands
+ * in.
+ */
+export function clipBodyRect(rect: Rect): Rect {
+  const gutter = Math.min(CLIP_GUTTER_PX, Math.max(0, (rect.width - 1) / 2))
+  return {
+    x: rect.x + gutter,
+    y: rect.y,
+    width: Math.max(0, rect.width - gutter * 2),
+    height: rect.height,
+  }
+}
+
 export function drawClipRect(ctx: DrawContext, args: ClipDrawArgs): void {
   const { rect, palette, selected, label, dimmed, drawContent } = args
   if (rect.width <= 0) return
+
+  const body = clipBodyRect(rect)
+  if (body.width <= 0) return
+
+  const radius = Math.min(CLIP_RADIUS_PX, body.width / 2, body.height / 2)
+
   ctx.save()
   if (dimmed) ctx.globalAlpha = 0.3
 
+  // Fill and content clipped to the rounded body, so filmstrip tiles and
+  // waveform bars stop at the corners instead of squaring them off.
+  ctx.save()
+  roundRectPath(ctx, body.x, body.y, body.width, body.height, radius)
+  ctx.clip()
   ctx.fillStyle = selected ? palette.fillSelected : palette.fill
-  ctx.fillRect(rect.x, rect.y, rect.width, rect.height)
+  ctx.fillRect(body.x, body.y, body.width, body.height)
+  drawContent?.(ctx, body)
+  ctx.restore()
 
-  // `border-r` between adjacent clips.
-  ctx.fillStyle = palette.border
-  ctx.fillRect(rect.x + rect.width - 1, rect.y, 1, rect.height)
-
-  drawContent?.(ctx, rect)
-
+  // The outline is the selection. A 1px inset ring in the track's own hue was
+  // invisible once frames filled the clip; selection now reads as a thick
+  // white border round the whole block, the one treatment that survives any
+  // frame underneath it.
   if (selected) {
-    // `ring-1 ring-inset` — a 1px ring drawn inside the box.
-    ctx.strokeStyle = palette.ring
+    const inset = CLIP_SELECTED_BORDER_PX / 2
+    ctx.strokeStyle = TIMELINE_COLORS.clipSelectedOutline
+    ctx.lineWidth = CLIP_SELECTED_BORDER_PX
+    roundRectPath(ctx, body.x + inset, body.y + inset, Math.max(0, body.width - CLIP_SELECTED_BORDER_PX), Math.max(0, body.height - CLIP_SELECTED_BORDER_PX), radius)
+    ctx.stroke()
+  } else {
+    ctx.strokeStyle = palette.border
     ctx.lineWidth = 1
-    ctx.strokeRect(rect.x + 0.5, rect.y + 0.5, Math.max(0, rect.width - 1), Math.max(0, rect.height - 1))
+    roundRectPath(ctx, body.x + 0.5, body.y + 0.5, Math.max(0, body.width - 1), Math.max(0, body.height - 1), radius)
+    ctx.stroke()
   }
 
-  if (rect.width >= MIN_LABEL_WIDTH_PX) {
+  // An empty label draws nothing at all — video clips carry none now that the
+  // track rail names the row.
+  if (label !== '' && body.width >= MIN_LABEL_WIDTH_PX) {
     ctx.save()
     ctx.beginPath()
-    ctx.rect(rect.x, rect.y, rect.width, rect.height)
+    ctx.rect(body.x, body.y, body.width, body.height)
     ctx.clip()
     ctx.fillStyle = palette.text
     ctx.font = LABEL_FONT
     ctx.textBaseline = 'middle'
-    ctx.fillText(label, rect.x + LABEL_PAD_PX, rect.y + rect.height / 2)
+    // Pinned to the TOP, not the vertical centre it used to sit at: a video
+    // clip is now split into a frames band and a waveform band, and the centre
+    // is the seam between them — the worst line on the clip for legibility.
+    // The shadow is what lets it read over an arbitrary frame underneath;
+    // `restore()` below drops it before anything else paints.
+    ctx.shadowColor = LABEL_SHADOW_COLOR
+    ctx.shadowBlur = LABEL_SHADOW_BLUR_PX
+    ctx.fillText(label, body.x + LABEL_PAD_PX, body.y + LABEL_TOP_OFFSET_PX)
     ctx.restore()
   }
 
@@ -350,21 +439,17 @@ export function drawCrossfadeBand(ctx: DrawContext, rect: Rect): void {
   ctx.fillRect(rect.x + rect.width - 1, rect.y, 1, rect.height)
 }
 
-/** The red wash over the marker range. */
-export function drawSelectionTint(ctx: DrawContext, rect: Rect): void {
-  if (rect.width <= 0) return
-  ctx.fillStyle = TIMELINE_COLORS.markerSelectionTint
-  ctx.fillRect(rect.x, rect.y, rect.width, rect.height)
-}
-
-export function drawMarkerLine(ctx: DrawContext, x: number, top: number, bottom: number): void {
-  ctx.fillStyle = TIMELINE_COLORS.marker
-  ctx.fillRect(x, top, 1, bottom - top)
-}
-
 export function drawPlayhead(ctx: DrawContext, x: number, top: number, bottom: number): void {
   ctx.fillStyle = TIMELINE_COLORS.playhead
   ctx.fillRect(x - PLAYHEAD_WIDTH_PX / 2, top, PLAYHEAD_WIDTH_PX, bottom - top)
+}
+
+/** The preview-axis cursor. Drawn BEFORE the playhead by `drawTimelineOverlay`
+ *  so that where the two coincide the red playback line stays the one you see —
+ *  the playhead is the position that survives the pointer leaving. */
+export function drawCursorLine(ctx: DrawContext, x: number, top: number, bottom: number): void {
+  ctx.fillStyle = TIMELINE_COLORS.cursor
+  ctx.fillRect(x - CURSOR_WIDTH_PX / 2, top, CURSOR_WIDTH_PX, bottom - top)
 }
 
 // ── Scene composition ────────────────────────────────────────────────────
@@ -375,9 +460,6 @@ export interface TimelineScene {
   layout: TimelineLayout
   /** Unified selection (visual items + audio tracks), as Timeline holds it. */
   selectedIds: string[]
-  /** The two-marker range, when both markers are placed. */
-  markerSelection: { start: number; end: number } | null
-  markers: [number | null, number | null]
   surfaceWidth: number
   surfaceHeight: number
   /** T6 waveform content-layer provider. Absent → no waveforms drawn (DOM
@@ -402,31 +484,28 @@ function intersectsRange(start: number, end: number, range: { start: number; end
 }
 
 /**
- * Paint the content layer: rows, clips, audio bars, crossfade bands, the
- * marker range tint and marker lines. The playhead is NOT drawn here — it
- * lives on its own layer so a 60fps playhead never repaints the content (see
- * `drawTimelineOverlay`).
+ * Paint the content layer: rows, clips, audio bars and crossfade bands. The
+ * playhead is NOT drawn here — it lives on its own layer so a 60fps playhead
+ * never repaints the content (see `drawTimelineOverlay`).
  *
  * Culling is the whole point: items outside the visible time range are skipped
  * before any draw call, so the number of draw calls is bounded by what fits on
  * screen, not by how big the project is. Returned stats make that assertable.
  */
 export function drawTimelineContent(ctx: DrawContext, scene: TimelineScene): DrawStats {
-  const { viewport, layout, selectedIds, markerSelection, markers, surfaceWidth, surfaceHeight } = scene
+  const { viewport, layout, selectedIds, surfaceWidth, surfaceHeight } = scene
   const range = visibleRange(viewport)
   const stats: DrawStats = { visualItemsDrawn: 0, audioItemsDrawn: 0, itemsCulled: 0 }
 
   ctx.clearRect(0, 0, surfaceWidth, surfaceHeight)
 
-  const primarySelectedId = selectedIds[0] ?? null
-  const markerActive = markers[0] !== null || markerSelection !== null
 
   for (const row of layout.rows) {
     drawRowBackground(ctx, { x: 0, y: row.y, width: surfaceWidth, height: row.height })
 
-    // `dimmed`: with markers placed and a primary selection elsewhere, the DOM
-    // fades every row that doesn't hold it.
-    const dimmed = markerActive && primarySelectedId !== null && !row.items.some(i => i.id === primarySelectedId)
+    // A SKIPPED track is drawn faded: it still draws, and stays selectable and
+    // editable; only playback and export leave it out.
+    const dimmed = row.disabled === true
     const palette = TRACK_PALETTE[row.trackIdx % TRACK_PALETTE.length]
 
     for (const item of row.items) {
@@ -437,13 +516,18 @@ export function drawTimelineContent(ctx: DrawContext, scene: TimelineScene): Dra
         surfaceWidth,
       )
       if (rect.width <= 0) { stats.itemsCulled++; continue }
-      const clipWaveform = scene.waveforms?.clipColumns(item, rect) ?? null
-      const filmstripTiles = scene.filmstrips?.clipTiles(item, rect) ?? null
-      // Composed in one hook: filmstrip tiles paint first as the background
-      // fill, the waveform's bottom band paints after as the overlay — the
-      // ordering the plan calls for. When `filmstripTiles` is null (no T7
-      // provider, or nothing ready yet) this reduces to exactly T6's
-      // original single-waveform hook.
+      // Both lookups size to the BODY, the rect `drawClipRect` actually paints
+      // into — not the full span, which is two gutters wider.
+      const body = clipBodyRect(rect)
+      const clipWaveform = scene.waveforms?.clipColumns(item, body) ?? null
+      const filmstripTiles = scene.filmstrips?.clipTiles(item, body) ?? null
+      // Composed in one hook, but painting into DISJOINT halves of the clip
+      // (`clip-bands.ts`): tiles in the upper frames band, waveform in the
+      // lower one. Order no longer matters for overlap — it is kept
+      // frames-then-waveform so that if a band ever gains a translucent edge
+      // the picture sits under the audio, not over it. Either half may be
+      // absent (no proxy, no adapter, nothing fetched yet) and the other still
+      // draws.
       const drawContent = (filmstripTiles || clipWaveform)
         ? (c: DrawContext, r: Rect) => {
             if (filmstripTiles) drawFilmstripTiles(c, filmstripTiles)
@@ -454,7 +538,7 @@ export function drawTimelineContent(ctx: DrawContext, scene: TimelineScene): Dra
         rect,
         palette,
         selected: selectedIds.includes(item.id),
-        label: `▪ ${item.type}`,
+        label: visualItemLabel(item),
         dimmed,
         drawContent,
       })
@@ -507,32 +591,6 @@ export function drawTimelineContent(ctx: DrawContext, scene: TimelineScene): Dra
     }
   }
 
-  // The range tint covers the visual rows only — the DOM draws it inside
-  // VisualTrackRow, and audio lanes have never been tinted.
-  const lastRow = layout.rows[layout.rows.length - 1]
-  const visualRowsBottom = lastRow ? lastRow.y + lastRow.height : 0
-
-  if (markerSelection && visualRowsBottom > 0 && intersectsRange(markerSelection.start, markerSelection.end, range)) {
-    drawSelectionTint(ctx, clampRectToSurface(
-      {
-        x: timeToX(markerSelection.start, viewport),
-        y: 0,
-        width: (markerSelection.end - markerSelection.start) * viewport.pxPerSecond,
-        height: visualRowsBottom,
-      },
-      surfaceWidth,
-    ))
-  }
-
-  // Marker lines span the whole surface: they mark a time, not a row, the same
-  // way the DOM's hover indicator spans the scrubber and every row below it.
-  for (const marker of markers) {
-    if (marker === null) continue
-    const x = timeToX(marker, viewport)
-    if (x < 0 || x > surfaceWidth) continue
-    drawMarkerLine(ctx, x, 0, surfaceHeight)
-  }
-
   return stats
 }
 
@@ -541,24 +599,30 @@ export interface OverlayScene {
   currentTime: number
   surfaceWidth: number
   surfaceHeight: number
-  /** T7 — the hover-scrub preview thumb, present only when the pointer rests
-   *  over a clip (no gesture running) with a matched tile ready. Absent or
-   *  `null` → nothing extra drawn. */
-  hoverThumb?: FilmstripHoverThumb | null
+  /** Where the preview-axis cursor sits, or null/absent when the axis is off
+   *  or the pointer is elsewhere. Independent of `currentTime`: while the axis
+   *  is on the preview follows THIS while the playhead stays put, which is the
+   *  entire point of the toggle. */
+  cursorTime?: number | null
 }
 
 /** Paint the playhead layer. Kept separate from the content so playback — which
  *  moves the playhead ~60 times a second — repaints two `fillRect`s, not the
- *  whole timeline. The T7 hover thumb lives here too (not the content layer)
- *  for the same reason: hovering must not force a content repaint. */
+ *  whole timeline. The preview-axis cursor rides here for the same reason:
+ *  tracking the pointer must not force a content repaint. */
 export function drawTimelineOverlay(ctx: DrawContext, scene: OverlayScene): void {
-  const { viewport, currentTime, surfaceWidth, surfaceHeight, hoverThumb } = scene
+  const { viewport, currentTime, surfaceWidth, surfaceHeight, cursorTime } = scene
   ctx.clearRect(0, 0, surfaceWidth, surfaceHeight)
+  if (cursorTime !== undefined && cursorTime !== null) {
+    const cx = timeToX(cursorTime, viewport)
+    if (!(cx < -CURSOR_WIDTH_PX || cx > surfaceWidth + CURSOR_WIDTH_PX)) {
+      drawCursorLine(ctx, cx, 0, surfaceHeight)
+    }
+  }
   const x = timeToX(currentTime, viewport)
   if (!(x < -PLAYHEAD_WIDTH_PX || x > surfaceWidth + PLAYHEAD_WIDTH_PX)) {
     drawPlayhead(ctx, x, 0, surfaceHeight)
   }
-  if (hoverThumb) drawFilmstripHoverThumb(ctx, hoverThumb, surfaceWidth)
 }
 
 /** AudioTrackRow's label rule: the type name, else the track label, else the

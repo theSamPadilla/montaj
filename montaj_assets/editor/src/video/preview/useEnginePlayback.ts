@@ -35,8 +35,10 @@
  *    `<video>` slot through a GainNode to get amplification. The engine has no
  *    element to route: `createMasterClock` takes the item's `volume`/`muted`
  *    and scales the PCM at ring-enqueue time (T4), reached from
- *    `engine/index.ts`'s `SourceRequest` → `request.item.volume`. Nothing to
- *    thread here; adding a second volume path would be the duplication the
+ *    `engine/index.ts`'s `SourceRequest` → `request.item.volume`. The TRACK's
+ *    volume/mute ride the same path: the scheduler folds them into the request
+ *    item (`withTrackAudio`) before the host ever sees it. Nothing to thread
+ *    here either way; adding a second volume path would be the duplication the
  *    divergence registry exists to prevent.
  *  - **`<video>` slot mechanics.** No refs, no slot swap, no `onError` proxy
  *    fallback (`proxySupport.ts` gates the LEGACY player; the engine's own
@@ -54,6 +56,7 @@ import {
 } from '../../engine'
 import { getSharedAudioContext, resumeAudioContextFromGesture } from './audio-context'
 import type { EditorProject as Project, VisualItem } from '../../schema'
+import { enabledTrackItems } from '../timeline/timeline-model'
 
 /**
  * The legacy scrub effect's dead-zone (`Math.abs(currentTime -
@@ -149,8 +152,8 @@ export function useEnginePlayback(
   // `track0VideoItems` IS the legacy `clips` memo, lifted into the scheduler so
   // one definition serves both the engine's tick and this surface.
   const clips           = useMemo(() => track0VideoItems(project), [project])
-  const tracks0NonVideo = useMemo(() => (project.tracks?.[0] ?? []).filter(c => c.type !== 'video'), [project])
-  const overlayTracks   = useMemo(() => project.tracks?.slice(1) ?? [], [project])
+  const tracks0NonVideo = useMemo(() => (enabledTrackItems(project)[0] ?? []).filter(c => c.type !== 'video'), [project])
+  const overlayTracks   = useMemo(() => enabledTrackItems(project).slice(1), [project])
   const isCanvasProject = clips.length === 0
 
   const [status, setStatus] = useState<EngineStatus>(IDLE_STATUS)

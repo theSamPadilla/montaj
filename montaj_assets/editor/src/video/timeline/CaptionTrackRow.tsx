@@ -28,7 +28,7 @@
 // sibling caption-editing surface), which does the same for the same reason.
 import { useEffect, useRef, useState } from 'react'
 import type { CaptionSegment, Captions } from '../../schema'
-import { pct, trackRow } from './utils'
+import { timeSpanStyle, trackRow } from './utils'
 import { useTimelineContext } from './TimelineContext'
 import PlayheadLine from './PlayheadLine'
 import { useItemDragDrop } from './useItemDragDrop'
@@ -50,12 +50,23 @@ interface CaptionTrackRowProps {
 }
 
 export default function CaptionTrackRow({ captionTrack, fps, selectedCaptionId, onSelectCaption, onCaptionSegmentChange }: CaptionTrackRowProps) {
-  const { totalDuration, snapBoundaries, scrollRef, zoomRef, overlayDraggedRef, clock } = useTimelineContext()
+  const { totalDuration, snapBoundaries, scrollRef, zoomRef, overlayDraggedRef, clock, viewport } = useTimelineContext()
+
+  // `useItemDragDrop` converts drag pixels to time as
+  // `dx / (rect.width * zoom) * totalDuration`. In canvas mode the row's real
+  // scale is the viewport's `pxPerSecond`, so hand the hook the zoom that makes
+  // that identity hold — `pxPerSecond * totalDuration / rect.width` — rather
+  // than the DOM zoom, which would retime a dragged caption edge by whatever
+  // factor the canvas happens to be zoomed to.
+  const canvasZoomRef = useRef(1)
+  canvasZoomRef.current = viewport && viewport.widthPx > 0 && totalDuration > 0
+    ? (viewport.pxPerSecond * totalDuration) / viewport.widthPx
+    : 1
   const { beginResize } = useItemDragDrop({
     totalDuration,
     snapBoundaries,
     scrollRef,
-    zoomRef,
+    zoomRef: viewport ? canvasZoomRef : zoomRef,
     draggedFlagRef: overlayDraggedRef,
   })
 
@@ -146,7 +157,7 @@ export default function CaptionTrackRow({ captionTrack, fps, selectedCaptionId, 
             className={`absolute top-1 bottom-1 rounded flex items-center overflow-hidden
               ${canInteract ? 'cursor-pointer' : ''}
               ${isSelected ? 'bg-purple-600/70 ring-1 ring-inset ring-purple-300/80' : 'bg-purple-700/40 hover:bg-purple-600/50 border border-purple-500/40'}`}
-            style={{ left: `${pct(start, totalDuration)}%`, width: `${pct(end - start, totalDuration)}%` }}
+            style={timeSpanStyle(start, end, totalDuration, viewport)}
             onClick={(e) => {
               e.stopPropagation()
               if (!canInteract || overlayDraggedRef.current) return

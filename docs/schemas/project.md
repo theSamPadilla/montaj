@@ -46,7 +46,7 @@ The agent writes project.json as it works — every write pushes to the browser 
 | `workflow` | string | Workflow used to produce this edit |
 | `editingPrompt` | string | The free-form prompt passed in |
 | `settings` | object | Output resolution, fps, brand kit |
-| `tracks` | array | Array of track arrays. `tracks[0]` is the primary footage track. `tracks[1+]` are overlay tracks. Higher-index tracks render on top. May contain one empty track `[[]]` for animation-only projects. |
+| `tracks` | array | Array of track objects (`{id, items, volume?, muted?, enabled?}`); a legacy array-of-arrays shape is also still read everywhere. `tracks[0]` is the primary footage track. `tracks[1+]` are overlay tracks. Higher-index tracks render on top. `tracks[0]` may have an empty `items` array for animation-only projects. See [tracks](#tracks) below. |
 | `captions` | object | Caption configuration. Always rendered topmost, above all tracks. |
 | `audio` | object | Music and ducking config |
 | `derivedFrom` | string | Optional. Set on clip projects fanned out from a source by the `clips` workflow; the source project's id. |
@@ -78,45 +78,83 @@ The agent writes project.json as it works — every write pushes to the browser 
 
 ## tracks
 
-All timeline items live in `tracks` — a top-level array of track arrays. `tracks[0]` is the primary track (source footage). `tracks[1+]` are overlay tracks. Each inner array is one z-level; items in higher-index tracks render on top.
+Each entry in `tracks` is a track object:
+
+```json
+"tracks": [
+  { "id": "trk-0", "items": [ /* video items */ ] },
+  { "id": "trk-1", "items": [ /* overlay items */ ], "volume": 0.8, "muted": false, "enabled": true }
+]
+```
+
+`tracks[0]` is the primary track (source footage). `tracks[1+]` are overlay tracks. Track order is meaningful: index is z-order, and items on a higher-index track's `items` array render on top of items on a lower one.
+
+### Track object fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | string | Stable track identifier. Assigned when a legacy project is migrated (rule below) or when a drag creates a new track in the editor; never reused within a project. |
+| `items` | array | The track's timeline items — same item shapes as before: `type: "video"` on `tracks[0]`, `overlay`/`image`/`video` on `tracks[1+]`. See [Overlay track items](#overlay-track-items) below. |
+| `volume` | number | Optional. Gain for the track's audio. Absent = unity (1.0). |
+| `muted` | boolean | Optional. Absent or `false` = audible. |
+| `enabled` | boolean | Optional. Absent or `true` = the track renders. |
+
+`volume`/`muted`/`enabled` exist so a track has somewhere to carry a setting that belongs to the TRACK rather than to one clip on it. As of this writing nothing in the pipeline reads or writes them for actual gain/mute/skip behavior — they are structural groundwork, not a landed feature. They are unrelated to the per-clip `item.muted`/`item.volume` fields on individual `tracks[1+]` video items (below) and to `audio.tracks[].muted`/`.volume`, both of which render and preview already honor and neither of which changed here. A track carrying none of the three optional fields behaves exactly as it always has.
+
+### Legacy shape and the both-shapes contract
+
+Before this, `tracks` was a bare array of arrays — `[[item, item], [item]]` — with no place to hang a track-level setting. Both shapes are read everywhere in the codebase today. A project converts to the object shape the first time it's opened in the editor, riding the existing lazy on-open pass — there is no separate migration command or button. A project that's never opened keeps rendering and editing correctly as-is: the CLI and the render pipeline read both shapes directly, without requiring a migration.
+
+When a legacy track is converted, its `id` is generated as `trk-<index>`; a collision with an id already present elsewhere in the project is resolved by appending `-2`, `-3`, … A project already in object form is returned unchanged by the conversion (same object, same ids) — converting is idempotent, and a converged project triggers no extra write.
+
+**Read or write tracks through the shared accessors, never `project.tracks` directly** — they absorb the shape difference so callers don't have to:
+
+- Python: `normalize_tracks`, `track_items`, `replace_track_items` in `lib/project_tracks.py`
+- Render pipeline (Node): `normalizeTracks`, `trackItems` in `montaj_assets/render/project-tracks.js`
+- Editor (TypeScript): `normalizeTracks`, `trackItems`, `mapTrackItems` in `montaj_assets/editor/src/video/timeline/timeline-model.ts`
+
+The three are kept in lock-step by convention: the same input produces the same ids and the same structure from any of them. `engine/validate.py` accepts both shapes on read.
 
 ### Track conventions
 
 | Property | Rule |
 |----------|------|
-| **Primary track** | `tracks[0]` — always. Contains the main footage clips (`type: "video"`). |
+| **Primary track** | `tracks[0]` — always. Its `items` contain the main footage clips (`type: "video"`). |
 | **Z-order** | Track index = z-order. `tracks[0]` renders furthest back; higher indices on top. |
-| **Primary audio** | Non-muted items in `tracks[0]` provide the primary audio mix. |
+| **Primary audio** | Non-muted items in `tracks[0]`'s `items` provide the primary audio mix. |
 | **Transcript source** | Whisper runs against `tracks[0]` audio. |
-| **Canvas projects** | `tracks: [[]]` — one empty primary track. Duration is inferred from max `end` across all overlay tracks. |
+| **Canvas projects** | `tracks[0].items` is `[]` for animation-only projects. Duration is inferred from max `end` across all overlay tracks. |
 
 ### Primary track (`tracks[0]`)
 
-Items in `tracks[0]` are always `type: "video"`. They have explicit `start`/`end` positions on the output timeline. Gaps between items render as black + silence.
+Items in `tracks[0].items` are always `type: "video"`. They have explicit `start`/`end` positions on the output timeline. Gaps between items render as black + silence.
 
 ```json
 "tracks": [
-  [
-    {
-      "id": "clip-1",
-      "type": "video",
-      "src": "./footage/take1.mp4",
-      "start": 0.0,
-      "end": 5.8,
-      "inPoint": 2.5,
-      "outPoint": 8.3,
-      "transition": { "type": "crossfade", "duration": 0.3 }
-    },
-    {
-      "id": "clip-2",
-      "type": "video",
-      "src": "./footage/take2.mp4",
-      "start": 5.8,
-      "end": 17.9,
-      "inPoint": 0.0,
-      "outPoint": 12.1
-    }
-  ]
+  {
+    "id": "trk-0",
+    "items": [
+      {
+        "id": "clip-1",
+        "type": "video",
+        "src": "./footage/take1.mp4",
+        "start": 0.0,
+        "end": 5.8,
+        "inPoint": 2.5,
+        "outPoint": 8.3,
+        "transition": { "type": "crossfade", "duration": 0.3 }
+      },
+      {
+        "id": "clip-2",
+        "type": "video",
+        "src": "./footage/take2.mp4",
+        "start": 5.8,
+        "end": 17.9,
+        "inPoint": 0.0,
+        "outPoint": 12.1
+      }
+    ]
+  }
 ]
 ```
 
@@ -145,13 +183,13 @@ totalDuration = max(item.end) across all items in all tracks
 
 ### Overlay tracks (`tracks[1+]`)
 
-Overlay tracks contain the same item types as before: `overlay`, `image`, and `video`. See the field reference below.
+An overlay track's `items` array holds the same item types as before: `overlay`, `image`, and `video`. See the field reference below.
 
 ---
 
 ## Overlay track items
 
-All timed graphical elements in `tracks[1+]` are overlay track items. Each inner track array is one spatial z-level. Items in higher-index tracks render on top. Three item types are supported: `overlay`, `image`, and `video`.
+All timed graphical elements live in `tracks[1+]`'s `items` arrays. Each track is one spatial z-level; items on higher-index tracks render on top. Three item types are supported: `overlay`, `image`, and `video`.
 
 ### `type: "overlay"` — JSX component layer
 
@@ -541,7 +579,7 @@ Anything that *appears in* the video: characters, locations, specific objects. P
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `id` | string | Stable within the project. Referenced by `scenes[i].refImages` as well as `tracks[0][i].generation.refImages`. |
+| `id` | string | Stable within the project. Referenced by `scenes[i].refImages` as well as `tracks[0].items[i].generation.refImages`. |
 | `label` | string | Short human-friendly name. The user provides this at intake (e.g. "Max"). Agents use labels to match natural-language prompt mentions to refs. |
 | `anchor` | string | Agent-written longer description. If the user provided an image at intake, the agent writes the anchor from the image + label. If the user provided a text description, the anchor starts as that text and the agent enriches it. |
 | `refImages` | string[] | Absolute paths to reference images. For `source: "upload"`, populated at intake with the user's file. For `source: "text"`, starts empty; agent calls `generate_image` with the anchor as prompt and appends the result. Fed into Kling's `image_list` (up to 7 per scene — Kling's hard limit). |
@@ -659,9 +697,9 @@ When the agent uses Kling's multi-shot mode, a SINGLE `tracks[0]` clip can conta
 | `generation.batchShots[i].end` | number | Shot end in seconds, relative to the batch clip. |
 | `generation.batchShots[i].duration` | number | Requested duration in seconds (same as `end - start` barring Kling rounding). |
 
-**UI progress check.** A scene is "done" if `tracks[0].some(c => c.generation?.sceneId === s.id || c.generation?.batchShots?.some(x => x.sceneId === s.id))`. Both cases must be checked — the agent chooses between single-shot and batched dispatch per its judgment.
+**UI progress check.** A scene is "done" if `tracks[0].items.some(c => c.generation?.sceneId === s.id || c.generation?.batchShots?.some(x => x.sceneId === s.id))`. Both cases must be checked — the agent chooses between single-shot and batched dispatch per its judgment.
 
-**Regenerating one scene from a batch.** Run that scene as a single-shot call; append the resulting clip to `tracks[0]` as a new entry. Leave the original batched clip in place; its window for the replaced scene becomes unused time between other shots. The timeline readers place clips by `start`/`end`; unused windows are acceptable for v1.
+**Regenerating one scene from a batch.** Run that scene as a single-shot call; append the resulting clip to `tracks[0].items` as a new entry. Leave the original batched clip in place; its window for the replaced scene becomes unused time between other shots. The timeline readers place clips by `start`/`end`; unused windows are acceptable for v1.
 
 ### `regenQueue` (ai_video only)
 
@@ -690,7 +728,7 @@ Per-clip regeneration queue. The UI (inspect modal, subcut tool) and CLI (`monta
 | Field | Type | Description |
 |-------|------|-------------|
 | `id` | string | Unique within the queue. Convention: `"req-<timestamp>"`. |
-| `clipId` | string | Must match a `tracks[0][i].id`. |
+| `clipId` | string | Must match a `tracks[0].items[i].id`. |
 | `mode` | string | `"full"` (replace entire clip) or `"subcut"` (replace a window within the clip). |
 | `subrange` | object \| null | `{start: <int>, end: <int>}` in source-seconds. Null for `mode: "full"`. For subcut, `end - start` must be in [3, 15] integer. |
 | `prompt` | string | Natural language. The agent/step composes the ref clause and `<<<image_N>>>` tokens via `compose_prompt()`. |
@@ -710,12 +748,12 @@ Per-clip regeneration queue. The UI (inspect modal, subcut tool) and CLI (`monta
 
 `tracks[0]` holds **real clips only** — items whose `src` is a file that exists on disk. There are no stubs, no placeholder items, no `src: ""` entries. This invariant is consistent across all project types:
 
-- `editing` projects populate `tracks[0]` at intake with user-uploaded clips.
-- `music_video` projects start with `tracks[0] = []` and get populated by the lyrics pipeline.
-- `ai_video` projects start with `tracks[0] = []` and grow by append as each `kling_generate` call returns.
+- `editing` projects populate `tracks[0].items` at intake with user-uploaded clips.
+- `music_video` projects start with `tracks[0].items = []` and get populated by the lyrics pipeline.
+- `ai_video` projects start with `tracks[0].items = []` and grow by append as each `kling_generate` call returns.
 
 For `ai_video`:
-- At `pending` and `storyboard_ready` (including during active generation), `tracks[0]` is empty or partial. The StoryboardView stays mounted; per-scene progress is derived by checking whether `tracks[0].some(c => c.generation?.sceneId === scene.id)`.
+- At `pending` and `storyboard_ready` (including during active generation), `tracks[0].items` is empty or partial. The StoryboardView stays mounted; per-scene progress is derived by checking whether `tracks[0].items.some(c => c.generation?.sceneId === scene.id)`.
 - Status transitions `storyboard_ready → draft` only when every `storyboard.scenes[i]` has a corresponding clip in `tracks[0]`. At that point `EditorPage` routes to `ReviewView` and the user sees a coherent timeline for the first time.
 - On partial failure, status stays `storyboard_ready`. The failed scene has no corresponding clip; the agent can retry later (idempotent — scenes with existing clips are skipped).
 
@@ -732,46 +770,58 @@ Talking-head presenter over a screen recording, with a logo watermark, hook over
   "status": "final",
   "settings": { "resolution": [1080, 1920], "fps": 30 },
   "tracks": [
-    [
-      { "id": "clip-1", "type": "video", "src": "./screen_recording.mp4", "start": 0.0, "end": 120.0, "inPoint": 0, "outPoint": 120 }
-    ],
-    [
-      {
-        "id": "presenter",
-        "type": "video",
-        "src": "./presenter.mp4",
-        "remove_bg": true,
-        "start": 0.0,
-        "end": 120.0,
-        "inPoint": 0.0,
-        "outPoint": 120.0,
-        "offsetX": 0.6,
-        "offsetY": 0.65,
-        "scale": 0.35
-      }
-    ],
-    [
-      {
-        "id": "logo",
-        "type": "image",
-        "src": "./assets/logo.png",
-        "start": 0.0,
-        "end": 120.0,
-        "offsetX": 0.82,
-        "offsetY": 0.04,
-        "scale": 0.12
-      }
-    ],
-    [
-      {
-        "id": "hook",
-        "type": "overlay",
-        "src": "./overlays/hook.jsx",
-        "start": 0.0,
-        "end": 3.5,
-        "props": { "text": "Watch this" }
-      }
-    ]
+    {
+      "id": "trk-0",
+      "items": [
+        { "id": "clip-1", "type": "video", "src": "./screen_recording.mp4", "start": 0.0, "end": 120.0, "inPoint": 0, "outPoint": 120 }
+      ]
+    },
+    {
+      "id": "trk-1",
+      "items": [
+        {
+          "id": "presenter",
+          "type": "video",
+          "src": "./presenter.mp4",
+          "remove_bg": true,
+          "start": 0.0,
+          "end": 120.0,
+          "inPoint": 0.0,
+          "outPoint": 120.0,
+          "offsetX": 0.6,
+          "offsetY": 0.65,
+          "scale": 0.35
+        }
+      ]
+    },
+    {
+      "id": "trk-2",
+      "items": [
+        {
+          "id": "logo",
+          "type": "image",
+          "src": "./assets/logo.png",
+          "start": 0.0,
+          "end": 120.0,
+          "offsetX": 0.82,
+          "offsetY": 0.04,
+          "scale": 0.12
+        }
+      ]
+    },
+    {
+      "id": "trk-3",
+      "items": [
+        {
+          "id": "hook",
+          "type": "overlay",
+          "src": "./overlays/hook.jsx",
+          "start": 0.0,
+          "end": 3.5,
+          "props": { "text": "Watch this" }
+        }
+      ]
+    }
   ],
   "captions": { "style": "word-by-word", "segments": [] }
 }

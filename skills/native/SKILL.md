@@ -116,9 +116,13 @@ Pattern — always GET, merge in your delta, then PUT:
 # 1. Fetch fresh state
 curr=$(curl -s http://localhost:3000/api/projects/{id})
 
-# 2. Apply your delta (here: append a new overlay item to tracks[1])
+# 2. Apply your delta (here: append a new overlay item to tracks[1]'s items).
+#    `tracks` is an array of track OBJECTS (`{id, items, ...}`), not bare item
+#    arrays — appending to `.tracks[1]` directly would append into the wrong
+#    place, and on a project with only one track `.tracks[1]` doesn't exist
+#    yet, so the delta creates a properly-shaped track (`trk-1`) for it.
 new=$(echo "$curr" | jq --argjson item '{"id":"ov-new","type":"overlay","src":"...","start":12,"end":14}' \
-  '.tracks[1] += [$item]')
+  '.tracks |= (if length > 1 then .[1].items += [$item] else . + [{"id": "trk-1", "items": [$item]}] end)')
 
 # 3. PUT the merged result
 curl -s -X PUT http://localhost:3000/api/projects/{id} \

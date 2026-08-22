@@ -5,6 +5,7 @@ import json, os, re, sys
 from itertools import chain
 from cli.main import add_global_flags
 from cli.output import emit_error
+from lib.project_tracks import track_items
 from lib.proxy import PROXY_LOOK
 
 # Only files carrying a KNOWN look tag are ever deleted (SP3 fix S5) — the loose
@@ -217,7 +218,7 @@ def handle(args):
             except Exception:
                 continue
             changed = False
-            for group in list(data.get("tracks", [])) + [data.get("sources", [])]:
+            for group in track_items(data) + [data.get("sources", [])]:
                 for item in group or []:
                     if isinstance(item, dict) and item.get("proxySrc") in deleted:
                         del item["proxySrc"]

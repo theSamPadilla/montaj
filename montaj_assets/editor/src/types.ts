@@ -92,6 +92,18 @@ export interface RenderOptions {
    * when the render produces no SDR file.
    */
   sdrCurve?: string
+  /**
+   * Output base filename (no extension) for the rendered file, from the export
+   * dialog's Name field. Hosts that support naming the output read this; others
+   * ignore it. Omitted → the host's default naming applies.
+   */
+  name?: string
+  /**
+   * Poster/cover frame timecode in project-timeline seconds, from the export
+   * dialog's cover picker. Hosts that produce a cover read this; others ignore
+   * it. Omitted → the host's default (e.g. first frame) applies.
+   */
+  cover?: number
 }
 
 /**

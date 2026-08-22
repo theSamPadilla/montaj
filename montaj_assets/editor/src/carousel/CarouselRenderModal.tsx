@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import type { EditorAdapter, Project, RenderStatus } from '../types'
+import { Loader } from '../ui/Loader'
 
 interface CarouselRenderModalProps {
   projectId: string
@@ -328,7 +329,7 @@ export default function CarouselRenderModal({ projectId, adapter, slidesCount, r
           <div className="px-5 py-8 flex flex-col items-center justify-center gap-4 min-h-[12rem]">
             {status === 'running' ? (
               <>
-                <span className="w-6 h-6 rounded-full border-2 border-amber-400 border-t-transparent animate-spin" />
+                <Loader size="lg" />
                 <p className="text-sm text-[var(--editor-text)]/70">Rendering slides…</p>
                 <p className="text-xs text-[var(--editor-text)]/50">This can take a moment.</p>
               </>

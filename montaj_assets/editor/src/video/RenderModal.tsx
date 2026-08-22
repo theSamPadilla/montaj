@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ReactNode } from 'react'
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import { ChevronDown, ChevronRight } from 'lucide-react'
 import type {
@@ -9,9 +9,10 @@ import type {
   RenderPhase,
   RenderStatus,
 } from '../types'
-import type { ImageTone } from './imageTone'
-import ImageToneMenu from './ImageToneMenu'
+import { IMAGE_TONES, DEFAULT_IMAGE_TONE, type ImageTone } from './imageTone'
+import { TONE_EXAMPLES } from './imageToneExamples'
 import { SDR_CURVES, DEFAULT_SDR_CURVE, honestyLine, type SdrCurve } from './sdrCurves'
+import { Loader } from '../ui/Loader'
 
 /**
  * Host-supplied inputs for the pre-render options state. Absent (or `isHdr:
@@ -31,12 +32,28 @@ export interface PreRenderOptions {
    */
   keeps?: Array<{ start: number; end: number }>
   /**
-   * Current HDR image color mapping plus its setter, so the Advanced section
-   * can surface the same `ImageToneMenu` the toolbar shows. The setter is the
+   * Current HDR image color mapping plus its setter, so the export dialog can
+   * surface the same `ImageToneMenu` the toolbar shows. The setter is the
    * host's normal persistence path (an editor mutation that saves and undoes).
    * Absent → the menu is not rendered.
    */
   imageTone?: { value: ImageTone; set: (tone: ImageTone) => void }
+  /**
+   * Suggested output filename (no extension), seeding the dialog's Name field.
+   * Absent → the field defaults to `export`.
+   */
+  name?: string
+  /**
+   * Total project-timeline length in seconds — the render's duration. Seeds the
+   * dialog's duration footer and bounds the cover-frame slider (0..durationSec).
+   * Absent → treated as 0 (footer/slider fall back gracefully).
+   */
+  durationSec?: number
+  /**
+   * Output aspect ratio (width / height), so the cover preview matches the
+   * project's shape — a vertical project gets a vertical cover. Absent → 16/9.
+   */
+  aspectRatio?: number
 }
 
 interface RenderModalProps<P extends Project = Project> {
@@ -76,6 +93,32 @@ interface RenderModalProps<P extends Project = Project> {
 type RenderMedia = NonNullable<RenderStatus['media']>[number]
 
 function basename(p: string) { return p.split('/').pop() ?? p }
+
+/**
+ * Client mirror of the server's output-name sanitizer
+ * (`serve/routes/projects.py` `_sanitize_output_name`): basename, drop the
+ * extension and `..`, keep a conservative whitelist, trim leading/trailing
+ * space/dot. Falls back to `export` so an empty field is deterministic and the
+ * "Save to" line always shows the real filename the render will produce (the
+ * server re-sanitizes, so this only needs to match for the common cases).
+ */
+export function sanitizeOutputName(name: string): string {
+  const base = (name.split(/[/\\]/).pop() ?? '')
+    .replace(/\.[^.]*$/, '')
+    .replace(/\.\./g, '')
+    .replace(/[^A-Za-z0-9 _.-]+/g, '')
+    .replace(/^[ .]+|[ .]+$/g, '')
+  return base || 'export'
+}
+
+
+/** mm:ss for a duration/timecode in seconds. Clamps negatives to 0:00. */
+function formatTimecode(sec: number): string {
+  const total = Math.max(0, Math.floor(sec))
+  const m = Math.floor(total / 60)
+  const s = total % 60
+  return `${m}:${String(s).padStart(2, '0')}`
+}
 
 // ── Phase model (pure, exported for tests + the stepper) ──────────────────────
 
@@ -241,21 +284,55 @@ export default function RenderModal<P extends Project = Project>({ projectId, ad
   const cleanupTimerRef         = useRef<ReturnType<typeof setTimeout> | null>(null)
   const pollTimerRef            = useRef<ReturnType<typeof setInterval> | null>(null)
 
-  // ── Pre-render options (HDR projects only) ─────────────────────────────────
-  // `started` gates the render effect. SDR projects (no preRenderOptions, or
-  // isHdr: false) start true, so the render still fires on mount exactly as it
-  // always has; HDR projects start false and wait for "Start render".
-  const showOptions = !!preRenderOptions?.isHdr
+  // ── Pre-render options (the Export dialog) ─────────────────────────────────
+  // `started` gates the render effect. Hosts that pass `preRenderOptions` open
+  // on the dialog (montaj always does — for HDR and SDR alike); hosts that omit
+  // it keep the historical fire-on-mount behavior exactly. The HDR-only controls
+  // (Format / Image color / SDR curve) stay gated on `isHdr` inside the dialog.
+  const showOptions = !!preRenderOptions
+  const isHdr = !!preRenderOptions?.isHdr
+  const durationSec = preRenderOptions?.durationSec ?? 0
+  // Cover preview follows the project's shape. Portrait projects constrain by
+  // height (so a tall cover can't overrun the dialog); landscape fills the column.
+  const coverAspect = preRenderOptions?.aspectRatio && preRenderOptions.aspectRatio > 0
+    ? preRenderOptions.aspectRatio
+    : 16 / 9
+  const coverPortrait = coverAspect < 1
   const [started, setStarted]         = useState(!showOptions)
   const [exportChoice, setExport]     = useState<RenderExport>('auto')
   const [sdrCurve, setSdrCurve]       = useState<SdrCurve>(DEFAULT_SDR_CURVE)
   const [advancedOpen, setAdvanced]   = useState(false)
+  const [imageColorOpen, setImageColor] = useState(false)
+  const [showLog, setShowLog]         = useState(false)
   const [thumbs, setThumbs]           = useState<Record<string, string>>({})
   const [thumbsPending, setPending]   = useState(false)
-  // Chosen once per mount so both curves are sampled on the same frame.
+  // Chosen once per mount so both curves are sampled on the same frame. HDR-only
+  // — the curve compare (and thus this sample) doesn't exist for SDR projects.
   const [sampleAt] = useState<number | null>(() =>
-    showOptions ? pickSampleTime(preRenderOptions?.keeps) : null)
+    isHdr ? pickSampleTime(preRenderOptions?.keeps) : null)
   const thumbsRequestedRef = useRef(false)
+
+  // ── Name + cover (every project) ────────────────────────────────────────────
+  // Name seeds the output filename; cover is the poster-frame timecode (project
+  // seconds). Cover defaults to a sampled keep frame, or the timeline midpoint.
+  const [name, setName]               = useState<string>(preRenderOptions?.name ?? 'export')
+  const [coverTime, setCoverTime]     = useState<number>(() => {
+    const picked = pickSampleTime(preRenderOptions?.keeps)
+    return picked ?? (durationSec > 0 ? durationSec / 2 : 0)
+  })
+  const [coverEditing, setCoverEditing] = useState(false)
+  const [coverUrl, setCoverUrl]       = useState<string | null>(null)
+  const [coverLoading, setCoverLoading] = useState(false)
+  // "Edit cover" frame picker: evenly-spaced sample times (roughly one per 4s,
+  // clamped — each tile is a full composited sample_frame render, so the grid is
+  // bounded and loaded lazily). `coverTiles` maps tile index → resolved URL.
+  const [coverTiles, setCoverTiles]   = useState<Record<number, string>>({})
+  const coverTileTimes = useMemo<number[]>(() => {
+    if (durationSec <= 0) return []
+    const n = Math.min(12, Math.max(4, Math.round(durationSec / 4)))
+    return Array.from({ length: n }, (_, i) => ((i + 0.5) / n) * durationSec)
+  }, [durationSec])
+  const coverTilesRequestedRef = useRef<string>('')
 
   // The options the render was started with. Read through a ref inside the
   // render effect (which must not re-fire when unrelated state changes) and
@@ -305,6 +382,49 @@ export default function RenderModal<P extends Project = Project>({ projectId, ad
         .finally(settle)
     }
   }, [started, sampleAt, adapter, projectId])
+
+  // Cover preview: sample the poster frame at `coverTime`, DEBOUNCED so dragging
+  // the slider doesn't spam the sampler. Fire-and-forget like the curve
+  // thumbnails — an absent `getSampleFrame` or a failed call just leaves the
+  // placeholder, and nothing here can block or fail the render. The `alive`
+  // flag + clearTimeout drop a stale drag's in-flight request (and make the
+  // debounce naturally StrictMode-safe: the first mount's timer is cleared
+  // before it can fire).
+  useEffect(() => {
+    if (started) return
+    const getSampleFrame = adapter.getSampleFrame
+    if (!getSampleFrame) return
+    let alive = true
+    setCoverLoading(true)
+    const timer = setTimeout(() => {
+      getSampleFrame(projectId, coverTime, { sdrCurve })
+        .then(({ url }) => { if (alive) setCoverUrl(url) })
+        .catch(() => {})
+        .finally(() => { if (alive) setCoverLoading(false) })
+    }, 200)
+    return () => { alive = false; clearTimeout(timer) }
+  }, [started, coverTime, sdrCurve, adapter, projectId])
+
+  // Cover frame grid: sampled lazily once the picker opens, one composited frame
+  // per tile, folded in as each lands. Keyed by curve+count so switching the SDR
+  // curve re-samples but re-opening the picker reuses what's cached. Fire-and-
+  // forget — a failed/absent sampler just leaves that tile on its loader.
+  useEffect(() => {
+    if (started || !coverEditing) return
+    const getSampleFrame = adapter.getSampleFrame
+    if (!getSampleFrame || coverTileTimes.length === 0) return
+    const key = `${sdrCurve}:${coverTileTimes.length}`
+    if (coverTilesRequestedRef.current === key) return
+    coverTilesRequestedRef.current = key
+    setCoverTiles({})
+    let alive = true
+    coverTileTimes.forEach((t, i) => {
+      getSampleFrame(projectId, t, { sdrCurve })
+        .then(({ url }) => { if (alive) setCoverTiles(prev => ({ ...prev, [i]: url })) })
+        .catch(() => {})
+    })
+    return () => { alive = false }
+  }, [started, coverEditing, coverTileTimes, sdrCurve, adapter, projectId])
 
   useEffect(() => {
     if (!started) return
@@ -464,7 +584,12 @@ export default function RenderModal<P extends Project = Project>({ projectId, ad
   }
 
   function handleStart() {
-    const opts: RenderOptions = { export: exportChoice, sdrCurve }
+    const opts: RenderOptions = {
+      export: exportChoice,
+      sdrCurve,
+      name: sanitizeOutputName(name),
+      cover: coverTime,
+    }
     // The ref is what the render effect reads (it must not re-fire on unrelated
     // state); the state copy drives the stepper's phase list.
     renderOptsRef.current = opts
@@ -472,21 +597,17 @@ export default function RenderModal<P extends Project = Project>({ projectId, ad
     setStarted(true)
   }
 
-  // ── Pre-render options panel ────────────────────────────────────────────────
+  // ── Export dialog ───────────────────────────────────────────────────────────
   if (!started) {
     const curveInfo = SDR_CURVES.find(c => c.id === sdrCurve) ?? SDR_CURVES[0]
+    const outputName = sanitizeOutputName(name)
     return createPortal(
-      <div className="fixed inset-0 z-50 flex items-center justify-center bg-black">
-        <div className="w-full max-w-lg bg-[var(--editor-surface)] border border-[var(--editor-border)] rounded-xl shadow-2xl flex flex-col overflow-hidden">
+      <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-md p-4">
+        <div className="w-full max-w-3xl bg-[var(--editor-surface)] border border-white/10 rounded-2xl shadow-2xl flex flex-col overflow-hidden">
 
           {/* Header */}
-          <div className="flex items-center justify-between px-5 py-4 border-b border-[var(--editor-border)]">
-            <div className="flex flex-col gap-0.5">
-              <h2 className="text-sm font-semibold text-[var(--editor-text)]">Render options</h2>
-              <p className="text-xs text-[var(--editor-text)]/55">
-                This project renders in HDR, so you have an export choice to make.
-              </p>
-            </div>
+          <div className="flex items-center justify-between px-5 py-4 border-b border-white/10">
+            <h2 className="text-sm font-semibold text-[var(--editor-text)]">Export</h2>
             <button
               onClick={handleCancel}
               aria-label="Close"
@@ -496,139 +617,286 @@ export default function RenderModal<P extends Project = Project>({ projectId, ad
             </button>
           </div>
 
-          <div className="px-5 py-4 flex flex-col gap-4 max-h-[70vh] overflow-y-auto">
-            {/* Export choice */}
-            <div className="flex flex-col gap-2">
-              <p className="text-[11px] font-semibold uppercase tracking-wide text-[var(--editor-text)]/50">Export</p>
-              <div role="radiogroup" aria-label="Export" className="grid grid-cols-3 gap-2">
-                {EXPORT_CHOICES.map(choice => {
-                  const active = choice.id === exportChoice
-                  return (
-                    <button
-                      key={choice.id}
-                      role="radio"
-                      aria-checked={active}
-                      onClick={() => setExport(choice.id)}
-                      className={`flex flex-col gap-1 rounded-lg border p-2.5 text-left transition-colors ${
-                        active
-                          ? 'border-violet-400/60 bg-violet-400/10'
-                          : 'border-[var(--editor-border)] hover:bg-[var(--editor-text)]/5'
-                      }`}
-                    >
-                      <span className="text-xs font-semibold text-[var(--editor-text)]">{choice.label}</span>
-                      <span className="text-[10px] leading-snug text-[var(--editor-text)]/55">{choice.blurb}</span>
-                    </button>
-                  )
-                })}
+          {/* Two-column body: cover on the left, settings on the right. */}
+          <div className="flex flex-col md:flex-row gap-5 px-5 py-4 max-h-[70vh] overflow-y-auto">
+
+            {/* Left — cover preview + editor */}
+            <div className="md:w-64 shrink-0 flex flex-col gap-2">
+              <div
+                className="relative mx-auto max-w-full overflow-hidden rounded-lg border border-white/10 bg-black/40 flex items-center justify-center"
+                style={coverPortrait
+                  ? { aspectRatio: coverAspect, height: 'min(46vh, 22rem)' }
+                  : { aspectRatio: coverAspect, width: '100%' }}
+              >
+                {coverUrl ? (
+                  <img
+                    src={coverUrl}
+                    alt="Cover frame"
+                    className="w-full h-full object-cover"
+                  />
+                ) : coverLoading ? (
+                  <Loader size="md" label="Loading cover" />
+                ) : (
+                  <span className="text-[11px] text-[var(--editor-text)]/40">No preview</span>
+                )}
               </div>
+              {adapter.getSampleFrame && (
+                <>
+                  <button
+                    onClick={() => setCoverEditing(o => !o)}
+                    aria-expanded={coverEditing}
+                    className="self-start text-xs text-[var(--editor-text)]/70 hover:text-[var(--editor-text)] transition-colors"
+                  >
+                    {coverEditing ? 'Done' : 'Edit cover'}
+                  </button>
+                  {coverEditing && (
+                    coverTileTimes.length > 0 ? (
+                      <div className="flex gap-1.5 overflow-x-auto pb-1" role="radiogroup" aria-label="Cover frame">
+                        {coverTileTimes.map((t, i) => {
+                          const url = coverTiles[i]
+                          const nearest = coverTileTimes.reduce((best, tt, j) =>
+                            Math.abs(tt - coverTime) < Math.abs(coverTileTimes[best] - coverTime) ? j : best, 0)
+                          const active = i === nearest
+                          return (
+                            <button
+                              key={i}
+                              role="radio"
+                              aria-checked={active}
+                              onClick={() => setCoverTime(t)}
+                              title={formatTimecode(t)}
+                              className={`relative shrink-0 overflow-hidden rounded border transition-colors ${
+                                active
+                                  ? 'border-[var(--editor-accent)] ring-1 ring-[var(--editor-accent)]'
+                                  : 'border-white/10 hover:border-white/40'
+                              }`}
+                              style={{ aspectRatio: coverAspect, height: 72 }}
+                            >
+                              {url
+                                ? <img src={url} alt="" className="h-full w-full object-cover" />
+                                : <span className="flex h-full w-full items-center justify-center bg-black/40"><Loader size="sm" /></span>}
+                            </button>
+                          )
+                        })}
+                      </div>
+                    ) : (
+                      <p className="text-[11px] text-[var(--editor-text)]/40">No frames to pick from.</p>
+                    )
+                  )}
+                </>
+              )}
             </div>
 
-            {/* Advanced disclosure */}
-            <div className="flex flex-col gap-3 border-t border-[var(--editor-border)] pt-3">
-              <button
-                onClick={() => setAdvanced(o => !o)}
-                aria-expanded={advancedOpen}
-                className="flex items-center gap-1.5 self-start text-xs text-[var(--editor-text)]/70 hover:text-[var(--editor-text)] transition-colors"
-              >
-                {advancedOpen ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
-                Advanced
-              </button>
+            {/* Right — settings */}
+            <div className="flex-1 min-w-0 flex flex-col gap-4">
+              {/* Name */}
+              <label className="flex flex-col gap-1.5">
+                <span className="text-[11px] font-semibold uppercase tracking-wide text-[var(--editor-text)]/50">Name</span>
+                <input
+                  type="text"
+                  value={name}
+                  onChange={(e) => setName(e.target.value)}
+                  placeholder="export"
+                  className="text-sm px-3 py-1.5 rounded-md bg-[var(--editor-surface)] border border-[var(--editor-border)] text-[var(--editor-text)] focus:outline-none focus:border-[var(--editor-accent)] transition-colors"
+                />
+              </label>
 
-              {advancedOpen && (
-                <div className="flex flex-col gap-3">
+              {/* Save to */}
+              <div className="flex flex-col gap-1">
+                <span className="text-[11px] font-semibold uppercase tracking-wide text-[var(--editor-text)]/50">Save to</span>
+                <span className="text-xs font-mono text-[var(--editor-text)]/70 truncate">output/{outputName}.mp4</span>
+                <span className="text-[11px] text-[var(--editor-text)]/45">Download after export.</span>
+              </div>
+
+              {/* HDR-only controls: export format, image color, tone-curve compare. */}
+              {isHdr && (
+                <>
+                  {/* Format */}
                   <div className="flex flex-col gap-2">
-                    <p className="text-[11px] font-semibold uppercase tracking-wide text-[var(--editor-text)]/50">
-                      Tone curve for SDR
-                    </p>
-                    <div role="radiogroup" aria-label="Tone curve for SDR" className="grid grid-cols-2 gap-2">
-                      {SDR_CURVES.map(curve => {
-                        const active = curve.id === sdrCurve
-                        const thumb = thumbs[curve.id]
+                    <p className="text-[11px] font-semibold uppercase tracking-wide text-[var(--editor-text)]/50">Format</p>
+                    <div role="radiogroup" aria-label="Format" className="grid grid-cols-3 gap-2">
+                      {EXPORT_CHOICES.map(choice => {
+                        const active = choice.id === exportChoice
                         return (
                           <button
-                            key={curve.id}
+                            key={choice.id}
                             role="radio"
                             aria-checked={active}
-                            onClick={() => setSdrCurve(curve.id)}
-                            className={`flex flex-col gap-1.5 rounded-lg border p-2 text-left transition-colors ${
+                            onClick={() => setExport(choice.id)}
+                            className={`flex flex-col gap-1 rounded-lg border p-2.5 text-left transition-colors ${
                               active
                                 ? 'border-violet-400/60 bg-violet-400/10'
                                 : 'border-[var(--editor-border)] hover:bg-[var(--editor-text)]/5'
                             }`}
                           >
-                            {thumb ? (
-                              <img
-                                src={thumb}
-                                alt={`${curve.label} sample frame`}
-                                className="w-full aspect-video rounded object-cover border border-[var(--editor-border)]"
-                              />
-                            ) : thumbsPending ? (
-                              <span className="w-full aspect-video rounded border border-[var(--editor-border)] bg-[var(--editor-text)]/5 flex items-center justify-center text-[10px] text-[var(--editor-text)]/40">
-                                Sampling a frame…
-                              </span>
-                            ) : null}
-                            <span className="text-xs font-semibold text-[var(--editor-text)] flex items-center gap-1.5">
-                              {curve.label}
-                              {curve.id === DEFAULT_SDR_CURVE && (
-                                <span className="text-[9px] font-normal px-1 py-px rounded bg-[var(--editor-text)]/10 text-[var(--editor-text)]/55">default</span>
-                              )}
-                            </span>
-                            <span className="text-[10px] leading-snug text-[var(--editor-text)]/60">{curve.blurb}</span>
+                            <span className="text-xs font-semibold text-[var(--editor-text)]">{choice.label}</span>
+                            <span className="text-[10px] leading-snug text-[var(--editor-text)]/55">{choice.blurb}</span>
                           </button>
                         )
                       })}
                     </div>
-                    <p
-                      data-testid="sdr-honesty-line"
-                      className={`text-[11px] leading-snug ${
-                        sdrCurve === DEFAULT_SDR_CURVE
-                          ? 'text-[var(--editor-text)]/55'
-                          : 'text-amber-400/90'
-                      }`}
-                    >
-                      {honestyLine(sdrCurve)}
-                    </p>
                   </div>
 
-                  {/* Image color mapping — the same control the toolbar shows,
-                      persisting through the host's normal settings path. */}
-                  {preRenderOptions?.imageTone && (
-                    <div className="flex items-center justify-between gap-3 border-t border-[var(--editor-border)] pt-3">
-                      <span className="text-[11px] text-[var(--editor-text)]/55">
-                        How photos and logos are converted for the HDR render.
-                      </span>
-                      <ImageToneMenu
-                        variant="header"
-                        value={preRenderOptions.imageTone.value}
-                        onChange={preRenderOptions.imageTone.set}
-                      />
-                    </div>
-                  )}
-                </div>
-              )}
+                  {/* Image color — a disclosure matching the Advanced one below: a
+                      plain chevron toggle opening a 2-col grid of tones, each with a
+                      per-tone example image. Persists through the host's normal
+                      settings path (an editor mutation that saves + undoes). */}
+                  {(() => {
+                    const it = preRenderOptions?.imageTone
+                    if (!it) return null
+                    const tone = it.value ?? DEFAULT_IMAGE_TONE
+                    const toneInfo = IMAGE_TONES.find(t => t.id === tone) ?? IMAGE_TONES[0]
+                    return (
+                      <div className="flex flex-col gap-3 border-t border-[var(--editor-border)] pt-3">
+                        <button
+                          onClick={() => setImageColor(o => !o)}
+                          aria-expanded={imageColorOpen}
+                          className="flex items-center gap-1.5 self-start text-xs text-[var(--editor-text)]/70 hover:text-[var(--editor-text)] transition-colors"
+                        >
+                          {imageColorOpen ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
+                          Image color
+                        </button>
 
-              {!advancedOpen && (
-                <p className="text-[11px] text-[var(--editor-text)]/45">
-                  SDR files use the {curveInfo.label} look. Open Advanced to compare curves.
-                </p>
+                        {imageColorOpen ? (
+                          <div className="flex flex-col gap-2">
+                            <p className="text-[11px] font-semibold uppercase tracking-wide text-[var(--editor-text)]/50">
+                              How photos and logos convert for HDR
+                            </p>
+                            <div role="radiogroup" aria-label="Image color" className="grid grid-cols-2 gap-2">
+                              {IMAGE_TONES.map(t => {
+                                const active = t.id === tone
+                                return (
+                                  <button
+                                    key={t.id}
+                                    role="radio"
+                                    aria-checked={active}
+                                    onClick={() => it.set(t.id)}
+                                    className={`flex flex-col gap-1.5 rounded-lg border p-2 text-left transition-colors ${
+                                      active
+                                        ? 'border-violet-400/60 bg-violet-400/10'
+                                        : 'border-[var(--editor-border)] hover:bg-[var(--editor-text)]/5'
+                                    }`}
+                                  >
+                                    <img
+                                      src={TONE_EXAMPLES[t.id]}
+                                      alt={`${t.label} example`}
+                                      className="w-full aspect-video rounded object-cover border border-[var(--editor-border)]"
+                                    />
+                                    <span className="text-xs font-semibold text-[var(--editor-text)] flex items-center gap-1.5">
+                                      {t.label}
+                                      {t.id === DEFAULT_IMAGE_TONE && (
+                                        <span className="text-[9px] font-normal px-1 py-px rounded bg-[var(--editor-text)]/10 text-[var(--editor-text)]/55">default</span>
+                                      )}
+                                    </span>
+                                    <span className="text-[10px] leading-snug text-[var(--editor-text)]/60">{t.summary}</span>
+                                  </button>
+                                )
+                              })}
+                            </div>
+                          </div>
+                        ) : (
+                          <p className="text-[11px] text-[var(--editor-text)]/45">
+                            Photos and logos use the {toneInfo.label} conversion. Open to change.
+                          </p>
+                        )}
+                      </div>
+                    )
+                  })()}
+
+                  {/* Advanced disclosure — SDR tone-curve compare. */}
+                  <div className="flex flex-col gap-3 border-t border-[var(--editor-border)] pt-3">
+                    <button
+                      onClick={() => setAdvanced(o => !o)}
+                      aria-expanded={advancedOpen}
+                      className="flex items-center gap-1.5 self-start text-xs text-[var(--editor-text)]/70 hover:text-[var(--editor-text)] transition-colors"
+                    >
+                      {advancedOpen ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
+                      Advanced
+                    </button>
+
+                    {advancedOpen ? (
+                      <div className="flex flex-col gap-2">
+                        <p className="text-[11px] font-semibold uppercase tracking-wide text-[var(--editor-text)]/50">
+                          Tone curve for SDR
+                        </p>
+                        <div role="radiogroup" aria-label="Tone curve for SDR" className="grid grid-cols-2 gap-2">
+                          {SDR_CURVES.map(curve => {
+                            const active = curve.id === sdrCurve
+                            const thumb = thumbs[curve.id]
+                            return (
+                              <button
+                                key={curve.id}
+                                role="radio"
+                                aria-checked={active}
+                                onClick={() => setSdrCurve(curve.id)}
+                                className={`flex flex-col gap-1.5 rounded-lg border p-2 text-left transition-colors ${
+                                  active
+                                    ? 'border-violet-400/60 bg-violet-400/10'
+                                    : 'border-[var(--editor-border)] hover:bg-[var(--editor-text)]/5'
+                                }`}
+                              >
+                                {thumb ? (
+                                  <img
+                                    src={thumb}
+                                    alt={`${curve.label} sample frame`}
+                                    className="w-full aspect-video rounded object-cover border border-[var(--editor-border)]"
+                                  />
+                                ) : thumbsPending ? (
+                                  <span className="w-full aspect-video rounded border border-[var(--editor-border)] bg-[var(--editor-text)]/5 flex items-center justify-center">
+                                    <Loader size="sm" />
+                                  </span>
+                                ) : null}
+                                <span className="text-xs font-semibold text-[var(--editor-text)] flex items-center gap-1.5">
+                                  {curve.label}
+                                  {curve.id === DEFAULT_SDR_CURVE && (
+                                    <span className="text-[9px] font-normal px-1 py-px rounded bg-[var(--editor-text)]/10 text-[var(--editor-text)]/55">default</span>
+                                  )}
+                                </span>
+                                <span className="text-[10px] leading-snug text-[var(--editor-text)]/60">{curve.blurb}</span>
+                              </button>
+                            )
+                          })}
+                        </div>
+                        <p
+                          data-testid="sdr-honesty-line"
+                          className={`text-[11px] leading-snug ${
+                            sdrCurve === DEFAULT_SDR_CURVE
+                              ? 'text-[var(--editor-text)]/55'
+                              : 'text-amber-400/90'
+                          }`}
+                        >
+                          {honestyLine(sdrCurve)}
+                        </p>
+                      </div>
+                    ) : (
+                      <p className="text-[11px] text-[var(--editor-text)]/45">
+                        SDR files use the {curveInfo.label} look. Open Advanced to compare curves.
+                      </p>
+                    )}
+                  </div>
+                </>
               )}
             </div>
           </div>
 
-          {/* Footer */}
-          <div className="flex items-center justify-end gap-2 px-5 py-3 border-t border-[var(--editor-border)]">
-            <button
-              onClick={handleCancel}
-              className="text-sm px-4 py-1.5 rounded-md bg-[var(--editor-surface)] border border-[var(--editor-border)] text-[var(--editor-text)]/80 hover:opacity-90 transition-colors"
-            >
-              Cancel
-            </button>
-            <button
-              onClick={handleStart}
-              className="text-sm px-4 py-1.5 rounded-md bg-[var(--editor-accent)] text-[var(--editor-accent-foreground)] font-medium hover:opacity-90 transition-colors"
-            >
-              Start render
-            </button>
+          {/* Footer — duration on the left, actions on the right. */}
+          <div className="flex items-center justify-between gap-2 px-5 py-3 border-t border-[var(--editor-border)]">
+            <span className="text-xs text-[var(--editor-text)]/50 tabular-nums">
+              {durationSec > 0 ? formatTimecode(durationSec) : ''}
+            </span>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={handleCancel}
+                className="text-sm px-4 py-1.5 rounded-md bg-[var(--editor-surface)] border border-[var(--editor-border)] text-[var(--editor-text)]/80 hover:opacity-90 transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleStart}
+                className="text-sm px-4 py-1.5 rounded-md bg-[var(--editor-accent)] text-[var(--editor-accent-foreground)] font-medium hover:opacity-90 transition-colors"
+              >
+                Export
+              </button>
+            </div>
           </div>
         </div>
       </div>,
@@ -717,59 +985,93 @@ export default function RenderModal<P extends Project = Project>({ projectId, ad
   }
 
   return createPortal(
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black">
-      <div className={`w-full ${view === 'logs' ? 'max-w-3xl' : 'max-w-md'} bg-[var(--editor-surface)] border border-[var(--editor-border)] rounded-xl shadow-2xl flex flex-col overflow-hidden`}>
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-md p-4">
+      <div className="w-full max-w-md bg-[var(--editor-surface)] border border-white/10 rounded-2xl shadow-2xl flex flex-col overflow-hidden">
 
         {/* Header */}
-        <div className="flex items-center justify-between px-5 py-4 border-b border-[var(--editor-border)]">
+        <div className="flex items-center justify-between px-5 py-4 border-b border-white/10">
           <div className="flex items-center gap-2.5">
-            {status === 'running' && <span className="w-2 h-2 rounded-full bg-amber-400 animate-pulse" />}
+            {status === 'running' && <span className="w-2 h-2 rounded-full bg-[var(--editor-accent)] animate-pulse" />}
             {status === 'error'   && <span className="w-2 h-2 rounded-full bg-red-400" />}
-            <div className="flex flex-col gap-0.5">
-              <h2 className="text-sm font-semibold text-[var(--editor-text)]">
-                {status === 'running' ? 'Rendering…' : 'Render failed'}
-              </h2>
-            </div>
+            <h2 className="text-sm font-semibold text-[var(--editor-text)]">
+              {status === 'running' ? 'Rendering…' : 'Render failed'}
+            </h2>
           </div>
           {status !== 'running' && (
             <button onClick={onClose} className="text-[var(--editor-text)]/55 hover:text-[var(--editor-text)] transition-colors text-lg leading-none">×</button>
           )}
         </div>
 
-        {/* Body — full log panel (montaj-native / SSE) or phase stepper (Hub) */}
-        {view === 'logs' ? (
-          <div className="relative">
-            <button
-              onClick={() => navigator.clipboard.writeText(logs.join('\n') + (errorMsg ? '\n' + errorMsg : ''))}
-              className="absolute top-2 right-2 z-10 text-[10px] px-2 py-0.5 rounded bg-[var(--editor-surface)] border border-[var(--editor-border)] text-[var(--editor-text)]/60 hover:text-[var(--editor-text)] hover:border-[var(--editor-border)] transition-colors"
-              title="Copy logs"
-            >
-              Copy
-            </button>
-            <div
-              ref={logRef}
-              className="h-96 overflow-y-auto px-4 py-3 font-mono text-[11px] text-[var(--editor-text)]/80 bg-[var(--editor-surface)] flex flex-col gap-0.5"
-            >
-              {logs.length === 0 && status === 'running' && (
-                <span className="text-[var(--editor-text)]/40 italic">Starting render engine…</span>
-              )}
-              {logs.map((line, i) => (
-                <LogLine key={i} text={line} />
-              ))}
-              {status === 'error' && errorMsg && (
-                <span className="text-red-400 mt-1">{errorMsg}</span>
-              )}
+        {status === 'running' ? (
+          /* Stylized loading state: equalizer + phase + progress sweep. */
+          <div className="flex flex-col items-center gap-6 px-6 py-9">
+            <Loader size="lg" />
+
+            <div className="flex flex-col items-center gap-1 text-center">
+              <h3 className="text-base font-semibold text-[var(--editor-text)]">Exporting your video</h3>
+              <p className="text-xs text-[var(--editor-text)]/50">This can take a few minutes for longer videos.</p>
             </div>
+
+            {/* Granular phase progress (poll hosts advance through phases). */}
+            {view !== 'logs' && (
+              <div className="w-full max-w-xs rounded-xl border border-white/10 bg-black/20 px-4 py-3">
+                <PhaseStepper current={phase} phases={stepperPhases(renderOpts)} />
+              </div>
+            )}
+
+            {/* Raw render log, collapsed by default (montaj-native / SSE). */}
+            {view === 'logs' && (
+              <div className="w-full">
+                <button
+                  onClick={() => setShowLog(o => !o)}
+                  aria-expanded={showLog}
+                  className="mx-auto flex items-center gap-1 text-[11px] text-[var(--editor-text)]/50 hover:text-[var(--editor-text)]/80 transition-colors"
+                >
+                  {showLog ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
+                  {showLog ? 'Hide render log' : 'Show render log'}
+                </button>
+                {showLog && (
+                  <div className="relative mt-2">
+                    <button
+                      onClick={() => navigator.clipboard.writeText(logs.join('\n'))}
+                      className="absolute top-2 right-2 z-10 rounded border border-white/10 bg-black/40 px-2 py-0.5 text-[10px] text-[var(--editor-text)]/60 hover:text-[var(--editor-text)] transition-colors"
+                      title="Copy logs"
+                    >
+                      Copy
+                    </button>
+                    <div
+                      ref={logRef}
+                      className="flex h-52 flex-col gap-0.5 overflow-y-auto rounded-lg border border-white/10 bg-black/40 px-3 py-2 font-mono text-[11px] text-[var(--editor-text)]/80"
+                    >
+                      {logs.length === 0
+                        ? <span className="italic text-[var(--editor-text)]/40">Starting render engine…</span>
+                        : logs.map((line, i) => <LogLine key={i} text={line} />)}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
           </div>
         ) : (
+          /* Error state. */
           <div className="px-5 py-5">
-            {status === 'running' ? (
-              <>
-                <PhaseStepper current={phase} phases={stepperPhases(renderOpts)} />
-                <p className="mt-5 text-xs text-[var(--editor-text)]/50">
-                  This can take a few minutes for longer videos.
-                </p>
-              </>
+            {view === 'logs' ? (
+              <div className="relative">
+                <button
+                  onClick={() => navigator.clipboard.writeText(logs.join('\n') + (errorMsg ? '\n' + errorMsg : ''))}
+                  className="absolute top-2 right-2 z-10 rounded border border-white/10 bg-black/40 px-2 py-0.5 text-[10px] text-[var(--editor-text)]/60 hover:text-[var(--editor-text)] transition-colors"
+                  title="Copy logs"
+                >
+                  Copy
+                </button>
+                <div
+                  ref={logRef}
+                  className="flex h-72 flex-col gap-0.5 overflow-y-auto rounded-lg border border-white/10 bg-black/40 px-3 py-2 font-mono text-[11px] text-[var(--editor-text)]/80"
+                >
+                  {logs.map((line, i) => <LogLine key={i} text={line} />)}
+                  {errorMsg && <span className="mt-1 text-red-400">{errorMsg}</span>}
+                </div>
+              </div>
             ) : (
               <p className="text-sm text-red-400 whitespace-pre-wrap break-words">
                 {errorMsg ?? 'Render failed.'}
@@ -779,18 +1081,18 @@ export default function RenderModal<P extends Project = Project>({ projectId, ad
         )}
 
         {/* Footer */}
-        <div className="flex items-center justify-end gap-2 px-5 py-3 border-t border-[var(--editor-border)]">
+        <div className="flex items-center justify-end gap-2 px-5 py-3 border-t border-white/10">
           {status === 'running' ? (
             <button
               onClick={handleCancel}
-              className="text-sm px-4 py-1.5 rounded-md bg-[var(--editor-surface)] border border-[var(--editor-border)] text-[var(--editor-text)]/80 hover:bg-red-900/40 hover:border-red-700 hover:text-red-300 transition-colors"
+              className="text-sm px-4 py-1.5 rounded-md bg-black/20 border border-white/10 text-[var(--editor-text)]/80 hover:bg-red-900/40 hover:border-red-700 hover:text-red-300 transition-colors"
             >
               Cancel
             </button>
           ) : (
             <button
               onClick={onClose}
-              className="text-sm px-4 py-1.5 rounded-md bg-[var(--editor-surface)] border border-[var(--editor-border)] text-[var(--editor-text)] hover:opacity-90 transition-colors"
+              className="text-sm px-4 py-1.5 rounded-md bg-black/20 border border-white/10 text-[var(--editor-text)] hover:opacity-90 transition-colors"
             >
               Close
             </button>

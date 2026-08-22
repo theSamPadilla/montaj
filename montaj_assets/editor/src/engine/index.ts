@@ -216,9 +216,18 @@ interface Session {
   start: number
   /** `sourceWindow(item, 'preview').inPoint` as of the last (re)build. Same trim-detection role as `start`. */
   inPoint: number
-  /** `!!item.muted` as of the last (re)build. A mute toggle respawns the session — the clock's KIND depends on it. */
+  /**
+   * `!!item.muted` as of the last (re)build. A mute toggle respawns the
+   * session — the clock's KIND depends on it. EFFECTIVE mute: the scheduler
+   * folds the clip's track in before the request is built, so muting the
+   * TRACK respawns here exactly as muting the clip does.
+   */
   muted: boolean
-  /** `item.volume ?? 1` as of the last (re)build. Unlike `muted`, a change here is pushed live via `setVolume`, not a respawn trigger. */
+  /**
+   * `item.volume ?? 1` as of the last (re)build — the effective volume, track
+   * gain already multiplied in (see `SourceRequest.item`). Unlike `muted`, a
+   * change here is pushed live via `setVolume`, not a respawn trigger.
+   */
   volume: number
 }
 

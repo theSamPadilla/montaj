@@ -21,6 +21,8 @@ REPO_ROOT = Path(__file__).parent.parent
 INIT_PY = str(REPO_ROOT / "project" / "init.py")
 sys.path.insert(0, str(REPO_ROOT))
 
+from lib.project_tracks import track_items
+
 
 # ── helpers ────────────────────────────────────────────────────────────────────
 
@@ -95,7 +97,7 @@ class TestCliLocalClipAssetPassthrough:
         project = json.loads(project_path.read_text())
         assert project["version"] == "0.2"
         assert len(project["tracks"]) == 1
-        track = project["tracks"][0]
+        track = track_items(project)[0]
         assert len(track) == 1
         assert track[0]["src"].endswith("local.mp4")
 
@@ -133,7 +135,7 @@ class TestCliLocalClipAssetPassthrough:
         assert result.returncode == 0, result.stderr
         project_path = _project_path_from_stdout(result.stdout)
         project = json.loads(project_path.read_text())
-        assert len(project["tracks"][0]) == 1
+        assert len(track_items(project)[0]) == 1
         assert len(project["assets"]) == 1
 
 
@@ -185,7 +187,7 @@ class TestRemoteClipDirect:
         assert project_path_str is not None, "init.main() did not print a project path"
         project = json.loads(Path(project_path_str).read_text())
         assert project["version"] == "0.2"
-        track = project["tracks"][0]
+        track = track_items(project)[0]
         assert len(track) == 1
         # The clip src should reference the fetched file inside the workspace.
         assert "clip.mp4" in track[0]["src"]

@@ -12,6 +12,7 @@ export type {
   CaptionSegment,
   Captions,
   VisualItem,
+  VisualTrack,
   Asset,
   ImageElement,
   OverlayElement,
@@ -67,6 +68,19 @@ export {
 } from './video/cuts'
 export type { Cut } from './video/cuts'
 export { getOverlayDesignCanvas } from './video/design-canvas'
+// Track-shape tolerance: `project.tracks` may be on disk as the legacy
+// `VisualItem[][]` or as `VisualTrack[]`. Read through `trackItems`; normalize
+// on open with `normalizeTracks` (same object back when already converged).
+export {
+  effectiveItemAudio,
+  enabledTrackItems,
+  enabledTracks,
+  mapTrackItems,
+  normalizeTracks,
+  trackItems,
+  withEnabledItemTracks,
+  withItemTracks,
+} from './video/timeline/timeline-model'
 
 // ── Image tone (HDR image color mapping) ─────────────────────────────────────
 // The picker component is exported so hosts using `onProvideImageTone` can

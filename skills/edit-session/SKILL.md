@@ -123,18 +123,27 @@ const ITEM_FRAME = Math.round((16.70 - 16.52) * fps)  // 0.18s * fps
 ```json
 {
   "tracks": [
-    [
+    {
       // Track 0 — primary footage track
-      { "id": "clip-0", "type": "video", "src": "/abs/path/clip.mp4", "start": 0.0, "end": 0.0 }
-    ],
-    [
+      "id": "trk-0",
+      "items": [
+        { "id": "clip-0", "type": "video", "src": "/abs/path/clip.mp4", "start": 0.0, "end": 0.0 }
+      ]
+    },
+    {
       // Track 1 — background layer (opaque sections, backgrounds)
-      { "id": "...", "type": "overlay", "src": "/abs/path.jsx", "start": 0.0, "end": 5.0, "opaque": true }
-    ],
-    [
+      "id": "trk-1",
+      "items": [
+        { "id": "...", "type": "overlay", "src": "/abs/path.jsx", "start": 0.0, "end": 5.0, "opaque": true }
+      ]
+    },
+    {
       // Track 2+ — renders on top of track 1
-      { "id": "...", "type": "overlay", "src": "/abs/path.jsx", "start": 2.0, "end": 4.0 }
-    ]
+      "id": "trk-2",
+      "items": [
+        { "id": "...", "type": "overlay", "src": "/abs/path.jsx", "start": 2.0, "end": 4.0 }
+      ]
+    }
   ]
 }
 ```

@@ -140,7 +140,7 @@ describe('VideoEditor — editor-package integration', () => {
 
   it('shows the host pendingStatus slot for a pending project', async () => {
     const adapter = makeFakeAdapter()
-    const initial = makeVideoProject({ status: 'pending', tracks: [[]] })
+    const initial = makeVideoProject({ status: 'pending', tracks: [{ id: 'trk-0', items: [] }] })
     const { getByTestId } = render(
       <VideoEditor
         project={initial}
@@ -170,7 +170,7 @@ describe('VideoEditor — editor-package integration', () => {
 
   it('invokes onBackToSetup affordance only when the host supplies it', async () => {
     const adapter = makeFakeAdapter()
-    const initial = makeVideoProject({ status: 'pending', tracks: [[]] })
+    const initial = makeVideoProject({ status: 'pending', tracks: [{ id: 'trk-0', items: [] }] })
     const onBackToSetup = vi.fn()
     const { findByText } = render(
       <VideoEditor
@@ -217,7 +217,7 @@ describe('VideoEditor — editor-package integration', () => {
   it('shows the skill-path card on the pending surface when getInfo returns a path', async () => {
     const adapter = makeFakeAdapter()
     adapter.getInfo = vi.fn(async () => ({ root_skill_path: 'skills/video-skill.md' }))
-    const initial = makeVideoProject({ status: 'pending', tracks: [[]] })
+    const initial = makeVideoProject({ status: 'pending', tracks: [{ id: 'trk-0', items: [] }] })
     const { findByText } = render(
       <VideoEditor
         project={initial}
@@ -360,6 +360,61 @@ describe('VideoEditor — editor-package integration', () => {
     )
   })
 
+  // Regression: a timeline gesture is ONE undo step, not one per mousemove.
+  // `onProjectChange` (the per-move channel) used to be a full `sync.mutate`,
+  // so dragging a clip across the timeline pushed dozens of undo entries and
+  // Undo walked it back a few pixels at a time instead of returning it to where
+  // the drag started. Drives the real DOM drag so the wiring is what's under
+  // test, not the sync core (which already had transient/commit).
+  it('undoes a whole drag in one step, not one step per mousemove', async () => {
+    const realRect = Element.prototype.getBoundingClientRect
+    // jsdom reports every rect as 0x0, which collapses the drag hook's
+    // px-to-time conversion to a divide-by-zero no-op.
+    Element.prototype.getBoundingClientRect = function (this: Element) {
+      return { x: 0, y: 0, top: 0, left: 0, right: 1000, bottom: 100, width: 1000, height: 100, toJSON: () => ({}) } as DOMRect
+    }
+    try {
+      const adapter = makeFakeAdapter()
+      const initial = makeVideoProject({
+        tracks: [{
+          id: 'trk-0',
+          items: [
+            { id: 'clip-0', type: 'video', src: 'a.mp4', start: 0, end: 4, inPoint: 0, outPoint: 4, sourceDuration: 40 },
+          ],
+        }],
+      })
+      const { findByText } = render(
+        <VideoEditor project={initial} adapter={adapter} slots={{ exportActions: <div /> }} />,
+      )
+
+      const block = await findByText('▪ video')
+      // Press, then travel in several steps — each one used to be its own undo entry.
+      fireEvent.mouseDown(block, { clientX: 100, clientY: 20 })
+      for (const x of [140, 190, 250, 320, 400]) {
+        await act(async () => { document.dispatchEvent(new MouseEvent('mousemove', { clientX: x, clientY: 20, bubbles: true })) })
+      }
+      await act(async () => { document.dispatchEvent(new MouseEvent('mouseup', { clientX: 400, clientY: 20, bubbles: true })) })
+
+      // The gesture moved the clip and persisted exactly one save for it.
+      await waitFor(() => expect(adapter.saveCalls.length).toBeGreaterThan(0))
+      const moved = adapter.saveCalls[adapter.saveCalls.length - 1].project.tracks![0].items[0]
+      expect(moved.start).toBeGreaterThan(0)
+
+      // ONE undo returns it all the way to the start — not to an intermediate
+      // position partway through the drag.
+      await act(async () => {
+        document.dispatchEvent(new KeyboardEvent('keydown', { key: 'z', metaKey: true }))
+      })
+      await waitFor(() => {
+        const after = adapter.saveCalls[adapter.saveCalls.length - 1].project.tracks![0].items[0]
+        expect(after.start).toBe(0)
+        expect(after.end).toBe(4)
+      })
+    } finally {
+      Element.prototype.getBoundingClientRect = realRect
+    }
+  })
+
   // Regression: cancelOverlayEdit routes through sync.applyExternal (see
   // use-project-sync.ts) to revert the live preview. applyExternal used to leave
   // the sync core's transient-gesture baseline pointing at the pre-edit snapshot;
@@ -375,8 +430,8 @@ describe('VideoEditor — editor-package integration', () => {
     const initial = makeVideoProject({
       name: 'Original',
       tracks: [
-        [{ id: 'clip-0', type: 'video', src: 'a.mp4', start: 0, end: 4, inPoint: 0, outPoint: 4 }],
-        [{ id: 'overlay-1', type: 'overlay', src: 'overlay.jsx', start: 0, end: 4, props: { text: 'Old text' } }],
+        { id: 'trk-0', items: [{ id: 'clip-0', type: 'video', src: 'a.mp4', start: 0, end: 4, inPoint: 0, outPoint: 4 }] },
+        { id: 'trk-1', items: [{ id: 'overlay-1', type: 'overlay', src: 'overlay.jsx', start: 0, end: 4, props: { text: 'Old text' } }] },
       ],
     })
     const { findByText, findByTitle, findByLabelText, getByText } = render(
@@ -402,7 +457,9 @@ describe('VideoEditor — editor-package integration', () => {
     await waitFor(() => expect(onProjectChange).toHaveBeenLastCalledWith(
       expect.objectContaining({
         tracks: expect.arrayContaining([
-          expect.arrayContaining([expect.objectContaining({ id: 'overlay-1', props: { text: 'Live preview' } })]),
+          expect.objectContaining({
+            items: expect.arrayContaining([expect.objectContaining({ id: 'overlay-1', props: { text: 'Live preview' } })]),
+          }),
         ]),
       }),
     ))
@@ -413,7 +470,9 @@ describe('VideoEditor — editor-package integration', () => {
       expect.objectContaining({
         name: 'Original',
         tracks: expect.arrayContaining([
-          expect.arrayContaining([expect.objectContaining({ id: 'overlay-1', props: { text: 'Old text' } })]),
+          expect.objectContaining({
+            items: expect.arrayContaining([expect.objectContaining({ id: 'overlay-1', props: { text: 'Old text' } })]),
+          }),
         ]),
       }),
     ))

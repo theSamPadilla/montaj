@@ -20,7 +20,7 @@ function project(clips: VisualItem[]): Project {
     id: 'p1',
     status: 'draft',
     settings: { resolution: [1080, 1920] },
-    tracks: [clips],
+    tracks: [{ id: 'trk-0', items: clips }],
   }
 }
 

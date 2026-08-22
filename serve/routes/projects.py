@@ -29,6 +29,7 @@ from serve.common import (
 )
 from serve.caption_job import build_cut_spec
 from serve.routes.files import save_upload
+from lib.project_tracks import normalize_tracks, track_items
 from lib.remote_io import fetch_to_disk_async, push_from_disk_async, parse_allowed_hosts
 from project.init import _copy_into_workspace
 from serve.sse import SSEBroadcaster, sse_stream
@@ -126,13 +127,64 @@ _render_jobs: dict[str, _RenderJob] = {}
 # fire-and-forget tasks, so without this a render task could be GC'd mid-run.
 _render_task_refs: set = set()
 
+# Conservative output-name whitelist: letters, digits, space, dash,
+# underscore, dot. No path separators, so a sanitized name can never escape
+# output_dir on its own.
+_UNSAFE_OUTPUT_NAME_CHARS = re.compile(r"[^A-Za-z0-9 _.-]+")
+
+
+def _sanitize_output_name(name: str, fallback: str) -> str:
+    """Turn a caller-supplied render output name into a safe basename with no
+    extension and no path components. Strips directory components (basename),
+    the trailing extension, ``..``, and any character outside a conservative
+    whitelist; falls back to ``fallback`` (the project dir name) if nothing
+    safe survives."""
+    base = os.path.basename(name)
+    base = os.path.splitext(base)[0]
+    base = base.replace("..", "")
+    base = _UNSAFE_OUTPUT_NAME_CHARS.sub("", base)
+    base = base.strip(" .")
+    return base or fallback
+
+
+async def _extract_cover_frame(output_path: "Path", cover: float, job: _RenderJob) -> None:
+    """Best-effort poster-frame extraction for a finished render. Pulls the
+    frame at ``cover`` seconds into a sidecar JPEG next to ``output_path``.
+    Any failure here is logged to the job's line buffer and swallowed — the
+    render itself already succeeded and must not be flipped to error over a
+    missing thumbnail."""
+    cover_path = output_path.with_suffix(".jpg")
+    try:
+        cmd = [
+            ffmpeg_bin(), "-y",
+            "-ss", str(cover),
+            "-i", str(output_path),
+            "-frames:v", "1",
+            "-update", "1",
+            str(cover_path),
+        ]
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        await proc.communicate()
+        if proc.returncode != 0:
+            job.lines.append(f"[render] cover extraction failed (exit {proc.returncode})")
+    except Exception as e:
+        job.lines.append(f"[render] cover extraction failed: {e}")
+
 
 async def _run_render_detached(project_id: str, cmd: list[str], env: dict,
                                render_input: "Path", project_path: "Path",
-                               job: _RenderJob) -> None:
+                               job: _RenderJob, *, cover: float | None = None,
+                               output_path: "Path | None" = None) -> None:
     """Run a render subprocess to completion regardless of any client. Owns the
     `_render_procs` / `_active_renders` slot until the render actually finishes, so
-    a dropped SSE connection can't strand or abort it."""
+    a dropped SSE connection can't strand or abort it.
+
+    ``cover``/``output_path`` (both optional) trigger a best-effort poster-frame
+    extraction after a successful render — see `_extract_cover_frame`."""
     proc = None
     try:
         proc = await asyncio.create_subprocess_exec(
@@ -159,6 +211,8 @@ async def _run_render_detached(project_id: str, cmd: list[str], env: dict,
         await proc.wait()
         if proc.returncode == 0:
             job.status, job.result, job.phase = "done", stdout.decode().strip(), "done"
+            if cover is not None and output_path is not None:
+                await _extract_cover_frame(output_path, cover, job)
         else:
             job.status, job.result = "error", f"Render failed (exit {proc.returncode})"
     except Exception as e:  # surface any spawn/IO failure to the viewer
@@ -854,7 +908,7 @@ def _look_migration_items(project: dict):
     mirror — the same two groups cli/commands/clean.py walks when it strips
     dangling proxySrc pointers. Overlay/image/caption items carry no video
     artifacts and are skipped."""
-    groups = list(project.get("tracks") or []) + [project.get("sources") or []]
+    groups = track_items(project) + [project.get("sources") or []]
     for group in groups:
         for item in group or []:
             if isinstance(item, dict) and item.get("type") == "video" and item.get("src"):
@@ -1036,13 +1090,153 @@ async def _migrate_project_look(
     return result[0] if result is not None else None
 
 
+def _ensure_current_proxies(
+    project_id: str,
+    project_dir: Path,
+    project: dict,
+    broadcaster: "SSEBroadcaster | None" = None,
+) -> dict:
+    """Manual proxy migration: heal every video item that lacks a current,
+    fresh editing proxy, reusing the SP6b look-migration background apparatus.
+
+    A superset of `_migrate_project_look`'s proxy triage: one `is_proxy_fresh`
+    check covers missing proxies (no `proxySrc`), old-look proxies
+    (`_proxy_hable1`), and dangling pointers (file deleted) alike. Sources are
+    de-duped by target proxy path (`out`), so the clips fan-out's shared lazy
+    source encodes once and every child repoints to it.
+
+    Per unique `out`:
+      * Fresh on disk — the current-look proxy already exists and is at least as
+        new as the source. Repoint any item not already pointed at it (an
+        immediate `_apply_project_edits`, broadcast at once) and count the
+        source toward `alreadyFresh`.
+      * Not fresh — reuse the queued/running unit if one already produces `out`,
+        else build one, attach a target per item, and count toward `scheduled`.
+        Unlike `_migrate_project_look` this does NOT pre-clear the stale
+        `proxySrc`: a manual action's counts must only ever go DOWN, so the old
+        pointer survives until the fresh encode lands and repoints it.
+
+    Never awaits an encode — the background queue delivers write-backs over SSE.
+    Returns `{"scheduled": N, "alreadyFresh": M}`, both counts of unique sources.
+    """
+    from lib.proxy import is_proxy_fresh, proxy_path_for
+    from lib.types.colorspace import DEFAULT_COLOR_SPACE
+
+    settings = project.get("settings") or {}
+    if settings.get("proxy") is False:
+        return {"scheduled": 0, "alreadyFresh": 0}
+    color_space = settings.get("colorSpace") or DEFAULT_COLOR_SPACE
+
+    # Group every present, absolute-sourced video item by the ONE proxy path it
+    # would use (realpath so a shared lazy source's children collapse to one).
+    by_out: dict[str, list[dict]] = {}
+    real_by_out: dict[str, str] = {}
+    for item in _look_migration_items(project):
+        src = item["src"]
+        if not (os.path.isabs(src) and os.path.isfile(src)):
+            continue
+        real_src = os.path.realpath(src)
+        out = proxy_path_for(real_src)
+        by_out.setdefault(out, []).append(item)
+        real_by_out[out] = real_src
+
+    edits: list[tuple] = []
+    units: dict[str, _LookMigrationUnit] = {}
+    scheduled = 0
+    already_fresh = 0
+
+    for out, items in by_out.items():
+        real_src = real_by_out[out]
+        if is_proxy_fresh(out, real_src):
+            # Already encoded under the current look — just repoint any item that
+            # isn't pointed at it yet. No encode.
+            for item in items:
+                if item.get("proxySrc") != out:
+                    edits.append((item.get("id"), item["src"], "proxySrc", out))
+            already_fresh += 1
+        else:
+            # Missing / old-look / dangling — queue an encode (or attach to one
+            # already in flight for this out). Do NOT pre-clear proxySrc.
+            unit = _look_migration_pending("proxy", out) \
+                or _LookMigrationUnit("proxy", real_src, out, color_space)
+            units[out] = unit
+            for item in items:
+                unit.targets.append(
+                    (project_id, str(project_dir), "proxySrc", item.get("id"), item["src"], broadcaster)
+                )
+            scheduled += 1
+
+    if edits:
+        result = _apply_project_edits(project_dir / "project.json", edits)
+        if result is not None and broadcaster is not None:
+            broadcaster.publish(project_id, _sse_data_frame(result[1]))
+
+    for out, unit in units.items():
+        if _look_migration_pending("proxy", out) is unit:
+            continue  # already queued/running — this trigger only added targets
+        _look_migration_enqueue(unit)
+
+    return {"scheduled": scheduled, "alreadyFresh": already_fresh}
+
+
+@router.post("/projects/{project_id}/proxies")
+async def ensure_project_proxies(project_id: str, request: Request, project_dir: Path = Depends(get_project_dir)):
+    """Generate the missing/stale editing proxies for a project (manual
+    migration of pre-proxy projects). Reuses the look-migration queue: nothing
+    is encoded in the request — units are queued and land in project.json over
+    SSE as they finish. 202 when work was queued, 200 when everything was
+    already fresh. Best-effort: housekeeping never 500s the caller."""
+    project = json.loads((project_dir / "project.json").read_text())
+    broadcaster = getattr(request.app.state, "broadcaster", None) if request is not None else None
+    try:
+        result = _ensure_current_proxies(project_id, project_dir, project, broadcaster)
+    except Exception:
+        result = {"scheduled": 0, "alreadyFresh": 0}
+    return JSONResponse(result, status_code=202 if result["scheduled"] else 200)
+
+
 @router.get("/projects/{project_id}")
 async def get_project(project_id: str, request: Request = None, project_dir: Path = Depends(get_project_dir)):
-    project = json.loads((project_dir / "project.json").read_text())
+    project_path = project_dir / "project.json"
+    project = json.loads(project_path.read_text())
+    broadcaster = getattr(request.app.state, "broadcaster", None) if request is not None else None
+
+    # Lazy track-shape migration: converge a legacy `tracks: [[item]]` project to
+    # the object shape `tracks: [{"id", "items"}]` the moment it's opened. This
+    # is the ONLY place that migration runs — no button, no separate command.
+    # `normalize_tracks` returns the SAME object when nothing needs to change,
+    # which is exactly the "no write on an already-converged project" property:
+    # a second open must not touch the file. Same tmp+os.replace, no-await-
+    # between-read-and-write discipline as `_apply_project_edits` below, so this
+    # can't interleave with a concurrent PUT.
+    #
+    # Runs BEFORE look migration on purpose: look migration's own write-back
+    # (`_apply_project_edits`) re-reads project.json from disk and mutates item
+    # fields in place WITHOUT touching track shape, so it just preserves
+    # whatever shape it finds. Normalizing (and persisting) first means every
+    # later re-read — the immediate stale-pointer clear below, and each
+    # background job's write-back, however much later it lands — finds the
+    # object shape already on disk and carries it through untouched. Migrating
+    # shape second, off of look migration's returned project, would risk a
+    # background write-back re-reading the disk BEFORE our shape write landed
+    # and re-persisting the legacy shape underneath it.
+    normalized = normalize_tracks(project)
+    if normalized is not project:
+        text = json.dumps(normalized, indent=2)
+        try:
+            tmp = str(project_path) + ".tmp"
+            Path(tmp).write_text(text)
+            os.replace(tmp, project_path)
+        except OSError:
+            pass  # degrade to "not converged yet" — a project must always open
+        else:
+            if broadcaster is not None:
+                broadcaster.publish(project_id, _sse_data_frame(text))
+        project = normalized
+
     # Heal look-stale artifact pointers before handing the project over. The
     # response is the MIGRATED body — the pass only ever does name/stat work
     # plus a bounded ffprobe pass; every re-encode is queued, never awaited.
-    broadcaster = getattr(request.app.state, "broadcaster", None) if request is not None else None
     return await migrate_project_look(project_id, project_dir, project, broadcaster)
 
 
@@ -1265,6 +1459,12 @@ async def save_project(project_id: str, body: dict = Body(...), request: Request
     # runCount, settings, profile, …) gets wiped. To explicitly clear a field,
     # callers must send it as null in the body.
     merged = {**existing, **body}
+    # Agents routinely PUT a still-legacy `tracks` shape (or a whole project
+    # they hand-built). Normalize before writing so a server write never leaves
+    # legacy tracks on disk — a no-op (same object back) when already
+    # normalized or when `tracks` is absent/null, so the shallow-merge and
+    # explicit-null-clears-a-field semantics above are untouched.
+    merged = normalize_tracks(merged)
     text = json.dumps(merged, indent=2)
     project_path.write_text(text)
     # Broadcast immediately — before the git commit so the UI update is instant.
@@ -1325,6 +1525,11 @@ async def restore_version(project_id: str, commit: str, request: Request, projec
         restored = json.loads(stdout_b.decode())
     except Exception:
         raise server_error("parse_failed", "Could not parse project.json at that commit")
+    # A version from before the track-shape migration is legacy-shaped on disk
+    # in that commit. Normalize before writing/broadcasting so a restore never
+    # leaves legacy tracks on disk — a no-op (same object back) when the
+    # restored version is already normalized, matching save_project's rule.
+    restored = normalize_tracks(restored)
     project_path.write_text(json.dumps(restored, indent=2))
     broadcaster: SSEBroadcaster = request.app.state.broadcaster
     broadcaster.publish(project_id, f"data: {json.dumps(restored)}\n\n")
@@ -1358,7 +1563,7 @@ async def rerun_project(project_id: str, request: Request, project_dir: Path = D
         **project,
         "status": "pending",
         "runCount": run_count + 1,
-        "tracks": [{"id": "main", "type": "video", "clips": source_clips}],
+        "tracks": [{"id": "trk-0", "items": source_clips}],
     }
     if "prompt" in body:
         updated["editingPrompt"] = body["prompt"]
@@ -1742,12 +1947,25 @@ async def render_project(project_id: str, request: Request, project_dir: Path = 
             "message": f"sdrCurve must be one of {curve_ids()} (got {sdr_curve!r})",
         })
 
+    # Optional output naming + poster-frame extraction. `name` picks the output
+    # basename (sanitized — see _sanitize_output_name — so it can never escape
+    # output_dir); `cover` is a timeline timestamp (seconds) to grab as a
+    # sidecar JPEG once the render succeeds. Both are video-only (the carousel
+    # branch below never sets output_path, so cover extraction is skipped for
+    # carousels regardless of what's in the body).
+    name = body.get("name")
+    cover_raw = body.get("cover")
+    cover: float | None = None
+    if isinstance(cover_raw, (int, float)) and not isinstance(cover_raw, bool) and cover_raw >= 0:
+        cover = float(cover_raw)
+
     # Carousel renders go through asset normalization first: any .webp image bed
     # is transcoded to a sibling .png and the renderer is handed a normalized copy
     # of project.json (the sidecar Chromium can't decode .webp). render_input ==
     # project_path when nothing needed normalizing; otherwise it's a throwaway temp
     # file cleaned up in the event_stream finally.
     render_input = project_path
+    output_path: Path | None = None
     if project_type == "carousel":
         render_input = normalize_carousel_assets(project_path)
         render_script = Path(render_runtime_dir()) / "render-carousel.js"
@@ -1760,7 +1978,12 @@ async def render_project(project_id: str, request: Request, project_dir: Path = 
         # dir that /outputs lists) instead of render.js's default render/<name>.mp4.
         output_dir = project_dir / "output"
         output_dir.mkdir(exist_ok=True)
-        output_path = output_dir / f"{project_dir.name}.mp4"
+        safe_name = _sanitize_output_name(name, project_dir.name) if isinstance(name, str) else project_dir.name
+        output_path = output_dir / f"{safe_name}.mp4"
+        if output_path.resolve().parent != output_dir.resolve():
+            # Sanitization already forbids path separators, so this should be
+            # unreachable — but never write outside output/ regardless.
+            raise server_error("invalid_argument", "invalid output name")
         script_args = [str(project_path), "--out", str(output_path)]
         if export:
             script_args += ["--export", export]
@@ -1792,7 +2015,8 @@ async def render_project(project_id: str, request: Request, project_dir: Path = 
     job = _RenderJob()
     _render_jobs[project_id] = job
     task = asyncio.create_task(
-        _run_render_detached(project_id, cmd, env, render_input, project_path, job)
+        _run_render_detached(project_id, cmd, env, render_input, project_path, job,
+                             cover=cover, output_path=output_path)
     )
     _render_task_refs.add(task)
     task.add_done_callback(_render_task_refs.discard)

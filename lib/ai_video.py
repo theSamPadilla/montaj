@@ -8,6 +8,7 @@ from pathlib import Path
 from common import fail, get_duration
 from normalize import normalize, normalized_output_path, is_normalized, probe_video
 from lib.types.colorspace import normalize_key, DEFAULT_COLOR_SPACE, detect_from_transfer, is_hdr
+from lib.project_tracks import track_items, replace_track_items
 
 
 # Optimal Kling prompt order: camera first (framing context), then subject
@@ -212,7 +213,8 @@ def save_clip_to_project(project_path: Path, project: dict, scene: dict,
                          out_path: str, composed_prompt: str, model: str = "kling-v3-omni",
                          seed: int = None):
     """Append the generated clip to tracks[0] and save the project."""
-    tracks0 = project.get("tracks", [[]])[0]
+    items = track_items(project)
+    tracks0 = items[0] if items else []
     scenes = project.get("storyboard", {}).get("scenes", [])
 
     # Remove any existing clip for this scene before appending (idempotency)
@@ -276,7 +278,8 @@ def save_clip_to_project(project_path: Path, project: dict, scene: dict,
 
     tracks0.append(clip)
     tracks0.sort(key=lambda c: c.get("start", 0))
-    project["tracks"][0] = tracks0
+    # Assign into the caller's dict at the one key — the caller keeps using it.
+    project["tracks"] = replace_track_items(project, 0, tracks0)
 
     # Clear lastError on this scene
     for s in scenes:

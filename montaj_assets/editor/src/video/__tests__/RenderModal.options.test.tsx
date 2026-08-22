@@ -1,15 +1,16 @@
 import { StrictMode } from 'react'
 import { describe, it, expect, vi, afterEach } from 'vitest'
-import { render, screen, waitFor, fireEvent, cleanup } from '@testing-library/react'
+import { render, screen, waitFor, fireEvent, cleanup, within } from '@testing-library/react'
 import type { EditorAdapter, ImageElement, Project } from '../../types'
 import RenderModal, { pickSampleTime } from '../RenderModal'
 
 afterEach(cleanup)
 
-// ── Pre-render options (HDR projects) ─────────────────────────────────────────
-// The modal historically fired the render on mount with no inputs. HDR projects
-// now open on an options panel first; SDR projects must keep the old behavior
-// exactly, which is the regression these tests pin.
+// ── The Export dialog ─────────────────────────────────────────────────────────
+// The modal historically fired the render on mount with no inputs. Hosts that
+// pass `preRenderOptions` (montaj always does — HDR and SDR alike) now open on
+// the Export dialog first; hosts that omit it keep the old fire-on-mount
+// behavior exactly, which is the regression these tests pin.
 
 function baseAdapter(): EditorAdapter<Project> {
   return {
@@ -36,6 +37,11 @@ function pollAdapter(): EditorAdapter<Project> {
 
 const KEEPS = [{ start: 0, end: 12 }]
 
+// Query helpers that disambiguate the dialog title (heading) from the primary
+// action (button), which share the label "Export".
+const exportButton = () => screen.getByRole('button', { name: 'Export' })
+const exportHeading = () => screen.getByRole('heading', { name: 'Export' })
+
 describe('pickSampleTime', () => {
   it('lands inside the chosen keep, away from its edges', () => {
     const at = pickSampleTime([{ start: 10, end: 20 }], () => 0.5)!
@@ -58,29 +64,14 @@ describe('pickSampleTime', () => {
   })
 })
 
-describe('RenderModal — SDR projects (regression)', () => {
+describe('RenderModal — fire-on-mount (no preRenderOptions)', () => {
   it('fires the render on mount when preRenderOptions is absent', async () => {
     const adapter = pollAdapter()
     render(<RenderModal adapter={adapter} projectId="vid-1" onClose={vi.fn()} />)
 
     await waitFor(() => expect(adapter.renderAsync).toHaveBeenCalledTimes(1))
-    expect(screen.queryByText('Render options')).toBeNull()
+    expect(screen.queryByRole('heading', { name: 'Export' })).toBeNull()
     expect(screen.getByText('Rendering…')).toBeTruthy()
-  })
-
-  it('fires the render on mount when the project is not HDR', async () => {
-    const adapter = pollAdapter()
-    render(
-      <RenderModal
-        adapter={adapter}
-        projectId="vid-1"
-        onClose={vi.fn()}
-        preRenderOptions={{ isHdr: false, keeps: KEEPS }}
-      />,
-    )
-
-    await waitFor(() => expect(adapter.renderAsync).toHaveBeenCalledTimes(1))
-    expect(screen.queryByText('Render options')).toBeNull()
   })
 
   it('passes no render options through when there was nothing to choose', async () => {
@@ -92,8 +83,8 @@ describe('RenderModal — SDR projects (regression)', () => {
   })
 })
 
-describe('RenderModal — HDR options panel', () => {
-  it('shows the options and does NOT start the render', async () => {
+describe('RenderModal — Export dialog', () => {
+  it('opens for an HDR project and does NOT start the render', async () => {
     const adapter = pollAdapter()
     render(
       <RenderModal
@@ -104,9 +95,9 @@ describe('RenderModal — HDR options panel', () => {
       />,
     )
 
-    expect(screen.getByText('Render options')).toBeTruthy()
+    expect(exportHeading()).toBeTruthy()
     expect(screen.getByText('Match footage (HDR)')).toBeTruthy()
-    expect(screen.getByText('Start render')).toBeTruthy()
+    expect(exportButton()).toBeTruthy()
 
     // Give any effect a chance to misfire before asserting it did not.
     await waitFor(() => expect(screen.getByText('Advanced')).toBeTruthy())
@@ -114,7 +105,85 @@ describe('RenderModal — HDR options panel', () => {
     expect(adapter.render).not.toHaveBeenCalled()
   })
 
-  it('starts the render with the chosen options (poll transport)', async () => {
+  it('opens for an SDR project and hides the HDR-only controls', async () => {
+    const adapter = pollAdapter()
+    render(
+      <RenderModal
+        adapter={adapter}
+        projectId="vid-1"
+        onClose={vi.fn()}
+        preRenderOptions={{ isHdr: false, keeps: KEEPS, name: 'clip' }}
+      />,
+    )
+
+    // The dialog shows, with Name + Save-to, but none of the HDR controls.
+    expect(exportHeading()).toBeTruthy()
+    expect(screen.getByText('Name')).toBeTruthy()
+    expect(screen.getByText('Save to')).toBeTruthy()
+    expect(screen.queryByText('Format')).toBeNull()
+    expect(screen.queryByText('Match footage (HDR)')).toBeNull()
+    expect(screen.queryByText('Image color')).toBeNull()
+    expect(screen.queryByText('Advanced')).toBeNull()
+
+    // Nothing renders until the user hits Export.
+    await waitFor(() => expect(screen.getByText('Save to')).toBeTruthy())
+    expect(adapter.renderAsync).not.toHaveBeenCalled()
+
+    fireEvent.click(exportButton())
+    await waitFor(() => expect(adapter.renderAsync).toHaveBeenCalledTimes(1))
+  })
+})
+
+describe('RenderModal — name + cover', () => {
+  it('threads the edited name and chosen cover into the render opts (poll)', async () => {
+    const adapter = pollAdapter()
+    adapter.getSampleFrame = vi.fn(async () => ({ url: '/files?path=/cover.png' }))
+    render(
+      <RenderModal
+        adapter={adapter}
+        projectId="vid-1"
+        onClose={vi.fn()}
+        preRenderOptions={{ isHdr: true, keeps: KEEPS, durationSec: 12, name: 'export' }}
+      />,
+    )
+
+    fireEvent.change(screen.getByPlaceholderText('export'), { target: { value: 'my-clip' } })
+    fireEvent.click(screen.getByText('Edit cover'))
+    // Cover is now a frame-tile picker. durationSec 12 → 4 evenly-spaced tiles
+    // at 1.5 / 4.5 / 7.5 / 10.5s; clicking the second sets cover to 4.5.
+    const tiles = within(screen.getByRole('radiogroup', { name: 'Cover frame' })).getAllByRole('radio')
+    fireEvent.click(tiles[1])
+    fireEvent.click(exportButton())
+
+    await waitFor(() => expect(adapter.renderAsync).toHaveBeenCalledTimes(1))
+    expect(adapter.renderAsync).toHaveBeenCalledWith('vid-1', expect.objectContaining({
+      export: 'auto',
+      sdrCurve: 'vivid1',
+      name: 'my-clip',
+      cover: 4.5,
+    }))
+  })
+
+  it('defaults the name to the host-suggested value', async () => {
+    const adapter = pollAdapter()
+    render(
+      <RenderModal
+        adapter={adapter}
+        projectId="vid-1"
+        onClose={vi.fn()}
+        preRenderOptions={{ isHdr: true, keeps: KEEPS, name: 'reel-2' }}
+      />,
+    )
+
+    expect((screen.getByPlaceholderText('export') as HTMLInputElement).value).toBe('reel-2')
+    fireEvent.click(exportButton())
+    await waitFor(() => expect(adapter.renderAsync).toHaveBeenCalledTimes(1))
+    expect(adapter.renderAsync).toHaveBeenCalledWith('vid-1', expect.objectContaining({ name: 'reel-2' }))
+  })
+})
+
+describe('RenderModal — HDR format + curve', () => {
+  it('starts the render with the chosen format and curve (poll transport)', async () => {
     const adapter = pollAdapter()
     render(
       <RenderModal
@@ -128,17 +197,17 @@ describe('RenderModal — HDR options panel', () => {
     fireEvent.click(screen.getByText('Both'))
     fireEvent.click(screen.getByText('Advanced'))
     fireEvent.click(screen.getByText('Neutral brights'))
-    fireEvent.click(screen.getByText('Start render'))
+    fireEvent.click(exportButton())
 
     await waitFor(() => expect(adapter.renderAsync).toHaveBeenCalledTimes(1))
-    expect(adapter.renderAsync).toHaveBeenCalledWith('vid-1', {
+    expect(adapter.renderAsync).toHaveBeenCalledWith('vid-1', expect.objectContaining({
       export: 'both',
       sdrCurve: 'vivid1-neutral',
-    })
-    expect(screen.queryByText('Render options')).toBeNull()
+    }))
+    expect(screen.queryByRole('heading', { name: 'Export' })).toBeNull()
   })
 
-  it('starts the render with the chosen options (SSE transport)', async () => {
+  it('starts the render with the chosen format and curve (SSE transport)', async () => {
     const adapter = baseAdapter()
     render(
       <RenderModal
@@ -150,13 +219,13 @@ describe('RenderModal — HDR options panel', () => {
     )
 
     fireEvent.click(screen.getByText('SDR'))
-    fireEvent.click(screen.getByText('Start render'))
+    fireEvent.click(exportButton())
 
     await waitFor(() => expect(adapter.render).toHaveBeenCalledTimes(1))
-    expect(adapter.render).toHaveBeenCalledWith('vid-1', {
+    expect(adapter.render).toHaveBeenCalledWith('vid-1', expect.objectContaining({
       export: 'sdr',
       sdrCurve: 'vivid1',
-    })
+    }))
   })
 
   it('defaults to matching the footage on the default curve', async () => {
@@ -170,12 +239,12 @@ describe('RenderModal — HDR options panel', () => {
       />,
     )
 
-    fireEvent.click(screen.getByText('Start render'))
+    fireEvent.click(exportButton())
     await waitFor(() => expect(adapter.renderAsync).toHaveBeenCalledTimes(1))
-    expect(adapter.renderAsync).toHaveBeenCalledWith('vid-1', {
+    expect(adapter.renderAsync).toHaveBeenCalledWith('vid-1', expect.objectContaining({
       export: 'auto',
       sdrCurve: 'vivid1',
-    })
+    }))
   })
 
   it('shows the SDR derive step only when an SDR file is derived', async () => {
@@ -190,7 +259,7 @@ describe('RenderModal — HDR options panel', () => {
     )
 
     // Default (auto) → no derive step in the stepper.
-    fireEvent.click(screen.getByText('Start render'))
+    fireEvent.click(exportButton())
     await waitFor(() => expect(screen.getByText('Rendering graphics')).toBeTruthy())
     expect(screen.queryByText('Deriving SDR')).toBeNull()
     unmount()
@@ -204,7 +273,7 @@ describe('RenderModal — HDR options panel', () => {
       />,
     )
     fireEvent.click(screen.getByText('Both'))
-    fireEvent.click(screen.getByText('Start render'))
+    fireEvent.click(exportButton())
     await waitFor(() => expect(screen.getByText('Deriving SDR')).toBeTruthy())
   })
 })
@@ -267,6 +336,8 @@ describe('RenderModal — curve thumbnails', () => {
       />,
     )
 
+    // Two curve samples fire synchronously on mount; the cover sample is
+    // debounced, so it hasn't landed at the moment this resolves.
     await waitFor(() => expect(adapter.getSampleFrame).toHaveBeenCalledTimes(2))
     const calls = (adapter.getSampleFrame as ReturnType<typeof vi.fn>).mock.calls
     expect(calls.map(c => c[2]?.sdrCurve).sort()).toEqual(['vivid1', 'vivid1-neutral'])
@@ -334,7 +405,7 @@ describe('RenderModal — curve thumbnails', () => {
     expect(document.querySelectorAll('img').length).toBe(0)
 
     // Still perfectly renderable.
-    fireEvent.click(screen.getByText('Start render'))
+    fireEvent.click(exportButton())
     await waitFor(() => expect(adapter.renderAsync).toHaveBeenCalledTimes(1))
   })
 
@@ -354,13 +425,12 @@ describe('RenderModal — curve thumbnails', () => {
     await waitFor(() => expect(adapter.getSampleFrame).toHaveBeenCalledTimes(2))
     fireEvent.click(screen.getByText('Advanced'))
     expect(screen.getByText('Montaj Vivid')).toBeTruthy()
-    expect(document.querySelectorAll('img').length).toBe(0)
 
-    fireEvent.click(screen.getByText('Start render'))
+    fireEvent.click(exportButton())
     await waitFor(() => expect(adapter.renderAsync).toHaveBeenCalledTimes(1))
   })
 
-  it('does not sample when the project has no keeps to sample from', () => {
+  it('samples no curve thumbnails when there are no keeps to sample from', () => {
     const adapter = pollAdapter()
     adapter.getSampleFrame = vi.fn(async () => ({ url: '/x.png' }))
 
@@ -373,30 +443,15 @@ describe('RenderModal — curve thumbnails', () => {
       />,
     )
 
-    expect(adapter.getSampleFrame).not.toHaveBeenCalled()
-    expect(screen.getByText('Render options')).toBeTruthy()
-  })
-
-  it('does not sample for an SDR project', async () => {
-    const adapter = pollAdapter()
-    adapter.getSampleFrame = vi.fn(async () => ({ url: '/x.png' }))
-
-    render(
-      <RenderModal
-        adapter={adapter}
-        projectId="vid-1"
-        onClose={vi.fn()}
-        preRenderOptions={{ isHdr: false, keeps: KEEPS }}
-      />,
-    )
-
-    // It goes straight to rendering; the sampler is for the options panel only.
-    await waitFor(() => expect(adapter.renderAsync).toHaveBeenCalledTimes(1))
-    expect(adapter.getSampleFrame).not.toHaveBeenCalled()
+    // The dialog still opens; opening Advanced shows curve labels but no
+    // thumbnail sampling was scheduled (sampleAt is null with no keeps).
+    expect(exportHeading()).toBeTruthy()
+    fireEvent.click(screen.getByText('Advanced'))
+    expect(screen.queryByText('Sampling a frame…')).toBeNull()
   })
 })
 
-describe('RenderModal — image tone in Advanced', () => {
+describe('RenderModal — image color control', () => {
   it('persists a tone choice through the host callback', () => {
     const set = vi.fn()
     render(
@@ -408,9 +463,9 @@ describe('RenderModal — image tone in Advanced', () => {
       />,
     )
 
-    fireEvent.click(screen.getByText('Advanced'))
-    // The menu's trigger shows the current tone; open it and pick another.
-    fireEvent.click(screen.getByText('Image color:'))
+    // Image color is a first-class expandable section: click its header to open
+    // the tone list, then pick another.
+    fireEvent.click(screen.getByText('Image color'))
     fireEvent.click(screen.getByText('Broadcast'))
     expect(set).toHaveBeenCalledWith('broadcast')
   })
@@ -425,12 +480,12 @@ describe('RenderModal — image tone in Advanced', () => {
       />,
     )
 
-    fireEvent.click(screen.getByText('Advanced'))
+    // With no imageTone callback the whole Image color control is omitted.
     expect(screen.queryByText('Image color:')).toBeNull()
   })
 })
 
-describe('RenderModal — leaving the options panel', () => {
+describe('RenderModal — leaving the dialog', () => {
   it('cancels without starting a render', () => {
     const onCancel = vi.fn()
     const onClose = vi.fn()

@@ -175,3 +175,59 @@ def test_resolve_ref_paths():
     scene = _make_scene(ref_images=["ref2", "ref1"])
     paths = resolve_ref_paths(project, scene)
     assert paths == ["/path/cat.png", "/path/dog.png"]
+
+
+# ── save_clip_to_project — tracks[0] only ─────────────────────────────────────
+
+def _save_clip(project, tmp_path, monkeypatch, scene_id="scene-1"):
+    """Drive save_clip_to_project with probing/normalizing stubbed out."""
+    import lib.ai_video as av
+
+    monkeypatch.setattr(av, "probe_video", lambda p: None)
+    monkeypatch.setattr(av, "get_duration", lambda p: 5.0)
+    saved = {}
+    monkeypatch.setattr(av, "save_project", lambda p, proj: saved.update(project=proj))
+
+    scene = next(s for s in project["storyboard"]["scenes"] if s["id"] == scene_id)
+    av.save_clip_to_project(tmp_path / "project.json", project, scene,
+                            str(tmp_path / "out.mp4"), "a prompt")
+    return saved["project"]
+
+
+def _storyboard_project(tracks):
+    return {
+        "id": "p1",
+        "status": "pending",
+        "storyboard": {"scenes": [{"id": "scene-1", "duration": 5},
+                                  {"id": "scene-2", "duration": 5}]},
+        "tracks": tracks,
+    }
+
+
+def test_save_clip_to_project_keeps_overlay_tracks_and_their_settings(tmp_path, monkeypatch):
+    overlay = {"id": "ovl-1", "type": "overlay", "src": "./o.jsx", "start": 0.0, "end": 2.0}
+    project = _storyboard_project([
+        {"id": "trk-0", "items": []},
+        {"id": "captions", "items": [overlay], "volume": 0.5, "muted": False},
+    ])
+    out = _save_clip(project, tmp_path, monkeypatch)
+
+    assert out["tracks"][1] == {
+        "id": "captions", "items": [overlay], "volume": 0.5, "muted": False,
+    }
+    assert [c["id"] for c in out["tracks"][0]["items"]] == ["clip-scene-1"]
+
+
+def test_save_clip_to_project_writes_back_into_the_callers_dict(tmp_path, monkeypatch):
+    """The caller keeps using the same dict, so the new tracks must land in it."""
+    project = _storyboard_project([[]])
+    out = _save_clip(project, tmp_path, monkeypatch)
+    assert out is project
+    assert [c["id"] for c in project["tracks"][0]["items"]] == ["clip-scene-1"]
+
+
+def test_save_clip_to_project_accepts_a_project_with_no_tracks(tmp_path, monkeypatch):
+    project = _storyboard_project([])
+    del project["tracks"]
+    out = _save_clip(project, tmp_path, monkeypatch)
+    assert out["tracks"] == [{"id": "trk-0", "items": [out["tracks"][0]["items"][0]]}]

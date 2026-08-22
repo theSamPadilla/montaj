@@ -30,6 +30,7 @@
  * module is the pure/async logic T6 calls into.
  */
 import type { EditorProject as Project } from '../schema'
+import { trackItems } from '../video/timeline/timeline-model'
 
 export interface EligibilityResult {
   eligible: boolean
@@ -57,7 +58,7 @@ const ENGINE_AUDIO_CHANNELS = 2
  * wall-clock-fallback clock covers those (T5), no video decode required.
  */
 export function checkProjectShapeEligibility(project: Project): EligibilityResult {
-  const videoClips = (project.tracks?.[0] ?? []).filter((item) => item.type === 'video')
+  const videoClips = (trackItems(project)[0] ?? []).filter((item) => item.type === 'video')
   for (const clip of videoClips) {
     if (clip.nobg_preview_src) {
       return {

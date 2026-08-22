@@ -3,6 +3,7 @@
 import json, os
 from cli.main import add_global_flags
 from cli.output import emit_error
+from lib.project_tracks import track_items
 
 
 def register(subparsers):
@@ -45,11 +46,8 @@ def handle(args):
         print(json.dumps(project, indent=2))
         return
 
-    clips = sum(
-        len(t.get("clips", []))
-        for t in project.get("tracks", [])
-        if t.get("type") == "video"
-    )
+    tracks = track_items(project)
+    clips = len(tracks[0]) if tracks else 0
     print(f"id:       {project.get('id', '—')}")
     if project.get("name"):
         print(f"name:     {project['name']}")

@@ -148,6 +148,32 @@ export interface VisualItem {
   text?: string
 }
 
+/**
+ * One visual track: its items plus the properties that belong to the TRACK
+ * rather than to any one clip. Track ORDER is meaningful — index 0 is the
+ * primary footage track, higher indices render on top.
+ *
+ * `volume`, `muted` and `enabled` are optional and ABSENT by default; a track
+ * carrying none of them behaves exactly as it did before tracks became
+ * objects, so nothing needs to write a default in.
+ *
+ * A project may still be on disk in the legacy `VisualItem[][]` shape (a bare
+ * array of item arrays, with nowhere to put the fields above). Readers tolerate
+ * both shapes by going through `trackItems()` (video/timeline/timeline-model)
+ * rather than touching `project.tracks` directly; `normalizeTracks()` converts
+ * legacy → this shape when a project is opened.
+ */
+export interface VisualTrack {
+  id: string
+  items: VisualItem[]
+  /** Gain applied to every item's audio on this track. Absent = unity (1.0). */
+  volume?: number
+  /** Absent or false = audible. */
+  muted?: boolean
+  /** Absent or true = the track renders. */
+  enabled?: boolean
+}
+
 export interface Asset {
   id: string
   src: string
@@ -237,7 +263,7 @@ export interface EditorProject {
   name?: string | null
   editingPrompt?: string
   slides?: Slide[]
-  tracks?: VisualItem[][]
+  tracks?: VisualTrack[]
   captions?: Captions
   audio?: { tracks: AudioTrack[] }
   assets?: Asset[]

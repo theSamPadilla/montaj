@@ -7,6 +7,7 @@
 
 import type { VisualItem, AudioTrack } from '../../schema'
 import type { Project } from '../../types'
+import { mapTrackItems } from './timeline-model'
 
 const MIN_DURATION = 0.1
 
@@ -31,8 +32,8 @@ export function applyResizeDeltaToSelection(
   const targets = new Set(selectedIds.filter(id => id !== originatorId))
   if (targets.size === 0) return project
 
-  const nextTracks = (project.tracks ?? []).map(track =>
-    track.map(item => targets.has(item.id) ? resizeVisualItem(item, edge, deltas) : item)
+  const nextTracks = mapTrackItems(project, items =>
+    items.map(item => targets.has(item.id) ? resizeVisualItem(item, edge, deltas) : item)
   )
   const nextAudio = (project.audio?.tracks ?? []).map(t =>
     targets.has(t.id) ? resizeAudioTrack(t, edge, deltas) : t
@@ -108,8 +109,8 @@ export function applyMuteToSelection(
 
   return {
     ...project,
-    tracks: (project.tracks ?? []).map(track =>
-      track.map(item => targets.has(item.id) ? { ...item, muted } : item)
+    tracks: mapTrackItems(project, items =>
+      items.map(item => targets.has(item.id) ? { ...item, muted } : item)
     ),
     audio: project.audio
       ? {
@@ -129,9 +130,11 @@ export function deleteSelection(project: Project, selectedIds: readonly string[]
 
   return {
     ...project,
-    tracks: (project.tracks ?? [])
-      .map(track => track.filter(item => !targets.has(item.id)))
-      .filter(track => track.length > 0),
+    // Prune, not a plain map: an emptied track collapses. The surviving TRACK
+    // OBJECTS pass through the filter, so each keeps its own id and settings
+    // rather than inheriting the ones a shifted index used to point at.
+    tracks: mapTrackItems(project, items => items.filter(item => !targets.has(item.id)))
+      .filter(track => track.items.length > 0),
     audio: project.audio
       ? {
           ...project.audio,

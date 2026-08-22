@@ -8,6 +8,7 @@ import { getOverlayDesignCanvas } from '../design-canvas'
 import { ensureGoogleFontsLoaded } from '../../lib/google-fonts'
 import type { Corner, OverlayChanges } from './useDragOverlay'
 import type { useDragOverlay } from './useDragOverlay'
+import { enabledTrackItems } from '../timeline/timeline-model'
 
 // Mount video items this many seconds before item.start so the frame is ready.
 //
@@ -355,7 +356,8 @@ export default function OverlayItemsLayer({
   const [, bumpProxyFail] = useReducer((x: number) => x + 1, 0)
 
   // Interactive tracks — in canvas mode this includes track 0; otherwise overlays only.
-  const interactiveTracks = isCanvasProject ? project.tracks ?? [] : overlayTracks
+  // Enabled only: a skipped track must not be draggable in the preview either.
+  const interactiveTracks = isCanvasProject ? enabledTrackItems(project) : overlayTracks
 
   return (
     <>

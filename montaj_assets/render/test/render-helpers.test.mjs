@@ -38,6 +38,18 @@ test('getTotalDurationSeconds: items missing end field default to 0', () => {
   assert.equal(getTotalDurationSeconds({ tracks: [[{ id: 'c1' }]] }), 0)
 })
 
+test('getTotalDurationSeconds: object-shape tracks (VisualTrack[]) return the same max end as the legacy array-of-arrays shape', () => {
+  // trackItems() (called internally) is both-shapes tolerant; this pins that
+  // getTotalDurationSeconds itself never assumes tracks[i] is a bare array.
+  const project = {
+    tracks: [
+      { id: 'trk-0', items: [{ id: 'c1', end: 10.0 }, { id: 'c2', end: 20.0 }] },
+      { id: 'trk-1', items: [{ id: 'ov1', end: 15.0 }], volume: 0.8, muted: false },
+    ],
+  }
+  assert.equal(getTotalDurationSeconds(project), 20.0)
+})
+
 test('collectAllItems: collects image and video items from all tracks', () => {
   const project = {
     tracks: [
@@ -69,6 +81,31 @@ test('collectAllItems: tracks[0] items are included (no special-casing)', () => 
   assert.equal(videoItems.length, 1)
   assert.equal(videoItems[0].id, 'primary')
   assert.equal(videoItems[0].trackIdx, 0)
+})
+
+test('collectAllItems: object-shape tracks (VisualTrack[]) collect the same items as the legacy array-of-arrays shape', () => {
+  const project = {
+    tracks: [
+      { id: 'trk-0', items: [{ id: 'bg1', type: 'image', src: '/bg.png', start: 0, end: 10, offsetX: 0, offsetY: 0, scale: 1, opacity: 1 }] },
+      {
+        id: 'trk-1',
+        items: [
+          { id: 'img1', type: 'image', src: '/logo.png', start: 0, end: 10, offsetX: 0, offsetY: 0, scale: 1, opacity: 1 },
+          { id: 'vid1', type: 'video', src: '/pip.mp4', start: 2, end: 8, inPoint: 0, outPoint: 6, offsetX: 0, offsetY: 0, scale: 0.5, opacity: 1 },
+        ],
+        volume: 0.5,
+      },
+    ],
+  }
+  const { imageItems, videoItems } = collectAllItems(project)
+  assert.equal(imageItems.length, 2)
+  assert.equal(imageItems[0].id, 'bg1')
+  assert.equal(imageItems[0].trackIdx, 0)
+  assert.equal(imageItems[1].id, 'img1')
+  assert.equal(imageItems[1].trackIdx, 1)
+  assert.equal(videoItems.length, 1)
+  assert.equal(videoItems[0].id, 'vid1')
+  assert.equal(videoItems[0].trackIdx, 1)
 })
 
 test('collectAllItems: normalizedSrc is substituted as src and inPoint/outPoint are rebased by the cache origin', () => {
@@ -374,4 +411,120 @@ test('buildNormalizedOutputPath: trusts the tonemapped flag verbatim, even for a
 test('buildNormalizedOutputPath: preserves directory and swaps only the trailing extension segment', () => {
   const out = buildNormalizedOutputPath('/a/b/c/my.clip.mov', 'sdr_bt709', true)
   assert.equal(out, `/a/b/c/my.clip_normalized_sdr_bt709_${MASTER_LOOK}.mp4`)
+})
+
+// ── Skipped tracks ──────────────────────────────────────────────────────────
+// A track with `enabled: false` must be absent from the export: no picture, no
+// audio, and not counted toward the project's length. These drive the exported
+// render helpers directly, so a regression shows up here rather than in a file
+// someone has to watch.
+
+test('collectAllItems: a skipped track contributes no items', () => {
+  const project = {
+    tracks: [
+      { id: 't0', items: [{ id: 'a', type: 'video', src: '/a.mp4', start: 0, end: 2 }] },
+      { id: 't1', items: [{ id: 'b', type: 'image', src: '/b.png', start: 0, end: 2 }], enabled: false },
+    ],
+  }
+  const { imageItems, videoItems } = collectAllItems(project)
+  assert.deepEqual(videoItems.map(i => i.id), ['a'])
+  assert.deepEqual(imageItems.map(i => i.id), [], 'the skipped track\'s image is gone')
+})
+
+test('collectAllItems: an enabled:true track is included, same as an absent flag', () => {
+  const project = {
+    tracks: [{ id: 't0', items: [{ id: 'a', type: 'video', src: '/a.mp4', start: 0, end: 2 }], enabled: true }],
+  }
+  assert.deepEqual(collectAllItems(project).videoItems.map(i => i.id), ['a'])
+})
+
+test('getTotalDurationSeconds: skipping the track with the last clip shortens the render', () => {
+  // The deliberate call: the export ends where the remaining content ends,
+  // rather than running on into blank tail. See docs/plans/2026-08-21-track-skip.md.
+  const tracks = [
+    { id: 't0', items: [{ id: 'a', type: 'video', src: '/a.mp4', start: 0, end: 4 }] },
+    { id: 't1', items: [{ id: 'b', type: 'image', src: '/b.png', start: 4, end: 10 }] },
+  ]
+  assert.equal(getTotalDurationSeconds({ tracks }), 10)
+
+  const skipped = [tracks[0], { ...tracks[1], enabled: false }]
+  assert.equal(getTotalDurationSeconds({ tracks: skipped }), 4)
+})
+
+test('getTotalDurationSeconds: legacy array-of-arrays is unaffected', () => {
+  assert.equal(getTotalDurationSeconds({ tracks: [[{ id: 'a', end: 3 }]] }), 3)
+})
+
+// ── Track-wide volume/mute ───────────────────────────────────────────────
+// collectAllItems folds track.volume/track.muted into each video item's
+// effective volume/muted via effectiveItemAudio — multiply for volume, OR for
+// mute. See docs/plans/2026-08-21-track-skip.md ("F1 · Track-wide volume and
+// mute") and project-tracks.js's effectiveItemAudio for the rule.
+
+test('collectAllItems: track volume multiplies with clip volume, not replaces it', () => {
+  const project = {
+    tracks: [
+      {
+        id: 't0',
+        volume: 0.5,
+        items: [
+          { id: 'loud', type: 'video', src: '/loud.mp4', start: 0, end: 2, volume: 1.0 },
+          { id: 'quiet', type: 'video', src: '/quiet.mp4', start: 2, end: 4, volume: 0.4 },
+        ],
+      },
+    ],
+  }
+  const { videoItems } = collectAllItems(project)
+  const loud = videoItems.find(i => i.id === 'loud')
+  const quiet = videoItems.find(i => i.id === 'quiet')
+  assert.equal(loud.volume, 0.5)   // 0.5 * 1.0
+  assert.ok(Math.abs(quiet.volume - 0.2) < 1e-9)  // 0.5 * 0.4
+  // Multiplying (not replacing) keeps the ratio the operator set between the
+  // two clips intact under the track-level pull-down.
+  assert.ok(Math.abs(loud.volume / quiet.volume - 1.0 / 0.4) < 1e-9)
+})
+
+test('collectAllItems: track mute silences every item on it regardless of clip volume', () => {
+  const project = {
+    tracks: [
+      {
+        id: 't0',
+        muted: true,
+        items: [{ id: 'a', type: 'video', src: '/a.mp4', start: 0, end: 2, volume: 2.0 }],
+      },
+    ],
+  }
+  const { videoItems } = collectAllItems(project)
+  assert.equal(videoItems[0].muted, true)
+})
+
+test('collectAllItems: a muted clip stays muted when its track is not', () => {
+  const project = {
+    tracks: [
+      {
+        id: 't0',
+        items: [{ id: 'a', type: 'video', src: '/a.mp4', start: 0, end: 2, muted: true }],
+      },
+    ],
+  }
+  const { videoItems } = collectAllItems(project)
+  assert.equal(videoItems[0].muted, true)
+})
+
+test('collectAllItems: absent track volume/muted leave the item\'s own audio unchanged', () => {
+  const project = {
+    tracks: [
+      { id: 't0', items: [{ id: 'a', type: 'video', src: '/a.mp4', start: 0, end: 2, volume: 0.7 }] },
+    ],
+  }
+  const { videoItems } = collectAllItems(project)
+  assert.equal(videoItems[0].volume, 0.7)
+  assert.equal(videoItems[0].muted, false)
+})
+
+test('collectAllItems: legacy array-of-arrays tracks (no track settings possible) default volume to 1 and muted to false', () => {
+  const project = { tracks: [[{ id: 'a', type: 'video', src: '/a.mp4', start: 0, end: 2 }]] }
+  const { videoItems } = collectAllItems(project)
+  assert.equal(videoItems[0].volume, 1)
+  assert.equal(videoItems[0].muted, false)
 })

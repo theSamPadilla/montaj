@@ -3,6 +3,7 @@ import { renderHook } from '@testing-library/react'
 import { containsTime, resolveAt, sourceWindow } from '@bycrux/timeline-core'
 import { useVideoPlayback } from '../useVideoPlayback'
 import { engineSrcFor } from '../../../engine/scheduler'
+import { withItemTracks } from '../../timeline/timeline-model'
 import type { EditorProject, VisualItem } from '../../../schema'
 
 // The fixture is imported by RELATIVE path, not as `@bycrux/timeline-core/fixtures/…`:
@@ -79,7 +80,7 @@ function editorSceneAt(
 // `proj` defaults to the negative-start fixture so every existing call site
 // below is unchanged; the proxy-matrix block passes its own project explicitly.
 function resolverSceneAt(t: number, proj: EditorProject = project): FlatItem[] {
-  return resolveAt(proj, t, { variant: 'preview' }).items.map((r) => ({
+  return resolveAt(withItemTracks(proj), t, { variant: 'preview' }).items.map((r) => ({
     id: r.item.id as string,
     trackIdx: r.trackIdx,
     kind: r.kind,
@@ -107,7 +108,7 @@ describe('useVideoPlayback derived collections vs. resolveAt (negative-start cor
 
   it.each(TIMESTAMPS)('seeks the active clip where the resolver says, at t=%s', (t) => {
     const { clips } = derivedAt(t)
-    const scene = resolveAt(project, t, { variant: 'preview' })
+    const scene = resolveAt(withItemTracks(project), t, { variant: 'preview' })
     const videos = scene.items.filter((r) => r.kind === 'video')
     // t=-0.25 is before the only clip starts — assert that, so a fixture change
     // that silently empties this loop can't turn the case into a no-op.
@@ -165,7 +166,7 @@ describe('useVideoPlayback derived collections vs. resolveAt (proxy-matrix corpu
 
   it.each(TIMESTAMPS_PROXY)('seeks the active clip where the resolver says, at t=%s', (t) => {
     const { clips } = derivedAt(t, proxyMatrixProject)
-    const scene = resolveAt(proxyMatrixProject, t, { variant: 'preview' })
+    const scene = resolveAt(withItemTracks(proxyMatrixProject), t, { variant: 'preview' })
     const videos = scene.items.filter((r) => r.kind === 'video')
     // Every fixture timestamp lands inside exactly one clip's [start, end) —
     // assert that so a fixture edit that empties this loop can't go unnoticed.
@@ -267,7 +268,7 @@ describe('useVideoPlayback reload effect — proxySrc identity (SP3 mid-session 
     id: 'reload-test',
     status: 'draft',
     settings: { resolution: [1080, 1920] },
-    tracks: [[clip]],
+    tracks: [{ id: 'trk-0', items: [clip] }],
   })
 
   it('reloads only when proxySrc actually changes, not on every re-render', () => {

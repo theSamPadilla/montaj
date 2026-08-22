@@ -11,6 +11,7 @@ from fastapi.responses import JSONResponse
 from lib.credentials import CredentialError, build_env_overlay
 from serve.common import (
     MONTAJ_ROOT,
+    resolve_workspace,
     run_subprocess,
     not_found, bad_request, server_error,
 )
@@ -216,11 +217,21 @@ async def _execute_step(name: str, schema: dict, py_path: Path, body: dict, *, t
     # Non-blocking subprocess — allows the server to keep serving UI, SSE,
     # and other API requests while long-running steps (kling_generate, etc.)
     # are in progress.
+    #
+    # cwd is the WORKSPACE, not the server process's own cwd. Callers pass
+    # relative `--out-dir`s by convention (`montajAdapter`'s
+    # `.cache/filmstrips/<projectId>/<hash>`, `.cache/waveforms/<trackId>`),
+    # and those only mean anything relative to the workspace: resolved against
+    # the process cwd instead, a `montaj serve` started from anywhere but the
+    # workspace wrote its caches outside it, where `/api/files` correctly
+    # refuses to serve them ("Path is outside the allowed roots") and the
+    # filmstrips/waveform images silently never appeared. Inputs are always
+    # absolute, so nothing else depends on this cwd.
     try:
         stdout_text, stderr_text, returncode = await run_subprocess(
             [sys.executable, str(py_path), *cli_args],
             timeout=timeout,
-            cwd=str(Path.cwd()),
+            cwd=str(resolve_workspace()),
             env=env,
         )
     except HTTPException:

@@ -1,3 +1,4 @@
+import { timeToX, type Viewport } from './canvas/viewport'
 export function formatTime(s: number): string {
   const m   = Math.floor(s / 60)
   const sec = (s % 60).toFixed(1)
@@ -15,3 +16,25 @@ export function ratioFromClientX(clientX: number, scrubberRect: DOMRect): number
 
 export const trackRow     = 'relative h-10 bg-gray-100 dark:bg-gray-900 rounded overflow-hidden cursor-pointer'
 export const trackRowTall = 'relative h-14 bg-gray-100 dark:bg-gray-900 rounded overflow-hidden cursor-pointer'
+
+/**
+ * Where a time span sits on a DOM row, in whichever coordinate space the row's
+ * surface actually uses: percentages of the whole project in legacy DOM mode,
+ * absolute pixels off the canvas viewport when one is active.
+ *
+ * The single place that choice is made, so a row and its playhead line cannot
+ * disagree about it. `end` may be omitted for a zero-width span (a line).
+ */
+export function timeSpanStyle(
+  start: number,
+  end: number | null,
+  totalDuration: number,
+  viewport: Viewport | null,
+): { left: string; width?: string } {
+  if (viewport) {
+    const left = `${timeToX(start, viewport)}px`
+    return end === null ? { left } : { left, width: `${Math.max(0, (end - start) * viewport.pxPerSecond)}px` }
+  }
+  const left = `${pct(start, totalDuration)}%`
+  return end === null ? { left } : { left, width: `${pct(end - start, totalDuration)}%` }
+}

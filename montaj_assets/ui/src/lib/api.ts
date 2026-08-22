@@ -210,6 +210,9 @@ export const api = {
   rerun: (id: string, params?: { prompt?: string; workflow?: string; versionName?: string }) =>
     request<Project>(`/api/projects/${id}/rerun`, { method: 'POST', body: JSON.stringify(params ?? {}) }),
 
+  generateProxies: (id: string) =>
+    request<{ scheduled: number; alreadyFresh: number }>(`/api/projects/${id}/proxies`, { method: 'POST' }),
+
   listWorkflows: () => request<Workflow[]>('/api/workflows'),
 
   getWorkflow: (name: string) => request<Record<string, unknown>>(`/api/workflows/${name}`),
@@ -308,20 +311,23 @@ export const api = {
    * Start a render and stream its SSE progress.
    *
    * `opts` becomes the request body the render route reads: `export` picks the
-   * deliverables an HDR project produces (auto | sdr | both) and `sdrCurve`
-   * names the HDR→SDR tone curve. Omitted → no body, which the route treats as
-   * the historical defaults (`auto`, default curve).
+   * deliverables an HDR project produces (auto | sdr | both), `sdrCurve` names
+   * the HDR→SDR tone curve, `name` is the output base filename, and `cover` is
+   * the poster-frame timecode (project seconds). Omitted → no body, which the
+   * route treats as the historical defaults (`auto`, default curve).
    */
   renderProject: (
     projectId: string,
     onLog:   (line: string) => void,
     onDone:  (outputPath: string) => void,
     onError: (msg: string) => void,
-    opts?: { export?: string; sdrCurve?: string },
+    opts?: { export?: string; sdrCurve?: string; name?: string; cover?: number },
   ): Promise<() => void> => {
-    const body: Record<string, string> = {}
+    const body: Record<string, unknown> = {}
     if (opts?.export) body.export = opts.export
     if (opts?.sdrCurve) body.sdrCurve = opts.sdrCurve
+    if (opts?.name) body.name = opts.name
+    if (opts?.cover !== undefined) body.cover = opts.cover
     const init: RequestInit = Object.keys(body).length > 0
       ? { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }
       : { method: 'POST' }

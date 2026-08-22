@@ -226,7 +226,7 @@ verification pass gating any future default change.
   boolean}`. Absent or `{canvas: false}` (the default): the existing DOM
   track rows, unchanged. `{canvas: true}`: the track-row area (visual tracks
   + audio lanes) renders on canvas instead — the timeline's chrome (zoom
-  controls, marker state, the scrubber, the transcript panel/modal) and the
+  controls, the scrubber, the transcript panel/modal) and the
   caption row are unaffected either way; the caption row always stays a real
   DOM component (it hosts inline `contentEditable` text editing, which a
   canvas can't do), only its position in the stack changes — below the
@@ -273,8 +273,6 @@ with a dialog up.
 | `Delete` / `Backspace` | Delete the selection |
 | `⇧` + `Delete` / `⇧` + `Backspace` | Ripple-delete the selection — items after the deletion point shift to close the gap |
 | `←` / `→` | Step one frame (`⇧` + arrow steps one second) |
-| `Enter` | Place a marker at the playhead (cycles A → B → a fresh A) |
-| `Escape` | Clear markers |
 | `J` / `K` / `L` | Shuttle backward / stop / forward, seek-loop style at 1×/2×/4× (doubling on repeated presses in the same direction) — works identically whether the legacy `<video>` player or the experimental playback engine is active |
 | `⌘/Ctrl` + `K` | Open the command palette |
 | Click the time readout | Open the command palette straight into "go to time" (accepts bare seconds, `mm:ss`, or `hh:mm:ss`) |
@@ -283,8 +281,7 @@ The command palette (`⌘/Ctrl+K`) is a filterable list — type to narrow,
 arrow keys to move the highlight, Enter to run, Escape to close. Its command
 set is state-aware: Ripple-delete only appears with a selection, Undo/Redo
 only appear when there's something to undo/redo. Always present: Play/Pause,
-Split at playhead, Zoom to fit, Go to time…, Set marker at playhead, Clear
-markers.
+Split at playhead, Zoom to fit, Go to time…
 
 ---
 

@@ -105,7 +105,7 @@ Every cut is a hard cut. No crossfades, no speed ramps, no whip pans — none ap
 
 ### 6. Reframe horizontal sources
 
-For any clip whose `sourceWidth / sourceHeight` exceeds 9:16, set `sourceCrop` on its `tracks[0]` item using the deterministic centred math from `skills/find_clips/SKILL.md` step 4:
+For any clip whose `sourceWidth / sourceHeight` exceeds 9:16, set `sourceCrop` on its item in `tracks[0].items` using the deterministic centred math from `skills/find_clips/SKILL.md` step 4:
 
 ```
 source_ar = source_width / source_height
@@ -121,7 +121,7 @@ Also write `sourceWidth` and `sourceHeight` on the same item, from `probe`. **Wi
 
 ### 7. Emit the project
 
-- **`tracks[0]`** — every assigned shot, in timeline order. Each item carries `start` / `end` on the output timeline, `inPoint` / `outPoint` into its source, `muted: true`, and `sourceCrop` (+ `sourceWidth` / `sourceHeight`) where reframed. **Gaps are not permitted** — the timeline must be continuous from 0 to the voiceover's duration.
+- **`tracks[0].items`** — every assigned shot, in timeline order. Each item carries `start` / `end` on the output timeline, `inPoint` / `outPoint` into its source, `muted: true`, and `sourceCrop` (+ `sourceWidth` / `sourceHeight`) where reframed. **Gaps are not permitted** — the timeline must be continuous from 0 to the voiceover's duration.
 - **`audio.tracks[0]`** — the cleaned voiceover from `vo_materialize`, `volume: 1.0`.
 - **`project.voiceover.cleanedSrc`** — the cleaned file's path. Leave `project.voiceover.src` pointing at the original.
 - Do **not** put `project.voiceover.src` on any visual track unless the editing prompt explicitly asks for the speaker's picture.

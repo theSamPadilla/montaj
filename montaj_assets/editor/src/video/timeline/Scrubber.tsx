@@ -1,31 +1,37 @@
 import { formatTime, pct, ratioFromClientX } from './utils'
 import { useTimelineContext } from './TimelineContext'
 import { usePlaybackTime } from '../playback-clock'
+import { Tooltip } from '../../ui/Tooltip'
 
 interface ScrubberProps {
+  /**
+   * Whether to render the overview BAR (the track, the elapsed fill, the red
+   * handle). False in canvas mode, where it was removed: the bar maps the whole
+   * project across the full width while the canvas timeline owns its own zoom
+   * and scroll, so at any zoom but "fit" its red handle sat at a different x
+   * than the canvas playhead for the same instant — two red markers
+   * disagreeing about where you are. The readouts below it stay: they are
+   * times, not positions, and read from the same clock the canvas draws.
+   */
+  showBar?: boolean
   hoverPct: number | null
   draggingPlayhead: boolean
   setDraggingPlayhead: (v: boolean) => void
   keyNavTime: number | null
-  onSplit?: (at: number) => void
-  onCut?: (cut: { start: number; end: number }) => void
-  cutButtonLabel: string
   /** SP5 T9 — opens the command palette's "go to time" input. Absent →
    *  the time readout stays plain, non-interactive text. */
   onOpenGoToTime?: () => void
 }
 
 export default function Scrubber({
+  showBar = true,
   hoverPct,
   draggingPlayhead,
   setDraggingPlayhead,
   keyNavTime,
-  onSplit,
-  onCut,
-  cutButtonLabel,
   onOpenGoToTime,
 }: ScrubberProps) {
-  const { clock, totalDuration, contentDuration, markers, setMarkers, snapBoundaries, scrubberRef, selection } = useTimelineContext()
+  const { clock, totalDuration, contentDuration, snapBoundaries, scrubberRef } = useTimelineContext()
   const currentTime = usePlaybackTime(clock)
 
   function handleScrubClick(e: React.MouseEvent<HTMLDivElement>) {
@@ -34,53 +40,20 @@ export default function Scrubber({
     clock.set(ratioFromClientX(e.clientX, scrubberRef.current!.getBoundingClientRect()) * totalDuration)
   }
 
-  function handleScrubDoubleClick(e: React.MouseEvent<HTMLDivElement>) {
-    if (totalDuration === 0) return
-    e.preventDefault()
-    const t = ratioFromClientX(e.clientX, scrubberRef.current!.getBoundingClientRect()) * totalDuration
-    setMarkers(([a, b]) => {
-      if (a === null) return [t, null]       // place first marker
-      if (b === null) return [a, t]          // place second → selection complete
-      return [t, null]                       // reset: start fresh with new first marker
-    })
-  }
-
   return (
     <>
       {/* ── Scrubber ── */}
+      {showBar && (
       <div
         ref={scrubberRef}
-        className={`relative h-4 rounded-full bg-gray-200 dark:bg-gray-800 group ${markers[0] !== null && markers[1] === null ? 'cursor-cell' : 'cursor-crosshair'}`}
+        className="relative h-4 rounded-full bg-gray-200 dark:bg-gray-800 group cursor-crosshair"
         onClick={handleScrubClick}
-        onDoubleClick={handleScrubDoubleClick}
       >
         {/* Elapsed fill */}
         <div
           className="absolute inset-y-0 left-0 rounded-full bg-gray-400 dark:bg-gray-600 pointer-events-none"
           style={{ width: `${pct(currentTime, totalDuration)}%` }}
         />
-
-        {/* Selection range fill (both markers placed) */}
-        {selection && (
-          <div
-            className="absolute inset-y-0 bg-amber-500/25 pointer-events-none"
-            style={{ left: `${pct(selection.start, totalDuration)}%`, width: `${pct(selection.end - selection.start, totalDuration)}%` }}
-          />
-        )}
-
-        {/* Marker A */}
-        {markers[0] !== null && (
-          <div className="absolute top-0 bottom-0 w-px bg-amber-400 pointer-events-none" style={{ left: `${pct(markers[0], totalDuration)}%` }}>
-            <div className="absolute -top-0.5 -translate-x-1/2 w-2 h-2 bg-amber-400 rotate-45" />
-          </div>
-        )}
-
-        {/* Marker B */}
-        {markers[1] !== null && (
-          <div className="absolute top-0 bottom-0 w-px bg-amber-400 pointer-events-none" style={{ left: `${pct(markers[1], totalDuration)}%` }}>
-            <div className="absolute -top-0.5 -translate-x-1/2 w-2 h-2 bg-amber-400 rotate-45" />
-          </div>
-        )}
 
         {/* Playhead handle */}
         <div
@@ -119,10 +92,6 @@ export default function Scrubber({
             document.addEventListener('mousemove', onMove)
             document.addEventListener('mouseup', onUp)
           }}
-          onDoubleClick={(e) => {
-            e.stopPropagation()
-            handleScrubDoubleClick(e as React.MouseEvent<HTMLDivElement>)
-          }}
         >
           {keyNavTime !== null && (
             <div className="absolute -top-7 left-1/2 -translate-x-1/2 bg-gray-800 border border-gray-700 text-white text-[10px] font-mono px-1.5 py-0.5 rounded pointer-events-none whitespace-nowrap z-20">
@@ -141,60 +110,32 @@ export default function Scrubber({
           </div>
         )}
       </div>
+      )}
 
-      {/* Time readout + marker / selection range */}
-      <div className="flex items-center justify-between text-[10px] font-mono text-gray-600 -mt-1">
+      {/* Time readout. Without the bar this is the whole widget: current time
+          on the left, project duration on the right. */}
+      {/* `cursor-pointer` without the bar: the row is then a strip of timeline
+          background, and Timeline's container click seeks through it (see
+          `handleContainerClick`), so it should look live rather than dead. */}
+      <div className={`flex items-center justify-between text-[10px] font-mono text-gray-600 ${showBar ? '-mt-1' : 'cursor-pointer'}`}>
         {onOpenGoToTime ? (
-          <button
-            type="button"
-            title="Go to time"
-            onClick={(e) => { e.stopPropagation(); onOpenGoToTime() }}
-            className="hover:text-gray-300 transition-colors"
-          >
-            {formatTime(currentTime)}
-          </button>
+          <Tooltip label="Go to time">
+            <button
+              type="button"
+              aria-label="Go to time"
+              onClick={(e) => { e.stopPropagation(); onOpenGoToTime() }}
+              className="hover:text-gray-300 transition-colors"
+            >
+              {formatTime(currentTime)}
+            </button>
+          </Tooltip>
         ) : (
           <span>{formatTime(currentTime)}</span>
         )}
-        {markers[0] !== null && markers[1] === null && (
-          <span className="flex items-center gap-2 text-amber-400/80">
-            {onSplit && (
-              <button
-                className="px-2 py-0.5 rounded bg-amber-500/80 hover:bg-amber-400 text-black text-[10px] font-medium transition-colors"
-                onClick={(e) => { e.stopPropagation(); onSplit(markers[0]!); setMarkers([null, null]) }}
-              >
-                Split
-              </button>
-            )}
-            {formatTime(markers[0])} — double-click to set end
-            <button
-              className="text-gray-600 hover:text-gray-400"
-              onClick={(e) => { e.stopPropagation(); setMarkers([null, null]) }}
-            >✕</button>
-          </span>
-        )}
-        {selection && (
-          <span className="flex items-center gap-2 text-amber-400">
-            <button
-              className="text-gray-600 hover:text-gray-400"
-              onClick={(e) => { e.stopPropagation(); setMarkers([null, null]) }}
-            >✕</button>
-            {formatTime(selection.start)} – {formatTime(selection.end)}
-            {onCut && (
-              <button
-                className="px-2 py-0.5 rounded bg-red-600/80 hover:bg-red-500 text-white text-[10px] font-medium transition-colors"
-                onClick={(e) => {
-                  e.stopPropagation()
-                  onCut(selection)
-                  setMarkers([null, null])
-                }}
-              >
-                {cutButtonLabel}
-              </button>
-            )}
-          </span>
-        )}
-        <span>{formatTime(contentDuration)}</span>
+        {/* `data-timeline-chrome`: a readout, not a place to seek to. Clicking
+            it would otherwise jump the playhead to the far right of the view,
+            since it sits at the right edge of a strip that IS a time axis. */}
+        <span data-timeline-chrome className="cursor-default">{formatTime(contentDuration)}</span>
       </div>
     </>
   )

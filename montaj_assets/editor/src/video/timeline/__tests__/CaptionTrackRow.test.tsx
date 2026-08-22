@@ -14,6 +14,7 @@ const RECT = {
 
 function makeCtx(overrides: Partial<TimelineContextValue> = {}): TimelineContextValue {
   return {
+    viewport: null,
     totalDuration: 100,
     contentDuration: 100,
     snapBoundaries: [],
@@ -23,9 +24,6 @@ function makeCtx(overrides: Partial<TimelineContextValue> = {}): TimelineContext
     scrubberRef: { current: null },
     overlayDraggedRef: { current: false },
     clock: createPlaybackClock(),
-    markers: [null, null],
-    setMarkers: () => {},
-    selection: null,
     ...overrides,
   }
 }

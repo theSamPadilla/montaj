@@ -1,26 +1,23 @@
 /**
- * SP5 T7 — canvas filmstrip rendering: the zoom/visibility fetch gate, the
+ * SP5 T7 — canvas filmstrip rendering: the visibility fetch gate, the
  * ported sheet-index fetch-state store, tile selection + source-rect math,
- * the draw hooks wired into `drawClipRect`/`drawTimelineContent` (draw.ts,
- * composed with T6's waveform), and the hover-scrub thumb on the overlay
- * layer. Follows waveforms.test.ts's (T6) conventions throughout.
+ * and the draw hooks wired into `drawClipRect`/`drawTimelineContent` (draw.ts,
+ * composed with T6's waveform). Follows waveforms.test.ts's (T6) conventions
+ * throughout.
  */
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { createElement } from 'react'
-import { render, act, cleanup } from '@testing-library/react'
+import { describe, it, expect, vi } from 'vitest'
 import type { VisualItem } from '../../../../schema'
 import type { FilmstripIndex, FilmstripSheet, Project } from '../../../../types'
 import {
-  FILMSTRIP_ZOOM_THRESHOLD_PX_PER_SECOND,
+  FILMSTRIP_CELL_ASPECT,
   FilmstripStore,
+  centerCropTo,
   clipTimeToSourceTime,
   defaultSheetImageLoader,
-  drawFilmstripHoverThumb,
   drawFilmstripTiles,
   flattenTiles,
   nearestTile,
   tileSourceRect,
-  type FilmstripHoverThumb,
   type FilmstripQueryContext,
   type FilmstripTileDraw,
   type LoadedSheetImage,
@@ -34,10 +31,9 @@ import {
   type TimelineScene,
 } from '../draw'
 import { FETCH_RETRY_COOLDOWN_MS, type WaveformColumn } from '../waveforms'
+import { clipBands } from '../clip-bands'
+import { BASE_VISUAL_ROW_RENDER_HEIGHT_PX } from '../../timeline-model'
 import type { Viewport } from '../viewport'
-import { createViewportStore } from '../viewport'
-import { createPlaybackClock } from '../../../playback-clock'
-import TimelineCanvas from '../TimelineCanvas'
 
 // ── Recording context (mirrors waveforms.test.ts's convention) ───────────
 
@@ -73,7 +69,7 @@ function clip(over: Partial<VisualItem> = {}): VisualItem {
 }
 
 function rect(over: Partial<Rect> = {}): Rect {
-  return { x: 0, y: 0, width: 100, height: 40, ...over }
+  return { x: 0, y: 0, width: 100, height: BASE_VISUAL_ROW_RENDER_HEIGHT_PX, ...over }
 }
 
 function filmstripIndexFixture(over: Partial<FilmstripIndex> = {}): FilmstripIndex {
@@ -117,11 +113,40 @@ function flush(): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, 0))
 }
 
-// ── Zoom threshold ─────────────────────────────────────────────────────────
+// ── Cell sizing ────────────────────────────────────────────────────────────
 
-describe('FILMSTRIP_ZOOM_THRESHOLD_PX_PER_SECOND', () => {
-  it('is the filmstrip step\'s default tile width over its default min-interval (160 / 1.0)', () => {
-    expect(FILMSTRIP_ZOOM_THRESHOLD_PX_PER_SECOND).toBe(160)
+describe('FILMSTRIP_CELL_ASPECT', () => {
+  it('is square — the 9:16 footage this edits would otherwise draw as slivers', () => {
+    expect(FILMSTRIP_CELL_ASPECT).toBe(1)
+  })
+})
+
+describe('centerCropTo', () => {
+  it('crops a tall tile top and bottom to fill a square cell', () => {
+    // 9:16 source into a 1:1 destination: full width, a centered square of height.
+    expect(centerCropTo({ sx: 0, sy: 0, sw: 90, sh: 160 }, 1)).toEqual({ sx: 0, sy: 35, sw: 90, sh: 90 })
+  })
+
+  it('crops a wide tile left and right to fill a square cell', () => {
+    expect(centerCropTo({ sx: 0, sy: 0, sw: 160, sh: 90 }, 1)).toEqual({ sx: 35, sy: 0, sw: 90, sh: 90 })
+  })
+
+  it('keeps the tile\'s offset within its sheet, cropping relative to it', () => {
+    // The crop must move the sub-rect INSIDE the tile, never back toward the
+    // sheet origin, or every cell would show a slice of its neighbour.
+    expect(centerCropTo({ sx: 320, sy: 90, sw: 160, sh: 90 }, 1)).toEqual({ sx: 355, sy: 90, sw: 90, sh: 90 })
+  })
+
+  it('leaves an already-matching aspect untouched', () => {
+    const src = { sx: 10, sy: 20, sw: 80, sh: 40 }
+    expect(centerCropTo(src, 2)).toEqual(src)
+  })
+
+  it('returns the source unchanged for a degenerate aspect or size, rather than emitting NaNs', () => {
+    const src = { sx: 0, sy: 0, sw: 100, sh: 50 }
+    expect(centerCropTo(src, 0)).toEqual(src)
+    expect(centerCropTo(src, Number.NaN)).toEqual(src)
+    expect(centerCropTo({ sx: 0, sy: 0, sw: 0, sh: 0 }, 1)).toEqual({ sx: 0, sy: 0, sw: 0, sh: 0 })
   })
 })
 
@@ -234,71 +259,44 @@ describe('drawFilmstripTiles', () => {
   })
 })
 
-describe('drawFilmstripHoverThumb', () => {
-  function thumb(over: Partial<FilmstripHoverThumb> = {}): FilmstripHoverThumb {
-    return { image: {} as CanvasImageSource, sx: 0, sy: 0, sw: 160, sh: 90, x: 500, rowTop: 100, t: 12.3, ...over }
-  }
-
-  it('draws a card, the matched tile image, and a timecode label', () => {
-    const r = recordingContext()
-    drawFilmstripHoverThumb(r.ctx, thumb(), 1000)
-
-    expect(r.of('drawImage')).toHaveLength(1)
-    expect(r.of('fillText').some(c => String(c.args[0]).startsWith('0:12'))).toBe(true)
-  })
-
-  it('clamps horizontally so the card never starts left of the surface', () => {
-    const r = recordingContext()
-    drawFilmstripHoverThumb(r.ctx, thumb({ x: 0 }), 1000)
-    const start = r.calls.find(c => c.method === 'moveTo')!.args as number[]
-    expect(start[0]).toBeGreaterThanOrEqual(0)
-  })
-
-  it('clamps horizontally so the card never runs off the right of the surface', () => {
-    const r = recordingContext()
-    drawFilmstripHoverThumb(r.ctx, thumb({ x: 1000 }), 1000)
-    const start = r.calls.find(c => c.method === 'moveTo')!.args as number[]
-    expect(start[0]).toBeLessThanOrEqual(1000)
-  })
-
-  it('clamps to the surface top rather than skipping the draw when there is no room above the row', () => {
-    const r = recordingContext()
-    drawFilmstripHoverThumb(r.ctx, thumb({ rowTop: 0 }), 1000)
-    expect(r.of('drawImage')).toHaveLength(1)
-  })
-})
-
-// ── Fetch-state store: clipTiles fetch policy ─────────────────────────────
-
 describe('FilmstripStore.clipTiles fetch policy', () => {
-  const belowThreshold: Viewport = { pxPerSecond: FILMSTRIP_ZOOM_THRESHOLD_PX_PER_SECOND - 1, scrollSeconds: 0, widthPx: 1000 }
-  const aboveThreshold: Viewport = { pxPerSecond: 200, scrollSeconds: 0, widthPx: 1000 } // visible range [0, 5]
+  const zoomedOut: Viewport = { pxPerSecond: 12, scrollSeconds: 0, widthPx: 1000 }
+  const zoomedIn: Viewport = { pxPerSecond: 200, scrollSeconds: 0, widthPx: 1000 } // visible range [0, 5]
 
-  it('does not fetch below the zoom threshold, even when the clip is visible', () => {
-    const store = new FilmstripStore()
-    const fetcher = vi.fn()
-    store.clipTiles(clip({ proxySrc: 'proxy.mp4', start: 0, end: 5 }), rect({ width: 1000 }), queryCtx({ getFilmstrip: fetcher, viewport: belowThreshold }))
-    expect(fetcher).not.toHaveBeenCalled()
-  })
-
-  it('does not fetch above the threshold when the clip is off the visible range', () => {
-    const store = new FilmstripStore()
-    const fetcher = vi.fn()
-    store.clipTiles(clip({ proxySrc: 'proxy.mp4', start: 100, end: 105 }), rect({ width: 1000 }), queryCtx({ getFilmstrip: fetcher, viewport: aboveThreshold }))
-    expect(fetcher).not.toHaveBeenCalled()
-  })
-
-  it('fetches once both the zoom and visibility conditions hold', () => {
+  it('fetches when zoomed out, where the old 160px/s threshold used to suppress it', () => {
+    // The gate is gone on purpose: cells are sized by the frames band now, so
+    // zooming out yields fewer full-size frames rather than a row of slivers.
     const store = new FilmstripStore()
     const fetcher = vi.fn().mockResolvedValue(filmstripIndexFixture())
-    store.clipTiles(clip({ proxySrc: 'proxy.mp4', start: 0, end: 5 }), rect({ width: 1000 }), queryCtx({ getFilmstrip: fetcher, viewport: aboveThreshold }))
+    store.clipTiles(clip({ proxySrc: 'proxy.mp4', start: 0, end: 5 }), rect({ width: 1000 }), queryCtx({ getFilmstrip: fetcher, viewport: zoomedOut }))
     expect(fetcher).toHaveBeenCalledTimes(1)
+  })
+
+  it('still does not fetch when the clip is off the visible range', () => {
+    const store = new FilmstripStore()
+    const fetcher = vi.fn()
+    store.clipTiles(clip({ proxySrc: 'proxy.mp4', start: 100, end: 105 }), rect({ width: 1000 }), queryCtx({ getFilmstrip: fetcher, viewport: zoomedIn }))
+    expect(fetcher).not.toHaveBeenCalled()
+  })
+
+  it('fetches once the clip is visible', () => {
+    const store = new FilmstripStore()
+    const fetcher = vi.fn().mockResolvedValue(filmstripIndexFixture())
+    store.clipTiles(clip({ proxySrc: 'proxy.mp4', start: 0, end: 5 }), rect({ width: 1000 }), queryCtx({ getFilmstrip: fetcher, viewport: zoomedIn }))
+    expect(fetcher).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not fetch for a clip whose frames band has no height', () => {
+    const store = new FilmstripStore()
+    const fetcher = vi.fn()
+    store.clipTiles(clip({ proxySrc: 'proxy.mp4', start: 0, end: 5 }), rect({ width: 1000, height: 0 }), queryCtx({ getFilmstrip: fetcher, viewport: zoomedIn }))
+    expect(fetcher).not.toHaveBeenCalled()
   })
 
   it('never fetches when the item has no proxySrc', () => {
     const store = new FilmstripStore()
     const fetcher = vi.fn()
-    store.clipTiles(clip({ start: 0, end: 5 }), rect({ width: 1000 }), queryCtx({ getFilmstrip: fetcher, viewport: aboveThreshold }))
+    store.clipTiles(clip({ start: 0, end: 5 }), rect({ width: 1000 }), queryCtx({ getFilmstrip: fetcher, viewport: zoomedIn }))
     expect(fetcher).not.toHaveBeenCalled()
   })
 
@@ -306,7 +304,7 @@ describe('FilmstripStore.clipTiles fetch policy', () => {
     const store = new FilmstripStore()
     const fetcher = vi.fn()
     const imageItem = clip({ type: 'image', proxySrc: 'proxy.mp4', start: 0, end: 5 } as Partial<VisualItem> as VisualItem)
-    store.clipTiles(imageItem, rect({ width: 1000 }), queryCtx({ getFilmstrip: fetcher, viewport: aboveThreshold }))
+    store.clipTiles(imageItem, rect({ width: 1000 }), queryCtx({ getFilmstrip: fetcher, viewport: zoomedIn }))
     expect(fetcher).not.toHaveBeenCalled()
   })
 
@@ -314,22 +312,87 @@ describe('FilmstripStore.clipTiles fetch policy', () => {
     const store = new FilmstripStore()
     const fetcher = vi.fn().mockResolvedValue(filmstripIndexFixture())
 
-    store.clipTiles(clip({ start: 0, end: 5 }), rect({ width: 1000 }), queryCtx({ getFilmstrip: fetcher, viewport: aboveThreshold }))
+    store.clipTiles(clip({ start: 0, end: 5 }), rect({ width: 1000 }), queryCtx({ getFilmstrip: fetcher, viewport: zoomedIn }))
     expect(fetcher).not.toHaveBeenCalled()
 
-    store.clipTiles(clip({ start: 0, end: 5, proxySrc: 'proxy.mp4' }), rect({ width: 1000 }), queryCtx({ getFilmstrip: fetcher, viewport: aboveThreshold }))
+    store.clipTiles(clip({ start: 0, end: 5, proxySrc: 'proxy.mp4' }), rect({ width: 1000 }), queryCtx({ getFilmstrip: fetcher, viewport: zoomedIn }))
     expect(fetcher).toHaveBeenCalledTimes(1)
   })
 
   it('stays inert (never fetches, never throws) when the adapter has no getFilmstrip', () => {
     const store = new FilmstripStore()
     expect(() =>
-      store.clipTiles(clip({ proxySrc: 'proxy.mp4', start: 0, end: 5 }), rect({ width: 1000 }), queryCtx({ getFilmstrip: undefined, viewport: aboveThreshold })),
+      store.clipTiles(clip({ proxySrc: 'proxy.mp4', start: 0, end: 5 }), rect({ width: 1000 }), queryCtx({ getFilmstrip: undefined, viewport: zoomedIn })),
     ).not.toThrow()
   })
 })
 
 // ── Sheet-load laziness ────────────────────────────────────────────────────
+
+describe('FilmstripStore.clipTiles geometry', () => {
+  /** Drive the store to the point where its index AND sheet image are both
+   *  resolved, then return the tiles it lays out for a clip drawn at `pxPerSecond`. */
+  async function laidOut(pxPerSecond: number, image?: LoadedSheetImage) {
+    const store = new FilmstripStore()
+    const item = clip({ proxySrc: 'proxy.mp4', start: 0, end: 10 })
+    const viewport: Viewport = { pxPerSecond, scrollSeconds: 0, widthPx: 1000 }
+    // The rect the painter would compute: the clip's own on-screen width.
+    const r = rect({ width: (item.end - item.start) * pxPerSecond })
+    const ctx = () => queryCtx(image ? { viewport, loader: fakeLoader(image) } : { viewport })
+
+    store.clipTiles(item, r, ctx())        // starts the index fetch
+    await flush()
+    store.clipTiles(item, r, ctx())        // index ready — starts the sheet fetch
+    await flush()
+    return { tiles: store.clipTiles(item, r, ctx()) ?? [], rect: r }
+  }
+
+  it('lays every tile inside the clip\'s frames band, never over the waveform half', async () => {
+    const { tiles, rect: r } = await laidOut(60)
+    const band = clipBands(r).frames
+
+    expect(tiles.length).toBeGreaterThan(0)
+    for (const tile of tiles) {
+      expect(tile.rect.y).toBe(band.y)
+      expect(tile.rect.height).toBe(band.height)
+    }
+  })
+
+  it('sizes each full cell square to the band height, so frames are never stretched', async () => {
+    const { tiles, rect: r } = await laidOut(60)
+    const band = clipBands(r).frames
+
+    // The final cell is clipped by the clip's right edge; every other one is a
+    // full square.
+    for (const tile of tiles.slice(0, -1)) expect(tile.rect.width).toBe(band.height)
+    expect(tiles[tiles.length - 1].rect.width).toBeLessThanOrEqual(band.height)
+  })
+
+  it('crops each tile to its cell rather than squeezing a 9:16 frame into it', async () => {
+    // A 450x1600 sheet over 5 cols x 2 rows gives 90x800 tiles — vertical
+    // footage, the shape this editor actually cuts. Into a square cell the
+    // crop must keep the full width and take a centered square of the height.
+    const { tiles } = await laidOut(60, loadedImage(450, 1600))
+    const first = tiles[0]
+
+    expect(first.sw).toBe(90)   // full tile width, untouched
+    expect(first.sh).toBe(90)   // 800 cropped down to a square
+    expect(first.sy).toBe(355)  // centered: (800 - 90) / 2
+  })
+
+  it('walks further through the source per cell as you zoom out', async () => {
+    // The point of sizing cells by the band instead of by the tile interval:
+    // the same strip re-derives which frames it shows at every zoom. Zoomed
+    // out, each cell spans seconds and lands on a different tile; zoomed in,
+    // cells span fractions of a second and several share the nearest tile.
+    const outCells = (await laidOut(12)).tiles
+    const inCells = (await laidOut(200)).tiles
+    const distinct = (tiles: typeof outCells) => new Set(tiles.map(t => `${t.sx},${t.sy}`)).size
+
+    expect(distinct(outCells)).toBe(outCells.length)
+    expect(distinct(inCells)).toBeLessThan(inCells.length)
+  })
+})
 
 describe('FilmstripStore sheet-load laziness', () => {
   it('only requests the sheet(s) whose tiles are needed for the visible range', async () => {
@@ -405,68 +468,6 @@ describe('FilmstripStore quiet retry', () => {
   })
 })
 
-// ── hoverTile ────────────────────────────────────────────────────────────
-
-describe('FilmstripStore.hoverTile', () => {
-  const aboveThreshold: Viewport = { pxPerSecond: 200, scrollSeconds: 0, widthPx: 1000 }
-
-  it('resolves the nearest tile for a hovered timeline time', async () => {
-    const store = new FilmstripStore()
-    const ctx = () => queryCtx({ viewport: aboveThreshold })
-    const item = clip({ proxySrc: 'proxy.mp4', start: 0, end: 10 })
-
-    store.hoverTile(item, 4.4, ctx()) // starts the index fetch
-    await flush()
-    store.hoverTile(item, 4.4, ctx()) // index ready — starts the sheet-image fetch
-    await flush()
-    const result = store.hoverTile(item, 4.4, ctx()) // sheet ready — returns the tile
-
-    expect(result).not.toBeNull()
-    expect(result!.t).toBe(4)
-  })
-
-  it('aligns a trimmed clip through inPoint before matching a tile', async () => {
-    const store = new FilmstripStore()
-    const index = filmstripIndexFixture({
-      interval: 1,
-      sheets: [{ path: 's0.jpg', cols: 20, rows: 1, tiles: Array.from({ length: 20 }, (_, i) => ({ t: i, row: 0, col: i })) }],
-    })
-    const ctx = () => queryCtx({ getFilmstrip: vi.fn().mockResolvedValue(index), viewport: aboveThreshold })
-    // Trimmed clip: on-timeline [0,5) shows source [10,15).
-    const item = clip({ start: 0, end: 5, inPoint: 10, proxySrc: 'proxy.mp4' })
-
-    store.hoverTile(item, 2, ctx())
-    await flush()
-    store.hoverTile(item, 2, ctx())
-    await flush()
-    const result = store.hoverTile(item, 2, ctx())
-
-    expect(result).not.toBeNull()
-    expect(result!.t).toBe(12) // source time 10 + 2, not raw timeline time 2
-  })
-
-  it('returns null below the zoom threshold', () => {
-    const store = new FilmstripStore()
-    const item = clip({ proxySrc: 'proxy.mp4', start: 0, end: 10 })
-    const result = store.hoverTile(item, 4, queryCtx({ viewport: { pxPerSecond: 10, scrollSeconds: 0, widthPx: 1000 } }))
-    expect(result).toBeNull()
-  })
-
-  it('returns null for a non-video item, an item with no proxySrc, or an absent adapter method', () => {
-    const store = new FilmstripStore()
-    expect(store.hoverTile(clip({ proxySrc: undefined }), 4, queryCtx({ viewport: aboveThreshold }))).toBeNull()
-    expect(store.hoverTile(clip({ type: 'image', proxySrc: 'p.mp4' } as Partial<VisualItem> as VisualItem), 4, queryCtx({ viewport: aboveThreshold }))).toBeNull()
-    expect(store.hoverTile(clip({ proxySrc: 'p.mp4' }), 4, queryCtx({ getFilmstrip: undefined, viewport: aboveThreshold }))).toBeNull()
-  })
-
-  it('returns null while the index/sheet are still loading — never an empty placeholder, just no data yet', () => {
-    const store = new FilmstripStore()
-    const item = clip({ proxySrc: 'proxy.mp4', start: 0, end: 10 })
-    // No `await flush()` — the fetch is still in flight.
-    expect(store.hoverTile(item, 4, queryCtx({ viewport: aboveThreshold }))).toBeNull()
-  })
-})
-
 // ── Draw integration via drawTimelineContent (draw.ts) ────────────────────
 
 function project(over: Partial<Project> = {}): Project {
@@ -484,8 +485,6 @@ function scene(over: Partial<TimelineScene> = {}): TimelineScene {
     viewport: viewport(),
     layout: computeTimelineLayout(p),
     selectedIds: [],
-    markerSelection: null,
-    markers: [null, null],
     surfaceWidth: 1000,
     surfaceHeight: 200,
     ...over,
@@ -494,7 +493,7 @@ function scene(over: Partial<TimelineScene> = {}): TimelineScene {
 
 describe('drawTimelineContent filmstrip + waveform composition', () => {
   it('draws the filmstrip background and the waveform overlay together, in one drawContent hook', () => {
-    const p = project({ tracks: [[clip({ id: 'c0', start: 0, end: 4, proxySrc: 'proxy.mp4' })]] })
+    const p = project({ tracks: [{ id: 'trk-0', items: [clip({ id: 'c0', start: 0, end: 4, proxySrc: 'proxy.mp4' })] }] })
     const r = recordingContext()
     const tiles: FilmstripTileDraw[] = [{ image: {} as CanvasImageSource, sx: 0, sy: 0, sw: 160, sh: 90, rect: { x: 0, y: 0, width: 800, height: 56 } }]
     const columns: WaveformColumn[] = [{ min: -1, max: 1 }, { min: -0.5, max: 0.5 }]
@@ -512,7 +511,7 @@ describe('drawTimelineContent filmstrip + waveform composition', () => {
   })
 
   it('degrades to exactly T6\'s original waveform-only draw-call count when no filmstrip provider is set', () => {
-    const p = project({ tracks: [[clip({ id: 'c0', start: 0, end: 4 })]] })
+    const p = project({ tracks: [{ id: 'trk-0', items: [clip({ id: 'c0', start: 0, end: 4 })] }] })
     const withScene = recordingContext()
     drawTimelineContent(withScene.ctx, scene({
       project: p,
@@ -528,172 +527,5 @@ describe('drawTimelineContent filmstrip + waveform composition', () => {
     }))
     expect(withScene.calls.length).toBe(withoutFilmstripsKey.calls.length)
     expect(withScene.of('drawImage')).toHaveLength(0)
-  })
-})
-
-// ── TimelineCanvas hover-scrub integration (T7) ────────────────────────────
-// The pure store/draw functions above are the unit coverage; this is the one
-// thing only a mounted component can show — that an idle hover reaches the
-// overlay layer as a drawImage call once data resolves, and that starting a
-// gesture suppresses it even after the underlying data is ready. Harness
-// mirrors TimelineCanvas.pointer.test.tsx / TimelineCanvas.test.tsx (jsdom
-// has no 2D canvas and no real image decode, so both are stubbed).
-
-describe('TimelineCanvas hover-scrub thumb', () => {
-  let realGetContext: typeof HTMLCanvasElement.prototype.getContext
-  let realGetRect: typeof Element.prototype.getBoundingClientRect
-  let realImage: typeof Image
-  const recorders = new Map<HTMLCanvasElement, RecordedCall[]>()
-
-  function recorderFor(canvas: HTMLCanvasElement): RecordedCall[] {
-    const existing = recorders.get(canvas)
-    if (existing) return existing
-    const calls: RecordedCall[] = []
-    recorders.set(canvas, calls)
-    return calls
-  }
-
-  function contextFor(canvas: HTMLCanvasElement) {
-    const calls = recorderFor(canvas)
-    const props: Record<string, unknown> = {}
-    return new Proxy({}, {
-      get(_t, prop: string) {
-        if (prop in props) return props[prop]
-        if (prop === 'createLinearGradient') return () => ({ addColorStop: () => {} })
-        return (...args: unknown[]) => { calls.push({ method: prop, args }) }
-      },
-      set(_t, prop: string, value: unknown) {
-        props[prop] = value
-        calls.push({ method: `set:${prop}`, args: [value] })
-        return true
-      },
-    })
-  }
-
-  /** A jsdom-safe `Image()` stand-in: `onload` fires on the next microtask
-   *  after `src` is assigned, mimicking a real (fast) decode without needing
-   *  jsdom to implement image loading at all. */
-  class FakeImage {
-    onload: (() => void) | null = null
-    onerror: (() => void) | null = null
-    naturalWidth = 800
-    naturalHeight = 320
-    width = 800
-    height = 320
-    private _src = ''
-    set src(v: string) {
-      this._src = v
-      Promise.resolve().then(() => this.onload?.())
-    }
-    get src() { return this._src }
-  }
-
-  beforeEach(() => {
-    recorders.clear()
-    realGetContext = HTMLCanvasElement.prototype.getContext
-    realGetRect = Element.prototype.getBoundingClientRect
-    realImage = globalThis.Image
-    HTMLCanvasElement.prototype.getContext = function (this: HTMLCanvasElement) {
-      return contextFor(this)
-    } as unknown as typeof HTMLCanvasElement.prototype.getContext
-    Element.prototype.getBoundingClientRect = function (this: Element) {
-      return { x: 0, y: 0, top: 0, left: 0, right: 1000, bottom: 100, width: 1000, height: 100, toJSON: () => ({}) } as DOMRect
-    }
-    globalThis.Image = FakeImage as unknown as typeof Image
-    vi.useFakeTimers()
-  })
-
-  afterEach(() => {
-    cleanup()
-    vi.useRealTimers()
-    HTMLCanvasElement.prototype.getContext = realGetContext
-    Element.prototype.getBoundingClientRect = realGetRect
-    globalThis.Image = realImage
-  })
-
-  const hoverProject = {
-    id: 'p1',
-    tracks: [[{ id: 'c0', type: 'video', src: 'a.mp4', proxySrc: 'proxy.mp4', start: 0, end: 10 }]],
-  } as unknown as Project
-
-  function mount(overrides: { getFilmstrip?: FilmstripQueryContext['getFilmstrip']; resolveFilePath?: (p: string) => string } = {}) {
-    const store = createViewportStore()
-    const clock = createPlaybackClock()
-    // Plain `.ts` (not `.tsx`) — no JSX here, so the element is built with
-    // `createElement` directly.
-    const utils = render(
-      createElement(TimelineCanvas, {
-        project: hoverProject,
-        clock,
-        store,
-        totalDuration: 10,
-        selectedIds: [],
-        markers: [null, null],
-        ...overrides,
-      }),
-    )
-    act(() => { vi.advanceTimersByTime(32) })
-    // Zoom above the filmstrip threshold (160px/s); the whole clip fits on screen.
-    act(() => { store.set({ pxPerSecond: 200, scrollSeconds: 0, widthPx: 1000 }) })
-    act(() => { vi.advanceTimersByTime(32) })
-    const canvases = utils.container.querySelectorAll('canvas')
-    return {
-      ...utils,
-      overlay: recorderFor(canvases[1] as HTMLCanvasElement),
-      surface: utils.container.querySelector('[data-timeline-canvas]') as HTMLElement,
-    }
-  }
-
-  function mouse(type: string, x: number, y: number, init: MouseEventInit = {}) {
-    return new MouseEvent(type, { clientX: x, clientY: y, bubbles: true, cancelable: true, button: 0, ...init })
-  }
-
-  /** Flush the microtasks a fetch/decode round trip needs, then let a
-   *  scheduled repaint run. */
-  async function settle() {
-    await act(async () => { await Promise.resolve(); await Promise.resolve() })
-    act(() => { vi.advanceTimersByTime(32) })
-  }
-
-  it('shows the thumb once the index and sheet resolve, from an idle hover', async () => {
-    const getFilmstrip = vi.fn().mockResolvedValue(filmstripIndexFixture())
-    const resolveFilePath = (p: string) => `/files/${p}`
-    const { surface, overlay } = mount({ getFilmstrip, resolveFilePath })
-
-    act(() => { surface.dispatchEvent(mouse('mousemove', 500, 20)) }) // idle hover, over the clip
-    act(() => { vi.advanceTimersByTime(32) }) // starts the index fetch
-    await settle() // index resolves, starts the sheet-image fetch
-    await settle() // sheet resolves, thumb draws
-
-    expect(overlay.some(c => c.method === 'drawImage')).toBe(true)
-  })
-
-  it('suppresses the thumb once a gesture starts, even though the data is still cached and ready', async () => {
-    const getFilmstrip = vi.fn().mockResolvedValue(filmstripIndexFixture())
-    const resolveFilePath = (p: string) => `/files/${p}`
-    const { surface, overlay } = mount({ getFilmstrip, resolveFilePath })
-
-    act(() => { surface.dispatchEvent(mouse('mousemove', 500, 20)) })
-    act(() => { vi.advanceTimersByTime(32) })
-    await settle()
-    await settle()
-    expect(overlay.some(c => c.method === 'drawImage')).toBe(true) // baseline: the thumb is showing
-
-    overlay.length = 0
-    act(() => { surface.dispatchEvent(mouse('mousedown', 500, 20)) }) // gesture starts — clears the hover
-    act(() => { document.dispatchEvent(mouse('mousemove', 520, 20)) }) // drag continues over the same clip
-    act(() => { vi.advanceTimersByTime(32) })
-
-    expect(overlay.some(c => c.method === 'drawImage')).toBe(false)
-    act(() => { document.dispatchEvent(mouse('mouseup', 520, 20)) })
-  })
-
-  it('never draws a thumb when the host adapter has no getFilmstrip/resolveFilePath', async () => {
-    const { surface, overlay } = mount()
-    act(() => { surface.dispatchEvent(mouse('mousemove', 500, 20)) })
-    await settle()
-    await settle()
-
-    expect(overlay.some(c => c.method === 'drawImage')).toBe(false)
   })
 })

@@ -17,6 +17,8 @@ import { createPlaybackClock } from '../../../playback-clock'
 import type { Project } from '../../../../types'
 import TimelineCanvas from '../TimelineCanvas'
 import { createViewportStore } from '../viewport'
+import { computeTimelineLayout } from '../draw'
+import { trackItems } from '../../timeline-model'
 
 let realGetContext: typeof HTMLCanvasElement.prototype.getContext
 let realGetRect: typeof Element.prototype.getBoundingClientRect
@@ -48,15 +50,26 @@ afterEach(() => {
   Element.prototype.getBoundingClientRect = realGetRect
 })
 
-// One base track (row y 0–56) and one audio lane (y 60–100).
+// One base track (the tall row, starting at y 0) and one audio lane below it.
+// Probes into the track row use small Y's, which stay inside it at any row
+// height; the lane's own Y is derived below, since it moves when rows resize.
 const project = {
   id: 'p',
-  tracks: [[
-    { id: 'c0', type: 'video', src: 'a.mp4', start: 0, end: 4, inPoint: 0, outPoint: 4, sourceDuration: 20 },
-    { id: 'c1', type: 'video', src: 'b.mp4', start: 4, end: 8, inPoint: 0, outPoint: 4, sourceDuration: 20 },
-  ]],
+  tracks: [{
+    id: 'trk-0',
+    items: [
+      { id: 'c0', type: 'video', src: 'a.mp4', start: 0, end: 4, inPoint: 0, outPoint: 4, sourceDuration: 20 },
+      { id: 'c1', type: 'video', src: 'b.mp4', start: 4, end: 8, inPoint: 0, outPoint: 4, sourceDuration: 20 },
+    ],
+  }],
   audio: { tracks: [{ id: 'a0', src: 'v.mp3', start: 1, end: 5, lane: 0 }] },
 } as unknown as Project
+
+/** Vertical centre of the audio lane, taken from the painter's own layout. */
+const LANE_Y = (() => {
+  const lane = computeTimelineLayout(project).lanes[0]
+  return Math.round(lane.y + lane.height / 2)
+})()
 
 const TOTAL_DURATION = 13
 const SNAP_BOUNDARIES = [0, 4, 8, 1, 5]
@@ -70,27 +83,33 @@ function mount(overrides: Partial<React.ComponentProps<typeof TimelineCanvas>> =
     onOverlayEdit: vi.fn(),
     onInspectClip: vi.fn(),
     onInspectAudio: vi.fn(),
-    setMarkers: vi.fn(),
+    onHoverScrub: vi.fn(),
   }
   const renders = vi.fn()
   function Sibling() { renders(); return null }
 
-  const utils = render(
-    <>
-      <TimelineCanvas
-        project={project}
-        clock={clock}
-        store={store}
-        totalDuration={TOTAL_DURATION}
-        selectedIds={[]}
-        markers={[null, null]}
-        snapBoundaries={SNAP_BOUNDARIES}
-        {...handlers}
-        {...overrides}
-      />
-      <Sibling />
-    </>,
-  )
+  // Wrapped in a component so a test can flip `previewAxis` after mounting
+  // without rebuilding the store, the clock or the spies.
+  function Surface({ axis }: { axis?: boolean }) {
+    return (
+      <>
+        <TimelineCanvas
+          project={project}
+          clock={clock}
+          store={store}
+          totalDuration={TOTAL_DURATION}
+          selectedIds={[]}
+          snapBoundaries={SNAP_BOUNDARIES}
+          {...handlers}
+          {...overrides}
+          {...(axis === undefined ? {} : { previewAxis: axis })}
+        />
+        <Sibling />
+      </>
+    )
+  }
+
+  const utils = render(<Surface />)
   act(() => { vi.advanceTimersByTime(32) })
   // Pin the scale so the assertions can talk in whole seconds: x = t × 100.
   act(() => { store.set({ pxPerSecond: 100, scrollSeconds: 0, widthPx: 1000 }) })
@@ -102,6 +121,7 @@ function mount(overrides: Partial<React.ComponentProps<typeof TimelineCanvas>> =
     clock,
     renders,
     ...handlers,
+    rerenderWithAxis: (axis: boolean) => utils.rerender(<Surface axis={axis} />),
     surface: utils.container.querySelector('[data-timeline-canvas]') as HTMLElement,
   }
 }
@@ -157,7 +177,7 @@ describe('TimelineCanvas — pointer wiring', () => {
     expect(onSelectItem).not.toHaveBeenCalled()
 
     const committed = onOverlayEdit.mock.calls[0][0] as Project
-    expect((committed.tracks ?? []).flat().find(i => i.id === 'c0')).toMatchObject({ start: 1, end: 5 })
+    expect(trackItems(committed).flat().find(i => i.id === 'c0')).toMatchObject({ start: 1, end: 5 })
   })
 
   it('trims from a press on the out handle', () => {
@@ -168,20 +188,22 @@ describe('TimelineCanvas — pointer wiring', () => {
     act(() => { document.dispatchEvent(mouse('mouseup', 296, 20)) })
 
     const edited = onProjectChange.mock.calls[0][0] as Project
-    expect((edited.tracks ?? []).flat().find(i => i.id === 'c0')).toMatchObject({ end: 3, outPoint: 3 })
+    expect(trackItems(edited).flat().find(i => i.id === 'c0')).toMatchObject({ end: 3, outPoint: 3 })
   })
 
-  it('cycles the markers on a double-click over empty timeline', () => {
-    const { surface, setMarkers } = mount()
+  it('does nothing on a double-click over empty timeline', () => {
+    const { surface, onProjectChange, onSelectItem, onInspectClip } = mount()
     act(() => { surface.dispatchEvent(mouse('dblclick', 900, 20)) })
-    expect(setMarkers).toHaveBeenCalledWith([9, null])
+    expect(onProjectChange).not.toHaveBeenCalled()
+    expect(onSelectItem).not.toHaveBeenCalled()
+    expect(onInspectClip).not.toHaveBeenCalled()
   })
 
   it('opens the inspectors on a double-click over an item', () => {
     const { surface, onInspectClip, onInspectAudio } = mount()
     act(() => { surface.dispatchEvent(mouse('dblclick', 200, 20)) })
     expect(onInspectClip).toHaveBeenCalledWith('c0')
-    act(() => { surface.dispatchEvent(mouse('dblclick', 300, 80)) })
+    act(() => { surface.dispatchEvent(mouse('dblclick', 300, LANE_Y)) })
     expect(onInspectAudio).toHaveBeenCalledWith('a0')
   })
 
@@ -279,8 +301,8 @@ describe('TimelineCanvas — pointer wiring', () => {
     // The true 44px upward travel must land c0 on a NEW track above its
     // source track, not undo the drag back onto the track it started on.
     expect(tracks).toHaveLength(2)
-    expect(tracks[0].some(i => i.id === 'c0')).toBe(false)
-    expect(tracks[1].some(i => i.id === 'c0')).toBe(true)
+    expect(tracks[0].items.some(i => i.id === 'c0')).toBe(false)
+    expect(tracks[1].items.some(i => i.id === 'c0')).toBe(true)
   })
 
   it('does nothing when the host supplies no edit callbacks', () => {
@@ -290,5 +312,124 @@ describe('TimelineCanvas — pointer wiring', () => {
       act(() => { document.dispatchEvent(mouse('mousemove', 300, 20)) })
       act(() => { document.dispatchEvent(mouse('mouseup', 300, 20)) })
     }).not.toThrow()
+  })
+})
+
+// ── Preview axis ─────────────────────────────────────────────────────────
+//
+// Off (the default) this surface behaves exactly as every case above shows —
+// clicks seek, nothing hovers. On, moving the pointer reports the time under it
+// so the host can preview that frame, WITHOUT touching the playback clock.
+
+describe('TimelineCanvas — preview axis', () => {
+  it('reports nothing on hover while the axis is off', () => {
+    const { surface, clock, onHoverScrub } = mount()
+    act(() => { surface.dispatchEvent(mouse('mousemove', 500, 20)) })
+    expect(onHoverScrub).not.toHaveBeenCalled()
+    expect(clock.get()).toBe(0)
+  })
+
+  it('reports the hovered time while the axis is on, without moving the clock', () => {
+    const { surface, clock, onHoverScrub } = mount({ previewAxis: true })
+    act(() => { surface.dispatchEvent(mouse('mousemove', 500, 20)) })
+    act(() => { vi.advanceTimersByTime(32) })
+    expect(onHoverScrub).toHaveBeenCalledWith(5)
+    expect(clock.get()).toBe(0)
+  })
+
+  it('tracks the pointer across the surface, one frame at a time', () => {
+    const { surface, clock, onHoverScrub } = mount({ previewAxis: true })
+    for (const x of [200, 640, 900]) {
+      act(() => { surface.dispatchEvent(mouse('mousemove', x, 20)) })
+      act(() => { vi.advanceTimersByTime(32) })
+    }
+    expect(onHoverScrub.mock.calls.map(c => c[0])).toEqual([2, 6.4, 9])
+    expect(clock.get()).toBe(0)
+  })
+
+  it('coalesces a burst of moves into ONE request, for the latest position', () => {
+    // A trackpad sweep delivers far more moves than the display can show, and
+    // on long-GOP media each seek cancels the decode still in flight — the
+    // reason a fast scrub flashes black. Intermediate positions are dropped,
+    // not queued, so the request is always where the pointer is NOW.
+    const { surface, onHoverScrub } = mount({ previewAxis: true })
+    act(() => {
+      for (const x of [100, 200, 300, 400, 500, 600, 700]) {
+        surface.dispatchEvent(mouse('mousemove', x, 20))
+      }
+    })
+    act(() => { vi.advanceTimersByTime(32) })
+    expect(onHoverScrub.mock.calls.map(c => c[0])).toEqual([7])
+  })
+
+  it('draws the cursor line on every move, even the coalesced ones', () => {
+    // Only the frame REQUEST is rate-limited. The line itself must stay glued
+    // to the pointer or the affordance feels broken.
+    const { surface } = mount({ previewAxis: true })
+    act(() => { surface.dispatchEvent(mouse('mousemove', 300, 20)) })
+    act(() => { surface.dispatchEvent(mouse('mousemove', 800, 20)) })
+    // No assertion on emissions here — TimelineCanvas.test.tsx owns the paint
+    // proof; this pins that a burst never throws or drops the redraw path.
+    act(() => { vi.advanceTimersByTime(32) })
+  })
+
+  it('drops a queued request when the pointer leaves before it fires', () => {
+    // Otherwise a stale position lands one frame after the release and pins the
+    // preview to a frame the pointer has already left.
+    const { surface, onHoverScrub } = mount({ previewAxis: true })
+    act(() => { surface.dispatchEvent(mouse('mousemove', 500, 20)) })
+    act(() => { surface.dispatchEvent(mouse('mouseleave', 500, 20)) })
+    act(() => { vi.advanceTimersByTime(32) })
+    expect(onHoverScrub.mock.calls.map(c => c[0])).toEqual([null])
+  })
+
+  it('hovers over clips too, not just bare track area', () => {
+    // The pointer is over clip c0's body (row y 0-56); the preview should follow
+    // it there exactly as over empty space.
+    const { surface, onHoverScrub } = mount({ previewAxis: true })
+    act(() => { surface.dispatchEvent(mouse('mousemove', 250, 20)) })
+    act(() => { vi.advanceTimersByTime(32) })
+    expect(onHoverScrub).toHaveBeenCalledWith(2.5)
+  })
+
+  it('releases the override when the pointer leaves the surface', () => {
+    const { surface, onHoverScrub } = mount({ previewAxis: true })
+    act(() => { surface.dispatchEvent(mouse('mousemove', 500, 20)) })
+    act(() => { vi.advanceTimersByTime(32) })
+    onHoverScrub.mockClear()
+    act(() => { surface.dispatchEvent(mouse('mouseleave', 500, 20)) })
+    expect(onHoverScrub).toHaveBeenCalledWith(null)
+  })
+
+  it('releases the override when a gesture starts, and the click still seeks', () => {
+    // A press hands the playhead to the gesture; leaving a hover override up
+    // would pin the preview to a frame the drag is moving away from.
+    const { surface, clock, onHoverScrub } = mount({ previewAxis: true })
+    act(() => { surface.dispatchEvent(mouse('mousemove', 500, 20)) })
+    act(() => { vi.advanceTimersByTime(32) })
+    onHoverScrub.mockClear()
+    act(() => { surface.dispatchEvent(mouse('mousedown', 900, 20)) })
+    expect(onHoverScrub).toHaveBeenCalledWith(null)
+    expect(clock.get()).toBeCloseTo(9)
+    act(() => { document.dispatchEvent(mouse('mouseup', 900, 20)) })
+  })
+
+  it('clicking a clip seeks with the axis on, exactly as with it off', () => {
+    const { surface, clock, onSelectItem } = mount({ previewAxis: true })
+    act(() => { surface.dispatchEvent(mouse('mousedown', 200, 20)) })
+    act(() => { document.dispatchEvent(mouse('mouseup', 200, 20)) })
+    expect(onSelectItem).toHaveBeenCalledWith('c0', false)
+    expect(clock.get()).toBeCloseTo(2)
+  })
+
+  it('releases the override when the axis is switched off mid-hover', () => {
+    // No further mousemove is coming to do it, so the preview would otherwise
+    // stay frozen on whatever frame the pointer last rested over.
+    const { surface, onHoverScrub, rerenderWithAxis } = mount({ previewAxis: true })
+    act(() => { surface.dispatchEvent(mouse('mousemove', 500, 20)) })
+    act(() => { vi.advanceTimersByTime(32) })
+    onHoverScrub.mockClear()
+    act(() => { rerenderWithAxis(false) })
+    expect(onHoverScrub).toHaveBeenCalledWith(null)
   })
 })

@@ -129,25 +129,31 @@ The most reliable way to use frosted-glass / blurred card backgrounds is to **pu
 ```json
 {
   "tracks": [
-    [],
-    [
-      {
-        "id": "ov-card-bg",
-        "type": "overlay",
-        "src": "/path/overlays/card-bg.jsx",
-        "start": 2.0,
-        "end": 6.0
-      }
-    ],
-    [
-      {
-        "id": "ov-card-content",
-        "type": "overlay",
-        "src": "/path/overlays/card-content.jsx",
-        "start": 2.0,
-        "end": 6.0
-      }
-    ]
+    { "id": "trk-0", "items": [] },
+    {
+      "id": "trk-1",
+      "items": [
+        {
+          "id": "ov-card-bg",
+          "type": "overlay",
+          "src": "/path/overlays/card-bg.jsx",
+          "start": 2.0,
+          "end": 6.0
+        }
+      ]
+    },
+    {
+      "id": "trk-2",
+      "items": [
+        {
+          "id": "ov-card-content",
+          "type": "overlay",
+          "src": "/path/overlays/card-content.jsx",
+          "start": 2.0,
+          "end": 6.0
+        }
+      ]
+    }
   ]
 }
 ```
@@ -446,29 +452,32 @@ Place overlay items in `tracks[1+]` in `project.json`. Each item must have `type
 ```json
 {
   "tracks": [
-    [],
-    [
-      {
-        "id": "ov-hook",
-        "type": "overlay",
-        "src": "/abs/path/to/project/overlays/hook.jsx",
-        "start": 0.0,
-        "end": 3.0,
-        "props": {
-          "text": "She built an AI employee"
+    { "id": "trk-0", "items": [] },
+    {
+      "id": "trk-1",
+      "items": [
+        {
+          "id": "ov-hook",
+          "type": "overlay",
+          "src": "/abs/path/to/project/overlays/hook.jsx",
+          "start": 0.0,
+          "end": 3.0,
+          "props": {
+            "text": "She built an AI employee"
+          }
+        },
+        {
+          "id": "ov-logo",
+          "type": "overlay",
+          "src": "/abs/path/to/project/overlays/logo.jsx",
+          "start": 0.0,
+          "end": 999.0,
+          "props": {
+            "logoSrc": "/abs/path/to/project/assets/logo.png"
+          }
         }
-      },
-      {
-        "id": "ov-logo",
-        "type": "overlay",
-        "src": "/abs/path/to/project/overlays/logo.jsx",
-        "start": 0.0,
-        "end": 999.0,
-        "props": {
-          "logoSrc": "/abs/path/to/project/assets/logo.png"
-        }
-      }
-    ]
+      ]
+    }
   ]
 }
 ```

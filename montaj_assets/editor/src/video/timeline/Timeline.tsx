@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ComponentProps, type MutableRefObject, type ReactNode } from 'react'
+import { useEffect, useMemo, useRef, useState, type ComponentProps, type MutableRefObject, type ReactNode } from 'react'
 import AudioTrackRow from './AudioTrackRow'
 import type { GetWaveformChunks, ResolveFilePath } from './AudioWaveformLayer'
 import type { FilmstripIndex, GetFilmstripArgs, GetWaveformPeaksArgs, PeaksData, Project } from '../../types'
@@ -8,24 +8,26 @@ import { useTimelineZoom } from './useTimelineZoom'
 import { TimelineContext, type TimelineContextValue } from './TimelineContext'
 import { usePlaybackTime, type PlaybackClock } from '../playback-clock'
 import Scrubber from './Scrubber'
+import TrackGutter from './TrackGutter'
+import { computeTimelineLayout } from './canvas/draw'
+import { normalizeTracks, updateAudioTrack } from './timeline-model'
 import TranscriptPanel from './TranscriptPanel'
 import TranscriptModal from './TranscriptModal'
 import VisualTrackRow from './VisualTrackRow'
 import CaptionTrackRow from './CaptionTrackRow'
 import { deleteSelection, toggleSelection } from './multiSelectOps'
 import type { CaptionEditPatch } from './makeCaptionEdit'
-import { computeAutoCrossfade, computeDerivedTiming, groupAudioLanes } from './timeline-model'
+import { computeAutoCrossfade, computeDerivedTiming, groupAudioLanes, trackItems } from './timeline-model'
 import TimelineCanvas, { useCanvasZoomControls, type ZoomControls } from './canvas/TimelineCanvas'
-import { useViewportStore } from './canvas/viewport'
-import { useKeymap, matchesArrowLeft, matchesArrowRight, matchesDelete, matchesEnter, matchesEscape } from '../keymap'
+import { useViewportStore, useViewportValue, xToTime } from './canvas/viewport'
+import { useKeymap, matchesArrowLeft, matchesArrowRight, matchesDelete } from '../keymap'
+import { Tooltip } from '../../ui/Tooltip'
 
-/** Imperative actions a host-level command palette can trigger on markers/
- *  zoom without lifting Timeline's local state up. Filled via `actionsRef`
- *  (SP5 T9) — mirrors `transportRef`'s "ref threaded down, written by the
- *  owner" shape used for PreviewPlayer. */
+/** Imperative actions a host-level command palette can trigger on the
+ *  timeline's zoom without lifting Timeline's local state up. Filled via
+ *  `actionsRef` (SP5 T9) — mirrors `transportRef`'s "ref threaded down,
+ *  written by the owner" shape used for PreviewPlayer. */
 export interface TimelineActions {
-  clearMarkers: () => void
-  setMarkerAtPlayhead: () => void
   zoomFit: () => void
 }
 
@@ -48,11 +50,20 @@ interface TimelineProps {
   /** Commit a caption segment patch — text edit or edge-drag retime. Threaded
    *  straight to CaptionTrackRow (see makeCaptionEdit.ts). */
   onCaptionSegmentChange?: (segmentId: string, patch: CaptionEditPatch) => void
-  onSplit?: (at: number) => void
-  onCut?: (cut: { start: number; end: number }) => void
   onInspectClip?: (id: string) => void
   onInspectAudio?: (id: string) => void
   rippleMode?: boolean
+  /**
+   * CapCut's "preview axis" toggle, owned by VideoEditor's track-controls bar
+   * and OFF by default — off is exactly the behaviour this timeline has always
+   * had, so omitting it changes nothing. On, a yellow cursor line tracks the
+   * pointer and `onHoverScrub` reports the time under it. Canvas mode only:
+   * the DOM track rows keep their own mouse-follow indicator.
+   */
+  previewAxis?: boolean
+  /** The time under the pointer while the axis is on, null when it leaves.
+   *  Fires per mousemove — VideoEditor routes it into an external store. */
+  onHoverScrub?: (time: number | null) => void
   /**
    * SP5 — opt into the canvas track-row area. Mirrors the `engine` (SP4)
    * host-knob precedent. Absent or `{ canvas: false }`: the existing DOM
@@ -108,13 +119,12 @@ interface TimelineProps {
   /** Opens the command palette's "go to time" input directly. Wired to the
    *  scrubber's time readout; absent → the readout is plain text. */
   onOpenGoToTime?: () => void
-  /** Imperative marker/zoom actions for a host-level command palette. */
+  /** Imperative zoom actions for a host-level command palette. */
   actionsRef?: MutableRefObject<TimelineActions | null>
 }
 
 
-export default function Timeline({ project, clock, onProjectChange, onCaptionEdit, onOverlayEdit, onEditOverlay, selectedIds = [], onSelectIds, selectedCaptionId = null, onSelectCaption, onCaptionSegmentChange, onSplit, onCut, onInspectClip, onInspectAudio, rippleMode = false, getWaveformChunks, resolveFilePath, getWaveformPeaks, getFilmstrip, regenEnabled, isClipQueued, renderSubcutRegen, onRegenerateCaptions, timeline, modalOpen = false, onOpenGoToTime, actionsRef }: TimelineProps) {
-  const primarySelectedId = selectedIds[0] ?? null
+export default function Timeline({ project, clock, onProjectChange, onCaptionEdit, onOverlayEdit, onEditOverlay, selectedIds = [], onSelectIds, selectedCaptionId = null, onSelectCaption, onCaptionSegmentChange, onInspectClip, onInspectAudio, rippleMode = false, previewAxis = false, onHoverScrub, getWaveformChunks, resolveFilePath, getWaveformPeaks, getFilmstrip, regenEnabled, isClipQueued, renderSubcutRegen, onRegenerateCaptions, timeline, modalOpen = false, onOpenGoToTime, actionsRef }: TimelineProps) {
 
   // Click/shift-click handler — additive selection on shift or meta (cmd/ctrl).
   // Also enforces the item→caption half of the two selection models' mutual
@@ -126,13 +136,96 @@ export default function Timeline({ project, clock, onProjectChange, onCaptionEdi
   // `selectedIds`) lives in VideoEditor's wrapped `onSelectCaption`, since a
   // caption can be selected from the preview too — outside Timeline entirely —
   // not just from CaptionTrackRow.
+  /**
+   * Skip / un-skip a whole visual track.
+   *
+   * Preview-then-commit, the same two-channel shape every other timeline edit
+   * uses: `onProjectChange` applies it live (transient — no save, no undo
+   * entry), `onOverlayEdit` commits it as ONE undo step. Writing only through
+   * `onProjectChange` would leave it unsaved until some unrelated gesture
+   * flushed it.
+   */
+  function handleToggleTrackEnabled(trackIdx: number, enabled: boolean) {
+    if (!onProjectChange) return
+    const normalized = normalizeTracks(project)
+    const tracks = (normalized.tracks ?? []).map((t, i) =>
+      i === trackIdx ? { ...t, enabled } : t,
+    )
+    const next = { ...normalized, tracks } as Project
+    onProjectChange(next)
+    onOverlayEdit?.(next)
+  }
+
+  /**
+   * Track-wide volume/mute, from the rail's settings popover (TrackGutter.tsx).
+   * Same preview-then-commit shape as `handleToggleTrackEnabled` above, split
+   * across two handlers because volume is a CONTINUOUS control (a slider drag
+   * must preview many times and commit once) while mute is a discrete toggle
+   * (one click, one commit) — mirrors TranscriptPanel's fontsize slider vs.
+   * its style buttons.
+   *
+   * This writes `VisualTrack.volume`/`.muted`; the value doesn't stay
+   * track-level from there. `effectiveItemAudio(track, item)` in
+   * timeline-model.ts folds it into each item's own volume/mute (multiply,
+   * either/or), and every playback and export path reads the FOLDED value at
+   * its own fold point: `clipGain` in `useVideoPlayback.ts`,
+   * `withTrackAudio` in `engine/scheduler.ts`, and the inline fold in
+   * `render.js` (`collectAllItems`, ~line 829).
+   */
+  function handleSetTrackVolume(trackIdx: number, volume: number, commit: boolean) {
+    if (!onProjectChange) return
+    const normalized = normalizeTracks(project)
+    const tracks = (normalized.tracks ?? []).map((t, i) =>
+      i === trackIdx ? { ...t, volume } : t,
+    )
+    const next = { ...normalized, tracks } as Project
+    onProjectChange(next)
+    if (commit) onOverlayEdit?.(next)
+  }
+
+  function handleSetTrackMuted(trackIdx: number, muted: boolean) {
+    if (!onProjectChange) return
+    const normalized = normalizeTracks(project)
+    const tracks = (normalized.tracks ?? []).map((t, i) =>
+      i === trackIdx ? { ...t, muted } : t,
+    )
+    const next = { ...normalized, tracks } as Project
+    onProjectChange(next)
+    onOverlayEdit?.(next)
+  }
+
+  /**
+   * Audio-LANE volume/mute, from the rail's settings popover. A lane can hold
+   * several `AudioTrack`s sharing one row (see `groupAudioLanes` in
+   * timeline-model.ts), so the popover's single control fans out to every
+   * track id in the lane via the existing `updateAudioTrack` helper — unlike
+   * the visual-track handlers above, `AudioTrack.volume`/`.muted` are already
+   * live end to end (mix-audio.js, both preview paths), no separate fold step
+   * needed.
+   */
+  function handleSetLaneVolume(trackIds: string[], volume: number, commit: boolean) {
+    if (!onProjectChange) return
+    let next = project
+    for (const id of trackIds) next = updateAudioTrack(next, id, { volume })
+    onProjectChange(next)
+    if (commit) onOverlayEdit?.(next)
+  }
+
+  function handleSetLaneMuted(trackIds: string[], muted: boolean) {
+    if (!onProjectChange) return
+    let next = project
+    for (const id of trackIds) next = updateAudioTrack(next, id, { muted })
+    onProjectChange(next)
+    onOverlayEdit?.(next)
+  }
+
   function handleSelectItem(id: string | null, additive: boolean) {
     if (!onSelectIds) return
     onSelectCaption?.(null)
     if (id === null) { onSelectIds([]); return }
     onSelectIds(toggleSelection(selectedIds, id, additive))
   }
-  const allTracks      = project.tracks ?? []
+  const allTracks      = trackItems(project)
   const captionTrack   = project.captions
   const audioTracks    = project.audio?.tracks ?? []
 
@@ -154,14 +247,16 @@ export default function Timeline({ project, clock, onProjectChange, onCaptionEdi
   useEffect(() => {
     if (!onProjectChange) return
     const next = computeAutoCrossfade(project)
-    if (next) onProjectChange(next)
+    // Preview AND commit: `onProjectChange` alone is a live, uncommitted edit
+    // (the host applies it without saving), so a derived change like this would
+    // sit unsaved until some unrelated gesture happened to flush it.
+    if (next) { onProjectChange(next); onOverlayEdit?.(next) }
   // Intentionally keyed on a stable digest of audio-track timing/mute rather
   // than the array identity, so the crossfade pass only re-runs on real edits.
   }, [audioTracks.map(t => `${t.id}:${t.start}:${t.end}:${t.muted}`).join('|')])
 
   const [hoverPct, setHoverPct]               = useState<number | null>(null)
   const [draggingPlayhead, setDraggingPlayhead] = useState(false)
-  const [markers, setMarkers]                 = useState<[number | null, number | null]>([null, null])
   const [transcriptModalOpen, setTranscriptModalOpen] = useState(false)
 
   // The tabIndex={0} root below — Delete/Enter's guards below check focus is
@@ -194,28 +289,13 @@ export default function Timeline({ project, clock, onProjectChange, onCaptionEdi
     showFit: zoom > 1,
   }
 
-  // Place (or extend/reset) the two-marker selection at the current playhead —
-  // the original Enter handler's exact three-way branch. Shared with the
-  // Enter binding below and with `actionsRef`'s palette-facing action, so
-  // there is exactly one place that encodes the marker state machine.
-  const setMarkerAtPlayhead = useCallback(() => {
-    const t = clock.get()
-    setMarkers(([a, b]) => {
-      if (a === null) return [t, null]
-      if (b === null) return [a, t]
-      return [t, null]
-    })
-  }, [clock])
-
-  const clearMarkers = useCallback(() => setMarkers([null, null]), [])
-
-  // ── Timeline's own keymap — arrows (frame-step), delete (two-step:
-  // deleteSelection + conditional collapseGaps), enter (place marker),
-  // escape (clear markers). SP5 T9: these four bindings replace Timeline's
-  // old ad hoc document listener (arrows/escape, gated on totalDuration>0 by
-  // not registering at all) and its container-scoped onKeyDown (delete/enter)
-  // with the shared registry — one guarded document listener instead of two
-  // different attachment mechanisms with two different guard sets.
+  // ── Timeline's own keymap — arrows (frame-step) and delete (two-step:
+  // deleteSelection + conditional collapseGaps). SP5 T9: these bindings
+  // replace Timeline's old ad hoc document listener (arrows, gated on
+  // totalDuration>0 by not registering at all) and its container-scoped
+  // onKeyDown (delete) with the shared registry — one guarded document
+  // listener instead of two different attachment mechanisms with two
+  // different guard sets.
   //
   // Mounted HERE, not lifted into VideoEditor's keymap: this instance runs in
   // BOTH the pending and review surfaces (PendingSurface and ReviewSurface
@@ -243,15 +323,6 @@ export default function Timeline({ project, clock, onProjectChange, onCaptionEdi
       },
     },
     {
-      id: 'timeline.clear-markers',
-      description: 'Clear markers',
-      matches: matchesEscape,
-      guard: () => totalDuration > 0,
-      // The original Escape handler never called preventDefault — kept exact.
-      preventDefault: false,
-      action: clearMarkers,
-    },
-    {
       id: 'timeline.delete-selection',
       description: 'Delete selection',
       matches: matchesDelete,
@@ -270,38 +341,75 @@ export default function Timeline({ project, clock, onProjectChange, onCaptionEdi
         onSelectIds?.([])
       },
     },
-    {
-      id: 'timeline.set-marker',
-      description: 'Set marker at playhead',
-      matches: matchesEnter,
-      // Focus-scoped, same rationale as delete-selection above — pre-SP5 this
-      // lived on the container's own onKeyDown too.
-      guard: () => totalDuration > 0 && !!rootRef.current?.contains(document.activeElement),
-      action: setMarkerAtPlayhead,
-    },
   ], { modalOpen: transcriptModalOpen || modalOpen })
 
-  // Hand the marker/zoom actions up to a host-level command palette.
+  // Hand the zoom action up to a host-level command palette.
   useEffect(() => {
     if (!actionsRef) return
-    actionsRef.current = { clearMarkers, setMarkerAtPlayhead, zoomFit: zoomControls.fit }
+    actionsRef.current = { zoomFit: zoomControls.fit }
     return () => { actionsRef.current = null }
   })
 
-  // Derive selection from two placed markers
-  const selection = markers[0] !== null && markers[1] !== null
-    ? { start: Math.min(markers[0], markers[1]), end: Math.max(markers[0], markers[1]) }
-    : null
+  // Subscribing here (rather than inside each DOM row) keeps one subscription
+  // for the whole timeline; the rows that need it read it off the context.
+  // Null in DOM mode, where the rows own the layout and there is no canvas
+  // zoom to track.
+  // Same layout the canvas paints from, so the rail's rows line up with the
+  // clips exactly rather than by two independent calculations agreeing.
+  const canvasLayout = useMemo(() => computeTimelineLayout(project), [project.tracks, project.audio])
+
+  const canvasViewport = useViewportValue(viewportStore)
+  const viewport = canvasMode ? canvasViewport : null
 
   const ctx = useMemo<TimelineContextValue>(() => ({
+    viewport,
     totalDuration, contentDuration, snapBoundaries, zoom, zoomRef, scrollRef, scrubberRef,
-    overlayDraggedRef, clock, markers, setMarkers, selection,
-  }), [totalDuration, contentDuration, snapBoundaries, zoom, zoomRef, scrollRef, scrubberRef,
-    overlayDraggedRef, clock, markers, setMarkers, selection])
+    overlayDraggedRef, clock,
+  }), [viewport, totalDuration, contentDuration, snapBoundaries, zoom, zoomRef, scrollRef, scrubberRef,
+    overlayDraggedRef, clock])
 
+  /**
+   * Clicks that land on the timeline column but not on any row: the readout
+   * strip above the tracks, the gaps between rows, the space under the last
+   * one. They are background, and background belongs to the timeline — not
+   * dead chrome.
+   *
+   * In CANVAS mode this used to do nothing at all. It maps x→time through the
+   * scrubber's rect, and canvas mode doesn't render the scrubber bar, so
+   * `scrubberRef` is null and every one of these clicks fell out at the
+   * `if (!rect) return` below. The visible result was a ~40px strip under the
+   * toolbar that looked live and ignored you — including for the thing you
+   * most want a background click to do, which is drop the selection.
+   *
+   * Canvas mode now reads the canvas' own x-axis instead, so a background
+   * click does exactly what pressing bare canvas does: clear the selection,
+   * and seek to the clicked time. Clicks to the left of the canvas (over the
+   * track rail, which has no time axis) clear the selection without seeking.
+   * The canvas surface itself stops propagation — the pointer machine has
+   * already seeked on mousedown — so nothing here double-handles a real
+   * timeline click.
+   *
+   * `pointer-events` note: the controls in the strip (zoom buttons, the go-to
+   * time readout) are excluded by the `closest` test below, so isolating them
+   * costs nothing beyond it.
+   */
   function handleContainerClick(e: React.MouseEvent) {
-    if ((e.target as HTMLElement).closest('button, input, [contenteditable]')) return
+    if ((e.target as HTMLElement).closest('button, input, [contenteditable], [data-timeline-chrome]')) return
     if (totalDuration === 0) return
+
+    if (canvasMode) {
+      // Same order the pointer machine emits its effects in for a press on
+      // bare canvas: clear the selection, then seek.
+      handleSelectItem(null, false)
+      const surface = rootRef.current?.querySelector('[data-timeline-canvas]')
+      if (!surface || !viewport) return
+      const surfaceRect = surface.getBoundingClientRect()
+      const x = e.clientX - surfaceRect.left
+      if (x < 0 || x > surfaceRect.width) return   // over the rail — no time here
+      clock.set(Math.max(0, Math.min(totalDuration, xToTime(x, viewport))))
+      return
+    }
+
     const rect = scrubberRef.current?.getBoundingClientRect()
     if (!rect) return
     const clickedTime = ratioFromClientX(e.clientX, rect) * totalDuration
@@ -312,10 +420,6 @@ export default function Timeline({ project, clock, onProjectChange, onCaptionEdi
     }
     clock.set(clickedTime)
   }
-
-  const cutButtonLabel = primarySelectedId
-    ? `Cut ${allTracks.flat().find(i => i.id === primarySelectedId)?.type ?? 'item'}`
-    : 'Cut primary'
 
   // ── Caption track — its own row, NOT part of tracks[]; reads/writes
   // project.captions directly (see CaptionTrackRow's file header for the
@@ -336,7 +440,12 @@ export default function Timeline({ project, clock, onProjectChange, onCaptionEdi
     <TimelineContext.Provider value={ctx}>
     <div
       ref={rootRef}
-      className="flex flex-col gap-2 px-3 py-3 select-none outline-none"
+      // `min-h-full` so the column always fills the resizable timeline pane:
+      // that is what lets the transcript panel below sit at the BOTTOM of the
+      // pane rather than floating right under the tracks, and it makes the
+      // space between them read as timeline surface instead of page
+      // background. Content taller than the pane still scrolls.
+      className="flex min-h-full flex-col gap-2 px-3 py-3 select-none outline-none"
       tabIndex={0}
       onMouseMove={(e) => {
         const rect = scrubberRef.current?.getBoundingClientRect()
@@ -348,24 +457,30 @@ export default function Timeline({ project, clock, onProjectChange, onCaptionEdi
 
       {/* Zoom controls */}
       {totalDuration > 0 && (
-        <div className="flex items-center justify-end gap-0.5 -mb-1">
-          <button
-            className="text-[11px] leading-none text-gray-500 hover:text-gray-300 w-5 h-5 flex items-center justify-center rounded hover:bg-gray-800 transition-colors"
-            title="Zoom out"
-            onClick={(e) => { e.stopPropagation(); zoomControls.zoomOut() }}
-          >−</button>
-          {zoomControls.badge}
-          <button
-            className="text-[11px] leading-none text-gray-500 hover:text-gray-300 w-5 h-5 flex items-center justify-center rounded hover:bg-gray-800 transition-colors"
-            title="Zoom in"
-            onClick={(e) => { e.stopPropagation(); zoomControls.zoomIn() }}
-          >+</button>
-          {zoomControls.showFit && (
+        <div className={`flex items-center justify-end gap-0.5 -mb-1 ${canvasMode ? 'cursor-pointer' : ''}`}>
+          <Tooltip label="Zoom out">
             <button
-              className="text-[10px] text-gray-500 hover:text-gray-300 px-1.5 h-5 rounded hover:bg-gray-800 transition-colors ml-0.5"
-              title="Fit to view"
-              onClick={(e) => { e.stopPropagation(); zoomControls.fit() }}
-            >fit</button>
+              className="text-[11px] leading-none text-gray-500 hover:text-gray-300 w-5 h-5 flex items-center justify-center rounded hover:bg-gray-800 transition-colors"
+              aria-label="Zoom out"
+              onClick={(e) => { e.stopPropagation(); zoomControls.zoomOut() }}
+            >−</button>
+          </Tooltip>
+          {zoomControls.badge}
+          <Tooltip label="Zoom in">
+            <button
+              className="text-[11px] leading-none text-gray-500 hover:text-gray-300 w-5 h-5 flex items-center justify-center rounded hover:bg-gray-800 transition-colors"
+              aria-label="Zoom in"
+              onClick={(e) => { e.stopPropagation(); zoomControls.zoomIn() }}
+            >+</button>
+          </Tooltip>
+          {zoomControls.showFit && (
+            <Tooltip label="Fit to view" className="ml-0.5">
+              <button
+                className="text-[10px] text-gray-500 hover:text-gray-300 px-1.5 h-5 rounded hover:bg-gray-800 transition-colors"
+                aria-label="Fit to view"
+                onClick={(e) => { e.stopPropagation(); zoomControls.fit() }}
+              >fit</button>
+            </Tooltip>
           )}
         </div>
       )}
@@ -376,7 +491,13 @@ export default function Timeline({ project, clock, onProjectChange, onCaptionEdi
 
       {/* Scrubber + tracks wrapped in a relative container so the hover indicator spans the full height */}
       <div className="relative flex flex-col gap-2">
-        {hoverPct !== null && totalDuration > 0 && (
+        {/* Mouse-follow indicator — DOM mode only. The canvas surface draws its
+            own cursor line (on its own time axis, and only while the preview
+            axis is on); this one is positioned as a percentage of the
+            SCRUBBER's width, which stops being the canvas' time axis the
+            moment you zoom in. The scrubber's hover tooltip (driven by the same
+            `hoverPct`) is unaffected and still reads out the hovered time. */}
+        {!canvasMode && hoverPct !== null && totalDuration > 0 && (
           <div
             className="absolute inset-y-0 w-px bg-yellow-400/80 pointer-events-none z-20"
             style={{ left: `${hoverPct}%` }}
@@ -384,13 +505,11 @@ export default function Timeline({ project, clock, onProjectChange, onCaptionEdi
         )}
 
       <Scrubber
+        showBar={!canvasMode}
         hoverPct={hoverPct}
         draggingPlayhead={draggingPlayhead}
         setDraggingPlayhead={setDraggingPlayhead}
         keyNavTime={keyNavTime}
-        onSplit={onSplit}
-        onCut={onCut}
-        cutButtonLabel={cutButtonLabel}
         onOpenGoToTime={onOpenGoToTime}
       />
 
@@ -403,7 +522,21 @@ export default function Timeline({ project, clock, onProjectChange, onCaptionEdi
           </div>
         )}
         {canvasMode ? (
-          <>
+          // The gutter is a sibling COLUMN, not an overlay: it takes width from
+          // the canvas (which measures its own container) instead of painting
+          // over the clips at t=0. The caption row lives in the same right-hand
+          // column so it stays aligned with the canvas above it.
+          <div className="flex gap-1">
+            <TrackGutter
+              project={project}
+              layout={canvasLayout}
+              onToggleTrackEnabled={handleToggleTrackEnabled}
+              onSetTrackVolume={handleSetTrackVolume}
+              onSetTrackMuted={handleSetTrackMuted}
+              onSetLaneVolume={handleSetLaneVolume}
+              onSetLaneMuted={handleSetLaneMuted}
+            />
+            <div className="flex min-w-0 flex-1 flex-col gap-1">
             {/* ── Canvas track-row area — one surface in place of the visual
                 tracks + audio lanes the DOM branch renders below. It owns its
                 own zoom/scroll (px-per-second), so the scrubber above it stays
@@ -414,21 +547,22 @@ export default function Timeline({ project, clock, onProjectChange, onCaptionEdi
               store={viewportStore}
               totalDuration={totalDuration}
               selectedIds={selectedIds}
-              markers={markers}
               snapBoundaries={snapBoundaries}
               rippleMode={rippleMode}
+              previewAxis={previewAxis}
+              onHoverScrub={onHoverScrub}
               onSelectItem={handleSelectItem}
               onProjectChange={onProjectChange}
               onOverlayEdit={onOverlayEdit}
               onInspectClip={onInspectClip}
               onInspectAudio={onInspectAudio}
-              setMarkers={setMarkers}
               getWaveformPeaks={getWaveformPeaks}
               getFilmstrip={getFilmstrip}
               resolveFilePath={resolveFilePath}
             />
             {captionRow}
-          </>
+            </div>
+          </div>
         ) : (
           <>
             {captionRow}
@@ -504,10 +638,13 @@ export default function Timeline({ project, clock, onProjectChange, onCaptionEdi
       })()}
 
       {/* ── Transcript editor ── */}
+      {/* `mt-auto` pins it to the bottom of the pane; the gap it opens above is
+          the empty timeline area. */}
       {/* Wrapped in a clock-subscribing child so the active-segment highlight
           tracks the playhead WITHOUT Timeline (and its track rows) re-rendering
           every tick. */}
       <TranscriptPanelWithClock
+        className="mt-auto shrink-0"
         clock={clock}
         project={project}
         captionTrack={captionTrack}

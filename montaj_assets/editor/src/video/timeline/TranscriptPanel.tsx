@@ -4,6 +4,11 @@ import { formatTime } from './utils'
 import { EditableSegment } from './EditableSegment'
 import { makeCaptionEdit, type CaptionEditPatch } from './makeCaptionEdit'
 import { SwatchInput } from '../../ui'
+import { ChevronDown, ChevronRight } from 'lucide-react'
+import { reviveBoolean, usePersistentState } from '../../ui/usePersistentState'
+
+/** Whether the caption controls + transcript body are shown. */
+const CAPTIONS_PANEL_STORAGE_KEY = 'montaj.editor.captionsPanelExpanded'
 
 // Each caption style reads a different accent-color prop in its render template
 // (see render/templates/captions/*.jsx). The color control writes whichever field
@@ -32,6 +37,9 @@ interface TranscriptPanelProps {
   onCaptionEdit?: (project: Project) => void
   onProjectChange?: (project: Project) => void
   onExpand: () => void
+  /** Layout classes for the panel's own box — the timeline uses this to pin it
+   *  to the bottom of the pane. */
+  className?: string
   /** Opens the caption-regeneration modal. Provided only when the host adapter
    *  supports `generateCaptions`; absent → the "Regenerate" button is hidden. */
   onRegenerateCaptions?: () => void
@@ -46,7 +54,7 @@ interface TranscriptPanelProps {
   onCaptionSegmentChange?: (segmentId: string, patch: CaptionEditPatch) => void
 }
 
-export default function TranscriptPanel({ project, captionTrack, currentTime, onCaptionEdit, onProjectChange, onExpand, onRegenerateCaptions, selectedCaptionId, onCaptionSegmentChange }: TranscriptPanelProps) {
+export default function TranscriptPanel({ project, captionTrack, currentTime, onCaptionEdit, onProjectChange, onExpand, onRegenerateCaptions, selectedCaptionId, onCaptionSegmentChange, className = '' }: TranscriptPanelProps) {
   const segs = captionTrack?.segments ?? []
   const [confirmRemove, setConfirmRemove] = useState(false)
   const removeTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -63,6 +71,11 @@ export default function TranscriptPanel({ project, captionTrack, currentTime, on
       if (removeTimeoutRef.current) clearTimeout(removeTimeoutRef.current)
     }
   }, [])
+  // Collapsed state for the controls + transcript body. The caption ROW in the
+  // timeline is never hidden by this — only this panel's chrome, which is what
+  // eats vertical space when you want more timeline. Persisted per browser.
+  const [expanded, setExpanded] = usePersistentState(CAPTIONS_PANEL_STORAGE_KEY, true, reviveBoolean)
+
   // Find active segment index
   const activeIdx = segs.findIndex(s => currentTime >= s.start && currentTime < s.end)
   const nearIdx   = activeIdx !== -1 ? activeIdx
@@ -74,9 +87,19 @@ export default function TranscriptPanel({ project, captionTrack, currentTime, on
     : segs.slice(0, 3)
 
   return (
-    <div className="rounded border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 px-3 py-2.5">
-      <div className="flex items-center justify-between mb-2">
-        <span className="text-[10px] text-gray-500 uppercase tracking-wider">Captions</span>
+    <div className={`rounded border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 px-3 py-2.5 ${className}`}>
+      <div className={`flex items-center justify-between ${expanded ? 'mb-2' : ''}`}>
+        <button
+          type="button"
+          onClick={() => setExpanded(!expanded)}
+          aria-expanded={expanded}
+          aria-label="Caption controls"
+          className="flex items-center gap-1 text-[10px] text-gray-500 uppercase tracking-wider hover:text-gray-300 transition-colors"
+        >
+          {expanded ? <ChevronDown size={11} /> : <ChevronRight size={11} />}
+          Captions
+        </button>
+        {expanded && (
         <div className="flex items-center gap-2 flex-wrap justify-end">
           {captionTrack && (['word-by-word', 'pop', 'karaoke', 'subtitle', 'highlight-box', 'outline', 'clean'] as const).map(style => {
             const active = captionTrack.style === style
@@ -239,8 +262,10 @@ export default function TranscriptPanel({ project, captionTrack, currentTime, on
             </button>
           )}
         </div>
+        )}
       </div>
 
+      {expanded && (
       <div className="h-10 overflow-y-auto">
       {segs.length === 0 ? (
         <p className="text-xs text-gray-600 italic">No transcript — captions are generated during the agent pass</p>
@@ -268,6 +293,7 @@ export default function TranscriptPanel({ project, captionTrack, currentTime, on
         </p>
       )}
       </div>
+      )}
     </div>
   )
 }

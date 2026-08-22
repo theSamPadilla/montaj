@@ -6,7 +6,7 @@
  * ── How this stays fast ──────────────────────────────────────────────────
  * Three rules, all of them about NOT re-rendering React:
  *
- * 1. Two stacked canvases. Content (rows, clips, audio, markers) on the lower
+ * 1. Two stacked canvases. Content (rows, clips, audio) on the lower
  *    one, the playhead alone on the upper one. Playback moves the playhead ~60
  *    times a second; on a single canvas each move would have to repaint every
  *    clip, which is precisely the cost this surface exists to avoid.
@@ -22,7 +22,7 @@
  * repaints only the layers marked dirty.
  *
  * ── Pointer interaction (SP5 T5) ─────────────────────────────────────────
- * Every gesture — seek, select, move, trim, roll/slip/slide, markers — is
+ * Every gesture — seek, select, move, trim, roll/slip/slide — is
  * decided by `pointer-machine.ts`, which is pure. This file does only the three
  * things a pure reducer cannot: it turns mouse events into surface-space
  * points, it hands the machine a fresh view of the world on each event, and it
@@ -34,13 +34,12 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, type ReactNode } from 'react'
-import type { VisualItem } from '../../../schema'
 import type { GetFilmstripArgs, GetWaveformPeaksArgs, FilmstripIndex, PeaksData, Project } from '../../../types'
 import type { PlaybackClock } from '../../playback-clock'
 import type { ResolveFilePath } from '../AudioWaveformLayer'
 import { VISUAL_ROW_RENDER_HEIGHT_PX } from '../timeline-model'
 import { computeTimelineLayout, drawTimelineContent, drawTimelineOverlay } from './draw'
-import { hitTest, type Point } from './hit-test'
+import type { Point } from './hit-test'
 import {
   createPointerMachine,
   type Modifiers,
@@ -48,7 +47,7 @@ import {
   type PointerEffect,
 } from './pointer-machine'
 import { WaveformPeaksStore, type WaveformSceneLookup } from './waveforms'
-import { FilmstripStore, type FilmstripHoverThumb, type FilmstripSceneLookup } from './filmstrips'
+import { FilmstripStore, type FilmstripSceneLookup } from './filmstrips'
 import {
   ZOOM_BUTTON_FACTOR,
   applyWheelIntent,
@@ -61,6 +60,7 @@ import {
   useViewportValue,
   wheelIntent,
   withSurfaceWidth,
+  xToTime,
   zoomAtPivot,
   zoomMultiple,
   type SurfaceMetrics,
@@ -76,16 +76,24 @@ export interface TimelineCanvasProps {
   totalDuration: number
   /** Unified selection: visual items and audio tracks alike. */
   selectedIds: string[]
-  /** Marker A/B. The range tint is derived from them here, rather than taken
-   *  as a prop, so a freshly-built `{start,end}` object on every one of
-   *  Timeline's renders (it re-renders on hover) can't schedule a redraw. */
-  markers: [number | null, number | null]
   /** Clip and audio boundaries the gestures snap to — Timeline's existing
    *  `computeDerivedTiming` memo, shared with the DOM rows. Absent means no
    *  magnetism, which is the right degradation rather than an error. */
   snapBoundaries?: number[]
   /** Trims close the gap they open, as they do on the DOM rows. */
   rippleMode?: boolean
+  /** CapCut's "preview axis", off by default. On, a yellow cursor line tracks
+   *  the pointer across this surface and `onHoverScrub` reports the time under
+   *  it, so the host can show that frame in the preview while the playhead
+   *  stays where it is. Off, this surface behaves exactly as it always has:
+   *  no cursor line, and clicking seeks as usual. Pointer gestures are
+   *  identical either way — the toggle adds a hover affordance, it does not
+   *  change what a click does. */
+  previewAxis?: boolean
+  /** The time under the pointer while the axis is on, or null when the pointer
+   *  leaves or a gesture starts. Fires per mousemove, so the host must route it
+   *  to an external store rather than React state. */
+  onHoverScrub?: (time: number | null) => void
   /** Timeline's `handleSelectItem` — additive rules and the item↔caption
    *  exclusivity stay owned there, so both surfaces select identically. */
   onSelectItem?: (id: string | null, additive: boolean) => void
@@ -95,8 +103,6 @@ export interface TimelineCanvasProps {
   onOverlayEdit?: (p: Project) => void
   onInspectClip?: (id: string) => void
   onInspectAudio?: (id: string) => void
-  /** Double-click cycles the A/B markers through Timeline's own state. */
-  setMarkers?: (markers: [number | null, number | null]) => void
   /** T6 — the host adapter's peaks fetcher, threaded from
    *  `adapter.getWaveformPeaks` via Timeline. Absent → no waveforms anywhere
    *  (graceful; the surface just never asks). Canvas-mode only: the DOM path
@@ -130,15 +136,15 @@ export default function TimelineCanvas({
   store,
   totalDuration,
   selectedIds,
-  markers,
   snapBoundaries = NO_SNAP_BOUNDARIES,
   rippleMode = false,
+  previewAxis = false,
+  onHoverScrub,
   onSelectItem,
   onProjectChange,
   onOverlayEdit,
   onInspectClip,
   onInspectAudio,
-  setMarkers,
   getWaveformPeaks,
   getFilmstrip,
   resolveFilePath,
@@ -158,29 +164,34 @@ export default function TimelineCanvas({
   const filmstripStoreRef = useRef<FilmstripStore | null>(null)
   if (filmstripStoreRef.current === null) filmstripStoreRef.current = new FilmstripStore()
 
-  // T7 — the hovered clip/time, tracked only while idle (see the `hover`
-  // handler below); cleared on press so a gesture never shows a stale thumb,
-  // and on pointer-leave. Read fresh at overlay-paint time so a still pointer
-  // over a still-loading sheet picks up the thumb the moment data lands.
-  const filmstripHoverRef = useRef<{ item: VisualItem; t: number; rowY: number; x: number } | null>(null)
 
   const layout = useMemo(() => computeTimelineLayout(project), [project.tracks, project.audio])
   const surfaceHeight = Math.max(layout.height, VISUAL_ROW_RENDER_HEIGHT_PX)
 
-  // Same rule Timeline uses for its own chrome: a range exists only once both
-  // markers are down, low-to-high regardless of the order they were placed.
-  const markerSelection = useMemo(
-    () => (markers[0] !== null && markers[1] !== null
-      ? { start: Math.min(markers[0], markers[1]), end: Math.max(markers[0], markers[1]) }
-      : null),
-    [markers],
-  )
-
   // Latest draw inputs, readable from the imperative paint without making the
   // paint a dependency of every effect (the ref-to-latest pattern
   // `useTimelineZoom` uses for its wheel handler).
-  const sceneRef = useRef({ project, layout, selectedIds, markers, markerSelection, totalDuration })
-  sceneRef.current = { project, layout, selectedIds, markers, markerSelection, totalDuration }
+  const sceneRef = useRef({ project, layout, selectedIds, totalDuration })
+  sceneRef.current = { project, layout, selectedIds, totalDuration }
+
+  // The preview-axis cursor, tracked imperatively for the same reason the
+  // filmstrip hover thumb is: it moves with every mousemove, and a React state
+  // write per mouse position would re-render the caption row's hundreds of DOM
+  // nodes to move a 2px line. Read fresh at overlay-paint time.
+  const cursorTimeRef = useRef<number | null>(null)
+
+  // Hover-scrub emissions, coalesced to one per animation frame.
+  //
+  // The LINE is cheap — `requestRedraw` already folds it into one rAF. The
+  // EMISSION is not: each one asks the preview to show a different frame,
+  // which means seeking the source. A trackpad sweep delivers 60-120
+  // mousemoves a second, and on long-GOP media each seek cancels the decode
+  // still in flight, so the picture can end up never landing a frame at all
+  // (worst on un-proxied 4K HEVC, where a seek decodes up to a second of
+  // frames). One emission per frame is all a display can show anyway; the
+  // intermediate positions are dropped rather than queued, so the seek target
+  // is always the pointer's CURRENT position and never a stale backlog.
+  const hoverEmitRef = useRef<{ frame: number | null; pending: number | null }>({ frame: null, pending: null })
 
   const dirtyRef = useRef({ content: false, overlay: false })
   const frameRef = useRef<number | null>(null)
@@ -238,8 +249,6 @@ export default function TimelineCanvas({
           viewport,
           layout: scene.layout,
           selectedIds: scene.selectedIds,
-          markerSelection: scene.markerSelection,
-          markers: scene.markers,
           surfaceWidth: cssWidth,
           surfaceHeight: cssHeight,
           waveforms,
@@ -253,30 +262,12 @@ export default function TimelineCanvas({
       const ctx = overlayCanvasRef.current?.getContext('2d')
       if (ctx) {
         scaleContextToDpr(ctx, dpr)
-        // T7 — the hover-scrub thumb. Reads the same store as the content
-        // layer's filmstrip tiles above; see the `onReady` doc on
-        // `FilmstripQueryContext` for why it also redraws 'all' rather than
-        // just 'overlay'.
-        let hoverThumb: FilmstripHoverThumb | null = null
-        const hover = filmstripHoverRef.current
-        if (hover && getFilmstrip && resolveFilePath) {
-          const tile = filmstripStoreRef.current!.hoverTile(hover.item, hover.t, {
-            projectId: scene.project.id,
-            getFilmstrip,
-            fileUrl: resolveFilePath,
-            viewport,
-            onReady: () => requestRedraw('all'),
-          })
-          if (tile) {
-            hoverThumb = { image: tile.image, sx: tile.sx, sy: tile.sy, sw: tile.sw, sh: tile.sh, x: hover.x, rowTop: hover.rowY, t: tile.t }
-          }
-        }
         drawTimelineOverlay(ctx, {
           viewport,
           currentTime: clock.get(),
+          cursorTime: cursorTimeRef.current,
           surfaceWidth: cssWidth,
           surfaceHeight: cssHeight,
-          hoverThumb,
         })
       }
     }
@@ -301,6 +292,10 @@ export default function TimelineCanvas({
       cancelFrame(frameRef.current)
       frameRef.current = null
     }
+    const emit = hoverEmitRef.current
+    if (emit.frame !== null) cancelFrame(emit.frame)
+    emit.frame = null
+    emit.pending = null
   }, [])
 
   // ── Surface: CSS size, DPR, backing stores ──
@@ -320,15 +315,30 @@ export default function TimelineCanvas({
     })
   }, [store, requestRedraw])
 
+  // ── Turning the axis off with the pointer still over the surface takes the
+  //    line and the host's override down with it: no further mousemove is
+  //    coming to do it, and the preview would stay frozen on a hovered frame. ──
+  useEffect(() => {
+    if (previewAxis) return
+    const emit = hoverEmitRef.current
+    if (emit.frame !== null) cancelFrame(emit.frame)
+    emit.frame = null
+    emit.pending = null
+    if (cursorTimeRef.current === null) return
+    cursorTimeRef.current = null
+    onHoverScrub?.(null)
+    requestRedraw('overlay')
+  }, [previewAxis, onHoverScrub, requestRedraw])
+
   // ── Viewport: pan/zoom moves everything, including the playhead ──
   useEffect(() => store.subscribe(() => requestRedraw('all')), [store, requestRedraw])
 
   // ── Playhead: the only per-tick subscriber, and it repaints one layer ──
   useEffect(() => clock.subscribe(() => requestRedraw('overlay')), [clock, requestRedraw])
 
-  // ── Content: project/selection/marker edits ──
+  // ── Content: project/selection edits ──
   const selectionKey = selectedIds.join('\0')
-  useEffect(() => { requestRedraw('content') }, [project, layout, selectionKey, markers, requestRedraw])
+  useEffect(() => { requestRedraw('content') }, [project, layout, selectionKey, requestRedraw])
 
   // ── Duration changes re-clamp scale and scroll ──
   useEffect(() => {
@@ -373,12 +383,12 @@ export default function TimelineCanvas({
   // Everything the machine's context and effects need, refreshed each render so
   // handlers bound once on mount never read a stale project or callback.
   const pointerRef = useRef({
-    project, layout, selectedIds, markers, snapBoundaries, totalDuration, rippleMode,
-    onSelectItem, onProjectChange, onOverlayEdit, onInspectClip, onInspectAudio, setMarkers,
+    project, layout, selectedIds, snapBoundaries, totalDuration, rippleMode, previewAxis,
+    onSelectItem, onProjectChange, onOverlayEdit, onInspectClip, onInspectAudio, onHoverScrub,
   })
   pointerRef.current = {
-    project, layout, selectedIds, markers, snapBoundaries, totalDuration, rippleMode,
-    onSelectItem, onProjectChange, onOverlayEdit, onInspectClip, onInspectAudio, setMarkers,
+    project, layout, selectedIds, snapBoundaries, totalDuration, rippleMode, previewAxis,
+    onSelectItem, onProjectChange, onOverlayEdit, onInspectClip, onInspectAudio, onHoverScrub,
   }
 
   const buildContext = useCallback((): PointerContext => {
@@ -388,7 +398,6 @@ export default function TimelineCanvas({
       layout: p.layout,
       viewport: store.get(),
       selectedIds: p.selectedIds,
-      markers: p.markers,
       snapBoundaries: p.snapBoundaries,
       totalDuration: p.totalDuration,
       rippleMode: p.rippleMode,
@@ -405,7 +414,6 @@ export default function TimelineCanvas({
         case 'select':        p.onSelectItem?.(effect.id, effect.additive); break
         case 'projectChange': p.onProjectChange?.(effect.project); edited = true; break
         case 'commit':        p.onOverlayEdit?.(effect.project); break
-        case 'markers':       p.setMarkers?.(effect.markers); break
         case 'inspect':       (effect.target === 'visual' ? p.onInspectClip : p.onInspectAudio)?.(effect.id); break
         // Cursor is written straight to the node: an affordance that changes on
         // every hover must not cost a React render.
@@ -450,28 +458,51 @@ export default function TimelineCanvas({
     return { shift: e.shiftKey, alt: e.altKey, meta: e.metaKey, ctrl: e.ctrlKey }
   }
 
-  // T7 — hover-scrub tracking. Recomputes the hovered clip/time from a
-  // surface point via the same `hitTest` T5 uses, and schedules the overlay
-  // repaint that turns it into a thumb (see `paintRef.current`'s overlay
-  // branch above). Only ever invoked while idle (from `hover` below), so a
-  // gesture in progress never touches it — `down` below clears it up front
-  // the instant a press starts, so a drag never shows a stale thumb either.
-  function updateFilmstripHover(point: Point) {
+  // ── Preview axis: the cursor line, and the frame it asks the host to show ──
+  //
+  // Both halves are driven from the same place so the line and the previewed
+  // frame can never disagree. Time is taken raw from the x position — no
+  // snapping, because a hover affordance that jumped to clip boundaries would
+  // preview a frame other than the one the line is drawn at.
+
+  function updateAxisCursor(point: Point) {
     const p = pointerRef.current
-    const hit = hitTest(point, p.layout, store.get())
-    const isClipHit = (hit.kind === 'item-body' || hit.kind === 'item-edge') && !!hit.item && hit.trackIdx !== undefined
-    const row = isClipHit ? p.layout.rows.find(r => r.trackIdx === hit.trackIdx) : undefined
-    const next = row && hit.item ? { item: hit.item, t: hit.t, rowY: row.y, x: point.x } : null
-    const prev = filmstripHoverRef.current
-    if (next === null && prev === null) return
-    if (next && prev && prev.item === next.item && prev.t === next.t && prev.x === point.x) return
-    filmstripHoverRef.current = next
+    if (!p.previewAxis) return
+    const t = Math.max(0, Math.min(p.totalDuration, xToTime(point.x, store.get())))
+    if (cursorTimeRef.current === t) return
+    cursorTimeRef.current = t
     requestRedraw('overlay')
+    // The line tracks the pointer exactly; the frame request is rate-limited.
+    const emit = hoverEmitRef.current
+    emit.pending = t
+    if (emit.frame !== null) return
+    emit.frame = requestFrame(() => {
+      emit.frame = null
+      const next = emit.pending
+      emit.pending = null
+      if (next !== null) pointerRef.current.onHoverScrub?.(next)
+    })
   }
 
-  function clearFilmstripHover() {
-    if (filmstripHoverRef.current === null) return
-    filmstripHoverRef.current = null
+  /** Drop any frame request that hasn't fired yet, so a release can't be
+   *  overtaken by a stale position arriving one frame later. */
+  function cancelPendingHoverEmit() {
+    const emit = hoverEmitRef.current
+    if (emit.frame !== null) cancelFrame(emit.frame)
+    emit.frame = null
+    emit.pending = null
+  }
+
+  // Guarded on the ref, so the paths that call this speculatively (every
+  // pointer-leave, every press, mount with the axis already off) stay silent
+  // when there was no cursor up to take down.
+  function clearAxisCursor() {
+    cancelPendingHoverEmit()
+    if (cursorTimeRef.current === null) return
+    cursorTimeRef.current = null
+    // Released synchronously, never deferred: the preview must be handed back
+    // to the playhead the instant the pointer leaves or a gesture starts.
+    pointerRef.current.onHoverScrub?.(null)
     requestRedraw('overlay')
   }
 
@@ -484,8 +515,10 @@ export default function TimelineCanvas({
       gestureRectRef.current = containerRef.current?.getBoundingClientRect() ?? null
       const point = surfacePoint(e)
       if (!point) return
-      // A gesture is starting — no thumb during a drag/trim.
-      clearFilmstripHover()
+      // A gesture is starting — no axis cursor during a drag/trim. The gesture
+      // itself owns the playhead from here, and a click seeks, so leaving the
+      // cursor up would draw a second line the drag never moves.
+      clearAxisCursor()
       // Suppress the native text-selection drag; the surface is `select-none`
       // but a press-and-drag still starts one in some browsers. That
       // preventDefault also suppresses the focus a plain click would give this
@@ -515,7 +548,7 @@ export default function TimelineCanvas({
       const point = surfacePoint(e)
       if (!point) return
       runEffects(machine.dispatch({ type: 'pointerMove', point, modifiers: modifiersOf(e), ctx: buildContext() }))
-      updateFilmstripHover(point)
+      updateAxisCursor(point)
     },
     move(e) {
       const point = surfacePoint(e)
@@ -536,10 +569,10 @@ export default function TimelineCanvas({
       e.preventDefault()
       runEffects(machine.dispatch({ type: 'doubleClick', point, modifiers: modifiersOf(e), ctx: buildContext() }))
     },
-    // T7 — the pointer left the surface entirely; no more `mousemove` events
-    // will arrive to naturally age the thumb out, so drop it explicitly.
+    // The pointer left the surface entirely; no more `mousemove` events will
+    // arrive to naturally age the cursor out, so drop it explicitly.
     leave() {
-      clearFilmstripHover()
+      clearAxisCursor()
     },
   }
 

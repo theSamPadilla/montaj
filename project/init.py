@@ -833,7 +833,7 @@ def main():
             "colorSpace": project_color_space,
             "language": args.language,
         },
-        "tracks": [[] if args.canvas else clips],
+        "tracks": [{"id": "trk-0", "items": [] if args.canvas else clips}],
         "assets": assets,
         "audio": {},
         **({"profile": args.profile} if args.profile else {}),

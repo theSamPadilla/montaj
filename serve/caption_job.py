@@ -18,6 +18,8 @@ key — a ``[W, H]`` pair of even ints with the long side capped at 640 —
 derived from ``project.settings.resolution`` when present. Downstream
 ``materialize_cut`` uses this to normalise input dimensions before concat."""
 
+from lib.project_tracks import track_items
+
 
 def extract_segments(project: dict) -> list[dict]:
     """Return the primary-track video segments as ``[{"src", "in", "out"}, ...]``,
@@ -36,7 +38,8 @@ def extract_segments(project: dict) -> list[dict]:
     are skipped). Raises ``ValueError`` with a stable code-prefixed message when
     the timeline is unusable.
     """
-    track0 = (project.get("tracks") or [[]])[0]
+    items = track_items(project)
+    track0 = items[0] if items else []
     clips = sorted(
         [c for c in track0 if c.get("type") == "video"],
         key=lambda c: c.get("start", 0.0),

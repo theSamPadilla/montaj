@@ -1,7 +1,7 @@
 /**
- * Canvas filmstrip rendering (SP5 T7) — lazy tile-sheet fetch by zoom
- * threshold + visible range, tile draw as each clip's background content
- * layer, and the hover-scrub preview thumb on the overlay layer.
+ * Canvas filmstrip rendering (SP5 T7) — lazy tile-sheet fetch by visible
+ * range, drawn as the UPPER BAND of each clip (`clip-bands.ts` splits it with
+ * the waveform).
  *
  * Mirrors `waveforms.ts` (T6)'s shape and conventions throughout: a small
  * fetch-state store held for the lifetime of a mounted `TimelineCanvas`,
@@ -15,21 +15,23 @@
  *   cached here, independently, so a clip whose index is ready but whose
  *   sheet hasn't finished decoding degrades to "no tiles yet" rather than an
  *   error.
- * - Filmstrip data has TWO consumers on two different canvas layers: the
- *   content layer draws the background tile strip inside the clip rect
- *   (`clipTiles`), and the overlay layer draws the hover-scrub thumb
- *   (`hoverTile`) — see the `onReady` doc on `FilmstripQueryContext` for why
- *   that means always invalidating both layers, not just the caller's own.
  *
  * ── Fetch policy (SP5 plan decision 6 + T7 task) ──────────────────────────
  * Proxy-only: input is `item.proxySrc` ONLY, never `item.src` — no proxy, no
  * filmstrip, no fallback decode of the original, no error, no spinner (same
  * shape as T6's clip waveforms). Fetch identity includes `proxySrc`, so an
  * SSE-delivered proxy arriving mid-session re-keys and fetches automatically.
- * On top of that, the index fetch is gated on BOTH: the zoom crossing
- * `FILMSTRIP_ZOOM_THRESHOLD_PX_PER_SECOND`, and the clip actually
- * intersecting the viewport's visible time range — filmstrips are a
- * zoomed-in feature, not a background prefetch.
+ * On top of that, the index fetch is gated on the clip actually intersecting
+ * the viewport's visible time range.
+ *
+ * There is no longer a ZOOM gate. Filmstrips used to fetch and draw only above
+ * 160 px/s, because a cell was sized at one tile-interval and below that
+ * threshold every tile rendered as a sliver of itself. Cells are now sized by
+ * the frames band instead (see `clipTiles`), so zooming out yields fewer,
+ * full-size frames rather than many squeezed ones and the threshold has
+ * nothing left to protect. The cost this trades away is real: opening a
+ * project now runs the `filmstrip` step for every visible clip instead of only
+ * once someone zooms in. It is cached per proxy after the first run.
  *
  * ── Alignment ──────────────────────────────────────────────────────────
  * Filmstrip tiles are indexed by ABSOLUTE source-file time (the step tiles
@@ -41,37 +43,25 @@
  */
 import type { VisualItem } from '../../../schema'
 import type { FilmstripIndex, FilmstripSheet, GetFilmstripArgs } from '../../../types'
-import { roundRectPath, type DrawContext, type Rect } from './draw'
+import { clipBands } from './clip-bands'
+import type { DrawContext, Rect } from './draw'
 import { timeToX, visibleRange, xToTime, type Viewport } from './viewport'
-import { formatTime } from '../utils'
 import { FETCH_RETRY_COOLDOWN_MS } from './waveforms'
 
-// ── Zoom threshold ───────────────────────────────────────────────────────
-
-/** The `filmstrip` step's own default tile width (`filmstrip.py`'s
- *  `tile-width=160`). */
-const DEFAULT_TILE_WIDTH_PX = 160
-
-/** The step's own default `min-interval` (1.0s) — the shortest gap between
- *  tiles the step ever produces without an explicit override, so it's the
- *  right basis for a threshold computed before any real index has arrived. */
-const DEFAULT_MIN_INTERVAL_S = 1.0
+// ── Cell sizing ──────────────────────────────────────────────────────────
 
 /**
- * Filmstrips fetch and draw only once the timeline is zoomed in to at least
- * this many px/second. Below it, a filmstrip's tile-interval cell (≥1s at the
- * step's default `min-interval`) would render narrower than a tile's own
- * pixel width — every tile squeezed into a sliver of itself, all cost and no
- * legibility. Pinning the threshold to `tileWidth / minInterval` (both step
- * defaults: 160 / 1.0 = 160) means "zoomed in enough" is defined by the same
- * numbers the step itself uses for a full-size tile, not an arbitrary pick.
+ * Aspect ratio of one filmstrip cell, width ÷ height. Square: the footage this
+ * edits is 9:16, and a band-height-tall cell at the source's own aspect would
+ * be a ~27px sliver at every zoom. A square cell center-cropped out of the
+ * frame (see `centerCropTo`) trades the top and bottom of the picture for a
+ * thumbnail wide enough to recognize a shot from.
  */
-export const FILMSTRIP_ZOOM_THRESHOLD_PX_PER_SECOND = DEFAULT_TILE_WIDTH_PX / DEFAULT_MIN_INTERVAL_S
+export const FILMSTRIP_CELL_ASPECT = 1
 
-/** Floor on a cell's pixel width so a degenerate (zero/negative) `interval`
- *  from a malformed index can't turn the draw loop into a huge iteration —
- *  `rect`/viewport bounds already cap total width, so this only matters for
- *  bad data, not normal zoom ranges. */
+/** Floor on a cell's pixel width, so a degenerate (zero/negative) band height
+ *  can't turn the draw loop into a huge iteration. Normal cells are sized from
+ *  the frames band, which is tens of px tall. */
 const MIN_CELL_PX = 4
 
 // ── Source-time alignment ────────────────────────────────────────────────
@@ -156,6 +146,32 @@ export function tileSourceRect(
   return { sx: tile.col * sw, sy: tile.row * sh, sw, sh }
 }
 
+/**
+ * Narrow `src` to the largest centered sub-rect matching `destAspect`
+ * (width ÷ height), so a tile drawn into that destination fills it without
+ * distortion. Vertical 9:16 footage into a square cell loses the top and
+ * bottom; wide footage into the same cell loses the sides.
+ *
+ * Applied per CELL rather than once per tile because the cells at a clip's
+ * left and right edges are clipped narrower than a full one — cropping to the
+ * destination's actual aspect keeps those partial cells undistorted too,
+ * which cropping to a fixed square would not.
+ *
+ * A non-positive aspect or a degenerate source returns `src` unchanged: the
+ * caller's own `width <= 0` guards already skip those, and silently returning
+ * the uncropped rect is safer than emitting NaNs into `drawImage`.
+ */
+export function centerCropTo(src: TileSourceRect, destAspect: number): TileSourceRect {
+  if (!(destAspect > 0) || src.sw <= 0 || src.sh <= 0) return src
+  const srcAspect = src.sw / src.sh
+  if (srcAspect > destAspect) {
+    const sw = src.sh * destAspect
+    return { sx: src.sx + (src.sw - sw) / 2, sy: src.sy, sw, sh: src.sh }
+  }
+  const sh = src.sw / destAspect
+  return { sx: src.sx, sy: src.sy + (src.sh - sh) / 2, sw: src.sw, sh }
+}
+
 // ── Injectable image loading ─────────────────────────────────────────────
 
 export interface LoadedSheetImage {
@@ -193,97 +209,15 @@ export interface FilmstripTileDraw {
   rect: Rect
 }
 
-/** Paint the background tile strip inside a clip rect. Composed with T6's
- *  waveform inside `drawTimelineContent`'s single `drawContent` hook (see
- *  draw.ts): filmstrip tiles first (the background fill), waveform bars
- *  after (the subtle bottom-band overlay). */
+/** Paint the tile strip. Destination rects already sit in the clip's frames
+ *  band (`clipTiles` places them), so this just blits — composed with the
+ *  waveform inside `drawTimelineContent`'s single `drawContent` hook (draw.ts),
+ *  which paints the two bands into disjoint halves of the clip. */
 export function drawFilmstripTiles(ctx: DrawContext, tiles: readonly FilmstripTileDraw[]): void {
   for (const tile of tiles) {
     if (tile.rect.width <= 0 || tile.rect.height <= 0) continue
     ctx.drawImage(tile.image, tile.sx, tile.sy, tile.sw, tile.sh, tile.rect.x, tile.rect.y, tile.rect.width, tile.rect.height)
   }
-}
-
-// ── Hover-scrub preview thumb ────────────────────────────────────────────
-// Drawn on the OVERLAY layer only (never forces a content redraw) when the
-// pointer rests over a clip with no gesture running — "moving along the clip
-// flips through frames." Styled to match the canvas' existing chrome: a
-// small rounded card (draw.ts's `roundRectPath`) with a hairline border and
-// a small mono timecode label, echoing the clip labels' `LABEL_FONT`.
-
-export const HOVER_THUMB_WIDTH_PX = 128
-export const HOVER_THUMB_IMAGE_HEIGHT_PX = 72
-export const HOVER_THUMB_LABEL_HEIGHT_PX = 16
-export const HOVER_THUMB_HEIGHT_PX = HOVER_THUMB_IMAGE_HEIGHT_PX + HOVER_THUMB_LABEL_HEIGHT_PX
-export const HOVER_THUMB_GAP_ABOVE_ROW_PX = 8
-export const HOVER_THUMB_RADIUS_PX = 6
-export const HOVER_THUMB_PAD_PX = 4
-export const HOVER_THUMB_LABEL_FONT = '9px ui-monospace, SFMono-Regular, Menlo, monospace'
-
-export const HOVER_THUMB_COLORS = {
-  /** Near `TIMELINE_COLORS.rowBackground`, opaque enough to read the frame
-   *  clearly over any of `TRACK_PALETTE`'s six clip hues underneath it. */
-  card: 'rgba(15,23,42,0.95)',
-  border: 'rgba(226,232,240,0.25)',
-  label: '#e2e8f0',
-} as const
-
-/** A tile resolved for the hovered time, plus its screen anchor — everything
- *  `drawFilmstripHoverThumb` needs to paint. */
-export interface FilmstripHoverThumb {
-  image: CanvasImageSource
-  sx: number
-  sy: number
-  sw: number
-  sh: number
-  /** Horizontal CENTER of the thumb, in surface px — the hovered x. */
-  x: number
-  /** Top of the hovered row; the thumb floats above it. */
-  rowTop: number
-  /** The matched tile's own source-file time, for the label. */
-  t: number
-}
-
-function clampThumbLeft(left: number, surfaceWidth: number): number {
-  return Math.max(0, Math.min(left, surfaceWidth - HOVER_THUMB_WIDTH_PX))
-}
-
-/**
- * Paint the hover-scrub thumb: a rounded card, the matched tile, and its
- * timecode. Floats above `rowTop` with a small gap; when there's no room
- * above (the hovered row sits at the very top of the surface — the common
- * single-track-project case) it clamps to the surface top rather than
- * skipping the draw, so the feature isn't silently unavailable on the most
- * common project shape. Horizontally clamped so it never draws off either
- * edge of the surface.
- */
-export function drawFilmstripHoverThumb(ctx: DrawContext, thumb: FilmstripHoverThumb, surfaceWidth: number): void {
-  const left = clampThumbLeft(thumb.x - HOVER_THUMB_WIDTH_PX / 2, surfaceWidth)
-  const top = Math.max(0, thumb.rowTop - HOVER_THUMB_GAP_ABOVE_ROW_PX - HOVER_THUMB_HEIGHT_PX)
-
-  ctx.save()
-  roundRectPath(ctx, left, top, HOVER_THUMB_WIDTH_PX, HOVER_THUMB_HEIGHT_PX, HOVER_THUMB_RADIUS_PX)
-  ctx.fillStyle = HOVER_THUMB_COLORS.card
-  ctx.fill()
-  ctx.strokeStyle = HOVER_THUMB_COLORS.border
-  ctx.lineWidth = 1
-  ctx.stroke()
-
-  const imgLeft = left + HOVER_THUMB_PAD_PX
-  const imgTop = top + HOVER_THUMB_PAD_PX
-  const imgWidth = HOVER_THUMB_WIDTH_PX - HOVER_THUMB_PAD_PX * 2
-  const imgHeight = HOVER_THUMB_IMAGE_HEIGHT_PX - HOVER_THUMB_PAD_PX
-  ctx.drawImage(thumb.image, thumb.sx, thumb.sy, thumb.sw, thumb.sh, imgLeft, imgTop, imgWidth, imgHeight)
-
-  ctx.fillStyle = HOVER_THUMB_COLORS.label
-  ctx.font = HOVER_THUMB_LABEL_FONT
-  ctx.textBaseline = 'middle'
-  ctx.fillText(
-    formatTime(thumb.t),
-    left + HOVER_THUMB_PAD_PX,
-    top + HOVER_THUMB_IMAGE_HEIGHT_PX + HOVER_THUMB_LABEL_HEIGHT_PX / 2,
-  )
-  ctx.restore()
 }
 
 // ── Fetch-state store ─────────────────────────────────────────────────────
@@ -308,16 +242,11 @@ interface ImageEntry {
  * (viewport/onReady can both have moved since the last one); the store
  * itself is what persists across paints.
  *
- * `onReady` deliberately invalidates BOTH canvas layers (callers pass
- * `() => requestRedraw('all')`), not just the caller's own layer. Filmstrip
- * data has two independent consumers — `clipTiles` (content) and `hoverTile`
- * (overlay) — that can both resolve the SAME underlying index/sheet cache
- * entry. Only the call that actually ORIGINATES a fetch gets its `onReady`
+ * `onReady` invalidates the content layer, the only consumer of filmstrip
+ * data. Note that only the call which ORIGINATES a fetch gets its `onReady`
  * attached to that fetch's promise (see `resolveIndex`/`resolveSheetImage`
- * below); if content happens to win that race, a `requestRedraw('content')`
- * would resolve the data but never tell the overlay layer it's ready for the
- * hover thumb, and vice versa. Redrawing both sidesteps the race entirely at
- * the cost of one extra (cheap) layer repaint per resolution.
+ * below) — every other clip waiting on the same sheet is repainted by that one
+ * callback, since a content redraw repaints them all.
  */
 export interface FilmstripQueryContext {
   projectId: string
@@ -346,41 +275,39 @@ export interface FilmstripSceneLookup {
   clipTiles(item: VisualItem, rect: Rect): FilmstripTileDraw[] | null
 }
 
-/** A tile matched to a hovered time, before it's positioned on screen (that
- *  last step needs the hover point, which the store doesn't hold). */
-export interface FilmstripHoverResult {
-  image: CanvasImageSource
-  sx: number
-  sy: number
-  sw: number
-  sh: number
-  t: number
-}
-
 export class FilmstripStore {
   private indexEntries = new Map<string, IndexEntry>()
   private imageEntries = new Map<string, ImageEntry>()
 
   /**
    * Background tile strip for a clip's rect. `null` whenever there's nothing
-   * to draw: non-video items, no proxy yet, no adapter support, below the
-   * zoom threshold, off the visible range, or the index/sheets not ready
+   * to draw: non-video items, no proxy yet, no adapter support, off the
+   * visible range, a zero-height frames band, or the index/sheets not ready
    * yet — all graceful, never an error state the caller has to handle
    * specially.
    */
   clipTiles(item: VisualItem, rect: Rect, ctx: FilmstripQueryContext): FilmstripTileDraw[] | null {
     if (item.type !== 'video' || !item.proxySrc || !ctx.getFilmstrip || !ctx.fileUrl) return null
     if (rect.width <= 0 || rect.height <= 0) return null
-    if (ctx.viewport.pxPerSecond < FILMSTRIP_ZOOM_THRESHOLD_PX_PER_SECOND) return null
     const range = visibleRange(ctx.viewport)
     if (item.end < range.start || item.start > range.end) return null
+
+    const band = clipBands(rect).frames
+    if (band.height <= 0) return null
 
     const resolved = this.resolveIndex(item.proxySrc, ctx)
     if (!resolved || resolved.tiles.length === 0) return null
     const { data: index, tiles } = resolved
 
-    const pxPerSecond = ctx.viewport.pxPerSecond
-    const cellPx = Math.max(MIN_CELL_PX, index.interval * pxPerSecond)
+    // Cell width comes from the BAND HEIGHT, not from the index's tile
+    // interval — that is what makes the strip re-derive itself as you zoom.
+    // Each cell is one fixed-aspect thumbnail, so the clip's pixel width alone
+    // decides how many frames fit: zoom in and the same span grows more cells,
+    // each landing on a nearer tile; zoom out and it collapses to a few
+    // widely-spaced frames. Sizing cells by `interval * pxPerSecond` instead
+    // (the original) pinned one cell per tile at every zoom, which meant cells
+    // narrower than a tile when zoomed out and stretched frames when zoomed in.
+    const cellPx = Math.max(MIN_CELL_PX, band.height * FILMSTRIP_CELL_ASPECT)
 
     // Only the portion of the clip's cells actually on screen ever touches a
     // sheet — a long base-track clip can have hundreds of cells; a sliver of
@@ -409,41 +336,13 @@ export class FilmstripStore {
       const img = this.resolveSheetImage(sheet.path, ctx)
       if (!img) continue // sheet not decoded yet — this cell just stays blank until onReady fires
 
-      const src = tileSourceRect(sheet, tile, img.width, img.height)
-      out.push({
-        image: img.image,
-        sx: src.sx, sy: src.sy, sw: src.sw, sh: src.sh,
-        rect: { x: cellLeft, y: rect.y, width: cellRight - cellLeft, height: rect.height },
-      })
+      const dest: Rect = { x: cellLeft, y: band.y, width: cellRight - cellLeft, height: band.height }
+      const src = centerCropTo(tileSourceRect(sheet, tile, img.width, img.height), dest.width / dest.height)
+      out.push({ image: img.image, sx: src.sx, sy: src.sy, sw: src.sw, sh: src.sh, rect: dest })
     }
     return out.length > 0 ? out : null
   }
 
-  /**
-   * The nearest tile to `timelineTime` on `item`, for the hover-scrub thumb.
-   * Shares the same zoom-threshold gate and index/image cache as
-   * `clipTiles` — the thumb is only ever available once the background
-   * filmstrip feature itself would be active, never an independent fetch
-   * trigger of its own.
-   */
-  hoverTile(item: VisualItem, timelineTime: number, ctx: FilmstripQueryContext): FilmstripHoverResult | null {
-    if (item.type !== 'video' || !item.proxySrc || !ctx.getFilmstrip || !ctx.fileUrl) return null
-    if (ctx.viewport.pxPerSecond < FILMSTRIP_ZOOM_THRESHOLD_PX_PER_SECOND) return null
-
-    const resolved = this.resolveIndex(item.proxySrc, ctx)
-    if (!resolved || resolved.tiles.length === 0) return null
-
-    const sourceTime = clipTimeToSourceTime(item, timelineTime)
-    const tile = nearestTile(resolved.tiles, sourceTime)
-    if (!tile) return null
-
-    const sheet = resolved.data.sheets[tile.sheetIdx]
-    const img = this.resolveSheetImage(sheet.path, ctx)
-    if (!img) return null
-
-    const src = tileSourceRect(sheet, tile, img.width, img.height)
-    return { image: img.image, sx: src.sx, sy: src.sy, sw: src.sw, sh: src.sh, t: tile.t }
-  }
 
   /** Look up the index for `src`, kicking off a fetch when absent. Never
    *  re-fetches while loading or once ready; an errored entry is retried on

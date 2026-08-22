@@ -3,7 +3,7 @@
 // here is behavior BOTH surfaces must reproduce identically, so it lives
 // outside either render path.
 
-import type { AudioTrack, VisualItem } from '../../schema'
+import type { AudioTrack, VisualItem, VisualTrack } from '../../schema'
 import type { Project } from '../../types'
 
 // ── Row geometry ─────────────────────────────────────────────────────────
@@ -23,15 +23,19 @@ export const VISUAL_ROW_HEIGHT_PX = 24
  *  divisor (drag travel and rendered height coincide for audio lanes). */
 export const AUDIO_LANE_HEIGHT_PX = 40
 
-/** Rendered height of a visual track row — the `h-10` on `trackRow`
- *  (utils.ts). The canvas painter draws rows at this height so both surfaces
- *  look alike. */
+/** Rendered height of a non-base visual track row — the `h-10` on `trackRow`
+ *  (utils.ts). Held at the DOM height on purpose: these rows carry overlays,
+ *  which have no waveform and no filmstrip to show, so the extra height the
+ *  base track needs would just be empty space here. */
 export const VISUAL_ROW_RENDER_HEIGHT_PX = 40
 
-/** Rendered height of the BASE visual track (index 0) — the `h-14` on
- *  `trackRowTall`. The base video track is drawn taller than the overlay
- *  tracks stacked above it. */
-export const BASE_VISUAL_ROW_RENDER_HEIGHT_PX = 56
+/** Rendered height of the BASE visual track (index 0) in CANVAS mode. No
+ *  longer the DOM `h-14` its name came from: a canvas video clip splits its
+ *  height between a filmstrip and a waveform (see `canvas/clip-bands.ts`), and
+ *  56px left ~27px for each — too short to read either. The DOM path keeps its
+ *  own `h-14` and is unaffected, since it draws neither band. */
+export const BASE_VISUAL_ROW_RENDER_HEIGHT_PX = 120
+
 
 /** Vertical gap between rows — the `gap-1` (0.25rem = 4px) on the DOM track
  *  list's flex column. */
@@ -67,11 +71,77 @@ export function groupAudioLanes(tracks: AudioTrack[]): AudioLane[] {
     .map(([laneIndex, laneTracks]) => ({ laneIndex, tracks: laneTracks }))
 }
 
+// ── Item labels ──────────────────────────────────────────────────────────
+
+/** Longest run of an overlay's own text kept in its label; past this it stops
+ *  being scannable and starts being a smear. */
+const LABEL_TEXT_MAX = 28
+
+/** Basename without extension, for either separator. */
+function stem(path: string): string {
+  const cut = Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\'))
+  const name = cut === -1 ? path : path.slice(cut + 1)
+  const dot = name.lastIndexOf('.')
+  return dot > 0 ? name.slice(0, dot) : name
+}
+
+/**
+ * The first human-readable string an overlay's props carry, if any. Overlay
+ * components are free-form, so this checks the handful of prop names the shipped
+ * ones actually use for their visible copy, in the order a reader would care
+ * about: the text of the first line, then a caption, then generic single-string
+ * fields.
+ */
+function overlayText(props: Record<string, unknown> | undefined): string | null {
+  if (!props) return null
+  const lines = props.lines
+  if (Array.isArray(lines) && lines.length > 0) {
+    const first = lines[0]
+    if (first && typeof first === 'object' && typeof (first as { text?: unknown }).text === 'string') {
+      const text = (first as { text: string }).text.trim()
+      if (text) return text
+    }
+  }
+  for (const key of ['caption', 'text', 'title', 'label', 'headline'] as const) {
+    const value = props[key]
+    if (typeof value === 'string' && value.trim()) return value.trim()
+  }
+  return null
+}
+
+/**
+ * What a timeline block says it is.
+ *
+ * Every overlay used to read `▪ overlay`, which on a project carrying twenty of
+ * them identified nothing — you had to click each one to find out which was
+ * which. An overlay's component file names its KIND (`text_line`, `photo_hero`)
+ * and its props usually carry the copy actually on screen, so the two together
+ * say what the block is at a glance:
+ *
+ *   `text_line · we still need them`
+ *   `photo_hero · ex-googler`
+ *   `cold_open`                      (no text of its own)
+ *
+ * Video clips get NO label: the track rail already says the row is video, and
+ * the filmstrip inside the clip identifies which shot it is far better than a
+ * word would. Images fall back to their own filename.
+ */
+export function visualItemLabel(item: VisualItem): string {
+  if (item.type === 'video') return ''
+  if (item.type === 'image') return item.src ? stem(item.src) : 'image'
+
+  const kind = item.src ? stem(item.src) : 'overlay'
+  const text = overlayText(item.props)
+  if (!text) return kind
+  const trimmed = text.length > LABEL_TEXT_MAX ? `${text.slice(0, LABEL_TEXT_MAX - 1)}…` : text
+  return `${kind} · ${trimmed}`
+}
+
 // ── Cross-track move ─────────────────────────────────────────────────────
 
 export interface CrossTrackMoveArgs {
   /** The project's visual tracks as they stand mid-drag. */
-  tracks: VisualItem[][]
+  tracks: VisualTrack[]
   /** The item being dragged, at its ORIGINAL props — only start/end change. */
   item: VisualItem
   /** The dragged item's new timeline window. */
@@ -101,16 +171,23 @@ export interface CrossTrackMoveArgs {
  *   below, then two, and so on — and one step past the end of the array is a
  *   legal answer, which is how a drag creates a new top track.
  * - Tracks left empty by the move are pruned, so dragging the last item off a
- *   track collapses it.
+ *   track collapses it. The surviving TRACK OBJECTS are carried through the
+ *   prune, so each keeps its own id and its own volume/muted/enabled. (This is
+ *   the whole reason tracks are objects: with settings held in a parallel array
+ *   indexed alongside `tracks`, a prune shifts every index above it and hands
+ *   the wrong settings to the wrong track.)
+ * - A drag past the top of the stack mints a new track, with a fresh id from
+ *   the same rule the normalizer uses and deduped against the ids already in
+ *   play, so it can never collide with a surviving track.
  */
-export function moveItemAcrossTracks({ tracks, item, start, end, sourceTrackIdx, dy }: CrossTrackMoveArgs): VisualItem[][] {
+export function moveItemAcrossTracks({ tracks, item, start, end, sourceTrackIdx, dy }: CrossTrackMoveArgs): VisualTrack[] {
   const trackDelta = Math.round(dy / VISUAL_ROW_HEIGHT_PX)
   const targetIdx = Math.max(0, sourceTrackIdx - trackDelta)
   const duration = end - start
   const overlapMin = duration * 0.3
 
-  function hasOverlap(track: VisualItem[]): boolean {
-    return track.some(other => {
+  function hasOverlap(items: VisualItem[]): boolean {
+    return items.some(other => {
       if (other.id === item.id) return false
       return Math.min(end, other.end) - Math.max(start, other.start) > overlapMin
     })
@@ -120,18 +197,22 @@ export function moveItemAcrossTracks({ tracks, item, start, end, sourceTrackIdx,
   outer: for (let delta = 0; delta <= tracks.length; delta++) {
     for (const i of delta === 0 ? [targetIdx] : [targetIdx - delta, targetIdx + delta]) {
       if (i < 0) continue
-      const candidateTrack = i < tracks.length ? tracks[i] : []
-      if (!hasOverlap(candidateTrack)) { bestIdx = i; break outer }
+      const candidateItems = i < tracks.length ? tracks[i].items : []
+      if (!hasOverlap(candidateItems)) { bestIdx = i; break outer }
     }
   }
 
-  const removed = tracks.map(t => t.filter(other => other.id !== item.id))
+  const removed = tracks.map(t => ({ ...t, items: t.items.filter(other => other.id !== item.id) }))
   const movedItem = { ...item, start, end }
-  const placed = bestIdx >= removed.length
-    ? [...removed, [movedItem]]
-    : removed.map((t, i) => i === bestIdx ? [...t, movedItem] : t)
+  const newTrack = (): VisualTrack => ({
+    id: assignTrackId(removed.length, new Set(removed.map(t => t.id))),
+    items: [movedItem],
+  })
+  const placed: VisualTrack[] = bestIdx >= removed.length
+    ? [...removed, newTrack()]
+    : removed.map((t, i) => i === bestIdx ? { ...t, items: [...t.items, movedItem] } : t)
 
-  return placed.filter(t => t.length > 0)
+  return placed.filter(t => t.items.length > 0)
 }
 
 // ── Audio track update ───────────────────────────────────────────────────
@@ -164,7 +245,7 @@ export interface DerivedTiming {
  *  that used to live inline in Timeline so the canvas surface (T4) computes
  *  timing identically to the DOM surface. */
 export function computeDerivedTiming(project: Project): DerivedTiming {
-  const allTracks = project.tracks ?? []
+  const allTracks = trackItems(project)
   const audioTracks = project.audio?.tracks ?? []
   const snapBoundaries = [...new Set([
     ...allTracks.flat().flatMap(c => [c.start, c.end]),
@@ -206,14 +287,23 @@ export function computeAutoCrossfade(project: Project): Project | null {
     const a = updated[i]
     const b = updated[i + 1]
     if (a.end > b.start && !a.muted && !b.muted) {
-      // Overlap detected
+      // Overlap detected. Round ONCE and compare against the rounded value —
+      // comparing against the raw `overlap` made this non-idempotent whenever
+      // the overlap wasn't already a multiple of 0.1s (e.g. 0.37): the stored
+      // fade (0.4) would never equal the raw overlap (0.37), so `changed` was
+      // permanently true and this function kept reporting a change on a
+      // project it had already converged. Since Timeline.tsx's effect commits
+      // on every non-null result, that meant merely opening such a project
+      // wrote to disk and pushed a no-op undo entry, re-firing on every
+      // unrelated edit too.
       const overlap = Math.min(a.end - b.start, a.end - a.start, b.end - b.start)
-      if ((a.fadeOut ?? 0) !== overlap) {
-        a.fadeOut = Math.round(overlap * 10) / 10  // round to 0.1s
+      const rounded = Math.round(overlap * 10) / 10  // round to 0.1s
+      if ((a.fadeOut ?? 0) !== rounded) {
+        a.fadeOut = rounded
         changed = true
       }
-      if ((b.fadeIn ?? 0) !== overlap) {
-        b.fadeIn = Math.round(overlap * 10) / 10
+      if ((b.fadeIn ?? 0) !== rounded) {
+        b.fadeIn = rounded
         changed = true
       }
     }
@@ -229,4 +319,293 @@ export function computeAutoCrossfade(project: Project): Project | null {
       tracks: audioTracks.map(t => trackMap.get(t.id) ?? t),
     },
   }
+}
+
+// ── Track shape (legacy VisualItem[][] ⟷ VisualTrack[]) ───────────────────
+
+/**
+ * Both-shapes tolerance for `project.tracks`.
+ *
+ * A project's `tracks` is on disk in one of two shapes. The legacy shape is a
+ * bare array of arrays — `[[item, item], [item]]` — with nowhere to hang a
+ * property that belongs to the TRACK rather than to a clip. The object shape
+ * (`VisualTrack[]`, see schema.ts) gives each track that place:
+ *
+ *     [{ id: 'trk-0', items: [...] },
+ *      { id: 'trk-1', items: [...], volume: 0.8, muted: false }]
+ *
+ * `volume`/`muted`/`enabled` are optional and ABSENT by default, so a
+ * normalized project behaves identically to the legacy one it came from. Track
+ * order is unchanged and still meaningful (`tracks[0]` is the primary footage
+ * track; higher indices render on top).
+ *
+ * The house rule is read-tolerant everywhere, write-normalized on open: readers
+ * call `trackItems()` and never care which shape is on disk; whoever opens the
+ * project calls `normalizeTracks()` and persists the result.
+ *
+ * Mirrored, semantics for semantics, by `lib/project_tracks.py` and
+ * `montaj_assets/render/project-tracks.js`. Change one, change all three — a
+ * legacy project normalized by any of them must produce the same ids and the
+ * same structure.
+ */
+
+/** Plain object (not an array, not null) — the shape a track object arrives as. */
+function isTrackObject(v: unknown): v is Record<string, unknown> {
+  return typeof v === 'object' && v !== null && !Array.isArray(v)
+}
+
+/** A usable track id: a non-empty string. */
+function isTrackId(v: unknown): v is string {
+  return typeof v === 'string' && v.length > 0
+}
+
+/** True when `tracks` needs no work: every element is an object carrying a
+ *  non-empty string `id` and an array `items`, and no two share an id. */
+function isTrackObjectForm(tracks: unknown[]): boolean {
+  const seen = new Set<string>()
+  for (const track of tracks) {
+    if (!isTrackObject(track)) return false
+    if (!isTrackId(track.id)) return false
+    if (!Array.isArray(track.items)) return false
+    if (seen.has(track.id)) return false
+    seen.add(track.id)
+  }
+  return true
+}
+
+/** Generate an id for the track at `index`, avoiding every id in `taken`. The
+ *  rule: `trk-<index>`; if that is already taken, append an incrementing
+ *  counter starting at 2 — `trk-<index>-2`, `trk-<index>-3`, … — until one is
+ *  free. Deterministic and collision-free. `taken` is updated in place with the
+ *  id handed out. */
+function assignTrackId(index: number, taken: Set<string>): string {
+  let candidate = `trk-${index}`
+  let suffix = 2
+  while (taken.has(candidate)) {
+    candidate = `trk-${index}-${suffix}`
+    suffix += 1
+  }
+  taken.add(candidate)
+  return candidate
+}
+
+/**
+ * Return `project` with `tracks` in object form. Accepts either shape.
+ *
+ * Pure — never mutates the input, at any depth. New track objects and new item
+ * ARRAYS are built; the item objects themselves are carried over by reference.
+ *
+ * Idempotent, and identity-preserving: when `tracks` is already in object form
+ * the input object itself is returned, so `normalizeTracks(p) === p`. That
+ * identity is what the lazy on-open migration reads as "nothing to write" — a
+ * converged project must trigger no save. Same for a project with no `tracks`,
+ * a `tracks` of `null`/`undefined`, or a `tracks` that is not an array;
+ * validation is someone else's job and normalization never throws.
+ *
+ * Per element of `tracks`:
+ *   - an array  → `{ id: <generated>, items: <copy> }`
+ *   - an object → preserved, with every other key (`volume`, `muted`,
+ *     `enabled`, anything unknown) carried through untouched; `items` coerced
+ *     to an array (missing / null / non-array → `[]`); `id` filled in when
+ *     missing, not a string, empty, or a duplicate of an earlier track's id.
+ *   - anything else (null, a string, a number) → `{ id: <generated>, items: [] }`
+ *
+ * The input side is deliberately structural and loose so this keeps compiling
+ * both while `Project.tracks` is `VisualItem[][]` and after it becomes
+ * `VisualTrack[]`.
+ */
+export function normalizeTracks<T extends { tracks?: unknown }>(project: T): T {
+  if (project === null || typeof project !== 'object') return project
+  const tracks: unknown = project.tracks
+  if (!Array.isArray(tracks)) return project
+  if (isTrackObjectForm(tracks)) return project
+
+  // Every explicit id in the project, collected up front so a generated
+  // `trk-<i>` can never land on an id a LATER track already claims.
+  const taken = new Set<string>()
+  for (const track of tracks) {
+    if (isTrackObject(track) && isTrackId(track.id)) taken.add(track.id)
+  }
+
+  const kept = new Set<string>()  // ids handed out so far, so a duplicate loses to the first holder
+  const out = (tracks as unknown[]).map((track, index) => {
+    let normalized: Record<string, unknown>
+    if (Array.isArray(track)) {
+      normalized = { id: assignTrackId(index, taken), items: [...track] }
+    } else if (isTrackObject(track)) {
+      const items = Array.isArray(track.items) ? [...track.items] : []
+      const id = isTrackId(track.id) && !kept.has(track.id)
+        ? track.id
+        : assignTrackId(index, taken)
+      normalized = { ...track, id, items }
+    } else {
+      normalized = { id: assignTrackId(index, taken), items: [] }
+    }
+    kept.add(normalized.id as string)
+    return normalized
+  })
+
+  // The spread widens T to `T & { tracks: … }`; the cast restores the caller's
+  // own project type, which is what it was apart from the tracks rebuild.
+  return { ...project, tracks: out } as T
+}
+
+/**
+ * Just the items, in track order — for the many callers that only read.
+ * `[]` when the project has no tracks (or a `tracks` too malformed to
+ * normalize). The returned arrays are the normalized project's own item
+ * arrays; treat them as read-only.
+ */
+export function trackItems(project: { tracks?: unknown } | null | undefined): VisualItem[][] {
+  if (project === null || project === undefined || typeof project !== 'object') return []
+  const tracks: unknown = normalizeTracks(project).tracks
+  if (!Array.isArray(tracks)) return []
+  return (tracks as Array<{ items: VisualItem[] }>).map(t => t.items)
+}
+
+/**
+ * The items of ENABLED tracks only, in track order — for the surfaces that
+ * PRODUCE picture and sound.
+ *
+ * The counterpart to `trackItems`, and the split between them is the whole of
+ * the skip feature: editing surfaces (timeline, hit-testing, drag, trim, split,
+ * selection) call `trackItems` and keep seeing a skipped track, because you have
+ * to be able to see it and turn it back on. Playback and export call this one.
+ * Routing by which accessor a call site uses keeps the rule in one reviewable
+ * place instead of scattering `track.enabled === false` through a dozen files.
+ *
+ * `enabled` is absent by default, so `!== false` is the test: an untouched
+ * project has every track enabled.
+ *
+ * A skipped track's slot is EMPTIED, not removed — this maps, it does not
+ * filter. Every consumer of this array indexes it positionally (`[0]` is "the
+ * base footage track", `.slice(1)` is "the overlay tracks"); filtering would
+ * shift every later track's index down and silently reassign it to the wrong
+ * role. Emptying preserves position while still contributing nothing to
+ * playback or export.
+ *
+ * Items are passed through BY REFERENCE, never copied — the renderer's
+ * `resolveProjectPaths` mutates `item.src` in place through this view, so a
+ * defensive copy here would break path resolution with nothing failing.
+ */
+export function enabledTrackItems(project: { tracks?: unknown } | null | undefined): VisualItem[][] {
+  if (project === null || project === undefined || typeof project !== 'object') return []
+  const tracks: unknown = normalizeTracks(project).tracks
+  if (!Array.isArray(tracks)) return []
+  return (tracks as Array<{ items: VisualItem[]; enabled?: boolean }>)
+    .map(t => (t.enabled !== false ? t.items : []))
+}
+
+/**
+ * The ENABLED tracks themselves, in track order — the object-shape sibling of
+ * `enabledTrackItems`, for callers that need a track's own settings
+ * (`volume`, `muted`) alongside its items, not just the items. Both preview
+ * paths need it: they read their clips out of the first enabled track and then
+ * have to fold that track's audio settings into each one
+ * (`effectiveItemAudio`), which the flattened item-array view has nowhere to
+ * carry.
+ *
+ * Same treatment as `enabledTrackItems`: a skipped track's slot is emptied in
+ * place (`items: []`) rather than removed, so index i here is always index i
+ * there — the two accessors can never disagree about which tracks are "in",
+ * and neither shifts a later track into an earlier, positionally-meaningful
+ * slot.
+ *
+ * Tracks and items alike pass through BY REFERENCE; see `enabledTrackItems` on
+ * why copying items would break path resolution.
+ *
+ * Mirrors `enabledTracks` in `montaj_assets/render/project-tracks.js`.
+ */
+export function enabledTracks(project: { tracks?: unknown } | null | undefined): VisualTrack[] {
+  if (project === null || project === undefined || typeof project !== 'object') return []
+  const tracks: unknown = normalizeTracks(project).tracks
+  if (!Array.isArray(tracks)) return []
+  return (tracks as VisualTrack[]).map(t => (t.enabled !== false ? t : { ...t, items: [] }))
+}
+
+// ── Effective per-item audio (track × item fold) ────────────────────────
+
+/**
+ * Fold a track's volume/mute settings into one of its item's effective audio
+ * values. Volume **multiplies** — never replaces — so a clip an editor
+ * already turned down stays proportionally quieter under a track that's also
+ * pulled down; replacing would silently discard that per-clip work. Mute is
+ * **either/or** — either the track or the item being muted silences it.
+ *
+ *     effectiveVolume = (track.volume ?? 1) * (item.volume ?? 1)
+ *     effectiveMuted  = track.muted === true || item.muted === true
+ *
+ * Pure, and tolerant of absent fields on either argument — `track`/`item` may
+ * each be `undefined`/`null`/`{}`. That is the common case: nothing writes
+ * `track.volume`/`track.muted` by default, so most calls see an absent track
+ * side and the result reduces to the item's own settings, unchanged.
+ *
+ * Mirrored by `effectiveItemAudio` in `montaj_assets/render/project-tracks.js`
+ * — the two must agree or preview and render will disagree on how loud a clip
+ * actually is.
+ */
+export function effectiveItemAudio(
+  track: Pick<VisualTrack, 'volume' | 'muted'> | null | undefined,
+  item: Pick<VisualItem, 'volume' | 'muted'> | null | undefined,
+): { volume: number; muted: boolean } {
+  const volume = (track?.volume ?? 1) * (item?.volume ?? 1)
+  const muted = track?.muted === true || item?.muted === true
+  return { volume, muted }
+}
+
+/**
+ * `project` with its `tracks` swapped for the bare items view — the adapter for
+ * the `@bycrux/timeline-core` boundary.
+ *
+ * That package is plain JS and its contract (`ResolverProject`,
+ * `DurationProject`) still reads `tracks` as an array of item arrays. It takes
+ * the WHOLE project, not just the tracks, so a caller can't route it through
+ * `trackItems()` the way every in-package reader does. Everything but `tracks`
+ * passes through by reference.
+ */
+export function withItemTracks<T extends { tracks?: unknown }>(
+  project: T,
+): Omit<T, 'tracks'> & { tracks: VisualItem[][] } {
+  return { ...project, tracks: trackItems(project) }
+}
+
+/**
+ * `withItemTracks`, but showing only the enabled tracks — the timeline-core
+ * adapter for playback and export.
+ *
+ * Both halves are required together. Filtering without the unwrap re-breaks
+ * `@bycrux/timeline-core` (it reads `tracks` as bare item arrays and throws
+ * `TypeError: object is not iterable` on the object shape); unwrapping without
+ * the filter silently ignores skip, so a skipped track keeps rendering. Use
+ * this at every project-level timeline-core call on a playback path.
+ */
+export function withEnabledItemTracks<T extends { tracks?: unknown }>(
+  project: T,
+): Omit<T, 'tracks'> & { tracks: VisualItem[][] } {
+  return { ...project, tracks: enabledTrackItems(project) }
+}
+
+/**
+ * Rewrite every track's items, preserving each track's id and settings.
+ *
+ * The shape almost every edit takes: "map over the tracks, produce new items
+ * per track, keep everything else". Doing that by hand invites the bug this
+ * whole shape change exists to kill — rebuilding a track as a bare
+ * `{ id, items }` silently drops its `volume`/`muted`/`enabled`.
+ *
+ * Both-shapes tolerant on input (it normalizes first), always returns the
+ * object shape. Pure: new track objects, never a mutation of the input. `fn`
+ * receives the track's own item array — treat it as read-only — and the
+ * track's index, which is unchanged by this function (order is meaningful).
+ *
+ * Tracks left with no items are KEPT; pruning is `moveItemAcrossTracks`'
+ * and `deleteSelection`'s business and is spelled out explicitly there.
+ */
+export function mapTrackItems(
+  project: { tracks?: unknown },
+  fn: (items: VisualItem[], trackIndex: number) => VisualItem[],
+): VisualTrack[] {
+  const tracks: unknown = normalizeTracks(project).tracks
+  if (!Array.isArray(tracks)) return []
+  return (tracks as VisualTrack[]).map((track, i) => ({ ...track, items: fn(track.items, i) }))
 }

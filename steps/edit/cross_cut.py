@@ -7,6 +7,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "lib"))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 from common import fail
 from ai_video import find_project, save_project
+from lib.project_tracks import track_items, replace_track_items
 
 
 def segment_clip(clip, seg_duration):
@@ -37,7 +38,8 @@ def main():
         fail("invalid_params", "Segment duration must be >= 0.2s")
 
     project_path, project = find_project(args.project_id)
-    tracks0 = project.get("tracks", [[]])[0]
+    items = track_items(project)
+    tracks0 = items[0] if items else []
 
     # Find both clips
     clip_a = clip_b = None
@@ -118,7 +120,10 @@ def main():
         c["end"] = round(c["end"] + delta, 6)
 
     tracks0 = before + new_clips + between + after
-    project["tracks"] = [tracks0]
+    # Only track 0 is rewritten — overlay tracks and their settings survive.
+    # Overlay item times are deliberately left where they are; they do not
+    # ripple with the primary track's retiming.
+    project["tracks"] = replace_track_items(project, 0, tracks0)
     save_project(project_path, project)
 
     total_dur = sum(c["end"] - c["start"] for c in new_clips)

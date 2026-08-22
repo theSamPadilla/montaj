@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import { Pencil } from 'lucide-react'
 import { api } from '@/lib/api'
 import type { Project } from '@/lib/types/schema'
+import { mapTrackItems, trackItems } from '@/lib/types/schema'
 import { SceneCard } from '@/components/storyboard/SceneCard'
 import { SceneEditor } from '@/components/storyboard/SceneEditor'
 import { ImageRefsPanel } from '@/components/storyboard/ImageRefsPanel'
@@ -61,7 +62,7 @@ export default function StoryboardView({ project, onProjectChange, logMessage }:
     const sb = project.storyboard ?? { imageRefs: [], styleRefs: [], scenes: [] }
     const newScenes = sb.scenes.filter(s => s.id !== sceneId)
     // Also remove any matching clip from tracks[0]
-    const newTrack = (project.tracks?.[0] ?? []).filter(c =>
+    const newTrack = (trackItems(project)[0] ?? []).filter(c =>
       c.generation?.sceneId !== sceneId &&
       !c.generation?.batchShots?.some(shot => shot.sceneId === sceneId)
     )
@@ -73,10 +74,18 @@ export default function StoryboardView({ project, onProjectChange, logMessage }:
       cursor += dur
       return updated
     })
+    // Rebuilt through `mapTrackItems` rather than as `[retimedTrack, ...rest]`:
+    // track 0 keeps its own id and settings instead of being minted fresh.
+    // `mapTrackItems` returns `[]` outright for a project with no `tracks` yet
+    // (a fresh storyboard project before any clip exists) — the old
+    // `[retimedTrack, ...rest]` form always produced a one-track array in
+    // that case. Fall back to a freshly-minted track 0 so this still lands
+    // the project's first clip on a real track instead of discarding it.
+    const rebuiltTracks = mapTrackItems(project, (items, i) => (i === 0 ? retimedTrack : items))
     const nextProject: Project = {
       ...project,
       storyboard: { ...sb, scenes: newScenes },
-      tracks: [retimedTrack, ...(project.tracks?.slice(1) ?? [])],
+      tracks: rebuiltTracks.length > 0 ? rebuiltTracks : [{ id: 'trk-0', items: retimedTrack }],
     }
     await api.saveProject(project.id, nextProject)
     onProjectChange(nextProject)

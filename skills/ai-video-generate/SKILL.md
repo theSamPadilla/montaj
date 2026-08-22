@@ -26,10 +26,10 @@ pending → storyboard_ready → draft → final
 
 | Transition | Writer | Precondition |
 |------------|--------|--------------|
-| `pending → storyboard_ready` | **ai-video-plan** (agent) | Phase 1 writes complete: imageRefs anchors+images filled, styleAnchor written, scenes[] populated. `tracks[0]` still `[]`. |
+| `pending → storyboard_ready` | **ai-video-plan** (agent) | Phase 1 writes complete: imageRefs anchors+images filled, styleAnchor written, scenes[] populated. `tracks[0].items` still `[]`. |
 | `storyboard_ready → storyboard_ready` | **ai-video-plan** (agent) in review-phase | User asks for storyboard changes via chat. Mutate `project.json`; status stays `storyboard_ready`. |
 | `(implicit, UI-driven)` | **UI** | User clicks Approve. UI writes `storyboard.approval = {approvedAt: <ISO8601>}`. Status stays `storyboard_ready` — you observe the field and start Phase 6. |
-| `storyboard_ready → draft` | **you** (this skill) | Every `storyboard.scenes[i]` has a matching clip in `tracks[0]` (either `generation.sceneId === scene.id` OR a `batchShots[]` entry for it). |
+| `storyboard_ready → draft` | **you** (this skill) | Every `storyboard.scenes[i]` has a matching clip in `tracks[0].items` (either `generation.sceneId === scene.id` OR a `batchShots[]` entry for it). |
 | `draft → final` | **human** (via UI) | Manual review. Out of scope for this skill. |
 
 ---
@@ -69,10 +69,10 @@ Never trust the user's chat message alone as the authorization signal. The file 
 
 ### Step A — determine the scene set to generate
 
-Iterate `storyboard.scenes[]`. For each scene, check for a matching clip on `tracks[0]`:
+Iterate `storyboard.scenes[]`. For each scene, check for a matching clip on `tracks[0].items`:
 
-- **Single-shot origin**: `tracks[0].some(c => c.generation?.sceneId === scene.id)`.
-- **Batched origin**: `tracks[0].some(c => c.generation?.batchShots?.some(shot => shot.sceneId === scene.id))`.
+- **Single-shot origin**: `tracks[0].items.some(c => c.generation?.sceneId === scene.id)`.
+- **Batched origin**: `tracks[0].items.some(c => c.generation?.batchShots?.some(shot => shot.sceneId === scene.id))`.
 
 A scene is "already done" if EITHER check passes. Then:
 
@@ -84,7 +84,7 @@ This makes generation idempotent and incremental:
 
 - **Full approval (first run):** all scenes generate.
 - **Re-approval after editing specific scenes:** only the changed scenes regenerate. Unchanged scenes keep their existing clips.
-- **Selective regeneration (user asks to redo specific scenes):** remove the clip for that scene from `tracks[0]`, then call `kling_generate --project-id X --scene-id Y`. The step's dedup guard replaces any existing clip for the same sceneId, so you can also just re-run the step — it overwrites.
+- **Selective regeneration (user asks to redo specific scenes):** remove the clip for that scene from `tracks[0].items`, then call `kling_generate --project-id X --scene-id Y`. The step's dedup guard replaces any existing clip for the same sceneId, so you can also just re-run the step — it overwrites.
 
 **Never regenerate all scenes when only some changed.** Each Kling call costs credits and takes ~60s. If the user edited scenes 1 and 3, generate only those two. The agent should diff the user's changes against the current storyboard to determine which scenes need regeneration.
 
@@ -101,7 +101,7 @@ When parallel results land out of narrative order, compute each clip's `start`/`
 **How to fire in parallel:** Include multiple tool calls in one assistant message. For example, if you have 5 scenes and are capping at 4 concurrent:
 
 1. First message: call `kling_generate` for scenes 1, 2, 3, 4 simultaneously (4 tool calls in one response).
-2. When results arrive, write all 4 clips to `tracks[0]`.
+2. When results arrive, write all 4 clips to `tracks[0].items`.
 3. Second message: call `kling_generate` for scene 5.
 4. Write the final clip and check if all scenes are done → set status to `draft`.
 
@@ -116,7 +116,7 @@ Group up to 6 scenes into ONE `kling_generate` call using `--multi-shot --shot-t
 Trade-offs:
 - **Per-shot prompt cap is 512 chars**, not 2500. Write tighter per-scene prose.
 - **No `--first-frame` / `--last-frame`** — frame control isn't supported. Incompatible with chained.
-- **All-or-nothing failure.** If the batch fails on one scene, the whole batch is lost. Regenerating a single scene from a completed batch runs as a single-shot call spliced into `tracks[0]`.
+- **All-or-nothing failure.** If the batch fails on one scene, the whole batch is lost. Regenerating a single scene from a completed batch runs as a single-shot call spliced into `tracks[0].items`.
 - **One clip per batch, not per scene.** Store per-scene mapping in `generation.batchShots[]` (see Step D).
 - **Storyboard > 6 scenes** → split into multiple batches.
 
@@ -195,7 +195,7 @@ kling_generate \
 
 Add `--first-frame <path>` for chained mode (N-1's last frame).
 
-**On success:** append a new clip to `tracks[0]`:
+**On success:** append a new clip to `tracks[0].items`:
 
 ```json
 {
@@ -222,9 +222,9 @@ The prompt stored on `generation.prompt` is the **caller's composed string** (st
 
 **Post-download normalization:** After a clip is saved, `save_clip_to_project` automatically probes it and normalizes to the project's resolution and fps (from `project.settings`) if they don't match. For example, Kling outputs 1280x720 H.264 clips, which are upscaled to the project resolution (typically 1920x1080). The normalized file is written alongside the original (`*_normalized.mp4`) and `clip.src` is updated to point to it. If normalization fails, the original clip is kept as-is.
 
-**Write `project.json` back IMMEDIATELY after each scene completes** — do not batch writes. The UI watches for changes via SSE and flips scene chips from "pending" → "done" in real time. If you wait until all scenes finish to write, the user sees no progress for minutes. Each `kling_generate` call returns → append the clip to `tracks[0]` → save `project.json` → move to the next result. When running scenes in parallel, save after EACH result lands (not after all parallel calls complete).
+**Write `project.json` back IMMEDIATELY after each scene completes** — do not batch writes. The UI watches for changes via SSE and flips scene chips from "pending" → "done" in real time. If you wait until all scenes finish to write, the user sees no progress for minutes. Each `kling_generate` call returns → append the clip to `tracks[0].items` → save `project.json` → move to the next result. When running scenes in parallel, save after EACH result lands (not after all parallel calls complete).
 
-**On failure:** record `storyboard.scenes[i].lastError = {ts: <ISO8601>, message: <error>}` and write `project.json` back immediately. Do NOT append to `tracks[0]`. Continue to the next scene. The UI updates in real-time via SSE.
+**On failure:** record `storyboard.scenes[i].lastError = {ts: <ISO8601>, message: <error>}` and write `project.json` back immediately. Do NOT append to `tracks[0].items`. Continue to the next scene. The UI updates in real-time via SSE.
 
 **On retry after failures:** Before retrying failed scenes, clear `lastError` on each scene you're about to retry — set `storyboard.scenes[i].lastError = undefined` and write `project.json`. This resets the UI's red "failed" chips back to "pending" so the user sees live progress. Then proceed with generation as normal. On success, the clip write naturally clears the failed state in the UI.
 
@@ -255,7 +255,7 @@ kling_generate \
 
 Refs passed apply to any shot in the batch. Cap still 7 total.
 
-**On success:** append ONE clip to `tracks[0]` representing the whole batch:
+**On success:** append ONE clip to `tracks[0].items` representing the whole batch:
 
 ```json
 {
@@ -283,13 +283,13 @@ Refs passed apply to any shot in the batch. Cap still 7 total.
 
 `batchShots[i].start` / `end` are **relative to the batch clip**, not the project timeline. The UI uses these for per-scene progress.
 
-**On failure (batch-level):** the whole batch is lost. Record `storyboard.scenes[i].lastError = {ts, message, batchId}` on EVERY scene in the batch. Do NOT append to `tracks[0]`. The user can re-click Approve (Step A skips scenes with existing clips — retry is automatic for batches with no clip) or edit individual prompts and retry.
+**On failure (batch-level):** the whole batch is lost. Record `storyboard.scenes[i].lastError = {ts, message, batchId}` on EVERY scene in the batch. Do NOT append to `tracks[0].items`. The user can re-click Approve (Step A skips scenes with existing clips — retry is automatic for batches with no clip) or edit individual prompts and retry.
 
 ### Step E — Audio generation, then wrap up
 
 **Important: generate audio BEFORE setting status to `draft`.** Setting `draft` routes the user to ReviewView — audio tracks must already be on the project by then.
 
-After all scenes have clips on `tracks[0]`, process the audio intake fields first (Step E.1), then set status (Step E.2).
+After all scenes have clips on `tracks[0].items`, process the audio intake fields first (Step E.1), then set status (Step E.2).
 
 #### Step E.1 — Audio generation and assembly
 
@@ -434,7 +434,7 @@ After all scenes have clips, run the eval loop:
 
 The step evaluates each clip against a 5-dimension quality rubric (character match, physics, anatomy, action, standalone) using Gemini. If a clip fails, the step regenerates it via Kling (non-deterministic re-roll with the same composed prompt) and re-evaluates, up to `max-retries` times. Previous attempts are preserved as versioned files (`scene-1-v2.mp4`, etc.) and recorded in `generation.attempts[]` with their eval verdicts.
 
-Results are stored on `tracks[0][i].generation.eval` — `{pass, scores, attempt}`.
+Results are stored on `tracks[0].items[i].generation.eval` — `{pass, scores, attempt}`.
 
 **When to skip:** If the user says they're happy with the clips, want to iterate manually, or are cost-sensitive (each eval = 1 Gemini call + potentially N Kling calls per scene).
 
@@ -446,7 +446,7 @@ Results are stored on `tracks[0][i].generation.eval` — `{pass, scores, attempt
 
 Treat the project like any other. Respond to timeline-editing requests.
 
-Don't touch the `generation` block on `tracks[0]` clips unless explicitly asked ("regenerate scene 3 with a different prompt"). That block is a frozen snapshot of what produced the clip.
+Don't touch the `generation` block on `tracks[0].items` clips unless explicitly asked ("regenerate scene 3 with a different prompt"). That block is a frozen snapshot of what produced the clip.
 
 ### Processing the regenQueue
 
@@ -455,13 +455,13 @@ Don't touch the `generation` block on `tracks[0]` clips unless explicitly asked 
 **Verification guard (same spirit as Phase 6's approval guard):**
 1. `project.projectType === "ai_video"`.
 2. `project.regenQueue` is a non-empty array.
-3. Each entry's `clipId` matches a real item in `tracks[0]`.
+3. Each entry's `clipId` matches a real item in `tracks[0].items`.
 
 Bad entries → tell the user, do NOT drop silently.
 
 **For each entry, in order:**
 
-1. **Locate the clip.** `clip = tracks[0].find(c => c.id === entry.clipId)`. If missing → set `entry.lastError = {ts, message: "clip not found"}`, continue to next entry.
+1. **Locate the clip.** `clip = tracks[0].items.find(c => c.id === entry.clipId)`. If missing → set `entry.lastError = {ts, message: "clip not found"}`, continue to next entry.
 
 2. **Extract continuity frames if needed (subcut + toggle on):**
    - `entry.useFirstFrame === true` → `snapshot --input <clip.src> --at <entry.subrange.start> --out <frame_first.jpg>`.
@@ -486,7 +486,7 @@ Bad entries → tell the user, do NOT drop silently.
    - `--out <workspace_path>`
    - `--external-task-id <entry.id>`
 
-4. **Patch `tracks[0]` based on mode:**
+4. **Patch `tracks[0].items` based on mode:**
 
    **`mode: "full"`** — replace in place:
    - Push `{ts, prompt: <clip.generation.prompt>, src: <clip.src>}` onto `clip.generation.attempts[]`.
@@ -498,7 +498,7 @@ Bad entries → tell the user, do NOT drop silently.
    - **Left piece** (if non-zero duration): `inPoint = clip.inPoint`, `outPoint = entry.subrange.start`; timeline span `start = clip.start`, `end = clip.start + (subrange.start - clip.inPoint)`. Inherits `clip.generation` unchanged.
    - **Middle piece** (new): `src = <new path>`, `inPoint = 0`, `outPoint = entry.duration`; timeline span starts where left ends. Fresh `generation`: `{sceneId: clip.generation.sceneId, provider: "kling", model: entry.model, prompt: entry.prompt, refImages: entry.refImages, duration: entry.duration, attempts: []}`.
    - **Right piece** (if non-zero duration): `inPoint = entry.subrange.end`, `outPoint = clip.outPoint`; timeline span starts where middle ends. Inherits `clip.generation` unchanged.
-   - Replace the single `tracks[0]` entry with the non-degenerate pieces in order. Ripple subsequent clips.
+   - Replace the single `tracks[0].items` entry with the non-degenerate pieces in order. Ripple subsequent clips.
    - Degenerate case: subrange covers the whole clip → no left/right → equivalent to full-scene regen. No special-case logic needed.
 
 5. **Remove the processed entry** from `regenQueue`. Write `project.json`.
@@ -510,7 +510,7 @@ Bad entries → tell the user, do NOT drop silently.
 **Regen contract — what NOT to do:**
 - Don't process `regenQueue` entries before the user triggers you. The queue being non-empty doesn't mean "go" — wait for the chat message, same pattern as `storyboard.approval` in Phase 6.
 - Don't process entries in parallel if they target overlapping clips. Sequential avoids races.
-- Don't mutate `storyboard.scenes[]` during regen. Editorial plan stays stable; regen operates on `tracks[0]` only.
+- Don't mutate `storyboard.scenes[]` during regen. Editorial plan stays stable; regen operates on `tracks[0].items` only.
 - Don't drop bad entries silently. Record `lastError` so the user can fix and retry.
 - Don't pass `entry.prompt` raw as `--prompt` — compose it first (tokens + ref clause + styleAnchor). The connector does NOT add tokens; you must.
 - Don't skip the snapshot step when `useFirstFrame` / `useLastFrame` is set. Those toggles are the user's explicit continuity request; honor them.
@@ -524,14 +524,14 @@ One table of every field you write, grouped by phase.
 | Field | When | What |
 |-------|------|------|
 | `project.storyboard.scenes[i].lastError` | phase 6 | Optional per-scene error record. Clear on eventual success. For batched failures, stamp on every scene in the failed batch. |
-| `project.tracks[0]` | phase 6 | **Append** real clips only. Never stubs, never empty-src items. |
-| `project.tracks[0][i].generation.*` (single-shot) | phase 6 | Frozen snapshot: `{sceneId, provider, model, prompt, refImages, duration, attempts}`. |
-| `project.tracks[0][i].generation.multiShot / shotType / batchShots` | phase 6, batched only | Batched clip metadata; `batchShots[]` carries per-scene mapping inside the concatenated output. |
-| `project.tracks[0][i].generation.attempts` | post-draft regen (Phase 7 regenQueue drain) | Append previous `{ts, prompt, src}` before overwriting on a `mode: "full"` regen. For `mode: "subcut"`, the middle piece is a fresh clip with empty `attempts[]`; the left/right pieces inherit the original clip's attempts unchanged. |
+| `project.tracks[0].items` | phase 6 | **Append** real clips only. Never stubs, never empty-src items. |
+| `project.tracks[0].items[i].generation.*` (single-shot) | phase 6 | Frozen snapshot: `{sceneId, provider, model, prompt, refImages, duration, attempts}`. |
+| `project.tracks[0].items[i].generation.multiShot / shotType / batchShots` | phase 6, batched only | Batched clip metadata; `batchShots[]` carries per-scene mapping inside the concatenated output. |
+| `project.tracks[0].items[i].generation.attempts` | post-draft regen (Phase 7 regenQueue drain) | Append previous `{ts, prompt, src}` before overwriting on a `mode: "full"` regen. For `mode: "subcut"`, the middle piece is a fresh clip with empty `attempts[]`; the left/right pieces inherit the original clip's attempts unchanged. |
 | `project.regenQueue` | Phase 7 | UI and CLI append entries. Agent drains on trigger — remove on success, set `lastError` on failure. |
 | `project.storyboard.music` | intake | `{ mode: 'upload', path }` or `{ mode: 'describe', prompt }`. Project-wide music brief. |
 | `project.storyboard.voiceover` | intake | `{ prompt }`. Project-wide voiceover script or brief. |
-| `project.audio.tracks` (music/voiceover entries) | phase 6 | Appended after all scene clips are on `tracks[0]`. Music at volume 0.3 with ducking enabled; voiceover at volume 1.0. Stripped and re-created on Phase 6 re-runs. |
+| `project.audio.tracks` (music/voiceover entries) | phase 6 | Appended after all scene clips are on `tracks[0].items`. Music at volume 0.3 with ducking enabled; voiceover at volume 1.0. Stripped and re-created on Phase 6 re-runs. |
 | `project.status` → `draft` | end of Phase 6 | Only when every `storyboard.scenes[i]` has a matching clip (single-shot sceneId OR batchShots sceneId). |
 
 ---
@@ -545,10 +545,10 @@ One table of every field you write, grouped by phase.
 - **Don't set non-integer `scenes[i].duration`.** Kling's per-scene enum is integers (3–15 single-shot, 1–N multi-shot). Floats get silently clamped; apparent length drifts from your plan.
 - **Don't call `kling_generate` before `storyboard.approval` is set.** Premature generation wastes credits.
 - **Don't overwrite `storyboard.approval`.** The UI owns that field.
-- **Don't mutate `tracks[0][i].generation` to "edit the scene".** That block is a frozen snapshot. To change editorial intent, edit `storyboard.scenes[i]`. To actually regenerate with new settings, queue a `regenQueue` entry (via UI, CLI, or by writing one yourself in chat) and drain per Phase 7.
+- **Don't mutate `tracks[0].items[i].generation` to "edit the scene".** That block is a frozen snapshot. To change editorial intent, edit `storyboard.scenes[i]`. To actually regenerate with new settings, queue a `regenQueue` entry (via UI, CLI, or by writing one yourself in chat) and drain per Phase 7.
 - **Don't regenerate scenes that already have a clip** when the user re-approves. The skip-if-clip-exists check in Phase 6 Step A is mandatory — partial-approval retries depend on it.
-- **Don't put scenes on `tracks[0]` before they've been generated.** `tracks[0]` holds real clips only — no stubs, no empty-src items.
-- **Don't set `project.status` to `"draft"` until every `storyboard.scenes[i]` has a matching clip in `tracks[0]`.**
+- **Don't put scenes on `tracks[0].items` before they've been generated.** `tracks[0].items` holds real clips only — no stubs, no empty-src items.
+- **Don't set `project.status` to `"draft"` until every `storyboard.scenes[i]` has a matching clip in `tracks[0].items`.**
 - **Don't chain scenes via `--first-frame` by default.** Hard cuts are the standard. Frame bridging produces morphy AI-slop transitions. Reserve `--first-frame` for deliberate match-cuts (rare, user-requested only).
 - **Don't include `## Dialogue` in scene prompts when `storyboard.voiceover` is set.** Kling-generated dialogue competes with TTS voiceover — omit it so scenes only produce ambient SFX.
 - **Don't skip the Phase 6 re-run cleanup for audio tracks.** Always strip prior `music`, `music-*`, and `voiceover` tracks before appending new ones — prevents stale accumulation on re-approval.

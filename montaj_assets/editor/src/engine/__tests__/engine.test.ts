@@ -22,8 +22,8 @@ function canvasProject(overlayEnd = 4): Project {
     status: 'draft',
     settings: { resolution: [1080, 1920], fps: 30 },
     tracks: [
-      [{ id: 'img', type: 'image', src: '/bg.png', start: 0, end: overlayEnd }],
-      [{ id: 'o', type: 'overlay', src: '/o.jsx', start: 0, end: overlayEnd }],
+      { id: 'trk-0', items: [{ id: 'img', type: 'image', src: '/bg.png', start: 0, end: overlayEnd }] },
+      { id: 'trk-1', items: [{ id: 'o', type: 'overlay', src: '/o.jsx', start: 0, end: overlayEnd }] },
     ],
   } as Project
 }

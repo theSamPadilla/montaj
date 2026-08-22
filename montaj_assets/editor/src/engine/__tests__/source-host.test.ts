@@ -27,6 +27,8 @@ interface FakeServerState {
 }
 interface FakeClockState {
   volume: number
+  /** What `createMasterClock` was asked for — a muted clip gets a wall clock, not an audio one. */
+  muted: boolean
   disposed: boolean
   setVolume: ReturnType<typeof vi.fn>
 }
@@ -94,6 +96,7 @@ vi.mock('../audio-clock', async (importOriginal) => {
     createMasterClock: vi.fn(async (opts: { volume?: number; muted?: boolean; startProjectS: number }) => {
       const state: FakeClockState = {
         volume: opts.muted ? 0 : (opts.volume ?? 1),
+        muted: !!opts.muted,
         disposed: false,
         setVolume: vi.fn((v: number) => {
           state.volume = v
@@ -152,12 +155,13 @@ function videoItem(overrides: Partial<VisualItem> = {}): VisualItem {
   } as VisualItem
 }
 
-function videoProject(item: VisualItem): Project {
+/** `track` carries the TRACK's own settings — absent on every project nobody has touched. */
+function videoProject(item: VisualItem, track: { volume?: number; muted?: boolean } = {}): Project {
   return {
     id: 'p1',
     status: 'draft',
     settings: { resolution: [1080, 1920], fps: 30 },
-    tracks: [[item]],
+    tracks: [{ id: 'trk-0', items: [item], ...track }],
   } as Project
 }
 
@@ -233,6 +237,122 @@ describe('EngineSourceHost.retain — trim, mute and volume edits', () => {
   })
 })
 
+describe('EngineSourceHost.retain — the TRACK\'s volume and mute', () => {
+  // The host never learns that tracks exist: the scheduler folds each clip's
+  // track into the request before it is built, so everything below is the
+  // SAME two branches the clip-level cases above exercise — a live `setVolume`
+  // for a volume change, a respawn for a mute change.
+
+  it('builds the clock at the PRODUCT of the track and clip volumes', async () => {
+    // Multiplying, not replacing: a clip mixed down to 0.8 under a track at
+    // half stays at 0.4, not at 0.5.
+    const engine = createEngine(videoProject(videoItem({ volume: 0.8 }), { volume: 0.5 }), {
+      fileUrl: (p) => p,
+      nowMs: () => 0,
+    })
+    engine.seek(0)
+    await flush()
+    expect(clockInstances[0].volume).toBeCloseTo(0.4, 10)
+    engine.dispose()
+  })
+
+  it('keeps the mix between two clips when the track is pulled down', async () => {
+    // The property that makes the product rule right: both clips move by the
+    // same factor, so the 2:1 balance the editor set survives the track fader.
+    const a = videoItem({ id: 'a', start: 0, end: 3, outPoint: 3, volume: 0.8 })
+    const b = videoItem({ id: 'b', src: '/media/b.mov', proxySrc: '/proxies/b_proxy.mp4', start: 3, end: 6, inPoint: 0, outPoint: 3, volume: 0.4 })
+    const project: Project = {
+      id: 'p1',
+      status: 'draft',
+      settings: { resolution: [1080, 1920], fps: 30 },
+      tracks: [{ id: 'trk-0', items: [a, b], volume: 0.5 }],
+    } as Project
+    const engine = createEngine(project, { fileUrl: (p) => p, nowMs: () => 0 })
+
+    engine.seek(2) // 'a' active, 'b' inside the prewarm lead — both sessions build
+    await flush()
+
+    expect(clockInstances).toHaveLength(2)
+    expect(clockInstances[0].volume).toBeCloseTo(0.4, 10)
+    expect(clockInstances[1].volume).toBeCloseTo(0.2, 10)
+    expect(clockInstances[0].volume / clockInstances[1].volume).toBeCloseTo(2, 10)
+
+    engine.dispose()
+  })
+
+  it('leaves the clip volume alone when the track carries no settings', async () => {
+    const engine = createEngine(videoProject(videoItem({ volume: 0.8 })), { fileUrl: (p) => p, nowMs: () => 0 })
+    engine.seek(0)
+    await flush()
+    expect(clockInstances[0].volume).toBeCloseTo(0.8, 10)
+    engine.dispose()
+  })
+
+  it('mutes a clip on a muted track whatever its own volume says', async () => {
+    // `muted` is a construction-time decision (a muted clip runs on a wall
+    // clock, not an audio one), so this has to reach `createMasterClock`
+    // itself — a volume of 0 would not be the same thing.
+    const engine = createEngine(videoProject(videoItem({ volume: 2 }), { muted: true }), {
+      fileUrl: (p) => p,
+      nowMs: () => 0,
+    })
+    engine.seek(0)
+    await flush()
+    expect(clockInstances[0].muted).toBe(true)
+    expect(clockInstances[0].volume).toBe(0)
+    engine.dispose()
+  })
+
+  it('keeps a muted clip muted on an unmuted track', async () => {
+    const engine = createEngine(videoProject(videoItem({ muted: true }), { volume: 1 }), {
+      fileUrl: (p) => p,
+      nowMs: () => 0,
+    })
+    engine.seek(0)
+    await flush()
+    expect(clockInstances[0].muted).toBe(true)
+    engine.dispose()
+  })
+
+  it('rebuilds the session when the TRACK mute toggles, exactly as a clip mute does', async () => {
+    const item = videoItem({ muted: false })
+    const engine = createEngine(videoProject(item), { fileUrl: (p) => p, nowMs: () => 0 })
+    engine.seek(0)
+    await flush()
+    expect(clockInstances).toHaveLength(1)
+    expect(clockInstances[0].muted).toBe(false)
+
+    // Same clip, muted track. Compare with 'rebuilds the session when muted
+    // toggles' above: identical outcome, which is the whole point of folding
+    // before the request is built rather than teaching `retain` about tracks.
+    engine.updateProject(videoProject(item, { muted: true }))
+    await flush()
+
+    expect(clockInstances).toHaveLength(2)
+    expect(clockInstances[0].disposed).toBe(true)
+    expect(clockInstances[1].muted).toBe(true)
+
+    engine.dispose()
+  })
+
+  it('pushes a TRACK volume change to the live clock instead of rebuilding', async () => {
+    const item = videoItem({ volume: 0.8 })
+    const engine = createEngine(videoProject(item, { volume: 1 }), { fileUrl: (p) => p, nowMs: () => 0 })
+    engine.seek(0)
+    await flush()
+    expect(clockInstances).toHaveLength(1)
+
+    engine.updateProject(videoProject(item, { volume: 0.5 }))
+    await flush()
+
+    expect(clockInstances).toHaveLength(1) // no rebuild — a fader move must not restart the decoder
+    expect(clockInstances[0].setVolume).toHaveBeenCalledWith(0.4)
+    expect(clockInstances[0].volume).toBeCloseTo(0.4, 10)
+
+    engine.dispose()
+  })
+})
+
 describe('EngineSourceHost.abandonDemux — every waiter must abandon before the fetch aborts', () => {
   it('aborts only once the SECOND of two clips sharing an in-flight demux drops (not the first)', () => {
     // Two clips cut from the SAME proxy — the doc's own "fifty clips off one
@@ -248,7 +368,7 @@ describe('EngineSourceHost.abandonDemux — every waiter must abandon before the
       id: 'p1',
       status: 'draft',
       settings: { resolution: [1080, 1920], fps: 30 },
-      tracks: [[a, b]],
+      tracks: [{ id: 'trk-0', items: [a, b] }],
     } as Project
     const engine = createEngine(project, { fileUrl: (p) => p, nowMs: () => 0 })
 
@@ -256,7 +376,7 @@ describe('EngineSourceHost.abandonDemux — every waiter must abandon before the
     expect(demuxSignals).toHaveLength(1) // one shared in-flight fetch, not two
 
     // Drop both clips before the shared demux ever resolves.
-    engine.updateProject({ ...project, tracks: [[]] } as Project)
+    engine.updateProject({ ...project, tracks: [{ id: 'trk-0', items: [] }] } as Project)
 
     expect(demuxSignals[0].aborted).toBe(true)
 

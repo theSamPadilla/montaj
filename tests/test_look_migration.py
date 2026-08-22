@@ -19,6 +19,7 @@ import pytest
 
 import serve.routes.projects as projects_mod
 from serve.routes.projects import get_project
+from lib.project_tracks import track_items
 
 PID = "55555555-5555-4555-8555-555555555555"
 PID2 = "66666666-6666-4666-8666-666666666666"
@@ -159,7 +160,11 @@ def _legacy_artifacts(src: Path) -> tuple[Path, Path]:
 
 
 def _item(project: dict, track: int = 0, index: int = 0) -> dict:
-    return project["tracks"][track][index]
+    # Shape-tolerant: `project["tracks"][track]` is a bare item list before the
+    # T6 lazy shape migration runs (raw fixtures, or a project read straight
+    # off disk pre-open) and `{"id", "items"}` after (the body `get_project`
+    # returns, or a re-read of a project.json it already touched).
+    return track_items(project)[track][index]
 
 
 async def _settle() -> None:
@@ -441,10 +446,10 @@ def test_overlay_track_video_items_are_migrated(workspace, encodes, probe_hdr):
 
     assert len(encodes.proxy) == 1
     assert encodes.proxy[0][0] == os.path.realpath(overlay_src)
-    overlay_item = _read(project_dir)["tracks"][1][1]
+    overlay_item = _item(_read(project_dir), track=1, index=1)
     assert overlay_item["proxySrc"] == encodes.proxy[0][1]
     # The image item alongside it is untouched.
-    assert _read(project_dir)["tracks"][1][0] == {
+    assert _item(_read(project_dir), track=1, index=0) == {
         "id": "logo", "type": "image", "src": str(project_dir / "logo.png"),
         "start": 0.0, "end": 5.0,
     }
@@ -467,15 +472,23 @@ def test_proxy_opt_out_is_honoured(workspace, encodes, probe_hdr):
 
 
 def test_clean_project_is_not_rewritten(workspace, encodes, probe_hdr):
-    """A project with no artifact fields at all: no probe, no write, no jobs."""
+    """A project with no artifact fields at all: no probe, no jobs, and LOOK
+    migration itself makes no change. The one write this open still performs
+    is T6's lazy track-shape convergence (`_make_project` writes the legacy
+    `tracks: [[item]]` shape) — that pass is independent of look migration, so
+    the file after open must be exactly the shape-normalized `before`, nothing
+    more."""
+    from lib.project_tracks import normalize_tracks
+
     project_dir, src = _make_project(workspace, PID)
-    before = (project_dir / "project.json").read_text()
+    before = json.loads((project_dir / "project.json").read_text())
+    expected = normalize_tracks(before)
 
     body = _open_and_settle(PID, project_dir)
 
     assert encodes.total == 0
-    assert (project_dir / "project.json").read_text() == before
-    assert body == json.loads(before)
+    assert json.loads((project_dir / "project.json").read_text()) == expected
+    assert body == expected
 
 
 def test_failed_encode_leaves_field_cleared(workspace, encodes, probe_hdr, monkeypatch):

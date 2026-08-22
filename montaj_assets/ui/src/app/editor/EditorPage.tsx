@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useParams, useLocation, useNavigate } from 'react-router-dom'
 import { api } from '@/lib/api'
-import { ProjectContext, type Asset, type Project, type RunSnapshot } from '@/lib/types/schema'
+import { ProjectContext, normalizeTracks, trackItems, type Asset, type Project, type RunSnapshot } from '@/lib/types/schema'
 import { useProjectStream } from '@/lib/sse'
 import { createMontajAdapter } from './montajAdapter'
 import { useIsMobile } from '@/lib/useIsMobile'
-import { CarouselEditor, VideoEditor, ImageToneMenu, defaultMontajTheme, type EditorSlots, type ImageTone } from '@bycrux/editor'
+import { Upload } from 'lucide-react'
+import { CarouselEditor, VideoEditor, defaultMontajTheme, type EditorSlots, type ImageTone } from '@bycrux/editor'
 import AssetsPanel from '@/components/AssetsPanel'
 import ProjectHeader from '@/components/ProjectHeader'
 import RerunModal from '@/components/RerunModal'
@@ -36,7 +37,7 @@ function formatRelativeTime(iso: string): string {
 }
 
 function SnapshotCard({ snapshot, index, onRestore }: { snapshot: RunSnapshot; index: number; onRestore: () => void }) {
-  const clipCount = snapshot.tracks?.[0]?.length ?? 0
+  const clipCount = trackItems(snapshot)[0]?.length ?? 0
   const capCount  = snapshot.captions?.segments.length ?? 0
 
   return (
@@ -172,9 +173,11 @@ export default function EditorPage() {
   // pipeline re-run. Inspector/subcut state is owned by VideoEditor (render-prop
   // seams); only the Re-run modal toggle is host-local here.
   const [rerunOpen, setRerunOpen] = useState(false)
-  // VideoEditor pushes the image-tone state up so the setting lives in the page
-  // header (null when the project is SDR and the control should not appear).
-  const [imageToneApi, setImageToneApi] = useState<{ value: ImageTone; set: (tone: ImageTone) => void } | null>(null)
+  // VideoEditor pushes the image-tone state up via onProvideImageTone. The
+  // control now lives inside the Export dialog (moved out of the page header),
+  // but the callback stays wired: providing it suppresses the package toolbar's
+  // fallback tone menu. We only need the setter — the value is read in-dialog.
+  const [, setImageToneApi] = useState<{ value: ImageTone; set: (tone: ImageTone) => void } | null>(null)
   // VideoEditor hands us a stable `openRender()` trigger (it owns the RenderModal);
   // we host the Render button in the ProjectHeader instead of the package toolbar.
   const [openRender, setOpenRender] = useState<(() => void) | null>(null)
@@ -212,12 +215,17 @@ export default function EditorPage() {
     async (snapshot: RunSnapshot) => {
       const base = projectRef.current ?? project
       if (!base) return
-      const restored: Project = {
+      // `normalizeTracks` because a snapshot is a point-in-time copy of
+      // whatever `tracks` looked like when the run finished — snapshots already
+      // on disk hold the legacy array-of-arrays shape, and restoring one must
+      // not put that shape back into a live project. Converged snapshots are
+      // returned unchanged (identity), so this costs nothing for new ones.
+      const restored: Project = normalizeTracks({
         ...base,
         status: 'draft',
         tracks: snapshot.tracks,
         captions: snapshot.captions,
-      }
+      })
       handleProjectChange(restored)
       try {
         await api.saveProject(base.id, restored)
@@ -295,7 +303,7 @@ export default function EditorPage() {
           <div className="w-5 h-5 rounded-full border-2 border-gray-700 border-t-gray-400 animate-spin" />
           <p className="text-gray-300 text-sm">
             <span className="text-white font-medium">
-              {(project?.tracks?.[0] ?? []).length} clip(s)
+              {(trackItems(project)[0] ?? []).length} clip(s)
             </span>
             {' queued. Agent is working:'}
           </p>
@@ -396,27 +404,18 @@ export default function EditorPage() {
                   ← Storyboard
                 </Button>
               )}
-              {/* HDR image color mapping, surfaced as a page-header setting.
-                  VideoEditor owns the state + save path and hands it up via
-                  onProvideImageTone; null means SDR project (no control). */}
-              {imageToneApi && (
-                <ImageToneMenu
-                  variant="header"
-                  value={imageToneApi.value}
-                  onChange={imageToneApi.set}
-                />
-              )}
               {project.status !== 'pending' && (
                 <Button variant="outline" size="sm" onClick={() => setRerunOpen(true)}>
                   Re-run
                 </Button>
               )}
-              {/* Render lives in the header for the local OS editor (the package's
+              {/* Export lives in the header for the local OS editor (the package's
                   toolbar button is suppressed via onProvideRenderTrigger below).
                   Shown once the package hands us the trigger (review mode only). */}
               {openRender && (
-                <Button size="sm" onClick={openRender}>
-                  Render →
+                <Button size="sm" onClick={openRender} className="gap-1.5">
+                  <Upload className="w-3.5 h-3.5" />
+                  Export
                 </Button>
               )}
             </>
@@ -448,7 +447,7 @@ export default function EditorPage() {
               />
             )}
             renderSubcutRegen={({ clipId, onClose }) => {
-              const clip = (project.tracks?.[0] ?? []).find(c => c.id === clipId)
+              const clip = (trackItems(project)[0] ?? []).find(c => c.id === clipId)
               if (!clip) return null
               return (
                 <SubcutRegenTool

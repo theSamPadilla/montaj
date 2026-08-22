@@ -48,76 +48,133 @@ describe('createShuttleController', () => {
     }
   }
 
-  it('press() pauses playback once, from idle, and starts the loop', () => {
+  // Model real playback as a flag the play/pause deps flip, so isPlaying()
+  // reflects what the shuttle just did — exactly like the engine transport.
+  function makeDeps(clock: ReturnType<typeof createPlaybackClock>, getDuration = () => 100) {
+    let playing = false
+    const play = vi.fn(() => { playing = true })
+    const pause = vi.fn(() => { playing = false })
+    const fake = makeFakeRaf()
+    return {
+      play, pause, fake,
+      setPlaying: (v: boolean) => { playing = v },
+      deps: {
+        clock, getDuration,
+        isPlaying: () => playing,
+        play, pause,
+        raf: fake.raf, caf: fake.caf,
+      },
+    }
+  }
+
+  it('+1x is real playback with audio: press(1) from idle plays, no seek-loop', () => {
     const clock = createPlaybackClock(10)
-    const pause = vi.fn()
-    const { raf, caf } = makeFakeRaf()
-    const controller = createShuttleController({
-      clock, getDuration: () => 100, isPlaying: () => false, pause, raf, caf,
-    })
+    const { deps, play, pause, fake } = makeDeps(clock)
+    const controller = createShuttleController(deps)
 
     controller.press(1)
-    expect(pause).toHaveBeenCalledTimes(1)
+    expect(play).toHaveBeenCalledTimes(1)  // engine transport (audio) started
+    expect(pause).not.toHaveBeenCalled()
     expect(controller.getRate()).toBe(1)
+    expect(fake.hasPending()).toBe(false)  // NOT the silent seek-loop
+    expect(clock.get()).toBe(10)           // the shuttle isn't driving the clock
+  })
+
+  it('pressing L again leaves +1x for the silent 2x seek-loop, muting audio', () => {
+    const clock = createPlaybackClock(0)
+    const { deps, pause, fake } = makeDeps(clock)
+    const controller = createShuttleController(deps)
+
+    controller.press(1)                     // real play @1x
+    controller.press(1)                     // -> 2x seek-loop
+    expect(pause).toHaveBeenCalledTimes(1)  // real playback muted before scrubbing
+    expect(controller.getRate()).toBe(2)
+    expect(fake.hasPending()).toBe(true)
 
     // A same-direction repeat only bumps the rate — it must NOT pause again.
     controller.press(1)
     expect(pause).toHaveBeenCalledTimes(1)
-    expect(controller.getRate()).toBe(2)
+    expect(controller.getRate()).toBe(4)
   })
 
-  it('K (stop) zeroes the rate and cancels the loop', () => {
+  it('reverse is always a silent seek-loop, never real playback', () => {
+    const clock = createPlaybackClock(50)
+    const { deps, play, fake } = makeDeps(clock)
+    const controller = createShuttleController(deps)
+
+    controller.press(-1)
+    expect(play).not.toHaveBeenCalled()
+    expect(controller.getRate()).toBe(-1)
+    expect(fake.hasPending()).toBe(true)
+  })
+
+  it('resetting from a reverse loop back to +1x returns to real playback', () => {
+    const clock = createPlaybackClock(50)
+    const { deps, play, fake } = makeDeps(clock)
+    const controller = createShuttleController(deps)
+
+    controller.press(-1)                   // reverse loop
+    expect(fake.hasPending()).toBe(true)
+    controller.press(1)                    // opposite dir -> +1x -> real play
+    expect(play).toHaveBeenCalledTimes(1)
+    expect(controller.getRate()).toBe(1)
+    expect(fake.hasPending()).toBe(false)  // loop cancelled
+  })
+
+  it('stop() pauses shuttle-started real playback', () => {
+    const clock = createPlaybackClock(0)
+    const { deps, pause } = makeDeps(clock)
+    const controller = createShuttleController(deps)
+    controller.press(1)          // real play @1x
+    controller.stop()
+    expect(pause).toHaveBeenCalledTimes(1)
+    expect(controller.getRate()).toBe(0)
+  })
+
+  it('K (stop) zeroes the rate and cancels a running seek-loop', () => {
     const clock = createPlaybackClock(10)
-    const { raf, caf, hasPending } = makeFakeRaf()
-    const controller = createShuttleController({
-      clock, getDuration: () => 100, isPlaying: () => false, pause: () => {}, raf, caf,
-    })
-    controller.press(1)
-    expect(hasPending()).toBe(true)
+    const { deps, fake } = makeDeps(clock)
+    const controller = createShuttleController(deps)
+    controller.press(-1)         // reverse seek-loop
+    expect(fake.hasPending()).toBe(true)
     controller.stop()
     expect(controller.getRate()).toBe(0)
-    expect(hasPending()).toBe(false)
+    expect(fake.hasPending()).toBe(false)
   })
 
-  it('steps the clock forward on each pumped frame, clamped at the duration', () => {
+  it('steps the clock in the seek-loop, clamped at the duration', () => {
     const clock = createPlaybackClock(0)
-    const { raf, caf, pump } = makeFakeRaf()
-    const controller = createShuttleController({
-      clock, getDuration: () => 2, isPlaying: () => false, pause: () => {}, raf, caf,
-    })
-    controller.press(1) // rate = 1x
-    pump(0)      // establishes the frame baseline, no time delta yet
-    pump(1000)   // +1s at 1x -> clock should be ~1
-    expect(clock.get()).toBeCloseTo(1, 5)
-    pump(3000)   // +2s at 1x would overshoot past duration=2 -> clamped, loop stops
-    expect(clock.get()).toBe(2)
+    const { deps, fake } = makeDeps(clock, () => 4)
+    const controller = createShuttleController(deps)
+    controller.press(1)   // real play @1x — does NOT step the clock
+    controller.press(1)   // -> 2x seek-loop
+    fake.pump(0)          // establishes the frame baseline, no time delta yet
+    fake.pump(1000)       // +1s at 2x -> clock should be ~2
+    expect(clock.get()).toBeCloseTo(2, 5)
+    fake.pump(3000)       // +2s at 2x would overshoot past duration=4 -> clamped, loop stops
+    expect(clock.get()).toBe(4)
     expect(controller.getRate()).toBe(0)
   })
 
-  it('cancels when an external transport change starts real playback', () => {
+  it('cancels the seek-loop when an external transport change starts real playback', () => {
     const clock = createPlaybackClock(0)
-    const { raf, caf, pump } = makeFakeRaf()
-    let playing = false
-    const controller = createShuttleController({
-      clock, getDuration: () => 100, isPlaying: () => playing, pause: () => {}, raf, caf,
-    })
-    controller.press(1)
-    pump(0)
-    playing = true // user hit play, outside the shuttle
-    pump(16)
+    const { deps, fake, setPlaying } = makeDeps(clock)
+    const controller = createShuttleController(deps)
+    controller.press(-1)   // reverse seek-loop
+    fake.pump(0)
+    setPlaying(true)       // user hit play, outside the shuttle
+    fake.pump(16)
     expect(controller.getRate()).toBe(0)
   })
 
-  it('cancels when the clock is moved externally (a seek)', () => {
+  it('cancels the seek-loop when the clock is moved externally (a seek)', () => {
     const clock = createPlaybackClock(0)
-    const { raf, caf, pump } = makeFakeRaf()
-    const controller = createShuttleController({
-      clock, getDuration: () => 100, isPlaying: () => false, pause: () => {}, raf, caf,
-    })
-    controller.press(1)
-    pump(0)
-    clock.set(50) // an external seek, not written by the shuttle itself
-    pump(16)
+    const { deps, fake } = makeDeps(clock)
+    const controller = createShuttleController(deps)
+    controller.press(-1)   // reverse seek-loop
+    fake.pump(0)
+    clock.set(50)         // an external seek, not written by the shuttle itself
+    fake.pump(16)
     expect(controller.getRate()).toBe(0)
   })
 })

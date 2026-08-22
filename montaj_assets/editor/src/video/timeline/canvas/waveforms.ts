@@ -10,10 +10,12 @@
  *   are ports of that component's trim-alignment math (lines 75–89): same
  *   inputs, same positioning, just expressed as 0–1 fractions instead of CSS
  *   percentages so the canvas painter can multiply by `rect.width` directly.
- * - Visual-track clips: a NET-NEW subtle strip at the bottom of the clip
- *   rect. Clips never had waveforms before; this is new UI, so it stays
- *   understated (low alpha, thin band) rather than mimicking the audio
- *   lane's full-bar treatment.
+ * - Visual-track clips: the LOWER HALF of the clip rect (`clip-bands.ts`),
+ *   with the filmstrip taking the upper half. This began as a 10px strip
+ *   under a "new UI, stay understated" brief; it grew because the strip was
+ *   too small to cut against — at half a clip the waveform is the primary
+ *   thing you read on the base track, so it gets a darkened band and enough
+ *   alpha to be legible rather than merely present.
  *
  * ── Input-selection + fetch policy (SP5 plan decision) ───────────────────
  * Clips fetch from `item.proxySrc` ONLY — no fallback to `item.src` — so a
@@ -33,6 +35,7 @@
  */
 import type { AudioTrack, VisualItem } from '../../../schema'
 import type { GetWaveformPeaksArgs, PeaksData, PeaksResolution } from '../../../types'
+import { clipBands } from './clip-bands'
 import type { DrawContext, Rect } from './draw'
 
 // ── Resolution buckets ───────────────────────────────────────────────────
@@ -156,19 +159,20 @@ export function resamplePeaksToColumns(peaks: number[], columns: number): Wavefo
 // ── Drawing primitives ───────────────────────────────────────────────────
 
 export const WAVEFORM_COLORS = {
-  /** Translucent white so the strip reads over any of `TRACK_PALETTE`'s six
-   *  clip hues without needing a per-palette variant — kept low-alpha per
-   *  the "understated, new UI" brief. */
-  clip: 'rgba(255,255,255,0.35)',
+  /** Translucent white so the bars read over any of `TRACK_PALETTE`'s six clip
+   *  hues without needing a per-palette variant. Raised from the original
+   *  0.35: at 10px the strip was a texture and low alpha kept it from
+   *  competing with the label, but across half a clip it is the thing you cut
+   *  against and needs to read as a waveform. */
+  clip: 'rgba(255,255,255,0.6)',
+  /** Darkens the waveform band relative to the clip fill so the lower half
+   *  reads as its own lane rather than bars floating on the clip — the
+   *  separation CapCut gets from a distinct band colour. */
+  clipBand: 'rgba(0,0,0,0.22)',
   /** Sits inside `AudioTrackRow`'s emerald bar; brighter than the fill so it
    *  reads as drawn "on top of" it, echoing `TIMELINE_COLORS.audioRing`. */
   audioLane: 'rgba(167,243,208,0.75)',
 } as const
-
-/** Height of the clip-bottom waveform strip, in px — thin enough that it
- *  can't compete with the selection ring/tint or the centered label. */
-export const CLIP_WAVEFORM_HEIGHT_PX = 10
-export const CLIP_WAVEFORM_BOTTOM_INSET_PX = 2
 
 /** Paint one row of min/max columns as vertical bars centered in `rect`,
  *  amplitude scaled to `rect.height / 2`. The shared primitive both
@@ -191,15 +195,21 @@ export function drawWaveformBars(ctx: DrawContext, rect: Rect, columns: Waveform
   }
 }
 
-/** The thin band at the bottom of a clip rect the waveform draws into. */
+/** The lower half of a clip rect the waveform draws into — `clip-bands.ts` owns
+ *  the split, so this is a pass-through kept as the name the painter and its
+ *  tests already reach for. */
 export function clipWaveformBand(rect: Rect): Rect {
-  const height = Math.min(CLIP_WAVEFORM_HEIGHT_PX, Math.max(0, rect.height - CLIP_WAVEFORM_BOTTOM_INSET_PX * 2))
-  return { x: rect.x, y: rect.y + rect.height - CLIP_WAVEFORM_BOTTOM_INSET_PX - height, width: rect.width, height }
+  return clipBands(rect).waveform
 }
 
+/** Paint the clip's waveform half: a darkened band, then the bars centered in
+ *  it. The band is painted even where the bars are silent, so a quiet passage
+ *  reads as "no audio here" rather than as missing data. */
 export function drawClipWaveform(ctx: DrawContext, rect: Rect, columns: WaveformColumn[]): void {
   const band = clipWaveformBand(rect)
-  if (band.height <= 0) return
+  if (band.height <= 0 || band.width <= 0) return
+  ctx.fillStyle = WAVEFORM_COLORS.clipBand
+  ctx.fillRect(band.x, band.y, band.width, band.height)
   drawWaveformBars(ctx, band, columns, WAVEFORM_COLORS.clip)
 }
 
