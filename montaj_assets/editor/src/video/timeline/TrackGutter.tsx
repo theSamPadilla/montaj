@@ -1,5 +1,5 @@
 import { useRef, useState, type RefObject } from 'react'
-import { AudioLines, Captions, Eye, EyeOff, Film, Layers } from 'lucide-react'
+import { AudioLines, Captions, Eye, EyeOff, Film, Layers, Settings2, Volume2, VolumeX } from 'lucide-react'
 import { Tooltip } from '../../ui/Tooltip'
 import type { Project } from '../../types'
 import type { VisualItem } from '../../schema'
@@ -29,7 +29,9 @@ import TrackSettingsPopover from './TrackSettingsPopover'
 // only need once; the icon carries it and the word is a hover away. But 34px —
 // icon alone, hard against both edges — was too tight to read and left nowhere
 // for the skip control to live.
-const GUTTER_WIDTH_PX = 62
+// Fits the type glyph, the settings gear, the skip eye, and — only when it
+// applies — the muted indicator.
+const GUTTER_WIDTH_PX = 84
 
 /** Caption row height — the `h-10` on `trackRow` (utils.ts). */
 const CAPTION_ROW_HEIGHT_PX = 40
@@ -77,10 +79,12 @@ interface RailCellProps {
    * settings callback at all is wired (same "no dead button" rule the skip
    * toggle already follows).
    */
-  iconButton?: {
+  settingsButton?: {
     onClick: () => void
     open: boolean
     buttonRef: RefObject<HTMLButtonElement | null>
+    /** Names the button for screen readers — the gear alone says nothing. */
+    label: string
   }
 }
 
@@ -90,37 +94,73 @@ interface RailCellProps {
  * middle of nothing while the short rows look fine. Top-aligned, every cell
  * reads as the same control at the same place.
  */
-function RailCell({ height, accent, icon, label, action, dimmed, iconButton }: RailCellProps) {
+function RailCell({ height, accent, icon, label, action, dimmed, settingsButton }: RailCellProps) {
   return (
     <div
       className={`flex items-start gap-1 rounded overflow-hidden bg-[var(--editor-surface)] border border-[var(--editor-border)] px-1.5 py-1.5 select-none transition-opacity ${dimmed ? 'opacity-40' : ''}`}
       style={{ height, borderLeft: accent ? `2px solid ${accent}` : undefined }}
     >
+      {/* The type icon identifies the row and is NOT interactive. It used to
+          double as the settings trigger, which made it impossible to tell which
+          icons could be clicked — a decorative-looking glyph that happened to
+          open a dialog. Settings moved to the gear beside it. */}
       <Tooltip label={label}>
-        {iconButton ? (
+        <span aria-label={label} className="flex h-4 w-4 items-center justify-center text-[var(--editor-text)]/50">
+          {icon}
+        </span>
+      </Tooltip>
+      {settingsButton && (
+        <Tooltip label={settingsButton.label}>
           <button
-            ref={iconButton.buttonRef}
+            ref={settingsButton.buttonRef}
             type="button"
-            aria-label={label}
+            aria-label={settingsButton.label}
             aria-haspopup="dialog"
-            aria-expanded={iconButton.open}
-            onClick={iconButton.onClick}
+            aria-expanded={settingsButton.open}
+            onClick={settingsButton.onClick}
             className={`flex h-4 w-4 items-center justify-center rounded transition-colors ${
-              iconButton.open
+              settingsButton.open
                 ? 'text-[var(--editor-text)]/90 bg-[var(--editor-text)]/10'
-                : 'text-[var(--editor-text)]/50 hover:text-[var(--editor-text)]/90 hover:bg-[var(--editor-text)]/10'
+                : 'text-[var(--editor-text)]/40 hover:text-[var(--editor-text)]/90 hover:bg-[var(--editor-text)]/10'
             }`}
           >
-            {icon}
+            <Settings2 size={14} />
           </button>
-        ) : (
-          <span aria-label={label} className="flex h-4 w-4 items-center justify-center text-[var(--editor-text)]/50">
-            {icon}
-          </span>
-        )}
-      </Tooltip>
+        </Tooltip>
+      )}
       {action}
     </div>
+  )
+}
+
+/**
+ * The per-track mute switch, inline in the rail beside skip.
+ *
+ * Mute lives here rather than behind the settings gear because it is a state
+ * you flip constantly while cutting and need to SEE at a glance — the icon is
+ * both the control and the indicator. The gear is for the settings you set once
+ * and leave (volume today, speed later).
+ *
+ * Only rendered for rows that can actually carry audio: an overlay-only track
+ * has no audio to mute, so offering the control there is a lie.
+ */
+function MuteToggle({ muted, onToggle, trackLabel }: { muted: boolean; onToggle: () => void; trackLabel: string }) {
+  return (
+    <Tooltip label={muted ? `Unmute ${trackLabel}` : `Mute ${trackLabel}`}>
+      <button
+        type="button"
+        aria-label={`Mute ${trackLabel}`}
+        aria-pressed={muted}
+        onClick={onToggle}
+        className={`flex h-4 w-4 items-center justify-center rounded transition-colors ${
+          muted
+            ? 'text-amber-400/90 hover:text-amber-300'
+            : 'text-[var(--editor-text)]/35 hover:text-[var(--editor-text)]/80'
+        }`}
+      >
+        {muted ? <VolumeX size={13} /> : <Volume2 size={13} />}
+      </button>
+    </Tooltip>
   )
 }
 
@@ -178,10 +218,16 @@ function VisualTrackRailRow({
   const [open, setOpen] = useState(false)
   const buttonRef = useRef<HTMLButtonElement>(null)
 
-  // A button that opens an empty popover is worse than no button — same rule
-  // the skip toggle already follows for a host that hasn't wired an edit
-  // channel at all.
-  const hasSettings = !!(onToggleTrackEnabled || onSetTrackVolume || onSetTrackMuted)
+  // Audio controls only where there IS audio. An overlay- or image-only track
+  // carries none — `VisualItem.volume`/`muted` are documented "video type only" —
+  // so a volume slider and a mute button on such a row are controls that cannot
+  // do anything. Read the items rather than the track's nominal kind, so a
+  // mixed track (an overlay track that also holds a clip) still gets them.
+  const hasAudio = row.items.some(i => i.type === 'video')
+
+  // A button that opens an empty popover is worse than no button. The gear now
+  // holds only volume, so a track with no audio has nothing to put behind it.
+  const hasSettings = hasAudio && !!onSetTrackVolume
   const trackLabel = label.toLowerCase()
 
   return (
@@ -192,36 +238,34 @@ function VisualTrackRailRow({
         icon={<KindIcon kind={kind} />}
         label={label}
         dimmed={!enabled}
-        iconButton={hasSettings ? { onClick: () => setOpen(o => !o), open, buttonRef } : undefined}
-        action={onToggleTrackEnabled && (
-          <SkipToggle
-            enabled={enabled}
-            trackLabel={trackLabel}
-            onToggle={() => onToggleTrackEnabled(row.trackIdx, !enabled)}
-          />
-        )}
+        settingsButton={hasSettings ? { onClick: () => setOpen(o => !o), open, buttonRef, label: `${label} track settings` } : undefined}
+        action={
+          <>
+            {hasAudio && onSetTrackMuted && (
+              <MuteToggle
+                muted={muted}
+                trackLabel={`${trackLabel} track`}
+                onToggle={() => onSetTrackMuted(row.trackIdx, !muted)}
+              />
+            )}
+            {onToggleTrackEnabled && (
+              <SkipToggle
+                enabled={enabled}
+                trackLabel={trackLabel}
+                onToggle={() => onToggleTrackEnabled(row.trackIdx, !enabled)}
+              />
+            )}
+          </>
+        }
       />
       {open && hasSettings && (
         <TrackSettingsPopover
           anchorRef={buttonRef}
           onClose={() => setOpen(false)}
           title={`${label} track`}
-          volume={onSetTrackVolume ? volume : undefined}
-          onVolumeChange={onSetTrackVolume ? (v, commit) => onSetTrackVolume(row.trackIdx, v, commit) : undefined}
+          volume={volume}
+          onVolumeChange={(v, commit) => onSetTrackVolume!(row.trackIdx, v, commit)}
           volumeAriaLabel={`${label} volume`}
-          muted={onSetTrackMuted ? muted : undefined}
-          onMutedChange={onSetTrackMuted ? (m) => onSetTrackMuted(row.trackIdx, m) : undefined}
-          muteAriaLabel={`Mute ${trackLabel} track`}
-          skip={onToggleTrackEnabled ? {
-            skipped: !enabled,
-            onToggle: () => onToggleTrackEnabled(row.trackIdx, !enabled),
-            // Distinct from the rail's eye button, which already carries
-            // `Skip ${trackLabel} track` — with the popover open, the two
-            // controls would otherwise share one accessible name for the
-            // same action. The popover's own title (`${label} track`)
-            // already supplies the track context, so this can stay generic.
-            ariaLabel: 'Skip track',
-          } : undefined}
         />
       )}
     </div>
@@ -247,7 +291,8 @@ function AudioLaneRailRow({
 }) {
   const [open, setOpen] = useState(false)
   const buttonRef = useRef<HTMLButtonElement>(null)
-  const hasSettings = !!(onSetLaneVolume || onSetLaneMuted)
+  // The gear holds volume only now that mute is inline in the rail.
+  const hasSettings = !!onSetLaneVolume
 
   // Representative displayed value when the lane's tracks disagree: the
   // FIRST track's volume, and "every track muted" for the mute switch's
@@ -266,19 +311,23 @@ function AudioLaneRailRow({
         accent="rgba(16,185,129,0.6)"
         icon={<AudioLines size={15} />}
         label="Audio"
-        iconButton={hasSettings ? { onClick: () => setOpen(o => !o), open, buttonRef } : undefined}
+        settingsButton={hasSettings ? { onClick: () => setOpen(o => !o), open, buttonRef, label: 'Audio lane settings' } : undefined}
+        action={onSetLaneMuted && (
+          <MuteToggle
+            muted={muted}
+            trackLabel="audio lane"
+            onToggle={() => onSetLaneMuted(trackIds, !muted)}
+          />
+        )}
       />
       {open && hasSettings && (
         <TrackSettingsPopover
           anchorRef={buttonRef}
           onClose={() => setOpen(false)}
           title="Audio"
-          volume={onSetLaneVolume ? volume : undefined}
-          onVolumeChange={onSetLaneVolume ? (v, commit) => onSetLaneVolume(trackIds, v, commit) : undefined}
+          volume={volume}
+          onVolumeChange={(v, commit) => onSetLaneVolume!(trackIds, v, commit)}
           volumeAriaLabel="Audio lane volume"
-          muted={onSetLaneMuted ? muted : undefined}
-          onMutedChange={onSetLaneMuted ? (m) => onSetLaneMuted(trackIds, m) : undefined}
-          muteAriaLabel="Mute audio lane"
         />
       )}
     </div>

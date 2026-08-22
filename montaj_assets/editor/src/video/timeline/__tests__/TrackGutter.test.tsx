@@ -140,138 +140,103 @@ describe('TrackGutter — skip', () => {
   })
 })
 
-describe('TrackGutter — settings popover', () => {
-  it('is closed until the icon is clicked, then opens', () => {
-    render(<TrackGutter project={project()} onToggleTrackEnabled={vi.fn()} />)
+describe('TrackGutter — rail controls and settings', () => {
+  const wired = {
+    onToggleTrackEnabled: vi.fn(),
+    onSetTrackVolume: vi.fn(),
+    onSetTrackMuted: vi.fn(),
+  }
+
+  it('puts mute and skip in the RAIL, and volume behind the gear', () => {
+    // Mute and skip are flipped constantly while cutting and need to be seen at
+    // a glance, so they are inline; the gear is for what you set once.
+    render(<TrackGutter project={project()} {...wired} />)
+    expect(screen.getByRole('button', { name: 'Mute video track' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Skip video track' })).toBeTruthy()
     expect(screen.queryByRole('dialog')).toBeNull()
-    fireEvent.click(screen.getByLabelText('Video'))
-    expect(screen.getByRole('dialog')).toBeTruthy()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Video track settings' }))
+    expect(screen.getByLabelText('Video volume')).toBeTruthy()
   })
 
-  it('the icon renders as a plain, non-interactive label when no settings callback at all is wired', () => {
-    render(<TrackGutter project={project()} />)
+  it('offers NO audio controls on an overlay-only track', () => {
+    // Overlay and image items carry no audio — `VisualItem.volume`/`muted` are
+    // video-only — so a mute button or volume slider there could do nothing.
+    render(<TrackGutter project={project()} {...wired} />)
+    expect(screen.queryByRole('button', { name: 'Mute overlay track' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Overlay track settings' })).toBeNull()
+    // Skip still applies — you can hide an overlay track.
+    expect(screen.getByRole('button', { name: 'Skip overlay track' })).toBeTruthy()
+  })
+
+  it('gives a MIXED track audio controls, reading the items not the track kind', () => {
+    const mixed = {
+      id: 'p',
+      tracks: [{ id: 't0', items: [overlay('o0'), video('c0')] }],
+    } as unknown as Project
+    render(<TrackGutter project={mixed} showCaptionRow={false} {...wired} />)
+    expect(screen.getByRole('button', { name: 'Mute overlay track' })).toBeTruthy()
+  })
+
+  it('the type icon is a plain label, never the settings trigger', () => {
+    // It used to double as the trigger, which made it impossible to tell what
+    // was clickable.
+    render(<TrackGutter project={project()} {...wired} />)
     expect(screen.getByLabelText('Video').tagName).toBe('SPAN')
-    expect(screen.getByLabelText('Audio').tagName).toBe('SPAN')
   })
 
-  it('shows Volume, Mute, and Skip for a visual track', () => {
-    render(
-      <TrackGutter
-        project={project()}
-        onToggleTrackEnabled={vi.fn()}
-        onSetTrackVolume={vi.fn()}
-        onSetTrackMuted={vi.fn()}
-      />,
-    )
-    fireEvent.click(screen.getByLabelText('Video'))
-    expect(screen.getByLabelText('Video volume')).toBeTruthy()
-    expect(screen.getByRole('switch', { name: 'Mute video track' })).toBeTruthy()
-    // Distinct from the rail's own 'Skip video track' eye button — same
-    // action, but two controls can't share one accessible name.
-    expect(screen.getByRole('switch', { name: 'Skip track' })).toBeTruthy()
+  it('renders no gear when volume is not wired', () => {
+    render(<TrackGutter project={project()} onToggleTrackEnabled={vi.fn()} />)
+    expect(screen.queryByRole('button', { name: 'Video track settings' })).toBeNull()
   })
 
-  it('shows Volume and Mute for an audio lane, with no Skip control', () => {
-    render(<TrackGutter project={project()} onSetLaneVolume={vi.fn()} onSetLaneMuted={vi.fn()} />)
-    fireEvent.click(screen.getByLabelText('Audio'))
-    expect(screen.getByLabelText('Audio lane volume')).toBeTruthy()
-    expect(screen.getByRole('switch', { name: 'Mute audio lane' })).toBeTruthy()
-    expect(screen.queryByText('Skip')).toBeNull()
-  })
-
-  it('only shows the sections whose own callback is wired (no dead controls)', () => {
-    // onSetTrackMuted omitted — its section must not render even though the
-    // button itself does (onSetTrackVolume alone is enough to wire it).
-    render(<TrackGutter project={project()} onSetTrackVolume={vi.fn()} />)
-    fireEvent.click(screen.getByLabelText('Video'))
-    expect(screen.getByLabelText('Video volume')).toBeTruthy()
-    expect(screen.queryByRole('switch', { name: 'Mute video track' })).toBeNull()
-  })
-
-  it('previews a visual-track volume drag on change and commits once on release', () => {
-    const onSetTrackVolume = vi.fn()
-    render(<TrackGutter project={project()} onSetTrackVolume={onSetTrackVolume} />)
-    fireEvent.click(screen.getByLabelText('Video'))
-    const input = screen.getByLabelText('Video volume') as HTMLInputElement
-
-    fireEvent.change(input, { target: { value: '1.5' } })
-    expect(onSetTrackVolume).toHaveBeenCalledTimes(1)
-    expect(onSetTrackVolume).toHaveBeenCalledWith(0, 1.5, false)
-
-    fireEvent.pointerUp(input)
-    expect(onSetTrackVolume).toHaveBeenCalledTimes(2)
-    expect(onSetTrackVolume).toHaveBeenLastCalledWith(0, 1.5, true)
-  })
-
-  it('reports the volume for the track the popover actually belongs to', () => {
-    const onSetTrackVolume = vi.fn()
-    render(<TrackGutter project={project()} onSetTrackVolume={onSetTrackVolume} />)
-    fireEvent.click(screen.getByLabelText('Overlay'))
-    const input = screen.getByLabelText('Overlay volume') as HTMLInputElement
-    fireEvent.change(input, { target: { value: '0.3' } })
-    expect(onSetTrackVolume).toHaveBeenCalledWith(1, 0.3, false)
-  })
-
-  it('mute fires once per click with the toggled value (no preview/commit split)', () => {
+  it('toggles mute from the rail with the new value', () => {
     const onSetTrackMuted = vi.fn()
-    render(<TrackGutter project={project()} onSetTrackMuted={onSetTrackMuted} />)
-    fireEvent.click(screen.getByLabelText('Video'))
-    fireEvent.click(screen.getByRole('switch', { name: 'Mute video track' }))
-    expect(onSetTrackMuted).toHaveBeenCalledTimes(1)
+    render(<TrackGutter project={project()} {...wired} onSetTrackMuted={onSetTrackMuted} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Mute video track' }))
     expect(onSetTrackMuted).toHaveBeenCalledWith(0, true)
   })
 
-  it("the popover's Skip switch calls the same onToggleTrackEnabled the inline eye icon calls", () => {
-    const onToggleTrackEnabled = vi.fn()
-    render(<TrackGutter project={project()} onToggleTrackEnabled={onToggleTrackEnabled} />)
-    fireEvent.click(screen.getByLabelText('Video'))
-    fireEvent.click(screen.getByRole('switch', { name: 'Skip track' }))
-    expect(onToggleTrackEnabled).toHaveBeenCalledWith(0, false)
+  it('shows a muted track as pressed, so the state reads without colour', () => {
+    const p = { id: 'p', tracks: [{ id: 't0', items: [video('c0')], muted: true }] } as unknown as Project
+    render(<TrackGutter project={p} showCaptionRow={false} {...wired} />)
+    expect(screen.getByRole('button', { name: 'Mute video track' }).getAttribute('aria-pressed')).toBe('true')
   })
 
-  it('lane volume/mute callbacks fire with every AudioTrack id sharing the lane', () => {
-    const onSetLaneVolume = vi.fn()
+  it('gives an audio lane mute inline and volume behind the gear, but no skip', () => {
+    render(<TrackGutter project={project()} onSetLaneVolume={vi.fn()} onSetLaneMuted={vi.fn()} />)
+    expect(screen.getByRole('button', { name: 'Mute audio lane' })).toBeTruthy()
+    expect(screen.queryByRole('button', { name: /^Skip audio/ })).toBeNull()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Audio lane settings' }))
+    expect(screen.getByLabelText('Audio lane volume')).toBeTruthy()
+  })
+
+  it('fans a lane mute out over every track id in the lane', () => {
     const onSetLaneMuted = vi.fn()
-    const p = project({
-      audio: {
-        tracks: [
-          { id: 'a0', src: 'v.mp3', start: 0, end: 2, lane: 0 },
-          { id: 'a1', src: 'w.mp3', start: 2, end: 4, lane: 0 },
-        ],
-      },
-    } as Partial<Project>)
-    render(<TrackGutter project={p} onSetLaneVolume={onSetLaneVolume} onSetLaneMuted={onSetLaneMuted} />)
-    fireEvent.click(screen.getByLabelText('Audio'))
-
-    const volumeInput = screen.getByLabelText('Audio lane volume') as HTMLInputElement
-    fireEvent.change(volumeInput, { target: { value: '0.5' } })
-    expect(onSetLaneVolume).toHaveBeenCalledWith(['a0', 'a1'], 0.5, false)
-    fireEvent.pointerUp(volumeInput)
-    expect(onSetLaneVolume).toHaveBeenCalledWith(['a0', 'a1'], 0.5, true)
-
-    fireEvent.click(screen.getByRole('switch', { name: 'Mute audio lane' }))
+    const twoTrackLane = {
+      id: 'p',
+      tracks: [{ id: 't0', items: [video('c0')] }],
+      audio: { tracks: [
+        { id: 'a0', src: 'v.mp3', start: 0, end: 2, lane: 0 },
+        { id: 'a1', src: 'm.mp3', start: 0, end: 2, lane: 0 },
+      ] },
+    } as unknown as Project
+    render(<TrackGutter project={twoTrackLane} showCaptionRow={false} onSetLaneMuted={onSetLaneMuted} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Mute audio lane' }))
     expect(onSetLaneMuted).toHaveBeenCalledWith(['a0', 'a1'], true)
   })
 
-  it('a lane whose tracks disagree on muted displays the lane as unmuted', () => {
-    const p = project({
-      audio: {
-        tracks: [
-          { id: 'a0', src: 'v.mp3', start: 0, end: 2, lane: 0, muted: true },
-          { id: 'a1', src: 'w.mp3', start: 2, end: 4, lane: 0, muted: false },
-        ],
-      },
-    } as Partial<Project>)
-    render(<TrackGutter project={p} onSetLaneMuted={vi.fn()} />)
-    fireEvent.click(screen.getByLabelText('Audio'))
-    expect(screen.getByRole('switch', { name: 'Mute audio lane' }).getAttribute('aria-checked')).toBe('false')
-  })
+  it('previews a volume drag and commits once on release', () => {
+    const onSetTrackVolume = vi.fn()
+    render(<TrackGutter project={project()} {...wired} onSetTrackVolume={onSetTrackVolume} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Video track settings' }))
+    const slider = screen.getByLabelText('Video volume')
 
-  it('closes on outside click', () => {
-    render(<TrackGutter project={project()} onToggleTrackEnabled={vi.fn()} />)
-    fireEvent.click(screen.getByLabelText('Video'))
-    expect(screen.getByRole('dialog')).toBeTruthy()
-    fireEvent.mouseDown(document.body)
-    expect(screen.queryByRole('dialog')).toBeNull()
+    fireEvent.change(slider, { target: { value: '0.5' } })
+    expect(onSetTrackVolume).toHaveBeenLastCalledWith(0, 0.5, false)
+
+    fireEvent.pointerUp(slider)
+    expect(onSetTrackVolume).toHaveBeenLastCalledWith(0, 0.5, true)
   })
 })
