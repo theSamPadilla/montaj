@@ -59,4 +59,33 @@ describe('ControlsInfoModal', () => {
     expect(VIDEO_CONTROLS.length).toBeGreaterThan(0)
     expect(CAROUSEL_CONTROLS.length).toBeGreaterThan(0)
   })
+
+  it('renders an entry\'s `where` as a pill, not as a key chip', () => {
+    render(
+      <ControlsInfoModal
+        title="Editor controls"
+        sections={[{ heading: 'Mouse', entries: [{ where: 'Timeline', label: 'Drag a clip' }] }]}
+        onClose={vi.fn()}
+      />,
+    )
+    // A surface name is not something you press, so it must not be a <kbd> —
+    // that element is the modal's promise that a row names a keystroke.
+    expect(screen.getByText('Timeline').tagName).not.toBe('KBD')
+  })
+
+  it('keeps every mouse gesture in ONE section, tagged by surface', () => {
+    // Preview and Timeline were two cards; merging them into "Mouse" moved the
+    // surface onto each row. Re-splitting is fine, but silently dropping the
+    // `where` tags would lose which surface a gesture applies to entirely.
+    const mouse = VIDEO_CONTROLS.filter((s) => s.entries.some((e) => e.where))
+    expect(mouse).toHaveLength(1)
+    expect(mouse[0].heading).toBe('Mouse')
+    expect(mouse[0].entries.every((e) => e.where && e.icon)).toBe(true)
+    expect(new Set(mouse[0].entries.map((e) => e.where))).toEqual(new Set(['Preview', 'Timeline']))
+  })
+
+  it('gives every toolbar row the glyph of its button', () => {
+    const toolbar = VIDEO_CONTROLS.find((s) => s.heading === 'Toolbar')!
+    expect(toolbar.entries.every((e) => e.icon)).toBe(true)
+  })
 })

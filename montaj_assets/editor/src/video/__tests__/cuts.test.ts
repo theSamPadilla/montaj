@@ -8,6 +8,7 @@ import {
   rollEdit,
   slipItem,
   slideItem,
+  setClipSpeed,
 } from '../cuts'
 import type { EditorProject as Project, VisualItem, VisualTrack } from '../../schema'
 
@@ -802,4 +803,223 @@ describe('every op preserves track identity and settings', () => {
       expect(out.tracks![2].items).toEqual([])      // empty tracks are kept
     })
   }
+})
+
+// ── Per-clip speed (montaj/speed) ─────────────────────────────────────────────
+//
+// The invariant every op must preserve for a clip at speed S: the source-window
+// length is the timeline span times speed —
+//
+//     outPoint − inPoint === S · (end − start)
+//
+// A clip at S=1/absent is byte-identical to the pre-speed op (every test above
+// exercises that path). These tests exercise S=2 (a 10s source window plays in
+// 5 timeline seconds) and S=0.5 (a 10s window is stretched over 20 seconds).
+
+describe('per-clip speed', () => {
+  /** outPoint − inPoint − S·(end − start); 0 when the invariant holds. */
+  const invariantErr = (i: VisualItem) =>
+    (i.outPoint! - i.inPoint!) - (i.speed ?? 1) * (i.end - i.start)
+  const holdsFor = (i: VisualItem) => expect(invariantErr(i)).toBeCloseTo(0, 9)
+
+  describe('trim / cut ops keep outPoint − inPoint === S·(end − start)', () => {
+    it('applyCutToTracks trims a sped clip end (overlaps-left) coherently', () => {
+      const p = makeProject({
+        tracks: vtracks([{ id: 'a', type: 'video', start: 0, end: 5, inPoint: 100, outPoint: 110, speed: 2 }]),
+      })
+      const a = applyCutToTracks(p, { start: 3, end: 99 }).tracks![0].items[0]
+      expect(a).toMatchObject({ end: 3, outPoint: 106 })   // 100 + (3−0)·2
+      holdsFor(a)
+    })
+
+    it('applyCutToTracks trims a sped clip start (overlaps-right) coherently', () => {
+      const p = makeProject({
+        tracks: vtracks([{ id: 'a', type: 'video', start: 2, end: 7, inPoint: 100, outPoint: 110, speed: 2 }]),
+      })
+      const a = applyCutToTracks(p, { start: 0, end: 4 }).tracks![0].items[0]
+      expect(a).toMatchObject({ start: 4, inPoint: 104 })  // 100 + (4−2)·2
+      holdsFor(a)
+    })
+
+    it('splitAtTime splits a sped clip into two coherent fragments', () => {
+      const p = makeProject({
+        tracks: vtracks([{ id: 'a', type: 'video', start: 0, end: 5, inPoint: 100, outPoint: 110, speed: 2 }]),
+      })
+      const [left, right] = splitAtTime(p, 3, 'a').tracks![0].items
+      expect(left).toMatchObject({ end: 3, outPoint: 106 })            // 100 + 3·2
+      expect(right).toMatchObject({ start: 3, inPoint: 106, end: 5, outPoint: 110 })
+      holdsFor(left)
+      holdsFor(right)
+    })
+
+    it('applyCutToItem (collapse) cuts a sped clip coherently, re-timing the right fragment by /S', () => {
+      const p = makeProject({
+        tracks: vtracks([{ id: 'a', type: 'video', start: 0, end: 5, inPoint: 100, outPoint: 110, speed: 2 }]),
+      })
+      const [left, right] = applyCutToItem(p, 'a', { start: 1, end: 3 }).tracks![0].items
+      expect(left).toMatchObject({ end: 1, outPoint: 102 })            // physStart 100 + 1·2
+      // right: source [106, 110] is 4 src-seconds → 4/2 = 2 timeline seconds from cut.start 1.
+      expect(right).toMatchObject({ start: 1, end: 3, inPoint: 106, outPoint: 110 })
+      holdsFor(left)
+      holdsFor(right)
+    })
+
+    it('rollEdit moves the shared boundary by d·S in each clip’s own source', () => {
+      const p = makeProject({
+        tracks: vtracks([
+          { id: 'a', type: 'video', start: 0, end: 5, inPoint: 100, outPoint: 110, sourceDuration: 200, speed: 2 },
+          { id: 'b', type: 'video', start: 5, end: 9, inPoint: 20,  outPoint: 22,  sourceDuration: 200, speed: 0.5 },
+        ]),
+      })
+      const [a, b] = rollEdit(p, 'a', 'b', 1).tracks![0].items
+      expect(a).toMatchObject({ end: 6, outPoint: 112 })   // 110 + 1·2
+      expect(b).toMatchObject({ start: 6, inPoint: 20.5 })  // 20 + 1·0.5
+      holdsFor(a)
+      holdsFor(b)
+    })
+
+    it('rollEdit clamps a sped left clip at its source end by /S', () => {
+      const p = makeProject({
+        tracks: vtracks([
+          { id: 'a', type: 'video', start: 0, end: 5, inPoint: 100, outPoint: 110, sourceDuration: 111, speed: 2 },
+          { id: 'b', type: 'video', start: 5, end: 20, inPoint: 0, outPoint: 30, sourceDuration: 200, speed: 2 },
+        ]),
+      })
+      // left has only 1 source-second of headroom (111 − 110); at S=2 that is 0.5 timeline-seconds.
+      const [a] = rollEdit(p, 'a', 'b', 10).tracks![0].items
+      expect(a.outPoint).toBeCloseTo(111)
+      expect(a.end).toBeCloseTo(5.5)
+      holdsFor(a)
+    })
+
+    it('slipItem moves the source window by delta·S with the timeline fixed', () => {
+      const p = makeProject({
+        tracks: vtracks([
+          { id: 'a', type: 'video', start: 2, end: 8, inPoint: 5, outPoint: 17, sourceDuration: 200, speed: 2 },
+        ]),
+      })
+      const a = slipItem(p, 'a', 3).tracks![0].items[0]
+      expect(a).toMatchObject({ start: 2, end: 8, inPoint: 11, outPoint: 23 })  // ±3·2
+      holdsFor(a)
+    })
+
+    it('slipItem clamps a sped clip at the source start by /S', () => {
+      const p = makeProject({
+        tracks: vtracks([
+          { id: 'a', type: 'video', start: 2, end: 8, inPoint: 5, outPoint: 17, sourceDuration: 200, speed: 2 },
+        ]),
+      })
+      // minDelta = −inPoint/S = −2.5; a −10 drag parks inPoint at exactly 0.
+      const a = slipItem(p, 'a', -10).tracks![0].items[0]
+      expect(a.inPoint).toBeCloseTo(0)
+      expect(a.outPoint).toBeCloseTo(12)
+      holdsFor(a)
+    })
+
+    it('slideItem re-times each neighbor by d·S in its own source', () => {
+      const p = makeProject({
+        tracks: vtracks([
+          { id: 'p', type: 'video', start: 0,  end: 5,  inPoint: 0,   outPoint: 10,  sourceDuration: 200, speed: 2 },
+          { id: 'm', type: 'video', start: 5,  end: 10, inPoint: 100, outPoint: 105, sourceDuration: 200 },
+          { id: 'n', type: 'video', start: 10, end: 15, inPoint: 3,   outPoint: 13,  sourceDuration: 200, speed: 2 },
+        ]),
+      })
+      const [prev, item, next] = slideItem(p, 'm', 2).tracks![0].items
+      expect(prev).toMatchObject({ id: 'p', end: 7, outPoint: 14 })   // 10 + 2·2
+      expect(item).toMatchObject({ id: 'm', start: 7, end: 12, inPoint: 100, outPoint: 105 })
+      expect(next).toMatchObject({ id: 'n', start: 12, inPoint: 7 })  // 3 + 2·2
+      holdsFor(prev)
+      holdsFor(next)
+    })
+  })
+
+  describe('setClipSpeed', () => {
+    const oneClip = (over: Partial<VisualItem> = {}) => makeProject({
+      tracks: vtracks([{ id: 'a', type: 'video', start: 0, end: 10, inPoint: 100, outPoint: 110, ...over }]),
+    })
+
+    it('2× halves the timeline span, leaving inPoint/outPoint untouched', () => {
+      const a = setClipSpeed(oneClip(), 'a', 2).tracks![0].items[0]
+      expect(a).toMatchObject({ speed: 2, start: 0, end: 5, inPoint: 100, outPoint: 110 })
+      holdsFor(a)
+    })
+
+    it('0.5× doubles the timeline span', () => {
+      const a = setClipSpeed(oneClip(), 'a', 0.5).tracks![0].items[0]
+      expect(a).toMatchObject({ speed: 0.5, end: 20, inPoint: 100, outPoint: 110 })
+      holdsFor(a)
+    })
+
+    it('clamps speed above 4 to 4', () => {
+      const a = setClipSpeed(oneClip(), 'a', 10).tracks![0].items[0]
+      expect(a.speed).toBe(4)
+      expect(a.end).toBeCloseTo(2.5)   // 10 / 4
+      holdsFor(a)
+    })
+
+    it('clamps speed below 0.25 to 0.25', () => {
+      const a = setClipSpeed(oneClip(), 'a', 0.01).tracks![0].items[0]
+      expect(a.speed).toBe(0.25)
+      expect(a.end).toBeCloseTo(40)    // 10 / 0.25
+      holdsFor(a)
+    })
+
+    it('re-speeds an already-sped clip correctly (source length is speed-invariant)', () => {
+      // Start at 2× (end already 5), then 4×, then back to 1× → original 10s span.
+      const at2x = oneClip({ end: 5, speed: 2 })
+      const at4x = setClipSpeed(at2x, 'a', 4).tracks![0].items[0]
+      expect(at4x).toMatchObject({ speed: 4, end: 2.5 })
+      holdsFor(at4x)
+
+      const back = setClipSpeed(
+        makeProject({ tracks: vtracks([at4x]) }), 'a', 1,
+      ).tracks![0].items[0]
+      expect(back).toMatchObject({ speed: 1, end: 10, inPoint: 100, outPoint: 110 })
+      holdsFor(back)
+    })
+
+    it('re-fits a clip with no stored outPoint from its current span × speed', () => {
+      // No outPoint: source window is (end − start)·S. At 2× the 10s span → 20 src-seconds…
+      const at2x = setClipSpeed(oneClip({ inPoint: undefined, outPoint: undefined }), 'a', 2).tracks![0].items[0]
+      expect(at2x).toMatchObject({ speed: 2, end: 5 })   // 20 src-seconds / 2
+      // …and back to 1× recovers the original 10s span.
+      const back = setClipSpeed(makeProject({ tracks: vtracks([at2x]) }), 'a', 1).tracks![0].items[0]
+      expect(back).toMatchObject({ speed: 1, end: 10 })
+    })
+
+    it('does not close the gap it opens — the next clip stays put', () => {
+      const p = makeProject({
+        tracks: vtracks([
+          { id: 'a', type: 'video', start: 0,  end: 10, inPoint: 100, outPoint: 110 },
+          { id: 'b', type: 'video', start: 10, end: 15, inPoint: 0,   outPoint: 5 },
+        ]),
+      })
+      const out = setClipSpeed(p, 'a', 2)
+      expect(out.tracks![0].items[0]).toMatchObject({ end: 5, speed: 2 })
+      expect(out.tracks![0].items[1]).toMatchObject({ start: 10, end: 15 })  // gap at [5,10] left for the caller
+    })
+
+    it('returns the same reference when the clip is not found', () => {
+      const p = oneClip()
+      expect(setClipSpeed(p, 'nope', 2)).toBe(p)
+    })
+
+    it('is a no-op on a non-video clip — speed is video-only', () => {
+      const p = makeProject({
+        tracks: vtracks([{ id: 'a', type: 'image', start: 0, end: 10 }]),
+      })
+      const out = setClipSpeed(p, 'a', 2)
+      expect(out).toBe(p)
+      expect(out.tracks![0].items[0].speed).toBeUndefined()
+      expect(out.tracks![0].items[0].end).toBe(10)
+    })
+
+    it('returns a new project (immutable) when it does change the clip', () => {
+      const p = oneClip()
+      const out = setClipSpeed(p, 'a', 2)
+      expect(out).not.toBe(p)
+      expect(p.tracks![0].items[0].end).toBe(10)          // input untouched
+      expect(p.tracks![0].items[0].speed).toBeUndefined()
+    })
+  })
 })

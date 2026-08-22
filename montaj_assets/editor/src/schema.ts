@@ -110,6 +110,7 @@ export interface VisualItem {
    * existing proxy by construction — the freshness check sees a different filename and regenerates lazily. */
   proxySrc?: string         // video type only
   muted?: boolean         // video type only — suppress audio in preview and render
+  speed?: number          // video type only — playback speed, default 1.0, range 0.25–4
   sourceCrop?: { x: number; y: number; w: number; h: number }  // video type only — non-destructive crop of the source clip (0–1 fractions)
   sourceWidth?: number    // video type only — intrinsic width of the source clip in pixels
   sourceHeight?: number   // video type only — intrinsic height of the source clip in pixels

@@ -11,8 +11,9 @@
  * Because it is a string it cannot be type-checked, linted or unit-tested, so
  * — exactly like the decode worker — it is **thin by architecture**. Every
  * decision lives main-side in `audio-clock.ts` under test: what to decode,
- * how much to keep queued, the PCM volume scaling, the resample ratio, the
- * project↔media time mapping, the clock extrapolation. What is left here is
+ * how much to keep queued, the resample ratio, the project↔media time mapping,
+ * the clock extrapolation (volume rides a main-side output GainNode, downstream
+ * of this node — not the ring). What is left here is
  * the irreducible audio-thread part:
  *
  *  1. a FIFO of interleaved Float32 PCM chunks, drained one render quantum at

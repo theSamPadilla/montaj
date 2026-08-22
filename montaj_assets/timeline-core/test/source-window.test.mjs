@@ -603,6 +603,73 @@ describe('synthesizedOutPoint', () => {
 })
 
 // ---------------------------------------------------------------------------
+// 10b. Per-clip speed (montaj/speed) — seekTime scales the elapsed offset by S,
+//      synthesizedOutPoint scales the synthesized LENGTH by S; a stored outPoint
+//      passes through. inPoint/outPoint themselves are never scaled, so
+//      sourceWindow is speed-agnostic. S=1/absent is a strict no-op.
+// ---------------------------------------------------------------------------
+
+// Same window as SEEK_OFFSET_CLIP (inPoint 100, start 10) but sped up / slowed.
+const SPEED_2X = fixture('speed-2x-clip', {
+  src: '/orig.mov', inPoint: 100, outPoint: 120, start: 10, end: 20, speed: 2,
+})
+const SPEED_HALF = fixture('speed-0.5x-clip', {
+  src: '/orig.mov', inPoint: 100, outPoint: 120, start: 10, end: 50, speed: 0.5,
+})
+// No stored outPoint, so synthesizedOutPoint must scale (end - start) by S.
+const SPEED_2X_NO_OUT = fixture('speed-2x-no-outpoint', {
+  src: '/o.mov', inPoint: 2, start: 1, end: 6, speed: 2,
+})
+const SPEED_HALF_NO_OUT = fixture('speed-0.5x-no-outpoint', {
+  src: '/o.mov', inPoint: 2, start: 1, end: 6, speed: 0.5,
+})
+
+describe('per-clip speed', () => {
+  for (const variant of VARIANTS) {
+    test(`${variant}: speed=1 is identical to an absent speed`, () => {
+      const withOne = { ...SEEK_OFFSET_CLIP, speed: 1 }
+      closeTo(seekTime(withOne, 17.5, variant), seekTime(SEEK_OFFSET_CLIP, 17.5, variant), `${variant} seek S=1`)
+      closeTo(
+        synthesizedOutPoint({ ...SYNTH_NO_OUTPOINT_UNCACHED, speed: 1 }, variant),
+        synthesizedOutPoint(SYNTH_NO_OUTPOINT_UNCACHED, variant),
+        `${variant} synth S=1`,
+      )
+    })
+
+    test(`${variant}: seekTime scales the elapsed offset by S`, () => {
+      // 100 + 2·(15 - 10) = 110
+      closeTo(seekTime(SPEED_2X, 15, variant), 110, `${variant} 2x seek`)
+      // 100 + 0.5·(15 - 10) = 102.5
+      closeTo(seekTime(SPEED_HALF, 15, variant), 102.5, `${variant} 0.5x seek`)
+    })
+
+    test(`${variant}: the pre-start clamp still floors the offset at 0 under speed`, () => {
+      closeTo(seekTime(SPEED_2X, 4, variant), 100, `${variant} 2x pre-start`)
+      closeTo(seekTime(SPEED_2X, 10, variant), 100, `${variant} 2x at-start`)
+    })
+
+    test(`${variant}: a STORED outPoint passes through unchanged under speed`, () => {
+      // outPoint is a source coordinate, invariant to S — not scaled.
+      closeTo(synthesizedOutPoint(SPEED_2X, variant), 120, `${variant} 2x stored out`)
+      closeTo(synthesizedOutPoint(SPEED_HALF, variant), 120, `${variant} 0.5x stored out`)
+    })
+
+    test(`${variant}: a SYNTHESIZED outPoint scales (end - start) by S`, () => {
+      // 2 + (6 - 1)·2 = 12
+      closeTo(synthesizedOutPoint(SPEED_2X_NO_OUT, variant), 12, `${variant} 2x synth`)
+      // 2 + (6 - 1)·0.5 = 4.5
+      closeTo(synthesizedOutPoint(SPEED_HALF_NO_OUT, variant), 4.5, `${variant} 0.5x synth`)
+    })
+
+    test(`${variant}: sourceWindow itself is speed-agnostic (inPoint/outPoint unscaled)`, () => {
+      const w = sourceWindow(SPEED_2X, variant)
+      closeTo(w.inPoint, 100, `${variant} inPoint unscaled`)
+      closeTo(w.outPoint, 120, `${variant} outPoint unscaled`)
+    })
+  }
+})
+
+// ---------------------------------------------------------------------------
 // 11. Variant validation — a bad variant is a programming bug, not a fallback
 // ---------------------------------------------------------------------------
 

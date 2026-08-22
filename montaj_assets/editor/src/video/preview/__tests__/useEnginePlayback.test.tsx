@@ -66,6 +66,7 @@ interface FakeEngine {
   transport: EngineStatus['transport']
   now: number
   seeks: number[]
+  rates: number[]
   plays: number
   pauses: number
   disposes: number
@@ -97,6 +98,7 @@ vi.mock('../../../engine', async (importOriginal) => {
         play: () => void
         pause: () => void
         seek: (t: number) => void
+        setRate: (r: number) => void
         updateProject: (p: Project) => void
         status: () => EngineStatus
         clock: { now: () => number; playing: boolean; kind: 'audio' | 'fallback' }
@@ -108,6 +110,7 @@ vi.mock('../../../engine', async (importOriginal) => {
         transport: 'paused',
         now: deps.startProjectS ?? 0,
         seeks: [],
+        rates: [],
         plays: 0,
         pauses: 0,
         disposes: 0,
@@ -126,6 +129,7 @@ vi.mock('../../../engine', async (importOriginal) => {
         play: () => { engine.plays++; engine.transport = 'playing'; deps.onStatusChange?.(status()) },
         pause: () => { engine.pauses++; engine.transport = 'paused'; deps.onStatusChange?.(status()) },
         seek: (t: number) => { engine.seeks.push(t); engine.now = t },
+        setRate: (r: number) => { engine.rates.push(r) },
         updateProject: (p: Project) => { engine.updates.push(p) },
         status,
         clock: {
@@ -443,9 +447,18 @@ describe('useEnginePlayback gesture anchors', () => {
 
 describe('useEnginePlayback audio lanes', () => {
   const gains: Array<{ gain: { value: number } }> = []
+  // Lane elements are created programmatically (`new Audio()`, never mounted in
+  // the tree), so wrap the constructor to capture them for the rate assertions.
+  const audioEls: HTMLAudioElement[] = []
+  let RealAudio: typeof Audio
 
   beforeEach(() => {
     gains.length = 0
+    audioEls.length = 0
+    RealAudio = window.Audio
+    ;(window as unknown as { Audio: unknown }).Audio = class extends RealAudio {
+      constructor(src?: string) { super(src); audioEls.push(this as unknown as HTMLAudioElement) }
+    }
     ;(window as unknown as { AudioContext: unknown }).AudioContext = class {
       destination = {}
       createMediaElementSource() { return { connect() {} } }
@@ -454,6 +467,7 @@ describe('useEnginePlayback audio lanes', () => {
   })
 
   afterEach(() => {
+    ;(window as unknown as { Audio: unknown }).Audio = RealAudio
     delete (window as unknown as { __montajSharedCtx?: unknown }).__montajSharedCtx
   })
 
@@ -480,6 +494,28 @@ describe('useEnginePlayback audio lanes', () => {
     act(() => { engine.emit(3) })
     expect(gains[0].gain.value).toBeCloseTo(0.25, 6)
     expect(view.result.current.isPlaying).toBe(true)
+  })
+
+  it('setRate speeds every lane up, pitch-corrected, and drives the engine rate', () => {
+    const { view, engine } = setup(withAudio())
+    expect(audioEls).toHaveLength(1)
+    const el = audioEls[0]
+
+    act(() => { view.result.current.setRate(2) })
+    expect(engine.rates).toContain(2)
+    expect(el.playbackRate).toBe(2)
+    expect(el.preservesPitch).toBe(true)
+  })
+
+  it('a lane re-synced from the engine tick inherits the current transport rate', () => {
+    const { view, engine } = setup(withAudio())
+    const el = audioEls[0]
+    act(() => { view.result.current.setRate(4) })
+    act(() => { engine.setTransport('playing') })
+    // t = 3 is inside the track window, so the tick's syncAudioTracks re-applies
+    // the stored rate to the (active) lane.
+    act(() => { engine.emit(3) })
+    expect(el.playbackRate).toBe(4)
   })
 
   it('leaves the gain alone outside the track window', () => {

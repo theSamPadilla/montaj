@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { X, RefreshCw, ChevronDown, ChevronRight, Trash2 } from 'lucide-react'
 import type { Project, AudioTrack, RegenQueueEntry } from '@/lib/types/schema'
 import { mapTrackItems, trackItems } from '@/lib/types/schema'
+import { setClipSpeed, collapseGaps, SpeedControl, VolumeControl } from '@bycrux/editor'
 
 export type InspectTarget =
   | { kind: 'clip'; id: string }
@@ -13,17 +14,15 @@ interface Props {
   onClose: () => void
   onProjectChange: (p: Project) => void
   onSave: (p: Project) => Promise<unknown>
+  /** Magnet/ripple toggle state from the timeline. When true, an edit that
+   *  resizes a clip (e.g. a speed change) also closes the gap it leaves. */
+  rippleMode: boolean
 }
 
 const MODELS = ['kling-v3-omni', 'kling-video-o1'] as const
 
 function basename(path: string) {
   return path.split('/').pop() ?? path
-}
-
-function volumeToDb(v: number): string {
-  if (v === 0) return '\u2212\u221E dB'
-  return `${(20 * Math.log10(v)).toFixed(1)} dB`
 }
 
 /* ── Audio inspect branch ────────────────────────────────────── */
@@ -212,26 +211,9 @@ function AudioInspect({ project, trackId, onClose, onProjectChange, onSave }: {
           </div>
         </div>
 
-        {/* Volume */}
-        <div>
-          <label className="text-xs font-medium text-gray-400 mb-1 block">
-            Volume
-            <span className="ml-2 text-xs font-mono text-gray-500">
-              {volume.toFixed(2)} ({volumeToDb(volume)})
-            </span>
-          </label>
-          <input
-            type="range"
-            min={0}
-            max={2}
-            step={0.01}
-            value={volume}
-            onChange={e => setVolume(parseFloat(e.target.value))}
-            className="w-full h-2 rounded-full appearance-none cursor-pointer
-              [&::-webkit-slider-thumb]:bg-blue-400 [&::-webkit-slider-runnable-track]:bg-gray-700
-              [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-3 [&::-webkit-slider-thumb]:h-3 [&::-webkit-slider-thumb]:rounded-full"
-          />
-        </div>
+        {/* Volume — VolumeControl (slider + dB readout + preset chips), commits
+            with the modal's Save button below like the other fields here. */}
+        <VolumeControl value={volume} onChange={setVolume} label="Volume" idBase="track" />
 
         {/* Fade In / Fade Out */}
         <div className="flex gap-4">
@@ -398,12 +380,13 @@ function AudioInspect({ project, trackId, onClose, onProjectChange, onSave }: {
 
 /* ── Clip inspect branch (existing) ─────────────────────────── */
 
-function ClipInspect({ project, clipId, onClose, onProjectChange, onSave }: {
+function ClipInspect({ project, clipId, onClose, onProjectChange, onSave, rippleMode }: {
   project: Project
   clipId: string
   onClose: () => void
   onProjectChange: (p: Project) => void
   onSave: (p: Project) => Promise<unknown>
+  rippleMode: boolean
 }) {
   const clip = (trackItems(project)[0] ?? []).find(c => c.id === clipId)
   const gen = clip?.generation
@@ -420,6 +403,8 @@ function ClipInspect({ project, clipId, onClose, onProjectChange, onSave }: {
   const [clipVolume, setClipVolume] = useState(clip?.volume ?? 1)
   const [clipMuted, setClipMuted] = useState(clip?.muted ?? false)
   const [savingVolume, setSavingVolume] = useState(false)
+  const [clipSpeed, setClipSpeedValue] = useState(clip?.speed ?? 1)
+  const [savingSpeed, setSavingSpeed] = useState(false)
 
   if (!clip) return null
 
@@ -453,6 +438,22 @@ function ClipInspect({ project, clipId, onClose, onProjectChange, onSave }: {
       await onSave(nextProject)
     } finally {
       setSavingVolume(false)
+    }
+  }
+
+  async function handleSaveSpeed() {
+    setSavingSpeed(true)
+    try {
+      let next = setClipSpeed(project, clipId, clipSpeed)
+      if (rippleMode) next = collapseGaps(next)
+      onProjectChange(next)
+      await onSave(next)
+      // Re-sync to the saved (clamped) value so the field can't linger
+      // showing an out-of-range number like "10.00×" after save.
+      const saved = (trackItems(next)[0] ?? []).find(c => c.id === clipId)
+      setClipSpeedValue(saved?.speed ?? clipSpeed)
+    } finally {
+      setSavingSpeed(false)
     }
   }
 
@@ -512,31 +513,37 @@ function ClipInspect({ project, clipId, onClose, onProjectChange, onSave }: {
                 <span className="text-xs text-gray-400">Muted</span>
               </label>
             </div>
-            <div>
-              <label className="text-xs font-medium text-gray-400 mb-1 block">
-                Volume
-                <span className="ml-2 text-xs font-mono text-gray-500">
-                  {clipVolume.toFixed(2)} ({volumeToDb(clipVolume)})
-                </span>
-              </label>
-              <input
-                type="range"
-                min={0}
-                max={2}
-                step={0.01}
-                value={clipVolume}
-                onChange={e => setClipVolume(parseFloat(e.target.value))}
-                className="w-full h-2 rounded-full appearance-none cursor-pointer
-                  [&::-webkit-slider-thumb]:bg-blue-400 [&::-webkit-slider-runnable-track]:bg-gray-700
-                  [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-3 [&::-webkit-slider-thumb]:h-3 [&::-webkit-slider-thumb]:rounded-full"
-              />
-            </div>
+            <VolumeControl
+              value={clipVolume}
+              onChange={setClipVolume}
+              label="Volume"
+              idBase={`clip-volume-${clipId}`}
+            />
             <button
               onClick={handleSaveVolume}
               disabled={savingVolume}
               className="self-start px-3 py-1.5 rounded-md bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white text-xs font-medium transition-colors"
             >
               {savingVolume ? 'Saving\u2026' : 'Save audio settings'}
+            </button>
+          </div>
+        )}
+
+        {/* Speed controls \u2014 gated to video clips only (speed is video-only, see setClipSpeed) */}
+        {clip.type === 'video' && (
+          <div className="border border-gray-800 rounded-lg px-4 py-3 flex flex-col gap-3">
+            <SpeedControl
+              value={clipSpeed}
+              onChange={setClipSpeedValue}
+              label="Clip speed"
+              idBase={`clip-speed-${clipId}`}
+            />
+            <button
+              onClick={handleSaveSpeed}
+              disabled={savingSpeed || clipSpeed === (clip.speed ?? 1)}
+              className="self-start px-3 py-1.5 rounded-md bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white text-xs font-medium transition-colors"
+            >
+              {savingSpeed ? 'Saving\u2026' : 'Save speed'}
             </button>
           </div>
         )}
@@ -730,7 +737,7 @@ function ClipInspect({ project, clipId, onClose, onProjectChange, onSave }: {
 
 /* ── Main modal shell ────────────────────────────────────────── */
 
-export default function ClipInspectModal({ project, target, onClose, onProjectChange, onSave }: Props) {
+export default function ClipInspectModal({ project, target, onClose, onProjectChange, onSave, rippleMode }: Props) {
   // Gate check: don't render the modal shell if the target doesn't exist.
   if (target.kind === 'clip') {
     const clip = (trackItems(project)[0] ?? []).find(c => c.id === target.id)
@@ -751,6 +758,7 @@ export default function ClipInspectModal({ project, target, onClose, onProjectCh
             onClose={onClose}
             onProjectChange={onProjectChange}
             onSave={onSave}
+            rippleMode={rippleMode}
           />
         ) : (
           <AudioInspect

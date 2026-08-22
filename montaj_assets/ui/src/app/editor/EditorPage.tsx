@@ -437,13 +437,14 @@ export default function EditorPage() {
             engine={{ enabled: true }}
             timeline={{ canvas: true }}
             isClipQueued={(itemId) => (project.regenQueue ?? []).some(e => e.clipId === itemId)}
-            renderClipInspector={({ item, onClose }) => (
+            renderClipInspector={({ item, onClose, rippleMode }) => (
               <ClipInspectModal
                 project={project}
                 target={item as InspectTarget}
                 onProjectChange={handleProjectChange}
                 onSave={(p) => api.saveProject(p.id, p)}
                 onClose={onClose}
+                rippleMode={rippleMode}
               />
             )}
             renderSubcutRegen={({ clipId, onClose }) => {

@@ -25,18 +25,22 @@ function uniqueId(base: string): string {
 // ── Single base-clip helpers ────────────────────────────────────────────────
 
 function trimClipEnd(item: VisualItem, at: number): VisualItem {
+  // A timeline delta maps to a SOURCE delta of `·S` (montaj/speed); `·1` is exact
+  // so a clip at S=1/absent is byte-identical to the pre-speed op.
+  const s = item.speed ?? 1
   const trimmedDur = at - item.start
   return {
     ...item,
     end: at,
-    ...(item.outPoint !== undefined ? { outPoint: (item.inPoint ?? 0) + trimmedDur } : {}),
+    ...(item.outPoint !== undefined ? { outPoint: (item.inPoint ?? 0) + trimmedDur * s } : {}),
   }
 }
 
 function trimClipStart(item: VisualItem, at: number): VisualItem {
-  // Lift-style: clip start advances to the cut end; inPoint advances by the same amount.
+  // Lift-style: clip start advances to the cut end; inPoint advances by the same
+  // timeline distance converted to SOURCE seconds (`·S`, montaj/speed).
   // The resulting gap before the clip's new start position is intentional.
-  const sourceOffset = at - item.start
+  const sourceOffset = (at - item.start) * (item.speed ?? 1)
   return {
     ...item,
     start: at,
@@ -45,13 +49,14 @@ function trimClipStart(item: VisualItem, at: number): VisualItem {
 }
 
 function splitClip(item: VisualItem, cut: Cut): [VisualItem, VisualItem] {
+  const s = item.speed ?? 1
   const leftDur = cut.start - item.start
-  const rightSourceOffset = cut.end - item.start
+  const rightSourceOffset = (cut.end - item.start) * s
 
   const left: VisualItem = {
     ...item,
     end: cut.start,
-    ...(item.outPoint !== undefined ? { outPoint: (item.inPoint ?? 0) + leftDur } : {}),
+    ...(item.outPoint !== undefined ? { outPoint: (item.inPoint ?? 0) + leftDur * s } : {}),
   }
   const right: VisualItem = {
     ...item,
@@ -128,11 +133,15 @@ function applyCutToCaptions(segments: CaptionSegment[], cut: Cut): CaptionSegmen
  * Right fragment starts at cut.start (item shrinks; gap appears at item tail).
  */
 function cutSingleItem(item: VisualItem, cut: Cut): VisualItem[] {
+  // Timeline↔source conversions carry the clip's speed S (montaj/speed): a
+  // timeline delta is `·S` source-seconds, and a source length is `/S` timeline
+  // seconds. `·1`/`/1` are exact, so S=1/absent is byte-identical.
+  const s        = item.speed ?? 1
   const inPoint  = item.inPoint  ?? 0
-  const outPoint = item.outPoint ?? (inPoint + (item.end - item.start))
+  const outPoint = item.outPoint ?? (inPoint + (item.end - item.start) * s)
 
-  const physStart = inPoint + (cut.start - item.start)
-  const physEnd   = inPoint + (cut.end   - item.start)
+  const physStart = inPoint + (cut.start - item.start) * s
+  const physEnd   = inPoint + (cut.end   - item.start) * s
 
   const result: VisualItem[] = []
 
@@ -148,7 +157,7 @@ function cutSingleItem(item: VisualItem, cut: Cut): VisualItem[] {
       ...item,
       id: uniqueId(item.id),
       start: cut.start,
-      end: cut.start + (outPoint - physEnd),
+      end: cut.start + (outPoint - physEnd) / s,
       ...(item.inPoint !== undefined ? { inPoint: physEnd } : {}),
     })
   }
@@ -393,8 +402,14 @@ export function splitAtTime<P extends Project>(project: P, at: number, itemId: s
 //     cache origin and is never rewritten here (see schema.ts).
 //   • Source points are written only when the item already carries them, so an
 //     op never invents an inPoint/outPoint on an item that had none.
-//   • Timeline durations map 1:1 onto source-window durations (no speed ramps),
-//     so a MIN_DURATION clamp on the timeline is also the source-window clamp.
+//   • A clip's per-clip speed S (`item.speed ?? 1`, montaj/speed) is the timeline
+//     ↔source scale: `outPoint − inPoint === S·(end − start)`. A timeline delta
+//     converts to a SOURCE delta by `·S`, and a source length back to a timeline
+//     length by `/S`. `·1`/`/1` are exact, so every op is byte-identical at
+//     S=1/absent. MIN_DURATION clamps stay in TIMELINE terms (clip spans are
+//     timeline); only the source-media bounds (`inPoint ≥ 0`, `outPoint ≤
+//     sourceDuration`) pick up the `/S` factor, so a sped clip can't be trimmed
+//     to a negative or oversized source window.
 //   • `sourceDuration` absent ⇒ the source end is unknown ⇒ no upper clamp,
 //     the same `?? Infinity` convention `timeline/multiSelectOps.ts` uses.
 //   • Every op returns the SAME project reference when it would change nothing.
@@ -418,10 +433,12 @@ function findItem(tracks: VisualItem[][], itemId: string): { ti: number; ii: num
 }
 
 /** Source window of an item in original-source coordinates, defaulted the same
- *  way `cutSingleItem` defaults it. */
+ *  way `cutSingleItem` defaults it — the synthesized length carries speed S
+ *  (`(end − start)·S`) so `outPoint − inPoint === S·(end − start)` holds whether
+ *  outPoint was stored or defaulted. */
 function sourceWindow(item: VisualItem): { inPoint: number; outPoint: number } {
   const inPoint = item.inPoint ?? 0
-  return { inPoint, outPoint: item.outPoint ?? (inPoint + (item.end - item.start)) }
+  return { inPoint, outPoint: item.outPoint ?? (inPoint + (item.end - item.start) * (item.speed ?? 1)) }
 }
 
 /** Shift the segments whose midpoint falls inside `window` by `delta`, leaving
@@ -528,11 +545,16 @@ export function rollEdit<P extends Project>(
 
   const { outPoint: leftOut } = sourceWindow(left)
   const { inPoint: rightIn }  = sourceWindow(right)
+  // The two clips may run at different speeds: the boundary moves `d` on the
+  // TIMELINE, so each clip's source point moves by `d·S` in ITS OWN source, and
+  // each source-media clamp on `d` is that clip's source room `/S`.
+  const sLeft  = left.speed  ?? 1
+  const sRight = right.speed ?? 1
 
   let minDelta = left.start + MIN_DURATION - left.end
   let maxDelta = right.end - MIN_DURATION - right.start
-  if (left.type === 'video')  maxDelta = Math.min(maxDelta, (left.sourceDuration ?? Infinity) - leftOut)
-  if (right.type === 'video') minDelta = Math.max(minDelta, -rightIn)
+  if (left.type === 'video')  maxDelta = Math.min(maxDelta, ((left.sourceDuration ?? Infinity) - leftOut) / sLeft)
+  if (right.type === 'video') minDelta = Math.max(minDelta, -rightIn / sRight)
   if (minDelta > maxDelta) return project        // already past both limits — nothing safe to do
 
   const d = Math.max(minDelta, Math.min(delta, maxDelta))
@@ -541,12 +563,12 @@ export function rollEdit<P extends Project>(
   const newLeft: VisualItem = {
     ...left,
     end: left.end + d,
-    ...(left.outPoint !== undefined ? { outPoint: left.outPoint + d } : {}),
+    ...(left.outPoint !== undefined ? { outPoint: left.outPoint + d * sLeft } : {}),
   }
   const newRight: VisualItem = {
     ...right,
     start: right.start + d,
-    ...(right.inPoint !== undefined ? { inPoint: right.inPoint + d } : {}),
+    ...(right.inPoint !== undefined ? { inPoint: right.inPoint + d * sRight } : {}),
   }
   const newTrack = tracks[l.ti].map(item =>
     item.id === left.id ? newLeft : item.id === right.id ? newRight : item,
@@ -557,9 +579,11 @@ export function rollEdit<P extends Project>(
 
 /**
  * Slide an item's source window through its media while the item keeps its exact
- * timeline position: `inPoint` and `outPoint` both move by `delta`, `start` and
- * `end` do not. The window length never changes, so MIN_DURATION cannot bind —
- * only the source-media bounds do (`inPoint` >= 0, `outPoint` <= sourceDuration).
+ * timeline position: for a `delta`-second timeline drag `inPoint` and `outPoint`
+ * both move by `delta·S` in source (montaj/speed), `start` and `end` do not. The
+ * window length never changes, so MIN_DURATION cannot bind — only the
+ * source-media bounds do (`inPoint` >= 0, `outPoint` <= sourceDuration), and each
+ * bound on `delta` is that room `/S`.
  *
  * Nothing else on the timeline is affected, so captions and audio are untouched.
  *
@@ -575,9 +599,10 @@ export function slipItem<P extends Project>(project: P, itemId: string, delta: n
   if (item.type !== 'video') return project                                  // no source media
   if (item.inPoint === undefined && item.outPoint === undefined) return project
 
+  const s = item.speed ?? 1
   const { inPoint, outPoint } = sourceWindow(item)
-  const minDelta = -inPoint
-  const maxDelta = (item.sourceDuration ?? Infinity) - outPoint
+  const minDelta = -inPoint / s
+  const maxDelta = ((item.sourceDuration ?? Infinity) - outPoint) / s
   if (minDelta > maxDelta) return project
 
   const d = Math.max(minDelta, Math.min(delta, maxDelta))
@@ -585,8 +610,8 @@ export function slipItem<P extends Project>(project: P, itemId: string, delta: n
 
   const newItem: VisualItem = {
     ...item,
-    ...(item.inPoint  !== undefined ? { inPoint:  item.inPoint  + d } : {}),
-    ...(item.outPoint !== undefined ? { outPoint: item.outPoint + d } : {}),
+    ...(item.inPoint  !== undefined ? { inPoint:  item.inPoint  + d * s } : {}),
+    ...(item.outPoint !== undefined ? { outPoint: item.outPoint + d * s } : {}),
   }
   const newTrack = tracks[found.ti].map(other => (other.id === item.id ? newItem : other))
 
@@ -633,17 +658,23 @@ export function slideItem<P extends Project>(project: P, itemId: string, delta: 
   const prev   = before && Math.abs(before.end - item.start) <= EPSILON ? before : undefined
   const next   = after  && Math.abs(after.start - item.end)  <= EPSILON ? after  : undefined
 
+  // A neighbor absorbs the move by re-timing its source window: the previous
+  // neighbor's outPoint and the next neighbor's inPoint travel `d·S` in each
+  // neighbor's OWN source (montaj/speed), so each neighbor's source-media bound
+  // on `d` is its room `/S`. The timeline MIN_DURATION clamps are unaffected.
+  const sPrev = prev?.speed ?? 1
+  const sNext = next?.speed ?? 1
   let minDelta = -item.start
   let maxDelta = Infinity
   if (prev) {
     minDelta = Math.max(minDelta, MIN_DURATION - (prev.end - prev.start))
     if (prev.type === 'video') {
-      maxDelta = Math.min(maxDelta, (prev.sourceDuration ?? Infinity) - sourceWindow(prev).outPoint)
+      maxDelta = Math.min(maxDelta, ((prev.sourceDuration ?? Infinity) - sourceWindow(prev).outPoint) / sPrev)
     }
   }
   if (next) {
     maxDelta = Math.min(maxDelta, (next.end - next.start) - MIN_DURATION)
-    if (next.type === 'video') minDelta = Math.max(minDelta, -sourceWindow(next).inPoint)
+    if (next.type === 'video') minDelta = Math.max(minDelta, -sourceWindow(next).inPoint / sNext)
   }
   if (minDelta > maxDelta) return project
 
@@ -656,14 +687,14 @@ export function slideItem<P extends Project>(project: P, itemId: string, delta: 
     moved.set(prev.id, {
       ...prev,
       end: prev.end + d,
-      ...(prev.outPoint !== undefined ? { outPoint: prev.outPoint + d } : {}),
+      ...(prev.outPoint !== undefined ? { outPoint: prev.outPoint + d * sPrev } : {}),
     })
   }
   if (next) {
     moved.set(next.id, {
       ...next,
       start: next.start + d,
-      ...(next.inPoint !== undefined ? { inPoint: next.inPoint + d } : {}),
+      ...(next.inPoint !== undefined ? { inPoint: next.inPoint + d * sNext } : {}),
     })
   }
   const newTrack = track.map(other => moved.get(other.id) ?? other)
@@ -684,4 +715,54 @@ export function slideItem<P extends Project>(project: P, itemId: string, delta: 
     tracks: mapTrackItems(project, (items, i) => (i === found.ti ? newTrack : items)),
     captions: newCaptions,
   }
+}
+
+// ── Speed ────────────────────────────────────────────────────────────────────
+
+/** Speed bounds (montaj/speed). Mirrors the schema note on `VisualItem.speed`
+ *  and `engine/validate.py`'s range check. */
+const MIN_SPEED = 0.25
+const MAX_SPEED = 4
+
+/**
+ * Set a clip's per-clip playback speed and re-fit its timeline span to the same
+ * source range at the new rate.
+ *
+ * `speed` is clamped to [MIN_SPEED, MAX_SPEED]. `inPoint`/`outPoint` are
+ * speed-independent ORIGINAL-source coordinates and are left untouched; only the
+ * timeline `end` moves:
+ *
+ *     end = start + (effectiveOutPoint − effectiveInPoint) / speed
+ *
+ * The effective window comes from the same `sourceWindow` helper the trim ops
+ * use, so the source length is read consistently whether `outPoint` was stored
+ * or synthesized — which makes a re-speed from ANY prior S correct, since the
+ * source length is speed-invariant. The op re-times the ONE clip only; it
+ * deliberately does not close the gap it opens (speeding up) or the overlap it
+ * creates (slowing down) — the caller decides based on the magnet toggle
+ * (`collapseGaps`).
+ *
+ * Returns a new Project. Same reference back when `clipId` names no item, or
+ * the item is not a video clip — speed is video-only per the schema, so an
+ * image/overlay must not pick up a `speed` field or a rescaled `end`.
+ */
+export function setClipSpeed<P extends Project>(project: P, clipId: string, speed: number): P {
+  const tracks = trackItems(project)
+  const found = findItem(tracks, clipId)
+  if (!found) return project
+
+  const item = tracks[found.ti][found.ii]
+  if (item.type !== 'video') return project
+
+  const clamped = Math.min(MAX_SPEED, Math.max(MIN_SPEED, speed))
+  const { inPoint, outPoint } = sourceWindow(item)
+
+  const newItem: VisualItem = {
+    ...item,
+    speed: clamped,
+    end: item.start + (outPoint - inPoint) / clamped,
+  }
+  const newTrack = tracks[found.ti].map(other => (other.id === clipId ? newItem : other))
+
+  return { ...project, tracks: mapTrackItems(project, (items, i) => (i === found.ti ? newTrack : items)) }
 }

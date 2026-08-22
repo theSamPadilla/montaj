@@ -81,6 +81,12 @@
  * @property {number} [outPoint]          Original-source out point, seconds.
  * @property {number} [start]             Timeline start, seconds.
  * @property {number} [end]               Timeline end, seconds.
+ * @property {number} [speed]             Per-clip playback speed S (montaj/speed), default 1. At S the clip
+ *                                        plays S× faster: the source advances S source-seconds per
+ *                                        timeline-second, so `seekTime` scales the elapsed offset by S and
+ *                                        `synthesizedOutPoint`'s window length is `(end − start)·S`.
+ *                                        `inPoint`/`outPoint` stay in ORIGINAL-source coords — NEVER scaled
+ *                                        by S — so `sourceWindow` itself is speed-agnostic.
  */
 
 /**
@@ -291,11 +297,19 @@ export function playbackSrcFor(item, variant) {
 /**
  * Where to seek inside the chosen src to show timeline time `t`.
  *
- *     effectiveInPoint + max(0, t - item.start)
+ *     effectiveInPoint + (item.speed ?? 1) · max(0, t - item.start)
  *
- * Both consumers already compute exactly this:
+ * Both consumers already computed the S=1 form of this:
  *   • useVideoPlayback.ts:680 — `Math.max(inPoint, inPoint + (currentTime - clip.start))`
  *   • encode-segment.js:217-218 — `seekOffset = Math.max(0, segStart - item.start); actualIn = inPt + seekOffset`
+ *
+ * The `·(speed ?? 1)` factor (montaj/speed) converts elapsed TIMELINE-seconds
+ * into SOURCE-seconds: a clip at speed S consumes S× the source per project
+ * second. It is a STRICT NO-OP at S undefined/1 (`·1` is exact), so every frozen
+ * golden built from speed-free items is unchanged. NOTE: the live playback
+ * engine (`scheduler.ts` `placeInSource`) and the render (`encode-segment.js`)
+ * apply this same S factor THEMSELVES over the raw `inPoint`; neither calls this
+ * function, so there is no double-apply.
  *
  * The clamp matters for items whose window starts before the requested time
  * (render segments and preview scrubs both hand in times outside the item).
@@ -307,7 +321,7 @@ export function playbackSrcFor(item, variant) {
  */
 export function seekTime(item, t, variant) {
   const { inPoint } = sourceWindow(item, variant)
-  return inPoint + Math.max(0, t - (item.start ?? 0))
+  return inPoint + (item.speed ?? 1) * Math.max(0, t - (item.start ?? 0))
 }
 
 /**
@@ -331,6 +345,12 @@ export function seekTime(item, t, variant) {
  * normalized cache in play the two disagree by exactly the cache origin — that
  * is correct, not a bug, and neither should be "fixed" into the other.
  *
+ * The `·(speed ?? 1)` factor (montaj/speed) is applied only to the SYNTHESIZED
+ * length: an item with no stored `outPoint` spans `(end − start)` timeline
+ * seconds, which is `(end − start)·S` SOURCE seconds. A STORED `outPoint` is
+ * already the true source out (the invariant `outPoint − inPoint === S·(end −
+ * start)` holds), so it passes through untouched. Strict no-op at S undefined/1.
+ *
  * Takes a `variant` for the same reason `sourceWindow` does: the effective in
  * point it builds on is variant-dependent, and an implicit default would hide
  * preview/render mix-ups.
@@ -342,5 +362,5 @@ export function seekTime(item, t, variant) {
 export function synthesizedOutPoint(item, variant) {
   const w = sourceWindow(item, variant)
   if (w.outPoint !== undefined) return w.outPoint
-  return w.inPoint + ((item.end ?? 0) - (item.start ?? 0))
+  return w.inPoint + ((item.end ?? 0) - (item.start ?? 0)) * (item.speed ?? 1)
 }

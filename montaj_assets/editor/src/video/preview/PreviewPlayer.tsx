@@ -30,7 +30,14 @@ import CarouselPreview from './CarouselPreview'
 export interface TransportHandle {
   togglePlay: () => void
   isPlaying: () => boolean
+  /** The J/K/L shuttle's live transport rate. Engine mode drives the engine's
+   *  own rate (audible fast-forward); the legacy path has no rate knob, so it is
+   *  a no-op there. */
+  setRate: (rate: number) => void
 }
+
+/** Stable no-op for the legacy playback path, which has no transport-rate knob. */
+const NO_RATE = (_rate: number) => {}
 
 interface PreviewPlayerProps {
   project: Project
@@ -279,11 +286,13 @@ function PreviewSurface({
   // `isPlaying` is exposed as a getter (not the boolean itself) so a poller
   // (the J/K/L shuttle) always reads the current value, not a stale closure
   // from the render that last wrote the ref.
+  // Engine mode carries the real rate knob; the legacy path has none (no-op).
+  const setRate = playback.mode === 'engine' ? playback.setRate : NO_RATE
   useEffect(() => {
     if (!transportRef) return
-    transportRef.current = { togglePlay, isPlaying: () => isPlaying }
+    transportRef.current = { togglePlay, isPlaying: () => isPlaying, setRate }
     return () => { transportRef.current = null }
-  }, [transportRef, togglePlay, isPlaying])
+  }, [transportRef, togglePlay, isPlaying, setRate])
 
   const captionTrack = useMemo(() => project.captions, [project])
 

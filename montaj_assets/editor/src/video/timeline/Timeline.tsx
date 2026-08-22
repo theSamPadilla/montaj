@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState, type ComponentProps, type Mutable
 import AudioTrackRow from './AudioTrackRow'
 import type { GetWaveformChunks, ResolveFilePath } from './AudioWaveformLayer'
 import type { FilmstripIndex, GetFilmstripArgs, GetWaveformPeaksArgs, PeaksData, Project } from '../../types'
-import { collapseGaps } from '../cuts'
+import { collapseGaps, setClipSpeed } from '../cuts'
 import { ratioFromClientX } from './utils'
 import { useTimelineZoom } from './useTimelineZoom'
 import { TimelineContext, type TimelineContextValue } from './TimelineContext'
@@ -190,6 +190,28 @@ export default function Timeline({ project, clock, onProjectChange, onCaptionEdi
       i === trackIdx ? { ...t, muted } : t,
     )
     const next = { ...normalized, tracks } as Project
+    onProjectChange(next)
+    onOverlayEdit?.(next)
+  }
+
+  /**
+   * Track-wide speed, from the rail's settings popover's Speed control
+   * (TrackGutter.tsx / TrackSettingsPopover.tsx). Unlike volume/mute
+   * above, speed isn't a `VisualTrack` setting — it lives on each video
+   * clip — so this folds `setClipSpeed` over every video item on the track
+   * into ONE project before committing, the same way a multi-item ripple
+   * delete produces a single undo entry rather than one per clip. A bulk,
+   * one-shot edit (mirrors the clip inspect modal's own "Save speed" button),
+   * not a live preview, so there's no `commit` flag to thread.
+   */
+  function handleApplyTrackSpeed(trackIdx: number, speed: number) {
+    if (!onProjectChange) return
+    const items = trackItems(project)[trackIdx] ?? []
+    let next = project
+    for (const item of items) {
+      if (item.type === 'video') next = setClipSpeed(next, item.id, speed)
+    }
+    if (rippleMode) next = collapseGaps(next)
     onProjectChange(next)
     onOverlayEdit?.(next)
   }
@@ -533,6 +555,7 @@ export default function Timeline({ project, clock, onProjectChange, onCaptionEdi
               onToggleTrackEnabled={handleToggleTrackEnabled}
               onSetTrackVolume={handleSetTrackVolume}
               onSetTrackMuted={handleSetTrackMuted}
+              onApplySpeed={handleApplyTrackSpeed}
               onSetLaneVolume={handleSetLaneVolume}
               onSetLaneMuted={handleSetLaneMuted}
             />

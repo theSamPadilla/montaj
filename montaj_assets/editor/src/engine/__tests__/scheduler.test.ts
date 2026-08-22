@@ -51,6 +51,8 @@ class FakeClock implements MasterClock {
   readonly seeks: number[] = []
   /** Second arg of every `seek` call, aligned index-for-index with `seeks` — `undefined` when omitted. */
   readonly seekMediaS: Array<number | undefined> = []
+  /** Every `setTransportRate` call, in order — the propagation test reads this. */
+  readonly rates: number[] = []
   constructor(
     readonly kind: 'audio' | 'fallback',
     start: number,
@@ -72,6 +74,9 @@ class FakeClock implements MasterClock {
     this.t = projectS
   }
   setVolume() {}
+  setTransportRate(rate: number) {
+    this.rates.push(rate)
+  }
   stats() {
     return {
       kind: this.kind,
@@ -480,6 +485,39 @@ describe('placeInSource — the loopOffset reimplementation', () => {
   it('clamps to the in-point before the clip starts', () => {
     const c = clip('a', 5, 9)
     expect(placeInSource(c, { inPoint: 2, outPoint: 6 }, 1).mediaS).toBe(2)
+  })
+
+  it('scales the source traversal by per-clip speed (non-looping)', () => {
+    // speed 2: 2.5s into the clip consumes 5s of source; speed 0.5 consumes 1.25s.
+    const fast = clip('a', 10, 14, { speed: 2 })
+    expect(placeInSource(fast, { inPoint: 1, outPoint: 9 }, 12.5)).toMatchObject({
+      mediaS: 1 + 5,
+      wraps: 0,
+      looping: false,
+    })
+    const slow = clip('a', 10, 14, { speed: 0.5 })
+    expect(placeInSource(slow, { inPoint: 1, outPoint: 9 }, 12.5).mediaS).toBeCloseTo(1 + 1.25, 9)
+  })
+
+  it('speed 1 (and absent speed) is unchanged', () => {
+    const plain = clip('a', 10, 14)
+    const one = clip('a', 10, 14, { speed: 1 })
+    for (const t of [10, 11.3, 13.9]) {
+      expect(placeInSource(one, { inPoint: 1.5, outPoint: 5.5 }, t)).toEqual(
+        placeInSource(plain, { inPoint: 1.5, outPoint: 5.5 }, t),
+      )
+    }
+  })
+
+  it('wraps a sped-up loop in source terms (loopDur unaffected, traversed faster)', () => {
+    // window is a 2s source loop; at speed 2 a loop iteration is exhausted in 1s
+    // of project time. loopDur stays 2 (source); wraps/loopOffset stay in source.
+    const c = clip('a', 0, 10, { loop: true, speed: 2 })
+    const window = { inPoint: 0, outPoint: 2 }
+    // 0.25s project → 0.5s source → mediaS 0.5, no wrap yet.
+    expect(placeInSource(c, window, 0.25)).toMatchObject({ mediaS: 0.5, wraps: 0, loopOffset: 0 })
+    // 1.25s project → 2.5s source → one full loop (2s) + 0.5s → mediaS 0.5, wraps 1.
+    expect(placeInSource(c, window, 1.25)).toMatchObject({ mediaS: 0.5, wraps: 1, loopOffset: 2 })
   })
 })
 
@@ -897,6 +935,51 @@ describe('transition: boundary swap', () => {
     server.video.firstPresentationTsUs = 7_000
     step(h, 1.5)
     expect(last(server.pulls)).toBe(3_007_000)
+  })
+})
+
+describe('setRate — the live transport rate', () => {
+  const p = project([clip('a', 0, 2), clip('b', 2, 4)])
+
+  it('pushes the rate to the active clock and carries it onto clocks built afterward', () => {
+    const h = harness(p)
+    h.scheduler.play()
+    step(h, 0.5)
+    const clockA = h.host.sessions.get('a')!.clock
+    expect(clockA.kind).toBe('audio')
+
+    h.scheduler.setRate(2)
+    expect(clockA.rates).toEqual([2])
+
+    // Cross into clip b: the newly adopted clock inherits the live rate.
+    step(h, 2.1)
+    const clockB = h.host.sessions.get('b')!.clock
+    expect(clockB.rates).toContain(2)
+  })
+
+  it('leaves clocks untouched while R stays 1 (strict no-op default path)', () => {
+    const h = harness(p)
+    h.scheduler.play()
+    step(h, 0.5)
+    const clockA = h.host.sessions.get('a')!.clock
+    step(h, 2.1) // crosses the boundary; a's session is dropped afterward
+    const clockB = h.host.sessions.get('b')!.clock
+    // Never told a rate — the ownership swap must not re-anchor at the default.
+    expect(clockA.rates).toEqual([])
+    expect(clockB.rates).toEqual([])
+  })
+
+  it('is idempotent — an unchanged rate never touches the active clock', () => {
+    const h = harness(p)
+    h.scheduler.play()
+    step(h, 0.5)
+    const clockA = h.host.sessions.get('a')!.clock
+    h.scheduler.setRate(1) // already 1× — the shuttle's stop/reverse call
+    expect(clockA.rates).toEqual([])
+    h.scheduler.setRate(2) // a real change lands
+    expect(clockA.rates).toEqual([2])
+    h.scheduler.setRate(2) // same again — no-op, no re-anchor
+    expect(clockA.rates).toEqual([2])
   })
 })
 

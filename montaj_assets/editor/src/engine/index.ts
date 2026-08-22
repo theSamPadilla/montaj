@@ -141,6 +141,14 @@ export interface Engine {
   /** External scrub. Playback survives it; scrubbing past the end stops it. */
   seek(projectS: number): void
   /**
+   * Set the live transport rate R (default 1): project time advances R× wall
+   * time, applied to the active clock immediately and to every session built
+   * afterward. This is the J/K/L shuttle's knob. A per-clip `speed` change is
+   * NOT this — it arrives through {@link updateProject} as a session rebuild,
+   * like any other timeline edit.
+   */
+  setRate(rate: number): void
+  /**
    * Adopt an edited project.
    *
    * Beyond the obvious (new clips, moved boundaries), this is the path a
@@ -229,6 +237,14 @@ interface Session {
    * change here is pushed live via `setVolume`, not a respawn trigger.
    */
   volume: number
+  /**
+   * `item.speed ?? 1` as of the last (re)build. Speed re-maps source↔timeline
+   * and the master clock's timebase captures it at build time, so — like a trim
+   * or a mute toggle, and UNLIKE `volume` — a change respawns the session rather
+   * than pushing live. The transport rate R is the live axis; per-clip speed is
+   * not.
+   */
+  speed: number
 }
 
 interface ServerEntry {
@@ -273,7 +289,8 @@ class EngineSourceHost implements SourceHost {
         want.src !== session.src ||
         want.item.start !== session.start ||
         sourceWindow(want.item, 'preview').inPoint !== session.inPoint ||
-        !!want.item.muted !== session.muted
+        !!want.item.muted !== session.muted ||
+        (want.item.speed ?? 1) !== session.speed
       if (changed) this.dropSession(clipId)
     }
     // A clip's volume can change without a rebuild: push it straight to the
@@ -335,6 +352,7 @@ class EngineSourceHost implements SourceHost {
       inPoint: sourceWindow(request.item, 'preview').inPoint,
       muted: !!request.item.muted,
       volume: request.item.volume ?? 1,
+      speed: request.item.speed ?? 1,
     }
     this.sessions.set(request.clipId, session)
     void this.build(session, request)
@@ -359,6 +377,7 @@ class EngineSourceHost implements SourceHost {
       session.inPoint = window.inPoint
       session.muted = !!request.item.muted
       session.volume = request.item.volume ?? 1
+      session.speed = request.item.speed ?? 1
       const timebase: ClipTimebase = {
         start: request.item.start,
         // `sourceWindow(...).inPoint`, NOT the raw `item.inPoint` — for a
@@ -369,6 +388,10 @@ class EngineSourceHost implements SourceHost {
         // The AUDIO track's origin, per `ClipTimebase`. The video track has its
         // own and the scheduler reads it straight off the frame server.
         firstPresentationTsUs: demuxed.audio?.firstPresentationTsUs ?? 0,
+        // Per-clip speed is captured at build time (the clock is never
+        // reconfigured live); a speed edit respawns the session — see `Session
+        // .speed`. Absent ⇒ 1, the strict no-op mapping.
+        speed: request.item.speed ?? 1,
       }
       // Never rejects: a muted clip, a track with no decodable audio, a browser
       // without WebCodecs audio — all resolve to a wall clock with a reason.
@@ -676,6 +699,9 @@ export function createEngine(project: Project, deps: EngineDeps): Engine {
     seek(projectS: number) {
       scheduler.seek(projectS)
       if (scheduler.status().transport !== 'playing') stop()
+    },
+    setRate(rate: number) {
+      scheduler.setRate(rate)
     },
     updateProject(next: Project) {
       currentProject = next

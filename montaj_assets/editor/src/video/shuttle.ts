@@ -7,17 +7,18 @@ import type { PlaybackClock } from './playback-clock'
  *
  * Two mechanisms, split by what can carry audio:
  *
- *  - **1x forward IS real playback, with sound.** The engine only decodes at 1x
- *    real-time forward, so that is the one place audio is possible. The first L
- *    press (and any reset back to +1x) calls `deps.play()` — the same engine
- *    transport Space uses, AudioContext resume and all — instead of the loop.
- *  - **Everything else is a silent seek-loop** (2x/4x forward, and all reverse).
- *    The engine has no variable-rate API, so these can only fast-scrub the
- *    shared `PlaybackClock`: pause real playback first (muting audio), then an
- *    rAF loop steps `clock.set(clock.get() + rate * dt)`. This touches only the
- *    clock, never the engine or <video> elements directly, so it works
- *    identically over both playback paths. Real 2x+/reverse audio would need an
- *    audio time-stretch/resample pipeline that does not exist yet.
+ *  - **Forward (1x/2x/4x) IS real playback, with sound.** The engine has a live
+ *    transport rate (`deps.setRate`): project time advances R× and audio is
+ *    pitch-corrected via a streaming time-stretch, so 2x/4x forward is audible,
+ *    not just faster. A forward press ensures the engine transport is running
+ *    (via `deps.play()` — the same gesture-anchored path Space uses, AudioContext
+ *    resume and all) and sets the rate to the shuttle's magnitude.
+ *  - **Reverse is a silent seek-loop.** The engine has no reverse rate (reversed
+ *    audio is not a thing), so J can only fast-scrub the shared `PlaybackClock`:
+ *    real playback is paused (muting audio) and the transport rate reset to 1x,
+ *    then an rAF loop steps `clock.set(clock.get() + rate * dt)`. This touches
+ *    only the clock, never the engine or <video> elements directly, so it works
+ *    identically over both playback paths.
  */
 export type ShuttleRate = -4 | -2 | -1 | 0 | 1 | 2 | 4
 
@@ -42,20 +43,25 @@ export interface ShuttleDeps {
    *  every tick so a real "user hit play" transport change cancels the
    *  shuttle instead of racing it. */
   isPlaying: () => boolean
-  /** Start real 1x forward playback WITH audio — the engine transport (the
-   *  same gesture-anchored path Space uses, AudioContext resume included).
-   *  Called when the shuttle enters +1x; a no-op if already playing. */
+  /** Start real forward playback WITH audio — the engine transport (the same
+   *  gesture-anchored path Space uses, AudioContext resume included). Called on a
+   *  forward press; a no-op if already playing. */
   play: () => void
-  /** Pause real playback (audio implicitly muted). Called when entering a silent
-   *  seek-loop speed, and by stop() when the shuttle itself started playback. */
+  /** Pause real playback (audio implicitly muted). Called when entering the
+   *  reverse seek-loop, and by stop() when the shuttle itself started playback. */
   pause: () => void
+  /** Set the engine's live transport rate R. A forward press sets it to the
+   *  shuttle magnitude (1/2/4) for audible fast-forward; reverse and stop reset
+   *  it to 1x before pausing/scrubbing so nothing plays at a stale rate. */
+  setRate: (rate: number) => void
   /** Injectable for tests; defaults to `requestAnimationFrame`/`cancelAnimationFrame`. */
   raf?: (cb: (ms: number) => void) => number
   caf?: (id: number) => void
 }
 
 export interface ShuttleController {
-  /** J or L. Starts the loop (pausing playback first) if idle. */
+  /** J or L. Forward = real playback at the transport rate; reverse = the silent
+   *  seek-loop. */
   press: (direction: 1 | -1) => void
   /** K, or any other transport/seek change — stops the loop. */
   stop: () => void
@@ -73,8 +79,9 @@ export function createShuttleController(deps: ShuttleDeps): ShuttleController {
   // we changed it" apart from "something external moved the playhead" (a
   // Scrubber click, an arrow-key step, another editor gesture).
   let lastWritten: number | null = null
-  // True while the shuttle itself is driving real 1x forward playback (the +1x
-  // case). Tells stop() to pause it back, and tells a move OFF +1x to mute first.
+  // True while the shuttle itself is driving real forward playback (any of
+  // 1x/2x/4x). Tells stop() to pause it back, and tells a move to reverse to
+  // mute first.
   let realPlaying = false
 
   function stopLoop() {
@@ -86,9 +93,14 @@ export function createShuttleController(deps: ShuttleDeps): ShuttleController {
   function stop() {
     rate = 0
     stopLoop()
+    deps.setRate(1)
     if (realPlaying) { deps.pause(); realPlaying = false }
   }
 
+  // Only ever runs for reverse now (forward is real playback, no loop). Keeps
+  // the existing external-change/isPlaying cancellation guards so a real play or
+  // an external seek during a reverse scrub cancels the shuttle instead of
+  // racing it.
   function tick(ms: number) {
     if (rate === 0) { stopLoop(); return }
     if (deps.isPlaying()) { stop(); return }
@@ -117,21 +129,27 @@ export function createShuttleController(deps: ShuttleDeps): ShuttleController {
     press(direction: 1 | -1) {
       const next = nextShuttleRate(rate, direction)
 
-      if (next === 1) {
-        // +1x = REAL playback, with audio. Drop any silent seek-loop and hand
-        // off to the engine transport. If the user is already playing (e.g. they
-        // hit Space first), leave that playback owned by them — don't claim it.
+      if (next > 0) {
+        // FORWARD 1x/2x/4x = REAL playback at the engine transport rate — with
+        // audio, pitch-corrected. Drop any reverse seek-loop, make sure the
+        // engine is playing (resuming the AudioContext), then set the rate.
+        // Ownership (`realPlaying`) is only claimed when the shuttle itself
+        // starts playback from idle — if playback was already running (e.g.
+        // the user pressed Space first), stop() must leave it running rather
+        // than pausing playback the shuttle never started.
         stopLoop()
-        rate = 1
         if (!deps.isPlaying()) { deps.play(); realPlaying = true }
+        deps.setRate(next)
+        rate = next
         return
       }
 
-      // A silent seek-loop speed: 2x/4x forward, or any reverse. Real playback
-      // must be off so nothing double-drives the clock and audio is muted.
-      const wasLooping = rafId !== null
-      if (realPlaying) { deps.pause(); realPlaying = false }
-      else if (!wasLooping) deps.pause() // cancel any user-started real playback
+      // REVERSE = the silent seek-loop. Reset the transport rate and pause real
+      // playback before scrubbing, so nothing plays at a stale rate and nothing
+      // double-drives the clock while the loop fast-scrubs it.
+      deps.setRate(1)
+      if (deps.isPlaying()) deps.pause()
+      realPlaying = false
       rate = next
       startLoopIfNeeded()
     },

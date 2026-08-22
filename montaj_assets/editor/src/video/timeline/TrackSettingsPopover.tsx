@@ -1,6 +1,8 @@
 import { useEffect, useLayoutEffect, useRef, useState, type RefObject } from 'react'
 import { createPortal } from 'react-dom'
 import { Switch } from '../../ui/switch'
+import SpeedControl from './SpeedControl'
+import VolumeControl from './VolumeControl'
 
 /**
  * Track-wide settings, opened from the rail's icon button (see TrackGutter.tsx).
@@ -34,14 +36,6 @@ interface Position {
   flipped: boolean
 }
 
-/** `20 * log10(v)` dB, matching `ClipInspectModal.tsx`'s (host `montaj_assets/ui`
- *  package) per-clip volume readout exactly. Copied rather than imported — the
- *  `editor` package can't reach across into a host package's `src`. */
-function volumeToDb(v: number): string {
-  if (v === 0) return '−∞ dB'
-  return `${(20 * Math.log10(v)).toFixed(1)} dB`
-}
-
 export interface TrackSettingsPopoverProps {
   /** The rail button this popover is anchored to and positioned against. */
   anchorRef: RefObject<HTMLButtonElement | null>
@@ -71,6 +65,21 @@ export interface TrackSettingsPopoverProps {
    *  given, `onToggle` is the SAME callback the rail's inline eye icon calls;
    *  this is a second surface for it, not a second mutation path. */
   skip?: { skipped: boolean; onToggle: () => void; ariaLabel: string }
+  /**
+   * Speed section — give both `speed` and `onApplySpeed` to show it. Present
+   * only for visual (video) tracks; speed is a video-only concept, same as
+   * volume/mute above.
+   *
+   * Applies directly, no button: it is a track control, so touching it is the
+   * intent to set the whole track. It previews into local state during a slider
+   * drag and commits `onApplySpeed` on release (and immediately on a chip
+   * click) — the same live-preview-then-commit split the volume fader uses,
+   * just committing to every clip instead of a track-level value.
+   */
+  speed?: number
+  /** Applies `speed` to EVERY clip on the track. Fired on slider release and on
+   *  a preset-chip click (via SpeedControl's `onCommit`), not per drag tick. */
+  onApplySpeed?: (speed: number) => void
 }
 
 export default function TrackSettingsPopover({
@@ -84,12 +93,24 @@ export default function TrackSettingsPopover({
   onMutedChange,
   muteAriaLabel,
   skip,
+  speed,
+  onApplySpeed,
 }: TrackSettingsPopoverProps) {
   const popoverRef = useRef<HTMLDivElement>(null)
   const [position, setPosition] = useState<Position | null>(null)
 
   const showVolume = volume !== undefined && !!onVolumeChange
   const showMute = muted !== undefined && !!onMutedChange
+  const showSpeed = speed !== undefined && !!onApplySpeed
+
+  // Local slider value during a drag, seeded from the committed `speed` and
+  // reset whenever it changes under us — same shape as `liveVolume` below. The
+  // bulk apply to every clip runs on commit (slider release / chip click) via
+  // SpeedControl's `onCommit`, not on each drag tick.
+  const [localSpeed, setLocalSpeed] = useState(speed ?? 1)
+  useEffect(() => {
+    if (speed !== undefined) setLocalSpeed(speed)
+  }, [speed])
 
   // Live slider value during a drag — local state so a mid-drag frame doesn't
   // stutter waiting on a round trip through the project. Reset whenever the
@@ -164,30 +185,24 @@ export default function TrackSettingsPopover({
       <p className="text-xs font-semibold text-[var(--editor-text)]/90">{title}</p>
 
       {showVolume && (
-        <div className="flex flex-col gap-1">
-          <label className="flex items-center justify-between text-[11px] text-[var(--editor-text)]/70">
-            <span>Volume</span>
-            <span className="font-mono text-[10px] text-[var(--editor-text)]/50">
-              {liveVolume.toFixed(2)} ({volumeToDb(liveVolume)})
-            </span>
-          </label>
-          <input
-            type="range"
-            min={0}
-            max={2}
-            step={0.01}
-            value={liveVolume}
-            aria-label={volumeAriaLabel}
-            className="w-full accent-[var(--editor-accent)]"
-            onChange={e => {
-              const v = Number(e.target.value)
-              setLiveVolume(v)
-              onVolumeChange!(v, false)
-            }}
-            onPointerUp={e => onVolumeChange!(Number((e.target as HTMLInputElement).value), true)}
-            onKeyUp={e => onVolumeChange!(Number((e.target as HTMLInputElement).value), true)}
-          />
-        </div>
+        <VolumeControl
+          value={liveVolume}
+          onChange={v => { setLiveVolume(v); onVolumeChange!(v, false) }}
+          onCommit={v => onVolumeChange!(v, true)}
+          label="Volume"
+          ariaLabel={volumeAriaLabel}
+          idBase="track-volume"
+        />
+      )}
+
+      {showSpeed && (
+        <SpeedControl
+          value={localSpeed}
+          onChange={setLocalSpeed}
+          onCommit={onApplySpeed}
+          label="Speed"
+          idBase="track-speed"
+        />
       )}
 
       {showMute && (

@@ -91,6 +91,23 @@ const IDLE_STATUS: EngineStatus = {
 }
 
 /**
+ * Slave one audio lane element to the transport rate R, pitch-corrected.
+ *
+ * The engine playhead advances R× (the J/K/L shuttle's fast-forward), so a lane
+ * playing at `playbackRate = R` keeps its `currentTime` in step with the picture
+ * — music/VO speed up together instead of drifting. `preservesPitch` stops the
+ * speed-up from chipmunking; the vendor-prefixed variants are set best-effort
+ * for engines that only understand those.
+ */
+function applyLaneRate(el: HTMLAudioElement, rate: number): void {
+  el.playbackRate = rate
+  el.preservesPitch = true
+  const vendor = el as unknown as { mozPreservesPitch?: boolean; webkitPreservesPitch?: boolean }
+  if ('mozPreservesPitch' in vendor) vendor.mozPreservesPitch = true
+  if ('webkitPreservesPitch' in vendor) vendor.webkitPreservesPitch = true
+}
+
+/**
  * What `PreviewPlayer` consumes, minus the `<video>`-slot keys (refs, slot
  * index, `onTimeUpdate`/`onPause`/`onEnded`/`onError` handlers) — in engine
  * mode those elements do not exist, and the surface renders `EngineSurface`
@@ -118,6 +135,13 @@ export interface EnginePlayback {
   showVideo: boolean
   /** Gesture-anchored play/pause. Resumes the shared AudioContext first. */
   togglePlay: () => void
+  /**
+   * The J/K/L shuttle's live transport rate. Pushes R onto the engine (project
+   * time advances R×, audio pitch-corrected by the engine's own time-stretch)
+   * AND onto every `<audio>` lane's `playbackRate`, so music/VO fast-forward in
+   * lockstep. Reset to 1 by the shuttle on reverse/stop.
+   */
+  setRate: (rate: number) => void
   /** No track-0 video items — the legacy `isCanvasProject`, same predicate. */
   isCanvasProject: boolean
   /** Track-0 video items, start-sorted. Identical to the legacy `clips` memo. */
@@ -235,6 +259,9 @@ export function useEnginePlayback(
   const audioRefsMap = useRef<Map<string, HTMLAudioElement>>(new Map())
   const audioSrcMap  = useRef<Map<string, string>>(new Map())
   const gainNodesMap = useRef<Map<string, GainNode>>(new Map())
+  // The live transport rate R (the shuttle's fast-forward). Read every time a
+  // lane is (re)synced so a lane that starts or resumes mid-shuttle inherits it.
+  const transportRateRef = useRef(1)
 
   const unmutedAudioTracks = useMemo(
     () => (project.audio?.tracks ?? []).filter(t => !t.muted && t.src),
@@ -269,6 +296,12 @@ export function useEnginePlayback(
         if (!el.paused) el.pause()
         continue
       }
+
+      // Speed the lane up with the picture (pitch-corrected). The playhead and
+      // the lane both advance R× real time, so `win.trackTime` and the element's
+      // own `currentTime` stay in step and the drift re-seek below keeps working
+      // in project-time terms — no need to scale its tolerance.
+      applyLaneRate(el, transportRateRef.current)
 
       if (Math.abs(el.currentTime - win.trackTime) > AUDIO_SYNC_THRESHOLD_S) {
         el.currentTime = Math.max(0, win.trackTime)
@@ -480,6 +513,18 @@ export function useEnginePlayback(
     emitTime(engine.clock.now())
   }, [emitTime])
 
+  // The J/K/L shuttle's rate knob. Push R onto the engine transport (project
+  // time advances R×, audio pitch-corrected by the engine's streaming
+  // time-stretch) and onto every audio lane element (`<audio>` slaved to the
+  // playhead) so music/VO fast-forward in lockstep rather than drifting. Stored
+  // in a ref so a lane started or re-synced later inherits the current rate
+  // (see `syncAudioTracks` and the lane-creation effect).
+  const setRate = useCallback((rate: number) => {
+    transportRateRef.current = rate
+    engineRef.current?.setRate(rate)
+    for (const el of audioRefsMap.current.values()) applyLaneRate(el, rate)
+  }, [])
+
   // Space = play/pause. The legacy hook's keydown block is the spec: same
   // typing-surface guard (an `<input>`, a `<textarea>` or any contentEditable
   // host — which is what the caption/overlay editors and every modal field
@@ -517,6 +562,7 @@ export function useEnginePlayback(
     setIsPlaying,
     showVideo: status.picture === 'video',
     togglePlay,
+    setRate,
     isCanvasProject,
     clips,
     tracks0NonVideo,

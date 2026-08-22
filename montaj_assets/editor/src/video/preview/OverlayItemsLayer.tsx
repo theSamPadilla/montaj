@@ -21,8 +21,8 @@ import { enabledTrackItems } from '../timeline/timeline-model'
 const VIDEO_PRELOAD_S = 0.4
 
 // Synced video overlay — seeks to the correct position within the item's inPoint/outPoint range
-function OverlayVideo({ src, currentTime, itemStart, inPoint, isPlaying, muted, visible, onSrcError }: {
-  src: string; currentTime: number; itemStart: number; inPoint: number
+function OverlayVideo({ src, currentTime, itemStart, inPoint, speed = 1, isPlaying, muted, visible, onSrcError }: {
+  src: string; currentTime: number; itemStart: number; inPoint: number; speed?: number
   isPlaying: boolean; muted?: boolean; visible: boolean; onSrcError?: () => void
 }) {
   const ref = useRef<HTMLVideoElement>(null)
@@ -39,7 +39,11 @@ function OverlayVideo({ src, currentTime, itemStart, inPoint, isPlaying, muted, 
   useEffect(() => {
     const v = ref.current
     if (!v) return
-    const target = Math.max(inPoint, inPoint + (currentTime - itemStart))
+    // Source time = inPoint + S·(projectTime − start), matching timeline-core's
+    // `seekTime`. Strict no-op at S=1. A sped/slowed overlay walks its source
+    // faster/slower than project time, so without S it would seek to the wrong
+    // frame (and, past S=1, run off the end).
+    const target = Math.max(inPoint, inPoint + speed * (currentTime - itemStart))
     v.currentTime = target
   }, [])
 
@@ -51,24 +55,31 @@ function OverlayVideo({ src, currentTime, itemStart, inPoint, isPlaying, muted, 
     const v = ref.current
     if (!v) return
     if (v.readyState < 2) return
-    const target = inPoint + (currentTime - itemStart)
+    const target = inPoint + speed * (currentTime - itemStart)
     const drift = Math.abs(v.currentTime - target)
     if (!v.paused && drift < 1.5) return
     if (drift > 0.3) {
       v.currentTime = Math.max(inPoint, target)
     }
-  }, [currentTime, itemStart, inPoint])
+  }, [currentTime, itemStart, inPoint, speed])
 
   // Play/pause sync — only play when visible; pause when pre-loading or past end
   useEffect(() => {
     const v = ref.current
     if (!v) return
+    // Play at S× so one project-second consumes S source-seconds — keeps the
+    // element in step with project time instead of drifting until a re-seek
+    // fires. `preservesPitch` matters only for an audible overlay; harmless
+    // otherwise. Set before play(); a fresh src load resets rate to 1, so the
+    // dependency list re-runs this whenever speed changes under us.
+    v.playbackRate = speed
+    v.preservesPitch = true
     if (isPlaying && visible) {
       v.play().catch(() => {})
     } else {
       v.pause()
     }
-  }, [isPlaying, visible])
+  }, [isPlaying, visible, speed])
 
   return (
     <video
@@ -568,6 +579,7 @@ export default function OverlayItemsLayer({
                   currentTime={currentTime}
                   itemStart={item.start}
                   inPoint={item.inPoint ?? 0}
+                  speed={item.speed ?? 1}
                   isPlaying={isPlaying}
                   muted={item.muted}
                   visible={visible}

@@ -146,6 +146,135 @@ test('sourceCrop without source dims is a no-op (cannot compute pixels)', async 
 })
 
 // ---------------------------------------------------------------------------
+// Per-clip playback speed (montaj/speed feature)
+// ---------------------------------------------------------------------------
+
+test('speed=2: seek advances by seekOffset*speed, input trimmed to duration*speed, PTS scaled by 1/speed', async () => {
+  const item = {
+    type: 'video', src: '/src.mp4', start: 0, end: 5, inPoint: 0,
+    scale: 1, offsetX: 0, offsetY: 0, opacity: 1, speed: 2,
+  }
+  const { inputArgs, filterParts } = buildVideoItemFilterParts(item, 1920, 1080, 0, '[base]',
+    { segStart: 1, duration: 4, projectColorSpace: 'sdr_bt709', zscaleAvailable: false })
+  assert.equal(inputArgs[inputArgs.indexOf('-ss') + 1], '2',
+    'actualIn = inPoint(0) + seekOffset(1)*speed(2)')
+  assert.equal(inputArgs[inputArgs.indexOf('-t') + 1], '8',
+    'input trim = duration(4)*speed(2)')
+  assert.ok(videoFilter(filterParts).includes('setpts=(PTS-STARTPTS)/2'),
+    'video PTS must divide by speed')
+})
+
+test('speed=4, 0.5, 0.25: seek/trim/PTS all scale by speed', async () => {
+  for (const speed of [4, 0.5, 0.25]) {
+    const item = {
+      type: 'video', src: '/src.mp4', start: 0, end: 5, inPoint: 1,
+      scale: 1, offsetX: 0, offsetY: 0, opacity: 1, speed,
+    }
+    const { inputArgs, filterParts } = buildVideoItemFilterParts(item, 1920, 1080, 0, '[base]',
+      { segStart: 2, duration: 3, projectColorSpace: 'sdr_bt709', zscaleAvailable: false })
+    const seekOffset = 2 // segStart(2) - item.start(0)
+    assert.equal(inputArgs[inputArgs.indexOf('-ss') + 1], String(1 + seekOffset * speed),
+      `speed=${speed}: -ss must be inPoint + seekOffset*speed`)
+    assert.equal(inputArgs[inputArgs.indexOf('-t') + 1], String(3 * speed),
+      `speed=${speed}: -t must be duration*speed`)
+    assert.ok(videoFilter(filterParts).includes(`setpts=(PTS-STARTPTS)/${speed}`),
+      `speed=${speed}: video PTS must divide by speed`)
+  }
+})
+
+test('speed absent and speed:1 produce byte-identical video chains (strict no-op)', async () => {
+  const base = {
+    type: 'video', src: '/src.mp4', start: 0, end: 5, inPoint: 0,
+    scale: 1, offsetX: 0, offsetY: 0, opacity: 1,
+  }
+  const opts = { segStart: 0, duration: 5, projectColorSpace: 'sdr_bt709', zscaleAvailable: false }
+  const noSpeed = buildVideoItemFilterParts(base, 1920, 1080, 0, '[base]', opts)
+  const speed1 = buildVideoItemFilterParts({ ...base, speed: 1 }, 1920, 1080, 0, '[base]', opts)
+  assert.deepEqual(noSpeed.inputArgs, speed1.inputArgs)
+  assert.deepEqual(noSpeed.filterParts, speed1.filterParts)
+  assert.ok(videoFilter(noSpeed.filterParts).includes('setpts=PTS-STARTPTS,'),
+    'no speed → bare setpts, never a /1 division')
+  assert.ok(!videoFilter(noSpeed.filterParts).includes('/1'),
+    'no speed → no division by 1 must ever appear')
+})
+
+test('encodeSegment: speed=2 audio chain time-compresses via atempo, atrim window widens to duration*speed', async () => {
+  const seg = {
+    start: 0, end: 5, items: [
+      { type: 'video', src: '/clip.mp4', start: 0, end: 5, inPoint: 0,
+        trackIdx: 0, scale: 1, offsetX: 0, offsetY: 0, opacity: 1, muted: false, speed: 2 },
+    ], overlays: [], vw: 1920, vh: 1080, fps: 30,
+  }
+  const result = await encodeSegment(seg, '/tmp/test.mp4', { _dryRun: true })
+  const audioFilter = result.filterParts.find(f => f.includes('sample_rates=48000'))
+  assert.ok(audioFilter, 'per-item audio filter must exist')
+  assert.ok(audioFilter.includes('atrim=0:10'), 'atrim window = duration(5)*speed(2) = 10')
+  assert.ok(audioFilter.includes('atempo=2'), 'speed=2 chains a single atempo=2')
+  assert.ok(audioFilter.indexOf('atrim=') < audioFilter.indexOf('asetpts='),
+    'atrim must precede asetpts even with speed applied')
+  assert.ok(audioFilter.indexOf('asetpts=') < audioFilter.indexOf('atempo='),
+    'atempo must run after asetpts, before volume')
+})
+
+test('encodeSegment: speed=4 chains two atempo=2 stages (per-instance range is [0.5,2.0])', async () => {
+  const seg = {
+    start: 0, end: 3, items: [
+      { type: 'video', src: '/clip.mp4', start: 0, end: 3, inPoint: 0,
+        trackIdx: 0, scale: 1, offsetX: 0, offsetY: 0, opacity: 1, muted: false, speed: 4 },
+    ], overlays: [], vw: 1920, vh: 1080, fps: 30,
+  }
+  const result = await encodeSegment(seg, '/tmp/test.mp4', { _dryRun: true })
+  const audioFilter = result.filterParts.find(f => f.includes('sample_rates=48000'))
+  assert.ok(audioFilter.includes('atrim=0:12'), 'atrim window = duration(3)*speed(4) = 12')
+  assert.ok(audioFilter.includes('atempo=2,atempo=2'), 'speed=4 chains atempo=2 twice')
+})
+
+test('encodeSegment: speed=0.25 chains two atempo=0.5 stages', async () => {
+  const seg = {
+    start: 0, end: 4, items: [
+      { type: 'video', src: '/clip.mp4', start: 0, end: 4, inPoint: 0,
+        trackIdx: 0, scale: 1, offsetX: 0, offsetY: 0, opacity: 1, muted: false, speed: 0.25 },
+    ], overlays: [], vw: 1920, vh: 1080, fps: 30,
+  }
+  const result = await encodeSegment(seg, '/tmp/test.mp4', { _dryRun: true })
+  const audioFilter = result.filterParts.find(f => f.includes('sample_rates=48000'))
+  assert.ok(audioFilter.includes('atrim=0:1'), 'atrim window = duration(4)*speed(0.25) = 1')
+  assert.ok(audioFilter.includes('atempo=0.5,atempo=0.5'), 'speed=0.25 chains atempo=0.5 twice')
+})
+
+test('encodeSegment: speed=0.5 chains a single atempo=0.5', async () => {
+  const seg = {
+    start: 0, end: 4, items: [
+      { type: 'video', src: '/clip.mp4', start: 0, end: 4, inPoint: 0,
+        trackIdx: 0, scale: 1, offsetX: 0, offsetY: 0, opacity: 1, muted: false, speed: 0.5 },
+    ], overlays: [], vw: 1920, vh: 1080, fps: 30,
+  }
+  const result = await encodeSegment(seg, '/tmp/test.mp4', { _dryRun: true })
+  const audioFilter = result.filterParts.find(f => f.includes('sample_rates=48000'))
+  assert.ok(audioFilter.includes('atrim=0:2'), 'atrim window = duration(4)*speed(0.5) = 2')
+  assert.ok(audioFilter.includes('atempo=0.5'), 'speed=0.5 chains a single atempo=0.5')
+  assert.ok(!audioFilter.includes('atempo=0.5,atempo=0.5'), 'single-factor chain, not doubled')
+})
+
+test('encodeSegment: speed:1 and speed absent produce byte-identical segments (strict no-op)', async () => {
+  const mk = (speed) => ({
+    start: 0, end: 5, items: [
+      { type: 'video', src: '/clip.mp4', start: 0, end: 5, inPoint: 0,
+        trackIdx: 0, scale: 1, offsetX: 0, offsetY: 0, opacity: 1, muted: false,
+        ...(speed !== undefined ? { speed } : {}) },
+    ], overlays: [], vw: 1920, vh: 1080, fps: 30,
+  })
+  const withoutSpeed = await encodeSegment(mk(undefined), '/tmp/test.mp4', { _dryRun: true })
+  const withSpeed1 = await encodeSegment(mk(1), '/tmp/test.mp4', { _dryRun: true })
+  assert.deepEqual(withoutSpeed.inputs, withSpeed1.inputs)
+  assert.deepEqual(withoutSpeed.filterParts, withSpeed1.filterParts)
+  assert.deepEqual(withoutSpeed.args, withSpeed1.args)
+  const audioFilter = withoutSpeed.filterParts.find(f => f.includes('sample_rates=48000'))
+  assert.ok(!audioFilter.includes('atempo'), 'no speed → no atempo filter')
+  assert.ok(audioFilter.includes('atrim=0:5'), 'no speed → plain atrim=0:duration')
+})
+
+// ---------------------------------------------------------------------------
 // Multi-track audio mixing
 // ---------------------------------------------------------------------------
 

@@ -56,6 +56,13 @@ export interface SourceWindowItem {
   start?: number
   /** Timeline end, seconds. */
   end?: number
+  /**
+   * Per-clip playback speed S (montaj/speed), default 1. At S the clip plays S×
+   * faster: `seekTime` scales the elapsed offset by S and `synthesizedOutPoint`'s
+   * window length is `(end − start)·S`. `inPoint`/`outPoint` stay in
+   * ORIGINAL-source coords (never scaled by S), so `sourceWindow` is speed-agnostic.
+   */
+  speed?: number
 }
 
 /** What to load, and where to seek inside it. */
@@ -111,7 +118,9 @@ export declare function playbackSrcFor(
 
 /**
  * Where to seek inside the chosen src to show timeline time `t`:
- * `sourceWindow(item, variant).inPoint + max(0, t - item.start)`.
+ * `sourceWindow(item, variant).inPoint + (item.speed ?? 1) · max(0, t - item.start)`.
+ * The `·(speed ?? 1)` factor converts elapsed timeline-seconds to source-seconds
+ * (montaj/speed); a strict no-op at S undefined/1.
  *
  * @throws {TypeError} if `variant` is not `'preview'` or `'render'`.
  */
@@ -119,8 +128,10 @@ export declare function seekTime(item: SourceWindowItem, t: number, variant: Var
 
 /**
  * The out point to use when the item stores none:
- * `outPoint ?? effectiveInPoint + (end - start)`, in the chosen src's
- * coordinates. Takes a variant because the effective in point it builds on is
+ * `outPoint ?? effectiveInPoint + (end - start) · (speed ?? 1)`, in the chosen
+ * src's coordinates. The `·(speed ?? 1)` factor (montaj/speed) applies only to
+ * the SYNTHESIZED length; a stored `outPoint` is already the true source out and
+ * passes through. Takes a variant because the effective in point it builds on is
  * variant-dependent.
  *
  * @throws {TypeError} if `variant` is not `'preview'` or `'render'`.

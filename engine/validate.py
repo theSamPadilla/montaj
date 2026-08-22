@@ -32,12 +32,21 @@ _CAROUSEL_FORBIDDEN = ("tracks", "sources", "audio", "storyboard")
 
 
 def _validate_clip_extensions(data):
-    """Optional clips-workflow fields: derivedFrom (top-level) + sourceCrop on video items."""
+    """Optional clips-workflow fields: derivedFrom (top-level) + sourceCrop on video items.
+
+    Also range-checks the optional per-clip `speed` (montaj/speed): a number in
+    [0.25, 4] when present; absent means the default 1.0."""
     df = data.get("derivedFrom")
     if df is not None and not isinstance(df, str):
         fail("invalid_field", "derivedFrom must be a string")
     for ti, items in enumerate(track_items(data)):
         for item in items:
+            speed = item.get("speed")
+            if speed is not None:
+                # bool is a subclass of int — reject it so `True`/`False` isn't read as 1/0.
+                if isinstance(speed, bool) or not isinstance(speed, (int, float)) or not (0.25 <= float(speed) <= 4.0):
+                    fail("invalid_field", f"tracks[{ti}] item '{item.get('id','?')}': speed must be a number in [0.25, 4]")
+
             sc = item.get("sourceCrop")
             if sc is None:
                 continue

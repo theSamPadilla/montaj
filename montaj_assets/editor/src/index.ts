@@ -65,6 +65,7 @@ export {
   rollEdit,
   slipItem,
   slideItem,
+  setClipSpeed,
 } from './video/cuts'
 export type { Cut } from './video/cuts'
 export { getOverlayDesignCanvas } from './video/design-canvas'
@@ -87,6 +88,14 @@ export {
 // render the same control (variant="header") in their own chrome.
 export { default as ImageToneMenu } from './video/ImageToneMenu'
 export type { ImageToneMenuProps } from './video/ImageToneMenu'
+
+// ── Speed control (slider + preset chips) ────────────────────────────────────
+// Shared by the per-clip inspect modal (host `montaj_assets/ui`) and the
+// track-wide settings popover (TrackSettingsPopover.tsx).
+export { default as SpeedControl } from './video/timeline/SpeedControl'
+export type { SpeedControlProps } from './video/timeline/SpeedControl'
+export { default as VolumeControl } from './video/timeline/VolumeControl'
+export type { VolumeControlProps } from './video/timeline/VolumeControl'
 export { IMAGE_TONES, DEFAULT_IMAGE_TONE } from './video/imageTone'
 export type { ImageTone, ImageToneInfo } from './video/imageTone'
 

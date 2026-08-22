@@ -322,20 +322,30 @@ export interface SourcePlacement {
  * legacy expression would produce `Infinity`/`NaN` there).
  */
 export function placeInSource(
-  item: Pick<VisualItem, 'start' | 'loop'>,
+  item: Pick<VisualItem, 'start' | 'loop' | 'speed'>,
   window: Pick<SourceWindow, 'inPoint' | 'outPoint'>,
   t: number,
 ): SourcePlacement {
   const inPoint = window.inPoint
-  const elapsed = Math.max(0, t - (item.start ?? 0))
+  const speed = item.speed ?? 1
+  // Per-clip speed S scales the SOURCE traversal, not project time: the elapsed
+  // project-seconds inside the clip are converted to source-seconds at S× before
+  // any placement (`mediaS = inPoint + S·(t − start)`), so the clip shows S× its
+  // content per project-second. S=1 is the legacy `inPoint + elapsed`.
+  const sourceElapsed = speed * Math.max(0, t - (item.start ?? 0))
   const outPoint = window.outPoint
   const loopDur = outPoint == null ? 0 : outPoint - inPoint
   if (!item.loop || outPoint == null || loopDur <= 0) {
-    return { mediaS: inPoint + elapsed, wraps: 0, loopOffset: 0, looping: false }
+    return { mediaS: inPoint + sourceElapsed, wraps: 0, loopOffset: 0, looping: false }
   }
-  const wraps = Math.floor(elapsed / loopDur)
+  // `loopDur` is a SOURCE span (outPoint − inPoint) and speed does not touch it —
+  // only how fast we traverse it. One loop iteration therefore occupies
+  // `loopDur/speed` PROJECT-seconds, but once `elapsed` is in source-seconds the
+  // wrap arithmetic below is identical to the speed-1 case. `wraps`/`loopOffset`
+  // stay in source terms, consistent with a non-sped loop.
+  const wraps = Math.floor(sourceElapsed / loopDur)
   return {
-    mediaS: inPoint + (elapsed - wraps * loopDur),
+    mediaS: inPoint + (sourceElapsed - wraps * loopDur),
     wraps,
     loopOffset: wraps * loopDur,
     looping: true,
@@ -692,6 +702,13 @@ export interface Scheduler {
   pause(): void
   /** External scrub. Continues playing if it was playing (the legacy scrub effect's contract). */
   seek(projectS: number): void
+  /**
+   * Set the live transport rate R (default 1). Applied to the active clock now
+   * and to every session built afterward; per-clip `speed` is a rebuild edit
+   * (`setProject`), not this. End-of-project and seek read time off the clock,
+   * so they inherit R automatically.
+   */
+  setRate(rate: number): void
   /** One rAF step. No-op while `idle`; the facade pumps this only while `playing`. */
   tick(): void
   /** Project edits. Does NOT re-evaluate engine eligibility — that policy is T6's. */
@@ -735,6 +752,12 @@ class SchedulerImpl implements Scheduler {
   private clockOwner: string | null = null
   /** Identity of the session the clock came from — catches a rebuild under the same clip id. */
   private clockSource: ClipSource | null = null
+  /**
+   * Live transport rate R (default 1). Pushed onto the active clock by `setRate`
+   * and re-applied to every clock the ownership swap adopts, so a rate set
+   * mid-clip survives boundaries, gaps and rebuilds.
+   */
+  private transportRate = 1
 
   private transport: Transport = 'idle'
   private picture: Picture = 'black'
@@ -829,6 +852,17 @@ class SchedulerImpl implements Scheduler {
       this.transport = 'paused'
     }
     this.apply(t, { force: true, seeked: true })
+  }
+
+  setRate(rate: number): void {
+    if (this.disposed) return
+    // Idempotent: the shuttle calls setRate(1) on stop/reverse, and re-anchoring
+    // (worse, flushing) the active clock for an unchanged rate is pure churn.
+    if (rate === this.transportRate) return
+    this.transportRate = rate
+    // The active clock takes it immediately (re-anchor + ring flush — no jump);
+    // clocks built afterward pick it up in `apply`'s ownership swap.
+    this.clock.setTransportRate(rate)
   }
 
   tick(): void {
@@ -1011,6 +1045,11 @@ class SchedulerImpl implements Scheduler {
       // ≤1-frame backwards step the snap introduces at every cut.
       this.clock.seek(t)
       if (wasPlaying) this.clock.play()
+      // A freshly adopted clock defaults to 1×; carry the live transport rate
+      // onto it so a rate set mid-clip survives the boundary/gap swap. Guarded
+      // so R===1 stays a strict no-op (no spurious re-anchor on the default
+      // path). Applied AFTER seek/play, whose `restartAt` re-bases the ramp.
+      if (this.transportRate !== 1) this.clock.setTransportRate(this.transportRate)
       this.seekGen++
     } else if (opts.seeked) {
       this.clock.seek(t)

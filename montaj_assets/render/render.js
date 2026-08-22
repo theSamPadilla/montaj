@@ -859,6 +859,10 @@ function collectAllItems(projectJson) {
           remove_bg: item.remove_bg ?? false,
           muted,
           volume,
+          // Per-clip playback speed (montaj/speed feature). Not defaulted here —
+          // encode-segment.js treats a missing/undefined speed as 1 (no-op), so
+          // forwarding the raw value (possibly undefined) is correct.
+          speed: item.speed,
         })
       }
     }

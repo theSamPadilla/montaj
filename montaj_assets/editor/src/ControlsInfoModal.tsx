@@ -1,14 +1,21 @@
 import { useEffect, type ComponentType } from 'react'
 import {
+  ChevronsLeftRight,
   Clapperboard,
   Command,
   Crop,
   Keyboard,
   LayoutPanelTop,
   Magnet,
+  Maximize2,
   MousePointer2,
+  MousePointerClick,
+  Move,
+  MoveHorizontal,
+  RotateCw,
   SeparatorVertical,
   SlidersHorizontal,
+  Timer,
   X,
   type LucideProps,
 } from 'lucide-react'
@@ -17,11 +24,23 @@ import {
 export interface ControlEntry {
   keys?: string[]
   label: string
-  /** The button's OWN glyph, for a row describing a toolbar control. Rendered
-   *  in place of the row's bullet so the sentence and the button in the chrome
-   *  are recognisably the same thing — the crop button in particular is easy
-   *  to miss in a row of 12px icons, and greys out when no clip is selected. */
+  /** The row's own glyph, drawn in place of its bullet: a toolbar button's
+   *  actual icon, or a picture of the gesture (four-way arrows for a move,
+   *  facing chevrons for an edge-trim). It carries the meaning ahead of the
+   *  sentence — and for a toolbar row it also ties the words to a button
+   *  that's easy to miss, the crop one especially, since it's a 12px glyph
+   *  that greys out whenever no clip is selected. */
   icon?: ComponentType<LucideProps>
+  /** Where the gesture applies — "Preview", "Timeline". Rendered as a pill on
+   *  the right, in the same slot the keyboard rows put their key chips.
+   *
+   *  This exists because Preview and Timeline used to be two separate cards,
+   *  and the heading was the only thing saying which surface a gesture was
+   *  for. Merging them into one Mouse card would have thrown that away; the
+   *  pill puts it back per row, where it's easier to read anyway — you no
+   *  longer have to look up to a heading to find out where "corner-drag to
+   *  scale" applies. */
+  where?: string
 }
 
 export interface ControlSection {
@@ -40,11 +59,14 @@ export interface ControlsInfoModalProps {
  *  its own sections doesn't have to know about lucide. Unknown headings fall
  *  back to the neutral slider glyph rather than rendering a hole. */
 const SECTION_ICONS: Record<string, ComponentType<LucideProps>> = {
-  Preview: Clapperboard,
+  Mouse: MousePointer2,
   Canvas: MousePointer2,
-  Timeline: LayoutPanelTop,
   Toolbar: SlidersHorizontal,
   Keyboard: Keyboard,
+  // Not used by the two content arrays below any more (Preview and Timeline
+  // merged into Mouse), but kept for a host passing sections of its own.
+  Preview: Clapperboard,
+  Timeline: LayoutPanelTop,
 }
 
 /**
@@ -65,6 +87,10 @@ const SECTION_ICONS: Record<string, ComponentType<LucideProps>> = {
  * fold. Two columns put the whole thing on screen at once, which is also why the
  * body text is a full 14px rather than the 12px used elsewhere in the chrome:
  * this is a document you read, not a toolbar you glance at.
+ *
+ * Sections are cut by INPUT, not by surface: Mouse, Toolbar, Keyboard. "Where
+ * does this apply" then lives on the row that needs it (`ControlEntry.where`)
+ * instead of forcing a whole card per surface.
  *
  * Accent use is intentionally cheap to theme: everything tinted reads
  * `var(--editor-accent)` directly (section and toolbar icons, row dots, the
@@ -168,7 +194,7 @@ export default function ControlsInfoModal({ title, sections, onClose }: Controls
                     {section.entries.map((entry, i) => (
                       <li
                         key={i}
-                        className="flex items-center justify-between gap-4 rounded-md px-2 py-2 text-sm transition-colors hover:bg-white/[0.06]"
+                        className="flex items-center justify-between gap-3 rounded-md px-2 py-2 text-sm transition-colors hover:bg-white/[0.06]"
                       >
                         <span className="flex items-start gap-2.5 opacity-90">
                           {/* A toolbar row shows that button's real glyph;
@@ -192,6 +218,19 @@ export default function ControlsInfoModal({ title, sections, onClose }: Controls
                           )}
                           {entry.label}
                         </span>
+                        {entry.where && (
+                          /* Deliberately NOT a <kbd>: a surface name is not
+                             something you press. Pill, not keycap. */
+                          <span
+                            className="shrink-0 rounded-full border px-1.5 py-[3px] text-[10px] uppercase opacity-55"
+                            style={{
+                              borderColor: 'var(--editor-border)',
+                              background: 'var(--editor-surface)',
+                            }}
+                          >
+                            {entry.where}
+                          </span>
+                        )}
                         {entry.keys && entry.keys.length > 0 && (
                           <span className="flex shrink-0 items-center gap-1">
                             {entry.keys.map((k, j) => (
@@ -240,20 +279,19 @@ export default function ControlsInfoModal({ title, sections, onClose }: Controls
  *  transform (drag / corner-drag / scroll / rotate). */
 export const VIDEO_CONTROLS: ControlSection[] = [
   {
-    heading: 'Preview',
+    // One card for every mouse gesture, Preview and Timeline alike. They were
+    // two cards, which read as two subjects when they are one — "what the
+    // mouse does" — and split seven short rows across a column break. The
+    // per-row `where` pill carries the surface the heading used to.
+    heading: 'Mouse',
     entries: [
-      { label: 'Drag to move the selected clip or overlay' },
-      { label: 'Corner-drag or scroll to scale it' },
-      { label: 'Drag the rotate handle to turn an overlay' },
-    ],
-  },
-  {
-    heading: 'Timeline',
-    entries: [
-      { label: 'Drag a clip to reposition it' },
-      { label: "Drag a clip's edge to trim it" },
-      { label: 'Double-click a clip to inspect it' },
-      { label: 'Click the time readout to go to a timecode' },
+      { icon: Move, where: 'Preview', label: 'Drag to move the selected clip or overlay' },
+      { icon: Maximize2, where: 'Preview', label: 'Corner-drag or scroll to scale it' },
+      { icon: RotateCw, where: 'Preview', label: 'Drag the rotate handle to turn an overlay' },
+      { icon: MoveHorizontal, where: 'Timeline', label: 'Drag a clip to reposition it' },
+      { icon: ChevronsLeftRight, where: 'Timeline', label: "Drag a clip's edge to trim it" },
+      { icon: MousePointerClick, where: 'Timeline', label: 'Double-click a clip to inspect it' },
+      { icon: Timer, where: 'Timeline', label: 'Click the time readout to go to a timecode' },
     ],
   },
   {
@@ -288,9 +326,9 @@ export const CAROUSEL_CONTROLS: ControlSection[] = [
   {
     heading: 'Canvas',
     entries: [
-      { label: 'Drag an element to reposition it' },
-      { label: 'Resize or rotate it via the handles' },
-      { label: 'Double-click text to edit it' },
+      { icon: Move, label: 'Drag an element to reposition it' },
+      { icon: Maximize2, label: 'Resize or rotate it via the handles' },
+      { icon: MousePointerClick, label: 'Double-click text to edit it' },
     ],
   },
   {

@@ -611,6 +611,7 @@ function ReviewSurface<P extends Project>({
       isPlaying: () => transportRef.current?.isPlaying() ?? false,
       play: () => { if (!transportRef.current?.isPlaying()) transportRef.current?.togglePlay() },
       pause: () => { if (transportRef.current?.isPlaying()) transportRef.current.togglePlay() },
+      setRate: (rate) => transportRef.current?.setRate(rate),
     })
   }
   const shuttle = shuttleRef.current
@@ -1398,6 +1399,7 @@ function ReviewSurface<P extends Project>({
       {inspecting && renderClipInspector?.({
         item: inspecting,
         onClose: () => setInspecting(null),
+        rippleMode,
       })}
     </div>
   )

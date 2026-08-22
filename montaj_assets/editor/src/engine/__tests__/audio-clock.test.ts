@@ -17,8 +17,10 @@ import { describe, it, expect, afterEach, vi } from 'vitest'
 import { sourceWindow } from '@bycrux/timeline-core'
 import {
   MAX_EXTRAPOLATION_MS,
+  STRETCH_STEP_FRAMES,
   audioTrackIsDecodable,
   createMasterClock,
+  createStreamStretch,
   extrapolateSamples,
   mediaTsUsForProjectTime,
   normalizeAudioCodec,
@@ -127,6 +129,35 @@ describe('project-time mapping', () => {
     }
   })
 
+  it('scales the in-clip offset by per-clip speed (S>1 consumes more source per project-second)', () => {
+    const tb: ClipTimebase = { start: 4, inPoint: 10, firstPresentationTsUs: 0, speed: 2 }
+    // 1s of project time past the clip start consumes 2s of source at speed 2, so
+    // media 12s (2s past inPoint) maps back to 1s into the clip → project 5.
+    expect(projectTimeForMediaTsUs(tb, 12_000_000)).toBeCloseTo(5, 9)
+    // Forward: 1s into the clip → 2s past inPoint = media 12s.
+    expect(mediaTsUsForProjectTime(tb, 5)).toBeCloseTo(12_000_000, 3)
+  })
+
+  it('round-trips at speed 1, 2 and 0.5 (mappers stay exact inverses under speed)', () => {
+    for (const speed of [1, 2, 0.5]) {
+      const tb: ClipTimebase = { start: 3.25, inPoint: 7.5, firstPresentationTsUs: 68_333, speed }
+      for (const projectS of [3.25, 4, 9.125, 100]) {
+        expect(projectTimeForMediaTsUs(tb, mediaTsUsForProjectTime(tb, projectS))).toBeCloseTo(projectS, 9)
+      }
+    }
+  })
+
+  it('an absent speed is bit-identical to speed 1 (strict no-op default)', () => {
+    const without: ClipTimebase = { start: 2, inPoint: 5, firstPresentationTsUs: 100 }
+    const withOne: ClipTimebase = { ...without, speed: 1 }
+    for (const mediaTsUs of [100, 5_000_100, 12_345_678]) {
+      expect(projectTimeForMediaTsUs(without, mediaTsUs)).toBe(projectTimeForMediaTsUs(withOne, mediaTsUs))
+    }
+    for (const projectS of [2, 7.5, 42]) {
+      expect(mediaTsUsForProjectTime(without, projectS)).toBe(mediaTsUsForProjectTime(withOne, projectS))
+    }
+  })
+
   it('reproduces useVideoPlayback\'s formula for a proxy clip (full-source src, no rebase)', () => {
     // The legacy hook computes: projectT = clip.start + (video.currentTime - effectiveInPoint(clip)).
     // `video.currentTime` is time in the LOADED file — which for the engine is
@@ -198,6 +229,15 @@ describe('projectTimeForSamples', () => {
     // Last report said 1s of audio had played; 50ms of wall time has passed.
     const projected = extrapolateSamples(rate, 50, rate)
     expect(projectTimeForSamples(10, projected, rate)).toBeCloseTo(11.05, 9)
+  })
+
+  it('advances project time at the transport rate R (default 1)', () => {
+    // 1s of rendered audio is 2s of project time at R=2, 0.5s at R=0.5, 1s at R=1.
+    expect(projectTimeForSamples(0, 48000, 48000, 2)).toBeCloseTo(2, 9)
+    expect(projectTimeForSamples(0, 48000, 48000, 0.5)).toBeCloseTo(0.5, 9)
+    expect(projectTimeForSamples(0, 48000, 48000)).toBeCloseTo(1, 9)
+    // R scales only the sample term, off the anchor.
+    expect(projectTimeForSamples(10, 22050, 44100, 2)).toBeCloseTo(11, 9)
   })
 })
 
@@ -451,6 +491,48 @@ describe('createMasterClock — fallback transport coherence', () => {
     expect(clock.now()).toBeCloseTo(4, 9)
   })
 
+  it('changes transport rate mid-playback with no discontinuity, then advances at the new rate', async () => {
+    const now = { t: 0 }
+    const clock = await fallbackClock(0, now)
+    clock.play()
+    now.t += 1000 // 1s at 1× → project 1
+    expect(clock.now()).toBeCloseTo(1, 9)
+    clock.setTransportRate(2)
+    // Continuous: no jump at the instant of the change.
+    expect(clock.now()).toBeCloseTo(1, 9)
+    now.t += 1000 // 1s at 2× → +2 → project 3
+    expect(clock.now()).toBeCloseTo(3, 9)
+    clock.setTransportRate(0.5)
+    expect(clock.now()).toBeCloseTo(3, 9)
+    now.t += 1000 // 1s at 0.5× → +0.5 → project 3.5
+    expect(clock.now()).toBeCloseTo(3.5, 9)
+  })
+
+  it('a rate change while paused takes effect on resume, with no jump', async () => {
+    const now = { t: 0 }
+    const clock = await fallbackClock(5, now)
+    clock.setTransportRate(3) // paused: nothing moves yet
+    expect(clock.now()).toBe(5)
+    now.t += 10_000
+    expect(clock.now()).toBe(5)
+    clock.play()
+    now.t += 1000 // 1s at 3× → +3
+    expect(clock.now()).toBeCloseTo(8, 9)
+  })
+
+  it('seek keeps the current transport rate', async () => {
+    const now = { t: 0 }
+    const clock = await fallbackClock(0, now)
+    clock.setTransportRate(2)
+    clock.play()
+    now.t += 500 // +1 → 1
+    expect(clock.now()).toBeCloseTo(1, 9)
+    clock.seek(10)
+    expect(clock.now()).toBeCloseTo(10, 9)
+    now.t += 500 // still 2× → +1 → 11
+    expect(clock.now()).toBeCloseTo(11, 9)
+  })
+
   it('reports fallback stats with no ring numbers to invent', async () => {
     const now = { t: 0 }
     const clock = await fallbackClock(0, now)
@@ -464,5 +546,110 @@ describe('createMasterClock — fallback transport coherence', () => {
       queuedFrames: 0,
       queuedSeconds: 0,
     })
+  })
+})
+
+// ── Streaming time-stretch (the createAudioClock output-callback wrapper) ─────
+
+describe('createStreamStretch', () => {
+  const RATE = 48000
+
+  /** Mono sine of `freq` Hz, `frames` samples, amplitude 0.5. */
+  function sine(freq: number, frames: number, offset = 0): Float32Array {
+    const out = new Float32Array(frames)
+    for (let i = 0; i < frames; i++) out[i] = 0.5 * Math.sin((2 * Math.PI * freq * (i + offset)) / RATE)
+    return out
+  }
+  const finite = (s: Float32Array) => s.every((v) => Number.isFinite(v))
+  const maxAbs = (s: Float32Array) => s.reduce((m, v) => Math.max(m, Math.abs(v)), 0)
+
+  /** Feed a mono signal in `chunk`-frame pieces, concatenating everything emitted. */
+  function feedInChunks(freq: number, totalFrames: number, factor: number, chunk = 960): Float32Array {
+    const s = createStreamStretch(1, factor)
+    const pieces: Float32Array[] = []
+    let produced = 0
+    for (let off = 0; off < totalFrames; off += chunk) {
+      const n = Math.min(chunk, totalFrames - off)
+      const out = s.push(sine(freq, n, off))
+      if (out.length > 0) {
+        pieces.push(out)
+        produced += out.length
+      }
+    }
+    const all = new Float32Array(produced)
+    let at = 0
+    for (const p of pieces) {
+      all.set(p, at)
+      at += p.length
+    }
+    return all
+  }
+
+  it('is a zero-copy identity at factor 1 — the strict-bypass guarantee', () => {
+    const s = createStreamStretch(1, 1)
+    const chunks = [sine(440, 960), sine(440, 960, 960), sine(440, 300, 1920)]
+    for (const c of chunks) {
+      const out = s.push(c)
+      // Same reference back: no buffering, no copy, no added latency.
+      expect(out).toBe(c)
+    }
+  })
+
+  it('total output length ≈ input · factor across rates (chunks smaller than one WSOLA frame)', () => {
+    // 960-frame chunks are smaller than the 1024 analysis frame — the whole
+    // reason a streaming wrapper is needed rather than a per-chunk stretch.
+    const total = 40 * STRETCH_STEP_FRAMES // large enough that block-edge loss is a small %
+    for (const factor of [0.25, 0.5, 2, 4]) {
+      const out = feedInChunks(440, total, factor)
+      const ratio = out.length / (total * factor)
+      // Short by up to ~(context + one leftover block)·factor, negligible at this size.
+      expect(ratio).toBeGreaterThan(0.9)
+      expect(ratio).toBeLessThan(1.05)
+    }
+  })
+
+  it('preserves amplitude and never emits NaN/Infinity when slowed or sped', () => {
+    for (const factor of [0.5, 2]) {
+      const out = feedInChunks(440, 20 * STRETCH_STEP_FRAMES, factor)
+      expect(finite(out)).toBe(true)
+      // Unity-gain overlap-add of an amplitude-0.5 tone stays near 0.5 — not
+      // collapsed to silence (a broken crossfade) nor blown past unity.
+      expect(maxAbs(out)).toBeGreaterThan(0.3)
+      expect(maxAbs(out)).toBeLessThan(0.9)
+    }
+  })
+
+  it('keeps stereo channels interleaved and finite', () => {
+    const s = createStreamStretch(2, 0.5)
+    // Interleave a 300Hz L with a silent R.
+    const frames = 8 * STRETCH_STEP_FRAMES
+    const inter = new Float32Array(frames * 2)
+    for (let i = 0; i < frames; i++) inter[i * 2] = 0.5 * Math.sin((2 * Math.PI * 300 * i) / RATE)
+    const out = s.push(inter)
+    expect(out.length % 2).toBe(0)
+    expect(finite(out)).toBe(true)
+    expect(out.length).toBeGreaterThan(0)
+  })
+
+  it('reset() drops buffered input so a partial block never leaks across it', () => {
+    const s = createStreamStretch(1, 0.5)
+    // Under one block: buffered, nothing emitted yet.
+    expect(s.push(sine(440, 500)).length).toBe(0)
+    s.reset()
+    // With the pre-reset 500 dropped, this sub-block push must still buffer, not
+    // complete a block by combining with stale input.
+    const out = s.push(sine(440, STRETCH_STEP_FRAMES - 500))
+    expect(out.length).toBe(0)
+  })
+
+  it('adopts a new factor mid-stream without crashing and stays finite', () => {
+    const s = createStreamStretch(1, 2)
+    const a = s.push(sine(440, 4 * STRETCH_STEP_FRAMES))
+    s.setFactor(0.5)
+    const b = s.push(sine(440, 4 * STRETCH_STEP_FRAMES, 4 * STRETCH_STEP_FRAMES))
+    expect(finite(a)).toBe(true)
+    expect(finite(b)).toBe(true)
+    expect(a.length).toBeGreaterThan(0)
+    expect(b.length).toBeGreaterThan(0)
   })
 })

@@ -781,6 +781,11 @@ export interface VideoEditorProps<P extends Project = Project> {
   renderClipInspector?: (ctx: {
     item: { kind: 'clip' | 'audio'; id: string }
     onClose: () => void
+    /** Magnet/ripple toggle state, owned by the editor (`ReviewSurface`'s
+     *  `rippleMode`). Threaded through so the host inspector can decide
+     *  whether a resize op it applies (e.g. a speed change) should also
+     *  close the gap it leaves, matching the timeline's own ripple behavior. */
+    rippleMode: boolean
   }) => ReactNode
 
   /**

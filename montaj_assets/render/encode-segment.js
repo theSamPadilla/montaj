@@ -232,6 +232,9 @@ export function buildColorConversionFilter(srcKey, dstKey, hasZscaleFlag, opts =
  * @param {number} duration   — segment duration in seconds (used for -t)
  * @returns {{ inputArgs: string[], filterParts: string[], newVideoLabel: string }}
  */
+// NOTE: item.speed is intentionally ignored here — a still image has no
+// motion to time-scale, so speed is a no-op for image items (unlike video,
+// where it re-times decoded frames).
 export function buildImageItemFilterParts(item, vw, vh, idx, videoLabel, duration) {
   const s       = item.scale ?? 1
   const scaledW = Math.round(vw * s / 2) * 2
@@ -300,7 +303,15 @@ export function buildVideoItemFilterParts(item, vw, vh, idx, videoLabel, opts) {
 
   const inPt = item.inPoint ?? 0
   const seekOffset = Math.max(0, segStart - item.start)
-  const actualIn = inPt + seekOffset
+  // Per-clip playback speed (montaj/speed feature): at speed S the clip
+  // consumes S× the source per timeline-second, so the seek advance and the
+  // input trim window both scale by S. STRICT NO-OP at S undefined/1 — every
+  // string below must stay byte-identical to the pre-speed pipeline (two
+  // frozen encode-args goldens depend on it), so the `*speed` arithmetic only
+  // runs when hasSpeed is true.
+  const speed = item.speed
+  const hasSpeed = speed != null && speed !== 1
+  const actualIn = hasSpeed ? inPt + seekOffset * speed : inPt + seekOffset
 
   // ProRes 4444 (.mov from remove-bg) has alpha — use format=auto
   const ovFmt = item.src.endsWith('.mov') ? ':format=auto' : ':format=yuv420'
@@ -318,7 +329,7 @@ export function buildVideoItemFilterParts(item, vw, vh, idx, videoLabel, opts) {
   const inputArgs = [
     '-err_detect', 'ignore_err',
     '-max_error_rate', '1.0',
-    '-ss', String(actualIn), '-t', String(duration), '-i', item.src,
+    '-ss', String(actualIn), '-t', String(hasSpeed ? duration * speed : duration), '-i', item.src,
   ]
   const filterParts = []
 
@@ -359,8 +370,12 @@ export function buildVideoItemFilterParts(item, vw, vh, idx, videoLabel, opts) {
   // and only on items that are being converted, which keeps every SDR render
   // (and the frozen encode-args goldens) byte-identical.
   const divisibleBy = conversionStep ? ':force_divisible_by=2' : ''
+  // setpts time-compresses the sped-up source back to timeline-real-time: at
+  // speed S the S× extra source seconds consumed above play out over 1/S the
+  // time. A no-op (bare setpts=PTS-STARTPTS) at speed undefined/1.
+  const ptsStep = hasSpeed ? `setpts=(PTS-STARTPTS)/${speed}` : 'setpts=PTS-STARTPTS'
   filterParts.push(
-    `[${idx}:v]setpts=PTS-STARTPTS,${cropStep}` +
+    `[${idx}:v]${ptsStep},${cropStep}` +
     `scale=${scaledW}:${scaledH}:force_original_aspect_ratio=decrease${divisibleBy},` +
     `${conversionStep}` +
     `pad=${scaledW}:${scaledH}:(ow-iw)/2:(oh-ih)/2[vid${idx}]`
@@ -446,6 +461,26 @@ export function buildOverlayFilterParts(ov, vw, vh, ovIdx, videoLabel, segStart,
   const newVideoLabel = `[vov${ovIdx}]`
 
   return { inputArgs, filterParts, newVideoLabel }
+}
+
+/**
+ * Pitch-preserving time-compression chain for a sped-up clip's audio.
+ * ffmpeg's `atempo` filter accepts a per-instance factor in [0.5, 2.0] only —
+ * outside that range it must be chained, each instance's factor still within
+ * bounds, so their product equals the requested speed. Preserves pitch, unlike
+ * scaling PTS directly (which is how the video side re-times, but would
+ * chipmunk/slow-motion-drone the audio).
+ *
+ * @param {number} speed — clip playback speed, e.g. 4 or 0.25
+ * @returns {string} e.g. speed=4 -> 'atempo=2,atempo=2'; speed=0.25 -> 'atempo=0.5,atempo=0.5'
+ */
+function atempoChain(speed) {
+  const factors = []
+  let r = speed
+  while (r > 2.0) { factors.push(2.0); r /= 2.0 }
+  while (r < 0.5) { factors.push(0.5); r *= 2.0 }
+  factors.push(r)
+  return factors.map((f) => `atempo=${f}`).join(',')
 }
 
 /**
@@ -556,7 +591,21 @@ export async function encodeSegment(segment, outputPath, opts = {}) {
         // -accurate_seek + -t behaviour. Matches the anullsrc path which
         // already does this, and pairs with the PCM codec (no AAC framing
         // means no rounding to absorb a stray trailing sample).
-        filterParts.push(`[${idx}:a:0]atrim=0:${duration},asetpts=PTS-STARTPTS,volume=${vol},aformat=channel_layouts=stereo:sample_rates=48000[${aLabel}]`)
+        //
+        // Per-clip speed (S !== 1): the input above was trimmed to S× the
+        // segment duration of source seconds (see buildVideoItemFilterParts),
+        // so atrim's window widens to match, and atempoChain time-compresses
+        // that S× window back down to `duration` output seconds — pitch
+        // preserved, unlike scaling PTS the way the video side does. atrim
+        // stays BEFORE asetpts either way: it locks the sample range against
+        // the input's own (seek-based) PTS, not the zero-based PTS asetpts
+        // produces.
+        const speed = item.speed
+        const hasSpeed = speed != null && speed !== 1
+        const audioFilter = hasSpeed
+          ? `[${idx}:a:0]atrim=0:${duration * speed},asetpts=PTS-STARTPTS,${atempoChain(speed)},volume=${vol},aformat=channel_layouts=stereo:sample_rates=48000[${aLabel}]`
+          : `[${idx}:a:0]atrim=0:${duration},asetpts=PTS-STARTPTS,volume=${vol},aformat=channel_layouts=stereo:sample_rates=48000[${aLabel}]`
+        filterParts.push(audioFilter)
         audioLabels.push(`[${aLabel}]`)
       }
     }

@@ -59,6 +59,20 @@ const KIND_LABEL: Record<string, string> = {
   image: 'Image',
 }
 
+/**
+ * The track's shared clip speed, for the settings popover's display value —
+ * same "read the items, not track-level settings" approach `visualTrackKind`
+ * above uses, since speed lives on each video `VisualItem`, not the track.
+ * Returns 1 when the track holds no video clips or its clips disagree, same
+ * "representative value, actual apply always writes the real thing"
+ * convention `AudioLaneRailRow` already uses for a lane's volume.
+ */
+function commonTrackSpeed(items: VisualItem[]): number {
+  const speeds = items.filter(i => i.type === 'video').map(i => i.speed ?? 1)
+  if (speeds.length === 0) return 1
+  return speeds.every(s => s === speeds[0]) ? speeds[0] : 1
+}
+
 function KindIcon({ kind, className }: { kind: string | null; className?: string }) {
   if (kind === 'overlay' || kind === 'image') return <Layers size={15} className={className} />
   return <Film size={15} className={className} />
@@ -224,9 +238,11 @@ function VisualTrackRailRow({
   enabled,
   volume,
   muted,
+  speed,
   onToggleTrackEnabled,
   onSetTrackVolume,
   onSetTrackMuted,
+  onApplySpeed,
 }: {
   row: VisualRowLayout
   palette: TrackPalette
@@ -235,9 +251,11 @@ function VisualTrackRailRow({
   enabled: boolean
   volume: number
   muted: boolean
+  speed: number
   onToggleTrackEnabled?: (trackIdx: number, enabled: boolean) => void
   onSetTrackVolume?: (trackIdx: number, volume: number, commit: boolean) => void
   onSetTrackMuted?: (trackIdx: number, muted: boolean) => void
+  onApplySpeed?: (trackIdx: number, speed: number) => void
 }) {
   const [open, setOpen] = useState(false)
   const buttonRef = useRef<HTMLButtonElement>(null)
@@ -247,11 +265,14 @@ function VisualTrackRailRow({
   // so a volume slider and a mute button on such a row are controls that cannot
   // do anything. Read the items rather than the track's nominal kind, so a
   // mixed track (an overlay track that also holds a clip) still gets them.
+  // Speed is the same video-only concept, so it shares this gate.
   const hasAudio = row.items.some(i => i.type === 'video')
 
-  // A button that opens an empty popover is worse than no button. The gear now
-  // holds only volume, so a track with no audio has nothing to put behind it.
-  const hasSettings = hasAudio && !!onSetTrackVolume
+  const hasVolumeControl = hasAudio && !!onSetTrackVolume
+  const hasSpeedControl = hasAudio && !!onApplySpeed
+
+  // A button that opens an empty popover is worse than no button.
+  const hasSettings = hasVolumeControl || hasSpeedControl
   const trackLabel = label.toLowerCase()
 
   return (
@@ -291,9 +312,11 @@ function VisualTrackRailRow({
           anchorRef={buttonRef}
           onClose={() => setOpen(false)}
           title={`${label} track`}
-          volume={volume}
-          onVolumeChange={(v, commit) => onSetTrackVolume!(row.trackIdx, v, commit)}
+          volume={hasVolumeControl ? volume : undefined}
+          onVolumeChange={hasVolumeControl ? (v, commit) => onSetTrackVolume!(row.trackIdx, v, commit) : undefined}
           volumeAriaLabel={`${label} volume`}
+          speed={hasSpeedControl ? speed : undefined}
+          onApplySpeed={hasSpeedControl ? s => onApplySpeed!(row.trackIdx, s) : undefined}
         />
       )}
     </div>
@@ -381,6 +404,12 @@ export interface TrackGutterProps {
   /** Visual-track mute, from the settings popover. One call per click — mute
    *  is a discrete toggle, not a continuous gesture. */
   onSetTrackMuted?: (trackIdx: number, muted: boolean) => void
+  /** Applies a speed to EVERY video clip on the track, from the settings
+   *  popover's Speed control — committed on slider release / chip click (no
+   *  button), a bulk edit with no `commit` flag (mirrors `onSetTrackMuted`).
+   *  The DISPLAYED value isn't a prop — it's read off the track's own clips,
+   *  same as `kind` above (see `commonTrackSpeed`). */
+  onApplySpeed?: (trackIdx: number, speed: number) => void
   /** Audio-lane volume, from the settings popover — applies to every
    *  `AudioTrack` sharing the lane, hence the id array rather than one id. */
   onSetLaneVolume?: (trackIds: string[], volume: number, commit: boolean) => void
@@ -395,6 +424,7 @@ export default function TrackGutter({
   onToggleTrackEnabled,
   onSetTrackVolume,
   onSetTrackMuted,
+  onApplySpeed,
   onSetLaneVolume,
   onSetLaneMuted,
 }: TrackGutterProps) {
@@ -427,9 +457,11 @@ export default function TrackGutter({
               enabled={enabled}
               volume={settings?.volume ?? 1}
               muted={settings?.muted ?? false}
+              speed={commonTrackSpeed(tracks[row.trackIdx] ?? [])}
               onToggleTrackEnabled={onToggleTrackEnabled}
               onSetTrackVolume={onSetTrackVolume}
               onSetTrackMuted={onSetTrackMuted}
+              onApplySpeed={onApplySpeed}
             />
           )
         })}

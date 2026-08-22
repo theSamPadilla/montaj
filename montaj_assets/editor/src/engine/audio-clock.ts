@@ -44,6 +44,7 @@
 import { sampleAtOrBefore, type ChunkSource } from './demux'
 import { audioWorkletSource, RING_PROCESSOR_NAME } from './audio-worklet-source'
 import { getSharedAudioContext } from '../video/preview/audio-context'
+import { timeStretch } from './time-stretch'
 
 // ── Tuning constants ────────────────────────────────────────────────────────
 
@@ -111,6 +112,14 @@ export interface ClipTimebase {
   inPoint: number
   /** The audio track's t=0 origin, container µs (`ChunkSource.firstPresentationTsUs`). */
   firstPresentationTsUs: number
+  /**
+   * Per-clip playback speed S (`item.speed`), default 1. Scales the source↔
+   * timeline mapping ONLY — the clip shows S× its source content per project-
+   * second — and does NOT change how fast project time runs (that is the
+   * transport rate, `setTransportRate`). Absent ⇒ 1, i.e. bit-identical to the
+   * pre-speed mapping.
+   */
+  speed?: number
 }
 
 export interface MasterClockStats {
@@ -169,11 +178,22 @@ export interface MasterClock {
    */
   seek(projectS: number, mediaS?: number): void
   /**
-   * Update the clip's audio level. Takes effect for audio enqueued AFTER the
-   * call: up to `RING_SECONDS` of already-scaled PCM is in flight and plays at
-   * the old level. No-op on the fallback clock.
+   * Update the clip's audio level. Takes effect IMMEDIATELY: the level rides a
+   * per-session output gain node, so it re-levels everything already in the ring
+   * (up to `RING_SECONDS` of decode-ahead) the instant it is set, not only audio
+   * enqueued afterward. Applied via a short (~15ms) ramp to avoid a zipper click
+   * on a fast drag. No-op on the fallback clock.
    */
   setVolume(volume: number): void
+  /**
+   * Set the live transport rate R (default 1): project time thereafter advances
+   * R× wall-time. Continuous — the playhead does not jump across the change (a
+   * soft re-anchor freezes `now()` and re-bases the ramp). Independent of
+   * per-clip `speed`, which lives in the timebase and never changes how fast
+   * project time runs. Persists across `seek`/`play`/`pause`; a re-anchor
+   * (`restartAt`) re-bases its accounting without disturbing R.
+   */
+  setTransportRate(rate: number): void
   stats(): MasterClockStats
   /** Stop the decoder and detach the worklet node. NEVER closes the shared AudioContext. */
   dispose(): void
@@ -232,15 +252,26 @@ export function normalizeAudioCodec(codec: string): string {
  *
  * (The legacy site also adds `loopOffsetRef.current`. Loop is transport, not
  * timebase: a looping clip's wrap is a `seek()` on this clock, owned by T5.)
+ *
+ * At per-clip speed S≠1 the clip's own time runs S× faster than project time,
+ * so the in-clip source offset is DIVIDED by S (`(mediaS − inPoint) / speed`).
+ * S=1 (the default, and an absent `timebase.speed`) is the verbatim legacy
+ * mapping.
  */
 export function projectTimeForMediaTsUs(timebase: ClipTimebase, mediaTsUs: number): number {
+  const speed = timebase.speed ?? 1
   const mediaS = (mediaTsUs - timebase.firstPresentationTsUs) / 1_000_000
-  return timebase.start + (mediaS - timebase.inPoint)
+  return timebase.start + (mediaS - timebase.inPoint) / speed
 }
 
-/** Project seconds → media timestamp (container µs). Exact inverse of `projectTimeForMediaTsUs`. */
+/**
+ * Project seconds → media timestamp (container µs). Exact inverse of
+ * `projectTimeForMediaTsUs`: the in-clip project offset is MULTIPLIED by S on
+ * the way back to source time (`(projectS − start)·speed + inPoint`).
+ */
 export function mediaTsUsForProjectTime(timebase: ClipTimebase, projectS: number): number {
-  const mediaS = projectS - timebase.start + timebase.inPoint
+  const speed = timebase.speed ?? 1
+  const mediaS = (projectS - timebase.start) * speed + timebase.inPoint
   return timebase.firstPresentationTsUs + mediaS * 1_000_000
 }
 
@@ -265,35 +296,43 @@ export function extrapolateSamples(
 /**
  * Rendered output frames → project seconds. `anchorProjectS` is the project
  * time the ring's frame 0 was authored to play at, set on every reset.
+ *
+ * `rate` is the transport rate R (default 1): project time advances R× per
+ * rendered second. The caller passes `samples` already RE-BASED to the last
+ * rate change (`projected − rateAnchorSamples`), so a mid-playback rate change
+ * ramps from the frozen anchor rather than re-scaling all history. R=1 is the
+ * pre-rate reading.
  */
 export function projectTimeForSamples(
   anchorProjectS: number,
   samples: number,
   sampleRate: number,
+  rate: number = 1,
 ): number {
-  return anchorProjectS + samples / sampleRate
+  return anchorProjectS + (rate * samples) / sampleRate
 }
 
 /**
  * Interleave per-channel PCM planes into the single `[L0,R0,L1,R1,…]` buffer
- * the ring speaks, scaling by the clip's `volume` on the way through.
+ * the ring speaks, scaling by `volume` on the way through.
  *
- * **Why scale the PCM rather than hang a `GainNode` off the worklet node.**
- * Not because a GainNode cannot amplify — it can, and that is exactly why the
- * legacy path uses one (`useVideoPlayback.ts`'s `applyClipVolume`). It is
- * because the ring holds up to `RING_SECONDS` of decode-ahead: a node-level
- * gain applies to whatever is *leaving* the node now, so a per-clip level set
- * at a clip boundary would retroactively re-level the tail of the previous
- * clip still sitting in the ring. Scaling at enqueue binds each sample's level
- * to the clip that produced it, which is the only way per-clip volume can be
- * correct in a buffered pipeline.
+ * **Volume no longer rides here.** `createAudioClock` calls this with
+ * `volume === 1` and applies the clip's real level on a per-session output
+ * `GainNode` instead (see the node/gain/destination chain there). The original
+ * reason to scale at enqueue — that a single ring shared across clip boundaries
+ * would let a node-level gain re-level the previous clip's tail — does not hold:
+ * each clip session owns its own ring and its own gain node, so a live gain
+ * change only ever touches that clip. Moving volume to the node is what makes a
+ * `setVolume` audible immediately (it re-levels the buffered decode-ahead)
+ * rather than lagging by up to `RING_SECONDS`, and it matches the legacy player,
+ * which already routes each clip through its own GainNode. The `volume`
+ * parameter is retained for the pure-function tests and any caller that wants
+ * pre-scaled PCM.
  *
  * **No clamping, deliberately.** `volume` above 1.0 produces samples outside
- * [-1, 1] and they are left that way — identical to what the legacy GainNode
- * emits for the same clip. `AudioDestinationNode` does the clipping in both
- * paths, so preview loudness stays bit-for-bit comparable across the two
- * players. Clamping here would make the engine quieter than the legacy path on
- * exactly the clips a user amplified on purpose.
+ * [-1, 1] and they are left that way — identical to what a GainNode emits for
+ * the same clip. `AudioDestinationNode` does the clipping, so amplified clips
+ * stay as loud as the user asked; clamping here would quiet them instead.
  */
 export function scaleAndInterleavePlanes(
   planes: readonly Float32Array[],
@@ -363,6 +402,145 @@ export function resampleInterleaved(
   return { pcm: out, phase: phase + outFrames * ratio - inFrames }
 }
 
+// ── Streaming time-stretch (wraps the batch WSOLA primitive) ─────────────────
+
+/**
+ * New input frames (per channel) the streamer consumes per WSOLA batch. ~43ms at
+ * 48kHz — many decoded Opus packets (~960 frames each), so the batch primitive
+ * (`timeStretch`, whose analysis frame is 1024) sees far more than one frame and
+ * its similarity search has room to lock. Larger = fewer block joins but more
+ * latency before the first stretched audio appears.
+ */
+export const STRETCH_STEP_FRAMES = 2048
+
+/**
+ * Input frames (per channel) carried from the tail of one block to the head of
+ * the next. The next block re-renders this shared content, and the two
+ * independent WSOLA renderings of it are crossfaded — that overlap-add is what
+ * hides the phase discontinuity between otherwise-independent batches. One full
+ * analysis frame (1024) of lead-in.
+ */
+export const STRETCH_CONTEXT_FRAMES = 1024
+
+/**
+ * A streaming wrapper over the batch `timeStretch`.
+ *
+ * `timeStretch` is a whole-buffer WSOLA and the decoder hands us ~20ms packets —
+ * smaller than one 1024-sample analysis frame — so it cannot be called
+ * per-packet. This accumulates volume-scaled PCM across packets and stretches in
+ * `STRETCH_STEP_FRAMES` blocks, carrying `STRETCH_CONTEXT_FRAMES` of INPUT
+ * overlap between blocks and crossfading the two renderings of that overlap on
+ * the OUTPUT side (the "synthesis overlap"). The seam it hides is the price of
+ * wrapping a batch primitive rather than a natively-streaming one; the join is
+ * click-free at preview quality, not sample-exact — see `time-stretch.ts`.
+ */
+export interface StreamStretch {
+  /**
+   * Stretch a chunk of interleaved PCM, returning whatever whole-block output is
+   * ready now (interleaved, same channel count) — possibly EMPTY while the first
+   * block is still filling. At factor 1 it is a zero-copy identity (the input
+   * buffer itself is returned, no buffering, no added latency), so it agrees with
+   * the caller's own strict bypass.
+   */
+  push(input: Float32Array): Float32Array
+  /** Adopt a new factor. Drops the cross-block carry (a one-block seam); keeps pending input. */
+  setFactor(factor: number): void
+  /** Clear all buffered input and cross-block carry — the ring-reset twin. */
+  reset(): void
+}
+
+/** Concatenate two interleaved buffers (returns the non-empty one directly when possible). */
+function concatPcm(a: Float32Array, b: Float32Array): Float32Array {
+  if (a.length === 0) return b
+  if (b.length === 0) return a
+  const out = new Float32Array(a.length + b.length)
+  out.set(a, 0)
+  out.set(b, a.length)
+  return out
+}
+
+/**
+ * Linear crossfade of two equal-length interleaved buffers: `a` fades out while
+ * `b` fades in. Both are WSOLA renderings of the SAME content, so a linear blend
+ * (not equal-power) is correct — the two are already near-identical and in phase.
+ */
+function crossfadePcm(a: Float32Array, b: Float32Array, channels: number): Float32Array {
+  const frames = Math.floor(Math.min(a.length, b.length) / channels)
+  const out = new Float32Array(frames * channels)
+  for (let i = 0; i < frames; i++) {
+    const t = frames > 1 ? i / (frames - 1) : 1
+    for (let ch = 0; ch < channels; ch++) {
+      const idx = i * channels + ch
+      out[idx] = a[idx] * (1 - t) + b[idx] * t
+    }
+  }
+  return out
+}
+
+export function createStreamStretch(channels: number, factor: number): StreamStretch {
+  const step = STRETCH_STEP_FRAMES * channels
+  const context = STRETCH_CONTEXT_FRAMES * channels
+  let f = factor
+  /** Accumulated, not-yet-consumed input (interleaved). */
+  let pending: Float32Array = new Float32Array(0)
+  /** Last CONTEXT frames of the previous block's input — the next block's lead-in. */
+  let tailIn: Float32Array = new Float32Array(0)
+  /** Held output tail (the synthesis overlap) awaiting crossfade with the next block's head. */
+  let heldOut: Float32Array | null = null
+
+  const push = (input: Float32Array): Float32Array => {
+    if (f === 1) return input // strict identity — no buffering, no copy
+    if (input.length > 0) pending = concatPcm(pending, input)
+    // Held-frame count: the output span the carried input context maps to. Same
+    // value for what we HOLD and what we crossfade, so the two always align.
+    const hold = Math.round(STRETCH_CONTEXT_FRAMES * f) * channels
+    let emitted: Float32Array = new Float32Array(0)
+
+    while (pending.length >= step) {
+      const newInput = pending.subarray(0, step)
+      const feed = concatPcm(tailIn, newInput)
+      const out = timeStretch(feed, channels, f)
+      // Keep hold within half the block so `mid` below is never negative.
+      const h = Math.min(hold, Math.floor(out.length / channels / 2) * channels)
+
+      let blockOut: Float32Array
+      if (heldOut && h > 0) {
+        // out[0..h) and heldOut are two renderings of the carried context; blend
+        // them, then take the interior, holding a fresh tail for the next block.
+        const head = crossfadePcm(heldOut, out.subarray(0, h), channels)
+        const mid = out.subarray(h, out.length - h)
+        blockOut = concatPcm(head, mid)
+      } else {
+        // First block after a reset/factor change: nothing to blend with yet.
+        blockOut = out.subarray(0, Math.max(0, out.length - h))
+      }
+      heldOut = h > 0 ? out.slice(out.length - h) : null
+      // Carry the last CONTEXT frames of THIS input as the next block's lead-in.
+      tailIn = newInput.slice(newInput.length - context)
+      pending = pending.slice(step)
+      emitted = concatPcm(emitted, blockOut)
+    }
+    return emitted
+  }
+
+  return {
+    push,
+    setFactor(next: number) {
+      if (next === f) return
+      f = next
+      // Drop the cross-block carry so the next block starts clean at the new
+      // factor; pending input is kept (a smaller seam than dropping it).
+      tailIn = new Float32Array(0)
+      heldOut = null
+    },
+    reset() {
+      pending = new Float32Array(0)
+      tailIn = new Float32Array(0)
+      heldOut = null
+    },
+  }
+}
+
 /**
  * Can this track's audio be handed to `AudioDecoder` at all?
  *
@@ -397,8 +575,9 @@ function createFallbackClock(
   let base = startProjectS
   let startedAtMs = nowMs()
   let playing = false
+  let transportRate = 1
 
-  const read = () => (playing ? base + (nowMs() - startedAtMs) / 1000 : base)
+  const read = () => (playing ? base + (transportRate * (nowMs() - startedAtMs)) / 1000 : base)
 
   return {
     kind: 'fallback',
@@ -426,6 +605,15 @@ function createFallbackClock(
     },
     setVolume() {
       /* nothing is being rendered here — no level to set */
+    },
+    setTransportRate(rate: number) {
+      // Soft re-anchor so `now()` is continuous across the change: freeze where
+      // it reads, restart the wall-time baseline from here, then apply the new
+      // rate. Paused, `read()` returns `base` regardless of rate, so this is a
+      // harmless re-stamp; playing, it ramps R× from the current instant.
+      base = read()
+      startedAtMs = nowMs()
+      transportRate = rate
     },
     stats() {
       return {
@@ -518,7 +706,21 @@ async function createAudioClock(
     outputChannelCount: [channels],
     processorOptions: { reportIntervalS: REPORT_INTERVAL_S },
   })
-  node.connect(ctx.destination)
+  // Per-session output gain — the clip's volume rides HERE, not in the PCM.
+  // Each clip session owns its own node → gain → destination chain (one ring
+  // per clip, never a shared stream across clip boundaries — see
+  // `startSession`/`createMasterClock`), so a live gain change only ever touches
+  // this clip's audio and can never re-level a neighbour's tail sitting in
+  // another session's ring. That is the property the old enqueue-time PCM
+  // scaling was protecting; a per-session node has it for free, and unlike PCM
+  // scaling a gain change is heard IMMEDIATELY — it applies to whatever is
+  // leaving the node now, including the up-to-RING_SECONDS already buffered,
+  // instead of only to PCM enqueued after the change. This also matches the
+  // legacy player, which routes each <video> through its own GainNode.
+  const gainNode = ctx.createGain()
+  gainNode.gain.value = options.volume
+  node.connect(gainNode)
+  gainNode.connect(ctx.destination)
 
   if (ctx.state === 'suspended') {
     // Best effort only: a resume outside a user-gesture call stack is not
@@ -529,7 +731,6 @@ async function createAudioClock(
     void ctx.resume().catch(() => {})
   }
 
-  let volume = options.volume
   let playing = false
   let disposed = false
 
@@ -544,6 +745,27 @@ async function createAudioClock(
   let anchorProjectS = startProjectS
   let frozenProjectS = startProjectS
   let samplesConsumed = 0
+  /** Transport rate R (default 1). Project time advances R× per rendered second. */
+  let transportRate = 1
+  /**
+   * Cumulative-sample baseline captured on every reset and on every
+   * `setTransportRate`. `read()` counts rendered frames from HERE, not from the
+   * ring epoch's frame 0, so a mid-playback rate change re-bases the R× ramp
+   * without a discontinuity while `samplesConsumed` keeps its cumulative meaning
+   * (the worklet reports it monotonically and the feeder budgets off it).
+   */
+  let rateAnchorSamples = 0
+  /**
+   * Pitch-preserving time-stretch factor = 1/(R·S), where R is the live
+   * `transportRate` and S the fixed per-clip `timebase.speed`. The clip
+   * traverses R·S source-seconds per project-second, and that content must be
+   * compressed (R·S>1) or expanded (R·S<1) to fill one project-second of audio.
+   * factor 1 (R=S=1) is the strict-bypass path: no stretch, no buffering, the
+   * pipeline runs exactly as it did before variable rate.
+   */
+  const clipSpeed = timebase.speed ?? 1
+  let stretchFactor = 1 / (transportRate * clipSpeed)
+  const streamStretch = createStreamStretch(channels, stretchFactor)
   let underrunFrames = 0
   let lastReportMs = nowMs()
   /** Frames posted to the ring since the reset. */
@@ -571,7 +793,15 @@ async function createAudioClock(
   const read = (): number => {
     if (!playing) return frozenProjectS
     const projected = extrapolateSamples(samplesConsumed, nowMs() - lastReportMs, renderRate)
-    return projectTimeForSamples(anchorProjectS, projected, renderRate)
+    // Count frames from the last rate-anchor, not the ring epoch's frame 0, and
+    // scale by R. At R=1 with no rate change (`rateAnchorSamples === 0`) this is
+    // exactly `projectTimeForSamples(anchorProjectS, projected, renderRate)`.
+    return projectTimeForSamples(
+      anchorProjectS,
+      projected - rateAnchorSamples,
+      renderRate,
+      transportRate,
+    )
   }
 
   const decoder = new AudioDecoder({
@@ -589,9 +819,19 @@ async function createAudioClock(
           frame.copyTo(plane, { planeIndex: ch, format: 'f32-planar' })
           planes.push(plane)
         }
-        const scaled = scaleAndInterleavePlanes(planes, frames, volume)
+        // Interleave only — volume is applied downstream by `gainNode` (see the
+        // node/gain/destination chain above), so the ring holds the clip at unit
+        // level and a `setVolume` is heard without waiting for the ring to drain.
+        const scaled = scaleAndInterleavePlanes(planes, frames, 1)
+        // Pitch-preserving time-stretch at the DECODED rate, BEFORE the device
+        // resample. Strict bypass at factor 1 — `scaled` passes straight through,
+        // exactly as before variable rate. Otherwise the streaming wrapper
+        // accumulates across these tiny (~20ms) packets and emits whole WSOLA
+        // blocks, so `push` returns nothing until a block is ready.
+        const stretched = stretchFactor === 1 ? scaled : streamStretch.push(scaled)
+        if (stretched.length === 0) return
         const ratio = frame.sampleRate / renderRate
-        const resampled = resampleInterleaved(scaled, planeCount, ratio, resamplePhase)
+        const resampled = resampleInterleaved(stretched, planeCount, ratio, resamplePhase)
         resamplePhase = resampled.phase
         const outFrames = Math.floor(resampled.pcm.length / planeCount)
         if (outFrames === 0) return
@@ -631,6 +871,7 @@ async function createAudioClock(
       // never configured — nothing to close.
     }
     node.disconnect()
+    gainNode.disconnect()
     throw err
   }
 
@@ -699,10 +940,17 @@ async function createAudioClock(
     anchorProjectS = projectS
     frozenProjectS = projectS
     samplesConsumed = 0
+    // Re-base the rate ramp with the ring: samples are counted from 0 again, so
+    // the baseline must be 0. `transportRate` PERSISTS — a seek/wrap re-anchors
+    // media and project time, not the global transport rate.
+    rateAnchorSamples = 0
     underrunFrames = 0
     postedFrames = 0
     drainedFrames = 0
     resamplePhase = 0
+    // The stretcher's buffered input and cross-block carry describe the old ring
+    // epoch; drop them so the new epoch's first block starts clean.
+    streamStretch.reset()
     feedFailed = false
     lastReportMs = nowMs()
     // `mediaS`, when given, is the loop-wrapped media position the frame
@@ -782,7 +1030,44 @@ async function createAudioClock(
       if (playing) node.port.postMessage({ t: 'play' })
     },
     setVolume(next: number) {
-      volume = next
+      if (disposed) return
+      // Ride the output gain node: heard immediately, no ring flush, no
+      // re-decode. A short time-constant ramp (~15ms) instead of a hard jump so
+      // a fast slider drag doesn't zipper-click. `setTargetAtTime` schedules
+      // against the context clock, so it also settles cleanly when the context
+      // is suspended and later resumes.
+      gainNode.gain.setTargetAtTime(next, ctx.currentTime, 0.015)
+    },
+    setTransportRate(rate: number) {
+      if (disposed) return
+      const wasPlaying = playing
+      // The current project time, captured with the OLD rate BEFORE anything
+      // changes — the anchor the restart re-pins to, so the playhead stays
+      // continuous across the rate step (no jump).
+      const nowProjectS = read()
+      transportRate = rate
+      // Re-derive the stretch factor and hand it to the streamer (drops its
+      // cross-block carry, re-blocks at the new factor).
+      stretchFactor = 1 / (rate * clipSpeed)
+      streamStretch.setFactor(stretchFactor)
+      if (wasPlaying) {
+        // Flush the ring. It holds up to RING_SECONDS of audio already stretched
+        // at the OLD factor; leaving it would keep the speaker on the old rate
+        // for up to ~2s after the picture moved to the new one — and audible
+        // fast-forward is the point. `restartAt` re-anchors the clock to
+        // `nowProjectS` (samplesConsumed/rateAnchorSamples reset ⇒ `read()`
+        // returns `nowProjectS`, no jump), re-primes the decoder from the
+        // matching media position through the timebase, and resets the stretcher
+        // — new-factor audio reaches the speaker within one decode batch, the
+        // same brief re-decode gap `seek`/`play` already pay.
+        restartAt(nowProjectS)
+        node.port.postMessage({ t: 'play' })
+      }
+      // Paused: nothing to flush and nothing to re-anchor — `read()` returns
+      // `frozenProjectS` regardless of rate, and `play()` → `restartAt` re-primes
+      // the ring (with the new factor already set) before the new rate is ever
+      // counted against samples. Keeping the primed ring avoids a needless
+      // re-decode. (Do NOT flush when paused.)
     },
     stats() {
       return {
@@ -814,6 +1099,7 @@ async function createAudioClock(
       }
       try {
         node.disconnect()
+        gainNode.disconnect()
       } catch {
         // already disconnected — fine.
       }

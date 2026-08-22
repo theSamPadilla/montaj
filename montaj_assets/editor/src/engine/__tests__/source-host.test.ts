@@ -121,6 +121,7 @@ vi.mock('../audio-clock', async (importOriginal) => {
           t = next
         },
         setVolume: state.setVolume,
+        setTransportRate: () => {},
         stats: () => ({
           kind: 'fallback' as const,
           playing,

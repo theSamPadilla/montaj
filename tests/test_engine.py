@@ -489,6 +489,43 @@ def test_validate_project_rejects_out_of_range_source_crop(tmp_path):
         v.validate_project(path)
 
 
+# ── per-clip speed (montaj/speed) ──────────────────────────────────────────────
+
+def test_validate_project_accepts_absent_speed(tmp_path):
+    # No speed field ⇒ default 1.0 ⇒ valid (VALID_PRIMARY_CLIP has none).
+    path = _write_project(tmp_path, "project.json", {**VALID_PROJECT, "tracks": [[{**VALID_PRIMARY_CLIP}]]})
+    assert v.validate_project(path)["valid"] is True
+
+
+@pytest.mark.parametrize("speed", [0.25, 0.5, 1, 1.0, 2, 4, 4.0])
+def test_validate_project_accepts_in_range_speed(tmp_path, speed):
+    data = {**VALID_PROJECT, "tracks": [[{**VALID_PRIMARY_CLIP, "speed": speed}]]}
+    path = _write_project(tmp_path, "project.json", data)
+    assert v.validate_project(path)["valid"] is True
+
+
+@pytest.mark.parametrize("speed", [0.24, 0, -1, 4.01, 5])
+def test_validate_project_rejects_out_of_range_speed(tmp_path, speed):
+    data = {**VALID_PROJECT, "tracks": [[{**VALID_PRIMARY_CLIP, "speed": speed}]]}
+    path = _write_project(tmp_path, "project.json", data)
+    with pytest.raises(SystemExit):
+        v.validate_project(path)
+
+
+@pytest.mark.parametrize("speed", ["2", True, None])
+def test_validate_project_rejects_non_number_speed(tmp_path, speed):
+    # A JSON null round-trips to None, which validates as "absent" (valid); a
+    # string or bool is a type error. Split so the None case asserts acceptance.
+    clip = {**VALID_PRIMARY_CLIP, "speed": speed}
+    data = {**VALID_PROJECT, "tracks": [[clip]]}
+    path = _write_project(tmp_path, "project.json", data)
+    if speed is None:
+        assert v.validate_project(path)["valid"] is True
+    else:
+        with pytest.raises(SystemExit):
+            v.validate_project(path)
+
+
 # ---------------------------------------------------------------------------
 # validate_project — broll
 # ---------------------------------------------------------------------------
