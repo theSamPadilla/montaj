@@ -91,6 +91,17 @@ interface RailCellProps {
 }
 
 /**
+ * Vertical gap between a row's stacked controls, scaled to the room the row
+ * actually has. See the note in `RailCell` for why this cannot be one value:
+ * the tall base track and a 40px audio lane have very different budgets.
+ */
+function controlGap(height: number): string {
+  if (height >= 96) return 'gap-3'   // base video track — plenty of room
+  if (height >= 56) return 'gap-2'
+  return 'gap-1'                     // 40px audio lane: two buttons + 4px is the ceiling
+}
+
+/**
  * One row of the rail. Content sits at the TOP rather than centred: rows vary
  * from 40px to 120px, and a centred icon on the tall base track floats in the
  * middle of nothing while the short rows look fine. Top-aligned, every cell
@@ -99,7 +110,7 @@ interface RailCellProps {
 function RailCell({ height, accent, icon, label, action, dimmed, settingsButton }: RailCellProps) {
   return (
     <div
-      className={`flex items-start gap-1 rounded overflow-hidden bg-[var(--editor-surface)] border border-[var(--editor-border)] px-1 py-1 select-none transition-opacity ${dimmed ? 'opacity-40' : ''}`}
+      className={`flex items-start gap-1 rounded overflow-hidden bg-[var(--editor-surface)] border border-[var(--editor-border)] px-1 py-0.5 select-none transition-opacity ${dimmed ? 'opacity-40' : ''}`}
       style={{ height, borderLeft: accent ? `2px solid ${accent}` : undefined }}
     >
       {/* The type icon identifies the row and is NOT interactive. It used to
@@ -113,8 +124,15 @@ function RailCell({ height, accent, icon, label, action, dimmed, settingsButton 
       </Tooltip>
       {/* One COLUMN of controls, not a row: the rows are 40-120px tall and were
           wasting all of that height on a single line of icons, which forced the
-          rail wide enough to crowd the timeline. */}
-      <div className="flex min-w-0 flex-col gap-0.5">
+          rail wide enough to crowd the timeline.
+
+          The gap SCALES with the row, because a single value cannot serve both
+          ends: the 120px base track has room to breathe, while a 40px audio
+          lane has 36px of usable height for two 14px buttons and can afford
+          4px between them and no more. A fixed gap generous enough for the base
+          track would push the lane's lower control under `overflow-hidden`. */}
+      <div className={`flex min-w-0 flex-col ${controlGap(height)}`}>
+        {action}
         {settingsButton && (
           <Tooltip label={settingsButton.label}>
             <button
@@ -134,7 +152,6 @@ function RailCell({ height, accent, icon, label, action, dimmed, settingsButton 
             </button>
           </Tooltip>
         )}
-        {action}
       </div>
     </div>
   )
@@ -248,18 +265,22 @@ function VisualTrackRailRow({
         settingsButton={hasSettings ? { onClick: () => setOpen(o => !o), open, buttonRef, label: `${label} track settings` } : undefined}
         action={
           <>
-            {hasAudio && onSetTrackMuted && (
-              <MuteToggle
-                muted={muted}
-                trackLabel={`${trackLabel} track`}
-                onToggle={() => onSetTrackMuted(row.trackIdx, !muted)}
-              />
-            )}
+            {/* Visibility on top — it is the control you reach for most, and the
+                one whose state you scan a whole column of rows for. Mute sits
+                under it so the two state toggles stay together, with the
+                settings gear last. */}
             {onToggleTrackEnabled && (
               <SkipToggle
                 enabled={enabled}
                 trackLabel={trackLabel}
                 onToggle={() => onToggleTrackEnabled(row.trackIdx, !enabled)}
+              />
+            )}
+            {hasAudio && onSetTrackMuted && (
+              <MuteToggle
+                muted={muted}
+                trackLabel={`${trackLabel} track`}
+                onToggle={() => onSetTrackMuted(row.trackIdx, !muted)}
               />
             )}
           </>
