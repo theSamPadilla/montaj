@@ -608,51 +608,82 @@ comparison; the two variants no longer diverge).**
 
 ## D9. `geometry-duplication-hazard` (was: `designcanvas-duplication-hazard`)
 
-**Verified — hazard, not a live divergence.** `src/geometry.js` extracts three
-formulas that used to (and still do) live independently on both the editor
-and render sides. Extraction proves the two sides agree; it does NOT retire
-either original copy — none of the three has been switched over to call the
-new shared implementation. All three are the same shape of hazard: a future
-edit to one copy without the other silently introduces a real divergence,
-with no test to catch it until editor/render output actually shifts.
+**Hazard, not a live divergence. Sub-entry (b) RETIRED 2026-08-23 (SP9a-1);
+(a) and (c) remain open.** `src/geometry.js` extracts three formulas that
+used to — and, for (a) and (c), still do — live independently on both the
+editor and render sides. Extraction alone proves the two sides agree; it
+does NOT retire an original copy on its own. All three started out as the
+same shape of hazard: a future edit to one copy without the other silently
+introduces a real divergence, with no test to catch it until editor/render
+output actually shifts. SP9a-1 closed that hazard for (b) by switching every
+call site over to the shared implementation; see (b) below for what proved
+it safe. (a) and (c) still carry the open hazard — their original call sites
+have not been switched.
 
-**(a) `designCanvas` — the 1080-short-edge formula.** `editor/src/video/design-canvas.ts:5-11`
-(`getOverlayDesignCanvas`) and `render/render.js:125-131` (inline in `render()`,
-no named export) implement the identical formula:
+**(a) `designCanvas` — the 1080-short-edge formula. OPEN.**
+`editor/src/video/design-canvas.ts:5-11` (`getOverlayDesignCanvas`) and
+`render/render.js:263-269` (inline in `render()`, no named export) implement
+the identical formula:
 
     ratio = 1080 / min(w, h)
     [round(w*ratio/2)*2, round(h*ratio/2)*2]
 
 Confirmed algebraically identical by direct comparison of both blocks (T4's
 finding, re-verified during T5). They AGREE today — this is a positive
-finding, not a divergence.
+finding, not a divergence. Neither original copy has been switched over to
+`src/geometry.js`'s `designCanvas` export. That export does have a consumer
+today, though: `editor/src/engine/index.ts:801` (imported at `:46`), the SP4
+WebCodecs engine, calls it directly — a THIRD call site sitting alongside the
+two still-unswitched originals, not a replacement for either. (An earlier
+version of this entry claimed none of the four `geometry.js` exports named
+below had a consumer; that was true when written and has been false since
+`b9562ce`.)
 
-**(b) `toPixelBox`/`toCssBoxPct` — the scale/offset transform box.**
-`editor/src/video/preview/transformStyle.ts` (`videoTransformBoxPct`) and
-`render/encode-segment.js:154-158` (`buildImageItemFilterParts`) /
-`:210-214` (`buildVideoItemFilterParts`) implement the identical scale/offset
-box formula — see `src/geometry.js`'s module header for the side-by-side.
+**(b) `toPixelBox`/`toCssBoxPct` — the scale/offset transform box. RETIRED
+2026-08-23 (SP9a-1).** This was always THREE render-side copies, not two —
+`render/encode-segment.js`'s `buildImageItemFilterParts`,
+`buildVideoItemFilterParts` AND `buildOverlayFilterParts` all carried the
+identical inline formula; the overlay copy went undocumented in this entry
+until now. Plus the one editor copy, `editor/src/video/preview/transformStyle.ts`'s
+`videoTransformBoxPct`. All four implemented the same scale/offset box
+formula — see `src/geometry.js`'s module header for the side-by-side.
 Confirmed algebraically identical (`test/geometry.test.mjs`'s cross-check
-table). They AGREE today — this is also a positive finding.
+table); they agreed throughout, so this was always a positive finding, never
+a live divergence.
 
-**(c) `isFullFrameCrop` — the full-frame-crop short-circuit.**
+SP9a-1 retired the hazard itself: all four call sites now route through
+`toPixelBox`/`toCssBoxPct` instead of carrying their own copy —
+`encode-segment.js:245` (image), `:305` (video), `:457` (overlay), and
+`transformStyle.ts:36` (editor). Pinned by two things, in order: (1) a
+15,309-combination differential switchover sweep in `test/geometry.test.mjs`
+(`describe('D9 switchover gate — toPixelBox is byte-identical to the inline
+formula')`) proving the shared implementation byte-identical to every inline
+copy across 3 kinds x 7 canvases x 9 scales x 9x9 offsets, run BEFORE any
+call site moved; and (2) the `geometry-non-identity` encode-args golden,
+captured pre-refactor and byte-identical after. No copy of this formula
+remains outside `src/geometry.js`.
+
+**(c) `isFullFrameCrop` — the full-frame-crop short-circuit. OPEN.**
 `editor/src/video/preview/sourceCropStyle.ts:35` (inside
 `sourceCropVideoStyle`) implements `crop.x === 0 && crop.y === 0 && crop.w
 === 1 && crop.h === 1`. `src/geometry.js`'s `isFullFrameCrop` is a verbatim
 port of that same check. Render has no equivalent call site (nothing on the
 render side short-circuits a full-frame crop today), so this pair is
-editor-vs-`geometry.js` only, not editor-vs-render.
+editor-vs-`geometry.js` only, not editor-vs-render. Not touched by SP9a-1 —
+out of that plan's scope; `sourceCropStyle.ts:35` still holds its own inline
+copy, unswitched.
 
-For all three, the formula is written out on each original side with no
-shared source; `src/geometry.js`'s `designCanvas`/`toPixelBox`/`toCssBoxPct`/
-`isFullFrameCrop` are now the single implementations, but T6/T7 (or SP3/SP4)
-replacing the original call sites with them — retiring the hazard — is not
-part of SP2's scope. No fixture: none of these four exports has a consumer
-yet, so there is no editor/render behavior for a corpus fixture to pin.
+`src/geometry.js`'s `designCanvas`/`toPixelBox`/`toCssBoxPct`/`isFullFrameCrop`
+are the single implementations for all three formulas. As of SP9a-1,
+`designCanvas` has one consumer (`engine/index.ts:801`) and `toPixelBox`/
+`toCssBoxPct` have four consumers between them — the four call sites listed
+under (b). `isFullFrameCrop` alone still has none. No fixture for (a)/(c):
+both remain internally-agreeing hazards, not divergences, so there is no
+editor/render behavior difference for a corpus fixture to pin.
 
-**Owner: SP2 / SP3/SP4 backlog** (T4 already extracted the shared
-implementations; the hazard persists only until the original call sites are
-switched over).
+**Owner: (a) SP3/SP4 backlog — designCanvas still duplicated in `render.js`
+and `design-canvas.ts`. (b) CLOSED by SP9a-1 — no further owner. (c) SP3/SP4
+backlog — `isFullFrameCrop` still duplicated in `sourceCropStyle.ts`.**
 
 ## D10. `bytrackidx-missing-trackidx-tie` — discovered in T7
 

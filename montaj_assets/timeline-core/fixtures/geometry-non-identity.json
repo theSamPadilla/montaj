@@ -1,0 +1,39 @@
+{
+  "version": "0.2",
+  "id": "sp9a-corpus-geometry-non-identity",
+  "status": "draft",
+  "projectType": "editing",
+  "settings": { "fps": 30, "resolution": [1080, 1920], "colorSpace": "sdr_bt709" },
+  "tracks": [
+    [
+      {
+        "id": "geomVideo",
+        "type": "video",
+        "src": "/corpus/geomVideo.mp4",
+        "start": 0,
+        "end": 5,
+        "inPoint": 0,
+        "outPoint": 5,
+        "offsetX": 12.5,
+        "offsetY": -7.25,
+        "scale": 0.62,
+        "opacity": 1
+      }
+    ],
+    [
+      {
+        "id": "geomImage",
+        "type": "image",
+        "src": "/corpus/geomImage.png",
+        "start": 0,
+        "end": 5,
+        "offsetX": -20,
+        "offsetY": 8,
+        "scale": 1.35,
+        "opacity": 1,
+        "fit": "cover"
+      }
+    ]
+  ],
+  "audio": { "tracks": [] }
+}

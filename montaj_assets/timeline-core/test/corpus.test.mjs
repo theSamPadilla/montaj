@@ -139,8 +139,8 @@ test('corpus: every ENCODE_ARGS_FIXTURES entry names a real fixture and has a co
   }
 })
 
-test('corpus: exactly 14 named scenarios (the plan\'s fixture count, +1 in SP3 T4 for proxy-matrix.json)', () => {
-  assert.equal(fixtureNames().length, 14, 'fixtures/*.json count drifted from the 14 scenarios the plan names')
+test('corpus: exactly 15 named scenarios (the plan\'s fixture count, +1 in SP3 T4 for proxy-matrix.json, +1 in SP9a-1 T1 for geometry-non-identity.json)', () => {
+  assert.equal(fixtureNames().length, 15, 'fixtures/*.json count drifted from the 15 scenarios the plan names')
 })
 
 // ---------------------------------------------------------------------------

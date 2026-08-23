@@ -36,6 +36,7 @@ import { dirname } from 'path'
 import { FFMPEG, FFPROBE } from './ffmpeg-bin.js'
 import { specFor, detectFromTransfer, DEFAULT_COLOR_SPACE } from './color-space.js'
 import { lutPath } from './look.js'
+import { geometryFor, toPixelBox } from '@bycrux/timeline-core'
 
 const FFMPEG_TIMEOUT_MS = 600_000
 const IMAGE_EXTENSIONS = /\.(jpe?g|png|gif|webp|bmp|tiff?)$/i
@@ -236,11 +237,12 @@ export function buildColorConversionFilter(srcKey, dstKey, hasZscaleFlag, opts =
 // motion to time-scale, so speed is a no-op for image items (unlike video,
 // where it re-times decoded frames).
 export function buildImageItemFilterParts(item, vw, vh, idx, videoLabel, duration) {
-  const s       = item.scale ?? 1
-  const scaledW = Math.round(vw * s / 2) * 2
-  const scaledH = Math.round(vh * s / 2) * 2
-  const xPx     = Math.round(vw * (0.5 * (1 - s) + (item.offsetX ?? 0) / 100))
-  const yPx     = Math.round(vh * (0.5 * (1 - s) + (item.offsetY ?? 0) / 100))
+  // Geometry comes from the shared resolver — see @bycrux/timeline-core's
+  // src/geometry.js. This file used to carry its own copy of the formula; three
+  // copies lived here and a fourth in the editor, which is what KNOWN-DIVERGENCES
+  // D9 tracked. Equivalence is pinned by timeline-core's switchover sweep.
+  const { x: xPx, y: yPx, width: scaledW, height: scaledH } =
+    toPixelBox(geometryFor(item, 'image'), vw, vh)
 
   const inputArgs = ['-loop', '1', '-t', String(duration), '-i', item.src]
   const filterParts = []
@@ -295,11 +297,12 @@ export function buildVideoItemFilterParts(item, vw, vh, idx, videoLabel, opts) {
   const { segStart, duration, projectColorSpace, zscaleAvailable,
           lut3dAvailable, sdrCurve } = opts
 
-  const s       = item.scale ?? 1
-  const scaledW = Math.round(vw * s / 2) * 2
-  const scaledH = Math.round(vh * s / 2) * 2
-  const xPx     = Math.round(vw * (0.5 * (1 - s) + (item.offsetX ?? 0) / 100))
-  const yPx     = Math.round(vh * (0.5 * (1 - s) + (item.offsetY ?? 0) / 100))
+  // Geometry comes from the shared resolver — see @bycrux/timeline-core's
+  // src/geometry.js. This file used to carry its own copy of the formula; three
+  // copies lived here and a fourth in the editor, which is what KNOWN-DIVERGENCES
+  // D9 tracked. Equivalence is pinned by timeline-core's switchover sweep.
+  const { x: xPx, y: yPx, width: scaledW, height: scaledH } =
+    toPixelBox(geometryFor(item, 'video'), vw, vh)
 
   const inPt = item.inPoint ?? 0
   const seekOffset = Math.max(0, segStart - item.start)
@@ -450,11 +453,8 @@ export function buildOverlayFilterParts(ov, vw, vh, ovIdx, videoLabel, segStart,
   // shrinking it. Even-rounded — yuv420/yuva420 encoders reject odd dimensions.
   // Mirrors the image/video item path (buildImage/VideoItemFilterParts), which
   // already sizes to round(vw * scale / 2) * 2.
-  const ovScale = ov.scale ?? 1
-  const targetW = Math.round(vw * ovScale / 2) * 2
-  const targetH = Math.round(vh * ovScale / 2) * 2
-  const ovXPx   = Math.round(vw * (0.5 * (1 - ovScale) + (ov.offsetX ?? 0) / 100))
-  const ovYPx   = Math.round(vh * (0.5 * (1 - ovScale) + (ov.offsetY ?? 0) / 100))
+  const { x: ovXPx, y: ovYPx, width: targetW, height: targetH } =
+    toPixelBox(geometryFor(ov, 'overlay'), vw, vh)
 
   // Force yuva420p (or caller-specified format) — VP9 decoders may silently drop
   // the alpha plane on the production path; PNG-based callers pass 'rgba' to

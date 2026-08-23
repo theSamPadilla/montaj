@@ -1,0 +1,294 @@
+{
+  "planBoundaries": {
+    "24": [
+      0,
+      5
+    ],
+    "30": [
+      0,
+      5
+    ],
+    "60": [
+      0,
+      5
+    ]
+  },
+  "durations": {
+    "visualDuration": 5,
+    "projectEnd": 5
+  },
+  "resolveAt": {
+    "timestamps": [
+      0,
+      2.5,
+      5,
+      6
+    ],
+    "preview": [
+      {
+        "t": 0,
+        "items": [
+          {
+            "itemId": "geomVideo",
+            "trackIdx": 0,
+            "kind": "video",
+            "window": {
+              "src": "/corpus/geomVideo.mp4",
+              "inPoint": 0,
+              "outPoint": 5,
+              "usedNormalizedCache": false
+            },
+            "seek": 0,
+            "geometry": {
+              "scale": 0.62,
+              "offsetX": 12.5,
+              "offsetY": -7.25,
+              "opacity": 1,
+              "fit": "contain",
+              "rotation": 0
+            }
+          },
+          {
+            "itemId": "geomImage",
+            "trackIdx": 1,
+            "kind": "image",
+            "window": null,
+            "seek": 0,
+            "geometry": {
+              "scale": 1.35,
+              "offsetX": -20,
+              "offsetY": 8,
+              "opacity": 1,
+              "fit": "cover",
+              "rotation": 0
+            }
+          }
+        ]
+      },
+      {
+        "t": 2.5,
+        "items": [
+          {
+            "itemId": "geomVideo",
+            "trackIdx": 0,
+            "kind": "video",
+            "window": {
+              "src": "/corpus/geomVideo.mp4",
+              "inPoint": 0,
+              "outPoint": 5,
+              "usedNormalizedCache": false
+            },
+            "seek": 2.5,
+            "geometry": {
+              "scale": 0.62,
+              "offsetX": 12.5,
+              "offsetY": -7.25,
+              "opacity": 1,
+              "fit": "contain",
+              "rotation": 0
+            }
+          },
+          {
+            "itemId": "geomImage",
+            "trackIdx": 1,
+            "kind": "image",
+            "window": null,
+            "seek": 2.5,
+            "geometry": {
+              "scale": 1.35,
+              "offsetX": -20,
+              "offsetY": 8,
+              "opacity": 1,
+              "fit": "cover",
+              "rotation": 0
+            }
+          }
+        ]
+      },
+      {
+        "t": 5,
+        "items": []
+      },
+      {
+        "t": 6,
+        "items": []
+      }
+    ],
+    "render": [
+      {
+        "t": 0,
+        "items": [
+          {
+            "itemId": "geomVideo",
+            "trackIdx": 0,
+            "kind": "video",
+            "window": {
+              "src": "/corpus/geomVideo.mp4",
+              "inPoint": 0,
+              "outPoint": 5,
+              "usedNormalizedCache": false
+            },
+            "seek": 0,
+            "geometry": {
+              "scale": 0.62,
+              "offsetX": 12.5,
+              "offsetY": -7.25,
+              "opacity": 1,
+              "fit": "contain",
+              "rotation": 0
+            }
+          },
+          {
+            "itemId": "geomImage",
+            "trackIdx": 1,
+            "kind": "image",
+            "window": null,
+            "seek": 0,
+            "geometry": {
+              "scale": 1.35,
+              "offsetX": -20,
+              "offsetY": 8,
+              "opacity": 1,
+              "fit": "cover",
+              "rotation": 0
+            }
+          }
+        ]
+      },
+      {
+        "t": 2.5,
+        "items": [
+          {
+            "itemId": "geomVideo",
+            "trackIdx": 0,
+            "kind": "video",
+            "window": {
+              "src": "/corpus/geomVideo.mp4",
+              "inPoint": 0,
+              "outPoint": 5,
+              "usedNormalizedCache": false
+            },
+            "seek": 2.5,
+            "geometry": {
+              "scale": 0.62,
+              "offsetX": 12.5,
+              "offsetY": -7.25,
+              "opacity": 1,
+              "fit": "contain",
+              "rotation": 0
+            }
+          },
+          {
+            "itemId": "geomImage",
+            "trackIdx": 1,
+            "kind": "image",
+            "window": null,
+            "seek": 2.5,
+            "geometry": {
+              "scale": 1.35,
+              "offsetX": -20,
+              "offsetY": 8,
+              "opacity": 1,
+              "fit": "cover",
+              "rotation": 0
+            }
+          }
+        ]
+      },
+      {
+        "t": 5,
+        "items": []
+      },
+      {
+        "t": 6,
+        "items": []
+      }
+    ]
+  },
+  "resolveSegment": {
+    "fps": 30,
+    "segments": [
+      {
+        "segStart": 0,
+        "segEnd": 5,
+        "scene": {
+          "t": 0,
+          "items": [
+            {
+              "itemId": "geomVideo",
+              "trackIdx": 0,
+              "kind": "video",
+              "window": {
+                "src": "/corpus/geomVideo.mp4",
+                "inPoint": 0,
+                "outPoint": 5,
+                "usedNormalizedCache": false
+              },
+              "seek": 0,
+              "geometry": {
+                "scale": 0.62,
+                "offsetX": 12.5,
+                "offsetY": -7.25,
+                "opacity": 1,
+                "fit": "contain",
+                "rotation": 0
+              }
+            },
+            {
+              "itemId": "geomImage",
+              "trackIdx": 1,
+              "kind": "image",
+              "window": null,
+              "seek": 0,
+              "geometry": {
+                "scale": 1.35,
+                "offsetX": -20,
+                "offsetY": 8,
+                "opacity": 1,
+                "fit": "cover",
+                "rotation": 0
+              }
+            }
+          ]
+        }
+      }
+    ]
+  },
+  "sourceWindow": {
+    "geomVideo": {
+      "preview": {
+        "src": "/corpus/geomVideo.mp4",
+        "inPoint": 0,
+        "outPoint": 5,
+        "usedNormalizedCache": false
+      },
+      "render": {
+        "src": "/corpus/geomVideo.mp4",
+        "inPoint": 0,
+        "outPoint": 5,
+        "usedNormalizedCache": false
+      }
+    }
+  },
+  "seekTime": {
+    "geomVideo": {
+      "preview": {
+        "0": 0,
+        "5": 5,
+        "2.5": 2.5
+      },
+      "render": {
+        "0": 0,
+        "5": 5,
+        "2.5": 2.5
+      }
+    }
+  },
+  "synthesizedOutPoint": {
+    "geomVideo": {
+      "preview": 5,
+      "render": 5
+    }
+  },
+  "audioWindow": {}
+}

@@ -10,6 +10,7 @@
 // the container's own (frame) size, and scale() around center.
 
 import type { CSSProperties } from 'react'
+import { geometryFor, toCssBoxPct } from '@bycrux/timeline-core'
 
 export interface VideoTransform {
   scale?: number
@@ -32,13 +33,5 @@ export function videoTransformContainerStyle(t: VideoTransform): CSSProperties {
 // This is the canvas-aspect box the cropped video is contained within; the crop
 // handles for the on-canvas transform are drawn on it.
 export function videoTransformBoxPct(t: VideoTransform): { left: number; top: number; width: number; height: number } {
-  const s = t.scale ?? 1
-  const ox = t.offsetX ?? 0
-  const oy = t.offsetY ?? 0
-  return {
-    width: s * 100,
-    height: s * 100,
-    left: ((1 - s) / 2) * 100 + ox,
-    top: ((1 - s) / 2) * 100 + oy,
-  }
+  return toCssBoxPct(geometryFor(t, 'video'))
 }

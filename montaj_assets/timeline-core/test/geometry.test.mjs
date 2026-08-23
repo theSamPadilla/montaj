@@ -1,11 +1,13 @@
 // montaj_assets/timeline-core/test/geometry.test.mjs
 //
 // T4 suite for geometry.js. This is the fidelity contract for the port of the
-// shared percent-of-frame formula that shipped IDENTICALLY in two places:
+// shared percent-of-frame formula that shipped IDENTICALLY in FOUR places
+// until SP9a-1 retired the duplication on 2026-08-23:
 //
-//   (1) render (pixels)  — montaj_assets/render/encode-segment.js:
-//                          buildImageItemFilterParts:154-159 and
-//                          buildVideoItemFilterParts:210-214 (the SAME five lines)
+//   (1) render (pixels)  — montaj_assets/render/encode-segment.js, THREE copies:
+//                          buildImageItemFilterParts, buildVideoItemFilterParts
+//                          and buildOverlayFilterParts (the SAME five lines; the
+//                          overlay one went unrecorded by every doc until SP9a-1)
 //   (2) editor (CSS %)   — montaj_assets/editor/src/video/preview/transformStyle.ts
 //                          (videoTransformBoxPct / videoTransformContainerStyle)
 //
@@ -44,7 +46,10 @@ function legacyContainerStyle(s, ox, oy) {
   return { transform: `translate(${ox}%, ${oy}%) scale(${s})`, transformOrigin: 'center center' }
 }
 
-/** encode-segment.js's shared five-line pixel formula, inlined (buildImage/VideoItemFilterParts:154-159/210-214). */
+/** The five-line pixel formula as it shipped in encode-segment.js BEFORE SP9a-1,
+ *  inlined here deliberately so these numbers stay pinned rather than re-derived
+ *  from the code under test. All four sites now call `toPixelBox` instead
+ *  (encode-segment.js:245/305/457, transformStyle.ts:36). */
 function legacyPixelBox(s, ox, oy, vw, vh) {
   return {
     scaledW: Math.round((vw * s) / 2) * 2,
@@ -144,6 +149,93 @@ describe('cross-check: geometryFor -> {toCssBoxPct, toPixelBox} reproduce both l
     assert.notDeepEqual(nonIdentity, {})
     const g2 = geometryFor({ scale: 0.5, offsetX: 10, offsetY: 0 }, 'video')
     assert.notDeepEqual(toCssBoxPct(g2), { width: 100, height: 100, left: 0, top: 0 })
+  })
+})
+
+// ---------------------------------------------------------------------------
+// 1b. D9 switchover gate — differential sweep across a wide parameter space.
+// This is ADDITIONAL coverage alongside the CROSS_CHECK_TABLE above (which
+// stays as-is). The legacy reference below is the exact five lines that
+// shipped in encode-segment.js before SP9a-1 swapped the call sites onto
+// `toPixelBox`, inlined verbatim so the sweep pins real numbers rather than
+// re-deriving them from the code under test.
+// ---------------------------------------------------------------------------
+
+// The formula as it shipped in encode-segment.js BEFORE the SP9a-1 switchover,
+// inlined verbatim so the sweep pins real numbers rather than re-deriving them
+// from the code under test. Those three sites now call `toPixelBox` — see
+// encode-segment.js:245 (image), :305 (video), :457 (overlay). This inline copy
+// is the INDEPENDENT reference the switchover was proven against; do not
+// "simplify" it by importing the shared implementation, or the sweep becomes
+// a tautology comparing the shared code against itself.
+function legacyPixelBoxInline(item, vw, vh) {
+  const s       = item.scale ?? 1
+  const scaledW = Math.round(vw * s / 2) * 2
+  const scaledH = Math.round(vh * s / 2) * 2
+  const xPx     = Math.round(vw * (0.5 * (1 - s) + (item.offsetX ?? 0) / 100))
+  const yPx     = Math.round(vh * (0.5 * (1 - s) + (item.offsetY ?? 0) / 100))
+  return { x: xPx, y: yPx, width: scaledW, height: scaledH }
+}
+
+describe('D9 switchover gate — toPixelBox is byte-identical to the inline formula', () => {
+  const SCALES  = [0.1, 0.25, 0.333, 0.5, 0.75, 1, 1.0001, 1.5, 2]
+  const OFFSETS = [-50, -33.3, -10, -0.5, 0, 0.5, 10, 33.3, 50]
+  const CANVASES = [
+    [1080, 1920], [1920, 1080], [2160, 3840], [3840, 2160],
+    [101, 151],   // odd both axes — the even-rounding divergence case
+    [640, 480], [1440, 1440],
+  ]
+  const KINDS = ['image', 'video', 'overlay']
+
+  test('every scale x offset x canvas x kind combination agrees exactly', () => {
+    let checked = 0
+    for (const kind of KINDS) {
+      for (const [vw, vh] of CANVASES) {
+        for (const scale of SCALES) {
+          for (const offsetX of OFFSETS) {
+            for (const offsetY of OFFSETS) {
+              const item = { scale, offsetX, offsetY }
+              const shared = toPixelBox(geometryFor(item, kind), vw, vh)
+              const legacy = legacyPixelBoxInline(item, vw, vh)
+              assert.deepEqual(
+                shared, legacy,
+                `MISMATCH kind=${kind} canvas=${vw}x${vh} scale=${scale} ` +
+                `offset=(${offsetX},${offsetY})\n  shared=${JSON.stringify(shared)}` +
+                `\n  legacy=${JSON.stringify(legacy)}`,
+              )
+              checked++
+            }
+          }
+        }
+      }
+    }
+    // Guard against a silently-empty sweep: 3 kinds x 7 canvases x 9 scales x 81 offset pairs.
+    assert.equal(checked, 3 * 7 * 9 * 9 * 9)
+  })
+
+  test('absent scale/offset fields behave as the documented defaults', () => {
+    for (const kind of KINDS) {
+      assert.deepEqual(
+        toPixelBox(geometryFor({}, kind), 1080, 1920),
+        legacyPixelBoxInline({}, 1080, 1920),
+      )
+    }
+  })
+
+  test('the editor CSS adapter agrees with its own inline original', () => {
+    // transformStyle.ts's videoTransformBoxPct as it shipped before SP9a-1, inlined verbatim.
+    const legacyCss = (t) => {
+      const s = t.scale ?? 1, ox = t.offsetX ?? 0, oy = t.offsetY ?? 0
+      return { width: s * 100, height: s * 100, left: ((1 - s) / 2) * 100 + ox, top: ((1 - s) / 2) * 100 + oy }
+    }
+    for (const scale of SCALES) {
+      for (const offsetX of OFFSETS) {
+        for (const offsetY of OFFSETS) {
+          const item = { scale, offsetX, offsetY }
+          assert.deepEqual(toCssBoxPct(geometryFor(item, 'video')), legacyCss(item))
+        }
+      }
+    }
   })
 })
 

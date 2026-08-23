@@ -129,8 +129,21 @@ const EXPECTED_DIR = join(CORE_ROOT, 'expected')
  * would mean inventing a field the pipeline derives from a non-deterministic
  * subprocess. The opaqueVideo dry-run behavior is covered hand-built, with no
  * project dependency, in encode-segment.test.mjs.
+ *
+ * `geometry-non-identity` (SP9a-1 T1) closes the blind spot the other two
+ * fixtures share: both use identity geometry (`scale: 1, offsetX: 0,
+ * offsetY: 0`), where `xPx = yPx = 0` and the scaled box collapses to the
+ * full canvas, so neither exercises the scale/offset arithmetic at all. This
+ * fixture carries a video item (`scale: 0.62, offsetX: 12.5, offsetY: -7.25`)
+ * and an image item (`scale: 1.35, offsetX: -20, offsetY: 8`) on a
+ * non-square canvas, so a transposed w/h or x/y formula would be caught. It
+ * deliberately carries NO overlay item — see :121-131 above for why an
+ * overlay would freeze a `null` (`ov.webmPath`) into the golden permanently.
+ * Captured pre-refactor, before SP9a-1 T2-T4 swapped the call sites onto
+ * @bycrux/timeline-core's `toPixelBox`, so this golden is the proof that the
+ * swap changes no bytes for non-identity geometry either.
  */
-export const ENCODE_ARGS_FIXTURES = ['source-crop', 'source-crop-missing-dims']
+export const ENCODE_ARGS_FIXTURES = ['source-crop', 'source-crop-missing-dims', 'geometry-non-identity']
 
 /**
  * Run the REAL render pipeline over one corpus fixture in dry-run mode.
@@ -257,13 +270,13 @@ describe('freeze mechanism: identical is a no-op, changed is refused', () => {
       const before = ENCODE_ARGS_FIXTURES.map((n) => statSync(join(dir, `encode-args.${n}.json`)).mtimeMs)
 
       const plan = await planRegeneration(dir)
-      assert.deepEqual(plan.map((e) => e.status), ['identical', 'identical'])
+      assert.deepEqual(plan.map((e) => e.status), ['identical', 'identical', 'identical'])
 
       // Even WITH the override, identical files are not touched.
       const result = applyRegeneration(plan, { allowOverwrite: true })
       assert.equal(result.written.length, 0, 'nothing should be written')
       assert.equal(result.refused.length, 0)
-      assert.equal(result.unchanged.length, 2)
+      assert.equal(result.unchanged.length, 3)
 
       const after = ENCODE_ARGS_FIXTURES.map((n) => statSync(join(dir, `encode-args.${n}.json`)).mtimeMs)
       assert.deepEqual(after, before, 'mtimes moved — a file was opened for writing')
@@ -303,7 +316,7 @@ describe('freeze mechanism: identical is a no-op, changed is refused', () => {
       const result = applyRegeneration(await planRegeneration(dir), { allowOverwrite: false })
 
       assert.deepEqual(result.refused.map((e) => e.fixtureName), ['source-crop'])
-      assert.deepEqual(result.unchanged.map((e) => e.fixtureName), ['source-crop-missing-dims'])
+      assert.deepEqual(result.unchanged.map((e) => e.fixtureName), ['source-crop-missing-dims', 'geometry-non-identity'])
       assert.equal(statSync(untouched).mtimeMs, untouchedMtime, 'the matching fixture was touched')
     } finally {
       rmSync(dir, { recursive: true, force: true })
@@ -321,7 +334,7 @@ describe('freeze mechanism: identical is a no-op, changed is refused', () => {
       const result = applyRegeneration(await planRegeneration(dir), { allowOverwrite: true })
 
       assert.deepEqual(result.written.map((e) => e.fixtureName), ['source-crop'])
-      assert.deepEqual(result.unchanged.map((e) => e.fixtureName), ['source-crop-missing-dims'])
+      assert.deepEqual(result.unchanged.map((e) => e.fixtureName), ['source-crop-missing-dims', 'geometry-non-identity'])
       assert.equal(statSync(untouched).mtimeMs, untouchedMtime, 'the matching fixture was rewritten')
       // The overwrite restored it to what the pipeline produces — which, today,
       // is byte-identical to the real committed golden.

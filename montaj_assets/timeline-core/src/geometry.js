@@ -6,8 +6,10 @@
 // that absorbs the formula that shipped IDENTICALLY in two places:
 //
 //   (1) render (pixels) — montaj_assets/render/encode-segment.js:
-//       buildImageItemFilterParts:154-159 and buildVideoItemFilterParts:210-214
-//       are the SAME five lines:
+//       buildImageItemFilterParts, buildVideoItemFilterParts and
+//       buildOverlayFilterParts (three copies, not two — the overlay copy
+//       went undocumented until SP9a-1 closed it) all USED TO carry the SAME
+//       five lines inline:
 //
 //           const s       = item.scale ?? 1
 //           const scaledW = Math.round(vw * s / 2) * 2
@@ -30,12 +32,13 @@
 // this module — see test/geometry.test.mjs's cross-check table, which is
 // this package's headline test.
 //
-// EXTRACTED, NOT YET SWITCHED OVER: `toPixelBox`/`toCssBoxPct` prove the two
-// formulas agree, but neither original copy has been replaced — both (1) and
-// (2) above still ship, unchanged, today. `encode-segment.js:154-159/210-214`
-// still holds its own five-line copy, and `transformStyle.ts` still holds its
-// own `videoTransformBoxPct`. Switching either over is a behavior-change risk
-// SP2 declined; see the per-export notes below for who owns it.
+// SWITCHED OVER (SP9a-1, 2026-08-23): all four call sites now route through
+// `toPixelBox`/`toCssBoxPct` instead of carrying their own copy —
+// `encode-segment.js:245` (image), `:305` (video), `:457` (overlay), and
+// `transformStyle.ts:36` (editor, via `videoTransformBoxPct`). Equivalence
+// was proven first by a switchover sweep (`test/geometry.test.mjs`) and the
+// `geometry-non-identity` encode-args golden, before any call site moved —
+// see KNOWN-DIVERGENCES.md D9 for the closure record.
 //
 // ── Naming (three exports, one primitive + two adapters) ────────────────────
 //
@@ -43,30 +46,27 @@
 //                                     agnostic: percents and ratios, no pixels,
 //                                     no CSS units.
 //   toCssBoxPct(geometry)          — the CSS-percent adapter. Mirrors
-//                                     `videoTransformBoxPct` exactly. No
-//                                     consumer today — `PreviewPlayer.tsx`
-//                                     still imports `videoTransformBoxPct`
-//                                     from `./transformStyle`. Switching it
-//                                     over is a behavior-change risk SP2
-//                                     declined; owned by SP3/SP4.
+//                                     `videoTransformBoxPct` exactly. Consumed
+//                                     by `transformStyle.ts`'s own
+//                                     `videoTransformBoxPct` (`:36`), which now
+//                                     delegates here instead of carrying the
+//                                     formula itself.
 //   toPixelBox(geometry, vw, vh)   — the ffmpeg-pixel adapter, including the
 //                                     even-pixel rounding on width/height.
 //                                     Mirrors the shared five-line formula
-//                                     above. No consumer today —
-//                                     encode-segment.js:154-159/210-214 still
-//                                     holds its own copy of this formula.
-//                                     Switching it over is a behavior-change
-//                                     risk SP2 declined; owned by SP3/SP4.
+//                                     above. Consumed by all three render call
+//                                     sites (`encode-segment.js:245/305/457`
+//                                     — image, video, overlay).
 //
 // `videoTransformContainerStyle` (the CSS `translate()/scale()` STRING, with
 // its `s===1 && ox===0 && oy===0 -> {}` early return) is NOT ported as a
 // third adapter: it is a presentation micro-optimization (skip an inert CSS
 // transform) layered on top of the same box-pct numbers `toCssBoxPct` already
-// produces, not a distinct geometric derivation. No consumer wires
-// `toCssBoxPct` in today, so nothing keeps that early-return as a
-// consumer-side check over its output yet; see the cross-check test for how
-// the "identity" case is asserted consistent between the two views within
-// this module alone.
+// produces, not a distinct geometric derivation. It stays its own untouched
+// function in `transformStyle.ts` even though `videoTransformBoxPct` next to
+// it now delegates to `toCssBoxPct`; see the cross-check test for how the
+// "identity" case is asserted consistent between the two views within this
+// module alone.
 //
 // ── fit ───────────────────────────────────────────────────────────────────
 //
@@ -82,7 +82,7 @@
 //             render.js:599 `imageItems.push({ ...base, fit: item.fit ?? 'cover' })`;
 //             editor OverlayItemsLayer.tsx:399/403 `item.fit ?? 'cover'`.
 //   overlay — `undefined`. A JSX overlay is not a raster image being fit into
-//             a box; buildOverlayFilterParts (encode-segment.js:292-337) never
+//             a box; buildOverlayFilterParts (encode-segment.js:425-478) never
 //             reads a `fit` field at all — the overlay is scaled by `ov.scale`
 //             from its 1080-design canvas to the output canvas, which is a
 //             completely different operation from cover/contain/fill. Any
@@ -112,7 +112,7 @@
 // SP3/SP4): `geometryFor` forwards `sourceCrop` even when `sourceWidth`/
 // `sourceHeight` are absent — it has no opinion on that combination, it just
 // reports what the item carries. The DROP happens one layer downstream, in
-// encode-segment.js's `buildVideoItemFilterParts`:243 gate:
+// encode-segment.js's `buildVideoItemFilterParts`:343 gate:
 //
 //     const sc = item.sourceCrop
 //     if (sc && item.sourceWidth && item.sourceHeight) { ...crop filter... }
@@ -121,11 +121,10 @@
 // by this module. `toPixelBox` in this file does not implement that crop
 // filter step at all (it only derives the scale/offset overlay box, the part
 // of the formula shared with images) — the crop-specific ffmpeg
-// `crop=cw:ch:cx:cy` math stays render's own concern. No consumer today —
-// encode-segment.js:154-159/210-214 still holds its own copy of the
-// scale/offset formula. Switching it over is a behavior-change risk SP2
-// declined; owned by SP3/SP4. See test/geometry.test.mjs for the test that
-// documents (not fixes) this boundary.
+// `crop=cw:ch:cx:cy` math stays render's own concern, applied downstream of
+// the same `toPixelBox(geometryFor(item, 'video'), vw, vh)` call at `:305`.
+// See test/geometry.test.mjs for the test that documents (not fixes) this
+// boundary.
 //
 // ── (0,0,1,1) preview short-circuit ──────────────────────────────────────────
 //
@@ -154,7 +153,7 @@
 // buildImageItemFilterParts and buildVideoItemFilterParts (encode-segment.js)
 // apply a `colorchannelmixer=aa=<opacity>` step whenever `|opacity - 1| >
 // 0.001`. For an 'overlay' item, note honestly that `buildOverlayFilterParts`
-// (encode-segment.js:292-337) never reads an opacity field at all — a
+// (encode-segment.js:425-478) never reads an opacity field at all — a
 // puppeteer-rendered overlay's transparency, if any, is baked into its own
 // JSX/WebM alpha channel, not driven by this field. `geometryFor` still
 // forwards it (an authored value should not be silently dropped at this
@@ -187,7 +186,7 @@
 //
 // ── designCanvas — the 1080-short-edge rule ─────────────────────────────────
 //
-// design-canvas.ts:5-11 (editor) and render.js:124-130 (render, inline in
+// design-canvas.ts:5-11 (editor) and render.js:263-269 (render, inline in
 // `render()`, no equivalent named export) implement the IDENTICAL formula —
 // confirmed by direct comparison, not assumed:
 //
@@ -256,6 +255,14 @@ function fitFor(item, kind) {
 
 /**
  * The shared percent-of-frame geometry for one item.
+ *
+ * WARNING for a future reader: `kind` currently affects only `fit` (via
+ * `fitFor`), and `toPixelBox` ignores `fit` entirely, so passing the wrong
+ * `kind` is undetectable on the pixel path today — swapping a call site from
+ * `'image'` to `'video'` would leave all 364 render tests green. Every call
+ * site passes the correct kind today, so this is not a defect, but it
+ * becomes a live hazard the moment SP9b makes any geometry output
+ * kind-dependent.
  *
  * @param {GeometryItem} item
  * @param {import('./activation.js').ItemKind} kind
@@ -339,7 +346,7 @@ export function isFullFrameCrop(crop) {
 /**
  * The 1080-short-edge overlay design canvas. Verbatim port of
  * design-canvas.ts:5-11 (`getOverlayDesignCanvas`), confirmed algebraically
- * identical to render.js:124-130's inline copy — see the module header.
+ * identical to render.js:263-269's inline copy — see the module header.
  *
  * @param {readonly [number, number] | null | undefined} resolution
  * @returns {[number, number]}
