@@ -2,12 +2,12 @@
  * SP4 T1 — the playback engine's own eligibility gate.
  *
  * `../video/preview/proxySupport.ts` already gates the LEGACY `<video>`
- * player: it probes `<video>`/MediaSource decode support for the AV1+Opus
+ * player: it probes `<video>`/MediaSource decode support for the H.264+Opus
  * proxy MIME and strips `proxySrc` from an item when unsupported. The engine
  * never touches `<video>` — it decodes via WebCodecs directly — so it cannot
  * reuse that probe or its cache; it runs its OWN capability read via the
  * `VideoDecoder`/`AudioDecoder` `isConfigSupported` statics. Same target
- * codecs (av01 video + opus audio, muxed in the SP3 editing-proxy's MP4),
+ * codecs (avc1 video + opus audio, muxed in the SP3 editing-proxy's MP4),
  * two independent browser API surfaces, evaluated independently. Do NOT
  * import `proxySupport.ts` here, and do not import this module there — see
  * the plan's decision 2.
@@ -37,8 +37,15 @@ export interface EligibilityResult {
   reason?: string
 }
 
-/** The SP3 editing proxy's video codec — matches `proxySupport.ts`'s PROXY_MIME target (same encoder output, independently probed via a different API). */
-const ENGINE_VIDEO_CODEC = 'av01.0.05M.08'
+/**
+ * The SP3 editing proxy's video codec — matches `proxySupport.ts`'s
+ * PROXY_MIME target (same encoder output, independently probed via a
+ * different API). avc1.640028 = High profile @ level 4.0: libx264's actual
+ * default output (High, not Main; 720p above 30fps needs level 4.0 over
+ * 3.1). Keep in sync with `lib/proxy.py`'s encoder params — this describes
+ * what libx264 emits, not a target to constrain it to.
+ */
+const ENGINE_VIDEO_CODEC = 'avc1.640028'
 /**
  * Opus decodes at a fixed internal rate of 48kHz regardless of source/encode
  * rate (a codec-level guarantee, not a pipeline convention), so probing at
@@ -77,7 +84,7 @@ let capabilityCache: boolean | null = null
 
 /**
  * WebCodecs capability probe: can this browser decode the SP3 editing
- * proxy's codecs (av01 video + opus audio)? Cached for the session — same
+ * proxy's codecs (avc1 video + opus audio)? Cached for the session — same
  * shape as `proxySupport.ts`'s `proxyPlaybackSupported`, an independent
  * cache (see the module doc for why the two probes don't share one).
  * `VideoDecoder`/`AudioDecoder` are absent in jsdom/vitest (there is no
@@ -126,7 +133,7 @@ export async function evaluateEngineEligibility(project: Project): Promise<Eligi
   if (!capable) {
     return {
       eligible: false,
-      reason: 'WebCodecs av01/opus decode is not supported in this browser',
+      reason: 'WebCodecs avc1/opus decode is not supported in this browser',
     }
   }
   return { eligible: true }

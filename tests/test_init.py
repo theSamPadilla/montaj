@@ -1390,11 +1390,11 @@ def _last_ffmpeg_vf(log: Path) -> str:
 
 @pytest.mark.skipif(not HAS_FFMPEG, reason="ffmpeg not available")
 def test_init_eager_proxy_written_to_sources_and_tracks(tmp_path):
-    """Eager (default) mode: a full-source AV1 proxy is encoded and
+    """Eager (default) mode: a full-source H.264 proxy is encoded and
     clip["proxySrc"] lands on BOTH project['sources'] and
     project['tracks'][0] — the two arrays share the same dict objects."""
     sys.path.insert(0, str(REPO_ROOT))
-    from lib.proxy import PROXY_LOOK
+    from lib.proxy import PROXY_FORMAT, PROXY_LOOK
 
     src = tmp_path / "clip.mp4"
     _make_clip(src, duration=1)
@@ -1411,7 +1411,7 @@ def test_init_eager_proxy_written_to_sources_and_tracks(tmp_path):
     assert track_item["proxySrc"] == source_item["proxySrc"]
 
     proxy_path = Path(track_item["proxySrc"])
-    assert proxy_path.name.endswith(f"_proxy_{PROXY_LOOK}.mp4")
+    assert proxy_path.name.endswith(f"_proxy_{PROXY_LOOK}_{PROXY_FORMAT}.mp4")
     assert proxy_path.exists() and proxy_path.stat().st_size > 0
 
 
@@ -1433,6 +1433,68 @@ def test_init_proxy_inline_duration_gate_defers_long_sources(tmp_path):
     assert "proxy deferred" in (result.stderr + result.stdout)
     # Nothing was encoded.
     assert not list(ws.rglob("*_proxy_*.mp4"))
+
+
+def test_init_proxy_inline_duration_gate_sums_across_clips(tmp_path):
+    """The inline-proxy gate is a TOTAL-footage budget, decided once for the
+    whole import, not a per-clip check: many individually-short clips whose
+    SUM exceeds the budget must ALL defer, even though each one alone (1s)
+    would clear a per-clip gate on its own. This is exactly the case a
+    per-clip gate gets wrong — and the case this total-duration gate exists
+    to fix."""
+    clips = []
+    for i in range(3):
+        c = tmp_path / f"clip_{i}.mp4"
+        _make_clip(c, duration=1)
+        clips.append(str(c))
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    result = run_init(
+        "--clips", *clips, "--prompt", "test",
+        "--proxy-inline-max", "2",  # 3 * 1s = 3s total > 2s budget
+        env_override={"MONTAJ_WORKSPACE_DIR": str(ws)},
+    )
+    assert result.returncode == 0, result.stderr
+    project = json.loads(_project_path_from_stdout(result.stdout).read_text())
+    track = track_items(project)[0]
+    assert len(track) == 3
+    for item in track:
+        assert "proxySrc" not in item
+    assert "proxy deferred" in (result.stderr + result.stdout)
+    # Nothing was encoded — not even for the first clip(s), which a buggy
+    # per-clip gate would have let through before the running total crossed
+    # the budget.
+    assert not list(ws.rglob("*_proxy_*.mp4"))
+
+
+def test_init_proxy_inline_duration_gate_under_total_budget_encodes_inline(tmp_path):
+    """Converse of the above: several short clips whose SUMMED duration is
+    still under the inline budget all get proxied inline, same as a single
+    short clip would."""
+    from lib.proxy import PROXY_FORMAT, PROXY_LOOK
+
+    clips = []
+    for i in range(3):
+        c = tmp_path / f"clip_{i}.mp4"
+        _make_clip(c, duration=1)
+        clips.append(str(c))
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    result = run_init(
+        "--clips", *clips, "--prompt", "test",
+        "--proxy-inline-max", "60",  # 3 * 1s = 3s total, well under budget
+        env_override={"MONTAJ_WORKSPACE_DIR": str(ws)},
+    )
+    assert result.returncode == 0, result.stderr
+    project = json.loads(_project_path_from_stdout(result.stdout).read_text())
+    track = track_items(project)[0]
+    assert len(track) == 3
+    for item in track:
+        assert "proxySrc" in item
+        proxy_path = Path(item["proxySrc"])
+        assert proxy_path.name.endswith(f"_proxy_{PROXY_LOOK}_{PROXY_FORMAT}.mp4")
+        assert proxy_path.exists() and proxy_path.stat().st_size > 0
+    assert "proxy deferred" not in (result.stderr + result.stdout)
 
 
 def test_init_no_proxy_flag_skips_and_persists_setting(tmp_path):
@@ -1469,7 +1531,13 @@ def test_init_eager_proxy_command_is_plain_scale_no_tonemap(tmp_path):
     )
     assert result.returncode == 0, result.stderr
     vf = _last_ffmpeg_vf(log)
-    assert vf == "scale='if(gt(iw,ih),-2,720)':'if(gt(iw,ih),720,-2)'"
+    # scale THEN format=yuv420p, and no zscale chain between them. The pix_fmt
+    # conversion is not a tonemap: libx264 (unlike the libsvtav1 it replaced)
+    # takes its profile from the input pix_fmt, so a 10-bit or 4:2:2 source
+    # would otherwise yield High 10 / High 4:2:2 — profiles no browser decodes,
+    # handed to a capability gate that declares them playable.
+    assert vf == "scale='if(gt(iw,ih),-2,720)':'if(gt(iw,ih),720,-2)',format=yuv420p"
+    assert "zscale" not in vf and "tonemap" not in vf
     assert "zscale" not in vf
 
 
@@ -1519,7 +1587,11 @@ def test_init_eager_proxy_failure_does_not_block_import(tmp_path):
     wrapper.write_text(
         "#!/bin/bash\n"
         'for a in "$@"; do\n'
-        '  if [ "$a" = "libsvtav1" ]; then\n'
+        # libx264 is now BOTH the proxy AND the normalize master encoder, so
+        # it can't distinguish the two calls any more. libopus stays unique
+        # to the proxy encode (normalize's audio is always aac) — fail on
+        # that instead.
+        '  if [ "$a" = "libopus" ]; then\n'
         "    echo 'fake proxy encoder failure' >&2\n"
         "    exit 1\n"
         "  fi\n"
@@ -1529,7 +1601,8 @@ def test_init_eager_proxy_failure_does_not_block_import(tmp_path):
     wrapper.chmod(0o755)
 
     # yuv422p forces a real transcode, so this also proves normalize's libx264
-    # call succeeds through the SAME wrapper — only the libsvtav1 call fails.
+    # call succeeds through the SAME wrapper — only the proxy's libopus audio
+    # call fails.
     src = tmp_path / "clip.mp4"
     subprocess.run([
         "ffmpeg", "-y",
@@ -1557,11 +1630,11 @@ def test_init_eager_proxy_failure_does_not_block_import(tmp_path):
 
 @pytest.mark.skipif(not HAS_FFMPEG, reason="ffmpeg not available")
 def test_init_lazy_proxy_written_for_sdr_source(tmp_path):
-    """Lazy mode: a full-source AV1 proxy is encoded from the ORIGINAL (lazy
+    """Lazy mode: a full-source H.264 proxy is encoded from the ORIGINAL (lazy
     never conforms a master), and proxySrc lands on both sources and
     tracks[0] (same dict)."""
     sys.path.insert(0, str(REPO_ROOT))
-    from lib.proxy import PROXY_LOOK
+    from lib.proxy import PROXY_FORMAT, PROXY_LOOK
 
     src = tmp_path / "clip.mp4"
     _make_clip(src, duration=1)
@@ -1581,7 +1654,7 @@ def test_init_lazy_proxy_written_for_sdr_source(tmp_path):
     assert track_item["proxySrc"] == source_item["proxySrc"]
 
     proxy_path = Path(track_item["proxySrc"])
-    assert proxy_path.name.endswith(f"_proxy_{PROXY_LOOK}.mp4")
+    assert proxy_path.name.endswith(f"_proxy_{PROXY_LOOK}_{PROXY_FORMAT}.mp4")
     assert proxy_path.exists() and proxy_path.stat().st_size > 0
 
 
@@ -1599,7 +1672,13 @@ def test_init_lazy_proxy_command_is_plain_scale_for_sdr(tmp_path):
     )
     assert result.returncode == 0, result.stderr
     vf = _last_ffmpeg_vf(log)
-    assert vf == "scale='if(gt(iw,ih),-2,720)':'if(gt(iw,ih),720,-2)'"
+    # scale THEN format=yuv420p, and no zscale chain between them. The pix_fmt
+    # conversion is not a tonemap: libx264 (unlike the libsvtav1 it replaced)
+    # takes its profile from the input pix_fmt, so a 10-bit or 4:2:2 source
+    # would otherwise yield High 10 / High 4:2:2 — profiles no browser decodes,
+    # handed to a capability gate that declares them playable.
+    assert vf == "scale='if(gt(iw,ih),-2,720)':'if(gt(iw,ih),720,-2)',format=yuv420p"
+    assert "zscale" not in vf and "tonemap" not in vf
     assert "zscale" not in vf
 
 
@@ -1671,7 +1750,9 @@ def test_init_lazy_proxy_concurrent_children_freshness_short_circuits(tmp_path):
 
     # Exactly ONE real encode happened — the freshness short-circuit caught
     # the loser of the race before it called make_proxy a second time.
-    encode_blocks = [b for b in log.read_text().split("---\n") if "libsvtav1" in b]
+    # (lazy mode never calls normalize, so every "-c:v libx264" block in the
+    # log is unambiguously a proxy encode.)
+    encode_blocks = [b for b in log.read_text().split("---\n") if "libx264" in b]
     assert len(encode_blocks) == 1, (
         f"expected exactly 1 proxy encode for the shared source, got {len(encode_blocks)} "
         f"— freshness short-circuit did not dedupe concurrent children"

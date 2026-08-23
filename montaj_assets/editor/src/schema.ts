@@ -102,7 +102,7 @@ export interface VisualItem {
   normalizedSrc?: string    // derived per-window normalized cache; render/preview prefer it; src stays original
   /** Source-time (original coords) the normalizedSrc cache starts at; the cache covers [normalizedInPoint, normalizedInPoint + duration]. Absent ⇒ assume it starts at the clip's inPoint (legacy rebase-to-0). */
   normalizedInPoint?: number
-  /** Full-source, all-intra 720p AV1+Opus editing proxy for instant-scrub preview (SP3). Never windowed —
+  /** Full-source, all-intra 720p H.264+Opus editing proxy for instant-scrub preview (SP3). Never windowed —
    * no `proxyInPoint` — so one proxy can serve every clip sharing a lazy source. Preview-only: render never
    * reads this field. Preview's src precedence, alpha-safe, is
    * `nobg_preview_src ?? proxySrc ?? normalizedSrc ?? src`. Filename carries a look-version tag

@@ -13,7 +13,14 @@ from lib.proxy import PROXY_LOOK
 # APPEND (never remove) old tags here when lib/proxy.py's PROXY_LOOK bumps, so
 # the previous look's files stay cleanable after a regeneration.
 KNOWN_LOOKS = tuple(dict.fromkeys(("hable1", PROXY_LOOK)))
-PROXY_RE = re.compile(r"_proxy_(%s)\.mp4$" % "|".join(re.escape(look) for look in KNOWN_LOOKS))
+# The optional `(_h264)?` group covers lib/proxy.py's two proxy-naming
+# generations: proxies written before the AV1->H.264 encoder switch are named
+# `<stem>_proxy_<look>.mp4`; proxies written after are named
+# `<stem>_proxy_<look>_h264.mp4` (see PROXY_FORMAT in lib/proxy.py). The
+# `_h264` tag is hardcoded here rather than imported from PROXY_FORMAT —
+# this is a cleanup tool, so it must keep matching every generation of proxy
+# ever written, including this one, even once PROXY_FORMAT is bumped again.
+PROXY_RE = re.compile(r"_proxy_(%s)(_h264)?\.mp4$" % "|".join(re.escape(look) for look in KNOWN_LOOKS))
 
 # Superseded normalized masters (SP6b Task T5). lib/normalize.py's
 # normalized_output_path() only ever look-tags a tone-mapped HDR→SDR master

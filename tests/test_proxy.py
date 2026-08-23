@@ -1,4 +1,4 @@
-"""Tests for lib/proxy.py — the av1-crf35-fast editing proxy encode primitive.
+"""Tests for lib/proxy.py — the h264-crf20-fast editing proxy encode primitive.
 
 Naming, freshness, and the eager (SDR, no tonemap) encode arm are exercised
 end-to-end against a lavfi SDR fixture (tests/conftest.py's `test_video`,
@@ -26,6 +26,7 @@ import lib.normalize as nm
 import lib.proxy as proxy_mod
 from lib.normalize import _run_atomic_encode, probe_video
 from lib.proxy import (
+    PROXY_FORMAT,
     PROXY_LOOK,
     _build_proxy_cmd,
     is_proxy_fresh,
@@ -60,7 +61,7 @@ def test_proxy_path_for_outside_workspace_routes_to_sources_proxycache(tmp_path,
 
     out = proxy_path_for(str(outside))
     cache_root = workspace / ".sources" / "_proxycache"
-    assert Path(out).name == f"clip_proxy_{PROXY_LOOK}.mp4"
+    assert Path(out).name == f"clip_proxy_{PROXY_LOOK}_{PROXY_FORMAT}.mp4"
     assert str(cache_root) in out
     # Deterministic: same source → same path; the hash dir keys the realpath.
     assert proxy_path_for(str(outside)) == out
@@ -90,14 +91,20 @@ def _ffprobe_streams(path):
 
 
 def _ffprobe_key_frame_flags(path):
-    """List of 'key_frame' values (as strings, "0"/"1") for every video frame."""
+    """List of 'key_frame' values (as strings, "0"/"1") for every video frame.
+
+    Takes only the first CSV column: libx264 (unlike libsvtav1) stamps an
+    "H.26[45] User Data Unregistered SEI message" identifying itself on frame
+    0 only, which the csv writer surfaces as an extra trailing column on that
+    one row (e.g. "1,") even though only `key_frame` was requested.
+    """
     r = subprocess.run(
         ["ffprobe", "-v", "quiet", "-select_streams", "v:0",
          "-show_entries", "frame=key_frame", "-of", "csv=p=0", str(path)],
         capture_output=True, text=True, timeout=30,
     )
     assert r.returncode == 0, r.stderr
-    return [line.strip() for line in r.stdout.strip().split("\n") if line.strip()]
+    return [line.strip().split(",")[0] for line in r.stdout.strip().split("\n") if line.strip()]
 
 
 # ── PROXY_LOOK ───────────────────────────────────────────────────────────────
@@ -118,12 +125,21 @@ def test_proxy_look_is_sourced_from_the_look_manifest():
 
 def test_proxy_path_for_appends_look_suffix(monkeypatch):
     monkeypatch.setenv("MONTAJ_WORKSPACE_DIR", "/a")  # in-workspace ⇒ sibling naming
-    assert proxy_path_for("/a/b/clip.mp4") == f"/a/b/clip_proxy_{PROXY_LOOK}.mp4"
+    assert proxy_path_for("/a/b/clip.mp4") == f"/a/b/clip_proxy_{PROXY_LOOK}_{PROXY_FORMAT}.mp4"
+
+
+def test_proxy_path_for_pins_the_look_and_format_shape(monkeypatch):
+    """Pins the full <stem>_proxy_<look>_<format>.mp4 shape with the format tag
+    written out literally (not just via the PROXY_FORMAT constant) — this is
+    the exact filename shape the browser's codec probe assumes decodes as
+    H.264 (SP3 fix: AV1->H.264 encoder switch)."""
+    monkeypatch.setenv("MONTAJ_WORKSPACE_DIR", "/a")
+    assert proxy_path_for("/a/b/clip.mp4") == "/a/b/clip_proxy_vivid1_h264.mp4"
 
 
 def test_proxy_path_for_strips_only_the_last_extension(monkeypatch):
     monkeypatch.setenv("MONTAJ_WORKSPACE_DIR", "/a")
-    assert proxy_path_for("/a/b/my.clip.mov") == f"/a/b/my.clip_proxy_{PROXY_LOOK}.mp4"
+    assert proxy_path_for("/a/b/my.clip.mov") == f"/a/b/my.clip_proxy_{PROXY_LOOK}_{PROXY_FORMAT}.mp4"
 
 
 def test_proxy_path_for_is_sibling_of_source(monkeypatch):
@@ -141,7 +157,7 @@ def test_proxy_path_for_extensionless_source_under_dotted_directory(monkeypatch)
     # extension-less source, landing the proxy in the wrong directory.
     monkeypatch.setenv("MONTAJ_WORKSPACE_DIR", "/Users/x/Montaj")
     assert proxy_path_for("/Users/x/Montaj/.sources/abc/original") == (
-        f"/Users/x/Montaj/.sources/abc/original_proxy_{PROXY_LOOK}.mp4"
+        f"/Users/x/Montaj/.sources/abc/original_proxy_{PROXY_LOOK}_{PROXY_FORMAT}.mp4"
     )
 
 
@@ -175,13 +191,20 @@ def test_is_proxy_fresh_false_when_proxy_stale(tmp_path):
 # ── _build_proxy_cmd() — source-level assertions (no ffmpeg run) ───────────────
 
 def test_build_proxy_cmd_eager_arm_is_plain_scale_no_tonemap():
-    """Eager (already-SDR master): scale only, no zscale chain."""
+    """Eager (already-SDR master): scale + a pix_fmt normalize, no zscale
+    chain. The format=yuv420p is load-bearing even though this arm does no
+    color conversion: libsvtav1 used to normalize pixel format for every
+    proxy regardless of input; libx264 (the current encoder) does not, so a
+    10-bit or 4:2:2 "SDR" source (bt709-tagged but not necessarily 8-bit
+    4:2:0 — see the lazy-arm-selection contract) would otherwise ship as
+    High 10/4:2:2 H.264, which the browser capability gate in
+    proxySupport.ts declares playable and no browser can actually decode."""
     cmd, used_fallback = _build_proxy_cmd(
         "master.mp4", "out.mp4", tonemap=False, info={"has_audio": True}
     )
     assert used_fallback is False
     vf = cmd[cmd.index("-vf") + 1]
-    assert vf == "scale='if(gt(iw,ih),-2,720)':'if(gt(iw,ih),720,-2)'"
+    assert vf == "scale='if(gt(iw,ih),-2,720)':'if(gt(iw,ih),720,-2)',format=yuv420p"
     assert "zscale" not in vf
 
 
@@ -227,13 +250,30 @@ def test_build_proxy_cmd_lazy_arm_falls_back_without_zscale(monkeypatch):
     assert "tonemap=hable:desat=0" in vf
 
 
+def test_build_proxy_cmd_format_yuv420p_in_both_arms():
+    """Cheap guard, both arms: libx264 (unlike the retired libsvtav1) does not
+    normalize pixel format on its own — format=yuv420p must be explicit in
+    the -vf of the tonemap arm AND the plain-scale arm, or a 10-bit/4:2:2
+    "SDR" source ships as browser-undecodable High 10/4:2:2 H.264."""
+    cmd_false, _ = _build_proxy_cmd(
+        "master.mp4", "out.mp4", tonemap=False, info={"has_audio": True}
+    )
+    assert "format=yuv420p" in cmd_false[cmd_false.index("-vf") + 1]
+
+    cmd_true, _ = _build_proxy_cmd(
+        "original.mov", "out.mp4", tonemap=True,
+        info={"has_audio": True, "color_transfer": "arib-std-b67"},
+    )
+    assert "format=yuv420p" in cmd_true[cmd_true.index("-vf") + 1]
+
+
 def test_build_proxy_cmd_encoder_params():
-    """The locked av1-crf35-fast params: all-intra libsvtav1 + opus."""
+    """The locked h264-crf20-fast params: all-intra libx264 + opus."""
     cmd, _ = _build_proxy_cmd("master.mp4", "out.mp4", tonemap=False, info={"has_audio": True})
     assert "-hwaccel" in cmd and cmd[cmd.index("-hwaccel") + 1] == "auto"
-    assert cmd[cmd.index("-c:v") + 1] == "libsvtav1"
-    assert cmd[cmd.index("-crf") + 1] == "35"
-    assert cmd[cmd.index("-preset") + 1] == "8"
+    assert cmd[cmd.index("-c:v") + 1] == "libx264"
+    assert cmd[cmd.index("-crf") + 1] == "20"
+    assert cmd[cmd.index("-preset") + 1] == "veryfast"
     assert cmd[cmd.index("-g") + 1] == "1"  # GOP=1 → all-intra
     assert cmd[cmd.index("-c:a") + 1] == "libopus"
     assert cmd[cmd.index("-b:a") + 1] == "96k"
@@ -249,9 +289,70 @@ def test_build_proxy_cmd_silent_source_gets_anullsrc():
     assert cmd[cmd.index("-c:a") + 1] == "libopus"
 
 
+def _make_10bit_bt709_video(path, *, duration=1):
+    """A 10-bit, bt709-tagged (i.e. NOT HDR — no HDR transfer characteristic)
+    fixture: a 10-bit HEVC/ProRes-like master, the shape a professional camera
+    or an already-normalized-but-still-10-bit source produces. Distinct from
+    test_normalize.py's `_make_hdr_like_video`, which tags bt2020 + an HDR
+    transfer (arib-std-b67/smpte2084) — that source takes the LAZY tonemap=True
+    arm. This one is bt709-tagged, so LAZY normalize mode's tonemap selection
+    (any bt709-tagged source ⇒ tonemap=False) sends it down the EAGER/plain
+    arm, exactly the reachable path the blocker describes. Source encoder is
+    libx265 (needs 10-bit support); the proxy encoder under test is still
+    libx264 fed the decoded 10-bit frames — the exact repro.
+    """
+    subprocess.run([
+        "ffmpeg", "-y",
+        "-f", "lavfi", "-i", f"color=red:size=640x360:rate=30:duration={duration}",
+        "-f", "lavfi", "-i", f"sine=frequency=440:sample_rate=48000:duration={duration}",
+        "-c:v", "libx265", "-preset", "ultrafast", "-crf", "28",
+        "-pix_fmt", "yuv420p10le",
+        "-x265-params", "transfer=bt709:colorprim=bt709:colormatrix=bt709",
+        "-color_trc", "bt709",
+        "-color_primaries", "bt709",
+        "-colorspace", "bt709",
+        "-g", "30", "-keyint_min", "30",
+        "-c:a", "aac", "-ar", "48000",
+        str(path),
+    ], check=True, capture_output=True, timeout=60)
+
+
 # ── make_proxy() — real encode on the lavfi SDR fixture (eager arm) ────────────
 
-def test_make_proxy_eager_encode_all_intra_av1_opus(test_video, tmp_path):
+def test_make_proxy_eager_arm_10bit_source_downconverts_to_8bit_yuv420p(tmp_path):
+    """Regression for the blocker: libx264 (unlike the retired libsvtav1) does
+    not normalize pixel format on its own — it picks its H.264 profile from
+    whatever the input decodes to. A 10-bit bt709-tagged source fed through
+    the eager/plain-scale arm (tonemap=False; this is what LAZY normalize
+    mode's tonemap selection does for any bt709-tagged source, 10-bit or not)
+    must still come out 8-bit 4:2:0 (`format=yuv420p` in the -vf), or the
+    proxy ships as High 10 H.264 — a profile no browser `<video>` element
+    decodes, silently, past a capability gate that only checks the declared
+    codec string.
+
+    This test FAILS without the production fix: reverting the `format=yuv420p`
+    addition to `lib/proxy.py`'s eager arm (i.e. `vf = scale` instead of
+    `vf = f"{scale},format=yuv420p"`) reproduces `pix_fmt=yuv420p10le` /
+    `profile=High 10` on the encoded proxy.
+    """
+    src = tmp_path / "10bit_bt709.mov"
+    _make_10bit_bt709_video(src)
+    info = probe_video(str(src))
+    assert info is not None
+
+    out = tmp_path / "proxy.mp4"
+    make_proxy(str(src), str(out), tonemap=False, info=info)
+
+    video = next(s for s in _ffprobe_streams(out) if s["codec_type"] == "video")
+    assert video["codec_name"] == "h264"
+    assert video["pix_fmt"] == "yuv420p", (
+        f"expected 8-bit 4:2:0 output, got pix_fmt={video['pix_fmt']!r} "
+        f"profile={video.get('profile')!r} — browsers cannot decode this"
+    )
+    assert video.get("profile") not in ("High 10", "High 10 Intra", "High 4:2:2", "High 4:2:2 Intra")
+
+
+def test_make_proxy_eager_encode_all_intra_h264_opus(test_video, tmp_path):
     out = tmp_path / "proxy.mp4"
     info = probe_video(str(test_video))
     assert info is not None
@@ -264,7 +365,7 @@ def test_make_proxy_eager_encode_all_intra_av1_opus(test_video, tmp_path):
     streams = _ffprobe_streams(out)
     video = next(s for s in streams if s["codec_type"] == "video")
     audio = next(s for s in streams if s["codec_type"] == "audio")
-    assert video["codec_name"] == "av1"
+    assert video["codec_name"] == "h264"
     assert audio["codec_name"] == "opus"
 
     # All-intra: every sampled frame is a keyframe.
@@ -291,7 +392,7 @@ def test_make_proxy_uses_proxy_path_for_naming_convention(test_video, tmp_path):
     info = probe_video(str(src_copy))
     make_proxy(str(src_copy), out, tonemap=False, info=info)
     assert Path(out).exists()
-    assert out == str(tmp_path / f"clip_proxy_{PROXY_LOOK}.mp4")
+    assert out == str(tmp_path / f"clip_proxy_{PROXY_LOOK}_{PROXY_FORMAT}.mp4")
 
 
 def test_make_proxy_freshness_short_circuits_reencode(test_video, tmp_path):

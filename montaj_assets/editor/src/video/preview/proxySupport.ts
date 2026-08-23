@@ -1,8 +1,9 @@
 /**
  * SP3 fix B2 — proxy playback capability gate + per-session failure suppression.
  *
- * Editing proxies are AV1+Opus in MP4. Not every browser decodes that
- * (Safari on pre-M3 Macs has no AV1 decode and no Opus-in-MP4 at all), and a
+ * Editing proxies are H.264+Opus in MP4. Not every browser decodes that
+ * (Opus-in-MP4 support is not universal — a browser can decode H.264 and
+ * Opus separately yet still fail on the muxed combination), and a
  * `<video>` element given an undecodable src fails SILENTLY — a black preview
  * with no event the user can act on. Two defenses, both editor-side so
  * timeline-core stays pure (no environment probing in the resolver):
@@ -21,7 +22,11 @@
  * the unsupported path is tested via `__setProxySupportForTests`.
  */
 
-const PROXY_MIME = 'video/mp4; codecs="av01.0.05M.08, opus"'
+// avc1.640028 = High profile @ level 4.0 — libx264's actual default output
+// (High profile; 720p above 30fps needs level 4.0), not Main@3.1. Pinning
+// -profile:v main on the encoder to match a cheaper string would cost
+// bitrate for no benefit, so the declared codec follows the encoder instead.
+const PROXY_MIME = 'video/mp4; codecs="avc1.640028, opus"'
 
 let supportedCache: boolean | null = null
 

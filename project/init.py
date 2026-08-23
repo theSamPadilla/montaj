@@ -7,7 +7,7 @@ from datetime import datetime
 from pathlib import Path
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-from lib.common import SAFE_NAME, fail, get_duration, progress
+from lib.common import SAFE_NAME, fail, ffprobe_bin, progress
 from lib.remote_io import fetch_to_disk, parse_allowed_hosts
 from lib.normalize import normalize, normalized_output_path, is_normalized, probe_video
 from lib.proxy import is_proxy_fresh, make_proxy, proxy_path_for
@@ -25,14 +25,51 @@ from lib.workflow import read_workflow
 
 NORMALIZE_POOL_SIZE = 4  # outer pool — fast-path/skip workers don't acquire heavy_encode_sem
 HEAVY_ENCODE_LIMIT = 2   # libx264 -preset slow at 4K is memory-heavy — precedent: materialize_cut.py:22
-PROXY_ENCODE_LIMIT = 2   # av1 proxy encodes are their own CPU-heavy pool, separate from libx264/265 masters so proxies never queue behind normalize
-# Inline-proxy duration gate (SP3 fix B1). init runs inside serve's project-creation
-# subprocess with a hard 1800s budget (serve/routes/projects.py); at ~0.5x-realtime
-# encode speed a source longer than this defers its proxy to the POST /api/proxy
-# backfill job instead of blocking (and 504ing) project creation. Override per-run
-# with --proxy-inline-max; disable proxies entirely with --no-proxy or a workflow's
-# "proxy": false.
-PROXY_INLINE_MAX_SEC = 480.0
+# Proxy encodes are their own pool, separate from libx264/265 masters so proxies
+# never queue behind normalize. Sized by measurement, not taste — both numbers are
+# recorded so this doesn't get re-litigated from intuition: with AV1 proxies, 2
+# concurrent encodes already drew 976% CPU of the 1200% available, so 2 was the
+# correct cap. H.264 proxies are far cheaper — the same 2-wide pool reaches only
+# 535% — and widening to 4 took a 14-clip folder from 2:02 to 1:19.
+PROXY_ENCODE_LIMIT = 4
+# Inline-proxy TOTAL-footage budget (SP3 fix B1). init runs inside serve's
+# project-creation subprocess with a hard 1800s budget (serve/routes/projects.py).
+# The gate is the whole import, not any one source: N individually-short clips each
+# pass a per-clip gate and then all encode inline, and that batch is the wait the
+# creator actually feels. At the measured ~0.19s of wall per second of footage
+# (78.8s for 415s at concurrency 4), a 300s budget caps inline proxy work at roughly
+# a minute — a tolerable wait behind a loading modal. An import over budget defers
+# every proxy to the POST /api/proxy backfill job instead of blocking (and 504ing)
+# project creation. Override per-run with --proxy-inline-max; disable proxies
+# entirely with --no-proxy or a workflow's "proxy": false.
+PROXY_INLINE_MAX_TOTAL_SEC = 300.0
+
+
+def _probe_duration(path: str) -> float | None:
+    """Source duration in seconds, or None when the file can't be read.
+
+    Deliberately NOT lib.common.get_duration: that routes through run(check=True),
+    which fail()s on an unreadable file — printing an {"error": ...} JSON line to
+    stderr before raising SystemExit. Every duration read in init is best-effort
+    (a clip whose duration is unknown just doesn't get a sourceDuration and
+    doesn't count toward the proxy budget), and init must not leave a stray error
+    object on stderr for a failure it went on to ignore — serve parses stderr for
+    {"error": ...} when init exits non-zero.
+    """
+    try:
+        r = subprocess.run(
+            [ffprobe_bin(), "-v", "quiet", "-show_entries", "format=duration",
+             "-of", "csv=p=0", path],
+            # 60, not the 10 this first shipped with: it replaced get_duration,
+            # whose run() default is 300, and a cold 4K MOV on a network volume
+            # or an external spinning disk can genuinely exceed 10s on the
+            # header read. Timing out here is not free — it silently drops
+            # sourceDuration AND removes the clip from the inline-proxy budget.
+            capture_output=True, text=True, timeout=60,
+        )
+        return float(r.stdout.strip()) if r.returncode == 0 else None
+    except (Exception, SystemExit):
+        return None
 
 
 def _copy_into_workspace(src: str, dest_dir: str, prefix: str, link: bool = False) -> str:
@@ -268,9 +305,10 @@ def main():
     )
     parser.add_argument(
         "--proxy-inline-max", dest="proxy_inline_max", type=float, default=None,
-        help=f"Max source duration (seconds) proxied inline during init; longer sources "
-             f"defer to the backfill job so project creation never blocks on a long encode. "
-             f"Default {PROXY_INLINE_MAX_SEC:.0f}.",
+        help=f"Inline-proxy budget in seconds of TOTAL footage, summed across every source "
+             f"in the import; an import over budget defers all of its proxies to the "
+             f"background backfill job so project creation never blocks on a long encode. "
+             f"Default {PROXY_INLINE_MAX_TOTAL_SEC:.0f}.",
     )
     parser.add_argument(
         "--language", default="en",
@@ -286,10 +324,12 @@ def main():
     normalize_mode = args.normalize or _workflow_json.get("normalize", "eager")
 
     # Proxy policy (SP3 fix B1): --no-proxy beats the workflow's "proxy" setting,
-    # which beats the default (enabled). The inline-duration gate follows the same
-    # CLI-over-default rule.
+    # which beats the default (enabled). The inline total-footage budget follows the
+    # same CLI-over-default rule.
     proxy_enabled = (not args.no_proxy) and _workflow_json.get("proxy", True) is not False
-    proxy_inline_max = args.proxy_inline_max if args.proxy_inline_max is not None else PROXY_INLINE_MAX_SEC
+    proxy_inline_max_total = (
+        args.proxy_inline_max if args.proxy_inline_max is not None else PROXY_INLINE_MAX_TOTAL_SEC
+    )
 
     # Early carousel detection — validate incompatible args BEFORE any on-disk side effects.
     early_project_type = _read_project_type(args.workflow)
@@ -471,6 +511,14 @@ def main():
     # Cache probe results so _normalize_one below doesn't re-ffprobe each clip.
     # Keyed by absolute source path. Populated below for non-canvas projects.
     probe_cache: dict[str, dict] = {}
+    # Source durations, keyed by the ORIGINAL staged path. Filled in the same
+    # single pass as probe_cache — probe_video's ffprobe asks for stream entries
+    # only, so duration needs its own `format=duration` read, and the
+    # total-footage proxy budget has to be known BEFORE the normalize pool starts.
+    # This is the ONE duration read per clip: _normalize_one reads sourceDuration
+    # out of here (both arms) rather than probing again, so the per-clip ffprobe
+    # budget is unchanged — it moved, it didn't grow.
+    duration_cache: dict[str, float] = {}
 
     # Single probe pass — populates probe_cache (consumed by _normalize_one below),
     # collects (w, h, r_frame_rate) tuples for resolution + fps detection. This loop
@@ -487,6 +535,9 @@ def main():
     detected_pairs = []  # [(display_w, display_h, r_frame_rate)] in clip order
     if clips:
         for clip in clips:
+            _duration = _probe_duration(clip["src"])
+            if _duration is not None:
+                duration_cache[clip["src"]] = _duration
             info = probe_video(clip["src"])
             if info is None:
                 continue
@@ -559,11 +610,50 @@ def main():
     # because clips that pass is_normalized() bypass the semaphore entirely.
     _heavy_encode_sem = threading.Semaphore(HEAVY_ENCODE_LIMIT)
 
-    # Proxies are their own encoder pool (av1, hardware-decoded source) —
-    # separate from _heavy_encode_sem so proxy encodes never queue behind
-    # libx264/libx265 master transcodes. Capacity 2, so this alone does NOT
-    # serialize same-path racers (2 threads can hold it at once) — that's
-    # _proxy_locks_guard's job below.
+    # Whether this import's proxies are encoded inline or deferred wholesale to
+    # the backfill job — decided ONCE, here, before the pool starts, from the
+    # durations collected in the single probe pass above. The gate is the total
+    # footage rather than any one clip: fourteen individually-short sources each
+    # clear a per-clip gate and then all encode inline, which is exactly the wait
+    # this is meant to bound. Already-encoded proxies are still adopted below
+    # regardless — deferral only suppresses new encodes.
+    total_source_duration = sum(duration_cache.values())
+    defer_proxies = total_source_duration > proxy_inline_max_total
+    # A clip contributes 0 to the total when its duration could not be read, so
+    # a partial probe failure understates the budget. That only MATTERS for a
+    # clip that goes on to be proxied anyway, and the two reads are independent
+    # ffprobe calls: a raw elementary stream (and some fragmented MP4s) reports
+    # `format=duration` as N/A while probing its streams perfectly, so it clears
+    # the `info is not None` gate below and encodes inline at unknown cost.
+    #
+    # So fail closed on exactly that set, and no wider. Deferring whenever ANY
+    # probe failed was tried and reverted: a clip that fails BOTH reads is never
+    # proxied at all, and treating it as unknown cost makes one corrupt file
+    # suppress inline proxies for every healthy clip beside it — which is what
+    # `test_init_continues_when_one_clip_fails` exists to prevent, and it fires
+    # on tiny imports nowhere near the budget.
+    unknown_cost = [src for src in probe_cache if src not in duration_cache]
+    if unknown_cost:
+        defer_proxies = True
+        progress(f"proxy deferred: {len(unknown_cost)} source(s) probed OK but "
+                 f"reported no duration, so the inline budget cannot be trusted")
+    if proxy_enabled and defer_proxies:
+        progress(f"proxy deferred for all {len(clips)} clips (total footage "
+                 f"{total_source_duration:.0f}s > inline budget {proxy_inline_max_total:.0f}s) — "
+                 f"backfill runs in the background via POST /api/proxy or `montaj step proxy`")
+
+    # Proxies are their own encoder pool, separate from _heavy_encode_sem so proxy
+    # encodes never queue behind libx264/libx265 master transcodes. Its capacity is
+    # >1, so this alone does NOT serialize same-path racers (several threads can
+    # hold it at once) — that's _proxy_locks_guard's job below.
+    #
+    # NOTE: at PROXY_ENCODE_LIMIT == NORMALIZE_POOL_SIZE this semaphore no longer
+    # bounds anything. _schedule_proxy runs inline inside _normalize_one, so the
+    # outer pool is the real cap and at most NORMALIZE_POOL_SIZE proxies can be in
+    # flight whatever this is set to. It mattered at 2 (it was the binding
+    # constraint, and raising it to 4 is what took the reference folder from 2:02
+    # to 1:19); it would matter again if the pool grew. Raise the pool without
+    # raising this and proxies quietly become the bottleneck again.
     _proxy_encode_sem = threading.Semaphore(PROXY_ENCODE_LIMIT)
 
     # Per-proxy-path mutual exclusion for the "is it fresh, and if not, claim
@@ -585,8 +675,7 @@ def main():
                 _proxy_locks[path] = lock
             return lock
 
-    def _schedule_proxy(clip: dict, clip_id: str, src: str, *, tonemap: bool, info: dict,
-                        duration: float | None = None) -> None:
+    def _schedule_proxy(clip: dict, clip_id: str, src: str, *, tonemap: bool, info: dict) -> None:
         """Encode (or reuse) the full-source editing proxy for `src`, writing
         `clip["proxySrc"]` on success.
 
@@ -595,11 +684,13 @@ def main():
         proxySrc and the editor falls back to playing the master.
 
         SP3 fix B1: two gates run BEFORE any encode. Proxies disabled
-        (--no-proxy / workflow "proxy": false) → silent no-op. Source longer
-        than the inline gate → defer with a progress line; the proxy is
-        backfilled later via POST /api/proxy (which reuses the same freshness
-        check, so an already-fresh proxy from a previous run still gets
-        adopted below regardless of duration).
+        (--no-proxy / workflow "proxy": false) → silent no-op. Import over the
+        total-footage budget (`defer_proxies`, decided once above and already
+        logged once for the batch) → no new encode; the proxy is backfilled
+        later via POST /api/proxy. That second gate is checked AFTER the
+        freshness check, so an already-fresh proxy from a previous run — the
+        clips fan-out case, where every child adopts one shared proxy — still
+        gets picked up even when this import is over budget.
 
         The freshness check + encode is fully serialized per-path via
         _proxy_lock_for, so N concurrent children of one shared lazy source
@@ -611,16 +702,8 @@ def main():
             return
         proxy_out = proxy_path_for(src)
         try:
-            if not is_proxy_fresh(proxy_out, src):
-                if duration is None:
-                    try:
-                        duration = get_duration(src)
-                    except (Exception, SystemExit):
-                        duration = None
-                if duration is not None and duration > proxy_inline_max:
-                    progress(f"[{clip_id}] proxy deferred (source {duration:.0f}s > inline gate "
-                             f"{proxy_inline_max:.0f}s) — backfill via POST /api/proxy or `montaj step proxy`")
-                    return
+            if defer_proxies and not is_proxy_fresh(proxy_out, src):
+                return
             with _proxy_lock_for(proxy_out):
                 if not is_proxy_fresh(proxy_out, src):
                     with _proxy_encode_sem:
@@ -649,10 +732,14 @@ def main():
         # set so the UI can clamp edits; src is left pointing at the original
         # staged file.
         if normalize_mode == "lazy":
-            try:
-                clip["sourceDuration"] = get_duration(clip["src"])
-            except (Exception, SystemExit):
-                pass
+            # Reuse the duration read in the single pre-pool pass above; only
+            # re-read on a cache miss (that probe failed), same idiom as the
+            # probe_cache use below.
+            _duration = duration_cache.get(clip_path)
+            if _duration is None:
+                _duration = _probe_duration(clip_path)
+            if _duration is not None:
+                clip["sourceDuration"] = _duration
             progress(f"[{clip_id}] lazy skip")
 
             # Full-source editing proxy from the original — lazy mode never
@@ -693,7 +780,7 @@ def main():
                 # litters the user's own footage folders and clean --proxies
                 # can always find the artifact (SP3 fix S7).
                 _schedule_proxy(clip, clip_id, os.path.realpath(clip_path), tonemap=tonemap,
-                                info=info, duration=clip.get("sourceDuration"))
+                                info=info)
             return
 
         t0 = time.monotonic()
@@ -761,17 +848,19 @@ def main():
         # original.
         # Skipped when probing failed (no info to build the encode from).
 
-        # Cache source duration so the UI can clamp edits against it (computed
-        # BEFORE the proxy so the B1 inline-duration gate reuses it instead of
-        # a second ffprobe).
-        try:
-            clip["sourceDuration"] = get_duration(clip["src"])
-        except (Exception, SystemExit):
-            pass
+        # Cache source duration so the UI can clamp edits against it. Taken from
+        # the pre-pool read on the ORIGINAL staged file rather than a fresh probe
+        # of the post-normalize clip["src"]: normalize() conforms codec/color, it
+        # never trims, so the two are the same length — and the budget gate above
+        # needs this number before the pool starts either way. One read, reused.
+        _duration = duration_cache.get(clip_path)
+        if _duration is None:
+            _duration = _probe_duration(clip["src"])
+        if _duration is not None:
+            clip["sourceDuration"] = _duration
 
         if info is not None:
-            _schedule_proxy(clip, clip_id, clip["src"], tonemap=is_hdr(master_color_space), info=info,
-                            duration=clip.get("sourceDuration"))
+            _schedule_proxy(clip, clip_id, clip["src"], tonemap=is_hdr(master_color_space), info=info)
 
         elapsed = time.monotonic() - t0
         progress(f"[{clip_id}] {path_kind} done in {elapsed:.2f}s")

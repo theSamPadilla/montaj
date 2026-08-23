@@ -66,6 +66,33 @@ class TestGlobMatch:
         assert bare_proxy.exists()
         assert wrong_ext.exists()
 
+    def test_deletes_both_proxy_naming_generations(self, project_dir):
+        """PROXY_RE's optional `(_h264)?` group covers both proxy-naming
+        generations: the pre-AV1->H.264-switch name (`_proxy_<look>.mp4`) and
+        the post-switch name (`_proxy_<look>_h264.mp4`) — both must be
+        reclaimable, so an old proxy left over from before an upgrade doesn't
+        become permanently unclaimable."""
+        old_gen = project_dir / f"clip_proxy_{clean_cmd.PROXY_LOOK}.mp4"
+        new_gen = project_dir / f"clip_proxy_{clean_cmd.PROXY_LOOK}_h264.mp4"
+        old_gen.write_bytes(b"x" * 1024)
+        new_gen.write_bytes(b"y" * 1024)
+
+        clean_cmd.handle(_ns())
+
+        assert not old_gen.exists()
+        assert not new_gen.exists()
+
+    def test_h264_tagged_lookalike_with_unknown_look_survives(self, project_dir):
+        """A file that merely LOOKS like the new h264-tagged generation but
+        carries a look tag that isn't in KNOWN_LOOKS must survive, same as
+        the untagged-format lookalikes already covered above."""
+        lookalike = project_dir / "clip_proxy_unknownlook99x_h264.mp4"
+        lookalike.write_bytes(b"x" * 1024)
+
+        clean_cmd.handle(_ns())
+
+        assert lookalike.exists()
+
     def test_matches_nested_proxy_files(self, project_dir):
         nested = project_dir / "clips" / "sub" / "a_proxy_hable1.mp4"
         nested.parent.mkdir(parents=True)

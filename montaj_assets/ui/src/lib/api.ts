@@ -217,6 +217,16 @@ export const api = {
     request<{ scheduled: number; alreadyFresh: number }>(`/api/projects/${id}/proxies`, { method: 'POST' }),
 
   /**
+   * Poll the background proxy-generation drain. `running` is 0 or 1
+   * (single-worker drain); `queued` is how many are waiting behind it.
+   * Backs the passive header indicator (ProxyActivityIndicator) — the
+   * server returns zeros rather than erroring when the queue hasn't been
+   * touched yet, so this is safe to poll unconditionally.
+   */
+  proxyStatus: () =>
+    request<{ running: number; queued: number }>('/api/proxies/status'),
+
+  /**
    * Kick a background ingest of a new source clip (probe → normalize → proxy
    * → register in `project.sources`). Returns a job id to poll via
    * `getSourceJobStatus`. Backs `EditorAdapter.ingestSource`.

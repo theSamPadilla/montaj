@@ -3,6 +3,7 @@ import { Link, Outlet, useLocation } from 'react-router-dom'
 import { Moon, Sun } from 'lucide-react'
 import { useIsMobile } from '@/lib/useIsMobile'
 import MobileTopNav from '@/components/MobileTopNav'
+import ProxyActivityIndicator from '@/components/ProxyActivityIndicator'
 
 function Wordmark() {
   return (
@@ -71,6 +72,7 @@ export default function App() {
               </Link>
             ))}
           </nav>
+          <ProxyActivityIndicator />
           <button
             onClick={() => setDark(d => !d)}
             className="p-1.5 rounded text-gray-400 hover:text-gray-700 hover:bg-gray-100 dark:hover:text-gray-200 dark:hover:bg-gray-800 transition-colors"

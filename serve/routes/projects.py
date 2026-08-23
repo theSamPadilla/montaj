@@ -370,7 +370,18 @@ async def _run_ingest_detached(
     stream sub-progress from inside it), then appends the resulting clip to
     project["sources"], persists + broadcasts project.json (same
     read-write-broadcast idiom as save_project / `_run_caption_pipeline`
-    above), and records the outcome on `job`."""
+    above), and records the outcome on `job`.
+
+    The proxy is NEVER encoded inline (`proxy=False`): it is queued onto the
+    shared look-migration queue once the clip is persisted, so the job finishes
+    as soon as the source is staged and colour-normalized and the editor gets a
+    usable clip immediately. Colour normalization stays inline — it decides what
+    `src` even points at, which is correctness, not a cache.
+
+    Ordering is load-bearing: `_ensure_current_proxies` resolves its write-back
+    targets through `_apply_project_edits`, which RE-READS project.json and
+    matches on (id, src). Enqueue before the append is on disk and the encode
+    lands with nowhere to write its `proxySrc`."""
     def log(message: str) -> None:
         broadcaster.publish(project_id, f"event: log\ndata: {json.dumps({'message': message})}\n\n")
 
@@ -378,12 +389,12 @@ async def _run_ingest_detached(
         job.phase = "staging"
         log(f"[ingest] staging {os.path.basename(path)}")
 
-        clip = await asyncio.to_thread(ingest_source, project_dir, path, color_space, "eager")
+        clip = await asyncio.to_thread(
+            ingest_source, project_dir, path, color_space, "eager", proxy=False
+        )
 
         job.phase = "normalizing"
         log(f"[ingest] normalized to project color space ({color_space})")
-        job.phase = "building proxy"
-        log("[ingest] building proxy" if clip.get("proxySrc") else "[ingest] proxy skipped")
 
         # Read fresh right before the append+write to minimize clobbering a
         # concurrent editor save (mirrors the caption pipeline's late read).
@@ -394,6 +405,23 @@ async def _run_ingest_detached(
         text = json.dumps(project, indent=2)
         project_path.write_text(text)
         broadcaster.publish(project_id, _sse_data_frame(text))
+
+        # Only now the clip is on disk under a stable (id, src) can the encode's
+        # write-back find it. A bin entry on no track is a first-class target:
+        # `_look_migration_items` walks `sources` too. Best-effort — the clip is
+        # already usable, and the editor's manual migration is the fallback.
+        job.phase = "queueing proxy"
+        try:
+            queued = _ensure_current_proxies(
+                project_id, Path(project_dir), project, broadcaster
+            )["scheduled"]
+            # `queued` counts every un-proxied item in the project, not just the
+            # one just ingested: _ensure_current_proxies sweeps the whole thing,
+            # so adding one clip to an AV1-era project legitimately starts many
+            # encodes. Say the real number rather than implying it was one.
+            log(f"[ingest] {queued} proxy encode(s) queued" if queued else "[ingest] no proxy needed")
+        except Exception:
+            log("[ingest] proxy could not be queued")
 
         job.status, job.result, job.phase = "done", clip, "done"
         log(f"[ingest] added {clip['id']}")
@@ -494,13 +522,26 @@ def _git_commit_sync(project_dir: Path, message: str) -> None:
                    capture_output=True)
 
 
-async def _run_init_subprocess(cmd: list[str], *, timeout: int = 1800) -> dict:
+async def _run_init_subprocess(
+    cmd: list[str],
+    *,
+    timeout: int = 1800,
+    broadcaster: "SSEBroadcaster | None" = None,
+) -> dict:
     """Spawn project/init.py via subprocess, capture stdout (project path), and
     return the parsed project.json dict. Raises HTTPException on any failure.
 
     When MONTAJ_DEBUG=1, stderr is streamed live to the server's own stderr so
     operators can watch progress in real time. Default (unset): stderr is buffered
     and only surfaced on non-zero exit.
+
+    Init may DEFER proxy encoding (whole batches of it), which only skips the
+    work — nothing schedules it. This is the single seam both creation paths go
+    through, so the deferred work is queued here, on the existing single-worker
+    background queue, rather than waiting for a user to notice the manual
+    migration button. `broadcaster` is optional: without one the write-back into
+    project.json still happens as each encode lands, only the live SSE nudge to
+    an already-open editor is lost.
     """
     debug_log = os.environ.get("MONTAJ_DEBUG") == "1"
 
@@ -573,9 +614,21 @@ async def _run_init_subprocess(cmd: list[str], *, timeout: int = 1800) -> dict:
 
     project_path = Path(stdout.strip())
     try:
-        return json.loads(project_path.read_text())
+        project = json.loads(project_path.read_text())
     except Exception:
         raise server_error("read_failed", "Project created but could not be read back")
+
+    # Queue whatever init deferred. De-duping, freshness skipping, SSE targets
+    # and the write-back of `proxySrc` are all the existing queue's job — this
+    # only starts it. Best-effort like ensure_project_proxies: a project that
+    # was created successfully must never fail because housekeeping couldn't be
+    # scheduled (the editor's manual migration remains the fallback).
+    try:
+        _ensure_current_proxies(project.get("id"), project_path.parent, project, broadcaster)
+    except Exception:
+        pass
+
+    return project
 
 
 # ---------------------------------------------------------------------------
@@ -583,7 +636,7 @@ async def _run_init_subprocess(cmd: list[str], *, timeout: int = 1800) -> dict:
 # ---------------------------------------------------------------------------
 
 @router.post("/run", status_code=201)
-async def run_project(body: dict = Body(...)):
+async def run_project(request: Request, body: dict = Body(...)):
     clips        = body.get("clips", [])
     assets       = body.get("assets", [])
     prompt       = body.get("prompt")
@@ -641,7 +694,7 @@ async def run_project(body: dict = Body(...)):
                     raise bad_request("file_not_found", f"Asset not found: {asset}")
             cmd += ["--assets"] + [str(a) for a in assets]
 
-        return await _run_init_subprocess(cmd)
+        return await _run_init_subprocess(cmd, broadcaster=getattr(request.app.state, "broadcaster", None))
 
     if not prompt:
         raise bad_request("missing_field", "'prompt' is required")
@@ -820,7 +873,7 @@ async def run_project(body: dict = Body(...)):
     # 30 min ceiling is a sanity bound, not a real expected duration — with parallel
     # normalize + audio fast path + resolution preservation, realistic init time is
     # seconds to a few minutes even on heavy footage.
-    return await _run_init_subprocess(cmd)
+    return await _run_init_subprocess(cmd, broadcaster=getattr(request.app.state, "broadcaster", None))
 
 
 @router.get("/projects")
@@ -1032,8 +1085,10 @@ async def migrate_project_look(
 
     Per video item, with the item's source file present and absolute:
 
-    * `proxySrc` whose filename lacks `_proxy_<PROXY_LOOK>` (an old-look proxy
-      such as `_proxy_hable1`), or that names a file no longer on disk. The
+    * `proxySrc` whose filename lacks `_proxy_<PROXY_LOOK>_<PROXY_FORMAT>` (an
+      old-look proxy such as `_proxy_hable1_h264`, or an old-format one such as
+      the untagged-format `_proxy_vivid1`), or that names a file no longer on
+      disk. The
       current-look proxy is adopted when it already exists and is fresher than
       the source; otherwise the field is cleared and an encode queued.
     * `normalizedSrc` naming THIS item's full-source master under the untagged
@@ -1065,7 +1120,7 @@ async def _migrate_project_look(
     broadcaster: "SSEBroadcaster | None",
 ) -> dict | None:
     from lib.normalize import normalized_output_path, probe_video
-    from lib.proxy import PROXY_LOOK, is_proxy_fresh, proxy_path_for
+    from lib.proxy import PROXY_FORMAT, PROXY_LOOK, is_proxy_fresh, proxy_path_for
     from lib.types.colorspace import DEFAULT_COLOR_SPACE, detect_from_transfer, is_hdr
 
     settings = project.get("settings") or {}
@@ -1091,7 +1146,13 @@ async def _migrate_project_look(
 
         proxy_src = item.get("proxySrc")
         if proxies_enabled and proxy_src and (
-            f"_proxy_{PROXY_LOOK}" not in os.path.basename(proxy_src)
+            # Both tags, not just the look: an AV1-generation proxy is named
+            # `_proxy_<look>.mp4`, which CONTAINS `_proxy_<look>` — testing the
+            # look alone judges every pre-H.264 proxy current and never retires
+            # it. The browser codec probe now assumes H.264, so a project still
+            # pointing at av01 files would be judged decodable on evidence that
+            # no longer describes the file.
+            f"_proxy_{PROXY_LOOK}_{PROXY_FORMAT}" not in os.path.basename(proxy_src)
             or not os.path.isfile(proxy_src)
         ):
             proxy_stale.append(item)
@@ -1295,6 +1356,27 @@ async def ensure_project_proxies(project_id: str, request: Request, project_dir:
     except Exception:
         result = {"scheduled": 0, "alreadyFresh": 0}
     return JSONResponse(result, status_code=202 if result["scheduled"] else 200)
+
+
+@router.get("/proxies/status")
+async def proxy_activity_status():
+    """How much proxy encoding the background queue is doing right now:
+    `{"running": int, "queued": int}`.
+
+    A pure read of the look-migration queue's existing state — no new counters,
+    no locks. Only `kind == "proxy"` units count; a `normalize` unit in flight is
+    not proxy work. `running` is 0 or 1 because ONE worker drains the queue.
+
+    Deliberately total: a client polls this on a timer (every few seconds while
+    work is in flight), so it must be cheap and must never 500. Anything
+    unexpected reports zeros — "nothing happening" — rather than erroring."""
+    try:
+        current = _look_migration_current
+        running = 1 if current is not None and current.kind == "proxy" else 0
+        queued = sum(1 for unit in _look_migration_queue if unit.kind == "proxy")
+    except Exception:
+        running, queued = 0, 0
+    return {"running": running, "queued": queued}
 
 
 @router.get("/projects/{project_id}")

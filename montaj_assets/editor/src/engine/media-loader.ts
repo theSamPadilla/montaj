@@ -19,7 +19,7 @@
  * ─────────────────────────────────────────────────────────────────────────
  * This fetches the *entire* proxy into one ArrayBuffer before demuxing, which
  * is what the spike measured (§6: 30fps sustained, <1GB) and what SP3's
- * proxies are sized for — a CRF-35 AV1 editing proxy of a several-minute
+ * proxies are sized for — a libx264 -crf 20 editing proxy of a several-minute
  * source is tens of MB, and the whole point of the proxy tier is that it is
  * small enough to treat this way. It is nonetheless the engine's clearest
  * scaling limit: time-to-first-frame grows with file size (nothing decodes

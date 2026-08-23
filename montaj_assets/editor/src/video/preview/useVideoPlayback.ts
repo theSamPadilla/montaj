@@ -45,7 +45,7 @@ interface MontajVideoElement extends HTMLVideoElement {
 //     `nobg_src` is the ProRes 4444 render-only artifact and is never loaded
 //     into a <video> element; browsers can't decode ProRes.
 //
-//   • `proxySrc` (SP3) is the full-source, all-intra 720p AV1+Opus editing
+//   • `proxySrc` (SP3) is the full-source, all-intra 720p H.264+Opus editing
 //     proxy generated automatically at import. It also covers the FULL
 //     source, so it is NOT rebased either — same shape as `nobg_preview_src`.
 //     It sits AFTER `nobg_preview_src` in the precedence chain (an alpha

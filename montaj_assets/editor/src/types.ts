@@ -874,7 +874,7 @@ export interface VideoEditorProps<P extends Project = Project> {
    *
    * `{ enabled: true }` does not itself force engine mode: the editor
    * evaluates per-project eligibility (`engine/eligibility.ts` — WebCodecs
-   * av01/opus decode support, plus every track-0 video item proxied and none
+   * avc1/opus decode support, plus every track-0 video item proxied and none
    * requiring the WebM `nobg_preview_src` alpha path) once per project load,
    * and falls back to the legacy player, reasoned via console, whenever a
    * project doesn't pass. `debugHud` additionally renders the

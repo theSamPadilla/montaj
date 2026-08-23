@@ -22,7 +22,7 @@
  *  2. **The `esds` AudioSpecificConfig walk.** avcC/hvcC/vpcC/av1C are boxes
  *     that serialize straight back into the bytes WebCodecs wants; `esds` is
  *     a nested descriptor tree that does not, so AAC needs its own walk.
- *     Kept general even though SP3's proxies are av01+opus (neither of which
+ *     Kept general even though SP3's proxies are avc1+opus (neither of which
  *     needs it): the engine also has to be able to look at whatever else a
  *     host hands it, and the generality costs ~15 lines that are already
  *     written and already tested.

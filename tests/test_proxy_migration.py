@@ -19,7 +19,7 @@ import pytest
 
 import serve.routes.projects as projects_mod
 from serve.routes.projects import _ensure_current_proxies
-from lib.proxy import PROXY_LOOK, proxy_path_for
+from lib.proxy import PROXY_FORMAT, PROXY_LOOK, proxy_path_for
 
 PID = "55555555-5555-4555-8555-555555555555"
 PID2 = "66666666-6666-4666-8666-666666666666"
@@ -156,7 +156,7 @@ def test_missing_proxy_is_encoded_and_written_back(workspace, encodes):
     assert result == {"scheduled": 1, "alreadyFresh": 0}
     assert len(encodes.proxy) == 1
     assert encodes.proxy[0][0] == os.path.realpath(src)
-    assert encodes.proxy[0][1].endswith(f"_proxy_{PROXY_LOOK}.mp4")
+    assert encodes.proxy[0][1].endswith(f"_proxy_{PROXY_LOOK}_{PROXY_FORMAT}.mp4")
     project = _read(project_dir)
     assert _item(project)["proxySrc"] == encodes.proxy[0][1]
     # The `sources` mirror is healed too.
@@ -220,7 +220,7 @@ def test_stale_old_look_proxy_is_re_encoded_and_repointed(workspace, encodes):
     assert result == {"scheduled": 1, "alreadyFresh": 0}
     assert len(encodes.proxy) == 1
     new = encodes.proxy[0][1]
-    assert new.endswith(f"_proxy_{PROXY_LOOK}.mp4") and new != str(stale)
+    assert new.endswith(f"_proxy_{PROXY_LOOK}_{PROXY_FORMAT}.mp4") and new != str(stale)
     assert _item(_read(project_dir))["proxySrc"] == new
     # The stale file is left on disk — migration repoints, `montaj clean` deletes.
     assert stale.exists()
@@ -296,7 +296,7 @@ def test_http_shape(workspace, encodes):
             time.sleep(0.02)
 
     project = _read(project_dir)
-    assert _item(project)["proxySrc"].endswith(f"_proxy_{PROXY_LOOK}.mp4")
+    assert _item(project)["proxySrc"].endswith(f"_proxy_{PROXY_LOOK}_{PROXY_FORMAT}.mp4")
     assert Path(_item(project)["proxySrc"]).exists()
 
 

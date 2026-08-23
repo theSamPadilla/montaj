@@ -213,6 +213,7 @@ def test_open_clears_stale_fields_and_returns_migrated_body(workspace, encodes, 
 
 def test_open_schedules_one_proxy_and_one_normalize_job(workspace, encodes, probe_hdr):
     from lib.look import MASTER_LOOK
+    from lib.proxy import PROXY_FORMAT
 
     project_dir, src = _make_project(workspace, PID)
     proxy, master = _legacy_artifacts(src)
@@ -222,7 +223,7 @@ def test_open_schedules_one_proxy_and_one_normalize_job(workspace, encodes, prob
 
     assert len(encodes.proxy) == 1, encodes.proxy
     assert len(encodes.normalize) == 1, encodes.normalize
-    assert encodes.proxy[0][1].endswith(f"_proxy_{MASTER_LOOK}.mp4")
+    assert encodes.proxy[0][1].endswith(f"_proxy_{MASTER_LOOK}_{PROXY_FORMAT}.mp4")
     assert encodes.normalize[0][1].endswith(f"_normalized_sdr_bt709_{MASTER_LOOK}.mp4")
     # Both encode from the item's source, never from the stale artifact.
     assert encodes.proxy[0][0] == os.path.realpath(src)
@@ -231,6 +232,7 @@ def test_open_schedules_one_proxy_and_one_normalize_job(workspace, encodes, prob
 
 def test_completion_writes_fresh_paths_back(workspace, encodes, probe_hdr):
     from lib.look import MASTER_LOOK
+    from lib.proxy import PROXY_FORMAT
 
     project_dir, src = _make_project(workspace, PID)
     proxy, master = _legacy_artifacts(src)
@@ -240,7 +242,7 @@ def test_completion_writes_fresh_paths_back(workspace, encodes, probe_hdr):
 
     project = _read(project_dir)
     item = _item(project)
-    assert item["proxySrc"].endswith(f"_proxy_{MASTER_LOOK}.mp4")
+    assert item["proxySrc"].endswith(f"_proxy_{MASTER_LOOK}_{PROXY_FORMAT}.mp4")
     assert item["normalizedSrc"].endswith(f"_normalized_sdr_bt709_{MASTER_LOOK}.mp4")
     assert Path(item["proxySrc"]).exists()
     assert Path(item["normalizedSrc"]).exists()
@@ -357,11 +359,12 @@ def test_fresh_artifacts_are_repointed_without_encoding(workspace, encodes, prob
     """The current-look artifacts already exist (a sibling project encoded them,
     or a previous migration did). Repoint the fields; encode nothing."""
     from lib.look import MASTER_LOOK
+    from lib.proxy import PROXY_FORMAT
 
     project_dir, src = _make_project(workspace, PID)
     proxy, master = _legacy_artifacts(src)
     stem = src.with_suffix("")
-    fresh_proxy = Path(f"{stem}_proxy_{MASTER_LOOK}.mp4")
+    fresh_proxy = Path(f"{stem}_proxy_{MASTER_LOOK}_{PROXY_FORMAT}.mp4")
     fresh_master = Path(f"{stem}_normalized_sdr_bt709_{MASTER_LOOK}.mp4")
     fresh_proxy.write_bytes(b"proxy")
     fresh_master.write_bytes(b"master")
@@ -412,16 +415,45 @@ def test_missing_current_look_master_is_regenerated(workspace, encodes, probe_hd
 def test_missing_proxy_file_is_regenerated(workspace, encodes, probe_hdr):
     """Same for a deleted proxy: the name is current-look but the file is gone."""
     from lib.look import MASTER_LOOK
+    from lib.proxy import PROXY_FORMAT
 
     project_dir, src = _make_project(workspace, PID)
     stem = src.with_suffix("")
-    tagged = Path(f"{stem}_proxy_{MASTER_LOOK}.mp4")
+    tagged = Path(f"{stem}_proxy_{MASTER_LOOK}_{PROXY_FORMAT}.mp4")
     _set_fields(project_dir, proxySrc=str(tagged))  # never written to disk
 
     _open_and_settle(PID, project_dir)
 
     assert len(encodes.proxy) == 1
     assert _item(_read(project_dir))["proxySrc"] == str(tagged)
+
+
+def test_current_look_proxy_without_format_tag_is_stale(workspace, encodes, probe_hdr):
+    """Regression: the name-only triage used to test only
+    `f"_proxy_{PROXY_LOOK}" not in basename` — and `..._proxy_vivid1.mp4`
+    (current LOOK, but from before the AV1->H.264 proxy-format switch)
+    CONTAINS `_proxy_vivid1`, so every existing AV1-generation proxy was
+    wrongly judged current and never replaced. The triage now tests the full
+    `_proxy_<look>_<format>` tag, so this exact on-disk file must still be
+    treated as stale and re-encoded to the H.264 name."""
+    from lib.look import MASTER_LOOK
+    from lib.proxy import PROXY_FORMAT
+
+    project_dir, src = _make_project(workspace, PID)
+    stem = src.with_suffix("")
+    untagged_format = Path(f"{stem}_proxy_{MASTER_LOOK}.mp4")  # current look, old format
+    untagged_format.write_bytes(b"old-format-proxy")
+    _set_fields(project_dir, proxySrc=str(untagged_format))
+
+    _open_and_settle(PID, project_dir)
+
+    assert len(encodes.proxy) == 1, encodes.proxy
+    new_proxy = _item(_read(project_dir))["proxySrc"]
+    assert new_proxy.endswith(f"_proxy_{MASTER_LOOK}_{PROXY_FORMAT}.mp4")
+    assert new_proxy != str(untagged_format)
+    # The stale AV1-generation file is left on disk — migration repoints,
+    # `montaj clean` deletes it.
+    assert untagged_format.exists()
 
 
 def test_overlay_track_video_items_are_migrated(workspace, encodes, probe_hdr):

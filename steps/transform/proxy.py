@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Encode the full-source editing proxy: 720p, all-intra AV1+Opus, preview-only.
+"""Encode the full-source editing proxy: 720p, all-intra H.264+Opus, preview-only.
 
 Wraps lib/proxy.py's make_proxy(). Render never reads a proxy file — this
 step only ever produces a preview-track artifact (the project's proxySrc).
@@ -14,7 +14,7 @@ from proxy import make_proxy
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Encode a full-source 720p all-intra AV1+Opus editing proxy (preview-only, never used by render)"
+        description="Encode a full-source 720p all-intra H.264+Opus editing proxy (preview-only, never used by render)"
     )
     parser.add_argument("--input",   required=True,      help="Source video file")
     parser.add_argument("--tonemap", action="store_true", help="Source is HDR (original, not yet conformed) — compose scale-first HDR→SDR tonemap ahead of the encode")

@@ -38,13 +38,14 @@ def register(subparsers):
     )
     p.add_argument(
         "--proxy-inline-max", dest="proxy_inline_max", type=float, default=None,
-        help="Max source duration (seconds) proxied inline during init; longer sources "
-             "defer to the backfill job so project creation never blocks on a long encode. "
-             # Keep in sync with project/init.py's PROXY_INLINE_MAX_SEC — this
+        help="Inline-proxy budget in seconds of TOTAL footage, summed across every source "
+             "in the import; an import over budget defers all of its proxies to the "
+             "background backfill job so project creation never blocks on a long encode. "
+             # Keep in sync with project/init.py's PROXY_INLINE_MAX_TOTAL_SEC — this
              # help string doesn't read the constant (this module only builds
              # the subprocess argv; project/init.py's own module isn't imported
              # here), so a change there needs this string updated by hand.
-             "Default 480.",
+             "Default 300.",
     )
     # Local file pass-through flags (project/init.py accepts --clips/--assets;
     # the CLI now exposes them as --clip/--asset for a nicer UX).

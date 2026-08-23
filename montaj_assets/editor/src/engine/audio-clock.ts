@@ -234,7 +234,7 @@ export interface MasterClockOptions {
  * codec family, never for its casing. `'mp4a'` (a bare AAC family string with
  * no profile) is expanded to AAC-LC, the only form `configure()` accepts.
  *
- * SP1 §7.5 is the bug this function is: without it every AV1+Opus proxy fell
+ * SP1 §7.5 is the bug this function is: without it every H.264+Opus proxy fell
  * silently onto the wall clock and the audio master clock never ran.
  */
 export function normalizeAudioCodec(codec: string): string {

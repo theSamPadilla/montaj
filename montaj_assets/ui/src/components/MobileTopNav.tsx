@@ -1,5 +1,6 @@
 import { Link, useLocation } from 'react-router-dom'
 import { Moon, Sun } from 'lucide-react'
+import ProxyActivityIndicator from '@/components/ProxyActivityIndicator'
 
 const TABS = [
   { path: '/',         label: 'Editor' },
@@ -39,6 +40,7 @@ export default function MobileTopNav({ dark, onToggleDark }: Props) {
           </Link>
         ))}
       </nav>
+      <ProxyActivityIndicator />
       <button
         onClick={onToggleDark}
         className="p-2 rounded text-gray-400 dark:hover:text-gray-200 shrink-0"

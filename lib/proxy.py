@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Editing proxy encode primitive — full-source, all-intra, 720p AV1+Opus.
+"""Editing proxy encode primitive — full-source, all-intra, 720p H.264+Opus.
 
 Every imported video gets a lightweight "editing copy" for instant scrubbing
 in the editor preview: hardware-decoded, scaled to 720p on its short side,
-encoded all-intra (GOP=1) so any frame seeks instantly, AV1+Opus for size.
+encoded all-intra (GOP=1) so any frame seeks instantly, H.264+Opus for size.
 Render never touches proxies — this module only ever produces a preview-track
 artifact (``proxySrc`` on the project item), never anything render reads.
 
@@ -42,6 +42,22 @@ cli/commands/clean.py's KNOWN_LOOKS so the previous look's files stay
 cleanable (clean only deletes known-tagged files, SP3 fix S5). "hable1" is the
 historical value from before the Montaj Vivid LUT (SP6b) shipped."""
 
+PROXY_FORMAT = "h264"
+"""Codec/container-generation tag stamped into every proxy filename, alongside
+PROXY_LOOK. PROXY_LOOK tags the *colour look* (re-exported from MASTER_LOOK /
+montaj_assets/luts/looks.json); PROXY_FORMAT tags the *container/codec*
+generation, independently. Both are folded into proxy_path_for()'s filename,
+so bumping either tag naturally makes is_proxy_fresh() treat every
+existing proxy as stale and regenerate it under the new value — no migration
+step needed for either.
+
+Kept as its own tag rather than folded into PROXY_LOOK: PROXY_LOOK re-exports
+MASTER_LOOK, which also governs normalized master filenames. Bumping
+MASTER_LOOK to force a codec migration would needlessly invalidate every
+normalized master too, and would lie about what changed (masters aren't
+recolored when the proxy encoder changes). A separate tag is the honest
+mechanism — bump PROXY_FORMAT alone and only proxies get invalidated."""
+
 
 def _workspace_root() -> str:
     """Global workspace root: MONTAJ_WORKSPACE_DIR env var > ~/.montaj/config.json's
@@ -63,7 +79,7 @@ def _workspace_root() -> str:
 
 
 def proxy_path_for(src: str) -> str:
-    """Proxy path for `src`: ``<stem>_proxy_<PROXY_LOOK>.mp4``.
+    """Proxy path for `src`: ``<stem>_proxy_<PROXY_LOOK>_<PROXY_FORMAT>.mp4``.
 
     Placement (SP3 fix S7):
       - Sources under the workspace root (project dirs, ``.sources/<id>/``
@@ -83,7 +99,7 @@ def proxy_path_for(src: str) -> str:
     """
     real = os.path.realpath(src)
     head, tail = os.path.split(real)
-    name = f"{tail.rsplit('.', 1)[0]}_proxy_{PROXY_LOOK}.mp4"
+    name = f"{tail.rsplit('.', 1)[0]}_proxy_{PROXY_LOOK}_{PROXY_FORMAT}.mp4"
 
     ws_real = os.path.realpath(_workspace_root())
     if head == ws_real or head.startswith(ws_real + os.sep):
@@ -108,11 +124,12 @@ def is_proxy_fresh(proxy: str, src: str) -> bool:
 
 
 def _build_proxy_cmd(input_path: str, out_path: str, *, tonemap: bool, info: dict) -> tuple[list, bool]:
-    """Build the ffmpeg command for the av1-crf35-fast proxy encode.
+    """Build the ffmpeg command for the h264-crf20-fast proxy encode.
 
     `tonemap=True` composes the scale filter AHEAD of
     `_build_tonemap_vf_to_sdr()`'s zscale chain (scale-first ordering).
-    `tonemap=False` is a plain scale — the source is already SDR.
+    `tonemap=False` is a plain scale plus a pix_fmt normalize — the source is
+    already SDR (no color conversion needed) but may still be 10-bit/4:2:2.
 
     Returns (cmd, used_fallback_tonemap) — used_fallback_tonemap is True only
     when the tonemap arm ran without zscale (degraded color path; caller
@@ -126,7 +143,20 @@ def _build_proxy_cmd(input_path: str, out_path: str, *, tonemap: bool, info: dic
         tonemap_vf, used_fallback_tonemap = _build_tonemap_vf_to_sdr(source_color_space)
         vf = f"{scale},{tonemap_vf},format=yuv420p"
     else:
-        vf = scale
+        # format=yuv420p is required here even though this arm never touches
+        # color (no zscale/tonemap): libsvtav1 used to normalize pixel format
+        # for us regardless of what it was handed, but libx264 (the current
+        # encoder, see PROXY_FORMAT) encodes whatever pix_fmt the input
+        # decodes to. A 10-bit or 4:2:2 "SDR" source (yuv420p10le ProRes,
+        # 10-bit HEVC tagged bt709, etc — LAZY normalize mode's tonemap=False
+        # branch takes any bt709-tagged source, 8-bit or not) would otherwise
+        # ship as High 10/4:2:2 H.264, which the capability gate in
+        # proxySupport.ts declares "probably" playable (it only checks the
+        # avc1 profile string, not the actual bitstream) while no browser
+        # `<video>` element can actually decode it — the exact silent-black-
+        # preview failure that gate exists to prevent. Forcing 8-bit 4:2:0
+        # here is a no-op for the common already-8-bit-4:2:0 case.
+        vf = f"{scale},format=yuv420p"
 
     cmd = [
         ffmpeg_bin(), "-y",
@@ -140,7 +170,7 @@ def _build_proxy_cmd(input_path: str, out_path: str, *, tonemap: bool, info: dic
         cmd += ["-f", "lavfi", "-i", "anullsrc=cl=stereo:r=48000", "-shortest"]
     cmd += [
         "-vf", vf,
-        "-c:v", "libsvtav1", "-crf", "35", "-preset", "8", "-g", "1",
+        "-c:v", "libx264", "-crf", "20", "-preset", "veryfast", "-g", "1",
         "-c:a", "libopus", "-b:a", "96k",
         "-movflags", "+faststart",
         out_path,
@@ -187,7 +217,7 @@ def make_proxy(src: str, out: str, *, tonemap: bool, info: dict) -> str:
         progress("Proxy HDR→SDR colors WILL be less accurate (washed out highlights, shifted colors).")
         progress("To fix: run `montaj doctor` for instructions on installing libzimg.")
 
-    progress(f"Encoding proxy for {src}: av1-crf35-fast ({PROXY_LOOK})")
+    progress(f"Encoding proxy for {src}: h264-crf20-fast ({PROXY_LOOK})")
 
     timeout = max(900, _source_duration(src, info) * 2)
     _run_atomic_encode(cmd, tmp_path, out, label="ffmpeg proxy", timeout=timeout)

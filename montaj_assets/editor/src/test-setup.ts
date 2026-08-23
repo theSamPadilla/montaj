@@ -7,6 +7,6 @@ import '@testing-library/jest-dom'
 // covered explicitly via __setProxySupportForTests in proxySupport.test.ts.
 const realCanPlayType = HTMLMediaElement.prototype.canPlayType
 HTMLMediaElement.prototype.canPlayType = function (type: string) {
-  if (type.includes('av01')) return 'probably'
+  if (type.includes('avc1')) return 'probably'
   return realCanPlayType.call(this, type)
 }

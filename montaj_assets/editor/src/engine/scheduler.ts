@@ -97,7 +97,7 @@ import { effectiveItemAudio, enabledTrackItems, enabledTracks, withEnabledItemTr
  * playback at cross-source cuts. That lesson was measured against 4K 10-bit
  * HEVC masters with the moov atom at the END of the file (a slow tail range
  * fetch before anything can be indexed). The engine only ever opens SP3's
- * faststart AV1 proxies, which is a different order of magnitude — hence the
+ * faststart H.264 proxies, which is a different order of magnitude — hence the
  * plan's 1s. It is a dep (`prewarmLeadS`) precisely so the parity checklist can
  * move it without a code change if a real project says otherwise.
  */
@@ -499,7 +499,7 @@ export function transportEndFor(project: Project): number {
  * can act on: its chain is `nobg_preview_src > proxySrc > normalizedSrc > src`,
  * and three of those four are things this engine must never hand to its
  * demuxer — the masters are 4K 10-bit HEVC and `nobg_preview_src` is VP9 WebM,
- * while the demuxer is MP4-only in v1 and the decoder is configured for AV1.
+ * while the demuxer is MP4-only in v1 and the decoder is configured for H.264.
  *
  * `eligibility.ts` keeps whole projects containing those out of engine mode in
  * the first place, but eligibility is evaluated once per project-LOAD (plan
