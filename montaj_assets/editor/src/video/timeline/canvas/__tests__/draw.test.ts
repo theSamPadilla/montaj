@@ -203,6 +203,27 @@ describe('computeTimelineLayout', () => {
     expect(layout.rows.find(r => r.trackIdx === 0)!.height).toBe(BASE_VISUAL_ROW_RENDER_HEIGHT_PX)
   })
 
+  it('reorders a scrambled-input project so the video track is trackIdx 0, even when it was written second on disk (Part B)', () => {
+    // Raw/on-disk order: overlay first, video second — `allTracks` here
+    // comes from `trackItems`, which funnels through `normalizeTracks`
+    // (now order-canonicalizing too), so `computeTimelineLayout` never sees
+    // the raw order — the video track lands at trackIdx 0 regardless of
+    // where it sat in the stored array.
+    const p = project({
+      tracks: [
+        [{ id: 'ov', type: 'overlay', start: 0, end: 1 }],
+        [{ id: 'v0', type: 'video', src: 'v0.mp4', start: 0, end: 1 }],
+      ],
+    } as unknown as Partial<Project>)
+
+    const layout = computeTimelineLayout(p)
+    const baseRow = layout.rows.find(r => r.trackIdx === 0)!
+    expect(baseRow.items.map(i => i.id)).toEqual(['v0'])
+    expect(baseRow.height).toBe(BASE_VISUAL_ROW_RENDER_HEIGHT_PX)
+    const overlayRow = layout.rows.find(r => r.trackIdx === 1)!
+    expect(overlayRow.items.map(i => i.id)).toEqual(['ov'])
+  })
+
   it('is empty for an empty project, but still reserves the ruler', () => {
     const layout = computeTimelineLayout(project())
     expect(layout).toEqual({
@@ -218,7 +239,9 @@ describe('computeTimelineLayout', () => {
   describe('the caption band(s)', () => {
     it('sits strictly between the last overlay row and the base video row', () => {
       const p = project({
-        tracks: [[clip({ id: 'base' })], [clip({ id: 'ov1' })]],
+        // Overlay-typed, not `clip()`'s default video — this test is
+        // specifically about an OVERLAY row above the base, per its own name.
+        tracks: [[clip({ id: 'base' })], [clip({ id: 'ov1', type: 'overlay' })]],
         captions: { style: 'clean', segments: [captionSegment()] },
       } as unknown as Partial<Project>)
 
@@ -270,14 +293,16 @@ describe('computeTimelineLayout', () => {
     // reproduced here, numeral for numeral, rather than compared loosely.
     it('keeps a lane-0-only layout — band y, band height, and total surface height — byte-for-byte identical to before N-lane captions', () => {
       const p = project({
-        tracks: [[clip({ id: 'base' })], [clip({ id: 'ov1' })]],
+        // Overlay-typed, not `clip()`'s default video: this is the SINGLE
+        // -video-track case (only `base` is video) the byte-identical
+        // guarantee is about — the caption band still sits directly above
+        // the base row, exactly where it always has.
+        tracks: [[clip({ id: 'base' })], [clip({ id: 'ov1', type: 'overlay' })]],
         captions: { style: 'clean', segments: [captionSegment()] },
       } as unknown as Partial<Project>)
 
       const layout = computeTimelineLayout(p)
-      // `ov1` is a bare `clip()` — VIDEO-kind — so under the "every video
-      // track is tall" rule it is BASE height, not VISUAL height. Re-derived
-      // from the layout's own rows rather than pinned to either height
+      // Re-derived from the layout's own rows rather than pinned to a height
       // constant, so this regression guard survives future height changes.
       const upperRow = layout.rows.find(r => r.trackIdx === 1)!
       const baseRow = layout.rows.find(r => r.trackIdx === 0)!
@@ -292,7 +317,9 @@ describe('computeTimelineLayout', () => {
 
     it('emits N bands in descending lane order, lane 0 landing exactly where the single band sits today', () => {
       const p = project({
-        tracks: [[clip({ id: 'base' })], [clip({ id: 'ov1' })]],
+        // Overlay-typed, not `clip()`'s default video — single-video-track
+        // case, so lane 0 lands directly above `base` with nothing between.
+        tracks: [[clip({ id: 'base' })], [clip({ id: 'ov1', type: 'overlay' })]],
         captions: {
           style: 'clean',
           segments: [
@@ -317,6 +344,37 @@ describe('computeTimelineLayout', () => {
       // Higher lanes stack upward (smaller y) toward the overlays.
       expect(lane1.y).toBeLessThan(lane0.y)
       expect(lane2.y).toBeLessThan(lane1.y)
+    })
+
+    // ── Part B: track grouping — the caption band sits above the WHOLE
+    // video block, not squeezed between two video tracks ──────────────────
+
+    it('with two video tracks and one overlay track, stacks overlay(top) → captions → video block (topmost video, then base)', () => {
+      const p = project({
+        tracks: [
+          [clip({ id: 'base' })],                      // video, base
+          [clip({ id: 'video2', type: 'video' })],      // video, second track
+          [clip({ id: 'ov1', type: 'overlay' })],       // overlay
+        ],
+        captions: { style: 'clean', segments: [captionSegment()] },
+      } as unknown as Partial<Project>)
+
+      const layout = computeTimelineLayout(p)
+      // Already in canonical order in this fixture (video tracks precede the
+      // overlay track), so trackIdx assignment is unchanged from array order
+      // — but the DRAW order (top of screen first) is still the reverse.
+      expect(layout.rows.map(r => r.trackIdx)).toEqual([2, 1, 0])
+      const overlayRow = layout.rows.find(r => r.trackIdx === 2)!
+      const video2Row = layout.rows.find(r => r.trackIdx === 1)!
+      const baseRow = layout.rows.find(r => r.trackIdx === 0)!
+
+      expect(layout.captions).toHaveLength(1)
+      const band = layout.captions![0]
+      // Captions sit directly above the TOPMOST video track (video2) — NOT
+      // between video2 and base — and directly below the overlay row.
+      expect(band.y).toBe(overlayRow.y + overlayRow.height + ROW_GAP_PX)
+      expect(video2Row.y).toBe(band.y + band.height + ROW_GAP_PX)
+      expect(video2Row.y + video2Row.height + ROW_GAP_PX).toBe(baseRow.y)
     })
 
     it('a hole lane still gets its own band, empty of segments, rather than being skipped', () => {

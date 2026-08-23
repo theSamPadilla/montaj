@@ -16,7 +16,7 @@
  */
 import { describe, it, expect } from 'vitest'
 import type { Project } from '../../../types'
-import { applyMoveDeltaToSelection } from '../multiSelectOps'
+import { applyMoveDeltaToSelection, deleteSelection } from '../multiSelectOps'
 import { trackItems } from '../timeline-model'
 
 const TOTAL_DURATION = 20
@@ -390,5 +390,58 @@ describe('applyMoveDeltaToSelection — a caption overhanging totalDuration', ()
     const before = overhangProject()
     const after = applyMoveDeltaToSelection(before, ['c0', 'over'], 0.5, OVERHANG_TOTAL_DURATION)
     expect(after).toBe(before)
+  })
+})
+
+// ── deleteSelection — track grouping survives a prune (Part B) ─────────────
+//
+// `deleteSelection` re-groups its result (`normalizeTrackOrder`) after
+// pruning emptied tracks, because a prune can change a SURVIVING track's
+// coarse kind: a mixed track that loses its only video item becomes
+// overlay-kind, and the canonical video-block/overlay-block stack has to
+// re-absorb it rather than leave it stranded where it used to sit.
+
+describe('deleteSelection', () => {
+  function trackProject(
+    tracks: Array<{ id: string; items: Array<{ id: string; type: string; start: number; end: number }> }>,
+  ): Project {
+    return { id: 'p', tracks } as unknown as Project
+  }
+
+  it('returns the project unchanged when nothing is selected', () => {
+    const p = trackProject([{ id: 'trk-0', items: [{ id: 'v0', type: 'video', start: 0, end: 5 }] }])
+    expect(deleteSelection(p, [])).toBe(p)
+  })
+
+  it('prunes a track left empty by the delete (baseline, unaffected by grouping)', () => {
+    const p = trackProject([
+      { id: 'trk-0', items: [{ id: 'v0', type: 'video', start: 0, end: 5 }] },
+      { id: 'trk-1', items: [{ id: 'o0', type: 'overlay', start: 0, end: 5 }] },
+    ])
+    const next = deleteSelection(p, ['o0'])
+    expect(next.tracks!.map(t => t.id)).toEqual(['trk-0'])
+  })
+
+  it('re-groups a track whose coarse kind changed after the prune — losing its only video item drops it out of the video block', () => {
+    const p = trackProject([
+      {
+        id: 'trk-mixed',
+        items: [
+          { id: 'v-mixed', type: 'video', start: 0, end: 5 },
+          { id: 'o-mixed', type: 'overlay', start: 0, end: 5 },
+        ],
+      }, // mixed — video-kind today (has a video item), so it's in the video
+         // group AHEAD of trk-video, matching their raw array order.
+      { id: 'trk-video', items: [{ id: 'v0', type: 'video', start: 0, end: 5 }] },
+      { id: 'trk-overlay', items: [{ id: 'o0', type: 'overlay', start: 0, end: 5 }] },
+    ])
+
+    const next = deleteSelection(p, ['v-mixed'])
+
+    // trk-mixed lost its only video item and is now overlay-kind, so it
+    // drops OUT of the video block — trk-video (still video-kind) moves
+    // ahead of it, even though trk-mixed came first in the raw array.
+    expect(next.tracks!.map(t => t.id)).toEqual(['trk-video', 'trk-mixed', 'trk-overlay'])
+    expect(next.tracks!.find(t => t.id === 'trk-mixed')!.items.map(i => i.id)).toEqual(['o-mixed'])
   })
 })

@@ -321,7 +321,13 @@ export function moveItemAcrossTracks({ tracks, item, start, end, sourceTrackIdx,
     ? [...removed, newTrack()]
     : removed.map((t, i) => i === bestIdx ? { ...t, items: [...t.items, movedItem] } : t)
 
-  return placed.filter(t => t.items.length > 0)
+  // Re-group into the canonical video-block/overlay-block stack (see
+  // `normalizeTrackOrder`'s doc). This is what makes a freshly-minted video
+  // track — appended at the top by the mint above — land in the video block
+  // rather than staying stranded above the overlays, and makes every
+  // mid-drag transient frame already-canonical instead of relying on some
+  // later pass to re-normalize it.
+  return orderedTrackArray(placed.filter(t => t.items.length > 0))
 }
 
 // ── Audio track update ───────────────────────────────────────────────────
@@ -498,18 +504,79 @@ function assignTrackId(index: number, taken: Set<string>): string {
   return candidate
 }
 
+// ── Track group ordering ─────────────────────────────────────────────────
+// Sam's decision: the timeline ALWAYS stacks (top→bottom) overlay tracks,
+// then the caption band(s), then every VIDEO track as one contiguous block
+// (base video at the bottom), then audio lanes. Video and overlay tracks
+// stay SEPARATE — the kind-lock in `moveItemAcrossTracks` already blocks new
+// cross-kind mixing, so this only has to group what's already there, never
+// merge or split a track.
+
+/** A track's coarse kind for STACKING purposes: 'video' if it holds at least
+ *  one video item, 'overlay' otherwise (overlay/image items, or none at
+ *  all). Distinct from `moveItemAcrossTracks`'s own item-level `coarse` —
+ *  that one classifies a single dragged ITEM to gate a move; this one
+ *  classifies a whole TRACK by its content, to group tracks for display. A
+ *  track holding even one video item groups as video, mixed or not. */
+function trackGroupKind(track: VisualTrack): 'video' | 'overlay' {
+  return track.items.some(item => item.type === 'video') ? 'video' : 'overlay'
+}
+
 /**
- * Return `project` with `tracks` in object form. Accepts either shape.
+ * Stably partition `tracks` into the video group (in existing relative
+ * order) followed by the overlay group (in existing relative order).
+ * Returns the SAME array reference when the input is already in that order
+ * — the shared core both `normalizeTrackOrder` (below) and `normalizeTracks`
+ * call, so the identity contract lives in exactly one place.
+ */
+function orderedTrackArray(tracks: VisualTrack[]): VisualTrack[] {
+  const video: VisualTrack[] = []
+  const overlay: VisualTrack[] = []
+  for (const track of tracks) (trackGroupKind(track) === 'video' ? video : overlay).push(track)
+  const reordered = [...video, ...overlay]
+  return reordered.every((track, i) => track === tracks[i]) ? tracks : reordered
+}
+
+/**
+ * Reorder `project.tracks` into the canonical video-block/overlay-block
+ * stack (see the section header above) — a STABLE partition, so it only
+ * moves the two groups past each other and never reorders within one. Base
+ * video (index 0 today) is always video-kind, so it always stays first.
+ *
+ * Only reorders `tracks` itself — never touches items, captions, or audio —
+ * and assumes `tracks` is already in `VisualTrack[]` object form; call
+ * `normalizeTracks` first for a project that might still be in the legacy
+ * array-of-arrays shape (its own hook below already applies this after).
+ *
+ * Identity-preserving: when `tracks` is ALREADY in canonical order, returns
+ * the exact SAME `project` object — no new array, no new project, not even
+ * a shallow copy. This is load-bearing, not a micro-optimisation: a
+ * normalizer that changes identity on already-canonical state defeats "same
+ * reference → no re-render, no new undo entry" for a project that hasn't
+ * actually changed, silently eating whatever gesture is mid-flight when it
+ * runs (see the `normalizeTrackOrder(canonical) === canonical` test).
+ */
+export function normalizeTrackOrder<P extends Project>(project: P): P {
+  const tracks = project.tracks
+  if (!Array.isArray(tracks) || tracks.length === 0) return project
+  const reordered = orderedTrackArray(tracks)
+  return reordered === tracks ? project : { ...project, tracks: reordered }
+}
+
+/**
+ * Return `project` with `tracks` in object form AND in canonical stacking
+ * order (see `normalizeTrackOrder`). Accepts either shape.
  *
  * Pure — never mutates the input, at any depth. New track objects and new item
  * ARRAYS are built; the item objects themselves are carried over by reference.
  *
  * Idempotent, and identity-preserving: when `tracks` is already in object form
- * the input object itself is returned, so `normalizeTracks(p) === p`. That
- * identity is what the lazy on-open migration reads as "nothing to write" — a
- * converged project must trigger no save. Same for a project with no `tracks`,
- * a `tracks` of `null`/`undefined`, or a `tracks` that is not an array;
- * validation is someone else's job and normalization never throws.
+ * AND already in canonical order, the input object itself is returned, so
+ * `normalizeTracks(p) === p`. That identity is what the lazy on-open
+ * migration reads as "nothing to write" — a converged project must trigger
+ * no save. Same for a project with no `tracks`, a `tracks` of
+ * `null`/`undefined`, or a `tracks` that is not an array; validation is
+ * someone else's job and normalization never throws.
  *
  * Per element of `tracks`:
  *   - an array  → `{ id: <generated>, items: <copy> }`
@@ -518,6 +585,10 @@ function assignTrackId(index: number, taken: Set<string>): string {
  *     to an array (missing / null / non-array → `[]`); `id` filled in when
  *     missing, not a string, empty, or a duplicate of an earlier track's id.
  *   - anything else (null, a string, a number) → `{ id: <generated>, items: [] }`
+ * Then the whole array is re-ordered per `normalizeTrackOrder` — so this is
+ * the ONE place that migrates a project to the current canonical shape,
+ * called on every open and after every track-affecting change (Sam's "always
+ * normalize" decision), rather than something callers opt into separately.
  *
  * The input side is deliberately structural and loose so this keeps compiling
  * both while `Project.tracks` is `VisualItem[][]` and after it becomes
@@ -527,7 +598,10 @@ export function normalizeTracks<T extends { tracks?: unknown }>(project: T): T {
   if (project === null || typeof project !== 'object') return project
   const tracks: unknown = project.tracks
   if (!Array.isArray(tracks)) return project
-  if (isTrackObjectForm(tracks)) return project
+  if (isTrackObjectForm(tracks)) {
+    const reordered = orderedTrackArray(tracks as VisualTrack[])
+    return reordered === tracks ? project : ({ ...project, tracks: reordered } as T)
+  }
 
   // Every explicit id in the project, collected up front so a generated
   // `trk-<i>` can never land on an id a LATER track already claims.
@@ -556,7 +630,9 @@ export function normalizeTracks<T extends { tracks?: unknown }>(project: T): T {
 
   // The spread widens T to `T & { tracks: … }`; the cast restores the caller's
   // own project type, which is what it was apart from the tracks rebuild.
-  return { ...project, tracks: out } as T
+  // A brand-new `tracks` array either way, so no identity to preserve here —
+  // just order it before handing it back.
+  return { ...project, tracks: orderedTrackArray(out as unknown as VisualTrack[]) } as T
 }
 
 /**

@@ -631,12 +631,17 @@ describe('cross-track move', () => {
     expect(trackIndexOf(after, 'c1')).toBe(1)
   })
 
-  it('creates a new top track past the end of the stack', () => {
+  it('mints a new video track at the top of the video block, below any overlay track (Part B track grouping)', () => {
+    // Two steps up from track 0 mints a new track past the top of the
+    // existing (2-track) stack — but the result is RE-GROUPED: the new
+    // track is video-kind, so it joins the video block (alongside the
+    // remaining c1) ahead of the overlay track o0, rather than staying
+    // "literally on top" at index 2 the way an un-grouped mint would.
     const d = new Driver(makeContext())
     d.down(C0_BODY.x, C0_BODY.y)
     const after = lastProjectChange(d.move(C0_BODY.x, C0_BODY.y - VISUAL_ROW_HEIGHT_PX * 2))
     expect(after.tracks).toHaveLength(3)
-    expect(trackIndexOf(after, 'c0')).toBe(2)
+    expect(trackIndexOf(after, 'c0')).toBe(1)
   })
 
   it('prunes a track the move emptied', () => {

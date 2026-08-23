@@ -354,6 +354,14 @@ export interface TimelineLayout {
  * geometry — one layout, two readers.
  */
 export function computeTimelineLayout(project: Project): TimelineLayout {
+  // Order-normalized (Part B): `trackItems` funnels through `normalizeTracks`,
+  // which now groups tracks into the canonical video-block/overlay-block
+  // stack (`normalizeTrackOrder`) before returning — so `allTracks` here is
+  // ALREADY in that order, and `trackSettings` below (also read off
+  // `normalizeTracks(project)`) agrees with it index-for-index by
+  // construction. Display, hit-test (which derives its rows from this same
+  // layout), and mutation (`moveItemAcrossTracks` re-groups its own result
+  // the same way) therefore can never disagree about what trackIdx N is.
   const allTracks = trackItems(project)
   // Settings live on the track object; `trackItems` deliberately returns only
   // items, so read `enabled` off the normalized tracks alongside it. A
@@ -390,13 +398,30 @@ export function computeTimelineLayout(project: Project): TimelineLayout {
     }
   }
 
+  // Highest trackIdx that holds a video item. Because `allTracks` is already
+  // order-normalized (video block first, contiguous from index 0), this is
+  // the TOP of that block — where the caption band(s) belong: directly above
+  // the video block, below any overlay tracks. `-1` when there are no video
+  // tracks at all, in which case captions fall back to sitting above
+  // trackIdx 0 — today's behaviour, unchanged, whatever kind that track is.
+  // For a project with exactly one video track, `topVideoIdx` is always 0
+  // (the base track), so `captionEmitIdx` is 0 either way and this whole
+  // change is a no-op for the single-video-track case.
+  let topVideoIdx = -1
+  for (let i = 0; i < allTracks.length; i++) {
+    if (allTracks[i].some(item => item.type === 'video')) topVideoIdx = i
+  }
+  const captionEmitIdx = topVideoIdx >= 0 ? topVideoIdx : 0
+
   for (let reversedIdx = 0; reversedIdx < allTracks.length; reversedIdx++) {
     const trackIdx = allTracks.length - 1 - reversedIdx
-    // The caption bands sit directly above the base video track — captions
-    // narrate that footage, so they read as adjacent to it. `trackIdx === 0`
-    // is always the LAST iteration of this loop (reversed order), so this is
-    // "immediately before the base row is pushed".
-    if (trackIdx === 0 && captionGroups.length > 0) emitCaptionBands()
+    // The caption bands sit directly above the TOP of the video block —
+    // captions narrate that footage, so they read as adjacent to it, above
+    // whatever overlay tracks sit above the video block and below the video
+    // block itself. `trackIdx === captionEmitIdx` fires exactly once per
+    // layout, immediately before that row is pushed (rows are pushed in
+    // descending trackIdx order, i.e. top of screen first).
+    if (trackIdx === captionEmitIdx && captionGroups.length > 0) emitCaptionBands()
     // Tall not just for the base track (trackIdx 0, always tall even when
     // empty, so a blank base row doesn't jump size once footage lands) but
     // for ANY video-kind track — a second video track carries the same
@@ -416,9 +441,10 @@ export function computeTimelineLayout(project: Project): TimelineLayout {
     y += height + ROW_GAP_PX
   }
   // A project with captions but NO visual tracks at all never runs the loop
-  // above, so the hook that emits the bands right before `trackIdx === 0`
-  // never fires. Emit them here instead — still above where the (absent) base
-  // row would sit, which is the same rule applied to zero rows.
+  // above, so the hook that emits the bands right before `trackIdx ===
+  // captionEmitIdx` never fires. Emit them here instead — still above where
+  // the (absent) base row would sit, which is the same rule applied to zero
+  // rows.
   if (allTracks.length === 0 && captionGroups.length > 0) emitCaptionBands()
 
   // Resolved once per layout, not per track: an audio track may legally omit

@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import type { Project } from '../../../types'
-import type { AudioTrack, VisualItem } from '../../../schema'
+import type { AudioTrack, VisualItem, VisualTrack } from '../../../schema'
 import {
   AUDIO_FALLBACK_SPAN_SECONDS,
   resolveAudioWindow,
@@ -8,6 +8,7 @@ import {
   computeDerivedTiming,
   groupAudioLanes,
   mapTrackItems,
+  normalizeTrackOrder,
   normalizeTracks,
   trackItems,
 } from '../timeline-model'
@@ -420,7 +421,11 @@ describe('normalizeTracks / trackItems', () => {
       id: 'p1',
       tracks: [
         { id: 'trk-0', items: [], volume: 0.8, muted: false, enabled: true, somethingNew: { a: 1 } },
-        [item('a')],  // forces a rebuild so the object above is copied, not returned as-is
+        // Overlay-typed, not `item('a')`'s default video — both tracks stay
+        // in the SAME group (empty and overlay both group as overlay), so
+        // normalizeTracks' order-canonicalization doesn't move this one past
+        // index 0 and this test can stay about shape-normalization alone.
+        [{ id: 'a', type: 'overlay', start: 0, end: 1 }],  // forces a rebuild so the object above is copied, not returned as-is
       ],
     })
     expect(out[0]).toEqual({
@@ -448,6 +453,71 @@ describe('normalizeTracks / trackItems', () => {
     expect(trackItems(bogus)).toEqual([])
     expect(trackItems(null)).toEqual([])
     expect(trackItems(undefined)).toEqual([])
+  })
+})
+
+// ── Track group ordering ────────────────────────────────────────────────
+//
+// The canonical stack: every video track first (in existing relative
+// order), then every overlay track (in existing relative order). Identity
+// preservation on an already-canonical project is load-bearing — see the
+// function's own doc comment — so it gets its own `toBe` assertion here,
+// not folded into a looser `toEqual` check.
+
+describe('normalizeTrackOrder', () => {
+  const videoItem = (id: string): VisualItem => ({ id, type: 'video', src: `${id}.mp4`, start: 0, end: 1 } as VisualItem)
+  const overlayItem = (id: string): VisualItem => ({ id, type: 'overlay', start: 0, end: 1 } as unknown as VisualItem)
+  const videoTrack = (id: string): VisualTrack => ({ id, items: [videoItem(`${id}-i`)] })
+  const overlayTrack = (id: string): VisualTrack => ({ id, items: [overlayItem(`${id}-i`)] })
+  const emptyTrack = (id: string): VisualTrack => ({ id, items: [] })
+  const tracksOf = (p: Project): VisualTrack[] => normalizeTrackOrder(p).tracks as VisualTrack[]
+
+  it('stably partitions [video, overlay, video] into [video, video, overlay]', () => {
+    const v0 = videoTrack('v0')
+    const o0 = overlayTrack('o0')
+    const v1 = videoTrack('v1')
+    const out = tracksOf(project({ tracks: [v0, o0, v1] } as unknown as Partial<Project>))
+    expect(out.map(t => t.id)).toEqual(['v0', 'v1', 'o0'])
+    // Stable: v0 still precedes v1 (their original relative order), and
+    // every track survives BY REFERENCE — only the array's order changes.
+    expect(out[0]).toBe(v0)
+    expect(out[1]).toBe(v1)
+    expect(out[2]).toBe(o0)
+  })
+
+  it('returns the SAME project object when tracks are already canonical', () => {
+    const p = project({ tracks: [videoTrack('v0'), videoTrack('v1'), overlayTrack('o0')] } as unknown as Partial<Project>)
+    expect(normalizeTrackOrder(p)).toBe(p)
+  })
+
+  it('base video (index 0) always stays first', () => {
+    const base = videoTrack('base')
+    const out = tracksOf(project({ tracks: [base, overlayTrack('o0'), videoTrack('v1')] } as unknown as Partial<Project>))
+    expect(out[0]).toBe(base)
+  })
+
+  it('leaves an overlay-only project untouched (already canonical, no video group at all)', () => {
+    const p = project({ tracks: [overlayTrack('o0'), overlayTrack('o1')] } as unknown as Partial<Project>)
+    expect(normalizeTrackOrder(p)).toBe(p)
+  })
+
+  it('groups an empty track as overlay', () => {
+    const v0 = videoTrack('v0')
+    const out = tracksOf(project({ tracks: [emptyTrack('e0'), v0] } as unknown as Partial<Project>))
+    expect(out.map(t => t.id)).toEqual(['v0', 'e0'])
+  })
+
+  it('groups a track with even one video item as video, mixed with overlay items or not', () => {
+    const mixed: VisualTrack = { id: 'mixed', items: [overlayItem('a'), videoItem('b')] }
+    const out = tracksOf(project({ tracks: [overlayTrack('o0'), mixed] } as unknown as Partial<Project>))
+    expect(out.map(t => t.id)).toEqual(['mixed', 'o0'])
+  })
+
+  it('is a no-op for a project with no tracks, or an empty tracks array', () => {
+    const noTracks = project({})
+    expect(normalizeTrackOrder(noTracks)).toBe(noTracks)
+    const emptyTracks = project({ tracks: [] })
+    expect(normalizeTrackOrder(emptyTracks)).toBe(emptyTracks)
   })
 })
 

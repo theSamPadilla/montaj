@@ -10,7 +10,7 @@
 import type { VisualItem, AudioTrack, CaptionSegment, Captions } from '../../schema'
 import type { Project } from '../../types'
 import { laneOf } from '../captionLanes'
-import { mapTrackItems, trackItems } from './timeline-model'
+import { mapTrackItems, normalizeTrackOrder, trackItems } from './timeline-model'
 import { computeResizedItem, resizeWindowedItem, type Draggable } from './useItemDragDrop'
 
 
@@ -277,7 +277,7 @@ export function deleteSelection(project: Project, selectedIds: readonly string[]
   const targets = new Set(selectedIds)
   if (targets.size === 0) return project
 
-  return {
+  const next: Project = {
     ...project,
     // Prune, not a plain map: an emptied track collapses. The surviving TRACK
     // OBJECTS pass through the filter, so each keeps its own id and settings
@@ -291,6 +291,12 @@ export function deleteSelection(project: Project, selectedIds: readonly string[]
         }
       : project.audio,
   }
+  // Re-group (Part B): a prune can change a track's coarse kind — a mixed
+  // track that loses its only video item becomes overlay-kind — so the
+  // canonical video-block/overlay-block invariant (`normalizeTrackOrder`) is
+  // re-asserted here rather than assumed to survive every prune. A no-op
+  // (same reference) when it already does.
+  return normalizeTrackOrder(next)
 }
 
 /** Selection helper: toggle additive (shift-click) vs replace (plain click).

@@ -138,14 +138,53 @@ describe('moveItemAcrossTracks — kind lock (video vs overlay)', () => {
     // Track 1 is overlay-kind (wrong kind, even though there's no
     // time-overlap with `ov`); track 0 is video-kind but occupied by an
     // overlapping clip (wrong reason, but still blocked). Neither works, so
-    // the search must mint a new (video) track above the stack.
+    // the search must mint a new (video) track above the stack. The result
+    // is then re-grouped into the canonical video-block/overlay-block stack
+    // (see `normalizeTrackOrder`), so the minted video track lands ahead of
+    // the overlay track in the final order, not merely "above" it positionally.
     const videoDragged = clip('d', 0, 10)
     const tracks: VisualTrack[] = [
       { id: 'trk-0', items: [videoDragged, clip('blocker', 2, 8)] },
       { id: 'trk-1', items: [overlay('ov', 50, 60)] },
     ]
     const moved = moveItemAcrossTracks({ tracks, item: videoDragged, start: 0, end: 10, sourceTrackIdx: 0, dy: -24 })
-    expect(ids(moved)).toEqual([['blocker'], ['ov'], ['d']])
+    expect(ids(moved)).toEqual([['blocker'], ['d'], ['ov']])
+  })
+})
+
+// ── Track grouping (Part B): the result is ALWAYS canonical ─────────────
+//
+// `moveItemAcrossTracks` re-groups its own output into the video-block/
+// overlay-block stack (`normalizeTrackOrder`) before returning, so every
+// mid-drag frame is already canonical rather than relying on a later pass to
+// fix it up.
+
+const trackKind = (t: VisualTrack): 'video' | 'overlay' =>
+  t.items.some(i => i.type === 'video') ? 'video' : 'overlay'
+
+describe('moveItemAcrossTracks — result is canonically grouped', () => {
+  it('a newly-minted video track (past the top of the stack, over an overlay track) lands in the video block, not stranded above the overlay', () => {
+    // trk-0 is fully occupied by an overlapping blocker (can't share), and
+    // trk-1 is overlay-kind (kind-lock rules it out too) — the search mints
+    // a new track two steps up. Before Part B that new track would simply
+    // sit "on top" (index 2, above the overlay track); the re-group now
+    // moves it back down into the video block, ahead of the overlay track.
+    const videoDragged = clip('d', 0, 10)
+    const tracks: VisualTrack[] = [
+      { id: 'trk-0', items: [videoDragged, clip('blocker', 0, 10)] },
+      { id: 'trk-1', items: [overlay('ov', 50, 60)] },
+    ]
+    const moved = moveItemAcrossTracks({ tracks, item: videoDragged, start: 0, end: 10, sourceTrackIdx: 0, dy: -48 })
+    expect(ids(moved)).toEqual([['blocker'], ['d'], ['ov']])
+    expect(moved.map(trackKind)).toEqual(['video', 'video', 'overlay'])
+  })
+
+  it('the result is always canonical — matches its own re-grouping — for an ordinary same-kind move too', () => {
+    const tracks = stack([dragged], [clip('x', 50, 60)])
+    const moved = moveItemAcrossTracks({ tracks, item: dragged, start: 0, end: 10, sourceTrackIdx: 0, dy: -13 })
+    const videoGroup = moved.filter(t => trackKind(t) === 'video')
+    const overlayGroup = moved.filter(t => trackKind(t) === 'overlay')
+    expect(moved).toEqual([...videoGroup, ...overlayGroup])
   })
 })
 
