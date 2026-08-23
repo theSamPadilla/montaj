@@ -87,7 +87,7 @@ describe('TrackGutter', () => {
 
   it('omits the caption cell when showCaptionRow is false, even though the layout carries a caption band', () => {
     const p = project({ captions: captions() })
-    expect(computeTimelineLayout(p).caption).toBeTruthy()
+    expect(computeTimelineLayout(p).captions).toBeTruthy()
     render(<TrackGutter project={p} showCaptionRow={false} />)
     expect(screen.queryByLabelText('Captions')).toBeNull()
   })
@@ -110,10 +110,10 @@ describe('TrackGutter — caption cell alignment', () => {
   // the canvas layout, so its rail cell has to be positioned like every other
   // row rather than trail the gutter as its own flex cell.
 
-  it('positions the caption cell at layout.caption.y/height, inside the same block the track rows live in', () => {
+  it('positions the caption cell at layout.captions[0].y/height, inside the same block the track rows live in', () => {
     const p = project({ captions: captions() })
     const layout = computeTimelineLayout(p)
-    expect(layout.caption).toBeTruthy()
+    expect(layout.captions).toHaveLength(1)
 
     const { container } = render(<TrackGutter project={p} layout={layout} showCaptionRow />)
 
@@ -123,8 +123,8 @@ describe('TrackGutter — caption cell alignment', () => {
     // the cell is wrapped the SAME way the other rows are, not styled directly.
     const wrapper = cell.closest('.absolute') as HTMLElement
     expect(wrapper).toBeTruthy()
-    expect(wrapper.style.top).toBe(`${layout.caption!.y}px`)
-    expect(wrapper.style.height).toBe(`${layout.caption!.height}px`)
+    expect(wrapper.style.top).toBe(`${layout.captions![0].y}px`)
+    expect(wrapper.style.height).toBe(`${layout.captions![0].height}px`)
 
     // Structural, not a snapshot: the wrapper is a DESCENDANT of the `.relative`
     // block the track rows and audio lanes are absolutely positioned inside —
@@ -134,15 +134,15 @@ describe('TrackGutter — caption cell alignment', () => {
   })
 
   it('renders no caption cell on a project with no captions, even though showCaptionRow defaults true, and nothing else shifts', () => {
-    const p = project() // no `captions` field — the layout carries no band at all
+    const p = project() // no `captions` field — the layout carries no bands at all
     const layout = computeTimelineLayout(p)
-    expect(layout.caption).toBeUndefined()
+    expect(layout.captions).toBeUndefined()
 
     const { container } = render(<TrackGutter project={p} layout={layout} />)
     expect(screen.queryByLabelText('Captions')).toBeNull()
 
     // The row/lane cells still land exactly where the (caption-less) layout
-    // says they do — a missing band doesn't leave a gap or shift anything.
+    // says they do — missing bands don't leave a gap or shift anything.
     const positioned = [...container.querySelectorAll<HTMLElement>('.absolute')]
     const seen = positioned.map(el => ({ top: el.style.top, height: el.style.height }))
     for (const row of layout.rows) {
@@ -150,6 +150,31 @@ describe('TrackGutter — caption cell alignment', () => {
     }
     for (const lane of layout.lanes) {
       expect(seen).toContainEqual({ top: `${lane.y}px`, height: `${lane.height}px` })
+    }
+  })
+
+  it('renders N cells, one per band, each at its own band y — "Captions 1"…"Captions N" once there is more than one', () => {
+    const p = project({
+      captions: captions({
+        segments: [
+          { text: 'a', start: 0, end: 1, lane: 0 },
+          { text: 'b', start: 0, end: 1, lane: 1 },
+          { text: 'c', start: 0, end: 1, lane: 2 },
+        ],
+      }),
+    })
+    const layout = computeTimelineLayout(p)
+    expect(layout.captions).toHaveLength(3)
+
+    render(<TrackGutter project={p} layout={layout} showCaptionRow />)
+
+    // The bare "Captions" label is gone once there is more than one band.
+    expect(screen.queryByLabelText('Captions')).toBeNull()
+    for (const band of layout.captions!) {
+      const cell = screen.getByLabelText(`Captions ${band.lane + 1}`)
+      const wrapper = cell.closest('.absolute') as HTMLElement
+      expect(wrapper.style.top).toBe(`${band.y}px`)
+      expect(wrapper.style.height).toBe(`${band.height}px`)
     }
   })
 })
@@ -280,6 +305,56 @@ describe('TrackGutter — rail controls and settings', () => {
     render(<TrackGutter project={twoTrackLane} showCaptionRow={false} onSetLaneMuted={onSetLaneMuted} />)
     fireEvent.click(screen.getByRole('button', { name: 'Mute audio lane' }))
     expect(onSetLaneMuted).toHaveBeenCalledWith(['a0', 'a1'], true)
+  })
+
+  it('shows no magnet control when the host has not wired onSetLaneMagnet', () => {
+    render(<TrackGutter project={project()} onSetLaneMuted={vi.fn()} />)
+    expect(screen.queryByRole('button', { name: /^Magnetic /i })).toBeNull()
+  })
+
+  it('offers a magnet toggle per audio lane when wired, reflecting the OFF default', () => {
+    render(<TrackGutter project={project()} onSetLaneMagnet={vi.fn()} />)
+    const toggle = screen.getByRole('button', { name: 'Magnetic audio lane' })
+    expect(toggle).toBeTruthy()
+    expect(toggle.getAttribute('aria-pressed')).toBe('false')
+  })
+
+  it('reflects an ON magnetic lane', () => {
+    const p = {
+      id: 'p',
+      tracks: [{ id: 't0', items: [video('c0')] }],
+      audio: { tracks: [{ id: 'a0', src: 'v.mp3', start: 0, end: 2, lane: 0, magnetic: true }] },
+    } as unknown as Project
+    render(<TrackGutter project={p} showCaptionRow={false} onSetLaneMagnet={vi.fn()} />)
+    expect(screen.getByRole('button', { name: 'Magnetic audio lane' }).getAttribute('aria-pressed')).toBe('true')
+  })
+
+  it('fans a lane magnet toggle out over every track id in the lane, with the NEW value', () => {
+    const onSetLaneMagnet = vi.fn()
+    const twoTrackLane = {
+      id: 'p',
+      tracks: [{ id: 't0', items: [video('c0')] }],
+      audio: { tracks: [
+        { id: 'a0', src: 'v.mp3', start: 0, end: 2, lane: 0 },
+        { id: 'a1', src: 'm.mp3', start: 0, end: 2, lane: 0 },
+      ] },
+    } as unknown as Project
+    render(<TrackGutter project={twoTrackLane} showCaptionRow={false} onSetLaneMagnet={onSetLaneMagnet} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Magnetic audio lane' }))
+    expect(onSetLaneMagnet).toHaveBeenCalledWith(['a0', 'a1'], true)
+  })
+
+  it('reads a lane as magnetic only when EVERY track in it is', () => {
+    const mixedLane = {
+      id: 'p',
+      tracks: [{ id: 't0', items: [video('c0')] }],
+      audio: { tracks: [
+        { id: 'a0', src: 'v.mp3', start: 0, end: 2, lane: 0, magnetic: true },
+        { id: 'a1', src: 'm.mp3', start: 0, end: 2, lane: 0 },
+      ] },
+    } as unknown as Project
+    render(<TrackGutter project={mixedLane} showCaptionRow={false} onSetLaneMagnet={vi.fn()} />)
+    expect(screen.getByRole('button', { name: 'Magnetic audio lane' }).getAttribute('aria-pressed')).toBe('false')
   })
 
   it('previews a volume drag and commits once on release', () => {

@@ -375,7 +375,7 @@ describe('hitTest — the caption band', () => {
   } as unknown as Project
 
   const l = computeTimelineLayout(captioned)
-  const band = l.caption!
+  const band = l.captions![0]
   const BAND_Y = Math.round(band.y + band.height / 2)
   const capBaseRow = l.rows.find(r => r.trackIdx === 0)!
   const inBand = (x: number, y: number = BAND_Y) => hitTest({ x, y }, l, VIEWPORT)

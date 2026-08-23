@@ -22,6 +22,7 @@ import {
   CLIP_SELECTED_BORDER_PX,
   MIN_LABEL_WIDTH_PX,
   PLAYHEAD_WIDTH_PX,
+  ROW_RADIUS_PX,
   TIMELINE_COLORS,
   TRACK_PALETTE,
   clampRectToSurface,
@@ -182,9 +183,9 @@ describe('computeTimelineLayout', () => {
     })
   })
 
-  // ── Captions in the canvas layout (Phase 1) ──
+  // ── Captions in the canvas layout (Phase 1: one band. Phase 3: N bands) ──
 
-  describe('the caption band', () => {
+  describe('the caption band(s)', () => {
     it('sits strictly between the last overlay row and the base video row', () => {
       const p = project({
         tracks: [[clip({ id: 'base' })], [clip({ id: 'ov1' })]],
@@ -195,14 +196,15 @@ describe('computeTimelineLayout', () => {
       const overlayRow = layout.rows.find(r => r.trackIdx === 1)!
       const baseRow = layout.rows.find(r => r.trackIdx === 0)!
 
-      expect(layout.caption).toBeDefined()
-      expect(layout.caption!.height).toBe(CAPTION_ROW_HEIGHT_PX)
-      expect(layout.caption!.y).toBeGreaterThan(overlayRow.y + overlayRow.height)
-      expect(layout.caption!.y).toBeLessThan(baseRow.y)
-      expect(layout.caption!.segments).toEqual([captionSegment()])
+      expect(layout.captions).toHaveLength(1)
+      expect(layout.captions![0].lane).toBe(0)
+      expect(layout.captions![0].height).toBe(CAPTION_ROW_HEIGHT_PX)
+      expect(layout.captions![0].y).toBeGreaterThan(overlayRow.y + overlayRow.height)
+      expect(layout.captions![0].y).toBeLessThan(baseRow.y)
+      expect(layout.captions![0].segments).toEqual([captionSegment()])
     })
 
-    it('is absent — not an empty band — with no captions, and every other row is unchanged', () => {
+    it('is absent — not an empty array — with no captions, and every other row is unchanged', () => {
       const tracks = [[clip({ id: 'base' })], [clip({ id: 'ov1' })]]
       const noCaptionsAtAll = project({ tracks } as unknown as Partial<Project>)
       const emptySegments = project({
@@ -213,7 +215,7 @@ describe('computeTimelineLayout', () => {
       const baseline = computeTimelineLayout(noCaptionsAtAll)
       for (const p of [noCaptionsAtAll, emptySegments]) {
         const layout = computeTimelineLayout(p)
-        expect(layout.caption).toBeUndefined()
+        expect(layout.captions).toBeUndefined()
         expect(layout.rows).toEqual(baseline.rows)
         expect(layout.lanes).toEqual(baseline.lanes)
         expect(layout.height).toBe(baseline.height)
@@ -227,9 +229,86 @@ describe('computeTimelineLayout', () => {
       const layout = computeTimelineLayout(p)
 
       expect(layout.rows).toEqual([])
-      expect(layout.caption).toBeDefined()
-      expect(layout.caption!.y).toBe(RULER_HEIGHT_PX + ROW_GAP_PX)
-      expect(layout.height).toBe(layout.caption!.y + CAPTION_ROW_HEIGHT_PX)
+      expect(layout.captions).toHaveLength(1)
+      expect(layout.captions![0].y).toBe(RULER_HEIGHT_PX + ROW_GAP_PX)
+      expect(layout.height).toBe(layout.captions![0].y + CAPTION_ROW_HEIGHT_PX)
+    })
+
+    // ── Regression guard (Phase 3) ──
+    // Multi-lane captions must not move a single-lane project's band by even
+    // one pixel: the exact geometry a lane-0-only project got in Phase 1 is
+    // reproduced here, numeral for numeral, rather than compared loosely.
+    it('keeps a lane-0-only layout — band y, band height, and total surface height — byte-for-byte identical to before N-lane captions', () => {
+      const p = project({
+        tracks: [[clip({ id: 'base' })], [clip({ id: 'ov1' })]],
+        captions: { style: 'clean', segments: [captionSegment()] },
+      } as unknown as Partial<Project>)
+
+      const layout = computeTimelineLayout(p)
+      const contentTop = RULER_HEIGHT_PX + ROW_GAP_PX
+      const overlayRow = layout.rows.find(r => r.trackIdx === 1)!
+      expect(overlayRow).toMatchObject({ y: contentTop, height: VISUAL_ROW_RENDER_HEIGHT_PX })
+
+      const expectedCaptionY = contentTop + VISUAL_ROW_RENDER_HEIGHT_PX + ROW_GAP_PX
+      expect(layout.captions).toHaveLength(1)
+      expect(layout.captions![0]).toMatchObject({ lane: 0, y: expectedCaptionY, height: CAPTION_ROW_HEIGHT_PX })
+
+      const baseRow = layout.rows.find(r => r.trackIdx === 0)!
+      expect(baseRow).toMatchObject({
+        y: expectedCaptionY + CAPTION_ROW_HEIGHT_PX + ROW_GAP_PX,
+        height: BASE_VISUAL_ROW_RENDER_HEIGHT_PX,
+      })
+      expect(layout.height).toBe(baseRow.y + baseRow.height)
+    })
+
+    it('emits N bands in descending lane order, lane 0 landing exactly where the single band sits today', () => {
+      const p = project({
+        tracks: [[clip({ id: 'base' })], [clip({ id: 'ov1' })]],
+        captions: {
+          style: 'clean',
+          segments: [
+            captionSegment({ id: 's0', lane: 0 }),
+            captionSegment({ id: 's1', lane: 1, start: 2, end: 4 }),
+            captionSegment({ id: 's2', lane: 2, start: 4, end: 6 }),
+          ],
+        },
+      } as unknown as Partial<Project>)
+
+      const layout = computeTimelineLayout(p)
+      const baseRow = layout.rows.find(r => r.trackIdx === 0)!
+
+      expect(layout.captions).toHaveLength(3)
+      // Index 0 is the HIGHEST lane; the last entry is lane 0.
+      expect(layout.captions!.map(c => c.lane)).toEqual([2, 1, 0])
+
+      const [lane2, lane1, lane0] = layout.captions!
+      // Lane 0 sits immediately above the base row — the exact position a
+      // lane-0-only project's single band has always occupied.
+      expect(lane0.y + lane0.height + ROW_GAP_PX).toBe(baseRow.y)
+      // Higher lanes stack upward (smaller y) toward the overlays.
+      expect(lane1.y).toBeLessThan(lane0.y)
+      expect(lane2.y).toBeLessThan(lane1.y)
+    })
+
+    it('a hole lane still gets its own band, empty of segments, rather than being skipped', () => {
+      const p = project({
+        tracks: [[clip({ id: 'base' })]],
+        captions: {
+          style: 'clean',
+          // Lanes 0 and 2 occupied; lane 1 is a hole.
+          segments: [
+            captionSegment({ id: 's0', lane: 0 }),
+            captionSegment({ id: 's2', lane: 2, start: 4, end: 6 }),
+          ],
+        },
+      } as unknown as Partial<Project>)
+
+      const layout = computeTimelineLayout(p)
+      expect(layout.captions).toHaveLength(3)
+      expect(layout.captions!.map(c => c.lane)).toEqual([2, 1, 0])
+      const holeBand = layout.captions!.find(c => c.lane === 1)!
+      expect(holeBand.segments).toEqual([])
+      expect(holeBand.height).toBe(CAPTION_ROW_HEIGHT_PX)
     })
   })
 })
@@ -847,6 +926,33 @@ describe('drawTimelineContent', () => {
       const stats = drawTimelineContent(r.ctx, scene({ project: p, layout: computeTimelineLayout(p) }))
       expect(stats.captionItemsDrawn).toBe(0)
       expect(r.of('set:fillStyle').some(c => c.args[0] === CAPTION_PALETTE.fill)).toBe(false)
+    })
+
+    // ── N bands (Phase 3) ──
+
+    it('paints every band\'s background, including a hole lane that draws no blocks', () => {
+      const p = projectWithCaptions([
+        captionSegment({ id: 's0', lane: 0, start: 0, end: 2, text: 'a' }),
+        captionSegment({ id: 's2', lane: 2, start: 4, end: 6, text: 'c' }),
+        // Lane 1 is a hole — no segment sits there, but it still gets a band.
+      ])
+      const layout = computeTimelineLayout(p)
+      expect(layout.captions).toHaveLength(3)
+      const holeBand = layout.captions!.find(c => c.lane === 1)!
+      expect(holeBand.segments).toEqual([])
+
+      const r = recordingContext()
+      const stats = drawTimelineContent(r.ctx, scene({ project: p, layout, viewport: viewport({ pxPerSecond: 10 }) }))
+
+      // Two real segments drawn; the hole lane draws none.
+      expect(stats.captionItemsDrawn).toBe(2)
+      // Its background is still painted. `drawRowBackground`'s `roundRectPath`
+      // opens with `moveTo(x + radius, y)`, so finding that call at the hole
+      // band's own y proves the fill pass ran for it despite the empty
+      // segment list — this is what stops the timeline jumping by a whole
+      // row height mid-drag when a caption moves out of a lane that was
+      // otherwise alone.
+      expect(r.of('moveTo').some(c => c.args[0] === ROW_RADIUS_PX && c.args[1] === holeBand.y)).toBe(true)
     })
   })
 })

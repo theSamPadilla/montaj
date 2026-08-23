@@ -856,6 +856,79 @@ describe('audio bar trim', () => {
   })
 })
 
+describe('audio lane magnet', () => {
+  // Own fixture: a lane with a real gap between two MAGNETIC clips, so a
+  // commit has something to close. b0/b1 sit in lane 1, non-magnetic, purely
+  // as the drag target for the cross-lane-inheritance test below.
+  function magnetProject(): Project {
+    return {
+      id: 'p',
+      tracks: [{ id: 'trk-0', items: [{ id: 'c0', type: 'video', start: 0, end: 10 }] }],
+      audio: { tracks: [
+        { id: 'a0', src: 'v.mp3', start: 0, end: 2, lane: 0, magnetic: true },
+        { id: 'a1', src: 'm.mp3', start: 5, end: 8, lane: 0, magnetic: true },
+        { id: 'b0', src: 'n.mp3', start: 5, end: 7, lane: 1 },
+      ] },
+    } as unknown as Project
+  }
+
+  const project = magnetProject()
+  const layout = computeTimelineLayout(project)
+  const lane0Y = Math.round(layout.lanes[0].y + layout.lanes[0].height / 2)
+  const lane1Y = Math.round(layout.lanes[1].y + layout.lanes[1].height / 2)
+
+  it('leaves the mid-drag (projectChange) frames alone — reflow is commit-only', () => {
+    const d = new Driver(makeContext({ project: magnetProject() }))
+    // a0 spans [0,2] → body inside that span.
+    d.down(50, lane0Y)
+    // +1.5s: still short of a1 (start 5), and far enough from every snap
+    // candidate ({-2,0,3,5,6,8,10}, all >0.2s away) not to get caught.
+    const mid = lastProjectChange(d.move(200, lane0Y))
+    expect(audio(mid, 'a0').start).toBeCloseTo(1.5)
+    expect(audio(mid, 'a1').start).toBe(5) // untouched mid-drag — a real gap still exists
+  })
+
+  it('snaps the magnetic lane gapless on release, leaving a non-magnetic lane alone', () => {
+    const d = new Driver(makeContext({ project: magnetProject() }))
+    d.down(50, lane0Y)
+    d.move(200, lane0Y)
+    const committed = of(d.up(200, lane0Y), 'commit')
+    expect(committed).toHaveLength(1)
+    const out = committed[0].project
+    const finalA0 = audio(out, 'a0')
+    const finalA1 = audio(out, 'a1')
+    expect(finalA0.start).toBeCloseTo(1.5)
+    expect(finalA0.end).toBeCloseTo(3.5)
+    expect(finalA1.start).toBeCloseTo(finalA0.end) // gap closed, duration (3) preserved
+    expect(finalA1.end).toBeCloseTo(6.5)
+    // b0's lane (1) carries no magnetic clip — untouched by the same commit.
+    expect(audio(out, 'b0')).toMatchObject({ start: 5, end: 7 })
+  })
+
+  it('a clip dragged onto a magnetic lane adopts that lane\'s magnet state', () => {
+    const d = new Driver(makeContext({ project: magnetProject() }))
+    // b0 spans [5,7] in lane 1 → body inside that span.
+    d.down(600, lane1Y)
+    // Straight up one lane (dy = -AUDIO_LANE_HEIGHT_PX), no horizontal travel:
+    // destLane = max(0, 1 + round(-40/40)) = 0, which holds only a0/a1 —
+    // both magnetic — so b0 should adopt magnetic: true.
+    const mid = lastProjectChange(d.move(600, lane1Y - 40))
+    const movedB0 = audio(mid, 'b0')
+    expect(movedB0.lane).toBe(0)
+    expect(movedB0.magnetic).toBe(true)
+  })
+
+  it('a clip dragged onto an EMPTY lane leaves magnetic untouched', () => {
+    const d = new Driver(makeContext({ project: magnetProject() }))
+    d.down(600, lane1Y)
+    // Straight down one lane, into lane 2 — nothing lives there yet.
+    const mid = lastProjectChange(d.move(600, lane1Y + 40))
+    const movedB0 = audio(mid, 'b0')
+    expect(movedB0.lane).toBe(2)
+    expect(movedB0.magnetic).toBeUndefined()
+  })
+})
+
 // ── Inspection ───────────────────────────────────────────────────────────
 
 describe('double-click', () => {
@@ -1431,7 +1504,7 @@ function captionProject(): Project {
 }
 
 const CAPTION_LAYOUT = computeTimelineLayout(captionProject())
-const CAPTION_Y = Math.round(CAPTION_LAYOUT.caption!.y + CAPTION_LAYOUT.caption!.height / 2)
+const CAPTION_Y = Math.round(CAPTION_LAYOUT.captions![0].y + CAPTION_LAYOUT.captions![0].height / 2)
 
 const S0_BODY = { x: 150, y: CAPTION_Y }
 const S0_IN_EDGE = { x: 102, y: CAPTION_Y }
@@ -1856,7 +1929,7 @@ function tinyCaptionProject(): Project {
 }
 
 const TINY_LAYOUT = computeTimelineLayout(tinyCaptionProject())
-const TINY_Y = Math.round(TINY_LAYOUT.caption!.y + TINY_LAYOUT.caption!.height / 2)
+const TINY_Y = Math.round(TINY_LAYOUT.captions![0].y + TINY_LAYOUT.captions![0].height / 2)
 
 function tinyCtx(overrides: Partial<PointerContext> = {}): PointerContext {
   return makeContext({ project: tinyCaptionProject(), fps: CAPTION_FPS, viewport: TINY_VIEWPORT, ...overrides })
@@ -1958,7 +2031,7 @@ function overhangCaptionProject(): Project {
 }
 
 const OVERHANG_LAYOUT = computeTimelineLayout(overhangCaptionProject())
-const OVERHANG_Y = Math.round(OVERHANG_LAYOUT.caption!.y + OVERHANG_LAYOUT.caption!.height / 2)
+const OVERHANG_Y = Math.round(OVERHANG_LAYOUT.captions![0].y + OVERHANG_LAYOUT.captions![0].height / 2)
 /** `over`'s handles: the block spans x 14500–16000. */
 const OVER_IN_EDGE = 14502
 const OVER_OUT_EDGE = 15998

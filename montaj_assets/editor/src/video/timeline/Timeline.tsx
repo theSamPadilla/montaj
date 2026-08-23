@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState, type MutableRefObject, type React
 import AudioTrackRow from './AudioTrackRow'
 import type { GetWaveformChunks, ResolveFilePath } from './AudioWaveformLayer'
 import type { FilmstripIndex, GetFilmstripArgs, GetWaveformPeaksArgs, PeaksData, Project } from '../../types'
+import { reflowMagneticLanes } from '../audioMagnet'
 import { collapseGaps, setClipSpeed } from '../cuts'
 import { ratioFromClientX } from './utils'
 import { useTimelineZoom } from './useTimelineZoom'
@@ -243,6 +244,23 @@ export default function Timeline({ project, clock, onProjectChange, onOverlayEdi
     onOverlayEdit?.(next)
   }
 
+  /**
+   * Audio-LANE magnet toggle — same fan-out as mute above, since a lane can
+   * hold several `AudioTrack`s. Turning it ON also collapses the lane
+   * immediately (`reflowMagneticLanes`), so flipping the switch is itself an
+   * edit rather than something that waits for the next drag to take effect.
+   * Turning it OFF just clears the flag; a lane already gapless stays exactly
+   * where it is.
+   */
+  function handleSetLaneMagnet(trackIds: string[], magnetic: boolean) {
+    if (!onProjectChange) return
+    let next = project
+    for (const id of trackIds) next = updateAudioTrack(next, id, { magnetic })
+    if (magnetic) next = reflowMagneticLanes(next)
+    onProjectChange(next)
+    onOverlayEdit?.(next)
+  }
+
   function handleSelectItem(id: string | null, additive: boolean) {
     if (!onSelectIds) return
     if (id === null) { onSelectIds([]); return }
@@ -399,6 +417,9 @@ export default function Timeline({ project, clock, onProjectChange, onOverlayEdi
           }
         }
         if (rippleMode) updated = collapseGaps(updated)
+        // Deleting a clip out of a magnetic audio lane leaves a gap exactly
+        // like a trim or a move would — close it the same way, on release.
+        updated = reflowMagneticLanes(updated)
         onProjectChange(updated)
         onOverlayEdit?.(updated)
         onSelectIds?.([])
@@ -591,6 +612,7 @@ export default function Timeline({ project, clock, onProjectChange, onOverlayEdi
               onApplySpeed={handleApplyTrackSpeed}
               onSetLaneVolume={handleSetLaneVolume}
               onSetLaneMuted={handleSetLaneMuted}
+              onSetLaneMagnet={handleSetLaneMagnet}
             />
             <div className="flex min-w-0 flex-1 flex-col gap-1">
             {/* ── Canvas track-row area — one surface in place of the visual

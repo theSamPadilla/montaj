@@ -789,6 +789,90 @@ describe('slideItem', () => {
   })
 })
 
+// ── Caption lane preservation (multi-row captions, Phase 1) ─────────────────
+//
+// Every caption-touching helper above rebuilds segments with `{ ...seg, ... }`
+// rather than a literal field list, so a segment's `lane` survives every cut
+// op by construction — none of these helpers has any lane-specific logic of
+// its own. These tests exist to keep it that way: if a future edit ever
+// rebuilds a caption segment without spreading the original, one of these
+// fails and says so explicitly rather than silently dropping `lane`.
+
+describe('cuts.ts preserves CaptionSegment.lane', () => {
+  it('applyCutToTracks (lift) preserves lane and removes the SAME duration from every lane', () => {
+    const p = makeProject({
+      tracks: vtracks([{ id: 'a', type: 'video', start: 0, end: 20 }]),
+      captions: {
+        style: 'subtitle',
+        segments: [
+          { text: 'lane0-after', start: 8, end: 10, lane: 0 },
+          { text: 'lane1-after', start: 8, end: 10, lane: 1 },
+          { text: 'lane2-before', start: 0, end: 2, lane: 2 },
+        ],
+      },
+    })
+    const out = applyCutToTracks(p, { start: 3, end: 5 })   // 2s cut
+    const byText = Object.fromEntries(out.captions!.segments.map(s => [s.text, s]))
+    // Both lanes shift by the identical 2s cut duration — applyCutToCaptions
+    // has no per-lane branch, it operates over the flat segment list.
+    expect(byText['lane0-after']).toMatchObject({ start: 6, end: 8, lane: 0 })
+    expect(byText['lane1-after']).toMatchObject({ start: 6, end: 8, lane: 1 })
+    expect(byText['lane2-before']).toMatchObject({ start: 0, end: 2, lane: 2 })
+  })
+
+  it('collapseGaps preserves lane while remapping captions', () => {
+    const p = makeProject({
+      tracks: vtracks([
+        { id: 'a', type: 'video', start: 0, end: 5 },
+        { id: 'b', type: 'video', start: 8, end: 12 },   // 3s gap
+      ]),
+      captions: {
+        style: 'subtitle',
+        segments: [{ text: 'b-cap', start: 9, end: 11, lane: 2 }],
+      },
+    })
+    const out = collapseGaps(p)
+    expect(out.captions!.segments[0]).toMatchObject({ start: 6, end: 8, lane: 2 })
+  })
+
+  it('rippleDelete preserves lane on both untouched and shifted captions', () => {
+    const p = makeProject({
+      tracks: vtracks([
+        { id: 'a', type: 'video', start: 0, end: 5 },
+        { id: 'b', type: 'video', start: 5, end: 9 },
+        { id: 'c', type: 'video', start: 9, end: 14 },
+      ]),
+      captions: {
+        style: 'subtitle',
+        segments: [
+          { text: 'a-cap', start: 1, end: 3, lane: 1 },
+          { text: 'c-cap', start: 10, end: 12, lane: 3 },
+        ],
+      },
+    })
+    const segs = rippleDelete(p, 'b').captions!.segments
+    const byText = Object.fromEntries(segs.map(s => [s.text, s]))
+    expect(byText['a-cap']).toMatchObject({ lane: 1 })
+    expect(byText['c-cap']).toMatchObject({ start: 6, end: 8, lane: 3 })
+  })
+
+  it('slideItem (shiftCaptionsInWindow) preserves lane on the captions it shifts', () => {
+    const p = makeProject({
+      tracks: vtracks([
+        { id: 'p', type: 'video', start: 0,  end: 5,  inPoint: 0, outPoint: 5, sourceDuration: 30 },
+        { id: 'm', type: 'video', start: 5,  end: 10, inPoint: 2, outPoint: 7, sourceDuration: 30 },
+        { id: 'n', type: 'video', start: 10, end: 15, inPoint: 3, outPoint: 8, sourceDuration: 30 },
+      ]),
+      captions: {
+        style: 'subtitle',
+        segments: [{ text: 'm-cap', start: 6, end: 9, lane: 4 }],
+      },
+    })
+    const seg = slideItem(p, 'm', 2).captions!.segments[0]
+    expect(seg).toMatchObject({ start: 8, end: 11, lane: 4 })
+  })
+})
+
 // ── Track-level invariants ──────────────────────────────────────────────────
 //
 // Two properties every op in this file shares, both of which are easy to break

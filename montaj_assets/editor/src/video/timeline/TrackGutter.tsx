@@ -1,5 +1,5 @@
 import { useRef, useState, type RefObject } from 'react'
-import { AudioLines, Captions, Eye, EyeOff, Film, Layers, Settings2, Volume2, VolumeX } from 'lucide-react'
+import { AudioLines, Captions, Eye, EyeOff, Film, Layers, Magnet, Settings2, Volume2, VolumeX } from 'lucide-react'
 import { Tooltip } from '../../ui/Tooltip'
 import type { Project } from '../../types'
 import type { VisualItem } from '../../schema'
@@ -188,6 +188,33 @@ function MuteToggle({ muted, onToggle, trackLabel }: { muted: boolean; onToggle:
   )
 }
 
+/**
+ * The per-lane magnet switch — gapless mode. Modeled directly on `MuteToggle`
+ * beside it: same size, same lit-vs-dim shape, the icon doubling as both
+ * control and indicator so the row's state reads at a glance without opening
+ * the settings gear. Audio-lane only today (see `AudioLaneRailRow`); no
+ * visual-track equivalent exists yet.
+ */
+function MagnetToggle({ magnetic, onToggle, trackLabel }: { magnetic: boolean; onToggle: () => void; trackLabel: string }) {
+  return (
+    <Tooltip label="Magnetic track — keep gapless">
+      <button
+        type="button"
+        aria-label={`Magnetic ${trackLabel}`}
+        aria-pressed={magnetic}
+        onClick={onToggle}
+        className={`flex h-3.5 w-3.5 items-center justify-center rounded transition-colors ${
+          magnetic
+            ? 'text-emerald-400/90 hover:text-emerald-300'
+            : 'text-[var(--editor-text)]/35 hover:text-[var(--editor-text)]/80'
+        }`}
+      >
+        <Magnet size={13} />
+      </button>
+    </Tooltip>
+  )
+}
+
 /** The per-track skip switch. Eye/EyeOff rather than a checkbox: it reads at
  *  14px and says "shown / not shown" without a word. */
 function SkipToggle({ enabled, onToggle, trackLabel }: { enabled: boolean; onToggle: () => void; trackLabel: string }) {
@@ -321,10 +348,12 @@ function AudioLaneRailRow({
   lane,
   onSetLaneVolume,
   onSetLaneMuted,
+  onSetLaneMagnet,
 }: {
   lane: AudioLaneLayout
   onSetLaneVolume?: (trackIds: string[], volume: number, commit: boolean) => void
   onSetLaneMuted?: (trackIds: string[], muted: boolean) => void
+  onSetLaneMagnet?: (trackIds: string[], magnetic: boolean) => void
 }) {
   const [open, setOpen] = useState(false)
   const buttonRef = useRef<HTMLButtonElement>(null)
@@ -339,6 +368,7 @@ function AudioLaneRailRow({
   // the lane, per the task's own rule, regardless of what was shown.
   const volume = lane.tracks[0]?.volume ?? 1
   const muted = lane.tracks.length > 0 && lane.tracks.every(t => t.muted)
+  const magnetic = lane.tracks.length > 0 && lane.tracks.every(t => t.magnetic)
   const trackIds = lane.tracks.map(t => t.id)
 
   return (
@@ -349,13 +379,24 @@ function AudioLaneRailRow({
         icon={<AudioLines size={15} />}
         label="Audio"
         settingsButton={hasSettings ? { onClick: () => setOpen(o => !o), open, buttonRef, label: 'Audio lane settings' } : undefined}
-        action={onSetLaneMuted && (
-          <MuteToggle
-            muted={muted}
-            trackLabel="audio lane"
-            onToggle={() => onSetLaneMuted(trackIds, !muted)}
-          />
-        )}
+        action={
+          <>
+            {onSetLaneMuted && (
+              <MuteToggle
+                muted={muted}
+                trackLabel="audio lane"
+                onToggle={() => onSetLaneMuted(trackIds, !muted)}
+              />
+            )}
+            {onSetLaneMagnet && (
+              <MagnetToggle
+                magnetic={magnetic}
+                trackLabel="audio lane"
+                onToggle={() => onSetLaneMagnet(trackIds, !magnetic)}
+              />
+            )}
+          </>
+        }
       />
       {open && hasSettings && (
         <TrackSettingsPopover
@@ -373,11 +414,11 @@ function AudioLaneRailRow({
 
 export interface TrackGutterProps {
   project: Project
-  /** Gates the caption rail cell, aligned with the canvas' own caption band
-   *  (`layout.caption`). Has no effect when the layout carries no band at all
+  /** Gates the caption rail cells, aligned with the canvas' own caption bands
+   *  (`layout.captions`). Has no effect when the layout carries no bands at all
    *  (a project with no caption segments) — there is nothing to align a cell
    *  with. Defaults true so a host that hasn't wired the flag still sees the
-   *  cell whenever the layout has one. */
+   *  cells whenever the layout has any. */
   showCaptionRow?: boolean
   /** Layout to align against. Defaults to computing it from `project` — pass the
    *  caller's own so the two can't drift. */
@@ -404,6 +445,9 @@ export interface TrackGutterProps {
   onSetLaneVolume?: (trackIds: string[], volume: number, commit: boolean) => void
   /** Audio-lane mute, from the settings popover — same fan-out as volume. */
   onSetLaneMuted?: (trackIds: string[], muted: boolean) => void
+  /** Audio-lane magnet (gapless mode), from the rail's inline toggle — same
+   *  fan-out as mute/volume, and the same "absent ⇒ no control" convention. */
+  onSetLaneMagnet?: (trackIds: string[], magnetic: boolean) => void
 }
 
 export default function TrackGutter({
@@ -416,6 +460,7 @@ export default function TrackGutter({
   onApplySpeed,
   onSetLaneVolume,
   onSetLaneMuted,
+  onSetLaneMagnet,
 }: TrackGutterProps) {
   const resolved = layout ?? computeTimelineLayout(project)
   const tracks = trackItems(project)
@@ -460,24 +505,28 @@ export default function TrackGutter({
             lane={lane}
             onSetLaneVolume={onSetLaneVolume}
             onSetLaneMuted={onSetLaneMuted}
+            onSetLaneMagnet={onSetLaneMagnet}
           />
         ))}
         {/* Same absolute-positioned wrapper every other row uses, keyed off
-            `resolved.caption` rather than a constant — gutter and canvas read
-            the identical rectangle and can never drift apart. Gated on
-            `resolved.caption` FIRST: a caption-less project's layout carries
-            no band at all (see TimelineLayout.caption), so `showCaptionRow`
-            defaulting true must not conjure a cell with nothing to align to. */}
-        {resolved.caption && showCaptionRow && (
-          <div className="absolute inset-x-0" style={{ top: resolved.caption.y, height: resolved.caption.height }}>
+            each band's own `y` — gutter and canvas read the identical
+            rectangles and can never drift apart. Gated on `resolved.captions`
+            FIRST: a caption-less project's layout carries no bands at all (see
+            TimelineLayout.captions), so `showCaptionRow` defaulting true must
+            not conjure cells with nothing to align to.
+            One band ⇒ the bare "Captions" label, unchanged from before N
+            lanes existed. Several bands ⇒ "Captions 1"…"Captions N" (N =
+            lane + 1) so each cell reads which lane it aligns to. */}
+        {showCaptionRow && resolved.captions?.map(band => (
+          <div key={`caption-${band.lane}`} className="absolute inset-x-0" style={{ top: band.y, height: band.height }}>
             <RailCell
-              height={resolved.caption.height}
+              height={band.height}
               accent={CAPTION_RAIL_ACCENT}
               icon={<Captions size={15} />}
-              label="Captions"
+              label={resolved.captions!.length > 1 ? `Captions ${band.lane + 1}` : 'Captions'}
             />
           </div>
-        )}
+        ))}
       </div>
     </div>
   )

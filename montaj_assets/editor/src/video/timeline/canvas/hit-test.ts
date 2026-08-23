@@ -178,41 +178,46 @@ export function hitTest(
   // mid-drag rather than dropping the gesture on the floor.
   if (point.y < layout.ruler.y + layout.ruler.height) return { kind: 'ruler', t }
 
-  // The caption band. Its y-range is disjoint from every row and lane, so this
-  // could sit anywhere among the scans below; it goes here because it is a
-  // single optional rectangle like the ruler, which keeps the two loops
-  // adjacent and reads as "the two lone rectangles, then the two scans".
-  if (layout.caption) {
-    const { caption } = layout
-    if (point.y >= caption.y && point.y < caption.y + caption.height) {
-      // Id-less segments are never hittable. `backfillCaptionIds` mints an id
-      // shortly after captions arrive, but until it has, a segment has nothing
-      // to select BY — the same guard the retired CaptionTrackRow spelled `canInteract`.
-      const hittable = caption.segments.filter(
-        (seg): seg is CaptionSegment & { id: string } => typeof seg.id === 'string',
-      )
-      // Deliberately the FULL band height, unlike the audio-lane branch below,
-      // which treats its inset strip as lane background. The painter insets
-      // caption blocks by the same `AUDIO_ITEM_INSET_PX`, so this is a 4px
-      // cosmetic mismatch at the top and bottom — and that is much the lesser
-      // evil: a 40px row whose outer 8px silently miss reads as a broken row,
-      // while an audio LANE is tall enough that its inset is visibly gutter.
-      //
-      // The AUDIO tolerance, not a third one of its own: the retired DOM row's
-      // handles were `w-1.5` like AudioTrackRow's, and the painter draws
-      // caption handles at `AUDIO_HANDLE_WIDTH_PX`. Captions borrow the audio
-      // handle vocabulary wholesale, so they borrow its grab width too.
-      const hit = resolveRow(point.x, hittable, viewport, audioTolerance)
-      if (hit === null) {
-        // Not `empty-caption-row`. `background` already means exactly what the
-        // gaps between caption blocks should do — marquee from here, seek here,
-        // clear the selection — and a new kind would only force `isEmptyHit`
-        // and `resolveGesture` to learn about it for no behavioural gain.
-        return { kind: 'background', t }
-      }
-      if (hit.edge === null) return { kind: 'caption-body', t, itemId: hit.item.id, segment: hit.item }
-      return { kind: 'caption-edge', t, itemId: hit.item.id, edge: hit.edge, segment: hit.item }
+  // The caption bands. Their y-ranges are disjoint from every row and lane
+  // (and from each other), so this could sit anywhere among the scans below;
+  // it goes here because it was a single optional rectangle like the ruler
+  // before multi-lane captions existed, and this keeps that spot.
+  //
+  // NOTE (Phase 3 compile fix, not a redesign): this loop finds WHICH band the
+  // point falls in and then runs the exact single-band logic Phase 1 wrote,
+  // unchanged, against that band. There is no `captionLane` on `HitResult`,
+  // no vertical-drag awareness, no per-lane clamp — a later phase owns all of
+  // that. With exactly one band (the common case today) this is byte-for-byte
+  // the old behaviour.
+  for (const caption of layout.captions ?? []) {
+    if (point.y < caption.y || point.y >= caption.y + caption.height) continue
+    // Id-less segments are never hittable. `backfillCaptionIds` mints an id
+    // shortly after captions arrive, but until it has, a segment has nothing
+    // to select BY — the same guard the retired CaptionTrackRow spelled `canInteract`.
+    const hittable = caption.segments.filter(
+      (seg): seg is CaptionSegment & { id: string } => typeof seg.id === 'string',
+    )
+    // Deliberately the FULL band height, unlike the audio-lane branch below,
+    // which treats its inset strip as lane background. The painter insets
+    // caption blocks by the same `AUDIO_ITEM_INSET_PX`, so this is a 4px
+    // cosmetic mismatch at the top and bottom — and that is much the lesser
+    // evil: a 40px row whose outer 8px silently miss reads as a broken row,
+    // while an audio LANE is tall enough that its inset is visibly gutter.
+    //
+    // The AUDIO tolerance, not a third one of its own: the retired DOM row's
+    // handles were `w-1.5` like AudioTrackRow's, and the painter draws
+    // caption handles at `AUDIO_HANDLE_WIDTH_PX`. Captions borrow the audio
+    // handle vocabulary wholesale, so they borrow its grab width too.
+    const hit = resolveRow(point.x, hittable, viewport, audioTolerance)
+    if (hit === null) {
+      // Not `empty-caption-row`. `background` already means exactly what the
+      // gaps between caption blocks should do — marquee from here, seek here,
+      // clear the selection — and a new kind would only force `isEmptyHit`
+      // and `resolveGesture` to learn about it for no behavioural gain.
+      return { kind: 'background', t }
     }
+    if (hit.edge === null) return { kind: 'caption-body', t, itemId: hit.item.id, segment: hit.item }
+    return { kind: 'caption-edge', t, itemId: hit.item.id, edge: hit.edge, segment: hit.item }
   }
 
   for (const row of layout.rows) {
@@ -282,8 +287,11 @@ export function itemsInRect(
 
   // Captions first, mirroring `hitTest`'s order. Id-less segments are skipped
   // for the same reason they are unhittable: an id is what a selection is.
-  if (layout.caption && overlaps(layout.caption.y, layout.caption.y + layout.caption.height, top, bottom)) {
-    for (const seg of layout.caption.segments) {
+  // One pass per band, same as the row/lane scans below — a marquee spanning
+  // several caption lanes picks up segments from every band it touches.
+  for (const caption of layout.captions ?? []) {
+    if (!overlaps(caption.y, caption.y + caption.height, top, bottom)) continue
+    for (const seg of caption.segments) {
       if (typeof seg.id === 'string' && overlaps(seg.start, seg.end, left, right)) ids.push(seg.id)
     }
   }

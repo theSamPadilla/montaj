@@ -56,6 +56,7 @@
 
 import type { AudioTrack, CaptionSegment, Captions, VisualItem } from '../../../schema'
 import type { Project } from '../../../types'
+import { reflowMagneticLanes } from '../../audioMagnet'
 import { collapseGaps, rollEdit, slideItem, slipItem } from '../../cuts'
 import { applyMoveDeltaToSelection, applyResizeDeltaToSelection } from '../multiSelectOps'
 import { AUDIO_LANE_HEIGHT_PX, computeDerivedTiming, groupAudioLanes, mapTrackItems, moveItemAcrossTracks, normalizeTracks, trackItems, updateAudioTrack } from '../timeline-model'
@@ -769,11 +770,26 @@ function applyAudioMove(ctx: PointerContext, press: Press, point: Point, snap: S
   // Positive dy is downward, which in the audio stack means a HIGHER lane index
   // (lanes ascend downward) — the opposite of visual tracks.
   const laneDelta = Math.round((point.y - press.origin.y) / AUDIO_LANE_HEIGHT_PX)
-  const next = updateAudioTrack(press.baseProject, track.id, {
-    start,
-    end: start + duration,
-    lane: Math.max(0, press.hit.laneIdx + laneDelta),
-  })
+  const destLane = Math.max(0, press.hit.laneIdx + laneDelta)
+
+  const changes: Partial<AudioTrack> = { start, end: start + duration, lane: destLane }
+  // Cross-lane inheritance: a clip dropped onto another lane adopts THAT
+  // lane's magnet state, so the row it lands on stays consistent rather than
+  // mixing a magnetic clip in with non-magnetic neighbours (or vice versa).
+  // Grouped from `press.baseProject` — the project as it stood before this
+  // drag — so mid-drag lane membership never sees the dragged clip's own
+  // in-flight `lane` changes, and via `groupAudioLanes` so an auto-assigned
+  // (lane-less) neighbour is matched the same way the rail groups it, not by
+  // a raw `lane` field comparison. Moving onto an EMPTY lane leaves
+  // `magnetic` untouched: there is no row to be consistent with yet.
+  const destLaneGroup = groupAudioLanes(press.baseProject.audio?.tracks ?? [])
+    .find(l => l.laneIndex === destLane)
+  const destLaneTracks = (destLaneGroup?.tracks ?? []).filter(t => t.id !== track.id)
+  if (destLaneTracks.length > 0) {
+    changes.magnetic = destLaneTracks.every(t => t.magnetic === true)
+  }
+
+  const next = updateAudioTrack(press.baseProject, track.id, changes)
   return { effects: [{ type: 'projectChange', project: next }], snap: snapped.state, lastProject: next, guide }
 }
 
@@ -1275,7 +1291,12 @@ export function pointerReducer(state: MachineState, event: PointerMachineEvent):
         // to a no-op has nothing either — committing an unchanged project would
         // make the host write the file for a gesture that did nothing.
         if (state.gesture !== 'scrub' && state.lastProject !== state.press.baseProject) {
-          effects.push({ type: 'commit', project: state.lastProject })
+          // Snap any magnetic audio lane gapless on RELEASE, not mid-drag —
+          // `reflowMagneticLanes` is idempotent and only ever touches
+          // magnetic audio lanes, so visual/caption gestures and non-magnetic
+          // audio are unaffected; keeping it off the transient
+          // `projectChange` frames is what keeps the drag itself smooth.
+          effects.push({ type: 'commit', project: reflowMagneticLanes(state.lastProject) })
         }
         return withCursor(
           { kind: 'idle', cursor: state.cursor },

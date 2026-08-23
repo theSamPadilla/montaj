@@ -17,6 +17,7 @@
 
 import type { AudioTrack, CaptionSegment, VisualItem } from '../../../schema'
 import type { Project } from '../../../types'
+import { groupCaptionLanes } from '../../captionLanes'
 import {
   AUDIO_LANE_HEIGHT_PX,
   BASE_VISUAL_ROW_RENDER_HEIGHT_PX,
@@ -313,6 +314,10 @@ export interface AudioLaneLayout {
 }
 
 export interface CaptionRowLayout {
+  /** Which caption lane this band renders (see `CaptionSegment.lane` /
+   *  `captionLanes.ts`). Lane 0 is the band adjacent to the base video row;
+   *  higher lanes stack upward toward the overlays. */
+  lane: number
   y: number
   height: number
   segments: CaptionSegment[]
@@ -326,13 +331,15 @@ export interface TimelineLayout {
   /** Visual rows in DRAW order (top of the surface first). */
   rows: VisualRowLayout[]
   lanes: AudioLaneLayout[]
-  /** The caption band, carried the same way `ruler` is — a first-class
-   *  rectangle painter and (a later phase's) hit-test both read, rather than
-   *  each re-deriving it. Sits immediately above the base video row (see
-   *  `computeTimelineLayout`). Absent — not an empty band — when the project
-   *  has no caption segments, so a caption-less project's layout is unchanged
-   *  from before this existed. */
-  caption?: CaptionRowLayout
+  /** The caption bands, one per lane (see `captionLanes.ts`'s
+   *  `groupCaptionLanes`), carried the same way `ruler` is — a first-class set
+   *  of rectangles the painter and hit-test both read, rather than each
+   *  re-deriving them. In DRAW order (descending lane), so index 0 is the
+   *  HIGHEST lane and the last entry is lane 0, immediately above the base
+   *  video row (see `computeTimelineLayout`). Absent — not an empty array —
+   *  when the project has no caption segments, so a caption-less project's
+   *  layout is unchanged from before captions existed. */
+  captions?: CaptionRowLayout[]
   /** Total surface height in CSS px, excluding trailing gap. */
   height: number
 }
@@ -358,23 +365,38 @@ export function computeTimelineLayout(project: Project): TimelineLayout {
   let y = RULER_HEIGHT_PX + ROW_GAP_PX
 
   // Only stored when there is something to show — an empty `segments` (or no
-  // `project.captions` at all) means no band at all, not an empty one, so a
+  // `project.captions` at all) means no bands at all, not an empty array, so a
   // caption-less project's layout is byte-for-byte what it was before
   // captions joined the canvas.
   const captionSegments = project.captions?.segments ?? []
-  let caption: CaptionRowLayout | undefined
-  const emitCaptionBand = () => {
-    caption = { y, height: CAPTION_ROW_HEIGHT_PX, segments: captionSegments }
-    y += CAPTION_ROW_HEIGHT_PX + ROW_GAP_PX
+  // One group per lane, `0..maxCaptionLane`, INCLUDING holes as empty groups
+  // (see `groupCaptionLanes`) — a hole still needs a band, because an empty
+  // band that keeps painting its row background is what stops the timeline
+  // jumping by a whole row height mid-drag when a caption that was alone in
+  // its lane moves out of it.
+  const captionGroups = captionSegments.length > 0 ? groupCaptionLanes(captionSegments) : []
+  const captions: CaptionRowLayout[] = []
+  const emitCaptionBands = () => {
+    // Descending lane order: the highest lane is emitted FIRST, so it lands
+    // closest to the overlay rows already pushed above (smaller y); lane 0 is
+    // emitted LAST, landing at the current `y` — exactly where the single
+    // band sat before multi-lane captions existed. Higher lanes therefore
+    // stack upward toward the overlays, per the caption-lane convention
+    // documented in `captionLanes.ts`.
+    for (let i = captionGroups.length - 1; i >= 0; i--) {
+      const group = captionGroups[i]
+      captions.push({ lane: group.lane, y, height: CAPTION_ROW_HEIGHT_PX, segments: group.segments })
+      y += CAPTION_ROW_HEIGHT_PX + ROW_GAP_PX
+    }
   }
 
   for (let reversedIdx = 0; reversedIdx < allTracks.length; reversedIdx++) {
     const trackIdx = allTracks.length - 1 - reversedIdx
-    // The caption band sits directly above the base video track — captions
+    // The caption bands sit directly above the base video track — captions
     // narrate that footage, so they read as adjacent to it. `trackIdx === 0`
     // is always the LAST iteration of this loop (reversed order), so this is
     // "immediately before the base row is pushed".
-    if (trackIdx === 0 && captionSegments.length > 0) emitCaptionBand()
+    if (trackIdx === 0 && captionGroups.length > 0) emitCaptionBands()
     const height = trackIdx === 0 ? BASE_VISUAL_ROW_RENDER_HEIGHT_PX : VISUAL_ROW_RENDER_HEIGHT_PX
     rows.push({
       trackIdx,
@@ -387,10 +409,10 @@ export function computeTimelineLayout(project: Project): TimelineLayout {
     y += height + ROW_GAP_PX
   }
   // A project with captions but NO visual tracks at all never runs the loop
-  // above, so the hook that emits the band right before `trackIdx === 0`
-  // never fires. Emit it here instead — still above where the (absent) base
+  // above, so the hook that emits the bands right before `trackIdx === 0`
+  // never fires. Emit them here instead — still above where the (absent) base
   // row would sit, which is the same rule applied to zero rows.
-  if (allTracks.length === 0 && captionSegments.length > 0) emitCaptionBand()
+  if (allTracks.length === 0 && captionGroups.length > 0) emitCaptionBands()
 
   // Resolved once per layout, not per track: an audio track may legally omit
   // `start`/`end`, and `groupAudioLanes` needs a horizon to fall back to.
@@ -407,7 +429,7 @@ export function computeTimelineLayout(project: Project): TimelineLayout {
   })
 
   const layout: TimelineLayout = { ruler, rows, lanes, height: Math.max(0, y - ROW_GAP_PX) }
-  if (caption) layout.caption = caption
+  if (captions.length > 0) layout.captions = captions
   return layout
 }
 
@@ -1151,11 +1173,13 @@ export function drawTimelineContent(ctx: DrawContext, scene: TimelineScene): Dra
     ctx.restore()
   }
 
-  // The caption band — absent entirely on a project with no caption segments
+  // The caption bands — absent entirely on a project with no caption segments
   // (see `computeTimelineLayout`), so this whole pass is a no-op for every
-  // project that predates captions moving into the canvas.
-  if (layout.caption) {
-    const { caption } = layout
+  // project that predates captions moving into the canvas. A hole lane still
+  // gets a background-only band: nothing in its (empty) `segments` loop below
+  // draws a block, but the row painted at its `y` is what keeps every OTHER
+  // band from jumping position mid-drag.
+  for (const caption of layout.captions ?? []) {
     drawRowBackground(ctx, { x: 0, y: caption.y, width: surfaceWidth, height: caption.height })
     const handleRects: Array<{ rect: Rect; hoveredEdge: 'in' | 'out' | null }> = []
 

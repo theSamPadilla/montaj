@@ -97,7 +97,7 @@ const captionedProject = {
 
 /** Vertical centre of the caption band, from the painter's own layout. */
 const CAPTION_Y = (() => {
-  const band = computeTimelineLayout(captionedProject).caption!
+  const band = computeTimelineLayout(captionedProject).captions![0]
   return Math.round(band.y + band.height / 2)
 })()
 

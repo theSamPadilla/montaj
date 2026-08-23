@@ -18,10 +18,14 @@ import type { Project } from '../../types'
  *  current one. Lifted verbatim from VisualTrackRow's drag math. */
 export const VISUAL_ROW_HEIGHT_PX = 24
 
-/** Audio-lane row height in px — matches the `h-10` (2.5rem = 40px) Tailwind
- *  class on AudioTrackRow's row container. Doubles as the lane-index drag
- *  divisor (drag travel and rendered height coincide for audio lanes). */
-export const AUDIO_LANE_HEIGHT_PX = 40
+/** Audio-lane row height in px. Sized to fit the rail's stacked controls: mute,
+ *  magnet, and the volume gear share one vertical column (TrackGutter's
+ *  RailCell), and three 14px buttons plus their gaps need ~58px — at the old
+ *  40px the third control (the volume gear) was clipped below the fold once the
+ *  magnet was added. Doubles as the lane-index drag divisor, so drag travel and
+ *  rendered height stay coincident for audio lanes. (The legacy DOM
+ *  AudioTrackRow, unused in canvas mode, keeps its own `h-10`.) */
+export const AUDIO_LANE_HEIGHT_PX = 64
 
 /** Rendered height of a non-base visual track row — the `h-10` on `trackRow`
  *  (utils.ts). Held at the DOM height on purpose: these rows carry overlays,
@@ -44,10 +48,10 @@ export const ROW_GAP_PX = 4
 /** Caption row height — matches the `h-10` (2.5rem = 40px) Tailwind class the
  *  retired DOM caption row (CaptionTrackRow.tsx) used to draw. The only
  *  direct reader is `computeTimelineLayout` (canvas/draw.ts), which seeds
- *  `layout.caption`/`resolved.caption` with it; TrackGutter's rail cell and
- *  the hit-tester both take the rectangle from THAT output rather than
- *  reading this constant themselves, so every reader agrees on one rectangle
- *  by construction. */
+ *  each `layout.captions`/`resolved.captions` band with it; TrackGutter's
+ *  rail cells and the hit-tester both take the rectangles from THAT output
+ *  rather than reading this constant themselves, so every reader agrees on
+ *  the same rectangles by construction. */
 export const CAPTION_ROW_HEIGHT_PX = 40
 
 // ── Audio lane grouping ──────────────────────────────────────────────────
