@@ -151,12 +151,14 @@ describe('applyMoveDeltaToSelection — caption segments', () => {
 
 // ── Caption-neighbour clamp ─────────────────────────────────────────────
 //
-// Captions may never overlap: the preview and every render template resolve
-// which caption is showing with `segments.find(s => t >= s.start && t < s.end)`
-// — first match in array order — so an overlapped span silently drops
-// whichever segment lost that race. A selected caption may therefore not
-// cross a NON-selected caption's edge, folded into the same lo/hi the
-// timeline-edge clamp already uses (see `captionNeighbourBounds`).
+// Captions may never overlap WITHIN A LANE: `activeCaptionSegments`
+// (timeline-core) hands the preview and every render template EVERY live
+// segment, lane-ascending, and a lane is a z-order with no vertical offset of
+// its own — so two segments sharing a lane and an instant paint one straight
+// over the other. A selected caption may therefore not cross a NON-selected
+// SAME-LANE caption's edge, folded into the same lo/hi the timeline-edge clamp
+// already uses (see `captionNeighbourBounds`). The per-lane half of that rule
+// has its own describe block below.
 
 function neighbourProject(): Project {
   return {
@@ -239,6 +241,101 @@ describe('applyMoveDeltaToSelection — caption-neighbour clamp', () => {
     } as unknown as Project
     const after = applyMoveDeltaToSelection(before, ['c0'], 10, TOTAL_DURATION)
     expect(visual(after, 'c0')).toMatchObject({ start: 10, end: 15 })
+  })
+})
+
+// ── The neighbour clamp is PER LANE ────────────────────────────────────────
+//
+// Captions on different rows may overlap and all render — that is what caption
+// rows are for — so only a segment sharing the dragged one's lane is a bound.
+// A track-wide clamp (what this was before caption lanes existed) would stop a
+// lane-0 caption dead at a lane-1 caption it can legally pass straight under.
+
+describe('applyMoveDeltaToSelection — the caption-neighbour clamp is per lane', () => {
+  function twoLanes(): Project {
+    return {
+      id: 'p',
+      captions: {
+        style: 'pop',
+        segments: [
+          { id: 'ground', text: 'ground', start: 1, end: 2 },                 // lane 0 (absent ⇒ 0)
+          { id: 'upstairs', text: 'upstairs', start: 3, end: 4, lane: 1 },
+        ],
+      },
+    } as unknown as Project
+  }
+
+  it('lets a caption pass clean under a caption on another lane', () => {
+    // Track-wide, `upstairs` (3–4) would stop `ground` at a delta of 1. Per
+    // lane it is not a neighbour at all, so the full 5s delta lands.
+    const after = applyMoveDeltaToSelection(twoLanes(), ['ground'], 5, TOTAL_DURATION)
+    expect(seg(after, 'ground')).toMatchObject({ start: 6, end: 7 })
+  })
+
+  it('still stops at a neighbour that DOES share the lane', () => {
+    const sameLane = {
+      ...twoLanes(),
+      captions: {
+        style: 'pop',
+        segments: [
+          { id: 'ground', text: 'ground', start: 1, end: 2 },
+          { id: 'upstairs', text: 'upstairs', start: 3, end: 4 },   // now lane 0 too
+        ],
+      },
+    } as unknown as Project
+    const after = applyMoveDeltaToSelection(sameLane, ['ground'], 5, TOTAL_DURATION)
+    expect(seg(after, 'ground')).toMatchObject({ start: 2, end: 3 })
+  })
+
+  it('treats an absent lane and an explicit `lane: 0` as the same row', () => {
+    // `laneOf` collapses both to 0, so these two must clamp against each other.
+    const mixed = {
+      id: 'p',
+      captions: {
+        style: 'pop',
+        segments: [
+          { id: 'ground', text: 'ground', start: 1, end: 2 },
+          { id: 'explicit', text: 'explicit', start: 3, end: 4, lane: 0 },
+        ],
+      },
+    } as unknown as Project
+    expect(seg(applyMoveDeltaToSelection(mixed, ['ground'], 5, TOTAL_DURATION), 'ground'))
+      .toMatchObject({ start: 2, end: 3 })
+  })
+
+  it('takes the TIGHTEST bound across the lanes the selection actually occupies', () => {
+    // Two selected captions, one per lane, each with its own unselected
+    // same-lane neighbour: lane 0 leaves 3s of room, lane 1 leaves 4s. The
+    // group moves by the tighter of the two, 3s, and both keep their lanes.
+    //
+    // `decoy` is the discriminating part: it sits 0.5s to the right of both
+    // selected captions but on a lane NEITHER of them is on, so it bounds
+    // nothing. Track-wide it was the tightest bound of all and pinned the
+    // whole group to 0.5s.
+    const before: Project = {
+      id: 'p',
+      captions: {
+        style: 'pop',
+        segments: [
+          { id: 'a', text: 'a', start: 1, end: 2 },
+          { id: 'blockA', text: 'blockA', start: 5, end: 6 },                 // 3s of room for a
+          { id: 'b', text: 'b', start: 1, end: 2, lane: 1 },
+          { id: 'blockB', text: 'blockB', start: 6, end: 7, lane: 1 },        // 4s of room for b
+          { id: 'decoy', text: 'decoy', start: 2.5, end: 3.5, lane: 2 },
+        ],
+      },
+    } as unknown as Project
+    const after = applyMoveDeltaToSelection(before, ['a', 'b'], 5, TOTAL_DURATION)
+    expect(seg(after, 'a')).toMatchObject({ start: 4, end: 5 })
+    expect(seg(after, 'b')).toMatchObject({ start: 4, end: 5 })
+    expect(seg(after, 'decoy')).toMatchObject({ start: 2.5, end: 3.5 })
+  })
+
+  it('carries `lane` through a group move untouched — a group move is horizontal only', () => {
+    const after = applyMoveDeltaToSelection(twoLanes(), ['ground', 'upstairs'], 1, TOTAL_DURATION)
+    expect(seg(after, 'ground').lane).toBeUndefined()   // absent stays absent, not written to 0
+    expect(seg(after, 'upstairs').lane).toBe(1)
+    expect(seg(after, 'upstairs')).toMatchObject({ start: 4, end: 5 })
   })
 })
 

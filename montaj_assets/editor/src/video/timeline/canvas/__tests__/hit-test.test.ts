@@ -431,6 +431,13 @@ describe('hitTest — the caption band', () => {
     expect(inBand(100, band.y + band.height).kind).not.toBe('caption-body')
   })
 
+  it('reports the band lane on every caption hit — a single-band project is all lane 0', () => {
+    expect(inBand(100).captionLane).toBe(0)
+    expect(inBand(2).captionLane).toBe(0)
+    // Not a caption hit, so no lane to report.
+    expect(inBand(250).captionLane).toBeUndefined()
+  })
+
   it('classifies caption hits through the predicates', () => {
     expect(isCaptionHit(inBand(100))).toBe(true)
     expect(isCaptionHit(inBand(2))).toBe(true)
@@ -476,6 +483,81 @@ describe('hitTest — the caption band', () => {
       const rect = normalizeRect({ x: 0, y: capBaseRow.y }, { x: 1000, y: capBaseRow.y + 4 })
       expect(caught(rect)).toEqual(['c0', 'c1'])
     })
+  })
+})
+
+// ── Caption bands on more than one lane ────────────────────────────────────
+// Bands are emitted in DESCENDING lane order, so lane 0 sits lowest (adjacent
+// to the base video row) and higher lanes stack upward. A hit has to name the
+// band it landed in, because that is where a vertical drag measures its lane
+// delta from.
+describe('hitTest — captions across several lanes', () => {
+  const laned = {
+    ...project,
+    captions: {
+      style: 'pop',
+      segments: [
+        { id: 'l0', text: 'ground', start: 0, end: 2 },              // lane 0 (absent ⇒ 0)
+        { id: 'l1', text: 'middle', start: 0, end: 2, lane: 1 },     // same span, one row up
+        { id: 'l2', text: 'top', start: 3, end: 5, lane: 2 },
+      ],
+    },
+  } as unknown as Project
+
+  const l = computeTimelineLayout(laned)
+  const bandFor = (lane: number) => l.captions!.find(b => b.lane === lane)!
+  const midY = (lane: number) => Math.round(bandFor(lane).y + bandFor(lane).height / 2)
+  const hit = (x: number, lane: number) => hitTest({ x, y: midY(lane) }, l, VIEWPORT)
+
+  it('stacks lane 0 lowest and higher lanes above it', () => {
+    expect(l.captions!.map(b => b.lane)).toEqual([2, 1, 0])
+    expect(bandFor(2).y).toBeLessThan(bandFor(1).y)
+    expect(bandFor(1).y).toBeLessThan(bandFor(0).y)
+  })
+
+  it('resolves each band to its own segment, and reports its lane', () => {
+    expect(hit(100, 0)).toMatchObject({ kind: 'caption-body', itemId: 'l0', captionLane: 0 })
+    expect(hit(100, 1)).toMatchObject({ kind: 'caption-body', itemId: 'l1', captionLane: 1 })
+    expect(hit(400, 2)).toMatchObject({ kind: 'caption-body', itemId: 'l2', captionLane: 2 })
+  })
+
+  it('does not let one lane catch another lane\'s segment at the same x', () => {
+    // l0 and l1 share the span 0–2s exactly. Only the band under the point
+    // answers; the identically-placed segment one row up is not reachable
+    // from lane 0's band.
+    expect(hit(100, 0).itemId).toBe('l0')
+    expect(hit(400, 0).kind).toBe('background')   // l2's span, but l2 is on lane 2
+    expect(hit(100, 2).kind).toBe('background')   // l0/l1's span, but they are lower
+  })
+
+  it('reports the lane on an EDGE hit too', () => {
+    expect(hit(2, 1)).toMatchObject({ kind: 'caption-edge', itemId: 'l1', edge: 'in', captionLane: 1 })
+    expect(hit(198, 1)).toMatchObject({ kind: 'caption-edge', itemId: 'l1', edge: 'out', captionLane: 1 })
+  })
+
+  it('never reports a caption lane through `laneIdx`, which is the AUDIO index', () => {
+    // Load-bearing: `laneIdx` is fed to `tieredBoundaries`, which ranks THAT
+    // audio lane's boundaries strong. A caption on lane 0 must not hand a drag
+    // audio lane 0's magnets.
+    expect(hit(100, 1).laneIdx).toBeUndefined()
+    expect(hit(100, 0).laneIdx).toBeUndefined()
+  })
+
+  it('still finds the rows and lanes pushed down by the extra bands', () => {
+    const pushedBase = l.rows.find(r => r.trackIdx === 0)!
+    expect(pushedBase.y).toBeGreaterThan(baseRow.y)
+    expect(hitTest({ x: 250, y: Math.round(pushedBase.y + pushedBase.height / 2) }, l, VIEWPORT))
+      .toMatchObject({ kind: 'item-body', itemId: 'c0' })
+  })
+
+  it('a marquee crossing several bands catches segments from every one of them', () => {
+    const rect = normalizeRect({ x: 50, y: bandFor(2).y }, { x: 450, y: bandFor(0).y + bandFor(0).height })
+    expect(itemsInRect(rect, l, VIEWPORT).sort()).toEqual(['l0', 'l1', 'l2'])
+  })
+
+  it('a marquee inside ONE band catches only that band', () => {
+    const rect = normalizeRect({ x: 50, y: bandFor(1).y }, { x: 450, y: bandFor(1).y + bandFor(1).height })
+    expect(itemsInRect(rect, l, VIEWPORT).sort()).toEqual(['l1'])
   })
 })
 

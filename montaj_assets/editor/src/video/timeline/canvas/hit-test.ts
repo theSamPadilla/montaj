@@ -84,6 +84,16 @@ export interface HitResult {
   trackIdx?: number
   /** Audio lane index (the `lane` field / grouping index) for lane hits. */
   laneIdx?: number
+  /** Which caption lane a caption hit resolved in — the `lane` of the band the
+   *  point fell inside (see `CaptionRowLayout` in draw.ts).
+   *
+   *  A field of its own, deliberately NOT a reuse of `laneIdx`. That one is an
+   *  AUDIO lane index and is handed straight to `tieredBoundaries`, which ranks
+   *  the boundaries of THAT audio lane STRONG for the whole gesture. A caption
+   *  lane and an audio lane that happen to share a number have nothing to do
+   *  with each other, so passing one through the other would give a caption
+   *  drag the magnets of an unrelated row. */
+  captionLane?: number
   /** The hit item itself, so callers don't re-scan the project. Captured at
    *  press time by the pointer machine and used as the gesture's origin. */
   item?: VisualItem
@@ -183,12 +193,11 @@ export function hitTest(
   // it goes here because it was a single optional rectangle like the ruler
   // before multi-lane captions existed, and this keeps that spot.
   //
-  // NOTE (Phase 3 compile fix, not a redesign): this loop finds WHICH band the
-  // point falls in and then runs the exact single-band logic Phase 1 wrote,
-  // unchanged, against that band. There is no `captionLane` on `HitResult`,
-  // no vertical-drag awareness, no per-lane clamp — a later phase owns all of
-  // that. With exactly one band (the common case today) this is byte-for-byte
-  // the old behaviour.
+  // The loop finds WHICH band the point falls in and then runs the same
+  // single-band logic against that band, reporting the band's `lane` back as
+  // `captionLane` so a drag knows which row it started on. With exactly one
+  // band this is byte-for-byte the pre-lanes behaviour, plus a `captionLane`
+  // of 0 that nothing which doesn't care ever reads.
   for (const caption of layout.captions ?? []) {
     if (point.y < caption.y || point.y >= caption.y + caption.height) continue
     // Id-less segments are never hittable. `backfillCaptionIds` mints an id
@@ -216,8 +225,8 @@ export function hitTest(
       // and `resolveGesture` to learn about it for no behavioural gain.
       return { kind: 'background', t }
     }
-    if (hit.edge === null) return { kind: 'caption-body', t, itemId: hit.item.id, segment: hit.item }
-    return { kind: 'caption-edge', t, itemId: hit.item.id, edge: hit.edge, segment: hit.item }
+    if (hit.edge === null) return { kind: 'caption-body', t, itemId: hit.item.id, segment: hit.item, captionLane: caption.lane }
+    return { kind: 'caption-edge', t, itemId: hit.item.id, edge: hit.edge, segment: hit.item, captionLane: caption.lane }
   }
 
   for (const row of layout.rows) {

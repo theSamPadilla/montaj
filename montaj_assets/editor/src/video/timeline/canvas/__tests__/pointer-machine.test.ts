@@ -20,7 +20,7 @@
  */
 import { describe, it, expect } from 'vitest'
 import type { Project } from '../../../../types'
-import { VISUAL_ROW_HEIGHT_PX, computeDerivedTiming, trackItems } from '../../timeline-model'
+import { CAPTION_ROW_HEIGHT_PX, ROW_GAP_PX, VISUAL_ROW_HEIGHT_PX, computeDerivedTiming, trackItems } from '../../timeline-model'
 import { computeTimelineLayout } from '../draw'
 import {
   CAPTION_MIN_DURATION_S,
@@ -2098,5 +2098,381 @@ describe('caption trim — a caption that already overhangs the timeline', () =>
         expect(seg.end - seg.start).toBeGreaterThanOrEqual(CAPTION_MIN_DURATION_S - 1e-9)
       }
     }
+  })
+})
+
+// ── Caption ROWS: vertical drag, row creation, per-row clamps ──────────────
+//
+// Captions live on lanes now. Lane 0 is the band adjacent to the base video
+// row and higher lanes stack UPWARD, so a drag toward the top of the surface
+// RAISES the lane number — the opposite of audio, whose lanes ascend downward.
+// A lone caption changes rows; a caption travelling with a wider selection
+// never does.
+//
+// Fixture (100px/s, so x = t × 100):
+//
+//   lane 1  u0 1s–2s          (x 100–200)
+//   lane 0  g0 1s–2s (words), g1 5s–6s   (x 100–200, 500–600)
+//   row     track 0 — c0 0s–10s     ⇒ totalDuration 15
+//
+// u0 sits directly above g0 on purpose: it is what makes "the row I am aiming
+// at is already taken" reachable without moving horizontally at all.
+
+function lanedCaptionProject(): Project {
+  return {
+    id: 'p',
+    tracks: [{
+      id: 'trk-0',
+      items: [{ id: 'c0', type: 'video', src: 'a.mp4', start: 0, end: 10, inPoint: 0, outPoint: 10, sourceDuration: 20 }],
+    }],
+    captions: {
+      style: 'pop',
+      segments: [
+        // No `lane` at all — absent means lane 0, and this fixture leans on
+        // that being indistinguishable from an explicit 0.
+        {
+          id: 'g0',
+          text: 'hello there',
+          start: 1,
+          end: 2,
+          words: [
+            { word: 'hello', start: 1, end: 1.6 },
+            { word: 'there', start: 1.6, end: 2 },
+          ],
+        },
+        { id: 'g1', text: 'ground later', start: 5, end: 6 },
+        { id: 'u0', text: 'upstairs', start: 1, end: 2, lane: 1 },
+      ],
+    },
+  } as unknown as Project
+}
+
+const LANED_LAYOUT = computeTimelineLayout(lanedCaptionProject())
+const laneMidY = (layout: typeof LANED_LAYOUT, lane: number) => {
+  const band = layout.captions!.find(b => b.lane === lane)!
+  return Math.round(band.y + band.height / 2)
+}
+const L0_Y = laneMidY(LANED_LAYOUT, 0)
+const L1_Y = laneMidY(LANED_LAYOUT, 1)
+
+const G0_BODY = { x: 150, y: L0_Y }
+const G1_BODY = { x: 550, y: L0_Y }
+const U0_BODY = { x: 150, y: L1_Y }
+const G0_OUT = { x: 198, y: L0_Y }
+const U0_OUT = { x: 198, y: L1_Y }
+
+function lanedCtx(overrides: Partial<PointerContext> = {}): PointerContext {
+  return makeContext({ project: lanedCaptionProject(), fps: CAPTION_FPS, ...overrides })
+}
+
+/** Every caption lane in a project, keyed by segment id, read the way the
+ *  painter reads it (absent ⇒ 0). */
+function lanes(project: Project): Record<string, number> {
+  const out: Record<string, number> = {}
+  for (const s of project.captions?.segments ?? []) out[s.id as string] = s.lane ?? 0
+  return out
+}
+
+describe('caption vertical drag — moving between rows', () => {
+  it('the fixture stacks lane 0 below lane 1, one band apart', () => {
+    expect(LANED_LAYOUT.captions!.map(b => b.lane)).toEqual([1, 0])
+    expect(L0_Y - L1_Y).toBe(CAPTION_ROW_HEIGHT_PX + ROW_GAP_PX)
+  })
+
+  it('a caption dragged UP one band lands on the next lane up', () => {
+    const d = new Driver(lanedCtx())
+    d.down(G1_BODY.x, G1_BODY.y)
+    const moved = lastProjectChange(d.move(G1_BODY.x, G1_BODY.y - CAPTION_ROW_HEIGHT_PX))
+    expect(lanes(moved).g1).toBe(1)
+    // Purely vertical: the segment keeps its exact timing.
+    expect(caption(moved, 'g1')).toMatchObject({ start: 5, end: 6 })
+    // …and nothing else moved rows.
+    expect(lanes(moved).g0).toBe(0)
+    expect(lanes(moved).u0).toBe(1)
+  })
+
+  it('crosses a row at CAPTION_ROW_HEIGHT_PX of travel, not at the 44px band pitch', () => {
+    // 22px is over half of 40 and exactly half of 44 (which `Math.round`
+    // resolves DOWNWARD in magnitude, to -0). The shorter divisor is what lets
+    // the drag reach the next row before the cursor has fully left this one.
+    expect(Math.round(-22 / CAPTION_ROW_HEIGHT_PX)).toBe(-1)
+    expect(Math.round(-22 / (CAPTION_ROW_HEIGHT_PX + ROW_GAP_PX))).toBe(-0)
+
+    const crossed = new Driver(lanedCtx())
+    crossed.down(G1_BODY.x, G1_BODY.y)
+    expect(lanes(lastProjectChange(crossed.move(G1_BODY.x, G1_BODY.y - 22))).g1).toBe(1)
+
+    // 20px is under half a row: no vertical intent, and with no horizontal
+    // travel either the gesture has nothing at all to emit.
+    const held = new Driver(lanedCtx())
+    held.down(G1_BODY.x, G1_BODY.y)
+    expect(of(held.move(G1_BODY.x, G1_BODY.y - 20), 'projectChange')).toEqual([])
+  })
+
+  it('dragging past the TOP band mints a new row, and the band is there mid-drag', () => {
+    const d = new Driver(lanedCtx())
+    d.down(G1_BODY.x, G1_BODY.y)
+    const moved = lastProjectChange(d.move(G1_BODY.x, G1_BODY.y - CAPTION_ROW_HEIGHT_PX * 2))
+    expect(lanes(moved).g1).toBe(2)
+    // The band exists in the very frame the drag emits — that is what makes
+    // the new row appear under the cursor rather than at release.
+    expect(computeTimelineLayout(moved).captions!.map(b => b.lane)).toEqual([2, 1, 0])
+  })
+
+  it('clamps at lane 0 dragging DOWN, and never reaches the video row', () => {
+    const d = new Driver(lanedCtx())
+    d.down(G1_BODY.x, G1_BODY.y)
+    // Two rows down from lane 0 is lane -2; the clamp holds it at 0. The
+    // horizontal component is there only so the move is not a no-op and the
+    // landed lane is actually observable.
+    const moved = lastProjectChange(d.move(G1_BODY.x + 100, G1_BODY.y + CAPTION_ROW_HEIGHT_PX * 2))
+    expect(lanes(moved).g1).toBe(0)
+    expect(caption(moved, 'g1')).toMatchObject({ start: 6, end: 7 })
+
+    // A blanket guard: no downward travel, at any distance, puts a caption
+    // below lane 0.
+    for (const dy of [40, 80, 400, 4000]) {
+      const proj = lastProjectChange(d.move(G1_BODY.x + 100, G1_BODY.y + dy))
+      expect(lanes(proj).g1).toBeGreaterThanOrEqual(0)
+    }
+  })
+
+  it('hands a caption to the nearest FREE row when the one it aimed at is taken', () => {
+    // Straight up from g0 is lane 1, where u0 sits at exactly the same span.
+    // The fan-out's next candidate is the row it came from, which fits — so
+    // the caption simply stays put rather than being shoved somewhere it was
+    // not aimed at.
+    const blocked = new Driver(lanedCtx())
+    blocked.down(G0_BODY.x, G0_BODY.y)
+    expect(of(blocked.move(G0_BODY.x, G0_BODY.y - CAPTION_ROW_HEIGHT_PX), 'projectChange')).toEqual([])
+
+    // The same upward drag, landing clear of u0 in time, takes lane 1.
+    const clear = new Driver(lanedCtx())
+    clear.down(G0_BODY.x, G0_BODY.y)
+    const moved = lastProjectChange(clear.move(G0_BODY.x + 250, G0_BODY.y - CAPTION_ROW_HEIGHT_PX))
+    expect(lanes(moved).g0).toBe(1)
+    expect(caption(moved, 'g0')).toMatchObject({ start: 3.5, end: 4.5 })
+  })
+
+  it('fans out to a NEW row when the target row and the source row are both taken', () => {
+    // a0 aims at lane 1 and lands on b1; falling back to lane 0 lands on a1;
+    // so the drop goes to lane 2, which is empty by construction.
+    const crowded: Project = {
+      id: 'p',
+      tracks: [{ id: 'trk-0', items: [{ id: 'c0', type: 'video', src: 'a.mp4', start: 0, end: 10, inPoint: 0, outPoint: 10, sourceDuration: 20 }] }],
+      captions: {
+        style: 'pop',
+        segments: [
+          { id: 'a0', text: 'a0', start: 1, end: 2 },
+          { id: 'a1', text: 'a1', start: 5, end: 6 },
+          { id: 'b1', text: 'b1', start: 5, end: 6, lane: 1 },
+        ],
+      },
+    } as unknown as Project
+    const ctx = lanedCtx({ project: crowded, layout: computeTimelineLayout(crowded) })
+    const d = new Driver(ctx)
+    d.down(150, laneMidY(ctx.layout, 0))
+    const moved = lastProjectChange(d.move(150 + 400, laneMidY(ctx.layout, 0) - CAPTION_ROW_HEIGHT_PX))
+    expect(lanes(moved).a0).toBe(2)
+    expect(caption(moved, 'a0')).toMatchObject({ start: 5, end: 6 })
+    // Neither blocker moved, and neither was overlapped in its own row.
+    expect(caption(moved, 'a1')).toMatchObject({ start: 5, end: 6 })
+    expect(caption(moved, 'b1')).toMatchObject({ start: 5, end: 6 })
+  })
+
+  it('carries word timings across a row change, and never touches the text', () => {
+    const d = new Driver(lanedCtx())
+    d.down(G0_BODY.x, G0_BODY.y)
+    const moved = lastProjectChange(d.move(G0_BODY.x + 250, G0_BODY.y - CAPTION_ROW_HEIGHT_PX))
+    const seg = caption(moved, 'g0')
+    expect(seg.text).toBe('hello there')
+    expect(seg.words).toEqual([
+      { word: 'hello', start: 3.5, end: 4.1 },
+      { word: 'there', start: 4.1, end: 4.5 },
+    ])
+  })
+
+  it('changes rows on the very FIRST move of a freshly grabbed caption', () => {
+    // The stale-selection trap again: `selectMany` has not been echoed back
+    // yet, so `ctx.selectedIds` still holds only the clip. The vertical path
+    // has to cope with its own id being absent from the selection.
+    const d = new Driver(lanedCtx({ selectedIds: ['c0'] }))
+    d.down(G1_BODY.x, G1_BODY.y)
+    expect(lanes(lastProjectChange(d.move(G1_BODY.x, G1_BODY.y - CAPTION_ROW_HEIGHT_PX))).g1).toBe(1)
+  })
+
+  it('commits a cross-row drag exactly once', () => {
+    const d = new Driver(lanedCtx())
+    d.down(G1_BODY.x, G1_BODY.y)
+    d.move(G1_BODY.x, G1_BODY.y - CAPTION_ROW_HEIGHT_PX)
+    const committed = of(d.up(G1_BODY.x, G1_BODY.y - CAPTION_ROW_HEIGHT_PX), 'commit')
+    expect(committed).toHaveLength(1)
+    expect(lanes(committed[0].project).g1).toBe(1)
+  })
+
+  it('commits nothing when the caption ends the drag back in the row it started in', () => {
+    const d = new Driver(lanedCtx())
+    d.down(G1_BODY.x, G1_BODY.y)
+    d.move(G1_BODY.x, G1_BODY.y - CAPTION_ROW_HEIGHT_PX)
+    d.move(G1_BODY.x, G1_BODY.y)
+    expect(of(d.up(G1_BODY.x, G1_BODY.y), 'commit')).toEqual([])
+  })
+})
+
+describe('caption horizontal drag — clamped by its own row only', () => {
+  it('stops a lane-0 caption at its lane-0 neighbour', () => {
+    const d = new Driver(lanedCtx())
+    d.down(G0_BODY.x, G0_BODY.y)
+    // 500px right is 5s; g1 starts at 5, so g0 gets 3s of the travel.
+    const moved = lastProjectChange(d.move(G0_BODY.x + 500, G0_BODY.y))
+    expect(caption(moved, 'g0')).toMatchObject({ start: 4, end: 5 })
+    expect(lanes(moved).g0).toBe(0)
+  })
+
+  it('lets a lane-1 caption slide straight past a lane-0 caption', () => {
+    // The discriminating case for the per-lane clamp: u0 (lane 1) travels the
+    // full 5s even though g1 (lane 0) sits at 5s–6s directly in its path. A
+    // track-wide clamp stopped it at 4s–5s.
+    const d = new Driver(lanedCtx())
+    d.down(U0_BODY.x, U0_BODY.y)
+    const moved = lastProjectChange(d.move(U0_BODY.x + 500, U0_BODY.y))
+    expect(caption(moved, 'u0')).toMatchObject({ start: 6, end: 7 })
+    expect(lanes(moved).u0).toBe(1)
+  })
+
+  it('moves a whole selection horizontally and changes NO lane, however far the pointer travels down or up', () => {
+    const d = new Driver(lanedCtx({ selectedIds: ['g0', 'u0'] }))
+    d.down(G0_BODY.x, G0_BODY.y)
+    for (const dy of [-400, -CAPTION_ROW_HEIGHT_PX, CAPTION_ROW_HEIGHT_PX, 400]) {
+      const moved = lastProjectChange(d.move(G0_BODY.x + 100, G0_BODY.y + dy))
+      expect(caption(moved, 'g0')).toMatchObject({ start: 2, end: 3 })
+      expect(caption(moved, 'u0')).toMatchObject({ start: 2, end: 3 })
+      expect(lanes(moved)).toEqual({ g0: 0, g1: 0, u0: 1 })
+    }
+  })
+})
+
+describe('caption trim — bounded by its own row only', () => {
+  it('stops an end trim at the next caption IN ITS OWN LANE', () => {
+    const d = new Driver(lanedCtx())
+    d.down(G0_OUT.x, G0_OUT.y)
+    expect(caption(lastProjectChange(d.move(2000, G0_OUT.y)), 'g0').end).toBeCloseTo(5)
+  })
+
+  it('lets a lane-1 caption trim straight past a lane-0 caption', () => {
+    // u0 has no same-lane neighbour, so its only ceiling is the timeline's own
+    // horizon. Track-wide, g1's start (5) stopped it.
+    const d = new Driver(lanedCtx())
+    d.down(U0_OUT.x, U0_OUT.y)
+    const trimmed = caption(lastProjectChange(d.move(2000, U0_OUT.y)), 'u0')
+    expect(trimmed.end).toBeCloseTo(15)
+    expect(trimmed.start).toBe(1)
+  })
+
+  it('ignores a caption on another row when trimming a start edge', () => {
+    // p0 (lane 0) ends at 2 and q0 (lane 1) starts at 3. Track-wide, q0's in
+    // edge floored at 2; per lane it has no previous neighbour at all and may
+    // run back to t=0.
+    const split: Project = {
+      id: 'p',
+      tracks: [{ id: 'trk-0', items: [{ id: 'c0', type: 'video', src: 'a.mp4', start: 0, end: 10, inPoint: 0, outPoint: 10, sourceDuration: 20 }] }],
+      captions: {
+        style: 'pop',
+        segments: [
+          { id: 'p0', text: 'p0', start: 1, end: 2 },
+          { id: 'q0', text: 'q0', start: 3, end: 4, lane: 1 },
+        ],
+      },
+    } as unknown as Project
+    const ctx = lanedCtx({ project: split, layout: computeTimelineLayout(split) })
+    const d = new Driver(ctx)
+    d.down(302, laneMidY(ctx.layout, 1))
+    const trimmed = caption(lastProjectChange(d.move(0, laneMidY(ctx.layout, 1))), 'q0')
+    expect(trimmed.start).toBe(0)
+    expect(trimmed.end).toBe(4)
+  })
+
+  it('never moves a caption between rows — a trim is horizontal, always', () => {
+    const d = new Driver(lanedCtx())
+    d.down(G0_OUT.x, G0_OUT.y)
+    const moved = lastProjectChange(d.move(250, G0_OUT.y - CAPTION_ROW_HEIGHT_PX * 3))
+    expect(lanes(moved)).toEqual({ g0: 0, g1: 0, u0: 1 })
+  })
+})
+
+// ── Hole lanes, and when they collapse ────────────────────────────────────
+//
+// A caption that was alone in its row leaves a HOLE behind it. The hole is
+// deliberately KEPT for every mid-drag frame — it is what holds an empty band
+// open so the timeline does not jump a whole row height under the pointer —
+// and collapsed exactly once, inside the commit, so the move and the
+// renumbering are one undo entry.
+
+function threeLaneProject(): Project {
+  return {
+    id: 'p',
+    tracks: [{
+      id: 'trk-0',
+      items: [{ id: 'c0', type: 'video', src: 'a.mp4', start: 0, end: 10, inPoint: 0, outPoint: 10, sourceDuration: 20 }],
+    }],
+    captions: {
+      style: 'pop',
+      segments: [
+        { id: 'low', text: 'low', start: 1, end: 2 },
+        { id: 'mid', text: 'mid', start: 1, end: 2, lane: 1 },   // alone in its row
+        { id: 'top', text: 'top', start: 1, end: 2, lane: 2 },
+      ],
+    },
+  } as unknown as Project
+}
+
+describe('caption lanes — hole collapse at commit', () => {
+  const ctx = () => lanedCtx({ project: threeLaneProject(), layout: computeTimelineLayout(threeLaneProject()) })
+
+  it('keeps the hole open for every mid-drag frame', () => {
+    const c = ctx()
+    const d = new Driver(c)
+    const y = laneMidY(c.layout, 1)
+    d.down(150, y)
+    const moved = lastProjectChange(d.move(150, y - CAPTION_ROW_HEIGHT_PX * 2))
+    // mid vacated lane 1 for the new lane 3; lane 1 is now a hole, and the
+    // band for it is still painted.
+    expect(lanes(moved)).toEqual({ low: 0, mid: 3, top: 2 })
+    expect(computeTimelineLayout(moved).captions!.map(b => b.lane)).toEqual([3, 2, 1, 0])
+  })
+
+  it('collapses the hole once, in the single commit', () => {
+    const c = ctx()
+    const d = new Driver(c)
+    const y = laneMidY(c.layout, 1)
+    d.down(150, y)
+    d.move(150, y - CAPTION_ROW_HEIGHT_PX * 2)
+    const committed = of(d.up(150, y - CAPTION_ROW_HEIGHT_PX * 2), 'commit')
+    expect(committed).toHaveLength(1)
+    // Dense from 0, relative order preserved: low stays bottom, top moves down
+    // into the vacated row, mid lands on top.
+    expect(lanes(committed[0].project)).toEqual({ low: 0, mid: 2, top: 1 })
+    expect(computeTimelineLayout(committed[0].project).captions!.map(b => b.lane)).toEqual([2, 1, 0])
+  })
+
+  it('leaves an already-dense project byte-for-byte alone at commit', () => {
+    // Normalization must not manufacture a change of its own: a drag that
+    // vacates nothing commits exactly what the last frame emitted.
+    const d = new Driver(lanedCtx())
+    d.down(G1_BODY.x, G1_BODY.y)
+    const moved = lastProjectChange(d.move(G1_BODY.x, G1_BODY.y - CAPTION_ROW_HEIGHT_PX))
+    const committed = of(d.up(G1_BODY.x, G1_BODY.y - CAPTION_ROW_HEIGHT_PX), 'commit')
+    expect(committed[0].project.captions).toBe(moved.captions)
+  })
+
+  it('does not normalize a caption TRIM — a trim cannot empty a row', () => {
+    const c = ctx()
+    const d = new Driver(c)
+    const y = laneMidY(c.layout, 1)
+    d.down(198, y)                                    // mid's out handle
+    const moved = lastProjectChange(d.move(400, y))
+    const committed = of(d.up(400, y), 'commit')
+    expect(committed[0].project.captions).toBe(moved.captions)
+    expect(lanes(committed[0].project)).toEqual({ low: 0, mid: 1, top: 2 })
   })
 })

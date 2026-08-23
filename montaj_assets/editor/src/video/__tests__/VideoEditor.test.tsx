@@ -499,6 +499,91 @@ describe('VideoEditor — editor-package integration', () => {
     await waitFor(() => expect(onProjectChange).toHaveBeenLastCalledWith(expect.objectContaining({ name: 'FromServer' })))
   })
 
+  // Caption LANES are dense from 0 by contract — the bands the painter emits,
+  // the row the hit-test addresses and the fan-out a cross-row drag searches
+  // all assume it. A project.json written by hand or by an agent need not
+  // honour that, so the same defensive pass that backfills ids normalizes
+  // lanes on load.
+  it('normalizes sparse caption lanes on load, and settles instead of looping', async () => {
+    const adapter = makeFakeAdapter()
+    const onProjectChange = vi.fn()
+    render(
+      <VideoEditor
+        project={makeVideoProject({
+          status: 'draft',
+          captions: {
+            style: 'clean',
+            segments: [
+              // `lane: 7` with nothing on lanes 1–6: eight rows of mostly
+              // nothing unless this is collapsed to row 1.
+              { id: 's0', text: 'one', start: 0, end: 1, lane: 7, words: [{ word: 'one', start: 0, end: 1 }] },
+              { id: 's1', text: 'two', start: 1, end: 2, words: [{ word: 'two', start: 1, end: 2 }] },
+            ],
+          },
+        } as Partial<Project>)}
+        adapter={adapter}
+        onProjectChange={onProjectChange}
+        slots={{ exportActions: <div /> }}
+      />,
+    )
+
+    await waitFor(() => {
+      const last = onProjectChange.mock.calls[onProjectChange.mock.calls.length - 1][0] as Project
+      // s0 drops from 7 to 1; s1's absent lane already means 0 and is left
+      // absent rather than rewritten.
+      expect(last.captions?.segments.map((s) => s.lane)).toEqual([1, undefined])
+    })
+
+    // Settles: `normalizeCaptionLanes` hands back the same reference once the
+    // lanes are dense, so the pass that follows its own applyExternal is a true
+    // no-op rather than another write.
+    const settledCallCount = onProjectChange.mock.calls.length
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)) })
+    expect(onProjectChange.mock.calls.length).toBe(settledCallCount)
+  })
+
+  it('never publishes a half-normalized project — ids and lanes land in one write', async () => {
+    // Both defensive passes share ONE effect on purpose. Run as two effects
+    // with the same deps they both close over the pre-effect project, so the
+    // second applyExternal lands a project derived from before the first and
+    // drops the ids the backfill just minted — recovered on the next pass, but
+    // only after the host has already been handed that half-normalized frame.
+    const adapter = makeFakeAdapter()
+    const onProjectChange = vi.fn()
+    render(
+      <VideoEditor
+        project={makeVideoProject({
+          status: 'draft',
+          captions: {
+            style: 'clean',
+            segments: [
+              { text: 'one', start: 0, end: 1, lane: 4, words: [{ word: 'one', start: 0, end: 1 }] },
+              { text: 'two', start: 1, end: 2, words: [{ word: 'two', start: 1, end: 2 }] },
+            ],
+          },
+        } as Partial<Project>)}
+        adapter={adapter}
+        onProjectChange={onProjectChange}
+        slots={{ exportActions: <div /> }}
+      />,
+    )
+
+    await waitFor(() => {
+      const last = onProjectChange.mock.calls[onProjectChange.mock.calls.length - 1][0] as Project
+      expect(last.captions?.segments.map((s) => s.id)).toEqual(['cap-0', 'cap-1'])
+      expect(last.captions?.segments.map((s) => s.lane)).toEqual([1, undefined])
+    })
+
+    // Every frame the host saw is either the raw input or the finished result:
+    // no frame has the lanes collapsed while the ids are still missing.
+    for (const call of onProjectChange.mock.calls) {
+      const segments = (call[0] as Project).captions?.segments ?? []
+      if (segments.some((s) => s.lane === 1)) {
+        expect(segments.every((s) => !!s.id)).toBe(true)
+      }
+    }
+  })
+
   // Regression: the caption-repair effect (VideoEditor.tsx, near backfillCaptionIds)
   // used to be keyed on project.id ONLY, so it ran once per project load and never
   // again. CaptionRegenModal's onDone replaces project.captions via applyExternal

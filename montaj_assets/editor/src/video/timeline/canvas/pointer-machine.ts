@@ -54,12 +54,13 @@
  * doesn't collide: that path only fires for presses that never became drags.
  */
 
-import type { AudioTrack, CaptionSegment, Captions, VisualItem } from '../../../schema'
+import type { AudioTrack, CaptionSegment, VisualItem } from '../../../schema'
 import type { Project } from '../../../types'
 import { reflowMagneticLanes } from '../../audioMagnet'
+import { laneOf, normalizeCaptionLanes, resolveDropLane, sameLaneNeighbours } from '../../captionLanes'
 import { collapseGaps, rollEdit, slideItem, slipItem } from '../../cuts'
 import { applyMoveDeltaToSelection, applyResizeDeltaToSelection } from '../multiSelectOps'
-import { AUDIO_LANE_HEIGHT_PX, computeDerivedTiming, groupAudioLanes, mapTrackItems, moveItemAcrossTracks, normalizeTracks, trackItems, updateAudioTrack } from '../timeline-model'
+import { AUDIO_LANE_HEIGHT_PX, CAPTION_ROW_HEIGHT_PX, computeDerivedTiming, groupAudioLanes, mapTrackItems, moveItemAcrossTracks, normalizeTracks, trackItems, updateAudioTrack } from '../timeline-model'
 import { DRAG_THRESHOLD_PX, computeResizedItem, resizeWindowedItem, type Draggable } from '../useItemDragDrop'
 import type { TimelineLayout } from './draw'
 import {
@@ -835,13 +836,8 @@ function applyAudioTrim(ctx: PointerContext, press: Press, point: Point, snap: S
 }
 
 /**
- * Re-time a caption block, and whatever else is selected with it.
- *
- * There is no single-segment path to fall through to, the way `applyMove` and
- * `applyAudioMove` have one: a caption belongs to no track and no lane, so
- * there is nothing for a lone drag to do that the group path doesn't already
- * do. Everything goes through `applyGroupMove`, which is also what makes a
- * mixed clip+caption drag land as ONE undo entry.
+ * Re-time a caption block — across rows for a lone caption, and along the
+ * timeline for a caption travelling with a wider selection.
  *
  * The selection expression is load-bearing. `applyMoveDeltaToSelection` moves
  * only ids it is handed, and when a drag starts on an UNSELECTED caption the
@@ -850,34 +846,125 @@ function applyAudioTrim(ctx: PointerContext, press: Press, point: Point, snap: S
  * caption would sit perfectly still while the pointer walked away from it.
  * Falling back to `[seg.id]` covers both cases in one line: a caption already
  * in a multi-selection group-moves with everything else, a freshly grabbed one
- * moves alone.
+ * takes the single-caption path below.
+ *
+ * **Group drags never change lanes.** `applyMoveDeltaToSelection` is
+ * horizontal-only — it shifts times and re-spreads word timings, and `lane`
+ * rides its spread untouched — so a multi-selection travels along the timeline
+ * however far the pointer moves vertically. This is the one place where "drag
+ * any member and the whole selection follows" meets "drag up a row to change
+ * rows", and horizontal-only wins: a group has no single source lane to
+ * measure a lane delta from, and moving every member by the same lane delta
+ * would silently re-stack rows the operator never pointed at.
  *
  * Snapping is the ordinary boundary set. A caption hit carries no `trackIdx`
  * or `laneIdx` — it belongs to no row — so `tieredBoundaries` ranks every clip
  * and audio boundary WEAK for it, and captions do not snap to each other at
  * all (that function reads tracks and audio only). Accepted for v1.
  *
- * Captions may NOT overlap. `applyGroupMove` clamps the delta through
- * `applyMoveDeltaToSelection`, which folds in a caption-neighbour bound
+ * Captions may NOT overlap WITHIN A LANE. On the group path
+ * `applyMoveDeltaToSelection` folds a same-lane caption-neighbour bound in
  * alongside its timeline-edge bound (see `captionNeighbourBounds` in
- * multiSelectOps.ts) — a selected caption may not cross a non-selected one, in
- * either direction. This was dropped when captions moved onto the canvas
- * timeline for overlay parity (the retired DOM `CaptionTrackRow` had a
- * neighbour clamp) and has now been restored, because the gap was not
- * cosmetic: the preview and every render template resolve the active caption
- * with `segments.find(s => t >= s.start && t < s.end)`, the FIRST match in
- * array order, so an overlapped span silently drops whichever segment lost
- * that race — in preview AND in the export. `applyCaptionTrim`, below, has the
- * matching clamp for a trim. Multiple caption ROWS, where captions on
- * DIFFERENT rows may overlap and all render (CapCut's model), is a separate
- * planned feature needing more than one caption lane — not this.
+ * multiSelectOps.ts); on the single path the rule is enforced by choosing a
+ * lane the landed span actually fits in (`resolveDropLane`) rather than by
+ * clamping the horizontal landing. Overlap is illegal within a lane because
+ * `activeCaptionSegments` (timeline-core) hands the preview and every render
+ * template EVERY live segment, lane-ascending, and a lane is a z-order with no
+ * vertical offset of its own — so two segments sharing a lane and an instant
+ * paint one straight over the other, in preview AND in the export. Two
+ * segments on DIFFERENT lanes coinciding is the feature rows exist for.
+ * `applyCaptionTrim`, below, has the matching same-lane clamp for a trim.
  */
 function applyCaptionMove(ctx: PointerContext, press: Press, point: Point, snap: SnapState, lastProject: Project, escaped: boolean): Applied {
   const seg = press.hit.segment
   if (!seg || seg.id === undefined) return noChange(snap, lastProject)
   const id = seg.id
   const selection = ctx.selectedIds.includes(id) ? ctx.selectedIds : [id]
-  return applyGroupMove(ctx, press, point, snap, lastProject, escaped, { id, start: seg.start, end: seg.end }, selection)
+  const dragged = { id, start: seg.start, end: seg.end }
+  if (selection.length > 1) {
+    return applyGroupMove(ctx, press, point, snap, lastProject, escaped, dragged, selection)
+  }
+
+  // The row the press landed in, read off the BAND rather than off the segment.
+  // The two agree by construction (`groupCaptionLanes` files each segment into
+  // the band for its own lane), but the band is what the operator actually
+  // pointed at.
+  const sourceLane = press.hit.captionLane ?? laneOf(seg)
+
+  // Divided by CAPTION_ROW_HEIGHT_PX (40), NOT by the 44px band pitch the
+  // layout actually stacks bands at — the same deliberate shortfall
+  // `applyAudioMove` (AUDIO_LANE_HEIGHT_PX) and `moveItemAcrossTracks`
+  // (VISUAL_ROW_HEIGHT_PX) use, so the drag reaches the neighbouring row a few
+  // pixels before the cursor has fully left the current one.
+  //
+  // `resolveDropLane` then computes `wanted = clamp(sourceLane - laneDelta, 0,
+  // maxLane + 1)`. The MINUS is a deliberate inversion, not a slip: caption
+  // lanes ascend UPWARD on screen (Phase 3 emits the bands in descending lane
+  // order, so lane 0 sits lowest, immediately above the base video row),
+  // whereas audio lanes ascend DOWNWARD — so for captions a downward drag
+  // (positive `laneDelta`) must LOWER the lane number. A sign error here sends
+  // every caption the wrong way.
+  const laneDelta = Math.round((point.y - press.origin.y) / CAPTION_ROW_HEIGHT_PX)
+
+  // No vertical intent at all: byte-for-byte the horizontal-only behaviour,
+  // same-lane neighbour clamp included. This is what an operator who never
+  // drags vertically experiences, so it stays exactly the group path with a
+  // selection of one rather than a second implementation of the same thing.
+  if (laneDelta === 0) {
+    return applyGroupMove(ctx, press, point, snap, lastProject, escaped, dragged, selection)
+  }
+
+  // ── Vertical intent: a row change, resolved lane-first ──────────────────
+  const duration = seg.end - seg.start
+  const dt = (point.x - press.origin.x) / ctx.viewport.pxPerSecond
+  const boundaries = itemSnapPoints(ctx, press, originGuard(escaped, [seg.start, seg.end]))
+  const snapped = applySnap(seg.start + dt, snapPointsForSpan(boundaries, duration), ctx.viewport, snap, ctx.snapConfig)
+
+  // The horizontal landing is bounded by the timeline's own edges and NOTHING
+  // else — deliberately not by `applyMoveDeltaToSelection`'s neighbour clamp.
+  // A caption that is leaving its row must not be held back by that row's
+  // neighbours, and the row it lands in is chosen to fit it rather than being
+  // clamped against. That is the whole reason a cross-row drag never teleports
+  // a caption sideways hunting for a gap: the search happens in the vertical
+  // axis, exactly as `moveItemAcrossTracks` searches tracks for a clip.
+  //
+  // Same lo/hi `applyMoveDeltaToSelection` computes for a lone caption, minus
+  // its neighbour half — `hi`'s `Math.max(0, …)` floor included, so a caption
+  // already overhanging `totalDuration` (clips trimmed after captioning) is
+  // neither pushed further out nor yanked back in.
+  const delta = clamp(snapped.time - seg.start, -seg.start, Math.max(0, ctx.totalDuration - seg.end))
+  const start = seg.start + delta
+  const end = seg.end + delta
+
+  // Fans out from `wanted` — `wanted, wanted-1, wanted+1, …`, bounded to
+  // `[0, maxLane + 1]` — and takes the first lane the landed span fits in, so
+  // an occupied target row hands off to the nearest free one. `maxLane + 1` is
+  // empty by construction, so the search always terminates there; landing on
+  // it is exactly how a NEW row gets created.
+  const lane = resolveDropLane({
+    segments: press.baseProject.captions?.segments ?? [],
+    seg, sourceLane, laneDelta, start, end,
+  })
+
+  // Word timings are ABSOLUTE seconds, so every word travels with the segment
+  // by the same delta and nothing is respread — the identical rule
+  // `shiftCaptions` (multiSelectOps.ts) applies on the group path. `text` is
+  // never touched: a move is a retime.
+  const patch: Partial<CaptionSegment> = { start, end, lane }
+  if (seg.words) patch.words = seg.words.map(w => ({ ...w, start: w.start + delta, end: w.end + delta }))
+
+  // Same-reference on a true no-op, the contract `change` reads: a drag held
+  // against a clamp in a row it never left emits nothing rather than an
+  // identical project per pointer event.
+  const next = delta === 0 && lane === sourceLane
+    ? press.baseProject
+    : replaceCaptionSegment(press.baseProject, id, patch)
+  // Clamped against t=0 or the end of the timeline the caption is NOT where
+  // the magnet asked, so there is nothing to mark — same rule as `applyMove`.
+  const guide = Math.abs(start - snapped.time) <= EPSILON
+    ? spanSnapGuide(snapped, duration, boundaries)
+    : null
+  return change(next, lastProject, snapped.state, guide)
 }
 
 /** The shortest a caption may be trimmed to. Carried over from the retired DOM
@@ -885,28 +972,6 @@ function applyCaptionMove(ctx: PointerContext, press: Press, point: Point, snap:
  *  zero-length caption is unselectable and unreadable, and the click-seek in
  *  `pointerUp` needs every segment to be at least one frame long. */
 export const CAPTION_MIN_DURATION_S = 0.1
-
-/**
- * The nearest OTHER caption's end at or before `seg.start`, and the nearest
- * OTHER caption's start at or after `seg.end` — the boundaries a trim of `seg`
- * may not cross, because captions may never overlap (see the WHY on
- * `applyCaptionMove`, above). `seg` itself is excluded so it is never its own
- * neighbour; unlike the move clamp (`captionNeighbourBounds` in
- * multiSelectOps.ts) there is no wider "selected" set to exclude, since a trim
- * never touches more than one segment — see `applyCaptionTrim`'s own doc
- * comment. Absent neighbour reads as unbounded (`±Infinity`) on that side,
- * same convention the move clamp uses.
- */
-function captionEdgeNeighbours(captions: Captions | undefined, seg: CaptionSegment): { prevEnd: number; nextStart: number } {
-  let prevEnd = -Infinity
-  let nextStart = Infinity
-  for (const other of captions?.segments ?? []) {
-    if (other.id === seg.id) continue
-    if (other.end <= seg.start && other.end > prevEnd) prevEnd = other.end
-    if (other.start >= seg.end && other.start < nextStart) nextStart = other.start
-  }
-  return { prevEnd, nextStart }
-}
 
 /**
  * Drag ONE caption edge. Single-segment by design — multi-caption trim is out
@@ -924,19 +989,30 @@ function applyCaptionTrim(ctx: PointerContext, press: Press, point: Point, snap:
 
   const edge = press.hit.edge === 'in' ? 'start' : 'end'
   const initTime = edge === 'start' ? seg.start : seg.end
+  // The nearest OTHER caption SHARING THIS SEGMENT'S LANE on either side — a
+  // segment on another row is not a bound, because captions on different rows
+  // may overlap and all render. `sameLaneNeighbours` (captionLanes.ts) is the
+  // one place that search lives; `seg` is excluded there so it is never its own
+  // neighbour. Absent neighbour reads as unbounded (`±Infinity`) on that side,
+  // the same convention the move clamp uses.
+  //
   // Press-time, not live — same reasoning `press.baseProject` carries for the
   // snap boundaries (see the `Press` interface): the host echoes every
   // `projectChange` back through a re-render, and a neighbour search reading
   // the live project mid-drag would see this very segment's own current edge
   // reflected back as if it were a different, moving neighbour.
-  const { prevEnd, nextStart } = captionEdgeNeighbours(press.baseProject.captions, seg)
+  const { prev, next: after } = sameLaneNeighbours(press.baseProject.captions?.segments ?? [], seg)
+  const prevEnd = prev?.end ?? -Infinity
+  const nextStart = after?.start ?? Infinity
 
   // ── The dragged edge's LEGAL RANGE, computed once and used for everything ──
   //
-  // The timeline on one side, the duration floor on the other, and now a
-  // caption-neighbour bound on the third: captions may never overlap (see the
-  // WHY on `applyCaptionMove`), so a trim may not push its edge across the
-  // adjacent segment's edge either. All three fold into ONE range rather than
+  // The timeline on one side, the duration floor on the other, and a
+  // same-lane caption-neighbour bound on the third: captions may never overlap
+  // within a lane (see the WHY on `applyCaptionMove`), so a trim may not push
+  // its edge across the adjacent SAME-LANE segment's edge either — a segment
+  // on another row bounds nothing, since rows are allowed to overlap and all
+  // render. All three fold into ONE range rather than
   // clamps in sequence: whichever clamp ran second would undo the first.
   // Floor-after-bounds let a segment already shorter than the floor escape the
   // timeline (a 0s–0.05s segment's in edge landed at -0.05s); bounds-after-
@@ -955,23 +1031,25 @@ function applyCaptionTrim(ctx: PointerContext, press: Press, point: Point, snap:
   // own end instead, so a trim never pushes a caption FURTHER out than it
   // already was. A caption inside the timeline is unaffected — for it the max
   // IS `totalDuration`. `nextStart` then tightens that ceiling further when a
-  // following caption sits closer than the timeline edge does (`Infinity` when
-  // there is no next caption, so it never loosens the existing bound).
+  // following caption IN THE SAME LANE sits closer than the timeline edge does
+  // (`Infinity` when there is no such caption, so it never loosens the
+  // existing bound).
   //
   // `lo` on the start side stays floored at 0 rather than mirroring `hi`
   // (`Math.min(0, seg.start)`): a negative `start` is unreachable —
   // `applyMoveDeltaToSelection` clamps a group move at `-minStart` and this
   // trim clamps at 0, so nothing in the codebase can produce one, and
   // mirroring would be generality for a state that cannot occur. `prevEnd`
-  // raises that floor when a preceding caption sits to the right of t=0
-  // (`-Infinity` when there is no previous caption, so it never lowers it).
+  // raises that floor when a preceding caption IN THE SAME LANE sits to the
+  // right of t=0 (`-Infinity` when there is no such caption, so it never
+  // lowers it).
   const lo = edge === 'start' ? Math.max(0, prevEnd) : seg.start + CAPTION_MIN_DURATION_S
   const hi = edge === 'start'
     ? seg.end - CAPTION_MIN_DURATION_S
     : Math.min(Math.max(ctx.totalDuration, seg.end), nextStart)
 
   // An EMPTY range means a sub-floor segment pinned against t=0, the end of
-  // the timeline, or a neighbouring caption's own edge: there is no legal
+  // the timeline, or a same-lane neighbouring caption's own edge: there is no legal
   // position for this edge at all, so the trim declines to move rather than
   // inventing a least-bad one. Same shape `applyMoveDeltaToSelection` uses for
   // a group already wider than the timeline (or its own caption-neighbour
@@ -1296,7 +1374,22 @@ export function pointerReducer(state: MachineState, event: PointerMachineEvent):
           // magnetic audio lanes, so visual/caption gestures and non-magnetic
           // audio are unaffected; keeping it off the transient
           // `projectChange` frames is what keeps the drag itself smooth.
-          effects.push({ type: 'commit', project: reflowMagneticLanes(state.lastProject) })
+          let committed = reflowMagneticLanes(state.lastProject)
+          // A caption that was alone in its row leaves a HOLE lane behind it.
+          // Collapse it here — after the "did anything change" gate, inside the
+          // one commit — so a cross-row drag renumbers exactly once and lands
+          // as a single undo entry.
+          //
+          // The mid-drag `projectChange` frames deliberately keep the
+          // UN-normalized project: the hole lane is what keeps
+          // `groupCaptionLanes` emitting an empty band there, and that band is
+          // what stops the whole timeline jumping a row height under the
+          // pointer half way through the gesture.
+          if (state.gesture === 'caption-move') {
+            const normalized = normalizeCaptionLanes(committed.captions)
+            if (normalized !== committed.captions) committed = { ...committed, captions: normalized }
+          }
+          effects.push({ type: 'commit', project: committed })
         }
         return withCursor(
           { kind: 'idle', cursor: state.cursor },

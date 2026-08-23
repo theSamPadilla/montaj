@@ -160,6 +160,76 @@ describe('Timeline — T9 keymap (arrows / delete / enter / escape)', () => {
     expect(updated.captions?.segments).toEqual([])
   })
 
+  // Caption rows: emptying one leaves a HOLE lane, and the row has to collapse
+  // in the SAME commit as the delete that emptied it — otherwise the operator's
+  // Cmd-Z brings the caption back but leaves the row renumbering behind (or
+  // undoes it separately, one keystroke later).
+  it('Delete collapses and renumbers a caption row it empties, in the same commit', () => {
+    const clock = createPlaybackClock(0)
+    const onProjectChange = vi.fn()
+    const onOverlayEdit = vi.fn()
+    const project = {
+      ...makeProject(),
+      captions: {
+        style: 'clean',
+        segments: [
+          { id: 'cap-0', text: 'ground', start: 0, end: 1 },              // lane 0
+          { id: 'cap-1', text: 'middle', start: 0, end: 1, lane: 1 },     // lane 1, alone
+          { id: 'cap-2', text: 'top', start: 0, end: 1, lane: 2 },        // lane 2
+        ],
+      },
+    } as unknown as Project
+    const { container } = render(
+      <Timeline
+        project={project}
+        clock={clock}
+        selectedIds={['cap-1']}
+        onSelectIds={vi.fn()}
+        onProjectChange={onProjectChange}
+        onOverlayEdit={onOverlayEdit}
+      />,
+    )
+    focusTimelineRoot(container)
+    fireEvent.keyDown(document.body, { key: 'Delete' })
+    // ONE commit — the strip and the renumbering are a single undo entry.
+    expect(onProjectChange).toHaveBeenCalledTimes(1)
+    expect(onOverlayEdit).toHaveBeenCalledTimes(1)
+    const updated = onProjectChange.mock.calls[0][0] as Project
+    expect(updated.captions?.segments.map((s) => s.id)).toEqual(['cap-0', 'cap-2'])
+    // cap-2 was on lane 2 with a hole below it; it drops into the vacated row.
+    expect(updated.captions?.segments.map((s) => s.lane ?? 0)).toEqual([0, 1])
+  })
+
+  it('Delete leaves the other rows alone when the row it empties is the TOP one', () => {
+    // Removing the highest lane leaves no hole, so nothing renumbers.
+    const clock = createPlaybackClock(0)
+    const onProjectChange = vi.fn()
+    const project = {
+      ...makeProject(),
+      captions: {
+        style: 'clean',
+        segments: [
+          { id: 'cap-0', text: 'ground', start: 0, end: 1 },
+          { id: 'cap-1', text: 'top', start: 0, end: 1, lane: 1 },
+        ],
+      },
+    } as unknown as Project
+    const { container } = render(
+      <Timeline
+        project={project}
+        clock={clock}
+        selectedIds={['cap-1']}
+        onSelectIds={vi.fn()}
+        onProjectChange={onProjectChange}
+      />,
+    )
+    focusTimelineRoot(container)
+    fireEvent.keyDown(document.body, { key: 'Delete' })
+    const updated = onProjectChange.mock.calls[0][0] as Project
+    expect(updated.captions?.segments.map((s) => s.id)).toEqual(['cap-0'])
+    expect(updated.captions?.segments[0].lane).toBeUndefined()
+  })
+
   it('Delete does NOT delete the selection when focus is outside the timeline (restored pre-SP5 scoping)', () => {
     const clock = createPlaybackClock(0)
     const onProjectChange = vi.fn()

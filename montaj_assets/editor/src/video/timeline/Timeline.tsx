@@ -3,6 +3,7 @@ import AudioTrackRow from './AudioTrackRow'
 import type { GetWaveformChunks, ResolveFilePath } from './AudioWaveformLayer'
 import type { FilmstripIndex, GetFilmstripArgs, GetWaveformPeaksArgs, PeaksData, Project } from '../../types'
 import { reflowMagneticLanes } from '../audioMagnet'
+import { normalizeCaptionLanes } from '../captionLanes'
 import { collapseGaps, setClipSpeed } from '../cuts'
 import { ratioFromClientX } from './utils'
 import { useTimelineZoom } from './useTimelineZoom'
@@ -412,8 +413,13 @@ export default function Timeline({ project, clock, onProjectChange, onOverlayEdi
           // Leave captions as an EMPTY-segments object when every segment is
           // removed, never null the whole track — that's the sidebar's
           // explicit "Remove all" action, not a side effect of Delete.
+          //
+          // `normalizeCaptionLanes` runs INSIDE this same commit: emptying a
+          // caption row leaves a hole lane, and collapsing it here means the
+          // row disappearing and its neighbours renumbering are the same undo
+          // entry as the delete that caused them, not a second one.
           if (kept.length !== captionTrack.segments.length) {
-            updated = { ...updated, captions: { ...captionTrack, segments: kept } }
+            updated = { ...updated, captions: normalizeCaptionLanes({ ...captionTrack, segments: kept }) }
           }
         }
         if (rippleMode) updated = collapseGaps(updated)

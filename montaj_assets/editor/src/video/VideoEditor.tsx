@@ -10,6 +10,7 @@ import { getOverlayDesignCanvas } from './design-canvas'
 import { applyTheme, defaultMontajTheme } from '../theme'
 import { collapseGaps, rippleDelete, splitAtTime } from './cuts'
 import { repairCaptionWords } from './captionRepair'
+import { normalizeCaptionLanes } from './captionLanes'
 import Timeline, { type TimelineActions } from './timeline/Timeline'
 import { computeAutoCrossfade, computeDerivedTiming, enabledTrackItems, mapTrackItems, trackItems } from './timeline/timeline-model'
 import { makeCaptionEdit, type CaptionEditPatch } from './timeline/makeCaptionEdit'
@@ -187,13 +188,34 @@ export default function VideoEditor<P extends Project = Project>({
   // therefore re-fires this effect exactly once) finds nothing to do and stops.
   // Every other re-fire — one per caption edit — is a cheap `.every()` no-op.
   //
+  // The SECOND pass in the same effect is caption LANES. A project.json can
+  // arrive with sparse or hand-authored lanes (`lane: 7` on the only segment
+  // that has one, written by an agent or edited by hand), and every reader
+  // downstream — the bands the painter emits, the row the hit-test addresses,
+  // the fan-out a cross-row drag searches — assumes lanes are dense from 0. So
+  // normalize on load: `lane: 7` opens as row 1, not as eight rows of mostly
+  // nothing. `normalizeCaptionLanes` honours the same same-reference contract
+  // as `backfillCaptionIds`, so it is loop-proof for the same reason.
+  //
+  // Both passes share ONE effect, and the lane pass reads the BACKFILLED
+  // project rather than `sync.project`, on purpose: two effects with the same
+  // deps both close over the same pre-effect `sync.project`, so the second
+  // `applyExternal` of a commit lands a project derived from the state as it
+  // was BEFORE the first one and drops the ids the backfill just minted. It
+  // recovers on the next pass (the effect re-fires and re-mints), but only
+  // after publishing a half-normalized project to the host through
+  // `onProjectChange` and paying an extra render for it. Chained, the host only
+  // ever sees the input or the finished result.
+  //
   // `applyExternal` — no save, no undo push: this is normalization of loaded
   // data, not a user edit, so it must not dirty the project or contend with the
-  // undo stack; the ids persist naturally the next time the operator makes a
-  // real edit.
+  // undo stack; the ids and lanes persist naturally the next time the operator
+  // makes a real edit.
   useEffect(() => {
     const backfilled = backfillCaptionIds(sync.project)
-    if (backfilled !== sync.project) sync.applyExternal(backfilled)
+    const captions = normalizeCaptionLanes(backfilled.captions)
+    const normalized = captions === backfilled.captions ? backfilled : { ...backfilled, captions }
+    if (normalized !== sync.project) sync.applyExternal(normalized)
   }, [sync.project.id, sync.project.captions])
 
   // Notify the host of every authoritative change — edits, undo/redo, and SSE
