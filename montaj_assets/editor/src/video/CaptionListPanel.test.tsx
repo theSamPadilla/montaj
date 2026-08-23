@@ -32,6 +32,17 @@ const THREE_SEGS: CaptionSegment[] = [
   { id: 'cap-2', text: 'the end', start: 4, end: 6 },
 ]
 
+// Two lanes (SP5-captions Phase 5's `groupCaptionLanes` grouping). Lane 0
+// ("Row 1") is nearest the video; lane 1 ("Row 2") sits above it. Named
+// alpha/beta per lane so a search query can target exactly one row's segment
+// without also matching the other row's.
+const TWO_LANE_SEGS: CaptionSegment[] = [
+  { id: 'r1-a', text: 'lower caption alpha', start: 0, end: 2, lane: 0 },
+  { id: 'r2-a', text: 'upper caption alpha', start: 0, end: 2, lane: 1 },
+  { id: 'r1-b', text: 'lower caption beta', start: 2, end: 4, lane: 0 },
+  { id: 'r2-b', text: 'upper caption beta', start: 2, end: 4, lane: 1 },
+]
+
 function renderPanel(opts: {
   style?: Captions['style']
   segments?: CaptionSegment[]
@@ -503,6 +514,239 @@ describe('CaptionListPanel editFocusId (Phase 6 receiving end)', () => {
     // handled", since the id never changed, and wrongly stay silent here —
     // this is the one assertion only a nonce-keyed guard can pass.
     rerender(<CaptionListPanel {...commonProps} editFocusId={{ id: 'cap-1', nonce: 2 }} />)
+    expect(document.activeElement).toBe(editable)
+  })
+})
+
+// SP5-captions Phase 5: multi-lane captions (`CaptionSegment.lane`, grouped
+// via captionLanes.ts's `groupCaptionLanes`) get their own row headers,
+// per-lane numbering, and a row-filter chip strip. THREE_SEGS (used by every
+// test above) has no `lane` field on any segment, so it is — and stays — the
+// single-lane case: every project ever saved before this phase looks exactly
+// like it.
+describe('CaptionListPanel lanes (Phase 5)', () => {
+  it('single lane: no row headers, no row-filter chips, and the list has ONLY listitem children — the Fragment wrapper adds no DOM node', () => {
+    renderPanel() // THREE_SEGS: no `lane` field on any segment ⇒ one group
+    expect(screen.queryByRole('group', { name: 'Filter captions by row' })).toBeNull()
+    expect(screen.queryByText(/^Row \d+$/)).toBeNull()
+
+    const list = screen.getByRole('list', { name: 'Caption segments' })
+    const children = Array.from(list.children)
+    expect(children).toHaveLength(3)
+    children.forEach(child => expect(child.getAttribute('role')).toBe('listitem'))
+  })
+
+  it('a multi-lane project shows a sticky "Row N" header per lane, Row 1 (lane 0, nearest the video) first, each restarting its own 1-based numbering', () => {
+    renderPanel({ segments: TWO_LANE_SEGS })
+
+    // Distinguish the sticky LIST headers from the chip-strip BUTTONS that
+    // happen to carry the same "Row N" text.
+    const row1Header = screen.getAllByText('Row 1').find(el => el.tagName !== 'BUTTON')
+    const row2Header = screen.getAllByText('Row 2').find(el => el.tagName !== 'BUTTON')
+    expect(row1Header).toBeTruthy()
+    expect(row2Header).toBeTruthy()
+    // Row 1 (lane 0) lists FIRST, ahead of Row 2 (lane 1), in document order.
+    expect(row1Header!.compareDocumentPosition(row2Header!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+
+    const rows = screen.getAllByRole('listitem')
+    expect(rows).toHaveLength(4)
+    // Row 1's two captions are numbered 1, 2 — their position within lane 0.
+    // Row 2's RESTART at 1, 2 too — their position within lane 1 — not 3, 4,
+    // which a single counter running across every lane would have produced.
+    expect(within(rows[0]).getByText('1')).toBeTruthy() // r1-a
+    expect(within(rows[1]).getByText('2')).toBeTruthy() // r1-b
+    expect(within(rows[2]).getByText('1')).toBeTruthy() // r2-a
+    expect(within(rows[3]).getByText('2')).toBeTruthy() // r2-b
+    expect(rows[0]).toHaveTextContent('lower caption alpha')
+    expect(rows[3]).toHaveTextContent('upper caption beta')
+  })
+
+  it('shows an All / Row 1 / Row 2 chip strip only once there is more than one lane, "All" active by default', () => {
+    renderPanel({ segments: TWO_LANE_SEGS })
+    const group = screen.getByRole('group', { name: 'Filter captions by row' })
+    const chips = within(group).getAllByRole('button')
+    expect(chips.map(c => c.textContent)).toEqual(['All', 'Row 1', 'Row 2'])
+    expect(within(group).getByText('All')).toHaveAttribute('aria-pressed', 'true')
+    expect(within(group).getByText('Row 1')).toHaveAttribute('aria-pressed', 'false')
+  })
+
+  it('clicking a "Row N" chip filters the list down to just that lane, and "All" restores it', () => {
+    renderPanel({ segments: TWO_LANE_SEGS })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Row 2' }))
+    expect(screen.getByRole('button', { name: 'Row 2' })).toHaveAttribute('aria-pressed', 'true')
+    expect(screen.queryByText('lower caption alpha')).toBeNull()
+    expect(screen.queryByText('lower caption beta')).toBeNull()
+    expect(screen.getByText('upper caption alpha')).toBeTruthy()
+    expect(screen.getByText('upper caption beta')).toBeTruthy()
+    expect(screen.getAllByRole('listitem')).toHaveLength(2)
+
+    fireEvent.click(screen.getByRole('button', { name: 'All' }))
+    expect(screen.getAllByRole('listitem')).toHaveLength(4)
+  })
+
+  it('the row chip and search compose — both narrow the same list, neither disables the other', () => {
+    renderPanel({ segments: TWO_LANE_SEGS })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Row 1' }))
+    fireEvent.change(screen.getByLabelText('Search captions'), { target: { value: 'beta' } })
+
+    const rows = screen.getAllByRole('listitem')
+    expect(rows).toHaveLength(1)
+    expect(within(rows[0]).getByText('lower caption beta')).toBeTruthy()
+    // Its per-lane index badge is unaffected by its lane-mate (r1-a) being
+    // filtered out by search — still "2", its true position within lane 0.
+    expect(within(rows[0]).getByText('2')).toBeTruthy()
+  })
+
+  it('text edit, delete, and row-click-to-select still commit through the existing channels for a row-2 (lane 1) caption', () => {
+    const { onCaptionSegmentChange, onCaptionSegmentDelete, onSelectCaption, clock } = renderPanel({ segments: TWO_LANE_SEGS })
+
+    // rows[2] is r2-a: Row 2's first caption (Row 1's two captions list first).
+    const row2A = screen.getAllByRole('listitem')[2]
+
+    fireEvent.click(within(row2A).getByText('upper caption alpha'))
+    expect(onSelectCaption).toHaveBeenCalledWith('r2-a')
+    expect(clock.set).toHaveBeenCalledWith(0 + 0.5 / 30)
+
+    const span = within(row2A).getByText('upper caption alpha')
+    span.textContent = 'upper caption ALPHA'
+    fireEvent.blur(span)
+    expect(onCaptionSegmentChange).toHaveBeenCalledWith('r2-a', { text: 'upper caption ALPHA' })
+
+    fireEvent.click(within(row2A).getByLabelText('Delete caption'))
+    expect(onCaptionSegmentDelete).toHaveBeenCalledTimes(1)
+    expect(onCaptionSegmentDelete).toHaveBeenCalledWith('r2-a')
+  })
+
+  it('double-clicking a row-2 caption on the canvas clears an active "Row 1" chip filter, then scrolls to and focuses it', () => {
+    const {
+      rerender, project, clock, onSelectCaption, onCaptionSegmentChange, onCaptionEdit,
+      onProjectChange, onCaptionSegmentDelete, onRegenerateCaptions,
+    } = renderPanel({ segments: TWO_LANE_SEGS })
+
+    // Activate "Row 1" — Row 2's captions, including the canvas double-click
+    // target below, drop out of the DOM entirely.
+    fireEvent.click(screen.getByRole('button', { name: 'Row 1' }))
+    expect(screen.queryByText('upper caption alpha')).toBeNull()
+
+    rerender(
+      <CaptionListPanel
+        captionTrack={project.captions}
+        project={project}
+        currentTime={0}
+        selectedIds={[]}
+        onSelectCaption={onSelectCaption}
+        onCaptionSegmentChange={onCaptionSegmentChange}
+        onCaptionEdit={onCaptionEdit}
+        onProjectChange={onProjectChange}
+        onCaptionSegmentDelete={onCaptionSegmentDelete}
+        onRegenerateCaptions={onRegenerateCaptions}
+        fps={30}
+        clock={clock}
+        editFocusId={{ id: 'r2-a', nonce: 1 }}
+      />,
+    )
+
+    // The chip filter fell back to "All" (the same guard the search query
+    // already carries, extended to the row chip)...
+    expect(screen.getByRole('button', { name: 'All' })).toHaveAttribute('aria-pressed', 'true')
+    expect(screen.getByRole('button', { name: 'Row 1' })).toHaveAttribute('aria-pressed', 'false')
+    // ...and the target row is now visible, scrolled into view, and focused.
+    const editable = screen.getByText('upper caption alpha')
+    expect(document.activeElement).toBe(editable)
+  })
+
+  // The chip-filter test above is a 2-pass convergence (one guard clears, the
+  // effect re-runs, the target is found). The pre-existing SEARCH guard this
+  // one composes with had no direct test of its own anywhere in this file —
+  // both editFocusId tests predating Phase 5 leave `search` empty throughout.
+  // Pin it now that a second guard's correctness depends on it actually
+  // clearing and re-running rather than swallowing the request.
+  it('editFocusId cleared by SEARCH ALONE (single lane): the effect clears the query, then converges on the target', () => {
+    const {
+      rerender, project, clock, onSelectCaption, onCaptionSegmentChange, onCaptionEdit,
+      onProjectChange, onCaptionSegmentDelete, onRegenerateCaptions,
+    } = renderPanel({ segments: THREE_SEGS })
+
+    // "hello" filters the list down to cap-0 only — cap-1, the canvas
+    // double-click target below, drops out of the DOM.
+    fireEvent.change(screen.getByLabelText('Search captions'), { target: { value: 'hello' } })
+    expect(screen.queryByText('goodbye now')).toBeNull()
+
+    rerender(
+      <CaptionListPanel
+        captionTrack={project.captions}
+        project={project}
+        currentTime={0}
+        selectedIds={[]}
+        onSelectCaption={onSelectCaption}
+        onCaptionSegmentChange={onCaptionSegmentChange}
+        onCaptionEdit={onCaptionEdit}
+        onProjectChange={onProjectChange}
+        onCaptionSegmentDelete={onCaptionSegmentDelete}
+        onRegenerateCaptions={onRegenerateCaptions}
+        fps={30}
+        clock={clock}
+        editFocusId={{ id: 'cap-1', nonce: 1 }}
+      />,
+    )
+
+    // The query cleared (the pre-existing guard, still doing its job)...
+    expect(screen.getByLabelText('Search captions')).toHaveValue('')
+    // ...and the target row is now visible, scrolled into view, and focused.
+    const editable = screen.getByText('goodbye now')
+    expect(document.activeElement).toBe(editable)
+  })
+
+  // The true 3-pass sequence: BOTH guards block the target on the first
+  // effect run, so it must clear one, re-run (still blocked), clear the
+  // other, re-run again, and only THEN reach the scroll+focus call. This is
+  // the case the multi-pass "one setState per invocation" design exists for
+  // — a version of the effect that resolved only one guard per nonce (or
+  // wrote `lastHandledNonceRef` too early) would stall here even though the
+  // chip-only and search-only cases above both still pass.
+  it('editFocusId blocked by BOTH search and the row chip: the effect clears each in turn and converges', () => {
+    const {
+      rerender, project, clock, onSelectCaption, onCaptionSegmentChange, onCaptionEdit,
+      onProjectChange, onCaptionSegmentDelete, onRegenerateCaptions,
+    } = renderPanel({ segments: TWO_LANE_SEGS })
+
+    // "Row 1" hides every Row 2 caption, including the target (r2-a). "beta"
+    // additionally excludes r2-a's own text ("upper caption alpha") from a
+    // search match, so if the chip were somehow not blocking it, the search
+    // guard would catch it anyway — both guards are independently active
+    // against this exact target, not just one of them incidentally.
+    fireEvent.click(screen.getByRole('button', { name: 'Row 1' }))
+    fireEvent.change(screen.getByLabelText('Search captions'), { target: { value: 'beta' } })
+    expect(screen.queryByText('upper caption alpha')).toBeNull()
+    // Only r1-b ("lower caption beta") survives both filters.
+    expect(screen.getAllByRole('listitem')).toHaveLength(1)
+
+    rerender(
+      <CaptionListPanel
+        captionTrack={project.captions}
+        project={project}
+        currentTime={0}
+        selectedIds={[]}
+        onSelectCaption={onSelectCaption}
+        onCaptionSegmentChange={onCaptionSegmentChange}
+        onCaptionEdit={onCaptionEdit}
+        onProjectChange={onProjectChange}
+        onCaptionSegmentDelete={onCaptionSegmentDelete}
+        onRegenerateCaptions={onRegenerateCaptions}
+        fps={30}
+        clock={clock}
+        editFocusId={{ id: 'r2-a', nonce: 1 }}
+      />,
+    )
+
+    // Both guards fired and converged: query cleared, chip back to "All",
+    // target visible, scrolled into view, and focused.
+    expect(screen.getByLabelText('Search captions')).toHaveValue('')
+    expect(screen.getByRole('button', { name: 'All' })).toHaveAttribute('aria-pressed', 'true')
+    expect(screen.getByRole('button', { name: 'Row 1' })).toHaveAttribute('aria-pressed', 'false')
+    const editable = screen.getByText('upper caption alpha')
     expect(document.activeElement).toBe(editable)
   })
 })

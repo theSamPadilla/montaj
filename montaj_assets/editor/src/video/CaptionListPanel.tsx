@@ -4,7 +4,7 @@
 // lives in a searchable, numbered list in the right rail, with the track-level
 // style/size/color controls tucked behind a collapsible subsection so the list
 // stays the prominent thing in a ~300px-wide column.
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { Fragment, useEffect, useMemo, useRef, useState } from 'react'
 import { ChevronDown, ChevronRight, Search, Trash2 } from 'lucide-react'
 import type { Project } from '../types'
 import type { PlaybackClock } from './playback-clock'
@@ -13,6 +13,7 @@ import { EditableSegment } from './timeline/EditableSegment'
 import { formatTime } from './timeline/utils'
 import { SwatchInput } from '../ui'
 import { reviveBoolean, usePersistentState } from '../ui/usePersistentState'
+import { groupCaptionLanes, laneOf } from './captionLanes'
 
 /** Whether the "Caption style" subsection (size/color/preset controls) is
  *  expanded. A DIFFERENT key than the retired TranscriptPanel's
@@ -161,6 +162,10 @@ function CaptionListPanelBody({
 }: CaptionListPanelProps) {
   const segs = captionTrack?.segments ?? []
   const [search, setSearch] = useState('')
+  // `null` = the "All" chip (no row filter). Set to a lane index by clicking
+  // a "Row N" chip. Lives beside `search` rather than folded into it — they
+  // compose (both apply) instead of one being a mode that disables the other.
+  const [rowFilter, setRowFilter] = useState<number | null>(null)
   const [styleExpanded, setStyleExpanded] = usePersistentState(CAPTION_STYLE_STORAGE_KEY, false, reviveBoolean)
 
   // ── Remove all (confirm-twice, ported from TranscriptPanel) ──
@@ -190,11 +195,38 @@ function CaptionListPanelBody({
     return captionTrack.segments.find(s => s.id && idSet.has(s.id))
   }, [captionTrack, selectedIds])
 
-  const filtered = useMemo(() => {
-    const indexed = segs.map((seg, index) => ({ seg, index }))
+  // One group per lane (0..maxLane, holes included) via the same module the
+  // canvas timeline reads lanes through — see captionLanes.ts. `multiLane`
+  // gates ONLY the header/chip UI below; the grouping, search and index math
+  // run unconditionally so a single-lane project (every project has exactly
+  // one lane until Phase 3/4's drag gesture is used) takes the exact same
+  // code path as a multi-lane one, rather than a separate `length === 1`
+  // branch — with one group, its segments ARE `segs` in original order, so
+  // the per-group index below already equals the pre-Phase-5 global index.
+  const captionGroups = useMemo(() => (segs.length > 0 ? groupCaptionLanes(segs) : []), [segs])
+  const multiLane = captionGroups.length > 1
+
+  // Chip filter and search compose: a group is dropped by the chip (lane
+  // mismatch) before its rows are tested against the search query, and a row
+  // survives only if it passes both. Per-group index restarts at 0 within
+  // each group (group.segments is that lane's slice, in original order), so
+  // in the single-lane case it's identical to the old global `segs` index.
+  // A group with zero surviving rows is dropped entirely rather than kept
+  // with an empty body — this way search never leaves a dangling "Row N"
+  // header with nothing under it, and neither does a would-be hole lane.
+  const visibleGroups = useMemo(() => {
     const q = search.trim().toLowerCase()
-    return q ? indexed.filter(({ seg }) => seg.text.toLowerCase().includes(q)) : indexed
-  }, [segs, search])
+    return captionGroups
+      .filter(g => rowFilter === null || g.lane === rowFilter)
+      .map(g => ({
+        lane: g.lane,
+        rows: g.segments
+          .map((seg, index) => ({ seg, index }))
+          .filter(({ seg }) => !q || seg.text.toLowerCase().includes(q)),
+      }))
+      .filter(g => g.rows.length > 0)
+  }, [captionGroups, rowFilter, search])
+  const totalVisible = useMemo(() => visibleGroups.reduce((sum, g) => sum + g.rows.length, 0), [visibleGroups])
 
   // ── editFocusId: scroll + focus the target row (Phase 6's canvas
   // double-click wires into this). `lastHandledNonce` guards against
@@ -214,12 +246,23 @@ function CaptionListPanelBody({
       setSearch('')
       return
     }
+    // Same guard, extended to the row chip: a canvas double-click can target
+    // a caption in a lane the active "Row N" chip has filtered out (e.g. a
+    // double-click on a row-2 caption while "Row 1" is selected), which would
+    // otherwise leave the row-ref lookup below silently missing forever. Each
+    // `setState` here only clears ONE filter and returns; if both are
+    // blocking the target, this effect just re-runs (via the `search` /
+    // `rowFilter` deps below) and clears the other on the next pass.
+    if (rowFilter !== null && laneOf(seg) !== rowFilter) {
+      setRowFilter(null)
+      return
+    }
     const el = rowRefs.current.get(editFocusId.id)
     if (!el) return
     lastHandledNonceRef.current = editFocusId.nonce
     el.scrollIntoView({ block: 'nearest' })
     el.querySelector<HTMLElement>('[contenteditable="true"]')?.focus()
-  }, [editFocusId, search, segs])
+  }, [editFocusId, search, rowFilter, segs])
 
   function handleRowClick(segId: string | undefined, start: number) {
     if (!segId) return
@@ -433,6 +476,45 @@ function CaptionListPanelBody({
             />
           </div>
         )}
+
+        {/* ── Row filter chips (only when there's more than one lane to filter
+            between — a single-lane project never mounts this, keeping its
+            toolbar byte-for-byte what it was before lanes existed). Composes
+            with search rather than replacing it: both narrow the same
+            `visibleGroups` computation above. Same button look as the
+            "Caption style" preset row above, for one visual chip language
+            in this panel. ── */}
+        {multiLane && (
+          <div role="group" aria-label="Filter captions by row" className="flex flex-wrap gap-1">
+            <button
+              type="button"
+              aria-pressed={rowFilter === null}
+              onClick={() => setRowFilter(null)}
+              className={`text-[10px] rounded px-2 py-0.5 transition-all border ${
+                rowFilter === null
+                  ? 'bg-[var(--editor-accent)]/20 border-[var(--editor-accent)]/60 text-[var(--editor-accent)]'
+                  : 'bg-[var(--editor-surface)] border-[var(--editor-border)] text-[var(--editor-text)]/50 hover:text-[var(--editor-text)]/80 hover:border-[var(--editor-text)]/30'
+              }`}
+            >
+              All
+            </button>
+            {captionGroups.map(g => (
+              <button
+                key={g.lane}
+                type="button"
+                aria-pressed={rowFilter === g.lane}
+                onClick={() => setRowFilter(g.lane)}
+                className={`text-[10px] rounded px-2 py-0.5 transition-all border ${
+                  rowFilter === g.lane
+                    ? 'bg-[var(--editor-accent)]/20 border-[var(--editor-accent)]/60 text-[var(--editor-accent)]'
+                    : 'bg-[var(--editor-surface)] border-[var(--editor-border)] text-[var(--editor-text)]/50 hover:text-[var(--editor-text)]/80 hover:border-[var(--editor-text)]/30'
+                }`}
+              >
+                {`Row ${g.lane + 1}`}
+              </button>
+            ))}
+          </div>
+        )}
       </div>
 
       {/* ── Scrollable numbered list ── */}
@@ -441,71 +523,90 @@ function CaptionListPanelBody({
           <p className="text-xs text-[var(--editor-text)]/50 italic text-center mt-4 px-2 leading-relaxed">
             No captions yet. Captions are generated during transcription.
           </p>
-        ) : filtered.length === 0 ? (
+        ) : totalVisible === 0 ? (
           <p className="text-xs text-[var(--editor-text)]/50 italic text-center mt-4 px-2">No matching captions.</p>
         ) : (
-          filtered.map(({ seg, index }) => {
-            const isActive = currentTime >= seg.start && currentTime < seg.end
-            const isSelected = !!seg.id && selectedIds.includes(seg.id)
-            return (
-              <div
-                key={seg.id ?? index}
-                role="listitem"
-                // `aria-current`, not `aria-selected`: each row contains a
-                // contenteditable and a delete button, and ARIA forbids
-                // interactive descendants inside `option`/`listbox` — a
-                // screen reader could not reliably reach either control. A
-                // plain `list`/`listitem` has no such restriction.
-                aria-current={isSelected ? 'true' : undefined}
-                ref={el => {
-                  if (!seg.id) return
-                  if (el) rowRefs.current.set(seg.id, el)
-                  else rowRefs.current.delete(seg.id)
-                }}
-                onClick={() => handleRowClick(seg.id, seg.start)}
-                className={`group flex items-start gap-2 rounded px-2 py-1.5 cursor-pointer transition-colors border ${
-                  isSelected
-                    ? 'bg-[var(--editor-accent)]/15 border-[var(--editor-accent)]/60'
-                    : isActive
-                    ? 'bg-[var(--editor-surface)] border-[var(--editor-border)]'
-                    : 'border-transparent hover:bg-[var(--editor-surface)]'
-                }`}
-              >
-                {/* Index + timestamp, stacked — the two labels are complementary
-                    (R3: nothing from the retired TranscriptPanel/TranscriptModal
-                    dropped). The index gives ordinal position; the timestamp
-                    gives where in the video the line actually lands, which is
-                    what you navigate by. Both small/mono/muted so neither
-                    competes with the caption text beside them. */}
-                <div className="shrink-0 flex flex-col items-end gap-0.5 pt-0.5 w-10">
-                  {/* NOT `text-[var(--editor-text)]/N` — Tailwind cannot generate a
-                      rule for an opacity modifier on an arbitrary var() color, so
-                      that class is a silent no-op and these spans inherit the row's
-                      own (near-identical) foreground color instead. `opacity-N` is a
-                      real utility and, on a plain text span with no background,
-                      renders identically to the alpha-blended color that was
-                      intended. See CaptionListPanel.test.tsx for the regression
-                      guard. */}
-                  <span className="text-[10px] font-mono text-[var(--editor-text)] opacity-60">{index + 1}</span>
-                  <span className="text-[9px] font-mono text-[var(--editor-text)] opacity-50">{formatTime(seg.start)}</span>
+          visibleGroups.map(group => (
+            // A single-lane project has exactly one entry here, so this
+            // Fragment (which renders no DOM node of its own) is the only
+            // thing standing between this map and a bare `rows.map(...)` —
+            // the header below stays unmounted (`multiLane` false), leaving
+            // the row markup underneath byte-for-byte what it was pre-Phase-5.
+            <Fragment key={group.lane}>
+              {multiLane && (
+                // No "move to row" control here (v1, deliberate): row
+                // membership is a timeline DRAG gesture (Phase 3/4's
+                // resolveDropLane), and a sidebar dropdown doing the same
+                // move by a different mechanism invites the two to disagree
+                // about what a drag means. Follow-up, not YAGNI-scope here.
+                <div className="sticky top-0 z-10 -mx-2 px-2 py-1 bg-[var(--editor-surface)] border-b border-[var(--editor-border)] text-[10px] font-medium text-[var(--editor-text)]/50 uppercase tracking-wide">
+                  {`Row ${group.lane + 1}`}
                 </div>
-                <span className="flex-1 min-w-0 text-xs text-[var(--editor-text)] leading-snug">
-                  <EditableSegment
-                    seg={seg}
-                    onEdit={text => { if (seg.id) onCaptionSegmentChange?.(seg.id, { text }) }}
-                  />
-                </span>
-                <button
-                  className="shrink-0 opacity-0 group-hover:opacity-100 text-[var(--editor-text)]/40 hover:text-red-400 transition-opacity"
-                  onClick={e => { e.stopPropagation(); handleDelete(seg.id) }}
-                  title="Delete caption"
-                  aria-label="Delete caption"
-                >
-                  <Trash2 size={12} />
-                </button>
-              </div>
-            )
-          })
+              )}
+              {group.rows.map(({ seg, index }) => {
+                const isActive = currentTime >= seg.start && currentTime < seg.end
+                const isSelected = !!seg.id && selectedIds.includes(seg.id)
+                return (
+                  <div
+                    key={seg.id ?? index}
+                    role="listitem"
+                    // `aria-current`, not `aria-selected`: each row contains a
+                    // contenteditable and a delete button, and ARIA forbids
+                    // interactive descendants inside `option`/`listbox` — a
+                    // screen reader could not reliably reach either control. A
+                    // plain `list`/`listitem` has no such restriction.
+                    aria-current={isSelected ? 'true' : undefined}
+                    ref={el => {
+                      if (!seg.id) return
+                      if (el) rowRefs.current.set(seg.id, el)
+                      else rowRefs.current.delete(seg.id)
+                    }}
+                    onClick={() => handleRowClick(seg.id, seg.start)}
+                    className={`group flex items-start gap-2 rounded px-2 py-1.5 cursor-pointer transition-colors border ${
+                      isSelected
+                        ? 'bg-[var(--editor-accent)]/15 border-[var(--editor-accent)]/60'
+                        : isActive
+                        ? 'bg-[var(--editor-surface)] border-[var(--editor-border)]'
+                        : 'border-transparent hover:bg-[var(--editor-surface)]'
+                    }`}
+                  >
+                    {/* Index + timestamp, stacked — the two labels are complementary
+                        (R3: nothing from the retired TranscriptPanel/TranscriptModal
+                        dropped). The index gives ordinal position; the timestamp
+                        gives where in the video the line actually lands, which is
+                        what you navigate by. Both small/mono/muted so neither
+                        competes with the caption text beside them. */}
+                    <div className="shrink-0 flex flex-col items-end gap-0.5 pt-0.5 w-10">
+                      {/* NOT `text-[var(--editor-text)]/N` — Tailwind cannot generate a
+                          rule for an opacity modifier on an arbitrary var() color, so
+                          that class is a silent no-op and these spans inherit the row's
+                          own (near-identical) foreground color instead. `opacity-N` is a
+                          real utility and, on a plain text span with no background,
+                          renders identically to the alpha-blended color that was
+                          intended. See CaptionListPanel.test.tsx for the regression
+                          guard. */}
+                      <span className="text-[10px] font-mono text-[var(--editor-text)] opacity-60">{index + 1}</span>
+                      <span className="text-[9px] font-mono text-[var(--editor-text)] opacity-50">{formatTime(seg.start)}</span>
+                    </div>
+                    <span className="flex-1 min-w-0 text-xs text-[var(--editor-text)] leading-snug">
+                      <EditableSegment
+                        seg={seg}
+                        onEdit={text => { if (seg.id) onCaptionSegmentChange?.(seg.id, { text }) }}
+                      />
+                    </span>
+                    <button
+                      className="shrink-0 opacity-0 group-hover:opacity-100 text-[var(--editor-text)]/40 hover:text-red-400 transition-opacity"
+                      onClick={e => { e.stopPropagation(); handleDelete(seg.id) }}
+                      title="Delete caption"
+                      aria-label="Delete caption"
+                    >
+                      <Trash2 size={12} />
+                    </button>
+                  </div>
+                )
+              })}
+            </Fragment>
+          ))
         )}
       </div>
     </div>
