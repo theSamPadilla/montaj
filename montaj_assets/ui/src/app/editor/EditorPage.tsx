@@ -298,7 +298,7 @@ export default function EditorPage() {
   )
 
   // Video editor slots. The left media column is Montaj's tabbed MediaPanel:
-  // a Footage (or "B-Roll" for broll projects) tab backed by project.sources,
+  // a Footage (or "Videos" for broll projects) tab backed by project.sources,
   // and an Assets tab holding the existing ProfileAssetsPanel + AssetsPanel
   // composite (preserving the LiveView/ReviewView arrangement). `usedSrcs` is
   // every `src` placed anywhere on the timeline, computed once here and fed to
@@ -311,7 +311,7 @@ export default function EditorPage() {
         if (item.src) usedSrcs.add(item.src)
       }
     }
-    const footageLabel = project?.projectType === 'broll' ? 'B-Roll' : 'Footage'
+    const footageLabel = project?.projectType === 'broll' ? 'Videos' : 'Footage'
 
     // Broll-audio tab data. `voiceover` is a passthrough field (index signature
     // on EditorProject), so read it defensively. The tab appears only for a
