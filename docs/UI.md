@@ -160,6 +160,7 @@ eligible for the engine, and what a third-party host gets unless it opts in.
 - Overlays (title cards, lower thirds) same approach
 - Preview time follows the shared playback clock, on both paths alike
 - Preview is an **approximation** — CSS overlays are close but not pixel-perfect to the final render burn-in. The render is what matters.
+- A small expand button sits in the preview's top-right corner, and the `F` key does the same thing (see "Keyboard shortcuts" below) — either one takes the preview fullscreen, and exits via `F` again, the button, or the browser's own Escape
 
 ### Playback engine
 
@@ -271,8 +272,13 @@ J/K/L) stay live so undo works with a dialog up.
 | `⌘/Ctrl` + `⇧` + `Z` (or `⌘/Ctrl` + `Y`) | Redo |
 | `Delete` / `Backspace` | Delete the selection |
 | `⇧` + `Delete` / `⇧` + `Backspace` | Ripple-delete the selection — items after the deletion point shift to close the gap |
-| `←` / `→` | Step one frame (`⇧` + arrow steps one second) |
+| `←` / `→` | Step one frame (`⇧` + arrow steps ten frames) |
 | `J` / `K` / `L` | Shuttle backward / stop / forward, 1×/2×/4× (doubling on repeated presses in the same direction) — forward is real, pitch-corrected, audible playback on the playback engine; the `<video>` fallback plays forward at 1× only, and reverse is a silent scrub either way |
+| `⌘/Ctrl` + `C` | Copy the selection to an in-memory, per-session clipboard — visual items and audio tracks only, captions are excluded; doesn't survive a page reload, doesn't use the OS clipboard, and doesn't block the browser's native text copy |
+| `⌘/Ctrl` + `V` | Paste the clipboard at the playhead |
+| `⌘/Ctrl` + `D` | Duplicate the selection in place |
+| `⌘/Ctrl` + `⌥/Alt` + `V` | Paste attributes — apply the copied item's look (position, scale, opacity, rotation; `fit` for images; volume/muted/speed for video; volume/muted/ducking/fades for audio) onto the selected items without replacing them |
+| `F` | Toggle the preview to fullscreen (`⌘/Ctrl` + `F` is left alone for the browser's native find) |
 | `⌘/Ctrl` + `K` | Open the command palette |
 | Click the time readout | Open the command palette straight into "go to time" (accepts bare seconds, `mm:ss`, or `hh:mm:ss`) |
 

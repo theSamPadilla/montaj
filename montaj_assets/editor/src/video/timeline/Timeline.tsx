@@ -376,11 +376,15 @@ export default function Timeline({ project, clock, onProjectChange, onOverlayEdi
   useKeymap([
     {
       id: 'timeline.frame-step',
-      description: 'Step one frame',
+      description: 'Step one frame (Shift steps ten)',
       matches: (e) => matchesArrowLeft(e) || matchesArrowRight(e),
       guard: () => totalDuration > 0,
       action: (e) => {
-        const step = e.shiftKey ? 1 : frameStep
+        // Shift is a COARSE frame step, not a wall-clock jump: ten frames,
+        // so the unit stays the same as the plain step and only the size
+        // changes. It used to be a flat 1 second, which meant the shifted
+        // step drifted against the unshifted one on every fps that isn't 10.
+        const step = e.shiftKey ? 10 * frameStep : frameStep
         const dir  = matchesArrowRight(e) ? 1 : -1
         const next = Math.max(0, Math.min(totalDuration, clock.get() + dir * step))
         clock.set(next)
@@ -603,7 +607,7 @@ export default function Timeline({ project, clock, onProjectChange, onOverlayEdi
           // `TimelineCanvas` below, not a separate DOM element — the gutter's
           // own caption cell is sized from the same layout (`canvasLayout`) so
           // the two line up. `showCaptionRow` is left at its default (true)
-          // here: `TrackGutter` already gates the cell on `resolved.caption`,
+          // here: `TrackGutter` already gates the cell on `resolved.captions`,
           // which `computeTimelineLayout` only sets when there ARE captions,
           // so passing `!!captionTrack?.segments?.length` on top can never
           // change the outcome — it exists as a host knob for other callers,

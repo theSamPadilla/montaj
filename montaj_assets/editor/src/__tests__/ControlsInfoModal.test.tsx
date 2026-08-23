@@ -88,4 +88,18 @@ describe('ControlsInfoModal', () => {
     const toolbar = VIDEO_CONTROLS.find((s) => s.heading === 'Toolbar')!
     expect(toolbar.entries.every((e) => e.icon)).toBe(true)
   })
+
+  it('lists the clipboard and fullscreen shortcuts under Keyboard', () => {
+    const keyboard = VIDEO_CONTROLS.find((s) => s.heading === 'Keyboard')!
+    const labels = keyboard.entries.map((e) => e.label)
+    expect(labels).toEqual(
+      expect.arrayContaining([
+        'Copy the selection',
+        'Paste at the playhead',
+        'Duplicate the selection in place',
+        'Paste attributes onto the selection',
+        'Toggle fullscreen preview',
+      ]),
+    )
+  })
 })

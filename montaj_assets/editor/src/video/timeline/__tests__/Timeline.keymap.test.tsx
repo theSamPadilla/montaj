@@ -45,6 +45,28 @@ describe('Timeline — T9 keymap (arrows / delete / enter / escape)', () => {
     expect(clock.get()).toBeCloseTo(0.1, 5)
   })
 
+  // Shift is TEN FRAMES, not one second. At this fixture's 10fps the two
+  // happen to coincide at 1.0s, so both directions are asserted at a second
+  // fps below where they diverge — otherwise the old wall-clock behaviour
+  // would pass this test unchanged.
+  it('Shift+ArrowRight steps ten frames forward, and Shift+ArrowLeft ten back', () => {
+    const clock = createPlaybackClock(2)
+    render(<Timeline project={makeProject()} clock={clock} />)
+    act(() => { fireEvent.keyDown(document.body, { key: 'ArrowRight', shiftKey: true }) })
+    expect(clock.get()).toBeCloseTo(3, 5)
+    act(() => { fireEvent.keyDown(document.body, { key: 'ArrowLeft', shiftKey: true }) })
+    expect(clock.get()).toBeCloseTo(2, 5)
+  })
+
+  it('the shifted step is ten FRAMES, so it scales with fps rather than being a flat second', () => {
+    const clock = createPlaybackClock(2)
+    const project = makeProject()
+    render(<Timeline project={{ ...project, settings: { ...project.settings!, fps: 25 } }} clock={clock} />)
+    // 10 frames at 25fps is 0.4s. The old `shiftKey ? 1` would give 3.0.
+    act(() => { fireEvent.keyDown(document.body, { key: 'ArrowRight', shiftKey: true }) })
+    expect(clock.get()).toBeCloseTo(2.4, 5)
+  })
+
   it('does not step when the target is an input', () => {
     const clock = createPlaybackClock(0)
     const { container } = render(
