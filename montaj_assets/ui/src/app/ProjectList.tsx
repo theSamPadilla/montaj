@@ -4,7 +4,7 @@ import {
   Copy, Trash2, Plus, Check, ArrowRight,
   FolderPlus, Bot, Clapperboard, Layers, Film,
 } from 'lucide-react'
-import { StatusBadge } from '@/components/ui/badge'
+import { StatusBadge, WorkflowBadge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { api } from '@/lib/api'
 import type { Project } from '@/lib/types/schema'
@@ -146,8 +146,11 @@ function ProjectCard({ project, onOpen, onDelete }: { project: Project; onOpen: 
         <p className="mt-2.5 line-clamp-2 min-h-[2rem] text-xs leading-relaxed text-gray-500 dark:text-gray-400">
           {project.editingPrompt || 'No prompt.'}
         </p>
-        <div className="mt-3 flex items-center justify-between">
-          <StatusBadge status={project.status} />
+        <div className="mt-3 flex items-center justify-between gap-2">
+          <span className="flex min-w-0 items-center gap-1.5">
+            <StatusBadge status={project.status} />
+            <WorkflowBadge workflow={project.workflow} />
+          </span>
           <span className="flex items-center gap-1 text-xs font-medium text-gray-400 opacity-0 transition-opacity group-hover:opacity-100">
             Open <ArrowRight size={12} />
           </span>
