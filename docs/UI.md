@@ -42,7 +42,7 @@ As the agent works, the UI updates in real time.
 When the agent marks the project `draft`, the UI surfaces it for human adjustment.
 
 - Full timeline with clip, caption, and overlay tracks
-- Preview player: native `<video>` + CSS overlays synced to scrubber
+- Preview player: the WebCodecs playback engine painting to canvas (or the `<video>` fallback), with CSS-positioned overlays
 - Caption editor: click to edit text inline, drag to retime
 - Overlay editor: add/remove/reposition title cards, lower thirds
 - Prompt bar: modify the prompt and re-run the agent
@@ -149,38 +149,36 @@ The agent writes directly to disk. `montaj serve` watches. Every write immediate
 
 ## Preview player
 
-Native `<video>` element with CSS-positioned overlays, by default. No canvas,
-no WebGL — unless the experimental playback engine below is switched on.
+The WebCodecs playback engine decodes the editing proxy directly and paints
+it to a canvas. This is what `montaj serve`'s editor runs by default — see
+"Playback engine" below for the prop, eligibility, and fallback rules. A
+native `<video>` element with CSS-positioned overlays is the documented
+fallback path, not the default: it's what a project runs when it isn't
+eligible for the engine, and what a third-party host gets unless it opts in.
 
-- Captions rendered as absolutely positioned divs, shown/hidden by `currentTime`
+- Captions rendered as absolutely positioned divs, shown/hidden by the current time
 - Overlays (title cards, lower thirds) same approach
-- Timeline scrubber synced to `video.currentTime`
+- Preview time follows the shared playback clock, on both paths alike
 - Preview is an **approximation** — CSS overlays are close but not pixel-perfect to the final render burn-in. The render is what matters.
 
-### Playback engine (experimental, flag-gated, off by default)
+### Playback engine
 
-A WebCodecs-based playback engine (`montaj_assets/editor/src/engine/`) exists
-as an opt-in alternative to the `<video>` player above — it decodes the
-editing proxy directly and paints to a canvas instead. It ships entirely
-behind a flag and changes nothing about the default experience; see
-`docs/ARCHITECTURE.md`'s "Playback engine" section for how it works
-internally, and `docs/plans/SP4-PARITY-CHECKLIST.md` for the manual
-verification pass gating any future default change.
+A WebCodecs-based playback engine (`montaj_assets/editor/src/engine/`)
+decodes the editing proxy directly and paints it to a canvas. This is what
+`montaj serve`'s editor runs — `EditorPage.tsx` passes `engine={{ enabled:
+true }}` unconditionally (`montaj_assets/ui/src/app/editor/EditorPage.tsx:437`).
+See `docs/ARCHITECTURE.md`'s "Playback engine" section for how it works
+internally.
 
 - **The prop.** `VideoEditor` takes an optional `engine?: {enabled: boolean;
-  debugHud?: boolean}`. Absent or `{enabled: false}` (the default): unchanged
-  `<video>` preview, and the engine's eligibility check never even runs.
-  `{enabled: true}` asks the editor to try the engine — it does not force it
-  on for every project (see eligibility below). `debugHud: true` additionally
-  renders a small fps/dropped/buffered/clock readout; it has no effect while
-  `enabled` is false.
-- **montaj ui's dev toggle.** No in-app switch yet. In devtools, on the editor
-  tab: `localStorage.setItem('montaj-engine', '1')`, then reload — `EditorPage.tsx`
-  reads `localStorage['montaj-engine']` once per page load and passes
-  `engine={{ enabled: engineFlagEnabled }}` down. Remove the key (or set it to
-  anything else) and reload to go back to the `<video>` player. `debugHud`
-  isn't wired to a toggle here — enabling it for measurement means a
-  temporary source edit to that one line.
+  debugHud?: boolean}` — still the package contract for a third-party host.
+  Absent or `{enabled: false}` (the default for a host that doesn't pass it):
+  unchanged `<video>` preview, and the engine's eligibility check never even
+  runs. `{enabled: true}` — what Montaj's own UI always passes — asks the
+  editor to try the engine; it does not force it on for every project (see
+  eligibility below). `debugHud: true` additionally renders a small
+  fps/dropped/buffered/clock readout; it has no effect while `enabled` is
+  false.
 - **Eligibility.** Evaluated once per project **load**, never re-evaluated on
   an edit: the browser must support WebCodecs decode of the editing proxy's
   codecs (av01 video + Opus audio), every track-0 video item must already
@@ -208,35 +206,37 @@ verification pass gating any future default change.
 
 ## Timeline
 
-Clip, caption, and overlay tracks, plus a scrubber and zoom controls. Native
-`<div>`-per-item rows by default.
+Clip, caption, and overlay tracks, rendered on canvas by default (see
+"Canvas timeline" below). A track rail runs down the left with per-track
+volume, mute, and skip controls. Clips show filmstrip frames over a
+full-size waveform. Selected clips grow trim handles, with tiered
+snapping — a strong magnet to the next clip on the same track, a faint one
+to anything on another track or the playhead — and a visible snap indicator
+while you drag. Overlapping clips on the same track are marked with overlap
+bands.
 
-### Canvas timeline (experimental, flag-gated, off by default)
+### Canvas timeline
 
 A `<canvas>`-rendered alternative to the DOM track rows (visual tracks +
-audio lanes) exists as an opt-in — it draws clips and audio bars on a canvas
-instead of positioning one DOM element per item, which is what makes
-panning/zooming stay smooth regardless of project size. It ships entirely
-behind a flag and changes nothing about the default experience; see
+audio lanes) draws clips and audio bars on a canvas instead of positioning
+one DOM element per item, which is what keeps panning/zooming smooth
+regardless of project size. This is the timeline `montaj serve`'s editor
+runs — `EditorPage.tsx` passes `timeline={{ canvas: true }}` unconditionally
+(`montaj_assets/ui/src/app/editor/EditorPage.tsx:438`). See
 `docs/ARCHITECTURE.md`'s "Canvas timeline" section for how it works
-internally, and `docs/plans/SP5-PARITY-CHECKLIST.md` for the manual
-verification pass gating any future default change.
+internally.
 
 - **The prop.** `VideoEditor` takes an optional `timeline?: {canvas:
-  boolean}`. Absent or `{canvas: false}` (the default): the existing DOM
-  track rows, unchanged. `{canvas: true}`: the track-row area (visual tracks
-  + audio lanes) renders on canvas instead — the timeline's chrome (zoom
-  controls, the scrubber, the transcript panel/modal) and the
-  caption row are unaffected either way; the caption row always stays a real
-  DOM component (it hosts inline `contentEditable` text editing, which a
-  canvas can't do), only its position in the stack changes — below the
-  canvas in canvas mode, above the visual tracks in DOM mode.
-- **montaj ui's dev toggle.** No in-app switch yet, same pattern as the
-  playback engine flag above: `localStorage.setItem('montaj-timeline', '1')`
-  in devtools on the editor tab, then reload — `EditorPage.tsx` reads
-  `localStorage['montaj-timeline']` once per page load and passes
-  `timeline={{canvas: timelineFlagEnabled}}` down. Remove the key (or set it
-  to anything else) and reload to go back to the DOM rows.
+  boolean}` — still the package contract for a third-party host. Absent or
+  `{canvas: false}` (the default for a host that doesn't pass it): the
+  existing DOM track rows, unchanged. `{canvas: true}` — what Montaj's own UI
+  always passes — renders the track-row area (visual tracks + audio lanes) on
+  canvas instead; the timeline's chrome (zoom controls, the time readout, the
+  transcript panel/modal) and the caption row are unaffected either way; the
+  caption row always stays a real DOM component (it hosts inline
+  `contentEditable` text editing, which a canvas can't do), only its
+  position in the stack changes — below the canvas in canvas mode, above the
+  visual tracks in DOM mode.
 - **No eligibility gate.** Unlike the playback engine flag, there is no
   capability probe and no per-project fallback — `{canvas: true}` always
   takes effect, on every project, in every browser the editor runs in.
@@ -248,9 +248,7 @@ verification pass gating any future default change.
   roll, slip, and slide — bound to modifier-key drags. One deliberate
   display change: the zoom badge reports a fit-relative multiple rather than
   the DOM path's old zoom number, and can now show a value below 1× (zooming
-  out past "fit the whole project" is newly possible). The full list of
-  what's new versus what's an accepted difference lives in the parity
-  checklist.
+  out past "fit the whole project" is newly possible).
 
 ---
 
@@ -262,18 +260,19 @@ Space entirely (Space always toggles play/pause via the active playback
 path, exactly as before) and suppresses everything else while typing in a
 caption/overlay text field. Timeline-scoped keys (arrows, Delete, Enter,
 Escape) additionally stand down while a dialog is open; the editing keys
-(Split, Undo/Redo, ripple-delete, the palette, J/K/L) stay live so undo works
-with a dialog up.
+(Split, the preview-axis toggle, Undo/Redo, ripple-delete, the palette,
+J/K/L) stay live so undo works with a dialog up.
 
 | Keys | Action |
 |------|--------|
 | `S` | Split at the playhead |
+| `⌘/Ctrl` + `A` | Toggle the preview axis |
 | `⌘/Ctrl` + `Z` | Undo |
 | `⌘/Ctrl` + `⇧` + `Z` (or `⌘/Ctrl` + `Y`) | Redo |
 | `Delete` / `Backspace` | Delete the selection |
 | `⇧` + `Delete` / `⇧` + `Backspace` | Ripple-delete the selection — items after the deletion point shift to close the gap |
 | `←` / `→` | Step one frame (`⇧` + arrow steps one second) |
-| `J` / `K` / `L` | Shuttle backward / stop / forward, seek-loop style at 1×/2×/4× (doubling on repeated presses in the same direction) — works identically whether the legacy `<video>` player or the experimental playback engine is active |
+| `J` / `K` / `L` | Shuttle backward / stop / forward, 1×/2×/4× (doubling on repeated presses in the same direction) — forward is real, pitch-corrected, audible playback on the playback engine; the `<video>` fallback plays forward at 1× only, and reverse is a silent scrub either way |
 | `⌘/Ctrl` + `K` | Open the command palette |
 | Click the time readout | Open the command palette straight into "go to time" (accepts bare seconds, `mm:ss`, or `hh:mm:ss`) |
 

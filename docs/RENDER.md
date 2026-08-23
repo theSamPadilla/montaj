@@ -23,11 +23,14 @@ project.json
     │
     ├─ 1. Validate + resolve paths
     ├─ 2. Collect segment specs + video/image items
+    ├─ 2.5. Normalize pre-pass (project working color space)
     ├─ 3. processVideoItems (remove_bg if flagged)
     ├─ 4. Bundle JSX → HTML  (bundle.js, one per overlay/caption)
     ├─ 5. Render HTML → NUT/FFV1  (renderer.js, Puppeteer pool)
     ├─ 6. Probe source video dimensions → pixelRatio
-    └─ 7. compose()  →  final.mp4
+    ├─ 7. compose()  →  segments joined via concat
+    ├─ 7a. mix-audio.js  →  final.mp4
+    └─ 7b. deriveSdr()  (--export sdr|both on an HDR project only)  →  <name>-sdr.mp4
 ```
 
 ### Step 4 — JSX bundling (bundle.js)
@@ -178,6 +181,17 @@ paired with a light `hqdn3d=1.5:1.5:3:3` denoise pre-LUT — master creation
 only, never proxies or fallbacks), the editing proxy (`lib/proxy.py`), the
 per-item segment conversion (`encode-segment.js`), the embedded thumbnail
 (`compose.js`), and single-frame sampling (`sample-frame.js`).
+
+The manifest registers a second curve alongside the default:
+`montaj-vivid-v1-neutral.cube` (id `vivid1-neutral`, labeled "Neutral
+brights"). Both files run through the identical binding chain above —
+`vivid1-neutral` is a different `.cube` grade, not a different filter graph.
+`curve_ids()` / `lut_path(curve_id)` (Python) and their Node equivalents in
+`montaj_assets/render/look.js` resolve either id; passing no id resolves to
+`masterLook` (`vivid1`), which is what every site listed above uses. The
+neutral curve is only ever selected explicitly, via `--sdr-curve` on the
+derived SDR export (see *Export modes* below) or `sample_frame`'s matching
+`--sdr-curve` param.
 
 ---
 

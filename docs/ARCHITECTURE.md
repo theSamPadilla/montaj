@@ -583,6 +583,22 @@ independently re-deriving: which items are active at a timestamp, where their
 source window seeks to, where they sit in frame, which caption segment is
 speaking, and how long the project runs.
 
+**Entry points.** The project-shaped API is two functions, both returning a
+`Scene` — `{ items: ResolvedItem[], t: number }`, everything on screen at one
+instant, ordered back-to-front by ascending `trackIdx` (captions are excluded;
+`project.captions` is a top-level object, not track items, and its per-instant
+content is `activeCaptionSegment`). `resolveAt(project, t, {variant})` answers
+for a single instant using `start <= t < end`; a `t` inside a gap resolves to
+an empty `Scene`, with no last-clip fallback. `resolveSegment(project,
+segStart, segEnd, fps)` is render-only and variant-free — render cuts the
+timeline into segments rather than sampling instants, so it answers for the
+whole span `[segStart, segEnd]` at once via the containment predicate
+`coversSegment`, and sets `Scene.t` to `segStart`. Each `ResolvedItem` on
+`Scene.items` carries the original item (a reference, never a copy), its
+`trackIdx`, `kind`, the resolved `SourceWindow` (`null` for images and
+overlays, which have no source-file timeline), the `seek` position, and its
+`geometryFor` geometry.
+
 **Four implementations, one of them out of band.** Three JS runtimes import
 the package directly:
 
@@ -646,18 +662,20 @@ resolver (or to render's delegation to it) from silently changing what ships:
 
 ---
 
-### Playback engine (`montaj_assets/editor/src/engine/`) — experimental, flag-gated
+### Playback engine (`montaj_assets/editor/src/engine/`)
 
-**Status: off by default, opt-in, zero behavior change unless a host asks for
-it.** SP4 replaces the editor preview's double-buffered `<video>` machinery
-(`useVideoPlayback.ts`, three independent rAF clocks) with a WebCodecs
-demux→decode→paint pipeline, but ships it entirely behind a `VideoEditor`
-`engine?: {enabled, debugHud?}` prop (plan decision 3: feature-flagged
-parallel rollout — the old path stays until a parity pass clears it, and
-removal is a later, separate change). See `docs/UI.md` for the operator-facing
-surface (the flag, eligibility, fallback, Preparing placeholder, debug HUD)
-and `docs/plans/SP4-PARITY-CHECKLIST.md` for the manual verification pass that
-gates ever flipping the default.
+**Status: the editor's default player.** `EditorPage.tsx` passes `engine={{
+enabled: true }}` to `VideoEditor` (`EditorPage.tsx:437`), so every project
+loads through the WebCodecs demux→decode→paint pipeline described below in
+place of the legacy double-buffered `<video>` machinery (`useVideoPlayback.ts`,
+three independent rAF clocks) — a project falls back to the legacy player
+automatically, per project, whenever `evaluateEngineEligibility` finds a
+reason not to (see `eligibility.ts` below). The `VideoEditor` `engine?:
+{enabled, debugHud?}` prop remains a real host knob, not leftover rollout
+plumbing: a consumer other than Montaj's own editor can leave it unset to stay
+on the legacy player outright, or set `debugHud` to show the fps/dropped/
+buffered/clock readout. See `docs/UI.md` for the operator-facing surface
+(eligibility, fallback, the Preparing placeholder, the debug HUD).
 
 **Module map:**
 
@@ -755,18 +773,17 @@ real canvas — see `montaj_assets/editor/src/engine/__tests__/`.
 
 ---
 
-### Canvas timeline (`montaj_assets/editor/src/video/timeline/canvas/`) — experimental, flag-gated
+### Canvas timeline (`montaj_assets/editor/src/video/timeline/canvas/`)
 
-**Status: off by default, opt-in, zero behavior change unless a host asks for
-it.** SP5 replaces the timeline's DOM track-row area — every visual clip and
-audio bar its own positioned `<div>`, recalculated on every scroll/zoom, with
-zero virtualization — with a `<canvas>`-rendered surface, behind a
-`VideoEditor` `timeline?: {canvas: boolean}` prop (the same host-knob pattern
-SP4's `engine` flag established: the old DOM rows stay fully intact until a
-parity pass clears the flip, and removal is a later, separate change). See
-`docs/UI.md` for the operator-facing surface (the flag, what changes for the
-user) and `docs/plans/SP5-PARITY-CHECKLIST.md` for the manual verification
-pass that gates ever flipping the default.
+**Status: the editor's default timeline.** `EditorPage.tsx` passes
+`timeline={{ canvas: true }}` to `VideoEditor` (`EditorPage.tsx:438`), so the
+timeline's track-row area — every visual clip and audio bar previously its
+own positioned `<div>`, recalculated on every scroll/zoom, with zero
+virtualization — renders on a `<canvas>`-rendered surface instead of DOM rows.
+The `VideoEditor` `timeline?: {canvas: boolean}` prop remains a real host knob
+(the same pattern the `engine` flag above uses): the old DOM rows stay fully
+intact in the package for a host that sets `canvas: false` or omits the prop.
+See `docs/UI.md` for the operator-facing surface (what changes for the user).
 
 **Two-mode architecture, one chrome.** `Timeline.tsx` owns the surface either
 way — zoom controls, the scrubber, the transcript panel/modal,
@@ -840,8 +857,8 @@ directly (every gesture transition is a table test), `viewport.ts`/`snap.ts`/
 canvas 2D context in jsdom. See
 `montaj_assets/editor/src/video/timeline/canvas/__tests__/`.
 
-**Keyboard editing is a separate, NOT flag-gated change landing in the same
-SP.** `video/keymap.ts` is one `document`-level keydown registry (mounted
+**Keyboard editing is a separate change, not gated by the canvas-timeline
+flag.** `video/keymap.ts` is one `document`-level keydown registry (mounted
 twice — once in `Timeline.tsx` for arrows/delete/enter/escape, once in
 `VideoEditor.tsx`'s `ReviewSurface` for split/undo/redo/ripple-delete/
 palette/shuttle) replacing four independently-racing listeners that used to
@@ -994,8 +1011,11 @@ Both are React components rendered frame-by-frame by Puppeteer and composited in
 | `props` | no | Arbitrary data injected as the `props` global inside the component |
 | `offsetX` / `offsetY` | no | Position offset as % of frame size — written by the UI when user repositions |
 | `scale` | no | Uniform scale multiplier — written by the UI when user resizes |
+| `speed` | no | `type: "video"` only — per-clip playback speed multiplier, default 1.0, range 0.25–4, pitch-corrected. `inPoint`/`outPoint` stay in original-source coordinates (speed never rebases them) |
 
 `offsetX`, `offsetY`, and `scale` are applied by the render engine as a CSS transform on the component container: `translate(offsetX%, offsetY%) scale(scale)`. The JSX component itself is unaware of them.
+
+`speed` is applied at render (`encode-segment.js`) as `setpts=(PTS-STARTPTS)/speed` on the video stream (a no-op at `speed` undefined/1) and, on the audio stream, a chained `atempo` filter — ffmpeg's `atempo` only accepts a factor in `[0.5, 2.0]` per instance, so a speed outside that range (e.g. 4×) is expressed as multiple chained instances (`atempo=2,atempo=2`) rather than one out-of-range call. Preview applies the same factor via `seekTime`'s elapsed-offset scaling in `@bycrux/timeline-core`.
 
 **Captions** live in a separate track (`type: "caption"`). The agent does not write JSX for captions — it chooses a style name, and the render engine loads the matching built-in template:
 

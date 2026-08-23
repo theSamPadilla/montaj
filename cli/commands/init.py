@@ -30,6 +30,22 @@ def register(subparsers):
         default="auto",
         help="Project working color space. 'auto' (default) detects from clip metadata.",
     )
+    p.add_argument(
+        "--no-proxy", dest="no_proxy", action="store_true",
+        help="Skip editing-proxy generation entirely. The editor falls back to "
+             "playing masters; proxies can be backfilled later via POST /api/proxy or "
+             "`montaj step proxy`. Also settable per-workflow with \"proxy\": false.",
+    )
+    p.add_argument(
+        "--proxy-inline-max", dest="proxy_inline_max", type=float, default=None,
+        help="Max source duration (seconds) proxied inline during init; longer sources "
+             "defer to the backfill job so project creation never blocks on a long encode. "
+             # Keep in sync with project/init.py's PROXY_INLINE_MAX_SEC — this
+             # help string doesn't read the constant (this module only builds
+             # the subprocess argv; project/init.py's own module isn't imported
+             # here), so a change there needs this string updated by hand.
+             "Default 480.",
+    )
     # Local file pass-through flags (project/init.py accepts --clips/--assets;
     # the CLI now exposes them as --clip/--asset for a nicer UX).
     p.add_argument("--clip", dest="clips", action="append", default=[],
@@ -85,6 +101,10 @@ def handle(args):
     # defaults to 'auto', so passing it explicitly is unnecessary noise.
     if args.color_space and args.color_space != "auto":
         cmd += ["--color-space", args.color_space]
+    if args.no_proxy:
+        cmd += ["--no-proxy"]
+    if args.proxy_inline_max is not None:
+        cmd += ["--proxy-inline-max", str(args.proxy_inline_max)]
 
     # Local clips and assets (pass each as a separate --clips / --assets value;
     # project/init.py uses nargs="*" with action=append semantics via multiple flags).
