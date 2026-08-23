@@ -21,9 +21,21 @@
  * Clips fetch from `item.proxySrc` ONLY — no fallback to `item.src` — so a
  * clip with no proxy yet simply renders no waveform (graceful, no spinner,
  * no error) until the import pipeline delivers one. Audio lanes fetch from
- * `track.src` (audio tracks have no proxies). Both are windowed to the
- * item's/track's trimmed source range.
+ * `track.src` (audio tracks have no proxies), windowed to the track's own
+ * trim.
  *
+ * Clips are NOT windowed at fetch time. The editing proxy is the WHOLE
+ * source, never trimmed server-side, so it is shared, unwindowed data every
+ * clip pointing at that `proxySrc` can reuse regardless of which clip, or
+ * which trim, is asking — `clipColumns` fetches (and caches) it ONCE, keyed
+ * by src alone, and slices the clip's own [inPoint, outPoint] window out of
+ * it locally. Before this, the fetch itself was windowed and keyed by
+ * `(item.id, window)`, so splitting a clip (new ids) or trimming it (a new
+ * window) changed the key, forced a re-decode, and flashed the waveform
+ * blank for a frame — even though the underlying proxy data hadn't changed
+ * at all.
+ *
+
  * ── Zoom-crisp resolution (bucket scheme) ─────────────────────────────────
  * `resolveBucket` picks 50/200/800 from the current px/second. `resolve()`
  * (private, on `WaveformPeaksStore`) fetches the needed bucket only when
@@ -344,12 +356,50 @@ export function visibleClipSampleRange(
 }
 
 /**
- * Per-(owner, src, window, bucket) fetch state, keyed exactly as the
- * montaj adapter's own peaks cache is (`projectId:src:start:duration:bucket`,
- * see `montajAdapter.ts`'s `getWaveformPeaks`), plus the owner id since one
- * store instance serves every clip and audio track on the surface. One
- * instance lives for the lifetime of a mounted `TimelineCanvas` (held in a
- * ref), so fetches already in flight or resolved survive across redraws.
+ * Slice a WHOLE-proxy peaks array down to a clip's own trim window —
+ * `[window.start, window.start + window.duration]` expressed as a fraction
+ * of the proxy's own total duration — before any viewport slicing happens.
+ * `clipColumns` applies two nested fractions in sequence: proxy → clip trim
+ * window (this function) → visible viewport slice (`visibleClipSampleRange`,
+ * applied afterward, on the RESULT of this one).
+ *
+ * `null` when `proxyDuration` isn't usable (`<= 0`) — nothing to divide by,
+ * and the caller falls back to fetching this clip's own windowed peaks
+ * rather than guess a fraction against an unknown total.
+ */
+function sliceToSourceWindow(
+  peaks: number[],
+  proxyDuration: number,
+  window: { start: number; duration: number },
+): number[] | null {
+  if (!(proxyDuration > 0)) return null
+  const totalSamples = Math.floor(peaks.length / 2)
+  if (totalSamples <= 0) return peaks
+  const f0 = Math.max(0, Math.min(1, window.start / proxyDuration))
+  const f1 = Math.max(0, Math.min(1, (window.start + window.duration) / proxyDuration))
+  const s0 = Math.min(totalSamples, Math.floor(f0 * totalSamples))
+  const s1 = Math.max(s0, Math.min(totalSamples, Math.ceil(f1 * totalSamples)))
+  return peaks.slice(s0 * 2, s1 * 2)
+}
+
+/**
+ * Fetch state, keyed as `projectId|ownerId|src|start|duration|bucket` — the
+ * same shape the montaj adapter's own peaks cache uses
+ * (`projectId:src:start:duration:bucket`, see `montajAdapter.ts`'s
+ * `getWaveformPeaks`), plus an owner id since one store instance serves
+ * every clip and audio track on the surface.
+ *
+ * `ownerId`/`start`/`duration` are OMITTED from a CLIP's key — see
+ * `clipColumns` — because the editing proxy is shared, unwindowed data every
+ * clip pointing at that `proxySrc` can reuse regardless of which clip or
+ * which trim is asking; splitting or trimming a clip must not change its
+ * key. Audio-lane fetches keep the FULL key (owner + window): audio tracks
+ * have their own per-take sources, never a shared proxy, so there is nothing
+ * to gain by dropping either field there and doing so would only make an
+ * audio track's own trim stop invalidating its own cache entry.
+ *
+ * One instance lives for the lifetime of a mounted `TimelineCanvas` (held in
+ * a ref), so fetches already in flight or resolved survive across redraws.
  *
  * Rendering always prefers the highest-resolution READY entry across ALL
  * three buckets for a key, not just the one matching the current zoom's
@@ -360,27 +410,62 @@ export function visibleClipSampleRange(
 export class WaveformPeaksStore {
   private entries = new Map<string, Entry>()
 
-  /** Clip waveforms fetch from `item.proxySrc` ONLY (never `item.src`) and
-   *  only for `type: 'video'` items — images/overlays have no audio. Absent
-   *  proxy, absent adapter method, or a non-positive window all resolve to
-   *  `null` (no waveform yet), never an error. */
+  /**
+   * Clip waveforms fetch from `item.proxySrc` ONLY (never `item.src`) and
+   * only for `type: 'video'` items — images/overlays have no audio. Absent
+   * proxy, absent adapter method, or a non-positive window all resolve to
+   * `null` (no waveform yet), never an error.
+   *
+   * The fetch itself is UNWINDOWED — the whole proxy — and keyed by src
+   * alone (see `WaveformPeaksStore`'s own doc), so every clip, and every
+   * split/trim of every clip, sharing one `proxySrc` resolves from the SAME
+   * cache entry: no re-decode, no blank-frame flash when a clip is split or
+   * trimmed. The clip's own [inPoint, outPoint] window is then sliced out of
+   * that shared data LOCALLY (`sliceToSourceWindow`), and the existing
+   * viewport slice (`visibleClipSampleRange`) applied on top of THAT — two
+   * nested fractions, proxy → clip window → visible span.
+   */
   clipColumns(item: VisualItem, rect: Rect, ctx: WaveformQueryContext): WaveformColumn[] | null {
     if (item.type !== 'video' || !item.proxySrc || !ctx.getWaveformPeaks) return null
     if (rect.width <= 0) return null
     const window = clipSourceWindow(item)
     if (window && window.duration <= 0) return null
 
-    const data = this.resolve({ ownerId: item.id, src: item.proxySrc, start: window?.start, duration: window?.duration }, ctx)
-    if (!data) return null
+    const whole = this.resolve({ src: item.proxySrc }, ctx)
+    if (!whole) return null
 
     const columns = Math.max(1, Math.round(rect.width))
-    const totalSamples = Math.floor(data.peaks.length / 2)
+    let peaks = whole.peaks
+    if (window) {
+      // Prefer the fetch's OWN duration — since this is an unwindowed
+      // request, it should already be the proxy's true total length —
+      // falling back to the item's own record of it only if that's
+      // unusable (e.g. a step that doesn't report duration on an
+      // unwindowed fetch).
+      const proxyDuration = whole.duration > 0 ? whole.duration : (item.sourceDuration ?? 0)
+      const sliced = sliceToSourceWindow(whole.peaks, proxyDuration, window)
+      if (sliced) {
+        peaks = sliced
+      } else {
+        // Duration unknowable from either the fetch or the item — no way to
+        // map the trim window onto the whole-proxy peaks reliably. Falls
+        // back to the pre-fix behaviour: fetch (and cache) this clip's OWN
+        // windowed peaks, keyed by id + window. No cross-clip sharing in
+        // this rare case, but still the correct picture rather than a
+        // guess.
+        const windowed = this.resolve({ ownerId: item.id, src: item.proxySrc, start: window.start, duration: window.duration }, ctx)
+        if (!windowed) return null
+        peaks = windowed.peaks
+      }
+    }
+
+    const totalSamples = Math.floor(peaks.length / 2)
     const span = visibleClipSampleRange(item, rect, ctx.viewport, totalSamples)
     // No full span to divide by (e.g. zero pxPerSecond) — fall back to the
-    // pre-fix behaviour, the whole clip resampled into `columns`, rather than
-    // drawing nothing.
-    if (!span) return resamplePeaksToColumns(data.peaks, columns)
-    const slice = data.peaks.slice(span.s0 * 2, span.s1 * 2)
+    // pre-fix behaviour, the whole (already window-sliced) clip resampled
+    // into `columns`, rather than drawing nothing.
+    if (!span) return resamplePeaksToColumns(peaks, columns)
+    const slice = peaks.slice(span.s0 * 2, span.s1 * 2)
     return resamplePeaksToColumns(slice, columns)
   }
 
@@ -465,11 +550,11 @@ export class WaveformPeaksStore {
    * down.
    */
   private resolve(
-    key: { ownerId: string; src: string; start?: number; duration?: number },
+    key: { ownerId?: string; src: string; start?: number; duration?: number },
     ctx: WaveformQueryContext,
   ): PeaksData | null {
     const bucket = resolveBucket(ctx.pxPerSecond)
-    const base = `${ctx.projectId}|${key.ownerId}|${key.src}|${key.start ?? ''}|${key.duration ?? ''}`
+    const base = `${ctx.projectId}|${key.ownerId ?? ''}|${key.src}|${key.start ?? ''}|${key.duration ?? ''}`
 
     let best: PeaksData | null = null
     let covered = false

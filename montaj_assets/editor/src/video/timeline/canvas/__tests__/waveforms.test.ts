@@ -474,18 +474,86 @@ describe('WaveformPeaksStore.clipColumns', () => {
     nowSpy.mockRestore()
   })
 
-  it('re-fetches when the trim window changes (start/duration are part of the key)', async () => {
+  // ── Shared whole-proxy fetch (split/trim flash fix) ─────────────────────
+  // The editing proxy is the WHOLE source, never windowed server-side, so
+  // its peaks are identical no matter which clip — or which trim of which
+  // clip — is asking. `clipColumns` fetches it ONCE, keyed by src alone, and
+  // slices each clip's own [inPoint, outPoint] window out of it locally. A
+  // split (new item ids) or a trim (a new window) must not change the fetch
+  // key, or the waveform re-decodes and flashes blank for a frame.
+
+  it('a clip′s own window changing (a trim) reuses the SAME cached whole-proxy fetch — no re-fetch', async () => {
     const store = new WaveformPeaksStore()
     const fetcher = vi.fn().mockResolvedValue(peaksFixture())
     const barRect = rect()
 
     store.clipColumns(clip({ proxySrc: 'proxy.mp4', inPoint: 0, outPoint: 2 }), barRect, queryCtx({ getWaveformPeaks: fetcher }))
     await flush()
-    store.clipColumns(clip({ proxySrc: 'proxy.mp4', inPoint: 3, outPoint: 5 }), barRect, queryCtx({ getWaveformPeaks: fetcher }))
+    const cols = store.clipColumns(clip({ proxySrc: 'proxy.mp4', inPoint: 0.3, outPoint: 1.7 }), barRect, queryCtx({ getWaveformPeaks: fetcher }))
+
+    // ONE fetch total — trimming the window did not change the cache key.
+    expect(fetcher).toHaveBeenCalledTimes(1)
+    expect(fetcher.mock.calls[0][0].start).toBeUndefined()
+    expect(fetcher.mock.calls[0][0].duration).toBeUndefined()
+    expect(cols).not.toBeNull()
+  })
+
+  it('two clips with DIFFERENT ids sharing one proxySrc (a split) both resolve from the ONE cached fetch, each correctly window-sliced', async () => {
+    const store = new WaveformPeaksStore()
+    // 100-sample "whole proxy" standing in for a 10s source. The two halves
+    // have clearly distinct values so their resampled columns are easy to
+    // tell apart and check exactly.
+    const peaks: number[] = []
+    for (let i = 0; i < 100; i++) peaks.push(-(i + 1), i + 1)
+    const fetcher = vi.fn().mockResolvedValue(peaksFixture({ duration: 10, peaks }))
+
+    const firstHalf = clip({ id: 'first', proxySrc: 'shared.mp4', inPoint: 0, outPoint: 5, start: 0, end: 5 })
+    const secondHalf = clip({ id: 'second', proxySrc: 'shared.mp4', inPoint: 5, outPoint: 10, start: 0, end: 5 })
+    const vp = { pxPerSecond: 10, scrollSeconds: 0, widthPx: 1000 }
+    // Exactly the 5s clip's full on-screen span at 10px/s — the viewport
+    // slice this hands to `visibleClipSampleRange` is then a no-op, isolating
+    // the clip-WINDOW slicing this test is actually about.
+    const fullRect = rect({ x: 0, width: 50 })
+
+    store.clipColumns(firstHalf, fullRect, queryCtx({ getWaveformPeaks: fetcher, viewport: vp }))
     await flush()
 
+    const firstCols = store.clipColumns(firstHalf, fullRect, queryCtx({ getWaveformPeaks: fetcher, viewport: vp }))
+    const secondCols = store.clipColumns(secondHalf, fullRect, queryCtx({ getWaveformPeaks: fetcher, viewport: vp }))
+
+    // ONE fetch total, for the WHOLE proxy — the second clip's different id
+    // and different window both reused it instead of triggering their own.
+    expect(fetcher).toHaveBeenCalledTimes(1)
+    expect(fetcher.mock.calls[0][0]).toMatchObject({ src: 'shared.mp4' })
+    expect(fetcher.mock.calls[0][0].start).toBeUndefined()
+    expect(fetcher.mock.calls[0][0].duration).toBeUndefined()
+
+    // Each clip still gets its OWN correctly-windowed slice of that one fetch.
+    expect(firstCols).not.toBeNull()
+    expect(secondCols).not.toBeNull()
+    expect(firstCols).not.toEqual(secondCols)
+    expect(firstCols).toEqual(resamplePeaksToColumns(peaks.slice(0, 100), 50))
+    expect(secondCols).toEqual(resamplePeaksToColumns(peaks.slice(100, 200), 50))
+  })
+
+  it('falls back to a windowed per-clip fetch when the whole-proxy duration is unknowable', async () => {
+    const store = new WaveformPeaksStore()
+    const fetcher = vi.fn()
+      .mockResolvedValueOnce(peaksFixture({ duration: 0 })) // whole-proxy attempt: unusable duration
+      .mockResolvedValueOnce(peaksFixture({ start: 3, duration: 2, peaks: [-9, 9, -8, 8] })) // windowed fallback
+    const item = clip({ proxySrc: 'proxy.mp4', inPoint: 3, outPoint: 5 }) // no sourceDuration either
+    const barRect = rect()
+    const ctx = () => queryCtx({ getWaveformPeaks: fetcher })
+
+    store.clipColumns(item, barRect, ctx())      // triggers the whole-proxy fetch
+    await flush()                                 // resolves with an unusable duration: 0
+    store.clipColumns(item, barRect, ctx())      // duration known-unusable -> falls back to a windowed fetch
+    await flush()                                 // windowed fetch resolves
+    const cols = store.clipColumns(item, barRect, ctx())
+
     expect(fetcher).toHaveBeenCalledTimes(2)
-    expect(fetcher.mock.calls[1][0]).toMatchObject({ start: 3, duration: 2 })
+    expect(fetcher.mock.calls[1][0]).toMatchObject({ src: 'proxy.mp4', start: 3, duration: 2 })
+    expect(cols).not.toBeNull()
   })
 
   it('does not re-fetch on zoom-out: a higher bucket already ready is reused', async () => {
