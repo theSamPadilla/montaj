@@ -160,7 +160,12 @@ async function renderChunk(browser, job) {
   mkdirSync(frameDir, { recursive: true })
 
   const page = await browser.newPage()
-  await page.setViewport({ width, height, deviceScaleFactor: 1 })
+  // deviceScaleFactor 2 supersamples the capture: the viewport reported to CSS
+  // stays width × height, so overlay JSX authored in design pixels lays out
+  // identically, while the screenshot comes back at 2× device pixels. This is
+  // deliberately NOT done by raising the design canvas — that changes the CSS
+  // coordinate space and shrinks every overlay (see render.js:251-256).
+  await page.setViewport({ width, height, deviceScaleFactor: 2 })
 
   // Capture page-level JS errors so we can surface them in the render log
   const pageErrors = []

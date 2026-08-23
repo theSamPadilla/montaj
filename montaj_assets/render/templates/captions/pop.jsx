@@ -31,7 +31,12 @@ export default function Pop({
   const exitOpacity = interpolate(wordFrame, [Math.max(1, wordDuration - 6), wordDuration], [1, 0.3])
 
   const sc = spring({ frame: wordFrame, fps, stiffness: 500, damping: 24 })
-  const entryOpacity = interpolate(wordFrame, [0, 3], [0, 1])
+  // 2-frame entry envelope, matching word-by-word.jsx. `pop` is the other
+  // per-word template, so it shares that file's defect: a word shorter than the
+  // envelope is replaced before its fade reaches visibility. Same KNOWN LIMIT
+  // applies — the envelope still starts at opacity 0, so a one-frame word never
+  // becomes visible; closing that needs a non-zero floor and is a separate call.
+  const entryOpacity = interpolate(wordFrame, [0, 2], [0, 1])
   const opacity = Math.min(entryOpacity, exitOpacity)
 
   return (

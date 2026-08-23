@@ -402,6 +402,9 @@ export function buildVideoItemFilterParts(item, vw, vh, idx, videoLabel, opts) {
  * @param {number} segStart   — segment.start (seconds), used to compute seek offset
  * @param {number} duration   — segment duration (seconds)
  * @param {object} [opts]
+ * @param {number} opts.fps — REQUIRED for stream overlays (see the guard below). The
+ *   segment's own fps, the same value that generates the base canvas, so the overlay
+ *   is re-stamped onto exactly the grid it will be composited against.
  * @param {string} [opts.inputFormatFlag='yuva420p'] — pixel-format conversion applied to
  *   the overlay input before scale/composite. Default `yuva420p` is the production
  *   render's setting — VP9 decoders may silently drop the alpha plane otherwise.
@@ -420,6 +423,16 @@ export function buildOverlayFilterParts(ov, vw, vh, ovIdx, videoLabel, segStart,
   const inputFormatFlag     = opts.inputFormatFlag     ?? 'yuva420p'
   const compositeFormatFlag = opts.compositeFormatFlag ?? 'yuv420'
   const loopedInput         = opts.loopedInput         ?? false
+
+  // Stream overlays MUST declare the segment's fps. The FFV1-in-Matroska chunk
+  // carries millisecond-rounded PTS (0.033/0.067/0.100 against the base
+  // canvas's exact 0.033333/0.066667/0.100000), so framesync holds every third
+  // frame unless the input is re-stamped onto the exact grid below. Defaulting
+  // this to 30 would silently reintroduce that defect on any 24 or 60 fps
+  // project — hence a throw, not a fallback.
+  if (!loopedInput && !(opts.fps > 0)) {
+    throw new Error('buildOverlayFilterParts: opts.fps is required for stream overlays')
+  }
 
   const inputArgs = loopedInput
     ? ['-loop', '1', '-t', String(duration), '-i', ov.webmPath]
@@ -446,7 +459,8 @@ export function buildOverlayFilterParts(ov, vw, vh, ovIdx, videoLabel, segStart,
   // Force yuva420p (or caller-specified format) — VP9 decoders may silently drop
   // the alpha plane on the production path; PNG-based callers pass 'rgba' to
   // avoid an unnecessary colorspace bounce.
-  filterParts.push(`[${ovIdx}:v]format=${inputFormatFlag}[ovfmt${ovIdx}]`)
+  const ptsPin = loopedInput ? '' : `,setpts=N/(${opts.fps}*TB)`
+  filterParts.push(`[${ovIdx}:v]format=${inputFormatFlag}${ptsPin}[ovfmt${ovIdx}]`)
   let ovSrc = `[ovfmt${ovIdx}]`
 
   // Scale design-canvas → output-canvas (× user scale). When the output already
@@ -616,7 +630,7 @@ export async function encodeSegment(segment, outputPath, opts = {}) {
   for (const ov of overlays) {
     const ovIdx = inputIdx
     const { inputArgs, filterParts: fp, newVideoLabel } =
-      buildOverlayFilterParts(ov, vw, vh, ovIdx, videoLabel, start, duration)
+      buildOverlayFilterParts(ov, vw, vh, ovIdx, videoLabel, start, duration, { fps })
     inputs.push(...inputArgs)
     filterParts.push(...fp)
     videoLabel = newVideoLabel
