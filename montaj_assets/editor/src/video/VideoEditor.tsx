@@ -10,7 +10,7 @@ import { getOverlayDesignCanvas } from './design-canvas'
 import { applyTheme, defaultMontajTheme } from '../theme'
 import { collapseGaps, rippleDelete, splitAtTime } from './cuts'
 import { repairCaptionWords } from './captionRepair'
-import { normalizeCaptionLanes } from './captionLanes'
+import { maxCaptionLane, normalizeCaptionLanes } from './captionLanes'
 import Timeline, { type TimelineActions } from './timeline/Timeline'
 import { computeAutoCrossfade, computeDerivedTiming, enabledTrackItems, mapTrackItems, trackItems } from './timeline/timeline-model'
 import { makeCaptionEdit, type CaptionEditPatch } from './timeline/makeCaptionEdit'
@@ -1721,6 +1721,7 @@ function ReviewSurface<P extends Project>({
         <CaptionRegenModal
           adapter={adapter}
           projectId={project.id}
+          existingRowCount={maxCaptionLane(project.captions?.segments ?? []) + 1}
           onClose={() => setRegenCaptionsOpen(false)}
           onDone={(captions) => {
             sync.applyExternal({ ...syncProjectRef.current, captions } as P)

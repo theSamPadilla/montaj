@@ -314,6 +314,7 @@ Each style maps to a built-in JSX template served at `GET /api/caption-template/
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `id` | string | — | Stable identifier for the segment, used for selection in the editor (drag in preview, click in timeline). Optional in hand-authored captions — the editor backfills a `cap-<n>` id for any segment missing one, both on load and after caption regeneration. Ids are minted against those already in use, so a track mixing identified and unidentified segments never gets a duplicate. |
+| `lane` | integer | 0 | Which row this segment renders in. Absent means row 0; rows are dense from `0` (no holes) and are read/written through `video/captionLanes.ts` in the editor, never touched directly. Segments in different rows can be simultaneous — **every** active row renders at once, highest lane painting on top. A row is a z-order only, not a vertical offset, so two overlapping rows can visually collide on screen; `offsetX`/`offsetY` per segment (above) is how an author keeps them apart. `Captions.style` and every colour field below stay track-global — one style/theme is shared by every row, there is no per-row override. Consumed only by the JSX browser preview / Puppeteer render path; the ffmpeg `drawtext` render branch has no concept of rows and renders every segment as if `lane` were `0`. |
 | `offsetX` | number | 0 | Horizontal offset as % of frame width. `0` or absent = the style's default anchor (e.g. `bottom: 18%`, which varies per style). |
 | `offsetY` | number | 0 | Vertical offset as % of frame height. `0` or absent = the style's default anchor. |
 | `scale` | number | 1 | Visual scale of the whole caption block, about its own centre. This is a CSS transform, not a font-size change: it scales the background box (`subtitle`) and text stroke (`outline`) along with the text, and it does **not** re-wrap the text — a scaled-up caption keeps its original line breaks and can overflow the frame. |
@@ -336,7 +337,7 @@ Each style maps to a built-in JSX template served at `GET /api/caption-template/
 POST /api/projects/:id/captions
 ```
 
-SSE stream (default). Runs the materialize → transcribe → caption pipeline and streams `log` / `done` / `error` events. Writes `project.captions` on success.
+SSE stream (default). Runs the materialize → transcribe → caption pipeline and streams `log` / `done` / `error` events. Writes `project.captions` on success, REPLACING the field wholesale — the fresh transcript is always a single row (`lane` absent on every segment), so any additional hand-authored rows (see `lane` above) are discarded, not merged.
 
 Optional body fields: `model` (Whisper model, default `"large"`), `language` (default `"auto"`), `style` (default: existing `captions.style`, or `"pop"`).
 

@@ -328,6 +328,73 @@ export interface GetFilmstripArgs {
   tileWidth?: number
 }
 
+// ── Audio polish (optional capability) ────────────────────────────────────────
+
+/**
+ * Args for `EditorAdapter.analyzeAudioPolish`. `projectId` scopes the host's
+ * job/output cache (mirrors `getWaveformPeaks`/`getFilmstrip`); `piece`
+ * selects which of Montaj's four audio-polish steps to run (or the
+ * `'silence-check'` dry run — see `AudioPolishAnalysis`); `src` is the
+ * source-identity path being analyzed. `window`, when given, restricts
+ * analysis to a slice of the source — in **source** seconds, not timeline
+ * seconds (see `AudioPolishAnalysis` for why that distinction matters).
+ * `options` are piece-specific knobs: `language`/`model` steer `fillers`'
+ * speech recognition, `targetLufs` steers `loudness`'s gain calculation, and
+ * `maxWordGap`/`sentenceEdge` steer `silence`/`silence-check`'s gap-merging
+ * heuristics.
+ */
+export interface AnalyzeAudioPolishArgs {
+  projectId: string
+  piece: 'silence' | 'fillers' | 'loudness' | 'voice' | 'silence-check'
+  src: string
+  window?: { in: number; out: number }
+  options?: {
+    /**
+     * Speech-recognition language hint for `fillers` (e.g. `'en'`). Defaults
+     * to `'en'` at the call site and should be surfaced as a visible user
+     * control — a wrong language silently corrupts detection rather than
+     * failing loudly.
+     */
+    language?: string
+    model?: string
+    targetLufs?: number
+    maxWordGap?: number
+    sentenceEdge?: number
+  }
+}
+
+/**
+ * Result of `EditorAdapter.analyzeAudioPolish`, discriminated on `piece`.
+ * **Every time in here is source time** — an offset into the source file
+ * named by the request's `src`, never timeline time. Mixing the two is the
+ * single easiest way to misuse this type; a caller must convert through the
+ * clip's own timeline↔source mapping before applying a removal/keep to the
+ * project.
+ *
+ *  - `'silence'` / `'fillers'` — `removals`, each a source-time span to cut,
+ *    with optional `text` (the recognized words, for `fillers`).
+ *  - `'silence-check'` — `keeps`, the source-time spans that WOULD survive
+ *    silence removal at the current settings — the inverse framing of
+ *    `'silence'`, for previewing a threshold before committing to it.
+ *  - `'loudness'` — the measured integrated/true-peak/LRA loudness, the
+ *    requested target, and the gain in dB needed to reach it.
+ *  - `'voice'` — the isolated vocal track: `vocalsPath` is the host path,
+ *    `url` a directly displayable/fetchable URL for it (same convention as
+ *    `getSampleFrame`'s `url`).
+ */
+export type AudioPolishAnalysis =
+  | { piece: 'silence' | 'fillers'; removals: Array<{ start: number; end: number; text?: string }> }
+  | { piece: 'silence-check'; keeps: Array<[number, number]> }
+  | {
+      piece: 'loudness'
+      measuredI: number
+      measuredTP: number
+      measuredLRA: number
+      targetI: number
+      gainDb: number
+    }
+  | { piece: 'voice'; vocalsPath: string; url: string }
+
 // ── Media (optional capability) ───────────────────────────────────────────────
 
 /**
@@ -635,6 +702,12 @@ export interface EditorAdapter<P extends Project = Project> {
    * the editor patches `project.captions` from the 'done' event. Hosts without a
    * transcription pipeline omit this; the editor feature-detects its absence and
    * hides the "Regenerate captions" control.
+   *
+   * The 'done' `Captions` REPLACES `project.captions` wholesale, not just its
+   * segments in row 0 — a project with more than one caption row (see the
+   * `timeline` prop doc above) loses every row but the single fresh one this
+   * produces. `CaptionRegenModal` warns before that happens whenever the
+   * project has more than one row; there is no partial/per-row regeneration.
    */
   generateCaptions?(id: string, opts?: GenerateCaptionsOptions): AsyncIterable<CaptionEvent>
 
@@ -648,6 +721,30 @@ export interface EditorAdapter<P extends Project = Project> {
    * context sync is a convenience and must never surface as an editor error.
    */
   reportContext?(id: string, context: EditorContext): Promise<void>
+
+  /**
+   * Optional: analyze a clip's audio for one of four cleanup pieces (or a
+   * `'silence-check'` dry run) and return proposed edits for the user to
+   * review before applying — detect silence/filler words to trim, measure
+   * loudness and the gain needed to hit a target, or isolate vocals. Maps to
+   * Montaj's four underlying audio-polish steps.
+   *
+   * Promise-based, not an async iterable, and deliberately so: these are
+   * polled jobs with no log stream, unlike `generateCaptions`'s streaming
+   * transcription — modeled instead on `getWaveformPeaks`/`getFilmstrip`.
+   *
+   * Optional so Hub keeps compiling against the released `@bycrux/editor`
+   * unchanged; the UI hides the audio-polish entry point on hosts that omit
+   * this, the same `generateCaptions` precedent. Hosts without an
+   * audio-polish pipeline simply don't implement it.
+   *
+   * `args.window` and every time in the result are **source** time — offsets
+   * into `args.src`, never timeline time (see `AudioPolishAnalysis`). This is
+   * the single easiest way to misuse this method; a caller must convert
+   * through the clip's own timeline↔source mapping before applying a
+   * removal/keep to the project.
+   */
+  analyzeAudioPolish?(args: AnalyzeAudioPolishArgs): Promise<AudioPolishAnalysis>
 }
 
 // ── Theme ────────────────────────────────────────────────────────────────────
@@ -926,16 +1023,32 @@ export interface VideoEditorProps<P extends Project = Project> {
    * tests against (the entire editor suite stays green with this prop
    * untouched). The timeline's chrome (zoom controls, marker state,
    * transcript panel/modal, scrubber) is unaffected by this flag either way,
-   * but captions are NOT: DOM mode has no caption row at all, so captions can
-   * only be edited through the sidebar transcript panel, with no timeline
-   * retiming available there. This is a real, accepted limitation of the
-   * non-canvas path — a host embedding the package in DOM mode should know
-   * retiming a caption needs canvas mode.
+   * but captions are NOT: DOM mode has no caption row at all, however many
+   * rows the project's captions actually occupy, so captions can only be
+   * edited through the sidebar transcript panel, with no timeline retiming
+   * available there. This is a real, accepted limitation of the non-canvas
+   * path — a host embedding the package in DOM mode should know retiming a
+   * caption needs canvas mode.
    *
    * `{ canvas: true }` swaps the track-row area (visual tracks + audio lanes)
-   * for the canvas surface AND gives captions their own row inside it —
-   * selected, moved, and trimmed exactly like a clip, through the unified
-   * `selectedIds`.
+   * for the canvas surface AND gives captions their own row inside it — one
+   * row is the default, but a project can hold N rows (`CaptionSegment.lane`;
+   * see its doc in `schema.ts` and `video/captionLanes.ts`, the module every
+   * consumer reads lanes through). A row is created by dragging a caption
+   * past the current top row and destroyed the moment its last caption
+   * leaves — there is no separate "add row" affordance. Within a row a
+   * caption is selected, moved, and trimmed exactly like a clip, through the
+   * unified `selectedIds`.
+   *
+   * A row is purely a z-order, not a vertical screen offset: captions in
+   * different rows can be simultaneous, and ALL active captions render at
+   * once (row-ascending, so a higher row paints over a lower one). Nothing
+   * displaces overlapping captions apart, so two rows active at the same
+   * instant can visually overlap on screen — that's the operator's own
+   * placement to manage (via each segment's `offsetX`/`offsetY`), not
+   * something the row system prevents. `Captions.style` and every colour
+   * field stay track-global: one style/theme preset is shared by every row,
+   * there is no per-row override.
    *
    * This prop stays absent-by-default for every consumer of the package. The
    * montaj ui app passes `{ canvas: true }` unconditionally. Unlike `engine`

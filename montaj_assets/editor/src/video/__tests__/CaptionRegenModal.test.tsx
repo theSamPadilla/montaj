@@ -38,6 +38,7 @@ describe('CaptionRegenModal', () => {
       <CaptionRegenModal
         adapter={makeAdapter()}
         projectId="vid-1"
+        existingRowCount={1}
         onDone={onDone}
         onClose={onClose}
       />,
@@ -56,10 +57,38 @@ describe('CaptionRegenModal', () => {
       <CaptionRegenModal
         adapter={errorAdapter}
         projectId="vid-1"
+        existingRowCount={1}
         onDone={vi.fn()}
         onClose={vi.fn()}
       />,
     )
     await waitFor(() => expect(screen.getByText('multi_source')).toBeTruthy())
+  })
+
+  it('warns how many rows will be discarded when the project has more than one', async () => {
+    render(
+      <CaptionRegenModal
+        adapter={makeAdapter()}
+        projectId="vid-1"
+        existingRowCount={3}
+        onDone={vi.fn()}
+        onClose={vi.fn()}
+      />,
+    )
+    await waitFor(() => expect(screen.getByText(/replace all 3 caption rows with a single new row/i)).toBeTruthy())
+  })
+
+  it('shows no discard warning for a single-row (or empty) project', async () => {
+    render(
+      <CaptionRegenModal
+        adapter={makeAdapter()}
+        projectId="vid-1"
+        existingRowCount={1}
+        onDone={vi.fn()}
+        onClose={vi.fn()}
+      />,
+    )
+    await waitFor(() => expect(screen.getByText(/transcribing audio/i)).toBeTruthy())
+    expect(screen.queryByText(/caption rows/i)).toBeNull()
   })
 })

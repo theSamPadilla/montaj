@@ -125,6 +125,55 @@ def test_enrich_includes_the_caption_window_around_the_playhead():
     assert out["transcriptAroundPlayhead"]["segmentIdAtPlayhead"] == "s2"
 
 
+def test_enrich_transcript_ignores_a_higher_caption_row_at_the_playhead():
+    """A second row (e.g. a hand-authored title card) overlapping the
+    playhead must not get quoted as "what is being said" just because it
+    sits in a higher lane — only the lowest lane present is the transcript."""
+    project = _project()
+    project["captions"]["segments"] = project["captions"]["segments"] + [
+        {"id": "t1", "text": "BREAKING NEWS", "start": 4.0, "end": 9.0, "lane": 1},
+    ]
+    state = context.report("p1", {"playheadSec": 6.0, "selectedIds": []})
+    out = context.enrich("p1", project, state)
+    text = out["transcriptAroundPlayhead"]["text"]
+    assert "the thing nobody tells you" in text
+    assert "BREAKING NEWS" not in text
+    assert out["transcriptAroundPlayhead"]["segmentIdAtPlayhead"] == "s2"
+
+
+def test_enrich_transcript_reads_the_lowest_lane_present_when_it_is_not_zero():
+    """A project whose captions are ALL on a nonzero lane (hand-authored or
+    agent-written, with no lane-0 segment at all) must still get quoted rather
+    than going silent. This is the case "lowest lane present" exists for, as
+    opposed to a literal `lane == 0` filter — a project like this has nothing
+    at lane 0 for that filter to find."""
+    project = _project()
+    for seg in project["captions"]["segments"]:
+        seg["lane"] = 2
+    state = context.report("p1", {"playheadSec": 6.0, "selectedIds": []})
+    out = context.enrich("p1", project, state)
+    transcript = out["transcriptAroundPlayhead"]
+    assert transcript is not None
+    text = transcript["text"]
+    assert "the thing nobody tells you" in text
+    assert "hello there" in text and "is that it compounds" in text
+    assert transcript["segmentIdAtPlayhead"] == "s2"
+
+
+def test_enrich_transcript_is_byte_identical_for_a_single_row_project():
+    """Every existing (lane-less) project must read exactly as it did before
+    multi-row captions existed — the lowest-lane filter is a no-op when every
+    segment is lane 0."""
+    state = context.report("p1", {"playheadSec": 6.0, "selectedIds": []})
+    out = context.enrich("p1", _project(), state)
+    assert out["transcriptAroundPlayhead"] == {
+        "text": "hello there the thing nobody tells you is that it compounds",
+        "segmentIdAtPlayhead": "s2",
+        "startSec": 0.0,
+        "endSec": 14.0,
+    }
+
+
 def test_enrich_resolves_selection_to_real_items():
     state = context.report("p1", {"playheadSec": 1.0, "selectedIds": ["c2", "nope"]})
     out = context.enrich("p1", _project(), state)

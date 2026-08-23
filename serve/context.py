@@ -180,6 +180,21 @@ def _clip_at(project: dict, t: float) -> dict | None:
     }
 
 
+def _lane_of(seg: dict) -> int:
+    """A caption segment's lane, defaulted and defensively coerced.
+
+    Mirrors `laneOf` in editor/src/video/captionLanes.ts so serve and the
+    editor agree on which row is "the transcript": `lane` is an optional dict
+    key here exactly like it's an optional field there — absent (or
+    negative/non-finite) means lane 0.
+    """
+    raw = _num(seg.get("lane"))
+    if raw is None:
+        return 0
+    n = int(raw)
+    return n if n >= 0 else 0
+
+
 def _captions_around(project: dict, t: float) -> dict | None:
     """The caption segment under the playhead plus one either side.
 
@@ -199,6 +214,14 @@ def _captions_around(project: dict, t: float) -> dict | None:
     ]
     if not usable:
         return None
+
+    # A project can now hold several caption rows (lanes). We want to quote
+    # what is being SPOKEN, not a title card or call-out that happens to
+    # overlap the playhead in a higher lane — so narrow to the LOWEST lane
+    # present, not a literal lane 0. That keeps a hand-authored project whose
+    # only captions sit on lane 2 reporting something instead of going silent.
+    lowest_lane = min(_lane_of(s) for s in usable)
+    usable = [s for s in usable if _lane_of(s) == lowest_lane]
 
     usable.sort(key=lambda s: s["start"])
     at_idx = next(
