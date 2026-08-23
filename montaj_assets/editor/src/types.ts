@@ -925,13 +925,17 @@ export interface VideoEditorProps<P extends Project = Project> {
    * rows, completely unchanged — this is the non-regression guarantee SP5
    * tests against (the entire editor suite stays green with this prop
    * untouched). The timeline's chrome (zoom controls, marker state,
-   * transcript panel/modal, scrubber) and its caption row (`CaptionTrackRow`,
-   * which owns inline contentEditable editing and cannot move to canvas) are
-   * unaffected by this flag either way.
+   * transcript panel/modal, scrubber) is unaffected by this flag either way,
+   * but captions are NOT: DOM mode has no caption row at all, so captions can
+   * only be edited through the sidebar transcript panel, with no timeline
+   * retiming available there. This is a real, accepted limitation of the
+   * non-canvas path — a host embedding the package in DOM mode should know
+   * retiming a caption needs canvas mode.
    *
-   * `{ canvas: true }` swaps only the track-row area (visual tracks + audio
-   * lanes) for the canvas surface; the caption row still mounts as DOM,
-   * below it.
+   * `{ canvas: true }` swaps the track-row area (visual tracks + audio lanes)
+   * for the canvas surface AND gives captions their own row inside it —
+   * selected, moved, and trimmed exactly like a clip, through the unified
+   * `selectedIds`.
    *
    * This prop stays absent-by-default for every consumer of the package. The
    * montaj ui app passes `{ canvas: true }` unconditionally. Unlike `engine`

@@ -67,7 +67,7 @@ export interface Captions {
   fontsize?: number
   bgColor?: string
   // Per-style accent color fields, each read by the matching JSX caption template.
-  // A single UI control writes whichever one the active style uses (see TranscriptPanel).
+  // A single UI control writes whichever one the active style uses (see CaptionListPanel).
   accentColor?: string    // active-word/box accent — highlight-box, outline
   highlightColor?: string // active word — karaoke
   activeColor?: string    // active word — pop

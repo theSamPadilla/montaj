@@ -9,7 +9,7 @@ import { render, screen, cleanup, fireEvent } from '@testing-library/react'
 import TrackGutter, { visualTrackKind } from '../TrackGutter'
 import { computeTimelineLayout } from '../canvas/draw'
 import type { Project } from '../../../types'
-import type { VisualItem } from '../../../schema'
+import type { Captions, VisualItem } from '../../../schema'
 
 afterEach(() => cleanup())
 
@@ -17,6 +17,8 @@ const video = (id: string, over: Partial<VisualItem> = {}): VisualItem =>
   ({ id, type: 'video', src: 'a.mp4', start: 0, end: 2, ...over }) as VisualItem
 const overlay = (id: string, over: Partial<VisualItem> = {}): VisualItem =>
   ({ id, type: 'overlay', src: '/p/overlays/text_line.jsx', start: 0, end: 2, ...over }) as VisualItem
+const captions = (over: Partial<Captions> = {}): Captions =>
+  ({ style: 'clean', segments: [{ text: 'hello', start: 0, end: 1 }], ...over })
 
 function project(over: Partial<Project> = {}): Project {
   return {
@@ -45,8 +47,10 @@ describe('visualTrackKind', () => {
 describe('TrackGutter', () => {
   it('names each row by what it holds, plus the audio lane and the caption row', () => {
     // Icon-only cells: the name is the accessible name (and the hover tooltip),
-    // not on-screen text.
-    render(<TrackGutter project={project()} />)
+    // not on-screen text. The caption cell only renders when the layout has a
+    // band to align with (see 'TrackGutter — caption cell alignment' below),
+    // so this project needs actual caption segments.
+    render(<TrackGutter project={project({ captions: captions() })} />)
     expect(screen.getByLabelText('Video')).toBeTruthy()
     expect(screen.getByLabelText('Overlay')).toBeTruthy()
     expect(screen.getByLabelText('Audio')).toBeTruthy()
@@ -81,8 +85,10 @@ describe('TrackGutter', () => {
     expect(base.height).toBeGreaterThan(overlayRow.height)
   })
 
-  it('omits the caption cell when the caption row is not shown', () => {
-    render(<TrackGutter project={project()} showCaptionRow={false} />)
+  it('omits the caption cell when showCaptionRow is false, even though the layout carries a caption band', () => {
+    const p = project({ captions: captions() })
+    expect(computeTimelineLayout(p).caption).toBeTruthy()
+    render(<TrackGutter project={p} showCaptionRow={false} />)
     expect(screen.queryByLabelText('Captions')).toBeNull()
   })
 
@@ -96,6 +102,55 @@ describe('TrackGutter', () => {
     render(<TrackGutter project={bare} showCaptionRow={false} />)
     expect(screen.getByLabelText('Video')).toBeTruthy()
     expect(screen.queryByLabelText('Audio')).toBeNull()
+  })
+})
+
+describe('TrackGutter — caption cell alignment', () => {
+  // The caption row moved from a DOM strip below the canvas to a band INSIDE
+  // the canvas layout, so its rail cell has to be positioned like every other
+  // row rather than trail the gutter as its own flex cell.
+
+  it('positions the caption cell at layout.caption.y/height, inside the same block the track rows live in', () => {
+    const p = project({ captions: captions() })
+    const layout = computeTimelineLayout(p)
+    expect(layout.caption).toBeTruthy()
+
+    const { container } = render(<TrackGutter project={p} layout={layout} showCaptionRow />)
+
+    const cell = screen.getByLabelText('Captions')
+    // `.absolute` is the wrapper VisualTrackRailRow/AudioLaneRailRow both use —
+    // finding it via `closest` rather than asserting on RailCell itself proves
+    // the cell is wrapped the SAME way the other rows are, not styled directly.
+    const wrapper = cell.closest('.absolute') as HTMLElement
+    expect(wrapper).toBeTruthy()
+    expect(wrapper.style.top).toBe(`${layout.caption!.y}px`)
+    expect(wrapper.style.height).toBe(`${layout.caption!.height}px`)
+
+    // Structural, not a snapshot: the wrapper is a DESCENDANT of the `.relative`
+    // block the track rows and audio lanes are absolutely positioned inside —
+    // not a trailing sibling after it.
+    const relativeBlock = container.querySelector('.relative')!
+    expect(relativeBlock.contains(wrapper)).toBe(true)
+  })
+
+  it('renders no caption cell on a project with no captions, even though showCaptionRow defaults true, and nothing else shifts', () => {
+    const p = project() // no `captions` field — the layout carries no band at all
+    const layout = computeTimelineLayout(p)
+    expect(layout.caption).toBeUndefined()
+
+    const { container } = render(<TrackGutter project={p} layout={layout} />)
+    expect(screen.queryByLabelText('Captions')).toBeNull()
+
+    // The row/lane cells still land exactly where the (caption-less) layout
+    // says they do — a missing band doesn't leave a gap or shift anything.
+    const positioned = [...container.querySelectorAll<HTMLElement>('.absolute')]
+    const seen = positioned.map(el => ({ top: el.style.top, height: el.style.height }))
+    for (const row of layout.rows) {
+      expect(seen).toContainEqual({ top: `${row.y}px`, height: `${row.height}px` })
+    }
+    for (const lane of layout.lanes) {
+      expect(seen).toContainEqual({ top: `${lane.y}px`, height: `${lane.height}px` })
+    }
   })
 })
 

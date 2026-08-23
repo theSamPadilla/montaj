@@ -21,4 +21,24 @@ describe('VideoEditor context reporting', () => {
     expect(call).toMatch(/selectedCaptionId/)
     expect(call).toMatch(/adapter/)
   })
+
+  // D1: captions share `selectedIds` with clips/audio now, so `selectedCaptionId`
+  // must be DERIVED from that array rather than tracked as its own `useState` —
+  // a second selection model is exactly the bug a future refactor could
+  // reintroduce silently, since both compile and both satisfy the assertion
+  // above.
+  it('derives selectedCaptionId from selectedIds instead of its own useState', () => {
+    expect(src).not.toMatch(/\[selectedCaptionId, setSelectedCaptionId\]/)
+    const decl = src.match(/const selectedCaptionId = [^\n]+/)?.[0] ?? ''
+    expect(decl).toMatch(/selectedIds\.find/)
+  })
+
+  // handleSelectCaption used to keep two selection models mutually exclusive
+  // (set the caption id AND clear selectedIds). Under D1 there is one model,
+  // so selecting a caption is just replacing selectedIds.
+  it('handleSelectCaption sets selectedIds directly, not a separate caption state', () => {
+    const fn = src.match(/const handleSelectCaption = useCallback\(\([\s\S]*?\}, \[\]\)/)?.[0] ?? ''
+    expect(fn).toMatch(/setSelectedIds/)
+    expect(fn).not.toMatch(/setSelectedCaptionId/)
+  })
 })

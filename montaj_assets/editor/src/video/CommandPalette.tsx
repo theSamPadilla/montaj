@@ -21,7 +21,7 @@ export interface CommandPaletteProps {
 }
 
 /**
- * Cmd/Ctrl+K command palette. Styled after `TranscriptModal` (portal to
+ * Cmd/Ctrl+K command palette. Styled after the other editor modals (portal to
  * `document.body`, dark centered panel, backdrop-click-to-close) so it reads
  * as part of the same modal family.
  *

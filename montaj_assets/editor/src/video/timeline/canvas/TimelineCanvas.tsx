@@ -77,7 +77,14 @@ export interface TimelineCanvasProps {
   store: ViewportStore
   /** Content duration plus the timeline's drag headroom (timeline-model). */
   totalDuration: number
-  /** Unified selection: visual items and audio tracks alike. */
+  /** The project's frame rate. Used for exactly one thing — a click on a
+   *  caption seeks half a frame into the segment rather than to its start, so
+   *  the preview's frame-snapped clock lands inside it. See the seek in
+   *  `pointer-machine`'s `pointerUp`. */
+  fps: number
+  /** Unified selection: visual items, audio tracks and caption segments alike.
+   *  Captions share this ONE array rather than a channel of their own, which is
+   *  what lets a mixed clip+caption drag commit as a single undo entry. */
   selectedIds: string[]
   /** Clip and audio boundaries the gestures snap to — Timeline's existing
    *  `computeDerivedTiming` memo, shared with the DOM rows. Absent means no
@@ -110,6 +117,10 @@ export interface TimelineCanvasProps {
   onOverlayEdit?: (p: Project) => void
   onInspectClip?: (id: string) => void
   onInspectAudio?: (id: string) => void
+  /** Double-click on a caption block. A caption has no inspector dialog, so
+   *  this is not `onInspectClip`'s sibling: it asks the host to focus that
+   *  segment's row in the transcript sidebar, where caption text is edited. */
+  onEditCaption?: (id: string) => void
   /** T6 — the host adapter's peaks fetcher, threaded from
    *  `adapter.getWaveformPeaks` via Timeline. Absent → no waveforms anywhere
    *  (graceful; the surface just never asks). Canvas-mode only: the DOM path
@@ -142,6 +153,7 @@ export default function TimelineCanvas({
   clock,
   store,
   totalDuration,
+  fps,
   selectedIds,
   snapBoundaries = NO_SNAP_BOUNDARIES,
   rippleMode = false,
@@ -153,6 +165,7 @@ export default function TimelineCanvas({
   onOverlayEdit,
   onInspectClip,
   onInspectAudio,
+  onEditCaption,
   getWaveformPeaks,
   getFilmstrip,
   resolveFilePath,
@@ -173,7 +186,10 @@ export default function TimelineCanvas({
   if (filmstripStoreRef.current === null) filmstripStoreRef.current = new FilmstripStore()
 
 
-  const layout = useMemo(() => computeTimelineLayout(project), [project.tracks, project.audio])
+  // `project.captions` is in here because the caption band is part of the
+  // layout: without it a caption move or trim would change the project and
+  // repaint the OLD band, so the block would spring back under the cursor.
+  const layout = useMemo(() => computeTimelineLayout(project), [project.tracks, project.audio, project.captions])
   const surfaceHeight = Math.max(layout.height, VISUAL_ROW_RENDER_HEIGHT_PX)
 
   // Latest draw inputs, readable from the imperative paint without making the
@@ -413,12 +429,12 @@ export default function TimelineCanvas({
   // Everything the machine's context and effects need, refreshed each render so
   // handlers bound once on mount never read a stale project or callback.
   const pointerRef = useRef({
-    project, layout, selectedIds, snapBoundaries, totalDuration, rippleMode, previewAxis,
-    onSelectItem, onSelectItems, onProjectChange, onOverlayEdit, onInspectClip, onInspectAudio, onHoverScrub,
+    project, layout, selectedIds, snapBoundaries, totalDuration, fps, rippleMode, previewAxis,
+    onSelectItem, onSelectItems, onProjectChange, onOverlayEdit, onInspectClip, onInspectAudio, onEditCaption, onHoverScrub,
   })
   pointerRef.current = {
-    project, layout, selectedIds, snapBoundaries, totalDuration, rippleMode, previewAxis,
-    onSelectItem, onSelectItems, onProjectChange, onOverlayEdit, onInspectClip, onInspectAudio, onHoverScrub,
+    project, layout, selectedIds, snapBoundaries, totalDuration, fps, rippleMode, previewAxis,
+    onSelectItem, onSelectItems, onProjectChange, onOverlayEdit, onInspectClip, onInspectAudio, onEditCaption, onHoverScrub,
   }
 
   const buildContext = useCallback((): PointerContext => {
@@ -430,6 +446,7 @@ export default function TimelineCanvas({
       selectedIds: p.selectedIds,
       snapBoundaries: p.snapBoundaries,
       totalDuration: p.totalDuration,
+      fps: p.fps,
       rippleMode: p.rippleMode,
       playheadTime: clock.get(),
     }
@@ -445,6 +462,7 @@ export default function TimelineCanvas({
         case 'projectChange': p.onProjectChange?.(effect.project); edited = true; break
         case 'commit':        p.onOverlayEdit?.(effect.project); break
         case 'inspect':       (effect.target === 'visual' ? p.onInspectClip : p.onInspectAudio)?.(effect.id); break
+        case 'editCaption':   p.onEditCaption?.(effect.id); break
         // Cursor is written straight to the node: an affordance that changes on
         // every hover must not cost a React render.
         case 'cursor':        if (containerRef.current) containerRef.current.style.cursor = effect.cursor; break

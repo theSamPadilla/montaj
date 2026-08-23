@@ -46,7 +46,7 @@ export interface TrackSettingsPopoverProps {
   /** Volume section — give both `volume` and `onVolumeChange` to show it. */
   volume?: number
   /** `commit: false` on every drag tick (live preview only, mirrors
-   *  TranscriptPanel's fontsize slider); `commit: true` once, on
+   *  CaptionListPanel's fontsize slider); `commit: true` once, on
    *  release/keyup — the same preview-then-commit split every continuous
    *  timeline control uses, so a drag never produces one undo entry per
    *  pixel. */
@@ -115,7 +115,7 @@ export default function TrackSettingsPopover({
   // Live slider value during a drag — local state so a mid-drag frame doesn't
   // stutter waiting on a round trip through the project. Reset whenever the
   // committed value changes under us (e.g. undo while the popover is open).
-  // Exactly TranscriptPanel's `fontsize` pattern.
+  // Exactly CaptionListPanel's `fontsize` pattern.
   const [liveVolume, setLiveVolume] = useState(volume ?? 1)
   useEffect(() => {
     if (volume !== undefined) setLiveVolume(volume)

@@ -8,13 +8,15 @@
  * what's visible, not by how many items exist.
  */
 import { describe, it, expect } from 'vitest'
-import type { AudioTrack, VisualItem } from '../../../../schema'
+import type { AudioTrack, CaptionSegment, VisualItem } from '../../../../schema'
 import type { Project } from '../../../../types'
 import {
   AUDIO_HANDLE_WIDTH_PX,
   AUDIO_ITEM_INSET_PX,
+  CAPTION_PALETTE,
   CLIP_HANDLE_WIDTH_PX,
   CURSOR_WIDTH_PX,
+  LABEL_PAD_PX,
   LABEL_TOP_OFFSET_PX,
   CLIP_GUTTER_PX,
   CLIP_SELECTED_BORDER_PX,
@@ -26,6 +28,7 @@ import {
   computeTimelineLayout,
   overlapBands,
   drawAudioItem,
+  drawCaptionBlock,
   drawClipRect,
   drawTrimHandle,
   RULER_HEIGHT_PX,
@@ -47,6 +50,7 @@ import {
 import {
   AUDIO_LANE_HEIGHT_PX,
   BASE_VISUAL_ROW_RENDER_HEIGHT_PX,
+  CAPTION_ROW_HEIGHT_PX,
   ROW_GAP_PX,
   VISUAL_ROW_RENDER_HEIGHT_PX,
 } from '../../timeline-model'
@@ -103,6 +107,10 @@ function clip(over: Partial<VisualItem> = {}): VisualItem {
 
 function audio(over: Partial<AudioTrack> = {}): AudioTrack {
   return { id: 'a0', src: '/media/voice.mp3', start: 0, end: 2, ...over }
+}
+
+function captionSegment(over: Partial<CaptionSegment> = {}): CaptionSegment {
+  return { id: 'seg0', text: 'hello world', start: 0, end: 2, ...over }
 }
 
 function project(over: Partial<Project> = {}): Project {
@@ -171,6 +179,57 @@ describe('computeTimelineLayout', () => {
       rows: [],
       lanes: [],
       height: RULER_HEIGHT_PX,
+    })
+  })
+
+  // ── Captions in the canvas layout (Phase 1) ──
+
+  describe('the caption band', () => {
+    it('sits strictly between the last overlay row and the base video row', () => {
+      const p = project({
+        tracks: [[clip({ id: 'base' })], [clip({ id: 'ov1' })]],
+        captions: { style: 'clean', segments: [captionSegment()] },
+      } as unknown as Partial<Project>)
+
+      const layout = computeTimelineLayout(p)
+      const overlayRow = layout.rows.find(r => r.trackIdx === 1)!
+      const baseRow = layout.rows.find(r => r.trackIdx === 0)!
+
+      expect(layout.caption).toBeDefined()
+      expect(layout.caption!.height).toBe(CAPTION_ROW_HEIGHT_PX)
+      expect(layout.caption!.y).toBeGreaterThan(overlayRow.y + overlayRow.height)
+      expect(layout.caption!.y).toBeLessThan(baseRow.y)
+      expect(layout.caption!.segments).toEqual([captionSegment()])
+    })
+
+    it('is absent — not an empty band — with no captions, and every other row is unchanged', () => {
+      const tracks = [[clip({ id: 'base' })], [clip({ id: 'ov1' })]]
+      const noCaptionsAtAll = project({ tracks } as unknown as Partial<Project>)
+      const emptySegments = project({
+        tracks,
+        captions: { style: 'clean', segments: [] },
+      } as unknown as Partial<Project>)
+
+      const baseline = computeTimelineLayout(noCaptionsAtAll)
+      for (const p of [noCaptionsAtAll, emptySegments]) {
+        const layout = computeTimelineLayout(p)
+        expect(layout.caption).toBeUndefined()
+        expect(layout.rows).toEqual(baseline.rows)
+        expect(layout.lanes).toEqual(baseline.lanes)
+        expect(layout.height).toBe(baseline.height)
+      }
+    })
+
+    it('still appears, above where the video row would be, on a project with captions but no visual tracks', () => {
+      const p = project({
+        captions: { style: 'clean', segments: [captionSegment()] },
+      } as unknown as Partial<Project>)
+      const layout = computeTimelineLayout(p)
+
+      expect(layout.rows).toEqual([])
+      expect(layout.caption).toBeDefined()
+      expect(layout.caption!.y).toBe(RULER_HEIGHT_PX + ROW_GAP_PX)
+      expect(layout.height).toBe(layout.caption!.y + CAPTION_ROW_HEIGHT_PX)
     })
   })
 })
@@ -387,6 +446,55 @@ describe('drawAudioItem', () => {
     const fadeFills = r.of('fillRect')
     expect(fadeFills[0].args).toEqual([100, 0, 40, 32])
     expect(fadeFills[1].args).toEqual([100, 0, 200, 32]) // clamped to the bar
+  })
+})
+
+describe('drawCaptionBlock', () => {
+  it('fills and borders in the unselected purple, and centres the label', () => {
+    const r = recordingContext()
+    drawCaptionBlock(r.ctx, { rect: { x: 10, y: 4, width: 200, height: 32 }, selected: false, label: 'hello' })
+    expect(r.calls.some(c => c.method === 'set:fillStyle' && c.args[0] === CAPTION_PALETTE.fill)).toBe(true)
+    expect(r.calls.some(c => c.method === 'set:strokeStyle' && c.args[0] === CAPTION_PALETTE.border)).toBe(true)
+    // Vertically centred (no frames/waveform split to clear, unlike a clip),
+    // clipped and unindented since nothing is selected.
+    expect(r.of('fillText')[0].args).toEqual(['hello', 10 + LABEL_PAD_PX, 4 + 16])
+  })
+
+  it('swaps fill AND border-for-ring on selection, mirroring the retired DOM row', () => {
+    const r = recordingContext()
+    drawCaptionBlock(r.ctx, { rect: { x: 0, y: 0, width: 200, height: 32 }, selected: true, label: 'x' })
+    expect(r.calls.some(c => c.method === 'set:fillStyle' && c.args[0] === CAPTION_PALETTE.fillSelected)).toBe(true)
+    expect(r.calls.some(c => c.method === 'set:strokeStyle' && c.args[0] === CAPTION_PALETTE.ring)).toBe(true)
+    // Mutually exclusive with the unselected border — the DOM classes were
+    // never both at once.
+    expect(r.calls.some(c => c.method === 'set:strokeStyle' && c.args[0] === CAPTION_PALETTE.border)).toBe(false)
+  })
+
+  it('indents a selected block\'s label past its handle', () => {
+    const free = recordingContext()
+    drawCaptionBlock(free.ctx, { rect: { x: 0, y: 0, width: 200, height: 32 }, selected: false, label: 'title' })
+    const picked = recordingContext()
+    drawCaptionBlock(picked.ctx, { rect: { x: 0, y: 0, width: 200, height: 32 }, selected: true, label: 'title' })
+    expect(Number(picked.of('fillText')[0].args[1]) - Number(free.of('fillText')[0].args[1]))
+      .toBe(AUDIO_HANDLE_WIDTH_PX)
+  })
+
+  it('leaves the handles to the row painter, like drawAudioItem', () => {
+    const r = recordingContext()
+    drawCaptionBlock(r.ctx, { rect: { x: 0, y: 0, width: 200, height: 32 }, selected: true, label: '' })
+    expect(r.of('set:fillStyle').some(c => c.args[0] === TIMELINE_COLORS.handleFill)).toBe(false)
+  })
+
+  it('skips the label on a block too narrow to read it', () => {
+    const r = recordingContext()
+    drawCaptionBlock(r.ctx, { rect: { x: 0, y: 0, width: MIN_LABEL_WIDTH_PX - 1, height: 32 }, selected: false, label: 'hello' })
+    expect(r.count('fillText')).toBe(0)
+  })
+
+  it('draws nothing for a zero-width rect', () => {
+    const r = recordingContext()
+    drawCaptionBlock(r.ctx, { rect: { x: 0, y: 0, width: 0, height: 32 }, selected: false, label: 'x' })
+    expect(r.calls).toHaveLength(0)
   })
 })
 
@@ -659,6 +767,87 @@ describe('drawTimelineContent', () => {
     const r = recordingContext()
     drawTimelineContent(r.ctx, scene())
     expect(r.calls[0]).toEqual({ method: 'clearRect', args: [0, 0, 1000, 200] })
+  })
+
+  // ── Captions (Phase 1: display only) ──
+
+  describe('the caption band', () => {
+    function projectWithCaptions(segments: CaptionSegment[]): Project {
+      return project({
+        tracks: [[clip({ id: 'base', start: 0, end: 20 })]],
+        captions: { style: 'clean', segments },
+      } as unknown as Partial<Project>)
+    }
+
+    it('draws one block per segment', () => {
+      const p = projectWithCaptions([
+        captionSegment({ id: 's0', start: 0, end: 2, text: 'a' }),
+        captionSegment({ id: 's1', start: 2, end: 4, text: 'b' }),
+        captionSegment({ id: 's2', start: 4, end: 6, text: 'c' }),
+      ])
+      const r = recordingContext()
+      const stats = drawTimelineContent(r.ctx, scene({ project: p, layout: computeTimelineLayout(p) }))
+      expect(stats.captionItemsDrawn).toBe(3)
+      expect(r.of('set:fillStyle').filter(c => c.args[0] === CAPTION_PALETTE.fill)).toHaveLength(3)
+    })
+
+    it('highlights the block in scene.selectedIds and gives it handles; the others get neither', () => {
+      const p = projectWithCaptions([
+        captionSegment({ id: 's0', start: 0, end: 2, text: 'a' }),
+        captionSegment({ id: 's1', start: 2, end: 4, text: 'b' }),
+      ])
+      const r = recordingContext()
+      // Caption ids live in the SAME unified selectedIds array as clips/audio —
+      // no separate `selectedCaptionId` scene field.
+      drawTimelineContent(r.ctx, scene({ project: p, layout: computeTimelineLayout(p), selectedIds: ['s1'] }))
+
+      expect(r.of('set:fillStyle').filter(c => c.args[0] === CAPTION_PALETTE.fillSelected)).toHaveLength(1)
+      expect(r.of('set:fillStyle').filter(c => c.args[0] === CAPTION_PALETTE.fill)).toHaveLength(1)
+      expect(r.of('set:strokeStyle').filter(c => c.args[0] === CAPTION_PALETTE.ring)).toHaveLength(1)
+      // Exactly one block's worth of handles (2 pills: in + out).
+      expect(r.of('set:fillStyle').filter(c => c.args[0] === TIMELINE_COLORS.handleFill)).toHaveLength(2)
+    })
+
+    it('honors hoveredHandle for the selected caption', () => {
+      const p = projectWithCaptions([captionSegment({ id: 's0', start: 0, end: 2, text: 'a' })])
+      const r = recordingContext()
+      drawTimelineContent(r.ctx, scene({
+        project: p,
+        layout: computeTimelineLayout(p),
+        selectedIds: ['s0'],
+        hoveredHandle: { itemId: 's0', edge: 'out' },
+      }))
+      expect(r.of('set:fillStyle').some(c => c.args[0] === TIMELINE_COLORS.handleFillHovered)).toBe(true)
+    })
+
+    it('culls segments outside the visible range', () => {
+      const p = projectWithCaptions([
+        captionSegment({ id: 's0', start: 0, end: 2, text: 'a' }),
+        captionSegment({ id: 's1', start: 500, end: 502, text: 'far away' }),
+      ])
+      const r = recordingContext()
+      const stats = drawTimelineContent(r.ctx, scene({
+        project: p, layout: computeTimelineLayout(p), viewport: viewport({ pxPerSecond: 10 }),
+      }))
+      expect(stats.captionItemsDrawn).toBe(1)
+      expect(stats.itemsCulled).toBeGreaterThanOrEqual(1)
+    })
+
+    it('draws an id-less segment (before backfillCaptionIds runs) but never selects it', () => {
+      const p = projectWithCaptions([{ text: 'no id yet', start: 0, end: 2 } as CaptionSegment])
+      const r = recordingContext()
+      const stats = drawTimelineContent(r.ctx, scene({ project: p, layout: computeTimelineLayout(p) }))
+      expect(stats.captionItemsDrawn).toBe(1)
+      expect(r.of('set:fillStyle').some(c => c.args[0] === CAPTION_PALETTE.fillSelected)).toBe(false)
+    })
+
+    it('is a no-op on a project with no captions', () => {
+      const p = project({ tracks: [[clip({ id: 'base' })]] } as unknown as Partial<Project>)
+      const r = recordingContext()
+      const stats = drawTimelineContent(r.ctx, scene({ project: p, layout: computeTimelineLayout(p) }))
+      expect(stats.captionItemsDrawn).toBe(0)
+      expect(r.of('set:fillStyle').some(c => c.args[0] === CAPTION_PALETTE.fill)).toBe(false)
+    })
   })
 })
 

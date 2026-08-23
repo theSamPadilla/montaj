@@ -19,6 +19,7 @@ import {
   AUDIO_EDGE_TOLERANCE_PX,
   VISUAL_EDGE_TOLERANCE_PX,
   hitTest,
+  isCaptionHit,
   isEdgeHit,
   isEmptyHit,
   isItemHit,
@@ -349,6 +350,132 @@ describe('hitTest — an audio bar with no declared window', () => {
     const hit = hitTest({ x: 1200, y: LANE_MID_Y }, l, VIEWPORT)
     expect(hit.kind).toBe('empty-lane')
     expect(hit.itemId).toBeUndefined()
+  })
+})
+
+// ── The caption band ──────────────────────────────────────────────────────
+// Captions hit-test exactly like clips and audio bars now: the band is a
+// rectangle in the same layout, and its blocks resolve through the same
+// `resolveRow`. A separate fixture so the assertions above keep the geometry
+// they were written against.
+describe('hitTest — the caption band', () => {
+  const captioned = {
+    ...project,
+    captions: {
+      style: 'pop',
+      segments: [
+        // Deliberately NOT butted (a 1s gap): the gap is where "empty band"
+        // is probed, and it keeps each edge test aimed at one segment only.
+        { id: 's0', text: 'one', start: 0, end: 2 },
+        { id: 's1', text: 'two', start: 3, end: 5 },
+        // No id — before `backfillCaptionIds` has run. Draws, never hittable.
+        { text: 'three', start: 6, end: 8 },
+      ],
+    },
+  } as unknown as Project
+
+  const l = computeTimelineLayout(captioned)
+  const band = l.caption!
+  const BAND_Y = Math.round(band.y + band.height / 2)
+  const capBaseRow = l.rows.find(r => r.trackIdx === 0)!
+  const inBand = (x: number, y: number = BAND_Y) => hitTest({ x, y }, l, VIEWPORT)
+
+  it('sits immediately above the base video row', () => {
+    expect(band.y + band.height + ROW_GAP_PX).toBe(capBaseRow.y)
+    // …and below the overlay row, so it is genuinely between the two.
+    expect(band.y).toBeGreaterThan(l.rows.find(r => r.trackIdx === 1)!.y)
+  })
+
+  it('resolves a segment body', () => {
+    const hit = inBand(100)
+    expect(hit.kind).toBe('caption-body')
+    expect(hit.itemId).toBe('s0')
+    expect(hit.segment?.text).toBe('one')
+    expect(hit.t).toBeCloseTo(1)
+  })
+
+  it('resolves both trim handles', () => {
+    expect(inBand(2)).toMatchObject({ kind: 'caption-edge', itemId: 's0', edge: 'in' })
+    expect(inBand(198)).toMatchObject({ kind: 'caption-edge', itemId: 's0', edge: 'out' })
+    expect(inBand(302)).toMatchObject({ kind: 'caption-edge', itemId: 's1', edge: 'in' })
+    expect(inBand(498)).toMatchObject({ kind: 'caption-edge', itemId: 's1', edge: 'out' })
+  })
+
+  it('grabs handles at the AUDIO tolerance, not the visual one', () => {
+    // 7px in is body at 6px tolerance and would be the in-handle at 10px.
+    expect(AUDIO_EDGE_TOLERANCE_PX).toBeLessThan(VISUAL_EDGE_TOLERANCE_PX)
+    expect(inBand(AUDIO_EDGE_TOLERANCE_PX - 1).kind).toBe('caption-edge')
+    expect(inBand(AUDIO_EDGE_TOLERANCE_PX + 1).kind).toBe('caption-body')
+  })
+
+  it('reports background for the gaps between blocks, and past the last one', () => {
+    // Not a kind of its own: `background` already means marquee here, seek
+    // here, clear the selection — which is right for a gap in the band.
+    expect(inBand(250).kind).toBe('background')
+    expect(inBand(900).kind).toBe('background')
+    expect(isEmptyHit(inBand(250))).toBe(true)
+  })
+
+  it('never hits a segment that has no id yet', () => {
+    // x 600–800 is where the id-less segment is drawn.
+    expect(inBand(700).kind).toBe('background')
+    expect(inBand(602).kind).toBe('background')
+  })
+
+  it('hit-tests the FULL band height, inset and all', () => {
+    // The painter insets blocks by 4px top and bottom; the hit-test does not.
+    // A 40px row whose outer 8px silently missed would read as broken.
+    expect(inBand(100, band.y).kind).toBe('caption-body')
+    expect(inBand(100, band.y + band.height - 1).kind).toBe('caption-body')
+    // …and the pixel below the band belongs to the gap, not to the band.
+    expect(inBand(100, band.y + band.height).kind).not.toBe('caption-body')
+  })
+
+  it('classifies caption hits through the predicates', () => {
+    expect(isCaptionHit(inBand(100))).toBe(true)
+    expect(isCaptionHit(inBand(2))).toBe(true)
+    expect(isCaptionHit(inBand(250))).toBe(false)
+    // Load-bearing: `grabsPlayhead` and the hover-handle pass both key off this.
+    expect(isEdgeHit(inBand(2))).toBe(true)
+    expect(isEdgeHit(inBand(100))).toBe(false)
+    // Deliberately excluded — see the predicate's own comment.
+    expect(isItemHit(inBand(100))).toBe(false)
+  })
+
+  it('leaves the rows and lanes below it exactly where they were', () => {
+    // The band pushes the base row down, so every other probe here has to keep
+    // reading its Y from the layout — this asserts the layout still resolves.
+    expect(hitTest({ x: 250, y: Math.round(capBaseRow.y + capBaseRow.height / 2) }, l, VIEWPORT))
+      .toMatchObject({ kind: 'item-body', itemId: 'c0' })
+  })
+
+  describe('itemsInRect', () => {
+    const caught = (r: { x: number; y: number; width: number; height: number }) =>
+      itemsInRect(r, l, VIEWPORT).sort()
+
+    it('catches caption ids when the box crosses the band', () => {
+      const rect = normalizeRect({ x: 100, y: band.y }, { x: 350, y: band.y + band.height })
+      expect(caught(rect)).toEqual(['s0', 's1'])
+    })
+
+    it('skips id-less segments the box crosses', () => {
+      const rect = normalizeRect({ x: 550, y: band.y }, { x: 900, y: band.y + band.height })
+      expect(caught(rect)).toEqual([])
+    })
+
+    it('catches captions alongside clips and bars in one tall box', () => {
+      const rect = normalizeRect(
+        { x: 98, y: l.rows.find(r => r.trackIdx === 1)!.y },
+        { x: 104, y: l.lanes[0].y + l.lanes[0].height },
+      )
+      // t=1: s0 (0–2), c0 (0–5) and a0 (1–6) are live; o0 (2–4) is not.
+      expect(caught(rect)).toEqual(['a0', 'c0', 's0'])
+    })
+
+    it('catches nothing from the band when the box stays clear of it', () => {
+      const rect = normalizeRect({ x: 0, y: capBaseRow.y }, { x: 1000, y: capBaseRow.y + 4 })
+      expect(caught(rect)).toEqual(['c0', 'c1'])
+    })
   })
 })
 

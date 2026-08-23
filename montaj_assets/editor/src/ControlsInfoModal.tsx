@@ -72,7 +72,7 @@ const SECTION_ICONS: Record<string, ComponentType<LucideProps>> = {
 /**
  * Read-only "how to drive this editor" modal. Content is passed in per editor
  * (video vs carousel) so this component stays a dumb, themed renderer. Matches
- * the backdrop/Esc/close conventions of the other editor modals (TranscriptModal
+ * the backdrop/Esc/close conventions of the other editor modals (RenderModal
  * et al.) and uses the shared `--editor-*` theme tokens.
  *
  * The layout is deliberately not a flat list: each section is its own card with

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type ComponentProps, type MutableRefObject, type ReactNode } from 'react'
+import { useEffect, useMemo, useRef, useState, type MutableRefObject, type ReactNode } from 'react'
 import AudioTrackRow from './AudioTrackRow'
 import type { GetWaveformChunks, ResolveFilePath } from './AudioWaveformLayer'
 import type { FilmstripIndex, GetFilmstripArgs, GetWaveformPeaksArgs, PeaksData, Project } from '../../types'
@@ -6,17 +6,13 @@ import { collapseGaps, setClipSpeed } from '../cuts'
 import { ratioFromClientX } from './utils'
 import { useTimelineZoom } from './useTimelineZoom'
 import { TimelineContext, type TimelineContextValue } from './TimelineContext'
-import { usePlaybackTime, type PlaybackClock } from '../playback-clock'
+import type { PlaybackClock } from '../playback-clock'
 import Scrubber from './Scrubber'
 import TrackGutter from './TrackGutter'
 import { computeTimelineLayout } from './canvas/draw'
 import { normalizeTracks, updateAudioTrack } from './timeline-model'
-import TranscriptPanel from './TranscriptPanel'
-import TranscriptModal from './TranscriptModal'
 import VisualTrackRow from './VisualTrackRow'
-import CaptionTrackRow from './CaptionTrackRow'
 import { deleteSelection, toggleSelection } from './multiSelectOps'
-import type { CaptionEditPatch } from './makeCaptionEdit'
 import { computeAutoCrossfade, computeDerivedTiming, groupAudioLanes, trackItems } from './timeline-model'
 import TimelineCanvas, { useCanvasZoomControls, type ZoomControls } from './canvas/TimelineCanvas'
 import { useViewportStore, useViewportValue, xToTime } from './canvas/viewport'
@@ -42,23 +38,25 @@ interface TimelineProps {
   project: Project
   clock: PlaybackClock
   onProjectChange?: (p: Project) => void
-  onCaptionEdit?: (p: Project) => void
   onOverlayEdit?: (p: Project) => void
   /** Open the overlay props dialog (owned by VideoEditor). Threaded to each
    *  VisualTrackRow so a selected overlay block can offer an edit button. */
   onEditOverlay?: (id: string) => void
-  /** Unified selection — covers both visual items and audio tracks. */
+  /** Unified selection — covers both visual items and audio tracks. Captions
+   *  share this same array (D1) — a caption id is selected/moved/trimmed on
+   *  the canvas timeline exactly like a clip or audio track. Caption editing
+   *  UI itself (text, style, per-segment color) lives in the sidebar
+   *  CaptionListPanel now, not in Timeline — see VideoEditor.tsx. */
   selectedIds?: string[]
   onSelectIds?: (ids: string[]) => void
-  /** Selected caption segment id — shared with the preview's selection box.
-   *  Mutually exclusive with `selectedIds` (see CaptionTrackRow). */
-  selectedCaptionId?: string | null
-  onSelectCaption?: (id: string | null) => void
-  /** Commit a caption segment patch — text edit or edge-drag retime. Threaded
-   *  straight to CaptionTrackRow (see makeCaptionEdit.ts). */
-  onCaptionSegmentChange?: (segmentId: string, patch: CaptionEditPatch) => void
   onInspectClip?: (id: string) => void
   onInspectAudio?: (id: string) => void
+  /** Double-click on a caption block (canvas mode only). Forwarded straight to
+   *  `TimelineCanvas` — Timeline itself does nothing with it beyond passing it
+   *  through, same as `onInspectClip`/`onInspectAudio` above. The host
+   *  (VideoEditor) uses this to focus the segment's row in the sidebar
+   *  CaptionListPanel, since a caption has no inspector dialog of its own. */
+  onEditCaption?: (id: string) => void
   rippleMode?: boolean
   /**
    * CapCut's "preview axis" toggle, owned by VideoEditor's track-controls bar
@@ -75,10 +73,13 @@ interface TimelineProps {
    * SP5 — opt into the canvas track-row area. Mirrors the `engine` (SP4)
    * host-knob precedent. Absent or `{ canvas: false }`: the existing DOM
    * track rows (visual tracks + audio lanes), unchanged — this is the
-   * non-regression guarantee SP5 tests against. `{ canvas: true }`: the DOM
-   * track rows are replaced by one `TimelineCanvas` surface with its own
-   * px-per-second viewport; the caption row stays DOM either way (inline
-   * contentEditable editing can't move to canvas) and mounts below it.
+   * non-regression guarantee SP5 tests against, but captions pay for it:
+   * DOM mode has no caption row at all, so captions can only be edited
+   * through the sidebar transcript panel, with no timeline retiming
+   * available there. `{ canvas: true }`: the DOM track rows are replaced by
+   * one `TimelineCanvas` surface with its own px-per-second viewport, and
+   * captions get their own row IN it — selected, moved and trimmed exactly
+   * like a clip, through the unified `selectedIds`.
    */
   timeline?: { canvas: boolean }
   /** Audio-waveform fetcher, threaded to every AudioWaveformLayer. In V4 the
@@ -110,17 +111,11 @@ interface TimelineProps {
    *  regenQueue, storyboard, and onSave — none of which the package types know.
    *  Absent → the subcut tool is simply not rendered. */
   renderSubcutRegen?: (ctx: { clipId: string; onClose: () => void }) => ReactNode
-  /** Opens the caption-regeneration modal. Threaded down to TranscriptPanel.
-   *  Provided only when the host adapter supports `generateCaptions`; absent →
-   *  the "Regenerate" button is hidden. */
-  onRegenerateCaptions?: () => void
   /**
    * SP5 T9 — true while a HOST-level dialog (RenderModal, the command
    * palette, etc.) is open, so Timeline's own keymap (arrows/delete/enter/
-   * escape) doesn't fire underneath it. ORed with Timeline's own
-   * `transcriptModalOpen`, which already guarded arrows/escape before T9.
-   * Absent (PendingSurface today has no such dialogs) → only the local
-   * transcript-modal check applies, unchanged.
+   * escape) doesn't fire underneath it. Absent (PendingSurface today has no
+   * such dialogs) → the keymap's own guards apply, unchanged.
    */
   modalOpen?: boolean
   /** Opens the command palette's "go to time" input directly. Wired to the
@@ -131,18 +126,18 @@ interface TimelineProps {
 }
 
 
-export default function Timeline({ project, clock, onProjectChange, onCaptionEdit, onOverlayEdit, onEditOverlay, selectedIds = [], onSelectIds, selectedCaptionId = null, onSelectCaption, onCaptionSegmentChange, onInspectClip, onInspectAudio, rippleMode = false, previewAxis = false, onHoverScrub, getWaveformChunks, resolveFilePath, getWaveformPeaks, getFilmstrip, regenEnabled, isClipQueued, renderSubcutRegen, onRegenerateCaptions, timeline, modalOpen = false, onOpenGoToTime, actionsRef }: TimelineProps) {
+export default function Timeline({ project, clock, onProjectChange, onOverlayEdit, onEditOverlay, selectedIds = [], onSelectIds, onInspectClip, onInspectAudio, onEditCaption, rippleMode = false, previewAxis = false, onHoverScrub, getWaveformChunks, resolveFilePath, getWaveformPeaks, getFilmstrip, regenEnabled, isClipQueued, renderSubcutRegen, timeline, modalOpen = false, onOpenGoToTime, actionsRef }: TimelineProps) {
 
   // Click/shift-click handler — additive selection on shift or meta (cmd/ctrl).
-  // Also enforces the item→caption half of the two selection models' mutual
-  // exclusivity: selecting a real item clears `selectedCaptionId`, and so does
-  // clicking empty track space (id === null) — otherwise a "deselect all" click
-  // would clear the item handles but leave the caption's preview handles up,
-  // and since nothing else clears caption selection there would be no way to
-  // put a caption down at all. The other half (caption select clears
-  // `selectedIds`) lives in VideoEditor's wrapped `onSelectCaption`, since a
-  // caption can be selected from the preview too — outside Timeline entirely —
-  // not just from CaptionTrackRow.
+  // Under D1, captions share `selectedIds` with everything else, so there is
+  // no separate caption-clearing step here anymore: a plain (non-additive)
+  // select REPLACES the whole array with just this id, which drops any caption
+  // id that was in it, and a click on empty space (id === null) clears the
+  // array outright. A shift-click still ADDS to whatever is already selected,
+  // so a caption can sit alongside clips/audio in one selection — the
+  // overlay-parity ability D1 was for. VideoEditor derives its own
+  // `selectedCaptionId` (the preview's caption-box target) from this same
+  // array; see its `handleSelectCaption`.
   /**
    * Skip / un-skip a whole visual track.
    *
@@ -168,7 +163,7 @@ export default function Timeline({ project, clock, onProjectChange, onCaptionEdi
    * Same preview-then-commit shape as `handleToggleTrackEnabled` above, split
    * across two handlers because volume is a CONTINUOUS control (a slider drag
    * must preview many times and commit once) while mute is a discrete toggle
-   * (one click, one commit) — mirrors TranscriptPanel's fontsize slider vs.
+   * (one click, one commit) — mirrors CaptionListPanel's fontsize slider vs.
    * its style buttons.
    *
    * This writes `VisualTrack.volume`/`.muted`; the value doesn't stay
@@ -250,7 +245,6 @@ export default function Timeline({ project, clock, onProjectChange, onCaptionEdi
 
   function handleSelectItem(id: string | null, additive: boolean) {
     if (!onSelectIds) return
-    onSelectCaption?.(null)
     if (id === null) { onSelectIds([]); return }
     onSelectIds(toggleSelection(selectedIds, id, additive))
   }
@@ -266,7 +260,6 @@ export default function Timeline({ project, clock, onProjectChange, onCaptionEdi
    */
   function handleSelectItems(ids: string[], additive: boolean) {
     if (!onSelectIds) return
-    onSelectCaption?.(null)
     onSelectIds(additive ? [...new Set([...selectedIds, ...ids])] : ids)
   }
   const allTracks      = trackItems(project)
@@ -315,7 +308,6 @@ export default function Timeline({ project, clock, onProjectChange, onCaptionEdi
 
   const [hoverPct, setHoverPct]               = useState<number | null>(null)
   const [draggingPlayhead, setDraggingPlayhead] = useState(false)
-  const [transcriptModalOpen, setTranscriptModalOpen] = useState(false)
 
   // The tabIndex={0} root below — Delete/Enter's guards below check focus is
   // inside it before firing (see the useKeymap block), restoring the pre-T9
@@ -358,10 +350,8 @@ export default function Timeline({ project, clock, onProjectChange, onCaptionEdi
   // Mounted HERE, not lifted into VideoEditor's keymap: this instance runs in
   // BOTH the pending and review surfaces (PendingSurface and ReviewSurface
   // each render their own `<Timeline>` with their own `PlaybackClock`), same
-  // as the listeners it replaces. `modalOpen` ORs the host's dialogs
-  // (ReviewSurface's RenderModal/palette/etc — absent in PendingSurface) with
-  // Timeline's own `transcriptModalOpen`, which already guarded arrows/escape
-  // pre-T9.
+  // as the listeners it replaces. `modalOpen` is the host's dialogs
+  // (ReviewSurface's RenderModal/palette/etc — absent in PendingSurface).
   const fps = project.settings?.fps ?? 30
   const frameStep = 1 / fps
   useKeymap([
@@ -393,13 +383,28 @@ export default function Timeline({ project, clock, onProjectChange, onCaptionEdi
       action: () => {
         if (!onProjectChange) return
         let updated = deleteSelection(project, selectedIds)
+        // `deleteSelection` only knows tracks/audio vocabulary (see
+        // multiSelectOps.ts) — captions never lived in project.tracks, so a
+        // selected caption segment needs its own strip here, folded into the
+        // SAME commit as the clip/audio delete (one onProjectChange + one
+        // onOverlayEdit = one undo entry covering a mixed selection).
+        if (captionTrack?.segments?.length) {
+          const targets = new Set(selectedIds)
+          const kept = captionTrack.segments.filter(seg => !seg.id || !targets.has(seg.id))
+          // Leave captions as an EMPTY-segments object when every segment is
+          // removed, never null the whole track — that's the sidebar's
+          // explicit "Remove all" action, not a side effect of Delete.
+          if (kept.length !== captionTrack.segments.length) {
+            updated = { ...updated, captions: { ...captionTrack, segments: kept } }
+          }
+        }
         if (rippleMode) updated = collapseGaps(updated)
         onProjectChange(updated)
         onOverlayEdit?.(updated)
         onSelectIds?.([])
       },
     },
-  ], { modalOpen: transcriptModalOpen || modalOpen })
+  ], { modalOpen })
 
   // Hand the zoom action up to a host-level command palette.
   useEffect(() => {
@@ -414,7 +419,7 @@ export default function Timeline({ project, clock, onProjectChange, onCaptionEdi
   // zoom to track.
   // Same layout the canvas paints from, so the rail's rows line up with the
   // clips exactly rather than by two independent calculations agreeing.
-  const canvasLayout = useMemo(() => computeTimelineLayout(project), [project.tracks, project.audio])
+  const canvasLayout = useMemo(() => computeTimelineLayout(project), [project.tracks, project.audio, project.captions])
 
   const canvasViewport = useViewportValue(viewportStore)
   const viewport = canvasMode ? canvasViewport : null
@@ -478,21 +483,6 @@ export default function Timeline({ project, clock, onProjectChange, onCaptionEdi
     }
     clock.set(clickedTime)
   }
-
-  // ── Caption track — its own row, NOT part of tracks[]; reads/writes
-  // project.captions directly (see CaptionTrackRow's file header for the
-  // special-track rationale). Stays DOM in BOTH timeline modes — inline
-  // contentEditable editing can't move to canvas — so it's shared between
-  // the two track-row-area branches below rather than duplicated.
-  const captionRow = (
-    <CaptionTrackRow
-      captionTrack={captionTrack}
-      fps={project.settings?.fps ?? 30}
-      selectedCaptionId={selectedCaptionId}
-      onSelectCaption={onSelectCaption}
-      onCaptionSegmentChange={onCaptionSegmentChange}
-    />
-  )
 
   return (
     <TimelineContext.Provider value={ctx}>
@@ -582,8 +572,15 @@ export default function Timeline({ project, clock, onProjectChange, onCaptionEdi
         {canvasMode ? (
           // The gutter is a sibling COLUMN, not an overlay: it takes width from
           // the canvas (which measures its own container) instead of painting
-          // over the clips at t=0. The caption row lives in the same right-hand
-          // column so it stays aligned with the canvas above it.
+          // over the clips at t=0. Captions have their own row PAINTED inside
+          // `TimelineCanvas` below, not a separate DOM element — the gutter's
+          // own caption cell is sized from the same layout (`canvasLayout`) so
+          // the two line up. `showCaptionRow` is left at its default (true)
+          // here: `TrackGutter` already gates the cell on `resolved.caption`,
+          // which `computeTimelineLayout` only sets when there ARE captions,
+          // so passing `!!captionTrack?.segments?.length` on top can never
+          // change the outcome — it exists as a host knob for other callers,
+          // not for this one.
           <div className="flex gap-1">
             <TrackGutter
               project={project}
@@ -605,6 +602,7 @@ export default function Timeline({ project, clock, onProjectChange, onCaptionEdi
               clock={clock}
               store={viewportStore}
               totalDuration={totalDuration}
+              fps={fps}
               selectedIds={selectedIds}
               snapBoundaries={snapBoundaries}
               rippleMode={rippleMode}
@@ -616,17 +614,15 @@ export default function Timeline({ project, clock, onProjectChange, onCaptionEdi
               onOverlayEdit={onOverlayEdit}
               onInspectClip={onInspectClip}
               onInspectAudio={onInspectAudio}
+              onEditCaption={onEditCaption}
               getWaveformPeaks={getWaveformPeaks}
               getFilmstrip={getFilmstrip}
               resolveFilePath={resolveFilePath}
             />
-            {captionRow}
             </div>
           </div>
         ) : (
           <>
-            {captionRow}
-
             {[...allTracks].reverse().map((trackItems, reversedIdx) => {
               const trackIdx = allTracks.length - 1 - reversedIdx
               return (
@@ -697,57 +693,7 @@ export default function Timeline({ project, clock, onProjectChange, onCaptionEdi
         })
       })()}
 
-      {/* ── Transcript editor ── */}
-      {/* `mt-auto` pins it to the bottom of the pane; the gap it opens above is
-          the empty timeline area. */}
-      {/* Wrapped in a clock-subscribing child so the active-segment highlight
-          tracks the playhead WITHOUT Timeline (and its track rows) re-rendering
-          every tick. */}
-      <TranscriptPanelWithClock
-        className="mt-auto shrink-0"
-        clock={clock}
-        project={project}
-        captionTrack={captionTrack}
-        onCaptionEdit={onCaptionEdit}
-        onProjectChange={onProjectChange}
-        onExpand={() => setTranscriptModalOpen(true)}
-        onRegenerateCaptions={onRegenerateCaptions}
-        selectedCaptionId={selectedCaptionId}
-        onCaptionSegmentChange={onCaptionSegmentChange}
-      />
-
-      {/* ── Transcript modal ── */}
-      {transcriptModalOpen && (
-        <TranscriptModalWithClock
-          clock={clock}
-          project={project}
-          captionTrack={captionTrack}
-          onCaptionEdit={onCaptionEdit}
-          onClose={() => setTranscriptModalOpen(false)}
-        />
-      )}
-
     </div>
     </TimelineContext.Provider>
   )
-}
-
-// The transcript views highlight the active caption segment, so they genuinely
-// display time and must re-render every tick. Subscribing HERE (rather than in
-// Timeline) keeps the per-tick re-render scoped to these leaves — Timeline and
-// the track rows are unaffected.
-function TranscriptPanelWithClock({
-  clock,
-  ...rest
-}: { clock: PlaybackClock } & Omit<ComponentProps<typeof TranscriptPanel>, 'currentTime'>) {
-  const currentTime = usePlaybackTime(clock)
-  return <TranscriptPanel currentTime={currentTime} {...rest} />
-}
-
-function TranscriptModalWithClock({
-  clock,
-  ...rest
-}: { clock: PlaybackClock } & Omit<ComponentProps<typeof TranscriptModal>, 'currentTime'>) {
-  const currentTime = usePlaybackTime(clock)
-  return <TranscriptModal currentTime={currentTime} {...rest} />
 }

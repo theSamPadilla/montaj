@@ -18,10 +18,11 @@
  *
  * Edge tolerances are the DOM resize-handle widths, so a trim grab that worked
  * on the old timeline works here: `w-2.5` (10px) on VisualTrackRow's handles,
- * `w-1.5` (6px) on AudioTrackRow's.
+ * `w-1.5` (6px) on AudioTrackRow's — and on the retired CaptionTrackRow's,
+ * which is why captions hit-test at the audio tolerance.
  */
 
-import type { AudioTrack, VisualItem } from '../../../schema'
+import type { AudioTrack, CaptionSegment, VisualItem } from '../../../schema'
 import { AUDIO_ITEM_INSET_PX, type TimelineLayout } from './draw'
 import { timeToX, xToTime, type Viewport } from './viewport'
 
@@ -58,6 +59,10 @@ export type HitKind =
   /** Inside an audio bar, away from its trim handles. */
   | 'audio-body'
   | 'audio-edge'
+  /** Inside a caption block, away from its trim handles. */
+  | 'caption-body'
+  /** Inside a caption block's in/out trim handle. */
+  | 'caption-edge'
   /** A visual row, but no clip under the point. */
   | 'empty-row'
   /** An audio lane, but no bar under the point (includes the lane's inset). */
@@ -83,6 +88,10 @@ export interface HitResult {
    *  press time by the pointer machine and used as the gesture's origin. */
   item?: VisualItem
   track?: AudioTrack
+  /** The hit caption segment, for the same reason `item`/`track` are here: the
+   *  pointer machine captures it at press time and reads its `start`/`end` for
+   *  the whole gesture, rather than re-scanning `project.captions` per move. */
+  segment?: CaptionSegment
 }
 
 /** Which part of a horizontal span [x0, x1] a point falls in, given the handle
@@ -169,6 +178,43 @@ export function hitTest(
   // mid-drag rather than dropping the gesture on the floor.
   if (point.y < layout.ruler.y + layout.ruler.height) return { kind: 'ruler', t }
 
+  // The caption band. Its y-range is disjoint from every row and lane, so this
+  // could sit anywhere among the scans below; it goes here because it is a
+  // single optional rectangle like the ruler, which keeps the two loops
+  // adjacent and reads as "the two lone rectangles, then the two scans".
+  if (layout.caption) {
+    const { caption } = layout
+    if (point.y >= caption.y && point.y < caption.y + caption.height) {
+      // Id-less segments are never hittable. `backfillCaptionIds` mints an id
+      // shortly after captions arrive, but until it has, a segment has nothing
+      // to select BY — the same guard the retired CaptionTrackRow spelled `canInteract`.
+      const hittable = caption.segments.filter(
+        (seg): seg is CaptionSegment & { id: string } => typeof seg.id === 'string',
+      )
+      // Deliberately the FULL band height, unlike the audio-lane branch below,
+      // which treats its inset strip as lane background. The painter insets
+      // caption blocks by the same `AUDIO_ITEM_INSET_PX`, so this is a 4px
+      // cosmetic mismatch at the top and bottom — and that is much the lesser
+      // evil: a 40px row whose outer 8px silently miss reads as a broken row,
+      // while an audio LANE is tall enough that its inset is visibly gutter.
+      //
+      // The AUDIO tolerance, not a third one of its own: the retired DOM row's
+      // handles were `w-1.5` like AudioTrackRow's, and the painter draws
+      // caption handles at `AUDIO_HANDLE_WIDTH_PX`. Captions borrow the audio
+      // handle vocabulary wholesale, so they borrow its grab width too.
+      const hit = resolveRow(point.x, hittable, viewport, audioTolerance)
+      if (hit === null) {
+        // Not `empty-caption-row`. `background` already means exactly what the
+        // gaps between caption blocks should do — marquee from here, seek here,
+        // clear the selection — and a new kind would only force `isEmptyHit`
+        // and `resolveGesture` to learn about it for no behavioural gain.
+        return { kind: 'background', t }
+      }
+      if (hit.edge === null) return { kind: 'caption-body', t, itemId: hit.item.id, segment: hit.item }
+      return { kind: 'caption-edge', t, itemId: hit.item.id, edge: hit.edge, segment: hit.item }
+    }
+  }
+
   for (const row of layout.rows) {
     if (point.y < row.y || point.y >= row.y + row.height) continue
     const hit = resolveRow(point.x, row.items, viewport, visualTolerance)
@@ -234,6 +280,13 @@ export function itemsInRect(
   const top = rect.y
   const bottom = rect.y + rect.height
 
+  // Captions first, mirroring `hitTest`'s order. Id-less segments are skipped
+  // for the same reason they are unhittable: an id is what a selection is.
+  if (layout.caption && overlaps(layout.caption.y, layout.caption.y + layout.caption.height, top, bottom)) {
+    for (const seg of layout.caption.segments) {
+      if (typeof seg.id === 'string' && overlaps(seg.start, seg.end, left, right)) ids.push(seg.id)
+    }
+  }
   for (const row of layout.rows) {
     if (!overlaps(row.y, row.y + row.height, top, bottom)) continue
     for (const item of row.items) {
@@ -249,15 +302,32 @@ export function itemsInRect(
   return ids
 }
 
-/** Do the two `*-edge` kinds and their `edge` field describe a trim grab? */
+/** Do the three `*-edge` kinds and their `edge` field describe a trim grab?
+ *
+ *  Captions are in here deliberately, and it is load-bearing in both callers:
+ *  `grabsPlayhead` lets a caption EDGE beat a playhead grab while a caption
+ *  BODY yields to it, and TimelineCanvas's hover pass uses this to decide
+ *  which trim handle to light up — handles the painter already draws on a
+ *  selected caption. */
 export function isEdgeHit(hit: HitResult): boolean {
-  return hit.kind === 'item-edge' || hit.kind === 'audio-edge'
+  return hit.kind === 'item-edge' || hit.kind === 'audio-edge' || hit.kind === 'caption-edge'
 }
 
-/** Is this a hit on a clip or an audio bar (either body or edge)? */
+/** Is this a hit on a clip or an audio bar (either body or edge)?
+ *
+ *  Captions are deliberately NOT folded in, unlike `isEdgeHit` above. This
+ *  predicate has no non-test callers, so widening it would change a documented
+ *  meaning that nothing currently reads, on a guess about what a future caller
+ *  wants. Ask the caption question with `isCaptionHit`; a caller that wants
+ *  "anything grabbable" can OR the two, and does so knowingly. */
 export function isItemHit(hit: HitResult): boolean {
   return hit.kind === 'item-body' || hit.kind === 'item-edge'
     || hit.kind === 'audio-body' || hit.kind === 'audio-edge'
+}
+
+/** Is this a hit on a caption block (either body or edge)? */
+export function isCaptionHit(hit: HitResult): boolean {
+  return hit.kind === 'caption-body' || hit.kind === 'caption-edge'
 }
 
 /** Nothing under the point but timeline: every kind that means "seek here". */

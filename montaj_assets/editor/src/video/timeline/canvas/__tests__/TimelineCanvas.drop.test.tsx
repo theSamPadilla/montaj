@@ -95,6 +95,7 @@ function mount(overrides: Partial<React.ComponentProps<typeof TimelineCanvas>> =
       clock={clock}
       store={store}
       totalDuration={TOTAL_DURATION}
+      fps={30}
       selectedIds={[]}
       {...handlers}
       {...overrides}

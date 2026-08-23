@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { render, waitFor } from '@testing-library/react'
-import type { EditorAdapter, Project, RenderEvent, VersionEntry, WaveformChunk } from '../../types'
+import { render, screen, fireEvent, waitFor, act } from '@testing-library/react'
+import type { CaptionEvent, EditorAdapter, Project, RenderEvent, VersionEntry, WaveformChunk } from '../../types'
 import type { ImageElement } from '../../types'
 import VideoEditor from '../VideoEditor'
 
@@ -121,5 +121,184 @@ describe('VideoEditor — layout gating (classic vs. CapCut media panel)', () =>
     // no media-column resize divider.
     expect(queryByTestId('media-panel')).toBeNull()
     expect(queryByLabelText('Resize media panel')).toBeNull()
+  })
+})
+
+// ── Right-rail visibility gate (SP5-captions Phase 5) ─────────────────────────
+// The rail (version history / run history / sidebar assets / CaptionListPanel)
+// only mounts when it has something to show. A project with NO captions and NO
+// other rail content, on a host that DOES support `generateCaptions`, must
+// still get a rail — otherwise "Regenerate" (CaptionListPanel's only way to
+// create captions from scratch) is unreachable. The retired bottom
+// TranscriptPanel offered Regenerate unconditionally whenever the host
+// supported it; the rail gate must preserve that reachability now that the
+// control lives in the sidebar instead.
+describe('VideoEditor — right-rail gate includes the regenerate capability', () => {
+  it('renders the rail (and a working Regenerate) with no captions and no version/run/assets content, purely because the adapter supports generateCaptions', async () => {
+    const project = makeVideoProject() // no `captions` field at all
+    const adapter = {
+      loadProject: vi.fn(async () => project),
+      saveProject: vi.fn(async () => {}),
+      subscribe: () => () => {},
+      render: async function* (): AsyncIterable<RenderEvent> {
+        yield { type: 'done', outputPath: '/out.mp4' }
+      },
+      resolveImageSrc: (el: ImageElement) => el.src,
+      compileOverlay: vi.fn(async () => () => null),
+      listGlobalOverlays: vi.fn(async () => []),
+      listSystemOverlays: vi.fn(async () => []),
+      uploadFile: vi.fn(async () => '/path'),
+      fileUrl: (path: string) => path,
+      // Deliberately NO listVersionHistory, and no slots below — the rail has
+      // nothing else to justify its presence except the regenerate capability.
+      resolveCaptionTemplate: (style: string) => `/caption/${style}`,
+      getInfo: vi.fn(async () => ({ root_skill_path: undefined })),
+      generateCaptions: async function* (): AsyncIterable<CaptionEvent> {
+        yield { type: 'log', message: 'transcribing audio…' }
+      },
+    } as unknown as EditorAdapter<Project>
+
+    render(
+      <VideoEditor
+        project={project}
+        adapter={adapter}
+        onProjectChange={vi.fn()}
+      />,
+    )
+
+    // The rail mounted at all — its divider is the structural tell.
+    const divider = await waitFor(() => screen.getByLabelText('Resize sidebar'))
+    expect(divider).toBeTruthy()
+
+    // And Regenerate is not just present but actually reachable: clicking it
+    // opens CaptionRegenModal (asserted via its immediate "Starting
+    // transcription…" line, present before any stream event arrives).
+    fireEvent.click(screen.getByText('Regenerate'))
+    expect(await screen.findByText(/starting transcription/i)).toBeTruthy()
+  })
+})
+
+// ── primarySelectedId must skip caption ids (FIX 1) ─────────────────────────
+//
+// Under D1, a caption id shares `selectedIds` with clips and audio — selected
+// on the canvas timeline exactly like either, or (as exercised here, since
+// captions have no DOM-mode timeline row of their own any more — see the
+// retired CaptionTrackRow) via a plain click on its row in the sidebar
+// CaptionListPanel. `primarySelectedId` used to be `selectedIds[0]` verbatim,
+// so a caption id at index 0 blanked the selected clip's crop/overlay-edit
+// affordances and scoped Split to an id no track item matches. These are full
+// <VideoEditor> DOM-mode renders, not source-level assertions: selecting a
+// caption via its sidebar row, then additively (metaKey) selecting a clip or
+// overlay block via the ordinary DOM-mode timeline click, is a real user
+// gesture and needs no canvas/engine internals to drive.
+describe('VideoEditor — a caption id ahead of a clip id in selectedIds (D1)', () => {
+  function makeMixedProject(): Project {
+    return makeVideoProject({
+      tracks: [
+        [{ id: 'clip-0', type: 'video', src: 'a.mp4', start: 0, end: 4, inPoint: 0, outPoint: 4 }],
+        [{ id: 'overlay-1', type: 'overlay', src: 'overlay.jsx', start: 0, end: 4, props: { text: 'Hello' } }],
+      ],
+      captions: { style: 'pop', segments: [{ id: 'cap-0', text: 'caption one', start: 0, end: 1 }] },
+    } as unknown as Partial<Project>)
+  }
+
+  /** Click the caption's sidebar row (plain, single-select — replaces
+   *  `selectedIds`), then additively (metaKey) click the given timeline
+   *  block — `toggleSelection` appends, so the caption id lands FIRST. */
+  async function selectCaptionThenAdditively(label: string) {
+    fireEvent.click(await screen.findByText('caption one'))
+    fireEvent.click(await screen.findByText(label), { metaKey: true })
+  }
+
+  async function seekTo(seconds: string) {
+    fireEvent.click(await screen.findByLabelText('Go to time'))
+    const input = await screen.findByPlaceholderText(/mm:ss/)
+    fireEvent.change(input, { target: { value: seconds } })
+    fireEvent.keyDown(input, { key: 'Enter' })
+  }
+
+  it('resolves cropTarget to the clip, not null, and S still splits it', async () => {
+    const adapter = makeFakeAdapter()
+    const onProjectChange = vi.fn()
+    render(
+      <VideoEditor
+        project={makeMixedProject()}
+        adapter={adapter}
+        onProjectChange={onProjectChange}
+      />,
+    )
+    await selectCaptionThenAdditively('▪ video')
+
+    // cropTarget resolved past the caption to the clip: the button is
+    // enabled, not stuck on "Select a clip to crop".
+    expect(screen.getByLabelText('Crop source').hasAttribute('disabled')).toBe(false)
+    // selectedOverlayItem correctly stayed null — the resolved item is the
+    // video clip, not the overlay, so no stray "Edit overlay" button.
+    expect(screen.queryByLabelText('Edit overlay')).toBeNull()
+
+    // Seek inside the clip (splitting exactly at a clip's start/end is a
+    // no-op — see splitAtTime), then Split. Pre-fix, primarySelectedId was
+    // 'cap-0': no track item has that id, splitAtTime returned the same
+    // project reference, and handleSplit's `if (updated === base) return`
+    // swallowed the keypress with no onProjectChange call at all.
+    await seekTo('2')
+    await act(async () => {
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 's' }))
+    })
+
+    await waitFor(() => {
+      const last = onProjectChange.mock.calls[onProjectChange.mock.calls.length - 1][0] as Project
+      // `mapTrackItems` normalizes to `VisualTrack[]` ({ id, items }) on the
+      // way out, whatever shape the fixture went in with.
+      expect(last.tracks?.[0]?.items).toHaveLength(2) // clip-0 split into two
+      expect(last.tracks?.[1]?.items).toHaveLength(1) // overlay untouched — Split scoped to the clip only
+    })
+  })
+
+  it('resolves selectedOverlayItem to the overlay, not null, when it (not a clip) is the non-caption member', async () => {
+    const adapter = makeFakeAdapter()
+    render(
+      <VideoEditor
+        project={makeMixedProject()}
+        adapter={adapter}
+        onProjectChange={vi.fn()}
+      />,
+    )
+    await selectCaptionThenAdditively('▪ overlay')
+
+    expect(screen.getByLabelText('Edit overlay')).toBeTruthy()
+    // The overlay is not croppable — cropTarget correctly stayed null.
+    expect(screen.getByLabelText('Crop source').hasAttribute('disabled')).toBe(true)
+  })
+
+  it('a caption-only selection leaves primarySelectedId null — Split falls back to splitting every clip under the playhead, matching pre-D1 null-selection behavior', async () => {
+    const adapter = makeFakeAdapter()
+    const onProjectChange = vi.fn()
+    render(
+      <VideoEditor
+        project={makeMixedProject()}
+        adapter={adapter}
+        onProjectChange={onProjectChange}
+      />,
+    )
+    fireEvent.click(await screen.findByText('caption one'))
+
+    expect(screen.getByLabelText('Crop source').hasAttribute('disabled')).toBe(true)
+    expect(screen.queryByLabelText('Edit overlay')).toBeNull()
+
+    // If primarySelectedId had instead resolved to 'cap-0' (the bug this
+    // guards against, in a different shape), splitAtTime would scope to an id
+    // no track item matches and NEITHER track would split. Null is what
+    // `splitAtTime` reads as "split whatever the playhead is over" — both do.
+    await seekTo('2')
+    await act(async () => {
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 's' }))
+    })
+
+    await waitFor(() => {
+      const last = onProjectChange.mock.calls[onProjectChange.mock.calls.length - 1][0] as Project
+      expect(last.tracks?.[0]?.items).toHaveLength(2)
+      expect(last.tracks?.[1]?.items).toHaveLength(2)
+    })
   })
 })

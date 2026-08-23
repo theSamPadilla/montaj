@@ -3,8 +3,8 @@ import { AudioLines, Captions, Eye, EyeOff, Film, Layers, Settings2, Volume2, Vo
 import { Tooltip } from '../../ui/Tooltip'
 import type { Project } from '../../types'
 import type { VisualItem } from '../../schema'
-import { computeTimelineLayout, TRACK_PALETTE, type TimelineLayout, type TrackPalette, type VisualRowLayout, type AudioLaneLayout } from './canvas/draw'
-import { AUDIO_LANE_HEIGHT_PX, ROW_GAP_PX, normalizeTracks, trackItems } from './timeline-model'
+import { computeTimelineLayout, TRACK_PALETTE, CAPTION_RAIL_ACCENT, type TimelineLayout, type TrackPalette, type VisualRowLayout, type AudioLaneLayout } from './canvas/draw'
+import { AUDIO_LANE_HEIGHT_PX, normalizeTracks, trackItems } from './timeline-model'
 import TrackSettingsPopover from './TrackSettingsPopover'
 
 /**
@@ -34,9 +34,6 @@ import TrackSettingsPopover from './TrackSettingsPopover'
 // already have — the base track is 120px tall and was showing a single row of
 // icons in the top 16px of it.
 const GUTTER_WIDTH_PX = 46
-
-/** Caption row height — the `h-10` on `trackRow` (utils.ts). */
-const CAPTION_ROW_HEIGHT_PX = 40
 
 /**
  * What a visual track is *for*, from what it holds. Tracks aren't typed in the
@@ -376,8 +373,11 @@ function AudioLaneRailRow({
 
 export interface TrackGutterProps {
   project: Project
-  /** Rendered under the track rail, aligned with the caption row. Omit when the
-   *  caption row isn't shown. */
+  /** Gates the caption rail cell, aligned with the canvas' own caption band
+   *  (`layout.caption`). Has no effect when the layout carries no band at all
+   *  (a project with no caption segments) — there is nothing to align a cell
+   *  with. Defaults true so a host that hasn't wired the flag still sees the
+   *  cell whenever the layout has one. */
   showCaptionRow?: boolean
   /** Layout to align against. Defaults to computing it from `project` — pass the
    *  caller's own so the two can't drift. */
@@ -425,7 +425,7 @@ export default function TrackGutter({
   const trackSettings = normalizeTracks(project).tracks ?? []
 
   return (
-    <div className="flex shrink-0 flex-col" style={{ width: GUTTER_WIDTH_PX, gap: ROW_GAP_PX }}>
+    <div className="flex shrink-0 flex-col" style={{ width: GUTTER_WIDTH_PX }}>
       {/* Absolute positioning mirrors the canvas' own layout pass, so a row's
           label sits at exactly the y its clips do — including the base track's
           extra height. */}
@@ -462,16 +462,23 @@ export default function TrackGutter({
             onSetLaneMuted={onSetLaneMuted}
           />
         ))}
+        {/* Same absolute-positioned wrapper every other row uses, keyed off
+            `resolved.caption` rather than a constant — gutter and canvas read
+            the identical rectangle and can never drift apart. Gated on
+            `resolved.caption` FIRST: a caption-less project's layout carries
+            no band at all (see TimelineLayout.caption), so `showCaptionRow`
+            defaulting true must not conjure a cell with nothing to align to. */}
+        {resolved.caption && showCaptionRow && (
+          <div className="absolute inset-x-0" style={{ top: resolved.caption.y, height: resolved.caption.height }}>
+            <RailCell
+              height={resolved.caption.height}
+              accent={CAPTION_RAIL_ACCENT}
+              icon={<Captions size={15} />}
+              label="Captions"
+            />
+          </div>
+        )}
       </div>
-
-      {showCaptionRow && (
-        <RailCell
-          height={CAPTION_ROW_HEIGHT_PX}
-          accent="rgba(168,85,247,0.6)"
-          icon={<Captions size={15} />}
-          label="Captions"
-        />
-      )}
     </div>
   )
 }

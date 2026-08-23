@@ -23,6 +23,7 @@ import type { Project } from '../../../../types'
 import { VISUAL_ROW_HEIGHT_PX, computeDerivedTiming, trackItems } from '../../timeline-model'
 import { computeTimelineLayout } from '../draw'
 import {
+  CAPTION_MIN_DURATION_S,
   NO_MODIFIERS,
   createPointerMachine,
   cursorForHit,
@@ -88,6 +89,7 @@ function makeContext(overrides: Partial<PointerContext> = {}): PointerContext {
     totalDuration,
     rippleMode: false,
     playheadTime: 0,
+    fps: 30,
     ...overrides,
   }
 }
@@ -1376,6 +1378,594 @@ describe('multi-select move', () => {
       const proj = changes[changes.length - 1].project
       expect(visual(proj, 'c0').start).toBe(0)
       expect(visual(proj, 'c1').start).toBe(5)
+    }
+  })
+})
+
+// ── Captions ─────────────────────────────────────────────────────────────
+//
+// Caption blocks live in the canvas timeline now, and behave exactly like
+// overlay clips: click to select, drag the body to re-time, drag an edge to
+// trim, group-move with whatever else is selected. Their ids share the ONE
+// `selectedIds` array with clips and audio, which is what makes a mixed
+// clip+caption drag land as a single undo.
+//
+// Its own fixture — one clip and a caption band, nothing else — so the base
+// project's row geometry above stays exactly as those tests assume:
+//
+//   band caption s0 1s–2s (with word timings), s1 3.44s–4.5s, one id-less
+//   row  track 0 — c0 0s–10s
+//
+// s1's start is 3.44 on purpose: at 30fps that is frame 103.2, the fractional
+// part below 0.5 that makes the naive seek-to-`start` land in the PREVIOUS
+// segment. See the click-seek suite.
+
+const CAPTION_FPS = 30
+
+function captionProject(): Project {
+  return {
+    id: 'p',
+    tracks: [{
+      id: 'trk-0',
+      items: [{ id: 'c0', type: 'video', src: 'a.mp4', start: 0, end: 10, inPoint: 0, outPoint: 10, sourceDuration: 20 }],
+    }],
+    captions: {
+      style: 'pop',
+      segments: [
+        {
+          id: 's0',
+          text: 'hello there',
+          start: 1,
+          end: 2,
+          words: [
+            { word: 'hello', start: 1, end: 1.6 },
+            { word: 'there', start: 1.6, end: 2 },
+          ],
+        },
+        { id: 's1', text: 'second', start: 3.44, end: 4.5 },
+        // No id yet — `backfillCaptionIds` has not run. Never hittable.
+        { text: 'unminted', start: 7, end: 8 },
+      ],
+    },
+  } as unknown as Project
+}
+
+const CAPTION_LAYOUT = computeTimelineLayout(captionProject())
+const CAPTION_Y = Math.round(CAPTION_LAYOUT.caption!.y + CAPTION_LAYOUT.caption!.height / 2)
+
+const S0_BODY = { x: 150, y: CAPTION_Y }
+const S0_IN_EDGE = { x: 102, y: CAPTION_Y }
+const S0_OUT_EDGE = { x: 198, y: CAPTION_Y }
+const S1_BODY = { x: 400, y: CAPTION_Y }
+/** Over the id-less segment (x 700–800), which is band background. */
+const UNMINTED = { x: 750, y: CAPTION_Y }
+/** The gap between s0 and s1. */
+const CAPTION_GAP = { x: 260, y: CAPTION_Y }
+
+function captionCtx(overrides: Partial<PointerContext> = {}): PointerContext {
+  return makeContext({ project: captionProject(), fps: CAPTION_FPS, ...overrides })
+}
+
+function caption(project: Project, id: string) {
+  return (project.captions?.segments ?? []).find(s => s.id === id)!
+}
+
+describe('caption gestures — resolution and affordances', () => {
+  const ctx = captionCtx()
+  const bodyHit = hitTest(S0_BODY, ctx.layout, VIEWPORT)
+  const edgeHit = hitTest(S0_OUT_EDGE, ctx.layout, VIEWPORT)
+
+  it('a body-drag re-times and an edge-drag trims', () => {
+    expect(resolveGesture(bodyHit, mods())).toBe('caption-move')
+    expect(resolveGesture(edgeHit, mods())).toBe('caption-trim')
+  })
+
+  it('has no roll/slip/slide, so modifiers fall through as they do for audio', () => {
+    expect(resolveGesture(bodyHit, mods({ alt: true }))).toBe('caption-move')
+    expect(resolveGesture(bodyHit, mods({ meta: true }))).toBe('caption-move')
+    expect(resolveGesture(edgeHit, mods({ alt: true }))).toBe('caption-trim')
+  })
+
+  it('shows the resize cursor on an edge and the grab cursor on a body', () => {
+    expect(cursorForHit(edgeHit)).toBe('ew-resize')
+    expect(cursorForHit(bodyHit)).toBe('grab')
+  })
+
+  it('switches to the gesture cursor once the drag starts', () => {
+    const move = new Driver(captionCtx())
+    move.down(S0_BODY.x, S0_BODY.y)
+    expect(of(move.move(S0_BODY.x + 50, S0_BODY.y), 'cursor')).toEqual([{ type: 'cursor', cursor: 'grabbing' }])
+
+    // A trim PRESS already set `ew-resize` from the hit, and the gesture's own
+    // cursor is the same one — so the machine says nothing more, because it
+    // only speaks up when the cursor actually changes.
+    const trim = new Driver(captionCtx())
+    expect(of(trim.down(S0_OUT_EDGE.x, S0_OUT_EDGE.y), 'cursor')).toEqual([{ type: 'cursor', cursor: 'ew-resize' }])
+    expect(of(trim.move(S0_OUT_EDGE.x + 50, S0_OUT_EDGE.y), 'cursor')).toEqual([])
+    expect(trim.machine.state.cursor).toBe('ew-resize')
+  })
+})
+
+describe('caption click — select, and seek half a frame IN', () => {
+  it('selects on release and seeks to start + half a frame', () => {
+    const d = new Driver(captionCtx())
+    d.down(S1_BODY.x, S1_BODY.y)
+    const effects = d.up(S1_BODY.x, S1_BODY.y)
+    expect(of(effects, 'select')).toEqual([{ type: 'select', id: 's1', additive: false }])
+    expect(of(effects, 'seek')).toEqual([{ type: 'seek', time: 3.44 + 0.5 / CAPTION_FPS }])
+  })
+
+  it('lands inside the segment once the preview snaps the clock to the frame grid', () => {
+    // The regression this exists for. CaptionPreview runs
+    // `t = Math.round(currentTime * fps) / fps` before the templates' own
+    // `t >= start && t < end` test, and 3.44 × 30 = 103.2 rounds DOWN.
+    const snapToGrid = (t: number) => Math.round(t * CAPTION_FPS) / CAPTION_FPS
+    expect(snapToGrid(3.44)).toBeLessThan(3.44)                    // seeking to `start` misses
+    const d = new Driver(captionCtx())
+    d.down(S1_BODY.x, S1_BODY.y)
+    const seeked = of(d.up(S1_BODY.x, S1_BODY.y), 'seek')[0].time
+    expect(snapToGrid(seeked)).toBeGreaterThanOrEqual(3.44)         // half a frame in does not
+    expect(snapToGrid(seeked)).toBeLessThan(4.5)
+  })
+
+  it('seeks to the segment start, NOT to where the pointer clicked', () => {
+    // x=400 is t=4, well inside s1 — a visual clip would seek there.
+    const d = new Driver(captionCtx())
+    d.down(S1_BODY.x, S1_BODY.y)
+    expect(of(d.up(S1_BODY.x, S1_BODY.y), 'seek')[0].time).not.toBeCloseTo(4)
+  })
+
+  it('does not seek when the caption was already selected', () => {
+    const d = new Driver(captionCtx({ selectedIds: ['s1'] }))
+    d.down(S1_BODY.x, S1_BODY.y)
+    const effects = d.up(S1_BODY.x, S1_BODY.y)
+    expect(of(effects, 'select')).toEqual([{ type: 'select', id: 's1', additive: false }])
+    expect(of(effects, 'seek')).toEqual([])
+  })
+
+  it('does not seek on an additive click', () => {
+    const d = new Driver(captionCtx())
+    d.down(S1_BODY.x, S1_BODY.y, mods({ shift: true }))
+    const effects = d.up(S1_BODY.x, S1_BODY.y, mods({ shift: true }))
+    expect(of(effects, 'select')).toEqual([{ type: 'select', id: 's1', additive: true }])
+    expect(of(effects, 'seek')).toEqual([])
+  })
+
+  it('selects from a press on a trim handle that never became a drag', () => {
+    const d = new Driver(captionCtx())
+    d.down(S0_OUT_EDGE.x, S0_OUT_EDGE.y)
+    const effects = d.up(S0_OUT_EDGE.x, S0_OUT_EDGE.y)
+    expect(of(effects, 'select')).toEqual([{ type: 'select', id: 's0', additive: false }])
+    expect(of(effects, 'commit')).toEqual([])
+  })
+
+  it('treats a gap in the band as background: clears the selection and seeks there', () => {
+    const d = new Driver(captionCtx({ selectedIds: ['s0'] }))
+    d.down(CAPTION_GAP.x, CAPTION_GAP.y)
+    const effects = d.up(CAPTION_GAP.x, CAPTION_GAP.y)
+    expect(of(effects, 'select')).toEqual([{ type: 'select', id: null, additive: false }])
+    expect(of(effects, 'seek')).toEqual([{ type: 'seek', time: 2.6 }])
+  })
+
+  it('never selects a segment that has no id yet', () => {
+    const d = new Driver(captionCtx())
+    d.down(UNMINTED.x, UNMINTED.y)
+    expect(of(d.up(UNMINTED.x, UNMINTED.y), 'select')).toEqual([{ type: 'select', id: null, additive: false }])
+  })
+})
+
+describe('caption body drag — move', () => {
+  it('MOVES a caption that was not selected when the drag began', () => {
+    // The stale-selection trap. `selectMany` selects the grabbed caption, but
+    // the host has not echoed it back into `ctx.selectedIds` yet, so a move
+    // that keyed off `ctx.selectedIds` alone would shift nothing at all and
+    // the block would sit still under the pointer.
+    const d = new Driver(captionCtx())
+    d.down(S0_BODY.x, S0_BODY.y)
+    const eff = d.move(S0_BODY.x + 100, S0_BODY.y)
+    expect(of(eff, 'selectMany')).toEqual([{ type: 'selectMany', ids: ['s0'], additive: false }])
+    const moved = caption(lastProjectChange(eff), 's0')
+    expect(moved.start).toBeCloseTo(2)
+    expect(moved.end).toBeCloseTo(3)
+  })
+
+  it('moves ONLY the grabbed caption when something else holds the selection', () => {
+    const d = new Driver(captionCtx({ selectedIds: ['c0'] }))
+    d.down(S0_BODY.x, S0_BODY.y)
+    const proj = lastProjectChange(d.move(S0_BODY.x + 100, S0_BODY.y))
+    expect(caption(proj, 's0').start).toBeCloseTo(2)
+    expect(visual(proj, 'c0').start).toBe(0)      // the old selection stayed put
+  })
+
+  it('carries every word timing with the segment', () => {
+    const d = new Driver(captionCtx())
+    d.down(S0_BODY.x, S0_BODY.y)
+    const moved = caption(lastProjectChange(d.move(S0_BODY.x + 100, S0_BODY.y)), 's0')
+    expect(moved.words).toEqual([
+      { word: 'hello', start: 2, end: 2.6 },
+      { word: 'there', start: 2.6, end: 3 },
+    ])
+    expect(moved.text).toBe('hello there')
+  })
+
+  it('emits one projectChange per move and exactly ONE commit at release', () => {
+    const d = new Driver(captionCtx({ selectedIds: ['s0'] }))
+    d.down(S0_BODY.x, S0_BODY.y)
+    expect(of(d.move(S0_BODY.x + 50, S0_BODY.y), 'projectChange')).toHaveLength(1)
+    expect(of(d.move(S0_BODY.x + 80, S0_BODY.y), 'projectChange')).toHaveLength(1)
+    expect(of(d.move(S0_BODY.x + 100, S0_BODY.y), 'projectChange')).toHaveLength(1)
+    const committed = of(d.up(S0_BODY.x + 100, S0_BODY.y), 'commit')
+    expect(committed).toHaveLength(1)
+    expect(caption(committed[0].project, 's0').start).toBeCloseTo(2)
+  })
+
+  it('co-moves a whole caption selection under one delta', () => {
+    const d = new Driver(captionCtx({ selectedIds: ['s0', 's1'] }))
+    d.down(S0_BODY.x, S0_BODY.y)
+    const eff = d.move(S0_BODY.x + 100, S0_BODY.y)
+    // A group move never re-selects.
+    expect(of(eff, 'selectMany')).toEqual([])
+    const proj = lastProjectChange(eff)
+    expect(caption(proj, 's0')).toMatchObject({ start: 2, end: 3 })
+    expect(caption(proj, 's1').start).toBeCloseTo(4.44)
+    expect(caption(proj, 's1').end).toBeCloseTo(5.5)
+    expect(of(d.up(S0_BODY.x + 100, S0_BODY.y), 'commit')).toHaveLength(1)
+  })
+
+  it('co-moves a MIXED clip+caption selection, and commits it once', () => {
+    // The point of putting caption ids in the same `selectedIds` array: one
+    // gesture, one `projectChange` stream, one undo entry.
+    const d = new Driver(captionCtx({ selectedIds: ['c0', 's0'] }))
+    d.down(S0_BODY.x, S0_BODY.y)
+    const proj = lastProjectChange(d.move(S0_BODY.x + 100, S0_BODY.y))
+    expect(visual(proj, 'c0')).toMatchObject({ start: 1, end: 11 })
+    expect(caption(proj, 's0')).toMatchObject({ start: 2, end: 3 })
+    const committed = of(d.up(S0_BODY.x + 100, S0_BODY.y), 'commit')
+    expect(committed).toHaveLength(1)
+    expect(caption(committed[0].project, 's0').start).toBeCloseTo(2)
+    expect(visual(committed[0].project, 'c0').start).toBeCloseTo(1)
+  })
+
+  it('clamps the group as a body so no member leaves the timeline', () => {
+    const ctx = captionCtx({ selectedIds: ['s0'] })
+    const d = new Driver(ctx)
+    d.down(S0_BODY.x, S0_BODY.y)
+    expect(caption(lastProjectChange(d.move(-9999, S0_BODY.y)), 's0').start).toBe(0)
+    expect(caption(lastProjectChange(d.move(99999, S0_BODY.y)), 's0').end).toBeCloseTo(ctx.totalDuration)
+  })
+
+  it('commits nothing when the drag ends back where it started', () => {
+    const d = new Driver(captionCtx({ selectedIds: ['s0'] }))
+    d.down(S0_BODY.x, S0_BODY.y)
+    d.move(S0_BODY.x + 100, S0_BODY.y)
+    d.move(S0_BODY.x, S0_BODY.y)
+    expect(of(d.up(S0_BODY.x, S0_BODY.y), 'commit')).toEqual([])
+  })
+})
+
+describe('caption edge drag — trim', () => {
+  it('moves ONLY the dragged out edge', () => {
+    const d = new Driver(captionCtx())
+    d.down(S0_OUT_EDGE.x, S0_OUT_EDGE.y)
+    // The edge lands at its own time plus the pointer's travel: the press was
+    // at x=198 (inside the 6px handle), so 250 is 0.52s further on.
+    const trimmed = caption(lastProjectChange(d.move(250, S0_OUT_EDGE.y)), 's0')
+    expect(trimmed.end).toBeCloseTo(2.52)
+    expect(trimmed.start).toBe(1)
+  })
+
+  it('moves ONLY the dragged in edge', () => {
+    const d = new Driver(captionCtx())
+    d.down(S0_IN_EDGE.x, S0_IN_EDGE.y)
+    const trimmed = caption(lastProjectChange(d.move(150, S0_IN_EDGE.y)), 's0')
+    expect(trimmed.start).toBeCloseTo(1.48)
+    expect(trimmed.end).toBe(2)
+  })
+
+  it('never touches text or words — a retime is not a respread', () => {
+    const before = captionProject()
+    const d = new Driver(makeContext({ project: before, fps: CAPTION_FPS }))
+    d.down(S0_OUT_EDGE.x, S0_OUT_EDGE.y)
+    const trimmed = caption(lastProjectChange(d.move(250, S0_OUT_EDGE.y)), 's0')
+    expect(trimmed.text).toBe('hello there')
+    // The same array object, not merely the same values: nothing respread it.
+    expect(trimmed.words).toBe(caption(before, 's0').words)
+  })
+
+  it('leaves every OTHER segment alone', () => {
+    const d = new Driver(captionCtx())
+    d.down(S0_OUT_EDGE.x, S0_OUT_EDGE.y)
+    const proj = lastProjectChange(d.move(250, S0_OUT_EDGE.y))
+    expect(caption(proj, 's1')).toMatchObject({ start: 3.44, end: 4.5 })
+  })
+
+  it('never trims below the minimum duration, from either edge', () => {
+    // The floor the click-seek leans on: no segment is ever under one frame.
+    expect(CAPTION_MIN_DURATION_S).toBeGreaterThan(1 / CAPTION_FPS)
+
+    const out = new Driver(captionCtx())
+    out.down(S0_OUT_EDGE.x, S0_OUT_EDGE.y)
+    expect(caption(lastProjectChange(out.move(20, S0_OUT_EDGE.y)), 's0').end)
+      .toBeCloseTo(1 + CAPTION_MIN_DURATION_S)
+
+    const inn = new Driver(captionCtx())
+    inn.down(S0_IN_EDGE.x, S0_IN_EDGE.y)
+    expect(caption(lastProjectChange(inn.move(600, S0_IN_EDGE.y)), 's0').start)
+      .toBeCloseTo(2 - CAPTION_MIN_DURATION_S)
+  })
+
+  it('does not trim a multi-selection — v1 trims one segment', () => {
+    const d = new Driver(captionCtx({ selectedIds: ['s0', 's1'] }))
+    d.down(S0_OUT_EDGE.x, S0_OUT_EDGE.y)
+    const proj = lastProjectChange(d.move(250, S0_OUT_EDGE.y))
+    expect(caption(proj, 's0').end).toBeCloseTo(2.52)
+    expect(caption(proj, 's1')).toMatchObject({ start: 3.44, end: 4.5 })
+  })
+
+  it('commits once, and only what actually changed', () => {
+    const d = new Driver(captionCtx())
+    d.down(S0_OUT_EDGE.x, S0_OUT_EDGE.y)
+    d.move(250, S0_OUT_EDGE.y)
+    const committed = of(d.up(250, S0_OUT_EDGE.y), 'commit')
+    expect(committed).toHaveLength(1)
+    expect(caption(committed[0].project, 's0')).toMatchObject({ start: 1, end: 2.52 })
+  })
+
+  it('commits nothing when the edge ends back where it started', () => {
+    const d = new Driver(captionCtx())
+    d.down(S0_OUT_EDGE.x, S0_OUT_EDGE.y)
+    d.move(250, S0_OUT_EDGE.y)
+    d.move(S0_OUT_EDGE.x, S0_OUT_EDGE.y)
+    expect(of(d.up(S0_OUT_EDGE.x, S0_OUT_EDGE.y), 'commit')).toEqual([])
+  })
+})
+
+describe('caption playhead grab', () => {
+  it('a grab over a caption BODY scrubs instead of selecting', () => {
+    // Playhead at x=150, inside s0's body.
+    const d = new Driver(captionCtx({ playheadTime: 1.5 }))
+    const eff = d.down(150, CAPTION_Y)
+    const st = d.machine.state
+    expect(st.kind).toBe('dragging')
+    if (st.kind === 'dragging') expect(st.gesture).toBe('scrub')
+    expect(of(eff, 'seek').length).toBeGreaterThan(0)
+    expect(of(eff, 'select')).toEqual([])
+  })
+
+  it('a grab over a caption EDGE trims — the precise target wins (D1)', () => {
+    // Playhead at x=102, right on s0's in handle.
+    const d = new Driver(captionCtx({ playheadTime: 1.02 }))
+    d.down(S0_IN_EDGE.x, S0_IN_EDGE.y)
+    expect(d.machine.state.kind).toBe('pressed')     // not a scrub
+    d.move(S0_IN_EDGE.x + 30, S0_IN_EDGE.y)
+    const st = d.machine.state
+    expect(st.kind).toBe('dragging')
+    if (st.kind === 'dragging') expect(st.gesture).toBe('caption-trim')
+  })
+})
+
+describe('caption double-click', () => {
+  it('opens the caption for editing rather than an inspector', () => {
+    const d = new Driver(captionCtx())
+    expect(d.doubleClick(S0_BODY.x, S0_BODY.y)).toEqual([{ type: 'editCaption', id: 's0' }])
+  })
+
+  it('does the same from a caption edge', () => {
+    const d = new Driver(captionCtx())
+    expect(d.doubleClick(S0_OUT_EDGE.x, S0_OUT_EDGE.y)).toEqual([{ type: 'editCaption', id: 's0' }])
+  })
+
+  it('does nothing in the gaps between blocks', () => {
+    const d = new Driver(captionCtx())
+    expect(d.doubleClick(CAPTION_GAP.x, CAPTION_GAP.y)).toEqual([])
+    expect(d.doubleClick(UNMINTED.x, UNMINTED.y)).toEqual([])
+  })
+})
+
+// ── Caption trim at the timeline's own edges ──────────────────────────────
+//
+// The trim has two invariants that can fight each other: the edge stays inside
+// [0, totalDuration], and the segment stays at least `CAPTION_MIN_DURATION_S`
+// long. They only collide on a segment ALREADY shorter than the floor sitting
+// flush against a boundary — which Whisper produces routinely (a one-syllable
+// interjection) and which a caption move can push against `totalDuration`.
+//
+// Zoomed to 1000px/s: these blocks are 50px wide, so their handles are
+// separately grabbable. At the fixture's usual 100px/s a 5px block would
+// resolve every point to its OUT handle and the in-edge probes would miss.
+
+const TINY_VIEWPORT: Viewport = { pxPerSecond: 1000, scrollSeconds: 0, widthPx: 1000 }
+
+function tinyCaptionProject(): Project {
+  return {
+    id: 'p',
+    tracks: [{
+      id: 'trk-0',
+      items: [{ id: 'c0', type: 'video', src: 'a.mp4', start: 0, end: 10, inPoint: 0, outPoint: 10, sourceDuration: 20 }],
+    }],
+    captions: {
+      style: 'pop',
+      segments: [
+        // Shorter than the floor, flush against t=0.
+        { id: 'head', text: 'uh', start: 0, end: 0.05 },
+        // Shorter than the floor, flush against totalDuration (10 + 5 = 15).
+        { id: 'tail', text: 'hm', start: 14.95, end: 15 },
+        // Shorter than the floor, but nowhere near either boundary.
+        { id: 'middle', text: 'so', start: 5, end: 5.05 },
+      ],
+    },
+  } as unknown as Project
+}
+
+const TINY_LAYOUT = computeTimelineLayout(tinyCaptionProject())
+const TINY_Y = Math.round(TINY_LAYOUT.caption!.y + TINY_LAYOUT.caption!.height / 2)
+
+function tinyCtx(overrides: Partial<PointerContext> = {}): PointerContext {
+  return makeContext({ project: tinyCaptionProject(), fps: CAPTION_FPS, viewport: TINY_VIEWPORT, ...overrides })
+}
+
+describe('caption trim — a sub-floor segment pinned at a timeline edge', () => {
+  it('the fixture is the collision case: sub-floor segments, flush at both ends', () => {
+    const ctx = tinyCtx()
+    expect(ctx.totalDuration).toBe(15)
+    for (const id of ['head', 'tail', 'middle']) {
+      const seg = caption(ctx.project, id)
+      expect(seg.end - seg.start).toBeLessThan(CAPTION_MIN_DURATION_S)
+    }
+  })
+
+  it('never drags the in edge below t=0 — it declines to move at all', () => {
+    // head is 0s–0.05s, so its in edge has NO legal position: t=0 is already
+    // the floor's ceiling minus a negative. Bounds-then-floor put it at -0.05.
+    const ctx = tinyCtx()
+    const d = new Driver(ctx)
+    d.down(2, TINY_Y)                        // head's in handle (x 0–50, in zone ≤ 6)
+    const eff = d.move(-100, TINY_Y)
+    expect(of(eff, 'projectChange')).toEqual([])
+    const st = d.machine.state
+    expect(st.kind).toBe('dragging')
+    if (st.kind === 'dragging') expect(st.lastProject).toBe(ctx.project)
+    expect(caption(ctx.project, 'head')).toMatchObject({ start: 0, end: 0.05 })
+    expect(of(d.up(-100, TINY_Y), 'commit')).toEqual([])
+  })
+
+  it('never drags the out edge past totalDuration — it declines to move at all', () => {
+    // tail is 14.95s–15s against a 15s horizon. Bounds-then-floor put its out
+    // edge at 15.05.
+    const ctx = tinyCtx()
+    const d = new Driver(ctx)
+    d.down(14998, TINY_Y)                    // tail's out handle (x 14950–15000)
+    const eff = d.move(15100, TINY_Y)
+    expect(of(eff, 'projectChange')).toEqual([])
+    const st = d.machine.state
+    expect(st.kind).toBe('dragging')
+    if (st.kind === 'dragging') expect(st.lastProject).toBe(ctx.project)
+    expect(caption(ctx.project, 'tail')).toMatchObject({ start: 14.95, end: 15 })
+    expect(of(d.up(15100, TINY_Y), 'commit')).toEqual([])
+  })
+
+  it('still trims a sub-floor segment that is NOT pinned — the range is not empty', () => {
+    // The guard must decline only when there is genuinely nowhere legal to go.
+    // middle is 5s–5.05s with room on both sides, so dragging its out edge left
+    // grows it to the floor rather than refusing.
+    const d = new Driver(tinyCtx())
+    d.down(5048, TINY_Y)                     // middle's out handle (x 5000–5050)
+    const trimmed = caption(lastProjectChange(d.move(4900, TINY_Y)), 'middle')
+    expect(trimmed.end).toBeCloseTo(5 + CAPTION_MIN_DURATION_S)
+    expect(trimmed.start).toBe(5)
+  })
+
+  it('keeps every caption inside the timeline however far the pointer travels', () => {
+    // A blanket guard over both edges of all three segments: no drag, at any
+    // distance, may put a caption edge outside [0, totalDuration].
+    const ctx = tinyCtx()
+    // head's in handle, tail's out handle, then both of middle's.
+    for (const x of [2, 14998, 5002, 5048]) {
+      const d = new Driver(ctx)
+      d.down(x, TINY_Y)
+      for (const to of [-9999, 0, 5000, 15000, 99999]) {
+        const changes = of(d.move(to, TINY_Y), 'projectChange')
+        if (changes.length === 0) continue
+        for (const seg of changes[changes.length - 1].project.captions!.segments) {
+          expect(seg.start).toBeGreaterThanOrEqual(0)
+          expect(seg.end).toBeLessThanOrEqual(ctx.totalDuration)
+        }
+      }
+    }
+  })
+})
+
+// ── Caption trim on a caption that already overhangs the timeline ─────────
+//
+// `totalDuration` is derived from clips and audio only, so a caption can end
+// past it once clips are trimmed or deleted after captioning. The rule is that
+// a trim never pushes a caption FURTHER out than it already was — it may not
+// make an overhang worse, and it may not "helpfully" shrink one either.
+//
+// `over` straddles the horizon: start 14.5 inside a 15s timeline, end 16
+// beyond it. Same 1000px/s viewport, so x = t × 1000.
+
+function overhangCaptionProject(): Project {
+  return {
+    id: 'p',
+    tracks: [{
+      id: 'trk-0',
+      items: [{ id: 'c0', type: 'video', src: 'a.mp4', start: 0, end: 10, inPoint: 0, outPoint: 10, sourceDuration: 20 }],
+    }],
+    captions: {
+      style: 'pop',
+      segments: [{ id: 'over', text: 'trailing', start: 14.5, end: 16 }],
+    },
+  } as unknown as Project
+}
+
+const OVERHANG_LAYOUT = computeTimelineLayout(overhangCaptionProject())
+const OVERHANG_Y = Math.round(OVERHANG_LAYOUT.caption!.y + OVERHANG_LAYOUT.caption!.height / 2)
+/** `over`'s handles: the block spans x 14500–16000. */
+const OVER_IN_EDGE = 14502
+const OVER_OUT_EDGE = 15998
+
+function overhangCtx(overrides: Partial<PointerContext> = {}): PointerContext {
+  return makeContext({ project: overhangCaptionProject(), fps: CAPTION_FPS, viewport: TINY_VIEWPORT, ...overrides })
+}
+
+describe('caption trim — a caption that already overhangs the timeline', () => {
+  it('the fixture really does overhang', () => {
+    const ctx = overhangCtx()
+    expect(ctx.totalDuration).toBe(15)
+    expect(caption(ctx.project, 'over').end).toBeGreaterThan(ctx.totalDuration)
+    expect(caption(ctx.project, 'over').start).toBeLessThan(ctx.totalDuration)
+  })
+
+  it('nudges the out edge inward to where the pointer put it, not back to totalDuration', () => {
+    // The whole point of the raised ceiling. Bounded at `totalDuration` this
+    // lands at 15.6 (the duration floor) or 15 — either way a silent shrink of
+    // roughly half a second, triggered by a 50px nudge.
+    const d = new Driver(overhangCtx())
+    d.down(OVER_OUT_EDGE, OVERHANG_Y)
+    const trimmed = caption(lastProjectChange(d.move(OVER_OUT_EDGE - 50, OVERHANG_Y)), 'over')
+    expect(trimmed.end).toBeCloseTo(15.95)
+    expect(trimmed.start).toBe(14.5)
+  })
+
+  it('refuses to push the out edge FURTHER out than it already was', () => {
+    // `seg.end` is both the ceiling and the starting value, so an outward drag
+    // has nowhere legal to go and the trim declines entirely.
+    const ctx = overhangCtx()
+    const d = new Driver(ctx)
+    d.down(OVER_OUT_EDGE, OVERHANG_Y)
+    expect(of(d.move(OVER_OUT_EDGE + 500, OVERHANG_Y), 'projectChange')).toEqual([])
+    const st = d.machine.state
+    expect(st.kind).toBe('dragging')
+    if (st.kind === 'dragging') expect(st.lastProject).toBe(ctx.project)
+    expect(of(d.up(OVER_OUT_EDGE + 500, OVERHANG_Y), 'commit')).toEqual([])
+  })
+
+  it('still enforces the duration floor on an overhanging caption', () => {
+    // The raised ceiling relaxes the OUTER bound only; the floor is untouched.
+    const d = new Driver(overhangCtx())
+    d.down(OVER_OUT_EDGE, OVERHANG_Y)
+    const trimmed = caption(lastProjectChange(d.move(14000, OVERHANG_Y)), 'over')
+    expect(trimmed.end).toBeCloseTo(14.5 + CAPTION_MIN_DURATION_S)
+    expect(trimmed.start).toBe(14.5)
+  })
+
+  it('never pushes a caption further out than it already was, however far the pointer travels', () => {
+    // The overhang counterpart of the in-bounds sweep above: the invariant is
+    // the segment's OWN original end, not `totalDuration`.
+    const ctx = overhangCtx()
+    const original = caption(ctx.project, 'over')
+    for (const x of [OVER_IN_EDGE, OVER_OUT_EDGE]) {
+      const d = new Driver(ctx)
+      d.down(x, OVERHANG_Y)
+      for (const to of [-9999, 0, 14000, 15000, 16500, 99999]) {
+        const changes = of(d.move(to, OVERHANG_Y), 'projectChange')
+        if (changes.length === 0) continue
+        const seg = changes[changes.length - 1].project.captions!.segments[0]
+        expect(seg.start).toBeGreaterThanOrEqual(0)
+        expect(seg.end).toBeLessThanOrEqual(original.end)
+        expect(seg.end - seg.start).toBeGreaterThanOrEqual(CAPTION_MIN_DURATION_S - 1e-9)
+      }
     }
   })
 })

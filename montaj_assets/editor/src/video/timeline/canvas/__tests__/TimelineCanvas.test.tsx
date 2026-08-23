@@ -98,6 +98,7 @@ function mount(
           clock={clock}
           store={store}
           totalDuration={20}
+          fps={30}
           selectedIds={selectedIds}
           previewAxis={previewAxis}
         />
@@ -286,14 +287,14 @@ describe('TimelineCanvas', () => {
     const store = createViewportStore()
     const clock = createPlaybackClock()
     const { rerender, container } = render(
-      <TimelineCanvas project={project} clock={clock} store={store} totalDuration={20} selectedIds={[]} />,
+      <TimelineCanvas project={project} clock={clock} store={store} totalDuration={20} fps={30} selectedIds={[]} />,
     )
     act(() => { vi.advanceTimersByTime(32) })
     const content = recorderFor(container.querySelectorAll('canvas')[0] as HTMLCanvasElement)
     content.length = 0
 
     const edited = { ...project, tracks: [[{ id: 'c0', type: 'video', src: 'a.mp4', start: 2, end: 9 }]] } as unknown as Project
-    rerender(<TimelineCanvas project={edited} clock={clock} store={store} totalDuration={20} selectedIds={[]} />)
+    rerender(<TimelineCanvas project={edited} clock={clock} store={store} totalDuration={20} fps={30} selectedIds={[]} />)
     act(() => { vi.advanceTimersByTime(32) })
 
     expect(content.some(c => c.method === 'clearRect')).toBe(true)
@@ -308,7 +309,7 @@ describe('TimelineCanvas', () => {
     const clock = createPlaybackClock()
     const { rerender, container } = render(
       <StrictMode>
-        <TimelineCanvas project={project} clock={clock} store={store} totalDuration={20} selectedIds={[]} />
+        <TimelineCanvas project={project} clock={clock} store={store} totalDuration={20} fps={30} selectedIds={[]} />
       </StrictMode>,
     )
     act(() => { vi.advanceTimersByTime(32) })
@@ -317,7 +318,7 @@ describe('TimelineCanvas', () => {
 
     rerender(
       <StrictMode>
-        <TimelineCanvas project={project} clock={clock} store={store} totalDuration={20} selectedIds={['c0']} />
+        <TimelineCanvas project={project} clock={clock} store={store} totalDuration={20} fps={30} selectedIds={['c0']} />
       </StrictMode>,
     )
     act(() => { vi.advanceTimersByTime(32) })

@@ -15,6 +15,19 @@ function makeProject(): Project {
   } as unknown as Project
 }
 
+function makeProjectWithCaptions(): Project {
+  return {
+    ...makeProject(),
+    captions: {
+      style: 'clean',
+      segments: [
+        { id: 'cap-0', text: 'hello', start: 0, end: 1 },
+        { id: 'cap-1', text: 'world', start: 1, end: 2 },
+      ],
+    },
+  } as unknown as Project
+}
+
 /** Delete/Enter are focus-scoped to Timeline's own root (the `tabIndex={0}`
  *  container), mirroring pre-SP5 behavior — unlike arrows/Escape, which stay
  *  document-level. Timeline's root is the outermost DOM node it renders
@@ -90,6 +103,61 @@ describe('Timeline — T9 keymap (arrows / delete / enter / escape)', () => {
     expect(onSelectIds).toHaveBeenCalledWith([])
     const updated = onProjectChange.mock.calls[0][0] as Project
     expect(updated.tracks?.[0]?.items.find((i) => i.id === 'clip-0')).toBeUndefined()
+  })
+
+  // D1: a caption id can sit in `selectedIds` alongside a clip id (selected on
+  // the canvas timeline like any other item — see Timeline.tsx's
+  // handleSelectItem). `deleteSelection` only knows tracks/audio vocabulary, so
+  // the keymap action must strip selected caption segments itself, folded into
+  // the SAME onProjectChange/onOverlayEdit commit as the clip delete — one undo
+  // entry covering the mixed selection, not two.
+  it('Delete strips a selected caption segment AND a selected clip in one commit', () => {
+    const clock = createPlaybackClock(0)
+    const onProjectChange = vi.fn()
+    const onOverlayEdit = vi.fn()
+    const onSelectIds = vi.fn()
+    const { container } = render(
+      <Timeline
+        project={makeProjectWithCaptions()}
+        clock={clock}
+        selectedIds={['clip-0', 'cap-0']}
+        onSelectIds={onSelectIds}
+        onProjectChange={onProjectChange}
+        onOverlayEdit={onOverlayEdit}
+      />,
+    )
+    focusTimelineRoot(container)
+    fireEvent.keyDown(document.body, { key: 'Delete' })
+    expect(onProjectChange).toHaveBeenCalledTimes(1)
+    expect(onOverlayEdit).toHaveBeenCalledTimes(1)
+    expect(onSelectIds).toHaveBeenCalledWith([])
+    const updated = onProjectChange.mock.calls[0][0] as Project
+    expect(updated.tracks?.[0]?.items.find((i) => i.id === 'clip-0')).toBeUndefined()
+    expect(updated.captions?.segments.map((s) => s.id)).toEqual(['cap-1'])
+  })
+
+  // Deleting every remaining caption segment must leave `captions` as an
+  // empty-segments object, not null the whole track — nulling it is the
+  // sidebar's explicit "Remove all" action, not a side effect of Delete.
+  it('Delete leaves an empty captions object when the last segment is removed, never nulls the track', () => {
+    const clock = createPlaybackClock(0)
+    const onProjectChange = vi.fn()
+    const project = makeProjectWithCaptions()
+    project.captions!.segments = [{ id: 'cap-0', text: 'hello', start: 0, end: 1 }]
+    const { container } = render(
+      <Timeline
+        project={project}
+        clock={clock}
+        selectedIds={['cap-0']}
+        onSelectIds={vi.fn()}
+        onProjectChange={onProjectChange}
+      />,
+    )
+    focusTimelineRoot(container)
+    fireEvent.keyDown(document.body, { key: 'Delete' })
+    const updated = onProjectChange.mock.calls[0][0] as Project
+    expect(updated.captions).not.toBeNull()
+    expect(updated.captions?.segments).toEqual([])
   })
 
   it('Delete does NOT delete the selection when focus is outside the timeline (restored pre-SP5 scoping)', () => {

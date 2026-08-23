@@ -1,11 +1,13 @@
 // Multi-select project mutations shared by VisualTrackRow and AudioTrackRow.
 //
 // Selection IDs are unified — a single `selectedIds: string[]` covers visual
-// items (project.tracks[*][*]) and audio tracks (project.audio.tracks[*]).
+// items (project.tracks[*][*]), audio tracks (project.audio.tracks[*]) and
+// caption segments (project.captions.segments[*]).
 // Cross-type ops (e.g. resize a video clip + an audio track in one drag) work
-// because every id is globally unique within a Project.
+// because every id is globally unique within a Project. Captions join only the
+// MOVE op: mute, delete and resize are still clip/audio vocabulary.
 
-import type { VisualItem, AudioTrack } from '../../schema'
+import type { VisualItem, AudioTrack, CaptionSegment, Captions } from '../../schema'
 import type { Project } from '../../types'
 import { mapTrackItems, trackItems } from './timeline-model'
 import { computeResizedItem, resizeWindowedItem, type Draggable } from './useItemDragDrop'
@@ -71,8 +73,9 @@ function resizeAudioTrack(track: AudioTrack, edge: 'start' | 'end', { dStart, dE
 }
 
 /**
- * Shift every selected visual item and audio track by the same timeline delta,
- * preserving their relative positions — a rigid move of the whole selection.
+ * Shift every selected visual item, audio track and caption segment by the same
+ * timeline delta, preserving their relative positions — a rigid move of the
+ * whole selection.
  *
  * The delta is clamped ONCE, against the group as a body: the leftmost selected
  * start cannot cross t=0 and the rightmost selected end cannot cross
@@ -96,18 +99,34 @@ export function applyMoveDeltaToSelection(
   // The group's extent, so one clamp keeps every member on the timeline.
   let minStart = Infinity
   let maxEnd = -Infinity
-  const consider = (it: { id: string; start: number; end: number }) => {
-    if (!targets.has(it.id)) return
+  // `id` is optional only because `CaptionSegment.id` is (a segment briefly
+  // lacks one before `backfillCaptionIds` mints it). An id-less member can
+  // never be in `selectedIds`, so it simply never counts toward the extent.
+  const consider = (it: { id?: string; start: number; end: number }) => {
+    if (it.id === undefined || !targets.has(it.id)) return
     if (it.start < minStart) minStart = it.start
     if (it.end > maxEnd) maxEnd = it.end
   }
   for (const items of trackItems(project)) items.forEach(consider)
   for (const t of project.audio?.tracks ?? []) consider(t)
+  // Captions join the SAME extent scan, so one clamp covers a mixed
+  // clip+caption selection rather than letting the captions slide past t=0
+  // while the clips hold.
+  for (const seg of project.captions?.segments ?? []) consider(seg)
   // None of the selected ids are actually present (e.g. a stale selection).
   if (!Number.isFinite(minStart)) return project
 
   const lo = -minStart
-  const hi = totalDuration - maxEnd
+  // Floored at 0: never push a member further out than it already is.
+  // `totalDuration` is derived from clips and audio only (timeline-model.ts),
+  // so a caption can legally outlast it (e.g. clips trimmed/deleted after
+  // captioning) — for clips/audio `maxEnd` never exceeds `totalDuration`, but
+  // an overhanging caption drives `maxEnd` past it, which without the floor
+  // sends `hi` negative and drags the whole group backwards on a rightward
+  // drag (or makes it un-movable when mixed with a clip at lo=0). Mirrors the
+  // `Math.max(ctx.totalDuration, seg.end)` ceiling `applyCaptionTrim` already
+  // uses for the same overhang case.
+  const hi = Math.max(0, totalDuration - maxEnd)
   // A group already wider than the timeline (lo > hi) can't move without
   // pushing a member off an edge, so it doesn't.
   const delta = lo > hi ? 0 : Math.max(lo, Math.min(hi, requestedDelta))
@@ -116,13 +135,38 @@ export function applyMoveDeltaToSelection(
   const shift = <T extends { id: string; start: number; end: number }>(it: T): T =>
     targets.has(it.id) ? { ...it, start: it.start + delta, end: it.end + delta } : it
 
+  const captions = shiftCaptions(project.captions, targets, delta)
   return {
     ...project,
     tracks: mapTrackItems(project, items => items.map(shift)),
     audio: project.audio
       ? { ...project.audio, tracks: (project.audio.tracks ?? []).map(shift) }
       : project.audio,
+    // Same reference back when no caption moved, so a clips-only group move
+    // leaves `project.captions` byte-for-byte what it was — and stays
+    // `undefined` on a project that has none.
+    captions,
   }
+}
+
+/** The caption half of a group move. Word timings are ABSOLUTE seconds, so
+ *  every word travels with its segment by the same delta; a move preserves
+ *  duration, so nothing needs respreading. `text` is never touched. */
+function shiftCaptions(
+  captions: Captions | undefined,
+  targets: ReadonlySet<string>,
+  delta: number,
+): Captions | undefined {
+  if (!captions) return captions
+  let changed = false
+  const segments = captions.segments.map(seg => {
+    if (seg.id === undefined || !targets.has(seg.id)) return seg
+    changed = true
+    const next: CaptionSegment = { ...seg, start: seg.start + delta, end: seg.end + delta }
+    if (seg.words) next.words = seg.words.map(w => ({ ...w, start: w.start + delta, end: w.end + delta }))
+    return next
+  })
+  return changed ? { ...captions, segments } : captions
 }
 
 /** Set `muted` on every selected item to the given target value. Both visual

@@ -15,11 +15,12 @@
  * design.
  */
 
-import type { AudioTrack, VisualItem } from '../../../schema'
+import type { AudioTrack, CaptionSegment, VisualItem } from '../../../schema'
 import type { Project } from '../../../types'
 import {
   AUDIO_LANE_HEIGHT_PX,
   BASE_VISUAL_ROW_RENDER_HEIGHT_PX,
+  CAPTION_ROW_HEIGHT_PX,
   visualItemLabel,
   ROW_GAP_PX,
   VISUAL_ROW_RENDER_HEIGHT_PX,
@@ -94,6 +95,27 @@ export const TRACK_PALETTE: TrackPalette[] = [
   { fill: 'rgba(190,18,60,0.8)',   fillSelected: 'rgba(225,29,72,0.9)',   ring: 'rgba(253,164,175,0.8)', border: 'rgba(251,113,133,0.5)', text: '#fecdd3' }, // rose
   { fill: 'rgba(180,83,9,0.6)',    fillSelected: 'rgba(217,119,6,0.8)',   ring: 'rgba(251,191,36,0.8)',  border: 'rgba(245,158,11,0.5)',  text: '#fde68a' }, // amber
 ]
+
+/** The retired CaptionTrackRow's Tailwind purple classes, resolved. Unlike `TRACK_PALETTE`,
+ *  which cycles a hue per track, every caption block shares this ONE palette —
+ *  captions are a single row, not several, so there is nothing to cycle.
+ *  `fill`/`border` are the unselected state (`bg-purple-700/40` +
+ *  `border-purple-500/40`); `fillSelected`/`ring` the selected one
+ *  (`bg-purple-600/70` + `ring-purple-300/80`); `text` is `text-purple-100`. */
+export const CAPTION_PALETTE: TrackPalette = {
+  fill: 'rgba(126,34,206,0.4)',
+  fillSelected: 'rgba(147,51,234,0.7)',
+  ring: 'rgba(216,180,254,0.8)',
+  border: 'rgba(168,85,247,0.4)',
+  text: '#f3e8ff',
+}
+
+/** TrackGutter's rail-cell accent for the caption row. Same purple hue as
+ *  `CAPTION_PALETTE.border`, at a higher alpha (0.6 vs 0.4) — a rail chip
+ *  reads best brighter than a canvas fill. Exported beside `CAPTION_PALETTE`,
+ *  the single source for the caption purple, instead of letting TrackGutter
+ *  hardcode its own copy with nothing tying the two together. */
+export const CAPTION_RAIL_ACCENT = 'rgba(168,85,247,0.6)'
 
 export const TIMELINE_COLORS = {
   /** `bg-gray-900` — the dark-mode row background both row kinds use. */
@@ -290,6 +312,12 @@ export interface AudioLaneLayout {
   height: number
 }
 
+export interface CaptionRowLayout {
+  y: number
+  height: number
+  segments: CaptionSegment[]
+}
+
 export interface TimelineLayout {
   /** The time ruler strip across the top. Always present and always at y=0;
    *  carried in the layout rather than assumed so hit-testing and painting
@@ -298,6 +326,13 @@ export interface TimelineLayout {
   /** Visual rows in DRAW order (top of the surface first). */
   rows: VisualRowLayout[]
   lanes: AudioLaneLayout[]
+  /** The caption band, carried the same way `ruler` is — a first-class
+   *  rectangle painter and (a later phase's) hit-test both read, rather than
+   *  each re-deriving it. Sits immediately above the base video row (see
+   *  `computeTimelineLayout`). Absent — not an empty band — when the project
+   *  has no caption segments, so a caption-less project's layout is unchanged
+   *  from before this existed. */
+  caption?: CaptionRowLayout
   /** Total surface height in CSS px, excluding trailing gap. */
   height: number
 }
@@ -322,8 +357,24 @@ export function computeTimelineLayout(project: Project): TimelineLayout {
   const ruler = { y: 0, height: RULER_HEIGHT_PX }
   let y = RULER_HEIGHT_PX + ROW_GAP_PX
 
+  // Only stored when there is something to show — an empty `segments` (or no
+  // `project.captions` at all) means no band at all, not an empty one, so a
+  // caption-less project's layout is byte-for-byte what it was before
+  // captions joined the canvas.
+  const captionSegments = project.captions?.segments ?? []
+  let caption: CaptionRowLayout | undefined
+  const emitCaptionBand = () => {
+    caption = { y, height: CAPTION_ROW_HEIGHT_PX, segments: captionSegments }
+    y += CAPTION_ROW_HEIGHT_PX + ROW_GAP_PX
+  }
+
   for (let reversedIdx = 0; reversedIdx < allTracks.length; reversedIdx++) {
     const trackIdx = allTracks.length - 1 - reversedIdx
+    // The caption band sits directly above the base video track — captions
+    // narrate that footage, so they read as adjacent to it. `trackIdx === 0`
+    // is always the LAST iteration of this loop (reversed order), so this is
+    // "immediately before the base row is pushed".
+    if (trackIdx === 0 && captionSegments.length > 0) emitCaptionBand()
     const height = trackIdx === 0 ? BASE_VISUAL_ROW_RENDER_HEIGHT_PX : VISUAL_ROW_RENDER_HEIGHT_PX
     rows.push({
       trackIdx,
@@ -335,6 +386,11 @@ export function computeTimelineLayout(project: Project): TimelineLayout {
     })
     y += height + ROW_GAP_PX
   }
+  // A project with captions but NO visual tracks at all never runs the loop
+  // above, so the hook that emits the band right before `trackIdx === 0`
+  // never fires. Emit it here instead — still above where the (absent) base
+  // row would sit, which is the same rule applied to zero rows.
+  if (allTracks.length === 0 && captionSegments.length > 0) emitCaptionBand()
 
   // Resolved once per layout, not per track: an audio track may legally omit
   // `start`/`end`, and `groupAudioLanes` needs a horizon to fall back to.
@@ -350,7 +406,9 @@ export function computeTimelineLayout(project: Project): TimelineLayout {
     return laneLayout
   })
 
-  return { ruler, rows, lanes, height: Math.max(0, y - ROW_GAP_PX) }
+  const layout: TimelineLayout = { ruler, rows, lanes, height: Math.max(0, y - ROW_GAP_PX) }
+  if (caption) layout.caption = caption
+  return layout
 }
 
 // ── Primitives ───────────────────────────────────────────────────────────
@@ -659,6 +717,66 @@ export function drawAudioItem(ctx: DrawContext, args: AudioItemDrawArgs): void {
   ctx.restore()
 }
 
+export interface CaptionBlockDrawArgs {
+  /** Already inset (see `AUDIO_ITEM_INSET_PX`) — same contract as
+   *  `drawAudioItem`'s `rect`, not the full row span. */
+  rect: Rect
+  selected: boolean
+  label: string
+}
+
+/**
+ * One caption segment block. Structurally the closer sibling is
+ * `drawAudioItem`, not `drawClipRect`: like an audio bar, a caption has no
+ * content bands to split label position around, so its label rides centred;
+ * like an audio bar, it takes its OWN hue on selection rather than the
+ * global white clip-selection outline (`drawClipRect`'s override would be a
+ * lie here — a caption is never confused with a video clip because nothing
+ * else on this row looks like one).
+ *
+ * Unlike an audio bar, the FILL itself changes on selection too — mirrors
+ * the retired DOM row's `bg-purple-700/40` → `bg-purple-600/70` swap — and
+ * the border/ring pair is mutually exclusive (border unselected, ring
+ * selected) rather than audio's "border always, ring layered on top",
+ * because that is what the DOM classes did:
+ * `border border-purple-500/40` XOR `ring-1 ring-inset ring-purple-300/80`.
+ */
+export function drawCaptionBlock(ctx: DrawContext, args: CaptionBlockDrawArgs): void {
+  const { rect, selected, label } = args
+  if (rect.width <= 0) return
+
+  const palette = CAPTION_PALETTE
+  const radius = Math.min(AUDIO_ITEM_RADIUS_PX, rect.width / 2, rect.height / 2)
+  const handleWidth = selected ? Math.min(AUDIO_HANDLE_WIDTH_PX, rect.width / 2) : 0
+
+  ctx.save()
+  ctx.fillStyle = selected ? palette.fillSelected : palette.fill
+  roundRectPath(ctx, rect.x, rect.y, rect.width, rect.height, radius)
+  ctx.fill()
+
+  ctx.strokeStyle = selected ? palette.ring : palette.border
+  ctx.lineWidth = 1
+  roundRectPath(ctx, rect.x + 0.5, rect.y + 0.5, Math.max(0, rect.width - 1), Math.max(0, rect.height - 1), radius)
+  ctx.stroke()
+
+  // Centred, clipped to the block — matching the DOM row's `flex items-center
+  // overflow-hidden` rather than `drawClipRect`'s top pin, which exists only
+  // to clear that clip's own frames/waveform split. A caption block has none.
+  if (label !== '' && rect.width >= MIN_LABEL_WIDTH_PX) {
+    ctx.save()
+    ctx.beginPath()
+    ctx.rect(rect.x, rect.y, rect.width, rect.height)
+    ctx.clip()
+    ctx.fillStyle = palette.text
+    ctx.font = LABEL_FONT
+    ctx.textBaseline = 'middle'
+    ctx.fillText(label, rect.x + LABEL_PAD_PX + handleWidth, rect.y + rect.height / 2)
+    ctx.restore()
+  }
+
+  ctx.restore()
+}
+
 /**
  * The span where two items on one row sit on top of each other.
  *
@@ -823,6 +941,15 @@ export interface DrawStats {
   visualItemsDrawn: number
   audioItemsDrawn: number
   itemsCulled: number
+  /** Caption blocks drawn. Kept OUT of `visualItemsDrawn`/`audioItemsDrawn` —
+   *  every existing assertion built on those two ("drawn + culled === total
+   *  items") predates captions and counts only clips/overlays and audio bars;
+   *  folding captions in would silently change what those numbers mean for
+   *  every project that already has any. Culled captions still count toward
+   *  the shared `itemsCulled`, same as every other item kind. Required, not
+   *  optional: `drawTimelineContent` always initializes it to 0 and is the
+   *  only producer of a `DrawStats`, so every reader can rely on a number. */
+  captionItemsDrawn: number
 }
 
 /** Does [start, end] intersect the viewport's visible time range? */
@@ -937,7 +1064,7 @@ export function drawMarquee(ctx: DrawContext, rect: Rect): void {
 export function drawTimelineContent(ctx: DrawContext, scene: TimelineScene): DrawStats {
   const { viewport, layout, selectedIds, surfaceWidth, surfaceHeight, hoveredHandle } = scene
   const range = visibleRange(viewport)
-  const stats: DrawStats = { visualItemsDrawn: 0, audioItemsDrawn: 0, itemsCulled: 0 }
+  const stats: DrawStats = { visualItemsDrawn: 0, audioItemsDrawn: 0, itemsCulled: 0, captionItemsDrawn: 0 }
 
   ctx.clearRect(0, 0, surfaceWidth, surfaceHeight)
 
@@ -1022,6 +1149,50 @@ export function drawTimelineContent(ctx: DrawContext, scene: TimelineScene): Dra
       drawItemHandles(ctx, body, CLIP_HANDLE_WIDTH_PX, hoveredEdge, Math.min(CLIP_RADIUS_PX, body.width / 2, body.height / 2))
     }
     ctx.restore()
+  }
+
+  // The caption band — absent entirely on a project with no caption segments
+  // (see `computeTimelineLayout`), so this whole pass is a no-op for every
+  // project that predates captions moving into the canvas.
+  if (layout.caption) {
+    const { caption } = layout
+    drawRowBackground(ctx, { x: 0, y: caption.y, width: surfaceWidth, height: caption.height })
+    const handleRects: Array<{ rect: Rect; hoveredEdge: 'in' | 'out' | null }> = []
+
+    for (const seg of caption.segments) {
+      if (!intersectsRange(seg.start, seg.end, range)) { stats.itemsCulled++; continue }
+      const x = timeToX(seg.start, viewport)
+      const rect = clampRectToSurface(
+        {
+          x,
+          y: caption.y + AUDIO_ITEM_INSET_PX,
+          width: (seg.end - seg.start) * viewport.pxPerSecond,
+          height: caption.height - AUDIO_ITEM_INSET_PX * 2,
+        },
+        surfaceWidth,
+      )
+      if (rect.width <= 0) { stats.itemsCulled++; continue }
+      // A segment briefly has no `id` — before `backfillCaptionIds` mints one
+      // (see VideoEditor.tsx) — so it draws, but can never be selected or
+      // handled. `segId` (not `seg.id`) is what the rest of this block reads,
+      // since `seg.id`'s `string | undefined` would otherwise let a bare
+      // `hoveredHandle?.itemId === seg.id` go true on "both sides undefined"
+      // without `hoveredHandle` itself being set.
+      const segId = typeof seg.id === 'string' ? seg.id : null
+      const selected = segId !== null && selectedIds.includes(segId)
+      drawCaptionBlock(ctx, { rect, selected, label: seg.text })
+      if (selected && segId !== null) {
+        const hoveredEdge = hoveredHandle?.itemId === segId ? hoveredHandle.edge : null
+        handleRects.push({ rect, hoveredEdge })
+      }
+      stats.captionItemsDrawn++
+    }
+
+    // Handles last, over every block in the band — same "the control always
+    // wins the stacking order" rule the visual rows and audio lanes follow.
+    for (const { rect, hoveredEdge } of handleRects) {
+      drawItemHandles(ctx, rect, AUDIO_HANDLE_WIDTH_PX, hoveredEdge, AUDIO_ITEM_RADIUS_PX)
+    }
   }
 
   for (const lane of layout.lanes) {

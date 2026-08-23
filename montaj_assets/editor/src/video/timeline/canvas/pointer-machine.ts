@@ -27,7 +27,9 @@
  * - **A plain click on an unselected clip also seeks** to the clicked time,
  *   unsnapped; an additive click, or a click on an already-selected clip, does
  *   not (VisualTrackRow.tsx's `if (!additive && !isSel)`). Audio bars never
- *   seek on click — AudioTrackRow has no such line.
+ *   seek on click — AudioTrackRow has no such line. A caption seeks too, but
+ *   to its own start plus half a frame rather than to the clicked time; the
+ *   reasoning is at the seek itself, in `pointerUp`.
  * - **Additive means shift OR meta OR ctrl**, and the resulting selection is
  *   computed by `toggleSelection`, which the host still owns: the machine emits
  *   `{type:'select', id, additive}` so Timeline's existing `handleSelectItem`
@@ -52,7 +54,7 @@
  * doesn't collide: that path only fires for presses that never became drags.
  */
 
-import type { AudioTrack, VisualItem } from '../../../schema'
+import type { AudioTrack, CaptionSegment, VisualItem } from '../../../schema'
 import type { Project } from '../../../types'
 import { collapseGaps, rollEdit, slideItem, slipItem } from '../../cuts'
 import { applyMoveDeltaToSelection, applyResizeDeltaToSelection } from '../multiSelectOps'
@@ -62,6 +64,7 @@ import type { TimelineLayout } from './draw'
 import {
   PLAYHEAD_GRAB_PX,
   hitTest,
+  isCaptionHit,
   isEdgeHit,
   isEmptyHit,
   itemsInRect,
@@ -115,6 +118,10 @@ export interface PointerContext {
   rippleMode: boolean
   /** Where the playhead is, so item gestures can snap to it. */
   playheadTime: number
+  /** The project's frame rate. Needed for exactly one thing: a click on a
+   *  caption seeks half a frame INTO the segment rather than to its start —
+   *  see the seek in `pointerUp`. No gesture's arithmetic uses it. */
+  fps: number
   snapConfig?: SnapConfig
   hitTestOptions?: HitTestOptions
 }
@@ -144,6 +151,11 @@ export type PointerEffect =
   | { type: 'commit'; project: Project }
   /** Double-click on a clip or audio bar — `onInspectClip` / `onInspectAudio`. */
   | { type: 'inspect'; target: 'visual' | 'audio'; id: string }
+  /** Double-click on a caption block. Deliberately NOT `inspect`: a caption has
+   *  no inspector dialog — this routes to focusing its row in the transcript
+   *  sidebar, which is where caption text is edited now that the inline
+   *  contentEditable row is gone. */
+  | { type: 'editCaption'; id: string }
   /** The surface's CSS cursor. Emitted only when it changes. */
   | { type: 'cursor'; cursor: Cursor }
   /** Where to draw the snap guide and how hard it is holding, or nulls to take
@@ -168,6 +180,12 @@ export type GestureKind =
   | 'slide'
   | 'audio-move'
   | 'audio-trim'
+  /** Re-timing a caption block. Rides the clip group-move path, so a mixed
+   *  clip+caption selection travels as one body and lands as one undo. */
+  | 'caption-move'
+  /** Dragging one caption block's in/out edge. Single-segment: multi-caption
+   *  trim is out of scope for v1. */
+  | 'caption-trim'
   /** Dragging the playhead. Lives on the ruler strip only. */
   | 'scrub'
   /** Dragging a rubber-band box across empty track area to select. */
@@ -248,9 +266,11 @@ export function cursorForHit(hit: HitResult): Cursor {
   switch (hit.kind) {
     case 'item-edge':
     case 'audio-edge':
+    case 'caption-edge':
       return 'ew-resize'
     case 'item-body':
     case 'audio-body':
+    case 'caption-body':
       return 'grab'
     case 'ruler':
       return 'ew-resize'
@@ -264,6 +284,7 @@ function cursorForGesture(gesture: GestureKind): Cursor {
     case 'trim':
     case 'roll':
     case 'audio-trim':
+    case 'caption-trim':
     case 'scrub':
       return 'ew-resize'
     case 'marquee':
@@ -288,6 +309,13 @@ export function resolveGesture(hit: HitResult, modifiers: Modifiers): GestureKin
       return 'audio-trim'
     case 'audio-body':
       return 'audio-move'
+    // Captions have no roll/slip/slide either — there is no source window to
+    // slip and no neighbour to roll against — so modifiers fall through here
+    // exactly as they do for audio.
+    case 'caption-edge':
+      return 'caption-trim'
+    case 'caption-body':
+      return 'caption-move'
     // Empty track area drags out a selection box. The ruler is handled on
     // press (it scrubs immediately, so it never reaches this resolution), and
     // is deliberately absent here.
@@ -441,6 +469,20 @@ function replaceVisualItem(project: Project, id: string, patch: Partial<VisualIt
   }
 }
 
+/** `replaceVisualItem`'s caption twin. `patch` is deliberately typed as a
+ *  Partial of the whole segment rather than a start/end pair, but only ever
+ *  called with one edge — see `applyCaptionTrim` on why nothing else moves. */
+function replaceCaptionSegment(project: Project, id: string, patch: Partial<CaptionSegment>): Project {
+  if (!project.captions) return project
+  return {
+    ...project,
+    captions: {
+      ...project.captions,
+      segments: project.captions.segments.map(seg => (seg.id === id ? { ...seg, ...patch } : seg)),
+    },
+  }
+}
+
 /** The items either side of `item` on its own track, in timeline order, and
  *  only when they actually touch it — a gap means there is no shared boundary
  *  to roll. Same adjacency rule `slideItem` uses in cuts.ts. */
@@ -528,9 +570,14 @@ function directSnapGuide(snapped: SnapResult): SnapGuide | null {
  *  edge snaps to the boundaries exactly as a single move does; the delta that
  *  lands is what every selected item and audio track then shifts by, clamped as
  *  a body so none leaves the timeline. Rebuilt from `press.baseProject` each
- *  move so dragging back and forth cannot compound. Shared by `applyMove` and
- *  `applyAudioMove` — a multi-selection can mix clips and audio bars, so the
- *  group moves the same way whichever kind the drag started on. */
+ *  move so dragging back and forth cannot compound. Shared by `applyMove`,
+ *  `applyAudioMove` and `applyCaptionMove` — a multi-selection can mix clips,
+ *  audio bars and captions, so the group moves the same way whichever kind the
+ *  drag started on.
+ *
+ *  `selection` is a parameter rather than a read of `ctx.selectedIds` because
+ *  it is not always that: a freshly grabbed caption is not in the host's
+ *  selection yet on the first move of its own drag. See `applyCaptionMove`. */
 function applyGroupMove(
   ctx: PointerContext,
   press: Press,
@@ -539,13 +586,14 @@ function applyGroupMove(
   lastProject: Project,
   escaped: boolean,
   dragged: { id: string; start: number; end: number },
+  selection: readonly string[],
 ): Applied {
   const duration = dragged.end - dragged.start
   const dt = (point.x - press.origin.x) / ctx.viewport.pxPerSecond
   const boundaries = itemSnapPoints(ctx, press, originGuard(escaped, [dragged.start, dragged.end]))
   const points = snapPointsForSpan(boundaries, duration)
   const snapped = applySnap(dragged.start + dt, points, ctx.viewport, snap, ctx.snapConfig)
-  const next = applyMoveDeltaToSelection(press.baseProject, ctx.selectedIds, snapped.time - dragged.start, ctx.totalDuration)
+  const next = applyMoveDeltaToSelection(press.baseProject, selection, snapped.time - dragged.start, ctx.totalDuration)
   return change(next, lastProject, snapped.state, spanSnapGuide(snapped, duration, boundaries))
 }
 
@@ -558,7 +606,7 @@ function applyMove(ctx: PointerContext, press: Press, point: Point, snap: SnapSt
   // its shape. Cross-track movement is dropped for the group (see
   // `applyMoveDeltaToSelection`); a single-item move keeps it, below.
   if (ctx.selectedIds.length > 1 && ctx.selectedIds.includes(item.id)) {
-    return applyGroupMove(ctx, press, point, snap, lastProject, escaped, item)
+    return applyGroupMove(ctx, press, point, snap, lastProject, escaped, item, ctx.selectedIds)
   }
 
   const duration = item.end - item.start
@@ -703,7 +751,7 @@ function applyAudioMove(ctx: PointerContext, press: Press, point: Point, snap: S
   // one — same rule as the visual side. A lone audio bar keeps its lane-change
   // behaviour, below.
   if (ctx.selectedIds.length > 1 && ctx.selectedIds.includes(track.id)) {
-    return applyGroupMove(ctx, press, point, snap, lastProject, escaped, track)
+    return applyGroupMove(ctx, press, point, snap, lastProject, escaped, track, ctx.selectedIds)
   }
 
   const duration = track.end - track.start
@@ -770,6 +818,139 @@ function applyAudioTrim(ctx: PointerContext, press: Press, point: Point, snap: S
   return { effects: [{ type: 'projectChange', project: next }], snap: snapped.state, lastProject: next, guide }
 }
 
+/**
+ * Re-time a caption block, and whatever else is selected with it.
+ *
+ * There is no single-segment path to fall through to, the way `applyMove` and
+ * `applyAudioMove` have one: a caption belongs to no track and no lane, so
+ * there is nothing for a lone drag to do that the group path doesn't already
+ * do. Everything goes through `applyGroupMove`, which is also what makes a
+ * mixed clip+caption drag land as ONE undo entry.
+ *
+ * The selection expression is load-bearing. `applyMoveDeltaToSelection` moves
+ * only ids it is handed, and when a drag starts on an UNSELECTED caption the
+ * `selectMany` effect that selects it has not been echoed back by the host yet
+ * — so `ctx.selectedIds` does not contain it on that first move, and the
+ * caption would sit perfectly still while the pointer walked away from it.
+ * Falling back to `[seg.id]` covers both cases in one line: a caption already
+ * in a multi-selection group-moves with everything else, a freshly grabbed one
+ * moves alone.
+ *
+ * Snapping is the ordinary boundary set. A caption hit carries no `trackIdx`
+ * or `laneIdx` — it belongs to no row — so `tieredBoundaries` ranks every clip
+ * and audio boundary WEAK for it, and captions do not snap to each other at
+ * all (that function reads tracks and audio only). Accepted for v1.
+ *
+ * Deliberately missing: a clamp against the caption's immediate neighbours.
+ * The retired `CaptionTrackRow` had one; moving captions onto the canvas
+ * timeline for overlay parity dropped it, so a drag (and a trim — see
+ * `applyCaptionTrim`) can now push one caption block to overlap another in
+ * time. This is accepted, not an oversight: the preview and every render
+ * template resolve the active caption with `segments.find(s => t >= s.start
+ * && t < s.end)`, first match in array order, so where two segments overlap
+ * the earlier one in the array wins and the later one simply never displays
+ * for the overlapped span. Flagged in the plan's Risks section, not blocked.
+ */
+function applyCaptionMove(ctx: PointerContext, press: Press, point: Point, snap: SnapState, lastProject: Project, escaped: boolean): Applied {
+  const seg = press.hit.segment
+  if (!seg || seg.id === undefined) return noChange(snap, lastProject)
+  const id = seg.id
+  const selection = ctx.selectedIds.includes(id) ? ctx.selectedIds : [id]
+  return applyGroupMove(ctx, press, point, snap, lastProject, escaped, { id, start: seg.start, end: seg.end }, selection)
+}
+
+/** The shortest a caption may be trimmed to. Carried over from the retired DOM
+ *  row, which got the same floor from `beginResize`, and relied on twice: a
+ *  zero-length caption is unselectable and unreadable, and the click-seek in
+ *  `pointerUp` needs every segment to be at least one frame long. */
+export const CAPTION_MIN_DURATION_S = 0.1
+
+/**
+ * Drag ONE caption edge. Single-segment by design — multi-caption trim is out
+ * of scope for v1, so a trim never consults the selection at all.
+ *
+ * Only the dragged edge is written. `text` and `words` are never touched: a
+ * pure retime must not respread word timings, which is exactly why the retired
+ * DOM row's commit patch carried the one numeric field and nothing else. Word
+ * timings are absolute seconds, so they stay where the speech actually is; a
+ * respread would silently invent new ones from the segment's new duration.
+ */
+function applyCaptionTrim(ctx: PointerContext, press: Press, point: Point, snap: SnapState, lastProject: Project, escaped: boolean): Applied {
+  const seg = press.hit.segment
+  if (!seg || seg.id === undefined || !press.hit.edge) return noChange(snap, lastProject)
+
+  const edge = press.hit.edge === 'in' ? 'start' : 'end'
+  const initTime = edge === 'start' ? seg.start : seg.end
+
+  // ── The dragged edge's LEGAL RANGE, computed once and used for everything ──
+  //
+  // The timeline on one side, the duration floor on the other. Both bounds have
+  // to be one range rather than two clamps in sequence: whichever clamp ran
+  // second would undo the first. Floor-after-bounds let a segment already
+  // shorter than the floor escape the timeline (a 0s–0.05s segment's in edge
+  // landed at -0.05s); bounds-after-floor would break the other invariant
+  // instead. As a range, both hold at once.
+  //
+  // `hi` on the end side is NOT a flat `totalDuration`. That value is
+  // `contentDuration + Math.max(5, contentDuration * 0.2)` (timeline-model),
+  // derived from clips and audio ONLY, so a caption can outlast it whenever
+  // clips were trimmed or deleted after captioning. Rare, but reachable.
+  // Pinning such a segment at `totalDuration` would yank its end backwards the
+  // moment its handle was touched — a silent destructive shrink triggered by
+  // grabbing a handle, which is worse than the out-of-bounds write this bound
+  // exists to prevent: that one needs a sub-floor segment at a boundary, this
+  // one needs only an overhanging caption and a nudge. Ceiling at the segment's
+  // own end instead, so a trim never pushes a caption FURTHER out than it
+  // already was. A caption inside the timeline is unaffected — for it the max
+  // IS `totalDuration`.
+  //
+  // `lo` on the start side stays a flat 0, deliberately NOT the mirror image
+  // (`Math.min(0, seg.start)`). A negative `start` is unreachable:
+  // `applyMoveDeltaToSelection` clamps a group move at `-minStart` and this
+  // trim clamps at 0, so nothing in the codebase can produce one. Mirroring
+  // would be generality for a state that cannot occur — the asymmetry is
+  // intentional, and is not to be "fixed" into symmetry.
+  const lo = edge === 'start' ? 0 : seg.start + CAPTION_MIN_DURATION_S
+  const hi = edge === 'start' ? seg.end - CAPTION_MIN_DURATION_S : Math.max(ctx.totalDuration, seg.end)
+
+  // An EMPTY range means a sub-floor segment pinned against t=0 or the end of
+  // the timeline: there is no legal position for this edge at all, so the trim
+  // declines to move rather than inventing a least-bad one. Same shape
+  // `applyMoveDeltaToSelection` uses for a group already wider than the
+  // timeline, which likewise refuses to move rather than pick a side.
+  //
+  // This MUST short-circuit before either clamp below. `clamp` is
+  // `Math.max(lo, Math.min(hi, v))`, which silently returns `lo` when the range
+  // is inverted — so an unguarded clamp would not error, it would quietly place
+  // the edge at a bound that is on the wrong side of the other one.
+  if (lo > hi) return noChange(snap, lastProject)
+
+  const dt = (point.x - press.origin.x) / ctx.viewport.pxPerSecond
+  const raw = clamp(initTime + dt, lo, hi)
+
+  // Same exclusions as every other trim: the opposite edge stays suppressed
+  // for the whole gesture, and only the dragged edge's origin re-arms.
+  const fixedEdge = edge === 'start' ? seg.end : seg.start
+  const snapped = applySnap(
+    raw,
+    itemSnapPoints(ctx, press, [fixedEdge, ...originGuard(escaped, [initTime])]),
+    ctx.viewport, snap, ctx.snapConfig,
+  )
+  // Clamped again after the snap: a magnet can sit outside the range (the
+  // playhead parked past a short caption's floor, say), and a snap is a
+  // suggestion, not a licence to leave it.
+  const landed = clamp(snapped.time, lo, hi)
+
+  // Same-reference on a no-op, the contract `change` reads. Held against a
+  // clamp — dragging further past the floor produces the same edge every move —
+  // this is what keeps a pinned drag from emitting an identical project per
+  // pointer event, and a drag returned to its origin from committing at all.
+  const next = Math.abs(landed - initTime) <= EPSILON
+    ? press.baseProject
+    : replaceCaptionSegment(press.baseProject, seg.id, edge === 'start' ? { start: landed } : { end: landed })
+  return change(next, lastProject, snapped.state, edgeSnapGuide(snapped, landed))
+}
+
 function applyScrub(ctx: PointerContext, point: Point, snap: SnapState, lastProject: Project): Applied {
   const raw = clamp(xToTime(point.x, ctx.viewport), 0, ctx.totalDuration)
   const snapped = applySnap(raw, playheadSnapPoints(ctx), ctx.viewport, snap, ctx.snapConfig)
@@ -800,6 +981,8 @@ function applyGesture(
     case 'slide':       return applySlide(ctx, press, point, snap, lastProject, escaped)
     case 'audio-move':  return applyAudioMove(ctx, press, point, snap, lastProject, escaped)
     case 'audio-trim':  return applyAudioTrim(ctx, press, point, snap, lastProject, escaped)
+    case 'caption-move': return applyCaptionMove(ctx, press, point, snap, lastProject, escaped)
+    case 'caption-trim': return applyCaptionTrim(ctx, press, point, snap, lastProject, escaped)
     case 'scrub':       return applyScrub(ctx, point, snap, lastProject)
     case 'marquee':     return applyMarquee(press, point, snap, lastProject)
   }
@@ -954,13 +1137,17 @@ export function pointerReducer(state: MachineState, event: PointerMachineEvent):
       if (travelled(point, state.press.origin) < DRAG_THRESHOLD_PX) return { state, effects: [] }
       const gesture = resolveGesture(state.press.hit, state.press.modifiers)
       if (gesture === null) return { state, effects: [] }
-      // Grabbing an UNSELECTED clip or bar to move it makes it the selection
-      // first, so it is the thing that moves and the thing left selected after —
-      // matching every NLE. A drag that starts on an item already in a
-      // multi-selection is a group move and leaves the selection untouched.
+      // Grabbing an UNSELECTED clip, bar or caption to move it makes it the
+      // selection first, so it is the thing that moves and the thing left
+      // selected after — matching every NLE. A drag that starts on an item
+      // already in a multi-selection is a group move and leaves the selection
+      // untouched. Note this effect only reaches `ctx.selectedIds` on the NEXT
+      // event, which is why each move applier has to cope with its own dragged
+      // id being absent from it (see `applyCaptionMove`).
       const draggedId = state.press.hit.itemId
       const selectFirst: PointerEffect[] =
-        (gesture === 'move' || gesture === 'audio-move') && draggedId !== undefined && !ctx.selectedIds.includes(draggedId)
+        (gesture === 'move' || gesture === 'audio-move' || gesture === 'caption-move')
+          && draggedId !== undefined && !ctx.selectedIds.includes(draggedId)
           ? [{ type: 'selectMany', ids: [draggedId], additive: false }]
           : []
       const escaped = hasEscaped(ctx, state.press, point)
@@ -990,6 +1177,29 @@ export function pointerReducer(state: MachineState, event: PointerMachineEvent):
           const visual = pressed.kind === 'item-body' || pressed.kind === 'item-edge'
           if (visual && !additive && !wasSelected) {
             effects.push({ type: 'seek', time: clamp(xToTime(point.x, ctx.viewport), 0, ctx.totalDuration) })
+          } else if (isCaptionHit(pressed) && pressed.segment && !additive && !wasSelected) {
+            // A caption seeks to its OWN start, not to the clicked time —
+            // the preview only offers drag handles for the segment active at
+            // the playhead, so selecting one without seeking into it selects
+            // something the preview cannot yet act on.
+            //
+            // And half a frame IN, not to `start` itself. `CaptionPreview`
+            // snaps the clock to the frame grid (`t = Math.round(currentTime *
+            // fps) / fps`) before the templates' own `t >= start && t < end`
+            // test, and caption starts are arbitrary floats out of Whisper.
+            // Seeking to exactly `start` therefore rounds DOWN into the
+            // PREVIOUS segment whenever `start * fps` has a fractional part
+            // below 0.5 — roughly half of all segments (start 3.44 at 30fps →
+            // frame 103 → t 3.4333 < 3.44). `start + 0.5 / fps` puts the
+            // snapped `t` in [start, start + 1/fps), always inside, and
+            // `CAPTION_MIN_DURATION_S` guarantees no segment is under a frame.
+            //
+            // `ctx.fps` comes from `project.settings?.fps ?? 30`, which lets an
+            // explicit `0` (falsy, but not nullish) through untouched — and
+            // `0.5 / 0` is `Infinity`, which the clamp below parks at
+            // `totalDuration` instead of inside the segment. Guarded here too.
+            const fps = Number.isFinite(ctx.fps) && ctx.fps > 0 ? ctx.fps : 30
+            effects.push({ type: 'seek', time: clamp(pressed.segment.start + 0.5 / fps, 0, ctx.totalDuration) })
           }
         } else if (isEmptyHit(pressed)) {
           // A click on empty track area that never became a marquee: seek and
@@ -1039,6 +1249,8 @@ export function pointerReducer(state: MachineState, event: PointerMachineEvent):
       // A clip or bar opens its inspector. Timeline background does nothing:
       // double-clicking it used to place the A/B range markers, which are gone.
       if (hit.itemId !== undefined) {
+        // A caption has no inspector — it opens its text for editing instead.
+        if (isCaptionHit(hit)) return { state, effects: [{ type: 'editCaption', id: hit.itemId }] }
         const target = hit.kind === 'item-body' || hit.kind === 'item-edge' ? 'visual' : 'audio'
         return { state, effects: [{ type: 'inspect', target, id: hit.itemId }] }
       }

@@ -14,11 +14,12 @@ import Timeline, { type TimelineActions } from './timeline/Timeline'
 import { computeAutoCrossfade, computeDerivedTiming, enabledTrackItems, mapTrackItems, trackItems } from './timeline/timeline-model'
 import { makeCaptionEdit, type CaptionEditPatch } from './timeline/makeCaptionEdit'
 import PreviewPlayer, { type TransportHandle } from './preview/PreviewPlayer'
-import { createPlaybackClock, type PlaybackClock } from './playback-clock'
+import { createPlaybackClock, usePlaybackTime, type PlaybackClock } from './playback-clock'
 import { createHoverScrub } from './hover-scrub'
 import { useSourcePreview, type SourcePreviewStore } from './source-preview'
 import type { OverlayChanges } from './preview/useDragOverlay'
 import VersionPanel from './VersionPanel'
+import CaptionListPanel, { type CaptionListPanelProps, type CaptionEditFocusRequest, nextEditFocus } from './CaptionListPanel'
 import RenderModal from './RenderModal'
 import ImageToneMenu from './ImageToneMenu'
 import type { ImageTone } from './imageTone'
@@ -55,6 +56,10 @@ const RAIL_WIDTH_STORAGE_KEY = 'montaj.editor.railWidth'
  *  beside it — the vertical counterpart of the timeline pane's clamps. */
 const MIN_RAIL_PX = 150
 const MAX_RAIL_PX = 720
+/** Default/reset rail width, wide enough for the sidebar CaptionListPanel's
+ *  list and controls (previously 224 in 'sidebar' placement, 192 elsewhere —
+ *  now one shared default across placements). */
+const DEFAULT_RAIL_PX = 300
 const MIN_MAIN_PX = 320
 
 // ── CapCut media-panel width (opt-in via slots.mediaPanel) ─────────────────
@@ -540,15 +545,48 @@ function ReviewSurface<P extends Project>({
   if (!clockRef.current) clockRef.current = createPlaybackClock()
   const clock = clockRef.current
   // Multi-select: all currently-selected timeline item ids. Single-select
-  // consumers (canvas preview, cut/split) use selectedIds[0] as the primary.
+  // consumers (canvas preview, cut/split) use primarySelectedId, derived below
+  // once captionIdSet exists — it has to skip caption ids, so it can't just be
+  // selectedIds[0].
   const [selectedIds, setSelectedIds] = useState<string[]>([])
-  const primarySelectedId = selectedIds[0] ?? null
-  // Selected caption segment id. Deliberately owned here rather than inside the
-  // preview: it is shared selection state. The preview draws the selection box /
-  // drag handles for it, and the timeline's caption row (later task) highlights
-  // and seeks to the same segment — that sibling only needs `selectedCaptionId`
-  // and `setSelectedCaptionId` passed down, no lifting required.
-  const [selectedCaptionId, setSelectedCaptionId] = useState<string | null>(null)
+  // Canvas-timeline double-click → sidebar focus request (Phase 6). `nonce`
+  // is load-bearing: CaptionListPanel only re-focuses a row when `nonce`
+  // CHANGES (see its `lastHandledNonceRef` guard), so double-clicking the
+  // SAME caption twice must still produce two distinct requests — the bare
+  // id would be identical both times and the second double-click would be a
+  // silent no-op. Incrementing off the previous state (not a plain counter
+  // ref) keeps this correct even if two edits interleave with other renders.
+  const [editFocusId, setEditFocusId] = useState<CaptionEditFocusRequest | null>(null)
+  // Ids present in project.captions.segments — memoized so DERIVING
+  // selectedCaptionId below doesn't rescan every segment on every render, only
+  // when captions actually change.
+  const captionIdSet = useMemo(
+    () => new Set((project.captions?.segments ?? []).map(s => s.id).filter((id): id is string => !!id)),
+    [project.captions?.segments],
+  )
+  // The first NON-caption id in the selection, deliberately. Under D1 captions
+  // share `selectedIds` with clips and audio (see Timeline.tsx's
+  // `handleSelectItem`), but every consumer of this value — cropTarget,
+  // selectedOverlayItem, handleSplit's scope, PreviewPlayer's overlay
+  // selection box — speaks clip/audio vocabulary. Taking selectedIds[0]
+  // verbatim let a caption id at index 0 blank the selected clip's crop and
+  // overlay-edit affordances, and scoped Split to an id no track item
+  // matches, so `splitAtTime` returned its input unchanged and `S` silently
+  // did nothing. Captions are addressed separately, via `selectedCaptionId`
+  // below.
+  const primarySelectedId = selectedIds.find(id => !captionIdSet.has(id)) ?? null
+  // Selected caption segment id — DERIVED from `selectedIds`, not tracked as
+  // its own state. Under D1 a caption id is just another member of
+  // `selectedIds` (selected on the canvas timeline exactly like a clip or
+  // audio track — see Timeline.tsx's `handleSelectItem`); this is
+  // VideoEditor's mirror of "the first caption id in there, if any" for
+  // PreviewPlayer's selection box, the one remaining consumer that predates
+  // D1 and only understands a single id (CaptionListPanel, its other former
+  // sibling, derives its own selected segment straight from `selectedIds`
+  // instead of taking this prop). A marquee can legitimately put more than
+  // one caption id in `selectedIds` — taking the first is correct, the
+  // preview only ever shows one box.
+  const selectedCaptionId = selectedIds.find(id => captionIdSet.has(id)) ?? null
   // Publish what we are looking at, so an agent can resolve "this section".
   // No-ops entirely on a host that does not implement reportContext.
   useReportContext({
@@ -576,11 +614,14 @@ function ReviewSurface<P extends Project>({
     DEFAULT_TIMELINE_PANE_PX,
     reviveNumberInRange(MIN_TIMELINE_PANE_PX, MAX_TIMELINE_PANE_PX),
   )
-  // The right rail's width, same deal on the other axis.
+  // The right rail's width, same deal on the other axis. 300px (up from
+  // 224/192) is the new default so the sidebar CaptionListPanel's list and
+  // its "Caption style" controls aren't cramped — persisted per browser, so
+  // only a fresh/cleared localStorage picks up the new default.
   const workAreaRef = useRef<HTMLDivElement | null>(null)
   const [railWidth, setRailWidth] = usePersistentState(
     RAIL_WIDTH_STORAGE_KEY,
-    assetsPlacement === 'sidebar' ? 224 : 192,
+    DEFAULT_RAIL_PX,
     reviveNumberInRange(MIN_RAIL_PX, MAX_RAIL_PX),
   )
   // The left media column's width (CapCut layout only). Same persist/clamp
@@ -707,6 +748,10 @@ function ReviewSurface<P extends Project>({
   const [cropMode, setCropMode]       = useState(false)
   const [renderOpen, setRenderOpen]   = useState(false)
   const [regenCaptionsOpen, setRegenCaptionsOpen] = useState(false)
+  // Opens the caption-regeneration modal — CaptionListPanel's toolbar button.
+  // Provided only when the host adapter supports `generateCaptions`; absent →
+  // the "Regenerate" button is hidden there.
+  const handleRegenerateCaptions = adapter.generateCaptions ? () => setRegenCaptionsOpen(true) : undefined
   // The clip/audio inspector target — derived from the timeline's inspect
   // callbacks. A Montaj-agnostic { kind, id } selector, not a project entity.
   const [inspecting, setInspecting]   = useState<{ kind: 'clip' | 'audio'; id: string } | null>(null)
@@ -986,17 +1031,42 @@ function ReviewSurface<P extends Project>({
     makeCaptionEdit(segmentId, syncProjectRef.current, (p) => void syncMutate(() => p as P))(patch)
   }, [syncProjectRef, syncMutate])
 
-  // Selecting a caption segment and selecting a normal timeline item are
-  // mutually exclusive selection models — never show both sets of handles at
-  // once (see CaptionTrackRow's file header). A caption can be selected from
-  // either the preview (click the selection box) or the timeline's caption
-  // row, so this wrapper — not Timeline — is the one place that must clear
-  // `selectedIds` on every caption selection; Timeline's own
-  // `handleSelectItem` handles the reverse (selecting an item clears this).
+  // Delete one caption segment by id — CaptionListPanel's per-row trash
+  // button. Captions have no "add" affordance (R4: they come from
+  // transcription; Regenerate rebuilds the whole track), so this is the only
+  // track-mutating action the sidebar list performs beyond per-segment
+  // patches — narrow enough to get its own channel rather than stretching
+  // `onCaptionEdit`'s whole-project-commit signature for a single id.
+  const handleCaptionSegmentDelete = useCallback((segmentId: string) => {
+    const base = syncProjectRef.current
+    if (!base.captions) return
+    const segments = base.captions.segments.filter(s => s.id !== segmentId)
+    if (segments.length === base.captions.segments.length) return
+    void syncMutate(() => ({ ...base, captions: { ...base.captions, segments } } as P))
+  }, [syncProjectRef, syncMutate])
+
+  // Selecting a caption from the preview (click the selection box) is just
+  // setting the unified selection — `selectedCaptionId` above is DERIVED from
+  // `selectedIds`, so there is no second selection model left to keep in
+  // sync. `id !== null` replaces the whole array with just that caption
+  // (matching a plain, non-additive click anywhere else on the timeline);
+  // `null` clears it.
   const handleSelectCaption = useCallback((id: string | null) => {
-    setSelectedCaptionId(id)
-    if (id !== null) setSelectedIds([])
+    setSelectedIds(id ? [id] : [])
   }, [])
+
+  // Canvas double-click on a caption (Timeline's `onEditCaption`, Phase 6):
+  // selects it exactly like a click would, AND asks the sidebar to scroll to
+  // and focus that segment's text field — `nextEditFocus` (CaptionListPanel.tsx)
+  // is what makes a second double-click on the same segment re-focus it (see
+  // `editFocusId` above for why the bare id can't carry that signal alone).
+  // Extracted to a pure, unit-tested function rather than inlined here, since
+  // this increment is load-bearing and a source-level test alone can't prove
+  // it does the right arithmetic, only that it looks like it does.
+  const handleEditCaption = useCallback((id: string) => {
+    handleSelectCaption(id)
+    setEditFocusId(prev => nextEditFocus(prev, id))
+  }, [handleSelectCaption])
 
   function handleSplit(at?: number) {
     const base = syncProjectRef.current
@@ -1359,18 +1429,15 @@ function ReviewSurface<P extends Project>({
           project={project}
           clock={clock}
           onProjectChange={handleProjectChange}
-          onCaptionEdit={(p) => void sync.mutate(() => p as P)}
           onOverlayEdit={commitTimelineEdit}
           onEditOverlay={requestEditOverlay}
           previewAxis={previewAxis}
           onHoverScrub={handleHoverScrub}
           selectedIds={selectedIds}
           onSelectIds={setSelectedIds}
-          selectedCaptionId={selectedCaptionId}
-          onSelectCaption={handleSelectCaption}
-          onCaptionSegmentChange={handleCaptionSegmentChange}
           onInspectClip={(id) => setInspecting({ kind: 'clip', id })}
           onInspectAudio={(id) => setInspecting({ kind: 'audio', id })}
+          onEditCaption={handleEditCaption}
           rippleMode={rippleMode}
           getWaveformChunks={getWaveformChunks}
           resolveFilePath={resolveFilePath}
@@ -1379,7 +1446,6 @@ function ReviewSurface<P extends Project>({
           regenEnabled={regenEnabled}
           isClipQueued={isClipQueued}
           renderSubcutRegen={renderSubcutRegen}
-          onRegenerateCaptions={adapter.generateCaptions ? () => setRegenCaptionsOpen(true) : undefined}
           timeline={timeline}
           modalOpen={anyModalOpen}
           onOpenGoToTime={openGoToTime}
@@ -1397,11 +1463,22 @@ function ReviewSurface<P extends Project>({
     </div>
   )
 
-  // Right rail — version history + run history slot, and (in 'sidebar' placement)
-  // the assets panel stacked beneath them in the SAME column. Shared by both
-  // layouts (its own col-resize divider is included).
+  // Right rail — version history + run history slot, the sidebar caption list,
+  // and (in 'sidebar' placement) the assets panel stacked beneath them in the
+  // SAME column. Shared by both layouts (its own col-resize divider is
+  // included). `!!project.captions || !!handleRegenerateCaptions` is a new
+  // disjunct (SP5-captions Phase 5): CaptionListPanel now lives in this rail
+  // instead of a bottom panel, so the rail must appear whenever THAT panel
+  // has anything to offer — either existing captions, or (on a host that
+  // supports `generateCaptions`) the means to create them from scratch. The
+  // second half matters even with zero captions: the retired bottom
+  // TranscriptPanel showed "Regenerate" whenever the host supported it,
+  // regardless of caption count, and dropping that would make caption
+  // generation unreachable from the editor on a bare project with no other
+  // rail content.
   const rightRail = (adapter.listVersionHistory || slots?.runHistory ||
-    (assetsPlacement === 'sidebar' && slots?.assetsPanel)) && (
+    (assetsPlacement === 'sidebar' && slots?.assetsPanel) ||
+    !!project.captions || !!handleRegenerateCaptions) && (
     <>
       {/* Vertical divider, the same affordance as the preview/timeline one. */}
       <div
@@ -1409,7 +1486,7 @@ function ReviewSurface<P extends Project>({
         aria-orientation="vertical"
         aria-label="Resize sidebar"
         onMouseDown={startRailDrag}
-        onDoubleClick={() => setRailWidth(assetsPlacement === 'sidebar' ? 224 : 192)}
+        onDoubleClick={() => setRailWidth(DEFAULT_RAIL_PX)}
         className="group shrink-0 w-[5px] cursor-col-resize bg-transparent"
       >
         <div className="w-px h-full bg-[var(--editor-border)] transition-colors group-hover:bg-[var(--editor-accent)]" />
@@ -1421,6 +1498,30 @@ function ReviewSurface<P extends Project>({
       >
         {adapter.listVersionHistory && (
           <VersionPanel versions={versions} restoring={restoring} onRestore={handleRestoreVersion} />
+        )}
+        {/* Sidebar caption editor, directly below version history. Its own
+            flex-1 wrapper so the list scrolls independently of the rest of
+            the rail — mirrors the assetsPanel wrapper just below. Gated the
+            same way that one is: nothing to show, nothing rendered, rather
+            than an empty bordered box (CaptionListPanel has its own internal
+            guard too, for callers that can't check this ahead of time). */}
+        {(project.captions || handleRegenerateCaptions) && (
+          <div className="flex-1 min-h-0 overflow-hidden border-t border-[var(--editor-border)] flex flex-col">
+            <CaptionListPanelWithClock
+              captionTrack={project.captions}
+              project={project}
+              selectedIds={selectedIds}
+              onSelectCaption={handleSelectCaption}
+              onCaptionSegmentChange={handleCaptionSegmentChange}
+              onCaptionEdit={(p) => void sync.mutate(() => p as P)}
+              onProjectChange={handleProjectChange}
+              onCaptionSegmentDelete={handleCaptionSegmentDelete}
+              onRegenerateCaptions={handleRegenerateCaptions}
+              fps={project.settings?.fps ?? 30}
+              clock={clock}
+              editFocusId={editFocusId}
+            />
+          </div>
         )}
         {/* Host injects the Montaj-flavored "Previous runs" snapshot list here.
             RunSnapshot / project.history are host-only types — the package never
@@ -1625,4 +1726,15 @@ function ReviewSurface<P extends Project>({
       })}
     </div>
   )
+}
+
+// CaptionListPanel displays the active-segment highlight, so it genuinely
+// needs to re-render every tick. Subscribing HERE (rather than inside
+// ReviewSurface) keeps that per-tick re-render scoped to this leaf instead of
+// the whole review surface (toolbar + timeline + every context consumer) —
+// the same reasoning, and the same shape, as Timeline.tsx's
+// `TranscriptPanelWithClock` for the now-retired bottom transcript panel.
+function CaptionListPanelWithClock({ clock, ...rest }: Omit<CaptionListPanelProps, 'currentTime'>) {
+  const currentTime = usePlaybackTime(clock)
+  return <CaptionListPanel currentTime={currentTime} clock={clock} {...rest} />
 }

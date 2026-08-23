@@ -41,6 +41,15 @@ export const BASE_VISUAL_ROW_RENDER_HEIGHT_PX = 120
  *  list's flex column. */
 export const ROW_GAP_PX = 4
 
+/** Caption row height — matches the `h-10` (2.5rem = 40px) Tailwind class the
+ *  retired DOM caption row (CaptionTrackRow.tsx) used to draw. The only
+ *  direct reader is `computeTimelineLayout` (canvas/draw.ts), which seeds
+ *  `layout.caption`/`resolved.caption` with it; TrackGutter's rail cell and
+ *  the hit-tester both take the rectangle from THAT output rather than
+ *  reading this constant themselves, so every reader agrees on one rectangle
+ *  by construction. */
+export const CAPTION_ROW_HEIGHT_PX = 40
+
 // ── Audio lane grouping ──────────────────────────────────────────────────
 
 export interface AudioLane {

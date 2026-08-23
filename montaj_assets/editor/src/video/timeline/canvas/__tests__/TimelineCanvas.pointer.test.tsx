@@ -86,6 +86,20 @@ const RULER_Y = (() => {
 
 const TOTAL_DURATION = 13
 const SNAP_BOUNDARIES = [0, 4, 8, 1, 5]
+const FPS = 30
+
+/** The same fixture with a caption band, for the caption-only wiring below.
+ *  Separate so the row/lane probes above keep the geometry they assume. */
+const captionedProject = {
+  ...project,
+  captions: { style: 'pop', segments: [{ id: 's0', text: 'hello', start: 1, end: 3 }] },
+} as unknown as Project
+
+/** Vertical centre of the caption band, from the painter's own layout. */
+const CAPTION_Y = (() => {
+  const band = computeTimelineLayout(captionedProject).caption!
+  return Math.round(band.y + band.height / 2)
+})()
 
 function mount(overrides: Partial<React.ComponentProps<typeof TimelineCanvas>> = {}) {
   const store = createViewportStore()
@@ -112,6 +126,7 @@ function mount(overrides: Partial<React.ComponentProps<typeof TimelineCanvas>> =
           clock={clock}
           store={store}
           totalDuration={TOTAL_DURATION}
+          fps={FPS}
           selectedIds={[]}
           snapBoundaries={SNAP_BOUNDARIES}
           {...handlers}
@@ -465,6 +480,15 @@ describe('TimelineCanvas — preview axis', () => {
     act(() => { document.dispatchEvent(mouse('mouseup', 200, ROW_Y)) })
     expect(onSelectItem).toHaveBeenCalledWith('c0', false)
     expect(clock.get()).toBeCloseTo(2)
+  })
+
+  it('routes a caption double-click to onEditCaption, not to an inspector', () => {
+    const onEditCaption = vi.fn()
+    const { surface, onInspectClip, onInspectAudio } = mount({ project: captionedProject, onEditCaption })
+    act(() => { surface.dispatchEvent(mouse('dblclick', 200, CAPTION_Y)) })
+    expect(onEditCaption).toHaveBeenCalledWith('s0')
+    expect(onInspectClip).not.toHaveBeenCalled()
+    expect(onInspectAudio).not.toHaveBeenCalled()
   })
 
   it('releases the override when the axis is switched off mid-hover', () => {
