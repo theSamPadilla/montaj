@@ -500,7 +500,15 @@ async def run_project(body: dict = Body(...)):
     project_path_arg = body.get("projectPath")
     remote_clips = body.get("remoteClips", [])
     remote_assets = body.get("remoteAssets", [])
-    voiceover_asset = body.get("voiceoverAsset")
+    # Voiceover intake accepts a list (`voiceoverAssets`, one file per recorded
+    # take) or the original single `voiceoverAsset`. Both normalize to a list;
+    # init concatenates when there is more than one.
+    voiceover_assets = body.get("voiceoverAssets")
+    if voiceover_assets is None:
+        single = body.get("voiceoverAsset")
+        voiceover_assets = [single] if single else []
+    if not isinstance(voiceover_assets, list):
+        raise bad_request("invalid_field", "'voiceoverAssets' must be a list of paths")
     project_id_arg = _validate_optional_id(body)
 
     # --- Carousel fast path — branch before clip/asset/intake validation ---
@@ -579,8 +587,9 @@ async def run_project(body: dict = Body(...)):
         if not Path(asset).is_file():
             raise bad_request("file_not_found", f"Asset not found: {asset}")
 
-    if voiceover_asset and not Path(voiceover_asset).is_file():
-        raise bad_request("file_not_found", f"voiceoverAsset not found: {voiceover_asset}")
+    for vo in voiceover_assets:
+        if not isinstance(vo, str) or not Path(vo).is_file():
+            raise bad_request("file_not_found", f"voiceoverAsset not found: {vo}")
 
     # ai_video intake — structured image/style refs + intake settings forwarded to init.py
     intake = body.get("aiVideoIntake") or {}
@@ -681,8 +690,8 @@ async def run_project(body: dict = Body(...)):
         cmd += ["--name", name]
     if assets:
         cmd += ["--assets"] + [str(a) for a in assets]
-    if voiceover_asset:
-        cmd += ["--voiceover-asset", voiceover_asset]
+    if voiceover_assets:
+        cmd += ["--voiceover-asset"] + [str(v) for v in voiceover_assets]
     if profile:
         cmd += ["--profile", profile]
     if project_path_arg:

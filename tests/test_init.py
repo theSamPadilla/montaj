@@ -29,6 +29,25 @@ def _project_path_from_stdout(stdout: str) -> Path:
     return Path(lines[-1])
 
 
+def _make_tone_mov(path, seconds, freq=440):
+    """A real .mov with a tone, for voiceover-take tests."""
+    subprocess.run([
+        "ffmpeg", "-v", "error", "-y",
+        "-f", "lavfi", "-i", f"testsrc=duration={seconds}:size=320x240:rate=30",
+        "-f", "lavfi", "-i", f"sine=frequency={freq}:duration={seconds}:sample_rate=48000",
+        "-shortest", str(path),
+    ], check=True)
+    return str(path)
+
+
+def _audio_duration(path):
+    out = subprocess.run([
+        "ffprobe", "-v", "error", "-show_entries", "format=duration",
+        "-of", "csv=p=0", str(path),
+    ], capture_output=True, text=True, check=True).stdout.strip()
+    return float(out)
+
+
 def test_normal_project_has_tracks(tmp_path):
     clip = tmp_path / "clip.mp4"
     clip.write_bytes(b"fake")
@@ -1789,3 +1808,69 @@ def test_voiceover_asset_rejected_for_non_broll_workflow(tmp_path):
                       env_override={"MONTAJ_WORKSPACE_DIR": str(tmp_path)})
     assert result.returncode == 1
     assert json.loads(result.stderr.strip().splitlines()[-1])["error"] == "invalid_argument"
+
+
+def test_init_accepts_multiple_voiceover_takes(tmp_path):
+    """Several takes concatenate into one narration file; src points at it."""
+    clip = _make_tone_mov(tmp_path / "clip.mov", 1.0)
+    takes = [_make_tone_mov(tmp_path / f"t{i}.mov", 1.0) for i in range(3)]
+    result = run_init(
+        "--workflow", "broll", "--prompt", "p", "--clips", clip,
+        "--voiceover-asset", *takes,
+        env_override={"MONTAJ_WORKSPACE_DIR": str(tmp_path / "ws")},
+    )
+    assert result.returncode == 0, result.stderr
+    proj = json.loads(_project_path_from_stdout(result.stdout).read_text())
+    vo = proj["voiceover"]
+    assert vo["src"].endswith(".wav")
+    assert os.path.isfile(vo["src"])
+    assert _audio_duration(vo["src"]) == pytest.approx(3.0, abs=0.20)
+    assert len(vo["takes"]) == 3
+    assert all(os.path.isfile(t) for t in vo["takes"])
+
+
+def test_init_single_take_is_unchanged(tmp_path):
+    """One take is copied verbatim — no concat, no re-encode, suffix preserved."""
+    clip = _make_tone_mov(tmp_path / "clip.mov", 1.0)
+    take = _make_tone_mov(tmp_path / "only.mov", 1.0)
+    result = run_init(
+        "--workflow", "broll", "--prompt", "p", "--clips", clip,
+        "--voiceover-asset", take,
+        env_override={"MONTAJ_WORKSPACE_DIR": str(tmp_path / "ws")},
+    )
+    assert result.returncode == 0, result.stderr
+    vo = json.loads(_project_path_from_stdout(result.stdout).read_text())["voiceover"]
+    assert vo["src"].endswith(".mov")
+    assert os.path.getsize(vo["src"]) == os.path.getsize(take)
+    assert "takes" not in vo
+
+
+def test_init_voiceover_takes_preserve_order(tmp_path):
+    """Concat order follows argument order, not sort order."""
+    clip = _make_tone_mov(tmp_path / "clip.mov", 1.0)
+    b = _make_tone_mov(tmp_path / "b.mov", 1.0)
+    a = _make_tone_mov(tmp_path / "a.mov", 1.0)
+    result = run_init(
+        "--workflow", "broll", "--prompt", "p", "--clips", clip,
+        "--voiceover-asset", b, a,
+        env_override={"MONTAJ_WORKSPACE_DIR": str(tmp_path / "ws")},
+    )
+    assert result.returncode == 0, result.stderr
+    takes = json.loads(_project_path_from_stdout(result.stdout).read_text())["voiceover"]["takes"]
+    # _copy_into_workspace keeps the basename unless it collides, so b.mov/a.mov
+    # survive as-is — assert on the full basename, not a split fragment.
+    assert [os.path.basename(t) for t in takes] == ["b.mov", "a.mov"]
+
+
+def test_init_rejects_missing_file_among_takes(tmp_path):
+    clip = _make_tone_mov(tmp_path / "clip.mov", 1.0)
+    good = _make_tone_mov(tmp_path / "a.mov", 1.0)
+    result = run_init(
+        "--workflow", "broll", "--prompt", "p", "--clips", clip,
+        "--voiceover-asset", good, str(tmp_path / "nope.mov"),
+        env_override={"MONTAJ_WORKSPACE_DIR": str(tmp_path / "ws")},
+    )
+    assert result.returncode == 1
+    # fail() writes the structured error to stderr, not stdout — matching the
+    # four pre-existing voiceover error tests above.
+    assert json.loads(result.stderr.strip().splitlines()[-1])["error"] == "file_not_found"

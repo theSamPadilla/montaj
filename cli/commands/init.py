@@ -52,7 +52,9 @@ def register(subparsers):
                    help="Local clip path (repeatable)")
     p.add_argument("--asset", dest="assets", action="append", default=[],
                    help="Local asset path (image, logo, etc.) (repeatable)")
-    p.add_argument("--voiceover-asset", help="Audio or video file supplying the voiceover (broll only)")
+    p.add_argument("--voiceover-asset", action="append", dest="voiceover_asset",
+                   help="Audio or video file supplying the voiceover (broll only). "
+                        "Repeat once per take, in order, to concatenate them.")
     # Remote fetch flags (passed verbatim to project/init.py).
     p.add_argument("--remote-clip", dest="remote_clips", action="append", default=[],
                    help="Remote clip JSON: {url, destPath, contentType, sizeBytes, method?, headers?}. "
@@ -113,7 +115,7 @@ def handle(args):
     if args.assets:
         cmd += ["--assets"] + args.assets
     if args.voiceover_asset:
-        cmd += ["--voiceover-asset", args.voiceover_asset]
+        cmd += ["--voiceover-asset"] + list(args.voiceover_asset)
 
     # Remote clips: collect from --remote-clip flags + optional --remote-clips-file.
     remote_clips = list(args.remote_clips)

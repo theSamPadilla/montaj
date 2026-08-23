@@ -417,7 +417,8 @@ Present only on `broll` projects — `engine/validate.py` requires this block (w
 
 | Field | Type | Description |
 |-------|------|--------------|
-| `src` | string | Required. Absolute path to the voiceover source file in the workspace — audio or video. Only its audio is used; a video file's picture is never placed on a visual track unless the editing prompt explicitly asks for it. Written by `project/init.py` from `--voiceover-asset` (CLI) or `voiceoverAsset` (HTTP `POST /api/run`). Immutable after init. |
+| `src` | string | Required. Absolute path to the voiceover source file in the workspace — audio or video. Only its audio is used; a video file's picture is never placed on a visual track unless the editing prompt explicitly asks for it. Written by `project/init.py` from `--voiceover-asset` (CLI, accepting one or more paths) or `voiceoverAsset` / `voiceoverAssets` (HTTP `POST /api/run`). When several takes are supplied, `src` points at the concatenated `voiceover_full.wav` rather than at any single input (`voiceover_full_<N>.wav` in the rare case a take of the user's own already claims that name). Not rewritten by any step after init. |
+| `takes` | string[] | Optional. Absolute paths to the individual voiceover takes in the workspace, in the order they were concatenated to produce `src`. Written by `project/init.py` only when more than one file was supplied via `--voiceover-asset` / `voiceoverAssets`; absent for a single-take project, where `src` **is** the take. Provenance only — no step reads it. |
 | `cleanedSrc` | string | Optional. Absolute path to the cleaned voiceover, written by the `broll` skill after running `materialize_cut --audio` on the clean-cut chain. Present once the skill has produced its draft; absent before. |
 
 The footage index the `broll` skill builds while assembling the draft is written to `broll_index.json` in the project workspace — a working artifact for the skill, not part of `project.json`.

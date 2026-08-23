@@ -19,6 +19,7 @@ from lib.types.colorspace import (
     detect_from_transfer, is_hdr, normalize_key, smart_detect,
 )
 from lib.profile_assets import build_profile_snapshot
+from lib.voiceover import concat_takes
 from lib.workflow import read_workflow
 
 
@@ -186,9 +187,11 @@ def main():
     parser = argparse.ArgumentParser(description="Initialize a montaj project workspace")
     parser.add_argument("--clips", nargs="*", default=[], help="Input clip paths")
     parser.add_argument("--assets", nargs="*", default=[], help="Asset file paths (images, logos, etc.)")
-    parser.add_argument("--voiceover-asset",
-                        help="Audio or video file supplying the voiceover. "
-                             "For broll projects only. Only its audio is used.")
+    parser.add_argument("--voiceover-asset", nargs="+", dest="voiceover_asset",
+                        help="Audio or video file(s) supplying the voiceover. "
+                             "For broll projects only. Only its audio is used. "
+                             "Pass several, in order, when narration was recorded "
+                             "as one take per script section — they are concatenated.")
     parser.add_argument("--prompt", required=True, help="Editing prompt")
     parser.add_argument("--workflow", default="clean_cut", help="Workflow name")
     parser.add_argument("--name", help="Project name (used as workspace directory suffix)")
@@ -368,8 +371,9 @@ def main():
     if early_project_type == "broll" and not args.voiceover_asset:
         fail("missing_argument",
              "broll projects require --voiceover-asset")
-    if args.voiceover_asset and not os.path.isfile(args.voiceover_asset):
-        fail("file_not_found", f"File not found: {args.voiceover_asset}")
+    for _vo in (args.voiceover_asset or []):
+        if not os.path.isfile(_vo):
+            fail("file_not_found", f"File not found: {_vo}")
 
     # Resolve workspace_root first — both branches below need it.
     # Precedence: MONTAJ_WORKSPACE_DIR env var > ~/.montaj/config.json's workspaceDir > ~/Montaj.
@@ -802,8 +806,24 @@ def main():
         for i, a in enumerate(args.assets)
     ]
 
-    voiceover_path = (copy_into_workspace(os.path.abspath(args.voiceover_asset), "voiceover")
-                      if args.voiceover_asset else None)
+    # Stage every take into the workspace first, so the project owns its inputs
+    # even if the originals move. One take is used directly (byte-identical to
+    # the pre-list behavior); several are concatenated into one narration file.
+    voiceover_takes = [copy_into_workspace(os.path.abspath(v), "voiceover")
+                       for v in (args.voiceover_asset or [])]
+    if len(voiceover_takes) > 1:
+        # A take of the user's own can already be sitting at voiceover_full.wav
+        # (re-running init on a narration Montaj produced does it), and ffmpeg
+        # refuses to read and write one path. De-collide the same way
+        # _copy_into_workspace does rather than failing on valid input.
+        concat_out = os.path.join(workspace_dir, "voiceover_full.wav")
+        _n = 2
+        while os.path.exists(concat_out):
+            concat_out = os.path.join(workspace_dir, f"voiceover_full_{_n}.wav")
+            _n += 1
+        voiceover_path = concat_takes(voiceover_takes, concat_out)
+    else:
+        voiceover_path = voiceover_takes[0] if voiceover_takes else None
 
     project_type = _read_project_type(args.workflow)
 
@@ -850,6 +870,10 @@ def main():
 
     if voiceover_path:
         project["voiceover"] = {"src": voiceover_path}
+        # Provenance for a concatenated narration: which takes produced `src`,
+        # in order. Omitted for a single take, where `src` IS the take.
+        if len(voiceover_takes) > 1:
+            project["voiceover"]["takes"] = voiceover_takes
 
     if args.derived_from:
         project["derivedFrom"] = args.derived_from

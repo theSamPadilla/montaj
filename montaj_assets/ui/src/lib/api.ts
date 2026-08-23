@@ -108,6 +108,9 @@ export const api = {
     name?: string
     profile?: string
     carouselAspect?: 'square' | 'portrait' | 'vertical'
+    /** One entry per recorded take, in the order they should play. Init concatenates. */
+    voiceoverAssets?: string[]
+    /** @deprecated Single-take intake. Still honored by the server; prefer voiceoverAssets. */
     voiceoverAsset?: string
     aiVideoIntake?: {
       imageRefs: Array<{ label: string; path?: string; text?: string }>
