@@ -274,19 +274,55 @@ export interface WaveformSceneLookup {
 }
 
 /**
- * The [s0, s1) sample-index sub-range of a clip's peaks that the CLAMPED,
- * gutter-inset `rect` actually shows on screen, given the clip's own FULL
- * on-screen span — `item.start`..`item.end` mapped through `viewport`,
- * unclamped and un-inset. Mirrors `filmstrips.ts`'s `clipTiles`, which
- * derives its tile positions from that same full span rather than from
- * whatever clamped rect the row painter happened to hand it.
+ * The on-screen [left, left+width) span of a start..end timeline range,
+ * unclamped — a clip's or audio track's own true screen extent, NOT the
+ * surface-clamped rect the row/lane painter actually draws into. Shared by
+ * `visibleSpanFraction` below and (for audio bars) `audioColumns` directly,
+ * which needs it a second time to POSITION the visible slice it draws.
  *
- * Before this existed, `clipColumns` resampled the WHOLE peaks array into
- * `rect`'s width no matter which fraction of the clip `rect` actually
- * covered — correct only when the entire clip fit on screen, and pinned to
- * "the whole clip's peaks" at every scroll position once it didn't (a long
- * clip's waveform never changed as you scrolled through it, only the
- * filmstrip above it did).
+ * `null` for a degenerate (non-positive) span — nothing to divide by.
+ */
+function fullSpanX(start: number, end: number, viewport: Viewport): { left: number; width: number } | null {
+  const left = timeToX(start, viewport)
+  const width = timeToX(end, viewport) - left
+  return width > 0 ? { left, width } : null
+}
+
+/**
+ * Fraction [f0, f1] of a start..end timeline range's own FULL on-screen span
+ * (see `fullSpanX`) that the CLAMPED `rect` it was actually handed to draw
+ * into covers. Shared by `visibleClipSampleRange` (where this fraction maps
+ * directly onto the fetched peaks array) and `audioColumns` (where it maps
+ * onto the trim WINDOW first — one step further removed from the sample
+ * array, because the fetched data can itself be a clamped sub-range of that
+ * window; see `sourceTimeToBarFraction`).
+ *
+ * Before either caller accounted for this, they resampled/positioned using
+ * the WHOLE clip/track's data against whatever width `rect` happened to be —
+ * correct only while the whole clip/track fit on screen, and pinned to "the
+ * whole thing" at every scroll position once it didn't (long clip or track:
+ * the waveform never changed as you scrolled through it, only the filmstrip
+ * or ruler above it did).
+ *
+ * `null` for a degenerate (zero-width) full span — nothing to divide by.
+ */
+function visibleSpanFraction(start: number, end: number, rect: Rect, viewport: Viewport): { f0: number; f1: number } | null {
+  const span = fullSpanX(start, end, viewport)
+  if (!span) return null
+  // Clamped to [0, 1]: `rect` is the drawn body, which can only ever be a
+  // sub-span of the full extent, but float rounding at the very edges could
+  // otherwise nudge a fraction a hair outside that range.
+  const f0 = Math.max(0, Math.min(1, (rect.x - span.left) / span.width))
+  const f1 = Math.max(0, Math.min(1, (rect.x + rect.width - span.left) / span.width))
+  return { f0, f1 }
+}
+
+/**
+ * The [s0, s1) sample-index sub-range of a clip's peaks that the CLAMPED,
+ * gutter-inset `rect` actually shows on screen. Mirrors `filmstrips.ts`'s
+ * `clipTiles`, which derives its tile positions from the clip's full
+ * on-screen span rather than from whatever clamped rect the row painter
+ * happened to hand it.
  *
  * `null` for a degenerate (zero-width) full span or empty peaks — nothing to
  * divide by; the caller falls back to treating the whole array as visible.
@@ -298,20 +334,11 @@ export function visibleClipSampleRange(
   totalSamples: number,
 ): { s0: number; s1: number } | null {
   if (totalSamples <= 0) return null
-  const fullLeft = timeToX(item.start, viewport)
-  const fullRight = timeToX(item.end, viewport)
-  const fullWidth = fullRight - fullLeft
-  if (!(fullWidth > 0)) return null
+  const frac = visibleSpanFraction(item.start, item.end, rect, viewport)
+  if (!frac) return null
 
-  // Fractions of the clip's own duration that `rect`'s screen span covers.
-  // Clamped to [0, 1]: `rect` is the drawn body, which can only ever be a
-  // sub-span of the clip's full extent, but float rounding at the very edges
-  // could otherwise nudge a fraction a hair outside that range.
-  const f0 = Math.max(0, Math.min(1, (rect.x - fullLeft) / fullWidth))
-  const f1 = Math.max(0, Math.min(1, (rect.x + rect.width - fullLeft) / fullWidth))
-
-  const s0 = Math.min(totalSamples, Math.floor(f0 * totalSamples))
-  const s1 = Math.max(s0, Math.min(totalSamples, Math.ceil(f1 * totalSamples)))
+  const s0 = Math.min(totalSamples, Math.floor(frac.f0 * totalSamples))
+  const s1 = Math.max(s0, Math.min(totalSamples, Math.ceil(frac.f1 * totalSamples)))
   return { s0, s1 }
 }
 
@@ -356,12 +383,31 @@ export class WaveformPeaksStore {
     return resamplePeaksToColumns(slice, columns)
   }
 
-  /** Audio-lane waveforms fetch from `track.src` (audio tracks have no
-   *  proxies). Returns the fetched window's own bar-relative sub-rect
-   *  (via `sourceTimeToBarFraction`) alongside its columns, so a returned
-   *  window that doesn't exactly match the request (e.g. clamped near the
-   *  end of a source) still draws in the right place rather than stretched
-   *  across the whole bar. */
+  /**
+   * Audio-lane waveforms fetch from `track.src` (audio tracks have no
+   * proxies), windowed to the track's own trim (`audioTrackSourceWindow`) —
+   * NOT to whatever is currently visible, so scrolling never re-fetches.
+   * Returns the VISIBLE slice's own bar-relative sub-rect alongside its
+   * columns, so it draws in the right place rather than stretched across
+   * whatever rect the caller happened to hand in.
+   *
+   * Two things had to be reconciled to get there, both expressed as
+   * fractions of the track's trim WINDOW so they compose with one `Math.max`/
+   * `Math.min`:
+   *  - `dataX0..dataX1` (ported from before this fix): the fraction of the
+   *    window the FETCHED data actually covers — the step can return less
+   *    than requested (e.g. clamped near the end of a source file).
+   *  - `visible.f0..f1` (new): the fraction of the track's own FULL
+   *    on-screen span (`track.start`..`track.end` through `viewport`,
+   *    unclamped) that the CLAMPED `rect` we were handed to draw into
+   *    actually shows. Before this existed, `rect` was taken at face value
+   *    as "the whole bar" — fine while the bar fit on screen, but once a
+   *    long track ran off both edges, the ENTIRE window got squeezed into
+   *    whatever sliver was visible, unchanged as you scrolled through it
+   *    (the same bug `visibleClipSampleRange` fixed for clip waveforms).
+   * Only their overlap is fetched data AND currently visible — anything else
+   * is either data we don't have or off screen, neither worth drawing.
+   */
   audioColumns(track: AudioTrack, rect: Rect, ctx: WaveformQueryContext): { rect: Rect; columns: WaveformColumn[] } | null {
     if (!ctx.getWaveformPeaks || rect.width <= 0) return null
     const window = audioTrackSourceWindow(track)
@@ -370,16 +416,40 @@ export class WaveformPeaksStore {
     const data = this.resolve({ ownerId: track.id, src: track.src, start: window.start, duration: window.duration }, ctx)
     if (!data) return null
 
-    const x0 = sourceTimeToBarFraction(data.start, window)
-    const x1 = sourceTimeToBarFraction(data.start + data.duration, window)
-    const subRect: Rect = {
-      x: rect.x + x0 * rect.width,
-      y: rect.y,
-      width: Math.max(0, (x1 - x0) * rect.width),
-      height: rect.height,
-    }
+    const dataX0 = sourceTimeToBarFraction(data.start, window)
+    const dataX1 = sourceTimeToBarFraction(data.start + data.duration, window)
+    // A degenerate/absent full span (e.g. `track.end <= track.start`) falls
+    // back to "the whole window is visible" — the pre-fix assumption — rather
+    // than drawing nothing over what may still be a perfectly good `rect`.
+    const visible = visibleSpanFraction(track.start, track.end, rect, ctx.viewport) ?? { f0: 0, f1: 1 }
+
+    const f0 = Math.max(dataX0, visible.f0)
+    const f1 = Math.min(dataX1, visible.f1)
+    if (f1 <= f0) return null
+
+    // Position the visible slice against the bar's TRUE full on-screen span,
+    // not the clamped `rect` — that's what lets it land at the right x once
+    // the bar runs off an edge. Falls back to `rect` itself alongside the
+    // same fallback `visible` used above.
+    const full = fullSpanX(track.start, track.end, ctx.viewport)
+    const subRect: Rect = full
+      ? { x: full.left + f0 * full.width, y: rect.y, width: Math.max(0, (f1 - f0) * full.width), height: rect.height }
+      : { x: rect.x + f0 * rect.width, y: rect.y, width: Math.max(0, (f1 - f0) * rect.width), height: rect.height }
     if (subRect.width <= 0) return null
-    const columns = resamplePeaksToColumns(data.peaks, Math.max(1, Math.round(subRect.width)))
+
+    // Slice the fetched peaks down to just the visible fraction of the
+    // fetched span (`f0..f1` relative to `dataX0..dataX1`) before resampling
+    // — only ever the columns actually drawn get computed, mirroring
+    // `visibleClipSampleRange`.
+    const totalSamples = Math.floor(data.peaks.length / 2)
+    const dataSpan = dataX1 - dataX0
+    const df0 = dataSpan > 0 ? (f0 - dataX0) / dataSpan : 0
+    const df1 = dataSpan > 0 ? (f1 - dataX0) / dataSpan : 1
+    const s0 = Math.max(0, Math.min(totalSamples, Math.floor(df0 * totalSamples)))
+    const s1 = Math.max(s0, Math.min(totalSamples, Math.ceil(df1 * totalSamples)))
+    const slice = data.peaks.slice(s0 * 2, s1 * 2)
+
+    const columns = resamplePeaksToColumns(slice, Math.max(1, Math.round(subRect.width)))
     return { rect: subRect, columns }
   }
 

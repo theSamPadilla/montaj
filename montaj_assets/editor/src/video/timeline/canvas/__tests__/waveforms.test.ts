@@ -600,16 +600,76 @@ describe('WaveformPeaksStore.audioColumns', () => {
     // Track window is [2, 12) (inPoint 2, outPoint 12); the step echoes back
     // a clamped [2, 10) — 80% of the window — same as a real end-of-file clamp.
     const fetcher = vi.fn().mockResolvedValue(peaksFixture({ start: 2, duration: 8, peaks: [-1, 1, -1, 1] }))
+    // Track spans [0, 2) on the timeline; at 50px/s that's exactly 100px, so
+    // this `barRect` is the WHOLE bar, unclamped — isolates the "clamped
+    // fetch" fraction math this test is about from the separate
+    // visible-span-vs-clamped-rect math `audioColumns` also does now.
     const barRect = rect({ x: 0, width: 100 })
+    const fullyVisible = { pxPerSecond: 50, scrollSeconds: 0, widthPx: 1000 }
 
-    store.audioColumns(audio({ inPoint: 2, outPoint: 12 }), barRect, queryCtx({ getWaveformPeaks: fetcher }))
+    store.audioColumns(audio({ inPoint: 2, outPoint: 12 }), barRect, queryCtx({ getWaveformPeaks: fetcher, viewport: fullyVisible }))
     await flush()
-    const result = store.audioColumns(audio({ inPoint: 2, outPoint: 12 }), barRect, queryCtx({ getWaveformPeaks: fetcher }))
+    const result = store.audioColumns(audio({ inPoint: 2, outPoint: 12 }), barRect, queryCtx({ getWaveformPeaks: fetcher, viewport: fullyVisible }))
 
     expect(result).not.toBeNull()
     // [2,10) is 80% of the [2,12) window → sub-rect covers the first 80px of a 100px bar.
     expect(result!.rect.x).toBeCloseTo(0)
     expect(result!.rect.width).toBeCloseTo(80)
+  })
+
+  // ── Viewport-aware slicing (parity with clipColumns' scroll bug fix) ────
+  // Before this, `audioColumns` positioned the fetched window against
+  // whatever `rect` it was handed, taken at face value as "the whole bar" —
+  // correct only while the entire track fit on screen. Once a track ran off
+  // both edges, the same "whole window squeezed into whatever's visible"
+  // picture painted at every scroll position, same root cause as the
+  // clip-waveform bug, one layer further from the sample array because a
+  // fetch can itself return a clamped window.
+
+  it('resamples a DIFFERENT sub-window of the peaks when the same on-screen rect maps to a different part of a long audio track (scroll-dependent, not squeezed to the whole track every time)', async () => {
+    const store = new WaveformPeaksStore()
+    // 100 monotonically-increasing samples so two different sub-ranges are
+    // guaranteed to differ.
+    const peaks: number[] = []
+    for (let i = 0; i < 100; i++) peaks.push(-(i + 1), i + 1)
+    const fetcher = vi.fn().mockResolvedValue(peaksFixture({ start: 0, duration: 100, peaks }))
+    // A 100s track at 10px/s spans 1000px on screen — far wider than the
+    // 200px viewport it's drawn into, so `rect` (the visible slice) is only
+    // ever a fraction of the track's full span.
+    const track = audio({ id: 'a-long', start: 0, end: 100 })
+    const visibleRect = rect({ x: 0, width: 200 })
+    const atStart = { pxPerSecond: 10, scrollSeconds: 0, widthPx: 200 }
+    const scrolledIn = { pxPerSecond: 10, scrollSeconds: 40, widthPx: 200 }
+
+    // Warm the cache.
+    store.audioColumns(track, visibleRect, queryCtx({ getWaveformPeaks: fetcher, viewport: atStart }))
+    await flush()
+
+    const atStartResult = store.audioColumns(track, visibleRect, queryCtx({ getWaveformPeaks: fetcher, viewport: atStart }))
+    const scrolledInResult = store.audioColumns(track, visibleRect, queryCtx({ getWaveformPeaks: fetcher, viewport: scrolledIn }))
+
+    expect(atStartResult).not.toBeNull()
+    expect(scrolledInResult).not.toBeNull()
+    expect(atStartResult!.columns).not.toEqual(scrolledInResult!.columns)
+  })
+
+  it('matches the whole-window resample when the full track is on screen (unchanged from before the fix)', async () => {
+    const store = new WaveformPeaksStore()
+    const data = peaksFixture({ start: 0, duration: 2, peaks: [-100, 100, -200, 200, -50, 50, -300, 300] })
+    const fetcher = vi.fn().mockResolvedValue(data)
+    // A 2s track at 30px/s spans exactly 60px — hand audioColumns that as its
+    // rect, unclamped: the track is fully visible.
+    const track = audio({ id: 'a-full', start: 0, end: 2 })
+    const vp = { pxPerSecond: 30, scrollSeconds: 0, widthPx: 1000 }
+    const fullRect = rect({ x: 0, width: 60 })
+
+    store.audioColumns(track, fullRect, queryCtx({ getWaveformPeaks: fetcher, viewport: vp }))
+    await flush()
+    const result = store.audioColumns(track, fullRect, queryCtx({ getWaveformPeaks: fetcher, viewport: vp }))
+
+    expect(result).not.toBeNull()
+    expect(result!.rect).toEqual(fullRect)
+    expect(result!.columns).toEqual(resamplePeaksToColumns(data.peaks, 60))
   })
 })
 
