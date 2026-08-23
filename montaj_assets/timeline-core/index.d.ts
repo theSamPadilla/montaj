@@ -367,11 +367,15 @@ export declare function projectEnd(project: DurationProject): number
 // T4 — geometry, captions, audio (src/geometry.js, src/captions.js, src/audio.js)
 //
 // geometryFor is the shared percent-of-frame formula that shipped IDENTICALLY
-// in render (encode-segment.js:154-159/210-214, pixels) and the editor
-// (transformStyle.ts, CSS %). `toCssBoxPct` and `toPixelBox` are its two
-// engine-specific adapters — see the src/geometry.js module header for the
-// full naming rationale, the fit/sourceCrop/rotation decisions, and the
-// (0,0,1,1) preview short-circuit's exact legacy location.
+// in FOUR places until SP9a-1 retired the duplication: THREE copies in render
+// (encode-segment.js, pixels — buildImageItemFilterParts, buildVideoItemFilterParts,
+// buildOverlayFilterParts) and one in the editor (transformStyle.ts, CSS %).
+// All four now delegate to this shared implementation — encode-segment.js:245
+// (image), :305 (video), :457 (overlay), transformStyle.ts:36 (editor).
+// `toCssBoxPct` and `toPixelBox` are its two engine-specific adapters — see
+// the src/geometry.js module header for the full naming rationale, the
+// fit/sourceCrop/rotation decisions, and the (0,0,1,1) preview short-circuit's
+// exact legacy location.
 // ---------------------------------------------------------------------------
 
 /** The subset of a timeline item that geometry math reads. */
@@ -474,7 +478,7 @@ export declare function isFullFrameCrop(
 /**
  * The 1080-short-edge overlay design canvas. Verbatim port of
  * `design-canvas.ts:5-11`, confirmed algebraically identical to
- * `render.js:124-130`'s inline copy.
+ * `render.js:263-269`'s inline copy.
  */
 export declare function designCanvas(
   resolution: readonly [number, number] | null | undefined,
@@ -484,6 +488,12 @@ export declare function designCanvas(
 export interface CaptionSegment {
   start?: number
   end?: number
+  /**
+   * Vertical row. Absent ⇒ lane 0; lanes are dense from 0. Read ONLY as a sort
+   * key by {@link activeCaptionSegments} — never as an array index — so no
+   * coercion of a hand-edited bad value is needed here.
+   */
+  lane?: number
 }
 
 /** A captions track, as far as activation is concerned. */
@@ -496,12 +506,37 @@ export interface CaptionsTrack {
  * grid — exactly `CaptionPreview.tsx:187-194`'s `frame = round(currentTime *
  * fps); t = fps > 0 ? frame / fps : 0; find(s => t >= s.start && t < s.end)`.
  * Half-open (`start <= t < end`). Returns `null` when nothing matches.
+ *
+ * Paired with {@link activeCaptionSegments} — the two must agree on
+ * quantization and on the activation predicate.
  */
 export declare function activeCaptionSegment(
   captions: CaptionsTrack | null | undefined,
   currentTime: number,
   fps: number,
 ): CaptionSegment | null
+
+/**
+ * EVERY caption segment active at `currentTime`, ordered by `lane ?? 0`
+ * ascending — which IS the z-order, since consumers paint in the returned
+ * order and a higher lane therefore paints on top. Stable within a lane, so
+ * document order breaks ties. Identical quantization, `fps <= 0` guard and
+ * half-open predicate to {@link activeCaptionSegment}; the only difference is
+ * that this collects every match instead of the first.
+ *
+ * Returns a new array of the ORIGINAL segment objects — `[]` when nothing
+ * matches. Never mutates or re-orders `captions.segments`.
+ *
+ * Generic in the segment type (unlike the singular, whose signature predates
+ * this and is left alone): consumers hold a much richer segment than the
+ * `start`/`end`/`lane` this function reads, and they need `id`, `text`,
+ * `words` and the rest back out. `T` carries their own type through.
+ */
+export declare function activeCaptionSegments<T extends CaptionSegment>(
+  captions: { segments?: ReadonlyArray<T> } | null | undefined,
+  currentTime: number,
+  fps: number,
+): T[]
 
 /** A `project.audio.tracks[]` entry, as far as window/gain math is concerned. */
 export interface AudioTrack {

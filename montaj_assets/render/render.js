@@ -334,6 +334,20 @@ async function main(projectPath, { out, workers, clean, imageTone, exportMode = 
     if (!firstAudioTrack?.src) fail('missing_audio', 'renderMode ffmpeg-drawtext requires at least one unmuted audio track')
     const audioSrc = firstAudioTrack.src
 
+    // Caption LANES (rows) have no counterpart on this path. lyrics_render.py
+    // builds one flat drawtext filter chain and derives each word's end time
+    // from the NEXT segment's start, which assumes a single ordered,
+    // non-overlapping stream of captions — there is nowhere to hang a second
+    // row, and no per-row anchor. Every row is therefore drawn at the same
+    // anchor and they will overlap. That is honest; silently dropping the rows
+    // an operator built would be worse, so warn and render. The Puppeteer path
+    // (below) draws rows properly.
+    const laneCount = new Set(captions.segments.map(s => s.lane ?? 0)).size
+    if (laneCount > 1) {
+      log(`captions span ${laneCount} rows, but renderMode ffmpeg-drawtext has no per-row concept: `
+        + `all rows will be drawn at the same anchor and may overlap`)
+    }
+
     // Write captions to temp file. Captions in project.json are already in project-timeline
     // coordinates (0-based), so audioInPoint=0 — no timestamp offset needed.
     // The audio seek is passed separately via --audio-inpoint.

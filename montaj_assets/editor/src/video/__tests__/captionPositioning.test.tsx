@@ -18,9 +18,14 @@
 //     ResizeObserver calls back synchronously with a fixed size.
 //   - Range.prototype.getBoundingClientRect does not exist in jsdom at all
 //     (throws "is not a function"), and Element.prototype.getBoundingClientRect
-//     always returns zeros. CaptionPreview's measureCaptionContentRect walks
-//     real text nodes via Range on every commit, so without a stub any test
-//     that renders actual caption content crashes.
+//     always returns zeros. measureCaptionContentRect (captionDragState.ts,
+//     called from CaptionPreview's layout effect) walks real text nodes via
+//     Range on every commit, so without a stub any test that renders actual
+//     caption content crashes.
+//
+// The fake template below emits no `data-caption-id`, deliberately: that also
+// exercises measureCaptionContentRect's fallback to the whole root, which is
+// what keeps a host-supplied or pre-lane template's selection box working.
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, waitFor, fireEvent } from '@testing-library/react'
 import type { ReactElement } from 'react'

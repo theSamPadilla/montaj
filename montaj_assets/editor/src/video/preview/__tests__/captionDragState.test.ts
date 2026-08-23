@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, afterEach, beforeEach } from 'vitest'
 import {
   CAPTION_DRAG_SLOP_PX,
   CAPTION_MAX_SCALE,
@@ -6,6 +6,7 @@ import {
   captionDragGeometry,
   captionDragPatch,
   hasEscapedClickSlop,
+  measureCaptionContentRect,
   readCaptionGeometry,
   screenDeltaToFramePercent,
   type CaptionDragState,
@@ -164,5 +165,123 @@ describe('captionDragPatch', () => {
   it('a resize writes only the scale', () => {
     expect(captionDragPatch(drag({ type: 'resize-sw' }), { offsetX: 3, offsetY: 4, scale: 2 }))
       .toEqual({ scale: 2 })
+  })
+})
+
+// ── measureCaptionContentRect ───────────────────────────────────────────────
+//
+// Captions have lanes, so a template can paint several captions at once. The
+// selection box must wrap ONE of them, which is what the `segmentId` argument
+// is for. These cover the scoping and — just as important — the fallback that
+// keeps a template with no `data-caption-id` behaving exactly as it did before
+// lanes existed.
+
+/** Client rect with the fields the measurer reads. jsdom does no layout. */
+function fixedRect(left: number, top: number, right: number, bottom: number): DOMRect {
+  return {
+    left, top, right, bottom,
+    width: right - left, height: bottom - top,
+    x: left, y: top,
+    toJSON: () => ({}),
+  } as DOMRect
+}
+
+// Where each caption's text "paints", keyed by the text itself. Two boxes far
+// apart on the frame, so a measurement that accidentally unions them is
+// obvious rather than off by a few pixels.
+const BOXES: Record<string, [left: number, top: number, right: number, bottom: number]> = {
+  bottom: [100, 1700, 300, 1750],  // lane 0 — low on the frame
+  top:    [400, 200,  900, 280],   // lane 1 — high on the frame
+}
+const BOTTOM_RECT = { left: 100, top: 1700, width: 200, height: 50 }
+const TOP_RECT    = { left: 400, top: 200,  width: 500, height: 80 }
+// What an unscoped walk sees: the union of both, spanning most of the frame.
+const UNION_RECT  = { left: 100, top: 200,  width: 800, height: 1550 }
+
+beforeEach(() => {
+  // jsdom has no Range.prototype.getBoundingClientRect at all (and Element's
+  // returns zeros), so feed the walk a rect table keyed by the text node it is
+  // measuring. Assigned directly — vi.spyOn needs a pre-existing method.
+  Range.prototype.getBoundingClientRect = function (this: Range): DOMRect {
+    const text = this.startContainer.nodeValue?.trim() ?? ''
+    const box = BOXES[text]
+    return box ? fixedRect(box[0], box[1], box[2], box[3]) : fixedRect(0, 0, 0, 0)
+  }
+})
+
+afterEach(() => {
+  delete (Range.prototype as { getBoundingClientRect?: unknown }).getBoundingClientRect
+})
+
+function mount(html: string): HTMLElement {
+  const root = document.createElement('div')
+  root.innerHTML = html
+  return root
+}
+
+/** Two marked caption subtrees — what the templates render for two lanes. */
+const TWO_LANES =
+  '<div data-caption-id="cap-bottom"><div><span>bottom</span></div></div>' +
+  '<div data-caption-id="cap-top"><div><span>top</span></div></div>'
+
+/** One caption from a template that predates `data-caption-id`. */
+const UNMARKED = '<div><div><span>bottom</span></div></div>'
+
+describe('measureCaptionContentRect — scoping to one caption', () => {
+  it('measures only the requested subtree when two are marked', () => {
+    const root = mount(TWO_LANES)
+    expect(measureCaptionContentRect(root, 'cap-top')).toEqual(TOP_RECT)
+    expect(measureCaptionContentRect(root, 'cap-bottom')).toEqual(BOTTOM_RECT)
+  })
+
+  it('unions everything under the root when no segment is named', () => {
+    // The pre-lane behaviour, kept for callers that have no target in mind.
+    expect(measureCaptionContentRect(mount(TWO_LANES))).toEqual(UNION_RECT)
+  })
+
+  it('finds a marker nested below the root, not just a direct child', () => {
+    const root = mount(`<div class="wrapper">${TWO_LANES}</div>`)
+    expect(measureCaptionContentRect(root, 'cap-top')).toEqual(TOP_RECT)
+  })
+})
+
+describe('measureCaptionContentRect — fallback when the marker is absent', () => {
+  it('falls back to the whole root for a template that emits no marker', () => {
+    // Today's numbers, unchanged: a host-supplied or pre-lane template must
+    // keep its selection box rather than losing it.
+    expect(measureCaptionContentRect(mount(UNMARKED), 'cap-0')).toEqual(BOTTOM_RECT)
+  })
+
+  it('falls back to the whole root when the named segment is not the one on screen', () => {
+    expect(measureCaptionContentRect(mount(TWO_LANES), 'cap-nonexistent')).toEqual(UNION_RECT)
+  })
+
+  it('an id containing selector metacharacters cannot throw — it just misses and falls back', () => {
+    // project.json is hand-editable, so the lookup compares attributes rather
+    // than building a `[data-caption-id="…"]` selector that a quote would break.
+    expect(() => measureCaptionContentRect(mount(TWO_LANES), 'cap"]:not(*)')).not.toThrow()
+    expect(measureCaptionContentRect(mount(TWO_LANES), 'cap"]:not(*)')).toEqual(UNION_RECT)
+  })
+})
+
+describe('measureCaptionContentRect — nothing painted', () => {
+  it('returns null for an empty subtree, so the caller hides the box', () => {
+    expect(measureCaptionContentRect(mount(''))).toBeNull()
+    expect(measureCaptionContentRect(mount('<div data-caption-id="cap-0"></div>'), 'cap-0')).toBeNull()
+  })
+
+  it('ignores whitespace-only text nodes', () => {
+    expect(measureCaptionContentRect(mount('<div data-caption-id="cap-0">   </div>'), 'cap-0')).toBeNull()
+  })
+
+  it('returns null for the requested caption even while the OTHER one is painting', () => {
+    // `pop` renders no word between two word windows; the box must disappear
+    // for that caption rather than snapping onto its neighbour.
+    const root = mount(
+      '<div data-caption-id="cap-bottom"><div><span>bottom</span></div></div>' +
+      '<div data-caption-id="cap-top"></div>',
+    )
+    expect(measureCaptionContentRect(root, 'cap-top')).toBeNull()
+    expect(measureCaptionContentRect(root, 'cap-bottom')).toEqual(BOTTOM_RECT)
   })
 })

@@ -157,3 +157,80 @@ describe('per-word caption templates — short words are visible', () => {
     })
   }
 })
+
+// ---------------------------------------------------------------------------
+// Single-segment guard for the multi-lane conversion.
+//
+// The templates now draw EVERY active caption (lanes), which meant replacing
+// each one's `segments.find(...)` with a filter + lane sort and moving the
+// per-segment body into a helper. Nothing above this line changed — but the
+// assertions above are deliberately INEQUALITIES (`>= 0.5`), so they would
+// still pass if the move had quietly perturbed the envelope. These pin the
+// EXACT numbers a single-segment project produces, and the exact block count,
+// so the conversion is provably a no-op for every project that exists today
+// (no project can have overlapping captions until rows are reachable in the
+// UI).
+// ---------------------------------------------------------------------------
+
+/** The per-segment blocks a template returned — one outer <div> per active segment. */
+function captionBlocks(el) {
+  const kids = el.props.children
+  return Array.isArray(kids) ? kids : [kids]
+}
+
+describe('per-word caption templates — the multi-lane conversion is a no-op for one segment', () => {
+  // interpolate(wordFrame, [0, 2], [0.55, 1]) at wordFrame 0, 1, 2. A 30-frame
+  // word, so `pop`'s exit fade (the last 6 frames) cannot reach these and both
+  // templates are showing the entry envelope alone.
+  const ENTRY_ENVELOPE = [0.55, 0.775, 1]
+  const LONG_WORD = [{ word: 'hello', start: 0, end: 1 }]
+  const LONG_SEG  = { start: 0, end: 2, text: 'hello', words: LONG_WORD }
+
+  for (const name of PER_WORD) {
+    test(`${name}: one active segment renders exactly one block`, () => {
+      const blocks = captionBlocks(templates[name]({ frame: 10, fps: FPS, segments: [LONG_SEG] }))
+      assert.equal(blocks.length, 1)
+      assert.equal(blocks[0].type, 'div', 'the block is still the template\'s own outer wrapper')
+    })
+
+    test(`${name}: the entry envelope is exactly 0.55 -> 0.775 -> 1 over its first three frames`, () => {
+      ENTRY_ENVELOPE.forEach((expected, wordFrame) => {
+        const el = templates[name]({ frame: wordFrame, fps: FPS, segments: [LONG_SEG] })
+        assert.equal(
+          wordOpacity(el), expected,
+          `${name}: wordFrame ${wordFrame} — the floor is 0.55, NOT 0`,
+        )
+      })
+    })
+  }
+
+  // `pop` alone carries a second guard: its exit fade is wrapped in
+  // `wordDuration > 6`, because `interpolate` returns the END of its output
+  // range on a degenerate input range — without the wrapper a short word
+  // renders already faded OUT at 0.3. A 5-frame word is comfortably inside the
+  // guard (the exact 6-frame boundary is not asserted: `(end - start) * fps`
+  // lands within a float epsilon of 6 for a 6-frame word, so a test sitting on
+  // it would pin rounding, not behaviour).
+  test('pop: a 5-frame word never enters the exit fade — it holds full opacity to its last frame', () => {
+    const words = [
+      { word: 'a',   start: 30 / FPS, end: 35 / FPS },   // 5 frames
+      { word: 'cat', start: 35 / FPS, end: 60 / FPS },
+    ]
+    const seg = { start: 0, end: 3, text: 'a cat', words }
+    for (const frame of [32, 33, 34]) {          // wordFrame 2..4, past the entry envelope
+      const el = templates.pop({ frame, fps: FPS, segments: [seg] })
+      assert.equal(
+        wordOpacity(el), 1,
+        `pop: frame ${frame} — a short word must not be pre-faded to 0.3`,
+      )
+    }
+  })
+
+  test('pop: a long word DOES still fade out over its last 6 frames (the guard is not inverted)', () => {
+    // 30-frame word: the fade runs from wordFrame 24 to 30, ending at 0.3.
+    const el = templates.pop({ frame: 30, fps: FPS, segments: [LONG_SEG] })
+    assert.equal(wordOpacity(el), undefined, 'sanity: frame 30 is past this word, nothing rendered')
+    assert.ok(wordOpacity(templates.pop({ frame: 27, fps: FPS, segments: [LONG_SEG] })) < 1)
+    assert.ok(wordOpacity(templates.pop({ frame: 20, fps: FPS, segments: [LONG_SEG] })) === 1)
+  })
+})

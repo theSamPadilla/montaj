@@ -1,7 +1,12 @@
 // @ts-check
 // montaj_assets/timeline-core/src/captions.js
 //
-// activeCaptionSegment — frame-quantized caption segment selection.
+// activeCaptionSegment / activeCaptionSegments — frame-quantized caption
+// segment selection. TWO functions, deliberately: the singular is the historic
+// "first match wins" selector; the plural returns EVERY match, lane-ordered,
+// for the multi-row caption feature. They MUST stay in lockstep on
+// quantization and on the activation predicate — see the cross-reference note
+// on each of them before touching either.
 //
 // Ports montaj_assets/editor/src/video/preview/CaptionPreview.tsx:187-194
 // verbatim:
@@ -58,6 +63,7 @@
  * @typedef {Object} CaptionSegment
  * @property {number} [start] Seconds.
  * @property {number} [end]   Seconds.
+ * @property {number} [lane]  Vertical row. Absent ⇒ lane 0; higher paints on top.
  */
 
 /**
@@ -77,6 +83,14 @@
  * order). Returns `null` when nothing matches (an empty track, a gap between
  * segments, or `t` past the last segment) — the `?? null` in the original.
  *
+ * PAIRED WITH {@link activeCaptionSegments}. That one returns EVERY match
+ * rather than the first, and is what the render templates and the preview
+ * actually paint from now that captions have lanes. This singular one is still
+ * the right answer wherever exactly one segment is wanted. If you change the
+ * quantization or the predicate here, change it there too — the two are
+ * required to agree, and a divergence would put the preview's selection box on
+ * a different segment than the one on screen.
+ *
  * @param {CaptionsTrack | null | undefined} captions
  * @param {number} currentTime Timeline time, seconds — UNQUANTIZED; quantization happens inside.
  * @param {number} fps
@@ -94,4 +108,60 @@ export function activeCaptionSegment(captions, currentTime, fps) {
     if (t >= (s.start ?? Number.NaN) && t < (s.end ?? Number.NaN)) return s
   }
   return null
+}
+
+/**
+ * EVERY caption segment active at `currentTime`, ordered by lane ascending.
+ *
+ * PAIRED WITH {@link activeCaptionSegment} — same `Math.round(currentTime *
+ * fps)` quantization, same `fps > 0 ? frame / fps : 0` guard, same half-open
+ * `t >= start && t < end` predicate, same `?? NaN` totality trick. The ONLY
+ * difference is that this one keeps collecting instead of returning on the
+ * first hit. Neither may be "tidied" without the other; see the note on the
+ * singular for why the two must agree.
+ *
+ * Lane ascending is the ONLY ordering rule, and it IS the z-order: a consumer
+ * paints the returned segments in order, so a higher lane paints later and
+ * therefore on top. `Array.prototype.sort` is required to be stable (ES2019),
+ * so segments sharing a lane come back in the order they appear in
+ * `captions.segments` — document order breaks ties. There is no vertical
+ * offset per lane anywhere: two simultaneous captions draw at their own
+ * `offsetX`/`offsetY` and may overlap, which is the intended behavior.
+ *
+ * DUPLICATED LANE DEFAULT — deliberate, not an oversight. `seg.lane ?? 0` is
+ * read inline here rather than through the editor's `laneOf()`
+ * (editor/src/video/captionLanes.ts), because timeline-core is a standalone
+ * package and cannot import from the editor package. The caption templates
+ * under render/templates/captions/*.jsx duplicate it for the same reason
+ * (standalone JSX evaluated in a browser/Puppeteer context). Note the one
+ * divergence: `laneOf()` additionally coerces negative / non-integer /
+ * non-finite stored lanes to a safe array index, because it feeds array
+ * indexing; here a lane is only ever a sort key, so a hand-edited bad value
+ * degrades to an ordering quirk rather than a crash and needs no coercion.
+ *
+ * Returns a NEW array (never `captions.segments` itself, and never sorted in
+ * place), holding the ORIGINAL segment objects by reference. `[]` when nothing
+ * matches — the plural's counterpart to the singular's `null`.
+ *
+ * Generic in the segment type — unlike the singular, whose signature predates
+ * this and is deliberately left alone. Consumers hold a far richer segment
+ * than the `start`/`end`/`lane` read here and need `id`/`text`/`words` back
+ * out; `T` carries their own type straight through.
+ *
+ * @template {CaptionSegment} T
+ * @param {{ segments?: ReadonlyArray<T> } | null | undefined} captions
+ * @param {number} currentTime Timeline time, seconds — UNQUANTIZED; quantization happens inside.
+ * @param {number} fps
+ * @returns {T[]}
+ */
+export function activeCaptionSegments(captions, currentTime, fps) {
+  const frame = Math.round(currentTime * fps)
+  const t = fps > 0 ? frame / fps : 0
+  const segments = captions?.segments ?? []
+  /** @type {T[]} */
+  const active = []
+  for (const s of segments) {
+    if (t >= (s.start ?? Number.NaN) && t < (s.end ?? Number.NaN)) active.push(s)
+  }
+  return active.sort((a, b) => (a.lane ?? 0) - (b.lane ?? 0))
 }

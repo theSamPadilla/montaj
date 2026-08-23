@@ -32,12 +32,13 @@ export * from './src/durations.js'
 // toCssBoxPct / toPixelBox (its two engine-specific adapters), isFullFrameCrop
 // (the (0,0,1,1) preview short-circuit predicate), designCanvas (the
 // 1080-short-edge overlay design canvas rule) (absorbs:
-// transformStyle.ts, encode-segment.js:153-214, sourceCropStyle.ts:35,
+// transformStyle.ts, encode-segment.js:245/305/457, sourceCropStyle.ts:35,
 // design-canvas.ts:5-11).
 export * from './src/geometry.js'
 
 // T4 — captions: activeCaptionSegment, frame-quantized (absorbs
-// CaptionPreview.tsx:187-194).
+// CaptionPreview.tsx:187-194), and its plural sibling activeCaptionSegments
+// (every active segment, lane-ascending) for multi-row captions.
 export * from './src/captions.js'
 
 // T4 — audio: audioWindow, derived-outPoint rule + fade envelope (absorbs the
