@@ -305,12 +305,17 @@ export default function TimelineCanvas({
                 projectId: scene.project.id,
                 getWaveformPeaks,
                 pxPerSecond: viewport.pxPerSecond,
+                // Lets `clipColumns` recover the clip's full on-screen span
+                // and slice its peaks to whatever sub-range `rect` actually
+                // shows — see `WaveformQueryContext.viewport`.
+                viewport,
                 onReady: () => requestRedraw('content'),
               }),
               audioColumns: (track, rect) => waveformStoreRef.current!.audioColumns(track, rect, {
                 projectId: scene.project.id,
                 getWaveformPeaks,
                 pxPerSecond: viewport.pxPerSecond,
+                viewport,
                 onReady: () => requestRedraw('content'),
               }),
             }

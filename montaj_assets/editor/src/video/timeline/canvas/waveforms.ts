@@ -37,6 +37,7 @@ import type { AudioTrack, VisualItem } from '../../../schema'
 import type { GetWaveformPeaksArgs, PeaksData, PeaksResolution } from '../../../types'
 import { clipBands } from './clip-bands'
 import type { DrawContext, Rect } from './draw'
+import { timeToX, type Viewport } from './viewport'
 
 // ── Resolution buckets ───────────────────────────────────────────────────
 
@@ -251,6 +252,15 @@ export interface WaveformQueryContext {
   /** Absent → no waveforms anywhere (host adapter doesn't implement it). */
   getWaveformPeaks?: (args: GetWaveformPeaksArgs) => Promise<PeaksData>
   pxPerSecond: number
+  /** Needed by `clipColumns` to recover a clip's FULL on-screen span
+   *  (`item.start`..`item.end` mapped through this, unclamped) — the `rect`
+   *  it's handed is already clamped to the visible surface and inset by the
+   *  clip-body gutter (see `visibleClipSampleRange`), so `pxPerSecond` alone
+   *  isn't enough; `scrollSeconds` is what says WHICH slice of a long clip is
+   *  currently on screen. Not consulted by `audioColumns`, which positions
+   *  its fetched window within the bar rect it's handed directly rather than
+   *  against the clip's own full span. */
+  viewport: Viewport
   /** Called once when new data lands for a key that was previously
    *  loading/absent — the caller's cue to `requestRedraw('content')`. */
   onReady: () => void
@@ -261,6 +271,48 @@ export interface WaveformQueryContext {
 export interface WaveformSceneLookup {
   clipColumns(item: VisualItem, rect: Rect): WaveformColumn[] | null
   audioColumns(track: AudioTrack, rect: Rect): { rect: Rect; columns: WaveformColumn[] } | null
+}
+
+/**
+ * The [s0, s1) sample-index sub-range of a clip's peaks that the CLAMPED,
+ * gutter-inset `rect` actually shows on screen, given the clip's own FULL
+ * on-screen span — `item.start`..`item.end` mapped through `viewport`,
+ * unclamped and un-inset. Mirrors `filmstrips.ts`'s `clipTiles`, which
+ * derives its tile positions from that same full span rather than from
+ * whatever clamped rect the row painter happened to hand it.
+ *
+ * Before this existed, `clipColumns` resampled the WHOLE peaks array into
+ * `rect`'s width no matter which fraction of the clip `rect` actually
+ * covered — correct only when the entire clip fit on screen, and pinned to
+ * "the whole clip's peaks" at every scroll position once it didn't (a long
+ * clip's waveform never changed as you scrolled through it, only the
+ * filmstrip above it did).
+ *
+ * `null` for a degenerate (zero-width) full span or empty peaks — nothing to
+ * divide by; the caller falls back to treating the whole array as visible.
+ */
+export function visibleClipSampleRange(
+  item: VisualItem,
+  rect: Rect,
+  viewport: Viewport,
+  totalSamples: number,
+): { s0: number; s1: number } | null {
+  if (totalSamples <= 0) return null
+  const fullLeft = timeToX(item.start, viewport)
+  const fullRight = timeToX(item.end, viewport)
+  const fullWidth = fullRight - fullLeft
+  if (!(fullWidth > 0)) return null
+
+  // Fractions of the clip's own duration that `rect`'s screen span covers.
+  // Clamped to [0, 1]: `rect` is the drawn body, which can only ever be a
+  // sub-span of the clip's full extent, but float rounding at the very edges
+  // could otherwise nudge a fraction a hair outside that range.
+  const f0 = Math.max(0, Math.min(1, (rect.x - fullLeft) / fullWidth))
+  const f1 = Math.max(0, Math.min(1, (rect.x + rect.width - fullLeft) / fullWidth))
+
+  const s0 = Math.min(totalSamples, Math.floor(f0 * totalSamples))
+  const s1 = Math.max(s0, Math.min(totalSamples, Math.ceil(f1 * totalSamples)))
+  return { s0, s1 }
 }
 
 /**
@@ -292,7 +344,16 @@ export class WaveformPeaksStore {
 
     const data = this.resolve({ ownerId: item.id, src: item.proxySrc, start: window?.start, duration: window?.duration }, ctx)
     if (!data) return null
-    return resamplePeaksToColumns(data.peaks, Math.max(1, Math.round(rect.width)))
+
+    const columns = Math.max(1, Math.round(rect.width))
+    const totalSamples = Math.floor(data.peaks.length / 2)
+    const span = visibleClipSampleRange(item, rect, ctx.viewport, totalSamples)
+    // No full span to divide by (e.g. zero pxPerSecond) — fall back to the
+    // pre-fix behaviour, the whole clip resampled into `columns`, rather than
+    // drawing nothing.
+    if (!span) return resamplePeaksToColumns(data.peaks, columns)
+    const slice = data.peaks.slice(span.s0 * 2, span.s1 * 2)
+    return resamplePeaksToColumns(slice, columns)
   }
 
   /** Audio-lane waveforms fetch from `track.src` (audio tracks have no

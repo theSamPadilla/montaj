@@ -13,8 +13,10 @@ import type { Project } from '../../../../types'
 import {
   AUDIO_HANDLE_WIDTH_PX,
   AUDIO_ITEM_INSET_PX,
+  AUDIO_ITEM_RADIUS_PX,
   CAPTION_PALETTE,
   CLIP_HANDLE_WIDTH_PX,
+  CLIP_RADIUS_PX,
   CURSOR_WIDTH_PX,
   LABEL_PAD_PX,
   LABEL_TOP_OFFSET_PX,
@@ -25,6 +27,7 @@ import {
   ROW_RADIUS_PX,
   TIMELINE_COLORS,
   TRACK_PALETTE,
+  buttedEdges,
   clampRectToSurface,
   computeTimelineLayout,
   overlapBands,
@@ -32,6 +35,7 @@ import {
   drawCaptionBlock,
   drawClipRect,
   drawTrimHandle,
+  roundRectPath,
   RULER_HEIGHT_PX,
   SNAP_GUIDE_CAP_HALF_WIDTH_PX,
   SNAP_GUIDE_WEAK_WIDTH_PX,
@@ -425,6 +429,110 @@ describe('drawClipRect', () => {
     drawClipRect(r.ctx, { rect: { x: 0, y: 0, width: 80, height: 40 }, palette: TRACK_PALETTE[0], selected: false, label: 'x', dimmed: true })
     expect(r.calls.some(c => c.method === 'set:globalAlpha' && c.args[0] === 0.3)).toBe(true)
   })
+
+  // ── Squared corners on a butted edge (continuous-bar seam fix) ──────────
+  // `arcTo`'s 5th arg is the radius `roundRectPath` used for that corner; the
+  // fill/content mask is the FIRST `roundRectPath` a call emits, so its arcTo
+  // calls are `r.of('arcTo')[0..3]` in [tr, br, bl, tl] order (see
+  // `roundRectPath`'s own arg order).
+
+  it('squares the left corners (and only the left ones) when squaredLeft is set', () => {
+    const r = recordingContext()
+    drawClipRect(r.ctx, { rect: { x: 0, y: 0, width: 100, height: 40 }, palette: TRACK_PALETTE[0], selected: false, label: 'x', squaredLeft: true })
+    const [tr, br, bl, tl] = r.of('arcTo').slice(0, 4).map(c => c.args[4])
+    expect({ tr, br, bl, tl }).toEqual({ tr: CLIP_RADIUS_PX, br: CLIP_RADIUS_PX, bl: 0, tl: 0 })
+  })
+
+  it('squares the right corners (and only the right ones) when squaredRight is set', () => {
+    const r = recordingContext()
+    drawClipRect(r.ctx, { rect: { x: 0, y: 0, width: 100, height: 40 }, palette: TRACK_PALETTE[0], selected: false, label: 'x', squaredRight: true })
+    const [tr, br, bl, tl] = r.of('arcTo').slice(0, 4).map(c => c.args[4])
+    expect({ tr, br, bl, tl }).toEqual({ tr: 0, br: 0, bl: CLIP_RADIUS_PX, tl: CLIP_RADIUS_PX })
+  })
+
+  it('squares both sides when a clip is butted on both edges, and stays fully rounded when neither is set', () => {
+    const both = recordingContext()
+    drawClipRect(both.ctx, { rect: { x: 0, y: 0, width: 100, height: 40 }, palette: TRACK_PALETTE[0], selected: false, label: 'x', squaredLeft: true, squaredRight: true })
+    expect(both.of('arcTo').slice(0, 4).map(c => c.args[4])).toEqual([0, 0, 0, 0])
+
+    const neither = recordingContext()
+    drawClipRect(neither.ctx, { rect: { x: 0, y: 0, width: 100, height: 40 }, palette: TRACK_PALETTE[0], selected: false, label: 'x' })
+    expect(neither.of('arcTo').slice(0, 4).map(c => c.args[4])).toEqual([CLIP_RADIUS_PX, CLIP_RADIUS_PX, CLIP_RADIUS_PX, CLIP_RADIUS_PX])
+  })
+
+  it('squares the SELECTED outline too, not just the fill/content mask', () => {
+    const r = recordingContext()
+    drawClipRect(r.ctx, { rect: { x: 0, y: 0, width: 100, height: 40 }, palette: TRACK_PALETTE[0], selected: true, label: 'x', squaredLeft: true })
+    // Two roundRectPath passes for a selected clip: fill/content mask, then
+    // the selection outline — 8 arcTo calls total, 4 per pass.
+    const radii = r.of('arcTo').map(c => c.args[4])
+    expect(radii).toHaveLength(8)
+    const [, , bl1, tl1, , , bl2, tl2] = radii
+    expect([bl1, tl1]).toEqual([0, 0])
+    expect([bl2, tl2]).toEqual([0, 0])
+  })
+})
+
+describe('roundRectPath', () => {
+  it('treats a bare number as all four corners, matching a CornerRadii of the same value everywhere', () => {
+    const scalar = recordingContext()
+    roundRectPath(scalar.ctx, 0, 0, 100, 40, 6)
+    const uniform = recordingContext()
+    roundRectPath(uniform.ctx, 0, 0, 100, 40, { tl: 6, tr: 6, br: 6, bl: 6 })
+    expect(scalar.of('arcTo').map(c => c.args)).toEqual(uniform.of('arcTo').map(c => c.args))
+  })
+
+  it('draws each corner at its own radius, independent of the others', () => {
+    const r = recordingContext()
+    roundRectPath(r.ctx, 0, 0, 100, 40, { tl: 1, tr: 2, br: 3, bl: 4 })
+    const [tr, br, bl, tl] = r.of('arcTo').map(c => c.args[4])
+    expect({ tl, tr, br, bl }).toEqual({ tl: 1, tr: 2, br: 3, bl: 4 })
+  })
+})
+
+describe('buttedEdges', () => {
+  it('marks neither side for a lone item', () => {
+    const edges = buttedEdges([{ id: 'a', start: 0, end: 2 }])
+    expect(edges.get('a')).toEqual({ left: false, right: false })
+  })
+
+  it('marks the touching sides of two items that meet exactly', () => {
+    const edges = buttedEdges([
+      { id: 'a', start: 0, end: 2 },
+      { id: 'b', start: 2, end: 5 },
+    ])
+    expect(edges.get('a')).toEqual({ left: false, right: true })
+    expect(edges.get('b')).toEqual({ left: true, right: false })
+  })
+
+  it('does not mark items separated by even a small gap', () => {
+    const edges = buttedEdges([
+      { id: 'a', start: 0, end: 2 },
+      { id: 'b', start: 2.01, end: 5 },
+    ])
+    expect(edges.get('a')).toEqual({ left: false, right: false })
+    expect(edges.get('b')).toEqual({ left: false, right: false })
+  })
+
+  it('is order-independent — sorts by start before comparing neighbours', () => {
+    const edges = buttedEdges([
+      { id: 'b', start: 2, end: 5 },
+      { id: 'a', start: 0, end: 2 },
+    ])
+    expect(edges.get('a')).toEqual({ left: false, right: true })
+    expect(edges.get('b')).toEqual({ left: true, right: false })
+  })
+
+  it('handles a run of three, squaring only the internal joins', () => {
+    const edges = buttedEdges([
+      { id: 'a', start: 0, end: 2 },
+      { id: 'b', start: 2, end: 4 },
+      { id: 'c', start: 4, end: 6 },
+    ])
+    expect(edges.get('a')).toEqual({ left: false, right: true })
+    expect(edges.get('b')).toEqual({ left: true, right: true })
+    expect(edges.get('c')).toEqual({ left: true, right: false })
+  })
 })
 
 describe('drawTrimHandle', () => {
@@ -525,6 +633,42 @@ describe('drawAudioItem', () => {
     const fadeFills = r.of('fillRect')
     expect(fadeFills[0].args).toEqual([100, 0, 40, 32])
     expect(fadeFills[1].args).toEqual([100, 0, 200, 32]) // clamped to the bar
+  })
+
+  // ── Squared corners on a butted edge (continuous-bar seam fix) ──────────
+  // Unselected, fill and border share ONE roundRectPath call (border is a
+  // second `stroke()` on the same current path), so its 4 `arcTo` calls are
+  // the whole story here.
+
+  it('squares the left corners (and only the left ones) when squaredLeft is set', () => {
+    const r = recordingContext()
+    drawAudioItem(r.ctx, { rect: { x: 0, y: 0, width: 200, height: 32 }, selected: false, muted: false, label: 'x', squaredLeft: true })
+    const [tr, br, bl, tl] = r.of('arcTo').map(c => c.args[4])
+    expect({ tr, br, bl, tl }).toEqual({ tr: AUDIO_ITEM_RADIUS_PX, br: AUDIO_ITEM_RADIUS_PX, bl: 0, tl: 0 })
+  })
+
+  it('squares the right corners (and only the right ones) when squaredRight is set', () => {
+    const r = recordingContext()
+    drawAudioItem(r.ctx, { rect: { x: 0, y: 0, width: 200, height: 32 }, selected: false, muted: false, label: 'x', squaredRight: true })
+    const [tr, br, bl, tl] = r.of('arcTo').map(c => c.args[4])
+    expect({ tr, br, bl, tl }).toEqual({ tr: 0, br: 0, bl: AUDIO_ITEM_RADIUS_PX, tl: AUDIO_ITEM_RADIUS_PX })
+  })
+
+  it('stays fully rounded when neither side is butted', () => {
+    const r = recordingContext()
+    drawAudioItem(r.ctx, { rect: { x: 0, y: 0, width: 200, height: 32 }, selected: false, muted: false, label: 'x' })
+    expect(r.of('arcTo').map(c => c.args[4])).toEqual([AUDIO_ITEM_RADIUS_PX, AUDIO_ITEM_RADIUS_PX, AUDIO_ITEM_RADIUS_PX, AUDIO_ITEM_RADIUS_PX])
+  })
+
+  it('squares the SELECTED ring too, not just the fill/border', () => {
+    const r = recordingContext()
+    drawAudioItem(r.ctx, { rect: { x: 0, y: 0, width: 200, height: 32 }, selected: true, muted: false, label: 'x', squaredRight: true })
+    // Fill/border path, then the selection-ring path — 8 arcTo calls total.
+    const radii = r.of('arcTo').map(c => c.args[4])
+    expect(radii).toHaveLength(8)
+    const [tr1, br1, , , tr2, br2] = radii
+    expect([tr1, br1]).toEqual([0, 0])
+    expect([tr2, br2]).toEqual([0, 0])
   })
 })
 
@@ -807,6 +951,57 @@ describe('drawTimelineContent', () => {
     const r = recordingContext()
     drawTimelineContent(r.ctx, scene({ project: p, layout: computeTimelineLayout(p), viewport: viewport({ pxPerSecond: 10 }) }))
     expect(r.calls.some(c => c.method === 'set:strokeStyle' && c.args[0] === TIMELINE_COLORS.overlapHatch)).toBe(false)
+  })
+
+  // ── Butted-run corner squaring, wired end to end ────────────────────────
+
+  it('squares only the touching corners of a butted run of visual clips, leaving a separated clip fully rounded', () => {
+    const p = project({
+      tracks: [[
+        clip({ id: 'a', start: 0, end: 5 }),
+        clip({ id: 'b', start: 5, end: 9 }), // butted to `a`
+        clip({ id: 'c', start: 20, end: 25 }), // far away — not butted to `b`
+      ]],
+    } as unknown as Partial<Project>)
+    const r = recordingContext()
+    drawTimelineContent(r.ctx, scene({ project: p, layout: computeTimelineLayout(p), viewport: viewport({ pxPerSecond: 10 }) }))
+
+    // One row → one `drawRowBackground` roundRectPath (4 arcTo, ROW_RADIUS_PX)
+    // ahead of the clips; each unselected clip then contributes two
+    // roundRectPath calls of its own (content mask, border), 4 arcTo apiece.
+    // The content mask is the first of each pair.
+    const radii = r.of('arcTo').map(c => c.args[4])
+    const aMask = radii.slice(4, 8)
+    const bMask = radii.slice(12, 16)
+    const cMask = radii.slice(20, 24)
+    expect(aMask).toEqual([0, 0, CLIP_RADIUS_PX, CLIP_RADIUS_PX]) // butted on its right only
+    expect(bMask).toEqual([CLIP_RADIUS_PX, CLIP_RADIUS_PX, 0, 0]) // butted on its left only
+    expect(cMask).toEqual([CLIP_RADIUS_PX, CLIP_RADIUS_PX, CLIP_RADIUS_PX, CLIP_RADIUS_PX]) // isolated
+  })
+
+  it('squares only the touching corners of a butted run of audio bars in the same lane', () => {
+    const p = project({
+      audio: {
+        tracks: [
+          audio({ id: 'a', start: 0, end: 5, lane: 0 }),
+          audio({ id: 'b', start: 5, end: 9, lane: 0 }), // butted to `a`
+          audio({ id: 'c', start: 20, end: 25, lane: 0 }), // far away
+        ],
+      },
+    } as unknown as Partial<Project>)
+    const r = recordingContext()
+    drawTimelineContent(r.ctx, scene({ project: p, layout: computeTimelineLayout(p), viewport: viewport({ pxPerSecond: 10 }) }))
+
+    // One lane → one `drawRowBackground` roundRectPath (4 arcTo) ahead of the
+    // bars; each unmuted, unselected bar then contributes exactly one
+    // roundRectPath (fill and border share the path), 4 arcTo apiece.
+    const radii = r.of('arcTo').map(c => c.args[4])
+    const aRadii = radii.slice(4, 8)
+    const bRadii = radii.slice(8, 12)
+    const cRadii = radii.slice(12, 16)
+    expect(aRadii).toEqual([0, 0, AUDIO_ITEM_RADIUS_PX, AUDIO_ITEM_RADIUS_PX])
+    expect(bRadii).toEqual([AUDIO_ITEM_RADIUS_PX, AUDIO_ITEM_RADIUS_PX, 0, 0])
+    expect(cRadii).toEqual([AUDIO_ITEM_RADIUS_PX, AUDIO_ITEM_RADIUS_PX, AUDIO_ITEM_RADIUS_PX, AUDIO_ITEM_RADIUS_PX])
   })
 
   it('draws the band over the clips it spans, not under them', () => {

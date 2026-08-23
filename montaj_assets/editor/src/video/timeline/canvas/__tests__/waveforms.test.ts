@@ -82,7 +82,17 @@ function peaksFixture(over: Partial<PeaksData> = {}): PeaksData {
 }
 
 function queryCtx(over: Partial<WaveformQueryContext> = {}): WaveformQueryContext {
-  return { projectId: 'p1', getWaveformPeaks: vi.fn().mockResolvedValue(peaksFixture()), pxPerSecond: 30, onReady: vi.fn(), ...over }
+  return {
+    projectId: 'p1',
+    getWaveformPeaks: vi.fn().mockResolvedValue(peaksFixture()),
+    pxPerSecond: 30,
+    // Wide enough that the default `clip()` (0..2s at 30px/s = 60px) sits
+    // fully inside it, so tests that don't care about scroll/clamping see
+    // the whole clip's peaks, matching pre-fix behaviour.
+    viewport: { pxPerSecond: 30, scrollSeconds: 0, widthPx: 1000 },
+    onReady: vi.fn(),
+    ...over,
+  }
 }
 
 /** Flush the microtask queue so a mocked fetcher's `.then()`/`.catch()` runs. */
@@ -515,6 +525,58 @@ describe('WaveformPeaksStore.clipColumns', () => {
     const afterResolve = store.clipColumns(item, barRect, queryCtx({ getWaveformPeaks: fetcher, pxPerSecond: 1000 }))
     expect(afterResolve).not.toBeNull()
     expect(fetcher).toHaveBeenCalledTimes(2) // no third fetch just from reading it again
+  })
+
+  // ── Viewport-aware slicing (scroll bug fix) ─────────────────────────────
+  // Before this, `clipColumns` always resampled the WHOLE clip's peaks into
+  // whatever width `rect` happened to be — correct only while the entire
+  // clip fit on screen. Once a clip ran off both edges of the viewport, the
+  // same "whole clip squeezed into the visible width" picture painted at
+  // every scroll position, because `rect` (clamped to the visible surface)
+  // was the only geometry `clipColumns` had to go on.
+
+  it('resamples a DIFFERENT sub-window of the peaks when the same on-screen rect maps to a different part of a long clip (scroll-dependent, not squeezed to the whole clip every time)', async () => {
+    const store = new WaveformPeaksStore()
+    // 100 monotonically-increasing samples so two different sub-ranges are
+    // guaranteed to differ.
+    const peaks: number[] = []
+    for (let i = 0; i < 100; i++) peaks.push(-(i + 1), i + 1)
+    const fetcher = vi.fn().mockResolvedValue(peaksFixture({ duration: 100, peaks }))
+    // A 100s clip at 10px/s spans 1000px on screen — far wider than the
+    // 200px viewport it's drawn into, so `rect` (the visible slice) is only
+    // ever a fraction of the clip's full span.
+    const item = clip({ proxySrc: 'proxy.mp4', start: 0, end: 100 })
+    const visibleRect = rect({ x: 0, width: 200 })
+    const atStart = { pxPerSecond: 10, scrollSeconds: 0, widthPx: 200 }
+    const scrolledIn = { pxPerSecond: 10, scrollSeconds: 40, widthPx: 200 }
+
+    // Warm the cache.
+    store.clipColumns(item, visibleRect, queryCtx({ getWaveformPeaks: fetcher, viewport: atStart }))
+    await flush()
+
+    const colsAtStart = store.clipColumns(item, visibleRect, queryCtx({ getWaveformPeaks: fetcher, viewport: atStart }))
+    const colsScrolledIn = store.clipColumns(item, visibleRect, queryCtx({ getWaveformPeaks: fetcher, viewport: scrolledIn }))
+
+    expect(colsAtStart).not.toBeNull()
+    expect(colsScrolledIn).not.toBeNull()
+    expect(colsAtStart).not.toEqual(colsScrolledIn)
+  })
+
+  it('matches the whole-clip resample when the full clip is on screen (unchanged from before the fix)', async () => {
+    const store = new WaveformPeaksStore()
+    const data = peaksFixture()
+    const fetcher = vi.fn().mockResolvedValue(data)
+    const item = clip({ proxySrc: 'proxy.mp4', start: 0, end: 2 })
+    // A 2s clip at 30px/s spans exactly 60px — hand clipColumns that as its
+    // rect, unclamped: the clip is fully visible.
+    const vp = { pxPerSecond: 30, scrollSeconds: 0, widthPx: 1000 }
+    const fullRect = rect({ x: 0, width: 60 })
+
+    store.clipColumns(item, fullRect, queryCtx({ getWaveformPeaks: fetcher, viewport: vp }))
+    await flush()
+    const cols = store.clipColumns(item, fullRect, queryCtx({ getWaveformPeaks: fetcher, viewport: vp }))
+
+    expect(cols).toEqual(resamplePeaksToColumns(data.peaks, 60))
   })
 })
 
