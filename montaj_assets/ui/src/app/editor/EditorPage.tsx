@@ -10,6 +10,7 @@ import { CarouselEditor, VideoEditor, createSourcePreviewStore, defaultMontajThe
 import AssetsPanel from '@/components/AssetsPanel'
 import MediaPanel from '@/components/media/MediaPanel'
 import FootagePanel from '@/components/media/FootagePanel'
+import BrollAudioPanel, { type Voiceover } from '@/components/media/BrollAudioPanel'
 import ProjectHeader from '@/components/ProjectHeader'
 import RerunModal from '@/components/RerunModal'
 import { Button } from '@/components/ui/button'
@@ -312,10 +313,38 @@ export default function EditorPage() {
     }
     const footageLabel = project?.projectType === 'broll' ? 'B-Roll' : 'Footage'
 
+    // Broll-audio tab data. `voiceover` is a passthrough field (index signature
+    // on EditorProject), so read it defensively. The tab appears only for a
+    // b-roll project that actually carries voiceover audio (a src or takes);
+    // every other project passes no `brollAudio` node and keeps the two tabs.
+    const voiceover = (project?.voiceover as Voiceover | undefined) ?? undefined
+    const hasVoiceoverAudio = !!(voiceover && (voiceover.src || voiceover.takes?.length))
+    const showBrollAudio = project?.projectType === 'broll' && hasVoiceoverAudio
+    // The per-take wavs actually placed on the timeline drive the "Added" badge;
+    // their sourceDuration (when present) drives the duration chip.
+    const audioUsedSrcs = new Set<string>()
+    const audioDurationBySrc = new Map<string, number>()
+    for (const track of project?.audio?.tracks ?? []) {
+      if (track.src) {
+        audioUsedSrcs.add(track.src)
+        if (track.sourceDuration != null) audioDurationBySrc.set(track.src, track.sourceDuration)
+      }
+    }
+
     return {
       mediaPanel: project ? (
         <MediaPanel
           footageLabel={footageLabel}
+          brollAudio={
+            showBrollAudio ? (
+              <BrollAudioPanel
+                voiceover={voiceover}
+                usedSrcs={audioUsedSrcs}
+                durationBySrc={audioDurationBySrc}
+                fileUrl={adapter.fileUrl}
+              />
+            ) : undefined
+          }
           footage={
             <FootagePanel
               sources={project.sources ?? []}
