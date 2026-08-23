@@ -60,18 +60,19 @@ export function resolveBucket(pxPerSecond: number): PeaksResolution {
 /**
  * The source-time window `getWaveformPeaks` should fetch for an audio
  * track's lane waveform, and the window `sourceTimeToBarFraction` positions
- * against. Ported verbatim from `AudioWaveformLayer.tsx`'s
- * `sourceDur`/`inPt`/`outPt`/`visibleSpan` (lines 75–78): same defaulting,
- * same result, so a trimmed/offset audio track shows the same source-time
- * span on canvas that it shows in the DOM path. `duration <= 0` is that
- * component's `PlainFallback` case (a fully collapsed trim) — callers skip
+ * against. `duration <= 0` is the fully-collapsed-trim case — callers skip
  * drawing rather than fetch/render a degenerate window.
  */
 export function audioTrackSourceWindow(track: AudioTrack): { start: number; duration: number } {
-  const sourceDuration = track.sourceDuration ?? (track.end - track.start)
-  const inPoint = track.inPoint ?? 0
-  const outPoint = track.outPoint ?? sourceDuration
-  return { start: inPoint, duration: outPoint - inPoint }
+  const start = track.inPoint ?? 0
+  // outPoint present → exact window. Absent → for 1:1 audio the clip's timeline
+  // span IS its source-window duration; using end-start avoids treating
+  // sourceDuration (a length) as an absolute out-point, which goes negative for
+  // a split clip whose right half has inPoint>0 and no outPoint (blank waveform).
+  const duration = track.outPoint != null
+    ? Math.max(0, track.outPoint - start)
+    : Math.max(0, track.end - track.start)
+  return { start, duration }
 }
 
 /**

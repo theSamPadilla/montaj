@@ -282,12 +282,32 @@ export function moveItemAcrossTracks({ tracks, item, start, end, sourceTrackIdx,
     })
   }
 
+  // Coarse kind gate: video and overlay/image tracks are different worlds
+  // (an overlay is composited on top of the video underneath it, not spliced
+  // into its timeline), so a candidate track is only valid if it's either
+  // empty or already carries the dragged item's own coarse kind. This is
+  // deliberately narrow — just "don't let a video item land on an overlay
+  // track or vice versa" — NOT the fuller "video tracks form their own block
+  // below overlays" reorganization, which is separate follow-up work.
+  const coarse = (type?: string) => (type === 'video' ? 'video' : 'overlay')
+  const itemKind = coarse(item.type)
+  const kindOk = (items: VisualItem[]) => {
+    const others = items.filter(o => o.id !== item.id)
+    // Every OTHER item, not just the first — a track is allowed to hold both
+    // kinds (see TrackGutter's own note on a track that "also holds a
+    // clip"), and sampling only `others[0]` would make the check depend on
+    // array order rather than actually vetting every item already there.
+    return others.length === 0 || others.every(o => coarse(o.type) === itemKind)
+  }
+
   let bestIdx = targetIdx
   outer: for (let delta = 0; delta <= tracks.length; delta++) {
     for (const i of delta === 0 ? [targetIdx] : [targetIdx - delta, targetIdx + delta]) {
       if (i < 0) continue
+      // Past the end of the array is a new track — it inherits the dragged
+      // item's own kind by construction, so `[]` always passes `kindOk`.
       const candidateItems = i < tracks.length ? tracks[i].items : []
-      if (!hasOverlap(candidateItems)) { bestIdx = i; break outer }
+      if (!hasOverlap(candidateItems) && kindOk(candidateItems)) { bestIdx = i; break outer }
     }
   }
 

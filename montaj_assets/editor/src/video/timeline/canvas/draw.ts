@@ -397,7 +397,14 @@ export function computeTimelineLayout(project: Project): TimelineLayout {
     // is always the LAST iteration of this loop (reversed order), so this is
     // "immediately before the base row is pushed".
     if (trackIdx === 0 && captionGroups.length > 0) emitCaptionBands()
-    const height = trackIdx === 0 ? BASE_VISUAL_ROW_RENDER_HEIGHT_PX : VISUAL_ROW_RENDER_HEIGHT_PX
+    // Tall not just for the base track (trackIdx 0, always tall even when
+    // empty, so a blank base row doesn't jump size once footage lands) but
+    // for ANY video-kind track — a second video track carries the same
+    // filmstrip+waveform content as the base and is cramped without the
+    // room. Overlay/image tracks keep the short row.
+    const height = (trackIdx === 0 || allTracks[trackIdx][0]?.type === 'video')
+      ? BASE_VISUAL_ROW_RENDER_HEIGHT_PX
+      : VISUAL_ROW_RENDER_HEIGHT_PX
     rows.push({
       trackIdx,
       items: allTracks[trackIdx],
@@ -435,29 +442,16 @@ export function computeTimelineLayout(project: Project): TimelineLayout {
 
 // ── Primitives ───────────────────────────────────────────────────────────
 
-/** Independent radius per corner — lets a butted clip/audio-bar square off
- *  only the corner(s) touching a neighbour (see `buttedEdges`) while keeping
- *  the others rounded. */
-export interface CornerRadii { tl: number; tr: number; br: number; bl: number }
-
 /** Rounded-rect path. Hand-rolled rather than `ctx.roundRect` so the painter
- *  works on contexts (and stubs) that predate it. `r` is either one radius
- *  for all four corners (every existing call site) or a `CornerRadii` for a
- *  shape whose corners differ, e.g. a clip squared on the side that butts a
- *  neighbour. */
-export function roundRectPath(ctx: DrawContext, x: number, y: number, w: number, h: number, r: number | CornerRadii): void {
-  const radii = typeof r === 'number' ? { tl: r, tr: r, br: r, bl: r } : r
-  const clampCorner = (v: number) => Math.max(0, Math.min(v, w / 2, h / 2))
-  const tl = clampCorner(radii.tl)
-  const tr = clampCorner(radii.tr)
-  const br = clampCorner(radii.br)
-  const bl = clampCorner(radii.bl)
+ *  works on contexts (and stubs) that predate it. */
+export function roundRectPath(ctx: DrawContext, x: number, y: number, w: number, h: number, r: number): void {
+  const radius = Math.max(0, Math.min(r, w / 2, h / 2))
   ctx.beginPath()
-  ctx.moveTo(x + tl, y)
-  ctx.arcTo(x + w, y, x + w, y + h, tr)
-  ctx.arcTo(x + w, y + h, x, y + h, br)
-  ctx.arcTo(x, y + h, x, y, bl)
-  ctx.arcTo(x, y, x + w, y, tl)
+  ctx.moveTo(x + radius, y)
+  ctx.arcTo(x + w, y, x + w, y + h, radius)
+  ctx.arcTo(x + w, y + h, x, y + h, radius)
+  ctx.arcTo(x, y + h, x, y, radius)
+  ctx.arcTo(x, y, x + w, y, radius)
   ctx.closePath()
 }
 
@@ -490,12 +484,6 @@ export interface ClipDrawArgs {
    *  per-clip waveform hooks in here (filmstrip, T7, will too). Receives the
    *  same rect as the clip itself. */
   drawContent?: (ctx: DrawContext, rect: Rect) => void
-  /** This clip's LEFT/RIGHT edge butts exactly against a same-row neighbour
-   *  (see `buttedEdges`) — squares the two corners on that side (fill,
-   *  content clip mask, and border/selection outline alike) so a run of
-   *  butted clips reads as one continuous bar. Neither side by default. */
-  squaredLeft?: boolean
-  squaredRight?: boolean
 }
 
 /**
@@ -613,23 +601,13 @@ export function drawItemHandles(
 }
 
 export function drawClipRect(ctx: DrawContext, args: ClipDrawArgs): void {
-  const { rect, palette, selected, label, dimmed, drawContent, squaredLeft, squaredRight } = args
+  const { rect, palette, selected, label, dimmed, drawContent } = args
   if (rect.width <= 0) return
 
   const body = clipBodyRect(rect)
   if (body.width <= 0) return
 
   const radius = Math.min(CLIP_RADIUS_PX, body.width / 2, body.height / 2)
-  // Left corners square off when this clip butts a neighbour on its left,
-  // right corners when it butts one on its right — the same radii feed the
-  // fill/content mask and both border variants below, so a squared corner is
-  // squared everywhere, not rounded on the stroke and square on the fill.
-  const radii: CornerRadii = {
-    tl: squaredLeft ? 0 : radius,
-    bl: squaredLeft ? 0 : radius,
-    tr: squaredRight ? 0 : radius,
-    br: squaredRight ? 0 : radius,
-  }
 
   ctx.save()
   if (dimmed) ctx.globalAlpha = 0.3
@@ -637,7 +615,7 @@ export function drawClipRect(ctx: DrawContext, args: ClipDrawArgs): void {
   // Fill and content clipped to the rounded body, so filmstrip tiles and
   // waveform bars stop at the corners instead of squaring them off.
   ctx.save()
-  roundRectPath(ctx, body.x, body.y, body.width, body.height, radii)
+  roundRectPath(ctx, body.x, body.y, body.width, body.height, radius)
   ctx.clip()
   ctx.fillStyle = selected ? palette.fillSelected : palette.fill
   ctx.fillRect(body.x, body.y, body.width, body.height)
@@ -652,12 +630,12 @@ export function drawClipRect(ctx: DrawContext, args: ClipDrawArgs): void {
     const inset = CLIP_SELECTED_BORDER_PX / 2
     ctx.strokeStyle = TIMELINE_COLORS.clipSelectedOutline
     ctx.lineWidth = CLIP_SELECTED_BORDER_PX
-    roundRectPath(ctx, body.x + inset, body.y + inset, Math.max(0, body.width - CLIP_SELECTED_BORDER_PX), Math.max(0, body.height - CLIP_SELECTED_BORDER_PX), radii)
+    roundRectPath(ctx, body.x + inset, body.y + inset, Math.max(0, body.width - CLIP_SELECTED_BORDER_PX), Math.max(0, body.height - CLIP_SELECTED_BORDER_PX), radius)
     ctx.stroke()
   } else {
     ctx.strokeStyle = palette.border
     ctx.lineWidth = 1
-    roundRectPath(ctx, body.x + 0.5, body.y + 0.5, Math.max(0, body.width - 1), Math.max(0, body.height - 1), radii)
+    roundRectPath(ctx, body.x + 0.5, body.y + 0.5, Math.max(0, body.width - 1), Math.max(0, body.height - 1), radius)
     ctx.stroke()
   }
 
@@ -704,30 +682,16 @@ export interface AudioItemDrawArgs {
    *  label — the T6 audio-lane waveform hooks in here (mirrors the DOM
    *  path's `AudioWaveformLayer`, which also paints behind the type label). */
   drawContent?: (ctx: DrawContext, rect: Rect) => void
-  /** This bar's LEFT/RIGHT edge butts exactly against a same-lane neighbour
-   *  (see `buttedEdges`) — squares the two corners on that side, matching
-   *  `ClipDrawArgs.squaredLeft`/`squaredRight`. Neither side by default. */
-  squaredLeft?: boolean
-  squaredRight?: boolean
 }
 
 export function drawAudioItem(ctx: DrawContext, args: AudioItemDrawArgs): void {
-  const { rect, selected, muted, label, fadeInPx = 0, fadeOutPx = 0, drawContent, squaredLeft, squaredRight } = args
+  const { rect, selected, muted, label, fadeInPx = 0, fadeOutPx = 0, drawContent } = args
   const handleWidth = selected ? Math.min(AUDIO_HANDLE_WIDTH_PX, rect.width / 2) : 0
   if (rect.width <= 0) return
   ctx.save()
 
-  const radii: CornerRadii = {
-    tl: squaredLeft ? 0 : AUDIO_ITEM_RADIUS_PX,
-    bl: squaredLeft ? 0 : AUDIO_ITEM_RADIUS_PX,
-    tr: squaredRight ? 0 : AUDIO_ITEM_RADIUS_PX,
-    br: squaredRight ? 0 : AUDIO_ITEM_RADIUS_PX,
-  }
-
   ctx.fillStyle = muted ? TIMELINE_COLORS.audioMutedFill : TIMELINE_COLORS.audioFill
-  // Fill and (below, when unmuted) the border share this one path, so a
-  // squared corner is squared on both without drawing it twice.
-  roundRectPath(ctx, rect.x, rect.y, rect.width, rect.height, radii)
+  roundRectPath(ctx, rect.x, rect.y, rect.width, rect.height, AUDIO_ITEM_RADIUS_PX)
   ctx.fill()
   if (!muted) {
     ctx.strokeStyle = TIMELINE_COLORS.audioBorder
@@ -772,7 +736,7 @@ export function drawAudioItem(ctx: DrawContext, args: AudioItemDrawArgs): void {
   if (selected) {
     ctx.strokeStyle = TIMELINE_COLORS.audioRing
     ctx.lineWidth = 1
-    roundRectPath(ctx, rect.x + 0.5, rect.y + 0.5, Math.max(0, rect.width - 1), Math.max(0, rect.height - 1), radii)
+    roundRectPath(ctx, rect.x + 0.5, rect.y + 0.5, Math.max(0, rect.width - 1), Math.max(0, rect.height - 1), AUDIO_ITEM_RADIUS_PX)
     ctx.stroke()
     // Handles come later, in the lane painter's own pass — crossfaded bars
     // overlap by design, so burying them here would be the normal case rather
@@ -912,41 +876,6 @@ export function overlapBands(items: readonly { start: number; end: number }[]): 
     const b = sorted[i + 1]
     if (a.end <= b.start) continue
     out.push({ start: b.start, end: Math.min(a.end, b.end) })
-  }
-  return out
-}
-
-/** Time-domain tolerance for "the same instant" — matches the `EPSILON`
- *  `pointer-machine.ts`/`snap.ts` already use for the identical comparison
- *  (`Math.abs(before.end - item.start) <= EPSILON`) when deciding whether a
- *  drag has broken a clip away from a butted neighbour. Not imported from
- *  either module: both are gesture logic with no reason to depend on the
- *  painter, and the painter shouldn't depend on them either. */
-const BUTT_EPSILON = 1e-6
-
-/**
- * Which side(s) of each item touch a same-row/lane neighbour EXACTLY, in
- * project time — i.e. are butted, not merely adjacent in pixels. Sorted by
- * start once, then each item is compared only to its immediate neighbours in
- * that order: touching in time is what makes the drawn rects touch on screen
- * too, since `timeToX` is affine.
- *
- * Consumed by `drawClipRect`/`drawAudioItem` (via their `squaredLeft`/
- * `squaredRight` args) to square the facing corner(s) of a butted run, so it
- * paints as one continuous bar instead of independent rounded lozenges with a
- * seam-notch between them.
- */
-export function buttedEdges(items: readonly { id: string; start: number; end: number }[]): Map<string, { left: boolean; right: boolean }> {
-  const sorted = [...items].sort((a, b) => a.start - b.start)
-  const out = new Map<string, { left: boolean; right: boolean }>()
-  for (let i = 0; i < sorted.length; i++) {
-    const item = sorted[i]
-    const prev = i > 0 ? sorted[i - 1] : undefined
-    const next = i < sorted.length - 1 ? sorted[i + 1] : undefined
-    out.set(item.id, {
-      left: !!prev && Math.abs(prev.end - item.start) <= BUTT_EPSILON,
-      right: !!next && Math.abs(item.end - next.start) <= BUTT_EPSILON,
-    })
   }
   return out
 }
@@ -1181,9 +1110,6 @@ export function drawTimelineContent(ctx: DrawContext, scene: TimelineScene): Dra
     // Bodies of the selected clips in this row, queued for the handle pass at
     // the bottom of the loop.
     const handleRects: Array<{ body: Rect; hoveredEdge: 'in' | 'out' | null }> = []
-    // Which side(s) of each clip butt a same-row neighbour, so a run of
-    // butted clips paints as one continuous bar (see `buttedEdges`).
-    const edges = buttedEdges(row.items)
 
     for (const item of row.items) {
       if (!intersectsRange(item.start, item.end, range)) { stats.itemsCulled++; continue }
@@ -1215,7 +1141,6 @@ export function drawTimelineContent(ctx: DrawContext, scene: TimelineScene): Dra
             if (clipWaveform) drawClipWaveform(c, r, clipWaveform, itemMuted)
           }
         : undefined
-      const itemEdges = edges.get(item.id)
       drawClipRect(ctx, {
         rect,
         palette,
@@ -1223,8 +1148,6 @@ export function drawTimelineContent(ctx: DrawContext, scene: TimelineScene): Dra
         label: visualItemLabel(item),
         dimmed,
         drawContent,
-        squaredLeft: itemEdges?.left,
-        squaredRight: itemEdges?.right,
       })
       if (selectedIds.includes(item.id)) {
         handleRects.push({ body, hoveredEdge: hoveredHandle?.itemId === item.id ? hoveredHandle.edge : null })
@@ -1306,9 +1229,6 @@ export function drawTimelineContent(ctx: DrawContext, scene: TimelineScene): Dra
   for (const lane of layout.lanes) {
     drawRowBackground(ctx, { x: 0, y: lane.y, width: surfaceWidth, height: lane.height })
     const laneHandleRects: Array<{ rect: Rect; hoveredEdge: 'in' | 'out' | null }> = []
-    // Which side(s) of each bar butt a same-lane neighbour — mirrors the
-    // visual-row pass above.
-    const laneEdges = buttedEdges(lane.tracks)
 
     for (const track of lane.tracks) {
       if (!intersectsRange(track.start, track.end, range)) { stats.itemsCulled++; continue }
@@ -1323,21 +1243,23 @@ export function drawTimelineContent(ctx: DrawContext, scene: TimelineScene): Dra
         surfaceWidth,
       )
       if (rect.width <= 0) { stats.itemsCulled++; continue }
-      const audioWaveform = scene.waveforms?.audioColumns(track, rect) ?? null
-      const trackEdges = laneEdges.get(track.id)
+      // Horizontal gutter, same as a video clip's `clipBodyRect` — two
+      // touching audio bars therefore show the same uniform CLIP_GUTTER_PX
+      // gap video clips do, rather than a seam that depends on where exactly
+      // the bars' edges land.
+      const body = clipBodyRect(rect)
+      const audioWaveform = scene.waveforms?.audioColumns(track, body) ?? null
       drawAudioItem(ctx, {
-        rect,
+        rect: body,
         selected: selectedIds.includes(track.id),
         muted: !!track.muted,
         label: audioLabel(track),
         fadeInPx: (track.fadeIn ?? 0) * viewport.pxPerSecond,
         fadeOutPx: (track.fadeOut ?? 0) * viewport.pxPerSecond,
         drawContent: audioWaveform ? (c) => drawAudioLaneWaveform(c, audioWaveform.rect, audioWaveform.columns) : undefined,
-        squaredLeft: trackEdges?.left,
-        squaredRight: trackEdges?.right,
       })
       if (selectedIds.includes(track.id)) {
-        laneHandleRects.push({ rect, hoveredEdge: hoveredHandle?.itemId === track.id ? hoveredHandle.edge : null })
+        laneHandleRects.push({ rect: body, hoveredEdge: hoveredHandle?.itemId === track.id ? hoveredHandle.edge : null })
       }
       stats.audioItemsDrawn++
     }

@@ -77,6 +77,50 @@ function legacyProject(): Project {
   } as unknown as Project
 }
 
+/**
+ * Same layout as `baseProject`, but track 1's item is VIDEO-kind (`o0`
+ * keeps its id, start and end — only `type`/`src` change) instead of
+ * overlay. Used ONLY by the cross-track-move tests below that drag a clip
+ * ACROSS the track-0/track-1 boundary: those tests exist to exercise the
+ * search mechanics (accumulation, collision tolerance, pruning), and the
+ * kind-lock (`moveItemAcrossTracks`'s `kindOk`) correctly refuses to let a
+ * video clip land on an overlay-only track — so a same-kind neighbour is
+ * what lets the drag actually happen. Every other test in this file still
+ * exercises the real (video + overlay) `baseProject`.
+ */
+function sameKindProject(): Project {
+  return {
+    id: 'p',
+    tracks: [
+      {
+        id: 'trk-0',
+        items: [
+          { id: 'c0', type: 'video', src: 'a.mp4', start: 0, end: 5, inPoint: 0, outPoint: 5, sourceDuration: 20 },
+          { id: 'c1', type: 'video', src: 'b.mp4', start: 5, end: 10, inPoint: 2, outPoint: 7, sourceDuration: 20 },
+        ],
+      },
+      { id: 'trk-1', items: [{ id: 'o0', type: 'video', src: 'o0.mp4', start: 2, end: 4, inPoint: 0, outPoint: 2, sourceDuration: 20 }] },
+    ],
+    audio: { tracks: [{ id: 'a0', src: 'v.mp3', start: 1, end: 6, lane: 0 }] },
+  } as unknown as Project
+}
+
+/** `sameKindProject`, legacy array-of-arrays shape — the same-kind sibling of
+ *  `legacyProject`, for the T6-regression cross-track test. */
+function sameKindLegacyProject(): Project {
+  return {
+    id: 'p',
+    tracks: [
+      [
+        { id: 'c0', type: 'video', src: 'a.mp4', start: 0, end: 5, inPoint: 0, outPoint: 5, sourceDuration: 20 },
+        { id: 'c1', type: 'video', src: 'b.mp4', start: 5, end: 10, inPoint: 2, outPoint: 7, sourceDuration: 20 },
+      ],
+      [{ id: 'o0', type: 'video', src: 'o0.mp4', start: 2, end: 4, inPoint: 0, outPoint: 2, sourceDuration: 20 }],
+    ],
+    audio: { tracks: [{ id: 'a0', src: 'v.mp3', start: 1, end: 6, lane: 0 }] },
+  } as unknown as Project
+}
+
 function makeContext(overrides: Partial<PointerContext> = {}): PointerContext {
   const project = overrides.project ?? baseProject()
   const { snapBoundaries, totalDuration } = computeDerivedTiming(project)
@@ -168,6 +212,20 @@ const A0_OUT_EDGE = { x: 597, y: LANE_Y }
 const EMPTY = { x: 700, y: OVERLAY_Y }
 /** Inside the ruler strip — the only place a scrub starts now. */
 const RULER_Y = Math.round(LAYOUT.ruler.y + LAYOUT.ruler.height / 2)
+
+// `sameKindProject`'s own layout: track 1 being VIDEO-kind (not overlay)
+// makes it the TALL row too (any video track is, not just track 0), which
+// shifts track 0's Y down from `BASE_Y` above — so the cross-track-move
+// tests that use `sameKindProject` need their own Y's, not the ones derived
+// from `baseProject`. X's are unaffected (purely time-based) and are reused
+// from `C1_BODY`/`C0_BODY` above.
+const SAME_KIND_LAYOUT = computeTimelineLayout(sameKindProject())
+const sameKindRowMidY = (trackIdx: number) => {
+  const row = SAME_KIND_LAYOUT.rows.find(r => r.trackIdx === trackIdx)!
+  return Math.round(row.y + row.height / 2)
+}
+const SAME_KIND_BASE_Y = sameKindRowMidY(0)
+const SAME_KIND_TRACK1_Y = sameKindRowMidY(1)
 
 // ── Building blocks ──────────────────────────────────────────────────────
 
@@ -523,10 +581,12 @@ describe('body drag — move', () => {
   })
 
   it('accumulates across moves so the cross-track search sees its own work', () => {
-    const d = new Driver(makeContext())
-    d.down(C1_BODY.x, C1_BODY.y)
-    d.move(C1_BODY.x, C1_BODY.y - VISUAL_ROW_HEIGHT_PX)          // up one track
-    const after = lastProjectChange(d.move(C1_BODY.x, C1_BODY.y - VISUAL_ROW_HEIGHT_PX))
+    // `sameKindProject`: track 1 must be video-kind (not overlay) for this
+    // move to land at all — see the fixture's own doc comment.
+    const d = new Driver(makeContext({ project: sameKindProject() }))
+    d.down(C1_BODY.x, SAME_KIND_BASE_Y)
+    d.move(C1_BODY.x, SAME_KIND_BASE_Y - VISUAL_ROW_HEIGHT_PX)          // up one track
+    const after = lastProjectChange(d.move(C1_BODY.x, SAME_KIND_BASE_Y - VISUAL_ROW_HEIGHT_PX))
     expect(trackIndexOf(after, 'c1')).toBe(1)
   })
 
@@ -539,11 +599,13 @@ describe('body drag — move', () => {
 
 describe('cross-track move', () => {
   it('moves a clip up a track when the vertical travel points there', () => {
-    const d = new Driver(makeContext())
-    d.down(C1_BODY.x, C1_BODY.y)
+    // `sameKindProject`: track 1 is video-kind here so the kind-lock doesn't
+    // block the very move this test is about — see its own doc comment.
+    const d = new Driver(makeContext({ project: sameKindProject() }))
+    d.down(C1_BODY.x, SAME_KIND_BASE_Y)
     // 24px of upward travel is one track; c1 (5s–10s) doesn't collide with the
-    // overlay o0 (2s–4s), so it lands on track 1.
-    const after = lastProjectChange(d.move(C1_BODY.x, C1_BODY.y - VISUAL_ROW_HEIGHT_PX))
+    // video o0 (2s–4s), so it lands on track 1.
+    const after = lastProjectChange(d.move(C1_BODY.x, SAME_KIND_BASE_Y - VISUAL_ROW_HEIGHT_PX))
     expect(trackIndexOf(after, 'c1')).toBe(1)
     expect(visual(after, 'c1').start).toBeCloseTo(5)
   })
@@ -559,10 +621,12 @@ describe('cross-track move', () => {
 
   it('tolerates a brush past a neighbour', () => {
     // A 5s clip may overlap by up to 1.5s. Drag c1 up while shifting it left so
-    // it overlaps o0 (2s–4s) by only 1s.
-    const d = new Driver(makeContext())
-    d.down(C1_BODY.x, C1_BODY.y)
-    const after = lastProjectChange(d.move(C1_BODY.x - 200, C1_BODY.y - VISUAL_ROW_HEIGHT_PX))
+    // it overlaps o0 (2s–4s) by only 1s. `sameKindProject`: track 1 is
+    // video-kind so the kind-lock doesn't block the move before the overlap
+    // tolerance this test is actually about ever gets exercised.
+    const d = new Driver(makeContext({ project: sameKindProject() }))
+    d.down(C1_BODY.x, SAME_KIND_BASE_Y)
+    const after = lastProjectChange(d.move(C1_BODY.x - 200, SAME_KIND_BASE_Y - VISUAL_ROW_HEIGHT_PX))
     expect(visual(after, 'c1').start).toBeCloseTo(3)
     expect(trackIndexOf(after, 'c1')).toBe(1)
   })
@@ -576,11 +640,15 @@ describe('cross-track move', () => {
   })
 
   it('prunes a track the move emptied', () => {
-    const d = new Driver(makeContext())
-    d.down(300, OVERLAY_Y)                              // o0, the only item on track 1
+    // `sameKindProject`: o0 must be video-kind here — track 0 (its
+    // destination) is video-only, so an overlay `o0` could never land there
+    // and this test's own mechanic (the emptied track gets pruned) would
+    // never get to run.
+    const d = new Driver(makeContext({ project: sameKindProject() }))
+    d.down(300, SAME_KIND_TRACK1_Y)                     // o0, the only item on track 1
     // Down two tracks and out past the end of the base track's content, where
     // nothing collides — so track 1 is left empty and disappears.
-    const after = lastProjectChange(d.move(300 + 900, OVERLAY_Y + 48))
+    const after = lastProjectChange(d.move(300 + 900, SAME_KIND_TRACK1_Y + 48))
     expect(visual(after, 'o0').start).toBeCloseTo(11)
     expect(after.tracks).toHaveLength(1)
     expect(trackIndexOf(after, 'o0')).toBe(0)
@@ -591,9 +659,11 @@ describe('cross-track move', () => {
     // moveItemAcrossTracks, which does `t.items.filter(...)` on every track —
     // a crash on a bare array. The call site now normalizes defensively, so
     // this must behave identically to the object-shape test above.
-    const d = new Driver(makeContext({ project: legacyProject() }))
-    d.down(C1_BODY.x, C1_BODY.y)
-    const after = lastProjectChange(d.move(C1_BODY.x, C1_BODY.y - VISUAL_ROW_HEIGHT_PX))
+    // `sameKindLegacyProject`: same video-kind track 1 as `sameKindProject`,
+    // just in the legacy array-of-arrays shape this test targets.
+    const d = new Driver(makeContext({ project: sameKindLegacyProject() }))
+    d.down(C1_BODY.x, SAME_KIND_BASE_Y)
+    const after = lastProjectChange(d.move(C1_BODY.x, SAME_KIND_BASE_Y - VISUAL_ROW_HEIGHT_PX))
     expect(trackIndexOf(after, 'c1')).toBe(1)
     expect(visual(after, 'c1').start).toBeCloseTo(5)
   })

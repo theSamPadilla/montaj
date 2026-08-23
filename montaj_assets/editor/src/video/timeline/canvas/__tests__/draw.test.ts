@@ -16,7 +16,6 @@ import {
   AUDIO_ITEM_RADIUS_PX,
   CAPTION_PALETTE,
   CLIP_HANDLE_WIDTH_PX,
-  CLIP_RADIUS_PX,
   CURSOR_WIDTH_PX,
   LABEL_PAD_PX,
   LABEL_TOP_OFFSET_PX,
@@ -27,7 +26,6 @@ import {
   ROW_RADIUS_PX,
   TIMELINE_COLORS,
   TRACK_PALETTE,
-  buttedEdges,
   clampRectToSurface,
   computeTimelineLayout,
   overlapBands,
@@ -35,7 +33,6 @@ import {
   drawCaptionBlock,
   drawClipRect,
   drawTrimHandle,
-  roundRectPath,
   RULER_HEIGHT_PX,
   SNAP_GUIDE_CAP_HALF_WIDTH_PX,
   SNAP_GUIDE_WEAK_WIDTH_PX,
@@ -155,7 +152,10 @@ function rulerBaseline(vp: Viewport) {
 describe('computeTimelineLayout', () => {
   it('stacks visual tracks reversed, base track last and taller, audio lanes below', () => {
     const p = project({
-      tracks: [[clip({ id: 'base' })], [clip({ id: 'ov1' })], [clip({ id: 'ov2' })]],
+      // ov1/ov2 are overlay-typed (not video), so they stay the short row —
+      // isolates "base track is tall" from the separate "a VIDEO track is
+      // tall" rule below.
+      tracks: [[clip({ id: 'base' })], [clip({ id: 'ov1', type: 'overlay' })], [clip({ id: 'ov2', type: 'overlay' })]],
       audio: { tracks: [audio({ id: 'm', lane: 0 }), audio({ id: 'v', lane: 1 })] },
     } as unknown as Partial<Project>)
 
@@ -175,6 +175,32 @@ describe('computeTimelineLayout', () => {
     expect(layout.lanes[0].y).toBe(layout.rows[2].y + BASE_VISUAL_ROW_RENDER_HEIGHT_PX + ROW_GAP_PX)
     expect(layout.lanes[1].y).toBe(layout.lanes[0].y + AUDIO_LANE_HEIGHT_PX + ROW_GAP_PX)
     expect(layout.height).toBe(layout.lanes[1].y + AUDIO_LANE_HEIGHT_PX)
+  })
+
+  it('gives every VIDEO-kind track the tall base row height, not just trackIdx 0 — an overlay track stays short', () => {
+    // A second video track carries the same filmstrip+waveform content as
+    // the base track and needs the same room; an overlay/image track has
+    // neither and keeps the short row.
+    const p = project({
+      tracks: [
+        [clip({ id: 'base', type: 'video' })],
+        [clip({ id: 'video2', type: 'video' })],
+        [clip({ id: 'ov', type: 'overlay' })],
+      ],
+    } as unknown as Partial<Project>)
+
+    const layout = computeTimelineLayout(p)
+    expect(layout.rows.find(r => r.trackIdx === 0)!.height).toBe(BASE_VISUAL_ROW_RENDER_HEIGHT_PX)
+    expect(layout.rows.find(r => r.trackIdx === 1)!.height).toBe(BASE_VISUAL_ROW_RENDER_HEIGHT_PX)
+    expect(layout.rows.find(r => r.trackIdx === 2)!.height).toBe(VISUAL_ROW_RENDER_HEIGHT_PX)
+  })
+
+  it('keeps the base track (trackIdx 0) tall even when it has no items yet', () => {
+    // trackIdx 0 is always tall regardless of content, so a blank base row
+    // doesn't jump size the moment footage lands on it.
+    const p = project({ tracks: [[]] } as unknown as Partial<Project>)
+    const layout = computeTimelineLayout(p)
+    expect(layout.rows.find(r => r.trackIdx === 0)!.height).toBe(BASE_VISUAL_ROW_RENDER_HEIGHT_PX)
   })
 
   it('is empty for an empty project, but still reserves the ruler', () => {
@@ -249,19 +275,18 @@ describe('computeTimelineLayout', () => {
       } as unknown as Partial<Project>)
 
       const layout = computeTimelineLayout(p)
-      const contentTop = RULER_HEIGHT_PX + ROW_GAP_PX
-      const overlayRow = layout.rows.find(r => r.trackIdx === 1)!
-      expect(overlayRow).toMatchObject({ y: contentTop, height: VISUAL_ROW_RENDER_HEIGHT_PX })
-
-      const expectedCaptionY = contentTop + VISUAL_ROW_RENDER_HEIGHT_PX + ROW_GAP_PX
-      expect(layout.captions).toHaveLength(1)
-      expect(layout.captions![0]).toMatchObject({ lane: 0, y: expectedCaptionY, height: CAPTION_ROW_HEIGHT_PX })
-
+      // `ov1` is a bare `clip()` — VIDEO-kind — so under the "every video
+      // track is tall" rule it is BASE height, not VISUAL height. Re-derived
+      // from the layout's own rows rather than pinned to either height
+      // constant, so this regression guard survives future height changes.
+      const upperRow = layout.rows.find(r => r.trackIdx === 1)!
       const baseRow = layout.rows.find(r => r.trackIdx === 0)!
-      expect(baseRow).toMatchObject({
-        y: expectedCaptionY + CAPTION_ROW_HEIGHT_PX + ROW_GAP_PX,
-        height: BASE_VISUAL_ROW_RENDER_HEIGHT_PX,
-      })
+      const band = layout.captions![0]
+
+      expect(layout.captions).toHaveLength(1)
+      expect(band).toMatchObject({ lane: 0, height: CAPTION_ROW_HEIGHT_PX })
+      expect(band.y).toBe(upperRow.y + upperRow.height + ROW_GAP_PX)
+      expect(baseRow.y).toBe(band.y + band.height + ROW_GAP_PX)
       expect(layout.height).toBe(baseRow.y + baseRow.height)
     })
 
@@ -429,110 +454,6 @@ describe('drawClipRect', () => {
     drawClipRect(r.ctx, { rect: { x: 0, y: 0, width: 80, height: 40 }, palette: TRACK_PALETTE[0], selected: false, label: 'x', dimmed: true })
     expect(r.calls.some(c => c.method === 'set:globalAlpha' && c.args[0] === 0.3)).toBe(true)
   })
-
-  // ── Squared corners on a butted edge (continuous-bar seam fix) ──────────
-  // `arcTo`'s 5th arg is the radius `roundRectPath` used for that corner; the
-  // fill/content mask is the FIRST `roundRectPath` a call emits, so its arcTo
-  // calls are `r.of('arcTo')[0..3]` in [tr, br, bl, tl] order (see
-  // `roundRectPath`'s own arg order).
-
-  it('squares the left corners (and only the left ones) when squaredLeft is set', () => {
-    const r = recordingContext()
-    drawClipRect(r.ctx, { rect: { x: 0, y: 0, width: 100, height: 40 }, palette: TRACK_PALETTE[0], selected: false, label: 'x', squaredLeft: true })
-    const [tr, br, bl, tl] = r.of('arcTo').slice(0, 4).map(c => c.args[4])
-    expect({ tr, br, bl, tl }).toEqual({ tr: CLIP_RADIUS_PX, br: CLIP_RADIUS_PX, bl: 0, tl: 0 })
-  })
-
-  it('squares the right corners (and only the right ones) when squaredRight is set', () => {
-    const r = recordingContext()
-    drawClipRect(r.ctx, { rect: { x: 0, y: 0, width: 100, height: 40 }, palette: TRACK_PALETTE[0], selected: false, label: 'x', squaredRight: true })
-    const [tr, br, bl, tl] = r.of('arcTo').slice(0, 4).map(c => c.args[4])
-    expect({ tr, br, bl, tl }).toEqual({ tr: 0, br: 0, bl: CLIP_RADIUS_PX, tl: CLIP_RADIUS_PX })
-  })
-
-  it('squares both sides when a clip is butted on both edges, and stays fully rounded when neither is set', () => {
-    const both = recordingContext()
-    drawClipRect(both.ctx, { rect: { x: 0, y: 0, width: 100, height: 40 }, palette: TRACK_PALETTE[0], selected: false, label: 'x', squaredLeft: true, squaredRight: true })
-    expect(both.of('arcTo').slice(0, 4).map(c => c.args[4])).toEqual([0, 0, 0, 0])
-
-    const neither = recordingContext()
-    drawClipRect(neither.ctx, { rect: { x: 0, y: 0, width: 100, height: 40 }, palette: TRACK_PALETTE[0], selected: false, label: 'x' })
-    expect(neither.of('arcTo').slice(0, 4).map(c => c.args[4])).toEqual([CLIP_RADIUS_PX, CLIP_RADIUS_PX, CLIP_RADIUS_PX, CLIP_RADIUS_PX])
-  })
-
-  it('squares the SELECTED outline too, not just the fill/content mask', () => {
-    const r = recordingContext()
-    drawClipRect(r.ctx, { rect: { x: 0, y: 0, width: 100, height: 40 }, palette: TRACK_PALETTE[0], selected: true, label: 'x', squaredLeft: true })
-    // Two roundRectPath passes for a selected clip: fill/content mask, then
-    // the selection outline — 8 arcTo calls total, 4 per pass.
-    const radii = r.of('arcTo').map(c => c.args[4])
-    expect(radii).toHaveLength(8)
-    const [, , bl1, tl1, , , bl2, tl2] = radii
-    expect([bl1, tl1]).toEqual([0, 0])
-    expect([bl2, tl2]).toEqual([0, 0])
-  })
-})
-
-describe('roundRectPath', () => {
-  it('treats a bare number as all four corners, matching a CornerRadii of the same value everywhere', () => {
-    const scalar = recordingContext()
-    roundRectPath(scalar.ctx, 0, 0, 100, 40, 6)
-    const uniform = recordingContext()
-    roundRectPath(uniform.ctx, 0, 0, 100, 40, { tl: 6, tr: 6, br: 6, bl: 6 })
-    expect(scalar.of('arcTo').map(c => c.args)).toEqual(uniform.of('arcTo').map(c => c.args))
-  })
-
-  it('draws each corner at its own radius, independent of the others', () => {
-    const r = recordingContext()
-    roundRectPath(r.ctx, 0, 0, 100, 40, { tl: 1, tr: 2, br: 3, bl: 4 })
-    const [tr, br, bl, tl] = r.of('arcTo').map(c => c.args[4])
-    expect({ tl, tr, br, bl }).toEqual({ tl: 1, tr: 2, br: 3, bl: 4 })
-  })
-})
-
-describe('buttedEdges', () => {
-  it('marks neither side for a lone item', () => {
-    const edges = buttedEdges([{ id: 'a', start: 0, end: 2 }])
-    expect(edges.get('a')).toEqual({ left: false, right: false })
-  })
-
-  it('marks the touching sides of two items that meet exactly', () => {
-    const edges = buttedEdges([
-      { id: 'a', start: 0, end: 2 },
-      { id: 'b', start: 2, end: 5 },
-    ])
-    expect(edges.get('a')).toEqual({ left: false, right: true })
-    expect(edges.get('b')).toEqual({ left: true, right: false })
-  })
-
-  it('does not mark items separated by even a small gap', () => {
-    const edges = buttedEdges([
-      { id: 'a', start: 0, end: 2 },
-      { id: 'b', start: 2.01, end: 5 },
-    ])
-    expect(edges.get('a')).toEqual({ left: false, right: false })
-    expect(edges.get('b')).toEqual({ left: false, right: false })
-  })
-
-  it('is order-independent — sorts by start before comparing neighbours', () => {
-    const edges = buttedEdges([
-      { id: 'b', start: 2, end: 5 },
-      { id: 'a', start: 0, end: 2 },
-    ])
-    expect(edges.get('a')).toEqual({ left: false, right: true })
-    expect(edges.get('b')).toEqual({ left: true, right: false })
-  })
-
-  it('handles a run of three, squaring only the internal joins', () => {
-    const edges = buttedEdges([
-      { id: 'a', start: 0, end: 2 },
-      { id: 'b', start: 2, end: 4 },
-      { id: 'c', start: 4, end: 6 },
-    ])
-    expect(edges.get('a')).toEqual({ left: false, right: true })
-    expect(edges.get('b')).toEqual({ left: true, right: true })
-    expect(edges.get('c')).toEqual({ left: true, right: false })
-  })
 })
 
 describe('drawTrimHandle', () => {
@@ -633,42 +554,6 @@ describe('drawAudioItem', () => {
     const fadeFills = r.of('fillRect')
     expect(fadeFills[0].args).toEqual([100, 0, 40, 32])
     expect(fadeFills[1].args).toEqual([100, 0, 200, 32]) // clamped to the bar
-  })
-
-  // ── Squared corners on a butted edge (continuous-bar seam fix) ──────────
-  // Unselected, fill and border share ONE roundRectPath call (border is a
-  // second `stroke()` on the same current path), so its 4 `arcTo` calls are
-  // the whole story here.
-
-  it('squares the left corners (and only the left ones) when squaredLeft is set', () => {
-    const r = recordingContext()
-    drawAudioItem(r.ctx, { rect: { x: 0, y: 0, width: 200, height: 32 }, selected: false, muted: false, label: 'x', squaredLeft: true })
-    const [tr, br, bl, tl] = r.of('arcTo').map(c => c.args[4])
-    expect({ tr, br, bl, tl }).toEqual({ tr: AUDIO_ITEM_RADIUS_PX, br: AUDIO_ITEM_RADIUS_PX, bl: 0, tl: 0 })
-  })
-
-  it('squares the right corners (and only the right ones) when squaredRight is set', () => {
-    const r = recordingContext()
-    drawAudioItem(r.ctx, { rect: { x: 0, y: 0, width: 200, height: 32 }, selected: false, muted: false, label: 'x', squaredRight: true })
-    const [tr, br, bl, tl] = r.of('arcTo').map(c => c.args[4])
-    expect({ tr, br, bl, tl }).toEqual({ tr: 0, br: 0, bl: AUDIO_ITEM_RADIUS_PX, tl: AUDIO_ITEM_RADIUS_PX })
-  })
-
-  it('stays fully rounded when neither side is butted', () => {
-    const r = recordingContext()
-    drawAudioItem(r.ctx, { rect: { x: 0, y: 0, width: 200, height: 32 }, selected: false, muted: false, label: 'x' })
-    expect(r.of('arcTo').map(c => c.args[4])).toEqual([AUDIO_ITEM_RADIUS_PX, AUDIO_ITEM_RADIUS_PX, AUDIO_ITEM_RADIUS_PX, AUDIO_ITEM_RADIUS_PX])
-  })
-
-  it('squares the SELECTED ring too, not just the fill/border', () => {
-    const r = recordingContext()
-    drawAudioItem(r.ctx, { rect: { x: 0, y: 0, width: 200, height: 32 }, selected: true, muted: false, label: 'x', squaredRight: true })
-    // Fill/border path, then the selection-ring path — 8 arcTo calls total.
-    const radii = r.of('arcTo').map(c => c.args[4])
-    expect(radii).toHaveLength(8)
-    const [tr1, br1, , , tr2, br2] = radii
-    expect([tr1, br1]).toEqual([0, 0])
-    expect([tr2, br2]).toEqual([0, 0])
   })
 })
 
@@ -894,24 +779,57 @@ describe('drawTimelineContent', () => {
     expect(clipFill?.args).toEqual([50 + CLIP_GUTTER_PX, rowY, 100 - CLIP_GUTTER_PX * 2, BASE_VISUAL_ROW_RENDER_HEIGHT_PX])
   })
 
-  it('insets audio bars inside their lane', () => {
+  it('insets audio bars inside their lane, left/right AND top/bottom', () => {
     const p = project({ audio: { tracks: [audio({ start: 0, end: 4 })] } } as unknown as Partial<Project>)
     const r = recordingContext()
     drawTimelineContent(r.ctx, scene({ project: p, layout: computeTimelineLayout(p), viewport: viewport({ pxPerSecond: 20 }) }))
 
     // Audio bars are rounded, so their box is a path, not a fillRect: the lane
-    // background's path comes first, the bar's second, inset top and bottom.
+    // background's path comes first, the bar's second, inset top and bottom
+    // by AUDIO_ITEM_INSET_PX, AND left/right by CLIP_GUTTER_PX — the same
+    // horizontal gutter a video clip gets, so two touching audio bars show
+    // the same uniform gap two touching video clips do.
     const barHeight = AUDIO_LANE_HEIGHT_PX - AUDIO_ITEM_INSET_PX * 2
     // Lane y, not 0: the ruler owns the top of the surface and everything below
     // it is offset by that strip.
     const barTop = computeTimelineLayout(p).lanes[0].y + AUDIO_ITEM_INSET_PX
-    expect(r.of('moveTo')[1].args).toEqual([4, barTop])
+    // 4s @ 20px/s = 80px span, inset by CLIP_GUTTER_PX on each side.
+    const barLeft = CLIP_GUTTER_PX
+    const barRight = 80 - CLIP_GUTTER_PX
+    expect(r.of('moveTo')[1].args).toEqual([barLeft + 4, barTop])
     expect(r.of('arcTo').some(c =>
-      JSON.stringify(c.args) === JSON.stringify([80, barTop, 80, barTop + barHeight, 4]),
+      JSON.stringify(c.args) === JSON.stringify([barRight, barTop, barRight, barTop + barHeight, 4]),
     )).toBe(true)
     // By content, not by index — the ruler's own tick labels are fillText too.
     const barLabel = r.of('fillText').find(c => c.args[0] === 'voice.mp3')
-    expect(barLabel?.args).toEqual(['voice.mp3', 6, barTop + barHeight / 2])
+    expect(barLabel?.args).toEqual(['voice.mp3', barLeft + 6, barTop + barHeight / 2])
+  })
+
+  it('gives two butted audio bars the same uniform CLIP_GUTTER_PX gap two butted video clips get, not a seamless touch', () => {
+    const p = project({
+      audio: {
+        tracks: [
+          audio({ id: 'a', start: 0, end: 5, lane: 0 }),
+          audio({ id: 'b', start: 5, end: 9, lane: 0 }), // butted to `a` — no gap in time
+        ],
+      },
+    } as unknown as Partial<Project>)
+    const r = recordingContext()
+    drawTimelineContent(r.ctx, scene({ project: p, layout: computeTimelineLayout(p), viewport: viewport({ pxPerSecond: 10 }) }))
+
+    // Path order: the lane background's own roundRectPath moves first, then
+    // each bar's fill path, one moveTo apiece (unselected, unmuted — fill and
+    // border share the one path).
+    const [, aMoveTo, bMoveTo] = r.of('moveTo').map(c => c.args as number[])
+    const aLeft = aMoveTo[0] - AUDIO_ITEM_RADIUS_PX
+    const bLeft = bMoveTo[0] - AUDIO_ITEM_RADIUS_PX
+    // `a` spans [0,5) → raw x 0; `b` starts immediately after at raw x 50
+    // (5s × 10px/s). Each bar's drawn left edge sits CLIP_GUTTER_PX in from
+    // its raw span start — the identical inset a video clip's `clipBodyRect`
+    // applies — so the two bars show a uniform 2×CLIP_GUTTER_PX gap rather
+    // than touching.
+    expect(aLeft).toBe(CLIP_GUTTER_PX)
+    expect(bLeft).toBe(50 + CLIP_GUTTER_PX)
   })
 
   it('marks the overlap between two audio bars as a crossfade band', () => {
@@ -951,57 +869,6 @@ describe('drawTimelineContent', () => {
     const r = recordingContext()
     drawTimelineContent(r.ctx, scene({ project: p, layout: computeTimelineLayout(p), viewport: viewport({ pxPerSecond: 10 }) }))
     expect(r.calls.some(c => c.method === 'set:strokeStyle' && c.args[0] === TIMELINE_COLORS.overlapHatch)).toBe(false)
-  })
-
-  // ── Butted-run corner squaring, wired end to end ────────────────────────
-
-  it('squares only the touching corners of a butted run of visual clips, leaving a separated clip fully rounded', () => {
-    const p = project({
-      tracks: [[
-        clip({ id: 'a', start: 0, end: 5 }),
-        clip({ id: 'b', start: 5, end: 9 }), // butted to `a`
-        clip({ id: 'c', start: 20, end: 25 }), // far away — not butted to `b`
-      ]],
-    } as unknown as Partial<Project>)
-    const r = recordingContext()
-    drawTimelineContent(r.ctx, scene({ project: p, layout: computeTimelineLayout(p), viewport: viewport({ pxPerSecond: 10 }) }))
-
-    // One row → one `drawRowBackground` roundRectPath (4 arcTo, ROW_RADIUS_PX)
-    // ahead of the clips; each unselected clip then contributes two
-    // roundRectPath calls of its own (content mask, border), 4 arcTo apiece.
-    // The content mask is the first of each pair.
-    const radii = r.of('arcTo').map(c => c.args[4])
-    const aMask = radii.slice(4, 8)
-    const bMask = radii.slice(12, 16)
-    const cMask = radii.slice(20, 24)
-    expect(aMask).toEqual([0, 0, CLIP_RADIUS_PX, CLIP_RADIUS_PX]) // butted on its right only
-    expect(bMask).toEqual([CLIP_RADIUS_PX, CLIP_RADIUS_PX, 0, 0]) // butted on its left only
-    expect(cMask).toEqual([CLIP_RADIUS_PX, CLIP_RADIUS_PX, CLIP_RADIUS_PX, CLIP_RADIUS_PX]) // isolated
-  })
-
-  it('squares only the touching corners of a butted run of audio bars in the same lane', () => {
-    const p = project({
-      audio: {
-        tracks: [
-          audio({ id: 'a', start: 0, end: 5, lane: 0 }),
-          audio({ id: 'b', start: 5, end: 9, lane: 0 }), // butted to `a`
-          audio({ id: 'c', start: 20, end: 25, lane: 0 }), // far away
-        ],
-      },
-    } as unknown as Partial<Project>)
-    const r = recordingContext()
-    drawTimelineContent(r.ctx, scene({ project: p, layout: computeTimelineLayout(p), viewport: viewport({ pxPerSecond: 10 }) }))
-
-    // One lane → one `drawRowBackground` roundRectPath (4 arcTo) ahead of the
-    // bars; each unmuted, unselected bar then contributes exactly one
-    // roundRectPath (fill and border share the path), 4 arcTo apiece.
-    const radii = r.of('arcTo').map(c => c.args[4])
-    const aRadii = radii.slice(4, 8)
-    const bRadii = radii.slice(8, 12)
-    const cRadii = radii.slice(12, 16)
-    expect(aRadii).toEqual([0, 0, AUDIO_ITEM_RADIUS_PX, AUDIO_ITEM_RADIUS_PX])
-    expect(bRadii).toEqual([AUDIO_ITEM_RADIUS_PX, AUDIO_ITEM_RADIUS_PX, 0, 0])
-    expect(cRadii).toEqual([AUDIO_ITEM_RADIUS_PX, AUDIO_ITEM_RADIUS_PX, AUDIO_ITEM_RADIUS_PX, AUDIO_ITEM_RADIUS_PX])
   })
 
   it('draws the band over the clips it spans, not under them', () => {

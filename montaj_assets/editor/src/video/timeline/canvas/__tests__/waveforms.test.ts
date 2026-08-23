@@ -129,21 +129,27 @@ describe('audioTrackSourceWindow', () => {
     expect(audioTrackSourceWindow(audio({ inPoint: 3, outPoint: 8 }))).toEqual({ start: 3, duration: 5 })
   })
 
-  it('defaults outPoint to sourceDuration and inPoint to 0', () => {
-    expect(audioTrackSourceWindow(audio({ sourceDuration: 12 }))).toEqual({ start: 0, duration: 12 })
-  })
-
-  it('falls back to end-start when neither sourceDuration nor outPoint is present (DOM fallback)', () => {
+  it('falls back to end-start (1:1 audio: the clip′s timeline span IS its source-window duration) when outPoint is absent', () => {
     expect(audioTrackSourceWindow(audio({ start: 5, end: 9 }))).toEqual({ start: 0, duration: 4 })
   })
 
-  it('mixes a present inPoint with a defaulted outPoint', () => {
-    expect(audioTrackSourceWindow(audio({ inPoint: 2, sourceDuration: 10 }))).toEqual({ start: 2, duration: 8 })
+  it('yields a POSITIVE duration for a split clip whose right half has inPoint > 0 and no outPoint (regression: used to go negative)', () => {
+    // Real case: a "Recall drilled" clip split so its right half starts
+    // partway into the source (inPoint 3.198) with no outPoint set. The old
+    // formula misused `sourceDuration` (a LENGTH) as an absolute out-point,
+    // computing (end-start = 1.82) - inPoint(3.198) = -1.378 → duration <= 0
+    // → `audioColumns` bailed → the split clip's right half showed a blank
+    // waveform even though real peaks existed for it.
+    const w = audioTrackSourceWindow(audio({ inPoint: 3.198, outPoint: undefined, start: 6.85, end: 8.67 }))
+    expect(w.duration).toBeCloseTo(1.82)
+    expect(w.duration).toBeGreaterThan(0)
   })
 
-  it('does not clamp a collapsed/inverted trim — callers check duration <= 0 (DOM PlainFallback case)', () => {
-    const w = audioTrackSourceWindow(audio({ inPoint: 8, outPoint: 3 }))
-    expect(w).toEqual({ start: 8, duration: -5 })
+  it('clamps a collapsed/inverted trim to duration 0 rather than going negative, on either branch', () => {
+    // outPoint present, but before inPoint.
+    expect(audioTrackSourceWindow(audio({ inPoint: 8, outPoint: 3 }))).toEqual({ start: 8, duration: 0 })
+    // outPoint absent, but end before start.
+    expect(audioTrackSourceWindow(audio({ inPoint: 8, outPoint: undefined, start: 8, end: 3 }))).toEqual({ start: 8, duration: 0 })
   })
 })
 

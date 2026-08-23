@@ -21,6 +21,11 @@ import { moveItemAcrossTracks } from '../timeline-model'
 const clip = (id: string, start: number, end: number): VisualItem =>
   ({ id, type: 'video', src: `${id}.mp4`, start, end }) as VisualItem
 
+/** An overlay-kind item — everything below cares only about `type`, which is
+ *  the whole axis the kind-lock tests are about. */
+const overlay = (id: string, start: number, end: number): VisualItem =>
+  ({ id, type: 'overlay', start, end }) as VisualItem
+
 const dragged = clip('d', 0, 10)
 
 /** Tracks from bare item arrays, ids matching what the normalizer would give. */
@@ -92,6 +97,55 @@ describe('moveItemAcrossTracks — collision avoidance', () => {
     const tracks = stack([dragged, clip('far', 50, 60)])
     const moved = moveItemAcrossTracks({ tracks, item: dragged, start: 1, end: 11, sourceTrackIdx: 0, dy: 0 })
     expect(ids(moved)).toEqual([['far', 'd']])
+  })
+})
+
+// ── Kind lock: a video item and an overlay/image item are different worlds —
+// an overlay composites on top of the video underneath it, it doesn't splice
+// into that track's timeline. Neither kind may cross onto the other's track,
+// even when there'd be no time-overlap. (This is only the "can't cross
+// kinds" half; the fuller "video tracks form their own block below
+// overlays" reorganization is separate follow-up work.)
+
+describe('moveItemAcrossTracks — kind lock (video vs overlay)', () => {
+  it('does not let a video item land on an overlay track — skips it for a same-kind track', () => {
+    const videoDragged = clip('d', 0, 10)
+    const tracks: VisualTrack[] = [
+      { id: 'trk-0', items: [videoDragged, clip('stay', 50, 60)] },
+      { id: 'trk-1', items: [overlay('ov', 50, 60)] },
+    ]
+    // One step up from track 0 targets track 1 — the overlay track. There is
+    // no time-overlap with `ov`, so the OLD (kind-blind) search would have
+    // placed the video item there; it must instead fall back to its own
+    // (video) track.
+    const moved = moveItemAcrossTracks({ tracks, item: videoDragged, start: 0, end: 10, sourceTrackIdx: 0, dy: -24 })
+    expect(ids(moved)).toEqual([['stay', 'd'], ['ov']])
+  })
+
+  it('does not let an overlay item land on a video track — skips it for a same-kind track', () => {
+    const ovDragged = overlay('d', 0, 10)
+    const tracks: VisualTrack[] = [
+      { id: 'trk-0', items: [clip('vid', 50, 60)] },
+      { id: 'trk-1', items: [ovDragged, overlay('stay', 50, 60)] },
+    ]
+    // One step down from track 1 targets track 0 — the video track. Again no
+    // time-overlap, so only the kind gate keeps the overlay item off it.
+    const moved = moveItemAcrossTracks({ tracks, item: ovDragged, start: 0, end: 10, sourceTrackIdx: 1, dy: 24 })
+    expect(ids(moved)).toEqual([['vid'], ['stay', 'd']])
+  })
+
+  it('still mints a new track past the top when every same-kind track is blocked', () => {
+    // Track 1 is overlay-kind (wrong kind, even though there's no
+    // time-overlap with `ov`); track 0 is video-kind but occupied by an
+    // overlapping clip (wrong reason, but still blocked). Neither works, so
+    // the search must mint a new (video) track above the stack.
+    const videoDragged = clip('d', 0, 10)
+    const tracks: VisualTrack[] = [
+      { id: 'trk-0', items: [videoDragged, clip('blocker', 2, 8)] },
+      { id: 'trk-1', items: [overlay('ov', 50, 60)] },
+    ]
+    const moved = moveItemAcrossTracks({ tracks, item: videoDragged, start: 0, end: 10, sourceTrackIdx: 0, dy: -24 })
+    expect(ids(moved)).toEqual([['blocker'], ['ov'], ['d']])
   })
 })
 
