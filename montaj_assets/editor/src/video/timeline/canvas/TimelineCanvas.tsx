@@ -34,10 +34,12 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, type ReactNode } from 'react'
-import type { GetFilmstripArgs, GetWaveformPeaksArgs, FilmstripIndex, PeaksData, Project } from '../../../types'
+import type { GetFilmstripArgs, GetWaveformPeaksArgs, FilmstripIndex, PeaksData, Project, FootageDropPayload } from '../../../types'
+import { FOOTAGE_DND_MIME } from '../../../types'
 import type { PlaybackClock } from '../../playback-clock'
 import type { ResolveFilePath } from '../AudioWaveformLayer'
-import { VISUAL_ROW_RENDER_HEIGHT_PX } from '../timeline-model'
+import { VISUAL_ROW_RENDER_HEIGHT_PX, normalizeTracks } from '../timeline-model'
+import { insertClipAt } from '../../cuts'
 import { computeTimelineLayout, drawTimelineContent, drawTimelineOverlay } from './draw'
 import { hitTest, isEdgeHit, type Point, type SurfaceRect } from './hit-test'
 import {
@@ -686,6 +688,108 @@ export default function TimelineCanvas({
       el.removeEventListener('dblclick', onDoubleClick)
       el.removeEventListener('mouseleave', onLeave)
       releaseGestureRef.current?.()
+    }
+  }, [])
+
+  // ── Footage-bin drop ──
+  //
+  // Dropping a clip dragged from the (host-side) footage bin is NOT a pointer
+  // gesture — the browser owns the drag, there is no mousedown/up pair on this
+  // surface — so it stays out of the pointer machine and commits straight
+  // through the SAME discrete-edit pair every other discrete timeline edit
+  // uses: `onProjectChange` applies it live, `onOverlayEdit` persists it as one
+  // undo step (mirroring the machine's own `projectChange`+`commit` effects in
+  // `runEffects`, and Timeline's ripple-delete keymap). The drop always lands
+  // on the main VIDEO track — the first track holding a video item, `tracks[0]`
+  // in practice — rather than the row under the cursor: bin footage belongs on
+  // the primary track, and it keeps the placement unambiguous.
+  //
+  // The insertion indicator is the overlay's own cursor line
+  // (`drawTimelineOverlay`'s `cursorTime`) reused via `cursorTimeRef` — no new
+  // draw plumbing — and is taken down on `dragleave`/`drop`. It is written
+  // straight to the ref (never through `clearAxisCursor`) so a drag never fires
+  // the host's `onHoverScrub` preview seek.
+  const dragHandlersRef = useRef({
+    over: (_e: DragEvent) => {},
+    leave: (_e: DragEvent) => {},
+    drop: (_e: DragEvent) => {},
+  })
+  dragHandlersRef.current = {
+    over(e) {
+      const dt = e.dataTransfer
+      if (!dt?.types?.includes(FOOTAGE_DND_MIME)) return
+      // Without preventDefault the browser never fires `drop`; `copy` shows the
+      // right affordance (a bin drop adds a placement, it doesn't move the source).
+      e.preventDefault()
+      dt.dropEffect = 'copy'
+      const el = containerRef.current
+      if (!el) return
+      const t = xToTime(e.clientX - el.getBoundingClientRect().left, store.get())
+      if (cursorTimeRef.current === t) return
+      cursorTimeRef.current = t
+      requestRedraw('overlay')
+    },
+    leave() {
+      if (cursorTimeRef.current === null) return
+      cursorTimeRef.current = null
+      requestRedraw('overlay')
+    },
+    drop(e) {
+      // Not our drag → leave it for the browser (no preventDefault).
+      const raw = e.dataTransfer?.getData(FOOTAGE_DND_MIME)
+      if (!raw) return
+      e.preventDefault()
+      // Take the indicator down whatever happens below.
+      if (cursorTimeRef.current !== null) { cursorTimeRef.current = null; requestRedraw('overlay') }
+
+      let payload: FootageDropPayload
+      try {
+        payload = JSON.parse(raw) as FootageDropPayload
+      } catch {
+        return
+      }
+      if (
+        !payload ||
+        typeof payload.src !== 'string' ||
+        typeof payload.sourceDuration !== 'number' ||
+        !Number.isFinite(payload.sourceDuration) ||
+        payload.sourceDuration <= 0
+      ) return
+
+      const p = pointerRef.current
+      if (!p.onProjectChange && !p.onOverlayEdit) return
+      const el = containerRef.current
+      if (!el) return
+
+      const atTime = Math.max(0, Math.min(
+        p.totalDuration,
+        xToTime(e.clientX - el.getBoundingClientRect().left, store.get()),
+      ))
+
+      // Target the main video track — the first track that holds a video item.
+      const tracks = normalizeTracks(p.project).tracks ?? []
+      const target = tracks.find(t => (t.items ?? []).some(it => it.type === 'video')) ?? tracks[0]
+      if (!target) return
+
+      const next = insertClipAt(p.project, target.id, payload, atTime, { ripple: p.rippleMode })
+      p.onProjectChange?.(next)
+      p.onOverlayEdit?.(next)
+    },
+  }
+
+  useEffect(() => {
+    const el = containerRef.current
+    if (!el) return
+    const onOver = (e: DragEvent) => dragHandlersRef.current.over(e)
+    const onLeave = (e: DragEvent) => dragHandlersRef.current.leave(e)
+    const onDrop = (e: DragEvent) => dragHandlersRef.current.drop(e)
+    el.addEventListener('dragover', onOver)
+    el.addEventListener('dragleave', onLeave)
+    el.addEventListener('drop', onDrop)
+    return () => {
+      el.removeEventListener('dragover', onOver)
+      el.removeEventListener('dragleave', onLeave)
+      el.removeEventListener('drop', onDrop)
     }
   }, [])
 

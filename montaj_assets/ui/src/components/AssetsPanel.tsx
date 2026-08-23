@@ -14,9 +14,11 @@ interface AssetsPanelProps {
   profileName?: string
   /** When set, dropped assets are uploaded into the project's own directory instead of _uploads/. */
   projectId?: string
+  /** Asset `src` paths referenced by the timeline/overlays -> show the "Added" badge. */
+  usedSrcs?: Set<string>
 }
 
-export default function AssetsPanel({ assets, onChange, profileName, projectId }: AssetsPanelProps) {
+export default function AssetsPanel({ assets, onChange, profileName, projectId, usedSrcs }: AssetsPanelProps) {
   const [pickingAssets, setPickingAssets]     = useState(false)
   const [uploadingAssets, setUploadingAssets] = useState(false)
   const [dragOverAssets, setDragOverAssets]   = useState(false)
@@ -153,6 +155,11 @@ export default function AssetsPanel({ assets, onChange, profileName, projectId }
                       className="absolute inset-0 w-full h-full object-cover"
                       onError={(e) => { (e.target as HTMLImageElement).style.display = 'none' }}
                     />
+                    {usedSrcs?.has(asset.src) && (
+                      <span className="absolute top-1 left-1 px-1.5 py-0.5 rounded bg-black/70 text-white text-[10px] font-medium leading-none">
+                        Added
+                      </span>
+                    )}
                   </div>
                   <button
                     onClick={() => handleRemoveAsset(asset.id)}

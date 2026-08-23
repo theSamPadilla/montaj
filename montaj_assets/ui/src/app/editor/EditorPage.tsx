@@ -1,13 +1,15 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useParams, useLocation, useNavigate } from 'react-router-dom'
 import { api } from '@/lib/api'
-import { ProjectContext, normalizeTracks, trackItems, type Asset, type Project, type RunSnapshot } from '@/lib/types/schema'
+import { ProjectContext, normalizeTracks, mapTrackItems, trackItems, type Asset, type Project, type RunSnapshot } from '@/lib/types/schema'
 import { useProjectStream } from '@/lib/sse'
 import { createMontajAdapter } from './montajAdapter'
 import { useIsMobile } from '@/lib/useIsMobile'
 import { Upload } from 'lucide-react'
-import { CarouselEditor, VideoEditor, defaultMontajTheme, type EditorSlots, type ImageTone } from '@bycrux/editor'
+import { CarouselEditor, VideoEditor, createSourcePreviewStore, defaultMontajTheme, type EditorSlots, type ImageTone } from '@bycrux/editor'
 import AssetsPanel from '@/components/AssetsPanel'
+import MediaPanel from '@/components/media/MediaPanel'
+import FootagePanel from '@/components/media/FootagePanel'
 import ProjectHeader from '@/components/ProjectHeader'
 import RerunModal from '@/components/RerunModal'
 import { Button } from '@/components/ui/button'
@@ -167,6 +169,9 @@ export default function EditorPage() {
 
   // Montaj-native EditorAdapter for the package editors. Stable across renders.
   const adapter = useMemo(() => createMontajAdapter(), [])
+  // Hover-scrub bridge between the footage bin cards and the main preview.
+  // Created once; the footage card writes to it, VideoEditor's preview reads it.
+  const sourcePreview = useMemo(() => createSourcePreviewStore(), [])
 
   // ── Host shell state (video branch) ───────────────────────────────────────
   // Re-run modal lives in the host shell — VideoEditor doesn't own the host
@@ -202,6 +207,28 @@ export default function EditorPage() {
       const base = projectRef.current ?? project
       if (!base) return
       const updated = { ...base, assets: next }
+      handleProjectChange(updated)
+      await api.saveProject(base.id, updated)
+    },
+    [project, handleProjectChange],
+  )
+
+  // Remove a source from the footage bin: drops its `sources` entry and every
+  // timeline instance of the same clip (matched by `src`, which covers both
+  // init's shared-id clip and any later drag-placement of the same footage).
+  // Never deletes the underlying file — the source stays on disk and can be
+  // re-imported. Mirrors handleAssetsChange's immutable-update + persist shape.
+  const handleRemoveSource = useCallback(
+    async (sourceId: string) => {
+      const base = projectRef.current ?? project
+      if (!base?.sources) return
+      const removed = base.sources.find(s => s.id === sourceId)
+      if (!removed) return
+      const nextSources = base.sources.filter(s => s.id !== sourceId)
+      const nextTracks = mapTrackItems(base, items =>
+        removed.src ? items.filter(item => item.src !== removed.src) : items,
+      )
+      const updated = { ...base, sources: nextSources, tracks: nextTracks }
       handleProjectChange(updated)
       await api.saveProject(base.id, updated)
     },
@@ -269,25 +296,54 @@ export default function EditorPage() {
     [project, handleAssetsChange, logMessage],
   )
 
-  // Video editor slots. The assets panel for video is Montaj's project AssetsPanel;
-  // profile-scoped input materials are surfaced via ProfileAssetsPanel stacked
-  // above it (preserving the LiveView/ReviewView arrangement). runHistory feeds
-  // the package's right-sidebar slot.
-  const videoSlots: EditorSlots = useMemo(
-    () => ({
-      assetsPanel: project ? (
-        <>
-          {project.profile && (
-            <div className="border-b border-gray-200 dark:border-gray-800 p-2">
-              <ProfileAssetsPanel project={project} onProjectChange={handleProjectChange} />
-            </div>
-          )}
-          <AssetsPanel
-            assets={project.assets ?? []}
-            projectId={project.id}
-            onChange={handleAssetsChange}
-          />
-        </>
+  // Video editor slots. The left media column is Montaj's tabbed MediaPanel:
+  // a Footage (or "B-Roll" for broll projects) tab backed by project.sources,
+  // and an Assets tab holding the existing ProfileAssetsPanel + AssetsPanel
+  // composite (preserving the LiveView/ReviewView arrangement). `usedSrcs` is
+  // every `src` placed anywhere on the timeline, computed once here and fed to
+  // both tabs so a footage card or an asset card already in the edit shows the
+  // "Added" badge. runHistory feeds the package's right-sidebar slot.
+  const videoSlots: EditorSlots = useMemo(() => {
+    const usedSrcs = new Set<string>()
+    for (const items of trackItems(project)) {
+      for (const item of items) {
+        if (item.src) usedSrcs.add(item.src)
+      }
+    }
+    const footageLabel = project?.projectType === 'broll' ? 'B-Roll' : 'Footage'
+
+    return {
+      mediaPanel: project ? (
+        <MediaPanel
+          footageLabel={footageLabel}
+          footage={
+            <FootagePanel
+              sources={project.sources ?? []}
+              usedSrcs={usedSrcs}
+              projectId={project.id}
+              getFilmstrip={adapter.getFilmstrip!}
+              fileUrl={adapter.fileUrl}
+              ingestSource={(input) => adapter.ingestSource!(project.id, input)}
+              onRemove={handleRemoveSource}
+              sourcePreview={sourcePreview}
+            />
+          }
+          assets={
+            <>
+              {project.profile && (
+                <div className="border-b border-gray-200 dark:border-gray-800 p-2">
+                  <ProfileAssetsPanel project={project} onProjectChange={handleProjectChange} />
+                </div>
+              )}
+              <AssetsPanel
+                assets={project.assets ?? []}
+                projectId={project.id}
+                onChange={handleAssetsChange}
+                usedSrcs={usedSrcs}
+              />
+            </>
+          }
+        />
       ) : undefined,
       exportActions: (
         <a
@@ -315,9 +371,8 @@ export default function EditorPage() {
       runHistory: (
         <RunHistorySidebar history={project?.history ?? []} onRestore={handleRestoreRun} />
       ),
-    }),
-    [project, handleAssetsChange, handleProjectChange, handleRestoreRun, logMessage],
-  )
+    }
+  }, [project, adapter, sourcePreview, handleAssetsChange, handleProjectChange, handleRestoreRun, handleRemoveSource, logMessage])
 
   // Back-to-setup: delete the project and navigate to the setup view, carrying a
   // prefill so the user keeps their clips/name/prompt/workflow/profile. Ported
@@ -428,7 +483,7 @@ export default function EditorPage() {
             onProjectChange={handleProjectChange}
             theme={defaultMontajTheme}
             slots={videoSlots}
-            assetsPlacement="sidebar"
+            sourcePreview={sourcePreview}
             renderProgressView="logs"
             onProvideRenderTrigger={(fn) => setOpenRender(() => fn)}
             onProvideImageTone={setImageToneApi}

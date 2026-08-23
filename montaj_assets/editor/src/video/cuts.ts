@@ -1,6 +1,6 @@
 import type { Project } from '../types'
-import type { VisualItem, AudioTrack, CaptionSegment, Word } from '../schema'
-import { mapTrackItems, trackItems } from './timeline/timeline-model'
+import type { VisualItem, AudioTrack, CaptionSegment, Word, VisualTrack } from '../schema'
+import { mapTrackItems, trackItems, normalizeTracks } from './timeline/timeline-model'
 
 /** A time range to excise from the timeline. */
 export interface Cut {
@@ -765,4 +765,125 @@ export function setClipSpeed<P extends Project>(project: P, clipId: string, spee
   const newTrack = tracks[found.ti].map(other => (other.id === clipId ? newItem : other))
 
   return { ...project, tracks: mapTrackItems(project, (items, i) => (i === found.ti ? newTrack : items)) }
+}
+
+// ── Insert (place a new clip from the media bin) ──────────────────────────────
+
+/** The footage a media-bin drop hands to `insertClipAt`: enough to place a
+ *  whole-source video item, nothing more. `sourceDuration` is required — it is
+ *  both the placed clip's timeline length and its source window's end. */
+export interface NewClipInput {
+  src: string
+  proxySrc?: string
+  sourceDuration: number
+  sourceWidth?: number
+  sourceHeight?: number
+}
+
+/**
+ * A generic, collision-resistant timeline-item id — distinct in SHAPE from the
+ * `clip-<n>` ids init hands source clips, and from the `<base>_split_…` ids
+ * `uniqueId` mints for split fragments, so a bin placement can never be mistaken
+ * for either. Date.now()+random is fine in app runtime code (this is not a pure
+ * transform of the project).
+ */
+export function newClipId(): string {
+  return `clip_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`
+}
+
+/** True when [s, e) overlaps any item's window by more than float slop. Touching
+ *  edges (butt-adjacency) are NOT an overlap, matching the EPSILON tolerance the
+ *  rest of this file uses for adjacency. */
+function overlapsAny(s: number, e: number, items: VisualItem[]): boolean {
+  return items.some(it => Math.min(e, it.end) - Math.max(s, it.start) > EPSILON)
+}
+
+/**
+ * Place a NEW whole-source video clip on the track identified by `trackId`,
+ * returning a new Project (inputs — the project, its tracks/items, and the
+ * `clip` descriptor — are never mutated).
+ *
+ * The built item is a whole-source window: `inPoint 0 → outPoint sourceDuration`,
+ * `start → end` spanning exactly `sourceDuration` on the timeline, with a fresh
+ * `newClipId()`. `atTime` is clamped to `>= 0`.
+ *
+ * Placement follows the magnet, exactly as the other timeline ops treat it:
+ *
+ *   • `ripple: true` — shift-right insert. If the drop point lands inside an
+ *     existing item's span (straddles it), the effective insertion point snaps
+ *     to that item's NEAREST edge — start or end, ties going to end — so the new
+ *     clip never lands inside another clip's window. Every existing item whose
+ *     `start` is at/after the (possibly snapped) insertion point then moves
+ *     right by the new clip's length, and the new clip takes the freed slot at
+ *     the insertion point. This leaves NO overlaps and preserves order;
+ *     splitting the straddling clip is intentionally NOT done here.
+ *
+ *   • `ripple: false` — place at the drop point WITHOUT moving anything, but
+ *     never overlapping: if the drop window collides, the new clip snaps to the
+ *     nearest free gap at/after the drop point that fits it, and if no such gap
+ *     fits it is appended after the last item on the track. No overlaps result.
+ *
+ * The returned track's items are sorted by `start`. An unknown `trackId` returns
+ * the project unchanged (matching how the sibling ops no-op on a missing id).
+ */
+export function insertClipAt<P extends Project>(
+  project: P,
+  trackId: string,
+  clip: NewClipInput,
+  atTime: number,
+  opts: { ripple: boolean },
+): P {
+  const tracks = (normalizeTracks(project).tracks ?? []) as VisualTrack[]
+  const trackIdx = tracks.findIndex(t => t.id === trackId)
+  if (trackIdx === -1) return project
+
+  const len = clip.sourceDuration
+  const dropAt = Math.max(0, atTime)
+  const existing = tracks[trackIdx].items
+
+  // Where the new clip's timeline window actually lands.
+  let start: number
+  let shifted = existing
+  if (opts.ripple) {
+    // If the drop point lands inside an existing item's span, snap the
+    // effective insertion point to that item's nearest edge (ties → end) so
+    // the new clip never lands inside another clip's window. At most one item
+    // can straddle a point on a non-overlapping track.
+    const straddler = existing.find(it => it.start < dropAt - EPSILON && it.end > dropAt + EPSILON)
+    const insertAt = straddler
+      ? (dropAt - straddler.start < straddler.end - dropAt ? straddler.start : straddler.end)
+      : dropAt
+
+    start = insertAt
+    shifted = existing.map(it =>
+      it.start >= insertAt - EPSILON ? { ...it, start: it.start + len, end: it.end + len } : it,
+    )
+  } else {
+    // Earliest start >= dropAt whose [start, start+len] window is free. The
+    // candidate starts are the drop point itself and the end of every item
+    // at/after it; the last item's end always fits (nothing follows it).
+    const candidates = [
+      dropAt,
+      ...existing.filter(it => it.end >= dropAt - EPSILON).map(it => it.end),
+    ].sort((a, b) => a - b)
+    start = candidates.find(s => !overlapsAny(s, s + len, existing)) ?? dropAt
+  }
+
+  const placed: VisualItem = {
+    id: newClipId(),
+    type: 'video',
+    src: clip.src,
+    start,
+    end: start + len,
+    inPoint: 0,
+    outPoint: len,
+    sourceDuration: len,
+    ...(clip.proxySrc !== undefined ? { proxySrc: clip.proxySrc } : {}),
+    ...(clip.sourceWidth !== undefined ? { sourceWidth: clip.sourceWidth } : {}),
+    ...(clip.sourceHeight !== undefined ? { sourceHeight: clip.sourceHeight } : {}),
+  }
+
+  const newItems = [...shifted, placed].sort((a, b) => a.start - b.start)
+
+  return { ...project, tracks: mapTrackItems(project, (items, i) => (i === trackIdx ? newItems : items)) }
 }

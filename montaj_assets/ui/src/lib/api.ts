@@ -216,6 +216,23 @@ export const api = {
   generateProxies: (id: string) =>
     request<{ scheduled: number; alreadyFresh: number }>(`/api/projects/${id}/proxies`, { method: 'POST' }),
 
+  /**
+   * Kick a background ingest of a new source clip (probe → normalize → proxy
+   * → register in `project.sources`). Returns a job id to poll via
+   * `getSourceJobStatus`. Backs `EditorAdapter.ingestSource`.
+   */
+  ingestSource: (projectId: string, path: string) =>
+    request<{ job_id: string }>(`/api/projects/${projectId}/sources`, {
+      method: 'POST',
+      body: JSON.stringify({ path }),
+    }),
+
+  /** Poll status for a job kicked off by `ingestSource`. */
+  getSourceJobStatus: (projectId: string, jobId: string) =>
+    request<{ status: string; phase?: string; result?: unknown; error?: string }>(
+      `/api/projects/${projectId}/sources/status/${jobId}`,
+    ),
+
   listWorkflows: () => request<Workflow[]>('/api/workflows'),
 
   getWorkflow: (name: string) => request<Record<string, unknown>>(`/api/workflows/${name}`),

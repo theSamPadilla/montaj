@@ -24,6 +24,7 @@ import type {
   Captions,
 } from './schema'
 import type { ImageTone } from './video/imageTone'
+import type { SourcePreviewStore } from './video/source-preview'
 
 // ── Overlay compiler ─────────────────────────────────────────────────────────
 
@@ -113,6 +114,14 @@ export interface RenderOptions {
 export interface SampleFrameOptions {
   /** Tone curve to map an HDR project's frame through (see `RenderOptions.sdrCurve`). */
   sdrCurve?: string
+  /**
+   * Prefer each clip's SDR proxy over the full-resolution master for a fast
+   * preview (cover posters, the cover-frame grid). The proxy is already SDR, so
+   * this is mutually exclusive with `sdrCurve` — a proxy frame cannot show a
+   * per-curve HDR→SDR grade. Adapters that can't sample from a proxy may ignore
+   * it. Falls back to the master per clip when no proxy exists.
+   */
+  preferProxy?: boolean
 }
 
 /**
@@ -343,6 +352,28 @@ export interface MediaItem {
   name?: string
 }
 
+// ── Footage bin drag-and-drop (optional capability) ───────────────────────────
+
+/**
+ * The drag payload for dropping a bin clip onto the timeline. A subset of
+ * `VisualItem`'s fields — just enough for the timeline drop target to insert a
+ * new clip without round-tripping through the host.
+ */
+export interface FootageDropPayload {
+  src: string
+  proxySrc?: string
+  sourceDuration: number
+  sourceWidth?: number
+  sourceHeight?: number
+  name?: string
+}
+
+/**
+ * The custom drag-and-drop MIME type carrying a `FootageDropPayload` JSON
+ * string from the footage bin to the timeline drop target.
+ */
+export const FOOTAGE_DND_MIME = 'application/x-montaj-footage'
+
 // ── Adapter ────────────────────────────────────────────────────────────────
 
 /**
@@ -406,6 +437,19 @@ export interface EditorAdapter<P extends Project = Project> {
    * without a media library omit this; the editor must feature-detect it.
    */
   listMedia?(scope: MediaScope): Promise<MediaItem[]>
+
+  /**
+   * Optional: kick a background ingest of a new source clip (probe →
+   * normalize to the project's color space → proxy → register in
+   * `project.sources`). `input` is either a host-resolvable path already on
+   * the host's filesystem, or a `File` the adapter uploads itself. Resolves
+   * with a job id the caller can poll. Optional — hosts that don't support
+   * post-init ingest omit it.
+   */
+  ingestSource?(
+    projectId: string,
+    input: { path: string } | File,
+  ): Promise<{ jobId: string }>
 
   /**
    * Compile a JSX overlay template file into an `OverlayFactory`.
@@ -641,6 +685,12 @@ export interface EditorSlots {
   /** Rendered into the editor's assets/media panel area. */
   assetsPanel?: ReactNode
   /**
+   * Rendered in the left media column of the CapCut layout. When present, the
+   * editor renders the three-column + full-width-timeline layout; otherwise
+   * the classic layout is unchanged.
+   */
+  mediaPanel?: ReactNode
+  /**
    * Rendered in the pending/empty view in place of the default
    * "Message your agent to start" copy. Hosts use this to surface live agent
    * progress (Montaj feeds its SSE log line here); absent → default copy shows.
@@ -864,4 +914,21 @@ export interface VideoEditorProps<P extends Project = Project> {
    * that passes `true` gets the canvas surface for every project.
    */
   timeline?: { canvas: boolean }
+
+  /**
+   * Opt-in seam letting a host's footage bin drive the MAIN preview on hover.
+   * When the host hovers a bin clip card it sets `{ url, fraction }` on this
+   * store; the editor mounts a paused `<video>` overlay above the preview and
+   * seeks it to `fraction × duration`, so the operator source-scrubs an
+   * OFF-TIMELINE clip without disturbing the playhead. Clearing it to `null`
+   * unmounts the overlay and the normal timeline preview shows again.
+   *
+   * Default (prop omitted): totally inert — no overlay is ever mounted and the
+   * main preview behaves exactly as before, so the classic layout, Hub and LP
+   * are unaffected. A host opts in by creating the store
+   * (`createSourcePreviewStore`) and passing it here AND to the card that writes
+   * to it. Mirrors the `hover-scrub` store pattern; see
+   * `video/source-preview.ts`.
+   */
+  sourcePreview?: SourcePreviewStore
 }

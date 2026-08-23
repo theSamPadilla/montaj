@@ -29,6 +29,7 @@ from serve.common import (
 )
 from serve.caption_job import build_cut_spec
 from serve.routes.files import save_upload
+from lib.ingest import ingest_source
 from lib.project_tracks import normalize_tracks, track_items
 from lib.remote_io import fetch_to_disk_async, push_from_disk_async, parse_allowed_hosts
 from project.init import _copy_into_workspace
@@ -307,6 +308,98 @@ async def _run_caption_detached(
                 _tmp.unlink(missing_ok=True)
             except OSError:
                 pass
+
+
+class _IngestJob:
+    """Live state of a detached footage-ingest job, polled by
+    GET /sources/status/{job_id}. Runs to completion independent of any client
+    connection — a dropped request must NOT abort it. Keyed by job_id, not
+    project_id: unlike captions/renders, multiple imports may legitimately run
+    concurrently for the same project (e.g. importing several files at once)."""
+    __slots__ = ("status", "phase", "result", "error")
+
+    def __init__(self) -> None:
+        self.status: str = "running"     # running | done | error
+        self.phase: str = "staging"      # staging | normalizing | building proxy | done
+        self.result: dict | None = None  # appended clip dict (done)
+        self.error: str | None = None    # error message (error)
+
+
+_ingest_jobs: dict[str, _IngestJob] = {}
+
+# Strong refs to in-flight detached ingest tasks. asyncio only weakly tracks
+# fire-and-forget tasks, so without this an ingest task could be GC'd mid-run.
+_ingest_task_refs: set = set()
+
+_CLIP_ID_RE = re.compile(r"^clip-(\d+)$")
+
+
+def _next_clip_id(project: dict) -> str:
+    """Smallest ``clip-<N>`` id guaranteed not to collide with any existing
+    source or timeline-item id. Scans both project["sources"] and every
+    track's items (a placed clip shares its source's id, and a future
+    placement of THIS new clip must not collide with it either) — mirrors the
+    max+1 `asset-<N>` allocation in include_profile_asset below."""
+    max_n = -1
+    for src in project.get("sources") or []:
+        m = _CLIP_ID_RE.match(str(src.get("id", "")))
+        if m:
+            max_n = max(max_n, int(m.group(1)))
+    for track in project.get("tracks") or []:
+        for item in track.get("items") or []:
+            m = _CLIP_ID_RE.match(str(item.get("id", "")))
+            if m:
+                max_n = max(max_n, int(m.group(1)))
+    return f"clip-{max_n + 1}"
+
+
+async def _run_ingest_detached(
+    project_id: str,
+    project_dir: "Path",
+    path: str,
+    color_space: str,
+    broadcaster: "SSEBroadcaster",
+    job: "_IngestJob",
+) -> None:
+    """Run lib.ingest.ingest_source to completion regardless of any client,
+    mirroring `_run_caption_detached`. `ingest_source` is blocking (ffmpeg
+    probe/normalize/proxy), so it's offloaded to a thread — same reasoning as
+    the caption pipeline's subprocess-bound work. Emits `event: log` SSE
+    progress frames bracketing the staging/normalize/proxy work (ingest_source
+    itself has no phase callback, so these narrate the call rather than
+    stream sub-progress from inside it), then appends the resulting clip to
+    project["sources"], persists + broadcasts project.json (same
+    read-write-broadcast idiom as save_project / `_run_caption_pipeline`
+    above), and records the outcome on `job`."""
+    def log(message: str) -> None:
+        broadcaster.publish(project_id, f"event: log\ndata: {json.dumps({'message': message})}\n\n")
+
+    try:
+        job.phase = "staging"
+        log(f"[ingest] staging {os.path.basename(path)}")
+
+        clip = await asyncio.to_thread(ingest_source, project_dir, path, color_space, "eager")
+
+        job.phase = "normalizing"
+        log(f"[ingest] normalized to project color space ({color_space})")
+        job.phase = "building proxy"
+        log("[ingest] building proxy" if clip.get("proxySrc") else "[ingest] proxy skipped")
+
+        # Read fresh right before the append+write to minimize clobbering a
+        # concurrent editor save (mirrors the caption pipeline's late read).
+        project_path = Path(project_dir) / "project.json"
+        project = json.loads(project_path.read_text())
+        clip = {"id": _next_clip_id(project), **clip}
+        project.setdefault("sources", []).append(clip)
+        text = json.dumps(project, indent=2)
+        project_path.write_text(text)
+        broadcaster.publish(project_id, _sse_data_frame(text))
+
+        job.status, job.result, job.phase = "done", clip, "done"
+        log(f"[ingest] added {clip['id']}")
+    except Exception as e:
+        job.status, job.error = "error", str(e)
+        log(f"[ingest] failed: {e}")
 
 
 OVERLAY_NAME_RE = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
@@ -1566,8 +1659,12 @@ async def rerun_project(project_id: str, request: Request, project_dir: Path = D
     # Commit the completed version to git before resetting (in a thread — non-blocking)
     await asyncio.to_thread(_git_commit_sync, project_dir, f"version: run {run_count} — {version_label}")
 
-    # Restore video track to original source clips; drop captions/overlays
-    source_clips = [{"id": c["id"], "src": c["src"], "order": c["order"]} for c in sources]
+    # Restore video track to original source clips; drop captions/overlays.
+    # `order` is a legacy field: nothing downstream sorts or requires it (grep
+    # confirms no reader touches it), so a missing key on an init-created or
+    # ingested source (lib/ingest.py never sets it) degrades to None rather
+    # than KeyError-ing the whole rerun.
+    source_clips = [{"id": c["id"], "src": c["src"], "order": c.get("order")} for c in sources]
     updated = {
         **project,
         "status": "pending",
@@ -1789,6 +1886,75 @@ async def upload_asset_to_project(
     Keeps each project self-contained and portable."""
     dest = await save_upload(file, project_dir)
     return {"path": str(dest)}
+
+
+@router.post("/projects/{project_id}/sources")
+async def ingest_project_source(
+    project_id: str,
+    request: Request,
+    body: dict = Body(...),
+    project_dir: Path = Depends(get_project_dir),
+):
+    """Kick a detached footage-ingest job: stage (or adopt in place if already
+    staged — see lib/ingest.py's in-project guard), probe, normalize to the
+    project's color space, and proxy a new source video, then append it to
+    project["sources"]. Modeled on the async caption-job pattern (_CaptionJob /
+    _run_caption_detached above). Clients poll
+    GET .../sources/status/{job_id} to follow progress and pick up the
+    appended clip or error once terminal.
+
+    Body: {"path": "<absolute path to a readable video file>"}. The path is
+    typically one just staged via POST /upload-asset (browser drop) or picked
+    natively by the client (outside project_dir); lib.ingest.ingest_source
+    handles both without a double copy.
+    """
+    path = body.get("path")
+    if not isinstance(path, str) or not path:
+        raise bad_request("missing_field", "'path' is required")
+    if not os.path.isfile(path):
+        raise bad_request("invalid_path", f"'{path}' is not a readable file")
+
+    project_path = project_dir / "project.json"
+    try:
+        project = json.loads(project_path.read_text())
+    except Exception:
+        raise not_found("project_not_found", f"project.json for {project_id} not found")
+
+    color_space = (project.get("settings") or {}).get("colorSpace")
+    if not color_space:
+        raise bad_request("no_color_space", "Project has no settings.colorSpace")
+
+    broadcaster: SSEBroadcaster = request.app.state.broadcaster
+    job = _IngestJob()
+    job_id = uuid.uuid4().hex
+    _ingest_jobs[job_id] = job
+    task = asyncio.create_task(
+        _run_ingest_detached(project_id, project_dir, path, color_space, broadcaster, job)
+    )
+    _ingest_task_refs.add(task)
+    task.add_done_callback(_ingest_task_refs.discard)
+    return JSONResponse({"job_id": job_id}, status_code=202)
+
+
+@router.get("/projects/{project_id}/sources/status/{job_id}")
+async def ingest_source_status(
+    project_id: str,
+    job_id: str,
+    project_dir: Path = Depends(get_project_dir),
+):
+    """Poll the state of a detached footage-ingest job kicked by
+    POST /sources. Pairs with that route the same way GET /captions/status
+    pairs with POST /captions?async=1. 404 if job_id is unknown (never ran in
+    this process, or the process restarted since)."""
+    job = _ingest_jobs.get(job_id)
+    if job is None:
+        raise not_found("job_not_found", f"Ingest job '{job_id}' not found")
+    out: dict = {"status": job.status, "phase": job.phase}
+    if job.status == "done":
+        out["result"] = job.result
+    elif job.status == "error":
+        out["error"] = job.error
+    return out
 
 
 @router.post("/projects/{project_id}/download")

@@ -216,6 +216,22 @@ export function createMontajAdapter(): EditorAdapter<Project> {
 
     fileUrl: (path: string): string => fileUrl(path),
 
+    // Kick a background source ingest. A `File` input is staged into the
+    // project directory first via `uploadFile` (returns the staged abs path),
+    // then that path (or an already host-resolvable `input.path`) is handed to
+    // `POST /api/projects/:id/sources`. The caller polls the returned job id
+    // via `getSourceJobStatus`.
+    ingestSource: async (
+      projectId: string,
+      input: { path: string } | File,
+    ): Promise<{ jobId: string }> => {
+      const path = input instanceof File
+        ? await api.uploadFile(input, projectId)
+        : input.path
+      const { job_id } = await api.ingestSource(projectId, path)
+      return { jobId: job_id }
+    },
+
     listProfileOverlays: (profileName: string): Promise<GlobalOverlay[]> =>
       api.listProfileOverlays(profileName),
 
@@ -377,6 +393,10 @@ export function createMontajAdapter(): EditorAdapter<Project> {
       // Kebab-case: the step server matches body keys to the step schema's
       // declared param names (`--sdr-curve`), rejecting anything unrecognized.
       if (opts?.sdrCurve) stepArgs['sdr-curve'] = opts.sdrCurve
+      // Fast preview from the SDR proxy (cover + cover grid). Mutually exclusive
+      // with sdrCurve — a proxy frame can't show a per-curve grade — so callers
+      // pass one or the other.
+      if (opts?.preferProxy) stepArgs['prefer-proxy'] = true
 
       const result = await api.runStepAsync<{ path: string }>('sample_frame', stepArgs)
       return { url: fileUrl(result?.path ?? outPath) }

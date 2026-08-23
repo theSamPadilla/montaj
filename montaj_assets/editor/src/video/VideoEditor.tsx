@@ -16,6 +16,7 @@ import { makeCaptionEdit, type CaptionEditPatch } from './timeline/makeCaptionEd
 import PreviewPlayer, { type TransportHandle } from './preview/PreviewPlayer'
 import { createPlaybackClock, type PlaybackClock } from './playback-clock'
 import { createHoverScrub } from './hover-scrub'
+import { useSourcePreview, type SourcePreviewStore } from './source-preview'
 import type { OverlayChanges } from './preview/useDragOverlay'
 import VersionPanel from './VersionPanel'
 import RenderModal from './RenderModal'
@@ -54,6 +55,15 @@ const RAIL_WIDTH_STORAGE_KEY = 'montaj.editor.railWidth'
 const MIN_RAIL_PX = 150
 const MAX_RAIL_PX = 720
 const MIN_MAIN_PX = 320
+
+// ── CapCut media-panel width (opt-in via slots.mediaPanel) ─────────────────
+// The left media column's width, mirroring the right rail on the same axis.
+// Only consulted by the CapCut layout branch; classic layouts never read it.
+const MEDIA_PANEL_WIDTH_STORAGE_KEY = 'montaj.editor.mediaPanelWidth'
+/** Default matches today's `w-72` assets column so the switch feels familiar. */
+const DEFAULT_MEDIA_PANEL_PX = 288
+const MIN_MEDIA_PANEL_PX = 200
+const MAX_MEDIA_PANEL_PX = 640
 
 // Generic over the host's concrete project type `P` (default = the package's
 // own `Project`). Montaj passes its richer Project; the index signature on
@@ -136,6 +146,7 @@ export default function VideoEditor<P extends Project = Project>({
   onProvideImageTone,
   engine,
   timeline,
+  sourcePreview,
 }: Props<P>) {
   const emit = onProjectChange ?? (() => {})
 
@@ -245,6 +256,7 @@ export default function VideoEditor<P extends Project = Project>({
         onProvideImageTone={onProvideImageTone}
         engine={engine}
         timeline={timeline}
+        sourcePreview={sourcePreview}
       />
     </div>
   )
@@ -261,6 +273,78 @@ function useVersionHistory<P extends Project>(adapter: VideoEditorProps<P>['adap
   }, [adapter, project.id, project.status])
 
   return { versions, restoring, setRestoring }
+}
+
+// ── Footage-bin source-scrub overlay (opt-in) ────────────────────────────────
+
+/**
+ * A paused `<video>` overlaid on the main preview stage, driven by the host's
+ * footage bin: while a bin clip card is hovered the host writes `{ url, fraction }`
+ * to the `sourcePreview` store and this parks the video on `fraction × duration`,
+ * so the operator source-scrubs an OFF-TIMELINE clip in the big preview without
+ * disturbing the playhead or PreviewPlayer's own clock.
+ *
+ * Structurally a sibling of `hover-scrub`: the subscription lives HERE, in a leaf
+ * that renders one element, so a high-frequency hover over a card repaints only
+ * this overlay — never ReviewSurface (toolbar + timeline + every context
+ * consumer). The seek is imperative (an effect subscribed to the store writes
+ * `currentTime` directly) rather than React state, so a fraction move never
+ * re-mounts or reloads the `<video>`; only a url change (a different clip) does.
+ *
+ * Entirely inert when the host omits the store: `useSourcePreview(undefined)`
+ * returns null, so this renders nothing and the classic/Hub/LP preview is
+ * unchanged.
+ */
+function SourcePreviewOverlay({ store }: { store?: SourcePreviewStore }) {
+  const value = useSourcePreview(store)
+  const videoRef = useRef<HTMLVideoElement | null>(null)
+
+  // Imperative seek. Re-subscribes only when the url changes (a different clip);
+  // fraction moves flow through the store subscription without a dep change, and
+  // the `<video>` element/src stay put. A fresh src resets metadata, so seeking
+  // is deferred to `loadedmetadata` when `duration` isn't finite yet — that
+  // handler reads the CURRENT fraction, so a hover that moved while the proxy
+  // loaded still lands on the right frame.
+  useEffect(() => {
+    const v = videoRef.current
+    if (!v || !store) return
+    const applySeek = () => {
+      const cur = store.get()
+      if (!cur) return
+      const dur = v.duration
+      if (Number.isFinite(dur) && dur > 0) v.currentTime = cur.fraction * dur
+    }
+    v.addEventListener('loadedmetadata', applySeek)
+    const unsub = store.subscribe(applySeek)
+    applySeek()
+    return () => {
+      v.removeEventListener('loadedmetadata', applySeek)
+      unsub()
+    }
+  }, [store, value?.url])
+
+  if (!value) return null
+  return (
+    <video
+      ref={videoRef}
+      src={value.url}
+      muted
+      playsInline
+      preload="metadata"
+      // Display-only frame scrubber: never `.play()`, never steal pointer
+      // interaction from the preview beneath it.
+      style={{
+        position: 'absolute',
+        inset: 0,
+        width: '100%',
+        height: '100%',
+        objectFit: 'contain',
+        background: 'black',
+        zIndex: 20,
+        pointerEvents: 'none',
+      }}
+    />
+  )
 }
 
 // ── Pending / processing surface (former LiveView) ───────────────────────────
@@ -438,12 +522,14 @@ function ReviewSurface<P extends Project>({
   onProvideImageTone,
   engine,
   timeline,
+  sourcePreview,
 }: SurfaceProps<P> & {
   emit: (p: P) => void
   renderClipInspector?: VideoEditorProps<P>['renderClipInspector']
   renderSubcutRegen?: VideoEditorProps<P>['renderSubcutRegen']
   regenEnabled?: boolean
   isClipQueued?: (itemId: string) => boolean
+  sourcePreview?: VideoEditorProps<P>['sourcePreview']
 }) {
   const project = sync.project
   // Playhead in an external store, not useState — ~60Hz ticks re-render only the
@@ -487,6 +573,13 @@ function ReviewSurface<P extends Project>({
     assetsPlacement === 'sidebar' ? 224 : 192,
     reviveNumberInRange(MIN_RAIL_PX, MAX_RAIL_PX),
   )
+  // The left media column's width (CapCut layout only). Same persist/clamp
+  // pattern as the rail; ignored entirely unless `slots.mediaPanel` is present.
+  const [mediaPanelWidth, setMediaPanelWidth] = usePersistentState(
+    MEDIA_PANEL_WIDTH_STORAGE_KEY,
+    DEFAULT_MEDIA_PANEL_PX,
+    reviveNumberInRange(MIN_MEDIA_PANEL_PX, MAX_MEDIA_PANEL_PX),
+  )
 
   /** Drag the rail divider. Mirrors `startSplitDrag` on the horizontal axis;
    *  dragging LEFT widens the rail, hence the inverted delta. */
@@ -514,6 +607,35 @@ function ReviewSurface<P extends Project>({
     document.body.style.cursor = 'col-resize'
     document.body.style.userSelect = 'none'
   }, [railWidth, setRailWidth])
+
+  /** Drag the media-column divider (CapCut layout). The divider sits on the
+   *  column's RIGHT edge, so dragging RIGHT must WIDEN it — hence the delta is
+   *  ADDED (the mirror image of `startRailDrag`, whose rail grows leftward).
+   *  `MIN_MAIN_PX` still guards the preview column's minimum width. */
+  const startMediaPanelDrag = useCallback((e: React.MouseEvent) => {
+    e.preventDefault()
+    const startX = e.clientX
+    const startWidth = mediaPanelWidth
+    const available = workAreaRef.current?.getBoundingClientRect().width ?? 0
+    const max = Math.max(MIN_MEDIA_PANEL_PX, Math.min(MAX_MEDIA_PANEL_PX, available - MIN_MAIN_PX))
+
+    let latest = startWidth
+    const onMove = (ev: MouseEvent) => {
+      latest = Math.max(MIN_MEDIA_PANEL_PX, Math.min(max, startWidth + (ev.clientX - startX)))
+      setMediaPanelWidth(latest, { persist: false })
+    }
+    const onUp = () => {
+      document.removeEventListener('mousemove', onMove)
+      document.removeEventListener('mouseup', onUp)
+      document.body.style.cursor = ''
+      document.body.style.userSelect = ''
+      setMediaPanelWidth(latest)
+    }
+    document.addEventListener('mousemove', onMove)
+    document.addEventListener('mouseup', onUp)
+    document.body.style.cursor = 'col-resize'
+    document.body.style.userSelect = 'none'
+  }, [mediaPanelWidth, setMediaPanelWidth])
 
   /**
    * Drag the divider. Bound to `document` rather than the handle so the drag
@@ -1030,279 +1152,363 @@ function ReviewSurface<P extends Project>({
     }
   }
 
+  // ── Shared layout pieces ─────────────────────────────────────────────────
+  // The preview, row divider, timeline pane and right rail are identical in both
+  // layouts; only their arrangement differs (classic column vs. CapCut top-row +
+  // full-width timeline). Factoring them into local render values keeps the
+  // classic path byte-for-byte unchanged and lets the CapCut branch reuse the
+  // exact same nodes rather than duplicating this JSX.
+
+  const previewRegion = (
+    <div className="flex-1 min-h-0 flex items-center justify-center bg-black overflow-hidden p-2">
+      {hasContent ? (
+        <div
+          className="relative h-full max-w-full"
+          style={{ aspectRatio: (() => { const [w, h] = getOverlayDesignCanvas(project.settings?.resolution); return `${w} / ${h}` })() }}
+        >
+          <PreviewPlayer
+            project={project}
+            clock={clock}
+            selectedOverlayId={primarySelectedId ?? undefined}
+            onOverlayChange={handleOverlayChange}
+            onEditOverlay={requestEditOverlay}
+            compileOverlay={adapter.compileOverlay}
+            clearOverlayCache={adapter.clearOverlayCache}
+            watchFile={adapter.watchFile}
+            fileUrl={adapter.fileUrl}
+            resolveCaptionTemplate={adapter.resolveCaptionTemplate}
+            selectedCaptionId={selectedCaptionId ?? undefined}
+            onSelectCaption={handleSelectCaption}
+            onCaptionSegmentChange={handleCaptionSegmentChange}
+            engine={engine}
+            transportRef={transportRef}
+            hoverScrub={hoverScrub}
+          />
+          {/* Footage-bin source scrub (opt-in). A paused <video> parked above the
+              timeline preview, showing an OFF-TIMELINE clip's frame while the
+              host hovers a bin card. Inert unless a host supplies `sourcePreview`
+              AND sets a value — see SourcePreviewOverlay / source-preview.ts. */}
+          <SourcePreviewOverlay store={sourcePreview} />
+        </div>
+      ) : (
+        <p className="text-[var(--editor-text)]/60 text-sm">No clips</p>
+      )}
+    </div>
+  )
+
+  // The divider. `row-resize` plus a hairline that lights up on hover is the
+  // whole affordance — a 5px hit area is comfortable to grab without stealing a
+  // visible row from either pane. Double-click restores the default split.
+  const rowDivider = (
+    <div
+      role="separator"
+      aria-orientation="horizontal"
+      aria-label="Resize timeline"
+      onMouseDown={startSplitDrag}
+      onDoubleClick={() => setTimelinePaneHeight(DEFAULT_TIMELINE_PANE_PX)}
+      className="group shrink-0 h-[5px] cursor-row-resize bg-transparent"
+    >
+      <div className="h-px w-full bg-[var(--editor-border)] transition-colors group-hover:bg-[var(--editor-accent)]" />
+    </div>
+  )
+
+  // Timeline pane — the half the divider sizes.
+  const timelinePane = (
+    <div className="shrink-0 flex flex-col overflow-hidden" style={{ height: timelinePaneHeight }}>
+
+      {/* Track controls bar — controls + undo/redo + preview axis + ripple +
+          crop + render. Split is deliberately NOT here: it is a one-key verb
+          (S, listed in the controls modal), and a glyph for it only crowded a
+          row whose other buttons are modes you can't type your way into.
+          Every button carries a styled `Tooltip` instead of a native `title=`:
+          the native one is delayed ~1s and rendered in OS chrome, which on a
+          row of 12px glyphs meant the affordances were effectively unlabelled.
+          `aria-label` stays on each button — the tooltip is a hover affordance,
+          not an accessible name. Disabled buttons get `pointer-events-none` so
+          hover still reaches the wrapper and can explain WHY they're disabled,
+          and fade to 50% rather than 30%: at 30% a 12px glyph on this surface
+          reads as ABSENT, and Crop is disabled whenever no clip is selected —
+          which is most of the time, so the control looked like it had been
+          removed rather than like it was waiting on a selection. */}
+      <div className="shrink-0 flex items-center justify-end gap-1.5 px-3 py-1 border-t border-[var(--editor-border)] bg-[var(--editor-surface)]">
+        <Tooltip label="Controls & shortcuts" className="mr-auto">
+          <button
+            onClick={() => setShowControls(true)}
+            aria-label="Editor controls & shortcuts"
+            className="flex items-center gap-1 px-1.5 h-5 rounded transition-colors text-[var(--editor-text)]/75 bg-transparent hover:text-[var(--editor-text)] hover:bg-[var(--editor-text)]/10"
+          >
+            <HelpCircle size={14} />
+            <span className="text-[10px] leading-none">Controls</span>
+          </button>
+        </Tooltip>
+        <Tooltip label="Undo" keys={['⌘', 'Z']}>
+          <button
+            onClick={sync.undo}
+            disabled={!sync.canUndo}
+            aria-label="Undo"
+            className="flex items-center justify-center w-5 h-5 rounded transition-colors text-[var(--editor-text)]/60 bg-transparent hover:text-[var(--editor-text)] disabled:opacity-50 disabled:pointer-events-none"
+          >
+            <Undo2 size={12} />
+          </button>
+        </Tooltip>
+        <Tooltip label="Redo" keys={['⌘', '⇧', 'Z']}>
+          <button
+            onClick={sync.redo}
+            disabled={!sync.canRedo}
+            aria-label="Redo"
+            className="flex items-center justify-center w-5 h-5 rounded transition-colors text-[var(--editor-text)]/60 bg-transparent hover:text-[var(--editor-text)] disabled:opacity-50 disabled:pointer-events-none"
+          >
+            <Redo2 size={12} />
+          </button>
+        </Tooltip>
+        <Tooltip label={previewAxis ? 'Preview axis on — hover to preview' : 'Preview axis off'} keys={['⌘', 'A']}>
+          <button
+            onClick={() => setPreviewAxis(v => !v)}
+            aria-label="Preview axis"
+            aria-pressed={previewAxis}
+            className={`flex items-center justify-center w-5 h-5 rounded transition-colors ${
+              previewAxis
+                ? 'text-yellow-400 bg-yellow-400/15 hover:bg-yellow-400/25'
+                : 'text-[var(--editor-text)]/60 bg-transparent hover:text-[var(--editor-text)]'
+            }`}
+          >
+            <SeparatorVertical size={12} />
+          </button>
+        </Tooltip>
+        <Tooltip label={rippleMode ? 'Ripple on — gaps close' : 'Ripple: close the gap'}>
+          <button
+            onClick={handleRippleToggle}
+            aria-label="Ripple mode"
+            aria-pressed={rippleMode}
+            className={`flex items-center justify-center w-5 h-5 rounded transition-colors ${
+              rippleMode
+                ? 'text-teal-400 bg-teal-400/15 hover:bg-teal-400/25'
+                : 'text-[var(--editor-text)]/60 bg-transparent hover:text-[var(--editor-text)]'
+            }`}
+          >
+            <Magnet size={12} />
+          </button>
+        </Tooltip>
+        <Tooltip
+          label={!cropTarget ? 'Select a clip to crop' : cropMode ? 'Exit crop' : 'Crop source'}
+        >
+          <button
+            onClick={() => setCropMode(m => !m)}
+            disabled={!cropTarget}
+            aria-label="Crop source"
+            aria-pressed={cropMode}
+            className={`flex items-center justify-center w-5 h-5 rounded transition-colors disabled:opacity-50 disabled:pointer-events-none ${
+              cropMode
+                ? 'text-amber-400 bg-amber-400/15 hover:bg-amber-400/25'
+                : 'text-[var(--editor-text)]/60 bg-transparent hover:text-[var(--editor-text)]'
+            }`}
+          >
+            <Crop size={12} />
+          </button>
+        </Tooltip>
+        {selectedOverlayItem && (
+          <Tooltip label="Edit overlay">
+            <button
+              onClick={() => requestEditOverlay(selectedOverlayItem.id)}
+              aria-label="Edit overlay"
+              className="flex items-center justify-center w-5 h-5 rounded transition-colors text-[var(--editor-text)]/60 bg-transparent hover:text-[var(--editor-text)]"
+            >
+              <Pencil size={12} />
+            </button>
+          </Tooltip>
+        )}
+        {/* Image color mapping. HDR projects only (the tone has no effect on
+            SDR renders). Hidden when the host surfaces the setting in its own
+            chrome via onProvideImageTone, mirroring the Render button. */}
+        {!onProvideImageTone && isHdrProject && (
+          <ImageToneMenu
+            value={currentImageTone}
+            onChange={handleImageToneChange}
+          />
+        )}
+        {/* Default placement. A host that sets onProvideRenderTrigger renders
+            Render in its own chrome instead, so the toolbar button is hidden. */}
+        {!onProvideRenderTrigger && (
+          <button
+            onClick={openRender}
+            className="text-xs px-2.5 py-1 rounded-md bg-[var(--editor-accent)] text-[var(--editor-accent-foreground)] hover:opacity-90 transition-colors"
+          >
+            Render →
+          </button>
+        )}
+      </div>
+
+      <div className="flex-1 min-h-0 overflow-y-auto border-t border-[var(--editor-border)] bg-[var(--editor-surface)]">
+        <Timeline
+          project={project}
+          clock={clock}
+          onProjectChange={handleProjectChange}
+          onCaptionEdit={(p) => void sync.mutate(() => p as P)}
+          onOverlayEdit={commitTimelineEdit}
+          onEditOverlay={requestEditOverlay}
+          previewAxis={previewAxis}
+          onHoverScrub={handleHoverScrub}
+          selectedIds={selectedIds}
+          onSelectIds={setSelectedIds}
+          selectedCaptionId={selectedCaptionId}
+          onSelectCaption={handleSelectCaption}
+          onCaptionSegmentChange={handleCaptionSegmentChange}
+          onInspectClip={(id) => setInspecting({ kind: 'clip', id })}
+          onInspectAudio={(id) => setInspecting({ kind: 'audio', id })}
+          rippleMode={rippleMode}
+          getWaveformChunks={getWaveformChunks}
+          resolveFilePath={resolveFilePath}
+          getWaveformPeaks={getWaveformPeaks}
+          getFilmstrip={getFilmstrip}
+          regenEnabled={regenEnabled}
+          isClipQueued={isClipQueued}
+          renderSubcutRegen={renderSubcutRegen}
+          onRegenerateCaptions={adapter.generateCaptions ? () => setRegenCaptionsOpen(true) : undefined}
+          timeline={timeline}
+          modalOpen={anyModalOpen}
+          onOpenGoToTime={openGoToTime}
+          actionsRef={timelineActionsRef}
+        />
+      </div>
+    </div>
+  )
+
+  // Assets — dedicated separate column to the LEFT of the version rail
+  // (assetsPlacement: 'right'). Classic layouts only.
+  const assetsColumn = assetsPlacement === 'right' && slots?.assetsPanel && (
+    <div className="w-72 shrink-0 border-l border-[var(--editor-border)] bg-[var(--editor-surface)] flex flex-col overflow-hidden">
+      {slots.assetsPanel}
+    </div>
+  )
+
+  // Right rail — version history + run history slot, and (in 'sidebar' placement)
+  // the assets panel stacked beneath them in the SAME column. Shared by both
+  // layouts (its own col-resize divider is included).
+  const rightRail = (adapter.listVersionHistory || slots?.runHistory ||
+    (assetsPlacement === 'sidebar' && slots?.assetsPanel)) && (
+    <>
+      {/* Vertical divider, the same affordance as the preview/timeline one. */}
+      <div
+        role="separator"
+        aria-orientation="vertical"
+        aria-label="Resize sidebar"
+        onMouseDown={startRailDrag}
+        onDoubleClick={() => setRailWidth(assetsPlacement === 'sidebar' ? 224 : 192)}
+        className="group shrink-0 w-[5px] cursor-col-resize bg-transparent"
+      >
+        <div className="w-px h-full bg-[var(--editor-border)] transition-colors group-hover:bg-[var(--editor-accent)]" />
+      </div>
+
+      <div
+        style={{ width: railWidth }}
+        className="shrink-0 border-l border-[var(--editor-border)] bg-[var(--editor-surface)] flex flex-col overflow-hidden"
+      >
+        {adapter.listVersionHistory && (
+          <VersionPanel versions={versions} restoring={restoring} onRestore={handleRestoreVersion} />
+        )}
+        {/* Host injects the Montaj-flavored "Previous runs" snapshot list here.
+            RunSnapshot / project.history are host-only types — the package never
+            reads them. When absent nothing is rendered. */}
+        {slots?.runHistory}
+        {/* Assets stacked below versions/runs (assetsPlacement: 'sidebar'). The
+            host's panel manages its own scroll; flex-1 lets it take the
+            remaining rail height. A top border separates it from the runs. */}
+        {assetsPlacement === 'sidebar' && slots?.assetsPanel && (
+          <div className="flex-1 min-h-0 overflow-hidden border-t border-[var(--editor-border)] flex flex-col">
+            {slots.assetsPanel}
+          </div>
+        )}
+      </div>
+    </>
+  )
+
+  // Project media / assets — full-width region stacked BELOW the editor
+  // (assetsPlacement: 'bottom'). Classic layouts only.
+  const bottomAssets = assetsPlacement === 'bottom' && slots?.assetsPanel && (
+    <div className="shrink-0 border-t border-[var(--editor-border)] w-full flex flex-col max-h-[45%] overflow-hidden">
+      {slots.assetsPanel}
+    </div>
+  )
+
+  // Left media column (CapCut layout only): the host's media panel in a
+  // width-resizable column, with a col-resize divider on its RIGHT edge.
+  const mediaColumn = (
+    <>
+      <div
+        style={{ width: mediaPanelWidth }}
+        className="shrink-0 border-r border-[var(--editor-border)] bg-[var(--editor-surface)] flex flex-col overflow-hidden min-h-0"
+      >
+        {slots?.mediaPanel}
+      </div>
+      {/* Divider on the media column's RIGHT edge — drag right widens the column. */}
+      <div
+        role="separator"
+        aria-orientation="vertical"
+        aria-label="Resize media panel"
+        onMouseDown={startMediaPanelDrag}
+        onDoubleClick={() => setMediaPanelWidth(DEFAULT_MEDIA_PANEL_PX)}
+        className="group shrink-0 w-[5px] cursor-col-resize bg-transparent"
+      >
+        <div className="w-px h-full bg-[var(--editor-border)] transition-colors group-hover:bg-[var(--editor-accent)]" />
+      </div>
+    </>
+  )
+
   return (
     <div className="flex flex-col flex-1 overflow-hidden">
+      {slots?.mediaPanel ? (
+        /* CapCut layout (opt-in via slots.mediaPanel): three columns across the
+           top — [media | preview | rail] — with a full-width timeline strip
+           below. `splitRef` wraps the WHOLE top-row + timeline region so the
+           row divider trades height between them (MIN_PREVIEW_PANE_PX now guards
+           the entire top row); `workAreaRef` is the top row, so the rail/media
+           width drags still measure against the space those three columns share.
+           The shared pieces below (previewRegion / timelinePane / rightRail /
+           rowDivider) are the exact same nodes the classic layout renders — only
+           the arrangement differs. */
+        <div ref={splitRef} className="flex flex-col flex-1 overflow-hidden min-h-0">
+          <div ref={workAreaRef} className="flex flex-1 overflow-hidden min-h-0">
+            {mediaColumn}
+            {previewRegion}
+            {rightRail}
+          </div>
+          {rowDivider}
+          {timelinePane}
+        </div>
+      ) : (
+      /* Classic layout — byte-for-byte the pre-media-panel editor (Hub / LP). */
+      <>
       {/* Work area — editor body + version rail, side by side */}
       <div ref={workAreaRef} className="flex flex-1 overflow-hidden min-h-0">
       {/* Main: preview + timeline, split by a draggable divider. The preview
           takes whatever the timeline pane does not — so dragging the divider up
           trades preview area for timeline area and vice versa. */}
       <div ref={splitRef} className="flex flex-col flex-1 overflow-hidden">
-        <div className="flex-1 min-h-0 flex items-center justify-center bg-black overflow-hidden p-2">
-          {hasContent ? (
-            <div
-              className="relative h-full max-w-full"
-              style={{ aspectRatio: (() => { const [w, h] = getOverlayDesignCanvas(project.settings?.resolution); return `${w} / ${h}` })() }}
-            >
-              <PreviewPlayer
-                project={project}
-                clock={clock}
-                selectedOverlayId={primarySelectedId ?? undefined}
-                onOverlayChange={handleOverlayChange}
-                onEditOverlay={requestEditOverlay}
-                compileOverlay={adapter.compileOverlay}
-                clearOverlayCache={adapter.clearOverlayCache}
-                watchFile={adapter.watchFile}
-                fileUrl={adapter.fileUrl}
-                resolveCaptionTemplate={adapter.resolveCaptionTemplate}
-                selectedCaptionId={selectedCaptionId ?? undefined}
-                onSelectCaption={handleSelectCaption}
-                onCaptionSegmentChange={handleCaptionSegmentChange}
-                engine={engine}
-                transportRef={transportRef}
-                hoverScrub={hoverScrub}
-              />
-            </div>
-          ) : (
-            <p className="text-[var(--editor-text)]/60 text-sm">No clips</p>
-          )}
-        </div>
+        {previewRegion}
 
-        {/* The divider. `row-resize` plus a hairline that lights up on hover is
-            the whole affordance — a 5px hit area is comfortable to grab without
-            stealing a visible row from either pane. Double-click restores the
-            default split. */}
-        <div
-          role="separator"
-          aria-orientation="horizontal"
-          aria-label="Resize timeline"
-          onMouseDown={startSplitDrag}
-          onDoubleClick={() => setTimelinePaneHeight(DEFAULT_TIMELINE_PANE_PX)}
-          className="group shrink-0 h-[5px] cursor-row-resize bg-transparent"
-        >
-          <div className="h-px w-full bg-[var(--editor-border)] transition-colors group-hover:bg-[var(--editor-accent)]" />
-        </div>
+        {rowDivider}
 
-        {/* Timeline pane — the half the divider sizes. */}
-        <div className="shrink-0 flex flex-col overflow-hidden" style={{ height: timelinePaneHeight }}>
-
-        {/* Track controls bar — controls + undo/redo + preview axis + ripple +
-            crop + render. Split is deliberately NOT here: it is a one-key verb
-            (S, listed in the controls modal), and a glyph for it only crowded a
-            row whose other buttons are modes you can't type your way into.
-            Every button carries a styled `Tooltip` instead of a native `title=`:
-            the native one is delayed ~1s and rendered in OS chrome, which on a
-            row of 12px glyphs meant the affordances were effectively unlabelled.
-            `aria-label` stays on each button — the tooltip is a hover affordance,
-            not an accessible name. Disabled buttons get `pointer-events-none` so
-            hover still reaches the wrapper and can explain WHY they're disabled,
-            and fade to 50% rather than 30%: at 30% a 12px glyph on this surface
-            reads as ABSENT, and Crop is disabled whenever no clip is selected —
-            which is most of the time, so the control looked like it had been
-            removed rather than like it was waiting on a selection. */}
-        <div className="shrink-0 flex items-center justify-end gap-1.5 px-3 py-1 border-t border-[var(--editor-border)] bg-[var(--editor-surface)]">
-          <Tooltip label="Controls & shortcuts" className="mr-auto">
-            <button
-              onClick={() => setShowControls(true)}
-              aria-label="Editor controls & shortcuts"
-              className="flex items-center gap-1 px-1.5 h-5 rounded transition-colors text-[var(--editor-text)]/75 bg-transparent hover:text-[var(--editor-text)] hover:bg-[var(--editor-text)]/10"
-            >
-              <HelpCircle size={14} />
-              <span className="text-[10px] leading-none">Controls</span>
-            </button>
-          </Tooltip>
-          <Tooltip label="Undo" keys={['⌘', 'Z']}>
-            <button
-              onClick={sync.undo}
-              disabled={!sync.canUndo}
-              aria-label="Undo"
-              className="flex items-center justify-center w-5 h-5 rounded transition-colors text-[var(--editor-text)]/60 bg-transparent hover:text-[var(--editor-text)] disabled:opacity-50 disabled:pointer-events-none"
-            >
-              <Undo2 size={12} />
-            </button>
-          </Tooltip>
-          <Tooltip label="Redo" keys={['⌘', '⇧', 'Z']}>
-            <button
-              onClick={sync.redo}
-              disabled={!sync.canRedo}
-              aria-label="Redo"
-              className="flex items-center justify-center w-5 h-5 rounded transition-colors text-[var(--editor-text)]/60 bg-transparent hover:text-[var(--editor-text)] disabled:opacity-50 disabled:pointer-events-none"
-            >
-              <Redo2 size={12} />
-            </button>
-          </Tooltip>
-          <Tooltip label={previewAxis ? 'Preview axis on — hover to preview' : 'Preview axis off'} keys={['⌘', 'A']}>
-            <button
-              onClick={() => setPreviewAxis(v => !v)}
-              aria-label="Preview axis"
-              aria-pressed={previewAxis}
-              className={`flex items-center justify-center w-5 h-5 rounded transition-colors ${
-                previewAxis
-                  ? 'text-yellow-400 bg-yellow-400/15 hover:bg-yellow-400/25'
-                  : 'text-[var(--editor-text)]/60 bg-transparent hover:text-[var(--editor-text)]'
-              }`}
-            >
-              <SeparatorVertical size={12} />
-            </button>
-          </Tooltip>
-          <Tooltip label={rippleMode ? 'Ripple on — gaps close' : 'Ripple: close the gap'}>
-            <button
-              onClick={handleRippleToggle}
-              aria-label="Ripple mode"
-              aria-pressed={rippleMode}
-              className={`flex items-center justify-center w-5 h-5 rounded transition-colors ${
-                rippleMode
-                  ? 'text-teal-400 bg-teal-400/15 hover:bg-teal-400/25'
-                  : 'text-[var(--editor-text)]/60 bg-transparent hover:text-[var(--editor-text)]'
-              }`}
-            >
-              <Magnet size={12} />
-            </button>
-          </Tooltip>
-          <Tooltip
-            label={!cropTarget ? 'Select a clip to crop' : cropMode ? 'Exit crop' : 'Crop source'}
-          >
-            <button
-              onClick={() => setCropMode(m => !m)}
-              disabled={!cropTarget}
-              aria-label="Crop source"
-              aria-pressed={cropMode}
-              className={`flex items-center justify-center w-5 h-5 rounded transition-colors disabled:opacity-50 disabled:pointer-events-none ${
-                cropMode
-                  ? 'text-amber-400 bg-amber-400/15 hover:bg-amber-400/25'
-                  : 'text-[var(--editor-text)]/60 bg-transparent hover:text-[var(--editor-text)]'
-              }`}
-            >
-              <Crop size={12} />
-            </button>
-          </Tooltip>
-          {selectedOverlayItem && (
-            <Tooltip label="Edit overlay">
-              <button
-                onClick={() => requestEditOverlay(selectedOverlayItem.id)}
-                aria-label="Edit overlay"
-                className="flex items-center justify-center w-5 h-5 rounded transition-colors text-[var(--editor-text)]/60 bg-transparent hover:text-[var(--editor-text)]"
-              >
-                <Pencil size={12} />
-              </button>
-            </Tooltip>
-          )}
-          {/* Image color mapping. HDR projects only (the tone has no effect on
-              SDR renders). Hidden when the host surfaces the setting in its own
-              chrome via onProvideImageTone, mirroring the Render button. */}
-          {!onProvideImageTone && isHdrProject && (
-            <ImageToneMenu
-              value={currentImageTone}
-              onChange={handleImageToneChange}
-            />
-          )}
-          {/* Default placement. A host that sets onProvideRenderTrigger renders
-              Render in its own chrome instead, so the toolbar button is hidden. */}
-          {!onProvideRenderTrigger && (
-            <button
-              onClick={openRender}
-              className="text-xs px-2.5 py-1 rounded-md bg-[var(--editor-accent)] text-[var(--editor-accent-foreground)] hover:opacity-90 transition-colors"
-            >
-              Render →
-            </button>
-          )}
-        </div>
-
-        <div className="flex-1 min-h-0 overflow-y-auto border-t border-[var(--editor-border)] bg-[var(--editor-surface)]">
-          <Timeline
-            project={project}
-            clock={clock}
-            onProjectChange={handleProjectChange}
-            onCaptionEdit={(p) => void sync.mutate(() => p as P)}
-            onOverlayEdit={commitTimelineEdit}
-            onEditOverlay={requestEditOverlay}
-            previewAxis={previewAxis}
-            onHoverScrub={handleHoverScrub}
-            selectedIds={selectedIds}
-            onSelectIds={setSelectedIds}
-            selectedCaptionId={selectedCaptionId}
-            onSelectCaption={handleSelectCaption}
-            onCaptionSegmentChange={handleCaptionSegmentChange}
-            onInspectClip={(id) => setInspecting({ kind: 'clip', id })}
-            onInspectAudio={(id) => setInspecting({ kind: 'audio', id })}
-            rippleMode={rippleMode}
-            getWaveformChunks={getWaveformChunks}
-            resolveFilePath={resolveFilePath}
-            getWaveformPeaks={getWaveformPeaks}
-            getFilmstrip={getFilmstrip}
-            regenEnabled={regenEnabled}
-            isClipQueued={isClipQueued}
-            renderSubcutRegen={renderSubcutRegen}
-            onRegenerateCaptions={adapter.generateCaptions ? () => setRegenCaptionsOpen(true) : undefined}
-            timeline={timeline}
-            modalOpen={anyModalOpen}
-            onOpenGoToTime={openGoToTime}
-            actionsRef={timelineActionsRef}
-          />
-        </div>
-        </div>
+        {timelinePane}
       </div>
 
       {/* Assets — dedicated separate column to the LEFT of the version rail
           (assetsPlacement: 'right', two distinct columns). The Montaj-local OS
           layout uses 'sidebar' instead (stacked into the version rail below).
           The host's panel manages its own scroll. */}
-      {assetsPlacement === 'right' && slots?.assetsPanel && (
-        <div className="w-72 shrink-0 border-l border-[var(--editor-border)] bg-[var(--editor-surface)] flex flex-col overflow-hidden">
-          {slots.assetsPanel}
-        </div>
-      )}
+      {assetsColumn}
 
       {/* Right rail — version history + run history slot, and (in 'sidebar'
           placement) the assets panel stacked beneath them in the SAME column.
           This is the historical Montaj-local OS layout: versions on top, assets
           right below, one column — not a separate assets column. */}
-      {(adapter.listVersionHistory || slots?.runHistory ||
-        (assetsPlacement === 'sidebar' && slots?.assetsPanel)) && (
-      <>
-        {/* Vertical divider, the same affordance as the preview/timeline one. */}
-        <div
-          role="separator"
-          aria-orientation="vertical"
-          aria-label="Resize sidebar"
-          onMouseDown={startRailDrag}
-          onDoubleClick={() => setRailWidth(assetsPlacement === 'sidebar' ? 224 : 192)}
-          className="group shrink-0 w-[5px] cursor-col-resize bg-transparent"
-        >
-          <div className="w-px h-full bg-[var(--editor-border)] transition-colors group-hover:bg-[var(--editor-accent)]" />
-        </div>
-
-        <div
-          style={{ width: railWidth }}
-          className="shrink-0 border-l border-[var(--editor-border)] bg-[var(--editor-surface)] flex flex-col overflow-hidden"
-        >
-          {adapter.listVersionHistory && (
-            <VersionPanel versions={versions} restoring={restoring} onRestore={handleRestoreVersion} />
-          )}
-          {/* Host injects the Montaj-flavored "Previous runs" snapshot list here.
-              RunSnapshot / project.history are host-only types — the package never
-              reads them. When absent nothing is rendered. */}
-          {slots?.runHistory}
-          {/* Assets stacked below versions/runs (assetsPlacement: 'sidebar'). The
-              host's panel manages its own scroll; flex-1 lets it take the
-              remaining rail height. A top border separates it from the runs. */}
-          {assetsPlacement === 'sidebar' && slots?.assetsPanel && (
-            <div className="flex-1 min-h-0 overflow-hidden border-t border-[var(--editor-border)] flex flex-col">
-              {slots.assetsPanel}
-            </div>
-          )}
-        </div>
-      </>
-      )}
+      {rightRail}
       </div>
 
       {/* Project media / assets — full-width region stacked BELOW the editor
           (assetsPlacement: 'bottom'). Preferred by width-constrained hosts (Hub).
           The host's panel manages its own scroll. */}
-      {assetsPlacement === 'bottom' && slots?.assetsPanel && (
-        <div className="shrink-0 border-t border-[var(--editor-border)] w-full flex flex-col max-h-[45%] overflow-hidden">
-          {slots.assetsPanel}
-        </div>
+      {bottomAssets}
+      </>
       )}
 
       {/* Source-crop modal — drag-to-pan, aspect presets, zoom. Commits
