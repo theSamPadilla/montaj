@@ -121,6 +121,16 @@ export function matchesModKey(key: string) {
   return (e: KeyboardEvent) => mod(e) && e.key.toLowerCase() === lower
 }
 
+/** Mod+Alt+key, e.g. Cmd+Opt+V for paste-attributes. NOTE: `matchesModKey`
+ *  does NOT exclude `altKey`, so a mod+alt chord matches BOTH this and the
+ *  bare mod+key binding for the same letter — whichever binding is
+ *  registered FIRST in a `useKeymap` array wins (first match wins), so a
+ *  mod+alt binding must always be listed before its mod-only sibling. */
+export function matchesModAltKey(key: string) {
+  const lower = key.toLowerCase()
+  return (e: KeyboardEvent) => mod(e) && e.altKey && e.key.toLowerCase() === lower
+}
+
 /** Delete/Backspace WITHOUT Shift — reserves Shift+Delete for ripple-delete. */
 export function matchesDelete(e: KeyboardEvent): boolean {
   return (e.key === 'Delete' || e.key === 'Backspace') && !e.shiftKey

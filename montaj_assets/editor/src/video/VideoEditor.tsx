@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type MutableRefObject } from 'react'
-import { Crop, HelpCircle, Magnet, Pencil, Redo2, SeparatorVertical, Undo2 } from 'lucide-react'
+import { Crop, HelpCircle, Magnet, Maximize2, Minimize2, Pencil, Redo2, SeparatorVertical, Undo2 } from 'lucide-react'
 import type { Project, VideoEditorProps } from '../types'
 import { useProjectSync, type UseProjectSync } from '../state/use-project-sync'
 import { VideoSourceCropModal } from '../crop/VideoSourceCropModal'
@@ -28,8 +28,9 @@ import CaptionRegenModal from './CaptionRegenModal'
 import OverlayPropsModal from './preview/OverlayPropsModal'
 import CommandPalette, { type PaletteCommand } from './CommandPalette'
 import { createShuttleController } from './shuttle'
-import { useKeymap, matchesKey, matchesModKey, matchesPlainKey, matchesRedo, matchesShiftDelete, matchesUndo } from './keymap'
+import { useKeymap, matchesKey, matchesModAltKey, matchesModKey, matchesPlainKey, matchesRedo, matchesShiftDelete, matchesUndo } from './keymap'
 import { useReportContext } from './use-report-context'
+import { copySelection, duplicateSelection, pasteAt, pasteAttributes, type ClipboardPayload } from './clipboard-ops'
 
 // ── Layout preferences ───────────────────────────────────────────────────
 // Persisted per browser (not per project): how tall the timeline pane is, and
@@ -37,7 +38,6 @@ import { useReportContext } from './use-report-context'
 // with a host's own localStorage.
 
 const TIMELINE_PANE_STORAGE_KEY = 'montaj.editor.timelinePaneHeight'
-
 /** Starting height of the timeline pane — roughly the base track, one overlay
  *  row, an audio lane and the caption row, which is what the fixed layout used
  *  to come out at. */
@@ -555,6 +555,18 @@ function PendingSurface<P extends Project>({
 
 // ── Draft / final surface (former ReviewView) ────────────────────────────────
 
+// Every visual item id (across all tracks) plus every audio track id in a
+// project. Used by the clipboard paste/duplicate handlers below to diff
+// before/after a `pasteAt`/`duplicateSelection` call and find the ids those
+// pure ops minted (`newClipId()`), so the freshly pasted/duplicated items can
+// be selected — neither op returns the new ids directly.
+function collectAllIds(project: Project): Set<string> {
+  const ids = new Set<string>()
+  for (const item of trackItems(project).flat()) ids.add(item.id)
+  for (const track of project.audio?.tracks ?? []) ids.add(track.id)
+  return ids
+}
+
 function ReviewSurface<P extends Project>({
   sync,
   captionGestureRef,
@@ -654,6 +666,13 @@ function ReviewSurface<P extends Project>({
   // shows THAT frame while the playhead stays put — hover to look around, click
   // to actually go there.
   const [previewAxis, setPreviewAxis] = useState(false)
+
+  // Copy/paste/duplicate clipboard (T2). A ref, not state: nothing in this
+  // surface needs to re-render when it changes — the keymap guards below read
+  // it synchronously at keydown time, and `paletteCommands` (built fresh every
+  // render) reads it whenever the palette's own `setPaletteOpen` call triggers
+  // that render.
+  const clipboardRef = useRef<ClipboardPayload | null>(null)
 
   // ── Preview / timeline split ───────────────────────────────────────────
   // The timeline pane owns an explicit height and the preview takes the rest,
@@ -1190,9 +1209,78 @@ function ReviewSurface<P extends Project>({
     setSelectedIds([])
   }
 
+  // Copy the current selection into `clipboardRef` (T2). Visual items and
+  // audio tracks only — `copySelection` (clipboard-ops.ts) ignores caption
+  // ids by construction. Not a `sync.mutate`: nothing about the project
+  // changes, only local clipboard state.
+  function handleCopy() {
+    if (selectedIds.length === 0) return
+    clipboardRef.current = copySelection(syncProjectRef.current, selectedIds)
+  }
+
+  // Paste the clipboard at the playhead. One `sync.mutate`, same
+  // `if (updated === base) return` no-op guard `handleRippleDelete` uses
+  // above. `pasteAt` mints fresh ids for every pasted item, which
+  // `collectAllIds` doesn't get back directly — diffing the id sets before
+  // and after is what selects the newly pasted items afterward.
+  function handlePaste() {
+    const payload = clipboardRef.current
+    if (!payload) return
+    const base = syncProjectRef.current
+    const beforeIds = collectAllIds(base)
+    const updated = pasteAt(base, payload, clock.get())
+    if (updated === base) return
+    void sync.mutate(() => updated as P)
+    setSelectedIds([...collectAllIds(updated)].filter(id => !beforeIds.has(id)))
+  }
+
+  // Duplicate the current selection in place. Same commit + id-diff pattern
+  // as `handlePaste` above.
+  function handleDuplicate() {
+    if (selectedIds.length === 0) return
+    const base = syncProjectRef.current
+    const beforeIds = collectAllIds(base)
+    const updated = duplicateSelection(base, selectedIds)
+    if (updated === base) return
+    void sync.mutate(() => updated as P)
+    setSelectedIds([...collectAllIds(updated)].filter(id => !beforeIds.has(id)))
+  }
+
+  // Copy the clipboard's "look" attributes onto every selected item
+  // (`pasteAttributes`, clipboard-ops.ts — type-gated per item/track kind).
+  // No selection change: unlike paste/duplicate this never creates items.
+  function handlePasteAttributes() {
+    const payload = clipboardRef.current
+    if (!payload || selectedIds.length === 0) return
+    const base = syncProjectRef.current
+    const updated = pasteAttributes(base, payload, selectedIds)
+    if (updated === base) return
+    void sync.mutate(() => updated as P)
+  }
+
   const openPalette = useCallback(() => setPaletteOpen('list'), [])
   const openGoToTime = useCallback(() => setPaletteOpen('goto'), [])
   const closePalette = useCallback(() => setPaletteOpen(false), [])
+
+  // Fullscreen preview (T5). `previewRegionRef` is attached to the
+  // `previewRegion` wrapper div below — the ONE shared node both editor
+  // layouts (CapCut and classic) render, so a single ref/toggle covers both.
+  // `isFullscreen` is kept in sync with the REAL fullscreen state via the
+  // `fullscreenchange` listener, not just set optimistically on toggle: the
+  // browser can exit fullscreen on its own (Escape, tab switch) without ever
+  // calling `toggleFullscreen`, and the button/palette label would otherwise
+  // go stale. No Escape handling of our own — that's native.
+  const previewRegionRef = useRef<HTMLDivElement | null>(null)
+  const [isFullscreen, setIsFullscreen] = useState(false)
+  useEffect(() => {
+    const onFullscreenChange = () => setIsFullscreen(document.fullscreenElement === previewRegionRef.current)
+    document.addEventListener('fullscreenchange', onFullscreenChange)
+    return () => document.removeEventListener('fullscreenchange', onFullscreenChange)
+  }, [])
+  const toggleFullscreen = useCallback(() => {
+    if (document.fullscreenElement) void document.exitFullscreen()
+    else void previewRegionRef.current?.requestFullscreen()
+  }, [])
 
   // Command palette. Bindings for split/undo/redo/ripple-delete/palette-open
   // double as their own registry entries here; a few are palette-only
@@ -1229,6 +1317,54 @@ function ReviewSurface<P extends Project>({
       matches: matchesShiftDelete,
       guard: () => !!primarySelectedId,
       action: () => handleRippleDelete(),
+    },
+    {
+      // `preventDefault: false` so the browser's own text copy is untouched —
+      // this only ever ADDS a project-level copy on top, it never replaces
+      // whatever native selection copy would otherwise do.
+      id: 'video.copy',
+      description: 'Copy selection',
+      keyHint: ['⌘', 'C'],
+      matches: matchesModKey('c'),
+      guard: () => selectedIds.length > 0,
+      preventDefault: false,
+      action: () => handleCopy(),
+    },
+    {
+      // MUST be registered before `video.paste`: `matchesModKey('v')` does
+      // NOT exclude `altKey`, so Cmd+Opt+V matches BOTH this binding and the
+      // plain-paste one below — first match wins, so paste-attributes has to
+      // come first or Cmd+Opt+V would silently fall through to a plain paste.
+      // See keymap.ts's `matchesModAltKey` doc comment for the same note.
+      id: 'video.paste-attributes',
+      description: 'Paste attributes',
+      keyHint: ['⌘', '⌥', 'V'],
+      matches: matchesModAltKey('v'),
+      guard: () => !!clipboardRef.current && selectedIds.length > 0,
+      action: () => handlePasteAttributes(),
+    },
+    {
+      id: 'video.paste',
+      description: 'Paste',
+      keyHint: ['⌘', 'V'],
+      matches: matchesModKey('v'),
+      guard: () => !!clipboardRef.current,
+      action: () => handlePaste(),
+    },
+    {
+      id: 'video.duplicate',
+      description: 'Duplicate selection',
+      keyHint: ['⌘', 'D'],
+      matches: matchesModKey('d'),
+      guard: () => selectedIds.length > 0,
+      action: () => handleDuplicate(),
+    },
+    {
+      id: 'video.fullscreen',
+      description: 'Toggle fullscreen preview',
+      keyHint: ['F'],
+      matches: matchesPlainKey('f'),
+      action: () => toggleFullscreen(),
     },
     {
       // A for Axis. CapCut binds this to plain `S`, which Split owns here —
@@ -1304,6 +1440,16 @@ function ReviewSurface<P extends Project>({
   if (primarySelectedId) {
     paletteCommands.push({ id: 'ripple-delete', label: 'Ripple-delete selection', keyHint: ['⇧', 'Delete'], run: () => handleRippleDelete() })
   }
+  if (selectedIds.length > 0) {
+    paletteCommands.push({ id: 'copy', label: 'Copy', keyHint: ['⌘', 'C'], run: () => handleCopy() })
+    paletteCommands.push({ id: 'duplicate', label: 'Duplicate', keyHint: ['⌘', 'D'], run: () => handleDuplicate() })
+  }
+  if (clipboardRef.current) {
+    paletteCommands.push({ id: 'paste', label: 'Paste', keyHint: ['⌘', 'V'], run: () => handlePaste() })
+    if (selectedIds.length > 0) {
+      paletteCommands.push({ id: 'paste-attributes', label: 'Paste attributes', keyHint: ['⌘', '⌥', 'V'], run: () => handlePasteAttributes() })
+    }
+  }
   if (sync.canUndo) paletteCommands.push({ id: 'undo', label: 'Undo', keyHint: ['⌘', 'Z'], run: () => sync.undo() })
   if (sync.canRedo) paletteCommands.push({ id: 'redo', label: 'Redo', keyHint: ['⌘', '⇧', 'Z'], run: () => sync.redo() })
   paletteCommands.push({
@@ -1311,6 +1457,12 @@ function ReviewSurface<P extends Project>({
     label: previewAxis ? 'Preview axis: turn off' : 'Preview axis: turn on',
     keyHint: ['⌘', 'A'],
     run: () => setPreviewAxis(v => !v),
+  })
+  paletteCommands.push({
+    id: 'fullscreen',
+    label: isFullscreen ? 'Exit fullscreen' : 'Enter fullscreen',
+    keyHint: ['F'],
+    run: () => toggleFullscreen(),
   })
   paletteCommands.push({ id: 'zoom-fit', label: 'Zoom to fit', run: () => timelineActionsRef.current?.zoomFit() })
   paletteCommands.push({ id: 'goto', label: 'Go to time…', run: () => openGoToTime() })
@@ -1337,7 +1489,7 @@ function ReviewSurface<P extends Project>({
   // exact same nodes rather than duplicating this JSX.
 
   const previewRegion = (
-    <div className="flex-1 min-h-0 flex items-center justify-center bg-black overflow-hidden p-2">
+    <div ref={previewRegionRef} className="flex-1 min-h-0 flex items-center justify-center bg-black overflow-hidden p-2">
       {hasContent ? (
         <div
           className="relative h-full max-w-full"
@@ -1366,6 +1518,21 @@ function ReviewSurface<P extends Project>({
               host hovers a bin card. Inert unless a host supplies `sourcePreview`
               AND sets a value — see SourcePreviewOverlay / source-preview.ts. */}
           <SourcePreviewOverlay store={sourcePreview} />
+          {/* Fullscreen toggle (T5) — corner affordance over the video itself,
+              the same spot a native player puts one. `z-[200]` clears
+              PreviewPlayer's own internal overlays (its click-to-play layer is
+              z-10, its paused play-button glyph z-100), both scoped inside
+              PreviewPlayer's own subtree. */}
+          <Tooltip label={isFullscreen ? 'Exit fullscreen' : 'Enter fullscreen'} keys={['F']} className="absolute top-2 right-2 z-[200]">
+            <button
+              onClick={toggleFullscreen}
+              aria-label="Toggle fullscreen"
+              aria-pressed={isFullscreen}
+              className="flex items-center justify-center w-7 h-7 rounded-md bg-black/50 text-white/80 hover:text-white hover:bg-black/70 transition-colors"
+            >
+              {isFullscreen ? <Minimize2 size={14} /> : <Maximize2 size={14} />}
+            </button>
+          </Tooltip>
         </div>
       ) : (
         <p className="text-[var(--editor-text)]/60 text-sm">No clips</p>
