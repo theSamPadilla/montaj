@@ -48,14 +48,89 @@ export interface AudioLane {
   tracks: AudioTrack[]
 }
 
+/** Span given to an audio track that declares no `end` and whose source length
+ *  the project does not record: enough bar to see and grab, nothing more. */
+export const AUDIO_FALLBACK_SPAN_SECONDS = 5
+
+/** The value when it is a real, finite number; `null` otherwise. */
+function finiteNumber(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) ? value : null
+}
+
+/**
+ * The timeline window an audio track occupies.
+ *
+ * NOT to be confused with `@bycrux/timeline-core`'s `audioWindow(track, t)`,
+ * which takes a PLAYHEAD and answers "is this track audible right now, and at
+ * what gain". This one takes the project's content duration and answers "where
+ * does this bar sit on the timeline". Both are imported into this package, so
+ * the names are kept distinct on purpose.
+ *
+ * `start` and `end` are OPTIONAL on an audio track. `docs/schemas/project.md`
+ * marks only `src` required, and the renderer agrees: `render/mix-audio.js`
+ * delays by `start ?? 0` and never trims on `end` (it reads `end` only to
+ * place a fade-out), so the source window is `inPoint`/`outPoint` alone and a
+ * music bed with neither field plays its natural length. The `AudioTrack`
+ * type here declares both required — a convenience for the many call sites
+ * that do arithmetic on them, not a claim about what is on disk.
+ *
+ * That gap produced a real defect: a track written without `start`/`end`
+ * computed `NaN` for its left and width, so the DOM lane drew an invisible
+ * bar and the canvas painter culled it entirely, while the export was
+ * correct. Resolving the window here — and only here, at the one funnel every
+ * audio surface reads lanes from — is what keeps painter, hit-test and the
+ * pointer machine agreeing on where a bar is.
+ */
+export function resolveAudioWindow(
+  track: AudioTrack,
+  contentDuration = 0,
+): { start: number; end: number } {
+  const start = finiteNumber(track.start) ?? 0
+  // `> start`, not merely present: a declared window of zero or negative width
+  // is the sibling of the missing-window bug and fails the same way. `start: 0,
+  // end: 0` is the exact shape `skills/lyrics-video` told agents to write until
+  // recently, so projects carrying it exist; `engine/validate.py` rejects it now,
+  // but validation does not run on project open, so the editor still has to cope.
+  // Treat it as undeclared and fall through to the natural-length chain below.
+  const declaredEnd = finiteNumber(track.end)
+  if (declaredEnd !== null && declaredEnd > start) return { start, end: declaredEnd }
+
+  // No `end`: the track plays its natural length. Prefer the source's own
+  // length when the project records it, then the rest of the project's
+  // content, then a fixed span — so the bar is never zero-width.
+  // `outPoint` wins over `sourceDuration` only when it is actually past the
+  // in-point. A stale `outPoint: 0` is finite, so a bare `??` would let it beat
+  // a perfectly good `sourceDuration` and collapse `natural` to zero.
+  const inPt = finiteNumber(track.inPoint) ?? 0
+  const outPt = finiteNumber(track.outPoint)
+  const sourceEnd = outPt !== null && outPt > inPt ? outPt : finiteNumber(track.sourceDuration)
+  const natural = sourceEnd === null ? null : sourceEnd - inPt
+  if (natural !== null && natural > 0) return { start, end: start + natural }
+  // Guard the horizon too. `contentDuration` comes from `computeDerivedTiming`,
+  // which reduces with `Math.max(m, i.end ?? 0)` — so ONE item anywhere in the
+  // project with a non-numeric `end` makes it `NaN`, and an unguarded `Math.max`
+  // would propagate that straight back into the invisible bar this function
+  // exists to prevent. Falling back to 0 yields the fixed span instead.
+  const horizon = finiteNumber(contentDuration) ?? 0
+  return { start, end: Math.max(horizon, start + AUDIO_FALLBACK_SPAN_SECONDS) }
+}
+
 /**
  * Group audio tracks into rendered lanes, in ascending lane order. Tracks
  * carrying an explicit `lane` keep it; the rest are auto-assigned lanes above
  * the highest explicit one, in array order. Lifted out of Timeline's inline
  * IIFE so the DOM rows and the canvas painter can't drift on which track lands
  * in which row.
+ *
+ * Also resolves each track's timeline window (see `resolveAudioWindow`). A track
+ * whose `start` and `end` are both already finite is returned as the SAME
+ * object — no copy, no change — so nothing about a well-formed project is
+ * different from before this existed. Only a track missing one of them gets a
+ * resolved copy, and edits are applied by `id` (`updateAudioTrack`) rather
+ * than by object identity, so a drag or trim on that copy commits back to the
+ * right track and writes it a concrete window in passing.
  */
-export function groupAudioLanes(tracks: AudioTrack[]): AudioLane[] {
+export function groupAudioLanes(tracks: AudioTrack[], contentDuration = 0): AudioLane[] {
   const laneMap = new Map<number, AudioTrack[]>()
   let nextAutoLane = 0
   for (const t of tracks) {
@@ -64,7 +139,8 @@ export function groupAudioLanes(tracks: AudioTrack[]): AudioLane[] {
   for (const t of tracks) {
     const lane = t.lane ?? nextAutoLane++
     if (!laneMap.has(lane)) laneMap.set(lane, [])
-    laneMap.get(lane)!.push(t)
+    const { start, end } = resolveAudioWindow(t, contentDuration)
+    laneMap.get(lane)!.push(start === t.start && end === t.end ? t : { ...t, start, end })
   }
   return [...laneMap.entries()]
     .sort((a, b) => a[0] - b[0])

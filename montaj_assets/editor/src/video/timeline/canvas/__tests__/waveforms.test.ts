@@ -276,6 +276,32 @@ describe('clipWaveformBand', () => {
   })
 })
 
+describe('drawClipWaveform muted variant', () => {
+  it('uses the normal clip/band colors when not muted', () => {
+    const r = recordingContext()
+    const bandRect = rect({ height: 40 })
+    drawClipWaveform(r.ctx, bandRect, [{ min: -1, max: 1 }])
+
+    const fillStyles = r.calls.filter(c => c.method === 'set:fillStyle').map(c => c.args[0])
+    expect(fillStyles).toContain(WAVEFORM_COLORS.clipBand)
+    expect(fillStyles).toContain(WAVEFORM_COLORS.clip)
+    expect(fillStyles).not.toContain(WAVEFORM_COLORS.clipBandMuted)
+    expect(fillStyles).not.toContain(WAVEFORM_COLORS.clipMuted)
+  })
+
+  it('swaps in the grayed clipMuted/clipBandMuted pair when muted', () => {
+    const r = recordingContext()
+    const bandRect = rect({ height: 40 })
+    drawClipWaveform(r.ctx, bandRect, [{ min: -1, max: 1 }], true)
+
+    const fillStyles = r.calls.filter(c => c.method === 'set:fillStyle').map(c => c.args[0])
+    expect(fillStyles).toContain(WAVEFORM_COLORS.clipBandMuted)
+    expect(fillStyles).toContain(WAVEFORM_COLORS.clipMuted)
+    expect(fillStyles).not.toContain(WAVEFORM_COLORS.clipBand)
+    expect(fillStyles).not.toContain(WAVEFORM_COLORS.clip)
+  })
+})
+
 // ── drawClipRect / drawAudioItem content-layer hook ───────────────────────
 
 describe('drawClipRect content hook', () => {
@@ -589,6 +615,44 @@ describe('drawTimelineContent waveform wiring', () => {
     // Absent lookup and a lookup that always returns null produce identical
     // draw-call counts — no waveform fills either way.
     expect(withLookup.calls.length).toBe(withoutLookup.calls.length)
+  })
+
+  it('grays a video-track clip′s waveform when the track is muted, and uses the normal colors when it is not', () => {
+    const p = project({
+      tracks: [
+        { id: 'trk-0', items: [clip({ id: 'c0', start: 0, end: 4 })], muted: true },
+        { id: 'trk-1', items: [clip({ id: 'c1', start: 0, end: 4 })] },
+      ],
+    })
+    const columns: WaveformColumn[] = [{ min: -1, max: 1 }]
+    const lookup = { clipColumns: () => columns, audioColumns: () => null }
+
+    const mutedR = recordingContext()
+    drawTimelineContent(mutedR.ctx, scene({ project: p, layout: computeTimelineLayout(p), waveforms: lookup }))
+    const mutedFillStyles = mutedR.calls.filter(c => c.method === 'set:fillStyle').map(c => c.args[0])
+
+    // trk-0 (muted) contributes the grayed pair; trk-1 (unmuted) contributes
+    // the normal pair — both rows draw in the same pass.
+    expect(mutedFillStyles).toContain(WAVEFORM_COLORS.clipBandMuted)
+    expect(mutedFillStyles).toContain(WAVEFORM_COLORS.clipMuted)
+    expect(mutedFillStyles).toContain(WAVEFORM_COLORS.clipBand)
+    expect(mutedFillStyles).toContain(WAVEFORM_COLORS.clip)
+  })
+
+  it('grays a clip′s waveform when only the ITEM is muted, on an otherwise-unmuted track', () => {
+    const p = project({
+      tracks: [{ id: 'trk-0', items: [clip({ id: 'c0', start: 0, end: 4, muted: true })] }],
+    })
+    const columns: WaveformColumn[] = [{ min: -1, max: 1 }]
+    const r = recordingContext()
+    drawTimelineContent(r.ctx, scene({
+      project: p,
+      layout: computeTimelineLayout(p),
+      waveforms: { clipColumns: () => columns, audioColumns: () => null },
+    }))
+    const fillStyles = r.calls.filter(c => c.method === 'set:fillStyle').map(c => c.args[0])
+    expect(fillStyles).toContain(WAVEFORM_COLORS.clipMuted)
+    expect(fillStyles).not.toContain(WAVEFORM_COLORS.clip)
   })
 
   it('draws an audio-lane waveform inside the bar via the lookup', () => {

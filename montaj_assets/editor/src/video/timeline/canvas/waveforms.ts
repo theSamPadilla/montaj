@@ -172,6 +172,13 @@ export const WAVEFORM_COLORS = {
   /** Sits inside `AudioTrackRow`'s emerald bar; brighter than the fill so it
    *  reads as drawn "on top of" it, echoing `TIMELINE_COLORS.audioRing`. */
   audioLane: 'rgba(167,243,208,0.75)',
+  /** Muted video-track clip bars: dimmer than `clip`, but still readable so
+   *  the waveform shape survives on top of the darker muted scrim below. */
+  clipMuted: 'rgba(255,255,255,0.3)',
+  /** Muted band: a distinctly DARKER scrim than `clipBand` (not the old faint
+   *  lighten, which read almost identical to an unmuted clip), so a muted
+   *  clip's audio region visibly dims and reads as "off" at a glance. */
+  clipBandMuted: 'rgba(0,0,0,0.45)',
 } as const
 
 /** Paint one row of min/max columns as vertical bars centered in `rect`,
@@ -204,13 +211,15 @@ export function clipWaveformBand(rect: Rect): Rect {
 
 /** Paint the clip's waveform half: a darkened band, then the bars centered in
  *  it. The band is painted even where the bars are silent, so a quiet passage
- *  reads as "no audio here" rather than as missing data. */
-export function drawClipWaveform(ctx: DrawContext, rect: Rect, columns: WaveformColumn[]): void {
+ *  reads as "no audio here" rather than as missing data. `muted` swaps in the
+ *  grayed `clipMuted`/`clipBandMuted` pair — the same mute cue `drawAudioItem`
+ *  already gives audio-lane bars, extended to video-track clip waveforms. */
+export function drawClipWaveform(ctx: DrawContext, rect: Rect, columns: WaveformColumn[], muted = false): void {
   const band = clipWaveformBand(rect)
   if (band.height <= 0 || band.width <= 0) return
-  ctx.fillStyle = WAVEFORM_COLORS.clipBand
+  ctx.fillStyle = muted ? WAVEFORM_COLORS.clipBandMuted : WAVEFORM_COLORS.clipBand
   ctx.fillRect(band.x, band.y, band.width, band.height)
-  drawWaveformBars(ctx, band, columns, WAVEFORM_COLORS.clip)
+  drawWaveformBars(ctx, band, columns, muted ? WAVEFORM_COLORS.clipMuted : WAVEFORM_COLORS.clip)
 }
 
 /** Full-bar audio-lane waveform. `rect` is already the fetched window's

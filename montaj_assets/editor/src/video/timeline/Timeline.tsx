@@ -633,7 +633,7 @@ export default function Timeline({ project, clock, onProjectChange, onCaptionEdi
                 timeline-model so the canvas painter puts each track in the
                 same row this branch does. */}
             {(() => {
-              const lanes = groupAudioLanes(audioTracks)
+              const lanes = groupAudioLanes(audioTracks, contentDuration)
 
               return lanes.map(({ laneIndex: laneIdx, tracks: laneTracks }) => (
                 <AudioTrackRow

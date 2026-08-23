@@ -20,12 +20,12 @@ export default function MediaPanel({ footageLabel, footage, assets }: MediaPanel
   const [activeTab, setActiveTab] = useState<TabKey>('footage')
 
   return (
-    <div className="flex flex-col flex-1 overflow-hidden">
-      <div className="flex items-center border-b border-gray-200 dark:border-gray-800">
+    <div className="flex flex-col flex-1 min-h-0 overflow-hidden">
+      <div className="shrink-0 flex items-center border-b border-gray-200 dark:border-gray-800">
         <TabButton label={footageLabel} active={activeTab === 'footage'} onClick={() => setActiveTab('footage')} />
         <TabButton label="Assets" active={activeTab === 'assets'} onClick={() => setActiveTab('assets')} />
       </div>
-      <div className="flex-1 min-h-0 overflow-hidden">
+      <div className="flex flex-col flex-1 min-h-0 overflow-hidden">
         {activeTab === 'footage' ? footage : assets}
       </div>
     </div>

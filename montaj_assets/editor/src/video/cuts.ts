@@ -788,7 +788,12 @@ export interface NewClipInput {
  * transform of the project).
  */
 export function newClipId(): string {
-  return `clip_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`
+  // Two independent random draws (each ~52 bits, base36) plus the timestamp:
+  // a single 4-char draw is only ~1.7M-wide, so a tight burst of ids minted in
+  // the same millisecond (Date.now() constant) collides at a birthday rate that
+  // is small but real. Doubling the random tail makes a collision negligible.
+  const rand = Math.random().toString(36).slice(2, 8) + Math.random().toString(36).slice(2, 8)
+  return `clip_${Date.now().toString(36)}${rand}`
 }
 
 /** True when [s, e) overlaps any item's window by more than float slop. Touching

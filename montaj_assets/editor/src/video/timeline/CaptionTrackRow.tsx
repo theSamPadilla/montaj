@@ -28,8 +28,10 @@
 // sibling caption-editing surface), which does the same for the same reason.
 import { useEffect, useRef, useState } from 'react'
 import type { CaptionSegment, Captions } from '../../schema'
-import { timeSpanStyle, trackRow } from './utils'
+import { timeSpanStyle, trackRowCaptions } from './utils'
 import { useTimelineContext } from './TimelineContext'
+import { PLAYHEAD_GRAB_PX } from './canvas/hit-test'
+import { timeToX, xToTime } from './canvas/viewport'
 import PlayheadLine from './PlayheadLine'
 import { useItemDragDrop } from './useItemDragDrop'
 import type { Draggable, DragEventContext } from './useItemDragDrop'
@@ -62,7 +64,7 @@ export default function CaptionTrackRow({ captionTrack, fps, selectedCaptionId, 
   canvasZoomRef.current = viewport && viewport.widthPx > 0 && totalDuration > 0
     ? (viewport.pxPerSecond * totalDuration) / viewport.widthPx
     : 1
-  const { beginResize } = useItemDragDrop({
+  const { beginDrag, beginResize } = useItemDragDrop({
     totalDuration,
     snapBoundaries,
     scrollRef,
@@ -78,6 +80,59 @@ export default function CaptionTrackRow({ captionTrack, fps, selectedCaptionId, 
   // click to enter, blur to exit). At most one at a time — no multi-edit.
   const [editingId, setEditingId] = useState<string | null>(null)
 
+  // The row element, so a playhead grab can convert client x to a time against
+  // its own left edge (which is timeline t=scrollSeconds, same as the canvas).
+  const rowRef = useRef<HTMLDivElement>(null)
+
+  // Grab the playhead line where it crosses this row and scrub it, exactly as
+  // grabbing the full-height red bar over the canvas does (the pointer machine's
+  // `grabsPlayhead` / PLAYHEAD_GRAB_PX). The bar spans the whole timeline
+  // including this DOM caption row, so it has to be grabbable here too. Runs at
+  // CAPTURE so a press within the band wins over a segment's own body-drag or
+  // select; outside the band it returns and the segment handlers run untouched.
+  // Never clears the caption selection (decision D3) — it only moves the clock.
+  function handlePlayheadGrab(e: React.MouseEvent) {
+    if (e.button !== 0) return
+    const el = rowRef.current
+    if (!el) return
+    const rect = el.getBoundingClientRect()
+    if (rect.width <= 0) return
+    const pointerX = e.clientX - rect.left
+    const playheadX = viewport
+      ? timeToX(clock.get(), viewport)
+      : totalDuration > 0 ? (clock.get() / totalDuration) * rect.width : -Infinity
+    if (Math.abs(pointerX - playheadX) > PLAYHEAD_GRAB_PX) return
+    e.preventDefault()
+    e.stopPropagation()
+    const timeAt = (clientX: number): number => {
+      const x = clientX - rect.left
+      const t = viewport ? xToTime(x, viewport) : totalDuration > 0 ? (x / rect.width) * totalDuration : 0
+      return Math.max(0, Math.min(totalDuration, t))
+    }
+    clock.set(timeAt(e.clientX))
+    // Swallow the click this press produces so it can't bubble to Timeline's
+    // background handler and clear the selection — a playhead grab is a scrub,
+    // not a click-to-deselect (decision D3). The canvas surface does the same
+    // with its own `onClick` stopPropagation; the caption row has none, so the
+    // one click this gesture spawns is caught and dropped here.
+    const swallowClick = (ce: MouseEvent) => {
+      ce.stopPropagation()
+      ce.preventDefault()
+      document.removeEventListener('click', swallowClick, true)
+    }
+    document.addEventListener('click', swallowClick, true)
+    const onMove = (me: MouseEvent) => clock.set(timeAt(me.clientX))
+    const onUp = () => {
+      document.removeEventListener('mousemove', onMove)
+      document.removeEventListener('mouseup', onUp)
+      // A pure drag may spawn no click at all; don't leave the swallow armed
+      // for a later, unrelated one.
+      setTimeout(() => document.removeEventListener('click', swallowClick, true), 0)
+    }
+    document.addEventListener('mousemove', onMove)
+    document.addEventListener('mouseup', onUp)
+  }
+
   const segments = captionTrack?.segments ?? []
 
   // Empty state: no `project.captions`, or a track with zero segments. Still
@@ -85,7 +140,7 @@ export default function CaptionTrackRow({ captionTrack, fps, selectedCaptionId, 
   // even before any exist.
   if (segments.length === 0) {
     return (
-      <div className={trackRow}>
+      <div ref={rowRef} className={trackRowCaptions} onMouseDownCapture={handlePlayheadGrab}>
         <PlayheadLine />
         <div className="absolute inset-0 flex items-center px-2 pointer-events-none">
           <span className="text-[10px] text-gray-500 italic select-none">Captions</span>
@@ -132,8 +187,67 @@ export default function CaptionTrackRow({ captionTrack, fps, selectedCaptionId, 
     })
   }
 
+  // Click-drag-to-move: shifts the whole segment (both edges, same delta),
+  // clamped so it can neither cross nor reorder past its neighbors — v1 has
+  // no reordering. Mirrors `handleEdgeDrag`'s live-preview-then-commit shape.
+  // Word timings are absolute seconds and a move preserves duration, so the
+  // commit shifts every word by the same delta as the segment — the words
+  // travel WITH the caption (unlike edge-trim, which changes duration and
+  // leaves words for `makeCaptionEdit` to respread only on a text edit). The
+  // patch carries the pre-shifted `words` and no `text`, so `makeCaptionEdit`
+  // applies them verbatim without respreading.
+  function handleBodyDrag(e: React.MouseEvent, seg: CaptionSegment) {
+    if (!seg.id || !onCaptionSegmentChange) return
+    const segId = seg.id
+    const origStart = seg.start
+    const origEnd = seg.end
+    const origWords = seg.words
+    const duration = origEnd - origStart
+    const idx = segments.findIndex((s) => s.id === segId)
+    const prevEnd = idx > 0 ? segments[idx - 1].end : 0
+    const nextStart = idx >= 0 && idx < segments.length - 1 ? segments[idx + 1].start : totalDuration
+    let committedStart = origStart
+    let committedEnd = origEnd
+
+    beginDrag(e, seg as Draggable, {
+      onLivePreview: ({ item: moved }: DragEventContext) => {
+        // `moved.start`/`moved.end` already preserve `duration` (beginDrag
+        // shifts both edges by the same delta) and are already clamped to
+        // [0, totalDuration] and snapped to the timeline's own snapBoundaries.
+        // Clamp again against the immediate neighbors only, adjusting the
+        // OTHER edge by the same amount so duration stays fixed and the
+        // segment never crosses into neighboring space.
+        let newStart = moved.start
+        let newEnd = moved.end
+        if (newStart < prevEnd) {
+          newStart = prevEnd
+          newEnd = newStart + duration
+        } else if (newEnd > nextStart) {
+          newEnd = nextStart
+          newStart = newEnd - duration
+        }
+        committedStart = newStart
+        committedEnd = newEnd
+        setLive({ id: segId, start: newStart, end: newEnd })
+      },
+      onCommit: () => {
+        // `beginDrag` only commits once the press has crossed
+        // DRAG_THRESHOLD_PX (see useItemDragDrop) — a plain click never
+        // reaches here, so `onClick` above still handles select/seek alone.
+        if (committedStart === origStart && committedEnd === origEnd) {
+          setLive(null)
+          return
+        }
+        const delta = committedStart - origStart
+        const words = origWords?.map((w) => ({ ...w, start: w.start + delta, end: w.end + delta }))
+        onCaptionSegmentChange(segId, { start: committedStart, end: committedEnd, ...(words ? { words } : {}) })
+        setLive(null)
+      },
+    })
+  }
+
   return (
-    <div className={trackRow}>
+    <div ref={rowRef} className={trackRowCaptions} onMouseDownCapture={handlePlayheadGrab}>
       <PlayheadLine />
       {segments.map((seg) => {
         // `live` must be checked for null FIRST: an id-less segment (seg.id
@@ -185,6 +299,7 @@ export default function CaptionTrackRow({ captionTrack, fps, selectedCaptionId, 
               if (!canInteract) return
               setEditingId(seg.id!)
             }}
+            onMouseDown={(e) => handleBodyDrag(e, seg)}
           >
             {canInteract && (
               <div

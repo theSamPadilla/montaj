@@ -7,7 +7,7 @@
 
 import type { VisualItem, AudioTrack } from '../../schema'
 import type { Project } from '../../types'
-import { mapTrackItems } from './timeline-model'
+import { mapTrackItems, trackItems } from './timeline-model'
 import { computeResizedItem, resizeWindowedItem, type Draggable } from './useItemDragDrop'
 
 
@@ -68,6 +68,61 @@ function resizeAudioTrack(track: AudioTrack, edge: 'start' | 'end', { dStart, dE
     ? Math.max(0, track.start + dStart)
     : track.end + dEnd
   return resizeWindowedItem(track as unknown as Draggable, edge, requested) as unknown as AudioTrack
+}
+
+/**
+ * Shift every selected visual item and audio track by the same timeline delta,
+ * preserving their relative positions — a rigid move of the whole selection.
+ *
+ * The delta is clamped ONCE, against the group as a body: the leftmost selected
+ * start cannot cross t=0 and the rightmost selected end cannot cross
+ * `totalDuration`, so the selection keeps its shape at the edges instead of
+ * bunching up when one member hits a wall. Cross-track (vertical) movement is
+ * deliberately not part of a group move — every item stays on its own
+ * track/lane, which is the predictable behaviour when several move at once.
+ *
+ * The caller rebuilds from the press-time project on every move, so dragging
+ * back and forth cannot compound.
+ */
+export function applyMoveDeltaToSelection(
+  project: Project,
+  selectedIds: readonly string[],
+  requestedDelta: number,
+  totalDuration: number,
+): Project {
+  const targets = new Set(selectedIds)
+  if (targets.size === 0) return project
+
+  // The group's extent, so one clamp keeps every member on the timeline.
+  let minStart = Infinity
+  let maxEnd = -Infinity
+  const consider = (it: { id: string; start: number; end: number }) => {
+    if (!targets.has(it.id)) return
+    if (it.start < minStart) minStart = it.start
+    if (it.end > maxEnd) maxEnd = it.end
+  }
+  for (const items of trackItems(project)) items.forEach(consider)
+  for (const t of project.audio?.tracks ?? []) consider(t)
+  // None of the selected ids are actually present (e.g. a stale selection).
+  if (!Number.isFinite(minStart)) return project
+
+  const lo = -minStart
+  const hi = totalDuration - maxEnd
+  // A group already wider than the timeline (lo > hi) can't move without
+  // pushing a member off an edge, so it doesn't.
+  const delta = lo > hi ? 0 : Math.max(lo, Math.min(hi, requestedDelta))
+  if (delta === 0) return project
+
+  const shift = <T extends { id: string; start: number; end: number }>(it: T): T =>
+    targets.has(it.id) ? { ...it, start: it.start + delta, end: it.end + delta } : it
+
+  return {
+    ...project,
+    tracks: mapTrackItems(project, items => items.map(shift)),
+    audio: project.audio
+      ? { ...project.audio, tracks: (project.audio.tracks ?? []).map(shift) }
+      : project.audio,
+  }
 }
 
 /** Set `muted` on every selected item to the given target value. Both visual

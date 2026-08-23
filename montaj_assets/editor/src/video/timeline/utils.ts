@@ -16,6 +16,11 @@ export function ratioFromClientX(clientX: number, scrubberRect: DOMRect): number
 
 export const trackRow     = 'relative h-10 bg-gray-100 dark:bg-gray-900 rounded overflow-hidden cursor-pointer'
 export const trackRowTall = 'relative h-14 bg-gray-100 dark:bg-gray-900 rounded overflow-hidden cursor-pointer'
+// Same as `trackRow`, but for the captions row: unlike the canvas rows, empty
+// caption space isn't clickable-to-seek, so it should show the default arrow
+// rather than the pointing hand `trackRow` gives every other row. Individual
+// caption segments still carry their own cursor-pointer/cursor-ew-resize.
+export const trackRowCaptions = 'relative h-10 bg-gray-100 dark:bg-gray-900 rounded overflow-hidden cursor-default'
 
 /**
  * Where a time span sits on a DOM row, in whichever coordinate space the row's

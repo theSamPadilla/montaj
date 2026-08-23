@@ -105,17 +105,6 @@ interface RailCellProps {
 }
 
 /**
- * Vertical gap between a row's stacked controls, scaled to the room the row
- * actually has. See the note in `RailCell` for why this cannot be one value:
- * the tall base track and a 40px audio lane have very different budgets.
- */
-function controlGap(height: number): string {
-  if (height >= 96) return 'gap-3'   // base video track — plenty of room
-  if (height >= 56) return 'gap-2'
-  return 'gap-1'                     // 40px audio lane: two buttons + 4px is the ceiling
-}
-
-/**
  * One row of the rail. Content sits at the TOP rather than centred: rows vary
  * from 40px to 120px, and a centred icon on the tall base track floats in the
  * middle of nothing while the short rows look fine. Top-aligned, every cell
@@ -140,12 +129,12 @@ function RailCell({ height, accent, icon, label, action, dimmed, settingsButton 
           wasting all of that height on a single line of icons, which forced the
           rail wide enough to crowd the timeline.
 
-          The gap SCALES with the row, because a single value cannot serve both
-          ends: the 120px base track has room to breathe, while a 40px audio
-          lane has 36px of usable height for two 14px buttons and can afford
-          4px between them and no more. A fixed gap generous enough for the base
-          track would push the lane's lower control under `overflow-hidden`. */}
-      <div className={`flex min-w-0 flex-col ${controlGap(height)}`}>
+          The gap is a single constant across every row height, so the audio
+          lane's controls and the base track's controls read as the same
+          spacing rather than "cramped" vs. "spread". Content stays top-aligned,
+          so the tall base track just has unused space below the stack —
+          harmless — instead of gap scaling to fill it. */}
+      <div className="flex min-w-0 flex-col gap-1.5">
         {action}
         {settingsButton && (
           <Tooltip label={settingsButton.label}>

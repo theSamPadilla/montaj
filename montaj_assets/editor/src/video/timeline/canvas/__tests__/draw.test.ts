@@ -921,6 +921,19 @@ describe('skipped tracks', () => {
     expect(layout.rows.find(r => r.trackIdx === 0)?.disabled).toBe(false)
   })
 
+  it('marks a muted track\'s row so the painter can gray its clips\' waveforms', () => {
+    const p = {
+      id: 'p',
+      tracks: [
+        { id: 't0', items: [clip({ id: 'c0' })] },
+        { id: 't1', items: [clip({ id: 'o0', type: 'overlay' })], muted: true },
+      ],
+    } as unknown as Project
+    const layout = computeTimelineLayout(p)
+    expect(layout.rows.find(r => r.trackIdx === 1)?.trackMuted).toBe(true)
+    expect(layout.rows.find(r => r.trackIdx === 0)?.trackMuted).toBe(false)
+  })
+
   it('keeps a skipped row at full height and in place — it stays editable', () => {
     // Dimmed, not collapsed: you have to be able to see a skipped track and
     // click its clips to turn it back on.
@@ -935,5 +948,31 @@ describe('skipped tracks', () => {
     const r = recordingContext()
     drawTimelineContent(r.ctx, scene({ project: p, layout: computeTimelineLayout(p) }))
     expect(r.calls.some(c => c.method === 'set:globalAlpha' && c.args[0] === 0.3)).toBe(true)
+  })
+})
+
+describe('drawTimelineContent — an audio track with no start/end', () => {
+  // Regression: `intersectsRange(undefined, undefined, range)` is false, so the
+  // lane was culled and the timeline showed an empty row while the export was
+  // correct. See `resolveAudioWindow` in timeline-model.ts.
+  const p = {
+    id: 'p',
+    tracks: [[{ id: 'c0', type: 'video', src: 'a.mp4', start: 0, end: 10 }]],
+    audio: { tracks: [{ id: 'bed', src: 'song.mp3' }] },
+  } as unknown as Project
+
+  it('draws the bar instead of culling it', () => {
+    const layout = computeTimelineLayout(p)
+    expect(layout.lanes).toHaveLength(1)
+    const r = recordingContext()
+    const stats = drawTimelineContent(r.ctx, scene({ project: p, layout }))
+    expect(stats.audioItemsDrawn).toBe(1)
+    expect(stats.itemsCulled).toBe(0)
+  })
+
+  it('gives it a positive width', () => {
+    const layout = computeTimelineLayout(p)
+    const [t] = layout.lanes[0].tracks
+    expect(t.end - t.start).toBeGreaterThan(0)
   })
 })

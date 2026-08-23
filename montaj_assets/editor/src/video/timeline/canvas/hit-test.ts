@@ -36,6 +36,12 @@ export const VISUAL_EDGE_TOLERANCE_PX = 10
 /** AudioTrackRow's `w-1.5` resize handles. */
 export const AUDIO_EDGE_TOLERANCE_PX = 6
 
+/** Grab band (half-width, px) around the 2px playhead line. Matches the audio
+ *  trim-handle tolerance so the playhead is no harder to grab than an audio
+ *  edge. A press within this many px of where the playhead is drawn starts a
+ *  scrub, exactly as pressing the ruler does. */
+export const PLAYHEAD_GRAB_PX = 6
+
 export interface HitTestOptions {
   visualEdgeTolerancePx?: number
   audioEdgeTolerancePx?: number

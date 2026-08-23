@@ -55,7 +55,7 @@ export default function App() {
       {isMobile ? (
         <MobileTopNav dark={dark} onToggleDark={() => setDark(d => !d)} />
       ) : (
-        <header className="flex items-center gap-6 px-4 h-11 border-b border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-950 shrink-0">
+        <header className="relative flex items-center gap-6 px-4 h-11 border-b border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-950 shrink-0">
           <Wordmark />
           <nav className="flex gap-0.5 flex-1">
             {TABS.map(({ path, label }) => (
@@ -72,7 +72,9 @@ export default function App() {
               </Link>
             ))}
           </nav>
-          <ProxyActivityIndicator />
+          <div className="absolute left-1/2 -translate-x-1/2 pointer-events-none">
+            <ProxyActivityIndicator />
+          </div>
           <button
             onClick={() => setDark(d => !d)}
             className="p-1.5 rounded text-gray-400 hover:text-gray-700 hover:bg-gray-100 dark:hover:text-gray-200 dark:hover:bg-gray-800 transition-colors"

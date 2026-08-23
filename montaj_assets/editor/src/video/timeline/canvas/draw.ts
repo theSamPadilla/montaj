@@ -23,6 +23,7 @@ import {
   visualItemLabel,
   ROW_GAP_PX,
   VISUAL_ROW_RENDER_HEIGHT_PX,
+  computeDerivedTiming,
   groupAudioLanes,
   normalizeTracks,
   trackItems,
@@ -276,6 +277,10 @@ export interface VisualRowLayout {
    *  its full height (you have to be able to see and re-enable it); the painter
    *  just dims it. */
   disabled?: boolean
+  /** The track's `muted === true`. Item-level mute is folded in per item at
+   *  draw time (mirrors `effectiveItemAudio`'s OR) since this flag alone can't
+   *  see an individual item's own `muted`. */
+  trackMuted: boolean
 }
 
 export interface AudioLaneLayout {
@@ -326,11 +331,15 @@ export function computeTimelineLayout(project: Project): TimelineLayout {
       y,
       height,
       disabled: trackSettings[trackIdx]?.enabled === false,
+      trackMuted: trackSettings[trackIdx]?.muted === true,
     })
     y += height + ROW_GAP_PX
   }
 
-  const lanes: AudioLaneLayout[] = groupAudioLanes(project.audio?.tracks ?? []).map(lane => {
+  // Resolved once per layout, not per track: an audio track may legally omit
+  // `start`/`end`, and `groupAudioLanes` needs a horizon to fall back to.
+  const { contentDuration } = computeDerivedTiming(project)
+  const lanes: AudioLaneLayout[] = groupAudioLanes(project.audio?.tracks ?? [], contentDuration).map(lane => {
     const laneLayout: AudioLaneLayout = {
       laneIndex: lane.laneIndex,
       tracks: lane.tracks,
@@ -959,6 +968,10 @@ export function drawTimelineContent(ctx: DrawContext, scene: TimelineScene): Dra
       const body = clipBodyRect(rect)
       const clipWaveform = scene.waveforms?.clipColumns(item, body) ?? null
       const filmstripTiles = scene.filmstrips?.clipTiles(item, body) ?? null
+      // Mirrors `effectiveItemAudio`'s track-or-item OR without needing a full
+      // VisualTrack in scope here — `row.trackMuted` already folded in the
+      // track's own `muted`, so only the item's is left to OR in.
+      const itemMuted = row.trackMuted || item.muted === true
       // Composed in one hook, but painting into DISJOINT halves of the clip
       // (`clip-bands.ts`): tiles in the upper frames band, waveform in the
       // lower one. Order no longer matters for overlap — it is kept
@@ -969,7 +982,7 @@ export function drawTimelineContent(ctx: DrawContext, scene: TimelineScene): Dra
       const drawContent = (filmstripTiles || clipWaveform)
         ? (c: DrawContext, r: Rect) => {
             if (filmstripTiles) drawFilmstripTiles(c, filmstripTiles)
-            if (clipWaveform) drawClipWaveform(c, r, clipWaveform)
+            if (clipWaveform) drawClipWaveform(c, r, clipWaveform, itemMuted)
           }
         : undefined
       drawClipRect(ctx, {

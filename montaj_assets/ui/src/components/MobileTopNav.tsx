@@ -21,7 +21,7 @@ export default function MobileTopNav({ dark, onToggleDark }: Props) {
   }
 
   return (
-    <header className="flex items-center gap-2 px-2 h-10 border-b border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-950 shrink-0">
+    <header className="relative flex items-center gap-2 px-2 h-10 border-b border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-950 shrink-0">
       <Link to="/" className="flex items-center gap-1 shrink-0">
         <img src="/montaj-logo.png" alt="Montaj" className="w-5 h-5 rounded" />
       </Link>
@@ -40,7 +40,9 @@ export default function MobileTopNav({ dark, onToggleDark }: Props) {
           </Link>
         ))}
       </nav>
-      <ProxyActivityIndicator />
+      <div className="absolute left-1/2 -translate-x-1/2 pointer-events-none">
+        <ProxyActivityIndicator />
+      </div>
       <button
         onClick={onToggleDark}
         className="p-2 rounded text-gray-400 dark:hover:text-gray-200 shrink-0"

@@ -22,6 +22,8 @@ import {
   isEdgeHit,
   isEmptyHit,
   isItemHit,
+  itemsInRect,
+  normalizeRect,
 } from '../hit-test'
 import type { Viewport } from '../viewport'
 import {
@@ -301,5 +303,95 @@ describe('hitTest — degenerate layouts', () => {
     // Every clip collapses to x=0, so a point at x=100 is past all of them.
     expect(hit.kind).toBe('empty-row')
     expect(hit.t).toBe(0)
+  })
+})
+
+describe('hitTest — an audio bar with no declared window', () => {
+  // `groupAudioLanes` resolves the window, so the painter, the hit-test and the
+  // pointer machine all address the same bar. Without that, this lane's
+  // x-coordinates are NaN, and NaN loses every comparison in `spanZone` — so
+  // the bar reported a body hit at EVERY x in the lane, including well past
+  // its end, and the gesture that followed did NaN arithmetic. The contract is
+  // that the bar is grabbable where it is drawn and only there. Note which
+  // assertions actually guard it: a plain body hit does NOT, because NaN bounds
+  // fall through to 'body' everywhere. The in-handle and past-the-end cases do.
+  const p = {
+    id: 'p',
+    tracks: [[{ id: 'c0', type: 'video', src: 'a.mp4', start: 0, end: 10 }]],
+    audio: { tracks: [{ id: 'bed', src: 'song.mp3' }] },
+  } as unknown as Project
+  const l = computeTimelineLayout(p)
+  const lane = l.lanes[0]
+  const LANE_MID_Y = lane.y + lane.height / 2
+
+  it('a bar with no declared start/end is still grabbable', () => {
+    // Vertically centred in the lane. The fixture viewport runs at 100px/s
+    // from t=0, so x=40 is t=0.4 — past the in handle, nowhere near the out.
+    const hit = hitTest({ x: 40, y: LANE_MID_Y }, l, VIEWPORT)
+    expect(hit.kind).toBe('audio-body')
+    expect(hit.itemId).toBe('bed')
+  })
+
+  it('and its in-handle is where the bar actually starts', () => {
+    // This is the half that FAILS on revert. The body assertion above does not:
+    // with NaN bounds every comparison in `spanZone` is false, so it falls
+    // through to 'body' at every x and reports a body hit anyway. Only a zone
+    // that NaN cannot produce proves the window was resolved — the in handle
+    // needs `x <= x0 + tolerance` to be TRUE, which NaN never satisfies.
+    const hit = hitTest({ x: 2, y: LANE_MID_Y }, l, VIEWPORT)
+    expect(hit.kind).toBe('audio-edge')
+    expect(hit.edge).toBe('in')
+    expect(hit.itemId).toBe('bed')
+  })
+
+  it('and is not grabbable past the end of the resolved window', () => {
+    // The window resolves to the project's content duration (10s → x=1000).
+    const hit = hitTest({ x: 1200, y: LANE_MID_Y }, l, VIEWPORT)
+    expect(hit.kind).toBe('empty-lane')
+    expect(hit.itemId).toBeUndefined()
+  })
+})
+
+// ── itemsInRect: what a marquee box catches ────────────────────────────────
+// The one piece the marquee has always leaned on but never tested directly.
+// Intersection (touch), not containment; rows in surface space, spans in time.
+describe('itemsInRect', () => {
+  const sorted = (r: { x: number; y: number; width: number; height: number }) =>
+    itemsInRect(r, layout, VIEWPORT).sort()
+
+  it('catches every clip a horizontal box crosses within one row', () => {
+    // A box dragged LEFT from the empty tail across the base row, kept in that
+    // row's own y-band: the reachable way to marquee a fully-tiled row.
+    const rect = normalizeRect({ x: 800, y: BASE_Y }, { x: 300, y: BASE_Y + 4 })
+    expect(sorted(rect)).toEqual(['c0', 'c1'])
+  })
+
+  it('selects a clip a box lands fully INSIDE — touch, not containment', () => {
+    // x 600–700 is wholly within c1 (x 500–1000) and reaches neither edge.
+    const rect = normalizeRect({ x: 600, y: BASE_Y }, { x: 700, y: BASE_Y + 4 })
+    expect(sorted(rect)).toEqual(['c1'])
+  })
+
+  it('a tall thin box down one instant selects across every row at that time', () => {
+    // At t=3 (x=300): o0 (2–4), c0 (0–5) and a0 (1–6) all live.
+    const rect = normalizeRect(
+      { x: 298, y: overlayRow.y },
+      { x: 304, y: lane0.y + lane0.height },
+    )
+    expect(sorted(rect)).toEqual(['a0', 'c0', 'o0'])
+  })
+
+  it('selects nothing when the box stays entirely below every row', () => {
+    const rect = normalizeRect(
+      { x: 0, y: lane0.y + lane0.height + 20 },
+      { x: 1000, y: lane0.y + lane0.height + 60 },
+    )
+    expect(sorted(rect)).toEqual([])
+  })
+
+  it('selects nothing when the box misses every clip in time', () => {
+    // Past the last clip (x 1050–1200 → t 10.5–12) but within the base row band.
+    const rect = normalizeRect({ x: 1050, y: BASE_Y }, { x: 1200, y: BASE_Y + 4 })
+    expect(sorted(rect)).toEqual([])
   })
 })

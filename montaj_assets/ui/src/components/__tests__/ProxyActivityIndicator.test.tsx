@@ -38,19 +38,20 @@ describe('ProxyActivityIndicator', () => {
 
   it('counts the running clip too, since it is not ready either', async () => {
     // 1 encoding + 3 waiting = 4 clips you cannot scrub yet. Counting only the
-    // queue would say "3 left" while four are unready.
+    // queue would say "3 left" while four are unready — the denominator on
+    // the very first poll is the full remaining count, done starts at 0.
     proxyStatus.mockResolvedValue({ running: 1, queued: 3 })
     render(<ProxyActivityIndicator />)
     await flush()
     expect(screen.getByText('Getting your footage ready to edit')).toBeInTheDocument()
-    expect(screen.getByText('4 clips left')).toBeInTheDocument()
+    expect(screen.getByText('· 0/4')).toBeInTheDocument()
   })
 
-  it('singularizes the count for exactly one clip queued', async () => {
+  it('shows a 0/1 fraction on the first poll when a single clip is queued', async () => {
     proxyStatus.mockResolvedValue({ running: 0, queued: 1 })
     render(<ProxyActivityIndicator />)
     await flush()
-    expect(screen.getByText('1 clip left')).toBeInTheDocument()
+    expect(screen.getByText('· 0/1')).toBeInTheDocument()
   })
 
   it('still shows a count for the last clip, rather than dropping it', async () => {
@@ -60,7 +61,39 @@ describe('ProxyActivityIndicator', () => {
     render(<ProxyActivityIndicator />)
     await flush()
     expect(screen.getByText('Getting your footage ready to edit')).toBeInTheDocument()
-    expect(screen.getByText('1 clip left')).toBeInTheDocument()
+    expect(screen.getByText('· 0/1')).toBeInTheDocument()
+  })
+
+  it('grows done and holds total steady as a batch drains', async () => {
+    // First poll: 1 running + 2 queued = 3 remaining. Nothing has completed
+    // yet, so done is 0 and total is the full remaining count.
+    proxyStatus.mockResolvedValueOnce({ running: 1, queued: 2 })
+    render(<ProxyActivityIndicator />)
+    await flush()
+    expect(screen.getByText('· 0/3')).toBeInTheDocument()
+
+    // Second poll: remaining drained from 3 to 1 — two units completed since
+    // the last poll. done advances by that delta; total does not change,
+    // since no new work was observed.
+    proxyStatus.mockResolvedValue({ running: 1, queued: 0 })
+    await act(async () => { await vi.advanceTimersByTimeAsync(3_000) })
+    expect(screen.getByText('· 2/3')).toBeInTheDocument()
+  })
+
+  it('grows the total instead of resetting done when remaining rises mid-run', async () => {
+    // First poll: 2 remaining, nothing completed yet.
+    proxyStatus.mockResolvedValueOnce({ running: 1, queued: 1 })
+    render(<ProxyActivityIndicator />)
+    await flush()
+    expect(screen.getByText('· 0/2')).toBeInTheDocument()
+
+    // Second poll: remaining jumps from 2 to 5 (e.g. importing footage into
+    // an old project enqueued more clips mid-run). No units completed — the
+    // delta is negative, clamped to zero — so done stays put, but total
+    // grows to cover the newly-enqueued work instead of shrinking back down.
+    proxyStatus.mockResolvedValue({ running: 1, queued: 4 })
+    await act(async () => { await vi.advanceTimersByTimeAsync(3_000) })
+    expect(screen.getByText('· 0/5')).toBeInTheDocument()
   })
 
   it('carries the one-line explanation as a title attribute', async () => {

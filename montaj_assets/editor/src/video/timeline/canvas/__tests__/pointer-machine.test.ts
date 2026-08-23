@@ -1290,3 +1290,92 @@ describe('butted neighbours snap back', () => {
     expect(visual(lastProjectChange(back), 'c1').start).toBe(5)
   })
 })
+
+// ── Playhead grab ──────────────────────────────────────────────────────────
+// Grabbing the full-height playhead line anywhere it is reachable scrubs, on
+// the same path the ruler uses. The fixture playhead sits at x = playheadTime
+// × 100 (100px/s, no scroll).
+describe('playhead grab', () => {
+  it('grabs the playhead through a clip body and scrubs from the press', () => {
+    // Playhead at x=700, inside c1's body (x 500–1000).
+    const d = new Driver(makeContext({ playheadTime: 7 }))
+    const eff = d.down(700, BASE_Y)
+    const st = d.machine.state
+    expect(st.kind).toBe('dragging')
+    if (st.kind === 'dragging') expect(st.gesture).toBe('scrub')
+    expect(of(eff, 'seek').length).toBeGreaterThan(0)
+    expect(of(d.move(760, BASE_Y), 'seek').length).toBeGreaterThan(0)
+  })
+
+  it('does not clear the selection when grabbing the playhead (D3)', () => {
+    const d = new Driver(makeContext({ playheadTime: 7, selectedIds: ['c1'] }))
+    expect(of(d.down(700, BASE_Y), 'select')).toEqual([])
+  })
+
+  it('yields to a trim edge: a handle under the playhead still trims (D1)', () => {
+    // Playhead at x=505, right on c1's in-edge handle.
+    const d = new Driver(makeContext({ playheadTime: 5.05 }))
+    d.down(C1_IN_EDGE.x, C1_IN_EDGE.y)
+    expect(d.machine.state.kind).toBe('pressed')          // not a scrub
+    d.move(C1_IN_EDGE.x + 20, C1_IN_EDGE.y)
+    const st = d.machine.state
+    expect(st.kind).toBe('dragging')
+    if (st.kind === 'dragging') expect(st.gesture).toBe('trim')
+  })
+
+  it('an empty press away from the playhead is still a press, not a scrub', () => {
+    const d = new Driver(makeContext({ playheadTime: 1 }))  // playhead at x=100
+    d.down(EMPTY.x, EMPTY.y)                                 // x=700, far away
+    expect(d.machine.state.kind).toBe('pressed')
+  })
+
+  it('hovering the playhead shows the scrub cursor (D2)', () => {
+    const d = new Driver(makeContext({ playheadTime: 7 }))
+    expect(of(d.move(700, BASE_Y), 'cursor')).toEqual([{ type: 'cursor', cursor: 'ew-resize' }])
+  })
+
+  it('the ruler still clears the selection, unlike a playhead grab', () => {
+    const d = new Driver(makeContext({ selectedIds: ['c1'] }))
+    expect(of(d.down(400, RULER_Y), 'select')).toEqual([{ type: 'select', id: null, additive: false }])
+  })
+})
+
+// ── Multi-select move: the selection travels as one ────────────────────────
+describe('multi-select move', () => {
+  it('shifts every selected item by one delta, preserving the gaps', () => {
+    const d = new Driver(makeContext({ selectedIds: ['c0', 'c1'] }))
+    d.down(C0_BODY.x, C0_BODY.y)
+    const eff = d.move(C0_BODY.x + 120, C0_BODY.y)
+    // A group move never re-selects — the selection is preserved as-is.
+    expect(of(eff, 'selectMany')).toEqual([])
+    const proj = lastProjectChange(eff)
+    const c0 = visual(proj, 'c0'), c1 = visual(proj, 'c1')
+    const delta = c0.start - 0
+    expect(delta).toBeGreaterThan(0)
+    expect(c1.start - 5).toBeCloseTo(delta)     // c1 shifted by the SAME delta
+    expect(c0.end - c0.start).toBeCloseTo(5)    // durations preserved
+    expect(c1.end - c1.start).toBeCloseTo(5)
+  })
+
+  it('a drag on an item NOT in the selection selects just it and moves it alone', () => {
+    const d = new Driver(makeContext({ selectedIds: ['c1'] }))
+    d.down(C0_BODY.x, C0_BODY.y)                 // press c0, which is not selected
+    const eff = d.move(C0_BODY.x + 120, C0_BODY.y)
+    expect(of(eff, 'selectMany')).toEqual([{ type: 'selectMany', ids: ['c0'], additive: false }])
+    const proj = lastProjectChange(eff)
+    expect(visual(proj, 'c0').start).toBeGreaterThan(0)   // c0 moved
+    expect(visual(proj, 'c1').start).toBe(5)               // c1 untouched
+  })
+
+  it('clamps the group as a body so no member leaves the timeline', () => {
+    // c0 already starts at 0, so dragging the pair hard left cannot move it.
+    const d = new Driver(makeContext({ selectedIds: ['c0', 'c1'] }))
+    d.down(C0_BODY.x, C0_BODY.y)
+    const changes = of(d.move(C0_BODY.x - 300, C0_BODY.y), 'projectChange')
+    if (changes.length) {
+      const proj = changes[changes.length - 1].project
+      expect(visual(proj, 'c0').start).toBe(0)
+      expect(visual(proj, 'c1').start).toBe(5)
+    }
+  })
+})

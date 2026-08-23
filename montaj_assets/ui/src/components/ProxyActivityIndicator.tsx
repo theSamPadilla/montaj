@@ -16,8 +16,21 @@ const IDLE_POLL_MS   = 10_000
  * shows automatic work happening on its own.
  */
 export default function ProxyActivityIndicator() {
-  const [status, setStatus] = useState({ running: 0, queued: 0 })
+  const [status, setStatus] = useState({ running: 0, queued: 0, done: 0, total: 0 })
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  // Growth-safe, monotonic progress model. The server only ever reports
+  // remaining work (`running + queued`) — no total and no completed count —
+  // so we derive both client-side from the sequence of polls:
+  //   doneRef  — monotonic count of units observed completing. Never regresses.
+  //   totalRef — high-water mark of done+remaining, so it only ever grows.
+  // A mid-run enqueue (e.g. importing footage into an old project queues the
+  // whole project's clips) makes `remaining` jump back up; treating that as
+  // new denominator growth — rather than resetting progress — is what keeps
+  // the count from looking broken on that common case.
+  const doneRef = useRef(0)
+  const totalRef = useRef(0)
+  const lastRemainingRef = useRef(0)
 
   useEffect(() => {
     let cancelled = false
@@ -44,9 +57,23 @@ export default function ProxyActivityIndicator() {
         // to "show nothing" and keep polling rather than throwing.
       }
       if (cancelled || run !== runId) return
-      setStatus(result)
+
+      const remaining = result.running + result.queued
+      if (remaining === 0) {
+        // Batch over (or nothing running yet) — reset for the next batch.
+        doneRef.current = 0
+        totalRef.current = 0
+        lastRemainingRef.current = 0
+      } else {
+        const justCompleted = Math.max(0, lastRemainingRef.current - remaining)
+        doneRef.current += justCompleted
+        totalRef.current = Math.max(totalRef.current, doneRef.current + remaining)
+        lastRemainingRef.current = remaining
+      }
+
+      setStatus({ ...result, done: doneRef.current, total: totalRef.current })
       if (!document.hidden) {
-        const active = result.running + result.queued > 0
+        const active = remaining > 0
         timerRef.current = setTimeout(() => poll(run), active ? ACTIVE_POLL_MS : IDLE_POLL_MS)
       }
     }
@@ -69,7 +96,7 @@ export default function ProxyActivityIndicator() {
     }
   }, [])
 
-  const { running, queued } = status
+  const { running, queued, done, total } = status
   // Clips not yet ready to scrub — the one being encoded right now counts, it
   // is not ready either. Deliberately the same quantity the indicator's own
   // visibility keys on, so the count cannot vanish while work is still going:
@@ -85,9 +112,11 @@ export default function ProxyActivityIndicator() {
     >
       <Loader2 size={12} className="animate-spin" />
       <span>Getting your footage ready to edit</span>
-      <span className="text-gray-400 dark:text-gray-500">
-        {remaining} {remaining === 1 ? 'clip' : 'clips'} left
-      </span>
+      {total > 0 && (
+        <span className="text-gray-400 dark:text-gray-500">
+          · {done}/{total}
+        </span>
+      )}
     </div>
   )
 }

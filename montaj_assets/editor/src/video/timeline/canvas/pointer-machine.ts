@@ -55,12 +55,14 @@
 import type { AudioTrack, VisualItem } from '../../../schema'
 import type { Project } from '../../../types'
 import { collapseGaps, rollEdit, slideItem, slipItem } from '../../cuts'
-import { applyResizeDeltaToSelection } from '../multiSelectOps'
-import { AUDIO_LANE_HEIGHT_PX, groupAudioLanes, mapTrackItems, moveItemAcrossTracks, normalizeTracks, trackItems, updateAudioTrack } from '../timeline-model'
+import { applyMoveDeltaToSelection, applyResizeDeltaToSelection } from '../multiSelectOps'
+import { AUDIO_LANE_HEIGHT_PX, computeDerivedTiming, groupAudioLanes, mapTrackItems, moveItemAcrossTracks, normalizeTracks, trackItems, updateAudioTrack } from '../timeline-model'
 import { DRAG_THRESHOLD_PX, computeResizedItem, resizeWindowedItem, type Draggable } from '../useItemDragDrop'
 import type { TimelineLayout } from './draw'
 import {
+  PLAYHEAD_GRAB_PX,
   hitTest,
+  isEdgeHit,
   isEmptyHit,
   itemsInRect,
   normalizeRect,
@@ -81,7 +83,7 @@ import {
   type SnapState,
   type SnapStrength,
 } from './snap'
-import { xToTime, type Viewport } from './viewport'
+import { timeToX, xToTime, type Viewport } from './viewport'
 
 // ── Inputs ───────────────────────────────────────────────────────────────
 
@@ -357,7 +359,7 @@ function tieredBoundaries(
   // unlabelled track under lane 0 and call them all same-lane. `hitTest`
   // addresses lanes through this same grouping, and the two have to agree or
   // the tier is assigned against a row the gesture isn't on.
-  for (const lane of groupAudioLanes(project.audio?.tracks ?? [])) {
+  for (const lane of groupAudioLanes(project.audio?.tracks ?? [], computeDerivedTiming(project).contentDuration)) {
     const strength: SnapStrength = lane.laneIndex === laneIdx ? 'strong' : 'weak'
     for (const track of lane.tracks) {
       if (track.id === skipId) continue
@@ -383,6 +385,25 @@ function tieredBoundaries(
 function hasEscaped(ctx: PointerContext, press: Press, point: Point): boolean {
   const releasePx = (ctx.snapConfig ?? DEFAULT_SNAP_CONFIG).releasePx
   return Math.abs(point.x - press.origin.x) >= releasePx
+}
+
+/** Is `point` within grab range of the playhead line? Measured against
+ *  `ctx.playheadTime` — the time the overlay draws the line at — through the
+ *  live viewport, so the band tracks the line at any zoom or scroll. Y is not
+ *  tested: the line spans the whole surface, so the grab is available on every
+ *  row (which rows it actually WINS on is `grabsPlayhead`'s call). */
+function isOverPlayhead(point: Point, ctx: PointerContext): boolean {
+  if (!(ctx.viewport.pxPerSecond > 0)) return false
+  return Math.abs(point.x - timeToX(ctx.playheadTime, ctx.viewport)) <= PLAYHEAD_GRAB_PX
+}
+
+/** A near-playhead press that should grab the playhead and scrub, exactly as
+ *  the ruler does. Trim EDGES win over the grab — they are the precise target,
+ *  so grabbing the playhead where it crosses a clip yields the body but never
+ *  the handle (decision D1); everything else, clip and audio bodies and empty
+ *  space alike, yields to the grab (D2). */
+function grabsPlayhead(hit: HitResult, point: Point, ctx: PointerContext): boolean {
+  return !isEdgeHit(hit) && isOverPlayhead(point, ctx)
 }
 
 /**
@@ -503,9 +524,42 @@ function directSnapGuide(snapped: SnapResult): SnapGuide | null {
   return { time: snapped.snappedTo, strength: snapped.strength }
 }
 
+/** The whole selection travelling as one. The DRAGGED item's leading/trailing
+ *  edge snaps to the boundaries exactly as a single move does; the delta that
+ *  lands is what every selected item and audio track then shifts by, clamped as
+ *  a body so none leaves the timeline. Rebuilt from `press.baseProject` each
+ *  move so dragging back and forth cannot compound. Shared by `applyMove` and
+ *  `applyAudioMove` — a multi-selection can mix clips and audio bars, so the
+ *  group moves the same way whichever kind the drag started on. */
+function applyGroupMove(
+  ctx: PointerContext,
+  press: Press,
+  point: Point,
+  snap: SnapState,
+  lastProject: Project,
+  escaped: boolean,
+  dragged: { id: string; start: number; end: number },
+): Applied {
+  const duration = dragged.end - dragged.start
+  const dt = (point.x - press.origin.x) / ctx.viewport.pxPerSecond
+  const boundaries = itemSnapPoints(ctx, press, originGuard(escaped, [dragged.start, dragged.end]))
+  const points = snapPointsForSpan(boundaries, duration)
+  const snapped = applySnap(dragged.start + dt, points, ctx.viewport, snap, ctx.snapConfig)
+  const next = applyMoveDeltaToSelection(press.baseProject, ctx.selectedIds, snapped.time - dragged.start, ctx.totalDuration)
+  return change(next, lastProject, snapped.state, spanSnapGuide(snapped, duration, boundaries))
+}
+
 function applyMove(ctx: PointerContext, press: Press, point: Point, snap: SnapState, lastProject: Project, escaped: boolean): Applied {
   const item = press.hit.item
   if (!item || press.hit.trackIdx === undefined) return noChange(snap, lastProject)
+
+  // Multi-select move: the pressed item belongs to a selection of more than
+  // one, so the whole selection travels together by the same delta and keeps
+  // its shape. Cross-track movement is dropped for the group (see
+  // `applyMoveDeltaToSelection`); a single-item move keeps it, below.
+  if (ctx.selectedIds.length > 1 && ctx.selectedIds.includes(item.id)) {
+    return applyGroupMove(ctx, press, point, snap, lastProject, escaped, item)
+  }
 
   const duration = item.end - item.start
   const dt = (point.x - press.origin.x) / ctx.viewport.pxPerSecond
@@ -644,6 +698,13 @@ function applySlide(ctx: PointerContext, press: Press, point: Point, snap: SnapS
 function applyAudioMove(ctx: PointerContext, press: Press, point: Point, snap: SnapState, lastProject: Project, escaped: boolean): Applied {
   const track = press.hit.track
   if (!track || press.hit.laneIdx === undefined) return noChange(snap, lastProject)
+
+  // Multi-select move: the whole selection (clips and bars alike) travels as
+  // one — same rule as the visual side. A lone audio bar keeps its lane-change
+  // behaviour, below.
+  if (ctx.selectedIds.length > 1 && ctx.selectedIds.includes(track.id)) {
+    return applyGroupMove(ctx, press, point, snap, lastProject, escaped, track)
+  }
 
   const duration = track.end - track.start
   const dt = (point.x - press.origin.x) / ctx.viewport.pxPerSecond
@@ -820,21 +881,27 @@ export function pointerReducer(state: MachineState, event: PointerMachineEvent):
 
   switch (event.type) {
     case 'pointerDown': {
-      // The ruler: seek straight away and keep scrubbing. This is the surface's
-      // only playhead handle — canvas mode dropped the DOM overview bar (see
-      // Scrubber.tsx) and the track area's empty space now belongs to the
-      // marquee, so the ruler is where dragging the playhead lives. Landing the
-      // seek on mousedown rather than mouseup is what makes the drag continuous.
-      if (hit.kind === 'ruler') {
+      // The ruler, OR a press on the playhead line itself: seek straight away
+      // and keep scrubbing. The ruler is the surface's dedicated playhead
+      // handle — canvas mode dropped the DOM overview bar (see Scrubber.tsx) and
+      // the track area's empty space now belongs to the marquee — and grabbing
+      // the full-height red bar anywhere it is reachable does the same thing
+      // (`grabsPlayhead`). Landing the seek on mousedown rather than mouseup is
+      // what makes the drag continuous.
+      const onRuler = hit.kind === 'ruler'
+      if (onRuler || grabsPlayhead(hit, point, ctx)) {
         const applied = applyScrub(ctx, point, createSnapState(), ctx.project)
-        // Scrubbing clears the selection, for the same reason pressing bare
+        // The RULER clears the selection, for the same reason pressing bare
         // timeline used to: a clip left selected while you scrub somewhere else
         // means the next keyboard action (split, ripple-delete) hits an item
         // nowhere near where you are looking. Additive presses are exempt —
         // shift is how you build a multi-selection, not how you drop one.
-        const cleared: PointerEffect[] = isAdditive(modifiers)
-          ? applied.effects
-          : [{ type: 'select', id: null, additive: false }, ...applied.effects]
+        // Grabbing the playhead itself does NOT clear it (decision D3): it is a
+        // precise nudge in place, not a jump to somewhere else, and dropping a
+        // selection every time you fine-tune the playhead would be hostile.
+        const cleared: PointerEffect[] = (onRuler && !isAdditive(modifiers))
+          ? [{ type: 'select', id: null, additive: false }, ...applied.effects]
+          : applied.effects
         const next: MachineState = {
           kind: 'dragging',
           cursor: state.cursor,
@@ -878,12 +945,24 @@ export function pointerReducer(state: MachineState, event: PointerMachineEvent):
       // Dragging already returned above; only hover and a not-yet-resolved
       // press reach here.
       if (state.kind !== 'pressed') {
-        return withCursor(state, cursorForHit(hit), [])
+        // Over the playhead line the cursor is the scrub cursor, so hovering the
+        // red bar tells you it is grabbable before you press it.
+        const cursor = grabsPlayhead(hit, point, ctx) ? 'ew-resize' : cursorForHit(hit)
+        return withCursor(state, cursor, [])
       }
 
       if (travelled(point, state.press.origin) < DRAG_THRESHOLD_PX) return { state, effects: [] }
       const gesture = resolveGesture(state.press.hit, state.press.modifiers)
       if (gesture === null) return { state, effects: [] }
+      // Grabbing an UNSELECTED clip or bar to move it makes it the selection
+      // first, so it is the thing that moves and the thing left selected after —
+      // matching every NLE. A drag that starts on an item already in a
+      // multi-selection is a group move and leaves the selection untouched.
+      const draggedId = state.press.hit.itemId
+      const selectFirst: PointerEffect[] =
+        (gesture === 'move' || gesture === 'audio-move') && draggedId !== undefined && !ctx.selectedIds.includes(draggedId)
+          ? [{ type: 'selectMany', ids: [draggedId], additive: false }]
+          : []
       const escaped = hasEscaped(ctx, state.press, point)
       const applied = applyGesture(gesture, ctx, state.press, point, createSnapState(), state.press.baseProject, escaped)
       const next: MachineState = {
@@ -896,7 +975,7 @@ export function pointerReducer(state: MachineState, event: PointerMachineEvent):
         lastProject: applied.lastProject,
         escaped,
       }
-      return withCursor(next, cursorForGesture(gesture), guideEffects(null, applied.guide, applied.effects))
+      return withCursor(next, cursorForGesture(gesture), guideEffects(null, applied.guide, [...selectFirst, ...applied.effects]))
     }
 
     case 'pointerUp': {

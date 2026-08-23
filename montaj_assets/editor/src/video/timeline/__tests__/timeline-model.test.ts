@@ -2,6 +2,8 @@ import { describe, it, expect } from 'vitest'
 import type { Project } from '../../../types'
 import type { AudioTrack, VisualItem } from '../../../schema'
 import {
+  AUDIO_FALLBACK_SPAN_SECONDS,
+  resolveAudioWindow,
   computeAutoCrossfade,
   computeDerivedTiming,
   groupAudioLanes,
@@ -187,6 +189,92 @@ describe('groupAudioLanes', () => {
 
   it('returns nothing for no tracks', () => {
     expect(groupAudioLanes([])).toEqual([])
+  })
+})
+
+describe('resolveAudioWindow', () => {
+  it('passes a well-formed window straight through', () => {
+    expect(resolveAudioWindow(track({ start: 2, end: 9 }), 30)).toEqual({ start: 2, end: 9 })
+  })
+
+  it('defaults a missing start to 0', () => {
+    const t = { id: 'a', src: 'a.mp3', end: 9 } as unknown as AudioTrack
+    expect(resolveAudioWindow(t, 30).start).toBe(0)
+  })
+
+  it('derives a missing end from outPoint minus inPoint', () => {
+    const t = { id: 'a', src: 'a.mp3', start: 3, inPoint: 2, outPoint: 12 } as unknown as AudioTrack
+    expect(resolveAudioWindow(t, 30)).toEqual({ start: 3, end: 13 })
+  })
+
+  it('falls back to sourceDuration when there is no outPoint', () => {
+    const t = { id: 'a', src: 'a.mp3', start: 0, sourceDuration: 8 } as unknown as AudioTrack
+    expect(resolveAudioWindow(t, 30)).toEqual({ start: 0, end: 8 })
+  })
+
+  it('falls back to the project content duration when the source length is unknown', () => {
+    const t = { id: 'a', src: 'a.mp3' } as unknown as AudioTrack
+    expect(resolveAudioWindow(t, 30)).toEqual({ start: 0, end: 30 })
+  })
+
+  it('never returns a zero-width window, even with no content to measure against', () => {
+    const t = { id: 'a', src: 'a.mp3' } as unknown as AudioTrack
+    expect(resolveAudioWindow(t, 0)).toEqual({ start: 0, end: AUDIO_FALLBACK_SPAN_SECONDS })
+  })
+
+  it('survives a poisoned contentDuration', () => {
+    // One item with a non-numeric `end` anywhere in the project makes
+    // computeDerivedTiming's contentDuration NaN; the bar must still draw.
+    const t = { id: 'a', src: 'a.mp3' } as unknown as AudioTrack
+    // The exact span is the only value that proves the NaN horizon was
+    // REJECTED rather than propagated through Math.max.
+    expect(resolveAudioWindow(t, NaN)).toEqual({ start: 0, end: AUDIO_FALLBACK_SPAN_SECONDS })
+  })
+
+  it('ignores a stale outPoint that is not past the in-point', () => {
+    const t = { id: 'a', src: 'a.mp3', start: 0, outPoint: 0, sourceDuration: 180 } as unknown as AudioTrack
+    expect(resolveAudioWindow(t, 30)).toEqual({ start: 0, end: 180 })
+  })
+
+  it('treats a zero-width declared window as undeclared', () => {
+    // `start: 0, end: 0` is what skills/lyrics-video shipped; it drew an
+    // invisible bar for the same reason a missing window did.
+    const t = { id: 'a', src: 'a.mp3', start: 0, end: 0 } as unknown as AudioTrack
+    expect(resolveAudioWindow(t, 30)).toEqual({ start: 0, end: 30 })
+  })
+
+  it('treats an inverted declared window as undeclared', () => {
+    const t = { id: 'a', src: 'a.mp3', start: 10, end: 4 } as unknown as AudioTrack
+    // `start` must survive: zeroing it would jump the bar to the timeline head.
+    expect(resolveAudioWindow(t, 30)).toEqual({ start: 10, end: 30 })
+  })
+
+  it('treats NaN the same as absent', () => {
+    const t = { id: 'a', src: 'a.mp3', start: NaN, end: NaN, sourceDuration: 4 } as unknown as AudioTrack
+    expect(resolveAudioWindow(t, 30)).toEqual({ start: 0, end: 4 })
+  })
+})
+
+describe('groupAudioLanes — window resolution', () => {
+  it('returns the SAME object for a well-formed track (no-regression guarantee)', () => {
+    const t = track({ id: 'ok', start: 0, end: 5 })
+    const [lane] = groupAudioLanes([t], 30)
+    expect(lane.tracks[0]).toBe(t)
+  })
+
+  it('returns a resolved copy for a track missing its end', () => {
+    const t = { id: 'bed', src: 'a.mp3', start: 0 } as unknown as AudioTrack
+    const [lane] = groupAudioLanes([t], 30)
+    expect(lane.tracks[0]).not.toBe(t)
+    expect(lane.tracks[0].end).toBe(30)
+    expect(lane.tracks[0].id).toBe('bed')
+    expect(t.end).toBeUndefined()   // the caller's project is never mutated
+  })
+
+  it('still groups by lane exactly as before', () => {
+    const a = { id: 'a', src: 'a.mp3', lane: 2 } as unknown as AudioTrack
+    const b = track({ id: 'b', lane: 0 })
+    expect(groupAudioLanes([a, b], 30).map(l => l.laneIndex)).toEqual([0, 2])
   })
 })
 
