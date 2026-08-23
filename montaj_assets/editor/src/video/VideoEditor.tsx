@@ -1178,8 +1178,17 @@ function ReviewSurface<P extends Project>({
 
   function handleSplit(at?: number) {
     const base = syncProjectRef.current
-    const updated = splitAtTime(base, at ?? clock.get(), primarySelectedId ?? null)
+    let updated = splitAtTime(base, at ?? clock.get(), primarySelectedId ?? null)
     if (updated === base) return
+    // `splitAtTime` reaches `applyCutToCaptions`, which can DROP a caption
+    // segment at the cut instead of splitting it; dropping a row's last
+    // caption leaves a hole lane, so densify in the same commit — same guard
+    // `handleRippleDelete` uses, and free when nothing changed
+    // (`normalizeCaptionLanes` returns the same reference).
+    if (updated.captions) {
+      const dense = normalizeCaptionLanes(updated.captions)
+      if (dense !== updated.captions) updated = { ...updated, captions: dense } as P
+    }
     void sync.mutate(() => updated as P)
   }
 
@@ -1297,10 +1306,17 @@ function ReviewSurface<P extends Project>({
   useKeymap([
     {
       id: 'video.split',
-      description: 'Split at playhead',
+      description: 'Split at the playhead, or the preview axis when it is on',
       keyHint: ['S'],
       matches: matchesKey('s'),
-      action: () => handleSplit(),
+      // When the preview axis (⌘A) is on, `S` splits at the AXIS time
+      // (`hoverScrub`) rather than the playhead — split where you're looking,
+      // as CapCut does. Falls back to the playhead when the axis is off or
+      // nothing is being hovered (`get()` is null). Targeting is unchanged:
+      // `handleSplit` → `splitAtTime(base, at, primarySelectedId ?? null)`
+      // splits the selected item at that time, or the base track when nothing
+      // is selected (a no-op if the axis isn't over the item).
+      action: () => handleSplit(previewAxis ? (hoverScrub.get() ?? undefined) : undefined),
     },
     {
       id: 'video.undo',
