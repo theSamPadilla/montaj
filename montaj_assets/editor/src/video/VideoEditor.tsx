@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type MutableRefObject } from 'react'
 import { Crop, HelpCircle, Magnet, Pencil, Redo2, SeparatorVertical, Undo2 } from 'lucide-react'
 import type { Project, VideoEditorProps } from '../types'
 import { useProjectSync, type UseProjectSync } from '../state/use-project-sync'
@@ -164,6 +164,22 @@ export default function VideoEditor<P extends Project = Project>({
   // frames itself (video-shaped → default plain-replace reconcile).
   const sync = useProjectSync<P>(adapter, project.id, project)
 
+  // Set for the duration of a caption drag gesture (ReviewSurface's
+  // `handleProjectChange` → `commitTimelineEdit`), read by the lane-
+  // normalization effect just below. A cross-row drag deliberately leaves a
+  // HOLE lane open for the whole gesture (pointer-machine.ts normalizes only
+  // at commit, so the vacated lane's band stays visible as a drop target and
+  // the timeline doesn't jump under the pointer). Every `handleProjectChange`
+  // frame is a fresh `mutateTransient` call, which gives `captions` a new
+  // identity each mousemove — without this flag the effect below would see
+  // that hole on the very first move and call `sync.applyExternal`, which
+  // clears the sync core's transient baseline (`use-project-sync.ts`) and
+  // costs the whole gesture its single undo entry (`commitTimelineEdit`
+  // would then re-seed the baseline from the already-moved mid-drag state).
+  // A ref, not state: this must be readable synchronously inside the same
+  // handlers that flip it, with no re-render in between.
+  const captionGestureRef = useRef(false)
+
   // Every caption segment needs a stable `id` for selection (preview drag,
   // clickable timeline row). Segments saved before `id` existed on the schema
   // are missing it, and `steps/lyrics/caption.py` still writes segments without
@@ -213,7 +229,14 @@ export default function VideoEditor<P extends Project = Project>({
   // makes a real edit.
   useEffect(() => {
     const backfilled = backfillCaptionIds(sync.project)
-    const captions = normalizeCaptionLanes(backfilled.captions)
+    // Lane normalization is for captions ARRIVING from outside (mount, SSE, regen,
+    // a hand-authored project.json) -- never for a mid-gesture transient frame. A
+    // cross-row drag deliberately leaves a HOLE lane open for the whole gesture
+    // (pointer-machine normalizes at commit), and `applyExternal` clears the sync
+    // core's transient baseline, which would cost the gesture its single undo entry.
+    const captions = captionGestureRef.current
+      ? backfilled.captions
+      : normalizeCaptionLanes(backfilled.captions)
     const normalized = captions === backfilled.captions ? backfilled : { ...backfilled, captions }
     if (normalized !== sync.project) sync.applyExternal(normalized)
   }, [sync.project.id, sync.project.captions])
@@ -267,6 +290,7 @@ export default function VideoEditor<P extends Project = Project>({
     <div ref={containerRef} className="flex flex-col h-full">
       <ReviewSurface
         sync={sync}
+        captionGestureRef={captionGestureRef}
         emit={emit}
         adapter={adapter}
         slots={slots}
@@ -533,6 +557,7 @@ function PendingSurface<P extends Project>({
 
 function ReviewSurface<P extends Project>({
   sync,
+  captionGestureRef,
   emit,
   adapter,
   slots,
@@ -552,6 +577,10 @@ function ReviewSurface<P extends Project>({
   timeline,
   sourcePreview,
 }: SurfaceProps<P> & {
+  // See the definition beside `sync` in VideoEditor above — set for the
+  // duration of a caption drag gesture so the lane-normalization effect
+  // (also up in VideoEditor) leaves a mid-drag hole lane alone.
+  captionGestureRef: MutableRefObject<boolean>
   emit: (p: P) => void
   renderClipInspector?: VideoEditorProps<P>['renderClipInspector']
   renderSubcutRegen?: VideoEditorProps<P>['renderSubcutRegen']
@@ -1008,8 +1037,16 @@ function ReviewSurface<P extends Project>({
    * walked the clip back a few pixels at a time instead of putting it where it
    * started. `commitTimelineEdit` closes the gesture with ONE entry covering
    * the whole motion.
+   *
+   * Sets `captionGestureRef` BEFORE the transient apply: the lane-
+   * normalization effect in VideoEditor is a dep of `sync.project.captions`,
+   * so it can fire off the very state update `mutateTransient` triggers here —
+   * the flag has to already be true when that happens, or the first mousemove
+   * of a cross-row caption drag collapses the hole lane and clears the sync
+   * core's transient baseline (see the comment beside `captionGestureRef`).
    */
   function handleProjectChange(p: Project) {
+    captionGestureRef.current = true
     sync.mutateTransient(() => p as P)
   }
 
@@ -1021,8 +1058,22 @@ function ReviewSurface<P extends Project>({
    * been identical — a few callers (ripple delete, auto-crossfade) compute the
    * final project themselves and hand it straight here, and a caller that DID
    * already preview it lands a no-op.
+   *
+   * Clears `captionGestureRef` BEFORE the transient apply, for the same
+   * before-the-state-update reason `handleProjectChange` sets it: this commit
+   * IS the point a cross-row drag's hole lane should collapse, and the lane-
+   * normalization effect must see the flag already false when it re-fires off
+   * this project update.
+   *
+   * Known limitation: a gesture that calls `handleProjectChange` but never
+   * reaches a commit (e.g. the component unmounts mid-drag) leaves the flag
+   * stuck true. The only cost is that lane normalization for an externally-
+   * arrived sparse project (SSE, regen, a hand-authored project.json) waits
+   * one more caption edit before it applies — the next real `commitTimelineEdit`
+   * clears the flag and the effect catches up.
    */
   function commitTimelineEdit(p: Project) {
+    captionGestureRef.current = false
     // Fold the auto-crossfade into the SAME commit as the gesture, so an audio
     // drag/trim that ends overlapping a neighbour lands as ONE undo step (the
     // move and its derived fade together) rather than the move here plus a
@@ -1061,10 +1112,20 @@ function ReviewSurface<P extends Project>({
   // `onCaptionEdit`'s whole-project-commit signature for a single id.
   const handleCaptionSegmentDelete = useCallback((segmentId: string) => {
     const base = syncProjectRef.current
-    if (!base.captions) return
-    const segments = base.captions.segments.filter(s => s.id !== segmentId)
-    if (segments.length === base.captions.segments.length) return
-    void syncMutate(() => ({ ...base, captions: { ...base.captions, segments } } as P))
+    // Captured into a local rather than re-read as `base.captions` below: a
+    // property narrowing does NOT survive into the `syncMutate` closure, since
+    // the compiler cannot prove the property was not reassigned in between, so
+    // the spread there would widen `style` back to optional and no longer
+    // satisfy `Captions`.
+    const captions = base.captions
+    if (!captions) return
+    const segments = captions.segments.filter(s => s.id !== segmentId)
+    if (segments.length === captions.segments.length) return
+    // `normalizeCaptionLanes` (same call Timeline.tsx's Delete keymap makes)
+    // so deleting the LAST caption in a row collapses that hole lane in the
+    // same commit, instead of persisting a sparse lane to disk that only the
+    // canvas timeline's own Delete key used to close.
+    void syncMutate(() => ({ ...base, captions: normalizeCaptionLanes({ ...captions, segments }) } as P))
   }, [syncProjectRef, syncMutate])
 
   // Selecting a caption from the preview (click the selection box) is just
@@ -1115,8 +1176,16 @@ function ReviewSurface<P extends Project>({
   function handleRippleDelete() {
     if (!primarySelectedId) return
     const base = syncProjectRef.current
-    const updated = rippleDelete(base, primarySelectedId)
+    let updated = rippleDelete(base, primarySelectedId)
     if (updated === base) return
+    // `rippleDelete` reaches `applyCutToCaptions`, which DROPS caption segments
+    // falling inside the removed span rather than shifting them. Dropping the last
+    // caption in a row leaves a hole lane, so densify in the same commit. Free when
+    // nothing changed: `normalizeCaptionLanes` returns the same reference.
+    if (updated.captions) {
+      const dense = normalizeCaptionLanes(updated.captions)
+      if (dense !== updated.captions) updated = { ...updated, captions: dense } as P
+    }
     void sync.mutate(() => updated as P)
     setSelectedIds([])
   }
