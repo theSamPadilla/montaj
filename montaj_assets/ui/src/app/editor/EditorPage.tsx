@@ -342,6 +342,10 @@ export default function EditorPage() {
                 usedSrcs={audioUsedSrcs}
                 durationBySrc={audioDurationBySrc}
                 fileUrl={adapter.fileUrl}
+                projectId={project.id}
+                getWaveformPeaks={adapter.getWaveformPeaks!}
+                sources={project.sources}
+                getFilmstrip={adapter.getFilmstrip!}
               />
             ) : undefined
           }
