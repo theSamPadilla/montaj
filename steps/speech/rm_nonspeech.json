@@ -37,6 +37,18 @@
       "type": "string",
       "default": "en",
       "description": "Whisper language code (e.g. es), or 'auto' to detect. A non-English value auto-upgrades an *.en model to its multilingual sibling — pass it for non-English audio, otherwise speech is mis-detected and cut as silence."
+    },
+    {
+      "name": "window-in",
+      "type": "float",
+      "min": 0,
+      "description": "Analyse only this window of --input (source seconds), instead of the whole file. Must be paired with window-out; also adds a `cuts` array (the complement of `keeps` within the window) to the output."
+    },
+    {
+      "name": "window-out",
+      "type": "float",
+      "min": 0,
+      "description": "End of the analysis window in source seconds. Must be paired with window-in."
     }
   ]
 }

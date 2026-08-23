@@ -190,6 +190,13 @@ export function applyCutToTracks<P extends Project>(project: P, cut: Cut): P {
   return { ...project, tracks: newTracks, captions: newCaptions }
 }
 
+/** Options for `collapseGaps`. */
+export interface CollapseGapsOptions {
+  /** Remap `project.captions` with the same shifts the clips get. Default true
+   *  — see the "exactly one caption-mover" note on `collapseGaps`. */
+  remapCaptions?: boolean
+}
+
 /**
  * Close all gaps between primary clips by shifting each clip left to butt
  * against the previous one. Captions and all other tracks are remapped to
@@ -199,8 +206,24 @@ export function applyCutToTracks<P extends Project>(project: P, cut: Cut): P {
  * tracks[0] if no video track exists.
  *
  * Returns the same project reference if no gaps exist (safe to call always).
+ *
+ * EXACTLY ONE CAPTION-MOVER PER COMPOSITION. `applyCutToTracks` ripples captions
+ * itself (via `applyCutToCaptions`), and `collapseGaps` remaps them too — so
+ * composing those two shifts every caption TWICE. That is why the audio-polish
+ * path (`video/audioPolish.ts`) passes `remapCaptions: false`. By contrast
+ * `deleteSelection` is tracks-and-audio vocabulary only and never touches
+ * `project.captions`, which is why `deleteSelection` + `collapseGaps`
+ * (Timeline.tsx's delete keymap) is safe with the default. Naming both the
+ * unsafe and the safe composition is what makes this checkable.
+ *
+ * `remapCaptions` therefore defaults to TRUE — today's behaviour, byte-identical
+ * for every call site that passes no options — and is opted OUT of only by a
+ * caller that has already moved the captions itself.
  */
-export function collapseGaps<P extends Project>(project: P): P {
+export function collapseGaps<P extends Project>(
+  project: P,
+  { remapCaptions = true }: CollapseGapsOptions = {},
+): P {
   const tracks = trackItems(project)
 
   const primaryIdx = tracks.findIndex(t => t.some(c => c.type === 'video'))
@@ -243,7 +266,7 @@ export function collapseGaps<P extends Project>(project: P): P {
   })
 
   let newCaptions = project.captions
-  if (newCaptions) {
+  if (remapCaptions && newCaptions) {
     const segments = newCaptions.segments.map(seg => {
       const d = applyShift(seg.start, seg.end)
       if (d === 0) return seg

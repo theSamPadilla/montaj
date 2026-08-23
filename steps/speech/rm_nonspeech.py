@@ -3,8 +3,8 @@
 import json, os, sys, argparse, shutil, tempfile
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "lib"))
-from common import require_file, get_duration, transcribe_words, run
-from trim_spec import is_trim_spec, load as load_spec, merge as merge_keeps, audio_extract_cmd, remap_timestamp
+from common import fail, require_file, get_duration, transcribe_words, run
+from trim_spec import is_trim_spec, load as load_spec, merge as merge_keeps, audio_extract_cmd, remap_timestamp, from_window
 
 def main():
     parser = argparse.ArgumentParser(description="Remove non-speech regions from a video")
@@ -19,13 +19,29 @@ def main():
                         help="Whisper language code (e.g. es), or 'auto' to detect. A non-English "
                              "value auto-upgrades an *.en model to its multilingual sibling, so "
                              "pass it for non-English audio (otherwise speech is mis-detected and cut).")
+    parser.add_argument("--window-in", type=float,
+                        help="Analyse only this window of --input (source seconds). Must be paired "
+                             "with --window-out; routes through the trim-spec branch and additionally "
+                             "emits `cuts` (the complement of `keeps` within the window) in the output.")
+    parser.add_argument("--window-out", type=float,
+                        help="End of the analysis window in source seconds. Must be paired with --window-in.")
     args = parser.parse_args()
+
+    if (args.window_in is None) != (args.window_out is None):
+        fail("invalid_args", "--window-in and --window-out must be used together")
 
     require_file(args.input)
 
-    # ── trim spec path ────────────────────────────────────────────────────────
-    if is_trim_spec(args.input):
+    windowed = args.window_in is not None
+    if windowed:
+        spec = from_window(args.input, args.window_in, args.window_out)
+    elif is_trim_spec(args.input):
         spec = load_spec(args.input)
+    else:
+        spec = None
+
+    # ── trim spec path ────────────────────────────────────────────────────────
+    if spec is not None:
         source = spec["input"]
         keeps = spec["keeps"]
 
@@ -55,7 +71,10 @@ def main():
 
             if not seg_regions:
                 # No speech detected — keep everything as-is
-                print(json.dumps({"input": source, "keeps": keeps}))
+                result = {"input": source, "keeps": keeps}
+                if windowed:
+                    result["cuts"] = []
+                print(json.dumps(result))
                 return
 
             # Speech regions are "keeps in extracted timeline"; invert to get cuts
@@ -81,7 +100,10 @@ def main():
         finally:
             shutil.rmtree(work, ignore_errors=True)
 
-        print(json.dumps({"input": source, "keeps": refined}))
+        result = {"input": source, "keeps": refined}
+        if windowed:
+            result["cuts"] = [{"start": round(s, 4), "end": round(e, 4)} for s, e in nonspeech_cuts]
+        print(json.dumps(result))
         return
 
     # ── Raw video path ────────────────────────────────────────────────────────

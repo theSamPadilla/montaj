@@ -7,8 +7,12 @@ When the two drift, a schema-driven CLI wrapper generated from the schema would
 accept the wrong flags, wrong types, wrong defaults, or wrong choices.
 
 This test pins BIDIRECTIONAL parity for the 16 commands the consolidation plan
-migrates to schema-driven wrappers. The step's argparse is GROUND TRUTH; the
-schema must match it exactly, modulo:
+migrates to schema-driven wrappers, plus ``normalize`` (added by SP8c T1: its
+CLI wrapper stays hand-written — ``cli.commands.normalize`` in ``_COMMANDS``,
+not the schema-generated ``_STEP_COMMANDS`` — but its schema is still read by
+the server (``serve/routes/steps.py``) and the AI-tool layer, so drift there
+is exactly as real as for the schema-driven 16). The step's argparse is
+GROUND TRUTH; the schema must match it exactly, modulo:
 
   * the global flags the CLI adds itself — ``--out`` / ``--quiet`` / ``--json``
     (see ``cli/main.add_global_flags``); a step may declare ``--out``/``--json``
@@ -18,11 +22,12 @@ schema must match it exactly, modulo:
     into a positional, or an optional ``--input`` when ``required: false``), not
     as a param.
 
-Scope note: only the 16 migrated commands are asserted. Other built-in steps
-(cross_cut, montage, materialize_cut, remove_bg, waveform_*, sample_*, …) have
-their own, currently-unreconciled schema drift and a wider type vocabulary
-(``array``/``integer``/``number``, input types ``project``/``jsx``/``none``);
-folding them in is a separate reconciliation, not this task.
+Scope note: only the commands in ``MIGRATED_STEPS`` are asserted. Other
+built-in steps (cross_cut, montage, materialize_cut, remove_bg, waveform_*,
+sample_*, …) have their own, currently-unreconciled schema drift and a wider
+type vocabulary (``array``/``integer``/``number``, input types
+``project``/``jsx``/``none``); folding them in is a separate reconciliation,
+not this task.
 
 The step parser is introspected by loading the module and intercepting
 ``ArgumentParser.parse_args`` (the step self-configures ``sys.path``), run in a
@@ -36,13 +41,15 @@ import pytest
 
 from tests.conftest import REPO_ROOT, STEPS_DIR
 
-# Step names (schema/​.py basenames) for the 16 migrated CLI commands. Note the
-# CLI ``filler`` command maps to the ``rm_fillers`` step.
+# Step names (schema/​.py basenames) for the 16 migrated CLI commands, plus
+# `normalize` (SP8c T1 — see module docstring). Note the CLI ``filler``
+# command maps to the ``rm_fillers`` step.
 MIGRATED_STEPS = (
     "probe", "transcribe", "caption", "extract_audio", "resize",
     "rm_nonspeech", "stem_separation", "lyrics_sync", "lyrics_render",
     "generate_image", "generate_music", "generate_voiceover",
     "kling_generate", "analyze_media", "snapshot", "rm_fillers",
+    "normalize",
 )
 
 # Global flags the CLI layer owns; never required to appear as schema params.

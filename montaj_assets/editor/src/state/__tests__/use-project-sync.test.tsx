@@ -258,6 +258,62 @@ describe('useProjectSync — transient gestures', () => {
     await act(async () => { result.current.undo() })
     expect(result.current.project.name).toBe('Test Project')
   })
+
+  it('discardTransient restores the pre-gesture state without saving or touching undo', async () => {
+    const adapter = makeFakeAdapter()
+    const initial = makeProject()
+    const { result } = renderHook(() => useProjectSync(adapter, initial.id, initial))
+    const canUndoBefore = result.current.canUndo
+
+    act(() => {
+      result.current.mutateTransient((p) => ({ ...p, name: 'Drag 1' }))
+      result.current.mutateTransient((p) => ({ ...p, name: 'Drag 2' }))
+    })
+    expect(result.current.project.name).toBe('Drag 2')
+
+    act(() => { result.current.discardTransient() })
+
+    expect(result.current.project).toEqual(initial)
+    expect(adapter.saveProject).not.toHaveBeenCalled()
+    expect(result.current.canUndo).toBe(canUndoBefore)
+  })
+
+  it('discardTransient clears the baseline so a later unrelated commit does not push a stale undo step', async () => {
+    const adapter = makeFakeAdapter()
+    const initial = makeProject()
+    const { result } = renderHook(() => useProjectSync(adapter, initial.id, initial))
+
+    // Gesture that gets abandoned.
+    act(() => {
+      result.current.mutateTransient((p) => ({ ...p, name: 'Abandoned Drag' }))
+    })
+    act(() => { result.current.discardTransient() })
+    expect(result.current.project.name).toBe('Test Project')
+    expect(result.current.canUndo).toBe(false)
+
+    // A later, unrelated commit() — NOT preceded by any new mutateTransient —
+    // must not resurrect the discarded gesture's baseline as a phantom undo
+    // step. If discardTransient had merely restored state (the naive
+    // `mutateTransient(() => baseline)` a caller would otherwise have to do)
+    // without clearing `transientBaseline`, this commit() would call
+    // pushUndo(baseline) here and canUndo would flip to true despite no new
+    // gesture ever having happened.
+    await act(async () => { await result.current.commit() })
+
+    expect(result.current.canUndo).toBe(false)
+  })
+
+  it('discardTransient with no transient in flight is a safe no-op', async () => {
+    const adapter = makeFakeAdapter()
+    const initial = makeProject()
+    const { result } = renderHook(() => useProjectSync(adapter, initial.id, initial))
+
+    act(() => { result.current.discardTransient() })
+
+    expect(result.current.project).toEqual(initial)
+    expect(adapter.saveProject).not.toHaveBeenCalled()
+    expect(result.current.canUndo).toBe(false)
+  })
 })
 
 describe('useProjectSync — stale baseline regression', () => {

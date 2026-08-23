@@ -40,6 +40,8 @@ import type {
   GetWaveformPeaksArgs,
   FilmstripIndex,
   GetFilmstripArgs,
+  AnalyzeAudioPolishArgs,
+  AudioPolishAnalysis,
 } from '@bycrux/editor'
 // Montaj instantiates the editor's generic adapter with its full project type,
 // so loaded/saved/streamed frames keep Montaj's pipeline fields end-to-end.
@@ -63,6 +65,19 @@ const peaksCache = new Map<string, Promise<PeaksData>>()
 // Per (projectId, src, grid params) cache of pending filmstrip fetches.
 const filmstripCache = new Map<string, Promise<FilmstripIndex>>()
 
+// Per (projectId, src) cache of pending whole-source audio-polish job
+// promises — `voice` (vocal isolation) and `silence-check` (the dry-run
+// keeps preview), the two EXPENSIVE, whole-source pieces `analyzeAudioPolish`
+// can be asked for. Multiple clips routinely share one source, so this
+// dedupes concurrent/repeat callers the same way `peaksCache`/`filmstripCache`
+// do above (cache the *promise*, not the resolved value). The other three
+// pieces (`silence`, `fillers`, `loudness`) are per-clip WINDOWED calls and
+// are deliberately not cached anywhere: caching by src alone would return a
+// different clip's window, and a cache key spanning the full window would
+// dedupe next to nothing.
+const voiceCache = new Map<string, Promise<Extract<AudioPolishAnalysis, { piece: 'voice' }>>>()
+const silenceCheckCache = new Map<string, Promise<Extract<AudioPolishAnalysis, { piece: 'silence-check' }>>>()
+
 /**
  * Deterministic, filesystem-safe short hash of a source path — used to give
  * each source its own subfolder under a project-scoped filmstrip cache dir
@@ -77,6 +92,45 @@ function srcCacheKey(src: string): string {
     h = (Math.imul(31, h) + src.charCodeAt(i)) | 0
   }
   return (h >>> 0).toString(36)
+}
+
+/**
+ * Strips the extension off a path — used to derive `stem_separation`'s
+ * default output directory without reading anything back from the server
+ * (see the `voice` case below). Only the last dot IN THE BASENAME counts: a
+ * dot in a directory segment is ignored, and a basename that starts with a
+ * dot (a dotfile, e.g. `.bashrc`) is left untouched.
+ *
+ * Parity with Python's `os.path.splitext` is a COMPATIBILITY REQUIREMENT
+ * here, not defensive coding: `steps/audio/stem_separation.py` computes its
+ * own output dir with `os.path.splitext(args.input)[0]`, and this is the
+ * client-side reimplementation that has to agree with it bit-for-bit — any
+ * divergence produces a `vocalsPath` that doesn't point at the file the step
+ * actually wrote. See `montajAdapter.audioPolish.test.ts`'s dedicated
+ * edge-case tests (dot-in-directory, extensionless, dotfile, dotfile+ext).
+ */
+function stripExtension(path: string): string {
+  const slash = Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\'))
+  const dot = path.lastIndexOf('.')
+  if (dot <= slash + 1) return path
+  return path.slice(0, dot)
+}
+
+/**
+ * Maps a `rm_nonspeech`/`rm_fillers` windowed `cuts` array to
+ * `AudioPolishAnalysis`'s `removals` shape. `text` is only ever present on
+ * `rm_fillers`' cuts (the matched filler word); passed through when the step
+ * supplies it, omitted otherwise, so a `silence` result never carries a
+ * stray `text: undefined`. Defaults to `[]` when the step didn't windowed
+ * (no `cuts` key at all) rather than throwing — a defensive fallback, not an
+ * expected path, since `analyzeAudioPolish` always windows these two pieces.
+ */
+function cutsToRemovals(
+  cuts: Array<{ start: number; end: number; text?: string }> | undefined,
+): Array<{ start: number; end: number; text?: string }> {
+  return (cuts ?? []).map((c) =>
+    c.text !== undefined ? { start: c.start, end: c.end, text: c.text } : { start: c.start, end: c.end },
+  )
 }
 
 /**
@@ -411,6 +465,171 @@ export function createMontajAdapter(): EditorAdapter<Project> {
 
       const result = await api.runStepAsync<{ path: string }>('sample_frame', stepArgs)
       return { url: fileUrl(result?.path ?? outPath) }
+    },
+
+    // Audio polish → one of Montaj's four audio-polish step CLIs (or a
+    // `waveform_trim` dry run for `silence-check`), picked by `piece`. Every
+    // time in `args.window`/the result is SOURCE time — untouched, never
+    // converted to timeline time (that's the caller's job; see the
+    // `AudioPolishAnalysis` doc in editor-core's `types.ts`). `window: win`
+    // renames the destructured field so it doesn't shadow the DOM global
+    // `window`.
+    analyzeAudioPolish: async (args: AnalyzeAudioPolishArgs): Promise<AudioPolishAnalysis> => {
+      const { projectId, piece, src, window: win, options } = args
+
+      switch (piece) {
+        case 'silence': {
+          const stepArgs: Record<string, unknown> = { input: src }
+          if (win) {
+            stepArgs['window-in'] = win.in
+            stepArgs['window-out'] = win.out
+          }
+          if (options?.language !== undefined) stepArgs.language = options.language
+          if (options?.model !== undefined) stepArgs.model = options.model
+          if (options?.maxWordGap !== undefined) stepArgs['max-word-gap'] = options.maxWordGap
+          if (options?.sentenceEdge !== undefined) stepArgs['sentence-edge'] = options.sentenceEdge
+
+          const result = await api.runStepAsync<{
+            cuts?: Array<{ start: number; end: number; text?: string }>
+          }>('rm_nonspeech', stepArgs)
+          return { piece, removals: cutsToRemovals(result.cuts) }
+        }
+
+        case 'fillers': {
+          const stepArgs: Record<string, unknown> = { input: src }
+          if (win) {
+            stepArgs['window-in'] = win.in
+            stepArgs['window-out'] = win.out
+          }
+          if (options?.language !== undefined) stepArgs.language = options.language
+          if (options?.model !== undefined) stepArgs.model = options.model
+
+          const result = await api.runStepAsync<{
+            cuts?: Array<{ start: number; end: number; text?: string }>
+          }>('rm_fillers', stepArgs)
+          return { piece, removals: cutsToRemovals(result.cuts) }
+        }
+
+        case 'loudness': {
+          // Measure-only: the server prints the loudnorm pass-1 stats and
+          // exits, no --out needed (see steps/media/normalize.json).
+          const stepArgs: Record<string, unknown> = { input: src, 'measure-only': true }
+          if (win) {
+            stepArgs['window-in'] = win.in
+            stepArgs['window-out'] = win.out
+          }
+          // `target` is an enum (youtube/podcast/broadcast/custom); `lufs`
+          // is read only when target is 'custom' — so the two travel
+          // together, and are omitted together to keep the step's own
+          // default preset (youtube, -14 LUFS) when the caller passed none.
+          if (options?.targetLufs !== undefined) {
+            stepArgs.target = 'custom'
+            stepArgs.lufs = options.targetLufs
+          }
+
+          const result = await api.runStepAsync<{
+            input_i: number | string
+            input_tp: number | string
+            input_lra: number | string
+            target_i: number | string
+          }>('normalize', stepArgs)
+          // normalize.py emits these as real JSON numbers as of the current
+          // step version, but this adapter call is the boundary where an
+          // untyped JSON payload from the step becomes a typed
+          // AudioPolishAnalysis, and that is exactly where defensive
+          // coercion belongs. ffmpeg's own loudnorm filter (which
+          // normalize.py wraps) prints its pass-1 measurements as JSON
+          // *strings*, so an older `montaj serve` still running a prior
+          // step version -- or any future regression at the source -- must
+          // not be able to hand the modal a string that crashes its
+          // .toFixed() calls (see SP8c postmortem: AudioPolishModal.tsx
+          // crashed exactly this way).
+          const measuredI = Number(result.input_i)
+          const measuredTP = Number(result.input_tp)
+          const measuredLRA = Number(result.input_lra)
+          const targetI = Number(result.target_i)
+          // Applied gain = the level change (targetI - measuredI) held back
+          // by a true-peak guard so the gain never pushes true peak above
+          // -1.5 dBTP — NOT loudnorm's own dynamic pass (which additionally
+          // limits/compresses; deliberately not what this preview computes).
+          // A quiet-average/hot-peak clip (headroom-recorded speech is the
+          // common case) needs the guard to win, and gainDb legitimately
+          // comes out negative when it does — that's correct, not a bug.
+          // Canonical sibling: editor/src/video/audioPolish.ts's
+          // `loudnessGainDb(stats, targetI)` implements this exact formula;
+          // the two must stay in sync until they're unified behind one
+          // export (see SP8c coordination note).
+          const gainDb = Math.min(targetI - measuredI, -1.5 - measuredTP)
+          return {
+            piece,
+            measuredI,
+            measuredTP,
+            measuredLRA,
+            targetI,
+            gainDb,
+          }
+        }
+
+        case 'voice': {
+          const key = `${projectId}:${src}`
+          const existing = voiceCache.get(key)
+          if (existing) return existing
+
+          // stem_separation prints only the manifest JSON's path (wrapped by
+          // the server as `{path, type}`, not its content — unlike
+          // rm_nonspeech/rm_fillers/normalize, which print their JSON result
+          // directly). We still don't need to read it: NO --out-dir is sent
+          // here, deliberately unlike getFilmstrip's `.cache/filmstrips/...`
+          // convention — do not "harmonise" these. A filmstrip is a
+          // disposable, regenerable preview asset; a vocals stem is not — its
+          // path is persisted into `project.audio.tracks[].src` and later
+          // read by the RENDERER (a separate process with no guaranteed cwd),
+          // which feeds it to ffmpeg as `-i`. A relative `.cache/...` path
+          // would work in preview and break at export. Omitting --out-dir
+          // instead lets the step fall back to its own default — `<source
+          // without extension>_stems/`, next to the source (see
+          // steps/audio/stem_separation.py: `out_dir = args.out_dir or
+          // f"{base}_stems"`) — which is already ABSOLUTE, since `src` always
+          // is. `--stems vocals` also means only vocals.wav is written there
+          // (`separate()` skips every stem not requested), so the path is
+          // fully deterministic.
+          const promise = (async () => {
+            await api.runStepAsync<{ path: string }>('stem_separation', {
+              input: src,
+              stems: 'vocals',
+            })
+            const vocalsPath = `${stripExtension(src)}_stems/vocals.wav`
+            return { piece, vocalsPath, url: fileUrl(vocalsPath) } as const
+          })()
+          promise.catch(() => {
+            if (voiceCache.get(key) === promise) voiceCache.delete(key)
+          })
+          voiceCache.set(key, promise)
+          return promise
+        }
+
+        case 'silence-check': {
+          const key = `${projectId}:${src}`
+          const existing = silenceCheckCache.get(key)
+          if (existing) return existing
+
+          // Whole source, no options exposed — a dry-run preview of what
+          // `silence` would keep at the step's default threshold/min-silence.
+          const promise = api.runStepAsync<{ keeps: Array<[number, number]> }>(
+            'waveform_trim', { input: src },
+          ).then((result) => ({ piece, keeps: result.keeps }) as const)
+          promise.catch(() => {
+            if (silenceCheckCache.get(key) === promise) silenceCheckCache.delete(key)
+          })
+          silenceCheckCache.set(key, promise)
+          return promise
+        }
+
+        default: {
+          const exhaustiveCheck: never = piece
+          throw new Error(`analyzeAudioPolish: unknown piece ${String(exhaustiveCheck)}`)
+        }
+      }
     },
 
     // Drop one compiled-overlay cache entry. The host impl requires a src; with

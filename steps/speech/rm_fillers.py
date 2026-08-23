@@ -4,8 +4,8 @@ Also trims pre-speech noise at the head by snapping the start to the first word 
 import json, os, re, sys, argparse, tempfile
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "lib"))
-from common import require_file, run, get_duration, transcribe_words
-from trim_spec import is_trim_spec, load as load_spec, merge as merge_keeps, audio_extract_cmd, remap_timestamp
+from common import fail, require_file, run, get_duration, transcribe_words
+from trim_spec import is_trim_spec, load as load_spec, merge as merge_keeps, audio_extract_cmd, remap_timestamp, from_window
 
 # Hesitation-sound fillers per language. Kept conservative: only non-lexical
 # hesitations (never real words like Spanish "este"/"pues") so we don't cut
@@ -34,15 +34,32 @@ def main():
                              "auto-upgraded to a multilingual sibling when --language is non-English.")
     parser.add_argument("--language", default="en",
                         help="Language code (e.g. es) for transcription and filler matching, or 'auto'.")
+    parser.add_argument("--window-in", type=float,
+                        help="Analyse only this window of --input (source seconds). Must be paired "
+                             "with --window-out; routes through the trim-spec branch and additionally "
+                             "emits `cuts` (the complement of `keeps` within the window, each filler "
+                             "entry carrying the matched word as `text`) in the output.")
+    parser.add_argument("--window-out", type=float,
+                        help="End of the analysis window in source seconds. Must be paired with --window-in.")
     args = parser.parse_args()
+
+    if (args.window_in is None) != (args.window_out is None):
+        fail("invalid_args", "--window-in and --window-out must be used together")
 
     require_file(args.input)
 
     fillers = _filler_matcher(args.language)
 
-    # ── Trim spec path ────────────────────────────────────────────────────────
-    if is_trim_spec(args.input):
+    windowed = args.window_in is not None
+    if windowed:
+        spec = from_window(args.input, args.window_in, args.window_out)
+    elif is_trim_spec(args.input):
         spec = load_spec(args.input)
+    else:
+        spec = None
+
+    # ── Trim spec path ────────────────────────────────────────────────────────
+    if spec is not None:
         source = spec["input"]
         keeps = spec["keeps"]
 
@@ -65,25 +82,63 @@ def main():
                 "end":   remap_timestamp(w["end"],   keeps),
             })
 
-        # Identify filler cuts in original timeline
+        # Identify filler cuts in original timeline. filler_cuts stays a bare
+        # [[start, end], ...] list — trim_spec.merge destructures plain pairs —
+        # filler_cuts_with_text is a parallel, richer list carrying the matched
+        # word, used only to build the windowed `cuts` output below.
         filler_cuts = []
+        filler_cuts_with_text = []
         non_filler_words = []
         for w in remapped:
             text = w["text"].strip(".,!?")
             if fillers.match(text):
                 filler_cuts.append([w["start"], w["end"]])
+                filler_cuts_with_text.append({"start": w["start"], "end": w["end"], "text": w["text"]})
             else:
                 non_filler_words.append(w)
 
         # Snap head: move keeps[0][0] to just before first non-filler word
+        head_trim = None
         if non_filler_words and keeps:
             first_onset = non_filler_words[0]["start"]
             if keeps[0][0] < first_onset:
+                old_start = keeps[0][0]
                 keeps = list(keeps)  # make mutable copy
-                keeps[0] = [max(0.0, first_onset - HEAD_PAD), keeps[0][1]]
+                new_start = max(0.0, first_onset - HEAD_PAD)
+                keeps[0] = [new_start, keeps[0][1]]
+                if new_start > old_start:
+                    head_trim = [old_start, new_start]
 
         refined = merge_keeps(keeps, filler_cuts)
-        print(json.dumps({"input": source, "keeps": refined}))
+        result = {"input": source, "keeps": refined}
+        if windowed:
+            if head_trim:
+                # head_trim already accounts for [head_start, head_end) — any
+                # filler cut inside that span would otherwise double-report the
+                # same audio as two separate `cuts` entries (and, worse, ticking
+                # the filler one back off in the UI would silently do nothing,
+                # since the head-trim entry still covers it). Drop entries
+                # wholly inside the span; clip ones that straddle the boundary
+                # down to their surviving remainder past head_end.
+                head_start, head_end = head_trim
+                cuts = []
+                for c in filler_cuts_with_text:
+                    if c["start"] >= head_end:
+                        cuts.append(c)  # entirely after the head-trim span
+                    elif c["end"] > head_end:
+                        # Straddles the boundary — keep only the remainder.
+                        cuts.append({"start": head_end, "end": c["end"], "text": c["text"]})
+                    # else: wholly inside [head_start, head_end) — already
+                    # covered by the head-trim entry below; drop it.
+                cuts.append({"start": head_start, "end": head_end})
+            else:
+                cuts = list(filler_cuts_with_text)
+            cuts.sort(key=lambda c: c["start"])
+            result["cuts"] = [
+                {k: (round(v, 4) if isinstance(v, float) else v) for k, v in c.items()}
+                for c in cuts
+            ]
+        print(json.dumps(result))
         return
 
     # ── Raw video path ────────────────────────────────────────────────────────

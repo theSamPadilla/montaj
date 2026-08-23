@@ -48,6 +48,8 @@ export type {
   FilmstripSheet,
   FilmstripIndex,
   GetFilmstripArgs,
+  AnalyzeAudioPolishArgs,
+  AudioPolishAnalysis,
   FootageDropPayload,
   EditorAdapter,
   EditorContext,

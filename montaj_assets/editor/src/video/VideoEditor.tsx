@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type MutableRefObject } from 'react'
-import { Crop, HelpCircle, Magnet, Maximize2, Minimize2, Pencil, Redo2, SeparatorVertical, Undo2 } from 'lucide-react'
+import { Crop, HelpCircle, Magnet, Maximize2, Minimize2, Pencil, Redo2, SeparatorVertical, Undo2, Wand2 } from 'lucide-react'
 import type { Project, VideoEditorProps } from '../types'
 import { useProjectSync, type UseProjectSync } from '../state/use-project-sync'
 import { VideoSourceCropModal } from '../crop/VideoSourceCropModal'
@@ -25,6 +25,7 @@ import RenderModal from './RenderModal'
 import ImageToneMenu from './ImageToneMenu'
 import type { ImageTone } from './imageTone'
 import CaptionRegenModal from './CaptionRegenModal'
+import AudioPolishModal from './AudioPolishModal'
 import OverlayPropsModal from './preview/OverlayPropsModal'
 import CommandPalette, { type PaletteCommand } from './CommandPalette'
 import { createShuttleController } from './shuttle'
@@ -822,6 +823,11 @@ function ReviewSurface<P extends Project>({
   // Provided only when the host adapter supports `generateCaptions`; absent →
   // the "Regenerate" button is hidden there.
   const handleRegenerateCaptions = adapter.generateCaptions ? () => setRegenCaptionsOpen(true) : undefined
+  const [polishOpen, setPolishOpen] = useState(false)
+  // Opens AudioPolishModal — toolbar button and command palette entry.
+  // Provided only when the host adapter supports `analyzeAudioPolish`; absent →
+  // neither entry point renders, exactly like `handleRegenerateCaptions` above.
+  const handleAudioPolish = adapter.analyzeAudioPolish ? () => setPolishOpen(true) : undefined
   // The clip/audio inspector target — derived from the timeline's inspect
   // callbacks. A Montaj-agnostic { kind, id } selector, not a project entity.
   const [inspecting, setInspecting]   = useState<{ kind: 'clip' | 'audio'; id: string } | null>(null)
@@ -1008,7 +1014,7 @@ function ReviewSurface<P extends Project>({
   // the codebase (today's handlers didn't check this at all); this derives
   // it from state ReviewSurface already owns rather than inventing new
   // cross-file plumbing.
-  const anyModalOpen = renderOpen || regenCaptionsOpen || !!editingOverlayItem
+  const anyModalOpen = renderOpen || regenCaptionsOpen || polishOpen || !!editingOverlayItem
     || showControls || cropMode || !!inspecting || !!paletteOpen
 
   function withItemProps(base: P, id: string, nextProps: Record<string, unknown>): P {
@@ -1466,6 +1472,9 @@ function ReviewSurface<P extends Project>({
   })
   paletteCommands.push({ id: 'zoom-fit', label: 'Zoom to fit', run: () => timelineActionsRef.current?.zoomFit() })
   paletteCommands.push({ id: 'goto', label: 'Go to time…', run: () => openGoToTime() })
+  if (handleAudioPolish) {
+    paletteCommands.push({ id: 'audio-polish', label: 'Polish audio…', run: () => handleAudioPolish() })
+  }
 
   async function handleRestoreVersion(hash: string) {
     if (!adapter.restoreVersion) return
@@ -1669,6 +1678,20 @@ function ReviewSurface<P extends Project>({
             value={currentImageTone}
             onChange={handleImageToneChange}
           />
+        )}
+        {/* Audio polish — silence/fillers/loudness/voice cleanup. Hidden when the
+            host adapter doesn't implement `analyzeAudioPolish`, exactly like the
+            caption-regen entry point above. */}
+        {handleAudioPolish && (
+          <Tooltip label="Polish audio">
+            <button
+              onClick={handleAudioPolish}
+              aria-label="Polish audio"
+              className="flex items-center justify-center w-5 h-5 rounded transition-colors text-[var(--editor-text)]/60 bg-transparent hover:text-[var(--editor-text)]"
+            >
+              <Wand2 size={12} />
+            </button>
+          </Tooltip>
         )}
         {/* Default placement. A host that sets onProvideRenderTrigger renders
             Render in its own chrome instead, so the toolbar button is hidden. */}
@@ -1963,6 +1986,25 @@ function ReviewSurface<P extends Project>({
             sync.applyExternal({ ...syncProjectRef.current, captions } as P)
             setRegenCaptionsOpen(false)
           }}
+        />
+      )}
+
+      {/* Audio polish modal — owns its own transient/commit/discard cycle via
+          `sync`'s three primitives, passed individually (not as a `sync` object:
+          that's the modal's own prop contract). `project={sync.project}` sources
+          the modal's baseline snapshot AND its watch for an external (SSE) frame
+          landing over the preview mid-review; it cannot be re-derived from a prop
+          that changes as drafts are pushed. */}
+      {polishOpen && adapter.analyzeAudioPolish && (
+        <AudioPolishModal
+          projectId={project.id}
+          adapter={adapter}
+          project={sync.project}
+          selectionIds={selectedIds}
+          mutateTransient={sync.mutateTransient}
+          commit={sync.commit}
+          discardTransient={sync.discardTransient}
+          onClose={() => setPolishOpen(false)}
         />
       )}
 

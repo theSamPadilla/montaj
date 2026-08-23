@@ -137,6 +137,78 @@ describe('collapseGaps', () => {
     expect(cap).toMatchObject({ start: 6, end: 8 })
     expect(cap.words![0]).toMatchObject({ start: 6, end: 8 })
   })
+
+  // The caption remap is opt-OUT: every existing call site passes no options and
+  // must keep behaving exactly as the test above pins. Only the audio-polish
+  // composition, where `applyCutToTracks` has already rippled the captions,
+  // passes `remapCaptions: false` — see the invariant comment in cuts.ts.
+  describe('remapCaptions option', () => {
+    /** Two clips with a 3s gap and one caption sitting over the LATER clip, so a
+     *  caption remap is unambiguously visible (it moves 3s left) or absent. */
+    function gapped() {
+      return makeProject({
+        tracks: vtracks([
+          { id: 'a', type: 'video', start: 0, end: 5 },
+          { id: 'b', type: 'video', start: 8, end: 12 },
+        ]),
+        captions: {
+          style: 'subtitle',
+          segments: [{ text: 'b-cap', start: 9, end: 11, words: [{ word: 'x', start: 9, end: 11 }] }],
+        },
+      })
+    }
+
+    it('an empty options object is the same as no options at all', () => {
+      const p = gapped()
+      expect(collapseGaps(p, {})).toEqual(collapseGaps(p))
+    })
+
+    it('remapCaptions: true is the default and remaps captions', () => {
+      const out = collapseGaps(gapped(), { remapCaptions: true })
+      expect(out.tracks![0].items[1]).toMatchObject({ id: 'b', start: 5, end: 9 })
+      const cap = out.captions!.segments[0]
+      expect(cap).toMatchObject({ start: 6, end: 8 })
+      expect(cap.words![0]).toMatchObject({ start: 6, end: 8 })
+    })
+
+    it('remapCaptions: false closes clip gaps but leaves captions untouched', () => {
+      const p = gapped()
+      const out = collapseGaps(p, { remapCaptions: false })
+      expect(out.tracks![0].items[0]).toMatchObject({ id: 'a', start: 0, end: 5 })
+      expect(out.tracks![0].items[1]).toMatchObject({ id: 'b', start: 5, end: 9 })
+      // The whole captions object is passed through by reference — no segment,
+      // and no word inside a segment, is rebuilt.
+      expect(out.captions).toBe(p.captions)
+      expect(out.captions!.segments[0]).toMatchObject({ start: 9, end: 11 })
+      expect(out.captions!.segments[0].words![0]).toMatchObject({ start: 9, end: 11 })
+    })
+
+    it('remapCaptions: false still remaps OVERLAY tracks', () => {
+      const p = makeProject({
+        tracks: vtracks(
+          [
+            { id: 'a', type: 'video', start: 0, end: 5 },
+            { id: 'b', type: 'video', start: 8, end: 12 },
+          ],
+          [{ id: 'o', type: 'overlay', start: 9, end: 11 }],
+        ),
+        captions: { style: 'subtitle', segments: [{ text: 'b-cap', start: 9, end: 11 }] },
+      })
+      const out = collapseGaps(p, { remapCaptions: false })
+      expect(out.tracks![1].items[0]).toMatchObject({ id: 'o', start: 6, end: 8 })
+      expect(out.captions!.segments[0]).toMatchObject({ start: 9, end: 11 })
+    })
+
+    it('remapCaptions: false still returns the same reference when there is no gap', () => {
+      const p = makeProject({
+        tracks: vtracks([
+          { id: 'a', type: 'video', start: 0, end: 5 },
+          { id: 'b', type: 'video', start: 5, end: 10 },
+        ]),
+      })
+      expect(collapseGaps(p, { remapCaptions: false })).toBe(p)
+    })
+  })
 })
 
 describe('applyCutToItem (collapse, single item)', () => {

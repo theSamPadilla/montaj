@@ -42,6 +42,17 @@ def is_cut_spec(path: str) -> bool:
         return False
 
 
+def from_window(input_path: str, win_in: float, win_out: float) -> dict:
+    """Build a single-range trim spec covering [win_in, win_out) of input_path.
+
+    One copy of the "analyse only a window of a source file" rule — steps that
+    need it call this rather than constructing the {input, keeps} shape
+    themselves, and fall into the same tested trim-spec branch as a
+    caller-supplied spec.
+    """
+    return {"input": input_path, "keeps": [[win_in, win_out]]}
+
+
 def merge(keeps: list, cuts: list) -> list:
     """Remove cut ranges from keeps. All timestamps are in original source timeline."""
     MIN_SEGMENT = 0.02

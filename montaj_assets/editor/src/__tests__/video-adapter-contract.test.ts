@@ -9,16 +9,25 @@ import type {
   WaveformChunk,
   PeaksData,
   FilmstripIndex,
+  AudioPolishAnalysis,
 } from '../types'
 import type { EditorProject, ImageElement } from '../schema'
 
 // ── Video adapter contract ────────────────────────────────────────────────────
-// The video editor adds seven OPTIONAL adapter methods: listVersionHistory,
-// restoreVersion, getWaveformChunks, clearOverlayCache, getWaveformPeaks,
-// getFilmstrip, getSampleFrame. This file fails to compile if those methods are
-// mistyped, and verifies that (a) an adapter implementing them type-checks and
-// (b) one omitting them still type-checks. It also pins the `RenderOptions`
-// shape both `render` and `renderAsync` accept.
+// The video editor adds ELEVEN optional adapter methods. This file pins EIGHT
+// of them:
+//   listVersionHistory, restoreVersion, getWaveformChunks, clearOverlayCache,
+//   getWaveformPeaks, getFilmstrip, getSampleFrame, analyzeAudioPolish
+// It fails to compile if those are mistyped, and verifies that (a) an adapter
+// implementing them type-checks and (b) one omitting them still type-checks.
+// It also pins the `RenderOptions` shape both `render` and `renderAsync` accept.
+//
+// The remaining three — resolveCaptionTemplate, generateCaptions, reportContext
+// — are NOT pinned here; they are exercised by their own feature tests
+// (CaptionRegenModal, VideoEditor.context, use-report-context). Stated
+// explicitly because this list previously read as an exhaustive enumeration of
+// the optional surface while silently omitting them, which misleads anyone
+// consulting it to learn what a host may implement.
 
 const project: EditorProject = {
   version: '1',
@@ -47,7 +56,7 @@ const baseRequired = {
   fileUrl: (path: string): string => path,
 }
 
-// (a) Adapter implementing all six new optional methods.
+// (a) Adapter implementing all seven new optional methods.
 function makeVideoAdapter(): EditorAdapter<EditorProject> {
   return {
     ...baseRequired,
@@ -78,6 +87,18 @@ function makeVideoAdapter(): EditorAdapter<EditorProject> {
       at: number,
       opts?: SampleFrameOptions,
     ): Promise<{ url: string }> => ({ url: `/files?at=${at}&curve=${opts?.sdrCurve ?? ''}` }),
+    analyzeAudioPolish: async (args): Promise<AudioPolishAnalysis> => {
+      if (args.piece === 'silence' || args.piece === 'fillers') {
+        return { piece: args.piece, removals: [{ start: 1, end: 2, text: 'um' }] }
+      }
+      if (args.piece === 'silence-check') {
+        return { piece: 'silence-check', keeps: [[0, 1], [2, 3]] }
+      }
+      if (args.piece === 'loudness') {
+        return { piece: 'loudness', measuredI: -18, measuredTP: -1, measuredLRA: 5, targetI: -14, gainDb: 4 }
+      }
+      return { piece: 'voice', vocalsPath: '/audio/vocals.wav', url: '/files?path=vocals.wav' }
+    },
   }
 }
 
@@ -95,6 +116,7 @@ describe('EditorAdapter video methods', () => {
     expect(typeof a.clearOverlayCache).toBe('function')
     expect(typeof a.getWaveformPeaks).toBe('function')
     expect(typeof a.getFilmstrip).toBe('function')
+    expect(typeof a.analyzeAudioPolish).toBe('function')
 
     const versions = await a.listVersionHistory!('p1')
     expect(versions[0]).toMatchObject({ hash: 'abc', message: 'init' })
@@ -120,6 +142,34 @@ describe('EditorAdapter video methods', () => {
     expect(sample.url).toBe('/files?at=4.5&curve=vivid1-neutral')
     // Options are optional; the host falls back to its default curve.
     expect((await a.getSampleFrame!('p1', 4.5)).url).toBe('/files?at=4.5&curve=')
+
+    // Discriminated on `piece`; times are source time, never timeline time.
+    const removals = await a.analyzeAudioPolish!({ projectId: 'p1', piece: 'silence', src: 'a.mp4' })
+    if (removals.piece === 'silence' || removals.piece === 'fillers') {
+      expect(removals.removals[0]).toMatchObject({ start: 1, end: 2 })
+    }
+    const keeps = await a.analyzeAudioPolish!({ projectId: 'p1', piece: 'silence-check', src: 'a.mp4' })
+    if (keeps.piece === 'silence-check') {
+      expect(keeps.keeps[0]).toEqual([0, 1])
+    }
+    const loudness = await a.analyzeAudioPolish!({
+      projectId: 'p1',
+      piece: 'loudness',
+      src: 'a.mp4',
+      options: { targetLufs: -14 },
+    })
+    if (loudness.piece === 'loudness') {
+      expect(loudness).toMatchObject({ targetI: -14, gainDb: 4 })
+    }
+    const voice = await a.analyzeAudioPolish!({
+      projectId: 'p1',
+      piece: 'voice',
+      src: 'a.mp4',
+      window: { in: 0, out: 10 },
+    })
+    if (voice.piece === 'voice') {
+      expect(voice.url).toBe('/files?path=vocals.wav')
+    }
   })
 
   it('an adapter omitting the new optional methods still type-checks', () => {
@@ -131,6 +181,7 @@ describe('EditorAdapter video methods', () => {
     expect(a.getWaveformPeaks).toBeUndefined()
     expect(a.getFilmstrip).toBeUndefined()
     expect(a.getSampleFrame).toBeUndefined()
+    expect(a.analyzeAudioPolish).toBeUndefined()
   })
 })
 
