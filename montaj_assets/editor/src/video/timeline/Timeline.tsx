@@ -23,6 +23,13 @@ import { useViewportStore, useViewportValue, xToTime } from './canvas/viewport'
 import { useKeymap, matchesArrowLeft, matchesArrowRight, matchesDelete } from '../keymap'
 import { Tooltip } from '../../ui/Tooltip'
 
+/** How long the auto-crossfade pass waits after an audio-timing change before
+ *  it COMMITS the derived fades. Long enough that the continuous changes of a
+ *  live drag keep resetting it (so a whole gesture commits its crossfade once,
+ *  via `commitTimelineEdit`, not per frame); short enough that a settled edge
+ *  edit or ripple-delete lands its fade promptly. See the effect below. */
+export const CROSSFADE_COMMIT_DELAY_MS = 250
+
 /** Imperative actions a host-level command palette can trigger on the
  *  timeline's zoom without lifting Timeline's local state up. Filled via
  *  `actionsRef` (SP5 T9) — mirrors `transportRef`'s "ref threaded down,
@@ -282,15 +289,29 @@ export default function Timeline({ project, clock, onProjectChange, onCaptionEdi
   // the DOM and canvas (T4) track-row areas share it; this effect is a thin
   // shell that applies the result.
   useEffect(() => {
-    if (!onProjectChange) return
+    if (!onOverlayEdit) return
     const next = computeAutoCrossfade(project)
-    // Preview AND commit: `onProjectChange` alone is a live, uncommitted edit
-    // (the host applies it without saving), so a derived change like this would
-    // sit unsaved until some unrelated gesture happened to flush it.
-    if (next) { onProjectChange(next); onOverlayEdit?.(next) }
-  // Intentionally keyed on a stable digest of audio-track timing/mute rather
-  // than the array identity, so the crossfade pass only re-runs on real edits.
-  }, [audioTracks.map(t => `${t.id}:${t.start}:${t.end}:${t.muted}`).join('|')])
+    if (!next) return
+    // Commit the derived crossfade on a short delay, NEVER synchronously per
+    // change. Audio timing moves on every mousemove of a drag, and committing
+    // each one recorded dozens of undo entries for a single gesture — audio's
+    // version of the per-move-undo bug the video-move commit split fixed. A
+    // drag's own commit (`commitTimelineEdit`) now folds the crossfade into its
+    // one undo step, so this debounced pass is only the catch-all for audio
+    // timing that changes OUTSIDE a gesture (ripple-delete, gap-collapse): mid-
+    // drag the timer is cleared and rescheduled every frame and never fires,
+    // and right after a gesture it no-ops because `computeAutoCrossfade` is
+    // idempotent. The digest keying this effect includes the FADES on purpose —
+    // the gesture's own crossfade commit changes it, which re-runs this effect
+    // and clears the pending timer rather than letting a stale one fire. That
+    // is also why this only commits and no longer previews via `onProjectChange`:
+    // a preview would change the fade digest and clear the timer before it
+    // fired, so a ripple-delete's crossfade would never get saved.
+    const timer = setTimeout(() => onOverlayEdit(next), CROSSFADE_COMMIT_DELAY_MS)
+    return () => clearTimeout(timer)
+  // Keyed on a stable digest of audio-track timing/mute AND fades, so the pass
+  // re-runs on real edits (see above for why the fades belong in the key).
+  }, [audioTracks.map(t => `${t.id}:${t.start}:${t.end}:${t.muted}:${t.fadeIn ?? ''}:${t.fadeOut ?? ''}`).join('|')])
 
   const [hoverPct, setHoverPct]               = useState<number | null>(null)
   const [draggingPlayhead, setDraggingPlayhead] = useState(false)

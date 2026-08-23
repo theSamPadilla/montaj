@@ -198,7 +198,7 @@ export default function StoryboardView({ project, onProjectChange, logMessage }:
             <>
               <div className="flex flex-col items-center gap-2 text-center">
                 <p className="text-gray-900 dark:text-white text-lg font-semibold">Message your agent to start</p>
-                <p className="text-gray-600 dark:text-gray-400 text-sm">The agent will build your storyboard — scenes, characters, and style. Copy this and send it.</p>
+                <p className="text-gray-600 dark:text-gray-400 text-sm">The agent will build your storyboard: scenes, characters, and style. Copy this and send it.</p>
               </div>
 
               {skillPath && (
@@ -321,7 +321,7 @@ export default function StoryboardView({ project, onProjectChange, logMessage }:
               />
             ))}
             {scenes.length === 0 && (
-              <p className="text-sm text-gray-500 dark:text-gray-500 italic">No scenes yet — the agent is still building the storyboard.</p>
+              <p className="text-sm text-gray-500 dark:text-gray-500 italic">No scenes yet. The agent is still building the storyboard.</p>
             )}
           </section>
 

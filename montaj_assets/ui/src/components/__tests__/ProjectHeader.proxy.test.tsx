@@ -49,7 +49,7 @@ describe('ProjectHeader — proxy migration chip', () => {
       tracks: [{ id: 'trk-0', items: [{ id: 'c1', type: 'video', src: '/a.mp4', start: 0, end: 5 }] }],
     })
     renderHeader(project)
-    expect(screen.getByText('Migrate to V4')).toBeInTheDocument()
+    expect(screen.getByText('Generate previews')).toBeInTheDocument()
   })
 
   it('hides the chip when every video item already has a proxySrc', () => {
@@ -57,7 +57,7 @@ describe('ProjectHeader — proxy migration chip', () => {
       tracks: [{ id: 'trk-0', items: [{ id: 'c1', type: 'video', src: '/a.mp4', proxySrc: '/a_proxy.mp4', start: 0, end: 5 }] }],
     })
     renderHeader(project)
-    expect(screen.queryByText('Migrate to V4')).not.toBeInTheDocument()
+    expect(screen.queryByText('Generate previews')).not.toBeInTheDocument()
   })
 
   it('hides the chip when settings.proxy is explicitly false', () => {
@@ -66,7 +66,7 @@ describe('ProjectHeader — proxy migration chip', () => {
       settings: { resolution: [1920, 1080], proxy: false } as unknown as Project['settings'],
     })
     renderHeader(project)
-    expect(screen.queryByText('Migrate to V4')).not.toBeInTheDocument()
+    expect(screen.queryByText('Generate previews')).not.toBeInTheDocument()
   })
 
   it('hides the chip for a project with no video items', () => {
@@ -74,7 +74,7 @@ describe('ProjectHeader — proxy migration chip', () => {
       tracks: [{ id: 'trk-0', items: [{ id: 'c1', type: 'image', src: '/a.png', start: 0, end: 5 }] }],
     })
     renderHeader(project)
-    expect(screen.queryByText('Migrate to V4')).not.toBeInTheDocument()
+    expect(screen.queryByText('Generate previews')).not.toBeInTheDocument()
   })
 
   it('opens the modal when the chip is clicked', () => {
@@ -82,17 +82,17 @@ describe('ProjectHeader — proxy migration chip', () => {
       tracks: [{ id: 'trk-0', items: [{ id: 'c1', type: 'video', src: '/a.mp4', start: 0, end: 5 }] }],
     })
     renderHeader(project)
-    fireEvent.click(screen.getByText('Migrate to V4'))
-    expect(screen.getByText('Migrate this project to V4')).toBeInTheDocument()
+    fireEvent.click(screen.getByText('Generate previews'))
+    expect(screen.getByText('Generate editing previews')).toBeInTheDocument()
   })
 
-  it('calls api.generateProxies when "Migrate now" is clicked', async () => {
+  it('calls api.generateProxies when "Generate now" is clicked', async () => {
     const project = baseProject({
       tracks: [{ id: 'trk-0', items: [{ id: 'c1', type: 'video', src: '/a.mp4', start: 0, end: 5 }] }],
     })
     renderHeader(project)
-    fireEvent.click(screen.getByText('Migrate to V4'))
-    fireEvent.click(screen.getByText('Migrate now'))
+    fireEvent.click(screen.getByText('Generate previews'))
+    fireEvent.click(screen.getByText('Generate now'))
     await waitFor(() => expect(generateProxies).toHaveBeenCalledWith('proj-1'))
   })
 })

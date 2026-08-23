@@ -11,7 +11,7 @@ import { applyTheme, defaultMontajTheme } from '../theme'
 import { collapseGaps, rippleDelete, splitAtTime } from './cuts'
 import { repairCaptionWords } from './captionRepair'
 import Timeline, { type TimelineActions } from './timeline/Timeline'
-import { computeDerivedTiming, enabledTrackItems, mapTrackItems, trackItems } from './timeline/timeline-model'
+import { computeAutoCrossfade, computeDerivedTiming, enabledTrackItems, mapTrackItems, trackItems } from './timeline/timeline-model'
 import { makeCaptionEdit, type CaptionEditPatch } from './timeline/makeCaptionEdit'
 import PreviewPlayer, { type TransportHandle } from './preview/PreviewPlayer'
 import { createPlaybackClock, type PlaybackClock } from './playback-clock'
@@ -27,6 +27,7 @@ import OverlayPropsModal from './preview/OverlayPropsModal'
 import CommandPalette, { type PaletteCommand } from './CommandPalette'
 import { createShuttleController } from './shuttle'
 import { useKeymap, matchesKey, matchesModKey, matchesPlainKey, matchesRedo, matchesShiftDelete, matchesUndo } from './keymap'
+import { useReportContext } from './use-report-context'
 
 // ── Layout preferences ───────────────────────────────────────────────────
 // Persisted per browser (not per project): how tall the timeline pane is, and
@@ -548,6 +549,15 @@ function ReviewSurface<P extends Project>({
   // and seeks to the same segment — that sibling only needs `selectedCaptionId`
   // and `setSelectedCaptionId` passed down, no lifting required.
   const [selectedCaptionId, setSelectedCaptionId] = useState<string | null>(null)
+  // Publish what we are looking at, so an agent can resolve "this section".
+  // No-ops entirely on a host that does not implement reportContext.
+  useReportContext({
+    adapter,
+    projectId: project.id,
+    clock,
+    selectedIds,
+    selectedCaptionId,
+  })
   const [rippleMode, setRippleMode]   = useState(false)
   // CapCut's "preview axis", off by default. Off changes nothing: clicking the
   // timeline moves the red playhead and the preview follows it, as always. On,
@@ -946,7 +956,13 @@ function ReviewSurface<P extends Project>({
    * already preview it lands a no-op.
    */
   function commitTimelineEdit(p: Project) {
-    sync.mutateTransient(() => p as P)
+    // Fold the auto-crossfade into the SAME commit as the gesture, so an audio
+    // drag/trim that ends overlapping a neighbour lands as ONE undo step (the
+    // move and its derived fade together) rather than the move here plus a
+    // separate fade commit. Idempotent — a project needing no fade comes back
+    // unchanged — so video moves and non-overlapping audio moves are untouched.
+    const faded = computeAutoCrossfade(p) ?? p
+    sync.mutateTransient(() => faded as P)
     void sync.commit()
   }
 

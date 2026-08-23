@@ -61,7 +61,7 @@ export default function ProxyMigrationModal({ project, onClose }: ProxyMigration
             <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-amber-500/15">
               <Sparkles size={14} className="text-amber-400" />
             </span>
-            <h2 className="text-sm font-semibold text-white">Migrate this project to V4</h2>
+            <h2 className="text-sm font-semibold text-white">Generate editing previews</h2>
           </div>
           <button onClick={onClose} className="text-gray-500 hover:text-white transition-colors text-lg leading-none">×</button>
         </div>
@@ -73,17 +73,17 @@ export default function ProxyMigrationModal({ project, onClose }: ProxyMigration
           {result ? (
             result.scheduled > 0 ? (
               <p className="text-sm text-emerald-400">
-                Migrating {result.scheduled} clips in the background. The timeline will fill in as they finish.
+                Generating previews for {result.scheduled} clips in the background. The timeline will fill in as they finish.
               </p>
             ) : result.alreadyFresh > 0 ? (
-              <p className="text-sm text-emerald-400">This project is already on V4.</p>
+              <p className="text-sm text-emerald-400">Every clip in this project already has a preview.</p>
             ) : (
-              <p className="text-sm text-amber-400">Nothing to migrate. The source files for this project are missing.</p>
+              <p className="text-sm text-amber-400">Nothing to generate. The source files for this project are missing.</p>
             )
           ) : (
             <div className="flex flex-col gap-4">
               <p className="text-sm text-gray-300">
-                This project was made in an older version of Montaj. Migrating updates it for the V4 editor:
+                Some clips in this project have no editing preview yet. Generating them gives you:
               </p>
               <ul className="flex flex-col gap-2.5">
                 <li className="flex items-center gap-3">
@@ -120,7 +120,7 @@ export default function ProxyMigrationModal({ project, onClose }: ProxyMigration
           <div className="flex items-center justify-end gap-2 px-5 py-4 border-t border-gray-800">
             <Button variant="secondary" size="sm" onClick={onClose} disabled={loading}>Cancel</Button>
             <Button size="sm" onClick={handleGenerate} disabled={loading}>
-              {loading ? 'Starting...' : 'Migrate now'}
+              {loading ? 'Starting...' : 'Generate now'}
             </Button>
           </div>
         )}

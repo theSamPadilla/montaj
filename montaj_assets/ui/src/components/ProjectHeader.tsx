@@ -103,10 +103,10 @@ export default function ProjectHeader({ project, onProjectChange, actions }: Pro
         <button
           onClick={() => setProxyOpen(true)}
           className="flex items-center gap-1 rounded px-1.5 py-0.5 text-xs bg-amber-50 text-amber-700 hover:bg-amber-100 dark:bg-amber-900/40 dark:text-amber-300 dark:hover:bg-amber-900/60 transition-colors shrink-0"
-          title="This project was made in an older version. Click to migrate it to V4."
+          title="Some clips have no editing preview, so scrubbing is slow. Click to generate them."
         >
           <Sparkles size={11} />
-          Migrate to V4
+          Generate previews
         </button>
       )}
 
@@ -134,7 +134,7 @@ export default function ProjectHeader({ project, onProjectChange, actions }: Pro
             ? 'text-red-500 bg-red-50 dark:bg-red-950'
             : 'text-gray-500 hover:text-gray-900 dark:hover:text-white hover:bg-gray-100 dark:hover:bg-gray-800',
         ].join(' ')}
-        title={refreshState === 'err' ? 'Refresh failed — check connection' : 'Refresh project'}
+        title={refreshState === 'err' ? 'Refresh failed. Check your connection.' : 'Refresh project'}
       >
         {refreshState === 'err'
           ? <AlertCircle size={12} />

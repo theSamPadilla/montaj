@@ -888,6 +888,31 @@ async function createAudioClock(
     decoding = true
     feedEpoch = epoch
     const end = Math.min(nextPacketIdx + AUDIO_BATCH_PACKETS, audio.samples.length)
+
+    // A ranged source (`demux.ts`) holds the packet INDEX but not necessarily
+    // the packet BYTES. `ensure` returns null once they are resident — the
+    // whole-file path always does — so the steady state is unchanged and this
+    // costs nothing. On a miss, hold `decoding` (the re-entrance gate) across
+    // the fetch and then re-run from the top rather than continuing with this
+    // batch's indices: a `restartAt` may have moved `nextPacketIdx` while the
+    // bytes were in flight, and feeding the pre-seek batch would fill the ring
+    // with audio from the position the user just left.
+    const bytes = audio.ensure?.(nextPacketIdx, end)
+    if (bytes) {
+      bytes.then(
+        () => {
+          decoding = false
+          if (!disposed) feedMore()
+        },
+        (err: unknown) => {
+          decoding = false
+          feedFailed = true
+          onError?.(`audio fetch: ${err instanceof Error ? err.message : String(err)}`)
+        },
+      )
+      return
+    }
+
     try {
       for (let i = nextPacketIdx; i < end; i++) {
         const s = audio.samples[i]

@@ -408,6 +408,19 @@ export interface TickPlan {
   opaque: boolean
   /** The next track-0 video item starting after `t` — the prewarm target. */
   next: { item: VisualItem; clipId: string; start: number } | null
+  /**
+   * The track-0 video item immediately BEFORE the active one — the retain
+   * target behind the playhead.
+   *
+   * Prewarming only forward was right when a cached source pinned a whole
+   * proxy, but it made the commonest editing gesture the expensive one: nudge
+   * the playhead back over a cut and the clip you just left had already been
+   * disposed, so it rebuilt from scratch — new decode worker, new demux — every
+   * time you crossed the seam. Naming it in the plan lets `retainFor` keep it
+   * alive instead, which is only affordable now that ranged loading made a
+   * retained source cost a sample index rather than a file.
+   */
+  prev: { item: VisualItem; clipId: string; start: number } | null
   /** No track-0 video items at all — the legacy `isCanvasProject`. */
   canvas: boolean
 }
@@ -582,7 +595,19 @@ export function planTick(
     }
   }
 
-  return { t, active, opaque, next, canvas: clips.length === 0 }
+  // `clips` is start-sorted, so the LAST one starting before `t` that is not
+  // the active clip is the one immediately behind it. Excluding the active clip
+  // by id matters when clips overlap: `active` resolves to the latest start
+  // among the overlapping set, and without the check `prev` would name that
+  // same clip and retain nothing extra.
+  let prev: TickPlan['prev'] = null
+  for (const clip of clips) {
+    if (clip.start >= t) break
+    if (active && clip.id === active.clipId) continue
+    prev = { item: clip, clipId: clip.id, start: clip.start }
+  }
+
+  return { t, active, opaque, next, prev, canvas: clips.length === 0 }
 }
 
 // ── Injected async surfaces ─────────────────────────────────────────────────
@@ -1128,9 +1153,18 @@ class SchedulerImpl implements Scheduler {
   }
 
   /**
-   * Declare the live-session set: the active clip, plus the next one once its
-   * boundary is inside the prewarm lead. Everything else the host disposes —
-   * terminate-and-respawn stated as a set difference.
+   * Declare the live-session set: the active clip, the next one once its
+   * boundary is inside the prewarm lead, and the previous one. Everything else
+   * the host disposes — terminate-and-respawn stated as a set difference.
+   *
+   * The window is deliberately asymmetric. FORWARD retention is conditional on
+   * `prewarmLeadS` because playback reaches the next clip on a schedule, so
+   * there is a right moment to start; BACKWARD retention is unconditional
+   * because a scrub back across the cut has no schedule at all — by the time
+   * you could predict it, it has already happened, and predicting it wrongly is
+   * exactly the rebuild this exists to avoid. Both extra sessions usually cost
+   * nothing beyond a clock: `FrameServer` is refcounted by SRC, and on a
+   * silence-trimmed timeline prev/active/next are three windows into ONE proxy.
    *
    * Every request's `item` carries its TRACK's volume/mute already folded in
    * (`withTrackAudio`). The plan's own items are untouched — only what crosses
@@ -1148,20 +1182,33 @@ class SchedulerImpl implements Scheduler {
       })
     }
     if (plan.next && plan.next.start - t <= this.prewarmLeadS) {
-      // The same proxy-only gate the active clip goes through, over the same
-      // timeline-core window the resolver itself computes — never a second,
-      // drifting copy of the precedence chain.
-      const { src } = engineSrcFor(plan.next.item, sourceWindow(plan.next.item, 'preview'))
-      if (src) {
-        requests.push({
-          clipId: plan.next.clipId,
-          item: withTrackAudio(this.clipsTrack, plan.next.item),
-          src,
-          anchorProjectS: plan.next.start,
-        })
-      }
+      this.pushRetain(requests, plan.next)
+    }
+    if (plan.prev) {
+      this.pushRetain(requests, plan.prev)
     }
     this.host.retain(requests)
+  }
+
+  /**
+   * Add a non-active clip to the retained set, if it has an engine-usable src.
+   *
+   * The same proxy-only gate the active clip goes through, over the same
+   * timeline-core window the resolver itself computes — never a second,
+   * drifting copy of the precedence chain.
+   */
+  private pushRetain(
+    requests: SourceRequest[],
+    clip: { item: VisualItem; clipId: string; start: number },
+  ): void {
+    const { src } = engineSrcFor(clip.item, sourceWindow(clip.item, 'preview'))
+    if (!src) return
+    requests.push({
+      clipId: clip.clipId,
+      item: withTrackAudio(this.clipsTrack, clip.item),
+      src,
+      anchorProjectS: clip.start,
+    })
   }
 
   /** Playback path: paint whatever frame is due at the media clock. */

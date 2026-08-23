@@ -272,6 +272,17 @@ export function createMontajAdapter(): EditorAdapter<Project> {
 
     // ── Video editor capabilities ──────────────────────────────────────────────
 
+    /** Publish the live playhead/selection so the MCP server can read it.
+     *  Swallows every failure: this is a convenience channel and must never
+     *  make the editor look broken when serve is busy or restarting. */
+    reportContext: async (id, context) => {
+      try {
+        await api.reportContext(id, context)
+      } catch {
+        // Intentionally silent — see above.
+      }
+    },
+
     // Version history → `GET /api/projects/:id/versions`, mapped down to the
     // editor's VersionEntry slice (hash/message/timestamp).
     listVersionHistory: async (id: string): Promise<VersionEntry[]> => {

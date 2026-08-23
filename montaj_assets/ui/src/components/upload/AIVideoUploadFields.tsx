@@ -406,7 +406,7 @@ export function AIVideoUploadFields({ data, onChange, onError }: {
         })}
 
         {imageRefs.length > 6 && (
-          <p className="text-xs text-amber-500">Lots of references — the agent may take longer to process all of them.</p>
+          <p className="text-xs text-amber-500">Lots of references, so the agent may take longer to process all of them.</p>
         )}
 
         <button

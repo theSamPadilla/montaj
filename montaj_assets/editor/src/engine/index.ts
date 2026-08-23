@@ -4,9 +4,12 @@
  * `scheduler.ts` decides; this module makes those decisions possible. It owns
  * the three things a pure state machine cannot:
  *
- *   1. **Resources.** `loadBytes → demux → createFrameServer → createMasterClock`
- *      for one clip, behind the scheduler's `SourceHost` interface. The
- *      scheduler declares which clips it needs; this reconciles.
+ *   1. **Resources.** `demux → createFrameServer → createMasterClock` for one
+ *      clip, behind the scheduler's `SourceHost` interface. The scheduler
+ *      declares which clips it needs; this reconciles. `demux` is ranged — it
+ *      returns once the header is read and pulls media bytes as the playhead
+ *      reaches them — so a build finishing is no longer the same event as the
+ *      whole proxy having arrived.
  *   2. **The rAF loop.** Injected (`requestFrame`/`cancelFrame`) so tests drive
  *      it by hand, and running ONLY while the transport is playing — a paused
  *      editor burns no frames, exactly like the legacy hook's boundary rAF.
@@ -32,10 +35,13 @@
  *     `start`/`inPoint`/`volume`/`muted` and T4 is explicit that a live clock is
  *     never reconfigured.
  *   - **`DemuxedSource` — cached by `src` in a small LRU** beyond the live refs.
- *     Demuxing is the expensive half (a whole-file fetch plus a sample-table
- *     walk) and scrubbing back and forth across a cut is the single most common
- *     thing anyone does in an editor. Decode WORKERS are still terminated on
- *     the boundary; only the parsed bytes linger.
+ *     Demuxing used to be the expensive half (a WHOLE-FILE fetch plus a
+ *     sample-table walk) and scrubbing back and forth across a cut is the
+ *     single most common thing anyone does in an editor. Ranged loading made
+ *     the fetch half cheap, but the cache earns its place either way: it holds
+ *     the parsed sample index and whatever bytes have already been pulled, so a
+ *     re-entered source starts warm. What lingers is now bounded by
+ *     `demux.ts`'s resident-byte budgets rather than by the file's size.
  */
 import { designCanvas, sourceWindow } from '@bycrux/timeline-core'
 import type { EditorProject as Project, VisualItem } from '../schema'
@@ -57,11 +63,53 @@ import {
 export * from './scheduler'
 
 /**
- * Parsed sources kept alive past their last reference. Three covers "the clip
- * you are on, the one before it, the one after it" — the span a scrub across a
- * cut touches — without pinning a whole timeline's proxies in memory.
+ * Parsed sources kept alive past their last reference.
+ *
+ * Was 3 — "the clip you are on, the one before it, the one after it" — because
+ * a cached source used to pin a WHOLE PROXY in memory and three of those was
+ * already hundreds of megabytes. Ranged loading changed what a cached source
+ * costs: it is now a sample index plus a bounded byte cache (`demux.ts`'s
+ * `MAX_RESIDENT_*_BYTES` and `media-loader.ts`'s `MAX_CACHED_BYTES`, ~26 MB
+ * between them at the ceiling), so the same memory buys more of them. Five
+ * covers the retain window plus the two clips either side of it, which is the
+ * span a fast back-and-forth scrub across two cuts touches.
  */
-export const DEMUX_CACHE_MAX = 3
+export const DEMUX_CACHE_MAX = 5
+
+/**
+ * How long a source build may run before it is aborted.
+ *
+ * The failure this exists for: a fetch that never settles left the session in
+ * `loading` forever, and `state()` reports `loading` as the same
+ * "Preparing preview…" a not-yet-encoded proxy produces — so a hung request was
+ * indistinguishable from a proxy that simply had not arrived, and stayed on
+ * screen until the tab was reloaded. Aborting turns it into a `failed` session
+ * with a reason, which the retry below can then act on.
+ *
+ * Generous on purpose. A ranged build is a header fetch and at most one or two
+ * follow-ups; twenty seconds is not a latency budget, it is the point past
+ * which the request is not coming back.
+ */
+export const BUILD_TIMEOUT_MS = 20_000
+
+/**
+ * How many times a failed session may be rebuilt before the clip is left alone.
+ *
+ * Bounded because the failure might be permanent (a corrupt proxy, a codec the
+ * browser will not configure) and `retain` runs every tick — an unbounded retry
+ * would be an infinite rebuild loop burning a decode worker per attempt.
+ */
+export const MAX_SESSION_RETRIES = 3
+
+/**
+ * Backoff before the first retry, doubling per attempt (≈0.75s, 1.5s, 3s).
+ *
+ * Without it the three attempts would all be spent inside a few frames of the
+ * rAF loop, which retries nothing useful: the transient cases worth retrying —
+ * a proxy still being written, a request that lost its connection — need wall
+ * time to resolve, not another immediate attempt.
+ */
+export const SESSION_RETRY_BASE_MS = 750
 
 // ── Public surface ──────────────────────────────────────────────────────────
 
@@ -245,6 +293,13 @@ interface Session {
    * not.
    */
   speed: number
+  /** Rebuild attempts already spent on this clip — see {@link MAX_SESSION_RETRIES}. */
+  retries: number
+  /**
+   * Wall-clock milliseconds before which a `failed` session must not be
+   * retried. 0 on a session that has not failed.
+   */
+  retryAfterMs: number
 }
 
 interface ServerEntry {
@@ -255,6 +310,8 @@ interface ServerEntry {
 interface DemuxEntry {
   promise: Promise<DemuxedSource>
   controller: AbortController
+  /** Clears the build timeout. Idempotent; called on settle and on abandon. */
+  clearTimeout: () => void
   waiters: number
   /** How many `abandonDemux` calls this entry has absorbed — see `abandonDemux`. */
   abandoned: number
@@ -308,9 +365,30 @@ class EngineSourceHost implements SourceHost {
       }
     }
     for (const request of requests) {
-      if (this.sessions.has(request.clipId)) continue
+      const existing = this.sessions.get(request.clipId)
+      if (existing) {
+        // A `failed` session is KEPT in the map so `state()` can answer
+        // `'failed'` and this loop does not immediately rebuild it. That was
+        // unconditional, which made every failure permanent for as long as the
+        // clip stayed retained — including the transient ones (a proxy still
+        // being written, a request that lost its connection, a build that hit
+        // the timeout above). Retry is bounded and backed off so the "leave it
+        // alone" property still holds for a genuinely broken clip.
+        if (existing.status !== 'failed') continue
+        if (existing.retries >= MAX_SESSION_RETRIES) continue
+        if (this.now() < existing.retryAfterMs) continue
+        const retries = existing.retries + 1
+        this.dropSession(request.clipId)
+        this.startSession(request, retries)
+        continue
+      }
       this.startSession(request)
     }
+  }
+
+  /** Wall clock, through the injected seam so tests drive the backoff by hand. */
+  private now(): number {
+    return this.deps.nowMs?.() ?? performance.now()
   }
 
   state(clipId: string): SourceState {
@@ -334,15 +412,25 @@ class EngineSourceHost implements SourceHost {
     for (const clipId of [...this.sessions.keys()]) this.dropSession(clipId)
     for (const [, entry] of this.servers) entry.server.dispose()
     this.servers.clear()
+    // Ranged sources hold cached file bytes and can have reads in flight;
+    // dropping the map reference alone would leave both to the collector.
+    // Only done here, never on LRU eviction: `evictDemux` skips any src with a
+    // live server, so an evicted source has nothing reading it and nothing to
+    // abort, whereas closing one out from under an in-flight `build()` would
+    // strand the clip it was building.
+    for (const [, source] of this.demuxCache) source.dispose?.()
     this.demuxCache.clear()
-    for (const [, entry] of this.demuxing) entry.controller.abort()
+    for (const [, entry] of this.demuxing) {
+      entry.clearTimeout()
+      entry.controller.abort()
+    }
     this.demuxing.clear()
     this.scheduler = null
   }
 
   // ── session lifecycle ─────────────────────────────────────────────────────
 
-  private startSession(request: SourceRequest): void {
+  private startSession(request: SourceRequest, retries = 0): void {
     const session: Session = {
       clipId: request.clipId,
       src: request.src,
@@ -353,6 +441,8 @@ class EngineSourceHost implements SourceHost {
       muted: !!request.item.muted,
       volume: request.item.volume ?? 1,
       speed: request.item.speed ?? 1,
+      retries,
+      retryAfterMs: 0,
     }
     this.sessions.set(request.clipId, session)
     void this.build(session, request)
@@ -421,11 +511,23 @@ class EngineSourceHost implements SourceHost {
       if (acquired) this.releaseServer(session.src, session.clipId)
       if (session.cancelled) return
       const message = err instanceof Error ? err.message : String(err)
-      session.status = 'failed'
-      session.reason = message
+      this.markFailed(session, message)
       this.deps.onError?.(`engine: ${session.src} — ${message}`)
     }
     this.scheduler?.sourceChanged(session.clipId)
+  }
+
+  /**
+   * Move a session to `failed` and arm its retry window.
+   *
+   * The backoff doubles per attempt already spent, so the three attempts land
+   * roughly 0.75s, 1.5s and 3s after their respective failures rather than all
+   * inside the same handful of rAF ticks.
+   */
+  private markFailed(session: Session, reason: string): void {
+    session.status = 'failed'
+    session.reason = reason
+    session.retryAfterMs = this.now() + SESSION_RETRY_BASE_MS * 2 ** session.retries
   }
 
   private dropSession(clipId: string): void {
@@ -453,8 +555,7 @@ class EngineSourceHost implements SourceHost {
     this.deps.onError?.(`engine: decode failed for ${src} — ${message}`)
     for (const session of this.sessions.values()) {
       if (session.src !== src || session.status === 'failed') continue
-      session.status = 'failed'
-      session.reason = message
+      this.markFailed(session, message)
       session.source?.clock.dispose()
       if (session.source) {
         session.source = undefined
@@ -505,8 +606,39 @@ class EngineSourceHost implements SourceHost {
     let entry = this.demuxing.get(src)
     if (!entry) {
       const controller = new AbortController()
-      const promise = demux(src, this.deps.fileUrl, { signal: controller.signal })
-      entry = { promise, controller, waiters: 0, abandoned: 0 }
+      // The AbortController was already here for `abandonDemux`; the timer just
+      // gives it a second trigger. Aborting is the only thing that CAN end a
+      // hung fetch — a `Promise.race` would resolve the build's promise while
+      // the request stayed open, which is how you leak a connection per stalled
+      // clip on a timeline that keeps scrubbing past them.
+      let timedOut = false
+      let timer: ReturnType<typeof setTimeout> | undefined = setTimeout(() => {
+        timedOut = true
+        controller.abort()
+      }, BUILD_TIMEOUT_MS)
+      const clear = () => {
+        if (timer === undefined) return
+        clearTimeout(timer)
+        timer = undefined
+      }
+      const promise = demux(src, this.deps.fileUrl, { signal: controller.signal }).then(
+        (source) => {
+          clear()
+          return source
+        },
+        (err: unknown) => {
+          clear()
+          // The abort surfaces as a generic `AbortError`, which reads as "the
+          // caller cancelled" and would be shown to the user as such. Name the
+          // real cause instead: the session's `reason` is what reaches the
+          // Preparing placeholder.
+          if (timedOut) {
+            throw new Error(`preview build timed out after ${BUILD_TIMEOUT_MS} ms`)
+          }
+          throw err
+        },
+      )
+      entry = { promise, controller, clearTimeout: clear, waiters: 0, abandoned: 0 }
       this.demuxing.set(src, entry)
     }
     entry.waiters++
@@ -538,6 +670,7 @@ class EngineSourceHost implements SourceHost {
     if (!entry) return
     entry.abandoned++
     if (entry.abandoned < entry.waiters) return
+    entry.clearTimeout()
     entry.controller.abort()
     this.demuxing.delete(src)
   }

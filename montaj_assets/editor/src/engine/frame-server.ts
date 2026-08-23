@@ -236,6 +236,21 @@ class FrameServerImpl implements FrameServer {
   private batchExpected: number[] = []
   /** Decoded, undelivered frames, ascending by timestamp. */
   private frameBuffer: VideoFrame[] = []
+  /**
+   * Serializes posts behind a ranged source's byte fetches. Idle (depth 0)
+   * whenever nothing is waiting on bytes, which is when `postBatch` skips it
+   * entirely and posts synchronously — see `postBatch`.
+   */
+  private postQueue: Promise<void> = Promise.resolve()
+  private postDepth = 0
+  /**
+   * Which post chain is live. Bumped by `claimReqId`, i.e. every time
+   * everything older is superseded: a scrub landing mid-fetch must not queue
+   * behind the fetch it just made pointless, or the new frame would arrive no
+   * sooner than the abandoned one would have. Steps from a retired generation
+   * still run — they just settle their seek and return without posting.
+   */
+  private postGen = 0
 
   private received = 0
   private dropped = 0
@@ -278,6 +293,7 @@ class FrameServerImpl implements FrameServer {
   private claimReqId(): number {
     const reqId = this.nextReqId++
     this.latestReqId = reqId
+    this.retirePostQueue()
     for (const [id, pending] of this.pendingSeeks) {
       if (isSuperseded(id, this.latestReqId) && !pending.superseded) {
         pending.superseded = true
@@ -403,14 +419,125 @@ class FrameServerImpl implements FrameServer {
    * Post one decode range. Samples are sliced out of the demuxed table in
    * DECODE order and mapped to the wire shape; no transfer list, on purpose —
    * see the module doc.
+   *
+   * ── Ranged sources ──
+   * A ranged source (`demux.ts`) has the sample INDEX but not necessarily the
+   * sample BYTES, so the range has to be `ensure`d first. `ensure` returns
+   * `null` when the bytes are already there — which is always, on the
+   * whole-file path, and usually, mid-stream — so the common case stays exactly
+   * as synchronous as it was before ranged loading existed. That matters: a
+   * seek that had to hop a microtask would be a seek that paints a frame late.
+   *
+   * When a fetch IS needed, every subsequent post queues behind it. Not an
+   * optimization detail — `VideoDecoder` takes chunks in DECODE order and
+   * throws on the first one out of sequence, so a later batch overtaking an
+   * earlier one that is still fetching would kill the decoder for the rest of
+   * the session (SP1 §7.1, from the other direction).
    */
   private postBatch(startIdx: number, endIdx: number, targetTsUs: number, reqId: number): void {
+    if (this.postDepth === 0) {
+      const pending = this.video.ensure?.(startIdx, endIdx)
+      if (!pending) {
+        this.sendBatch(startIdx, endIdx, targetTsUs, reqId)
+        return
+      }
+      this.queuePost(pending, startIdx, endIdx, targetTsUs, reqId)
+      return
+    }
+    this.queuePost(null, startIdx, endIdx, targetTsUs, reqId)
+  }
+
+  /** Chain a post behind whatever byte fetches are already queued. */
+  private queuePost(
+    started: Promise<void> | null,
+    startIdx: number,
+    endIdx: number,
+    targetTsUs: number,
+    reqId: number,
+  ): void {
+    const gen = this.postGen
+    this.postDepth++
+    this.postQueue = this.postQueue
+      .then(async () => {
+        if (this.disposed) return
+        // A batch whose request was superseded while its bytes were in flight
+        // has nothing to answer, so it is not sent: decoding it would only
+        // produce frames `onFrameEvt` closes as stale. Its seek still has to be
+        // settled here — `claimReqId` marks a superseded seek and closes the
+        // frame it was holding, but the `null` normally arrives with the
+        // worker's `done`, which is never coming for a batch that never went.
+        if (this.retired(gen, reqId)) return
+        await (started ?? this.video.ensure?.(startIdx, endIdx))
+        if (this.disposed || this.retired(gen, reqId)) return
+        this.sendBatch(startIdx, endIdx, targetTsUs, reqId)
+      })
+      .catch((err: unknown) => {
+        this.failPost(reqId, err instanceof Error ? err.message : String(err))
+      })
+      .finally(() => {
+        if (gen === this.postGen) this.postDepth--
+      })
+  }
+
+  /** Superseded or from a retired chain: settle the seek and post nothing. */
+  private retired(gen: number, reqId: number): boolean {
+    if (gen === this.postGen && !isSuperseded(reqId, this.latestReqId)) return false
+    this.dropSeek(reqId)
+    return true
+  }
+
+  /**
+   * Retire the current post chain so the next post starts from an empty queue.
+   *
+   * Called from `claimReqId`, where everything older has just been superseded
+   * by definition — so nothing still queued can be wanted, and making the new
+   * request wait behind an abandoned fetch would hand back exactly the latency
+   * ranged loading exists to remove. No-op when nothing is queued, which is the
+   * normal case and keeps `postBatch`'s synchronous path intact.
+   */
+  private retirePostQueue(): void {
+    if (this.postDepth === 0) return
+    this.postGen++
+    this.postQueue = Promise.resolve()
+    this.postDepth = 0
+  }
+
+  /** Settle a seek with `null` and release the frame it was holding. */
+  private dropSeek(reqId: number): void {
+    const pending = this.pendingSeeks.get(reqId)
+    if (!pending) return
+    this.pendingSeeks.delete(reqId)
+    if (pending.best) {
+      pending.best.close()
+      this.dropped++
+    }
+    pending.resolve(null)
+  }
+
+  private sendBatch(startIdx: number, endIdx: number, targetTsUs: number, reqId: number): void {
     const samples: WorkerSample[] = []
     for (let i = startIdx; i < endIdx; i++) {
       const s: SampleRef = this.video.samples[i]
       samples.push({ tsUs: s.tsUs, durUs: s.durUs, isKey: s.isKey, data: s.data })
     }
     this.worker.postMessage({ t: 'decodeRange', samples, targetTsUs, reqId })
+  }
+
+  /**
+   * A batch's bytes could not be fetched.
+   *
+   * Reported through the same `onError` a decode failure uses, so `index.ts`
+   * fails the session and the clip lands on the Preparing placeholder with a
+   * reason — the same outcome a proxy that never loaded produces. A seek
+   * waiting on this batch is settled with `null` first: its frame promise is
+   * contractually total, and leaving it pending would hang the scrub rather
+   * than showing the failure.
+   */
+  private failPost(reqId: number, message: string): void {
+    if (this.disposed) return
+    this.lastError = message
+    this.dropSeek(reqId)
+    this.onError?.(message)
   }
 
   /** Top up decode-ahead from the planner's decisions. */

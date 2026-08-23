@@ -88,9 +88,21 @@ declare module 'mp4box' {
     esds?: { esd?: MP4BoxDescriptor }
   }
 
-  /** The slice of a `trak` box `demux.ts` walks to reach the `stsd` entries. */
+  /**
+   * The slice of a `trak` box `demux.ts` walks: the `stsd` entries, and the
+   * sample list mp4box builds from the sample tables.
+   *
+   * `samples` is populated by `buildSampleLists()` the moment `moov` finishes
+   * parsing — BEFORE any `mdat` byte has been seen — which is what makes ranged
+   * loading possible: every sample's `offset`/`size`/`cts`/`dts`/`is_sync` is
+   * already known, and only `data` is missing. `demux.ts`'s ranged path reads
+   * this array directly instead of going through `setExtractionOptions` +
+   * `onSamples`, because the extraction API's whole job is to hand back sample
+   * DATA, which is precisely the thing we are trying not to download.
+   */
   export interface MP4BoxTrak {
     mdia: { minf: { stbl: { stsd: { entries: MP4BoxSampleEntry[] } } } }
+    samples: MP4Sample[]
   }
 
   /**
@@ -143,6 +155,20 @@ declare module 'mp4box' {
     cts: number
     duration: number
     size: number
+    /**
+     * Byte offset of this sample's data in the FILE, resolved from
+     * `stco`/`co64` + `stsc` while the sample list is built. Known from the
+     * moov alone, which is what the ranged loader ranges on.
+     */
+    offset: number
+    /**
+     * The sample's encoded bytes. Typed as always-present because it is, on
+     * every sample delivered through `onSamples` — mp4box only emits a sample
+     * once it has read the data. A sample taken straight off
+     * `MP4BoxTrak.samples` is a different animal: mp4box has not filled this in
+     * yet, which is exactly why the ranged path reads `offset`/`size` and
+     * fetches the bytes itself rather than touching this field.
+     */
     data: Uint8Array
   }
 

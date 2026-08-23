@@ -715,14 +715,34 @@ describe('transition: play into a gap and out the other side', () => {
     expect(h.host.sessions.has('b')).toBe(true)
   })
 
-  it('drops the clip it left — the boundary terminate-and-respawn rule', () => {
-    const h = harness(p)
+  it('keeps the clip it just left retained, and drops it once it is no longer behind', () => {
+    // Reverses the original terminate-on-boundary rule. Disposing the outgoing
+    // clip made nudging the playhead back over a cut — the commonest gesture in
+    // an editor — rebuild it from scratch every single time. It is retained
+    // instead: its stream is stopped and its clock paused (asserted below), but
+    // the session survives so crossing back is free. Affordable only because
+    // ranged loading made a retained source cost a sample index rather than a
+    // whole proxy.
+    const three = project([clip('a', 0, 2), clip('b', 3, 5), clip('c', 5, 7)])
+    const h = harness(three)
     h.scheduler.play()
     step(h, 1)
     const serverA = h.host.server('a')
+    const sessionA = h.host.sessions.get('a')!
+
     step(h, 3.05)
-    expect(serverA.disposed).toBe(true)
+    expect(serverA.stops).toBeGreaterThan(0)
+    expect(serverA.disposed).toBe(false)
+    expect(sessionA.clock.playing).toBe(false)
+    expect(h.host.lastRetain().map((r) => r.clipId)).toContain('a')
+    expect(h.host.droppedClips).not.toContain('a')
+
+    // Two cuts later 'a' is neither active nor the clip behind the playhead, so
+    // the set difference finally takes it.
+    step(h, 5.05)
+    expect(h.host.lastRetain().map((r) => r.clipId)).not.toContain('a')
     expect(h.host.droppedClips).toContain('a')
+    expect(serverA.disposed).toBe(true)
   })
 })
 
@@ -904,9 +924,15 @@ describe('transition: boundary swap', () => {
 
     step(h, 2.05)
     const serverB = h.host.server('b')
+    // The outgoing session is STOPPED, not destroyed: nothing decodes and
+    // nothing plays out of it, but it stays retained as the clip behind the
+    // playhead so a scrub back over the cut does not rebuild it. What the swap
+    // rule was really protecting — no live session is ever reconfigured — is
+    // asserted by the next test.
     expect(serverA.stops).toBeGreaterThan(0)
-    expect(serverA.disposed).toBe(true)
-    expect(clockA.disposed).toBe(true)
+    expect(serverA.disposed).toBe(false)
+    expect(clockA.disposed).toBe(false)
+    expect(clockA.playing).toBe(false)
     // Anchored at the tick's time, not snapped back to the cut.
     expect(serverB.starts).toHaveLength(1)
     expect(serverB.starts[0]).toBeCloseTo(50_000, 3)

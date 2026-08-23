@@ -42,7 +42,7 @@ export interface Profile {
 // Montaj re-exports them so callers (OverlaysPage/ProfilesPage/montajAdapter)
 // and the adapter contract refer to the same type. Imported locally too so the
 // request<…> generics below can name them.
-import type { GlobalOverlay, GlobalOverlayProp } from '@bycrux/editor'
+import type { GlobalOverlay, GlobalOverlayProp, EditorContext } from '@bycrux/editor'
 export type { GlobalOverlay, GlobalOverlayProp }
 
 export interface ProfileAssetEntry {
@@ -98,6 +98,12 @@ export const api = {
     request<Project>(`/api/projects/${id}`, {
       method: 'PUT',
       body: JSON.stringify(project),
+    }),
+
+  reportContext: (id: string, context: EditorContext) =>
+    request<void>(`/api/projects/${id}/context`, {
+      method: 'POST',
+      body: JSON.stringify(context),
     }),
 
   createProject: (body: {

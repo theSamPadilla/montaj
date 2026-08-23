@@ -377,6 +377,20 @@ export const FOOTAGE_DND_MIME = 'application/x-montaj-footage'
 // ── Adapter ────────────────────────────────────────────────────────────────
 
 /**
+ * What the editor is looking at right now — ephemeral UI state, never part of
+ * the project document. Reported to the host so an agent can resolve "this
+ * section" against the actual playhead instead of guessing.
+ */
+export interface EditorContext {
+  /** Playhead position in project seconds. */
+  playheadSec: number
+  /** All selected timeline item ids; [0] is the primary. */
+  selectedIds: string[]
+  /** Selected caption segment id, if any. */
+  selectedCaptionId: string | null
+}
+
+/**
  * The contract a host implements to drive the editor. All transport,
  * authentication, and URL-shape concerns live behind this interface; the
  * editor calls only these methods.
@@ -623,6 +637,17 @@ export interface EditorAdapter<P extends Project = Project> {
    * hides the "Regenerate captions" control.
    */
   generateCaptions?(id: string, opts?: GenerateCaptionsOptions): AsyncIterable<CaptionEvent>
+
+  /**
+   * Optional: report the editor's live playhead and selection to the host.
+   *
+   * Fire-and-forget and already throttled by the editor (see
+   * `useReportContext`) — a host must not add its own debounce. Hosts with
+   * nowhere to put ephemeral UI state omit this entirely; the editor feature-
+   * detects its absence and reports nothing. A rejected promise is swallowed:
+   * context sync is a convenience and must never surface as an editor error.
+   */
+  reportContext?(id: string, context: EditorContext): Promise<void>
 }
 
 // ── Theme ────────────────────────────────────────────────────────────────────

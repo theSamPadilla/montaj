@@ -42,8 +42,22 @@
 // eslint-disable-next-line @typescript-eslint/triple-slash-reference
 /// <reference path="./mp4box.d.ts" />
 import * as MP4Box from 'mp4box'
-import type { MP4BoxDescriptor, MP4BoxSampleEntry, MP4Sample, MP4ArrayBuffer } from 'mp4box'
-import { loadBytes, type FileUrlResolver, type LoadBytesOptions } from './media-loader'
+import type {
+  MP4ArrayBuffer,
+  MP4BoxDescriptor,
+  MP4BoxSampleEntry,
+  MP4BoxTrak,
+  MP4File,
+  MP4Info,
+  MP4Sample,
+  MP4TrackInfo,
+} from 'mp4box'
+import {
+  openByteSource,
+  type FileUrlResolver,
+  type LoadBytesOptions,
+  type MediaByteSource,
+} from './media-loader'
 
 /** One encoded sample (video frame / audio packet), ready to become an `Encoded*Chunk`. */
 export interface SampleRef {
@@ -67,9 +81,35 @@ export interface SampleRef {
   durUs: number
   /** Sync sample (keyframe): decoding may start here. */
   isKey: boolean
-  /** The encoded bytes. */
+  /**
+   * The encoded bytes.
+   *
+   * On a RANGED source (the default — see `demuxRanged`) this starts as the
+   * shared empty array and is filled in by `ChunkSource.ensure`, then emptied
+   * again when the loader evicts the span. It is therefore only meaningful
+   * inside the window a caller has just ensured; anywhere else, an empty
+   * `data` means "not resident", not "an empty sample". Both readers —
+   * `frame-server.ts`'s `postBatch` and `audio-clock.ts`'s `feedMore` — go
+   * through `ensure` first for exactly this reason.
+   */
   data: Uint8Array
+  /**
+   * Byte offset of this sample in the file. Ranged sources only; `undefined`
+   * on the whole-file path, where the bytes are already in hand and there is
+   * nothing to range on.
+   */
+  offset?: number
+  /** Encoded length in bytes. Ranged sources only, same as {@link offset}. */
+  size?: number
 }
+
+/**
+ * The "not resident" sample payload. One shared instance rather than a fresh
+ * `new Uint8Array(0)` per sample: a 2-minute all-intra proxy has ~4000 video
+ * samples and ~7000 audio packets, and allocating 11000 empty typed arrays to
+ * represent "nothing here yet" is pure waste.
+ */
+const EMPTY_SAMPLE_DATA = new Uint8Array(0)
 
 /** A demuxed track: its decoder config plus its full sample index. */
 export interface ChunkSource {
@@ -139,6 +179,21 @@ export interface ChunkSource {
    * which is the first *decoded* frame and need not carry the lowest cts).
    */
   firstPresentationTsUs: number
+  /**
+   * Make `samples[startIdx…endIdx)` readable: fetch whatever part of that
+   * decode range is not resident and populate each sample's `data`.
+   *
+   * **Returns `null` when the bytes are already there**, which is the whole
+   * point of the shape: the whole-file path never defines `ensure` at all, and
+   * a ranged source returns `null` for a range it has already pulled, so the
+   * hot path (`frame-server.ts` posting the next batch of a stream that is
+   * already fed) stays synchronous. Only a genuine miss costs a promise — and
+   * a caller that gets one MUST await it before reading `data`.
+   *
+   * Rejects if the range cannot be fetched. Callers turn that into the same
+   * failure they already have for a proxy that will not load.
+   */
+  ensure?: (startIdx: number, endIdx: number) => Promise<void> | null
 }
 
 /** What `demux` returns for one media file: a video track and, if present, an audio track. */
@@ -147,6 +202,17 @@ export interface DemuxedSource {
   src: string
   video: ChunkSource
   audio: ChunkSource | null
+  /**
+   * Release the underlying byte source: drop its cached spans and abort reads
+   * still in flight. Ranged sources only; absent on the whole-file path, which
+   * holds nothing but the buffer the caller can already drop.
+   *
+   * Called by `index.ts` when a source leaves the demux LRU or the engine is
+   * torn down. A disposed source cannot be read again — evicting one that a
+   * live decode session is still using would strand it, which is why
+   * `evictDemux` skips any src with a frame server on it.
+   */
+  dispose?: () => void
 }
 
 /**
@@ -473,18 +539,362 @@ export function demuxBytes(bytes: ArrayBuffer, label = 'media'): DemuxedSource {
   }
 }
 
+// ── Ranged demux ─────────────────────────────────────────────────────────────
+
+/**
+ * How much of the file each header-walk step asks for while hunting `moov`.
+ *
+ * Equal to `media-loader.ts`'s `BLOCK_BYTES`/`PROBE_BYTES` so the first step is
+ * served straight out of the bytes the opening probe already fetched — for a
+ * `+faststart` proxy (which is what `lib/proxy.py` writes) that means the whole
+ * sample index arrives in the SAME request that measured the file, and the walk
+ * ends after one iteration with zero extra round trips.
+ */
+const HEADER_CHUNK_BYTES = 1024 * 1024
+
+/**
+ * Hard stop on the header walk. `moov` is either at the front (faststart) or
+ * one hop past `mdat` (mp4box reports where to jump), so a real file finishes
+ * in one or two steps; this only exists so a malformed container cannot spin
+ * the loop forever.
+ */
+const MAX_HEADER_CHUNKS = 64
+
+/**
+ * Resident-sample-data budget per track.
+ *
+ * This is the number that replaces "the whole proxy" as the engine's memory
+ * cost. Video gets the larger share because its samples are three orders of
+ * magnitude bigger than Opus packets; both are small next to a 400 MB file,
+ * which is the point.
+ */
+export const MAX_RESIDENT_VIDEO_BYTES = 16 * 1024 * 1024
+export const MAX_RESIDENT_AUDIO_BYTES = 2 * 1024 * 1024
+
+/**
+ * How many of the most recently loaded ranges are exempt from eviction.
+ *
+ * Load-bearing, not a tuning knob. A caller's sequence is `await ensure(a, b)`
+ * and then a SYNCHRONOUS read of `samples[a…b)`, and another track's `ensure`
+ * can resolve — and evict — in the microtask gap between the two. Anything
+ * inside the last few ranges must therefore still be there when the awaiting
+ * caller wakes up. Four covers `MAX_IN_FLIGHT_BATCHES` (2) with room to spare.
+ */
+const PROTECTED_RANGES = 4
+
+/** Copy bytes into a standalone `ArrayBuffer` tagged with its file offset for mp4box. */
+function toMp4Buffer(bytes: Uint8Array, fileStart: number): MP4ArrayBuffer {
+  const copy = new ArrayBuffer(bytes.length)
+  new Uint8Array(copy).set(bytes)
+  const buffer = copy as MP4ArrayBuffer
+  buffer.fileStart = fileStart
+  return buffer
+}
+
+/**
+ * Feed mp4box top-level boxes until it has parsed `moov`, skipping `mdat`.
+ *
+ * `appendBuffer` returns the file position mp4box wants next — that is the
+ * whole streaming contract, and it is what lets this jump over an `mdat` that
+ * may be hundreds of megabytes without reading a byte of it. Two cases come
+ * back and they need different handling:
+ *
+ *  - `next > end` (past what we just fed): mp4box finished a box and is telling
+ *    us to skip ahead. Follow it.
+ *  - `next <= end`: mp4box needs MORE of the box it is in the middle of.
+ *    Continue sequentially from where we stopped — following `next` here would
+ *    re-read the same bytes forever.
+ *
+ * Once `onReady` fires, mp4box has already run `buildSampleLists()`, so every
+ * track's `samples` array is fully populated with offsets and sizes and no
+ * data. That is the sample index; nothing else needs to be downloaded to build
+ * it.
+ */
+async function readMoov(
+  source: MediaByteSource,
+  label: string,
+): Promise<{ file: MP4File; info: MP4Info }> {
+  const file = MP4Box.createFile()
+  const errors: string[] = []
+  let info: MP4Info | null = null
+
+  file.onError = (e) => {
+    errors.push(String(e))
+  }
+  file.onReady = (parsed) => {
+    info = parsed
+  }
+
+  let next = 0
+  for (let step = 0; step < MAX_HEADER_CHUNKS; step++) {
+    if (next >= source.size) break
+    const end = Math.min(next + HEADER_CHUNK_BYTES, source.size)
+    const chunk = await source.read(next, end)
+    if (chunk.length === 0) break
+    const returned = file.appendBuffer(toMp4Buffer(chunk, next))
+    if (errors.length > 0) {
+      throw new Error(`demux: ${label} — mp4box parse error: ${errors.join('; ')}`)
+    }
+    if (info) return { file, info }
+    next = typeof returned === 'number' && returned > end ? returned : end
+  }
+
+  throw new Error(`demux: ${label} — no moov box found in ${source.size} bytes`)
+}
+
+/** One loaded decode range, for eviction bookkeeping. */
+interface LoadedRange {
+  seq: number
+  startIdx: number
+  endIdx: number
+}
+
+/**
+ * Build a track's `ensure`: the on-demand loader that turns "samples `a…b`"
+ * into "one byte range" and fills in their `data`.
+ *
+ * The byte range is the union of the samples' extents, which for an interleaved
+ * MP4 means it also spans the OTHER track's bytes sitting between them. That is
+ * fine and in fact desirable — `media-loader.ts` caches block-aligned, so the
+ * audio clock's read of the same region is a cache hit rather than a second
+ * fetch of the same megabytes.
+ *
+ * Ownership, not chunk membership, drives eviction: when a range overlaps one
+ * already loaded, the NEWER range takes ownership of the shared samples, so
+ * retiring the older one cannot pull bytes out from under a caller that just
+ * awaited the newer one.
+ */
+function createRangeLoader(
+  source: MediaByteSource,
+  samples: SampleRef[],
+  budgetBytes: number,
+): ((startIdx: number, endIdx: number) => Promise<void> | null) | undefined {
+  if (samples.length === 0) return undefined
+
+  /** `owner[i]` is the seq of the range that materialized sample i, or -1 for "not resident". */
+  const owner = new Int32Array(samples.length).fill(-1)
+  const ranges: LoadedRange[] = []
+  const inflight = new Map<string, Promise<void>>()
+  let residentBytes = 0
+  let nextSeq = 0
+
+  function evict(): void {
+    while (residentBytes > budgetBytes && ranges.length > PROTECTED_RANGES) {
+      const victim = ranges.shift()
+      if (!victim) return
+      for (let i = victim.startIdx; i < victim.endIdx; i++) {
+        if (owner[i] !== victim.seq) continue
+        residentBytes -= samples[i].data.length
+        samples[i].data = EMPTY_SAMPLE_DATA
+        owner[i] = -1
+      }
+    }
+  }
+
+  async function load(startIdx: number, endIdx: number): Promise<void> {
+    let lo = Number.POSITIVE_INFINITY
+    let hi = 0
+    for (let i = startIdx; i < endIdx; i++) {
+      const offset = samples[i].offset ?? 0
+      const size = samples[i].size ?? 0
+      if (offset < lo) lo = offset
+      if (offset + size > hi) hi = offset + size
+    }
+    if (!(hi > lo)) return
+
+    const seq = nextSeq++
+    const bytes = await source.read(lo, hi)
+    for (let i = startIdx; i < endIdx; i++) {
+      if (owner[i] < 0) {
+        const sample = samples[i]
+        const at = (sample.offset ?? 0) - lo
+        const size = sample.size ?? 0
+        if (at < 0 || at + size > bytes.length) {
+          throw new Error(
+            `demux: ${source.src} — sample ${i} falls outside its own byte range (truncated file?)`,
+          )
+        }
+        // A COPY, not a subarray view: a view would pin the whole fetched span
+        // for as long as any single sample outlives it, which is the memory
+        // problem this module exists to remove. `frame-server.ts` structured-
+        // clones these to the worker, so it copies regardless.
+        sample.data = bytes.slice(at, at + size)
+        residentBytes += sample.data.length
+      }
+      owner[i] = seq
+    }
+    ranges.push({ seq, startIdx, endIdx })
+    evict()
+  }
+
+  return (startIdx: number, endIdx: number): Promise<void> | null => {
+    const from = Math.max(0, Math.min(startIdx, samples.length))
+    const to = Math.max(from, Math.min(endIdx, samples.length))
+    if (to === from) return null
+    let missing = false
+    for (let i = from; i < to; i++) {
+      if (owner[i] < 0) {
+        missing = true
+        break
+      }
+    }
+    if (!missing) return null
+
+    const key = `${from}:${to}`
+    const existing = inflight.get(key)
+    if (existing) return existing
+    const pending = load(from, to).finally(() => {
+      inflight.delete(key)
+    })
+    inflight.set(key, pending)
+    return pending
+  }
+}
+
+/** Sample index for one track, straight off the moov — offsets and sizes, no data. */
+function refsFromTrak(trak: MP4BoxTrak, timescale: number): SampleRef[] {
+  const out: SampleRef[] = []
+  for (const s of trak.samples ?? []) {
+    out.push({
+      tsUs: (s.cts / timescale) * 1e6,
+      dtsUs: (s.dts / timescale) * 1e6,
+      durUs: (s.duration / timescale) * 1e6,
+      isKey: !!s.is_sync,
+      data: EMPTY_SAMPLE_DATA,
+      offset: s.offset,
+      size: s.size,
+    })
+  }
+  return out
+}
+
+/** The byte the track's last sample ends at — 0 for an empty track. */
+function trackEndOffset(samples: readonly SampleRef[]): number {
+  let end = 0
+  for (const s of samples) {
+    const at = (s.offset ?? 0) + (s.size ?? 0)
+    if (at > end) end = at
+  }
+  return end
+}
+
+/**
+ * Build a lazily-loaded `DemuxedSource` over an already-open byte source.
+ *
+ * Everything except sample DATA comes from the moov, so this returns as soon as
+ * the header is parsed — a couple of hundred KB regardless of whether the file
+ * behind it is 40 MB or 400 MB, which is the acceptance criterion this whole
+ * change exists to meet.
+ */
+async function buildRangedSource(
+  source: MediaByteSource,
+  label: string,
+): Promise<DemuxedSource> {
+  const { file, info } = await readMoov(source, label)
+
+  const vTrack = info.videoTracks?.[0]
+  const aTrack = info.audioTracks?.[0]
+  if (!vTrack) throw new Error(`demux: no video track in ${label}`)
+
+  const buildTrack = (kind: 'video' | 'audio', track: MP4TrackInfo): ChunkSource => {
+    const timescale = track.timescale || 1
+    const trak = file.getTrackById(track.id)
+    const samples = trak ? refsFromTrak(trak, timescale) : []
+    const presIndex = buildPresIndex(samples)
+    const durationS = track.duration / timescale
+    return {
+      kind,
+      codec: track.codec,
+      description: trak ? descriptionForEntries(trak.mdia.minf.stbl.stsd.entries) : undefined,
+      fps: durationS > 0 ? samples.length / durationS : 0,
+      durationS,
+      coded:
+        kind === 'video'
+          ? {
+              // CODED dimensions (stsd), not tkhd's display size — see
+              // `ChunkSource.coded`.
+              width: track.video?.width ?? track.track_width,
+              height: track.video?.height ?? track.track_height,
+            }
+          : { width: 0, height: 0 },
+      ...(kind === 'audio' && track.audio
+        ? {
+            audio: {
+              sampleRate: track.audio.sample_rate,
+              channelCount: track.audio.channel_count,
+            },
+          }
+        : {}),
+      samples,
+      presIndex,
+      firstPresentationTsUs: firstPresentationTsUs(samples, presIndex),
+      ensure: createRangeLoader(
+        source,
+        samples,
+        kind === 'video' ? MAX_RESIDENT_VIDEO_BYTES : MAX_RESIDENT_AUDIO_BYTES,
+      ),
+    }
+  }
+
+  const video = buildTrack('video', vTrack)
+  // Same §A.14 guard as the whole-file path, moved forward to where a ranged
+  // load can actually see it: a moov that describes samples the file is too
+  // short to contain is a truncated proxy, and every downstream helper
+  // tolerates an unplayable source silently. Failing here routes the clip to
+  // the Preparing placeholder with a reason instead of freezing on the
+  // PREVIOUS clip's last frame.
+  if (video.samples.length === 0 || trackEndOffset(video.samples) > source.size) {
+    throw new Error(
+      `demux: ${label} — video track has no sample data (truncated or missing mdat)`,
+    )
+  }
+
+  return {
+    src: label,
+    video,
+    audio: aTrack ? buildTrack('audio', aTrack) : null,
+    dispose: () => source.close(),
+  }
+}
+
 /**
  * Load and demux one media source.
  *
- * `fileUrl` is injected rather than assumed — see `media-loader.ts` for why
- * (and for the ranged-loading follow-up that will eventually replace the
- * whole-file fetch underneath this).
+ * Ranged by default: `openByteSource` measures the file and fetches only its
+ * header, the sample index is built from that, and `mdat` bytes are pulled
+ * through `ChunkSource.ensure` as the playhead reaches them. A host that does
+ * not honour `Range` transparently falls back to the original whole-file load
+ * (`demuxBytes` over the body the probe already returned), so nothing about
+ * this is conditional on the caller.
+ *
+ * `fileUrl` is injected rather than assumed — see `media-loader.ts` for why.
  */
 export async function demux(
   src: string,
   fileUrl: FileUrlResolver,
   options: LoadBytesOptions = {},
 ): Promise<DemuxedSource> {
-  const bytes = await loadBytes(src, fileUrl, options)
-  return demuxBytes(bytes, src)
+  const source = await openByteSource(src, fileUrl, options)
+
+  if (!source.ranged) {
+    const whole = source.whole
+    source.close()
+    if (!whole) throw new Error(`demux: ${src} — no bytes returned`)
+    return demuxBytes(whole, src)
+  }
+
+  // The build's abort signal has to reach the reads that happen DURING the
+  // build (header walk); `openByteSource` only carried it as far as the probe.
+  // Closing on abort is the right response either way — a session dropped
+  // mid-build is never resumed, it is rebuilt from scratch.
+  const onAbort = () => source.close()
+  options.signal?.addEventListener('abort', onAbort, { once: true })
+  try {
+    return await buildRangedSource(source, src)
+  } catch (err) {
+    source.close()
+    throw err
+  } finally {
+    options.signal?.removeEventListener('abort', onAbort)
+  }
 }

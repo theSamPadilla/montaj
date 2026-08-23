@@ -50,6 +50,7 @@ export type {
   GetFilmstripArgs,
   FootageDropPayload,
   EditorAdapter,
+  EditorContext,
   EditorTheme,
   EditorSlots,
   CarouselEditorProps,
@@ -185,6 +186,7 @@ export { default as PreviewPlayer } from './video/preview/PreviewPlayer'
 export { default as CarouselPreview } from './video/preview/CarouselPreview'
 export { default as OverlayItemsLayer } from './video/preview/OverlayItemsLayer'
 export { useVideoPlayback } from './video/preview/useVideoPlayback'
+export { useReportContext, REPORT_INTERVAL_MS } from './video/use-report-context'
 export { useDragOverlay } from './video/preview/useDragOverlay'
 export type { Corner, DragType } from './video/preview/useDragOverlay'
 
