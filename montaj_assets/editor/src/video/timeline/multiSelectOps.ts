@@ -73,6 +73,57 @@ function resizeAudioTrack(track: AudioTrack, edge: 'start' | 'end', { dStart, dE
 }
 
 /**
+ * How far the SELECTED captions, as a group, may travel before any one of them
+ * would cross a NON-selected caption's edge.
+ *
+ * Captions must never overlap. The preview and every render template resolve
+ * which caption is showing with `segments.find(s => t >= s.start && t < s.end)`
+ * — the FIRST match in array order — so an overlapped span silently drops
+ * whichever segment lost that race, in both preview and export; with
+ * transcripts back-to-back by default this is not an edge case. (Multiple
+ * simultaneous captions is a real, separate feature — CapCut-style caption
+ * ROWS, where captions on DIFFERENT rows may coincide and all render. That
+ * needs a data-model change — more than one caption lane — this project
+ * doesn't have yet. Today there is exactly one caption row, and within it
+ * overlap is not legal; this rule is meant to become that row's rule once the
+ * lanes exist, not to be thrown away.)
+ *
+ * For each selected segment this finds its nearest NON-selected neighbour on
+ * either side (greatest `end <= seg.start` on the left, smallest
+ * `start >= seg.end` on the right) and how much room that neighbour leaves.
+ * The group bound is the TIGHTEST of those per-segment rooms — same shape as
+ * the extent scan below: one number covers the whole body. Selected ids are
+ * excluded from the neighbour search on BOTH sides (a selected segment is
+ * never treated as another selected segment's neighbour, itself included);
+ * that is what lets a run of adjacent selected captions move rigidly, stopping
+ * only at the first caption not coming along for the ride, rather than jamming
+ * against each other one gap in. Absent neighbour reads as unbounded
+ * (`Infinity`) on that side.
+ */
+function captionNeighbourBounds(
+  captions: Captions | undefined,
+  targets: ReadonlySet<string>,
+): { maxLeft: number; maxRight: number } {
+  const segments = captions?.segments ?? []
+  let maxLeft = Infinity
+  let maxRight = Infinity
+  for (const seg of segments) {
+    if (seg.id === undefined || !targets.has(seg.id)) continue
+    let leftEnd = -Infinity
+    let rightStart = Infinity
+    for (const other of segments) {
+      // Skips every selected segment, this one included — see the WHY above.
+      if (other.id !== undefined && targets.has(other.id)) continue
+      if (other.end <= seg.start && other.end > leftEnd) leftEnd = other.end
+      if (other.start >= seg.end && other.start < rightStart) rightStart = other.start
+    }
+    if (leftEnd > -Infinity) maxLeft = Math.min(maxLeft, seg.start - leftEnd)
+    if (rightStart < Infinity) maxRight = Math.min(maxRight, rightStart - seg.end)
+  }
+  return { maxLeft, maxRight }
+}
+
+/**
  * Shift every selected visual item, audio track and caption segment by the same
  * timeline delta, preserving their relative positions — a rigid move of the
  * whole selection.
@@ -83,6 +134,10 @@ function resizeAudioTrack(track: AudioTrack, edge: 'start' | 'end', { dStart, dE
  * bunching up when one member hits a wall. Cross-track (vertical) movement is
  * deliberately not part of a group move — every item stays on its own
  * track/lane, which is the predictable behaviour when several move at once.
+ *
+ * The SAME clamp also folds in `captionNeighbourBounds`: a selected caption may
+ * not cross a non-selected one, so a group that includes captions is clamped
+ * by whichever is tighter, the timeline edge or a caption neighbour.
  *
  * The caller rebuilds from the press-time project on every move, so dragging
  * back and forth cannot compound.
@@ -116,7 +171,15 @@ export function applyMoveDeltaToSelection(
   // None of the selected ids are actually present (e.g. a stale selection).
   if (!Number.isFinite(minStart)) return project
 
-  const lo = -minStart
+  // The caption-neighbour bound folds into the SAME lo/hi the timeline edges
+  // use below — one range, not two clamps in sequence (a second clamp would
+  // undo the first, same reasoning `applyCaptionTrim` documents for its own
+  // lo/hi). `maxLeft`/`maxRight` are `Infinity` when nothing selected is a
+  // caption (or no neighbour exists), so `Math.max`/`Math.min` below are then
+  // no-ops and the plain timeline-edge bound is all that's left.
+  const { maxLeft, maxRight } = captionNeighbourBounds(project.captions, targets)
+
+  const lo = Math.max(-minStart, -maxLeft)
   // Floored at 0: never push a member further out than it already is.
   // `totalDuration` is derived from clips and audio only (timeline-model.ts),
   // so a caption can legally outlast it (e.g. clips trimmed/deleted after
@@ -126,9 +189,10 @@ export function applyMoveDeltaToSelection(
   // drag (or makes it un-movable when mixed with a clip at lo=0). Mirrors the
   // `Math.max(ctx.totalDuration, seg.end)` ceiling `applyCaptionTrim` already
   // uses for the same overhang case.
-  const hi = Math.max(0, totalDuration - maxEnd)
+  const hi = Math.min(Math.max(0, totalDuration - maxEnd), maxRight)
   // A group already wider than the timeline (lo > hi) can't move without
-  // pushing a member off an edge, so it doesn't.
+  // pushing a member off an edge, so it doesn't. Same short-circuit now also
+  // catches a group that can't move without crossing a caption neighbour.
   const delta = lo > hi ? 0 : Math.max(lo, Math.min(hi, requestedDelta))
   if (delta === 0) return project
 

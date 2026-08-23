@@ -54,7 +54,7 @@
  * doesn't collide: that path only fires for presses that never became drags.
  */
 
-import type { AudioTrack, CaptionSegment, VisualItem } from '../../../schema'
+import type { AudioTrack, CaptionSegment, Captions, VisualItem } from '../../../schema'
 import type { Project } from '../../../types'
 import { collapseGaps, rollEdit, slideItem, slipItem } from '../../cuts'
 import { applyMoveDeltaToSelection, applyResizeDeltaToSelection } from '../multiSelectOps'
@@ -841,15 +841,20 @@ function applyAudioTrim(ctx: PointerContext, press: Press, point: Point, snap: S
  * and audio boundary WEAK for it, and captions do not snap to each other at
  * all (that function reads tracks and audio only). Accepted for v1.
  *
- * Deliberately missing: a clamp against the caption's immediate neighbours.
- * The retired `CaptionTrackRow` had one; moving captions onto the canvas
- * timeline for overlay parity dropped it, so a drag (and a trim — see
- * `applyCaptionTrim`) can now push one caption block to overlap another in
- * time. This is accepted, not an oversight: the preview and every render
- * template resolve the active caption with `segments.find(s => t >= s.start
- * && t < s.end)`, first match in array order, so where two segments overlap
- * the earlier one in the array wins and the later one simply never displays
- * for the overlapped span. Flagged in the plan's Risks section, not blocked.
+ * Captions may NOT overlap. `applyGroupMove` clamps the delta through
+ * `applyMoveDeltaToSelection`, which folds in a caption-neighbour bound
+ * alongside its timeline-edge bound (see `captionNeighbourBounds` in
+ * multiSelectOps.ts) — a selected caption may not cross a non-selected one, in
+ * either direction. This was dropped when captions moved onto the canvas
+ * timeline for overlay parity (the retired DOM `CaptionTrackRow` had a
+ * neighbour clamp) and has now been restored, because the gap was not
+ * cosmetic: the preview and every render template resolve the active caption
+ * with `segments.find(s => t >= s.start && t < s.end)`, the FIRST match in
+ * array order, so an overlapped span silently drops whichever segment lost
+ * that race — in preview AND in the export. `applyCaptionTrim`, below, has the
+ * matching clamp for a trim. Multiple caption ROWS, where captions on
+ * DIFFERENT rows may overlap and all render (CapCut's model), is a separate
+ * planned feature needing more than one caption lane — not this.
  */
 function applyCaptionMove(ctx: PointerContext, press: Press, point: Point, snap: SnapState, lastProject: Project, escaped: boolean): Applied {
   const seg = press.hit.segment
@@ -864,6 +869,28 @@ function applyCaptionMove(ctx: PointerContext, press: Press, point: Point, snap:
  *  zero-length caption is unselectable and unreadable, and the click-seek in
  *  `pointerUp` needs every segment to be at least one frame long. */
 export const CAPTION_MIN_DURATION_S = 0.1
+
+/**
+ * The nearest OTHER caption's end at or before `seg.start`, and the nearest
+ * OTHER caption's start at or after `seg.end` — the boundaries a trim of `seg`
+ * may not cross, because captions may never overlap (see the WHY on
+ * `applyCaptionMove`, above). `seg` itself is excluded so it is never its own
+ * neighbour; unlike the move clamp (`captionNeighbourBounds` in
+ * multiSelectOps.ts) there is no wider "selected" set to exclude, since a trim
+ * never touches more than one segment — see `applyCaptionTrim`'s own doc
+ * comment. Absent neighbour reads as unbounded (`±Infinity`) on that side,
+ * same convention the move clamp uses.
+ */
+function captionEdgeNeighbours(captions: Captions | undefined, seg: CaptionSegment): { prevEnd: number; nextStart: number } {
+  let prevEnd = -Infinity
+  let nextStart = Infinity
+  for (const other of captions?.segments ?? []) {
+    if (other.id === seg.id) continue
+    if (other.end <= seg.start && other.end > prevEnd) prevEnd = other.end
+    if (other.start >= seg.end && other.start < nextStart) nextStart = other.start
+  }
+  return { prevEnd, nextStart }
+}
 
 /**
  * Drag ONE caption edge. Single-segment by design — multi-caption trim is out
@@ -881,15 +908,24 @@ function applyCaptionTrim(ctx: PointerContext, press: Press, point: Point, snap:
 
   const edge = press.hit.edge === 'in' ? 'start' : 'end'
   const initTime = edge === 'start' ? seg.start : seg.end
+  // Press-time, not live — same reasoning `press.baseProject` carries for the
+  // snap boundaries (see the `Press` interface): the host echoes every
+  // `projectChange` back through a re-render, and a neighbour search reading
+  // the live project mid-drag would see this very segment's own current edge
+  // reflected back as if it were a different, moving neighbour.
+  const { prevEnd, nextStart } = captionEdgeNeighbours(press.baseProject.captions, seg)
 
   // ── The dragged edge's LEGAL RANGE, computed once and used for everything ──
   //
-  // The timeline on one side, the duration floor on the other. Both bounds have
-  // to be one range rather than two clamps in sequence: whichever clamp ran
-  // second would undo the first. Floor-after-bounds let a segment already
-  // shorter than the floor escape the timeline (a 0s–0.05s segment's in edge
-  // landed at -0.05s); bounds-after-floor would break the other invariant
-  // instead. As a range, both hold at once.
+  // The timeline on one side, the duration floor on the other, and now a
+  // caption-neighbour bound on the third: captions may never overlap (see the
+  // WHY on `applyCaptionMove`), so a trim may not push its edge across the
+  // adjacent segment's edge either. All three fold into ONE range rather than
+  // clamps in sequence: whichever clamp ran second would undo the first.
+  // Floor-after-bounds let a segment already shorter than the floor escape the
+  // timeline (a 0s–0.05s segment's in edge landed at -0.05s); bounds-after-
+  // floor would break the other invariant instead. As a range, all three hold
+  // at once.
   //
   // `hi` on the end side is NOT a flat `totalDuration`. That value is
   // `contentDuration + Math.max(5, contentDuration * 0.2)` (timeline-model),
@@ -902,22 +938,28 @@ function applyCaptionTrim(ctx: PointerContext, press: Press, point: Point, snap:
   // one needs only an overhanging caption and a nudge. Ceiling at the segment's
   // own end instead, so a trim never pushes a caption FURTHER out than it
   // already was. A caption inside the timeline is unaffected — for it the max
-  // IS `totalDuration`.
+  // IS `totalDuration`. `nextStart` then tightens that ceiling further when a
+  // following caption sits closer than the timeline edge does (`Infinity` when
+  // there is no next caption, so it never loosens the existing bound).
   //
-  // `lo` on the start side stays a flat 0, deliberately NOT the mirror image
-  // (`Math.min(0, seg.start)`). A negative `start` is unreachable:
+  // `lo` on the start side stays floored at 0 rather than mirroring `hi`
+  // (`Math.min(0, seg.start)`): a negative `start` is unreachable —
   // `applyMoveDeltaToSelection` clamps a group move at `-minStart` and this
-  // trim clamps at 0, so nothing in the codebase can produce one. Mirroring
-  // would be generality for a state that cannot occur — the asymmetry is
-  // intentional, and is not to be "fixed" into symmetry.
-  const lo = edge === 'start' ? 0 : seg.start + CAPTION_MIN_DURATION_S
-  const hi = edge === 'start' ? seg.end - CAPTION_MIN_DURATION_S : Math.max(ctx.totalDuration, seg.end)
+  // trim clamps at 0, so nothing in the codebase can produce one, and
+  // mirroring would be generality for a state that cannot occur. `prevEnd`
+  // raises that floor when a preceding caption sits to the right of t=0
+  // (`-Infinity` when there is no previous caption, so it never lowers it).
+  const lo = edge === 'start' ? Math.max(0, prevEnd) : seg.start + CAPTION_MIN_DURATION_S
+  const hi = edge === 'start'
+    ? seg.end - CAPTION_MIN_DURATION_S
+    : Math.min(Math.max(ctx.totalDuration, seg.end), nextStart)
 
-  // An EMPTY range means a sub-floor segment pinned against t=0 or the end of
-  // the timeline: there is no legal position for this edge at all, so the trim
-  // declines to move rather than inventing a least-bad one. Same shape
-  // `applyMoveDeltaToSelection` uses for a group already wider than the
-  // timeline, which likewise refuses to move rather than pick a side.
+  // An EMPTY range means a sub-floor segment pinned against t=0, the end of
+  // the timeline, or a neighbouring caption's own edge: there is no legal
+  // position for this edge at all, so the trim declines to move rather than
+  // inventing a least-bad one. Same shape `applyMoveDeltaToSelection` uses for
+  // a group already wider than the timeline (or its own caption-neighbour
+  // bound), which likewise refuses to move rather than pick a side.
   //
   // This MUST short-circuit before either clamp below. `clamp` is
   // `Math.max(lo, Math.min(hi, v))`, which silently returns `lo` when the range

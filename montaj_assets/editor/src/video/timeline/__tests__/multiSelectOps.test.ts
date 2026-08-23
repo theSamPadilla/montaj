@@ -105,15 +105,24 @@ describe('applyMoveDeltaToSelection — caption segments', () => {
   })
 
   it('counts a caption at the right-hand extreme too', () => {
-    // Push s1's end (4) out to the horizon: the group may travel 16s.
-    const after = applyMoveDeltaToSelection(project(), ['s1'], 99, TOTAL_DURATION)
+    // Push s1's end (4) out to the horizon: the group may travel 16s. Isolated
+    // to a project with only s1's caption present — `project()`'s own s0 and
+    // id-less segment would otherwise trip the caption-neighbour clamp (see
+    // the dedicated describe block below) before this ever reaches the
+    // timeline edge under test here.
+    const before = { ...project(), captions: { style: 'pop', segments: [{ id: 's1', text: 'second', start: 3, end: 4 }] } } as unknown as Project
+    const after = applyMoveDeltaToSelection(before, ['s1'], 99, TOTAL_DURATION)
     expect(seg(after, 's1')).toMatchObject({ start: 19, end: 20 })
   })
 
   it('moves a caption whose id is the only one selected', () => {
     // The shape `applyCaptionMove` leans on when a drag starts on an
-    // UNSELECTED caption: a one-id selection still moves.
-    const after = applyMoveDeltaToSelection(project(), ['s0'], 2, TOTAL_DURATION)
+    // UNSELECTED caption: a one-id selection still moves. Isolated to a
+    // project with only s0's caption present, for the same reason as above —
+    // `project()`'s s1 sits only 1s away and would clamp this delta to 1
+    // rather than the full 2 this test means to demonstrate.
+    const before = { ...project(), captions: { style: 'pop', segments: [{ id: 's0', text: 'hello there', start: 1, end: 2 }] } } as unknown as Project
+    const after = applyMoveDeltaToSelection(before, ['s0'], 2, TOTAL_DURATION)
     expect(seg(after, 's0')).toMatchObject({ start: 3, end: 4 })
   })
 
@@ -137,6 +146,99 @@ describe('applyMoveDeltaToSelection — caption segments', () => {
     const after = applyMoveDeltaToSelection(before, ['c0'], 1, TOTAL_DURATION)
     expect(after.captions).toBeUndefined()
     expect(visual(after, 'c0')).toMatchObject({ start: 1, end: 6 })
+  })
+})
+
+// ── Caption-neighbour clamp ─────────────────────────────────────────────
+//
+// Captions may never overlap: the preview and every render template resolve
+// which caption is showing with `segments.find(s => t >= s.start && t < s.end)`
+// — first match in array order — so an overlapped span silently drops
+// whichever segment lost that race. A selected caption may therefore not
+// cross a NON-selected caption's edge, folded into the same lo/hi the
+// timeline-edge clamp already uses (see `captionNeighbourBounds`).
+
+function neighbourProject(): Project {
+  return {
+    id: 'p',
+    captions: {
+      style: 'pop',
+      segments: [
+        { id: 's0', text: 'hello there', start: 1, end: 2 },
+        { id: 's1', text: 'second', start: 3, end: 4 },
+      ],
+    },
+  } as unknown as Project
+}
+
+describe('applyMoveDeltaToSelection — caption-neighbour clamp', () => {
+  it('does not let a single selected caption cross its previous (left) neighbour', () => {
+    // s1 (3–4) may travel left only until its start meets s0's end (2) — a 1s
+    // gap — not the -5 requested, and not the -3 a bare timeline-edge clamp
+    // (t=0) alone would allow.
+    const after = applyMoveDeltaToSelection(neighbourProject(), ['s1'], -5, TOTAL_DURATION)
+    expect(seg(after, 's1')).toMatchObject({ start: 2, end: 3 })
+  })
+
+  it('does not let a single selected caption cross its next (right) neighbour', () => {
+    // s0 (1–2) may travel right only until its end meets s1's start (3).
+    const after = applyMoveDeltaToSelection(neighbourProject(), ['s0'], 5, TOTAL_DURATION)
+    expect(seg(after, 's0')).toMatchObject({ start: 2, end: 3 })
+  })
+
+  it('preserves duration when the neighbour clamp bites', () => {
+    // The clamp shifts the whole delta, not just one edge — a clamped move is
+    // still a rigid shift, never a shrink. Pinned against the exact clamped
+    // position (not just the duration, which a differently-clamped result —
+    // e.g. the timeline-edge clamp alone — would also happen to preserve):
+    // duration survives a clamp landing AT the neighbour bound specifically.
+    const after = applyMoveDeltaToSelection(neighbourProject(), ['s0'], 5, TOTAL_DURATION)
+    const clamped = seg(after, 's0')
+    expect(clamped).toMatchObject({ start: 2, end: 3 })
+    expect(clamped.end - clamped.start).toBe(1)
+  })
+
+  it('moves an adjacent run of selected captions rigidly, without clamping the pair against each other', () => {
+    const before: Project = {
+      id: 'p',
+      captions: {
+        style: 'pop',
+        segments: [
+          { id: 'a', text: 'a', start: 1, end: 2 },
+          { id: 'b', text: 'b', start: 2, end: 3 },  // touches a — both selected
+          { id: 'c', text: 'c', start: 4, end: 5 },  // NOT selected — the real stop
+        ],
+      },
+    } as unknown as Project
+
+    // Small delta, nowhere near c: both move by the full amount and stay
+    // exactly as adjacent as they started. If the neighbour search didn't
+    // exclude selected ids, b would see a as a "left neighbour" (or vice
+    // versa) and refuse to move at all.
+    const nudged = applyMoveDeltaToSelection(before, ['a', 'b'], 0.5, TOTAL_DURATION)
+    expect(seg(nudged, 'a')).toMatchObject({ start: 1.5, end: 2.5 })
+    expect(seg(nudged, 'b')).toMatchObject({ start: 2.5, end: 3.5 })
+
+    // Large delta: the pair travels together and stops the instant b's end
+    // reaches c's start (4) — 1s of the 5 requested — never crossing into c.
+    const stopped = applyMoveDeltaToSelection(before, ['a', 'b'], 5, TOTAL_DURATION)
+    expect(seg(stopped, 'a')).toMatchObject({ start: 2, end: 3 })
+    expect(seg(stopped, 'b')).toMatchObject({ start: 3, end: 4 })
+  })
+
+  it('leaves a clips-only selection unaffected by any caption, however it overlaps in time', () => {
+    const before: Project = {
+      id: 'p',
+      tracks: [{ id: 'trk-0', items: [{ id: 'c0', type: 'video', src: 'a.mp4', start: 0, end: 5 }] }],
+      captions: {
+        style: 'pop',
+        // Overlaps c0's whole span in time — irrelevant, since no caption is
+        // selected, `captionNeighbourBounds` never even looks at it.
+        segments: [{ id: 's0', text: 'hello', start: 0.5, end: 4.5 }],
+      },
+    } as unknown as Project
+    const after = applyMoveDeltaToSelection(before, ['c0'], 10, TOTAL_DURATION)
+    expect(visual(after, 'c0')).toMatchObject({ start: 10, end: 15 })
   })
 })
 

@@ -1437,6 +1437,8 @@ const S0_BODY = { x: 150, y: CAPTION_Y }
 const S0_IN_EDGE = { x: 102, y: CAPTION_Y }
 const S0_OUT_EDGE = { x: 198, y: CAPTION_Y }
 const S1_BODY = { x: 400, y: CAPTION_Y }
+/** s1's in handle (s1 spans x 344–450). */
+const S1_IN_EDGE = { x: 346, y: CAPTION_Y }
 /** Over the id-less segment (x 700–800), which is band background. */
 const UNMINTED = { x: 750, y: CAPTION_Y }
 /** The gap between s0 and s1. */
@@ -1627,7 +1629,15 @@ describe('caption body drag — move', () => {
   })
 
   it('clamps the group as a body so no member leaves the timeline', () => {
-    const ctx = captionCtx({ selectedIds: ['s0'] })
+    // Single caption, no other captions in the project — isolates the
+    // timeline-edge clamp from the caption-neighbour clamp (its own describe
+    // block below), which would otherwise stop s0 at s1's start (3.44) long
+    // before it ever reached `ctx.totalDuration`.
+    const soloProject: Project = {
+      ...captionProject(),
+      captions: { style: 'pop', segments: [{ id: 's0', text: 'hello there', start: 1, end: 2 }] },
+    } as unknown as Project
+    const ctx = captionCtx({ project: soloProject, selectedIds: ['s0'] })
     const d = new Driver(ctx)
     d.down(S0_BODY.x, S0_BODY.y)
     expect(caption(lastProjectChange(d.move(-9999, S0_BODY.y)), 's0').start).toBe(0)
@@ -1717,6 +1727,54 @@ describe('caption edge drag — trim', () => {
     d.move(250, S0_OUT_EDGE.y)
     d.move(S0_OUT_EDGE.x, S0_OUT_EDGE.y)
     expect(of(d.up(S0_OUT_EDGE.x, S0_OUT_EDGE.y), 'commit')).toEqual([])
+  })
+
+  it("stops an end-edge trim at the next caption's start — captions may not overlap", () => {
+    // Dragged far past s1 (x=2000, t=20). Without the neighbour clamp this
+    // would land at `Math.max(ctx.totalDuration, seg.end)` = 15; with it, s1
+    // starts at 3.44 and that is the real ceiling.
+    const d = new Driver(captionCtx())
+    d.down(S0_OUT_EDGE.x, S0_OUT_EDGE.y)
+    const trimmed = caption(lastProjectChange(d.move(2000, S0_OUT_EDGE.y)), 's0')
+    expect(trimmed.end).toBeCloseTo(3.44)
+    expect(trimmed.start).toBe(1)
+  })
+
+  it("stops a start-edge trim at the previous caption's end — captions may not overlap", () => {
+    // Dragged far past s0 (x=0, t=0). Without the neighbour clamp this would
+    // land at 0 (`lo`'s flat floor); with it, s0 ends at 2 and that is the
+    // real floor.
+    const d = new Driver(captionCtx())
+    d.down(S1_IN_EDGE.x, S1_IN_EDGE.y)
+    const trimmed = caption(lastProjectChange(d.move(0, S1_IN_EDGE.y)), 's1')
+    expect(trimmed.start).toBeCloseTo(2)
+    expect(trimmed.end).toBeCloseTo(4.5)
+  })
+
+  it('a drag clamped to zero movement by a butted neighbour still emits no commit', () => {
+    // Two captions already touching (a's end === b's start === 2, the
+    // `resolveRow` tie-break case): a's out edge has no legal room to move
+    // right at all, so `hi` equals its own current value from the first
+    // frame — the clamp lands it back on `initTime` every time.
+    const butted: Project = {
+      id: 'p',
+      tracks: [{ id: 'trk-0', items: [{ id: 'c0', type: 'video', src: 'a.mp4', start: 0, end: 10, inPoint: 0, outPoint: 10, sourceDuration: 20 }] }],
+      captions: {
+        style: 'pop',
+        segments: [
+          { id: 'a', text: 'first', start: 1, end: 2 },
+          { id: 'b', text: 'second', start: 2, end: 3 },
+        ],
+      },
+    } as unknown as Project
+    const d = new Driver(captionCtx({ project: butted }))
+    // a's out edge sits at x=198 (200 - 2, same offset every other edge point
+    // in this file uses), safely inside a and not on the shared boundary.
+    d.down(198, CAPTION_Y)
+    const move = d.move(280, CAPTION_Y)
+    expect(of(move, 'projectChange')).toEqual([])
+    expect(caption(butted, 'a')).toMatchObject({ start: 1, end: 2 })
+    expect(of(d.up(280, CAPTION_Y), 'commit')).toEqual([])
   })
 })
 
