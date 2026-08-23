@@ -32,6 +32,11 @@ def main():
                         help="Look curve id for the HDR-to-SDR grade (see lib/look.py::curve_ids()). "
                              "Meaningless on SDR projects: ignored with a stderr warning, not an "
                              "error. Omit to use the project's master look.")
+    parser.add_argument("--prefer-proxy", action="store_true",
+                        help="Decode each clip from its SDR proxy (proxySrc) instead of the master "
+                             "when a proxy exists — a fast path for quick previews. The proxy is "
+                             "already SDR, so no HDR tone-map is applied; do not combine with "
+                             "--sdr-curve. Falls back to the master per clip when no proxy exists.")
     parser.add_argument("--out", default=None,
                         help="Output PNG path (default: <project_dir>/render/samples/frame-<at>s.png)")
     args = parser.parse_args()
@@ -52,6 +57,9 @@ def main():
         "--at", str(args.at),
         "--out", out,
     ]
+
+    if args.prefer_proxy:
+        cmd.append("--prefer-proxy")
 
     if args.sdr_curve is not None:
         # Fail loudly here rather than let sample-frame.js's own manifest check

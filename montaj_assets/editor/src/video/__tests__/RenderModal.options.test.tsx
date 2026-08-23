@@ -149,9 +149,11 @@ describe('RenderModal — name + cover', () => {
 
     fireEvent.change(screen.getByPlaceholderText('export'), { target: { value: 'my-clip' } })
     fireEvent.click(screen.getByText('Edit cover'))
-    // Cover is now a frame-tile picker. durationSec 12 → 4 evenly-spaced tiles
-    // at 1.5 / 4.5 / 7.5 / 10.5s; clicking the second sets cover to 4.5.
+    // Cover is a frame-tile picker with a fixed 10-frame grid. durationSec 12 →
+    // tiles at ((i+0.5)/10)*12 = 0.6 / 1.8 / 3.0 / …; clicking the second (index
+    // 1) sets cover to 1.8.
     const tiles = within(screen.getByRole('radiogroup', { name: 'Cover frame' })).getAllByRole('radio')
+    expect(tiles).toHaveLength(10)
     fireEvent.click(tiles[1])
     fireEvent.click(exportButton())
 
@@ -160,7 +162,7 @@ describe('RenderModal — name + cover', () => {
       export: 'auto',
       sdrCurve: 'vivid1',
       name: 'my-clip',
-      cover: 4.5,
+      cover: expect.closeTo(1.8, 5),
     }))
   })
 
@@ -336,8 +338,10 @@ describe('RenderModal — curve thumbnails', () => {
       />,
     )
 
-    // Two curve samples fire synchronously on mount; the cover sample is
-    // debounced, so it hasn't landed at the moment this resolves.
+    // Curve samples are deferred until Advanced is opened (they only show
+    // there). Opening it fires exactly one sample per curve; the cover sample is
+    // debounced, so it hasn't landed by the time these two resolve.
+    fireEvent.click(screen.getByText('Advanced'))
     await waitFor(() => expect(adapter.getSampleFrame).toHaveBeenCalledTimes(2))
     const calls = (adapter.getSampleFrame as ReturnType<typeof vi.fn>).mock.calls
     expect(calls.map(c => c[2]?.sdrCurve).sort()).toEqual(['vivid1', 'vivid1-neutral'])
@@ -346,7 +350,6 @@ describe('RenderModal — curve thumbnails', () => {
     expect(calls[0][1]).toBeGreaterThan(0)
     expect(calls[0][1]).toBeLessThan(12)
 
-    fireEvent.click(screen.getByText('Advanced'))
     await waitFor(() => {
       const srcs = Array.from(document.querySelectorAll('img')).map(i => i.getAttribute('src'))
       expect(srcs).toContain('/files?path=/sample-vivid1.png')
@@ -377,10 +380,11 @@ describe('RenderModal — curve thumbnails', () => {
       </StrictMode>,
     )
 
-    // Dedup still holds: exactly one sample per curve despite the double-mount.
+    // Open Advanced to trigger the (now-deferred) curve sampling. Dedup still
+    // holds: exactly one sample per curve despite the double-mount.
+    fireEvent.click(screen.getByText('Advanced'))
     await waitFor(() => expect(adapter.getSampleFrame).toHaveBeenCalledTimes(2))
 
-    fireEvent.click(screen.getByText('Advanced'))
     await waitFor(() => {
       const srcs = Array.from(document.querySelectorAll('img')).map(i => i.getAttribute('src'))
       expect(srcs).toContain('/files?path=/sample-vivid1.png')
@@ -422,8 +426,8 @@ describe('RenderModal — curve thumbnails', () => {
       />,
     )
 
-    await waitFor(() => expect(adapter.getSampleFrame).toHaveBeenCalledTimes(2))
     fireEvent.click(screen.getByText('Advanced'))
+    await waitFor(() => expect(adapter.getSampleFrame).toHaveBeenCalledTimes(2))
     expect(screen.getByText('Montaj Vivid')).toBeTruthy()
 
     fireEvent.click(exportButton())

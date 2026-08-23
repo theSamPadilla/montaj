@@ -53,6 +53,12 @@ const CACHE_DIR = join(tmpdir(), 'montaj-sample-cache')
 const CACHE_TTL_MS = 24 * 60 * 60 * 1000  // 24 hours
 const OVERLAY_CONCURRENCY = 4
 const SHORT_EDGE_TARGET = 1080
+// Accurate-decode window for the two-stage frame seek below. A coarse `-ss`
+// before `-i` jumps to the nearest keyframe near the target (near-instant, no
+// decode), then this many seconds are decoded accurately after `-i` to land on
+// the exact frame. Bounds the decode to ~PREROLL + one GOP regardless of how
+// deep into a clip the sample sits, instead of decoding from t=0 every time.
+const SEEK_PREROLL_S = 2
 
 // When previewing a single overlay frame we don't know the item's real on-screen
 // length. Overlays commonly fade OUT over the final ~15 frames keyed to the
@@ -97,6 +103,7 @@ if (isMain) {
   let projectArg    = null
   let atArg         = null
   let sdrCurveArg   = null
+  let preferProxyArg = false
   // shared
   let outArg        = null
 
@@ -115,6 +122,7 @@ if (isMain) {
     if (a === '--project')      { projectArg    = argv[++i]; continue }
     if (a === '--at')           { atArg         = parseFloat(argv[++i]); continue }
     if (a === '--sdr-curve')    { sdrCurveArg   = argv[++i]; continue }
+    if (a === '--prefer-proxy') { preferProxyArg = true; continue }
     if (a === '--out')          { outArg        = argv[++i]; continue }
   }
 
@@ -165,6 +173,7 @@ if (isMain) {
       atSeconds: atArg,
       outPath: resolve(outArg),
       sdrCurve: sdrCurveArg,
+      preferProxy: preferProxyArg,
     }).then(result => {
       process.stdout.write(result.pngPath + '\n')
     }).catch(err => {
@@ -489,6 +498,7 @@ export async function sampleFrame({
   atSeconds,
   outPath,
   sdrCurve = null,
+  preferProxy = false,
 }) {
   if (!outPath) throw new Error('outPath is required')
   if (atSeconds == null) throw new Error('atSeconds is required')
@@ -508,7 +518,7 @@ export async function sampleFrame({
   }
 
   // Cache key
-  const cacheKey = buildFrameCacheKey(projectPath, project, atSeconds, sdrCurve)
+  const cacheKey = buildFrameCacheKey(projectPath, project, atSeconds, sdrCurve, preferProxy)
   const cachePng = join(CACHE_DIR, `${cacheKey}.png`)
 
   if (existsSync(cachePng)) {
@@ -642,21 +652,42 @@ export async function sampleFrame({
       // normalizedSrc cache. Use normalized/audioclean cached file if present and
       // fresh on top of that (read-only — never triggers normalization).
       const window = ri.window
-      const src = resolveVideoSource(window.src)
-      // ri.seek === window.inPoint + max(0, atSeconds - item.start) — the
-      // resolver's seekTime(item, atSeconds, 'render'), replacing this file's old
-      // hand-rolled `atSeconds - item.start + (item.inPoint ?? 0)`, which never
-      // rebased for a normalizedSrc cache.
-      const seekTime = ri.seek
+      // Fast-preview path: decode the clip's SDR proxy instead of the master
+      // when `preferProxy` is set and one exists. The proxy is full-source (the
+      // item's own coords, no normalizedSrc rebase) and already SDR, so it needs
+      // the ORIGINAL-coords seek and NO tone-map (both handled below). Decided
+      // per clip: a clip with no proxy quietly falls back to the master.
+      const item = ri.item
+      const useProxy = preferProxy && !!item.proxySrc && existsSync(item.proxySrc)
+      const src = useProxy ? item.proxySrc : resolveVideoSource(window.src)
+      // ri.seek is the resolver's speed-aware seekTime, but rebased for a
+      // normalizedSrc cache. The proxy is un-rebased, so recompute in the item's
+      // own source coords (still speed-aware) when using it.
+      const seekTime = useProxy
+        ? (item.inPoint ?? 0) + (item.speed ?? 1) * Math.max(0, atSeconds - item.start)
+        : ri.seek
       const framePng = join(workDir, `video-${vi}.png`)
 
-      log(`extracting video frame at t=${seekTime.toFixed(3)}s from ${src ? basename(src) : '(no src)'}`)
+      log(`extracting video frame at t=${seekTime.toFixed(3)}s from ${src ? basename(src) : '(no src)'}${useProxy ? ' (proxy)' : ''}`)
 
-      // Accurate seek: -ss AFTER -i (slow but frame-accurate, ~5–10s on long HEVC clips)
+      // Two-stage seek: fast + still frame-accurate. A coarse `-ss` BEFORE `-i`
+      // jumps to the nearest keyframe at/before the target without decoding
+      // anything, then a short `-ss` AFTER `-i` accurately decodes only the
+      // remainder from that keyframe to the exact frame. The old form (`-ss`
+      // after `-i` alone) decoded the clip from t=0 to the target — ~5–10s on a
+      // long HEVC clip, paid on every preview sample (the render modal fires
+      // three: a cover plus one per SDR curve). This bounds the decode to
+      // ~SEEK_PREROLL_S (+ one GOP) no matter how deep the sample sits, with no
+      // loss of accuracy: the fine seek always decodes forward from a real
+      // keyframe to the requested frame.
+      const seek = Math.max(0, seekTime)
+      const fastSeek = Math.max(0, seek - SEEK_PREROLL_S)
+      const fineSeek = seek - fastSeek
       const ffmpegExtractArgs = [
         '-y', '-v', 'error',
+        ...(fastSeek > 0 ? ['-ss', String(fastSeek)] : []),
         '-i', src,
-        '-ss', String(Math.max(0, seekTime)),
+        '-ss', String(fineSeek),
       ]
 
       // Filter chain: the optional source crop (clips workflow vertical reframe)
@@ -680,7 +711,7 @@ export async function sampleFrame({
         const cy = Math.round(ri.geometry.sourceHeight * sc.y)          // origin NOT even-rounded
         vfParts.push(`crop=${cw}:${ch}:${cx}:${cy}`)
       }
-      if (hdrProject) {
+      if (hdrProject && !useProxy) {
         // Grade HLG/PQ → SDR BT.709 inline so the PNG lands as a normal SDR
         // image, through the same Montaj Vivid LUT the render and the proxies
         // use — that shared LUT is what lets the preview claim to match the SDR
@@ -921,6 +952,11 @@ function resolveProjectPaths(projectJson, projectDir) {
       if (item.src && !item.src.startsWith('/')) {
         item.src = resolve(projectDir, item.src)
       }
+      // proxySrc is resolved too so the fast-preview path (preferProxy) can
+      // reach it; it is full-source (no window/rebase), same as `src`.
+      if (item.proxySrc && !item.proxySrc.startsWith('/')) {
+        item.proxySrc = resolve(projectDir, item.proxySrc)
+      }
     }
   }
   for (const track of projectJson.audio?.tracks ?? []) {
@@ -957,7 +993,7 @@ function buildOverlayCacheKey(componentPath, props, frame, width, height, google
 }
 
 /** Build a content-hash cache key for sampleFrame. */
-function buildFrameCacheKey(projectPath, project, atSeconds, sdrCurve = null) {
+function buildFrameCacheKey(projectPath, project, atSeconds, sdrCurve = null, preferProxy = false) {
   let mtime = '0'
   if (projectPath) {
     try { mtime = String(statSync(projectPath).mtimeMs) } catch {}
@@ -976,7 +1012,7 @@ function buildFrameCacheKey(projectPath, project, atSeconds, sdrCurve = null) {
   // serve the pre-change frame back forever, since nothing else in the key
   // moves when the manifest does.
   const raw = [RESOLVER_VERSION, mtime, String(atSeconds), colorSpace,
-               MASTER_LOOK, sdrCurve ?? MASTER_LOOK].join('|')
+               MASTER_LOOK, sdrCurve ?? MASTER_LOOK, preferProxy ? 'proxy' : 'master'].join('|')
   return createHash('sha256').update(raw).digest('hex')
 }
 

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
-import { ChevronDown, ChevronRight } from 'lucide-react'
+import { ChevronDown, ChevronRight, ChevronLeft, Maximize2 } from 'lucide-react'
 import type {
   EditorAdapter,
   Project,
@@ -269,6 +269,74 @@ function LogLine({ text }: { text: string }) {
   )
 }
 
+// ── Progress ────────────────────────────────────────────────────────────────
+
+/**
+ * Pipeline stages keyed to the log vocabulary the render emits (the same
+ * families LogLine colours). Each maps a matched line to how far through the
+ * whole render it is, plus a span the within-stage counter can fill.
+ */
+const LOG_STAGES: Array<{ re: RegExp; base: number; span: number }> = [
+  { re: /launch|browser|bundl|rendering|segment/i,       base: 0.08, span: 0.37 },
+  { re: /caption/i,                                      base: 0.45, span: 0.05 },
+  { re: /trimm|building|compos|encod|frame\s+\d+\s*\/\s*\d+/i, base: 0.50, span: 0.35 },
+  { re: /sdr|derive/i,                                   base: 0.85, span: 0.10 },
+  { re: /assembl|complete|ready|saved|\bdone\b/i,        base: 0.98, span: 0.02 },
+]
+
+/**
+ * Best-effort render progress (0..1) for the SSE/log transport, where no `phase`
+ * is reported. Takes the FURTHEST stage any line mentions — so a per-segment or
+ * per-frame counter resetting between stages never walks the bar backwards — and
+ * refines within that stage from the newest `segment i/N` / `frame i/N` count.
+ * Returns null before any line lands (the caller shows an indeterminate bar).
+ */
+export function parseLogProgress(logs: string[]): number | null {
+  if (logs.length === 0) return null
+  let best = 0.02  // a line exists, so the engine has started
+  for (const line of logs) {
+    for (let s = LOG_STAGES.length - 1; s >= 0; s--) {
+      if (LOG_STAGES[s].re.test(line)) { best = Math.max(best, LOG_STAGES[s].base); break }
+    }
+  }
+  for (let i = logs.length - 1; i >= 0; i--) {
+    const m = logs[i].match(/(?:segment|frame)\s+(\d+)\s*\/\s*(\d+)/i)
+    if (m) {
+      const n = Number(m[1]), d = Number(m[2])
+      const stage = LOG_STAGES.find(st => st.re.test(logs[i]))
+      if (stage && d > 0 && n <= d) best = Math.max(best, stage.base + stage.span * (n / d))
+      break
+    }
+  }
+  return best
+}
+
+/**
+ * A slim progress bar. A number 0..1 draws a determinate fill; `null` draws an
+ * indeterminate sweep (keyframes inlined so the bar is self-contained in any
+ * host, no Tailwind config dependency).
+ */
+function ProgressBar({ value }: { value: number | null }) {
+  const pct = value === null ? null : Math.max(0, Math.min(1, value)) * 100
+  return (
+    <div className="w-full max-w-xs" role="progressbar" aria-label="Render progress"
+      aria-valuenow={pct === null ? undefined : Math.round(pct)} aria-valuemin={0} aria-valuemax={100}>
+      <div className="h-1.5 w-full overflow-hidden rounded-full bg-[var(--editor-text)]/10">
+        {pct === null ? (
+          <>
+            <style>{'@keyframes montajRenderIndet{0%{transform:translateX(-100%)}100%{transform:translateX(320%)}}'}</style>
+            <div className="h-full w-1/3 rounded-full bg-[var(--editor-accent)]"
+              style={{ animation: 'montajRenderIndet 1.2s ease-in-out infinite' }} />
+          </>
+        ) : (
+          <div className="h-full rounded-full bg-[var(--editor-accent)] transition-[width] duration-500 ease-out"
+            style={{ width: `${pct}%` }} />
+        )}
+      </div>
+    </div>
+  )
+}
+
 export default function RenderModal<P extends Project = Project>({ projectId, adapter, onClose, onCancel, exportActions, progressView, preRenderOptions }: RenderModalProps<P>) {
   const [status, setStatus]     = useState<'running' | 'done' | 'error'>('running')
   const [phase, setPhase]       = useState<RenderPhase>('preparing')
@@ -306,6 +374,10 @@ export default function RenderModal<P extends Project = Project>({ projectId, ad
   const [showLog, setShowLog]         = useState(false)
   const [thumbs, setThumbs]           = useState<Record<string, string>>({})
   const [thumbsPending, setPending]   = useState(false)
+  // The SDR curve whose thumbnail is opened full-size in the lightbox (see
+  // below), so the small grid preview can be inspected at detail and paged
+  // between. Null = closed.
+  const [expandedCurveId, setExpandedCurveId] = useState<string | null>(null)
   // Chosen once per mount so both curves are sampled on the same frame. HDR-only
   // — the curve compare (and thus this sample) doesn't exist for SDR projects.
   const [sampleAt] = useState<number | null>(() =>
@@ -329,7 +401,7 @@ export default function RenderModal<P extends Project = Project>({ projectId, ad
   const [coverTiles, setCoverTiles]   = useState<Record<number, string>>({})
   const coverTileTimes = useMemo<number[]>(() => {
     if (durationSec <= 0) return []
-    const n = Math.min(12, Math.max(4, Math.round(durationSec / 4)))
+    const n = 10  // fixed grid of 10 evenly-spaced frames (was ~one per 4s)
     return Array.from({ length: n }, (_, i) => ((i + 0.5) / n) * durationSec)
   }, [durationSec])
   const coverTilesRequestedRef = useRef<string>('')
@@ -354,7 +426,12 @@ export default function RenderModal<P extends Project = Project>({ projectId, ad
   // call just leaves the picker showing labels, and nothing here can block or
   // fail the render.
   useEffect(() => {
-    if (started || sampleAt === null) return
+    // Deferred until Advanced is actually open: the curve thumbnails only show
+    // inside that (collapsed-by-default) disclosure, so sampling them on mount
+    // spent two full frame renders on previews most exports never look at. Now
+    // the modal opens sampling just the cover; the curves sample the first time
+    // Advanced is expanded (once — `thumbsRequestedRef` dedups).
+    if (started || sampleAt === null || !advancedOpen) return
     const getSampleFrame = adapter.getSampleFrame
     if (!getSampleFrame) return
     // Fetch each curve's thumbnail once. The ref guard dedups StrictMode's
@@ -381,7 +458,7 @@ export default function RenderModal<P extends Project = Project>({ projectId, ad
         .catch(() => {})
         .finally(settle)
     }
-  }, [started, sampleAt, adapter, projectId])
+  }, [started, sampleAt, adapter, projectId, advancedOpen])
 
   // Cover preview: sample the poster frame at `coverTime`, DEBOUNCED so dragging
   // the slider doesn't spam the sampler. Fire-and-forget like the curve
@@ -397,34 +474,39 @@ export default function RenderModal<P extends Project = Project>({ projectId, ad
     let alive = true
     setCoverLoading(true)
     const timer = setTimeout(() => {
-      getSampleFrame(projectId, coverTime, { sdrCurve })
+      // Sample from the SDR proxy — the cover is a poster preview, not a
+      // colour-graded frame, so it doesn't need the master or a per-curve tone
+      // map (the real poster is made from the master at export). Much faster,
+      // and it means dragging the cover slider no longer re-samples on curve.
+      getSampleFrame(projectId, coverTime, { preferProxy: true })
         .then(({ url }) => { if (alive) setCoverUrl(url) })
         .catch(() => {})
         .finally(() => { if (alive) setCoverLoading(false) })
     }, 200)
     return () => { alive = false; clearTimeout(timer) }
-  }, [started, coverTime, sdrCurve, adapter, projectId])
+  }, [started, coverTime, adapter, projectId])
 
   // Cover frame grid: sampled lazily once the picker opens, one composited frame
-  // per tile, folded in as each lands. Keyed by curve+count so switching the SDR
-  // curve re-samples but re-opening the picker reuses what's cached. Fire-and-
-  // forget — a failed/absent sampler just leaves that tile on its loader.
+  // per tile from the SDR proxy (fast; these are only for picking a timestamp),
+  // folded in as each lands. Keyed by tile count so re-opening the picker reuses
+  // what's cached. Fire-and-forget — a failed/absent sampler just leaves that
+  // tile on its loader.
   useEffect(() => {
     if (started || !coverEditing) return
     const getSampleFrame = adapter.getSampleFrame
     if (!getSampleFrame || coverTileTimes.length === 0) return
-    const key = `${sdrCurve}:${coverTileTimes.length}`
+    const key = `${coverTileTimes.length}`
     if (coverTilesRequestedRef.current === key) return
     coverTilesRequestedRef.current = key
     setCoverTiles({})
     let alive = true
     coverTileTimes.forEach((t, i) => {
-      getSampleFrame(projectId, t, { sdrCurve })
+      getSampleFrame(projectId, t, { preferProxy: true })
         .then(({ url }) => { if (alive) setCoverTiles(prev => ({ ...prev, [i]: url })) })
         .catch(() => {})
     })
     return () => { alive = false }
-  }, [started, coverEditing, coverTileTimes, sdrCurve, adapter, projectId])
+  }, [started, coverEditing, coverTileTimes, adapter, projectId])
 
   useEffect(() => {
     if (!started) return
@@ -566,13 +648,28 @@ export default function RenderModal<P extends Project = Project>({ projectId, ad
   // been started there, so backing out is free.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      // Lightbox open: Escape closes it, arrows page between the loaded curve
+      // previews. It captures these keys so they don't also close the dialog.
+      if (expandedCurveId) {
+        if (e.key === 'Escape') { setExpandedCurveId(null); return }
+        if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+          e.preventDefault()
+          const avail = SDR_CURVES.filter(c => thumbs[c.id])
+          if (avail.length > 1) {
+            const cur = avail.findIndex(c => c.id === expandedCurveId)
+            const step = e.key === 'ArrowRight' ? 1 : -1
+            setExpandedCurveId(avail[(cur + step + avail.length) % avail.length].id)
+          }
+        }
+        return
+      }
       if (e.key !== 'Escape') return
       if (!started) (onCancel ?? onClose)()
       else if (status !== 'running') onClose()
     }
     document.addEventListener('keydown', onKey)
     return () => document.removeEventListener('keydown', onKey)
-  }, [status, started, onClose, onCancel])
+  }, [status, started, onClose, onCancel, expandedCurveId, thumbs])
 
   function handleCancel() {
     cancelledRef.current = true
@@ -601,7 +698,17 @@ export default function RenderModal<P extends Project = Project>({ projectId, ad
   if (!started) {
     const curveInfo = SDR_CURVES.find(c => c.id === sdrCurve) ?? SDR_CURVES[0]
     const outputName = sanitizeOutputName(name)
-    return createPortal(
+    // Lightbox nav: only curves whose thumbnail has loaded are pageable.
+    const expandedCurve = expandedCurveId ? SDR_CURVES.find(c => c.id === expandedCurveId) ?? null : null
+    const expandedUrl = expandedCurveId ? thumbs[expandedCurveId] : undefined
+    const navCurves = SDR_CURVES.filter(c => thumbs[c.id])
+    const canNavCurves = navCurves.length > 1
+    const goCurve = (step: number) => {
+      const cur = navCurves.findIndex(c => c.id === expandedCurveId)
+      if (cur >= 0) setExpandedCurveId(navCurves[(cur + step + navCurves.length) % navCurves.length].id)
+    }
+    return (<>
+      {createPortal(
       <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-md p-4">
         <div className="w-full max-w-3xl bg-[var(--editor-surface)] border border-white/10 rounded-2xl shadow-2xl flex flex-col overflow-hidden">
 
@@ -835,13 +942,32 @@ export default function RenderModal<P extends Project = Project>({ projectId, ad
                                 }`}
                               >
                                 {thumb ? (
-                                  <img
-                                    src={thumb}
-                                    alt={`${curve.label} sample frame`}
-                                    className="w-full aspect-video rounded object-cover border border-[var(--editor-border)]"
-                                  />
+                                  // Shown at the SOURCE aspect ratio (not a fixed
+                                  // 16:9) so a vertical project reads as vertical.
+                                  // The hover "expand" control opens it full-size
+                                  // in the lightbox; it stops propagation so a
+                                  // click on it inspects rather than selects the
+                                  // curve.
+                                  <span className="relative block w-full">
+                                    <img
+                                      src={thumb}
+                                      alt={`${curve.label} sample frame`}
+                                      style={{ aspectRatio: coverAspect }}
+                                      className="w-full rounded object-cover border border-[var(--editor-border)]"
+                                    />
+                                    <span
+                                      role="button"
+                                      tabIndex={0}
+                                      aria-label={`Expand ${curve.label} preview`}
+                                      onClick={(e) => { e.stopPropagation(); setExpandedCurveId(curve.id) }}
+                                      onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.stopPropagation(); setExpandedCurveId(curve.id) } }}
+                                      className="absolute top-1 right-1 flex items-center justify-center rounded bg-black/55 p-1 text-white/85 hover:text-white cursor-pointer transition-colors"
+                                    >
+                                      <Maximize2 size={12} />
+                                    </span>
+                                  </span>
                                 ) : thumbsPending ? (
-                                  <span className="w-full aspect-video rounded border border-[var(--editor-border)] bg-[var(--editor-text)]/5 flex items-center justify-center">
+                                  <span style={{ aspectRatio: coverAspect }} className="w-full rounded border border-[var(--editor-border)] bg-[var(--editor-text)]/5 flex items-center justify-center">
                                     <Loader size="sm" />
                                   </span>
                                 ) : null}
@@ -901,7 +1027,55 @@ export default function RenderModal<P extends Project = Project>({ projectId, ad
         </div>
       </div>,
       document.body,
-    )
+      )}
+      {expandedCurve && expandedUrl && createPortal(
+        <div
+          className="fixed inset-0 z-[60] flex flex-col items-center justify-center gap-3 bg-black/90 p-6"
+          onClick={() => setExpandedCurveId(null)}
+          role="dialog"
+          aria-label={`${expandedCurve.label} preview`}
+        >
+          <div className="relative flex items-center justify-center" onClick={(e) => e.stopPropagation()}>
+            {canNavCurves && (
+              <button
+                onClick={() => goCurve(-1)}
+                aria-label="Previous curve"
+                className="absolute -left-3 sm:-left-14 top-1/2 -translate-y-1/2 rounded-full bg-black/60 p-2 text-white/80 hover:text-white transition-colors"
+              >
+                <ChevronLeft size={22} />
+              </button>
+            )}
+            {/* Clicking the image itself pages to the next curve (wraps) — the
+                quickest A/B compare; the backdrop or Esc closes. */}
+            <img
+              src={expandedUrl}
+              alt={`${expandedCurve.label} sample frame`}
+              onClick={() => { if (canNavCurves) goCurve(1) }}
+              className={`max-h-[82vh] max-w-[88vw] rounded-lg object-contain shadow-2xl ${canNavCurves ? 'cursor-pointer' : ''}`}
+            />
+            {canNavCurves && (
+              <button
+                onClick={() => goCurve(1)}
+                aria-label="Next curve"
+                className="absolute -right-3 sm:-right-14 top-1/2 -translate-y-1/2 rounded-full bg-black/60 p-2 text-white/80 hover:text-white transition-colors"
+              >
+                <ChevronRight size={22} />
+              </button>
+            )}
+          </div>
+          <div className="flex items-center gap-2 text-xs" onClick={(e) => e.stopPropagation()}>
+            <span className="font-semibold text-white/90">{expandedCurve.label}</span>
+            {expandedCurve.id === DEFAULT_SDR_CURVE && (
+              <span className="text-[10px] px-1 py-px rounded bg-white/15 text-white/70">default</span>
+            )}
+          </div>
+          <p className="text-[11px] text-white/40">
+            {canNavCurves ? 'Click the image or press ← → to compare · Esc or click outside to close' : 'Esc or click outside to close'}
+          </p>
+        </div>,
+        document.body,
+      )}
+    </>)
   }
 
   if (status === 'done') {
@@ -1011,6 +1185,20 @@ export default function RenderModal<P extends Project = Project>({ projectId, ad
               <h3 className="text-base font-semibold text-[var(--editor-text)]">Exporting your video</h3>
               <p className="text-xs text-[var(--editor-text)]/50">This can take a few minutes for longer videos.</p>
             </div>
+
+            {/* Progress bar — always visible while rendering, above the stepper
+                (poll hosts) or the render-log disclosure (SSE hosts). Poll hosts
+                have a real `phase`; the SSE log transport pins phase to
+                'rendering', so there we infer progress from the log stream. */}
+            <ProgressBar value={
+              view === 'logs'
+                ? parseLogProgress(logs)
+                : (() => {
+                    const ph = stepperPhases(renderOpts)
+                    const i = ph.indexOf(phase)
+                    return i >= 0 ? i / ph.length : (phase === 'done' ? 1 : null)
+                  })()
+            } />
 
             {/* Granular phase progress (poll hosts advance through phases). */}
             {view !== 'logs' && (

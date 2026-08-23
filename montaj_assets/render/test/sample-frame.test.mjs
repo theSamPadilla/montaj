@@ -527,6 +527,45 @@ test('(h) sampleFrame: single video item produces a non-black frame', { timeout:
 })
 
 // ---------------------------------------------------------------------------
+// (h2) sampleFrame: preferProxy decodes the proxy, the default decodes the master
+// ---------------------------------------------------------------------------
+test('(h2) sampleFrame: preferProxy decodes the proxy, not the master', { timeout: 120_000 }, async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), 'montaj-sf-test-h2-'))
+  try {
+    const fixture = makeSyntheticFixture(dir)  // clip-0's master is RED
+    if (!fixture) { t.skip('ffmpeg synthetic source generation failed'); return }
+
+    // A GREEN proxy for clip-0, distinct from its RED master, so which source
+    // was decoded is directly visible in the sampled pixel.
+    const proxyPath = join(dir, 'clip-a_proxy.mp4')
+    const pr = spawnSync('ffmpeg', [
+      '-y', '-f', 'lavfi', '-i', 'color=c=green:size=64x64:rate=30:duration=3',
+      '-pix_fmt', 'yuv420p', proxyPath,
+    ], { encoding: 'utf8', timeout: 15_000 })
+    if (pr.status !== 0) { t.skip('ffmpeg proxy generation failed'); return }
+    fixture.project.tracks[0][0].proxySrc = proxyPath
+
+    // preferProxy → the GREEN proxy is decoded (t=1.5: only clip-0, no overlay).
+    const proxyOut = join(dir, 'proxy.png')
+    const rProxy = await sampleFrame({ projectJson: fixture.project, atSeconds: 1.5, outPath: proxyOut, preferProxy: true })
+    const dims = pngDimensions(rProxy.pngPath)
+    const gpx = readPixelRgba(rProxy.pngPath, dims.w >> 1, dims.h >> 1)
+    assert.ok(gpx.g > 100 && gpx.r < 120 && gpx.b < 120,
+      `preferProxy should decode the green proxy, got R=${gpx.r} G=${gpx.g} B=${gpx.b}`)
+
+    // Default (no preferProxy) → the RED master is decoded. Distinct cache key
+    // (preferProxy is part of it), so this is a real second render, not a hit.
+    const masterOut = join(dir, 'master.png')
+    const rMaster = await sampleFrame({ projectJson: fixture.project, atSeconds: 1.5, outPath: masterOut })
+    const rpx = readPixelRgba(rMaster.pngPath, dims.w >> 1, dims.h >> 1)
+    assert.ok(rpx.r > 150 && rpx.g < 100 && rpx.b < 100,
+      `default should decode the red master, got R=${rpx.r} G=${rpx.g} B=${rpx.b}`)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+// ---------------------------------------------------------------------------
 // (s) sampleFrame: object-shape tracks (VisualTrack[]) resolve, not throw
 // ---------------------------------------------------------------------------
 test('(s) sampleFrame: object-shape tracks produce a frame, not a throw', { timeout: 120_000 }, async (t) => {

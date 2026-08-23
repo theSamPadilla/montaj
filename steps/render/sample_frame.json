@@ -29,6 +29,12 @@
       "description": "Look curve id for the HDR-to-SDR grade (see montaj_assets/luts/looks.json, e.g. 'vivid1'). Meaningless on SDR projects: ignored with a stderr warning, not an error. Omit to use the project's master look."
     },
     {
+      "name": "prefer-proxy",
+      "type": "bool",
+      "required": false,
+      "description": "Decode each clip from its SDR proxy (proxySrc) instead of the full-resolution master when a proxy exists. Much faster for quick previews (cover posters, cover-frame grids); the proxy is already SDR so no HDR tone-map is applied. Do NOT combine with --sdr-curve: the proxy is baked at the default look and cannot show a per-curve grade. Falls back to the master per clip when no proxy is present."
+    },
+    {
       "name": "out",
       "type": "path",
       "required": false,
