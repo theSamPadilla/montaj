@@ -1,3 +1,4 @@
+/// <reference types="vite/client" />
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, fireEvent, cleanup, within } from '@testing-library/react'
 import type { Project } from '../types'
@@ -5,6 +6,7 @@ import type { Captions, CaptionSegment } from '../schema'
 import type { PlaybackClock } from './playback-clock'
 import CaptionListPanel, { type CaptionListPanelProps, nextEditFocus } from './CaptionListPanel'
 import { formatTime } from './timeline/utils'
+import src from './CaptionListPanel.tsx?raw'
 
 // The "Caption style" subsection's expanded/collapsed state persists to
 // localStorage (usePersistentState) — clear it between tests or an earlier
@@ -114,6 +116,33 @@ describe('CaptionListPanel list', () => {
     expect(within(rows[0]).getByText(formatTime(THREE_SEGS[0].start))).toBeTruthy()
     expect(within(rows[1]).getByText(formatTime(THREE_SEGS[1].start))).toBeTruthy()
     expect(within(rows[2]).getByText(formatTime(THREE_SEGS[2].start))).toBeTruthy()
+  })
+
+  // Regression guard, source-level rather than rendered: Tailwind cannot
+  // generate a rule for an opacity modifier on an arbitrary var() color
+  // (`text-[var(--editor-text)]/40`) — the class is a silent no-op, so the
+  // element inherits whatever color its ancestor has instead. That shipped
+  // invisibly on these exact two spans (index number + start timestamp):
+  // measured in a real browser at rgb(17,24,39) text on an rgb(17,24,39) row,
+  // a 1.00:1 contrast ratio, across all 39 rows of a real caption list. jsdom
+  // doesn't evaluate Tailwind, so `getByText(...)` above passes either way —
+  // only a source-text check on the actual class string catches it.
+  //
+  // Scoped to just these two spans, not "no `/<number>` modifier anywhere in
+  // the file": ~12 OTHER `text-[var(--editor-text)]/N` uses remain elsewhere
+  // in this component (toolbar, buttons, search, empty states) and are
+  // equally no-ops, but they were individually measured to render legibly in
+  // their positions and are out of scope for this fix. A file-wide ban here
+  // would either force touching all of them unverified or need a fragile
+  // "count didn't grow" check that can't tell one class moving from banning
+  // one occurrence while a new one appears elsewhere.
+  it('the row index and timestamp spans do not use a no-op opacity-modifier color class', () => {
+    const indexSpan = src.match(/<span className="[^"]*">\{index \+ 1\}<\/span>/)?.[0] ?? ''
+    const timestampSpan = src.match(/<span className="[^"]*">\{formatTime\(seg\.start\)\}<\/span>/)?.[0] ?? ''
+    expect(indexSpan).toBeTruthy()
+    expect(timestampSpan).toBeTruthy()
+    expect(indexSpan).not.toMatch(/text-\[var\(--editor-text\)\]\/\d+/)
+    expect(timestampSpan).not.toMatch(/text-\[var\(--editor-text\)\]\/\d+/)
   })
 
   it('with no captionTrack but a regenerate capability, offers only Regenerate + the empty message — no style controls, no search, no count', () => {

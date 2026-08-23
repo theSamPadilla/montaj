@@ -478,8 +478,16 @@ function CaptionListPanelBody({
                     what you navigate by. Both small/mono/muted so neither
                     competes with the caption text beside them. */}
                 <div className="shrink-0 flex flex-col items-end gap-0.5 pt-0.5 w-10">
-                  <span className="text-[10px] font-mono text-[var(--editor-text)]/40">{index + 1}</span>
-                  <span className="text-[9px] font-mono text-[var(--editor-text)]/35">{formatTime(seg.start)}</span>
+                  {/* NOT `text-[var(--editor-text)]/N` — Tailwind cannot generate a
+                      rule for an opacity modifier on an arbitrary var() color, so
+                      that class is a silent no-op and these spans inherit the row's
+                      own (near-identical) foreground color instead. `opacity-N` is a
+                      real utility and, on a plain text span with no background,
+                      renders identically to the alpha-blended color that was
+                      intended. See CaptionListPanel.test.tsx for the regression
+                      guard. */}
+                  <span className="text-[10px] font-mono text-[var(--editor-text)] opacity-60">{index + 1}</span>
+                  <span className="text-[9px] font-mono text-[var(--editor-text)] opacity-50">{formatTime(seg.start)}</span>
                 </div>
                 <span className="flex-1 min-w-0 text-xs text-[var(--editor-text)] leading-snug">
                   <EditableSegment
