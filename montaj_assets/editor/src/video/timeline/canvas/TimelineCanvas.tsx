@@ -33,7 +33,7 @@
  * hook does it.
  */
 
-import { useCallback, useEffect, useMemo, useRef, type ReactNode } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import type { GetFilmstripArgs, GetWaveformPeaksArgs, FilmstripIndex, PeaksData, Project, FootageDropPayload } from '../../../types'
 import { FOOTAGE_DND_MIME } from '../../../types'
 import type { PlaybackClock } from '../../playback-clock'
@@ -148,6 +148,41 @@ const cancelFrame: (handle: number) => void =
  *  pointer layer's latest-props ref with a fresh array every render. */
 const NO_SNAP_BOUNDARIES: number[] = []
 
+/**
+ * How tall the surface must be to reach the bottom of the pane's visible area.
+ *
+ * `surfaceOffsetTop` is the surface's top measured from the scroll CONTENT's
+ * origin (everything laid out above it: the zoom chrome, the scrubber, the
+ * paddings) — NOT its position on screen. That distinction is what makes the
+ * measurement scroll-invariant: scrolling a tall timeline moves the surface's
+ * screen position but not its offset within the content, so the fill it asks
+ * for never grows as you scroll. It is also independent of the surface's OWN
+ * height, so setting the result can never change the next measurement.
+ *
+ * `paddingBelow` is the padding under the surface in the flow (only the
+ * Timeline root's `py-3` contributes today). Pure, so it unit-tests without a
+ * layout. Clamped at 0 so an overflowing timeline never asks for a negative
+ * height (the caller's Math.max keeps the layout height there instead).
+ */
+export function paneFillHeight(viewportHeight: number, surfaceOffsetTop: number, paddingBelow: number): number {
+  return Math.max(0, viewportHeight - surfaceOffsetTop - paddingBelow)
+}
+
+/** Sum the `padding-bottom` of every element from `from` up to and including
+ *  `to` — the padding that sits under the surface within the scroll viewport,
+ *  which the fill must leave clear or it would overflow the pane by that much
+ *  and show a scrollbar. Generic over the DOM chain rather than hardcoding the
+ *  root's `py-3`, so a class change to the timeline column can't silently
+ *  reintroduce the overflow. */
+function paddingBelowSurface(from: HTMLElement | null, to: HTMLElement): number {
+  let total = 0
+  for (let el: HTMLElement | null = from; el; el = el.parentElement) {
+    total += parseFloat(getComputedStyle(el).paddingBottom) || 0
+    if (el === to) break
+  }
+  return total
+}
+
 export default function TimelineCanvas({
   project,
   clock,
@@ -190,7 +225,15 @@ export default function TimelineCanvas({
   // layout: without it a caption move or trim would change the project and
   // repaint the OLD band, so the block would spring back under the cursor.
   const layout = useMemo(() => computeTimelineLayout(project), [project.tracks, project.audio, project.captions])
-  const surfaceHeight = Math.max(layout.height, VISUAL_ROW_RENDER_HEIGHT_PX)
+
+  // How far the surface grows PAST the drawn tracks to fill the empty area at
+  // the bottom of the resizable timeline pane. The tracks stay top-anchored;
+  // this only adds background below them, so a click there hits the canvas
+  // (deselect / seek / marquee) instead of dead page space. 0 until measured,
+  // and stays 0 in any host that doesn't mark a scroll viewport (see the effect
+  // below), which degrades to the pre-fill behaviour.
+  const [paneFill, setPaneFill] = useState(0)
+  const surfaceHeight = Math.max(layout.height, VISUAL_ROW_RENDER_HEIGHT_PX, paneFill)
 
   // Latest draw inputs, readable from the imperative paint without making the
   // paint a dependency of every effect (the ref-to-latest pattern
@@ -360,6 +403,46 @@ export default function TimelineCanvas({
       requestRedraw('all')
     })
   }, [store, requestRedraw])
+
+  // ── Fill the pane: grow the surface to reach the bottom of the timeline
+  //    pane, so the empty area under the last track is live canvas ──
+  //
+  // Measured against the pane's scroll viewport (the `data-timeline-scroll`
+  // marker VideoEditor puts on it), whose height is set by the resizable pane
+  // and is INDEPENDENT of the surface's own height — so setting `paneFill` can
+  // never change what the next measurement reads, and there is no feedback loop
+  // even while the surface (and the flow below it) grows and the pane scrolls.
+  // A host that marks no viewport (the pending layout, tests) is left at 0 and
+  // keeps the pre-fill height. Re-measures on pane resize (the viewport's
+  // ResizeObserver) and whenever the layout changes (a row added above the
+  // surface shifts its top; more rows change how much space is left).
+  useEffect(() => {
+    const el = containerRef.current
+    if (!el) return
+    const scroll = el.closest('[data-timeline-scroll]') as HTMLElement | null
+    if (!scroll) return
+    const measure = () => {
+      const scrollRect = scroll.getBoundingClientRect()
+      const surfaceRect = el.getBoundingClientRect()
+      // Offset within the scroll CONTENT, not on screen: the `scrollTop` term
+      // cancels the shift `surfaceRect.top` takes on when the pane is scrolled,
+      // so a scrolled-down measurement asks for the same fill as an unscrolled
+      // one (see `paneFillHeight`).
+      const surfaceOffsetTop = surfaceRect.top - scrollRect.top + scroll.scrollTop
+      const padding = paddingBelowSurface(el.parentElement, scroll)
+      const next = Math.round(paneFillHeight(scrollRect.height, surfaceOffsetTop, padding))
+      setPaneFill(prev => (prev === next ? prev : next))
+    }
+    measure()
+    let ro: ResizeObserver | undefined
+    if (typeof ResizeObserver !== 'undefined') {
+      ro = new ResizeObserver(() => measure())
+      ro.observe(scroll)
+    }
+    const onResize = () => measure()
+    window.addEventListener('resize', onResize)
+    return () => { ro?.disconnect(); window.removeEventListener('resize', onResize) }
+  }, [layout])
 
   // ── Turning the axis off with the pointer still over the surface takes the
   //    line and the host's override down with it: no further mousemove is

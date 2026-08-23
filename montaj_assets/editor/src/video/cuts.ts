@@ -339,19 +339,39 @@ export function applyCutToItem<P extends Project>(project: P, itemId: string, cu
 // ── Audio split helper ────────────────────────────────────────────────────
 
 function splitAudioTrack(track: AudioTrack, at: number): [AudioTrack, AudioTrack] {
-  const inPoint = track.inPoint ?? 0
-  const sourceOffset = at - track.start
+  // Resolve the ORIGINAL track's effective source window the same way the canvas
+  // waveform painter (`audioTrackSourceWindow`) and the DOM `AudioWaveformLayer`
+  // default it — `inPoint ?? 0`, `outPoint ?? sourceDuration ?? span` — then hand
+  // BOTH halves a fully-specified [inPoint, outPoint] window. Audio always runs at
+  // speed 1, so the split point's source offset equals its timeline offset.
+  //
+  // The right half MUST carry an explicit `outPoint`. Previously it only inherited
+  // whatever the source had, so a track with no `outPoint`/`sourceDuration` left
+  // the fragment's source end unknown; `audioTrackSourceWindow` then fell back to
+  // the fragment's own `end - start` (its timeline span, not the source end),
+  // yielding a truncated window — and, for any split past the track's midpoint, a
+  // non-positive one that the painter skips entirely. That is why the new fragment
+  // rendered as a solid block with no waveform while the left half (which already
+  // got an explicit `outPoint`) kept its bars. Slicing by src+window is the
+  // codebase's design (peaks are fetched per source window and cached by
+  // src+window+bucket), so the fix is to give the fragment the correct window; no
+  // extra decode beyond the one cheap windowed peaks fetch each new half needs.
+  const inPoint  = track.inPoint ?? 0
+  const outPoint = track.outPoint ?? track.sourceDuration ?? (track.end - track.start)
+  const splitPoint = inPoint + (at - track.start)
 
   const left: AudioTrack = {
     ...track,
     end: at,
-    outPoint: inPoint + sourceOffset,
+    inPoint,
+    outPoint: splitPoint,
   }
   const right: AudioTrack = {
     ...track,
     id: uniqueId(track.id),
     start: at,
-    inPoint: inPoint + sourceOffset,
+    inPoint: splitPoint,
+    outPoint,
   }
   return [left, right]
 }

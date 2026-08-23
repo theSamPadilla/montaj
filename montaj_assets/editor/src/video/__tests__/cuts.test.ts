@@ -11,6 +11,7 @@ import {
   setClipSpeed,
 } from '../cuts'
 import type { EditorProject as Project, VisualItem, VisualTrack } from '../../schema'
+import { audioTrackSourceWindow } from '../timeline/canvas/waveforms'
 
 /** Object-shape visual tracks, carrying the ids `normalizeTracks` would hand
  *  out — so a fixture reads `vtracks([clipA, clipB], [overlay])`. The cut ops
@@ -207,6 +208,48 @@ describe('splitAtTime', () => {
     expect(out.audio!.tracks).toHaveLength(2)
     expect(out.audio!.tracks[0]).toMatchObject({ end: 4, outPoint: 4 })
     expect(out.audio!.tracks[1]).toMatchObject({ start: 4, inPoint: 4 })
+  })
+
+  it('both split halves resolve a positive waveform window when the source has no outPoint/sourceDuration', () => {
+    // The bug: the new (right) fragment rendered as a solid block with no
+    // waveform. Its source window came out truncated — and, for a split PAST the
+    // midpoint, non-positive — so the waveform painter skipped it. Split a
+    // 0..10 track (no outPoint, no sourceDuration) at 7, well past the midpoint.
+    const p = makeProject({
+      tracks: vtracks([]),
+      audio: { tracks: [{ id: 'au', src: 'a.mp3', start: 0, end: 10 }] },
+    })
+    const [left, right] = splitAtTime(p, 7, null).audio!.tracks
+
+    // Both halves carry an explicit, fully-specified source window.
+    expect(left).toMatchObject({ start: 0, end: 7, inPoint: 0, outPoint: 7 })
+    expect(right).toMatchObject({ start: 7, end: 10, inPoint: 7, outPoint: 10 })
+
+    // Both halves resolve to a positive waveform window (the right one used to be
+    // negative here → painter drew nothing → blank block).
+    const lw = audioTrackSourceWindow(left)
+    const rw = audioTrackSourceWindow(right)
+    expect(lw).toEqual({ start: 0, duration: 7 })
+    expect(rw).toEqual({ start: 7, duration: 3 })
+    expect(rw.duration).toBeGreaterThan(0)
+
+    // The two windows tile the original source range [0,10] with no gap/overlap.
+    expect(lw.start + lw.duration).toBeCloseTo(rw.start)
+    expect(lw.duration + rw.duration).toBeCloseTo(10)
+  })
+
+  it('carries an existing trim window across a split (both halves stay within source)', () => {
+    // A pre-trimmed track: source window [2,12] mapped onto timeline [0,10].
+    const p = makeProject({
+      tracks: vtracks([]),
+      audio: { tracks: [{ id: 'au', src: 'a.mp3', start: 0, end: 10, inPoint: 2, outPoint: 12 }] },
+    })
+    const [left, right] = splitAtTime(p, 6, null).audio!.tracks
+    // Split at timeline 6 → source 2 + 6 = 8.
+    expect(left).toMatchObject({ start: 0, end: 6, inPoint: 2, outPoint: 8 })
+    expect(right).toMatchObject({ start: 6, end: 10, inPoint: 8, outPoint: 12 })
+    expect(audioTrackSourceWindow(left)).toEqual({ start: 2, duration: 6 })
+    expect(audioTrackSourceWindow(right)).toEqual({ start: 8, duration: 4 })
   })
 })
 

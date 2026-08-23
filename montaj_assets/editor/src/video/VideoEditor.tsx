@@ -1424,7 +1424,11 @@ function ReviewSurface<P extends Project>({
         )}
       </div>
 
-      <div className="flex-1 min-h-0 overflow-y-auto border-t border-[var(--editor-border)] bg-[var(--editor-surface)]">
+      {/* `data-timeline-scroll`: the canvas timeline measures against this
+          viewport to grow its surface down into the empty space below the
+          tracks (see TimelineCanvas's pane-fill effect). Its height is fixed by
+          the resizable pane, so the measurement never feeds back. */}
+      <div data-timeline-scroll className="flex-1 min-h-0 overflow-y-auto border-t border-[var(--editor-border)] bg-[var(--editor-surface)]">
         <Timeline
           project={project}
           clock={clock}
