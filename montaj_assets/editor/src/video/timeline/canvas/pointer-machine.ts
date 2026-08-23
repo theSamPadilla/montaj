@@ -59,8 +59,18 @@ import { applyResizeDeltaToSelection } from '../multiSelectOps'
 import { AUDIO_LANE_HEIGHT_PX, groupAudioLanes, mapTrackItems, moveItemAcrossTracks, normalizeTracks, trackItems, updateAudioTrack } from '../timeline-model'
 import { DRAG_THRESHOLD_PX, computeResizedItem, resizeWindowedItem, type Draggable } from '../useItemDragDrop'
 import type { TimelineLayout } from './draw'
-import { hitTest, isEmptyHit, type HitResult, type HitTestOptions, type Point } from './hit-test'
 import {
+  hitTest,
+  isEmptyHit,
+  itemsInRect,
+  normalizeRect,
+  type HitResult,
+  type HitTestOptions,
+  type Point,
+  type SurfaceRect,
+} from './hit-test'
+import {
+  DEFAULT_SNAP_CONFIG,
   applySnap,
   createSnapState,
   snapPointsExcluding,
@@ -119,7 +129,7 @@ export type PointerMachineEvent =
 
 // ── Outputs ──────────────────────────────────────────────────────────────
 
-export type Cursor = 'pointer' | 'grab' | 'grabbing' | 'ew-resize'
+export type Cursor = 'default' | 'pointer' | 'grab' | 'grabbing' | 'ew-resize' | 'crosshair'
 
 export type PointerEffect =
   /** `clock.set` — move the playhead. */
@@ -138,6 +148,13 @@ export type PointerEffect =
    *  it down. Emitted only when it CHANGES — a drag held against one boundary
    *  emits once on capture and once on release, not sixty times a second. */
   | { type: 'snapGuide'; time: number | null; strength: SnapStrength | null }
+  /** The rubber-band box to paint, or null to take it down. */
+  | { type: 'marquee'; rect: SurfaceRect | null }
+  /** What a finished marquee caught. Separate from `select` because a marquee
+   *  replaces (or extends) the whole selection in one step — replaying it as N
+   *  single `select` effects would make the host apply N re-renders and, worse,
+   *  would need the first to be non-additive and the rest additive. */
+  | { type: 'selectMany'; ids: string[]; additive: boolean }
 
 // ── State ────────────────────────────────────────────────────────────────
 
@@ -149,8 +166,10 @@ export type GestureKind =
   | 'slide'
   | 'audio-move'
   | 'audio-trim'
-  /** Dragging the playhead across empty timeline. */
+  /** Dragging the playhead. Lives on the ruler strip only. */
   | 'scrub'
+  /** Dragging a rubber-band box across empty track area to select. */
+  | 'marquee'
 
 export interface Press {
   origin: Point
@@ -193,10 +212,14 @@ export type MachineState =
       guide: SnapGuide | null
       /** The most recent project this gesture emitted — what a commit persists. */
       lastProject: Project
+      /** Latched once the gesture has pulled clear of where it started, and
+       *  never cleared. Arms the origin boundary so a butted clip can snap back
+       *  onto its neighbour — see `originGuard`. */
+      escaped: boolean
     }
 
 export function initialMachineState(): MachineState {
-  return { kind: 'idle', cursor: 'pointer' }
+  return { kind: 'idle', cursor: 'default' }
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────
@@ -212,8 +235,13 @@ function travelled(a: Point, b: Point): number {
 }
 
 /** Cursor for a resting pointer over a hit — the DOM rows' affordances:
- *  `cursor-ew-resize` on handles, `cursor-grab` on item bodies,
- *  `cursor-pointer` on the row/lane background. */
+ *  `cursor-ew-resize` on handles, `cursor-grab` on item bodies.
+ *
+ *  Empty timeline is the plain arrow, not `pointer`. A hand cursor promises a
+ *  thing you can click, and the gaps between clips are not a thing — they are
+ *  where you drag out a selection. `pointer` there read as "everything on this
+ *  surface is a button", which is the opposite of what a track area is.
+ *  The ruler keeps `ew-resize`, because scrubbing IS a horizontal drag. */
 export function cursorForHit(hit: HitResult): Cursor {
   switch (hit.kind) {
     case 'item-edge':
@@ -222,8 +250,10 @@ export function cursorForHit(hit: HitResult): Cursor {
     case 'item-body':
     case 'audio-body':
       return 'grab'
+    case 'ruler':
+      return 'ew-resize'
     default:
-      return 'pointer'
+      return 'default'
   }
 }
 
@@ -234,6 +264,8 @@ function cursorForGesture(gesture: GestureKind): Cursor {
     case 'audio-trim':
     case 'scrub':
       return 'ew-resize'
+    case 'marquee':
+      return 'crosshair'
     default:
       return 'grabbing'
   }
@@ -254,6 +286,13 @@ export function resolveGesture(hit: HitResult, modifiers: Modifiers): GestureKin
       return 'audio-trim'
     case 'audio-body':
       return 'audio-move'
+    // Empty track area drags out a selection box. The ruler is handled on
+    // press (it scrubs immediately, so it never reaches this resolution), and
+    // is deliberately absent here.
+    case 'empty-row':
+    case 'empty-lane':
+    case 'background':
+      return 'marquee'
     default:
       return null
   }
@@ -289,12 +328,27 @@ function itemSnapPoints(ctx: PointerContext, press: Press, exclude: readonly num
  *
  * Audio lanes tier against the LANE, matching how `hitTest` addresses them: a
  * lane can hold several tracks, and to an editor they are one row.
+ *
+ * `skipId` drops the dragged item's OWN two boundaries, by identity rather than
+ * by value. That distinction is the whole fix for butted clips: narration is
+ * recorded as takes that butt end-to-end, so a voice clip's start is numerically
+ * equal to its neighbour's end, and the old value-based exclusion in
+ * `itemSnapPoints` deleted BOTH — handing every butted clip a timeline where the
+ * one boundary it most wants to snap to had been quietly removed. Excluding by
+ * identity keeps the neighbour's boundary in the set; `originGuard` then handles
+ * the separate problem of not being glued to it at rest.
  */
-function tieredBoundaries(project: Project, trackIdx?: number, laneIdx?: number): SnapPoint[] {
+function tieredBoundaries(
+  project: Project,
+  trackIdx?: number,
+  laneIdx?: number,
+  skipId?: string,
+): SnapPoint[] {
   const points: SnapPoint[] = []
   trackItems(project).forEach((items, idx) => {
     const strength: SnapStrength = idx === trackIdx ? 'strong' : 'weak'
     for (const item of items) {
+      if (item.id === skipId) continue
       points.push({ time: item.start, strength }, { time: item.end, strength })
     }
   })
@@ -306,10 +360,48 @@ function tieredBoundaries(project: Project, trackIdx?: number, laneIdx?: number)
   for (const lane of groupAudioLanes(project.audio?.tracks ?? [])) {
     const strength: SnapStrength = lane.laneIndex === laneIdx ? 'strong' : 'weak'
     for (const track of lane.tracks) {
+      if (track.id === skipId) continue
       points.push({ time: track.start, strength }, { time: track.end, strength })
     }
   }
   return points
+}
+
+/**
+ * Has this gesture pulled clear of where it started?
+ *
+ * Measured in pixels from the press point, which is the same distance every
+ * gesture's candidate has travelled from its own origin (a move's start, a
+ * trim's edge, a roll's cut all track `point.x` one-for-one), so one test
+ * serves them all without knowing which gesture is running.
+ *
+ * LATCHED by the caller: once true it stays true for the rest of the gesture.
+ * That is the whole point. A guard that merely asked "am I far from the origin
+ * right now" could never re-arm the origin boundary, because being near it is
+ * exactly the moment you want it back.
+ */
+function hasEscaped(ctx: PointerContext, press: Press, point: Point): boolean {
+  const releasePx = (ctx.snapConfig ?? DEFAULT_SNAP_CONFIG).releasePx
+  return Math.abs(point.x - press.origin.x) >= releasePx
+}
+
+/**
+ * The origin values to keep suppressed.
+ *
+ * A gesture starts ON its own origin, so any magnet sitting there captures it
+ * instantly and then demands a full release radius of travel before the item
+ * moves at all — the item stays put, then jumps 44px in one step. That is why
+ * origins were excluded in the first place.
+ *
+ * But excluding them for the WHOLE gesture is what made a butted clip
+ * unsnappable back: the boundary you want to return to is the boundary you
+ * started on, and a butted neighbour contributes the very same value. Dropping
+ * the suppression the moment the gesture has pulled clear gives both halves —
+ * the clip breaks away cleanly, and the boundary re-arms behind it so butting
+ * the two back together catches.
+ */
+function originGuard(escaped: boolean, origins: readonly number[]): readonly number[] {
+  return escaped ? [] : origins
 }
 
 /** Snap targets for dragging the playhead itself: the clip/audio boundaries.
@@ -411,7 +503,7 @@ function directSnapGuide(snapped: SnapResult): SnapGuide | null {
   return { time: snapped.snappedTo, strength: snapped.strength }
 }
 
-function applyMove(ctx: PointerContext, press: Press, point: Point, snap: SnapState, lastProject: Project): Applied {
+function applyMove(ctx: PointerContext, press: Press, point: Point, snap: SnapState, lastProject: Project, escaped: boolean): Applied {
   const item = press.hit.item
   if (!item || press.hit.trackIdx === undefined) return noChange(snap, lastProject)
 
@@ -419,7 +511,7 @@ function applyMove(ctx: PointerContext, press: Press, point: Point, snap: SnapSt
   const dt = (point.x - press.origin.x) / ctx.viewport.pxPerSecond
   const rawStart = clamp(item.start + dt, 0, Math.max(0, ctx.totalDuration - duration))
 
-  const boundaries = itemSnapPoints(ctx, press, [item.start, item.end])
+  const boundaries = itemSnapPoints(ctx, press, originGuard(escaped, [item.start, item.end]))
   const points = snapPointsForSpan(boundaries, duration)
   const snapped = applySnap(rawStart, points, ctx.viewport, snap, ctx.snapConfig)
   const start = clamp(snapped.time, 0, Math.max(0, ctx.totalDuration - duration))
@@ -448,7 +540,7 @@ function applyMove(ctx: PointerContext, press: Press, point: Point, snap: SnapSt
   return { effects: [{ type: 'projectChange', project: next }], snap: snapped.state, lastProject: next, guide }
 }
 
-function applyTrim(ctx: PointerContext, press: Press, point: Point, snap: SnapState, lastProject: Project): Applied {
+function applyTrim(ctx: PointerContext, press: Press, point: Point, snap: SnapState, lastProject: Project, escaped: boolean): Applied {
   const item = press.hit.item
   if (!item || !press.hit.edge) return noChange(snap, lastProject)
 
@@ -457,7 +549,15 @@ function applyTrim(ctx: PointerContext, press: Press, point: Point, snap: SnapSt
   const dt = (point.x - press.origin.x) / ctx.viewport.pxPerSecond
   const raw = clamp(initTime + dt, 0, ctx.totalDuration)
 
-  const snapped = applySnap(raw, itemSnapPoints(ctx, press, [item.start, item.end]), ctx.viewport, snap, ctx.snapConfig)
+  // The opposite edge stays excluded for the whole gesture — trimming an out
+  // edge back onto its own in edge is a zero-length clip, not an alignment.
+  // Only the edge being dragged gets the re-arming treatment.
+  const fixedEdge = edge === 'start' ? item.end : item.start
+  const snapped = applySnap(
+    raw,
+    itemSnapPoints(ctx, press, [fixedEdge, ...originGuard(escaped, [initTime])]),
+    ctx.viewport, snap, ctx.snapConfig,
+  )
   const resized = computeResizedItem(item as Draggable, edge, snapped.time)
 
   // Trims always rebuild from the pressed-at project, never from the running
@@ -480,7 +580,7 @@ function applyTrim(ctx: PointerContext, press: Press, point: Point, snap: SnapSt
   return { effects: [{ type: 'projectChange', project: next }], snap: snapped.state, lastProject: next, guide }
 }
 
-function applyRoll(ctx: PointerContext, press: Press, point: Point, snap: SnapState, lastProject: Project): Applied {
+function applyRoll(ctx: PointerContext, press: Press, point: Point, snap: SnapState, lastProject: Project, escaped: boolean): Applied {
   const item = press.hit.item
   if (!item || !press.hit.edge) return noChange(snap, lastProject)
 
@@ -493,9 +593,16 @@ function applyRoll(ctx: PointerContext, press: Press, point: Point, snap: SnapSt
 
   const boundary = left.end
   const dt = (point.x - press.origin.x) / ctx.viewport.pxPerSecond
+  const candidate = clamp(boundary + dt, 0, ctx.totalDuration)
+  // A roll's origin IS the shared boundary, and both neighbours contribute it.
+  // The outer edges stay excluded throughout: rolling the cut onto either
+  // neighbour's far edge would consume that clip entirely.
   const snapped = applySnap(
-    clamp(boundary + dt, 0, ctx.totalDuration),
-    itemSnapPoints(ctx, press, [left.start, left.end, right.start, right.end]),
+    candidate,
+    itemSnapPoints(ctx, press, [
+      left.start, right.end,
+      ...originGuard(escaped, [left.end, right.start]),
+    ]),
     ctx.viewport,
     snap,
     ctx.snapConfig,
@@ -517,14 +624,15 @@ function applySlip(ctx: PointerContext, press: Press, point: Point, snap: SnapSt
   return change(slipItem(press.baseProject, item.id, -dt), lastProject, snap, null)
 }
 
-function applySlide(ctx: PointerContext, press: Press, point: Point, snap: SnapState, lastProject: Project): Applied {
+function applySlide(ctx: PointerContext, press: Press, point: Point, snap: SnapState, lastProject: Project, escaped: boolean): Applied {
   const item = press.hit.item
   if (!item) return noChange(snap, lastProject)
 
   const dt = (point.x - press.origin.x) / ctx.viewport.pxPerSecond
+  const candidate = clamp(item.start + dt, 0, ctx.totalDuration)
   const snapped = applySnap(
-    clamp(item.start + dt, 0, ctx.totalDuration),
-    itemSnapPoints(ctx, press, [item.start, item.end]),
+    candidate,
+    itemSnapPoints(ctx, press, originGuard(escaped, [item.start, item.end])),
     ctx.viewport,
     snap,
     ctx.snapConfig,
@@ -533,7 +641,7 @@ function applySlide(ctx: PointerContext, press: Press, point: Point, snap: SnapS
   return change(slid, lastProject, snapped.state, directSnapGuide(snapped))
 }
 
-function applyAudioMove(ctx: PointerContext, press: Press, point: Point, snap: SnapState, lastProject: Project): Applied {
+function applyAudioMove(ctx: PointerContext, press: Press, point: Point, snap: SnapState, lastProject: Project, escaped: boolean): Applied {
   const track = press.hit.track
   if (!track || press.hit.laneIdx === undefined) return noChange(snap, lastProject)
 
@@ -541,7 +649,7 @@ function applyAudioMove(ctx: PointerContext, press: Press, point: Point, snap: S
   const dt = (point.x - press.origin.x) / ctx.viewport.pxPerSecond
   const rawStart = clamp(track.start + dt, 0, Math.max(0, ctx.totalDuration - duration))
 
-  const boundaries = itemSnapPoints(ctx, press, [track.start, track.end])
+  const boundaries = itemSnapPoints(ctx, press, originGuard(escaped, [track.start, track.end]))
   const points = snapPointsForSpan(boundaries, duration)
   const snapped = applySnap(rawStart, points, ctx.viewport, snap, ctx.snapConfig)
   const start = clamp(snapped.time, 0, Math.max(0, ctx.totalDuration - duration))
@@ -560,7 +668,7 @@ function applyAudioMove(ctx: PointerContext, press: Press, point: Point, snap: S
   return { effects: [{ type: 'projectChange', project: next }], snap: snapped.state, lastProject: next, guide }
 }
 
-function applyAudioTrim(ctx: PointerContext, press: Press, point: Point, snap: SnapState, lastProject: Project): Applied {
+function applyAudioTrim(ctx: PointerContext, press: Press, point: Point, snap: SnapState, lastProject: Project, escaped: boolean): Applied {
   const track = press.hit.track
   if (!track || !press.hit.edge) return noChange(snap, lastProject)
 
@@ -568,7 +676,12 @@ function applyAudioTrim(ctx: PointerContext, press: Press, point: Point, snap: S
   const initTime = edge === 'start' ? track.start : track.end
   const dt = (point.x - press.origin.x) / ctx.viewport.pxPerSecond
   const raw = clamp(initTime + dt, 0, ctx.totalDuration)
-  const snapped = applySnap(raw, itemSnapPoints(ctx, press, [track.start, track.end]), ctx.viewport, snap, ctx.snapConfig)
+  const fixedEdge = edge === 'start' ? track.end : track.start
+  const snapped = applySnap(
+    raw,
+    itemSnapPoints(ctx, press, [fixedEdge, ...originGuard(escaped, [initTime])]),
+    ctx.viewport, snap, ctx.snapConfig,
+  )
 
   // An audio track is always source-windowed, so it goes straight to
   // `resizeWindowedItem` — `computeResizedItem` would take its non-video
@@ -614,18 +727,33 @@ function applyGesture(
   point: Point,
   snap: SnapState,
   lastProject: Project,
+  escaped: boolean,
 ): Applied {
   // Before first layout there is no scale, so a pixel delta has no meaning.
   if (!(ctx.viewport.pxPerSecond > 0)) return noChange(snap, lastProject)
   switch (gesture) {
-    case 'move':        return applyMove(ctx, press, point, snap, lastProject)
-    case 'trim':        return applyTrim(ctx, press, point, snap, lastProject)
-    case 'roll':        return applyRoll(ctx, press, point, snap, lastProject)
+    case 'move':        return applyMove(ctx, press, point, snap, lastProject, escaped)
+    case 'trim':        return applyTrim(ctx, press, point, snap, lastProject, escaped)
+    case 'roll':        return applyRoll(ctx, press, point, snap, lastProject, escaped)
     case 'slip':        return applySlip(ctx, press, point, snap, lastProject)
-    case 'slide':       return applySlide(ctx, press, point, snap, lastProject)
-    case 'audio-move':  return applyAudioMove(ctx, press, point, snap, lastProject)
-    case 'audio-trim':  return applyAudioTrim(ctx, press, point, snap, lastProject)
+    case 'slide':       return applySlide(ctx, press, point, snap, lastProject, escaped)
+    case 'audio-move':  return applyAudioMove(ctx, press, point, snap, lastProject, escaped)
+    case 'audio-trim':  return applyAudioTrim(ctx, press, point, snap, lastProject, escaped)
     case 'scrub':       return applyScrub(ctx, point, snap, lastProject)
+    case 'marquee':     return applyMarquee(press, point, snap, lastProject)
+  }
+}
+
+/** The live marquee: paint the box, change nothing. The selection is applied
+ *  once, on release — a marquee that re-selected on every move would push a
+ *  selection change per pointer event through the host for a gesture the user
+ *  has not finished expressing. */
+function applyMarquee(press: Press, point: Point, snap: SnapState, lastProject: Project): Applied {
+  return {
+    effects: [{ type: 'marquee', rect: normalizeRect(press.origin, point) }],
+    snap,
+    lastProject,
+    guide: null,
   }
 }
 
@@ -660,11 +788,15 @@ export function pointerReducer(state: MachineState, event: PointerMachineEvent):
   if (event.type === 'cancel') {
     // Carry the current cursor into the idle state first, so `withCursor` sees
     // the change it has to undo — a cancelled drag must not leave the surface
-    // showing a grabbing hand.
+    // showing a grabbing hand. A cancelled marquee takes its box with it and
+    // selects nothing, which is what cancel means.
+    const cancelled: PointerEffect[] = state.kind === 'dragging' && state.gesture === 'marquee'
+      ? [{ type: 'marquee', rect: null }]
+      : []
     return withCursor(
       { kind: 'idle', cursor: state.cursor },
       initialMachineState().cursor,
-      guideEffects(currentGuide(state), null, []),
+      guideEffects(currentGuide(state), null, cancelled),
     )
   }
 
@@ -674,9 +806,12 @@ export function pointerReducer(state: MachineState, event: PointerMachineEvent):
   // have no use for a hit result, so they take the early exit before one is
   // computed.
   if (event.type === 'pointerMove' && state.kind === 'dragging') {
-    const applied = applyGesture(state.gesture, ctx, state.press, point, state.snap, state.lastProject)
+    // Latched, never cleared: once this gesture has pulled clear of its origin
+    // the boundary it started on stays armed for the rest of the drag.
+    const escaped = state.escaped || hasEscaped(ctx, state.press, point)
+    const applied = applyGesture(state.gesture, ctx, state.press, point, state.snap, state.lastProject, escaped)
     return {
-      state: { ...state, snap: applied.snap, guide: applied.guide, lastProject: applied.lastProject },
+      state: { ...state, snap: applied.snap, guide: applied.guide, lastProject: applied.lastProject, escaped },
       effects: guideEffects(state.guide, applied.guide, applied.effects),
     }
   }
@@ -685,18 +820,18 @@ export function pointerReducer(state: MachineState, event: PointerMachineEvent):
 
   switch (event.type) {
     case 'pointerDown': {
-      // Empty timeline: seek straight away and keep scrubbing. The canvas has
-      // no playhead handle of its own (the DOM scrubber above it stays whole-
-      // project chrome), so pressing the surface IS grabbing the playhead. The
-      // DOM's click-to-seek landed on mouseup; landing it on mousedown is the
-      // same destination one event earlier, and it makes the drag continuous.
-      if (isEmptyHit(hit)) {
+      // The ruler: seek straight away and keep scrubbing. This is the surface's
+      // only playhead handle — canvas mode dropped the DOM overview bar (see
+      // Scrubber.tsx) and the track area's empty space now belongs to the
+      // marquee, so the ruler is where dragging the playhead lives. Landing the
+      // seek on mousedown rather than mouseup is what makes the drag continuous.
+      if (hit.kind === 'ruler') {
         const applied = applyScrub(ctx, point, createSnapState(), ctx.project)
-        // Pressing bare timeline clears the selection. Without this a clip
-        // stayed selected while you scrubbed somewhere else entirely, so the
-        // next keyboard action (split, ripple-delete) hit an item nowhere near
-        // where you were looking. Additive presses are exempt — shift is how
-        // you build a multi-selection, not how you drop one.
+        // Scrubbing clears the selection, for the same reason pressing bare
+        // timeline used to: a clip left selected while you scrub somewhere else
+        // means the next keyboard action (split, ripple-delete) hits an item
+        // nowhere near where you are looking. Additive presses are exempt —
+        // shift is how you build a multi-selection, not how you drop one.
         const cleared: PointerEffect[] = isAdditive(modifiers)
           ? applied.effects
           : [{ type: 'select', id: null, additive: false }, ...applied.effects]
@@ -711,25 +846,30 @@ export function pointerReducer(state: MachineState, event: PointerMachineEvent):
             wasSelected: false,
             // A scrub never reads these (it uses `playheadSnapPoints`), but a
             // Press without them would be a Press with a hole in it.
-            snapBoundaries: tieredBoundaries(ctx.project, hit.trackIdx, hit.laneIdx),
+            snapBoundaries: tieredBoundaries(ctx.project, hit.trackIdx, hit.laneIdx, hit.itemId),
           },
           gesture: 'scrub',
           snap: applied.snap,
           guide: applied.guide,
           lastProject: ctx.project,
+          escaped: false,
         }
         return withCursor(next, cursorForGesture('scrub'), guideEffects(currentGuide(state), applied.guide, cleared))
       }
 
-      // On an item: nothing happens yet. Whether this is a click (select) or a
-      // drag (edit) is not knowable until the pointer moves or lifts.
+      // On an item, or on empty track area: nothing happens yet. Whether this
+      // is a click (select an item / seek) or a drag (edit / marquee) is not
+      // knowable until the pointer moves or lifts. Empty space used to seek on
+      // press; it now waits, because the same press may turn out to be the
+      // start of a selection box and seeking first would move the playhead
+      // every time you drew one.
       const press: Press = {
         origin: point,
         modifiers,
         hit,
         baseProject: ctx.project,
         wasSelected: hit.itemId !== undefined && ctx.selectedIds.includes(hit.itemId),
-        snapBoundaries: tieredBoundaries(ctx.project, hit.trackIdx, hit.laneIdx),
+        snapBoundaries: tieredBoundaries(ctx.project, hit.trackIdx, hit.laneIdx, hit.itemId),
       }
       return withCursor({ kind: 'pressed', cursor: state.cursor, press }, cursorForHit(hit), [])
     }
@@ -744,7 +884,8 @@ export function pointerReducer(state: MachineState, event: PointerMachineEvent):
       if (travelled(point, state.press.origin) < DRAG_THRESHOLD_PX) return { state, effects: [] }
       const gesture = resolveGesture(state.press.hit, state.press.modifiers)
       if (gesture === null) return { state, effects: [] }
-      const applied = applyGesture(gesture, ctx, state.press, point, createSnapState(), state.press.baseProject)
+      const escaped = hasEscaped(ctx, state.press, point)
+      const applied = applyGesture(gesture, ctx, state.press, point, createSnapState(), state.press.baseProject, escaped)
       const next: MachineState = {
         kind: 'dragging',
         cursor: state.cursor,
@@ -753,6 +894,7 @@ export function pointerReducer(state: MachineState, event: PointerMachineEvent):
         snap: applied.snap,
         guide: applied.guide,
         lastProject: applied.lastProject,
+        escaped,
       }
       return withCursor(next, cursorForGesture(gesture), guideEffects(null, applied.guide, applied.effects))
     }
@@ -770,12 +912,34 @@ export function pointerReducer(state: MachineState, event: PointerMachineEvent):
           if (visual && !additive && !wasSelected) {
             effects.push({ type: 'seek', time: clamp(xToTime(point.x, ctx.viewport), 0, ctx.totalDuration) })
           }
+        } else if (isEmptyHit(pressed)) {
+          // A click on empty track area that never became a marquee: seek and
+          // drop the selection, which is what pressing there did before the
+          // marquee took the drag half of this gesture.
+          if (!isAdditive(modifiers)) effects.push({ type: 'select', id: null, additive: false })
+          effects.push({ type: 'seek', time: clamp(xToTime(point.x, ctx.viewport), 0, ctx.totalDuration) })
         }
         return withCursor({ kind: 'idle', cursor: state.cursor }, cursorForHit(hit), effects)
       }
 
       if (state.kind === 'dragging') {
         const effects: PointerEffect[] = []
+        if (state.gesture === 'marquee') {
+          // Take the box down first, then apply what it caught. A marquee never
+          // touches the project, so it never commits.
+          const rect = normalizeRect(state.press.origin, point)
+          effects.push({ type: 'marquee', rect: null })
+          effects.push({
+            type: 'selectMany',
+            ids: itemsInRect(rect, ctx.layout, ctx.viewport),
+            additive: isAdditive(state.press.modifiers) || isAdditive(modifiers),
+          })
+          return withCursor(
+            { kind: 'idle', cursor: state.cursor },
+            cursorForHit(hit),
+            guideEffects(state.guide, null, effects),
+          )
+        }
         // A scrub has nothing to persist, and a gesture whose every move clamped
         // to a no-op has nothing either — committing an unchanged project would
         // make the host write the file for a gesture that did nothing.

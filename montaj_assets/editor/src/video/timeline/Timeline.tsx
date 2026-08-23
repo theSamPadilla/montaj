@@ -247,6 +247,21 @@ export default function Timeline({ project, clock, onProjectChange, onCaptionEdi
     if (id === null) { onSelectIds([]); return }
     onSelectIds(toggleSelection(selectedIds, id, additive))
   }
+
+  /**
+   * A marquee's whole catch, applied at once.
+   *
+   * Deliberately a SET operation rather than a fold of `toggleSelection`:
+   * toggling would flip off any item that was already selected and happens to
+   * fall inside the box, so dragging a marquee over an existing selection would
+   * deselect exactly the clips it visibly covers. A marquee states what is
+   * selected; additive unions it with what was there.
+   */
+  function handleSelectItems(ids: string[], additive: boolean) {
+    if (!onSelectIds) return
+    onSelectCaption?.(null)
+    onSelectIds(additive ? [...new Set([...selectedIds, ...ids])] : ids)
+  }
   const allTracks      = trackItems(project)
   const captionTrack   = project.captions
   const audioTracks    = project.audio?.tracks ?? []
@@ -575,6 +590,7 @@ export default function Timeline({ project, clock, onProjectChange, onCaptionEdi
               previewAxis={previewAxis}
               onHoverScrub={onHoverScrub}
               onSelectItem={handleSelectItem}
+              onSelectItems={handleSelectItems}
               onProjectChange={onProjectChange}
               onOverlayEdit={onOverlayEdit}
               onInspectClip={onInspectClip}

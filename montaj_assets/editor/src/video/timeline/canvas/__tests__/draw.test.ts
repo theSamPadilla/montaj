@@ -28,6 +28,7 @@ import {
   drawAudioItem,
   drawClipRect,
   drawTrimHandle,
+  RULER_HEIGHT_PX,
   SNAP_GUIDE_CAP_HALF_WIDTH_PX,
   SNAP_GUIDE_WEAK_WIDTH_PX,
   SNAP_GUIDE_WIDTH_PX,
@@ -125,6 +126,17 @@ function scene(over: Partial<TimelineScene> = {}): TimelineScene {
   }
 }
 
+/** What the ruler alone draws at this viewport — an empty project draws the
+ *  ruler and nothing else. Content-volume assertions subtract this so they keep
+ *  measuring the thing they are about (items, rows) rather than the fixed cost
+ *  of the chrome above them. */
+function rulerBaseline(vp: Viewport) {
+  const empty = project()
+  const r = recordingContext()
+  drawTimelineContent(r.ctx, scene({ project: empty, layout: computeTimelineLayout(empty), viewport: vp }))
+  return { calls: r.calls.length, fillRect: r.count('fillRect'), fillText: r.count('fillText') }
+}
+
 // ── Layout ───────────────────────────────────────────────────────────────
 
 describe('computeTimelineLayout', () => {
@@ -138,8 +150,11 @@ describe('computeTimelineLayout', () => {
 
     // Draw order top→bottom mirrors the DOM's `[...allTracks].reverse()`.
     expect(layout.rows.map(r => r.trackIdx)).toEqual([2, 1, 0])
-    expect(layout.rows[0]).toMatchObject({ y: 0, height: VISUAL_ROW_RENDER_HEIGHT_PX })
-    expect(layout.rows[1]).toMatchObject({ y: VISUAL_ROW_RENDER_HEIGHT_PX + ROW_GAP_PX })
+    // Rows start below the ruler strip, which owns the top of the surface.
+    const contentTop = RULER_HEIGHT_PX + ROW_GAP_PX
+    expect(layout.ruler).toEqual({ y: 0, height: RULER_HEIGHT_PX })
+    expect(layout.rows[0]).toMatchObject({ y: contentTop, height: VISUAL_ROW_RENDER_HEIGHT_PX })
+    expect(layout.rows[1]).toMatchObject({ y: contentTop + VISUAL_ROW_RENDER_HEIGHT_PX + ROW_GAP_PX })
     // The base video track is the tall one (`trackRowTall`).
     expect(layout.rows[2].height).toBe(BASE_VISUAL_ROW_RENDER_HEIGHT_PX)
 
@@ -149,9 +164,14 @@ describe('computeTimelineLayout', () => {
     expect(layout.height).toBe(layout.lanes[1].y + AUDIO_LANE_HEIGHT_PX)
   })
 
-  it('is empty for an empty project', () => {
+  it('is empty for an empty project, but still reserves the ruler', () => {
     const layout = computeTimelineLayout(project())
-    expect(layout).toEqual({ rows: [], lanes: [], height: 0 })
+    expect(layout).toEqual({
+      ruler: { y: 0, height: RULER_HEIGHT_PX },
+      rows: [],
+      lanes: [],
+      height: RULER_HEIGHT_PX,
+    })
   })
 })
 
@@ -536,8 +556,11 @@ describe('drawTimelineContent', () => {
 
     // (10 - 8) * 25 = 50px from the left, 4s * 25 = 100px wide — then inset by
     // the gutter each side, which is paint only and does not move the clip in time.
-    const clipFill = r.of('fillRect')[0]
-    expect(clipFill.args).toEqual([50 + CLIP_GUTTER_PX, 0, 100 - CLIP_GUTTER_PX * 2, BASE_VISUAL_ROW_RENDER_HEIGHT_PX])
+    // Located by its width rather than by call order: the ruler and the row
+    // background both fillRect before the clip does.
+    const rowY = computeTimelineLayout(p).rows[0].y
+    const clipFill = r.of('fillRect').find(c => c.args[2] === 100 - CLIP_GUTTER_PX * 2)
+    expect(clipFill?.args).toEqual([50 + CLIP_GUTTER_PX, rowY, 100 - CLIP_GUTTER_PX * 2, BASE_VISUAL_ROW_RENDER_HEIGHT_PX])
   })
 
   it('insets audio bars inside their lane', () => {
@@ -548,11 +571,16 @@ describe('drawTimelineContent', () => {
     // Audio bars are rounded, so their box is a path, not a fillRect: the lane
     // background's path comes first, the bar's second, inset top and bottom.
     const barHeight = AUDIO_LANE_HEIGHT_PX - AUDIO_ITEM_INSET_PX * 2
-    expect(r.of('moveTo')[1].args).toEqual([4, AUDIO_ITEM_INSET_PX])
+    // Lane y, not 0: the ruler owns the top of the surface and everything below
+    // it is offset by that strip.
+    const barTop = computeTimelineLayout(p).lanes[0].y + AUDIO_ITEM_INSET_PX
+    expect(r.of('moveTo')[1].args).toEqual([4, barTop])
     expect(r.of('arcTo').some(c =>
-      JSON.stringify(c.args) === JSON.stringify([80, AUDIO_ITEM_INSET_PX, 80, AUDIO_ITEM_INSET_PX + barHeight, 4]),
+      JSON.stringify(c.args) === JSON.stringify([80, barTop, 80, barTop + barHeight, 4]),
     )).toBe(true)
-    expect(r.of('fillText')[0].args).toEqual(['voice.mp3', 6, AUDIO_ITEM_INSET_PX + barHeight / 2])
+    // By content, not by index — the ruler's own tick labels are fillText too.
+    const barLabel = r.of('fillText').find(c => c.args[0] === 'voice.mp3')
+    expect(barLabel?.args).toEqual(['voice.mp3', 6, barTop + barHeight / 2])
   })
 
   it('marks the overlap between two audio bars as a crossfade band', () => {
@@ -839,8 +867,9 @@ describe('draw culling', () => {
     // And the draw-call list is bounded by the viewport too — rows, the drawn
     // items and their labels, nothing per-culled-item.
     const rowCount = layout.rows.length + layout.lanes.length
-    expect(r.count('fillText')).toBeLessThanOrEqual(drawn)
-    expect(r.count('fillRect')).toBeLessThanOrEqual(rowCount + drawn * 4)
+    const base = rulerBaseline(zoomedIn.viewport)
+    expect(r.count('fillText') - base.fillText).toBeLessThanOrEqual(drawn)
+    expect(r.count('fillRect') - base.fillRect).toBeLessThanOrEqual(rowCount + drawn * 4)
   })
 
   it('bounds draw calls by viewport size, not project size', () => {
@@ -858,8 +887,11 @@ describe('draw culling', () => {
     drawTimelineContent(b.ctx, scene({ project: huge, layout: computeTimelineLayout(huge), viewport: viewport(window) }))
 
     // 10× the project, the same handful of draw calls (within one row's worth).
+    // The ruler is a fixed cost at a fixed viewport, so it cancels in the
+    // difference and is subtracted from the absolute bound.
+    const base = rulerBaseline(viewport(window))
     expect(Math.abs(b.calls.length - a.calls.length)).toBeLessThan(60)
-    expect(b.calls.length).toBeLessThan(200)
+    expect(b.calls.length - base.calls).toBeLessThan(200)
   })
 
   it('draws more, but still only what fits, when zoomed out to the whole project', () => {

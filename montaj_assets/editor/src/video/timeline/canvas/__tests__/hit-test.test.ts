@@ -14,7 +14,7 @@
  */
 import { describe, it, expect } from 'vitest'
 import type { Project } from '../../../../types'
-import { computeTimelineLayout } from '../draw'
+import { RULER_HEIGHT_PX, computeTimelineLayout } from '../draw'
 import {
   AUDIO_EDGE_TOLERANCE_PX,
   VISUAL_EDGE_TOLERANCE_PX,
@@ -66,9 +66,12 @@ function at(x: number, y: number) {
 
 describe('hitTest — geometry sanity', () => {
   it('the fixture lays out where the assertions below assume', () => {
+    // Rows begin under the ruler strip, which owns the top of the surface.
+    const contentTop = RULER_HEIGHT_PX + ROW_GAP_PX
+    expect(layout.ruler).toEqual({ y: 0, height: RULER_HEIGHT_PX })
     expect(layout.rows.map(r => [r.trackIdx, r.y, r.height])).toEqual([
-      [1, 0, VISUAL_ROW_RENDER_HEIGHT_PX],
-      [0, VISUAL_ROW_RENDER_HEIGHT_PX + ROW_GAP_PX, BASE_VISUAL_ROW_RENDER_HEIGHT_PX],
+      [1, contentTop, VISUAL_ROW_RENDER_HEIGHT_PX],
+      [0, contentTop + VISUAL_ROW_RENDER_HEIGHT_PX + ROW_GAP_PX, BASE_VISUAL_ROW_RENDER_HEIGHT_PX],
     ])
     expect(layout.lanes.map(l => [l.laneIndex, l.y, l.height])).toEqual([[baseRow.y + baseRow.height + ROW_GAP_PX, AUDIO_LANE_HEIGHT_PX]].map(([y, h]) => [0, y, h]))
   })
@@ -110,8 +113,9 @@ describe('hitTest — visual items', () => {
       id: 'p', tracks: [[{ id: 'n0', type: 'video', src: 'n.mp4', start: 0, end: 0.12 }]],
     } as unknown as Project
     const narrowLayout = computeTimelineLayout(narrow)
-    expect(hitTest({ x: 6, y: 10 }, narrowLayout, VIEWPORT)).toMatchObject({ edge: 'out' })
-    expect(hitTest({ x: 1, y: 10 }, narrowLayout, VIEWPORT)).toMatchObject({ edge: 'in' })
+    const narrowY = narrowLayout.rows[0].y + 2
+    expect(hitTest({ x: 6, y: narrowY }, narrowLayout, VIEWPORT)).toMatchObject({ edge: 'out' })
+    expect(hitTest({ x: 1, y: narrowY }, narrowLayout, VIEWPORT)).toMatchObject({ edge: 'in' })
   })
 
   it('resolves a shared boundary to the clip painted on top', () => {
@@ -240,8 +244,13 @@ describe('hitTest — outside the rows', () => {
     expect(at(300, 500).kind).toBe('background')
   })
 
-  it('treats negative y as background', () => {
-    expect(at(300, -5).kind).toBe('background')
+  it('treats negative y as the ruler, so a scrub survives drifting off the top', () => {
+    // Everything at or above the ruler's bottom edge is the ruler, including
+    // points off the surface entirely. A pointer that wanders above the strip
+    // mid-scrub is still scrubbing; reporting `background` there would drop the
+    // gesture the moment the hand rose.
+    expect(at(300, -5).kind).toBe('ruler')
+    expect(at(300, -5).t).toBeCloseTo(3)
   })
 
   it('still reports a time for points off either end of the surface', () => {
@@ -280,7 +289,10 @@ describe('hitTest — predicates', () => {
 describe('hitTest — degenerate layouts', () => {
   it('reports background for an empty project', () => {
     const empty = computeTimelineLayout({ id: 'p' } as unknown as Project)
-    expect(hitTest({ x: 100, y: 10 }, empty, VIEWPORT).kind).toBe('background')
+    // Below the ruler: with no rows or lanes there is nothing but background.
+    expect(hitTest({ x: 100, y: RULER_HEIGHT_PX + 10 }, empty, VIEWPORT).kind).toBe('background')
+    // The ruler itself is still there, even with nothing to rule over.
+    expect(hitTest({ x: 100, y: 2 }, empty, VIEWPORT).kind).toBe('ruler')
   })
 
   it('survives a viewport with no scale yet', () => {

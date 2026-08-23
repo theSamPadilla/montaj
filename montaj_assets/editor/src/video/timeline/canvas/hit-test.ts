@@ -42,6 +42,9 @@ export interface HitTestOptions {
 }
 
 export type HitKind =
+  /** The time ruler strip along the top. Scrubbing lives here, and only here:
+   *  the track area's empty space belongs to the marquee now. */
+  | 'ruler'
   /** Inside a visual clip, away from its trim handles. */
   | 'item-body'
   /** Inside a visual clip's in/out trim handle. */
@@ -154,6 +157,12 @@ export function hitTest(
   const visualTolerance = opts.visualEdgeTolerancePx ?? VISUAL_EDGE_TOLERANCE_PX
   const audioTolerance = opts.audioEdgeTolerancePx ?? AUDIO_EDGE_TOLERANCE_PX
 
+  // Before the rows, and including everything above the strip: a pointer that
+  // has run off the top of the surface is still aiming at the ruler, and
+  // clamping it there keeps a scrub alive when the hand drifts upward
+  // mid-drag rather than dropping the gesture on the floor.
+  if (point.y < layout.ruler.y + layout.ruler.height) return { kind: 'ruler', t }
+
   for (const row of layout.rows) {
     if (point.y < row.y || point.y >= row.y + row.height) continue
     const hit = resolveRow(point.x, row.items, viewport, visualTolerance)
@@ -179,6 +188,59 @@ export function hitTest(
   }
 
   return { kind: 'background', t }
+}
+
+export interface SurfaceRect { x: number; y: number; width: number; height: number }
+
+/** A rect from two corners, in any drag direction. A marquee dragged up-left
+ *  is the same box as one dragged down-right; normalizing here means every
+ *  consumer can assume non-negative width and height. */
+export function normalizeRect(a: Point, b: Point): SurfaceRect {
+  const x = Math.min(a.x, b.x)
+  const y = Math.min(a.y, b.y)
+  return { x, y, width: Math.abs(a.x - b.x), height: Math.abs(a.y - b.y) }
+}
+
+function overlaps(aStart: number, aEnd: number, bStart: number, bEnd: number): boolean {
+  return aStart < bEnd && bStart < aEnd
+}
+
+/**
+ * Every item id the marquee box touches — visual clips and audio bars alike.
+ *
+ * Touch, not containment: a box only counts items it fully encloses forces you
+ * to drag past the ends of long clips to catch them, which on a zoomed-in
+ * timeline can mean dragging off-screen. Every NLE uses intersection, and so
+ * does the reference this was built from.
+ *
+ * Rows are tested against the box in surface space and spans in time space, so
+ * a tall thin box down one moment in time selects across every track at once —
+ * which is the gesture's most useful form.
+ */
+export function itemsInRect(
+  rect: SurfaceRect,
+  layout: TimelineLayout,
+  viewport: Viewport,
+): string[] {
+  const ids: string[] = []
+  const left = xToTime(rect.x, viewport)
+  const right = xToTime(rect.x + rect.width, viewport)
+  const top = rect.y
+  const bottom = rect.y + rect.height
+
+  for (const row of layout.rows) {
+    if (!overlaps(row.y, row.y + row.height, top, bottom)) continue
+    for (const item of row.items) {
+      if (overlaps(item.start, item.end, left, right)) ids.push(item.id)
+    }
+  }
+  for (const lane of layout.lanes) {
+    if (!overlaps(lane.y, lane.y + lane.height, top, bottom)) continue
+    for (const track of lane.tracks) {
+      if (overlaps(track.start, track.end, left, right)) ids.push(track.id)
+    }
+  }
+  return ids
 }
 
 /** Do the two `*-edge` kinds and their `edge` field describe a trim grab? */

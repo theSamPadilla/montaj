@@ -39,7 +39,7 @@ import type { PlaybackClock } from '../../playback-clock'
 import type { ResolveFilePath } from '../AudioWaveformLayer'
 import { VISUAL_ROW_RENDER_HEIGHT_PX } from '../timeline-model'
 import { computeTimelineLayout, drawTimelineContent, drawTimelineOverlay } from './draw'
-import { hitTest, isEdgeHit, type Point } from './hit-test'
+import { hitTest, isEdgeHit, type Point, type SurfaceRect } from './hit-test'
 import {
   createPointerMachine,
   type Modifiers,
@@ -98,6 +98,10 @@ export interface TimelineCanvasProps {
   /** Timeline's `handleSelectItem` — additive rules and the item↔caption
    *  exclusivity stay owned there, so both surfaces select identically. */
   onSelectItem?: (id: string | null, additive: boolean) => void
+  /** A marquee's whole catch, applied in one step. Falls back to replaying
+   *  `onSelectItem` per id when the host does not implement it, so a host that
+   *  predates the marquee still selects correctly. */
+  onSelectItems?: (ids: string[], additive: boolean) => void
   /** Live, uncommitted edit — fires once per pointer move during a gesture. */
   onProjectChange?: (p: Project) => void
   /** Gesture finished; persist. Same split the DOM rows use. */
@@ -142,6 +146,7 @@ export default function TimelineCanvas({
   previewAxis = false,
   onHoverScrub,
   onSelectItem,
+  onSelectItems,
   onProjectChange,
   onOverlayEdit,
   onInspectClip,
@@ -187,6 +192,11 @@ export default function TimelineCanvas({
   // `snapGuide` effect only when the guide MOVES, so this is written a couple
   // of times per gesture rather than per event.
   const snapGuideRef = useRef<{ time: number; strength: SnapStrength } | null>(null)
+
+  // The rubber-band box, same imperative treatment: it follows the pointer, so
+  // a React state write per move would re-render the timeline to move a
+  // rectangle.
+  const marqueeRef = useRef<SurfaceRect | null>(null)
 
   // The trim handle under the resting pointer, so the painter can light it up.
   // Held as a ref for the usual reason, but redrawn through `requestRedraw`
@@ -283,6 +293,7 @@ export default function TimelineCanvas({
           cursorTime: cursorTimeRef.current,
           snapTime: snapGuideRef.current?.time ?? null,
           snapStrength: snapGuideRef.current?.strength ?? null,
+          marquee: marqueeRef.current,
           surfaceWidth: cssWidth,
           surfaceHeight: cssHeight,
         })
@@ -401,11 +412,11 @@ export default function TimelineCanvas({
   // handlers bound once on mount never read a stale project or callback.
   const pointerRef = useRef({
     project, layout, selectedIds, snapBoundaries, totalDuration, rippleMode, previewAxis,
-    onSelectItem, onProjectChange, onOverlayEdit, onInspectClip, onInspectAudio, onHoverScrub,
+    onSelectItem, onSelectItems, onProjectChange, onOverlayEdit, onInspectClip, onInspectAudio, onHoverScrub,
   })
   pointerRef.current = {
     project, layout, selectedIds, snapBoundaries, totalDuration, rippleMode, previewAxis,
-    onSelectItem, onProjectChange, onOverlayEdit, onInspectClip, onInspectAudio, onHoverScrub,
+    onSelectItem, onSelectItems, onProjectChange, onOverlayEdit, onInspectClip, onInspectAudio, onHoverScrub,
   }
 
   const buildContext = useCallback((): PointerContext => {
@@ -442,6 +453,24 @@ export default function TimelineCanvas({
             ? null
             : { time: effect.time, strength: effect.strength }
           requestRedraw('overlay')
+          break
+        // Overlay-only for the same reason as the guide: the box follows the
+        // pointer, and repainting clips and filmstrips behind it sixty times a
+        // second to move a rectangle would be absurd.
+        case 'marquee':
+          marqueeRef.current = effect.rect
+          requestRedraw('overlay')
+          break
+        case 'selectMany':
+          if (p.onSelectItems) {
+            p.onSelectItems(effect.ids, effect.additive)
+          } else {
+            // No bulk handler: replay as singles. The first is non-additive
+            // unless the marquee itself was additive (so it replaces the old
+            // selection), and every one after it extends what the first set.
+            if (!effect.additive && effect.ids.length === 0) p.onSelectItem?.(null, false)
+            effect.ids.forEach((id, i) => p.onSelectItem?.(id, effect.additive || i > 0))
+          }
           break
       }
     }

@@ -605,8 +605,11 @@ describe('drawTimelineContent waveform wiring', () => {
     }))
 
     // The bar's own background is painted via fill() (roundRectPath), not
-    // fillRect — the only fillRect calls left are the 3 waveform bars.
-    const fills = r.of('fillRect')
-    expect(fills).toHaveLength(3)
+    // fillRect, so the waveform's 3 bars are the only fillRects the LOOKUP
+    // adds. Measured as a delta against the same scene with no lookup, because
+    // the ruler strip along the top fillRects too.
+    const bare = recordingContext()
+    drawTimelineContent(bare.ctx, scene({ project: p, layout: computeTimelineLayout(p) }))
+    expect(r.of('fillRect').length - bare.of('fillRect').length).toBe(3)
   })
 })

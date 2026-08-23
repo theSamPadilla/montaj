@@ -71,6 +71,19 @@ const LANE_Y = (() => {
   return Math.round(lane.y + lane.height / 2)
 })()
 
+/** Vertical centre of the single visual row, likewise from the layout — the
+ *  ruler strip offsets everything below it, so a hardcoded y aims at the gap. */
+const ROW_Y = (() => {
+  const row = computeTimelineLayout(project).rows[0]
+  return Math.round(row.y + row.height / 2)
+})()
+
+/** Inside the ruler strip, where scrubbing lives. */
+const RULER_Y = (() => {
+  const ruler = computeTimelineLayout(project).ruler
+  return Math.round(ruler.y + ruler.height / 2)
+})()
+
 const TOTAL_DURATION = 13
 const SNAP_BOUNDARIES = [0, 4, 8, 1, 5]
 
@@ -79,6 +92,7 @@ function mount(overrides: Partial<React.ComponentProps<typeof TimelineCanvas>> =
   const clock = createPlaybackClock()
   const handlers = {
     onSelectItem: vi.fn(),
+    onSelectItems: vi.fn(),
     onProjectChange: vi.fn(),
     onOverlayEdit: vi.fn(),
     onInspectClip: vi.fn(),
@@ -131,11 +145,33 @@ function mouse(type: string, x: number, y: number, init: MouseEventInit = {}) {
 }
 
 describe('TimelineCanvas — pointer wiring', () => {
-  it('seeks the clock from a press on empty timeline', () => {
+  it('seeks the clock from a click on empty timeline', () => {
+    // On release, not on press: the same press may turn out to be a marquee.
     const { surface, clock } = mount()
-    act(() => { surface.dispatchEvent(mouse('mousedown', 900, 20)) })
+    act(() => { surface.dispatchEvent(mouse('mousedown', 900, ROW_Y)) })
+    expect(clock.get()).toBe(0)
+    act(() => { document.dispatchEvent(mouse('mouseup', 900, ROW_Y)) })
     expect(clock.get()).toBeCloseTo(9)
-    act(() => { document.dispatchEvent(mouse('mouseup', 900, 20)) })
+  })
+
+  it('seeks on PRESS from the ruler, and keeps scrubbing', () => {
+    const { surface, clock } = mount()
+    act(() => { surface.dispatchEvent(mouse('mousedown', 900, RULER_Y)) })
+    expect(clock.get()).toBeCloseTo(9)
+    act(() => { document.dispatchEvent(mouse('mousemove', 600, RULER_Y)) })
+    expect(clock.get()).toBeCloseTo(6)
+    act(() => { document.dispatchEvent(mouse('mouseup', 600, RULER_Y)) })
+  })
+
+  it('drags a marquee across empty track area and selects what it caught', () => {
+    const { surface, onSelectItems } = mount()
+    act(() => { surface.dispatchEvent(mouse('mousedown', 900, ROW_Y)) })
+    act(() => { document.dispatchEvent(mouse('mousemove', 300, ROW_Y)) })
+    act(() => { document.dispatchEvent(mouse('mouseup', 300, ROW_Y)) })
+    expect(onSelectItems).toHaveBeenCalledTimes(1)
+    const [ids, additive] = onSelectItems.mock.calls[0]
+    expect(ids).toEqual(expect.arrayContaining(['c1']))
+    expect(additive).toBe(false)
   })
 
   it('converts client coordinates into surface coordinates', () => {
@@ -144,33 +180,34 @@ describe('TimelineCanvas — pointer wiring', () => {
       return { x: 200, y: 50, top: 50, left: 200, right: 1200, bottom: 150, width: 1000, height: 100, toJSON: () => ({}) } as DOMRect
     }
     const { surface, clock } = mount()
-    // Client (1100, 70) is surface (900, 20) — empty track area at t=9.
-    act(() => { surface.dispatchEvent(mouse('mousedown', 1100, 70)) })
+    // Client x=1100 is surface x=900 — empty track area at t=9. The y is the
+    // row's own centre pushed down by the stubbed rect's top edge.
+    act(() => { surface.dispatchEvent(mouse('mousedown', 1100, 50 + ROW_Y)) })
+    act(() => { document.dispatchEvent(mouse('mouseup', 1100, 50 + ROW_Y)) })
     expect(clock.get()).toBeCloseTo(9)
-    act(() => { document.dispatchEvent(mouse('mouseup', 1100, 70)) })
   })
 
   it('selects a clip on a click, through the host\'s own handler', () => {
     const { surface, onSelectItem, onProjectChange } = mount()
-    act(() => { surface.dispatchEvent(mouse('mousedown', 200, 20)) })
-    act(() => { document.dispatchEvent(mouse('mouseup', 200, 20)) })
+    act(() => { surface.dispatchEvent(mouse('mousedown', 200, ROW_Y)) })
+    act(() => { document.dispatchEvent(mouse('mouseup', 200, ROW_Y)) })
     expect(onSelectItem).toHaveBeenCalledWith('c0', false)
     expect(onProjectChange).not.toHaveBeenCalled()
   })
 
   it('passes the additive modifier through', () => {
     const { surface, onSelectItem } = mount()
-    act(() => { surface.dispatchEvent(mouse('mousedown', 200, 20, { shiftKey: true })) })
-    act(() => { document.dispatchEvent(mouse('mouseup', 200, 20, { shiftKey: true })) })
+    act(() => { surface.dispatchEvent(mouse('mousedown', 200, ROW_Y, { shiftKey: true })) })
+    act(() => { document.dispatchEvent(mouse('mouseup', 200, ROW_Y, { shiftKey: true })) })
     expect(onSelectItem).toHaveBeenCalledWith('c0', true)
   })
 
   it('drives a drag through onProjectChange per move and onOverlayEdit once', () => {
     const { surface, onProjectChange, onOverlayEdit, onSelectItem } = mount()
-    act(() => { surface.dispatchEvent(mouse('mousedown', 200, 20)) })
-    act(() => { document.dispatchEvent(mouse('mousemove', 250, 20)) })
-    act(() => { document.dispatchEvent(mouse('mousemove', 300, 20)) })
-    act(() => { document.dispatchEvent(mouse('mouseup', 300, 20)) })
+    act(() => { surface.dispatchEvent(mouse('mousedown', 200, ROW_Y)) })
+    act(() => { document.dispatchEvent(mouse('mousemove', 250, ROW_Y)) })
+    act(() => { document.dispatchEvent(mouse('mousemove', 300, ROW_Y)) })
+    act(() => { document.dispatchEvent(mouse('mouseup', 300, ROW_Y)) })
 
     expect(onProjectChange).toHaveBeenCalledTimes(2)
     expect(onOverlayEdit).toHaveBeenCalledTimes(1)
@@ -183,9 +220,9 @@ describe('TimelineCanvas — pointer wiring', () => {
   it('trims from a press on the out handle', () => {
     const { surface, onProjectChange } = mount()
     // c0 ends at t=4 → x=400; its out handle is 390–400.
-    act(() => { surface.dispatchEvent(mouse('mousedown', 396, 20)) })
-    act(() => { document.dispatchEvent(mouse('mousemove', 296, 20)) })
-    act(() => { document.dispatchEvent(mouse('mouseup', 296, 20)) })
+    act(() => { surface.dispatchEvent(mouse('mousedown', 396, ROW_Y)) })
+    act(() => { document.dispatchEvent(mouse('mousemove', 296, ROW_Y)) })
+    act(() => { document.dispatchEvent(mouse('mouseup', 296, ROW_Y)) })
 
     const edited = onProjectChange.mock.calls[0][0] as Project
     expect(trackItems(edited).flat().find(i => i.id === 'c0')).toMatchObject({ end: 3, outPoint: 3 })
@@ -193,7 +230,7 @@ describe('TimelineCanvas — pointer wiring', () => {
 
   it('does nothing on a double-click over empty timeline', () => {
     const { surface, onProjectChange, onSelectItem, onInspectClip } = mount()
-    act(() => { surface.dispatchEvent(mouse('dblclick', 900, 20)) })
+    act(() => { surface.dispatchEvent(mouse('dblclick', 900, ROW_Y)) })
     expect(onProjectChange).not.toHaveBeenCalled()
     expect(onSelectItem).not.toHaveBeenCalled()
     expect(onInspectClip).not.toHaveBeenCalled()
@@ -201,7 +238,7 @@ describe('TimelineCanvas — pointer wiring', () => {
 
   it('opens the inspectors on a double-click over an item', () => {
     const { surface, onInspectClip, onInspectAudio } = mount()
-    act(() => { surface.dispatchEvent(mouse('dblclick', 200, 20)) })
+    act(() => { surface.dispatchEvent(mouse('dblclick', 200, ROW_Y)) })
     expect(onInspectClip).toHaveBeenCalledWith('c0')
     act(() => { surface.dispatchEvent(mouse('dblclick', 300, LANE_Y)) })
     expect(onInspectAudio).toHaveBeenCalledWith('a0')
@@ -211,14 +248,19 @@ describe('TimelineCanvas — pointer wiring', () => {
     const { surface, renders } = mount()
     const before = renders.mock.calls.length
 
-    act(() => { surface.dispatchEvent(mouse('mousemove', 200, 20)) })
+    act(() => { surface.dispatchEvent(mouse('mousemove', 200, ROW_Y)) })
     expect(surface.style.cursor).toBe('grab')
 
-    act(() => { surface.dispatchEvent(mouse('mousemove', 396, 20)) })
+    act(() => { surface.dispatchEvent(mouse('mousemove', 396, ROW_Y)) })
     expect(surface.style.cursor).toBe('ew-resize')
 
-    act(() => { surface.dispatchEvent(mouse('mousemove', 900, 20)) })
-    expect(surface.style.cursor).toBe('pointer')
+    act(() => { surface.dispatchEvent(mouse('mousemove', 900, ROW_Y)) })
+    // Empty track area is the plain arrow: nothing to click, only a marquee
+    // to drag out.
+    expect(surface.style.cursor).toBe('default')
+
+    act(() => { surface.dispatchEvent(mouse('mousemove', 900, RULER_Y)) })
+    expect(surface.style.cursor).toBe('ew-resize')
 
     expect(renders.mock.calls.length).toBe(before)
   })
@@ -227,22 +269,23 @@ describe('TimelineCanvas — pointer wiring', () => {
     const { surface, clock, onProjectChange } = mount()
 
     // No press: page-wide movement is ignored.
-    act(() => { document.dispatchEvent(mouse('mousemove', 500, 20)) })
+    act(() => { document.dispatchEvent(mouse('mousemove', 500, ROW_Y)) })
     expect(onProjectChange).not.toHaveBeenCalled()
 
-    act(() => { surface.dispatchEvent(mouse('mousedown', 900, 20)) })
-    act(() => { document.dispatchEvent(mouse('mousemove', 950, 20)) })
+    // Driven from the ruler, which is where a drag still moves the clock.
+    act(() => { surface.dispatchEvent(mouse('mousedown', 900, RULER_Y)) })
+    act(() => { document.dispatchEvent(mouse('mousemove', 950, RULER_Y)) })
     expect(clock.get()).toBeCloseTo(9.5)
-    act(() => { document.dispatchEvent(mouse('mouseup', 950, 20)) })
+    act(() => { document.dispatchEvent(mouse('mouseup', 950, RULER_Y)) })
 
     // After release, movement over the page no longer scrubs.
-    act(() => { document.dispatchEvent(mouse('mousemove', 100, 20)) })
+    act(() => { document.dispatchEvent(mouse('mousemove', 100, ROW_Y)) })
     expect(clock.get()).toBeCloseTo(9.5)
   })
 
   it('ignores non-primary buttons', () => {
     const { surface, clock } = mount()
-    act(() => { surface.dispatchEvent(mouse('mousedown', 900, 20, { button: 2 })) })
+    act(() => { surface.dispatchEvent(mouse('mousedown', 900, ROW_Y, { button: 2 })) })
     expect(clock.get()).toBe(0)
   })
 
@@ -262,10 +305,10 @@ describe('TimelineCanvas — pointer wiring', () => {
 
   it('unmounts without leaving document listeners behind', () => {
     const { surface, clock, unmount } = mount()
-    act(() => { surface.dispatchEvent(mouse('mousedown', 900, 20)) })
+    act(() => { surface.dispatchEvent(mouse('mousedown', 900, ROW_Y)) })
     const seeked = clock.get()
     unmount()
-    act(() => { document.dispatchEvent(mouse('mousemove', 100, 20)) })
+    act(() => { document.dispatchEvent(mouse('mousemove', 100, ROW_Y)) })
     expect(clock.get()).toBe(seeked)
   })
 
@@ -290,7 +333,7 @@ describe('TimelineCanvas — pointer wiring', () => {
     // c0 is on the sole video track (row y 0–56). Press its body, then drag
     // straight up 44px in PAGE coordinates — one row's worth — well past the
     // drag threshold, to a new top track.
-    act(() => { surface.dispatchEvent(mouse('mousedown', 200, 20)) })
+    act(() => { surface.dispatchEvent(mouse('mousedown', 200, ROW_Y)) })
     act(() => { document.dispatchEvent(mouse('mousemove', 200, 4)) })
     act(() => { document.dispatchEvent(mouse('mousemove', 200, -24)) })
     act(() => { document.dispatchEvent(mouse('mouseup', 200, -24)) })
@@ -308,9 +351,9 @@ describe('TimelineCanvas — pointer wiring', () => {
   it('does nothing when the host supplies no edit callbacks', () => {
     const { surface } = mount({ onProjectChange: undefined, onOverlayEdit: undefined, onSelectItem: undefined })
     expect(() => {
-      act(() => { surface.dispatchEvent(mouse('mousedown', 200, 20)) })
-      act(() => { document.dispatchEvent(mouse('mousemove', 300, 20)) })
-      act(() => { document.dispatchEvent(mouse('mouseup', 300, 20)) })
+      act(() => { surface.dispatchEvent(mouse('mousedown', 200, ROW_Y)) })
+      act(() => { document.dispatchEvent(mouse('mousemove', 300, ROW_Y)) })
+      act(() => { document.dispatchEvent(mouse('mouseup', 300, ROW_Y)) })
     }).not.toThrow()
   })
 })
@@ -324,14 +367,14 @@ describe('TimelineCanvas — pointer wiring', () => {
 describe('TimelineCanvas — preview axis', () => {
   it('reports nothing on hover while the axis is off', () => {
     const { surface, clock, onHoverScrub } = mount()
-    act(() => { surface.dispatchEvent(mouse('mousemove', 500, 20)) })
+    act(() => { surface.dispatchEvent(mouse('mousemove', 500, ROW_Y)) })
     expect(onHoverScrub).not.toHaveBeenCalled()
     expect(clock.get()).toBe(0)
   })
 
   it('reports the hovered time while the axis is on, without moving the clock', () => {
     const { surface, clock, onHoverScrub } = mount({ previewAxis: true })
-    act(() => { surface.dispatchEvent(mouse('mousemove', 500, 20)) })
+    act(() => { surface.dispatchEvent(mouse('mousemove', 500, ROW_Y)) })
     act(() => { vi.advanceTimersByTime(32) })
     expect(onHoverScrub).toHaveBeenCalledWith(5)
     expect(clock.get()).toBe(0)
@@ -366,8 +409,8 @@ describe('TimelineCanvas — preview axis', () => {
     // Only the frame REQUEST is rate-limited. The line itself must stay glued
     // to the pointer or the affordance feels broken.
     const { surface } = mount({ previewAxis: true })
-    act(() => { surface.dispatchEvent(mouse('mousemove', 300, 20)) })
-    act(() => { surface.dispatchEvent(mouse('mousemove', 800, 20)) })
+    act(() => { surface.dispatchEvent(mouse('mousemove', 300, ROW_Y)) })
+    act(() => { surface.dispatchEvent(mouse('mousemove', 800, ROW_Y)) })
     // No assertion on emissions here — TimelineCanvas.test.tsx owns the paint
     // proof; this pins that a burst never throws or drops the redraw path.
     act(() => { vi.advanceTimersByTime(32) })
@@ -377,7 +420,7 @@ describe('TimelineCanvas — preview axis', () => {
     // Otherwise a stale position lands one frame after the release and pins the
     // preview to a frame the pointer has already left.
     const { surface, onHoverScrub } = mount({ previewAxis: true })
-    act(() => { surface.dispatchEvent(mouse('mousemove', 500, 20)) })
+    act(() => { surface.dispatchEvent(mouse('mousemove', 500, ROW_Y)) })
     act(() => { surface.dispatchEvent(mouse('mouseleave', 500, 20)) })
     act(() => { vi.advanceTimersByTime(32) })
     expect(onHoverScrub.mock.calls.map(c => c[0])).toEqual([null])
@@ -387,14 +430,14 @@ describe('TimelineCanvas — preview axis', () => {
     // The pointer is over clip c0's body (row y 0-56); the preview should follow
     // it there exactly as over empty space.
     const { surface, onHoverScrub } = mount({ previewAxis: true })
-    act(() => { surface.dispatchEvent(mouse('mousemove', 250, 20)) })
+    act(() => { surface.dispatchEvent(mouse('mousemove', 250, ROW_Y)) })
     act(() => { vi.advanceTimersByTime(32) })
     expect(onHoverScrub).toHaveBeenCalledWith(2.5)
   })
 
   it('releases the override when the pointer leaves the surface', () => {
     const { surface, onHoverScrub } = mount({ previewAxis: true })
-    act(() => { surface.dispatchEvent(mouse('mousemove', 500, 20)) })
+    act(() => { surface.dispatchEvent(mouse('mousemove', 500, ROW_Y)) })
     act(() => { vi.advanceTimersByTime(32) })
     onHoverScrub.mockClear()
     act(() => { surface.dispatchEvent(mouse('mouseleave', 500, 20)) })
@@ -405,19 +448,21 @@ describe('TimelineCanvas — preview axis', () => {
     // A press hands the playhead to the gesture; leaving a hover override up
     // would pin the preview to a frame the drag is moving away from.
     const { surface, clock, onHoverScrub } = mount({ previewAxis: true })
-    act(() => { surface.dispatchEvent(mouse('mousemove', 500, 20)) })
+    act(() => { surface.dispatchEvent(mouse('mousemove', 500, ROW_Y)) })
     act(() => { vi.advanceTimersByTime(32) })
     onHoverScrub.mockClear()
-    act(() => { surface.dispatchEvent(mouse('mousedown', 900, 20)) })
+    act(() => { surface.dispatchEvent(mouse('mousedown', 900, ROW_Y)) })
     expect(onHoverScrub).toHaveBeenCalledWith(null)
+    // The seek itself lands on release now — empty space defers, because the
+    // press may still turn into a marquee.
+    act(() => { document.dispatchEvent(mouse('mouseup', 900, ROW_Y)) })
     expect(clock.get()).toBeCloseTo(9)
-    act(() => { document.dispatchEvent(mouse('mouseup', 900, 20)) })
   })
 
   it('clicking a clip seeks with the axis on, exactly as with it off', () => {
     const { surface, clock, onSelectItem } = mount({ previewAxis: true })
-    act(() => { surface.dispatchEvent(mouse('mousedown', 200, 20)) })
-    act(() => { document.dispatchEvent(mouse('mouseup', 200, 20)) })
+    act(() => { surface.dispatchEvent(mouse('mousedown', 200, ROW_Y)) })
+    act(() => { document.dispatchEvent(mouse('mouseup', 200, ROW_Y)) })
     expect(onSelectItem).toHaveBeenCalledWith('c0', false)
     expect(clock.get()).toBeCloseTo(2)
   })
@@ -426,7 +471,7 @@ describe('TimelineCanvas — preview axis', () => {
     // No further mousemove is coming to do it, so the preview would otherwise
     // stay frozen on whatever frame the pointer last rested over.
     const { surface, onHoverScrub, rerenderWithAxis } = mount({ previewAxis: true })
-    act(() => { surface.dispatchEvent(mouse('mousemove', 500, 20)) })
+    act(() => { surface.dispatchEvent(mouse('mousemove', 500, ROW_Y)) })
     act(() => { vi.advanceTimersByTime(32) })
     onHoverScrub.mockClear()
     act(() => { rerenderWithAxis(false) })

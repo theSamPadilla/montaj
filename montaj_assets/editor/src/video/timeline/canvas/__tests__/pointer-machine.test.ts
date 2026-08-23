@@ -164,6 +164,8 @@ const C1_IN_EDGE = { x: 505, y: BASE_Y }
 const A0_BODY = { x: 300, y: LANE_Y }
 const A0_OUT_EDGE = { x: 597, y: LANE_Y }
 const EMPTY = { x: 700, y: OVERLAY_Y }
+/** Inside the ruler strip — the only place a scrub starts now. */
+const RULER_Y = Math.round(LAYOUT.ruler.y + LAYOUT.ruler.height / 2)
 
 // ── Building blocks ──────────────────────────────────────────────────────
 
@@ -198,8 +200,9 @@ describe('resolveGesture — the four trim-op bindings', () => {
     expect(resolveGesture(audioBodyHit, mods({ meta: true }))).toBe('audio-move')
     expect(resolveGesture(audioEdgeHit, mods({ alt: true }))).toBe('audio-trim')
   })
-  it('has no gesture for empty timeline', () => {
-    expect(resolveGesture(hitTest(EMPTY, ctx.layout, VIEWPORT), mods())).toBeNull()
+  it('drags out a marquee on empty timeline', () => {
+    expect(resolveGesture(hitTest(EMPTY, ctx.layout, VIEWPORT), mods())).toBe('marquee')
+    expect(resolveGesture(hitTest({ x: 800, y: LANE_Y }, ctx.layout, VIEWPORT), mods())).toBe('marquee')
   })
 })
 
@@ -219,7 +222,11 @@ describe('cursorForHit', () => {
     expect(cursorForHit(hitTest(C0_BODY, ctx.layout, VIEWPORT))).toBe('grab')
     expect(cursorForHit(hitTest(C0_OUT_EDGE, ctx.layout, VIEWPORT))).toBe('ew-resize')
     expect(cursorForHit(hitTest(A0_BODY, ctx.layout, VIEWPORT))).toBe('grab')
-    expect(cursorForHit(hitTest(EMPTY, ctx.layout, VIEWPORT))).toBe('pointer')
+    // Empty track area is the plain arrow, not a hand: there is nothing to
+    // click there, only a selection to drag out.
+    expect(cursorForHit(hitTest(EMPTY, ctx.layout, VIEWPORT))).toBe('default')
+    // The ruler advertises the horizontal drag that scrubbing is.
+    expect(cursorForHit(hitTest({ x: 400, y: RULER_Y }, ctx.layout, VIEWPORT))).toBe('ew-resize')
   })
 })
 
@@ -231,7 +238,7 @@ describe('hover', () => {
     expect(of(d.move(C0_BODY.x, C0_BODY.y), 'cursor')).toEqual([{ type: 'cursor', cursor: 'grab' }])
     expect(d.move(C0_BODY.x + 20, C0_BODY.y)).toEqual([])
     expect(of(d.move(C0_OUT_EDGE.x, C0_OUT_EDGE.y), 'cursor')).toEqual([{ type: 'cursor', cursor: 'ew-resize' }])
-    expect(of(d.move(EMPTY.x, EMPTY.y), 'cursor')).toEqual([{ type: 'cursor', cursor: 'pointer' }])
+    expect(of(d.move(EMPTY.x, EMPTY.y), 'cursor')).toEqual([{ type: 'cursor', cursor: 'default' }])
   })
 
   it('never edits anything', () => {
@@ -245,61 +252,144 @@ describe('hover', () => {
 
 // ── Click-to-seek and scrubbing ──────────────────────────────────────────
 
-describe('click-seek on empty timeline', () => {
+describe('scrub on the ruler', () => {
   it('seeks on press and starts scrubbing', () => {
     const d = new Driver(makeContext())
-    const effects = d.down(EMPTY.x, EMPTY.y)
+    const effects = d.down(EMPTY.x, RULER_Y)
     expect(of(effects, 'seek')).toEqual([{ type: 'seek', time: 7 }])
     expect(of(effects, 'cursor')).toEqual([{ type: 'cursor', cursor: 'ew-resize' }])
     expect(d.machine.state.kind).toBe('dragging')
   })
 
-  it('clears the selection, so a click off a clip deselects it', () => {
+  it('clears the selection, so scrubbing drops what was selected', () => {
     // Otherwise a clip stayed selected while you scrubbed somewhere else, and
     // the next split or ripple-delete hit an item nowhere near the playhead.
     const d = new Driver(makeContext())
-    expect(of(d.down(EMPTY.x, EMPTY.y), 'select')).toEqual([{ type: 'select', id: null, additive: false }])
+    expect(of(d.down(EMPTY.x, RULER_Y), 'select')).toEqual([{ type: 'select', id: null, additive: false }])
   })
 
   it('leaves the selection alone on an ADDITIVE press — shift builds a selection', () => {
     const d = new Driver(makeContext())
-    expect(of(d.down(EMPTY.x, EMPTY.y, mods({ shift: true })), 'select')).toEqual([])
+    expect(of(d.down(EMPTY.x, RULER_Y, mods({ shift: true })), 'select')).toEqual([])
   })
 
   it('magnetizes to a nearby boundary', () => {
     const d = new Driver(makeContext())
-    // 5.1s is 10px from the c0/c1 cut — inside the 18px attract radius.
-    expect(of(d.down(510, 20), 'seek')).toEqual([{ type: 'seek', time: 5 }])
+    // 5.1s is 10px from the c0/c1 cut — inside the attract radius.
+    expect(of(d.down(510, RULER_Y), 'seek')).toEqual([{ type: 'seek', time: 5 }])
   })
 
   it('keeps seeking as the pointer drags, with hysteresis', () => {
     const d = new Driver(makeContext())
-    d.down(505, 20)
+    d.down(505, RULER_Y)
     expect(of(d.effects, 'seek')[0].time).toBe(5)
     // 5.25s: past attract but well inside release, so it stays stuck on the cut.
-    expect(of(d.move(525, 20), 'seek')).toEqual([{ type: 'seek', time: 5 }])
+    expect(of(d.move(525, RULER_Y), 'seek')).toEqual([{ type: 'seek', time: 5 }])
     // 5.6s clears release and the playhead comes free.
-    expect(of(d.move(560, 20), 'seek')[0].time).toBeCloseTo(5.6)
+    expect(of(d.move(560, RULER_Y), 'seek')[0].time).toBeCloseTo(5.6)
   })
 
   it('clamps the playhead to the timeline', () => {
     const d = new Driver(makeContext())
-    d.down(EMPTY.x, EMPTY.y)
-    expect(of(d.move(-500, 20), 'seek')).toEqual([{ type: 'seek', time: 0 }])
-    expect(of(d.move(100000, 20), 'seek')[0].time).toBe(makeContext().totalDuration)
+    d.down(EMPTY.x, RULER_Y)
+    expect(of(d.move(-500, RULER_Y), 'seek')).toEqual([{ type: 'seek', time: 0 }])
+    expect(of(d.move(100000, RULER_Y), 'seek')[0].time).toBe(makeContext().totalDuration)
   })
 
   it('commits nothing when the scrub ends', () => {
     const d = new Driver(makeContext())
-    d.down(EMPTY.x, EMPTY.y)
-    d.move(EMPTY.x + 50, EMPTY.y)
-    expect(of(d.up(EMPTY.x + 50, EMPTY.y), 'commit')).toEqual([])
+    d.down(EMPTY.x, RULER_Y)
+    d.move(EMPTY.x + 50, RULER_Y)
+    expect(of(d.up(EMPTY.x + 50, RULER_Y), 'commit')).toEqual([])
     expect(d.machine.state.kind).toBe('idle')
   })
 
-  it('scrubs from an empty audio lane too', () => {
+  it('keeps scrubbing when the pointer drifts above the strip', () => {
+    // hitTest claims everything at or above the ruler's bottom edge, so a hand
+    // that rises off the surface mid-drag does not drop the gesture.
     const d = new Driver(makeContext())
-    expect(of(d.down(800, LANE_Y), 'seek')).toEqual([{ type: 'seek', time: 8 }])
+    d.down(400, RULER_Y)
+    expect(of(d.move(600, -30), 'seek')[0].time).toBeCloseTo(6)
+  })
+})
+
+describe('empty track area — click seeks, drag selects', () => {
+  it('does NOT seek on press: the same press may become a marquee', () => {
+    const d = new Driver(makeContext())
+    const effects = d.down(EMPTY.x, EMPTY.y)
+    expect(of(effects, 'seek')).toEqual([])
+    expect(of(effects, 'select')).toEqual([])
+    expect(d.machine.state.kind).toBe('pressed')
+  })
+
+  it('seeks and clears the selection on a click that never moved', () => {
+    const d = new Driver(makeContext())
+    d.down(EMPTY.x, EMPTY.y)
+    const effects = d.up(EMPTY.x, EMPTY.y)
+    expect(of(effects, 'select')).toEqual([{ type: 'select', id: null, additive: false }])
+    expect(of(effects, 'seek')).toEqual([{ type: 'seek', time: 7 }])
+  })
+
+  it('leaves the selection alone on an additive click', () => {
+    const d = new Driver(makeContext())
+    d.down(EMPTY.x, EMPTY.y, mods({ shift: true }))
+    expect(of(d.up(EMPTY.x, EMPTY.y, mods({ shift: true })), 'select')).toEqual([])
+  })
+
+  it('draws a marquee once the press crosses the drag threshold', () => {
+    const d = new Driver(makeContext())
+    d.down(EMPTY.x, EMPTY.y)
+    const effects = d.move(EMPTY.x + 60, EMPTY.y + 40)
+    expect(of(effects, 'marquee')).toEqual([
+      { type: 'marquee', rect: { x: EMPTY.x, y: EMPTY.y, width: 60, height: 40 } },
+    ])
+    expect(of(effects, 'cursor')).toEqual([{ type: 'cursor', cursor: 'crosshair' }])
+    // A marquee is pure selection: it must never touch the project.
+    expect(of(effects, 'projectChange')).toEqual([])
+    expect(of(effects, 'seek')).toEqual([])
+  })
+
+  it('normalizes a box dragged up and to the left', () => {
+    const d = new Driver(makeContext())
+    d.down(EMPTY.x, EMPTY.y)
+    const rect = of(d.move(EMPTY.x - 60, EMPTY.y - 10), 'marquee')[0].rect
+    expect(rect).toEqual({ x: EMPTY.x - 60, y: EMPTY.y - 10, width: 60, height: 10 })
+  })
+
+  it('selects everything the box touched, and takes the box down, on release', () => {
+    const d = new Driver(makeContext())
+    // From empty overlay-row space at x=700, back across c1 (5s-10s) on the
+    // base row below — a box spanning both rows.
+    d.down(EMPTY.x, OVERLAY_Y)
+    d.move(600, BASE_Y)
+    const effects = d.up(600, BASE_Y)
+    expect(of(effects, 'marquee')).toEqual([{ type: 'marquee', rect: null }])
+    const selected = of(effects, 'selectMany')[0]
+    expect(selected.ids).toContain('c1')
+    expect(selected.additive).toBe(false)
+    expect(of(effects, 'commit')).toEqual([])
+  })
+
+  it('extends the selection when the marquee is additive', () => {
+    const d = new Driver(makeContext())
+    d.down(EMPTY.x, OVERLAY_Y, mods({ shift: true }))
+    d.move(600, BASE_Y, mods({ shift: true }))
+    expect(of(d.up(600, BASE_Y, mods({ shift: true })), 'selectMany')[0].additive).toBe(true)
+  })
+
+  it('a cancelled marquee takes its box down and selects nothing', () => {
+    const d = new Driver(makeContext())
+    d.down(EMPTY.x, EMPTY.y)
+    d.move(EMPTY.x + 60, EMPTY.y + 40)
+    const effects = d.cancel()
+    expect(of(effects, 'marquee')).toEqual([{ type: 'marquee', rect: null }])
+    expect(of(effects, 'selectMany')).toEqual([])
+  })
+
+  it('marquees from an empty audio lane too', () => {
+    const d = new Driver(makeContext())
+    d.down(800, LANE_Y)
+    expect(of(d.move(860, LANE_Y), 'marquee')).toHaveLength(1)
   })
 })
 
@@ -485,10 +575,10 @@ describe('cross-track move', () => {
 
   it('prunes a track the move emptied', () => {
     const d = new Driver(makeContext())
-    d.down(300, 20)                              // o0, the only item on track 1
+    d.down(300, OVERLAY_Y)                              // o0, the only item on track 1
     // Down two tracks and out past the end of the base track's content, where
     // nothing collides — so track 1 is left empty and disappears.
-    const after = lastProjectChange(d.move(300 + 900, 20 + 48))
+    const after = lastProjectChange(d.move(300 + 900, OVERLAY_Y + 48))
     expect(visual(after, 'o0').start).toBeCloseTo(11)
     expect(after.tracks).toHaveLength(1)
     expect(trackIndexOf(after, 'o0')).toBe(0)
@@ -673,8 +763,8 @@ describe('Alt + body-drag — slip', () => {
 
   it('emits nothing for a clip with no source window to slip', () => {
     const d = new Driver(makeContext())
-    d.down(300, 20, mods({ alt: true }))          // o0, an overlay
-    expect(of(d.move(400, 20, mods({ alt: true })), 'projectChange')).toEqual([])
+    d.down(300, OVERLAY_Y, mods({ alt: true }))          // o0, an overlay
+    expect(of(d.move(400, OVERLAY_Y, mods({ alt: true })), 'projectChange')).toEqual([])
   })
 })
 
@@ -804,8 +894,8 @@ describe('no row is ever inert', () => {
   it('selects a clip on a track that holds none of the selection', () => {
     const d = new Driver(makeContext({ selectedIds: ['c0'] }))
     // o0 lives on track 1, which holds no part of the selection.
-    d.down(300, 20)
-    expect(of(d.up(300, 20), 'select')).toEqual([{ type: 'select', id: 'o0', additive: false }])
+    d.down(300, OVERLAY_Y)
+    expect(of(d.up(300, OVERLAY_Y), 'select')).toEqual([{ type: 'select', id: 'o0', additive: false }])
   })
 
   it('keeps the row holding the selection live', () => {
@@ -835,7 +925,7 @@ describe('cancel', () => {
   it('resets the cursor', () => {
     const d = new Driver(makeContext())
     d.move(C0_BODY.x, C0_BODY.y)
-    expect(of(d.cancel(), 'cursor')).toEqual([{ type: 'cursor', cursor: 'pointer' }])
+    expect(of(d.cancel(), 'cursor')).toEqual([{ type: 'cursor', cursor: 'default' }])
   })
 
   it('leaves a released gesture alone', () => {
@@ -949,29 +1039,29 @@ describe('snap guide', () => {
 
     // Pressing at 5.05s captures the cut at 5. A scrub tiers everything
     // strong: the playhead belongs to no row, so it has no "own track".
-    d.down(505, 20)
+    d.down(505, RULER_Y)
     expect(of(d.effects, 'snapGuide')).toEqual(guide(5, 'strong'))
 
     // Still held at 5.25s — past attract, well inside release. The guide has
     // not MOVED, so nothing is emitted: a drag held against one boundary must
     // not spray an effect per pointer event.
-    expect(of(d.move(525, 20), 'snapGuide')).toEqual([])
+    expect(of(d.move(525, RULER_Y), 'snapGuide')).toEqual([])
 
     // 5.6s clears release.
-    expect(of(d.move(560, 20), 'snapGuide')).toEqual(guide(null, null))
+    expect(of(d.move(560, RULER_Y), 'snapGuide')).toEqual(guide(null, null))
     // …and stays down without re-announcing itself.
-    expect(of(d.move(580, 20), 'snapGuide')).toEqual([])
+    expect(of(d.move(580, RULER_Y), 'snapGuide')).toEqual([])
   })
 
   it('takes the guide down when a gesture ends still snapped', () => {
     const d = new Driver(makeContext())
-    d.down(505, 20)
-    expect(of(d.up(505, 20), 'snapGuide')).toEqual(guide(null, null))
+    d.down(505, RULER_Y)
+    expect(of(d.up(505, RULER_Y), 'snapGuide')).toEqual(guide(null, null))
   })
 
   it('takes the guide down on a cancelled gesture', () => {
     const d = new Driver(makeContext())
-    d.down(505, 20)
+    d.down(505, RULER_Y)
     expect(of(d.cancel(), 'snapGuide')).toEqual(guide(null, null))
   })
 
@@ -1076,7 +1166,7 @@ describe('degenerate context', () => {
   })
 
   it('starts idle with the default cursor', () => {
-    expect(initialMachineState()).toEqual({ kind: 'idle', cursor: 'pointer' })
+    expect(initialMachineState()).toEqual({ kind: 'idle', cursor: 'default' })
   })
 
   it('is a pure reducer — the same input twice gives the same output', () => {
@@ -1099,3 +1189,104 @@ describe('degenerate context', () => {
   })
 })
 
+
+// ── Butted neighbours (the narration-snapping regression) ────────────────
+
+/**
+ * Voice-over is recorded as takes that butt end-to-end, so a voice clip's start
+ * is numerically equal to its neighbour's end. Snap origins used to be excluded
+ * by VALUE, which deleted the neighbour's boundary along with the clip's own —
+ * handing every butted clip a timeline whose one useful magnet had been quietly
+ * removed. Excluding by identity keeps the neighbour; `originGuard` suppresses
+ * it only while the gesture is still sitting on it.
+ */
+describe('butted neighbours snap back', () => {
+  /** Two audio bars sharing lane 0, butted at `join`, over a video bed. */
+  function butted(join: number, secondEnd: number): Project {
+    return {
+      id: 'p',
+      tracks: [{ id: 'trk-0', items: [
+        { id: 'c0', type: 'video', src: 'a.mp4', start: 0, end: 30, inPoint: 0, outPoint: 30, sourceDuration: 60 },
+      ] }],
+      audio: { tracks: [
+        { id: 'vo1', src: 'vo1.wav', start: 0, end: join, lane: 0 },
+        { id: 'vo2', src: 'vo2.wav', start: join, end: secondEnd, lane: 0 },
+      ] },
+    } as unknown as Project
+  }
+
+  /** Grab vo2's body, optionally pull well clear first, then land its start at
+   *  `landAt` seconds. `viaEscape` is what a real drag away-and-back does; the
+   *  origin boundary only re-arms once the gesture has cleared it. */
+  function dragVo2(
+    ctx: PointerContext, grabT: number, from: number, landAt: number,
+    { viaEscape = true } = {},
+  ) {
+    const lane = ctx.layout.lanes[0]
+    const y = Math.round(lane.y + lane.height / 2)
+    const d = new Driver(ctx)
+    const originX = grabT * 100
+    d.down(originX, y)
+    if (viaEscape) d.move(originX + 300, y)     // 300px out, far past the 44px release
+    return d.move(originX + (landAt - from) * 100, y)
+  }
+
+  it('snaps a butted bar back onto its neighbour once pulled clear', () => {
+    const project = butted(4, 9)
+    const ctx = makeContext({ project, viewport: VIEWPORT, ...computeDerivedTiming(project) })
+    // Grabbed at t=6, aiming vo2's start at 4.08 — 8px past vo1's end, well
+    // inside the strong radius and well outside the release radius of the
+    // origin it started on, so the boundary is armed.
+    const effects = dragVo2(ctx, 6, 4, 4.08)
+    expect(audio(lastProjectChange(effects), 'vo2').start).toBe(4)
+    expect(of(effects, 'snapGuide')).toEqual(guide(4, 'strong'))
+  })
+
+  it('still lets a butted bar start moving without a 44px fight', () => {
+    // The origin is suppressed while the gesture sits on it, so the first small
+    // drag moves the clip rather than being swallowed by the magnet.
+    const project = butted(4, 9)
+    const ctx = makeContext({ project, viewport: VIEWPORT, ...computeDerivedTiming(project) })
+    const effects = dragVo2(ctx, 6, 4, 4.12, { viaEscape: false })
+    expect(audio(lastProjectChange(effects), 'vo2').start).toBeCloseTo(4.12)
+  })
+
+  it('a gapped neighbour was always fine, and still is', () => {
+    const project = butted(4, 9)
+    ;(project.audio!.tracks as unknown as Array<Record<string, unknown>>)[1] = {
+      id: 'vo2', src: 'vo2.wav', start: 5, end: 10, lane: 0,
+    }
+    const ctx = makeContext({ project, viewport: VIEWPORT, ...computeDerivedTiming(project) })
+    expect(audio(lastProjectChange(dragVo2(ctx, 7, 5, 4.08)), 'vo2').start).toBe(4)
+  })
+
+  it('a bar never snaps to its own edges — only to a real neighbour', () => {
+    // vo2 alone in its lane: pulled clear of the origin there is nothing at 4
+    // for it to catch, so it lands exactly where it was put.
+    const project = {
+      id: 'p',
+      tracks: [{ id: 'trk-0', items: [
+        { id: 'c0', type: 'video', src: 'a.mp4', start: 0, end: 30, inPoint: 0, outPoint: 30, sourceDuration: 60 },
+      ] }],
+      audio: { tracks: [{ id: 'vo2', src: 'vo2.wav', start: 4, end: 9, lane: 0 }] },
+    } as unknown as Project
+    const ctx = makeContext({ project, viewport: VIEWPORT, ...computeDerivedTiming(project) })
+    expect(audio(lastProjectChange(dragVo2(ctx, 6, 4, 4.08)), 'vo2').start).toBeCloseTo(4.08)
+  })
+
+  it('applies to butted VIDEO clips too — the same bug, less often seen', () => {
+    // c0 0-5 and c1 5-10 are butted on track 0. Drag c1 left toward 5.08.
+    const d = new Driver(makeContext())
+    d.down(C1_BODY.x, C1_BODY.y)
+    const effects = d.move(C1_BODY.x - (5 - 5.08) * 100 - 300, C1_BODY.y)
+    // Pulled well clear (3s left), then the assertion that matters is simply
+    // that c0's end is a live magnet rather than having been filtered away.
+    const boundaries = of(effects, 'snapGuide')
+    expect(boundaries.length).toBeGreaterThanOrEqual(0)
+    const d2 = new Driver(makeContext())
+    d2.down(C1_BODY.x, C1_BODY.y)
+    d2.move(C1_BODY.x - 300, C1_BODY.y)                    // break away
+    const back = d2.move(C1_BODY.x + (5.08 - 5) * 100 - 0, C1_BODY.y)  // return to 5.08
+    expect(visual(lastProjectChange(back), 'c1').start).toBe(5)
+  })
+})

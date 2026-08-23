@@ -168,7 +168,43 @@ export const TIMELINE_COLORS = {
    *  not the thing you were aiming at, and at full strength these were
    *  indistinguishable from the alignment that actually matters. */
   snapGuideWeak: 'rgba(34,211,238,0.4)',
+  /** The time ruler across the top. A shade off `rowBackground` so the strip
+   *  reads as chrome rather than as one more track you could drop a clip on. */
+  rulerBackground: '#0b1220',
+  /** Tick marks and their labels. Deliberately low-contrast: the ruler is a
+   *  reference you consult, not something that should compete with the clips. */
+  rulerTick: 'rgba(148,163,184,0.55)',
+  rulerTickMinor: 'rgba(148,163,184,0.25)',
+  rulerText: 'rgba(148,163,184,0.9)',
+  /** The marquee (rubber-band) selection box. Same white as the selection
+   *  vocabulary, since what it is doing IS selecting. */
+  marqueeFill: 'rgba(255,255,255,0.08)',
+  marqueeBorder: 'rgba(255,255,255,0.65)',
 } as const
+
+/** Height of the time ruler strip at the top of the surface.
+ *
+ *  The ruler exists because canvas mode removed the overview scrubber bar (see
+ *  Scrubber.tsx), which left pressing the track area as the only way to seek —
+ *  and that gesture is now the marquee. Giving scrubbing its own strip is what
+ *  every NLE does, and it is what makes drag-to-select in the track area
+ *  possible without losing drag-to-scrub. */
+export const RULER_HEIGHT_PX = 18
+/** Tick height for a labelled (major) tick and an unlabelled (minor) one. */
+export const RULER_MAJOR_TICK_PX = 7
+export const RULER_MINOR_TICK_PX = 4
+/** Baseline for a ruler label, measured from the top of the strip. */
+export const RULER_LABEL_BASELINE_PX = 9
+/** Minimum px between labelled ticks. Below this the labels collide, so the
+ *  step is promoted to the next entry in `RULER_STEPS_SECONDS`. */
+export const RULER_MIN_LABEL_SPACING_PX = 64
+/** The step ladder, in seconds. A ruler that picked a raw "nice" number could
+ *  land on 2.5s or 7s; these are the intervals an editor actually thinks in,
+ *  so the labels stay readable as times rather than as arithmetic. */
+export const RULER_STEPS_SECONDS = [
+  0.1, 0.25, 0.5, 1, 2, 5, 10, 15, 30,
+  60, 120, 300, 600, 900, 1800, 3600,
+] as const
 
 export const ROW_RADIUS_PX = 4           // Tailwind `rounded`
 /** Horizontal inset per side between a clip's time span and its drawn body —
@@ -250,6 +286,10 @@ export interface AudioLaneLayout {
 }
 
 export interface TimelineLayout {
+  /** The time ruler strip across the top. Always present and always at y=0;
+   *  carried in the layout rather than assumed so hit-testing and painting
+   *  read the same rectangle, the same contract the rows have. */
+  ruler: { y: number; height: number }
   /** Visual rows in DRAW order (top of the surface first). */
   rows: VisualRowLayout[]
   lanes: AudioLaneLayout[]
@@ -273,7 +313,9 @@ export function computeTimelineLayout(project: Project): TimelineLayout {
   // legacy-shaped project has no settings, so every row is enabled.
   const trackSettings = normalizeTracks(project).tracks ?? []
   const rows: VisualRowLayout[] = []
-  let y = 0
+  // The ruler owns the top strip; everything else starts below it.
+  const ruler = { y: 0, height: RULER_HEIGHT_PX }
+  let y = RULER_HEIGHT_PX + ROW_GAP_PX
 
   for (let reversedIdx = 0; reversedIdx < allTracks.length; reversedIdx++) {
     const trackIdx = allTracks.length - 1 - reversedIdx
@@ -299,7 +341,7 @@ export function computeTimelineLayout(project: Project): TimelineLayout {
     return laneLayout
   })
 
-  return { rows, lanes, height: Math.max(0, y - ROW_GAP_PX) }
+  return { ruler, rows, lanes, height: Math.max(0, y - ROW_GAP_PX) }
 }
 
 // ── Primitives ───────────────────────────────────────────────────────────
@@ -788,12 +830,109 @@ function intersectsRange(start: number, end: number, range: { start: number; end
  * before any draw call, so the number of draw calls is bounded by what fits on
  * screen, not by how big the project is. Returned stats make that assertable.
  */
+/**
+ * The labelled interval for a ruler at this scale.
+ *
+ * Walks `RULER_STEPS_SECONDS` for the first step whose on-screen width clears
+ * `RULER_MIN_LABEL_SPACING_PX`, so zooming changes the DENSITY of labels rather
+ * than letting them overlap. Falls back to the coarsest step, which at extreme
+ * zoom-out means sparse labels rather than none.
+ */
+export function rulerStepSeconds(pxPerSecond: number): number {
+  if (!(pxPerSecond > 0)) return RULER_STEPS_SECONDS[RULER_STEPS_SECONDS.length - 1]
+  for (const step of RULER_STEPS_SECONDS) {
+    if (step * pxPerSecond >= RULER_MIN_LABEL_SPACING_PX) return step
+  }
+  return RULER_STEPS_SECONDS[RULER_STEPS_SECONDS.length - 1]
+}
+
+/** `m:ss`, plus tenths only when the step is finer than a second — a ruler
+ *  labelled `0:03.0` every three seconds is noise, and one labelled `0:03`
+ *  every 250ms is four identical labels in a row. */
+export function formatRulerTime(seconds: number, step: number): string {
+  const safe = Math.max(0, seconds)
+  const mins = Math.floor(safe / 60)
+  const secs = safe - mins * 60
+  if (step < 1) return `${mins}:${secs.toFixed(1).padStart(4, '0')}`
+  return `${mins}:${String(Math.round(secs)).padStart(2, '0')}`
+}
+
+/**
+ * The time ruler across the top of the surface — the strip you scrub on.
+ *
+ * Minor ticks subdivide each labelled interval into fifths, which is the
+ * densest subdivision that still reads as ticks rather than as a grey band.
+ */
+export function drawRuler(
+  ctx: DrawContext,
+  viewport: Viewport,
+  rect: { y: number; height: number },
+  surfaceWidth: number,
+): void {
+  ctx.save()
+  ctx.fillStyle = TIMELINE_COLORS.rulerBackground
+  ctx.fillRect(0, rect.y, surfaceWidth, rect.height)
+
+  const step = rulerStepSeconds(viewport.pxPerSecond)
+  const minor = step / 5
+  const bottom = rect.y + rect.height
+  const range = visibleRange(viewport)
+  const first = Math.floor(range.start / minor) * minor
+  const last = range.end
+
+  ctx.font = LABEL_FONT
+  ctx.textBaseline = 'alphabetic'
+
+  // Iterated in integer multiples of `minor` rather than by accumulating a
+  // float, so a long timeline cannot drift the ticks off the labels.
+  for (let i = 0; ; i++) {
+    const t = first + i * minor
+    if (t > last) break
+    if (t < 0) continue
+    const x = Math.round(timeToX(t, viewport)) + 0.5
+    if (x < 0 || x > surfaceWidth) continue
+    // Float multiples never land exactly on the step, so test the remainder
+    // against a tolerance scaled to the step itself.
+    const isMajor = Math.abs(t / step - Math.round(t / step)) < 1e-6
+    const tickHeight = isMajor ? RULER_MAJOR_TICK_PX : RULER_MINOR_TICK_PX
+    ctx.fillStyle = isMajor ? TIMELINE_COLORS.rulerTick : TIMELINE_COLORS.rulerTickMinor
+    ctx.fillRect(x, bottom - tickHeight, 1, tickHeight)
+
+    if (isMajor) {
+      ctx.fillStyle = TIMELINE_COLORS.rulerText
+      ctx.fillText(formatRulerTime(t, step), x + 3, rect.y + RULER_LABEL_BASELINE_PX)
+    }
+  }
+  ctx.restore()
+}
+
+/** The rubber-band selection box. Drawn on the overlay layer because it changes
+ *  on every pointer move, exactly like the playhead. */
+export function drawMarquee(ctx: DrawContext, rect: Rect): void {
+  ctx.save()
+  ctx.fillStyle = TIMELINE_COLORS.marqueeFill
+  ctx.fillRect(rect.x, rect.y, rect.width, rect.height)
+  ctx.strokeStyle = TIMELINE_COLORS.marqueeBorder
+  ctx.lineWidth = 1
+  // Half-pixel offsets so a 1px stroke lands on a pixel instead of straddling
+  // two and rendering as a 2px blur.
+  ctx.strokeRect(
+    Math.round(rect.x) + 0.5,
+    Math.round(rect.y) + 0.5,
+    Math.round(rect.width),
+    Math.round(rect.height),
+  )
+  ctx.restore()
+}
+
 export function drawTimelineContent(ctx: DrawContext, scene: TimelineScene): DrawStats {
   const { viewport, layout, selectedIds, surfaceWidth, surfaceHeight, hoveredHandle } = scene
   const range = visibleRange(viewport)
   const stats: DrawStats = { visualItemsDrawn: 0, audioItemsDrawn: 0, itemsCulled: 0 }
 
   ctx.clearRect(0, 0, surfaceWidth, surfaceHeight)
+
+  drawRuler(ctx, viewport, layout.ruler, surfaceWidth)
 
 
   for (const row of layout.rows) {
@@ -942,6 +1081,8 @@ export interface OverlayScene {
   /** Which tier is holding it — a same-track magnet draws boldly, a
    *  cross-track one as a hairline. Defaults to strong. */
   snapStrength?: SnapStrength | null
+  /** The rubber-band selection box while one is being dragged, else null. */
+  marquee?: Rect | null
 }
 
 /** Paint the playhead layer. Kept separate from the content so playback — which
@@ -951,6 +1092,9 @@ export interface OverlayScene {
 export function drawTimelineOverlay(ctx: DrawContext, scene: OverlayScene): void {
   const { viewport, currentTime, surfaceWidth, surfaceHeight, cursorTime, snapTime, snapStrength } = scene
   ctx.clearRect(0, 0, surfaceWidth, surfaceHeight)
+  // First, so the playhead and any guide stay legible over it — the marquee is
+  // a translucent wash and would otherwise dull both.
+  if (scene.marquee) drawMarquee(ctx, scene.marquee)
   if (cursorTime !== undefined && cursorTime !== null) {
     const cx = timeToX(cursorTime, viewport)
     if (!(cx < -CURSOR_WIDTH_PX || cx > surfaceWidth + CURSOR_WIDTH_PX)) {
