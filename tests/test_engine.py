@@ -586,6 +586,134 @@ def test_voiceover_ignored_on_non_broll_projects(tmp_path):
     assert v.validate_project(path)["valid"] is True
 
 
+# ── audio.tracks ──────────────────────────────────────────────────────────────
+#
+# The load-bearing assertion in this block is the FIRST one: a track with no
+# `end` must stay valid. That shape is what `mix-audio.js` renders as "play the
+# bed for its natural length", and making the validator reject it would outlaw
+# a legitimate project to paper over an editor bug. If a future change makes
+# that test fail, the change is wrong, not the test.
+
+def _audio(*tracks):
+    return {**VALID_PROJECT, "tracks": [[{**VALID_PRIMARY_CLIP}]], "audio": {"tracks": list(tracks)}}
+
+
+def test_validate_project_audio_track_does_not_require_end(tmp_path):
+    """A music bed with no `end` plays its natural length. Legal, and stays legal."""
+    path = _write_project(tmp_path, "project.json", _audio({"src": "/a/song.mp3", "volume": 0.2}))
+    assert v.validate_project(path)["valid"] is True
+
+
+def test_validate_project_audio_track_does_not_require_start_or_id(tmp_path):
+    path = _write_project(tmp_path, "project.json", _audio({"src": "/a/song.mp3"}))
+    assert v.validate_project(path)["valid"] is True
+
+
+def test_validate_project_audio_track_accepts_a_full_track(tmp_path):
+    data = _audio({"id": "aud-0", "src": "/a/vo.wav", "volume": 1.0, "start": 0, "end": 36.4,
+                   "inPoint": 0, "outPoint": 36.4, "lane": 0, "muted": False,
+                   "fadeIn": 0.5, "fadeOut": 0.5})
+    path = _write_project(tmp_path, "project.json", data)
+    assert v.validate_project(path)["valid"] is True
+
+
+def test_validate_project_audio_track_requires_src(tmp_path):
+    path = _write_project(tmp_path, "project.json", _audio({"id": "aud-0", "start": 0, "end": 5}))
+    with pytest.raises(SystemExit):
+        v.validate_project(path)
+
+
+def test_validate_project_audio_track_rejects_empty_src(tmp_path):
+    path = _write_project(tmp_path, "project.json", _audio({"src": ""}))
+    with pytest.raises(SystemExit):
+        v.validate_project(path)
+
+
+def test_validate_project_audio_track_rejects_zero_width_lane(tmp_path):
+    """`start: 0, end: 0` — the exact shape skills/lyrics-video used to ship."""
+    path = _write_project(tmp_path, "project.json",
+                          _audio({"id": "music", "src": "/a/song.mp3", "start": 0, "end": 0}))
+    with pytest.raises(SystemExit):
+        v.validate_project(path)
+
+
+def test_validate_project_audio_track_rejects_zero_end_with_no_start(tmp_path):
+    """`mix-audio.js` delays by `start ?? 0`, so this is the same zero-width lane."""
+    path = _write_project(tmp_path, "project.json", _audio({"src": "/a/song.mp3", "end": 0}))
+    with pytest.raises(SystemExit):
+        v.validate_project(path)
+
+
+@pytest.mark.parametrize("key", ["start", "end", "volume", "inPoint", "outPoint", "fadeIn", "fadeOut"])
+def test_validate_project_audio_track_rejects_negative_numbers(tmp_path, key):
+    """A negative reaches ffmpeg as a malformed filter argument (adelay=-2000)."""
+    path = _write_project(tmp_path, "project.json", _audio({"src": "/a/song.mp3", key: -1}))
+    with pytest.raises(SystemExit):
+        v.validate_project(path)
+
+
+def test_validate_project_audio_track_rejects_end_before_start(tmp_path):
+    path = _write_project(tmp_path, "project.json",
+                          _audio({"src": "/a/song.mp3", "start": 10, "end": 4}))
+    with pytest.raises(SystemExit):
+        v.validate_project(path)
+
+
+@pytest.mark.parametrize("key", ["start", "end", "volume", "inPoint", "outPoint", "fadeIn", "fadeOut"])
+def test_validate_project_audio_track_numeric_fields_must_be_numbers(tmp_path, key):
+    path = _write_project(tmp_path, "project.json", _audio({"src": "/a/song.mp3", key: "1.0"}))
+    with pytest.raises(SystemExit):
+        v.validate_project(path)
+
+
+@pytest.mark.parametrize("key", ["start", "end", "volume", "inPoint", "outPoint", "fadeIn", "fadeOut", "lane"])
+def test_validate_project_audio_track_rejects_bool_for_a_number(tmp_path, key):
+    """bool is a subclass of int — True must not be read as 1."""
+    path = _write_project(tmp_path, "project.json", _audio({"src": "/a/song.mp3", key: True}))
+    with pytest.raises(SystemExit):
+        v.validate_project(path)
+
+
+def test_validate_project_audio_track_lane_must_be_an_integer(tmp_path):
+    path = _write_project(tmp_path, "project.json", _audio({"src": "/a/song.mp3", "lane": 1.5}))
+    with pytest.raises(SystemExit):
+        v.validate_project(path)
+
+
+def test_validate_project_audio_track_muted_must_be_a_bool(tmp_path):
+    path = _write_project(tmp_path, "project.json", _audio({"src": "/a/song.mp3", "muted": "yes"}))
+    with pytest.raises(SystemExit):
+        v.validate_project(path)
+
+
+def test_validate_project_audio_track_rejects_duplicate_ids(tmp_path):
+    data = _audio({"id": "aud-0", "src": "/a/one.wav"}, {"id": "aud-0", "src": "/a/two.wav"})
+    path = _write_project(tmp_path, "project.json", data)
+    with pytest.raises(SystemExit):
+        v.validate_project(path)
+
+
+def test_validate_project_audio_tracks_must_be_a_list(tmp_path):
+    data = {**VALID_PROJECT, "tracks": [[{**VALID_PRIMARY_CLIP}]], "audio": {"tracks": {"src": "/a.mp3"}}}
+    path = _write_project(tmp_path, "project.json", data)
+    with pytest.raises(SystemExit):
+        v.validate_project(path)
+
+
+def test_validate_project_empty_audio_object_still_valid(tmp_path):
+    """`"audio": {}` is what project/init.py writes. It must stay valid."""
+    data = {**VALID_PROJECT, "tracks": [[{**VALID_PRIMARY_CLIP}]], "audio": {}}
+    path = _write_project(tmp_path, "project.json", data)
+    assert v.validate_project(path)["valid"] is True
+
+
+def test_validate_project_no_audio_key_still_valid(tmp_path):
+    data = {**VALID_PROJECT, "tracks": [[{**VALID_PRIMARY_CLIP}]]}
+    del data["audio"]
+    path = _write_project(tmp_path, "project.json", data)
+    assert v.validate_project(path)["valid"] is True
+
+
 # ---------------------------------------------------------------------------
 # validate_workflow
 # ---------------------------------------------------------------------------

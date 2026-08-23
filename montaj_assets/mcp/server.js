@@ -17,12 +17,13 @@ import {
   ListResourcesRequestSchema,
   ReadResourceRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
-import { readFileSync, existsSync, readdirSync } from "fs";
+import { readFileSync, existsSync, readdirSync, realpathSync } from "fs";
 import { resolve, join, dirname }               from "path";
-import { fileURLToPath }                        from "url";
+import { fileURLToPath, pathToFileURL }         from "url";
 import { spawnSync }                            from "child_process";
 import { homedir }                              from "os";
 import { runCli }                               from "./run-cli.js";
+import { fetchContext }                         from "./serve-client.js";
 
 const __dirname       = dirname(fileURLToPath(import.meta.url))
 // MCP_DIR  = where this server.js lives (montaj_assets/mcp/) — for sibling files like node_modules.
@@ -115,6 +116,93 @@ function wrapOutput(stdout) {
 }
 
 // ---------------------------------------------------------------------------
+// Editor context resource — montaj://context
+// ---------------------------------------------------------------------------
+
+export const CONTEXT_URI = "montaj://context"
+
+/**
+ * Turn a serve-client result into the text an agent reads.
+ *
+ * Markdown, not JSON, and deliberately so: this is read by a language model,
+ * and every failure mode has to be a sentence it can act on. A raw JSON dump
+ * with `"clipAtPlayhead": null` invites a confident wrong answer; "the playhead
+ * is over a gap" does not.
+ */
+export function renderContextResource(result) {
+  if (!result.ok) {
+    return `# Editor context — unavailable\n\n${result.reason}.\n\n` +
+           `Start the editor with \`montaj serve\` and open a project, then read this resource again.`
+  }
+  const body = result.body
+  if (!body.active) {
+    return `# Editor context — no editor open\n\n` +
+           `${body.reason ?? "No editor has reported recently"}.\n\n` +
+           `Nothing is on screen right now, so there is no "here" to resolve against. ` +
+           `Ask the user which project and timestamp they mean, or read the project directly.`
+  }
+
+  const p    = body.project ?? {}
+  const head = body.playhead ?? {}
+  const clip = body.clipAtPlayhead
+  const cap  = body.transcriptAroundPlayhead
+  const lines = [
+    `# Editor context`,
+    ``,
+    `**Project:** ${p.name ?? "(unnamed)"} (\`${p.id}\`)${
+      typeof p.durationSec === "number" ? ` — ${p.durationSec.toFixed(2)}s` : ""}`,
+    `**Playhead:** ${head.sec}s (frame ${head.frame})`,
+    `**Reported:** ${body.ageMs} ms ago`,
+    ``,
+  ]
+
+  lines.push(`## Clip under the playhead`, ``)
+  if (clip) {
+    lines.push(
+      `- id: \`${clip.id}\`  ·  type: ${clip.type ?? "video"}`,
+      `- source: \`${clip.src}\``,
+      `- timeline window: ${clip.start}s → ${clip.end}s`,
+      clip.sourceTimeSec !== null && clip.sourceTimeSec !== undefined
+        ? `- position within the source file: ${clip.sourceTimeSec}s`
+        : `- (this item carries no inPoint, so source time is unmapped)`,
+      ``,
+    )
+  } else {
+    lines.push(`The playhead is over a gap — no item is on screen at this time.`, ``)
+  }
+
+  lines.push(`## Selection`, ``)
+  if (body.selection?.length) {
+    for (const s of body.selection) {
+      lines.push(`- \`${s.id}\` (${s.kind}${s.src ? `, \`${s.src}\`` : ""})`)
+    }
+  } else {
+    lines.push(`Nothing is selected.`)
+  }
+  if (body.selectedCaptionId) {
+    lines.push(`Caption segment \`${body.selectedCaptionId}\` is selected.`)
+  }
+  lines.push(``)
+
+  lines.push(`## What is being said here`, ``)
+  if (cap) {
+    lines.push(`> ${String(cap.text).replace(/\s+/g, " ").trim()}`, ``)
+    if (typeof cap.startSec === "number" && typeof cap.endSec === "number") {
+      lines.push(`That quote spans ${cap.startSec}s → ${cap.endSec}s and may run wider than the playhead: it is the segment under the playhead plus one either side.`, ``)
+    }
+    if (cap.segmentIdAtPlayhead) {
+      lines.push(`The playhead sits inside caption segment \`${cap.segmentIdAtPlayhead}\`.`)
+    } else {
+      lines.push(`The playhead falls between caption segments.`)
+    }
+  } else {
+    lines.push(`This project has no captions, so there is no transcript to quote.`)
+  }
+
+  return lines.join("\n")
+}
+
+// ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
 
@@ -150,16 +238,34 @@ async function main() {
   }
 
   server.setRequestHandler(ListResourcesRequestSchema, async () => ({
-    resources: scanProfiles().map(name => ({
-      uri:         `montaj://profile/${name}`,
-      name:        `Profile: ${name}`,
-      description: `Creator style profile for ${name} — pacing, colour palette, editorial direction`,
-      mimeType:    "text/markdown",
-    })),
+    resources: [
+      {
+        uri:         CONTEXT_URI,
+        name:        "Editor context",
+        description: "What the montaj editor is looking at right now — playhead, " +
+                     "selection, the clip under the playhead, and the words being said there",
+        mimeType:    "text/markdown",
+      },
+      ...scanProfiles().map(name => ({
+        uri:         `montaj://profile/${name}`,
+        name:        `Profile: ${name}`,
+        description: `Creator style profile for ${name} — pacing, colour palette, editorial direction`,
+        mimeType:    "text/markdown",
+      })),
+    ],
   }))
 
   server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
     const { uri } = request.params
+    if (uri === CONTEXT_URI) {
+      return {
+        contents: [{
+          uri,
+          mimeType: "text/markdown",
+          text: renderContextResource(await fetchContext()),
+        }],
+      }
+    }
     if (!uri.startsWith("montaj://profile/")) {
       return { contents: [{ uri, mimeType: "text/plain", text: `Unknown resource: ${uri}` }] }
     }
@@ -240,7 +346,25 @@ async function main() {
   await server.connect(transport)
 }
 
-main().catch(err => {
-  process.stderr.write(JSON.stringify({ error: "server_error", message: err.message }) + "\n")
-  process.exit(1)
-})
+// Only start the server when this file is the entry point. Importing it — as
+// the tests do, to reach renderContextResource — must not connect a stdio
+// transport, which would hold stdin open and hang the test runner.
+// realpathSync is load-bearing: import.meta.url is always the resolved real
+// path, so comparing it against a raw argv[1] fails whenever server.js is
+// reached through a symlink (an npm bin shim, a symlinked $HOME), and the
+// server would exit 0 having done nothing.
+function isEntryPoint() {
+  try {
+    return Boolean(process.argv[1]) &&
+           import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href
+  } catch {
+    return false
+  }
+}
+
+if (isEntryPoint()) {
+  main().catch(err => {
+    process.stderr.write(JSON.stringify({ error: "server_error", message: err.message }) + "\n")
+    process.exit(1)
+  })
+}

@@ -120,13 +120,14 @@ Works with any agent that has shell access — Claude Code, OpenClaw, or any fra
 
 ### MCP
 
-Montaj runs as a local MCP server (`montaj mcp`), started automatically by the MCP client (Claude Desktop, Claude Code). The agent calls steps as native tools — no shell access required.
+Montaj runs as a local MCP server (`montaj mcp`), started automatically by the MCP client (Claude Desktop, Claude Code). The agent calls a curated set of CLI commands as native tools — no shell access required.
 
 ```
 Claude Desktop opens
   → spawns: montaj mcp
-  → montaj mcp reads steps/*.json, registers each as an MCP tool
-  → agent calls: trim({input: "clip.mp4", start: 2.5, end: 8.3})
+  → montaj mcp runs `python3 cli/mcp_schema.py`, which introspects the
+    allowlisted CLI commands' argparse parsers and returns tool schemas
+  → agent calls: transcribe({input: "clip.mp4"})
   → montaj mcp invokes the CLI executable, returns result
 Session ends → process dies
 ```
@@ -140,7 +141,32 @@ Configure once in `claude_desktop_config.json`:
 }
 ```
 
-New steps are picked up automatically — adding `steps/my-step.py` + `.json` makes it available as an MCP tool with no extra configuration.
+**Tools come from CLI commands, not from steps directly.** `cli/mcp_schema.py` builds a parser for each command named in its `_EXPORTED_COMMANDS` allowlist, then flattens subcommands into separate tools — so the 26-command allowlist currently yields 35 tools (`workflow` alone becomes `workflow_new`/`workflow_list`/`workflow_edit`/`workflow_run`). Argument schemas are derived from the argparse actions, so a flag added to a CLI command shows up as an MCP parameter with no extra work.
+
+**Adding a step does not by itself create an MCP tool.** Three things have to line up:
+
+1. `steps/<name>.py` + `.json` — the step itself.
+2. An entry in `cli/main.py`'s `_STEP_COMMANDS`, which generates the CLI command from the step's JSON schema (`cli/step_command.py`). Hand-written commands live in `_COMMANDS` instead.
+3. An entry in `cli/mcp_schema.py`'s `_EXPORTED_COMMANDS`, which is what actually exports it over MCP.
+
+The allowlist is deliberate: it keeps the agent-facing surface curated rather than exposing every command the CLI happens to grow.
+
+### MCP resources
+
+Alongside its tools, `montaj mcp` exposes two read-only resources:
+
+- `montaj://profile/<name>` — a creator style profile, read straight off
+  `~/.montaj/profiles/<name>/style_profile.md`.
+- `montaj://context` — what the editor is looking at *right now*: playhead,
+  selection, the clip under the playhead, and the caption text spanning it.
+
+`montaj://context` is the one place MCP talks to `montaj serve` over HTTP. The
+two are separate processes, so `montaj serve` announces its port in
+`~/.montaj/serve.json` (written at startup, removed at shutdown, pid-checked by
+readers) and the MCP server reads that to find it. The state itself is
+ephemeral — held in memory by serve, never written to `project.json`, expired
+after two minutes, and gone when serve stops. With no editor open the resource
+says so rather than returning stale coordinates.
 
 ### HTTP API (via montaj serve)
 

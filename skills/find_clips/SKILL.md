@@ -181,6 +181,7 @@ curl -s -X PUT http://localhost:3000/api/projects/<child_id> \
 ```
 
 Key invariants:
+- **Edit `tracks[0].items[0]` in place. Never rebuild it.** Every example above reads the child project, sets specific keys with `jq`, and PUTs the whole thing back. That is not a stylistic choice: `project/init.py` already wrote `proxySrc` (the editing proxy the WebCodecs preview engine requires — `montaj_assets/editor/src/engine/eligibility.ts:69`) and `sourceDuration` onto that item, and a rebuilt item silently drops whatever you did not think to copy. The symptom never appears here; it appears later, as sluggish scrubbing in the child project and a chip in the header saying its clips have no previews. If you ever do need to construct the item fresh, copy `proxySrc`, `normalizedSrc`, `normalizedInPoint`, and `sourceDuration` across from the item you are replacing.
 - `tracks[0].items[0].src` **stays the original source path** (the symlink to the .MOV/.mp4). Never replace it.
 - `tracks[0].items[0].normalizedSrc` is the derived per-window cache that render and preview prefer when available.
 - `tracks[0].items[0].normalizedInPoint` is the **cache origin** — the source-time (original coordinates) at which the cache starts. Set it to the same value as `inPoint` when the cache is built (because `normalize_window` builds the cache for the current window). Render and preview rebase inPoint/outPoint by this origin so they seek to the correct position inside the cache. If a user later trims the clip's start inward, the cache still covers the new (narrower) window and the rebased seek still lands correctly, because `effectiveInPoint = inPoint - normalizedInPoint`.
@@ -190,19 +191,28 @@ Key invariants:
 
 The source project is scaffolding: it exists only so this skill can probe, transcribe, and sample. Once the child clips exist, the user should **not** be left with a project for the raw source. After all child projects and their `normalizedSrc` window caches are created and verified, relocate the source out of the source-project directory and delete the source project.
 
-1. **Relocate the source file to the shared source store** so it survives deletion of the source project (each child symlinks to it):
+1. **Relocate the source file _and its editing proxy_ to the shared source store** so both survive deletion of the source project (each child symlinks to the source, and every child shares the one proxy):
    ```bash
    SHARED="$HOME/Montaj/.sources/<source_project_id>"
    mkdir -p "$SHARED"
    mv "<source_project_dir>/<source_filename>" "$SHARED/<source_filename>"
+   mv "<source_project_dir>/"*_proxy_*.mp4 "$SHARED/" 2>/dev/null || true
    ```
-2. **Repoint each child's symlinked `tracks[0].items[0].src`** to the relocated file:
+
+   **Moving the proxy is not optional.** `project/init.py` resolves each child's symlink before naming the proxy (`os.path.realpath`), and `lib/proxy.py:89` puts an in-workspace source's proxy *beside the source* — so all N children share exactly one proxy file, and it is sitting inside the directory step 3 is about to `shutil.rmtree`. Leave it behind and every clip you just created loses its editing preview the moment the source project is deleted: `proxySrc` points at a file that no longer exists, the WebCodecs engine refuses the project, and the operator gets a chip telling them their clips have no previews. The destination path above is exactly the path `proxy_path_for` will compute for the relocated source, and `mv` preserves mtimes, so the moved proxy is still considered fresh.
+2. **Repoint each child's symlink, then repoint its `proxySrc`:**
    ```bash
    for child_dir in <child1_dir> <child2_dir> <child3_dir>; do
      ln -sf "$SHARED/<source_filename>" "$child_dir/<source_filename>"
    done
+
+   # Point each child's proxySrc at the relocated proxy. The server recomputes
+   # the path itself, finds the moved file already fresh, and rewrites the field.
+   for child_id in <child1_id> <child2_id> <child3_id>; do
+     curl -s -X POST "http://localhost:3000/api/projects/$child_id/proxies"
+   done
    ```
-   Only the symlink target moves — each child's `src`/`inPoint`/`outPoint` in `project.json` are unchanged, and the per-window `normalizedSrc` caches live inside the child dirs (unaffected). Verify each `src` still resolves before continuing.
+   Each of those should return `{"scheduled": 0, "alreadyFresh": 1}` — `alreadyFresh` means the proxy was found at its new path and the pointer was updated with no re-encode. A `scheduled: 1` means the proxy was not where it was expected and a fresh encode was queued instead; that is not fatal, but check step 1's `mv` actually moved the file. Only the symlink target moves — each child's `src`/`inPoint`/`outPoint` in `project.json` are unchanged, and the per-window `normalizedSrc` caches live inside the child dirs (unaffected). Verify each `src` still resolves before continuing.
 3. **Delete the source project:**
    ```bash
    curl -s -X DELETE http://localhost:3000/api/projects/<source_project_id>

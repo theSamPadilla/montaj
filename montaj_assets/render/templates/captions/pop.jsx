@@ -26,17 +26,30 @@ export default function Pop({
   // Frames elapsed since word start (for entry spring)
   const wordFrame = Math.max(0, Math.round((t - activeWord.start) * fps))
 
-  // How close to the next word (for exit fade)
+  // How close to the next word (for exit fade). The 6-frame fade only applies
+  // when the word is long enough to have room for one.
+  //
+  // The previous `Math.max(1, wordDuration - 6)` guard looked like it was
+  // preventing a degenerate range but was creating one: on a one-frame word it
+  // produced [1, 1], and `interpolate` returns the END of the output range when
+  // inHi === inLo (helpers.js:29), so exitOpacity came out 0.3 — the word was
+  // rendered fully faded-OUT on the only frame it had. That, not the entry
+  // envelope, is why a one-frame `pop` word stayed invisible even after the
+  // entry floor landed. Any word of 6 frames or fewer hit some version of it.
   const wordDuration = (activeWord.end - activeWord.start) * fps
-  const exitOpacity = interpolate(wordFrame, [Math.max(1, wordDuration - 6), wordDuration], [1, 0.3])
+  const exitOpacity = wordDuration > 6
+    ? interpolate(wordFrame, [wordDuration - 6, wordDuration], [1, 0.3])
+    : 1
 
   const sc = spring({ frame: wordFrame, fps, stiffness: 500, damping: 24 })
-  // 2-frame entry envelope, matching word-by-word.jsx. `pop` is the other
-  // per-word template, so it shares that file's defect: a word shorter than the
-  // envelope is replaced before its fade reaches visibility. Same KNOWN LIMIT
-  // applies — the envelope still starts at opacity 0, so a one-frame word never
-  // becomes visible; closing that needs a non-zero floor and is a separate call.
-  const entryOpacity = interpolate(wordFrame, [0, 2], [0, 1])
+  // 2-frame entry envelope with a non-zero floor, matching word-by-word.jsx —
+  // `pop` is the other per-word template and shared the same defect: a word
+  // shorter than the envelope was replaced before its fade reached visibility,
+  // and a one-frame word rendered once at opacity 0 and was never seen.
+  // Starting at 0.55 makes the first frame legible; see word-by-word.jsx for
+  // the measurements and the sub-one-frame case this still does not cover.
+  // Regression coverage: test/caption-short-words.test.mjs.
+  const entryOpacity = interpolate(wordFrame, [0, 2], [0.55, 1])
   const opacity = Math.min(entryOpacity, exitOpacity)
 
   return (

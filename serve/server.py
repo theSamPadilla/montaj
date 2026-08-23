@@ -12,6 +12,7 @@ import httpx
 from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse, HTMLResponse, Response
 
+from serve import lockfile
 from serve.common import resolve_workspace
 from serve.sse import SSEBroadcaster
 from serve.watcher import GlobalOverlayWatcher, ProjectWatcher
@@ -75,6 +76,13 @@ async def lifespan(app: FastAPI):
     app.state.vite_proc       = vite_proc
     app.state.http_client     = http_client
 
+    # Announce this serve so a separately-spawned MCP server can find it.
+    # Best-effort: a read-only HOME must not stop serve from starting.
+    try:
+        lockfile.write(port=PORT, workspace=workspace)
+    except OSError:
+        pass
+
     # Give Vite a moment to start before opening the browser
     if not HEADLESS:
         open_delay = 2.5 if vite_proc else 0.5
@@ -82,6 +90,7 @@ async def lifespan(app: FastAPI):
     yield
     watcher.stop()
     overlay_watcher.stop()
+    lockfile.remove()
     await http_client.aclose()
     # Naturally a no-op in headless mode (vite_proc stays None).
     if vite_proc:

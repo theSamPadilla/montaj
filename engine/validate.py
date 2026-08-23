@@ -58,6 +58,89 @@ def _validate_clip_extensions(data):
                     fail("invalid_field", f"tracks[{ti}] item '{item.get('id','?')}': sourceCrop.{k} must be a number in [0,1]")
 
 
+def _validate_audio_tracks(data):
+    """`audio.tracks` shape check.
+
+    **Deliberately does NOT require `end`.** A track with no `end` is legal and
+    renders correctly: `montaj_assets/render/mix-audio.js` delays by
+    `track.start ?? 0` and never trims on `end` (it uses `end` only to place a
+    fade-out), so the source window is `inPoint`/`outPoint` alone and a music
+    bed with neither plays its natural length. Requiring `end` here would
+    outlaw a valid project in order to paper over an editor defect; the editor
+    is fixed instead — see `audioWindow` / `groupAudioLanes` in
+    `montaj_assets/editor/src/video/timeline/timeline-model.ts`.
+
+    What IS checked is the shape. A track with no `src` renders nothing at all.
+    A non-numeric `start`/`end`/`volume` reaches ffmpeg as a malformed filter
+    argument. And `end <= start` is a zero- or negative-width lane, which is
+    the exact defect this validator exists to catch: it is never a legitimate
+    edit, and it is invisible in the editor and correct in the export, so
+    nothing else will tell you about it.
+    """
+    audio = data.get("audio")
+    if audio is None:
+        return
+    if not isinstance(audio, dict):
+        fail("invalid_field", "'audio' must be an object")
+
+    tracks = audio.get("tracks")
+    if tracks is None:
+        return
+    if not isinstance(tracks, list):
+        fail("invalid_field", "'audio.tracks' must be an array")
+
+    seen_ids = set()
+    for i, track in enumerate(tracks):
+        if not isinstance(track, dict):
+            fail("invalid_field", f"audio.tracks[{i}] must be an object")
+
+        src = track.get("src")
+        if not isinstance(src, str) or not src:
+            fail("missing_field", f"audio.tracks[{i}]: 'src' must be a non-empty string")
+
+        track_id = track.get("id")
+        if track_id is not None:
+            if not isinstance(track_id, str) or not track_id:
+                fail("invalid_field", f"audio.tracks[{i}]: 'id' must be a non-empty string")
+            if track_id in seen_ids:
+                fail("duplicate_audio_track_id",
+                     f"Duplicate audio track id '{track_id}' at audio.tracks[{i}]")
+            seen_ids.add(track_id)
+
+        # bool is a subclass of int — reject it so True/False isn't read as 1/0.
+        for key in ("start", "end", "volume", "inPoint", "outPoint", "fadeIn", "fadeOut"):
+            val = track.get(key)
+            if val is None:
+                continue
+            if isinstance(val, bool) or not isinstance(val, (int, float)):
+                fail("invalid_field", f"audio.tracks[{i}]: '{key}' must be a number")
+            # Negatives are the other half of "malformed filter argument": a
+            # negative `start` reaches ffmpeg as `adelay=-2000` (mix-audio.js:66)
+            # and a negative `inPoint` as `-ss -3`, neither of which ffmpeg
+            # accepts. Nothing in this repo emits one.
+            if val < 0:
+                fail("invalid_field", f"audio.tracks[{i}]: '{key}' must be >= 0")
+
+        lane = track.get("lane")
+        if lane is not None and (isinstance(lane, bool) or not isinstance(lane, int)):
+            fail("invalid_field", f"audio.tracks[{i}]: 'lane' must be an integer")
+
+        muted = track.get("muted")
+        if muted is not None and not isinstance(muted, bool):
+            fail("invalid_field", f"audio.tracks[{i}]: 'muted' must be a boolean")
+
+        # Compare against the RENDERED default, not just an explicit `start`.
+        # `mix-audio.js` delays by `track.start ?? 0`, so `{"src": ..., "end": 0}`
+        # with no `start` is the same zero-width lane as `start: 0, end: 0` — the
+        # omitted-`start` spelling of the exact defect this check exists to catch.
+        start, end = track.get("start"), track.get("end")
+        base = start if isinstance(start, (int, float)) else 0
+        if isinstance(end, (int, float)) and end <= base:
+            fail("invalid_field",
+                 f"audio.tracks[{i}]: 'end' ({end}) must be greater than 'start' ({base}); "
+                 f"omit 'end' to play the source's natural length")
+
+
 def validate_project(path):
     if not os.path.isfile(path):
         fail("file_not_found", f"File not found: {path}")
@@ -234,6 +317,7 @@ def validate_project(path):
                     prev_end = item["end"]
 
         _validate_clip_extensions(data)
+        _validate_audio_tracks(data)
 
     return {"valid": True}
 

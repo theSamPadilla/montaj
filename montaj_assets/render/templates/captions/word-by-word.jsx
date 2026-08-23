@@ -26,17 +26,24 @@ export default function WordByWord({
   // Frames elapsed since this word started
   const wordFrame = Math.max(0, Math.round((t - activeWord.start) * fps))
   const sc = spring({ frame: wordFrame, fps, stiffness: 420, damping: 28 })
-  // A 4-frame fade meant any word shorter than ~130ms was replaced before its
-  // own fade reached visibility. Measured across two real projects, 12.2% of
-  // caption words are sub-100ms. A 2-frame envelope brings two-frame words to
-  // 50% opacity on their second frame instead of 25%.
+  // Entry envelope with a NON-ZERO FLOOR. History, because the floor looks
+  // arbitrary without it: a 4-frame fade from 0 meant any word shorter than
+  // ~130ms was replaced before its fade reached visibility; shrinking to 2
+  // frames helped two-frame words but still opened at 0, so a one-frame word
+  // rendered once, at opacity 0, and was simply never seen. Measured on real
+  // projects, about 1 caption word in 20 lasts under two frames on a
+  // word-by-word project (robotics-ban 14/287, ai-safety 15/278).
   //
-  // KNOWN LIMIT: this still starts at opacity 0, so a one-frame word (18 of 69
-  // sub-100ms words measured) never becomes visible, and a zero-frame word (11
-  // of 69) has no frame to render on at all. Closing the one-frame case needs a
-  // non-zero floor — interpolate(wordFrame, [0, 2], [0.55, 1]) — which changes
-  // how every word enters and is a separate decision.
-  const opacity = interpolate(wordFrame, [0, 2], [0, 1])
+  // Starting at 0.55 means a word is legible on its very first frame, which is
+  // the only frame some words get. The spring `sc` still carries the entrance,
+  // so this reads as a snappier pop rather than a missing fade — and every word
+  // past frame 2 is unchanged at full opacity.
+  //
+  // STILL NOT FIXED HERE: a word shorter than one frame interval can fail to
+  // contain any frame's timestamp, so `activeWord` never selects it and no
+  // opacity curve can help. That needs a minimum-duration floor at
+  // transcription time. Regression coverage: test/caption-short-words.test.mjs.
+  const opacity = interpolate(wordFrame, [0, 2], [0.55, 1])
 
   return (
     <div style={captionOuterStyle(seg)}>

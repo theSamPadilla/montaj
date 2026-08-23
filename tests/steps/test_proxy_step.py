@@ -26,7 +26,7 @@ pytestmark = pytest.mark.skipif(not HAS_FFMPEG, reason="ffmpeg not available")
 # ── step CLI ─────────────────────────────────────────────────────────────────
 
 def test_proxy_step_basic(test_video, tmp_path):
-    """Step encodes an all-intra AV1+Opus 720p proxy and prints the output path."""
+    """Step encodes an all-intra H.264+Opus 720p proxy and prints the output path."""
     out = tmp_path / "proxy.mp4"
     proc = run_step(
         "proxy.py",
@@ -45,7 +45,7 @@ def test_proxy_step_basic(test_video, tmp_path):
     streams = json.loads(r.stdout)["streams"]
     video = next(s for s in streams if s["codec_type"] == "video")
     audio = next(s for s in streams if s["codec_type"] == "audio")
-    assert video["codec_name"] == "av1"
+    assert video["codec_name"] == "h264"
     assert audio["codec_name"] == "opus"
     assert video["height"] == 720  # test_video is 640x480 landscape
 

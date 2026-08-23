@@ -51,13 +51,13 @@ Ask: **"Where is your content? You can paste a TikTok/Instagram/YouTube URL, or 
 
 If multiple URLs are provided (e.g. several individual video links), fire all fetch calls as **parallel tool calls** — do not download sequentially.
 ```
-montaj fetch --url <url1> --out ~/.montaj/profiles/<name>/videos/current/
-montaj fetch --url <url2> --out ~/.montaj/profiles/<name>/videos/current/
+montaj fetch <url1> --out ~/.montaj/profiles/<name>/videos/current/
+montaj fetch <url2> --out ~/.montaj/profiles/<name>/videos/current/
 # ... fire all simultaneously
 ```
 For a single profile or channel URL with `--limit`, one fetch call is sufficient.
 ```
-montaj fetch --url <url> --out ~/.montaj/profiles/<name>/videos/current/ --limit 15
+montaj fetch <url> --out ~/.montaj/profiles/<name>/videos/current/ --limit 15
 ```
 
 **If local path:** Use the directory directly. List files to confirm.

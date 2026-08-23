@@ -37,7 +37,7 @@ Both modes run on the same machine and share one filesystem, so file paths are a
 ## Workspace & config resolution
 
 - **Project directory:** `{workspaceDir}/<date>-<name>/`. `workspaceDir` defaults to `~/Montaj`; override in `~/.montaj/config.json`.
-- **Step outputs** go next to their inputs. Trim-spec outputs: `<original>_spec.json`. Concat output: `<original>_concat.mp4`. Final render: `output.mp4` in the project directory. Transcripts: `<clip>_transcript.json` and `<clip>.srt`.
+- **Step outputs** go next to their inputs. Trim-spec outputs: `<original>_spec.json`. Materialized cuts: `<original>_cut.mp4` (or `_cut.wav` with `--audio`). Editing proxies: `<original>_proxy_<look>_<format>.mp4` beside the source, or under `<workspace>/.sources/_proxycache/<hash>/` when the source lives outside the workspace. Final render: `output.mp4` in the project directory. Transcripts: `<clip>_transcript.json` and `<clip>.srt`.
 - **Server port (HTTP mode):** `montaj serve` listens on **port 3000** by default; override with the `MONTAJ_SERVE_PORT` environment variable. Use that port in every URL below.
 
 ---
@@ -67,9 +67,9 @@ curl -s -X POST http://localhost:3000/api/steps/probe \
   -d '{"input": "/path/to/clip.mp4"}'
 
 # Step with params
-curl -s -X POST http://localhost:3000/api/steps/trim \
+curl -s -X POST http://localhost:3000/api/steps/materialize_cut \
   -H "Content-Type: application/json" \
-  -d '{"input": "/path/to/clip.mp4", "start": 2.5, "end": 8.3}'
+  -d '{"input": "/path/to/clip.mp4", "inpoint": 2.5, "outpoint": 8.3}'
 
 # Multiple inputs (rm_fillers batch, etc.)
 curl -s -X POST http://localhost:3000/api/steps/rm_fillers \
@@ -158,23 +158,20 @@ Use CLI mode when `montaj serve` is NOT running.
 ```bash
 montaj probe clip.mp4
 montaj snapshot clip.mp4
-montaj trim clip.mp4 --start 2.5 --end 8.3
-montaj cut clip.mp4 --start 3.0 --end 7.5
-montaj cut clip.mp4 --cuts '[[0,1.2],[5.3,7.8]]'   # multiple cuts, one ffmpeg pass
-montaj cut clip.mp4 --cuts '[[3.0,7.5]]' --spec     # write trim spec instead of encoding
-montaj materialize-cut clip.mp4 --inpoint 2.0 --outpoint 8.0
-montaj materialize-cut spec.json
+montaj materialize-cut clip.mp4 --inpoint 2.0 --outpoint 8.0    # keep one range
+montaj materialize-cut clip.mp4 --cuts '[[0,1.2],[5.3,7.8]]'    # remove ranges, one ffmpeg pass
+montaj materialize-cut spec.json                                 # apply every keep in a trim spec
 montaj waveform-trim clip.mp4 --threshold -30 --min-silence 0.3
 montaj rm-nonspeech clip_spec.json --model base
 montaj transcribe clip.mp4 --model base.en
 montaj caption clip.mp4 --style word-by-word
-montaj crop-spec --input spec.json --keep 8.5:14.8 --keep 40.0:end
-montaj virtual-to-original --input spec.json 47.32
+montaj step crop_spec --input spec.json --keep 8.5:14.8 --keep 40.0:end
+montaj step virtual_to_original --input spec.json 47.32
 montaj normalize clip.mp4 --target youtube
 montaj resize clip.mp4 --ratio 9:16
 ```
 
-To see all available steps including project-local custom steps: `montaj step -h`.
+Not every step has a top-level command, and `montaj -h` is not the way to find out which do: about twenty step commands are deliberately hidden from that listing (`_HIDDEN` in `cli/main.py`), including `probe`, `transcribe`, `caption`, `normalize`, `resize` and `materialize-cut` — every one demoed above. They work as shown. Anything without a top-level command runs as `montaj step <name>`, which accepts either spelling (`crop_spec` or `crop-spec`). To see all available steps, including user and project-local custom ones: `montaj step -h`.
 
 Fire long-running CLI steps in the background (`run_in_background: true` on the Bash call) for the same reasons as HTTP mode.
 

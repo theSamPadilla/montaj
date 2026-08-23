@@ -27,6 +27,7 @@ from serve.common import (
     not_found, bad_request, forbidden, server_error,
     validate_project_subpath, _is_under,
 )
+from serve import context as context_store
 from serve.caption_job import build_cut_spec
 from serve.routes.files import save_upload
 from lib.ingest import ingest_source
@@ -2736,3 +2737,48 @@ async def captions_status(project_id: str, project_dir: Path = Depends(get_proje
     elif job.status == "error":
         out["error"] = job.error
     return out
+
+
+@router.post("/projects/{project_id}/context", status_code=204)
+async def report_context(
+    project_id: str,
+    body: dict = Body(...),
+    project_dir: Path = Depends(get_project_dir),
+):
+    """The editor telling us where its playhead is.
+
+    Deliberately ephemeral — nothing here is written to project.json and nothing
+    is committed. The get_project_dir dependency is here purely to 404 an
+    unknown project rather than silently accumulating context for one.
+    """
+    try:
+        context_store.report(project_id, body)
+    except ValueError as e:
+        raise bad_request("invalid_context", str(e))
+
+
+@router.get("/context")
+async def read_active_context():
+    """Whatever editor reported most recently, enriched against its project.
+
+    Always 200. "No editor is open" is a normal answer to this question, not an
+    error — a 404 here would read to a caller as "this endpoint is broken".
+    """
+    active = context_store.active()
+    if active is None:
+        return {"active": False, "reason": "no editor has reported recently"}
+
+    project_id, state = active
+    workspace = resolve_workspace()
+    project_dir = find_project_dir(workspace, project_id)
+    if project_dir is None:
+        return {"active": False, "reason": f"project '{project_id}' is no longer in the workspace"}
+    try:
+        project = json.loads((project_dir / "project.json").read_text())
+    except (OSError, ValueError):
+        return {"active": False, "reason": f"project '{project_id}' could not be read"}
+
+    if not isinstance(project, dict):
+        return {"active": False, "reason": f"project '{project_id}' is not a readable project file"}
+
+    return {"active": True, **context_store.enrich(project_id, project, state)}

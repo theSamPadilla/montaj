@@ -218,6 +218,8 @@ Add `--first-frame <path>` for chained mode (N-1's last frame).
 }
 ```
 
+**These clips have no editing proxy, and neither does the one `kling_generate` writes for you.** `lib/ai_video.py:235-253` builds the item with `id`/`type`/`src`/`start`/`end`/`inPoint`/`outPoint`/`generation`/`sourceDuration` and no `proxySrc`, so an `ai_video` project fails the WebCodecs eligibility gate on every clip (`montaj_assets/editor/src/engine/eligibility.ts:69` refuses the whole project when any track-0 video item lacks the field). Do not invent a value for it and do not compute the path yourself — Step E.2 below backfills them all in one call, after every scene has landed.
+
 The prompt stored on `generation.prompt` is the **caller's composed string** (styleAnchor + scene prose in natural language) — NOT the wire string the connector produced after prepending its ref clause. The connector derives the ref clause deterministically from `refImages`, so regen can re-run the same caller prompt and reproduce the same wire string. Phase 7's regenerate flows (full-scene and subcut) pre-fill the prompt field from this.
 
 **Post-download normalization:** After a clip is saved, `save_clip_to_project` automatically probes it and normalizes to the project's resolution and fps (from `project.settings`) if they don't match. For example, Kling outputs 1280x720 H.264 clips, which are upscaled to the project resolution (typically 1920x1080). The normalized file is written alongside the original (`*_normalized.mp4`) and `clip.src` is updated to point to it. If normalization fails, the original clip is kept as-is.
@@ -280,6 +282,8 @@ Refs passed apply to any shot in the batch. Cap still 7 total.
   }
 }
 ```
+
+Same proxy caveat as the single-shot clip above: a batched clip carries no `proxySrc` either. Step E.2 covers both.
 
 `batchShots[i].start` / `end` are **relative to the batch clip**, not the project timeline. The UI uses these for per-scene progress.
 
@@ -422,7 +426,15 @@ Write `project.json` after appending the audio tracks.
 
 #### Step E.2 — Set status
 
-- **When every `storyboard.scenes[i]` has a matching clip** (by sceneId OR batchShots sceneId) AND audio generation is complete (or skipped if no intake fields): set `project.status = "draft"`. The UI's EditorPage routing carries the user to ReviewView.
+- **When every `storyboard.scenes[i]` has a matching clip** (by sceneId OR batchShots sceneId) AND audio generation is complete (or skipped if no intake fields): **first backfill the editing proxies, then** set `project.status = "draft"`. The UI's EditorPage routing carries the user to ReviewView.
+
+  ```bash
+  curl -s -X POST http://localhost:3000/api/projects/{id}/proxies
+  ```
+
+  Every clip on `tracks[0]` was written without a `proxySrc` — neither `kling_generate` nor the hand-written batched and subcut shapes add one. Without them the WebCodecs playback engine refuses the project (`montaj_assets/editor/src/engine/eligibility.ts:69`), preview falls back to decoding each generated master on every seek, and the header shows a chip telling the operator their clips have no previews. This one call covers the whole project: it computes each proxy path itself, de-duplicates by target, encodes in the background, and writes `proxySrc` back onto each item over SSE. `202` means encodes were queued; `200` means everything was already fresh. It does not block — flipping to `draft` immediately afterwards is correct, and the timeline fills in as the encodes land.
+
+  Do this on Phase 7 regen too, after a `mode: "full"` or `mode: "subcut"` entry has rewritten `tracks[0].items` — the new pieces are new files and need their own proxies.
 - **If some scenes failed:** leave status at `storyboard_ready`. The user sees partial progress (some cards "done," some showing error). They may re-click Approve (idempotency handles retry) or ask in chat for tweaks.
 
 ### Step F — evaluate generated clips (optional but recommended)

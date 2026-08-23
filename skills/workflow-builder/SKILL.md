@@ -28,20 +28,28 @@ Before reasoning about dependencies, know what each step reads and produces:
 |------|-------|---------|
 | `probe` | original clip | metadata JSON |
 | `snapshot` | original clip | contact sheet image |
-| `transcribe` | original clip | transcript JSON + SRT |
-| `rm_fillers` | original clip + transcript | cleaned video |
-| `waveform_trim` | any video | trimmed video |
-| `rm_nonspeech` | any video | trimmed video |
-| `trim` | any video | trimmed video |
-| `cut` | any video | trimmed video (or trim spec with `--spec`) — supports `--cuts '[[s,e],...]'` for multiple sections in one pass |
-| `caption` | transcript + cleaned video | caption track data |
-| `normalize` | any video | normalized video |
+| `detect_shots` | original clip | shot boundaries + motion stats JSON |
+| `shot_sheet` | clip + its `detect_shots` JSON | contact sheet images + a `tiles` map |
+| `transcribe` | original clip, or a trim spec | transcript JSON + SRT |
+| `waveform_trim` | any video | **trim spec** (no encode) |
+| `rm_nonspeech` | a trim spec | **refined trim spec** (no encode) |
+| `rm_fillers` | a trim spec | **refined trim spec** (no encode) |
+| `crop_spec` | a trim spec | **cropped trim spec** (no encode) |
+| `virtual_to_original` | a trim spec | timestamp mapping, virtual ↔ original |
+| `materialize_cut` | a trim spec, or a raw clip + `--inpoint/--outpoint/--cuts` | encoded H.264 clip (or audio with `--audio`) |
+| `caption` | transcript | caption track data |
+| `normalize` | any video | loudness-normalized video |
+| `normalize_window` | clip + `--inpoint/--outpoint` | conformed window cache → `normalizedSrc` |
+| `proxy` | any video | 720p editing proxy → `proxySrc` (preview only) |
 | `resize` | any video | resized video |
 | `extract_audio` | any video | audio file |
-| `concat` | multiple videos | joined video |
+| `remove_bg` | encoded video | ProRes 4444 alpha `.mov` + WebM preview proxy |
 | `fetch` | — | downloaded video file |
-| `pacing` | any video | pacing analysis JSON |
-| `jump_cut_detect` | any video | issues JSON |
+| `analyze_media` | any media | model response: plain text, or JSON with `--json-output` |
+
+**Most of the clean-and-trim chain never encodes.** `waveform_trim` starts the chain by emitting a trim spec — `{"input": "...", "keeps": [[s, e], ...]}` — and `rm_nonspeech`, `rm_fillers` and `crop_spec` each take a spec and return a refined spec. Passing a video file to any of the three is a mistake. The chain ends either at `materialize_cut` (when a later step genuinely needs a file) or, far more often, at `tracks[0]` items carrying the surviving keeps as `inPoint`/`outPoint`, which the render engine assembles in a single pass.
+
+The canonical step list is `find steps -name '*.json'`; anything not in it is not a step.
 
 ---
 
@@ -91,7 +99,8 @@ Apply these rules:
 - `caption` commonly needs both `transcribe` AND the last cleaning step (e.g. `waveform_trim`)
 
 **Steps that have no downstream deps:**
-- `probe`, `snapshot`, `pacing`, `jump_cut_detect` — analysis-only, no other step needs their output
+- `probe`, `snapshot`, `analyze_media` — analysis-only, no other step needs their output.
+  (`detect_shots` is NOT in this group: `shot_sheet` requires its JSON via `--shots`.)
 
 ### Step 4 — Identify parallel waves
 
