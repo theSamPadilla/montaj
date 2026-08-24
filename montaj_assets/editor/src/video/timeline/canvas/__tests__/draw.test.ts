@@ -633,6 +633,23 @@ describe('drawKeyframeStrip', () => {
     expect(r.of('set:strokeStyle').every(c => c.args[0] === TIMELINE_COLORS.keyframeDiamondStroke)).toBe(true)
   })
 
+  it('paints the diamond matching selectedT with a different fillStyle than the rest', () => {
+    const r = recordingContext()
+    // Union of times is {0, 1} (ascending) — selecting t=1 must mark only the
+    // SECOND diamond, leaving the first one drawn with the ordinary fill.
+    drawKeyframeStrip(r.ctx, keyframedOverlay(), BODY, vp, 1)
+    const fills = r.of('set:fillStyle').map(c => c.args[0])
+    expect(fills).toEqual([TIMELINE_COLORS.keyframeDiamondFill, TIMELINE_COLORS.keyframeDiamondSelectedFill])
+  })
+
+  it('paints every diamond identically when selectedT is null (or omitted)', () => {
+    const r = recordingContext()
+    drawKeyframeStrip(r.ctx, keyframedOverlay(), BODY, vp, null)
+    const fills = r.of('set:fillStyle').map(c => c.args[0])
+    expect(fills[0]).toBe(fills[1])
+    expect(new Set(fills).size).toBe(1)
+  })
+
   it('clips to a region derived from the clip body, widened past its edges (not the raw body rect)', () => {
     const r = recordingContext()
     drawKeyframeStrip(r.ctx, keyframedOverlay(), BODY, vp)
@@ -1412,6 +1429,58 @@ describe('drawTimelineContent', () => {
       const r = recordingContext()
       drawTimelineContent(r.ctx, scene({ project: p, layout: computeTimelineLayout(p), selectedIds: ['o0'] }))
       expect(r.of('set:fillStyle').some(c => c.args[0] === TIMELINE_COLORS.keyframeDiamondFill)).toBe(false)
+    })
+
+    it('paints the diamond matching scene.selectedKeyframe differently from the other diamond', () => {
+      const p = project({ tracks: [[keyframedOverlay({
+        keyframes: [{ prop: 'offsetX', points: [{ t: 0, value: 0 }, { t: 1, value: 10 }] }],
+      })]] } as unknown as Partial<Project>)
+      const r = recordingContext()
+      drawTimelineContent(r.ctx, scene({
+        project: p,
+        layout: computeTimelineLayout(p),
+        selectedIds: ['o0'],
+        selectedKeyframe: { itemId: 'o0', t: 1 },
+      }))
+      const fills = r.of('set:fillStyle').map(c => c.args[0])
+      expect(fills).toContain(TIMELINE_COLORS.keyframeDiamondSelectedFill)
+      expect(fills).toContain(TIMELINE_COLORS.keyframeDiamondFill)
+    })
+
+    it('paints both diamonds identically when selectedKeyframe is null', () => {
+      const p = project({ tracks: [[keyframedOverlay({
+        keyframes: [{ prop: 'offsetX', points: [{ t: 0, value: 0 }, { t: 1, value: 10 }] }],
+      })]] } as unknown as Partial<Project>)
+      const r = recordingContext()
+      drawTimelineContent(r.ctx, scene({
+        project: p,
+        layout: computeTimelineLayout(p),
+        selectedIds: ['o0'],
+        selectedKeyframe: null,
+      }))
+      const diamondFills = r.of('set:fillStyle')
+        .map(c => c.args[0])
+        .filter(fill => fill === TIMELINE_COLORS.keyframeDiamondFill || fill === TIMELINE_COLORS.keyframeDiamondSelectedFill)
+      expect(diamondFills).toHaveLength(2)
+      expect(new Set(diamondFills).size).toBe(1)
+    })
+
+    it('paints nothing selected when selectedKeyframe.itemId names a different item', () => {
+      const p = project({ tracks: [[keyframedOverlay({
+        keyframes: [{ prop: 'offsetX', points: [{ t: 0, value: 0 }, { t: 1, value: 10 }] }],
+      })]] } as unknown as Partial<Project>)
+      const r = recordingContext()
+      drawTimelineContent(r.ctx, scene({
+        project: p,
+        layout: computeTimelineLayout(p),
+        selectedIds: ['o0'],
+        selectedKeyframe: { itemId: 'some-other-item', t: 1 },
+      }))
+      const diamondFills = r.of('set:fillStyle')
+        .map(c => c.args[0])
+        .filter(fill => fill === TIMELINE_COLORS.keyframeDiamondFill || fill === TIMELINE_COLORS.keyframeDiamondSelectedFill)
+      expect(diamondFills).toHaveLength(2)
+      expect(new Set(diamondFills).size).toBe(1)
     })
   })
 })

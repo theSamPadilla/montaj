@@ -87,6 +87,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   Keyframe persistence is unchanged: every control routes through the same
   auto-keyframe rule, so editing an already-animated property adds a keyframe
   at the playhead rather than overwriting the animation.
+- **Keyframe diamonds are now on the canvas timeline itself, not just the
+  panel.** A selected, keyframed overlay draws a diamond strip along the
+  bottom of its clip, one per distinct keyframe time. Double-clicking the
+  clip keys all five transform properties at the instant you clicked, each at
+  the value it already holds there, so nothing moves; double-clicking a
+  diamond selects it (its fill
+  turns white); dragging a diamond retimes it with snapping to the item's
+  other keyframe times, landing on one merges the two; right-click opens a
+  menu for per-property easing and removal; and Delete/Backspace removes
+  every property keyed at the selected instant. Keyframing stays
+  overlay-only, a render constraint rather than a UI limitation.
 
 ### Both editors
 

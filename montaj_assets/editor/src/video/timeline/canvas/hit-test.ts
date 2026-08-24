@@ -23,7 +23,7 @@
  */
 
 import type { AudioTrack, CaptionSegment, VisualItem } from '../../../schema'
-import { isKeyframed } from '../../keyframeOps'
+import { canKeyframe, isKeyframed } from '../../keyframeOps'
 import { AUDIO_ITEM_INSET_PX, type TimelineLayout } from './draw'
 import { KEYFRAME_HIT_HALF_WIDTH_PX, KEYFRAME_STRIP_ZONE_HEIGHT_PX, keyframeDiamondX, keyframeUnionTimes } from './keyframe-strip'
 import { timeToX, xToTime, type Viewport } from './viewport'
@@ -365,7 +365,7 @@ export function hitTest(
     if (selectedIds !== undefined && selectedIds.length > 0) {
       for (let i = row.items.length - 1; i >= 0; i--) {
         const item = row.items[i]
-        if (item.type !== 'overlay' || !selectedIds.includes(item.id) || !isKeyframed(item)) continue
+        if (!canKeyframe(item) || !selectedIds.includes(item.id) || !isKeyframed(item)) continue
         const kfT = keyframeStripZone(point, item, row.y, row.height, viewport)
         if (kfT !== null) return { kind: 'keyframe', t, itemId: item.id, kfT, trackIdx: row.trackIdx, item }
       }

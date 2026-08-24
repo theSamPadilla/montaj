@@ -6,7 +6,7 @@ import type { EasingName, KeyframeProp, VisualItem } from '../../schema'
 import { reflowMagneticLanes } from '../audioMagnet'
 import { normalizeCaptionLanes } from '../captionLanes'
 import { collapseGaps, setClipSpeed } from '../cuts'
-import { removeKeyframe, setKeyframeEasing } from '../keyframeOps'
+import { removeKeyframesAt, setKeyframeEasing } from '../keyframeOps'
 import { useTimelineZoom } from './useTimelineZoom'
 import { TimelineContext, type TimelineContextValue } from './TimelineContext'
 import type { PlaybackClock } from '../playback-clock'
@@ -15,10 +15,12 @@ import TrackGutter from './TrackGutter'
 import { computeTimelineLayout, TIMELINE_COLORS, type TimelineLayout } from './canvas/draw'
 import { DEFAULT_FADE_CURVE, fadeCurveIconPoints, type FadeCurve } from './canvas/fade-curve'
 import { VISUAL_EDGE_TOLERANCE_PX } from './canvas/hit-test'
+import { keyframeUnionTimes } from './canvas/keyframe-strip'
 import { mapTrackItems, normalizeTracks, updateAudioTrack } from './timeline-model'
 import { deleteSelection, toggleSelection } from './multiSelectOps'
 import { computeAutoCrossfade, computeDerivedTiming, trackItems } from './timeline-model'
 import TimelineCanvas, { useCanvasZoomControls, type ZoomControls } from './canvas/TimelineCanvas'
+import type { KeyframeSelection } from './canvas/pointer-machine'
 import { timeToX, useViewportStore, useViewportValue, xToTime, type ViewportStore } from './canvas/viewport'
 import { useKeymap, matchesArrowLeft, matchesArrowRight, matchesDelete, matchesModKey } from '../keymap'
 import { Tooltip } from '../../ui/Tooltip'
@@ -474,6 +476,49 @@ export default function Timeline({ project, clock, onProjectChange, onOverlayEdi
   const [keyframeMenu, setKeyframeMenu] = useState<{ itemId: string; t: number; props: KeyframeProp[]; isLast: boolean; x: number; y: number } | null>(null)
 
   /**
+   * The selected keyframe diamond, or null. Kind-agnostic: a diamond is a
+   * TIME on an item, so the props at that time are derived when acted on
+   * rather than stored here. Lives in Timeline rather than `VideoEditor`
+   * because every clearing trigger is already visible here and nothing
+   * outside the timeline consumes it.
+   */
+  const [selectedKeyframe, setSelectedKeyframe] = useState<KeyframeSelection | null>(null)
+
+  // Clear when the owning item stops being selected. A keyframe selection is
+  // meaningless without its item selected — the strip is not even drawn then
+  // (draw.ts gates on selection), so a stale selection would be invisible and
+  // still armed for Delete.
+  useEffect(() => {
+    if (selectedKeyframe && !selectedIds.includes(selectedKeyframe.itemId)) setSelectedKeyframe(null)
+  }, [selectedIds, selectedKeyframe])
+
+  /**
+   * Whole-item edit, for an op that derives its own affected props (unlike
+   * `applyToKeyframedItem` below, which threads a function per prop) — e.g.
+   * `removeKeyframesAt`, which decides itself which prop tracks have a point
+   * at `t`. Same commit shape as `applyToKeyframedItem`: one `onProjectChange`
+   * + one `onOverlayEdit` = one undo entry. Skips the commit entirely when
+   * `fn` returns the SAME item reference (no prop actually had anything to
+   * change) — `removeKeyframesAt`'s reference-equality no-op — so a Delete
+   * that couldn't find its keyframe never spends an undo entry on nothing.
+   */
+  function applyToItem(itemId: string, fn: (item: VisualItem) => VisualItem) {
+    setKeyframeMenu(null)
+    if (!onProjectChange) return
+    let changed = false
+    const tracks = mapTrackItems(project, items => items.map(item => {
+      if (item.id !== itemId) return item
+      const next = fn(item)
+      if (next !== item) changed = true
+      return next
+    }))
+    if (!changed) return
+    const next = { ...project, tracks } as Project
+    onProjectChange(next)
+    onOverlayEdit?.(next)
+  }
+
+  /**
    * Apply `fn` to every prop the diamond at `t` represents, on the item
    * `itemId`, as ONE commit — same shape as `handleSetFadeCurve` above: a
    * discrete, one-shot pick, so `onProjectChange` + `onOverlayEdit` fire
@@ -496,8 +541,12 @@ export default function Timeline({ project, clock, onProjectChange, onOverlayEdi
     onOverlayEdit?.(next)
   }
 
-  function handleRemoveKeyframe(itemId: string, t: number, props: KeyframeProp[]) {
-    applyToKeyframedItem(itemId, props, prop => item => removeKeyframe(item, prop, t))
+  function handleRemoveKeyframe(itemId: string, t: number) {
+    // Clearing rule 2 (plan Task 3): the keyframe is gone, so the selection
+    // naming it must go too — the menu is the OTHER route to the same removal
+    // the Delete binding performs, and the two must not disagree.
+    if (selectedKeyframe && selectedKeyframe.itemId === itemId && selectedKeyframe.t === t) setSelectedKeyframe(null)
+    applyToItem(itemId, item => removeKeyframesAt(item, t))
   }
 
   function handleSetKeyframeEasing(itemId: string, t: number, props: KeyframeProp[], easing: EasingName) {
@@ -642,6 +691,33 @@ export default function Timeline({ project, clock, onProjectChange, onOverlayEdi
         const dir  = matchesArrowRight(e) ? 1 : -1
         const next = Math.max(0, Math.min(totalDuration, clock.get() + dir * step))
         clock.set(next)
+      },
+    },
+    {
+      id: 'timeline.delete-keyframe',
+      description: 'Delete selected keyframe',
+      matches: matchesDelete,
+      // Ordered BEFORE `timeline.delete-selection` and guarded on a keyframe
+      // actually being selected: useKeymap is first-match-wins (keymap.ts:80-86),
+      // so with no keyframe selected this falls straight through to clip
+      // deletion. The focus scope matches the binding below it exactly — a
+      // Delete typed outside the timeline must not reach either.
+      guard: () => {
+        if (!selectedKeyframe || !rootRef.current?.contains(document.activeElement)) return false
+        // A selection can go stale WITHOUT its item leaving `selectedIds`:
+        // dragging the diamond retimes it, the right-click menu removes it,
+        // undo rewinds it, a split moves it to the other half. `drawKeyframeStrip`
+        // matches on `t`, so nothing draws as selected then — and Delete must do
+        // what the operator SEES (delete the clip) rather than swallow the press
+        // on a keyframe that no longer exists.
+        const item = trackItems(project).flat().find(i => i.id === selectedKeyframe.itemId)
+        return !!item && keyframeUnionTimes(item).includes(selectedKeyframe.t)
+      },
+      action: () => {
+        if (!selectedKeyframe) return
+        const { itemId, t } = selectedKeyframe
+        setSelectedKeyframe(null)
+        applyToItem(itemId, item => removeKeyframesAt(item, t))
       },
     },
     {
@@ -869,6 +945,8 @@ export default function Timeline({ project, clock, onProjectChange, onOverlayEdi
               onHoverScrub={onHoverScrub}
               onSelectItem={handleSelectItem}
               onSelectItems={handleSelectItems}
+              selectedKeyframe={selectedKeyframe}
+              onSelectKeyframe={setSelectedKeyframe}
               onProjectChange={onProjectChange}
               onOverlayEdit={onOverlayEdit}
               onInspectClip={onInspectClip}
@@ -1033,7 +1111,7 @@ export default function Timeline({ project, clock, onProjectChange, onOverlayEdi
               <button
                 type="button"
                 className="rounded px-1.5 py-1 text-left text-[11px] text-red-400 hover:bg-red-500/10"
-                onClick={() => handleRemoveKeyframe(keyframeMenu.itemId, keyframeMenu.t, keyframeMenu.props)}
+                onClick={() => handleRemoveKeyframe(keyframeMenu.itemId, keyframeMenu.t)}
               >
                 Remove keyframe
               </button>

@@ -2,6 +2,7 @@ import type { Project } from '../types'
 import type { VisualItem, AudioTrack, CaptionSegment, Word, VisualTrack, KeyframeTrack } from '../schema'
 import { mapTrackItems, trackItems, normalizeTracks } from './timeline/timeline-model'
 import { normalizeTrack } from '@bycrux/timeline-core'
+import { canKeyframe } from './keyframeOps'
 
 /** A time range to excise from the timeline. */
 export interface Cut {
@@ -125,7 +126,7 @@ function splitClip(item: VisualItem, cut: Cut): [VisualItem, VisualItem] {
   // Overlay-only (schema.ts). Every OTHER item type either never carries
   // `keyframes` or has it ignored (docs/schemas/project.md), so this never
   // runs for a video/image clip even if one somehow had a stray array.
-  if (item.type === 'overlay' && item.keyframes && item.keyframes.length > 0) {
+  if (canKeyframe(item) && item.keyframes && item.keyframes.length > 0) {
     const { left: leftKf, right: rightKf } = splitKeyframeTracks(item, cut)
     if (leftKf) left.keyframes = leftKf
     else delete left.keyframes
@@ -229,7 +230,7 @@ function cutSingleItem(item: VisualItem, cut: Cut): VisualItem[] {
   // item.start)` either way. It also holds at any speed, since `(outPoint -
   // physEnd) / s` reduces to `item.end - cut.end`, exactly the timeline span
   // the re-anchored points cover.
-  const keyed = item.type === 'overlay' && !!item.keyframes && item.keyframes.length > 0
+  const keyed = canKeyframe(item) && !!item.keyframes && item.keyframes.length > 0
   const { left: leftKf, right: rightKf } = keyed ? splitKeyframeTracks(item, cut) : {}
 
   if (physStart > inPoint) {

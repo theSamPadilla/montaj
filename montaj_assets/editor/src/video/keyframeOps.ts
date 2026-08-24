@@ -26,6 +26,44 @@ import { geometryAt, normalizeTrack } from '@bycrux/timeline-core'
  * the render bake cannot drift from each other or from this module.
  */
 
+/**
+ * THE single gate on which items support keyframing. Every call site that used
+ * to spell `item.type === 'overlay'` inline routes through here instead, so
+ * the set of keyframeable kinds is defined in exactly one place.
+ *
+ * Overlay-only today, and that is a RENDER constraint rather than a UI
+ * preference. `geometryFor` (timeline-core) reads only an item's static
+ * scalars and never its `keyframes`, and the ffmpeg composite emits ONE static
+ * box per segment — there is no per-frame hook in it. Overlays escape that
+ * only because they are captured frame-by-frame in a browser, where the shim
+ * applies `geometryAt(item, 'overlay', frame / fps)` as a CSS transform and
+ * bakes the motion into the pixels (`render/bundle.js` generateShim,
+ * `render/encode-segment.js:558-572`).
+ *
+ * So widening this predicate is NOT sufficient to support video keyframes.
+ * The PREVIEW gates on the same overlay-only condition, deliberately
+ * (`preview/OverlayItemsLayer.tsx:466`) — it mirrors the renderer so it can
+ * never promise motion the export cannot reproduce. A keyframed video would
+ * therefore animate nowhere: a confusing no-op rather than a wrong export.
+ * Turning it on is THREE coordinated changes — this predicate, that preview
+ * branch, and the renderer's per-frame geometry — landed together or not at
+ * all. See docs/plans/MASTER.md:221 for the ffmpeg-expression vs
+ * sub-segment cost analysis and :225 for the cost spike that gates it
+ * (tracked as SP9d).
+ *
+ * A type predicate, not a plain `boolean`: call sites used to spell
+ * `!item || item.type !== 'overlay'`, which narrowed `item`'s nullability
+ * through the guard for free. Returning `item is VisualItem` keeps that
+ * narrowing available through this one call instead. It is deliberately
+ * `VisualItem`, not some overlay-only subtype — `VisualItem` is a monolithic
+ * interface with `type` as a plain field rather than a discriminant, so
+ * there is no narrower shape to assert; this is the strongest claim TS can
+ * check.
+ */
+export function canKeyframe(item: VisualItem | null | undefined): item is VisualItem {
+  return !!item && item.type === 'overlay'
+}
+
 // ── Reading ──────────────────────────────────────────────────────────────
 
 /** The track for `prop` on `item`, or `undefined` if the item isn't
@@ -57,13 +95,14 @@ export function isKeyframed(item: VisualItem): boolean {
  * render bake sample from — rather than re-deriving defaults or calling
  * `sampleTrack` directly, so the defaults (scale 1, offsetX/offsetY/rotation
  * 0, opacity 1) live in exactly one place and cannot drift from what
- * actually gets painted. `'overlay'` is the right `kind` for every
- * `KeyframeProp` read: keyframing is overlay-only (see `KeyframeProp`'s doc
- * comment in schema.ts), and `geometryAt`'s `kind` only changes `fit`, which
- * isn't a keyframeable prop.
+ * actually gets painted. `item.type` is passed through as the `kind` rather
+ * than a hardcoded `'overlay'`: `geometryAt`'s `kind` only selects `fit`,
+ * which isn't a keyframeable prop, so every one of the five reads is
+ * identical either way — but this way the function never lies about what
+ * kind of item it's reading.
  */
 export function valueAt(item: VisualItem, prop: KeyframeProp, localT: number): number {
-  return geometryAt(item, 'overlay', localT)[prop]
+  return geometryAt(item, item.type, localT)[prop]
 }
 
 // ── Writing ──────────────────────────────────────────────────────────────
@@ -153,6 +192,41 @@ export function removeKeyframe(item: VisualItem, prop: KeyframeProp, t: number):
   if (points.length === 0) return withTrack(item, prop, undefined)
 
   return withTrack(item, prop, normalizeTrack({ prop, points }))
+}
+
+/**
+ * Remove every keyframe sitting at `t`, across all props — the whole diamond
+ * the operator sees, since one diamond on the strip is the UNION of every prop
+ * keyed at that instant (`keyframeUnionTimes`).
+ *
+ * The last-point branch is the reason this exists rather than callers looping
+ * `removeKeyframe`. `removeKeyframe` on a track's ONLY point drops the track
+ * without writing the sampled value into the item's static scalar, so the
+ * overlay snaps back to whatever stale value was sitting there from before
+ * keyframing was switched on. `disableKeyframing` samples the curve FIRST and
+ * writes it, so nothing moves. Every removal path must take that branch, or
+ * the two disagree — which is exactly what happened between the canvas
+ * right-click menu and the properties panel before this helper existed.
+ *
+ * Returns the SAME item when no prop has a point at `t`, so callers can use
+ * reference equality to skip a no-op commit.
+ */
+export function removeKeyframesAt(item: VisualItem, t: number): VisualItem {
+  if (!Number.isFinite(t)) return item
+
+  const props = (item.keyframes ?? [])
+    .filter(track => track.points.some(p => p.t === t))
+    .map(track => track.prop)
+  if (props.length === 0) return item
+
+  let next = item
+  for (const prop of props) {
+    const points = trackFor(next, prop)?.points ?? []
+    next = points.length > 1
+      ? removeKeyframe(next, prop, t)
+      : disableKeyframing(next, prop, t)
+  }
+  return next
 }
 
 /**

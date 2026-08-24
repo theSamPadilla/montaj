@@ -6,6 +6,7 @@ import {
   trackFor,
   hasKeyframes,
   isKeyframed,
+  canKeyframe,
   valueAt,
   setKeyframe,
   removeKeyframe,
@@ -13,6 +14,7 @@ import {
   setKeyframeEasing,
   enableKeyframing,
   disableKeyframing,
+  removeKeyframesAt,
 } from '../keyframeOps'
 
 function overlay(over: Partial<VisualItem> = {}): VisualItem {
@@ -435,5 +437,97 @@ describe('round-trip with sampleTrack', () => {
     item = removeKeyframe(item, 'scale', 0)
     expect(trackFor(item, 'scale')).toBeUndefined()
     expect(sampleTrack(trackFor(item, 'scale'), 0)).toBeUndefined()
+  })
+})
+
+describe('canKeyframe — the single gate on which items support keyframing', () => {
+  it('accepts an overlay', () => {
+    expect(canKeyframe({ id: 'o', type: 'overlay', start: 0, end: 5 } as VisualItem)).toBe(true)
+  })
+
+  it('rejects video and image items', () => {
+    // NOT a UI preference: `geometryFor` (timeline-core) never reads
+    // `item.keyframes`, and the ffmpeg path emits ONE static box per segment.
+    // The preview gates on the SAME overlay-only condition on purpose
+    // (`preview/OverlayItemsLayer.tsx:466`), so a keyframed video would
+    // animate nowhere — a confusing no-op. Turning it on is three coordinated
+    // changes: this predicate, that preview branch, and the renderer.
+    expect(canKeyframe({ id: 'v', type: 'video', start: 0, end: 5 } as VisualItem)).toBe(false)
+    expect(canKeyframe({ id: 'i', type: 'image', start: 0, end: 5 } as VisualItem)).toBe(false)
+  })
+
+  it('rejects a video item even when it carries a stray keyframes array', () => {
+    const strays = {
+      id: 'v', type: 'video', start: 0, end: 5,
+      keyframes: [{ prop: 'scale', points: [{ t: 0, value: 1 }] }],
+    } as unknown as VisualItem
+    expect(canKeyframe(strays)).toBe(false)
+  })
+
+  it('rejects null/undefined without throwing', () => {
+    expect(canKeyframe(null as unknown as VisualItem)).toBe(false)
+    expect(canKeyframe(undefined as unknown as VisualItem)).toBe(false)
+  })
+})
+
+describe('valueAt — samples with the item\'s OWN kind', () => {
+  it('reads the five props identically for any item kind', () => {
+    // `geometryAt`'s `kind` only drives `fit`, which is not keyframeable, so
+    // this is behaviour-preserving today. It stops the function LYING about
+    // the item's kind, which is what makes Task 1 a safe foundation.
+    const base = { id: 'x', start: 0, end: 10, scale: 1.5, offsetX: 20 }
+    const asOverlay = { ...base, type: 'overlay' } as VisualItem
+    const asVideo = { ...base, type: 'video' } as VisualItem
+    expect(valueAt(asOverlay, 'scale', 0)).toBe(1.5)
+    expect(valueAt(asVideo, 'scale', 0)).toBe(1.5)
+    expect(valueAt(asVideo, 'offsetX', 0)).toBe(20)
+  })
+})
+
+describe('removeKeyframesAt — removes every prop keyed at one instant, without jumping', () => {
+  it('removes the point from every prop that has one at t', () => {
+    const item = {
+      id: 'o', type: 'overlay', start: 0, end: 10, scale: 9, offsetX: 9,
+      keyframes: [
+        { prop: 'scale', points: [{ t: 0, value: 1 }, { t: 5, value: 2 }] },
+        { prop: 'offsetX', points: [{ t: 0, value: 0 }, { t: 5, value: 50 }] },
+        { prop: 'opacity', points: [{ t: 2, value: 0.5 }] },
+      ],
+    } as unknown as VisualItem
+
+    const next = removeKeyframesAt(item, 5)
+    expect(trackFor(next, 'scale')!.points.map(p => p.t)).toEqual([0])
+    expect(trackFor(next, 'offsetX')!.points.map(p => p.t)).toEqual([0])
+    // A prop with no point at t is untouched.
+    expect(trackFor(next, 'opacity')!.points.map(p => p.t)).toEqual([2])
+  })
+
+  it('freezes the sampled value when t was a track\'s LAST point, so nothing jumps', () => {
+    // THE BUG THIS FIXES: plain `removeKeyframe` drops the track without
+    // writing the scalar, so the overlay snaps back to the stale `scale: 9`.
+    const item = {
+      id: 'o', type: 'overlay', start: 0, end: 10, scale: 9,
+      keyframes: [{ prop: 'scale', points: [{ t: 3, value: 2 }] }],
+    } as unknown as VisualItem
+
+    const next = removeKeyframesAt(item, 3)
+    expect(hasKeyframes(next, 'scale')).toBe(false)
+    expect(next.scale).toBe(2)      // the curve's value, NOT the stale 9
+  })
+
+  it('is a no-op when no prop has a point at t', () => {
+    const item = {
+      id: 'o', type: 'overlay', start: 0, end: 10,
+      keyframes: [{ prop: 'scale', points: [{ t: 0, value: 1 }] }],
+    } as unknown as VisualItem
+    expect(removeKeyframesAt(item, 7)).toBe(item)
+  })
+
+  it('drops item.keyframes entirely when the last point of the last track goes', () => {
+    const item = {
+      id: 'o', type: 'overlay', start: 0, end: 10, scale: 9,
+      keyframes: [{ prop: 'scale', points: [{ t: 1, value: 3 }] }],
+    } as unknown as VisualItem
+    expect(removeKeyframesAt(item, 1).keyframes).toBeUndefined()
   })
 })

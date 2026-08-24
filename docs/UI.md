@@ -398,7 +398,10 @@ host built against the older DOM-rows timeline is maintained internally.
 An overlay's `offsetX`, `offsetY`, `scale`, `rotation`, and `opacity` can each
 be animated over the overlay's own lifetime rather than held fixed. Two
 surfaces, both canvas-timeline-only — neither exists in the Overlays tab's
-live-preview page:
+live-preview page. Overlay-only is a render constraint, not a UI choice: the
+ffmpeg composite emits one static box per clip, and only overlays are
+captured frame-by-frame in a browser step that can bake motion into the
+pixels, so a keyframed clip would have nowhere to play its animation back.
 
 - **Setting a key.** Each property gets its own keyframe diamond toggle in
   the right-hand **Transform** panel (`OverlayInspector.tsx`, see "Properties
@@ -417,13 +420,22 @@ live-preview page:
   time from each. A property whose only keyframe is the one being removed
   gets its sampled value written into its static scalar first, so it holds
   its position instead of jumping back to a stale value. The arrows jump the
-  playhead to the previous/next keyframe across all five tracks.
+  playhead to the previous/next keyframe across all five tracks. Double-clicking
+  the selected overlay on the canvas does the same thing from the timeline
+  side, at the instant the click landed on rather than at the playhead: it
+  keys all five properties there, reading each off the item as it stands, so
+  nothing on screen moves.
 - **The strip.** `drawKeyframeStrip` (`timeline/canvas/draw.ts`, geometry in
   `timeline/canvas/keyframe-strip.ts`) paints one diamond per distinct
   keyframe time, in a thin zone along the bottom of the clip — only for a
   SELECTED, keyframed overlay item, nothing else ever draws a diamond.
   `hit-test.ts`'s `keyframeStripZone` gives diamonds first claim on that zone,
   ahead of the ordinary clip-body hit.
+- **Selecting a diamond.** Double-clicking a diamond selects it rather than
+  opening the clip's inspector, swapping its fill from amber to white with a
+  thicker stroke — the same "outline thickens" language a selected clip's
+  border uses. Selection is what the keyboard removal below and the
+  right-click menu act on.
 - **Retiming.** Dragging a diamond enters the `keyframe-move` pointer state
   (`pointer-machine.ts`), moving every prop that has a keyframe at that time
   together via `keyframeOps.moveKeyframe`, clamped to the item's own
@@ -441,6 +453,13 @@ live-preview page:
   keyframe: its easing governs the segment leaving it, and the last keyframe
   has no next segment to leave. Right-click only, like the `fadeCurveMenu`
   it mirrors — there is no keyboard path to open it.
+- **Removing via keyboard.** With a diamond selected, Delete or Backspace
+  removes every property keyed at that instant (`keyframeOps.removeKeyframesAt`)
+  — same effect as the panel header diamond's un-key, and the same freeze: a
+  property whose only keyframe is the one being removed gets that instant's
+  sampled value written into its static scalar first, so nothing jumps. With
+  no keyframe selected, Delete/Backspace deletes the selected clip exactly as
+  it always has.
 
 **Trimming an item does not rewrite its keyframes.** A keyframe's `t` is
 item-relative, and no trim path touches `item.keyframes` (the only write is

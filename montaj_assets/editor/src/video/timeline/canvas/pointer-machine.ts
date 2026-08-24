@@ -54,12 +54,12 @@
  * doesn't collide: that path only fires for presses that never became drags.
  */
 
-import type { AudioTrack, CaptionSegment, VisualItem } from '../../../schema'
+import type { AudioTrack, CaptionSegment, KeyframeProp, VisualItem } from '../../../schema'
 import type { Project } from '../../../types'
 import { reflowMagneticLanes } from '../../audioMagnet'
 import { laneOf, normalizeCaptionLanes, resolveDropLane, sameLaneNeighbours } from '../../captionLanes'
 import { collapseGaps, rollEdit, slideItem, slipItem } from '../../cuts'
-import { moveKeyframe } from '../../keyframeOps'
+import { canKeyframe, enableKeyframing, moveKeyframe, setKeyframe, valueAt } from '../../keyframeOps'
 import { applyMoveDeltaToSelection, applyResizeDeltaToSelection } from '../multiSelectOps'
 import { AUDIO_LANE_HEIGHT_PX, CAPTION_ROW_HEIGHT_PX, VISUAL_ROW_HEIGHT_PX, computeDerivedTiming, groupAudioLanes, mapTrackItems, moveItemAcrossTracks, normalizeTracks, trackItems, updateAudioTrack } from '../timeline-model'
 import { DRAG_THRESHOLD_PX, computeResizedItem, resizeWindowedItem, type Draggable } from '../useItemDragDrop'
@@ -91,6 +91,13 @@ import {
   type SnapStrength,
 } from './snap'
 import { timeToX, xToTime, type Viewport } from './viewport'
+
+/** Every keyframeable prop, in the order a double-click keys them — the same
+ *  list, in the same order, as `OverlayInspector`'s `ALL_PROPS`, which its
+ *  header keyframe-all action walks. Annotated with the element type so a
+ *  misspelled prop is a compile error; an OMISSION is not, so a sixth member of
+ *  the `KeyframeProp` union has to be added here by hand. */
+const KEYFRAME_PROPS: readonly KeyframeProp[] = ['offsetX', 'offsetY', 'scale', 'rotation', 'opacity']
 
 // ── Inputs ───────────────────────────────────────────────────────────────
 
@@ -173,6 +180,19 @@ export type PointerEffect =
    *  single `select` effects would make the host apply N re-renders and, worse,
    *  would need the first to be non-additive and the rest additive. */
   | { type: 'selectMany'; ids: string[]; additive: boolean }
+  /** A keyframe diamond became the selected keyframe. Item-relative `t`,
+   *  matching `Keyframe.t`. The host holds this selection; the machine is
+   *  stateless about it, exactly as it is about item selection. */
+  | { type: 'selectKeyframe'; itemId: string; t: number }
+
+/** The host's record of which diamond is selected. A diamond is a time on an
+ *  item — the props at that time are derived when acted on, never stored here. */
+export interface KeyframeSelection {
+  itemId: string
+  /** ITEM-RELATIVE seconds, matching `Keyframe.t` and `HitResult.kfT`. Never
+   *  absolute timeline time. */
+  t: number
+}
 
 // ── State ────────────────────────────────────────────────────────────────
 
@@ -997,7 +1017,7 @@ function applyKeyframeMove(
 ): Applied {
   const item = press.hit.item
   const fromT = press.hit.kfT
-  if (!item || item.type !== 'overlay' || fromT === undefined) return noChange(snap, lastProject)
+  if (!canKeyframe(item) || fromT === undefined) return noChange(snap, lastProject)
 
   const duration = Math.max(0, item.end - item.start)
   const dt = (point.x - press.origin.x) / ctx.viewport.pxPerSecond
@@ -1597,14 +1617,54 @@ export function pointerReducer(state: MachineState, event: PointerMachineEvent):
     }
 
     case 'doubleClick': {
+      // A diamond selects itself. Checked first: a 'keyframe' hit also carries an
+      // itemId, so the generic branch below would otherwise swallow it.
+      if (hit.kind === 'keyframe' && hit.itemId !== undefined && hit.kfT !== undefined) {
+        return { state, effects: [{ type: 'selectKeyframe', itemId: hit.itemId, t: hit.kfT }] }
+      }
+      // Key the SELECTED element, and only when the click landed ON it. Checked
+      // against `ctx.selectedIds` rather than "is there a selection" so a
+      // double-click on a different clip never keys the selected one.
+      if (
+        (hit.kind === 'item-body' || hit.kind === 'item-edge') &&
+        hit.item && hit.itemId !== undefined &&
+        ctx.selectedIds.includes(hit.itemId) &&
+        canKeyframe(hit.item)
+      ) {
+        const item = hit.item
+        const localT = clamp(hit.t - item.start, 0, Math.max(0, item.end - item.start))
+
+        // Every value read off the ORIGINAL item BEFORE threading, so one prop's
+        // write cannot perturb another's sample. Same rule OverlayInspector's
+        // header diamond follows.
+        const sampled = KEYFRAME_PROPS.map(prop => [prop, valueAt(item, prop, localT)] as const)
+        let nextItem = item
+        for (const [prop, value] of sampled) {
+          nextItem = setKeyframe(enableKeyframing(nextItem, prop, localT), prop, localT, value)
+        }
+        if (nextItem === item) return { state, effects: [] }
+
+        // `ctx.project` is the ONLY project reference in scope here. The
+        // `doubleClick` case is a top-level branch of the reducer's switch — it is
+        // not nested under a `pressed`/`dragging` state, so there is no `press`
+        // and no `baseProject`. (`baseProject` is a drag-only concept: recompute
+        // from press-time so a back-and-forth drag cannot compound. A discrete
+        // double-click never presses, so it is meaningless here.)
+        const next = replaceVisualItem(ctx.project, item.id, { keyframes: nextItem.keyframes })
+        return { state, effects: [
+          { type: 'projectChange', project: next },
+          { type: 'commit', project: next },
+        ] }
+      }
       // A clip or bar opens its inspector. Timeline background does nothing:
       // double-clicking it used to place the A/B range markers, which are gone.
       if (hit.itemId !== undefined) {
         // A caption has no inspector — it opens its text for editing instead.
         if (isCaptionHit(hit)) return { state, effects: [{ type: 'editCaption', id: hit.itemId }] }
-        // 'keyframe' is visual too — a diamond only ever exists on an
-        // overlay item (never an audio track), so double-clicking one opens
-        // that overlay's OWN inspector, same as double-clicking its body.
+        // 'keyframe' is visual too — a diamond only ever exists on an overlay
+        // item (never an audio track). A well-formed diamond hit already
+        // returned above; this only catches one missing its `kfT`, which still
+        // belongs to that overlay rather than to any audio bar.
         const target = hit.kind === 'item-body' || hit.kind === 'item-edge' || hit.kind === 'keyframe' ? 'visual' : 'audio'
         return { state, effects: [{ type: 'inspect', target, id: hit.itemId }] }
       }

@@ -31,7 +31,7 @@ import {
   trackItems,
 } from '../timeline-model'
 import { DEFAULT_FADE_CURVE, fadeGain, makeFadeGainAt, type FadeCurve } from './fade-curve'
-import { isKeyframed } from '../../keyframeOps'
+import { canKeyframe, isKeyframed } from '../../keyframeOps'
 import { KEYFRAME_DIAMOND_SIZE_PX, KEYFRAME_STRIP_BOTTOM_PAD_PX, keyframeDiamondX, keyframeUnionTimes } from './keyframe-strip'
 import type { SnapStrength } from './snap'
 import { timeToX, visibleRange, type Viewport } from './viewport'
@@ -166,6 +166,12 @@ export const TIMELINE_COLORS = {
    *  filmstrip frame of any brightness — same trick `LABEL_SHADOW_COLOR`
    *  uses for the clip label. */
   keyframeDiamondStroke: 'rgba(0,0,0,0.7)',
+  /** The ONE diamond matching the host's `selectedKeyframe`, drawn with this
+   *  fill instead of `keyframeDiamondFill`. White, not a new hue: it is
+   *  already the selection vocabulary on this surface (`clipSelectedOutline`,
+   *  `handleFill`), and reads clearly against the amber every other diamond
+   *  in the strip keeps. */
+  keyframeDiamondSelectedFill: '#ffffff',
   /** Where two items on the same row overlap in time.
    *
    *  These were 0.15 amber fill / 0.3 amber border. Two things were wrong with
@@ -853,8 +859,14 @@ function drawFadeGrip(ctx: DrawContext, x: number, top: number, active: boolean)
  * because the gate already limits diamonds to a selected item, there is no
  * separate "active/subtle" distinction to draw here the way the fade grip
  * needs for discoverability.
+ *
+ * `selected` is a DIFFERENT axis from that gate: which one diamond, among
+ * however many the strip draws, is the host's `selectedKeyframe`. It swaps
+ * the fill to `keyframeDiamondSelectedFill` and thickens the stroke, the
+ * same "outline thickens" language `drawItemHandles` uses for a selected
+ * clip's border.
  */
-function drawKeyframeDiamond(ctx: DrawContext, x: number, y: number): void {
+function drawKeyframeDiamond(ctx: DrawContext, x: number, y: number, selected = false): void {
   const half = KEYFRAME_DIAMOND_SIZE_PX / 2
   ctx.beginPath()
   ctx.moveTo(x, y - half)
@@ -862,10 +874,10 @@ function drawKeyframeDiamond(ctx: DrawContext, x: number, y: number): void {
   ctx.lineTo(x, y + half)
   ctx.lineTo(x - half, y)
   ctx.closePath()
-  ctx.fillStyle = TIMELINE_COLORS.keyframeDiamondFill
+  ctx.fillStyle = selected ? TIMELINE_COLORS.keyframeDiamondSelectedFill : TIMELINE_COLORS.keyframeDiamondFill
   ctx.fill()
   ctx.strokeStyle = TIMELINE_COLORS.keyframeDiamondStroke
-  ctx.lineWidth = 1
+  ctx.lineWidth = selected ? 2 : 1
   ctx.stroke()
 }
 
@@ -907,8 +919,21 @@ function drawKeyframeDiamond(ctx: DrawContext, x: number, y: number): void {
  * outside the clip" still holds; only the definition of "the clip" grew back
  * out to `rect` (plus the diamond's own half-width) to match what decision 3
  * was actually protecting.
+ *
+ * `selectedT`, when given, is compared against each diamond's own `t` — not
+ * carried as a separate "which index" — so the ONE diamond it names (if any
+ * is currently on the strip at all) is the one `drawKeyframeDiamond` paints
+ * `selected`. Absent or `null` means no diamond on this strip is selected,
+ * the ordinary case for every item except the one holding the host's
+ * `selectedKeyframe`.
  */
-export function drawKeyframeStrip(ctx: DrawContext, item: VisualItem, body: Rect, viewport: Viewport): void {
+export function drawKeyframeStrip(
+  ctx: DrawContext,
+  item: VisualItem,
+  body: Rect,
+  viewport: Viewport,
+  selectedT?: number | null,
+): void {
   const times = keyframeUnionTimes(item)
   if (times.length === 0 || body.width <= 0) return
 
@@ -919,7 +944,7 @@ export function drawKeyframeStrip(ctx: DrawContext, item: VisualItem, body: Rect
   ctx.rect(body.x - margin, body.y, body.width + margin * 2, body.height)
   ctx.clip()
   for (const t of times) {
-    drawKeyframeDiamond(ctx, keyframeDiamondX(item, t, viewport), y)
+    drawKeyframeDiamond(ctx, keyframeDiamondX(item, t, viewport), y, t === selectedT)
   }
   ctx.restore()
 }
@@ -1231,6 +1256,14 @@ export interface TimelineScene {
   /** The trim handle the pointer is resting on, if any. Only ever set for a
    *  SELECTED item, since unselected ones draw no handles to highlight. */
   hoveredHandle?: { itemId: string; edge: 'in' | 'out' } | null
+  /** The selected keyframe diamond, if any (`pointer-machine.ts`'s
+   *  `KeyframeSelection`, structurally — this module doesn't import that
+   *  type, since `pointer-machine.ts` imports THIS module already, and the
+   *  reverse would be circular). `itemId`'s strip, if it draws a diamond at
+   *  `t` at all, paints that one `selected`; every other diamond on every
+   *  other strip paints ordinary. Mirrors `hoveredHandle`'s own inline shape
+   *  for the same reason. */
+  selectedKeyframe?: { itemId: string; t: number } | null
   surfaceWidth: number
   surfaceHeight: number
   /** T6 waveform content-layer provider. Absent → no waveforms drawn, which
@@ -1367,7 +1400,7 @@ export function drawMarquee(ctx: DrawContext, rect: Rect): void {
 }
 
 export function drawTimelineContent(ctx: DrawContext, scene: TimelineScene): DrawStats {
-  const { viewport, layout, selectedIds, surfaceWidth, surfaceHeight, hoveredHandle } = scene
+  const { viewport, layout, selectedIds, selectedKeyframe, surfaceWidth, surfaceHeight, hoveredHandle } = scene
   const range = visibleRange(viewport)
   const stats: DrawStats = { visualItemsDrawn: 0, audioItemsDrawn: 0, itemsCulled: 0, captionItemsDrawn: 0 }
 
@@ -1431,8 +1464,8 @@ export function drawTimelineContent(ctx: DrawContext, scene: TimelineScene): Dra
       // see `drawKeyframeStrip`'s own doc for why this is gated here rather
       // than inside it. Drawn AFTER the clip's own content/label so a
       // diamond never sits under a filmstrip frame.
-      if (itemSelected && item.type === 'overlay' && isKeyframed(item)) {
-        drawKeyframeStrip(ctx, item, body, viewport)
+      if (itemSelected && canKeyframe(item) && isKeyframed(item)) {
+        drawKeyframeStrip(ctx, item, body, viewport, selectedKeyframe?.itemId === item.id ? selectedKeyframe.t : null)
       }
       if (itemSelected) {
         handleRects.push({ body, hoveredEdge: hoveredHandle?.itemId === item.id ? hoveredHandle.edge : null })

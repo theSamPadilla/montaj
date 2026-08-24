@@ -115,9 +115,19 @@ export interface Captions {
  *  the value is held until the next keyframe's `t`, then jumps. */
 export type EasingName = 'linear' | 'ease' | 'ease-in' | 'ease-out' | 'ease-in-out' | 'hold'
 
-/** The transform properties that can be keyframed. Overlays only for now —
- *  video/image clips and the main video transform stay static (their geometry
- *  rides ffmpeg, which has no per-frame browser step to bake a curve into). */
+/** The transform properties that can be keyframed. Which item KINDS support
+ *  keyframing is decided by `canKeyframe`
+ *  (`montaj_assets/editor/src/video/keyframeOps.ts`) — the runtime source of
+ *  truth, not this type. It's overlay-only today, and that's a render
+ *  constraint rather than a UI preference: `geometryFor` (timeline-core)
+ *  reads only an item's static scalars and never its `keyframes`, and the
+ *  ffmpeg composite emits one static box per segment. The preview gates on
+ *  the same overlay-only condition (`preview/OverlayItemsLayer.tsx:466`) so
+ *  it can never promise motion the export cannot reproduce — a keyframed
+ *  video would animate nowhere, a confusing no-op rather than a wrong
+ *  export. Widening it is three coordinated changes — `canKeyframe`, that
+ *  preview branch, and the renderer's per-frame geometry — landed together
+ *  or not at all. */
 export type KeyframeProp = 'offsetX' | 'offsetY' | 'scale' | 'rotation' | 'opacity'
 
 export interface Keyframe {
@@ -159,7 +169,11 @@ export interface VisualItem {
   fit?: 'cover' | 'contain' | 'fill'  // image type only — how the source fills its box. Default 'cover' (AR-preserving fill+crop). 'contain' letterboxes; 'fill' is legacy stretch (no AR).
   volume?: number         // video audio level 0.0–2.0, default 1.0 (ignored for images)
   rotation?: number       // degrees, clockwise
-  keyframes?: KeyframeTrack[]  // overlay type only — animates the five transform props over the item's own lifetime. Absent = today's static item, which renders on the unchanged ffmpeg-positioned path.
+  /** Which item kinds support this is decided by `canKeyframe`
+   *  (video/keyframeOps.ts), the runtime source of truth — see `KeyframeProp`
+   *  above for why it's overlay-only today (a render constraint, not a UI
+   *  preference). */
+  keyframes?: KeyframeTrack[]  // animates the five transform props over the item's own lifetime. Absent = today's static item, which renders on the unchanged ffmpeg-positioned path.
   opaque?: boolean        // legacy boolean kept for old overlay items
   props?: Record<string, unknown>  // overlay type only
   googleFonts?: string[]  // overlay type only — Google Fonts family specs (e.g. ["Syne:wght@800"])

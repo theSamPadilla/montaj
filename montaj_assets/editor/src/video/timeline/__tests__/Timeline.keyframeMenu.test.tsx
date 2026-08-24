@@ -220,4 +220,34 @@ describe('Timeline — keyframe-strip popup (right-click a keyframe diamond)', (
     expect(onProjectChange).not.toHaveBeenCalled()
     expect(onOverlayEdit).not.toHaveBeenCalled()
   })
+
+  it('freezes the value when the removed keyframe was a track\'s LAST point', () => {
+    // Plain `removeKeyframe` drops the track WITHOUT writing the sampled value
+    // into the static scalar, so the overlay would snap back to the stale
+    // `opacity: 0.1`. Both removal paths share `removeKeyframesAt` precisely so
+    // this menu and Delete cannot disagree.
+    const base = makeProject()
+    const stale = {
+      ...base,
+      tracks: [{
+        ...base.tracks![0],
+        items: [{
+          ...base.tracks![0].items[0],
+          opacity: 0.1,
+          keyframes: [
+            { prop: 'offsetX', points: [{ t: 0.5, value: 0 }, { t: 1.5, value: 10 }] },
+            { prop: 'opacity', points: [{ t: 0.5, value: 0.4 }] },
+          ],
+        }],
+      }],
+    } as unknown as Project
+    const { surface, onOverlayEdit, project } = mount(stale)
+    fireEvent.contextMenu(surface, keyframeClientPoint(project, 0.5))
+
+    fireEvent.click(removeButton())
+
+    const item = (onOverlayEdit.mock.calls[0][0] as Project).tracks![0].items[0]
+    expect(item.keyframes!.find(t => t.prop === 'opacity')).toBeUndefined()
+    expect(item.opacity).toBeCloseTo(0.4, 5)   // the curve's value, NOT the stale 0.1
+  })
 })

@@ -415,9 +415,11 @@ describe('hitTest — keyframe strip (SP9b T3.3)', () => {
 
   it('yields no keyframe hit on a selected, keyframed item that is not an overlay', () => {
     // Overlays are the only keyframeable kind (schema.ts's `KeyframeProp`
-    // doc); the row scan gates on `item.type === 'overlay'` rather than
-    // trusting `isKeyframed` alone, so a hand-edited video clip carrying a
-    // stray `keyframes` array still never hit-tests as one.
+    // doc); the row scan gates on `canKeyframe(item)` rather than trusting
+    // `isKeyframed` alone, so a hand-edited video clip carrying a stray
+    // `keyframes` array still never hit-tests as one — the point of this
+    // case is proving the gate isn't accidentally weakened to `isKeyframed`
+    // by itself.
     const videoKf = {
       id: 'p',
       tracks: [[{

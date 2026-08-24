@@ -45,6 +45,7 @@ import { hitTest, isEdgeHit, type Point, type SurfaceRect } from './hit-test'
 import { keyframeUnionTimes } from './keyframe-strip'
 import {
   createPointerMachine,
+  type KeyframeSelection,
   type Modifiers,
   type PointerContext,
   type PointerEffect,
@@ -116,6 +117,9 @@ export interface TimelineCanvasProps {
    *  `onSelectItem` per id when the host does not implement it, so a host that
    *  predates the marquee still selects correctly. */
   onSelectItems?: (ids: string[], additive: boolean) => void
+  /** The currently selected keyframe, drawn filled. Null when none. */
+  selectedKeyframe?: KeyframeSelection | null
+  onSelectKeyframe?: (selection: KeyframeSelection | null) => void
   /** Live, uncommitted edit — fires once per pointer move during a gesture. */
   onProjectChange?: (p: Project) => void
   /** Gesture finished; persist. Same split the DOM rows use. */
@@ -230,6 +234,8 @@ export default function TimelineCanvas({
   onHoverScrub,
   onSelectItem,
   onSelectItems,
+  selectedKeyframe = null,
+  onSelectKeyframe,
   onProjectChange,
   onOverlayEdit,
   onInspectClip,
@@ -274,8 +280,8 @@ export default function TimelineCanvas({
   // Latest draw inputs, readable from the imperative paint without making the
   // paint a dependency of every effect (the ref-to-latest pattern
   // `useTimelineZoom` uses for its wheel handler).
-  const sceneRef = useRef({ project, layout, selectedIds, totalDuration })
-  sceneRef.current = { project, layout, selectedIds, totalDuration }
+  const sceneRef = useRef({ project, layout, selectedIds, selectedKeyframe, totalDuration })
+  sceneRef.current = { project, layout, selectedIds, selectedKeyframe, totalDuration }
 
   // The preview-axis cursor, tracked imperatively for the same reason the
   // filmstrip hover thumb is: it moves with every mousemove, and a React state
@@ -375,6 +381,7 @@ export default function TimelineCanvas({
           viewport,
           layout: scene.layout,
           selectedIds: scene.selectedIds,
+          selectedKeyframe: scene.selectedKeyframe,
           hoveredHandle: hoveredHandleRef.current,
           surfaceWidth: cssWidth,
           surfaceHeight: cssHeight,
@@ -511,7 +518,9 @@ export default function TimelineCanvas({
 
   // ── Content: project/selection edits ──
   const selectionKey = selectedIds.join('\0')
-  useEffect(() => { requestRedraw('content') }, [project, layout, selectionKey, requestRedraw])
+  // The selected keyframe is content too — the strip draws it filled — so a
+  // change of diamond has to repaint that layer, same as a change of item.
+  useEffect(() => { requestRedraw('content') }, [project, layout, selectionKey, selectedKeyframe, requestRedraw])
 
   // ── Duration changes re-clamp scale and scroll ──
   useEffect(() => {
@@ -560,11 +569,11 @@ export default function TimelineCanvas({
   // handlers bound once on mount never read a stale project or callback.
   const pointerRef = useRef({
     project, layout, selectedIds, snapBoundaries, totalDuration, fps, rippleMode, previewAxis,
-    onSelectItem, onSelectItems, onProjectChange, onOverlayEdit, onInspectClip, onInspectAudio, onEditCaption, onHoverScrub, onFadeCurveMenu, onKeyframeMenu,
+    onSelectItem, onSelectItems, onSelectKeyframe, onProjectChange, onOverlayEdit, onInspectClip, onInspectAudio, onEditCaption, onHoverScrub, onFadeCurveMenu, onKeyframeMenu,
   })
   pointerRef.current = {
     project, layout, selectedIds, snapBoundaries, totalDuration, fps, rippleMode, previewAxis,
-    onSelectItem, onSelectItems, onProjectChange, onOverlayEdit, onInspectClip, onInspectAudio, onEditCaption, onHoverScrub, onFadeCurveMenu, onKeyframeMenu,
+    onSelectItem, onSelectItems, onSelectKeyframe, onProjectChange, onOverlayEdit, onInspectClip, onInspectAudio, onEditCaption, onHoverScrub, onFadeCurveMenu, onKeyframeMenu,
   }
 
   const buildContext = useCallback((): PointerContext => {
@@ -589,6 +598,7 @@ export default function TimelineCanvas({
       switch (effect.type) {
         case 'seek':          clock.set(effect.time); break
         case 'select':        p.onSelectItem?.(effect.id, effect.additive); break
+        case 'selectKeyframe': p.onSelectKeyframe?.({ itemId: effect.itemId, t: effect.t }); break
         case 'projectChange': p.onProjectChange?.(effect.project); edited = true; break
         case 'commit':        p.onOverlayEdit?.(effect.project); break
         case 'inspect':       (effect.target === 'visual' ? p.onInspectClip : p.onInspectAudio)?.(effect.id); break

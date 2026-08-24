@@ -20,6 +20,7 @@
  */
 import { describe, it, expect } from 'vitest'
 import type { Project } from '../../../../types'
+import { trackFor, valueAt } from '../../../keyframeOps'
 import { CAPTION_ROW_HEIGHT_PX, ROW_GAP_PX, VISUAL_ROW_HEIGHT_PX, computeDerivedTiming, trackItems } from '../../timeline-model'
 import { AUDIO_ITEM_INSET_PX, computeTimelineLayout } from '../draw'
 import {
@@ -1352,6 +1353,79 @@ describe('double-click', () => {
   it('opens the audio inspector on a bar', () => {
     const d = new Driver(makeContext())
     expect(d.doubleClick(A0_BODY.x, A0_BODY.y)).toEqual([{ type: 'inspect', target: 'audio', id: 'a0' }])
+  })
+
+  it('double-clicking a keyframe diamond selects it rather than opening an inspector', () => {
+    // Was: emitted {type:'inspect'} identically to a clip-body double-click,
+    // which goes nowhere now that the properties panel replaced that modal.
+    // This branch had zero coverage before.
+    const ctx = makeContext({ project: keyframedProject(), selectedIds: ['o0'] })
+    const effects = new Driver(ctx).doubleClick(O0_KEYFRAME_SHARED.x, O0_KEYFRAME_SHARED.y)
+
+    expect(of(effects, 'selectKeyframe')).toEqual([{ type: 'selectKeyframe', itemId: 'o0', t: 0.5 }])
+    expect(of(effects, 'inspect')).toHaveLength(0)
+    // Selecting a diamond is not an edit.
+    expect(of(effects, 'projectChange')).toHaveLength(0)
+  })
+
+  it('reports the diamond\'s own item-relative t, not absolute timeline time', () => {
+    // o0 starts at 2s, so the t=1.5 diamond sits at absolute 3.5s. The effect
+    // must carry 1.5 — `Keyframe.t` is item-relative and every consumer
+    // (removeKeyframesAt, moveKeyframe) assumes that.
+    const ctx = makeContext({ project: keyframedProject(), selectedIds: ['o0'] })
+    const effects = new Driver(ctx).doubleClick(O0_KEYFRAME_SOLO.x, O0_KEYFRAME_SOLO.y)
+
+    expect(of(effects, 'selectKeyframe')[0].t).toBe(1.5)
+  })
+})
+
+describe('double-click to key (selected element only)', () => {
+  const KEYFRAME_PROPS = ['offsetX', 'offsetY', 'scale', 'rotation', 'opacity'] as const
+  const O0_BODY = { x: 300, y: OVERLAY_Y }   // absolute 3s -> localT 1 on o0 (starts at 2s)
+
+  it('keys all five props at the clicked time, without moving the overlay', () => {
+    const project = keyframedProject()
+    const ctx = makeContext({ project, selectedIds: ['o0'] })
+    const effects = new Driver(ctx).doubleClick(O0_BODY.x, O0_BODY.y)
+
+    const next = visual(lastProjectChange(effects), 'o0')
+    const before = visual(project, 'o0')
+    for (const prop of KEYFRAME_PROPS) {
+      expect(trackFor(next, prop)!.points.find(p => p.t === 1)).toBeDefined()
+      // Nothing moved: the keyed value IS the value it already had there.
+      expect(valueAt(next, prop, 1)).toBeCloseTo(valueAt(before, prop, 1))
+    }
+    // Existing keyframes are untouched — this ADDS a moment, it does not reset.
+    expect(trackFor(next, 'offsetX')!.points.find(p => p.t === 0.5)).toBeDefined()
+    expect(trackFor(next, 'offsetX')!.points.find(p => p.t === 1.5)).toBeDefined()
+    expect(of(effects, 'commit')).toHaveLength(1)
+  })
+
+  it('does NOT key an item that is not selected', () => {
+    const ctx = makeContext({ project: keyframedProject() })   // selectedIds defaults to []
+    const effects = new Driver(ctx).doubleClick(O0_BODY.x, O0_BODY.y)
+    expect(of(effects, 'projectChange')).toHaveLength(0)
+  })
+
+  it('does NOT key a selected item when the double-click landed on a DIFFERENT item', () => {
+    // Inverted on purpose: the click lands on o0, which IS keyframeable, and
+    // c0 is what's selected. `canKeyframe` therefore cannot be what refuses —
+    // the ONLY thing standing between this and a key is `selectedIds` not
+    // containing 'o0'. The rule is "on the selected element", not "while
+    // something is selected", and this is the case that separates the two
+    // (test 2 above has an EMPTY selection, so it passes either way).
+    const ctx = makeContext({ project: keyframedProject(), selectedIds: ['c0'] })
+    const effects = new Driver(ctx).doubleClick(O0_BODY.x, O0_BODY.y)
+    expect(of(effects, 'projectChange')).toHaveLength(0)
+  })
+
+  it('does NOT key a video clip, even when it is selected', () => {
+    // canKeyframe gates this. The preview gates on the SAME overlay-only
+    // condition on purpose (preview/OverlayItemsLayer.tsx:466), so a keyed
+    // video would animate nowhere — a confusing no-op. See canKeyframe's doc.
+    const ctx = makeContext({ project: keyframedProject(), selectedIds: ['c0'] })
+    const effects = new Driver(ctx).doubleClick(C0_BODY.x, C0_BODY.y)
+    expect(of(effects, 'projectChange')).toHaveLength(0)
   })
 })
 

@@ -15,6 +15,7 @@ import {
 } from 'lucide-react'
 import type { KeyframeProp, VisualItem } from '../schema'
 import {
+  canKeyframe,
   disableKeyframing,
   enableKeyframing,
   hasKeyframes,
@@ -529,7 +530,7 @@ export default function OverlayInspector({ item, clock, onPreview, onCommit, onC
   // of selection — the operator's chrome preference, not the item's state.
   const [collapsed, setCollapsed] = useState(false)
 
-  if (!item || item.type !== 'overlay') {
+  if (!canKeyframe(item)) {
     return (
       <div className={SECTION_CLASS}>
         <div className="px-3 py-6 text-center text-[11px] text-[var(--editor-text)]/45">
