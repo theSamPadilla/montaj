@@ -8,8 +8,8 @@ import type { Project } from '../../types'
 
 // ── Row geometry ─────────────────────────────────────────────────────────
 // Named constants for the row-height magic numbers used in cross-row drag
-// math (VisualTrackRow, AudioTrackRow). Centralized so the canvas painter
-// (T4) draws rows at the same height the DOM rows use today.
+// math (the canvas pointer machine, Timeline.tsx). Centralized so the canvas
+// painter (T4) draws rows at these heights consistently.
 
 /** Vertical travel, in px, that a cross-track drag must cover to move an item
  *  one visual track. NOT the rendered row height (see
@@ -23,21 +23,19 @@ export const VISUAL_ROW_HEIGHT_PX = 24
  *  RailCell), and three 14px buttons plus their gaps need ~58px — at the old
  *  40px the third control (the volume gear) was clipped below the fold once the
  *  magnet was added. Doubles as the lane-index drag divisor, so drag travel and
- *  rendered height stay coincident for audio lanes. (The legacy DOM
- *  AudioTrackRow, unused in canvas mode, keeps its own `h-10`.) */
+ *  rendered height stay coincident for audio lanes. */
 export const AUDIO_LANE_HEIGHT_PX = 64
 
-/** Rendered height of a non-base visual track row — the `h-10` on `trackRow`
- *  (utils.ts). Held at the DOM height on purpose: these rows carry overlays,
- *  which have no waveform and no filmstrip to show, so the extra height the
- *  base track needs would just be empty space here. */
+/** Rendered height of a non-base visual track row — 40px. Held at that height
+ *  on purpose: these rows carry overlays, which have no waveform and no
+ *  filmstrip to show, so the extra height the base track needs would just be
+ *  empty space here. */
 export const VISUAL_ROW_RENDER_HEIGHT_PX = 40
 
-/** Rendered height of the BASE visual track (index 0) in CANVAS mode. No
- *  longer the DOM `h-14` its name came from: a canvas video clip splits its
- *  height between a filmstrip and a waveform (see `canvas/clip-bands.ts`), and
- *  56px left ~27px for each — too short to read either. The DOM path keeps its
- *  own `h-14` and is unaffected, since it draws neither band. */
+/** Rendered height of the BASE visual track (index 0). No longer the DOM
+ *  `h-14` its name came from: a video clip splits its height between a
+ *  filmstrip and a waveform (see `canvas/clip-bands.ts`), and 56px left ~27px
+ *  for each — too short to read either. */
 export const BASE_VISUAL_ROW_RENDER_HEIGHT_PX = 120
 
 
@@ -376,8 +374,8 @@ export function moveItemAcrossTracks({ tracks, item, start, end, sourceTrackIdx,
 // ── Audio track update ───────────────────────────────────────────────────
 
 /** Patch one audio track by id, leaving the rest of the project alone. Shared
- *  by AudioTrackRow and the canvas pointer machine so audio edits take the same
- *  shape on both surfaces. */
+ *  by the canvas pointer machine and Timeline.tsx so audio edits take the
+ *  same shape wherever they're made. */
 export function updateAudioTrack(project: Project, trackId: string, changes: Partial<AudioTrack>): Project {
   return {
     ...project,

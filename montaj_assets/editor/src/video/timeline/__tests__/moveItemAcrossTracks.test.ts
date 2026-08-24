@@ -2,8 +2,8 @@
 /**
  * SP5 T5 — the cross-track placement search, extracted out of VisualTrackRow so
  * the canvas pointer machine lands a dragged clip on the same track the DOM
- * rows would. VisualTrackRow now calls this function, so its behaviour is the
- * DOM path's behaviour by construction rather than by copy.
+ * rows would have. VisualTrackRow and its DOM control arm are retired, so this
+ * file is now the only coverage for this placement search.
  *
  * One vertical track step is 24px (VISUAL_ROW_HEIGHT_PX) and DOWNWARD travel
  * LOWERS the index, because track 0 is the base video track at the bottom of

@@ -3,10 +3,10 @@
  * SP5 T5 — the drag/resize arithmetic extracted out of `useItemDragDrop` so the
  * canvas pointer machine can reuse it instead of reimplementing trims.
  *
- * The hook's own suite (`useItemDragDrop.test.ts`) still drives the DOM shell
- * unchanged and proves the extraction didn't move any behaviour; this file
- * covers the arithmetic directly, including the cases the shell can't easily
- * reach (source-media clamps, tie-breaks).
+ * The hook's own suite (`useItemDragDrop.test.ts`), which drove the DOM shell,
+ * is retired along with that shell — this file is now the only coverage for
+ * this arithmetic, including the cases the shell couldn't easily reach
+ * (source-media clamps, tie-breaks).
  */
 import { describe, it, expect } from 'vitest'
 import {

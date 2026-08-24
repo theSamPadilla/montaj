@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach, onTestFinished } from 'vitest'
 import { render, waitFor, act, fireEvent } from '@testing-library/react'
 import type {
   CaptionEvent,
@@ -12,6 +12,7 @@ import type {
 import type { Captions, VisualItem } from '../../schema'
 import type { OverlayChanges } from '../preview/useDragOverlay'
 import VideoEditor from '../VideoEditor'
+import { dragCanvasItem, installCanvasHarness, selectCanvasItem } from '../timeline/__tests__/_canvasSelect'
 
 // ── Fake adapter ──────────────────────────────────────────────────────────────
 // Full EditorAdapter with the video-editor capabilities VideoEditor threads:
@@ -367,52 +368,39 @@ describe('VideoEditor — editor-package integration', () => {
   // the drag started. Drives the real DOM drag so the wiring is what's under
   // test, not the sync core (which already had transient/commit).
   it('undoes a whole drag in one step, not one step per mousemove', async () => {
-    const realRect = Element.prototype.getBoundingClientRect
-    // jsdom reports every rect as 0x0, which collapses the drag hook's
-    // px-to-time conversion to a divide-by-zero no-op.
-    Element.prototype.getBoundingClientRect = function (this: Element) {
-      return { x: 0, y: 0, top: 0, left: 0, right: 1000, bottom: 100, width: 1000, height: 100, toJSON: () => ({}) } as DOMRect
-    }
-    try {
-      const adapter = makeFakeAdapter()
-      const initial = makeVideoProject({
-        tracks: [{
-          id: 'trk-0',
-          items: [
-            { id: 'clip-0', type: 'video', src: 'a.mp4', start: 0, end: 4, inPoint: 0, outPoint: 4, sourceDuration: 40 },
-          ],
-        }],
-      })
-      const { findByText } = render(
-        <VideoEditor project={initial} adapter={adapter} slots={{ exportActions: <div /> }} />,
-      )
+    onTestFinished(installCanvasHarness())
+    const adapter = makeFakeAdapter()
+    const initial = makeVideoProject({
+      tracks: [{
+        id: 'trk-0',
+        items: [
+          { id: 'clip-0', type: 'video', src: 'a.mp4', start: 0, end: 4, inPoint: 0, outPoint: 4, sourceDuration: 40 },
+        ],
+      }],
+    })
+    const { container } = render(
+      <VideoEditor project={initial} adapter={adapter} slots={{ exportActions: <div /> }} />,
+    )
 
-      const block = await findByText('▪ video')
-      // Press, then travel in several steps — each one used to be its own undo entry.
-      fireEvent.mouseDown(block, { clientX: 100, clientY: 20 })
-      for (const x of [140, 190, 250, 320, 400]) {
-        await act(async () => { document.dispatchEvent(new MouseEvent('mousemove', { clientX: x, clientY: 20, bubbles: true })) })
-      }
-      await act(async () => { document.dispatchEvent(new MouseEvent('mouseup', { clientX: 400, clientY: 20, bubbles: true })) })
+    // Press, then travel in several steps — each one used to be its own undo
+    // entry. `steps` defaults to 5, matching the DOM version's five mousemoves.
+    dragCanvasItem(container, initial, { type: 'video' }, { dxPx: 300 })
 
-      // The gesture moved the clip and persisted exactly one save for it.
-      await waitFor(() => expect(adapter.saveCalls.length).toBeGreaterThan(0))
-      const moved = adapter.saveCalls[adapter.saveCalls.length - 1].project.tracks![0].items[0]
-      expect(moved.start).toBeGreaterThan(0)
+    // The gesture moved the clip and persisted exactly one save for it.
+    await waitFor(() => expect(adapter.saveCalls.length).toBeGreaterThan(0))
+    const moved = adapter.saveCalls[adapter.saveCalls.length - 1].project.tracks![0].items[0]
+    expect(moved.start).toBeGreaterThan(0)
 
-      // ONE undo returns it all the way to the start — not to an intermediate
-      // position partway through the drag.
-      await act(async () => {
-        document.dispatchEvent(new KeyboardEvent('keydown', { key: 'z', metaKey: true }))
-      })
-      await waitFor(() => {
-        const after = adapter.saveCalls[adapter.saveCalls.length - 1].project.tracks![0].items[0]
-        expect(after.start).toBe(0)
-        expect(after.end).toBe(4)
-      })
-    } finally {
-      Element.prototype.getBoundingClientRect = realRect
-    }
+    // ONE undo returns it all the way to the start — not to an intermediate
+    // position partway through the drag.
+    await act(async () => {
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'z', metaKey: true }))
+    })
+    await waitFor(() => {
+      const after = adapter.saveCalls[adapter.saveCalls.length - 1].project.tracks![0].items[0]
+      expect(after.start).toBe(0)
+      expect(after.end).toBe(4)
+    })
   })
 
   // Regression: cancelOverlayEdit routes through sync.applyExternal (see
@@ -425,6 +413,7 @@ describe('VideoEditor — editor-package integration', () => {
   // (select overlay → open dialog → live preview → Cancel) rather than the core
   // directly, to prove the fix holds through VideoEditor's wiring too.
   it('Cancel after previewing an overlay-props edit reverts the project, and a later gesture is not corrupted by the stale pre-edit baseline', async () => {
+    onTestFinished(installCanvasHarness())
     const adapter = makeFakeAdapter()
     const onProjectChange = vi.fn()
     const initial = makeVideoProject({
@@ -434,7 +423,7 @@ describe('VideoEditor — editor-package integration', () => {
         { id: 'trk-1', items: [{ id: 'overlay-1', type: 'overlay', src: 'overlay.jsx', start: 0, end: 4, props: { text: 'Old text' } }] },
       ],
     })
-    const { findByText, findByTitle, findByLabelText, getByText } = render(
+    const { container, findByLabelText, getByText } = render(
       <VideoEditor
         project={initial}
         adapter={adapter}
@@ -443,12 +432,16 @@ describe('VideoEditor — editor-package integration', () => {
       />,
     )
 
-    // Select the overlay item — additive (metaKey) click sidesteps the plain-
-    // click playhead-seek branch, which needs real layout metrics jsdom doesn't
-    // provide — then open its props dialog via the timeline's Pencil button.
-    const overlayBlock = await findByText('▪ overlay')
-    fireEvent.click(overlayBlock, { metaKey: true })
-    const editBtn = await findByTitle('Edit overlay')
+    // Select the overlay item — additive (metaKey) click, matching the DOM
+    // version's modifier — then open its props dialog. The canvas timeline has
+    // no per-item Pencil button (that was a DOM-row-only affordance), but the
+    // controls bar's own "Edit overlay" button is mode-independent: it fires
+    // the same `requestEditOverlay` off `selectedOverlayItem` regardless of
+    // whether the selection came from a DOM row or a canvas gesture, and opens
+    // the same `OverlayPropsModal`. See `ReviewSurface`'s `selectedOverlayItem &&`
+    // Edit-overlay `<Tooltip>` in VideoEditor.tsx.
+    selectCanvasItem(container, initial, { type: 'overlay' }, { metaKey: true })
+    const editBtn = await findByLabelText('Edit overlay')
     fireEvent.click(editBtn)
 
     // Preview an edit — mutateTransient baselines against the pre-gesture state.
@@ -485,7 +478,7 @@ describe('VideoEditor — editor-package integration', () => {
 
     // A second overlay-props gesture must baseline against THIS state, not a
     // stale pre-first-gesture snapshot left behind if Cancel failed to clear it.
-    const editBtn2 = await findByTitle('Edit overlay')
+    const editBtn2 = await findByLabelText('Edit overlay')
     fireEvent.click(editBtn2)
     const textField2 = await findByLabelText('text')
     fireEvent.change(textField2, { target: { value: 'Second edit' } })

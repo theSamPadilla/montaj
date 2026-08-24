@@ -231,6 +231,19 @@ export interface VersionEntry {
   timestamp: string
 }
 
+// ── Host path resolution ─────────────────────────────────────────────────────
+
+/**
+ * Resolves a host-internal asset path into a displayable URL (e.g. Montaj's
+ * `/api/files?path=…`). This is `EditorAdapter.fileUrl`'s signature, named so
+ * the components it is threaded down to as a prop can type it without
+ * depending on the whole adapter: the canvas timeline takes it to display the
+ * `path`s that come back on `WaveformChunk` and `FilmstripSheet` below.
+ * Optional wherever it is a prop — a host that omits it gets identity, and the
+ * feature that needed the URL degrades to nothing rather than erroring.
+ */
+export type ResolveFilePath = (path: string) => string
+
 // ── Waveform chunks (optional capability) ─────────────────────────────────────
 
 /**
@@ -639,11 +652,16 @@ export interface EditorAdapter<P extends Project = Project> {
   versionFrameUrl?(id: string, commit: string, t: number): string
 
   /**
-   * Optional: produce rendered waveform-image chunks for an audio track. The
-   * editor passes the project id, the track id (used to namespace the output
-   * cache), the track's source path, and an optional chunk duration in seconds.
-   * The host renders/caches the chunks and returns their resolvable paths. Maps
-   * to Montaj's `waveform_image` step.
+   * RETIRED — the editor no longer calls this. It produced rendered
+   * waveform-image chunks (fixed PNG strips) for the DOM timeline's audio
+   * rows; those rows are gone and the canvas timeline draws from
+   * `getWaveformPeaks` instead, which is now the package's only waveform
+   * path. The signature is kept so hosts that still implement it keep
+   * compiling, and so a host can go on serving it to its own chrome — but
+   * nothing in this package reads the result. Mapped to Montaj's
+   * `waveform_image` step; args were the project id, the track id (which
+   * namespaced the output cache), the track's source path, and an optional
+   * chunk duration in seconds.
    */
   getWaveformChunks?(
     projectId: string,
@@ -654,23 +672,24 @@ export interface EditorAdapter<P extends Project = Project> {
 
   /**
    * Optional: produce zoom-bucketed audio peak data for a scrubbable
-   * waveform view — the canvas-timeline sibling of `getWaveformChunks`, used
-   * instead of it when the host renders waveforms zoom-responsively rather
-   * than as fixed PNG chunks. Input-selection policy is the *caller's*
+   * waveform view. This is the package's ONLY waveform path — the canvas
+   * timeline draws every waveform from it (see the retired
+   * `getWaveformChunks` above). Input-selection policy is the *caller's*
    * responsibility, not this method's: `item.proxySrc` (proxy only — no
    * fallback to the original) for per-clip waveforms on visual tracks,
    * `track.src` for audio lanes (see the Montaj adapter implementation
    * comment). Maps to Montaj's
-   * `waveform_peaks` step. Hosts without a canvas timeline omit this; the
-   * editor feature-detects its absence.
+   * `waveform_peaks` step. Optional: a host without a peaks step omits it and
+   * the editor feature-detects its absence, drawing no waveforms.
    */
   getWaveformPeaks?(args: GetWaveformPeaksArgs): Promise<PeaksData>
 
   /**
    * Optional: produce a uniform time-grid filmstrip (thumbnail strip) for a
    * video source, tiled into one or more contact sheets with a timestamp
-   * index. Maps to Montaj's `filmstrip` step. Hosts without a canvas
-   * timeline omit this; the editor feature-detects its absence.
+   * index. Maps to Montaj's `filmstrip` step. Optional: a host without a
+   * filmstrip step omits it and the editor feature-detects its absence,
+   * drawing no tile strips or hover-scrub thumbs.
    */
   getFilmstrip?(args: GetFilmstripArgs): Promise<FilmstripIndex>
 
@@ -953,27 +972,23 @@ export interface VideoEditorProps<P extends Project = Project> {
   onProvideImageTone?: (api: { value: ImageTone; set: (tone: ImageTone) => void } | null) => void
 
   // ── Host-supplied Montaj-specific UI (render-prop seams) ──────────────────
-  // The clip/audio inspector and the subcut-regeneration tool read host-only
+  // The generation panel and the subcut-regeneration tool read host-only
   // fields (regenQueue, storyboard, the host's full Project) the package types
   // don't know. The editor surfaces them as render-props it threads/renders so
   // those components can stay host-side; the editor stays Montaj-agnostic.
+  // Both take the clip id rather than a project entity — the editor owns the
+  // selection, the host owns what to draw for it.
 
   /**
-   * Render-prop seam for the host's clip/audio inspector (Montaj's
-   * ClipInspectModal). The editor owns the "which item is being inspected"
-   * state — it derives `ctx.item` from the timeline's `onInspectClip` /
-   * `onInspectAudio` callbacks (a Montaj-agnostic `{ kind, id }` selector, not
-   * a project entity) and passes a close callback. Absent → no inspector.
+   * Render-prop seam for the host's per-clip generation panel (Montaj's AI
+   * regenerate surface), rendered inside the right properties panel beneath
+   * the clip properties whenever a VIDEO clip is selected. It reads and writes
+   * `project.regenQueue` and `project.storyboard` — host-only fields this
+   * package deliberately knows nothing about (see EditorProject's index-
+   * signature comment) — so the content stays host-side and the editor only
+   * says WHERE it goes and WHICH clip it is for. Absent → nothing rendered.
    */
-  renderClipInspector?: (ctx: {
-    item: { kind: 'clip' | 'audio'; id: string }
-    onClose: () => void
-    /** Magnet/ripple toggle state, owned by the editor (`ReviewSurface`'s
-     *  `rippleMode`). Threaded through so the host inspector can decide
-     *  whether a resize op it applies (e.g. a speed change) should also
-     *  close the gap it leaves, matching the timeline's own ripple behavior. */
-    rippleMode: boolean
-  }) => ReactNode
+  renderGenerationPanel?: (ctx: { clipId: string }) => ReactNode
 
   /**
    * Render-prop seam for the host's subcut-regeneration tool (Montaj's
@@ -1024,53 +1039,6 @@ export interface VideoEditorProps<P extends Project = Project> {
    * and must still opt in.
    */
   engine?: { enabled: boolean; debugHud?: boolean }
-
-  /**
-   * SP5 — opt into the canvas timeline surface, replacing the DOM
-   * track-row area (visual tracks + audio lanes) with a `<canvas>`-rendered
-   * view. Follows the `engine` (SP4) host-knob precedent: an optional prop,
-   * absent by default, that a host passes to change editor behavior.
-   * Threaded straight through to `Timeline`'s own `timeline` prop (see
-   * `video/timeline/Timeline.tsx`).
-   *
-   * Default (prop omitted) or `{ canvas: false }`: the existing DOM timeline
-   * rows, completely unchanged — this is the non-regression guarantee SP5
-   * tests against (the entire editor suite stays green with this prop
-   * untouched). The timeline's chrome (zoom controls, marker state,
-   * transcript panel/modal, scrubber) is unaffected by this flag either way,
-   * but captions are NOT: DOM mode has no caption row at all, however many
-   * rows the project's captions actually occupy, so captions can only be
-   * edited through the sidebar transcript panel, with no timeline retiming
-   * available there. This is a real, accepted limitation of the non-canvas
-   * path — a host embedding the package in DOM mode should know retiming a
-   * caption needs canvas mode.
-   *
-   * `{ canvas: true }` swaps the track-row area (visual tracks + audio lanes)
-   * for the canvas surface AND gives captions their own row inside it — one
-   * row is the default, but a project can hold N rows (`CaptionSegment.lane`;
-   * see its doc in `schema.ts` and `video/captionLanes.ts`, the module every
-   * consumer reads lanes through). A row is created by dragging a caption
-   * past the current top row and destroyed the moment its last caption
-   * leaves — there is no separate "add row" affordance. Within a row a
-   * caption is selected, moved, and trimmed exactly like a clip, through the
-   * unified `selectedIds`.
-   *
-   * A row is purely a z-order, not a vertical screen offset: captions in
-   * different rows can be simultaneous, and ALL active captions render at
-   * once (row-ascending, so a higher row paints over a lower one). Nothing
-   * displaces overlapping captions apart, so two rows active at the same
-   * instant can visually overlap on screen — that's the operator's own
-   * placement to manage (via each segment's `offsetX`/`offsetY`), not
-   * something the row system prevents. `Captions.style` and every colour
-   * field stay track-global: one style/theme preset is shared by every row,
-   * there is no per-row override.
-   *
-   * This prop stays absent-by-default for every consumer of the package. The
-   * montaj ui app passes `{ canvas: true }` unconditionally. Unlike `engine`
-   * there is no eligibility gate behind this prop — it is total, so a host
-   * that passes `true` gets the canvas surface for every project.
-   */
-  timeline?: { canvas: boolean }
 
   /**
    * Opt-in seam letting a host's footage bin drive the MAIN preview on hover.

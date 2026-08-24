@@ -173,7 +173,7 @@ describe('computeTimelineLayout', () => {
     expect(layout.ruler).toEqual({ y: 0, height: RULER_HEIGHT_PX })
     expect(layout.rows[0]).toMatchObject({ y: contentTop, height: VISUAL_ROW_RENDER_HEIGHT_PX })
     expect(layout.rows[1]).toMatchObject({ y: contentTop + VISUAL_ROW_RENDER_HEIGHT_PX + ROW_GAP_PX })
-    // The base video track is the tall one (`trackRowTall`).
+    // The base video track is the tall one (120px vs. 40px for the rest).
     expect(layout.rows[2].height).toBe(BASE_VISUAL_ROW_RENDER_HEIGHT_PX)
 
     expect(layout.lanes.map(l => l.laneIndex)).toEqual([0, 1])

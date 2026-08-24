@@ -14,53 +14,33 @@
  * invisible to a test that doesn't ask. So these ask.
  *
  * jsdom lays everything out at 0×0, so the canvas surface's rect is stubbed to
- * a real one — without it every click reads as x=0 in a 0-wide surface and the
- * seek half of this can't be observed at all.
+ * a real one via `installCanvasHarness` — without it every click reads as x=0
+ * in a 0-wide surface and the seek half of this can't be observed at all.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, cleanup, fireEvent } from '@testing-library/react'
 import type { Project } from '../../../types'
 import { createPlaybackClock } from '../../playback-clock'
 import Timeline from '../Timeline'
+import { installCanvasHarness, SURFACE_LEFT } from './_canvasSelect'
 
-const SURFACE_LEFT = 100
-const SURFACE_WIDTH = 1000
-
-let realGetContext: typeof HTMLCanvasElement.prototype.getContext
-let realGetRect: typeof Element.prototype.getBoundingClientRect
+let uninstall: () => void
 
 beforeEach(() => {
-  realGetContext = HTMLCanvasElement.prototype.getContext
-  realGetRect = Element.prototype.getBoundingClientRect
-  HTMLCanvasElement.prototype.getContext = (() =>
-    new Proxy({}, {
-      get(_t, prop: string) {
-        if (prop === 'createLinearGradient') return () => ({ addColorStop: () => {} })
-        return () => {}
-      },
-      set() { return true },
-    })) as unknown as typeof HTMLCanvasElement.prototype.getContext
-
-  // The canvas surface sits inset from the left of the column — that gap is the
-  // track rail, which is why a click at clientX < SURFACE_LEFT has no time.
-  Element.prototype.getBoundingClientRect = function (this: Element) {
-    const isSurface = (this as HTMLElement).hasAttribute?.('data-timeline-canvas')
-    const left = isSurface ? SURFACE_LEFT : 0
-    const width = isSurface ? SURFACE_WIDTH : SURFACE_LEFT + SURFACE_WIDTH
-    return {
-      x: left, y: 0, top: 0, left, right: left + width, bottom: 200,
-      width, height: 200, toJSON: () => ({}),
-    } as DOMRect
-  }
+  uninstall = installCanvasHarness()
 })
 
 afterEach(() => {
   cleanup()
-  HTMLCanvasElement.prototype.getContext = realGetContext
-  Element.prototype.getBoundingClientRect = realGetRect
+  uninstall()
 })
 
-/** 10s of content, so "fit" is a round 100px per second across the surface. */
+/** 10s of content. NOT a round 100px/second on the fitted surface — "fit" is
+ *  computed against `computeDerivedTiming().totalDuration`, which is content
+ *  duration PLUS drag headroom (`+ max(5, content * 0.2)`), so 10s of content
+ *  fits as 15s of fitted timeline (≈66.7px/s here), not 100px/s. Nothing below
+ *  asserts the scale, so the exact value was never load-bearing — this note is
+ *  just so a reader doesn't assume a round number computing their own point. */
 function makeProject(): Project {
   return {
     id: 'p1',
@@ -79,7 +59,6 @@ function mount(clockAt = 0) {
       clock={clock}
       selectedIds={['clip-0']}
       onSelectIds={onSelectIds}
-      timeline={{ canvas: true }}
     />,
   )
   // The strip is the column's own background: the row area is a child, so

@@ -1,7 +1,7 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type MutableRefObject } from 'react'
-import { Crop, Ear, EarOff, HelpCircle, Magnet, Maximize2, Minimize2, Pencil, Redo2, SeparatorVertical, Smartphone, Undo2, Wand2 } from 'lucide-react'
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type MutableRefObject } from 'react'
+import { Captions, Crop, Ear, EarOff, Film, HelpCircle, History, Magnet, Maximize2, Minimize2, Pencil, Redo2, SeparatorVertical, Smartphone, Undo2, Wand2 } from 'lucide-react'
 import type { Project, VideoEditorProps } from '../types'
-import type { VisualItem } from '../schema'
+import type { AudioTrack, VisualItem } from '../schema'
 import { useProjectSync, type UseProjectSync } from '../state/use-project-sync'
 import { VideoSourceCropModal } from '../crop/VideoSourceCropModal'
 import ControlsInfoModal, { VIDEO_CONTROLS } from '../ControlsInfoModal'
@@ -26,8 +26,10 @@ import { createScrubResolver } from '../engine/scrub-resolve'
 import { useSourcePreview, type SourcePreviewStore } from './source-preview'
 import { formatTimecode } from './timecode'
 import type { OverlayChanges } from './preview/useDragOverlay'
-import VersionPanel, { dedupeVersions } from './VersionPanel'
+import VersionPanel, { listVersions } from './VersionPanel'
 import OverlayInspector from './OverlayInspector'
+import LeftPanelTabs, { type LeftPanelTab } from './panels/LeftPanelTabs'
+import ClipPropertiesPanel, { type ClipSelection } from './panels/ClipPropertiesPanel'
 import VersionCompare from './VersionCompare'
 import CaptionListPanel, { type CaptionListPanelProps, type CaptionEditFocusRequest, nextEditFocus } from './CaptionListPanel'
 import RenderModal from './RenderModal'
@@ -155,14 +157,13 @@ export default function VideoEditor<P extends Project = Project>({
   onBackToSetup,
   assetsPlacement = 'right',
   renderProgressView = 'phases',
-  renderClipInspector,
+  renderGenerationPanel,
   renderSubcutRegen,
   regenEnabled,
   isClipQueued,
   onProvideRenderTrigger,
   onProvideImageTone,
   engine,
-  timeline,
   sourcePreview,
 }: Props<P>) {
   const emit = onProjectChange ?? (() => {})
@@ -270,7 +271,6 @@ export default function VideoEditor<P extends Project = Project>({
   const isPending = sync.project.status === 'pending'
 
   // ── Shared injected adapter fns, threaded to Timeline + PreviewPlayer. ──
-  const getWaveformChunks = adapter.getWaveformChunks
   const resolveFilePath   = adapter.fileUrl
   // T6 — canvas-timeline waveforms; absent → Timeline renders none (graceful).
   const getWaveformPeaks  = adapter.getWaveformPeaks
@@ -285,12 +285,10 @@ export default function VideoEditor<P extends Project = Project>({
           adapter={adapter}
           slots={slots}
           onBackToSetup={onBackToSetup}
-          getWaveformChunks={getWaveformChunks}
           resolveFilePath={resolveFilePath}
           getWaveformPeaks={getWaveformPeaks}
           getFilmstrip={getFilmstrip}
           engine={engine}
-          timeline={timeline}
         />
       </div>
     )
@@ -306,18 +304,16 @@ export default function VideoEditor<P extends Project = Project>({
         slots={slots}
         assetsPlacement={assetsPlacement}
         renderProgressView={renderProgressView}
-        getWaveformChunks={getWaveformChunks}
         resolveFilePath={resolveFilePath}
         getWaveformPeaks={getWaveformPeaks}
         getFilmstrip={getFilmstrip}
-        renderClipInspector={renderClipInspector}
+        renderGenerationPanel={renderGenerationPanel}
         renderSubcutRegen={renderSubcutRegen}
         regenEnabled={regenEnabled}
         isClipQueued={isClipQueued}
         onProvideRenderTrigger={onProvideRenderTrigger}
         onProvideImageTone={onProvideImageTone}
         engine={engine}
-        timeline={timeline}
         sourcePreview={sourcePreview}
       />
     </div>
@@ -425,14 +421,12 @@ interface SurfaceProps<P extends Project> {
   slots?: VideoEditorProps<P>['slots']
   assetsPlacement?: VideoEditorProps<P>['assetsPlacement']
   renderProgressView?: VideoEditorProps<P>['renderProgressView']
-  getWaveformChunks?: VideoEditorProps<P>['adapter']['getWaveformChunks']
   resolveFilePath: (path: string) => string
   getWaveformPeaks?: VideoEditorProps<P>['adapter']['getWaveformPeaks']
   getFilmstrip?: VideoEditorProps<P>['adapter']['getFilmstrip']
   onProvideRenderTrigger?: VideoEditorProps<P>['onProvideRenderTrigger']
   onProvideImageTone?: VideoEditorProps<P>['onProvideImageTone']
   engine?: VideoEditorProps<P>['engine']
-  timeline?: VideoEditorProps<P>['timeline']
 }
 
 function PendingSurface<P extends Project>({
@@ -440,12 +434,10 @@ function PendingSurface<P extends Project>({
   adapter,
   slots,
   onBackToSetup,
-  getWaveformChunks,
   resolveFilePath,
   getWaveformPeaks,
   getFilmstrip,
   engine,
-  timeline,
 }: SurfaceProps<P> & { onBackToSetup?: () => void }) {
   const project = sync.project
   // The playhead lives in an external store (not useState) so ~60Hz ticks only
@@ -574,11 +566,9 @@ function PendingSurface<P extends Project>({
           <Timeline
             project={project}
             clock={clock}
-            getWaveformChunks={getWaveformChunks}
             resolveFilePath={resolveFilePath}
             getWaveformPeaks={getWaveformPeaks}
             getFilmstrip={getFilmstrip}
-            timeline={timeline}
           />
         </div>
       </div>
@@ -596,7 +586,7 @@ function PendingSurface<P extends Project>({
       {compareOpen != null && adapter.versionFrameUrl && (
         <VersionCompare
           projectId={project.id}
-          versions={dedupeVersions(versions)}
+          versions={listVersions(versions)}
           initialLeftHash={compareOpen}
           frameUrl={adapter.versionFrameUrl}
           onClose={() => setCompareOpen(null)}
@@ -628,18 +618,16 @@ function ReviewSurface<P extends Project>({
   slots,
   assetsPlacement = 'right',
   renderProgressView = 'phases',
-  getWaveformChunks,
   resolveFilePath,
   getWaveformPeaks,
   getFilmstrip,
-  renderClipInspector,
+  renderGenerationPanel,
   renderSubcutRegen,
   regenEnabled,
   isClipQueued,
   onProvideRenderTrigger,
   onProvideImageTone,
   engine,
-  timeline,
   sourcePreview,
 }: SurfaceProps<P> & {
   // See the definition beside `sync` in VideoEditor above — set for the
@@ -647,7 +635,7 @@ function ReviewSurface<P extends Project>({
   // (also up in VideoEditor) leaves a mid-drag hole lane alone.
   captionGestureRef: MutableRefObject<boolean>
   emit: (p: P) => void
-  renderClipInspector?: VideoEditorProps<P>['renderClipInspector']
+  renderGenerationPanel?: VideoEditorProps<P>['renderGenerationPanel']
   renderSubcutRegen?: VideoEditorProps<P>['renderSubcutRegen']
   regenEnabled?: boolean
   isClipQueued?: (itemId: string) => boolean
@@ -880,9 +868,6 @@ function ReviewSurface<P extends Project>({
   // Provided only when the host adapter supports `analyzeAudioPolish`; absent →
   // neither entry point renders, exactly like `handleRegenerateCaptions` above.
   const handleAudioPolish = adapter.analyzeAudioPolish ? () => setPolishOpen(true) : undefined
-  // The clip/audio inspector target — derived from the timeline's inspect
-  // callbacks. A Montaj-agnostic { kind, id } selector, not a project entity.
-  const [inspecting, setInspecting]   = useState<{ kind: 'clip' | 'audio'; id: string } | null>(null)
   // SP5 T9 — command palette (Cmd/Ctrl+K). `'goto'` opens straight into the
   // timecode input (the scrubber's time-readout click); `'list'` opens the
   // filtered command list.
@@ -1198,7 +1183,7 @@ function ReviewSurface<P extends Project>({
   // it from state ReviewSurface already owns rather than inventing new
   // cross-file plumbing.
   const anyModalOpen = renderOpen || regenCaptionsOpen || polishOpen || !!editingOverlayItem
-    || showControls || cropMode || !!inspecting || !!paletteOpen
+    || showControls || cropMode || !!paletteOpen
 
   function withItemProps(base: P, id: string, nextProps: Record<string, unknown>): P {
     return {
@@ -1232,6 +1217,28 @@ function ReviewSurface<P extends Project>({
   const selectedOverlayItem = primarySelectedId
     ? allVisualItems.find(i => i.id === primarySelectedId && i.type === 'overlay' && !!i.src) ?? null
     : null
+
+  // The right properties panel's non-overlay target, resolved from the SAME
+  // primary selection `selectedOverlayItem` above uses and derived the same
+  // way — against `trackItems(project)` for a visual item, then against
+  // `project.audio.tracks`. Precedence is overlay → clip → audio: an overlay
+  // IS a visual item, so the clip branch has to exclude `type === 'overlay'`
+  // or a selected overlay would show clip properties instead of its Transform
+  // inspector. Audio is reached only when the id names no visual item at all —
+  // ids are unique across the project, so that is a plain fallback, not a
+  // guess. Exactly one of {overlay, clip, audio, nothing} holds at a time.
+  const selectedVisualItem = primarySelectedId
+    ? allVisualItems.find(i => i.id === primarySelectedId) ?? null
+    : null
+  const selectedAudioTrack = primarySelectedId && !selectedVisualItem
+    ? project.audio?.tracks.find(t => t.id === primarySelectedId) ?? null
+    : null
+  const clipSelection: ClipSelection =
+    selectedVisualItem && selectedVisualItem.type !== 'overlay'
+      ? { kind: 'clip', item: selectedVisualItem }
+      : selectedAudioTrack
+        ? { kind: 'audio', track: selectedAudioTrack }
+        : null
 
   // Edits coming from the timeline (drag/move/track changes): route through the
   // sync core — one undo step + queued save + rollback-on-failure.
@@ -1308,7 +1315,10 @@ function ReviewSurface<P extends Project>({
   // REMOVE `item.keyframes` entirely (see keyframeOps.withTrack) — something
   // a `{ ...item, ...changes }` merge can't express, since spreading in
   // `keyframes: undefined` leaves the key present rather than absent.
-  function replaceOverlayItem(p: P, nextItem: VisualItem): P {
+  // Shared with the clip properties panel below: a whole-item replacement is
+  // exactly what that one needs too (a speed change rewrites `end` alongside
+  // `speed`), so both inspectors write back through this.
+  function replaceVisualItem(p: P, nextItem: VisualItem): P {
     return {
       ...p,
       tracks: mapTrackItems(p, items => items.map(item => (item.id === nextItem.id ? nextItem : item))),
@@ -1317,7 +1327,7 @@ function ReviewSurface<P extends Project>({
   // Live preview for a continuously-typed number field: no undo entry, no
   // save yet. Mirrors previewOverlayProps below.
   function previewOverlayInspectorChange(nextItem: VisualItem) {
-    sync.mutateTransient(p => replaceOverlayItem(p, nextItem))
+    sync.mutateTransient(p => replaceVisualItem(p, nextItem))
   }
   // Closes a typing gesture (fired on the field's blur) as one undo step +
   // queued save. Mirrors commitOverlayEdit below — the last preview already
@@ -1331,6 +1341,80 @@ function ReviewSurface<P extends Project>({
   function applyOverlayInspectorChange(nextItem: VisualItem) {
     previewOverlayInspectorChange(nextItem)
     commitOverlayInspectorChange()
+  }
+
+  // Move the playhead to an absolute timeline time, clamped to the project —
+  // the same clamp the command palette's "go to time" applies. `clock.set` is
+  // the whole of "seek" in this surface: audible drag-scrub hangs off the
+  // hover store, not the clock (a clock tick CANCELS a hover preview, see the
+  // subscription above), so there is no extra side effect to route through.
+  // OverlayInspector's keyframe-nav arrows are the only caller; without it
+  // they render disabled.
+  const seekTo = useCallback(
+    (time: number) => clock.set(Math.max(0, Math.min(getTotalDuration(), time))),
+    [clock, getTotalDuration],
+  )
+
+  // ── Clip / audio properties-panel edits ────────────────────────────────────
+  // The same preview/commit/change trio as the overlay inspector above, on the
+  // same `sync` machinery — ClipPropertiesPanel is its sibling in the right
+  // column and hands back a whole replacement item / track the same way.
+
+  /** Set by a preview that changed the selected clip's timeline DURATION
+   *  (today only a speed change does). Read and cleared by the commit below,
+   *  which is where ripple has to run. A ref, not state: it is gesture
+   *  bookkeeping, and flipping it must not re-render mid-drag. */
+  const clipDurationChangedRef = useRef(false)
+
+  // Cleared whenever the selection changes. Today `SpeedControl` sets the flag
+  // and commits atomically, so it cannot survive a gesture — but nothing in
+  // the type system says so, and a future control that previews a duration
+  // change WITHOUT committing (an abandoned drag, a discarded transient, a
+  // selection change mid-gesture) would leave it set and ripple the timeline
+  // on the next unrelated commit. Resetting here makes that impossible rather
+  // than merely unlikely.
+  useEffect(() => { clipDurationChangedRef.current = false }, [primarySelectedId])
+
+  function previewClipChange(nextItem: VisualItem) {
+    const before = trackItems(sync.projectRef.current).flat().find(i => i.id === nextItem.id)
+    if (before && (before.end - before.start) !== (nextItem.end - nextItem.start)) {
+      clipDurationChangedRef.current = true
+    }
+    sync.mutateTransient(p => replaceVisualItem(p, nextItem))
+  }
+  function commitClipChange() {
+    // Ripple, which the retired ClipInspectModal used to do itself: shrinking a
+    // clip (a speed-up) leaves a gap, and with the magnet on the timeline
+    // closes it. ClipPropertiesPanel cannot — it only ever sees the one item,
+    // and `collapseGaps` moves that item's SIBLINGS — so the commit handler
+    // owns it. Folded into the same transient gesture, so the speed change and
+    // the gap it closed undo as one step.
+    if (clipDurationChangedRef.current && rippleMode) {
+      sync.mutateTransient(p => collapseGaps(p))
+    }
+    clipDurationChangedRef.current = false
+    void sync.commit()
+  }
+  function applyClipChange(nextItem: VisualItem) {
+    previewClipChange(nextItem)
+    commitClipChange()
+  }
+
+  function replaceAudioTrack(p: P, nextTrack: AudioTrack): P {
+    return {
+      ...p,
+      audio: { ...p.audio, tracks: (p.audio?.tracks ?? []).map(t => (t.id === nextTrack.id ? nextTrack : t)) },
+    } as P
+  }
+  function previewAudioChange(nextTrack: AudioTrack) {
+    sync.mutateTransient(p => replaceAudioTrack(p, nextTrack))
+  }
+  function commitAudioChange() {
+    void sync.commit()
+  }
+  function applyAudioChange(nextTrack: AudioTrack) {
+    previewAudioChange(nextTrack)
+    commitAudioChange()
   }
 
   // Commit a per-segment caption change (preview drag → offsetX/offsetY/scale).
@@ -2075,23 +2159,23 @@ function ReviewSurface<P extends Project>({
           clock={clock}
           onProjectChange={handleProjectChange}
           onOverlayEdit={commitTimelineEdit}
-          onEditOverlay={requestEditOverlay}
           previewAxis={previewAxis}
           onHoverScrub={handleHoverScrub}
           selectedIds={selectedIds}
           onSelectIds={setSelectedIds}
-          onInspectClip={(id) => setInspecting({ kind: 'clip', id })}
-          onInspectAudio={(id) => setInspecting({ kind: 'audio', id })}
+          // No `onInspectClip` / `onInspectAudio`: the clip-inspect modal they
+          // opened is retired. Single-click selection now populates the right
+          // properties panel, so a double-click on a clip/audio bar is simply a
+          // no-op. The Timeline props still exist (that is its API) — this
+          // editor just has nothing left to do with them.
           onEditCaption={handleEditCaption}
           rippleMode={rippleMode}
-          getWaveformChunks={getWaveformChunks}
           resolveFilePath={resolveFilePath}
           getWaveformPeaks={getWaveformPeaks}
           getFilmstrip={getFilmstrip}
           regenEnabled={regenEnabled}
           isClipQueued={isClipQueued}
           renderSubcutRegen={renderSubcutRegen}
-          timeline={timeline}
           modalOpen={anyModalOpen}
           onOpenGoToTime={openGoToTime}
           actionsRef={timelineActionsRef}
@@ -2108,9 +2192,44 @@ function ReviewSurface<P extends Project>({
     </div>
   )
 
-  // Right rail — version history + run history slot, the sidebar caption list,
+  // ── Pieces shared by the two layouts' side columns ────────────────────────
+  // The caption editor and the version list live in the CLASSIC right rail and
+  // in the CapCut LEFT panel's Captions / Versions tabs. Built once here, with
+  // one set of props, so the two layouts can never drift apart — only one of
+  // them mounts per render, so sharing the element is free.
+  const captionListPanel = (
+    <CaptionListPanelWithClock
+      captionTrack={project.captions}
+      project={project}
+      selectedIds={selectedIds}
+      onSelectCaption={handleSelectCaption}
+      onCaptionSegmentChange={handleCaptionSegmentChange}
+      onCaptionEdit={(p) => void sync.mutate(() => p as P)}
+      onProjectChange={handleProjectChange}
+      onCaptionSegmentDelete={handleCaptionSegmentDelete}
+      onRegenerateCaptions={handleRegenerateCaptions}
+      // Disables the panel's generate/regenerate trigger for the life of
+      // the modal. Defensive rather than load-bearing: CaptionRegenModal
+      // is a full-screen blocking portal, so the panel underneath can't
+      // be clicked anyway. It keeps the panel honest on its own terms —
+      // and re-enables on close, so a failed job never leaves a
+      // permanently dead button.
+      captionsGenerating={regenCaptionsOpen}
+      fps={project.settings?.fps ?? 30}
+      clock={clock}
+      editFocusId={editFocusId}
+    />
+  )
+  const versionPanel = adapter.listVersionHistory && (
+    <VersionPanel versions={versions} restoring={restoring} onRestore={handleRestoreVersion} onSaveVersion={handleSaveVersion} saving={saving} onCompareVersion={adapter.versionFrameUrl ? handleCompareVersion : undefined} />
+  )
+
+  // Right rail — CLASSIC LAYOUTS ONLY (Hub / LP). The CapCut layout replaces it
+  // with the properties-only `propertiesPanel` below and moves this rail's
+  // captions and versions into the left panel's tabs.
+  // Version history + run history slot, the sidebar caption list,
   // and (in 'sidebar' placement) the assets panel stacked beneath them in the
-  // SAME column. Shared by both layouts (its own col-resize divider is
+  // SAME column (its own col-resize divider is
   // included). `!!project.captions || !!handleRegenerateCaptions` is a new
   // disjunct (SP5-captions Phase 5): CaptionListPanel now lives in this rail
   // instead of a bottom panel, so the rail must appear whenever THAT panel
@@ -2150,18 +2269,18 @@ function ReviewSurface<P extends Project>({
             diamonds for the selected overlay's transform props. Above
             VersionPanel: it's the thing the operator is actively editing,
             versions/captions/assets are reference material below it. Renders
-            nothing itself when nothing/a non-overlay is selected. */}
+            its own "Select an overlay…" empty state when nothing, or a
+            non-overlay, is selected. */}
         <OverlayInspector
           item={selectedOverlayItem}
           clock={clock}
           onPreview={previewOverlayInspectorChange}
           onCommit={commitOverlayInspectorChange}
           onChange={applyOverlayInspectorChange}
+          onSeek={seekTo}
         />
 
-        {adapter.listVersionHistory && (
-          <VersionPanel versions={versions} restoring={restoring} onRestore={handleRestoreVersion} onSaveVersion={handleSaveVersion} saving={saving} onCompareVersion={adapter.versionFrameUrl ? handleCompareVersion : undefined} />
-        )}
+        {versionPanel}
 
         {/* Sidebar caption editor, directly below version history. Its own
             flex-1 wrapper so the list scrolls independently of the rest of
@@ -2171,27 +2290,7 @@ function ReviewSurface<P extends Project>({
             guard too, for callers that can't check this ahead of time). */}
         {(project.captions || handleRegenerateCaptions) && (
           <div className="flex-1 min-h-0 overflow-hidden border-t border-[var(--editor-border)] flex flex-col">
-            <CaptionListPanelWithClock
-              captionTrack={project.captions}
-              project={project}
-              selectedIds={selectedIds}
-              onSelectCaption={handleSelectCaption}
-              onCaptionSegmentChange={handleCaptionSegmentChange}
-              onCaptionEdit={(p) => void sync.mutate(() => p as P)}
-              onProjectChange={handleProjectChange}
-              onCaptionSegmentDelete={handleCaptionSegmentDelete}
-              onRegenerateCaptions={handleRegenerateCaptions}
-              // Disables the panel's generate/regenerate trigger for the life of
-              // the modal. Defensive rather than load-bearing: CaptionRegenModal
-              // is a full-screen blocking portal, so the panel underneath can't
-              // be clicked anyway. It keeps the panel honest on its own terms —
-              // and re-enables on close, so a failed job never leaves a
-              // permanently dead button.
-              captionsGenerating={regenCaptionsOpen}
-              fps={project.settings?.fps ?? 30}
-              clock={clock}
-              editFocusId={editFocusId}
-            />
+            {captionListPanel}
           </div>
         )}
         {/* Host injects the Montaj-flavored "Previous runs" snapshot list here.
@@ -2218,17 +2317,58 @@ function ReviewSurface<P extends Project>({
     </div>
   )
 
-  // Left media column (CapCut layout only): the host's media panel in a
-  // width-resizable column, with a col-resize divider on its RIGHT edge.
-  const mediaColumn = (
+  // Left panel (CapCut layout only): the editor's browser column — Media,
+  // Captions and Versions behind a vertical icon rail — in a width-resizable
+  // column, with a col-resize divider on its RIGHT edge. Captions and version
+  // history used to stack into the right rail; in this layout that rail is
+  // properties-only, so they live here now. Each tab is added only when it has
+  // something to show, so the rail never offers a dead icon.
+  const leftPanelTabs: LeftPanelTab[] = []
+  if (slots?.mediaPanel) {
+    leftPanelTabs.push({ id: 'media', label: 'Media', icon: <Film size={16} />, content: slots.mediaPanel })
+  }
+  // Same gate the classic rail uses for its caption section — existing
+  // captions, or (on a host that supports `generateCaptions`) the means to
+  // create them from scratch.
+  if (project.captions || handleRegenerateCaptions) {
+    leftPanelTabs.push({
+      id: 'captions',
+      label: 'Captions',
+      icon: <Captions size={16} />,
+      // The same flex-1 wrapper the rail gives it, minus the rail's top
+      // border: inside a tab panel there is nothing above to divide from.
+      content: <div className="flex-1 min-h-0 overflow-hidden flex flex-col">{captionListPanel}</div>,
+    })
+  }
+  if (adapter.listVersionHistory || slots?.runHistory) {
+    leftPanelTabs.push({
+      id: 'versions',
+      label: 'Versions',
+      icon: <History size={16} />,
+      content: (
+        <>
+          {versionPanel}
+          {/* The host's "Previous runs" list, directly beneath version history —
+              the same adjacency it had in the rail. RunSnapshot / project.history
+              are host-only types; the package never reads them. */}
+          {slots?.runHistory}
+        </>
+      ),
+    })
+  }
+
+  const leftPanel = (
     <>
       <div
         style={{ width: mediaPanelWidth }}
         className="shrink-0 border-r border-[var(--editor-border)] bg-[var(--editor-surface)] flex flex-col overflow-hidden min-h-0"
       >
-        {slots?.mediaPanel}
+        <LeftPanelTabs tabs={leftPanelTabs} defaultTabId="captions" className="flex-1 min-h-0" />
       </div>
-      {/* Divider on the media column's RIGHT edge — drag right widens the column. */}
+      {/* Divider on the left panel's RIGHT edge — drag right widens the column.
+          Kept under its original "Resize media panel" name: it is the same
+          affordance on the same persisted width, and renaming it would break
+          every host/test that reaches for it. */}
       <div
         role="separator"
         aria-orientation="vertical"
@@ -2242,23 +2382,106 @@ function ReviewSurface<P extends Project>({
     </>
   )
 
+  // Right properties panel (CapCut layout only) — the contextual inspector for
+  // whatever is selected, in place of the classic stacked rail.
+  //
+  // ALWAYS rendered, never gated on the selection (Sam): a column that came and
+  // went would resize the preview every time the operator clicked from a clip
+  // to empty space, so it holds its width and each panel shows its own empty
+  // state instead. That is also why there is no third "nothing selected" node
+  // here — OverlayInspector already has one, and inventing another would give
+  // the same column two different ways of saying nothing is selected.
+  const propertiesPanel = (
+    <>
+      {/* Vertical divider, the same affordance as the preview/timeline one. */}
+      <div
+        role="separator"
+        aria-orientation="vertical"
+        aria-label="Resize sidebar"
+        onMouseDown={startRailDrag}
+        onDoubleClick={() => setRailWidth(DEFAULT_RAIL_PX)}
+        className="group shrink-0 w-[5px] cursor-col-resize bg-transparent"
+      >
+        <div className="w-px h-full bg-[var(--editor-border)] transition-colors group-hover:bg-[var(--editor-accent)]" />
+      </div>
+
+      <div
+        style={{ width: railWidth }}
+        className="shrink-0 border-l border-[var(--editor-border)] bg-[var(--editor-surface)] flex flex-col overflow-hidden"
+      >
+        {/* Scrolls as one: both panels are stacks of shrink-0 sections, and the
+            audio track's fades/ducking groups (or a tall generationSlot) run
+            past the bottom of a short window. */}
+        <div className="flex-1 min-h-0 overflow-y-auto flex flex-col">
+          {clipSelection ? (
+            <ClipPropertiesPanel
+              selection={clipSelection}
+              onPreviewClip={previewClipChange}
+              onCommitClip={commitClipChange}
+              onChangeClip={applyClipChange}
+              onPreviewAudio={previewAudioChange}
+              onCommitAudio={commitAudioChange}
+              onChangeAudio={applyAudioChange}
+              // The host's generation panel is per-CLIP — it draws that clip's
+              // prompt/model/refImages — so the editor, which owns the
+              // selection, resolves the node here rather than taking a static
+              // one the host would have to track selection to build. Video
+              // only: generation does not exist on an image clip or an audio
+              // track, the same reason the panel hides Speed for non-video.
+              // KEYED ON THE CLIP ID, and that key is load-bearing. The host's
+              // panel seeds its regen form (prompt, model, duration, ref
+              // images) from the clip in `useState` initializers, which run
+              // ONCE per mount. Selecting a different video clip keeps
+              // `clipSelection.kind === 'clip'`, so without a key React
+              // reconciles this subtree IN PLACE and the form keeps the
+              // PREVIOUS clip's content while `clipId` points at the new one —
+              // queueing a regeneration that spends credits rendering the
+              // wrong clip's prompt. The retired modal never hit this because
+              // it remounted on every double-click. Keying here rather than in
+              // the host means every host gets that guarantee from the seam
+              // itself instead of having to know about it.
+              generationSlot={
+                clipSelection.kind === 'clip' && clipSelection.item.type === 'video'
+                  ? <Fragment key={clipSelection.item.id}>{renderGenerationPanel?.({ clipId: clipSelection.item.id })}</Fragment>
+                  : undefined
+              }
+            />
+          ) : (
+            /* An overlay's Transform properties — or, with nothing selected,
+               this component's own empty state. */
+            <OverlayInspector
+              item={selectedOverlayItem}
+              clock={clock}
+              onPreview={previewOverlayInspectorChange}
+              onCommit={commitOverlayInspectorChange}
+              onChange={applyOverlayInspectorChange}
+              onSeek={seekTo}
+            />
+          )}
+        </div>
+      </div>
+    </>
+  )
+
   return (
     <div className="flex flex-col flex-1 overflow-hidden">
       {slots?.mediaPanel ? (
         /* CapCut layout (opt-in via slots.mediaPanel): three columns across the
-           top — [media | preview | rail] — with a full-width timeline strip
-           below. `splitRef` wraps the WHOLE top-row + timeline region so the
+           top — [left panel | preview | properties] — with a full-width timeline
+           strip below. `splitRef` wraps the WHOLE top-row + timeline region so the
            row divider trades height between them (MIN_PREVIEW_PANE_PX now guards
            the entire top row); `workAreaRef` is the top row, so the rail/media
            width drags still measure against the space those three columns share.
-           The shared pieces below (previewRegion / timelinePane / rightRail /
-           rowDivider) are the exact same nodes the classic layout renders — only
-           the arrangement differs. */
+           `previewRegion` / `timelinePane` / `rowDivider` are the exact same nodes
+           the classic layout renders. The two side columns are NOT shared: this
+           layout browses (media/captions/versions) on the left and inspects the
+           selection on the right, where the classic layout stacks all of it into
+           one right rail. */
         <div ref={splitRef} className="flex flex-col flex-1 overflow-hidden min-h-0">
           <div ref={workAreaRef} className="flex flex-1 overflow-hidden min-h-0">
-            {mediaColumn}
+            {leftPanel}
             {previewRegion}
-            {rightRail}
+            {propertiesPanel}
           </div>
           {rowDivider}
           {timelinePane}
@@ -2368,7 +2591,7 @@ function ReviewSurface<P extends Project>({
       {compareOpen != null && adapter.versionFrameUrl && (
         <VersionCompare
           projectId={project.id}
-          versions={dedupeVersions(versions)}
+          versions={listVersions(versions)}
           initialLeftHash={compareOpen}
           frameUrl={adapter.versionFrameUrl}
           durationSeconds={preRenderOptions.durationSec}
@@ -2427,13 +2650,6 @@ function ReviewSurface<P extends Project>({
           onClose={cancelOverlayEdit}
         />
       )}
-
-      {/* Clip / audio inspector — host-rendered via render-prop seam. */}
-      {inspecting && renderClipInspector?.({
-        item: inspecting,
-        onClose: () => setInspecting(null),
-        rippleMode,
-      })}
     </div>
   )
 }

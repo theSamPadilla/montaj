@@ -13,9 +13,8 @@
  *   scrollSeconds the time at the left edge of the surface
  *
  * Time↔pixel conversion is then a pure affine map, independent of content.
- * The DOM path keeps its own model untouched (`useTimelineZoom`); the zoom
- * badge bridges the two by reporting a fit-relative multiple (`zoomMultiple`)
- * so the numbers users know stay recognizable.
+ * The zoom badge reports a fit-relative multiple (`zoomMultiple`) so the
+ * numbers users knew from the old DOM path's zoom stay recognizable.
  *
  * Everything above `createViewportStore` is pure math with no DOM access, so
  * it is unit-testable and reusable by hit-testing (T5) and the content layers

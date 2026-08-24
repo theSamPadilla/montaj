@@ -10,9 +10,9 @@
  *
  * `TimelineCanvas`'s `contextmenu` handler does its own hit-test and calls
  * `onFadeCurveMenu` with CLIENT coordinates; `Timeline` owns the menu's
- * open/closed state and renders it as a `position: fixed` DOM overlay. This
- * mirrors `Timeline.backgroundClick.test.tsx`'s canvas-mode stubbing: jsdom
- * lays everything out at 0×0, so the surface's rect is stubbed to a real one.
+ * open/closed state and renders it as a `position: fixed` DOM overlay. jsdom
+ * lays everything out at 0×0, so the surface's rect is stubbed to a real one
+ * via `installCanvasHarness` (see `_canvasSelect.ts`).
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, cleanup, fireEvent, screen } from '@testing-library/react'
@@ -20,43 +20,18 @@ import type { AudioTrack } from '../../../schema'
 import type { Project } from '../../../types'
 import { createPlaybackClock } from '../../playback-clock'
 import Timeline from '../Timeline'
-import { computeDerivedTiming } from '../timeline-model'
 import { AUDIO_ITEM_INSET_PX, computeTimelineLayout } from '../canvas/draw'
-import { fitPxPerSecond, timeToX, type Viewport } from '../canvas/viewport'
+import { installCanvasHarness, SURFACE_LEFT, timeToClientX } from './_canvasSelect'
 
-const SURFACE_LEFT = 100
-const SURFACE_WIDTH = 1000
-
-let realGetContext: typeof HTMLCanvasElement.prototype.getContext
-let realGetRect: typeof Element.prototype.getBoundingClientRect
+let uninstall: () => void
 
 beforeEach(() => {
-  realGetContext = HTMLCanvasElement.prototype.getContext
-  realGetRect = Element.prototype.getBoundingClientRect
-  HTMLCanvasElement.prototype.getContext = (() =>
-    new Proxy({}, {
-      get(_t, prop: string) {
-        if (prop === 'createLinearGradient') return () => ({ addColorStop: () => {} })
-        return () => {}
-      },
-      set() { return true },
-    })) as unknown as typeof HTMLCanvasElement.prototype.getContext
-
-  Element.prototype.getBoundingClientRect = function (this: Element) {
-    const isSurface = (this as HTMLElement).hasAttribute?.('data-timeline-canvas')
-    const left = isSurface ? SURFACE_LEFT : 0
-    const width = isSurface ? SURFACE_WIDTH : SURFACE_LEFT + SURFACE_WIDTH
-    return {
-      x: left, y: 0, top: 0, left, right: left + width, bottom: 200,
-      width, height: 200, toJSON: () => ({}),
-    } as DOMRect
-  }
+  uninstall = installCanvasHarness()
 })
 
 afterEach(() => {
   cleanup()
-  HTMLCanvasElement.prototype.getContext = realGetContext
-  Element.prototype.getBoundingClientRect = realGetRect
+  uninstall()
 })
 
 const AUDIO_TRACK: AudioTrack = { id: 'a0', src: 'v.mp3', start: 0, end: 10, fadeIn: 2 }
@@ -77,17 +52,15 @@ function makeProject(track: AudioTrack = AUDIO_TRACK): Project {
 /** The fade-in grip's CLIENT (x, y) for `AUDIO_TRACK`, derived the same way
  *  `hit-test.ts`'s `audioFadeGripX`/`audioFadeGripZone` do — purely from
  *  time and the lane's own y, with no clip-body gutter math (the grip's HIT
- *  zone is defined in time, not pixels; see hit-test.ts). Computed against
- *  the SAME fit-to-view viewport the mounted surface settles to on render
- *  (see `withSurfaceWidth`/`fitViewport` — deterministic given a stubbed,
- *  synchronous `getBoundingClientRect`). */
+ *  zone is defined in time, not pixels; see hit-test.ts). `timeToClientX`
+ *  gives the SAME fit-to-view viewport the mounted surface settles to on
+ *  render; only the audio-bar's own top inset (`AUDIO_ITEM_INSET_PX`) is
+ *  genuinely fade-specific and stays local. */
 function fadeInGripClientPoint(project: Project) {
-  const { totalDuration } = computeDerivedTiming(project)
-  const vp: Viewport = { pxPerSecond: fitPxPerSecond(SURFACE_WIDTH, totalDuration), scrollSeconds: 0, widthPx: SURFACE_WIDTH }
+  const clientX = timeToClientX(project, AUDIO_TRACK.start + (AUDIO_TRACK.fadeIn ?? 0))
   const lane = computeTimelineLayout(project).lanes[0]
-  const gripX = timeToX(AUDIO_TRACK.start + (AUDIO_TRACK.fadeIn ?? 0), vp)
   const barTop = lane.y + AUDIO_ITEM_INSET_PX
-  return { clientX: SURFACE_LEFT + gripX, clientY: barTop + 2 }
+  return { clientX, clientY: barTop + 2 }
 }
 
 function mount(track: AudioTrack = AUDIO_TRACK) {
@@ -101,7 +74,6 @@ function mount(track: AudioTrack = AUDIO_TRACK) {
       clock={clock}
       onProjectChange={onProjectChange}
       onOverlayEdit={onOverlayEdit}
-      timeline={{ canvas: true }}
     />,
   )
   const surface = utils.container.querySelector('[data-timeline-canvas]') as HTMLElement

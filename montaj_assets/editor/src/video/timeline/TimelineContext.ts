@@ -1,27 +1,25 @@
 import { createContext, useContext } from 'react'
 import type { PlaybackClock } from '../playback-clock'
-import type { Viewport } from './canvas/viewport'
 
+/**
+ * What Timeline shares with the chrome it renders around the canvas surface.
+ *
+ * That is now one component — `Scrubber`, the time-readout strip — so this
+ * carries exactly the two things it reads and nothing else. It used to also
+ * carry the canvas viewport, the DOM scroll container's zoom/scrollRef, the
+ * scrubber bar's rect ref and the overlay-drag flag, for the rows that stayed
+ * in the DOM while the tracks moved to canvas. There are no such rows left:
+ * clips, audio lanes and captions are all painted by `TimelineCanvas`, which
+ * reads the viewport from its own external store (`canvas/viewport.ts`) rather
+ * than through React, precisely so a zoom gesture doesn't re-render anything.
+ *
+ * Positions therefore never travel through this context — only times do. That
+ * is the property worth keeping: two surfaces that agreed about the clock but
+ * computed x independently is what made the old DOM playhead drift out of
+ * alignment with the clips above it the moment you zoomed.
+ */
 export interface TimelineContextValue {
-  /**
-   * The canvas surface's viewport in CANVAS mode, `null` in legacy DOM mode.
-   *
-   * The rows that stayed in the DOM after the tracks moved to canvas — today
-   * just the caption row and its playhead line — must position against this,
-   * not against `totalDuration`. The canvas owns its own zoom and scroll, so a
-   * DOM row laid out as a fraction of the whole project drifts out of
-   * alignment with the clips above it the moment you zoom: the same instant on
-   * two surfaces landed at two different x's, which read as a broken playhead.
-   */
-  viewport: Viewport | null
-  totalDuration: number
   contentDuration: number
-  snapBoundaries: number[]
-  zoom: number
-  zoomRef: React.RefObject<number>
-  scrollRef: React.RefObject<HTMLDivElement | null>
-  scrubberRef: React.RefObject<HTMLDivElement | null>
-  overlayDraggedRef: React.MutableRefObject<boolean>
   clock: PlaybackClock
 }
 

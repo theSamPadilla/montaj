@@ -43,6 +43,8 @@ When the agent marks the project `draft`, the UI surfaces it for human adjustmen
 
 - Full timeline with clip, caption, and overlay tracks
 - Preview player: the WebCodecs playback engine painting to canvas (or the `<video>` fallback), with CSS-positioned overlays
+- Left panel: a tabbed browser (Media / Captions / Versions) — see "Panel layout"
+- Right panel: the properties of the current selection (an overlay's Transform)
 - Caption editor: click to edit text inline, drag to retime
 - Overlay editor: add/remove/reposition title cards, lower thirds
 - Prompt bar: modify the prompt and re-run the agent
@@ -153,6 +155,109 @@ The agent writes directly to disk. `montaj serve` watches. Every write immediate
 
 ---
 
+## Panel layout
+
+The editor uses the standard pro-editor split: **left = browse, right = inspect**,
+with the preview and timeline in the center.
+
+The left sidebar used to do both jobs at once, stacking the things you can add
+(captions, versions, media) on top of the properties of whatever was selected.
+That is why the version list felt cramped, and why there was nowhere sensible
+for a properties panel to grow.
+
+### Left panel: tabbed browser
+
+`video/panels/LeftPanelTabs.tsx` is a generic tab shell: a vertical icon rail
+(icon above a short label, CapCut-style) beside a content pane. It knows nothing
+about what is in its tabs. The host passes an array of
+`{ id, icon, label, content }`, so a new tab is one array entry and no change to
+the shell. Today it carries three:
+
+| Tab | Content |
+|---|---|
+| **Media** | The footage bin / assets panel |
+| **Captions** (default) | `CaptionListPanel` with its existing sub-controls |
+| **Versions** | The consolidated version list (see "Version history") |
+
+Audio, Effects and Text are the obvious future tabs; the shell is built to take
+them.
+
+Two behaviors worth knowing:
+
+- **The active tab persists** across reloads (`localStorage`, one key). A stored
+  id that no longer matches any tab falls back to the default rather than
+  blanking the panel, so an older stored preference cannot strand you on an
+  empty pane.
+- **A tab is not mounted until you first open it, and then it stays mounted**,
+  hidden rather than destroyed. So the Captions tab keeps its scroll position,
+  sub-tab and any half-finished edit when you switch to Versions and back, while
+  the heavier Media tab costs nothing until it is actually opened.
+
+The rail is a real ARIA tablist: arrow keys move between tabs, Home and End jump
+to the ends.
+
+### Right panel: properties only
+
+The right panel holds exactly one thing, the properties of the current
+selection, and it is **always present** so the preview and timeline never
+resize as you click around. What it shows depends on what is selected:
+
+| Selected | Panel shows |
+|---|---|
+| An overlay | The **Transform** panel (below) |
+| A video or image clip | **Clip**: volume, mute, and (video only) speed |
+| An audio track | **Audio track**: label, volume, mute, fades, ducking, trim and position |
+| Nothing | A short "select an overlay" line |
+
+Clip and audio properties used to live in a double-click modal. They are now
+edited in place, which is why a speed change made from the panel still ripples
+the timeline closed behind it when the magnet is on, exactly as the modal did.
+
+Deleting an audio track is deliberately **not** in the panel: it is a
+destructive action, and the panel is somewhere you land just by selecting.
+Select the track on the timeline and press Delete or Backspace instead.
+
+On an AI-video project, a selected generated clip also gets a **Generation**
+section beneath its properties, showing the frozen prompt, model and attempt
+history, with the regenerate flow. That content is supplied by the host (it
+reads the project's regeneration queue and storyboard, which the editor package
+knows nothing about) through the `renderGenerationPanel` seam.
+
+### Properties panel (Transform)
+
+`video/OverlayInspector.tsx`. One collapsible **Transform** section over the five
+keyframeable properties, with a keyframe `‹ ◇ ›` unit on every animatable row and
+one in the header covering all five (see "Overlay keyframes"):
+
+- **Scale** — a slider plus X and Y value boxes with steppers. The X/Y pair is
+  linked by a uniform-scale lock, currently fixed on: an overlay has a single
+  scale factor, so width and height always scale together and both boxes drive
+  the same value. Separate `scaleX`/`scaleY` is a follow-up that has to change
+  the schema, the shared geometry in `@bycrux/timeline-core`, the preview
+  transform, the drag gestures' edge-snap and the ffmpeg render bake together;
+  the row is laid out for it now so that lands as an unlock rather than a
+  redesign.
+- **Position** — X and Y offset boxes, each with a stepper.
+- **Rotate** — a value box plus a circular dial. The dial is keyboard operable
+  (arrows step one degree, Shift steps fifteen).
+- **Opacity** — a value box. This panel is still the only place opacity is
+  editable at all: the preview's drag gestures cover position, scale and
+  rotation, but never opacity.
+- **Align** — six buttons snapping the overlay to the frame's left/center/right
+  and top/middle/bottom. Alignment uses the same edge math as the preview's
+  drag snapping, so a button and a snapped drag land on identical values. An
+  overlay at scale 1 or above already covers the frame and has no edge to align
+  to, so every alignment collapses to centered rather than pushing it off-frame.
+- **Reset** (the header's ⟲) returns all five properties to their defaults. It
+  deliberately does not delete keyframe tracks: on an animated property it keys
+  the default value at the playhead, the same non-destructive rule the rest of
+  the panel follows. Clearing a track is the row diamond's job.
+
+Editing any control while a property is already animated adds a keyframe at the
+playhead instead of overwriting the animation.
+
+---
+
 ## Preview player
 
 The WebCodecs playback engine decodes the editing proxy directly and paints
@@ -248,7 +353,7 @@ already shares, and both apply to the WebCodecs engine and the legacy
 
 ## Timeline
 
-Clip, caption, and overlay tracks, rendered on canvas by default (see
+Clip, caption, and overlay tracks, rendered on one `<canvas>` surface (see
 "Canvas timeline" below). A track rail runs down the left with per-track
 volume, mute, and skip controls. Clips show filmstrip frames over a
 full-size waveform. Selected clips grow trim handles, with tiered
@@ -259,53 +364,60 @@ bands.
 
 ### Canvas timeline
 
-A `<canvas>`-rendered alternative to the DOM track rows (visual tracks +
-audio lanes) draws clips and audio bars on a canvas instead of positioning
+The track-row area (visual tracks, audio lanes, and caption bands) draws
+clips, audio bars, and caption blocks on a `<canvas>` instead of positioning
 one DOM element per item, which is what keeps panning/zooming smooth
-regardless of project size. This is the timeline `montaj serve`'s editor
-runs — `EditorPage.tsx` passes `timeline={{ canvas: true }}` unconditionally
-(`montaj_assets/ui/src/app/editor/EditorPage.tsx:438`). See
-`docs/ARCHITECTURE.md`'s "Canvas timeline" section for how it works
-internally.
+regardless of project size. This is the editor's only timeline — Montaj's
+own `montaj serve` editor renders it exactly the way every other host does,
+with nothing to configure. See `docs/ARCHITECTURE.md`'s "Canvas timeline"
+section for how it works internally; the migration runbook for updating a
+host built against the older DOM-rows timeline is maintained internally.
 
-- **The prop.** `VideoEditor` takes an optional `timeline?: {canvas:
-  boolean}` — still the package contract for a third-party host. Absent or
-  `{canvas: false}` (the default for a host that doesn't pass it): the
-  existing DOM track rows, unchanged. `{canvas: true}` — what Montaj's own UI
-  always passes — renders the track-row area (visual tracks + audio lanes) on
-  canvas instead; the timeline's chrome (zoom controls, the time readout, the
-  transcript panel/modal) and the caption row are unaffected either way; the
-  caption row always stays a real DOM component (it hosts inline
-  `contentEditable` text editing, which a canvas can't do), only its
-  position in the stack changes — below the canvas in canvas mode, above the
-  visual tracks in DOM mode.
-- **No eligibility gate.** Unlike the playback engine flag, there is no
-  capability probe and no per-project fallback — `{canvas: true}` always
-  takes effect, on every project, in every browser the editor runs in.
-- **What's new when it's on.** Per-clip waveforms on visual tracks (clips
-  never showed a waveform before this), zoom-responsive audio-lane
-  waveforms replacing fixed-resolution PNG chunks, hover-scrub filmstrip
-  thumbnails once zoomed in past a threshold, one unified magnetic-snap feel
-  across every drag/trim gesture, and four new trim tools — ripple-delete,
-  roll, slip, and slide — bound to modifier-key drags. One deliberate
-  display change: the zoom badge reports a fit-relative multiple rather than
-  the DOM path's old zoom number, and can now show a value below 1× (zooming
-  out past "fit the whole project" is newly possible).
+- **No prop, no mode.** `@bycrux/editor` used to take an optional
+  `timeline?: {canvas: boolean}` prop; a host that omitted it (or passed
+  `{canvas: false}`) got a degraded, DOM-rows timeline with no per-clip
+  waveforms and no filmstrip thumbnails. That prop is gone — there is
+  nothing to opt into, no eligibility check, and no fallback path. The
+  timeline's chrome (zoom controls, the time readout, the transcript
+  panel/modal) is unaffected by any of this. Captions are not a DOM
+  carve-out either: caption blocks render as bands on the same canvas
+  surface as clips and audio, in the same vertical stack; caption *text*
+  editing happens in the Captions tab of the left panel, not inline on the
+  timeline.
+- **What canvas brought.** Per-clip waveforms on visual tracks (clips never
+  showed a waveform before this), zoom-responsive audio-lane waveforms
+  replacing fixed-resolution PNG chunks, hover-scrub filmstrip thumbnails
+  once zoomed in past a threshold, one unified magnetic-snap feel across
+  every drag/trim gesture, and four trim tools — ripple-delete, roll, slip,
+  and slide — bound to modifier-key drags. The zoom badge reports a
+  fit-relative multiple and can show a value below 1× (zooming out past "fit
+  the whole project" is possible).
 
 ### Overlay keyframes
 
 An overlay's `offsetX`, `offsetY`, `scale`, `rotation`, and `opacity` can each
 be animated over the overlay's own lifetime rather than held fixed. Two
-surfaces, both canvas-timeline-only — neither exists in DOM-track mode or in
-the Overlays tab's live-preview page:
+surfaces, both canvas-timeline-only — neither exists in the Overlays tab's
+live-preview page:
 
 - **Setting a key.** Each property gets its own keyframe diamond toggle in
-  `OverlayInspector.tsx`'s right-rail panel. Clicking it drops a keyframe at
-  the playhead with the property's current value. CapCut-style
-  auto-keyframe-on-edit: once a property already has at least one keyframe,
-  changing its value with the playhead parked (dragging the overlay, editing
-  its number field) drops a new keyframe automatically, no diamond click
-  needed.
+  the right-hand **Transform** panel (`OverlayInspector.tsx`, see "Properties
+  panel" below). Clicking it drops a keyframe at the playhead with the
+  property's current value. CapCut-style auto-keyframe-on-edit: once a
+  property already has at least one keyframe, changing its value with the
+  playhead parked (dragging the overlay, editing its number field, moving the
+  scale slider or the rotate dial) drops a new keyframe automatically, no
+  diamond click needed. Every control in that panel obeys this one rule, so
+  none of them can drift from the others.
+- **Keying everything at once.** The panel's section header carries its own
+  `‹ ◇ ›` unit covering all five properties: the diamond is filled only when
+  every property has a keyframe at exactly the playhead, and clicking it keys
+  all five there (reading each value off the item as it stands, so nothing on
+  screen moves). Clicking it when all five are already keyed removes that
+  time from each. A property whose only keyframe is the one being removed
+  gets its sampled value written into its static scalar first, so it holds
+  its position instead of jumping back to a stale value. The arrows jump the
+  playhead to the previous/next keyframe across all five tracks.
 - **The strip.** `drawKeyframeStrip` (`timeline/canvas/draw.ts`, geometry in
   `timeline/canvas/keyframe-strip.ts`) paints one diamond per distinct
   keyframe time, in a thin zone along the bottom of the clip — only for a
@@ -397,10 +509,12 @@ shifts clips, overlays and audio tracks but explicitly **not** captions.
 
 ## Version history
 
-Sidebar **Versions** panel (`video/VersionPanel.tsx`). Git-backed snapshots, one entry per run, newest first.
+The left panel's **Versions** tab (`video/VersionPanel.tsx`). Git-backed snapshots: **every** saved version gets its own row, newest first.
+
+Rows show the version's **name and date**, with **Compare** and **Restore** on each. There is no per-run grouping and no "Run N" prefix: "run" is backend plumbing (`runCount`, the Re-run flow) that stays in the backend and is no longer surfaced, and collapsing to one row per run used to hide real saved versions from the operator. The only entry still filtered out is the run-0 init baseline. Auto-generated labels are humanized for display (`draft` reads as "Draft", `export` as "Exported", `autosave before restore` as "Auto-save before restore", an empty label as "Untitled save"); an operator-typed name is shown verbatim.
 
 - **Snapshot triggers**: each agent run, status transitions (`pending` → `draft` → `final`), and now every export too. A no-op re-export (no diff since the last snapshot) doesn't create a new one.
-- **Save version**: name field + button above the list, always visible (not gated on the collapse state). Optional name, defaults to "manual save". Commit message: `version: run N — <name>`. No track/status side effects.
+- **Save version**: name field + button above the list, always visible (not gated on the collapse state). Optional name, defaults to "manual save". Commit message: `version: run N — <name>` — the run number is still written to the commit message, it is just no longer displayed. No track/status side effects.
 - **Restore**: `POST /api/projects/:id/versions/:commit/restore`. Non-destructive as of this change — if the working tree has uncommitted edits, they're committed first as `version: run N — autosave before restore` before checking out the target commit, so restoring never loses work. Skipped when there's nothing uncommitted.
 - **Compare**: `video/VersionCompare.tsx`, opened from each version's **Compare** button. Two-pane visual diff — Left/Right pickers (any version, or the `"working"` sentinel for the live on-disk state) plus a debounced time-scrub slider, each pane an `<img>` from `GET /api/projects/:id/versions/:commit/frame?t=`. Gated on the adapter exposing `versionFrameUrl`; a host without it just doesn't render the Compare button.
 - Backend routes: `POST /api/projects/:id/versions` (save), `GET /api/projects/:id/versions` (list), `POST /api/projects/:id/versions/:commit/restore` (restore), `GET /api/projects/:id/versions/:commit/frame?t=` (frame render — reuses the SDR-proxy sample-frame path).

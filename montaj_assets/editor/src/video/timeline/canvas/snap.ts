@@ -7,7 +7,9 @@
  * The flat version has the classic problem — right at the threshold the value
  * flickers between snapped and free as the hand jitters — and the two radii
  * disagreed about how strong a magnet feels. Plan decision 7 keeps the good one
- * and retires the others, in canvas mode only (the DOM paths are untouched).
+ * and retires the others. (It once applied to the canvas surface only, while
+ * the DOM rows kept the flat test; those rows are gone, so this is simply how
+ * snapping works.)
  *
  * The hysteresis is what makes it feel deliberate: a point attracts from one
  * radius but holds until the cursor clears a wider one. The asymmetry is the

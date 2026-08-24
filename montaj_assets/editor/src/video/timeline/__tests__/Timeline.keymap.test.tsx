@@ -1,10 +1,19 @@
-import { describe, it, expect, vi, afterEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, cleanup, fireEvent, act } from '@testing-library/react'
 import type { Project } from '../../../types'
 import { createPlaybackClock } from '../../playback-clock'
 import Timeline, { type TimelineActions } from '../Timeline'
+import { installCanvasHarness } from './_canvasSelect'
 
-afterEach(() => cleanup())
+// SP5 — the DOM timeline is retired, so every Timeline mount is a canvas one
+// and needs the canvas harness (stubbed getContext/getBoundingClientRect) even
+// though none of these tests click or drag — TimelineCanvas paints on mount.
+let uninstallCanvasHarness: () => void
+beforeEach(() => { uninstallCanvasHarness = installCanvasHarness() })
+afterEach(() => {
+  cleanup()
+  uninstallCanvasHarness()
+})
 
 function makeProject(): Project {
   return {

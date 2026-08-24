@@ -388,7 +388,7 @@ export interface TimelineLayout {
  * Row rectangles for a project, in the order the DOM path stacks them:
  * visual tracks reversed (highest index on top, so the base video track sits at
  * the bottom and overlays stack above it), then audio lanes below, ascending.
- * The base track is drawn taller, matching `trackRowTall`.
+ * The base track is drawn taller (120px vs. 40px for the rest).
  *
  * T5's hit-testing should derive its rows from here rather than re-deriving
  * geometry — one layout, two readers.
@@ -1233,9 +1233,8 @@ export interface TimelineScene {
   hoveredHandle?: { itemId: string; edge: 'in' | 'out' } | null
   surfaceWidth: number
   surfaceHeight: number
-  /** T6 waveform content-layer provider. Absent → no waveforms drawn (DOM
-   *  mode never sets this; canvas mode without a `getWaveformPeaks` adapter
-   *  method omits it too). */
+  /** T6 waveform content-layer provider. Absent → no waveforms drawn, which
+   *  is what a host without a `getWaveformPeaks` adapter method gets. */
   waveforms?: WaveformSceneLookup
   /** T7 filmstrip content-layer provider (the background tile strip inside a
    *  clip rect). Absent → no filmstrips drawn, same graceful omission as

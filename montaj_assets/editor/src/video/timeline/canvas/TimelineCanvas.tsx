@@ -1,7 +1,8 @@
 /**
- * TimelineCanvas (SP5 T4) — the canvas track-row area, mounted by Timeline in
- * place of the DOM visual rows + audio lanes when `timeline.canvas` is on. The
- * caption row stays DOM and mounts below it (SP5 decision 3).
+ * TimelineCanvas (SP5 T4) — the canvas track-row area. It is the ONLY track
+ * surface: it carries the visual tracks, the audio lanes and the caption rows
+ * alike, and the DOM rows it replaced (which for a while it was mounted in
+ * place of, behind a `timeline.canvas` prop) are gone.
  *
  * ── How this stays fast ──────────────────────────────────────────────────
  * Three rules, all of them about NOT re-rendering React:
@@ -10,10 +11,9 @@
  *    one, the playhead alone on the upper one. Playback moves the playhead ~60
  *    times a second; on a single canvas each move would have to repaint every
  *    clip, which is precisely the cost this surface exists to avoid.
- * 2. The playhead subscribes to the playback clock directly, the way
- *    `PlayheadLine` does in the DOM path — except the subscription drives an
- *    imperative redraw instead of a React render, so nothing above it (and in
- *    particular not the caption row's hundreds of DOM nodes) re-renders.
+ * 2. The playhead subscribes to the playback clock directly, the way the DOM
+ *    path's `PlayheadLine` did — except the subscription drives an imperative
+ *    redraw instead of a React render, so nothing above it re-renders.
  * 3. Zoom/scroll live in an external store (viewport.ts), not React state, so
  *    a wheel-zoom gesture never re-renders Timeline. Only the zoom badge
  *    subscribes for display.
@@ -34,11 +34,10 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
-import type { GetFilmstripArgs, GetWaveformPeaksArgs, FilmstripIndex, PeaksData, Project, FootageDropPayload } from '../../../types'
+import type { GetFilmstripArgs, GetWaveformPeaksArgs, FilmstripIndex, PeaksData, Project, FootageDropPayload, ResolveFilePath } from '../../../types'
 import { FOOTAGE_DND_MIME } from '../../../types'
 import type { KeyframeProp } from '../../../schema'
 import type { PlaybackClock } from '../../playback-clock'
-import type { ResolveFilePath } from '../AudioWaveformLayer'
 import { VISUAL_ROW_RENDER_HEIGHT_PX, normalizeTracks } from '../timeline-model'
 import { insertClipAt } from '../../cuts'
 import { computeTimelineLayout, drawTimelineContent, drawTimelineOverlay } from './draw'
@@ -151,12 +150,11 @@ export interface TimelineCanvasProps {
   onKeyframeMenu?: (args: { itemId: string; t: number; props: KeyframeProp[]; isLast: boolean; x: number; y: number }) => void
   /** T6 — the host adapter's peaks fetcher, threaded from
    *  `adapter.getWaveformPeaks` via Timeline. Absent → no waveforms anywhere
-   *  (graceful; the surface just never asks). Canvas-mode only: the DOM path
-   *  never receives or calls this. */
+   *  (graceful; the surface just never asks). */
   getWaveformPeaks?: (args: GetWaveformPeaksArgs) => Promise<PeaksData>
   /** T7 — the host adapter's filmstrip fetcher, threaded from
    *  `adapter.getFilmstrip` via Timeline. Absent → no filmstrips or
-   *  hover-scrub thumbs anywhere (graceful). Canvas-mode only. */
+   *  hover-scrub thumbs anywhere (graceful). */
   getFilmstrip?: (args: GetFilmstripArgs) => Promise<FilmstripIndex>
   /** T7 — resolves a filmstrip sheet's host path into a displayable URL, the
    *  SAME mechanism `WaveformChunk.path` uses for the DOM waveform PNGs
@@ -533,10 +531,13 @@ export default function TimelineCanvas({
     const intent = wheelIntent(e, e.clientX - el.getBoundingClientRect().left)
     if (intent.kind === 'none') return
     e.preventDefault()
-    // The DOM path's wheel listener is still bound to the scroll container we
-    // sit inside (Timeline keeps its chrome in both modes). Without this it
-    // would zoom its own multiplier off the same gesture and widen the page
-    // under the canvas.
+    // Don't let a wheel gesture we've already consumed bubble to the scroll
+    // container we sit inside, or to the page. (This originally existed for a
+    // sharper reason: the DOM timeline bound its own non-passive wheel
+    // listener to that container, and without this it would zoom its separate
+    // multiplier off the same gesture and widen the page under the canvas.
+    // Those rows and that listener are gone — see `useTimelineZoom` — so this
+    // is now just ordinary "we handled it" containment.)
     e.stopPropagation()
     store.set(vp => applyWheelIntent(vp, intent, sceneRef.current.totalDuration))
   }
@@ -1110,10 +1111,10 @@ export default function TimelineCanvas({
       // own affordance decision separately.
       className="relative w-full select-none outline-none"
       style={{ height: surfaceHeight, cursor: 'pointer' }}
-      // Timeline's container click seeks by percentage of `totalDuration`,
-      // which is only the canvas' own time axis at fit zoom. The pointer
-      // machine has already seeked (on mousedown) by the time this fires, so
-      // swallow it rather than let it re-seek to the wrong second.
+      // Timeline's container click also seeks, via `xToTime` against this
+      // same canvas viewport. The pointer machine has already seeked (on
+      // mousedown) by the time this fires, so swallow it rather than let it
+      // re-seek to the wrong second.
       onClick={e => e.stopPropagation()}
     >
       <canvas ref={contentCanvasRef} className="absolute inset-0 w-full h-full" />
@@ -1123,10 +1124,11 @@ export default function TimelineCanvas({
 }
 
 // ── Zoom chrome adapter ──────────────────────────────────────────────────
-// Timeline's zoom controls are shared chrome: the same three buttons drive the
-// DOM path's zoom multiplier or the canvas' viewport depending on the flag.
-// The canvas hands Timeline this adapter so the chrome itself doesn't branch
-// beyond picking which one to call.
+// Timeline renders the zoom buttons; the canvas owns what they do. It hands
+// Timeline this adapter so the chrome stays presentational and the viewport
+// mutation lives with the surface that draws it. (It was once a seam between
+// two zoom models — the DOM path's integer multiplier and the canvas'
+// viewport — but the DOM timeline is gone, so there is only one implementer.)
 
 export interface ZoomControls {
   badge: ReactNode

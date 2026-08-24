@@ -1,8 +1,9 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach, onTestFinished } from 'vitest'
 import { render, screen, fireEvent, waitFor, act } from '@testing-library/react'
 import type { CaptionEvent, EditorAdapter, Project, RenderEvent, VersionEntry, WaveformChunk } from '../../types'
 import type { ImageElement } from '../../types'
 import VideoEditor from '../VideoEditor'
+import { installCanvasHarness, selectCanvasItem, type CanvasItemSelector } from '../timeline/__tests__/_canvasSelect'
 
 // ── Layout gating: classic vs. CapCut media-panel branch ─────────────────────
 // ReviewSurface renders the classic layout (preview above a timeline pane, plus
@@ -80,7 +81,7 @@ afterEach(() => vi.restoreAllMocks())
 describe('VideoEditor — layout gating (classic vs. CapCut media panel)', () => {
   it('renders the CapCut layout when slots.mediaPanel is provided', async () => {
     const adapter = makeFakeAdapter()
-    const { getByTestId, getByLabelText } = render(
+    const { getByTestId, getByLabelText, getByRole } = render(
       <VideoEditor
         project={makeVideoProject()}
         adapter={adapter}
@@ -89,7 +90,16 @@ describe('VideoEditor — layout gating (classic vs. CapCut media panel)', () =>
       />,
     )
 
-    // The host's media panel is rendered (its content is present).
+    // The host's media panel is rendered (its content is present). It sits in a
+    // Media TAB of the left panel now, and the tabs mount LAZILY, so this test
+    // clicks that tab before asserting rather than relying on it happening to
+    // be open. It would otherwise pass only incidentally: this fixture has no
+    // captions and no `generateCaptions`, so there is no Captions tab for
+    // `defaultTabId="captions"` to open and Media is tabs[0] by fallback — and
+    // giving this adapter caption support later would break the assertion for
+    // reasons that have nothing to do with layout. See
+    // VideoEditor.propertiesPanel.test.tsx for the tab behaviour itself.
+    fireEvent.click(await waitFor(() => getByRole('tab', { name: 'Media' })))
     const media = await waitFor(() => getByTestId('media-panel'))
     // The CapCut-only media-column resize divider exists.
     expect(getByLabelText('Resize media panel')).toBeTruthy()
@@ -203,11 +213,11 @@ describe('VideoEditor — a caption id ahead of a clip id in selectedIds (D1)', 
   }
 
   /** Click the caption's sidebar row (plain, single-select — replaces
-   *  `selectedIds`), then additively (metaKey) click the given timeline
-   *  block — `toggleSelection` appends, so the caption id lands FIRST. */
-  async function selectCaptionThenAdditively(label: string) {
+   *  `selectedIds`), then additively (metaKey) select the given canvas
+   *  item — `toggleSelection` appends, so the caption id lands FIRST. */
+  async function selectCaptionThenAdditively(container: HTMLElement, project: Project, selector: CanvasItemSelector) {
     fireEvent.click(await screen.findByText('caption one'))
-    fireEvent.click(await screen.findByText(label), { metaKey: true })
+    selectCanvasItem(container, project, selector, { metaKey: true })
   }
 
   async function seekTo(seconds: string) {
@@ -218,16 +228,18 @@ describe('VideoEditor — a caption id ahead of a clip id in selectedIds (D1)', 
   }
 
   it('resolves cropTarget to the clip, not null, and S still splits it', async () => {
+    onTestFinished(installCanvasHarness())
     const adapter = makeFakeAdapter()
     const onProjectChange = vi.fn()
-    render(
+    const project = makeMixedProject()
+    const { container } = render(
       <VideoEditor
-        project={makeMixedProject()}
+        project={project}
         adapter={adapter}
         onProjectChange={onProjectChange}
       />,
     )
-    await selectCaptionThenAdditively('▪ video')
+    await selectCaptionThenAdditively(container, project, { type: 'video' })
 
     // cropTarget resolved past the caption to the clip: the button is
     // enabled, not stuck on "Select a clip to crop".
@@ -256,15 +268,17 @@ describe('VideoEditor — a caption id ahead of a clip id in selectedIds (D1)', 
   })
 
   it('resolves selectedOverlayItem to the overlay, not null, when it (not a clip) is the non-caption member', async () => {
+    onTestFinished(installCanvasHarness())
     const adapter = makeFakeAdapter()
-    render(
+    const project = makeMixedProject()
+    const { container } = render(
       <VideoEditor
-        project={makeMixedProject()}
+        project={project}
         adapter={adapter}
         onProjectChange={vi.fn()}
       />,
     )
-    await selectCaptionThenAdditively('▪ overlay')
+    await selectCaptionThenAdditively(container, project, { type: 'overlay' })
 
     expect(screen.getByLabelText('Edit overlay')).toBeTruthy()
     // The overlay is not croppable — cropTarget correctly stayed null.
@@ -272,6 +286,7 @@ describe('VideoEditor — a caption id ahead of a clip id in selectedIds (D1)', 
   })
 
   it('a caption-only selection leaves primarySelectedId null — Split then scopes to the MAIN video track only, not every clip under the playhead', async () => {
+    onTestFinished(installCanvasHarness())
     const adapter = makeFakeAdapter()
     const onProjectChange = vi.fn()
     render(

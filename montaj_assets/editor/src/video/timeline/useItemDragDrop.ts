@@ -1,4 +1,17 @@
-import type React from 'react'
+/**
+ * The drag/resize arithmetic the timeline's gestures are built out of.
+ *
+ * This module once also held `useItemDragDrop`, a React hook that wired these
+ * functions to mouse events for the DOM track rows. Those rows are retired
+ * and the hook went with them: the canvas timeline's pointer machine
+ * (`canvas/pointer-machine.ts`) owns gesture handling now, and calls straight
+ * into three of the five pure functions below — `DRAG_THRESHOLD_PX`,
+ * `computeResizedItem`, `resizeWindowedItem` — with times it derived from its
+ * own viewport and snapped with hysteresis (`canvas/snap.ts`). The other two,
+ * `snapToBoundaries` and `snapMovedSpan`, have no production caller any more
+ * (canvas snapping lives in `canvas/snap.ts`) and are kept deliberately,
+ * test-covered only. Nothing here touches the DOM or React any more.
+ */
 
 export interface Draggable {
   id: string
@@ -16,30 +29,10 @@ export interface Draggable {
 }
 
 /** The floor on an item's timeline duration. At speed S the source window
- *  floor follows from it (`MIN_DURATION · S`), so only this one is needed. */
-export const MIN_DURATION = 0.1
-
-export interface DragEventContext {
-  /** The item with updated start/end (and inPoint/outPoint for resize) */
-  item: Draggable
-  /** Horizontal delta in timeline seconds from initial position */
-  dx: number
-  /** Vertical delta in raw pixels from initial position */
-  dy: number
-}
-
-export interface UseItemDragDropConfig {
-  totalDuration: number
-  snapBoundaries: number[]
-  snapThresholdPx?: number // default 8
-  /** Element used for getBoundingClientRect() → pixel-to-time conversion */
-  scrollRef: React.RefObject<HTMLDivElement | null>
-  /** Timeline zoom factor — content width is zoom × scrollRef.width. Required so
-   *  pixel-to-time conversion matches the visible scale (without this, drag/resize
-   *  is `zoom`× too sensitive when zoomed in). */
-  zoomRef?: React.RefObject<number>
-  draggedFlagRef?: React.MutableRefObject<boolean> // sets true during drag (click suppression)
-}
+ *  floor follows from it (`MIN_DURATION · S`), so only this one is needed.
+ *  Module-local: it constrains the two resize functions below and nothing
+ *  outside this file (`cuts.ts` has a same-valued constant of its own). */
+const MIN_DURATION = 0.1
 
 /** A press must travel at least this many pixels before it becomes a drag.
  *  Below it the gesture stays a click. Without this threshold, a single pixel of
@@ -52,13 +45,9 @@ export interface UseItemDragDropConfig {
 export const DRAG_THRESHOLD_PX = 4
 
 // ── Pure drag/resize math ────────────────────────────────────────────────
-// Extracted from the hook body so the canvas timeline's pointer machine
-// (SP5 T5) reuses the exact trim arithmetic rather than reimplementing it, and
-// so the arithmetic is testable without a component. The hook below is now a
-// DOM shell over these three functions and behaves exactly as it did: it still
-// converts pixels through the zoom-container width, still snaps flat, and still
-// drives the legacy rows. The canvas calls the same functions with times it
-// derived from its own viewport and snapped with hysteresis (canvas/snap.ts).
+// Extracted from the retired hook's body so the canvas timeline's pointer
+// machine (SP5 T5) reuses the exact trim arithmetic rather than
+// reimplementing it, and so the arithmetic is testable without a component.
 
 /** Nearest boundary within `threshold` seconds of `raw`, else `raw` itself.
  *  Ties keep the earlier entry — `<` is strict, as in the original loop. */
@@ -188,116 +177,4 @@ export function computeResizedItem(item: Draggable, edge: 'start' | 'end', t: nu
       : { ...item, end: Math.max(t, item.start + MIN_DURATION) }
   }
   return resizeWindowedItem(item, edge, t)
-}
-
-export function useItemDragDrop(config: UseItemDragDropConfig) {
-  const {
-    totalDuration,
-    snapBoundaries,
-    snapThresholdPx = 8,
-    scrollRef,
-    zoomRef,
-    draggedFlagRef,
-  } = config
-
-  function beginResize(
-    e: React.MouseEvent,
-    item: Draggable,
-    edge: 'start' | 'end',
-    callbacks: {
-      onLivePreview: (ctx: DragEventContext) => void
-      onCommit: () => void
-    },
-  ): void {
-    e.stopPropagation()
-    e.preventDefault()
-
-    const initX = e.clientX
-    const initTime = edge === 'start' ? item.start : item.end
-
-    function computeResized(moveE: MouseEvent): Draggable {
-      if (!scrollRef.current) return item
-      const rect = scrollRef.current.getBoundingClientRect()
-      const contentWidth = rect.width * (zoomRef?.current ?? 1)
-      const dt = ((moveE.clientX - initX) / contentWidth) * totalDuration
-      const raw = Math.max(0, Math.min(totalDuration, initTime + dt))
-      const snapThreshold = (snapThresholdPx / contentWidth) * totalDuration
-      return computeResizedItem(item, edge, snapToBoundaries(raw, snapBoundaries, snapThreshold))
-    }
-
-    function onMove(moveE: MouseEvent) {
-      const resized = computeResized(moveE)
-      callbacks.onLivePreview({ item: resized, dx: 0, dy: 0 })
-    }
-    function onUp() {
-      callbacks.onCommit()
-      document.removeEventListener('mousemove', onMove)
-      document.removeEventListener('mouseup', onUp)
-    }
-    document.addEventListener('mousemove', onMove)
-    document.addEventListener('mouseup', onUp)
-  }
-
-  function beginDrag(
-    e: React.MouseEvent,
-    item: Draggable,
-    callbacks: {
-      onLivePreview: (ctx: DragEventContext) => void
-      onCommit: () => void
-    },
-  ): void {
-    e.stopPropagation()
-
-    const initX = e.clientX
-    const initY = e.clientY
-    const initStart = item.start
-    const initEnd = item.end
-    const duration = initEnd - initStart
-    let dragStarted = false
-
-    function onMove(moveE: MouseEvent) {
-      // Ignore sub-threshold pointer drift — it's a click, not a drag. Only once
-      // the press travels past DRAG_THRESHOLD_PX do we set the drag flag (which
-      // suppresses click-to-select) and start moving the item.
-      if (!dragStarted) {
-        const moved = Math.hypot(moveE.clientX - initX, moveE.clientY - initY)
-        if (moved < DRAG_THRESHOLD_PX) return
-        dragStarted = true
-      }
-      if (draggedFlagRef) draggedFlagRef.current = true
-
-      const rect = scrollRef.current?.getBoundingClientRect()
-      const contentWidth = rect ? rect.width * (zoomRef?.current ?? 1) : 0
-      const dx = contentWidth ? ((moveE.clientX - initX) / contentWidth) * totalDuration : 0
-      const dy = moveE.clientY - initY
-
-      const rawStart = Math.max(0, Math.min(totalDuration - duration, initStart + dx))
-
-      // Snap leading/trailing edge to nearest item edge within threshold
-      const snapThreshold = contentWidth ? (snapThresholdPx / contentWidth) * totalDuration : 0
-      const snapped = snapMovedSpan(rawStart, duration, snapBoundaries, snapThreshold)
-      const newStart = Math.max(0, Math.min(totalDuration - duration, snapped.start))
-      const newEnd = newStart + duration
-
-      const movedItem = { ...item, start: newStart, end: newEnd }
-      callbacks.onLivePreview({ item: movedItem, dx, dy })
-    }
-
-    function onUp() {
-      document.removeEventListener('mousemove', onMove)
-      document.removeEventListener('mouseup', onUp)
-      if (draggedFlagRef && draggedFlagRef.current) {
-        callbacks.onCommit()
-        // reset after click event fires
-        setTimeout(() => {
-          draggedFlagRef!.current = false
-        }, 0)
-      }
-    }
-
-    document.addEventListener('mousemove', onMove)
-    document.addEventListener('mouseup', onUp)
-  }
-
-  return { beginDrag, beginResize }
 }

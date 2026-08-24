@@ -801,53 +801,57 @@ real canvas — see `montaj_assets/editor/src/engine/__tests__/`.
 
 ### Canvas timeline (`montaj_assets/editor/src/video/timeline/canvas/`)
 
-**Status: the editor's default timeline.** `EditorPage.tsx` passes
-`timeline={{ canvas: true }}` to `VideoEditor` (`EditorPage.tsx:438`), so the
-timeline's track-row area — every visual clip and audio bar previously its
-own positioned `<div>`, recalculated on every scroll/zoom, with zero
-virtualization — renders on a `<canvas>`-rendered surface instead of DOM rows.
-The `VideoEditor` `timeline?: {canvas: boolean}` prop remains a real host knob
-(the same pattern the `engine` flag above uses): the old DOM rows stay fully
-intact in the package for a host that sets `canvas: false` or omits the prop.
-See `docs/UI.md` for the operator-facing surface (what changes for the user).
+**Status: the only timeline.** The track-row area — every visual clip and
+audio bar, previously its own positioned `<div>`, recalculated on every
+scroll/zoom, with zero virtualization — renders on one `<canvas>`-rendered
+surface. There is no DOM-rows mode left to opt into: the `VideoEditor`
+`timeline?: {canvas: boolean}` prop is gone from the package entirely, and
+canvas is unconditionally what every host gets, including Montaj's own
+`montaj_assets/ui` editor page. See `docs/UI.md` for the operator-facing
+surface (what changes for the user); the consumer migration runbook (exact
+adapter signatures, call-site patterns, and a verification checklist) is
+maintained internally for the hosts that need it.
 
-**Two-mode architecture, one chrome.** `Timeline.tsx` owns the surface either
-way — zoom controls, the scrubber, the transcript panel/modal,
-and the `TimelineContext` provider are unchanged by the flag. Only the
-track-row area (visual tracks + audio lanes) swaps: `{canvas: false}` (or the
-prop absent) renders the existing `VisualTrackRow`/`AudioTrackRow` DOM rows;
-`{canvas: true}` renders one `TimelineCanvas` surface in their place. The
-caption row (`CaptionTrackRow`) is an explicit carve-out from "DOM rows
-retired" — inline `contentEditable` editing (caret, IME, selection, a11y)
-does not survive a canvas — and mounts as a real DOM component in **both**
-modes; only its position in the vertical stack changes (below the canvas in
-canvas mode, above the visual tracks in DOM mode — see the parity
-checklist's §C for why that's an accepted difference, not a bug).
+**One chrome, one track-row surface.** `Timeline.tsx` owns the surface — zoom
+controls, the scrubber, the transcript panel/modal, and the `TimelineContext`
+provider — same as before this change. The track-row area (visual tracks,
+audio lanes, and caption bands) is one `TimelineCanvas` surface; the
+`VisualTrackRow`/`AudioTrackRow` DOM rows it replaced are deleted from the
+package outright, not kept behind a flag. Captions are not a DOM carve-out:
+they render as bands inside the same canvas layout as clips and audio items
+(`draw.ts`'s `CaptionRowLayout`, hit-tested by `hit-test.ts` alongside
+visual/audio rows) — the old `CaptionTrackRow` DOM component (inline
+`contentEditable` editing) was retired separately, in the 2026-08-23
+captions-canvas-row work, before this change touched anything. Caption
+*text* editing itself lives in the Captions tab of the left panel
+(`CaptionListPanel.tsx`, via `EditableSegment`'s `contentEditable` span), not
+inline on the timeline surface.
 
-**The shared `timeline-model.ts` contract.** Anything both surfaces must
-reproduce identically lives in `timeline/timeline-model.ts`, imported by
-both the DOM branch and the canvas branch — behavior can't fork between them
-because there is exactly one implementation, not two kept in sync by hand:
+**The `timeline-model.ts` contract.** Timing/layout logic the canvas surface
+must reproduce exactly lives in `timeline/timeline-model.ts`. It predates the
+canvas timeline as a module shared between the (now-deleted) DOM rows and the
+canvas surface, so behavior couldn't fork between them while both existed;
+today it's simply the canvas surface's one implementation:
 
 | Export | What it is |
 |---|---|
-| `computeDerivedTiming` | Snap boundaries, content duration, and the padded total duration — the render-time memo both branches key their `useMemo` on. |
-| `computeAutoCrossfade` | The auto-crossfade rule (overlapping unmuted audio tracks get complementary fade-out/fade-in). Lifted out of what used to be an untested, DOM-only render-time effect in `Timeline.tsx`; now unit-tested and invoked from ONE `useEffect` in `Timeline.tsx` that sits above the DOM/canvas branch, so it fires identically regardless of the flag. |
-| `groupAudioLanes` | Groups audio tracks into lanes (explicit `lane` field, or auto-assigned) — used by the DOM branch's lane rendering and by the canvas layout (`computeTimelineLayout` in `draw.ts`), so a track can never land in a different lane depending on the flag. |
+| `computeDerivedTiming` | Snap boundaries, content duration, and the padded total duration — the render-time memo `Timeline.tsx` keys its `useMemo` on. |
+| `computeAutoCrossfade` | The auto-crossfade rule (overlapping unmuted audio tracks get complementary fade-out/fade-in). Lifted out of what used to be an untested, DOM-only render-time effect in `Timeline.tsx`; now unit-tested and invoked from ONE `useEffect` in `Timeline.tsx` that sits above the track-row area. |
+| `groupAudioLanes` | Groups audio tracks into lanes (explicit `lane` field, or auto-assigned) — consumed by the canvas layout (`computeTimelineLayout` in `draw.ts`; previously also by the DOM rows' lane rendering, before they were deleted). |
 | `moveItemAcrossTracks` | The cross-track drag placement search (collision-avoidance, track pruning) extracted verbatim from `VisualTrackRow`'s drag handler; reused by the canvas pointer machine for the identical gesture. |
-| Row-geometry constants | `VISUAL_ROW_HEIGHT_PX`, `AUDIO_LANE_HEIGHT_PX`, `VISUAL_ROW_RENDER_HEIGHT_PX`, `BASE_VISUAL_ROW_RENDER_HEIGHT_PX`, `ROW_GAP_PX` — the DOM rows' Tailwind heights, named once so the canvas painter draws rows at the same size the DOM rows render. |
+| Row-geometry constants | `VISUAL_ROW_HEIGHT_PX`, `AUDIO_LANE_HEIGHT_PX`, `VISUAL_ROW_RENDER_HEIGHT_PX`, `BASE_VISUAL_ROW_RENDER_HEIGHT_PX`, `ROW_GAP_PX` — named after the deleted DOM rows' Tailwind heights, so the canvas painter draws rows at the same size those rows used to render. |
 
 **The canvas module layout.** Everything under `timeline/canvas/` is pure,
 DOM-free logic plus one thin React shell:
 
 | Module | What it does |
 |---|---|
-| `viewport.ts` | The scroll/zoom model: `pxPerSecond` (px per second) + `scrollSeconds` (time at the left edge), replacing the DOM path's "multiple of container width against a content-dependent duration" zoom — a model that couldn't zoom out past fit and silently changed px/second whenever a clip moved. Time↔pixel conversion is a pure affine map. Also owns the DPR-crisp rendering plumbing (backing-store sizing, `ResizeObserver` + a `devicePixelRatio`-change watcher, `ctx.setTransform` scaling) — no precedent existed elsewhere in the repo for a resolution-independent 2D canvas. The viewport lives in an external store (`createViewportStore`, `useSyncExternalStore`), not React state, so a wheel-zoom gesture never re-renders `Timeline` (and in particular never re-renders the caption row's hundreds of DOM nodes). |
+| `viewport.ts` | The scroll/zoom model: `pxPerSecond` (px per second) + `scrollSeconds` (time at the left edge), replacing the DOM path's "multiple of container width against a content-dependent duration" zoom — a model that couldn't zoom out past fit and silently changed px/second whenever a clip moved. Time↔pixel conversion is a pure affine map. Also owns the DPR-crisp rendering plumbing (backing-store sizing, `ResizeObserver` + a `devicePixelRatio`-change watcher, `ctx.setTransform` scaling) — no precedent existed elsewhere in the repo for a resolution-independent 2D canvas. The viewport lives in an external store (`createViewportStore`, `useSyncExternalStore`), not React state, so a wheel-zoom gesture never re-renders `Timeline`. |
 | `draw.ts` | Pure paint functions (`drawClipRect`, `drawAudioItem`, `drawTimelineContent`, `drawTimelineOverlay`, …) taking a structural `DrawContext` subset of `CanvasRenderingContext2D`, so a recording stub can assert on the exact call list in tests. `drawTimelineContent` culls to the visible time range before any draw call — draw cost is bounded by the viewport, not the project (the acceptance probe the parity checklist's §B cites). The playhead is a SEPARATE draw function/layer (see `TimelineCanvas.tsx` below) so a 60Hz-during-playback repaint never touches the content layer. |
 | `hit-test.ts` | Pure point → target resolution (`{kind, itemId, edge\|body, trackIdx\|laneIdx, t}`) over the SAME layout `draw.ts` computes (`computeTimelineLayout`) — the canvas has no DOM elements to let the browser hit-test for it, so this exists where the DOM path never needed an equivalent. |
 | `snap.ts` | ONE magnetic-snapping model (18px attract / 28px release hysteresis, generalized from the Scrubber's playhead-drag implementation) used by every gesture — playhead drag, clip drag, and edge trims alike — retiring the DOM path's other two implementations (a flat 8px "nearest wins" test with no memory, which flickers right at the threshold). |
 | `pointer-machine.ts` | The full gesture state machine — a pure reducer (`pointerReducer`) over `{state, event} → {state, effects}`, with no DOM access, so every transition is a unit test rather than a browser session. Implements click-seek, press-scrub, additive selection, cross-track move, edge trims, and the four new trim gestures (edge-drag = trim, Alt+edge-drag = roll, Alt+body-drag = slip, Cmd/Ctrl+body-drag = slide) with the DOM rows' exact callback contracts (`onProjectChange` per-move, `onOverlayEdit` at commit). |
-| `waveforms.ts` | Turns fetched `PeaksData` into pixel columns and paints them as a content layer inside `drawClipRect`/`drawAudioItem`. Two render targets: audio lanes (replacing the DOM path's fixed-resolution PNG chunks, canvas mode only) and NET-NEW per-clip waveforms on visual tracks (clips never had waveforms before this SP). `WaveformPeaksStore` is a small per-mounted-surface fetch-state cache keyed by `(ownerId, src, window, bucket)`, resolution-bucketed at 50/200/800 samples/second based on current zoom (`resolveBucket`) so zoom-in fetches the next bucket up exactly once and zoom-out never re-fetches (a cached higher-resolution bucket downsamples for free). |
+| `waveforms.ts` | Turns fetched `PeaksData` into pixel columns and paints them as a content layer inside `drawClipRect`/`drawAudioItem`. Two render targets: audio lanes (replacing the DOM path's fixed-resolution PNG chunks) and NET-NEW per-clip waveforms on visual tracks (clips never had waveforms before this SP). `WaveformPeaksStore` is a small per-mounted-surface fetch-state cache keyed by `(ownerId, src, window, bucket)`, resolution-bucketed at 50/200/800 samples/second based on current zoom (`resolveBucket`) so zoom-in fetches the next bucket up exactly once and zoom-out never re-fetches (a cached higher-resolution bucket downsamples for free). |
 | `filmstrips.ts` | Lazy tile-sheet fetch (gated on BOTH a zoom threshold — `tileWidth / minInterval` from the step's own defaults, 160px/s — and the clip actually intersecting the visible range) plus tile-draw and the hover-scrub preview thumb. `FilmstripStore` caches the index (JSON) and decoded sheet images independently, so a ready index with an undecoded sheet degrades to "no tiles yet" rather than an error. |
 | `TimelineCanvas.tsx` | The React shell: two stacked `<canvas>` elements (content below, playhead-only overlay above — so a ~60Hz-during-playback playhead move repaints two `fillRect`s, not the whole scene), rAF-coalesced redraw scheduling (`requestRedraw('content' \| 'overlay' \| 'all')`), the playhead subscribing directly to the shared `PlaybackClock` (mirroring the DOM path's isolated `PlayheadLine`, but driving an imperative repaint instead of a React render), and the DOM event listeners that translate mouse events into `pointer-machine.ts` calls. |
 

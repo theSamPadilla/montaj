@@ -1,8 +1,9 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { render, waitFor, act, fireEvent } from '@testing-library/react'
+import { describe, it, expect, vi, beforeEach, afterEach, onTestFinished } from 'vitest'
+import { render, waitFor, act } from '@testing-library/react'
 import type { EditorAdapter, Project, RenderEvent, VersionEntry, WaveformChunk } from '../../types'
 import type { ImageElement } from '../../types'
 import VideoEditor from '../VideoEditor'
+import { installCanvasHarness, selectCanvasItem } from '../timeline/__tests__/_canvasSelect'
 
 // ── FIX 3 regression ──────────────────────────────────────────────────────────
 // Shift+Delete (VideoEditor.tsx's `handleRippleDelete`) reaches cuts.ts's
@@ -120,15 +121,20 @@ describe('VideoEditor — ripple-delete densifies caption lanes (FIX 3)', () => 
       },
     } as Partial<Project>)
 
-    const { getAllByText } = render(
-      <VideoEditor project={initial} adapter={adapter} onProjectChange={vi.fn()} slots={{ exportActions: <div /> }} />,
+    onTestFinished(installCanvasHarness())
+    const { container } = render(
+      <VideoEditor
+        project={initial}
+        adapter={adapter}
+        onProjectChange={vi.fn()}
+        slots={{ exportActions: <div /> }}
+      />,
     )
 
-    // Additive (metaKey) click sidesteps the plain-click playhead-seek branch,
-    // which needs real layout metrics jsdom doesn't provide — same trick
-    // VideoEditor.test.tsx's overlay-selection tests use.
-    const clipA = (await waitFor(() => getAllByText('▪ video')))[0]
-    fireEvent.click(clipA, { metaKey: true })
+    // Additive (metaKey) click, matching the DOM version's modifier.
+    // `{ type: 'video' }` resolves the FIRST video item in draw order —
+    // clip-A — same as the DOM version's `getAllByText('▪ video')[0]`.
+    selectCanvasItem(container, initial, { type: 'video' }, { metaKey: true })
 
     await act(async () => {
       document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Delete', shiftKey: true }))

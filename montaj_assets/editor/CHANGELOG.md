@@ -6,6 +6,83 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+### Video editor
+
+- **BREAKING: the DOM timeline is removed — canvas is the only timeline.**
+  The `VideoEditor` `timeline?: { canvas: boolean }` prop is gone from
+  `VideoEditorProps`; a host that still passes it fails typecheck. The old
+  DOM-rows implementation (one positioned `<div>` per visual clip / audio
+  item) is deleted from the package outright, not kept behind a flag. A host
+  that never passed the prop typechecks with no changes required, but its
+  runtime behavior changes silently: it used to fall onto the DOM-rows path
+  by default, and now gets the canvas timeline instead — which needs
+  `EditorAdapter.getWaveformPeaks` and `getFilmstrip` implemented to draw
+  per-clip/audio-lane waveforms and filmstrip thumbnails. Both stay optional
+  and feature-detected, so a host missing either loses that imagery with no
+  error, not a crash. A full migration runbook for consumer hosts — exact
+  adapter method signatures, greppable call-site patterns, and a verification
+  checklist — is maintained internally.
+- **Ported the subcut-regenerate control to the canvas timeline.** It used to
+  be a Scissors button on the old DOM clip rows, which would have made it
+  unreachable — and effectively retired for good — once those rows came out;
+  instead it moved across intact. It appears on a selected clip once the host
+  enables regeneration, the clip still carries its generation provenance, and
+  the clip is at least 3 seconds long, the same conditions the button always
+  required. A "queued" badge shows on a clip the host reports as queued, but
+  the button itself stays clickable while queued, so a queued clip can still
+  be reopened and resubmitted rather than getting locked out. Clicking the
+  button toggles the tool open and closed. It's rendered as a real HTML
+  control positioned over the canvas surface rather than painted into it, so
+  it keeps a genuine button's accessible name, title, and hover state, and it
+  now has test coverage it never had before.
+- **Reorganized the editor panels: left browses, right inspects.** The left
+  sidebar is now a tabbed browser with an icon rail — **Media**, **Captions**
+  (the default) and **Versions** — and the right panel holds only the
+  properties of what is selected. Previously one sidebar stacked both jobs,
+  which is why the version list felt cramped and the properties panel had
+  nowhere to grow. The tab shell (`video/panels/LeftPanelTabs.tsx`) is generic:
+  a new tab is one `{ id, icon, label, content }` entry, so Audio/Effects/Text
+  drop in later without touching it. The active tab persists across reloads,
+  and a tab keeps its state (scroll position, sub-tab, a half-finished edit)
+  when you switch away and back. The right panel is always present, showing a
+  short prompt when nothing is selected, so the preview and timeline never
+  resize as selection changes. The preview and timeline themselves are
+  unchanged. This applies to the three-column layout (the one a host opts into
+  with `slots.mediaPanel`); the classic layout's arrangement is untouched.
+- **Version history shows every version, by name and date.** The list no longer
+  collapses to one row per backend "run", and the "Run N" prefix is gone: run
+  is plumbing that was never meant to surface, and collapsing by it hid real
+  saved versions. Each version is now its own row with **Compare** and
+  **Restore**, newest first, with auto-generated labels humanized ("Draft",
+  "Exported", "Auto-save before restore", "Untitled save") and operator-typed
+  names shown verbatim. Compare and Restore behave exactly as before.
+- **BREAKING: `renderClipInspector` is removed** from `VideoEditorProps`, and
+  clip properties are now edited in the right panel instead of a modal.
+  Selecting a video clip edits its volume, mute and speed there; selecting an
+  audio track edits its label, volume, mute, fades, ducking, trim and position.
+  A host no longer supplies any of that. Hosts with host-only per-clip UI use
+  the new, narrower `renderGenerationPanel?: (ctx: { clipId: string }) =>
+  ReactNode` seam, which the editor renders inside the properties panel beneath
+  the clip properties when a video clip is selected. Deleting an audio track is
+  deliberately not in the panel (destructive, and the panel is somewhere you
+  land just by selecting) — the timeline's Delete/Backspace still does it.
+- **Speed changes from the panel still ripple.** The retired modal closed the
+  gap a speed-up leaves behind when the magnet is on; the editor's commit
+  handler now owns that, folded into the same undo step as the speed change
+  itself.
+- **Redesigned the overlay properties panel as a Transform inspector.** The flat
+  stack of five number fields is now a sectioned panel: a **Scale** slider with
+  X/Y boxes and a uniform-scale lock, **Position** X/Y, a **Rotate** box with a
+  circular dial (keyboard operable, Shift for coarse steps), **Opacity**, a
+  six-button **Align** row that snaps to the frame edges using the same math as
+  the preview's drag snapping, and a **Reset**. Every animatable row keeps its
+  keyframe diamond, and the section header gains a keyframe unit covering all
+  five properties at once plus arrows that jump the playhead between keyframes.
+  When nothing is selected the panel shows a short prompt instead of vanishing.
+  Keyframe persistence is unchanged: every control routes through the same
+  auto-keyframe rule, so editing an already-animated property adds a keyframe
+  at the playhead rather than overwriting the animation.
+
 ### Both editors
 
 - **Added: visible Undo (and Redo) toolbar buttons.** Undo/redo was previously

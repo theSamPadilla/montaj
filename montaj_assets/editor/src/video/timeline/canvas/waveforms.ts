@@ -4,9 +4,9 @@
  * (draw.ts) call between the fill/border and the label.
  *
  * ── Two render targets, one pipeline ─────────────────────────────────────
- * - Audio lanes: a full-bar waveform, replacing the DOM path's fixed PNG
- *   chunks (`AudioWaveformLayer.tsx`) in canvas mode only — legacy DOM mode
- *   is untouched. `audioTrackSourceWindow` / `sourceTimeToBarFraction` below
+ * - Audio lanes: a full-bar waveform, replacing the retired DOM path's fixed
+ *   PNG chunks (`AudioWaveformLayer.tsx`, since deleted).
+ *   `audioTrackSourceWindow` / `sourceTimeToBarFraction` below
  *   are ports of that component's trim-alignment math (lines 75–89): same
  *   inputs, same positioning, just expressed as 0–1 fractions instead of CSS
  *   percentages so the canvas painter can multiply by `rect.width` directly.

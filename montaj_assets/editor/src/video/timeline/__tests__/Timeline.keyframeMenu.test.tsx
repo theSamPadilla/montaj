@@ -11,50 +11,26 @@
  * `TimelineCanvas`'s `contextmenu` handler does its own hit-test and calls
  * `onKeyframeMenu` with CLIENT coordinates; `Timeline` owns the menu's
  * open/closed state and renders it as a `position: fixed` DOM overlay —
- * mirrors `Timeline.fadeCurveMenu.test.tsx`'s own stubbing.
+ * mirrors `Timeline.fadeCurveMenu.test.tsx`'s own stubbing (`installCanvasHarness`,
+ * see `_canvasSelect.ts`).
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, cleanup, fireEvent, screen } from '@testing-library/react'
 import type { Project } from '../../../types'
 import { createPlaybackClock } from '../../playback-clock'
 import Timeline from '../Timeline'
-import { computeDerivedTiming } from '../timeline-model'
 import { computeTimelineLayout } from '../canvas/draw'
-import { fitPxPerSecond, timeToX, type Viewport } from '../canvas/viewport'
+import { installCanvasHarness, SURFACE_LEFT, timeToClientX } from './_canvasSelect'
 
-const SURFACE_LEFT = 100
-const SURFACE_WIDTH = 1000
-
-let realGetContext: typeof HTMLCanvasElement.prototype.getContext
-let realGetRect: typeof Element.prototype.getBoundingClientRect
+let uninstall: () => void
 
 beforeEach(() => {
-  realGetContext = HTMLCanvasElement.prototype.getContext
-  realGetRect = Element.prototype.getBoundingClientRect
-  HTMLCanvasElement.prototype.getContext = (() =>
-    new Proxy({}, {
-      get(_t, prop: string) {
-        if (prop === 'createLinearGradient') return () => ({ addColorStop: () => {} })
-        return () => {}
-      },
-      set() { return true },
-    })) as unknown as typeof HTMLCanvasElement.prototype.getContext
-
-  Element.prototype.getBoundingClientRect = function (this: Element) {
-    const isSurface = (this as HTMLElement).hasAttribute?.('data-timeline-canvas')
-    const left = isSurface ? SURFACE_LEFT : 0
-    const width = isSurface ? SURFACE_WIDTH : SURFACE_LEFT + SURFACE_WIDTH
-    return {
-      x: left, y: 0, top: 0, left, right: left + width, bottom: 200,
-      width, height: 200, toJSON: () => ({}),
-    } as DOMRect
-  }
+  uninstall = installCanvasHarness()
 })
 
 afterEach(() => {
   cleanup()
-  HTMLCanvasElement.prototype.getContext = realGetContext
-  Element.prototype.getBoundingClientRect = realGetRect
+  uninstall()
 })
 
 /** o0 (2s-4s, overlay) keyframed on offsetX at t=0.5 AND t=1.5, and on
@@ -92,7 +68,6 @@ function mount(project: Project = makeProject()) {
       onProjectChange={onProjectChange}
       onOverlayEdit={onOverlayEdit}
       selectedIds={['o0']}
-      timeline={{ canvas: true }}
     />,
   )
   const surface = utils.container.querySelector('[data-timeline-canvas]') as HTMLElement
@@ -101,15 +76,13 @@ function mount(project: Project = makeProject()) {
 
 /** CLIENT (x, y) for the diamond at item-relative `t` on `project`'s o0,
  *  computed the same way `hit-test.ts`'s keyframe zone does: `item.start + t`
- *  through the SAME fit-to-view viewport the mounted surface settles to on
- *  render, at a y a couple px above the row's own bottom edge (inside the
- *  bottom strip zone the diamond hit-tests in). */
+ *  through `timeToClientX` — the SAME fit-to-view viewport the mounted
+ *  surface settles to on render — at a y a couple px above the row's own
+ *  bottom edge (inside the bottom strip zone the diamond hit-tests in). */
 function keyframeClientPoint(project: Project, t: number) {
-  const { totalDuration } = computeDerivedTiming(project)
-  const vp: Viewport = { pxPerSecond: fitPxPerSecond(SURFACE_WIDTH, totalDuration), scrollSeconds: 0, widthPx: SURFACE_WIDTH }
   const row = computeTimelineLayout(project).rows[0]
-  const x = timeToX(2 + t, vp)   // o0.start is 2
-  return { clientX: SURFACE_LEFT + x, clientY: row.y + row.height - 2 }
+  const clientX = timeToClientX(project, 2 + t)   // o0.start is 2
+  return { clientX, clientY: row.y + row.height - 2 }
 }
 
 /** Easing buttons render VISIBLE text (unlike the icon-only fade picker), so

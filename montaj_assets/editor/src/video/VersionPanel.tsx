@@ -16,19 +16,40 @@ function parseVersion(v: ProjectVersion): { run: number; label: string } {
   return m ? { run: parseInt(m[1]), label: m[2] } : { run: 0, label: v.message }
 }
 
-export function dedupeVersions(versions: ProjectVersion[]): ProjectVersion[] {
+const KNOWN_LABELS: Record<string, string> = {
+  draft: 'Draft',
+  final: 'Final',
+  pending: 'Pending',
+  export: 'Exported',
+  'autosave before restore': 'Auto-save before restore',
+}
+
+/** Turns a raw parsed label into what the operator sees. Known backend labels
+ *  get a human-readable name; an empty label (no message) reads as "Untitled
+ *  save" rather than blank; anything else is an operator-typed name and is
+ *  shown verbatim, unmangled apart from surrounding whitespace. Returns the
+ *  TRIMMED name, not the raw one: the save path already trims what it stores
+ *  (`nameInput.trim()` below), so stray padding here only ever comes from a
+ *  hand-edited commit message, and rendering it would just misalign the row. */
+export function humanizeLabel(label: string): string {
+  const trimmed = label.trim()
+  if (trimmed === '') return 'Untitled save'
+  const known = KNOWN_LABELS[trimmed.toLowerCase()]
+  return known ?? trimmed
+}
+
+function timestampMs(v: ProjectVersion): number {
+  const ms = Date.parse(v.timestamp)
+  return Number.isNaN(ms) ? 0 : ms
+}
+
+/** Every saved version gets its own row — no collapsing by backend "run".
+ *  Only the run-0 init baseline is filtered out. Sorted newest first by
+ *  timestamp; the sort is stable so same-timestamp entries keep their input
+ *  order, and it never mutates the caller's array. */
+export function listVersions(versions: ProjectVersion[]): ProjectVersion[] {
   const nonInit = versions.filter(v => parseVersion(v).run > 0)
-  const byRun = new Map<number, ProjectVersion>()
-  for (const v of nonInit) {
-    const { run, label } = parseVersion(v)
-    const existing = byRun.get(run)
-    const isDefault = label === 'draft' || label === 'final' || label === 'pending'
-    if (!existing) { byRun.set(run, v); continue }
-    const { label: existingLabel } = parseVersion(existing)
-    const existingIsDefault = existingLabel === 'draft' || existingLabel === 'final' || existingLabel === 'pending'
-    if (existingIsDefault && !isDefault) byRun.set(run, v)
-  }
-  return [...byRun.values()].sort((a, b) => parseVersion(b).run - parseVersion(a).run)
+  return [...nonInit].sort((a, b) => timestampMs(b) - timestampMs(a))
 }
 
 interface VersionPanelProps {
@@ -49,7 +70,7 @@ interface VersionPanelProps {
 export default function VersionPanel({ versions, restoring, onRestore, onSaveVersion, saving, onCompareVersion }: VersionPanelProps) {
   const [open, setOpen] = useState(true)
   const [nameInput, setNameInput] = useState('')
-  const deduped = dedupeVersions(versions)
+  const rows = listVersions(versions)
 
   function handleSaveClick() {
     onSaveVersion?.(nameInput.trim() || undefined)
@@ -62,7 +83,7 @@ export default function VersionPanel({ versions, restoring, onRestore, onSaveVer
     // with it — the panel vanished and there was nothing left to click to bring
     // it back, so collapsing it once hid version history for the rest of the
     // session.
-    <div className="shrink-0 border-b border-[var(--editor-border)] flex flex-col overflow-hidden">
+    <div className="flex-1 min-h-0 border-b border-[var(--editor-border)] flex flex-col overflow-hidden">
       <button
         onClick={() => setOpen(o => !o)}
         aria-expanded={open}
@@ -70,8 +91,8 @@ export default function VersionPanel({ versions, restoring, onRestore, onSaveVer
       >
         <span className="text-xs font-medium text-[var(--editor-text)]/60 uppercase tracking-wide">
           Versions
-          {deduped.length > 0 && (
-            <span className="ml-1.5 text-[var(--editor-text)]/40 normal-case tracking-normal">{deduped.length}</span>
+          {rows.length > 0 && (
+            <span className="ml-1.5 text-[var(--editor-text)]/40 normal-case tracking-normal">{rows.length}</span>
           )}
         </span>
         <span className="text-[var(--editor-text)]/50 text-[10px]">{open ? '▲' : '▼'}</span>
@@ -101,27 +122,18 @@ export default function VersionPanel({ versions, restoring, onRestore, onSaveVer
 
       {/* Padding lives on the INNER box: on the collapsing element itself it
           survives `max-height: 0` and leaves a stray 16px strip under the
-          header. */}
-      <div
-        className="overflow-y-auto"
-        style={{ maxHeight: open ? 224 : 0, transition: 'max-height 0.15s ease' }}
-      >
+          header. The collapse stays on the LIST, never on the whole panel —
+          see the module-level note above the header button. */}
+      <div className={open ? 'flex-1 min-h-0 overflow-y-auto' : 'h-0 overflow-hidden'}>
       <div className="p-2 flex flex-col gap-1.5">
-        {deduped.length === 0 ? (
+        {rows.length === 0 ? (
           <p className="text-xs text-[var(--editor-text)]/55 text-center mt-2 px-1 leading-relaxed">No saved versions yet.</p>
-        ) : deduped.map(v => {
-          const { run, label } = parseVersion(v)
-          const isDefault = label === 'draft' || label === 'final' || label === 'pending'
+        ) : rows.map(v => {
+          const { label } = parseVersion(v)
+          const name = humanizeLabel(label)
           return (
             <div key={v.hash} className="rounded border border-[var(--editor-border)] bg-[var(--editor-surface)] p-2 flex flex-col gap-1">
-              <div className="flex items-center gap-1.5">
-                <span className="text-[10px] text-[var(--editor-text)]/50 shrink-0">Run {run}</span>
-                {isDefault ? (
-                  <span className="text-[10px] text-[var(--editor-text)]/60 capitalize">{label}</span>
-                ) : (
-                  <span className="text-xs font-medium text-[var(--editor-text)] truncate capitalize" title={label}>{label}</span>
-                )}
-              </div>
+              <span className="text-xs font-medium text-[var(--editor-text)] truncate" title={name}>{name}</span>
               <span className="text-[10px] text-[var(--editor-text)]/55">{formatTime(v.timestamp)}</span>
               <div className="flex items-center gap-2.5">
                 <button

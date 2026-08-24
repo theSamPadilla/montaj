@@ -1,27 +1,25 @@
 import { useEffect, useMemo, useRef, useState, type MutableRefObject, type ReactNode } from 'react'
+import { Scissors } from 'lucide-react'
 import { EASING_NAMES } from '@bycrux/timeline-core'
-import AudioTrackRow from './AudioTrackRow'
-import type { GetWaveformChunks, ResolveFilePath } from './AudioWaveformLayer'
-import type { FilmstripIndex, GetFilmstripArgs, GetWaveformPeaksArgs, PeaksData, Project } from '../../types'
+import type { FilmstripIndex, GetFilmstripArgs, GetWaveformPeaksArgs, PeaksData, Project, ResolveFilePath } from '../../types'
 import type { EasingName, KeyframeProp, VisualItem } from '../../schema'
 import { reflowMagneticLanes } from '../audioMagnet'
 import { normalizeCaptionLanes } from '../captionLanes'
 import { collapseGaps, setClipSpeed } from '../cuts'
 import { removeKeyframe, setKeyframeEasing } from '../keyframeOps'
-import { ratioFromClientX } from './utils'
 import { useTimelineZoom } from './useTimelineZoom'
 import { TimelineContext, type TimelineContextValue } from './TimelineContext'
 import type { PlaybackClock } from '../playback-clock'
 import Scrubber from './Scrubber'
 import TrackGutter from './TrackGutter'
-import { computeTimelineLayout, TIMELINE_COLORS } from './canvas/draw'
+import { computeTimelineLayout, TIMELINE_COLORS, type TimelineLayout } from './canvas/draw'
 import { DEFAULT_FADE_CURVE, fadeCurveIconPoints, type FadeCurve } from './canvas/fade-curve'
+import { VISUAL_EDGE_TOLERANCE_PX } from './canvas/hit-test'
 import { mapTrackItems, normalizeTracks, updateAudioTrack } from './timeline-model'
-import VisualTrackRow from './VisualTrackRow'
 import { deleteSelection, toggleSelection } from './multiSelectOps'
-import { computeAutoCrossfade, computeDerivedTiming, groupAudioLanes, trackItems } from './timeline-model'
+import { computeAutoCrossfade, computeDerivedTiming, trackItems } from './timeline-model'
 import TimelineCanvas, { useCanvasZoomControls, type ZoomControls } from './canvas/TimelineCanvas'
-import { useViewportStore, useViewportValue, xToTime } from './canvas/viewport'
+import { timeToX, useViewportStore, useViewportValue, xToTime, type ViewportStore } from './canvas/viewport'
 import { useKeymap, matchesArrowLeft, matchesArrowRight, matchesDelete, matchesModKey } from '../keymap'
 import { Tooltip } from '../../ui/Tooltip'
 
@@ -45,9 +43,6 @@ interface TimelineProps {
   clock: PlaybackClock
   onProjectChange?: (p: Project) => void
   onOverlayEdit?: (p: Project) => void
-  /** Open the overlay props dialog (owned by VideoEditor). Threaded to each
-   *  VisualTrackRow so a selected overlay block can offer an edit button. */
-  onEditOverlay?: (id: string) => void
   /** Unified selection — covers both visual items and audio tracks. Captions
    *  share this same array (D1) — a caption id is selected/moved/trimmed on
    *  the canvas timeline exactly like a clip or audio track. Caption editing
@@ -57,7 +52,7 @@ interface TimelineProps {
   onSelectIds?: (ids: string[]) => void
   onInspectClip?: (id: string) => void
   onInspectAudio?: (id: string) => void
-  /** Double-click on a caption block (canvas mode only). Forwarded straight to
+  /** Double-click on a caption block. Forwarded straight to
    *  `TimelineCanvas` — Timeline itself does nothing with it beyond passing it
    *  through, same as `onInspectClip`/`onInspectAudio` above. The host
    *  (VideoEditor) uses this to focus the segment's row in the sidebar
@@ -68,41 +63,22 @@ interface TimelineProps {
    * CapCut's "preview axis" toggle, owned by VideoEditor's track-controls bar
    * and OFF by default — off is exactly the behaviour this timeline has always
    * had, so omitting it changes nothing. On, a yellow cursor line tracks the
-   * pointer and `onHoverScrub` reports the time under it. Canvas mode only:
-   * the DOM track rows keep their own mouse-follow indicator.
+   * pointer and `onHoverScrub` reports the time under it.
    */
   previewAxis?: boolean
   /** The time under the pointer while the axis is on, null when it leaves.
    *  Fires per mousemove — VideoEditor routes it into an external store. */
   onHoverScrub?: (time: number | null) => void
-  /**
-   * SP5 — opt into the canvas track-row area. Mirrors the `engine` (SP4)
-   * host-knob precedent. Absent or `{ canvas: false }`: the existing DOM
-   * track rows (visual tracks + audio lanes), unchanged — this is the
-   * non-regression guarantee SP5 tests against, but captions pay for it:
-   * DOM mode has no caption row at all, so captions can only be edited
-   * through the sidebar transcript panel, with no timeline retiming
-   * available there. `{ canvas: true }`: the DOM track rows are replaced by
-   * one `TimelineCanvas` surface with its own px-per-second viewport, and
-   * captions get their own row IN it — selected, moved and trimmed exactly
-   * like a clip, through the unified `selectedIds`.
-   */
-  timeline?: { canvas: boolean }
-  /** Audio-waveform fetcher, threaded to every AudioWaveformLayer. In V4 the
-   *  VideoEditor wires this from `adapter.getWaveformChunks`. Absent → no
-   *  waveforms render (graceful). */
-  getWaveformChunks?: GetWaveformChunks
   /** Resolves a waveform chunk's host path into a displayable URL. */
   resolveFilePath?: ResolveFilePath
   /** Zoom-bucketed peaks fetcher for the canvas timeline's waveforms (T6),
-   *  threaded from `adapter.getWaveformPeaks`. Canvas-mode only — passed to
-   *  `TimelineCanvas` and ignored by the DOM track rows. Absent → no
-   *  waveforms anywhere (graceful). */
+   *  threaded from `adapter.getWaveformPeaks`. Passed straight to
+   *  `TimelineCanvas`. Absent → no waveforms anywhere (graceful). */
   getWaveformPeaks?: (args: GetWaveformPeaksArgs) => Promise<PeaksData>
   /** Filmstrip-index fetcher for the canvas timeline's tile strips + hover-
-   *  scrub thumb (T7), threaded from `adapter.getFilmstrip`. Canvas-mode
-   *  only — passed to `TimelineCanvas` and ignored by the DOM track rows.
-   *  Absent → no filmstrips or thumbs anywhere (graceful). */
+   *  scrub thumb (T7), threaded from `adapter.getFilmstrip`. Passed straight
+   *  to `TimelineCanvas`. Absent → no filmstrips or thumbs anywhere
+   *  (graceful). */
   getFilmstrip?: (args: GetFilmstripArgs) => Promise<FilmstripIndex>
   /** Host-computed gate for the per-clip subcut-regenerate affordance (Montaj:
    *  ai_video projects). The package never reads `projectType`. */
@@ -178,6 +154,140 @@ function FadeCurveIcon({ curve, active }: { curve: FadeCurve; active: boolean })
   )
 }
 
+/** Gap between a clip's right edge and the right edge of its HTML chrome, in
+ *  CSS px. Derived from the trim handle's own grab width rather than picked, so
+ *  the Scissors button can never cover the band a trim has to be started in —
+ *  a button sitting on the last two pixels of the handle is a trim you can't
+ *  begin, which is exactly the kind of overlap a magic number drifts into. */
+export const CLIP_CHROME_RIGHT_PAD_PX = VISUAL_EDGE_TOLERANCE_PX + 2
+
+/**
+ * Per-clip HTML chrome pinned over the canvas timeline: the subcut-regenerate
+ * Scissors button and the "queued" badge.
+ *
+ * ── Why HTML and not paint ───────────────────────────────────────────────
+ * These two affordances lived on the DOM clip rows (`VisualTrackRow`). The
+ * canvas draws clips as pixels, so there is no per-clip element to hang a
+ * button off — and a real button is what a click target with a title, an
+ * accessible name and a hover state wants to be. Adding a per-clip button
+ * sub-zone to `hit-test.ts` (plus the tap-vs-drag disambiguation that implies)
+ * is far more machinery than two pieces of chrome need, so instead each one is
+ * an absolutely-positioned HTML node placed by the SAME layout + viewport math
+ * the painter uses: `row.y`/`row.height` from `computeTimelineLayout`, and
+ * `timeToX` for the item's span.
+ *
+ * ── Why it is a SIBLING of the canvas surface, not a child ───────────────
+ * `TimelineCanvas` binds `mousedown` on its own container element, and a
+ * mousedown there STARTS A GESTURE (scrub, drag or trim). A button nested
+ * inside that container would therefore start a gesture underneath its own
+ * click — and `onMouseDown={e => e.stopPropagation()}` cannot prevent it,
+ * because React delegates synthetic events to its ROOT container: the
+ * canvas' own native listener sits between the button and that root, so it
+ * fires first and a synthetic handler is already too late. Stopping it would
+ * mean an imperative native listener per button.
+ *
+ * Rendering the chrome OUTSIDE `[data-timeline-canvas]` removes the hazard by
+ * construction — the canvas' listener is never on the propagation path at
+ * all — and costs nothing in alignment: the chrome's positioning context is
+ * the flex column that wraps the canvas and nothing else, whose content box is
+ * exactly the surface's box (one `w-full` child with an explicit height). The
+ * remaining bubble path is Timeline's own container click, which already
+ * excludes `button` from its background-click handling.
+ *
+ * `position: absolute` (not the `fixed` + clientX/clientY snapshot the fade and
+ * keyframe menus use) because this chrome is persistent: it has to stay pinned
+ * to a clip that pans and rescales, not sit where a one-shot right-click
+ * happened.
+ */
+function CanvasClipChrome({
+  layout,
+  viewportStore,
+  selectedIds,
+  regenEnabled,
+  isClipQueued,
+  subcutClipId,
+  setSubcutClipId,
+}: {
+  layout: TimelineLayout
+  viewportStore: ViewportStore
+  selectedIds: string[]
+  regenEnabled?: boolean
+  isClipQueued?: (itemId: string) => boolean
+  subcutClipId: string | null
+  setSubcutClipId: (id: string | null) => void
+}) {
+  // Subscribed HERE, not lifted to Timeline's top level — see the "Why HTML
+  // and not paint" note above this component. This chrome is the only thing
+  // that needs a re-render when the viewport pans or zooms (it has to stay
+  // pinned to a clip that just moved under it); isolating the subscription to
+  // this component means a wheel-zoom frame re-renders ONLY this chrome, not
+  // Timeline's whole subtree (`TimelineCanvas`, `TrackGutter`, `Scrubber`,
+  // etc). Same isolation `CanvasZoomBadge` already uses in TimelineCanvas.tsx,
+  // for the same reason.
+  const viewport = useViewportValue(viewportStore)
+
+  // Before the first layout pass there is no scale, so every clip would
+  // collapse onto x=0 and the chrome would stack up in the corner.
+  if (viewport.pxPerSecond <= 0) return null
+
+  return (
+    <>
+      {layout.rows.flatMap(row => row.items.flatMap(item => {
+        const isSel = selectedIds.includes(item.id)
+        const queued = isClipQueued?.(item.id) === true
+        // The gate, carried over verbatim from `VisualTrackRow`: the clip is
+        // selected, the host has enabled regeneration for this project, the
+        // clip still carries its frozen generation provenance, and it is long
+        // enough to be worth cutting into sub-shots. Queued is a BADGE, not a
+        // disable — a queued clip can be re-opened and re-submitted.
+        const showSubcut = isSel && regenEnabled && item.generation && (item.end - item.start) >= 3
+        if (!queued && !showSubcut) return []
+
+        const x0 = timeToX(item.start, viewport)
+        const x1 = timeToX(item.end, viewport)
+        if (x1 <= 0 || x0 >= viewport.widthPx) return []   // scrolled off-surface
+        // Right-anchored: the painter writes each clip's label along its LEFT
+        // edge, so the right end is the free space. Clamped so a clip whose
+        // end is off-surface keeps its chrome at the surface edge rather than
+        // parking it out of view.
+        const right = Math.max(CLIP_CHROME_RIGHT_PAD_PX, viewport.widthPx - x1 + CLIP_CHROME_RIGHT_PAD_PX)
+        // A LEFT bound too, so the box is the clip's own span and
+        // `overflow-hidden` can clip to it. The DOM clip rows got this for
+        // free: their chrome sat inside a row element that was already
+        // `overflow-hidden`. The canvas has no per-clip element to inherit
+        // that from, so right-anchored chrome on a very narrow clip used to
+        // overhang LEFTWARD past the clip's start and read as the
+        // neighbouring clip's badge. Clamped at 0 the same way `right` is, so
+        // a clip whose start is off-surface keeps its box on the surface.
+        // Content is right-aligned, so a box too narrow for both clips the
+        // badge off (it is leftmost) and keeps the button.
+        const left = Math.max(0, x0)
+
+        return [(
+          <div
+            key={item.id}
+            className="pointer-events-none absolute z-20 flex items-center justify-end gap-1 overflow-hidden"
+            style={{ top: row.y, height: row.height, left, right }}
+          >
+            {queued && (
+              <span className="rounded bg-gray-900/70 px-1 text-[10px] font-medium text-amber-300/80">queued</span>
+            )}
+            {showSubcut && (
+              <button
+                type="button"
+                className="pointer-events-auto cursor-pointer rounded bg-gray-900/70 p-0.5 text-gray-200 opacity-50 transition-opacity hover:opacity-100"
+                title="Subcut regenerate"
+                aria-label="Subcut regenerate"
+                onClick={(e) => { e.stopPropagation(); setSubcutClipId(subcutClipId === item.id ? null : item.id) }}
+              ><Scissors size={10} /></button>
+            )}
+          </div>
+        )]
+      }))}
+    </>
+  )
+}
+
 /** Human-readable labels for `EASING_NAMES` (@bycrux/timeline-core) — the
  *  keyframe-strip easing picker's six buttons. Kept as a plain lookup rather
  *  than a formatter, since 'ease-in-out' has no mechanical rule that reads
@@ -191,7 +301,7 @@ const EASING_LABELS: Record<EasingName, string> = {
   hold: 'Hold',
 }
 
-export default function Timeline({ project, clock, onProjectChange, onOverlayEdit, onEditOverlay, selectedIds = [], onSelectIds, onInspectClip, onInspectAudio, onEditCaption, rippleMode = false, previewAxis = false, onHoverScrub, getWaveformChunks, resolveFilePath, getWaveformPeaks, getFilmstrip, regenEnabled, isClipQueued, renderSubcutRegen, timeline, modalOpen = false, onOpenGoToTime, actionsRef }: TimelineProps) {
+export default function Timeline({ project, clock, onProjectChange, onOverlayEdit, selectedIds = [], onSelectIds, onInspectClip, onInspectAudio, onEditCaption, rippleMode = false, previewAxis = false, onHoverScrub, resolveFilePath, getWaveformPeaks, getFilmstrip, regenEnabled, isClipQueued, renderSubcutRegen, modalOpen = false, onOpenGoToTime, actionsRef }: TimelineProps) {
 
   // Click/shift-click handler — additive selection on shift or meta (cmd/ctrl).
   // Under D1, captions share `selectedIds` with everything else, so there is
@@ -457,38 +567,23 @@ export default function Timeline({ project, clock, onProjectChange, onOverlayEdi
   // re-runs on real edits (see above for why the fades belong in the key).
   }, [audioTracks.map(t => `${t.id}:${t.start}:${t.end}:${t.muted}:${t.fadeIn ?? ''}:${t.fadeOut ?? ''}`).join('|')])
 
-  const [hoverPct, setHoverPct]               = useState<number | null>(null)
-  const [draggingPlayhead, setDraggingPlayhead] = useState(false)
-
   // The tabIndex={0} root below — Delete/Enter's guards below check focus is
   // inside it before firing (see the useKeymap block), restoring the pre-T9
   // scoping those two bindings had (arrows/Escape were already document-level
   // pre-SP5 and stay that way — see the useKeymap block's own comment).
   const rootRef                               = useRef<HTMLDivElement>(null)
-  const scrubberRef                           = useRef<HTMLDivElement>(null)
-  const overlayDraggedRef                     = useRef(false)
-  const [keyNavTime, setKeyNavTime]           = useState<number | null>(null)
-  const keyNavTimerRef                        = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   const [subcutClipId, setSubcutClipId]       = useState<string | null>(null)
 
-  const { zoom, zoomRef, scrollRef, zoomTo } = useTimelineZoom(totalDuration)
+  const { scrollRef } = useTimelineZoom()
 
-  // ── Zoom chrome, one control set over two models ──
-  // The DOM path zooms a scroll container by a multiplier; the canvas path
-  // pans/zooms a px-per-second viewport. Both feed the same three buttons via
-  // this adapter, so the chrome below doesn't branch and legacy mode renders
-  // exactly what it rendered before.
-  const canvasMode = timeline?.canvas === true
+  // ── Zoom chrome ──
+  // The canvas surface pans/zooms a px-per-second viewport; these three
+  // buttons drive it through `useCanvasZoomControls`. This used to be an
+  // adapter over two zoom models (the retired DOM rows zoomed a scroll
+  // container by a multiplier instead) — there is only the one now.
   const viewportStore = useViewportStore()
-  const canvasZoom = useCanvasZoomControls(viewportStore, totalDuration)
-  const zoomControls: ZoomControls = canvasMode ? canvasZoom : {
-    badge: <span className="text-[10px] font-mono text-gray-500 w-7 text-center tabular-nums select-none">{zoom}×</span>,
-    zoomIn:  () => zoomTo(zoomRef.current + 1),
-    zoomOut: () => zoomTo(zoomRef.current - 1),
-    fit:     () => zoomTo(1),
-    showFit: zoom > 1,
-  }
+  const zoomControls: ZoomControls = useCanvasZoomControls(viewportStore, totalDuration)
 
   // ── Timeline's own keymap — arrows (frame-step) and delete (two-step:
   // deleteSelection + conditional collapseGaps). SP5 T9: these bindings
@@ -518,9 +613,6 @@ export default function Timeline({ project, clock, onProjectChange, onOverlayEdi
       guard: () => totalDuration > 0,
       action: () => {
         clock.set(0)
-        setKeyNavTime(0)
-        if (keyNavTimerRef.current) clearTimeout(keyNavTimerRef.current)
-        keyNavTimerRef.current = setTimeout(() => setKeyNavTime(null), 1500)
       },
     },
     {
@@ -534,9 +626,6 @@ export default function Timeline({ project, clock, onProjectChange, onOverlayEdi
       // The jump belongs at the last real element, not into that headroom.
       action: () => {
         clock.set(contentDuration)
-        setKeyNavTime(contentDuration)
-        if (keyNavTimerRef.current) clearTimeout(keyNavTimerRef.current)
-        keyNavTimerRef.current = setTimeout(() => setKeyNavTime(null), 1500)
       },
     },
     {
@@ -553,9 +642,6 @@ export default function Timeline({ project, clock, onProjectChange, onOverlayEdi
         const dir  = matchesArrowRight(e) ? 1 : -1
         const next = Math.max(0, Math.min(totalDuration, clock.get() + dir * step))
         clock.set(next)
-        setKeyNavTime(next)
-        if (keyNavTimerRef.current) clearTimeout(keyNavTimerRef.current)
-        keyNavTimerRef.current = setTimeout(() => setKeyNavTime(null), 1500)
       },
     },
     {
@@ -626,23 +712,13 @@ export default function Timeline({ project, clock, onProjectChange, onOverlayEdi
     return () => { actionsRef.current = null }
   })
 
-  // Subscribing here (rather than inside each DOM row) keeps one subscription
-  // for the whole timeline; the rows that need it read it off the context.
-  // Null in DOM mode, where the rows own the layout and there is no canvas
-  // zoom to track.
   // Same layout the canvas paints from, so the rail's rows line up with the
   // clips exactly rather than by two independent calculations agreeing.
   const canvasLayout = useMemo(() => computeTimelineLayout(project), [project.tracks, project.audio, project.captions])
 
-  const canvasViewport = useViewportValue(viewportStore)
-  const viewport = canvasMode ? canvasViewport : null
-
   const ctx = useMemo<TimelineContextValue>(() => ({
-    viewport,
-    totalDuration, contentDuration, snapBoundaries, zoom, zoomRef, scrollRef, scrubberRef,
-    overlayDraggedRef, clock,
-  }), [viewport, totalDuration, contentDuration, snapBoundaries, zoom, zoomRef, scrollRef, scrubberRef,
-    overlayDraggedRef, clock])
+    contentDuration, clock,
+  }), [contentDuration, clock])
 
   /**
    * Clicks that land on the timeline column but not on any row: the readout
@@ -650,20 +726,13 @@ export default function Timeline({ project, clock, onProjectChange, onOverlayEdi
    * one. They are background, and background belongs to the timeline — not
    * dead chrome.
    *
-   * In CANVAS mode this used to do nothing at all. It maps x→time through the
-   * scrubber's rect, and canvas mode doesn't render the scrubber bar, so
-   * `scrubberRef` is null and every one of these clicks fell out at the
-   * `if (!rect) return` below. The visible result was a ~40px strip under the
-   * toolbar that looked live and ignored you — including for the thing you
-   * most want a background click to do, which is drop the selection.
-   *
-   * Canvas mode now reads the canvas' own x-axis instead, so a background
-   * click does exactly what pressing bare canvas does: clear the selection,
-   * and seek to the clicked time. Clicks to the left of the canvas (over the
-   * track rail, which has no time axis) clear the selection without seeking.
-   * The canvas surface itself stops propagation — the pointer machine has
-   * already seeked on mousedown — so nothing here double-handles a real
-   * timeline click.
+   * This reads the canvas' own x-axis — the only time axis there is now that
+   * the scrubber's overview bar is gone — so a background click does exactly
+   * what pressing bare canvas does: clear the selection, and seek to the
+   * clicked time. Clicks to the left of the canvas (over the track rail,
+   * which has no time axis) clear the selection without seeking. The canvas
+   * surface itself stops propagation — the pointer machine has already seeked
+   * on mousedown — so nothing here double-handles a real timeline click.
    *
    * `pointer-events` note: the controls in the strip (zoom buttons, the go-to
    * time readout) are excluded by the `closest` test below, so isolating them
@@ -673,28 +742,18 @@ export default function Timeline({ project, clock, onProjectChange, onOverlayEdi
     if ((e.target as HTMLElement).closest('button, input, [contenteditable], [data-timeline-chrome]')) return
     if (totalDuration === 0) return
 
-    if (canvasMode) {
-      // Same order the pointer machine emits its effects in for a press on
-      // bare canvas: clear the selection, then seek.
-      handleSelectItem(null, false)
-      const surface = rootRef.current?.querySelector('[data-timeline-canvas]')
-      if (!surface || !viewport) return
-      const surfaceRect = surface.getBoundingClientRect()
-      const x = e.clientX - surfaceRect.left
-      if (x < 0 || x > surfaceRect.width) return   // over the rail — no time here
-      clock.set(Math.max(0, Math.min(totalDuration, xToTime(x, viewport))))
-      return
-    }
-
-    const rect = scrubberRef.current?.getBoundingClientRect()
-    if (!rect) return
-    const clickedTime = ratioFromClientX(e.clientX, rect) * totalDuration
-    const snapThreshold = (8 / rect.width) * totalDuration
-    const boundaries = snapBoundaries
-    for (const b of boundaries) {
-      if (Math.abs(clickedTime - b) < snapThreshold) { clock.set(b); return }
-    }
-    clock.set(clickedTime)
+    // Same order the pointer machine emits its effects in for a press on
+    // bare canvas: clear the selection, then seek.
+    handleSelectItem(null, false)
+    const surface = rootRef.current?.querySelector('[data-timeline-canvas]')
+    if (!surface) return
+    const surfaceRect = surface.getBoundingClientRect()
+    const x = e.clientX - surfaceRect.left
+    if (x < 0 || x > surfaceRect.width) return   // over the rail — no time here
+    // `.get()`, not a subscription: this is an event handler, not something
+    // that renders, and `get()` is the more correct read anyway — mid-pan the
+    // last value React committed can lag a frame behind the store.
+    clock.set(Math.max(0, Math.min(totalDuration, xToTime(x, viewportStore.get()))))
   }
 
   return (
@@ -708,17 +767,12 @@ export default function Timeline({ project, clock, onProjectChange, onOverlayEdi
       // background. Content taller than the pane still scrolls.
       className="flex min-h-full flex-col gap-2 px-3 py-3 select-none outline-none"
       tabIndex={0}
-      onMouseMove={(e) => {
-        const rect = scrubberRef.current?.getBoundingClientRect()
-        if (rect) setHoverPct(ratioFromClientX(e.clientX, rect) * 100)
-      }}
-      onMouseLeave={() => setHoverPct(null)}
       onClick={handleContainerClick}
     >
 
       {/* Zoom controls */}
       {totalDuration > 0 && (
-        <div className={`flex items-center justify-end gap-0.5 -mb-1 ${canvasMode ? 'cursor-pointer' : ''}`}>
+        <div className="flex items-center justify-end gap-0.5 -mb-1 cursor-pointer">
           <Tooltip label="Zoom out">
             <button
               className="text-[11px] leading-none text-gray-500 hover:text-gray-300 w-5 h-5 flex items-center justify-center rounded hover:bg-gray-800 transition-colors"
@@ -746,33 +800,19 @@ export default function Timeline({ project, clock, onProjectChange, onOverlayEdi
         </div>
       )}
 
-      {/* Scroll container for zoomed tracks */}
+      {/* Horizontal overflow guard. This used to be a zoom viewport: the DOM
+          rows were laid out as percentages of the whole project, so zooming
+          meant widening an inner div to `zoom × 100%` and scrolling this
+          container over it. The canvas surface zooms its own px-per-second
+          viewport instead and always fits the width it is given, so nothing
+          in here is ever wider than the pane — this stays only as the guard
+          that keeps an unexpectedly wide child from stretching the page. */}
       <div ref={scrollRef} className="overflow-x-auto">
-      <div style={{ width: zoom > 1 ? `${zoom * 100}%` : '100%' }} className="min-w-full">
 
-      {/* Scrubber + tracks wrapped in a relative container so the hover indicator spans the full height */}
+      {/* Readout strip + tracks, wrapped in a relative container */}
       <div className="relative flex flex-col gap-2">
-        {/* Mouse-follow indicator — DOM mode only. The canvas surface draws its
-            own cursor line (on its own time axis, and only while the preview
-            axis is on); this one is positioned as a percentage of the
-            SCRUBBER's width, which stops being the canvas' time axis the
-            moment you zoom in. The scrubber's hover tooltip (driven by the same
-            `hoverPct`) is unaffected and still reads out the hovered time. */}
-        {!canvasMode && hoverPct !== null && totalDuration > 0 && (
-          <div
-            className="absolute inset-y-0 w-px bg-yellow-400/80 pointer-events-none z-20"
-            style={{ left: `${hoverPct}%` }}
-          />
-        )}
 
-      <Scrubber
-        showBar={!canvasMode}
-        hoverPct={hoverPct}
-        draggingPlayhead={draggingPlayhead}
-        setDraggingPlayhead={setDraggingPlayhead}
-        keyNavTime={keyNavTime}
-        onOpenGoToTime={onOpenGoToTime}
-      />
+      <Scrubber onOpenGoToTime={onOpenGoToTime} />
 
       {/* ── Tracks ── */}
       <div className="flex flex-col gap-1">
@@ -782,19 +822,18 @@ export default function Timeline({ project, clock, onProjectChange, onOverlayEdi
             <span>ffmpeg render — overlays are preview only, final text is burned by ffmpeg</span>
           </div>
         )}
-        {canvasMode ? (
-          // The gutter is a sibling COLUMN, not an overlay: it takes width from
-          // the canvas (which measures its own container) instead of painting
-          // over the clips at t=0. Captions have their own row PAINTED inside
-          // `TimelineCanvas` below, not a separate DOM element — the gutter's
-          // own caption cell is sized from the same layout (`canvasLayout`) so
-          // the two line up. `showCaptionRow` is left at its default (true)
-          // here: `TrackGutter` already gates the cell on `resolved.captions`,
-          // which `computeTimelineLayout` only sets when there ARE captions,
-          // so passing `!!captionTrack?.segments?.length` on top can never
-          // change the outcome — it exists as a host knob for other callers,
-          // not for this one.
-          <div className="flex gap-1">
+        {/* The gutter is a sibling COLUMN, not an overlay: it takes width from
+            the canvas (which measures its own container) instead of painting
+            over the clips at t=0. Captions have their own row PAINTED inside
+            `TimelineCanvas` below, not a separate DOM element — the gutter's
+            own caption cell is sized from the same layout (`canvasLayout`) so
+            the two line up. `showCaptionRow` is left at its default (true)
+            here: `TrackGutter` already gates the cell on `resolved.captions`,
+            which `computeTimelineLayout` only sets when there ARE captions,
+            so passing `!!captionTrack?.segments?.length` on top can never
+            change the outcome — it exists as a host knob for other callers,
+            not for this one. */}
+        <div className="flex gap-1">
             <TrackGutter
               project={project}
               layout={canvasLayout}
@@ -806,11 +845,17 @@ export default function Timeline({ project, clock, onProjectChange, onOverlayEdi
               onSetLaneMuted={handleSetLaneMuted}
               onSetLaneMagnet={handleSetLaneMagnet}
             />
-            <div className="flex min-w-0 flex-1 flex-col gap-1">
-            {/* ── Canvas track-row area — one surface in place of the visual
-                tracks + audio lanes the DOM branch renders below. It owns its
-                own zoom/scroll (px-per-second), so the scrubber above it stays
-                a whole-project overview rather than tracking canvas zoom. ── */}
+            {/* `relative` makes this column the positioning context for the
+                per-clip HTML chrome below — see `CanvasClipChrome`. It holds
+                exactly one in-flow child (the canvas surface, `w-full` with an
+                explicit height), so its content box IS that surface's box and
+                the chrome lands on the same pixels the painter does. */}
+            <div className="relative flex min-w-0 flex-1 flex-col gap-1">
+            {/* ── Canvas track-row area — one surface carrying the visual
+                tracks, audio lanes and caption rows. It owns its own
+                zoom/scroll (px-per-second), so the readout strip above it
+                stays a whole-project readout rather than tracking canvas
+                zoom. ── */}
             <TimelineCanvas
               project={project}
               clock={clock}
@@ -835,63 +880,34 @@ export default function Timeline({ project, clock, onProjectChange, onOverlayEdi
               getFilmstrip={getFilmstrip}
               resolveFilePath={resolveFilePath}
             />
+            {/* ── Per-clip HTML chrome over the canvas ──
+                The subcut-regenerate trigger and the "queued" badge, ported
+                from the DOM clip rows. Passed the STORE, not a subscribed
+                value: unlike the canvas itself, which reads `store.get()`
+                inside its draw to avoid re-rendering, this chrome IS a DOM
+                node that has to be re-laid-out by React on every viewport
+                change or it detaches from its clip the moment you pan or
+                zoom — so it subscribes internally, isolated to itself, the
+                same way `CanvasZoomBadge` isolates its own subscription in
+                TimelineCanvas.tsx. That isolation is the whole point: it
+                keeps a wheel-zoom frame from re-rendering Timeline's entire
+                subtree (this chrome does NOT share a subscription with the
+                zoom badge — each owns its own). */}
+            <CanvasClipChrome
+              layout={canvasLayout}
+              viewportStore={viewportStore}
+              selectedIds={selectedIds}
+              regenEnabled={regenEnabled}
+              isClipQueued={isClipQueued}
+              subcutClipId={subcutClipId}
+              setSubcutClipId={setSubcutClipId}
+            />
             </div>
-          </div>
-        ) : (
-          <>
-            {[...allTracks].reverse().map((trackItems, reversedIdx) => {
-              const trackIdx = allTracks.length - 1 - reversedIdx
-              return (
-                <VisualTrackRow
-                  key={trackIdx}
-                  trackItems={trackItems}
-                  trackIdx={trackIdx}
-                  project={project}
-                  selectedIds={selectedIds}
-                  rippleMode={rippleMode}
-                  onProjectChange={onProjectChange}
-                  onOverlayEdit={onOverlayEdit}
-                  onEditOverlay={onEditOverlay}
-                  onSelectItem={handleSelectItem}
-                  onInspectClip={onInspectClip}
-                  subcutClipId={subcutClipId}
-                  setSubcutClipId={setSubcutClipId}
-                  regenEnabled={regenEnabled}
-                  isClipQueued={isClipQueued}
-                />
-              )
-            })}
-
-            {/* Audio tracks — grouped by lane. The grouping lives in
-                timeline-model so the canvas painter puts each track in the
-                same row this branch does. */}
-            {(() => {
-              const lanes = groupAudioLanes(audioTracks, contentDuration)
-
-              return lanes.map(({ laneIndex: laneIdx, tracks: laneTracks }) => (
-                <AudioTrackRow
-                  key={`audio-lane-${laneIdx}`}
-                  tracks={laneTracks}
-                  laneIndex={laneIdx}
-                  laneCount={lanes.length}
-                  project={project}
-                  onProjectChange={onProjectChange}
-                  onOverlayEdit={onOverlayEdit}
-                  selectedIds={selectedIds}
-                  onSelectItem={handleSelectItem}
-                  onInspect={onInspectAudio}
-                  getWaveformChunks={getWaveformChunks}
-                  resolveFilePath={resolveFilePath}
-                />
-              ))
-            })()}
-          </>
-        )}
+        </div>
 
       </div>
 
       </div>{/* end scrubber+tracks wrapper */}
-      </div>{/* end inner zoom div */}
       </div>{/* end scroll container */}
 
       {/* ── Subcut regen tool (host-rendered via render-prop seam) ──
@@ -909,7 +925,7 @@ export default function Timeline({ project, clock, onProjectChange, onOverlayEdi
         })
       })()}
 
-      {/* ── Fade-shape picker — right-click a fade grip (canvas mode; see
+      {/* ── Fade-shape picker — right-click a fade grip (see
           `TimelineCanvas`'s `contextMenu` handler). `fixed`-positioned at the
           CLIENT coordinates the grip was clicked at, since it renders outside
           the canvas surface's own coordinate space. A full-surface backdrop
@@ -959,7 +975,7 @@ export default function Timeline({ project, clock, onProjectChange, onOverlayEdi
       })()}
 
       {/* ── Keyframe-strip popup (SP9b T3.3) — right-click a keyframe diamond
-          (canvas mode; see `TimelineCanvas`'s `contextMenu` handler). The
+          (see `TimelineCanvas`'s `contextMenu` handler). The
           fade-shape picker's exact sibling: same `fixed`-positioned menu at
           the CLIENT coordinates the diamond was clicked at, same full-surface
           dismiss-on-outside-interaction backdrop. Two sections: the six

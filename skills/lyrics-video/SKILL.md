@@ -178,7 +178,7 @@ Verify the burned-in text looks correct, then trigger the full render with `mont
 }
 ```
 
-**`end` is not optional in practice, and `end: 0` is worse than omitting it.** The timeline draws an audio lane as `left = pct(track.start, total)` and `width = pct(track.end - track.start, total)` (`montaj_assets/editor/src/video/timeline/AudioTrackRow.tsx:170-171`). `end: 0` with `start: 0` makes that width exactly `0%`: the lane row appears, permanently empty, and the song looks like it never landed. It still *plays* — preview filters only on `!muted && src` — so this fails in the one direction that is hardest to notice, looking broken while sounding fine. Set `end` to the song's real duration, from `montaj probe song.mp3`. Set `start` explicitly too, even when it is `0`. And keep `id`: the timeline keys tracks by it for selection and crossfade.
+**`end` is not optional in practice, and `end: 0` is worse than omitting it.** The timeline draws an audio lane from `timeToX(track.start)` to `timeToX(track.end)` (`montaj_assets/editor/src/video/timeline/canvas/draw.ts`, `drawAudioItem`). `end: 0` with `start: 0` makes that span exactly zero-width: the lane row appears, permanently empty, and the song looks like it never landed. It still *plays* — preview filters only on `!muted && src` — so this fails in the one direction that is hardest to notice, looking broken while sounding fine. Set `end` to the song's real duration, from `montaj probe song.mp3`. Set `start` explicitly too, even when it is `0`. And keep `id`: the timeline keys tracks by it for selection and crossfade.
 
 `tracks[0].items` = background video loop OR empty array
 `tracks[1].items` = lyric phrase overlays (one per segment from lyrics_sync)

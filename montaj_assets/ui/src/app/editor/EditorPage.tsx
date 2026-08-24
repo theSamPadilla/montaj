@@ -14,7 +14,7 @@ import BrollAudioPanel, { type Voiceover } from '@/components/media/BrollAudioPa
 import ProjectHeader from '@/components/ProjectHeader'
 import RerunModal from '@/components/RerunModal'
 import { Button } from '@/components/ui/button'
-import ClipInspectModal, { type InspectTarget } from '@/components/timeline/ClipInspectModal'
+import GenerationPanel from '@/components/timeline/GenerationPanel'
 import SubcutRegenTool from '@/components/timeline/SubcutRegenTool'
 import { ProfileAssetsPanel } from './ProfileAssetsPanel'
 import UploadView from './UploadView'
@@ -523,16 +523,13 @@ export default function EditorPage() {
             onBackToSetup={handleBackToSetup}
             regenEnabled={project.projectType === 'ai_video'}
             engine={{ enabled: true }}
-            timeline={{ canvas: true }}
             isClipQueued={(itemId) => (project.regenQueue ?? []).some(e => e.clipId === itemId)}
-            renderClipInspector={({ item, onClose, rippleMode }) => (
-              <ClipInspectModal
+            renderGenerationPanel={({ clipId }) => (
+              <GenerationPanel
                 project={project}
-                target={item as InspectTarget}
+                clipId={clipId}
                 onProjectChange={handleProjectChange}
                 onSave={(p) => api.saveProject(p.id, p)}
-                onClose={onClose}
-                rippleMode={rippleMode}
               />
             )}
             renderSubcutRegen={({ clipId, onClose }) => {

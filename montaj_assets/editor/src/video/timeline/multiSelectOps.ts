@@ -1,4 +1,5 @@
-// Multi-select project mutations shared by VisualTrackRow and AudioTrackRow.
+// Multi-select project mutations shared by the canvas pointer machine
+// (canvas/pointer-machine.ts) and Timeline.tsx.
 //
 // Selection IDs are unified — a single `selectedIds: string[]` covers visual
 // items (project.tracks[*][*]), audio tracks (project.audio.tracks[*]) and
