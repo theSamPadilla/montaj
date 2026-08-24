@@ -96,7 +96,7 @@ describe('OverlayInspector — rendering', () => {
 
     expect(screen.getByLabelText('Offset X')).toHaveValue(10)
     expect(screen.getByLabelText('Offset Y')).toHaveValue(-5)
-    expect(screen.getByLabelText('Scale')).toHaveValue(1.2)
+    expect(screen.getByLabelText('Scale')).toHaveValue(120) // shown as a percentage now
     expect(screen.getByLabelText('Rotation')).toHaveValue(45)
     expect(screen.getByLabelText('Opacity')).toHaveValue(0.5)
   })
@@ -133,11 +133,11 @@ describe('OverlayInspector — rendering', () => {
 
 describe('OverlayInspector — keyframe diamond', () => {
   it('reflects keyframed state per property', () => {
-    const item = overlayItem({ keyframes: [{ prop: 'offsetX', points: [{ t: 0, value: 10 }] }] })
+    const item = overlayItem({ keyframes: [{ prop: 'scale', points: [{ t: 0, value: 1.2 }] }] })
     renderInspector(item, 5)
 
-    expect(screen.getByRole('button', { name: /Remove Offset X keyframe/ })).toHaveAttribute('aria-pressed', 'true')
-    expect(screen.getByRole('button', { name: /Add Scale keyframe/ })).toHaveAttribute('aria-pressed', 'false')
+    expect(screen.getByRole('button', { name: /Remove Scale keyframe/ })).toHaveAttribute('aria-pressed', 'true')
+    expect(screen.getByRole('button', { name: /Add Rotation keyframe/ })).toHaveAttribute('aria-pressed', 'false')
   })
 
   it('toggling an unkeyframed property enables keyframing without moving the overlay', () => {
@@ -157,16 +157,16 @@ describe('OverlayInspector — keyframe diamond', () => {
 
   it('toggling a keyframed property disables keyframing and freezes the current value', () => {
     const item = overlayItem({
-      offsetX: 999, // stale static field — disableKeyframing must overwrite it from the curve
-      keyframes: [{ prop: 'offsetX', points: [{ t: 0, value: 0 }, { t: 10, value: 100 }] }],
+      rotation: 999, // stale static field — disableKeyframing must overwrite it from the curve
+      keyframes: [{ prop: 'rotation', points: [{ t: 0, value: 0 }, { t: 10, value: 90 }] }],
     })
     const { onChange } = renderInspector(item, 5) // localT = 0 -> curve value 0
 
-    fireEvent.click(screen.getByRole('button', { name: /Remove Offset X keyframe/ }))
+    fireEvent.click(screen.getByRole('button', { name: /Remove Rotation keyframe/ }))
 
     const next = onChange.mock.calls[0][0] as VisualItem
-    expect(hasKeyframes(next, 'offsetX')).toBe(false)
-    expect(next.offsetX).toBe(0)
+    expect(hasKeyframes(next, 'rotation')).toBe(false)
+    expect(next.rotation).toBe(0)
   })
 })
 
@@ -336,13 +336,12 @@ describe('OverlayInspector — a mid-typed value survives a playhead tick (FIX 1
 })
 
 describe('OverlayInspector — scale slider', () => {
-  it('reflects the sampled scale, in sync with the value boxes', () => {
+  it('reflects the sampled scale as a percentage, in sync with the slider', () => {
     renderInspector(overlayItem(), 5)
 
     const slider = screen.getByRole('slider', { name: 'Scale slider' }) as HTMLInputElement
     expect(slider.value).toBe('1.2')
-    expect(screen.getByLabelText('Scale')).toHaveValue(1.2)
-    expect(screen.getByLabelText('Scale Y')).toHaveValue(1.2)
+    expect(screen.getByLabelText('Scale')).toHaveValue(120) // 1.2x => 120%
   })
 
   it('tracks a keyframed scale as the playhead moves', () => {
@@ -357,7 +356,7 @@ describe('OverlayInspector — scale slider', () => {
     act(() => { clock.set(15) }) // localT = 10
 
     expect(slider.value).toBe('2')
-    expect(screen.getByLabelText('Scale')).toHaveValue(2)
+    expect(screen.getByLabelText('Scale')).toHaveValue(200) // 2x => 200%
   })
 
   it('previews the slider value on every change', () => {
@@ -423,23 +422,22 @@ describe('OverlayInspector — uniform scale lock', () => {
     expect(lock).toBeDisabled()
   })
 
-  it('drives the same `scale` prop from the Y box as from the X box', () => {
+  it('the scale box takes a percentage and writes it back as a multiplier', () => {
     const { onPreview } = renderInspector(overlayItem(), 5)
 
-    fireEvent.change(screen.getByLabelText('Scale Y'), { target: { value: '2' } })
+    fireEvent.change(screen.getByLabelText('Scale'), { target: { value: '200' } })
 
     expect(onPreview).toHaveBeenCalledTimes(1)
-    const next = onPreview.mock.calls[0][0] as VisualItem
-    expect(next.scale).toBe(2)
+    expect((onPreview.mock.calls[0][0] as VisualItem).scale).toBe(2)
   })
 
-  it('the Y box keyframes `scale` too', () => {
+  it('the scale box keyframes `scale` (in percent) when it is animated', () => {
     const item = overlayItem({
       keyframes: [{ prop: 'scale', points: [{ t: 0, value: 0.5 }, { t: 10, value: 2 }] }],
     })
     const { onPreview } = renderInspector(item, 8) // localT = 3
 
-    fireEvent.change(screen.getByLabelText('Scale Y'), { target: { value: '1.5' } })
+    fireEvent.change(screen.getByLabelText('Scale'), { target: { value: '150' } })
 
     const next = onPreview.mock.calls[0][0] as VisualItem
     expect(trackFor(next, 'scale')!.points.find(p => p.t === 3)?.value).toBe(1.5)
@@ -500,14 +498,6 @@ describe('OverlayInspector — steppers', () => {
 
     const next = onChange.mock.calls[0][0] as VisualItem
     expect(trackFor(next, 'offsetX')!.points.find(p => p.t === 3)?.value).toBe(31)
-  })
-
-  it('gives the Scale Y box its own stepper on the same prop', () => {
-    const { onChange } = renderInspector(overlayItem(), 5)
-
-    fireEvent.click(screen.getByRole('button', { name: 'Increase Scale Y' }))
-
-    expect((onChange.mock.calls[0][0] as VisualItem).scale).toBe(1.21)
   })
 })
 
@@ -841,8 +831,9 @@ describe('OverlayInspector — header keyframe navigation', () => {
     const onSeek = vi.fn()
     renderInspector(multiPropKeyed(), 10, { onSeek }) // localT = 5
 
-    // offsetX has points at 0 and 6; opacity's 2 and 8 are not its business.
-    fireEvent.click(screen.getByRole('button', { name: 'Previous Offset X keyframe' }))
+    // The Position pair covers offsetX (points 0, 6); largest t < 5 is 0, and
+    // the seek is item.start + t = 5. opacity's 2 and 8 are not its business.
+    fireEvent.click(screen.getByRole('button', { name: 'Previous Position keyframe' }))
     expect(onSeek).toHaveBeenCalledWith(5)
 
     // Scale has no track at all.

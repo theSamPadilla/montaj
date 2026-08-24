@@ -11,7 +11,6 @@ import {
   ChevronRight,
   ChevronUp,
   Diamond,
-  Link2,
   RotateCcw,
 } from 'lucide-react'
 import type { KeyframeProp, VisualItem } from '../schema'
@@ -658,6 +657,31 @@ export default function OverlayInspector({ item, clock, onPreview, onCommit, onC
     onChange(next)
   }
 
+  // Position (offsetX + offsetY) keyed as a pair — CapCut shows one diamond for
+  // Position, so the row animates/toggles both axes together, with the same
+  // enable/disable rule the per-row diamonds use (handleToggle). Kept separate
+  // from handleKeyframeAll so that ALL_PROPS path is untouched.
+  const positionProps: KeyframeProp[] = ['offsetX', 'offsetY']
+  const positionKeyed = positionProps.every(prop => hasKeyframes(target, prop))
+
+  function handlePositionToggle() {
+    let next = target
+    for (const prop of positionProps) {
+      next = positionKeyed ? disableKeyframing(next, prop, localT) : enableKeyframing(next, prop, localT)
+    }
+    onChange(next)
+  }
+
+  // Scale is shown as a PERCENTAGE (CapCut: 1 => 100%). The box reports percent;
+  // the stored `scale` scalar stays a multiplier, so convert on the way in. The
+  // slider and stepper stay on the multiplier (ScaleSlider / handleStep).
+  function handleScalePercent(raw: string) {
+    if (raw === '' || raw === '-') return // mid-typing — nothing finite yet
+    const pct = Number(raw)
+    if (!Number.isFinite(pct)) return
+    preview('scale', pct / 100)
+  }
+
   function handleReset() {
     let next = target
     // Deliberately does NOT delete keyframe tracks. On a keyframed prop this
@@ -670,6 +694,7 @@ export default function OverlayInspector({ item, clock, onPreview, onCommit, onC
   }
 
   const headerNav = navFor(ALL_PROPS)
+  const positionNav = navFor(positionProps)
 
   /** The `‹ ◇ ›` unit for one row. */
   function rowNav(prop: KeyframeProp) {
@@ -733,88 +758,88 @@ export default function OverlayInspector({ item, clock, onPreview, onCommit, onC
       {!collapsed && (
         <div className="flex flex-col gap-2 p-2">
           {/* ── Scale ─────────────────────────────────────────────────────
-              The X and Y boxes both read from and write to the ONE uniform
-              `scale` scalar the schema has today, which is why the link
-              toggle renders permanently checked and disabled: with the lock
-              on, editing either axis moving both is the literally correct
-              behaviour of a uniform-locked scale control, so nothing on
-              screen is a lie.
-
-              Separate `scaleX`/`scaleY` is a follow-up plan, not an omission
-              here: it needs `schema.ts`, timeline-core's `geometryAt` /
-              `toPixelBox`, the preview transform, `useDragOverlay`'s
-              edge-snap and the ffmpeg render bake all changed together, or
-              the preview and the render drift. The row is deliberately built
-              as an X/Y pair NOW so that lands as unlocking this toggle
-              rather than as another redesign of this panel. */}
-          <div className="flex flex-col gap-1">
-            <div className="flex items-center gap-2">
-              <span className={ROW_LABEL_CLASS}>Scale</span>
-              <ScaleSlider
-                value={sampled.scale}
-                onPreview={v => preview('scale', v)}
+              One row (CapCut): slider + a PERCENTAGE value (1 => 100%) +
+              stepper + keyframe unit. The box reports percent while the stored
+              `scale` scalar stays a multiplier; handleScalePercent converts.
+              The uniform-scale lock is its own labelled toggle row below. */}
+          <div className="flex items-center gap-2">
+            <span className={ROW_LABEL_CLASS}>Scale</span>
+            <ScaleSlider
+              value={sampled.scale}
+              onPreview={v => preview('scale', v)}
+              onCommit={onCommit}
+            />
+            <div className="flex shrink-0 items-center gap-1">
+              <OverlayInspectorField
+                id="overlay-inspector-scale"
+                name="Scale"
+                step={1}
+                min={5}
+                max={400}
+                value={Math.round(sampled.scale * 100)}
+                onInput={handleScalePercent}
                 onCommit={onCommit}
+                className="h-7 w-12 px-1.5 text-xs"
               />
-              <button
-                type="button"
-                role="checkbox"
-                aria-checked="true"
-                aria-disabled="true"
-                aria-label="Uniform scale"
-                title="Width and height scale together"
-                disabled
-                className="flex h-5 w-5 shrink-0 items-center justify-center rounded text-[var(--editor-accent)]"
-              >
-                <Link2 size={12} />
-              </button>
+              <span aria-hidden="true" className="text-[10px] text-[var(--editor-text)]/40">%</span>
+              <Stepper name="Scale" onStep={d => handleStep(ROWS.scale, d)} />
             </div>
-            <div className="flex items-center gap-2">
-              <span className="w-14 shrink-0" />
-              <NumberCell
-                row={ROWS.scale}
-                prefix="X"
-                value={sampled.scale}
-                onInput={raw => handleInput('scale', raw)}
-                onCommit={onCommit}
-                onStep={d => handleStep(ROWS.scale, d)}
-              />
-              <NumberCell
-                row={ROWS.scale}
-                name="Scale Y"
-                prefix="Y"
-                value={sampled.scale}
-                onInput={raw => handleInput('scale', raw)}
-                onCommit={onCommit}
-                onStep={d => handleStep(ROWS.scale, d)}
-              />
-              <div className="ml-auto">{rowNav('scale')}</div>
-            </div>
+            {rowNav('scale')}
           </div>
 
-          {/* ── Position ─────────────────────────────────────────────────── */}
-          <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+          {/* ── Uniform scale ─────────────────────────────────────────────
+              Its own labelled toggle row (CapCut) instead of a bare link icon.
+              Permanently on and disabled while the schema has one uniform
+              `scale`; scaleX/scaleY (a follow-up) unlocks it. */}
+          <div className="flex items-center gap-2">
+            <span className="shrink-0 text-[11px] text-[var(--editor-text)]/55">Uniform scale</span>
+            <button
+              type="button"
+              role="checkbox"
+              aria-checked="true"
+              aria-disabled="true"
+              aria-label="Uniform scale"
+              title="Width and height scale together"
+              disabled
+              className="ml-auto relative h-4 w-7 shrink-0 rounded-full bg-[var(--editor-accent)] opacity-60"
+            >
+              <span className="absolute right-0.5 top-0.5 h-3 w-3 rounded-full bg-white" />
+            </button>
+          </div>
+
+          {/* ── Position ───────────────────────────────────────────────────
+              X and Y with ONE keyframe unit for the pair on the right (CapCut),
+              not a diamond crammed in after each axis. */}
+          <div className="flex items-center gap-2">
             <span className={ROW_LABEL_CLASS}>Position</span>
-            <div className="flex items-center gap-1">
-              <NumberCell
-                row={ROWS.offsetX}
-                prefix="X"
-                value={sampled.offsetX}
-                onInput={raw => handleInput('offsetX', raw)}
-                onCommit={onCommit}
-                onStep={d => handleStep(ROWS.offsetX, d)}
+            <NumberCell
+              row={ROWS.offsetX}
+              prefix="X"
+              value={sampled.offsetX}
+              onInput={raw => handleInput('offsetX', raw)}
+              onCommit={onCommit}
+              onStep={d => handleStep(ROWS.offsetX, d)}
+            />
+            <NumberCell
+              row={ROWS.offsetY}
+              prefix="Y"
+              value={sampled.offsetY}
+              onInput={raw => handleInput('offsetY', raw)}
+              onCommit={onCommit}
+              onStep={d => handleStep(ROWS.offsetY, d)}
+            />
+            <div className="ml-auto">
+              <KeyframeNav
+                prevLabel="Previous Position keyframe"
+                nextLabel="Next Position keyframe"
+                diamondLabel={positionKeyed ? 'Remove Position keyframe at playhead' : 'Add Position keyframe at playhead'}
+                pressed={positionKeyed}
+                canPrev={positionNav.canPrev}
+                canNext={positionNav.canNext}
+                onPrev={positionNav.onPrev}
+                onNext={positionNav.onNext}
+                onDiamond={handlePositionToggle}
               />
-              {rowNav('offsetX')}
-            </div>
-            <div className="flex items-center gap-1">
-              <NumberCell
-                row={ROWS.offsetY}
-                prefix="Y"
-                value={sampled.offsetY}
-                onInput={raw => handleInput('offsetY', raw)}
-                onCommit={onCommit}
-                onStep={d => handleStep(ROWS.offsetY, d)}
-              />
-              {rowNav('offsetY')}
             </div>
           </div>
 
