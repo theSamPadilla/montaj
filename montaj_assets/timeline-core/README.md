@@ -2,8 +2,7 @@
 
 Pure resolver for "what is on screen at time T" — the single source of
 truth shared by Montaj's editor preview, render engine, and
-`sample-frame.js`. Python's `caption_job.py` stays a separate
-implementation but is checked against the same fixture corpus.
+`sample-frame.js`.
 
 ## Rules
 
@@ -48,8 +47,7 @@ Then **hand-audit the diff** against the legacy code paths cited in
 `src/*.js`'s module headers and in `KNOWN-DIVERGENCES.md` before committing —
 a regenerated golden is not self-validating; see `fixtures/README.md` for the
 full corpus map (which fixture pins which bug/divergence) and the documented
-shape of `expected/*.json` (including the source-window golden shape a Python
-parity test reads).
+shape of `expected/*.json`, including the source-window golden shape).
 
 ### ⚠️ `expected/encode-args.*.json` are frozen pre-SP2 artifacts
 

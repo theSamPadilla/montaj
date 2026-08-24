@@ -1,118 +1,214 @@
-"""Helpers for the caption-generation route: derive the materialize_cut spec
-from a project's primary track.
+"""Helpers for the caption-generation route: derive the AUDIBLE TIMELINE MIX
+spec from a project.
 
-Supports single- AND multi-source timelines. A multi-source timeline (a normal
-reaction/compilation cut where tracks[0] concatenates several source files) is
-materialised into one composed mp4 by the same per-segment seek + concat graph
-the single-source path already uses — captions then transcribe that output, so
-the word timings land 1:1 on the final video timeline.
+Captions are a transcript of what a viewer HEARS, so the caption job has to
+transcribe the same thing the preview scrubber plays and the renderer encodes:
 
-When every tracks[0] video clip carries a ``normalizedSrc`` cache (an SDR
-bt709 pre-encoded window anchored at ``normalizedInPoint``), ``extract_segments``
-rebases the in/out points into cache time so the ffmpeg concat never mixes raw
-HDR originals with SDR caches. This is ALL-OR-NOTHING: if any clip lacks a
-``normalizedSrc`` the function falls back to the original ``src`` for all clips.
+  * every ``video`` item on every ENABLED visual track — ``tracks[1..]``
+    included, not just the primary footage track — unless the item or its
+    track is muted, and
+  * every ``project["audio"]["tracks"]`` entry (voiceover, music, sfx) unless
+    it is muted,
 
-For multi-source specs ``build_cut_spec`` also emits an optional ``"scale"``
-key — a ``[W, H]`` pair of even ints with the long side capped at 640 —
-derived from ``project.settings.resolution`` when present. Downstream
-``materialize_cut`` uses this to normalise input dimensions before concat."""
+each laid down at its OWN timeline position, with silence in the gaps.
 
-from lib.project_tracks import track_items
+That last part is what makes the resulting word timings usable. The old
+implementation concatenated the primary track's clips into one MP4, so output
+time equalled the SUM of clip lengths — every gap on the timeline shifted every
+later word earlier. A positioned mix is project-time second for second, so a
+word at 12.4s in the transcript is a word at 12.4s on the timeline.
+
+Mute is the ONLY audibility gate that matters here, and it is read at caption
+time only — nothing is written back to the project and nothing remembers a
+decision after the job. Unmuting a track later simply means the next caption
+run sees it.
+
+WHAT THIS DELIBERATELY DOES NOT MODEL
+-------------------------------------
+* **Fades and ducking.** ``fadeIn``/``fadeOut``/``ducking`` shape a mix for
+  the ear; they only attenuate the head or tail of material that is included
+  either way. Transcription wants intelligibility, so the envelope is skipped
+  and the flat ``volume`` is applied.
+* **``loop``.** ``VisualItem.loop`` is a preview-only field — the renderer
+  never repeats a video item's audio (``montaj_assets/render/encode-segment.js``
+  loops IMAGES only), so neither does this.
+* **``normalizedSrc`` / ``proxySrc`` caches.** Both exist for PICTURE: the
+  normalized cache is an SDR colour conversion (the old video cut needed it so
+  ffmpeg's concat never mixed HDR and SDR inputs), and the proxy is a 720p
+  editing copy whose 96k Opus audio would degrade transcription input. An
+  audio mix has neither problem, so every segment reads the ORIGINAL ``src``
+  and the raw, un-rebased ``inPoint`` that goes with it.
+"""
+
+from lib.project_tracks import normalize_tracks
 
 
-def extract_segments(project: dict) -> list[dict]:
-    """Return the primary-track video segments as ``[{"src", "in", "out"}, ...]``,
-    ordered by clip ``start`` — the concatenation order that defines the output
-    timeline. Each segment is one clip's source window, in source time (or in
-    cache time when ``normalizedSrc`` caches are used).
+def effective_item_audio(track: dict, item: dict) -> tuple[float, bool]:
+    """Fold a track's volume/mute into one of its items'.
 
-    Cache selection is ALL-OR-NOTHING: switches to ``normalizedSrc`` only when
-    every video clip in tracks[0] has one. In cache mode each clip's in/out is
-    rebased by ``normalizedInPoint ?? inPoint`` so that time 0 is the cache
-    origin. Tiny negative values (float rounding when inPoint == normalizedInPoint)
-    are clamped to 0.0.
-
-    Works for single- and multi-source timelines; only tracks[0] *video* clips
-    are considered (overlays in tracks[1+] are visual and ignored, audio clips
-    are skipped). Raises ``ValueError`` with a stable code-prefixed message when
-    the timeline is unusable.
+    Volume MULTIPLIES (a clip an editor already turned down stays
+    proportionally quieter under a track pulled down too); mute is either/or.
+    Mirrors ``effectiveItemAudio`` in ``montaj_assets/render/project-tracks.js``
+    and in ``montaj_assets/editor/src/video/timeline/timeline-model.ts`` — the
+    three must agree or captions, preview and render disagree about what is
+    audible.
     """
-    items = track_items(project)
-    track0 = items[0] if items else []
-    clips = sorted(
-        [c for c in track0 if c.get("type") == "video"],
-        key=lambda c: c.get("start", 0.0),
-    )
-    if not clips:
-        raise ValueError("no_clips: primary track has no video clips")
+    track = track or {}
+    item = item or {}
+    volume = _num(track.get("volume"), 1.0) * _num(item.get("volume"), 1.0)
+    muted = track.get("muted") is True or item.get("muted") is True
+    return volume, muted
 
-    use_cache = bool(clips) and all(c.get("normalizedSrc") for c in clips)
+
+def _num(value, default: float) -> float:
+    """``float(value)`` when it is a finite number, else ``default``. Keeps a
+    ``None``/``"1.0"``/NaN in a hand-edited project from poisoning the spec."""
+    try:
+        out = float(value)
+    except (TypeError, ValueError):
+        return default
+    if out != out or out in (float("inf"), float("-inf")):
+        return default
+    return out
+
+
+def _segment(src, start: float, end: float, in_pt: float, volume: float, speed: float):
+    """One positioned audio segment, or ``None`` when it contributes nothing.
+
+    ``end - start`` (the span the item actually occupies on the timeline) is
+    authoritative for length, not the stored ``outPoint``: a stale ``outPoint``
+    left behind by a trim would silence the segment early. Render reads the
+    timeline span the same way (``encode-segment.js`` seeks by ``inPoint`` and
+    trims by the SEGMENT's duration), and so does the preview's ``audioWindow``
+    (``timeline-core/src/audio.js``, "derived, not stored").
+
+    A segment starting before the origin is clipped rather than dropped: the
+    part of it that lands on the timeline is kept, with its in-point moved
+    forward by the amount that fell off the front.
+    """
+    if not src or not isinstance(src, str):
+        return None
+    if volume <= 0:
+        return None
+    if end <= start:
+        return None
+    if start < 0:
+        in_pt += (-start) * speed
+        start = 0.0
+        if end <= 0:
+            return None
+    in_pt = max(0.0, in_pt)
+    out_pt = in_pt + (end - start) * speed
+    if out_pt <= in_pt:
+        return None
+    seg = {
+        "src": src,
+        "in": round(in_pt, 4),
+        "out": round(out_pt, 4),
+        "start": round(start, 4),
+        "volume": round(volume, 4),
+    }
+    if speed != 1.0:
+        seg["speed"] = round(speed, 4)
+    return seg
+
+
+def _visual_segments(project: dict) -> list[dict]:
+    """Audible video-item audio across EVERY enabled visual track.
+
+    ``enabled is not False`` is the test — ``enabled`` is absent by default, so
+    an untouched project has every track on. Same rule as
+    ``lib/project_tracks.enabled_track_items``, but the TRACK object is needed
+    here (for its ``volume``/``muted``), not just its items.
+    """
+    tracks = normalize_tracks(project).get("tracks") if isinstance(project, dict) else None
+    if not isinstance(tracks, list):
+        return []
 
     segments = []
-    for c in clips:
-        if use_cache:
-            src = c.get("normalizedSrc")
-            origin = c.get("normalizedInPoint")
-            if origin is None:
-                origin = c.get("inPoint", 0.0)
-            origin = float(origin)
-            in_pt = float(c.get("inPoint", 0.0)) - origin
-            out_pt = float(c.get("outPoint", c.get("end", 0.0) - c.get("start", 0.0) + c.get("inPoint", 0.0))) - origin
-            in_pt = max(0.0, in_pt)
-        else:
-            src = c.get("src")
-            in_pt = float(c.get("inPoint", 0.0))
-            out_pt = float(c.get("outPoint", c.get("end", 0.0) - c.get("start", 0.0) + in_pt))
-        if src and out_pt > in_pt:
-            segments.append({"src": src, "in": round(in_pt, 4), "out": round(out_pt, 4)})
-    if not segments:
-        raise ValueError("empty_keeps: clips produced no positive-length keep ranges")
+    for track in tracks:
+        if not isinstance(track, dict) or track.get("enabled") is False:
+            continue
+        for item in track.get("items") or []:
+            if not isinstance(item, dict) or item.get("type") != "video":
+                continue
+            volume, muted = effective_item_audio(track, item)
+            if muted:
+                continue
+            speed = _num(item.get("speed"), 1.0)
+            if speed <= 0:
+                speed = 1.0
+            seg = _segment(
+                item.get("src"),
+                _num(item.get("start"), 0.0),
+                _num(item.get("end"), 0.0),
+                _num(item.get("inPoint"), 0.0),
+                volume,
+                speed,
+            )
+            if seg:
+                segments.append(seg)
     return segments
 
 
-def build_cut_spec(project: dict) -> dict:
-    """Build the materialize_cut input spec for the caption cut.
+def _audio_track_segments(project: dict) -> list[dict]:
+    """Audible ``project["audio"]["tracks"]`` entries — voiceover, music, sfx.
 
-    Single-source timelines keep the legacy ``{"input", "keeps"}`` trim-spec
-    shape — byte-identical to the previous behaviour, so single-source
-    captioning is unchanged downstream. Multi-source timelines (>1 distinct
-    ``src``) produce ``{"segments": [{"src", "in", "out"}, ...]}``, which
-    materialize_cut composes into one mp4 via the same seek + concat graph.
-
-    When clips carry ``normalizedSrc`` caches (see ``extract_segments``), the
-    segment src paths and in/out values are already rebased into cache time.
-
-    For multi-source specs an optional ``"scale": [W, H]`` key is included when
-    ``project.settings.resolution`` is a valid ``[w, h]`` pair. The long side is
-    capped at 640 and both dimensions are floored to even integers ≥ 2. Downstream
-    materialize_cut uses this to scale and pad each input to a uniform size before
-    the concat filter.
+    On a voiceover-driven cut (the ``broll`` workflow mutes the footage track
+    outright) these ARE the timeline's speech, and the old primary-track cut
+    never saw them at all.
     """
-    segments = extract_segments(project)
-    sources = {s["src"] for s in segments}
-    if len(sources) == 1:
-        return {
-            "input": segments[0]["src"],
-            "keeps": [[s["in"], s["out"]] for s in segments],
-        }
-    spec: dict = {"segments": segments}
-    res = (project.get("settings") or {}).get("resolution")
-    if (
-        isinstance(res, (list, tuple))
-        and len(res) == 2
-        and res[0] and res[1]
-        and float(res[0]) > 0
-        and float(res[1]) > 0
-    ):
-        w, h = float(res[0]), float(res[1])
-        longest = max(w, h)
-        factor = longest / 640.0 if longest > 640.0 else 1.0
+    audio = (project or {}).get("audio") or {}
+    tracks = audio.get("tracks")
+    if not isinstance(tracks, list):
+        return []
 
-        def _even(x: float) -> int:
-            v = int(x / factor)
-            v -= v % 2
-            return max(2, v)
+    segments = []
+    for track in tracks:
+        if not isinstance(track, dict) or track.get("muted") is True:
+            continue
+        seg = _segment(
+            track.get("src"),
+            _num(track.get("start"), 0.0),
+            _num(track.get("end"), 0.0),
+            _num(track.get("inPoint"), 0.0),
+            _num(track.get("volume"), 1.0),
+            1.0,
+        )
+        if seg:
+            segments.append(seg)
+    return segments
 
-        spec["scale"] = [_even(w), _even(h)]
-    return spec
+
+def build_audio_mix_spec(project: dict, sample_rate: int = 16000) -> dict:
+    """Build the ``mix_timeline`` input spec for the caption transcript.
+
+    Returns ``{"duration", "sampleRate", "segments": [...]}`` where every
+    segment is ``{"src", "in", "out", "start", "volume"[, "speed"]}`` in
+    seconds, ordered by ``start`` (then ``src``) so the spec — and the ffmpeg
+    graph built from it — is deterministic for a given project.
+
+    ``duration`` is the end of the last audible segment, which is all the
+    transcript needs: trailing silence after the final sound carries no words.
+
+    Raises ``ValueError`` with a stable code-prefixed message when the timeline
+    has nothing audible to transcribe.
+    """
+    segments = _visual_segments(project) + _audio_track_segments(project)
+    if not segments:
+        raise ValueError(
+            "no_audio: timeline has no audible clips or audio tracks — "
+            "every video clip and audio track is muted, empty, or on a skipped track"
+        )
+    segments.sort(key=lambda s: (s["start"], s["src"]))
+
+    duration = 0.0
+    for seg in segments:
+        span = (seg["out"] - seg["in"]) / seg.get("speed", 1.0)
+        duration = max(duration, seg["start"] + span)
+
+    return {
+        "duration": round(duration, 4),
+        "sampleRate": sample_rate,
+        "segments": segments,
+    }

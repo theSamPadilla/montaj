@@ -28,7 +28,7 @@ from serve.common import (
     validate_project_subpath, _is_under,
 )
 from serve import context as context_store
-from serve.caption_job import build_cut_spec
+from serve.caption_job import build_audio_mix_spec
 from serve.routes.files import save_upload
 from lib.ingest import ingest_source
 from lib.project_tracks import normalize_tracks, track_items
@@ -299,8 +299,8 @@ async def _run_caption_detached(
         _active_caption_jobs.discard(project_id)
         # Clean up temp files (mirrors the SSE path's finally).
         for _tmp in (
-            project_dir / "_caption_cut.json",
-            project_dir / "_caption_cut.mp4",
+            project_dir / "_caption_mix.json",
+            project_dir / "_caption_mix.wav",
             project_dir / "_caption_words.json",
             project_dir / "_caption_words.srt",
             project_dir / "_caption_track.json",
@@ -2593,7 +2593,7 @@ async def _run_caption_pipeline(
     is_disconnected=None,
 ):
     """Core caption pipeline, shared by the SSE route and (later) a detached
-    async caller. Runs build_cut_spec → write cut spec → materialize_cut →
+    async caller. Runs build_audio_mix_spec → write mix spec → mix_timeline →
     transcribe → caption, then persists project["captions"] (carrying prior
     theme keys forward), writes project.json, and broadcasts the update.
 
@@ -2620,12 +2620,12 @@ async def _run_caption_pipeline(
     """
     project_path = project_dir / "project.json"
 
-    materialize_cut_py = MONTAJ_ROOT / "steps" / "transform" / "materialize_cut.py"
+    mix_timeline_py = MONTAJ_ROOT / "steps" / "audio" / "mix_timeline.py"
     transcribe_py = MONTAJ_ROOT / "steps" / "speech" / "transcribe.py"
     caption_py = MONTAJ_ROOT / "steps" / "lyrics" / "caption.py"
 
-    cut_spec_path = project_dir / "_caption_cut.json"
-    cut_mp4_path = project_dir / "_caption_cut.mp4"
+    mix_spec_path = project_dir / "_caption_mix.json"
+    mix_wav_path = project_dir / "_caption_mix.wav"
     words_prefix = project_dir / "_caption_words"
     words_json_path = project_dir / "_caption_words.json"
     track_path = project_dir / "_caption_track.json"
@@ -2633,23 +2633,24 @@ async def _run_caption_pipeline(
     env = os.environ.copy()
     env["MONTAJ_ROOT"] = str(MONTAJ_ROOT)
 
-    # 1. Derive the cut spec from the primary track (single- or multi-source).
-    #    Multi-source composes all tracks[0] clips into one MP4; output-time
-    #    word timings then map 1:1 to the timeline.
-    cut_spec = build_cut_spec(project)
+    # 1. Derive the audible mix from the WHOLE timeline: every unmuted video
+    #    item on every enabled visual track, plus every unmuted audio track,
+    #    each at its own timeline position. Output time is timeline time, so
+    #    word timings map 1:1 without any remapping downstream.
+    mix_spec = build_audio_mix_spec(project)
 
-    # 2. Write the cut spec.
-    cut_spec_path.write_text(json.dumps(cut_spec))
+    # 2. Write the mix spec.
+    mix_spec_path.write_text(json.dumps(mix_spec))
 
     steps = [
         (
-            "materialize_cut",
-            [str(materialize_cut_py), "--input", str(cut_spec_path),
-             "--out", str(cut_mp4_path)],
+            "mix_timeline",
+            [str(mix_timeline_py), "--input", str(mix_spec_path),
+             "--out", str(mix_wav_path)],
         ),
         (
             "transcribe",
-            [str(transcribe_py), "--input", str(cut_mp4_path),
+            [str(transcribe_py), "--input", str(mix_wav_path),
              "--model", model, "--language", language,
              "--out", str(words_prefix)],
         ),
@@ -2729,16 +2730,17 @@ async def generate_captions(
     body: dict = Body(default={}),
     project_dir: Path = Depends(get_project_dir),
 ):
-    """Regenerate the project's captions over the trimmed timeline. Streams
-    progress as SSE log/done/error events.
+    """Regenerate the project's captions from the timeline's AUDIBLE mix.
+    Streams progress as SSE log/done/error events.
 
     Pipeline (all subprocesses, stderr streamed as `log` events):
-      1. build_cut_spec  — derive the cut spec from the primary track
-                           (single- or multi-source; multi-source composes all
-                           tracks[0] clips, in order, into one MP4).
-      2. materialize_cut — render the trimmed timeline to a plain MP4.
+      1. build_audio_mix_spec — every unmuted video item on every enabled
+                           visual track, plus every unmuted audio track, each
+                           positioned at its own timeline time.
+      2. mix_timeline    — sum that into one 16 kHz mono WAV whose time IS
+                           timeline time (gaps stay silent).
       3. transcribe      — multilingual, language-auto-detecting, OUTPUT-time
-                           word timings (plain video in, NOT a trim spec).
+                           word timings (plain audio in, NOT a trim spec).
       4. caption         — group words into styled caption segments.
     On success, writes project["captions"], persists project.json, broadcasts
     the update, and emits a `done` event carrying the caption track JSON.
@@ -2767,8 +2769,8 @@ async def generate_captions(
 
     # Temp paths the pipeline writes; mirrored here so the generator's `finally`
     # can unlink them (kept identical to the pipeline's own paths).
-    cut_spec_path = project_dir / "_caption_cut.json"
-    cut_mp4_path = project_dir / "_caption_cut.mp4"
+    mix_spec_path = project_dir / "_caption_mix.json"
+    mix_wav_path = project_dir / "_caption_mix.wav"
     words_json_path = project_dir / "_caption_words.json"
     track_path = project_dir / "_caption_track.json"
 
@@ -2836,7 +2838,7 @@ async def generate_captions(
             try:
                 track = task.result()
             except ValueError as e:
-                # build_cut_spec rejected the project.
+                # build_audio_mix_spec rejected the project (nothing audible).
                 yield f"event: error\ndata: {str(e)}\n\n"
                 return
             except CaptionPipelineError as e:
@@ -2869,8 +2871,8 @@ async def generate_captions(
         finally:
             _active_caption_jobs.discard(project_id)
             for _tmp in (
-                cut_spec_path,
-                cut_mp4_path,
+                mix_spec_path,
+                mix_wav_path,
                 words_json_path,
                 project_dir / "_caption_words.srt",
                 track_path,

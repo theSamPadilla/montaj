@@ -1,6 +1,6 @@
 """Unit tests for the generate_captions step's pure helpers + step discovery.
 
-These tests deliberately avoid running materialize_cut/transcribe/caption
+These tests deliberately avoid running mix_timeline/transcribe/caption
 end-to-end (those need real media + whisper). They cover the unit-testable
 caption-theme merge and style-default logic, plus the scan_steps discovery.
 """
@@ -119,21 +119,23 @@ class _FakeBroadcaster:
 
 
 def test_caption_pipeline_stderr_tail_in_error(tmp_path):
-    """When materialize_cut exits 1 (missing src), CaptionPipelineError.message
+    """When mix_timeline exits 1 (missing src), CaptionPipelineError.message
     carries the stderr tail and the fake broadcaster records it too."""
     from serve.routes.projects import _run_caption_pipeline, CaptionPipelineError
 
     project_dir = tmp_path / "proj"
     project_dir.mkdir()
 
-    # Minimal project: one video clip pointing at a non-existent file.
-    # build_cut_spec will produce a single-source {"input", "keeps"} spec.
+    # Minimal project: one audible video clip pointing at a non-existent file.
+    # build_audio_mix_spec accepts it (it is unmuted and has a real timeline
+    # span); mix_timeline is where the missing file is caught.
     project = {
         "tracks": [[
             {
                 "type": "video",
                 "src": "/nonexistent/none.mov",
                 "start": 0.0,
+                "end": 2.0,
                 "inPoint": 0.0,
                 "outPoint": 2.0,
             }
@@ -156,7 +158,7 @@ def test_caption_pipeline_stderr_tail_in_error(tmp_path):
         ))
 
     msg = exc_info.value.message
-    assert "materialize_cut failed (exit 1)" in msg, f"unexpected message: {msg!r}"
+    assert "mix_timeline failed (exit 1)" in msg, f"unexpected message: {msg!r}"
     assert "--- stderr tail ---" in msg, f"stderr tail header missing: {msg!r}"
     assert "file_not_found" in msg, f"file_not_found error missing: {msg!r}"
 

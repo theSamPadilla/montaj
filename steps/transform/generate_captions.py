@@ -2,12 +2,13 @@
 """Generate a project's caption track server-side, writing project["captions"].
 
 CLI-subprocess equivalent of the /projects/{id}/captions SSE route. Given a
-project id, it derives the cut spec from the primary track (single- or
-multi-source — a multi-source timeline composes all tracks[0] clips, in order,
-into one MP4), then runs the full pipeline as subprocesses:
+project id, it derives the timeline's AUDIBLE MIX — every unmuted video item on
+every enabled visual track plus every unmuted audio track, each at its own
+timeline position — then runs the full pipeline as subprocesses:
 
-  1. materialize_cut — render the trimmed timeline to a plain MP4.
-  2. transcribe      — multilingual, output-time word timings (plain video in,
+  1. mix_timeline    — sum the audible timeline into one 16 kHz mono WAV whose
+                       time IS timeline time (gaps stay silent).
+  2. transcribe      — multilingual, output-time word timings (plain audio in,
                        NOT a trim spec, so timestamps are project-time).
   3. caption         — group words into styled caption segments.
 
@@ -31,7 +32,7 @@ from common import fail, run  # noqa: E402
 
 sys.path.insert(0, MONTAJ_ROOT)
 from serve.common import get_project_dir  # noqa: E402
-from serve.caption_job import build_cut_spec  # noqa: E402
+from serve.caption_job import build_audio_mix_spec  # noqa: E402
 
 # Caption-theme keys carried forward from a prior caption track. Mirrors the
 # SSE route's merge in serve/routes/projects.py.
@@ -62,7 +63,7 @@ def merge_caption_theme(track: dict, prev) -> dict:
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Generate a project's caption track over its trimmed timeline"
+        description="Generate a project's caption track from its audible timeline mix"
     )
     parser.add_argument("--project-id", required=True, help="Project id")
     parser.add_argument("--model", default="large", help="Whisper model")
@@ -88,37 +89,37 @@ def main():
         fail("project_not_found", f"project.json for {args.project_id} not found")
 
     try:
-        cut_spec = build_cut_spec(project)
+        mix_spec = build_audio_mix_spec(project)
     except ValueError as e:
-        fail("extract_keeps_failed", str(e))
+        fail("no_audible_timeline", str(e))
 
     style = resolve_style(args.style, project)
 
-    materialize_cut_py = os.path.join(MONTAJ_ROOT, "steps", "transform", "materialize_cut.py")
+    mix_timeline_py = os.path.join(MONTAJ_ROOT, "steps", "audio", "mix_timeline.py")
     transcribe_py = os.path.join(MONTAJ_ROOT, "steps", "speech", "transcribe.py")
     caption_py = os.path.join(MONTAJ_ROOT, "steps", "lyrics", "caption.py")
 
     d = str(project_dir)
-    cut_spec_path = os.path.join(d, "_caption_cut.json")
-    cut_mp4_path = os.path.join(d, "_caption_cut.mp4")
+    mix_spec_path = os.path.join(d, "_caption_mix.json")
+    mix_wav_path = os.path.join(d, "_caption_mix.wav")
     words_prefix = os.path.join(d, "_caption_words")
     words_json_path = os.path.join(d, "_caption_words.json")
     words_srt_path = os.path.join(d, "_caption_words.srt")
     track_path = os.path.join(d, "_caption_track.json")
 
     try:
-        # 1. Write the cut spec (single- or multi-source).
-        with open(cut_spec_path, "w") as f:
-            json.dump(cut_spec, f)
+        # 1. Write the mix spec.
+        with open(mix_spec_path, "w") as f:
+            json.dump(mix_spec, f)
 
-        # 2. Materialise the trimmed timeline to a plain MP4.
-        run([sys.executable, materialize_cut_py,
-             "--input", cut_spec_path, "--out", cut_mp4_path])
+        # 2. Mix the audible timeline into one WAV, in timeline time.
+        run([sys.executable, mix_timeline_py,
+             "--input", mix_spec_path, "--out", mix_wav_path])
 
-        # 3. Transcribe the materialised cut as a plain video so word timings
-        #    are output/project-time (NOT a trim spec).
+        # 3. Transcribe the mix as plain audio so word timings are
+        #    output/project-time (NOT a trim spec).
         run([sys.executable, transcribe_py,
-             "--input", cut_mp4_path,
+             "--input", mix_wav_path,
              "--model", args.model, "--language", args.language,
              "--out", words_prefix])
 
@@ -136,7 +137,7 @@ def main():
 
         print(json.dumps(track))
     finally:
-        for tmp in (cut_spec_path, cut_mp4_path, words_json_path,
+        for tmp in (mix_spec_path, mix_wav_path, words_json_path,
                     words_srt_path, track_path):
             try:
                 if os.path.exists(tmp):

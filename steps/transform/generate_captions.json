@@ -1,6 +1,6 @@
 {
   "name": "generate_captions",
-  "description": "Generate a project's caption track over its trimmed timeline and write project[\"captions\"]. Derives the single-source cut from the primary track, materialises the trimmed MP4, transcribes it (multilingual, output-time word timings), groups words into styled caption segments, and merges any prior caption theme (position/color/fontsize/bgColor/accentColor). CLI-subprocess equivalent of the /projects/{id}/captions SSE route. Run async (montaj_step async:true) — transcription with the 'large' model is slow — and poll montaj_step_status. Takes a project id, not a file input.",
+  "description": "Generate a project's caption track from everything audible on its timeline and write project[\"captions\"]. Mixes every unmuted video item on every enabled visual track together with every unmuted audio track (voiceover, music, sfx), each at its own timeline position, transcribes that mix (multilingual, timeline-time word timings), groups words into styled caption segments, and merges any prior caption theme (position/color/fontsize/bgColor/accentColor). Mute is read at generation time only. CLI-subprocess equivalent of the /projects/{id}/captions SSE route. Run async (montaj_step async:true) — transcription with the 'large' model is slow — and poll montaj_step_status. Takes a project id, not a file input.",
   "input": {
     "type": "none",
     "description": "No file input — operates on a project by id (see project-id param)."

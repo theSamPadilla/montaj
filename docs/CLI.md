@@ -534,7 +534,7 @@ exact flags. Full per-step parameter docs: https://docs.montaj.ag/steps
 
 | Directory | Steps |
 |-----------|-------|
-| `steps/audio/` | `extract_audio`, `stem_separation`, `waveform_image`, `waveform_peaks`, `waveform_trim` |
+| `steps/audio/` | `extract_audio`, `mix_timeline`, `stem_separation`, `waveform_image`, `waveform_peaks`, `waveform_trim` |
 | `steps/edit/` | `cross_cut`, `jump_cut`, `montage` |
 | `steps/generate/` | `generate_image`, `generate_music`, `generate_voiceover`, `kling_generate` |
 | `steps/lyrics/` | `caption`, `lyrics_render`, `lyrics_sync` |

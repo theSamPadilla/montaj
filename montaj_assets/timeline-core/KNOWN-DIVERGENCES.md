@@ -746,20 +746,33 @@ here is well-formed, and this needs a deliberately field-less item.
 
 **Owner: SP4** (alongside the other ordering entries, D7 in particular).
 
-## D11-D13. Python (`serve/caption_job.py`) vs the TS resolver
+## D11-D13. Python (`serve/caption_job.py`) vs the TS resolver — ✅ ALL RESOLVED (2026-08-24)
 
-D1-D10 above are all TS-vs-TS (preview vs render) — the axis this file's
-Summary table tracks. `serve/caption_job.py`'s `extract_segments` is a THIRD,
-independent port of source-window math (Python can't import a TS package),
-kept in agreement with the resolver by `tests/test_caption_job.py` running
-against this corpus's fixtures/goldens rather than by shared code (see
-`docs/ARCHITECTURE.md`'s resolver section). T10 built that test and, in doing
-so, found three places Python's port disagrees with `src/source-window.js`.
-None of these are TS-vs-TS, so none belong in the Summary table above — same
-treatment T10 itself used, filed here as an extension of "Discovered during
-SP2" rather than a ninth Summary row.
+**Resolved by deletion, not by porting the fix.** All three entries described
+`serve/caption_job.py`'s `extract_segments` — a THIRD, independent port of
+source-window math (Python can't import a TS package), kept in agreement with
+the resolver by `tests/test_caption_job.py` running against this corpus's
+fixtures/goldens rather than by shared code.
 
-### D11. `python-all-or-nothing-cache-selection`
+That function no longer exists. The caption job used to build a VIDEO cut of
+`tracks[0]` and transcribe it, which is why it needed source-window resolution
+at all: the `normalizedSrc` rebase existed so ffmpeg's concat never mixed HDR
+originals with SDR caches in one graph. Captions are now transcribed from an
+AUDIO mix of the whole audible timeline (`build_audio_mix_spec` →
+`steps/audio/mix_timeline.py`), and an audio mix has no colour-space problem to
+solve: every segment reads the ORIGINAL `src` with the raw, un-rebased
+`inPoint`, and window LENGTH comes from the item's timeline span rather than a
+stored `outPoint`. No cache selection, no rebase, no `outPoint` read — so none
+of D11, D12 or D13 has any code left to diverge.
+
+Python is consequently no longer a fourth reader of this corpus;
+`tests/test_caption_job.py` now pins the audibility/positioning contract
+instead. The three entries are kept below for the record.
+
+The entries were never TS-vs-TS, so they were never in the Summary table
+above, and their closure does not change it.
+
+### D11. `python-all-or-nothing-cache-selection` — ✅ RESOLVED (2026-08-24, code deleted)
 
 **Verified.** `extract_segments`'s cache switch (`serve/caption_job.py:47`,
 `use_cache = bool(clips) and all(c.get("normalizedSrc") for c in clips)`) is
@@ -777,11 +790,11 @@ a corpus gap; T10 constructed the mixed case inline in
 `tests/test_caption_job.py` (`test_all_or_nothing_cache_selection_diverges_from_ts_per_item`)
 instead.
 
-**Owner: render/backlog** (reassigned from SP4 per decision 7, SP4 T8 —
-`serve/caption_job.py` is the Python captioning pipeline, not `editor/src/engine/`
-work; SP4's scope ends at the preview/engine boundary).
+**Owner: closed.** (Was render/backlog, reassigned from SP4 per decision 7,
+SP4 T8.) `extract_segments` was deleted when captions moved to the audible
+timeline mix — see the section header above.
 
-### D12. `python-negative-inpoint-clamp`
+### D12. `python-negative-inpoint-clamp` — ✅ RESOLVED (2026-08-24, code deleted)
 
 **Verified — includes a docstring/code mismatch, not just a divergence.**
 `extract_segments` floors a negative rebased in-point at 0
@@ -802,11 +815,11 @@ another corpus gap; T10 constructed this inline too
 (`test_cache_rebase_negative_in_point_clamped_to_zero`,
 `test_outpoint_fallback_uses_unclamped_in_point_internally`).
 
-**Owner: render/backlog** (reassigned from SP4 per decision 7, SP4 T8 —
-`serve/caption_job.py` is the Python captioning pipeline, not `editor/src/engine/`
-work; SP4's scope ends at the preview/engine boundary).
+**Owner: closed.** (Was render/backlog, reassigned from SP4 per decision 7,
+SP4 T8.) `extract_segments` was deleted when captions moved to the audible
+timeline mix — see the section header above.
 
-### D13. `python-outpoint-null-vs-absent`
+### D13. `python-outpoint-null-vs-absent` — ✅ RESOLVED (2026-08-24, code deleted)
 
 **Verified — narrow, reachable only outside type-checked authoring.**
 `extract_segments`'s outPoint fallback (`serve/caption_job.py:58` in the cache
@@ -827,9 +840,9 @@ bypassing the schema. No fixture in this corpus authors an explicit `null`
 outPoint (every cache-related fixture either sets a real number or omits the
 key), so this is unexercised in the golden suite too.
 
-**Owner: render/backlog** (reassigned from SP4 per decision 7, SP4 T8 —
-`serve/caption_job.py` is the Python captioning pipeline, not `editor/src/engine/`
-work; SP4's scope ends at the preview/engine boundary).
+**Owner: closed.** (Was render/backlog, reassigned from SP4 per decision 7,
+SP4 T8.) `extract_segments` was deleted when captions moved to the audible
+timeline mix — see the section header above.
 
 ---
 

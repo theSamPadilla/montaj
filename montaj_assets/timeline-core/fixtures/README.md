@@ -108,12 +108,13 @@ replaced by `itemId` (the original item's `id` field) — the golden never
 embeds a copy of the item itself, only the ID plus everything the resolver
 *computed*: `trackIdx`, `kind`, `window`, `seek`, `geometry`.
 
-**This is the shape T10's Python parity test reads.** `sourceWindow` and
-`seekTime` are keyed by `itemId`, so a Python harness can look up any video
-item from a fixture by its `id` field and compare its own computation against
+`sourceWindow` and `seekTime` are keyed by `itemId`, so any harness — in this
+package's own suites or outside it — can look up a video item from a fixture by
+its `id` field and compare its own computation against
 `golden.sourceWindow[itemId][variant]` / `golden.seekTime[itemId][variant][String(t)]`
-without needing to re-derive timestamps itself. Do not rename or restructure
-these two keys without updating T10.
+without re-deriving timestamps itself. (T10's Python parity test used to be one
+such reader; it was retired in 2026-08 when the caption job stopped resolving
+source windows at all — see KNOWN-DIVERGENCES.md D11-D13.)
 
 ## Regenerating
 

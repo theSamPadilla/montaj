@@ -625,8 +625,7 @@ whole span `[segStart, segEnd]` at once via the containment predicate
 overlays, which have no source-file timeline), the `seek` position, and its
 `geometryFor` geometry.
 
-**Four implementations, one of them out of band.** Three JS runtimes import
-the package directly:
+**Three implementations.** All three JS runtimes import the package directly:
 
 - **Editor preview** — `useVideoPlayback`'s `effectiveInPoint`/`effectiveOutPoint`/
   `playbackSrcFor` are thin wrappers over the resolver; `PreviewPlayer.activeClip`
@@ -636,11 +635,14 @@ the package directly:
 - **`sample-frame.js`** — the diagnostic frame-sampling tool adopts it too, so
   what an engineer inspects offline matches what actually renders.
 
-Python's `serve/caption_job.py` is a **fourth, independent implementation** —
-TypeScript-shaped code can't run inside the Python server process, so its
-timeline arithmetic is hand-ported rather than imported. It's kept honest
-against the other three by a pytest pinned to the same fixture corpus (see
-below), not by sharing code.
+Python's `serve/caption_job.py` used to be a fourth, hand-ported
+implementation, kept honest against the other three by a pytest pinned to the
+same fixture corpus. It no longer resolves source windows at all: the caption
+job builds an AUDIO mix of the audible timeline rather than a video cut of
+`tracks[0]`, and audio has no `normalizedSrc`/`nobg`/proxy precedence problem
+to solve — every segment reads the original `src` with its raw `inPoint`, and
+window length comes from the item's timeline span. One less port to keep in
+sync.
 
 **The variant model.** The resolver is variant-aware, not silently unified:
 every function whose answer legitimately differs between preview and render
@@ -655,11 +657,11 @@ variants are supposed to agree, they call the same variant-agnostic primitive.
 
 **The shared fixture corpus.** `fixtures/*.json` (project-shaped test inputs)
 and `expected/*.json` (committed golden output) live in the package and are
-read by all three JS suites plus the Python pytest — one corpus, four readers,
-so "does runtime X agree with runtime Y" is a fixture-by-fixture diff instead
-of a claim. `fixtures/README.md` documents the corpus's own ground rules
-(never depend on real files, never author a genuinely malformed or
-unreachable-in-production fixture).
+read by all three JS suites — one corpus, three readers, so "does runtime X
+agree with runtime Y" is a fixture-by-fixture diff instead of a claim.
+`fixtures/README.md` documents the corpus's own ground rules (never depend on
+real files, never author a genuinely malformed or unreachable-in-production
+fixture).
 
 **The divergence registry.** Porting three independently-evolved codebases
 into one resolver surfaced places where they already disagreed with each

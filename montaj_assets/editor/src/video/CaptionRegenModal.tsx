@@ -24,7 +24,7 @@ function LogLine({ text }: { text: string }) {
   let color = 'text-[var(--editor-text)]/60'
   if (/ready|complete|done|transcribed/i.test(text))      color = 'text-green-400'
   else if (/transcrib|detecting|loading|model/i.test(text)) color = 'text-sky-400'
-  else if (/extract|building|composing/i.test(text))      color = 'text-amber-400'
+  else if (/extract|building|composing|mixing/i.test(text)) color = 'text-amber-400'
   else if (/error|fail|warn/i.test(text))                 color = 'text-red-400'
 
   return (
@@ -129,6 +129,15 @@ export default function CaptionRegenModal<P extends Project = Project>({ project
                   : status === 'done' ? 'Captions regenerated'
                   : 'Caption regeneration failed'}
               </h2>
+              {/* What gets transcribed is not obvious from the button that
+                  opened this modal, and mute is the one control the editor
+                  has over it — worth one line here rather than a support
+                  question about why a clip's audio showed up in the
+                  captions. Read at generation time only: unmuting later just
+                  means the next run sees it. */}
+              <p className="text-[11px] text-[var(--editor-text)]/50">
+                Transcribes everything audible on the timeline. Muted clips and tracks are skipped.
+              </p>
             </div>
           </div>
           {status !== 'running' && (
