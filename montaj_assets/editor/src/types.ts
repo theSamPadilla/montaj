@@ -1063,4 +1063,33 @@ export interface VideoEditorProps<P extends Project = Project> {
    * `video/source-preview.ts`.
    */
   sourcePreview?: SourcePreviewStore
+
+  /**
+   * Opt-in seam for a non-blocking, host-driven caption job. When provided,
+   * the editor delegates the caption generate/regenerate trigger to this
+   * callback instead of opening its own blocking `CaptionRegenModal` — the
+   * host is asserting it owns the job (e.g. running it as a background task
+   * and reconciling `project.captions` itself via its own transport). Wins
+   * over `adapter.generateCaptions` when both are present, since a host that
+   * passes this prop typically still implements `generateCaptions` to power
+   * the job it triggers.
+   *
+   * Absent (the default): the editor's existing built-in `CaptionRegenModal`
+   * path runs completely unchanged — this is the Hub/Los Parceros backward-
+   * compat guarantee. Neither host currently passes this prop.
+   */
+  onRegenerateCaptions?: () => void
+  /**
+   * Lets the host tell the caption panel that ITS background caption job is
+   * in flight, so the generate/regenerate trigger button disables while it
+   * runs. Meaningful only alongside `onRegenerateCaptions` — a host that owns
+   * the trigger also owns knowing when the job is still running, since the
+   * editor has no visibility into a job it didn't start.
+   *
+   * OR'd with the editor's own internal modal-open state at the call site —
+   * it never replaces that state, only adds to it, so the built-in modal's
+   * "disable the trigger while it's open" behavior keeps working even when a
+   * host also sets this. Absent → treated as `false`, no effect.
+   */
+  captionsGenerating?: boolean
 }

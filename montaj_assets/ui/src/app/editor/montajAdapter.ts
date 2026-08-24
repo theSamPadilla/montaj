@@ -727,7 +727,18 @@ export function createMontajAdapter(): EditorAdapter<Project> {
               return new Promise((resolve) => { resolveNext = resolve })
             },
             return(): Promise<IteratorResult<CaptionEvent>> {
-              done = true
+              // `finish()`, not a bare `done = true`: a consumer PARKED on
+              // `next()` when `return()` lands has a pending promise that
+              // only `finish()` resolves. Setting the flag alone leaves that
+              // promise unresolved forever, so the consumer's loop never
+              // exits and its `finally` never runs.
+              //
+              // Reachable since `captionJob.tsx` began calling `return()`
+              // EAGERLY from `cancel()` (rather than only via breaking a
+              // `for await`, which can't be parked — it only breaks just
+              // after an event resolved). Cancelling a caption job while
+              // whisper is between stderr lines is exactly that case.
+              finish()
               cancel?.()
               return Promise.resolve({ value: undefined, done: true })
             },

@@ -4,9 +4,10 @@ import { api } from '@/lib/api'
 import { ProjectContext, normalizeTracks, mapTrackItems, trackItems, type Asset, type Project, type RunSnapshot } from '@/lib/types/schema'
 import { useProjectStream } from '@/lib/sse'
 import { createMontajAdapter } from './montajAdapter'
+import { useCaptionJobStatus, useCaptionJobSink } from './captionJob'
 import { useIsMobile } from '@/lib/useIsMobile'
 import { Upload } from 'lucide-react'
-import { CarouselEditor, VideoEditor, createSourcePreviewStore, defaultMontajTheme, type EditorSlots, type ImageTone } from '@bycrux/editor'
+import { CarouselEditor, VideoEditor, createSourcePreviewStore, defaultMontajTheme, type Captions, type EditorSlots, type ImageTone } from '@bycrux/editor'
 import AssetsPanel from '@/components/AssetsPanel'
 import MediaPanel from '@/components/media/MediaPanel'
 import FootagePanel from '@/components/media/FootagePanel'
@@ -179,6 +180,54 @@ export default function EditorPage() {
   // pipeline re-run. Inspector/subcut state is owned by VideoEditor (render-prop
   // seams); only the Re-run modal toggle is host-local here.
   const [rerunOpen, setRerunOpen] = useState(false)
+  // Background caption-regeneration job, owned by the app-root
+  // CaptionJobProvider (App.tsx) so it survives navigating away from this
+  // project. EditorPage supplies the trigger (below) and reads status here.
+  // Uses the NARROW useCaptionJobStatus() (status/projectId/error + actions,
+  // no `logs`) rather than useCaptionJob() deliberately: EditorPage renders
+  // the whole <VideoEditor> tree, which is not memoized, so subscribing to
+  // the full hook would re-render it on every appended log line for the
+  // duration of a transcription. Do not "simplify" this back to
+  // useCaptionJob() — see captionJob.tsx's useCaptionJobStatus() comment.
+  const captionJob = useCaptionJobStatus()
+  // Handed to VideoEditor as `onRegenerateCaptions`: delegates the trigger to
+  // the background job instead of letting the package open its own blocking
+  // CaptionRegenModal. `run` is a thunk — captionJob.start only calls it once
+  // the job actually begins, which is what lets captionJob.tsx avoid ever
+  // importing the adapter (see that file's header comment). Guarded on
+  // `adapter.generateCaptions` at the call site below, not here: omitting the
+  // whole `onRegenerateCaptions` prop (rather than passing a callback that
+  // would start nothing) is what tells VideoEditor the host does NOT own the
+  // job, so its own generateCaptions-gated fallback (VideoEditor.tsx:879)
+  // still renders. createMontajAdapter always implements generateCaptions,
+  // so this guard is defensive rather than load-bearing today.
+  const handleRegenerateCaptions = useCallback(() => {
+    const base = projectRef.current ?? project
+    if (!base) return
+    captionJob.start(base.id, () => adapter.generateCaptions!(base.id, { style: base.captions?.style }))
+  }, [project, adapter, captionJob.start])
+  // Patches THIS component's own `project` state when a background caption
+  // job finishes. The mounted VideoEditor needs nothing from this sink — it
+  // refreshes itself off the same SSE frame through its own adapter
+  // subscription. What IS stale without this is `project`/`projectRef` here:
+  // handleUpdate (above) drops SSE frames on the floor while a package editor
+  // is mounted, on the assumption that the package editor is authoritative —
+  // an assumption a background job breaks, since it can outlive the mounted
+  // editor or finish after the user has navigated to a different project.
+  //
+  // Deliberately does NOT call api.saveProject: the montaj server already
+  // persisted the regenerated captions as part of the caption job and
+  // broadcast the SSE frame the mounted editor reconciles against, so saving
+  // here would double-write. This mirrors the built-in CaptionRegenModal's
+  // onDone, which patches via `sync.applyExternal` and never saves either
+  // (see the comment above `<CaptionRegenModal>` in
+  // montaj_assets/editor/src/video/VideoEditor.tsx).
+  const handleCaptionJobDone = useCallback((projectId: string, captions: Captions) => {
+    const base = projectRef.current
+    if (!base || base.id !== projectId) return // job completed after navigating away
+    handleProjectChange({ ...base, captions })
+  }, [handleProjectChange])
+  useCaptionJobSink(handleCaptionJobDone)
   // VideoEditor pushes the image-tone state up via onProvideImageTone. The
   // control now lives inside the Export dialog (moved out of the page header),
   // but the callback stays wired: providing it suppresses the package toolbar's
@@ -535,6 +584,13 @@ export default function EditorPage() {
             onProvideRenderTrigger={(fn) => setOpenRender(() => fn)}
             onProvideImageTone={setImageToneApi}
             onBackToSetup={handleBackToSetup}
+            // See handleRegenerateCaptions above for why this is guarded on
+            // adapter.generateCaptions rather than passed unconditionally.
+            onRegenerateCaptions={adapter.generateCaptions ? handleRegenerateCaptions : undefined}
+            // The job lives at the app root and outlives this route, so the
+            // projectId check keeps a job started on project A from greying
+            // out project B's trigger after navigating here.
+            captionsGenerating={captionJob.status === 'running' && captionJob.projectId === project.id}
             regenEnabled={project.projectType === 'ai_video'}
             engine={{ enabled: true }}
             isClipQueued={(itemId) => (project.regenQueue ?? []).some(e => e.clipId === itemId)}

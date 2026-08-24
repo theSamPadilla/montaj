@@ -526,6 +526,45 @@ shifts clips, overlays and audio tracks but explicitly **not** captions.
 
 ---
 
+## Background caption generation
+
+Regenerating captions does not block the editor. The trigger in the Captions
+panel starts a job and hands the editor straight back; progress appears as a
+small readout in the app's top bar next to the proxy-generation one, with the
+current phase and a Cancel. On success the captions land and the readout
+disappears; on failure it turns red with the reason and a dismiss.
+
+**The job is owned above the route.** `app/editor/captionJob.tsx` is a context
+provider mounted in `App.tsx`, so a running job survives navigating away from
+the project and back. It does not survive a full page reload: the stream is
+client-side, and making it reload-durable needs server-side job tracking the
+way proxies have. `start(projectId, run)` takes a thunk returning the event
+stream rather than the options themselves, so this app-root module never
+imports `createMontajAdapter` and never drags the adapter graph out of the
+lazy editor chunk into the main bundle.
+
+**The editor package still owns a blocking modal, and that is still the
+default.** `VideoEditorProps` gained two optional props, `onRegenerateCaptions`
+and `captionsGenerating`. A host that passes the first is asserting it owns the
+job: the editor delegates the trigger and never mounts `CaptionRegenModal`. A
+host that passes neither (Hub, Los Parceros) behaves exactly as before. That is
+why this is additive rather than a replacement.
+
+**Nothing here saves the project.** The server persists regenerated captions
+itself and broadcasts an SSE frame the mounted editor reconciles, so a save
+would double-write. The host sink exists only to refresh `EditorPage`'s own
+copy of the project, which is otherwise stale because it deliberately drops SSE
+frames while a package editor is mounted.
+
+**Cancel stops the request, not just the listening.** Cancelling calls the
+stream iterator's `return()` immediately, which aborts the fetch and lets the
+server's disconnect poll kill the pipeline. Waiting for the loop to notice on
+its next event would leave the job alive through whisper's quiet stretches, and
+an immediate retry would then collide with the server's one-job-per-project
+guard.
+
+---
+
 ## Version history
 
 The left panel's **Versions** tab (`video/VersionPanel.tsx`). Git-backed snapshots: **every** saved version gets its own row, newest first.

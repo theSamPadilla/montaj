@@ -1,6 +1,7 @@
 import { Link, useLocation } from 'react-router-dom'
 import { Moon, Sun } from 'lucide-react'
 import ProxyActivityIndicator from '@/components/ProxyActivityIndicator'
+import CaptionActivityIndicator from '@/components/CaptionActivityIndicator'
 
 const TABS = [
   { path: '/',         label: 'Editor' },
@@ -40,8 +41,11 @@ export default function MobileTopNav({ dark, onToggleDark }: Props) {
           </Link>
         ))}
       </nav>
-      <div className="absolute left-1/2 -translate-x-1/2 pointer-events-none">
+      <div className="absolute left-1/2 -translate-x-1/2 flex items-center gap-2 pointer-events-none">
         <ProxyActivityIndicator />
+        {/* compact: the mobile bar has no room for the log line — see
+            CaptionActivityIndicator's Props doc for what that drops. */}
+        <CaptionActivityIndicator compact />
       </div>
       <button
         onClick={onToggleDark}

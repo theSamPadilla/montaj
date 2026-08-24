@@ -165,6 +165,8 @@ export default function VideoEditor<P extends Project = Project>({
   onProvideImageTone,
   engine,
   sourcePreview,
+  onRegenerateCaptions,
+  captionsGenerating,
 }: Props<P>) {
   const emit = onProjectChange ?? (() => {})
 
@@ -315,6 +317,8 @@ export default function VideoEditor<P extends Project = Project>({
         onProvideImageTone={onProvideImageTone}
         engine={engine}
         sourcePreview={sourcePreview}
+        onRegenerateCaptions={onRegenerateCaptions}
+        captionsGenerating={captionsGenerating}
       />
     </div>
   )
@@ -629,6 +633,8 @@ function ReviewSurface<P extends Project>({
   onProvideImageTone,
   engine,
   sourcePreview,
+  onRegenerateCaptions,
+  captionsGenerating,
 }: SurfaceProps<P> & {
   // See the definition beside `sync` in VideoEditor above — set for the
   // duration of a caption drag gesture so the lane-normalization effect
@@ -640,6 +646,8 @@ function ReviewSurface<P extends Project>({
   regenEnabled?: boolean
   isClipQueued?: (itemId: string) => boolean
   sourcePreview?: VideoEditorProps<P>['sourcePreview']
+  onRegenerateCaptions?: VideoEditorProps<P>['onRegenerateCaptions']
+  captionsGenerating?: VideoEditorProps<P>['captionsGenerating']
 }) {
   const project = sync.project
   // Playhead in an external store, not useState — ~60Hz ticks re-render only the
@@ -860,9 +868,15 @@ function ReviewSurface<P extends Project>({
   const [renderOpen, setRenderOpen]   = useState(false)
   const [regenCaptionsOpen, setRegenCaptionsOpen] = useState(false)
   // Opens the caption-regeneration modal — CaptionListPanel's toolbar button.
-  // Provided only when the host adapter supports `generateCaptions`; absent →
-  // the "Regenerate" button is hidden there.
-  const handleRegenerateCaptions = adapter.generateCaptions ? () => setRegenCaptionsOpen(true) : undefined
+  // `onRegenerateCaptions` (host prop) wins when provided: a host that passes
+  // it is asserting it owns the caption job (running it as a background task
+  // instead of this component's blocking modal), so its trigger takes over
+  // even though `adapter.generateCaptions` is also present — the host uses
+  // that same adapter method to actually run the job it owns. Otherwise, the
+  // built-in modal path is provided only when the host adapter supports
+  // `generateCaptions`; absent → the "Regenerate" button is hidden there.
+  const handleRegenerateCaptions =
+    onRegenerateCaptions ?? (adapter.generateCaptions ? () => setRegenCaptionsOpen(true) : undefined)
   const [polishOpen, setPolishOpen] = useState(false)
   // Opens AudioPolishModal — toolbar button and command palette entry.
   // Provided only when the host adapter supports `analyzeAudioPolish`; absent →
@@ -2208,13 +2222,17 @@ function ReviewSurface<P extends Project>({
       onProjectChange={handleProjectChange}
       onCaptionSegmentDelete={handleCaptionSegmentDelete}
       onRegenerateCaptions={handleRegenerateCaptions}
-      // Disables the panel's generate/regenerate trigger for the life of
-      // the modal. Defensive rather than load-bearing: CaptionRegenModal
-      // is a full-screen blocking portal, so the panel underneath can't
-      // be clicked anyway. It keeps the panel honest on its own terms —
-      // and re-enables on close, so a failed job never leaves a
-      // permanently dead button.
-      captionsGenerating={regenCaptionsOpen}
+      // Disables the panel's generate/regenerate trigger while a job is in
+      // flight, from either source: the host's own background job
+      // (`captionsGenerating` prop, set when the host owns the trigger via
+      // `onRegenerateCaptions`) OR'd with this component's internal modal-
+      // open state. The internal half is defensive rather than load-bearing
+      // — CaptionRegenModal is a full-screen blocking portal, so the panel
+      // underneath can't be clicked anyway — but it keeps the panel honest
+      // on its own terms and re-enables on close, so a failed job never
+      // leaves a permanently dead button. The host half is load-bearing:
+      // it's the editor's only signal that an off-component job is running.
+      captionsGenerating={captionsGenerating || regenCaptionsOpen}
       fps={project.settings?.fps ?? 30}
       clock={clock}
       editFocusId={editFocusId}
@@ -2614,7 +2632,7 @@ function ReviewSurface<P extends Project>({
           montaj persists the regenerated captions server-side and the SSE frame
           reconciles, so a saveProject here would double-write. applyExternal keeps
           it out of the undo stack (server-authored, not a user edit). */}
-      {regenCaptionsOpen && adapter.generateCaptions && (
+      {regenCaptionsOpen && adapter.generateCaptions && !onRegenerateCaptions && (
         <CaptionRegenModal
           adapter={adapter}
           projectId={project.id}

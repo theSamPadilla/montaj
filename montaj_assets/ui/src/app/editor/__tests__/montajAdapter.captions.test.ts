@@ -36,6 +36,22 @@ function sseResponse(frames: string[]) {
   }
 }
 
+/**
+ * An SSE response whose body stays OPEN — it never closes on its own, so a
+ * consumer that calls `next()` with nothing queued PARKS on an unresolved
+ * promise. That is the exact state `captionJob.tsx`'s eager cancel puts the
+ * iterator in (whisper can sit many seconds between stderr lines), and it is
+ * the only state in which `return()`'s obligation to settle a pending
+ * `next()` is observable.
+ */
+function openSseResponse() {
+  return {
+    ok: true,
+    status: 200,
+    body: new ReadableStream<Uint8Array>({ start() { /* held open deliberately */ } }),
+  }
+}
+
 /** A non-streaming JSON error response (what the 409 guard returns). */
 function jsonErrorResponse(status: number, detail: unknown) {
   return {
@@ -162,6 +178,34 @@ describe('montajAdapter.generateCaptions', () => {
       { type: 'log', message: '[transcribe] 12%' },
       { type: 'error', message: 'Caption stream ended without a result' },
     ])
+  })
+
+  it('settles a parked next() when return() is called, rather than hanging forever', async () => {
+    // Regression pin. `return()` used to set its `done` flag WITHOUT resolving
+    // an already-pending `next()`, so a consumer parked on that promise waited
+    // on it forever: its loop never exited and its `finally` never ran.
+    //
+    // Unreachable while the only consumer was a `for await` (which can break
+    // only just after an event resolved, never while parked), and therefore
+    // invisible to `captionJob.test.tsx`, whose hand-written fake stream
+    // implements `return()` correctly. It became reachable the moment
+    // captionJob's `cancel()` started calling `return()` EAGERLY.
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(openSseResponse()))
+
+    const adapter = createMontajAdapter()
+    const iterator = adapter.generateCaptions!('proj-1')[Symbol.asyncIterator]()
+
+    // Nothing has been pushed, so this cannot resolve yet — it parks.
+    const parked = iterator.next()
+    let settled = false
+    void parked.then(() => { settled = true })
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(settled).toBe(false)
+
+    await iterator.return!()
+
+    await expect(parked).resolves.toEqual({ value: undefined, done: true })
   })
 
   it('still throws for a non-409 failure', async () => {

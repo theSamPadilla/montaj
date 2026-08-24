@@ -57,6 +57,7 @@ vi.mock('@/lib/overlay-eval', () => ({
 }))
 
 import EditorPage from '../EditorPage'
+import { CaptionJobProvider } from '../captionJob'
 
 beforeEach(() => {
   vi.spyOn(console, 'warn').mockImplementation(() => {})
@@ -74,14 +75,19 @@ afterEach(() => vi.restoreAllMocks())
 
 describe('EditorPage — carousel project', () => {
   it('renders the package CarouselEditor with the AssetsPanel slot', async () => {
+    // EditorPage reads caption-job state (T4) via the app-root
+    // CaptionJobProvider (App.tsx); mirror that mount here so the hook has a
+    // context to read from.
     const { getByText, getByTitle } = render(
-      <MemoryRouter
-        initialEntries={[{ pathname: '/editor/proj-carousel-1', state: { project: carouselProject } }]}
-      >
-        <Routes>
-          <Route path="/editor/:id" element={<EditorPage />} />
-        </Routes>
-      </MemoryRouter>,
+      <CaptionJobProvider>
+        <MemoryRouter
+          initialEntries={[{ pathname: '/editor/proj-carousel-1', state: { project: carouselProject } }]}
+        >
+          <Routes>
+            <Route path="/editor/:id" element={<EditorPage />} />
+          </Routes>
+        </MemoryRouter>
+      </CaptionJobProvider>,
     )
 
     // Stable package-owned element: the Render button title.
