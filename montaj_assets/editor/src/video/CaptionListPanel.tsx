@@ -5,7 +5,7 @@
 // style/size/color controls tucked behind a collapsible subsection so the list
 // stays the prominent thing in a ~300px-wide column.
 import { Fragment, useEffect, useMemo, useRef, useState } from 'react'
-import { AlignCenter, AlignLeft, AlignRight, ChevronDown, ChevronRight, Search, Trash2 } from 'lucide-react'
+import { AlignCenter, AlignLeft, AlignRight, ChevronDown, ChevronRight, RefreshCw, Search, Trash2 } from 'lucide-react'
 import type { Project } from '../types'
 import type { Captions } from '../schema'
 import type { PlaybackClock } from './playback-clock'
@@ -553,42 +553,6 @@ function CaptionListPanelBody({
               <span className="ml-1.5 text-[var(--editor-text)]/40 normal-case tracking-normal">{segs.length}</span>
             )}
           </span>
-          <div className="flex items-center gap-1.5 shrink-0">
-            {/* Only the "replace what's there" state lives in the header —
-                the "there's nothing yet" state has its own primary button
-                down in the empty-state body below, so this panel never shows
-                two competing triggers at once. */}
-            {onRegenerateCaptions && segs.length > 0 && (
-              <button
-                type="button"
-                // `disabled:hover:*` classes here used to target the
-                // arbitrary-var color `text-[var(--editor-text)]`/`border-
-                // [var(--editor-border)]` with no rule ever generated for
-                // them (the same opacity-modifier trap this file documents
-                // elsewhere) — Tailwind emitted nothing, so a disabled button
-                // still brightened to full foreground on hover.
-                // `disabled:pointer-events-none` actually works: it removes
-                // hover (and click) entirely while disabled.
-                className="text-[10px] text-[var(--editor-text)]/60 hover:text-[var(--editor-text)] border border-[var(--editor-border)] hover:border-[var(--editor-text)]/30 bg-[var(--editor-surface)] rounded px-1.5 py-0.5 transition-colors disabled:opacity-40 disabled:cursor-not-allowed disabled:pointer-events-none"
-                onClick={onRegenerateCaptions}
-                disabled={captionsGenerating}
-              >
-                Regenerate captions
-              </button>
-            )}
-            {captionTrack && segs.length > 0 && (
-              <button
-                className={`text-[10px] rounded px-1.5 py-0.5 transition-all border ${
-                  confirmRemove
-                    ? 'bg-red-500/20 border-red-500/60 text-red-400'
-                    : 'text-[var(--editor-text)]/60 hover:text-[var(--editor-text)] border-[var(--editor-border)] hover:border-[var(--editor-text)]/30 bg-[var(--editor-surface)]'
-                }`}
-                onClick={handleRemoveAllClick}
-              >
-                {confirmRemove ? 'Really remove?' : 'Remove all'}
-              </button>
-            )}
-          </div>
         </div>
 
         {/* ── Collapsible "Caption style" subsection ── */}
@@ -995,6 +959,41 @@ function CaptionListPanelBody({
           ))
         )}
       </div>
+
+      {/* ── Actions footer ──
+          The generate/remove triggers live at the BOTTOM of the panel, out of
+          the way of the list, and only when there is something to act on. The
+          "there's nothing yet" state keeps its own primary button in the empty
+          body above, so the panel never shows two competing triggers. */}
+      {segs.length > 0 && (
+        <div className="shrink-0 border-t border-[var(--editor-border)] px-3 py-2.5 flex items-center gap-2">
+          {onRegenerateCaptions && (
+            <button
+              type="button"
+              onClick={onRegenerateCaptions}
+              disabled={captionsGenerating}
+              className="flex-1 flex items-center justify-center gap-1.5 h-8 rounded-md border border-[var(--editor-border)] bg-[var(--editor-surface)] text-xs font-medium text-[var(--editor-text)] transition-colors hover:border-[var(--editor-accent)] hover:text-[var(--editor-accent)] disabled:opacity-40 disabled:cursor-not-allowed disabled:pointer-events-none"
+            >
+              <RefreshCw size={13} className={captionsGenerating ? 'animate-spin' : undefined} />
+              Regenerate captions
+            </button>
+          )}
+          {captionTrack && (
+            <button
+              type="button"
+              onClick={handleRemoveAllClick}
+              className={`flex items-center justify-center gap-1.5 h-8 px-3 rounded-md border text-xs font-medium transition-colors ${
+                confirmRemove
+                  ? 'bg-red-500/15 border-red-500/60 text-red-400'
+                  : 'border-[var(--editor-border)] bg-[var(--editor-surface)] text-[var(--editor-text)]/70 hover:border-red-500/50 hover:text-red-400'
+              }`}
+            >
+              <Trash2 size={13} />
+              {confirmRemove ? 'Really remove?' : 'Remove all'}
+            </button>
+          )}
+        </div>
+      )}
     </div>
   )
 }
