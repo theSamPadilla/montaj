@@ -95,7 +95,7 @@
 
 import { sourceWindow } from './source-window.js'
 import { visualDuration } from './durations.js'
-import { geometryFor } from './geometry.js'
+import { geometryAt } from './geometry.js'
 
 // NOTE: T2's `Variant` / `SourceWindow` / `SourceWindowItem` are referenced
 // below as inline `import('./source-window.js').X` types rather than aliased
@@ -116,8 +116,9 @@ import { geometryFor } from './geometry.js'
  * A timeline `VisualItem` (montaj_assets/editor/src/schema.ts:78) as far as
  * activation is concerned: everything source-window math reads, plus the few
  * fields activation itself consults, plus (T4) everything geometry math
- * reads — `resolveItem` calls `geometryFor(item, kind)` on every item, so the
- * type needs to structurally overlap `GeometryItem` for `tsc` to accept it.
+ * reads — `resolveItem` calls `geometryAt(item, kind, elapsed)` on every item,
+ * so the type needs to structurally overlap `GeometryItem` for `tsc` to accept
+ * it. That overlap is also what carries the optional `keyframes` field.
  *
  * `start` / `end` are required by the project schema but typed optional here so
  * the functions stay total over partial fixtures — same stance as T2.
@@ -171,10 +172,19 @@ import { geometryFor } from './geometry.js'
  *   negative-start overlay, a render segment that begins mid-item) reports how
  *   far INTO itself it already is.
  * @property {import('./geometry.js').Geometry} geometry
- *   The shared percent-of-frame geometry for this item — `geometryFor(item,
- *   kind)` (src/geometry.js). Frame-relative and engine-agnostic; see that
- *   module for the two adapters (`toCssBoxPct`, `toPixelBox`) that derive
- *   CSS-percent and ffmpeg-pixel numbers from it.
+ *   The shared percent-of-frame geometry for this item AT THIS INSTANT —
+ *   `geometryAt(item, kind, elapsed)` (src/geometry.js), where the clock is
+ *   the item-relative `max(0, t - item.start)` (SP9b). For an item with no
+ *   `keyframes` that IS `geometryFor(item, kind)`: `geometryAt` hands such an
+ *   item to `geometryFor` itself, so the static result is unchanged by
+ *   construction. Frame-relative and engine-agnostic; see that module for the
+ *   three adapters (`toCssBoxPct`, `toPixelBox`, `toRotatedPixelBox`) that
+ *   derive CSS-percent and ffmpeg-pixel numbers from it.
+ *
+ *   NOTE for `resolveSegment`: it resolves the whole segment at `segStart`, so
+ *   an animated item's geometry there is the value at the SEGMENT's start, not
+ *   a per-frame curve. The render bake samples per frame through its own
+ *   `geometryAt` calls; `resolveSegment` is the segment-planning view.
  */
 
 /**
@@ -572,7 +582,11 @@ export function planBoundaries(project, fps) {
  */
 function resolveItem(item, kind, trackIdx, t, variant) {
   const elapsed = Math.max(0, t - (item.start ?? 0))
-  const geometry = geometryFor(item, kind)
+  // `elapsed` is already the ITEM-RELATIVE clock keyframes are authored
+  // against (src/curves.js convention 1), so the same number that drives
+  // `seek` drives the curves. An item with no keyframes routes straight back
+  // through `geometryFor` inside `geometryAt`, unchanged.
+  const geometry = geometryAt(item, kind, elapsed)
   if (kind === 'video') {
     const window = sourceWindow(item, variant)
     // Identical to `seekTime(item, t, variant)` by construction — that function

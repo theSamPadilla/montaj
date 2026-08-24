@@ -555,3 +555,52 @@ describe('TimelineCanvas — fade-curve context menu', () => {
     expect(() => { surface.dispatchEvent(mouse('contextmenu', 100, LANE_TOP)) }).not.toThrow()
   })
 })
+
+describe('TimelineCanvas — keyframe-strip context menu (SP9b T3.3)', () => {
+  // A single overlay track, keyframed on offsetX at t=0.5 only — the strip's
+  // one diamond, at x=(2+0.5)×100=250 at the scale `mount` pins.
+  const keyframedProject = {
+    id: 'p',
+    tracks: [{
+      id: 'trk-0',
+      items: [{
+        id: 'o0', type: 'overlay', start: 2, end: 4,
+        keyframes: [{ prop: 'offsetX', points: [{ t: 0.5, value: 0 }] }],
+      }],
+    }],
+  } as unknown as Project
+
+  const KF_ROW = computeTimelineLayout(keyframedProject).rows[0]
+  const KF_ZONE_Y = Math.round(KF_ROW.y + KF_ROW.height - 2)
+  const KF_X = 250
+
+  it('right-clicking a diamond calls onKeyframeMenu with the item, t, props and CLIENT coordinates', () => {
+    const onKeyframeMenu = vi.fn()
+    const { surface } = mount({ project: keyframedProject, selectedIds: ['o0'], onKeyframeMenu })
+    act(() => { surface.dispatchEvent(mouse('contextmenu', KF_X, KF_ZONE_Y)) })
+    expect(onKeyframeMenu).toHaveBeenCalledTimes(1)
+    expect(onKeyframeMenu).toHaveBeenCalledWith({ itemId: 'o0', t: 0.5, props: ['offsetX'], isLast: true, x: KF_X, y: KF_ZONE_Y })
+  })
+
+  it('prevents the default browser menu only on a diamond hit', () => {
+    const onKeyframeMenu = vi.fn()
+    const { surface } = mount({ project: keyframedProject, selectedIds: ['o0'], onKeyframeMenu })
+    const onDiamond = mouse('contextmenu', KF_X, KF_ZONE_Y)
+    surface.dispatchEvent(onDiamond)
+    expect(onDiamond.defaultPrevented).toBe(true)
+  })
+
+  it('does not open when the keyframed overlay is not selected', () => {
+    const onKeyframeMenu = vi.fn()
+    const { surface } = mount({ project: keyframedProject, selectedIds: [], onKeyframeMenu })
+    const elsewhere = mouse('contextmenu', KF_X, KF_ZONE_Y)
+    surface.dispatchEvent(elsewhere)
+    expect(onKeyframeMenu).not.toHaveBeenCalled()
+    expect(elsewhere.defaultPrevented).toBe(false)
+  })
+
+  it('does nothing when the host implements no onKeyframeMenu at all', () => {
+    const { surface } = mount({ project: keyframedProject, selectedIds: ['o0'] })
+    expect(() => { surface.dispatchEvent(mouse('contextmenu', KF_X, KF_ZONE_Y)) }).not.toThrow()
+  })
+})

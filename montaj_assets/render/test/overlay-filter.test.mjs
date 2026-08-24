@@ -140,6 +140,176 @@ test('(j) rotation is normalized, and emitted as degrees rather than a float rad
   }
 })
 
+// ---------------------------------------------------------------------------
+// Keyframed overlays (SP9b T2.3)
+//
+// An animated overlay's geometry is baked into its CAPTURE, per frame, by the
+// Puppeteer shim (bundle.js `generateShim`) — because this filter graph places
+// an overlay ONCE for a whole segment and has no per-frame hook to animate
+// through. So the composite's whole job for a keyframed overlay is to NOT
+// position it: drop the design-canvas frame onto the output canvas untouched.
+//
+// The failure this guards is double application: geometry in the pixels AND in
+// the filter graph, which quarter-sizes a half-scaled animated overlay and
+// double-turns a rotated one.
+// ---------------------------------------------------------------------------
+
+const TRACKS = [{ prop: 'offsetX', points: [{ t: 0, value: 0 }, { t: 2, value: 40 }] }]
+
+test('(l) a keyframed overlay composites full-canvas at the origin', () => {
+  const s = callOv({ keyframes: TRACKS, offsetX: 30, offsetY: -20, scale: 0.4 }, { fps: 30 })
+    .filterParts.join('\n')
+  assert.match(s, /scale=1080:1920/,
+    'the capture already carries the scale — the composite must not apply it again')
+  assert.match(s, /overlay=x=0:y=0:/,
+    'the capture already carries the offsets — the composite must not apply them again')
+  assert.doesNotMatch(s, /overlay=x=(?!0:y=0:)/)
+})
+
+test('(m) rotation is NOT re-applied to a keyframed overlay', () => {
+  // The subtle one. `rotation` is still on the descriptor (render.js stamps it
+  // for every overlay), and it is legitimately non-zero — the shim baked it. A
+  // `rotate=` step here would turn the pixels a SECOND time, and unlike the
+  // scale/offset cases the result is not merely misplaced but visibly smeared,
+  // since rotate resamples.
+  for (const rotation of [90, 180, 270, -45]) {
+    const s = callOv({ keyframes: TRACKS, rotation }, { fps: 30 }).filterParts.join('\n')
+    assert.doesNotMatch(s, /rotate=/, `rotation ${rotation}: already baked, must not turn again`)
+    assert.match(s, /scale=1080:1920\[ovsc1\]/, `rotation ${rotation}: scale step must stay bare`)
+    assert.match(s, /overlay=x=0:y=0:/, `rotation ${rotation}: and composite at the origin`)
+  }
+})
+
+test('(n) a keyframed overlay is indistinguishable from an identity static one', () => {
+  // Not a restatement of (l): this pins WHAT the keyframed branch agrees with.
+  // Its output must be exactly the graph a plain, unpositioned overlay
+  // produces — which is what makes "the capture IS the canvas" true rather
+  // than just plausible.
+  const identity = callOv({}, { fps: 30 })
+  const keyframed = callOv(
+    { keyframes: TRACKS, offsetX: 30, offsetY: -20, scale: 0.4, rotation: 90 }, { fps: 30 })
+  assert.deepEqual(keyframed.filterParts, identity.filterParts)
+  assert.deepEqual(keyframed.inputArgs, identity.inputArgs)
+})
+
+test('(o) the even-pixel rounding still applies on an odd output canvas', () => {
+  // The keyframed target is spelled as the IDENTITY GEOMETRY, not as a literal
+  // `scale=${vw}:${vh}`, precisely so it inherits `round(vw/2)*2`. yuva420
+  // encoders reject odd dimensions, so a 1081-wide output must still land on an
+  // even scale target — 1082, the nearest even, exactly as the static path at
+  // scale 1 already lands there. Being one pixel over the canvas is the
+  // pre-existing convention on every path here, not a keyframe-specific choice.
+  const kf = buildOverlayFilterParts(
+    { ...OV, keyframes: TRACKS }, 1081, 1921, 1, '[base]', 0, 2, { fps: 30 })
+  const s = kf.filterParts.join('\n')
+  assert.match(s, /scale=1082:1922/, 'odd canvas dims must round to even, as every other path does')
+  assert.match(s, /overlay=x=0:y=0:/)
+
+  // And it lands on the SAME even numbers the static scale-1 path does.
+  const staticIdentity = buildOverlayFilterParts(OV, 1081, 1921, 1, '[base]', 0, 2, { fps: 30 })
+  assert.deepEqual(kf.filterParts, staticIdentity.filterParts)
+})
+
+test('(p) an EMPTY keyframes array takes the ordinary static path', () => {
+  // The editor can leave `keyframes: []` behind after the last key is deleted.
+  // Such an item animates nothing, so nothing was baked, and treating it as
+  // baked would drop its position on the floor. Same rule the shim applies.
+  const s = callOv({ keyframes: [], offsetX: 25, scale: 0.5 }, { fps: 30 }).filterParts.join('\n')
+  const noKf = callOv({ offsetX: 25, scale: 0.5 }, { fps: 30 }).filterParts.join('\n')
+  assert.equal(s, noKf, 'an empty track list is not an animation')
+  assert.match(s, /scale=540:960/)
+  assert.doesNotMatch(s, /overlay=x=0:y=0:/)
+})
+
+test('(q) STATIC overlays are byte-identical to the pre-keyframes filter graph', () => {
+  // The hard acceptance criterion for T2.3. These are the exact strings this
+  // function emitted before the keyframed branch existed, transcribed by hand
+  // rather than captured from a re-run — a golden regenerated from today's code
+  // would pass no matter what the branch did to the static path.
+  const { inputArgs, filterParts, newVideoLabel } = callOv({ offsetX: 10, scale: 0.5 }, { fps: 30 })
+  assert.deepEqual(inputArgs, ['-ss', '0', '-t', '2', '-i', '/tmp/ov.mkv'])
+  assert.deepEqual(filterParts, [
+    '[1:v]format=yuva420p,setpts=N/(30*TB)[ovfmt1]',
+    '[ovfmt1]scale=540:960[ovsc1]',
+    '[base][ovsc1]overlay=x=378:y=480:format=yuv420:shortest=0[vov1]',
+  ])
+  assert.equal(newVideoLabel, '[vov1]')
+})
+
+// ---------------------------------------------------------------------------
+// Item-level opacity (SP9b, decided mid-task)
+//
+// A pre-existing gap, unrelated to keyframes: images applied item opacity, videos
+// applied item opacity, overlays applied nothing — so a translucent overlay looked
+// translucent in the editor preview and exported fully opaque. It was missing at
+// BOTH ends (no filter term here, and render.js never stamped `opacity` onto the
+// descriptor), which is why nothing caught it.
+//
+// The epsilon guard is what keeps this safe to land: opacity 1 and opacity absent
+// must emit NOTHING, so every project that does not set overlay opacity keeps a
+// byte-identical filter graph.
+// ---------------------------------------------------------------------------
+
+test('(r) opacity absent or 1 emits no opacity step at all', () => {
+  const absent = callOv({}, { fps: 30 })
+  for (const [label, patch] of [['1', { opacity: 1 }], ['0.9999', { opacity: 0.9999 }]]) {
+    const got = callOv(patch, { fps: 30 })
+    assert.deepEqual(got.filterParts, absent.filterParts,
+      `opacity ${label}: must be a strict no-op — this is what keeps the goldens valid`)
+    assert.deepEqual(got.inputArgs, absent.inputArgs)
+  }
+  assert.doesNotMatch(absent.filterParts.join('\n'), /colorchannelmixer/)
+})
+
+test('(s) a translucent overlay gets colorchannelmixer, between geometry and composite', () => {
+  const { filterParts } = callOv({ opacity: 0.5 }, { fps: 30 })
+  // Position in the chain matters as much as presence: it must consume the
+  // SCALED/rotated label and hand its own label to the composite, exactly as the
+  // image and video paths sequence it.
+  assert.deepEqual(filterParts, [
+    '[1:v]format=yuva420p,setpts=N/(30*TB)[ovfmt1]',
+    '[ovfmt1]scale=1080:1920[ovsc1]',
+    '[ovsc1]colorchannelmixer=aa=0.5[ovop1]',
+    '[base][ovop1]overlay=x=0:y=0:format=yuv420:shortest=0[vov1]',
+  ])
+})
+
+test('(t) opacity 0 is a real value, not a falsy no-op', () => {
+  // `?? 1` in the guard, never `|| 1` — a fully transparent overlay is a
+  // legitimate authored state (and the end state of every fade-out).
+  const s = callOv({ opacity: 0 }, { fps: 30 }).filterParts.join('\n')
+  assert.match(s, /colorchannelmixer=aa=0\[ovop1\]/)
+})
+
+test('(u) opacity composes with rotation without disturbing either', () => {
+  const s = callOv({ opacity: 0.25, rotation: 90 }, { fps: 30 }).filterParts.join('\n')
+  assert.match(s, /scale=1080:1920,rotate=90\*PI\/180:ow=1920:oh=1080:c=black@0\.0\[ovsc1\]/)
+  assert.match(s, /\[ovsc1\]colorchannelmixer=aa=0\.25\[ovop1\]/,
+    'opacity follows the geometry chain, so it multiplies the already-turned frame')
+  assert.match(s, /\[base\]\[ovop1\]overlay=x=-420:y=420:/)
+})
+
+test('(v) a KEYFRAMED overlay never gets colorchannelmixer — opacity is baked', () => {
+  // The mutual-exclusion pin. The shim applied opacity as CSS on the transform
+  // layer, so a second multiply here would SQUARE it: 0.5 would export at 0.25.
+  for (const opacity of [0.5, 0, 0.25]) {
+    const s = callOv({ keyframes: TRACKS, opacity }, { fps: 30 }).filterParts.join('\n')
+    assert.doesNotMatch(s, /colorchannelmixer/,
+      `opacity ${opacity}: already in the pixels — applying it again would square it`)
+  }
+  // And the whole chain still collapses to the identity graph, opacity included.
+  assert.deepEqual(
+    callOv({ keyframes: TRACKS, opacity: 0.5, scale: 0.4, rotation: 90 }, { fps: 30 }).filterParts,
+    callOv({}, { fps: 30 }).filterParts)
+})
+
+test('(w) an overlay with an EMPTY keyframes array still gets its opacity applied', () => {
+  // The empty-array case is static everywhere else, so it must be static here
+  // too — nothing was baked, so the compositor owns the opacity.
+  const s = callOv({ keyframes: [], opacity: 0.5 }, { fps: 30 }).filterParts.join('\n')
+  assert.match(s, /colorchannelmixer=aa=0\.5/)
+})
+
 test('(k) not rotated: the overlay grown box IS the unrotated box (x === xPx, y === yPx)', () => {
   // The counterpart of the image and video tests in encode-segment.test.mjs.
   // Test (g) proves absent/0/360 agree with each other; this proves what they

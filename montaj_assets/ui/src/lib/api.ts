@@ -259,6 +259,18 @@ export const api = {
   restoreVersion: (id: string, hash: string) =>
     request<Project>(`/api/projects/${id}/versions/${hash}/restore`, { method: 'POST' }),
 
+  /**
+   * Checkpoint the current on-disk project as a manual version (git commit of
+   * project.json, no other side effects). `name` becomes the commit's label;
+   * omitted, the server falls back to "manual save". Returns the updated
+   * version list (same shape as `listVersions`).
+   */
+  saveVersion: (id: string, name?: string) =>
+    request<ProjectVersion[]>(`/api/projects/${id}/versions`, {
+      method: 'POST',
+      body: JSON.stringify(name === undefined ? {} : { name }),
+    }),
+
   getInfo: () => request<{ skill_path: string; root_skill_path: string; style_profile_skill_path: string }>('/api/info'),
 
   listProfiles: () => request<Profile[]>('/api/profiles'),
@@ -515,4 +527,14 @@ export const api = {
 /** Build a URL that serves a local file through montaj serve. */
 export function fileUrl(absolutePath: string) {
   return `/api/files?path=${encodeURIComponent(absolutePath)}`
+}
+
+/**
+ * Build the URL for a rendered frame from a specific version. `commit` is a
+ * git commit hash, or the literal string `"working"` for the live on-disk
+ * state; `t` is the timestamp in seconds. Used as an `<img src>` — the
+ * server renders and returns a PNG (GET /api/projects/:id/versions/:commit/frame).
+ */
+export function versionFrameUrl(id: string, commit: string, t: number) {
+  return `/api/projects/${id}/versions/${encodeURIComponent(commit)}/frame?t=${t}`
 }

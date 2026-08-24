@@ -261,11 +261,59 @@
 // They agree. This is a POSITIVE finding (no divergence to register), unlike
 // most of the pairs this package ports.
 //
+// ── keyframes — geometryAt is the ANIMATED sibling of geometryFor (SP9b) ─────
+//
+// `geometryFor(item, kind)` answers "where is this item", full stop. SP9b adds
+// keyframed properties, so the honest question becomes "where is this item AT
+// THIS INSTANT" — and that is `geometryAt(item, kind, localT)`.
+//
+// `localT` is ITEM-RELATIVE seconds (0 = the item's own `start`), the same
+// convention src/curves.js fixes and for the same reason: an item dragged
+// along the timeline carries its animation with it, unchanged.
+//
+// The parity contract is the whole point. Curve evaluation lives ONLY in
+// src/curves.js, and BOTH engines reach it through this ONE function — the
+// editor preview samples `geometryAt` at the playhead, the render bake samples
+// `geometryAt` per frame. Neither one interpolates anything itself. Any easing
+// math that appears in the preview, the render shim or encode-segment.js is a
+// PARITY BUG, not an optimization.
+//
+//   geometryFor(item, kind)          — the STATIC path. Its body is untouched
+//                                      by SP9b, deliberately: see below.
+//   geometryAt(item, kind, localT)   — the animated path. For each of the five
+//                                      keyframeable props it prefers
+//                                      `sampleTrack(track, localT)` and falls
+//                                      back to the item's static scalar; every
+//                                      other field is built exactly as
+//                                      `geometryFor` builds it.
+//
+// NO-KEYFRAME IDENTITY, BY CONSTRUCTION. An item with no `keyframes` does not
+// take a parallel code path through `geometryAt` — it is handed to
+// `geometryFor` itself, the same function, so the two CANNOT drift. That
+// matters beyond tidiness: a project without keyframes must produce a
+// byte-identical ffmpeg filter graph, which is what keeps the render goldens
+// valid. Do not "simplify" that short-circuit into a duplicated object
+// literal, and do not reroute `geometryFor` through `geometryAt`.
+//
+// Only the five props src/curves.js names (`offsetX`, `offsetY`, `scale`,
+// `rotation`, `opacity`) are animatable. `fit`, `sourceCrop`, `sourceWidth`
+// and `sourceHeight` are NOT keyframeable and are forwarded exactly as the
+// static path forwards them — `sourceCrop` still BY REFERENCE, never cloned.
+// A track naming any other prop is simply never consulted.
+//
+// The fallback is `??`, never `||`: `sampleTrack` returns the `undefined`
+// sentinel for "no track", and 0 is an ordinary sampled value (opacity 0,
+// offset 0). `||` would silently discard a legitimately animated 0 and snap
+// the item back to its static scalar — an animation that fades to invisible
+// would flash fully opaque on the last frame instead.
+//
 // ── Purity ──────────────────────────────────────────────────────────────────
 //
 // No Date, no Math.random, no I/O, no globals, no mutation of the input item
 // or of any `sourceCrop`/`resolution` array/object handed in. Same inputs
 // always produce the same outputs.
+
+import { sampleTrack } from './curves.js'
 
 /**
  * The subset of a timeline item that geometry math reads. Deliberately
@@ -284,6 +332,11 @@
  * @property {number} [sourceHeight] Source intrinsic pixel height. Forwarded verbatim.
  * @property {number} [rotation]     Degrees. Carried by `geometryFor`, consumed
  *   ONLY by `toRotatedPixelBox` — see the module header.
+ * @property {import('./curves.js').KeyframeTrack[]} [keyframes]
+ *   Per-property animation, at most one track per prop. Read ONLY by
+ *   `geometryAt`; `geometryFor` does not know this field exists. Absent (the
+ *   overwhelmingly common case) means the item is static — see the module
+ *   header's no-keyframe identity note.
  */
 
 /**
@@ -345,6 +398,80 @@ export function geometryFor(item, kind) {
     sourceWidth: item.sourceWidth,
     sourceHeight: item.sourceHeight,
     rotation: item.rotation ?? 0,
+  }
+}
+
+/**
+ * The track driving `prop`, or `undefined` if the item does not animate it.
+ *
+ * FIRST wins if a malformed item somehow carries two tracks for one prop — the
+ * `.find()` reading, which is what a reader expects. Written as a plain indexed
+ * loop rather than `.find()` because this is called five times per item per
+ * frame on both the preview and the bake path, and `.find()` allocates a
+ * closure every call. Tracks are tiny (at most five, one per animatable prop),
+ * so five scans of the array cost less than the closures would.
+ *
+ * @param {import('./curves.js').KeyframeTrack[]} tracks
+ * @param {import('./curves.js').KeyframeProp} prop
+ * @returns {import('./curves.js').KeyframeTrack | undefined}
+ */
+function trackFor(tracks, prop) {
+  for (let i = 0; i < tracks.length; i++) {
+    const track = tracks[i]
+    if (track && track.prop === prop) return track
+  }
+  return undefined
+}
+
+/**
+ * The shared percent-of-frame geometry for one item AT ONE INSTANT — the
+ * animated sibling of {@link geometryFor}.
+ *
+ * WHY THIS EXISTS: keyframed properties have to move identically in the editor
+ * preview and in the ffmpeg render, and the only way to guarantee that is for
+ * both engines to ask the SAME function for the SAME instant. The preview
+ * samples this at the playhead; the render bake samples it per frame. Curve
+ * evaluation itself lives in src/curves.js and nowhere else — any easing math
+ * that turns up in the preview, the render shim or encode-segment.js is a
+ * PARITY BUG, not a local optimization. See the module header.
+ *
+ * `localT` is ITEM-RELATIVE seconds (0 = the item's own `start`), matching
+ * src/curves.js's convention 1, so moving an item along the timeline carries
+ * its animation with it unchanged. `resolveItem` (activation.js) already
+ * computes exactly this quantity as `max(0, t - item.start)` and passes it
+ * straight through.
+ *
+ * An item with no keyframes is handed to {@link geometryFor} ITSELF — the same
+ * function, not a copy of its body — so the static path is identical BY
+ * CONSTRUCTION and a keyframe-free project keeps producing a byte-identical
+ * filter graph. Only the five props src/curves.js names can be animated;
+ * `fit`/`sourceCrop`/`sourceWidth`/`sourceHeight` are forwarded exactly as the
+ * static path forwards them (`sourceCrop` by reference, never cloned).
+ *
+ * @param {GeometryItem} item
+ * @param {import('./activation.js').ItemKind} kind
+ * @param {number} localT Seconds from the ITEM's own `start`, not timeline
+ *   time. A non-finite value is not an error: `sampleTrack` reads it as
+ *   "before the first keyframe".
+ * @returns {Geometry}
+ */
+export function geometryAt(item, kind, localT) {
+  const tracks = item.keyframes
+  // The static path is `geometryFor` itself, not a re-implementation of it.
+  if (!Array.isArray(tracks) || tracks.length === 0) return geometryFor(item, kind)
+
+  // `??`, never `||`: `sampleTrack`'s "no track" sentinel is `undefined`, and a
+  // sampled 0 (opacity 0, offset 0) is an ordinary value that must survive.
+  return {
+    scale: sampleTrack(trackFor(tracks, 'scale'), localT) ?? item.scale ?? 1,
+    offsetX: sampleTrack(trackFor(tracks, 'offsetX'), localT) ?? item.offsetX ?? 0,
+    offsetY: sampleTrack(trackFor(tracks, 'offsetY'), localT) ?? item.offsetY ?? 0,
+    opacity: sampleTrack(trackFor(tracks, 'opacity'), localT) ?? item.opacity ?? 1,
+    fit: fitFor(item, kind),
+    sourceCrop: item.sourceCrop,
+    sourceWidth: item.sourceWidth,
+    sourceHeight: item.sourceHeight,
+    rotation: sampleTrack(trackFor(tracks, 'rotation'), localT) ?? item.rotation ?? 0,
   }
 }
 

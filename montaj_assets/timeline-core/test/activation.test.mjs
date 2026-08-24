@@ -48,6 +48,8 @@ import {
   resolveAt,
   sourceWindow,
   seekTime,
+  geometryFor,
+  geometryAt,
 } from '../index.js'
 
 const VARIANTS = ['preview', 'render']
@@ -1285,5 +1287,260 @@ describe('totality', () => {
         }
       }
     }
+  })
+})
+
+// ---------------------------------------------------------------------------
+// 8. Keyframed geometry through resolveAt (SP9b T0.3)
+//
+// `resolveItem` now calls `geometryAt(item, kind, elapsed)` instead of
+// `geometryFor(item, kind)`. `elapsed` is `max(0, t - item.start)` — the
+// quantity it was already computing for `seek` — and that is exactly the
+// ITEM-RELATIVE clock keyframes are authored against (src/curves.js
+// convention 1), so an item dragged along the timeline carries its animation
+// with it unchanged.
+//
+// The first block below is the regression pin: for an item with no keyframes,
+// `ResolvedItem.geometry` must be what it always was.
+// ---------------------------------------------------------------------------
+
+/** A two-point linear track over [0, endT]. */
+const track = (prop, from, to, endT = 4) => ({
+  prop,
+  points: [
+    { t: 0, value: from },
+    { t: endT, value: to },
+  ],
+})
+
+describe('resolveAt geometry: an item with NO keyframes resolves exactly as before', () => {
+  const ITEMS = [
+    { id: 'plain-video', type: 'video', src: '/a.mov', inPoint: 2, outPoint: 12, start: 0, end: 10 },
+    { id: 'plain-image', type: 'image', src: '/b.jpg', start: 0, end: 10, fit: 'contain', opacity: 0.7 },
+    {
+      id: 'transformed-overlay',
+      type: 'overlay',
+      src: '/c.jsx',
+      start: 0,
+      end: 10,
+      scale: 0.6,
+      offsetX: -12,
+      offsetY: 8,
+      rotation: 42,
+    },
+    {
+      id: 'cropped-video',
+      type: 'video',
+      src: '/d.mov',
+      start: 0,
+      end: 10,
+      sourceCrop: { x: 0.1, y: 0, w: 0.5, h: 1 },
+      sourceWidth: 1920,
+      sourceHeight: 1080,
+    },
+  ]
+  const p = project([ITEMS])
+
+  for (const variant of VARIANTS) {
+    test(`${variant}: every geometry deepEquals geometryFor(item, kind), at every t`, () => {
+      for (const t of [0, 0.5, 3, 7.25, 9.999]) {
+        for (const r of resolveAt(p, t, { variant }).items) {
+          assert.deepEqual(
+            r.geometry,
+            geometryFor(r.item, r.kind),
+            `${r.item.id} at t=${t} must be the untouched static geometry`,
+          )
+        }
+      }
+    })
+  }
+
+  test('and the geometry does not vary with t at all for such an item', () => {
+    const at0 = resolveAt(p, 0, { variant: 'preview' }).items.map((r) => r.geometry)
+    const at9 = resolveAt(p, 9, { variant: 'preview' }).items.map((r) => r.geometry)
+    assert.deepEqual(at0, at9)
+  })
+
+  test('resolveSegment is unchanged too for keyframe-less items', () => {
+    const scene = resolveSegment(p, 0, 10, 30)
+    assert.equal(scene.items.length, ITEMS.length)
+    for (const r of scene.items) {
+      assert.deepEqual(r.geometry, geometryFor(r.item, r.kind), `${r.item.id} in resolveSegment`)
+    }
+  })
+})
+
+describe('resolveAt geometry: a keyframed item interpolates over the timeline', () => {
+  const ANIMATED = {
+    id: 'anim',
+    type: 'overlay',
+    src: '/anim.jsx',
+    start: 0,
+    end: 10,
+    scale: 9, // absurd static, so a pass can only come from the track
+    keyframes: [track('scale', 0.5, 1.5), track('opacity', 0, 1)],
+  }
+  const p = project([[ANIMATED]])
+
+  test('two different t values yield DIFFERENT geometry', () => {
+    const a = resolveAt(p, 0, { variant: 'preview' }).items[0].geometry
+    const b = resolveAt(p, 2, { variant: 'preview' }).items[0].geometry
+    assert.notDeepEqual(a, b)
+    closeTo(a.scale, 0.5, 'scale at the first keyframe')
+    closeTo(b.scale, 1, 'scale halfway along the curve')
+    closeTo(a.opacity, 0, 'opacity at the first keyframe — a genuine 0, not the default 1')
+    closeTo(b.opacity, 0.5, 'opacity halfway')
+  })
+
+  test('the geometry is exactly geometryAt(item, kind, max(0, t - start))', () => {
+    for (const t of [0, 1, 2.5, 4, 9.9]) {
+      assert.deepEqual(
+        resolveAt(p, t, { variant: 'render' }).items[0].geometry,
+        geometryAt(ANIMATED, 'overlay', Math.max(0, t - ANIMATED.start)),
+        `t=${t}`,
+      )
+    }
+  })
+
+  test('past the last keyframe the value CLAMPS rather than extrapolating', () => {
+    // The track ends at localT 4 but the item runs to 10.
+    for (const t of [4, 6, 9.99]) {
+      closeTo(resolveAt(p, t, { variant: 'preview' }).items[0].geometry.scale, 1.5, `t=${t}`)
+    }
+  })
+})
+
+describe('resolveAt geometry: localT is ITEM-RELATIVE, not timeline time', () => {
+  /** Same animation, same authoring, only the position on the timeline differs. */
+  const animatedAt = (start) => ({
+    id: `anim@${start}`,
+    type: 'image',
+    src: '/i.jpg',
+    start,
+    end: start + 10,
+    keyframes: [track('offsetX', -40, 40)],
+  })
+
+  test("an item starting at t=5 uses its keyframe t=0 value at TIMELINE t=5, not at t=0", () => {
+    const p = project([[animatedAt(5)]])
+    // Timeline 5 is the item's own 0.
+    closeTo(resolveAt(p, 5, { variant: 'preview' }).items[0].geometry.offsetX, -40, 'timeline 5 == item 0')
+    // Timeline 7 is the item's own 2 -> halfway along a 4s track.
+    closeTo(resolveAt(p, 7, { variant: 'preview' }).items[0].geometry.offsetX, 0, 'timeline 7 == item 2')
+    // Timeline 9 is the item's own 4 -> the last keyframe.
+    closeTo(resolveAt(p, 9, { variant: 'preview' }).items[0].geometry.offsetX, 40, 'timeline 9 == item 4')
+  })
+
+  test('moving the item along the timeline carries its animation with it, unchanged', () => {
+    for (const d of [0, 1, 2, 4]) {
+      const early = resolveAt(project([[animatedAt(0)]]), 0 + d, { variant: 'preview' }).items[0].geometry
+      const late = resolveAt(project([[animatedAt(12.5)]]), 12.5 + d, { variant: 'preview' }).items[0].geometry
+      assert.deepEqual(early, late, `d=${d}: same offset into the item, same geometry`)
+    }
+  })
+
+  test('a NEGATIVE-start item clamps localT at 0 — the same clamp `seek` uses', () => {
+    const item = {
+      id: 'neg',
+      type: 'overlay',
+      src: '/n.jsx',
+      start: -0.5,
+      end: 5,
+      keyframes: [track('scale', 0.2, 1)],
+    }
+    const p = project([[item]])
+    // At timeline -0.4 the item is 0.1s into itself — a negative TIMELINE time
+    // still measures forward through the item, on both clocks.
+    const early = resolveAt(p, -0.4, { variant: 'preview' }).items[0]
+    closeTo(early.seek, 0.1, 'seek')
+    closeTo(early.geometry.scale, 0.2 + 0.8 * (0.1 / 4), 'geometry reads the same 0.1s')
+    // At timeline 0 the item is 0.5s into itself, on both clocks.
+    const at0 = resolveAt(p, 0, { variant: 'preview' }).items[0]
+    closeTo(at0.seek, 0.5, 'seek')
+    closeTo(at0.geometry.scale, 0.2 + 0.8 * (0.5 / 4), 'geometry reads the same 0.5s')
+  })
+
+  test('the max(0, …) floor is reachable via resolveSegment, and clamps the curve to its first keyframe', () => {
+    // `coversSegment` tolerates an item starting up to one frame AFTER segStart,
+    // so `t - item.start` can go slightly negative there. `seek` floors it at 0
+    // and the curve clock is the SAME number, so it floors identically rather
+    // than extrapolating backwards off the front of the track.
+    const fps = 30
+    const segStart = 2
+    const item = {
+      id: 'late-start',
+      type: 'image',
+      src: '/i.jpg',
+      start: segStart + 1 / fps,
+      end: 10,
+      keyframes: [track('scale', 0.2, 1)],
+    }
+    const r = resolveSegment(project([[item]]), segStart, 8, fps).items[0]
+    assert.notEqual(r, undefined, 'the one-frame slack really does admit this item')
+    closeTo(r.seek, 0, 'seek floors at 0')
+    assert.equal(r.geometry.scale, 0.2, 'and the curve clamps to its first keyframe')
+    assert.deepEqual(r.geometry, geometryAt(item, 'image', 0), 'identical to sampling at localT 0')
+  })
+
+  test('for a VIDEO item the curve clock is seek MINUS the rebased inPoint', () => {
+    // `seek` lands in the source's coordinates; the curve clock does not. The
+    // two are the same `elapsed`, offset by window.inPoint.
+    const item = {
+      id: 'v',
+      type: 'video',
+      src: '/orig.mov',
+      normalizedSrc: '/cache/win.mp4',
+      normalizedInPoint: 5,
+      inPoint: 6,
+      outPoint: 20,
+      start: 10,
+      end: 24,
+      keyframes: [track('offsetY', 0, 20)],
+    }
+    const p = project([[item]])
+    for (const variant of VARIANTS) {
+      for (const t of [10, 12, 14, 20]) {
+        const r = resolveAt(p, t, { variant }).items[0]
+        const elapsed = r.seek - r.window.inPoint
+        closeTo(elapsed, t - 10, `${variant} t=${t}: elapsed recovered from seek`)
+        assert.deepEqual(r.geometry, geometryAt(item, 'video', elapsed), `${variant} t=${t}`)
+      }
+    }
+  })
+})
+
+describe('resolveSegment geometry: resolved at the SEGMENT start (documented, not a bug)', () => {
+  // resolveSegment calls collectScene with `segStart` as `t`, so an animated
+  // item's geometry is its value at the segment's start — this is the
+  // segment-PLANNING view, not a per-frame bake. The render bake samples
+  // `geometryAt` per frame itself. Pinned here so a future change to
+  // resolveSegment's clock is a deliberate decision rather than a surprise.
+  const item = {
+    id: 'anim',
+    type: 'image',
+    src: '/i.jpg',
+    start: 0,
+    end: 8,
+    keyframes: [track('scale', 0.5, 1.5)],
+  }
+  const p = project([[item]])
+
+  test('the geometry is geometryAt at segStart, for every segment of the same item', () => {
+    for (const [segStart, segEnd] of [
+      [0, 8],
+      [2, 8],
+      [3.5, 8],
+    ]) {
+      const r = resolveSegment(p, segStart, segEnd, 30).items[0]
+      assert.deepEqual(r.geometry, geometryAt(item, 'image', segStart), `segment [${segStart}, ${segEnd}]`)
+    }
+  })
+
+  test('two segments of the same animated item therefore carry different geometry', () => {
+    const a = resolveSegment(p, 0, 8, 30).items[0].geometry
+    const b = resolveSegment(p, 2, 8, 30).items[0].geometry
+    assert.notDeepEqual(a, b)
+    closeTo(a.scale, 0.5)
+    closeTo(b.scale, 1)
   })
 })

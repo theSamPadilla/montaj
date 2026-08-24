@@ -174,6 +174,17 @@ export interface EngineStats {
   clock: 'audio' | 'fallback'
 }
 
+/**
+ * A pinned handle to a shared demuxed source. The demux LRU treats a src as
+ * unevictable while at least one `AcquiredDemux` for it is unreleased — so a
+ * non-scheduler consumer (the drag-scrub audio source) can share the warm
+ * cache without racing the scheduler's own eviction. Release exactly once.
+ */
+export interface AcquiredDemux {
+  source: DemuxedSource
+  release(): void
+}
+
 export interface Engine {
   /**
    * Bind the canvas the engine paints into, or `null` to unbind.
@@ -210,6 +221,13 @@ export interface Engine {
   readonly clock: EngineClock
   /** T7's debug HUD aggregate. See {@link EngineStats}. Cheap — safe to call on a polling timer. */
   stats(): EngineStats
+  /**
+   * Acquire a shared demuxed source for `src`, pinning it in the LRU until
+   * the returned handle is released. Used by the drag-scrub audio source so a
+   * scrub across a cut hits the same warm cache the scheduler built up
+   * instead of re-demuxing the proxy privately. Release exactly once.
+   */
+  acquireDemux(src: string): Promise<AcquiredDemux>
   dispose(): void
 }
 
@@ -323,6 +341,14 @@ class EngineSourceHost implements SourceHost {
   /** Insertion-ordered, oldest first — the LRU. */
   private readonly demuxCache = new Map<string, DemuxedSource>()
   private readonly demuxing = new Map<string, DemuxEntry>()
+  /**
+   * Refcount of outstanding `AcquiredDemux` pins per src. A pinned src is
+   * skipped by `evictDemux` so a non-scheduler consumer (the drag-scrub audio
+   * source) can hold a warm demux across a cut without the scheduler evicting
+   * it out from under them. Counted (not a Set) so a reentrant acquire on the
+   * same src does not silently trip the "already pinned" check on release.
+   */
+  private readonly demuxPins = new Map<string, number>()
   private scheduler: Scheduler | null = null
   private disposed = false
 
@@ -420,6 +446,7 @@ class EngineSourceHost implements SourceHost {
     // strand the clip it was building.
     for (const [, source] of this.demuxCache) source.dispose?.()
     this.demuxCache.clear()
+    this.demuxPins.clear()
     for (const [, entry] of this.demuxing) {
       entry.clearTimeout()
       entry.controller.abort()
@@ -681,11 +708,49 @@ class EngineSourceHost implements SourceHost {
       for (const src of this.demuxCache.keys()) {
         // Never evict a source a live decode session is reading from.
         if (this.servers.has(src)) continue
+        // Or one an outside consumer (the drag-scrub source) is holding.
+        if (this.demuxPins.has(src)) continue
         victim = src
         break
       }
       if (victim === null) return
       this.demuxCache.delete(victim)
+    }
+  }
+
+  /**
+   * Shared with the drag-scrub audio source. `acquireDemux` already coalesces
+   * concurrent builds and populates the LRU; this wraps it in a per-src pin
+   * so the caller can hold the demux across a cut without the scheduler
+   * evicting it, and releases the pin exactly once.
+   *
+   * On a disposed host the pin is a no-op and release is silent — the
+   * scrubber can outlive us during teardown and its release must not throw.
+   */
+  async acquirePinnedDemux(src: string): Promise<AcquiredDemux> {
+    const source = await this.acquireDemux(src)
+    if (this.disposed) {
+      return { source, release: () => {} }
+    }
+    this.demuxPins.set(src, (this.demuxPins.get(src) ?? 0) + 1)
+    let released = false
+    return {
+      source,
+      release: () => {
+        if (released) return
+        released = true
+        if (this.disposed) return
+        const next = (this.demuxPins.get(src) ?? 0) - 1
+        if (next > 0) {
+          this.demuxPins.set(src, next)
+          return
+        }
+        this.demuxPins.delete(src)
+        // The pin may have held this src past the LRU cap; unpinned entries
+        // are eligible again so re-check now instead of waiting for the next
+        // `acquireDemux` to reconcile it.
+        this.evictDemux()
+      },
     }
   }
 }
@@ -869,6 +934,7 @@ export function createEngine(project: Project, deps: EngineDeps): Engine {
         return scheduler.status().clock
       },
     },
+    acquireDemux: (src: string) => host.acquirePinnedDemux(src),
     dispose() {
       if (disposed) return
       disposed = true

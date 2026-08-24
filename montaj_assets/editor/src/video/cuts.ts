@@ -1,6 +1,7 @@
 import type { Project } from '../types'
-import type { VisualItem, AudioTrack, CaptionSegment, Word, VisualTrack } from '../schema'
+import type { VisualItem, AudioTrack, CaptionSegment, Word, VisualTrack, KeyframeTrack } from '../schema'
 import { mapTrackItems, trackItems, normalizeTracks } from './timeline/timeline-model'
+import { normalizeTrack } from '@bycrux/timeline-core'
 
 /** A time range to excise from the timeline. */
 export interface Cut {
@@ -48,6 +49,62 @@ function trimClipStart(item: VisualItem, at: number): VisualItem {
   }
 }
 
+/**
+ * Split `item.keyframes` (overlay-only; see schema.ts) into the two tracks
+ * each fragment of a cut should carry. Shared by BOTH `splitClip` (lift: the
+ * right fragment stays at `cut.end`, a gap opens where the cut was) and
+ * `cutSingleItem` (collapse: the right fragment moves to `cut.start`, no gap)
+ * — the two disagree about WHERE the right fragment ends up on the timeline,
+ * but that disagreement never reaches this function. `t` is item-relative
+ * TIMELINE seconds (docs/schemas/project.md), unrelated to `speed`'s source
+ * scaling — unlike `outPoint`/`inPoint` elsewhere in this file, keyframe
+ * times need no `·s` conversion, and this function never reads `item.speed`.
+ *
+ * Left keeps every point at or before the cut (its own new span is
+ * `[item.start, cut.start)`, so `t` is unchanged — the left fragment's start
+ * didn't move, in EITHER caller). Right keeps every point at or after the cut
+ * and RE-ANCHORS it by subtracting `cut.end − item.start`, so `t` stays
+ * relative to the right fragment's own new `start` — wherever that new
+ * `start` physically lands, the point is still "this far past the cut" in
+ * the ORIGINAL animation curve, which is the one thing both callers need.
+ * (For `splitClip` specifically, where the right fragment's new `start` IS
+ * `cut.end`, this re-anchoring also happens to preserve the original
+ * ABSOLUTE wall-clock instant — a stronger property that only holds for a
+ * lift, not a collapse, but follows for free from the same subtraction.) A
+ * point exactly at a zero-width split (`splitAtTime`, where `cut.start ===
+ * cut.end`) is legitimately kept by BOTH fragments — as the last point of
+ * left's curve and the first of right's — so the animation stays continuous
+ * across the cut rather than only one side inheriting the boundary value.
+ *
+ * Each returned track is a fresh array (`normalizeTrack` always allocates),
+ * so the two fragments never share a reference with each other or with
+ * `item.keyframes` — the bug this exists to fix. Returns `undefined` for a
+ * side with no points left, matching `keyframeOps.ts`'s `withTrack`
+ * invariant: no lingering empty-`points` track, no lingering empty array.
+ */
+function splitKeyframeTracks(item: VisualItem, cut: Cut): { left?: KeyframeTrack[]; right?: KeyframeTrack[] } {
+  const tracks = item.keyframes
+  if (!tracks || tracks.length === 0) return {}
+
+  const leftDur     = cut.start - item.start
+  const rightOffset = cut.end   - item.start
+
+  const left = tracks
+    .map(track => normalizeTrack({ prop: track.prop, points: track.points.filter(p => p.t <= leftDur) }))
+    .filter((track): track is KeyframeTrack => !!track && track.points.length > 0)
+  const right = tracks
+    .map(track => normalizeTrack({
+      prop: track.prop,
+      points: track.points.filter(p => p.t >= rightOffset).map(p => ({ ...p, t: p.t - rightOffset })),
+    }))
+    .filter((track): track is KeyframeTrack => !!track && track.points.length > 0)
+
+  return {
+    left:  left.length  > 0 ? left  : undefined,
+    right: right.length > 0 ? right : undefined,
+  }
+}
+
 function splitClip(item: VisualItem, cut: Cut): [VisualItem, VisualItem] {
   const s = item.speed ?? 1
   const leftDur = cut.start - item.start
@@ -64,6 +121,18 @@ function splitClip(item: VisualItem, cut: Cut): [VisualItem, VisualItem] {
     start: cut.end,  // lift: right fragment stays at its original timeline position
     ...(item.inPoint !== undefined ? { inPoint: (item.inPoint ?? 0) + rightSourceOffset } : {}),
   }
+
+  // Overlay-only (schema.ts). Every OTHER item type either never carries
+  // `keyframes` or has it ignored (docs/schemas/project.md), so this never
+  // runs for a video/image clip even if one somehow had a stray array.
+  if (item.type === 'overlay' && item.keyframes && item.keyframes.length > 0) {
+    const { left: leftKf, right: rightKf } = splitKeyframeTracks(item, cut)
+    if (leftKf) left.keyframes = leftKf
+    else delete left.keyframes
+    if (rightKf) right.keyframes = rightKf
+    else delete right.keyframes
+  }
+
   return [left, right]
 }
 
@@ -145,21 +214,49 @@ function cutSingleItem(item: VisualItem, cut: Cut): VisualItem[] {
 
   const result: VisualItem[] = []
 
+  // Same overlay-keyframe split `splitClip` performs, for the same reason: a
+  // bare `...item` spread would hand BOTH fragments the same `keyframes` array
+  // object, and leave the right fragment's points anchored to the ORIGINAL
+  // item's start even though its own `start` has moved — so its animation would
+  // play at the wrong times, and every point inside the removed range would sit
+  // dead in the data.
+  //
+  // `splitKeyframeTracks` applies unchanged despite this function COLLAPSING
+  // the right fragment onto `cut.start` (where `splitClip`'s LIFT leaves it at
+  // `cut.end`, unmoved): a keyframe's `t` is relative to its own fragment's
+  // `start`, wherever that new `start` physically lands, so the collapse vs.
+  // lift distinction cancels out and the re-anchor is `t - (cut.end -
+  // item.start)` either way. It also holds at any speed, since `(outPoint -
+  // physEnd) / s` reduces to `item.end - cut.end`, exactly the timeline span
+  // the re-anchored points cover.
+  const keyed = item.type === 'overlay' && !!item.keyframes && item.keyframes.length > 0
+  const { left: leftKf, right: rightKf } = keyed ? splitKeyframeTracks(item, cut) : {}
+
   if (physStart > inPoint) {
-    result.push({
+    const left: VisualItem = {
       ...item,
       end: cut.start,
       ...(item.outPoint !== undefined ? { outPoint: physStart } : {}),
-    })
+    }
+    if (keyed) {
+      if (leftKf) left.keyframes = leftKf
+      else delete left.keyframes
+    }
+    result.push(left)
   }
   if (outPoint - physEnd > 0.001) {
-    result.push({
+    const right: VisualItem = {
       ...item,
       id: uniqueId(item.id),
       start: cut.start,
       end: cut.start + (outPoint - physEnd) / s,
       ...(item.inPoint !== undefined ? { inPoint: physEnd } : {}),
-    })
+    }
+    if (keyed) {
+      if (rightKf) right.keyframes = rightKf
+      else delete right.keyframes
+    }
+    result.push(right)
   }
 
   return result

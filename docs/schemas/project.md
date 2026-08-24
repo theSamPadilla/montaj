@@ -263,6 +263,7 @@ All timed graphical elements live in `tracks[1+]`'s `items` arrays. Each track i
 | `scale` | number | all | Size multiplier from center |
 | `rotation` | number | all | Clockwise rotation in degrees. Optional; default 0. Any finite number — values outside [0,360) are normalized at render. |
 | `opacity` | number | all | Opacity 0.0–1.0 (default 1.0). Applied at compose time. |
+| `keyframes` | array | overlay | Animate `offsetX`/`offsetY`/`scale`/`rotation`/`opacity` over the item's own lifetime instead of holding them fixed. Ignored on `image`/`video` items by the final render even if present — see "Overlay keyframes" below for the one narrower exception. |
 | `props` | object | overlay | Arbitrary props passed to the JSX component |
 | `opaque` | boolean | overlay | When `true`, render engine skips alpha — JSX controls full frame |
 | `googleFonts` | array | overlay | Google Font names to load before rendering |
@@ -273,6 +274,55 @@ All timed graphical elements live in `tracks[1+]`'s `items` arrays. Each track i
 | `muted` | boolean | video | When `true`, audio from this video item is suppressed in both preview and final render. Default: `false`. |
 | `inPoint` | number | video | Trim start in the source video file (seconds) |
 | `outPoint` | number | video | Trim end in the source video file (seconds) |
+
+### Overlay keyframes
+
+Any `overlay` item may carry a `keyframes` array to animate `offsetX`,
+`offsetY`, `scale`, `rotation`, and `opacity` over its own lifetime, instead
+of holding them fixed for the item's whole `start`–`end` window. One entry
+per animated property:
+
+```json
+"keyframes": [
+  { "prop": "offsetX", "points": [{ "t": 0, "value": -20 }, { "t": 1.5, "value": 20, "easing": "ease-out" }] },
+  { "prop": "opacity",  "points": [{ "t": 0, "value": 0, "easing": "hold" }, { "t": 0.5, "value": 1 }] }
+]
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `prop` | string | One of `offsetX`, `offsetY`, `scale`, `rotation`, `opacity` |
+| `points` | array | Ascending by `t`, no duplicate `t` |
+| `points[].t` | number | Item-relative seconds — `0` is this overlay's own `start`, not the project timeline |
+| `points[].value` | number | The property's value at `t`, same units as the static field of the same name |
+| `points[].easing` | string | How the segment **leaving** this keyframe is shaped (outgoing, not incoming). Absent or unrecognized = `linear`. Ignored on the last point of a track — it has no outgoing segment. One of `linear`, `ease`, `ease-in`, `ease-out`, `ease-in-out`, `hold` |
+
+`hold` is step-end: the value stays at this keyframe's own value until the
+*next* keyframe's own `t`, then jumps — it does not ease toward the next
+value at all.
+
+A property with no track (or an item with no `keyframes` at all) keeps
+reading its static field exactly as before; a track is only consulted for the
+props it names. Before an animated property's first keyframe or after its
+last, the value clamps to that endpoint rather than extrapolating.
+
+**Overlays only, for the final render.** `image` and `video` items ignore
+`keyframes` there even if present, as does the project's own background video
+transform: those are composited by ffmpeg with no per-frame browser step to
+bake a moving transform into, so there is nowhere for a curve to be captured.
+Only `overlay` items — which already go through a per-frame Puppeteer capture
+— can animate in the actual export.
+
+One narrower path does NOT follow that rule: `resolveItem`
+(`timeline-core/src/activation.js`) calls `geometryAt` for every item kind,
+not `overlay` alone, and the Export dialog's still-frame preview
+(`render/sample-frame.js`) reads that result for image/video pseudo-items
+too. A hand-authored `image`/`video` item carrying `keyframes` would therefore
+animate in that one still-frame sample even though the real render still
+composites it statically — the two disagree in that narrow case. This is not
+reachable through the editor: nothing in it ever writes `keyframes` onto an
+image or video item, so the divergence only matters for hand-edited or
+agent-authored `project.json`.
 
 ---
 

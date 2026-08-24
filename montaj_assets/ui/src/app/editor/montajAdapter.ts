@@ -22,7 +22,7 @@
  * AI-generation, not a queryable library. The editor feature-detects its
  * absence.
  */
-import { api, fileUrl } from '@/lib/api'
+import { api, fileUrl, versionFrameUrl } from '@/lib/api'
 import {
   compileOverlay as hostCompileOverlay,
   clearOverlayCache as hostClearOverlayCache,
@@ -354,6 +354,15 @@ export function createMontajAdapter(): EditorAdapter<Project> {
     // restored full Montaj project.
     restoreVersion: (id: string, hash: string): Promise<Project> =>
       api.restoreVersion(id, hash),
+
+    // Save → `POST /api/projects/:id/versions`, mapped down to the same
+    // VersionEntry slice as listVersionHistory.
+    saveVersion: (id: string, name?: string): Promise<VersionEntry[]> =>
+      api.saveVersion(id, name).then(vs => vs.map(v => ({ hash: v.hash, message: v.message, timestamp: v.timestamp }))),
+
+    // Version frame URL → thin delegate to `GET /api/projects/:id/versions/:commit/frame`.
+    versionFrameUrl: (id: string, commit: string, t: number): string =>
+      versionFrameUrl(id, commit, t),
 
     // Waveform chunks → the `waveform_image` step, with the dedup cache folded
     // in from the former lib/audio-waveform.ts. The output dir is namespaced by

@@ -31,6 +31,8 @@ import {
   trackItems,
 } from '../timeline-model'
 import { DEFAULT_FADE_CURVE, fadeGain, makeFadeGainAt, type FadeCurve } from './fade-curve'
+import { isKeyframed } from '../../keyframeOps'
+import { KEYFRAME_DIAMOND_SIZE_PX, KEYFRAME_STRIP_BOTTOM_PAD_PX, keyframeDiamondX, keyframeUnionTimes } from './keyframe-strip'
 import type { SnapStrength } from './snap'
 import { timeToX, visibleRange, type Viewport } from './viewport'
 import { drawAudioLaneWaveform, drawClipWaveform, type WaveformSceneLookup } from './waveforms'
@@ -154,6 +156,16 @@ export const TIMELINE_COLORS = {
    *  language the trim handles use. */
   fadeGripSubtle: 'rgba(255,255,255,0.35)',
   fadeGripActive: 'rgba(255,255,255,0.95)',
+  /** The keyframe-strip diamond (`drawKeyframeDiamond`). Amber rather than
+   *  reusing white (the selection/handle vocabulary) or cyan (the snap
+   *  guide) or yellow (`cursor`, the preview-axis line) — every other
+   *  bright hue on this surface already means something else, and a
+   *  keyframe is its own kind of mark. */
+  keyframeDiamondFill: '#fb923c',
+  /** Outline so the diamond reads as a shape rather than a blob against a
+   *  filmstrip frame of any brightness — same trick `LABEL_SHADOW_COLOR`
+   *  uses for the clip label. */
+  keyframeDiamondStroke: 'rgba(0,0,0,0.7)',
   /** Where two items on the same row overlap in time.
    *
    *  These were 0.15 amber fill / 0.3 amber border. Two things were wrong with
@@ -829,6 +841,89 @@ function drawFadeGrip(ctx: DrawContext, x: number, top: number, active: boolean)
   ctx.fill()
 }
 
+/**
+ * One keyframe-strip diamond, centred at `(x, y)`.
+ *
+ * Unlike `drawFadeGrip` (drawn on every audio bar, selected or not — see its
+ * own doc for why), a diamond is drawn ONLY for the selected, keyframed
+ * overlay item: `drawTimelineContent`'s loop gates the whole strip on that,
+ * not this function. A keyframe is per-property editing state, not a
+ * persistent property of the clip the way a fade is, so showing it on every
+ * overlay would be noise rather than an affordance (plan decision 1) — and
+ * because the gate already limits diamonds to a selected item, there is no
+ * separate "active/subtle" distinction to draw here the way the fade grip
+ * needs for discoverability.
+ */
+function drawKeyframeDiamond(ctx: DrawContext, x: number, y: number): void {
+  const half = KEYFRAME_DIAMOND_SIZE_PX / 2
+  ctx.beginPath()
+  ctx.moveTo(x, y - half)
+  ctx.lineTo(x + half, y)
+  ctx.lineTo(x, y + half)
+  ctx.lineTo(x - half, y)
+  ctx.closePath()
+  ctx.fillStyle = TIMELINE_COLORS.keyframeDiamondFill
+  ctx.fill()
+  ctx.strokeStyle = TIMELINE_COLORS.keyframeDiamondStroke
+  ctx.lineWidth = 1
+  ctx.stroke()
+}
+
+/**
+ * The keyframe strip for one selected, keyframed overlay item: one diamond
+ * per DISTINCT keyframe time across ALL of its tracks (`keyframeUnionTimes` —
+ * plan decision 2's "union of times", not one row per property), positioned
+ * along the BOTTOM of the clip's drawn body.
+ *
+ * Each diamond's x comes from `keyframeDiamondX`, which converts through the
+ * SAME `timeToX` every other draw call on this surface uses — so unlike the
+ * fade envelope (which has to be handed the clip's true, unclamped span to
+ * survive horizontal scroll, see `drawFadeEnvelope`'s own note) a diamond
+ * needs no such plumbing: its position is already absolute screen space.
+ * What it DOES need is the clip to `body` (decision 3: never draw outside
+ * the clip), which is why the whole strip is wrapped in one clip region
+ * rather than each diamond clamping itself.
+ *
+ * The clip region is widened past `body`'s own edges, NOT set to `body`
+ * verbatim. `body` is already inset from the clip's TRUE time span by
+ * `CLIP_GUTTER_PX` (`clipBodyRect`), but a diamond's x is NOT computed from
+ * `body` — `keyframeDiamondX` runs `item.start + t` through the same
+ * `timeToX` the row loop used to get the clip's true, un-inset `rect` in the
+ * first place. So an ENDPOINT diamond (t=0 or t=duration) is centred exactly
+ * at `rect.x` / `rect.x + rect.width` — which is `CLIP_GUTTER_PX` further out
+ * than `body`'s corresponding edge — and widening the clip by only half a
+ * diamond from `body` (as it might look natural to do) still falls
+ * `CLIP_GUTTER_PX` short of that centre, leaving a slimmer but still-real
+ * sliver. The margin below is `half a diamond` **+ `CLIP_GUTTER_PX`**, which
+ * puts the widened region's edge exactly back at `rect`'s true edge before
+ * adding the half-diamond room a full diamond needs — so the endpoint diamond
+ * survives WHOLE, not just mostly. That is not a corner case: `enableKeyframing`
+ * seeds a keyframe at t=0 when the playhead sits at the item's own start, and
+ * `applyKeyframeMove` lists 0 and duration as STRONG snap targets, so drags
+ * are actively steered onto them. The extra margin never exposes anything
+ * outside the clip's true span — a diamond's `t` is already clamped to
+ * `[0, duration]` by every writer in `keyframeOps.ts` and, symmetrically, by
+ * `hit-test.ts`'s `keyframeStripZone` filter — so "decision 3: never draw
+ * outside the clip" still holds; only the definition of "the clip" grew back
+ * out to `rect` (plus the diamond's own half-width) to match what decision 3
+ * was actually protecting.
+ */
+export function drawKeyframeStrip(ctx: DrawContext, item: VisualItem, body: Rect, viewport: Viewport): void {
+  const times = keyframeUnionTimes(item)
+  if (times.length === 0 || body.width <= 0) return
+
+  const y = body.y + body.height - KEYFRAME_DIAMOND_SIZE_PX / 2 - KEYFRAME_STRIP_BOTTOM_PAD_PX
+  const margin = KEYFRAME_DIAMOND_SIZE_PX / 2 + CLIP_GUTTER_PX
+  ctx.save()
+  ctx.beginPath()
+  ctx.rect(body.x - margin, body.y, body.width + margin * 2, body.height)
+  ctx.clip()
+  for (const t of times) {
+    drawKeyframeDiamond(ctx, keyframeDiamondX(item, t, viewport), y)
+  }
+  ctx.restore()
+}
+
 export interface AudioItemDrawArgs {
   rect: Rect
   selected: boolean
@@ -1324,15 +1419,23 @@ export function drawTimelineContent(ctx: DrawContext, scene: TimelineScene): Dra
             if (clipWaveform) drawClipWaveform(c, r, clipWaveform, itemMuted)
           }
         : undefined
+      const itemSelected = selectedIds.includes(item.id)
       drawClipRect(ctx, {
         rect,
         palette,
-        selected: selectedIds.includes(item.id),
+        selected: itemSelected,
         label: visualItemLabel(item),
         dimmed,
         drawContent,
       })
-      if (selectedIds.includes(item.id)) {
+      // The keyframe strip (SP9b T3.3): selected, keyframed overlays only —
+      // see `drawKeyframeStrip`'s own doc for why this is gated here rather
+      // than inside it. Drawn AFTER the clip's own content/label so a
+      // diamond never sits under a filmstrip frame.
+      if (itemSelected && item.type === 'overlay' && isKeyframed(item)) {
+        drawKeyframeStrip(ctx, item, body, viewport)
+      }
+      if (itemSelected) {
         handleRects.push({ body, hoveredEdge: hoveredHandle?.itemId === item.id ? hoveredHandle.edge : null })
       }
       stats.visualItemsDrawn++

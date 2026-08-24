@@ -27,6 +27,7 @@ import {
   itemsInRect,
   normalizeRect,
 } from '../hit-test'
+import { KEYFRAME_DIAMOND_SIZE_PX, KEYFRAME_STRIP_BOTTOM_PAD_PX, KEYFRAME_STRIP_ZONE_HEIGHT_PX } from '../keyframe-strip'
 import type { Viewport } from '../viewport'
 import {
   AUDIO_LANE_HEIGHT_PX,
@@ -288,6 +289,150 @@ describe('hitTest — audio fade grips', () => {
     // The track's own corner is no longer a grip — it's ordinary trim-edge
     // territory now that the grip has moved off it.
     expect(fadeAt(100, fadeBarTop)).toMatchObject({ kind: 'audio-edge', edge: 'in' })
+  })
+})
+
+describe('hitTest — keyframe strip (SP9b T3.3)', () => {
+  // o0 (2s–4s, overlay) keyframed on offsetX at t=0, 0.5 and 1.5, and on
+  // opacity at t=0.5 ONLY — so the union of times (the merged strip, plan
+  // decision 2) is {0, 0.5, 1.5}, landing at x=200 (o0's own left edge, to
+  // probe precedence over item-edge), x=250 (a diamond TWO props share, to
+  // probe the "one diamond per shared instant" rule) and x=350 (offsetX
+  // alone) — all at 100px/s off o0's start (2s).
+  const keyframedProject = {
+    id: 'p',
+    tracks: [
+      [
+        { id: 'c0', type: 'video', src: 'a.mp4', start: 0, end: 5 },
+        { id: 'c1', type: 'video', src: 'b.mp4', start: 5, end: 10 },
+      ],
+      [{
+        id: 'o0', type: 'overlay', start: 2, end: 4,
+        keyframes: [
+          { prop: 'offsetX', points: [{ t: 0, value: -5 }, { t: 0.5, value: 0 }, { t: 1.5, value: 10 }] },
+          { prop: 'opacity', points: [{ t: 0.5, value: 1 }] },
+        ],
+      }],
+    ],
+    audio: { tracks: [{ id: 'a0', src: 'v.mp3', start: 1, end: 6, lane: 0 }] },
+  } as unknown as Project
+
+  const kfLayout = computeTimelineLayout(keyframedProject)
+  const kfRow = kfLayout.rows.find(r => r.trackIdx === 1)!
+  // Well inside the bottom strip zone, not at its very edge.
+  const KF_ZONE_Y = kfRow.y + kfRow.height - 2
+
+  function atKf(x: number, y: number, selectedIds: string[]) {
+    return hitTest({ x, y }, kfLayout, VIEWPORT, { selectedIds })
+  }
+
+  it('finds a diamond at a time only ONE prop has', () => {
+    expect(atKf(350, KF_ZONE_Y, ['o0'])).toMatchObject({ kind: 'keyframe', itemId: 'o0', kfT: 1.5 })
+  })
+
+  it('finds ONE diamond at a time TWO props share', () => {
+    expect(atKf(250, KF_ZONE_Y, ['o0'])).toMatchObject({ kind: 'keyframe', itemId: 'o0', kfT: 0.5 })
+  })
+
+  it('takes precedence over the item-edge trim zone at the exact corner, where both overlap', () => {
+    // x=200 is o0's own left edge — also inside VISUAL_EDGE_TOLERANCE_PX of
+    // it — but a keyframe sits exactly there too. The diamond must win.
+    expect(atKf(200, KF_ZONE_Y, ['o0'])).toMatchObject({ kind: 'keyframe', itemId: 'o0', kfT: 0 })
+  })
+
+  it("the clickable zone reaches all the way up to the diamond's own drawn top edge (FIX 7)", () => {
+    // The diamond is drawn KEYFRAME_DIAMOND_SIZE_PX + KEYFRAME_STRIP_BOTTOM_PAD_PX
+    // (8 + 4 = 12px) up from the row's bottom (see drawKeyframeStrip / keyframe-
+    // strip.ts's own doc). Computed independently of KEYFRAME_STRIP_ZONE_HEIGHT_PX
+    // itself, so this would have failed against the old hand-picked 10px zone
+    // height, which fell 2px short of the diamond's actual top edge.
+    const diamondTopFromBottom = KEYFRAME_DIAMOND_SIZE_PX + KEYFRAME_STRIP_BOTTOM_PAD_PX
+    const topOfDiamond = kfRow.y + kfRow.height - diamondTopFromBottom
+    expect(atKf(350, topOfDiamond, ['o0'])).toMatchObject({ kind: 'keyframe', itemId: 'o0', kfT: 1.5 })
+  })
+
+  it('an in-span keyframe still hits normally (non-regression)', () => {
+    expect(atKf(350, KF_ZONE_Y, ['o0'])).toMatchObject({ kind: 'keyframe', itemId: 'o0', kfT: 1.5 })
+  })
+
+  it('a point far from any diamond in x, but still within the strip zone in y, does not produce a keyframe hit', () => {
+    // x=380 is well inside o0's body (200-400) but 30px from the nearest
+    // diamond (x=350, t=1.5) — outside KEYFRAME_HIT_HALF_WIDTH_PX (6px). Must
+    // fall through to the ordinary item-body hit, not stay stuck on 'keyframe'.
+    expect(atKf(380, KF_ZONE_Y, ['o0'])).toMatchObject({ kind: 'item-body', itemId: 'o0' })
+  })
+
+  it('an out-of-span keyframe produces NO keyframe hit — the item-body of the clip actually drawn there wins instead', () => {
+    // o0 (2s-4s, duration 2s) carries an OUT-OF-SPAN keyframe at t=3
+    // (t > duration). Unclamped, its screen x is (o0.start + 3) * 100 = 500 —
+    // which is nowhere near o0's own drawn rect (x 200-400): it lands exactly
+    // where the NEXT item on the same track, o1 (4s-6s), is actually drawn.
+    // Before the fix, keyframeStripZone had no span filter, so o0's phantom
+    // diamond at x=500 won the hit ahead of o1's real, visible body.
+    const overlapProject = {
+      id: 'p',
+      tracks: [
+        [{ id: 'c0', type: 'video', src: 'a.mp4', start: 0, end: 10 }],
+        [
+          {
+            id: 'o0', type: 'overlay', start: 2, end: 4,
+            keyframes: [{ prop: 'offsetX', points: [{ t: 0.5, value: 0 }, { t: 3, value: 10 }] }],
+          },
+          { id: 'o1', type: 'overlay', start: 4, end: 6 },
+        ],
+      ],
+    } as unknown as Project
+    const overlapLayout = computeTimelineLayout(overlapProject)
+    const row = overlapLayout.rows.find(r => r.trackIdx === 1)!
+    const y = row.y + row.height - 2
+    expect(hitTest({ x: 500, y }, overlapLayout, VIEWPORT, { selectedIds: ['o0'] }))
+      .toMatchObject({ kind: 'item-body', itemId: 'o1' })
+  })
+
+  it('does not steal the row away from the diamond zone — item-body still resolves above/below it', () => {
+    // Same x as a diamond, but ABOVE KEYFRAME_STRIP_ZONE_HEIGHT_PX from the
+    // row's bottom: falls through to the ordinary clip body.
+    expect(KEYFRAME_STRIP_ZONE_HEIGHT_PX).toBeGreaterThan(0)
+    const aboveStrip = kfRow.y + 2
+    expect(atKf(250, aboveStrip, ['o0'])).toMatchObject({ kind: 'item-body', itemId: 'o0' })
+  })
+
+  it('yields no keyframe hit when the overlay is NOT selected', () => {
+    expect(atKf(250, KF_ZONE_Y, [])).toMatchObject({ kind: 'item-body', itemId: 'o0' })
+  })
+
+  it('yields no keyframe hit when a DIFFERENT item is selected', () => {
+    expect(atKf(250, KF_ZONE_Y, ['c0'])).toMatchObject({ kind: 'item-body', itemId: 'o0' })
+  })
+
+  it('yields no keyframe hit on a selected but UN-keyframed overlay', () => {
+    const plain = { id: 'p', tracks: [[{ id: 'o1', type: 'overlay', start: 2, end: 4 }]] } as unknown as Project
+    const plainLayout = computeTimelineLayout(plain)
+    const row = plainLayout.rows[0]
+    const y = row.y + row.height - 2
+    expect(hitTest({ x: 250, y }, plainLayout, VIEWPORT, { selectedIds: ['o1'] })).toMatchObject({ kind: 'item-body', itemId: 'o1' })
+  })
+
+  it('yields no keyframe hit on a selected, keyframed item that is not an overlay', () => {
+    // Overlays are the only keyframeable kind (schema.ts's `KeyframeProp`
+    // doc); the row scan gates on `item.type === 'overlay'` rather than
+    // trusting `isKeyframed` alone, so a hand-edited video clip carrying a
+    // stray `keyframes` array still never hit-tests as one.
+    const videoKf = {
+      id: 'p',
+      tracks: [[{
+        id: 'c0', type: 'video', src: 'a.mp4', start: 2, end: 4,
+        keyframes: [{ prop: 'offsetX', points: [{ t: 0.5, value: 0 }] }],
+      }]],
+    } as unknown as Project
+    const videoLayout = computeTimelineLayout(videoKf)
+    const row = videoLayout.rows[0]
+    const y = row.y + row.height - 2
+    expect(hitTest({ x: 250, y }, videoLayout, VIEWPORT, { selectedIds: ['c0'] }).kind).not.toBe('keyframe')
+  })
+
+  it('is backward compatible: omitting `selectedIds` entirely never produces a keyframe hit', () => {
+    expect(hitTest({ x: 250, y: KF_ZONE_Y }, kfLayout, VIEWPORT).kind).not.toBe('keyframe')
   })
 })
 

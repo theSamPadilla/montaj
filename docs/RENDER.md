@@ -85,6 +85,31 @@ This corruption happens during `avformat_open_input()`, leaving the demuxer stat
 - `-reserve_index_space 1000000` — seek index at the start of the file; the demuxer finds timestamps without backward scanning
 - `-g 1` — every FFV1 frame is a keyframe, so the MKV muxer places a cue point before every frame for accurate per-frame seeking in the compose filter graph
 
+### Overlay keyframes (SP9b)
+
+An overlay item with a non-empty `keyframes` array skips the ordinary
+"position once per segment" path. `bundle.js`'s `generateShim` wraps the
+component in a full-canvas layer whose CSS transform is re-derived every
+frame from `@bycrux/timeline-core`'s `geometryAt(item, 'overlay', frame /
+fps)` — the same function the editor preview samples — so the motion is
+baked into the PNG sequence Step 5 captures, frame by frame, rather than left
+for compositing to apply once. `encode-segment.js`'s `buildOverlayFilterParts`
+(Stage 2, below) then composites a keyframed overlay's capture full-canvas at
+`overlay=x=0:y=0`, with no `scale`/`rotate`/`colorchannelmixer` positioning
+step — the geometry is already in the pixels. A keyframe-free overlay is
+untouched: same shim, same filter graph, byte-identical to before this
+feature existed.
+
+**Cost.** `renderer.js` captures every overlay, keyframed or not, at
+`deviceScaleFactor: 2` over the 1080-short-edge design canvas — 2160px on the
+short edge — so a 4K export's compose-time `scale=` target lands on that same
+2160×3840 native resolution and composites at roughly 1:1, no upscale;
+sub-4K exports downscale it instead. That capture resolution doesn't change
+for a keyframed overlay. What does change is per-frame cost: re-evaluating
+the curve and re-styling the DOM every frame measured at about 27% slower per
+frame than the same overlay captured static, independent of export
+resolution.
+
 ---
 
 ## Project Color Space

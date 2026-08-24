@@ -18,7 +18,15 @@
 // encode-segment.js, so the numbers are pinned rather than re-derived.
 import { describe, test } from 'node:test'
 import assert from 'node:assert/strict'
-import { geometryFor, toCssBoxPct, toPixelBox, toRotatedPixelBox, isFullFrameCrop, designCanvas } from '../index.js'
+import {
+  geometryFor,
+  geometryAt,
+  toCssBoxPct,
+  toPixelBox,
+  toRotatedPixelBox,
+  isFullFrameCrop,
+  designCanvas,
+} from '../index.js'
 
 /** Float compare. */
 function closeTo(actual, expected, message) {
@@ -888,6 +896,501 @@ describe('totality', () => {
       assert.equal(h % 2, 0)
       assert.ok(w > 0)
       assert.ok(h > 0)
+    }
+  })
+})
+
+// ---------------------------------------------------------------------------
+// 7. geometryAt — the ANIMATED sibling of geometryFor (SP9b T0.2)
+//
+// Two things are being pinned here, and the first one is the point of the
+// whole feature:
+//
+//   PARITY. The editor preview and the ffmpeg render must place a keyframed
+//   item at the SAME spot at the SAME instant. They get there by both calling
+//   `geometryAt` and then handing its ONE result to their own adapter —
+//   `toCssBoxPct` for the preview, `toRotatedPixelBox` for the render. So the
+//   headline test below makes exactly one `geometryAt` call per instant and
+//   asserts the two adapters agree on the box, via the same algebraic identity
+//   the CROSS_CHECK_TABLE at the top of this file uses for the static path.
+//
+//   NO-KEYFRAME IDENTITY. An item without keyframes must resolve to something
+//   `deepEqual` to `geometryFor`'s result — same fields, same values, same key
+//   order — because a keyframe-free project has to keep producing a
+//   byte-identical ffmpeg filter graph and leave the render goldens valid.
+//   `geometryAt` gets that by handing such items to `geometryFor` ITSELF; the
+//   tests here pin the observable consequence, including for the array-present-
+//   but-no-matching-track case, which does NOT take that short-circuit and so
+//   exercises the object literal.
+// ---------------------------------------------------------------------------
+
+/** The five keyframeable props, in the order src/curves.js names them. */
+const KEYFRAME_PROPS = ['offsetX', 'offsetY', 'scale', 'rotation', 'opacity']
+
+/** A two-point linear track — the easing-free case whose values are hand-checkable. */
+const linearTrack = (prop, from, to, endT = 4) => ({
+  prop,
+  points: [
+    { t: 0, value: from },
+    { t: endT, value: to },
+  ],
+})
+
+/** Linear interpolation over [0, endT], clamped at both ends — the expected value, computed here. */
+function expectLinear(from, to, localT, endT = 4) {
+  if (!(localT > 0)) return from
+  if (localT >= endT) return to
+  return from + (to - from) * (localT / endT)
+}
+
+/**
+ * An item whose STATIC scalars are all deliberately absurd, so any test that
+ * passes is passing because the TRACK was consulted and not because the static
+ * fallback happened to be right.
+ */
+const ANIMATED_ITEM = {
+  scale: 9,
+  offsetX: 99,
+  offsetY: -99,
+  opacity: 0.123,
+  rotation: 7,
+  keyframes: [
+    linearTrack('offsetX', -20, 20),
+    linearTrack('offsetY', 10, -30),
+    linearTrack('scale', 0.5, 1.5),
+    linearTrack('rotation', 0, 90),
+    linearTrack('opacity', 0, 1),
+  ],
+}
+
+const ANIMATED_EXPECT = (localT) => ({
+  offsetX: expectLinear(-20, 20, localT),
+  offsetY: expectLinear(10, -30, localT),
+  scale: expectLinear(0.5, 1.5, localT),
+  rotation: expectLinear(0, 90, localT),
+  opacity: expectLinear(0, 1, localT),
+})
+
+describe('geometryAt: PARITY — one sample, both adapters agree (the headline assertion)', () => {
+  // Every instant is checked on two very different canvases, since the whole
+  // failure mode this guards is "the preview looked right and the export did
+  // not" and the export canvas is rarely the preview's.
+  const CANVASES = [
+    [1080, 1920],
+    [1920, 1080],
+  ]
+
+  for (const localT of [0, 0.5, 1, 2, 2.5, 3, 4]) {
+    for (const [vw, vh] of CANVASES) {
+      test(`localT=${localT} on a ${vw}x${vh} canvas: toCssBoxPct and toRotatedPixelBox describe the same box`, () => {
+        // ONE call. Both adapters derive from this single result — that is the
+        // structure that makes drift impossible, so the test reproduces it.
+        const g = geometryAt(ANIMATED_ITEM, 'video', localT)
+
+        // First: the sampled geometry is what the curves say it is.
+        const want = ANIMATED_EXPECT(localT)
+        for (const prop of KEYFRAME_PROPS) {
+          closeTo(g[prop], want[prop], `localT=${localT}: ${prop}`)
+        }
+
+        const cssBox = toCssBoxPct(g)
+        const rot = toRotatedPixelBox(g, vw, vh)
+
+        // The cross-adapter algebraic identity, exactly as the static
+        // CROSS_CHECK_TABLE asserts it: render's unrotated pixel top-left is
+        // the preview's CSS-percent top-left, in pixels.
+        assert.equal(
+          Math.round((vw * cssBox.left) / 100),
+          rot.xPx,
+          `localT=${localT}: xPx == round(vw * cssBox.left / 100)`,
+        )
+        assert.equal(
+          Math.round((vh * cssBox.top) / 100),
+          rot.yPx,
+          `localT=${localT}: yPx == round(vh * cssBox.top / 100)`,
+        )
+        // ... and the same for the size, modulo render's even-pixel rounding.
+        assert.equal(
+          Math.round((vw * cssBox.width) / 100 / 2) * 2,
+          rot.scaledW,
+          `localT=${localT}: scaledW == evenRound(vw * cssBox.width / 100)`,
+        )
+        assert.equal(
+          Math.round((vh * cssBox.height) / 100 / 2) * 2,
+          rot.scaledH,
+          `localT=${localT}: scaledH == evenRound(vh * cssBox.height / 100)`,
+        )
+
+        // The rotated box is driven by the SAMPLED rotation, not the static 7.
+        closeTo(rot.rotationDeg, want.rotation, `localT=${localT}: rotationDeg is the sampled rotation`)
+        // Centre preservation still holds on the animated path.
+        assert.equal(
+          rot.x + rot.outW / 2,
+          rot.xPx + rot.scaledW / 2,
+          `localT=${localT}: rotation grows the box about the unrotated centre`,
+        )
+        assert.equal(rot.y + rot.outH / 2, rot.yPx + rot.scaledH / 2)
+      })
+    }
+  }
+
+  test('the item actually MOVES — three instants give three different boxes on both adapters', () => {
+    const boxes = [0, 2, 4].map((localT) => {
+      const g = geometryAt(ANIMATED_ITEM, 'video', localT)
+      return { css: toCssBoxPct(g), rot: toRotatedPixelBox(g, 1080, 1920) }
+    })
+    assert.notDeepEqual(boxes[0].css, boxes[1].css)
+    assert.notDeepEqual(boxes[1].css, boxes[2].css)
+    assert.notDeepEqual(boxes[0].rot, boxes[1].rot)
+    assert.notDeepEqual(boxes[1].rot, boxes[2].rot)
+  })
+
+  test('sampling the same instant twice is bit-identical (no solver state, no memoization)', () => {
+    for (const localT of [0, 1.3, 2.5, 4]) {
+      assert.deepEqual(geometryAt(ANIMATED_ITEM, 'video', localT), geometryAt(ANIMATED_ITEM, 'video', localT))
+    }
+  })
+
+  test('an EASED track is still one sample feeding both adapters (parity is not linear-only)', () => {
+    const eased = {
+      keyframes: [
+        { prop: 'scale', points: [{ t: 0, value: 0.4, easing: 'ease-in-out' }, { t: 2, value: 1.2 }] },
+        { prop: 'offsetX', points: [{ t: 0, value: -30, easing: 'ease-out' }, { t: 2, value: 30 }] },
+      ],
+    }
+    for (const localT of [0.25, 0.5, 1, 1.75]) {
+      const g = geometryAt(eased, 'image', localT)
+      const cssBox = toCssBoxPct(g)
+      const rot = toRotatedPixelBox(g, 1920, 1080)
+      assert.equal(Math.round((1920 * cssBox.left) / 100), rot.xPx, `eased localT=${localT}: xPx identity`)
+      assert.equal(Math.round((1080 * cssBox.top) / 100), rot.yPx, `eased localT=${localT}: yPx identity`)
+      assert.equal(Math.round((1920 * cssBox.width) / 100 / 2) * 2, rot.scaledW)
+      // An eased curve must not sit still: the midpoint is strictly between the
+      // endpoints, so the box has genuinely moved off its start.
+      assert.notEqual(g.scale, 0.4, `eased localT=${localT}: the curve is being evaluated`)
+    }
+  })
+})
+
+describe('geometryAt: NO-KEYFRAME IDENTITY — indistinguishable from geometryFor', () => {
+  const LOCAL_TS = [0, 1.7, 12345, -3, NaN, Infinity, -Infinity]
+
+  // `undefined`/absent and `[]` take the short-circuit and are literally
+  // `geometryFor`'s own return value. A non-empty array of tracks for props
+  // this item does not animate does NOT short-circuit — it walks the object
+  // literal and every prop falls through to its static scalar — so it is the
+  // case that would catch a divergence between the two constructions.
+  const NO_ANIMATION_SHAPES = [
+    ['keyframes absent', (item) => ({ ...item })],
+    ['keyframes: undefined', (item) => ({ ...item, keyframes: undefined })],
+    ['keyframes: [] (empty)', (item) => ({ ...item, keyframes: [] })],
+    ['keyframes: null', (item) => ({ ...item, keyframes: null })],
+    [
+      'keyframes with no track for any animatable prop (does NOT short-circuit)',
+      (item) => ({ ...item, keyframes: [{ prop: 'volume', points: [{ t: 0, value: 1 }, { t: 3, value: 0 }] }] }),
+    ],
+    [
+      'a track whose points array is empty (sampleTrack returns the undefined sentinel)',
+      (item) => ({ ...item, keyframes: [{ prop: 'scale', points: [] }] }),
+    ],
+    [
+      'a track whose every point is malformed',
+      (item) => ({
+        ...item,
+        keyframes: [{ prop: 'opacity', points: [{ t: NaN, value: 0.5 }, { t: 1, value: Infinity }, null] }],
+      }),
+    ],
+  ]
+
+  for (const [label, shape] of NO_ANIMATION_SHAPES) {
+    test(`${label}: geometryAt deepEquals geometryFor for every fixture, at every localT`, () => {
+      for (const { item, kind } of GEOMETRY_FIXTURES) {
+        const staticGeometry = geometryFor(item, kind)
+        const withShape = shape(item)
+        for (const localT of LOCAL_TS) {
+          assert.deepEqual(
+            geometryAt(withShape, kind, localT),
+            staticGeometry,
+            `${label} / kind=${kind} / localT=${localT}`,
+          )
+        }
+      }
+    })
+  }
+
+  test('the KEY ORDER matches geometryFor exactly, on both the short-circuit and the literal path', () => {
+    // deepEqual is order-blind; the render encoder reads these positionally in
+    // places, and a reordered literal is exactly the kind of drift the
+    // short-circuit exists to prevent, so pin the key list itself.
+    const expected = Object.keys(geometryFor({ scale: 0.5 }, 'image'))
+    assert.deepEqual(expected, [
+      'scale',
+      'offsetX',
+      'offsetY',
+      'opacity',
+      'fit',
+      'sourceCrop',
+      'sourceWidth',
+      'sourceHeight',
+      'rotation',
+    ])
+    // Short-circuit path (no keyframes).
+    assert.deepEqual(Object.keys(geometryAt({ scale: 0.5 }, 'image', 1)), expected)
+    // Literal path (a real animated track).
+    assert.deepEqual(Object.keys(geometryAt({ keyframes: [linearTrack('scale', 0.5, 1)] }, 'image', 1)), expected)
+  })
+
+  test('the short-circuit is the SAME function: an unkeyframed item at any localT is one fixed value', () => {
+    const item = { scale: 0.75, offsetX: 12, offsetY: -4, opacity: 0.6, rotation: 33 }
+    const first = geometryAt(item, 'video', 0)
+    for (const localT of [0, 0.001, 5, 1e9, NaN]) {
+      assert.deepEqual(geometryAt(item, 'video', localT), first, `localT=${localT} must not move a static item`)
+    }
+    assert.deepEqual(first, geometryFor(item, 'video'))
+  })
+})
+
+describe('geometryAt: each prop animates independently', () => {
+  // The other four statics are non-default and mutually distinct, so a prop
+  // leaking into its neighbour is visible rather than accidentally correct.
+  const STATICS = { scale: 0.8, offsetX: 15, offsetY: -25, opacity: 0.4, rotation: 120 }
+  const MOVED = { scale: 1.6, offsetX: -60, offsetY: 45, opacity: 0.9, rotation: 300 }
+
+  for (const prop of KEYFRAME_PROPS) {
+    test(`${prop} alone: it animates while the other four keep their static scalars`, () => {
+      const item = { ...STATICS, keyframes: [linearTrack(prop, STATICS[prop], MOVED[prop])] }
+
+      const atStart = geometryAt(item, 'overlay', 0)
+      const atMid = geometryAt(item, 'overlay', 2)
+      const atEnd = geometryAt(item, 'overlay', 4)
+
+      assert.equal(atStart[prop], STATICS[prop], `${prop} at t=0 is the first keyframe`)
+      closeTo(atMid[prop], (STATICS[prop] + MOVED[prop]) / 2, `${prop} at the midpoint`)
+      assert.equal(atEnd[prop], MOVED[prop], `${prop} at t=4 is the last keyframe`)
+      assert.notEqual(atMid[prop], STATICS[prop], `${prop} genuinely moved`)
+
+      for (const other of KEYFRAME_PROPS) {
+        if (other === prop) continue
+        assert.equal(atMid[other], STATICS[other], `${other} has no track, so it keeps its static scalar`)
+        assert.equal(atStart[other], STATICS[other])
+        assert.equal(atEnd[other], STATICS[other])
+      }
+    })
+  }
+
+  test('all five animate at once without interfering', () => {
+    const g = geometryAt(ANIMATED_ITEM, 'video', 1)
+    const want = ANIMATED_EXPECT(1)
+    for (const prop of KEYFRAME_PROPS) closeTo(g[prop], want[prop], `all-five: ${prop}`)
+  })
+
+  test('a track naming an unknown prop is never consulted (it cannot animate `fit`, say)', () => {
+    const item = {
+      scale: 0.5,
+      fit: 'contain',
+      keyframes: [
+        { prop: 'fit', points: [{ t: 0, value: 0 }, { t: 1, value: 1 }] },
+        { prop: 'volume', points: [{ t: 0, value: 1 }, { t: 1, value: 0 }] },
+        linearTrack('scale', 0.5, 1),
+      ],
+    }
+    const g = geometryAt(item, 'image', 4)
+    assert.equal(g.fit, 'contain', 'fit is not keyframeable and stays the item\'s own tri-state')
+    assert.equal(g.scale, 1, 'the one legitimate track still animates')
+  })
+})
+
+describe('geometryAt: endpoint exactness, clamping, and single-keyframe tracks', () => {
+  test('AT a keyframe\'s own t the geometry carries that keyframe\'s value EXACTLY, for every easing', () => {
+    for (const easing of ['linear', 'ease', 'ease-in', 'ease-out', 'ease-in-out', 'hold', undefined]) {
+      const item = {
+        scale: 99,
+        keyframes: [
+          {
+            prop: 'scale',
+            points: [
+              { t: 0, value: 0.3, easing },
+              { t: 1.5, value: 0.7, easing },
+              { t: 3, value: 1.9 },
+            ],
+          },
+        ],
+      }
+      assert.equal(geometryAt(item, 'video', 0).scale, 0.3, `easing=${easing}: at t=0`)
+      assert.equal(geometryAt(item, 'video', 1.5).scale, 0.7, `easing=${easing}: at the middle keyframe's own t`)
+      assert.equal(geometryAt(item, 'video', 3).scale, 1.9, `easing=${easing}: at the last keyframe's own t`)
+    }
+  })
+
+  test('before the first keyframe and after the last, the value CLAMPS — never extrapolates', () => {
+    const item = {
+      offsetX: 42,
+      keyframes: [{ prop: 'offsetX', points: [{ t: 2, value: -10 }, { t: 5, value: 30 }] }],
+    }
+    for (const localT of [0, 0.5, 1.999, -100]) {
+      assert.equal(geometryAt(item, 'image', localT).offsetX, -10, `localT=${localT} clamps to the first keyframe`)
+    }
+    for (const localT of [5, 5.001, 1e6]) {
+      assert.equal(geometryAt(item, 'image', localT).offsetX, 30, `localT=${localT} clamps to the last keyframe`)
+    }
+    // The clamp beats the static scalar: the track wins even outside its span.
+    assert.notEqual(geometryAt(item, 'image', 0).offsetX, 42)
+  })
+
+  test('a non-finite localT reads as "before the first keyframe", not as "far future"', () => {
+    const item = { keyframes: [{ prop: 'opacity', points: [{ t: 0, value: 0.2 }, { t: 4, value: 1 }] }] }
+    for (const localT of [NaN, Infinity, -Infinity, undefined]) {
+      assert.equal(geometryAt(item, 'overlay', localT).opacity, 0.2, `localT=${localT}`)
+    }
+  })
+
+  test('a single-keyframe track is a constant at every localT (and still beats the static scalar)', () => {
+    const item = { rotation: 15, keyframes: [{ prop: 'rotation', points: [{ t: 2, value: -45 }] }] }
+    for (const localT of [0, 2, 100, NaN]) {
+      assert.equal(geometryAt(item, 'overlay', localT).rotation, -45, `localT=${localT}`)
+    }
+  })
+
+  test('`hold` is step-END through geometryAt too: it jumps at the NEXT keyframe\'s own t', () => {
+    const item = {
+      keyframes: [
+        { prop: 'opacity', points: [{ t: 0, value: 1, easing: 'hold' }, { t: 2, value: 0 }] },
+      ],
+    }
+    assert.equal(geometryAt(item, 'image', 0).opacity, 1)
+    assert.equal(geometryAt(item, 'image', 1.999).opacity, 1, 'still held right up to the next keyframe')
+    assert.equal(geometryAt(item, 'image', 2).opacity, 0, 'and jumps exactly AT it')
+  })
+})
+
+describe('geometryAt: a SAMPLED 0 survives — the `??` vs `||` trap', () => {
+  // `||` would treat a sampled 0 as "nothing sampled" and fall back to the
+  // static scalar. A fade-to-invisible would flash fully opaque on its last
+  // frame; a scale-to-nothing would snap back to full size. Every prop below
+  // has a NON-zero static value, so the only way to read 0 is via the track.
+  test('opacity animating to exactly 0 yields 0, not the static 0.8', () => {
+    const item = { opacity: 0.8, keyframes: [{ prop: 'opacity', points: [{ t: 0, value: 1 }, { t: 2, value: 0 }] }] }
+    assert.equal(geometryAt(item, 'image', 2).opacity, 0, 'the sampled 0 is the answer')
+    assert.equal(geometryAt(item, 'image', 10).opacity, 0, 'and it survives the after-last clamp too')
+  })
+
+  test('offsetX animating through exactly 0 yields 0, not the static 25', () => {
+    const item = { offsetX: 25, keyframes: [{ prop: 'offsetX', points: [{ t: 0, value: -10 }, { t: 2, value: 10 }] }] }
+    assert.equal(geometryAt(item, 'video', 1).offsetX, 0, 'the midpoint of -10..10 is a genuine 0')
+  })
+
+  test('offsetY and rotation both read a sampled 0 rather than their statics', () => {
+    const item = {
+      offsetY: -33,
+      rotation: 270,
+      keyframes: [
+        { prop: 'offsetY', points: [{ t: 0, value: 0 }, { t: 2, value: 40 }] },
+        { prop: 'rotation', points: [{ t: 0, value: 0 }, { t: 2, value: 180 }] },
+      ],
+    }
+    const g = geometryAt(item, 'overlay', 0)
+    assert.equal(g.offsetY, 0)
+    assert.equal(g.rotation, 0)
+  })
+
+  test('scale animating to exactly 0 yields 0, not the static 1 (the most destructive `||` case)', () => {
+    const item = { scale: 1, keyframes: [{ prop: 'scale', points: [{ t: 0, value: 1 }, { t: 2, value: 0 }] }] }
+    const g = geometryAt(item, 'video', 2)
+    assert.equal(g.scale, 0, 'a scale-to-nothing must not snap back to full size')
+    // And it propagates: the box collapses on both adapters rather than filling the frame.
+    assert.deepEqual(toCssBoxPct(g), { width: 0, height: 0, left: 50, top: 50 })
+    assert.equal(toPixelBox(g, 1080, 1920).width, 0)
+  })
+
+  test('a sampled 0 also survives when the static scalar is ABSENT (default would be 1)', () => {
+    const item = { keyframes: [{ prop: 'opacity', points: [{ t: 0, value: 0 }] }] }
+    assert.equal(geometryAt(item, 'image', 0).opacity, 0, 'not the 1 default')
+  })
+})
+
+describe('geometryAt: the non-keyframeable fields pass through untouched', () => {
+  const CROP = { x: 0.1, y: 0.2, w: 0.5, h: 0.6 }
+  const item = {
+    fit: 'fill',
+    sourceCrop: CROP,
+    sourceWidth: 3840,
+    sourceHeight: 2160,
+    keyframes: [linearTrack('scale', 0.5, 1.5), linearTrack('opacity', 0, 1)],
+  }
+
+  test('sourceCrop / sourceWidth / sourceHeight are forwarded verbatim on the ANIMATED path', () => {
+    for (const localT of [0, 2, 4]) {
+      const g = geometryAt(item, 'video', localT)
+      assert.deepEqual(g.sourceCrop, CROP)
+      assert.equal(g.sourceWidth, 3840)
+      assert.equal(g.sourceHeight, 2160)
+    }
+  })
+
+  test('sourceCrop is the SAME OBJECT by reference, never a clone (same posture as geometryFor)', () => {
+    const g = geometryAt(item, 'video', 2)
+    assert.equal(g.sourceCrop, CROP, 'identity, not deep equality')
+    assert.equal(g.sourceCrop, geometryFor(item, 'video').sourceCrop, 'both paths forward the same reference')
+  })
+
+  test('fit follows the same per-kind rules as geometryFor on the animated path', () => {
+    // video is ALWAYS 'contain' (item.fit is never read); image is the item's
+    // own tri-state; overlay and anything else is undefined.
+    assert.equal(geometryAt(item, 'video', 2).fit, 'contain', 'video ignores item.fit')
+    assert.equal(geometryAt(item, 'image', 2).fit, 'fill', 'image honours item.fit')
+    assert.equal(geometryAt(item, 'overlay', 2).fit, undefined, 'an overlay has no fit concept')
+    const noFit = { keyframes: [linearTrack('scale', 0.5, 1)] }
+    assert.equal(geometryAt(noFit, 'image', 1).fit, 'cover', "image's default is still 'cover'")
+    // ... and it matches geometryFor's answer for the same item and kind.
+    for (const kind of ['video', 'image', 'overlay']) {
+      assert.equal(geometryAt(item, kind, 2).fit, geometryFor(item, kind).fit, `fit parity for kind=${kind}`)
+    }
+  })
+})
+
+describe('geometryAt: purity and totality (same package contract as everything else here)', () => {
+  test('it never mutates the item, its keyframes, or its sourceCrop', () => {
+    const item = structuredClone(ANIMATED_ITEM)
+    item.sourceCrop = { x: 0, y: 0, w: 1, h: 1 }
+    const before = structuredClone(item)
+    for (const localT of [0, 1, 2.5, 4, NaN]) geometryAt(item, 'video', localT)
+    assert.deepEqual(item, before)
+  })
+
+  test('every numeric field is finite at every instant, for every kind', () => {
+    for (const kind of ['video', 'image', 'overlay']) {
+      for (const localT of [-1, 0, 1.234, 4, 1e9, NaN, Infinity]) {
+        const g = geometryAt(ANIMATED_ITEM, kind, localT)
+        for (const prop of KEYFRAME_PROPS) {
+          assert.equal(Number.isFinite(g[prop]), true, `kind=${kind} localT=${localT}: ${prop} is finite`)
+        }
+      }
+    }
+  })
+
+  test('a malformed track mixed in with good points still yields a usable geometry', () => {
+    const item = {
+      scale: 0.5,
+      keyframes: [
+        { prop: 'scale', points: [{ t: 0, value: 0.5 }, null, { t: NaN, value: 3 }, { t: 2, value: 1.5 }] },
+        null,
+        { prop: 'opacity' },
+      ],
+    }
+    const g = geometryAt(item, 'image', 1)
+    closeTo(g.scale, 1, 'the two usable scale points still interpolate')
+    assert.equal(g.opacity, 1, 'a track with no points array falls back to the default')
+  })
+
+  test('the result feeds all three adapters without producing NaN, at every instant', () => {
+    for (const localT of [0, 1, 2, 3, 4]) {
+      const g = geometryAt(ANIMATED_ITEM, 'video', localT)
+      for (const v of Object.values(toCssBoxPct(g))) assert.equal(Number.isFinite(v), true)
+      for (const v of Object.values(toPixelBox(g, 1080, 1920))) assert.equal(Number.isFinite(v), true)
+      const rot = toRotatedPixelBox(g, 1080, 1920)
+      for (const k of ['scaledW', 'scaledH', 'xPx', 'yPx', 'outW', 'outH', 'x', 'y', 'rotationDeg']) {
+        assert.equal(Number.isFinite(rot[k]), true, `localT=${localT}: rotated box ${k}`)
+      }
     }
   })
 })

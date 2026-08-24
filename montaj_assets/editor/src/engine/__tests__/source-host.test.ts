@@ -405,3 +405,51 @@ describe('EngineSourceHost.build — server-ref release on a throw after acquire
     engine.dispose()
   })
 })
+
+// ── T4: shared demux LRU / pinned acquireDemux ──────────────────────────────
+describe('EngineSourceHost.acquirePinnedDemux — shared demux LRU', () => {
+  it('coalesces concurrent acquires on the same src (one demux call, one dispose per pin)', async () => {
+    const engine = createEngine(videoProject(videoItem()), { fileUrl: (p) => p, nowMs: () => 0 })
+    const [a, b] = await Promise.all([
+      engine.acquireDemux('/proxies/z.mp4'),
+      engine.acquireDemux('/proxies/z.mp4'),
+    ])
+    // Both pins reference the SAME cached source — the whole point of sharing.
+    expect(a.source).toBe(b.source)
+    expect(demuxCalls.filter((s) => s === '/proxies/z.mp4')).toHaveLength(1)
+
+    a.release()
+    // Second release is idempotent; the counter drops to zero here.
+    b.release()
+    b.release()
+
+    engine.dispose()
+  })
+
+  it('keeps a pinned src warm across a re-acquire even after the pin is released', async () => {
+    const engine = createEngine(videoProject(videoItem()), { fileUrl: (p) => p, nowMs: () => 0 })
+    const a = await engine.acquireDemux('/proxies/z.mp4')
+    a.release()
+    // Cache hit on the second acquire — no additional demux.
+    const b = await engine.acquireDemux('/proxies/z.mp4')
+    expect(demuxCalls.filter((s) => s === '/proxies/z.mp4')).toHaveLength(1)
+    b.release()
+
+    engine.dispose()
+  })
+
+  it('a scheduler session pins the src too — the scrubber releasing does not evict a live server', async () => {
+    const item = videoItem()
+    const engine = createEngine(videoProject(item), { fileUrl: (p) => p, nowMs: () => 0 })
+    engine.seek(0)
+    await flush()
+    // Take a pin ON TOP of the scheduler's own use.
+    const pin = await engine.acquireDemux('/proxies/a_proxy.mp4')
+    pin.release()
+    // Scheduler session still holds the server, so nothing torn down.
+    expect(serverInstances).toHaveLength(1)
+    expect(serverInstances[0].disposed).toBe(false)
+
+    engine.dispose()
+  })
+})

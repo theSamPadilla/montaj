@@ -111,6 +111,36 @@ export interface Captions {
   textAlign?: string       // 'left' | 'center' | 'right'
 }
 
+/** Easing applied across the segment LEAVING a keyframe. `hold` is step-end:
+ *  the value is held until the next keyframe's `t`, then jumps. */
+export type EasingName = 'linear' | 'ease' | 'ease-in' | 'ease-out' | 'ease-in-out' | 'hold'
+
+/** The transform properties that can be keyframed. Overlays only for now —
+ *  video/image clips and the main video transform stay static (their geometry
+ *  rides ffmpeg, which has no per-frame browser step to bake a curve into). */
+export type KeyframeProp = 'offsetX' | 'offsetY' | 'scale' | 'rotation' | 'opacity'
+
+export interface Keyframe {
+  t: number               // ITEM-relative seconds — 0 is the item's own `start`, not timeline zero
+  value: number
+  easing?: EasingName     // governs the segment from THIS keyframe to the next; absent = 'linear'
+}
+
+/** One animated property. `points` must be ascending by `t` with no duplicates:
+ *  the read path (`sampleTrack`) assumes it and deliberately does not sort, so
+ *  the editor normalizes on write.
+ *
+ *  These four types intentionally mirror the canonical definitions in
+ *  `@bycrux/timeline-core` (`src/curves.js`, declared in its `index.d.ts`),
+ *  which is where the interpolation actually happens for BOTH the preview and
+ *  the render. They are re-declared rather than imported because this file is
+ *  deliberately self-contained (see the header). Keep the two in sync — the
+ *  shapes are structurally compatible by design. */
+export interface KeyframeTrack {
+  prop: KeyframeProp
+  points: Keyframe[]
+}
+
 export interface VisualItem {
   id: string
   type: 'overlay' | 'image' | 'video'
@@ -129,6 +159,7 @@ export interface VisualItem {
   fit?: 'cover' | 'contain' | 'fill'  // image type only — how the source fills its box. Default 'cover' (AR-preserving fill+crop). 'contain' letterboxes; 'fill' is legacy stretch (no AR).
   volume?: number         // video audio level 0.0–2.0, default 1.0 (ignored for images)
   rotation?: number       // degrees, clockwise
+  keyframes?: KeyframeTrack[]  // overlay type only — animates the five transform props over the item's own lifetime. Absent = today's static item, which renders on the unchanged ffmpeg-positioned path.
   opaque?: boolean        // legacy boolean kept for old overlay items
   props?: Record<string, unknown>  // overlay type only
   googleFonts?: string[]  // overlay type only — Google Fonts family specs (e.g. ["Syne:wght@800"])
@@ -301,6 +332,10 @@ export interface EditorProject {
      *  by render. Absent = no chrome shown (the "None" picker option, and the
      *  default for every project until the operator picks a platform). */
     socialPreview?: 'tiktok' | 'youtube' | 'instagram'
+    /** Whether dragging the playhead plays audible scrub grains (tape
+     *  jog-wheel feel) — see engine/scrub-source.ts. Default false (opt-in);
+     *  an explicit `true` persists the operator's opt-in. */
+    audibleScrub?: boolean
   }
   name?: string | null
   editingPrompt?: string

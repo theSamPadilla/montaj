@@ -59,10 +59,12 @@ import type { Project } from '../../../types'
 import { reflowMagneticLanes } from '../../audioMagnet'
 import { laneOf, normalizeCaptionLanes, resolveDropLane, sameLaneNeighbours } from '../../captionLanes'
 import { collapseGaps, rollEdit, slideItem, slipItem } from '../../cuts'
+import { moveKeyframe } from '../../keyframeOps'
 import { applyMoveDeltaToSelection, applyResizeDeltaToSelection } from '../multiSelectOps'
 import { AUDIO_LANE_HEIGHT_PX, CAPTION_ROW_HEIGHT_PX, VISUAL_ROW_HEIGHT_PX, computeDerivedTiming, groupAudioLanes, mapTrackItems, moveItemAcrossTracks, normalizeTracks, trackItems, updateAudioTrack } from '../timeline-model'
 import { DRAG_THRESHOLD_PX, computeResizedItem, resizeWindowedItem, type Draggable } from '../useItemDragDrop'
 import type { TimelineLayout } from './draw'
+import { keyframeUnionTimes } from './keyframe-strip'
 import {
   PLAYHEAD_GRAB_PX,
   hitTest,
@@ -184,6 +186,8 @@ export type GestureKind =
   | 'audio-trim'
   /** Dragging an audio bar's fade-in or fade-out grip. See `applyAudioFade`. */
   | 'audio-fade'
+  /** Dragging a keyframe-strip diamond to retime it. See `applyKeyframeMove`. */
+  | 'keyframe-move'
   /** Re-timing a caption block. Rides the clip group-move path, so a mixed
    *  clip+caption selection travels as one body and lands as one undo. */
   | 'caption-move'
@@ -285,6 +289,10 @@ export function cursorForHit(hit: HitResult): Cursor {
   switch (hit.kind) {
     case 'audio-fade':
       return hit.side === 'out' ? 'nesw-resize' : 'nwse-resize'
+    // A diamond only ever moves horizontally along its own item — the same
+    // retime-in-place gesture a trim edge does, so it gets the same cursor.
+    case 'keyframe':
+      return 'ew-resize'
     case 'item-edge':
     case 'audio-edge':
     case 'caption-edge':
@@ -309,6 +317,7 @@ function cursorForGesture(gesture: GestureKind): Cursor {
     case 'audio-trim':
     case 'caption-trim':
     case 'scrub':
+    case 'keyframe-move':
       return 'ew-resize'
     case 'marquee':
       return 'crosshair'
@@ -335,6 +344,9 @@ export function resolveGesture(hit: HitResult, modifiers: Modifiers): GestureKin
     // No modifiers of its own — a fade grip does exactly one thing.
     case 'audio-fade':
       return 'audio-fade'
+    // A keyframe diamond does exactly one thing too — retime.
+    case 'keyframe':
+      return 'keyframe-move'
     // Captions have no roll/slip/slide either — there is no source window to
     // slip and no neighbour to roll against — so modifiers fall through here
     // exactly as they do for audio.
@@ -486,9 +498,11 @@ function isOverPlayhead(point: Point, ctx: PointerContext): boolean {
  *  same D1 reasoning — an even smaller, more deliberate target than a trim
  *  edge — which is why this checks `hit.kind` directly rather than folding
  *  into `isEdgeHit` (whose contract is specifically "describes a trim grab",
- *  read via `hit.edge`; a fade grip has no `edge`, only `side`). */
+ *  read via `hit.edge`; a fade grip has no `edge`, only `side`). Keyframe
+ *  diamonds win for the identical reason — same size class as a fade grip,
+ *  same "smaller and more deliberate than a trim edge" case for the grab. */
 function grabsPlayhead(hit: HitResult, point: Point, ctx: PointerContext): boolean {
-  return !isEdgeHit(hit) && hit.kind !== 'audio-fade' && isOverPlayhead(point, ctx)
+  return !isEdgeHit(hit) && hit.kind !== 'audio-fade' && hit.kind !== 'keyframe' && isOverPlayhead(point, ctx)
 }
 
 /**
@@ -938,6 +952,78 @@ function applyAudioFade(ctx: PointerContext, press: Press, point: Point, snap: S
 }
 
 /**
+ * Drag a keyframe-strip diamond to retime it (plan decision 5).
+ *
+ * The diamond represents every prop that has a point at the SAME
+ * item-relative `t` — the "union of times" decision 2 draws as one merged
+ * strip — so moving it moves EVERY track that has a point there, together,
+ * one `keyframeOps.moveKeyframe` call per prop. `toT` clamps to
+ * `[0, item.end - item.start]`, the item's own span; there is nothing outside
+ * it a keyframe could mean.
+ *
+ * Snapping, unlike the fade grip (which has no meaningful boundary and skips
+ * `applySnap` entirely), DOES apply here: the item's own start/end and every
+ * OTHER keyframe time on the SAME item are real alignments worth a magnet —
+ * converted to ABSOLUTE timeline time (`item.start + t`) since `applySnap`
+ * works in that unit, the same conversion `applyAudioTrim`'s `edgeSnapGuide`
+ * call makes for its own landed value. `fromT`'s own instant is excluded via
+ * `originGuard`, exactly as a trim excludes the edge it started on, so the
+ * diamond isn't recaptured at the position it is leaving; excluded THROUGH
+ * `escaped`, so dragging back allows it to re-snap onto its own start
+ * position once the gesture has pulled clear — same story as a trimmed edge
+ * butting back onto its origin.
+ *
+ * Recomputes from `press.baseProject` every move — like every other
+ * bounded, single-item op (trim, fade) and unlike `move`, which accumulates
+ * — so dragging back and forth cannot compound.
+ *
+ * LANDING ON ANOTHER KEYFRAME MERGES THE TWO. Every other keyframe time is a
+ * STRONG snap target (above), so a drag is actively steered onto them — and
+ * `moveKeyframe` → `normalizeTrack` resolve a same-`t` collision last-wins:
+ * for any prop the two diamonds share, the DRAGGED one's value survives and
+ * the target's is silently dropped. This is deliberate — it reads as "drag
+ * one diamond onto another to collapse them into one" — but it IS a real data
+ * loss for whichever prop's value didn't win, so don't "fix" it into a no-op
+ * or a merge-by-average without a product decision first. It is a normal
+ * undo step like any other keyframe edit, so it is trivially reversible.
+ */
+function applyKeyframeMove(
+  ctx: PointerContext,
+  press: Press,
+  point: Point,
+  snap: SnapState,
+  lastProject: Project,
+  escaped: boolean,
+): Applied {
+  const item = press.hit.item
+  const fromT = press.hit.kfT
+  if (!item || item.type !== 'overlay' || fromT === undefined) return noChange(snap, lastProject)
+
+  const duration = Math.max(0, item.end - item.start)
+  const dt = (point.x - press.origin.x) / ctx.viewport.pxPerSecond
+  const raw = clamp(fromT + dt, 0, duration)
+
+  const otherTimes = keyframeUnionTimes(item).filter(t => t !== fromT)
+  const rawPoints: SnapPoint[] = [0, duration, ...otherTimes].map(t => ({ time: item.start + t, strength: 'strong' as const }))
+  const points = snapPointsExcluding(rawPoints, originGuard(escaped, [item.start + fromT]))
+  const snapped = applySnap(item.start + raw, points, ctx.viewport, snap, ctx.snapConfig)
+  const toT = clamp(snapped.time - item.start, 0, duration)
+
+  const props = (item.keyframes ?? [])
+    .filter(track => track.points.some(p => p.t === fromT))
+    .map(track => track.prop)
+  if (props.length === 0) return noChange(snap, lastProject)
+
+  let nextItem = item
+  for (const prop of props) nextItem = moveKeyframe(nextItem, prop, fromT, toT)
+  if (nextItem === item) return noChange(snap, lastProject)
+
+  const next = replaceVisualItem(press.baseProject, item.id, nextItem)
+  const guide = edgeSnapGuide(snapped, item.start + toT)
+  return { effects: [{ type: 'projectChange', project: next }], snap: snapped.state, lastProject: next, guide }
+}
+
+/**
  * Re-time a caption block — across rows for a lone caption, and along the
  * timeline for a caption travelling with a wider selection.
  *
@@ -1220,6 +1306,7 @@ function applyGesture(
     case 'audio-move':  return applyAudioMove(ctx, press, point, snap, lastProject, escaped)
     case 'audio-trim':  return applyAudioTrim(ctx, press, point, snap, lastProject, escaped)
     case 'audio-fade':  return applyAudioFade(ctx, press, point, snap, lastProject)
+    case 'keyframe-move': return applyKeyframeMove(ctx, press, point, snap, lastProject, escaped)
     case 'caption-move': return applyCaptionMove(ctx, press, point, snap, lastProject, escaped)
     case 'caption-trim': return applyCaptionTrim(ctx, press, point, snap, lastProject, escaped)
     case 'scrub':       return applyScrub(ctx, point, snap, lastProject)
@@ -1299,7 +1386,12 @@ export function pointerReducer(state: MachineState, event: PointerMachineEvent):
     }
   }
 
-  const hit = hitTest(point, ctx.layout, ctx.viewport, ctx.hitTestOptions)
+  // `selectedIds` is merged in here rather than left for each caller to add
+  // to its own `hitTestOptions`, so every host that builds a `PointerContext`
+  // gets keyframe hit-testing for free the moment it has a selection —
+  // exactly like `ctx.selectedIds` itself is already required on the context,
+  // not an opt-in.
+  const hit = hitTest(point, ctx.layout, ctx.viewport, { ...ctx.hitTestOptions, selectedIds: ctx.selectedIds })
 
   switch (event.type) {
     case 'pointerDown': {
@@ -1510,7 +1602,10 @@ export function pointerReducer(state: MachineState, event: PointerMachineEvent):
       if (hit.itemId !== undefined) {
         // A caption has no inspector — it opens its text for editing instead.
         if (isCaptionHit(hit)) return { state, effects: [{ type: 'editCaption', id: hit.itemId }] }
-        const target = hit.kind === 'item-body' || hit.kind === 'item-edge' ? 'visual' : 'audio'
+        // 'keyframe' is visual too — a diamond only ever exists on an
+        // overlay item (never an audio track), so double-clicking one opens
+        // that overlay's OWN inspector, same as double-clicking its body.
+        const target = hit.kind === 'item-body' || hit.kind === 'item-edge' || hit.kind === 'keyframe' ? 'visual' : 'audio'
         return { state, effects: [{ type: 'inspect', target, id: hit.itemId }] }
       }
       return { state, effects: [] }

@@ -439,6 +439,43 @@ test('collectPuppeteerSegments: ignores non-overlay types in tracks[1+]', () => 
   assert.equal(specs.length, 0)
 })
 
+test('collectPuppeteerSegments: overlay geometry (incl. opacity and keyframes) reaches the spec', () => {
+  // These specs are not just an intermediate: `encode-args-golden` and
+  // `resolver-parity` feed them STRAIGHT into planSegments and from there into
+  // buildOverlayFilterParts as the overlay descriptor. So the spec is one of the
+  // two shapes that has to carry every field the compositor reads — the other
+  // being the rendered-segment object render.js stamps in main().
+  const tracks = [{ prop: 'opacity', points: [{ t: 0, value: 0 }, { t: 1, value: 1 }] }]
+  const project = {
+    tracks: [
+      [],
+      [
+        { id: 'ov1', type: 'overlay', src: '/abs/a.jsx', start: 0, end: 2,
+          offsetX: 10, offsetY: -5, scale: 0.5, rotation: 45, opacity: 0.25 },
+        { id: 'ov2', type: 'overlay', src: '/abs/b.jsx', start: 0, end: 2, keyframes: tracks },
+        { id: 'ov3', type: 'overlay', src: '/abs/c.jsx', start: 0, end: 2 },
+      ],
+    ],
+    settings: { fps: 30 },
+  }
+  const [a, b, c] = collectPuppeteerSegments(project, 30, 1080, 1920, '/tmp/seg')
+
+  assert.equal(a.opacity, 0.25, 'opacity must reach the spec — it is read by the composite step')
+  assert.equal(a.rotation, 45)
+  assert.equal(a.scale, 0.5)
+  assert.equal(a.offsetX, 10)
+  assert.equal(a.offsetY, -5)
+  assert.equal('keyframes' in a, false, 'a static overlay must carry NO keyframes key')
+
+  assert.deepEqual(b.keyframes, tracks, 'tracks must be forwarded by reference')
+
+  // Defaults, and specifically opacity 1 — the value the compositor's epsilon
+  // guard reads as "emit nothing", which is what keeps the goldens byte-identical.
+  assert.equal(c.opacity, 1)
+  assert.equal(c.rotation, 0)
+  assert.equal('keyframes' in c, false)
+})
+
 test('collectPuppeteerSegments: clean-style captions with no fontFamily still default to Figtree', () => {
   const project = {
     tracks: [

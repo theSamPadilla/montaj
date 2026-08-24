@@ -44,6 +44,7 @@ import {
   OVERLAP_HATCH_SHADOW_WIDTH_PX,
   OVERLAP_HATCH_WIDTH_PX,
   drawItemHandles,
+  drawKeyframeStrip,
   drawOverlapBand,
   drawPlayhead,
   drawSnapGuide,
@@ -52,6 +53,7 @@ import {
   type DrawContext,
   type TimelineScene,
 } from '../draw'
+import { KEYFRAME_DIAMOND_SIZE_PX, KEYFRAME_STRIP_BOTTOM_PAD_PX, keyframeDiamondX } from '../keyframe-strip'
 import {
   AUDIO_LANE_HEIGHT_PX,
   BASE_VISUAL_ROW_RENDER_HEIGHT_PX,
@@ -574,6 +576,98 @@ describe('drawTrimHandle', () => {
   it('draws nothing for an empty rect', () => {
     const r = recordingContext()
     drawTrimHandle(r.ctx, { rect: { x: 0, y: 0, width: 0, height: 0 }, edge: 'in', width: 10 })
+    expect(r.calls).toHaveLength(0)
+  })
+})
+
+describe('drawKeyframeStrip', () => {
+  // 2s–4s overlay, keyframed on offsetX (t=0, t=1) and opacity (t=0 only —
+  // shares the FIRST diamond with offsetX). Union of times is {0, 1}: one
+  // diamond both props share, one offsetX draws alone.
+  function keyframedOverlay(): VisualItem {
+    return clip({
+      id: 'o0', type: 'overlay', src: undefined, start: 2, end: 4,
+      keyframes: [
+        { prop: 'offsetX', points: [{ t: 0, value: 0 }, { t: 1, value: 10 }] },
+        { prop: 'opacity', points: [{ t: 0, value: 1 }] },
+      ],
+    } as unknown as Partial<VisualItem>)
+  }
+
+  // A REALISTIC body, not the clip's raw rect: the real caller (the row loop
+  // below) always hands `drawKeyframeStrip` `clipBodyRect(rect)`, which insets
+  // by `CLIP_GUTTER_PX` per side. `rect.x` for this item (start=2 @ 10px/s) is
+  // 20 and `rect.width` is 20, so `body` is `{ x: 22, width: 16 }` — using
+  // `{ x: 20, width: 20 }` here (rect verbatim) used to mask the endpoint-
+  // diamond clipping bug this file now guards against, because it made
+  // `body.x` coincide with `rect.x` instead of sitting `CLIP_GUTTER_PX` inside
+  // it.
+  const BODY = { x: 20 + CLIP_GUTTER_PX, y: 0, width: 20 - CLIP_GUTTER_PX * 2, height: 40 }
+  const vp = viewport({ pxPerSecond: 10 })
+
+  it('draws one diamond per DISTINCT time in the union, not one per prop', () => {
+    const r = recordingContext()
+    drawKeyframeStrip(r.ctx, keyframedOverlay(), BODY, vp)
+    // Each diamond is one closed 4-point path: moveTo + 3 lineTo + closePath.
+    expect(r.count('moveTo')).toBe(2)
+    expect(r.count('closePath')).toBe(2)
+    expect(r.count('fill')).toBe(2)
+  })
+
+  it('positions each diamond at item.start + t, run through the SAME timeToX everything else uses', () => {
+    const r = recordingContext()
+    drawKeyframeStrip(r.ctx, keyframedOverlay(), BODY, vp)
+    const y = BODY.y + BODY.height - KEYFRAME_DIAMOND_SIZE_PX / 2 - KEYFRAME_STRIP_BOTTOM_PAD_PX
+    const half = KEYFRAME_DIAMOND_SIZE_PX / 2
+    // t=0 -> (2+0)*10=20; t=1 -> (2+1)*10=30.
+    expect(r.of('moveTo').map(c => c.args)).toEqual([
+      [20, y - half],
+      [30, y - half],
+    ])
+  })
+
+  it('fills amber and strokes for definition', () => {
+    const r = recordingContext()
+    drawKeyframeStrip(r.ctx, keyframedOverlay(), BODY, vp)
+    expect(r.of('set:fillStyle').every(c => c.args[0] === TIMELINE_COLORS.keyframeDiamondFill)).toBe(true)
+    expect(r.of('set:strokeStyle').every(c => c.args[0] === TIMELINE_COLORS.keyframeDiamondStroke)).toBe(true)
+  })
+
+  it('clips to a region derived from the clip body, widened past its edges (not the raw body rect)', () => {
+    const r = recordingContext()
+    drawKeyframeStrip(r.ctx, keyframedOverlay(), BODY, vp)
+    // The widened region equals the clip's TRUE (un-gutter-inset) rect, grown
+    // by half a diamond on each side: [rect.x - half, rect.x + rect.width +
+    // half]. rect.x=20, rect.width=20, half=4 -> [16, 44] -> x=16, width=28.
+    const half = KEYFRAME_DIAMOND_SIZE_PX / 2
+    const rectX = BODY.x - CLIP_GUTTER_PX
+    const rectWidth = BODY.width + CLIP_GUTTER_PX * 2
+    expect(r.of('rect')[0].args).toEqual([rectX - half, BODY.y, rectWidth + half * 2, BODY.height])
+    expect(r.count('clip')).toBe(1)
+  })
+
+  it('an ENDPOINT diamond (t=0, at the clip\'s own true left edge) survives WHOLE — the gutter inset no longer slices it to a sliver', () => {
+    const r = recordingContext()
+    const item = keyframedOverlay()
+    drawKeyframeStrip(r.ctx, item, BODY, vp)
+    const [regionX, , regionWidth] = r.of('rect')[0].args as number[]
+    const half = KEYFRAME_DIAMOND_SIZE_PX / 2
+    const cx = keyframeDiamondX(item, 0, vp)
+    // The whole diamond — both edges, not just its centre — must fall inside
+    // the clip region drawKeyframeStrip actually used.
+    expect(regionX).toBeLessThanOrEqual(cx - half)
+    expect(regionX + regionWidth).toBeGreaterThanOrEqual(cx + half)
+  })
+
+  it('draws nothing for an unkeyframed item', () => {
+    const r = recordingContext()
+    drawKeyframeStrip(r.ctx, clip({ id: 'o1', type: 'overlay', src: undefined, start: 2, end: 4 }), BODY, vp)
+    expect(r.calls).toHaveLength(0)
+  })
+
+  it('draws nothing into a zero-width body', () => {
+    const r = recordingContext()
+    drawKeyframeStrip(r.ctx, keyframedOverlay(), { ...BODY, width: 0 }, vp)
     expect(r.calls).toHaveLength(0)
   })
 })
@@ -1280,6 +1374,44 @@ describe('drawTimelineContent', () => {
       // row height mid-drag when a caption moves out of a lane that was
       // otherwise alone.
       expect(r.of('moveTo').some(c => c.args[0] === ROW_RADIUS_PX && c.args[1] === holeBand.y)).toBe(true)
+    })
+  })
+
+  describe('the keyframe strip (SP9b T3.3)', () => {
+    function keyframedOverlay(over: Partial<VisualItem> = {}): VisualItem {
+      return clip({
+        id: 'o0', type: 'overlay', src: undefined, start: 2, end: 4,
+        keyframes: [{ prop: 'offsetX', points: [{ t: 0.5, value: 0 }] }],
+        ...over,
+      } as unknown as Partial<VisualItem>)
+    }
+
+    it('draws diamonds for a selected, keyframed overlay', () => {
+      const p = project({ tracks: [[keyframedOverlay()]] } as unknown as Partial<Project>)
+      const r = recordingContext()
+      drawTimelineContent(r.ctx, scene({ project: p, layout: computeTimelineLayout(p), selectedIds: ['o0'] }))
+      expect(r.of('set:fillStyle').some(c => c.args[0] === TIMELINE_COLORS.keyframeDiamondFill)).toBe(true)
+    })
+
+    it('draws nothing when the overlay is not selected', () => {
+      const p = project({ tracks: [[keyframedOverlay()]] } as unknown as Partial<Project>)
+      const r = recordingContext()
+      drawTimelineContent(r.ctx, scene({ project: p, layout: computeTimelineLayout(p), selectedIds: [] }))
+      expect(r.of('set:fillStyle').some(c => c.args[0] === TIMELINE_COLORS.keyframeDiamondFill)).toBe(false)
+    })
+
+    it('draws nothing for a selected overlay with no keyframes', () => {
+      const p = project({ tracks: [[clip({ id: 'o0', type: 'overlay', src: undefined, start: 2, end: 4 })]] } as unknown as Partial<Project>)
+      const r = recordingContext()
+      drawTimelineContent(r.ctx, scene({ project: p, layout: computeTimelineLayout(p), selectedIds: ['o0'] }))
+      expect(r.of('set:fillStyle').some(c => c.args[0] === TIMELINE_COLORS.keyframeDiamondFill)).toBe(false)
+    })
+
+    it('draws nothing for a selected, keyframed item that is not an overlay', () => {
+      const p = project({ tracks: [[keyframedOverlay({ type: 'video' })]] } as unknown as Partial<Project>)
+      const r = recordingContext()
+      drawTimelineContent(r.ctx, scene({ project: p, layout: computeTimelineLayout(p), selectedIds: ['o0'] }))
+      expect(r.of('set:fillStyle').some(c => c.args[0] === TIMELINE_COLORS.keyframeDiamondFill)).toBe(false)
     })
   })
 })

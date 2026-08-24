@@ -36,12 +36,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import type { GetFilmstripArgs, GetWaveformPeaksArgs, FilmstripIndex, PeaksData, Project, FootageDropPayload } from '../../../types'
 import { FOOTAGE_DND_MIME } from '../../../types'
+import type { KeyframeProp } from '../../../schema'
 import type { PlaybackClock } from '../../playback-clock'
 import type { ResolveFilePath } from '../AudioWaveformLayer'
 import { VISUAL_ROW_RENDER_HEIGHT_PX, normalizeTracks } from '../timeline-model'
 import { insertClipAt } from '../../cuts'
 import { computeTimelineLayout, drawTimelineContent, drawTimelineOverlay } from './draw'
 import { hitTest, isEdgeHit, type Point, type SurfaceRect } from './hit-test'
+import { keyframeUnionTimes } from './keyframe-strip'
 import {
   createPointerMachine,
   type Modifiers,
@@ -133,6 +135,20 @@ export interface TimelineCanvasProps {
    *  a right-click on a fade grip falls through to the browser's own context
    *  menu, same as anywhere else on the surface. */
   onFadeCurveMenu?: (args: { trackId: string; side: 'in' | 'out'; x: number; y: number }) => void
+  /** Right-click on a keyframe-strip diamond (SP9b T3.3) — `onFadeCurveMenu`'s
+   *  sibling for the keyframe-strip's own popup: the host is expected to
+   *  offer the six `EASING_NAMES` (via `keyframeOps.setKeyframeEasing`) AND a
+   *  way to remove the keyframe (via `keyframeOps.removeKeyframe`), applied
+   *  once per entry in `props` — every keyframe track that has a point at
+   *  `t`, which is every prop this ONE diamond represents (plan decision 2).
+   *  `x`/`y` are CLIENT coordinates, same reason `onFadeCurveMenu`'s are.
+   *  `isLast` is true when `t` is the item's LAST keyframe: its easing (which
+   *  governs the segment INTO the next keyframe — see `Keyframe.easing`'s
+   *  doc in schema.ts) has no next keyframe to reach, so a host offering the
+   *  easing picker should grey it out or omit it there — removal still
+   *  applies regardless. Absent → a right-click on a diamond falls through to
+   *  the browser's own context menu. */
+  onKeyframeMenu?: (args: { itemId: string; t: number; props: KeyframeProp[]; isLast: boolean; x: number; y: number }) => void
   /** T6 — the host adapter's peaks fetcher, threaded from
    *  `adapter.getWaveformPeaks` via Timeline. Absent → no waveforms anywhere
    *  (graceful; the surface just never asks). Canvas-mode only: the DOM path
@@ -222,6 +238,7 @@ export default function TimelineCanvas({
   onInspectAudio,
   onEditCaption,
   onFadeCurveMenu,
+  onKeyframeMenu,
   getWaveformPeaks,
   getFilmstrip,
   resolveFilePath,
@@ -542,11 +559,11 @@ export default function TimelineCanvas({
   // handlers bound once on mount never read a stale project or callback.
   const pointerRef = useRef({
     project, layout, selectedIds, snapBoundaries, totalDuration, fps, rippleMode, previewAxis,
-    onSelectItem, onSelectItems, onProjectChange, onOverlayEdit, onInspectClip, onInspectAudio, onEditCaption, onHoverScrub, onFadeCurveMenu,
+    onSelectItem, onSelectItems, onProjectChange, onOverlayEdit, onInspectClip, onInspectAudio, onEditCaption, onHoverScrub, onFadeCurveMenu, onKeyframeMenu,
   })
   pointerRef.current = {
     project, layout, selectedIds, snapBoundaries, totalDuration, fps, rippleMode, previewAxis,
-    onSelectItem, onSelectItems, onProjectChange, onOverlayEdit, onInspectClip, onInspectAudio, onEditCaption, onHoverScrub, onFadeCurveMenu,
+    onSelectItem, onSelectItems, onProjectChange, onOverlayEdit, onInspectClip, onInspectAudio, onEditCaption, onHoverScrub, onFadeCurveMenu, onKeyframeMenu,
   }
 
   const buildContext = useCallback((): PointerContext => {
@@ -674,7 +691,11 @@ export default function TimelineCanvas({
   function hoveredHandleAt(point: Point): { itemId: string; edge: 'in' | 'out' } | null {
     const p = pointerRef.current
     if (p.selectedIds.length === 0) return null
-    const hit = hitTest(point, p.layout, store.get())
+    // `selectedIds` also lets a keyframe diamond's own small zone take
+    // precedence here, same as it does in the machine's own hit-test — a
+    // trim handle must not light up underneath a diamond that would win the
+    // actual press.
+    const hit = hitTest(point, p.layout, store.get(), { selectedIds: p.selectedIds })
     if (!isEdgeHit(hit) || hit.itemId === undefined || hit.edge === undefined) return null
     return p.selectedIds.includes(hit.itemId) ? { itemId: hit.itemId, edge: hit.edge } : null
   }
@@ -910,21 +931,34 @@ export default function TimelineCanvas({
       // un-light the very edge being dragged.
       if (machine.state.kind === 'idle') clearHoveredHandle()
     },
-    // Right-click a fade grip → the fade-shape picker (Vegas' own gesture).
-    // Anywhere else on the surface, this is a no-op and the browser's normal
-    // context menu shows — only a fade-grip hit calls `preventDefault`. Runs
-    // its OWN hit-test rather than going through the pointer machine: a
-    // right-click is not a gesture (no drag, no press/release pair), and the
-    // machine's vocabulary has nothing for it.
+    // Right-click a fade grip → the fade-shape picker (Vegas' own gesture), OR
+    // a keyframe diamond → its own easing/remove picker (SP9b T3.3, the same
+    // shape of popup — see `onKeyframeMenu`'s doc). Anywhere else on the
+    // surface, this is a no-op and the browser's normal context menu shows —
+    // only one of those two hits calls `preventDefault`. Runs its OWN
+    // hit-test rather than going through the pointer machine: a right-click
+    // is not a gesture (no drag, no press/release pair), and the machine's
+    // vocabulary has nothing for it.
     contextMenu(e) {
       const p = pointerRef.current
-      if (!p.onFadeCurveMenu) return
+      if (!p.onFadeCurveMenu && !p.onKeyframeMenu) return
       const point = surfacePoint(e)
       if (!point) return
-      const hit = hitTest(point, p.layout, store.get())
-      if (hit.kind !== 'audio-fade' || hit.itemId === undefined || !hit.side) return
-      e.preventDefault()
-      p.onFadeCurveMenu({ trackId: hit.itemId, side: hit.side, x: e.clientX, y: e.clientY })
+      const hit = hitTest(point, p.layout, store.get(), { selectedIds: p.selectedIds })
+      if (p.onFadeCurveMenu && hit.kind === 'audio-fade' && hit.itemId !== undefined && hit.side) {
+        e.preventDefault()
+        p.onFadeCurveMenu({ trackId: hit.itemId, side: hit.side, x: e.clientX, y: e.clientY })
+        return
+      }
+      if (p.onKeyframeMenu && hit.kind === 'keyframe' && hit.itemId !== undefined && hit.kfT !== undefined && hit.item) {
+        e.preventDefault()
+        const times = keyframeUnionTimes(hit.item)
+        const isLast = times.length > 0 && hit.kfT === times[times.length - 1]
+        const props = (hit.item.keyframes ?? [])
+          .filter(track => track.points.some(pt => pt.t === hit.kfT))
+          .map(track => track.prop)
+        p.onKeyframeMenu({ itemId: hit.itemId, t: hit.kfT, props, isLast, x: e.clientX, y: e.clientY })
+      }
     },
   }
 

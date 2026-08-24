@@ -209,6 +209,41 @@ internally.
   operator/engineering affordance for confirming the engine is keeping up —
   not end-user copy.
 
+### Audio sync and drag-scrub
+
+A/V sync compensation and audible drag-scrub both run off the one shared
+`AudioContext` (`video/preview/audio-context.ts`) that every playback path
+already shares, and both apply to the WebCodecs engine and the legacy
+`<video>` fallback alike.
+
+- **A/V sync compensation.** A decoded frame reaches the speaker
+  `baseLatency + outputLatency` before it's actually audible, so painting the
+  playhead from the frame just handed to the speaker put the picture ahead of
+  its own sound. The playhead paint path now subtracts that same
+  `outputLatency + baseLatency`, read live off the shared `AudioContext`, so
+  picture and sound land together during playback.
+- **Audible drag-scrub.** Dragging the playhead or the ruler while paused now
+  plays short bursts of audio at the drag position — a tape jog-wheel you can
+  scrub by ear. Each new scrub position fires one short Hann-windowed grain of
+  that position's audio on a throwaway audio node on the shared context, in
+  parallel with (and never touching) the master playback graph.
+- **The toggle.** An ear button sits in the editor toolbar, alongside the
+  other editing tools (undo/redo, split, snap, crop, audio polish). It
+  reflects and sets `settings.audibleScrub` on the project, off by default
+  (opt in), and persists per project the same way the other preview settings
+  do.
+- **Device caveat.** Past about 80ms of combined output latency, the toggle
+  disables itself automatically — a grain fired at a scrub position that far
+  behind no longer reads as instant. Bluetooth output commonly reports
+  100-300ms, a physical wall no software fix can close; wired and built-in
+  output is typically 20-45ms and stays enabled.
+- **Silent by design.** No grain plays over a gap between clips, on a canvas
+  or overlay-only project (no track-0 video), on a clip whose editing proxy
+  isn't ready yet, or on a project running the legacy `<video>` fallback path
+  (which can't decode grains at all) — none of these are bugs, the same way a
+  stationary hover is silent on purpose. Reverse-scrub isn't supported either:
+  the decode pipeline only runs forward.
+
 ---
 
 ## Timeline
@@ -257,6 +292,63 @@ internally.
   the DOM path's old zoom number, and can now show a value below 1× (zooming
   out past "fit the whole project" is newly possible).
 
+### Overlay keyframes
+
+An overlay's `offsetX`, `offsetY`, `scale`, `rotation`, and `opacity` can each
+be animated over the overlay's own lifetime rather than held fixed. Two
+surfaces, both canvas-timeline-only — neither exists in DOM-track mode or in
+the Overlays tab's live-preview page:
+
+- **Setting a key.** Each property gets its own keyframe diamond toggle in
+  `OverlayInspector.tsx`'s right-rail panel. Clicking it drops a keyframe at
+  the playhead with the property's current value. CapCut-style
+  auto-keyframe-on-edit: once a property already has at least one keyframe,
+  changing its value with the playhead parked (dragging the overlay, editing
+  its number field) drops a new keyframe automatically, no diamond click
+  needed.
+- **The strip.** `drawKeyframeStrip` (`timeline/canvas/draw.ts`, geometry in
+  `timeline/canvas/keyframe-strip.ts`) paints one diamond per distinct
+  keyframe time, in a thin zone along the bottom of the clip — only for a
+  SELECTED, keyframed overlay item, nothing else ever draws a diamond.
+  `hit-test.ts`'s `keyframeStripZone` gives diamonds first claim on that zone,
+  ahead of the ordinary clip-body hit.
+- **Retiming.** Dragging a diamond enters the `keyframe-move` pointer state
+  (`pointer-machine.ts`), moving every prop that has a keyframe at that time
+  together via `keyframeOps.moveKeyframe`, clamped to the item's own
+  duration. Every OTHER keyframe time on the same item is a strong snap
+  target, so a drag is actively steered onto them — landing exactly on one
+  MERGES the two diamonds: for any prop they share, the dragged one's value
+  wins and the target's is dropped. This reads as "drag one diamond onto
+  another to collapse them," and it is a normal, undoable edit like any
+  other keyframe change.
+- **Remove and easing.** Right-click a diamond to fire `onKeyframeMenu`
+  (`TimelineCanvas.tsx`) — the host renders a picker offering the six
+  `EASING_NAMES` (via `keyframeOps.setKeyframeEasing`) and a remove action
+  (via `keyframeOps.removeKeyframe`), one per keyframe track that has a point
+  at that time. The easing option is omitted when `t` is the item's LAST
+  keyframe: its easing governs the segment leaving it, and the last keyframe
+  has no next segment to leave. Right-click only, like the `fadeCurveMenu`
+  it mirrors — there is no keyboard path to open it.
+
+**Trimming an item does not rewrite its keyframes.** A keyframe's `t` is
+item-relative, and no trim path touches `item.keyframes` (the only write is
+`applyKeyframeMove` in `pointer-machine.ts`). Two consequences, both
+deliberate rather than oversights:
+
+- Trimming an overlay SHORTER leaves any keyframe past the new end in the
+  data. The animation simply truncates — `sampleTrack` interpolates normally
+  up to the last reachable instant — which is the expected behaviour and
+  matches how keyframes survive a trim in other editors. Re-extending the item
+  brings those keyframes back into play unchanged.
+- While out of span, such a keyframe is neither drawn nor hit-testable
+  (`keyframeUnionTimes` returns every time unfiltered, but the diamond's x
+  falls outside the clip rect), so it cannot be removed until the item is
+  extended again. The workaround is to extend, delete, and re-trim.
+
+Clamping or deleting keyframes on trim was considered and rejected: silently
+discarding a user's animation because they shortened a clip is worse than
+leaving it dormant and recoverable.
+
 ---
 
 ## Audio polish
@@ -300,6 +392,18 @@ itself while clips lift, so `collapseGaps` is called with
 and applied descending; per-clip batching reintroduces a stale-coordinate bug
 across clip boundaries. A head removal additionally needs `closeLeadGap`, which
 shifts clips, overlays and audio tracks but explicitly **not** captions.
+
+---
+
+## Version history
+
+Sidebar **Versions** panel (`video/VersionPanel.tsx`). Git-backed snapshots, one entry per run, newest first.
+
+- **Snapshot triggers**: each agent run, status transitions (`pending` → `draft` → `final`), and now every export too. A no-op re-export (no diff since the last snapshot) doesn't create a new one.
+- **Save version**: name field + button above the list, always visible (not gated on the collapse state). Optional name, defaults to "manual save". Commit message: `version: run N — <name>`. No track/status side effects.
+- **Restore**: `POST /api/projects/:id/versions/:commit/restore`. Non-destructive as of this change — if the working tree has uncommitted edits, they're committed first as `version: run N — autosave before restore` before checking out the target commit, so restoring never loses work. Skipped when there's nothing uncommitted.
+- **Compare**: `video/VersionCompare.tsx`, opened from each version's **Compare** button. Two-pane visual diff — Left/Right pickers (any version, or the `"working"` sentinel for the live on-disk state) plus a debounced time-scrub slider, each pane an `<img>` from `GET /api/projects/:id/versions/:commit/frame?t=`. Gated on the adapter exposing `versionFrameUrl`; a host without it just doesn't render the Compare button.
+- Backend routes: `POST /api/projects/:id/versions` (save), `GET /api/projects/:id/versions` (list), `POST /api/projects/:id/versions/:commit/restore` (restore), `GET /api/projects/:id/versions/:commit/frame?t=` (frame render — reuses the SDR-proxy sample-frame path).
 
 ---
 

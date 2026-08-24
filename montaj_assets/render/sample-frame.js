@@ -616,12 +616,38 @@ export async function sampleFrame({
     })
     return {
       // Shape expected by buildOverlayFilterParts: webmPath, startSeconds, offsetX, offsetY, scale
+      //
+      // NEVER add `keyframes` (or spread `ov`) here, and never `...ri.geometry`
+      // it either. This descriptor is deliberately a flat list of ALREADY-SAMPLED
+      // scalars: `ri.geometry` is `geometryAt(item, kind, ri.seek)` (see
+      // @bycrux/timeline-core/src/activation.js), so an animated overlay's values
+      // below are its values at THIS instant, and one instant is all a still
+      // frame has. buildOverlayFilterParts must therefore take its ORDINARY
+      // path and position this PNG statically at exactly that sampled geometry —
+      // which is the right answer for a single frame, and is why this path needs
+      // no bake.
+      //
+      // A leaked `keyframes` key would flip it onto the baked branch (full-canvas
+      // scale, overlay=0:0) while `sampleOverlay` above renders an UN-baked
+      // capture — bundleComponent is called with no geometry at all — so the
+      // Export dialog's preview would silently lose every overlay's position.
+      // Pinned by test/sample-frame.test.mjs.
       webmPath:     result.pngPath,
       startSeconds: ov.start,
       offsetX:      ri.geometry.offsetX,
       offsetY:      ri.geometry.offsetY,
       scale:        ri.geometry.scale,
       rotation:     ri.geometry.rotation,
+      // Forwarded for the same reason the image and video pseudo-items below
+      // forward it (`opacity: ri.geometry.opacity`, Step 3): overlays were the
+      // one kind that did not, back when buildOverlayFilterParts had no opacity
+      // term to forward it TO. It has one now, so leaving this off would make
+      // the Export dialog the only surface still rendering overlays fully
+      // opaque — the divergence, just moved.
+      //
+      // Sampled, like every other value here, so a keyframed opacity fade shows
+      // its true state at this instant.
+      opacity:      ri.geometry.opacity,
       opaque:       ov.opaque ?? false,
     }
   }, OVERLAY_CONCURRENCY)

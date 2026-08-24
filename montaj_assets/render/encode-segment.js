@@ -277,6 +277,12 @@ function rotateFilterStep(box, alphaPin = false) {
   return `,${pin}rotate=${box.rotationDeg}*PI/180:ow=${box.outW}:oh=${box.outH}:c=black@0.0`
 }
 
+// The geometry of an overlay whose transform is ALREADY baked into its capture:
+// the identity. Built by `geometryFor` from an empty item rather than written
+// out as an object literal, so it cannot drift from the defaults that function
+// applies. Consumed only by buildOverlayFilterParts' keyframed branch.
+const BAKED_OVERLAY_GEOMETRY = geometryFor({}, 'overlay')
+
 /**
  * Build filter-graph parts for one image item.
  *
@@ -543,7 +549,27 @@ export function buildOverlayFilterParts(ov, vw, vh, ovIdx, videoLabel, segStart,
   // shrinking it. Even-rounded — yuv420/yuva420 encoders reject odd dimensions.
   // Mirrors the image/video item path (buildImage/VideoItemFilterParts), which
   // already sizes to round(vw * scale / 2) * 2.
-  const ovBox = toRotatedPixelBox(geometryFor(ov, 'overlay'), vw, vh)
+  //
+  // ── Keyframed overlays are already positioned (SP9b T2.3) ─────────────────
+  //
+  // This filter graph places an overlay ONCE for the whole segment; there is no
+  // per-frame hook in it. So an ANIMATED overlay is positioned somewhere that
+  // does have one — the Puppeteer page — where the shim wraps the component in a
+  // full-canvas layer carrying `geometryAt(item,'overlay',frame/fps)` as a CSS
+  // transform (bundle.js `generateShim`). By the time the capture reaches this
+  // function, offset/scale/rotation/opacity are IN THE PIXELS, and the only
+  // correct thing left to do is drop the (already design-canvas-sized) frame
+  // onto the output canvas unchanged.
+  //
+  // "Unchanged" is spelled as the IDENTITY geometry rather than as hand-written
+  // numbers, so it inherits the even-pixel rounding (`round(vw/2)*2`) every
+  // other path here uses, and `rotateFilterStep` sees an identity box and emits
+  // nothing — a keyframed overlay must NOT rotate twice.
+  //
+  // Applying `geometryFor` here as well would DOUBLE-apply the transform: a
+  // half-scaled, animated overlay would come out quarter-sized.
+  const keyframed = Array.isArray(ov.keyframes) && ov.keyframes.length > 0
+  const ovBox = toRotatedPixelBox(keyframed ? BAKED_OVERLAY_GEOMETRY : geometryFor(ov, 'overlay'), vw, vh)
   const { scaledW: targetW, scaledH: targetH } = ovBox
 
   // Force yuva420p (or caller-specified format) — VP9 decoders may silently drop
@@ -562,6 +588,31 @@ export function buildOverlayFilterParts(ov, vw, vh, ovIdx, videoLabel, segStart,
   // (or rgba for the PNG callers), so `c=black@0.0` is representable.
   filterParts.push(`${ovSrc}scale=${targetW}:${targetH}${rotateFilterStep(ovBox)}[ovsc${ovIdx}]`)
   ovSrc = `[ovsc${ovIdx}]`
+
+  // Item-level opacity, in the same position and the same shape the image path
+  // (buildImageItemFilterParts) and video path (buildVideoItemFilterParts) have
+  // always used it: after the geometry chain, before the composite.
+  //
+  // This was MISSING here until SP9b, and missing in two places at once — this
+  // function had no opacity term at all, and render.js never stamped `opacity`
+  // onto the descriptor to begin with. A translucent overlay therefore looked
+  // translucent in the editor preview and rendered fully opaque. Both ends are
+  // fixed now. Unrelated to keyframes; it was simply a gap.
+  //
+  // The epsilon guard is the sibling paths' guard verbatim, and it is
+  // load-bearing beyond tidiness: opacity 1 (and absent) must emit NOTHING, so
+  // every overlay that does not set opacity keeps a byte-identical filter graph
+  // and the frozen render goldens stay valid.
+  //
+  // NOT applied to a keyframed overlay: the shim already baked opacity into the
+  // capture as CSS (bundle.js `generateShim`), so a second multiply here would
+  // square it — 0.5 would render at 0.25. The two paths are mutually exclusive
+  // by construction, and the alpha is definitely present either way because the
+  // `format=${inputFormatFlag}` step above pinned this chain to yuva420p/rgba.
+  if (!keyframed && Math.abs((ov.opacity ?? 1) - 1) > 0.001) {
+    filterParts.push(`${ovSrc}colorchannelmixer=aa=${ov.opacity}[ovop${ovIdx}]`)
+    ovSrc = `[ovop${ovIdx}]`
+  }
 
   // ovBox.x/ovBox.y is the top-left of the GROWN box; identical to the
   // unrotated top-left whenever the overlay is not rotated. `overlay` accepts

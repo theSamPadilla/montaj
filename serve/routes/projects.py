@@ -17,7 +17,7 @@ from datetime import datetime
 from pathlib import Path
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Request, UploadFile
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from urllib.parse import urlparse
 
 from serve.common import (
@@ -1694,9 +1694,68 @@ async def list_versions(project_id: str, project_dir: Path = Depends(get_project
     return await asyncio.to_thread(_git_log)
 
 
+@router.post("/projects/{project_id}/versions")
+async def create_version(project_id: str, request: Request, project_dir: Path = Depends(get_project_dir)):
+    """Checkpoint the current on-disk project.json as a manual version.
+
+    No track reset, no status change, no project.json write — just a git commit
+    of whatever is currently on disk, so it becomes a recoverable version. The
+    commit-message shape matches the rerun/render paths so VersionPanel's parser
+    picks it up. `_git_commit_sync` is no-op-safe: if there's nothing to
+    commit, the history is unchanged.
+    """
+    body = {}
+    try:
+        body = await request.json()
+    except Exception:
+        pass
+    name_raw = body.get("name", "") if isinstance(body, dict) else ""
+    if not isinstance(name_raw, str):
+        name_raw = ""
+    # Commit subjects don't like newlines; also cap length so the message stays
+    # sensible in the UI parser.
+    clean_name = name_raw.replace("\r", " ").replace("\n", " ").strip()
+    if len(clean_name) > 120:
+        clean_name = clean_name[:120].rstrip()
+    label = clean_name or "manual save"
+
+    project_path = project_dir / "project.json"
+    project = json.loads(project_path.read_text())
+    run_count = project.get("runCount", 1)
+
+    await asyncio.to_thread(_git_commit_sync, project_dir, f"version: run {run_count} — {label}")
+
+    # Return the same shape as GET /projects/{id}/versions so the client can
+    # replace its list in one call.
+    def _git_log():
+        result = subprocess.run(
+            ["git", "log", "--pretty=format:%H|%s|%aI", "--", "project.json"],
+            cwd=str(project_dir), capture_output=True, text=True,
+        )
+        versions = []
+        for line in result.stdout.strip().splitlines():
+            parts = line.split("|", 2)
+            if len(parts) == 3:
+                versions.append({"hash": parts[0], "message": parts[1], "timestamp": parts[2]})
+        return versions
+
+    return await asyncio.to_thread(_git_log)
+
+
 @router.post("/projects/{project_id}/versions/{commit}/restore")
 async def restore_version(project_id: str, commit: str, request: Request, project_dir: Path = Depends(get_project_dir)):
     project_path = project_dir / "project.json"
+    # Read current runCount from on-disk project.json before restoring, so the
+    # "autosave before restore" snapshot lands in the current run's history.
+    # _git_commit_sync is no-op-safe, so this only creates a version when the
+    # working tree actually has uncommitted edits — the history won't fill
+    # with noise on every restore.
+    current_project = json.loads(project_path.read_text())
+    current_run_count = current_project.get("runCount", 1)
+    await asyncio.to_thread(
+        _git_commit_sync, project_dir,
+        f"version: run {current_run_count} — autosave before restore",
+    )
     proc = await asyncio.create_subprocess_exec(
         "git", "show", f"{commit}:project.json",
         cwd=str(project_dir),
@@ -1719,6 +1778,123 @@ async def restore_version(project_id: str, commit: str, request: Request, projec
     broadcaster: SSEBroadcaster = request.app.state.broadcaster
     broadcaster.publish(project_id, f"data: {json.dumps(restored)}\n\n")
     return restored
+
+
+@router.get("/projects/{project_id}/versions/{commit}/frame")
+async def version_frame(
+    project_id: str,
+    commit: str,
+    t: float,
+    project_dir: Path = Depends(get_project_dir),
+):
+    """Render a single composited PNG frame at time ``t`` from a past version of
+    the project (or the live working copy when ``commit == 'working'``).
+
+    Powers the frontend A/B compare view: pick any historical version, ask for
+    the frame at any timestamp, get back a PNG rendered from THAT commit's
+    project.json without touching the live on-disk state. The (commit, t) pair
+    is content-addressed for git commits, so successful PNGs are cached under
+    ``render/samples/versions/<commit>/frame-<t>s.png``. The ``working``
+    sentinel is never cached — its input state can change with any edit.
+    """
+    if t < 0:
+        raise bad_request("invalid_argument", "t must be >= 0")
+
+    is_working = commit == "working"
+
+    # Validate the commit exists before doing anything expensive. Mirrors the
+    # `git show ... returncode != 0 -> not_found` idiom in restore_version, but
+    # with rev-parse we can 404 without allocating stdout bytes.
+    if not is_working:
+        proc = await asyncio.create_subprocess_exec(
+            "git", "rev-parse", "--verify", f"{commit}^{{commit}}",
+            cwd=str(project_dir),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        await proc.communicate()
+        if proc.returncode != 0:
+            raise not_found("not_found", f"Commit '{commit}' not found")
+
+    # Cached PNGs live alongside the extracted project.json for the same
+    # (commit, t). Working-copy frames get their own bucket but are never served
+    # from cache.
+    bucket = "working" if is_working else commit
+    cache_path = project_dir / "render" / "samples" / "versions" / bucket / f"frame-{t}s.png"
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+
+    if not is_working and cache_path.is_file():
+        return FileResponse(
+            cache_path,
+            media_type="image/png",
+            headers={"Cache-Control": "public, max-age=31536000, immutable"},
+        )
+
+    # Materialize the project.json input the render will read. For a real
+    # commit we `git show` it into render/versions/<commit>/project.json (kept
+    # on disk as a natural companion to the cached frame). For 'working' we
+    # feed the live file straight through.
+    if is_working:
+        input_json = project_dir / "project.json"
+        if not input_json.is_file():
+            raise not_found("not_found", "project.json not found")
+    else:
+        input_json = project_dir / "render" / "versions" / commit / "project.json"
+        input_json.parent.mkdir(parents=True, exist_ok=True)
+        show = await asyncio.create_subprocess_exec(
+            "git", "show", f"{commit}:project.json",
+            cwd=str(project_dir),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout_b, _ = await show.communicate()
+        if show.returncode != 0:
+            raise not_found("not_found", f"Commit '{commit}' not found")
+        input_json.write_bytes(stdout_b)
+
+    render_script = Path(render_runtime_dir()) / "sample-frame.js"
+    if not render_script.is_file():
+        raise server_error("not_found", f"{render_script.name} not found")
+
+    node_bin = shutil.which("node")
+    if not node_bin:
+        raise server_error("not_found", "node not found in PATH")
+
+    env = os.environ.copy()
+    env["MONTAJ_ROOT"] = str(MONTAJ_ROOT)
+    env["MONTAJ_FFMPEG"] = ffmpeg_bin()
+    env["MONTAJ_FFPROBE"] = ffprobe_bin()
+
+    cmd = [
+        node_bin, str(render_script),
+        "--mode", "frame",
+        "--project", str(input_json),
+        "--at", str(t),
+        "--out", str(cache_path),
+        "--prefer-proxy",
+    ]
+    render_proc = await asyncio.create_subprocess_exec(
+        *cmd,
+        cwd=str(MONTAJ_ROOT),
+        env=env,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    _, stderr_b = await render_proc.communicate()
+    if render_proc.returncode != 0:
+        err = (stderr_b or b"").decode("utf-8", errors="replace")[-500:]
+        raise server_error("render_failed", f"sample-frame.js exit {render_proc.returncode}: {err}")
+    if not cache_path.is_file():
+        raise server_error("render_failed", "sample-frame.js reported success but no PNG was written")
+
+    # Working-copy frames are the only mutable case — the input state changes
+    # with every edit, so browsers/proxies must revalidate on every request.
+    cache_header = "no-store" if is_working else "public, max-age=31536000, immutable"
+    return FileResponse(
+        cache_path,
+        media_type="image/png",
+        headers={"Cache-Control": cache_header},
+    )
 
 
 @router.post("/projects/{project_id}/rerun")
@@ -2168,8 +2344,10 @@ async def render_project(project_id: str, request: Request, project_dir: Path = 
         })
 
     try:
-        project_type = json.loads(project_path.read_text()).get("projectType", "")
+        project = json.loads(project_path.read_text())
+        project_type = project.get("projectType", "")
     except Exception:
+        project = {}
         project_type = ""
 
     scale_raw = request.query_params.get("scale")
@@ -2247,6 +2425,13 @@ async def render_project(project_id: str, request: Request, project_dir: Path = 
             script_args += ["--export", export]
         if sdr_curve:
             script_args += ["--sdr-curve", sdr_curve]
+        # Snapshot the current project.json into git before kicking off the
+        # detached render, so every export creates a recoverable version.
+        # _git_commit_sync is no-op-safe on a clean tree, so back-to-back
+        # renders don't spam the history. Carousel already commits on →final;
+        # this covers the video path.
+        run_count = project.get("runCount", 1)
+        await asyncio.to_thread(_git_commit_sync, project_dir, f"version: run {run_count} — export")
 
     if not render_script.is_file():
         raise server_error("not_found", f"{render_script.name} not found")

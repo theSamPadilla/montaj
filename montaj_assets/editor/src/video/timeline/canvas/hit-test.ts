@@ -23,7 +23,9 @@
  */
 
 import type { AudioTrack, CaptionSegment, VisualItem } from '../../../schema'
+import { isKeyframed } from '../../keyframeOps'
 import { AUDIO_ITEM_INSET_PX, type TimelineLayout } from './draw'
+import { KEYFRAME_HIT_HALF_WIDTH_PX, KEYFRAME_STRIP_ZONE_HEIGHT_PX, keyframeDiamondX, keyframeUnionTimes } from './keyframe-strip'
 import { timeToX, xToTime, type Viewport } from './viewport'
 
 export interface Point {
@@ -59,6 +61,13 @@ export const FADE_GRIP_ZONE_HEIGHT_PX = 10
 export interface HitTestOptions {
   visualEdgeTolerancePx?: number
   audioEdgeTolerancePx?: number
+  /** The current selection, ids only — needed for exactly one thing: a
+   *  keyframe-strip diamond (`'keyframe'`) only exists to hit-test on a
+   *  SELECTED overlay (plan decision 1; `drawKeyframeStrip` only PAINTS one
+   *  there too). Absent or empty means no keyframe hits are possible, which
+   *  is also what every caller that predates T3.3 gets — this option is
+   *  purely additive. */
+  selectedIds?: readonly string[]
 }
 
 export type HitKind =
@@ -69,6 +78,13 @@ export type HitKind =
   | 'item-body'
   /** Inside a visual clip's in/out trim handle. */
   | 'item-edge'
+  /** On a keyframe-strip diamond (`drawKeyframeStrip` in draw.ts) — the small
+   *  zone along the bottom of a SELECTED, keyframed overlay clip. Only ever
+   *  produced for an item that satisfies all three (see `HitTestOptions.
+   *  selectedIds`); takes precedence over `item-edge`/`item-body` within its
+   *  own small zone, the same way `audio-fade` takes precedence over
+   *  `audio-edge`/`audio-body`. */
+  | 'keyframe'
   /** Inside an audio bar, away from its trim handles. */
   | 'audio-body'
   | 'audio-edge'
@@ -105,6 +121,11 @@ export interface HitResult {
    *  a fade grip is not a trim handle, and `isEdgeHit` (which several
    *  callers use to mean "this is a trim grab") must not go true for it. */
   side?: 'in' | 'out'
+  /** The keyframe's item-relative time, on a `'keyframe'` hit — the SAME `t`
+   *  every `keyframeOps` export addresses a point by. A field of its own,
+   *  deliberately not a reuse of `t` (which is the point's ABSOLUTE timeline
+   *  time, the same `t` every other hit kind reports). */
+  kfT?: number
   /** Visual track index (project.tracks[trackIdx]) for row and item hits. */
   trackIdx?: number
   /** Audio lane index (the `lane` field / grouping index) for lane hits. */
@@ -237,6 +258,38 @@ function audioFadeGripZone(
 }
 
 /**
+ * Does `point` fall on one of `item`'s keyframe-strip diamonds? Returns the
+ * matching keyframe's item-relative `t`, or null.
+ *
+ * Confined to the bottom `KEYFRAME_STRIP_ZONE_HEIGHT_PX` of the row — the same
+ * "small dedicated target near where it's drawn" reasoning `audioFadeGripZone`
+ * uses to keep a grip from swallowing the trim edge below it; here what sits
+ * below is `item-body`/`item-edge`, not `audio-body`/`audio-edge`, but the
+ * precedence story is identical. Callers gate this on selection themselves
+ * (`hitTest` only calls it for ids in `opts.selectedIds`) — it does not check
+ * again, mirroring how `drawKeyframeStrip` is gated by ITS caller rather than
+ * internally.
+ *
+ * Out-of-span times (`t < 0` or `t > duration`) are skipped. `draw.ts`'s
+ * `drawKeyframeStrip` clips such a diamond away — it is never actually drawn
+ * anywhere — but `keyframeDiamondX` is happy to compute a screen x for it
+ * regardless, and that x can land ANYWHERE in the row, including on top of a
+ * different clip's body that IS drawn there. Without this filter that
+ * invisible zone would win over the real `item-body`/`item-edge` hit
+ * underneath it, purely because it happened to be checked first.
+ */
+function keyframeStripZone(point: Point, item: VisualItem, rowY: number, rowHeight: number, viewport: Viewport): number | null {
+  const zoneTop = rowY + rowHeight - KEYFRAME_STRIP_ZONE_HEIGHT_PX
+  if (point.y < zoneTop || point.y >= rowY + rowHeight) return null
+  const duration = Math.max(0, item.end - item.start)
+  for (const t of keyframeUnionTimes(item)) {
+    if (t < 0 || t > duration) continue
+    if (Math.abs(point.x - keyframeDiamondX(item, t, viewport)) <= KEYFRAME_HIT_HALF_WIDTH_PX) return t
+  }
+  return null
+}
+
+/**
  * Resolve a surface-space point to what sits under it.
  *
  * Items within a row are scanned back-to-front (last in the array first), which
@@ -301,8 +354,22 @@ export function hitTest(
     return { kind: 'caption-edge', t, itemId: hit.item.id, edge: hit.edge, segment: hit.item, captionLane: caption.lane }
   }
 
+  const selectedIds = opts.selectedIds
   for (const row of layout.rows) {
     if (point.y < row.y || point.y >= row.y + row.height) continue
+    // Keyframe diamonds take precedence within their own small bottom-strip
+    // zone — selected, keyframed overlay items only (nothing else EVER draws
+    // a diamond; see `drawKeyframeStrip`). Scanned back-to-front like
+    // `resolveRow`, so a diamond on a higher-stacked item wins ties the same
+    // way a body/edge hit would.
+    if (selectedIds !== undefined && selectedIds.length > 0) {
+      for (let i = row.items.length - 1; i >= 0; i--) {
+        const item = row.items[i]
+        if (item.type !== 'overlay' || !selectedIds.includes(item.id) || !isKeyframed(item)) continue
+        const kfT = keyframeStripZone(point, item, row.y, row.height, viewport)
+        if (kfT !== null) return { kind: 'keyframe', t, itemId: item.id, kfT, trackIdx: row.trackIdx, item }
+      }
+    }
     const hit = resolveRow(point.x, row.items, viewport, visualTolerance)
     if (hit === null) return { kind: 'empty-row', t, trackIdx: row.trackIdx }
     if (hit.edge === null) return { kind: 'item-body', t, itemId: hit.item.id, trackIdx: row.trackIdx, item: hit.item }

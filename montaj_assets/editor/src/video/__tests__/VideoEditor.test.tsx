@@ -723,4 +723,118 @@ describe('VideoEditor — editor-package integration', () => {
       expect(last.captions).toEqual(regeneratedTrack)
     })
   })
+
+  // ── Version history: save / restore / compare (SP8b T8) ──────────────────────
+
+  it('a completed render triggers listVersionHistory to be called again', async () => {
+    const adapter = makeFakeAdapter()
+    // Starting status is already 'final' — openRender always re-sets status to
+    // 'final' (`{ ...project, status: 'final' }`), which for an
+    // already-final project is the SAME primitive value. useVersionHistory's
+    // auto-refetch effect is keyed on `project.status` by reference-equal
+    // primitive, so it will NOT re-fire from that assignment here — isolating
+    // this test to the refetch RenderModal's onRenderComplete triggers once
+    // the fake adapter's render stream reaches its `done` event.
+    const initial = makeVideoProject({ status: 'final' })
+    const { findByText, findByRole } = render(
+      <VideoEditor
+        project={initial}
+        adapter={adapter}
+        onProjectChange={vi.fn()}
+        slots={{ exportActions: <div /> }}
+      />,
+    )
+
+    await waitFor(() => expect(adapter.listVersionHistory).toHaveBeenCalledTimes(1))
+
+    const renderBtn = await findByText('Render →')
+    await act(async () => { renderBtn.click() })
+
+    // ReviewSurface always supplies `preRenderOptions`, so RenderModal opens on
+    // its pre-render options dialog first — the render itself only starts once
+    // the "Export" action inside that dialog is clicked.
+    const startBtn = await findByRole('button', { name: 'Export' })
+    await act(async () => { fireEvent.click(startBtn) })
+
+    await waitFor(() => {
+      expect(adapter.listVersionHistory).toHaveBeenCalledTimes(2)
+    })
+  })
+
+  it('handleSaveVersion calls adapter.saveVersion and refetches history', async () => {
+    const adapter = makeFakeAdapter()
+    adapter.saveVersion = vi.fn(async () => [])
+    const initial = makeVideoProject({ status: 'draft' })
+    const { findByPlaceholderText, findByText } = render(
+      <VideoEditor
+        project={initial}
+        adapter={adapter}
+        onProjectChange={vi.fn()}
+        slots={{ exportActions: <div /> }}
+      />,
+    )
+
+    await waitFor(() => expect(adapter.listVersionHistory).toHaveBeenCalledTimes(1))
+
+    const input = await findByPlaceholderText('Name (optional)')
+    fireEvent.change(input, { target: { value: 'my checkpoint' } })
+    const saveBtn = await findByText('Save version')
+    fireEvent.click(saveBtn)
+
+    await waitFor(() => {
+      expect(adapter.saveVersion).toHaveBeenCalledWith('vid-1', 'my checkpoint')
+    })
+    await waitFor(() => {
+      expect(adapter.listVersionHistory).toHaveBeenCalledTimes(2)
+    })
+  })
+
+  it('handleRestoreVersion refetches history after restore', async () => {
+    const adapter = makeFakeAdapter()
+    const versionEntry = { hash: 'abc123', message: 'version: run 1 — draft', timestamp: '2026-01-01T00:00:00Z' }
+    adapter.listVersionHistory = vi.fn(async () => [versionEntry])
+    const initial = makeVideoProject({ status: 'draft' })
+    const { findByText } = render(
+      <VideoEditor
+        project={initial}
+        adapter={adapter}
+        onProjectChange={vi.fn()}
+        slots={{ exportActions: <div /> }}
+      />,
+    )
+
+    await waitFor(() => expect(adapter.listVersionHistory).toHaveBeenCalledTimes(1))
+
+    const restoreBtn = await findByText('Restore →')
+    fireEvent.click(restoreBtn)
+
+    await waitFor(() => {
+      expect(adapter.restoreVersion).toHaveBeenCalledWith('vid-1', 'abc123')
+    })
+    // Post-Phase-3 behavior: a restore refetches version history rather than
+    // relying on the restored project's status to have changed.
+    await waitFor(() => {
+      expect(adapter.listVersionHistory).toHaveBeenCalledTimes(2)
+    })
+  })
+
+  it('does not render the Compare button when adapter.versionFrameUrl is undefined', async () => {
+    const adapter = makeFakeAdapter()
+    const versionEntry = { hash: 'abc123', message: 'version: run 1 — draft', timestamp: '2026-01-01T00:00:00Z' }
+    adapter.listVersionHistory = vi.fn(async () => [versionEntry])
+    // adapter.versionFrameUrl is intentionally left undefined — makeFakeAdapter's default.
+    const initial = makeVideoProject({ status: 'draft' })
+    const { queryByText } = render(
+      <VideoEditor
+        project={initial}
+        adapter={adapter}
+        onProjectChange={vi.fn()}
+        slots={{ exportActions: <div /> }}
+      />,
+    )
+
+    await waitFor(() => expect(adapter.listVersionHistory).toHaveBeenCalled())
+
+    expect(queryByText('Compare')).toBeNull()
+  })
 })

@@ -325,6 +325,152 @@ describe('splitAtTime', () => {
   })
 })
 
+// SP9b terminator fix — splitClip and cutSingleItem (behind applyCutToItem)
+// both used to spread `...item` for both fragments, so both inherited the
+// SAME `keyframes` array object with unchanged item-relative `t`. The right
+// fragment's `start` moves, so its curve restarted there and every point past
+// its shortened span went dead. Shared by both describe blocks below —
+// splitAtTime (lift: a point cut, right fragment stays at cut.end) and
+// applyCutToItem (collapse: a ranged cut, right fragment moves to cut.start)
+// — so the same fixture exercises both call sites of `splitKeyframeTracks`.
+function keyframedOverlay(over: Partial<VisualItem> = {}): VisualItem {
+  return {
+    id: 'o0', type: 'overlay', start: 0, end: 10,
+    keyframes: [
+      { prop: 'offsetX', points: [{ t: 0, value: 0 }, { t: 3, value: 30 }, { t: 7, value: 70 }, { t: 10, value: 100 }] },
+      { prop: 'opacity', points: [{ t: 3, value: 1 }] },
+    ],
+    ...over,
+  } as VisualItem
+}
+
+describe('splitAtTime — overlay keyframes', () => {
+  it('gives each fragment its OWN keyframes array — never the same reference as the other fragment or the original item', () => {
+    const overlay = keyframedOverlay()
+    const p = makeProject({ tracks: vtracks([], [overlay]) })
+    const [left, right] = splitAtTime(p, 5, 'o0').tracks![1].items
+
+    expect(left.keyframes).toBeDefined()
+    expect(right.keyframes).toBeDefined()
+    expect(left.keyframes).not.toBe(right.keyframes)
+    expect(left.keyframes).not.toBe(overlay.keyframes)
+    expect(right.keyframes).not.toBe(overlay.keyframes)
+  })
+
+  it("drops points outside each fragment's new span", () => {
+    const p = makeProject({ tracks: vtracks([], [keyframedOverlay()]) })
+    const [left, right] = splitAtTime(p, 5, 'o0').tracks![1].items
+
+    // Left is now [0,5): keeps t=0,3 (<=5); drops t=7,10.
+    const leftOffsetX = left.keyframes!.find(t => t.prop === 'offsetX')!
+    expect(leftOffsetX.points.map(pt => pt.t)).toEqual([0, 3])
+
+    // Right is now [5,10): keeps t=7,10 (>=5), re-anchored by -5; drops t=0,3.
+    const rightOffsetX = right.keyframes!.find(t => t.prop === 'offsetX')!
+    expect(rightOffsetX.points.map(pt => pt.t)).toEqual([2, 5])
+  })
+
+  it("re-anchors the right fragment's remaining points so the animation lands at the same wall-clock instants as before the split", () => {
+    const p = makeProject({ tracks: vtracks([], [keyframedOverlay()]) })
+    const [, right] = splitAtTime(p, 5, 'o0').tracks![1].items
+
+    expect(right.start).toBe(5) // splitAtTime moves the right fragment's start to the cut
+    const rightOffsetX = right.keyframes!.find(t => t.prop === 'offsetX')!
+    // Original point at t=7 (wall-clock 0+7=7). On the new fragment it's t=2,
+    // and 2 + the fragment's own start (5) is still 7 — same instant, same value.
+    const pt = rightOffsetX.points.find(pt => pt.t === 2)!
+    expect(pt.value).toBe(70)
+    expect(right.start + pt.t).toBe(7)
+  })
+
+  it('a point exactly at the split lands on BOTH fragments, keeping the curve continuous across the cut', () => {
+    const p = makeProject({ tracks: vtracks([], [keyframedOverlay()]) })
+    const [left, right] = splitAtTime(p, 3, 'o0').tracks![1].items
+
+    const leftOpacity = left.keyframes!.find(t => t.prop === 'opacity')!
+    const rightOpacity = right.keyframes!.find(t => t.prop === 'opacity')!
+    expect(leftOpacity.points).toEqual([{ t: 3, value: 1 }])
+    expect(rightOpacity.points).toEqual([{ t: 0, value: 1 }]) // re-anchored: 3 - 3 = 0
+  })
+
+  it('a keyframe-less overlay is unaffected — no stray `keyframes` field appears on either fragment', () => {
+    const p = makeProject({ tracks: vtracks([], [{ id: 'o1', type: 'overlay', start: 0, end: 10 } as VisualItem]) })
+    const [left, right] = splitAtTime(p, 5, 'o1').tracks![1].items
+
+    expect(left.keyframes).toBeUndefined()
+    expect(right.keyframes).toBeUndefined()
+  })
+
+  it('a non-overlay item is unaffected — keyframes stay overlay-only even if a stray array is present', () => {
+    const original = { prop: 'offsetX' as const, points: [{ t: 0, value: 0 }, { t: 8, value: 80 }] }
+    const p = makeProject({
+      tracks: vtracks([{
+        id: 'v0', type: 'video', start: 0, end: 10, inPoint: 0, outPoint: 10,
+        keyframes: [original],
+      } as VisualItem]),
+    })
+    const [left, right] = splitAtTime(p, 5, 'v0').tracks![0].items
+
+    // splitClip's `...item` spread hands both fragments the SAME array for a
+    // non-overlay item — this file's fix touches overlays only, since no
+    // other item type ever reads `item.keyframes` (docs/schemas/project.md).
+    expect(left.keyframes).toBe(right.keyframes)
+    expect(left.keyframes![0]).toBe(original)
+  })
+})
+
+// `cutSingleItem` (behind applyCutToItem) had the IDENTICAL bare-`...item`
+// spread `splitClip` did, so it shared one keyframes array between fragments
+// and left the right fragment's points anchored to the original item's start.
+// Fixing only one of two identical call sites would have been worse than
+// fixing neither: cutting an overlay, rather than splitting it, would have
+// silently produced a wrong animation.
+describe('applyCutToItem — overlay keyframes', () => {
+  it('gives each fragment its own array and drops points inside the removed range', () => {
+    const overlay = keyframedOverlay()
+    const p = makeProject({ tracks: vtracks([], [overlay]) })
+    // Remove [4,6]. Left keeps t<=4 (0,3); right keeps t>=6 (7,10).
+    const items = applyCutToItem(p, 'o0', { start: 4, end: 6 }).tracks![1].items
+    expect(items).toHaveLength(2)
+    const [left, right] = items
+
+    expect(left.keyframes).not.toBe(right.keyframes)
+    expect(left.keyframes).not.toBe(overlay.keyframes)
+    expect(right.keyframes).not.toBe(overlay.keyframes)
+
+    const leftX = left.keyframes!.find(t => t.prop === 'offsetX')!
+    expect(leftX.points.map(pt => pt.t)).toEqual([0, 3])
+    // opacity's only point is t=3, which survives on the left only.
+    expect(left.keyframes!.some(t => t.prop === 'opacity')).toBe(true)
+    expect(right.keyframes!.some(t => t.prop === 'opacity')).toBe(false)
+  })
+
+  it('re-anchors the right fragment so its points keep their wall-clock instants', () => {
+    const overlay = keyframedOverlay()
+    const p = makeProject({ tracks: vtracks([], [overlay]) })
+    const [, right] = applyCutToItem(p, 'o0', { start: 4, end: 6 }).tracks![1].items
+
+    // Right lifts to start=4 and shows original content from t=6 onward, so
+    // the original t=7 and t=10 points re-anchor to 1 and 4. Their absolute
+    // instants are then 4+1=5 and 4+4=8 — the same offsets into the surviving
+    // content they always had, now that 2s were removed.
+    const rightX = right.keyframes!.find(t => t.prop === 'offsetX')!
+    expect(right.start).toBe(4)
+    expect(rightX.points.map(pt => pt.t)).toEqual([1, 4])
+    expect(rightX.points.map(pt => pt.value)).toEqual([70, 100])
+  })
+
+  it('leaves a keyframe-less overlay and a non-overlay item untouched', () => {
+    const plain = { id: 'o1', type: 'overlay', start: 0, end: 10 } as VisualItem
+    const vid   = { id: 'a', type: 'video', start: 0, end: 10, inPoint: 0, outPoint: 10 } as VisualItem
+    const p = makeProject({ tracks: vtracks([vid], [plain]) })
+    const out = applyCutToItem(p, 'o1', { start: 4, end: 6 })
+    for (const it of out.tracks![1].items) expect(it.keyframes).toBeUndefined()
+    const outVid = applyCutToItem(p, 'a', { start: 4, end: 6 })
+    for (const it of outVid.tracks![0].items) expect(it.keyframes).toBeUndefined()
+  })
+})
+
 describe('rippleDelete', () => {
   it('returns the same reference when the item is not found', () => {
     const p = makeProject({ tracks: vtracks([{ id: 'a', type: 'video', start: 0, end: 5 }]) })

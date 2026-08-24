@@ -565,14 +565,19 @@ async function main(projectPath, { out, workers, clean, imageTone, exportMode = 
   for (let i = 0; i < segmentSpecs.length; i++) {
     const spec = segmentSpecs[i]
     log(`bundling segment ${i + 1}/${segmentSpecs.length} (${spec.id})...`)
-    // offsetX/offsetY/scale below are DEAD PARAMETERS: bundleComponent threads
-    // them into generateShim (bundle.js), which accepts them but never emits
-    // them into the shim it writes — overlay positioning happens entirely at
-    // ffmpeg composite time (buildOverlayFilterParts in encode-segment.js), not
-    // in the Puppeteer-rendered HTML. rotation is deliberately NOT forwarded
-    // here for the same reason: it would be cargo cult, not a fix. Don't "fix"
-    // this apparent omission without first checking whether generateShim still
-    // ignores these three.
+    // The geometry below is read by generateShim (bundle.js) ONLY when the item
+    // carries `keyframes` — the one case where the ffmpeg composite cannot do
+    // the positioning, because the filter graph places an overlay once for a
+    // whole segment and an animated one has to move within it. That item's
+    // transform is baked into the Puppeteer capture per frame instead, and
+    // buildOverlayFilterParts (encode-segment.js) then composites it full-canvas.
+    //
+    // For every other overlay — the overwhelmingly common case — these five are
+    // still DEAD PARAMETERS, exactly as they were before SP9b: generateShim
+    // accepts them, emits nothing, and positioning happens entirely at ffmpeg
+    // composite time. The un-baked shim is byte-identical to the pre-keyframes
+    // one, deliberately, which is what keeps the render goldens valid. Don't
+    // "fix" that apparent omission for a static overlay: it isn't one.
     const { htmlPath, workDir } = await bundleComponent({
       componentPath:  spec.componentPath,
       props:          spec.props,
@@ -583,6 +588,9 @@ async function main(projectPath, { out, workers, clean, imageTone, exportMode = 
       offsetX:        spec.offsetX     ?? 0,
       offsetY:        spec.offsetY     ?? 0,
       scale:          spec.scale       ?? 1,
+      rotation:       spec.rotation    ?? 0,
+      opacity:        spec.opacity     ?? 1,
+      keyframes:      spec.keyframes   ?? null,
       googleFonts:    spec.googleFonts ?? [],
     })
     spec.htmlPath = htmlPath
@@ -608,8 +616,22 @@ async function main(projectPath, { out, workers, clean, imageTone, exportMode = 
       // Skipping this line is the worst partial failure: images/videos rotate
       // correctly while overlays silently don't.
       rSeg.rotation  = spec.rotation  ?? 0
+      // The OTHER half of the missing-overlay-opacity bug. collectPuppeteerSegments
+      // has always collected `opacity` onto the spec, but it stopped here — so even
+      // once buildOverlayFilterParts learned to emit `colorchannelmixer=aa=`, it
+      // would have read `undefined` off every descriptor and emitted nothing. Both
+      // halves are required; neither alone does anything.
+      rSeg.opacity   = spec.opacity   ?? 1
       rSeg.opaque    = spec.opaque    ?? false
       rSeg.isCaption = spec.isCaption ?? false
+      // Same reference-flow argument as rotation directly above, and the same
+      // worst-case partial failure: buildOverlayFilterParts reads `keyframes`
+      // off THIS object to decide that the capture is already positioned. Miss
+      // this line and an animated overlay gets its transform applied TWICE —
+      // once baked into the pixels, once by the compositor. Assigned only when
+      // the spec actually has tracks, so a static overlay's descriptor keeps no
+      // `keyframes` key at all and takes the byte-identical filter path.
+      if (spec.keyframes?.length) rSeg.keyframes = spec.keyframes
     }
   }
 
@@ -740,6 +762,13 @@ function collectPuppeteerSegments(projectJson, fps, width, height, segDir) {
           opacity:       item.opacity ?? 1,
           opaque:        item.opaque  ?? false,
           googleFonts:   item.googleFonts ?? [],
+          // Keyframes drive BOTH ends of the render: bundleComponent bakes the
+          // animated transform into the capture, and buildOverlayFilterParts
+          // then composites that capture full-canvas instead of positioning it
+          // (see both for why). Spread conditionally, NOT defaulted to `[]` —
+          // an item that animates nothing must leave the key absent so it
+          // reaches the un-baked shim and the byte-identical filter graph.
+          ...(item.keyframes?.length ? { keyframes: item.keyframes } : {}),
           frameCount,
           fps,
           startSeconds,

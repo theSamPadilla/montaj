@@ -225,7 +225,14 @@ export interface ResolvedItem {
    */
   seek: number
   /**
-   * The shared percent-of-frame geometry for this item — see {@link geometryFor}.
+   * The shared percent-of-frame geometry for this item AT THIS INSTANT — see
+   * {@link geometryAt}, called with the item-relative clock
+   * `max(0, t - item.start)` (SP9b). For an item with no `keyframes` that IS
+   * {@link geometryFor}'s result, by construction rather than by coincidence.
+   *
+   * NOTE for {@link resolveSegment}: it resolves the whole segment at
+   * `segStart`, so an animated item's geometry there is the value at the
+   * SEGMENT's start, not a per-frame curve.
    */
   geometry: Geometry
 }
@@ -378,6 +385,11 @@ export declare function projectEnd(project: DurationProject): number
 // naming rationale, the
 // fit/sourceCrop/rotation decisions, and the (0,0,1,1) preview short-circuit's
 // exact legacy location.
+//
+// SP9b adds `geometryAt(item, kind, localT)` — the ANIMATED sibling. It is the
+// one function both engines call to place a keyframed item at an instant, and
+// an item with no `keyframes` is handed to `geometryFor` itself, so the static
+// path cannot drift from it.
 // ---------------------------------------------------------------------------
 
 /** The subset of a timeline item that geometry math reads. */
@@ -404,6 +416,12 @@ export interface GeometryItem {
    * rotation-blind — see the src/geometry.js module header.
    */
   rotation?: number
+  /**
+   * Per-property animation (SP9b), at most one track per prop. Read ONLY by
+   * {@link geometryAt}; {@link geometryFor} does not know this field exists.
+   * Absent — the overwhelmingly common case — means the item is static.
+   */
+  keyframes?: KeyframeTrack[]
 }
 
 /**
@@ -448,6 +466,34 @@ export interface Geometry {
  * sourceCrop / rotation decisions.
  */
 export declare function geometryFor(item: GeometryItem, kind: ItemKind): Geometry
+
+/**
+ * The shared percent-of-frame geometry for one item AT ONE INSTANT — the
+ * animated sibling of {@link geometryFor} (SP9b).
+ *
+ * Keyframed properties have to move identically in the editor preview and in
+ * the ffmpeg render, so BOTH engines ask this ONE function for the SAME
+ * instant: the preview samples it at the playhead, the render bake samples it
+ * per frame, and neither interpolates anything itself. Curve evaluation lives
+ * in {@link sampleTrack} and nowhere else — easing math anywhere else is a
+ * PARITY BUG.
+ *
+ * `localT` is ITEM-RELATIVE seconds (0 = the item's own `start`), so an item
+ * dragged along the timeline carries its animation with it unchanged. A
+ * non-finite `localT` is not an error: it reads as "before the first
+ * keyframe".
+ *
+ * An item with no `keyframes` is handed to {@link geometryFor} ITSELF — the
+ * same function, not a copy of its body — so the static path is identical BY
+ * CONSTRUCTION and a keyframe-free project keeps producing a byte-identical
+ * ffmpeg filter graph. Only the five {@link KeyframeProp} values can be
+ * animated; `fit`/`sourceCrop`/`sourceWidth`/`sourceHeight` are forwarded
+ * exactly as the static path forwards them (`sourceCrop` by reference, never
+ * cloned). The per-prop fallback is `??` and never `||`, so a legitimately
+ * animated 0 (opacity 0, offset 0) survives instead of snapping back to the
+ * item's static scalar.
+ */
+export declare function geometryAt(item: GeometryItem, kind: ItemKind, localT: number): Geometry
 
 /**
  * The editor-CSS adapter. Verbatim port of `videoTransformBoxPct`
@@ -633,3 +679,142 @@ export interface AudioWindow {
  * this documents.
  */
 export declare function audioWindow(track: AudioTrack, t: number): AudioWindow
+
+// ---------------------------------------------------------------------------
+// SP9b-T0.1 — keyframe curves (src/curves.js)
+//
+// THE single source of truth for easing. Keyframed properties have to animate
+// identically in the editor preview and in the ffmpeg render, so curve
+// evaluation lives here and ONLY here: any easing math that appears in the
+// preview, the render shim or encode-segment.js is a parity bug. The named
+// presets are the CSS ones by name and by control points, but the numbers are
+// always produced by this package's own deterministic solver — never by a
+// browser on one side and a solver on the other.
+//
+// Three conventions are load-bearing and each is silent-bug territory if read
+// backwards; see the src/curves.js module header for the long form:
+//   1. a keyframe's `t` is ITEM-RELATIVE seconds (0 = the item's own `start`),
+//      never timeline seconds;
+//   2. `easing` is OUTGOING — it shapes the segment LEAVING its keyframe, so
+//      the last keyframe's `easing` is never read;
+//   3. `hold` is step-END — it holds keyframe i's value for the whole segment
+//      and jumps at keyframe i+1's own `t`.
+// ---------------------------------------------------------------------------
+
+/**
+ * The supported easing names. The five bezier ones are the CSS keywords by
+ * name AND by control points (`ease` = (0.25, 0.1, 0.25, 1), `ease-in` =
+ * (0.42, 0, 1, 1), `ease-out` = (0, 0, 0.58, 1), `ease-in-out` =
+ * (0.42, 0, 0.58, 1)); `hold` is the step function CSS spells `steps(1, end)`
+ * and has no bezier form. An unrecognized name is never an error — it falls
+ * back to `'linear'`, because a hand-edited project must still render.
+ */
+export type EasingName = 'linear' | 'ease' | 'ease-in' | 'ease-out' | 'ease-in-out' | 'hold'
+
+/**
+ * The item properties that can be keyframed — deliberately the five
+ * {@link geometryFor} already understands. A track naming anything else is
+ * simply never consulted.
+ */
+export type KeyframeProp = 'offsetX' | 'offsetY' | 'scale' | 'rotation' | 'opacity'
+
+/** One keyframe. */
+export interface Keyframe {
+  /**
+   * Seconds from the ITEM's own `start` — item-relative, NEVER timeline time,
+   * so moving an item on the timeline carries its animation with it unchanged.
+   */
+  t: number
+  /**
+   * The property's value at `t`, in the property's own units (percent of frame
+   * for offsets, a multiplier for scale, degrees for rotation, 0-1 for
+   * opacity). This package never interprets them.
+   */
+  value: number
+  /**
+   * How the segment LEAVING this keyframe is shaped — OUTGOING, not incoming.
+   * Absent (and unrecognized) means `'linear'`. Ignored on the last keyframe,
+   * which has no outgoing segment.
+   */
+  easing?: EasingName
+}
+
+/**
+ * One animated property's keyframes. `points` MUST be ascending by `t` with
+ * no duplicate `t`: {@link sampleTrack} assumes it and deliberately does not
+ * re-sort (it is a per-frame path and must not allocate).
+ * {@link normalizeTrack} is how the editor establishes that invariant at
+ * write time.
+ */
+export interface KeyframeTrack {
+  /** Which property these keyframes drive. */
+  prop: KeyframeProp
+  /** Ascending by `t`, no duplicate `t`. */
+  points: Keyframe[]
+}
+
+/**
+ * Every supported easing, in picker order. Frozen — the UI reads it, it never
+ * edits it.
+ */
+export declare const EASING_NAMES: ReadonlyArray<EasingName>
+
+/**
+ * The eased progress along one segment: given linear progress `p` in [0, 1],
+ * how far the VALUE has travelled. Every easing decision in Montaj funnels
+ * through this one function.
+ *
+ * Total by design: `p` is clamped to [0, 1] (a non-finite `p` reads as 0) and
+ * an unrecognized `easing` falls back to `'linear'` rather than throwing.
+ * Both anchors are EXACT for every easing — `p === 0` returns 0 and `p === 1`
+ * returns 1 with no solver round-trip — and `'linear'` is short-circuited
+ * entirely, returning `p` bit-for-bit. `'hold'` returns 0 for all `p < 1` and
+ * 1 only at `p === 1` (step-END).
+ *
+ * Deterministic: a hand-rolled Newton-Raphson-with-bisection solver (the
+ * classic WebKit `UnitBezier`), no lookup tables, no memoization, no globals.
+ */
+export declare function easeProgress(easing: EasingName | undefined, p: number): number
+
+/**
+ * The value of one keyframed property at item-relative time `localT`, or the
+ * `undefined` SENTINEL when there is nothing to sample — `track` is
+ * null/undefined, has no `points` array, has an empty one, or every point in
+ * it is malformed. It is `undefined` and NOT 0 precisely so callers can fall
+ * back to the static scalar:
+ *
+ *     const scale = sampleTrack(track, t - item.start) ?? item.scale ?? 1
+ *
+ * 0 is an ordinary keyframe value (opacity 0, offset 0), so the sentinel has
+ * to sit outside the number line.
+ *
+ * Rules: `localT` at or before the first keyframe clamps to that keyframe's
+ * value and at or after the last clamps to that one's (no extrapolation,
+ * ever); a single keyframe is a constant; AT a keyframe's own `t` the value
+ * reads back exactly, for every easing including `hold`; a non-finite
+ * `localT` reads as "before the first keyframe"; malformed points are skipped
+ * rather than thrown on; and two keyframes sharing a `t` do not divide by
+ * zero — the later one wins, matching {@link normalizeTrack}.
+ *
+ * `points` is ASSUMED ascending. Allocates nothing: this runs per animated
+ * prop, per item, per frame.
+ */
+export declare function sampleTrack(
+  track: KeyframeTrack | Keyframe[] | null | undefined,
+  localT: number,
+): number | undefined
+
+/**
+ * The WRITE-time normalizer: a NEW track whose `points` satisfy the invariant
+ * {@link sampleTrack} assumes — ascending by `t`, at most one keyframe per
+ * `t`, nothing malformed. The editor calls it whenever keyframes are added,
+ * dragged or pasted, so the read path never has to sort.
+ *
+ * De-duplication is LAST WINS in AUTHORING order (the sort is stable, so a key
+ * added later at an existing `t` replaces the one already there). Points with
+ * a non-finite `t` or `value` are dropped. Pure: the input track and its array
+ * are never mutated or re-ordered, and surviving keyframe objects are carried
+ * across BY REFERENCE, not cloned — the same forwarding posture
+ * {@link geometryFor} takes with `sourceCrop`.
+ */
+export declare function normalizeTrack(track: KeyframeTrack | null | undefined): KeyframeTrack | undefined

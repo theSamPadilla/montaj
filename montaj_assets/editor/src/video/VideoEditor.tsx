@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type MutableRefObject } from 'react'
-import { Crop, HelpCircle, Magnet, Maximize2, Minimize2, Pencil, Redo2, SeparatorVertical, Smartphone, Undo2, Wand2 } from 'lucide-react'
+import { Crop, Ear, EarOff, HelpCircle, Magnet, Maximize2, Minimize2, Pencil, Redo2, SeparatorVertical, Smartphone, Undo2, Wand2 } from 'lucide-react'
 import type { Project, VideoEditorProps } from '../types'
+import type { VisualItem } from '../schema'
 import { useProjectSync, type UseProjectSync } from '../state/use-project-sync'
 import { VideoSourceCropModal } from '../crop/VideoSourceCropModal'
 import ControlsInfoModal, { VIDEO_CONTROLS } from '../ControlsInfoModal'
@@ -15,15 +16,19 @@ import { maxCaptionLane, normalizeCaptionLanes } from './captionLanes'
 import Timeline, { type TimelineActions } from './timeline/Timeline'
 import { computeAutoCrossfade, computeDerivedTiming, enabledTrackItems, mapTrackItems, trackItems } from './timeline/timeline-model'
 import { makeCaptionEdit, type CaptionEditPatch } from './timeline/makeCaptionEdit'
-import PreviewPlayer, { type TransportHandle } from './preview/PreviewPlayer'
+import PreviewPlayer, { type TransportHandle, type ScrubHandle } from './preview/PreviewPlayer'
 import SocialPreviewMenu, { PlatformGlyph, platformOption } from './preview/SocialPreviewMenu'
 import type { SocialPreviewPlatform } from './preview/SocialSafeZoneOverlay'
 import { createPlaybackClock, usePlaybackTime, type PlaybackClock } from './playback-clock'
 import { createHoverScrub } from './hover-scrub'
+import { createScrubSource, type ScrubSource } from '../engine/scrub-source'
+import { createScrubResolver } from '../engine/scrub-resolve'
 import { useSourcePreview, type SourcePreviewStore } from './source-preview'
 import { formatTimecode } from './timecode'
 import type { OverlayChanges } from './preview/useDragOverlay'
-import VersionPanel from './VersionPanel'
+import VersionPanel, { dedupeVersions } from './VersionPanel'
+import OverlayInspector from './OverlayInspector'
+import VersionCompare from './VersionCompare'
 import CaptionListPanel, { type CaptionListPanelProps, type CaptionEditFocusRequest, nextEditFocus } from './CaptionListPanel'
 import RenderModal from './RenderModal'
 import ImageToneMenu from './ImageToneMenu'
@@ -324,12 +329,20 @@ export default function VideoEditor<P extends Project = Project>({
 function useVersionHistory<P extends Project>(adapter: VideoEditorProps<P>['adapter'], project: P) {
   const [versions, setVersions]   = useState<{ hash: string; message: string; timestamp: string }[]>([])
   const [restoring, setRestoring] = useState<string | null>(null)
+  const [saving, setSaving]       = useState(false)
+
+  // Extracted so ad-hoc callers (post-restore, post-save, post-render) can
+  // re-run the same fetch on demand via `refresh`, without duplicating the
+  // adapter call or bypassing the auto-refetch effect below.
+  const fetchVersions = useCallback(() => {
+    return adapter.listVersionHistory?.(project.id).then(setVersions).catch(() => {}) ?? Promise.resolve()
+  }, [adapter, project.id])
 
   useEffect(() => {
-    adapter.listVersionHistory?.(project.id).then(setVersions).catch(() => {})
-  }, [adapter, project.id, project.status])
+    void fetchVersions()
+  }, [fetchVersions, project.status])
 
-  return { versions, restoring, setRestoring }
+  return { versions, restoring, setRestoring, saving, setSaving, refresh: fetchVersions }
 }
 
 // ── Footage-bin source-scrub overlay (opt-in) ────────────────────────────────
@@ -442,7 +455,11 @@ function PendingSurface<P extends Project>({
   const clock = clockRef.current
   const [skillPath, setSkillPath] = useState<string | null>(null)
   const [copied, setCopied] = useState(false)
-  const { versions, restoring, setRestoring } = useVersionHistory(adapter, project)
+  const { versions, restoring, setRestoring, saving, setSaving, refresh: refreshVersions } = useVersionHistory(adapter, project)
+  // The version-compare view: the LEFT hash it was opened for, or null when
+  // closed. Lives beside `versions` since VersionCompare's picker is seeded
+  // from the same list VersionPanel renders.
+  const [compareOpen, setCompareOpen] = useState<string | null>(null)
 
   useEffect(() => {
     adapter.getInfo?.().then(info => setSkillPath(info.root_skill_path ?? null)).catch(() => {})
@@ -466,7 +483,25 @@ function PendingSurface<P extends Project>({
       console.error(e)
     } finally {
       setRestoring(null)
+      await refreshVersions()
     }
+  }
+
+  async function handleSaveVersion(name?: string) {
+    if (!adapter.saveVersion) return
+    setSaving(true)
+    try {
+      await adapter.saveVersion(project.id, name)
+      await refreshVersions()
+    } catch (e) {
+      console.error(e)
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  function handleCompareVersion(hash: string) {
+    setCompareOpen(hash)
   }
 
   return (
@@ -551,8 +586,21 @@ function PendingSurface<P extends Project>({
       {/* Right sidebar — version history (hidden when the capability is absent) */}
       {adapter.listVersionHistory && (
         <div className="w-48 shrink-0 border-l border-[var(--editor-border)] bg-[var(--editor-surface)] flex flex-col overflow-hidden">
-          <VersionPanel versions={versions} restoring={restoring} onRestore={handleRestoreVersion} />
+          <VersionPanel versions={versions} restoring={restoring} onRestore={handleRestoreVersion} onSaveVersion={handleSaveVersion} saving={saving} onCompareVersion={adapter.versionFrameUrl ? handleCompareVersion : undefined} />
         </div>
+      )}
+
+      {/* Visual A/B version compare — opened from a VersionPanel entry's
+          Compare button. Gated on the adapter capability so a host without
+          `versionFrameUrl` never sees an unusable Compare affordance's modal. */}
+      {compareOpen != null && adapter.versionFrameUrl && (
+        <VersionCompare
+          projectId={project.id}
+          versions={dedupeVersions(versions)}
+          initialLeftHash={compareOpen}
+          frameUrl={adapter.versionFrameUrl}
+          onClose={() => setCompareOpen(null)}
+        />
       )}
     </div>
   )
@@ -845,9 +893,49 @@ function ReviewSurface<P extends Project>({
   // (legacy or engine) is active. The keymap and palette use it for play/
   // pause; the shuttle polls `isPlaying()` to detect a real transport change.
   const transportRef = useRef<TransportHandle | null>(null)
+  // The audible drag-scrub source's engine seam — mirrors `transportRef`.
+  // Filled by PreviewPlayer only on the WebCodecs engine path; stays null on
+  // the legacy `<video>` fallback (see the scrub-source effect below).
+  const scrubHandleRef = useRef<ScrubHandle | null>(null)
   // Marker/zoom actions Timeline exposes for the palette, mirroring
   // `transportRef`'s shape.
   const timelineActionsRef = useRef<TimelineActions | null>(null)
+
+  // Declared ahead of the scrub effect below (rather than alongside
+  // currentSocialPreview/currentImageTone further down) because that effect
+  // reads it to seed the scrubber's initial enabled state.
+  const currentAudibleScrub = project.settings?.audibleScrub ?? false
+
+  // Audible drag-scrub: one grain-per-move scrubber for the life of the
+  // surface, attached to the same hover store the preview reads. `resolve`
+  // re-checks `scrubHandleRef.current` on every call (not just at
+  // construction) so it stays silent — same as a gap or a canvas project —
+  // until PreviewPlayer's own effect fills the ref, and goes silent again if
+  // the project is on the legacy `<video>` fallback, which never fills it.
+  const scrubberRef = useRef<ScrubSource | null>(null)
+  useEffect(() => {
+    const resolve = createScrubResolver(() => sync.projectRef.current)
+    const scrubber = createScrubSource({
+      acquireDemux: (src) => scrubHandleRef.current!.acquireDemux(src),
+      resolve: (projectS) => (scrubHandleRef.current ? resolve(projectS) : null),
+      onError: (message) => console.error('[montaj] scrub-source:', message),
+    })
+    scrubber.setEnabled(currentAudibleScrub)
+    scrubberRef.current = scrubber
+    const detach = scrubber.attach(hoverScrub)
+    return () => {
+      detach()
+      scrubber.dispose()
+      scrubberRef.current = null
+    }
+  }, [hoverScrub, sync.projectRef])
+
+  // Flip the live scrubber's enabled flag when the settings toggle changes,
+  // without tearing down and recreating it — `setEnabled` also stops any
+  // in-flight grain on disable (scrub-source.ts).
+  useEffect(() => {
+    scrubberRef.current?.setEnabled(currentAudibleScrub)
+  }, [currentAudibleScrub])
 
   // Duration for shuttle clamping and the palette's "go to time" clamp —
   // read fresh off the sync core's project ref rather than captured once, so
@@ -892,6 +980,18 @@ function ReviewSurface<P extends Project>({
     void syncMutate(() => {
       const cur = syncProjectRef.current
       return { ...cur, settings: { ...cur.settings, imageTone: tone } } as P
+    })
+  }, [syncMutate, syncProjectRef])
+
+  // Persist the audible drag-scrub toggle into project settings — same
+  // save-then-sync idiom as handleImageToneChange above. SET-always (unlike
+  // handleSocialPreviewChange's omit-key below): a boolean has no natural
+  // "unset" state, and default-off means an explicit `true` has to persist
+  // the operator's opt-in.
+  const handleAudibleScrubChange = useCallback((on: boolean) => {
+    void syncMutate(() => {
+      const cur = syncProjectRef.current
+      return { ...cur, settings: { ...cur.settings, audibleScrub: on } } as P
     })
   }, [syncMutate, syncProjectRef])
 
@@ -1007,7 +1107,11 @@ function ReviewSurface<P extends Project>({
   }, [syncMutate, syncProjectRef])
   useEffect(() => { onProvideRenderTrigger?.(openRender) }, [onProvideRenderTrigger, openRender])
 
-  const { versions, restoring, setRestoring } = useVersionHistory(adapter, project)
+  const { versions, restoring, setRestoring, saving, setSaving, refresh: refreshVersions } = useVersionHistory(adapter, project)
+  // The version-compare view: the LEFT hash it was opened for, or null when
+  // closed. Mirrors PendingSurface's `compareOpen` — each surface mounts its
+  // own VersionPanel, so each owns its own compare state.
+  const [compareOpen, setCompareOpen] = useState<string | null>(null)
 
   // Repair caption segments whose words[] text has diverged from edited seg.text.
   // Inline caption edits update seg.text but not seg.words; this normalizes the
@@ -1195,6 +1299,38 @@ function ReviewSurface<P extends Project>({
         items.map(item => item.id !== id ? item : { ...item, ...changes })
       ),
     } as P))
+  }
+
+  // OverlayInspector edits (T3.2). Unlike handleOverlayChange above, this
+  // takes a WHOLE replacement item rather than a partial-changes patch:
+  // OverlayInspector itself decides (via keyframeOps) whether an edit writes
+  // a static scalar or drops a keyframe, and disabling keyframing has to
+  // REMOVE `item.keyframes` entirely (see keyframeOps.withTrack) — something
+  // a `{ ...item, ...changes }` merge can't express, since spreading in
+  // `keyframes: undefined` leaves the key present rather than absent.
+  function replaceOverlayItem(p: P, nextItem: VisualItem): P {
+    return {
+      ...p,
+      tracks: mapTrackItems(p, items => items.map(item => (item.id === nextItem.id ? nextItem : item))),
+    } as P
+  }
+  // Live preview for a continuously-typed number field: no undo entry, no
+  // save yet. Mirrors previewOverlayProps below.
+  function previewOverlayInspectorChange(nextItem: VisualItem) {
+    sync.mutateTransient(p => replaceOverlayItem(p, nextItem))
+  }
+  // Closes a typing gesture (fired on the field's blur) as one undo step +
+  // queued save. Mirrors commitOverlayEdit below — the last preview already
+  // applied the final value, so this only has to persist it.
+  function commitOverlayInspectorChange() {
+    void sync.commit()
+  }
+  // A discrete, already-final edit (the keyframe diamond toggle) — there is
+  // no separate blur to commit on, so preview + commit fire back to back as
+  // one user-visible action.
+  function applyOverlayInspectorChange(nextItem: VisualItem) {
+    previewOverlayInspectorChange(nextItem)
+    commitOverlayInspectorChange()
   }
 
   // Commit a per-segment caption change (preview drag → offsetX/offsetY/scale).
@@ -1606,7 +1742,25 @@ function ReviewSurface<P extends Project>({
       console.error(e)
     } finally {
       setRestoring(null)
+      await refreshVersions()
     }
+  }
+
+  async function handleSaveVersion(name?: string) {
+    if (!adapter.saveVersion) return
+    setSaving(true)
+    try {
+      await adapter.saveVersion(project.id, name)
+      await refreshVersions()
+    } catch (e) {
+      console.error(e)
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  function handleCompareVersion(hash: string) {
+    setCompareOpen(hash)
   }
 
   // ── Shared layout pieces ─────────────────────────────────────────────────
@@ -1654,6 +1808,7 @@ function ReviewSurface<P extends Project>({
                 onCaptionSegmentChange={handleCaptionSegmentChange}
                 engine={engine}
                 transportRef={transportRef}
+                scrubHandleRef={scrubHandleRef}
                 hoverScrub={hoverScrub}
                 // Social-media preview chrome (mirrors CapCut's "Preview your
                 // video for social media" picker) — it previews what platform
@@ -1885,6 +2040,19 @@ function ReviewSurface<P extends Project>({
             </button>
           </Tooltip>
         )}
+        {/* Audible drag-scrub toggle — sits next to Polish audio as the
+            other audio tool in this row (moved out of the preview's
+            controls row, which is chrome, not editing tools). */}
+        <Tooltip label={currentAudibleScrub ? 'Mute drag-scrub audio' : 'Unmute drag-scrub audio'}>
+          <button
+            onClick={() => handleAudibleScrubChange(!currentAudibleScrub)}
+            aria-label="Toggle audible drag-scrub"
+            aria-pressed={currentAudibleScrub}
+            className="flex items-center justify-center w-5 h-5 rounded transition-colors text-[var(--editor-text)]/60 bg-transparent hover:text-[var(--editor-text)]"
+          >
+            {currentAudibleScrub ? <Ear size={12} /> : <EarOff size={12} />}
+          </button>
+        </Tooltip>
         {/* Default placement. A host that sets onProvideRenderTrigger renders
             Render in its own chrome instead, so the toolbar button is hidden. */}
         {!onProvideRenderTrigger && (
@@ -1953,9 +2121,13 @@ function ReviewSurface<P extends Project>({
   // regardless of caption count, and dropping that would make caption
   // generation unreachable from the editor on a bare project with no other
   // rail content.
+  // `!!selectedOverlayItem` is a further disjunct (SP9b T3.2): the overlay
+  // inspector below lives in this same rail, so the rail must appear whenever
+  // an overlay is selected — even on a project with no versions, captions, or
+  // assets to otherwise justify the rail's existence.
   const rightRail = (adapter.listVersionHistory || slots?.runHistory ||
     (assetsPlacement === 'sidebar' && slots?.assetsPanel) ||
-    !!project.captions || !!handleRegenerateCaptions) && (
+    !!project.captions || !!handleRegenerateCaptions || !!selectedOverlayItem) && (
     <>
       {/* Vertical divider, the same affordance as the preview/timeline one. */}
       <div
@@ -1973,9 +2145,24 @@ function ReviewSurface<P extends Project>({
         style={{ width: railWidth }}
         className="shrink-0 border-l border-[var(--editor-border)] bg-[var(--editor-surface)] flex flex-col overflow-hidden"
       >
+
+        {/* SP9b T3.2 — numeric property fields + per-property keyframe
+            diamonds for the selected overlay's transform props. Above
+            VersionPanel: it's the thing the operator is actively editing,
+            versions/captions/assets are reference material below it. Renders
+            nothing itself when nothing/a non-overlay is selected. */}
+        <OverlayInspector
+          item={selectedOverlayItem}
+          clock={clock}
+          onPreview={previewOverlayInspectorChange}
+          onCommit={commitOverlayInspectorChange}
+          onChange={applyOverlayInspectorChange}
+        />
+
         {adapter.listVersionHistory && (
-          <VersionPanel versions={versions} restoring={restoring} onRestore={handleRestoreVersion} />
+          <VersionPanel versions={versions} restoring={restoring} onRestore={handleRestoreVersion} onSaveVersion={handleSaveVersion} saving={saving} onCompareVersion={adapter.versionFrameUrl ? handleCompareVersion : undefined} />
         )}
+
         {/* Sidebar caption editor, directly below version history. Its own
             flex-1 wrapper so the list scrolls independently of the rest of
             the rail — mirrors the assetsPanel wrapper just below. Gated the
@@ -2167,6 +2354,25 @@ function ReviewSurface<P extends Project>({
           preRenderOptions={preRenderOptions}
           onClose={() => setRenderOpen(false)}
           onCancel={() => setRenderOpen(false)}
+          onRenderComplete={() => { void refreshVersions() }}
+        />
+      )}
+
+      {/* Visual A/B version compare — opened from a VersionPanel entry's
+          Compare button. Gated on the adapter capability so a host without
+          `versionFrameUrl` never sees an unusable Compare affordance's modal.
+          `durationSeconds` reuses `preRenderOptions.durationSec` — the same
+          "video spine's last frame" figure RenderModal's export dialog
+          already computes, so the scrub slider covers the real project
+          length without a second duration pass. */}
+      {compareOpen != null && adapter.versionFrameUrl && (
+        <VersionCompare
+          projectId={project.id}
+          versions={dedupeVersions(versions)}
+          initialLeftHash={compareOpen}
+          frameUrl={adapter.versionFrameUrl}
+          durationSeconds={preRenderOptions.durationSec}
+          onClose={() => setCompareOpen(null)}
         />
       )}
 

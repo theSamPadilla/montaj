@@ -88,6 +88,12 @@ interface RenderModalProps<P extends Project = Project> {
    *  away from the editor — the project is unchanged and the user is likely
    *  about to keep editing. Defaults to onClose if not provided (back-compat). */
   onCancel?: () => void
+  /** Fired exactly once, the moment the render transitions to 'done' (either
+   *  transport — the poll loop or the SSE stream) — NOT on modal close, and
+   *  not on error. Callers use this to refresh state that a finished render
+   *  affects (e.g. re-fetching version history), independent of when/whether
+   *  the operator dismisses the modal. */
+  onRenderComplete?: () => void
   /** Host-supplied export controls (e.g. a "Download all (.zip)" link) rendered
    *  in the done state's action area, mirroring the carousel render modal. */
   exportActions?: ReactNode
@@ -379,7 +385,7 @@ function ProgressBar({ value }: { value: number | null }) {
   )
 }
 
-export default function RenderModal<P extends Project = Project>({ projectId, adapter, onClose, onCancel, exportActions, progressView, preRenderOptions }: RenderModalProps<P>) {
+export default function RenderModal<P extends Project = Project>({ projectId, adapter, onClose, onCancel, onRenderComplete, exportActions, progressView, preRenderOptions }: RenderModalProps<P>) {
   const [status, setStatus]     = useState<'running' | 'done' | 'error'>('running')
   const [phase, setPhase]       = useState<RenderPhase>('preparing')
   const [logs, setLogs]         = useState<string[]>([])
@@ -393,6 +399,11 @@ export default function RenderModal<P extends Project = Project>({ projectId, ad
   const unmountedRef            = useRef(false)
   const cleanupTimerRef         = useRef<ReturnType<typeof setTimeout> | null>(null)
   const pollTimerRef            = useRef<ReturnType<typeof setInterval> | null>(null)
+  // Guards onRenderComplete so it fires exactly once per render attempt even
+  // though the poll loop can tick again after 'done' (see the note at
+  // `pollTimerRef.current = setInterval(...)` below) and even across both
+  // completion transports (poll vs. SSE).
+  const renderCompleteFiredRef  = useRef(false)
 
   // ── Pre-render options (the Export dialog) ─────────────────────────────────
   // `started` gates the render effect. Hosts that pass `preRenderOptions` open
@@ -572,6 +583,7 @@ export default function RenderModal<P extends Project = Project>({ projectId, ad
 
     unmountedRef.current = false
     cancelledRef.current = false
+    renderCompleteFiredRef.current = false
 
     void (async () => {
       try {
@@ -613,6 +625,7 @@ export default function RenderModal<P extends Project = Project>({ projectId, ad
               stopPolling()
               setMedia(snap.media ?? null)
               setStatus('done')
+              fireRenderComplete()
             } else if (snap.status === 'error') {
               stopPolling()
               setError(snap.error ?? 'Render failed.')
@@ -645,6 +658,7 @@ export default function RenderModal<P extends Project = Project>({ projectId, ad
               setOutput(ev.outputPath)
               setExtraOutputs(ev.outputPaths?.slice(1) ?? [])
               setStatus('done')
+              fireRenderComplete()
             } else {
               setError(ev.message)
               setStatus('error')
@@ -666,6 +680,17 @@ export default function RenderModal<P extends Project = Project>({ projectId, ad
         clearInterval(pollTimerRef.current)
         pollTimerRef.current = null
       }
+    }
+
+    // See `renderCompleteFiredRef`'s declaration: guards against firing more
+    // than once for a single render attempt — both because the poll loop can
+    // tick again after 'done' (a stray `setInterval` re-arm right after the
+    // immediate first tick already resolved) and because callers only care
+    // about the transition into 'done', not every render that reaches it.
+    function fireRenderComplete() {
+      if (renderCompleteFiredRef.current) return
+      renderCompleteFiredRef.current = true
+      onRenderComplete?.()
     }
 
     function scheduleCleanup() {

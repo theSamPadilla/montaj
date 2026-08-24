@@ -9,7 +9,8 @@
 //   - (out of band, not an importer of this package) Python's caption_job.py,
 //     kept in agreement via the shared fixture corpus instead
 //
-// All six `export * from './src/...'` lines below (16-45) landed in T4.
+// The first six `export * from './src/...'` lines below landed in T4; the
+// seventh (curves) landed in SP9b-T0.1.
 
 // T2 — source-window math: sourceWindow, playbackSrcFor, seekTime,
 // synthesizedOutPoint (absorbs useVideoPlayback.ts:29-88 and render.js:605-632).
@@ -28,7 +29,9 @@ export * from './src/activation.js'
 // "audio-duration mismatch".
 export * from './src/durations.js'
 
-// T4 — geometry: geometryFor (the shared percent-of-frame primitive),
+// T4 — geometry: geometryFor (the shared percent-of-frame primitive) and
+// SP9b's geometryAt (its animated sibling: the same geometry AT an instant,
+// and the ONE function both engines call to place a keyframed item),
 // toCssBoxPct / toPixelBox (its two engine-specific adapters), isFullFrameCrop
 // (the (0,0,1,1) preview short-circuit predicate), designCanvas (the
 // 1080-short-edge overlay design canvas rule) (absorbs:
@@ -44,6 +47,13 @@ export * from './src/captions.js'
 // T4 — audio: audioWindow, derived-outPoint rule + fade envelope (absorbs the
 // pure arithmetic slice of useVideoPlayback.ts:435-484).
 export * from './src/audio.js'
+
+// SP9b-T0.1 — keyframe curves: sampleTrack (the per-frame read path),
+// normalizeTrack (the editor's write-time normalizer), easeProgress (the
+// bezier/step solver) and EASING_NAMES. THE single source of truth for easing:
+// any curve math in the preview, the render shim or encode-segment.js is a
+// parity bug — see the src/curves.js module header.
+export * from './src/curves.js'
 
 /**
  * Version salt for resolver-derived caches. sample-frame.js mixes this into its

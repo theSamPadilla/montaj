@@ -624,6 +624,21 @@ export interface EditorAdapter<P extends Project = Project> {
   restoreVersion?(id: string, hash: string): Promise<P>
 
   /**
+   * Optional: save the current project state as a named version. Maps to
+   * Montaj's `POST /api/projects/:id/versions` with `{ name? }`. Returns the
+   * updated version list.
+   */
+  saveVersion?(id: string, name?: string): Promise<VersionEntry[]>
+
+  /**
+   * Optional: build the URL for a rendered frame from a specific version
+   * (git commit hash, or the string `"working"` for the live on-disk state)
+   * at time `t` seconds. The URL is used as an `<img src>`; the host serves
+   * the PNG. Maps to Montaj's `GET /api/projects/:id/versions/:commit/frame?t=`.
+   */
+  versionFrameUrl?(id: string, commit: string, t: number): string
+
+  /**
    * Optional: produce rendered waveform-image chunks for an audio track. The
    * editor passes the project id, the track id (used to namespace the output
    * cache), the track's source path, and an optional chunk duration in seconds.

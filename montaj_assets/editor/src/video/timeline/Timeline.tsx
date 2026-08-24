@@ -1,10 +1,13 @@
 import { useEffect, useMemo, useRef, useState, type MutableRefObject, type ReactNode } from 'react'
+import { EASING_NAMES } from '@bycrux/timeline-core'
 import AudioTrackRow from './AudioTrackRow'
 import type { GetWaveformChunks, ResolveFilePath } from './AudioWaveformLayer'
 import type { FilmstripIndex, GetFilmstripArgs, GetWaveformPeaksArgs, PeaksData, Project } from '../../types'
+import type { EasingName, KeyframeProp, VisualItem } from '../../schema'
 import { reflowMagneticLanes } from '../audioMagnet'
 import { normalizeCaptionLanes } from '../captionLanes'
 import { collapseGaps, setClipSpeed } from '../cuts'
+import { removeKeyframe, setKeyframeEasing } from '../keyframeOps'
 import { ratioFromClientX } from './utils'
 import { useTimelineZoom } from './useTimelineZoom'
 import { TimelineContext, type TimelineContextValue } from './TimelineContext'
@@ -13,7 +16,7 @@ import Scrubber from './Scrubber'
 import TrackGutter from './TrackGutter'
 import { computeTimelineLayout, TIMELINE_COLORS } from './canvas/draw'
 import { DEFAULT_FADE_CURVE, fadeCurveIconPoints, type FadeCurve } from './canvas/fade-curve'
-import { normalizeTracks, updateAudioTrack } from './timeline-model'
+import { mapTrackItems, normalizeTracks, updateAudioTrack } from './timeline-model'
 import VisualTrackRow from './VisualTrackRow'
 import { deleteSelection, toggleSelection } from './multiSelectOps'
 import { computeAutoCrossfade, computeDerivedTiming, groupAudioLanes, trackItems } from './timeline-model'
@@ -175,6 +178,19 @@ function FadeCurveIcon({ curve, active }: { curve: FadeCurve; active: boolean })
   )
 }
 
+/** Human-readable labels for `EASING_NAMES` (@bycrux/timeline-core) — the
+ *  keyframe-strip easing picker's six buttons. Kept as a plain lookup rather
+ *  than a formatter, since 'ease-in-out' has no mechanical rule that reads
+ *  better than a name written out by hand. */
+const EASING_LABELS: Record<EasingName, string> = {
+  linear: 'Linear',
+  ease: 'Ease',
+  'ease-in': 'Ease In',
+  'ease-out': 'Ease Out',
+  'ease-in-out': 'Ease In Out',
+  hold: 'Hold',
+}
+
 export default function Timeline({ project, clock, onProjectChange, onOverlayEdit, onEditOverlay, selectedIds = [], onSelectIds, onInspectClip, onInspectAudio, onEditCaption, rippleMode = false, previewAxis = false, onHoverScrub, getWaveformChunks, resolveFilePath, getWaveformPeaks, getFilmstrip, regenEnabled, isClipQueued, renderSubcutRegen, timeline, modalOpen = false, onOpenGoToTime, actionsRef }: TimelineProps) {
 
   // Click/shift-click handler — additive selection on shift or meta (cmd/ctrl).
@@ -331,6 +347,51 @@ export default function Timeline({ project, clock, onProjectChange, onOverlayEdi
     const next = updateAudioTrack(project, trackId, side === 'in' ? { fadeInCurve: curve } : { fadeOutCurve: curve })
     onProjectChange(next)
     onOverlayEdit?.(next)
+  }
+
+  /**
+   * The keyframe-strip popup (SP9b T3.3) — `fadeCurveMenu`'s exact sibling: a
+   * small DOM menu that opens on a RIGHT-CLICK of a keyframe-strip diamond
+   * (`TimelineCanvas`'s `contextMenu` handler, the only caller of
+   * `setKeyframeMenu`). `x`/`y` are CLIENT coordinates for the same
+   * `position: fixed` reason. `props` is every keyframe track that has a
+   * point at `t` — a diamond can represent several props sharing one instant
+   * (the "union of times" the strip draws — see `keyframe-strip.ts`) — so
+   * every action below applies to ALL of them at once. `isLast` is true when
+   * `t` is the item's LAST keyframe: its easing has no next keyframe to
+   * reach, so the picker below disables (not hides) those six buttons then.
+   */
+  const [keyframeMenu, setKeyframeMenu] = useState<{ itemId: string; t: number; props: KeyframeProp[]; isLast: boolean; x: number; y: number } | null>(null)
+
+  /**
+   * Apply `fn` to every prop the diamond at `t` represents, on the item
+   * `itemId`, as ONE commit — same shape as `handleSetFadeCurve` above: a
+   * discrete, one-shot pick, so `onProjectChange` + `onOverlayEdit` fire
+   * together as a single undo entry. Routes through `mapTrackItems`, the
+   * SAME item-patch mechanism the canvas pointer machine's own keyframe-drag
+   * gesture uses (`pointer-machine.ts`'s `replaceVisualItem`) — no second
+   * persistence path for keyframe edits.
+   */
+  function applyToKeyframedItem(itemId: string, props: KeyframeProp[], fn: (prop: KeyframeProp) => (item: VisualItem) => VisualItem) {
+    setKeyframeMenu(null)
+    if (!onProjectChange) return
+    const tracks = mapTrackItems(project, items => items.map(item => {
+      if (item.id !== itemId) return item
+      let next = item
+      for (const prop of props) next = fn(prop)(next)
+      return next
+    }))
+    const next = { ...project, tracks } as Project
+    onProjectChange(next)
+    onOverlayEdit?.(next)
+  }
+
+  function handleRemoveKeyframe(itemId: string, t: number, props: KeyframeProp[]) {
+    applyToKeyframedItem(itemId, props, prop => item => removeKeyframe(item, prop, t))
+  }
+
+  function handleSetKeyframeEasing(itemId: string, t: number, props: KeyframeProp[], easing: EasingName) {
+    applyToKeyframedItem(itemId, props, prop => item => setKeyframeEasing(item, prop, t, easing))
   }
 
   function handleSelectItem(id: string | null, additive: boolean) {
@@ -550,6 +611,14 @@ export default function Timeline({ project, clock, onProjectChange, onOverlayEdi
     return () => document.removeEventListener('keydown', onKeyDown)
   }, [fadeCurveMenu])
 
+  // `fadeCurveMenu`'s Escape handling, sibling for sibling.
+  useEffect(() => {
+    if (!keyframeMenu) return
+    const onKeyDown = (e: KeyboardEvent) => { if (e.key === 'Escape') setKeyframeMenu(null) }
+    document.addEventListener('keydown', onKeyDown)
+    return () => document.removeEventListener('keydown', onKeyDown)
+  }, [keyframeMenu])
+
   // Hand the zoom action up to a host-level command palette.
   useEffect(() => {
     if (!actionsRef) return
@@ -761,6 +830,7 @@ export default function Timeline({ project, clock, onProjectChange, onOverlayEdi
               onInspectAudio={onInspectAudio}
               onEditCaption={onEditCaption}
               onFadeCurveMenu={setFadeCurveMenu}
+              onKeyframeMenu={setKeyframeMenu}
               getWaveformPeaks={getWaveformPeaks}
               getFilmstrip={getFilmstrip}
               resolveFilePath={resolveFilePath}
@@ -883,6 +953,74 @@ export default function Timeline({ project, clock, onProjectChange, onOverlayEdi
                   <FadeCurveIcon curve={curve} active={activeCurve === curve} />
                 </button>
               ))}
+            </div>
+          </>
+        )
+      })()}
+
+      {/* ── Keyframe-strip popup (SP9b T3.3) — right-click a keyframe diamond
+          (canvas mode; see `TimelineCanvas`'s `contextMenu` handler). The
+          fade-shape picker's exact sibling: same `fixed`-positioned menu at
+          the CLIENT coordinates the diamond was clicked at, same full-surface
+          dismiss-on-outside-interaction backdrop. Two sections: the six
+          EASING_NAMES (labelled "Easing to next keyframe" — easing is
+          OUTGOING, see `Keyframe.easing`'s doc in schema.ts, so this is the
+          one place that direction has to be said out loud or a user authors
+          the wrong curve) and, always available regardless of `isLast`, the
+          keyframe's own removal. */}
+      {keyframeMenu && (() => {
+        const item = trackItems(project).flat().find(i => i.id === keyframeMenu.itemId)
+        const easingAt = (prop: KeyframeProp): EasingName => {
+          const track = item?.keyframes?.find(kt => kt.prop === prop)
+          return track?.points.find(p => p.t === keyframeMenu.t)?.easing ?? 'linear'
+        }
+        const easings = keyframeMenu.props.map(easingAt)
+        const activeEasing: EasingName | null = easings.length > 0 && easings.every(e => e === easings[0]) ? easings[0] : null
+        return (
+          <>
+            <div
+              data-timeline-chrome
+              data-testid="keyframe-menu-backdrop"
+              className="fixed inset-0 z-40"
+              onClick={() => setKeyframeMenu(null)}
+              onContextMenu={(e) => { e.preventDefault(); setKeyframeMenu(null) }}
+            />
+            <div
+              data-timeline-chrome
+              className="fixed z-50 flex flex-col gap-1.5 rounded border border-gray-700 bg-gray-900 p-2 shadow-xl"
+              style={{ left: keyframeMenu.x, top: keyframeMenu.y }}
+            >
+              <div className="px-0.5 text-[10px] text-gray-500">Easing to next keyframe</div>
+              <div className="flex flex-wrap gap-1 max-w-[220px]">
+                {EASING_NAMES.map((name) => (
+                  <button
+                    key={name}
+                    type="button"
+                    title={keyframeMenu.isLast ? 'No next keyframe' : EASING_LABELS[name]}
+                    aria-label={EASING_LABELS[name]}
+                    aria-pressed={activeEasing === name}
+                    disabled={keyframeMenu.isLast}
+                    className={`rounded px-1.5 py-0.5 text-[11px] transition-colors ${
+                      keyframeMenu.isLast
+                        ? 'text-gray-600 cursor-not-allowed'
+                        : activeEasing === name
+                          ? 'bg-gray-700 text-gray-100 ring-1 ring-emerald-400/60'
+                          : 'text-gray-300 hover:bg-gray-800'
+                    }`}
+                    onClick={() => handleSetKeyframeEasing(keyframeMenu.itemId, keyframeMenu.t, keyframeMenu.props, name)}
+                  >
+                    {EASING_LABELS[name]}
+                  </button>
+                ))}
+              </div>
+              <div className="h-px bg-gray-700" />
+              <button
+                type="button"
+                className="rounded px-1.5 py-1 text-left text-[11px] text-red-400 hover:bg-red-500/10"
+                onClick={() => handleRemoveKeyframe(keyframeMenu.itemId, keyframeMenu.t, keyframeMenu.props)}
+              >
+                Remove keyframe
+              </button>
             </div>
           </>
         )

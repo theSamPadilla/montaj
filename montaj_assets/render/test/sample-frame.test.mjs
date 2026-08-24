@@ -24,7 +24,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
-  mkdtempSync, mkdirSync, writeFileSync,
+  mkdtempSync, mkdirSync, writeFileSync, readFileSync,
   existsSync, rmSync, statSync,
 } from 'node:fs'
 import { join, dirname, basename } from 'node:path'
@@ -33,6 +33,7 @@ import { fileURLToPath } from 'node:url'
 import { spawnSync } from 'node:child_process'
 
 import { sampleOverlay, sampleFrame, buildFrameCacheKey } from '../sample-frame.js'
+import { buildOverlayFilterParts } from '../encode-segment.js'
 import { MASTER_LOOK } from '../look.js'
 import { normalizeTracks } from '../project-tracks.js'
 import { resolveAt } from '@bycrux/timeline-core'
@@ -1129,4 +1130,95 @@ test('(o) sampleFrame: clip boundary tiebreak picks later clip', { timeout: 60_0
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }
+})
+
+// ---------------------------------------------------------------------------
+// (u)-(v) — sample-frame needs NO keyframe bake (SP9b T2.5)
+//
+// The production renderer bakes a keyframed overlay's transform into its capture
+// per frame, because the ffmpeg filter graph places an overlay once per segment
+// and cannot animate within one. sample-frame has the opposite problem: it makes
+// exactly ONE frame, and one frame needs exactly one geometry.
+//
+// It already has it. The descriptor sample-frame hands to buildOverlayFilterParts
+// is a flat list of scalars read off `ri.geometry`, which is
+// `geometryAt(item, kind, ri.seek)` — the item's geometry AT the sampled instant.
+// Carrying no `keyframes` key, that descriptor takes buildOverlayFilterParts'
+// ORDINARY path and gets positioned statically at exactly those values, which is
+// the correct answer. So: no bake, and the Export dialog's preview frame already
+// matches the real render at that timestamp.
+//
+// What would break it is a leak. `sampleOverlay` bundles the overlay with NO
+// geometry at all (an un-baked capture); if `keyframes` ever reached the
+// descriptor — via a spread of the item, or of ri.geometry — the composite would
+// flip to the baked branch (full-canvas, overlay=0:0) against an un-baked
+// capture, and every overlay would silently lose its position in the preview.
+// These two tests are cheap and pin exactly that.
+// ---------------------------------------------------------------------------
+
+test('(u) the sampled geometry positions the overlay statically, at the instant\'s values', () => {
+  // An overlay that slides from offsetX 0 to 40 over its first 2s. Sampled at
+  // t=1.0 (localT 1.0, halfway, linear) the resolver must hand back offsetX 20 —
+  // and the filter graph must place the PNG THERE, not at the item's static 0
+  // and not full-canvas.
+  const project = {
+    settings: { fps: 30, resolution: [1080, 1920] },
+    tracks: [
+      [],
+      [{
+        id: 'ov1', type: 'overlay', src: '/abs/ov.jsx', start: 0.5, end: 4,
+        offsetX: 0, scale: 1,
+        keyframes: [{ prop: 'offsetX', points: [{ t: 0, value: 0 }, { t: 2, value: 40 }] }],
+      }],
+    ],
+  }
+  const scene = resolveAt(project, 1.5, { variant: 'render' })
+  const ri = scene.items.find(i => i.kind === 'overlay')
+  assert.ok(ri, 'the overlay must be active at t=1.5')
+  assert.equal(ri.seek, 1.0, 'seek is item-relative: 1.5 - 0.5')
+  assert.equal(ri.geometry.offsetX, 20, 'halfway along a linear 0→40 track')
+
+  // Rebuilt exactly as sample-frame.js builds it — a flat list of sampled
+  // scalars, no `keyframes` key, no spread.
+  const ov = {
+    webmPath: '/tmp/ov.png',
+    startSeconds: 0.5,
+    offsetX: ri.geometry.offsetX,
+    offsetY: ri.geometry.offsetY,
+    scale: ri.geometry.scale,
+    rotation: ri.geometry.rotation,
+    opaque: false,
+  }
+  const s = buildOverlayFilterParts(ov, 1080, 1920, 1, '[base]', 0, 2, {
+    inputFormatFlag: 'rgba', compositeFormatFlag: 'auto', loopedInput: true,
+  }).filterParts.join('\n')
+
+  // 20% of 1080 = 216. Static placement at the SAMPLED offset is the whole point.
+  assert.match(s, /overlay=x=216:y=0:/,
+    'a still frame must be composited at the geometry of its own instant')
+  assert.doesNotMatch(s, /overlay=x=0:y=0:/, 'not full-canvas — nothing was baked into this PNG')
+})
+
+test('(v) sample-frame\'s overlay descriptor never carries `keyframes`', () => {
+  // A source-level guard, because the invariant IS about the shape of an object
+  // literal: the moment someone "simplifies" it to `...ov` or `...ri.geometry`,
+  // a keyframed overlay silently flips onto the baked composite branch while its
+  // capture stays un-baked. No behavioural test upstream of the PNG would catch
+  // that; this one costs nothing.
+  const src = readFileSync(join(__dirname, '..', 'sample-frame.js'), 'utf8')
+  // Comments stripped first: the guard is about what the literal DOES, and the
+  // comment sitting on it necessarily names the very things forbidden below.
+  const descriptor = src
+    .slice(
+      src.indexOf('// Shape expected by buildOverlayFilterParts'),
+      src.indexOf('}, OVERLAY_CONCURRENCY)'),
+    )
+    .replace(/^\s*\/\/.*$/gm, '')
+  assert.ok(descriptor.includes('webmPath'), 'the overlay descriptor literal must still be findable')
+  assert.doesNotMatch(descriptor, /^\s*keyframes\s*:/m,
+    'sample-frame renders ONE frame at an already-sampled geometry — it must never '
+    + 'claim to be baked')
+  assert.doesNotMatch(descriptor, /\.\.\.ri\.geometry|\.\.\.ov\b|\.\.\.ri\.item/,
+    'spreading would leak keyframes (and anything else added to the item later) '
+    + 'onto the descriptor')
 })

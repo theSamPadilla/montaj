@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react'
-import { containsTime, geometryFor } from '@bycrux/timeline-core'
+import { containsTime, geometryAt, geometryFor } from '@bycrux/timeline-core'
 import { isProxyUsable, markProxyFailed } from './proxySupport'
 import type { EditorProject as Project, VisualItem } from '../../schema'
 import type { OverlayFactory } from '../../types'
@@ -456,7 +456,17 @@ export default function OverlayItemsLayer({
           const isSel    = selectedOverlayId === item.id
           // Persisted geometry from the resolver; live drag state layered on top
           // (see the tracks[0] block above for why the override has to win).
-          const g        = geometryFor(item, item.type)
+          //
+          // Keyframes are overlay-only this round. The renderer composites image
+          // and video CLIPS through `geometryFor` directly (encode-segment.js:305
+          // and :375) and has no per-frame browser step to bake a moving
+          // transform into, so animating a clip HERE would show motion in the
+          // preview that the export cannot reproduce — the exact preview/render
+          // divergence timeline-core exists to prevent. Mirror the renderer:
+          // overlays animate, clips do not.
+          const g        = item.type === 'overlay'
+            ? geometryAt(item, item.type, currentTime - item.start)
+            : geometryFor(item, item.type)
           const fit      = g.fit ?? 'cover'
           const offsetX  = (liveOffset?.id   === item.id ? liveOffset.x       : null) ?? g.offsetX
           const offsetY  = (liveOffset?.id   === item.id ? liveOffset.y       : null) ?? g.offsetY
@@ -503,6 +513,17 @@ export default function OverlayItemsLayer({
           // others stack above.
           const zIndex = isCanvasProject ? trackIdx + 11 : trackIdx + 12
 
+          // PARITY-CRITICAL: `render/test/overlay-transform-parity.test.mjs`
+          // hand-mirrors this exact `transform`/`transformOrigin`/`opacity`
+          // template (its `previewStyle`, ~:56-63) to prove the render bake
+          // produces the same CSS string this preview does — it cannot import
+          // this .tsx file into its plain node:test runner, so it transcribes
+          // instead. This file's own suite
+          // (preview/__tests__/OverlayItemsLayer.keyframes.test.tsx, the
+          // "pins the exact preview template" test) pins the SAME literal
+          // template against what this component actually renders, so a drift
+          // here fails THAT test even though the render-side test can't see
+          // this file at all. Change this template, update both.
           const wrapperStyle: React.CSSProperties = {
             transform: `translate(${offsetX}%, ${offsetY}%) rotate(${rotation}deg) scale(${scale})`,
             transformOrigin: 'center center',

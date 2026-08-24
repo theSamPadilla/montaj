@@ -13,6 +13,7 @@ import { useVideoPlayback } from './useVideoPlayback'
 import { useEnginePlayback, type EnginePlayback } from './useEnginePlayback'
 import EngineSurface from './EngineSurface'
 import { evaluateEngineEligibility } from '../../engine/eligibility'
+import type { AcquiredDemux } from '../../engine'
 import { usePlaybackTime, type PlaybackClock } from '../playback-clock'
 import { gateTimeSink, handOverToHover, useHoverScrubTime, type HoverScrub } from '../hover-scrub'
 import { sourceCropVideoStyle } from './sourceCropStyle'
@@ -35,6 +36,18 @@ export interface TransportHandle {
    *  own rate (audible fast-forward); the legacy path has no rate knob, so it is
    *  a no-op there. */
   setRate: (rate: number) => void
+}
+
+/**
+ * The audible drag-scrub source's (`../../engine/scrub-source.ts`) seam onto
+ * the engine's shared demux LRU — mirrors `TransportHandle`'s shape. Filled
+ * only on the WebCodecs engine path (see the effect beside `transportRef`'s,
+ * below); stays null on the legacy `<video>` fallback, since a fallback
+ * project's clips either lack a `proxySrc` or can't be engine-decoded — this
+ * absence IS the capability gate the scrubber needs.
+ */
+export interface ScrubHandle {
+  acquireDemux: (src: string) => Promise<AcquiredDemux>
 }
 
 /** Stable no-op for the legacy playback path, which has no transport-rate knob. */
@@ -72,6 +85,11 @@ interface PreviewPlayerProps {
    * engine). Absent → no-op; nothing reads or writes it.
    */
   transportRef?: MutableRefObject<TransportHandle | null>
+  /**
+   * The audible drag-scrub source's engine seam — mirrors `transportRef`.
+   * Absent → no-op; nothing reads or writes it.
+   */
+  scrubHandleRef?: MutableRefObject<ScrubHandle | null>
   /**
    * The preview-axis override: while the pointer is over the timeline with the
    * axis on, this holds the time under it and the preview paints THAT frame
@@ -255,6 +273,7 @@ function PreviewSurface({
   onCaptionSegmentChange,
   engine,
   transportRef,
+  scrubHandleRef,
   socialPreview,
 }: SurfaceProps & { playback: PlaybackBinding }) {
   const [RENDER_W, RENDER_H] = getOverlayDesignCanvas(project.settings?.resolution)
@@ -316,6 +335,17 @@ function PreviewSurface({
     transportRef.current = { togglePlay, isPlaying: () => isPlaying, setRate }
     return () => { transportRef.current = null }
   }, [transportRef, togglePlay, isPlaying, setRate])
+
+  // The scrub seam: only the engine path can decode a grain, so the legacy
+  // `<video>` fallback simply never fills this — that absence is the audible
+  // drag-scrub's capability gate. `acquireDemux` is a stable-identity callback
+  // (see `useEnginePlayback`), so this effect only re-runs on a mode change.
+  const acquireDemux = playback.mode === 'engine' ? playback.acquireDemux : undefined
+  useEffect(() => {
+    if (!scrubHandleRef || !acquireDemux) return
+    scrubHandleRef.current = { acquireDemux }
+    return () => { scrubHandleRef.current = null }
+  }, [scrubHandleRef, acquireDemux])
 
   const captionTrack = useMemo(() => project.captions, [project])
 

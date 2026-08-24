@@ -66,6 +66,38 @@ function baseProject(): Project {
   } as unknown as Project
 }
 
+/**
+ * Same layout as `baseProject`, but o0 (the overlay) is keyframed: offsetX at
+ * t=0.5 and t=1.5, opacity at t=0.5 only — so the strip's union of times
+ * (plan decision 2) is {0.5, 1.5}. At 100px/s and o0.start=2, those land at
+ * x=250 (a diamond BOTH props share) and x=350 (offsetX alone).
+ */
+function keyframedProject(): Project {
+  return {
+    id: 'p',
+    tracks: [
+      {
+        id: 'trk-0',
+        items: [
+          { id: 'c0', type: 'video', src: 'a.mp4', start: 0, end: 5, inPoint: 0, outPoint: 5, sourceDuration: 20 },
+          { id: 'c1', type: 'video', src: 'b.mp4', start: 5, end: 10, inPoint: 2, outPoint: 7, sourceDuration: 20 },
+        ],
+      },
+      {
+        id: 'trk-1',
+        items: [{
+          id: 'o0', type: 'overlay', start: 2, end: 4,
+          keyframes: [
+            { prop: 'offsetX', points: [{ t: 0.5, value: 0 }, { t: 1.5, value: 10 }] },
+            { prop: 'opacity', points: [{ t: 0.5, value: 1 }] },
+          ],
+        }],
+      },
+    ],
+    audio: { tracks: [{ id: 'a0', src: 'v.mp3', start: 1, end: 6, lane: 0 }] },
+  } as unknown as Project
+}
+
 /** Same layout as `baseProject`, but `tracks` in the pre-T6 legacy shape (a
  *  bare array of item arrays, no track ids). Every reader in the package
  *  tolerates this — but `moveItemAcrossTracks`'s two callers used to pass
@@ -225,6 +257,14 @@ const A0_OUT_EDGE = { x: 597, y: LANE_Y }
 const FADE_GRIP_Y = Math.round(LAYOUT.lanes[0].y + AUDIO_ITEM_INSET_PX + FADE_GRIP_ZONE_HEIGHT_PX / 2)
 const A0_FADE_IN_GRIP = { x: 100, y: FADE_GRIP_Y }
 const A0_FADE_OUT_GRIP = { x: 600, y: FADE_GRIP_Y }
+// Keyframe diamonds live in the BOTTOM `KEYFRAME_STRIP_ZONE_HEIGHT_PX` of the
+// row, not its centre — same reasoning `FADE_GRIP_Y` needed for the fade
+// grip's own top zone. `keyframedProject`'s o0 (2s–4s @ 100px/s) has diamonds
+// at x=250 (offsetX + opacity, shared) and x=350 (offsetX alone).
+const OVERLAY_ROW = LAYOUT.rows.find(r => r.trackIdx === 1)!
+const KEYFRAME_ZONE_Y = OVERLAY_ROW.y + OVERLAY_ROW.height - 2
+const O0_KEYFRAME_SHARED = { x: 250, y: KEYFRAME_ZONE_Y }   // t=0.5 — offsetX + opacity
+const O0_KEYFRAME_SOLO = { x: 350, y: KEYFRAME_ZONE_Y }     // t=1.5 — offsetX only
 const EMPTY = { x: 700, y: OVERLAY_Y }
 /** Inside the ruler strip — the only place a scrub starts now. */
 const RULER_Y = Math.round(LAYOUT.ruler.y + LAYOUT.ruler.height / 2)
@@ -1091,6 +1131,121 @@ describe('audio fade drag', () => {
     const trimmed = audio(lastProjectChange(d.move(A0_OUT_EDGE.x + 100, A0_OUT_EDGE.y)), 'a0')
     expect(trimmed.end).toBeCloseTo(7)
     expect(trimmed.fadeIn ?? 0).toBe(0)
+  })
+})
+
+describe('keyframe drag (SP9b T3.3)', () => {
+  function offsetXTrack(item: ReturnType<typeof visual>) {
+    return item.keyframes!.find(t => t.prop === 'offsetX')!
+  }
+  function opacityTrack(item: ReturnType<typeof visual>) {
+    return item.keyframes!.find(t => t.prop === 'opacity')!
+  }
+  /** Pixel-delta drags land on a float (30px / 100px-per-second = 0.3, not
+   *  exactly representable) — asserts the SET of times, each within floating
+   *  tolerance, rather than a brittle exact-array `toEqual`. */
+  function expectTimes(track: { points: { t: number }[] }, expected: number[]) {
+    const ts = track.points.map(p => p.t)
+    expect(ts).toHaveLength(expected.length)
+    ts.forEach((t, i) => expect(t).toBeCloseTo(expected[i]))
+  }
+
+  it('retimes every prop sharing the dragged diamond′s t together', () => {
+    // ZERO_SNAP so the landing time is exact, hand-computed, not wherever a
+    // magnet happens to pull it.
+    const d = new Driver(makeContext({
+      project: keyframedProject(),
+      selectedIds: ['o0'],
+      snapConfig: ZERO_SNAP,
+    }))
+    d.down(O0_KEYFRAME_SHARED.x, O0_KEYFRAME_SHARED.y)
+    // +30px = +0.3s -> t 0.5 -> 0.8.
+    const moved = visual(lastProjectChange(d.move(O0_KEYFRAME_SHARED.x + 30, O0_KEYFRAME_SHARED.y)), 'o0')
+    expectTimes(offsetXTrack(moved), [0.8, 1.5])
+    expect(offsetXTrack(moved).points[0].value).toBe(0)
+    expectTimes(opacityTrack(moved), [0.8])
+  })
+
+  it('does not touch a track that has no point at the dragged t', () => {
+    const d = new Driver(makeContext({
+      project: keyframedProject(),
+      selectedIds: ['o0'],
+      snapConfig: ZERO_SNAP,
+    }))
+    d.down(O0_KEYFRAME_SOLO.x, O0_KEYFRAME_SOLO.y)
+    // +20px = +0.2s -> t 1.5 -> 1.7. opacity has no point at 1.5, so it must
+    // stay exactly where it was.
+    const moved = visual(lastProjectChange(d.move(O0_KEYFRAME_SOLO.x + 20, O0_KEYFRAME_SOLO.y)), 'o0')
+    expectTimes(offsetXTrack(moved), [0.5, 1.7])
+    expectTimes(opacityTrack(moved), [0.5])
+  })
+
+  it('clamps at the item′s own start (t=0), dragging far past it', () => {
+    const d = new Driver(makeContext({
+      project: keyframedProject(),
+      selectedIds: ['o0'],
+      snapConfig: ZERO_SNAP,
+    }))
+    d.down(O0_KEYFRAME_SHARED.x, O0_KEYFRAME_SHARED.y)
+    const moved = visual(lastProjectChange(d.move(O0_KEYFRAME_SHARED.x - 1000, O0_KEYFRAME_SHARED.y)), 'o0')
+    expect(offsetXTrack(moved).points.map(p => p.t)).toEqual([0, 1.5])
+    expect(opacityTrack(moved).points.map(p => p.t)).toEqual([0])
+  })
+
+  it('clamps at the item′s own end (t=duration), dragging far past it', () => {
+    const d = new Driver(makeContext({
+      project: keyframedProject(),
+      selectedIds: ['o0'],
+      snapConfig: ZERO_SNAP,
+    }))
+    d.down(O0_KEYFRAME_SOLO.x, O0_KEYFRAME_SOLO.y)
+    // o0 is 2s–4s, so item-relative duration is 2 — the drag cannot push the
+    // diamond past t=2 however far the pointer travels.
+    const moved = visual(lastProjectChange(d.move(O0_KEYFRAME_SOLO.x + 1000, O0_KEYFRAME_SOLO.y)), 'o0')
+    expect(offsetXTrack(moved).points.map(p => p.t)).toEqual([0.5, 2])
+  })
+
+  it('snaps a dragged diamond onto the item′s own end boundary', () => {
+    // Default (non-zero) snap config: drag from t=1.5 towards t=2 (the item's
+    // own duration/end), landing just short of it — within the 20px/0.2s
+    // strong-attract radius (DEFAULT_SNAP_CONFIG), so it catches exactly on 2.
+    const d = new Driver(makeContext({ project: keyframedProject(), selectedIds: ['o0'] }))
+    d.down(O0_KEYFRAME_SOLO.x, O0_KEYFRAME_SOLO.y)
+    const moved = visual(lastProjectChange(d.move(O0_KEYFRAME_SOLO.x + 45, O0_KEYFRAME_SOLO.y)), 'o0')
+    expect(offsetXTrack(moved).points.some(p => p.t === 2)).toBe(true)
+  })
+
+  it('shows the ew-resize retime cursor while dragging a diamond', () => {
+    const d = new Driver(makeContext({ project: keyframedProject(), selectedIds: ['o0'] }))
+    d.down(O0_KEYFRAME_SHARED.x, O0_KEYFRAME_SHARED.y)
+    // Already ew-resize from the press-time hit, and the gesture holds the
+    // same cursor, so the move emits no cursor change.
+    expect(of(d.move(O0_KEYFRAME_SHARED.x + 30, O0_KEYFRAME_SHARED.y), 'cursor')).toEqual([])
+    expect(d.machine.state.cursor).toBe('ew-resize')
+  })
+
+  it('emits one projectChange per move and a single commit at release', () => {
+    const d = new Driver(makeContext({
+      project: keyframedProject(),
+      selectedIds: ['o0'],
+      snapConfig: ZERO_SNAP,
+    }))
+    d.down(O0_KEYFRAME_SHARED.x, O0_KEYFRAME_SHARED.y)
+    expect(of(d.move(O0_KEYFRAME_SHARED.x + 10, O0_KEYFRAME_SHARED.y), 'projectChange')).toHaveLength(1)
+    expect(of(d.move(O0_KEYFRAME_SHARED.x + 30, O0_KEYFRAME_SHARED.y), 'projectChange')).toHaveLength(1)
+    const committed = of(d.up(O0_KEYFRAME_SHARED.x + 30, O0_KEYFRAME_SHARED.y), 'commit')
+    expect(committed).toHaveLength(1)
+    expectTimes(offsetXTrack(visual(committed[0].project, 'o0')), [0.8, 1.5])
+  })
+
+  it('never becomes a gesture at all when the overlay is not selected — the ordinary item move fires instead', () => {
+    const d = new Driver(makeContext({ project: keyframedProject(), selectedIds: [] }))
+    d.down(O0_KEYFRAME_SHARED.x, O0_KEYFRAME_SHARED.y)
+    const moved = visual(lastProjectChange(d.move(O0_KEYFRAME_SHARED.x + 30, O0_KEYFRAME_SHARED.y)), 'o0')
+    // The whole item slid, not a keyframe — its keyframes are untouched and
+    // its own start/end moved instead.
+    expect(offsetXTrack(moved).points.map(p => p.t)).toEqual([0.5, 1.5])
+    expect(moved.start).not.toBe(2)
   })
 })
 

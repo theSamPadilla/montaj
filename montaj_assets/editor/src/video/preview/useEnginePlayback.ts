@@ -50,6 +50,7 @@ import { audioWindow } from '@bycrux/timeline-core'
 import {
   createEngine,
   track0VideoItems,
+  type AcquiredDemux,
   type Engine,
   type EngineStats,
   type EngineStatus,
@@ -164,6 +165,14 @@ export interface EnginePlayback {
    * (between project identities, or after dispose).
    */
   getStats: () => EngineStats | null
+  /**
+   * The engine's shared demux LRU, exposed for the audible drag-scrub source
+   * (`../../engine/scrub-source.ts`) — it composites over this graph rather
+   * than driving the master clock's ring, and pins/releases through the same
+   * LRU the scheduler reads from (`../../engine/index.ts`'s `acquirePinnedDemux`).
+   * Stable identity, like `getStats`.
+   */
+  acquireDemux: (src: string) => Promise<AcquiredDemux>
 }
 
 export function useEnginePlayback(
@@ -461,6 +470,7 @@ export function useEnginePlayback(
     })
     engineRef.current = engine
     lastEmittedRef.current = currentTimeRef.current
+    lastRawTimeRef.current = currentTimeRef.current
     emittedRef.current = []
     // The project object the engine was just built with is, by definition,
     // already applied — without this the edit effect below would re-apply it.
@@ -495,6 +505,7 @@ export function useEnginePlayback(
       // is the only truth, so adopt it as the mirror rather than seeking a
       // later engine to a stale value.
       lastEmittedRef.current = currentTime
+      lastRawTimeRef.current = currentTime
       return
     }
     if (isEcho(currentTime)) return
@@ -502,6 +513,7 @@ export function useEnginePlayback(
     // External scrub. Mirror FIRST so a re-render before the engine's own echo
     // lands cannot fire a second seek for the same gesture.
     lastEmittedRef.current = currentTime
+    lastRawTimeRef.current = currentTime
     emittedRef.current = []
     engine.seek(currentTime)
   }, [currentTime])
@@ -589,6 +601,12 @@ export function useEnginePlayback(
 
   const getStats = useCallback((): EngineStats | null => engineRef.current?.stats() ?? null, [])
 
+  const acquireDemux = useCallback((src: string): Promise<AcquiredDemux> => {
+    const engine = engineRef.current
+    if (!engine) return Promise.reject(new Error('scrub-source: engine not attached'))
+    return engine.acquireDemux(src)
+  }, [])
+
   return {
     isPlaying: status.transport === 'playing',
     setIsPlaying,
@@ -602,5 +620,6 @@ export function useEnginePlayback(
     status,
     attachCanvas,
     getStats,
+    acquireDemux,
   }
 }
