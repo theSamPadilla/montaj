@@ -512,7 +512,7 @@ describe('VideoEditor — T5 fullscreen preview', () => {
     expect(screen.getByLabelText('Toggle fullscreen').getAttribute('aria-pressed')).toBe('false')
   })
 
-  it('the expand button in the preview corner also toggles it', async () => {
+  it('the fullscreen button in the preview controls row also toggles it', async () => {
     const adapter = makeFakeAdapter()
     render(<VideoEditor project={makeVideoProject()} adapter={adapter} onProjectChange={vi.fn()} slots={{ exportActions: <div /> }} />)
     await screen.findByText('▪ overlay')
@@ -556,5 +556,59 @@ describe('VideoEditor — T5 fullscreen preview', () => {
       document.dispatchEvent(new KeyboardEvent('keydown', { key: 'k', metaKey: true }))
     })
     expect(await screen.findByText('Exit fullscreen')).toBeTruthy()
+  })
+})
+
+// ── Preview controls row — timecode, zoom-to-fit, safe-zone toggle ────────
+
+describe('VideoEditor — preview controls row', () => {
+  it('renders a current / total timecode readout that updates as the playhead moves', async () => {
+    const adapter = makeFakeAdapter()
+    render(<VideoEditor project={makeVideoProject()} adapter={adapter} onProjectChange={vi.fn()} slots={{ exportActions: <div /> }} />)
+    await screen.findByText('▪ overlay')
+
+    // makeVideoProject's clips run 0-4, so content duration is 4s.
+    expect(screen.getByTestId('preview-timecode').textContent).toBe('0:00.0 / 0:04.0')
+
+    // Seek via the command palette's "go to time" entry (clock.set under the
+    // hood) — the readout's `usePlaybackTime(clock)` subscription should
+    // pick the new position up without any other interaction.
+    fireEvent.click(await screen.findByLabelText('Go to time'))
+    const input = await screen.findByPlaceholderText(/mm:ss/)
+    fireEvent.change(input, { target: { value: '2' } })
+    fireEvent.keyDown(input, { key: 'Enter' })
+
+    await waitFor(() => expect(screen.getByTestId('preview-timecode').textContent).toBe('0:02.0 / 0:04.0'))
+  })
+
+  it('the safe-zone toggle shows and hides the TikTok chrome overlay over the video, off by default', async () => {
+    const adapter = makeFakeAdapter()
+    render(<VideoEditor project={makeVideoProject()} adapter={adapter} onProjectChange={vi.fn()} slots={{ exportActions: <div /> }} />)
+    await screen.findByText('▪ overlay')
+
+    expect(screen.queryByTestId('social-safe-zone-overlay')).toBeNull()
+    const toggle = screen.getByLabelText('Safe zone guide')
+    expect(toggle.getAttribute('aria-pressed')).toBe('false')
+
+    fireEvent.click(toggle)
+    expect(toggle.getAttribute('aria-pressed')).toBe('true')
+    expect(screen.getByTestId('social-safe-zone-overlay')).toBeTruthy()
+
+    fireEvent.click(toggle)
+    expect(toggle.getAttribute('aria-pressed')).toBe('false')
+    expect(screen.queryByTestId('social-safe-zone-overlay')).toBeNull()
+  })
+
+  it('the zoom-to-fit button resets the timeline zoom via timelineActionsRef, same as the palette entry', async () => {
+    const adapter = makeFakeAdapter()
+    render(<VideoEditor project={makeVideoProject()} adapter={adapter} onProjectChange={vi.fn()} slots={{ exportActions: <div /> }} />)
+    await screen.findByText('▪ overlay')
+
+    expect(screen.getByLabelText('Zoom in').closest('div')?.textContent).toContain('1×')
+    fireEvent.click(screen.getByLabelText('Zoom in'))
+    expect(screen.getByLabelText('Zoom in').closest('div')?.textContent).toContain('2×')
+
+    fireEvent.click(screen.getByLabelText('Zoom to fit'))
+    expect(screen.getByLabelText('Zoom in').closest('div')?.textContent).toContain('1×')
   })
 })

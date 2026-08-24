@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type MutableRefObject } from 'react'
-import { Crop, HelpCircle, Magnet, Maximize2, Minimize2, Pencil, Redo2, SeparatorVertical, Undo2, Wand2 } from 'lucide-react'
+import { Crop, HelpCircle, Magnet, Maximize2, Minimize2, Pencil, Redo2, Scan, SeparatorVertical, Smartphone, Undo2, Wand2 } from 'lucide-react'
 import type { Project, VideoEditorProps } from '../types'
 import { useProjectSync, type UseProjectSync } from '../state/use-project-sync'
 import { VideoSourceCropModal } from '../crop/VideoSourceCropModal'
@@ -18,6 +18,8 @@ import PreviewPlayer, { type TransportHandle } from './preview/PreviewPlayer'
 import { createPlaybackClock, usePlaybackTime, type PlaybackClock } from './playback-clock'
 import { createHoverScrub } from './hover-scrub'
 import { useSourcePreview, type SourcePreviewStore } from './source-preview'
+import { formatTimecode } from './timecode'
+import SocialSafeZoneOverlay from './preview/SocialSafeZoneOverlay'
 import type { OverlayChanges } from './preview/useDragOverlay'
 import VersionPanel from './VersionPanel'
 import CaptionListPanel, { type CaptionListPanelProps, type CaptionEditFocusRequest, nextEditFocus } from './CaptionListPanel'
@@ -976,6 +978,17 @@ function ReviewSurface<P extends Project>({
   const clips      = trackItems(project)[0] ?? []
   const hasContent = clips.length > 0 || (trackItems(project).slice(1).flat().length ?? 0) > 0 || (project.captions?.segments?.length ?? 0) > 0
 
+  // Preview controls row's timecode readout. `currentTime` is the same
+  // `usePlaybackTime(clock)` subscription `CaptionListPanelWithClock` uses
+  // lower down — a second, independent call here rather than threading its
+  // value up, since it's a plain hook and this is a different render leaf.
+  // `previewDuration` is the actual playable length (contentDuration), NOT
+  // `getTotalDuration()`'s zoom/scroll-padded value used for shuttle/seek
+  // clamping — that one runs ~20% past the last clip so the timeline canvas
+  // has room to drag into, which would read as a wrong total here.
+  const currentTime = usePlaybackTime(clock)
+  const previewDuration = useMemo(() => computeDerivedTiming(project).contentDuration, [project])
+
   // The selected tracks[0] video item, if any — the only thing source-crop mode
   // can target. Source crop is a tracks[0]-video primitive (the renderer applies
   // it to the original clip before compositing).
@@ -1178,7 +1191,21 @@ function ReviewSurface<P extends Project>({
 
   function handleSplit(at?: number) {
     const base = syncProjectRef.current
-    let updated = splitAtTime(base, at ?? clock.get(), primarySelectedId ?? null)
+    const time = at ?? clock.get()
+    // With nothing selected, split ONLY the main video track (tracks[0]) at
+    // `time` — NOT every track under it. Passing `null` to `splitAtTime`
+    // razors every visual track AND every audio track at once, which is not
+    // what "Split with nothing selected" should do (Sam: main track only). So
+    // resolve the base-track clip under `time` and scope the split to its id;
+    // if nothing on the main track sits under `time`, there's nothing to split
+    // — a no-op, rather than cutting overlays/audio too.
+    let targetId = primarySelectedId ?? null
+    if (targetId === null) {
+      const mainItem = (trackItems(base)[0] ?? []).find(it => time > it.start && time < it.end)
+      if (!mainItem) return
+      targetId = mainItem.id
+    }
+    let updated = splitAtTime(base, time, targetId)
     if (updated === base) return
     // `splitAtTime` reaches `applyCutToCaptions`, which can DROP a caption
     // segment at the cut instead of splitting it; dropping a row's last
@@ -1296,6 +1323,11 @@ function ReviewSurface<P extends Project>({
     if (document.fullscreenElement) void document.exitFullscreen()
     else void previewRegionRef.current?.requestFullscreen()
   }, [])
+
+  // Safe-zone preview (mirrors CapCut's "TikTok" toggle) — a viewing aid
+  // only, off by default. Drawn inside the aspect-ratio box (over the video)
+  // rather than the controls row below it, by SocialSafeZoneOverlay itself.
+  const [showSafeZone, setShowSafeZone] = useState(false)
 
   // Command palette. Bindings for split/undo/redo/ripple-delete/palette-open
   // double as their own registry entries here; a few are palette-only
@@ -1513,54 +1545,110 @@ function ReviewSurface<P extends Project>({
   // classic path byte-for-byte unchanged and lets the CapCut branch reuse the
   // exact same nodes rather than duplicating this JSX.
 
+  // The preview column: video area on top, a slim controls row on chrome
+  // underneath it. `previewRegionRef` stays on this outermost node — it is
+  // both the fullscreen target and the one shared node both editor layouts
+  // render, and keeping the controls row INSIDE it means the row is still
+  // reachable once fullscreened (a bare video with no chrome at all would
+  // leave fullscreen viewers with no way back out except Escape).
+  //
+  // The fullscreen button used to be a 28px corner overlay on the video
+  // itself (`absolute top-2 right-2`, bg-black/50 for contrast against
+  // whatever frame happened to be playing) — invisible on bright footage
+  // and competing with the picture. It now lives as a normal child of this
+  // row, on chrome, sized and styled like every other row button below
+  // (the track-controls bar's Ripple/Crop toggles) rather than floating.
   const previewRegion = (
-    <div ref={previewRegionRef} className="flex-1 min-h-0 flex items-center justify-center bg-black overflow-hidden p-2">
+    <div ref={previewRegionRef} className="flex-1 min-h-0 flex flex-col bg-black overflow-hidden">
       {hasContent ? (
-        <div
-          className="relative h-full max-w-full"
-          style={{ aspectRatio: (() => { const [w, h] = getOverlayDesignCanvas(project.settings?.resolution); return `${w} / ${h}` })() }}
-        >
-          <PreviewPlayer
-            project={project}
-            clock={clock}
-            selectedOverlayId={primarySelectedId ?? undefined}
-            onOverlayChange={handleOverlayChange}
-            onEditOverlay={requestEditOverlay}
-            compileOverlay={adapter.compileOverlay}
-            clearOverlayCache={adapter.clearOverlayCache}
-            watchFile={adapter.watchFile}
-            fileUrl={adapter.fileUrl}
-            resolveCaptionTemplate={adapter.resolveCaptionTemplate}
-            selectedCaptionId={selectedCaptionId ?? undefined}
-            onSelectCaption={handleSelectCaption}
-            onCaptionSegmentChange={handleCaptionSegmentChange}
-            engine={engine}
-            transportRef={transportRef}
-            hoverScrub={hoverScrub}
-          />
-          {/* Footage-bin source scrub (opt-in). A paused <video> parked above the
-              timeline preview, showing an OFF-TIMELINE clip's frame while the
-              host hovers a bin card. Inert unless a host supplies `sourcePreview`
-              AND sets a value — see SourcePreviewOverlay / source-preview.ts. */}
-          <SourcePreviewOverlay store={sourcePreview} />
-          {/* Fullscreen toggle (T5) — corner affordance over the video itself,
-              the same spot a native player puts one. `z-[200]` clears
-              PreviewPlayer's own internal overlays (its click-to-play layer is
-              z-10, its paused play-button glyph z-100), both scoped inside
-              PreviewPlayer's own subtree. */}
-          <Tooltip label={isFullscreen ? 'Exit fullscreen' : 'Enter fullscreen'} keys={['F']} className="absolute top-2 right-2 z-[200]">
-            <button
-              onClick={toggleFullscreen}
-              aria-label="Toggle fullscreen"
-              aria-pressed={isFullscreen}
-              className="flex items-center justify-center w-7 h-7 rounded-md bg-black/50 text-white/80 hover:text-white hover:bg-black/70 transition-colors"
+        <>
+          <div className="flex-1 min-h-0 flex items-center justify-center overflow-hidden p-2">
+            <div
+              className="relative h-full max-w-full"
+              style={{ aspectRatio: (() => { const [w, h] = getOverlayDesignCanvas(project.settings?.resolution); return `${w} / ${h}` })() }}
             >
-              {isFullscreen ? <Minimize2 size={14} /> : <Maximize2 size={14} />}
-            </button>
-          </Tooltip>
-        </div>
+              <PreviewPlayer
+                project={project}
+                clock={clock}
+                selectedOverlayId={primarySelectedId ?? undefined}
+                onOverlayChange={handleOverlayChange}
+                onEditOverlay={requestEditOverlay}
+                compileOverlay={adapter.compileOverlay}
+                clearOverlayCache={adapter.clearOverlayCache}
+                watchFile={adapter.watchFile}
+                fileUrl={adapter.fileUrl}
+                resolveCaptionTemplate={adapter.resolveCaptionTemplate}
+                selectedCaptionId={selectedCaptionId ?? undefined}
+                onSelectCaption={handleSelectCaption}
+                onCaptionSegmentChange={handleCaptionSegmentChange}
+                engine={engine}
+                transportRef={transportRef}
+                hoverScrub={hoverScrub}
+              />
+              {/* Footage-bin source scrub (opt-in). A paused <video> parked above the
+                  timeline preview, showing an OFF-TIMELINE clip's frame while the
+                  host hovers a bin card. Inert unless a host supplies `sourcePreview`
+                  AND sets a value — see SourcePreviewOverlay / source-preview.ts. */}
+              <SourcePreviewOverlay store={sourcePreview} />
+              {/* Safe-zone viewing aid (mirrors CapCut's "TikTok" toggle), drawn over
+                  the video itself rather than the chrome row below — it previews
+                  what platform UI would sit ON TOP of the picture, so it has to be
+                  in the same coordinate space as the picture. Off by default; the
+                  component itself no-ops on an unset/unknown platform. */}
+              {showSafeZone && <SocialSafeZoneOverlay platform="tiktok" />}
+            </div>
+          </div>
+          {/* Preview controls row — chrome, not video. Timecode readout on the
+              left; zoom-to-fit, safe-zone preview and fullscreen on the right,
+              styled like the track-controls bar's toggles below (Ripple/Crop):
+              w-5 h-5 icon buttons, `aria-pressed` colouring for true toggles,
+              a styled `Tooltip` on every button instead of a native `title=`. */}
+          <div className="shrink-0 flex items-center gap-1.5 px-3 py-1 border-t border-[var(--editor-border)] bg-[var(--editor-surface)]">
+            <span
+              data-testid="preview-timecode"
+              className="mr-auto text-[10px] font-mono tabular-nums text-[var(--editor-text)]/60 select-none"
+            >
+              {formatTimecode(currentTime)} / {formatTimecode(previewDuration)}
+            </span>
+            <Tooltip label="Zoom to fit">
+              <button
+                onClick={() => timelineActionsRef.current?.zoomFit()}
+                aria-label="Zoom to fit"
+                className="flex items-center justify-center w-5 h-5 rounded transition-colors text-[var(--editor-text)]/60 bg-transparent hover:text-[var(--editor-text)]"
+              >
+                <Scan size={12} />
+              </button>
+            </Tooltip>
+            <Tooltip label={showSafeZone ? 'Hide safe zone guide' : 'Show safe zone guide'}>
+              <button
+                onClick={() => setShowSafeZone(v => !v)}
+                aria-label="Safe zone guide"
+                aria-pressed={showSafeZone}
+                className={`flex items-center justify-center w-5 h-5 rounded transition-colors ${
+                  showSafeZone
+                    ? 'text-sky-400 bg-sky-400/15 hover:bg-sky-400/25'
+                    : 'text-[var(--editor-text)]/60 bg-transparent hover:text-[var(--editor-text)]'
+                }`}
+              >
+                <Smartphone size={12} />
+              </button>
+            </Tooltip>
+            <Tooltip label={isFullscreen ? 'Exit fullscreen' : 'Enter fullscreen'} keys={['F']}>
+              <button
+                onClick={toggleFullscreen}
+                aria-label="Toggle fullscreen"
+                aria-pressed={isFullscreen}
+                className="flex items-center justify-center w-5 h-5 rounded transition-colors text-[var(--editor-text)]/60 bg-transparent hover:text-[var(--editor-text)]"
+              >
+                {isFullscreen ? <Minimize2 size={12} /> : <Maximize2 size={12} />}
+              </button>
+            </Tooltip>
+          </div>
+        </>
       ) : (
-        <p className="text-[var(--editor-text)]/60 text-sm">No clips</p>
+        <div className="flex-1 min-h-0 flex items-center justify-center p-2">
+          <p className="text-[var(--editor-text)]/60 text-sm">No clips</p>
+        </div>
       )}
     </div>
   )

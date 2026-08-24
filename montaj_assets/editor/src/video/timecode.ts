@@ -30,3 +30,30 @@ export function parseTimecode(input: string): number | null {
   if (minutes >= 60) return null
   return hours * 3600 + minutes * 60 + seconds
 }
+
+/**
+ * Format seconds for the preview transport row's timecode readout, as
+ * `m:ss.f` (or `h:mm:ss.f` once the value reaches an hour) — one decimal
+ * place, rounded to the nearest tenth of a second.
+ *
+ * Deliberately NOT frames (no CapCut-style `hh:mm:ss:ff`): `parseTimecode`
+ * above has no notion of frames — its trailing fractional part is seconds
+ * only — so a frames-style display would silently mis-parse if a user
+ * copied it into the command palette's "go to time" field (a trailing
+ * `:18` would be read as 18 SECONDS, not 18 frames). Emitting the same
+ * `m:ss[.f]` shape `parseTimecode` already accepts keeps the two in sync;
+ * see the round-trip tests in `__tests__/timecode.test.ts`.
+ */
+export function formatTimecode(sec: number): string {
+  const clamped = Number.isFinite(sec) ? Math.max(0, sec) : 0
+  const totalTenths = Math.round(clamped * 10)
+  const wholeSeconds = Math.floor(totalTenths / 10)
+  const tenths = totalTenths % 10
+  const hours = Math.floor(wholeSeconds / 3600)
+  const minutes = Math.floor((wholeSeconds % 3600) / 60)
+  const seconds = wholeSeconds % 60
+  const secondsStr = `${String(seconds).padStart(2, '0')}.${tenths}`
+  return hours > 0
+    ? `${hours}:${String(minutes).padStart(2, '0')}:${secondsStr}`
+    : `${minutes}:${secondsStr}`
+}

@@ -160,7 +160,7 @@ eligible for the engine, and what a third-party host gets unless it opts in.
 - Overlays (title cards, lower thirds) same approach
 - Preview time follows the shared playback clock, on both paths alike
 - Preview is an **approximation** — CSS overlays are close but not pixel-perfect to the final render burn-in. The render is what matters.
-- A small expand button sits in the preview's top-right corner, and the `F` key does the same thing (see "Keyboard shortcuts" below) — either one takes the preview fullscreen, and exits via `F` again, the button, or the browser's own Escape
+- A slim controls row sits on chrome beneath the preview (not floating over the video itself): a `current / total` timecode readout on the left, and zoom-to-fit, a safe-zone preview toggle, and fullscreen on the right. The safe-zone toggle overlays a TikTok-style UI chrome guide (status bar, nav, engagement rail) on top of the video so you can see what a platform's own UI would cover, off by default. Fullscreen is also reachable via the `F` key (see "Keyboard shortcuts" below); the controls row stays available once fullscreened, and exits via `F` again, the button, or the browser's own Escape
 
 ### Playback engine
 

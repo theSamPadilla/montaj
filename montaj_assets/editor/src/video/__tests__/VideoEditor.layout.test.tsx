@@ -271,7 +271,7 @@ describe('VideoEditor — a caption id ahead of a clip id in selectedIds (D1)', 
     expect(screen.getByLabelText('Crop source').hasAttribute('disabled')).toBe(true)
   })
 
-  it('a caption-only selection leaves primarySelectedId null — Split falls back to splitting every clip under the playhead, matching pre-D1 null-selection behavior', async () => {
+  it('a caption-only selection leaves primarySelectedId null — Split then scopes to the MAIN video track only, not every clip under the playhead', async () => {
     const adapter = makeFakeAdapter()
     const onProjectChange = vi.fn()
     render(
@@ -286,10 +286,12 @@ describe('VideoEditor — a caption id ahead of a clip id in selectedIds (D1)', 
     expect(screen.getByLabelText('Crop source').hasAttribute('disabled')).toBe(true)
     expect(screen.queryByLabelText('Edit overlay')).toBeNull()
 
-    // If primarySelectedId had instead resolved to 'cap-0' (the bug this
-    // guards against, in a different shape), splitAtTime would scope to an id
-    // no track item matches and NEITHER track would split. Null is what
-    // `splitAtTime` reads as "split whatever the playhead is over" — both do.
+    // primarySelectedId is null (caption-only selection). Split with nothing
+    // selected resolves the MAIN video track's clip under the playhead
+    // (`trackItems(base)[0]`) and scopes the split to its id — it does NOT
+    // razor every track. Passing null straight to `splitAtTime` used to cut
+    // the overlay under the playhead too, which was wrong (Sam): nothing
+    // selected means the main track only.
     await seekTo('2')
     await act(async () => {
       document.dispatchEvent(new KeyboardEvent('keydown', { key: 's' }))
@@ -297,8 +299,8 @@ describe('VideoEditor — a caption id ahead of a clip id in selectedIds (D1)', 
 
     await waitFor(() => {
       const last = onProjectChange.mock.calls[onProjectChange.mock.calls.length - 1][0] as Project
-      expect(last.tracks?.[0]?.items).toHaveLength(2)
-      expect(last.tracks?.[1]?.items).toHaveLength(2)
+      expect(last.tracks?.[0]?.items).toHaveLength(2) // main video clip split
+      expect(last.tracks?.[1]?.items).toHaveLength(1) // overlay untouched — split scoped to the main track
     })
   })
 })
