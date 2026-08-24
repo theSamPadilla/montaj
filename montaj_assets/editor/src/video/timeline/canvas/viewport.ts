@@ -41,10 +41,16 @@ export const MIN_PX_PER_SECOND = 1
  *  any frame-accurate trim needs. */
 export const MAX_PX_PER_SECOND = 2000
 
-/** How far below "fit the whole project" zoom-out is allowed to go. The DOM
- *  model bottomed out AT fit; being able to pull back from the content is a
- *  deliberate improvement (it gives drop room past the last clip). */
-export const MIN_FIT_MULTIPLE = 0.25
+/** How far below "fit the whole project" zoom-out is allowed to go, as a
+ *  fraction of the fit scale. The DOM model bottomed out AT fit; pulling back
+ *  from the content is a deliberate improvement (it gives drop room past the
+ *  last clip) — but only so far. At `0.5` the content bottoms out filling HALF
+ *  the surface width (one content-length of drop room past the end), instead of
+ *  shrinking to a sliver: CapCut caps its max zoom-out the same way, and a
+ *  quarter-width timeline (the old `0.25`) is more empty canvas than anyone
+ *  needs to reach the end. `MIN_PX_PER_SECOND` still floors this for a project
+ *  long enough that half-width would fall below it. */
+export const MIN_FIT_MULTIPLE = 0.5
 
 /** Extra scroll past the end of the content, as a fraction of one screenful,
  *  so the rightmost item can always be dragged/trimmed further out. */
@@ -103,6 +109,63 @@ export function maxScrollSeconds(vp: Viewport, totalDuration: number): number {
 export function clampScrollSeconds(scrollSeconds: number, vp: Viewport, totalDuration: number): number {
   if (!Number.isFinite(scrollSeconds)) return 0
   return Math.max(0, Math.min(maxScrollSeconds(vp, totalDuration), scrollSeconds))
+}
+
+/** How close to the surface's left/right edge a drag's pointer must sit before
+ *  edge auto-scroll starts panning the view to follow it (CSS px). */
+export const EDGE_SCROLL_ZONE_PX = 40
+
+/** Panning speed at the edge itself, in content CSS px/second — ramps linearly
+ *  from 0 at the zone's outer boundary up to this at the surface edge. Fast
+ *  enough to cross a long timeline without feeling like a jump, slow enough to
+ *  stay controllable right at the zone's threshold. */
+export const EDGE_SCROLL_MAX_PX_PER_SEC = 600
+
+/**
+ * How many seconds to pan the viewport for one animation frame of an active
+ * drag whose pointer sits at `pointerX` (CSS px from the surface's left edge —
+ * the same `Point.x` a gesture already works in). Zero outside the
+ * `edgeZonePx` band at either edge; ramps linearly from 0 at the zone's outer
+ * boundary to `maxPxPerSec` (content px/second) at the surface edge itself,
+ * and holds at `maxPxPerSec` for a pointer that has travelled PAST the edge —
+ * a drag driven by document-level listeners (not native pointer capture) can
+ * report an x outside [0, canvasWidth] once the real cursor leaves the
+ * surface.
+ *
+ * Negative = pan left/earlier, positive = pan right/later, 0 = the pointer is
+ * not near either edge. Framerate-independent: the ramped speed is scaled by
+ * `dtSeconds` and converted from content px/second to timeline seconds via
+ * `pxPerSecond`, so callers can feed it a real frame delta and get a
+ * consistent pan regardless of the display's refresh rate.
+ */
+export function edgeScrollDelta(
+  pointerX: number,
+  canvasWidth: number,
+  pxPerSecond: number,
+  dtSeconds: number,
+  edgeZonePx: number,
+  maxPxPerSec: number,
+): number {
+  if (canvasWidth <= 0 || pxPerSecond <= 0 || edgeZonePx <= 0 || dtSeconds <= 0) return 0
+
+  const leftBoundary = edgeZonePx
+  const rightBoundary = canvasWidth - edgeZonePx
+
+  let depthPx: number
+  let direction: -1 | 1
+  if (pointerX < leftBoundary) {
+    depthPx = leftBoundary - pointerX
+    direction = -1
+  } else if (pointerX > rightBoundary) {
+    depthPx = pointerX - rightBoundary
+    direction = 1
+  } else {
+    return 0
+  }
+
+  const ratio = Math.min(1, depthPx / edgeZonePx)
+  const contentPxPerSecond = ratio * maxPxPerSec
+  return (direction * contentPxPerSecond * dtSeconds) / pxPerSecond
 }
 
 /**

@@ -602,25 +602,46 @@ describe('VideoEditor — preview controls row', () => {
     await waitFor(() => expect(screen.getByTestId('preview-timecode').textContent).toBe('0:04.0 / 0:04.0'))
   })
 
-  it('the safe-zone toggle shows and hides the TikTok chrome overlay over the video, off by default', async () => {
+  it('the social-preview picker shows and hides the chrome overlay over the video, off ("None") by default', async () => {
     const adapter = makeFakeAdapter()
     render(<VideoEditor project={makeVideoProject()} adapter={adapter} onProjectChange={vi.fn()} slots={{ exportActions: <div /> }} />)
     await screen.findByText('▪ overlay')
 
     expect(screen.queryByTestId('social-safe-zone-overlay')).toBeNull()
-    const toggle = screen.getByLabelText('Safe zone guide')
-    expect(toggle.getAttribute('aria-pressed')).toBe('false')
+    const trigger = screen.getByLabelText('Preview for social media')
+    expect(trigger.getAttribute('aria-pressed')).toBe('false')
 
-    fireEvent.click(toggle)
-    expect(toggle.getAttribute('aria-pressed')).toBe('true')
+    // Open the picker and choose TikTok — the chrome overlay mounts and the
+    // trigger reflects an active selection.
+    fireEvent.click(trigger)
+    fireEvent.click(screen.getByLabelText('TikTok'))
+    expect(trigger.getAttribute('aria-pressed')).toBe('true')
     expect(screen.getByTestId('social-safe-zone-overlay')).toBeTruthy()
 
-    fireEvent.click(toggle)
-    expect(toggle.getAttribute('aria-pressed')).toBe('false')
+    // Reopen and choose None — the overlay unmounts and the trigger returns
+    // to its inactive state.
+    fireEvent.click(trigger)
+    fireEvent.click(screen.getByLabelText('None'))
+    expect(trigger.getAttribute('aria-pressed')).toBe('false')
     expect(screen.queryByTestId('social-safe-zone-overlay')).toBeNull()
   })
 
-  it('the zoom-to-fit button resets the timeline zoom via timelineActionsRef, same as the palette entry', async () => {
+  it('the social-preview pick persists into project settings (mirrors handleImageToneChange)', async () => {
+    const adapter = makeFakeAdapter()
+    render(<VideoEditor project={makeVideoProject()} adapter={adapter} onProjectChange={vi.fn()} slots={{ exportActions: <div /> }} />)
+    await screen.findByText('▪ overlay')
+
+    fireEvent.click(screen.getByLabelText('Preview for social media'))
+    fireEvent.click(screen.getByLabelText('Instagram Reels'))
+
+    await waitFor(() => expect(adapter.saveProject).toHaveBeenCalled())
+    // saveProject(projectId, project) — the project itself is the SECOND arg.
+    const calls = (adapter.saveProject as ReturnType<typeof vi.fn>).mock.calls
+    const saved = calls[calls.length - 1]?.[1]
+    expect(saved.settings.socialPreview).toBe('instagram')
+  })
+
+  it("the timeline chrome's 'fit' button resets the zoom — the single consolidated zoom-to-fit control (the duplicate preview-row icon was removed)", async () => {
     const adapter = makeFakeAdapter()
     render(<VideoEditor project={makeVideoProject()} adapter={adapter} onProjectChange={vi.fn()} slots={{ exportActions: <div /> }} />)
     await screen.findByText('▪ overlay')
@@ -629,7 +650,10 @@ describe('VideoEditor — preview controls row', () => {
     fireEvent.click(screen.getByLabelText('Zoom in'))
     expect(screen.getByLabelText('Zoom in').closest('div')?.textContent).toContain('2×')
 
-    fireEvent.click(screen.getByLabelText('Zoom to fit'))
+    // "fit" (aria-label "Fit to view") lives next to the +/- zoom buttons in
+    // the timeline chrome, shown once you're off-fit; the preview controls row
+    // no longer carries a duplicate zoom-to-fit icon.
+    fireEvent.click(screen.getByLabelText('Fit to view'))
     expect(screen.getByLabelText('Zoom in').closest('div')?.textContent).toContain('1×')
   })
 })

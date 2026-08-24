@@ -156,7 +156,7 @@ describe('CaptionListPanel list', () => {
     expect(timestampSpan).not.toMatch(/text-\[var\(--editor-text\)\]\/\d+/)
   })
 
-  it('with no captionTrack but a regenerate capability, offers only Regenerate + the empty message — no style controls, no search, no count', () => {
+  it('with no captionTrack but a regenerate capability, offers only Generate captions + the empty message — no style controls, no search, no count', () => {
     const project = { id: 'p1' } as unknown as Project
     const clock = makeClock()
     render(
@@ -171,8 +171,10 @@ describe('CaptionListPanel list', () => {
         clock={clock}
       />,
     )
-    expect(screen.getByText('Regenerate')).toBeTruthy()
-    expect(screen.getByText(/no captions yet/i)).toBeTruthy()
+    // No captions yet, so the trigger is the empty state's primary
+    // "Generate captions" button, not the header's "Regenerate captions".
+    expect(screen.getByText('Generate captions')).toBeTruthy()
+    expect(screen.getByText(/generated from/i)).toBeTruthy()
     expect(screen.queryByLabelText('Caption style controls')).toBeNull()
     expect(screen.queryByLabelText('Search captions')).toBeNull()
     expect(screen.queryByText('Remove all')).toBeNull()
@@ -391,12 +393,12 @@ describe('CaptionListPanel relocated style controls', () => {
 describe('CaptionListPanel toolbar actions', () => {
   it('Regenerate fires onRegenerateCaptions and is hidden when the prop is absent', () => {
     const { onRegenerateCaptions } = renderPanel({ withRegenerate: true })
-    fireEvent.click(screen.getByText('Regenerate'))
+    fireEvent.click(screen.getByText('Regenerate captions'))
     expect(onRegenerateCaptions).toHaveBeenCalledTimes(1)
     cleanup()
 
     renderPanel({ withRegenerate: false })
-    expect(screen.queryByText('Regenerate')).toBeNull()
+    expect(screen.queryByText('Regenerate captions')).toBeNull()
   })
 
   it('Remove all requires two clicks and commits captions: null on the second', () => {

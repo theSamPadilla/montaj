@@ -10,6 +10,9 @@
  *   - render          → `api.renderProject` (POST /api/projects/:id/render SSE),
  *                       adapted from its callback shape into an
  *                       `AsyncIterable<RenderEvent>`.
+ *   - generateCaptions → `api.generateCaptions`
+ *                       (POST /api/projects/:id/captions SSE), adapted the
+ *                       same way into an `AsyncIterable<CaptionEvent>`.
  *   - resolveImageSrc → Montaj's workspace/files URL rule, replicated from
  *                       SlideCanvas's `resolveAsset`: absolute/data URLs pass
  *                       through; workspace paths route via `/api/files?path=`.
@@ -42,6 +45,9 @@ import type {
   GetFilmstripArgs,
   AnalyzeAudioPolishArgs,
   AudioPolishAnalysis,
+  CaptionEvent,
+  GenerateCaptionsOptions,
+  Captions,
 } from '@bycrux/editor'
 // Montaj instantiates the editor's generic adapter with its full project type,
 // so loaded/saved/streamed frames keep Montaj's pipeline fields end-to-end.
@@ -636,6 +642,89 @@ export function createMontajAdapter(): EditorAdapter<Project> {
     // none given there is nothing to clear, so this is a no-op.
     clearOverlayCache: (src?: string): void => {
       if (src) hostClearOverlayCache(src)
+    },
+
+    // Caption regeneration → `api.generateCaptions`, bridged from its callback
+    // SSE into an async iterable by exactly the same queue + promise-resolver
+    // pattern `render` uses above. Events are pushed as they arrive and never
+    // buffered to completion: the pipeline runs four subprocesses and can take
+    // minutes on a long timeline, while the CaptionRegenModal renders the log
+    // live. The terminal 'done' carries the whole fresh track, which REPLACES
+    // project.captions wholesale.
+    generateCaptions: (id: string, opts?: GenerateCaptionsOptions): AsyncIterable<CaptionEvent> => {
+      return {
+        [Symbol.asyncIterator](): AsyncIterator<CaptionEvent> {
+          const queue: CaptionEvent[] = []
+          let resolveNext: ((r: IteratorResult<CaptionEvent>) => void) | null = null
+          let done = false
+          let cancel: (() => void) | null = null
+
+          const push = (ev: CaptionEvent) => {
+            // Terminal events end the stream after delivery.
+            if (resolveNext) {
+              const r = resolveNext
+              resolveNext = null
+              r({ value: ev, done: false })
+            } else {
+              queue.push(ev)
+            }
+            if (ev.type === 'done' || ev.type === 'error') finish()
+          }
+
+          const finish = () => {
+            done = true
+            if (resolveNext) {
+              const r = resolveNext
+              resolveNext = null
+              r({ value: undefined, done: true })
+            }
+          }
+
+          api
+            .generateCaptions(
+              id,
+              (line) => push({ type: 'log', message: line }),
+              (captionsJson) => {
+                // The done frame carries the caption track as raw JSON (api.ts
+                // stays free of the Captions type). A malformed payload must
+                // become a terminal error here — if the parse escaped, the
+                // stream would never terminate and the modal would hang.
+                let captions: Captions
+                try {
+                  captions = JSON.parse(captionsJson) as Captions
+                } catch (err) {
+                  push({
+                    type: 'error',
+                    message: `Malformed caption payload: ${err instanceof Error ? err.message : String(err)}`,
+                  })
+                  return
+                }
+                push({ type: 'done', captions })
+              },
+              (message) => push({ type: 'error', message }),
+              { model: opts?.model, language: opts?.language, style: opts?.style },
+            )
+            .then((c) => { cancel = c })
+            .catch((err) => {
+              push({ type: 'error', message: err instanceof Error ? err.message : String(err) })
+            })
+
+          return {
+            next(): Promise<IteratorResult<CaptionEvent>> {
+              if (queue.length > 0) {
+                return Promise.resolve({ value: queue.shift()!, done: false })
+              }
+              if (done) return Promise.resolve({ value: undefined, done: true })
+              return new Promise((resolve) => { resolveNext = resolve })
+            },
+            return(): Promise<IteratorResult<CaptionEvent>> {
+              done = true
+              cancel?.()
+              return Promise.resolve({ value: undefined, done: true })
+            },
+          }
+        },
+      }
     },
 
     // Map a caption style name to the Montaj-specific template path that

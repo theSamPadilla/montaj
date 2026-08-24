@@ -67,6 +67,68 @@ describe('Timeline — T9 keymap (arrows / delete / enter / escape)', () => {
     expect(clock.get()).toBeCloseTo(2.4, 5)
   })
 
+  // Content end = the furthest item's end across ALL clips/overlays/audio
+  // (`contentDuration` from computeDerivedTiming), not the zoom/scroll
+  // headroom-padded `totalDuration`. This fixture's video track ends at 4s,
+  // but a later audio track pushes the real content end out to 7s — proving
+  // the jump lands on the furthest ELEMENT, not just the longest video clip.
+  // totalDuration would pad that out further still (7 + max(5, 7*0.2) = 12),
+  // so asserting 7 (not 12, not 4) pins down both distinctions at once.
+  function makeProjectWithFurtherAudio(): Project {
+    const project = makeProject()
+    return {
+      ...project,
+      audio: { tracks: [{ id: 'a0', src: 'v.mp3', start: 5, end: 7, lane: 0 }] },
+    } as unknown as Project
+  }
+
+  it('Cmd/Ctrl+ArrowLeft jumps the playhead to the start (0)', () => {
+    const clock = createPlaybackClock(3)
+    render(<Timeline project={makeProjectWithFurtherAudio()} clock={clock} />)
+    act(() => { fireEvent.keyDown(document.body, { key: 'ArrowLeft', metaKey: true }) })
+    expect(clock.get()).toBe(0)
+  })
+
+  it('Ctrl+ArrowLeft (non-Mac mod) also jumps to the start', () => {
+    const clock = createPlaybackClock(3)
+    render(<Timeline project={makeProjectWithFurtherAudio()} clock={clock} />)
+    act(() => { fireEvent.keyDown(document.body, { key: 'ArrowLeft', ctrlKey: true }) })
+    expect(clock.get()).toBe(0)
+  })
+
+  it('Cmd/Ctrl+ArrowRight jumps the playhead to the content end (furthest element, not headroom)', () => {
+    const clock = createPlaybackClock(0)
+    render(<Timeline project={makeProjectWithFurtherAudio()} clock={clock} />)
+    act(() => { fireEvent.keyDown(document.body, { key: 'ArrowRight', metaKey: true }) })
+    // 7, not 4 (the video clip alone) and not 12 (totalDuration's headroom).
+    expect(clock.get()).toBe(7)
+  })
+
+  it('a plain ArrowLeft/ArrowRight still frame-steps and does NOT jump, even with the further-audio fixture', () => {
+    const clock = createPlaybackClock(2)
+    render(<Timeline project={makeProjectWithFurtherAudio()} clock={clock} />)
+    act(() => { fireEvent.keyDown(document.body, { key: 'ArrowRight' }) })
+    expect(clock.get()).toBeCloseTo(2.1, 5)
+    act(() => { fireEvent.keyDown(document.body, { key: 'ArrowLeft' }) })
+    expect(clock.get()).toBeCloseTo(2, 5)
+  })
+
+  it('Cmd+ArrowLeft/Right does not ALSO fire the frame-step binding (no double-action)', () => {
+    const clock = createPlaybackClock(3)
+    render(<Timeline project={makeProjectWithFurtherAudio()} clock={clock} />)
+    act(() => { fireEvent.keyDown(document.body, { key: 'ArrowRight', metaKey: true }) })
+    // If frame-step also fired, this would be 7 + 0.1 instead of 7.
+    expect(clock.get()).toBe(7)
+  })
+
+  it('Cmd/Ctrl+Arrow jump is inert on an empty project (guard: totalDuration > 0)', () => {
+    const clock = createPlaybackClock(0)
+    const emptyProject = { ...makeProject(), tracks: [] } as unknown as Project
+    render(<Timeline project={emptyProject} clock={clock} />)
+    act(() => { fireEvent.keyDown(document.body, { key: 'ArrowRight', metaKey: true }) })
+    expect(clock.get()).toBe(0)
+  })
+
   it('does not step when the target is an input', () => {
     const clock = createPlaybackClock(0)
     const { container } = render(

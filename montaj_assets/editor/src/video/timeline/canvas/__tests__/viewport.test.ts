@@ -5,6 +5,8 @@
  */
 import { describe, it, expect, vi } from 'vitest'
 import {
+  EDGE_SCROLL_MAX_PX_PER_SEC,
+  EDGE_SCROLL_ZONE_PX,
   MAX_PX_PER_SECOND,
   MIN_FIT_MULTIPLE,
   MIN_PX_PER_SECOND,
@@ -14,6 +16,7 @@ import {
   clampPxPerSecond,
   clampScrollSeconds,
   createViewportStore,
+  edgeScrollDelta,
   fitPxPerSecond,
   fitViewport,
   formatZoomMultiple,
@@ -128,6 +131,79 @@ describe('scroll clamping', () => {
     expect(panByPixels(v, 250, 1000).scrollSeconds).toBe(15)
     expect(panByPixels(v, -250, 1000).scrollSeconds).toBe(5)
     expect(panByPixels(v, -1e6, 1000).scrollSeconds).toBe(0)
+  })
+})
+
+describe('edge auto-scroll delta', () => {
+  // A round scale (100 px/s) keeps the arithmetic legible: 1 content px is
+  // 0.01s, so a max speed of 600 px/s is 6 s/s.
+  const pxPerSecond = 100
+  const canvasWidth = 1000
+  const zone = EDGE_SCROLL_ZONE_PX // 40
+  const maxSpeed = EDGE_SCROLL_MAX_PX_PER_SEC // 600 px/s
+
+  it('is zero for a pointer in the middle of the surface', () => {
+    expect(edgeScrollDelta(500, canvasWidth, pxPerSecond, 1, zone, maxSpeed)).toBe(0)
+  })
+
+  it('is zero exactly at the zone boundary, on either side', () => {
+    expect(edgeScrollDelta(zone, canvasWidth, pxPerSecond, 1, zone, maxSpeed)).toBe(0)
+    expect(edgeScrollDelta(canvasWidth - zone, canvasWidth, pxPerSecond, 1, zone, maxSpeed)).toBe(0)
+  })
+
+  it('pans left (negative) inside the left zone, right (positive) inside the right zone', () => {
+    expect(edgeScrollDelta(10, canvasWidth, pxPerSecond, 1, zone, maxSpeed)).toBeLessThan(0)
+    expect(edgeScrollDelta(canvasWidth - 10, canvasWidth, pxPerSecond, 1, zone, maxSpeed)).toBeGreaterThan(0)
+  })
+
+  it('ramps linearly with how deep into the zone the pointer sits', () => {
+    // Depth 10/40 = 25% of the way in → 25% of max speed either side.
+    const shallow = edgeScrollDelta(zone - 10, canvasWidth, pxPerSecond, 1, zone, maxSpeed)
+    // Depth 30/40 = 75% of the way in → 3× the shallow pan.
+    const deep = edgeScrollDelta(zone - 30, canvasWidth, pxPerSecond, 1, zone, maxSpeed)
+    expect(Math.abs(shallow)).toBeCloseTo((0.25 * maxSpeed * 1) / pxPerSecond, 10)
+    expect(Math.abs(deep)).toBeCloseTo((0.75 * maxSpeed * 1) / pxPerSecond, 10)
+    expect(Math.abs(deep)).toBeCloseTo(Math.abs(shallow) * 3, 10)
+
+    const shallowRight = edgeScrollDelta(canvasWidth - (zone - 10), canvasWidth, pxPerSecond, 1, zone, maxSpeed)
+    const deepRight = edgeScrollDelta(canvasWidth - (zone - 30), canvasWidth, pxPerSecond, 1, zone, maxSpeed)
+    expect(shallowRight).toBeCloseTo(-shallow, 10) // mirror image of the left side
+    expect(deepRight).toBeCloseTo(-deep, 10)
+  })
+
+  it('holds at max speed for a pointer that has travelled past the surface edge', () => {
+    // The document-level drag listeners can report an x outside the surface
+    // once the real cursor leaves it — depth must clamp, not keep growing.
+    const atEdge = edgeScrollDelta(0, canvasWidth, pxPerSecond, 1, zone, maxSpeed)
+    const wayPast = edgeScrollDelta(-500, canvasWidth, pxPerSecond, 1, zone, maxSpeed)
+    expect(wayPast).toBe(atEdge)
+    expect(atEdge).toBeCloseTo(-maxSpeed / pxPerSecond, 10)
+
+    const atRightEdge = edgeScrollDelta(canvasWidth, canvasWidth, pxPerSecond, 1, zone, maxSpeed)
+    const wayPastRight = edgeScrollDelta(canvasWidth + 500, canvasWidth, pxPerSecond, 1, zone, maxSpeed)
+    expect(wayPastRight).toBe(atRightEdge)
+    expect(atRightEdge).toBeCloseTo(maxSpeed / pxPerSecond, 10)
+  })
+
+  it('scales with the frame delta — framerate independent', () => {
+    const oneFrame = edgeScrollDelta(10, canvasWidth, pxPerSecond, 1 / 60, zone, maxSpeed)
+    const doubleFrame = edgeScrollDelta(10, canvasWidth, pxPerSecond, 2 / 60, zone, maxSpeed)
+    expect(doubleFrame).toBeCloseTo(oneFrame * 2, 10)
+  })
+
+  it('is zero for a non-positive frame delta, px/second, zone, or surface width', () => {
+    expect(edgeScrollDelta(10, canvasWidth, pxPerSecond, 0, zone, maxSpeed)).toBe(0)
+    expect(edgeScrollDelta(10, canvasWidth, 0, 1, zone, maxSpeed)).toBe(0)
+    expect(edgeScrollDelta(10, canvasWidth, pxPerSecond, 1, 0, maxSpeed)).toBe(0)
+    expect(edgeScrollDelta(10, 0, pxPerSecond, 1, zone, maxSpeed)).toBe(0)
+  })
+
+  it('converts content px/second to timeline seconds through the current scale', () => {
+    // At the edge itself (full ramp), a 200 px/s zoom halves the seconds
+    // moved compared to the 100 px/s fixture above for the same content speed.
+    const atZoomedIn = edgeScrollDelta(0, canvasWidth, 200, 1, zone, maxSpeed)
+    const atFixtureScale = edgeScrollDelta(0, canvasWidth, pxPerSecond, 1, zone, maxSpeed)
+    expect(atZoomedIn).toBeCloseTo(atFixtureScale / 2, 10)
   })
 })
 

@@ -14,13 +14,19 @@ export default function Clean({
   segments = [],
   color    = '#ffffff',
   fontSize = 54,
+  fontFamily    = '"Figtree", system-ui, sans-serif',
+  fontWeight    = 700,
+  textAlign     = 'center',
+  letterSpacing = '0.01em',
+  lineHeight    = 1.3,
+  textTransform,
 }) {
   const t = frame / fps
 
   const active = activeSegments(segments, t)
   if (!active.length) return null
 
-  return <>{active.map((seg, i) => renderSegment(seg, seg.id ?? i, { frame, fps, color, fontSize }))}</>
+  return <>{active.map((seg, i) => renderSegment(seg, seg.id ?? i, { frame, fps, color, fontSize, fontFamily, fontWeight, textAlign, letterSpacing, lineHeight, textTransform }))}</>
 }
 
 /**
@@ -53,7 +59,7 @@ function activeSegments(segments, t) {
  * caption's rect instead of the union of everything on screen (see
  * measureCaptionContentRect in editor/src/video/preview/captionDragState.ts).
  */
-function renderSegment(seg, key, { frame, fps, color, fontSize }) {
+function renderSegment(seg, key, { frame, fps, color, fontSize, fontFamily, fontWeight, textAlign, letterSpacing, lineHeight, textTransform }) {
   const segStartFrame = Math.round(seg.start * fps)
   const segEndFrame   = Math.round(seg.end   * fps)
   const frameInSeg    = frame - segStartFrame
@@ -78,12 +84,13 @@ function renderSegment(seg, key, { frame, fps, color, fontSize }) {
         <div style={{
           color: seg.color ?? color,
           fontSize,
-          fontFamily: '"Figtree", system-ui, sans-serif',
-          fontWeight: 700,
-          lineHeight: 1.3,
-          textAlign: 'center',
+          fontFamily,
+          fontWeight,
+          lineHeight,
+          textAlign,
           maxWidth: '92%',
-          letterSpacing: '0.01em',
+          letterSpacing,
+          textTransform,
           textShadow: '0 2px 10px rgba(0,0,0,0.75), 0 0 34px rgba(0,0,0,0.45)',
         }}>
           {seg.text}

@@ -15,13 +15,23 @@ export default function HighlightBox({
   color       = '#ffffff',
   accentColor = '#fbbf24',
   fontSize    = 68,
+  fontFamily    = 'system-ui, -apple-system, sans-serif',
+  fontWeight    = 900,
+  textAlign     = 'center',
+  letterSpacing,
+  // No shared default here: the no-words fallback (below) renders with no
+  // lineHeight today, while the words branch renders at 1.25 — see the `??`
+  // fallback at each call site, which preserves both current looks exactly
+  // when this prop is absent and still lets an explicit value reach both.
+  lineHeight,
+  textTransform,
 }) {
   const t = frame / fps
 
   const active = activeSegments(segments, t)
   if (!active.length) return null
 
-  return <>{active.map((seg, i) => renderSegment(seg, seg.id ?? i, { frame, fps, t, color, accentColor, fontSize }))}</>
+  return <>{active.map((seg, i) => renderSegment(seg, seg.id ?? i, { frame, fps, t, color, accentColor, fontSize, fontFamily, fontWeight, textAlign, letterSpacing, lineHeight, textTransform }))}</>
 }
 
 /**
@@ -55,7 +65,7 @@ function activeSegments(segments, t) {
  * caption's rect instead of the union of everything on screen (see
  * measureCaptionContentRect in editor/src/video/preview/captionDragState.ts).
  */
-function renderSegment(seg, key, { frame, fps, t, color, accentColor, fontSize }) {
+function renderSegment(seg, key, { frame, fps, t, color, accentColor, fontSize, fontFamily, fontWeight, textAlign, letterSpacing, lineHeight, textTransform }) {
   const words = seg.words || []
   if (!words.length) {
     // No word timestamps — fall back to plain text with a short fade-in
@@ -67,16 +77,19 @@ function renderSegment(seg, key, { frame, fps, t, color, accentColor, fontSize }
           bottom: '18%',
           left: 0,
           right: 0,
-          textAlign: 'center',
+          textAlign,
           padding: '0 6%',
           opacity,
         })}>
           <span style={{
             fontSize,
-            fontWeight: 900,
-            fontFamily: 'system-ui, -apple-system, sans-serif',
+            fontWeight,
+            fontFamily,
             color: seg.color ?? color,
             textShadow: '0 2px 12px rgba(0,0,0,0.85)',
+            letterSpacing,
+            lineHeight,
+            textTransform,
           }}>
             {seg.text}
           </span>
@@ -101,7 +114,7 @@ function renderSegment(seg, key, { frame, fps, t, color, accentColor, fontSize }
         bottom: '18%',
         left: 0,
         right: 0,
-        textAlign: 'center',
+        textAlign,
         padding: '0 6%',
       })}>
         <div style={{
@@ -111,9 +124,11 @@ function renderSegment(seg, key, { frame, fps, t, color, accentColor, fontSize }
           alignItems: 'center',
           gap: '0.3em',
           fontSize,
-          fontWeight: 900,
-          fontFamily: 'system-ui, -apple-system, sans-serif',
-          lineHeight: 1.25,
+          fontWeight,
+          fontFamily,
+          letterSpacing,
+          lineHeight: lineHeight ?? 1.25,
+          textTransform,
         }}>
           {words.map((w, i) => {
             const active = i === activeIndex

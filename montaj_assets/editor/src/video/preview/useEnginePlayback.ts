@@ -54,7 +54,7 @@ import {
   type EngineStats,
   type EngineStatus,
 } from '../../engine'
-import { getSharedAudioContext, resumeAudioContextFromGesture } from './audio-context'
+import { getSharedAudioContext, latencySeconds, peekSharedAudioContext, resumeAudioContextFromGesture } from './audio-context'
 import type { EditorProject as Project, VisualItem } from '../../schema'
 import { enabledTrackItems } from '../timeline/timeline-model'
 
@@ -212,6 +212,15 @@ export function useEnginePlayback(
   // effect can recognize its own echo.
   const lastEmittedRef = useRef(currentTime)
   /**
+   * Mirrors the RAW (frames-consumed) time `emitTime` receives, alongside
+   * `lastEmittedRef`'s AUDIBLE (latency-compensated) mirror. `syncAudioTracks`
+   * callsites outside `emitTime` itself — the audio-lane-added and
+   * transport-transition effects — need this one: `<audio>` elements are
+   * frames-consumed devices on the same graph, and handing them the
+   * compensated value double-lags their output by `latencySeconds`.
+   */
+  const lastRawTimeRef = useRef(currentTime)
+  /**
    * Ring of values emitted since the last external seek.
    *
    * The dead-zone alone satisfies "an echo of the LATEST emission never seeks".
@@ -359,7 +368,7 @@ export function useEnginePlayback(
     // A lane added mid-session has to be placed at the current playhead
     // immediately; the next engine tick would otherwise be the first thing to
     // touch it, and while paused there is no next tick.
-    syncAudioTracks(lastEmittedRef.current, isEnginePlaying())
+    syncAudioTracks(lastRawTimeRef.current, isEnginePlaying())
   // Keyed on the identity string ALONE, exactly as the legacy hook keys it: the
   // effect must fire on adds/removes/src changes and never on a volume drag
   // (which would tear down and rebuild every element mid-playback). The closure
@@ -392,10 +401,33 @@ export function useEnginePlayback(
 
   /** Mirror-then-forward. The ORDER is the bridge's whole contract. */
   const emitTime = useCallback((t: number) => {
-    lastEmittedRef.current = t
-    rememberEmitted(t)
-    onTimeRef.current(t)
-    syncAudioTracks(t, isEnginePlaying())
+    // `t` is frames-CONSUMED time (`samplesConsumed / sampleRate + anchor`);
+    // those frames become audible `latencySeconds` later. Painting to `t`
+    // while playing puts the picture ahead of the ear by that gap ("laggy
+    // audio") — subtract live off the shared context so a device switch
+    // (which changes `outputLatency`) is picked up on the very next tick.
+    //
+    // Skipped when NOT playing: the paused path's onTime fires from
+    // `scheduler.apply` on seek-land with the exact seek target, and
+    // compensating that would offset the scrubbed-to display.
+    //
+    // The store, `rememberEmitted` and `lastEmittedRef` all mirror the
+    // AUDIBLE value so the echo coming back through `currentTime` compares
+    // cleanly. `syncAudioTracks` gets the RAW `t`, though: `<audio>` elements
+    // are frames-consumed devices on the same graph, and syncing them to the
+    // audible value would double-lag their output by `latencySeconds`.
+    const playing = isEnginePlaying()
+    // `peek` never creates: production reaches the playing branch only after
+    // `togglePlay`'s gesture, which has already minted the shared ctx via
+    // `getSharedAudioContext()`. No ctx means no gesture yet, and the
+    // frames-consumed clock has nothing audible behind it to lag.
+    const ctx = playing ? peekSharedAudioContext() : undefined
+    const painted = ctx ? Math.max(0, t - latencySeconds(ctx)) : t
+    lastEmittedRef.current = painted
+    lastRawTimeRef.current = t
+    rememberEmitted(painted)
+    onTimeRef.current(painted)
+    syncAudioTracks(t, playing)
   }, [syncAudioTracks])
 
   const handleStatus = useCallback((next: EngineStatus) => {
@@ -477,7 +509,7 @@ export function useEnginePlayback(
   // Transport transitions the tick cannot report: `pause()` publishes a status
   // but never runs a tick, so the lanes would keep playing without this.
   useEffect(() => {
-    syncAudioTracks(lastEmittedRef.current, status.transport === 'playing')
+    syncAudioTracks(lastRawTimeRef.current, status.transport === 'playing')
   }, [status.transport, syncAudioTracks])
 
   // ── Gestures ──────────────────────────────────────────────────────────────

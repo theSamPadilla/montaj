@@ -2367,6 +2367,34 @@ class CaptionPipelineError(Exception):
         self.message = message
 
 
+def _merge_caption_theme(prev: dict, track: dict) -> dict:
+    """Carry forward every prior caption-track key the pipeline didn't just
+    regenerate, so a new theme field survives caption regeneration by default
+    instead of by memory.
+
+    This used to be a hand-maintained allowlist of five keys (position, color,
+    fontsize, bgColor, accentColor). A hand-maintained list means every new
+    caption field has to be remembered here separately — and twice it wasn't:
+    the per-style accent colours (highlightColor/activeColor/backgroundColor
+    for karaoke, pop, and subtitle) were dropped, and the whole text-styling
+    set (fontFamily, googleFonts, fontWeight, textTransform, letterSpacing,
+    lineHeight, textAlign) would have been silently discarded the day it
+    shipped. Same bug class, same fix, as `montaj_assets/render/render.js`'s
+    clip-field list (see CHANGELOG.md, "a clip field can no longer silently
+    fail to reach the renderer"): copy everything, then call out only the
+    fields that genuinely need special handling.
+
+    `style` is excluded because the route resolves it separately (and it's
+    already on the regenerated track). `segments` is excluded because they
+    are the whole point of the regeneration. A value the pipeline itself
+    produced on `track` always wins over the carried-forward one.
+    """
+    for k, v in prev.items():
+        if k not in ("style", "segments") and k not in track:
+            track[k] = v
+    return track
+
+
 async def _run_caption_pipeline(
     project_id: str,
     project_dir: Path,
@@ -2500,9 +2528,7 @@ async def _run_caption_pipeline(
     # Persist the caption track onto the project and broadcast.
     track = json.loads(track_path.read_text())
     prev = project.get("captions") or {}
-    for k in ("position", "color", "fontsize", "bgColor", "accentColor"):
-        if k in prev and k not in track:
-            track[k] = prev[k]
+    track = _merge_caption_theme(prev, track)
     project["captions"] = track
     text = json.dumps(project, indent=2)
     project_path.write_text(text)
@@ -2630,6 +2656,23 @@ async def generate_captions(
                 return
             except CaptionPipelineError as e:
                 yield f"event: error\ndata: {e.message}\n\n"
+                return
+            except Exception as e:
+                # Catch-all so the stream ALWAYS ends with a terminal frame.
+                # Without this, any exception out of `_run_caption_pipeline`
+                # that isn't one of the two typed cases above (an ffmpeg
+                # subprocess crash, a bug in a pipeline step, ...) would
+                # propagate out of this generator with no frame ever yielded —
+                # the client's read loop would see the connection just close,
+                # with no `done`/`error` frame to act on. `asyncio.CancelledError`
+                # does not subclass `Exception` (Python 3.8+), so a disconnect
+                # cancellation still propagates through here untouched, and the
+                # `None` sentinel path below is a normal return value, not an
+                # exception, so it is unaffected by this clause either. See
+                # the matching client-side `sawTerminal` guard in
+                # ui/src/lib/api.ts, which covers this same failure mode from
+                # the other end.
+                yield f"event: error\ndata: {str(e)}\n\n"
                 return
 
             # None sentinel = client disconnected mid-pipeline; stop quietly.

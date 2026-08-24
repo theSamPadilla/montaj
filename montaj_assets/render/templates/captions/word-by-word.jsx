@@ -12,13 +12,19 @@ export default function WordByWord({
   segments = [],
   color    = '#ffffff',
   fontSize = 72,
+  fontFamily    = 'system-ui, -apple-system, sans-serif',
+  fontWeight    = 800,
+  textAlign     = 'center',
+  letterSpacing = '-0.02em',
+  lineHeight,
+  textTransform,
 }) {
   const t = frame / fps
 
   const active = activeSegments(segments, t)
   if (!active.length) return null
 
-  return <>{active.map((seg, i) => renderSegment(seg, seg.id ?? i, { fps, t, color, fontSize }))}</>
+  return <>{active.map((seg, i) => renderSegment(seg, seg.id ?? i, { fps, t, color, fontSize, fontFamily, fontWeight, textAlign, letterSpacing, lineHeight, textTransform }))}</>
 }
 
 /**
@@ -56,7 +62,7 @@ function activeSegments(segments, t) {
  * caption's rect instead of the union of everything on screen (see
  * measureCaptionContentRect in editor/src/video/preview/captionDragState.ts).
  */
-function renderSegment(seg, key, { fps, t, color, fontSize }) {
+function renderSegment(seg, key, { fps, t, color, fontSize, fontFamily, fontWeight, textAlign, letterSpacing, lineHeight, textTransform }) {
   const words = seg.words || []
   if (!words.length) return null
 
@@ -81,10 +87,37 @@ function renderSegment(seg, key, { fps, t, color, fontSize }) {
   // so this reads as a snappier pop rather than a missing fade — and every word
   // past frame 2 is unchanged at full opacity.
   //
-  // STILL NOT FIXED HERE: a word shorter than one frame interval can fail to
-  // contain any frame's timestamp, so `activeWord` never selects it and no
-  // opacity curve can help. That needs a minimum-duration floor at
-  // transcription time. Regression coverage: test/caption-short-words.test.mjs.
+  // A generation-time floor now exists: steps/lyrics/caption.py's
+  // `floor_word_durations` (MIN_WORD_DURATION_S = 0.05s), applied at the
+  // transcript word-flatten before phrase/segment grouping. Measured across
+  // 8 real projects on 2026-08-23: it rescues 27 of 30 sub-frame words
+  // found there (90%).
+  //
+  // It is PARTIAL, and three sources of sub-frame words survive it:
+  //   - By design, it leaves a fully-starved run of adjacent sub-floor
+  //     words unchanged — its donation gate refuses to rob a successor to
+  //     save its predecessor, so no donation in such a run is ever
+  //     accepted. The 3 unrescued words above are exactly this case.
+  //   - Captions written via a project PUT bypass the generator entirely;
+  //     montaj stores whatever word timings it receives.
+  //   - Caption text edited in the browser editor is spread uniformly
+  //     across the segment's EXISTING duration; the floor call made there
+  //     is inert by construction (a uniform spread can never satisfy the
+  //     donation gate), and that is deliberate — montaj follows CapCut
+  //     here, where editing a caption's text never changes its duration.
+  //
+  // So this opacity floor is still load-bearing and must NOT be removed as
+  // redundant with the generation-time one: the two are jointly necessary.
+  // The generator floor reduces how often a sub-frame word reaches render;
+  // this one is what saves it the times one still does. Removing either
+  // brings the invisible-word bug back for a subset of captions — which
+  // reads as flakiness, not a regression, and is harder to diagnose than
+  // the original bug was.
+  //
+  // Regression coverage: test/caption-short-words.test.mjs, which now
+  // proves both halves — that a floor-rescued 50ms word draws on at least
+  // one frame at 30fps, and that a deliberately-unrescued starved run
+  // still does not.
   const opacity = interpolate(wordFrame, [0, 2], [0.55, 1])
 
   return (
@@ -96,17 +129,19 @@ function renderSegment(seg, key, { fps, t, color, fontSize }) {
         bottom: '18%',
         left: 0,
         right: 0,
-        textAlign: 'center',
+        textAlign,
         padding: '0 8%',
       })}>
         <span style={{
           display: 'inline-block',
           fontSize,
-          fontWeight: 800,
-          fontFamily: 'system-ui, -apple-system, sans-serif',
+          fontWeight,
+          fontFamily,
           color: seg.color ?? color,
           textShadow: '0 2px 12px rgba(0,0,0,0.85)',
-          letterSpacing: '-0.02em',
+          letterSpacing,
+          lineHeight,
+          textTransform,
           opacity,
           transform: `scale(${sc})`,
           transformOrigin: 'center bottom',

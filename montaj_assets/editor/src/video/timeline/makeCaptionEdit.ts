@@ -1,5 +1,6 @@
 import type { Project } from '../../types'
 import type { CaptionSegment } from '../../schema'
+import { floorWordDurations } from '../captionWordFloor'
 
 /** Fields `makeCaptionEdit` can patch onto a single caption segment. */
 export type CaptionEditPatch = Partial<CaptionSegment>
@@ -40,11 +41,14 @@ export function makeCaptionEdit(
           const newWords = next.text.split(/\s+/).filter(Boolean)
           const segDur = next.end - next.start
           const wordDur = segDur / (newWords.length || 1)
-          next.words = newWords.map((w, wi) => ({
+          const spreadWords = newWords.map((w, wi) => ({
             word: w,
             start: next.start + wi * wordDur,
             end: next.start + (wi + 1) * wordDur,
           }))
+          // Uniform spread has no minimum of its own — floor it so a short
+          // word never falls below a frame at any fps. See captionWordFloor.ts.
+          next.words = floorWordDurations(spreadWords, next.end)
           return next
         }),
       },

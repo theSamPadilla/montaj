@@ -152,6 +152,88 @@ describe('moveItemAcrossTracks — kind lock (video vs overlay)', () => {
   })
 })
 
+// ── Ripple-insert (`makeSpace`, magnet/ripple mode ON) ──────────────────
+//
+// Everything above exercises the DEFAULT (`makeSpace` omitted, i.e. magnet
+// off) path and must keep passing byte-for-byte — that is the whole contract
+// of the flag being optional. These tests are the ON path: a colliding
+// target track stops being disqualifying and instead gets pushed open to fit
+// the dropped item, CapCut-style.
+
+describe('moveItemAcrossTracks — ripple-insert (makeSpace: true)', () => {
+  it('ripple-inserts on the target track instead of fanning out when it collides', () => {
+    // Same fixture as "rejects a target track where it would overlap by more
+    // than 30% of itself" above (which asserts the magnet-OFF fallback lands
+    // `d` back on its own track). With makeSpace on, the target (track 0, the
+    // base track) is no longer disqualified by the collision — `blocker`
+    // shifts right by `d`'s own duration (10s) instead.
+    const tracks = stack([clip('blocker', 5, 20)], [dragged])
+    const moved = moveItemAcrossTracks({ tracks, item: dragged, start: 0, end: 10, sourceTrackIdx: 1, dy: 24, makeSpace: true })
+    expect(ids(moved)).toEqual([['blocker', 'd']])
+    expect(moved[0].items[0]).toMatchObject({ id: 'blocker', start: 15, end: 30 })
+    expect(moved[0].items[1]).toMatchObject({ id: 'd', start: 0, end: 10 })
+  })
+
+  it('only pushes items starting at or after the drop point, leaving earlier items alone', () => {
+    const tracks = stack([clip('early', 0, 3), clip('blocker', 5, 20)], [dragged])
+    const moved = moveItemAcrossTracks({ tracks, item: dragged, start: 4, end: 14, sourceTrackIdx: 1, dy: 24, makeSpace: true })
+    expect(ids(moved)).toEqual([['early', 'blocker', 'd']])
+    expect(moved[0].items[0]).toMatchObject({ id: 'early', start: 0, end: 3 })        // untouched — starts before the drop point
+    expect(moved[0].items[1]).toMatchObject({ id: 'blocker', start: 15, end: 30 })    // pushed right by 10s
+    expect(moved[0].items[2]).toMatchObject({ id: 'd', start: 4, end: 14 })
+  })
+
+  it('drops into a genuine gap unchanged — nothing to push', () => {
+    const tracks = stack([clip('far', 50, 60)], [dragged])
+    const moved = moveItemAcrossTracks({ tracks, item: dragged, start: 0, end: 10, sourceTrackIdx: 1, dy: 24, makeSpace: true })
+    expect(ids(moved)).toEqual([['far', 'd']])
+    expect(moved[0].items[0]).toMatchObject({ id: 'far', start: 50, end: 60 })
+  })
+
+  it('does not push the dragged item against itself when it collides on its own track', () => {
+    // A same-track re-drop (dy: 0) that overlaps a later neighbour on the
+    // SAME track it started on — the dragged item is excluded from its own
+    // track before the push, so it can never end up shifting itself.
+    const tracks = stack([dragged, clip('x', 12, 20)])
+    const moved = moveItemAcrossTracks({ tracks, item: dragged, start: 10, end: 20, sourceTrackIdx: 0, dy: 0, makeSpace: true })
+    expect(ids(moved)).toEqual([['x', 'd']])
+    expect(moved[0].items[0]).toMatchObject({ id: 'x', start: 22, end: 30 })
+    expect(moved[0].items[1]).toMatchObject({ id: 'd', start: 10, end: 20 })
+  })
+
+  it('keeps the kind-lock even with makeSpace on — a video item never ripple-inserts onto an overlay track', () => {
+    const videoDragged = clip('d', 0, 10)
+    const tracks: VisualTrack[] = [
+      { id: 'trk-0', items: [overlay('ov', 0, 20)] },
+      { id: 'trk-1', items: [videoDragged] },
+    ]
+    // One step down targets track 0 — overlay-kind, so the kind gate refuses
+    // it regardless of `makeSpace`; the item falls back to its own (now
+    // empty) track rather than ripple-inserting into the overlay. The result
+    // is then re-grouped into the canonical video-block/overlay-block stack
+    // (`normalizeTrackOrder`), which is why the video track leads even though
+    // it was positionally second.
+    const moved = moveItemAcrossTracks({ tracks, item: videoDragged, start: 0, end: 10, sourceTrackIdx: 1, dy: 24, makeSpace: true })
+    expect(ids(moved)).toEqual([['d'], ['ov']])
+    expect(moved[1].items[0]).toMatchObject({ id: 'ov', start: 0, end: 20 })  // untouched — no ripple happened
+  })
+
+  it('still mints a new track when every existing track is kind-blocked, even with makeSpace on', () => {
+    // Both existing tracks are overlay-kind from the dragged item's point of
+    // view (track 1 mixes the dragged video item with an overlay — an
+    // unusual shape, but one the kind gate has to cope with either way), so
+    // there is no kind-ok candidate anywhere in the array — only past its
+    // end, same as the magnet-off "mint" case.
+    const videoDragged = clip('d', 0, 10)
+    const tracks: VisualTrack[] = [
+      { id: 'trk-0', items: [overlay('ov0', 0, 5)] },
+      { id: 'trk-1', items: [videoDragged, overlay('ov1', 50, 60)] },
+    ]
+    const moved = moveItemAcrossTracks({ tracks, item: videoDragged, start: 0, end: 10, sourceTrackIdx: 1, dy: 0, makeSpace: true })
+    expect(ids(moved)).toEqual([['d'], ['ov0'], ['ov1']])
+  })
+})
+
 // ── Track grouping (Part B): the result is ALWAYS canonical ─────────────
 //
 // `moveItemAcrossTracks` re-groups its own output into the video-block/

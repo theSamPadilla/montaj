@@ -234,3 +234,136 @@ describe('per-word caption templates — the multi-lane conversion is a no-op fo
     assert.ok(wordOpacity(templates.pop({ frame: 20, fps: FPS, segments: [LONG_SEG] })) === 1)
   })
 })
+
+// ---------------------------------------------------------------------------
+// The word-duration floor's render-side consequence.
+//
+// steps/lyrics/caption.py's `floor_word_durations` (25 unit tests in
+// tests/steps/test_caption.py) proves the TIMING algebra: a sub-floor word
+// either gets its shared boundary donated forward to 50ms, or -- when the
+// donation would starve its successor -- is left completely unchanged. That
+// suite is Python and never touches a template. What it does NOT prove is
+// the thing this file exists for: that a word the floor rescues to 50ms
+// actually lands on a drawn frame at 30fps, and that a word the floor
+// deliberately refuses to rescue is the one that still doesn't. These three
+// blocks are that render-side proof; they hardcode `floor_word_durations`'s
+// OUTPUT as fixture input (never call the Python function from JS) and
+// cross-reference the exact Python test whose numbers they reuse, so nobody
+// mistakes this for redundant coverage of the timing algebra itself.
+// ---------------------------------------------------------------------------
+
+/** The word text drawn on the same span that carries the opacity -- both
+ *  templates render `{activeWord.word}` as that span's only child. Mirrors
+ *  wordOpacity's walk so the two agree on which node is "the word". */
+function activeWordText(el) {
+  let found
+  const walk = (node) => {
+    if (!node || typeof node !== 'object') return
+    const style = node.props?.style
+    if (style && typeof style.opacity === 'number') found = node.props.children
+    const kids = node.props?.children
+    if (Array.isArray(kids)) kids.forEach(walk)
+    else if (kids) walk(kids)
+  }
+  walk(el)
+  return found
+}
+
+describe('per-word caption templates — a floor-rescued word renders at 30fps', () => {
+  // Exactly tests/steps/test_caption.py::test_floor_donation_accepted's input
+  // and output: floor_word_durations([_w(0, 0.02), _w(0.02, 0.40)], 0.05)
+  // donates the shared boundary forward because the successor keeps 0.35s,
+  // comfortably over the 0.05s floor. This is that call's OUTPUT, hardcoded
+  // as fixture input -- the Python suite proves the transformation, this
+  // proves the rendered consequence.
+  const RESCUED_WORDS = [
+    { word: 'a',   start: 0,    end: 0.05 },
+    { word: 'cat', start: 0.05, end: 0.40 },
+  ]
+  const RESCUED_SEG = { start: 0, end: 1.4, text: 'a cat', words: RESCUED_WORDS }
+
+  for (const name of PER_WORD) {
+    test(`${name}: the rescued word is the active, visibly-opaque word on frame 0`, () => {
+      // [0, 0.05) spans t=0 (frame 0) and t=0.0333 (frame 1) at 30fps -- frame
+      // 0 is enough to prove "at least one frame", so that's what is pinned.
+      const el = templates[name]({ frame: 0, fps: FPS, segments: [RESCUED_SEG] })
+      assert.equal(activeWordText(el), 'a', `${name}: frame 0 should show the rescued word 'a'`)
+      const op = wordOpacity(el)
+      assert.ok(
+        op >= 0.5,
+        `${name}: rescued word rendered at opacity ${op} on a frame inside its floored span`,
+      )
+    })
+  }
+})
+
+describe('per-word caption templates — a fully-starved run is left unchanged, by design, and the render cost of that is honest', () => {
+  // Exactly tests/steps/test_caption.py::test_floor_starved_run_entirely_unchanged's
+  // input: floor_word_durations([_w(0,0.02), _w(0.02,0.04), _w(0.04,0.06), _w(0.06,0.11)], 0.05)
+  // returns these four words byte-for-byte identical -- every donation in the
+  // run is refused (each successor would drop below the floor), and the
+  // fourth word is already AT the floor so the "short" branch never fires for
+  // it. This is NOT the floor failing to do its job: the donation-gate
+  // contract is that a refused donation confers no immunity, and a run where
+  // every boundary refuses comes back exactly as it went in. What follows
+  // documents what "unchanged" costs at 30fps -- it must NOT be read as a
+  // rescue that fell short.
+  const STARVED_WORDS = [
+    { word: 'one',   start: 0,    end: 0.02 },
+    { word: 'two',   start: 0.02, end: 0.04 },
+    { word: 'three', start: 0.04, end: 0.06 },
+    { word: 'four',  start: 0.06, end: 0.11 },
+  ]
+  const STARVED_SEG = { start: 0, end: 1.11, text: 'one two three four', words: STARVED_WORDS }
+
+  for (const name of PER_WORD) {
+    test(`${name}: 'three', the one starved word with no 30fps frame timestamp inside it, never draws`, () => {
+      const seen = new Set()
+      for (let frame = 0; frame <= 4; frame++) {
+        const text = activeWordText(templates[name]({ frame, fps: FPS, segments: [STARVED_SEG] }))
+        if (text != null) seen.add(text)
+      }
+      // 'three' spans [0.04, 0.06); no integer frame at 30fps (t = 0, 0.0333,
+      // 0.0667, 0.1, 0.1333, ...) falls inside that half-open interval, and
+      // the floor left it exactly there BY DESIGN (donation refused on both
+      // sides) -- this must NOT be asserted as something the floor rescues.
+      assert.ok(!seen.has('three'),
+        `${name}: 'three' must never be the active word -- it is sub-frame and the floor ` +
+        `deliberately did not touch it`)
+      // Sanity: the harness itself isn't just rendering nothing -- its
+      // starved neighbours 'one', 'two', and 'four' DO land on a frame each,
+      // which is what makes 'three' the one real exception, not an artifact
+      // of an empty loop.
+      assert.ok([...seen].sort().join() === ['four', 'one', 'two'].join(),
+        `${name}: expected exactly one/two/four to render across frames 0-4, got ${[...seen]}`)
+    })
+  }
+})
+
+describe('per-word caption templates — an already-floor-clean stream renders exactly as before the floor existed', () => {
+  // Analogous to tests/steps/test_caption.py::test_floor_already_long_words_untouched:
+  // every word here is already comfortably above the 50ms floor, so
+  // floor_word_durations is a no-op on it (the `dur >= floor_s: continue`
+  // fast path). Nothing in the render path calls the floor at all -- this
+  // pins the render-side half of "no-op": a normal stream shows each word in
+  // turn, once, in order, none dropped, none overlapping, exactly as it did
+  // before the floor was ever added.
+  const CLEAN_WORDS = [
+    { word: 'the',   start: 0,   end: 0.3 },
+    { word: 'quick', start: 0.3, end: 0.6 },
+    { word: 'fox',   start: 0.6, end: 0.9 },
+  ]
+  const CLEAN_SEG = { start: 0, end: 1.9, text: 'the quick fox', words: CLEAN_WORDS }
+
+  for (const name of PER_WORD) {
+    test(`${name}: each word in an ordinary stream renders once, in order`, () => {
+      const seenOrder = []
+      for (let frame = 0; frame <= 26; frame++) {
+        const text = activeWordText(templates[name]({ frame, fps: FPS, segments: [CLEAN_SEG] }))
+        if (text != null && seenOrder[seenOrder.length - 1] !== text) seenOrder.push(text)
+      }
+      assert.deepEqual(seenOrder, ['the', 'quick', 'fox'],
+        `${name}: expected each word to appear once, in order, with none skipped or repeated out of order`)
+    })
+  }
+})

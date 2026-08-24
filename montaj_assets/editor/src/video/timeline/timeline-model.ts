@@ -240,6 +240,12 @@ export interface CrossTrackMoveArgs {
   sourceTrackIdx: number
   /** Vertical travel of the drag in raw pixels (positive = downward). */
   dy: number
+  /** Magnet/ripple mode (`ctx.rippleMode`). When true, a colliding target
+   *  track is no longer disqualifying — the drop RIPPLE-INSERTS on it instead
+   *  of fanning out to a different track. See the "ripple-insert" section of
+   *  this function's own doc comment. Defaults to false, which reproduces the
+   *  function's pre-existing (magnet-off) behaviour byte-for-byte. */
+  makeSpace?: boolean
 }
 
 /**
@@ -268,8 +274,23 @@ export interface CrossTrackMoveArgs {
  * - A drag past the top of the stack mints a new track, with a fresh id from
  *   the same rule the normalizer uses and deduped against the ids already in
  *   play, so it can never collide with a surviving track.
+ *
+ * ── Ripple-insert (`makeSpace`, magnet/ripple mode ON) ────────────────────
+ * Everything above is the magnet-OFF path and is completely unchanged by
+ * `makeSpace` being available — with it omitted or false this function is
+ * byte-identical to before. When `makeSpace` is true (the pointer machine
+ * passes `ctx.rippleMode`), a collision at the pointed-at track (`targetIdx`)
+ * stops being disqualifying, CapCut-style: instead of fanning out to another
+ * track, the drop lands exactly where the drag points and PUSHES every item
+ * on that track whose `start` is at/after the dropped item's own `start` to
+ * the right by the dropped item's duration, making room for it in place. The
+ * search below still runs — so the kind-lock and the "one past the end mints
+ * a track" rule are unchanged — but with `makeSpace` on it only ever fans out
+ * for a KIND mismatch, never for a collision, since collision no longer
+ * disqualifies a candidate. Dropping into a genuine gap (no collision at
+ * `targetIdx`) is identical in both modes — there is nothing to push.
  */
-export function moveItemAcrossTracks({ tracks, item, start, end, sourceTrackIdx, dy }: CrossTrackMoveArgs): VisualTrack[] {
+export function moveItemAcrossTracks({ tracks, item, start, end, sourceTrackIdx, dy, makeSpace = false }: CrossTrackMoveArgs): VisualTrack[] {
   const trackDelta = Math.round(dy / VISUAL_ROW_HEIGHT_PX)
   const targetIdx = Math.max(0, sourceTrackIdx - trackDelta)
   const duration = end - start
@@ -307,7 +328,12 @@ export function moveItemAcrossTracks({ tracks, item, start, end, sourceTrackIdx,
       // Past the end of the array is a new track — it inherits the dragged
       // item's own kind by construction, so `[]` always passes `kindOk`.
       const candidateItems = i < tracks.length ? tracks[i].items : []
-      if (!hasOverlap(candidateItems) && kindOk(candidateItems)) { bestIdx = i; break outer }
+      // In ripple mode a collision is no longer disqualifying (it becomes a
+      // ripple-insert below), so the gate drops to kind-only — which is what
+      // keeps the search from fanning out past the pointed-at track just
+      // because something is sitting there.
+      const collisionOk = makeSpace || !hasOverlap(candidateItems)
+      if (collisionOk && kindOk(candidateItems)) { bestIdx = i; break outer }
     }
   }
 
@@ -317,9 +343,26 @@ export function moveItemAcrossTracks({ tracks, item, start, end, sourceTrackIdx,
     id: assignTrackId(removed.length, new Set(removed.map(t => t.id))),
     items: [movedItem],
   })
-  const placed: VisualTrack[] = bestIdx >= removed.length
-    ? [...removed, newTrack()]
-    : removed.map((t, i) => i === bestIdx ? { ...t, items: [...t.items, movedItem] } : t)
+
+  let placed: VisualTrack[]
+  if (bestIdx >= removed.length) {
+    placed = [...removed, newTrack()]
+  } else if (makeSpace && hasOverlap(removed[bestIdx].items)) {
+    // Ripple-insert: push every item on the target track that starts at or
+    // after the drop point to the right by the dragged item's own duration —
+    // `removed[bestIdx].items` already excludes the dragged item itself, so
+    // this can't shift the very item being placed — then land the dragged
+    // item at its dropped window.
+    placed = removed.map((t, i) => {
+      if (i !== bestIdx) return t
+      const shifted = t.items.map(other =>
+        other.start >= start ? { ...other, start: other.start + duration, end: other.end + duration } : other,
+      )
+      return { ...t, items: [...shifted, movedItem] }
+    })
+  } else {
+    placed = removed.map((t, i) => i === bestIdx ? { ...t, items: [...t.items, movedItem] } : t)
+  }
 
   // Re-group into the canonical video-block/overlay-block stack (see
   // `normalizeTrackOrder`'s doc). This is what makes a freshly-minted video

@@ -9,7 +9,7 @@ import type {
   VersionEntry,
   WaveformChunk,
 } from '../../types'
-import type { VisualItem } from '../../schema'
+import type { Captions, VisualItem } from '../../schema'
 import type { OverlayChanges } from '../preview/useDragOverlay'
 import VideoEditor from '../VideoEditor'
 
@@ -613,7 +613,10 @@ describe('VideoEditor — editor-package integration', () => {
       />,
     )
 
-    const regenBtn = await findByText('Regenerate')
+    // This project starts with no captions, so the panel's trigger is the
+    // empty state's "Generate captions" button; the two tests below seed a
+    // caption track and therefore get "Regenerate captions" instead.
+    const regenBtn = await findByText('Generate captions')
     await act(async () => { regenBtn.click() })
 
     // Repair fired for a captions-only replacement — words[] derived from the
@@ -629,5 +632,95 @@ describe('VideoEditor — editor-package integration', () => {
     const settledCallCount = onProjectChange.mock.calls.length
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)) })
     expect(onProjectChange.mock.calls.length).toBe(settledCallCount)
+  })
+
+  // Round-trip regression: the caption pipeline (serve/routes/projects.py,
+  // _run_caption_pipeline) writes the SAME freshly-regenerated track to two
+  // places — the `done` frame on this fetch's own SSE response (read by
+  // CaptionRegenModal → onDone → applyExternal), and project.json, broadcast
+  // over the AMBIENT per-project stream (read by adapter.subscribe →
+  // applyExternal). Those are two independent connections with no ordering
+  // guarantee between them. Neither arrival order may leave project.captions
+  // stale or half-merged — each segment already carries a fixed-point `words[]`
+  // so the caption-repair effect is a no-op and doesn't obscure the assertion.
+  const regeneratedTrack: Captions = {
+    style: 'pop',
+    segments: [{
+      id: 's1',
+      text: 'fresh take',
+      start: 0,
+      end: 1,
+      words: [{ word: 'fresh', start: 0, end: 0.5 }, { word: 'take', start: 0.5, end: 1 }],
+    }],
+  }
+
+  it('captions land as the new track when the ambient SSE broadcast arrives AFTER the done event', async () => {
+    const adapter = makeFakeAdapter()
+    adapter.generateCaptions = async function* (): AsyncIterable<CaptionEvent> {
+      yield { type: 'done', captions: regeneratedTrack }
+    }
+    const onProjectChange = vi.fn()
+    const { findByText } = render(
+      <VideoEditor
+        project={makeVideoProject({
+          captions: { style: 'clean', segments: [{ id: 'old', text: 'stale', start: 0, end: 1 }] },
+        } as Partial<Project>)}
+        adapter={adapter}
+        onProjectChange={onProjectChange}
+        slots={{ exportActions: <div /> }}
+      />,
+    )
+
+    const regenBtn = await findByText('Regenerate captions')
+    await act(async () => { regenBtn.click() })
+
+    await waitFor(() => {
+      const last = onProjectChange.mock.calls[onProjectChange.mock.calls.length - 1][0] as Project
+      expect(last.captions).toEqual(regeneratedTrack)
+    })
+
+    // The server's whole-project broadcast for this SAME write lands next, on
+    // the ambient stream — carrying the identical track. Must be a no-op.
+    const afterDone = onProjectChange.mock.calls[onProjectChange.mock.calls.length - 1][0] as Project
+    await act(async () => {
+      adapter.emit({ ...afterDone, captions: regeneratedTrack })
+    })
+
+    const final = onProjectChange.mock.calls[onProjectChange.mock.calls.length - 1][0] as Project
+    expect(final.captions).toEqual(regeneratedTrack)
+  })
+
+  it('captions land as the new track when the ambient SSE broadcast arrives BEFORE the done event resolves', async () => {
+    const adapter = makeFakeAdapter()
+    const baseProject = makeVideoProject({
+      captions: { style: 'clean', segments: [{ id: 'old', text: 'stale', start: 0, end: 1 }] },
+    } as Partial<Project>)
+    adapter.generateCaptions = async function* (): AsyncIterable<CaptionEvent> {
+      // Simulate the server writing + broadcasting project.json BEFORE this
+      // request's own `done` frame is read — the two are separate connections
+      // (POST response body vs. GET .../stream), and the route publishes the
+      // broadcast strictly before it yields `done` (serve/routes/projects.py,
+      // _run_caption_pipeline: broadcaster.publish(...) then `return track`,
+      // ahead of the route's `yield f"event: done..."`).
+      adapter.emit({ ...baseProject, captions: regeneratedTrack })
+      yield { type: 'done', captions: regeneratedTrack }
+    }
+    const onProjectChange = vi.fn()
+    const { findByText } = render(
+      <VideoEditor
+        project={baseProject}
+        adapter={adapter}
+        onProjectChange={onProjectChange}
+        slots={{ exportActions: <div /> }}
+      />,
+    )
+
+    const regenBtn = await findByText('Regenerate captions')
+    await act(async () => { regenBtn.click() })
+
+    await waitFor(() => {
+      const last = onProjectChange.mock.calls[onProjectChange.mock.calls.length - 1][0] as Project
+      expect(last.captions).toEqual(regeneratedTrack)
+    })
   })
 })

@@ -13,13 +13,19 @@ export default function Pop({
   color       = '#ffffff',
   activeColor = '#ffe600',
   fontSize    = 68,
+  fontFamily    = 'system-ui, -apple-system, sans-serif',
+  fontWeight    = 800,
+  textAlign     = 'center',
+  letterSpacing = '-0.02em',
+  lineHeight,
+  textTransform,
 }) {
   const t = frame / fps
 
   const active = activeSegments(segments, t)
   if (!active.length) return null
 
-  return <>{active.map((seg, i) => renderSegment(seg, seg.id ?? i, { fps, t, activeColor, fontSize }))}</>
+  return <>{active.map((seg, i) => renderSegment(seg, seg.id ?? i, { fps, t, activeColor, fontSize, fontFamily, fontWeight, textAlign, letterSpacing, lineHeight, textTransform }))}</>
 }
 
 /**
@@ -57,7 +63,7 @@ function activeSegments(segments, t) {
  * caption's rect instead of the union of everything on screen (see
  * measureCaptionContentRect in editor/src/video/preview/captionDragState.ts).
  */
-function renderSegment(seg, key, { fps, t, activeColor, fontSize }) {
+function renderSegment(seg, key, { fps, t, activeColor, fontSize, fontFamily, fontWeight, textAlign, letterSpacing, lineHeight, textTransform }) {
   const words = seg.words || []
   if (!words.length) return null
 
@@ -89,8 +95,15 @@ function renderSegment(seg, key, { fps, t, activeColor, fontSize }) {
   // shorter than the envelope was replaced before its fade reached visibility,
   // and a one-frame word rendered once at opacity 0 and was never seen.
   // Starting at 0.55 makes the first frame legible; see word-by-word.jsx for
-  // the measurements and the sub-one-frame case this still does not cover.
-  // Regression coverage: test/caption-short-words.test.mjs.
+  // the measurements. A generation-time floor (steps/lyrics/caption.py's
+  // floor_word_durations) now rescues most sub-frame words before they ever
+  // reach render — but it is deliberately partial, and word-by-word.jsx
+  // documents the three sources that still survive it. This opacity floor
+  // is what catches the ones that do, so it must NOT be removed as
+  // redundant with the generation-time one: the two are jointly necessary,
+  // and dropping either brings the invisible-word bug back for a subset of
+  // captions rather than all of them. Regression coverage:
+  // test/caption-short-words.test.mjs.
   const entryOpacity = interpolate(wordFrame, [0, 2], [0.55, 1])
   const opacity = Math.min(entryOpacity, exitOpacity)
 
@@ -103,17 +116,19 @@ function renderSegment(seg, key, { fps, t, activeColor, fontSize }) {
         bottom: '18%',
         left: 0,
         right: 0,
-        textAlign: 'center',
+        textAlign,
         padding: '0 8%',
       })}>
         <span style={{
           display: 'inline-block',
           fontSize,
-          fontWeight: 800,
-          fontFamily: 'system-ui, -apple-system, sans-serif',
+          fontWeight,
+          fontFamily,
           color: activeColor,
           textShadow: '0 0 30px rgba(255,230,0,0.4), 0 2px 12px rgba(0,0,0,0.85)',
-          letterSpacing: '-0.02em',
+          letterSpacing,
+          lineHeight,
+          textTransform,
           opacity,
           transform: `scale(${sc})`,
           transformOrigin: 'center bottom',

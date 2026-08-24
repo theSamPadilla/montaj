@@ -60,7 +60,7 @@ import { reflowMagneticLanes } from '../../audioMagnet'
 import { laneOf, normalizeCaptionLanes, resolveDropLane, sameLaneNeighbours } from '../../captionLanes'
 import { collapseGaps, rollEdit, slideItem, slipItem } from '../../cuts'
 import { applyMoveDeltaToSelection, applyResizeDeltaToSelection } from '../multiSelectOps'
-import { AUDIO_LANE_HEIGHT_PX, CAPTION_ROW_HEIGHT_PX, computeDerivedTiming, groupAudioLanes, mapTrackItems, moveItemAcrossTracks, normalizeTracks, trackItems, updateAudioTrack } from '../timeline-model'
+import { AUDIO_LANE_HEIGHT_PX, CAPTION_ROW_HEIGHT_PX, VISUAL_ROW_HEIGHT_PX, computeDerivedTiming, groupAudioLanes, mapTrackItems, moveItemAcrossTracks, normalizeTracks, trackItems, updateAudioTrack } from '../timeline-model'
 import { DRAG_THRESHOLD_PX, computeResizedItem, resizeWindowedItem, type Draggable } from '../useItemDragDrop'
 import type { TimelineLayout } from './draw'
 import {
@@ -216,7 +216,15 @@ export interface Press {
    *  `itemSnapPoints` only excludes the press-time pair, so a gesture reading
    *  live boundaries would find its own last position back in the magnet list
    *  and snap to itself. Capturing once, here, is what makes that exclusion
-   *  complete. */
+   *  complete.
+   *
+   *  This is the DEFAULT tiering — the one every gesture except a single-item
+   *  visual/audio MOVE uses as-is. Those two re-tier against the row the item
+   *  is currently over instead of the row it started on (see `itemSnapPoints`'s
+   *  `current` parameter); they do so by re-running `tieredBoundaries` fresh
+   *  each move, off `baseProject` below (not off this field), so the id-based
+   *  exclusion stays exact and the recompute never reads a live, re-rendered
+   *  project either. */
   snapBoundaries: readonly SnapPoint[]
 }
 
@@ -355,24 +363,51 @@ export function resolveGesture(hit: HitResult, modifiers: Modifiers): GestureKin
  *  every echoed `projectChange`, so a live read would put the item's own
  *  moving edges back into the magnet list mid-gesture (see the `Press.
  *  snapBoundaries` doc). The playhead is read from `ctx` because it cannot
- *  change during an item gesture. */
-function itemSnapPoints(ctx: PointerContext, press: Press, exclude: readonly number[]): SnapPoint[] {
+ *  change during an item gesture.
+ *
+ *  `current`, when passed, overrides which row is tiered STRONG: instead of
+ *  `press.snapBoundaries` (frozen at the press-time row), this re-runs
+ *  `tieredBoundaries` fresh against `press.baseProject` — still a frozen
+ *  project, so the id-based exclusion (`press.hit.itemId`) stays exact and
+ *  this is no less immune to the self-snap problem above — but tiered
+ *  against the row the caller says the item is CURRENTLY over rather than
+ *  the row it started on. Only a single-item visual/audio MOVE passes this;
+ *  every other gesture stays on the press-time row (see call sites). */
+function itemSnapPoints(
+  ctx: PointerContext,
+  press: Press,
+  exclude: readonly number[],
+  current?: { trackIdx?: number; laneIdx?: number },
+): SnapPoint[] {
+  const boundaries = current
+    ? tieredBoundaries(press.baseProject, current.trackIdx, current.laneIdx, press.hit.itemId)
+    : press.snapBoundaries
   // The playhead is STRONG regardless of tier: it belongs to no track, and
   // parking a cut on it is always a deliberate act rather than an accident of
   // what happens to be on the row above.
-  const points: SnapPoint[] = [...press.snapBoundaries, { time: ctx.playheadTime, strength: 'strong' }]
+  const points: SnapPoint[] = [...boundaries, { time: ctx.playheadTime, strength: 'strong' }]
   return snapPointsExcluding(points, exclude)
 }
 
 /**
  * Every boundary in the project, tiered against the row the gesture is working
- * on. Captured once per press (see `Press.snapBoundaries`).
+ * on. Captured once per press for most gestures (see `Press.snapBoundaries`);
+ * a single-item visual/audio MOVE instead calls this fresh on every move,
+ * with the CURRENT row (see `itemSnapPoints`'s `current` parameter).
  *
- * "Own track" is the row the press LANDED on, and it stays that row even if a
- * cross-track move later carries the item somewhere else. Re-tiering mid-drag
- * would re-rank the magnets under the cursor at the moment it crosses a row
- * boundary, which reads as the clip lurching; a fixed frame of reference for
- * the whole gesture is both calmer and easier to reason about.
+ * "Own track" used to mean the row the press LANDED on, held fixed for the
+ * whole gesture even once a cross-track move carried the item somewhere else
+ * — deliberately, to avoid the magnets under the cursor re-ranking (and the
+ * clip appearing to lurch) the instant it crossed a row boundary. That
+ * decision is REVERSED for a single-item move: dragging a clip onto another
+ * track and getting only the origin track's strong magnets reads as "snapping
+ * doesn't work over here", which is worse than the lurch it was avoiding — so
+ * for `move`/`audio-move` the strong tier now follows the row the item is
+ * CURRENTLY over, and the origin row's magnets fall back to weak the moment
+ * the drag has crossed into a new one. Every other gesture (trim, roll, slip,
+ * slide, the two audio/caption trims, scrub) never changes row mid-gesture,
+ * so this reversal is invisible to them — they still tier once, at press time,
+ * against the row they're on for their entire run.
  *
  * Audio lanes tier against the LANE, matching how `hitTest` addresses them: a
  * lane can hold several tracks, and to an editor they are one row.
@@ -635,7 +670,14 @@ function applyMove(ctx: PointerContext, press: Press, point: Point, snap: SnapSt
   const dt = (point.x - press.origin.x) / ctx.viewport.pxPerSecond
   const rawStart = clamp(item.start + dt, 0, Math.max(0, ctx.totalDuration - duration))
 
-  const boundaries = itemSnapPoints(ctx, press, originGuard(escaped, [item.start, item.end]))
+  // Which track the item is CURRENTLY over, mirroring `moveItemAcrossTracks`'s
+  // own `targetIdx` below exactly — same divisor, same rounding, same
+  // "downward travel lowers the index" sign — so the strong snap tier and the
+  // track the drop will actually land on always agree.
+  const dy = point.y - press.origin.y
+  const currentTrackIdx = Math.max(0, press.hit.trackIdx - Math.round(dy / VISUAL_ROW_HEIGHT_PX))
+
+  const boundaries = itemSnapPoints(ctx, press, originGuard(escaped, [item.start, item.end]), { trackIdx: currentTrackIdx })
   const points = snapPointsForSpan(boundaries, duration)
   const snapped = applySnap(rawStart, points, ctx.viewport, snap, ctx.snapConfig)
   const start = clamp(snapped.time, 0, Math.max(0, ctx.totalDuration - duration))
@@ -658,7 +700,8 @@ function applyMove(ctx: PointerContext, press: Press, point: Point, snap: SnapSt
       start,
       end: start + duration,
       sourceTrackIdx: press.hit.trackIdx,
-      dy: point.y - press.origin.y,
+      dy,
+      makeSpace: ctx.rippleMode,
     }),
   }
   return { effects: [{ type: 'projectChange', project: next }], snap: snapped.state, lastProject: next, guide }
@@ -780,18 +823,22 @@ function applyAudioMove(ctx: PointerContext, press: Press, point: Point, snap: S
   const dt = (point.x - press.origin.x) / ctx.viewport.pxPerSecond
   const rawStart = clamp(track.start + dt, 0, Math.max(0, ctx.totalDuration - duration))
 
-  const boundaries = itemSnapPoints(ctx, press, originGuard(escaped, [track.start, track.end]))
+  // Positive dy is downward, which in the audio stack means a HIGHER lane index
+  // (lanes ascend downward) — the opposite of visual tracks. Computed here,
+  // ahead of the snap boundaries below, because `destLane` is simultaneously
+  // "which lane the drop will land on" and "which lane's peers should snap
+  // strong right now" — the same current-lane derivation `itemSnapPoints`
+  // needs, so one computation serves both.
+  const laneDelta = Math.round((point.y - press.origin.y) / AUDIO_LANE_HEIGHT_PX)
+  const destLane = Math.max(0, press.hit.laneIdx + laneDelta)
+
+  const boundaries = itemSnapPoints(ctx, press, originGuard(escaped, [track.start, track.end]), { laneIdx: destLane })
   const points = snapPointsForSpan(boundaries, duration)
   const snapped = applySnap(rawStart, points, ctx.viewport, snap, ctx.snapConfig)
   const start = clamp(snapped.time, 0, Math.max(0, ctx.totalDuration - duration))
   const guide = Math.abs(start - snapped.time) <= EPSILON
     ? spanSnapGuide(snapped, duration, boundaries)
     : null
-
-  // Positive dy is downward, which in the audio stack means a HIGHER lane index
-  // (lanes ascend downward) — the opposite of visual tracks.
-  const laneDelta = Math.round((point.y - press.origin.y) / AUDIO_LANE_HEIGHT_PX)
-  const destLane = Math.max(0, press.hit.laneIdx + laneDelta)
 
   const changes: Partial<AudioTrack> = { start, end: start + duration, lane: destLane }
   // Cross-lane inheritance: a clip dropped onto another lane adopts THAT

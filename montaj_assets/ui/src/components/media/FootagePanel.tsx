@@ -1,5 +1,5 @@
-import { useEffect, useRef, useState } from 'react'
-import { X, Film, Plus } from 'lucide-react'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { X, Film, Plus, ArrowUpDown, Check } from 'lucide-react'
 import {
   FilmstripScrubber,
   FOOTAGE_DND_MIME,
@@ -27,6 +27,22 @@ function formatDuration(seconds: number): string {
 function clamp(v: number, lo: number, hi: number): number {
   return Math.min(hi, Math.max(lo, v))
 }
+
+/** Lowercased extension without the dot, e.g. `mov`. Empty string if there is none. */
+function extensionOf(src: string | undefined): string {
+  if (!src) return ''
+  const base = basename(src)
+  const dot = base.lastIndexOf('.')
+  return dot > 0 ? base.slice(dot + 1).toLowerCase() : ''
+}
+
+type SortKey = 'name' | 'dateAdded' | 'type'
+
+const SORT_OPTIONS: { key: SortKey; label: string }[] = [
+  { key: 'name', label: 'Name' },
+  { key: 'dateAdded', label: 'Date added' },
+  { key: 'type', label: 'Type' },
+]
 
 interface InFlightImport {
   id: string
@@ -66,6 +82,10 @@ export default function FootagePanel({
   const [picking, setPicking] = useState(false)
   const [hover, setHover] = useState<{ id: string; fraction: number } | null>(null)
   const pollTimers = useRef(new Map<string, ReturnType<typeof setInterval>>())
+  // No active sort = today's default order (whatever `sources` arrives in).
+  const [sortKey, setSortKey] = useState<SortKey | null>(null)
+  const [sortMenuOpen, setSortMenuOpen] = useState(false)
+  const sortMenuRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
     const timers = pollTimers.current
@@ -74,6 +94,40 @@ export default function FootagePanel({
       timers.clear()
     }
   }, [])
+
+  useEffect(() => {
+    if (!sortMenuOpen) return
+    function handleClickOutside(e: MouseEvent) {
+      if (sortMenuRef.current && !sortMenuRef.current.contains(e.target as Node)) {
+        setSortMenuOpen(false)
+      }
+    }
+    document.addEventListener('mousedown', handleClickOutside)
+    return () => document.removeEventListener('mousedown', handleClickOutside)
+  }, [sortMenuOpen])
+
+  // Sorts a copy — never mutates the `sources` prop — and keeps ties in their
+  // original relative order (stable) via the captured index tiebreak.
+  const sortedSources = useMemo(() => {
+    if (!sortKey) return sources
+    const indexed = sources.map((s, i) => ({ s, i }))
+    if (sortKey === 'name') {
+      indexed.sort((a, b) => {
+        const an = a.s.src ? basename(a.s.src) : 'Untitled'
+        const bn = b.s.src ? basename(b.s.src) : 'Untitled'
+        return an.localeCompare(bn, undefined, { numeric: true, sensitivity: 'base' }) || a.i - b.i
+      })
+    } else if (sortKey === 'type') {
+      indexed.sort((a, b) => extensionOf(a.s.src).localeCompare(extensionOf(b.s.src)) || a.i - b.i)
+    } else {
+      // dateAdded: VisualItem carries no addedAt/createdAt timestamp, so the
+      // array's insertion order IS the date-added order (the server appends
+      // each new source — see serve/routes/projects.py). Newest-first reads
+      // as the useful default for this sort.
+      indexed.sort((a, b) => b.i - a.i)
+    }
+    return indexed.map(x => x.s)
+  }, [sources, sortKey])
 
   function updateInFlight(id: string, patch: Partial<InFlightImport>) {
     setInFlight(prev => prev.map(item => (item.id === id ? { ...item, ...patch } : item)))
@@ -178,7 +232,31 @@ export default function FootagePanel({
 
   return (
     <div className="flex flex-col flex-1 overflow-hidden">
-      <div className="shrink-0 flex items-center justify-end px-3 py-2 border-b border-gray-200 dark:border-gray-800">
+      <div className="shrink-0 flex items-center justify-between px-3 py-2 border-b border-gray-200 dark:border-gray-800">
+        <div className="relative" ref={sortMenuRef}>
+          <button
+            onClick={() => setSortMenuOpen(o => !o)}
+            className="flex items-center gap-1 text-xs text-gray-500 hover:text-gray-900 dark:hover:text-white transition-colors"
+            title="Sort footage"
+          >
+            <ArrowUpDown size={12} />
+            {sortKey ? SORT_OPTIONS.find(o => o.key === sortKey)?.label : 'Sort'}
+          </button>
+          {sortMenuOpen && (
+            <div className="absolute left-0 top-full mt-1 z-10 w-32 rounded-md border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 shadow-lg py-1">
+              {SORT_OPTIONS.map(option => (
+                <button
+                  key={option.key}
+                  onClick={() => { setSortKey(option.key); setSortMenuOpen(false) }}
+                  className="w-full flex items-center justify-between gap-2 px-2.5 py-1.5 text-xs text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
+                >
+                  {option.label}
+                  {sortKey === option.key && <Check size={12} className="text-blue-500" />}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
         <button
           onClick={handlePick}
           disabled={picking}
@@ -236,7 +314,7 @@ export default function FootagePanel({
                 )}
               </div>
             ))}
-            {sources.map(source => {
+            {sortedSources.map(source => {
               const used = !!source.src && usedSrcs.has(source.src)
               const name = source.src ? basename(source.src) : 'Untitled'
               return (

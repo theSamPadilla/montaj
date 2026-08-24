@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type MutableRefObject } from 'react'
-import { Crop, HelpCircle, Magnet, Maximize2, Minimize2, Pencil, Redo2, Scan, SeparatorVertical, Smartphone, Undo2, Wand2 } from 'lucide-react'
+import { Crop, HelpCircle, Magnet, Maximize2, Minimize2, Pencil, Redo2, SeparatorVertical, Smartphone, Undo2, Wand2 } from 'lucide-react'
 import type { Project, VideoEditorProps } from '../types'
 import { useProjectSync, type UseProjectSync } from '../state/use-project-sync'
 import { VideoSourceCropModal } from '../crop/VideoSourceCropModal'
@@ -7,6 +7,7 @@ import ControlsInfoModal, { VIDEO_CONTROLS } from '../ControlsInfoModal'
 import { Tooltip } from '../ui/Tooltip'
 import { reviveNumberInRange, usePersistentState } from '../ui/usePersistentState'
 import { getOverlayDesignCanvas } from './design-canvas'
+import { availableResolutionTiers, availableFpsTiers, currentResolutionTier, maxExportFps } from './export-limits'
 import { applyTheme, defaultMontajTheme } from '../theme'
 import { collapseGaps, rippleDelete, splitAtTime } from './cuts'
 import { repairCaptionWords } from './captionRepair'
@@ -15,6 +16,8 @@ import Timeline, { type TimelineActions } from './timeline/Timeline'
 import { computeAutoCrossfade, computeDerivedTiming, enabledTrackItems, mapTrackItems, trackItems } from './timeline/timeline-model'
 import { makeCaptionEdit, type CaptionEditPatch } from './timeline/makeCaptionEdit'
 import PreviewPlayer, { type TransportHandle } from './preview/PreviewPlayer'
+import SocialPreviewMenu, { PlatformGlyph, platformOption } from './preview/SocialPreviewMenu'
+import type { SocialPreviewPlatform } from './preview/SocialSafeZoneOverlay'
 import { createPlaybackClock, usePlaybackTime, type PlaybackClock } from './playback-clock'
 import { createHoverScrub } from './hover-scrub'
 import { useSourcePreview, type SourcePreviewStore } from './source-preview'
@@ -892,6 +895,30 @@ function ReviewSurface<P extends Project>({
     })
   }, [syncMutate, syncProjectRef])
 
+  // Persist the social-media preview platform into project settings — same
+  // shape as handleImageToneChange above. `null` clears it (the picker's
+  // "None" entry), which the settings-spread below has to do by explicitly
+  // OMITTING the key rather than writing `socialPreview: undefined`: a
+  // spread with an `undefined` value still enumerates the key, so a
+  // JSON-serialized save would round-trip it back as `null`/absent
+  // inconsistently across hosts — omitting it keeps "no selection" and
+  // "field never written" the same on-disk shape.
+  const handleSocialPreviewChange = useCallback((platform: SocialPreviewPlatform | null) => {
+    void syncMutate(() => {
+      const cur = syncProjectRef.current
+      const { socialPreview: _drop, ...restSettings } = cur.settings
+      return {
+        ...cur,
+        settings: platform ? { ...restSettings, socialPreview: platform } : restSettings,
+      } as P
+    })
+  }, [syncMutate, syncProjectRef])
+  const currentSocialPreview = project.settings?.socialPreview ?? null
+  // The active pick's glyph/badge, for the controls-row trigger button
+  // (see its render site below) — `null` on "None", same as `platformOption`
+  // itself returns for a `null` platform.
+  const activeSocialPreviewOption = platformOption(currentSocialPreview)
+
   // Host-chrome placement of the image-tone setting (mirrors
   // onProvideRenderTrigger): push the current state up whenever it changes,
   // and null for SDR projects so the host hides the control.
@@ -920,6 +947,32 @@ function ReviewSurface<P extends Project>({
       .map(item => ({ start: item.start, end: item.end })),
     [project.tracks],
   )
+  // Persist the export resolution / fps tier into project settings — same
+  // save-then-sync idiom as handleImageToneChange above. Mutating
+  // settings.resolution to a same-aspect higher tier doesn't perturb the
+  // editor preview (design-canvas only reads it for aspect), so this is safe
+  // to fire straight from the export dialog's tier picker.
+  const handleExportResolutionChange = useCallback((res: [number, number]) => {
+    void syncMutate(() => {
+      const cur = syncProjectRef.current
+      return { ...cur, settings: { ...cur.settings, resolution: res } } as P
+    })
+  }, [syncMutate, syncProjectRef])
+
+  const handleExportFpsChange = useCallback((fps: number) => {
+    void syncMutate(() => {
+      const cur = syncProjectRef.current
+      return { ...cur, settings: { ...cur.settings, fps } } as P
+    })
+  }, [syncMutate, syncProjectRef])
+
+  // Source-capped tier lists for the export dialog's resolution/fps pickers.
+  // Memoized separately from preRenderOptions so a project mutation unrelated
+  // to tracks/resolution/fps doesn't recompute the (mildly more expensive)
+  // source-scan in availableResolutionTiers.
+  const availableRes = useMemo(() => availableResolutionTiers(project), [project])
+  const availableFpsList = useMemo(() => availableFpsTiers(project), [project])
+
   const preRenderOptions = useMemo(() => ({
     isHdr: isHdrProject,
     keeps: renderKeeps,
@@ -930,7 +983,21 @@ function ReviewSurface<P extends Project>({
       const r = project.settings?.resolution
       return r && r[0] > 0 && r[1] > 0 ? r[0] / r[1] : undefined
     })(),
-  }), [isHdrProject, renderKeeps, currentImageTone, handleImageToneChange, project.name, project.settings?.resolution])
+    resolution: {
+      value: currentResolutionTier(project) ?? project.settings.resolution,
+      available: availableRes,
+      set: handleExportResolutionChange,
+    },
+    fps: {
+      value: maxExportFps(project),
+      available: availableFpsList,
+      set: handleExportFpsChange,
+    },
+  }), [
+    isHdrProject, renderKeeps, currentImageTone, handleImageToneChange,
+    project.name, project.settings?.resolution, project.settings?.fps,
+    availableRes, availableFpsList, handleExportResolutionChange, handleExportFpsChange,
+  ])
 
   const openRender = useCallback(() => {
     const final = { ...syncProjectRef.current, status: 'final' } as P
@@ -1323,10 +1390,15 @@ function ReviewSurface<P extends Project>({
     else void previewRegionRef.current?.requestFullscreen()
   }, [])
 
-  // Safe-zone preview (mirrors CapCut's "TikTok" toggle) — a viewing aid
-  // only, off by default. Drawn inside the aspect-ratio box (over the video)
-  // rather than the controls row below it, by SocialSafeZoneOverlay itself.
-  const [showSafeZone, setShowSafeZone] = useState(false)
+  // Social-media preview chrome (mirrors CapCut's "Preview your video for
+  // social media" picker) — a viewing aid only, off ("None") by default.
+  // Drawn inside the aspect-ratio box (over the video) rather than the
+  // controls row below it, by SocialSafeZoneOverlay itself. Persisted into
+  // project settings (see handleSocialPreviewChange below) the same way
+  // handleImageToneChange persists the HDR image-tone pick — a real user
+  // preference, not per-render state, so it survives a reload.
+  const [socialPreviewMenuOpen, setSocialPreviewMenuOpen] = useState(false)
+  const socialPreviewTriggerRef = useRef<HTMLButtonElement>(null)
 
   // Command palette. Bindings for split/undo/redo/ripple-delete/palette-open
   // double as their own registry entries here; a few are palette-only
@@ -1583,14 +1655,15 @@ function ReviewSurface<P extends Project>({
                 engine={engine}
                 transportRef={transportRef}
                 hoverScrub={hoverScrub}
-                // Safe-zone viewing aid (mirrors CapCut's "TikTok" toggle) — it
-                // previews what platform UI would sit ON TOP of the picture, so
-                // PreviewPlayer mounts it INSIDE its own preview surface (same
-                // coordinate space AND stacking context as the picture, rather
-                // than as a sibling here) — see the `safeZone` prop doc on
-                // PreviewPlayerProps. Off by default; the component itself
-                // no-ops on an unset/unknown platform.
-                safeZone={showSafeZone ? 'tiktok' : undefined}
+                // Social-media preview chrome (mirrors CapCut's "Preview your
+                // video for social media" picker) — it previews what platform
+                // UI would sit ON TOP of the picture, so PreviewPlayer mounts
+                // it INSIDE its own preview surface (same coordinate space AND
+                // stacking context as the picture, rather than as a sibling
+                // here) — see the `socialPreview` prop doc on
+                // PreviewPlayerProps. "None" (null) by default; the component
+                // itself no-ops on an unset/unknown platform.
+                socialPreview={currentSocialPreview ?? undefined}
               />
               {/* Footage-bin source scrub (opt-in). A paused <video> parked above the
                   timeline preview, showing an OFF-TIMELINE clip's frame while the
@@ -1616,29 +1689,38 @@ function ReviewSurface<P extends Project>({
                   itself and the total are untouched. */}
               {formatTimecode(Math.min(currentTime, previewDuration))} / {formatTimecode(previewDuration)}
             </span>
-            <Tooltip label="Zoom to fit">
+            {/* Zoom-to-fit lives in the timeline zoom chrome ("fit" next to the
+                +/- zoom buttons, Timeline.tsx) — no duplicate control here. */}
+            <Tooltip label="Preview for social media">
               <button
-                onClick={() => timelineActionsRef.current?.zoomFit()}
-                aria-label="Zoom to fit"
-                className="flex items-center justify-center w-5 h-5 rounded transition-colors text-[var(--editor-text)]/60 bg-transparent hover:text-[var(--editor-text)]"
-              >
-                <Scan size={12} />
-              </button>
-            </Tooltip>
-            <Tooltip label={showSafeZone ? 'Hide safe zone guide' : 'Show safe zone guide'}>
-              <button
-                onClick={() => setShowSafeZone(v => !v)}
-                aria-label="Safe zone guide"
-                aria-pressed={showSafeZone}
+                ref={socialPreviewTriggerRef}
+                onClick={() => setSocialPreviewMenuOpen(v => !v)}
+                aria-label="Preview for social media"
+                aria-haspopup="menu"
+                aria-expanded={socialPreviewMenuOpen}
+                aria-pressed={currentSocialPreview !== null}
                 className={`flex items-center justify-center w-5 h-5 rounded transition-colors ${
-                  showSafeZone
+                  currentSocialPreview !== null
                     ? 'text-sky-400 bg-sky-400/15 hover:bg-sky-400/25'
                     : 'text-[var(--editor-text)]/60 bg-transparent hover:text-[var(--editor-text)]'
                 }`}
               >
-                <Smartphone size={12} />
+                {/* Trigger reflects the active selection: the platform's own
+                    glyph (TikTok/YouTube/Instagram) once one is picked, the
+                    plain Smartphone icon otherwise. */}
+                {activeSocialPreviewOption
+                  ? <PlatformGlyph icon={activeSocialPreviewOption.icon} badgeClassName={activeSocialPreviewOption.badgeClassName} size={14} />
+                  : <Smartphone size={12} />}
               </button>
             </Tooltip>
+            {socialPreviewMenuOpen && (
+              <SocialPreviewMenu
+                anchorRef={socialPreviewTriggerRef}
+                value={currentSocialPreview}
+                onChange={handleSocialPreviewChange}
+                onClose={() => setSocialPreviewMenuOpen(false)}
+              />
+            )}
             <Tooltip label={isFullscreen ? 'Exit fullscreen' : 'Enter fullscreen'} keys={['F']}>
               <button
                 onClick={toggleFullscreen}
@@ -1912,6 +1994,13 @@ function ReviewSurface<P extends Project>({
               onProjectChange={handleProjectChange}
               onCaptionSegmentDelete={handleCaptionSegmentDelete}
               onRegenerateCaptions={handleRegenerateCaptions}
+              // Disables the panel's generate/regenerate trigger for the life of
+              // the modal. Defensive rather than load-bearing: CaptionRegenModal
+              // is a full-screen blocking portal, so the panel underneath can't
+              // be clicked anyway. It keeps the panel honest on its own terms —
+              // and re-enables on close, so a failed job never leaves a
+              // permanently dead button.
+              captionsGenerating={regenCaptionsOpen}
               fps={project.settings?.fps ?? 30}
               clock={clock}
               editFocusId={editFocusId}

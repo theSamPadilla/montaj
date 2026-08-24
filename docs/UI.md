@@ -54,6 +54,12 @@ Review is optional — click Render directly from live view if the first pass is
 
 Triggers the render pass. Progress streams back via SSE. Final MP4 lands in `workspace/`.
 
+Before firing, the Export dialog collects a filename, a poster/cover frame, an output resolution, and an output frame rate. HDR projects also get a format choice (HDR / SDR / Both), the image-color control, and an SDR tone-curve compare.
+
+- Resolution is source-capped by the timeline's footage: each tier the menu offers is one the largest native clip can actually produce. A project shot at 1080p won't offer 4K — that would just re-encode to a larger file with no added detail. A project with a 4K clip on the timeline can export up to 4K, and the largest available tier is marked "recommended". Frame rate is capped at the project's own `settings.fps` (30 by default), so no 60 fps option shows up on a 30 fps project.
+- The chosen resolution and frame rate are persisted with the project (`settings.resolution` / `settings.fps`), so re-opening the dialog reflects the last choice.
+- This does not rescale the editor preview. Resolution is applied at render time only; the preview always runs at the overlay design canvas.
+
 ---
 
 ## Tabs

@@ -28,6 +28,7 @@ import {
   TIMELINE_COLORS,
   TRACK_PALETTE,
   clampRectToSurface,
+  drawRowBackground,
   computeTimelineLayout,
   overlapBands,
   drawAudioItem,
@@ -997,6 +998,25 @@ describe('drawSnapGuide — weak', () => {
 
   it('is thinner than the strong guide it sits alongside', () => {
     expect(SNAP_GUIDE_WEAK_WIDTH_PX).toBeLessThan(SNAP_GUIDE_WIDTH_PX)
+  })
+})
+
+describe('drawRowBackground — panel + divider', () => {
+  it('fills the row and strokes a rowDivider outline as the track divider', () => {
+    const r = recordingContext()
+    drawRowBackground(r.ctx, { x: 0, y: 10, width: 200, height: 40 })
+    expect(r.calls.some(c => c.method === 'set:fillStyle' && c.args[0] === TIMELINE_COLORS.rowBackground)).toBe(true)
+    expect(r.calls.some(c => c.method === 'set:strokeStyle' && c.args[0] === TIMELINE_COLORS.rowDivider)).toBe(true)
+    const strokes = r.of('strokeRect')
+    expect(strokes).toHaveLength(1)
+    expect(strokes[0].args).toEqual([0.5, 10.5, 199, 39])
+  })
+
+  it('paints the alternate shade when one is passed, so adjacent lanes differ', () => {
+    const r = recordingContext()
+    drawRowBackground(r.ctx, { x: 0, y: 0, width: 100, height: 20 }, TIMELINE_COLORS.rowBackgroundAlt)
+    expect(r.calls.some(c => c.method === 'set:fillStyle' && c.args[0] === TIMELINE_COLORS.rowBackgroundAlt)).toBe(true)
+    expect(r.calls.some(c => c.method === 'set:fillStyle' && c.args[0] === TIMELINE_COLORS.rowBackground)).toBe(false)
   })
 })
 

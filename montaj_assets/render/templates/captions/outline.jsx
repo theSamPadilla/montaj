@@ -15,13 +15,27 @@ export default function Outline({
   color       = '#ffffff',
   accentColor = '#fbbf24',
   fontSize    = 80,
+  fontFamily    = 'system-ui, -apple-system, sans-serif',
+  fontWeight    = 900,
+  textAlign     = 'center',
+  letterSpacing,
+  // No shared default: the no-words fallback (below) renders with no
+  // lineHeight today, while the words branch renders at 1.15 — the `??`
+  // fallback at each call site preserves both current looks exactly when
+  // this prop is absent, and still lets an explicit value reach both.
+  lineHeight,
+  // Same story for textTransform: the words branch is deliberately all-caps
+  // ('uppercase' is this template's stencil look, not a placeholder), while
+  // the fallback branch renders the segment text as-is. `??` per call site
+  // again, not a shared default, to avoid uppercasing the fallback branch.
+  textTransform,
 }) {
   const t = frame / fps
 
   const active = activeSegments(segments, t)
   if (!active.length) return null
 
-  return <>{active.map((seg, i) => renderSegment(seg, seg.id ?? i, { frame, fps, t, color, accentColor, fontSize }))}</>
+  return <>{active.map((seg, i) => renderSegment(seg, seg.id ?? i, { frame, fps, t, color, accentColor, fontSize, fontFamily, fontWeight, textAlign, letterSpacing, lineHeight, textTransform }))}</>
 }
 
 /**
@@ -55,7 +69,7 @@ function activeSegments(segments, t) {
  * caption's rect instead of the union of everything on screen (see
  * measureCaptionContentRect in editor/src/video/preview/captionDragState.ts).
  */
-function renderSegment(seg, key, { frame, fps, t, color, accentColor, fontSize }) {
+function renderSegment(seg, key, { frame, fps, t, color, accentColor, fontSize, fontFamily, fontWeight, textAlign, letterSpacing, lineHeight, textTransform }) {
   const words = seg.words || []
   if (!words.length) {
     // No word timestamps — fall back to plain text with a short fade-in
@@ -67,16 +81,19 @@ function renderSegment(seg, key, { frame, fps, t, color, accentColor, fontSize }
           bottom: '18%',
           left: 0,
           right: 0,
-          textAlign: 'center',
+          textAlign,
           padding: '0 6%',
           opacity,
         })}>
           <span style={{
             fontSize,
-            fontWeight: 900,
-            fontFamily: 'system-ui, -apple-system, sans-serif',
+            fontWeight,
+            fontFamily,
             color: seg.color ?? color,
             textShadow: '0 2px 12px rgba(0,0,0,0.85)',
+            letterSpacing,
+            lineHeight,
+            textTransform,
           }}>
             {seg.text}
           </span>
@@ -95,15 +112,16 @@ function renderSegment(seg, key, { frame, fps, t, color, accentColor, fontSize }
         bottom: '18%',
         left: 0,
         right: 0,
-        textAlign: 'center',
+        textAlign,
         padding: '0 6%',
       })}>
         <div style={{
           fontSize,
-          fontWeight: 900,
-          fontFamily: 'system-ui, -apple-system, sans-serif',
-          textTransform: 'uppercase',
-          lineHeight: 1.15,
+          fontWeight,
+          fontFamily,
+          letterSpacing,
+          textTransform: textTransform ?? 'uppercase',
+          lineHeight: lineHeight ?? 1.15,
           WebkitTextStroke: '9px #000000',
           paintOrder: 'stroke fill',
           textShadow: '0 6px 18px rgba(0,0,0,0.55)',

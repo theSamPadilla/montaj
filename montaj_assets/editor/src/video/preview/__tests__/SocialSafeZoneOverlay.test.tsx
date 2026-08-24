@@ -56,7 +56,6 @@ describe('SocialSafeZoneOverlay — TikTok chrome', () => {
     expect(getByText('9:41')).toBeTruthy()
 
     // Nav row — For You is the active tab
-    expect(getByText('Explore')).toBeTruthy()
     expect(getByText('Following')).toBeTruthy()
     expect(getByText('For You')).toBeTruthy()
 
@@ -64,24 +63,60 @@ describe('SocialSafeZoneOverlay — TikTok chrome', () => {
     expect(getAllByText('2.8M')).toHaveLength(4)
 
     // Bottom-left credit block
-    expect(getByText('Your name')).toBeTruthy()
+    expect(getByText('@Your name')).toBeTruthy()
     expect(getByText('Here are some descriptions about videos')).toBeTruthy()
-    expect(getByText('See original')).toBeTruthy()
+    expect(getByText('Music name')).toBeTruthy()
   })
+})
 
-  it('never uses an em dash in its copy', () => {
+describe('SocialSafeZoneOverlay — YouTube Shorts chrome', () => {
+  it('renders its distinguishing chrome: channel row and Subscribe pill', () => {
     installResizeObserver({ width: 1080, height: 1920 })
-    const { getByTestId } = render(<SocialSafeZoneOverlay platform="tiktok" />)
-    expect(getByTestId('social-safe-zone-overlay').textContent).not.toContain('—')
+    const { getByText, getAllByText } = render(<SocialSafeZoneOverlay platform="youtube" />)
+
+    expect(getByText('9:41')).toBeTruthy()
+    expect(getByText('@channel')).toBeTruthy()
+    expect(getByText('Subscribe')).toBeTruthy()
+    // Right rail — thumbs-up and comments are both counted; thumbs-down,
+    // share, remix and the sound thumbnail are icon-only (no count).
+    expect(getAllByText('2.8M')).toHaveLength(2)
+  })
+})
+
+describe('SocialSafeZoneOverlay — Instagram Reels chrome', () => {
+  it('renders its distinguishing chrome: the Reels title and a Follow pill', () => {
+    installResizeObserver({ width: 1080, height: 1920 })
+    const { getByText, getAllByText } = render(<SocialSafeZoneOverlay platform="instagram" />)
+
+    expect(getByText('9:41')).toBeTruthy()
+    expect(getByText('Reels')).toBeTruthy()
+    expect(getByText('Follow')).toBeTruthy()
+    expect(getByText('Your name')).toBeTruthy()
+    // Right rail — likes, comments and send are each counted 2.8M.
+    expect(getAllByText('2.8M')).toHaveLength(3)
+  })
+})
+
+describe('SocialSafeZoneOverlay — copy style', () => {
+  it('never uses an em dash, on any platform', () => {
+    installResizeObserver({ width: 1080, height: 1920 })
+    for (const platform of ['tiktok', 'youtube', 'instagram'] as const) {
+      const { getByTestId, unmount } = render(<SocialSafeZoneOverlay platform={platform} />)
+      expect(getByTestId('social-safe-zone-overlay').textContent).not.toContain('—')
+      unmount()
+    }
   })
 })
 
 describe('SocialSafeZoneOverlay — never steals a click', () => {
-  it('the root layer is pointer-events-none', () => {
+  it('the root layer is pointer-events-none, on every platform', () => {
     installResizeObserver({ width: 1080, height: 1920 })
-    const { getByTestId } = render(<SocialSafeZoneOverlay platform="tiktok" />)
-    const root = getByTestId('social-safe-zone-overlay')
-    expect(root.className).toContain('pointer-events-none')
+    for (const platform of ['tiktok', 'youtube', 'instagram'] as const) {
+      const { getByTestId, unmount } = render(<SocialSafeZoneOverlay platform={platform} />)
+      const root = getByTestId('social-safe-zone-overlay')
+      expect(root.className).toContain('pointer-events-none')
+      unmount()
+    }
   })
 })
 

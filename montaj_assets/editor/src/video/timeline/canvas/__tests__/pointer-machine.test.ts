@@ -36,9 +36,18 @@ import {
   type PointerEffect,
 } from '../pointer-machine'
 import { FADE_GRIP_ZONE_HEIGHT_PX, hitTest } from '../hit-test'
+import type { SnapConfig } from '../snap'
 import type { Viewport } from '../viewport'
 
 const VIEWPORT: Viewport = { pxPerSecond: 100, scrollSeconds: 0, widthPx: 1000 }
+
+/** Zeroes every capture/release radius, so `applySnap` never magnetizes a
+ *  candidate to a boundary (see `applySnap`'s `dist < bestStrongDist` gate —
+ *  `bestStrongDist` starts at `attractPx`, so 0 means no distance is ever
+ *  `< 0`). Used by the ripple-insert tests below, which need the dropped
+ *  item to land at an EXACT, hand-computed time rather than wherever the
+ *  magnet happens to pull it. */
+const ZERO_SNAP: SnapConfig = { attractPx: 0, releasePx: 0, weakAttractPx: 0, weakReleasePx: 0 }
 
 function baseProject(): Project {
   return {
@@ -683,6 +692,63 @@ describe('cross-track move', () => {
     const after = lastProjectChange(d.move(C1_BODY.x, SAME_KIND_BASE_Y - VISUAL_ROW_HEIGHT_PX))
     expect(trackIndexOf(after, 'c1')).toBe(1)
     expect(visual(after, 'c1').start).toBeCloseTo(5)
+  })
+})
+
+describe('cross-track move — ripple mode (makeSpace)', () => {
+  // `sameKindProject`: track 1 is video-kind here so the kind-lock doesn't
+  // block the moves these tests are actually about — see its own doc
+  // comment. `ZERO_SNAP` makes the dropped position land exactly on the
+  // hand-computed number rather than wherever the magnet pulls it, since the
+  // point of these tests is the ripple push amount, not snap behaviour.
+  it('ripple-inserts into the target track instead of bumping to another one when the drop collides', () => {
+    const d = new Driver(makeContext({ project: sameKindProject(), rippleMode: true, snapConfig: ZERO_SNAP }))
+    d.down(C1_BODY.x, SAME_KIND_BASE_Y)
+    // c1 (5s–10s) moves up one track and 4s left, landing at 1s–6s — a 2s
+    // overlap with o0 (2s–4s), past the 30%-of-5s tolerance.
+    const after = lastProjectChange(d.move(C1_BODY.x - 400, SAME_KIND_BASE_Y - VISUAL_ROW_HEIGHT_PX))
+    expect(trackIndexOf(after, 'c1')).toBe(1)
+    expect(visual(after, 'c1')).toMatchObject({ start: 1, end: 6 })
+    // o0 is pushed right by c1's own 5s duration rather than the drag
+    // bumping to a different track.
+    expect(visual(after, 'o0')).toMatchObject({ start: 7, end: 9 })
+    expect(after.tracks).toHaveLength(2)
+  })
+
+  it('bumps to a different track for the identical drag when magnet is off (contrast)', () => {
+    const d = new Driver(makeContext({ project: sameKindProject(), rippleMode: false, snapConfig: ZERO_SNAP }))
+    d.down(C1_BODY.x, SAME_KIND_BASE_Y)
+    const after = lastProjectChange(d.move(C1_BODY.x - 400, SAME_KIND_BASE_Y - VISUAL_ROW_HEIGHT_PX))
+    // Track 1 collides (o0) and, at this dropped position, so does track 0
+    // (c0, 0s-5s, overlapped by 4s), so the outward search mints a fresh
+    // track above both rather than landing on either — and o0 is left
+    // completely untouched.
+    expect(trackIndexOf(after, 'c1')).toBe(2)
+    expect(after.tracks).toHaveLength(3)
+    expect(visual(after, 'o0')).toMatchObject({ start: 2, end: 4 })
+  })
+
+  it('drops into a fitting gap unchanged when magnet is on — nothing to push', () => {
+    const d = new Driver(makeContext({ project: sameKindProject(), rippleMode: true, snapConfig: ZERO_SNAP }))
+    d.down(C1_BODY.x, SAME_KIND_BASE_Y)
+    // Purely vertical travel: c1 keeps its own 5s–10s window, which doesn't
+    // overlap o0 (2s–4s) at all.
+    const after = lastProjectChange(d.move(C1_BODY.x, SAME_KIND_BASE_Y - VISUAL_ROW_HEIGHT_PX))
+    expect(trackIndexOf(after, 'c1')).toBe(1)
+    expect(visual(after, 'c1')).toMatchObject({ start: 5, end: 10 })
+    expect(visual(after, 'o0')).toMatchObject({ start: 2, end: 4 })
+  })
+
+  it('keeps the kind-lock in ripple mode — a video clip never lands on the overlay track', () => {
+    // `baseProject`: track 1 is genuinely overlay-kind here (unlike
+    // `sameKindProject`), which is exactly what this test needs.
+    const d = new Driver(makeContext({ rippleMode: true, snapConfig: ZERO_SNAP }))
+    d.down(C0_BODY.x, C0_BODY.y)
+    // One track up targets track 1 (the overlay track); even though makeSpace
+    // is on, the kind gate must still refuse it.
+    const after = lastProjectChange(d.move(C0_BODY.x, C0_BODY.y - VISUAL_ROW_HEIGHT_PX))
+    expect(trackIndexOf(after, 'c0')).toBe(0)
+    expect(visual(after, 'o0')).toMatchObject({ start: 2, end: 4 })
   })
 })
 
@@ -1400,6 +1466,132 @@ describe('snap guide', () => {
     const d = new Driver(makeContext())
     d.down(C0_BODY.x, C0_BODY.y, mods({ alt: true }))
     expect(of(d.move(C0_BODY.x + 100, C0_BODY.y, mods({ alt: true })), 'snapGuide')).toEqual([])
+  })
+})
+
+// A single-item MOVE is the one gesture whose strong snap tier follows the
+// row the item is CURRENTLY over rather than the row the press landed on —
+// see `tieredBoundaries`'s doc comment for why every other gesture keeps the
+// press-time row for its whole run. These tests drag `sameKindProject`'s c1
+// (track 0, 5s–10s) up onto track 1 (o0, video-kind here so the kind-lock
+// doesn't block the move) and prove the tiers actually flip as it crosses.
+describe('cross-track re-tiering — a move follows the row it is currently over', () => {
+  it('promotes the destination track\'s boundary to strong once the drag reaches it', () => {
+    // rawStart lands on 4.08 — 8px short of o0's end (4s, track 1). Outside
+    // the weak radius (6px), so at rest on track 0 (o0's boundary tiered
+    // weak) it does not catch at all.
+    const atRest = new Driver(makeContext({ project: sameKindProject() }))
+    atRest.down(C1_BODY.x, SAME_KIND_BASE_Y)
+    expect(of(atRest.move(658, SAME_KIND_BASE_Y), 'snapGuide')).toEqual([])
+
+    // The identical horizontal drag, but crossed onto track 1: o0's boundary
+    // is now the CURRENT track's peer, promoted to strong, and the same 8px
+    // is well inside its 20px radius.
+    const crossed = new Driver(makeContext({ project: sameKindProject() }))
+    crossed.down(C1_BODY.x, SAME_KIND_BASE_Y)
+    expect(of(crossed.move(658, SAME_KIND_BASE_Y - VISUAL_ROW_HEIGHT_PX), 'snapGuide')).toEqual(guide(4, 'strong'))
+  })
+
+  it('demotes the origin track\'s boundary to weak once the drag has left it', () => {
+    // Target is c0's START (0s), not its end (5s) — 5s is butted against c1's
+    // own start and would be suppressed by the origin guard at this short a
+    // travel distance, which is a different mechanism from the one this test
+    // is about. rawStart lands on 0.15 — 15px short of 0: inside the strong
+    // radius (20px), outside the weak one (6px).
+    //
+    // The playhead is parked well away from 0 (rather than left at the
+    // default 0) — it is ALWAYS a strong candidate regardless of track, and
+    // at the default it would coincide with this test's own target and mask
+    // the tier this test is actually checking.
+    const ctx = makeContext({ project: sameKindProject(), playheadTime: -1000 })
+    const atRest = new Driver(ctx)
+    atRest.down(C1_BODY.x, SAME_KIND_BASE_Y)
+    expect(of(atRest.move(265, SAME_KIND_BASE_Y), 'snapGuide')).toEqual(guide(0, 'strong'))
+
+    // Crossed onto track 1, track 0 — the track this drag LEFT — demotes to
+    // weak, and the same 15px is now too far even for that.
+    const crossed = new Driver(ctx)
+    crossed.down(C1_BODY.x, SAME_KIND_BASE_Y)
+    expect(of(crossed.move(265, SAME_KIND_BASE_Y - VISUAL_ROW_HEIGHT_PX), 'snapGuide')).toEqual([])
+  })
+
+  it('keeps the playhead strong no matter which track the drag is currently over', () => {
+    // The playhead belongs to no track, so re-tiering must never touch it.
+    // rawStart lands exactly on 3.5, an arbitrary playhead time that shares no
+    // value with any clip or audio boundary in the fixture.
+    const ctx = makeContext({ project: sameKindProject(), playheadTime: 3.5 })
+    const atRest = new Driver(ctx)
+    atRest.down(C1_BODY.x, SAME_KIND_BASE_Y)
+    expect(of(atRest.move(600, SAME_KIND_BASE_Y), 'snapGuide')).toEqual(guide(3.5, 'strong'))
+
+    const crossed = new Driver(ctx)
+    crossed.down(C1_BODY.x, SAME_KIND_BASE_Y)
+    expect(of(crossed.move(600, SAME_KIND_BASE_Y - VISUAL_ROW_HEIGHT_PX), 'snapGuide')).toEqual(guide(3.5, 'strong'))
+  })
+
+  it('still excludes the dragged item\'s own edges once re-tiered onto a new track', () => {
+    // Aimed exactly at c1's own original end (10s) after crossing onto track
+    // 1. `tieredBoundaries`'s `skipId` drops a dragged item's own boundaries
+    // by IDENTITY, not by value, and that has to keep working when the tier
+    // is recomputed fresh per move — a regression here would have c1 snap to
+    // its own trailing edge as an exact-match WEAK point (tiered against
+    // track 0, which it no longer occupies) the moment it crossed rows.
+    const d = new Driver(makeContext({ project: sameKindProject() }))
+    d.down(C1_BODY.x, SAME_KIND_BASE_Y)
+    expect(of(d.move(1250, SAME_KIND_BASE_Y - VISUAL_ROW_HEIGHT_PX), 'snapGuide')).toEqual([])
+  })
+
+  it('leaves a within-track move exactly as it was — the current track equals the origin track throughout', () => {
+    // No vertical travel at all: c0 dragged along track 0 toward c1's own
+    // trailing edge at 10s, 8px short — same-track, so still strong.
+    const d = new Driver(makeContext({ project: sameKindProject() }))
+    d.down(C0_BODY.x, SAME_KIND_BASE_Y)
+    expect(of(d.move(1242, SAME_KIND_BASE_Y), 'snapGuide')).toEqual(guide(10, 'strong'))
+  })
+})
+
+describe('cross-lane re-tiering — a single-item audio move follows the lane it is currently over', () => {
+  it('promotes the destination lane\'s boundary to strong, and demotes the origin lane\'s', () => {
+    const project = {
+      id: 'p',
+      tracks: [{ id: 'trk-0', items: [{ id: 'c0', type: 'video', src: 'a.mp4', start: 0, end: 12, inPoint: 0, outPoint: 12, sourceDuration: 20 }] }],
+      audio: {
+        tracks: [
+          { id: 'a0', src: 'v.mp3', start: 1, end: 6, lane: 0 },
+          { id: 'a1', src: 'w.mp3', start: 8, end: 11, lane: 0 },
+          { id: 'b0', src: 'm.mp3', start: 3, end: 4, lane: 1 },
+        ],
+      },
+    } as unknown as Project
+    const ctx = makeContext({ project })
+    const lane0 = ctx.layout.lanes.find(l => l.laneIndex === 0)!
+    const y0 = Math.round(lane0.y + lane0.height / 2)
+    const lane1 = ctx.layout.lanes.find(l => l.laneIndex === 1)!
+    const y1 = Math.round(lane1.y + lane1.height / 2)
+
+    // a0 (1s–6s) dragged toward b0's end at 4s, 8px short — outside the weak
+    // radius, so at rest in lane 0 (b0's boundary tiered weak) it misses.
+    const missesAtRest = new Driver(ctx)
+    missesAtRest.down(300, y0)
+    expect(of(missesAtRest.move(608, y0), 'snapGuide')).toEqual([])
+
+    // The same drag, crossed into lane 1: b0's boundary promotes to strong
+    // and the same 8px catches.
+    const catchesCrossed = new Driver(ctx)
+    catchesCrossed.down(300, y0)
+    expect(of(catchesCrossed.move(608, y1), 'snapGuide')).toEqual(guide(4, 'strong'))
+
+    // a1 (lane 0, a0's own origin lane) is a strong peer at rest — 15px is
+    // inside the strong radius and outside the weak one.
+    const holdsAtRest = new Driver(ctx)
+    holdsAtRest.down(300, y0)
+    expect(of(holdsAtRest.move(1015, y0), 'snapGuide')).toEqual(guide(8, 'strong'))
+
+    // Crossed into lane 1, lane 0 — the lane this drag LEFT — demotes to
+    // weak, and the same 15px is now too far even for that.
+    const releasesCrossed = new Driver(ctx)
+    releasesCrossed.down(300, y0)
+    expect(of(releasesCrossed.move(1015, y1), 'snapGuide')).toEqual([])
   })
 })
 

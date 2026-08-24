@@ -17,7 +17,7 @@ import { usePlaybackTime, type PlaybackClock } from '../playback-clock'
 import { gateTimeSink, handOverToHover, useHoverScrubTime, type HoverScrub } from '../hover-scrub'
 import { sourceCropVideoStyle } from './sourceCropStyle'
 import CarouselPreview from './CarouselPreview'
-import SocialSafeZoneOverlay, { type SocialSafeZonePlatform } from './SocialSafeZoneOverlay'
+import SocialSafeZoneOverlay, { type SocialPreviewPlatform } from './SocialSafeZoneOverlay'
 
 // ---------------------------------------------------------------------------
 
@@ -85,26 +85,27 @@ interface PreviewPlayerProps {
    */
   hoverScrub?: HoverScrub
   /**
-   * Safe-zone viewing aid (mirrors CapCut's "TikTok" toggle) — see
-   * `SocialSafeZoneOverlay`. Absent/falsy/unrecognized → no-op, same contract
-   * as that component's own `platform` prop, which this passes straight
-   * through. Threaded in here (rather than mounted by the host as a sibling
-   * of `PreviewPlayer`) so it lands INSIDE the same stacking context as the
-   * rest of the picture — see the z-index note at its render site below.
+   * Social-platform preview chrome (mirrors CapCut's "Preview your video for
+   * social media" picker) — see `SocialSafeZoneOverlay`. Absent/falsy/
+   * unrecognized → no-op, same contract as that component's own `platform`
+   * prop, which this passes straight through. Threaded in here (rather than
+   * mounted by the host as a sibling of `PreviewPlayer`) so it lands INSIDE
+   * the same stacking context as the rest of the picture — see the z-index
+   * note at its render site below.
    */
-  safeZone?: SocialSafeZonePlatform | string | null
+  socialPreview?: SocialPreviewPlatform | string | null
 }
 
 export default function PreviewPlayer(props: PreviewPlayerProps) {
   if (props.project.projectType === 'carousel') {
     // CarouselPreview renders into normal document flow (no `isolation:
     // isolate` stacking context of its own — see VideoPreviewPlayer/
-    // PreviewSurface below), so the safe-zone overlay composes correctly as
-    // a plain sibling here; it only needs to move INSIDE the video path.
+    // PreviewSurface below), so the social-preview overlay composes correctly
+    // as a plain sibling here; it only needs to move INSIDE the video path.
     return (
       <>
         <CarouselPreview project={props.project} />
-        <SocialSafeZoneOverlay platform={props.safeZone} />
+        <SocialSafeZoneOverlay platform={props.socialPreview} />
       </>
     )
   }
@@ -254,7 +255,7 @@ function PreviewSurface({
   onCaptionSegmentChange,
   engine,
   transportRef,
-  safeZone,
+  socialPreview,
 }: SurfaceProps & { playback: PlaybackBinding }) {
   const [RENDER_W, RENDER_H] = getOverlayDesignCanvas(project.settings?.resolution)
 
@@ -589,8 +590,8 @@ function PreviewSurface({
         />
       )}
 
-      {/* Safe-zone viewing aid — see `SocialSafeZoneOverlay` and the
-          `safeZone` prop doc above. Rendered HERE, inside this same
+      {/* Social-preview chrome — see `SocialSafeZoneOverlay` and the
+          `socialPreview` prop doc above. Rendered HERE, inside this same
           `isolation: isolate` container as the video/overlays/captions above
           and the play glyph below, so its z-index (48) is compared directly
           against theirs rather than being evaluated one stacking context up
@@ -598,7 +599,7 @@ function PreviewSurface({
           the ENTIRE box, glyph included, regardless of that box's own
           internal ordering). No-ops on an absent/unrecognized platform, so
           this is unconditional. */}
-      <SocialSafeZoneOverlay platform={safeZone} />
+      <SocialSafeZoneOverlay platform={socialPreview} />
     </div>
   )
 }

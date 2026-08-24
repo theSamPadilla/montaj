@@ -73,28 +73,35 @@ This is not a corner case. In the reference set, the longest video holds a singl
 
 ### 4. Assign shots to beats
 
-Target numbers. Measured rows come from the four references; the two derived rows are marked.
+Target numbers. Measured rows come from the four references; derived rows are marked.
 
 | quantity | value | |
 |---|---|---|
-| target shot length | 1.2–1.5s | derived — brackets the measured 1.4s mean |
-| median across references | 1.1s | measured |
+| **working range** | **1–2s** | derived — the default band for a shot during narration |
+| **fast-paced narration** | **~1s ceiling** | derived — dense, quick delivery holds nothing longer |
 | hard minimum | 0.5s | measured |
-| soft maximum during narration | 3.1s | measured |
+| median across references | 1.1s | measured |
+| outer bound during narration | 3.1s | measured — reserved for reading beats, not a default |
 | protected beats | no maximum | derived — follows from step 3 |
+
+**Short wins.** The default is the bottom half of the working range, not the top. A shot earns its way past ~2s by having something the viewer must actually read or watch resolve; absent that, it is too long. The measured 3.1s is the longest non-hero shot in the entire reference set — treat it as the outer bound for a map or a sign, not as headroom to spend.
+
+**Match the ceiling to the delivery.** Fast, dense narration wants ~1s and under; more measured, deliberate narration can sit in the upper half of the band. Read the actual speech rate rather than assuming — and let the editing prompt move it. "Keep it snappy" or "punchy" pulls the whole edit toward 1s; a calm explainer allows longer holds.
+
+**Vary the lengths. Uniformity is the failure mode.** A run of shots all cut to the same duration reads as a slideshow on a timer, however well-chosen the shots are — the eye locks onto the interval and stops watching the content. Deliberately mix within the band: a 0.8s next to a 1.6s next to a 1.1s. As a sanity check, if three consecutive shots are within ~0.15s of each other, or the whole edit's shot lengths cluster tightly around one value, re-cut for variation. The rhythm should feel driven by the narration, which is naturally uneven, rather than by a metronome.
 
 The median holds across VO-driven and music-driven references and across 9s and 67s runtimes. It is the single most reproducible number in the reference set.
 
 Rules:
 
 - **Shot length is a consequence, not a parameter.** It falls out of how long the narration spends on the subject.
-- A beat longer than the soft maximum is filled with **multiple shots of the same subject**, not one long hold. The references show a waterfall across three angles for one 2.5s clause. Only fall back to a longer single hold when the index has no second angle.
-- A beat that needs the viewer to **read** something — a map, a sign, a screen — gets the long end of the range. The longest non-hero shot in the reference set is 3.10s on a map.
+- A beat longer than the working range is filled with **multiple shots of the same subject**, not one long hold — and this is the main lever for keeping shots short. The references show a waterfall across three angles for one 2.5s clause. Only fall back to a longer single hold when the index has no second angle.
+- A beat that needs the viewer to **read** something — a map, a sign, a screen — is the one case that earns the outer bound. The longest non-hero shot in the reference set is 3.10s on a map. Nothing else should reach for that number.
 - **Lean away from reusing a shot.** Repeats read as running out of material, so reach for a fresh shot first and let each one appear once where the library allows it. This is guidance, not a prohibition — reuse is available when it genuinely serves the edit. (Design rule. The reference set actually leans the other way: REFERENCE.md line 110 records driving shots recurring 4× as connective tissue. Treat the preference as a nudge against that pattern, not a ban on it.)
 
   When you do come back to a source, prefer a **visually distinct passage** of it over a near-identical frame, space it out rather than stacking repeats close together, and note it in the coverage report so the choice is visible.
 
-  **If the library is thinner than the beat count**, fewer and longer shots is usually the better trade than repeating: let shots run toward the soft maximum, merge adjacent beats that share a subject, give a reading beat its long end. Weigh that against holding too long on a weak frame — a well-placed second use can beat a shot that overstays.
+  **If the library is thinner than the beat count**, fewer and longer shots is usually the better trade than repeating: let shots run to the top of the working range, merge adjacent beats that share a subject, give a reading beat its long end. Weigh that against holding too long on a weak frame — a well-placed second use can beat a shot that overstays, and both beat a slideshow of identical 3s holds.
 - **Assign globally, not beat-by-beat greedily.** The only shot that fits beat 7 may also be the best for beat 3. Resolve the whole assignment before committing.
 - **You do not have to use every clip, and usually should not.** The footage library is a library, not a checklist. The narration decides how many shots the edit needs; whatever the library holds beyond that is simply not in this video. A library of thirty clips against a twenty-second script means most of those clips go unused, and that is the correct outcome — not a coverage failure to be corrected. Leaving a clip out costs nothing. Forcing it in costs the beat it displaces.
 
@@ -179,7 +186,7 @@ Confidence is `good` / `weak` / `filler`. Every beat that got an atmospheric fil
 - Number of clips indexed, shots indexed, and assets folded into the index.
 - Whether `montaj analyze-media` was used to bulk-fill the index.
 - Beat count, and which beats (if any) were marked `protected` and why.
-- Median and mean assigned shot length, so drift from the 1.1s / 1.4s reference is visible.
+- Median and mean assigned shot length, plus the **min and max**, so both the overall pace and the amount of variation are visible. A spread that is nearly flat is a finding worth reporting even when the median looks right.
 - Every `filler` beat.
 - How many clips the edit used out of how many were available, plainly (e.g. "9 of 31 clips used"). A low ratio is information, not an alarm.
 
@@ -190,11 +197,13 @@ Confidence is `good` / `weak` / `filler`. Every beat that got an atmospheric fil
 - **Dropping `proxySrc` when building `tracks[0]` items.** The proxies already exist; they are recorded on `project.sources`, not on the items you are creating, so they vanish unless you copy them across. The edit looks correct and validates fine — the damage shows up as sluggish scrubbing, a disabled WebCodecs engine, and a "Generate previews" chip in the header. Copy `proxySrc` from the matching `sources` entry by `src`.
 - **Consolidating the voiceover into one audio track.** It is the shorter path and it takes the operator's section-by-section edits away. One track per take, contiguous on lane 0 — see step 7.
 - **Setting `sourceCrop` without `sourceWidth` / `sourceHeight`** — the crop silently no-ops and the render letterboxes.
-- **Enforcing the 3.1s soft maximum on a protected beat.** This is the failure the reference set exists to prevent.
+- **Enforcing the shot-length ceiling on a protected beat.** This is the failure the reference set exists to prevent — a protected beat has no maximum at all.
 - **Re-estimating `motion_mean` / `motion_peak`** instead of copying them from `detect_shots`.
 - **Cutting in the silence between words** instead of on the word onset.
 - **Writing overlays.** `montaj/overlay` runs after you and owns `tracks[1+]`. Emit footage and audio only.
 - **Leaving a gap in the timeline** to signal a weak match. Fill it, mark it `filler` in the coverage report.
+- **Cutting every shot to the same length.** Well-chosen shots on a fixed interval still read as a slideshow; the eye locks onto the rhythm and stops watching. Vary within the band.
+- **Spending the 3.1s outer bound as if it were the target.** It is the longest non-hero shot in the whole reference set, reserved for a beat the viewer must read. The working range is 1-2s and the default is its bottom half.
 - **Trying to use every clip in the library.** The narration decides how many shots the edit needs; the library is not a checklist and there is no obligation to spend it. Working a clip in because it is still unused, or stretching the edit to accommodate one, always costs the beat it displaces. Most libraries should finish with clips unused.
 - **Reaching for a repeat before checking the library for a fresh shot.** Repeats read as running out of material; prefer a new shot, or fewer and longer ones, where either is available. Reuse is allowed, just not the first move.
 - **Guessing a tile's shot from its position** on the contact sheet instead of reading the `tiles` map.

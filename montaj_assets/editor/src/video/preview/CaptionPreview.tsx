@@ -35,6 +35,7 @@ import { activeCaptionSegments } from '@bycrux/timeline-core'
 import type { Captions } from '../../schema'
 import type { OverlayFactory } from '../../types'
 import OverlayErrorBoundary from '../../carousel/OverlayErrorBoundary'
+import { ensureGoogleFontsLoaded } from '../../lib/google-fonts'
 import type { CaptionEditPatch } from '../timeline/makeCaptionEdit'
 import {
   captionDragGeometry,
@@ -179,12 +180,23 @@ export default function CaptionPreview({
   useEffect(() => { setHovered(false) }, [targetId])
 
   // Theme props for the template: everything on the track except style/segments
-  // (handled separately) and googleFonts (a render-time font-loading hint, not
-  // a template prop). Normalize the legacy lowercase `fontsize` key to the
-  // camelCase `fontSize` templates actually read.
-  const { style: _style, segments: _segments, googleFonts: _googleFonts, fontsize, ...theme } = track
+  // (handled separately) and googleFonts — not a template prop, but the editor
+  // must still LOAD it (see the effect below) so preview and render use the same
+  // face. Normalize the legacy lowercase `fontsize` key to the camelCase
+  // `fontSize` templates actually read.
+  const { style: _style, segments: _segments, googleFonts, fontsize, ...theme } = track
   const themeProps: Record<string, unknown> = { ...theme }
   if (fontsize != null) themeProps.fontSize = fontsize
+
+  // Inject the caption track's Google Fonts so the preview paints the same face
+  // the renderer fetches (render.js hands `captions.googleFonts` to
+  // bundleComponent, which injects the same stylesheet into the Puppeteer page).
+  // Without this, `captions.fontFamily` reaches the template in both paths but
+  // only the render has the font file — a silent preview/render divergence.
+  // Depend on the joined list rather than the array: `track` is a fresh object
+  // on every project edit, and String() flattens both the typed string[] and the
+  // bare string persisted projects occasionally carry (see google-fonts.ts).
+  useEffect(() => { ensureGoogleFontsLoaded(googleFonts) }, [String(googleFonts)])
 
   // Live drag preview: overlay the in-flight geometry onto the dragged segment
   // only. The templates read offsetX/offsetY/scale straight off the segment, so

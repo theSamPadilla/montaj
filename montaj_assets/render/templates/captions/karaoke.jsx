@@ -14,13 +14,19 @@ export default function Karaoke({
   color         = 'rgba(255,255,255,0.55)',
   highlightColor = '#ffffff',
   fontSize      = 52,
+  fontFamily    = 'system-ui, -apple-system, sans-serif',
+  fontWeight    = 700,
+  textAlign     = 'center',
+  letterSpacing,
+  lineHeight,
+  textTransform,
 }) {
   const t = frame / fps
 
   const active = activeSegments(segments, t)
   if (!active.length) return null
 
-  return <>{active.map((seg, i) => renderSegment(seg, seg.id ?? i, { frame, fps, t, color, highlightColor, fontSize }))}</>
+  return <>{active.map((seg, i) => renderSegment(seg, seg.id ?? i, { frame, fps, t, color, highlightColor, fontSize, fontFamily, fontWeight, textAlign, letterSpacing, lineHeight, textTransform }))}</>
 }
 
 /**
@@ -54,7 +60,7 @@ function activeSegments(segments, t) {
  * caption's rect instead of the union of everything on screen (see
  * measureCaptionContentRect in editor/src/video/preview/captionDragState.ts).
  */
-function renderSegment(seg, key, { frame, fps, t, color, highlightColor, fontSize }) {
+function renderSegment(seg, key, { frame, fps, t, color, highlightColor, fontSize, fontFamily, fontWeight, textAlign, letterSpacing, lineHeight, textTransform }) {
   const words = seg.words || []
   if (!words.length) {
     // No word timestamps — fall back to plain text
@@ -69,16 +75,19 @@ function renderSegment(seg, key, { frame, fps, t, color, highlightColor, fontSiz
           bottom: '18%',
           left: 0,
           right: 0,
-          textAlign: 'center',
+          textAlign,
           padding: '0 8%',
           opacity,
         })}>
           <span style={{
             fontSize,
-            fontWeight: 700,
-            fontFamily: 'system-ui, -apple-system, sans-serif',
+            fontWeight,
+            fontFamily,
             color: highlightColor,
             textShadow: '0 2px 12px rgba(0,0,0,0.85)',
+            letterSpacing,
+            lineHeight,
+            textTransform,
           }}>
             {seg.text}
           </span>
@@ -97,16 +106,19 @@ function renderSegment(seg, key, { frame, fps, t, color, highlightColor, fontSiz
         bottom: '18%',
         left: 0,
         right: 0,
-        textAlign: 'center',
+        textAlign,
         padding: '0 8%',
         opacity: fadeOpacity,
       })}>
         <div style={{
           display: 'inline',
           fontSize,
-          fontWeight: 700,
-          fontFamily: 'system-ui, -apple-system, sans-serif',
+          fontWeight,
+          fontFamily,
           textShadow: '0 2px 12px rgba(0,0,0,0.85)',
+          letterSpacing,
+          lineHeight,
+          textTransform,
         }}>
           {words.map((w, i) => {
             const spoken = t >= w.end

@@ -97,6 +97,18 @@ export interface Captions {
   activeColor?: string    // active word — pop
   backgroundColor?: string// text box background — subtitle
   googleFonts?: string[]  // Google Fonts family specs for the caption template (e.g. ["Figtree:wght@700"])
+  // Text-styling fields, honoured by the JSX caption templates only (NOT the ffmpeg
+  // drawtext render branch). `fontFamily` and `googleFonts` travel together: a family
+  // whose font file isn't also fetched via `googleFonts` renders as the fallback face,
+  // in both the editor preview and the export.
+  fontFamily?: string      // CSS font-family stack (e.g. '"Baloo 2", system-ui, sans-serif')
+  fontWeight?: number | string // default is per style: clean/karaoke 700, subtitle 600,
+                                // pop/word-by-word 800, highlight-box/outline 900 — so an
+                                // existing project with no fontWeight renders unchanged.
+  textTransform?: string   // 'uppercase' | 'lowercase' | 'capitalize' | 'none'
+  letterSpacing?: string   // CSS length, e.g. '0.02em'
+  lineHeight?: number | string
+  textAlign?: string       // 'left' | 'center' | 'right'
 }
 
 export interface VisualItem {
@@ -284,6 +296,11 @@ export interface EditorProject {
     /** Color mapping for overlay images in HDR renders — see video/imageTone.ts.
      *  Absent → the render default ('vivid'). No effect on SDR projects. */
     imageTone?: 'vivid' | 'broadcast' | 'punchy' | 'raw'
+    /** Which platform's chrome the preview overlays on top of the video — see
+     *  video/preview/SocialSafeZoneOverlay.tsx. A viewing aid only; never read
+     *  by render. Absent = no chrome shown (the "None" picker option, and the
+     *  default for every project until the operator picks a platform). */
+    socialPreview?: 'tiktok' | 'youtube' | 'instagram'
   }
   name?: string | null
   editingPrompt?: string

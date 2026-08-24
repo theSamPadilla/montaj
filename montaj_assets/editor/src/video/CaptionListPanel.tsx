@@ -5,8 +5,9 @@
 // style/size/color controls tucked behind a collapsible subsection so the list
 // stays the prominent thing in a ~300px-wide column.
 import { Fragment, useEffect, useMemo, useRef, useState } from 'react'
-import { ChevronDown, ChevronRight, Search, Trash2 } from 'lucide-react'
+import { AlignCenter, AlignLeft, AlignRight, ChevronDown, ChevronRight, Search, Trash2 } from 'lucide-react'
 import type { Project } from '../types'
+import type { Captions } from '../schema'
 import type { PlaybackClock } from './playback-clock'
 import type { CaptionEditPatch } from './timeline/makeCaptionEdit'
 import { EditableSegment } from './timeline/EditableSegment'
@@ -14,6 +15,9 @@ import { formatTime } from './timeline/utils'
 import { SwatchInput } from '../ui'
 import { reviveBoolean, usePersistentState } from '../ui/usePersistentState'
 import { groupCaptionLanes, laneOf } from './captionLanes'
+import { FontFamilyPicker, findFontOption } from '../text/FontPicker'
+import CaptionSpecimen from './CaptionSpecimen'
+import { CAPTION_STYLE_LETTER_SPACING, CAPTION_STYLE_LINE_HEIGHT, CAPTION_STYLE_TEXT_TRANSFORM } from './captionStyleDefaults'
 
 /** Whether the "Caption style" subsection (size/color/preset controls) is
  *  expanded. A DIFFERENT key than the retired TranscriptPanel's
@@ -44,6 +48,161 @@ const ACCENT: Partial<Record<CaptionStyle, { field: AccentField; label: string; 
 const HEX = /^#[0-9a-f]{6}$/i
 const toHex = (v: unknown, fallback: string): string =>
   typeof v === 'string' && HEX.test(v) ? v : fallback
+
+// ── Text styling: case + alignment button groups ──
+// Glyph labels only (the rail is ~300px), so each carries an aria-label — "TT"
+// is not a word a screen reader can announce usefully.
+const CASES = [
+  { value: 'uppercase', glyph: 'TT', label: 'Uppercase' },
+  { value: 'lowercase', glyph: 'tt', label: 'Lowercase' },
+  { value: 'capitalize', glyph: 'Tt', label: 'Capitalize' },
+] as const
+
+const ALIGNMENTS = [
+  { value: 'left', Icon: AlignLeft, label: 'Align left' },
+  { value: 'center', Icon: AlignCenter, label: 'Align center' },
+  { value: 'right', Icon: AlignRight, label: 'Align right' },
+] as const
+
+/** The panel's one chip look, matching the STYLES preset row. The inactive
+ *  foreground is `text-[var(--editor-text)] opacity-60` rather than
+ *  `text-[var(--editor-text)]/60` — Tailwind cannot generate an opacity
+ *  modifier on an arbitrary var() color, so that class is a silent no-op (see
+ *  the longer note on the row index span at the bottom of this file). The
+ *  preset row's own inactive class predates that finding and is left alone. */
+const chipClass = (active: boolean): string =>
+  `text-[10px] rounded px-2 py-0.5 transition-all border ${
+    active
+      ? 'bg-[var(--editor-accent)]/20 border-[var(--editor-accent)]/60 text-[var(--editor-accent)]'
+      : 'bg-[var(--editor-surface)] border-[var(--editor-border)] text-[var(--editor-text)] opacity-60 hover:opacity-100'
+  }`
+
+/** Display value for the letter-spacing stepper: the numeric part of a stored
+ *  CSS length, read as em. Tolerates absent, '0.02em', '-0.02em', '.02em',
+ *  ' 0.02 em ' and a bare number. A value stored in some OTHER unit ('2px')
+ *  deliberately reads as EMPTY rather than as "2" — showing it would silently
+ *  re-interpret it as 2em the moment the operator nudges the stepper. */
+function parseEmValue(value: string | undefined): string {
+  if (!value) return ''
+  const m = /^\s*(-?(?:\d+(?:\.\d+)?|\.\d+))\s*(?:em)?\s*$/i.exec(value)
+  return m ? m[1] : ''
+}
+
+/** Display value for the line-height stepper. `Captions.lineHeight` is
+ *  `number | string`; a string is accepted only when it is unitless, which is
+ *  the form CSS reads as a multiple of the font size and the only form this
+ *  stepper writes. Anything else ('120%', '1.3em') reads as empty, same
+ *  reasoning as above. */
+function parseUnitlessValue(value: number | string | undefined): string {
+  if (typeof value === 'number') return Number.isFinite(value) ? String(value) : ''
+  if (!value) return ''
+  const m = /^\s*(\d+(?:\.\d+)?|\.\d+)\s*$/.exec(value)
+  return m ? m[1] : ''
+}
+
+/** Strip float-step noise (0.1 + 0.01 = 0.11000000000000001) before the value
+ *  is written into the project — and, for letter spacing, before it is
+ *  stringified into a CSS length that ends up in the saved JSON. */
+const roundTo = (n: number, places: number): number => Number(n.toFixed(places))
+
+interface StepperFieldProps {
+  label: string
+  ariaLabel: string
+  /** Display value, already parsed out of whatever the project stored. */
+  value: string
+  min: number
+  max: number
+  step: number
+  /** Rendered beside the field, e.g. 'em'. The operator never types the unit —
+   *  the same contract as FontSizePicker (text/FontPicker.tsx), which appends
+   *  `px` itself. */
+  unit?: string
+  /** Shown when the field is empty (the project has no explicit value) —
+   *  the active style's OWN default for this field, so the input reports the
+   *  effective value that will actually render instead of looking blank.
+   *  Never written into the project; a style with no default for this field
+   *  passes `''`, which is a no-op placeholder. */
+  placeholder?: string
+  onLive: (n: number) => void
+  onCommit: (n: number) => void
+}
+
+/** Numeric stepper for the caption text-styling block, on the same live/commit
+ *  split as the fontsize slider above it: every intermediate value (a
+ *  keystroke, a spinner arrow, a held spinner) previews through `onLive` only,
+ *  and the settled value persists ONCE through `onCommit`, on blur or Enter.
+ *
+ *  `dirtyRef` is what makes "once" true, and why this doesn't just compare the
+ *  field against the incoming `value` prop: live preview has ALREADY written
+ *  the pending number into the project, so by the time blur fires the prop
+ *  equals the pending value and a value-comparison guard would skip the commit
+ *  entirely, silently losing the edit. "Did the operator change anything" is
+ *  the only signal that survives live preview. It also means a bare focus/blur
+ *  commits nothing, and Enter-then-blur commits once rather than twice. */
+function StepperField({ label, ariaLabel, value, min, max, step, unit, placeholder, onLive, onCommit }: StepperFieldProps) {
+  const [text, setText] = useState(value)
+  const focusedRef = useRef(false)
+  const dirtyRef = useRef(false)
+
+  // Don't stomp what the operator is part-way through typing; re-sync from the
+  // project only while the field is unfocused (same guard as FontSizePicker).
+  useEffect(() => {
+    if (!focusedRef.current) setText(value)
+  }, [value])
+
+  /** The clamped number this field currently holds, or `null` while it holds
+   *  nothing usable (empty mid-edit, a lone '-'). min/max on the element are a
+   *  spinner hint only — a typed value can exceed them — so the clamp lives
+   *  here, on the path everything is written through. */
+  const numeric = (raw: string): number | null => {
+    if (raw.trim() === '') return null
+    const n = Number(raw)
+    return Number.isFinite(n) ? Math.min(max, Math.max(min, n)) : null
+  }
+
+  function commit() {
+    if (!dirtyRef.current) return
+    const n = numeric(text)
+    if (n === null) return
+    dirtyRef.current = false
+    onCommit(n)
+  }
+
+  return (
+    <label className="flex items-center gap-1 min-w-0">
+      <span className="text-[10px] text-[var(--editor-text)] opacity-60 shrink-0">{label}</span>
+      <input
+        type="number"
+        aria-label={ariaLabel}
+        min={min}
+        max={max}
+        step={step}
+        placeholder={placeholder}
+        value={text}
+        onChange={e => {
+          const raw = e.target.value
+          setText(raw)
+          const n = numeric(raw)
+          if (n === null) return
+          dirtyRef.current = true
+          onLive(n)
+        }}
+        onFocus={() => { focusedRef.current = true }}
+        onBlur={() => {
+          focusedRef.current = false
+          commit()
+          // Left empty or unparseable: nothing was committed, so snap the
+          // display back to what the project actually holds rather than
+          // leaving a blank field that misreports the caption's real value.
+          if (numeric(text) === null) setText(value)
+        }}
+        onKeyUp={e => { if (e.key === 'Enter') commit() }}
+        className="w-12 h-6 rounded border border-[var(--editor-border)] bg-[var(--editor-surface)] px-1 text-[10px] font-mono text-[var(--editor-text)] focus:outline-none focus:border-[var(--editor-accent)]"
+      />
+      {unit && <span className="text-[10px] text-[var(--editor-text)] opacity-40 shrink-0">{unit}</span>}
+    </label>
+  )
+}
 
 /** A double-click-to-edit request from the canvas timeline (Phase 6). `nonce`
  *  changes on every request even if `id` repeats, so re-double-clicking the
@@ -93,6 +252,14 @@ export interface CaptionListPanelProps {
   /** Opens the caption-regeneration modal. Provided only when the host
    *  adapter supports `generateCaptions`; absent → the button is hidden. */
   onRegenerateCaptions?: () => void
+  /** Whether a generate/regenerate job is currently streaming (the
+   *  `CaptionRegenModal` is open and running). Disables the trigger so it
+   *  can't be fired twice from this panel; the modal itself owns the
+   *  progress UI, so this panel does nothing more than go inert. Optional
+   *  and defaults to falsy — a host that never passes it (or that stops
+   *  passing `true` once a job ends, including a failed one) leaves the
+   *  trigger enabled exactly as it is today. */
+  captionsGenerating?: boolean
   fps: number
   /** Imperative seek target for a row click (see the half-frame comment
    *  below) — separate from `currentTime`, which only drives the highlight. */
@@ -113,6 +280,7 @@ export default function CaptionListPanel({
   onProjectChange,
   onCaptionSegmentDelete,
   onRegenerateCaptions,
+  captionsGenerating,
   fps,
   clock,
   editFocusId,
@@ -135,6 +303,7 @@ export default function CaptionListPanel({
       onProjectChange={onProjectChange}
       onCaptionSegmentDelete={onCaptionSegmentDelete}
       onRegenerateCaptions={onRegenerateCaptions}
+      captionsGenerating={captionsGenerating}
       fps={fps}
       clock={clock}
       editFocusId={editFocusId}
@@ -156,6 +325,7 @@ function CaptionListPanelBody({
   onProjectChange,
   onCaptionSegmentDelete,
   onRegenerateCaptions,
+  captionsGenerating,
   fps,
   clock,
   editFocusId,
@@ -303,14 +473,51 @@ function CaptionListPanelBody({
 
   const accent = captionTrack ? ACCENT[captionTrack.style] : undefined
 
+  // Bold reads "on" whenever `fontWeight` is ABSENT — each of the seven JSX
+  // caption templates then renders at its OWN designed weight (outline's 900
+  // stencil stamp, subtitle's lighter 600), which is what every existing
+  // project renders today, so bold has to read as "on" by default. It also
+  // reads "on" for anything already stored at 600+ (a project that happens to
+  // carry an explicit weight there). Off is the single explicit value 400.
+  //
+  // `fontWeight` is `number | string` (schema.ts) and CSS accepts the string
+  // keywords 'bold'/'bolder' as legal values — `Number('bold')` is `NaN`,
+  // which fails the `>= 600` check, so a project carrying the keyword read as
+  // OFF even though it renders bold. Checked as its own case rather than
+  // folded into the numeric one.
+  const isBoldKeyword = typeof captionTrack?.fontWeight === 'string'
+    && ['bold', 'bolder'].includes(captionTrack.fontWeight.trim().toLowerCase())
+  const boldOn = captionTrack
+    ? (captionTrack.fontWeight == null || isBoldKeyword || Number(captionTrack.fontWeight) >= 600)
+    : false
+
   // onChange = live preview only (cheap, no PUT); onCommit persists once.
-  const liveTrack = (patch: Record<string, string>) => {
+  // `Partial<Captions>`, not `Record<string, string>`: the text-styling
+  // controls below write a `string[]` (googleFonts) and a number
+  // (lineHeight), and stringifying those to fit a narrower patch type would
+  // put values in the project that the caption templates can't read.
+  const liveTrack = (patch: Partial<Captions>) => {
     if (!project.captions) return
     onProjectChange?.({ ...project, captions: { ...project.captions, ...patch } })
   }
-  const commitTrack = (patch: Record<string, string>) => {
+  const commitTrack = (patch: Partial<Captions>) => {
     if (!project.captions) return
     onCaptionEdit?.({ ...project, captions: { ...project.captions, ...patch } })
+  }
+  // Deletes a key from the persisted captions object entirely, rather than
+  // overwriting it. `commitTrack` above can only ADD/OVERWRITE keys via its
+  // patch spread — writing `{ [key]: undefined }` through it would leave the
+  // key present (with an `undefined` value) in the live-preview project, but
+  // JSON.stringify DROPS `undefined` keys on the way to the server, so the
+  // preview and the persisted project would end up disagreeing about whether
+  // the field is set at all. Building the object explicitly and destructuring
+  // the key out of it is the only way both paths agree. Used by the Bold
+  // toggle: switching bold back ON has to DELETE `fontWeight`, not write 700
+  // (see the toggle's own comment for why a flat 700 is wrong).
+  const commitTrackOmitting = (key: keyof Captions) => {
+    if (!project.captions) return
+    const { [key]: _dropped, ...rest } = project.captions
+    onCaptionEdit?.({ ...project, captions: rest as Captions })
   }
   // Per-segment color: when a real segment is selected, the base swatch
   // targets ITS color instead of the track's. Live preview still flows
@@ -347,12 +554,26 @@ function CaptionListPanelBody({
             )}
           </span>
           <div className="flex items-center gap-1.5 shrink-0">
-            {onRegenerateCaptions && (
+            {/* Only the "replace what's there" state lives in the header —
+                the "there's nothing yet" state has its own primary button
+                down in the empty-state body below, so this panel never shows
+                two competing triggers at once. */}
+            {onRegenerateCaptions && segs.length > 0 && (
               <button
-                className="text-[10px] text-[var(--editor-text)]/60 hover:text-[var(--editor-text)] border border-[var(--editor-border)] hover:border-[var(--editor-text)]/30 bg-[var(--editor-surface)] rounded px-1.5 py-0.5 transition-colors"
+                type="button"
+                // `disabled:hover:*` classes here used to target the
+                // arbitrary-var color `text-[var(--editor-text)]`/`border-
+                // [var(--editor-border)]` with no rule ever generated for
+                // them (the same opacity-modifier trap this file documents
+                // elsewhere) — Tailwind emitted nothing, so a disabled button
+                // still brightened to full foreground on hover.
+                // `disabled:pointer-events-none` actually works: it removes
+                // hover (and click) entirely while disabled.
+                className="text-[10px] text-[var(--editor-text)]/60 hover:text-[var(--editor-text)] border border-[var(--editor-border)] hover:border-[var(--editor-text)]/30 bg-[var(--editor-surface)] rounded px-1.5 py-0.5 transition-colors disabled:opacity-40 disabled:cursor-not-allowed disabled:pointer-events-none"
                 onClick={onRegenerateCaptions}
+                disabled={captionsGenerating}
               >
-                Regenerate
+                Regenerate captions
               </button>
             )}
             {captionTrack && segs.length > 0 && (
@@ -457,6 +678,152 @@ function CaptionListPanelBody({
                     />
                   )}
                 </div>
+
+                {/* ── Text styling ──
+                    Every control here writes a track-level `Captions` field
+                    that all seven JSX caption templates already read as a
+                    prop, so one write reaches the editor preview and the
+                    export together — no separate render-side plumbing. */}
+                <div className="flex flex-col gap-1.5 border-t border-[var(--editor-border)] pt-2">
+                  <CaptionSpecimen
+                    captions={captionTrack}
+                    currentTime={currentTime}
+                    selectedSegmentId={selectedSeg?.id}
+                    fontFamily={captionTrack.fontFamily}
+                    // The LIVE slider value, not `captionTrack.fontsize`, so
+                    // the specimen scales continuously during a fontsize drag
+                    // instead of jumping only when the drag is committed.
+                    fontSize={fontsize}
+                    textTransform={captionTrack.textTransform}
+                    letterSpacing={captionTrack.letterSpacing}
+                    fontWeight={captionTrack.fontWeight}
+                  />
+
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-[10px] text-[var(--editor-text)] opacity-60 shrink-0">Font</span>
+                    <FontFamilyPicker
+                      value={captionTrack.fontFamily ?? ''}
+                      onChange={value => {
+                        // `fontFamily` and `googleFonts` MUST be written in ONE
+                        // patch. A family whose font file is never fetched
+                        // renders as the fallback face — in the preview AND in
+                        // the export — which is the exact failure this control
+                        // exists to prevent; and two patches would also stack
+                        // two undo entries and could interleave with another
+                        // edit between them. The System option carries no
+                        // `spec`, and `[]` is the right write for it:
+                        // explicitly empty, so a previously picked family's
+                        // spec cannot linger and keep being fetched.
+                        //
+                        // The spec is resolved here rather than handed over by
+                        // `FontFamilyPicker` (whose onChange gives only the CSS
+                        // value) so its signature — and its other caller,
+                        // text/TextFormattingToolbar.tsx — stays untouched.
+                        // `findFontOption` is an exact round-trip on an
+                        // option's own `value`, so this always finds the option
+                        // the operator just clicked.
+                        const opt = findFontOption(value)
+                        commitTrack({ fontFamily: value, googleFonts: opt?.spec ? [opt.spec] : [] })
+                      }}
+                      className="flex-1 min-w-0"
+                      buttonClassName="flex h-7 w-full items-center gap-1 rounded border border-[var(--editor-border)] bg-[var(--editor-surface)] px-1.5 text-[11px] text-[var(--editor-text)] hover:border-[var(--editor-accent)] focus:outline-none focus:border-[var(--editor-accent)]"
+                    />
+                    <button
+                      type="button"
+                      aria-pressed={boldOn}
+                      aria-label="Bold"
+                      // Surprising on first read, so said explicitly: ON means
+                      // the key is ABSENT, not "set to some bold number". Each
+                      // of the seven caption templates has its own designed
+                      // weight (outline's 900 stencil, subtitle's 600, …), and
+                      // that only comes through when `fontWeight` isn't in the
+                      // project at all. Writing 700 here would flatten every
+                      // style onto the same weight and quietly break each
+                      // style's look — so turning bold back ON has to DELETE
+                      // the key (via `commitTrackOmitting`), never re-write it.
+                      onClick={() => boldOn ? commitTrack({ fontWeight: 400 }) : commitTrackOmitting('fontWeight')}
+                      className={`${chipClass(boldOn)} font-bold shrink-0`}
+                    >
+                      B
+                    </button>
+                  </div>
+
+                  <div className="flex items-center justify-between gap-1.5">
+                    <div role="group" aria-label="Caption text case" className="flex items-center gap-1">
+                      {/* Absent `textTransform` seeds from the active style's
+                          own default (same reasoning as `boldOn` above) — a
+                          fresh `outline` caption renders uppercase before any
+                          case chip is ever clicked, so the chip has to read
+                          pressed for that to be true rather than lying about
+                          the caption's real on-screen case. An EXPLICIT
+                          'none' (written when the operator turns a case back
+                          off) is not "absent" and never falls back. */}
+                      {CASES.map(({ value, glyph, label }) => {
+                        const effectiveTransform = captionTrack.textTransform ?? CAPTION_STYLE_TEXT_TRANSFORM[captionTrack.style]
+                        const active = effectiveTransform === value
+                        return (
+                          <button
+                            key={value}
+                            type="button"
+                            aria-label={label}
+                            aria-pressed={active}
+                            // Re-clicking the active case clears it. Writes
+                            // 'none' rather than dropping the key: an absent
+                            // field can't overwrite the value already saved on
+                            // the project, so "off" has to be said out loud.
+                            onClick={() => commitTrack({ textTransform: active ? 'none' : value })}
+                            className={`${chipClass(active)} font-mono`}
+                          >
+                            {glyph}
+                          </button>
+                        )
+                      })}
+                    </div>
+                    <div role="group" aria-label="Caption text alignment" className="flex items-center gap-1">
+                      {ALIGNMENTS.map(({ value, Icon, label }) => {
+                        const active = captionTrack.textAlign === value
+                        return (
+                          <button
+                            key={value}
+                            type="button"
+                            aria-label={label}
+                            aria-pressed={active}
+                            onClick={() => commitTrack({ textAlign: value })}
+                            className={`${chipClass(active)} flex items-center justify-center px-1.5`}
+                          >
+                            <Icon size={11} />
+                          </button>
+                        )
+                      })}
+                    </div>
+                  </div>
+
+                  <div className="flex items-center justify-between gap-2">
+                    <StepperField
+                      label="Spacing"
+                      ariaLabel="Caption letter spacing"
+                      value={parseEmValue(captionTrack.letterSpacing)}
+                      placeholder={parseEmValue(CAPTION_STYLE_LETTER_SPACING[captionTrack.style])}
+                      min={-0.1}
+                      max={0.5}
+                      step={0.01}
+                      unit="em"
+                      onLive={n => liveTrack({ letterSpacing: `${roundTo(n, 3)}em` })}
+                      onCommit={n => commitTrack({ letterSpacing: `${roundTo(n, 3)}em` })}
+                    />
+                    <StepperField
+                      label="Line"
+                      ariaLabel="Caption line height"
+                      value={parseUnitlessValue(captionTrack.lineHeight)}
+                      placeholder={parseUnitlessValue(CAPTION_STYLE_LINE_HEIGHT[captionTrack.style])}
+                      min={0.8}
+                      max={2.5}
+                      step={0.05}
+                      onLive={n => liveTrack({ lineHeight: roundTo(n, 2) })}
+                      onCommit={n => commitTrack({ lineHeight: roundTo(n, 2) })}
+                    />
+                  </div>
+                </div>
               </div>
             )}
           </div>
@@ -520,9 +887,28 @@ function CaptionListPanelBody({
       {/* ── Scrollable numbered list ── */}
       <div role="list" aria-label="Caption segments" className="flex-1 min-h-0 overflow-y-auto px-2 py-2 flex flex-col gap-1">
         {segs.length === 0 ? (
-          <p className="text-xs text-[var(--editor-text)]/50 italic text-center mt-4 px-2 leading-relaxed">
-            No captions yet. Captions are generated during transcription.
-          </p>
+          <div className="flex flex-col items-center gap-2 text-center mt-4 px-2">
+            <p className="text-xs text-[var(--editor-text)]/50 leading-relaxed">
+              {onRegenerateCaptions
+                ? "Captions are generated from the timeline's audio."
+                : 'No captions yet. Captions are generated during transcription.'}
+            </p>
+            {/* Primary action — the only thing to do on an otherwise empty
+                panel, so it gets the accent treatment rather than the small
+                ghost buttons in the header above. Absent entirely when the
+                host has no `generateCaptions` (Hub/LP): a button with no
+                working handler is worse than no button. */}
+            {onRegenerateCaptions && (
+              <button
+                type="button"
+                onClick={onRegenerateCaptions}
+                disabled={captionsGenerating}
+                className="text-xs font-medium rounded-md px-3 py-1.5 bg-[var(--editor-accent)] text-[var(--editor-accent-foreground)] hover:opacity-90 transition-opacity disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:opacity-50"
+              >
+                Generate captions
+              </button>
+            )}
+          </div>
         ) : totalVisible === 0 ? (
           <p className="text-xs text-[var(--editor-text)]/50 italic text-center mt-4 px-2">No matching captions.</p>
         ) : (

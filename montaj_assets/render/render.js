@@ -769,9 +769,12 @@ function collectPuppeteerSegments(projectJson, fps, width, height, segDir) {
       delete captionTheme.fontsize
     }
     // The 'clean' style is built around Figtree — default its google font
-    // when the caller hasn't specified one, so the render isn't silently
-    // falling back to a system font.
-    if (captions.style === 'clean' && (captionFonts == null || captionFonts.length === 0)) {
+    // when the caller hasn't specified one AND hasn't chosen their own font
+    // family. Otherwise a project asking for e.g. Baloo 2 would also fetch
+    // Figtree, and if the chosen family string is malformed the CSS cascade
+    // would silently fall back to Figtree rather than to system-ui, which is
+    // a confusing failure mode.
+    if (captions.style === 'clean' && (captionFonts == null || captionFonts.length === 0) && captionTheme.fontFamily == null) {
       captionFonts = ['Figtree:wght@700']
     }
     specs.push({

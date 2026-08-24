@@ -8,6 +8,8 @@ import {
 import { gateProxy, isProxyUsable, markProxyFailed } from './proxySupport'
 import {
   getSharedAudioContext,
+  latencySeconds,
+  peekSharedAudioContext,
   resumeAudioContextFromGesture,
   type MontajWindow,
 } from './audio-context'
@@ -168,6 +170,25 @@ export function useVideoPlayback(
   const fileUrlRef = useRef(fileUrl)
   useEffect(() => { fileUrlRef.current = fileUrl }, [fileUrl])
 
+  // The AUDIBLE-time bridge to the store. Every playback-advance emission in
+  // this hook (rAF canvas tick, gap tick, `handleTimeUpdate`, clip-switch and
+  // end-of-clip snaps) routes through this instead of calling `onTimeUpdate`
+  // directly. The `<video>` element's `currentTime` and the RAF wall-clock both
+  // report the same frames-consumed lead the engine's master clock does — the
+  // audio graph is shared — so the picture leads the ear by exactly
+  // `latencySeconds` unless we subtract it here. Read live off the shared ctx
+  // so device switches take effect on the very next emission; clamp ≥ 0.
+  // Scrubs never come through here: the scrub effect updates `lastTimeRef`
+  // without emitting, so seek/scrub display is unaffected.
+  const emitTime = useCallback((t: number) => {
+    // `peek` never creates: production reaches this only during playback, whose
+    // gesture-anchored `togglePlay` has already minted the shared ctx — no ctx
+    // means no gesture yet, so the frames-consumed clock has nothing audible
+    // behind it to lag, and pass-through is the correct behavior.
+    const ctx = peekSharedAudioContext()
+    onTimeUpdate(ctx ? Math.max(0, t - latencySeconds(ctx)) : t)
+  }, [onTimeUpdate])
+
   function getActiveVideo() { return activeSlotRef.current === 0 ? video0Ref.current : video1Ref.current }
   function getInactiveVideo() { return activeSlotRef.current === 0 ? video1Ref.current : video0Ref.current }
 
@@ -323,7 +344,7 @@ export function useVideoPlayback(
         const dt   = (ms - rafLastMs.current) / 1000
         const next = Math.min(lastTimeRef.current + dt, maxEnd)
         lastTimeRef.current = next
-        onTimeUpdate(next)
+        emitTime(next)
         if (next >= maxEnd) {
           setIsPlaying(false)
           rafRef.current = null
@@ -346,7 +367,7 @@ export function useVideoPlayback(
     return () => {
       if (rafRef.current) cancelAnimationFrame(rafRef.current)
     }
-  }, [isPlaying, isCanvasProject, onTimeUpdate])
+  }, [isPlaying, isCanvasProject, emitTime])
 
   // ── Multi-track audio management ───────────────────────────────────────────
   // Derive unmuted tracks. The full tracks array is a new reference on every
@@ -577,7 +598,7 @@ export function useVideoPlayback(
     const elapsed = (performance.now() - gapWallRef.current) / 1000
     const t = Math.min(gapFromRef.current + elapsed, gapTargetRef.current)
     lastTimeRef.current = t
-    onTimeUpdate(t)
+    emitTime(t)
 
     if (t < gapTargetRef.current) {
       gapRAFRef.current = requestAnimationFrame(tickGap)
@@ -598,7 +619,7 @@ export function useVideoPlayback(
     const ns = (1 - activeSlotRef.current) as 0 | 1
     const nv = ns === 0 ? video0Ref.current : video1Ref.current
     lastTimeRef.current = nc.start
-    onTimeUpdate(nc.start)
+    emitTime(nc.start)
     activeIdxRef.current = ni
     if (nv) {
       const src = fileUrlRef.current(playbackSrcFor(nc))
@@ -612,7 +633,7 @@ export function useVideoPlayback(
     setActiveSlot(ns)
     setShowVideo(true)
     preloadSrcRef.current = ''
-  }, [clips, videoTrack, onTimeUpdate])
+  }, [clips, videoTrack, emitTime])
 
   // Scrub: seek active slot when currentTime jumps externally
   useEffect(() => {
@@ -767,7 +788,7 @@ export function useVideoPlayback(
           const nextVideo = nextSlot === 0 ? video0Ref.current : video1Ref.current
 
           lastTimeRef.current = next.start
-          onTimeUpdate(next.start)
+          emitTime(next.start)
           activeIdxRef.current = nextIdx
 
           if (nextVideo) {
@@ -791,7 +812,7 @@ export function useVideoPlayback(
         video.pause()
         const finalTime = clips[activeIdxRef.current].end
         lastTimeRef.current = finalTime
-        onTimeUpdate(finalTime)
+        emitTime(finalTime)
 
         // If overlays or audio extend beyond the last video clip,
         // continue advancing time via the gap clock (shows overlays, plays audio).
@@ -815,15 +836,15 @@ export function useVideoPlayback(
     if (clip.loop && t >= clip.end) {
       video.pause()
       lastTimeRef.current = clip.end
-      onTimeUpdate(clip.end)
+      emitTime(clip.end)
       for (const el of audioRefsMap.current.values()) { if (!el.paused) el.pause() }
       setIsPlaying(false)
       return
     }
 
     lastTimeRef.current = t
-    onTimeUpdate(t)
-  }, [clips, videoTrack, onTimeUpdate])
+    emitTime(t)
+  }, [clips, videoTrack, emitTime])
 
   /**
    * SP3 fix B2 — decode-failure fallback. Wired to both <video> slots'

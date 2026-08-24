@@ -128,6 +128,12 @@ export const CAPTION_RAIL_ACCENT = 'rgba(168,85,247,0.6)'
 export const TIMELINE_COLORS = {
   /** `bg-gray-900` — the dark-mode row background both row kinds use. */
   rowBackground: '#111827',
+  /** A hair lighter than `rowBackground`, alternated with it per row so
+   *  adjacent track lanes read as distinct panels instead of one dark field. */
+  rowBackgroundAlt: '#161f30',
+  /** Subtle outline around every row band — the visible divider that separates
+   *  one track lane from the next, rather than relying on the gap alone. */
+  rowDivider: 'rgba(148,163,184,0.16)',
   /** `bg-emerald-500/40` + `border-emerald-500/60` on AudioTrackRow's bars. */
   audioFill: 'rgba(16,185,129,0.4)',
   audioBorder: 'rgba(16,185,129,0.6)',
@@ -519,6 +525,14 @@ export function drawRowBackground(ctx: DrawContext, rect: Rect, color: string = 
   ctx.fillStyle = color
   roundRectPath(ctx, rect.x, rect.y, rect.width, rect.height, ROW_RADIUS_PX)
   ctx.fill()
+  // A faint outline so each lane reads as its own panel and the boundary
+  // between adjacent tracks is a visible divider, not just the gap. Uses
+  // strokeRect rather than a stroked roundRectPath so it adds no path
+  // (`moveTo`) calls — the row corners are only 4px, so a square outline reads
+  // as clean at this radius.
+  ctx.strokeStyle = TIMELINE_COLORS.rowDivider
+  ctx.lineWidth = 1
+  ctx.strokeRect(rect.x + 0.5, rect.y + 0.5, Math.max(0, rect.width - 1), Math.max(0, rect.height - 1))
 }
 
 export interface ClipDrawArgs {
@@ -1268,8 +1282,9 @@ export function drawTimelineContent(ctx: DrawContext, scene: TimelineScene): Dra
   drawRuler(ctx, viewport, layout.ruler, surfaceWidth)
 
 
+  let rowShadeIdx = 0
   for (const row of layout.rows) {
-    drawRowBackground(ctx, { x: 0, y: row.y, width: surfaceWidth, height: row.height })
+    drawRowBackground(ctx, { x: 0, y: row.y, width: surfaceWidth, height: row.height }, rowShadeIdx++ % 2 === 0 ? TIMELINE_COLORS.rowBackground : TIMELINE_COLORS.rowBackgroundAlt)
 
     // A SKIPPED track is drawn faded: it still draws, and stays selectable and
     // editable; only playback and export leave it out.

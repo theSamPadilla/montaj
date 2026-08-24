@@ -52,8 +52,12 @@ import type { SnapStrength } from './snap'
 import { WaveformPeaksStore, type WaveformSceneLookup } from './waveforms'
 import { FilmstripStore, type FilmstripSceneLookup } from './filmstrips'
 import {
+  EDGE_SCROLL_MAX_PX_PER_SEC,
+  EDGE_SCROLL_ZONE_PX,
   ZOOM_BUTTON_FACTOR,
   applyWheelIntent,
+  clampScrollSeconds,
+  edgeScrollDelta,
   fitViewport,
   formatZoomMultiple,
   observeSurface,
@@ -151,6 +155,14 @@ const requestFrame: (cb: () => void) => number =
 
 const cancelFrame: (handle: number) => void =
   typeof cancelAnimationFrame === 'function' ? cancelAnimationFrame : clearTimeout
+
+/** A monotonic clock for timing the edge auto-scroll loop's frame deltas.
+ *  `performance.now()` where available (real browsers, and jsdom under
+ *  Vitest's fake timers, which fake it in lockstep with `requestAnimationFrame`);
+ *  `Date.now()` as the only fallback. */
+function perfNow(): number {
+  return typeof performance !== 'undefined' && typeof performance.now === 'function' ? performance.now() : Date.now()
+}
 
 /** Stable empty default so an omitted `snapBoundaries` doesn't churn the
  *  pointer layer's latest-props ref with a fresh array every render. */
@@ -399,6 +411,9 @@ export default function TimelineCanvas({
     if (emit.frame !== null) cancelFrame(emit.frame)
     emit.frame = null
     emit.pending = null
+    // Same StrictMode concern as `frameRef` above, for the edge auto-scroll
+    // loop's own rAF handle.
+    stopEdgeAutoScroll()
   }, [])
 
   // ── Surface: CSS size, DPR, backing stores ──
@@ -605,6 +620,20 @@ export default function TimelineCanvas({
   // `surfacePoint`'s comment for why. Null while idle.
   const gestureRectRef = useRef<DOMRect | null>(null)
 
+  // ── Edge auto-scroll ──
+  //
+  // The latest surface-space point and modifiers a real pointermove reported
+  // during a drag. The rAF loop below re-feeds THIS SAME point back into the
+  // machine after each pan, rather than reading a fresh one — the pointer
+  // itself hasn't moved, only the view under it has, so re-dispatching the
+  // unchanged point against the panned viewport is exactly what advances the
+  // dragged item's time (see `dispatchPointerMove`). Null outside a gesture.
+  const lastDragPointRef = useRef<{ point: Point; modifiers: Modifiers } | null>(null)
+  // The loop's own rAF handle, and the timestamp its last tick ran at (for a
+  // framerate-independent pan). Both null while the loop isn't running.
+  const edgeScrollFrameRef = useRef<number | null>(null)
+  const edgeScrollLastTimeRef = useRef<number | null>(null)
+
   const handlersRef = useRef({
     down: (_e: MouseEvent) => {},
     hover: (_e: MouseEvent) => {},
@@ -712,6 +741,91 @@ export default function TimelineCanvas({
     requestRedraw('overlay')
   }
 
+  // ── Edge auto-scroll: pan the view while a drag holds near either edge ──
+  //
+  // Standard NLE behaviour: drag an item/handle past the visible edge and the
+  // view pans to follow, rather than trapping the gesture at whatever was on
+  // screen when the drag started. Only gestures where "the pointer is
+  // captured and following makes sense" qualify — every `dragging` state
+  // EXCEPT `scrub` (the ruler already owns the playhead directly; panning
+  // underneath it while it drags would fight the seek instead of extending
+  // it). Marquee selection is included: dragging the box out past the edge to
+  // catch items further along the timeline is the same affordance.
+
+  function dispatchPointerMove(point: Point, modifiers: Modifiers) {
+    runEffects(machine.dispatch({ type: 'pointerMove', point, modifiers, ctx: buildContext() }))
+  }
+
+  function stopEdgeAutoScroll() {
+    if (edgeScrollFrameRef.current !== null) {
+      cancelFrame(edgeScrollFrameRef.current)
+      edgeScrollFrameRef.current = null
+    }
+    edgeScrollLastTimeRef.current = null
+  }
+
+  function inEdgeZone(pointerX: number, surfaceWidth: number): boolean {
+    return pointerX < EDGE_SCROLL_ZONE_PX || pointerX > surfaceWidth - EDGE_SCROLL_ZONE_PX
+  }
+
+  function edgeAutoScrollTick() {
+    edgeScrollFrameRef.current = null
+
+    const state = machine.state
+    if (state.kind !== 'dragging' || state.gesture === 'scrub') { stopEdgeAutoScroll(); return }
+    const drag = lastDragPointRef.current
+    const rect = gestureRectRef.current
+    if (!drag || !rect || rect.width <= 0) { stopEdgeAutoScroll(); return }
+    if (!inEdgeZone(drag.point.x, rect.width)) { stopEdgeAutoScroll(); return }
+
+    const now = perfNow()
+    const last = edgeScrollLastTimeRef.current
+    edgeScrollLastTimeRef.current = now
+    // The first tick has no prior timestamp to diff against; skip panning
+    // this frame (a 0-length delta would pan nothing anyway) and let the next
+    // one carry a real elapsed time, so the very first frame after entering
+    // the zone doesn't jump by a guessed duration.
+    if (last !== null) {
+      const dt = Math.min(0.1, (now - last) / 1000)
+      const viewport = store.get()
+      const delta = edgeScrollDelta(
+        drag.point.x, rect.width, viewport.pxPerSecond, dt,
+        EDGE_SCROLL_ZONE_PX, EDGE_SCROLL_MAX_PX_PER_SEC,
+      )
+      if (delta !== 0) {
+        let hitClamp = false
+        store.set(vp => {
+          const nextScroll = clampScrollSeconds(vp.scrollSeconds + delta, vp, sceneRef.current.totalDuration)
+          if (nextScroll === vp.scrollSeconds) { hitClamp = true; return vp }
+          return { ...vp, scrollSeconds: nextScroll }
+        })
+        if (hitClamp) { stopEdgeAutoScroll(); return }
+        // Re-feed the SAME screen point now that scrollSeconds has moved
+        // under it — the store's own `subscribe` (wired above) already
+        // requests the repaint this pan needs.
+        dispatchPointerMove(drag.point, drag.modifiers)
+      }
+    }
+
+    edgeScrollFrameRef.current = requestFrame(edgeAutoScrollTick)
+  }
+
+  /** Called on every real pointermove during a gesture. Starts the loop the
+   *  first time the pointer enters an edge zone; leaves it running otherwise
+   *  (the loop re-reads `lastDragPointRef` itself each tick, so a pointer that
+   *  keeps moving within the zone doesn't need to restart anything, and one
+   *  that leaves the zone is caught on the loop's own next tick). */
+  function updateEdgeAutoScroll() {
+    const state = machine.state
+    if (state.kind !== 'dragging' || state.gesture === 'scrub') { stopEdgeAutoScroll(); return }
+    const drag = lastDragPointRef.current
+    const rect = gestureRectRef.current
+    if (!drag || !rect || rect.width <= 0 || !inEdgeZone(drag.point.x, rect.width)) return
+    if (edgeScrollFrameRef.current !== null) return // already running
+    edgeScrollLastTimeRef.current = null
+    edgeScrollFrameRef.current = requestFrame(edgeAutoScrollTick)
+  }
+
   handlersRef.current = {
     down(e) {
       if (e.button !== 0) return
@@ -744,6 +858,11 @@ export default function TimelineCanvas({
         document.removeEventListener('mouseup', onUp)
         gestureRectRef.current = null
         releaseGestureRef.current = null
+        // Every path that ends a gesture — release, a stale gesture's next
+        // press, or unmount — runs through here, so this is the one place
+        // edge auto-scroll needs to be torn down.
+        stopEdgeAutoScroll()
+        lastDragPointRef.current = null
       }
     },
     // Hover only updates the cursor, and only while no gesture is running — the
@@ -760,7 +879,13 @@ export default function TimelineCanvas({
     move(e) {
       const point = surfacePoint(e)
       if (!point) return
-      runEffects(machine.dispatch({ type: 'pointerMove', point, modifiers: modifiersOf(e), ctx: buildContext() }))
+      const modifiers = modifiersOf(e)
+      // Latched for edge auto-scroll: its rAF loop re-dispatches THIS point
+      // once scrollSeconds pans under it, rather than reading a fresh one —
+      // see `lastDragPointRef`'s doc.
+      lastDragPointRef.current = { point, modifiers }
+      dispatchPointerMove(point, modifiers)
+      updateEdgeAutoScroll()
     },
     up(e) {
       // Point first, then release — the point must still see this gesture's

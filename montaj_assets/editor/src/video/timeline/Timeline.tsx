@@ -19,7 +19,7 @@ import { deleteSelection, toggleSelection } from './multiSelectOps'
 import { computeAutoCrossfade, computeDerivedTiming, groupAudioLanes, trackItems } from './timeline-model'
 import TimelineCanvas, { useCanvasZoomControls, type ZoomControls } from './canvas/TimelineCanvas'
 import { useViewportStore, useViewportValue, xToTime } from './canvas/viewport'
-import { useKeymap, matchesArrowLeft, matchesArrowRight, matchesDelete } from '../keymap'
+import { useKeymap, matchesArrowLeft, matchesArrowRight, matchesDelete, matchesModKey } from '../keymap'
 import { Tooltip } from '../../ui/Tooltip'
 
 /** How long the auto-crossfade pass waits after an audio-timing change before
@@ -445,6 +445,39 @@ export default function Timeline({ project, clock, onProjectChange, onOverlayEdi
   const fps = project.settings?.fps ?? 30
   const frameStep = 1 / fps
   useKeymap([
+    // Cmd/Ctrl+Arrow jump-to-start/end. `matchesArrowLeft`/`matchesArrowRight`
+    // (keymap.ts's `matchesKey`) don't exclude modifiers, so a mod+arrow chord
+    // matches BOTH these bindings AND `timeline.frame-step` below — these two
+    // are listed FIRST so first-match-wins picks the jump, not a frame step
+    // (same precedence pattern documented on `matchesModAltKey` in keymap.ts).
+    {
+      id: 'timeline.jump-start',
+      description: 'Jump to start',
+      matches: matchesModKey('ArrowLeft'),
+      guard: () => totalDuration > 0,
+      action: () => {
+        clock.set(0)
+        setKeyNavTime(0)
+        if (keyNavTimerRef.current) clearTimeout(keyNavTimerRef.current)
+        keyNavTimerRef.current = setTimeout(() => setKeyNavTime(null), 1500)
+      },
+    },
+    {
+      id: 'timeline.jump-end',
+      description: 'Jump to end',
+      matches: matchesModKey('ArrowRight'),
+      guard: () => totalDuration > 0,
+      // `contentDuration` is the furthest item's end (max across every clip/
+      // overlay/audio track) — NOT `totalDuration`, which pads content with
+      // scroll/drop headroom (see computeDerivedTiming in timeline-model.ts).
+      // The jump belongs at the last real element, not into that headroom.
+      action: () => {
+        clock.set(contentDuration)
+        setKeyNavTime(contentDuration)
+        if (keyNavTimerRef.current) clearTimeout(keyNavTimerRef.current)
+        keyNavTimerRef.current = setTimeout(() => setKeyNavTime(null), 1500)
+      },
+    },
     {
       id: 'timeline.frame-step',
       description: 'Step one frame (Shift steps ten)',

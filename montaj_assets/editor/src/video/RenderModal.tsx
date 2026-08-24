@@ -54,6 +54,26 @@ export interface PreRenderOptions {
    * project's shape — a vertical project gets a vertical cover. Absent → 16/9.
    */
   aspectRatio?: number
+  /**
+   * Export resolution control — source-capped tier picker.
+   * `value`  — the currently-selected [w, h] (initial = the project's current settings.resolution).
+   * `available` — the tiers the dialog may offer, each as [w, h] preserving aspect; ordered ascending by short-side.
+   * `set` — the host's persistence setter (mutates settings.resolution + saves). Absent → no dropdown rendered.
+   */
+  resolution?: {
+    value: [number, number]
+    available: Array<[number, number]>
+    set: (r: [number, number]) => void
+  }
+  /**
+   * Export fps control — source-capped tier picker. `value` is the currently-selected fps
+   * (initial = settings.fps ?? 30). `available` is the fps tiers offerable (asc). `set` persists.
+   */
+  fps?: {
+    value: number
+    available: number[]
+    set: (f: number) => void
+  }
 }
 
 interface RenderModalProps<P extends Project = Project> {
@@ -192,6 +212,28 @@ const EXPORT_CHOICES: Array<{ id: RenderExport; label: string; blurb: string }> 
   { id: 'sdr',  label: 'SDR',                 blurb: 'One standard file. Plays the same everywhere.' },
   { id: 'both', label: 'Both',                blurb: 'The HDR file plus an SDR copy beside it.' },
 ]
+
+/** Friendly tier name for a resolution, keyed off the short side (e.g. 1080
+ *  for both 1080x1920 and 1920x1080). Falls back to "<n>p" for non-standard
+ *  short sides so an odd source resolution still reads sensibly. */
+export function resLabel([w, h]: [number, number]): string {
+  const short = Math.min(w, h)
+  switch (short) {
+    case 720:  return '720p'
+    case 1080: return '1080p (HD)'
+    case 1440: return '1440p (2K)'
+    case 2160: return '2160p (4K)'
+    default:   return `${short}p`
+  }
+}
+
+/** Short helper line under an fps tier button — a plain-English hint, empty
+ *  for the neutral default (30). */
+function fpsHint(fps: number): string {
+  if (fps === 24) return 'cinema'
+  if (fps === 60) return 'smooth'
+  return ''
+}
 
 const POLL_INTERVAL_MS = 2500
 
@@ -813,6 +855,83 @@ export default function RenderModal<P extends Project = Project>({ projectId, ad
                 <span className="text-xs font-mono text-[var(--editor-text)]/70 truncate">output/{outputName}.mp4</span>
                 <span className="text-[11px] text-[var(--editor-text)]/45">Download after export.</span>
               </div>
+
+              {/* Resolution — source-capped tier picker. Only rendered when the
+                  host supplies a `resolution` control; the tile whose short
+                  side equals the CURRENT project resolution is active, and the
+                  highest available tier is flagged "recommended". */}
+              {preRenderOptions?.resolution && (() => {
+                const res = preRenderOptions.resolution
+                const currentShort = Math.min(...res.value)
+                const maxShort = res.available.length > 0
+                  ? Math.max(...res.available.map(([w, h]) => Math.min(w, h)))
+                  : undefined
+                return (
+                  <div className="flex flex-col gap-2">
+                    <p className="text-[11px] font-semibold uppercase tracking-wide text-[var(--editor-text)]/50">Resolution</p>
+                    <div role="radiogroup" aria-label="Resolution" className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                      {res.available.map(([w, h]) => {
+                        const short = Math.min(w, h)
+                        const active = short === currentShort
+                        const recommended = maxShort !== undefined && short === maxShort
+                        return (
+                          <button
+                            key={`${w}x${h}`}
+                            role="radio"
+                            aria-checked={active}
+                            onClick={() => res.set([w, h])}
+                            className={`flex flex-col gap-1 rounded-lg border p-2.5 text-left transition-colors ${
+                              active
+                                ? 'border-violet-400/60 bg-violet-400/10'
+                                : 'border-[var(--editor-border)] hover:bg-[var(--editor-text)]/5'
+                            }`}
+                          >
+                            <span className="text-xs font-semibold text-[var(--editor-text)] flex items-center gap-1.5">
+                              {resLabel([w, h])}
+                              {recommended && (
+                                <span className="text-[9px] font-normal px-1 py-px rounded bg-[var(--editor-text)]/10 text-[var(--editor-text)]/55">recommended</span>
+                              )}
+                            </span>
+                            <span className="text-[10px] leading-snug text-[var(--editor-text)]/55">{w} × {h}</span>
+                          </button>
+                        )
+                      })}
+                    </div>
+                  </div>
+                )
+              })()}
+
+              {/* Frame rate — source-capped tier picker, same idiom as Resolution. */}
+              {preRenderOptions?.fps && (() => {
+                const fps = preRenderOptions.fps
+                return (
+                  <div className="flex flex-col gap-2">
+                    <p className="text-[11px] font-semibold uppercase tracking-wide text-[var(--editor-text)]/50">Frame rate</p>
+                    <div role="radiogroup" aria-label="Frame rate" className="grid grid-cols-3 gap-2">
+                      {fps.available.map(f => {
+                        const active = f === fps.value
+                        const hint = fpsHint(f)
+                        return (
+                          <button
+                            key={f}
+                            role="radio"
+                            aria-checked={active}
+                            onClick={() => fps.set(f)}
+                            className={`flex flex-col gap-1 rounded-lg border p-2.5 text-left transition-colors ${
+                              active
+                                ? 'border-violet-400/60 bg-violet-400/10'
+                                : 'border-[var(--editor-border)] hover:bg-[var(--editor-text)]/5'
+                            }`}
+                          >
+                            <span className="text-xs font-semibold text-[var(--editor-text)]">{f} fps</span>
+                            <span className="text-[10px] leading-snug text-[var(--editor-text)]/55">{hint}</span>
+                          </button>
+                        )
+                      })}
+                    </div>
+                  </div>
+                )
+              })()}
 
               {/* HDR-only controls: export format, image color, tone-curve compare. */}
               {isHdr && (

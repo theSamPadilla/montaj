@@ -147,6 +147,70 @@ describe('FootagePanel', () => {
     expect(screen.getByText('No footage yet. Import video to get started.')).toBeInTheDocument()
   })
 
+  it('lists Name, Date added, and Type in the sort menu', () => {
+    render(<FootagePanel {...baseProps({ sources: [source()] })} />)
+    fireEvent.click(screen.getByTitle('Sort footage'))
+    expect(screen.getByText('Name')).toBeInTheDocument()
+    expect(screen.getByText('Date added')).toBeInTheDocument()
+    expect(screen.getByText('Type')).toBeInTheDocument()
+  })
+
+  it('leaves the default (insertion) order unchanged on mount', () => {
+    render(
+      <FootagePanel
+        {...baseProps({
+          sources: [
+            source({ id: 'src-1', src: '/videos/banana.mp4' }),
+            source({ id: 'src-2', src: '/videos/apple.mov' }),
+            source({ id: 'src-3', src: '/videos/cherry.mp4' }),
+          ],
+        })}
+      />,
+    )
+    const names = screen.getAllByTitle(/\.(mp4|mov)$/).map(el => el.textContent)
+    expect(names).toEqual(['banana.mp4', 'apple.mov', 'cherry.mp4'])
+  })
+
+  it('sorts cards alphabetically by filename when Name is picked', () => {
+    render(
+      <FootagePanel
+        {...baseProps({
+          sources: [
+            source({ id: 'src-1', src: '/videos/banana.mp4' }),
+            source({ id: 'src-2', src: '/videos/apple.mov' }),
+            source({ id: 'src-3', src: '/videos/cherry.mp4' }),
+          ],
+        })}
+      />,
+    )
+    fireEvent.click(screen.getByTitle('Sort footage'))
+    fireEvent.click(screen.getByText('Name'))
+
+    const names = screen.getAllByTitle(/\.(mp4|mov)$/).map(el => el.textContent)
+    expect(names).toEqual(['apple.mov', 'banana.mp4', 'cherry.mp4'])
+    expect(screen.getByTitle('Sort footage')).toHaveTextContent('Name')
+  })
+
+  it('groups cards by file extension when Type is picked', () => {
+    render(
+      <FootagePanel
+        {...baseProps({
+          sources: [
+            source({ id: 'src-1', src: '/videos/one.mp4' }),
+            source({ id: 'src-2', src: '/videos/two.mov' }),
+            source({ id: 'src-3', src: '/videos/three.mp4' }),
+          ],
+        })}
+      />,
+    )
+    fireEvent.click(screen.getByTitle('Sort footage'))
+    fireEvent.click(screen.getByText('Type'))
+
+    const names = screen.getAllByTitle(/\.(mp4|mov)$/).map(el => el.textContent)
+    // "mov" < "mp4" lexicographically; ties (one.mp4, three.mp4) keep their original order.
+    expect(names).toEqual(['two.mov', 'one.mp4', 'three.mp4'])
+  })
+
   it('drives sourcePreview.set with the proxy url and hover fraction on pointer move, and clears it on pointer leave', () => {
     const set = vi.fn()
     const sourcePreview = { get: () => null, set, subscribe: () => () => {} }

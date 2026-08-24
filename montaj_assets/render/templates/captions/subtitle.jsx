@@ -13,13 +13,19 @@ export default function Subtitle({
   color           = '#ffffff',
   backgroundColor = 'rgba(0,0,0,0.6)',
   fontSize        = 46,
+  fontFamily    = 'system-ui, -apple-system, sans-serif',
+  fontWeight    = 600,
+  textAlign     = 'center',
+  letterSpacing,
+  lineHeight    = 1.4,
+  textTransform,
 }) {
   const t = frame / fps
 
   const active = activeSegments(segments, t)
   if (!active.length) return null
 
-  return <>{active.map((seg, i) => renderSegment(seg, seg.id ?? i, { frame, fps, color, backgroundColor, fontSize }))}</>
+  return <>{active.map((seg, i) => renderSegment(seg, seg.id ?? i, { frame, fps, color, backgroundColor, fontSize, fontFamily, fontWeight, textAlign, letterSpacing, lineHeight, textTransform }))}</>
 }
 
 /**
@@ -52,7 +58,7 @@ function activeSegments(segments, t) {
  * caption's rect instead of the union of everything on screen (see
  * measureCaptionContentRect in editor/src/video/preview/captionDragState.ts).
  */
-function renderSegment(seg, key, { frame, fps, color, backgroundColor, fontSize }) {
+function renderSegment(seg, key, { frame, fps, color, backgroundColor, fontSize, fontFamily, fontWeight, textAlign, letterSpacing, lineHeight, textTransform }) {
   const segStartFrame = Math.round(seg.start * fps)
   const segEndFrame   = Math.round(seg.end   * fps)
   const frameInSeg    = frame - segStartFrame
@@ -78,13 +84,15 @@ function renderSegment(seg, key, { frame, fps, color, backgroundColor, fontSize 
           background: backgroundColor,
           color: seg.color ?? color,
           fontSize,
-          fontFamily: 'system-ui, -apple-system, sans-serif',
-          fontWeight: 600,
+          fontFamily,
+          fontWeight,
           padding: '8px 18px',
           borderRadius: 6,
-          lineHeight: 1.4,
-          textAlign: 'center',
+          lineHeight,
+          textAlign,
           maxWidth: '90%',
+          letterSpacing,
+          textTransform,
           textShadow: '0 1px 4px rgba(0,0,0,0.5)',
         }}>
           {seg.text}

@@ -439,6 +439,32 @@ test('collectPuppeteerSegments: ignores non-overlay types in tracks[1+]', () => 
   assert.equal(specs.length, 0)
 })
 
+test('collectPuppeteerSegments: clean-style captions with no fontFamily still default to Figtree', () => {
+  const project = {
+    tracks: [
+      [{ id: 'clip1', type: 'video', src: '/foo.mp4', start: 0, end: 5 }],
+    ],
+    captions: { style: 'clean', segments: [{ text: 'hi', start: 0, end: 1 }] },
+    settings: { fps: 30 },
+  }
+  const specs = collectPuppeteerSegments(project, 30, 1080, 1920, '/tmp/seg')
+  const captionSpec = specs.find(s => s.id === 'captions')
+  assert.deepEqual(captionSpec.googleFonts, ['Figtree:wght@700'])
+})
+
+test('collectPuppeteerSegments: clean-style captions with a caller-set fontFamily do NOT also fetch Figtree', () => {
+  const project = {
+    tracks: [
+      [{ id: 'clip1', type: 'video', src: '/foo.mp4', start: 0, end: 5 }],
+    ],
+    captions: { style: 'clean', fontFamily: 'Baloo 2', segments: [{ text: 'hi', start: 0, end: 1 }] },
+    settings: { fps: 30 },
+  }
+  const specs = collectPuppeteerSegments(project, 30, 1080, 1920, '/tmp/seg')
+  const captionSpec = specs.find(s => s.id === 'captions')
+  assert.deepEqual(captionSpec.googleFonts, [])
+})
+
 // ---------------------------------------------------------------------------
 // resolveFilePath
 // ---------------------------------------------------------------------------

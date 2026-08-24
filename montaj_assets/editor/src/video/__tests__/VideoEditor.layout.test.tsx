@@ -128,7 +128,7 @@ describe('VideoEditor — layout gating (classic vs. CapCut media panel)', () =>
 // The rail (version history / run history / sidebar assets / CaptionListPanel)
 // only mounts when it has something to show. A project with NO captions and NO
 // other rail content, on a host that DOES support `generateCaptions`, must
-// still get a rail — otherwise "Regenerate" (CaptionListPanel's only way to
+// still get a rail — otherwise "Generate captions" (CaptionListPanel's only way to
 // create captions from scratch) is unreachable. The retired bottom
 // TranscriptPanel offered Regenerate unconditionally whenever the host
 // supported it; the rail gate must preserve that reachability now that the
@@ -170,10 +170,10 @@ describe('VideoEditor — right-rail gate includes the regenerate capability', (
     const divider = await waitFor(() => screen.getByLabelText('Resize sidebar'))
     expect(divider).toBeTruthy()
 
-    // And Regenerate is not just present but actually reachable: clicking it
+    // And the trigger is not just present but actually reachable: clicking it
     // opens CaptionRegenModal (asserted via its immediate "Starting
     // transcription…" line, present before any stream event arrives).
-    fireEvent.click(screen.getByText('Regenerate'))
+    fireEvent.click(screen.getByText('Generate captions'))
     expect(await screen.findByText(/starting transcription/i)).toBeTruthy()
   })
 })
