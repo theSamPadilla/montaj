@@ -267,6 +267,77 @@ describe('drawWaveformBars', () => {
     drawWaveformBars(r.ctx, rect(), [], WAVEFORM_COLORS.clip)
     expect(r.of('fillRect')).toHaveLength(0)
   })
+
+  // ── Fade gain scaling (Vegas behaviour: the waveform shrinks to zero
+  //    through a fade-out and grows from zero through a fade-in) ──────────
+
+  it('with no gainAt, draws exactly as before (full amplitude, unaffected)', () => {
+    const r = recordingContext()
+    const bandRect = rect({ x: 0, y: 0, width: 40, height: 20 })
+    const columns: WaveformColumn[] = [{ min: -1, max: 1 }, { min: -1, max: 1 }]
+    drawWaveformBars(r.ctx, bandRect, columns, WAVEFORM_COLORS.clip)
+    const [, y0, , h0] = r.of('fillRect')[0].args as number[]
+    // Full amplitude: top at rect.y (0), full band height (20).
+    expect(y0).toBeCloseTo(0)
+    expect(h0).toBeCloseTo(20)
+  })
+
+  it('a column under gain 0 collapses to a hairline at the center — ~0 height, not full amplitude', () => {
+    const r = recordingContext()
+    const bandRect = rect({ x: 0, y: 0, width: 40, height: 20 })
+    const columns: WaveformColumn[] = [{ min: -1, max: 1 }]
+    drawWaveformBars(r.ctx, bandRect, columns, WAVEFORM_COLORS.clip, () => 0)
+    const [, y, , h] = r.of('fillRect')[0].args as number[]
+    const centerY = bandRect.y + bandRect.height / 2
+    // Collapsed to the center line: top sits at (or just above, the 1px
+    // floor) the vertical center, nowhere near the full 20px band height.
+    expect(y).toBeCloseTo(centerY, 0)
+    expect(h).toBeLessThan(2)
+  })
+
+  it('gain 0.5 halves the amplitude relative to gain 1', () => {
+    const full = recordingContext()
+    const half = recordingContext()
+    const bandRect = rect({ x: 0, y: 0, width: 40, height: 20 })
+    const columns: WaveformColumn[] = [{ min: -1, max: 1 }]
+    drawWaveformBars(full.ctx, bandRect, columns, WAVEFORM_COLORS.clip, () => 1)
+    drawWaveformBars(half.ctx, bandRect, columns, WAVEFORM_COLORS.clip, () => 0.5)
+    const [, , , hFull] = full.of('fillRect')[0].args as number[]
+    const [, , , hHalf] = half.of('fillRect')[0].args as number[]
+    expect(hHalf).toBeCloseTo(hFull / 2, 1)
+  })
+
+  it('samples gainAt PER COLUMN — a fade partway across the bar leaves untouched columns at full height', () => {
+    const r = recordingContext()
+    const bandRect = rect({ x: 0, y: 0, width: 40, height: 20 })
+    const columns: WaveformColumn[] = [{ min: -1, max: 1 }, { min: -1, max: 1 }]
+    // Silence the first column only (x < 20), full gain elsewhere.
+    drawWaveformBars(r.ctx, bandRect, columns, WAVEFORM_COLORS.clip, x => (x < 20 ? 0 : 1))
+    const fills = r.of('fillRect').map(c => c.args as number[])
+    expect(fills[0][3]).toBeLessThan(2)     // first column: collapsed
+    expect(fills[1][3]).toBeCloseTo(20)     // second column: untouched, full height
+  })
+})
+
+describe('drawAudioLaneWaveform gainAt passthrough', () => {
+  it('threads gainAt straight through to drawWaveformBars', () => {
+    const r = recordingContext()
+    const bandRect = rect({ x: 0, y: 0, width: 20, height: 20 })
+    const columns: WaveformColumn[] = [{ min: -1, max: 1 }]
+    drawAudioLaneWaveform(r.ctx, bandRect, columns, () => 0)
+    const [, , , h] = r.of('fillRect')[0].args as number[]
+    expect(h).toBeLessThan(2)
+  })
+
+  it('omitting gainAt draws at full amplitude, same as before the fade-shape feature', () => {
+    const r = recordingContext()
+    const bandRect = rect({ x: 0, y: 0, width: 20, height: 20 })
+    const columns: WaveformColumn[] = [{ min: -1, max: 1 }]
+    drawAudioLaneWaveform(r.ctx, bandRect, columns)
+    const [, y, , h] = r.of('fillRect')[0].args as number[]
+    expect(y).toBeCloseTo(0)
+    expect(h).toBeCloseTo(20)
+  })
 })
 
 describe('clipWaveformBand', () => {

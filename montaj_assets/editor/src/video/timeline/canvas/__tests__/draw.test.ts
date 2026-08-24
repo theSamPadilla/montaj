@@ -16,6 +16,7 @@ import {
   AUDIO_ITEM_RADIUS_PX,
   CAPTION_PALETTE,
   CLIP_HANDLE_WIDTH_PX,
+  FADE_GRIP_SIZE_PX,
   CURSOR_WIDTH_PX,
   LABEL_PAD_PX,
   LABEL_TOP_OFFSET_PX,
@@ -33,6 +34,7 @@ import {
   drawCaptionBlock,
   drawClipRect,
   drawTrimHandle,
+  FADE_ENVELOPE_SEGMENTS,
   RULER_HEIGHT_PX,
   SNAP_GUIDE_CAP_HALF_WIDTH_PX,
   SNAP_GUIDE_WEAK_WIDTH_PX,
@@ -575,6 +577,21 @@ describe('drawTrimHandle', () => {
   })
 })
 
+/**
+ * The i-th fade envelope's curve `lineTo` calls (0-based: fade-in is drawn
+ * before fade-out when both are set — see `drawAudioItem`'s own call order).
+ * Each curve is exactly `FADE_ENVELOPE_SEGMENTS` `lineTo` calls (one
+ * `moveTo` plus `FADE_ENVELOPE_SEGMENTS` `lineTo`s), and nothing else on a
+ * bar calls `lineTo` before them — the bar body is `arcTo`, the tint band is
+ * `fillRect`, and the fade grips (which DO use `lineTo`) are always drawn
+ * after every envelope — so a fixed-size slice from the FRONT of `lineTo`
+ * calls is exact regardless of what (if anything) is drawn afterward.
+ */
+function envelopeCurveLineTos(r: Recorder, index = 0): number[][] {
+  const lines = r.of('lineTo').map(c => c.args as number[])
+  return lines.slice(index * FADE_ENVELOPE_SEGMENTS, (index + 1) * FADE_ENVELOPE_SEGMENTS)
+}
+
 describe('drawAudioItem', () => {
   it('fills emerald, labels the bar, and rings it when selected', () => {
     const r = recordingContext()
@@ -599,19 +616,184 @@ describe('drawAudioItem', () => {
     expect(r.calls.some(c => c.method === 'set:strokeStyle' && c.args[0] === TIMELINE_COLORS.audioBorder)).toBe(false)
   })
 
-  it('paints fade gradients clipped to the bar', () => {
+  it('tints the WHOLE fade-width band, full height, both sides of the curve — clamped to the bar', () => {
     const r = recordingContext()
     drawAudioItem(r.ctx, {
       rect: { x: 100, y: 0, width: 200, height: 32 },
       selected: false, muted: false, label: 'Music',
       fadeInPx: 40, fadeOutPx: 5000, // fade-out longer than the bar
     })
-    const gradients = r.of('createLinearGradient')
-    expect(gradients).toHaveLength(2)
-    expect(gradients[0].args).toEqual([100, 0, 140, 0])
-    const fadeFills = r.of('fillRect')
-    expect(fadeFills[0].args).toEqual([100, 0, 40, 32])
-    expect(fadeFills[1].args).toEqual([100, 0, 200, 32]) // clamped to the bar
+    expect(r.count('quadraticCurveTo')).toBe(0)
+    // The tint is a plain full-height rect — NOT a curve-bounded wedge —
+    // spanning the fade's own width. Fade-in: [spanX, spanX+w] = [100, 140].
+    const fills = r.of('fillRect').map(c => c.args as number[])
+    expect(fills).toContainEqual([100, 0, 40, 32])
+    // Fade-out, clamped to the bar's own 200px width, not the requested
+    // 5000: the fade eats the whole bar, so its band is the full [100, 300).
+    expect(fills).toContainEqual([100, 0, 200, 32])
+    const dimFills = r.calls.filter(c => c.method === 'set:fillStyle' && c.args[0] === TIMELINE_COLORS.fadeEnvelopeDim)
+    expect(dimFills).toHaveLength(2)
+
+    // The curve itself still traces the fade's own full-volume corner.
+    const fadeInCurve = envelopeCurveLineTos(r, 0)
+    expect(fadeInCurve[fadeInCurve.length - 1]).toEqual([140, 0])
+    const fadeOutCurve = envelopeCurveLineTos(r, 1)
+    expect(fadeOutCurve[fadeOutCurve.length - 1]).toEqual([100, 0])
+  })
+
+  it('samples the exp curve by default: y is monotonic and the endpoints are exact', () => {
+    const r = recordingContext()
+    drawAudioItem(r.ctx, {
+      rect: { x: 0, y: 0, width: 200, height: 32 },
+      selected: false, muted: false, label: 'Music',
+      fadeInPx: 100,
+    })
+    // moveTo[0] is the bar body's OWN rounded-rect path (`roundRectPath`,
+    // unrelated to the envelope); moveTo[1] is the curve's own start — the
+    // silent corner.
+    const moves = r.of('moveTo').map(c => c.args as number[])
+    expect(moves[1]).toEqual([0, 32])
+    const curve = envelopeCurveLineTos(r)
+    expect(curve).toHaveLength(FADE_ENVELOPE_SEGMENTS)
+    // Monotonically non-decreasing gain (y decreasing towards 0/top) as x
+    // increases from silent to full — every curve in fade-curve.ts is
+    // monotonic over [0,1].
+    for (let i = 1; i < curve.length; i++) {
+      expect(curve[i][1]).toBeLessThanOrEqual(curve[i - 1][1] + 1e-9)
+    }
+    // Last sample lands exactly at the full-volume corner.
+    expect(curve[curve.length - 1]).toEqual([100, 0])
+  })
+
+  it('anchors the fade to the clip′s TRUE span, not the clamped rect, so it scrolls with the clip', () => {
+    // A clip scrolled off the left edge: the lane painter clamps `rect` to the
+    // visible surface (x:0) for the bar fill and waveform, but hands the fade
+    // its TRUE unclamped span via fadeSpanX/fadeSpanWidth. The envelope and
+    // grips must anchor to the true span — otherwise they stay pinned to the
+    // viewport edge while the clip scrolls under them (the bug this fixes).
+    // The envelope is still clipped to the visible bar; only its anchor moves.
+    const r = recordingContext()
+    drawAudioItem(r.ctx, {
+      rect: { x: 0, y: 0, width: 200, height: 32 },   // clamped visible portion
+      fadeSpanX: -100, fadeSpanWidth: 300,            // TRUE span: left edge off-screen at -100, 300px wide
+      selected: false, muted: false, label: 'Music',
+      fadeInPx: 40, fadeOutPx: 30,
+    })
+    // Fade-in full-volume x = fadeSpanX + fadeInPx = -60 — NOT rect.x + 40 =
+    // 40, where the old clamped-rect anchor wrongly pinned it on screen.
+    const fadeInCurve = envelopeCurveLineTos(r, 0)
+    expect(fadeInCurve[fadeInCurve.length - 1]).toEqual([-60, 0])
+    // Fade-out: silent at the TRUE right edge (fadeSpanX + fadeSpanWidth =
+    // 200), full-volume 30px in from there (170).
+    const fadeOutCurve = envelopeCurveLineTos(r, 1)
+    expect(fadeOutCurve[fadeOutCurve.length - 1]).toEqual([170, 0])
+    // The tint bands anchor to the same true span.
+    const fills = r.of('fillRect').map(c => c.args as number[])
+    expect(fills).toContainEqual([-100, 0, 40, 32])   // fade-in band: [-100, -60)
+    expect(fills).toContainEqual([170, 0, 30, 32])    // fade-out band: [170, 200)
+    // Both grips ride the same true-span anchors.
+    const half = FADE_GRIP_SIZE_PX / 2
+    const [inGrip, outGrip] = r.of('moveTo').map(c => c.args as number[]).slice(-2)
+    expect(inGrip).toEqual([-60 - half, 0])
+    expect(outGrip).toEqual([170 - half, 0])
+  })
+
+  it('draws the requested curve shape — linear is a straight ramp, not exp′s ease', () => {
+    const linear = recordingContext()
+    drawAudioItem(linear.ctx, {
+      rect: { x: 0, y: 0, width: 200, height: 32 },
+      selected: false, muted: false, label: 'x',
+      fadeInPx: 100, fadeInCurve: 'linear',
+    })
+    const exp = recordingContext()
+    drawAudioItem(exp.ctx, {
+      rect: { x: 0, y: 0, width: 200, height: 32 },
+      selected: false, muted: false, label: 'x',
+      fadeInPx: 100, fadeInCurve: 'exp',
+    })
+    // Midpoint (p=0.5) of the curve: linear sits at half the drop, exp (t²)
+    // has barely started dropping — the two curves must disagree.
+    const midOf = (r: Recorder) => {
+      const curve = envelopeCurveLineTos(r)
+      return curve[Math.floor(curve.length / 2) - 1]
+    }
+    expect(midOf(linear)[1]).not.toBeCloseTo(midOf(exp)[1], 1)
+  })
+
+  it('defaults an unset curve to exp', () => {
+    const withDefault = recordingContext()
+    drawAudioItem(withDefault.ctx, {
+      rect: { x: 0, y: 0, width: 200, height: 32 },
+      selected: false, muted: false, label: 'x',
+      fadeInPx: 100,
+    })
+    const explicit = recordingContext()
+    drawAudioItem(explicit.ctx, {
+      rect: { x: 0, y: 0, width: 200, height: 32 },
+      selected: false, muted: false, label: 'x',
+      fadeInPx: 100, fadeInCurve: 'exp',
+    })
+    expect(withDefault.calls).toEqual(explicit.calls)
+  })
+})
+
+describe('drawAudioItem fade grips', () => {
+  it('draws both grips at the bar′s own corners when no fade is set, in the SUBTLE style', () => {
+    const r = recordingContext()
+    drawAudioItem(r.ctx, { rect: { x: 100, y: 0, width: 200, height: 32 }, selected: false, muted: false, label: 'x' })
+    // No fade → no envelope curves → the fill/border path's own moveTo (0)
+    // is immediately followed by the two grips (1, 2).
+    const gripMoves = r.of('moveTo').map(c => c.args as number[])
+    const half = FADE_GRIP_SIZE_PX / 2
+    expect(gripMoves[1]).toEqual([100 - half, 0])   // in-grip at the LEFT corner
+    expect(gripMoves[2]).toEqual([300 - half, 0])   // out-grip at the RIGHT corner
+    const gripFills = r.calls.filter(c => c.method === 'set:fillStyle' && c.args[0] === TIMELINE_COLORS.fadeGripSubtle)
+    expect(gripFills).toHaveLength(2)
+    expect(r.calls.some(c => c.method === 'set:fillStyle' && c.args[0] === TIMELINE_COLORS.fadeGripActive)).toBe(false)
+  })
+
+  it('moves a grip to the fade′s INNER edge once a fade is set, not the corner', () => {
+    const r = recordingContext()
+    drawAudioItem(r.ctx, {
+      rect: { x: 100, y: 0, width: 200, height: 32 }, selected: false, muted: false, label: 'x',
+      fadeInPx: 40, fadeOutPx: 30,
+    })
+    // Envelope curves add their own moveTo calls ahead of the grips'; pick
+    // the grips off the END rather than counting in, so this stays correct
+    // regardless of how many moveTo calls `drawFadeEnvelope` itself makes.
+    const half = FADE_GRIP_SIZE_PX / 2
+    const [inGrip, outGrip] = r.of('moveTo').map(c => c.args as number[]).slice(-2)
+    expect(inGrip).toEqual([140 - half, 0])   // rect.x + fadeInPx
+    expect(outGrip).toEqual([270 - half, 0])  // rect.x + rect.width - fadeOutPx
+  })
+
+  it('brightens BOTH grips when the bar is selected', () => {
+    const r = recordingContext()
+    drawAudioItem(r.ctx, { rect: { x: 0, y: 0, width: 200, height: 32 }, selected: true, muted: false, label: 'x' })
+    const gripFills = r.calls.filter(c => c.method === 'set:fillStyle' && c.args[0] === TIMELINE_COLORS.fadeGripActive)
+    expect(gripFills).toHaveLength(2)
+    expect(r.calls.some(c => c.method === 'set:fillStyle' && c.args[0] === TIMELINE_COLORS.fadeGripSubtle)).toBe(false)
+  })
+
+  it('brightens only the HOVERED grip, leaving the other side subtle', () => {
+    const r = recordingContext()
+    drawAudioItem(r.ctx, {
+      rect: { x: 0, y: 0, width: 200, height: 32 }, selected: false, muted: false, label: 'x',
+      hoveredFadeSide: 'in',
+    })
+    const gripStyles = r.calls
+      .filter(c => c.method === 'set:fillStyle' && (c.args[0] === TIMELINE_COLORS.fadeGripActive || c.args[0] === TIMELINE_COLORS.fadeGripSubtle))
+      .map(c => c.args[0])
+    // In-grip drawn first, out-grip second (see `drawAudioItem`'s own order).
+    expect(gripStyles).toEqual([TIMELINE_COLORS.fadeGripActive, TIMELINE_COLORS.fadeGripSubtle])
+  })
+
+  it('skips both grips on a bar too narrow for them', () => {
+    const r = recordingContext()
+    drawAudioItem(r.ctx, { rect: { x: 0, y: 0, width: FADE_GRIP_SIZE_PX * 2 - 1, height: 32 }, selected: false, muted: false, label: '' })
+    expect(r.calls.some(c =>
+      c.method === 'set:fillStyle' && (c.args[0] === TIMELINE_COLORS.fadeGripActive || c.args[0] === TIMELINE_COLORS.fadeGripSubtle),
+    )).toBe(false)
   })
 })
 
@@ -875,10 +1057,15 @@ describe('drawTimelineContent', () => {
     const r = recordingContext()
     drawTimelineContent(r.ctx, scene({ project: p, layout: computeTimelineLayout(p), viewport: viewport({ pxPerSecond: 10 }) }))
 
-    // Path order: the lane background's own roundRectPath moves first, then
-    // each bar's fill path, one moveTo apiece (unselected, unmuted — fill and
-    // border share the one path).
-    const [, aMoveTo, bMoveTo] = r.of('moveTo').map(c => c.args as number[])
+    // Path order: the lane background's own roundRectPath moves first (1);
+    // then each bar's OWN fill path (1 moveTo, unselected/unmuted — fill and
+    // border share the one path), followed by its two fade-grip triangles
+    // (1 moveTo apiece, drawn on every bar regardless of selection — see
+    // `drawFadeGrip`). So track `a` is index 1, and track `b`'s fill-path
+    // moveTo is index 1 + (1 fill + 2 grips) = 4, not a plain "next index".
+    const moveTos = r.of('moveTo').map(c => c.args as number[])
+    const aMoveTo = moveTos[1]
+    const bMoveTo = moveTos[4]
     const aLeft = aMoveTo[0] - AUDIO_ITEM_RADIUS_PX
     const bLeft = bMoveTo[0] - AUDIO_ITEM_RADIUS_PX
     // `a` spans [0,5) → raw x 0; `b` starts immediately after at raw x 50

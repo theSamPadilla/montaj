@@ -30,6 +30,11 @@ export interface AudioTrack {
   }
   fadeIn?: number          // fade-in duration in seconds (0 = no fade)
   fadeOut?: number         // fade-out duration in seconds (0 = no fade)
+  // Envelope shape for each fade — see video/timeline/canvas/fade-curve.ts.
+  // Absent ⇒ DEFAULT_FADE_CURVE ('exp'), which is also the shape every fade
+  // rendered before curves existed, so an un-set project looks unchanged.
+  fadeInCurve?: 'linear' | 'log' | 'exp'
+  fadeOutCurve?: 'linear' | 'log' | 'exp'
   sourceDuration?: number  // intrinsic duration of the source file in seconds
   lane?: number            // visual grouping — tracks sharing a lane render in the same row
   magnetic?: boolean       // when set, this clip's LANE is kept gapless (no gaps/overlaps). Fanned out across the lane like `muted`.

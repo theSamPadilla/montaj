@@ -30,6 +30,7 @@ import {
   normalizeTracks,
   trackItems,
 } from '../timeline-model'
+import { DEFAULT_FADE_CURVE, fadeGain, makeFadeGainAt, type FadeCurve } from './fade-curve'
 import type { SnapStrength } from './snap'
 import { timeToX, visibleRange, type Viewport } from './viewport'
 import { drawAudioLaneWaveform, drawClipWaveform, type WaveformSceneLookup } from './waveforms'
@@ -47,6 +48,12 @@ export interface DrawContext {
   closePath(): void
   moveTo(x: number, y: number): void
   lineTo(x: number, y: number): void
+  /** Unused by any painter today — the fade-envelope curve
+   *  (`drawFadeEnvelope`) was its one caller until fade shapes replaced the
+   *  single quadratic ease with a sampled polyline. Kept on the interface
+   *  since it's part of the real `CanvasRenderingContext2D` shape a live
+   *  context satisfies for free, and a future curve is one candidate use. */
+  quadraticCurveTo(cpx: number, cpy: number, x: number, y: number): void
   arcTo(x1: number, y1: number, x2: number, y2: number, radius: number): void
   rect(x: number, y: number, w: number, h: number): void
   clip(): void
@@ -128,9 +135,19 @@ export const TIMELINE_COLORS = {
   audioMutedFill: 'rgba(255,255,255,0.1)',
   audioRing: 'rgba(110,231,183,0.8)',
   audioText: '#a7f3d0',
-  /** Fade in/out gradients: `linear-gradient(to right, rgba(0,0,0,0.6), transparent)`. */
-  fadeShadow: 'rgba(0,0,0,0.6)',
-  fadeTransparent: 'rgba(0,0,0,0)',
+  /** Fade envelope: the dimmed tint across the WHOLE fade-width band
+   *  (`drawFadeEnvelope`; both sides of the curve, not a wedge on one side),
+   *  and the curve's own stroke drawn on top of it. Replaces a flat
+   *  linear-gradient wash — the curve is what makes the RAMP, and its
+   *  length, legible, not just "audio is quieter somewhere near here". */
+  fadeEnvelopeDim: 'rgba(0,0,0,0.35)',
+  fadeEnvelopeLine: 'rgba(255,255,255,0.55)',
+  /** The fade-grip triangle at an audio bar's top corner (`drawFadeGrip`).
+   *  Subtle by default so it doesn't compete with the label; brighter when
+   *  hovered or the bar is selected — the same "clearer when it matters"
+   *  language the trim handles use. */
+  fadeGripSubtle: 'rgba(255,255,255,0.35)',
+  fadeGripActive: 'rgba(255,255,255,0.95)',
   /** Where two items on the same row overlap in time.
    *
    *  These were 0.15 amber fill / 0.3 amber border. Two things were wrong with
@@ -275,6 +292,11 @@ export const OVERLAP_HATCH_SHADOW_WIDTH_PX = 3
 export const OVERLAP_EDGE_WIDTH_PX = 1.5
 export const AUDIO_ITEM_RADIUS_PX = 4    // Tailwind `rounded` on the bar
 export const AUDIO_ITEM_INSET_PX = 4     // `top-1 bottom-1` on the bar
+/** Fade-grip triangle size (px), base and height alike. Kept small
+ *  deliberately — see hit-test.ts's `FADE_GRIP_HALF_WIDTH_PX`/
+ *  `FADE_GRIP_ZONE_HEIGHT_PX` for why the grip's CLICKABLE zone is a
+ *  matching small top-corner target rather than the full bar height. */
+export const FADE_GRIP_SIZE_PX = 6
 export const PLAYHEAD_WIDTH_PX = 2       // `w-[2px]`
 export const CURSOR_WIDTH_PX = 2         // matches the playhead's weight
 export const LABEL_FONT = '10px ui-sans-serif, system-ui, sans-serif'
@@ -696,6 +718,103 @@ export function drawClipRect(ctx: DrawContext, args: ClipDrawArgs): void {
   ctx.restore()
 }
 
+/** Segments the envelope polyline samples `fadeGain` at. 24 is smooth enough
+ *  that `exp`/`log`'s curvature reads clearly at any bar width the fade grip
+ *  can produce, without asking the rasterizer to stroke hundreds of tiny
+ *  segments on every repaint. Exported so tests can assert on the curve's
+ *  `lineTo` call count directly. */
+export const FADE_ENVELOPE_SEGMENTS = 24
+
+/**
+ * Vegas-style fade envelope: the WHOLE fade-width region — `x = spanX` to
+ * `spanX + fadeInPx` for a fade-in, `spanX + spanWidth - fadeOutPx` to
+ * `spanX + spanWidth` for a fade-out, measured off the clip's TRUE span (see
+ * the note inside) so the fade tracks the clip under horizontal scroll — is
+ * tinted FULL HEIGHT, top to bottom, as one band. The gain curve is then
+ * stroked brightly on top of it, dividing the band into what's above and
+ * below the curve — but BOTH halves stay tinted; this is not a wedge on one
+ * side. The band is what says "this section is fading, full stop"; the curve
+ * on top is what says exactly how much, at exactly which point. Replaces a
+ * flat linear-gradient wash, which said "audio is quieter somewhere here"
+ * but not how much quieter, where, or for how long — and replaced an earlier
+ * one-sided wedge fill (shading only the region UNDER the curve) that read as
+ * "this is the remaining signal" rather than "this is the fading section".
+ *
+ * The curve is drawn as a sampled polyline (`FADE_ENVELOPE_SEGMENTS` steps of
+ * `fadeGain`), not a single curve primitive, because the shape is now a
+ * per-fade CHOICE (`curve`) rather than one fixed ease — `fadeGain` is the
+ * one source of truth for what each shape looks like, shared with the
+ * waveform's own amplitude scaling (`waveforms.ts`) and the rendered mix
+ * (`mix-audio.js`), and a polyline is the only primitive that can trace an
+ * arbitrary one of them.
+ */
+function drawFadeEnvelope(
+  ctx: DrawContext,
+  rect: Rect,
+  edge: 'in' | 'out',
+  widthPx: number,
+  spanX: number,
+  spanWidth: number,
+  curve: FadeCurve,
+): void {
+  // `spanX`/`spanWidth` are the clip's TRUE horizontal span (its unclamped
+  // body edges), NOT `rect` — the lane painter clamps `rect` to the visible
+  // surface, and anchoring the curve there pinned the fade to a fixed screen
+  // x so it stayed put while the clip scrolled under it (the same class of bug
+  // the waveform once had). The envelope is drawn inside the bar's clip
+  // region, so a span edge scrolled off-screen is harmless — it's clipped.
+  const w = Math.min(Math.max(0, widthPx), spanWidth)
+  if (w <= 0) return
+  const top = rect.y
+  const bottom = rect.y + rect.height
+  const silentX = edge === 'in' ? spanX : spanX + spanWidth
+  const fullX = edge === 'in' ? spanX + w : spanX + spanWidth - w
+
+  // Full-height tint across the whole fade-width band, both sides of the
+  // curve — a plain rect, not a curve-bounded wedge, so `bandX` is just
+  // whichever of the two x's is smaller regardless of edge direction.
+  ctx.fillStyle = TIMELINE_COLORS.fadeEnvelopeDim
+  ctx.fillRect(Math.min(silentX, fullX), top, w, bottom - top)
+
+  // `p` runs 0 (silentX, bottom — silent) → 1 (fullX, top — full volume), the
+  // same convention `fadeGain` itself uses, so the first sample is always
+  // exactly the silent corner and the last exactly the full-volume one.
+  ctx.beginPath()
+  for (let i = 0; i <= FADE_ENVELOPE_SEGMENTS; i++) {
+    const p = i / FADE_ENVELOPE_SEGMENTS
+    const x = silentX + (fullX - silentX) * p
+    const y = bottom - fadeGain(p, curve) * (bottom - top)
+    if (i === 0) ctx.moveTo(x, y)
+    else ctx.lineTo(x, y)
+  }
+  ctx.strokeStyle = TIMELINE_COLORS.fadeEnvelopeLine
+  ctx.lineWidth = 1.5
+  ctx.stroke()
+}
+
+/**
+ * The small fade-grip triangle at one top corner of an audio bar — sitting
+ * at the fade's inner edge when a fade is already set (drag it further in
+ * or back out to the corner to adjust or remove the fade), or at the bar's
+ * own corner when there is none yet (drag inward from there to create one).
+ *
+ * Drawn on EVERY bar, unlike the trim handles (`drawTrimHandle`), which are
+ * selected-only: a fade grip has to be discoverable without selecting the
+ * bar first, or it may as well not exist. `active` (hover, or the bar being
+ * selected) brightens it — the same "clearer when it matters" language the
+ * trim handles use, just without gating existence on selection too.
+ */
+function drawFadeGrip(ctx: DrawContext, x: number, top: number, active: boolean): void {
+  const half = FADE_GRIP_SIZE_PX / 2
+  ctx.beginPath()
+  ctx.moveTo(x - half, top)
+  ctx.lineTo(x + half, top)
+  ctx.lineTo(x, top + FADE_GRIP_SIZE_PX)
+  ctx.closePath()
+  ctx.fillStyle = active ? TIMELINE_COLORS.fadeGripActive : TIMELINE_COLORS.fadeGripSubtle
+  ctx.fill()
+}
+
 export interface AudioItemDrawArgs {
   rect: Rect
   selected: boolean
@@ -704,14 +823,40 @@ export interface AudioItemDrawArgs {
   /** Fade widths in px, already converted from seconds. */
   fadeInPx?: number
   fadeOutPx?: number
+  /** The clip's TRUE (unclamped) body span in surface x — left edge and
+   *  width. The fade envelope and grips anchor to THIS, not `rect`, which the
+   *  lane painter clamps to the visible surface; without it a fade stays
+   *  pinned to the viewport edge instead of scrolling with its clip. Default
+   *  to `rect.x`/`rect.width` when absent (an on-screen, unscrolled clip). */
+  fadeSpanX?: number
+  fadeSpanWidth?: number
+  /** Envelope shape for each fade — see `fade-curve.ts`. Default
+   *  `DEFAULT_FADE_CURVE` ('exp'), the shape every fade had before curves
+   *  existed, so a bar whose track carries no explicit choice looks
+   *  unchanged. */
+  fadeInCurve?: FadeCurve
+  fadeOutCurve?: FadeCurve
   /** Content layer drawn inside the bar's clip region, beneath the fades and
    *  label — the T6 audio-lane waveform hooks in here (mirrors the DOM
    *  path's `AudioWaveformLayer`, which also paints behind the type label). */
   drawContent?: (ctx: DrawContext, rect: Rect) => void
+  /** Which fade grip (if any) the pointer is resting on — brightens that one
+   *  grip the same way `hoveredEdge` brightens a trim handle. Absent/null
+   *  when nothing is hovered, which is also what a host that never wires up
+   *  hover detection gets: the grip still renders (just always at its
+   *  subtle-or-selected style), so the feature is fully usable without this
+   *  field ever being set. */
+  hoveredFadeSide?: 'in' | 'out' | null
 }
 
 export function drawAudioItem(ctx: DrawContext, args: AudioItemDrawArgs): void {
-  const { rect, selected, muted, label, fadeInPx = 0, fadeOutPx = 0, drawContent } = args
+  const { rect, selected, muted, label, fadeInPx = 0, fadeOutPx = 0, drawContent, hoveredFadeSide } = args
+  const fadeInCurve = args.fadeInCurve ?? DEFAULT_FADE_CURVE
+  const fadeOutCurve = args.fadeOutCurve ?? DEFAULT_FADE_CURVE
+  // Fades anchor to the clip's true span (scrolls with the clip); fall back to
+  // the drawn rect for callers/tests that don't supply it (on-screen clip).
+  const fadeSpanX = args.fadeSpanX ?? rect.x
+  const fadeSpanWidth = args.fadeSpanWidth ?? rect.width
   const handleWidth = selected ? Math.min(AUDIO_HANDLE_WIDTH_PX, rect.width / 2) : 0
   if (rect.width <= 0) return
   ctx.save()
@@ -734,22 +879,8 @@ export function drawAudioItem(ctx: DrawContext, args: AudioItemDrawArgs): void {
 
   drawContent?.(ctx, rect)
 
-  if (fadeInPx > 0) {
-    const w = Math.min(fadeInPx, rect.width)
-    const g = ctx.createLinearGradient(rect.x, rect.y, rect.x + w, rect.y)
-    g.addColorStop(0, TIMELINE_COLORS.fadeShadow)
-    g.addColorStop(1, TIMELINE_COLORS.fadeTransparent)
-    ctx.fillStyle = g
-    ctx.fillRect(rect.x, rect.y, w, rect.height)
-  }
-  if (fadeOutPx > 0) {
-    const w = Math.min(fadeOutPx, rect.width)
-    const g = ctx.createLinearGradient(rect.x + rect.width, rect.y, rect.x + rect.width - w, rect.y)
-    g.addColorStop(0, TIMELINE_COLORS.fadeShadow)
-    g.addColorStop(1, TIMELINE_COLORS.fadeTransparent)
-    ctx.fillStyle = g
-    ctx.fillRect(rect.x + rect.width - w, rect.y, w, rect.height)
-  }
+  if (fadeInPx > 0) drawFadeEnvelope(ctx, rect, 'in', fadeInPx, fadeSpanX, fadeSpanWidth, fadeInCurve)
+  if (fadeOutPx > 0) drawFadeEnvelope(ctx, rect, 'out', fadeOutPx, fadeSpanX, fadeSpanWidth, fadeOutCurve)
 
   if (rect.width >= MIN_LABEL_WIDTH_PX) {
     ctx.fillStyle = TIMELINE_COLORS.audioText
@@ -767,6 +898,17 @@ export function drawAudioItem(ctx: DrawContext, args: AudioItemDrawArgs): void {
     // Handles come later, in the lane painter's own pass — crossfaded bars
     // overlap by design, so burying them here would be the normal case rather
     // than the exception.
+  }
+
+  // Fade grips: on EVERY bar (not gated on `selected`, unlike the trim
+  // handles above) — see `drawFadeGrip`'s own doc for why. Skipped only
+  // when the bar is too narrow for the two grips to avoid sitting on top of
+  // each other.
+  if (fadeSpanWidth >= FADE_GRIP_SIZE_PX * 2) {
+    const inX = fadeSpanX + Math.min(fadeInPx, fadeSpanWidth)
+    const outX = fadeSpanX + fadeSpanWidth - Math.min(fadeOutPx, fadeSpanWidth)
+    drawFadeGrip(ctx, inX, rect.y, selected || hoveredFadeSide === 'in')
+    drawFadeGrip(ctx, outX, rect.y, selected || hoveredFadeSide === 'out')
   }
 
   ctx.restore()
@@ -1274,15 +1416,32 @@ export function drawTimelineContent(ctx: DrawContext, scene: TimelineScene): Dra
       // gap video clips do, rather than a seam that depends on where exactly
       // the bars' edges land.
       const body = clipBodyRect(rect)
+      // The clip's TRUE body span, before surface-clamping, so the fade
+      // envelope/grips anchor to the clip and scroll with it (see
+      // `fadeSpanX`/`fadeSpanWidth`). `rect`/`body` above are already clamped
+      // to the visible surface for the bar fill and waveform.
+      const fullBody = clipBodyRect({ x, y: body.y, width: (track.end - track.start) * viewport.pxPerSecond, height: body.height })
       const audioWaveform = scene.waveforms?.audioColumns(track, body) ?? null
+      const fadeInPx = (track.fadeIn ?? 0) * viewport.pxPerSecond
+      const fadeOutPx = (track.fadeOut ?? 0) * viewport.pxPerSecond
+      const fadeInCurve = track.fadeInCurve ?? DEFAULT_FADE_CURVE
+      const fadeOutCurve = track.fadeOutCurve ?? DEFAULT_FADE_CURVE
+      // One gain-at-x lookup per bar, built against its TRUE span (mirrors
+      // fadeSpanX/fadeSpanWidth below) so the waveform's amplitude scaling
+      // agrees with the envelope drawn over it — same anchor, same curves.
+      const gainAt = makeFadeGainAt(fullBody.x, fullBody.width, fadeInPx, fadeOutPx, fadeInCurve, fadeOutCurve)
       drawAudioItem(ctx, {
         rect: body,
         selected: selectedIds.includes(track.id),
         muted: !!track.muted,
         label: audioLabel(track),
-        fadeInPx: (track.fadeIn ?? 0) * viewport.pxPerSecond,
-        fadeOutPx: (track.fadeOut ?? 0) * viewport.pxPerSecond,
-        drawContent: audioWaveform ? (c) => drawAudioLaneWaveform(c, audioWaveform.rect, audioWaveform.columns) : undefined,
+        fadeInPx,
+        fadeOutPx,
+        fadeInCurve,
+        fadeOutCurve,
+        fadeSpanX: fullBody.x,
+        fadeSpanWidth: fullBody.width,
+        drawContent: audioWaveform ? (c) => drawAudioLaneWaveform(c, audioWaveform.rect, audioWaveform.columns, gainAt) : undefined,
       })
       if (selectedIds.includes(track.id)) {
         laneHandleRects.push({ rect: body, hoveredEdge: hoveredHandle?.itemId === track.id ? hoveredHandle.edge : null })

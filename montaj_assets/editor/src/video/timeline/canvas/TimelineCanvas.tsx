@@ -121,6 +121,14 @@ export interface TimelineCanvasProps {
    *  this is not `onInspectClip`'s sibling: it asks the host to focus that
    *  segment's row in the transcript sidebar, where caption text is edited. */
   onEditCaption?: (id: string) => void
+  /** Right-click on an audio bar's fade GRIP — Vegas' own gesture for picking
+   *  a fade's shape. `x`/`y` are CLIENT coordinates (not surface-relative,
+   *  unlike every other callback here) because the host renders the picker as
+   *  an absolutely-positioned DOM menu of its own, outside this canvas
+   *  surface, and a screen position is what CSS `left`/`top` need. Absent →
+   *  a right-click on a fade grip falls through to the browser's own context
+   *  menu, same as anywhere else on the surface. */
+  onFadeCurveMenu?: (args: { trackId: string; side: 'in' | 'out'; x: number; y: number }) => void
   /** T6 — the host adapter's peaks fetcher, threaded from
    *  `adapter.getWaveformPeaks` via Timeline. Absent → no waveforms anywhere
    *  (graceful; the surface just never asks). Canvas-mode only: the DOM path
@@ -201,6 +209,7 @@ export default function TimelineCanvas({
   onInspectClip,
   onInspectAudio,
   onEditCaption,
+  onFadeCurveMenu,
   getWaveformPeaks,
   getFilmstrip,
   resolveFilePath,
@@ -518,11 +527,11 @@ export default function TimelineCanvas({
   // handlers bound once on mount never read a stale project or callback.
   const pointerRef = useRef({
     project, layout, selectedIds, snapBoundaries, totalDuration, fps, rippleMode, previewAxis,
-    onSelectItem, onSelectItems, onProjectChange, onOverlayEdit, onInspectClip, onInspectAudio, onEditCaption, onHoverScrub,
+    onSelectItem, onSelectItems, onProjectChange, onOverlayEdit, onInspectClip, onInspectAudio, onEditCaption, onHoverScrub, onFadeCurveMenu,
   })
   pointerRef.current = {
     project, layout, selectedIds, snapBoundaries, totalDuration, fps, rippleMode, previewAxis,
-    onSelectItem, onSelectItems, onProjectChange, onOverlayEdit, onInspectClip, onInspectAudio, onEditCaption, onHoverScrub,
+    onSelectItem, onSelectItems, onProjectChange, onOverlayEdit, onInspectClip, onInspectAudio, onEditCaption, onHoverScrub, onFadeCurveMenu,
   }
 
   const buildContext = useCallback((): PointerContext => {
@@ -603,6 +612,7 @@ export default function TimelineCanvas({
     up: (_e: MouseEvent) => {},
     doubleClick: (_e: MouseEvent) => {},
     leave: (_e: MouseEvent) => {},
+    contextMenu: (_e: MouseEvent) => {},
   })
 
   function surfacePoint(e: MouseEvent): Point | null {
@@ -775,6 +785,22 @@ export default function TimelineCanvas({
       // un-light the very edge being dragged.
       if (machine.state.kind === 'idle') clearHoveredHandle()
     },
+    // Right-click a fade grip → the fade-shape picker (Vegas' own gesture).
+    // Anywhere else on the surface, this is a no-op and the browser's normal
+    // context menu shows — only a fade-grip hit calls `preventDefault`. Runs
+    // its OWN hit-test rather than going through the pointer machine: a
+    // right-click is not a gesture (no drag, no press/release pair), and the
+    // machine's vocabulary has nothing for it.
+    contextMenu(e) {
+      const p = pointerRef.current
+      if (!p.onFadeCurveMenu) return
+      const point = surfacePoint(e)
+      if (!point) return
+      const hit = hitTest(point, p.layout, store.get())
+      if (hit.kind !== 'audio-fade' || hit.itemId === undefined || !hit.side) return
+      e.preventDefault()
+      p.onFadeCurveMenu({ trackId: hit.itemId, side: hit.side, x: e.clientX, y: e.clientY })
+    },
   }
 
   useEffect(() => {
@@ -784,14 +810,17 @@ export default function TimelineCanvas({
     const onHover = (e: MouseEvent) => handlersRef.current.hover(e)
     const onDoubleClick = (e: MouseEvent) => handlersRef.current.doubleClick(e)
     const onLeave = (e: MouseEvent) => handlersRef.current.leave(e)
+    const onContextMenu = (e: MouseEvent) => handlersRef.current.contextMenu(e)
     el.addEventListener('mousedown', onDown)
     el.addEventListener('mousemove', onHover)
     el.addEventListener('dblclick', onDoubleClick)
+    el.addEventListener('contextmenu', onContextMenu)
     el.addEventListener('mouseleave', onLeave)
     return () => {
       el.removeEventListener('mousedown', onDown)
       el.removeEventListener('mousemove', onHover)
       el.removeEventListener('dblclick', onDoubleClick)
+      el.removeEventListener('contextmenu', onContextMenu)
       el.removeEventListener('mouseleave', onLeave)
       releaseGestureRef.current?.()
     }

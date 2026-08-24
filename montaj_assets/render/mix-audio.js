@@ -10,6 +10,28 @@ import { FFMPEG } from './ffmpeg-bin.js'
 const FFMPEG_TIMEOUT_MS = 600_000
 
 /**
+ * Editor fade-shape name → ffmpeg `afade`'s own `curve=` vocabulary.
+ *
+ * `linear` → `tri` (ffmpeg has no filter named "linear"; `tri` — a
+ * triangular/linear ramp — is its equivalent). `exp`/`log` map straight
+ * across: the editor's shapes (see editor/src/video/timeline/canvas/
+ * fade-curve.ts's `fadeGain`, `t²` for exp and `t(2-t)` for log) were picked
+ * to READ as those two ffmpeg curve families, not to reproduce their exact
+ * formulas — the editor's envelope and waveform are the visual preview, this
+ * is what actually shapes the rendered audio, and both now agree on shape by
+ * name.
+ */
+const FFMPEG_CURVE_BY_SHAPE = { linear: 'tri', log: 'log', exp: 'exp' }
+
+/** `track.fadeInCurve`/`fadeOutCurve` → an ffmpeg `curve=` value, defaulting
+ *  to `exp` — the same DEFAULT_FADE_CURVE the editor falls back to for a
+ *  track that predates fade shapes, so an un-set project renders exactly as
+ *  it always has. */
+function ffmpegFadeCurve(shape) {
+  return FFMPEG_CURVE_BY_SHAPE[shape] ?? FFMPEG_CURVE_BY_SHAPE.exp
+}
+
+/**
  * Build ffmpeg input args for all unmuted audio tracks.
  *
  * @param {Array} audioTracks  — project.audio.tracks
@@ -59,8 +81,8 @@ export function buildAudioTrackFilters(audioTracks = [], baseInputIdx, currentAu
       const fadeIn = track.fadeIn ?? 0
       const fadeOut = track.fadeOut ?? 0
       const trackDur = (track.end ?? 0) - (track.start ?? 0)
-      if (fadeIn > 0) fadeFilters += `,afade=t=in:d=${fadeIn}`
-      if (fadeOut > 0) fadeFilters += `,afade=t=out:st=${Math.max(0, trackDur - fadeOut)}:d=${fadeOut}`
+      if (fadeIn > 0) fadeFilters += `,afade=t=in:d=${fadeIn}:curve=${ffmpegFadeCurve(track.fadeInCurve)}`
+      if (fadeOut > 0) fadeFilters += `,afade=t=out:st=${Math.max(0, trackDur - fadeOut)}:d=${fadeOut}:curve=${ffmpegFadeCurve(track.fadeOutCurve)}`
       filterParts.push(
         `${audioIn}asplit=2[speech${offset}][sc${offset}]`,
         `[${inputIdx}:a]adelay=${delayMs}:all=1,volume=${vol}${fadeFilters}[mscaled${offset}]`,
@@ -73,8 +95,8 @@ export function buildAudioTrackFilters(audioTracks = [], baseInputIdx, currentAu
       const fadeIn = track.fadeIn ?? 0
       const fadeOut = track.fadeOut ?? 0
       const trackDur = (track.end ?? 0) - (track.start ?? 0)
-      if (fadeIn > 0) fadeFilters += `,afade=t=in:d=${fadeIn}`
-      if (fadeOut > 0) fadeFilters += `,afade=t=out:st=${Math.max(0, trackDur - fadeOut)}:d=${fadeOut}`
+      if (fadeIn > 0) fadeFilters += `,afade=t=in:d=${fadeIn}:curve=${ffmpegFadeCurve(track.fadeInCurve)}`
+      if (fadeOut > 0) fadeFilters += `,afade=t=out:st=${Math.max(0, trackDur - fadeOut)}:d=${fadeOut}:curve=${ffmpegFadeCurve(track.fadeOutCurve)}`
       filterParts.push(
         `[${inputIdx}:a]adelay=${delayMs}:all=1,volume=${vol}${fadeFilters}[atrack${offset}]`,
         `${audioIn}[atrack${offset}]amix=inputs=2:duration=longest:normalize=0[amid${offset}]`,

@@ -21,7 +21,7 @@
 import { describe, it, expect } from 'vitest'
 import type { Project } from '../../../../types'
 import { CAPTION_ROW_HEIGHT_PX, ROW_GAP_PX, VISUAL_ROW_HEIGHT_PX, computeDerivedTiming, trackItems } from '../../timeline-model'
-import { computeTimelineLayout } from '../draw'
+import { AUDIO_ITEM_INSET_PX, computeTimelineLayout } from '../draw'
 import {
   CAPTION_MIN_DURATION_S,
   NO_MODIFIERS,
@@ -35,7 +35,7 @@ import {
   type PointerContext,
   type PointerEffect,
 } from '../pointer-machine'
-import { hitTest } from '../hit-test'
+import { FADE_GRIP_ZONE_HEIGHT_PX, hitTest } from '../hit-test'
 import type { Viewport } from '../viewport'
 
 const VIEWPORT: Viewport = { pxPerSecond: 100, scrollSeconds: 0, widthPx: 1000 }
@@ -209,6 +209,13 @@ const C1_BODY = { x: 750, y: BASE_Y }
 const C1_IN_EDGE = { x: 505, y: BASE_Y }
 const A0_BODY = { x: 300, y: LANE_Y }
 const A0_OUT_EDGE = { x: 597, y: LANE_Y }
+// The fade grips live in the TOP `FADE_GRIP_ZONE_HEIGHT_PX` of the bar, not
+// its vertical centre — `LANE_Y` above is no good for them. a0 spans 1s–6s
+// with no fade set, so its corners (and therefore its un-faded grips) sit at
+// x=100 (start) and x=600 (end).
+const FADE_GRIP_Y = Math.round(LAYOUT.lanes[0].y + AUDIO_ITEM_INSET_PX + FADE_GRIP_ZONE_HEIGHT_PX / 2)
+const A0_FADE_IN_GRIP = { x: 100, y: FADE_GRIP_Y }
+const A0_FADE_OUT_GRIP = { x: 600, y: FADE_GRIP_Y }
 const EMPTY = { x: 700, y: OVERLAY_Y }
 /** Inside the ruler strip — the only place a scrub starts now. */
 const RULER_Y = Math.round(LAYOUT.ruler.y + LAYOUT.ruler.height / 2)
@@ -287,6 +294,11 @@ describe('cursorForHit', () => {
     expect(cursorForHit(hitTest(EMPTY, ctx.layout, VIEWPORT))).toBe('default')
     // The ruler advertises the horizontal drag that scrubbing is.
     expect(cursorForHit(hitTest({ x: 400, y: RULER_Y }, ctx.layout, VIEWPORT))).toBe('ew-resize')
+    // A fade grip is a resize too, but DIAGONAL (it sits at a top corner), so
+    // you can tell it apart from an edge trim's horizontal ew-resize: the
+    // fade-in grip (top-left) is nwse, the fade-out grip (top-right) is nesw.
+    expect(cursorForHit(hitTest(A0_FADE_IN_GRIP, ctx.layout, VIEWPORT))).toBe('nwse-resize')
+    expect(cursorForHit(hitTest(A0_FADE_OUT_GRIP, ctx.layout, VIEWPORT))).toBe('nesw-resize')
   })
 })
 
@@ -928,6 +940,91 @@ describe('audio bar trim', () => {
     d.down(A0_OUT_EDGE.x, A0_OUT_EDGE.y)
     const next = lastProjectChange(d.move(A0_OUT_EDGE.x - 100, A0_OUT_EDGE.y))
     expect(visual(next, 'c1').start).toBe(5)
+  })
+})
+
+describe('audio fade drag', () => {
+  // `baseProject`'s a0 with a fade already set on one side — used by the
+  // clamp/remove tests below, which need a non-zero starting value to drag
+  // away from. Same track id/span, so `FADE_GRIP_Y` and the shared `LAYOUT`
+  // still apply: fade values don't move the lane geometry.
+  function withFadeOut(fadeOut: number): Project {
+    const p = baseProject()
+    return { ...p, audio: { tracks: [{ ...p.audio!.tracks[0], fadeOut }] } }
+  }
+  function withFadeIn(fadeIn: number): Project {
+    const p = baseProject()
+    return { ...p, audio: { tracks: [{ ...p.audio!.tracks[0], fadeIn }] } }
+  }
+
+  it('sets fadeIn dragging the fade-in grip inward (right)', () => {
+    const d = new Driver(makeContext())
+    d.down(A0_FADE_IN_GRIP.x, A0_FADE_IN_GRIP.y)
+    const faded = audio(lastProjectChange(d.move(A0_FADE_IN_GRIP.x + 100, A0_FADE_IN_GRIP.y)), 'a0')
+    expect(faded.fadeIn).toBeCloseTo(1)
+    expect(faded.fadeOut ?? 0).toBe(0)
+  })
+
+  it('sets fadeOut dragging the fade-out grip inward (left)', () => {
+    const d = new Driver(makeContext())
+    d.down(A0_FADE_OUT_GRIP.x, A0_FADE_OUT_GRIP.y)
+    const faded = audio(lastProjectChange(d.move(A0_FADE_OUT_GRIP.x - 150, A0_FADE_OUT_GRIP.y)), 'a0')
+    expect(faded.fadeOut).toBeCloseTo(1.5)
+    expect(faded.fadeIn ?? 0).toBe(0)
+  })
+
+  it('clamps fadeIn at zero — dragging outward past the corner cannot go negative', () => {
+    const d = new Driver(makeContext())
+    d.down(A0_FADE_IN_GRIP.x, A0_FADE_IN_GRIP.y)
+    const faded = audio(lastProjectChange(d.move(A0_FADE_IN_GRIP.x - 100, A0_FADE_IN_GRIP.y)), 'a0')
+    expect(faded.fadeIn).toBe(0)
+  })
+
+  it('removes an existing fadeIn when dragged back past the corner', () => {
+    // fadeIn:2 puts the grip at t=1+2=3 → x=300.
+    const d = new Driver(makeContext({ project: withFadeIn(2) }))
+    d.down(300, FADE_GRIP_Y)
+    const faded = audio(lastProjectChange(d.move(300 - 500, FADE_GRIP_Y)), 'a0')
+    expect(faded.fadeIn).toBe(0)
+  })
+
+  it('clamps so fadeIn + fadeOut never exceeds the bar\'s duration', () => {
+    // duration is 5s (1s–6s); fadeOut is already 3s, so fadeIn can grow to at
+    // most 2s no matter how far the grip is dragged.
+    const d = new Driver(makeContext({ project: withFadeOut(3) }))
+    d.down(A0_FADE_IN_GRIP.x, A0_FADE_IN_GRIP.y)
+    const faded = audio(lastProjectChange(d.move(A0_FADE_IN_GRIP.x + 1000, A0_FADE_IN_GRIP.y)), 'a0')
+    expect(faded.fadeIn).toBeCloseTo(2)
+    expect(faded.fadeOut).toBe(3)   // untouched — this drag only ever touches its own side
+  })
+
+  it('shows the diagonal fade-resize cursor while dragging a fade grip', () => {
+    const d = new Driver(makeContext())
+    d.down(A0_FADE_IN_GRIP.x, A0_FADE_IN_GRIP.y)
+    // Already nwse-resize from the press-time hit (the fade-in grip's diagonal),
+    // and the fade gesture holds that same cursor, so the move emits no change.
+    expect(of(d.move(A0_FADE_IN_GRIP.x + 50, A0_FADE_IN_GRIP.y), 'cursor')).toEqual([])
+    expect(d.machine.state.cursor).toBe('nwse-resize')
+  })
+
+  it('emits one projectChange per move and a single commit at release', () => {
+    const d = new Driver(makeContext())
+    d.down(A0_FADE_IN_GRIP.x, A0_FADE_IN_GRIP.y)
+    expect(of(d.move(A0_FADE_IN_GRIP.x + 50, A0_FADE_IN_GRIP.y), 'projectChange')).toHaveLength(1)
+    expect(of(d.move(A0_FADE_IN_GRIP.x + 80, A0_FADE_IN_GRIP.y), 'projectChange')).toHaveLength(1)
+    const committed = of(d.up(A0_FADE_IN_GRIP.x + 80, A0_FADE_IN_GRIP.y), 'commit')
+    expect(committed).toHaveLength(1)
+    expect(audio(committed[0].project, 'a0').fadeIn).toBeCloseTo(0.8)
+  })
+
+  it('never disturbs the audio-trim gesture on the same bar\'s edge', () => {
+    // A0_OUT_EDGE sits in the bar's full-height edge zone, well below the
+    // fade grip's small top zone — the trim gesture must fire, not a fade.
+    const d = new Driver(makeContext())
+    d.down(A0_OUT_EDGE.x, A0_OUT_EDGE.y)
+    const trimmed = audio(lastProjectChange(d.move(A0_OUT_EDGE.x + 100, A0_OUT_EDGE.y)), 'a0')
+    expect(trimmed.end).toBeCloseTo(7)
+    expect(trimmed.fadeIn ?? 0).toBe(0)
   })
 })
 

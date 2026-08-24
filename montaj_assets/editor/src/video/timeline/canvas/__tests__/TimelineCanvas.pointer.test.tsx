@@ -17,7 +17,7 @@ import { createPlaybackClock } from '../../../playback-clock'
 import type { Project } from '../../../../types'
 import TimelineCanvas from '../TimelineCanvas'
 import { createViewportStore } from '../viewport'
-import { computeTimelineLayout } from '../draw'
+import { AUDIO_ITEM_INSET_PX, computeTimelineLayout } from '../draw'
 import { trackItems } from '../../timeline-model'
 
 let realGetContext: typeof HTMLCanvasElement.prototype.getContext
@@ -82,6 +82,15 @@ const ROW_Y = (() => {
 const RULER_Y = (() => {
   const ruler = computeTimelineLayout(project).ruler
   return Math.round(ruler.y + ruler.height / 2)
+})()
+
+/** Just inside the TOP of the audio lane's bar — where a fade grip's small
+ *  hit zone lives (see hit-test.ts's `FADE_GRIP_ZONE_HEIGHT_PX`), a few px
+ *  below the lane's own top-of-bar y so it's inside that zone rather than
+ *  sitting exactly on its boundary. */
+const LANE_TOP = (() => {
+  const lane = computeTimelineLayout(project).lanes[0]
+  return Math.round(lane.y + AUDIO_ITEM_INSET_PX) + 2
 })()
 
 const TOTAL_DURATION = 13
@@ -500,5 +509,49 @@ describe('TimelineCanvas — preview axis', () => {
     onHoverScrub.mockClear()
     act(() => { rerenderWithAxis(false) })
     expect(onHoverScrub).toHaveBeenCalledWith(null)
+  })
+})
+
+describe('TimelineCanvas — fade-curve context menu', () => {
+  it('right-clicking a fade grip calls onFadeCurveMenu with the track, side, and CLIENT coordinates', () => {
+    const onFadeCurveMenu = vi.fn()
+    const { surface } = mount({ onFadeCurveMenu })
+    // a0 runs 1..5s at 100px/s → its fade-in grip sits at its own start
+    // corner (x=100) when no fade is set (see hit-test.ts's `audioFadeGripX`).
+    act(() => { surface.dispatchEvent(mouse('contextmenu', 100, LANE_TOP)) })
+    expect(onFadeCurveMenu).toHaveBeenCalledTimes(1)
+    expect(onFadeCurveMenu).toHaveBeenCalledWith({ trackId: 'a0', side: 'in', x: 100, y: LANE_TOP })
+  })
+
+  it('right-clicking the OUT grip reports side "out"', () => {
+    const onFadeCurveMenu = vi.fn()
+    const { surface } = mount({ onFadeCurveMenu })
+    // a0 ends at t=5 → x=500.
+    act(() => { surface.dispatchEvent(mouse('contextmenu', 500, LANE_TOP)) })
+    expect(onFadeCurveMenu).toHaveBeenCalledWith({ trackId: 'a0', side: 'out', x: 500, y: LANE_TOP })
+  })
+
+  it('prevents the default browser menu only on a fade-grip hit', () => {
+    const onFadeCurveMenu = vi.fn()
+    const { surface } = mount({ onFadeCurveMenu })
+    const onGrip = mouse('contextmenu', 100, LANE_TOP)
+    surface.dispatchEvent(onGrip)
+    expect(onGrip.defaultPrevented).toBe(true)
+  })
+
+  it('does nothing on a right-click away from a fade grip — no menu, native default untouched', () => {
+    const onFadeCurveMenu = vi.fn()
+    const { surface } = mount({ onFadeCurveMenu })
+    const elsewhere = mouse('contextmenu', 300, LANE_TOP)
+    surface.dispatchEvent(elsewhere)
+    expect(onFadeCurveMenu).not.toHaveBeenCalled()
+    expect(elsewhere.defaultPrevented).toBe(false)
+  })
+
+  it('does nothing when the host implements no onFadeCurveMenu at all', () => {
+    const { surface } = mount()
+    // Must not throw — a host that predates the picker gets exactly the old
+    // browser context menu everywhere on the surface.
+    expect(() => { surface.dispatchEvent(mouse('contextmenu', 100, LANE_TOP)) }).not.toThrow()
   })
 })

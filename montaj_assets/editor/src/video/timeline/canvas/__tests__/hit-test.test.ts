@@ -14,9 +14,10 @@
  */
 import { describe, it, expect } from 'vitest'
 import type { Project } from '../../../../types'
-import { RULER_HEIGHT_PX, computeTimelineLayout } from '../draw'
+import { AUDIO_ITEM_INSET_PX, RULER_HEIGHT_PX, computeTimelineLayout } from '../draw'
 import {
   AUDIO_EDGE_TOLERANCE_PX,
+  FADE_GRIP_ZONE_HEIGHT_PX,
   VISUAL_EDGE_TOLERANCE_PX,
   hitTest,
   isCaptionHit,
@@ -235,6 +236,58 @@ describe('hitTest — audio lanes', () => {
 
   it('reports empty lane area', () => {
     expect(at(800, LANE_Y)).toMatchObject({ kind: 'empty-lane', laneIdx: 0 })
+  })
+})
+
+describe('hitTest — audio fade grips', () => {
+  // a0 spans x 100–600 (1s–6s @ 100px/s) with no fadeIn/fadeOut set, so both
+  // grips sit at the bar's own corners — see `audioFadeGripZone`'s doc for
+  // the precedence this creates against the trim edge, which claims the SAME
+  // x but the bar's FULL height.
+  const barTop = lane0.y + AUDIO_ITEM_INSET_PX
+
+  it('finds the fade-IN grip at the bar′s own left corner when no fade is set', () => {
+    expect(at(100, barTop)).toMatchObject({ kind: 'audio-fade', itemId: 'a0', side: 'in', laneIdx: 0 })
+  })
+
+  it('finds the fade-OUT grip at the bar′s own right corner when no fade is set', () => {
+    expect(at(600, barTop)).toMatchObject({ kind: 'audio-fade', itemId: 'a0', side: 'out', laneIdx: 0 })
+  })
+
+  it('takes precedence over the trim edge at the exact corner, where both zones overlap', () => {
+    // (100, barTop) is also inside the audio-edge zone (±AUDIO_EDGE_TOLERANCE_PX
+    // of the corner) — confirm the GRIP wins there, not the edge.
+    expect(at(100, barTop).kind).toBe('audio-fade')
+  })
+
+  it('does NOT steal the trim edge below the grip′s small top zone — the full-height edge is still reachable further down', () => {
+    // Same x as the corner (well within AUDIO_EDGE_TOLERANCE_PX), but below
+    // FADE_GRIP_ZONE_HEIGHT_PX — resolves to the trim edge, not the grip.
+    const belowGripZone = barTop + FADE_GRIP_ZONE_HEIGHT_PX + 2
+    expect(at(100, belowGripZone)).toMatchObject({ kind: 'audio-edge', edge: 'in' })
+  })
+
+  it('leaves the bar BODY, away from either grip, alone', () => {
+    expect(at(300, barTop)).toMatchObject({ kind: 'audio-body', itemId: 'a0' })
+  })
+
+  it('moves the grip zone to the fade′s INNER edge once a fade is set, not the corner', () => {
+    const withFade = {
+      id: 'p',
+      audio: { tracks: [{ id: 'f0', src: 'v.mp3', start: 1, end: 6, lane: 0, fadeIn: 1, fadeOut: 0.5 }] },
+    } as unknown as Project
+    const fadeLayout = computeTimelineLayout(withFade)
+    const fadeLane = fadeLayout.lanes[0]
+    const fadeBarTop = fadeLane.y + AUDIO_ITEM_INSET_PX
+    const fadeAt = (x: number, y: number) => hitTest({ x, y }, fadeLayout, VIEWPORT)
+
+    // Track spans x 100–600 (1s–6s). fadeIn=1s -> inner edge at 100+100=200.
+    // fadeOut=0.5s -> inner edge at 600-50=550.
+    expect(fadeAt(200, fadeBarTop)).toMatchObject({ kind: 'audio-fade', side: 'in' })
+    expect(fadeAt(550, fadeBarTop)).toMatchObject({ kind: 'audio-fade', side: 'out' })
+    // The track's own corner is no longer a grip — it's ordinary trim-edge
+    // territory now that the grip has moved off it.
+    expect(fadeAt(100, fadeBarTop)).toMatchObject({ kind: 'audio-edge', edge: 'in' })
   })
 })
 

@@ -140,7 +140,7 @@ export type PointerMachineEvent =
 
 // ── Outputs ──────────────────────────────────────────────────────────────
 
-export type Cursor = 'default' | 'pointer' | 'grab' | 'grabbing' | 'ew-resize' | 'crosshair'
+export type Cursor = 'default' | 'pointer' | 'grab' | 'grabbing' | 'ew-resize' | 'nwse-resize' | 'nesw-resize' | 'crosshair'
 
 export type PointerEffect =
   /** `clock.set` — move the playhead. */
@@ -182,6 +182,8 @@ export type GestureKind =
   | 'slide'
   | 'audio-move'
   | 'audio-trim'
+  /** Dragging an audio bar's fade-in or fade-out grip. See `applyAudioFade`. */
+  | 'audio-fade'
   /** Re-timing a caption block. Rides the clip group-move path, so a mixed
    *  clip+caption selection travels as one body and lands as one undo. */
   | 'caption-move'
@@ -257,7 +259,14 @@ function travelled(a: Point, b: Point): number {
 }
 
 /** Cursor for a resting pointer over a hit — the DOM rows' affordances:
- *  `cursor-ew-resize` on handles, `cursor-grab` on item bodies.
+ *  `cursor-ew-resize` on edge handles, `cursor-grab` on item bodies.
+ *
+ *  A fade GRIP is a resize too, but of the fade envelope rather than the clip,
+ *  and it sits at a top CORNER — so it gets a DIAGONAL resize cursor pointing
+ *  along that corner (`nwse-resize` for a top-left fade-in grip, `nesw-resize`
+ *  for a top-right fade-out grip). That keeps it distinguishable from an edge
+ *  trim's horizontal `ew-resize`: both read as "drag to resize", but you can
+ *  tell by the cursor whether you've grabbed the fade or the clip edge.
  *
  *  Empty timeline is the plain arrow, not `pointer`. A hand cursor promises a
  *  thing you can click, and the gaps between clips are not a thing — they are
@@ -266,6 +275,8 @@ function travelled(a: Point, b: Point): number {
  *  The ruler keeps `ew-resize`, because scrubbing IS a horizontal drag. */
 export function cursorForHit(hit: HitResult): Cursor {
   switch (hit.kind) {
+    case 'audio-fade':
+      return hit.side === 'out' ? 'nesw-resize' : 'nwse-resize'
     case 'item-edge':
     case 'audio-edge':
     case 'caption-edge':
@@ -283,6 +294,8 @@ export function cursorForHit(hit: HitResult): Cursor {
 
 function cursorForGesture(gesture: GestureKind): Cursor {
   switch (gesture) {
+    case 'audio-fade':
+      return 'nwse-resize'   // the diagonal fade-grip cursor, held through the drag
     case 'trim':
     case 'roll':
     case 'audio-trim':
@@ -311,6 +324,9 @@ export function resolveGesture(hit: HitResult, modifiers: Modifiers): GestureKin
       return 'audio-trim'
     case 'audio-body':
       return 'audio-move'
+    // No modifiers of its own — a fade grip does exactly one thing.
+    case 'audio-fade':
+      return 'audio-fade'
     // Captions have no roll/slip/slide either — there is no source window to
     // slip and no neighbour to roll against — so modifiers fall through here
     // exactly as they do for audio.
@@ -431,9 +447,13 @@ function isOverPlayhead(point: Point, ctx: PointerContext): boolean {
  *  the ruler does. Trim EDGES win over the grab — they are the precise target,
  *  so grabbing the playhead where it crosses a clip yields the body but never
  *  the handle (decision D1); everything else, clip and audio bodies and empty
- *  space alike, yields to the grab (D2). */
+ *  space alike, yields to the grab (D2). Fade GRIPS win over it too, by the
+ *  same D1 reasoning — an even smaller, more deliberate target than a trim
+ *  edge — which is why this checks `hit.kind` directly rather than folding
+ *  into `isEdgeHit` (whose contract is specifically "describes a trim grab",
+ *  read via `hit.edge`; a fade grip has no `edge`, only `side`). */
 function grabsPlayhead(hit: HitResult, point: Point, ctx: PointerContext): boolean {
-  return !isEdgeHit(hit) && isOverPlayhead(point, ctx)
+  return !isEdgeHit(hit) && hit.kind !== 'audio-fade' && isOverPlayhead(point, ctx)
 }
 
 /**
@@ -836,6 +856,41 @@ function applyAudioTrim(ctx: PointerContext, press: Press, point: Point, snap: S
 }
 
 /**
+ * Drag an audio bar's fade-in or fade-out GRIP. Dragging the fade-IN grip
+ * RIGHT (away from the bar's start) grows `fadeIn`; dragging the fade-OUT
+ * grip LEFT (away from the bar's end) grows `fadeOut` — opposite pixel signs
+ * for the same "away from the corner, into the clip" motion. Dragging either
+ * grip back past its own corner clamps to 0, which is how a fade is removed.
+ *
+ * No snapping — a fade grip has no meaningful timeline boundary to magnetize
+ * to, only its own bar's corner and duration, both already enforced by the
+ * clamp below — so this is simpler than `applyAudioTrim`: no
+ * `itemSnapPoints`/`applySnap`, no guide, `snap` passed straight through
+ * unchanged.
+ *
+ * Clamp: `fadeIn`/`fadeOut` are each floored at 0 (Math.max inside `clamp`),
+ * and the two together may never exceed the bar's own duration — measured
+ * against the OTHER side's current (committed) value, since a single drag
+ * only ever touches its own side.
+ */
+function applyAudioFade(ctx: PointerContext, press: Press, point: Point, snap: SnapState, lastProject: Project): Applied {
+  const track = press.hit.track
+  const side = press.hit.side
+  if (!track || !side) return noChange(snap, lastProject)
+
+  const duration = Math.max(0, track.end - track.start)
+  const dt = (point.x - press.origin.x) / ctx.viewport.pxPerSecond
+  const initial = side === 'in' ? (track.fadeIn ?? 0) : (track.fadeOut ?? 0)
+  const otherFade = side === 'in' ? (track.fadeOut ?? 0) : (track.fadeIn ?? 0)
+  const raw = side === 'in' ? initial + dt : initial - dt
+  const value = clamp(raw, 0, Math.max(0, duration - otherFade))
+
+  const changes: Partial<AudioTrack> = side === 'in' ? { fadeIn: value } : { fadeOut: value }
+  const next = updateAudioTrack(press.baseProject, track.id, changes)
+  return { effects: [{ type: 'projectChange', project: next }], snap, lastProject: next, guide: null }
+}
+
+/**
  * Re-time a caption block — across rows for a lone caption, and along the
  * timeline for a caption travelling with a wider selection.
  *
@@ -1117,6 +1172,7 @@ function applyGesture(
     case 'slide':       return applySlide(ctx, press, point, snap, lastProject, escaped)
     case 'audio-move':  return applyAudioMove(ctx, press, point, snap, lastProject, escaped)
     case 'audio-trim':  return applyAudioTrim(ctx, press, point, snap, lastProject, escaped)
+    case 'audio-fade':  return applyAudioFade(ctx, press, point, snap, lastProject)
     case 'caption-move': return applyCaptionMove(ctx, press, point, snap, lastProject, escaped)
     case 'caption-trim': return applyCaptionTrim(ctx, press, point, snap, lastProject, escaped)
     case 'scrub':       return applyScrub(ctx, point, snap, lastProject)

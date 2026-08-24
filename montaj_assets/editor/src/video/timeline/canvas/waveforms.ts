@@ -197,8 +197,23 @@ export const WAVEFORM_COLORS = {
 
 /** Paint one row of min/max columns as vertical bars centered in `rect`,
  *  amplitude scaled to `rect.height / 2`. The shared primitive both
- *  `drawClipWaveform` and `drawAudioLaneWaveform` style differently. */
-export function drawWaveformBars(ctx: DrawContext, rect: Rect, columns: WaveformColumn[], color: string): void {
+ *  `drawClipWaveform` and `drawAudioLaneWaveform` style differently.
+ *
+ *  `gainAt`, when given, is sampled at each column's CENTER x and scales
+ *  that column's `min`/`max` before the bar is measured — the Vegas
+ *  behaviour of a waveform shrinking to zero through a fade-out and growing
+ *  from zero through a fade-in, using the fade's own shape curve
+ *  (`fade-curve.ts`'s `fadeGain`, via `makeFadeGainAt`). Absent — the
+ *  default — draws exactly as before: full amplitude everywhere, the
+ *  contract every existing caller (clip waveforms, an audio bar with no
+ *  fade) still gets. */
+export function drawWaveformBars(
+  ctx: DrawContext,
+  rect: Rect,
+  columns: WaveformColumn[],
+  color: string,
+  gainAt?: (x: number) => number,
+): void {
   if (rect.width <= 0 || rect.height <= 0 || columns.length === 0) return
   const centerY = rect.y + rect.height / 2
   const halfHeight = rect.height / 2
@@ -207,11 +222,12 @@ export function drawWaveformBars(ctx: DrawContext, rect: Rect, columns: Waveform
   ctx.fillStyle = color
   for (let i = 0; i < columns.length; i++) {
     const { min, max } = columns[i]
-    const hi = Math.max(min, max)
-    const lo = Math.min(min, max)
+    const x = rect.x + i * colWidth
+    const gain = gainAt ? gainAt(x + colWidth / 2) : 1
+    const hi = Math.max(min, max) * gain
+    const lo = Math.min(min, max) * gain
     const top = centerY - hi * halfHeight
     const bottom = centerY - lo * halfHeight
-    const x = rect.x + i * colWidth
     ctx.fillRect(x, top, Math.max(1, colWidth), Math.max(1, bottom - top))
   }
 }
@@ -238,9 +254,20 @@ export function drawClipWaveform(ctx: DrawContext, rect: Rect, columns: Waveform
 
 /** Full-bar audio-lane waveform. `rect` is already the fetched window's
  *  bar-relative sub-rect (see `WaveformPeaksStore.audioColumns`), so this
- *  paints edge-to-edge of whatever span the data actually covers. */
-export function drawAudioLaneWaveform(ctx: DrawContext, rect: Rect, columns: WaveformColumn[]): void {
-  drawWaveformBars(ctx, rect, columns, WAVEFORM_COLORS.audioLane)
+ *  paints edge-to-edge of whatever span the data actually covers.
+ *
+ *  `gainAt` — see `drawWaveformBars` — is a lookup over the BAR's own true
+ *  span in surface x (built once per bar by the painter, from the track's
+ *  fades and curves), not over `rect`, which can be a scrolled/clamped
+ *  sub-span of it; passing it straight through is what lets a column keep
+ *  the right gain regardless of which slice of the bar `rect` happens to be. */
+export function drawAudioLaneWaveform(
+  ctx: DrawContext,
+  rect: Rect,
+  columns: WaveformColumn[],
+  gainAt?: (x: number) => number,
+): void {
+  drawWaveformBars(ctx, rect, columns, WAVEFORM_COLORS.audioLane, gainAt)
 }
 
 // ── Fetch-state store ────────────────────────────────────────────────────

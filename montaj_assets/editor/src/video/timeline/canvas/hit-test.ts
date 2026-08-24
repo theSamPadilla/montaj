@@ -43,6 +43,19 @@ export const AUDIO_EDGE_TOLERANCE_PX = 6
  *  scrub, exactly as pressing the ruler does. */
 export const PLAYHEAD_GRAB_PX = 6
 
+/** Half-width (px) of an audio bar's fade-GRIP zone — small on purpose,
+ *  matching `draw.ts`'s `FADE_GRIP_SIZE_PX` triangle it's the hit zone for.
+ *  See `audioFadeGripZone`'s doc for the precedence this creates against the
+ *  full-height trim edge. */
+export const FADE_GRIP_HALF_WIDTH_PX = 5
+
+/** How far down from the TOP of an audio bar the fade-grip zone reaches.
+ *  Confines the grip to a small top-corner target rather than the bar's
+ *  full height — which is what keeps it from swallowing the trim edge
+ *  (`audio-edge`), grabbable across the bar's full height everywhere below
+ *  this. */
+export const FADE_GRIP_ZONE_HEIGHT_PX = 10
+
 export interface HitTestOptions {
   visualEdgeTolerancePx?: number
   audioEdgeTolerancePx?: number
@@ -59,6 +72,12 @@ export type HitKind =
   /** Inside an audio bar, away from its trim handles. */
   | 'audio-body'
   | 'audio-edge'
+  /** On an audio bar's fade-in or fade-out GRIP — a small zone at the TOP of
+   *  the bar near the fade's inner edge (or the bar's own corner, when no
+   *  fade is set). Takes precedence over `audio-edge`/`audio-body` within
+   *  its own small zone; see `audioFadeGripZone`'s doc for the precedence
+   *  this creates and why it doesn't swallow the trim edge. */
+  | 'audio-fade'
   /** Inside a caption block, away from its trim handles. */
   | 'caption-body'
   /** Inside a caption block's in/out trim handle. */
@@ -80,6 +99,12 @@ export interface HitResult {
    *  handle, `out` the right/end one — the vocabulary `cuts.ts` uses for source
    *  windows, rather than the DOM hook's `start`/`end`. */
   edge?: 'in' | 'out'
+  /** Which fade grip, on `audio-fade` hits. `in` is the fade-in grip
+   *  (top-left corner or its inner edge), `out` the fade-out grip
+   *  (top-right). A field of its own, deliberately NOT a reuse of `edge` —
+   *  a fade grip is not a trim handle, and `isEdgeHit` (which several
+   *  callers use to mean "this is a trim grab") must not go true for it. */
+  side?: 'in' | 'out'
   /** Visual track index (project.tracks[trackIdx]) for row and item hits. */
   trackIdx?: number
   /** Audio lane index (the `lane` field / grouping index) for lane hits. */
@@ -164,6 +189,53 @@ function resolveRow<T extends { id: string; start: number; end: number }>(
   return null
 }
 
+/** The screen x of an audio bar's fade GRIP for one side — at the fade's
+ *  inner edge when a fade is set, or at the bar's own corner when it isn't
+ *  (drag inward from there to create one). Expressed in TIME-then-`timeToX`,
+ *  the same convention `resolveRow` uses for every other audio-lane zone:
+ *  the gutter `clipBodyRect` insets the DRAWN body by is paint, not a dead
+ *  zone, so hit-testing always works over the raw span. Shares this math
+ *  with `draw.ts`'s own grip placement (there expressed in already-converted
+ *  px, since the painter works from a `rect` rather than a `track`) only in
+ *  spirit — the two are kept independently computed because they start from
+ *  different inputs, not duplicated by accident. */
+function audioFadeGripX(track: AudioTrack, side: 'in' | 'out', viewport: Viewport): number {
+  return side === 'in'
+    ? timeToX(track.start + Math.max(0, track.fadeIn ?? 0), viewport)
+    : timeToX(track.end - Math.max(0, track.fadeOut ?? 0), viewport)
+}
+
+/**
+ * Does `point` fall in one of `track`'s two fade-grip zones? Returns the
+ * matching side, or null.
+ *
+ * Confined to the TOP `FADE_GRIP_ZONE_HEIGHT_PX` of the bar (`barTop` is the
+ * same y the caller already computed for the bar's vertical inset) — this,
+ * not a separate x-tolerance trick, is what keeps the grip from swallowing
+ * the trim edge. `audio-edge` is grabbable across the bar's FULL height; a
+ * fade grip only claims a small target at the very top, near the same
+ * corner, so the two zones barely overlap and where they do (no fade set,
+ * grip sitting exactly at the corner) the grip wins — it is the smaller,
+ * more deliberate target, the same reasoning `grabsPlayhead` already gives
+ * trim edges over the playhead grab.
+ */
+function audioFadeGripZone(
+  point: Point,
+  track: AudioTrack,
+  barTop: number,
+  viewport: Viewport,
+): 'in' | 'out' | null {
+  if (point.y < barTop || point.y > barTop + FADE_GRIP_ZONE_HEIGHT_PX) return null
+  const x0 = timeToX(track.start, viewport)
+  const x1 = timeToX(track.end, viewport)
+  if (point.x < x0 - FADE_GRIP_HALF_WIDTH_PX || point.x > x1 + FADE_GRIP_HALF_WIDTH_PX) return null
+  const inX = audioFadeGripX(track, 'in', viewport)
+  if (Math.abs(point.x - inX) <= FADE_GRIP_HALF_WIDTH_PX) return 'in'
+  const outX = audioFadeGripX(track, 'out', viewport)
+  if (Math.abs(point.x - outX) <= FADE_GRIP_HALF_WIDTH_PX) return 'out'
+  return null
+}
+
 /**
  * Resolve a surface-space point to what sits under it.
  *
@@ -244,6 +316,15 @@ export function hitTest(
     const barTop = lane.y + AUDIO_ITEM_INSET_PX
     const barBottom = lane.y + lane.height - AUDIO_ITEM_INSET_PX
     if (point.y >= barTop && point.y < barBottom) {
+      // Fade grips take precedence within their own small top-corner zone —
+      // see `audioFadeGripZone`'s doc for why. Scanned back-to-front like
+      // `resolveRow`, so a grip on a higher-stacked (later-drawn, crossfaded)
+      // bar wins ties the same way a body/edge hit would.
+      for (let i = lane.tracks.length - 1; i >= 0; i--) {
+        const track = lane.tracks[i]
+        const side = audioFadeGripZone(point, track, barTop, viewport)
+        if (side !== null) return { kind: 'audio-fade', t, itemId: track.id, side, laneIdx: lane.laneIndex, track }
+      }
       const hit = resolveRow(point.x, lane.tracks, viewport, audioTolerance)
       if (hit !== null) {
         if (hit.edge === null) return { kind: 'audio-body', t, itemId: hit.item.id, laneIdx: lane.laneIndex, track: hit.item }

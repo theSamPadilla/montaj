@@ -11,7 +11,8 @@ import { TimelineContext, type TimelineContextValue } from './TimelineContext'
 import type { PlaybackClock } from '../playback-clock'
 import Scrubber from './Scrubber'
 import TrackGutter from './TrackGutter'
-import { computeTimelineLayout } from './canvas/draw'
+import { computeTimelineLayout, TIMELINE_COLORS } from './canvas/draw'
+import { DEFAULT_FADE_CURVE, fadeCurveIconPoints, type FadeCurve } from './canvas/fade-curve'
 import { normalizeTracks, updateAudioTrack } from './timeline-model'
 import VisualTrackRow from './VisualTrackRow'
 import { deleteSelection, toggleSelection } from './multiSelectOps'
@@ -127,6 +128,52 @@ interface TimelineProps {
   actionsRef?: MutableRefObject<TimelineActions | null>
 }
 
+/** Icon size for the fade-shape picker's buttons — small enough for a
+ *  compact popover, large enough that `exp`/`log`'s curvature reads clearly
+ *  at a glance. */
+const FADE_CURVE_ICON_SIZE = { width: 40, height: 28 }
+/** Inset between the icon's frame and where the curve itself is drawn, so
+ *  the polyline never touches (and gets clipped by) the frame's own stroke. */
+const FADE_CURVE_ICON_PAD = 4
+
+/**
+ * One fade-shape picker option's icon: a small inline SVG tracing the ACTUAL
+ * curve (`fadeCurveIconPoints`, sampling the same `fadeGain` the real
+ * envelope and waveform scaling use), not a decorative stand-in — "Linear"
+ * really is a straight ramp, "Logarithmic" really is concave-down (rises
+ * fast, levels near the top), "Exponential" really is concave-up (stays low,
+ * rises sharply near the end). Silent is the bottom-left corner, full volume
+ * the top-right, matching Vegas' own fade-icon convention.
+ *
+ * `active` brightens both the frame and the stroke — the same "clearer when
+ * it matters" language the timeline's other affordances (trim handles, fade
+ * grips) already use — so the picker itself shows which shape is currently
+ * set the moment it opens.
+ */
+function FadeCurveIcon({ curve, active }: { curve: FadeCurve; active: boolean }) {
+  const { width: w, height: h } = FADE_CURVE_ICON_SIZE
+  const points = fadeCurveIconPoints(curve, w - FADE_CURVE_ICON_PAD * 2, h - FADE_CURVE_ICON_PAD * 2)
+  const d = points.map((p, i) => `${i === 0 ? 'M' : 'L'}${p.x.toFixed(2)},${p.y.toFixed(2)}`).join(' ')
+  return (
+    <svg width={w} height={h} viewBox={`0 0 ${w} ${h}`} aria-hidden="true" className="block">
+      <rect
+        x={0.5} y={0.5} width={w - 1} height={h - 1} rx={3}
+        fill="none"
+        stroke={active ? TIMELINE_COLORS.fadeEnvelopeLine : 'rgba(255,255,255,0.15)'}
+        strokeWidth={1}
+      />
+      <path
+        d={d}
+        transform={`translate(${FADE_CURVE_ICON_PAD},${FADE_CURVE_ICON_PAD})`}
+        fill="none"
+        stroke={active ? TIMELINE_COLORS.fadeEnvelopeLine : 'rgba(255,255,255,0.75)'}
+        strokeWidth={1.75}
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  )
+}
 
 export default function Timeline({ project, clock, onProjectChange, onOverlayEdit, onEditOverlay, selectedIds = [], onSelectIds, onInspectClip, onInspectAudio, onEditCaption, rippleMode = false, previewAxis = false, onHoverScrub, getWaveformChunks, resolveFilePath, getWaveformPeaks, getFilmstrip, regenEnabled, isClipQueued, renderSubcutRegen, timeline, modalOpen = false, onOpenGoToTime, actionsRef }: TimelineProps) {
 
@@ -258,6 +305,30 @@ export default function Timeline({ project, clock, onProjectChange, onOverlayEdi
     let next = project
     for (const id of trackIds) next = updateAudioTrack(next, id, { magnetic })
     if (magnetic) next = reflowMagneticLanes(next)
+    onProjectChange(next)
+    onOverlayEdit?.(next)
+  }
+
+  /**
+   * The fade-shape picker: a small DOM menu (Linear / Logarithmic /
+   * Exponential) that opens on a RIGHT-CLICK of a fade grip (Vegas' own
+   * gesture — see `TimelineCanvas`'s `contextMenu` handler, which is the only
+   * caller of `setFadeCurveMenu`). `x`/`y` are CLIENT coordinates, so the
+   * menu below positions itself with `position: fixed` rather than measuring
+   * anything on this component's own tree.
+   */
+  const [fadeCurveMenu, setFadeCurveMenu] = useState<{ trackId: string; side: 'in' | 'out'; x: number; y: number } | null>(null)
+
+  /**
+   * Commit a fade's shape — a discrete, one-shot pick like
+   * `handleSetLaneMagnet` above, not a continuous drag, so `onProjectChange`
+   * + `onOverlayEdit` fire together as ONE undo entry rather than splitting
+   * across a preview/commit pair.
+   */
+  function handleSetFadeCurve(trackId: string, side: 'in' | 'out', curve: FadeCurve) {
+    setFadeCurveMenu(null)
+    if (!onProjectChange) return
+    const next = updateAudioTrack(project, trackId, side === 'in' ? { fadeInCurve: curve } : { fadeOutCurve: curve })
     onProjectChange(next)
     onOverlayEdit?.(next)
   }
@@ -436,6 +507,15 @@ export default function Timeline({ project, clock, onProjectChange, onOverlayEdi
       },
     },
   ], { modalOpen })
+
+  // Close the fade-curve picker on Escape — the backdrop click below (and a
+  // pick itself) already closes it any other way a user would try.
+  useEffect(() => {
+    if (!fadeCurveMenu) return
+    const onKeyDown = (e: KeyboardEvent) => { if (e.key === 'Escape') setFadeCurveMenu(null) }
+    document.addEventListener('keydown', onKeyDown)
+    return () => document.removeEventListener('keydown', onKeyDown)
+  }, [fadeCurveMenu])
 
   // Hand the zoom action up to a host-level command palette.
   useEffect(() => {
@@ -647,6 +727,7 @@ export default function Timeline({ project, clock, onProjectChange, onOverlayEdi
               onInspectClip={onInspectClip}
               onInspectAudio={onInspectAudio}
               onEditCaption={onEditCaption}
+              onFadeCurveMenu={setFadeCurveMenu}
               getWaveformPeaks={getWaveformPeaks}
               getFilmstrip={getFilmstrip}
               resolveFilePath={resolveFilePath}
@@ -723,6 +804,55 @@ export default function Timeline({ project, clock, onProjectChange, onOverlayEdi
           clipId: subcutClipId,
           onClose: () => setSubcutClipId(null),
         })
+      })()}
+
+      {/* ── Fade-shape picker — right-click a fade grip (canvas mode; see
+          `TimelineCanvas`'s `contextMenu` handler). `fixed`-positioned at the
+          CLIENT coordinates the grip was clicked at, since it renders outside
+          the canvas surface's own coordinate space. A full-surface backdrop
+          behind it closes the menu on any click (or right-click) elsewhere —
+          the same dismiss-on-outside-interaction every other popover here
+          uses (TrackSettingsPopover). Options are ICONS (`FadeCurveIcon`),
+          not text — Vegas shows the curve's shape, not its name — with the
+          shape name kept as `title`/`aria-label` so it's still discoverable
+          on hover and to a screen reader. */}
+      {fadeCurveMenu && (() => {
+        const track = project.audio?.tracks?.find(t => t.id === fadeCurveMenu.trackId)
+        const activeCurve: FadeCurve = (fadeCurveMenu.side === 'in' ? track?.fadeInCurve : track?.fadeOutCurve) ?? DEFAULT_FADE_CURVE
+        return (
+          <>
+            <div
+              data-timeline-chrome
+              data-testid="fade-curve-menu-backdrop"
+              className="fixed inset-0 z-40"
+              onClick={() => setFadeCurveMenu(null)}
+              onContextMenu={(e) => { e.preventDefault(); setFadeCurveMenu(null) }}
+            />
+            <div
+              data-timeline-chrome
+              className="fixed z-50 flex gap-1 rounded border border-gray-700 bg-gray-900 p-1 shadow-xl"
+              style={{ left: fadeCurveMenu.x, top: fadeCurveMenu.y }}
+            >
+              {([
+                ['linear', 'Linear'],
+                ['log', 'Logarithmic'],
+                ['exp', 'Exponential'],
+              ] as const).map(([curve, label]) => (
+                <button
+                  key={curve}
+                  type="button"
+                  title={label}
+                  aria-label={label}
+                  aria-pressed={activeCurve === curve}
+                  className={`rounded p-0.5 transition-colors ${activeCurve === curve ? 'bg-gray-700 ring-1 ring-emerald-400/60' : 'hover:bg-gray-800'}`}
+                  onClick={() => handleSetFadeCurve(fadeCurveMenu.trackId, fadeCurveMenu.side, curve)}
+                >
+                  <FadeCurveIcon curve={curve} active={activeCurve === curve} />
+                </button>
+              ))}
+            </div>
+          </>
+        )
       })()}
 
     </div>
