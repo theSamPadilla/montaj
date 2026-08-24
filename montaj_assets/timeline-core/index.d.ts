@@ -221,7 +221,7 @@ export interface ResolvedItem {
    * coordinate system that lands in: non-null ⇒ a position inside
    * `window.src` (identical to `seekTime(item, t, variant)`); null ⇒ elapsed
    * time since the item's own start, which for an overlay is exactly the
-   * quantity `sample-frame.js:556` and `encode-segment.js:299` compute.
+   * quantity `sample-frame.js:597` and `encode-segment.js:532` compute.
    */
   seek: number
   /**
