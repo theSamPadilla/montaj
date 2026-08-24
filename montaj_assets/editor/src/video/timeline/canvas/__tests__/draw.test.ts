@@ -910,7 +910,7 @@ describe('drawAudioItem fade grips', () => {
 })
 
 describe('drawCaptionBlock', () => {
-  it('fills and borders in the unselected purple, and centres the label', () => {
+  it('fills and borders in the unselected caption color, and centres the label', () => {
     const r = recordingContext()
     drawCaptionBlock(r.ctx, { rect: { x: 10, y: 4, width: 200, height: 32 }, selected: false, label: 'hello' })
     expect(r.calls.some(c => c.method === 'set:fillStyle' && c.args[0] === CAPTION_PALETTE.fill)).toBe(true)

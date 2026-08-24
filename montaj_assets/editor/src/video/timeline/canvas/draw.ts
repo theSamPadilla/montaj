@@ -106,26 +106,28 @@ export const TRACK_PALETTE: TrackPalette[] = [
   { fill: 'rgba(180,83,9,0.6)',    fillSelected: 'rgba(217,119,6,0.8)',   ring: 'rgba(251,191,36,0.8)',  border: 'rgba(245,158,11,0.5)',  text: '#fde68a' }, // amber
 ]
 
-/** The retired CaptionTrackRow's Tailwind purple classes, resolved. Unlike `TRACK_PALETTE`,
- *  which cycles a hue per track, every caption block shares this ONE palette —
- *  captions are a single row, not several, so there is nothing to cycle.
- *  `fill`/`border` are the unselected state (`bg-purple-700/40` +
- *  `border-purple-500/40`); `fillSelected`/`ring` the selected one
- *  (`bg-purple-600/70` + `ring-purple-300/80`); `text` is `text-purple-100`. */
+/** The caption block palette. Unlike `TRACK_PALETTE`, which cycles a hue per
+ *  track, every caption block shares this ONE palette — captions are a single
+ *  row, not several, so there is nothing to cycle. Deliberately CYAN, distinct
+ *  from the overlay tracks' violet and the audio lane's emerald, so a caption
+ *  reads as its own element type on the timeline rather than blending into an
+ *  overlay. `fill`/`border` are the unselected state; `fillSelected`/`ring` the
+ *  selected one; `text` is the label color. (The selected/unselected keyframe
+ *  diamonds are white / amber, both legible on this cyan.) */
 export const CAPTION_PALETTE: TrackPalette = {
-  fill: 'rgba(126,34,206,0.4)',
-  fillSelected: 'rgba(147,51,234,0.7)',
-  ring: 'rgba(216,180,254,0.8)',
-  border: 'rgba(168,85,247,0.4)',
-  text: '#f3e8ff',
+  fill: 'rgba(8,145,178,0.4)',
+  fillSelected: 'rgba(6,182,212,0.75)',
+  ring: 'rgba(165,243,252,0.85)',
+  border: 'rgba(34,211,238,0.5)',
+  text: '#cffafe',
 }
 
-/** TrackGutter's rail-cell accent for the caption row. Same purple hue as
- *  `CAPTION_PALETTE.border`, at a higher alpha (0.6 vs 0.4) — a rail chip
- *  reads best brighter than a canvas fill. Exported beside `CAPTION_PALETTE`,
- *  the single source for the caption purple, instead of letting TrackGutter
- *  hardcode its own copy with nothing tying the two together. */
-export const CAPTION_RAIL_ACCENT = 'rgba(168,85,247,0.6)'
+/** TrackGutter's rail-cell accent for the caption row. Same cyan hue as
+ *  `CAPTION_PALETTE.border`, at a higher alpha — a rail chip reads best brighter
+ *  than a canvas fill. Exported beside `CAPTION_PALETTE`, the single source for
+ *  the caption color, instead of letting TrackGutter hardcode its own copy with
+ *  nothing tying the two together. */
+export const CAPTION_RAIL_ACCENT = 'rgba(34,211,238,0.6)'
 
 export const TIMELINE_COLORS = {
   /** `bg-gray-900` — the dark-mode row background both row kinds use. */
