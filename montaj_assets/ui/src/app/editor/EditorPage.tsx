@@ -332,6 +332,20 @@ export default function EditorPage() {
     }
 
     return {
+      // Branded empty state for the right properties panel (nothing selected):
+      // Montaj's logo + "Select an element", vertically centered. The package
+      // falls back to its own generic centered default when this is absent.
+      propertiesEmptyState: (
+        // Inline color/opacity rather than Tailwind arbitrary-value opacity
+        // (`text-[var(--editor-text)]/70`): that modifier is proven in the
+        // editor package's Tailwind but not guaranteed to emit under the ui
+        // package's, and a non-emitting class fails silently (no type error).
+        <div className="flex-1 flex flex-col items-center justify-center gap-3 px-6 text-center" style={{ color: 'var(--editor-text)' }}>
+          <img src="/montaj-logo.png" alt="" className="h-11 w-11 rounded-xl" style={{ opacity: 0.4 }} />
+          <p className="text-xs font-medium" style={{ opacity: 0.7 }}>Select an element</p>
+          <p className="text-[11px]" style={{ opacity: 0.45 }}>Choose a clip, overlay, or track to edit its properties.</p>
+        </div>
+      ),
       mediaPanel: project ? (
         <MediaPanel
           footageLabel={footageLabel}

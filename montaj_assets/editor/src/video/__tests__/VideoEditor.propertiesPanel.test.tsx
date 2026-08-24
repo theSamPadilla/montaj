@@ -118,14 +118,25 @@ beforeEach(() => {
 afterEach(() => vi.restoreAllMocks())
 
 describe('VideoEditor — CapCut right properties panel', () => {
-  it('always renders the column, showing the overlay inspector\'s own empty state when nothing is selected', async () => {
+  it('always renders the column, showing the generic empty state when nothing is selected', async () => {
     const project = makeProject()
     renderCapCut(project, makeFakeAdapter(project))
 
     // The column's divider is the structural tell that it mounted at all —
     // with NOTHING selected, which is the whole point of "always visible".
     await waitFor(() => screen.getByLabelText('Resize sidebar'))
-    expect(screen.getByText('Select an overlay to edit its properties.')).toBeTruthy()
+    expect(screen.getByText('Select an element')).toBeTruthy()
+  })
+
+  it('renders the host-supplied propertiesEmptyState slot instead of the default when nothing is selected', async () => {
+    const project = makeProject()
+    renderCapCut(project, makeFakeAdapter(project), {
+      slots: { propertiesEmptyState: <div data-testid="host-empty">host empty</div> },
+    })
+    await waitFor(() => screen.getByLabelText('Resize sidebar'))
+    expect(screen.getByTestId('host-empty')).toBeTruthy()
+    // The host node REPLACES the generic default, it is not stacked with it.
+    expect(screen.queryByText('Select an element')).toBeNull()
   })
 
   it('swaps in the clip properties when a video clip is selected', async () => {
@@ -138,8 +149,8 @@ describe('VideoEditor — CapCut right properties panel', () => {
 
     expect(await screen.findByRole('slider', { name: 'Speed' })).toBeTruthy()
     expect(screen.getByLabelText('Mute clip')).toBeTruthy()
-    // Exactly one branch renders — the overlay inspector is gone, not stacked.
-    expect(screen.queryByText('Select an overlay to edit its properties.')).toBeNull()
+    // Exactly one branch renders — the empty state is gone, not stacked.
+    expect(screen.queryByText('Select an element')).toBeNull()
   })
 
   it('swaps in the audio-track properties when an audio track is selected', async () => {

@@ -103,6 +103,7 @@ Follow save discipline: **read the project**, merge the updated `tracks` array i
 - **Keep text short** — 2–6 words for lower-thirds, 4–8 for hooks. Short + large beats long + small
 - **Leave `offsetX`, `offsetY`, `scale` at defaults** (`0`, `0`, `1`) — the human positions overlays via the UI drag tool after preview
 - **Use assets from `project.assets`** — pass asset `src` paths as `props`, don't hardcode paths inside JSX
+- **Expose text styling as props** — a text overlay you want editable in the editor's properties panel must READ its font, size, weight, style, color, alignment, transform, and background from `props` (the nine standard text props) with sensible defaults, not hardcode them in the JSX. A hardcoded style shows no control in the panel. See skill `write-overlay` → "Make text overlays editable in the properties panel"
 
 ## Render Constraints
 

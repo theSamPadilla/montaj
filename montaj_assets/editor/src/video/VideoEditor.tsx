@@ -1,5 +1,5 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type MutableRefObject } from 'react'
-import { Captions, Crop, Ear, EarOff, Film, HelpCircle, History, Magnet, Maximize2, Minimize2, Pencil, Redo2, SeparatorVertical, Smartphone, Undo2, Wand2 } from 'lucide-react'
+import { Captions, Crop, Ear, EarOff, Film, HelpCircle, History, Magnet, Maximize2, Minimize2, Pencil, Redo2, SeparatorVertical, Smartphone, SquareDashedMousePointer, Undo2, Wand2 } from 'lucide-react'
 import type { Project, VideoEditorProps } from '../types'
 import type { AudioTrack, VisualItem } from '../schema'
 import { useProjectSync, type UseProjectSync } from '../state/use-project-sync'
@@ -2387,10 +2387,11 @@ function ReviewSurface<P extends Project>({
   //
   // ALWAYS rendered, never gated on the selection (Sam): a column that came and
   // went would resize the preview every time the operator clicked from a clip
-  // to empty space, so it holds its width and each panel shows its own empty
-  // state instead. That is also why there is no third "nothing selected" node
-  // here — OverlayInspector already has one, and inventing another would give
-  // the same column two different ways of saying nothing is selected.
+  // to empty space, so it holds its width and shows an empty state instead.
+  // Three branches: a selected clip/audio track → ClipPropertiesPanel; a
+  // selected overlay → OverlayInspector; nothing selected → a centered empty
+  // state, the host's `slots.propertiesEmptyState` when supplied (Montaj brands
+  // it with its logo) or the generic "Select an element" default otherwise.
   const propertiesPanel = (
     <>
       {/* Vertical divider, the same affordance as the preview/timeline one. */}
@@ -2446,9 +2447,8 @@ function ReviewSurface<P extends Project>({
                   : undefined
               }
             />
-          ) : (
-            /* An overlay's Transform properties — or, with nothing selected,
-               this component's own empty state. */
+          ) : selectedOverlayItem ? (
+            /* A selected overlay's Transform properties. */
             <OverlayInspector
               item={selectedOverlayItem}
               clock={clock}
@@ -2457,6 +2457,16 @@ function ReviewSurface<P extends Project>({
               onChange={applyOverlayInspectorChange}
               onSeek={seekTo}
             />
+          ) : (
+            /* Nothing selected: the host's branded empty state, or the
+               package's generic centered default. */
+            slots?.propertiesEmptyState ?? (
+              <div className="flex-1 flex flex-col items-center justify-center gap-2.5 px-6 text-center">
+                <SquareDashedMousePointer size={26} className="text-[var(--editor-text)]/25" />
+                <p className="text-xs font-medium text-[var(--editor-text)]/60">Select an element</p>
+                <p className="text-[11px] text-[var(--editor-text)]/40">Choose a clip, overlay, or track to edit its properties.</p>
+              </div>
+            )
           )}
         </div>
       </div>

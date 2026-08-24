@@ -49,6 +49,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   resize as selection changes. The preview and timeline themselves are
   unchanged. This applies to the three-column layout (the one a host opts into
   with `slots.mediaPanel`); the classic layout's arrangement is untouched.
+- **The right properties panel has a real empty state, brandable by the host.**
+  With nothing selected it now shows a vertically centered "Select an element"
+  prompt in place of the old terse one-liner. A host can replace it via the new
+  `slots.propertiesEmptyState` (Montaj renders its logo there); absent, the
+  package's generic centered default shows. Classic layout unaffected.
 - **Version history shows every version, by name and date.** The list no longer
   collapses to one row per backend "run", and the "Run N" prefix is gone: run
   is plumbing that was never meant to surface, and collapsing by it hid real

@@ -847,6 +847,13 @@ export interface EditorSlots {
    */
   mediaPanel?: ReactNode
   /**
+   * Rendered in the CapCut layout's right properties panel when nothing is
+   * selected, in place of the editor's generic centered "Select an element"
+   * empty state. Hosts use it to brand the empty panel (Montaj shows its
+   * logo). Absent → the generic default shows. No effect in the classic layout.
+   */
+  propertiesEmptyState?: ReactNode
+  /**
    * Rendered in the pending/empty view in place of the default
    * "Message your agent to start" copy. Hosts use this to surface live agent
    * progress (Montaj feeds its SSE log line here); absent → default copy shows.
