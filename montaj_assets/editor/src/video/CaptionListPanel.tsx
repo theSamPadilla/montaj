@@ -912,12 +912,17 @@ function CaptionListPanelBody({
                       else rowRefs.current.delete(seg.id)
                     }}
                     onClick={() => handleRowClick(seg.id, seg.start)}
-                    className={`group flex items-start gap-2 rounded px-2 py-1.5 cursor-pointer transition-colors border ${
+                    // Every segment reads as its own card: a solid surface fill
+                    // plus a visible border always, so rows don't melt into the
+                    // panel. Accent (indigo-500 == --editor-accent #6366f1) is
+                    // used through real Tailwind classes, not `/N` on the arbitrary
+                    // var — the latter is a silent no-op on a hex-valued var.
+                    className={`group flex items-start gap-2.5 rounded-md px-2.5 py-2 cursor-pointer border transition-colors ${
                       isSelected
-                        ? 'bg-[var(--editor-accent)]/15 border-[var(--editor-accent)]/60'
+                        ? 'bg-indigo-500/10 border-indigo-500/60'
                         : isActive
-                        ? 'bg-[var(--editor-surface)] border-[var(--editor-border)]'
-                        : 'border-transparent hover:bg-[var(--editor-surface)]'
+                        ? 'bg-[var(--editor-surface)] border-indigo-500/30'
+                        : 'bg-[var(--editor-surface)] border-[var(--editor-border)] hover:border-indigo-400/40'
                     }`}
                   >
                     {/* Index + timestamp, stacked — the two labels are complementary

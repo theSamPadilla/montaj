@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { Save } from 'lucide-react'
 import type { VersionEntry } from '../types'
 
 // VersionPanel reads only the editor-relevant slice of a version — hash,
@@ -68,7 +69,6 @@ interface VersionPanelProps {
 }
 
 export default function VersionPanel({ versions, restoring, onRestore, onSaveVersion, saving, onCompareVersion }: VersionPanelProps) {
-  const [open, setOpen] = useState(true)
   const [nameInput, setNameInput] = useState('')
   const rows = listVersions(versions)
 
@@ -78,75 +78,67 @@ export default function VersionPanel({ versions, restoring, onRestore, onSaveVer
   }
 
   return (
-    // The collapse is on the LIST, never on the whole panel. Collapsing used to
-    // set `max-height: 0` on this outer element, which took the header button
-    // with it — the panel vanished and there was nothing left to click to bring
-    // it back, so collapsing it once hid version history for the rest of the
-    // session.
     <div className="flex-1 min-h-0 border-b border-[var(--editor-border)] flex flex-col overflow-hidden">
-      <button
-        onClick={() => setOpen(o => !o)}
-        aria-expanded={open}
-        className="shrink-0 flex items-center justify-between px-3 py-2 border-b border-[var(--editor-border)] hover:bg-[var(--editor-surface)] transition-colors w-full text-left"
-      >
-        <span className="text-xs font-medium text-[var(--editor-text)]/60 uppercase tracking-wide">
-          Versions
-          {rows.length > 0 && (
-            <span className="ml-1.5 text-[var(--editor-text)]/40 normal-case tracking-normal">{rows.length}</span>
-          )}
-        </span>
-        <span className="text-[var(--editor-text)]/50 text-[10px]">{open ? '▲' : '▼'}</span>
-      </button>
+      {/* No collapse control: Versions has its own tab now, so the whole panel
+          IS the list. The count sits on the right as an explicit "N versions"
+          label so it reads as a quantity rather than part of the title. */}
+      <div className="shrink-0 flex items-center justify-between px-3 py-2 border-b border-[var(--editor-border)]">
+        <span className="text-xs font-medium text-[var(--editor-text)]/60 uppercase tracking-wide">Versions</span>
+        {rows.length > 0 && (
+          <span className="text-[10px] text-[var(--editor-text)] opacity-50">
+            {rows.length} {rows.length === 1 ? 'version' : 'versions'}
+          </span>
+        )}
+      </div>
 
       {/* Save affordance — always visible (not gated on `open`) so saving a
           version doesn't require expanding the list first. Disabled rather
           than hidden when the host has no `onSaveVersion`, matching the
           Restore buttons' pattern of degrading gracefully. */}
-      <div className="shrink-0 flex items-center gap-1.5 px-3 py-2 border-b border-[var(--editor-border)]">
+      <div className="shrink-0 flex items-center gap-2 px-3 py-2.5 border-b border-[var(--editor-border)]">
         <input
           type="text"
           value={nameInput}
           onChange={e => setNameInput(e.target.value)}
           placeholder="Name (optional)"
           disabled={saving || !onSaveVersion}
-          className="min-w-0 flex-1 text-[11px] bg-[var(--editor-bg)] border border-[var(--editor-border)] rounded px-1.5 py-1 text-[var(--editor-text)] placeholder:text-[var(--editor-text)]/40 focus:outline-none focus:border-[var(--editor-accent)] disabled:opacity-40"
+          className="min-w-0 flex-1 h-8 text-[11px] bg-[var(--editor-bg)] border border-[var(--editor-border)] rounded-md px-2 text-[var(--editor-text)] placeholder:text-[var(--editor-text)]/40 focus:outline-none focus:border-[var(--editor-accent)] disabled:opacity-40"
         />
         <button
           onClick={handleSaveClick}
           disabled={saving || !onSaveVersion}
-          className="shrink-0 text-[10px] font-medium px-2 py-1 rounded bg-[var(--editor-accent)]/15 text-[var(--editor-accent)] hover:bg-[var(--editor-accent)]/25 transition-colors disabled:opacity-40 disabled:hover:bg-[var(--editor-accent)]/15"
+          className="shrink-0 flex items-center gap-1.5 h-8 px-3 rounded-md bg-[var(--editor-accent)] text-white text-xs font-medium hover:opacity-90 transition-opacity disabled:opacity-40 disabled:hover:opacity-40"
         >
+          <Save size={13} />
           {saving ? 'Saving…' : 'Save version'}
         </button>
       </div>
 
-      {/* Padding lives on the INNER box: on the collapsing element itself it
-          survives `max-height: 0` and leaves a stray 16px strip under the
-          header. The collapse stays on the LIST, never on the whole panel —
-          see the module-level note above the header button. */}
-      <div className={open ? 'flex-1 min-h-0 overflow-y-auto' : 'h-0 overflow-hidden'}>
+      <div className="flex-1 min-h-0 overflow-y-auto">
       <div className="p-2 flex flex-col gap-1.5">
         {rows.length === 0 ? (
-          <p className="text-xs text-[var(--editor-text)]/55 text-center mt-2 px-1 leading-relaxed">No saved versions yet.</p>
+          <p className="text-xs text-[var(--editor-text)] opacity-55 text-center mt-2 px-1 leading-relaxed">No saved versions yet.</p>
         ) : rows.map(v => {
           const { label } = parseVersion(v)
           const name = humanizeLabel(label)
           return (
-            <div key={v.hash} className="rounded border border-[var(--editor-border)] bg-[var(--editor-surface)] p-2 flex flex-col gap-1">
-              <span className="text-xs font-medium text-[var(--editor-text)] truncate" title={name}>{name}</span>
-              <span className="text-[10px] text-[var(--editor-text)]/55">{formatTime(v.timestamp)}</span>
-              <div className="flex items-center gap-2.5">
+            <div key={v.hash} className="rounded-md border border-[var(--editor-border)] bg-[var(--editor-surface)] p-2.5 flex flex-col gap-2">
+              <div className="flex flex-col gap-0.5">
+                <span className="text-xs font-medium text-[var(--editor-text)] truncate" title={name}>{name}</span>
+                <span className="text-[10px] text-[var(--editor-text)] opacity-55">{formatTime(v.timestamp)}</span>
+              </div>
+              <div className="flex items-center gap-1.5">
                 <button
                   onClick={() => onRestore(v.hash)}
                   disabled={restoring === v.hash}
-                  className="text-[10px] text-[var(--editor-accent)] hover:opacity-80 text-left transition-colors disabled:opacity-40"
+                  className="flex items-center h-6 px-2 rounded border border-indigo-500/50 text-[10px] font-medium text-indigo-300 hover:bg-indigo-500/10 transition-colors disabled:opacity-40"
                 >
                   {restoring === v.hash ? 'Restoring…' : 'Restore →'}
                 </button>
                 {onCompareVersion && (
                   <button
                     onClick={() => onCompareVersion(v.hash)}
-                    className="text-[10px] text-[var(--editor-text)]/45 hover:text-[var(--editor-text)]/75 text-left transition-colors"
+                    className="flex items-center h-6 px-2 rounded border border-[var(--editor-border)] text-[10px] font-medium text-[var(--editor-text)] opacity-70 hover:opacity-100 transition-opacity"
                   >
                     Compare
                   </button>

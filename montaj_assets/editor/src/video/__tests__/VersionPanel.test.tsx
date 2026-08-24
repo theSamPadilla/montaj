@@ -54,11 +54,10 @@ describe('VersionPanel', () => {
 
     expect(container.textContent).toContain('Draft')
     expect(container.textContent).not.toContain('initial commit')
-    // Header count reflects only the non-init entry. Read off the collapse
-    // button's own text rather than a Tailwind class, so a styling change
-    // can't quietly turn this into a no-op assertion.
-    const header = screen.getByRole('button', { expanded: true })
-    expect(header.textContent).toMatch(/^Versions\s*1\b/)
+    // Header count reflects only the non-init entry, shown as an explicit
+    // "N versions" label on the right (no collapse control — Versions has its
+    // own tab now).
+    expect(screen.getByText('1 version')).toBeTruthy()
   })
 
   it('orders rows newest-first by timestamp regardless of input order', () => {
