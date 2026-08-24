@@ -53,6 +53,29 @@ const C = { cyan: TTY ? '\x1b[96m' : '', reset: TTY ? '\x1b[0m' : '' }
 const EXPORT_MODES = ['auto', 'sdr', 'both']
 
 // ---------------------------------------------------------------------------
+// collectAllItems' preview-field drop-list (SP-fixes-batch T2)
+//
+// Preview-only artifacts that collectAllItems (below) must never let reach a
+// render item, even though its passthrough spread forwards everything else on
+// the item by default. `proxySrc` is the SP3 full-source 720p editing proxy —
+// instant-scrub preview only; render always resolves the master via
+// `src`/`normalizedSrc` through `sourceWindow`, never the proxy.
+// `nobg_preview_src` is the preview-resolution VP9-with-alpha
+// background-removal cache; render's own remove_bg pipeline produces (and
+// reads) `nobg_src`, a ProRes 4444 master, instead. See schema.ts for both
+// fields' full docs and KNOWN-DIVERGENCES.md `nobg-precedence` for why preview
+// and render disagree here on purpose.
+//
+// Declared up here beside EXPORT_MODES, not down by collectAllItems itself,
+// for the SAME reason spelled out in the comment above: the CLI block right
+// below calls `main()` synchronously during module evaluation, and `main()`
+// reaches `collectAllItems()` before its first `await` — so a `const`
+// declared near collectAllItems would still be in its temporal dead zone the
+// first time a real render hits it.
+// ---------------------------------------------------------------------------
+const DROPPED_PREVIEW_FIELDS = ['proxySrc', 'nobg_preview_src']
+
+// ---------------------------------------------------------------------------
 // CLI argument parsing
 // ---------------------------------------------------------------------------
 
@@ -762,6 +785,18 @@ function collectPuppeteerSegments(projectJson, fps, width, height, segDir) {
 // Direct items: image and video items from all tracks (no Puppeteer)
 // ---------------------------------------------------------------------------
 
+// DROPPED_PREVIEW_FIELDS is declared near the top of the file, beside
+// EXPORT_MODES, not here — see the comment there for what it drops, why, and
+// why its position (ahead of the `if (isMain)` CLI block) is load-bearing.
+
+// Shallow-copies obj and deletes `fields` from the copy. Used to build the
+// passthrough item literal below without mutating the source item.
+function omitFields(obj, fields) {
+  const copy = { ...obj }
+  for (const field of fields) delete copy[field]
+  return copy
+}
+
 function collectAllItems(projectJson) {
   const imageItems = []
   const videoItems = []
@@ -770,19 +805,15 @@ function collectAllItems(projectJson) {
   for (let trackIdx = 0; trackIdx < tracks.length; trackIdx++) {
     const track = tracks[trackIdx]
     for (const item of track.items ?? []) {
-      const base = {
-        id:      item.id,
-        src:     item.src,
-        start:   item.start,
-        end:     item.end,
+      const passthrough = omitFields(item, DROPPED_PREVIEW_FIELDS)
+      const geometryDefaults = {
         offsetX: item.offsetX ?? 0,
         offsetY: item.offsetY ?? 0,
         scale:   item.scale   ?? 1,
         opacity: item.opacity ?? 1,
-        trackIdx,
       }
       if (item.type === 'image') {
-        imageItems.push({ ...base, fit: item.fit ?? 'cover' })
+        imageItems.push({ ...passthrough, ...geometryDefaults, fit: item.fit ?? 'cover', trackIdx })
       } else if (item.type === 'video') {
         // Prefer the normalizedSrc cache when present (and not on the nobg
         // path). A normalizedSrc cache covers [normalizedInPoint, normalizedInPoint + duration]
@@ -844,38 +875,51 @@ function collectAllItems(projectJson) {
         // mute").
         const { volume, muted } = effectiveItemAudio(track, item)
         videoItems.push({
-          ...base,
-          // The whitelist below is exhaustive by design — these objects are what
-          // encode-segment.js reads (and mutates), so a field omitted here is
-          // dropped silently, with no type error. That has shipped as a bug twice:
-          // once for `sourceCrop` & friends (see below) and once for image `fit`.
+          ...passthrough,
+          ...geometryDefaults,
+          trackIdx,
+          // This object used to be built field-by-field from a hand-written
+          // whitelist — and a field left off it was dropped silently, with no
+          // type error, before it ever reached encode-segment.js. That
+          // shipped as a real production bug twice: once for `sourceCrop` &
+          // friends, once for image `fit`. It's built as a spread now —
+          // `{...item, <overrides>}` minus DROPPED_PREVIEW_FIELDS — so a
+          // field nobody's written an explicit line for here still reaches
+          // encode-segment.js instead of silently vanishing. Only the fields
+          // below are the explicit part: src/inPoint/outPoint (transformed by
+          // sourceWindow), volume/muted (folded by effectiveItemAudio),
+          // trackIdx (synthesized above), and the geometry/remove_bg
+          // defaults. Unknown fields flow; transforms and drops are the
+          // explicit part. Do not add sourceCrop/sourceWidth/sourceHeight/
+          // nobg_src/normalizedSrc to DROPPED_PREVIEW_FIELDS — those are
+          // render inputs (crop geometry and cache substitutes), not preview
+          // artifacts; only proxySrc and nobg_preview_src belong on that
+          // list. One newly-passed-through field the encoder actually reads
+          // today: `type` -- encode-segment.js's isImageItem() checks
+          // `item.type === 'image'` before falling back to a filename-
+          // extension regex, so an image whose `src` lacks a recognised
+          // extension (`.avif`, `.heic`, an extensionless cache path, a URL
+          // with a query string) now correctly routes to the image filter
+          // path, where it previously fell through to the video one.
           src,
-          nobg_src:     item.nobg_src,
-          normalizedSrc: item.normalizedSrc,
           // `inPoint` is already in the CHOSEN src's coordinates. Paired with
-          // `start` (from `base`) it is exactly the input encode-segment.js:216-218
-          // needs: `actualIn = inPoint + max(0, segStart - start)`, which is the
-          // resolver's `seekTime(item, segStart, 'render')` written out by hand.
+          // `start` (passed through from `item`) it is exactly the input
+          // encode-segment.js:216-218 needs: `actualIn = inPoint + max(0,
+          // segStart - start)`, which is the resolver's `seekTime(item,
+          // segStart, 'render')` written out by hand.
           inPoint,
           // null normalizes to undefined here (source-window.js:221); no render
           // consumer reads this field today.
           outPoint,
-          // Source crop (clips workflow vertical reframe) — applied at encode
-          // time by buildVideoItemFilterParts. normalizeIfNeeded/normalize_window
-          // does NOT bake the crop into normalizedSrc (the cache stays at full
-          // source dimensions), so these MUST be forwarded or the crop is lost
-          // and the full frame is letterboxed into the output canvas instead.
-          // The resolver has no opinion on them (they are geometry, not source
-          // window), so they stay hand-forwarded here, by reference.
-          sourceCrop:   item.sourceCrop,
-          sourceWidth:  item.sourceWidth,
-          sourceHeight: item.sourceHeight,
           remove_bg: item.remove_bg ?? false,
           muted,
           volume,
           // Per-clip playback speed (montaj/speed feature). Not defaulted here —
           // encode-segment.js treats a missing/undefined speed as 1 (no-op), so
-          // forwarding the raw value (possibly undefined) is correct.
+          // forwarding the raw value (possibly undefined) is correct. The
+          // spread already carries `item.speed` through; this override keeps
+          // the "not defaulted" contract visible in the diff rather than
+          // relying on spread behavior alone.
           speed: item.speed,
         })
       }

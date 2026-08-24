@@ -165,16 +165,24 @@ test('collectAllItems: nobg_src path is NOT rebased even if normalizedSrc presen
 })
 
 // ---------------------------------------------------------------------------
-// collectAllItems — the output whitelist (SP2 T8)
+// collectAllItems — the output whitelist (SP2 T8), now passthrough-by-default (T2)
 //
-// `collectAllItems` builds each video item from an explicit field whitelist
-// rather than spreading the source item. That is deliberate (the renderer's
-// items are mutated in place downstream, and a spread would drag editor-only
-// fields into the encoder), but it means every field the encoder reads has to
-// be listed by hand — and a field that is NOT listed is dropped silently, with
-// no type error and no failing test. Both cases below are real shipped bugs of
-// exactly that shape. They are pinned here so the T8 swap onto
-// `@bycrux/timeline-core`'s `sourceWindow` cannot reintroduce them.
+// `collectAllItems` used to build each video item from an explicit field
+// whitelist rather than spreading the source item — every field the encoder
+// reads had to be listed by hand, and a field that was NOT listed was dropped
+// silently, with no type error and no failing test. Both cases below are real
+// shipped bugs of exactly that shape.
+//
+// T2 rebuilt it as `{...item, <overrides>}` minus a small DROPPED_PREVIEW_FIELDS
+// list (see render.js), so an unlisted field now flows through instead of
+// vanishing. `sourceCrop`/`sourceWidth`/`sourceHeight` below are pinned as
+// values, not as always-present keys — that distinction is exactly what
+// changed: a field the source item never had is now genuinely absent from the
+// output rather than present-but-undefined, and the encoder's own gate
+// (encode-segment.js:343) is a truthiness check that cannot tell the
+// difference. These tests stay in place so neither the T8 sourceWindow swap
+// nor the T2 passthrough swap can reintroduce the underlying bug (a field the
+// encoder needs quietly not arriving).
 // ---------------------------------------------------------------------------
 
 test('collectAllItems: sourceCrop / sourceWidth / sourceHeight survive the whitelist verbatim (Bug B regression)', () => {
@@ -227,12 +235,14 @@ test('collectAllItems: sourceCrop survives even when the normalized cache is sub
 test('collectAllItems: sourceCrop with NO sourceWidth/sourceHeight is still forwarded — the drop happens downstream [registry: sourcecrop-missing-dims-silent-drop]', () => {
   // KNOWN-DIVERGENCES.md `sourcecrop-missing-dims-silent-drop`. This documents
   // TODAY'S behavior as expected-for-now, not as desirable. collectAllItems has
-  // no opinion on the combination — it forwards `sourceCrop` and forwards the
-  // two `undefined` dimensions. One layer down, `buildVideoItemFilterParts`'s
-  // gate (encode-segment.js:243) needs all three, so it emits no crop= step at
-  // all and the reframe vanishes with no warning. Owner of the actual fix: SP4.
-  // Mirrored by fixtures/source-crop-missing-dims.json, whose committed
-  // encode-args golden contains no crop filter — see encode-args-golden.test.mjs.
+  // no opinion on the combination — it forwards whatever the item carries (here,
+  // just `sourceCrop`, via the passthrough spread). One layer down,
+  // `buildVideoItemFilterParts`'s gate (encode-segment.js:343) needs all three
+  // (`sourceCrop && item.sourceWidth && item.sourceHeight`, a truthiness check),
+  // so it emits no crop= step at all and the reframe vanishes with no warning.
+  // Owner of the actual fix: SP4. Mirrored by fixtures/source-crop-missing-dims.json,
+  // whose committed encode-args golden contains no crop filter — see
+  // encode-args-golden.test.mjs.
   const crop = { x: 0.2, y: 0.1, w: 0.6, h: 0.7 }
   const project = {
     tracks: [
@@ -243,7 +253,12 @@ test('collectAllItems: sourceCrop with NO sourceWidth/sourceHeight is still forw
   assert.deepEqual(videoItems[0].sourceCrop, crop)
   assert.equal(videoItems[0].sourceWidth, undefined)
   assert.equal(videoItems[0].sourceHeight, undefined)
-  assert.ok('sourceWidth' in videoItems[0], 'the key is present-but-undefined, not absent — the whitelist always sets it')
+  // Passthrough-by-default (T2): the key is only present if the source item
+  // carried it. The old hand-written whitelist always wrote `sourceWidth:
+  // item.sourceWidth`, so a source item without the field left a
+  // present-but-undefined key behind; the spread manufactures no such key.
+  // The encoder's gate above is a truthiness check either way, so this is inert.
+  assert.ok(!('sourceWidth' in videoItems[0]), 'the spread does not manufacture a key the source item never had')
 })
 
 test('collectAllItems: a normalizedSrc item with neither normalizedInPoint nor inPoint rebases to 0, not NaN (the ONE sanctioned SP2 behavior change)', () => {
@@ -267,6 +282,65 @@ test('collectAllItems: a normalizedSrc item with neither normalizedInPoint nor i
   assert.ok(!Number.isNaN(videoItems[0].outPoint), 'outPoint must not be NaN')
   assert.equal(videoItems[0].inPoint, 0)
   assert.equal(videoItems[0].outPoint, 4.5)
+})
+
+// ---------------------------------------------------------------------------
+// collectAllItems — passthrough by default (T2)
+//
+// The whitelist above was rebuilt as `{...item, <overrides>}` minus
+// DROPPED_PREVIEW_FIELDS (see render.js). These tests pin the two halves of
+// that contract directly: a field nobody's written a line for survives
+// untouched, and the two listed preview-only fields are stripped even though
+// nothing else asks for them to be. The first half is what makes adding a new
+// item field a one-place change: define it, and it reaches encode-segment.js
+// without an edit here.
+// ---------------------------------------------------------------------------
+
+test('collectAllItems: an unrecognized field on a video item passes through untouched', () => {
+  const project = {
+    tracks: [
+      [{ id: 'v', type: 'video', src: '/orig.mp4', start: 0, end: 4, inPoint: 0, outPoint: 4, zzTestField: 'unicorn' }],
+    ],
+  }
+  const { videoItems } = collectAllItems(project)
+  assert.equal(videoItems[0].zzTestField, 'unicorn')
+})
+
+test('collectAllItems: an unrecognized field on an image item passes through untouched', () => {
+  const project = {
+    tracks: [
+      [{ id: 'img', type: 'image', src: '/bg.png', start: 0, end: 4, zzTestField: 'unicorn' }],
+    ],
+  }
+  const { imageItems } = collectAllItems(project)
+  assert.equal(imageItems[0].zzTestField, 'unicorn')
+})
+
+test('collectAllItems: proxySrc and nobg_preview_src are dropped, not forwarded (DROPPED_PREVIEW_FIELDS)', () => {
+  const project = {
+    tracks: [
+      [{
+        id: 'v', type: 'video', src: '/orig.mp4', start: 0, end: 4, inPoint: 0, outPoint: 4,
+        proxySrc: '/orig_proxy_v1.mp4', nobg_preview_src: '/orig_nobg_preview.webm',
+      }],
+    ],
+  }
+  const { videoItems } = collectAllItems(project)
+  assert.equal(videoItems[0].proxySrc, undefined)
+  assert.equal(videoItems[0].nobg_preview_src, undefined)
+  assert.ok(!('proxySrc' in videoItems[0]), 'dropped, not just falsy — the key must not survive')
+  assert.ok(!('nobg_preview_src' in videoItems[0]), 'dropped, not just falsy — the key must not survive')
+})
+
+test('collectAllItems: a raw item.trackIdx does not clobber the synthesized loop index', () => {
+  const project = {
+    tracks: [
+      [],
+      [{ id: 'v', type: 'video', src: '/orig.mp4', start: 0, end: 4, inPoint: 0, outPoint: 4, trackIdx: 999 }],
+    ],
+  }
+  const { videoItems } = collectAllItems(project)
+  assert.equal(videoItems[0].trackIdx, 1, 'trackIdx must be the synthesized loop index, not a spread-through item.trackIdx')
 })
 
 test('shouldSkipNormalize: lazy + normalizedSrc → skip (cache already conforms)', () => {
