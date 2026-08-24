@@ -370,10 +370,12 @@ export declare function projectEnd(project: DurationProject): number
 // in FOUR places until SP9a-1 retired the duplication: THREE copies in render
 // (encode-segment.js, pixels — buildImageItemFilterParts, buildVideoItemFilterParts,
 // buildOverlayFilterParts) and one in the editor (transformStyle.ts, CSS %).
-// All four now delegate to this shared implementation — encode-segment.js:245
-// (image), :305 (video), :457 (overlay), transformStyle.ts:36 (editor).
-// `toCssBoxPct` and `toPixelBox` are its two engine-specific adapters — see
-// the src/geometry.js module header for the full naming rationale, the
+// All four now delegate to this shared implementation — encode-segment.js:305
+// (image), :375 (video), :546 (overlay), transformStyle.ts:36 (editor).
+// `toCssBoxPct`, `toPixelBox` and `toRotatedPixelBox` are its engine-specific
+// adapters (the third added by SP9a-2, and it DELEGATES to the second rather
+// than duplicating it) — see the src/geometry.js module header for the full
+// naming rationale, the
 // fit/sourceCrop/rotation decisions, and the (0,0,1,1) preview short-circuit's
 // exact legacy location.
 // ---------------------------------------------------------------------------
@@ -396,7 +398,11 @@ export interface GeometryItem {
   sourceWidth?: number
   /** Source intrinsic pixel height. Forwarded verbatim. */
   sourceHeight?: number
-  /** Degrees. Carried, never applied by this package — see {@link geometryFor}. */
+  /**
+   * Degrees. Carried by {@link geometryFor}; consumed ONLY by
+   * {@link toRotatedPixelBox}. {@link toPixelBox} and {@link toCssBoxPct} stay
+   * rotation-blind — see the src/geometry.js module header.
+   */
   rotation?: number
 }
 
@@ -427,11 +433,11 @@ export interface Geometry {
   /** Forwarded verbatim. */
   sourceHeight: number | undefined
   /**
-   * Degrees. Carried so a future fix has somewhere to read it from.
-   * KNOWN DIVERGENCE (KNOWN-DIVERGENCES.md, T5; owner backlog/SP7): render
-   * NEVER reads `rotation` anywhere in encode-segment.js — an overlay rotated
-   * in the editor exports un-rotated today. {@link toPixelBox} MUST NOT
-   * consume this field.
+   * Degrees, as authored — NOT normalized here (normalization into [0, 360)
+   * happens inside {@link toRotatedPixelBox}, which is the one adapter that
+   * consumes this field). {@link toPixelBox} MUST NOT consume it: its
+   * rotation-blindness is a frozen contract that SP9a-1's four switched-over
+   * call sites depend on, and there is a test pinning it.
    */
   rotation: number
 }
@@ -463,6 +469,61 @@ export declare function toPixelBox(
   vw: number,
   vh: number,
 ): { x: number; y: number; width: number; height: number }
+
+/**
+ * The rotated placement of one item, in pixels. `scaledW`/`scaledH`/`xPx`/`yPx`
+ * are exactly {@link toPixelBox}'s `width`/`height`/`x`/`y`; `outW`/`outH`/`x`/`y`
+ * describe the axis-aligned bounding box the rotated content occupies and where
+ * that grown box is composited.
+ */
+export interface RotatedPixelBox {
+  /** Unrotated width, even. Straight from {@link toPixelBox}. */
+  scaledW: number
+  /** Unrotated height, even. Straight from {@link toPixelBox}. */
+  scaledH: number
+  /** Unrotated left. Straight from {@link toPixelBox}. */
+  xPx: number
+  /** Unrotated top. Straight from {@link toPixelBox}. */
+  yPx: number
+  /** Bounding-box width after rotation, even-rounded. */
+  outW: number
+  /** Bounding-box height after rotation, even-rounded. */
+  outH: number
+  /** Left of the GROWN box. Exact integer; deliberately NOT even-rounded. */
+  x: number
+  /** Top of the GROWN box. Exact integer; deliberately NOT even-rounded. */
+  y: number
+  /**
+   * Normalized rotation in [0, 360) DEGREES — not radians, not a filter string.
+   * timeline-core owns the numbers; formatting an ffmpeg `rotate=` step is the
+   * consumer's job.
+   */
+  rotationDeg: number
+  /**
+   * `rotationDeg === 0`, i.e. the grown box IS the unrotated box and no rotate
+   * step needs appending.
+   */
+  isIdentity: boolean
+}
+
+/**
+ * The rotation-aware sibling of {@link toPixelBox}: the same unrotated numbers
+ * (obtained by delegating to it, never by duplicating its math) plus the grown
+ * bounding box and the adjusted top-left that keeps the item's CENTRE fixed
+ * (`x + outW/2 === xPx + scaledW/2`, exactly).
+ *
+ * Always returns a full box, never `null`: at rotation 0 / 360 / absent /
+ * non-finite the grown box IS the unrotated box and `isIdentity` is true, so a
+ * call site can read `.x`/`.y` unconditionally and branch only on whether to
+ * append a rotate step. See the src/geometry.js module header for the verified
+ * formula, why the grown box is `round`ed and never `ceil`ed, and why `x`/`y`
+ * are not even-rounded.
+ */
+export declare function toRotatedPixelBox(
+  geometry: Pick<Geometry, 'scale' | 'offsetX' | 'offsetY'> & { rotation?: number },
+  vw: number,
+  vh: number,
+): RotatedPixelBox
 
 /**
  * Whether `crop` is the default full-frame crop, i.e. "no crop at all" —

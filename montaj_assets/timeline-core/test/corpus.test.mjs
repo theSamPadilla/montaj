@@ -151,7 +151,13 @@ const REGISTRY_PATH = join(ROOT, 'KNOWN-DIVERGENCES.md')
 const registryText = readFileSync(REGISTRY_PATH, 'utf8')
 
 const MANDATED_ENTRY_IDS = [
+  // `rotation` stays mandated after SP9a-2 closed it: the row is retained with
+  // its resolution rather than deleted, so the registry keeps the record of what
+  // shipped and where its tests live.
   'rotation',
+  // Registered by SP9a-2 as its explicit trade — render rotates video, no
+  // preview path does. See D15.
+  'video-rotation-not-previewed',
   'opaque-in-preview',
   'dead-render-outpoint',
   'audio-duration-mismatch',
@@ -185,7 +191,7 @@ function parseSummaryTable(text) {
   return rows
 }
 
-test('KNOWN-DIVERGENCES.md: summary table contains all eight plan-mandated entry ids', () => {
+test('KNOWN-DIVERGENCES.md: summary table contains all nine plan-mandated entry ids', () => {
   const rows = parseSummaryTable(registryText)
   const ids = rows.map((cells) => cells[0].replace(/`/g, ''))
   const missing = MANDATED_ENTRY_IDS.filter((id) => !ids.includes(id))

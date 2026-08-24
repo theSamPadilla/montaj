@@ -621,6 +621,7 @@ export async function sampleFrame({
       offsetX:      ri.geometry.offsetX,
       offsetY:      ri.geometry.offsetY,
       scale:        ri.geometry.scale,
+      rotation:     ri.geometry.rotation,
       opaque:       ov.opaque ?? false,
     }
   }, OVERLAY_CONCURRENCY)
@@ -790,11 +791,12 @@ export async function sampleFrame({
         if (!framePng) continue // defensive — every video RI got a frame extracted above
         // Treat the extracted video frame as an image item — it's a PNG at this point.
         pseudoItem = {
-          src:     framePng,
-          scale:   ri.geometry.scale,
-          offsetX: ri.geometry.offsetX,
-          offsetY: ri.geometry.offsetY,
-          opacity: ri.geometry.opacity,
+          src:      framePng,
+          scale:    ri.geometry.scale,
+          offsetX:  ri.geometry.offsetX,
+          offsetY:  ri.geometry.offsetY,
+          rotation: ri.geometry.rotation,
+          opacity:  ri.geometry.opacity,
           // TRAP: buildImageItemFilterParts defaults to 'cover' when fit is
           // omitted, which CROPS the frame to fill its box. Production video is
           // ALWAYS contain-fit — buildVideoItemFilterParts' own scale step uses
@@ -807,12 +809,13 @@ export async function sampleFrame({
         }
       } else {
         pseudoItem = {
-          src:     ri.item.src,
-          scale:   ri.geometry.scale,
-          offsetX: ri.geometry.offsetX,
-          offsetY: ri.geometry.offsetY,
-          opacity: ri.geometry.opacity,
-          fit:     ri.geometry.fit, // image's own tri-state, default 'cover'
+          src:      ri.item.src,
+          scale:    ri.geometry.scale,
+          offsetX:  ri.geometry.offsetX,
+          offsetY:  ri.geometry.offsetY,
+          rotation: ri.geometry.rotation,
+          opacity:  ri.geometry.opacity,
+          fit:      ri.geometry.fit, // image's own tri-state, default 'cover'
         }
       }
       const { inputArgs, filterParts: fp, newVideoLabel } =

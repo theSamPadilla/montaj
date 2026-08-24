@@ -261,6 +261,7 @@ All timed graphical elements live in `tracks[1+]`'s `items` arrays. Each track i
 | `offsetX` | number | all | Horizontal offset as % of frame width |
 | `offsetY` | number | all | Vertical offset as % of frame height |
 | `scale` | number | all | Size multiplier from center |
+| `rotation` | number | all | Clockwise rotation in degrees. Optional; default 0. Any finite number — values outside [0,360) are normalized at render. |
 | `opacity` | number | all | Opacity 0.0–1.0 (default 1.0). Applied at compose time. |
 | `props` | object | overlay | Arbitrary props passed to the JSX component |
 | `opaque` | boolean | overlay | When `true`, render engine skips alpha — JSX controls full frame |

@@ -24,7 +24,8 @@ file; they are called out here only so a reader doesn't go looking for them.
 
 | id | what | preview | render | owner | fixture |
 | --- | --- | --- | --- | --- | --- |
-| `rotation` | An overlay/image's `rotation` field | Applied to the on-canvas transform | NEVER read anywhere in the encode path — exports un-rotated | backlog / SP7 | none (documented in `src/geometry.js`'s module header; `Geometry.rotation` is carried but `toPixelBox` refuses to consume it) |
+| `rotation` | An overlay/image's `rotation` field | Applied to the on-canvas transform | **RESOLVED SP9a-2 (2026-08-23)** — applied at render on all three paths | ✅ closed | none needed (see entry 1 for where the tests live) |
+| `video-rotation-not-previewed` | The **`tracks[0]` MAIN CLIP's** `rotation` field (overlay-track video is NOT affected — it previews rotated and is at full parity) | NEVER applied — `videoTransformContainerStyle` emits `translate`/`scale` only, so neither the legacy `<video>` path nor the engine canvas rotates the main clip | Applied since SP9a-2 — a rotated main clip exports rotated | backlog | none — no corpus fixture carries a rotated video item (0/229 real items carry `rotation` at all) |
 | `opaque-in-preview` | An overlay's `opaque` flag | SP4 engine: unified to render semantics by construction (picture suppressed, audio kept). Legacy `<video>` path: never read — the video underneath stays visible | Gates video COMPOSITING only (audio still sourced) via the segment-level `opaqueVideo` flag | SP4 — engine unified (T5); legacy path open until removed | `fixtures/opaque-overlay.json` |
 | `dead-render-outpoint` | A video item's stored `outPoint` when it has drifted from `end - start` | N/A (preview derives its own effective outPoint) | See `audio-outpoint-not-derived` below — render mirrors this same "trust the stored value" pattern for the AUDIO track case; the VISUAL item case is the base entry here | SP4 (visual-item case) / render backlog (audio case — `mix-audio.js`, see D1) | `fixtures/trim-after-cache.json` (rebase math), `fixtures/audio-outlasts-video.json` (companion audio-track case) |
 | `audio-duration-mismatch` | Project "duration" | `projectEnd` — `max(videoEnd, overlayEnd, audioEnd)`, AUDIO INCLUDED | `visualDuration` — max `end` over every VISUAL item, AUDIO EXCLUDED | SP4 — preview half CLOSED (T8: `projectEnd` adopted in both the legacy hook and the engine); render/truncation half open, see follow-up in the entry | `fixtures/audio-outlasts-video.json` |
@@ -33,22 +34,44 @@ file; they are called out here only so a reader doesn't go looking for them.
 | `loop-not-rendered-transition-dead-field` | A video item's `loop` and `transition` fields | `loop` is honored (`useVideoPlayback.ts:633/700/779`); `transition` is read NOWHERE in the editor either. SP4's engine reimplements `loop` (`engine/scheduler.ts`'s `placeInSource`/`endsOnLoopBoundary`); dropping loop support entirely was considered and rejected — it stays flagged as an operator option, not defaulted | Neither field is read anywhere under `montaj_assets/render/*.js` (grepped — zero hits) | SP4 / schema-cleanup backlog | `fixtures/loop-item.json` |
 | `sourcecrop-missing-dims-silent-drop` | A `sourceCrop` with no `sourceWidth`/`sourceHeight` | `sourceCropVideoStyle` (`sourceCropStyle.ts:32`) returns `null` early (`!sourceWidth \|\| !sourceHeight`) — falls back to full-frame, same as render. SP4's engine (`engine/scheduler.ts`'s `sourceCropDrawPlan`) keeps the same parity-safe no-dims→no-crop guard rather than the `PreviewPlayer.tsx` call-site fallback that would have made the divergence worse | `buildVideoItemFilterParts`'s gate (`encode-segment.js:243`, `if (sc && item.sourceWidth && item.sourceHeight)`) silently skips the crop filter step entirely | SP3 / SP4 | `fixtures/source-crop-missing-dims.json` + `expected/encode-args.source-crop-missing-dims.json` (no `crop=` filter step present — verified empirically) |
 
-## 1. `rotation`
+## 1. `rotation` — ✅ RESOLVED IN SP9a-2 (2026-08-23)
 
-Preview (`OverlayItemsLayer.tsx:377/451` read `g.rotation`, falling back from
-any live drag state; `:379/494` apply `rotate(${rotation}deg)` to the on-canvas
-CSS transform — two call sites, one for track-0 canvas items, one for overlay
-tracks) ultimately reads `item.rotation ?? 0` via `geometryFor` (see below).
-Render (`encode-segment.js`'s `buildImageItemFilterParts`, `buildVideoItemFilterParts`,
-`buildOverlayFilterParts`) has no rotation handling anywhere — grepped, zero
-hits. An overlay or image rotated in the editor exports un-rotated.
+**Retained rather than deleted**: this entry tracked the divergence from SP2
+until SP9a-2 closed it, and the resolution is the useful part of the record.
 
-`geometryFor` (`src/geometry.js:264-276`) carries `item.rotation ?? 0` (line 274)
-on the returned `Geometry` so a future fix has somewhere to read it from, but
-`toPixelBox` (the render pixel adapter) deliberately does not consume it —
-see `test/geometry.test.mjs` for the assertion that pins that boundary.
+**What it was.** Preview (`OverlayItemsLayer.tsx:392/507` apply
+`rotate(${rotation}deg)` to the on-canvas CSS transform — two call sites, one
+for track-0 canvas items, one for overlay tracks) read `item.rotation ?? 0` via
+`geometryFor`. Render (`encode-segment.js`'s `buildImageItemFilterParts`,
+`buildVideoItemFilterParts`, `buildOverlayFilterParts`) had no rotation handling
+anywhere — grepped, zero hits. An overlay or image rotated in the editor
+exported un-rotated, silently.
 
-**Owner: backlog / SP7.**
+**What shipped.** `toRotatedPixelBox` (`src/geometry.js`) is the rotation-aware
+sibling of `toPixelBox`: it delegates for the unrotated numbers and adds the
+even-rounded grown bounding box plus a centre-preserving adjusted origin.
+`encode-segment.js`'s `rotateFilterStep()` owns all rotation filter syntax and
+appends an ffmpeg `rotate=` step on the image, video, and overlay paths;
+`render.js` and `sample-frame.js` forward `rotation` to them. ffmpeg's `rotate`
+is clockwise-positive, matching CSS — verified empirically, there is no sign
+flip.
+
+**`toPixelBox` was NOT modified and must stay rotation-blind** — its
+ignores-rotation contract is still pinned by `test/geometry.test.mjs`, and
+`toRotatedPixelBox` is the only rotation-aware adapter. Do not "simplify" the
+two into one.
+
+**Where the tests live.** `test/geometry.test.mjs` (the helper's matrix,
+including centre-preservation and grown-box integrality across a sweep);
+`render/test/encode-segment.test.mjs` and `overlay-filter.test.mjs` (per-path
+`{absent, 0, 360}` byte-identity plus rotated-case assertions);
+`render/test/rotation.integration.test.mjs` (pixel probes that fail under a sign
+flip — strings cannot catch that); `render/test/encode-args-golden.test.mjs`
+(asserts no frozen golden contains `rotate=`, so the identity gate can't pass
+vacuously).
+
+**Owner: ✅ closed (SP9a-2).** The video-preview half is a separate, still-open
+entry — see `video-rotation-not-previewed` below.
 
 ## 2. `opaque-in-preview`
 
@@ -868,6 +891,57 @@ compressor in the Web Audio graph is audio-DSP feature work, not something any
 currently-scoped SP task claims. It is NOT SP4: plan decision 5 keeps
 `project.audio.tracks` on plain `<audio>` elements with volume/fade only, and
 adding a compressor node would be new engine scope beyond "WebCodecs video
-playback," not a bookkeeping fix. Flagged here, matching how entry 1
-(`rotation`) is flagged, so it isn't lost rather than assigned to a sprint that
-isn't actually going to build it.)
+playback," not a bookkeeping fix. Flagged here, matching how
+`video-rotation-not-previewed` (D15) is flagged, so it isn't lost rather than
+assigned to a sprint that isn't actually going to build it. This sentence used
+to cite entry 1 (`rotation`) as the precedent; entry 1 closed in SP9a-2, so the
+pointer moved to the open entry that still demonstrates the pattern.)
+
+## D15. `video-rotation-not-previewed` — introduced by SP9a-2
+
+**This is the registered trade of SP9a-2, not an oversight.** SP9a-2 taught
+render to apply `rotation` on all three paths.
+
+**Scope: the `tracks[0]` MAIN CLIP only.** Everything rendered by
+`OverlayItemsLayer` is at full parity — image items, JSX overlays, **and
+overlay-track video items**. `OverlayItemsLayer.tsx:507` puts
+`rotate(${rotation}deg)` on the wrapper of every item in `interactiveTracks`,
+and the `item.type === 'video'` branch (`:547`) renders `<OverlayVideo>` INSIDE
+that wrapper with `{handles}` (`:588`) — so an overlay-track video both previews
+rotated and is directly rotatable by the on-canvas handle. Only the main clip,
+which `OverlayItemsLayer` never touches, is affected.
+
+**The mechanism, stated precisely** (it is worth being exact, because a wrong
+description sends the next maintainer to the wrong file — an earlier draft of
+this entry blamed "the experimental engine canvas", which is not where the gap
+lives):
+
+`PreviewPlayer.tsx:3` imports `videoTransformContainerStyle` from
+`preview/transformStyle.ts`. That function (`:24-30`) emits
+`translate(${ox}%, ${oy}%) scale(${s})` — **no `rotate()` term at all** — and
+`PreviewPlayer.tsx` contains zero occurrences of `rotate`. `toCssBoxPct`
+(`src/geometry.js`) likewise ignores rotation by contract, the CSS-side twin of
+`toPixelBox`'s pin.
+
+Because `EngineSurface.tsx` renders *inside* that same transform container, the
+legacy `<video>` path and the WebCodecs engine canvas share one origin for this
+gap. **Both fail identically**, so this is not an engine-only issue, and fixing
+it means teaching `videoTransformContainerStyle` to emit a `rotate()` term —
+**one function** — rather than touching the engine compositor.
+
+**How the main clip acquires `rotation` at all.** The on-canvas rotate handle
+(`useDragOverlay.ts:54/139`) drives `OverlayItemsLayer`, which never renders the
+main clip — so the handle cannot reach it. Two routes remain: paste-attributes
+(`clipboard-ops.ts:287` forwards `rotation` when the source carries it, and the
+source may be a rotated overlay-track item), and direct project-JSON authoring
+by an agent — the ordinary path in an agent-native tool. So this is reachable,
+not theoretical.
+
+**Severity: low today, and here is the honest reason.** 0 of 229 items across
+every real project carry a `rotation` key at all, so nothing in the workspace is
+affected right now. That is exactly why SP9a-2 shipped the render half first:
+closing the silent-drop trap before anyone falls into it.
+
+**Owner: backlog.** Precedent for registering rather than fixing a
+preview/render split mid-flight: `opaque-in-preview` (entry 2), which carried a
+partially-unified state across SP4 with the legacy path left open.

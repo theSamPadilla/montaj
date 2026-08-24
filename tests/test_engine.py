@@ -1,5 +1,6 @@
 """Unit tests for engine/resolve_workflow.py and engine/validate_step.py."""
 import json
+import math
 import sys
 from pathlib import Path
 
@@ -520,6 +521,49 @@ def test_validate_project_rejects_non_number_speed(tmp_path, speed):
     data = {**VALID_PROJECT, "tracks": [[clip]]}
     path = _write_project(tmp_path, "project.json", data)
     if speed is None:
+        assert v.validate_project(path)["valid"] is True
+    else:
+        with pytest.raises(SystemExit):
+            v.validate_project(path)
+
+
+# ── per-item rotation ────────────────────────────────────────────────────────
+
+def test_validate_project_accepts_absent_rotation(tmp_path):
+    # No rotation field ⇒ default 0 ⇒ valid (VALID_PRIMARY_CLIP has none).
+    path = _write_project(tmp_path, "project.json", {**VALID_PROJECT, "tracks": [[{**VALID_PRIMARY_CLIP}]]})
+    assert v.validate_project(path)["valid"] is True
+
+
+@pytest.mark.parametrize("rotation", [0, 90, 360, 720, -45, 0.5])
+def test_validate_project_accepts_finite_rotation(tmp_path, rotation):
+    # Range is intentionally unchecked here — a helper elsewhere normalizes
+    # any finite value into [0,360) — so out-of-range values like 720 or -45
+    # are still valid at this layer.
+    data = {**VALID_PROJECT, "tracks": [[{**VALID_PRIMARY_CLIP, "rotation": rotation}]]}
+    path = _write_project(tmp_path, "project.json", data)
+    assert v.validate_project(path)["valid"] is True
+
+
+@pytest.mark.parametrize("rotation", [math.nan, math.inf, -math.inf])
+def test_validate_project_rejects_non_finite_rotation(tmp_path, rotation):
+    # json.load parses NaN/Infinity into float instances, so isinstance alone
+    # would accept them; math.isfinite() is what catches these.
+    data = {**VALID_PROJECT, "tracks": [[{**VALID_PRIMARY_CLIP, "rotation": rotation}]]}
+    path = _write_project(tmp_path, "project.json", data)
+    with pytest.raises(SystemExit):
+        v.validate_project(path)
+
+
+@pytest.mark.parametrize("rotation", ["90", [90], True, None])
+def test_validate_project_rejects_non_number_rotation(tmp_path, rotation):
+    # A JSON null round-trips to None, which validates as "absent" (valid); a
+    # string, list, or bool is a type error. Split so the None case asserts
+    # acceptance.
+    clip = {**VALID_PRIMARY_CLIP, "rotation": rotation}
+    data = {**VALID_PROJECT, "tracks": [[clip]]}
+    path = _write_project(tmp_path, "project.json", data)
+    if rotation is None:
         assert v.validate_project(path)["valid"] is True
     else:
         with pytest.raises(SystemExit):

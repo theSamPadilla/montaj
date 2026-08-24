@@ -316,6 +316,31 @@ test('collectAllItems: an unrecognized field on an image item passes through unt
   assert.equal(imageItems[0].zzTestField, 'unicorn')
 })
 
+// rotation (SP9a-2 T3): the passthrough spread is what forwards rotation to
+// encode-segment.js — it's on neither the override list nor
+// DROPPED_PREVIEW_FIELDS. These are the confirming tests: they must fail if
+// someone later adds 'rotation' to DROPPED_PREVIEW_FIELDS or reverts the
+// spread back to an explicit whitelist.
+test('collectAllItems: rotation on a video item passes through untouched', () => {
+  const project = {
+    tracks: [
+      [{ id: 'v', type: 'video', src: '/orig.mp4', start: 0, end: 4, inPoint: 0, outPoint: 4, rotation: 90 }],
+    ],
+  }
+  const { videoItems } = collectAllItems(project)
+  assert.equal(videoItems[0].rotation, 90)
+})
+
+test('collectAllItems: rotation on an image item passes through untouched', () => {
+  const project = {
+    tracks: [
+      [{ id: 'img', type: 'image', src: '/bg.png', start: 0, end: 4, rotation: 270 }],
+    ],
+  }
+  const { imageItems } = collectAllItems(project)
+  assert.equal(imageItems[0].rotation, 270)
+})
+
 test('collectAllItems: proxySrc and nobg_preview_src are dropped, not forwarded (DROPPED_PREVIEW_FIELDS)', () => {
   const project = {
     tracks: [

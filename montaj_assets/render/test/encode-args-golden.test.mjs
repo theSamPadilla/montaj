@@ -237,6 +237,29 @@ describe('encode-args golden: post-swap render pipeline == pre-T7 legacy output'
     const filters = golden.segments.flatMap((s) => s.filterParts).join('\n')
     assert.doesNotMatch(filters, /crop=/, 'the missing-dims silent drop stopped being silent — update the registry')
   })
+
+  test('no frozen golden contains a rotate= step (SP9a-2)', async () => {
+    // The goldens are the render-output-unchanged guarantee: they prove
+    // rotation support changed NOTHING for pre-existing (unrotated) content.
+    // That guarantee passes VACUOUSLY the moment a rotation fixture ever
+    // creeps into ENCODE_ARGS_FIXTURES — none of today's corpus fixtures
+    // carry a `rotation` field, so none of these frozen goldens should ever
+    // contain a `rotate=` filter step. This assertion is what makes the gate
+    // honest rather than trusting that omission stays accidental.
+    //
+    // Do NOT "fix" a failure here by regenerating a golden, and do NOT add a
+    // rotation fixture to ENCODE_ARGS_FIXTURES to give this something to
+    // pass against — no legitimate golden can exist for a feature that did
+    // not exist when these were frozen. Pixel-level rotation-direction
+    // coverage lives in rotation.integration.test.mjs, which drives ffmpeg
+    // directly and deliberately stays out of this frozen corpus.
+    for (const fixtureName of ENCODE_ARGS_FIXTURES) {
+      const golden = readGolden(fixtureName)
+      const filters = golden.segments.flatMap((s) => s.filterParts).join('\n')
+      assert.doesNotMatch(filters, /rotate=/,
+        `${fixtureName}: frozen golden unexpectedly contains a rotate= step`)
+    }
+  })
 })
 
 // ---------------------------------------------------------------------------

@@ -4,7 +4,7 @@
  *
  * Each call composites:
  *   - N visual items: layered by trackIdx (lower = background). Each item has
- *     scale, offsetX, offsetY, opacity. Images loop, videos seek+trim.
+ *     scale, offsetX, offsetY, opacity, rotation. Images loop, videos seek+trim.
  *   - 0-N overlays: Puppeteer-rendered MKV/WebM with alpha, scaled from the
  *     1080-design canvas to the output resolution and positioned via offsetX,
  *     offsetY, scale. Captions are always last (topmost z-layer) — ensured by
@@ -25,8 +25,8 @@
  * Per-item color conversion: when an item's source color space differs from the
  * project's color space, a conversion filter is injected between the per-item
  * scale and pad steps (see the step-order note in buildVideoItemFilterParts —
- * geometry first so the conversion runs on canvas-sized frames, pad last so its
- * bars are synthesized in the destination color space). The source's
+ * geometry first so the conversion runs on canvas-sized frames, pad after it so
+ * its bars are synthesized in the destination color space). The source's
  * color_transfer is read from item.colorTransfer (stamped by render.js during
  * the videoItems collection pass) — no per-segment ffprobe.
  */
@@ -36,7 +36,7 @@ import { dirname } from 'path'
 import { FFMPEG, FFPROBE } from './ffmpeg-bin.js'
 import { specFor, detectFromTransfer, DEFAULT_COLOR_SPACE } from './color-space.js'
 import { lutPath } from './look.js'
-import { geometryFor, toPixelBox } from '@bycrux/timeline-core'
+import { geometryFor, toRotatedPixelBox } from '@bycrux/timeline-core'
 
 const FFMPEG_TIMEOUT_MS = 600_000
 const IMAGE_EXTENSIONS = /\.(jpe?g|png|gif|webp|bmp|tiff?)$/i
@@ -223,6 +223,61 @@ export function buildColorConversionFilter(srcKey, dstKey, hasZscaleFlag, opts =
 // ---------------------------------------------------------------------------
 
 /**
+ * The ONE place ffmpeg rotation filter SYNTAX lives. `@bycrux/timeline-core`'s
+ * `toRotatedPixelBox` owns the NUMBERS (normalized degrees, the grown
+ * axis-aligned bounding box, the centre-preserving top-left); this owns the
+ * string that spends them. No `rotate=` appears in timeline-core, and no
+ * geometry is re-derived here — the boundary runs exactly along that seam.
+ *
+ * Returns a chain fragment with a LEADING comma, or `''` when the box is not
+ * rotated. The leading comma (rather than the trailing one `cropStep` /
+ * `conversionStep` use below) is what lets all three call sites share one
+ * helper: on the video path the rotate step lands AFTER `pad`, which is the
+ * last filter before the output label, so there is nothing for a trailing
+ * comma to precede.
+ *
+ * That shape is also what makes the no-rotation guarantee STRUCTURAL rather
+ * than a promise. Every call site interpolates this into an otherwise
+ * unmodified template literal, and concatenating `''` cannot alter a string,
+ * so an item with rotation absent / 0 / 360 emits filters byte-identical to
+ * the pre-rotation pipeline. Two frozen encode-args goldens depend on that.
+ *
+ * `format=yuva420p` is emitted INSIDE this helper — on the video path only,
+ * and UNCONDITIONALLY when rotating — so it structurally cannot leak onto an
+ * unrotated item. It is a defensive pin, not a load-bearing one: in the
+ * production chain (`scale(decrease)` → `pad` → this step → `rotate`), `pad`
+ * already leaves the stream alpha-capable, so the `c=black@0.0` corner fill
+ * shows the canvas through either way (measured corner Y=150 against ffmpeg
+ * 8.1.2, pinned or not). The pin still earns its place: explicitly stating
+ * the format beats trusting filter-negotiation to keep doing the right
+ * thing, and it is what saves a bare `yuv420p → rotate` chain with no
+ * preceding `pad` from going opaque (measured Y=0 unpinned vs. Y=150 pinned
+ * in that isolated shape). Same explicit-pin discipline as the
+ * `format=rgb48le` before `lut3d` in buildVividLutChain, and for the same
+ * class of reason: ffmpeg will pick a format that silently discards what the
+ * next filter needs. The image and overlay paths need no pin — their chains
+ * already carry alpha (every image fit chain runs through `format=rgba`;
+ * the overlay input is pinned to `yuva420p`/`rgba` at its own `format=`
+ * step).
+ *
+ * The angle is emitted as a DEGREE expression (`45*PI/180`), not a
+ * pre-computed float radian. ffmpeg evaluates it to the identical double, and
+ * the authored degrees stay legible in filter strings, render logs and
+ * goldens.
+ *
+ * @param {{outW: number, outH: number, rotationDeg: number, isIdentity: boolean}} box
+ *   — a `toRotatedPixelBox` result. Note that 180° is NOT identity: the box
+ *   does not grow, but the pixels still have to turn.
+ * @param {boolean} [alphaPin=false] — true on the video path only.
+ * @returns {string} `''`, or `,[format=yuva420p,]rotate=…`
+ */
+function rotateFilterStep(box, alphaPin = false) {
+  if (box.isIdentity) return ''
+  const pin = alphaPin ? 'format=yuva420p,' : ''
+  return `,${pin}rotate=${box.rotationDeg}*PI/180:ow=${box.outW}:oh=${box.outH}:c=black@0.0`
+}
+
+/**
  * Build filter-graph parts for one image item.
  *
  * @param {object} item       — the image item from segment.items
@@ -241,8 +296,14 @@ export function buildImageItemFilterParts(item, vw, vh, idx, videoLabel, duratio
   // src/geometry.js. This file used to carry its own copy of the formula; three
   // copies lived here and a fourth in the editor, which is what KNOWN-DIVERGENCES
   // D9 tracked. Equivalence is pinned by timeline-core's switchover sweep.
-  const { x: xPx, y: yPx, width: scaledW, height: scaledH } =
-    toPixelBox(geometryFor(item, 'image'), vw, vh)
+  // toRotatedPixelBox DELEGATES to toPixelBox for scaledW/scaledH, so those are
+  // the same integers this line has always produced; it adds the bounding box a
+  // rotated frame grows into (outW/outH) and the centre-preserving top-left to
+  // composite that box at (box.x/box.y). At rotation absent/0/360 the grown box
+  // IS the unrotated box, so box.x/box.y are exactly toPixelBox's x/y and every
+  // string below is unchanged.
+  const box = toRotatedPixelBox(geometryFor(item, 'image'), vw, vh)
+  const { scaledW, scaledH } = box
 
   const inputArgs = ['-loop', '1', '-t', String(duration), '-i', item.src]
   const filterParts = []
@@ -263,13 +324,21 @@ export function buildImageItemFilterParts(item, vw, vh, idx, videoLabel, duratio
     fitChain = `scale=${scaledW}:${scaledH}:force_original_aspect_ratio=increase,`
              + `crop=${scaledW}:${scaledH},format=rgba`
   }
-  filterParts.push(`[${idx}:v]${fitChain},setpts=PTS-STARTPTS[img${idx}]`)
+  // Rotate AFTER the fit chain, BEFORE setpts: the fit chain is what establishes
+  // the scaledW×scaledH box rotation is defined against, and setpts is timing,
+  // not geometry, so it neither cares nor should pay for the grown frame. No
+  // alpha pin — all three fit chains above run through `format=rgba`, so the
+  // `c=black@0.0` corners are already representable.
+  filterParts.push(`[${idx}:v]${fitChain}${rotateFilterStep(box)},setpts=PTS-STARTPTS[img${idx}]`)
   let src = `[img${idx}]`
   if (Math.abs((item.opacity ?? 1) - 1) > 0.001) {
     filterParts.push(`${src}colorchannelmixer=aa=${item.opacity}[imgop${idx}]`)
     src = `[imgop${idx}]`
   }
-  filterParts.push(`${videoLabel}${src}overlay=x=${xPx}:y=${yPx}:shortest=0[iv${idx}]`)
+  // box.x/box.y, not the unrotated x/y: a rotated frame arrives here at
+  // outW×outH, so compositing it at the unrotated top-left would translate it
+  // by half the growth instead of turning it in place.
+  filterParts.push(`${videoLabel}${src}overlay=x=${box.x}:y=${box.y}:shortest=0[iv${idx}]`)
   const newVideoLabel = `[iv${idx}]`
 
   return { inputArgs, filterParts, newVideoLabel }
@@ -301,8 +370,10 @@ export function buildVideoItemFilterParts(item, vw, vh, idx, videoLabel, opts) {
   // src/geometry.js. This file used to carry its own copy of the formula; three
   // copies lived here and a fourth in the editor, which is what KNOWN-DIVERGENCES
   // D9 tracked. Equivalence is pinned by timeline-core's switchover sweep.
-  const { x: xPx, y: yPx, width: scaledW, height: scaledH } =
-    toPixelBox(geometryFor(item, 'video'), vw, vh)
+  // See the note on the image path: toRotatedPixelBox delegates for
+  // scaledW/scaledH and adds the grown box plus its centre-preserving top-left.
+  const box = toRotatedPixelBox(geometryFor(item, 'video'), vw, vh)
+  const { scaledW, scaledH } = box
 
   const inPt = item.inPoint ?? 0
   const seekOffset = Math.max(0, segStart - item.start)
@@ -348,7 +419,8 @@ export function buildVideoItemFilterParts(item, vw, vh, idx, videoLabel, opts) {
     cropStep = `crop=${cw}:${ch}:${cx}:${cy},`
   }
 
-  // STEP ORDER IS LOAD-BEARING: crop → scale → convert → pad (SP6b T6).
+  // STEP ORDER IS LOAD-BEARING: crop → scale → convert → pad → rotate
+  // (SP6b T6; rotate added by SP9a-2).
   //
   // Geometry first. The conversion used to run at the head of this chain, which
   // meant tone-mapping every source pixel in float before throwing most of them
@@ -372,6 +444,23 @@ export function buildVideoItemFilterParts(item, vw, vh, idx, videoLabel, opts) {
   // scale, on the decoder's always-even frame. Rounding is at most one pixel
   // and only on items that are being converted, which keeps every SDR render
   // (and the frozen encode-args goldens) byte-identical.
+  //
+  // rotate goes LAST, after pad, for two independent reasons.
+  //
+  // Geometrically it has to. Rotation is defined against the scaledW×scaledH
+  // box the item occupies on the canvas, and it is `pad` that produces that
+  // box — `scale=…:force_original_aspect_ratio=decrease` fits INSIDE it and
+  // generally lands smaller. Rotating before pad would turn the decrease-fit
+  // frame and then letterbox the result, i.e. rotate the wrong rectangle and
+  // put the bars on the wrong axis.
+  //
+  // And it is the cheap place. rotate is the one geometry step that GROWS the
+  // frame — at scale 1, 45° the bounding box is ~2.2× the pixels — so rotating
+  // ahead of the conversion would hand every one of those extra pixels to the
+  // LUT chain (rgb48le + lut3d + two zscales), which is by far the most
+  // expensive stretch in this graph. Same instinct as the crop → scale →
+  // convert ordering above: never make the color chain pay for pixels the
+  // geometry chain could have settled first.
   const divisibleBy = conversionStep ? ':force_divisible_by=2' : ''
   // setpts time-compresses the sped-up source back to timeline-real-time: at
   // speed S the S× extra source seconds consumed above play out over 1/S the
@@ -381,14 +470,15 @@ export function buildVideoItemFilterParts(item, vw, vh, idx, videoLabel, opts) {
     `[${idx}:v]${ptsStep},${cropStep}` +
     `scale=${scaledW}:${scaledH}:force_original_aspect_ratio=decrease${divisibleBy},` +
     `${conversionStep}` +
-    `pad=${scaledW}:${scaledH}:(ow-iw)/2:(oh-ih)/2[vid${idx}]`
+    `pad=${scaledW}:${scaledH}:(ow-iw)/2:(oh-ih)/2${rotateFilterStep(box, true)}[vid${idx}]`
   )
   let src = `[vid${idx}]`
   if (Math.abs((item.opacity ?? 1) - 1) > 0.001) {
     filterParts.push(`${src}colorchannelmixer=aa=${item.opacity}[vidop${idx}]`)
     src = `[vidop${idx}]`
   }
-  filterParts.push(`${videoLabel}${src}overlay=x=${xPx}:y=${yPx}${ovFmt}:shortest=0[iv${idx}]`)
+  // box.x/box.y, not the unrotated x/y — see the image path.
+  filterParts.push(`${videoLabel}${src}overlay=x=${box.x}:y=${box.y}${ovFmt}:shortest=0[iv${idx}]`)
   const newVideoLabel = `[iv${idx}]`
 
   return { inputArgs, filterParts, newVideoLabel }
@@ -453,8 +543,8 @@ export function buildOverlayFilterParts(ov, vw, vh, ovIdx, videoLabel, segStart,
   // shrinking it. Even-rounded — yuv420/yuva420 encoders reject odd dimensions.
   // Mirrors the image/video item path (buildImage/VideoItemFilterParts), which
   // already sizes to round(vw * scale / 2) * 2.
-  const { x: ovXPx, y: ovYPx, width: targetW, height: targetH } =
-    toPixelBox(geometryFor(ov, 'overlay'), vw, vh)
+  const ovBox = toRotatedPixelBox(geometryFor(ov, 'overlay'), vw, vh)
+  const { scaledW: targetW, scaledH: targetH } = ovBox
 
   // Force yuva420p (or caller-specified format) — VP9 decoders may silently drop
   // the alpha plane on the production path; PNG-based callers pass 'rgba' to
@@ -466,11 +556,19 @@ export function buildOverlayFilterParts(ov, vw, vh, ovIdx, videoLabel, segStart,
   // Scale design-canvas → output-canvas (× user scale). When the output already
   // matches the design canvas at scale 1 this is an identity scale (1080→1080),
   // which ffmpeg fast-paths.
-  filterParts.push(`${ovSrc}scale=${targetW}:${targetH}[ovsc${ovIdx}]`)
+  // Rotate AFTER that scale — the design→output scale is what establishes the
+  // targetW×targetH box rotation turns within. No alpha pin needed here: the
+  // `format=${inputFormatFlag}` step above already put this chain in yuva420p
+  // (or rgba for the PNG callers), so `c=black@0.0` is representable.
+  filterParts.push(`${ovSrc}scale=${targetW}:${targetH}${rotateFilterStep(ovBox)}[ovsc${ovIdx}]`)
   ovSrc = `[ovsc${ovIdx}]`
 
+  // ovBox.x/ovBox.y is the top-left of the GROWN box; identical to the
+  // unrotated top-left whenever the overlay is not rotated. `overlay` accepts
+  // negative coordinates, and a rotated overlay near an edge legitimately
+  // produces them — do not clamp.
   filterParts.push(
-    `${videoLabel}${ovSrc}overlay=x=${ovXPx}:y=${ovYPx}:format=${compositeFormatFlag}:shortest=0[vov${ovIdx}]`
+    `${videoLabel}${ovSrc}overlay=x=${ovBox.x}:y=${ovBox.y}:format=${compositeFormatFlag}:shortest=0[vov${ovIdx}]`
   )
   const newVideoLabel = `[vov${ovIdx}]`
 

@@ -18,7 +18,7 @@
 // encode-segment.js, so the numbers are pinned rather than re-derived.
 import { describe, test } from 'node:test'
 import assert from 'node:assert/strict'
-import { geometryFor, toCssBoxPct, toPixelBox, isFullFrameCrop, designCanvas } from '../index.js'
+import { geometryFor, toCssBoxPct, toPixelBox, toRotatedPixelBox, isFullFrameCrop, designCanvas } from '../index.js'
 
 /** Float compare. */
 function closeTo(actual, expected, message) {
@@ -385,6 +385,346 @@ describe(
     })
   },
 )
+
+// ---------------------------------------------------------------------------
+// 4b. toRotatedPixelBox — the rotation-aware SIBLING of toPixelBox (SP9a-2)
+//
+// The block above stays as-is: `toPixelBox` remains rotation-blind, and SP9a-1's
+// four switched-over call sites depend on that. This block covers the new
+// sibling, which DELEGATES to `toPixelBox` for the unrotated numbers and adds
+// the grown bounding box (`outW`/`outH`) plus the adjusted top-left (`x`/`y`).
+//
+// The formula is pinned, not re-derived: it was verified empirically against
+// ffmpeg 8.1.2 and the 360x640 @ 90-degree case below carries those exact
+// numbers.
+// ---------------------------------------------------------------------------
+
+/** Every combination below is swept by the invariant tests at the end of this block. */
+const ROT_SWEEP = (() => {
+  const out = []
+  for (const [vw, vh] of [
+    [1080, 1920],
+    [1920, 1080],
+    [360, 640],
+    [1000, 1000],
+    [101, 151],
+  ]) {
+    for (const s of [0.3, 0.5, 1, 1.5, 0.751]) {
+      for (const [ox, oy] of [
+        [0, 0],
+        [10, -5],
+        [-33, 25],
+      ]) {
+        for (const rotation of [0, 1, 15, 30, 45, 60, 89, 90, 91, 120, 180, 200, 270, 359, 360, -45, -90, -360, 720, 1234.5]) {
+          out.push({ vw, vh, s, ox, oy, rotation })
+        }
+      }
+    }
+  }
+  return out
+})()
+
+describe('toRotatedPixelBox: identity — rotation absent / 0 / 360 returns a FULL box, never null', () => {
+  // 360x640 @ scale 0.5 -> the unrotated box is 180x320 at (90, 160).
+  const UNROTATED = { scaledW: 180, scaledH: 320, xPx: 90, yPx: 160 }
+
+  for (const [label, item] of [
+    ['absent rotation', { scale: 0.5 }],
+    ['rotation: 0', { scale: 0.5, rotation: 0 }],
+    ['rotation: 360', { scale: 0.5, rotation: 360 }],
+    ['rotation: -360 (a negative that normalizes to 0)', { scale: 0.5, rotation: -360 }],
+    ['rotation: 720', { scale: 0.5, rotation: 720 }],
+  ]) {
+    test(`${label} -> isIdentity, grown box === unrotated box`, () => {
+      const box = toRotatedPixelBox(geometryFor(item, 'overlay'), 360, 640)
+      assert.equal(box.isIdentity, true)
+      assert.equal(box.rotationDeg, 0)
+      assert.equal(box.outW, box.scaledW, 'the grown box IS the unrotated box')
+      assert.equal(box.outH, box.scaledH)
+      assert.equal(box.x, box.xPx, 'rotation 0 => x === toPixelBox().x, exactly')
+      assert.equal(box.y, box.yPx)
+      assert.deepEqual({ scaledW: box.scaledW, scaledH: box.scaledH, xPx: box.xPx, yPx: box.yPx }, UNROTATED)
+    })
+  }
+
+  test('the identity case returns a full box, NOT null/undefined — call sites read .x/.y unconditionally', () => {
+    const box = toRotatedPixelBox(geometryFor({ scale: 1 }, 'overlay'), 1080, 1920)
+    assert.equal(typeof box, 'object')
+    assert.notEqual(box, null)
+    for (const k of ['scaledW', 'scaledH', 'xPx', 'yPx', 'outW', 'outH', 'x', 'y', 'rotationDeg']) {
+      assert.equal(typeof box[k], 'number', `${k} is a number on the identity box too`)
+    }
+    assert.equal(typeof box.isIdentity, 'boolean')
+  })
+})
+
+describe('toRotatedPixelBox: the empirically verified case (ffmpeg 8.1.2)', () => {
+  test('360x640 canvas, scale 0.5, rotation 90 -> outW=320, outH=180, x=20, y=230', () => {
+    const box = toRotatedPixelBox(geometryFor({ scale: 0.5, rotation: 90 }, 'overlay'), 360, 640)
+    // Unrotated: a 180x320 portrait box at (90, 160).
+    assert.equal(box.scaledW, 180)
+    assert.equal(box.scaledH, 320)
+    assert.equal(box.xPx, 90)
+    assert.equal(box.yPx, 160)
+    // Rotated a quarter turn: the box lies down, and the top-left moves so the
+    // centre stays put.
+    assert.equal(box.outW, 320)
+    assert.equal(box.outH, 180)
+    assert.equal(box.x, 20)
+    assert.equal(box.y, 230)
+    assert.equal(box.rotationDeg, 90)
+    assert.equal(box.isIdentity, false)
+  })
+})
+
+describe(
+  'toRotatedPixelBox: the grown box uses round, NEVER ceil — Math.cos(PI/2) is 6.1e-17, not 0, ' +
+    'so the raw bound carries float dust that `ceil` would turn into a real 2px of padding',
+  () => {
+    /** The raw (unrounded) bounds, inlined so the dust is visible in the test itself. */
+    function rawBounds(scaledW, scaledH, deg) {
+      const a = (deg * Math.PI) / 180
+      return {
+        rawW: Math.abs(scaledW * Math.cos(a)) + Math.abs(scaledH * Math.sin(a)),
+        rawH: Math.abs(scaledW * Math.sin(a)) + Math.abs(scaledH * Math.cos(a)),
+      }
+    }
+
+    test('portrait 180x320 @ 90deg: the dust lands on the HEIGHT (180.00000000000003) — round gives 180, ceil would give 182', () => {
+      const { rawW, rawH } = rawBounds(180, 320, 90)
+      // Documented reality, not a guess: at 320 the float dust (1.1e-14) falls
+      // below half an ULP and vanishes; at 180 it survives.
+      assert.equal(rawW, 320, 'the width side is exactly 320 in float64')
+      assert.ok(rawH > 180, `the height side carries dust: ${rawH}`)
+      assert.equal(Math.ceil(rawH / 2) * 2, 182, 'ceil would inflate the box by a real 2px')
+      assert.equal(Math.round(rawH / 2) * 2, 180, 'round lands on the exact answer')
+
+      const box = toRotatedPixelBox(geometryFor({ scale: 0.5, rotation: 90 }, 'overlay'), 360, 640)
+      assert.equal(box.outH, 180, 'the helper must use round')
+      assert.equal(box.outW, 320)
+    })
+
+    test('landscape 320x180 @ 90deg: the same dust lands on the WIDTH instead — still 180, not 182', () => {
+      const { rawW } = rawBounds(320, 180, 90)
+      assert.ok(rawW > 180, `the width side carries dust: ${rawW}`)
+      assert.equal(Math.ceil(rawW / 2) * 2, 182)
+
+      const box = toRotatedPixelBox(geometryFor({ scale: 0.5, rotation: 90 }, 'overlay'), 640, 360)
+      assert.equal(box.scaledW, 320)
+      assert.equal(box.scaledH, 180)
+      assert.equal(box.outW, 180, 'the helper must use round on this side too')
+      assert.equal(box.outH, 320)
+    })
+
+    test('90deg is exact across the sweep: no dimension is ever 2px larger than the exact quarter-turn swap', () => {
+      for (const { vw, vh, s, ox, oy } of ROT_SWEEP.filter((c) => c.rotation === 90)) {
+        const g = geometryFor({ scale: s, offsetX: ox, offsetY: oy, rotation: 90 }, 'overlay')
+        const box = toRotatedPixelBox(g, vw, vh)
+        const label = `${vw}x${vh} s=${s} @90`
+        assert.equal(box.outW, box.scaledH, `${label}: a quarter turn swaps the dimensions exactly`)
+        assert.equal(box.outH, box.scaledW, `${label}: a quarter turn swaps the dimensions exactly`)
+      }
+    })
+  },
+)
+
+describe('toRotatedPixelBox: 45deg growth', () => {
+  test('a 1000x1000 full-frame box grows to its 1414px diagonal and stays centred', () => {
+    const box = toRotatedPixelBox(geometryFor({ scale: 1, rotation: 45 }, 'overlay'), 1000, 1000)
+    assert.equal(box.scaledW, 1000)
+    assert.equal(box.scaledH, 1000)
+    assert.equal(box.xPx, 0)
+    assert.equal(box.yPx, 0)
+    // 1000 * sqrt(2) = 1414.21... -> even-rounded to 1414.
+    assert.equal(box.outW, 1414)
+    assert.equal(box.outH, 1414)
+    // The grown box hangs off every edge by (1414 - 1000) / 2 = 207.
+    assert.equal(box.x, -207, 'a negative x is correct: the grown box extends past the canvas edge')
+    assert.equal(box.y, -207)
+    // Centre unmoved.
+    assert.equal(box.x + box.outW / 2, box.xPx + box.scaledW / 2)
+    assert.equal(box.y + box.outH / 2, box.yPx + box.scaledH / 2)
+  })
+
+  test('a 540x960 portrait box grows in BOTH dimensions at 45deg', () => {
+    const box = toRotatedPixelBox(geometryFor({ scale: 0.5, rotation: 45 }, 'overlay'), 1080, 1920)
+    assert.equal(box.scaledW, 540)
+    assert.equal(box.scaledH, 960)
+    assert.ok(box.outW > box.scaledW, `outW ${box.outW} > scaledW ${box.scaledW}`)
+    assert.ok(box.outH > box.scaledH, `outH ${box.outH} > scaledH ${box.scaledH}`)
+    assert.equal(box.outW, 1060)
+    assert.equal(box.outH, 1060)
+    assert.equal(box.x, 10)
+    assert.equal(box.y, 430)
+  })
+
+  test('180deg does NOT grow the box, but is still not the identity (a rotate step is required)', () => {
+    const box = toRotatedPixelBox(geometryFor({ scale: 0.5, rotation: 180 }, 'overlay'), 360, 640)
+    assert.equal(box.outW, box.scaledW, 'a half turn leaves the bounding box alone')
+    assert.equal(box.outH, box.scaledH)
+    assert.equal(box.x, box.xPx)
+    assert.equal(box.y, box.yPx)
+    assert.equal(box.rotationDeg, 180)
+    assert.equal(box.isIdentity, false, 'isIdentity is about the ANGLE, not about whether the box grew')
+  })
+})
+
+describe('toRotatedPixelBox: rotation normalization into [0, 360)', () => {
+  test('a non-finite rotation (NaN / Infinity / -Infinity) degrades to identity, never to a NaN box', () => {
+    for (const rotation of [NaN, Infinity, -Infinity]) {
+      const box = toRotatedPixelBox(geometryFor({ scale: 0.5, rotation }, 'overlay'), 360, 640)
+      assert.equal(box.isIdentity, true, `rotation ${rotation} -> identity`)
+      assert.equal(box.rotationDeg, 0)
+      assert.equal(box.outW, 180)
+      assert.equal(box.outH, 320)
+      assert.equal(box.x, 90)
+      assert.equal(box.y, 160)
+      for (const k of ['outW', 'outH', 'x', 'y', 'rotationDeg']) {
+        assert.ok(Number.isFinite(box[k]), `${k} stays finite for rotation ${rotation}`)
+      }
+    }
+  })
+
+  test('a negative rotation normalizes by turns: -90 is 270, NOT identity and NOT 90', () => {
+    const neg = toRotatedPixelBox(geometryFor({ scale: 0.5, rotation: -90 }, 'overlay'), 360, 640)
+    const pos = toRotatedPixelBox(geometryFor({ scale: 0.5, rotation: 270 }, 'overlay'), 360, 640)
+    assert.equal(neg.rotationDeg, 270)
+    assert.equal(neg.isIdentity, false)
+    assert.deepEqual(neg, pos, '-90 and 270 are the same box')
+  })
+
+  test('-450 normalizes to 270 as well (more than a full turn negative)', () => {
+    assert.equal(toRotatedPixelBox(geometryFor({ scale: 0.5, rotation: -450 }, 'overlay'), 360, 640).rotationDeg, 270)
+  })
+
+  test('rotationDeg is always in [0, 360) across the sweep', () => {
+    for (const { vw, vh, s, ox, oy, rotation } of ROT_SWEEP) {
+      const box = toRotatedPixelBox(geometryFor({ scale: s, offsetX: ox, offsetY: oy, rotation }, 'overlay'), vw, vh)
+      assert.ok(box.rotationDeg >= 0 && box.rotationDeg < 360, `rotation ${rotation} -> ${box.rotationDeg}`)
+      assert.equal(box.isIdentity, box.rotationDeg === 0, 'isIdentity tracks the normalized angle exactly')
+    }
+  })
+})
+
+describe('toRotatedPixelBox: DELEGATES to toPixelBox — it never re-derives the unrotated math', () => {
+  test('scaledW/scaledH/xPx/yPx are byte-identical to toPixelBox across the whole sweep', () => {
+    for (const { vw, vh, s, ox, oy, rotation } of ROT_SWEEP) {
+      const g = geometryFor({ scale: s, offsetX: ox, offsetY: oy, rotation }, 'overlay')
+      const plain = toPixelBox(g, vw, vh)
+      const rot = toRotatedPixelBox(g, vw, vh)
+      const label = `${vw}x${vh} s=${s} off=(${ox},${oy}) r=${rotation}`
+      assert.equal(rot.scaledW, plain.width, `${label}: scaledW`)
+      assert.equal(rot.scaledH, plain.height, `${label}: scaledH`)
+      assert.equal(rot.xPx, plain.x, `${label}: xPx`)
+      assert.equal(rot.yPx, plain.y, `${label}: yPx`)
+    }
+  })
+
+  test('and it agrees with the INLINED legacy pixel formula too, so the delegation did not drift', () => {
+    for (const { vw, vh, s, ox, oy, rotation } of ROT_SWEEP) {
+      const rot = toRotatedPixelBox(geometryFor({ scale: s, offsetX: ox, offsetY: oy, rotation }, 'overlay'), vw, vh)
+      const legacy = legacyPixelBox(s, ox, oy, vw, vh)
+      assert.deepEqual({ scaledW: rot.scaledW, scaledH: rot.scaledH, xPx: rot.xPx, yPx: rot.yPx }, legacy)
+    }
+  })
+})
+
+describe('toRotatedPixelBox: the invariants the design rests on', () => {
+  test('CENTRE PRESERVATION: x + outW/2 === xPx + scaledW/2 (exactly, both axes, whole sweep)', () => {
+    for (const { vw, vh, s, ox, oy, rotation } of ROT_SWEEP) {
+      const box = toRotatedPixelBox(geometryFor({ scale: s, offsetX: ox, offsetY: oy, rotation }, 'overlay'), vw, vh)
+      const label = `${vw}x${vh} s=${s} off=(${ox},${oy}) r=${rotation}`
+      assert.equal(box.x + box.outW / 2, box.xPx + box.scaledW / 2, `${label}: horizontal centre moved`)
+      assert.equal(box.y + box.outH / 2, box.yPx + box.scaledH / 2, `${label}: vertical centre moved`)
+    }
+  })
+
+  test('INTEGRALITY: the grown box is EVEN, so (outW - scaledW)/2 is an exact integer and x/y are integers', () => {
+    for (const { vw, vh, s, ox, oy, rotation } of ROT_SWEEP) {
+      const box = toRotatedPixelBox(geometryFor({ scale: s, offsetX: ox, offsetY: oy, rotation }, 'overlay'), vw, vh)
+      const label = `${vw}x${vh} s=${s} off=(${ox},${oy}) r=${rotation}`
+      assert.equal(box.outW % 2, 0, `${label}: outW must be even (x264/yuv420 rejects odd dimensions)`)
+      assert.equal(box.outH % 2, 0, `${label}: outH must be even`)
+      // THIS is why the grown box is even-rounded at all: the halving below has
+      // to land on an integer, never a .5 pixel.
+      assert.ok(Number.isInteger((box.outW - box.scaledW) / 2), `${label}: (outW - scaledW)/2 must be integral`)
+      assert.ok(Number.isInteger((box.outH - box.scaledH) / 2), `${label}: (outH - scaledH)/2 must be integral`)
+      assert.ok(Number.isInteger(box.x), `${label}: x is an exact integer`)
+      assert.ok(Number.isInteger(box.y), `${label}: y is an exact integer`)
+    }
+  })
+
+  test('x/y are deliberately NOT even-rounded — an ODD placement is allowed and must survive', () => {
+    const box = toRotatedPixelBox(
+      geometryFor({ scale: 0.5, offsetX: 10, offsetY: -5, rotation: 30 }, 'overlay'),
+      1920,
+      1080,
+    )
+    assert.equal(box.x, 601)
+    assert.equal(box.x % 2, 1, 'an odd x is correct: offsets carry no even-pixel requirement')
+    assert.equal(box.y, 12)
+    assert.equal(box.outW % 2, 0, 'only the BOX is even-rounded')
+    assert.equal(box.outH % 2, 0)
+  })
+})
+
+describe('toRotatedPixelBox: boundary — timeline-core emits NUMBERS, never ffmpeg filter syntax', () => {
+  test('rotationDeg is a DEGREE number in [0,360), not radians and not a `rotate=` string', () => {
+    const box = toRotatedPixelBox(geometryFor({ scale: 1, rotation: 90 }, 'overlay'), 1080, 1920)
+    assert.equal(box.rotationDeg, 90, 'degrees — the consumer converts to radians')
+    assert.notEqual(box.rotationDeg, Math.PI / 2, 'not pre-converted to radians here')
+    assert.equal(typeof box.rotationDeg, 'number', "a bare number — formatting it is encode-segment.js's job")
+  })
+
+  test('every returned field is a number or a boolean — no strings anywhere in the box', () => {
+    const box = toRotatedPixelBox(geometryFor({ scale: 0.4, offsetX: 5, rotation: 33 }, 'overlay'), 1080, 1920)
+    for (const [k, v] of Object.entries(box)) {
+      assert.ok(typeof v === 'number' || typeof v === 'boolean', `${k} is ${typeof v}, expected number|boolean`)
+    }
+  })
+
+  test('the returned shape is exactly the documented ten fields', () => {
+    const box = toRotatedPixelBox(geometryFor({ scale: 0.4, rotation: 33 }, 'overlay'), 1080, 1920)
+    assert.deepEqual(Object.keys(box).sort(), [
+      'isIdentity',
+      'outH',
+      'outW',
+      'rotationDeg',
+      'scaledH',
+      'scaledW',
+      'x',
+      'xPx',
+      'y',
+      'yPx',
+    ])
+  })
+})
+
+describe('toRotatedPixelBox: purity (same package contract as everything else here)', () => {
+  test('it never mutates the geometry handed to it', () => {
+    const g = geometryFor({ scale: 0.5, offsetX: 10, offsetY: -5, rotation: -90 }, 'overlay')
+    const before = JSON.parse(JSON.stringify(g))
+    toRotatedPixelBox(g, 1080, 1920)
+    assert.deepEqual(JSON.parse(JSON.stringify(g)), before)
+    assert.equal(g.rotation, -90, 'the AUTHORED rotation stays un-normalized on the geometry')
+  })
+
+  test('two calls with the same input return deep-equal results', () => {
+    const g = geometryFor({ scale: 0.75, offsetX: -12, offsetY: 8, rotation: 137 }, 'overlay')
+    assert.deepEqual(toRotatedPixelBox(g, 1080, 1920), toRotatedPixelBox(g, 1080, 1920))
+  })
+
+  test('calling it does not disturb toPixelBox: the rotation-blind pin above still holds afterwards', () => {
+    const base = { scale: 0.5, offsetX: 10, offsetY: -5 }
+    const g90 = geometryFor({ ...base, rotation: 90 }, 'overlay')
+    toRotatedPixelBox(g90, 1920, 1080)
+    assert.deepEqual(
+      toPixelBox(g90, 1920, 1080),
+      toPixelBox(geometryFor({ ...base, rotation: 0 }, 'overlay'), 1920, 1080),
+      'toPixelBox stays rotation-blind',
+    )
+  })
+})
 
 // ---------------------------------------------------------------------------
 // 5. designCanvas

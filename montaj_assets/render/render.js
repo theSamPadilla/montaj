@@ -565,6 +565,14 @@ async function main(projectPath, { out, workers, clean, imageTone, exportMode = 
   for (let i = 0; i < segmentSpecs.length; i++) {
     const spec = segmentSpecs[i]
     log(`bundling segment ${i + 1}/${segmentSpecs.length} (${spec.id})...`)
+    // offsetX/offsetY/scale below are DEAD PARAMETERS: bundleComponent threads
+    // them into generateShim (bundle.js), which accepts them but never emits
+    // them into the shim it writes — overlay positioning happens entirely at
+    // ffmpeg composite time (buildOverlayFilterParts in encode-segment.js), not
+    // in the Puppeteer-rendered HTML. rotation is deliberately NOT forwarded
+    // here for the same reason: it would be cargo cult, not a fix. Don't "fix"
+    // this apparent omission without first checking whether generateShim still
+    // ignores these three.
     const { htmlPath, workDir } = await bundleComponent({
       componentPath:  spec.componentPath,
       props:          spec.props,
@@ -593,6 +601,13 @@ async function main(projectPath, { out, workers, clean, imageTone, exportMode = 
       rSeg.offsetX   = spec.offsetX   ?? 0
       rSeg.offsetY   = spec.offsetY   ?? 0
       rSeg.scale     = spec.scale     ?? 1
+      // rotation must be restated here too: these rSeg objects flow BY REFERENCE
+      // through segment-plan.js's `overlays` array (built via activeIn() over
+      // puppeteerSegs, preserving object identity) into buildOverlayFilterParts,
+      // which reads rotation off this very object via geometryFor(ov, 'overlay').
+      // Skipping this line is the worst partial failure: images/videos rotate
+      // correctly while overlays silently don't.
+      rSeg.rotation  = spec.rotation  ?? 0
       rSeg.opaque    = spec.opaque    ?? false
       rSeg.isCaption = spec.isCaption ?? false
     }
@@ -721,6 +736,7 @@ function collectPuppeteerSegments(projectJson, fps, width, height, segDir) {
           offsetX:       item.offsetX ?? 0,
           offsetY:       item.offsetY ?? 0,
           scale:         item.scale   ?? 1,
+          rotation:      item.rotation ?? 0,
           opacity:       item.opacity ?? 1,
           opaque:        item.opaque  ?? false,
           googleFonts:   item.googleFonts ?? [],

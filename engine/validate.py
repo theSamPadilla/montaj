@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Validate step, project, and workflow JSON files against the montaj spec."""
-import argparse, json, os, re, sys
+import argparse, json, math, os, re, sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "lib"))
 from common import fail
@@ -32,10 +32,20 @@ _CAROUSEL_FORBIDDEN = ("tracks", "sources", "audio", "storyboard")
 
 
 def _validate_clip_extensions(data):
-    """Optional clips-workflow fields: derivedFrom (top-level) + sourceCrop on video items.
+    """Optional clips-workflow fields plus per-item speed/rotation checks.
+
+    Validates derivedFrom (top-level) and sourceCrop on video items.
 
     Also range-checks the optional per-clip `speed` (montaj/speed): a number in
-    [0.25, 4] when present; absent means the default 1.0."""
+    [0.25, 4] when present; absent means the default 1.0.
+
+    Also validates the optional per-item `rotation` (degrees, clockwise, set by
+    the editor's rotate handle): must be a finite number when present.
+    `json.load` accepts `NaN`/`Infinity` as valid floats, so an isinstance
+    check alone would let either through to poison the geometry math
+    downstream — `math.isfinite()` catches what isinstance can't. Range is
+    intentionally unchecked here: a helper elsewhere normalizes any finite
+    value into [0,360)."""
     df = data.get("derivedFrom")
     if df is not None and not isinstance(df, str):
         fail("invalid_field", "derivedFrom must be a string")
@@ -46,6 +56,12 @@ def _validate_clip_extensions(data):
                 # bool is a subclass of int — reject it so `True`/`False` isn't read as 1/0.
                 if isinstance(speed, bool) or not isinstance(speed, (int, float)) or not (0.25 <= float(speed) <= 4.0):
                     fail("invalid_field", f"tracks[{ti}] item '{item.get('id','?')}': speed must be a number in [0.25, 4]")
+
+            rotation = item.get("rotation")
+            if rotation is not None:
+                # bool is a subclass of int — reject it, as the speed check above does.
+                if isinstance(rotation, bool) or not isinstance(rotation, (int, float)) or not math.isfinite(rotation):
+                    fail("invalid_field", f"tracks[{ti}] item '{item.get('id','?')}': rotation must be a finite number")
 
             sc = item.get("sourceCrop")
             if sc is None:

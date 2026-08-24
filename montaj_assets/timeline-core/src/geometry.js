@@ -34,13 +34,13 @@
 //
 // SWITCHED OVER (SP9a-1, 2026-08-23): all four call sites now route through
 // `toPixelBox`/`toCssBoxPct` instead of carrying their own copy —
-// `encode-segment.js:245` (image), `:305` (video), `:457` (overlay), and
+// `encode-segment.js:305` (image), `:375` (video), `:546` (overlay), and
 // `transformStyle.ts:36` (editor, via `videoTransformBoxPct`). Equivalence
 // was proven first by a switchover sweep (`test/geometry.test.mjs`) and the
 // `geometry-non-identity` encode-args golden, before any call site moved —
 // see KNOWN-DIVERGENCES.md D9 for the closure record.
 //
-// ── Naming (three exports, one primitive + two adapters) ────────────────────
+// ── Naming (one primitive + three adapters) ─────────────────────────────────
 //
 //   geometryFor(item, kind)        — the primitive. Frame-relative, engine-
 //                                     agnostic: percents and ratios, no pixels,
@@ -55,8 +55,13 @@
 //                                     even-pixel rounding on width/height.
 //                                     Mirrors the shared five-line formula
 //                                     above. Consumed by all three render call
-//                                     sites (`encode-segment.js:245/305/457`
+//                                     sites (`encode-segment.js:305/375/546`
 //                                     — image, video, overlay).
+//   toRotatedPixelBox(g, vw, vh)   — the ROTATION-AWARE pixel adapter. A
+//                                     SIBLING of `toPixelBox` that DELEGATES to
+//                                     it for the unrotated numbers and adds the
+//                                     grown bounding box plus the adjusted
+//                                     top-left. See the rotation section below.
 //
 // `videoTransformContainerStyle` (the CSS `translate()/scale()` STRING, with
 // its `s===1 && ox===0 && oy===0 -> {}` early return) is NOT ported as a
@@ -122,7 +127,7 @@
 // filter step at all (it only derives the scale/offset overlay box, the part
 // of the formula shared with images) — the crop-specific ffmpeg
 // `crop=cw:ch:cx:cy` math stays render's own concern, applied downstream of
-// the same `toPixelBox(geometryFor(item, 'video'), vw, vh)` call at `:305`.
+// the same `toPixelBox(geometryFor(item, 'video'), vw, vh)` call at `:375`.
 // See test/geometry.test.mjs for the test that documents (not fixes) this
 // boundary.
 //
@@ -161,18 +166,76 @@
 // a KNOWN-DIVERGENCES.md entry: there is no PREVIEW/RENDER pair that
 // disagrees here, just a field that is a no-op for one kind.
 //
-// ── rotation — carried, never applied ────────────────────────────────────────
+// ── rotation — carried by geometryFor, applied by toRotatedPixelBox ──────────
 //
 // OverlayItemsLayer.tsx:423 reads `item.rotation ?? 0` and the PREVIEW applies
-// it to the on-canvas transform. RENDER NEVER READS `rotation` ANYWHERE:
+// it to the on-canvas transform. RENDER used to read `rotation` NOWHERE:
 // buildImageItemFilterParts, buildVideoItemFilterParts and
-// buildOverlayFilterParts (encode-segment.js) have no rotation handling at
-// all. An overlay rotated in the editor exports UN-ROTATED today. This is a
-// named registry entry — KNOWN-DIVERGENCES.md entry 1, `rotation`, owner
-// backlog/SP7.
-// `geometryFor` CARRIES `item.rotation ?? 0` on the geometry so a future fix
-// has somewhere to read it from, but `toPixelBox` — the render pixel adapter
-// — MUST NOT consume it; see the test asserting exactly that.
+// buildOverlayFilterParts (encode-segment.js) had no rotation handling at all,
+// so an overlay rotated in the editor exported UN-ROTATED — KNOWN-DIVERGENCES.md
+// entry 1, `rotation`.
+//
+// SP9a-2 closes the GEOMETRY half of that gap. `geometryFor` still CARRIES
+// `item.rotation ?? 0` unchanged, and the two pre-existing adapters are
+// unchanged too; the new numbers live in a fourth export.
+//
+//   `toPixelBox`        — the UNROTATED box. MUST NOT consume `rotation`.
+//                         test/geometry.test.mjs pins that its output is
+//                         identical for rotation 0 and rotation 90 and that it
+//                         does not even expose a rotation field; SP9a-1's four
+//                         switched-over call sites (encode-segment.js:305/375/546,
+//                         transformStyle.ts:36) depend on exactly that contract,
+//                         so it stays frozen. Do not "upgrade" it in place.
+//   `toRotatedPixelBox` — the rotation-aware SIBLING. DELEGATES to `toPixelBox`
+//                         for `scaledW`/`scaledH`/`xPx`/`yPx` — it never
+//                         re-derives or duplicates that math, so both helpers
+//                         produce the SAME integers from the SAME function —
+//                         and adds the axis-aligned bounding box the rotated
+//                         content grows into (`outW`/`outH`) plus the top-left
+//                         that box must be composited at (`x`/`y`).
+//
+// The formula, verified empirically against ffmpeg 8.1.2 — do not re-derive:
+//
+//     rot  = ((r % 360) + 360) % 360        // 0 when r is not finite
+//     a    = rot * PI / 180
+//     outW = round((|scaledW*cos(a)| + |scaledH*sin(a)|) / 2) * 2
+//     outH = round((|scaledW*sin(a)| + |scaledH*cos(a)|) / 2) * 2
+//     x    = xPx - (outW - scaledW) / 2
+//     y    = yPx - (outH - scaledH) / 2
+//
+// Three details that are load-bearing rather than incidental:
+//
+//   ROUND, NEVER CEIL, on the grown box. `Math.cos(PI/2)` is 6.1e-17, not 0, so
+//   at r=90 a 180x320 box yields a raw height of 180.00000000000003. `ceil`
+//   turns that float dust into a REAL 2px of padding (182); `round` gives the
+//   exact 180. There is a named test for this.
+//
+//   The grown box is EVEN-rounded (`round(v/2)*2`, the same even-pixel discipline
+//   `toPixelBox` applies, for the same x264/yuv420 reason) and `scaledW`/`scaledH`
+//   are even by construction, so `(outW - scaledW)` is even and the halving in
+//   `x`/`y` is an EXACT integer. That is the whole reason the grown box is
+//   even-rounded — there is an invariant test pinning the integrality.
+//
+//   `x`/`y` are NOT even-rounded. Offsets carry no even-pixel requirement, and
+//   quantizing them would both visibly snap position and break the
+//   `rotation === 0 => x === toPixelBox().x` identity.
+//
+// At rotation 0 (and 360, and any non-finite value) the helper returns a FULL
+// box, never `null`: `outW === scaledW`, `outH === scaledH`, `x === xPx`,
+// `y === yPx`, `isIdentity === true`. Call sites read `.x`/`.y` unconditionally
+// and branch only on whether to APPEND a rotate step. The identity falls out of
+// the formula itself (`cos(0)` is exactly 1, `sin(0)` exactly 0, and an even
+// `scaledW` survives `round(scaledW/2)*2` untouched) — there is no special case.
+//
+// Centre preservation is the point of the whole design: substituting `x` gives
+// `x + outW/2 === xPx + scaledW/2` exactly, i.e. the box grows symmetrically
+// around the centre the unrotated box already had, so rotation never translates
+// the content. Pinned by a test.
+//
+// BOUNDARY: timeline-core owns the NUMBERS only. `rotationDeg` is emitted as the
+// normalized [0,360) DEGREE value; turning it into an ffmpeg `rotate=` step
+// (radians, `ow`/`oh`, `fillcolor`) is encode-segment.js's job. No ffmpeg filter
+// syntax lives in this package.
 //
 // ── z-order ──────────────────────────────────────────────────────────────────
 //
@@ -219,7 +282,8 @@
  *   Forwarded verbatim — see the module header.
  * @property {number} [sourceWidth]  Source intrinsic pixel width. Forwarded verbatim.
  * @property {number} [sourceHeight] Source intrinsic pixel height. Forwarded verbatim.
- * @property {number} [rotation]     Degrees. Carried, never applied — see the module header.
+ * @property {number} [rotation]     Degrees. Carried by `geometryFor`, consumed
+ *   ONLY by `toRotatedPixelBox` — see the module header.
  */
 
 /**
@@ -239,7 +303,9 @@
  * @property {{x: number, y: number, w: number, h: number} | undefined} sourceCrop Forwarded verbatim, by reference.
  * @property {number | undefined} sourceWidth  Forwarded verbatim.
  * @property {number | undefined} sourceHeight Forwarded verbatim.
- * @property {number} rotation Degrees. Carried; the pixel adapter MUST ignore it — see the module header.
+ * @property {number} rotation Degrees, as authored (NOT normalized here).
+ *   `toPixelBox` and `toCssBoxPct` MUST ignore it; `toRotatedPixelBox` is the
+ *   one adapter that consumes it — see the module header.
  */
 
 /**
@@ -326,6 +392,78 @@ export function toPixelBox(geometry, vw, vh) {
     height: Math.round((vh * s) / 2) * 2,
     x: Math.round(vw * (0.5 * (1 - s) + ox / 100)),
     y: Math.round(vh * (0.5 * (1 - s) + oy / 100)),
+  }
+}
+
+/**
+ * The rotated placement of one item, in pixels.
+ *
+ * `scaledW`/`scaledH`/`xPx`/`yPx` are exactly `toPixelBox`'s
+ * `width`/`height`/`x`/`y` (this box DELEGATES, it does not re-derive them);
+ * `outW`/`outH`/`x`/`y` describe the axis-aligned bounding box the rotated
+ * content occupies and where that grown box is composited.
+ *
+ * @typedef {Object} RotatedPixelBox
+ * @property {number} scaledW     Unrotated width, even. Straight from `toPixelBox`.
+ * @property {number} scaledH     Unrotated height, even. Straight from `toPixelBox`.
+ * @property {number} xPx         Unrotated left. Straight from `toPixelBox`.
+ * @property {number} yPx         Unrotated top. Straight from `toPixelBox`.
+ * @property {number} outW        Bounding-box width after rotation, even-rounded.
+ * @property {number} outH        Bounding-box height after rotation, even-rounded.
+ * @property {number} x           Left of the GROWN box. Exact integer; NOT even-rounded.
+ * @property {number} y           Top of the GROWN box. Exact integer; NOT even-rounded.
+ * @property {number} rotationDeg Normalized rotation in [0, 360) degrees. Not radians,
+ *   not a filter string — the consumer formats it (see the module header's BOUNDARY note).
+ * @property {boolean} isIdentity `rotationDeg === 0`, i.e. the grown box IS the
+ *   unrotated box and no rotate step needs appending.
+ */
+
+/**
+ * The rotation-aware sibling of {@link toPixelBox}: the same unrotated numbers
+ * (obtained by DELEGATING to it — never by duplicating its math) plus the
+ * grown bounding box and the adjusted top-left that keeps the CENTRE fixed.
+ *
+ * Always returns a full box, never `null`: at rotation 0/360/absent/non-finite
+ * the grown box IS the unrotated box and `isIdentity` is true, so a call site
+ * can read `.x`/`.y` unconditionally and branch only on whether to append a
+ * rotate step.
+ *
+ * `toPixelBox` itself is deliberately left rotation-blind — see the module
+ * header for why that contract is frozen, why the grown box is `round`ed and
+ * never `ceil`ed, and why `x`/`y` are not even-rounded.
+ *
+ * @param {Pick<Geometry, 'scale' | 'offsetX' | 'offsetY'> & { rotation?: number }} geometry
+ * @param {number} vw Canvas width, pixels.
+ * @param {number} vh Canvas height, pixels.
+ * @returns {RotatedPixelBox}
+ */
+export function toRotatedPixelBox(geometry, vw, vh) {
+  // Delegate: the unrotated numbers come from the ONE function that owns them.
+  const { width: scaledW, height: scaledH, x: xPx, y: yPx } = toPixelBox(geometry, vw, vh)
+
+  const r = geometry.rotation
+  // Non-finite (undefined/NaN/±Infinity) collapses to 0 rather than poisoning
+  // the whole box with NaN — an unreadable rotation means "not rotated".
+  const rot = Number.isFinite(r) ? ((/** @type {number} */ (r) % 360) + 360) % 360 : 0
+  const a = (rot * Math.PI) / 180
+
+  // Even-rounded so that (outW - scaledW) is even and the halving below is an
+  // exact integer. `round`, NEVER `ceil` — see the module header.
+  const outW = Math.round((Math.abs(scaledW * Math.cos(a)) + Math.abs(scaledH * Math.sin(a))) / 2) * 2
+  const outH = Math.round((Math.abs(scaledW * Math.sin(a)) + Math.abs(scaledH * Math.cos(a))) / 2) * 2
+
+  return {
+    scaledW,
+    scaledH,
+    xPx,
+    yPx,
+    outW,
+    outH,
+    // Grow symmetrically about the unrotated centre: x + outW/2 === xPx + scaledW/2.
+    x: xPx - (outW - scaledW) / 2,
+    y: yPx - (outH - scaledH) / 2,
+    rotationDeg: rot,
+    isIdentity: rot === 0,
   }
 }
 

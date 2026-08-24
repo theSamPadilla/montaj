@@ -3,12 +3,14 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
   encodeSegment,
+  buildImageItemFilterParts,
   buildVideoItemFilterParts,
   buildColorConversionFilter,
   buildVividLutChain,
   hasZscale,
   hasLut3d,
 } from '../encode-segment.js'
+import { geometryFor, toPixelBox, toRotatedPixelBox } from '@bycrux/timeline-core'
 import { lutPath, MASTER_LOOK } from '../look.js'
 import {
   COLOR_SPACE_SPECS,
@@ -1096,5 +1098,199 @@ test('e2e: aspect-mismatched HLG source letterboxes to true black, output tagged
       `picture area should carry the graded source, got rgb(${mid.r}, ${mid.g}, ${mid.b})`)
   } finally {
     rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+// ---------------------------------------------------------------------------
+// Rotation (SP9a-2 T2): the filter-chain insertion
+//
+// timeline-core owns the NUMBERS (toRotatedPixelBox); encode-segment.js owns
+// the SYNTAX. The highest-value property here is the NO-OP: with rotation
+// absent, 0 or 360, every emitted string must stay byte-identical to the
+// pre-rotation pipeline — two frozen encode-args goldens depend on it.
+// Modelled on the speed strict-no-op test above, because the mechanism is the
+// same: a helper that returns '' interpolated into an otherwise unmodified
+// template literal, and concatenating '' cannot alter a string.
+//
+// 0 and 360 are BOTH tested because they reach the identity by different
+// routes — 0 trivially, 360 only because toRotatedPixelBox normalizes into
+// [0, 360) first. A full turn being free is a property, not an accident.
+// ---------------------------------------------------------------------------
+
+const NO_ROTATION = [['0', { rotation: 0 }], ['360', { rotation: 360 }]]
+
+// 1080×1920 canvas at scale 0.5 → a 540×960 box at (270, 480). At 90° the
+// bounding box swaps to 960×540 and its top-left moves to (60, 690), which
+// keeps the CENTRE exactly where it was: 60 + 960/2 === 270 + 540/2 === 540.
+// Numbers read off toRotatedPixelBox, not hand-derived.
+const ROT_ITEM = { scale: 0.5, offsetX: 0, offsetY: 0, opacity: 1 }
+
+test('rotation absent/0/360: the image chain is byte-identical (strict no-op)', () => {
+  const base = { ...ROT_ITEM, type: 'image', src: '/img.png', start: 0, end: 5 }
+  const call = (extra) =>
+    buildImageItemFilterParts({ ...base, ...extra }, 1080, 1920, 0, '[base]', 5)
+
+  const absent = call({})
+  for (const [label, patch] of NO_ROTATION) {
+    const got = call(patch)
+    assert.deepEqual(got.inputArgs, absent.inputArgs, `rotation ${label}: inputArgs must not move`)
+    assert.deepEqual(got.filterParts, absent.filterParts, `rotation ${label}: filterParts must not move`)
+  }
+
+  const s = videoFilter(absent.filterParts)
+  assert.ok(!s.includes('rotate='), 'an unrotated image must emit no rotate step at all')
+  assert.ok(!s.includes('format=yuva'), 'the video-path alpha pin must never reach the image path')
+
+  // Deep-equality across the three cases would also be satisfied by three
+  // equally WRONG numbers, so pin the placement against the unrotated box
+  // directly: switching the composite to the grown box's top-left must be
+  // invisible when there is no growth.
+  const { x, y } = toPixelBox(geometryFor(base, 'image'), 1080, 1920)
+  assert.ok(s.includes(`overlay=x=${x}:y=${y}:shortest=0`),
+    `an unrotated image must still composite at the unrotated top-left (${x}, ${y})`)
+})
+
+test('rotation 90: the image rotate step sits between the fit chain and setpts', () => {
+  const item = { ...ROT_ITEM, type: 'image', src: '/img.png', start: 0, end: 5, rotation: 90 }
+  const { filterParts } = buildImageItemFilterParts(item, 1080, 1920, 0, '[base]', 5)
+  const chain = filterParts[0]
+
+  // Position is the whole assertion: the fit chain establishes the 540×960 box
+  // rotation is defined against, and setpts is timing rather than geometry, so
+  // it neither cares nor should pay for the grown frame.
+  assert.ok(
+    chain.includes('crop=540:960,format=rgba,'
+      + 'rotate=90*PI/180:ow=960:oh=540:c=black@0.0,setpts=PTS-STARTPTS'),
+    `rotate must follow the fit chain and precede setpts, got: ${chain}`)
+  assert.ok(!chain.includes('format=yuva'),
+    'every image fit chain already runs through format=rgba — no second pin')
+  assert.ok(filterParts.some((p) => p.includes('overlay=x=60:y=690:')),
+    'the grown box must composite at ITS top-left, or rotation translates the image')
+})
+
+test('rotation absent/0/360: the video chain is byte-identical (strict no-op)', () => {
+  const base = { ...ROT_ITEM, type: 'video', src: '/src.mp4', start: 0, end: 5, inPoint: 0 }
+  const opts = { segStart: 0, duration: 5, projectColorSpace: 'sdr_bt709', zscaleAvailable: false }
+  const call = (extra) =>
+    buildVideoItemFilterParts({ ...base, ...extra }, 1080, 1920, 0, '[base]', opts)
+
+  const absent = call({})
+  for (const [label, patch] of NO_ROTATION) {
+    const got = call(patch)
+    assert.deepEqual(got.inputArgs, absent.inputArgs, `rotation ${label}: inputArgs must not move`)
+    assert.deepEqual(got.filterParts, absent.filterParts, `rotation ${label}: filterParts must not move`)
+  }
+
+  const s = videoFilter(absent.filterParts)
+  assert.ok(!s.includes('rotate='), 'an unrotated video must emit no rotate step at all')
+  assert.ok(!s.includes('format=yuva'),
+    'the alpha pin lives INSIDE the rotate helper, so it cannot leak onto an unrotated item')
+
+  const { x, y } = toPixelBox(geometryFor(base, 'video'), 1080, 1920)
+  assert.ok(s.includes(`overlay=x=${x}:y=${y}`),
+    `an unrotated video must still composite at the unrotated top-left (${x}, ${y})`)
+})
+
+test('rotation 90: the video rotate step comes LAST, after pad, behind the alpha pin', () => {
+  const item = { ...ROT_ITEM, type: 'video', src: '/src.mp4', start: 0, end: 5, inPoint: 0, rotation: 90 }
+  const opts = { segStart: 0, duration: 5, projectColorSpace: 'sdr_bt709', zscaleAvailable: false }
+  const { filterParts } = buildVideoItemFilterParts(item, 1080, 1920, 0, '[base]', opts)
+  const chain = filterParts[0]
+
+  assert.ok(
+    chain.endsWith('pad=540:960:(ow-iw)/2:(oh-ih)/2,format=yuva420p,'
+      + 'rotate=90*PI/180:ow=960:oh=540:c=black@0.0[vid0]'),
+    `rotate must be the last filter, after pad and behind the pin, got: ${chain}`)
+  assert.ok(filterParts.some((p) => p.includes('overlay=x=60:y=690')),
+    'the grown box must composite at ITS top-left, or rotation translates the clip')
+})
+
+test('rotation: the video alpha pin is unconditional, never sniffed from the filename', () => {
+  // A .mov src already flips ovFmt to format=auto (ProRes 4444 carries alpha),
+  // which is exactly the kind of per-extension branch that invites a matching
+  // one on the rotate pin. There is none, deliberately: the pin is defensive
+  // rather than load-bearing here (pad already leaves the production chain
+  // alpha-capable, so the c=black@0.0 corner fill shows the canvas through
+  // either way — measured Y=150 against ffmpeg 8.1.2, pinned or not), but an
+  // explicit format beats trusting filter-negotiation, on every container.
+  const opts = { segStart: 0, duration: 5, projectColorSpace: 'sdr_bt709', zscaleAvailable: false }
+  for (const src of ['/src.mp4', '/src.mov']) {
+    const item = { ...ROT_ITEM, type: 'video', src, start: 0, end: 5, inPoint: 0, rotation: 90 }
+    const chain = buildVideoItemFilterParts(item, 1080, 1920, 0, '[base]', opts).filterParts[0]
+    assert.ok(chain.includes('format=yuva420p,rotate='),
+      `${src}: the alpha pin must immediately precede rotate`)
+  }
+})
+
+test('rotation 90 + HDR source: rotate stays behind the whole conversion chain', () => {
+  // Two independent reasons, both asserted by POSITION because "all the steps
+  // are present" was already true of every wrong order.
+  //
+  // Geometric: rotation is defined against the scaledW×scaledH box, and pad is
+  // what produces that box — scale's decrease-fit lands strictly inside it.
+  //
+  // Cost: rotate is the one geometry step that GROWS the frame (~2.2× the
+  // pixels at scale 1, 45°), so rotating ahead of the conversion would hand
+  // every one of those extra pixels to the LUT chain, the most expensive
+  // stretch in the graph. Same instinct as the crop → scale → convert
+  // ordering the section above pins.
+  const item = {
+    ...ROT_ITEM, type: 'video', src: '/iphone-hdr.mp4', start: 0, end: 3, inPoint: 0,
+    colorTransfer: 'arib-std-b67', rotation: 90,
+  }
+  const opts = {
+    segStart: 0, duration: 3, projectColorSpace: 'sdr_bt709',
+    zscaleAvailable: true, lut3dAvailable: true,
+  }
+  const chain = buildVideoItemFilterParts(item, 1080, 1920, 0, '[base]', opts).filterParts[0]
+
+  const iLut = chain.indexOf('lut3d=')
+  const iPad = chain.indexOf('pad=')
+  const iPin = chain.indexOf('format=yuva420p')
+  const iRot = chain.indexOf('rotate=')
+  assert.ok(iLut >= 0 && iPad >= 0 && iPin >= 0 && iRot >= 0,
+    `expected the LUT, pad, pin and rotate all present, got: ${chain}`)
+  assert.ok(iLut < iPad, 'the conversion must still precede pad (its bars stay in the dest space)')
+  assert.ok(iPad < iPin, 'pad must precede the alpha pin — rotate turns the PADDED box')
+  assert.ok(iPin < iRot, 'the alpha pin must precede rotate, which needs an alpha plane to fill')
+})
+
+// The three tests below pin the "identical values when not rotated" property
+// DIRECTLY — one per path — rather than leaving it implied by the {absent, 0,
+// 360} deep-equals above. Those prove the three cases agree with each other;
+// these prove what they agree ON is the unrotated placement. Switching the
+// composite from toPixelBox's x/y to the grown box's x/y is only safe because
+// the two coincide exactly whenever the box does not grow, and that identity
+// is what lets a rotation-capable call site stay byte-identical for the
+// overwhelming majority of items, which carry no rotation at all.
+
+test('not rotated: the image grown box IS the unrotated box (x === xPx, y === yPx)', () => {
+  const base = { ...ROT_ITEM, type: 'image', src: '/img.png', start: 0, end: 5 }
+  for (const [label, patch] of [['absent', {}], ...NO_ROTATION]) {
+    const item = { ...base, ...patch }
+    const box = toRotatedPixelBox(geometryFor(item, 'image'), 1080, 1920)
+    assert.ok(box.isIdentity, `rotation ${label}: must be the identity box`)
+    assert.equal(box.x, box.xPx, `rotation ${label}: grown-box x must equal the unrotated x`)
+    assert.equal(box.y, box.yPx, `rotation ${label}: grown-box y must equal the unrotated y`)
+
+    const { filterParts } = buildImageItemFilterParts(item, 1080, 1920, 0, '[base]', 5)
+    assert.ok(videoFilter(filterParts).includes(`overlay=x=${box.xPx}:y=${box.yPx}:shortest=0`),
+      `rotation ${label}: the composite must spend the unrotated top-left`)
+  }
+})
+
+test('not rotated: the video grown box IS the unrotated box (x === xPx, y === yPx)', () => {
+  const base = { ...ROT_ITEM, type: 'video', src: '/src.mp4', start: 0, end: 5, inPoint: 0 }
+  const opts = { segStart: 0, duration: 5, projectColorSpace: 'sdr_bt709', zscaleAvailable: false }
+  for (const [label, patch] of [['absent', {}], ...NO_ROTATION]) {
+    const item = { ...base, ...patch }
+    const box = toRotatedPixelBox(geometryFor(item, 'video'), 1080, 1920)
+    assert.ok(box.isIdentity, `rotation ${label}: must be the identity box`)
+    assert.equal(box.x, box.xPx, `rotation ${label}: grown-box x must equal the unrotated x`)
+    assert.equal(box.y, box.yPx, `rotation ${label}: grown-box y must equal the unrotated y`)
+
+    const { filterParts } = buildVideoItemFilterParts(item, 1080, 1920, 0, '[base]', opts)
+    assert.ok(videoFilter(filterParts).includes(`overlay=x=${box.xPx}:y=${box.yPx}:`),
+      `rotation ${label}: the composite must spend the unrotated top-left`)
   }
 })
