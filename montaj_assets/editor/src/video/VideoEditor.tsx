@@ -19,7 +19,6 @@ import { createPlaybackClock, usePlaybackTime, type PlaybackClock } from './play
 import { createHoverScrub } from './hover-scrub'
 import { useSourcePreview, type SourcePreviewStore } from './source-preview'
 import { formatTimecode } from './timecode'
-import SocialSafeZoneOverlay from './preview/SocialSafeZoneOverlay'
 import type { OverlayChanges } from './preview/useDragOverlay'
 import VersionPanel from './VersionPanel'
 import CaptionListPanel, { type CaptionListPanelProps, type CaptionEditFocusRequest, nextEditFocus } from './CaptionListPanel'
@@ -1584,18 +1583,20 @@ function ReviewSurface<P extends Project>({
                 engine={engine}
                 transportRef={transportRef}
                 hoverScrub={hoverScrub}
+                // Safe-zone viewing aid (mirrors CapCut's "TikTok" toggle) — it
+                // previews what platform UI would sit ON TOP of the picture, so
+                // PreviewPlayer mounts it INSIDE its own preview surface (same
+                // coordinate space AND stacking context as the picture, rather
+                // than as a sibling here) — see the `safeZone` prop doc on
+                // PreviewPlayerProps. Off by default; the component itself
+                // no-ops on an unset/unknown platform.
+                safeZone={showSafeZone ? 'tiktok' : undefined}
               />
               {/* Footage-bin source scrub (opt-in). A paused <video> parked above the
                   timeline preview, showing an OFF-TIMELINE clip's frame while the
                   host hovers a bin card. Inert unless a host supplies `sourcePreview`
                   AND sets a value — see SourcePreviewOverlay / source-preview.ts. */}
               <SourcePreviewOverlay store={sourcePreview} />
-              {/* Safe-zone viewing aid (mirrors CapCut's "TikTok" toggle), drawn over
-                  the video itself rather than the chrome row below — it previews
-                  what platform UI would sit ON TOP of the picture, so it has to be
-                  in the same coordinate space as the picture. Off by default; the
-                  component itself no-ops on an unset/unknown platform. */}
-              {showSafeZone && <SocialSafeZoneOverlay platform="tiktok" />}
             </div>
           </div>
           {/* Preview controls row — chrome, not video. Timecode readout on the
@@ -1608,7 +1609,12 @@ function ReviewSurface<P extends Project>({
               data-testid="preview-timecode"
               className="mr-auto text-[10px] font-mono tabular-nums text-[var(--editor-text)]/60 select-none"
             >
-              {formatTimecode(currentTime)} / {formatTimecode(previewDuration)}
+              {/* The playhead can sit past `previewDuration` while parked in
+                  `getTotalDuration()`'s ~20% trailing headroom (drag room for
+                  the timeline canvas) — clamp the DISPLAYED current time only,
+                  so the readout never shows e.g. "1:10.0 / 1:00.0". The clock
+                  itself and the total are untouched. */}
+              {formatTimecode(Math.min(currentTime, previewDuration))} / {formatTimecode(previewDuration)}
             </span>
             <Tooltip label="Zoom to fit">
               <button

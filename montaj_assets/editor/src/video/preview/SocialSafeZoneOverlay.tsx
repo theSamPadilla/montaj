@@ -7,7 +7,8 @@
  *
  * Display-only: this never touches the project, never affects render output,
  * and renders nothing when `platform` is absent/unrecognized. It is purely
- * an editor viewing aid, mounted conditionally by the host.
+ * an editor viewing aid — mounted unconditionally by `PreviewPlayer` (its
+ * `safeZone` prop), a no-op whenever the host doesn't pass a platform.
  *
  * Scaling
  * -------
@@ -91,16 +92,26 @@ export default function SocialSafeZoneOverlay({ platform }: SocialSafeZoneOverla
       ref={wrapRef}
       data-testid="social-safe-zone-overlay"
       className="absolute inset-0 pointer-events-none overflow-hidden"
-      // z 48: above the video (z 1), the play-toggle click layer (z 10), the
-      // base-video transform handles (z 11), overlay items (z ~12–20) and
-      // captions (z 45, PreviewSurface/CaptionPreview) — this is a viewing
-      // aid over the fully-composited frame, so it has to sit above
-      // everything that composites into the picture or it wouldn't show
-      // what actually gets covered. Below the caption/overlay selection
-      // handles and snap guides (z 50) and the paused play glyph (z 100):
-      // those are editor chrome, not content, and must stay legible on top
-      // of a chrome preview that is itself just a viewing aid. See the
-      // z-index layering in PreviewPlayer.tsx.
+      // z 48. This component is mounted by PreviewPlayer's `PreviewSurface`
+      // (video path) or directly by `PreviewPlayer` (carousel path) as a
+      // SIBLING of the video/overlay/caption layers, inside the same
+      // `isolation: isolate` container — see the `safeZone` prop doc and its
+      // render site in preview/PreviewPlayer.tsx. That placement is load-
+      // bearing: z-index only orders siblings within the SAME stacking
+      // context, so mounting this anywhere else (e.g. as a sibling of
+      // `PreviewPlayer` itself, outside its isolated container) makes this
+      // z-index compare against that whole container's z-index instead —
+      // which is `auto`, so a positive value here would paint above the
+      // ENTIRE player, play button included, no matter what it's set to.
+      //
+      // Within this container, 48 sits above the video (z 1), the
+      // play-toggle click layer (z 10), the base-video transform handles
+      // (z 11), overlay items (z ~12–20) and captions (z 45) — a viewing aid
+      // over the fully-composited frame has to sit above everything that
+      // composites into the picture, or it wouldn't show what actually gets
+      // covered. It sits below the paused play glyph (z 100), which is
+      // editor chrome, not content, and must stay legible on top of a
+      // chrome preview that is itself just a viewing aid.
       style={{ zIndex: 48 }}
     >
       {scale !== null && (

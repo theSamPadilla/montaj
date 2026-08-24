@@ -144,6 +144,36 @@ describe('pasteAt', () => {
     expect(pasted.end).toBe(18)
   })
 
+  it('does not materialize an empty `audio` object when pasting visual-only items into an audio-less project', () => {
+    const p = makeProject({
+      tracks: vtracks([{ id: 'a', type: 'video', start: 0, end: 5 }]),
+      // No `audio` key at all.
+    })
+    expect(p.audio).toBeUndefined()
+    const payload = copySelection(p, ['a'])!
+    const out = pasteAt(p, payload, 20)
+    expect(out.audio).toBeUndefined()
+  })
+
+  it('still attaches `audio` when the paste itself adds audio tracks, even starting from an audio-less project', () => {
+    const source = makeProject({ audio: { tracks: [{ id: 'aud1', src: 'x.mp3', start: 0, end: 4 }] } })
+    const payload = copySelection(source, ['aud1'])!
+    const target = makeProject() // no `audio` key
+    const out = pasteAt(target, payload, 10)
+    expect(out.audio!.tracks).toHaveLength(1)
+    expect(out.audio!.tracks[0]).toMatchObject({ src: 'x.mp3', start: 10, end: 14 })
+  })
+
+  it('preserves an existing (possibly empty-after-paste) `audio` object rather than dropping it', () => {
+    const p = makeProject({
+      tracks: vtracks([{ id: 'a', type: 'video', start: 0, end: 5 }]),
+      audio: { tracks: [] },
+    })
+    const payload = copySelection(p, ['a'])!
+    const out = pasteAt(p, payload, 20)
+    expect(out.audio).toEqual({ tracks: [] })
+  })
+
   it('clones an audio track verbatim with a fresh id, shifted to the anchor', () => {
     const track: AudioTrack = { id: 'aud1', src: 'x.mp3', start: 0, end: 4, volume: 0.8, muted: true }
     const p = makeProject({ audio: { tracks: [track] } })
@@ -152,6 +182,23 @@ describe('pasteAt', () => {
     const pasted = out.audio!.tracks.find(t => t.id !== 'aud1')!
     expect(pasted).toMatchObject({ src: 'x.mp3', start: 30, end: 34, volume: 0.8, muted: true })
     expect(pasted.id).not.toBe('aud1')
+  })
+
+  it('gap-resolves a pasted audio track against its OWN lane only, not every audio track flattened', () => {
+    // Music bed (lane 0) runs the whole timeline; voiceover (lane 1) is much
+    // shorter and overlaps it freely, as parallel lanes are meant to. Pasting
+    // a copy of the voiceover back at t=0 collides with the ORIGINAL voiceover
+    // (same lane, still on the timeline) and must resolve to its end (30) —
+    // NOT past the bed's end (60), which the old flattened check wrongly used.
+    const bed: AudioTrack = { id: 'bed', src: 'bed.mp3', start: 0, end: 60, lane: 0 }
+    const vo: AudioTrack = { id: 'vo', src: 'vo.mp3', start: 0, end: 30, lane: 1 }
+    const p = makeProject({ audio: { tracks: [bed, vo] } })
+    const payload = copySelection(p, ['vo'])!
+    const out = pasteAt(p, payload, 0)
+    const pasted = out.audio!.tracks.find(t => t.id !== 'bed' && t.id !== 'vo')!
+    expect(pasted.start).toBe(30) // shifted past the original voiceover, lane 1's only occupant
+    expect(pasted.end).toBe(60)
+    expect(pasted.lane).toBe(1)
   })
 
   it('preserves the original relative offset between a visual item and an audio track pasted together, earliest landing exactly on the anchor', () => {
@@ -216,6 +263,21 @@ describe('duplicateSelection', () => {
     const out = duplicateSelection(p, ['aud1'])
     const dup = out.audio!.tracks.find(t => t.id !== 'aud1')!
     expect(dup).toMatchObject({ src: 'x.mp3', start: 4, end: 8, volume: 0.6 })
+  })
+
+  it('gap-resolves a duplicated audio track against its OWN lane only, not every audio track flattened', () => {
+    // Music bed [0,60] in lane 0 + voiceover [0,30] in lane 1. Duplicating the
+    // voiceover must land the copy at [30,60] in lane 1 (right after the
+    // original, overlapping the bed is fine) — NOT shoved to [60,90] by
+    // wrongly treating the longer bed as a same-lane collision.
+    const bed: AudioTrack = { id: 'bed', src: 'bed.mp3', start: 0, end: 60, lane: 0 }
+    const vo: AudioTrack = { id: 'vo', src: 'vo.mp3', start: 0, end: 30, lane: 1 }
+    const p = makeProject({ audio: { tracks: [bed, vo] } })
+    const out = duplicateSelection(p, ['vo'])
+    const dup = out.audio!.tracks.find(t => t.id !== 'bed' && t.id !== 'vo')!
+    expect(dup.start).toBe(30)
+    expect(dup.end).toBe(60)
+    expect(dup.lane).toBe(1)
   })
 
   it('mints fresh, unique ids for every duplicated item, colliding with nothing', () => {

@@ -581,6 +581,27 @@ describe('VideoEditor — preview controls row', () => {
     await waitFor(() => expect(screen.getByTestId('preview-timecode').textContent).toBe('0:02.0 / 0:04.0'))
   })
 
+  it('clamps the DISPLAYED current time to the total, never showing more than it, while parked in the timeline canvas headroom', async () => {
+    const adapter = makeFakeAdapter()
+    render(<VideoEditor project={makeVideoProject()} adapter={adapter} onProjectChange={vi.fn()} slots={{ exportActions: <div /> }} />)
+    await screen.findByText('▪ overlay')
+
+    // makeVideoProject's clips run 0-4 (content duration 4s), but the go-to-time
+    // clamp uses `getTotalDuration()` — content duration plus drag headroom for
+    // the timeline canvas (max(5, contentDuration * 0.2), so 9s here) — not the
+    // 4s shown as the readout's total. Seeking to 6 lands the playhead PAST the
+    // readout's total, entirely inside that headroom.
+    fireEvent.click(await screen.findByLabelText('Go to time'))
+    const input = await screen.findByPlaceholderText(/mm:ss/)
+    fireEvent.change(input, { target: { value: '6' } })
+    fireEvent.keyDown(input, { key: 'Enter' })
+
+    // The readout must never show a current time past its own total — clamped
+    // display only; the clock and total are untouched (proven by the sibling
+    // test above landing exactly on an UN-clamped in-range seek).
+    await waitFor(() => expect(screen.getByTestId('preview-timecode').textContent).toBe('0:04.0 / 0:04.0'))
+  })
+
   it('the safe-zone toggle shows and hides the TikTok chrome overlay over the video, off by default', async () => {
     const adapter = makeFakeAdapter()
     render(<VideoEditor project={makeVideoProject()} adapter={adapter} onProjectChange={vi.fn()} slots={{ exportActions: <div /> }} />)

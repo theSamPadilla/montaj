@@ -31,6 +31,29 @@ import type { VisualItem, AudioTrack, VisualTrack } from '../schema'
 import { mapTrackItems, normalizeTracks, updateAudioTrack } from './timeline/timeline-model'
 import { newClipId } from './cuts'
 
+/**
+ * Whether two audio tracks share a rendered LANE, per `groupAudioLanes`
+ * (timeline/timeline-model.ts) — audio tracks are PARALLEL rows, not one
+ * shared timeline, so only same-lane tracks can ever collide.
+ *
+ * `groupAudioLanes` assigns every lane-less track a lane strictly above the
+ * highest EXPLICIT lane in the whole array (a first pass finds that max, a
+ * second pass hands out `nextAutoLane++` to each lane-less track in order).
+ * Two consequences that make the direct comparison below exactly equivalent
+ * to running the real algorithm, without needing this module to carry a
+ * `contentDuration` to call it:
+ *   - a lane-less track's auto-assigned lane is never shared with anything
+ *     else, regardless of how many other lane-less tracks exist or their
+ *     array order — so `lane == null` means "my own lane" unconditionally;
+ *   - two EXPLICIT lanes collide iff their numbers are equal, which is just
+ *     `===`.
+ * So "same lane" reduces to: both tracks declare a lane, and it's the same
+ * number.
+ */
+function sameAudioLane(a: AudioTrack, b: AudioTrack): boolean {
+  return a.lane != null && a.lane === b.lane
+}
+
 /** Float slop for overlap/adjacency checks — mirrors the tolerance `cuts.ts`
  *  uses for the same purpose. */
 const EPSILON = 0.001
@@ -132,7 +155,9 @@ function earliestFittingGap(
  * Audio tracks clone the full `AudioTrack` object the same verbatim way, with
  * `start`/`end` shifted by the same delta and appended to
  * `project.audio.tracks`, gap-resolved the same way against the existing
- * tracks plus anything already pasted.
+ * tracks plus anything already pasted IN THE SAME LANE (`sameAudioLane`) —
+ * audio lanes are parallel rows, so a track in a different lane (e.g. a
+ * voiceover pasted under a much longer music bed) never affects placement.
  *
  * Returns the same project reference when the payload is `null` or captured
  * nothing.
@@ -166,11 +191,26 @@ export function pasteAt<P extends Project>(project: P, payload: ClipboardPayload
   let audioTracks = project.audio?.tracks ?? []
   for (const track of payload.audioTracks) {
     const duration = track.end - track.start
-    const start = earliestFittingGap(track.start + delta, duration, audioTracks)
+    // Gap-resolve against SAME-LANE tracks only — see `sameAudioLane` — so a
+    // longer clip in a different lane (e.g. a music bed under a voiceover)
+    // never shoves this paste past where it actually collides.
+    const laneMates = audioTracks.filter(t => sameAudioLane(t, track))
+    const start = earliestFittingGap(track.start + delta, duration, laneMates)
     audioTracks = [...audioTracks, { ...track, id: newClipId(), start, end: start + duration }]
   }
 
-  return { ...project, tracks: newTracks, audio: { ...project.audio, tracks: audioTracks } }
+  // Only attach `audio` when there's a reason to: the project already had one
+  // (preserve it, even if this paste added nothing to it), or this paste
+  // actually added audio tracks. Otherwise leave `project.audio` exactly as
+  // it was (`undefined` on an audio-less project) — a visual-only paste must
+  // not materialize an empty `audio: { tracks: [] }` and its undo/save entry.
+  const audio = project.audio
+    ? { ...project.audio, tracks: audioTracks }
+    : payload.audioTracks.length > 0
+      ? { tracks: audioTracks }
+      : project.audio
+
+  return { ...project, tracks: newTracks, audio }
 }
 
 /**
@@ -215,7 +255,9 @@ export function duplicateSelection<P extends Project>(project: P, selectedIds: r
   let audioTracks = existingAudio
   for (const track of selectedAudio) {
     const duration = track.end - track.start
-    const start = earliestFittingGap(track.end, duration, audioTracks)
+    // Same-lane scoping — see `sameAudioLane` and its use in `pasteAt` above.
+    const laneMates = audioTracks.filter(t => sameAudioLane(t, track))
+    const start = earliestFittingGap(track.end, duration, laneMates)
     audioTracks = [...audioTracks, { ...track, id: newClipId(), start, end: start + duration }]
     changed = true
   }
