@@ -54,12 +54,12 @@
  * doesn't collide: that path only fires for presses that never became drags.
  */
 
-import type { AudioTrack, CaptionSegment, KeyframeProp, VisualItem } from '../../../schema'
+import type { AudioTrack, CaptionSegment, VisualItem } from '../../../schema'
 import type { Project } from '../../../types'
 import { reflowMagneticLanes } from '../../audioMagnet'
 import { laneOf, normalizeCaptionLanes, resolveDropLane, sameLaneNeighbours } from '../../captionLanes'
 import { collapseGaps, rollEdit, slideItem, slipItem } from '../../cuts'
-import { canKeyframe, enableKeyframing, moveKeyframe, setKeyframe, valueAt } from '../../keyframeOps'
+import { canKeyframe, enableKeyframing, moveKeyframe, setKeyframe, transformProps, valueAt } from '../../keyframeOps'
 import { applyMoveDeltaToSelection, applyResizeDeltaToSelection } from '../multiSelectOps'
 import { AUDIO_LANE_HEIGHT_PX, CAPTION_ROW_HEIGHT_PX, VISUAL_ROW_HEIGHT_PX, computeDerivedTiming, groupAudioLanes, mapTrackItems, moveItemAcrossTracks, normalizeTracks, trackItems, updateAudioTrack } from '../timeline-model'
 import { DRAG_THRESHOLD_PX, computeResizedItem, resizeWindowedItem, type Draggable } from '../useItemDragDrop'
@@ -91,13 +91,6 @@ import {
   type SnapStrength,
 } from './snap'
 import { timeToX, xToTime, type Viewport } from './viewport'
-
-/** Every keyframeable prop, in the order a double-click keys them — the same
- *  list, in the same order, as `OverlayInspector`'s `ALL_PROPS`, which its
- *  header keyframe-all action walks. Annotated with the element type so a
- *  misspelled prop is a compile error; an OMISSION is not, so a sixth member of
- *  the `KeyframeProp` union has to be added here by hand. */
-const KEYFRAME_PROPS: readonly KeyframeProp[] = ['offsetX', 'offsetY', 'scale', 'rotation', 'opacity']
 
 // ── Inputs ───────────────────────────────────────────────────────────────
 
@@ -1634,10 +1627,18 @@ export function pointerReducer(state: MachineState, event: PointerMachineEvent):
         const item = hit.item
         const localT = clamp(hit.t - item.start, 0, Math.max(0, item.end - item.start))
 
+        // WHICH props get keyed depends on the item, and this used to be a
+        // hand-maintained five-prop constant here. `transformProps` is the
+        // shared rule (see its doc comment for why a fixed list breaks in both
+        // directions): keying `scaleX`/`scaleY` on a uniform overlay freezes its
+        // zoom, and keying `scale` on a per-axis one does nothing at all,
+        // because a per-axis value shadows the uniform one in the resolver.
+        // OverlayInspector's header keyframe-all action reads the same function.
+        //
         // Every value read off the ORIGINAL item BEFORE threading, so one prop's
         // write cannot perturb another's sample. Same rule OverlayInspector's
         // header diamond follows.
-        const sampled = KEYFRAME_PROPS.map(prop => [prop, valueAt(item, prop, localT)] as const)
+        const sampled = transformProps(item).map(prop => [prop, valueAt(item, prop, localT)] as const)
         let nextItem = item
         for (const [prop, value] of sampled) {
           nextItem = setKeyframe(enableKeyframing(nextItem, prop, localT), prop, localT, value)

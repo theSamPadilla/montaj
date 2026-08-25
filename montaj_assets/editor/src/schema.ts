@@ -116,19 +116,24 @@ export interface Captions {
 export type EasingName = 'linear' | 'ease' | 'ease-in' | 'ease-out' | 'ease-in-out' | 'hold'
 
 /** The transform properties that can be keyframed. Which item KINDS support
- *  keyframing is decided by `canKeyframe`
+ *  which of them is decided by `canKeyframe` / `canKeyframeProp`
  *  (`montaj_assets/editor/src/video/keyframeOps.ts`) — the runtime source of
- *  truth, not this type. It's overlay-only today, and that's a render
- *  constraint rather than a UI preference: `geometryFor` (timeline-core)
- *  reads only an item's static scalars and never its `keyframes`, and the
- *  ffmpeg composite emits one static box per segment. The preview gates on
- *  the same overlay-only condition (`preview/OverlayItemsLayer.tsx:466`) so
- *  it can never promise motion the export cannot reproduce — a keyframed
- *  video would animate nowhere, a confusing no-op rather than a wrong
- *  export. Widening it is three coordinated changes — `canKeyframe`, that
- *  preview branch, and the renderer's per-frame geometry — landed together
- *  or not at all. */
-export type KeyframeProp = 'offsetX' | 'offsetY' | 'scale' | 'rotation' | 'opacity'
+ *  truth, not this type.
+ *
+ *  `keyframes` is NO LONGER overlay-only (SP9d). Overlays, `image` and
+ *  `video` items all animate their geometry, in the preview and in the
+ *  export alike: the renderer compiles each curve into a time-varying ffmpeg
+ *  filter expression (`render/encode-segment.js`, `animatedGeometry`), which
+ *  is the per-frame hook the ffmpeg path used to lack.
+ *
+ *  OPACITY ANIMATION is what stayed overlay-only, and that one IS a hard
+ *  render constraint: ffmpeg applies alpha through `colorchannelmixer`,
+ *  whose `aa` option is a `<double>` and accepts no expression at all, so a
+ *  clip cannot be faded through that path in any form. Overlays escape it by
+ *  being captured frame-by-frame in a browser, where opacity is just CSS.
+ *  See `canKeyframeProp` for the full reasoning and `docs/RENDER.md` for the
+ *  measured cost of the alternative. */
+export type KeyframeProp = 'offsetX' | 'offsetY' | 'scale' | 'scaleX' | 'scaleY' | 'rotation' | 'opacity'
 
 export interface Keyframe {
   t: number               // ITEM-relative seconds — 0 is the item's own `start`, not timeline zero
@@ -165,6 +170,8 @@ export interface VisualItem {
   offsetX?: number
   offsetY?: number
   scale?: number
+  scaleX?: number          // absent = fall back to `scale` (the resolver does `scaleX ?? scale ?? 1`)
+  scaleY?: number          // absent = fall back to `scale` (the resolver does `scaleY ?? scale ?? 1`)
   opacity?: number        // 0.0–1.0
   fit?: 'cover' | 'contain' | 'fill'  // image type only — how the source fills its box. Default 'cover' (AR-preserving fill+crop). 'contain' letterboxes; 'fill' is legacy stretch (no AR).
   volume?: number         // video audio level 0.0–2.0, default 1.0 (ignored for images)
@@ -173,7 +180,7 @@ export interface VisualItem {
    *  (video/keyframeOps.ts), the runtime source of truth — see `KeyframeProp`
    *  above for why it's overlay-only today (a render constraint, not a UI
    *  preference). */
-  keyframes?: KeyframeTrack[]  // animates the five transform props over the item's own lifetime. Absent = today's static item, which renders on the unchanged ffmpeg-positioned path.
+  keyframes?: KeyframeTrack[]  // animates the transform props over the item's own lifetime. Overlays, images and video clips all honour it; `opacity` animates on overlays ONLY (see KeyframeProp). Absent = a static item, which renders on the unchanged ffmpeg-positioned path.
   opaque?: boolean        // legacy boolean kept for old overlay items
   props?: Record<string, unknown>  // overlay type only
   googleFonts?: string[]  // overlay type only — Google Fonts family specs (e.g. ["Syne:wght@800"])

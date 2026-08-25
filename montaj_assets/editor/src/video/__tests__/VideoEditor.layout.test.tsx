@@ -59,6 +59,10 @@ function makeFakeAdapter(): EditorAdapter<Project> {
 }
 
 beforeEach(() => {
+  // The caption panel now splits into Style / Captions sub-tabs and defaults
+  // to Style; these tests select captions from the transcript list, so pin the
+  // sub-tab to 'captions' (usePersistentState reads this at mount).
+  window.localStorage.setItem('montaj.editor.captionPanelTab', JSON.stringify('captions'))
   vi.spyOn(console, 'warn').mockImplementation(() => {})
   vi.spyOn(console, 'error').mockImplementation(() => {})
   ;(globalThis as unknown as { ResizeObserver: unknown }).ResizeObserver = class {
@@ -245,8 +249,10 @@ describe('VideoEditor — a caption id ahead of a clip id in selectedIds (D1)', 
     // enabled, not stuck on "Select a clip to crop".
     expect(screen.getByLabelText('Crop source').hasAttribute('disabled')).toBe(false)
     // selectedOverlayItem correctly stayed null — the resolved item is the
-    // video clip, not the overlay, so no stray "Edit overlay" button.
-    expect(screen.queryByLabelText('Edit overlay')).toBeNull()
+    // video clip, not the overlay, so the right panel's Content/Transform tab
+    // strip (`role="group" aria-label="Overlay panel view"`, only drawn when
+    // `overlayPropertiesPanel` has a truthy `selectedOverlayItem`) is absent.
+    expect(screen.queryByRole('group', { name: 'Overlay panel view' })).toBeNull()
 
     // Seek inside the clip (splitting exactly at a clip's start/end is a
     // no-op — see splitAtTime), then Split. Pre-fix, primarySelectedId was
@@ -280,7 +286,15 @@ describe('VideoEditor — a caption id ahead of a clip id in selectedIds (D1)', 
     )
     await selectCaptionThenAdditively(container, project, { type: 'overlay' })
 
-    expect(screen.getByLabelText('Edit overlay')).toBeTruthy()
+    // selectedOverlayItem resolved to the overlay (not null): `overlayPropertiesPanel`
+    // (VideoEditor.tsx, shared by both layouts' right rail) only draws its
+    // Content/Transform tab strip — `role="group" aria-label="Overlay panel
+    // view"` — when `selectedOverlayItem` is truthy; with nothing (or a
+    // non-overlay) selected it falls through to OverlayInspector's bare empty
+    // state instead. The floating "Edit overlay" Pencil button this test used
+    // to probe with is gone (folded into this same panel), but the tab strip
+    // proves the same resolution this test is actually about.
+    expect(screen.getByRole('group', { name: 'Overlay panel view' })).toBeTruthy()
     // The overlay is not croppable — cropTarget correctly stayed null.
     expect(screen.getByLabelText('Crop source').hasAttribute('disabled')).toBe(true)
   })
@@ -299,7 +313,10 @@ describe('VideoEditor — a caption id ahead of a clip id in selectedIds (D1)', 
     fireEvent.click(await screen.findByText('caption one'))
 
     expect(screen.getByLabelText('Crop source').hasAttribute('disabled')).toBe(true)
-    expect(screen.queryByLabelText('Edit overlay')).toBeNull()
+    // primarySelectedId is null for a caption-only selection, so
+    // selectedOverlayItem is null too — the Content/Transform tab strip
+    // (`role="group" aria-label="Overlay panel view"`) doesn't render.
+    expect(screen.queryByRole('group', { name: 'Overlay panel view' })).toBeNull()
 
     // primarySelectedId is null (caption-only selection). Split with nothing
     // selected resolves the MAIN video track's clip under the playhead

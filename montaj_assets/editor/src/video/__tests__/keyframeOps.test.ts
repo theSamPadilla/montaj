@@ -15,6 +15,8 @@ import {
   enableKeyframing,
   disableKeyframing,
   removeKeyframesAt,
+  isUniformScale,
+  transformProps,
 } from '../keyframeOps'
 
 function overlay(over: Partial<VisualItem> = {}): VisualItem {
@@ -445,23 +447,26 @@ describe('canKeyframe — the single gate on which items support keyframing', ()
     expect(canKeyframe({ id: 'o', type: 'overlay', start: 0, end: 5 } as VisualItem)).toBe(true)
   })
 
-  it('rejects video and image items', () => {
-    // NOT a UI preference: `geometryFor` (timeline-core) never reads
-    // `item.keyframes`, and the ffmpeg path emits ONE static box per segment.
-    // The preview gates on the SAME overlay-only condition on purpose
-    // (`preview/OverlayItemsLayer.tsx:466`), so a keyframed video would
-    // animate nowhere — a confusing no-op. Turning it on is three coordinated
-    // changes: this predicate, that preview branch, and the renderer.
-    expect(canKeyframe({ id: 'v', type: 'video', start: 0, end: 5 } as VisualItem)).toBe(false)
-    expect(canKeyframe({ id: 'i', type: 'image', start: 0, end: 5 } as VisualItem)).toBe(false)
+  it('ACCEPTS video and image items (SP9d)', () => {
+    // Was false, and the reason it was false is gone. The ffmpeg path used to
+    // emit ONE static box per segment with no per-frame hook; encode-segment.js
+    // now compiles a curve into a time-varying filter expression, and the
+    // preview animates clips to match. Three coordinated changes, landed
+    // together: this predicate, that preview branch, and the renderer.
+    expect(canKeyframe({ id: 'v', type: 'video', start: 0, end: 5 } as VisualItem)).toBe(true)
+    expect(canKeyframe({ id: 'i', type: 'image', start: 0, end: 5 } as VisualItem)).toBe(true)
   })
 
-  it('rejects a video item even when it carries a stray keyframes array', () => {
-    const strays = {
+  it('still rejects kinds with no transform at all', () => {
+    expect(canKeyframe({ id: 'a', type: 'audio', start: 0, end: 5 } as unknown as VisualItem)).toBe(false)
+  })
+
+  it('accepts a video item carrying a keyframes array', () => {
+    const kf = {
       id: 'v', type: 'video', start: 0, end: 5,
       keyframes: [{ prop: 'scale', points: [{ t: 0, value: 1 }] }],
     } as unknown as VisualItem
-    expect(canKeyframe(strays)).toBe(false)
+    expect(canKeyframe(kf)).toBe(true)
   })
 
   it('rejects null/undefined without throwing', () => {
@@ -529,5 +534,110 @@ describe('removeKeyframesAt — removes every prop keyed at one instant, without
       keyframes: [{ prop: 'scale', points: [{ t: 1, value: 3 }] }],
     } as unknown as VisualItem
     expect(removeKeyframesAt(item, 1).keyframes).toBeUndefined()
+  })
+})
+
+describe('isUniformScale — how an overlay is AUTHORED, not what its numbers are', () => {
+  it('is true for an item carrying no per-axis scale at all', () => {
+    expect(isUniformScale(overlay())).toBe(true)
+    expect(isUniformScale(overlay({ scale: 1.2 }))).toBe(true)
+  })
+
+  it('is false for either per-axis SCALAR on its own', () => {
+    expect(isUniformScale(overlay({ scaleX: 1.2 }))).toBe(false)
+    expect(isUniformScale(overlay({ scaleY: 1.2 }))).toBe(false)
+  })
+
+  it('is false for either per-axis TRACK, even with no scalar', () => {
+    const keyed = (prop: 'scaleX' | 'scaleY') =>
+      overlay({ keyframes: [{ prop, points: [{ t: 0, value: 1 }] }] })
+    expect(isUniformScale(keyed('scaleX'))).toBe(false)
+    expect(isUniformScale(keyed('scaleY'))).toBe(false)
+  })
+
+  it('stays false when the two axes happen to be EQUAL', () => {
+    // The whole reason absence is the test. An overlay the operator unlocked on
+    // purpose and left at 120%/120% is authored per-axis; an equality test
+    // would silently re-lock it the moment the two numbers met.
+    expect(isUniformScale(overlay({ scaleX: 1.2, scaleY: 1.2 }))).toBe(false)
+  })
+
+  it('ignores an EMPTY per-axis track, which is not an animation', () => {
+    // withTrack never leaves one behind, but a hand-edited project.json can.
+    expect(isUniformScale(overlay({ keyframes: [{ prop: 'scaleX', points: [] }] }))).toBe(true)
+  })
+
+  it('is unmoved by tracks on other props', () => {
+    expect(isUniformScale(overlay({
+      keyframes: [{ prop: 'scale', points: [{ t: 0, value: 1 }, { t: 5, value: 2 }] }],
+    }))).toBe(true)
+  })
+})
+
+describe('transformProps — the set an all-props action may walk', () => {
+  it('gives a uniform item `scale` and NEITHER per-axis prop', () => {
+    const props = transformProps(overlay({ scale: 1.2 }))
+    expect(props).toEqual(['offsetX', 'offsetY', 'scale', 'rotation', 'opacity'])
+  })
+
+  it('gives a per-axis item both axes and NOT `scale`', () => {
+    const props = transformProps(overlay({ scaleX: 1.5, scaleY: 0.5 }))
+    expect(props).toEqual(['offsetX', 'offsetY', 'scaleX', 'scaleY', 'rotation', 'opacity'])
+  })
+
+  it('never mixes the uniform and per-axis scale props', () => {
+    // The invariant, whatever the item: the scale props returned are EITHER
+    // exactly ['scale'] OR exactly ['scaleX','scaleY']. A list carrying all
+    // three would have one shadowing the others.
+    const items = [
+      overlay(),
+      overlay({ scale: 2 }),
+      overlay({ scaleX: 1 }),
+      overlay({ scaleY: 1 }),
+      overlay({ scale: 2, scaleX: 1, scaleY: 1 }),
+      overlay({ keyframes: [{ prop: 'scaleX', points: [{ t: 0, value: 1 }] }] }),
+      overlay({ keyframes: [{ prop: 'scale', points: [{ t: 0, value: 1 }] }] }),
+    ]
+    for (const item of items) {
+      const scaleProps = transformProps(item).filter(p => p.startsWith('scale'))
+      expect([['scale'], ['scaleX', 'scaleY']]).toContainEqual(scaleProps)
+    }
+  })
+
+  it('returns the same prop ORDER for both shapes, so the two agree bar the scale slot', () => {
+    const strip = (item: VisualItem) => transformProps(item).filter(p => !p.startsWith('scale'))
+    expect(strip(overlay())).toEqual(strip(overlay({ scaleX: 1, scaleY: 1 })))
+    expect(strip(overlay())).toEqual(['offsetX', 'offsetY', 'rotation', 'opacity'])
+  })
+
+  it('keying every returned prop leaves a uniform animation still animating', () => {
+    // The failure this function exists to prevent, driven end to end: a
+    // one-point scaleX track would shadow the `scale` track and freeze the zoom.
+    const item = overlay({
+      keyframes: [{ prop: 'scale', points: [{ t: 0, value: 1 }, { t: 10, value: 3 }] }],
+    })
+    let next = item
+    for (const prop of transformProps(item)) {
+      next = setKeyframe(enableKeyframing(next, prop, 5), prop, 5, valueAt(item, prop, 5))
+    }
+
+    expect(trackFor(next, 'scaleX')).toBeUndefined()
+    expect(valueAt(next, 'scaleX', 0)).toBe(1)
+    expect(valueAt(next, 'scaleX', 10)).toBe(3)
+    expect(valueAt(next, 'scaleY', 10)).toBe(3)
+  })
+
+  it('keying every returned prop actually bites on a per-axis item', () => {
+    // The symmetric failure: `scale` is shadowed there, so keying it would look
+    // like the gesture did nothing.
+    const item = overlay({ scaleX: 1.5, scaleY: 0.5 })
+    let next = item
+    for (const prop of transformProps(item)) {
+      next = setKeyframe(enableKeyframing(next, prop, 5), prop, 5, valueAt(item, prop, 5))
+    }
+
+    expect(trackFor(next, 'scaleX')!.points).toEqual([{ t: 5, value: 1.5 }])
+    expect(trackFor(next, 'scaleY')!.points).toEqual([{ t: 5, value: 0.5 }])
+    expect(trackFor(next, 'scale')).toBeUndefined()
   })
 })

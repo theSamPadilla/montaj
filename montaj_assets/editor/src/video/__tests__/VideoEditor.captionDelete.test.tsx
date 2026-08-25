@@ -79,6 +79,10 @@ function makeFakeAdapter(): FakeAdapter {
 }
 
 beforeEach(() => {
+  // The caption panel now splits into Style / Captions sub-tabs defaulting to
+  // Style; this test deletes from the transcript list, so pin the sub-tab to
+  // 'captions' (usePersistentState reads this at mount).
+  window.localStorage.setItem('montaj.editor.captionPanelTab', JSON.stringify('captions'))
   vi.spyOn(console, 'warn').mockImplementation(() => {})
   vi.spyOn(console, 'error').mockImplementation(() => {})
   ;(globalThis as unknown as { ResizeObserver: unknown }).ResizeObserver = class {

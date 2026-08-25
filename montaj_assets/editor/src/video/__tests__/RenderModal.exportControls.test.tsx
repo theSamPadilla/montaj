@@ -98,32 +98,6 @@ describe('RenderModal — Resolution radiogroup', () => {
     expect(screen.queryByRole('radiogroup', { name: 'Resolution' })).toBeNull()
   })
 
-  it('flags only the MAX available tier as recommended', () => {
-    render(
-      <RenderModal
-        adapter={pollAdapter()}
-        projectId="vid-1"
-        onClose={vi.fn()}
-        preRenderOptions={{
-          isHdr: false,
-          keeps: KEEPS,
-          resolution: {
-            value: [1080, 1920],
-            available: [[720, 1280], [1080, 1920], [2160, 3840]],
-            set: vi.fn(),
-          },
-        }}
-      />,
-    )
-
-    const radios = within(resGroup()).getAllByRole('radio')
-    radios.forEach(radio => {
-      const hasBadge = within(radio).queryByText(/recommended/i) !== null
-      const is2160 = within(radio).queryByText('2160p (4K)') !== null
-      expect(hasBadge).toBe(is2160)
-    })
-  })
-
   it('does not offer 1440p or 2160p for a 1080p-source-only project', () => {
     const project = makeProject({
       settings: { resolution: [1080, 1920] },
@@ -148,7 +122,7 @@ describe('RenderModal — Resolution radiogroup', () => {
     expect(within(resGroup()).queryByText(/2160p/)).toBeNull()
   })
 
-  it('offers up to 2160p for a 4K-source project, with 2160p recommended and 1080p not', () => {
+  it('offers up to 2160p for a 4K-source project (1080p also available)', () => {
     const project = makeProject({
       settings: { resolution: [1080, 1920] },
       tracks: vtracks([videoClip({ sourceWidth: 2160, sourceHeight: 3840 })]),
@@ -173,8 +147,6 @@ describe('RenderModal — Resolution radiogroup', () => {
     const tile1080 = radios.find(r => within(r).queryByText('1080p (HD)') !== null)
     expect(tile2160).toBeTruthy()
     expect(tile1080).toBeTruthy()
-    expect(within(tile2160!).queryByText(/recommended/i)).toBeTruthy()
-    expect(within(tile1080!).queryByText(/recommended/i)).toBeNull()
   })
 
   it('calls set with the clicked tier, never the current value', () => {

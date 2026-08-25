@@ -306,23 +306,42 @@ reading its static field exactly as before; a track is only consulted for the
 props it names. Before an animated property's first keyframe or after its
 last, the value clamps to that endpoint rather than extrapolating.
 
-**Overlays only, for the final render.** `image` and `video` items ignore
-`keyframes` there even if present, as does the project's own background video
-transform: those are composited by ffmpeg with no per-frame browser step to
-bake a moving transform into, so there is nowhere for a curve to be captured.
-Only `overlay` items — which already go through a per-frame Puppeteer capture
-— can animate in the actual export.
+**Which kinds animate, and which property does not.** `overlay`, `image` and
+`video` items all animate `offsetX`, `offsetY`, `scale`/`scaleX`/`scaleY` and
+`rotation`, in the editor preview and in the rendered export alike. Overlays get
+that from the per-frame Puppeteer capture they already went through; clips get it
+from the renderer compiling each curve into a time-varying ffmpeg filter
+expression (`render/encode-segment.js`, `animatedGeometry`).
 
-One narrower path does NOT follow that rule: `resolveItem`
-(`timeline-core/src/activation.js`) calls `geometryAt` for every item kind,
-not `overlay` alone, and the Export dialog's still-frame preview
-(`render/sample-frame.js`) reads that result for image/video pseudo-items
-too. A hand-authored `image`/`video` item carrying `keyframes` would therefore
-animate in that one still-frame sample even though the real render still
-composites it statically — the two disagree in that narrow case. This is not
-reachable through the editor: nothing in it ever writes `keyframes` onto an
-image or video item, so the divergence only matters for hand-edited or
-agent-authored `project.json`.
+**`opacity` is the exception: it animates on overlays and NOWHERE on a clip.**
+That is a hard limit of ffmpeg, not a scope decision. Alpha is applied through
+`colorchannelmixer`, whose `aa` option is declared `<double>` — it takes a
+literal number and accepts no expression at any evaluation mode. (The `T` flag
+ffmpeg prints beside it is `AV_OPT_FLAG_RUNTIME_PARAM`, i.e. settable via
+`sendcmd`/`zmq`; it is not expression support, and it has been misread as such.)
+So there is no way to fade a clip through the ffmpeg path at all. An `opacity`
+track on an `image` or `video` item is therefore IGNORED everywhere:
+
+- the render composites the static `opacity` scalar;
+- the editor preview shows that same static value, deliberately, so it never
+  promises a fade the export cannot produce;
+- the editor will not write such a track in the first place — `canKeyframeProp`
+  excludes it, the inspector's opacity keyframe control is visibly disabled with
+  a reason, and double-click-to-key skips it;
+- the Export dialog's still-frame preview reads the static scalar too.
+
+That last point closes a divergence this document used to describe. `resolveItem`
+(`timeline-core/src/activation.js`) calls `geometryAt` for every item kind, so a
+clip's sampled geometry has always been available to `render/sample-frame.js` —
+which is now correct for position/scale/rotation, because the export animates
+those. For `opacity` it would have been wrong, so the sampler explicitly reads
+`item.opacity` rather than the sampled value. The still frame's job is to show
+what the export will look like, so it agrees with the export on every property.
+
+Closing the opacity gap for real would need the per-frame browser bake extended
+to video: decode every frame of the animated span and composite it the way
+overlays already are. That was measured at 14–33× the expression path's render
+time and is out of scope; see `docs/RENDER.md`.
 
 ---
 

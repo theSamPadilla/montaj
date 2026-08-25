@@ -44,7 +44,7 @@ When the agent marks the project `draft`, the UI surfaces it for human adjustmen
 - Full timeline with clip, caption, and overlay tracks
 - Preview player: the WebCodecs playback engine painting to canvas (or the `<video>` fallback), with CSS-positioned overlays
 - Left panel: a tabbed browser (Media / Captions / Versions) — see "Panel layout"
-- Right panel: the properties of the current selection (an overlay's Transform)
+- Right panel: the properties of the current selection (an overlay's Content and Transform tabs)
 - Caption editor: click to edit text inline, drag to retime
 - Overlay editor: add/remove/reposition title cards, lower thirds
 - Prompt bar: modify the prompt and re-run the agent
@@ -176,7 +176,7 @@ the shell. Today it carries three:
 | Tab | Content |
 |---|---|
 | **Media** | The footage bin / assets panel |
-| **Captions** (default) | `CaptionListPanel` with its existing sub-controls |
+| **Captions** (default) | `CaptionListPanel` — its own Format / Styles / Captions sub-tabs (see "Caption panel" below) |
 | **Versions** | The consolidated version list (see "Version history") |
 
 Audio, Effects and Text are the obvious future tabs; the shell is built to take
@@ -196,6 +196,41 @@ Two behaviors worth knowing:
 The rail is a real ARIA tablist: arrow keys move between tabs, Home and End jump
 to the ends.
 
+### Caption panel: Format, Styles, and Captions
+
+`CaptionListPanel` has its own sub-tab switch above its content, **Format**
+(the default), **Styles**, and **Captions**. It is one node rendered by both
+layouts — the CapCut left panel's Captions tab and the classic right rail — so
+neither layout can drift from the other. The active sub-tab persists across
+reloads (`localStorage`, key `montaj.editor.captionPanelTab`); a `'style'`
+value left over from an earlier build maps to `'format'`. That migration is
+belt-and-braces rather than load-bearing: `'format'` is also the fallback for
+an unrecognised stored value, so a stale entry lands on the same tab either way.
+
+**Format.** The fine controls, moved verbatim from the retired collapsible
+"Caption style" subsection: font size, base and accent colors, the font
+specimen, font family picker, bold, case, alignment, letter spacing, line
+height. It is the default tab — the controls an operator reaches for most
+often once a style is chosen.
+
+**Styles.** A card grid replacing the old row of text chips, one card per
+caption style, each rendering that style's real
+`render/templates/captions/*.jsx` template — the same one the final export
+uses — on a four-word sample, so the preview and the burned-in output can't drift.
+Hovering a card plays the style's actual animation (pop pops, karaoke fills,
+word-by-word steps); clicking a card applies it, and the active style's card
+shows a selected accent ring. This needs the host adapter's `compileOverlay`
+and `resolveCaptionTemplate`, wired through as two new optional props on
+`CaptionListPanelProps`; a host that omits either (Hub, Los Parceros) falls
+back to a static styled specimen card per style instead — still clickable,
+just not animated. Opening the tab compiles all seven caption templates (a
+fetch plus a Babel transpile each, cached per source afterward) rather than
+just the one the live preview already compiles; animation is hover-gated, so
+only the card under the cursor is doing per-frame work.
+
+**Captions.** The transcript list — search, row filters, per-segment editing,
+footer actions. Unchanged by the Format/Styles split.
+
 ### Right panel: properties only
 
 The right panel holds exactly one thing, the properties of the current
@@ -204,10 +239,10 @@ resize as you click around. What it shows depends on what is selected:
 
 | Selected | Panel shows |
 |---|---|
-| An overlay | The **Transform** panel (below) |
-| A video or image clip | **Clip**: volume, mute, and (video only) speed |
+| An overlay | **Content** and **Transform** tabs (below), Content first |
+| A video or image clip | **Transform, Speed, Volume, Crop** and **Generate** tabs (below); which tabs appear depends on the clip |
 | An audio track | **Audio track**: label, volume, mute, fades, ducking, trim and position |
-| Nothing | A short "select an overlay" line |
+| Nothing | A short "Select an element" line |
 
 Clip and audio properties used to live in a double-click modal. They are now
 edited in place, which is why a speed change made from the panel still ripples
@@ -217,26 +252,65 @@ Deleting an audio track is deliberately **not** in the panel: it is a
 destructive action, and the panel is somewhere you land just by selecting.
 Select the track on the timeline and press Delete or Backspace instead.
 
-On an AI-video project, a selected generated clip also gets a **Generation**
-section beneath its properties, showing the frozen prompt, model and attempt
-history, with the regenerate flow. That content is supplied by the host (it
-reads the project's regeneration queue and storyboard, which the editor package
-knows nothing about) through the `renderGenerationPanel` seam.
+On an AI-video project, a selected generated clip also gets a **Generate**
+tab, showing the frozen prompt, model and attempt history, with the
+regenerate flow. That content is supplied by the host (it reads the
+project's regeneration queue and storyboard, which the editor package knows
+nothing about) through the `renderGenerationPanel` seam.
 
-### Properties panel (Transform)
+### Overlay properties: Content and Transform tabs
 
-`video/OverlayInspector.tsx`. One collapsible **Transform** section over the five
-keyframeable properties, with a keyframe `‹ ◇ ›` unit on every animatable row and
-one in the header covering all five (see "Overlay keyframes"):
+Selecting an overlay shows two tabs above its properties, **Content** (the
+default) and **Transform**, in the same right panel a selected clip or audio
+track uses. This replaced a floating "Edit overlay" dialog, which is gone
+completely, along with the Pencil "Edit overlay" button that used to open it
+from the controls bar. The active tab persists across reloads (`localStorage`,
+key `montaj.editor.overlayPanelTab`) the same way the left panel's tab does.
+Double-clicking an overlay in the preview now selects it — landing on
+whichever tab was last open — instead of opening a modal. Every field in
+either tab previews live against the canvas and commits on blur as one undo
+step; there is no Save button and no Cancel, so undo is the way back out of
+an edit.
 
-- **Scale** — a slider plus X and Y value boxes with steppers. The X/Y pair is
-  linked by a uniform-scale lock, currently fixed on: an overlay has a single
-  scale factor, so width and height always scale together and both boxes drive
-  the same value. Separate `scaleX`/`scaleY` is a follow-up that has to change
-  the schema, the shared geometry in `@bycrux/timeline-core`, the preview
-  transform, the drag gestures' edge-snap and the ffmpeg render bake together;
-  the row is laid out for it now so that lands as an unlock rather than a
-  redesign.
+The tab strip itself (`video/panels/TabNav.tsx`) is a shared component: the
+same underline strip, uppercase labels with an accent underline under the
+active tab, also drives the caption panel's Format/Styles/Captions switch
+(see "Caption panel" above) and the clip properties tabs below, so none of
+them can visually drift apart.
+
+**Content tab.** `video/panels/OverlayContentPanel.tsx`. The overlay's own
+primitive props, inferred straight from whatever the item's `props` object
+carries — there's no schema to register a component with. Each field renders
+as the control its value's shape calls for: a boolean as a checkbox, a finite
+number as a stepper, a string matching `#hex` as a color swatch, a string that
+looks like an image (a known image extension, or a `data:image/…` URL) as a
+thumbnail with a file picker (degrading to a plain path text field on a host
+with no upload support), and everything else as a single-line text field.
+That's what makes an AI-written one-off overlay just as editable as a shipped
+template. Non-primitive props (arrays, objects, null) aren't shown and aren't
+touched — every write spreads the item's whole `props` record, so they ride
+through unchanged. With nothing selected, or an overlay with no editable
+props, the panel shows a short prompt instead of an empty field list.
+
+**Transform tab.** `video/OverlayInspector.tsx`. One **Transform** section
+over the keyframeable geometry, with a keyframe `‹ ◇ ›` unit on every
+animatable row and one in the header covering all of them (see "Overlay
+keyframes"). The section header used to carry a fold/unfold chevron; it's
+gone now that Transform is reached by selecting its own tab rather than
+sharing a pane with other fields, so there's nothing left to collapse it
+for — the section is always open:
+
+- **Scale** — a slider plus X and Y value boxes with steppers, and a
+  uniform-scale lock between them. Locked (the default) is a single scale
+  factor: both boxes drive the same value, and the preview selection box's
+  four corner handles resize it, both axes together. Unlock it to scale width
+  and height independently — from the X/Y boxes, or by dragging the preview's
+  four edge handles, each of which moves one axis (the corner handles still
+  move both). Unlocking seeds both axes from the scale the overlay already
+  has, so nothing visibly jumps; re-locking collapses them back to one number,
+  keeping the X value and dropping Y. Non-uniform scale is stored as
+  `scaleX`/`scaleY` on the item (absent falls back to `scale`), and both are
+  keyframeable like every other row here.
 - **Position** — X and Y offset boxes, each with a stepper.
 - **Rotate** — a value box plus a circular dial. The dial is keyboard operable
   (arrows step one degree, Shift steps fifteen).
@@ -248,13 +322,52 @@ one in the header covering all five (see "Overlay keyframes"):
   drag snapping, so a button and a snapped drag land on identical values. An
   overlay at scale 1 or above already covers the frame and has no edge to align
   to, so every alignment collapses to centered rather than pushing it off-frame.
-- **Reset** (the header's ⟲) returns all five properties to their defaults. It
-  deliberately does not delete keyframe tracks: on an animated property it keys
-  the default value at the playhead, the same non-destructive rule the rest of
-  the panel follows. Clearing a track is the row diamond's job.
+- **Reset** (the header's ⟲) returns every property to its default. On an
+  unlocked overlay that resets `scaleX` and `scaleY` to 1 each; it does not
+  re-lock the overlay back to uniform scale, since the lock is an authoring
+  choice, not a transform value with a default of its own. Reset deliberately
+  does not delete keyframe tracks either: on an animated property it keys the
+  default value at the playhead, the same non-destructive rule the rest of the
+  panel follows. Clearing a track is the row diamond's job.
 
 Editing any control while a property is already animated adds a keyframe at the
 playhead instead of overwriting the animation.
+
+### Clip properties: Transform, Speed, Volume, Crop, Generate tabs
+
+Selecting a video or image clip on the timeline shows the same right panel,
+tabbed with up to five tabs, opening on **Transform**: **Transform, Speed,
+Volume, Crop, Generate**, using the shared `TabNav` strip described above.
+This replaced a flat pane that only ever showed Volume and, for a video
+clip, Speed, with no way to move, scale or rotate a clip from the panel.
+
+Which tabs show depends on the selected clip, not a fixed set:
+
+| Tab | Shown when | Content |
+|---|---|---|
+| **Transform** | Always | The same `OverlayInspector` scale/position/rotate/opacity/align controls overlays use — see "Overlay properties" above. Section header has no fold/unfold chevron; it's always open |
+| **Speed** | Video clips only | The speed control; ripples the timeline the same way a speed change always has |
+| **Volume** | Always | Volume slider and Mute |
+| **Crop** | The clip is the main-track video with a source | Opens the dedicated crop tool |
+| **Generate** | The clip is a generated clip | The host's regenerate flow (prompt, model, attempt history), supplied through the `renderGenerationPanel` seam, same as the Generate row described above |
+
+The active tab is remembered per browser (`localStorage`, key
+`montaj.editor.clipPanelTab`) the same way the overlay and caption panel
+tabs are; selecting a clip whose tab set doesn't include the last-remembered
+tab (e.g. an image clip after Speed was active) falls back to Transform
+rather than showing a blank pane.
+
+Clips keyframe the same way overlays do, through the same Transform tab:
+editing a property that has no keyframes yet sets a static transform on the
+whole clip rather than creating one, and only once a property already has a
+keyframe does editing it at the playhead add another. Opacity is the one
+property that can be set statically on a clip but never keyframed, the same
+ffmpeg limitation described under "Keyframes" below. This is UI wiring over
+transforms the render engine already supported for clips; a project with no
+clip transforms renders exactly as it did before.
+
+Audio tracks are unaffected by any of this and keep their own untabbed
+panel (see the table above); captions keep their own left-panel flow.
 
 ---
 
@@ -272,6 +385,23 @@ eligible for the engine, and what a third-party host gets unless it opts in.
 - Preview time follows the shared playback clock, on both paths alike
 - Preview is an **approximation** — CSS overlays are close but not pixel-perfect to the final render burn-in. The render is what matters.
 - A slim controls row sits on chrome beneath the preview (not floating over the video itself): a `current / total` timecode readout on the left, and zoom-to-fit, a safe-zone preview toggle, and fullscreen on the right. The safe-zone toggle overlays a TikTok-style UI chrome guide (status bar, nav, engagement rail) on top of the video so you can see what a platform's own UI would cover, off by default. Fullscreen is also reachable via the `F` key (see "Keyboard shortcuts" below); the controls row stays available once fullscreened, and exits via `F` again, the button, or the browser's own Escape
+
+### Selection box
+
+A selected overlay and a selected base clip (`tracks[0]` video) draw the exact
+same selection chrome, so they read as the same kind of object rather than two
+different affordances: a 2px `var(--editor-selection)` outline around the
+item's bounding box, plus eight 12x12 white squares with a selection-coloured
+border — one at each corner and one at the midpoint of each edge. The four
+corner handles resize both axes together; the four edge handles resize one
+axis only, which is what makes non-uniform overlay scale (see "Overlay
+properties: Content and Transform tabs" above) reachable by dragging, not just
+from the Transform tab's boxes. A rotate handle sits above the box on a short
+stem. Every handle counter-scales against the item's own `scale(scaleX,
+scaleY)` so it stays a constant square regardless of how large or stretched
+the item is. Drag snap guides (to the frame edges, other items, and the
+playhead) are drawn from the same `var(--editor-selection)` token, so they
+match the box and handles rather than standing out as a separate colour.
 
 ### Playback engine
 
@@ -393,15 +523,24 @@ host built against the older DOM-rows timeline is maintained internally.
   fit-relative multiple and can show a value below 1× (zooming out past "fit
   the whole project" is possible).
 
-### Overlay keyframes
+### Keyframes
 
-An overlay's `offsetX`, `offsetY`, `scale`, `rotation`, and `opacity` can each
-be animated over the overlay's own lifetime rather than held fixed. Two
-surfaces, both canvas-timeline-only — neither exists in the Overlays tab's
-live-preview page. Overlay-only is a render constraint, not a UI choice: the
-ffmpeg composite emits one static box per clip, and only overlays are
-captured frame-by-frame in a browser step that can bake motion into the
-pixels, so a keyframed clip would have nowhere to play its animation back.
+An item's `offsetX`, `offsetY`, `scale`, `rotation`, and `opacity` can each be
+animated over the item's own lifetime rather than held fixed. Two surfaces, both
+canvas-timeline-only — neither exists in the Overlays tab's live-preview page.
+
+**Video and image clips can be keyframed too**, not just overlays. Their
+position, scale and rotation animate in the preview and in the export alike: the
+renderer compiles each curve into a time-varying ffmpeg filter expression. This
+was overlay-only until SP9d, when the ffmpeg path gained that per-frame hook.
+
+**Opacity is the one property a clip cannot animate.** ffmpeg applies alpha
+through a filter that accepts a fixed number and no expression, so there is no
+way to fade a clip in the export. Rather than silently ignoring the setting, the
+opacity keyframe diamond is shown **disabled** on a video or image clip, with a
+tooltip explaining why; double-clicking a clip to key everything skips opacity
+for the same reason. Overlays are unaffected and still animate opacity normally
+— they are captured frame-by-frame in a browser, where opacity is just CSS.
 
 - **Setting a key.** Each property gets its own keyframe diamond toggle in
   the right-hand **Transform** panel (`OverlayInspector.tsx`, see "Properties

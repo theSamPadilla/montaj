@@ -1,32 +1,54 @@
 // Sidebar caption editor (SP5-captions Phase 5). Replaces the bottom
 // TranscriptPanel + its "Expand" TranscriptModal: instead of a two-line
 // vicinity strip at the bottom of the timeline pane, every caption segment
-// lives in a searchable, numbered list in the right rail, with the track-level
-// style/size/color controls tucked behind a collapsible subsection so the list
-// stays the prominent thing in a ~300px-wide column.
+// lives in a searchable, numbered list, under three sub-tabs — "Format" (the
+// track-level size/color/font controls, the default), "Styles" (the live
+// style gallery, CaptionStyleGallery.tsx) and "Captions" (the list itself) —
+// so the list stays the prominent thing in a ~300px-wide column. Mounted by
+// BOTH VideoEditor layouts: the CapCut left panel's Captions tab and the
+// classic right rail.
 import { Fragment, useEffect, useMemo, useRef, useState } from 'react'
-import { AlignCenter, AlignLeft, AlignRight, ChevronDown, ChevronRight, RefreshCw, Search, Trash2 } from 'lucide-react'
-import type { Project } from '../types'
+import { AlignCenter, AlignLeft, AlignRight, Loader2, RefreshCw, Search, Trash2 } from 'lucide-react'
+import type { Project, OverlayFactory } from '../types'
 import type { Captions } from '../schema'
 import type { PlaybackClock } from './playback-clock'
 import type { CaptionEditPatch } from './timeline/makeCaptionEdit'
 import { EditableSegment } from './timeline/EditableSegment'
 import { formatTime } from './timeline/utils'
 import { SwatchInput } from '../ui'
-import { reviveBoolean, usePersistentState } from '../ui/usePersistentState'
+import { usePersistentState } from '../ui/usePersistentState'
 import { groupCaptionLanes, laneOf } from './captionLanes'
 import { FontFamilyPicker, findFontOption } from '../text/FontPicker'
 import CaptionSpecimen from './CaptionSpecimen'
+import CaptionStyleGallery from './CaptionStyleGallery'
+import TabNav from './panels/TabNav'
 import { CAPTION_STYLE_LETTER_SPACING, CAPTION_STYLE_LINE_HEIGHT, CAPTION_STYLE_TEXT_TRANSFORM } from './captionStyleDefaults'
 
-/** Whether the "Caption style" subsection (size/color/preset controls) is
- *  expanded. A DIFFERENT key than the retired TranscriptPanel's
- *  'montaj.editor.captionsPanelExpanded' — that key gated the whole old
- *  bottom panel (controls + transcript body together); reusing it here would
- *  make this list inherit a stale on/off state that meant something else. */
-const CAPTION_STYLE_STORAGE_KEY = 'montaj.editor.captionListStyleExpanded'
-
-const STYLES = ['word-by-word', 'pop', 'karaoke', 'subtitle', 'highlight-box', 'outline', 'clean'] as const
+/** Which of the panel's three sub-tabs is showing: the fine formatting
+ *  controls, the style gallery, or the caption transcript. 'format' is the
+ *  default — you land on the size/colors/font/case controls, the thing an
+ *  operator reaches for most once a style is chosen, with the gallery of live
+ *  style previews one tab over and the full transcript one further. Replaces
+ *  the retired collapsible "Caption style" subsection; a DIFFERENT key than
+ *  that collapse's 'montaj.editor.captionListStyleExpanded' (a boolean) so a
+ *  stale expanded/collapsed value can never be misread as a tab name. */
+const CAPTION_TAB_STORAGE_KEY = 'montaj.editor.captionPanelTab'
+type CaptionPanelTab = 'styles' | 'format' | 'captions'
+/** Anything unrecognised reads as "no stored preference" (→ the default), with
+ *  ONE explicit migration: before the tab split a single 'style' tab held both
+ *  the preset chips and the fine controls. A browser carrying that value lands
+ *  on 'format' — the new default a returning user should see — rather than
+ *  being silently reset, which is what a plain reject-to-default would do. */
+export const reviveCaptionTab = (raw: unknown): CaptionPanelTab | null => {
+  if (raw === 'styles' || raw === 'format' || raw === 'captions') return raw
+  if (raw === 'style') return 'format' // migrate the pre-split value
+  return null
+}
+const CAPTION_TABS: readonly { value: CaptionPanelTab; label: string }[] = [
+  { value: 'format', label: 'Format' },
+  { value: 'styles', label: 'Styles' },
+  { value: 'captions', label: 'Captions' },
+]
 
 // ── Ported from TranscriptPanel.tsx (that file is being deleted) ──
 // Each caption style reads a different accent-color prop in its render template
@@ -64,18 +86,46 @@ const ALIGNMENTS = [
   { value: 'right', Icon: AlignRight, label: 'Align right' },
 ] as const
 
-/** The panel's one chip look, matching the STYLES preset row. The inactive
- *  foreground is `text-[var(--editor-text)] opacity-60` rather than
+/** The panel's one chip look, worn by every toggle on the Format tab (Bold,
+ *  case, alignment). The inactive foreground is
+ *  `text-[var(--editor-text)] opacity-60` rather than
  *  `text-[var(--editor-text)]/60` — Tailwind cannot generate an opacity
  *  modifier on an arbitrary var() color, so that class is a silent no-op (see
  *  the longer note on the row index span at the bottom of this file). The
- *  preset row's own inactive class predates that finding and is left alone. */
+ *  row-filter chips on the Captions tab hand-roll the same look with the older
+ *  `/N` classes; that predates the finding above and is left alone. */
 const chipClass = (active: boolean): string =>
   `text-[10px] rounded px-2 py-0.5 transition-all border ${
     active
       ? 'bg-[var(--editor-accent)]/20 border-[var(--editor-accent)]/60 text-[var(--editor-accent)]'
       : 'bg-[var(--editor-surface)] border-[var(--editor-border)] text-[var(--editor-text)] opacity-60 hover:opacity-100'
   }`
+
+/** One labeled row on the Format tab — a label on the left, its control filling
+ *  the rest. Worn by every row there so the whole tab reads as a two-column
+ *  grid (label · control) rather than a stack of loose widgets. */
+const rowClass = 'flex items-center gap-1.5'
+/** The label cell of a `rowClass` row. The width is FIXED rather than intrinsic
+ *  — that is the entire point: it is what makes the labels a column, so every
+ *  control starts at the same x instead of "Font" and "Alignment" indenting
+ *  their controls differently. `w-14` (56px) clears the longest label
+ *  ("Alignment") at this size and still leaves the ~300px rail enough room for
+ *  the widest control (the font picker + Bold).
+ *
+ *  `opacity-60`, NOT `text-[var(--editor-text)]/60` — an opacity modifier on an
+ *  arbitrary var() color is a silent no-op; see the note on `chipClass` above.
+ *
+ *  These labels are PRESENTATIONAL: plain sibling spans, never a
+ *  `<label htmlFor>`. A bound <label> REPLACES the control's accessible name,
+ *  which would silently rewrite "Caption font size" to "Font size" — losing the
+ *  disambiguation a screen reader needs in a rail that also carries overlay and
+ *  clip controls. Every control here keeps its own `aria-label` unchanged, and
+ *  a span that would then repeat those words as loose text beside it carries
+ *  `aria-hidden` so they aren't announced twice. `StepperField` is the one
+ *  exception, and doesn't need it: its span sits INSIDE the <label> bound to
+ *  its input, so it is consumed by that association rather than read as
+ *  standalone text — and `aria-label` still outranks it for the name. */
+const rowLabelClass = 'w-14 shrink-0 text-[10px] text-[var(--editor-text)] opacity-60'
 
 /** Display value for the letter-spacing stepper: the numeric part of a stored
  *  CSS length, read as em. Tolerates absent, '0.02em', '-0.02em', '.02em',
@@ -169,8 +219,14 @@ function StepperField({ label, ariaLabel, value, min, max, step, unit, placehold
   }
 
   return (
-    <label className="flex items-center gap-1 min-w-0">
-      <span className="text-[10px] text-[var(--editor-text)] opacity-60 shrink-0">{label}</span>
+    // Wears `rowClass`/`rowLabelClass` so a stepper lines up with the plain
+    // rows around it. This one is a real bound <label> rather than the
+    // presentational span those rows use, and that is safe here for the same
+    // reason it was before: `aria-label` on the input OUTRANKS label content in
+    // the accessible-name calculation, so the field is still announced as
+    // "Caption letter spacing" / "Caption line height", not "Spacing" / "Line".
+    <label className={rowClass}>
+      <span className={rowLabelClass}>{label}</span>
       <input
         type="number"
         aria-label={ariaLabel}
@@ -267,6 +323,17 @@ export interface CaptionListPanelProps {
   /** Phase 6 wires the canvas double-click into this; scrolls the target row
    *  into view and focuses its `EditableSegment` when `nonce` changes. */
   editFocusId?: CaptionEditFocusRequest | null
+  /** Compile a JSX overlay template into an `OverlayFactory` (sourced from
+   *  `adapter.compileOverlay`, same as `CaptionPreview`). Optional — absent
+   *  ⇒ the style gallery falls back to a static specimen card instead of a
+   *  live-rendered one, so hosts without a compiler (e.g. Hub/LP) degrade
+   *  gracefully rather than breaking. */
+  compileOverlay?: (src: string) => Promise<OverlayFactory>
+  /** Resolve a caption style name to the template identifier `compileOverlay`
+   *  expects (sourced from `adapter.resolveCaptionTemplate`). Optional, and
+   *  only meaningful alongside `compileOverlay` — without either, the gallery
+   *  falls back to the static specimen card. */
+  resolveCaptionTemplate?: (style: string) => string
 }
 
 export default function CaptionListPanel({
@@ -284,6 +351,8 @@ export default function CaptionListPanel({
   fps,
   clock,
   editFocusId,
+  compileOverlay,
+  resolveCaptionTemplate,
 }: CaptionListPanelProps) {
   const segs = captionTrack?.segments ?? []
 
@@ -307,6 +376,8 @@ export default function CaptionListPanel({
       fps={fps}
       clock={clock}
       editFocusId={editFocusId}
+      compileOverlay={compileOverlay}
+      resolveCaptionTemplate={resolveCaptionTemplate}
     />
   )
 }
@@ -329,6 +400,8 @@ function CaptionListPanelBody({
   fps,
   clock,
   editFocusId,
+  compileOverlay,
+  resolveCaptionTemplate,
 }: CaptionListPanelProps) {
   const segs = captionTrack?.segments ?? []
   const [search, setSearch] = useState('')
@@ -336,7 +409,7 @@ function CaptionListPanelBody({
   // a "Row N" chip. Lives beside `search` rather than folded into it — they
   // compose (both apply) instead of one being a mode that disables the other.
   const [rowFilter, setRowFilter] = useState<number | null>(null)
-  const [styleExpanded, setStyleExpanded] = usePersistentState(CAPTION_STYLE_STORAGE_KEY, false, reviveBoolean)
+  const [tab, setTab] = usePersistentState<CaptionPanelTab>(CAPTION_TAB_STORAGE_KEY, 'format', reviveCaptionTab)
 
   // ── Remove all (confirm-twice, ported from TranscriptPanel) ──
   const [confirmRemove, setConfirmRemove] = useState(false)
@@ -408,6 +481,17 @@ function CaptionListPanelBody({
     if (!editFocusId || editFocusId.nonce === lastHandledNonceRef.current) return
     const seg = segs.find(s => s.id === editFocusId.id)
     if (!seg) return
+    // The transcript rows only render on the "Captions" tab; a canvas
+    // double-click that arrives while the "Styles" or "Format" tab is showing
+    // has to flip there first. Same one-clear-per-pass shape as the
+    // search/rowFilter guards below — this effect re-runs (tab is a dep) once
+    // the Captions tab has actually mounted the target row, and only then does
+    // the lookup below find it. Without this, a double-click on the canvas
+    // would silently do nothing whenever the panel was on another tab.
+    if (tab !== 'captions') {
+      setTab('captions')
+      return
+    }
     // A live search filtering the target row out of the DOM would make the
     // row-ref lookup below miss. Clear it and let this effect re-run once the
     // list re-renders with the row present.
@@ -432,7 +516,7 @@ function CaptionListPanelBody({
     lastHandledNonceRef.current = editFocusId.nonce
     el.scrollIntoView({ block: 'nearest' })
     el.querySelector<HTMLElement>('[contenteditable="true"]')?.focus()
-  }, [editFocusId, search, rowFilter, segs])
+  }, [editFocusId, search, rowFilter, segs, tab, setTab])
 
   function handleRowClick(segId: string | undefined, start: number) {
     if (!segId) return
@@ -544,9 +628,14 @@ function CaptionListPanelBody({
 
   return (
     <div className="flex flex-col h-full min-h-0">
-      {/* ── Toolbar header ── */}
-      <div className="shrink-0 border-b border-[var(--editor-border)] px-3 py-2 flex flex-col gap-2">
-        <div className="flex items-center justify-between gap-2">
+      {/* ── Header: title + count + the Styles / Format / Captions tab switch.
+          The strip itself is the shared `TabNav` (panels/TabNav.tsx), which
+          every small in-panel tab switch in the editor now renders: uppercase
+          labels, an accent underline under the active tab sitting on this
+          header's bottom border, muted inactive — NOT a filled segmented
+          control — so the left rail's panels share one tab language. ── */}
+      <div className="shrink-0 border-b border-[var(--editor-border)] flex flex-col">
+        <div className="px-3 pt-2 pb-1 flex items-center justify-between gap-2">
           <span className="text-xs font-medium text-[var(--editor-text)]/60 uppercase tracking-wide">
             Captions
             {segs.length > 0 && (
@@ -555,43 +644,93 @@ function CaptionListPanelBody({
           </span>
         </div>
 
-        {/* ── Collapsible "Caption style" subsection ── */}
-        {captionTrack && (
-          <div>
-            <button
-              type="button"
-              onClick={() => setStyleExpanded(!styleExpanded)}
-              aria-expanded={styleExpanded}
-              aria-label="Caption style controls"
-              className="flex items-center gap-1 text-[10px] text-[var(--editor-text)]/50 uppercase tracking-wider hover:text-[var(--editor-text)]/80 transition-colors"
-            >
-              {styleExpanded ? <ChevronDown size={11} /> : <ChevronRight size={11} />}
-              Caption style
-            </button>
-            {styleExpanded && (
-              <div className="mt-2 flex flex-col gap-2">
-                <div className="flex flex-wrap gap-1">
-                  {STYLES.map(style => {
-                    const active = captionTrack.style === style
-                    return (
-                      <button
-                        key={style}
-                        className={`text-[10px] rounded px-2 py-0.5 transition-all border ${
-                          active
-                            ? 'bg-[var(--editor-accent)]/20 border-[var(--editor-accent)]/60 text-[var(--editor-accent)]'
-                            : 'bg-[var(--editor-surface)] border-[var(--editor-border)] text-[var(--editor-text)]/50 hover:text-[var(--editor-text)]/80 hover:border-[var(--editor-text)]/30'
-                        }`}
-                        onClick={() => {
-                          if (!project.captions) return
-                          onCaptionEdit?.({ ...project, captions: { ...project.captions, style } })
-                        }}
-                      >
-                        {style}
-                      </button>
-                    )
-                  })}
-                </div>
-                <div className="flex items-center gap-1.5">
+        {/* Only mounts once there are captions to split between the gallery,
+            the format controls and the transcript; 'Format' is the default.
+            No `className` is passed: TabNav's own base is `flex items-center`,
+            which is exactly what this strip carried inline, and the header's
+            bottom border (which the active tab's underline sits on) belongs to
+            the wrapper ABOVE — not to the strip.
+
+            TabNav renders `aria-pressed` buttons under a `role="group"` rather
+            than a `role="tab"`/`tablist` pair; its own doc comment has the
+            general reasoning, which bites doubly here because the host's LEFT
+            rail (LeftPanelTabs) already owns a tab literally named "Captions",
+            so a second `role="tab"` of that name would put two "Captions tab"
+            nodes in the a11y tree. */}
+        {segs.length > 0 && captionTrack && (
+          <TabNav tabs={CAPTION_TABS} value={tab} onChange={setTab} ariaLabel="Caption panel view" />
+        )}
+      </div>
+
+      {segs.length === 0 ? (
+        /* ── Empty / loading state (no captions yet) — spans the whole panel,
+              no tabs. While a background job runs this is a loading placeholder
+              that agrees with the top-bar progress indicator; otherwise it is
+              the idle prompt and its one primary trigger. ── */
+        <div className="flex-1 min-h-0 overflow-y-auto px-2 py-2">
+          {captionsGenerating ? (
+            <div className="flex flex-col items-center gap-3 text-center mt-10 px-4">
+              <Loader2 size={22} className="animate-spin text-[var(--editor-accent)]" aria-hidden="true" />
+              <div className="flex flex-col gap-1" role="status" aria-live="polite">
+                <p className="text-xs font-medium text-[var(--editor-text)]">Generating captions…</p>
+                <p className="text-[11px] text-[var(--editor-text)] opacity-50 leading-relaxed">
+                  Transcribing the timeline's audio. You can keep editing while this runs.
+                </p>
+              </div>
+            </div>
+          ) : (
+            <div className="flex flex-col items-center gap-2 text-center mt-4 px-2">
+              <p className="text-xs text-[var(--editor-text)]/50 leading-relaxed">
+                {onRegenerateCaptions
+                  ? "Captions are generated from the timeline's audio."
+                  : 'No captions yet. Captions are generated during transcription.'}
+              </p>
+              {/* Primary action — the only thing to do on an otherwise empty
+                  panel, so it gets the accent treatment rather than the small
+                  ghost buttons in the footer. Absent entirely when the host has
+                  no `generateCaptions` (Hub/LP): a button with no working
+                  handler is worse than no button. */}
+              {onRegenerateCaptions && (
+                <button
+                  type="button"
+                  onClick={onRegenerateCaptions}
+                  className="text-xs font-medium rounded-md px-3 py-1.5 bg-[var(--editor-accent)] text-[var(--editor-accent-foreground)] hover:opacity-90 transition-opacity"
+                >
+                  Generate captions
+                </button>
+              )}
+            </div>
+          )}
+        </div>
+      ) : tab === 'styles' ? (
+        /* ── Styles tab — the gallery of style previews, replacing the preset
+              chip row that used to sit above the fine controls. The gallery
+              renders a plain grid and owns no scrolling of its own, so it sits
+              inside the same scroll wrapper the chip row did. ── */
+        <div className="flex-1 min-h-0 overflow-y-auto px-3 py-3">
+          {captionTrack && (
+            <CaptionStyleGallery
+              captions={captionTrack}
+              project={project}
+              onCaptionEdit={onCaptionEdit}
+              compileOverlay={compileOverlay}
+              resolveCaptionTemplate={resolveCaptionTemplate}
+            />
+          )}
+        </div>
+      ) : tab === 'format' ? (
+        /* ── Format tab — the fine caption controls (size, colors, specimen,
+              font, case, alignment, spacing), always visible (no collapse),
+              scrollable. Every control sits on a LABELED ROW: a fixed-width
+              label cell then the control (`rowClass` / `rowLabelClass`), so the
+              tab reads as one two-column grid. The specimen is the deliberate
+              exception — it is a preview, not a control, and spans the full
+              width. ── */
+        <div className="flex-1 min-h-0 overflow-y-auto px-3 py-3">
+          {captionTrack && (
+            <div className="flex flex-col gap-1.5">
+                <div className={rowClass}>
+                  <span className={rowLabelClass} aria-hidden="true">Font size</span>
                   <input
                     type="range"
                     aria-label="Caption font size"
@@ -620,7 +759,12 @@ function CaptionListPanelBody({
                   />
                   <span className="text-[10px] text-[var(--editor-text)]/50 font-mono w-9 text-right">{fontsize}px</span>
                 </div>
-                <div className="flex items-center gap-1.5">
+                <div className={rowClass}>
+                  {/* One label for both swatches: the base one (track, or the
+                      selected segment) and the active style's accent, when it
+                      has one. Each still carries its own `aria-label` naming
+                      exactly which color it writes. */}
+                  <span className={rowLabelClass} aria-hidden="true">Color</span>
                   <SwatchInput
                     size="sm"
                     showValue={false}
@@ -663,8 +807,8 @@ function CaptionListPanelBody({
                     fontWeight={captionTrack.fontWeight}
                   />
 
-                  <div className="flex items-center gap-1.5">
-                    <span className="text-[10px] text-[var(--editor-text)] opacity-60 shrink-0">Font</span>
+                  <div className={rowClass}>
+                    <span className={rowLabelClass} aria-hidden="true">Font</span>
                     <FontFamilyPicker
                       value={captionTrack.fontFamily ?? ''}
                       onChange={value => {
@@ -712,7 +856,8 @@ function CaptionListPanelBody({
                     </button>
                   </div>
 
-                  <div className="flex items-center justify-between gap-1.5">
+                  <div className={rowClass}>
+                    <span className={rowLabelClass} aria-hidden="true">Case</span>
                     <div role="group" aria-label="Caption text case" className="flex items-center gap-1">
                       {/* Absent `textTransform` seeds from the active style's
                           own default (same reasoning as `boldOn` above) — a
@@ -743,6 +888,14 @@ function CaptionListPanelBody({
                         )
                       })}
                     </div>
+                  </div>
+
+                  {/* Alignment used to ride on the RIGHT of the case row. Its
+                      own labeled row now, so it reads as a named control like
+                      every other one here instead of an unlabeled trio of icons
+                      pushed to the far edge. */}
+                  <div className={rowClass}>
+                    <span className={rowLabelClass} aria-hidden="true">Alignment</span>
                     <div role="group" aria-label="Caption text alignment" className="flex items-center gap-1">
                       {ALIGNMENTS.map(({ value, Icon, label }) => {
                         const active = captionTrack.textAlign === value
@@ -762,118 +915,99 @@ function CaptionListPanelBody({
                     </div>
                   </div>
 
-                  <div className="flex items-center justify-between gap-2">
-                    <StepperField
-                      label="Spacing"
-                      ariaLabel="Caption letter spacing"
-                      value={parseEmValue(captionTrack.letterSpacing)}
-                      placeholder={parseEmValue(CAPTION_STYLE_LETTER_SPACING[captionTrack.style])}
-                      min={-0.1}
-                      max={0.5}
-                      step={0.01}
-                      unit="em"
-                      onLive={n => liveTrack({ letterSpacing: `${roundTo(n, 3)}em` })}
-                      onCommit={n => commitTrack({ letterSpacing: `${roundTo(n, 3)}em` })}
-                    />
-                    <StepperField
-                      label="Line"
-                      ariaLabel="Caption line height"
-                      value={parseUnitlessValue(captionTrack.lineHeight)}
-                      placeholder={parseUnitlessValue(CAPTION_STYLE_LINE_HEIGHT[captionTrack.style])}
-                      min={0.8}
-                      max={2.5}
-                      step={0.05}
-                      onLive={n => liveTrack({ lineHeight: roundTo(n, 2) })}
-                      onCommit={n => commitTrack({ lineHeight: roundTo(n, 2) })}
-                    />
-                  </div>
+                  {/* One row each rather than the old side-by-side pair —
+                      StepperField renders its own `rowClass` row, so these land
+                      in the same label column as everything above. */}
+                  <StepperField
+                    label="Spacing"
+                    ariaLabel="Caption letter spacing"
+                    value={parseEmValue(captionTrack.letterSpacing)}
+                    placeholder={parseEmValue(CAPTION_STYLE_LETTER_SPACING[captionTrack.style])}
+                    min={-0.1}
+                    max={0.5}
+                    step={0.01}
+                    unit="em"
+                    onLive={n => liveTrack({ letterSpacing: `${roundTo(n, 3)}em` })}
+                    onCommit={n => commitTrack({ letterSpacing: `${roundTo(n, 3)}em` })}
+                  />
+                  <StepperField
+                    label="Line"
+                    ariaLabel="Caption line height"
+                    value={parseUnitlessValue(captionTrack.lineHeight)}
+                    placeholder={parseUnitlessValue(CAPTION_STYLE_LINE_HEIGHT[captionTrack.style])}
+                    min={0.8}
+                    max={2.5}
+                    step={0.05}
+                    onLive={n => liveTrack({ lineHeight: roundTo(n, 2) })}
+                    onCommit={n => commitTrack({ lineHeight: roundTo(n, 2) })}
+                  />
                 </div>
+            </div>
+          )}
+        </div>
+      ) : (
+        /* ── Captions tab — search, row filters, the numbered transcript, and
+              the generate / remove actions. Reachable only once captions exist
+              (segs.length > 0), so search and the footer are unconditional here
+              rather than re-gated on the count. ── */
+        <>
+          <div className="shrink-0 border-b border-[var(--editor-border)] px-3 py-2 flex flex-col gap-2">
+            {/* ── Search ── */}
+            <div className="relative">
+              <Search size={11} className="absolute left-2 top-1/2 -translate-y-1/2 text-[var(--editor-text)]/40 pointer-events-none" />
+              <input
+                type="text"
+                value={search}
+                onChange={e => setSearch(e.target.value)}
+                placeholder="Search captions…"
+                aria-label="Search captions"
+                className="w-full h-7 rounded-md border border-[var(--editor-border)] bg-[var(--editor-surface)] pl-6 pr-2 text-xs text-[var(--editor-text)] placeholder-[var(--editor-text)]/40 focus:outline-none focus:border-[var(--editor-accent)]"
+              />
+            </div>
+
+            {/* ── Row filter chips (only when there's more than one lane to filter
+                between — a single-lane project never mounts this, keeping its
+                toolbar byte-for-byte what it was before lanes existed). Composes
+                with search rather than replacing it: both narrow the same
+                `visibleGroups` computation above. Same button look as the
+                Format tab's chips, for one visual chip language in this
+                panel. ── */}
+            {multiLane && (
+              <div role="group" aria-label="Filter captions by row" className="flex flex-wrap gap-1">
+                <button
+                  type="button"
+                  aria-pressed={rowFilter === null}
+                  onClick={() => setRowFilter(null)}
+                  className={`text-[10px] rounded px-2 py-0.5 transition-all border ${
+                    rowFilter === null
+                      ? 'bg-[var(--editor-accent)]/20 border-[var(--editor-accent)]/60 text-[var(--editor-accent)]'
+                      : 'bg-[var(--editor-surface)] border-[var(--editor-border)] text-[var(--editor-text)]/50 hover:text-[var(--editor-text)]/80 hover:border-[var(--editor-text)]/30'
+                  }`}
+                >
+                  All
+                </button>
+                {captionGroups.map(g => (
+                  <button
+                    key={g.lane}
+                    type="button"
+                    aria-pressed={rowFilter === g.lane}
+                    onClick={() => setRowFilter(g.lane)}
+                    className={`text-[10px] rounded px-2 py-0.5 transition-all border ${
+                      rowFilter === g.lane
+                        ? 'bg-[var(--editor-accent)]/20 border-[var(--editor-accent)]/60 text-[var(--editor-accent)]'
+                        : 'bg-[var(--editor-surface)] border-[var(--editor-border)] text-[var(--editor-text)]/50 hover:text-[var(--editor-text)]/80 hover:border-[var(--editor-text)]/30'
+                    }`}
+                  >
+                    {`Row ${g.lane + 1}`}
+                  </button>
+                ))}
               </div>
             )}
           </div>
-        )}
 
-        {/* ── Search ── */}
-        {segs.length > 0 && (
-          <div className="relative">
-            <Search size={11} className="absolute left-2 top-1/2 -translate-y-1/2 text-[var(--editor-text)]/40 pointer-events-none" />
-            <input
-              type="text"
-              value={search}
-              onChange={e => setSearch(e.target.value)}
-              placeholder="Search captions…"
-              aria-label="Search captions"
-              className="w-full h-7 rounded-md border border-[var(--editor-border)] bg-[var(--editor-surface)] pl-6 pr-2 text-xs text-[var(--editor-text)] placeholder-[var(--editor-text)]/40 focus:outline-none focus:border-[var(--editor-accent)]"
-            />
-          </div>
-        )}
-
-        {/* ── Row filter chips (only when there's more than one lane to filter
-            between — a single-lane project never mounts this, keeping its
-            toolbar byte-for-byte what it was before lanes existed). Composes
-            with search rather than replacing it: both narrow the same
-            `visibleGroups` computation above. Same button look as the
-            "Caption style" preset row above, for one visual chip language
-            in this panel. ── */}
-        {multiLane && (
-          <div role="group" aria-label="Filter captions by row" className="flex flex-wrap gap-1">
-            <button
-              type="button"
-              aria-pressed={rowFilter === null}
-              onClick={() => setRowFilter(null)}
-              className={`text-[10px] rounded px-2 py-0.5 transition-all border ${
-                rowFilter === null
-                  ? 'bg-[var(--editor-accent)]/20 border-[var(--editor-accent)]/60 text-[var(--editor-accent)]'
-                  : 'bg-[var(--editor-surface)] border-[var(--editor-border)] text-[var(--editor-text)]/50 hover:text-[var(--editor-text)]/80 hover:border-[var(--editor-text)]/30'
-              }`}
-            >
-              All
-            </button>
-            {captionGroups.map(g => (
-              <button
-                key={g.lane}
-                type="button"
-                aria-pressed={rowFilter === g.lane}
-                onClick={() => setRowFilter(g.lane)}
-                className={`text-[10px] rounded px-2 py-0.5 transition-all border ${
-                  rowFilter === g.lane
-                    ? 'bg-[var(--editor-accent)]/20 border-[var(--editor-accent)]/60 text-[var(--editor-accent)]'
-                    : 'bg-[var(--editor-surface)] border-[var(--editor-border)] text-[var(--editor-text)]/50 hover:text-[var(--editor-text)]/80 hover:border-[var(--editor-text)]/30'
-                }`}
-              >
-                {`Row ${g.lane + 1}`}
-              </button>
-            ))}
-          </div>
-        )}
-      </div>
-
-      {/* ── Scrollable numbered list ── */}
-      <div role="list" aria-label="Caption segments" className="flex-1 min-h-0 overflow-y-auto px-2 py-2 flex flex-col gap-1">
-        {segs.length === 0 ? (
-          <div className="flex flex-col items-center gap-2 text-center mt-4 px-2">
-            <p className="text-xs text-[var(--editor-text)]/50 leading-relaxed">
-              {onRegenerateCaptions
-                ? "Captions are generated from the timeline's audio."
-                : 'No captions yet. Captions are generated during transcription.'}
-            </p>
-            {/* Primary action — the only thing to do on an otherwise empty
-                panel, so it gets the accent treatment rather than the small
-                ghost buttons in the header above. Absent entirely when the
-                host has no `generateCaptions` (Hub/LP): a button with no
-                working handler is worse than no button. */}
-            {onRegenerateCaptions && (
-              <button
-                type="button"
-                onClick={onRegenerateCaptions}
-                disabled={captionsGenerating}
-                className="text-xs font-medium rounded-md px-3 py-1.5 bg-[var(--editor-accent)] text-[var(--editor-accent-foreground)] hover:opacity-90 transition-opacity disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:opacity-50"
-              >
-                Generate captions
-              </button>
-            )}
-          </div>
-        ) : totalVisible === 0 ? (
+          {/* ── Scrollable numbered list ── */}
+          <div role="list" aria-label="Caption segments" className="flex-1 min-h-0 overflow-y-auto px-2 py-2 flex flex-col gap-1">
+        {totalVisible === 0 ? (
           <p className="text-xs text-[var(--editor-text)]/50 italic text-center mt-4 px-2">No matching captions.</p>
         ) : (
           visibleGroups.map(group => (
@@ -963,41 +1097,41 @@ function CaptionListPanelBody({
             </Fragment>
           ))
         )}
-      </div>
+          </div>
 
-      {/* ── Actions footer ──
-          The generate/remove triggers live at the BOTTOM of the panel, out of
-          the way of the list, and only when there is something to act on. The
-          "there's nothing yet" state keeps its own primary button in the empty
-          body above, so the panel never shows two competing triggers. */}
-      {segs.length > 0 && (
-        <div className="shrink-0 border-t border-[var(--editor-border)] px-3 py-2.5 flex items-center gap-2">
-          {onRegenerateCaptions && (
-            <button
-              type="button"
-              onClick={onRegenerateCaptions}
-              disabled={captionsGenerating}
-              className="flex-1 flex items-center justify-center gap-1.5 h-8 rounded-md border border-[var(--editor-border)] bg-[var(--editor-surface)] text-xs font-medium text-[var(--editor-text)] transition-colors hover:border-[var(--editor-accent)] hover:text-[var(--editor-accent)] disabled:opacity-40 disabled:cursor-not-allowed disabled:pointer-events-none"
-            >
-              <RefreshCw size={13} className={captionsGenerating ? 'animate-spin' : undefined} />
-              Regenerate captions
-            </button>
-          )}
-          {captionTrack && (
-            <button
-              type="button"
-              onClick={handleRemoveAllClick}
-              className={`flex items-center justify-center gap-1.5 h-8 px-3 rounded-md border text-xs font-medium transition-colors ${
-                confirmRemove
-                  ? 'bg-red-500/15 border-red-500/60 text-red-400'
-                  : 'border-[var(--editor-border)] bg-[var(--editor-surface)] text-[var(--editor-text)]/70 hover:border-red-500/50 hover:text-red-400'
-              }`}
-            >
-              <Trash2 size={13} />
-              {confirmRemove ? 'Really remove?' : 'Remove all'}
-            </button>
-          )}
-        </div>
+          {/* ── Actions footer ──
+              The generate / remove triggers live at the BOTTOM of the Captions
+              tab, out of the way of the list. Reachable only when captions
+              exist, so this is unconditional rather than re-gated on the count;
+              the empty state above keeps its own primary Generate button. */}
+          <div className="shrink-0 border-t border-[var(--editor-border)] px-3 py-2.5 flex items-center gap-2">
+            {onRegenerateCaptions && (
+              <button
+                type="button"
+                onClick={onRegenerateCaptions}
+                disabled={captionsGenerating}
+                className="flex-1 flex items-center justify-center gap-1.5 h-8 rounded-md border border-[var(--editor-border)] bg-[var(--editor-surface)] text-xs font-medium text-[var(--editor-text)] transition-colors hover:border-[var(--editor-accent)] hover:text-[var(--editor-accent)] disabled:opacity-40 disabled:cursor-not-allowed disabled:pointer-events-none"
+              >
+                <RefreshCw size={13} className={captionsGenerating ? 'animate-spin' : undefined} />
+                Regenerate captions
+              </button>
+            )}
+            {captionTrack && (
+              <button
+                type="button"
+                onClick={handleRemoveAllClick}
+                className={`flex items-center justify-center gap-1.5 h-8 px-3 rounded-md border text-xs font-medium transition-colors ${
+                  confirmRemove
+                    ? 'bg-red-500/15 border-red-500/60 text-red-400'
+                    : 'border-[var(--editor-border)] bg-[var(--editor-surface)] text-[var(--editor-text)]/70 hover:border-red-500/50 hover:text-red-400'
+                }`}
+              >
+                <Trash2 size={13} />
+                {confirmRemove ? 'Really remove?' : 'Remove all'}
+              </button>
+            )}
+          </div>
+        </>
       )}
     </div>
   )

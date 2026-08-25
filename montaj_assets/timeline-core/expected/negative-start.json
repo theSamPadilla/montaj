@@ -43,6 +43,8 @@
             "seek": 0,
             "geometry": {
               "scale": 1,
+              "scaleX": 1,
+              "scaleY": 1,
               "offsetX": 0,
               "offsetY": 0,
               "opacity": 1,
@@ -62,6 +64,8 @@
             "seek": 0.25,
             "geometry": {
               "scale": 1,
+              "scaleX": 1,
+              "scaleY": 1,
               "offsetX": 0,
               "offsetY": 0,
               "opacity": 1,
@@ -86,6 +90,8 @@
             "seek": 2,
             "geometry": {
               "scale": 1,
+              "scaleX": 1,
+              "scaleY": 1,
               "offsetX": 0,
               "offsetY": 0,
               "opacity": 1,
@@ -101,6 +107,8 @@
             "seek": 0.5,
             "geometry": {
               "scale": 1,
+              "scaleX": 1,
+              "scaleY": 1,
               "offsetX": 0,
               "offsetY": 0,
               "opacity": 1,
@@ -125,6 +133,8 @@
             "seek": 4.75,
             "geometry": {
               "scale": 1,
+              "scaleX": 1,
+              "scaleY": 1,
               "offsetX": 0,
               "offsetY": 0,
               "opacity": 1,
@@ -140,6 +150,8 @@
             "seek": 3.25,
             "geometry": {
               "scale": 1,
+              "scaleX": 1,
+              "scaleY": 1,
               "offsetX": 0,
               "offsetY": 0,
               "opacity": 1,
@@ -164,6 +176,8 @@
             "seek": 7.5,
             "geometry": {
               "scale": 1,
+              "scaleX": 1,
+              "scaleY": 1,
               "offsetX": 0,
               "offsetY": 0,
               "opacity": 1,
@@ -189,6 +203,8 @@
             "seek": 7.75,
             "geometry": {
               "scale": 1,
+              "scaleX": 1,
+              "scaleY": 1,
               "offsetX": 0,
               "offsetY": 0,
               "opacity": 1,
@@ -219,6 +235,8 @@
             "seek": 0,
             "geometry": {
               "scale": 1,
+              "scaleX": 1,
+              "scaleY": 1,
               "offsetX": 0,
               "offsetY": 0,
               "opacity": 1,
@@ -238,6 +256,8 @@
             "seek": 0.25,
             "geometry": {
               "scale": 1,
+              "scaleX": 1,
+              "scaleY": 1,
               "offsetX": 0,
               "offsetY": 0,
               "opacity": 1,
@@ -262,6 +282,8 @@
             "seek": 2,
             "geometry": {
               "scale": 1,
+              "scaleX": 1,
+              "scaleY": 1,
               "offsetX": 0,
               "offsetY": 0,
               "opacity": 1,
@@ -277,6 +299,8 @@
             "seek": 0.5,
             "geometry": {
               "scale": 1,
+              "scaleX": 1,
+              "scaleY": 1,
               "offsetX": 0,
               "offsetY": 0,
               "opacity": 1,
@@ -301,6 +325,8 @@
             "seek": 4.75,
             "geometry": {
               "scale": 1,
+              "scaleX": 1,
+              "scaleY": 1,
               "offsetX": 0,
               "offsetY": 0,
               "opacity": 1,
@@ -316,6 +342,8 @@
             "seek": 3.25,
             "geometry": {
               "scale": 1,
+              "scaleX": 1,
+              "scaleY": 1,
               "offsetX": 0,
               "offsetY": 0,
               "opacity": 1,
@@ -340,6 +368,8 @@
             "seek": 7.5,
             "geometry": {
               "scale": 1,
+              "scaleX": 1,
+              "scaleY": 1,
               "offsetX": 0,
               "offsetY": 0,
               "opacity": 1,
@@ -365,6 +395,8 @@
             "seek": 7.75,
             "geometry": {
               "scale": 1,
+              "scaleX": 1,
+              "scaleY": 1,
               "offsetX": 0,
               "offsetY": 0,
               "opacity": 1,
@@ -406,6 +438,8 @@
               "seek": 2,
               "geometry": {
                 "scale": 1,
+                "scaleX": 1,
+                "scaleY": 1,
                 "offsetX": 0,
                 "offsetY": 0,
                 "opacity": 1,
@@ -421,6 +455,8 @@
               "seek": 0.5,
               "geometry": {
                 "scale": 1,
+                "scaleX": 1,
+                "scaleY": 1,
                 "offsetX": 0,
                 "offsetY": 0,
                 "opacity": 1,
@@ -449,6 +485,8 @@
               "seek": 7.5,
               "geometry": {
                 "scale": 1,
+                "scaleX": 1,
+                "scaleY": 1,
                 "offsetX": 0,
                 "offsetY": 0,
                 "opacity": 1,

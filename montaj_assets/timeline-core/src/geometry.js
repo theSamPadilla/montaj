@@ -32,6 +32,35 @@
 // this module — see test/geometry.test.mjs's cross-check table, which is
 // this package's headline test.
 //
+// ── NON-UNIFORM scale — sx drives WIDTH/LEFT, sy drives HEIGHT/TOP ───────────
+//
+// Both legacy formulas above are written with a single `s` because a single
+// `s` is all a legacy item ever carried. `geometryFor` now ALSO resolves
+// `scaleX`/`scaleY`, and the adapters split the formula along the axis it was
+// always implicitly split along — the width/left pair reads the X scale, the
+// height/top pair reads the Y scale:
+//
+//     width:  sx * 100                    height: sy * 100
+//     left:   ((1 - sx) / 2) * 100 + ox    top:   ((1 - sy) / 2) * 100 + oy
+//
+//     scaledW = round(vw * sx / 2) * 2     scaledH = round(vh * sy / 2) * 2
+//     xPx     = round(vw * (0.5 * (1 - sx) + ox / 100))
+//     yPx     = round(vh * (0.5 * (1 - sy) + oy / 100))
+//
+// `scale` is UNTOUCHED and remains the legacy UNIFORM fallback, still emitted
+// on every `Geometry` because callers read it. An item that carries only
+// `scale` resolves `sx === sy === scale`, which collapses every line above
+// back into the one-`s` form character for character — which is precisely why
+// a scale-only project keeps producing a byte-identical ffmpeg filter graph
+// and leaves the render goldens valid. There is a named back-compat test.
+//
+// The cross-unit identity survives the split unchanged, because it never
+// mixed the axes in the first place: `xPx` is still exactly
+// `vw * cssLeft / 100` and `scaledW` still exactly `vw * cssWidth / 100`
+// before even-rounding — now with both sides reading sx — and likewise for
+// `yPx`/`scaledH` on sy. The cross-check table carries a non-uniform row that
+// pins exactly that.
+//
 // SWITCHED OVER (SP9a-1, 2026-08-23): all four call sites now route through
 // `toPixelBox`/`toCssBoxPct` instead of carrying their own copy —
 // `encode-segment.js:305` (image), `:375` (video), `:546` (overlay), and
@@ -280,7 +309,7 @@
 //
 //   geometryFor(item, kind)          — the STATIC path. Its body is untouched
 //                                      by SP9b, deliberately: see below.
-//   geometryAt(item, kind, localT)   — the animated path. For each of the five
+//   geometryAt(item, kind, localT)   — the animated path. For each of the seven
 //                                      keyframeable props it prefers
 //                                      `sampleTrack(track, localT)` and falls
 //                                      back to the item's static scalar; every
@@ -295,11 +324,25 @@
 // valid. Do not "simplify" that short-circuit into a duplicated object
 // literal, and do not reroute `geometryFor` through `geometryAt`.
 //
-// Only the five props src/curves.js names (`offsetX`, `offsetY`, `scale`,
-// `rotation`, `opacity`) are animatable. `fit`, `sourceCrop`, `sourceWidth`
-// and `sourceHeight` are NOT keyframeable and are forwarded exactly as the
-// static path forwards them — `sourceCrop` still BY REFERENCE, never cloned.
-// A track naming any other prop is simply never consulted.
+// Only the seven props src/curves.js names (`offsetX`, `offsetY`, `scale`,
+// `scaleX`, `scaleY`, `rotation`, `opacity`) are animatable. `fit`,
+// `sourceCrop`, `sourceWidth` and `sourceHeight` are NOT keyframeable and are
+// forwarded exactly as the static path forwards them — `sourceCrop` still BY
+// REFERENCE, never cloned. A track naming any other prop is simply never
+// consulted.
+//
+// The scale trio has one wrinkle worth stating explicitly, because getting it
+// wrong silently freezes an animation. `scaleX`'s fallback chain is
+//
+//     sampleTrack(scaleX track) ?? item.scaleX ?? <the RESOLVED scale>
+//
+// where "the resolved scale" is `sampleTrack(scale track) ?? item.scale ?? 1`
+// — the ANIMATED value, not the static `item.scale`. A legacy overlay that
+// keyframes uniform `scale` and knows nothing about `scaleX`/`scaleY` must
+// keep animating on both axes; falling back to the static scalar there would
+// pin it at its authored size and the zoom would simply stop happening. The
+// resolved value is computed ONCE and reused by all three fields, so the scale
+// track is never sampled twice for one instant.
 //
 // The fallback is `??`, never `||`: `sampleTrack` returns the `undefined`
 // sentinel for "no track", and 0 is an ordinary sampled value (opacity 0,
@@ -321,6 +364,12 @@ import { sampleTrack } from './curves.js'
  *
  * @typedef {Object} GeometryItem
  * @property {number} [scale]        Multiplier on the frame's own size. Default 1.
+ *   The legacy UNIFORM knob, and still the fallback for both axes.
+ * @property {number} [scaleX]       Multiplier on the frame's WIDTH. Absent ⇒
+ *   falls back to `scale` (and then to 1), so a legacy scale-only item is
+ *   unchanged — see the module header's non-uniform section.
+ * @property {number} [scaleY]       Multiplier on the frame's HEIGHT. Absent ⇒
+ *   falls back to `scale` (and then to 1).
  * @property {number} [offsetX]      Percent of frame WIDTH. Default 0.
  * @property {number} [offsetY]      Percent of frame HEIGHT. Default 0.
  * @property {number} [opacity]      0-1. Default 1.
@@ -345,7 +394,13 @@ import { sampleTrack } from './curves.js'
  * from this.
  *
  * @typedef {Object} Geometry
- * @property {number} scale    Multiplier on the frame's own size.
+ * @property {number} scale    Multiplier on the frame's own size. The legacy
+ *   UNIFORM value, resolved and still emitted because callers read it; the
+ *   adapters read `scaleX`/`scaleY` instead.
+ * @property {number} scaleX   Multiplier on the frame's WIDTH. Equals `scale`
+ *   whenever the item carries no `scaleX` of its own.
+ * @property {number} scaleY   Multiplier on the frame's HEIGHT. Equals `scale`
+ *   whenever the item carries no `scaleY` of its own.
  * @property {number} offsetX  Percent of frame width.
  * @property {number} offsetY  Percent of frame height.
  * @property {number} opacity  0-1.
@@ -389,7 +444,11 @@ function fitFor(item, kind) {
  */
 export function geometryFor(item, kind) {
   return {
+    // `scale` stays exactly as it always was — the legacy uniform value, still
+    // emitted because callers read it — and is the per-axis fallback.
     scale: item.scale ?? 1,
+    scaleX: item.scaleX ?? item.scale ?? 1,
+    scaleY: item.scaleY ?? item.scale ?? 1,
     offsetX: item.offsetX ?? 0,
     offsetY: item.offsetY ?? 0,
     opacity: item.opacity ?? 1,
@@ -406,10 +465,10 @@ export function geometryFor(item, kind) {
  *
  * FIRST wins if a malformed item somehow carries two tracks for one prop — the
  * `.find()` reading, which is what a reader expects. Written as a plain indexed
- * loop rather than `.find()` because this is called five times per item per
+ * loop rather than `.find()` because this is called seven times per item per
  * frame on both the preview and the bake path, and `.find()` allocates a
- * closure every call. Tracks are tiny (at most five, one per animatable prop),
- * so five scans of the array cost less than the closures would.
+ * closure every call. Tracks are tiny (at most seven, one per animatable prop),
+ * so seven scans of the array cost less than the closures would.
  *
  * @param {import('./curves.js').KeyframeTrack[]} tracks
  * @param {import('./curves.js').KeyframeProp} prop
@@ -444,9 +503,13 @@ function trackFor(tracks, prop) {
  * An item with no keyframes is handed to {@link geometryFor} ITSELF — the same
  * function, not a copy of its body — so the static path is identical BY
  * CONSTRUCTION and a keyframe-free project keeps producing a byte-identical
- * filter graph. Only the five props src/curves.js names can be animated;
+ * filter graph. Only the seven props src/curves.js names can be animated;
  * `fit`/`sourceCrop`/`sourceWidth`/`sourceHeight` are forwarded exactly as the
  * static path forwards them (`sourceCrop` by reference, never cloned).
+ *
+ * `scaleX`/`scaleY` fall back to the RESOLVED (i.e. possibly animated) `scale`,
+ * never to the static `item.scale` — a legacy item that keyframes uniform
+ * `scale` has to keep animating on both axes. See the module header.
  *
  * @param {GeometryItem} item
  * @param {import('./activation.js').ItemKind} kind
@@ -460,10 +523,18 @@ export function geometryAt(item, kind, localT) {
   // The static path is `geometryFor` itself, not a re-implementation of it.
   if (!Array.isArray(tracks) || tracks.length === 0) return geometryFor(item, kind)
 
+  // Resolved ONCE, then reused as the per-axis fallback below — so the `scale`
+  // track is sampled once per instant, and `scaleX`/`scaleY` follow the
+  // ANIMATED uniform scale rather than the static `item.scale`. A legacy
+  // overlay keyframing plain `scale` therefore keeps animating on both axes.
+  const s = sampleTrack(trackFor(tracks, 'scale'), localT) ?? item.scale ?? 1
+
   // `??`, never `||`: `sampleTrack`'s "no track" sentinel is `undefined`, and a
   // sampled 0 (opacity 0, offset 0) is an ordinary value that must survive.
   return {
-    scale: sampleTrack(trackFor(tracks, 'scale'), localT) ?? item.scale ?? 1,
+    scale: s,
+    scaleX: sampleTrack(trackFor(tracks, 'scaleX'), localT) ?? item.scaleX ?? s,
+    scaleY: sampleTrack(trackFor(tracks, 'scaleY'), localT) ?? item.scaleY ?? s,
     offsetX: sampleTrack(trackFor(tracks, 'offsetX'), localT) ?? item.offsetX ?? 0,
     offsetY: sampleTrack(trackFor(tracks, 'offsetY'), localT) ?? item.offsetY ?? 0,
     opacity: sampleTrack(trackFor(tracks, 'opacity'), localT) ?? item.opacity ?? 1,
@@ -480,16 +551,28 @@ export function geometryAt(item, kind, localT) {
  * (transformStyle.ts): the frame-relative % rect the item's box occupies —
  * left/top/width/height, all as percentages of the frame's own dimensions.
  *
- * @param {Pick<Geometry, 'scale' | 'offsetX' | 'offsetY'>} geometry
+ * WIDTH and LEFT come from the X scale, HEIGHT and TOP from the Y scale. On a
+ * uniform item those are the same number and this is the legacy formula
+ * unchanged — see the module header's non-uniform section.
+ *
+ * The per-axis scales are resolved DEFENSIVELY (`?? scale ?? 1`) rather than
+ * read raw, because this adapter is also handed hand-built partial objects
+ * carrying only `{scale, offsetX, offsetY}` — reading `geometry.scaleX`
+ * straight off one of those would produce a `NaN` box rather than the uniform
+ * one the caller means. Hence the loose `@param` shape below.
+ *
+ * @param {Pick<Geometry, 'offsetX' | 'offsetY'> & { scale?: number, scaleX?: number, scaleY?: number }} geometry
  * @returns {{ left: number, top: number, width: number, height: number }}
  */
 export function toCssBoxPct(geometry) {
-  const { scale: s, offsetX: ox, offsetY: oy } = geometry
+  const { offsetX: ox, offsetY: oy } = geometry
+  const sx = geometry.scaleX ?? geometry.scale ?? 1
+  const sy = geometry.scaleY ?? geometry.scale ?? 1
   return {
-    width: s * 100,
-    height: s * 100,
-    left: ((1 - s) / 2) * 100 + ox,
-    top: ((1 - s) / 2) * 100 + oy,
+    width: sx * 100,
+    height: sy * 100,
+    left: ((1 - sx) / 2) * 100 + ox,
+    top: ((1 - sy) / 2) * 100 + oy,
   }
 }
 
@@ -507,18 +590,26 @@ export function toCssBoxPct(geometry) {
  * the module header's "missing-dims silent drop" note for why it stays out
  * of scope here.
  *
- * @param {Pick<Geometry, 'scale' | 'offsetX' | 'offsetY'>} geometry
+ * WIDTH and X come from the X scale, HEIGHT and Y from the Y scale, each
+ * keeping its own even-pixel rounding. On a uniform item both axes read the
+ * same number and this is the legacy five-line formula unchanged. The per-axis
+ * scales are resolved defensively for the same partial-object reason
+ * `toCssBoxPct` documents.
+ *
+ * @param {Pick<Geometry, 'offsetX' | 'offsetY'> & { scale?: number, scaleX?: number, scaleY?: number }} geometry
  * @param {number} vw Canvas width, pixels.
  * @param {number} vh Canvas height, pixels.
  * @returns {{ x: number, y: number, width: number, height: number }}
  */
 export function toPixelBox(geometry, vw, vh) {
-  const { scale: s, offsetX: ox, offsetY: oy } = geometry
+  const { offsetX: ox, offsetY: oy } = geometry
+  const sx = geometry.scaleX ?? geometry.scale ?? 1
+  const sy = geometry.scaleY ?? geometry.scale ?? 1
   return {
-    width: Math.round((vw * s) / 2) * 2,
-    height: Math.round((vh * s) / 2) * 2,
-    x: Math.round(vw * (0.5 * (1 - s) + ox / 100)),
-    y: Math.round(vh * (0.5 * (1 - s) + oy / 100)),
+    width: Math.round((vw * sx) / 2) * 2,
+    height: Math.round((vh * sy) / 2) * 2,
+    x: Math.round(vw * (0.5 * (1 - sx) + ox / 100)),
+    y: Math.round(vh * (0.5 * (1 - sy) + oy / 100)),
   }
 }
 
@@ -559,7 +650,12 @@ export function toPixelBox(geometry, vw, vh) {
  * header for why that contract is frozen, why the grown box is `round`ed and
  * never `ceil`ed, and why `x`/`y` are not even-rounded.
  *
- * @param {Pick<Geometry, 'scale' | 'offsetX' | 'offsetY'> & { rotation?: number }} geometry
+ * Non-uniform scale needs no handling here: `scaledW`/`scaledH` already arrive
+ * split by axis from `toPixelBox`, so the growth formula below inherits it for
+ * free. The geometry object is forwarded down verbatim, which is why this
+ * `@param` carries the same loose per-axis shape `toPixelBox` accepts.
+ *
+ * @param {Pick<Geometry, 'offsetX' | 'offsetY'> & { scale?: number, scaleX?: number, scaleY?: number, rotation?: number }} geometry
  * @param {number} vw Canvas width, pixels.
  * @param {number} vh Canvas height, pixels.
  * @returns {RotatedPixelBox}

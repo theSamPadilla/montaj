@@ -82,11 +82,15 @@
  */
 
 /**
- * The item properties that can be keyframed. Deliberately the five that
+ * The item properties that can be keyframed. Deliberately the seven that
  * `geometryFor` already understands — animating anything else is out of
  * scope, and a track naming an unknown prop is simply never consulted.
  *
- * @typedef {'offsetX' | 'offsetY' | 'scale' | 'rotation' | 'opacity'} KeyframeProp
+ * `scale` is the legacy UNIFORM knob and `scaleX`/`scaleY` are its per-axis
+ * siblings; an item with no per-axis track follows the `scale` one on both
+ * axes, so adding these two did not change what a `scale`-only track does.
+ *
+ * @typedef {'offsetX' | 'offsetY' | 'scale' | 'scaleX' | 'scaleY' | 'rotation' | 'opacity'} KeyframeProp
  */
 
 /**

@@ -33,17 +33,24 @@ const __dirname = dirname(fileURLToPath(import.meta.url))
  * @param {number}  [opts.offsetX]   - Percent of frame width.  Read ONLY when `keyframes` is non-empty.
  * @param {number}  [opts.offsetY]   - Percent of frame height. Read ONLY when `keyframes` is non-empty.
  * @param {number}  [opts.scale]     - Frame-size multiplier.   Read ONLY when `keyframes` is non-empty.
+ * @param {number}  [opts.scaleX]    - Width multiplier.  Defaults to `scale`, so a legacy
+ *   uniform item is unchanged. Read ONLY when `keyframes` is non-empty.
+ * @param {number}  [opts.scaleY]    - Height multiplier. Defaults to `scale`, ditto.
  * @param {number}  [opts.rotation]  - Degrees.                 Read ONLY when `keyframes` is non-empty.
  * @param {number}  [opts.opacity]   - 0-1.                     Read ONLY when `keyframes` is non-empty.
  * @param {import('@bycrux/timeline-core').KeyframeTrack[]|null} [opts.keyframes]
  *   The item's keyframe tracks. Non-empty ⇒ the shim BAKES this item's transform
  *   into the capture per frame (see `generateShim`); absent/empty ⇒ the shim is
- *   byte-identical to the pre-SP9b one and the five scalars above are ignored,
+ *   byte-identical to the pre-SP9b one and the scalars above are ignored,
  *   exactly as they always were. Overlay positioning for a keyframe-free item
  *   still happens entirely at ffmpeg composite time.
  * @returns {Promise<{ htmlPath: string, workDir: string }>}
  */
-export async function bundleComponent({ componentPath, props, fps, durationFrames, width, height, offsetX = 0, offsetY = 0, scale = 1, rotation = 0, opacity = 1, keyframes = null, opaque = false, googleFonts = [] }) {
+// `scaleX`/`scaleY` default to `scale` (a destructuring default may read an
+// earlier binding), which is the same `?? scale ?? 1` fallback the resolver in
+// @bycrux/timeline-core applies — so a caller that knows only about uniform
+// `scale`, or passes `scaleX: undefined`, still bakes the legacy numbers.
+export async function bundleComponent({ componentPath, props, fps, durationFrames, width, height, offsetX = 0, offsetY = 0, scale = 1, scaleX = scale, scaleY = scale, rotation = 0, opacity = 1, keyframes = null, opaque = false, googleFonts = [] }) {
   const id      = randomBytes(8).toString('hex')
   const workDir = join(tmpdir(), `montaj-bundle-${id}`)
   mkdirSync(workDir, { recursive: true })
@@ -53,12 +60,18 @@ export async function bundleComponent({ componentPath, props, fps, durationFrame
   const htmlPath   = join(workDir, 'index.html')
 
   // The MINIMAL `GeometryItem` (@bycrux/timeline-core/src/geometry.js) the bake
-  // needs: the five animatable scalars, which `geometryAt` falls back to for any
+  // needs: the animatable scalars, which `geometryAt` falls back to for any
   // prop the item does not animate, plus the tracks themselves. `null` — the
   // overwhelmingly common case — means "no bake", and generateShim then emits
   // exactly the shim it emitted before keyframes existed.
+  //
+  // `scaleX`/`scaleY` ride alongside `scale`, not instead of it: `geometryAt`
+  // resolves each axis as `sampleTrack(scaleX) ?? item.scaleX ?? <resolved
+  // scale>`, so dropping the per-axis pair would snap a non-uniform item that
+  // animates only, say, opacity back to a uniform box, while dropping `scale`
+  // would break the fallback every uniform item still relies on.
   const bakeGeometry = Array.isArray(keyframes) && keyframes.length > 0
-    ? { offsetX, offsetY, scale, rotation, opacity, keyframes }
+    ? { offsetX, offsetY, scale, scaleX, scaleY, rotation, opacity, keyframes }
     : null
 
   writeFileSync(shimPath, generateShim(componentPath, props, fps, durationFrames, bakeGeometry))
@@ -146,7 +159,7 @@ function rewritePathsToFileUrls(value) {
  * @param {object} props
  * @param {number} fps
  * @param {number} durationFrames
- * @param {{offsetX:number, offsetY:number, scale:number, rotation:number, opacity:number, keyframes:object[]}|null} [bakeGeometry]
+ * @param {{offsetX:number, offsetY:number, scale:number, scaleX:number, scaleY:number, rotation:number, opacity:number, keyframes:object[]}|null} [bakeGeometry]
  *   Non-null ⇒ this item is KEYFRAMED and the shim wraps the component in a
  *   full-design-canvas layer whose CSS transform is re-derived every frame from
  *   `geometryAt(item, 'overlay', frame / fps)`.
@@ -166,6 +179,14 @@ function rewritePathsToFileUrls(value) {
  *   NO easing/interpolation math here: curve evaluation lives only in
  *   @bycrux/timeline-core/src/curves.js, and any lerp appearing in this file
  *   would be a parity bug, not an optimization.
+ *
+ *   The two-argument `scale(sx, sy)` is emitted UNCONDITIONALLY, including when
+ *   the two axes are equal. That is not an oversight to tidy up: parity here is
+ *   asserted on the transform STRING (test/overlay-transform-parity.test.mjs),
+ *   the preview emits the two-argument form unconditionally too, and `scale(2)`
+ *   is CSS-equivalent to `scale(2, 2)` but not string-equal — so a
+ *   `sx === sy → scale(s)` shortcut would break the comparison for every
+ *   legacy uniform overlay while changing nothing about the pixels.
  *
  *   `localT = frame / fps` is correct because this shim's frame 0 IS the
  *   overlay item's own (frame-quantized) `start`: collectPuppeteerSegments
@@ -214,7 +235,7 @@ function __bakeStyle(f) {
   return {
     position: 'absolute',
     inset: 0,
-    transform: \`translate(\${g.offsetX}%, \${g.offsetY}%) rotate(\${g.rotation}deg) scale(\${g.scale})\`,
+    transform: \`translate(\${g.offsetX}%, \${g.offsetY}%) rotate(\${g.rotation}deg) scale(\${g.scaleX}, \${g.scaleY})\`,
     transformOrigin: 'center center',
     opacity: g.opacity,
   }

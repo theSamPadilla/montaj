@@ -1,5 +1,5 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type MutableRefObject } from 'react'
-import { Captions, Crop, Ear, EarOff, Film, HelpCircle, History, Magnet, Maximize2, Minimize2, Pencil, Redo2, SeparatorVertical, Smartphone, SquareDashedMousePointer, Undo2, Wand2 } from 'lucide-react'
+import { Captions, Crop, Ear, EarOff, Film, HelpCircle, History, Magnet, Maximize2, Minimize2, Redo2, SeparatorVertical, Smartphone, SquareDashedMousePointer, Undo2, Wand2 } from 'lucide-react'
 import type { Project, VideoEditorProps } from '../types'
 import type { AudioTrack, VisualItem } from '../schema'
 import { useProjectSync, type UseProjectSync } from '../state/use-project-sync'
@@ -30,6 +30,8 @@ import VersionPanel, { listVersions } from './VersionPanel'
 import OverlayInspector from './OverlayInspector'
 import LeftPanelTabs, { type LeftPanelTab } from './panels/LeftPanelTabs'
 import ClipPropertiesPanel, { type ClipSelection } from './panels/ClipPropertiesPanel'
+import OverlayContentPanel from './panels/OverlayContentPanel'
+import TabNav from './panels/TabNav'
 import VersionCompare from './VersionCompare'
 import CaptionListPanel, { type CaptionListPanelProps, type CaptionEditFocusRequest, nextEditFocus } from './CaptionListPanel'
 import RenderModal from './RenderModal'
@@ -37,7 +39,6 @@ import ImageToneMenu from './ImageToneMenu'
 import type { ImageTone } from './imageTone'
 import CaptionRegenModal from './CaptionRegenModal'
 import AudioPolishModal from './AudioPolishModal'
-import OverlayPropsModal from './preview/OverlayPropsModal'
 import CommandPalette, { type PaletteCommand } from './CommandPalette'
 import { createShuttleController } from './shuttle'
 import { useKeymap, matchesKey, matchesModAltKey, matchesModKey, matchesPlainKey, matchesRedo, matchesShiftDelete, matchesUndo } from './keymap'
@@ -83,6 +84,20 @@ const MEDIA_PANEL_WIDTH_STORAGE_KEY = 'montaj.editor.mediaPanelWidth'
 const DEFAULT_MEDIA_PANEL_PX = 288
 const MIN_MEDIA_PANEL_PX = 200
 const MAX_MEDIA_PANEL_PX = 640
+
+// ── Overlay properties panel tab ──────────────────────────────────────────
+// Which of the right column's two overlay tabs is showing. Persisted per
+// browser like every other panel preference, so the operator's habit survives
+// a reload. 'content' is the default: what an overlay SAYS is what you reach
+// for first, and it is the tab that replaced the double-click dialog.
+const OVERLAY_PANEL_TAB_STORAGE_KEY = 'montaj.editor.overlayPanelTab'
+type OverlayPanelTab = 'content' | 'transform'
+const reviveOverlayPanelTab = (raw: unknown): OverlayPanelTab | null =>
+  raw === 'content' || raw === 'transform' ? raw : null
+const OVERLAY_PANEL_TABS: readonly { value: OverlayPanelTab; label: string }[] = [
+  { value: 'content', label: 'Content' },
+  { value: 'transform', label: 'Transform' },
+]
 
 // Generic over the host's concrete project type `P` (default = the package's
 // own `Project`). Montaj passes its richer Project; the index signature on
@@ -750,6 +765,15 @@ function ReviewSurface<P extends Project>({
     DEFAULT_MEDIA_PANEL_PX,
     reviveNumberInRange(MIN_MEDIA_PANEL_PX, MAX_MEDIA_PANEL_PX),
   )
+  // Which overlay tab the right column opens on. Same persist-per-browser
+  // pattern as the widths above; the reviver rejects anything that isn't one
+  // of the two tab names, so a stale key from an older build falls back to
+  // 'content' rather than rendering a blank pane.
+  const [overlayPanelTab, setOverlayPanelTab] = usePersistentState<OverlayPanelTab>(
+    OVERLAY_PANEL_TAB_STORAGE_KEY,
+    'content',
+    reviveOverlayPanelTab,
+  )
 
   /** Drag the rail divider. Mirrors `startSplitDrag` on the horizontal axis;
    *  dragging LEFT widens the rail, hence the inverted delta. */
@@ -887,7 +911,7 @@ function ReviewSurface<P extends Project>({
   // filtered command list.
   const [paletteOpen, setPaletteOpen] = useState<false | 'list' | 'goto'>(false)
 
-  // ── T9 keymap plumbing (continued after `editingOverlayItem`, below) ──
+  // ── T9 keymap plumbing (continued after `anyModalOpen`, below) ──
   // The transport seam — filled by PreviewPlayer from whichever playback path
   // (legacy or engine) is active. The keymap and palette use it for play/
   // pause; the shuttle polls `isPlaying()` to detect a real transport change.
@@ -1170,22 +1194,21 @@ function ReviewSurface<P extends Project>({
     if (!cropTarget && cropMode) setCropMode(false)
   }, [cropTarget, cropMode])
 
-  // Overlay props dialog — opened from the preview (double-click), the controls
-  // bar, or the timeline block. VideoEditor owns the state so all three surfaces
-  // share one modal. Edits ride the sync core's transient/commit gesture path
-  // (live preview + one undo step on Save).
-  const [editingOverlayId, setEditingOverlayId] = useState<string | null>(null)
-  // Project snapshot taken when the dialog opens, so Cancel reverts to the
-  // pre-edit state even though edits preview live in between.
-  const editOriginalRef = useRef<P | null>(null)
-  const requestEditOverlay = useCallback((id: string) => {
-    editOriginalRef.current = syncProjectRef.current
-    setEditingOverlayId(id)
-  }, [syncProjectRef])
+  // Overlay content editing used to be a floating dialog VideoEditor owned the
+  // open/closed state for, shared by the preview double-click, the controls bar
+  // and the timeline block. It is the right column's **Content** tab now (see
+  // `propertiesPanel` below), which is never "open": selecting an overlay IS
+  // opening it. So there is no `editingOverlayId`, and no pre-open project
+  // snapshot for a Cancel to restore — undo is the revert path, and it works
+  // because each committed gesture is exactly one undo step. Requesting an
+  // edit is therefore just selecting the overlay. Replaces the whole selection
+  // rather than extending it, matching a plain non-additive click: the panel
+  // renders `primarySelectedId`, so leaving a previous id in front of this one
+  // would double-click an overlay and show a different item's properties.
+  const selectOverlayForEditing = useCallback((id: string) => {
+    setSelectedIds([id])
+  }, [])
   const allVisualItems = trackItems(project).flat()
-  const editingOverlayItem = editingOverlayId
-    ? allVisualItems.find(i => i.id === editingOverlayId) ?? null
-    : null
 
   // T9 keymap plumbing: every dialog/panel this surface can have open, ORed
   // into one flag so the keymap (and Timeline's own arrows/delete/enter/
@@ -1195,8 +1218,10 @@ function ReviewSurface<P extends Project>({
   // shortcut. There is no general "is a modal open" concept anywhere else in
   // the codebase (today's handlers didn't check this at all); this derives
   // it from state ReviewSurface already owns rather than inventing new
-  // cross-file plumbing.
-  const anyModalOpen = renderOpen || regenCaptionsOpen || polishOpen || !!editingOverlayItem
+  // cross-file plumbing. The overlay props dialog used to be a term here; the
+  // Content tab that replaced it is a PANEL, and a panel must not suppress the
+  // timeline's own keys the way a modal does.
+  const anyModalOpen = renderOpen || regenCaptionsOpen || polishOpen
     || showControls || cropMode || !!paletteOpen
 
   function withItemProps(base: P, id: string, nextProps: Record<string, unknown>): P {
@@ -1209,25 +1234,18 @@ function ReviewSurface<P extends Project>({
   }
   // Live preview: reflect the in-progress edit locally (transient — no save, no
   // undo push) so the overlay re-renders as the operator tweaks. `commit()` on
-  // Save persists the accumulated transient state as one undo step.
+  // the field's blur persists the accumulated transient state as one undo step.
   function previewOverlayProps(id: string, nextProps: Record<string, unknown>) {
     sync.mutateTransient(p => withItemProps(p, id, nextProps))
   }
-  // Commit on Save: the last preview already applied the final props transiently,
-  // so committing persists them and records one undo step (the pre-edit baseline).
+  // Closes a Content-tab typing gesture (fired on the field's blur) as one undo
+  // step + queued save: the last preview already applied the final props
+  // transiently, so this only has to persist them. Identical in shape to
+  // `commitOverlayInspectorChange` below — the two tabs of the same panel.
   function commitOverlayEdit() {
     void sync.commit()
-    editOriginalRef.current = null
-    setEditingOverlayId(null)
   }
-  // Cancel/Esc/close: discard the live preview by restoring the pre-edit snapshot
-  // (no save, no undo push).
-  function cancelOverlayEdit() {
-    if (editOriginalRef.current) sync.applyExternal(editOriginalRef.current)
-    editOriginalRef.current = null
-    setEditingOverlayId(null)
-  }
-  // The primary-selected JSX overlay, if any — drives the controls-bar edit button.
+  // The primary-selected JSX overlay, if any — the Content/Transform panel's target.
   const selectedOverlayItem = primarySelectedId
     ? allVisualItems.find(i => i.id === primarySelectedId && i.type === 'overlay' && !!i.src) ?? null
     : null
@@ -1895,7 +1913,10 @@ function ReviewSurface<P extends Project>({
                 clock={clock}
                 selectedOverlayId={primarySelectedId ?? undefined}
                 onOverlayChange={handleOverlayChange}
-                onEditOverlay={requestEditOverlay}
+                // Double-click on the preview. It used to open the props
+                // dialog; it SELECTS now, which is what puts the overlay's
+                // props on screen in the right column's Content tab.
+                onEditOverlay={selectOverlayForEditing}
                 compileOverlay={adapter.compileOverlay}
                 clearOverlayCache={adapter.clearOverlayCache}
                 watchFile={adapter.watchFile}
@@ -2104,17 +2125,11 @@ function ReviewSurface<P extends Project>({
             <Crop size={12} />
           </button>
         </Tooltip>
-        {selectedOverlayItem && (
-          <Tooltip label="Edit overlay">
-            <button
-              onClick={() => requestEditOverlay(selectedOverlayItem.id)}
-              aria-label="Edit overlay"
-              className="flex items-center justify-center w-5 h-5 rounded transition-colors text-[var(--editor-text)]/60 bg-transparent hover:text-[var(--editor-text)]"
-            >
-              <Pencil size={12} />
-            </button>
-          </Tooltip>
-        )}
+        {/* The Pencil "Edit overlay" button used to sit here, opening the
+            floating props dialog. Both are retired: selecting an overlay now
+            shows its props in the right column's Content tab, so a button whose
+            only job was "open the thing that is already open" had nothing left
+            to do. */}
         {/* Image color mapping. HDR projects only (the tone has no effect on
             SDR renders). Hidden when the host surfaces the setting in its own
             chrome via onProvideImageTone, mirroring the Render button. */}
@@ -2236,10 +2251,83 @@ function ReviewSurface<P extends Project>({
       fps={project.settings?.fps ?? 30}
       clock={clock}
       editFocusId={editFocusId}
+      compileOverlay={adapter.compileOverlay}
+      resolveCaptionTemplate={adapter.resolveCaptionTemplate}
     />
   )
   const versionPanel = adapter.listVersionHistory && (
     <VersionPanel versions={versions} restoring={restoring} onRestore={handleRestoreVersion} onSaveVersion={handleSaveVersion} saving={saving} onCompareVersion={adapter.versionFrameUrl ? handleCompareVersion : undefined} />
+  )
+
+  /**
+   * The selected overlay's properties, in two tabs: **Content** (its own props
+   * — text, colors, numbers, toggles, images) and **Transform** (the
+   * keyframeable geometry). Content is the default, and it is what the retired
+   * floating "Edit overlay" dialog used to show.
+   *
+   * ONE node, rendered by BOTH layouts — the classic right rail below and the
+   * CapCut `propertiesPanel` further down. That is not incidental tidiness: the
+   * dialog this replaces was mounted at the top level and its Pencil button
+   * lived in the controls bar, so BOTH were layout-independent. Giving the tabs
+   * only to the CapCut column would have left classic hosts (Hub, LP) with a
+   * Transform inspector and no way to reach an overlay's text at all.
+   *
+   * A COMPACT INLINE tab strip, deliberately not `LeftPanelTabs`: that
+   * component's `w-16` vertical icon rail spends a fifth of a 300px column on
+   * chrome. Two buttons in the same underline language as CaptionListPanel's
+   * Style/Captions pair cost a row of height and nothing horizontally. Built
+   * from the shared `TabNav` (`./panels/TabNav`) — the same underline strip
+   * `ClipPropertiesPanel`'s own clip tabs use — rather than a hand-rolled one,
+   * so every small in-panel tab switch in the editor speaks the same visual
+   * and accessible language.
+   *
+   * `aria-pressed` rather than `role="tab"`, for CaptionListPanel's reason (and
+   * `TabNav`'s own doc comment): the CapCut LEFT rail is a real tablist, and a
+   * second set of tabs in the same tree makes `getByRole('tab', …)` ambiguous
+   * in the host's own tests.
+   *
+   * With nothing (or a non-overlay) selected this falls through to
+   * `OverlayInspector`'s own "Select an overlay…" empty state rather than a
+   * bare tab strip over an empty pane — the classic rail renders this
+   * unconditionally and relied on exactly that empty state before.
+   */
+  const overlayPropertiesPanel = selectedOverlayItem ? (
+    <>
+      <TabNav
+        tabs={OVERLAY_PANEL_TABS}
+        value={overlayPanelTab}
+        onChange={setOverlayPanelTab}
+        ariaLabel="Overlay panel view"
+        className="shrink-0 border-b border-[var(--editor-border)]"
+      />
+      {overlayPanelTab === 'content' ? (
+        <OverlayContentPanel
+          item={selectedOverlayItem}
+          onPreview={next => previewOverlayProps(selectedOverlayItem.id, next)}
+          onCommit={commitOverlayEdit}
+          fileUrl={adapter.fileUrl}
+          uploadFile={file => adapter.uploadFile(file, project.id)}
+        />
+      ) : (
+        <OverlayInspector
+          item={selectedOverlayItem}
+          clock={clock}
+          onPreview={previewOverlayInspectorChange}
+          onCommit={commitOverlayInspectorChange}
+          onChange={applyOverlayInspectorChange}
+          onSeek={seekTo}
+        />
+      )}
+    </>
+  ) : (
+    <OverlayInspector
+      item={null}
+      clock={clock}
+      onPreview={previewOverlayInspectorChange}
+      onCommit={commitOverlayInspectorChange}
+      onChange={applyOverlayInspectorChange}
+      onSeek={seekTo}
+    />
   )
 
   // Right rail — CLASSIC LAYOUTS ONLY (Hub / LP). The CapCut layout replaces it
@@ -2283,20 +2371,15 @@ function ReviewSurface<P extends Project>({
         className="shrink-0 border-l border-[var(--editor-border)] bg-[var(--editor-surface)] flex flex-col overflow-hidden"
       >
 
-        {/* SP9b T3.2 — numeric property fields + per-property keyframe
-            diamonds for the selected overlay's transform props. Above
-            VersionPanel: it's the thing the operator is actively editing,
-            versions/captions/assets are reference material below it. Renders
-            its own "Select an overlay…" empty state when nothing, or a
+        {/* SP9b T3.2 — the selected overlay's properties. Above VersionPanel:
+            it's the thing the operator is actively editing,
+            versions/captions/assets are reference material below it. Was the
+            Transform inspector alone; it is the Content/Transform tab pair now
+            (see `overlayPropertiesPanel`), because the floating dialog that
+            used to carry Content was reachable from this layout too. Still
+            renders its own "Select an overlay…" empty state when nothing, or a
             non-overlay, is selected. */}
-        <OverlayInspector
-          item={selectedOverlayItem}
-          clock={clock}
-          onPreview={previewOverlayInspectorChange}
-          onCommit={commitOverlayInspectorChange}
-          onChange={applyOverlayInspectorChange}
-          onSeek={seekTo}
-        />
+        {overlayPropertiesPanel}
 
         {versionPanel}
 
@@ -2406,10 +2489,18 @@ function ReviewSurface<P extends Project>({
   // ALWAYS rendered, never gated on the selection (Sam): a column that came and
   // went would resize the preview every time the operator clicked from a clip
   // to empty space, so it holds its width and shows an empty state instead.
-  // Three branches: a selected clip/audio track → ClipPropertiesPanel; a
-  // selected overlay → OverlayInspector; nothing selected → a centered empty
-  // state, the host's `slots.propertiesEmptyState` when supplied (Montaj brands
-  // it with its logo) or the generic "Select an element" default otherwise.
+  // Three branches: a selected clip → the tabbed `ClipPropertiesPanel`, whose
+  // Transform tab is the SAME `OverlayInspector` instance the overlay branch
+  // below uses (passed in as `transformSlot`, wired to the identical
+  // preview/commit/change trio) — a clip and an overlay's geometry controls
+  // are one component either way, just reached through a different tab shell;
+  // a selected audio track → the same `ClipPropertiesPanel`, which renders its
+  // untabbed `AudioSection` instead (audio has no Transform/Speed/Crop, so
+  // there is nothing to tab between); a selected overlay → the Content/
+  // Transform pair (`overlayPropertiesPanel`); nothing selected → a centered
+  // empty state, the host's `slots.propertiesEmptyState` when supplied (Montaj
+  // brands it with its logo) or the generic "Select an element" default
+  // otherwise.
   const propertiesPanel = (
     <>
       {/* Vertical divider, the same affordance as the preview/timeline one. */}
@@ -2441,12 +2532,50 @@ function ReviewSurface<P extends Project>({
               onPreviewAudio={previewAudioChange}
               onCommitAudio={commitAudioChange}
               onChangeAudio={applyAudioChange}
+              // Transform tab body: the SAME OverlayInspector instance (and the
+              // same preview/commit/change trio) the overlay branch below uses —
+              // a clip's geometry is edited by the identical control, just
+              // reached through this panel's tab shell instead of the overlay
+              // Content/Transform pair. Undefined for an audio-track selection
+              // (audio has no geometry to transform), which also means
+              // ClipPropertiesPanel offers no Transform tab for it.
+              transformSlot={
+                clipSelection.kind === 'clip' ? (
+                  <OverlayInspector
+                    item={clipSelection.item}
+                    clock={clock}
+                    onPreview={previewOverlayInspectorChange}
+                    onCommit={commitOverlayInspectorChange}
+                    onChange={applyOverlayInspectorChange}
+                    onSeek={seekTo}
+                  />
+                ) : undefined
+              }
+              // Crop tab: offered only when the selected clip IS the source-crop
+              // target — `cropTarget` (above) already encodes that rule (tracks[0]
+              // video with a src), so this just checks the current clip against
+              // it rather than re-deriving the condition. Unlike the toolbar
+              // button (above), which is an honest toggle, this is a one-way
+              // ENTER: the tab body stays mounted once opened, so a toggle here
+              // would silently exit crop mode on a second click with no
+              // feedback from the button itself (no aria-pressed, no label
+              // change). Exiting stays reachable through the toolbar button and
+              // the crop modal's own close path.
+              onOpenCrop={
+                clipSelection.kind === 'clip' && cropTarget?.id === clipSelection.item.id
+                  ? () => setCropMode(true)
+                  : undefined
+              }
               // The host's generation panel is per-CLIP — it draws that clip's
               // prompt/model/refImages — so the editor, which owns the
               // selection, resolves the node here rather than taking a static
-              // one the host would have to track selection to build. Video
-              // only: generation does not exist on an image clip or an audio
-              // track, the same reason the panel hides Speed for non-video.
+              // one the host would have to track selection to build. Gated on
+              // the clip actually being a regenerable generation (project has
+              // regen enabled AND the clip still carries its frozen generation
+              // provenance), not merely on being a video: `ClipTabs` shows a
+              // Generate tab whenever this slot is defined, so a bare
+              // video-type check would put a dead, empty tab on every ordinary
+              // video clip in every non-ai_video project.
               // KEYED ON THE CLIP ID, and that key is load-bearing. The host's
               // panel seeds its regen form (prompt, model, duration, ref
               // images) from the clip in `useState` initializers, which run
@@ -2460,21 +2589,21 @@ function ReviewSurface<P extends Project>({
               // the host means every host gets that guarantee from the seam
               // itself instead of having to know about it.
               generationSlot={
-                clipSelection.kind === 'clip' && clipSelection.item.type === 'video'
-                  ? <Fragment key={clipSelection.item.id}>{renderGenerationPanel?.({ clipId: clipSelection.item.id })}</Fragment>
+                clipSelection.kind === 'clip'
+                && clipSelection.item.type === 'video'
+                && regenEnabled
+                && clipSelection.item.generation
+                && renderGenerationPanel
+                  ? <Fragment key={clipSelection.item.id}>{renderGenerationPanel({ clipId: clipSelection.item.id })}</Fragment>
                   : undefined
               }
             />
           ) : selectedOverlayItem ? (
-            /* A selected overlay's Transform properties. */
-            <OverlayInspector
-              item={selectedOverlayItem}
-              clock={clock}
-              onPreview={previewOverlayInspectorChange}
-              onCommit={commitOverlayInspectorChange}
-              onChange={applyOverlayInspectorChange}
-              onSeek={seekTo}
-            />
+            /* The selected overlay's Content/Transform tabs — the SAME node the
+               classic right rail renders (see `overlayPropertiesPanel`), so the
+               two layouts can never drift apart on which tab is showing or what
+               either one edits. */
+            overlayPropertiesPanel
           ) : (
             /* Nothing selected: the host's branded empty state, or the
                package's generic centered default. */
@@ -2664,20 +2793,6 @@ function ReviewSurface<P extends Project>({
         />
       )}
 
-      {/* Overlay props dialog — edits the selected overlay's primitive props
-          (text, colors, numbers, toggles). Opened from the preview double-click,
-          the controls bar, or a timeline block. Edits preview live (transient) and
-          undo as one step on Save. */}
-      {editingOverlayItem && (
-        <OverlayPropsModal
-          itemProps={editingOverlayItem.props ?? {}}
-          fileUrl={adapter.fileUrl}
-          uploadFile={(file) => adapter.uploadFile(file, project.id)}
-          onPreview={(next) => previewOverlayProps(editingOverlayItem.id, next)}
-          onSave={() => commitOverlayEdit()}
-          onClose={cancelOverlayEdit}
-        />
-      )}
     </div>
   )
 }

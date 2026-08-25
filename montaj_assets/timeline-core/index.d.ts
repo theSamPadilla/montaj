@@ -394,8 +394,21 @@ export declare function projectEnd(project: DurationProject): number
 
 /** The subset of a timeline item that geometry math reads. */
 export interface GeometryItem {
-  /** Multiplier on the frame's own size. Default 1. */
+  /**
+   * Multiplier on the frame's own size. Default 1. The legacy UNIFORM knob,
+   * and still the fallback for both axes.
+   */
   scale?: number
+  /**
+   * Multiplier on the frame's WIDTH. Absent ⇒ falls back to {@link scale} (and
+   * then to 1), so a legacy scale-only item resolves exactly as it always did.
+   */
+  scaleX?: number
+  /**
+   * Multiplier on the frame's HEIGHT. Absent ⇒ falls back to {@link scale}
+   * (and then to 1).
+   */
+  scaleY?: number
   /** Percent of frame WIDTH. Default 0. */
   offsetX?: number
   /** Percent of frame HEIGHT. Default 0. */
@@ -430,8 +443,23 @@ export interface GeometryItem {
  * numbers from this.
  */
 export interface Geometry {
-  /** Multiplier on the frame's own size. */
+  /**
+   * Multiplier on the frame's own size — the legacy UNIFORM value, resolved
+   * and still emitted because callers read it. The adapters read
+   * {@link scaleX}/{@link scaleY} instead.
+   */
   scale: number
+  /**
+   * Multiplier on the frame's WIDTH. Equals {@link scale} whenever the item
+   * carries no `scaleX` of its own, which is what keeps a legacy scale-only
+   * project byte-identical.
+   */
+  scaleX: number
+  /**
+   * Multiplier on the frame's HEIGHT. Equals {@link scale} whenever the item
+   * carries no `scaleY` of its own.
+   */
+  scaleY: number
   /** Percent of frame width. */
   offsetX: number
   /** Percent of frame height. */
@@ -486,21 +514,35 @@ export declare function geometryFor(item: GeometryItem, kind: ItemKind): Geometr
  * An item with no `keyframes` is handed to {@link geometryFor} ITSELF — the
  * same function, not a copy of its body — so the static path is identical BY
  * CONSTRUCTION and a keyframe-free project keeps producing a byte-identical
- * ffmpeg filter graph. Only the five {@link KeyframeProp} values can be
+ * ffmpeg filter graph. Only the seven {@link KeyframeProp} values can be
  * animated; `fit`/`sourceCrop`/`sourceWidth`/`sourceHeight` are forwarded
  * exactly as the static path forwards them (`sourceCrop` by reference, never
  * cloned). The per-prop fallback is `??` and never `||`, so a legitimately
  * animated 0 (opacity 0, offset 0) survives instead of snapping back to the
  * item's static scalar.
+ *
+ * `scaleX`/`scaleY` fall back to the RESOLVED — i.e. possibly animated —
+ * `scale`, never to the static `item.scale`, so an item that keyframes plain
+ * uniform `scale` keeps animating on both axes.
  */
 export declare function geometryAt(item: GeometryItem, kind: ItemKind, localT: number): Geometry
 
 /**
  * The editor-CSS adapter. Verbatim port of `videoTransformBoxPct`
  * (transformStyle.ts): the frame-relative % rect the item's box occupies.
+ *
+ * WIDTH and LEFT come from the X scale, HEIGHT and TOP from the Y scale; on a
+ * uniform item both read the same number and this is the legacy formula
+ * unchanged. The per-axis scales are resolved defensively (`?? scale ?? 1`),
+ * which is why every scale key below is OPTIONAL: this adapter is also handed
+ * hand-built partial objects carrying only `{scale, offsetX, offsetY}`.
  */
 export declare function toCssBoxPct(
-  geometry: Pick<Geometry, 'scale' | 'offsetX' | 'offsetY'>,
+  geometry: Pick<Geometry, 'offsetX' | 'offsetY'> & {
+    scale?: number
+    scaleX?: number
+    scaleY?: number
+  },
 ): { left: number; top: number; width: number; height: number }
 
 /**
@@ -509,9 +551,17 @@ export declare function toCssBoxPct(
  * even-pixel rounding on width/height (`round(vw*s/2)*2`, NOT the same as
  * `round(vw*s)`). Does NOT include the separate `sourceCrop` ffmpeg crop step
  * — see the src/geometry.js module header.
+ *
+ * WIDTH and X come from the X scale, HEIGHT and Y from the Y scale, each
+ * keeping its own even-pixel rounding; the scale keys are optional for the
+ * same partial-object reason {@link toCssBoxPct} documents.
  */
 export declare function toPixelBox(
-  geometry: Pick<Geometry, 'scale' | 'offsetX' | 'offsetY'>,
+  geometry: Pick<Geometry, 'offsetX' | 'offsetY'> & {
+    scale?: number
+    scaleX?: number
+    scaleY?: number
+  },
   vw: number,
   vh: number,
 ): { x: number; y: number; width: number; height: number }
@@ -564,9 +614,19 @@ export interface RotatedPixelBox {
  * append a rotate step. See the src/geometry.js module header for the verified
  * formula, why the grown box is `round`ed and never `ceil`ed, and why `x`/`y`
  * are not even-rounded.
+ *
+ * Non-uniform scale needs no handling here: `scaledW`/`scaledH` arrive already
+ * split by axis from {@link toPixelBox}, so the growth formula inherits it for
+ * free. The geometry object is forwarded down verbatim, hence the same loose
+ * per-axis shape.
  */
 export declare function toRotatedPixelBox(
-  geometry: Pick<Geometry, 'scale' | 'offsetX' | 'offsetY'> & { rotation?: number },
+  geometry: Pick<Geometry, 'offsetX' | 'offsetY'> & {
+    scale?: number
+    scaleX?: number
+    scaleY?: number
+    rotation?: number
+  },
   vw: number,
   vh: number,
 ): RotatedPixelBox
@@ -712,11 +772,22 @@ export declare function audioWindow(track: AudioTrack, t: number): AudioWindow
 export type EasingName = 'linear' | 'ease' | 'ease-in' | 'ease-out' | 'ease-in-out' | 'hold'
 
 /**
- * The item properties that can be keyframed — deliberately the five
+ * The item properties that can be keyframed — deliberately the seven
  * {@link geometryFor} already understands. A track naming anything else is
  * simply never consulted.
+ *
+ * `scale` is the legacy UNIFORM knob and `scaleX`/`scaleY` are its per-axis
+ * siblings; an item with no per-axis track follows the `scale` track on both
+ * axes, so adding these two did not change what a `scale`-only track does.
  */
-export type KeyframeProp = 'offsetX' | 'offsetY' | 'scale' | 'rotation' | 'opacity'
+export type KeyframeProp =
+  | 'offsetX'
+  | 'offsetY'
+  | 'scale'
+  | 'scaleX'
+  | 'scaleY'
+  | 'rotation'
+  | 'opacity'
 
 /** One keyframe. */
 export interface Keyframe {
@@ -818,3 +889,78 @@ export declare function sampleTrack(
  * {@link geometryFor} takes with `sourceCrop`.
  */
 export declare function normalizeTrack(track: KeyframeTrack | null | undefined): KeyframeTrack | undefined
+
+/**
+ * Options for {@link compileTrackExpr}.
+ *
+ * `pixelTolerance` is in OUTPUT PIXELS, because "visually identical" is a
+ * statement about pixels; `unitsPerPixel` converts it into the compiled
+ * property's own units. See the `src/expr.js` header for the derivation
+ * against `toPixelBox`/`toRotatedPixelBox` — briefly:
+ * `100/vw` for offsetX/offsetY, `1/vw` for scale/scaleX/scaleY, and for
+ * `rotation` the value derived from the item's PEAK `scaledW`/`scaledH` across
+ * its whole span, which the caller must supply because a single track cannot
+ * see its sibling scale track.
+ */
+export interface CompileTrackExprOptions {
+  /** Default 0.25. */
+  pixelTolerance?: number
+  /** Default 1. */
+  unitsPerPixel?: number
+}
+
+/** What {@link compileTrackExprInfo} reports alongside the expression. */
+export interface CompiledTrackExpr {
+  /** `null` when the track holds no usable keyframe — keep the static value. */
+  expr: string | null
+  /** Piecewise-linear segments emitted. 0 for a constant. */
+  segments: number
+  /** True when {@link MAX_SEGMENTS} was reached with the tolerance still unmet. */
+  capped: boolean
+  /** Worst chord deviation actually achieved, in the property's own units. */
+  maxError: number
+  /** `pixelTolerance * unitsPerPixel`, i.e. the target `maxError` aimed at. */
+  tolerance: number
+}
+
+/**
+ * Ceiling on adaptive subdivision. 63, not 64: the emitted form spends one
+ * `between(...)` arm on the before-span guard on top of one per segment, and
+ * the contract is that the whole expression holds at most 64 `between(...)`
+ * calls.
+ */
+export declare const MAX_SEGMENTS: number
+
+/**
+ * Compile a keyframe track into an ffmpeg filter expression in `t`
+ * (ITEM-relative seconds — the caller makes ffmpeg's `t` mean that).
+ *
+ * Emits a piecewise-LINEAR approximation sampled through {@link sampleTrack}
+ * rather than a translation of the easing maths: the four `ease*` easings are
+ * cubic Béziers inverted by Newton-Raphson, and porting that into ffmpeg's
+ * expression language would be an iterative solver written twice, in two
+ * languages, that must agree forever. Sampling here keeps exactly ONE
+ * implementation of easing in the system.
+ *
+ * The emitted vocabulary is only `if`, `between`, `+ - * /`, `t` and numeric
+ * literals. Callers interpolating the result into a PIXEL option must wrap it
+ * in `round(...)`: ffmpeg truncates such an option toward zero while
+ * {@link toPixelBox} rounds, so a bare expression can land a pixel short.
+ *
+ * Returns `null` when the track holds no usable keyframe.
+ */
+export declare function compileTrackExpr(
+  track: KeyframeTrack | Keyframe[] | null | undefined,
+  options?: CompileTrackExprOptions,
+): string | null
+
+/**
+ * {@link compileTrackExpr} plus the diagnostics the render path warns from —
+ * notably `capped`, which `encode-segment.js` surfaces as a `console.warn`
+ * naming the item and property so an operator whose export came out slightly
+ * coarse can find out why.
+ */
+export declare function compileTrackExprInfo(
+  track: KeyframeTrack | Keyframe[] | null | undefined,
+  options?: CompileTrackExprOptions,
+): CompiledTrackExpr

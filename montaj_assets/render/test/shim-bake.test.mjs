@@ -112,8 +112,14 @@ describe('shim bake: a keyframed overlay', () => {
     // do NOT commute: translate → rotate → scale about the centre is a different
     // matrix from any other ordering, so the order is part of the contract, not
     // a formatting choice.
+    //
+    // The scale term is the TWO-argument `scale(sx, sy)`, unconditionally —
+    // uniform items included. The preview emits it unconditionally, and parity
+    // is asserted on the STRING (test/overlay-transform-parity.test.mjs), so a
+    // `sx === sy → scale(s)` shortcut would be CSS-equivalent yet break every
+    // legacy overlay's comparison.
     assert.match(baked,
-      /transform: `translate\(\$\{g\.offsetX\}%, \$\{g\.offsetY\}%\) rotate\(\$\{g\.rotation\}deg\) scale\(\$\{g\.scale\}\)`/)
+      /transform: `translate\(\$\{g\.offsetX\}%, \$\{g\.offsetY\}%\) rotate\(\$\{g\.rotation\}deg\) scale\(\$\{g\.scaleX\}, \$\{g\.scaleY\}\)`/)
     assert.match(baked, /transformOrigin: 'center center'/)
     // Beside the transform, never inside it — the preview applies it the same way.
     assert.match(baked, /opacity: g\.opacity/)

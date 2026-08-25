@@ -16,16 +16,22 @@ import type { Captions, CaptionSegment } from '../../schema'
 import type { PlaybackClock } from '../playback-clock'
 import CaptionListPanel from '../CaptionListPanel'
 
-// The subsection's expanded/collapsed state persists to localStorage
-// (usePersistentState) — clear it between tests or an earlier `expandStyle()`
-// leaks in and TOGGLES the section shut instead of open.
+// The panel's active sub-tab persists to localStorage (usePersistentState).
+// Clear it, then seed 'captions' for consistency with the sibling suites;
+// every test here flips to the Format tab via `expandStyle()` anyway, since
+// the font and text-styling controls live there now (moved off the retired
+// "Style" tab, which split into "Styles" — a preset gallery, see
+// CaptionStyleGallery.test.tsx — and "Format" — these fine controls).
 //
 // No local ResizeObserver stub: the specimen strip observes its own width and
 // jsdom has no ResizeObserver, but src/test-setup.ts now installs a no-op one
 // globally. That also means these tests run the specimen's "measurement never
 // happens" floor-clamp path, which is why the size assertions below read the
 // reported figure rather than a computed px.
-beforeEach(() => window.localStorage.clear())
+beforeEach(() => {
+  window.localStorage.clear()
+  window.localStorage.setItem('montaj.editor.captionPanelTab', JSON.stringify('captions'))
+})
 afterEach(() => cleanup())
 
 Element.prototype.scrollIntoView = vi.fn()
@@ -85,7 +91,10 @@ function renderPanel(extra: Partial<Captions> = {}, currentTime = 0, selectedIds
 }
 
 function expandStyle() {
-  fireEvent.click(screen.getByLabelText('Caption style controls'))
+  // Font/text-styling controls moved from a collapse toggle, then from a
+  // single "Style" tab, onto the "Format" tab; these suites seed 'captions',
+  // so this click flips there.
+  fireEvent.click(screen.getByRole('button', { name: 'Format' }))
 }
 
 function pickFont(label: string) {

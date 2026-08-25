@@ -4,15 +4,20 @@ import { render, screen, fireEvent, cleanup, within } from '@testing-library/rea
 import type { Project } from '../types'
 import type { Captions, CaptionSegment } from '../schema'
 import type { PlaybackClock } from './playback-clock'
-import CaptionListPanel, { type CaptionListPanelProps, nextEditFocus } from './CaptionListPanel'
+import CaptionListPanel, { type CaptionListPanelProps, nextEditFocus, reviveCaptionTab } from './CaptionListPanel'
 import { formatTime } from './timeline/utils'
 import src from './CaptionListPanel.tsx?raw'
 
-// The "Caption style" subsection's expanded/collapsed state persists to
-// localStorage (usePersistentState) — clear it between tests or an earlier
-// test's `expandStyle()` leaks into the next one and TOGGLES it shut instead
-// (see ui/__tests__/usePersistentState.test.tsx for the same convention).
-beforeEach(() => window.localStorage.clear())
+// The panel's active sub-tab (Format / Styles / Captions) persists to
+// localStorage (usePersistentState). Clear it between tests, then SEED it to
+// 'captions' so the bulk of the suites below — which inspect the transcript
+// list, search, row filters, and footer actions — render on the tab those
+// live on. The dedicated 'tabs' suite at the bottom clears this seed itself
+// to exercise the real default ('format').
+beforeEach(() => {
+  window.localStorage.clear()
+  window.localStorage.setItem('montaj.editor.captionPanelTab', JSON.stringify('captions'))
+})
 afterEach(() => cleanup())
 
 // jsdom doesn't implement scrollIntoView; the editFocusId effect calls it.
@@ -265,21 +270,36 @@ describe('CaptionListPanel row interactions', () => {
 })
 
 describe('CaptionListPanel relocated style controls', () => {
-  function expandStyle() {
-    fireEvent.click(screen.getByLabelText('Caption style controls'))
+  // The style controls used to hide behind a collapse toggle, then behind a
+  // single "Style" tab; they now split across two tabs — "Format" (the fine
+  // controls: size, colors, specimen, font, Bold, case, alignment, spacing;
+  // the panel's default) and "Styles" (the gallery of live style previews,
+  // see CaptionStyleGallery.tsx / .test.tsx). Selecting a tab is what makes
+  // its controls visible — these suites seed 'captions' in `beforeEach`, so
+  // each helper's click actually flips tabs here.
+  function expandFormat() {
+    fireEvent.click(screen.getByRole('button', { name: 'Format' }))
+  }
+  function expandStyles() {
+    fireEvent.click(screen.getByRole('button', { name: 'Styles' }))
   }
 
-  it('a style preset click commits via onCaptionEdit, writing captions.style', () => {
+  // Was: click a style preset CHIP on the old single "Style" tab. The chip
+  // row is retired (CaptionStyleGallery replaces it); this proves the PANEL
+  // wires the gallery's click-to-commit through onCaptionEdit exactly as the
+  // chip row did — the gallery's own test file covers the gallery in
+  // isolation, this is the integration seam between the two.
+  it('a style gallery card click commits via onCaptionEdit, writing captions.style', () => {
     const { onCaptionEdit } = renderPanel({ style: 'pop' })
-    expandStyle()
-    fireEvent.click(screen.getByText('subtitle'))
+    expandStyles()
+    fireEvent.click(screen.getByRole('button', { name: 'Subtitle' }))
     expect(onCaptionEdit).toHaveBeenCalledTimes(1)
     expect(onCaptionEdit.mock.calls[0][0].captions.style).toBe('subtitle')
   })
 
   it('fontsize slider previews live on change and commits once on pointer-up — exactly one channel per gesture', () => {
     const { onProjectChange, onCaptionEdit } = renderPanel()
-    expandStyle()
+    expandFormat()
     const slider = screen.getByLabelText('Caption font size')
 
     fireEvent.change(slider, { target: { value: '60' } })
@@ -296,7 +316,7 @@ describe('CaptionListPanel relocated style controls', () => {
 
   it('base text color previews live via onProjectChange and commits via onCaptionEdit when no segment is selected', () => {
     const { onProjectChange, onCaptionEdit } = renderPanel()
-    expandStyle()
+    expandFormat()
     const input = screen.getByLabelText('Caption text color') as HTMLInputElement
 
     fireEvent.change(input, { target: { value: '#76b900' } })
@@ -318,7 +338,7 @@ describe('CaptionListPanel relocated style controls', () => {
       extra: { color: '#abcdef' },
       selectedIds: ['cap-0'],
     })
-    expandStyle()
+    expandFormat()
     expect((screen.getByLabelText('Selected segment text color') as HTMLInputElement).value).toBe('#00ff00')
   })
 
@@ -327,7 +347,7 @@ describe('CaptionListPanel relocated style controls', () => {
       selectedIds: ['cap-1'],
       extra: { color: '#ffffff' },
     })
-    expandStyle()
+    expandFormat()
     const input = screen.getByLabelText('Selected segment text color') as HTMLInputElement
 
     fireEvent.change(input, { target: { value: '#123456' } })
@@ -366,7 +386,7 @@ describe('CaptionListPanel relocated style controls', () => {
   ])('accent color for style $style', ({ style, label, field }) => {
     it(`writes to captions.${field}, live then commit, exactly once each`, () => {
       const { onProjectChange, onCaptionEdit } = renderPanel({ style })
-      expandStyle()
+      expandFormat()
       const input = screen.getByLabelText(label) as HTMLInputElement
 
       fireEvent.change(input, { target: { value: '#111111' } })
@@ -384,7 +404,7 @@ describe('CaptionListPanel relocated style controls', () => {
 
   it.each(['clean', 'word-by-word'] as const)('hides the accent swatch for styles with no accent: %s', (style) => {
     renderPanel({ style })
-    expandStyle()
+    expandFormat()
     expect(screen.getByLabelText('Caption text color')).toBeTruthy()
     expect(screen.queryByLabelText(/(accent|highlight|active|box) color/i)).toBeNull()
   })
@@ -750,5 +770,151 @@ describe('CaptionListPanel lanes (Phase 5)', () => {
     expect(screen.getByRole('button', { name: 'Row 1' })).toHaveAttribute('aria-pressed', 'false')
     const editable = screen.getByText('upper caption alpha')
     expect(document.activeElement).toBe(editable)
+  })
+})
+
+// The panel splits into three sub-tabs once captions exist: "Format" (the
+// default — the fine look-and-feel controls: size, colors, font, case,
+// alignment, spacing), "Styles" (a gallery of live style previews, see
+// CaptionStyleGallery.tsx) and "Captions" (the transcript, search, and
+// actions). These tests clear the 'captions' seed the suites above set, so
+// they see the REAL default. See CaptionListPanel.tsx's CAPTION_TABS and
+// reviveCaptionTab.
+describe('CaptionListPanel tabs', () => {
+  it('defaults to the Format tab; the transcript, search, and footer live under the Captions tab', () => {
+    window.localStorage.clear() // no seed → the real default ('format')
+    renderPanel()
+
+    // Format tab is active: the fine controls are visible, the style gallery
+    // and the transcript are not.
+    expect(screen.getByLabelText('Caption font size')).toBeTruthy()
+    expect(screen.queryByRole('group', { name: 'Caption style' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Subtitle' })).toBeNull()
+    expect(screen.queryByRole('listitem')).toBeNull()
+    expect(screen.queryByLabelText('Search captions')).toBeNull()
+    expect(screen.queryByText('Regenerate captions')).toBeNull()
+    expect(screen.getByRole('button', { name: 'Format' })).toHaveAttribute('aria-pressed', 'true')
+
+    // Switching to Captions reveals the list, search, and the footer actions.
+    fireEvent.click(screen.getByRole('button', { name: 'Captions' }))
+    expect(screen.getAllByRole('listitem')).toHaveLength(3)
+    expect(screen.getByLabelText('Search captions')).toBeTruthy()
+    expect(screen.getByText('Regenerate captions')).toBeTruthy()
+    // The format controls are gone now.
+    expect(screen.queryByLabelText('Caption font size')).toBeNull()
+  })
+
+  it('shows all three tabs, in order Format, Styles, Captions', () => {
+    window.localStorage.clear()
+    renderPanel()
+    const tabGroup = screen.getByRole('group', { name: 'Caption panel view' })
+    const tabs = within(tabGroup).getAllByRole('button')
+    expect(tabs.map(t => t.textContent)).toEqual(['Format', 'Styles', 'Captions'])
+  })
+
+  // 'format' is BOTH the migration target for a stale pre-split 'style'
+  // value AND usePersistentState's fallback `initial` for an unrecognised
+  // one (see usePersistentState.ts: revive() -> null falls back to
+  // `initial`). So a DOM render can't tell "migrated" from "rejected and
+  // defaulted" — both land on the exact same Format tab. This test only
+  // proves a stale value never crashes and renders Format either way; it is
+  // NOT proof the migration line exists. The real migration coverage is the
+  // direct reviveCaptionTab() unit test in the 'reviveCaptionTab' describe
+  // below.
+  it('a stale persisted "style" value (pre-split) renders the Format tab without crashing', () => {
+    window.localStorage.setItem('montaj.editor.captionPanelTab', JSON.stringify('style'))
+    renderPanel()
+
+    expect(screen.getByRole('button', { name: 'Format' })).toHaveAttribute('aria-pressed', 'true')
+    expect(screen.getByLabelText('Caption font size')).toBeTruthy()
+    expect(screen.queryByRole('listitem')).toBeNull()
+  })
+
+  it('the chosen tab persists across remounts (localStorage-backed)', () => {
+    window.localStorage.clear()
+    renderPanel()
+    fireEvent.click(screen.getByRole('button', { name: 'Captions' }))
+    cleanup()
+
+    renderPanel()
+    expect(screen.getByRole('button', { name: 'Captions' })).toHaveAttribute('aria-pressed', 'true')
+    expect(screen.getAllByRole('listitem')).toHaveLength(3)
+  })
+
+  it('shows a loading placeholder (not the Generate button) in the empty state while captions are generating', () => {
+    const project = { id: 'p1' } as unknown as Project
+    render(
+      <CaptionListPanel
+        captionTrack={undefined}
+        project={project}
+        currentTime={0}
+        selectedIds={[]}
+        onSelectCaption={vi.fn()}
+        onRegenerateCaptions={vi.fn()}
+        captionsGenerating
+        fps={30}
+        clock={makeClock()}
+      />,
+    )
+    expect(screen.getByText(/Generating captions/i)).toBeTruthy()
+    expect(screen.getByText(/Transcribing the timeline's audio/i)).toBeTruthy()
+    // While a job is running the idle prompt and its Generate trigger are gone.
+    expect(screen.queryByRole('button', { name: 'Generate captions' })).toBeNull()
+    expect(screen.queryByText(/generated from the timeline/i)).toBeNull()
+  })
+
+  it('a canvas edit-focus request flips from the Format tab to the Captions tab and focuses the target row', () => {
+    window.localStorage.clear() // real default = Format, where the row is NOT rendered
+    const project = makeProject('karaoke', THREE_SEGS)
+    const clock = makeClock()
+    const commonProps = {
+      captionTrack: project.captions,
+      project,
+      currentTime: 0,
+      selectedIds: [] as string[],
+      onSelectCaption: vi.fn(),
+      onCaptionSegmentChange: vi.fn(),
+      fps: 30,
+      clock,
+    }
+
+    const { rerender } = render(<CaptionListPanel {...commonProps} editFocusId={null} />)
+    // On the Format tab the transcript rows are not mounted at all.
+    expect(screen.queryByText('goodbye now')).toBeNull()
+
+    rerender(<CaptionListPanel {...commonProps} editFocusId={{ id: 'cap-1', nonce: 1 }} />)
+    // The effect flipped to the Captions tab so the row exists, then focused it.
+    expect(screen.getByRole('button', { name: 'Captions' })).toHaveAttribute('aria-pressed', 'true')
+    const editable = screen.getByText('goodbye now')
+    expect(document.activeElement).toBe(editable)
+  })
+})
+
+// Direct unit tests for reviveCaptionTab, exercised in isolation rather than
+// through a DOM render. This matters specifically for the 'style' -> 'format'
+// migration: 'format' is ALSO usePersistentState's `initial` fallback for a
+// value revive() rejects (see usePersistentState.ts), so a rendered panel
+// looks identical whether 'style' was migrated or simply rejected and
+// defaulted. Only calling reviveCaptionTab() directly and checking its
+// return value can tell those two cases apart — that's what proves the
+// migration line in CaptionListPanel.tsx is actually there.
+describe('reviveCaptionTab', () => {
+  it('migrates the pre-split "style" value to "format"', () => {
+    expect(reviveCaptionTab('style')).toBe('format')
+  })
+
+  it('passes "styles" through unchanged (not double-migrated)', () => {
+    expect(reviveCaptionTab('styles')).toBe('styles')
+  })
+
+  it('passes the other current tab values through unchanged', () => {
+    expect(reviveCaptionTab('format')).toBe('format')
+    expect(reviveCaptionTab('captions')).toBe('captions')
+  })
+
+  it('rejects unrecognised values to null (caller falls back to the default)', () => {
+    expect(reviveCaptionTab('bogus')).toBeNull()
+    expect(reviveCaptionTab(null)).toBeNull()
+    expect(reviveCaptionTab(42)).toBeNull()
   })
 })

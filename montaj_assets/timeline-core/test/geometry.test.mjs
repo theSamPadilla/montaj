@@ -68,9 +68,45 @@ function legacyPixelBox(s, ox, oy, vw, vh) {
 }
 
 // ---------------------------------------------------------------------------
+// The SAME two formulas with the axes split — width/left read the X scale,
+// height/top read the Y scale. Written out per-axis rather than derived from
+// the two above so the non-uniform rows are pinned by their own reference.
+//
+// When sx === sy these reduce to the one-`s` originals character for
+// character, which is why the uniform rows below are asserted against BOTH:
+// agreement between the two IS the back-compat claim, checked on every row
+// rather than argued for in a comment.
+// ---------------------------------------------------------------------------
+
+/** videoTransformBoxPct with the axes split. */
+function axisCssBoxPct(sx, sy, ox, oy) {
+  return {
+    width: sx * 100,
+    height: sy * 100,
+    left: ((1 - sx) / 2) * 100 + ox,
+    top: ((1 - sy) / 2) * 100 + oy,
+  }
+}
+
+/** The five-line pixel formula with the axes split, even-rounding kept per axis. */
+function axisPixelBox(sx, sy, ox, oy, vw, vh) {
+  return {
+    scaledW: Math.round((vw * sx) / 2) * 2,
+    scaledH: Math.round((vh * sy) / 2) * 2,
+    xPx: Math.round(vw * (0.5 * (1 - sx) + ox / 100)),
+    yPx: Math.round(vh * (0.5 * (1 - sy) + oy / 100)),
+  }
+}
+
+// ---------------------------------------------------------------------------
 // 1. THE CROSS-CHECK TABLE — the headline requirement.
 // ---------------------------------------------------------------------------
 
+// A row with no `sx`/`sy` is a LEGACY item: it carries `scale` and nothing
+// else, exactly as every project on disk does. A row WITH them is a
+// non-uniform item, and `sx: undefined` on such a row means that axis is
+// genuinely absent and must fall back to `scale` — the fallback is being
+// exercised through the real adapters, not simulated.
 const CROSS_CHECK_TABLE = [
   { name: 'identity: s=1, ox=0, oy=0, landscape', s: 1, ox: 0, oy: 0, vw: 1920, vh: 1080 },
   { name: 'fractional scale, mixed-sign offsets, landscape', s: 0.5, ox: 10, oy: -20, vw: 1920, vh: 1080 },
@@ -80,18 +116,73 @@ const CROSS_CHECK_TABLE = [
   { name: 'identity at a NON-square, ODD canvas — even-pixel rounding actually rounds', s: 1, ox: 0, oy: 0, vw: 101, vh: 151 },
   { name: 'fractional scale forcing an odd raw pixel width', s: 0.501, ox: 0, oy: 0, vw: 1000, vh: 1000 },
   { name: 'square-ish 4K-scale canvas, small negative offsets', s: 0.9, ox: -3, oy: -7, vw: 3840, vh: 2160 },
+
+  // NON-UNIFORM rows (sx !== sy). The identity the table exists to pin never
+  // mixed the axes, so it survives the split untouched — these rows are what
+  // proves that rather than assuming it.
+  {
+    name: 'NON-UNIFORM: squashed wide (sx=0.9, sy=0.4), mixed-sign offsets, landscape',
+    s: 1, sx: 0.9, sy: 0.4, ox: 12, oy: -8, vw: 1920, vh: 1080,
+  },
+  {
+    name: 'NON-UNIFORM: stretched tall (sx=0.35, sy=1.4), portrait canvas',
+    s: 1, sx: 0.35, sy: 1.4, ox: -20, oy: 5, vw: 1080, vh: 1920,
+  },
+  {
+    name: 'NON-UNIFORM: scaleX only — scaleY falls back to scale, and the two axes differ',
+    s: 0.6, sx: 1.25, sy: undefined, ox: 0, oy: 15, vw: 1920, vh: 1080,
+  },
+  {
+    name: 'NON-UNIFORM: scaleY only — scaleX falls back to scale',
+    s: 0.45, sx: undefined, sy: 1.1, ox: -33.3, oy: 0, vw: 1080, vh: 1920,
+  },
+  {
+    name: 'NON-UNIFORM on the ODD canvas — each axis rounds to even independently',
+    s: 1, sx: 0.501, sy: 0.999, ox: 0, oy: 0, vw: 101, vh: 151,
+  },
 ]
 
 describe('cross-check: geometryFor -> {toCssBoxPct, toPixelBox} reproduce both legacy formulas', () => {
-  for (const { name, s, ox, oy, vw, vh } of CROSS_CHECK_TABLE) {
+  for (const row of CROSS_CHECK_TABLE) {
+    const { name, s, ox, oy, vw, vh } = row
     test(name, () => {
+      // Only set the per-axis keys the row actually declares — an absent one
+      // must reach the adapters as genuinely absent so `?? scale` is what
+      // resolves it.
+      const item = { scale: s, offsetX: ox, offsetY: oy }
+      if (row.sx !== undefined) item.scaleX = row.sx
+      if (row.sy !== undefined) item.scaleY = row.sy
+      const sx = row.sx ?? s
+      const sy = row.sy ?? s
+
       // ONE geometryFor call; both adapters derive from its single result.
-      const g = geometryFor({ scale: s, offsetX: ox, offsetY: oy }, 'video')
+      const g = geometryFor(item, 'video')
       const cssBox = toCssBoxPct(g)
       const pixelBox = toPixelBox(g, vw, vh)
 
-      const wantCss = legacyCssBoxPct(s, ox, oy)
-      const wantPixel = legacyPixelBox(s, ox, oy, vw, vh)
+      // The resolver's own view of the two axes, before either adapter runs.
+      closeTo(g.scaleX, sx, `${name}: geometry scaleX`)
+      closeTo(g.scaleY, sy, `${name}: geometry scaleY`)
+      closeTo(g.scale, s, `${name}: geometry scale is untouched by the split`)
+
+      const wantCss = axisCssBoxPct(sx, sy, ox, oy)
+      const wantPixel = axisPixelBox(sx, sy, ox, oy, vw, vh)
+
+      // A uniform row is ALSO pinned against the untouched one-`s` originals.
+      // This is the back-compat assertion: for a legacy item the split formula
+      // and the legacy formula are the same numbers, on every row.
+      if (sx === sy) {
+        assert.deepEqual(wantCss, legacyCssBoxPct(s, ox, oy), `${name}: the split css formula reduces to the legacy one`)
+        assert.deepEqual(
+          wantPixel,
+          legacyPixelBox(s, ox, oy, vw, vh),
+          `${name}: the split pixel formula reduces to the legacy one`,
+        )
+      } else {
+        // ... and a non-uniform row must NOT be reproducible by the uniform
+        // formula, or it is not actually testing the split.
+        assert.notDeepEqual(wantCss, legacyCssBoxPct(s, ox, oy), `${name}: this row genuinely has sx !== sy`)
+      }
 
       closeTo(cssBox.width, wantCss.width, `${name}: css width`)
       closeTo(cssBox.height, wantCss.height, `${name}: css height`)
@@ -106,8 +197,9 @@ describe('cross-check: geometryFor -> {toCssBoxPct, toPixelBox} reproduce both l
       // The algebraic identity that is the whole point of extracting this
       // module: render's xPx equals round(vw * cssBox.left / 100), and
       // scaledW equals round(vw * cssBox.width / 100) BEFORE the even-pixel
-      // rounding is reapplied on top (scaledW = round(vw*s/2)*2, which is
-      // round(round(vw*cssBox.width/100)/2)*2 when cssBox.width = s*100 exactly).
+      // rounding is reapplied on top (scaledW = round(vw*sx/2)*2, which is
+      // round(round(vw*cssBox.width/100)/2)*2 when cssBox.width = sx*100 exactly).
+      // It never mixed the axes, so it holds unchanged on the non-uniform rows.
       assert.equal(
         Math.round((vw * cssBox.left) / 100),
         pixelBox.x,
@@ -117,6 +209,16 @@ describe('cross-check: geometryFor -> {toCssBoxPct, toPixelBox} reproduce both l
         Math.round((vh * cssBox.top) / 100),
         pixelBox.y,
         `${name}: yPx == round(vh * cssBox.top / 100)`,
+      )
+      assert.equal(
+        Math.round((vw * cssBox.width) / 100 / 2) * 2,
+        pixelBox.width,
+        `${name}: scaledW == evenRound(vw * cssBox.width / 100)`,
+      )
+      assert.equal(
+        Math.round((vh * cssBox.height) / 100 / 2) * 2,
+        pixelBox.height,
+        `${name}: scaledH == evenRound(vh * cssBox.height / 100)`,
       )
     })
   }
@@ -244,6 +346,241 @@ describe('D9 switchover gate — toPixelBox is byte-identical to the inline form
         }
       }
     }
+  })
+})
+
+// ---------------------------------------------------------------------------
+// 1c. NON-UNIFORM scale — `scaleX`/`scaleY` layered ADDITIVELY over `scale`.
+//
+// The entire safety claim is one sentence: an item carrying only `scale`
+// resolves, and renders, exactly as it did before the per-axis fields existed.
+// Everything below checks that against formulas written out BY HAND — the same
+// posture as the legacy references at the top of this file — rather than
+// against the implementation's own output, which would make the whole section
+// a tautology.
+// ---------------------------------------------------------------------------
+
+/**
+ * `toRotatedPixelBox` as it computed BEFORE the per-axis split: ONE `s` feeding
+ * both axes, then the empirically verified growth formula. Inlined verbatim for
+ * the same reason `legacyPixelBox` is — it is the independent reference the
+ * back-compat claim is proven against, so it must not import the code under
+ * test.
+ */
+function legacyRotatedPixelBox(s, ox, oy, rotation, vw, vh) {
+  const { scaledW, scaledH, xPx, yPx } = legacyPixelBox(s, ox, oy, vw, vh)
+  const rot = Number.isFinite(rotation) ? ((rotation % 360) + 360) % 360 : 0
+  const a = (rot * Math.PI) / 180
+  const outW = Math.round((Math.abs(scaledW * Math.cos(a)) + Math.abs(scaledH * Math.sin(a))) / 2) * 2
+  const outH = Math.round((Math.abs(scaledW * Math.sin(a)) + Math.abs(scaledH * Math.cos(a))) / 2) * 2
+  return {
+    scaledW,
+    scaledH,
+    xPx,
+    yPx,
+    outW,
+    outH,
+    x: xPx - (outW - scaledW) / 2,
+    y: yPx - (outH - scaledH) / 2,
+    rotationDeg: rot,
+    isIdentity: rot === 0,
+  }
+}
+
+describe('non-uniform scale: BACK-COMPAT — a `scale`-only item is byte-identical to pre-change', () => {
+  const SCALES = [0.1, 0.25, 0.5, 0.75, 1, 1.0001, 1.5, 2]
+  const OFFSETS = [-50, -10, 0, 0.5, 33.3]
+  const CANVASES = [
+    [1080, 1920],
+    [1920, 1080],
+    [101, 151], // odd both axes — where even-rounding actually bites
+  ]
+  const KINDS = ['image', 'video', 'overlay']
+
+  test('scaleX === scaleY === scale for every legacy item, on every kind', () => {
+    let checked = 0
+    for (const kind of KINDS) {
+      for (const scale of SCALES) {
+        for (const offsetX of OFFSETS) {
+          const g = geometryFor({ scale, offsetX }, kind)
+          assert.equal(g.scale, scale, `kind=${kind} scale=${scale}: scale is untouched`)
+          assert.equal(g.scaleX, scale, `kind=${kind} scale=${scale}: scaleX falls back to scale`)
+          assert.equal(g.scaleY, scale, `kind=${kind} scale=${scale}: scaleY falls back to scale`)
+          checked++
+        }
+      }
+    }
+    assert.equal(checked, KINDS.length * SCALES.length * OFFSETS.length)
+  })
+
+  test('an item with NO scale at all resolves all three to the documented default of 1', () => {
+    for (const kind of KINDS) {
+      const g = geometryFor({}, kind)
+      assert.equal(g.scale, 1)
+      assert.equal(g.scaleX, 1)
+      assert.equal(g.scaleY, 1)
+    }
+  })
+
+  test('toCssBoxPct and toPixelBox reproduce the PRE-CHANGE numbers exactly, across the sweep', () => {
+    let checked = 0
+    for (const scale of SCALES) {
+      for (const offsetX of OFFSETS) {
+        for (const offsetY of OFFSETS) {
+          const g = geometryFor({ scale, offsetX, offsetY }, 'video')
+
+          // CSS: exact deepEqual against the one-`s` legacy formula. Not
+          // closeTo — "byte-identical" means the same float, not a near one.
+          assert.deepEqual(toCssBoxPct(g), legacyCssBoxPct(scale, offsetX, offsetY))
+
+          for (const [vw, vh] of CANVASES) {
+            const want = legacyPixelBox(scale, offsetX, offsetY, vw, vh)
+            assert.deepEqual(toPixelBox(g, vw, vh), {
+              width: want.scaledW,
+              height: want.scaledH,
+              x: want.xPx,
+              y: want.yPx,
+            })
+            checked++
+          }
+        }
+      }
+    }
+    assert.equal(checked, SCALES.length * OFFSETS.length * OFFSETS.length * CANVASES.length)
+  })
+
+  test('toRotatedPixelBox reproduces the PRE-CHANGE box exactly, at every rotation', () => {
+    const ROTATIONS = [0, 30, 45, 90, 180, 270, 360, -90, 450, NaN, undefined]
+    for (const scale of SCALES) {
+      for (const rotation of ROTATIONS) {
+        for (const [vw, vh] of CANVASES) {
+          const g = geometryFor({ scale, offsetX: 10, offsetY: -5, rotation }, 'overlay')
+          assert.deepEqual(
+            toRotatedPixelBox(g, vw, vh),
+            legacyRotatedPixelBox(scale, 10, -5, rotation, vw, vh),
+            `scale=${scale} rotation=${rotation} canvas=${vw}x${vh}`,
+          )
+        }
+      }
+    }
+  })
+
+  test('the uniform box is still the SQUARE-scaling one: width/height track scale together', () => {
+    // The failure this catches is a half-applied split — sy wired to `scale`
+    // but sx left on something else, or vice versa. On a uniform item the two
+    // adapters' aspect behaviour must stay locked together.
+    for (const scale of [0.3, 0.7, 1, 1.8]) {
+      const g = geometryFor({ scale }, 'image')
+      const css = toCssBoxPct(g)
+      assert.equal(css.width, css.height, `scale=${scale}: a uniform item has a square-scaled box in %`)
+      assert.equal(css.left, css.top, `scale=${scale}: and the same inset on both axes at zero offset`)
+      const px = toPixelBox(g, 1000, 1000)
+      assert.equal(px.width, px.height, `scale=${scale}: and on a square canvas, in pixels too`)
+      assert.equal(px.x, px.y)
+    }
+  })
+})
+
+describe('non-uniform scale: the two axes are genuinely independent', () => {
+  test('changing scaleX moves ONLY width/left; changing scaleY moves ONLY height/top', () => {
+    const base = geometryFor({ scale: 0.5, offsetX: 4, offsetY: -6 }, 'image')
+    const widened = geometryFor({ scale: 0.5, scaleX: 0.8, offsetX: 4, offsetY: -6 }, 'image')
+    const taller = geometryFor({ scale: 0.5, scaleY: 0.8, offsetX: 4, offsetY: -6 }, 'image')
+
+    const b = toCssBoxPct(base)
+    const w = toCssBoxPct(widened)
+    const t = toCssBoxPct(taller)
+
+    assert.notEqual(w.width, b.width, 'scaleX changed the width')
+    assert.notEqual(w.left, b.left, 'and the left, which is derived from the same axis')
+    assert.equal(w.height, b.height, 'but NOT the height')
+    assert.equal(w.top, b.top, 'and NOT the top')
+
+    assert.notEqual(t.height, b.height, 'scaleY changed the height')
+    assert.notEqual(t.top, b.top, 'and the top')
+    assert.equal(t.width, b.width, 'but NOT the width')
+    assert.equal(t.left, b.left, 'and NOT the left')
+  })
+
+  test('the same axis separation holds in pixels, including the even-rounding', () => {
+    const g = geometryFor({ scale: 1, scaleX: 0.5, scaleY: 0.25 }, 'video')
+    const px = toPixelBox(g, 1920, 1080)
+    assert.equal(px.width, Math.round((1920 * 0.5) / 2) * 2, 'width reads sx')
+    assert.equal(px.height, Math.round((1080 * 0.25) / 2) * 2, 'height reads sy')
+    assert.equal(px.x, Math.round(1920 * 0.5 * (1 - 0.5)), 'x reads sx')
+    assert.equal(px.y, Math.round(1080 * 0.5 * (1 - 0.25)), 'y reads sy')
+    assert.equal(px.width % 2, 0, 'each axis still lands on an even pixel count')
+    assert.equal(px.height % 2, 0)
+  })
+
+  test('a per-axis value does NOT leak into `scale`, which stays the authored uniform value', () => {
+    const g = geometryFor({ scale: 0.5, scaleX: 2, scaleY: 3 }, 'overlay')
+    assert.equal(g.scale, 0.5, 'callers that still read `scale` see exactly what was authored')
+    assert.equal(g.scaleX, 2)
+    assert.equal(g.scaleY, 3)
+  })
+
+  test('toRotatedPixelBox inherits the split for free — it never re-derives the unrotated size', () => {
+    const g = geometryFor({ scale: 1, scaleX: 0.5, scaleY: 0.25, rotation: 90 }, 'overlay')
+    const plain = toPixelBox(g, 1920, 1080)
+    const rot = toRotatedPixelBox(g, 1920, 1080)
+    assert.equal(rot.scaledW, plain.width, 'delegated, not recomputed')
+    assert.equal(rot.scaledH, plain.height)
+    assert.equal(rot.xPx, plain.x)
+    assert.equal(rot.yPx, plain.y)
+    // At 90deg a non-square box swaps its bounding dimensions.
+    assert.equal(rot.outW, plain.height)
+    assert.equal(rot.outH, plain.width)
+    // Centre preservation survives non-uniform scale.
+    assert.equal(rot.x + rot.outW / 2, rot.xPx + rot.scaledW / 2)
+    assert.equal(rot.y + rot.outH / 2, rot.yPx + rot.scaledH / 2)
+  })
+})
+
+describe('non-uniform scale: the adapters still accept a hand-built partial geometry', () => {
+  // Render and editor code builds `{scale, offsetX, offsetY}` objects by hand
+  // rather than routing every one through `geometryFor`. Reading
+  // `geometry.scaleX` RAW would turn every one of those into a NaN box, so the
+  // adapters resolve `?? scale ?? 1`. These tests are that guard.
+  const PARTIAL = { scale: 0.6, offsetX: 10, offsetY: -20 }
+
+  test('toCssBoxPct on a partial object equals the full-geometry answer', () => {
+    assert.deepEqual(toCssBoxPct(PARTIAL), toCssBoxPct(geometryFor(PARTIAL, 'video')))
+    assert.deepEqual(toCssBoxPct(PARTIAL), legacyCssBoxPct(0.6, 10, -20))
+  })
+
+  test('toPixelBox on a partial object equals the full-geometry answer', () => {
+    for (const [vw, vh] of [[1080, 1920], [1920, 1080], [101, 151]]) {
+      assert.deepEqual(toPixelBox(PARTIAL, vw, vh), toPixelBox(geometryFor(PARTIAL, 'video'), vw, vh))
+    }
+  })
+
+  test('toRotatedPixelBox on a partial object equals the full-geometry answer', () => {
+    const partialRotated = { ...PARTIAL, rotation: 45 }
+    assert.deepEqual(
+      toRotatedPixelBox(partialRotated, 1080, 1920),
+      toRotatedPixelBox(geometryFor(partialRotated, 'overlay'), 1080, 1920),
+    )
+  })
+
+  test('no adapter produces NaN on a partial object — the actual failure mode being guarded', () => {
+    for (const v of Object.values(toCssBoxPct(PARTIAL))) assert.equal(Number.isFinite(v), true)
+    for (const v of Object.values(toPixelBox(PARTIAL, 1080, 1920))) assert.equal(Number.isFinite(v), true)
+    const rot = toRotatedPixelBox({ ...PARTIAL, rotation: 33 }, 1080, 1920)
+    for (const k of ['scaledW', 'scaledH', 'xPx', 'yPx', 'outW', 'outH', 'x', 'y', 'rotationDeg']) {
+      assert.equal(Number.isFinite(rot[k]), true, `rotated box ${k}`)
+    }
+  })
+
+  test('an object with NO scale key at all still resolves to the full-frame box, not NaN', () => {
+    // The most degenerate partial object a caller could hand over.
+    assert.deepEqual(toCssBoxPct({ offsetX: 0, offsetY: 0 }), { width: 100, height: 100, left: 0, top: 0 })
+    assert.deepEqual(toPixelBox({ offsetX: 0, offsetY: 0 }, 1080, 1920), {
+      width: 1080,
+      height: 1920,
+      x: 0,
+      y: 0,
+    })
   })
 })
 
@@ -821,6 +1158,10 @@ const GEOMETRY_FIXTURES = [
     item: { sourceCrop: { x: 0.1, y: 0.2, w: 0.3, h: 0.4 }, sourceWidth: 1920, sourceHeight: 1080, rotation: 45 },
     kind: 'video',
   },
+  // Non-uniform: both axes explicit, and one axis absent so the `?? scale`
+  // fallback is exercised by the purity/totality sweeps too.
+  { item: { scale: 1, scaleX: 0.8, scaleY: 0.35, offsetX: 5, offsetY: -5 }, kind: 'image' },
+  { item: { scale: 0.6, scaleX: 1.4, rotation: 45 }, kind: 'overlay' },
 ]
 
 describe('purity', () => {
@@ -861,6 +1202,8 @@ describe('totality', () => {
     for (const { item, kind } of GEOMETRY_FIXTURES) {
       const g = geometryFor(item, kind)
       assert.equal(Number.isFinite(g.scale), true)
+      assert.equal(Number.isFinite(g.scaleX), true)
+      assert.equal(Number.isFinite(g.scaleY), true)
       assert.equal(Number.isFinite(g.offsetX), true)
       assert.equal(Number.isFinite(g.offsetY), true)
       assert.equal(Number.isFinite(g.opacity), true)
@@ -924,7 +1267,16 @@ describe('totality', () => {
 //   exercises the object literal.
 // ---------------------------------------------------------------------------
 
-/** The five keyframeable props, in the order src/curves.js names them. */
+/**
+ * The five keyframeable props whose tracks are mutually INDEPENDENT, in the
+ * order src/curves.js names them.
+ *
+ * `scaleX`/`scaleY` are keyframeable too, but they are deliberately NOT in this
+ * list: they are COUPLED to `scale` (an item with no per-axis track follows the
+ * animated uniform one on both axes), so a loop that asserts "every other prop
+ * keeps its static scalar" cannot include them without contradicting itself.
+ * The coupling has its own section at the end of this file.
+ */
 const KEYFRAME_PROPS = ['offsetX', 'offsetY', 'scale', 'rotation', 'opacity']
 
 /** A two-point linear track — the easing-free case whose values are hand-checkable. */
@@ -1125,6 +1477,8 @@ describe('geometryAt: NO-KEYFRAME IDENTITY — indistinguishable from geometryFo
     const expected = Object.keys(geometryFor({ scale: 0.5 }, 'image'))
     assert.deepEqual(expected, [
       'scale',
+      'scaleX',
+      'scaleY',
       'offsetX',
       'offsetY',
       'opacity',
@@ -1392,5 +1746,219 @@ describe('geometryAt: purity and totality (same package contract as everything e
         assert.equal(Number.isFinite(rot[k]), true, `localT=${localT}: rotated box ${k}`)
       }
     }
+  })
+})
+
+// ---------------------------------------------------------------------------
+// 8. NON-UNIFORM scale ON THE ANIMATED PATH — the scale/scaleX/scaleY coupling.
+//
+// The fallback chain for the X axis is, in order:
+//
+//     sampleTrack(scaleX track) ?? item.scaleX ?? <the RESOLVED scale>
+//
+// and the last link is the one that is easy to get wrong. "Resolved scale"
+// means `sampleTrack(scale track) ?? item.scale ?? 1` — the ANIMATED value, not
+// the static `item.scale`. Falling back to the static scalar there would freeze
+// every legacy keyframed zoom in place: the item would sit at its authored size
+// for the whole clip and the animation would simply stop happening, silently,
+// on projects that never mentioned `scaleX` at all. That is the failure this
+// section exists to catch.
+// ---------------------------------------------------------------------------
+
+describe('geometryAt: a `scale` track with NO per-axis track drives scaleX AND scaleY', () => {
+  const item = { keyframes: [linearTrack('scale', 0.5, 1.5)] }
+
+  test('all three follow the curve together, at every instant', () => {
+    for (const localT of [0, 1, 2, 3, 4]) {
+      const g = geometryAt(item, 'video', localT)
+      const want = expectLinear(0.5, 1.5, localT)
+      closeTo(g.scale, want, `localT=${localT}: scale`)
+      closeTo(g.scaleX, want, `localT=${localT}: scaleX follows the ANIMATED scale`)
+      closeTo(g.scaleY, want, `localT=${localT}: scaleY follows the ANIMATED scale`)
+      assert.equal(g.scaleX, g.scale, `localT=${localT}: scaleX is the resolved scale exactly, not a near value`)
+      assert.equal(g.scaleY, g.scale, `localT=${localT}: same for scaleY`)
+    }
+  })
+
+  test('the box GENUINELY animates on both axes — it does not freeze at the static scalar', () => {
+    // The regression this names: `scaleX: ... ?? item.scale ?? 1` instead of
+    // `?? s`. With a static `scale` present, that reads 0.9 forever and the
+    // zoom vanishes while `g.scale` alone keeps moving.
+    const withStatic = { scale: 0.9, keyframes: [linearTrack('scale', 0.5, 1.5)] }
+    const start = toCssBoxPct(geometryAt(withStatic, 'video', 0))
+    const mid = toCssBoxPct(geometryAt(withStatic, 'video', 2))
+    const end = toCssBoxPct(geometryAt(withStatic, 'video', 4))
+
+    assert.notEqual(start.width, mid.width, 'the width is animating')
+    assert.notEqual(mid.width, end.width)
+    assert.notEqual(start.height, mid.height, 'and so is the height')
+    assert.notEqual(mid.height, end.height)
+
+    // And it never lands on the static 0.9 box the frozen-fallback bug would produce.
+    const frozen = toCssBoxPct(geometryFor({ scale: 0.9 }, 'video'))
+    for (const [label, box] of [['start', start], ['mid', mid], ['end', end]]) {
+      assert.notDeepEqual(box, frozen, `${label}: the box is not stuck on the static scale`)
+    }
+  })
+
+  test('a legacy keyframed item is byte-identical to what the uniform formula says at every instant', () => {
+    // The back-compat claim, on the ANIMATED path this time.
+    for (const localT of [0, 0.75, 2, 3.5, 4]) {
+      const g = geometryAt(item, 'image', localT)
+      const s = expectLinear(0.5, 1.5, localT)
+      assert.deepEqual(toCssBoxPct(g), legacyCssBoxPct(s, 0, 0), `localT=${localT}: css`)
+      const want = legacyPixelBox(s, 0, 0, 1080, 1920)
+      assert.deepEqual(toPixelBox(g, 1080, 1920), {
+        width: want.scaledW,
+        height: want.scaledH,
+        x: want.xPx,
+        y: want.yPx,
+      })
+    }
+  })
+
+  test('the scale track is sampled ONCE per instant — repeated calls are bit-identical', () => {
+    // The implementation resolves `s` once and reuses it for all three fields.
+    // If it ever sampled twice, the three values could drift apart on an eased
+    // curve; pin that they cannot.
+    const eased = {
+      keyframes: [{ prop: 'scale', points: [{ t: 0, value: 0.3, easing: 'ease-in-out' }, { t: 2, value: 1.7 }] }],
+    }
+    for (const localT of [0.1, 0.5, 1, 1.9]) {
+      const g = geometryAt(eased, 'overlay', localT)
+      assert.equal(g.scaleX, g.scale, `eased localT=${localT}: scaleX === scale, exactly`)
+      assert.equal(g.scaleY, g.scale, `eased localT=${localT}: scaleY === scale, exactly`)
+      assert.deepEqual(geometryAt(eased, 'overlay', localT), g)
+    }
+  })
+})
+
+describe('geometryAt: a scaleX-ONLY track animates X while Y follows the static scale', () => {
+  const item = { scale: 0.4, keyframes: [linearTrack('scaleX', 0.2, 1.2)] }
+
+  test('scaleX follows its track; scaleY and scale both stay on the static 0.4', () => {
+    for (const localT of [0, 1, 2, 3, 4]) {
+      const g = geometryAt(item, 'image', localT)
+      closeTo(g.scaleX, expectLinear(0.2, 1.2, localT), `localT=${localT}: scaleX animates`)
+      assert.equal(g.scaleY, 0.4, `localT=${localT}: scaleY has no track and no static, so it is the static scale`)
+      assert.equal(g.scale, 0.4, `localT=${localT}: the uniform scale is untouched by a per-axis track`)
+    }
+  })
+
+  test('the BOX stretches on X only: width/left move, height/top do not', () => {
+    const boxes = [0, 2, 4].map((localT) => toCssBoxPct(geometryAt(item, 'image', localT)))
+    assert.notEqual(boxes[0].width, boxes[1].width, 'the width is animating')
+    assert.notEqual(boxes[1].width, boxes[2].width)
+    assert.notEqual(boxes[0].left, boxes[1].left, 'and so is the left, derived from the same axis')
+    for (const box of boxes) {
+      assert.equal(box.height, 0.4 * 100, 'the height is pinned to the static scale throughout')
+      assert.equal(box.top, ((1 - 0.4) / 2) * 100, 'and so is the top')
+    }
+  })
+
+  test('a scaleY-only track is the mirror image of that', () => {
+    const yOnly = { scale: 0.4, keyframes: [linearTrack('scaleY', 0.2, 1.2)] }
+    const boxes = [0, 2, 4].map((localT) => toCssBoxPct(geometryAt(yOnly, 'image', localT)))
+    assert.notEqual(boxes[0].height, boxes[1].height)
+    assert.notEqual(boxes[0].top, boxes[1].top)
+    for (const box of boxes) {
+      assert.equal(box.width, 0.4 * 100)
+      assert.equal(box.left, ((1 - 0.4) / 2) * 100)
+    }
+  })
+
+  test('scaleX and scaleY tracks together animate the two axes independently', () => {
+    const both = {
+      keyframes: [linearTrack('scaleX', 0.2, 1), linearTrack('scaleY', 1, 0.2)],
+    }
+    for (const localT of [0, 1, 2, 3, 4]) {
+      const g = geometryAt(both, 'overlay', localT)
+      closeTo(g.scaleX, expectLinear(0.2, 1, localT), `localT=${localT}: scaleX`)
+      closeTo(g.scaleY, expectLinear(1, 0.2, localT), `localT=${localT}: scaleY`)
+    }
+    // They cross exactly once, at the midpoint — proof the two are not aliased
+    // to the same sampled value.
+    const mid = geometryAt(both, 'overlay', 2)
+    closeTo(mid.scaleX, mid.scaleY, 'the two curves cross at t=2')
+    const early = geometryAt(both, 'overlay', 0)
+    assert.notEqual(early.scaleX, early.scaleY, 'and are distinct everywhere else')
+  })
+
+  test('a per-axis track beats a `scale` track on its own axis, and only on its own axis', () => {
+    const mixed = { keyframes: [linearTrack('scale', 0.5, 1.5), linearTrack('scaleX', 2, 2)] }
+    for (const localT of [0, 2, 4]) {
+      const g = geometryAt(mixed, 'video', localT)
+      assert.equal(g.scaleX, 2, `localT=${localT}: the scaleX track wins on X`)
+      closeTo(g.scaleY, expectLinear(0.5, 1.5, localT), `localT=${localT}: Y still follows the scale track`)
+      closeTo(g.scale, expectLinear(0.5, 1.5, localT), `localT=${localT}: and so does the uniform scale itself`)
+    }
+  })
+
+  test('a STATIC item.scaleX also beats an animated `scale` on its own axis (the documented chain)', () => {
+    // `sampleTrack(scaleX) ?? item.scaleX ?? s` — the static per-axis value sits
+    // AHEAD of the resolved scale, so an item that pins one axis keeps it pinned
+    // while the other animates. Documenting the order, not just the endpoints.
+    const item2 = { scale: 1, scaleX: 0.25, keyframes: [linearTrack('scale', 0.5, 1.5)] }
+    for (const localT of [0, 2, 4]) {
+      const g = geometryAt(item2, 'image', localT)
+      assert.equal(g.scaleX, 0.25, `localT=${localT}: the static scaleX holds its axis`)
+      closeTo(g.scaleY, expectLinear(0.5, 1.5, localT), `localT=${localT}: Y follows the animated scale`)
+    }
+  })
+
+  test('a sampled 0 on a per-axis track survives — the `??` vs `||` trap, per axis', () => {
+    const collapsing = { scale: 1, scaleX: 0.8, keyframes: [{ prop: 'scaleX', points: [{ t: 0, value: 1 }, { t: 2, value: 0 }] }] }
+    const g = geometryAt(collapsing, 'video', 2)
+    assert.equal(g.scaleX, 0, 'a collapse-to-nothing on X must not snap back to 0.8 or to 1')
+    assert.equal(g.scaleY, 1, 'while Y is untouched')
+    assert.deepEqual(toCssBoxPct(g), { width: 0, height: 100, left: 50, top: 0 })
+    assert.equal(toPixelBox(g, 1080, 1920).width, 0)
+    assert.equal(toPixelBox(g, 1080, 1920).height, 1920)
+  })
+})
+
+describe('geometryAt: PARITY holds on a non-uniform animated item', () => {
+  // The same cross-adapter identity the static table pins, on an item whose two
+  // axes are animating to different values — the case where a half-applied
+  // split would show up as "the preview looked right and the export did not".
+  const item = {
+    offsetX: 8,
+    offsetY: -12,
+    keyframes: [linearTrack('scaleX', 0.3, 1.1), linearTrack('scaleY', 1.2, 0.4), linearTrack('rotation', 0, 60)],
+  }
+
+  for (const [vw, vh] of [[1080, 1920], [1920, 1080]]) {
+    test(`${vw}x${vh}: toCssBoxPct and toRotatedPixelBox describe the same box at every instant`, () => {
+      for (const localT of [0, 1, 2, 3, 4]) {
+        const g = geometryAt(item, 'overlay', localT)
+        const cssBox = toCssBoxPct(g)
+        const rot = toRotatedPixelBox(g, vw, vh)
+
+        assert.equal(Math.round((vw * cssBox.left) / 100), rot.xPx, `localT=${localT}: xPx identity`)
+        assert.equal(Math.round((vh * cssBox.top) / 100), rot.yPx, `localT=${localT}: yPx identity`)
+        assert.equal(Math.round((vw * cssBox.width) / 100 / 2) * 2, rot.scaledW, `localT=${localT}: scaledW identity`)
+        assert.equal(Math.round((vh * cssBox.height) / 100 / 2) * 2, rot.scaledH, `localT=${localT}: scaledH identity`)
+
+        // Centre preservation, with the two axes on different curves.
+        assert.equal(rot.x + rot.outW / 2, rot.xPx + rot.scaledW / 2)
+        assert.equal(rot.y + rot.outH / 2, rot.yPx + rot.scaledH / 2)
+      }
+    })
+  }
+
+  test('every numeric field stays finite across the animation, on all three adapters', () => {
+    for (const localT of [-1, 0, 2, 4, 1e9, NaN, Infinity]) {
+      const g = geometryAt(item, 'overlay', localT)
+      assert.equal(Number.isFinite(g.scaleX), true, `localT=${localT}: scaleX`)
+      assert.equal(Number.isFinite(g.scaleY), true, `localT=${localT}: scaleY`)
+      for (const v of Object.values(toCssBoxPct(g))) assert.equal(Number.isFinite(v), true)
+      for (const v of Object.values(toPixelBox(g, 1080, 1920))) assert.equal(Number.isFinite(v), true)
+    }
+  })
+
+  test('geometryAt never mutates a non-uniform item', () => {
+    const clone = structuredClone(item)
+    for (const localT of [0, 2, 4, NaN]) geometryAt(clone, 'overlay', localT)
+    assert.deepEqual(clone, item)
   })
 })

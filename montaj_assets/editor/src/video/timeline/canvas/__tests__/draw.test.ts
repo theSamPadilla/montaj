@@ -1424,8 +1424,19 @@ describe('drawTimelineContent', () => {
       expect(r.of('set:fillStyle').some(c => c.args[0] === TIMELINE_COLORS.keyframeDiamondFill)).toBe(false)
     })
 
-    it('draws nothing for a selected, keyframed item that is not an overlay', () => {
+    it('DRAWS the strip for a selected, keyframed video clip (SP9d)', () => {
+      // Clips became keyframeable when the renderer learned to compile curves
+      // into ffmpeg expressions, so the strip has to show up for them too — a
+      // keyframe you cannot see is a keyframe you cannot drag or delete.
       const p = project({ tracks: [[keyframedOverlay({ type: 'video' })]] } as unknown as Partial<Project>)
+      const r = recordingContext()
+      drawTimelineContent(r.ctx, scene({ project: p, layout: computeTimelineLayout(p), selectedIds: ['o0'] }))
+      expect(r.of('set:fillStyle').some(c => c.args[0] === TIMELINE_COLORS.keyframeDiamondFill)).toBe(true)
+    })
+
+    it('still draws nothing for a selected, keyframed item of a NON-visual kind', () => {
+      // The gate must stay a gate — `canKeyframe`, not `isKeyframed` alone.
+      const p = project({ tracks: [[keyframedOverlay({ type: 'audio' } as unknown as Partial<VisualItem>)]] } as unknown as Partial<Project>)
       const r = recordingContext()
       drawTimelineContent(r.ctx, scene({ project: p, layout: computeTimelineLayout(p), selectedIds: ['o0'] }))
       expect(r.of('set:fillStyle').some(c => c.args[0] === TIMELINE_COLORS.keyframeDiamondFill)).toBe(false)

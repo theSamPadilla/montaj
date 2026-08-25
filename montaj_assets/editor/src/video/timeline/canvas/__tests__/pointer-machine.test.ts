@@ -1380,8 +1380,21 @@ describe('double-click', () => {
 })
 
 describe('double-click to key (selected element only)', () => {
+  // WHICH props the gesture keys is `transformProps(item)`'s call, not a fixed
+  // list — a uniform overlay gets `scale`, one authored per-axis gets
+  // `scaleX`/`scaleY`. `keyframedProject`'s o0 carries neither per-axis field,
+  // so it is uniform and every case below but the last two uses this list.
   const KEYFRAME_PROPS = ['offsetX', 'offsetY', 'scale', 'rotation', 'opacity'] as const
+  const PER_AXIS_PROPS = ['offsetX', 'offsetY', 'scaleX', 'scaleY', 'rotation', 'opacity'] as const
   const O0_BODY = { x: 300, y: OVERLAY_Y }   // absolute 3s -> localT 1 on o0 (starts at 2s)
+
+  /** `keyframedProject` with o0's scale authored some other way. */
+  function overlayScaledBy(over: Record<string, unknown>): Project {
+    const project = keyframedProject()
+    const track = (project.tracks as { items: unknown[] }[])[1]
+    track.items[0] = { ...(track.items[0] as object), ...over }
+    return project
+  }
 
   it('keys all five props at the clicked time, without moving the overlay', () => {
     const project = keyframedProject()
@@ -1419,13 +1432,77 @@ describe('double-click to key (selected element only)', () => {
     expect(of(effects, 'projectChange')).toHaveLength(0)
   })
 
-  it('does NOT key a video clip, even when it is selected', () => {
-    // canKeyframe gates this. The preview gates on the SAME overlay-only
-    // condition on purpose (preview/OverlayItemsLayer.tsx:466), so a keyed
-    // video would animate nowhere — a confusing no-op. See canKeyframe's doc.
+  it('DOES key a selected video clip (SP9d)', () => {
+    // canKeyframe widened when the renderer gained a per-frame geometry hook.
     const ctx = makeContext({ project: keyframedProject(), selectedIds: ['c0'] })
     const effects = new Driver(ctx).doubleClick(C0_BODY.x, C0_BODY.y)
-    expect(of(effects, 'projectChange')).toHaveLength(0)
+    expect(of(effects, 'projectChange')).toHaveLength(1)
+  })
+
+  it('never writes an OPACITY track when keying a clip', () => {
+    // ffmpeg cannot vary a clip's alpha, so an opacity track written here would
+    // be silently ignored by the export — a keyframe that does nothing. The
+    // exclusion lives in transformProps via canKeyframeProp.
+    const ctx = makeContext({ project: keyframedProject(), selectedIds: ['c0'] })
+    const effects = new Driver(ctx).doubleClick(C0_BODY.x, C0_BODY.y)
+    const next = visual(lastProjectChange(effects), 'c0')
+    expect(trackFor(next, 'opacity')).toBeUndefined()
+    // ...while the geometry props it CAN animate are all keyed.
+    expect(trackFor(next, 'scale')).toBeDefined()
+    expect(trackFor(next, 'offsetX')).toBeDefined()
+    expect(trackFor(next, 'rotation')).toBeDefined()
+  })
+
+  it('never seeds scaleX/scaleY on a UNIFORM overlay — that would freeze its zoom', () => {
+    // THE regression guard. `scaleX` shadows `scale` in the resolver's fallback
+    // chain, so a one-point (i.e. constant) scaleX track seeded here would stop
+    // this overlay's uniform zoom from ever animating again — silently, with
+    // nothing on screen to say why, until the operator scrubs.
+    const project = overlayScaledBy({
+      keyframes: [{ prop: 'scale', points: [{ t: 0, value: 1 }, { t: 2, value: 2 }] }],
+    })
+    const ctx = makeContext({ project, selectedIds: ['o0'] })
+    const effects = new Driver(ctx).doubleClick(O0_BODY.x, O0_BODY.y)
+
+    const next = visual(lastProjectChange(effects), 'o0')
+    expect(trackFor(next, 'scale')!.points.find(p => p.t === 1)).toBeDefined()
+    expect(trackFor(next, 'scaleX')).toBeUndefined()
+    expect(trackFor(next, 'scaleY')).toBeUndefined()
+    // The zoom still animates, on both axes, exactly as it did before.
+    expect(valueAt(next, 'scaleX', 0)).toBeCloseTo(1)
+    expect(valueAt(next, 'scaleX', 2)).toBeCloseTo(2)
+    expect(valueAt(next, 'scaleY', 0)).toBeCloseTo(1)
+    expect(valueAt(next, 'scaleY', 2)).toBeCloseTo(2)
+  })
+
+  it('keys scaleX/scaleY and NOT `scale` on a PER-AXIS overlay', () => {
+    // The symmetric failure: keying `scale` on an item whose per-axis fields
+    // already shadow it would make the whole gesture appear to do nothing.
+    const project = overlayScaledBy({ scaleX: 1.5, scaleY: 0.5 })
+    const ctx = makeContext({ project, selectedIds: ['o0'] })
+    const effects = new Driver(ctx).doubleClick(O0_BODY.x, O0_BODY.y)
+
+    const next = visual(lastProjectChange(effects), 'o0')
+    const before = visual(project, 'o0')
+    for (const prop of PER_AXIS_PROPS) {
+      expect(trackFor(next, prop)!.points.find(p => p.t === 1)).toBeDefined()
+      // Nothing moved, per-axis included.
+      expect(valueAt(next, prop, 1)).toBeCloseTo(valueAt(before, prop, 1))
+    }
+    expect(trackFor(next, 'scale')).toBeUndefined()
+  })
+
+  it('follows a per-axis KEYFRAME TRACK, not just the per-axis scalars', () => {
+    const project = overlayScaledBy({
+      keyframes: [{ prop: 'scaleX', points: [{ t: 0, value: 1 }, { t: 2, value: 3 }] }],
+    })
+    const ctx = makeContext({ project, selectedIds: ['o0'] })
+    const effects = new Driver(ctx).doubleClick(O0_BODY.x, O0_BODY.y)
+
+    const next = visual(lastProjectChange(effects), 'o0')
+    expect(trackFor(next, 'scaleX')!.points.find(p => p.t === 1)?.value).toBeCloseTo(2)
+    expect(trackFor(next, 'scaleY')!.points.find(p => p.t === 1)).toBeDefined()
+    expect(trackFor(next, 'scale')).toBeUndefined()
   })
 })
 

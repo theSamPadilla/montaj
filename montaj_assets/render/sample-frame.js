@@ -615,7 +615,7 @@ export async function sampleFrame({
       outPath: tmpOverlayOut,
     })
     return {
-      // Shape expected by buildOverlayFilterParts: webmPath, startSeconds, offsetX, offsetY, scale
+      // Shape expected by buildOverlayFilterParts: webmPath, startSeconds, offsetX, offsetY, scale/scaleX/scaleY
       //
       // NEVER add `keyframes` (or spread `ov`) here, and never `...ri.geometry`
       // it either. This descriptor is deliberately a flat list of ALREADY-SAMPLED
@@ -637,6 +637,13 @@ export async function sampleFrame({
       offsetX:      ri.geometry.offsetX,
       offsetY:      ri.geometry.offsetY,
       scale:        ri.geometry.scale,
+      // `ri.geometry` is a full `Geometry`, so these two are always present and
+      // already equal to `scale` on a uniform item — no `??` chain needed here,
+      // unlike the raw-item sites in render.js. Forwarding them is what lets
+      // buildOverlayFilterParts size a stretched overlay for the Export
+      // dialog's still the same way the production compose does.
+      scaleX:       ri.geometry.scaleX,
+      scaleY:       ri.geometry.scaleY,
       rotation:     ri.geometry.rotation,
       // Forwarded for the same reason the image and video pseudo-items below
       // forward it (`opacity: ri.geometry.opacity`, Step 3): overlays were the
@@ -816,13 +823,43 @@ export async function sampleFrame({
         const framePng = videoFramePaths.get(ri)
         if (!framePng) continue // defensive — every video RI got a frame extracted above
         // Treat the extracted video frame as an image item — it's a PNG at this point.
+        //
+        // NEVER add `keyframes` here, and never spread `ri.geometry` or the
+        // source item in wholesale. Same discipline as the overlay descriptor
+        // above (see its "NEVER add `keyframes`" note), but now load-bearing for
+        // a second reason: since SP9d, buildImageItemFilterParts branches on
+        // `Array.isArray(item.keyframes) && item.keyframes.length > 0` and, when
+        // true, compiles the curves into piecewise-linear ffmpeg expressions.
+        // This descriptor is a flat list of ALREADY-SAMPLED scalars — a still
+        // frame has exactly one instant — so leaving `keyframes` off is what
+        // keeps the sampler on the exact, non-approximated literal path. A
+        // future edit that "helpfully" forwards them would silently swap those
+        // exact values for the render approximation, in the one surface whose
+        // whole job is to show precisely what a given instant looks like.
         pseudoItem = {
           src:      framePng,
           scale:    ri.geometry.scale,
+          // Beside `scale`, for the same reason the overlay descriptor above
+          // carries them: buildImageItemFilterParts re-resolves this pseudo-item
+          // through `geometryFor`, which reads the per-axis pair first. Drop
+          // them and a stretched video reverts to a uniform box in the Export
+          // dialog's still while the preview shows it stretched.
+          scaleX:   ri.geometry.scaleX,
+          scaleY:   ri.geometry.scaleY,
           offsetX:  ri.geometry.offsetX,
           offsetY:  ri.geometry.offsetY,
           rotation: ri.geometry.rotation,
-          opacity:  ri.geometry.opacity,
+          // STATIC opacity, deliberately, and this is a PARITY fix (SP9d T6).
+          // `ri.geometry` is `geometryAt(...)`, so `.opacity` is the SAMPLED
+          // curve value — but the export cannot fade a clip at all (ffmpeg's
+          // `colorchannelmixer aa` is a <double> and takes no expression), so
+          // honouring the curve here would make the Export dialog's still and
+          // version-compare show a fade the rendered file never has. The still
+          // frame's whole job is to show what the export will look like, so it
+          // reads the same static scalar the export does. Geometry — position,
+          // scale, rotation — stays SAMPLED above, because the export animates
+          // those now and the two agree.
+          opacity:  ri.item.opacity ?? 1,
           // TRAP: buildImageItemFilterParts defaults to 'cover' when fit is
           // omitted, which CROPS the frame to fill its box. Production video is
           // ALWAYS contain-fit — buildVideoItemFilterParts' own scale step uses
@@ -837,10 +874,12 @@ export async function sampleFrame({
         pseudoItem = {
           src:      ri.item.src,
           scale:    ri.geometry.scale,
+          scaleX:   ri.geometry.scaleX, // see the video branch above
+          scaleY:   ri.geometry.scaleY,
           offsetX:  ri.geometry.offsetX,
           offsetY:  ri.geometry.offsetY,
           rotation: ri.geometry.rotation,
-          opacity:  ri.geometry.opacity,
+          opacity:  ri.item.opacity ?? 1, // static — see the video branch above
           fit:      ri.geometry.fit, // image's own tri-state, default 'cover'
         }
       }

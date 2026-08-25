@@ -295,7 +295,7 @@ export default function CaptionPreview({
     const h = rect.height + BOX_PAD * 2
     // Keep a grabbable sliver of the box inside the frame. offsetX/offsetY are
     // unbounded and there is no numeric reset control for captions (unlike
-    // overlays, which have OverlayPropsModal), so a segment dragged fully past
+    // overlays, whose Transform panel has one), so a segment dragged fully past
     // the frame edge would have BOTH its text and its selection box clipped
     // away by this wrapper's `overflow-hidden` — leaving no way to drag it back
     // short of hand-editing project.json. Dragging is delta-based (see

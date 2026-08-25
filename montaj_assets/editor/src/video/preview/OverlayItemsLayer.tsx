@@ -6,7 +6,7 @@ import type { OverlayFactory } from '../../types'
 import OverlayErrorBoundary from '../../carousel/OverlayErrorBoundary'
 import { getOverlayDesignCanvas } from '../design-canvas'
 import { ensureGoogleFontsLoaded } from '../../lib/google-fonts'
-import type { Corner, OverlayChanges } from './useDragOverlay'
+import type { Corner, Edge, OverlayChanges } from './useDragOverlay'
 import type { useDragOverlay } from './useDragOverlay'
 import { enabledTrackItems } from '../timeline/timeline-model'
 
@@ -195,8 +195,9 @@ function CustomOverlay({
   }, [src, watchFile, compile])
 
   // Deep-clone/rewrite the props once per props change instead of every frame.
-  // Live prop edits (OverlayPropsModal → VideoEditor.withItemProps) always
-  // produce a new `props` object reference, so this recomputes on every edit.
+  // Live prop edits (the panel's Content tab → VideoEditor.withItemProps)
+  // always produce a new `props` object reference, so this recomputes on every
+  // edit.
   const resolvedProps = useMemo(
     () => resolveOverlayPropPaths(props, fileUrl) as Record<string, unknown>,
     [props, fileUrl],
@@ -221,56 +222,97 @@ function CustomOverlay({
 }
 
 // ---------------------------------------------------------------------------
-// Corner handle — L-shaped bracket that stays a fixed visual size
+// Selection chrome — box, resize handles, rotate handle, snap guides
 // ---------------------------------------------------------------------------
 
-function CornerHandle({ corner, scale, onMouseDown }: {
-  corner: Corner
-  scale: number
+// Everything the selection draws reads the host theme's selection colour, so a
+// selected OVERLAY and a selected base CLIP are the same object to the eye. The
+// clip's box is PreviewPlayer.tsx (~:526-559): a 2px outline plus 12px white
+// squares with a 1.5px selection-coloured border. These constants exist so the
+// two can't drift into "nearly the same" — change the look in one place.
+const SELECTION         = 'var(--editor-selection)'
+const SELECTION_OUTLINE = `2px solid ${SELECTION}`
+const HANDLE_PX         = 12
+
+/** White square with a selection-coloured border — the clip box's handle. */
+const HANDLE_FACE: React.CSSProperties = {
+  width: HANDLE_PX,
+  height: HANDLE_PX,
+  backgroundColor: '#fff',
+  border: `1.5px solid ${SELECTION}`,
+  borderRadius: 2,
+}
+
+// Eight handles: four corners scale BOTH axes together, four edge midpoints
+// scale exactly one (`useDragOverlay` maps `resize-e`/`resize-w` to X and
+// `resize-n`/`resize-s` to Y). Ordered corners-then-edges only for readability.
+const RESIZE_HANDLES: Array<Corner | Edge> = ['nw', 'ne', 'sw', 'se', 'n', 's', 'e', 'w']
+
+const HANDLE_CURSOR: Record<Corner | Edge, string> = {
+  nw: 'cursor-nw-resize', ne: 'cursor-ne-resize',
+  sw: 'cursor-sw-resize', se: 'cursor-se-resize',
+  n:  'cursor-ns-resize', s:  'cursor-ns-resize',
+  e:  'cursor-ew-resize', w:  'cursor-ew-resize',
+}
+
+/** Anchor point on the item's bounding box, in % of the box. */
+const HANDLE_ANCHOR: Record<Corner | Edge, [number, number]> = {
+  nw: [0, 0],    n: [50, 0],    ne: [100, 0],
+  w:  [0, 50],                  e:  [100, 50],
+  sw: [0, 100],  s: [50, 100],  se: [100, 100],
+}
+
+// Every chrome element inside the item's wrapper inherits the wrapper's
+// `scale(scaleX, scaleY)`, so each counter-scales by the INVERSE OF BOTH AXES to
+// stay a constant, SQUARE visual size. A single `scale(1/s)` would leave the
+// handles visibly stretched into rectangles on a non-uniformly scaled item.
+function ResizeHandle({ handle, scaleX, scaleY, onMouseDown }: {
+  handle: Corner | Edge
+  scaleX: number
+  scaleY: number
   onMouseDown: (e: React.MouseEvent) => void
 }) {
-  const cursorClass = {
-    nw: 'cursor-nw-resize', ne: 'cursor-ne-resize',
-    sw: 'cursor-sw-resize', se: 'cursor-se-resize',
-  }[corner]
-
-  const posClass = {
-    nw: 'top-0 left-0',   ne: 'top-0 right-0',
-    sw: 'bottom-0 left-0', se: 'bottom-0 right-0',
-  }[corner]
-
-  // L-shaped bracket: show only the two relevant border sides
-  const borderClass = {
-    nw: 'border-t-2 border-l-2',
-    ne: 'border-t-2 border-r-2',
-    sw: 'border-b-2 border-l-2',
-    se: 'border-b-2 border-r-2',
-  }[corner]
-
-  // Inverse scale so handle stays constant visual size; origin at the corner itself
-  const origin = `${corner.includes('n') ? 'top' : 'bottom'} ${corner.includes('w') ? 'left' : 'right'}`
-
+  const [ax, ay] = HANDLE_ANCHOR[handle]
   return (
     <div
-      className={`absolute w-5 h-5 border-amber-400 z-50 ${cursorClass} ${posClass} ${borderClass}`}
-      style={{ transformOrigin: origin, transform: `scale(${1 / scale})` }}
+      data-handle={handle}
+      className={`absolute z-50 ${HANDLE_CURSOR[handle]}`}
+      style={{
+        ...HANDLE_FACE,
+        // `left`/`top` put the handle's TOP-LEFT on the anchor point, and the
+        // origin is pinned there too — so the transform below is measured from
+        // the anchor, not from the handle's own centre.
+        left: `${ax}%`,
+        top:  `${ay}%`,
+        transformOrigin: '0 0',
+        // Order is load-bearing: `scale` OUTSIDE `translate`. The -50%/-50%
+        // resolves against the handle's own 12px box, and only in this order
+        // does the wrapper's scale(sx, sy) cancel out of BOTH the size and the
+        // centring offset — leaving a constant 12px square centred on the
+        // anchor at any scale. `translate(...) scale(...)` would leave the
+        // centring offset scaled and walk the handle off the box.
+        transform: `scale(${1 / scaleX}, ${1 / scaleY}) translate(-50%, -50%)`,
+      }}
       onMouseDown={onMouseDown}
     />
   )
 }
 
-function RotateHandle({ scale, onMouseDown }: {
-  scale: number
+function RotateHandle({ scaleX, scaleY, onMouseDown }: {
+  scaleX: number
+  scaleY: number
   onMouseDown: (e: React.MouseEvent) => void
 }) {
   return (
     <div
       className="absolute top-0 left-1/2 z-50 cursor-grab flex flex-col items-center"
-      style={{ transform: `translateX(-50%) translateY(-100%) scale(${1 / scale})`, transformOrigin: 'bottom center' }}
+      style={{ transform: `translateX(-50%) translateY(-100%) scale(${1 / scaleX}, ${1 / scaleY})`, transformOrigin: 'bottom center' }}
       onMouseDown={onMouseDown}
     >
-      <div className="w-4 h-4 rounded-full border-2 border-amber-400 bg-black/60" />
-      <div className="w-px h-3 bg-amber-400" />
+      {/* Same white square as a resize handle, lifted clear of the box on a
+          short stalk so it never collides with the `n` edge handle. */}
+      <div style={HANDLE_FACE} />
+      <div style={{ width: 1, height: HANDLE_PX, backgroundColor: SELECTION }} />
     </div>
   )
 }
@@ -279,15 +321,23 @@ function RotateHandle({ scale, onMouseDown }: {
 // image's bounding box; counter-scales so it stays a constant size regardless of
 // the item's scale. 'fill' is the legacy stretch behavior (kept for opt-in).
 const FIT_OPTIONS: Array<'cover' | 'contain' | 'fill'> = ['cover', 'contain', 'fill']
-function FitControl({ value, scale, onChange }: {
+function FitControl({ value, scaleX, scaleY, onChange }: {
   value: 'cover' | 'contain' | 'fill'
-  scale: number
+  scaleX: number
+  scaleY: number
   onChange: (fit: 'cover' | 'contain' | 'fill') => void
 }) {
   return (
     <div
-      className="absolute bottom-0 left-1/2 z-50 flex gap-px rounded bg-black/70 border border-amber-400/50 overflow-hidden"
-      style={{ transform: `translateX(-50%) translateY(140%) scale(${1 / scale})`, transformOrigin: 'top center' }}
+      // Part of the selection treatment (it only exists while the item is
+      // selected), so it rides the same token as the box and handles rather
+      // than keeping an accent of its own.
+      className="absolute bottom-0 left-1/2 z-50 flex gap-px rounded bg-black/70 border overflow-hidden"
+      style={{
+        borderColor: SELECTION,
+        transform: `translateX(-50%) translateY(140%) scale(${1 / scaleX}, ${1 / scaleY})`,
+        transformOrigin: 'top center',
+      }}
       onMouseDown={(e) => e.stopPropagation()}
     >
       {FIT_OPTIONS.map(opt => (
@@ -296,8 +346,9 @@ function FitControl({ value, scale, onChange }: {
           type="button"
           onClick={(e) => { e.stopPropagation(); onChange(opt) }}
           className={`px-2 py-1 text-[11px] font-mono capitalize ${
-            value === opt ? 'bg-amber-400 text-black' : 'text-gray-300 hover:bg-white/10'
+            value === opt ? 'text-black' : 'text-gray-300 hover:bg-white/10'
           }`}
+          style={value === opt ? { backgroundColor: SELECTION } : undefined}
         >
           {opt}
         </button>
@@ -382,45 +433,62 @@ export default function OverlayItemsLayer({
         // The resolver only ever sees the SAVED project, so it cannot know about
         // an in-flight drag — `liveOffset`/`liveScale`/`liveRotation` must keep
         // winning, with `geometryFor` supplying the base each falls back to.
-        const g        = geometryFor(item, 'image')
+        // Animated for the same reason as the items branch below: the renderer
+        // composites tracks[0] images through the very same
+        // buildImageItemFilterParts, which since SP9d compiles their curves into
+        // ffmpeg expressions. Leaving this branch on the static resolve would
+        // put back a preview/render divergence in the one place nobody would
+        // look for it. Opacity stays static here too — ffmpeg cannot vary it.
+        const gAnimated = geometryAt(item, 'image', currentTime - item.start)
+        const g        = { ...gAnimated, opacity: geometryFor(item, 'image').opacity }
         const fit      = g.fit ?? 'cover'
         const offsetX  = (liveOffset?.id   === item.id ? liveOffset.x       : null) ?? g.offsetX
         const offsetY  = (liveOffset?.id   === item.id ? liveOffset.y       : null) ?? g.offsetY
         const scale    = (liveScale?.id    === item.id ? liveScale.scale    : null) ?? g.scale
+        // The rendered box is per-axis; `scale` above stays the uniform value the
+        // drag state is seeded with. `g.scaleX`/`g.scaleY` already fall back to
+        // `g.scale`, so a legacy scale-only item resolves both to the same number.
+        const scaleX   = (liveScale?.id    === item.id ? liveScale.scaleX   : null) ?? g.scaleX
+        const scaleY   = (liveScale?.id    === item.id ? liveScale.scaleY   : null) ?? g.scaleY
         const rotation = (liveRotation?.id === item.id ? liveRotation.rotation : null) ?? g.rotation
+        const hasPerAxis = item.scaleX != null || item.scaleY != null
         const wrapperStyle: React.CSSProperties = {
-          transform: `translate(${offsetX}%, ${offsetY}%) rotate(${rotation}deg) scale(${scale})`,
+          transform: `translate(${offsetX}%, ${offsetY}%) rotate(${rotation}deg) scale(${scaleX}, ${scaleY})`,
           transformOrigin: 'center center',
           // Raise above play/pause div (z=10) when selected so pointer events land here
           zIndex: isSel ? 11 : 2,
           opacity: g.opacity,
+          // Selection box — the same 2px token outline a selected base clip
+          // gets (PreviewPlayer.tsx ~:536), so the two read as one treatment.
+          ...(isSel ? { outline: SELECTION_OUTLINE } : null),
         }
         const wrapperClass = `absolute inset-0 ${
           isSel
-            ? `${dragState?.type === 'move' ? 'cursor-grabbing' : 'cursor-grab'} ring-1 ring-inset ring-amber-400/40`
+            ? (dragState?.type === 'move' ? 'cursor-grabbing' : 'cursor-grab')
             : 'pointer-events-none'
         }`
+        const initGeom = { initOffsetX: offsetX, initOffsetY: offsetY, initScale: scale, initScaleX: scaleX, initScaleY: scaleY, initHasPerAxis: hasPerAxis, initRotation: rotation }
         function startMove(e: React.MouseEvent) {
           if (!isSel) return
           e.stopPropagation()
-          setDragState({ id: item.id, type: 'move', initX: e.clientX, initY: e.clientY, initOffsetX: offsetX, initOffsetY: offsetY, initScale: scale, initRotation: rotation })
+          setDragState({ id: item.id, type: 'move', initX: e.clientX, initY: e.clientY, ...initGeom })
         }
         const handles = isSel && (
           <>
-            {(['nw', 'ne', 'sw', 'se'] as Corner[]).map(c => (
-              <CornerHandle key={c} corner={c} scale={scale} onMouseDown={(e) => {
+            {RESIZE_HANDLES.map(h => (
+              <ResizeHandle key={h} handle={h} scaleX={scaleX} scaleY={scaleY} onMouseDown={(e) => {
                 e.stopPropagation()
-                setDragState({ id: item.id, type: `resize-${c}`, initX: e.clientX, initY: e.clientY, initOffsetX: offsetX, initOffsetY: offsetY, initScale: scale, initRotation: rotation })
+                setDragState({ id: item.id, type: `resize-${h}`, initX: e.clientX, initY: e.clientY, ...initGeom })
               }} />
             ))}
-            <RotateHandle scale={scale} onMouseDown={(e) => {
+            <RotateHandle scaleX={scaleX} scaleY={scaleY} onMouseDown={(e) => {
               e.stopPropagation()
               const rect = containerRef.current?.getBoundingClientRect()
               if (!rect) return
               const cx = rect.left + rect.width  * (0.5 + offsetX / 100)
               const cy = rect.top  + rect.height * (0.5 + offsetY / 100)
               const initAngle = Math.atan2(e.clientY - cy, e.clientX - cx)
-              setDragState({ id: item.id, type: 'rotate', initX: e.clientX, initY: e.clientY, initOffsetX: offsetX, initOffsetY: offsetY, initScale: scale, initRotation: rotation, cx, cy, initAngle })
+              setDragState({ id: item.id, type: 'rotate', initX: e.clientX, initY: e.clientY, ...initGeom, cx, cy, initAngle })
             }} />
           </>
         )
@@ -434,7 +502,7 @@ export default function OverlayItemsLayer({
             />
             {handles}
             {isSel && onOverlayChange && (
-              <FitControl value={fit} scale={scale} onChange={(next) => onOverlayChange(item.id, { fit: next })} />
+              <FitControl value={fit} scaleX={scaleX} scaleY={scaleY} onChange={(next) => onOverlayChange(item.id, { fit: next })} />
             )}
           </div>
         )
@@ -457,32 +525,54 @@ export default function OverlayItemsLayer({
           // Persisted geometry from the resolver; live drag state layered on top
           // (see the tracks[0] block above for why the override has to win).
           //
-          // Keyframes are overlay-only this round. The renderer composites image
-          // and video CLIPS through `geometryFor` directly (encode-segment.js:305
-          // and :375) and has no per-frame browser step to bake a moving
-          // transform into, so animating a clip HERE would show motion in the
-          // preview that the export cannot reproduce — the exact preview/render
-          // divergence timeline-core exists to prevent. Mirror the renderer:
-          // overlays animate, clips do not.
+          // EVERY item kind animates its position, scale and rotation: since
+          // SP9d the renderer compiles a clip's curves into time-varying ffmpeg
+          // expressions (encode-segment.js `animatedGeometry`), so a moving clip
+          // in this preview is a promise the export now keeps.
+          //
+          // OPACITY IS THE ONE EXCEPTION, and it is not a cost decision — it is
+          // a wall. ffmpeg's `colorchannelmixer` takes its alpha gain `aa` as a
+          // <double> and accepts no expression at all, so a clip's opacity curve
+          // cannot reach the render in any form. Animating it here would put
+          // back exactly the preview/render divergence this package exists to
+          // prevent: a fade the viewer sees and the export silently drops. So
+          // clips sample the curve for geometry and keep their STATIC opacity.
+          //
+          // Do not "finish the job" by dropping this override. Overlays are
+          // unaffected — they are baked per frame in a browser, where opacity is
+          // just another CSS value.
+          const animated = geometryAt(item, item.type, currentTime - item.start)
           const g        = item.type === 'overlay'
-            ? geometryAt(item, item.type, currentTime - item.start)
-            : geometryFor(item, item.type)
+            ? animated
+            : { ...animated, opacity: geometryFor(item, item.type).opacity }
           const fit      = g.fit ?? 'cover'
           const offsetX  = (liveOffset?.id   === item.id ? liveOffset.x       : null) ?? g.offsetX
           const offsetY  = (liveOffset?.id   === item.id ? liveOffset.y       : null) ?? g.offsetY
           const scale    = (liveScale?.id    === item.id ? liveScale.scale    : null) ?? g.scale
+          // Per-axis is what the box actually renders at; `scale` stays the
+          // uniform value the drag state carries. `g.scaleX`/`g.scaleY` already
+          // fall back to `g.scale`, so a legacy item resolves both to one number.
+          const scaleX   = (liveScale?.id    === item.id ? liveScale.scaleX   : null) ?? g.scaleX
+          const scaleY   = (liveScale?.id    === item.id ? liveScale.scaleY   : null) ?? g.scaleY
           const rotation = (liveRotation?.id === item.id ? liveRotation.rotation : null) ?? g.rotation
+          // Whether the item PERSISTS per-axis scale (vs inheriting both from the
+          // legacy uniform `scale`) — decides whether a resize commits per-axis
+          // fields; see `onUp` in useDragOverlay.ts.
+          const hasPerAxis = item.scaleX != null || item.scaleY != null
+          const initGeom = { initOffsetX: offsetX, initOffsetY: offsetY, initScale: scale, initScaleX: scaleX, initScaleY: scaleY, initHasPerAxis: hasPerAxis, initRotation: rotation }
 
           function startMove(e: React.MouseEvent) {
             if (!isSel) return
             e.stopPropagation()
-            setDragState({ id: item.id, type: 'move', initX: e.clientX, initY: e.clientY, initOffsetX: offsetX, initOffsetY: offsetY, initScale: scale, initRotation: rotation })
+            setDragState({ id: item.id, type: 'move', initX: e.clientX, initY: e.clientY, ...initGeom })
           }
 
-          function startResize(corner: Corner) {
+          // Corner OR edge — `useDragOverlay` reads the suffix and decides
+          // between a both-axes and a single-axis gesture.
+          function startResize(handle: Corner | Edge) {
             return (e: React.MouseEvent) => {
               e.stopPropagation()
-              setDragState({ id: item.id, type: `resize-${corner}`, initX: e.clientX, initY: e.clientY, initOffsetX: offsetX, initOffsetY: offsetY, initScale: scale, initRotation: rotation })
+              setDragState({ id: item.id, type: `resize-${handle}`, initX: e.clientX, initY: e.clientY, ...initGeom })
             }
           }
 
@@ -493,7 +583,7 @@ export default function OverlayItemsLayer({
             const cx = rect.left + rect.width  * (0.5 + offsetX / 100)
             const cy = rect.top  + rect.height * (0.5 + offsetY / 100)
             const initAngle = Math.atan2(e.clientY - cy, e.clientX - cx)
-            setDragState({ id: item.id, type: 'rotate', initX: e.clientX, initY: e.clientY, initOffsetX: offsetX, initOffsetY: offsetY, initScale: scale, initRotation: rotation, cx, cy, initAngle })
+            setDragState({ id: item.id, type: 'rotate', initX: e.clientX, initY: e.clientY, ...initGeom, cx, cy, initAngle })
           }
 
           // Double-click a selected JSX overlay opens the props dialog (owned by
@@ -524,25 +614,38 @@ export default function OverlayItemsLayer({
           // template against what this component actually renders, so a drift
           // here fails THAT test even though the render-side test can't see
           // this file at all. Change this template, update both.
+          //
+          // The template ships in FIVE places, two real and three transcribed:
+          // this line, the tracks[0] block above, the keyframes suite's
+          // `previewStyle`, render/bundle.js's overlay bake, and the render
+          // parity suite's `previewStyle`. The render-side pair is mid-migration
+          // onto the two-argument `scale(sx, sy)` form under its own slice, so
+          // it still transcribes the one-argument form for now — that gap is
+          // known and tracked, not a drift to "fix" from here.
           const wrapperStyle: React.CSSProperties = {
-            transform: `translate(${offsetX}%, ${offsetY}%) rotate(${rotation}deg) scale(${scale})`,
+            transform: `translate(${offsetX}%, ${offsetY}%) rotate(${rotation}deg) scale(${scaleX}, ${scaleY})`,
             transformOrigin: 'center center',
             zIndex,
             opacity: g.opacity,
+            // Selection box. NOT part of the parity template above — the render
+            // bake has no selection state to reproduce — so it is appended
+            // here, after the three transcribed properties, and only when the
+            // item is actually selected.
+            ...(isSel ? { outline: SELECTION_OUTLINE } : null),
           }
 
           const wrapperClass = `absolute inset-0 ${
             isSel
-              ? `${dragState?.type === 'move' ? 'cursor-grabbing' : 'cursor-grab'} ring-1 ring-inset ring-amber-400/40`
+              ? (dragState?.type === 'move' ? 'cursor-grabbing' : 'cursor-grab')
               : 'pointer-events-none'
           }`
 
           const handles = isSel && (
             <>
-              {(['nw', 'ne', 'sw', 'se'] as Corner[]).map(c => (
-                <CornerHandle key={c} corner={c} scale={scale} onMouseDown={startResize(c)} />
+              {RESIZE_HANDLES.map(h => (
+                <ResizeHandle key={h} handle={h} scaleX={scaleX} scaleY={scaleY} onMouseDown={startResize(h)} />
               ))}
-              <RotateHandle scale={scale} onMouseDown={startRotate} />
+              <RotateHandle scaleX={scaleX} scaleY={scaleY} onMouseDown={startRotate} />
             </>
           )
 
@@ -558,7 +661,7 @@ export default function OverlayItemsLayer({
                 />
                 {handles}
                 {isSel && onOverlayChange && (
-                  <FitControl value={fit} scale={scale} onChange={(next) => onOverlayChange(item.id, { fit: next })} />
+                  <FitControl value={fit} scaleX={scaleX} scaleY={scaleY} onChange={(next) => onOverlayChange(item.id, { fit: next })} />
                 )}
               </div>
             )
@@ -665,7 +768,9 @@ export default function OverlayItemsLayer({
           return (
             <div
               key={item.id}
-              className={`absolute ${isSel ? 'cursor-grab ring-1 ring-amber-400/40' : 'pointer-events-none'} ${posClass[pos] ?? posClass['bottom-left']}`}
+              // The selection outline rides on `wrapperStyle` (shared with the
+              // branches above), so only the cursor differs from unselected.
+              className={`absolute ${isSel ? 'cursor-grab' : 'pointer-events-none'} ${posClass[pos] ?? posClass['bottom-left']}`}
               style={wrapperStyle}
               onMouseDown={startMove}
             >
@@ -680,26 +785,35 @@ export default function OverlayItemsLayer({
         })
       )}
 
+      {/* Snap guides. All of these are selection chrome, so they read the same
+          token as the box and handles. The faint reference frame gets its
+          fade from element `opacity` rather than a translucent colour: the
+          token is an opaque colour string, and this codebase deliberately
+          avoids `color-mix` (see ControlsInfoModal.tsx ~:130). */}
       {/* Center snap guide lines */}
       {dragState?.type === 'move' && snapGuides.x && (
-        <div className="absolute top-0 bottom-0 left-1/2 w-px bg-amber-400 pointer-events-none z-50"
-             style={{ transform: 'translateX(-50%)' }} />
+        <div className="absolute top-0 bottom-0 left-1/2 w-px pointer-events-none z-50"
+             style={{ backgroundColor: SELECTION, transform: 'translateX(-50%)' }} />
       )}
       {dragState?.type === 'move' && snapGuides.y && (
-        <div className="absolute left-0 right-0 top-1/2 h-px bg-amber-400 pointer-events-none z-50"
-             style={{ transform: 'translateY(-50%)' }} />
+        <div className="absolute left-0 right-0 top-1/2 h-px pointer-events-none z-50"
+             style={{ backgroundColor: SELECTION, transform: 'translateY(-50%)' }} />
       )}
       {/* Edge guide lines — always visible during a move drag as reference frame */}
-      {dragState?.type === 'move' && <div className="absolute top-0 bottom-0 left-0   w-px bg-amber-400/30 pointer-events-none z-50" />}
-      {dragState?.type === 'move' && <div className="absolute top-0 bottom-0 right-0  w-px bg-amber-400/30 pointer-events-none z-50" />}
-      {dragState?.type === 'move' && <div className="absolute left-0 right-0 top-0    h-px bg-amber-400/30 pointer-events-none z-50" />}
-      {dragState?.type === 'move' && <div className="absolute left-0 right-0 bottom-0 h-px bg-amber-400/30 pointer-events-none z-50" />}
+      {dragState?.type === 'move' && <div className="absolute top-0 bottom-0 left-0   w-px pointer-events-none z-50" style={{ backgroundColor: SELECTION, opacity: 0.3 }} />}
+      {dragState?.type === 'move' && <div className="absolute top-0 bottom-0 right-0  w-px pointer-events-none z-50" style={{ backgroundColor: SELECTION, opacity: 0.3 }} />}
+      {dragState?.type === 'move' && <div className="absolute left-0 right-0 top-0    h-px pointer-events-none z-50" style={{ backgroundColor: SELECTION, opacity: 0.3 }} />}
+      {dragState?.type === 'move' && <div className="absolute left-0 right-0 bottom-0 h-px pointer-events-none z-50" style={{ backgroundColor: SELECTION, opacity: 0.3 }} />}
       {/* Edge snap highlight — brighten when snapping to an edge */}
-      {dragState?.type === 'move' && snapGuides.left   && <div className="absolute top-0 bottom-0 left-0   w-px bg-amber-400 pointer-events-none z-50" />}
-      {dragState?.type === 'move' && snapGuides.right  && <div className="absolute top-0 bottom-0 right-0  w-px bg-amber-400 pointer-events-none z-50" />}
-      {dragState?.type === 'move' && snapGuides.top    && <div className="absolute left-0 right-0 top-0    h-px bg-amber-400 pointer-events-none z-50" />}
-      {dragState?.type === 'move' && snapGuides.bottom && <div className="absolute left-0 right-0 bottom-0 h-px bg-amber-400 pointer-events-none z-50" />}
-      {/* Rotation snap guide — line through center at the snapped angle */}
+      {dragState?.type === 'move' && snapGuides.left   && <div className="absolute top-0 bottom-0 left-0   w-px pointer-events-none z-50" style={{ backgroundColor: SELECTION }} />}
+      {dragState?.type === 'move' && snapGuides.right  && <div className="absolute top-0 bottom-0 right-0  w-px pointer-events-none z-50" style={{ backgroundColor: SELECTION }} />}
+      {dragState?.type === 'move' && snapGuides.top    && <div className="absolute left-0 right-0 top-0    h-px pointer-events-none z-50" style={{ backgroundColor: SELECTION }} />}
+      {dragState?.type === 'move' && snapGuides.bottom && <div className="absolute left-0 right-0 bottom-0 h-px pointer-events-none z-50" style={{ backgroundColor: SELECTION }} />}
+      {/* Rotation snap guide — line through center at the snapped angle.
+          `stroke` goes through the CSS `style` prop, NOT the SVG presentation
+          attribute: `var()` is only resolved by the CSS cascade, so
+          stroke="var(--editor-selection)" would be parsed as an unknown paint
+          and drop the line entirely. */}
       {dragState?.type === 'rotate' && snapRotation !== null && (
         <div className="absolute inset-0 pointer-events-none z-50">
           <svg width="100%" height="100%" overflow="visible">
@@ -707,13 +821,15 @@ export default function OverlayItemsLayer({
               x1="50%" y1="50%"
               x2={`calc(50% + 200% * ${Math.cos((snapRotation - 90) * Math.PI / 180)})`}
               y2={`calc(50% + 200% * ${Math.sin((snapRotation - 90) * Math.PI / 180)})`}
-              stroke="rgb(251 191 36)" strokeWidth="1" strokeDasharray="4 3" opacity="0.8"
+              style={{ stroke: SELECTION }}
+              strokeWidth="1" strokeDasharray="4 3" opacity="0.8"
             />
             <line
               x1="50%" y1="50%"
               x2={`calc(50% - 200% * ${Math.cos((snapRotation - 90) * Math.PI / 180)})`}
               y2={`calc(50% - 200% * ${Math.sin((snapRotation - 90) * Math.PI / 180)})`}
-              stroke="rgb(251 191 36)" strokeWidth="1" strokeDasharray="4 3" opacity="0.8"
+              style={{ stroke: SELECTION }}
+              strokeWidth="1" strokeDasharray="4 3" opacity="0.8"
             />
           </svg>
         </div>

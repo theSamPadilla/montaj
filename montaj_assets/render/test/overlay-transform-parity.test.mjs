@@ -61,10 +61,16 @@ import { collectPuppeteerSegments } from '../render.js'
 // OverlayItemsLayer.keyframes.test.tsx pins this SAME literal template
 // against what the real component renders, so a drift there is what catches
 // a change here that this file's transcription missed.
+//
+// NOTE ON THE TWO-ARGUMENT `scale(sx, sy)`: it is emitted UNCONDITIONALLY on
+// both sides, uniform items included. `scale(2)` and `scale(2, 2)` are
+// CSS-equivalent but NOT string-equal, and this suite compares strings — so a
+// `sx === sy → scale(s)` shortcut on either side would fail every legacy
+// uniform overlay here while changing nothing about the rendered pixels.
 /** OverlayItemsLayer.tsx ~:517-521, verbatim. */
 function previewStyle(g) {
   return {
-    transform: `translate(${g.offsetX}%, ${g.offsetY}%) rotate(${g.rotation}deg) scale(${g.scale})`,
+    transform: `translate(${g.offsetX}%, ${g.offsetY}%) rotate(${g.rotation}deg) scale(${g.scaleX}, ${g.scaleY})`,
     transformOrigin: 'center center',
     opacity: g.opacity,
   }
@@ -139,6 +145,97 @@ describe('T4.1: preview transform string == render bake transform string, for th
     // the comment above claims it does.
     assert.equal(bakeStyle(29).opacity, 0)
     assert.equal(bakeStyle(30).opacity, 1)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// 1b. Transform string parity — NON-UNIFORM scale
+//
+// The block above animates the legacy uniform `scale`, where `scaleX` and
+// `scaleY` resolve to the SAME number every frame — so a one-argument
+// `scale(s)` on both sides would have satisfied it. This block is what
+// actually pins the per-axis half: the two axes differ at every instant, so a
+// shim (or a preview transcription) that still read `g.scale` would print one
+// number where two are needed and fail immediately.
+//
+// The string-equality assertions cannot, on their own, catch BOTH sides
+// regressing together — they compare one transcription against one generated
+// source. The literal-shape assertion below is the guard for that case: it
+// pins the emitted text itself, not just the agreement between the two.
+// ---------------------------------------------------------------------------
+
+describe('T5: preview transform string == render bake transform string, for a NON-UNIFORM item', () => {
+  const FPS = 30
+  const FRAMES = [0, 9, 29, 30, 45, 59, 60]
+  // Deliberately carries NO uniform `scale` key: this item was authored
+  // per-axis, which is exactly the shape the `?? scale ?? 1` fallback chain
+  // must not quietly flatten back to a square box.
+  const ITEM = {
+    offsetX: 4, offsetY: -6, scaleX: 1.8, scaleY: 0.4, rotation: 15, opacity: 1,
+    // Different curves AND different endpoints per axis, so neither track is a
+    // copy of the other and the two never coincide.
+    keyframes: [
+      { prop: 'scaleX', points: [{ t: 0, value: 0.25, easing: 'ease-in' }, { t: 2, value: 2 }] },
+      { prop: 'scaleY', points: [{ t: 0, value: 1.75 }, { t: 1, value: 0.6, easing: 'ease-out' }, { t: 2, value: 1.1 }] },
+      { prop: 'offsetX', points: [{ t: 0, value: -10 }, { t: 2, value: 10 }] },
+    ],
+  }
+  // Exactly the object bundleComponent now builds for this item: the uniform
+  // fallback AND both axes. `scale` stays in the bake because `geometryAt`
+  // resolves an axis as `<track> ?? item.scaleX ?? <resolved scale>` — the
+  // uniform value is still the last link of that chain.
+  const shim = generateShim('/abs/overlay.jsx', {}, FPS, 60, {
+    offsetX: ITEM.offsetX, offsetY: ITEM.offsetY,
+    scale: ITEM.scale ?? 1, scaleX: ITEM.scaleX, scaleY: ITEM.scaleY,
+    rotation: ITEM.rotation, opacity: ITEM.opacity, keyframes: ITEM.keyframes,
+  })
+  const bakeStyle = renderBakeStyleFn(shim)
+
+  for (const frame of FRAMES) {
+    test(`frame=${frame} (localT=${frame / FPS})`, () => {
+      const g = geometryAt(ITEM, 'overlay', frame / FPS)
+      const want = previewStyle(g)
+      const got = bakeStyle(frame)
+
+      assert.equal(got.transform, want.transform, `frame=${frame}: transform string`)
+      assert.equal(got.transformOrigin, want.transformOrigin, `frame=${frame}: transformOrigin`)
+      assert.equal(got.opacity, want.opacity, `frame=${frame}: opacity`)
+    })
+  }
+
+  test('the fixture is genuinely non-uniform at every frame asserted above', () => {
+    // Without this, a fixture that drifted into uniformity would leave the
+    // whole block passing for the wrong reason — it would be testing the
+    // uniform case a second time.
+    for (const frame of FRAMES) {
+      const g = geometryAt(ITEM, 'overlay', frame / FPS)
+      assert.notEqual(g.scaleX, g.scaleY, `frame=${frame}: axes must differ`)
+    }
+  })
+
+  test('the emitted text is a two-argument scale carrying both axes', () => {
+    // Frame 0 sits exactly on both scale tracks' first point, so the expected
+    // numbers are the authored ones — no float formatting to reason about.
+    assert.match(bakeStyle(0).transform, /\bscale\(0\.25, 1\.75\)$/)
+    assert.match(bakeStyle(0).transform, /^translate\(-10%, -6%\) rotate\(15deg\) /)
+  })
+
+  test('a legacy uniform item emits the TWO-argument form too, never scale(s)', () => {
+    // The back-compat half of the string contract: the preview emits
+    // `scale(sx, sy)` unconditionally, so the shim must as well. An
+    // `sx === sy → scale(s)` shortcut here would be CSS-equivalent and would
+    // still break parity for every overlay authored before per-axis scale.
+    const uniform = {
+      scale: 0.5,
+      keyframes: [{ prop: 'opacity', points: [{ t: 0, value: 0 }, { t: 1, value: 1 }] }],
+    }
+    const uniformStyle = renderBakeStyleFn(generateShim('/abs/overlay.jsx', {}, FPS, 30, {
+      offsetX: 0, offsetY: 0, scale: 0.5, scaleX: 0.5, scaleY: 0.5,
+      rotation: 0, opacity: 1, keyframes: uniform.keyframes,
+    }))(0)
+
+    assert.match(uniformStyle.transform, /\bscale\(0\.5, 0\.5\)$/)
+    assert.equal(uniformStyle.transform, previewStyle(geometryAt(uniform, 'overlay', 0)).transform)
   })
 })
 

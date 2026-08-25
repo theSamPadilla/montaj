@@ -97,8 +97,10 @@ describe('OverlayItemsLayer — double-click to edit overlay', () => {
     const wrapper = container.querySelector('div') as HTMLDivElement
     fireEvent.dblClick(wrapper)
 
-    // The dialog is owned by VideoEditor now: the layer neither inline-edits nor
-    // renders the modal or a floating pencil itself.
+    // Prop editing lives in the right panel's Content tab now — there is no
+    // dialog anywhere, so the layer has nothing to render for it. The textbox
+    // assertion is the load-bearing one (no INLINE editor in the layer); the
+    // two below are belt-and-braces against a modal being reintroduced here.
     expect(screen.queryByRole('textbox')).toBeNull()
     expect(screen.queryByRole('heading', { name: 'Edit overlay' })).toBeNull()
     expect(screen.queryByRole('button', { name: 'Edit overlay props' })).toBeNull()

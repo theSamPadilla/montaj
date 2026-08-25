@@ -25,7 +25,15 @@ function overlayItem(over: Partial<VisualItem> = {}): VisualItem {
   } as VisualItem
 }
 
+/** The header's all-props list for a UNIFORM item — what every suite below
+ *  that drives the header diamond uses, since they all render uniform items.
+ *  An item carrying scaleX/scaleY gets PER_AXIS_PROPS instead; see the
+ *  "uniform scale lock" suite. Deliberately still hard-coded rather than
+ *  imported: it is the contract the panel is being held to. */
 const ALL_PROPS: KeyframeProp[] = ['offsetX', 'offsetY', 'scale', 'rotation', 'opacity']
+const PER_AXIS_PROPS: KeyframeProp[] = ['offsetX', 'offsetY', 'scaleX', 'scaleY', 'rotation', 'opacity']
+
+const LOCK = 'Uniform scale'
 
 function renderInspector(
   item: VisualItem | null,
@@ -108,25 +116,48 @@ describe('OverlayInspector — rendering', () => {
     expect(screen.queryByLabelText('Offset X')).toBeNull()
   })
 
-  it('renders the empty state for a non-overlay item', () => {
+  it('renders the panel for a VIDEO clip now that clips are keyframeable (SP9d)', () => {
     const item = { id: 'v1', type: 'video', src: 'v.mp4', start: 0, end: 10 } as VisualItem
+    renderInspector(item, 5)
+
+    expect(screen.queryByText('Select an overlay to edit its properties.')).toBeNull()
+    expect(screen.queryByLabelText('Offset X')).not.toBeNull()
+  })
+
+  it("disables a clip's OPACITY keyframe diamond, with a reason, rather than hiding it", () => {
+    // ffmpeg's colorchannelmixer takes its alpha gain as a <double> and accepts
+    // no expression, so clip opacity cannot animate. A missing control reads as
+    // a bug; a disabled one that says why reads as the limitation it is.
+    const item = { id: 'v1', type: 'video', src: 'v.mp4', start: 0, end: 10 } as VisualItem
+    renderInspector(item, 5)
+
+    const diamond = screen.getByLabelText(/Opacity keyframe at playhead/)
+    expect(diamond).toBeDisabled()
+    expect(diamond.getAttribute('title')).toMatch(/cannot be animated/i)
+  })
+
+  it('leaves an overlay\'s opacity diamond fully enabled', () => {
+    renderInspector(overlayItem(), 5)
+    expect(screen.getByLabelText(/Opacity keyframe at playhead/)).not.toBeDisabled()
+  })
+
+  it('renders the empty state for a kind that cannot be keyframed at all', () => {
+    const item = { id: 'a1', type: 'audio', src: 'a.wav', start: 0, end: 10 } as unknown as VisualItem
     renderInspector(item, 5)
 
     expect(screen.getByText('Select an overlay to edit its properties.')).toBeInTheDocument()
     expect(screen.queryByLabelText('Offset X')).toBeNull()
   })
 
-  it('collapses and re-expands the section body', () => {
+  it('renders the transform body unconditionally (no collapse toggle)', () => {
     renderInspector(overlayItem(), 5)
-    const toggle = screen.getByRole('button', { name: 'Transform' })
 
-    expect(toggle).toHaveAttribute('aria-expanded', 'true')
+    // The header label is inert text now — no button, no aria-expanded, so
+    // there is nothing left to click to hide the body.
+    expect(screen.queryByRole('button', { name: 'Transform' })).toBeNull()
+    expect(screen.getByText('Transform')).not.toHaveAttribute('aria-expanded')
 
-    fireEvent.click(toggle)
-    expect(toggle).toHaveAttribute('aria-expanded', 'false')
-    expect(screen.queryByLabelText('Offset X')).toBeNull()
-
-    fireEvent.click(toggle)
+    // The body is visible immediately, with no interaction required.
     expect(screen.getByLabelText('Offset X')).toHaveValue(10)
   })
 })
@@ -201,6 +232,50 @@ describe('OverlayInspector — auto-keyframe on change', () => {
     // The original endpoints are untouched — this ADDS a keyframe, not replaces the track.
     expect(track.points.find(p => p.t === 0)?.value).toBe(0)
     expect(track.points.find(p => p.t === 10)?.value).toBe(100)
+  })
+})
+
+// Same writeProp rule as the suite above, pinned for a CLIP specifically —
+// clips are about to start using this panel (canKeyframe already accepts
+// 'video'/'image', see the "renders the panel for a VIDEO clip" test), and
+// nothing previously locked the static-vs-keyframe behavior in for that kind.
+describe('OverlayInspector — auto-keyframe on change (video clip)', () => {
+  function clipItem(over: Partial<VisualItem> = {}): VisualItem {
+    return { id: 'v1', type: 'video', src: 'v.mp4', start: 0, end: 10, ...over } as VisualItem
+  }
+
+  it('writes the static scalar when the property is NOT keyframed', () => {
+    const item = clipItem({ rotation: 0 })
+    const { onPreview } = renderInspector(item, 5) // localT = 5
+
+    fireEvent.change(screen.getByLabelText('Rotation'), { target: { value: '45' } })
+
+    expect(onPreview).toHaveBeenCalledTimes(1)
+    const next = onPreview.mock.calls[0][0] as VisualItem
+    expect(next.rotation).toBe(45)
+    expect(hasKeyframes(next, 'rotation')).toBe(false)
+    expect(next.keyframes).toBeUndefined() // no implicit keyframe track appears
+  })
+
+  it('writes a keyframe at the playhead when the property IS keyframed', () => {
+    const item = clipItem({
+      keyframes: [{ prop: 'rotation', points: [{ t: 0, value: 0 }, { t: 10, value: 90 }] }],
+    })
+    const { onPreview } = renderInspector(item, 3) // localT = 3, not already on the track
+
+    fireEvent.change(screen.getByLabelText('Rotation'), { target: { value: '45' } })
+
+    expect(onPreview).toHaveBeenCalledTimes(1)
+    const next = onPreview.mock.calls[0][0] as VisualItem
+    const track = next.keyframes!.find(t => t.prop === 'rotation')!
+    const point = track.points.find(p => p.t === 3)
+    expect(point).toBeDefined()
+    expect(point!.value).toBe(45)
+    // The static scalar is NOT overwritten — the write went to the curve instead.
+    expect(next.rotation).toBeUndefined()
+    // The original endpoints are untouched — this ADDS a keyframe, not replaces the track.
+    expect(track.points.find(p => p.t === 0)?.value).toBe(0)
+    expect(track.points.find(p => p.t === 10)?.value).toBe(90)
   })
 })
 
@@ -413,13 +488,330 @@ describe('OverlayInspector — scale slider', () => {
 })
 
 describe('OverlayInspector — uniform scale lock', () => {
-  it('renders checked and disabled, because the schema has one uniform scale', () => {
+  it('renders checked and ENABLED for an item with no per-axis scale', () => {
     renderInspector(overlayItem(), 5)
 
-    const lock = screen.getByRole('checkbox', { name: 'Uniform scale' })
+    const lock = screen.getByRole('checkbox', { name: LOCK })
     expect(lock).toHaveAttribute('aria-checked', 'true')
-    expect(lock).toHaveAttribute('aria-disabled', 'true')
-    expect(lock).toBeDisabled()
+    expect(lock).not.toHaveAttribute('aria-disabled')
+    expect(lock).toBeEnabled()
+  })
+
+  it('renders UNCHECKED for an item that carries scaleX/scaleY', () => {
+    renderInspector(overlayItem({ scaleX: 1.2, scaleY: 0.8 }), 5)
+
+    expect(screen.getByRole('checkbox', { name: LOCK })).toHaveAttribute('aria-checked', 'false')
+  })
+
+  it('reads unchecked off a per-axis KEYFRAME TRACK, not just the scalar', () => {
+    const item = overlayItem({
+      keyframes: [{ prop: 'scaleX', points: [{ t: 0, value: 1 }, { t: 10, value: 2 }] }],
+    })
+    renderInspector(item, 5)
+
+    expect(screen.getByRole('checkbox', { name: LOCK })).toHaveAttribute('aria-checked', 'false')
+  })
+
+  it('stays unchecked for a deliberately-unlocked item whose axes happen to be equal', () => {
+    // Equality is NOT the test — `scaleX === scaleY` on an item the operator
+    // unlocked on purpose must not silently re-lock it.
+    renderInspector(overlayItem({ scaleX: 1.2, scaleY: 1.2 }), 5)
+
+    expect(screen.getByRole('checkbox', { name: LOCK })).toHaveAttribute('aria-checked', 'false')
+  })
+
+  it('re-derives its state when a DIFFERENT overlay is selected', () => {
+    // The reason the state is derived from `item` rather than held in
+    // useState: this panel is reconciled in place across selection changes, so
+    // component state would keep showing the previous overlay's answer.
+    const clock = createPlaybackClock(5)
+    const props = { clock, onPreview: vi.fn(), onCommit: vi.fn(), onChange: vi.fn() }
+    const { rerender } = render(<OverlayInspector item={overlayItem({ scaleX: 2, scaleY: 0.5 })} {...props} />)
+    expect(screen.getByRole('checkbox', { name: LOCK })).toHaveAttribute('aria-checked', 'false')
+
+    rerender(<OverlayInspector item={overlayItem({ id: 'o2' })} {...props} />)
+
+    expect(screen.getByRole('checkbox', { name: LOCK })).toHaveAttribute('aria-checked', 'true')
+  })
+
+  it('is operable from the keyboard', () => {
+    const { onChange } = renderInspector(overlayItem(), 5)
+
+    // role=checkbox on a <button> fires click for Space/Enter natively; jsdom
+    // does not synthesize that, so the click IS the keyboard activation here.
+    // What this asserts is that nothing disables the control or swallows it.
+    const lock = screen.getByRole('checkbox', { name: LOCK })
+    lock.focus()
+    expect(lock).toHaveFocus()
+    fireEvent.click(lock)
+
+    expect(onChange).toHaveBeenCalledTimes(1)
+  })
+
+  describe('unlocking (ON → OFF)', () => {
+    it('splits the Scale row into Scale X / Scale Y boxes', () => {
+      renderInspector(overlayItem({ scaleX: 1.2, scaleY: 0.8 }), 5)
+
+      expect(screen.getByLabelText('Scale X')).toHaveValue(120)
+      expect(screen.getByLabelText('Scale Y')).toHaveValue(80)
+      // The single uniform row — box AND slider — is gone.
+      expect(screen.queryByLabelText('Scale')).toBeNull()
+      expect(screen.queryByRole('slider', { name: 'Scale slider' })).toBeNull()
+    })
+
+    it('seeds BOTH axes from the current scale, so nothing jumps', () => {
+      const item = overlayItem({ scale: 1.2 })
+      const { onChange } = renderInspector(item, 5) // localT = 0
+
+      fireEvent.click(screen.getByRole('checkbox', { name: LOCK }))
+
+      expect(onChange).toHaveBeenCalledTimes(1)
+      const next = onChange.mock.calls[0][0] as VisualItem
+      expect(next.scaleX).toBe(1.2)
+      expect(next.scaleY).toBe(1.2)
+      // The actual no-jump proof: the EFFECTIVE per-axis scale the renderer
+      // resolves is identical either side of the transition.
+      expect(valueAt(next, 'scaleX', 0)).toBe(valueAt(item, 'scaleX', 0))
+      expect(valueAt(next, 'scaleY', 0)).toBe(valueAt(item, 'scaleY', 0))
+    })
+
+    it('seeds from the ANIMATED scale at the playhead, not the static scalar', () => {
+      const item = overlayItem({
+        scale: 999, // stale scalar the track shadows — seeding from it would jump
+        keyframes: [{ prop: 'scale', points: [{ t: 0, value: 1 }, { t: 10, value: 2 }] }],
+      })
+      const { onChange } = renderInspector(item, 10) // localT = 5, halfway => 1.5
+
+      fireEvent.click(screen.getByRole('checkbox', { name: LOCK }))
+
+      const next = onChange.mock.calls[0][0] as VisualItem
+      expect(next.scaleX).toBe(1.5)
+      expect(next.scaleY).toBe(1.5)
+      expect(valueAt(next, 'scaleX', 5)).toBe(valueAt(item, 'scaleX', 5))
+      expect(valueAt(next, 'scaleY', 5)).toBe(valueAt(item, 'scaleY', 5))
+    })
+
+    it('writes the per-axis boxes back as multipliers', () => {
+      const { onPreview } = renderInspector(overlayItem({ scaleX: 1, scaleY: 1 }), 5)
+
+      fireEvent.change(screen.getByLabelText('Scale X'), { target: { value: '200' } })
+      fireEvent.change(screen.getByLabelText('Scale Y'), { target: { value: '50' } })
+
+      expect((onPreview.mock.calls[0][0] as VisualItem).scaleX).toBe(2)
+      expect((onPreview.mock.calls[1][0] as VisualItem).scaleY).toBe(0.5)
+    })
+
+    it('steps each axis independently', () => {
+      const { onChange } = renderInspector(overlayItem({ scaleX: 1.2, scaleY: 1.2 }), 5)
+
+      fireEvent.click(screen.getByRole('button', { name: 'Increase Scale X' }))
+      expect((onChange.mock.calls[0][0] as VisualItem).scaleX).toBe(1.21)
+
+      fireEvent.click(screen.getByRole('button', { name: 'Decrease Scale Y' }))
+      expect((onChange.mock.calls[1][0] as VisualItem).scaleY).toBe(1.19)
+    })
+  })
+
+  describe('locking (OFF → ON)', () => {
+    it('collapses to `scale` keeping the X value, and clears both axes', () => {
+      const item = overlayItem({ scaleX: 1.5, scaleY: 0.25 })
+      const { onChange } = renderInspector(item, 5)
+
+      fireEvent.click(screen.getByRole('checkbox', { name: LOCK }))
+
+      expect(onChange).toHaveBeenCalledTimes(1)
+      const next = onChange.mock.calls[0][0] as VisualItem
+      expect(next.scale).toBe(1.5) // X wins — arbitrary but documented and stable
+      expect('scaleX' in next).toBe(false)
+      expect('scaleY' in next).toBe(false)
+      // And the resolver agrees: both axes fall back to the uniform value.
+      expect(valueAt(next, 'scaleX', 0)).toBe(1.5)
+      expect(valueAt(next, 'scaleY', 0)).toBe(1.5)
+    })
+
+    it('clears per-axis keyframe TRACKS too, not just the scalars', () => {
+      const item = overlayItem({
+        scaleX: 9,
+        keyframes: [
+          { prop: 'scaleX', points: [{ t: 0, value: 1.5 }, { t: 10, value: 3 }] },
+          { prop: 'scaleY', points: [{ t: 0, value: 0.25 }, { t: 10, value: 4 }] },
+          { prop: 'opacity', points: [{ t: 0, value: 0.5 }] },
+        ],
+      })
+      const { onChange } = renderInspector(item, 5) // localT = 0
+
+      fireEvent.click(screen.getByRole('checkbox', { name: LOCK }))
+
+      const next = onChange.mock.calls[0][0] as VisualItem
+      expect(next.scale).toBe(1.5) // the X CURVE's value at the playhead
+      expect('scaleX' in next).toBe(false)
+      expect(trackFor(next, 'scaleX')).toBeUndefined()
+      expect(trackFor(next, 'scaleY')).toBeUndefined()
+      // An unrelated track is untouched — this clears two props, not the item.
+      expect(trackFor(next, 'opacity')!.points).toEqual([{ t: 0, value: 0.5 }])
+    })
+
+    it('drops `item.keyframes` entirely when the per-axis tracks were the only ones', () => {
+      const item = overlayItem({
+        keyframes: [
+          { prop: 'scaleX', points: [{ t: 0, value: 1.5 }] },
+          { prop: 'scaleY', points: [{ t: 0, value: 0.5 }] },
+        ],
+      })
+      const { onChange } = renderInspector(item, 5)
+
+      fireEvent.click(screen.getByRole('checkbox', { name: LOCK }))
+
+      // Not a lingering `[]` — downstream treats "no keyframes" as the static
+      // path and the two must behave identically (withTrack's contract).
+      expect((onChange.mock.calls[0][0] as VisualItem).keyframes).toBeUndefined()
+    })
+
+    it('keyframes `scale` instead of writing the scalar when it is already animated', () => {
+      // The collapse is a normal panel write, so writeProp's auto-keyframe rule
+      // applies to it exactly as it does to typing in the Scale box.
+      const item = overlayItem({
+        scaleX: 2,
+        keyframes: [{ prop: 'scale', points: [{ t: 0, value: 0.5 }, { t: 10, value: 1 }] }],
+      })
+      const { onChange } = renderInspector(item, 8) // localT = 3
+
+      fireEvent.click(screen.getByRole('checkbox', { name: LOCK }))
+
+      const next = onChange.mock.calls[0][0] as VisualItem
+      expect(trackFor(next, 'scale')!.points.find(p => p.t === 3)?.value).toBe(2)
+      expect('scaleX' in next).toBe(false)
+    })
+
+    it('round-trips: unlock then lock returns the original scale', () => {
+      const item = overlayItem({ scale: 1.2 })
+      const first = renderInspector(item, 5)
+      fireEvent.click(screen.getByRole('checkbox', { name: LOCK }))
+      const unlocked = first.onChange.mock.calls[0][0] as VisualItem
+      first.unmount()
+
+      const second = renderInspector(unlocked, 5)
+      fireEvent.click(screen.getByRole('checkbox', { name: LOCK }))
+      const relocked = second.onChange.mock.calls[0][0] as VisualItem
+
+      expect(relocked.scale).toBe(1.2)
+      expect('scaleX' in relocked).toBe(false)
+      expect('scaleY' in relocked).toBe(false)
+    })
+  })
+
+  describe('per-axis keyframes', () => {
+    it('gives each axis its OWN keyframe unit', () => {
+      renderInspector(overlayItem({ scaleX: 1, scaleY: 1 }), 5)
+
+      expect(screen.getByRole('button', { name: 'Add Scale X keyframe at playhead' })).toBeInTheDocument()
+      expect(screen.getByRole('button', { name: 'Add Scale Y keyframe at playhead' })).toBeInTheDocument()
+      expect(screen.getByRole('button', { name: 'Previous Scale X keyframe' })).toBeInTheDocument()
+      expect(screen.getByRole('button', { name: 'Next Scale Y keyframe' })).toBeInTheDocument()
+      // The uniform row's diamond is gone with the row.
+      expect(screen.queryByRole('button', { name: 'Add Scale keyframe at playhead' })).toBeNull()
+    })
+
+    it('a diamond animates ONE axis, leaving the other static', () => {
+      const { onChange } = renderInspector(overlayItem({ scaleX: 1.5, scaleY: 0.5 }), 8) // localT = 3
+
+      fireEvent.click(screen.getByRole('button', { name: 'Add Scale X keyframe at playhead' }))
+
+      const next = onChange.mock.calls[0][0] as VisualItem
+      expect(trackFor(next, 'scaleX')!.points).toEqual([{ t: 3, value: 1.5 }])
+      expect(hasKeyframes(next, 'scaleY')).toBe(false)
+      expect(next.scaleY).toBe(0.5)
+    })
+
+    it('a pressed diamond turns that axis back into a static scalar', () => {
+      const item = overlayItem({
+        scaleX: 999, // stale — disableKeyframing must overwrite it, not restore it
+        keyframes: [{ prop: 'scaleX', points: [{ t: 0, value: 1.5 }] }],
+      })
+      const { onChange } = renderInspector(item, 5) // localT = 0
+
+      const diamond = screen.getByRole('button', { name: 'Remove Scale X keyframe at playhead' })
+      expect(diamond).toHaveAttribute('aria-pressed', 'true')
+      fireEvent.click(diamond)
+
+      const next = onChange.mock.calls[0][0] as VisualItem
+      expect(trackFor(next, 'scaleX')).toBeUndefined()
+      expect(next.scaleX).toBe(1.5) // nothing moves
+    })
+
+    it('the per-axis boxes keyframe (in percent) when that axis is animated', () => {
+      const item = overlayItem({
+        keyframes: [{ prop: 'scaleY', points: [{ t: 0, value: 0.5 }, { t: 10, value: 2 }] }],
+      })
+      const { onPreview } = renderInspector(item, 8) // localT = 3
+
+      fireEvent.change(screen.getByLabelText('Scale Y'), { target: { value: '150' } })
+
+      const next = onPreview.mock.calls[0][0] as VisualItem
+      expect(trackFor(next, 'scaleY')!.points.find(p => p.t === 3)?.value).toBe(1.5)
+    })
+  })
+
+  describe('the header all-props actions follow the lock', () => {
+    it('keyframe-all on a UNIFORM item keys `scale` and never seeds scaleX/scaleY', () => {
+      // The whole point of the two-list split: a one-point scaleX track would
+      // shadow the `scale` track and silently freeze the uniform zoom.
+      const item = overlayItem({
+        keyframes: [{ prop: 'scale', points: [{ t: 0, value: 1 }, { t: 10, value: 2 }] }],
+      })
+      const { onChange } = renderInspector(item, 8) // localT = 3
+
+      fireEvent.click(screen.getByRole('button', { name: HEADER_DIAMOND }))
+
+      const next = onChange.mock.calls[0][0] as VisualItem
+      expect(trackFor(next, 'scale')!.points.some(p => p.t === 3)).toBe(true)
+      expect(trackFor(next, 'scaleX')).toBeUndefined()
+      expect(trackFor(next, 'scaleY')).toBeUndefined()
+      // The uniform animation still animates.
+      expect(valueAt(next, 'scaleX', 0)).toBe(1)
+      expect(valueAt(next, 'scaleX', 10)).toBe(2)
+    })
+
+    it('keyframe-all on an UNLOCKED item keys both axes and not `scale`', () => {
+      const item = overlayItem({ scaleX: 1.5, scaleY: 0.5 })
+      const { onChange } = renderInspector(item, 8) // localT = 3
+
+      fireEvent.click(screen.getByRole('button', { name: HEADER_DIAMOND }))
+
+      const next = onChange.mock.calls[0][0] as VisualItem
+      for (const prop of PER_AXIS_PROPS) {
+        expect(trackFor(next, prop)!.points.some(p => p.t === 3)).toBe(true)
+        expect(valueAt(next, prop, 3)).toBe(valueAt(item, prop, 3))
+      }
+      expect(trackFor(next, 'scale')).toBeUndefined()
+    })
+
+    it('reset-all on an UNLOCKED item resets the axes, not the shadowed `scale`', () => {
+      const item = overlayItem({ scale: 1.2, scaleX: 3, scaleY: 0.25 })
+      const { onChange } = renderInspector(item, 5)
+
+      fireEvent.click(screen.getByRole('button', { name: 'Reset transform' }))
+
+      const next = onChange.mock.calls[0][0] as VisualItem
+      expect(next.scaleX).toBe(1)
+      expect(next.scaleY).toBe(1)
+      expect(next.scale).toBe(1.2) // untouched, and shadowed anyway
+      // Reset is not a re-lock: the item stays authored per-axis.
+      expect(screen.getByRole('checkbox', { name: LOCK })).toHaveAttribute('aria-checked', 'false')
+    })
+
+    it('the header diamond reflects both axes on an unlocked item', () => {
+      const keyed = (props: KeyframeProp[]) =>
+        overlayItem({ scaleX: 1, scaleY: 1, keyframes: props.map(prop => ({ prop, points: [{ t: 0, value: 1 }] })) })
+
+      const { unmount } = renderInspector(keyed(PER_AXIS_PROPS), 5) // localT = 0
+      expect(screen.getByRole('button', { name: HEADER_DIAMOND })).toHaveAttribute('aria-pressed', 'true')
+      unmount()
+
+      // Everything but scaleY: the header must NOT read as fully keyed.
+      renderInspector(keyed(PER_AXIS_PROPS.filter(p => p !== 'scaleY')), 5)
+      expect(screen.getByRole('button', { name: HEADER_DIAMOND })).toHaveAttribute('aria-pressed', 'false')
+    })
   })
 
   it('the scale box takes a percentage and writes it back as a multiplier', () => {
@@ -742,6 +1134,46 @@ describe('OverlayInspector — align row', () => {
 
     const next = onChange.mock.calls[0][0] as VisualItem
     expect(trackFor(next, 'offsetX')!.points.find(p => p.t === 3)?.value).toBe(-25)
+  })
+
+  it('uses the X scale for horizontal alignment and the Y scale for vertical', () => {
+    // A non-uniform overlay's left edge is set by its WIDTH and its top edge by
+    // its HEIGHT, so one shared scale would put one of the two axes wrong.
+    const item = overlayItem({ scaleX: 0.5, scaleY: 0.25 })
+    const { onChange } = renderInspector(item, 5)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Align left' }))
+    expect((onChange.mock.calls[0][0] as VisualItem).offsetX).toBe(-25) // (1 - 0.5) / 2
+
+    fireEvent.click(screen.getByRole('button', { name: 'Align bottom' }))
+    expect((onChange.mock.calls[1][0] as VisualItem).offsetY).toBe(37.5) // (1 - 0.25) / 2
+  })
+
+  it('samples each axis independently mid-animation', () => {
+    const item = overlayItem({
+      scaleX: 999,
+      scaleY: 999,
+      keyframes: [
+        { prop: 'scaleX', points: [{ t: 0, value: 0.5 }, { t: 10, value: 0.5 }] },
+        { prop: 'scaleY', points: [{ t: 0, value: 0.2 }, { t: 10, value: 0.2 }] },
+      ],
+    })
+    const { onChange } = renderInspector(item, 8) // localT = 3
+
+    fireEvent.click(screen.getByRole('button', { name: 'Align right' }))
+    expect((onChange.mock.calls[0][0] as VisualItem).offsetX).toBe(25)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Align top' }))
+    expect((onChange.mock.calls[1][0] as VisualItem).offsetY).toBe(-40)
+  })
+
+  it('is unchanged for a legacy uniform item, where both axes resolve to `scale`', () => {
+    const item = overlayItem({ scale: 0.5 })
+    const { onChange } = renderInspector(item, 5)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Align top' }))
+
+    expect((onChange.mock.calls[0][0] as VisualItem).offsetY).toBe(-25)
   })
 })
 

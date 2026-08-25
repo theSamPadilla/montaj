@@ -19,22 +19,30 @@ import {
   disableKeyframing,
   enableKeyframing,
   hasKeyframes,
+  isUniformScale,
   removeKeyframe,
   setKeyframe,
   trackFor,
+  transformProps,
   valueAt,
+  canKeyframeProp,
 } from './keyframeOps'
 import { usePlaybackTime, type PlaybackClock } from './playback-clock'
 import { cn, inspectorInputClass } from '../ui'
 
 /**
  * `<OverlayInspector>` — the editor's contextual right-hand **Transform**
- * properties panel for the selected overlay. One collapsible section holding
- * the five keyframeable transform props (offsetX/offsetY/scale/rotation/
- * opacity) as a scale slider + X/Y boxes, a position pair, a rotation box
- * with a circular dial, an opacity box, and a six-button align row — plus a
- * per-property keyframe unit (`‹ ◇ ›`) and an all-properties one in the
- * section header.
+ * properties panel for the selected overlay. One section holding the
+ * keyframeable transform props as a scale slider + percent box, a
+ * position pair, a rotation box with a circular dial, an opacity box, and a
+ * six-button align row — plus a per-property keyframe unit (`‹ ◇ ›`) and an
+ * all-properties one in the section header.
+ *
+ * WHICH props those are depends on the item: an overlay scaled uniformly
+ * carries `scale`, one scaled per-axis carries `scaleX`/`scaleY` instead, and
+ * the Uniform-scale toggle moves an item between the two. See `uniform` and
+ * `allProps` below — that split runs through the header actions as well as
+ * the Scale row itself.
  *
  * Every control obeys the SAME CapCut-style auto-keyframe rule, factored into
  * {@link writeProp}: editing a prop that's already keyframed drops a keyframe
@@ -61,7 +69,8 @@ export interface OverlayInspectorProps {
    *  instead of the whole editor (see playback-clock.ts's doc comment). */
   clock: PlaybackClock
   /** Live-preview a continuously-typed edit: no undo entry, no save yet.
-   *  Mirrors OverlayPropsModal's onPreview / VideoEditor's previewOverlayProps. */
+   *  The same contract the Content tab's fields use (OverlayContentPanel) —
+   *  both routed through VideoEditor's previewOverlayProps. */
   onPreview: (item: VisualItem) => void
   /** Commit the last previewed edit as one undo step + queued save. Fired on
    *  the number input's blur, closing the typing gesture. */
@@ -97,13 +106,11 @@ const ROWS: Record<KeyframeProp, RowSpec> = {
   offsetX:  { prop: 'offsetX',  name: 'Offset X', step: 1 },
   offsetY:  { prop: 'offsetY',  name: 'Offset Y', step: 1 },
   scale:    { prop: 'scale',    name: 'Scale',    step: 0.01, min: 0.01 },
+  scaleX:   { prop: 'scaleX',   name: 'Scale X',  step: 0.01, min: 0.01 },
+  scaleY:   { prop: 'scaleY',   name: 'Scale Y',  step: 0.01, min: 0.01 },
   rotation: { prop: 'rotation', name: 'Rotation', step: 1 },
   opacity:  { prop: 'opacity',  name: 'Opacity',  step: 0.01, min: 0, max: 1 },
 }
-
-/** Every prop this panel edits, in the order the header's all-props actions
- *  (reset, keyframe-all) walk them. */
-const ALL_PROPS: KeyframeProp[] = ['offsetX', 'offsetY', 'scale', 'rotation', 'opacity']
 
 /** Identity transform. Kept in step with `geometryAt`'s defaults in
  *  `@bycrux/timeline-core` — the same values `valueAt` falls back to when a
@@ -112,6 +119,8 @@ const DEFAULTS: Record<KeyframeProp, number> = {
   offsetX: 0,
   offsetY: 0,
   scale: 1,
+  scaleX: 1,
+  scaleY: 1,
   rotation: 0,
   opacity: 1,
 }
@@ -138,11 +147,50 @@ function writeProp(item: VisualItem, prop: KeyframeProp, localT: number, value: 
     : { ...item, [prop]: value }
 }
 
+/**
+ * Remove one per-axis scale from `item` ENTIRELY — the static scalar AND any
+ * keyframe track — so the resolver falls back to uniform `scale` again.
+ *
+ * The one write in this panel that does NOT go through {@link writeProp}, and
+ * it cannot: `writeProp` writes VALUES, and no value of `scaleX` means
+ * "absent" — 1 still shadows a `scale` of 1.2. `disableKeyframing` is no help
+ * either despite dropping the track, because its whole job is to write the
+ * sampled value into the static scalar so nothing jumps, and that scalar is
+ * exactly the field that has to go.
+ *
+ * Peeling the points off with `removeKeyframe` IS the documented way to drop a
+ * track without that scalar write: its last-point branch routes through
+ * `withTrack`, which removes the track (and `item.keyframes` itself when it
+ * was the last one). The `delete` then clears the scalar off a COPY — the
+ * input item is never mutated, matching keyframeOps' contract.
+ *
+ * Returns the same item when there was nothing to clear, so reference equality
+ * still tells a caller a no-op happened.
+ */
+function clearScaleAxis(item: VisualItem, prop: 'scaleX' | 'scaleY'): VisualItem {
+  let next = item
+  // Times read off the ORIGINAL track, which `removeKeyframe` never mutates;
+  // each `t` is distinct (normalizeTrack's invariant) so one pass clears all.
+  for (const point of trackFor(item, prop)?.points ?? []) next = removeKeyframe(next, prop, point.t)
+  if (next[prop] === undefined) return next
+  const stripped = { ...next }
+  delete stripped[prop]
+  return stripped
+}
+
 /** The offset (percent of frame) that puts the overlay's edge on the frame's
  *  edge for `edge` = -1 (left/top), 0 (center/middle), +1 (right/bottom).
  *  Mirrors useDragOverlay's edge-snap: an overlay at scale >= 1 already covers
  *  the frame, so it has no edge to align to and every alignment collapses to
- *  centered rather than pushing it further off-frame. */
+ *  centered rather than pushing it further off-frame.
+ *
+ *  PER-AXIS by the caller, not by this function: `scale` is whichever axis'
+ *  scale the alignment being computed runs along — `scaleX` for the
+ *  left/center/right buttons (which write `offsetX`, a percent of frame
+ *  WIDTH), `scaleY` for top/middle/bottom. Keeping the signature one scalar
+ *  rather than taking the whole geometry keeps this a self-contained bit of
+ *  arithmetic the tests can drive directly; the axis choice lives at the one
+ *  call site, in the align button map. */
 export function alignedOffset(scale: number, edge: -1 | 0 | 1): number {
   const magnitude = Math.max(0, (0.5 - scale / 2) * 100)
   // The `+ 0` normalizes the NEGATIVE zero `-1 * 0` produces at scale >= 1.
@@ -286,6 +334,10 @@ interface KeyframeNavProps {
   onPrev: () => void
   onNext: () => void
   onDiamond: () => void
+  /** Greys the diamond out — the property exists but cannot be keyframed here. */
+  diamondDisabled?: boolean
+  /** Tooltip explaining WHY, shown only when disabled. */
+  diamondReason?: string
 }
 
 /** The `‹ ◇ ›` unit: step to the previous/next keyframe, and toggle the
@@ -293,6 +345,7 @@ interface KeyframeNavProps {
  *  all-props variant — lays out and labels the three controls identically. */
 function KeyframeNav({
   prevLabel, nextLabel, diamondLabel, pressed, canPrev, canNext, onPrev, onNext, onDiamond,
+  diamondDisabled = false, diamondReason,
 }: KeyframeNavProps) {
   return (
     <div className="flex shrink-0 items-center gap-0.5">
@@ -303,12 +356,20 @@ function KeyframeNav({
         type="button"
         aria-label={diamondLabel}
         aria-pressed={pressed}
+        aria-disabled={diamondDisabled || undefined}
+        disabled={diamondDisabled}
+        title={diamondReason}
         onClick={onDiamond}
         className={cn(
           'flex h-5 w-5 shrink-0 items-center justify-center rounded transition-colors',
-          pressed
-            ? 'text-[var(--editor-accent)]'
-            : 'text-[var(--editor-text)]/40 hover:text-[var(--editor-text)]/70',
+          // DISABLED, not hidden. A control that vanishes reads as a bug and
+          // invites a support question; one that is visibly unavailable and
+          // says why reads as a limitation, which is what it is.
+          diamondDisabled
+            ? 'cursor-not-allowed text-[var(--editor-text)]/20'
+            : pressed
+              ? 'text-[var(--editor-accent)]'
+              : 'text-[var(--editor-text)]/40 hover:text-[var(--editor-text)]/70',
         )}
       >
         <Diamond size={11} fill={pressed ? 'currentColor' : 'none'} />
@@ -519,6 +580,44 @@ function NumberCell({ row, name = row.name, prefix, value, onInput, onCommit, on
   )
 }
 
+/** A scale number box with its `%` suffix and stepper. Scale is shown as a
+ *  PERCENTAGE (CapCut: 1 => 100%) while the stored scalar stays a multiplier,
+ *  so only what is typed and displayed converts — `value` and `onStep` are
+ *  still multiplier-side, exactly as the slider and `handleStep` always were.
+ *  One component rather than the inline markup this used to be, because the
+ *  unlocked Scale X / Scale Y rows have to convert, bound and step identically
+ *  to the locked `Scale` row; three copies of the `* 100` would drift. */
+function ScalePercentCell({
+  row, value, onInput, onCommit, onStep,
+}: {
+  row: RowSpec
+  value: number
+  onInput: (raw: string) => void
+  onCommit: () => void
+  onStep: (direction: 1 | -1) => void
+}) {
+  return (
+    <div className="flex shrink-0 items-center gap-1">
+      <OverlayInspectorField
+        id={`overlay-inspector-${row.name.replace(/\s+/g, '-').toLowerCase()}`}
+        name={row.name}
+        // Percent-side bounds, matching the slider's span. Deliberately NOT
+        // ROWS.scale*'s multiplier `step`/`min`, which are what the STEPPER
+        // works in.
+        step={1}
+        min={5}
+        max={400}
+        value={Math.round(value * 100)}
+        onInput={onInput}
+        onCommit={onCommit}
+        className="h-7 w-12 px-1.5 text-xs"
+      />
+      <span aria-hidden="true" className="text-[10px] text-[var(--editor-text)]/40">%</span>
+      <Stepper name={row.name} onStep={onStep} />
+    </div>
+  )
+}
+
 const SECTION_CLASS = 'shrink-0 border-b border-[var(--editor-border)] flex flex-col overflow-hidden'
 
 export default function OverlayInspector({ item, clock, onPreview, onCommit, onChange, onSeek }: OverlayInspectorProps) {
@@ -526,9 +625,6 @@ export default function OverlayInspector({ item, clock, onPreview, onCommit, onC
   // cheap: this component renders nothing else, so a tick that turns out to
   // target a non-overlay/no selection still only re-runs this one function.
   const playhead = usePlaybackTime(clock)
-  // Held on the OUTER component so collapsing the section survives a change
-  // of selection — the operator's chrome preference, not the item's state.
-  const [collapsed, setCollapsed] = useState(false)
 
   if (!canKeyframe(item)) {
     return (
@@ -556,16 +652,31 @@ export default function OverlayInspector({ item, clock, onPreview, onCommit, onC
   const localT = Math.min(Math.max(0, playhead - target.start), Math.max(0, target.end - target.start))
 
   // Every prop's value at the playhead, sampled ONCE off the incoming item.
-  // The header's all-props actions thread five writes through one another, so
-  // they must read from this snapshot rather than re-sampling a partially
-  // written item — otherwise one prop's write could perturb another's value.
+  // The header's all-props actions thread five or six writes through one
+  // another, so they must read from this snapshot rather than re-sampling a
+  // partially written item — otherwise one prop's write could perturb
+  // another's value. `scaleX`/`scaleY` are always populated even on a uniform
+  // item: `geometryAt` resolves them through `scale`, so they read as the
+  // overlay's actual per-axis size whether or not it carries the fields.
   const sampled: Record<KeyframeProp, number> = {
     offsetX: valueAt(target, 'offsetX', localT),
     offsetY: valueAt(target, 'offsetY', localT),
     scale: valueAt(target, 'scale', localT),
+    scaleX: valueAt(target, 'scaleX', localT),
+    scaleY: valueAt(target, 'scaleY', localT),
     rotation: valueAt(target, 'rotation', localT),
     opacity: valueAt(target, 'opacity', localT),
   }
+
+  // Which scale the item is actually authored in, and therefore which prop
+  // list every all-props action walks. Both are DERIVED from the item on each
+  // render, never held in `useState`, like every other value this panel shows:
+  // this component is reconciled in place across selection changes, so state
+  // would keep answering for the previously selected overlay. The rule itself
+  // lives in keyframeOps — the canvas timeline's double-click-to-key gesture
+  // needs exactly the same answer, and two copies of it would drift.
+  const uniform = isUniformScale(target)
+  const allProps = transformProps(target)
 
   /** Continuous gesture step — no undo entry yet. */
   function preview(prop: KeyframeProp, value: number) {
@@ -599,7 +710,7 @@ export default function OverlayInspector({ item, clock, onPreview, onCommit, onC
   }
 
   /** Ascending, de-duplicated keyframe times across `props`. */
-  function keyframeTimes(props: KeyframeProp[]): number[] {
+  function keyframeTimes(props: readonly KeyframeProp[]): number[] {
     const times = new Set<number>()
     for (const prop of props) for (const point of trackFor(target, prop)?.points ?? []) times.add(point.t)
     return [...times].sort((a, b) => a - b)
@@ -609,7 +720,7 @@ export default function OverlayInspector({ item, clock, onPreview, onCommit, onC
    *  ABSOLUTE timeline time (`item.start + t`) — keyframe `t` is item-relative
    *  (see Keyframe.t) and the clock is not. Without `onSeek` they render
    *  disabled rather than silently doing nothing. */
-  function navFor(props: KeyframeProp[]) {
+  function navFor(props: readonly KeyframeProp[]) {
     const times = keyframeTimes(props)
     let prev: number | undefined
     for (const t of times) if (t < localT) prev = t // ascending, so the last one under localT wins
@@ -626,12 +737,12 @@ export default function OverlayInspector({ item, clock, onPreview, onCommit, onC
    *  what the header diamond reflects, and the branch its click takes. Note
    *  this is a stricter test than the per-row diamonds' `hasKeyframes`, which
    *  only asks whether the prop is animated at all. */
-  const allKeyed = ALL_PROPS.every(prop => (trackFor(target, prop)?.points ?? []).some(p => p.t === localT))
+  const allKeyed = allProps.every(prop => (trackFor(target, prop)?.points ?? []).some(p => p.t === localT))
 
   function handleKeyframeAll() {
     let next = target
     if (allKeyed) {
-      for (const prop of ALL_PROPS) {
+      for (const prop of allProps) {
         const points = trackFor(next, prop)?.points ?? []
         // The distinction matters. `removeKeyframe` on a track's LAST point
         // drops the track WITHOUT writing the sampled value into the static
@@ -645,10 +756,10 @@ export default function OverlayInspector({ item, clock, onPreview, onCommit, onC
           : disableKeyframing(next, prop, localT)
       }
     } else {
-      for (const prop of ALL_PROPS) {
+      for (const prop of allProps) {
         // `enableKeyframing` is a documented NO-OP on an already-keyframed
-        // prop, so it is safe to run across all five unconditionally; it only
-        // seeds a track for the ones that had none. `setKeyframe` then pins
+        // prop, so it is safe to run across the whole list unconditionally; it
+        // only seeds a track for the ones that had none. `setKeyframe` then pins
         // the CURRENT value at the playhead on every prop, animated or not.
         // Values come from `sampled` (read off the original item), so nothing
         // on screen moves and no write perturbs another's sample.
@@ -661,7 +772,8 @@ export default function OverlayInspector({ item, clock, onPreview, onCommit, onC
   // Position (offsetX + offsetY) keyed as a pair — CapCut shows one diamond for
   // Position, so the row animates/toggles both axes together, with the same
   // enable/disable rule the per-row diamonds use (handleToggle). Kept separate
-  // from handleKeyframeAll so that ALL_PROPS path is untouched.
+  // from handleKeyframeAll so that the all-props path (`transformProps(item)`,
+  // which varies with the uniform-scale lock) is untouched.
   const positionProps: KeyframeProp[] = ['offsetX', 'offsetY']
   const positionKeyed = positionProps.every(prop => hasKeyframes(target, prop))
 
@@ -674,13 +786,49 @@ export default function OverlayInspector({ item, clock, onPreview, onCommit, onC
   }
 
   // Scale is shown as a PERCENTAGE (CapCut: 1 => 100%). The box reports percent;
-  // the stored `scale` scalar stays a multiplier, so convert on the way in. The
-  // slider and stepper stay on the multiplier (ScaleSlider / handleStep).
-  function handleScalePercent(raw: string) {
+  // the stored scalar stays a multiplier, so convert on the way in. The slider
+  // and stepper stay on the multiplier (ScaleSlider / handleStep). Takes the
+  // prop so the unlocked per-axis boxes convert through the same path as the
+  // locked one instead of a second copy of the `/ 100`.
+  function handleScalePercent(prop: 'scale' | 'scaleX' | 'scaleY', raw: string) {
     if (raw === '' || raw === '-') return // mid-typing — nothing finite yet
     const pct = Number(raw)
     if (!Number.isFinite(pct)) return
-    preview('scale', pct / 100)
+    preview(prop, pct / 100)
+  }
+
+  /**
+   * Move the item between uniform `scale` and per-axis `scaleX`/`scaleY`. One
+   * discrete edit either way — one undo entry, no separate commit.
+   *
+   * Both directions route their VALUE write through `writeProp`, so the panel's
+   * auto-keyframe rule applies here exactly as it does to typing in a box: a
+   * prop that is already animated gets a keyframe at the playhead rather than a
+   * silently-detaching static scalar.
+   */
+  function handleUniformToggle() {
+    if (uniform) {
+      // ON -> OFF (unlocking). Seed BOTH axes from `sampled.scale` — the scale
+      // the overlay actually has at the playhead, animated value included, not
+      // the raw `item.scale` — so the instant the lock opens nothing moves.
+      // Once `scaleX`/`scaleY` exist they shadow `scale` entirely, which is
+      // precisely why they have to be seeded rather than left absent.
+      let next = writeProp(target, 'scaleX', localT, sampled.scale)
+      next = writeProp(next, 'scaleY', localT, sampled.scale)
+      onChange(next)
+      return
+    }
+    // OFF -> ON (locking). Two numbers have to collapse into one and X WINS.
+    // That is arbitrary — Y would have been just as defensible — but it is
+    // CHOSEN and stable, not accidental: the operator can read the surviving
+    // number off the Scale X box before clicking, and locking always means the
+    // same thing. Then both per-axis fields are cleared outright, tracks and
+    // all (see clearScaleAxis), because merely writing them equal would leave
+    // them shadowing `scale` and the row would have nothing to lock TO.
+    let next = writeProp(target, 'scale', localT, sampled.scaleX)
+    next = clearScaleAxis(next, 'scaleX')
+    next = clearScaleAxis(next, 'scaleY')
+    onChange(next)
   }
 
   function handleReset() {
@@ -690,11 +838,15 @@ export default function OverlayInspector({ item, clock, onPreview, onCommit, onC
     // non-destructive rule every other control in this panel follows, and it
     // keeps "reset" from silently discarding an animation the operator spent
     // real time on. Clearing a track is the per-row diamond's job.
-    for (const prop of ALL_PROPS) next = writeProp(next, prop, localT, DEFAULTS[prop])
+    // Walks `allProps`, so an unlocked item resets `scaleX`/`scaleY` to 1 and
+    // leaves the shadowed `scale` alone. Reset does not re-lock: the lock is
+    // the operator's own choice about how this overlay is authored, not a
+    // transform value with a default.
+    for (const prop of allProps) next = writeProp(next, prop, localT, DEFAULTS[prop])
     onChange(next)
   }
 
-  const headerNav = navFor(ALL_PROPS)
+  const headerNav = navFor(allProps)
   const positionNav = navFor(positionProps)
 
   /** The `‹ ◇ ›` unit for one row. */
@@ -702,6 +854,10 @@ export default function OverlayInspector({ item, clock, onPreview, onCommit, onC
     const row = ROWS[prop]
     const nav = navFor([prop])
     const keyframed = hasKeyframes(target, prop)
+    // Per-property, per-kind: a clip animates position/scale/rotation but not
+    // opacity, because ffmpeg's `colorchannelmixer aa` takes a <double> and no
+    // expression. See canKeyframeProp for the full reason.
+    const allowed = canKeyframeProp(target, prop)
     return (
       <KeyframeNav
         prevLabel={`Previous ${row.name} keyframe`}
@@ -713,11 +869,14 @@ export default function OverlayInspector({ item, clock, onPreview, onCommit, onC
         onPrev={nav.onPrev}
         onNext={nav.onNext}
         onDiamond={() => handleToggle(prop)}
+        diamondDisabled={!allowed}
+        diamondReason={allowed ? undefined
+          : `${row.name} cannot be animated on a video or image clip. The export has no way to vary it over time. Overlays can.`}
       />
     )
   }
 
-  const alignButtons: { label: string; icon: ComponentType<{ size?: number }>; prop: KeyframeProp; edge: -1 | 0 | 1 }[] = [
+  const alignButtons: { label: string; icon: ComponentType<{ size?: number }>; prop: 'offsetX' | 'offsetY'; edge: -1 | 0 | 1 }[] = [
     { label: 'Align left',   icon: AlignStartVertical,    prop: 'offsetX', edge: -1 },
     { label: 'Align center', icon: AlignCenterVertical,   prop: 'offsetX', edge: 0 },
     { label: 'Align right',  icon: AlignEndVertical,      prop: 'offsetX', edge: 1 },
@@ -729,15 +888,9 @@ export default function OverlayInspector({ item, clock, onPreview, onCommit, onC
   return (
     <div className={SECTION_CLASS}>
       <div className="shrink-0 flex items-center gap-1 border-b border-[var(--editor-border)] px-2 py-1.5">
-        <button
-          type="button"
-          aria-expanded={!collapsed}
-          onClick={() => setCollapsed(c => !c)}
-          className="flex items-center gap-1 rounded px-1 py-0.5 text-[var(--editor-text)]/60 transition-colors hover:text-[var(--editor-text)]"
-        >
-          {collapsed ? <ChevronRight size={12} /> : <ChevronDown size={12} />}
-          <span className="text-xs font-medium uppercase tracking-wide">Transform</span>
-        </button>
+        <span className="px-1 py-0.5 text-xs font-medium uppercase tracking-wide text-[var(--editor-text)]/60">
+          Transform
+        </span>
         <div className="ml-auto flex items-center gap-1">
           <IconButton label="Reset transform" title="Reset every transform property to its default" onClick={handleReset}>
             <RotateCcw size={12} />
@@ -756,13 +909,23 @@ export default function OverlayInspector({ item, clock, onPreview, onCommit, onC
         </div>
       </div>
 
-      {!collapsed && (
-        <div className="flex flex-col gap-2 p-2">
-          {/* ── Scale ─────────────────────────────────────────────────────
-              One row (CapCut): slider + a PERCENTAGE value (1 => 100%) +
-              stepper + keyframe unit. The box reports percent while the stored
-              `scale` scalar stays a multiplier; handleScalePercent converts.
-              The uniform-scale lock is its own labelled toggle row below. */}
+      <div className="flex flex-col gap-2 p-2">
+        {/* ── Scale ─────────────────────────────────────────────────────
+            LOCKED (the default, and every legacy overlay): one row (CapCut)
+            — slider + a PERCENTAGE value (1 => 100%) + stepper + keyframe
+            unit, all writing the uniform `scale`.
+
+            UNLOCKED: that row splits per axis into Scale X / Scale Y, each
+            writing its own prop and carrying its OWN keyframe unit (they
+            animate independently, so one shared diamond would be a lie).
+            Two rows rather than both boxes crammed into one: the Position
+            row already fills the 300px default rail with two boxes and a
+            SINGLE shared keyframe unit, and a second unit does not fit
+            beside them. Each row is otherwise the Rotate/Opacity row
+            verbatim — label, cell, keyframe unit pushed right. The slider
+            is dropped while unlocked; it drives one number and there are
+            two. */}
+        {uniform ? (
           <div className="flex items-center gap-2">
             <span className={ROW_LABEL_CLASS}>Scale</span>
             <ScaleSlider
@@ -770,134 +933,157 @@ export default function OverlayInspector({ item, clock, onPreview, onCommit, onC
               onPreview={v => preview('scale', v)}
               onCommit={onCommit}
             />
-            <div className="flex shrink-0 items-center gap-1">
-              <OverlayInspectorField
-                id="overlay-inspector-scale"
-                name="Scale"
-                step={1}
-                min={5}
-                max={400}
-                value={Math.round(sampled.scale * 100)}
-                onInput={handleScalePercent}
-                onCommit={onCommit}
-                className="h-7 w-12 px-1.5 text-xs"
-              />
-              <span aria-hidden="true" className="text-[10px] text-[var(--editor-text)]/40">%</span>
-              <Stepper name="Scale" onStep={d => handleStep(ROWS.scale, d)} />
-            </div>
+            <ScalePercentCell
+              row={ROWS.scale}
+              value={sampled.scale}
+              onInput={raw => handleScalePercent('scale', raw)}
+              onCommit={onCommit}
+              onStep={d => handleStep(ROWS.scale, d)}
+            />
             {rowNav('scale')}
           </div>
-
-          {/* ── Uniform scale ─────────────────────────────────────────────
-              Its own labelled toggle row (CapCut) instead of a bare link icon.
-              Permanently on and disabled while the schema has one uniform
-              `scale`; scaleX/scaleY (a follow-up) unlocks it. */}
-          <div className="flex items-center gap-2">
-            <span className="shrink-0 text-[11px] text-[var(--editor-text)]/55">Uniform scale</span>
-            <button
-              type="button"
-              role="checkbox"
-              aria-checked="true"
-              aria-disabled="true"
-              aria-label="Uniform scale"
-              title="Width and height scale together"
-              disabled
-              className="ml-auto relative h-4 w-7 shrink-0 rounded-full bg-[var(--editor-accent)] opacity-60"
-            >
-              <span className="absolute right-0.5 top-0.5 h-3 w-3 rounded-full bg-white" />
-            </button>
-          </div>
-
-          {/* ── Position ───────────────────────────────────────────────────
-              X and Y with ONE keyframe unit for the pair on the right (CapCut),
-              not a diamond crammed in after each axis. */}
-          <div className="flex items-center gap-2">
-            <span className={ROW_LABEL_CLASS}>Position</span>
-            <NumberCell
-              row={ROWS.offsetX}
-              prefix="X"
-              value={sampled.offsetX}
-              onInput={raw => handleInput('offsetX', raw)}
-              onCommit={onCommit}
-              onStep={d => handleStep(ROWS.offsetX, d)}
-            />
-            <NumberCell
-              row={ROWS.offsetY}
-              prefix="Y"
-              value={sampled.offsetY}
-              onInput={raw => handleInput('offsetY', raw)}
-              onCommit={onCommit}
-              onStep={d => handleStep(ROWS.offsetY, d)}
-            />
-            <div className="ml-auto">
-              <KeyframeNav
-                prevLabel="Previous Position keyframe"
-                nextLabel="Next Position keyframe"
-                diamondLabel={positionKeyed ? 'Remove Position keyframe at playhead' : 'Add Position keyframe at playhead'}
-                pressed={positionKeyed}
-                canPrev={positionNav.canPrev}
-                canNext={positionNav.canNext}
-                onPrev={positionNav.onPrev}
-                onNext={positionNav.onNext}
-                onDiamond={handlePositionToggle}
+        ) : (
+          (['scaleX', 'scaleY'] as const).map(prop => (
+            <div key={prop} className="flex items-center gap-2">
+              <span className={ROW_LABEL_CLASS}>{ROWS[prop].name}</span>
+              <ScalePercentCell
+                row={ROWS[prop]}
+                value={sampled[prop]}
+                onInput={raw => handleScalePercent(prop, raw)}
+                onCommit={onCommit}
+                onStep={d => handleStep(ROWS[prop], d)}
               />
+              <div className="ml-auto">{rowNav(prop)}</div>
             </div>
-          </div>
+          ))
+        )}
 
-          {/* ── Rotate ───────────────────────────────────────────────────── */}
-          <div className="flex items-center gap-2">
-            <span className={ROW_LABEL_CLASS}>Rotate</span>
-            <NumberCell
-              row={ROWS.rotation}
-              value={sampled.rotation}
-              onInput={raw => handleInput('rotation', raw)}
-              onCommit={onCommit}
-              onStep={d => handleStep(ROWS.rotation, d)}
+        {/* ── Uniform scale ─────────────────────────────────────────────
+            Its own labelled toggle row (CapCut) instead of a bare link icon.
+            ON means the item scales through one uniform `scale`; turning it
+            off splits that into `scaleX`/`scaleY`, and back on collapses
+            them again — see handleUniformToggle for both tiebreaks. The
+            state is DERIVED from the item (isUniform), never held here, so
+            selecting a different overlay shows that overlay's answer.
+            `role="checkbox"` on a <button> is keyboard-operable natively
+            (Space/Enter both fire click), so it needs no key handler of its
+            own — only a visible focus ring. */}
+        <div className="flex items-center gap-2">
+          <span className="shrink-0 text-[11px] text-[var(--editor-text)]/55">Uniform scale</span>
+          <button
+            type="button"
+            role="checkbox"
+            aria-checked={uniform}
+            aria-label="Uniform scale"
+            title={uniform ? 'Width and height scale together' : 'Width and height scale independently'}
+            onClick={handleUniformToggle}
+            className={cn(
+              'ml-auto relative h-4 w-7 shrink-0 rounded-full outline-none transition-colors focus-visible:ring-1 focus-visible:ring-[var(--editor-accent)] focus-visible:ring-offset-1 focus-visible:ring-offset-[var(--editor-surface)]',
+              uniform ? 'bg-[var(--editor-accent)]' : 'bg-[var(--editor-border)]',
+            )}
+          >
+            <span
+              className={cn(
+                'absolute top-0.5 h-3 w-3 rounded-full bg-white transition-all',
+                uniform ? 'right-0.5' : 'left-0.5',
+              )}
             />
-            <RotationDial
-              rotation={sampled.rotation}
-              onPreview={deg => preview('rotation', deg)}
-              onCommit={onCommit}
-              onChange={deg => commitDiscrete('rotation', deg)}
-            />
-            <div className="ml-auto">{rowNav('rotation')}</div>
-          </div>
+          </button>
+        </div>
 
-          {/* ── Opacity ──────────────────────────────────────────────────── */}
-          <div className="flex items-center gap-2">
-            <span className={ROW_LABEL_CLASS}>Opacity</span>
-            <NumberCell
-              row={ROWS.opacity}
-              value={sampled.opacity}
-              onInput={raw => handleInput('opacity', raw)}
-              onCommit={onCommit}
-              onStep={d => handleStep(ROWS.opacity, d)}
+        {/* ── Position ───────────────────────────────────────────────────
+            X and Y with ONE keyframe unit for the pair on the right (CapCut),
+            not a diamond crammed in after each axis. */}
+        <div className="flex items-center gap-2">
+          <span className={ROW_LABEL_CLASS}>Position</span>
+          <NumberCell
+            row={ROWS.offsetX}
+            prefix="X"
+            value={sampled.offsetX}
+            onInput={raw => handleInput('offsetX', raw)}
+            onCommit={onCommit}
+            onStep={d => handleStep(ROWS.offsetX, d)}
+          />
+          <NumberCell
+            row={ROWS.offsetY}
+            prefix="Y"
+            value={sampled.offsetY}
+            onInput={raw => handleInput('offsetY', raw)}
+            onCommit={onCommit}
+            onStep={d => handleStep(ROWS.offsetY, d)}
+          />
+          <div className="ml-auto">
+            <KeyframeNav
+              prevLabel="Previous Position keyframe"
+              nextLabel="Next Position keyframe"
+              diamondLabel={positionKeyed ? 'Remove Position keyframe at playhead' : 'Add Position keyframe at playhead'}
+              pressed={positionKeyed}
+              canPrev={positionNav.canPrev}
+              canNext={positionNav.canNext}
+              onPrev={positionNav.onPrev}
+              onNext={positionNav.onNext}
+              onDiamond={handlePositionToggle}
             />
-            <div className="ml-auto">{rowNav('opacity')}</div>
-          </div>
-
-          {/* ── Align ────────────────────────────────────────────────────── */}
-          <div className="flex items-center gap-2">
-            <span className={ROW_LABEL_CLASS}>Align</span>
-            {[alignButtons.slice(0, 3), alignButtons.slice(3)].map((group, i) => (
-              <div key={i} className="flex items-center gap-0.5">
-                {group.map(({ label, icon: Icon, prop, edge }) => (
-                  <IconButton
-                    key={label}
-                    label={label}
-                    // The CURRENT sampled scale, not the raw `item.scale`, so
-                    // aligning mid-animation snaps to the edge the overlay
-                    // actually has at the playhead.
-                    onClick={() => commitDiscrete(prop, alignedOffset(sampled.scale, edge))}
-                  >
-                    <Icon size={12} />
-                  </IconButton>
-                ))}
-              </div>
-            ))}
           </div>
         </div>
-      )}
+
+        {/* ── Rotate ───────────────────────────────────────────────────── */}
+        <div className="flex items-center gap-2">
+          <span className={ROW_LABEL_CLASS}>Rotate</span>
+          <NumberCell
+            row={ROWS.rotation}
+            value={sampled.rotation}
+            onInput={raw => handleInput('rotation', raw)}
+            onCommit={onCommit}
+            onStep={d => handleStep(ROWS.rotation, d)}
+          />
+          <RotationDial
+            rotation={sampled.rotation}
+            onPreview={deg => preview('rotation', deg)}
+            onCommit={onCommit}
+            onChange={deg => commitDiscrete('rotation', deg)}
+          />
+          <div className="ml-auto">{rowNav('rotation')}</div>
+        </div>
+
+        {/* ── Opacity ──────────────────────────────────────────────────── */}
+        <div className="flex items-center gap-2">
+          <span className={ROW_LABEL_CLASS}>Opacity</span>
+          <NumberCell
+            row={ROWS.opacity}
+            value={sampled.opacity}
+            onInput={raw => handleInput('opacity', raw)}
+            onCommit={onCommit}
+            onStep={d => handleStep(ROWS.opacity, d)}
+          />
+          <div className="ml-auto">{rowNav('opacity')}</div>
+        </div>
+
+        {/* ── Align ────────────────────────────────────────────────────── */}
+        <div className="flex items-center gap-2">
+          <span className={ROW_LABEL_CLASS}>Align</span>
+          {[alignButtons.slice(0, 3), alignButtons.slice(3)].map((group, i) => (
+            <div key={i} className="flex items-center gap-0.5">
+              {group.map(({ label, icon: Icon, prop, edge }) => (
+                <IconButton
+                  key={label}
+                  label={label}
+                  // The CURRENT sampled scale, not the raw scalar, so
+                  // aligning mid-animation snaps to the edge the overlay
+                  // actually has at the playhead — and the scale of the axis
+                  // being aligned, since a non-uniform overlay's left edge is
+                  // set by its WIDTH and its top edge by its HEIGHT. On a
+                  // uniform item both sample back to `scale`, so legacy
+                  // overlays align exactly as before.
+                  onClick={() => commitDiscrete(prop, alignedOffset(prop === 'offsetX' ? sampled.scaleX : sampled.scaleY, edge))}
+                >
+                  <Icon size={12} />
+                </IconButton>
+              ))}
+            </div>
+          ))}
+        </div>
+      </div>
     </div>
   )
 }

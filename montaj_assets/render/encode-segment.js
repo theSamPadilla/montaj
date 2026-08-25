@@ -36,7 +36,9 @@ import { dirname } from 'path'
 import { FFMPEG, FFPROBE } from './ffmpeg-bin.js'
 import { specFor, detectFromTransfer, DEFAULT_COLOR_SPACE } from './color-space.js'
 import { lutPath } from './look.js'
-import { geometryFor, toRotatedPixelBox } from '@bycrux/timeline-core'
+import {
+  geometryFor, geometryAt, toRotatedPixelBox, toPixelBox, compileTrackExprInfo,
+} from '@bycrux/timeline-core'
 
 const FFMPEG_TIMEOUT_MS = 600_000
 const IMAGE_EXTENSIONS = /\.(jpe?g|png|gif|webp|bmp|tiff?)$/i
@@ -271,6 +273,236 @@ export function buildColorConversionFilter(srcKey, dstKey, hasZscaleFlag, opts =
  * @param {boolean} [alphaPin=false] — true on the video path only.
  * @returns {string} `''`, or `,[format=yuva420p,]rotate=…`
  */
+/**
+ * ANIMATED-ITEM GEOMETRY — the keyframed sibling of `toRotatedPixelBox`.
+ *
+ * Returns `null` for an item with no keyframes, which is what keeps the static
+ * path byte-identical: every caller below branches on this being null and
+ * otherwise emits exactly the strings it always has.
+ *
+ * ── Why the filter chain changes shape, and not just its numbers ────────────
+ *
+ * Three filters in the existing chain CANNOT accept a variable-size input, and
+ * all three fail SILENTLY — no ffmpeg warning, roughly the right picture at
+ * small deltas, visibly wrong at the extremes (measured; see the SP9d spike):
+ *
+ *   1. `rotate` configures against its first frame and mis-scales every
+ *      resized frame after it. An animated ANGLE alone is fine; it is the
+ *      changing frame SIZE that breaks it.
+ *   2. The colour conversion (`zscale` + `lut3d`) does the same. That is the
+ *      path every HDR source takes, i.e. the common one, not an edge case.
+ *   3. `pad` exposes NO `t` and no `n` even at `eval=frame` — its whole
+ *      vocabulary is geometric (`iw ih ow oh a sar dar x y`) — so it cannot be
+ *      driven from a curve at all.
+ *
+ * So the animated chain keeps every size-sensitive filter on a CONSTANT frame
+ * and does the varying resize afterwards. `scale` and `pad` still run at their
+ * usual place in the order, just sized to the PEAK box the item ever reaches
+ * rather than to its current one, and a second `scale` — the animated one —
+ * follows the pad:
+ *
+ *     crop → scale(STATIC, peak box) → convert → pad(STATIC, peak box)
+ *          → scale(ANIMATED)  [→ pad(peak, transparent) → rotate]  → overlay
+ *
+ * `pad` therefore still sits AFTER the conversion, which is the rule the
+ * step-order comment in buildVideoItemFilterParts exists to protect: its bars
+ * are synthesized black and must stay out of the LUT. And because that pad
+ * brings the frame to the canvas's own aspect, the animated `scale` after it is
+ * a plain uniform resize — no second fit, no second pad, and nothing for the
+ * `t`-less `pad` to have to express.
+ *
+ * The cost is one extra resample on animated items only (peak box → current
+ * box, always a downscale since the peak is by definition the largest). The
+ * static path resamples once, and is untouched.
+ *
+ * @param {object} item     the timeline item
+ * @param {'video'|'image'} kind
+ * @param {number} vw       canvas width, pixels
+ * @param {number} vh       canvas height, pixels
+ * @param {number} timeOffset  ITEM-relative seconds at which ffmpeg's `t` is 0
+ * @param {number} duration    segment duration, seconds
+ * @param {(prop: string, info: object) => void} onCap  called per capped track
+ * @returns {null | {
+ *   peakW: number, peakH: number, hasRotation: boolean,
+ *   rotOutW: number, rotOutH: number,
+ *   boxWExpr: string, boxHExpr: string,
+ *   xExpr: string, yExpr: string, angleExpr: string | null,
+ * }}
+ */
+function animatedGeometry(item, kind, vw, vh, timeOffset, duration, onCap) {
+  const tracks = item?.keyframes
+  if (!Array.isArray(tracks) || tracks.length === 0) return null
+
+  // Only the geometry props compile. `opacity` is deliberately absent: ffmpeg's
+  // `colorchannelmixer aa` is a <double> and accepts no expression at all, so a
+  // clip's opacity curve is IGNORED here and the static value is used instead.
+  // That gap is a property of the tool, not an oversight — see docs/RENDER.md.
+  const GEOMETRY_PROPS = ['offsetX', 'offsetY', 'scale', 'scaleX', 'scaleY', 'rotation']
+  const animatedProps = tracks.filter(
+    (tr) => tr && GEOMETRY_PROPS.includes(tr.prop) && Array.isArray(tr.points) && tr.points.length > 0,
+  )
+  if (animatedProps.length === 0) return null
+
+  const staticGeom = geometryFor(item, kind)
+
+  // Sample the resolved geometry across the segment to find the largest box the
+  // item ever occupies, and the widest angle it ever reaches. Keyframe instants
+  // are included explicitly because a cubic-bezier easing is monotone between
+  // keyframes, so the extremes land ON them; the uniform grid is belt-and-braces
+  // for a hand-authored track with an easing that is not.
+  const probes = new Set([0, duration])
+  for (let i = 0; i <= 120; i++) probes.add((duration * i) / 120)
+  for (const tr of animatedProps) {
+    for (const p of tr.points) {
+      const local = p.t - timeOffset
+      if (local >= 0 && local <= duration) probes.add(local)
+    }
+  }
+
+  let peakW = 0
+  let peakH = 0
+  let maxAbsDeg = 0
+  for (const localT of probes) {
+    const g = geometryAt(item, kind, timeOffset + localT)
+    const b = toPixelBox(g, vw, vh)
+    if (b.width > peakW) peakW = b.width
+    if (b.height > peakH) peakH = b.height
+    const deg = Number.isFinite(g.rotation) ? Math.abs(g.rotation) : 0
+    if (deg > maxAbsDeg) maxAbsDeg = deg
+  }
+  // A degenerate track (every sample zero-sized) has nothing to animate.
+  if (!(peakW > 0) || !(peakH > 0)) return null
+
+  /**
+   * One property as an ffmpeg expression, or its static value as a literal.
+   * Times are shifted so the compiled `t` is ffmpeg's `t` (0 at the start of
+   * this segment) rather than the item-relative `t` the curve is authored in —
+   * shifting the BREAKPOINTS rather than rewriting the emitted string keeps
+   * this exact and avoids surgery on an expression we just built.
+   */
+  const exprFor = (prop, staticValue, unitsPerPixel) => {
+    const tr = animatedProps.find((x) => x.prop === prop)
+    if (!tr) return null
+    const shifted = { prop, points: tr.points.map((p) => ({ ...p, t: p.t - timeOffset })) }
+    const info = compileTrackExprInfo(shifted, { pixelTolerance: 0.25, unitsPerPixel })
+    if (info.capped) onCap(prop, info)
+    return info.expr ?? String(staticValue)
+  }
+
+  const lit = (v) => String(v)
+  // scaleX/scaleY fall back to the uniform `scale` track, then to the static
+  // per-axis value — mirroring geometryAt's own resolution order.
+  const sExpr = exprFor('scale', staticGeom.scale, 1 / vw)
+  const sxExpr = exprFor('scaleX', staticGeom.scaleX, 1 / vw) ?? sExpr ?? lit(staticGeom.scaleX)
+  const syExpr = exprFor('scaleY', staticGeom.scaleY, 1 / vh) ?? sExpr ?? lit(staticGeom.scaleY)
+  const oxExpr = exprFor('offsetX', staticGeom.offsetX, 100 / vw) ?? lit(staticGeom.offsetX)
+  const oyExpr = exprFor('offsetY', staticGeom.offsetY, 100 / vh) ?? lit(staticGeom.offsetY)
+  // Rotation's tolerance is converted against the item's PEAK size, per the
+  // plan: the pixel error an angle error produces scales with the box's current
+  // size, so referencing a fixed or first-frame size under-subdivides exactly
+  // when the item is largest and the wobble is most visible. Degrees per pixel
+  // at the peak radius.
+  const peakDim = Math.max(peakW, peakH)
+  const rotExpr = exprFor('rotation', staticGeom.rotation ?? 0, (180 / Math.PI) / (peakDim / 2))
+
+  // `round(...)`, always. ffmpeg TRUNCATES a pixel option's expression toward
+  // zero while toPixelBox uses Math.round, so a bare expression that lands a
+  // hair under an integer costs a whole pixel against the preview. Pinned by
+  // timeline-core's expr.ffmpeg test.
+  const evenBox = (dim, sc) => `round(round(${dim}*(${sc}))/2)*2`
+  const boxWExpr = evenBox(vw, sxExpr)
+  const boxHExpr = evenBox(vh, syExpr)
+
+  // Animating POSITION alone is nearly free — the overlay's x/y are already
+  // evaluated per frame, so nothing else in the chain has to change. Only a
+  // size or rotation curve forces the restructured chain (and its extra
+  // resample), so the two cases are kept apart rather than lumped together.
+  const sizeAnimates = animatedProps.some((tr) => tr.prop === 'scale' || tr.prop === 'scaleX' || tr.prop === 'scaleY')
+  const rotationAnimates = animatedProps.some((tr) => tr.prop === 'rotation')
+  const needsAnimatedChain = sizeAnimates || rotationAnimates
+  // A rotate step is emitted on the animated chain whenever the item is turned
+  // at all, animated or not: a STATIC angle over a resized input breaks exactly
+  // the same way an animated one does.
+  const emitRotate = needsAnimatedChain && maxAbsDeg > 0
+  let rotOutW = peakW
+  let rotOutH = peakH
+  if (emitRotate) {
+    // `rotate`'s ow/oh are CONFIG-TIME ONLY — `t` in them evaluates to nan and
+    // the graph dies — so the grown box is reserved once, at the worst angle the
+    // item reaches, and held for every frame.
+    const a = (maxAbsDeg * Math.PI) / 180
+    rotOutW = Math.round((Math.abs(peakW * Math.cos(a)) + Math.abs(peakH * Math.sin(a))) / 2) * 2
+    rotOutH = Math.round((Math.abs(peakW * Math.sin(a)) + Math.abs(peakH * Math.cos(a))) / 2) * 2
+  }
+
+  // Composite position. Without rotation the overlay input IS the current box,
+  // so its top-left is the box's own. With rotation the input is the frozen
+  // rotOutW×rotOutH box, which has to be re-centred on the box centre every
+  // frame — the expression sibling of toRotatedPixelBox's centre-preserving
+  // `x = xPx - (outW - scaledW)/2`.
+  const xPxExpr = `round(${vw}*(0.5*(1-(${sxExpr}))+(${oxExpr})/100))`
+  const yPxExpr = `round(${vh}*(0.5*(1-(${syExpr}))+(${oyExpr})/100))`
+  const xExpr = emitRotate ? `round(${xPxExpr}+(${boxWExpr})/2-${rotOutW}/2)` : xPxExpr
+  const yExpr = emitRotate ? `round(${yPxExpr}+(${boxHExpr})/2-${rotOutH}/2)` : yPxExpr
+
+  return {
+    peakW, peakH, needsAnimatedChain, emitRotate, rotOutW, rotOutH,
+    boxWExpr, boxHExpr, xExpr, yExpr, xPxExpr, yPxExpr,
+    angleExpr: emitRotate
+      ? (rotExpr ? `(${rotExpr})*PI/180` : `${staticGeom.rotation ?? 0}*PI/180`)
+      : null,
+  }
+}
+
+/**
+ * Composite position for an item whose SIZE and ROTATION are static but whose
+ * POSITION animates. The grown-box correction `toRotatedPixelBox` folds into
+ * `box.x` is a constant here, so it is simply added to the moving top-left
+ * rather than recomputed per frame.
+ */
+function staticBoxPosition(anim, box) {
+  const dx = box.x - box.xPx
+  const dy = box.y - box.yPx
+  return {
+    x: dx === 0 ? anim.xPxExpr : `round(${anim.xPxExpr}+${dx})`,
+    y: dy === 0 ? anim.yPxExpr : `round(${anim.yPxExpr}+${dy})`,
+  }
+}
+
+/**
+ * The `[→ pad(peak, transparent) → rotate]` tail of an animated chain.
+ *
+ * Empty when the item never rotates. Otherwise it re-establishes a CONSTANT
+ * frame size before `rotate` — which is the whole reason this exists, since
+ * `rotate` mis-renders a resized input — by padding out to the peak box with a
+ * TRANSPARENT fill. Transparent, not black: the item's own letterbox bars were
+ * already synthesized by the static pad upstream, and painting more black here
+ * would draw bars beyond the item's actual box.
+ */
+function animatedRotateStep(anim, alphaPin = false) {
+  if (!anim.emitRotate) return ''
+  return `,${alphaPin ? 'format=yuva420p,' : ''}`
+       + `pad=${anim.peakW}:${anim.peakH}:(ow-iw)/2:(oh-ih)/2:color=black@0.0:eval=frame,`
+       + `rotate='${anim.angleExpr}':ow=${anim.rotOutW}:oh=${anim.rotOutH}:c=black@0.0`
+}
+
+/**
+ * Warn, once per property, when a track could not be approximated within
+ * tolerance. Task 2's compiler reports the cap on a return value, which proves
+ * it noticed; this is the only place the information reaches an operator whose
+ * export came out slightly coarse and who has no idea why.
+ */
+function warnIfCapped(item, kind) {
+  return (prop, info) => {
+    console.warn(
+      `[montaj] ${kind} item ${item.id ?? item.src ?? '(unnamed)'}: '${prop}' keyframe curve `
+      + `hit the ${info.segments}-segment cap; achieved ${info.maxError.toPrecision(3)} `
+      + `vs a ${info.tolerance.toPrecision(3)} target (in ${prop} units). `
+      + `The animation renders slightly coarser than the preview.`,
+    )
+  }
+}
+
 function rotateFilterStep(box, alphaPin = false) {
   if (box.isIdentity) return ''
   const pin = alphaPin ? 'format=yuva420p,' : ''
@@ -297,7 +529,7 @@ const BAKED_OVERLAY_GEOMETRY = geometryFor({}, 'overlay')
 // NOTE: item.speed is intentionally ignored here — a still image has no
 // motion to time-scale, so speed is a no-op for image items (unlike video,
 // where it re-times decoded frames).
-export function buildImageItemFilterParts(item, vw, vh, idx, videoLabel, duration) {
+export function buildImageItemFilterParts(item, vw, vh, idx, videoLabel, duration, segStart) {
   // Geometry comes from the shared resolver — see @bycrux/timeline-core's
   // src/geometry.js. This file used to carry its own copy of the formula; three
   // copies lived here and a fourth in the editor, which is what KNOWN-DIVERGENCES
@@ -311,6 +543,15 @@ export function buildImageItemFilterParts(item, vw, vh, idx, videoLabel, duratio
   const box = toRotatedPixelBox(geometryFor(item, 'image'), vw, vh)
   const { scaledW, scaledH } = box
 
+  // ITEM-relative timeline seconds at the instant ffmpeg's `t` reads 0. The
+  // input is `-loop 1 -t duration`, so PTS start at 0 and `t` runs 0..duration
+  // in SEGMENT time — hence the shift is (segStart - item.start), the same
+  // quantity the video path calls seekOffset. `segStart` is optional so
+  // sample-frame.js's six-argument call keeps working; its pseudo-item never
+  // carries `keyframes`, so the animated branch cannot engage there anyway.
+  const imgOffset = segStart == null ? 0 : Math.max(0, segStart - (item.start ?? 0))
+  const anim = animatedGeometry(item, 'image', vw, vh, imgOffset, duration, warnIfCapped(item, 'image'))
+
   const inputArgs = ['-loop', '1', '-t', String(duration), '-i', item.src]
   const filterParts = []
 
@@ -320,22 +561,36 @@ export function buildImageItemFilterParts(item, vw, vh, idx, videoLabel, duratio
   // (does NOT preserve AR — kept only for explicit opt-in). Mirrors the AR-safe
   // treatment the video branch already applies via force_original_aspect_ratio.
   const fit = item.fit ?? 'cover'
+  // When animated, the fit runs to the PEAK box and the varying resize is
+  // appended after it. All three fits stay correct under that split because the
+  // peak box and every animated box share the CANVAS's aspect ratio, so the
+  // trailing resize is uniform and changes framing in none of them.
+  const fitW = anim?.needsAnimatedChain ? anim.peakW : scaledW
+  const fitH = anim?.needsAnimatedChain ? anim.peakH : scaledH
   let fitChain
   if (fit === 'contain') {
-    fitChain = `scale=${scaledW}:${scaledH}:force_original_aspect_ratio=decrease,format=rgba,`
-             + `pad=${scaledW}:${scaledH}:(ow-iw)/2:(oh-ih)/2:color=black@0.0`
+    fitChain = `scale=${fitW}:${fitH}:force_original_aspect_ratio=decrease,format=rgba,`
+             + `pad=${fitW}:${fitH}:(ow-iw)/2:(oh-ih)/2:color=black@0.0`
   } else if (fit === 'fill') {
-    fitChain = `scale=${scaledW}:${scaledH},format=rgba`
+    fitChain = `scale=${fitW}:${fitH},format=rgba`
   } else { // 'cover' (default)
-    fitChain = `scale=${scaledW}:${scaledH}:force_original_aspect_ratio=increase,`
-             + `crop=${scaledW}:${scaledH},format=rgba`
+    fitChain = `scale=${fitW}:${fitH}:force_original_aspect_ratio=increase,`
+             + `crop=${fitW}:${fitH},format=rgba`
   }
+  // No alpha pin on the rotate: all three fit chains already run through
+  // `format=rgba`, so the transparent pad and `c=black@0.0` corners are
+  // representable exactly as the static path assumes.
+  const animStep = anim?.needsAnimatedChain
+    ? `,scale=w='${anim.boxWExpr}':h='${anim.boxHExpr}':eval=frame${animatedRotateStep(anim, false)}`
+    : ''
   // Rotate AFTER the fit chain, BEFORE setpts: the fit chain is what establishes
   // the scaledW×scaledH box rotation is defined against, and setpts is timing,
   // not geometry, so it neither cares nor should pay for the grown frame. No
   // alpha pin — all three fit chains above run through `format=rgba`, so the
   // `c=black@0.0` corners are already representable.
-  filterParts.push(`[${idx}:v]${fitChain}${rotateFilterStep(box)},setpts=PTS-STARTPTS[img${idx}]`)
+  filterParts.push(
+    `[${idx}:v]${fitChain}${anim?.needsAnimatedChain ? animStep : rotateFilterStep(box)},setpts=PTS-STARTPTS[img${idx}]`
+  )
   let src = `[img${idx}]`
   if (Math.abs((item.opacity ?? 1) - 1) > 0.001) {
     filterParts.push(`${src}colorchannelmixer=aa=${item.opacity}[imgop${idx}]`)
@@ -344,7 +599,15 @@ export function buildImageItemFilterParts(item, vw, vh, idx, videoLabel, duratio
   // box.x/box.y, not the unrotated x/y: a rotated frame arrives here at
   // outW×outH, so compositing it at the unrotated top-left would translate it
   // by half the growth instead of turning it in place.
-  filterParts.push(`${videoLabel}${src}overlay=x=${box.x}:y=${box.y}:shortest=0[iv${idx}]`)
+  // Opacity is NOT animated even when a curve exists — see the video path.
+  const iPos = anim
+    ? (anim.needsAnimatedChain ? { x: anim.xExpr, y: anim.yExpr } : staticBoxPosition(anim, box))
+    : null
+  filterParts.push(
+    `${videoLabel}${src}overlay=` +
+    `x=${iPos ? `'${iPos.x}'` : box.x}:y=${iPos ? `'${iPos.y}'` : box.y}` +
+    `:shortest=0[iv${idx}]`
+  )
   const newVideoLabel = `[iv${idx}]`
 
   return { inputArgs, filterParts, newVideoLabel }
@@ -392,6 +655,16 @@ export function buildVideoItemFilterParts(item, vw, vh, idx, videoLabel, opts) {
   const speed = item.speed
   const hasSpeed = speed != null && speed !== 1
   const actualIn = hasSpeed ? inPt + seekOffset * speed : inPt + seekOffset
+
+  // `seekOffset` is ITEM-relative TIMELINE seconds at the instant ffmpeg's `t`
+  // reads 0, which is exactly the base `Keyframe.t` is authored in — so it is
+  // the shift the compiler needs, and it is speed-independent. Speed scales the
+  // SOURCE seek (`actualIn`, above) because a 2x clip eats 2x the source per
+  // timeline-second; it does not scale timeline time. `setpts` at the head of
+  // the chain divides PTS by the speed, so every downstream filter's `t` is
+  // already back in timeline seconds. Verified against real footage at 1x, 2x
+  // and 0.5x: the animation lands identically at all three.
+  const anim = animatedGeometry(item, 'video', vw, vh, seekOffset, duration, warnIfCapped(item, 'video'))
 
   // ProRes 4444 (.mov from remove-bg) has alpha — use format=auto
   const ovFmt = item.src.endsWith('.mov') ? ':format=auto' : ':format=yuv420'
@@ -472,11 +745,23 @@ export function buildVideoItemFilterParts(item, vw, vh, idx, videoLabel, opts) {
   // speed S the S× extra source seconds consumed above play out over 1/S the
   // time. A no-op (bare setpts=PTS-STARTPTS) at speed undefined/1.
   const ptsStep = hasSpeed ? `setpts=(PTS-STARTPTS)/${speed}` : 'setpts=PTS-STARTPTS'
+  // The animated branch sizes scale+pad to the PEAK box instead of the current
+  // one and appends the varying resize AFTER the pad, so the conversion and
+  // `rotate` only ever see a constant frame size — see animatedGeometry's header
+  // for why all three of them silently mis-render otherwise. The static branch
+  // below is byte-for-byte what it has always been; two frozen goldens say so.
   filterParts.push(
     `[${idx}:v]${ptsStep},${cropStep}` +
-    `scale=${scaledW}:${scaledH}:force_original_aspect_ratio=decrease${divisibleBy},` +
-    `${conversionStep}` +
-    `pad=${scaledW}:${scaledH}:(ow-iw)/2:(oh-ih)/2${rotateFilterStep(box, true)}[vid${idx}]`
+    (anim?.needsAnimatedChain
+      ? `scale=${anim.peakW}:${anim.peakH}:force_original_aspect_ratio=decrease${divisibleBy},` +
+        `${conversionStep}` +
+        `pad=${anim.peakW}:${anim.peakH}:(ow-iw)/2:(oh-ih)/2,` +
+        `scale=w='${anim.boxWExpr}':h='${anim.boxHExpr}':eval=frame` +
+        `${animatedRotateStep(anim, true)}`
+      : `scale=${scaledW}:${scaledH}:force_original_aspect_ratio=decrease${divisibleBy},` +
+        `${conversionStep}` +
+        `pad=${scaledW}:${scaledH}:(ow-iw)/2:(oh-ih)/2${rotateFilterStep(box, true)}`) +
+    `[vid${idx}]`
   )
   let src = `[vid${idx}]`
   if (Math.abs((item.opacity ?? 1) - 1) > 0.001) {
@@ -484,7 +769,17 @@ export function buildVideoItemFilterParts(item, vw, vh, idx, videoLabel, opts) {
     src = `[vidop${idx}]`
   }
   // box.x/box.y, not the unrotated x/y — see the image path.
-  filterParts.push(`${videoLabel}${src}overlay=x=${box.x}:y=${box.y}${ovFmt}:shortest=0[iv${idx}]`)
+  // Opacity is NOT animated even when a curve exists: `colorchannelmixer aa` is
+  // a <double> and accepts no expression, so the static value above stands and
+  // the curve is ignored. Documented in docs/RENDER.md; pinned by a test.
+  const vPos = anim
+    ? (anim.needsAnimatedChain ? { x: anim.xExpr, y: anim.yExpr } : staticBoxPosition(anim, box))
+    : null
+  filterParts.push(
+    `${videoLabel}${src}overlay=` +
+    `x=${vPos ? `'${vPos.x}'` : box.x}:y=${vPos ? `'${vPos.y}'` : box.y}` +
+    `${ovFmt}:shortest=0[iv${idx}]`
+  )
   const newVideoLabel = `[iv${idx}]`
 
   return { inputArgs, filterParts, newVideoLabel }
@@ -700,7 +995,7 @@ export async function encodeSegment(segment, outputPath, opts = {}) {
       // (no input, no inputIdx bump).
       if (opaqueVideo) continue
       const { inputArgs, filterParts: fp, newVideoLabel } =
-        buildImageItemFilterParts(item, vw, vh, idx, videoLabel, duration)
+        buildImageItemFilterParts(item, vw, vh, idx, videoLabel, duration, start)
       inputs.push(...inputArgs)
       filterParts.push(...fp)
       videoLabel = newVideoLabel

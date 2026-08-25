@@ -883,14 +883,13 @@ export default function RenderModal<P extends Project = Project>({ projectId, ad
 
               {/* Resolution — source-capped tier picker. Only rendered when the
                   host supplies a `resolution` control; the tile whose short
-                  side equals the CURRENT project resolution is active, and the
-                  highest available tier is flagged "recommended". */}
+                  side equals the CURRENT project resolution is pre-selected.
+                  That selected state is the only affordance — no "recommended"
+                  badge (per operator: the pre-selection is enough, and the
+                  badge overflowed the tile). */}
               {preRenderOptions?.resolution && (() => {
                 const res = preRenderOptions.resolution
                 const currentShort = Math.min(...res.value)
-                const maxShort = res.available.length > 0
-                  ? Math.max(...res.available.map(([w, h]) => Math.min(w, h)))
-                  : undefined
                 return (
                   <div className="flex flex-col gap-2">
                     <p className="text-[11px] font-semibold uppercase tracking-wide text-[var(--editor-text)]/50">Resolution</p>
@@ -898,7 +897,6 @@ export default function RenderModal<P extends Project = Project>({ projectId, ad
                       {res.available.map(([w, h]) => {
                         const short = Math.min(w, h)
                         const active = short === currentShort
-                        const recommended = maxShort !== undefined && short === maxShort
                         return (
                           <button
                             key={`${w}x${h}`}
@@ -911,12 +909,7 @@ export default function RenderModal<P extends Project = Project>({ projectId, ad
                                 : 'border-[var(--editor-border)] hover:bg-[var(--editor-text)]/5'
                             }`}
                           >
-                            <span className="text-xs font-semibold text-[var(--editor-text)] flex items-center gap-1.5">
-                              {resLabel([w, h])}
-                              {recommended && (
-                                <span className="text-[9px] font-normal px-1 py-px rounded bg-[var(--editor-text)]/10 text-[var(--editor-text)]/55">recommended</span>
-                              )}
-                            </span>
+                            <span className="text-xs font-semibold text-[var(--editor-text)]">{resLabel([w, h])}</span>
                             <span className="text-[10px] leading-snug text-[var(--editor-text)]/55">{w} × {h}</span>
                           </button>
                         )

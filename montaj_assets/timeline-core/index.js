@@ -55,6 +55,13 @@ export * from './src/audio.js'
 // parity bug — see the src/curves.js module header.
 export * from './src/curves.js'
 
+// SP9d-T2 — curve → ffmpeg expression: compileTrackExpr (and the diagnostic
+// compileTrackExprInfo the render path warns from). Emits a piecewise-LINEAR
+// approximation sampled through curves.js's own sampleTrack rather than a
+// second implementation of the easing maths — see the src/expr.js header for
+// why translating the beziers into ffmpeg's expression language was rejected.
+export * from './src/expr.js'
+
 /**
  * Version salt for resolver-derived caches. sample-frame.js mixes this into its
  * cache key so a change in resolver semantics invalidates stale cached frames

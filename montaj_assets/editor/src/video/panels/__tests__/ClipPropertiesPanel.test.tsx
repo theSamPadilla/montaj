@@ -4,7 +4,18 @@ import { render, screen, fireEvent, cleanup } from '@testing-library/react'
 import type { AudioTrack, VisualItem } from '../../../schema'
 import ClipPropertiesPanel, { type ClipSelection } from '../ClipPropertiesPanel'
 
+// The panel now persists its active clip tab to localStorage (see
+// ClipPropertiesPanel's CLIP_PANEL_TAB_STORAGE_KEY) — clear it between tests
+// so one test's tab choice can't leak into the next, same pattern as
+// LeftPanelTabs' own test file.
+beforeEach(() => window.localStorage.clear())
 afterEach(cleanup)
+
+/** Clicks a clip-panel tab button by its accessible name (e.g. "Volume",
+ *  "Speed", "Crop", "Generate", "Transform"). */
+function openClipTab(name: string) {
+  fireEvent.click(screen.getByRole('button', { name }))
+}
 
 function clipItem(over: Partial<VisualItem> = {}): VisualItem {
   return {
@@ -42,7 +53,9 @@ function makeCallbacks() {
 
 type Callbacks = ReturnType<typeof makeCallbacks>
 
-function makeElement(selection: ClipSelection, cbs: Callbacks, extra: { generationSlot?: ReactNode } = {}) {
+type ClipTabExtras = { transformSlot?: ReactNode; onOpenCrop?: () => void; generationSlot?: ReactNode }
+
+function makeElement(selection: ClipSelection, cbs: Callbacks, extra: ClipTabExtras = {}) {
   return (
     <ClipPropertiesPanel
       selection={selection}
@@ -57,7 +70,7 @@ function makeElement(selection: ClipSelection, cbs: Callbacks, extra: { generati
   )
 }
 
-function renderPanel(selection: ClipSelection, extra: { generationSlot?: ReactNode } = {}) {
+function renderPanel(selection: ClipSelection, extra: ClipTabExtras = {}) {
   const cbs = makeCallbacks()
   const utils = render(makeElement(selection, cbs, extra))
   return {
@@ -113,21 +126,28 @@ describe('ClipPropertiesPanel — clip selection', () => {
   it('renders the current volume, mute, and speed values', () => {
     renderPanel({ kind: 'clip', item: clipItem({ volume: 1.5, muted: true, speed: 2 }) })
 
+    // No transformSlot offered by this fixture, so Speed — the first tab
+    // this video selection actually offers — is the default active tab.
+    expect(screen.getByRole('slider', { name: 'Speed' })).toHaveValue('2')
+
+    openClipTab('Volume')
     expect(screen.getByRole('slider', { name: 'Volume' })).toHaveValue('1.5')
     expect(screen.getByRole('switch', { name: 'Mute clip' })).toHaveAttribute('aria-checked', 'true')
-    expect(screen.getByRole('slider', { name: 'Speed' })).toHaveValue('2')
   })
 
   it('defaults volume/muted/speed the same way the modal does (1 / false / 1) when unset', () => {
     renderPanel({ kind: 'clip', item: clipItem() })
 
+    expect(screen.getByRole('slider', { name: 'Speed' })).toHaveValue('1')
+
+    openClipTab('Volume')
     expect(screen.getByRole('slider', { name: 'Volume' })).toHaveValue('1')
     expect(screen.getByRole('switch', { name: 'Mute clip' })).toHaveAttribute('aria-checked', 'false')
-    expect(screen.getByRole('slider', { name: 'Speed' })).toHaveValue('1')
   })
 
   it('volume: previews on every drag step and commits once, writing item.volume', () => {
     const { onPreviewClip, onCommitClip } = renderPanel({ kind: 'clip', item: clipItem({ volume: 1 }) })
+    openClipTab('Volume')
     const slider = screen.getByRole('slider', { name: 'Volume' })
 
     fireEvent.change(slider, { target: { value: '1.5' } })
@@ -141,6 +161,7 @@ describe('ClipPropertiesPanel — clip selection', () => {
 
   it('mute: fires exactly one discrete onChangeClip, no preview/commit', () => {
     const { onPreviewClip, onCommitClip, onChangeClip } = renderPanel({ kind: 'clip', item: clipItem({ muted: false }) })
+    openClipTab('Volume')
 
     fireEvent.click(screen.getByRole('switch', { name: 'Mute clip' }))
 
@@ -187,13 +208,15 @@ describe('ClipPropertiesPanel — clip selection', () => {
 })
 
 describe('ClipPropertiesPanel — generation slot', () => {
-  it('renders the host-injected slot below the Clip section when provided', () => {
+  it('renders the host-injected slot in the Generate tab when provided', () => {
     renderPanel({ kind: 'clip', item: clipItem() }, { generationSlot: <div data-testid="gen-slot">Regenerate</div> })
+    openClipTab('Generate')
     expect(screen.getByTestId('gen-slot')).toBeTruthy()
   })
 
-  it('renders nothing in its place when absent', () => {
+  it('offers no Generate tab, and renders nothing in its place, when absent', () => {
     renderPanel({ kind: 'clip', item: clipItem() })
+    expect(screen.queryByRole('button', { name: 'Generate' })).toBeNull()
     expect(screen.queryByTestId('gen-slot')).toBeNull()
   })
 })
@@ -437,9 +460,94 @@ describe('ClipPropertiesPanel — speed is video-only', () => {
       />,
     )
 
+    expect(screen.queryByRole('button', { name: 'Speed' })).toBeNull()
     expect(screen.queryByLabelText('Speed')).toBeNull()
-    // The video-agnostic controls are still there.
+    // The video-agnostic controls are still there, on the Volume tab (the
+    // only tab this image selection offers besides Transform, so it's also
+    // the default active tab here).
+    openClipTab('Volume')
     expect(screen.getByLabelText('Mute clip')).toBeTruthy()
+  })
+})
+
+describe('ClipPropertiesPanel — clip tabs', () => {
+  it('defaults to the Transform tab, showing transformSlot content on first render', () => {
+    renderPanel({ kind: 'clip', item: clipItem() }, { transformSlot: <div data-testid="transform-slot">Transform body</div> })
+
+    expect(screen.getByTestId('transform-slot')).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Transform' })).toHaveAttribute('aria-pressed', 'true')
+  })
+
+  it('an image clip offers no Speed, Crop, or Generate tabs', () => {
+    // Crop/Generate are gated on the CALLER supplying onOpenCrop/
+    // generationSlot at all (the host encodes the "images don't generate or
+    // crop" rule) — this fixture mirrors a host that, for an image, simply
+    // doesn't offer those slots.
+    renderPanel({ kind: 'clip', item: clipItem({ type: 'image' }) }, { transformSlot: <div>T</div> })
+
+    expect(screen.getByRole('button', { name: 'Transform' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Volume' })).toBeTruthy()
+    expect(screen.queryByRole('button', { name: 'Speed' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Crop' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Generate' })).toBeNull()
+  })
+
+  it('a main-track video with both slots offers all five tabs, in order', () => {
+    renderPanel(
+      { kind: 'clip', item: clipItem({ type: 'video' }) },
+      { transformSlot: <div>T</div>, onOpenCrop: vi.fn(), generationSlot: <div>G</div> },
+    )
+
+    const names = screen.getAllByRole('button').map(b => b.textContent)
+    expect(names).toEqual(['Transform', 'Speed', 'Volume', 'Crop', 'Generate'])
+  })
+
+  it('renders no Crop tab when onOpenCrop is omitted', () => {
+    renderPanel({ kind: 'clip', item: clipItem() }, { transformSlot: <div>T</div> })
+    expect(screen.queryByRole('button', { name: 'Crop' })).toBeNull()
+  })
+
+  it("clicking the Crop tab's button calls onOpenCrop", () => {
+    const onOpenCrop = vi.fn()
+    renderPanel({ kind: 'clip', item: clipItem() }, { transformSlot: <div>T</div>, onOpenCrop })
+
+    openClipTab('Crop')
+    fireEvent.click(screen.getByRole('button', { name: 'Open crop tool' }))
+    expect(onOpenCrop).toHaveBeenCalledTimes(1)
+  })
+
+  function StatefulSlot() {
+    const [value, setValue] = useState('')
+    return <input aria-label="Gen prompt" value={value} onChange={e => setValue(e.target.value)} />
+  }
+
+  it("switching tabs away from Generate and back preserves the generation slot's internal state", () => {
+    renderPanel(
+      { kind: 'clip', item: clipItem() },
+      { transformSlot: <div>T</div>, generationSlot: <StatefulSlot /> },
+    )
+
+    openClipTab('Generate')
+    fireEvent.change(screen.getByLabelText('Gen prompt'), { target: { value: 'a sunset over water' } })
+    expect(screen.getByLabelText('Gen prompt')).toHaveValue('a sunset over water')
+
+    // Switch away, then back. If the Generate tab body were unmounted on
+    // switch-away (a plain conditional render instead of lazy-mount-then-
+    // keep-mounted), StatefulSlot's `useState('')` initializer would re-run
+    // on remount and this value would be lost.
+    openClipTab('Volume')
+    openClipTab('Generate')
+    expect(screen.getByLabelText('Gen prompt')).toHaveValue('a sunset over water')
+  })
+
+  it('falls back to Transform when the persisted tab id is not in the current tab set', () => {
+    // Simulates the operator having 'generate' active on a different clip,
+    // then selecting one whose host doesn't offer a generationSlot.
+    window.localStorage.setItem('montaj.editor.clipPanelTab', JSON.stringify('generate'))
+    renderPanel({ kind: 'clip', item: clipItem() }, { transformSlot: <div data-testid="transform-slot">T</div> })
+
+    expect(screen.getByTestId('transform-slot')).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Transform' })).toHaveAttribute('aria-pressed', 'true')
   })
 })
 

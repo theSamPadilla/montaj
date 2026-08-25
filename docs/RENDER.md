@@ -110,6 +110,92 @@ the curve and re-styling the DOM every frame measured at about 27% slower per
 frame than the same overlay captured static, independent of export
 resolution.
 
+### Video and image keyframes (SP9d)
+
+A `video` or `image` item with a non-empty `keyframes` array has its geometry
+compiled into **time-varying ffmpeg filter expressions** rather than the single
+static box the composite normally emits. There is no browser step involved:
+`encode-segment.js` (`animatedGeometry`) turns each curve into an expression in
+`t` and interpolates it into the filter options that accept one — `overlay`'s
+`x`/`y`, `scale`'s `w`/`h` (with `eval=frame`), and `rotate`'s angle.
+
+**What compiles.** `offsetX`, `offsetY`, `scale`/`scaleX`/`scaleY` and
+`rotation`. **`opacity` does not, and cannot** — see below.
+
+**How a curve becomes an expression.** Not by translating the easing. The
+`ease*` easings are cubic Béziers inverted by Newton-Raphson, and porting that
+into ffmpeg's expression language would mean one iterative solver written twice,
+in two languages, that must agree forever. Instead `timeline-core`'s
+`compileTrackExpr` samples the curve through the SAME `sampleTrack` the preview
+uses and emits a piecewise-**linear** expression through those samples, so
+ffmpeg only ever does `if`/`between` plus a lerp. Breakpoints are chosen
+adaptively against a 0.25px tolerance, converted into each property's own units
+(rotation's against the item's PEAK box size, since an angle error's pixel cost
+scales with how large the item is). Subdivision is globally greedy and capped at
+63 segments; hitting the cap logs a warning naming the item and property.
+
+**Why the filter chain changes shape on an animated item.** Three filters cannot
+accept a variable-size input, and all three fail *silently* — no ffmpeg warning,
+roughly right at small deltas, visibly wrong at the extremes:
+
+- `rotate` configures against its first frame and mis-scales every resized frame
+  after it (an animated *angle* alone is fine; it is the changing frame SIZE);
+- the colour conversion (`zscale` + `lut3d`) does the same — the path every HDR
+  source takes, i.e. the common one;
+- `pad` exposes no `t` or `n` at all, even at `eval=frame`.
+
+So an animated item's chain keeps every size-sensitive filter on a constant
+frame and does the varying resize afterwards:
+
+```
+crop → scale(STATIC, peak box) → convert → pad(STATIC, peak box)
+     → scale(ANIMATED, eval=frame)  [→ pad(peak, transparent) → rotate]  → overlay
+```
+
+`pad` still sits after the conversion, so its black bars stay out of the LUT.
+Animating position ALONE skips all of this — `overlay`'s x/y are already
+evaluated per frame — so it costs nothing.
+
+Every expression fed to a pixel option is wrapped in `round()`: ffmpeg truncates
+such an option toward zero while the shared geometry rounds, so a bare
+expression can land a whole pixel short of the preview.
+
+**Cost.** 3s segment, real footage, full encode, median of 5 interleaved runs.
+Only segments that actually use keyframes pay any of this.
+
+| | 1080p | 4K |
+|---|---|---|
+| static baseline | 1.00× | 1.00× |
+| position only | 1.06× | ~1.07× |
+| + scale | 1.67× | ~1.19× |
+| + rotation | 2.28× | ~1.59× |
+
+The 1080p column is measured against the shipped implementation. The 4K column
+is carried over from the SP9d Task 1 spike, whose chains were equivalent but did
+not include the peak-box pre-fit resample this implementation adds — which is
+why 1080p's `+ scale` came out at 1.67× against the spike's 1.50×. Expect the
+4K figures to be similarly conservative-by-a-little rather than exact. They were
+not re-measured against the final code because the machine was under a load
+average of ~37 at the time and 4K run-to-run spread reached 200%; 1080p stayed
+inside 25% and was usable. Re-measure on an idle machine before quoting 4K.
+
+Scale's cost is proportional to the ANIMATED SPAN, not the clip length (a long
+clip with a short push-in pays almost nothing extra); rotation's is per frame of
+the whole segment. Peak memory at 4K rises from ~514 MB to ~900 MB on a
+scale-animated item. Expression arm count is free — 64 arms measured the same as
+1 — so the tolerance can be tightened without a render-time penalty.
+
+**Why opacity is excluded.** ffmpeg applies alpha through `colorchannelmixer`,
+whose `aa` option is declared `<double>`: a literal number, no expression, at any
+evaluation mode. (The `T` flag beside it is `AV_OPT_FLAG_RUNTIME_PARAM` —
+settable via `sendcmd`/`zmq` — not expression support.) A clip's `opacity` track
+is therefore ignored by the renderer, by the preview, and by the still-frame
+sampler, and the editor will not write one. Closing the gap needs the per-frame
+browser bake extended to video — decode every frame of the animated span and
+composite it the way overlays already are. Measured at **14–33×** the expression
+path's render time, versus **15×** for splitting the span into one-frame
+sub-segments. Both were rejected on that basis.
+
 ---
 
 ## Project Color Space

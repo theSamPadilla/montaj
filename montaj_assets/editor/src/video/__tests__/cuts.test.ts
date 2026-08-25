@@ -401,7 +401,11 @@ describe('splitAtTime — overlay keyframes', () => {
     expect(right.keyframes).toBeUndefined()
   })
 
-  it('a non-overlay item is unaffected — keyframes stay overlay-only even if a stray array is present', () => {
+  it('a keyframed VIDEO clip splits and re-anchors like an overlay (SP9d)', () => {
+    // Was "keyframes stay overlay-only". Clips read `item.keyframes` now, so a
+    // shared array between fragments — or a right fragment whose points are
+    // still anchored to the ORIGINAL start — is a real bug, not a harmless
+    // stray. `canKeyframe` gates this code and widened, so it already applies.
     const original = { prop: 'offsetX' as const, points: [{ t: 0, value: 0 }, { t: 8, value: 80 }] }
     const p = makeProject({
       tracks: vtracks([{
@@ -411,11 +415,14 @@ describe('splitAtTime — overlay keyframes', () => {
     })
     const [left, right] = splitAtTime(p, 5, 'v0').tracks![0].items
 
-    // splitClip's `...item` spread hands both fragments the SAME array for a
-    // non-overlay item — this file's fix touches overlays only, since no
-    // other item type ever reads `item.keyframes` (docs/schemas/project.md).
-    expect(left.keyframes).toBe(right.keyframes)
-    expect(left.keyframes![0]).toBe(original)
+    // Separate arrays — a shared one would let an edit to either fragment
+    // silently mutate the other.
+    expect(left.keyframes).not.toBe(right.keyframes)
+    // The right fragment's remaining point is re-anchored to ITS OWN start:
+    // t=8 on the original is t=3 once the fragment begins at 5.
+    const rightPoints = right.keyframes!.find(k => k.prop === 'offsetX')!.points
+    expect(rightPoints.some(pt => pt.t === 3)).toBe(true)
+    expect(rightPoints.some(pt => pt.t === 8)).toBe(false)
   })
 })
 

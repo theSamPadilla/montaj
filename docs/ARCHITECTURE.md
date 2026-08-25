@@ -1043,9 +1043,11 @@ Both are React components rendered frame-by-frame by Puppeteer and composited in
 | `props` | no | Arbitrary data injected as the `props` global inside the component |
 | `offsetX` / `offsetY` | no | Position offset as % of frame size — written by the UI when user repositions |
 | `scale` | no | Uniform scale multiplier — written by the UI when user resizes |
+| `scaleX` / `scaleY` | no | Per-axis scale multipliers — written by the UI when user resizes non-uniformly (dragging an edge handle, or unlocking the Transform panel's uniform-scale lock). Each falls back to `scale` when absent, so an item that has never been resized non-uniformly is unaffected |
+| `rotation` | no | Rotation in degrees — written by the UI when user rotates via the Transform panel's dial or the preview's rotate handle |
 | `speed` | no | `type: "video"` only — per-clip playback speed multiplier, default 1.0, range 0.25–4, pitch-corrected. `inPoint`/`outPoint` stay in original-source coordinates (speed never rebases them) |
 
-`offsetX`, `offsetY`, and `scale` are applied by the render engine as a CSS transform on the component container: `translate(offsetX%, offsetY%) scale(scale)`. The JSX component itself is unaware of them.
+`offsetX`, `offsetY`, `scaleX`/`scaleY` (each resolved from `scaleX ?? scale ?? 1`, `scaleY ?? scale ?? 1`), and `rotation` are applied by the render engine as a CSS transform on the component container: `translate(offsetX%, offsetY%) rotate(deg) scale(sx, sy)`. The two-argument `scale(sx, sy)` form is emitted unconditionally — a uniform item just emits both arguments equal — rather than switching to a one-argument `scale(s)` when the axes match, because preview↔render parity is asserted on the transform string itself. The JSX component itself is unaware of any of this.
 
 `speed` is applied at render (`encode-segment.js`) as `setpts=(PTS-STARTPTS)/speed` on the video stream (a no-op at `speed` undefined/1) and, on the audio stream, a chained `atempo` filter — ffmpeg's `atempo` only accepts a factor in `[0.5, 2.0]` per instance, so a speed outside that range (e.g. 4×) is expressed as multiple chained instances (`atempo=2,atempo=2`) rather than one out-of-range call. Preview applies the same factor via `seekTime`'s elapsed-offset scaling in `@bycrux/timeline-core`.
 

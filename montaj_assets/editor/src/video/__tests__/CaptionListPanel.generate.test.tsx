@@ -9,16 +9,20 @@
  * that file's shape independently, per the same convention.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { render, screen, fireEvent, cleanup, within } from '@testing-library/react'
+import { render, screen, fireEvent, cleanup } from '@testing-library/react'
 import type { Project } from '../../types'
 import type { Captions, CaptionSegment } from '../../schema'
 import type { PlaybackClock } from '../playback-clock'
 import CaptionListPanel, { type CaptionListPanelProps } from '../CaptionListPanel'
 
-// The "Caption style" subsection's expanded/collapsed state persists to
-// localStorage (usePersistentState) — clear it between tests or an earlier
-// `expandStyle()` leaks in and TOGGLES the section shut instead of open.
-beforeEach(() => window.localStorage.clear())
+// The panel's active sub-tab persists to localStorage (usePersistentState).
+// Clear it, then seed 'captions' so the regenerate-trigger assertions render
+// on the tab the footer lives on; the Bold tests flip to the Format tab via
+// `expandStyle()`.
+beforeEach(() => {
+  window.localStorage.clear()
+  window.localStorage.setItem('montaj.editor.captionPanelTab', JSON.stringify('captions'))
+})
 afterEach(() => cleanup())
 
 Element.prototype.scrollIntoView = vi.fn()
@@ -71,7 +75,9 @@ function renderPanel(opts: {
 }
 
 function expandStyle() {
-  fireEvent.click(screen.getByLabelText('Caption style controls'))
+  // Bold moved from a collapse toggle, then from a single "Style" tab, onto
+  // the "Format" tab; these suites seed 'captions', so this click flips there.
+  fireEvent.click(screen.getByRole('button', { name: 'Format' }))
 }
 
 describe('CaptionListPanel Bold toggle', () => {
@@ -133,11 +139,11 @@ describe('CaptionListPanel generate/regenerate trigger', () => {
     renderPanel({ captions: { style: 'pop', fontsize: 46, segments: [] }, withRegenerate: false })
 
     expect(screen.getByText(/no captions yet/i)).toBeTruthy()
-    // Scoped to the empty-state body, not the whole panel: the "Caption
-    // style controls" disclosure toggle is itself a `<button>` in the header
-    // and is unrelated to the generate/regenerate trigger this test covers.
-    const list = screen.getByRole('list', { name: 'Caption segments' })
-    expect(within(list).queryByRole('button')).toBeNull()
+    // With zero segments the panel shows a plain empty-state placeholder — no
+    // transcript list, no tab bar (there's nothing to tab between), and, with
+    // no generation capability, no button anywhere at all.
+    expect(screen.queryByRole('list', { name: 'Caption segments' })).toBeNull()
+    expect(screen.queryByRole('button')).toBeNull()
   })
 
   it('disables the trigger while a job is running', () => {

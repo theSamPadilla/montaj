@@ -5,15 +5,17 @@ import { setClipSpeed } from '../cuts'
 import SpeedControl from '../timeline/SpeedControl'
 import VolumeControl from '../timeline/VolumeControl'
 import { cn, inspectorInputClass, Switch } from '../../ui'
+import { usePersistentState } from '../../ui/usePersistentState'
+import TabNav, { type TabNavTab } from './TabNav'
 
 /**
  * `<ClipPropertiesPanel>` — the editor's contextual right-hand properties
  * panel for a selected VIDEO CLIP or AUDIO TRACK. The sibling of
- * `OverlayInspector` (which covers a selected overlay's Transform
- * properties): the two mount in the same column and share its visual
- * language — a collapsible section, `var(--editor-*)` custom properties,
- * `inspectorInputClass` inputs — so the column reads as one system no matter
- * which one is showing.
+ * `OverlayInspector` (the overlay Transform panel, which this panel now also
+ * hosts as its clip Transform tab): the two mount in the same column and
+ * share its visual language — `var(--editor-*)` custom properties,
+ * `inspectorInputClass` inputs, the same section chrome — so the column
+ * reads as one system no matter which one is showing.
  *
  * These fields used to live only in the host-side `ClipInspectModal`
  * (`montaj_assets/ui`), opened by double-click. This panel reimplements the
@@ -41,11 +43,23 @@ export interface ClipPropertiesPanelProps {
   onPreviewAudio: (track: AudioTrack) => void
   onCommitAudio: () => void
   onChangeAudio: (track: AudioTrack) => void
-  /** Host-injected section rendered BELOW the editor-managed properties when
-   *  a video clip is selected. Montaj puts its AI generation / regenerate
-   *  surface here: that reads and writes `project.regenQueue`, a host-only
-   *  field this package deliberately knows nothing about (see schema.ts's
-   *  EditorProject index-signature comment). Absent -> nothing renders. */
+  /** Transform tab body for a selected clip: the host's `OverlayInspector`
+   *  instance, wired to the playback clock and the host's own sync/seek
+   *  handlers — none of which this props-driven package has on hand, so the
+   *  host builds it and hands it in rather than this panel importing and
+   *  wiring `OverlayInspector` itself. Absent -> no Transform tab. */
+  transformSlot?: ReactNode
+  /** Present -> a Crop tab appears whose body is a single button that calls
+   *  this. The caller decides WHETHER cropping applies to the current
+   *  selection (e.g. only a tracks[0] video) — this panel just renders the
+   *  tab it's offered and defers to a host-owned crop tool. Absent -> no
+   *  Crop tab. */
+  onOpenCrop?: () => void
+  /** Generate tab body when a video clip is selected. Montaj puts its AI
+   *  generation / regenerate surface here: that reads and writes
+   *  `project.regenQueue`, a host-only field this package deliberately knows
+   *  nothing about (see schema.ts's EditorProject index-signature comment).
+   *  Absent -> no Generate tab. */
   generationSlot?: ReactNode
 }
 
@@ -56,10 +70,11 @@ function basename(path: string): string {
   return path.split('/').pop() ?? path
 }
 
-/** One collapsible section frame, shared by the Clip and Audio track
- *  sections and by Audio's Fades/Ducking sub-groups (via `nested`). Mirrors
- *  OverlayInspector's Transform section header exactly (chevron + uppercase
- *  label), scaled down for a nested sub-group. */
+/** One collapsible section frame, shared by the Audio track section and its
+ *  Fades/Ducking sub-groups (via `nested`). Mirrors OverlayInspector's
+ *  Transform section header exactly (chevron + uppercase label), scaled
+ *  down for a nested sub-group. The Clip side used to share this too, before
+ *  its fields became tabbed (a tab has nothing to fold). */
 function CollapsibleSection({
   label,
   collapsed,
@@ -206,53 +221,167 @@ function withResolvedSpeed(item: VisualItem, speed: number): VisualItem {
   return next.tracks?.[0]?.items[0] ?? item
 }
 
-interface ClipSectionProps {
+// ── Clip properties tabs ────────────────────────────────────────────────
+// Which of the selected clip's tabs is showing. Persisted per browser like
+// every other panel preference, so the operator's habit survives a reload.
+// 'transform' is the default — geometry is what an operator reaches for
+// first when a clip is selected, matching OverlayInspector's own Transform
+// tab for overlays.
+const CLIP_PANEL_TAB_STORAGE_KEY = 'montaj.editor.clipPanelTab'
+type ClipPanelTab = 'transform' | 'speed' | 'volume' | 'crop' | 'generate'
+const CLIP_PANEL_TAB_IDS: readonly ClipPanelTab[] = ['transform', 'speed', 'volume', 'crop', 'generate']
+const reviveClipPanelTab = (raw: unknown): ClipPanelTab | null =>
+  typeof raw === 'string' && (CLIP_PANEL_TAB_IDS as readonly string[]).includes(raw) ? (raw as ClipPanelTab) : null
+
+interface ClipTabsProps {
   item: VisualItem
   onPreviewClip: (item: VisualItem) => void
   onCommitClip: () => void
   onChangeClip: (item: VisualItem) => void
+  transformSlot?: ReactNode
+  onOpenCrop?: () => void
+  generationSlot?: ReactNode
 }
 
-function ClipSection({ item, onPreviewClip, onCommitClip, onChangeClip }: ClipSectionProps) {
-  const [collapsed, setCollapsed] = useState(false)
+/**
+ * A selected clip's properties, tabbed: **Transform · Speed · Volume · Crop
+ * · Generate**, in that fixed order. A tab appears only when it has
+ * something to show for THIS selection — an image clip with no generation
+ * slot offers only Transform and Volume; a main-track video with both slots
+ * offers all five. Replaces the old flat `ClipSection` (Volume + Mute +
+ * video-only Speed stacked above the host's `generationSlot`).
+ */
+function ClipTabs({ item, onPreviewClip, onCommitClip, onChangeClip, transformSlot, onOpenCrop, generationSlot }: ClipTabsProps) {
+  const tabs: TabNavTab<ClipPanelTab>[] = []
+  if (transformSlot !== undefined) tabs.push({ value: 'transform', label: 'Transform' })
+  // Speed is video-only, matching the modal this replaces. `setClipSpeed`
+  // returns the project UNCHANGED for a non-video item (cuts.ts's
+  // `item.type !== 'video'` early return), so offering the tab for an image
+  // would give the operator a slider that silently does nothing.
+  if (item.type === 'video') tabs.push({ value: 'speed', label: 'Speed' })
+  tabs.push({ value: 'volume', label: 'Volume' })
+  if (onOpenCrop) tabs.push({ value: 'crop', label: 'Crop' })
+  if (generationSlot !== undefined) tabs.push({ value: 'generate', label: 'Generate' })
+
+  const [persistedTab, setPersistedTab] = usePersistentState<ClipPanelTab>(
+    CLIP_PANEL_TAB_STORAGE_KEY,
+    'transform',
+    reviveClipPanelTab,
+  )
+
+  // Stale-tab safety AT RENDER TIME, not just on load: unlike LeftPanelTabs'
+  // static rail, this tab set is DERIVED FROM THE SELECTION — an image has
+  // no Speed tab, a clip with no `generationSlot` has no Generate tab — so it
+  // changes as the operator selects different clips. A persisted/active tab
+  // that isn't in the CURRENT set (persisted 'speed', then the operator
+  // selects an image) falls back to 'transform', or to the first tab this
+  // selection actually offers if even Transform is missing, rather than
+  // rendering a blank pane.
+  const currentTab: ClipPanelTab = tabs.some(t => t.value === persistedTab)
+    ? persistedTab
+    : tabs.some(t => t.value === 'transform')
+      ? 'transform'
+      : (tabs[0]?.value ?? 'volume')
+
+  // Lazy mount, then KEEP MOUNTED: a tab body isn't rendered until first
+  // activated, but once mounted it stays mounted and is only hidden on
+  // switch-away — exactly `LeftPanelTabs`' policy, and load-bearing here for
+  // the same reason it's load-bearing there. The Generate tab's slot seeds
+  // its regen form (prompt, model, duration, reference images) from
+  // `useState` initializers that run ONCE per mount; unmounting it on
+  // Generate -> Speed -> Generate would silently lose everything the
+  // operator had typed. Do not "optimize" this into a plain conditional
+  // render.
+  const [mountedTabs, setMountedTabs] = useState<Set<ClipPanelTab>>(() => new Set([currentTab]))
+  if (!mountedTabs.has(currentTab)) {
+    setMountedTabs(prev => {
+      const next = new Set(prev)
+      next.add(currentTab)
+      return next
+    })
+  }
 
   const volume = item.volume ?? 1
   const muted = item.muted ?? false
   const speed = item.speed ?? 1
 
   return (
-    <CollapsibleSection label="Clip" collapsed={collapsed} onToggle={() => setCollapsed(c => !c)}>
-      <VolumeControl
-        value={volume}
-        onChange={v => onPreviewClip({ ...item, volume: v })}
-        onCommit={() => onCommitClip()}
-        label="Volume"
-        idBase="clip-properties-volume"
+    <>
+      <TabNav
+        tabs={tabs}
+        value={currentTab}
+        onChange={setPersistedTab}
+        ariaLabel="Clip panel view"
+        className="shrink-0 border-b border-[var(--editor-border)] px-1"
       />
-      <Row label="Mute">
-        <Switch checked={muted} onCheckedChange={next => onChangeClip({ ...item, muted: next })} aria-label="Mute clip" />
-      </Row>
-      {/* Speed is video-only, matching the modal this replaces. `setClipSpeed`
-          returns the project UNCHANGED for a non-video item (cuts.ts's
-          `item.type !== 'video'` early return), so rendering the control for an
-          image would give the operator a slider that silently does nothing. */}
-      {item.type === 'video' && (
-        <SpeedControl
-          value={speed}
-          // The drag/type gesture only ever shows the SPEED number moving —
-          // mirroring ClipInspectModal's slider, which doesn't resize the clip
-          // until its Save button is pressed. Duration is re-fit exactly once,
-          // in onCommit below, via the real function.
-          onChange={v => onPreviewClip({ ...item, speed: v })}
-          onCommit={v => {
-            onPreviewClip(withResolvedSpeed(item, v))
-            onCommitClip()
-          }}
-          label="Speed"
-          idBase="clip-properties-speed"
-        />
-      )}
-    </CollapsibleSection>
+      {tabs
+        .filter(tab => mountedTabs.has(tab.value))
+        .map(tab => {
+          const active = tab.value === currentTab
+          return (
+            <div
+              key={tab.value}
+              hidden={!active}
+              style={active ? undefined : { display: 'none' }}
+              className="flex flex-col overflow-hidden"
+            >
+              {/* Transform/Generate render the host slot DIRECTLY — each
+                  already brings its own section chrome (OverlayInspector
+                  wraps itself in the same SECTION_CLASS this file uses).
+                  Wrapping them again here would double up borders/padding. */}
+              {tab.value === 'transform' && transformSlot}
+              {tab.value === 'speed' && (
+                <div className="flex flex-col gap-2 p-2">
+                  <SpeedControl
+                    value={speed}
+                    // The drag/type gesture only ever shows the SPEED number
+                    // moving — mirroring ClipInspectModal's slider, which
+                    // doesn't resize the clip until its Save button is
+                    // pressed. Duration is re-fit exactly once, in onCommit
+                    // below, via the real function.
+                    onChange={v => onPreviewClip({ ...item, speed: v })}
+                    onCommit={v => {
+                      onPreviewClip(withResolvedSpeed(item, v))
+                      onCommitClip()
+                    }}
+                    label="Speed"
+                    idBase="clip-properties-speed"
+                  />
+                </div>
+              )}
+              {tab.value === 'volume' && (
+                <div className="flex flex-col gap-2 p-2">
+                  <VolumeControl
+                    value={volume}
+                    onChange={v => onPreviewClip({ ...item, volume: v })}
+                    onCommit={() => onCommitClip()}
+                    label="Volume"
+                    idBase="clip-properties-volume"
+                  />
+                  <Row label="Mute">
+                    <Switch checked={muted} onCheckedChange={next => onChangeClip({ ...item, muted: next })} aria-label="Mute clip" />
+                  </Row>
+                </div>
+              )}
+              {tab.value === 'crop' && onOpenCrop && (
+                <div className="flex flex-col gap-2 p-2">
+                  <p className="text-[11px] text-[var(--editor-text)]/55">
+                    Opens a dedicated tool to crop this clip's source video.
+                  </p>
+                  <button
+                    type="button"
+                    onClick={onOpenCrop}
+                    className="self-start rounded border border-[var(--editor-border)] px-2 py-1 text-[11px] font-medium text-[var(--editor-text)] transition-colors hover:bg-[var(--editor-text)]/5"
+                  >
+                    Open crop tool
+                  </button>
+                </div>
+              )}
+              {tab.value === 'generate' && generationSlot}
+            </div>
+          )
+        })}
+    </>
   )
 }
 
@@ -498,6 +627,8 @@ export default function ClipPropertiesPanel({
   onPreviewAudio,
   onCommitAudio,
   onChangeAudio,
+  transformSlot,
+  onOpenCrop,
   generationSlot,
 }: ClipPropertiesPanelProps) {
   if (!selection) {
@@ -512,10 +643,15 @@ export default function ClipPropertiesPanel({
 
   if (selection.kind === 'clip') {
     return (
-      <>
-        <ClipSection item={selection.item} onPreviewClip={onPreviewClip} onCommitClip={onCommitClip} onChangeClip={onChangeClip} />
-        {generationSlot}
-      </>
+      <ClipTabs
+        item={selection.item}
+        onPreviewClip={onPreviewClip}
+        onCommitClip={onCommitClip}
+        onChangeClip={onChangeClip}
+        transformSlot={transformSlot}
+        onOpenCrop={onOpenCrop}
+        generationSlot={generationSlot}
+      />
     )
   }
 

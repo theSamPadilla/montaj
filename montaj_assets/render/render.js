@@ -588,6 +588,11 @@ async function main(projectPath, { out, workers, clean, imageTone, exportMode = 
       offsetX:        spec.offsetX     ?? 0,
       offsetY:        spec.offsetY     ?? 0,
       scale:          spec.scale       ?? 1,
+      // Per-axis siblings, resolved with the same `?? scale ?? 1` chain the
+      // timeline-core resolver uses, so a legacy uniform item forwards three
+      // identical numbers and bakes exactly what it always baked.
+      scaleX:         spec.scaleX ?? spec.scale ?? 1,
+      scaleY:         spec.scaleY ?? spec.scale ?? 1,
       rotation:       spec.rotation    ?? 0,
       opacity:        spec.opacity     ?? 1,
       keyframes:      spec.keyframes   ?? null,
@@ -609,6 +614,14 @@ async function main(projectPath, { out, workers, clean, imageTone, exportMode = 
       rSeg.offsetX   = spec.offsetX   ?? 0
       rSeg.offsetY   = spec.offsetY   ?? 0
       rSeg.scale     = spec.scale     ?? 1
+      // Same reference-flow argument as rotation below, and the same shape of
+      // partial failure: buildOverlayFilterParts sizes a non-keyframed overlay
+      // from `geometryFor(ov, 'overlay')` read off THIS object, and that
+      // resolver reads `scaleX`/`scaleY` before falling back to `scale`. Miss
+      // these two lines and a non-uniform overlay renders as a uniform box
+      // while the preview shows it stretched.
+      rSeg.scaleX    = spec.scaleX ?? spec.scale ?? 1
+      rSeg.scaleY    = spec.scaleY ?? spec.scale ?? 1
       // rotation must be restated here too: these rSeg objects flow BY REFERENCE
       // through segment-plan.js's `overlays` array (built via activeIn() over
       // puppeteerSegs, preserving object identity) into buildOverlayFilterParts,
@@ -758,6 +771,13 @@ function collectPuppeteerSegments(projectJson, fps, width, height, segDir) {
           offsetX:       item.offsetX ?? 0,
           offsetY:       item.offsetY ?? 0,
           scale:         item.scale   ?? 1,
+          // Per-axis siblings beside `scale`, never instead of it: everything
+          // downstream of this spec (bundleComponent's bake, the rSeg
+          // descriptor, buildOverlayFilterParts) resolves an axis as
+          // `scaleX ?? scale ?? 1`, so a legacy uniform item carries three
+          // identical numbers and takes the path it always took.
+          scaleX:        item.scaleX ?? item.scale ?? 1,
+          scaleY:        item.scaleY ?? item.scale ?? 1,
           rotation:      item.rotation ?? 0,
           opacity:       item.opacity ?? 1,
           opaque:        item.opaque  ?? false,
@@ -858,6 +878,14 @@ function collectAllItems(projectJson) {
         offsetX: item.offsetX ?? 0,
         offsetY: item.offsetY ?? 0,
         scale:   item.scale   ?? 1,
+        // Defaulted explicitly rather than left to `passthrough` (which would
+        // carry `item.scaleX` through only when the item happens to have one):
+        // every geometry field this literal states is stated so the item that
+        // reaches encode-segment.js has a complete, resolved box. `?? scale ??
+        // 1` matches the timeline-core resolver exactly, so a uniform item is
+        // byte-for-byte what it was.
+        scaleX:  item.scaleX  ?? item.scale ?? 1,
+        scaleY:  item.scaleY  ?? item.scale ?? 1,
         opacity: item.opacity ?? 1,
       }
       if (item.type === 'image') {

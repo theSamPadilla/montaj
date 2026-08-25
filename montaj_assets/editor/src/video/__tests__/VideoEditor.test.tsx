@@ -95,6 +95,10 @@ function makeFakeAdapter(): FakeAdapter {
 }
 
 beforeEach(() => {
+  // The caption panel now splits into Style / Captions sub-tabs and defaults
+  // to Style; these tests want the transcript + Regenerate trigger visible, so
+  // pin the sub-tab to 'captions' (usePersistentState reads this at mount).
+  window.localStorage.setItem('montaj.editor.captionPanelTab', JSON.stringify('captions'))
   vi.spyOn(console, 'warn').mockImplementation(() => {})
   vi.spyOn(console, 'error').mockImplementation(() => {})
   ;(globalThis as unknown as { ResizeObserver: unknown }).ResizeObserver = class {
@@ -403,16 +407,32 @@ describe('VideoEditor — editor-package integration', () => {
     })
   })
 
-  // Regression: cancelOverlayEdit routes through sync.applyExternal (see
-  // use-project-sync.ts) to revert the live preview. applyExternal used to leave
-  // the sync core's transient-gesture baseline pointing at the pre-edit snapshot;
-  // if a real external frame then arrived before the *next* gesture, that next
-  // gesture would see a non-null baseline and skip re-baselining, so its commit
-  // pushed the STALE pre-first-gesture snapshot as the undo target — a later
-  // Undo would silently discard the external change. Drives the actual DOM path
-  // (select overlay → open dialog → live preview → Cancel) rather than the core
-  // directly, to prove the fix holds through VideoEditor's wiring too.
-  it('Cancel after previewing an overlay-props edit reverts the project, and a later gesture is not corrupted by the stale pre-edit baseline', async () => {
+  // Regression (now against the Content-tab commit model): the right panel's
+  // Content tab previews an edit transiently through sync.mutateTransient — no
+  // undo entry, no save — and commits it on the field's blur through
+  // sync.commit() — exactly one undo entry + one queued save. This replaced
+  // the floating OverlayPropsModal's Save/Cancel model (see VideoEditor.tsx's
+  // `selectOverlayForEditing` comment): there is no Cancel any more, and no
+  // pre-open snapshot for one to restore — Undo is the only revert path now,
+  // and `editOriginalRef` (the stale pre-edit baseline the old version of this
+  // test guarded surviving a Cancel) is deleted along with the modal, so that
+  // exact bug is structurally impossible.
+  //
+  // The underlying risk it stood in for — a transient-gesture baseline
+  // surviving stale across an external frame that lands between two gestures —
+  // is a SYNC-CORE concern, not a VideoEditor-wiring one, and it is already
+  // covered directly at that layer: see
+  // src/state/__tests__/use-project-sync.test.tsx, describe('useProjectSync —
+  // stale baseline regression'), `it('undo after a gesture that follows an
+  // external frame restores the external state, not the stale pre-gesture
+  // baseline', ...)`. That test drives mutateTransient → applyExternal
+  // (mid-gesture) → mutateTransient → commit → undo directly against the hook,
+  // which is a strictly better place to guard it (no modal, no DOM, no
+  // dependency on VideoEditor's plumbing existing at all). This test's job is
+  // narrower and DOM-specific: prove VideoEditor's Content-tab wiring
+  // (previewOverlayProps → mutateTransient, commitOverlayEdit → sync.commit(),
+  // fired on the field's change/blur) is correct.
+  it('an overlay-props edit previews transiently, then commits on blur as one undo step', async () => {
     onTestFinished(installCanvasHarness())
     const adapter = makeFakeAdapter()
     const onProjectChange = vi.fn()
@@ -423,7 +443,7 @@ describe('VideoEditor — editor-package integration', () => {
         { id: 'trk-1', items: [{ id: 'overlay-1', type: 'overlay', src: 'overlay.jsx', start: 0, end: 4, props: { text: 'Old text' } }] },
       ],
     })
-    const { container, findByLabelText, getByText } = render(
+    const { container, findByLabelText } = render(
       <VideoEditor
         project={initial}
         adapter={adapter}
@@ -433,19 +453,13 @@ describe('VideoEditor — editor-package integration', () => {
     )
 
     // Select the overlay item — additive (metaKey) click, matching the DOM
-    // version's modifier — then open its props dialog. The canvas timeline has
-    // no per-item Pencil button (that was a DOM-row-only affordance), but the
-    // controls bar's own "Edit overlay" button is mode-independent: it fires
-    // the same `requestEditOverlay` off `selectedOverlayItem` regardless of
-    // whether the selection came from a DOM row or a canvas gesture, and opens
-    // the same `OverlayPropsModal`. See `ReviewSurface`'s `selectedOverlayItem &&`
-    // Edit-overlay `<Tooltip>` in VideoEditor.tsx.
+    // version's modifier. Selecting IS opening it now (no Pencil/dialog step):
+    // the right panel's Content tab shows the overlay's fields immediately —
+    // see VideoEditor.tsx's `overlayPropertiesPanel` / `selectOverlayForEditing`.
     selectCanvasItem(container, initial, { type: 'overlay' }, { metaKey: true })
-    const editBtn = await findByLabelText('Edit overlay')
-    fireEvent.click(editBtn)
+    const textField = await findByLabelText('text')
 
     // Preview an edit — mutateTransient baselines against the pre-gesture state.
-    const textField = await findByLabelText('text')
     fireEvent.change(textField, { target: { value: 'Live preview' } })
     await waitFor(() => expect(onProjectChange).toHaveBeenLastCalledWith(
       expect.objectContaining({
@@ -457,8 +471,24 @@ describe('VideoEditor — editor-package integration', () => {
       }),
     ))
 
-    // Cancel — routes through applyExternal, reverting to the pre-edit snapshot.
-    fireEvent.click(getByText('Cancel'))
+    // Still transient: nothing has been pushed to the undo stack yet, so Undo
+    // here is a no-op — sync core's undo() pops an empty stack and returns
+    // before touching project state, so onProjectChange doesn't fire again.
+    const callsBeforeUndo = onProjectChange.mock.calls.length
+    await act(async () => {
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'z', metaKey: true }))
+    })
+    expect(onProjectChange.mock.calls.length).toBe(callsBeforeUndo)
+
+    // Blur commits the gesture as ONE undo step. commit() doesn't itself
+    // change project content (it only pushes the pre-gesture baseline and
+    // queues a save), so the Undo right after is what proves the whole typing
+    // gesture collapsed to exactly one entry — it lands all the way back on
+    // the pre-edit text, not some intermediate preview.
+    fireEvent.blur(textField)
+    await act(async () => {
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'z', metaKey: true }))
+    })
     await waitFor(() => expect(onProjectChange).toHaveBeenLastCalledWith(
       expect.objectContaining({
         name: 'Original',
@@ -469,27 +499,6 @@ describe('VideoEditor — editor-package integration', () => {
         ]),
       }),
     ))
-
-    // A real external frame now arrives (SSE echo / caption regen / restoreVersion)
-    // — an authoritative change that must survive whatever the cancelled gesture
-    // left behind in the sync core.
-    await act(async () => { adapter.emit({ ...initial, name: 'FromServer' }) })
-    await waitFor(() => expect(onProjectChange).toHaveBeenLastCalledWith(expect.objectContaining({ name: 'FromServer' })))
-
-    // A second overlay-props gesture must baseline against THIS state, not a
-    // stale pre-first-gesture snapshot left behind if Cancel failed to clear it.
-    const editBtn2 = await findByLabelText('Edit overlay')
-    fireEvent.click(editBtn2)
-    const textField2 = await findByLabelText('text')
-    fireEvent.change(textField2, { target: { value: 'Second edit' } })
-    fireEvent.click(getByText('Save'))
-
-    // Undo should remove only the second gesture, landing back on the external
-    // ('FromServer') state — not the stale first-gesture baseline ('Original').
-    await act(async () => {
-      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'z', metaKey: true }))
-    })
-    await waitFor(() => expect(onProjectChange).toHaveBeenLastCalledWith(expect.objectContaining({ name: 'FromServer' })))
   })
 
   // Caption LANES are dense from 0 by contract — the bands the painter emits,

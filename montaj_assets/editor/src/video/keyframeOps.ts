@@ -31,25 +31,18 @@ import { geometryAt, normalizeTrack } from '@bycrux/timeline-core'
  * to spell `item.type === 'overlay'` inline routes through here instead, so
  * the set of keyframeable kinds is defined in exactly one place.
  *
- * Overlay-only today, and that is a RENDER constraint rather than a UI
- * preference. `geometryFor` (timeline-core) reads only an item's static
- * scalars and never its `keyframes`, and the ffmpeg composite emits ONE static
- * box per segment — there is no per-frame hook in it. Overlays escape that
- * only because they are captured frame-by-frame in a browser, where the shim
- * applies `geometryAt(item, 'overlay', frame / fps)` as a CSS transform and
- * bakes the motion into the pixels (`render/bundle.js` generateShim,
- * `render/encode-segment.js:558-572`).
+ * VIDEO, IMAGE AND OVERLAY, since SP9d. It was overlay-only for a real render
+ * reason, not a UI preference: the ffmpeg composite emitted ONE static box per
+ * segment and had no per-frame hook, while overlays escaped that only because
+ * they are captured frame-by-frame in a browser. That changed when
+ * `encode-segment.js` learned to compile a curve into a time-varying ffmpeg
+ * expression (`animatedGeometry`), so a clip's position, scale and rotation now
+ * animate in the export exactly as they do in the preview.
  *
- * So widening this predicate is NOT sufficient to support video keyframes.
- * The PREVIEW gates on the same overlay-only condition, deliberately
- * (`preview/OverlayItemsLayer.tsx:466`) — it mirrors the renderer so it can
- * never promise motion the export cannot reproduce. A keyframed video would
- * therefore animate nowhere: a confusing no-op rather than a wrong export.
- * Turning it on is THREE coordinated changes — this predicate, that preview
- * branch, and the renderer's per-frame geometry — landed together or not at
- * all. See docs/plans/MASTER.md:221 for the ffmpeg-expression vs
- * sub-segment cost analysis and :225 for the cost spike that gates it
- * (tracked as SP9d).
+ * Keyframeability is now PER PROPERTY PER KIND, though — a clip can animate
+ * position but not opacity — so an item-level yes/no is no longer the whole
+ * answer. Use {@link canKeyframeProp} wherever a specific property is in hand;
+ * this predicate answers only "can ANY property on this item be keyframed".
  *
  * A type predicate, not a plain `boolean`: call sites used to spell
  * `!item || item.type !== 'overlay'`, which narrowed `item`'s nullability
@@ -61,7 +54,36 @@ import { geometryAt, normalizeTrack } from '@bycrux/timeline-core'
  * check.
  */
 export function canKeyframe(item: VisualItem | null | undefined): item is VisualItem {
-  return !!item && item.type === 'overlay'
+  return !!item && (item.type === 'overlay' || item.type === 'video' || item.type === 'image')
+}
+
+/**
+ * Whether ONE property on ONE item can be keyframed.
+ *
+ * Overlays: everything. Clips (video/image): everything EXCEPT `opacity`.
+ *
+ * The opacity exclusion is a hard limit of the render, not a scope decision.
+ * A clip's transform reaches ffmpeg as a filter expression, and ffmpeg happily
+ * evaluates expressions for `overlay`'s x/y, `scale`'s w/h and `rotate`'s
+ * angle. Its alpha control does not play along: `colorchannelmixer` declares
+ * `aa` as a `<double>`, which accepts a literal number and nothing else — no
+ * expression, at any evaluation mode. (The `T` flag ffmpeg prints beside it is
+ * `AV_OPT_FLAG_RUNTIME_PARAM`, i.e. settable via `sendcmd`/`zmq`; it is not
+ * expression support, and it has been misread as such before.) There is
+ * therefore no way to fade a clip through the ffmpeg path at all.
+ *
+ * Overlays are exempt because they never touch that filter: they are baked
+ * frame-by-frame in a browser, where opacity is just another CSS value.
+ *
+ * Closing this gap needs the per-frame browser bake extended to video — decode
+ * every frame of the animated span and composite it the way overlays already
+ * are. That was measured at 14-33x the expression path's render time and is
+ * explicitly out of scope; see docs/RENDER.md.
+ */
+export function canKeyframeProp(item: VisualItem | null | undefined, prop: KeyframeProp): boolean {
+  if (!canKeyframe(item)) return false
+  if (item.type === 'overlay') return true
+  return prop !== 'opacity'
 }
 
 // ── Reading ──────────────────────────────────────────────────────────────
@@ -86,6 +108,65 @@ export function hasKeyframes(item: VisualItem, prop: KeyframeProp): boolean {
 /** True when `item` has ANY non-empty keyframe track, on any prop. */
 export function isKeyframed(item: VisualItem): boolean {
   return (item.keyframes ?? []).some(track => track.points.length > 0)
+}
+
+/**
+ * Whether `item` scales UNIFORMLY — i.e. carries no per-axis scale AT ALL,
+ * neither a static `scaleX`/`scaleY` scalar nor a keyframe track for either.
+ *
+ * ABSENCE is the test, deliberately, and not `scaleX === scaleY`: an overlay
+ * the operator unlocked on purpose and happens to have left at 120%/120% is
+ * authored per-axis, and an equality test would silently re-lock it the moment
+ * the two numbers met.
+ */
+export function isUniformScale(item: VisualItem): boolean {
+  return (
+    item.scaleX === undefined && item.scaleY === undefined &&
+    !hasKeyframes(item, 'scaleX') && !hasKeyframes(item, 'scaleY')
+  )
+}
+
+/** The two orders {@link transformProps} chooses between. Position first,
+ *  scale, then rotation and opacity — the order the inspector header's
+ *  all-props actions walk them, kept identical for both shapes. */
+const UNIFORM_TRANSFORM_PROPS: readonly KeyframeProp[] = ['offsetX', 'offsetY', 'scale', 'rotation', 'opacity']
+const PER_AXIS_TRANSFORM_PROPS: readonly KeyframeProp[] = ['offsetX', 'offsetY', 'scaleX', 'scaleY', 'rotation', 'opacity']
+
+/**
+ * The transform props that are AUTHORITATIVE for `item` — the set that any
+ * "do this to EVERY transform prop" action must walk, and the whole reason
+ * {@link isUniformScale} exists.
+ *
+ * Never a flat list of all seven, and never one fixed list of five. The scale
+ * props form a fallback chain — `sampleTrack(scaleX) ?? item.scaleX ??
+ * <the resolved scale>` (see `geometry.js`'s non-uniform section) — so a
+ * per-axis value SHADOWS the uniform one, and getting this set wrong breaks a
+ * keyframe-everything action in one of two symmetric ways:
+ *
+ *   - Handing `scaleX`/`scaleY` to a UNIFORM item seeds one-point (i.e.
+ *     constant) per-axis tracks. Those immediately shadow the `scale` track,
+ *     and the overlay's uniform zoom silently stops happening — nothing on
+ *     screen says why, and the damage is invisible until the operator scrubs.
+ *   - Handing `scale` to a PER-AXIS item writes a prop that `scaleX`/`scaleY`
+ *     already shadow, so the gesture appears to do nothing at all.
+ *
+ * Both the inspector's header actions and the canvas timeline's
+ * double-click-to-key gesture read this, so the rule is defined once. It used
+ * to be a hand-maintained constant in each of them; two copies of a rule whose
+ * failure mode is a silent frozen animation is exactly the kind of thing that
+ * drifts. Do NOT reintroduce a local copy.
+ *
+ * The result is ALSO filtered by {@link canKeyframeProp}, which is what keeps a
+ * clip's un-animatable `opacity` out of every "do this to every transform prop"
+ * action. That matters in both directions and both are easy to get wrong:
+ * double-clicking a video would otherwise write an opacity track the renderer
+ * silently ignores, and the inspector's header diamond — which lights only when
+ * EVERY prop in this list is keyed at the playhead — could then never light on a
+ * clip at all, because the one prop it waits for can never be keyed.
+ */
+export function transformProps(item: VisualItem): readonly KeyframeProp[] {
+  const base = isUniformScale(item) ? UNIFORM_TRANSFORM_PROPS : PER_AXIS_TRANSFORM_PROPS
+  return base.filter(prop => canKeyframeProp(item, prop))
 }
 
 /**
@@ -145,6 +226,8 @@ function withStaticValue(item: VisualItem, prop: KeyframeProp, value: number): V
     case 'offsetX': return { ...item, offsetX: value }
     case 'offsetY': return { ...item, offsetY: value }
     case 'scale': return { ...item, scale: value }
+    case 'scaleX': return { ...item, scaleX: value }
+    case 'scaleY': return { ...item, scaleY: value }
     case 'rotation': return { ...item, rotation: value }
     case 'opacity': return { ...item, opacity: value }
   }

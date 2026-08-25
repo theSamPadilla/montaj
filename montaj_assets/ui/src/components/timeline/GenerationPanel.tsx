@@ -31,8 +31,7 @@ const CHIP_OFF = 'border-[var(--editor-border)] bg-[var(--editor-surface)] text-
 
 /**
  * `<GenerationPanel>` — Montaj's AI-regeneration surface for a video clip,
- * rendered inside the editor's right-hand properties panel (beneath the
- * editor-owned clip properties — volume/mute/speed — via
+ * rendered as the editor's clip properties panel's Generate tab (via
  * `renderGenerationPanel`).
  *
  * Reads/writes `project.regenQueue` and `project.storyboard`: host-only

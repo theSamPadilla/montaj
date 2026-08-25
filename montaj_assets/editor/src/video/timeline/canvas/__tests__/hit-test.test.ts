@@ -413,13 +413,11 @@ describe('hitTest — keyframe strip (SP9b T3.3)', () => {
     expect(hitTest({ x: 250, y }, plainLayout, VIEWPORT, { selectedIds: ['o1'] })).toMatchObject({ kind: 'item-body', itemId: 'o1' })
   })
 
-  it('yields no keyframe hit on a selected, keyframed item that is not an overlay', () => {
-    // Overlays are the only keyframeable kind (schema.ts's `KeyframeProp`
-    // doc); the row scan gates on `canKeyframe(item)` rather than trusting
-    // `isKeyframed` alone, so a hand-edited video clip carrying a stray
-    // `keyframes` array still never hit-tests as one — the point of this
-    // case is proving the gate isn't accidentally weakened to `isKeyframed`
-    // by itself.
+  it('YIELDS a keyframe hit on a selected, keyframed video clip (SP9d)', () => {
+    // Clips became keyframeable once the renderer could compile curves into
+    // ffmpeg expressions, so their diamonds must be grabbable like an
+    // overlay's. The gate is still `canKeyframe(item)`, not `isKeyframed`
+    // alone — the case below proves it is still a gate.
     const videoKf = {
       id: 'p',
       tracks: [[{
@@ -430,7 +428,21 @@ describe('hitTest — keyframe strip (SP9b T3.3)', () => {
     const videoLayout = computeTimelineLayout(videoKf)
     const row = videoLayout.rows[0]
     const y = row.y + row.height - 2
-    expect(hitTest({ x: 250, y }, videoLayout, VIEWPORT, { selectedIds: ['c0'] }).kind).not.toBe('keyframe')
+    expect(hitTest({ x: 250, y }, videoLayout, VIEWPORT, { selectedIds: ['c0'] }).kind).toBe('keyframe')
+  })
+
+  it('still yields no keyframe hit on a kind that cannot be keyframed at all', () => {
+    const audioKf = {
+      id: 'p',
+      tracks: [[{
+        id: 'a0', type: 'audio', src: 'a.wav', start: 2, end: 4,
+        keyframes: [{ prop: 'offsetX', points: [{ t: 0.5, value: 0 }] }],
+      }]],
+    } as unknown as Project
+    const audioLayout = computeTimelineLayout(audioKf)
+    const row = audioLayout.rows[0]
+    const y = row.y + row.height - 2
+    expect(hitTest({ x: 250, y }, audioLayout, VIEWPORT, { selectedIds: ['a0'] }).kind).not.toBe('keyframe')
   })
 
   it('is backward compatible: omitting `selectedIds` entirely never produces a keyframe hit', () => {
