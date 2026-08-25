@@ -72,7 +72,7 @@ function renderSegment(seg, key, { frame, fps, color, backgroundColor, fontSize,
   return (
     <div key={key} style={captionOuterStyle(seg)} data-caption-id={seg.id}>
       <div style={captionInnerStyle(seg, {
-        bottom: '8%',
+        bottom: '15%',
         left: 0,
         right: 0,
         display: 'flex',

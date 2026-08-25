@@ -236,7 +236,7 @@ export default function ProjectList() {
             Montaj gives it the tools to edit video.
           </p>
           {!showGuide && skillPath && (
-            <div className="mt-4 max-w-xl">
+            <div className="mt-4">
               <p className="mb-2 text-xs font-semibold uppercase tracking-wider text-gray-400 dark:text-gray-500">
                 Send this to your agent
               </p>
@@ -245,7 +245,7 @@ export default function ProjectList() {
           )}
           <div className="mt-6 flex items-center justify-between text-xs text-gray-400 dark:text-gray-500">
             <p>
-              Built with love and coffee by{' '}
+              Built with ♥️ and ☕ by{' '}
               <a
                 href="https://bycrux.com"
                 target="_blank"

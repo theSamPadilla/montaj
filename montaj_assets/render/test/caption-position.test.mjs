@@ -270,54 +270,54 @@ describe('no-offset equivalence gate — outer wrapper (all 7 templates)', () =>
 })
 
 describe('no-offset equivalence gate — inner anchor, historical values (10 wrapper blocks)', () => {
-  test('clean: bottom 10%, padding 0 7%, flex+justifyContent, opacity', () => {
+  test('clean: bottom 17%, padding 0 7%, flex+justifyContent, opacity', () => {
     const { innerEl } = renderNoOffset('clean')
     assert.equal(innerEl.type, 'div')
     assert.deepEqual(innerEl.props.style, {
       position: 'absolute',
-      bottom: '10%', left: 0, right: 0,
+      bottom: '17%', left: 0, right: 0,
       display: 'flex', justifyContent: 'center',
       padding: '0 7%',
       opacity: 1,
     })
   })
 
-  test('subtitle: bottom 8%, padding 0 6%, flex+justifyContent, opacity', () => {
+  test('subtitle: bottom 15%, padding 0 6%, flex+justifyContent, opacity', () => {
     const { innerEl } = renderNoOffset('subtitle')
     assert.deepEqual(innerEl.props.style, {
       position: 'absolute',
-      bottom: '8%', left: 0, right: 0,
+      bottom: '15%', left: 0, right: 0,
       display: 'flex', justifyContent: 'center',
       padding: '0 6%',
       opacity: 1,
     })
   })
 
-  test('karaoke — no-words fallback branch: bottom 18%, padding 0 8%, textAlign center, opacity', () => {
+  test('karaoke — no-words fallback branch: bottom 25%, padding 0 8%, textAlign center, opacity', () => {
     const { innerEl } = renderNoOffset('karaoke', { words: [] })
     assert.deepEqual(innerEl.props.style, {
       position: 'absolute',
-      bottom: '18%', left: 0, right: 0,
+      bottom: '25%', left: 0, right: 0,
       textAlign: 'center', padding: '0 8%',
       opacity: 1,
     })
   })
 
-  test('karaoke — main (words) branch: bottom 18%, padding 0 8%, textAlign center, opacity: fadeOpacity', () => {
+  test('karaoke — main (words) branch: bottom 25%, padding 0 8%, textAlign center, opacity: fadeOpacity', () => {
     const { innerEl } = renderNoOffset('karaoke', { words: WORDS })
     assert.deepEqual(innerEl.props.style, {
       position: 'absolute',
-      bottom: '18%', left: 0, right: 0,
+      bottom: '25%', left: 0, right: 0,
       textAlign: 'center', padding: '0 8%',
       opacity: 1,
     })
   })
 
-  test('outline — no-words fallback branch: bottom 18%, padding 0 6%, textAlign center, opacity', () => {
+  test('outline — no-words fallback branch: bottom 25%, padding 0 6%, textAlign center, opacity', () => {
     const { innerEl } = renderNoOffset('outline', { words: [] })
     assert.deepEqual(innerEl.props.style, {
       position: 'absolute',
-      bottom: '18%', left: 0, right: 0,
+      bottom: '25%', left: 0, right: 0,
       textAlign: 'center', padding: '0 6%',
       opacity: 1,
     })
@@ -326,51 +326,51 @@ describe('no-offset equivalence gate — inner anchor, historical values (10 wra
   // Asymmetry preserved on purpose (per the plan): the outline MAIN branch's
   // anchor never carried an opacity key, unlike its own fallback branch above
   // and unlike every other template's main branch. Do not "fix" this here.
-  test('outline — main (words) branch: bottom 18%, padding 0 6%, textAlign center, NO opacity key', () => {
+  test('outline — main (words) branch: bottom 25%, padding 0 6%, textAlign center, NO opacity key', () => {
     const { innerEl } = renderNoOffset('outline', { words: WORDS })
     assert.deepEqual(innerEl.props.style, {
       position: 'absolute',
-      bottom: '18%', left: 0, right: 0,
+      bottom: '25%', left: 0, right: 0,
       textAlign: 'center', padding: '0 6%',
     })
     assert.ok(!('opacity' in innerEl.props.style))
   })
 
-  test('highlight-box — no-words fallback branch: bottom 18%, padding 0 6%, textAlign center, opacity', () => {
+  test('highlight-box — no-words fallback branch: bottom 25%, padding 0 6%, textAlign center, opacity', () => {
     const { innerEl } = renderNoOffset('highlight-box', { words: [] })
     assert.deepEqual(innerEl.props.style, {
       position: 'absolute',
-      bottom: '18%', left: 0, right: 0,
+      bottom: '25%', left: 0, right: 0,
       textAlign: 'center', padding: '0 6%',
       opacity: 1,
     })
   })
 
   // Same asymmetry as outline — main branch never had an opacity key.
-  test('highlight-box — main (words) branch: bottom 18%, padding 0 6%, textAlign center, NO opacity key', () => {
+  test('highlight-box — main (words) branch: bottom 25%, padding 0 6%, textAlign center, NO opacity key', () => {
     const { innerEl } = renderNoOffset('highlight-box', { words: WORDS })
     assert.deepEqual(innerEl.props.style, {
       position: 'absolute',
-      bottom: '18%', left: 0, right: 0,
+      bottom: '25%', left: 0, right: 0,
       textAlign: 'center', padding: '0 6%',
     })
     assert.ok(!('opacity' in innerEl.props.style))
   })
 
-  test('word-by-word: bottom 18%, padding 0 8%, textAlign center, no wrapper opacity', () => {
+  test('word-by-word: bottom 25%, padding 0 8%, textAlign center, no wrapper opacity', () => {
     const { innerEl } = renderNoOffset('word-by-word', { words: WORDS })
     assert.deepEqual(innerEl.props.style, {
       position: 'absolute',
-      bottom: '18%', left: 0, right: 0,
+      bottom: '25%', left: 0, right: 0,
       textAlign: 'center', padding: '0 8%',
     })
   })
 
-  test('pop: bottom 18%, padding 0 8%, textAlign center, no wrapper opacity', () => {
+  test('pop: bottom 25%, padding 0 8%, textAlign center, no wrapper opacity', () => {
     const { innerEl } = renderNoOffset('pop', { words: WORDS })
     assert.deepEqual(innerEl.props.style, {
       position: 'absolute',
-      bottom: '18%', left: 0, right: 0,
+      bottom: '25%', left: 0, right: 0,
       textAlign: 'center', padding: '0 8%',
     })
   })

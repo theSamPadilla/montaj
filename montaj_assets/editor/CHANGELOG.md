@@ -8,6 +8,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Video editor
 
+- **Fixed: turning on a social-media preview from "None" showed nothing until a
+  page reload.** The safe-zone chrome overlay attached its size observer only
+  once, on mount — and while "None" was selected the observed element wasn't in
+  the DOM, so switching to TikTok/Instagram/YouTube mounted the chrome but never
+  measured it, leaving it invisible until a reload happened to remount it with a
+  platform already set. The observer now re-attaches whenever the platform
+  changes, so the chrome appears the instant it is turned on.
+- **The social-media preview chrome is closer to each app.** TikTok and YouTube
+  Shorts now draw their bottom tab bars; YouTube adds a top-left back arrow and a
+  solid-white Subscribe pill; Instagram adds the reshare action to its rail and
+  the bottom add-comment bar. Still generic placeholder content and icon-only
+  marks throughout — never real account data or platform wordmarks.
 - **Fixed: Dolby Vision sources no longer fail the export.** A DV clip (e.g. an
   iPhone HDR recording) carries a Dolby Vision RPU that propagated untouched
   through the pipeline into libx265, which re-emitted it in-band; the MP4 muxer

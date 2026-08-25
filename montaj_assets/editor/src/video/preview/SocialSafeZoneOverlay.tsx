@@ -1,7 +1,8 @@
 /**
  * SocialSafeZoneOverlay — a preview-only viewing aid that draws a REALISTIC
- * mock of a target social platform's in-app chrome (status bar, nav, engagement
- * rail, caption/credit block) semi-transparently over the video preview, so
+ * mock of a target social platform's in-app chrome (status bar, top nav,
+ * engagement rail, caption/credit block, and the app's own bottom tab bar /
+ * add-comment bar) semi-transparently over the video preview, so
  * the operator can see roughly what the app's own UI will sit on top of their
  * content once posted. Mirrors CapCut's "Preview your video for social media"
  * picker — TikTok, YouTube Shorts and Instagram Reels, each with its own
@@ -68,11 +69,16 @@ import {
   BatteryFull,
   Bookmark,
   Camera,
+  ChevronLeft,
+  Clapperboard,
   Heart,
+  Home,
+  Inbox,
   MessageCircle,
   MoreHorizontal,
   MoreVertical,
   Music,
+  Play,
   Plus,
   Repeat2,
   Search,
@@ -83,6 +89,7 @@ import {
   ThumbsDown,
   ThumbsUp,
   User,
+  Users,
   Wifi,
   type LucideIcon,
 } from 'lucide-react'
@@ -141,7 +148,14 @@ export default function SocialSafeZoneOverlay({ platform }: SocialSafeZoneOverla
     })
     obs.observe(el)
     return () => obs.disconnect()
-  }, [])
+    // Keyed on `platform`, not `[]`: the observed `wrapRef` div only exists
+    // while a recognized platform is active (the `!renderChrome` early-return
+    // below unmounts it otherwise). Tying the observer's lifecycle to
+    // `platform` re-attaches it the instant the chrome mounts — without this,
+    // switching from "None" to a platform mounts the div but never re-runs
+    // this effect, so `scale` stays null and the chrome never paints until a
+    // full reload remounts the component with the platform already set.
+  }, [platform])
 
   const renderChrome = platform ? PLATFORM_CHROME[platform] : undefined
   if (!renderChrome) return null
@@ -223,6 +237,31 @@ function RailAction({ icon: Icon, label }: { icon: LucideIcon; label: string }) 
   )
 }
 
+/** App bottom tab bar — evenly spaced icon-over-label tabs pinned to the very
+ *  bottom of the frame, the way TikTok and YouTube Shorts both draw their app
+ *  nav. It belongs in a "what covers my content" aid precisely because it
+ *  occupies the bottom strip a caption placed too low would collide with. The
+ *  middle "create" tab is a filled white chip with no label, matching how both
+ *  apps draw their + button. */
+function BottomNav({ tabs }: { tabs: { icon: LucideIcon; label?: string; create?: boolean }[] }) {
+  return (
+    <div className="absolute flex items-end justify-between" style={{ left: 44, right: 44, bottom: 28 }}>
+      {tabs.map((t, i) => (
+        <div key={i} className="flex flex-col items-center" style={{ gap: 7 }}>
+          {t.create ? (
+            <div className="flex items-center justify-center rounded-xl bg-white/95" style={{ width: 78, height: 54 }}>
+              <t.icon size={38} strokeWidth={3} className="text-black" />
+            </div>
+          ) : (
+            <t.icon size={46} strokeWidth={2.25} className="text-white/95" />
+          )}
+          {t.label && <span className="text-white/90" style={{ fontSize: 25, fontWeight: 600 }}>{t.label}</span>}
+        </div>
+      ))}
+    </div>
+  )
+}
+
 // ── TikTok chrome ────────────────────────────────────────────────────────
 
 function TikTokChrome() {
@@ -285,6 +324,17 @@ function TikTokChrome() {
           <span>Music name</span>
         </div>
       </div>
+
+      {/* Bottom app nav — Home / Friends / create / Inbox / Profile */}
+      <BottomNav
+        tabs={[
+          { icon: Home, label: 'Home' },
+          { icon: Users, label: 'Friends' },
+          { icon: Plus, create: true },
+          { icon: Inbox, label: 'Inbox' },
+          { icon: User, label: 'Profile' },
+        ]}
+      />
     </div>
   )
 }
@@ -295,6 +345,9 @@ function YouTubeShortsChrome() {
   return (
     <div className="absolute inset-0" style={{ filter: SHADOW_FILTER }}>
       <StatusBar />
+
+      {/* Top-left — back */}
+      <ChevronLeft size={48} strokeWidth={2.5} className="absolute text-white/90" style={{ top: 132, left: 40 }} />
 
       {/* Top-right — search, more (kebab) */}
       <div className="absolute flex items-center text-white/90" style={{ top: 138, right: 48, gap: 36 }}>
@@ -328,8 +381,8 @@ function YouTubeShortsChrome() {
           </div>
           <span style={{ fontSize: 46, fontWeight: 700 }}>@channel</span>
           <span
-            className="rounded-full bg-white/25 border border-white/60 text-white"
-            style={{ fontSize: 34, fontWeight: 700, padding: '10px 28px' }}
+            className="rounded-full bg-white text-black"
+            style={{ fontSize: 34, fontWeight: 700, padding: '10px 30px' }}
           >
             Subscribe
           </span>
@@ -338,6 +391,17 @@ function YouTubeShortsChrome() {
           Here are some descriptions about videos
         </div>
       </div>
+
+      {/* Bottom app nav — Home / Shorts / create / Subscriptions / You */}
+      <BottomNav
+        tabs={[
+          { icon: Home, label: 'Home' },
+          { icon: Play, label: 'Shorts' },
+          { icon: Plus, create: true },
+          { icon: Clapperboard, label: 'Subscriptions' },
+          { icon: User, label: 'You' },
+        ]}
+      />
     </div>
   )
 }
@@ -358,10 +422,11 @@ function InstagramReelsChrome() {
         <Camera size={42} strokeWidth={2.5} className="text-white/90" />
       </div>
 
-      {/* Right rail — likes, comments, send, more, audio thumbnail */}
-      <div className="absolute flex flex-col items-center" style={{ right: 40, top: 900, gap: 52 }}>
+      {/* Right rail — likes, comments, reshare, send, more, audio thumbnail */}
+      <div className="absolute flex flex-col items-center" style={{ right: 40, top: 800, gap: 52 }}>
         <RailAction icon={Heart} label="2.8M" />
         <RailAction icon={MessageCircle} label="2.8M" />
+        <RailAction icon={Repeat2} label="2.8M" />
         <RailAction icon={Send} label="2.8M" />
         <MoreHorizontal size={74} strokeWidth={2.25} className="text-white/95" />
         <div
@@ -396,6 +461,17 @@ function InstagramReelsChrome() {
           <Music size={30} strokeWidth={2.25} />
           <span>Music name</span>
         </div>
+      </div>
+
+      {/* Bottom — add-comment bar + save */}
+      <div className="absolute flex items-center" style={{ left: 44, right: 44, bottom: 34, gap: 22 }}>
+        <div
+          className="flex-1 flex items-center rounded-full border border-white/40 bg-white/10 text-white/80"
+          style={{ height: 84, paddingLeft: 40, fontSize: 34 }}
+        >
+          Add comment...
+        </div>
+        <Bookmark size={60} strokeWidth={2.25} className="text-white/95" />
       </div>
     </div>
   )

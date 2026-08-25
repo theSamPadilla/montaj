@@ -78,7 +78,7 @@ function renderSegment(seg, key, { frame, fps, t, color, accentColor, fontSize, 
     return (
       <div key={key} style={captionOuterStyle(seg)} data-caption-id={seg.id}>
         <div style={captionInnerStyle(seg, {
-          bottom: '18%',
+          bottom: '25%',
           left: 0,
           right: 0,
           textAlign,
@@ -109,7 +109,7 @@ function renderSegment(seg, key, { frame, fps, t, color, accentColor, fontSize, 
   return (
     <div key={key} style={captionOuterStyle(seg)} data-caption-id={seg.id}>
       <div style={captionInnerStyle(seg, {
-        bottom: '18%',
+        bottom: '25%',
         left: 0,
         right: 0,
         textAlign,

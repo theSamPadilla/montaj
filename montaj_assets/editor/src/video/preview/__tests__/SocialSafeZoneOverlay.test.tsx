@@ -66,6 +66,10 @@ describe('SocialSafeZoneOverlay — TikTok chrome', () => {
     expect(getByText('@Your name')).toBeTruthy()
     expect(getByText('Here are some descriptions about videos')).toBeTruthy()
     expect(getByText('Music name')).toBeTruthy()
+
+    // Bottom app nav
+    expect(getByText('Home')).toBeTruthy()
+    expect(getByText('Profile')).toBeTruthy()
   })
 })
 
@@ -80,6 +84,10 @@ describe('SocialSafeZoneOverlay — YouTube Shorts chrome', () => {
     // Right rail — thumbs-up and comments are both counted; thumbs-down,
     // share, remix and the sound thumbnail are icon-only (no count).
     expect(getAllByText('2.8M')).toHaveLength(2)
+
+    // Bottom app nav
+    expect(getByText('Home')).toBeTruthy()
+    expect(getByText('Subscriptions')).toBeTruthy()
   })
 })
 
@@ -92,8 +100,10 @@ describe('SocialSafeZoneOverlay — Instagram Reels chrome', () => {
     expect(getByText('Reels')).toBeTruthy()
     expect(getByText('Follow')).toBeTruthy()
     expect(getByText('Your name')).toBeTruthy()
-    // Right rail — likes, comments and send are each counted 2.8M.
-    expect(getAllByText('2.8M')).toHaveLength(3)
+    // Right rail — likes, comments, reshare and send are each counted 2.8M.
+    expect(getAllByText('2.8M')).toHaveLength(4)
+    // Immersive reel view also draws the add-comment bar.
+    expect(getByText('Add comment...')).toBeTruthy()
   })
 })
 

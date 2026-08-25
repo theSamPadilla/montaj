@@ -113,7 +113,7 @@ function renderSegment(seg, key, { fps, t, activeColor, fontSize, fontFamily, fo
           that span already carries its own spring pop-in `transform: scale(...)`, and
           merging the two transforms would corrupt the pop animation. */}
       <div style={captionInnerStyle(seg, {
-        bottom: '18%',
+        bottom: '25%',
         left: 0,
         right: 0,
         textAlign,
