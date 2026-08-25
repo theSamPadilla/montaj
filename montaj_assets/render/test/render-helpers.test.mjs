@@ -3,7 +3,8 @@ import assert from 'node:assert/strict'
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
-import { getTotalDurationSeconds, collectAllItems, collectPuppeteerSegments, resolveFilePath, shouldSkipNormalize } from '../render.js'
+import { getTotalDurationSeconds, collectAllItems, collectPuppeteerSegments, resolveFilePath, shouldSkipNormalize, buildNormalizedOutputPath } from '../render.js'
+import { MASTER_LOOK } from '../look.js'
 
 test('getTotalDurationSeconds: returns 0 for empty tracks', () => {
   assert.equal(getTotalDurationSeconds({ tracks: [[]] }), 0)
@@ -37,6 +38,18 @@ test('getTotalDurationSeconds: items missing end field default to 0', () => {
   assert.equal(getTotalDurationSeconds({ tracks: [[{ id: 'c1' }]] }), 0)
 })
 
+test('getTotalDurationSeconds: object-shape tracks (VisualTrack[]) return the same max end as the legacy array-of-arrays shape', () => {
+  // trackItems() (called internally) is both-shapes tolerant; this pins that
+  // getTotalDurationSeconds itself never assumes tracks[i] is a bare array.
+  const project = {
+    tracks: [
+      { id: 'trk-0', items: [{ id: 'c1', end: 10.0 }, { id: 'c2', end: 20.0 }] },
+      { id: 'trk-1', items: [{ id: 'ov1', end: 15.0 }], volume: 0.8, muted: false },
+    ],
+  }
+  assert.equal(getTotalDurationSeconds(project), 20.0)
+})
+
 test('collectAllItems: collects image and video items from all tracks', () => {
   const project = {
     tracks: [
@@ -68,6 +81,31 @@ test('collectAllItems: tracks[0] items are included (no special-casing)', () => 
   assert.equal(videoItems.length, 1)
   assert.equal(videoItems[0].id, 'primary')
   assert.equal(videoItems[0].trackIdx, 0)
+})
+
+test('collectAllItems: object-shape tracks (VisualTrack[]) collect the same items as the legacy array-of-arrays shape', () => {
+  const project = {
+    tracks: [
+      { id: 'trk-0', items: [{ id: 'bg1', type: 'image', src: '/bg.png', start: 0, end: 10, offsetX: 0, offsetY: 0, scale: 1, opacity: 1 }] },
+      {
+        id: 'trk-1',
+        items: [
+          { id: 'img1', type: 'image', src: '/logo.png', start: 0, end: 10, offsetX: 0, offsetY: 0, scale: 1, opacity: 1 },
+          { id: 'vid1', type: 'video', src: '/pip.mp4', start: 2, end: 8, inPoint: 0, outPoint: 6, offsetX: 0, offsetY: 0, scale: 0.5, opacity: 1 },
+        ],
+        volume: 0.5,
+      },
+    ],
+  }
+  const { imageItems, videoItems } = collectAllItems(project)
+  assert.equal(imageItems.length, 2)
+  assert.equal(imageItems[0].id, 'bg1')
+  assert.equal(imageItems[0].trackIdx, 0)
+  assert.equal(imageItems[1].id, 'img1')
+  assert.equal(imageItems[1].trackIdx, 1)
+  assert.equal(videoItems.length, 1)
+  assert.equal(videoItems[0].id, 'vid1')
+  assert.equal(videoItems[0].trackIdx, 1)
 })
 
 test('collectAllItems: normalizedSrc is substituted as src and inPoint/outPoint are rebased by the cache origin', () => {
@@ -124,6 +162,210 @@ test('collectAllItems: nobg_src path is NOT rebased even if normalizedSrc presen
   const { videoItems } = collectAllItems(project)
   assert.equal(videoItems[0].src, '/orig_nobg.mov')
   assert.equal(videoItems[0].inPoint, 2.0)
+})
+
+// ---------------------------------------------------------------------------
+// collectAllItems — the output whitelist (SP2 T8), now passthrough-by-default (T2)
+//
+// `collectAllItems` used to build each video item from an explicit field
+// whitelist rather than spreading the source item — every field the encoder
+// reads had to be listed by hand, and a field that was NOT listed was dropped
+// silently, with no type error and no failing test. Both cases below are real
+// shipped bugs of exactly that shape.
+//
+// T2 rebuilt it as `{...item, <overrides>}` minus a small DROPPED_PREVIEW_FIELDS
+// list (see render.js), so an unlisted field now flows through instead of
+// vanishing. `sourceCrop`/`sourceWidth`/`sourceHeight` below are pinned as
+// values, not as always-present keys — that distinction is exactly what
+// changed: a field the source item never had is now genuinely absent from the
+// output rather than present-but-undefined, and the encoder's own gate
+// (encode-segment.js:343) is a truthiness check that cannot tell the
+// difference. These tests stay in place so neither the T8 sourceWindow swap
+// nor the T2 passthrough swap can reintroduce the underlying bug (a field the
+// encoder needs quietly not arriving).
+// ---------------------------------------------------------------------------
+
+test('collectAllItems: sourceCrop / sourceWidth / sourceHeight survive the whitelist verbatim (Bug B regression)', () => {
+  // SHIPPED BUG (CHANGELOG "Render: sourceCrop is applied again"): these three
+  // fields were absent from the whitelist, so `buildVideoItemFilterParts`'s crop
+  // gate — which requires ALL THREE — never fired and the clips-workflow
+  // vertical reframe was silently a no-op: the full 16:9 source got letterboxed
+  // into the portrait canvas instead of being cropped to its 9:16 slice.
+  // `normalize_window` keeps the cache at full source dimensions, so the crop
+  // MUST survive to encode time whichever src is chosen.
+  const crop = { x: 0.1, y: 0.05, w: 0.8, h: 0.9 }
+  const project = {
+    tracks: [
+      [{
+        id: 'cropped', type: 'video', src: '/orig.mp4', start: 0, end: 5, inPoint: 0, outPoint: 5,
+        sourceCrop: crop, sourceWidth: 1920, sourceHeight: 1080,
+      }],
+    ],
+  }
+  const { videoItems } = collectAllItems(project)
+  assert.deepEqual(videoItems[0].sourceCrop, crop)
+  assert.equal(videoItems[0].sourceCrop, crop, 'forwarded by reference, not cloned')
+  assert.equal(videoItems[0].sourceWidth, 1920)
+  assert.equal(videoItems[0].sourceHeight, 1080)
+})
+
+test('collectAllItems: sourceCrop survives even when the normalized cache is substituted (Bug B + rebase together)', () => {
+  // The two fixes interact: substituting `normalizedSrc` rebases in/outPoint,
+  // and the crop still has to ride along. `sourceWidth`/`sourceHeight` describe
+  // the cache too (normalize_window does not resize), so the crop math holds.
+  const crop = { x: 0.2, y: 0, w: 0.5625, h: 1 }
+  const project = {
+    tracks: [
+      [{
+        id: 'v', type: 'video', src: '/orig.mp4', normalizedSrc: '/orig_norm.mp4', normalizedInPoint: 5,
+        start: 0, end: 5, inPoint: 6, outPoint: 11,
+        sourceCrop: crop, sourceWidth: 3840, sourceHeight: 2160,
+      }],
+    ],
+  }
+  const { videoItems } = collectAllItems(project)
+  assert.equal(videoItems[0].src, '/orig_norm.mp4')
+  assert.equal(videoItems[0].inPoint, 1)
+  assert.equal(videoItems[0].outPoint, 6)
+  assert.deepEqual(videoItems[0].sourceCrop, crop)
+  assert.equal(videoItems[0].sourceWidth, 3840)
+  assert.equal(videoItems[0].sourceHeight, 2160)
+})
+
+test('collectAllItems: sourceCrop with NO sourceWidth/sourceHeight is still forwarded — the drop happens downstream [registry: sourcecrop-missing-dims-silent-drop]', () => {
+  // KNOWN-DIVERGENCES.md `sourcecrop-missing-dims-silent-drop`. This documents
+  // TODAY'S behavior as expected-for-now, not as desirable. collectAllItems has
+  // no opinion on the combination — it forwards whatever the item carries (here,
+  // just `sourceCrop`, via the passthrough spread). One layer down,
+  // `buildVideoItemFilterParts`'s gate (encode-segment.js:343) needs all three
+  // (`sourceCrop && item.sourceWidth && item.sourceHeight`, a truthiness check),
+  // so it emits no crop= step at all and the reframe vanishes with no warning.
+  // Owner of the actual fix: SP4. Mirrored by fixtures/source-crop-missing-dims.json,
+  // whose committed encode-args golden contains no crop filter — see
+  // encode-args-golden.test.mjs.
+  const crop = { x: 0.2, y: 0.1, w: 0.6, h: 0.7 }
+  const project = {
+    tracks: [
+      [{ id: 'croppedNoDims', type: 'video', src: '/orig.mp4', start: 0, end: 4, inPoint: 0, outPoint: 4, sourceCrop: crop }],
+    ],
+  }
+  const { videoItems } = collectAllItems(project)
+  assert.deepEqual(videoItems[0].sourceCrop, crop)
+  assert.equal(videoItems[0].sourceWidth, undefined)
+  assert.equal(videoItems[0].sourceHeight, undefined)
+  // Passthrough-by-default (T2): the key is only present if the source item
+  // carried it. The old hand-written whitelist always wrote `sourceWidth:
+  // item.sourceWidth`, so a source item without the field left a
+  // present-but-undefined key behind; the spread manufactures no such key.
+  // The encoder's gate above is a truthiness check either way, so this is inert.
+  assert.ok(!('sourceWidth' in videoItems[0]), 'the spread does not manufacture a key the source item never had')
+})
+
+test('collectAllItems: a normalizedSrc item with neither normalizedInPoint nor inPoint rebases to 0, not NaN (the ONE sanctioned SP2 behavior change)', () => {
+  // SANCTIONED BEHAVIOR CHANGE (SP2 T2/T8 — the only one in the whole swap).
+  // Legacy render.js:613 read `item.normalizedInPoint ?? item.inPoint` with NO
+  // `?? 0` tail, so an item carrying neither field made the rebase arithmetic
+  // `undefined - undefined` = NaN, and that NaN travelled all the way to
+  // ffmpeg's `-ss` (encode-segment.js:216's `item.inPoint ?? 0` does NOT catch
+  // it — NaN is not nullish). The editor's copy of this math always had the
+  // tail; adopting `sourceWindow(item, 'render')` is how render finally gets it.
+  // A missing origin means "origin 0", never NaN.
+  // Corpus twin: timeline-core fixtures/nan-case.json.
+  const project = {
+    tracks: [
+      [{ id: 'nanItem', type: 'video', src: '/nan_orig.mp4', normalizedSrc: '/nan_norm.mp4', start: 0, end: 4, outPoint: 4.5 }],
+    ],
+  }
+  const { videoItems } = collectAllItems(project)
+  assert.equal(videoItems[0].src, '/nan_norm.mp4')
+  assert.ok(!Number.isNaN(videoItems[0].inPoint), 'inPoint must not be NaN')
+  assert.ok(!Number.isNaN(videoItems[0].outPoint), 'outPoint must not be NaN')
+  assert.equal(videoItems[0].inPoint, 0)
+  assert.equal(videoItems[0].outPoint, 4.5)
+})
+
+// ---------------------------------------------------------------------------
+// collectAllItems — passthrough by default (T2)
+//
+// The whitelist above was rebuilt as `{...item, <overrides>}` minus
+// DROPPED_PREVIEW_FIELDS (see render.js). These tests pin the two halves of
+// that contract directly: a field nobody's written a line for survives
+// untouched, and the two listed preview-only fields are stripped even though
+// nothing else asks for them to be. The first half is what makes adding a new
+// item field a one-place change: define it, and it reaches encode-segment.js
+// without an edit here.
+// ---------------------------------------------------------------------------
+
+test('collectAllItems: an unrecognized field on a video item passes through untouched', () => {
+  const project = {
+    tracks: [
+      [{ id: 'v', type: 'video', src: '/orig.mp4', start: 0, end: 4, inPoint: 0, outPoint: 4, zzTestField: 'unicorn' }],
+    ],
+  }
+  const { videoItems } = collectAllItems(project)
+  assert.equal(videoItems[0].zzTestField, 'unicorn')
+})
+
+test('collectAllItems: an unrecognized field on an image item passes through untouched', () => {
+  const project = {
+    tracks: [
+      [{ id: 'img', type: 'image', src: '/bg.png', start: 0, end: 4, zzTestField: 'unicorn' }],
+    ],
+  }
+  const { imageItems } = collectAllItems(project)
+  assert.equal(imageItems[0].zzTestField, 'unicorn')
+})
+
+// rotation (SP9a-2 T3): the passthrough spread is what forwards rotation to
+// encode-segment.js — it's on neither the override list nor
+// DROPPED_PREVIEW_FIELDS. These are the confirming tests: they must fail if
+// someone later adds 'rotation' to DROPPED_PREVIEW_FIELDS or reverts the
+// spread back to an explicit whitelist.
+test('collectAllItems: rotation on a video item passes through untouched', () => {
+  const project = {
+    tracks: [
+      [{ id: 'v', type: 'video', src: '/orig.mp4', start: 0, end: 4, inPoint: 0, outPoint: 4, rotation: 90 }],
+    ],
+  }
+  const { videoItems } = collectAllItems(project)
+  assert.equal(videoItems[0].rotation, 90)
+})
+
+test('collectAllItems: rotation on an image item passes through untouched', () => {
+  const project = {
+    tracks: [
+      [{ id: 'img', type: 'image', src: '/bg.png', start: 0, end: 4, rotation: 270 }],
+    ],
+  }
+  const { imageItems } = collectAllItems(project)
+  assert.equal(imageItems[0].rotation, 270)
+})
+
+test('collectAllItems: proxySrc and nobg_preview_src are dropped, not forwarded (DROPPED_PREVIEW_FIELDS)', () => {
+  const project = {
+    tracks: [
+      [{
+        id: 'v', type: 'video', src: '/orig.mp4', start: 0, end: 4, inPoint: 0, outPoint: 4,
+        proxySrc: '/orig_proxy_v1.mp4', nobg_preview_src: '/orig_nobg_preview.webm',
+      }],
+    ],
+  }
+  const { videoItems } = collectAllItems(project)
+  assert.equal(videoItems[0].proxySrc, undefined)
+  assert.equal(videoItems[0].nobg_preview_src, undefined)
+  assert.ok(!('proxySrc' in videoItems[0]), 'dropped, not just falsy — the key must not survive')
+  assert.ok(!('nobg_preview_src' in videoItems[0]), 'dropped, not just falsy — the key must not survive')
+})
+
+test('collectAllItems: a raw item.trackIdx does not clobber the synthesized loop index', () => {
+  const project = {
+    tracks: [
+      [],
+      [{ id: 'v', type: 'video', src: '/orig.mp4', start: 0, end: 4, inPoint: 0, outPoint: 4, trackIdx: 999 }],
+    ],
+  }
+  const { videoItems } = collectAllItems(project)
+  assert.equal(videoItems[0].trackIdx, 1, 'trackIdx must be the synthesized loop index, not a spread-through item.trackIdx')
 })
 
 test('shouldSkipNormalize: lazy + normalizedSrc → skip (cache already conforms)', () => {
@@ -197,6 +439,69 @@ test('collectPuppeteerSegments: ignores non-overlay types in tracks[1+]', () => 
   assert.equal(specs.length, 0)
 })
 
+test('collectPuppeteerSegments: overlay geometry (incl. opacity and keyframes) reaches the spec', () => {
+  // These specs are not just an intermediate: `encode-args-golden` and
+  // `resolver-parity` feed them STRAIGHT into planSegments and from there into
+  // buildOverlayFilterParts as the overlay descriptor. So the spec is one of the
+  // two shapes that has to carry every field the compositor reads — the other
+  // being the rendered-segment object render.js stamps in main().
+  const tracks = [{ prop: 'opacity', points: [{ t: 0, value: 0 }, { t: 1, value: 1 }] }]
+  const project = {
+    tracks: [
+      [],
+      [
+        { id: 'ov1', type: 'overlay', src: '/abs/a.jsx', start: 0, end: 2,
+          offsetX: 10, offsetY: -5, scale: 0.5, rotation: 45, opacity: 0.25 },
+        { id: 'ov2', type: 'overlay', src: '/abs/b.jsx', start: 0, end: 2, keyframes: tracks },
+        { id: 'ov3', type: 'overlay', src: '/abs/c.jsx', start: 0, end: 2 },
+      ],
+    ],
+    settings: { fps: 30 },
+  }
+  const [a, b, c] = collectPuppeteerSegments(project, 30, 1080, 1920, '/tmp/seg')
+
+  assert.equal(a.opacity, 0.25, 'opacity must reach the spec — it is read by the composite step')
+  assert.equal(a.rotation, 45)
+  assert.equal(a.scale, 0.5)
+  assert.equal(a.offsetX, 10)
+  assert.equal(a.offsetY, -5)
+  assert.equal('keyframes' in a, false, 'a static overlay must carry NO keyframes key')
+
+  assert.deepEqual(b.keyframes, tracks, 'tracks must be forwarded by reference')
+
+  // Defaults, and specifically opacity 1 — the value the compositor's epsilon
+  // guard reads as "emit nothing", which is what keeps the goldens byte-identical.
+  assert.equal(c.opacity, 1)
+  assert.equal(c.rotation, 0)
+  assert.equal('keyframes' in c, false)
+})
+
+test('collectPuppeteerSegments: clean-style captions with no fontFamily still default to Figtree', () => {
+  const project = {
+    tracks: [
+      [{ id: 'clip1', type: 'video', src: '/foo.mp4', start: 0, end: 5 }],
+    ],
+    captions: { style: 'clean', segments: [{ text: 'hi', start: 0, end: 1 }] },
+    settings: { fps: 30 },
+  }
+  const specs = collectPuppeteerSegments(project, 30, 1080, 1920, '/tmp/seg')
+  const captionSpec = specs.find(s => s.id === 'captions')
+  assert.deepEqual(captionSpec.googleFonts, ['Figtree:wght@700'])
+})
+
+test('collectPuppeteerSegments: clean-style captions with a caller-set fontFamily do NOT also fetch Figtree', () => {
+  const project = {
+    tracks: [
+      [{ id: 'clip1', type: 'video', src: '/foo.mp4', start: 0, end: 5 }],
+    ],
+    captions: { style: 'clean', fontFamily: 'Baloo 2', segments: [{ text: 'hi', start: 0, end: 1 }] },
+    settings: { fps: 30 },
+  }
+  const specs = collectPuppeteerSegments(project, 30, 1080, 1920, '/tmp/seg')
+  const captionSpec = specs.find(s => s.id === 'captions')
+  assert.deepEqual(captionSpec.googleFonts, [])
+})
+
 // ---------------------------------------------------------------------------
 // resolveFilePath
 // ---------------------------------------------------------------------------
@@ -229,4 +534,159 @@ test('resolveFilePath: \u202f in filename resolved to actual file', () => {
 
 test('resolveFilePath: missing file returns null', () => {
   assert.equal(resolveFilePath('/nonexistent/path/file.mp4'), null)
+})
+
+// ---------------------------------------------------------------------------
+// buildNormalizedOutputPath (SP6b Task T3 — look-tagged master naming)
+// ---------------------------------------------------------------------------
+
+test('buildNormalizedOutputPath: untagged when not tonemapped', () => {
+  assert.equal(
+    buildNormalizedOutputPath('/videos/clip.mp4', 'sdr_bt709', false),
+    '/videos/clip_normalized_sdr_bt709.mp4'
+  )
+})
+
+test('buildNormalizedOutputPath: appends the master look when tonemapped', () => {
+  assert.equal(
+    buildNormalizedOutputPath('/videos/clip.mp4', 'sdr_bt709', true),
+    `/videos/clip_normalized_sdr_bt709_${MASTER_LOOK}.mp4`
+  )
+})
+
+test('buildNormalizedOutputPath: trusts the tonemapped flag verbatim, even for an HDR target', () => {
+  // Not a real call shape render.js would produce (tonemapped is only ever
+  // computed true for an HDR source + SDR target) but pins that the helper
+  // itself just does what it's told — namespacing by color space, tagging by
+  // the boolean, no re-derivation of "is this really a tonemap" inside it.
+  // Mirrors Python's test_hdr_target_gets_tagged_when_told_tonemapped.
+  assert.equal(
+    buildNormalizedOutputPath('/videos/clip.mp4', 'hdr_hlg', false),
+    '/videos/clip_normalized_hdr_hlg.mp4'
+  )
+  assert.equal(
+    buildNormalizedOutputPath('/videos/clip.mp4', 'hdr_hlg', true),
+    `/videos/clip_normalized_hdr_hlg_${MASTER_LOOK}.mp4`
+  )
+})
+
+test('buildNormalizedOutputPath: preserves directory and swaps only the trailing extension segment', () => {
+  const out = buildNormalizedOutputPath('/a/b/c/my.clip.mov', 'sdr_bt709', true)
+  assert.equal(out, `/a/b/c/my.clip_normalized_sdr_bt709_${MASTER_LOOK}.mp4`)
+})
+
+// ── Skipped tracks ──────────────────────────────────────────────────────────
+// A track with `enabled: false` must be absent from the export: no picture, no
+// audio, and not counted toward the project's length. These drive the exported
+// render helpers directly, so a regression shows up here rather than in a file
+// someone has to watch.
+
+test('collectAllItems: a skipped track contributes no items', () => {
+  const project = {
+    tracks: [
+      { id: 't0', items: [{ id: 'a', type: 'video', src: '/a.mp4', start: 0, end: 2 }] },
+      { id: 't1', items: [{ id: 'b', type: 'image', src: '/b.png', start: 0, end: 2 }], enabled: false },
+    ],
+  }
+  const { imageItems, videoItems } = collectAllItems(project)
+  assert.deepEqual(videoItems.map(i => i.id), ['a'])
+  assert.deepEqual(imageItems.map(i => i.id), [], 'the skipped track\'s image is gone')
+})
+
+test('collectAllItems: an enabled:true track is included, same as an absent flag', () => {
+  const project = {
+    tracks: [{ id: 't0', items: [{ id: 'a', type: 'video', src: '/a.mp4', start: 0, end: 2 }], enabled: true }],
+  }
+  assert.deepEqual(collectAllItems(project).videoItems.map(i => i.id), ['a'])
+})
+
+test('getTotalDurationSeconds: skipping the track with the last clip shortens the render', () => {
+  // The deliberate call: the export ends where the remaining content ends,
+  // rather than running on into blank tail. See docs/plans/2026-08-21-track-skip.md.
+  const tracks = [
+    { id: 't0', items: [{ id: 'a', type: 'video', src: '/a.mp4', start: 0, end: 4 }] },
+    { id: 't1', items: [{ id: 'b', type: 'image', src: '/b.png', start: 4, end: 10 }] },
+  ]
+  assert.equal(getTotalDurationSeconds({ tracks }), 10)
+
+  const skipped = [tracks[0], { ...tracks[1], enabled: false }]
+  assert.equal(getTotalDurationSeconds({ tracks: skipped }), 4)
+})
+
+test('getTotalDurationSeconds: legacy array-of-arrays is unaffected', () => {
+  assert.equal(getTotalDurationSeconds({ tracks: [[{ id: 'a', end: 3 }]] }), 3)
+})
+
+// ── Track-wide volume/mute ───────────────────────────────────────────────
+// collectAllItems folds track.volume/track.muted into each video item's
+// effective volume/muted via effectiveItemAudio — multiply for volume, OR for
+// mute. See docs/plans/2026-08-21-track-skip.md ("F1 · Track-wide volume and
+// mute") and project-tracks.js's effectiveItemAudio for the rule.
+
+test('collectAllItems: track volume multiplies with clip volume, not replaces it', () => {
+  const project = {
+    tracks: [
+      {
+        id: 't0',
+        volume: 0.5,
+        items: [
+          { id: 'loud', type: 'video', src: '/loud.mp4', start: 0, end: 2, volume: 1.0 },
+          { id: 'quiet', type: 'video', src: '/quiet.mp4', start: 2, end: 4, volume: 0.4 },
+        ],
+      },
+    ],
+  }
+  const { videoItems } = collectAllItems(project)
+  const loud = videoItems.find(i => i.id === 'loud')
+  const quiet = videoItems.find(i => i.id === 'quiet')
+  assert.equal(loud.volume, 0.5)   // 0.5 * 1.0
+  assert.ok(Math.abs(quiet.volume - 0.2) < 1e-9)  // 0.5 * 0.4
+  // Multiplying (not replacing) keeps the ratio the operator set between the
+  // two clips intact under the track-level pull-down.
+  assert.ok(Math.abs(loud.volume / quiet.volume - 1.0 / 0.4) < 1e-9)
+})
+
+test('collectAllItems: track mute silences every item on it regardless of clip volume', () => {
+  const project = {
+    tracks: [
+      {
+        id: 't0',
+        muted: true,
+        items: [{ id: 'a', type: 'video', src: '/a.mp4', start: 0, end: 2, volume: 2.0 }],
+      },
+    ],
+  }
+  const { videoItems } = collectAllItems(project)
+  assert.equal(videoItems[0].muted, true)
+})
+
+test('collectAllItems: a muted clip stays muted when its track is not', () => {
+  const project = {
+    tracks: [
+      {
+        id: 't0',
+        items: [{ id: 'a', type: 'video', src: '/a.mp4', start: 0, end: 2, muted: true }],
+      },
+    ],
+  }
+  const { videoItems } = collectAllItems(project)
+  assert.equal(videoItems[0].muted, true)
+})
+
+test('collectAllItems: absent track volume/muted leave the item\'s own audio unchanged', () => {
+  const project = {
+    tracks: [
+      { id: 't0', items: [{ id: 'a', type: 'video', src: '/a.mp4', start: 0, end: 2, volume: 0.7 }] },
+    ],
+  }
+  const { videoItems } = collectAllItems(project)
+  assert.equal(videoItems[0].volume, 0.7)
+  assert.equal(videoItems[0].muted, false)
+})
+
+test('collectAllItems: legacy array-of-arrays tracks (no track settings possible) default volume to 1 and muted to false', () => {
+  const project = { tracks: [[{ id: 'a', type: 'video', src: '/a.mp4', start: 0, end: 2 }]] }
+  const { videoItems } = collectAllItems(project)
+  assert.equal(videoItems[0].volume, 1)
+  assert.equal(videoItems[0].muted, false)
 })

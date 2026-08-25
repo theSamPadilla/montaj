@@ -11,6 +11,7 @@
  * downstream save/notify).
  */
 import type { Captions, CaptionSegment } from '../schema'
+import { floorWordDurations } from './captionWordFloor'
 
 // Collapses any run of whitespace to a single space, in addition to trim +
 // case-fold, before the two sides are compared. `newWords` below is always
@@ -31,13 +32,16 @@ function repairSegment(seg: CaptionSegment): CaptionSegment {
   const newWords = seg.text.split(/\s+/).filter(Boolean)
   const segDur = seg.end - seg.start
   const wordDur = segDur / (newWords.length || 1)
+  const spreadWords = newWords.map((w, i) => ({
+    word: w,
+    start: seg.start + i * wordDur,
+    end: seg.start + (i + 1) * wordDur,
+  }))
   return {
     ...seg,
-    words: newWords.map((w, i) => ({
-      word: w,
-      start: seg.start + i * wordDur,
-      end: seg.start + (i + 1) * wordDur,
-    })),
+    // Uniform spread has no minimum of its own — floor it so a short word
+    // never falls below a frame at any fps. See captionWordFloor.ts.
+    words: floorWordDurations(spreadWords, seg.end),
   }
 }
 

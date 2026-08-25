@@ -16,16 +16,23 @@ def register(subparsers):
 
 
 def handle(args):
-    from lib.normalize import normalize, probe_video, is_normalized
+    from lib.normalize import normalize, normalized_output_path, probe_video, is_normalized
     from lib.common import require_file
+    from lib.types.colorspace import detect_from_transfer, is_hdr
 
     require_file(args.input)
-    out = args.out or f"{args.input.rsplit('.', 1)[0]}_normalized_{args.color_space}.mp4"
 
     info = probe_video(args.input)
     if info and is_normalized(args.input, info, args.color_space):
         print(args.input)  # already conformant
         return
 
-    result = normalize(args.input, out, args.color_space)
+    tonemapped = (
+        info is not None
+        and is_hdr(detect_from_transfer(info.get("color_transfer")))
+        and args.color_space == "sdr_bt709"
+    )
+    out = args.out or normalized_output_path(args.input, args.color_space, tonemapped=tonemapped)
+
+    result = normalize(args.input, out, args.color_space, info=info)
     print(result)

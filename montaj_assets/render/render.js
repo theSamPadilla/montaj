@@ -18,9 +18,13 @@ import { bundleComponent, cleanupBundle } from './bundle.js'
 import { renderAllSegments }              from './renderer.js'
 import { compose, embedThumbnail }        from './compose.js'
 import { FFMPEG, FFPROBE }                from './ffmpeg-bin.js'
-import { requireValidKey, detectFromTransfer, smartDetect, DEFAULT_COLOR_SPACE } from './color-space.js'
+import { requireValidKey, detectFromTransfer, smartDetect, isHdr, DEFAULT_COLOR_SPACE } from './color-space.js'
 import { pMap }                           from './p-map.js'
 import { fileHasAudio }                   from './encode-segment.js'
+import { deriveSdr, probeColorTransfer }  from './derive-sdr.js'
+import { sourceWindow }                   from '@bycrux/timeline-core'
+import { MASTER_LOOK, curveIds }          from './look.js'
+import { effectiveItemAudio, enabledTrackItems, enabledTracks, trackItems } from './project-tracks.js'
 
 const __dirname  = dirname(fileURLToPath(import.meta.url))
 const isMain = resolve(process.argv[1] ?? '') === fileURLToPath(import.meta.url)
@@ -33,6 +37,45 @@ const TTY = process.stderr.isTTY
 const C = { cyan: TTY ? '\x1b[96m' : '', reset: TTY ? '\x1b[0m' : '' }
 
 // ---------------------------------------------------------------------------
+// Export modes (SP6b Task T7)
+//
+// auto — render the project at its own working color space. Exactly the
+//        pre-SP6b behavior, and the default: one file, no derive pass.
+// sdr  — emit only a Rec.709 SDR file. An HDR project still renders its HDR
+//        master first (that's the only way to get the edit), but the master is
+//        scratch: it lands on a temp name and is deleted once derived.
+// both — emit the HDR master AND an SDR sibling derived from it.
+//
+// Declared above the CLI block rather than beside its resolvers below because
+// the flag is validated during module evaluation — a `const` further down the
+// file is still in its temporal dead zone at that point.
+// ---------------------------------------------------------------------------
+const EXPORT_MODES = ['auto', 'sdr', 'both']
+
+// ---------------------------------------------------------------------------
+// collectAllItems' preview-field drop-list (SP-fixes-batch T2)
+//
+// Preview-only artifacts that collectAllItems (below) must never let reach a
+// render item, even though its passthrough spread forwards everything else on
+// the item by default. `proxySrc` is the SP3 full-source 720p editing proxy —
+// instant-scrub preview only; render always resolves the master via
+// `src`/`normalizedSrc` through `sourceWindow`, never the proxy.
+// `nobg_preview_src` is the preview-resolution VP9-with-alpha
+// background-removal cache; render's own remove_bg pipeline produces (and
+// reads) `nobg_src`, a ProRes 4444 master, instead. See schema.ts for both
+// fields' full docs and KNOWN-DIVERGENCES.md `nobg-precedence` for why preview
+// and render disagree here on purpose.
+//
+// Declared up here beside EXPORT_MODES, not down by collectAllItems itself,
+// for the SAME reason spelled out in the comment above: the CLI block right
+// below calls `main()` synchronously during module evaluation, and `main()`
+// reaches `collectAllItems()` before its first `await` — so a `const`
+// declared near collectAllItems would still be in its temporal dead zone the
+// first time a real render hits it.
+// ---------------------------------------------------------------------------
+const DROPPED_PREVIEW_FIELDS = ['proxySrc', 'nobg_preview_src']
+
+// ---------------------------------------------------------------------------
 // CLI argument parsing
 // ---------------------------------------------------------------------------
 
@@ -40,7 +83,8 @@ if (isMain) {
   const argv = process.argv.slice(2)
 
   if (!argv.length || argv[0] === '--help') {
-    process.stderr.write('Usage: render.js <project.json> [--out <path>] [--workers <n>] [--clean] [--image-tone <vivid|broadcast|punchy|raw>]\n')
+    process.stderr.write('Usage: render.js <project.json> [--out <path>] [--workers <n>] [--clean] '
+      + '[--image-tone <vivid|broadcast|punchy|raw>] [--export <auto|sdr|both>] [--sdr-curve <id>]\n')
     process.exit(1)
   }
 
@@ -49,18 +93,38 @@ if (isMain) {
   let workersArg   = null
   let cleanArg     = false
   let imageToneArg = null
+  let exportArg    = null
+  let sdrCurveArg  = null
 
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === '--out')        { outArg       = argv[++i]; continue }
     if (argv[i] === '--workers')    { workersArg   = parseInt(argv[++i], 10); continue }
     if (argv[i] === '--clean')      { cleanArg     = true; continue }
     if (argv[i] === '--image-tone') { imageToneArg = argv[++i]; continue }
+    if (argv[i] === '--export')     { exportArg    = argv[++i]; continue }
+    if (argv[i] === '--sdr-curve')  { sdrCurveArg  = argv[++i]; continue }
     if (!projectArg) projectArg = argv[i]
   }
 
   if (!projectArg) fail('missing_argument', 'No project.json path provided')
 
-  main(projectArg, { out: outArg, workers: workersArg, clean: cleanArg, imageTone: imageToneArg }).catch(err => {
+  // Both resolvers throw rather than exiting so they stay unit-testable; the
+  // CLI is the layer that turns a bad flag into the JSON-on-stderr + exit 1
+  // convention. Validated here, before any work starts, so a typo costs
+  // nothing instead of surfacing after a 10-minute render.
+  let exportMode = 'auto'
+  let sdrCurve   = null
+  try {
+    exportMode = resolveExportMode(exportArg)
+    sdrCurve   = resolveSdrCurve(sdrCurveArg)
+  } catch (err) {
+    fail('invalid_argument', err.message)
+  }
+
+  main(projectArg, {
+    out: outArg, workers: workersArg, clean: cleanArg, imageTone: imageToneArg,
+    exportMode, sdrCurve,
+  }).catch(err => {
     fail('render_error', err.message)
   })
 }
@@ -84,11 +148,109 @@ function resolveImageTone(cliValue, settings) {
   return chosen
 }
 
+/** Validate `--export`. Returns the mode ('auto' when omitted); throws on an unknown value. */
+function resolveExportMode(value) {
+  const chosen = value ?? 'auto'
+  if (!EXPORT_MODES.includes(chosen)) {
+    throw new Error(`Unknown export mode ${JSON.stringify(chosen)} — expected one of ${EXPORT_MODES.join(', ')}`)
+  }
+  return chosen
+}
+
+/**
+ * Validate `--sdr-curve` against the look registry. Returns null when omitted
+ * (meaning "the master look"); throws listing the valid ids on an unknown one.
+ * A silent fallback to the master look would be a color bug the user can only
+ * find by eye, so this is a hard error.
+ */
+function resolveSdrCurve(value) {
+  if (value == null) return null
+  const ids = curveIds()
+  if (!ids.includes(value)) {
+    throw new Error(
+      `Unknown sdr curve ${JSON.stringify(value)} — expected one of ${ids.join(', ')}. `
+      + `Check montaj_assets/luts/looks.json.`)
+  }
+  return value
+}
+
+/**
+ * Decide what this render emits and where the compose pass writes.
+ *
+ * @param {object} args
+ * @param {string} args.exportMode          'auto' | 'sdr' | 'both'
+ * @param {string} args.projectColorSpace   the project's working color space
+ * @param {string} args.outputPath          the file the user asked for
+ * @returns {{
+ *   mode: string,            effective mode — 'auto' once an SDR project downgrades
+ *   composePath: string,     where compose writes the render
+ *   derivePath: string|null, the SDR rendition to derive, or null for no derive
+ *   tempMaster: string|null, composePath when it is scratch to delete afterwards
+ *   outputs: string[],       files this render emits, primary first
+ *   notice: string|null,     one-line explanation of a downgraded request
+ * }}
+ */
+/**
+ * `<name>.mp4` + '-sdr' → `<name>-sdr.mp4`, the compose.js `.replace(/(\.\w+)$/,…)`
+ * idiom. Falls back to plain appending when the path has no extension (`--out
+ * /tmp/clip`): the point of a sibling name is that it is a DIFFERENT file, and
+ * a no-op replace would hand ffmpeg the same path to read and write.
+ */
+function siblingPath(path, suffix) {
+  return /(\.\w+)$/.test(path)
+    ? path.replace(/(\.\w+)$/, `${suffix}$1`)
+    : `${path}${suffix}`
+}
+
+function planExport({ exportMode, projectColorSpace, outputPath }) {
+  // An SDR project's render already IS the SDR rendition — there is no HDR
+  // master to derive from and nothing to convert. Say so once, then behave
+  // exactly like auto rather than emitting a pointless second identical file.
+  if (exportMode === 'auto' || !isHdr(projectColorSpace)) {
+    const notice = exportMode === 'auto' ? null
+      : `--export ${exportMode}: this project is already SDR (${projectColorSpace}) — `
+        + `its render is the SDR rendition; emitting one file`
+    return {
+      mode: 'auto',
+      composePath: outputPath,
+      derivePath: null,
+      tempMaster: null,
+      outputs: [outputPath],
+      notice,
+    }
+  }
+
+  if (exportMode === 'both') {
+    const derivePath = siblingPath(outputPath, '-sdr')
+    return {
+      mode: 'both',
+      composePath: outputPath,
+      derivePath,
+      tempMaster: null,
+      outputs: [outputPath, derivePath],
+      notice: null,
+    }
+  }
+
+  // 'sdr' on an HDR project: the user's name belongs to the SDR file, so the
+  // HDR master renders to a temp sibling (same directory — compose writes its
+  // scratch beside its output) and is removed once the derive succeeds.
+  const tempMaster = siblingPath(outputPath, '-hdrmaster.tmp')
+  return {
+    mode: 'sdr',
+    composePath: tempMaster,
+    derivePath: outputPath,
+    tempMaster,
+    outputs: [outputPath],
+    notice: null,
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
 
-async function main(projectPath, { out, workers, clean, imageTone }) {
+async function main(projectPath, { out, workers, clean, imageTone, exportMode = 'auto', sdrCurve = null }) {
   // 1. Validate + resolve paths
   const absProjectPath = resolve(projectPath)
   if (!existsSync(absProjectPath)) fail('file_not_found', `project.json not found: ${absProjectPath}`)
@@ -195,6 +357,20 @@ async function main(projectPath, { out, workers, clean, imageTone }) {
     if (!firstAudioTrack?.src) fail('missing_audio', 'renderMode ffmpeg-drawtext requires at least one unmuted audio track')
     const audioSrc = firstAudioTrack.src
 
+    // Caption LANES (rows) have no counterpart on this path. lyrics_render.py
+    // builds one flat drawtext filter chain and derives each word's end time
+    // from the NEXT segment's start, which assumes a single ordered,
+    // non-overlapping stream of captions — there is nowhere to hang a second
+    // row, and no per-row anchor. Every row is therefore drawn at the same
+    // anchor and they will overlap. That is honest; silently dropping the rows
+    // an operator built would be worse, so warn and render. The Puppeteer path
+    // (below) draws rows properly.
+    const laneCount = new Set(captions.segments.map(s => s.lane ?? 0)).size
+    if (laneCount > 1) {
+      log(`captions span ${laneCount} rows, but renderMode ffmpeg-drawtext has no per-row concept: `
+        + `all rows will be drawn at the same anchor and may overlap`)
+    }
+
     // Write captions to temp file. Captions in project.json are already in project-timeline
     // coordinates (0-based), so audioInPoint=0 — no timestamp offset needed.
     // The audio seek is passed separately via --audio-inpoint.
@@ -204,7 +380,7 @@ async function main(projectPath, { out, workers, clean, imageTone }) {
     writeFileSync(captionsPath, JSON.stringify(captionsWithOffset))
 
     // Optional background video: first video item in tracks[0]
-    const bgItem = (projectJson.tracks?.[0] ?? []).find(i => i.type === 'video')
+    const bgItem = (enabledTrackItems(projectJson)[0] ?? []).find(i => i.type === 'video')
 
     const projectDuration = getTotalDurationSeconds(projectJson)
     const lyricsRenderArgs = [
@@ -230,6 +406,13 @@ async function main(projectPath, { out, workers, clean, imageTone }) {
     if (captions.wordsPerLine)     lyricsRenderArgs.push('--words-per-line', String(captions.wordsPerLine))
     if (captions.accumulate)       lyricsRenderArgs.push('--accumulate')
     if (captions.box)              lyricsRenderArgs.push('--box')
+
+    // lyrics_render.py emits SDR h264 whatever settings.colorSpace claims, so
+    // there is no HDR master here to derive an SDR rendition from.
+    if (exportMode !== 'auto') {
+      log(`--export ${exportMode} has no effect for renderMode ffmpeg-drawtext — `
+        + `its output is always SDR; emitting one file`)
+    }
 
     log('rendering via ffmpeg drawtext (skipping Puppeteer)...')
     const result = spawnSync(PYTHON, lyricsRenderArgs, { encoding: 'utf8', timeout: 600_000 })
@@ -303,6 +486,13 @@ async function main(projectPath, { out, workers, clean, imageTone }) {
     projectColorSpace = DEFAULT_COLOR_SPACE
   }
 
+  // 2b. Export plan — what this render emits, and where compose writes. Resolved
+  //     as soon as the working color space is known so a downgraded request
+  //     ("--export sdr on an already-SDR project") is reported before the
+  //     expensive work rather than after it.
+  const exportPlan = planExport({ exportMode, projectColorSpace, outputPath })
+  if (exportPlan.notice) log(exportPlan.notice)
+
   // 3. Normalize non-conformant video items to project format (parallel, cap=2)
   //    Cap matches materialize_cut.py's libx264 worker count — memory-heavy at 4K.
   //    Requires normalizeIfNeeded to be async (see below) — pMap with a sync mapper
@@ -322,7 +512,12 @@ async function main(projectPath, { out, workers, clean, imageTone }) {
     // python spawn. collectAllItems already substituted it as item.src and
     // rebased inPoint. Without a cache (lazy or eager), fall through to normalize.
     if (shouldSkipNormalize(settings, item)) return
-    const normalizedPath = await normalizeIfNeeded(item.src, projectColorSpace)
+    // tonemapped: this item's own probed transfer is HDR and the project is
+    // SDR — the one case normalizeIfNeeded's ffmpeg chain (via lib.normalize)
+    // actually runs the HDR→SDR Montaj Vivid LUT. Mirrors the Python sites'
+    // `is_hdr(detect_from_transfer(...)) and color_space == "sdr_bt709"` check.
+    const tonemapped = isHdr(detectFromTransfer(item.colorTransfer)) && projectColorSpace === 'sdr_bt709'
+    const normalizedPath = await normalizeIfNeeded(item.src, projectColorSpace, tonemapped)
     if (normalizedPath !== item.src) {
       log(`normalized ${item.src.split('/').pop()} → ${normalizedPath.split('/').pop()}`)
       item.src = normalizedPath
@@ -370,6 +565,19 @@ async function main(projectPath, { out, workers, clean, imageTone }) {
   for (let i = 0; i < segmentSpecs.length; i++) {
     const spec = segmentSpecs[i]
     log(`bundling segment ${i + 1}/${segmentSpecs.length} (${spec.id})...`)
+    // The geometry below is read by generateShim (bundle.js) ONLY when the item
+    // carries `keyframes` — the one case where the ffmpeg composite cannot do
+    // the positioning, because the filter graph places an overlay once for a
+    // whole segment and an animated one has to move within it. That item's
+    // transform is baked into the Puppeteer capture per frame instead, and
+    // buildOverlayFilterParts (encode-segment.js) then composites it full-canvas.
+    //
+    // For every other overlay — the overwhelmingly common case — these five are
+    // still DEAD PARAMETERS, exactly as they were before SP9b: generateShim
+    // accepts them, emits nothing, and positioning happens entirely at ffmpeg
+    // composite time. The un-baked shim is byte-identical to the pre-keyframes
+    // one, deliberately, which is what keeps the render goldens valid. Don't
+    // "fix" that apparent omission for a static overlay: it isn't one.
     const { htmlPath, workDir } = await bundleComponent({
       componentPath:  spec.componentPath,
       props:          spec.props,
@@ -380,6 +588,14 @@ async function main(projectPath, { out, workers, clean, imageTone }) {
       offsetX:        spec.offsetX     ?? 0,
       offsetY:        spec.offsetY     ?? 0,
       scale:          spec.scale       ?? 1,
+      // Per-axis siblings, resolved with the same `?? scale ?? 1` chain the
+      // timeline-core resolver uses, so a legacy uniform item forwards three
+      // identical numbers and bakes exactly what it always baked.
+      scaleX:         spec.scaleX ?? spec.scale ?? 1,
+      scaleY:         spec.scaleY ?? spec.scale ?? 1,
+      rotation:       spec.rotation    ?? 0,
+      opacity:        spec.opacity     ?? 1,
+      keyframes:      spec.keyframes   ?? null,
       googleFonts:    spec.googleFonts ?? [],
     })
     spec.htmlPath = htmlPath
@@ -398,8 +614,37 @@ async function main(projectPath, { out, workers, clean, imageTone }) {
       rSeg.offsetX   = spec.offsetX   ?? 0
       rSeg.offsetY   = spec.offsetY   ?? 0
       rSeg.scale     = spec.scale     ?? 1
+      // Same reference-flow argument as rotation below, and the same shape of
+      // partial failure: buildOverlayFilterParts sizes a non-keyframed overlay
+      // from `geometryFor(ov, 'overlay')` read off THIS object, and that
+      // resolver reads `scaleX`/`scaleY` before falling back to `scale`. Miss
+      // these two lines and a non-uniform overlay renders as a uniform box
+      // while the preview shows it stretched.
+      rSeg.scaleX    = spec.scaleX ?? spec.scale ?? 1
+      rSeg.scaleY    = spec.scaleY ?? spec.scale ?? 1
+      // rotation must be restated here too: these rSeg objects flow BY REFERENCE
+      // through segment-plan.js's `overlays` array (built via activeIn() over
+      // puppeteerSegs, preserving object identity) into buildOverlayFilterParts,
+      // which reads rotation off this very object via geometryFor(ov, 'overlay').
+      // Skipping this line is the worst partial failure: images/videos rotate
+      // correctly while overlays silently don't.
+      rSeg.rotation  = spec.rotation  ?? 0
+      // The OTHER half of the missing-overlay-opacity bug. collectPuppeteerSegments
+      // has always collected `opacity` onto the spec, but it stopped here — so even
+      // once buildOverlayFilterParts learned to emit `colorchannelmixer=aa=`, it
+      // would have read `undefined` off every descriptor and emitted nothing. Both
+      // halves are required; neither alone does anything.
+      rSeg.opacity   = spec.opacity   ?? 1
       rSeg.opaque    = spec.opaque    ?? false
       rSeg.isCaption = spec.isCaption ?? false
+      // Same reference-flow argument as rotation directly above, and the same
+      // worst-case partial failure: buildOverlayFilterParts reads `keyframes`
+      // off THIS object to decide that the capture is already positioned. Miss
+      // this line and an animated overlay gets its transform applied TWICE —
+      // once baked into the pixels, once by the compositor. Assigned only when
+      // the spec actually has tracks, so a static overlay's descriptor keeps no
+      // `keyframes` key at all and takes the byte-identical filter path.
+      if (spec.keyframes?.length) rSeg.keyframes = spec.keyframes
     }
   }
 
@@ -428,11 +673,34 @@ async function main(projectPath, { out, workers, clean, imageTone }) {
     puppeteerSegments: renderedSegments,
     imageItems,
     videoItems,
-    outputPath,
+    outputPath: exportPlan.composePath,
     videoWidth:  actualWidth,
     videoHeight: actualHeight,
     colorSpace:  projectColorSpace,
+    sdrCurve,
   })
+
+  // 7b. Derive the SDR rendition from the finished HDR master — one ffmpeg pass
+  //     through the Montaj Vivid LUT, audio stream-copied, not a second render.
+  //     Only reached for an HDR project under --export sdr|both; auto skips it
+  //     entirely and this whole block is a no-op.
+  if (exportPlan.derivePath) {
+    // PHASE MARKER: "deriving SDR rendition" → `sdr_derive` in serve's
+    // _render_phase_for (serve/routes/projects.py); the editor's render stepper
+    // keys off that phase name. Keep this substring in sync if you reword.
+    log(`deriving SDR rendition → ${basename(exportPlan.derivePath)}...`)
+    await deriveSdr(exportPlan.composePath, exportPlan.derivePath, { sdrCurve })
+    // The derived file is Rec.709 already, so its poster needs no tone-map —
+    // passing sdr_bt709 (not the project's HDR key) is what keeps the extract
+    // from running the LUT a second time over already-graded pixels.
+    embedThumbnail(exportPlan.derivePath, 'sdr_bt709')
+    if (exportPlan.tempMaster) {
+      // --export sdr: the HDR master was scaffolding. Removed only on success —
+      // if the derive threw, the master is the one salvageable artifact of a
+      // long render and is worth more on disk than a tidy directory.
+      rmSync(exportPlan.tempMaster, { force: true })
+    }
+  }
 
   // 8. Cleanup temp bundles (always); intermediate segments only if --clean
   for (const dir of workDirs) cleanupBundle(dir)
@@ -442,8 +710,11 @@ async function main(projectPath, { out, workers, clean, imageTone }) {
     log('intermediate files cleaned')
   }
 
-  // Step output convention: final path on stdout
-  process.stdout.write(outputPath + '\n')
+  // Step output convention: final path on stdout. --export both emits two files;
+  // the master keeps line 1 so every single-path reader (montaj render, Hub,
+  // serve's job.result) still sees the same thing it always has, and the derived
+  // SDR sibling follows on line 2.
+  process.stdout.write(exportPlan.outputs.join('\n') + '\n')
 }
 
 // ---------------------------------------------------------------------------
@@ -464,24 +735,9 @@ function probeVideoDimensions(filePath) {
   return null
 }
 
-/** Return the ffprobe color_transfer string (e.g. 'bt709', 'arib-std-b67',
- *  'smpte2084') for the first video stream, or null on error / missing tag.
- *
- *  Note: `-of csv=p=0` emits a trailing comma even on single-field stream
- *  queries (e.g. `arib-std-b67,\n`). Strip both whitespace and trailing
- *  commas before returning, otherwise downstream string equality against
- *  COLOR_SPACE_SPECS.transferValues silently misses every HDR clip and the
- *  whole project gets mis-classified as SDR. */
-function probeColorTransfer(filePath) {
-  const result = spawnSync(FFPROBE, [
-    '-v', 'quiet', '-select_streams', 'v:0',
-    '-show_entries', 'stream=color_transfer',
-    '-of', 'csv=p=0', filePath,
-  ], { encoding: 'utf8', timeout: 30_000 })
-  if (result.status !== 0) return null
-  const value = (result.stdout || '').trim().replace(/,+$/, '')
-  return value || null
-}
+// probeColorTransfer lives in derive-sdr.js — the derive pass needs the same
+// "what color space is this file, really" read, and one implementation beats
+// two copies of the trailing-comma workaround its doc comment explains.
 
 // ---------------------------------------------------------------------------
 // Segment collection: Puppeteer segments (overlay + captions)
@@ -500,7 +756,7 @@ function collectPuppeteerSegments(projectJson, fps, width, height, segDir) {
   const totalSecs = quantize(getTotalDurationSeconds(projectJson))
 
   // Overlay items live in tracks[1+]; tracks[0] is primary footage
-  const overlayTracks = (projectJson.tracks ?? []).slice(1)
+  const overlayTracks = enabledTrackItems(projectJson).slice(1)
   for (let trackIdx = 0; trackIdx < overlayTracks.length; trackIdx++) {
     const track = overlayTracks[trackIdx]
     for (const item of track ?? []) {
@@ -515,9 +771,24 @@ function collectPuppeteerSegments(projectJson, fps, width, height, segDir) {
           offsetX:       item.offsetX ?? 0,
           offsetY:       item.offsetY ?? 0,
           scale:         item.scale   ?? 1,
+          // Per-axis siblings beside `scale`, never instead of it: everything
+          // downstream of this spec (bundleComponent's bake, the rSeg
+          // descriptor, buildOverlayFilterParts) resolves an axis as
+          // `scaleX ?? scale ?? 1`, so a legacy uniform item carries three
+          // identical numbers and takes the path it always took.
+          scaleX:        item.scaleX ?? item.scale ?? 1,
+          scaleY:        item.scaleY ?? item.scale ?? 1,
+          rotation:      item.rotation ?? 0,
           opacity:       item.opacity ?? 1,
           opaque:        item.opaque  ?? false,
           googleFonts:   item.googleFonts ?? [],
+          // Keyframes drive BOTH ends of the render: bundleComponent bakes the
+          // animated transform into the capture, and buildOverlayFilterParts
+          // then composites that capture full-canvas instead of positioning it
+          // (see both for why). Spread conditionally, NOT defaulted to `[]` —
+          // an item that animates nothing must leave the key absent so it
+          // reaches the un-baked shim and the byte-identical filter graph.
+          ...(item.keyframes?.length ? { keyframes: item.keyframes } : {}),
           frameCount,
           fps,
           startSeconds,
@@ -547,9 +818,12 @@ function collectPuppeteerSegments(projectJson, fps, width, height, segDir) {
       delete captionTheme.fontsize
     }
     // The 'clean' style is built around Figtree — default its google font
-    // when the caller hasn't specified one, so the render isn't silently
-    // falling back to a system font.
-    if (captions.style === 'clean' && (captionFonts == null || captionFonts.length === 0)) {
+    // when the caller hasn't specified one AND hasn't chosen their own font
+    // family. Otherwise a project asking for e.g. Baloo 2 would also fetch
+    // Figtree, and if the chosen family string is malformed the CSS cascade
+    // would silently fall back to Figtree rather than to system-ui, which is
+    // a confusing failure mode.
+    if (captions.style === 'clean' && (captionFonts == null || captionFonts.length === 0) && captionTheme.fontFamily == null) {
       captionFonts = ['Figtree:wght@700']
     }
     specs.push({
@@ -569,7 +843,8 @@ function collectPuppeteerSegments(projectJson, fps, width, height, segDir) {
   }
 
   // NOTE: The old schema had a tracks[type=caption] fallback block here. It has been
-  // removed — in v0.2, projectJson.tracks is always an array of arrays, never typed objects.
+  // removed — `tracks` may be on disk in either the legacy array-of-arrays shape
+  // or the object shape; `trackItems()` absorbs the difference.
 
   return specs
 }
@@ -578,57 +853,150 @@ function collectPuppeteerSegments(projectJson, fps, width, height, segDir) {
 // Direct items: image and video items from all tracks (no Puppeteer)
 // ---------------------------------------------------------------------------
 
+// DROPPED_PREVIEW_FIELDS is declared near the top of the file, beside
+// EXPORT_MODES, not here — see the comment there for what it drops, why, and
+// why its position (ahead of the `if (isMain)` CLI block) is load-bearing.
+
+// Shallow-copies obj and deletes `fields` from the copy. Used to build the
+// passthrough item literal below without mutating the source item.
+function omitFields(obj, fields) {
+  const copy = { ...obj }
+  for (const field of fields) delete copy[field]
+  return copy
+}
+
 function collectAllItems(projectJson) {
   const imageItems = []
   const videoItems = []
 
-  for (let trackIdx = 0; trackIdx < (projectJson.tracks ?? []).length; trackIdx++) {
-    const track = projectJson.tracks[trackIdx]
-    for (const item of track ?? []) {
-      const base = {
-        id:      item.id,
-        src:     item.src,
-        start:   item.start,
-        end:     item.end,
+  const tracks = enabledTracks(projectJson)
+  for (let trackIdx = 0; trackIdx < tracks.length; trackIdx++) {
+    const track = tracks[trackIdx]
+    for (const item of track.items ?? []) {
+      const passthrough = omitFields(item, DROPPED_PREVIEW_FIELDS)
+      const geometryDefaults = {
         offsetX: item.offsetX ?? 0,
         offsetY: item.offsetY ?? 0,
         scale:   item.scale   ?? 1,
+        // Defaulted explicitly rather than left to `passthrough` (which would
+        // carry `item.scaleX` through only when the item happens to have one):
+        // every geometry field this literal states is stated so the item that
+        // reaches encode-segment.js has a complete, resolved box. `?? scale ??
+        // 1` matches the timeline-core resolver exactly, so a uniform item is
+        // byte-for-byte what it was.
+        scaleX:  item.scaleX  ?? item.scale ?? 1,
+        scaleY:  item.scaleY  ?? item.scale ?? 1,
         opacity: item.opacity ?? 1,
-        trackIdx,
       }
       if (item.type === 'image') {
-        imageItems.push({ ...base, fit: item.fit ?? 'cover' })
+        imageItems.push({ ...passthrough, ...geometryDefaults, fit: item.fit ?? 'cover', trackIdx })
       } else if (item.type === 'video') {
         // Prefer the normalizedSrc cache when present (and not on the nobg
         // path). A normalizedSrc cache covers [normalizedInPoint, normalizedInPoint + duration]
         // of the original and plays from time 0. When we substitute it we must
         // rebase inPoint and outPoint by the cache origin so encode-segment seeks
         // to the right position inside the short cache file (actualIn = inPoint +
-        // seekOffset). The cache origin is `item.normalizedInPoint ?? item.inPoint`
+        // seekOffset). The cache origin is `normalizedInPoint ?? inPoint ?? 0`
         // (legacy clips without normalizedInPoint assumed origin == inPoint → rebase
-        // to 0, which is reproduced here by the fallback). The nobg_src path is NOT
+        // to 0, which is reproduced by the fallback). The nobg_src path is NOT
         // a normalized cache and must keep the original inPoint/outPoint unchanged.
-        const chosenSrc = item.nobg_src && item.remove_bg ? item.nobg_src : (item.normalizedSrc ?? item.src)
-        const usedNormalized = chosenSrc === item.normalizedSrc
-        const normOrigin = item.normalizedInPoint ?? item.inPoint
+        //
+        // ── SP2 T8: the arithmetic above moved ───────────────────────────────
+        //
+        // That whole computation now lives once, in `@bycrux/timeline-core`'s
+        // `sourceWindow(item, 'render')` (src/source-window.js), shared with the
+        // editor preview so the two engines can no longer drift apart — this used
+        // to be duplicated by hand in useVideoPlayback.ts and the copies had
+        // already diverged. The comment above stays because it records a real
+        // production bug (Bug A: a start-trim after the cache was built), and the
+        // resolver reproduces the reasoning verbatim next to the branch that
+        // implements it. Two copies of a bug's history is cheap; zero is how the
+        // bug comes back.
+        //
+        // The `'render'` variant is load-bearing. Preview and render legitimately
+        // disagree on src precedence — render never loads `nobg_preview_src` and
+        // only loads `nobg_src` when `remove_bg` is actually on — so the resolver
+        // is variant-aware rather than unifying them, which would change render
+        // output. See KNOWN-DIVERGENCES.md `nobg-precedence`.
+        //
+        // SANCTIONED BEHAVIOR CHANGE (the only one in this swap): the origin's
+        // `?? 0` tail. The line this replaced read `item.normalizedInPoint ??
+        // item.inPoint` with no tail, so an item carrying a normalizedSrc but
+        // NEITHER origin field computed `undefined - undefined` = NaN and sent it
+        // to ffmpeg's `-ss` (encode-segment.js:216's `?? 0` does not catch it —
+        // NaN is not nullish). A missing origin means origin 0. The editor always
+        // had the tail; render now matches. Pinned by render-helpers.test.mjs and
+        // by timeline-core's fixtures/nan-case.json.
+        //
+        // NOT changed, deliberately: `src` may still be `undefined` here for an
+        // item with neither `src` nor `normalizedSrc`. The render variant has no
+        // `?? ''` tail (preview does), because `''` and `undefined` fail
+        // DIFFERENTLY downstream and such an item is unrenderable either way.
+        // Same for the `undefined === undefined` quirk that makes that item count
+        // as "using the cache". Both are ported verbatim; making render total is a
+        // behavior change with its own plan.
+        //
+        // Guarded permanently by test/encode-args-golden.test.mjs, which runs this
+        // function + planSegments + encodeSegment(...,{_dryRun:true}) over the
+        // shared corpus and deep-equals the result against goldens captured from
+        // the pre-SP2 pipeline.
+        const { src, inPoint, outPoint } = sourceWindow(item, 'render')
+        // Track-wide volume/mute folded in here — the one fold point the
+        // render path needs. `effectiveItemAudio` multiplies volume (never
+        // replaces, so a clip an editor already turned down stays
+        // proportionally quieter under a track pulled down too) and ORs mute
+        // (either one silences it). Formula and rationale:
+        // project-tracks.js's effectiveItemAudio; feature background:
+        // docs/plans/2026-08-21-track-skip.md ("F1 · Track-wide volume and
+        // mute").
+        const { volume, muted } = effectiveItemAudio(track, item)
         videoItems.push({
-          ...base,
-          src:          chosenSrc,
-          nobg_src:     item.nobg_src,
-          normalizedSrc: item.normalizedSrc,
-          inPoint:      usedNormalized ? (item.inPoint - normOrigin) : item.inPoint,
-          outPoint:     usedNormalized ? (item.outPoint != null ? item.outPoint - normOrigin : item.outPoint) : item.outPoint,
-          // Source crop (clips workflow vertical reframe) — applied at encode
-          // time by buildVideoItemFilterParts. normalizeIfNeeded/normalize_window
-          // does NOT bake the crop into normalizedSrc (the cache stays at full
-          // source dimensions), so these MUST be forwarded or the crop is lost
-          // and the full frame is letterboxed into the output canvas instead.
-          sourceCrop:   item.sourceCrop,
-          sourceWidth:  item.sourceWidth,
-          sourceHeight: item.sourceHeight,
+          ...passthrough,
+          ...geometryDefaults,
+          trackIdx,
+          // This object used to be built field-by-field from a hand-written
+          // whitelist — and a field left off it was dropped silently, with no
+          // type error, before it ever reached encode-segment.js. That
+          // shipped as a real production bug twice: once for `sourceCrop` &
+          // friends, once for image `fit`. It's built as a spread now —
+          // `{...item, <overrides>}` minus DROPPED_PREVIEW_FIELDS — so a
+          // field nobody's written an explicit line for here still reaches
+          // encode-segment.js instead of silently vanishing. Only the fields
+          // below are the explicit part: src/inPoint/outPoint (transformed by
+          // sourceWindow), volume/muted (folded by effectiveItemAudio),
+          // trackIdx (synthesized above), and the geometry/remove_bg
+          // defaults. Unknown fields flow; transforms and drops are the
+          // explicit part. Do not add sourceCrop/sourceWidth/sourceHeight/
+          // nobg_src/normalizedSrc to DROPPED_PREVIEW_FIELDS — those are
+          // render inputs (crop geometry and cache substitutes), not preview
+          // artifacts; only proxySrc and nobg_preview_src belong on that
+          // list. One newly-passed-through field the encoder actually reads
+          // today: `type` -- encode-segment.js's isImageItem() checks
+          // `item.type === 'image'` before falling back to a filename-
+          // extension regex, so an image whose `src` lacks a recognised
+          // extension (`.avif`, `.heic`, an extensionless cache path, a URL
+          // with a query string) now correctly routes to the image filter
+          // path, where it previously fell through to the video one.
+          src,
+          // `inPoint` is already in the CHOSEN src's coordinates. Paired with
+          // `start` (passed through from `item`) it is exactly the input
+          // encode-segment.js:216-218 needs: `actualIn = inPoint + max(0,
+          // segStart - start)`, which is the resolver's `seekTime(item,
+          // segStart, 'render')` written out by hand.
+          inPoint,
+          // null normalizes to undefined here (source-window.js:221); no render
+          // consumer reads this field today.
+          outPoint,
           remove_bg: item.remove_bg ?? false,
-          muted:     item.muted ?? false,
-          volume:    item.volume,
+          muted,
+          volume,
+          // Per-clip playback speed (montaj/speed feature). Not defaulted here —
+          // encode-segment.js treats a missing/undefined speed as 1 (no-op), so
+          // forwarding the raw value (possibly undefined) is correct. The
+          // spread already carries `item.speed` through; this override keeps
+          // the "not defaulted" contract visible in the diff rather than
+          // relying on spread behavior alone.
+          speed: item.speed,
         })
       }
     }
@@ -703,8 +1071,11 @@ function overlayTemplatePath(item) {
 // ---------------------------------------------------------------------------
 
 function resolveProjectPaths(projectJson, projectDir) {
-  // v0.2: tracks is an array of arrays; every item in every track may have a src
-  for (const track of projectJson.tracks ?? []) {
+  // EVERY track, including skipped ones: this mutates `item.src` in place, and
+  // resolving a path for an item we then don't render costs nothing, whereas
+  // leaving a skipped track's paths unresolved would surprise anything that
+  // reads them later.
+  for (const track of trackItems(projectJson)) {
     for (const item of track ?? []) {
       if (item.src && !item.src.startsWith('/')) {
         item.src = resolve(projectDir, item.src)
@@ -747,8 +1118,9 @@ function resolveFilePath(p) {
 function validateProjectFiles(projectJson) {
   const missing = []
 
-  // v0.2: tracks is an array of arrays; check src existence on every item in every track
-  for (const track of projectJson.tracks ?? []) {
+  // Only the tracks that will actually be rendered: a missing source file on a
+  // SKIPPED track must not fail the render — leaving it out is the whole point.
+  for (const track of enabledTrackItems(projectJson)) {
     for (const item of track ?? []) {
       if (item.src && !resolveFilePath(item.src)) missing.push(item.src)
     }
@@ -768,7 +1140,9 @@ function validateProjectFiles(projectJson) {
 // ---------------------------------------------------------------------------
 
 function getTotalDurationSeconds(projectJson) {
-  const allItems = (projectJson.tracks ?? []).flat()
+  // Enabled tracks only: skipping the track that held the last clip shortens the
+  // output rather than padding it with blank tail. See docs/plans/2026-08-21-track-skip.md.
+  const allItems = enabledTrackItems(projectJson).flat()
   if (allItems.length === 0) return 0
   return Math.max(...allItems.map(i => i.end ?? 0))
 }
@@ -777,10 +1151,21 @@ function getTotalDurationSeconds(projectJson) {
 // Normalize pre-pass
 // ---------------------------------------------------------------------------
 
-async function normalizeIfNeeded(src, projectColorSpace) {
-  // Output filename is namespaced per color space so SDR-then-HDR re-normalize
-  // doesn't collide. Matches the suffix produced by lib.normalize.main().
-  const out = src.replace(/(\.\w+)$/, `_normalized_${projectColorSpace}.mp4`)
+/**
+ * Build the deterministic normalized-master output path for `src`, mirroring
+ * lib.normalize.normalized_output_path() (the one place the Python side
+ * builds this name). Namespaced per color space so SDR-then-HDR re-normalize
+ * doesn't collide. When `tonemapped` is true (this item's own probed
+ * transfer is HDR and the project is SDR — the HDR→SDR Montaj Vivid LUT
+ * chain runs) the current master look is appended (SP6b Task T3).
+ */
+function buildNormalizedOutputPath(src, projectColorSpace, tonemapped) {
+  const lookSuffix = tonemapped ? `_${MASTER_LOOK}` : ''
+  return src.replace(/(\.\w+)$/, `_normalized_${projectColorSpace}${lookSuffix}.mp4`)
+}
+
+async function normalizeIfNeeded(src, projectColorSpace, tonemapped) {
+  const out = buildNormalizedOutputPath(src, projectColorSpace, tonemapped)
 
   // Idempotency cache: if the deterministic output already exists and is
   // fresher than the source, the previous render already paid the cost — skip
@@ -930,4 +1315,5 @@ function fail(code, message) {
   process.exit(1)
 }
 
-export { getTotalDurationSeconds, collectPuppeteerSegments, collectAllItems, resolveFilePath, shouldSkipNormalize }
+export { getTotalDurationSeconds, collectPuppeteerSegments, collectAllItems, resolveFilePath, shouldSkipNormalize, buildNormalizedOutputPath,
+         EXPORT_MODES, resolveExportMode, resolveSdrCurve, planExport }

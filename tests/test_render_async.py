@@ -86,6 +86,7 @@ def _reserve(job):
     ("[montaj render] rendering with Puppeteer...", "rendering"),
     ("[montaj render] composing final video...", "encoding"),
     ("[montaj compose] concatenating 16 segment(s)...", "encoding"),
+    ("[montaj render] deriving SDR rendition → x-sdr.mp4...", "sdr_derive"),
     ("some unrelated chatter", None),
     ("", None),
 ])
@@ -176,7 +177,27 @@ def test_render_status_done_includes_output_path(tmp_path):
     projects_mod._render_jobs[PID] = job
 
     out = asyncio.run(render_status(PID, project_dir=tmp_path))
-    assert out == {"status": "done", "phase": "done", "outputPath": "/p/output/x.mp4"}
+    assert out == {
+        "status": "done", "phase": "done",
+        "outputPath": "/p/output/x.mp4",
+        "outputPaths": ["/p/output/x.mp4"],
+    }
+
+
+def test_render_status_done_with_export_both_splits_output_paths(tmp_path):
+    # --export both makes render.js print two stdout lines (master, then the
+    # derived SDR sibling) — job.result is that two-line blob verbatim.
+    job = _RenderJob()
+    job.status, job.phase = "done", "done"
+    job.result = "/p/output/x.mp4\n/p/output/x-sdr.mp4"
+    projects_mod._render_jobs[PID] = job
+
+    out = asyncio.run(render_status(PID, project_dir=tmp_path))
+    assert out == {
+        "status": "done", "phase": "done",
+        "outputPath": "/p/output/x.mp4",  # first line only, compat with single-path readers
+        "outputPaths": ["/p/output/x.mp4", "/p/output/x-sdr.mp4"],
+    }
 
 
 def test_render_status_error_includes_error(tmp_path):
@@ -193,11 +214,20 @@ def test_render_status_error_includes_error(tmp_path):
 # ---------------------------------------------------------------------------
 
 class _FakeRequest:
-    def __init__(self, query):
+    def __init__(self, query, body=None):
         self.query_params = query
+        self._body = body
 
     async def is_disconnected(self):
         return False
+
+    async def json(self):
+        # Mirrors Starlette's Request.json(): raises when no body was sent, so
+        # the route's `try: body = await request.json() except: pass` pattern
+        # sees the same "no body" signal it sees in production.
+        if self._body is None:
+            raise ValueError("no body")
+        return self._body
 
 
 def _setup_video_project(tmp_path, monkeypatch):
@@ -216,7 +246,7 @@ def _setup_video_project(tmp_path, monkeypatch):
     # Never actually spawn — capture the cmd and leave a never-resolving job.
     captured = {}
 
-    async def _fake_detached(project_id, cmd, env, render_input, project_path, job):
+    async def _fake_detached(project_id, cmd, env, render_input, project_path, job, **kwargs):
         captured["cmd"] = cmd
         # leave job running (simulates an in-flight render)
 
@@ -261,3 +291,108 @@ def test_no_async_param_returns_sse_stream(tmp_path, monkeypatch):
 
     assert isinstance(resp, StreamingResponse)
     assert resp.media_type == "text/event-stream"
+
+
+# ---------------------------------------------------------------------------
+# Optional JSON body: { "export": ..., "sdrCurve": ... } threaded to script_args
+# ---------------------------------------------------------------------------
+
+def test_no_body_leaves_argv_unchanged_from_today(tmp_path, monkeypatch):
+    """No body at all (request.json() raises, mirroring a bodyless POST) → the
+    auto path's argv stays byte-identical to before this body-reading was added."""
+    project_dir, captured = _setup_video_project(tmp_path, monkeypatch)
+    req = _FakeRequest({"async": "1"}, body=None)
+
+    asyncio.run(render_project(PID, req, project_dir=project_dir))
+
+    cmd = captured["cmd"]
+    assert "--export" not in cmd
+    assert "--sdr-curve" not in cmd
+
+
+def test_empty_body_leaves_argv_unchanged(tmp_path, monkeypatch):
+    """An empty JSON object body is likewise treated as "nothing requested"."""
+    project_dir, captured = _setup_video_project(tmp_path, monkeypatch)
+    req = _FakeRequest({"async": "1"}, body={})
+
+    asyncio.run(render_project(PID, req, project_dir=project_dir))
+
+    cmd = captured["cmd"]
+    assert "--export" not in cmd
+    assert "--sdr-curve" not in cmd
+
+
+def test_body_export_and_sdr_curve_thread_to_script_args(tmp_path, monkeypatch):
+    project_dir, captured = _setup_video_project(tmp_path, monkeypatch)
+    req = _FakeRequest({"async": "1"}, body={"export": "both", "sdrCurve": "vivid1-neutral"})
+
+    asyncio.run(render_project(PID, req, project_dir=project_dir))
+
+    cmd = captured["cmd"]
+    assert cmd[cmd.index("--export") + 1] == "both"
+    assert cmd[cmd.index("--sdr-curve") + 1] == "vivid1-neutral"
+
+
+def test_body_export_only_omits_sdr_curve_flag(tmp_path, monkeypatch):
+    project_dir, captured = _setup_video_project(tmp_path, monkeypatch)
+    req = _FakeRequest({"async": "1"}, body={"export": "sdr"})
+
+    asyncio.run(render_project(PID, req, project_dir=project_dir))
+
+    cmd = captured["cmd"]
+    assert cmd[cmd.index("--export") + 1] == "sdr"
+    assert "--sdr-curve" not in cmd
+
+
+def test_body_invalid_export_rejected_422(tmp_path, monkeypatch):
+    from fastapi import HTTPException
+    project_dir, captured = _setup_video_project(tmp_path, monkeypatch)
+    req = _FakeRequest({"async": "1"}, body={"export": "4k"})
+
+    with pytest.raises(HTTPException) as exc_info:
+        asyncio.run(render_project(PID, req, project_dir=project_dir))
+
+    assert exc_info.value.status_code == 422
+    assert exc_info.value.detail["error"] == "invalid_argument"
+    # the render never got kicked off
+    assert "cmd" not in captured
+
+
+def test_body_invalid_sdr_curve_rejected_422(tmp_path, monkeypatch):
+    from fastapi import HTTPException
+    project_dir, captured = _setup_video_project(tmp_path, monkeypatch)
+    req = _FakeRequest({"async": "1"}, body={"sdrCurve": "not-a-real-curve"})
+
+    with pytest.raises(HTTPException) as exc_info:
+        asyncio.run(render_project(PID, req, project_dir=project_dir))
+
+    assert exc_info.value.status_code == 422
+    assert exc_info.value.detail["error"] == "invalid_argument"
+    assert "cmd" not in captured
+
+
+# ---------------------------------------------------------------------------
+# SSE 'done' event carries only the first output path
+# ---------------------------------------------------------------------------
+
+def test_sse_done_event_carries_only_first_output_path(tmp_path, monkeypatch):
+    """--export both makes render.js print two stdout lines; the SSE 'done' event
+    must carry only the first (master) path — same outputPath compat contract as
+    the status route — not a raw multi-line blob that would corrupt SSE framing."""
+    project_dir, captured = _setup_video_project(tmp_path, monkeypatch)
+    req = _FakeRequest({})
+
+    resp = asyncio.run(render_project(PID, req, project_dir=project_dir))
+
+    job = projects_mod._render_jobs[PID]
+    job.status = "done"
+    job.result = "/out/master.mp4\n/out/master-sdr.mp4"
+
+    async def _first_done_chunk():
+        async for chunk in resp.body_iterator:
+            if "event: done" in chunk:
+                return chunk
+        return None
+
+    chunk = asyncio.run(_first_done_chunk())
+    assert chunk == "event: done\ndata: /out/master.mp4\n\n"

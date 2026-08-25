@@ -12,7 +12,7 @@ This is **Step F** of the ai-video-generate Phase 6 contract — optional but re
 
 ## When to load
 
-After all scenes have clips on `tracks[0]` (Phase 6 Step E complete). The agent runs this loop before setting `status: "draft"`, or after draft if the user requests quality review.
+After all scenes have clips on `tracks[0].items` (Phase 6 Step E complete). The agent runs this loop before setting `status: "draft"`, or after draft if the user requests quality review.
 
 ## The rubric
 
@@ -101,8 +101,8 @@ Now evaluate the video clip.
 ## The eval loop
 
 ```
-for each scene that has a clip on tracks[0]:
-  1. Read clip.src from tracks[0]
+for each scene that has a clip on tracks[0].items:
+  1. Read clip.src from tracks[0].items
   2. Build eval prompt (rubric + composed prompt + character specs)
   3. Call: analyze_media --input <clip.src> --json-output --prompt <eval_prompt>
   4. Parse the JSON verdict
@@ -160,7 +160,7 @@ Previous attempts preserve the old `src` path (versioned files are never overwri
 
 - **Don't revise prompts in the eval loop.** Re-roll only. Prompt revision is an agent editorial decision, not a mechanical retry. If repeated re-rolls fail, tell the user.
 - **Don't overwrite clip files.** Use versioned paths (`-v2.mp4`, `-v3.mp4`). Previous versions must be recoverable from `generation.attempts[].src`.
-- **Don't eval before generation.** The clip must exist on `tracks[0]` first.
+- **Don't eval before generation.** The clip must exist on `tracks[0].items` first.
 - **Don't eval every project.** This is optional. Skip if the user is happy, iterating manually, or cost-sensitive.
 - **Don't run evals in parallel for the same project.** Sequential avoids project.json write races.
 - **Don't use `generation.prompt` for the eval context.** Re-compose from `scene.prompt` via `compose_prompt()` — that's the wire-ready version with tokens and specs.

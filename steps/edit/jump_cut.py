@@ -7,6 +7,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "lib"))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 from common import fail
 from ai_video import find_project, save_project
+from lib.project_tracks import track_items, replace_track_items
 
 
 def cuts_to_keeps(cuts, clip_duration):
@@ -53,7 +54,8 @@ def main():
     args = parser.parse_args()
 
     project_path, project = find_project(args.project_id)
-    tracks0 = project.get("tracks", [[]])[0]
+    items = track_items(project)
+    tracks0 = items[0] if items else []
 
     # Find the clip
     clip_index = None
@@ -113,7 +115,10 @@ def main():
 
     # Replace clip and ripple
     tracks0 = ripple_tracks(tracks0, clip_index, 1, new_clips)
-    project["tracks"] = [tracks0]
+    # Only track 0 is rewritten — overlay tracks and their settings survive.
+    # Overlay item times are deliberately left where they are; they do not
+    # ripple with the primary track's retiming.
+    project["tracks"] = replace_track_items(project, 0, tracks0)
     save_project(project_path, project)
 
     total_kept = sum(c["outPoint"] - c["inPoint"] for c in new_clips)

@@ -21,6 +21,13 @@
 //      OBJECTS (not serialized CSS text) the template hands to
 //      captionOuterStyle/captionInnerStyle.
 //
+// Templates render EVERY active segment, not just the first, so what a
+// template returns is a Fragment holding one outer <div> per active segment,
+// lane-ascending. `captionBlocks` below unwraps that; a single-segment project
+// yields exactly one block, and that block is the element the template used to
+// return directly — which is what keeps every historical assertion below
+// meaningful as a no-change gate.
+//
 // Anchor-assertion strategy (see the task report for the fuller version):
 // the EXPECTED anchor for each template/branch is hardcoded here (verified
 // against `git diff HEAD` when this feature was implemented — the previous
@@ -218,10 +225,27 @@ const FRAME = 40
 const SEG_BASE = { start: 1, end: 5 }
 const WORDS = [{ word: 'hi', start: 1, end: 2 }] // active at t≈1.333
 
+/**
+ * Unwrap a template's return value into its per-segment blocks — one outer
+ * <div> per active segment, in paint order (lane ascending). The templates
+ * return `<>{active.map(...)}</>`, so `props.children` is that array; the
+ * single-child case is normalized to a one-element array so callers never
+ * branch.
+ */
+function captionBlocks(el, name) {
+  assert.ok(el, `${name}: expected an element, got ${el} (segment/frame out of range?)`)
+  const kids = el.props.children
+  return Array.isArray(kids) ? kids : [kids]
+}
+
 /** Render `templates[name]` with a no-offset, scale-1 segment and return { outerEl, innerEl }. */
 function renderNoOffset(name, extraSeg = {}) {
   const seg = { ...SEG_BASE, text: 'hi', ...extraSeg }
-  const outerEl = templates[name]({ frame: FRAME, fps: FPS, segments: [seg] })
+  const blocks = captionBlocks(templates[name]({ frame: FRAME, fps: FPS, segments: [seg] }), name)
+  // One active segment must still produce exactly one block — the single-row
+  // no-change gate this whole file exists to hold.
+  assert.equal(blocks.length, 1, `${name}: one active segment must render exactly one block`)
+  const outerEl = blocks[0]
   assert.ok(outerEl, `${name}: expected an element, got ${outerEl} (segment/frame out of range?)`)
   const innerEl = outerEl.props.children
   assert.ok(innerEl, `${name}: expected an inner element`)
@@ -396,7 +420,9 @@ function renderForColor(name, { segColor, trackColor, words } = {}) {
   }
   const props = { frame: FRAME, fps: FPS, segments: [seg] }
   if (trackColor !== undefined) props.color = trackColor
-  const outerEl = templates[name](props)
+  const blocks = captionBlocks(templates[name](props), name)
+  assert.equal(blocks.length, 1, `${name}: one active segment must render exactly one block`)
+  const outerEl = blocks[0]
   assert.ok(outerEl, `${name}: expected an element, got ${outerEl}`)
   const innerEl = outerEl.props.children
   assert.ok(innerEl, `${name}: expected an inner element`)
@@ -484,4 +510,94 @@ describe('per-segment color override — seg.color ?? color (base text color)', 
     const withSegColor    = renderForColor('pop', { segColor: '#123456', words: WORDS })
     assert.equal(directColor(withSegColor.innerEl), directColor(withoutSegColor.innerEl))
   })
+})
+
+// ---------------------------------------------------------------------------
+// Part 4 — lanes: EVERY active segment renders, lane-ascending.
+//
+// Captions gained a `lane` (row) field, so two segments can be active at the
+// same instant. Lane ascending is the paint order and therefore the z-order —
+// a higher lane paints later and lands on top. It is the ONLY stacking rule:
+// there is deliberately no automatic vertical offset per row, so two
+// simultaneous captions draw at their own offsets and may overlap.
+//
+// Every fixture below stores the HIGH lane FIRST, so a template that merely
+// preserved document order (or that still used `segments.find`) fails here.
+// ---------------------------------------------------------------------------
+
+/** Render `templates[name]` with the given segments and return the blocks. */
+function renderSegments(name, segments) {
+  return captionBlocks(templates[name]({ frame: FRAME, fps: FPS, segments }), name)
+}
+
+/** Two simultaneous segments with distinct lanes and distinct geometry. */
+function laneFixture(name) {
+  const words = NEEDS_WORDS.has(name) ? { words: WORDS } : {}
+  return [
+    { ...SEG_BASE, id: 'top',    text: 'top',    lane: 1, offsetX: 20, offsetY: -30, scale: 2,   ...words },
+    { ...SEG_BASE, id: 'bottom', text: 'bottom', lane: 0, offsetX: -5, offsetY: 4,   scale: 0.5, ...words },
+  ]
+}
+
+describe('lanes — two simultaneous segments both render, lane-ascending (all 7 templates)', () => {
+  for (const name of STYLE_NAMES) {
+    test(`${name}: both segments are present, higher lane later in document order`, () => {
+      const blocks = renderSegments(name, laneFixture(name))
+      assert.equal(blocks.length, 2, `${name}: both active segments must render`)
+      assert.deepEqual(
+        blocks.map(b => b.props['data-caption-id']),
+        ['bottom', 'top'],
+        `${name}: lane 0 paints first, lane 1 last (= on top)`,
+      )
+    })
+
+    test(`${name}: each segment carries its OWN offsetX/offsetY/scale`, () => {
+      const [bottom, top] = renderSegments(name, laneFixture(name))
+      // Outer wrapper carries the offsets, inner anchor box the scale — the
+      // same split Part 1/Part 2 pin for the single-segment case.
+      assert.equal(bottom.props.style.transform, 'translate(-5%, 4%)', `${name}: lane 0 offsets`)
+      assert.equal(top.props.style.transform,    'translate(20%, -30%)', `${name}: lane 1 offsets`)
+      assert.equal(bottom.props.children.props.style.transform, 'scale(0.5)', `${name}: lane 0 scale`)
+      assert.equal(top.props.children.props.style.transform,    'scale(2)',   `${name}: lane 1 scale`)
+    })
+
+    test(`${name}: a lane-less segment is treated as lane 0 and paints under lane 1`, () => {
+      const [top, bottom] = laneFixture(name)
+      delete bottom.lane
+      assert.deepEqual(
+        renderSegments(name, [top, bottom]).map(b => b.props['data-caption-id']),
+        ['bottom', 'top'],
+      )
+    })
+
+    test(`${name}: segments sharing a lane keep document order (stable sort)`, () => {
+      const [a, b] = laneFixture(name)
+      a.lane = 0
+      assert.deepEqual(
+        renderSegments(name, [a, b]).map(b2 => b2.props['data-caption-id']),
+        ['top', 'bottom'],
+        `${name}: same lane -> stored order wins, no reshuffle`,
+      )
+    })
+
+    test(`${name}: a segment active in another lane but not at this instant is not drawn`, () => {
+      const [top, bottom] = laneFixture(name)
+      top.start = 20; top.end = 25   // well past FRAME/FPS ≈ 1.333s
+      const blocks = renderSegments(name, [top, bottom])
+      assert.equal(blocks.length, 1)
+      assert.equal(blocks[0].props['data-caption-id'], 'bottom')
+    })
+  }
+})
+
+describe('lanes — data-caption-id marks each block for the preview measurer', () => {
+  for (const name of STYLE_NAMES) {
+    test(`${name}: the outer wrapper carries the segment's own id`, () => {
+      const { outerEl } = renderNoOffset(name, {
+        id: 'cap-7',
+        ...(NEEDS_WORDS.has(name) ? { words: WORDS } : {}),
+      })
+      assert.equal(outerEl.props['data-caption-id'], 'cap-7')
+    })
+  }
 })

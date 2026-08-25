@@ -65,14 +65,16 @@ montaj waveform-trim clip0.mp4 clip1.mp4 clip2.mp4
 
 ## Clip-level — multiple steps per clip (swarm)
 
-When each clip needs 3+ sequential steps before concat, background jobs get unwieldy. Use **one subagent per clip**:
+When each clip needs 3+ sequential per-clip steps, background jobs get unwieldy. Use **one subagent per clip**:
 
-1. Identify fan-out point: all per-clip steps (before concat)
-2. Identify fan-in point: `concat` and everything after
+1. Identify the fan-out point: every step declared `foreach: clips`
+2. Identify the fan-in point: the first step with no `foreach` that actually consumes every clip's output — an agent-authored task in the clip-based workflows (`select-takes`, `overlay`). Not every non-`foreach` step is a fan-in: `broll`'s whole `vo_*` chain is non-`foreach` because it runs on the voiceover alone, in parallel with the footage pass
 3. Spawn one subagent per clip — each receives: clip path, steps to run, project id, editing prompt
 4. Cap at **4 concurrent clip agents** to avoid resource contention
 5. Wait for all subagents to complete, collect output paths
-6. Fan in: run `concat` with all paths, then continue
+6. Fan in: hand the collected paths to the non-`foreach` step and continue
+
+There is no join step. Nothing concatenates the per-clip outputs into one file: the surviving keeps become `tracks[0]` items with their own `inPoint`/`outPoint`, and the render engine assembles them in a single pass at the end.
 
 Use when a clip needs 3+ sequential steps — subagent coordination overhead is worth it beyond that threshold.
 
@@ -85,8 +87,11 @@ Workflow steps declare `needs: [step_ids]`. Identify waves of ready steps (all `
 | Wave | Steps | Pattern |
 |------|-------|---------|
 | 1 | `probe`, `snapshot`, `waveform_trim` (per clip) | Bash `&` or waveform_trim batch |
-| 2 | `transcribe` (per clip) | Bash `&` |
-| 3 | `rm_fillers` (per clip) | Bash `&` |
-| 4 | `select-takes` | Sequential |
-| 5 | `caption`, `overlays` | Sequential |
-| 6 | `concat` | Sequential (encode boundary) |
+| 2 | `rm_nonspeech` (per clip) | Bash `&` |
+| 3 | `transcribe` (per clip) | Bash `&` |
+| 4 | `select-takes` | Sequential — the fan-in; needs every clip's transcript |
+| 5 | `rm_fillers` (per clip) | Bash `&` |
+| 6 | `transcribe_final` (per clip) | Bash `&` |
+| 7 | `overlay` | Sequential |
+
+Assembly is not a wave. The render engine reads the finished `tracks` and encodes once, at render time.

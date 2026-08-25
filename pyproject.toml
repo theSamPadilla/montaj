@@ -73,15 +73,27 @@ include = [
 # Keep this broad so future *.json/*.yaml additions ship without a packaging
 # diff. node_modules/ and ui/dist/ are already pruned by MANIFEST.in.
 "*" = ["*.json", "*.yaml"]
-# overlay-runtime and editor are Node bundles, not Python packages — no
-# __init__.py (and overlay-runtime's dir name is hyphenated), so
+# overlay-runtime, editor and timeline-core are Node bundles, not Python
+# packages — no __init__.py (and their dir names are hyphenated), so
 # setuptools.packages.find skips them and their source falls out of the wheel.
 # Force the whole subtree in via the parent package's data globs (node_modules/
 # is still pruned by MANIFEST.in). NOTE: editor was added in 3.0.0 but its glob
 # was missed until 3.0.3 — without it the wheel shipped editor/package.json but
 # not editor/src, so the UI's `@bycrux/editor: file:../editor` dep resolved to a
 # package with no source and `montaj install ui` failed with TS2307.
-"montaj_assets" = ["overlay-runtime/**/*", "editor/**/*"]
+# timeline-core (SP2) hit the IDENTICAL bug: the `"*" = ["*.json"]` glob above
+# let its package.json/fixtures/expected through, so the dir looked present while
+# index.js and src/ were missing entirely — render/ and editor/ both declare
+# `@bycrux/timeline-core: file:../timeline-core`, so `montaj install` would
+# resolve a package with no main and no source. ci.yml's wheel job now greps for
+# index.js and src/source-window.js so a fourth bundle can't repeat this.
+# luts/ (SP6b) hits a FIFTH variant of the same class: `.cube` matches neither
+# the `"*" = ["*.json"]` glob above nor any prior "montaj_assets" glob, so
+# without an explicit entry here it would ship in the sdist (MANIFEST.in globs
+# broadly) but silently miss the wheel — the LUT files would look present in
+# a source checkout while `montaj install` shipped a package with no tone-map
+# data. ci.yml's wheel job greps for montaj-vivid-v1.cube so this can't repeat.
+"montaj_assets" = ["overlay-runtime/**/*", "editor/**/*", "timeline-core/**/*", "luts/**/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

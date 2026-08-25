@@ -10,6 +10,7 @@ import type {
   EditorAdapter,
 } from '../types'
 import { Button, cn, inspectorInputClass, SwatchInput } from '../ui'
+import { Loader } from '../ui/Loader'
 import { TextFormattingToolbar } from '../text/TextFormattingToolbar'
 
 function parseNumber(v: string): number | null {
@@ -345,7 +346,7 @@ export default function SlidePropertyPanel({
               </div>
 
               {schemasLoading && (
-                <div className="text-xs text-[var(--editor-text)]/55">Loading overlay props…</div>
+                <Loader size="sm" label="Loading overlay props" />
               )}
 
               {!schemasLoading && overlaySchema && overlaySchema.props.length > 0 && (

@@ -17,9 +17,11 @@
     "lint": "eslint src"
   },
   "dependencies": {
+    "@bycrux/timeline-core": "file:../timeline-core",
     "class-variance-authority": "^0.7",
     "clsx": "^2",
     "lucide-react": "^0.400",
+    "mp4box": "^0.5.4",
     "tailwind-merge": "^2"
   },
   "peerDependencies": {

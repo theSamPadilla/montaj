@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """Validate step, project, and workflow JSON files against the montaj spec."""
-import argparse, json, os, re, sys
+import argparse, json, math, os, re, sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "lib"))
 from common import fail
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from lib.types.carousel import CAROUSEL_ASPECTS, CAROUSEL_RESOLUTIONS
+from lib.project_tracks import track_items
 
 # Re-export existing step validation so tests can import from validate
 from validate_step import validate as validate_step  # noqa: F401
@@ -31,12 +32,37 @@ _CAROUSEL_FORBIDDEN = ("tracks", "sources", "audio", "storyboard")
 
 
 def _validate_clip_extensions(data):
-    """Optional clips-workflow fields: derivedFrom (top-level) + sourceCrop on video items."""
+    """Optional clips-workflow fields plus per-item speed/rotation checks.
+
+    Validates derivedFrom (top-level) and sourceCrop on video items.
+
+    Also range-checks the optional per-clip `speed` (montaj/speed): a number in
+    [0.25, 4] when present; absent means the default 1.0.
+
+    Also validates the optional per-item `rotation` (degrees, clockwise, set by
+    the editor's rotate handle): must be a finite number when present.
+    `json.load` accepts `NaN`/`Infinity` as valid floats, so an isinstance
+    check alone would let either through to poison the geometry math
+    downstream — `math.isfinite()` catches what isinstance can't. Range is
+    intentionally unchecked here: a helper elsewhere normalizes any finite
+    value into [0,360)."""
     df = data.get("derivedFrom")
     if df is not None and not isinstance(df, str):
         fail("invalid_field", "derivedFrom must be a string")
-    for ti, track in enumerate(data.get("tracks", [])):
-        for item in track:
+    for ti, items in enumerate(track_items(data)):
+        for item in items:
+            speed = item.get("speed")
+            if speed is not None:
+                # bool is a subclass of int — reject it so `True`/`False` isn't read as 1/0.
+                if isinstance(speed, bool) or not isinstance(speed, (int, float)) or not (0.25 <= float(speed) <= 4.0):
+                    fail("invalid_field", f"tracks[{ti}] item '{item.get('id','?')}': speed must be a number in [0.25, 4]")
+
+            rotation = item.get("rotation")
+            if rotation is not None:
+                # bool is a subclass of int — reject it, as the speed check above does.
+                if isinstance(rotation, bool) or not isinstance(rotation, (int, float)) or not math.isfinite(rotation):
+                    fail("invalid_field", f"tracks[{ti}] item '{item.get('id','?')}': rotation must be a finite number")
+
             sc = item.get("sourceCrop")
             if sc is None:
                 continue
@@ -46,6 +72,89 @@ def _validate_clip_extensions(data):
                 val = sc.get(k)
                 if not isinstance(val, (int, float)) or not (0.0 <= float(val) <= 1.0):
                     fail("invalid_field", f"tracks[{ti}] item '{item.get('id','?')}': sourceCrop.{k} must be a number in [0,1]")
+
+
+def _validate_audio_tracks(data):
+    """`audio.tracks` shape check.
+
+    **Deliberately does NOT require `end`.** A track with no `end` is legal and
+    renders correctly: `montaj_assets/render/mix-audio.js` delays by
+    `track.start ?? 0` and never trims on `end` (it uses `end` only to place a
+    fade-out), so the source window is `inPoint`/`outPoint` alone and a music
+    bed with neither plays its natural length. Requiring `end` here would
+    outlaw a valid project in order to paper over an editor defect; the editor
+    is fixed instead — see `audioWindow` / `groupAudioLanes` in
+    `montaj_assets/editor/src/video/timeline/timeline-model.ts`.
+
+    What IS checked is the shape. A track with no `src` renders nothing at all.
+    A non-numeric `start`/`end`/`volume` reaches ffmpeg as a malformed filter
+    argument. And `end <= start` is a zero- or negative-width lane, which is
+    the exact defect this validator exists to catch: it is never a legitimate
+    edit, and it is invisible in the editor and correct in the export, so
+    nothing else will tell you about it.
+    """
+    audio = data.get("audio")
+    if audio is None:
+        return
+    if not isinstance(audio, dict):
+        fail("invalid_field", "'audio' must be an object")
+
+    tracks = audio.get("tracks")
+    if tracks is None:
+        return
+    if not isinstance(tracks, list):
+        fail("invalid_field", "'audio.tracks' must be an array")
+
+    seen_ids = set()
+    for i, track in enumerate(tracks):
+        if not isinstance(track, dict):
+            fail("invalid_field", f"audio.tracks[{i}] must be an object")
+
+        src = track.get("src")
+        if not isinstance(src, str) or not src:
+            fail("missing_field", f"audio.tracks[{i}]: 'src' must be a non-empty string")
+
+        track_id = track.get("id")
+        if track_id is not None:
+            if not isinstance(track_id, str) or not track_id:
+                fail("invalid_field", f"audio.tracks[{i}]: 'id' must be a non-empty string")
+            if track_id in seen_ids:
+                fail("duplicate_audio_track_id",
+                     f"Duplicate audio track id '{track_id}' at audio.tracks[{i}]")
+            seen_ids.add(track_id)
+
+        # bool is a subclass of int — reject it so True/False isn't read as 1/0.
+        for key in ("start", "end", "volume", "inPoint", "outPoint", "fadeIn", "fadeOut"):
+            val = track.get(key)
+            if val is None:
+                continue
+            if isinstance(val, bool) or not isinstance(val, (int, float)):
+                fail("invalid_field", f"audio.tracks[{i}]: '{key}' must be a number")
+            # Negatives are the other half of "malformed filter argument": a
+            # negative `start` reaches ffmpeg as `adelay=-2000` (mix-audio.js:66)
+            # and a negative `inPoint` as `-ss -3`, neither of which ffmpeg
+            # accepts. Nothing in this repo emits one.
+            if val < 0:
+                fail("invalid_field", f"audio.tracks[{i}]: '{key}' must be >= 0")
+
+        lane = track.get("lane")
+        if lane is not None and (isinstance(lane, bool) or not isinstance(lane, int)):
+            fail("invalid_field", f"audio.tracks[{i}]: 'lane' must be an integer")
+
+        muted = track.get("muted")
+        if muted is not None and not isinstance(muted, bool):
+            fail("invalid_field", f"audio.tracks[{i}]: 'muted' must be a boolean")
+
+        # Compare against the RENDERED default, not just an explicit `start`.
+        # `mix-audio.js` delays by `track.start ?? 0`, so `{"src": ..., "end": 0}`
+        # with no `start` is the same zero-width lane as `start: 0, end: 0` — the
+        # omitted-`start` spelling of the exact defect this check exists to catch.
+        start, end = track.get("start"), track.get("end")
+        base = start if isinstance(start, (int, float)) else 0
+        if isinstance(end, (int, float)) and end <= base:
+            fail("invalid_field",
+                 f"audio.tracks[{i}]: 'end' ({end}) must be greater than 'start' ({base}); "
+                 f"omit 'end' to play the source's natural length")
 
 
 def validate_project(path):
@@ -171,14 +280,29 @@ def validate_project(path):
             fail("invalid_tracks", "tracks must be an array")
 
         for i, track in enumerate(tracks):
-            if not isinstance(track, list):
-                fail("invalid_tracks", f"tracks[{i}] must be an array of items, not an object")
+            # Both shapes are legal: a bare array of items (legacy) or a track
+            # object carrying an `items` array plus optional track settings.
+            if isinstance(track, list):
+                items = track
+            elif isinstance(track, dict):
+                items = track.get("items")
+                if not isinstance(items, list):
+                    fail("invalid_tracks", f"tracks[{i}] must be an array of items, or an object with an 'items' array")
+                if "id" in track and not isinstance(track["id"], str):
+                    fail("invalid_field", f"tracks[{i}]: 'id' must be a string")
+                if "volume" in track and (isinstance(track["volume"], bool) or not isinstance(track["volume"], (int, float))):
+                    fail("invalid_field", f"tracks[{i}]: 'volume' must be a number")
+                for key in ("muted", "enabled"):
+                    if key in track and not isinstance(track[key], bool):
+                        fail("invalid_field", f"tracks[{i}]: '{key}' must be a boolean")
+            else:
+                fail("invalid_tracks", f"tracks[{i}] must be an array of items, or an object with an 'items' array")
 
             if i == 0:
                 # Primary track: items must be type "video" with start/end.
                 # Overlap is intentionally NOT checked here — primary clips can overlap
                 # on the timeline; compose.js handles rendering order via itsoffset.
-                for item in track:
+                for item in items:
                     for field in PRIMARY_CLIP_REQUIRED:
                         if field not in item:
                             fail("missing_field", f"tracks[0] item missing required field '{field}': {item.get('id', '?')}")
@@ -192,7 +316,7 @@ def validate_project(path):
                             fail("invalid_field", f"tracks[0] item '{item.get('id', '?')}': end ({e}) < start ({s})")
             else:
                 # Overlay tracks: standard visual item validation + overlap check
-                sorted_items = sorted(track, key=lambda x: x.get("start", 0))
+                sorted_items = sorted(items, key=lambda x: x.get("start", 0))
                 prev_end = None
                 for item in sorted_items:
                     for field in VISUAL_ITEM_REQUIRED:
@@ -209,6 +333,7 @@ def validate_project(path):
                     prev_end = item["end"]
 
         _validate_clip_extensions(data)
+        _validate_audio_tracks(data)
 
     return {"valid": True}
 

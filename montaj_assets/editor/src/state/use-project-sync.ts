@@ -52,6 +52,8 @@ export interface UseProjectSync<P extends Project = Project> {
   mutateTransient: (fn: (p: P) => P) => void
   /** One queued save for the accumulated transient state; one undo step. */
   commit: () => Promise<void>
+  /** Abandon an in-progress transient gesture — no save, no undo push. */
+  discardTransient: () => void
   /** Apply server-authored state — no save, no undo push (e.g. caption regen). */
   applyExternal: (p: P) => void
   undo: () => void
@@ -230,6 +232,20 @@ export function useProjectSync<P extends Project = Project>(
     )
   }, [save, pushUndo])
 
+  // Abandon an in-progress transient gesture: restore projectRef/state to the
+  // pre-gesture baseline and clear it. No save, no undo push. A no-op when no
+  // transient baseline is set. Exists so callers don't have to reproduce this
+  // themselves via `mutateTransient(() => baseline)`, which would restore the
+  // state but leave `transientBaseline` set — corrupting the NEXT unrelated
+  // commit() into pushing a stale baseline for a gesture that never happened.
+  const discardTransient = useCallback((): void => {
+    const baseline = transientBaseline.current
+    if (baseline === null) return
+    transientBaseline.current = null
+    projectRef.current = baseline
+    setProject(baseline)
+  }, [])
+
   // undo()/redo() — snapshot swap. Pops the target stack, pushes current state
   // to the opposite stack, replaces the entire state, and enqueues a save so the
   // host persists the swap. Also clears transientBaseline: it replaces state
@@ -297,6 +313,7 @@ export function useProjectSync<P extends Project = Project>(
     mutate,
     mutateTransient,
     commit,
+    discardTransient,
     applyExternal,
     undo,
     redo,

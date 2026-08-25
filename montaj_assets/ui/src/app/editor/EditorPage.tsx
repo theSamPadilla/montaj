@@ -1,16 +1,21 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useParams, useLocation, useNavigate } from 'react-router-dom'
 import { api } from '@/lib/api'
-import { ProjectContext, type Asset, type Project, type RunSnapshot } from '@/lib/types/schema'
+import { ProjectContext, normalizeTracks, mapTrackItems, trackItems, type Asset, type Project, type RunSnapshot } from '@/lib/types/schema'
 import { useProjectStream } from '@/lib/sse'
 import { createMontajAdapter } from './montajAdapter'
+import { useCaptionJobStatus, useCaptionJobSink } from './captionJob'
 import { useIsMobile } from '@/lib/useIsMobile'
-import { CarouselEditor, VideoEditor, ImageToneMenu, defaultMontajTheme, type EditorSlots, type ImageTone } from '@bycrux/editor'
+import { Upload } from 'lucide-react'
+import { CarouselEditor, VideoEditor, createSourcePreviewStore, defaultMontajTheme, type Captions, type EditorSlots, type ImageTone } from '@bycrux/editor'
 import AssetsPanel from '@/components/AssetsPanel'
+import MediaPanel from '@/components/media/MediaPanel'
+import FootagePanel from '@/components/media/FootagePanel'
+import BrollAudioPanel, { type Voiceover } from '@/components/media/BrollAudioPanel'
 import ProjectHeader from '@/components/ProjectHeader'
 import RerunModal from '@/components/RerunModal'
 import { Button } from '@/components/ui/button'
-import ClipInspectModal, { type InspectTarget } from '@/components/timeline/ClipInspectModal'
+import GenerationPanel from '@/components/timeline/GenerationPanel'
 import SubcutRegenTool from '@/components/timeline/SubcutRegenTool'
 import { ProfileAssetsPanel } from './ProfileAssetsPanel'
 import UploadView from './UploadView'
@@ -36,7 +41,7 @@ function formatRelativeTime(iso: string): string {
 }
 
 function SnapshotCard({ snapshot, index, onRestore }: { snapshot: RunSnapshot; index: number; onRestore: () => void }) {
-  const clipCount = snapshot.tracks?.[0]?.length ?? 0
+  const clipCount = trackItems(snapshot)[0]?.length ?? 0
   const capCount  = snapshot.captions?.segments.length ?? 0
 
   return (
@@ -166,19 +171,71 @@ export default function EditorPage() {
 
   // Montaj-native EditorAdapter for the package editors. Stable across renders.
   const adapter = useMemo(() => createMontajAdapter(), [])
+  // Hover-scrub bridge between the footage bin cards and the main preview.
+  // Created once; the footage card writes to it, VideoEditor's preview reads it.
+  const sourcePreview = useMemo(() => createSourcePreviewStore(), [])
 
   // ── Host shell state (video branch) ───────────────────────────────────────
   // Re-run modal lives in the host shell — VideoEditor doesn't own the host
   // pipeline re-run. Inspector/subcut state is owned by VideoEditor (render-prop
   // seams); only the Re-run modal toggle is host-local here.
   const [rerunOpen, setRerunOpen] = useState(false)
-  // VideoEditor pushes the image-tone state up so the setting lives in the page
-  // header (null when the project is SDR and the control should not appear).
-  const [imageToneApi, setImageToneApi] = useState<{ value: ImageTone; set: (tone: ImageTone) => void } | null>(null)
+  // Background caption-regeneration job, owned by the app-root
+  // CaptionJobProvider (App.tsx) so it survives navigating away from this
+  // project. EditorPage supplies the trigger (below) and reads status here.
+  // Uses the NARROW useCaptionJobStatus() (status/projectId/error + actions,
+  // no `logs`) rather than useCaptionJob() deliberately: EditorPage renders
+  // the whole <VideoEditor> tree, which is not memoized, so subscribing to
+  // the full hook would re-render it on every appended log line for the
+  // duration of a transcription. Do not "simplify" this back to
+  // useCaptionJob() — see captionJob.tsx's useCaptionJobStatus() comment.
+  const captionJob = useCaptionJobStatus()
+  // Handed to VideoEditor as `onRegenerateCaptions`: delegates the trigger to
+  // the background job instead of letting the package open its own blocking
+  // CaptionRegenModal. `run` is a thunk — captionJob.start only calls it once
+  // the job actually begins, which is what lets captionJob.tsx avoid ever
+  // importing the adapter (see that file's header comment). Guarded on
+  // `adapter.generateCaptions` at the call site below, not here: omitting the
+  // whole `onRegenerateCaptions` prop (rather than passing a callback that
+  // would start nothing) is what tells VideoEditor the host does NOT own the
+  // job, so its own generateCaptions-gated fallback (VideoEditor.tsx:879)
+  // still renders. createMontajAdapter always implements generateCaptions,
+  // so this guard is defensive rather than load-bearing today.
+  const handleRegenerateCaptions = useCallback(() => {
+    const base = projectRef.current ?? project
+    if (!base) return
+    captionJob.start(base.id, () => adapter.generateCaptions!(base.id, { style: base.captions?.style }))
+  }, [project, adapter, captionJob.start])
+  // Patches THIS component's own `project` state when a background caption
+  // job finishes. The mounted VideoEditor needs nothing from this sink — it
+  // refreshes itself off the same SSE frame through its own adapter
+  // subscription. What IS stale without this is `project`/`projectRef` here:
+  // handleUpdate (above) drops SSE frames on the floor while a package editor
+  // is mounted, on the assumption that the package editor is authoritative —
+  // an assumption a background job breaks, since it can outlive the mounted
+  // editor or finish after the user has navigated to a different project.
+  //
+  // Deliberately does NOT call api.saveProject: the montaj server already
+  // persisted the regenerated captions as part of the caption job and
+  // broadcast the SSE frame the mounted editor reconciles against, so saving
+  // here would double-write. This mirrors the built-in CaptionRegenModal's
+  // onDone, which patches via `sync.applyExternal` and never saves either
+  // (see the comment above `<CaptionRegenModal>` in
+  // montaj_assets/editor/src/video/VideoEditor.tsx).
+  const handleCaptionJobDone = useCallback((projectId: string, captions: Captions) => {
+    const base = projectRef.current
+    if (!base || base.id !== projectId) return // job completed after navigating away
+    handleProjectChange({ ...base, captions })
+  }, [handleProjectChange])
+  useCaptionJobSink(handleCaptionJobDone)
+  // VideoEditor pushes the image-tone state up via onProvideImageTone. The
+  // control now lives inside the Export dialog (moved out of the page header),
+  // but the callback stays wired: providing it suppresses the package toolbar's
+  // fallback tone menu. We only need the setter — the value is read in-dialog.
+  const [, setImageToneApi] = useState<{ value: ImageTone; set: (tone: ImageTone) => void } | null>(null)
   // VideoEditor hands us a stable `openRender()` trigger (it owns the RenderModal);
   // we host the Render button in the ProjectHeader instead of the package toolbar.
   const [openRender, setOpenRender] = useState<(() => void) | null>(null)
-
   // Host-supplied slots for the package editors:
   //  - assetsPanel : Montaj's own assets panel (uploads into the project dir,
   //                  persists via PUT on change).
@@ -206,6 +263,28 @@ export default function EditorPage() {
     [project, handleProjectChange],
   )
 
+  // Remove a source from the footage bin: drops its `sources` entry and every
+  // timeline instance of the same clip (matched by `src`, which covers both
+  // init's shared-id clip and any later drag-placement of the same footage).
+  // Never deletes the underlying file — the source stays on disk and can be
+  // re-imported. Mirrors handleAssetsChange's immutable-update + persist shape.
+  const handleRemoveSource = useCallback(
+    async (sourceId: string) => {
+      const base = projectRef.current ?? project
+      if (!base?.sources) return
+      const removed = base.sources.find(s => s.id === sourceId)
+      if (!removed) return
+      const nextSources = base.sources.filter(s => s.id !== sourceId)
+      const nextTracks = mapTrackItems(base, items =>
+        removed.src ? items.filter(item => item.src !== removed.src) : items,
+      )
+      const updated = { ...base, sources: nextSources, tracks: nextTracks }
+      handleProjectChange(updated)
+      await api.saveProject(base.id, updated)
+    },
+    [project, handleProjectChange],
+  )
+
   // Restore a prior run snapshot — mirrors LiveView.handleRestore: rebuild the
   // project from the snapshot's tracks/captions, flip back to draft, persist,
   // and propagate via onProjectChange.
@@ -213,12 +292,17 @@ export default function EditorPage() {
     async (snapshot: RunSnapshot) => {
       const base = projectRef.current ?? project
       if (!base) return
-      const restored: Project = {
+      // `normalizeTracks` because a snapshot is a point-in-time copy of
+      // whatever `tracks` looked like when the run finished — snapshots already
+      // on disk hold the legacy array-of-arrays shape, and restoring one must
+      // not put that shape back into a live project. Converged snapshots are
+      // returned unchanged (identity), so this costs nothing for new ones.
+      const restored: Project = normalizeTracks({
         ...base,
         status: 'draft',
         tracks: snapshot.tracks,
         captions: snapshot.captions,
-      }
+      })
       handleProjectChange(restored)
       try {
         await api.saveProject(base.id, restored)
@@ -262,25 +346,100 @@ export default function EditorPage() {
     [project, handleAssetsChange, logMessage],
   )
 
-  // Video editor slots. The assets panel for video is Montaj's project AssetsPanel;
-  // profile-scoped input materials are surfaced via ProfileAssetsPanel stacked
-  // above it (preserving the LiveView/ReviewView arrangement). runHistory feeds
-  // the package's right-sidebar slot.
-  const videoSlots: EditorSlots = useMemo(
-    () => ({
-      assetsPanel: project ? (
-        <>
-          {project.profile && (
-            <div className="border-b border-gray-200 dark:border-gray-800 p-2">
-              <ProfileAssetsPanel project={project} onProjectChange={handleProjectChange} />
-            </div>
-          )}
-          <AssetsPanel
-            assets={project.assets ?? []}
-            projectId={project.id}
-            onChange={handleAssetsChange}
-          />
-        </>
+  // Video editor slots. The left media column is Montaj's tabbed MediaPanel:
+  // a Footage (or "Videos" for broll projects) tab backed by project.sources,
+  // and an Assets tab holding the existing ProfileAssetsPanel + AssetsPanel
+  // composite (preserving the LiveView/ReviewView arrangement). `usedSrcs` is
+  // every `src` placed anywhere on the timeline, computed once here and fed to
+  // both tabs so a footage card or an asset card already in the edit shows the
+  // "Added" badge. runHistory feeds the package's right-sidebar slot.
+  const videoSlots: EditorSlots = useMemo(() => {
+    const usedSrcs = new Set<string>()
+    for (const items of trackItems(project)) {
+      for (const item of items) {
+        if (item.src) usedSrcs.add(item.src)
+      }
+    }
+    const footageLabel = project?.projectType === 'broll' ? 'Videos' : 'Footage'
+
+    // Broll-audio tab data. `voiceover` is a passthrough field (index signature
+    // on EditorProject), so read it defensively. The tab appears only for a
+    // b-roll project that actually carries voiceover audio (a src or takes);
+    // every other project passes no `brollAudio` node and keeps the two tabs.
+    const voiceover = (project?.voiceover as Voiceover | undefined) ?? undefined
+    const hasVoiceoverAudio = !!(voiceover && (voiceover.src || voiceover.takes?.length))
+    const showBrollAudio = project?.projectType === 'broll' && hasVoiceoverAudio
+    // The per-take wavs actually placed on the timeline drive the "Added" badge;
+    // their sourceDuration (when present) drives the duration chip.
+    const audioUsedSrcs = new Set<string>()
+    const audioDurationBySrc = new Map<string, number>()
+    for (const track of project?.audio?.tracks ?? []) {
+      if (track.src) {
+        audioUsedSrcs.add(track.src)
+        if (track.sourceDuration != null) audioDurationBySrc.set(track.src, track.sourceDuration)
+      }
+    }
+
+    return {
+      // Branded empty state for the right properties panel (nothing selected):
+      // Montaj's logo + "Select an element", vertically centered. The package
+      // falls back to its own generic centered default when this is absent.
+      propertiesEmptyState: (
+        // Inline color/opacity rather than Tailwind arbitrary-value opacity
+        // (`text-[var(--editor-text)]/70`): that modifier is proven in the
+        // editor package's Tailwind but not guaranteed to emit under the ui
+        // package's, and a non-emitting class fails silently (no type error).
+        <div className="flex-1 flex flex-col items-center justify-center gap-3 px-6 text-center" style={{ color: 'var(--editor-text)' }}>
+          <img src="/montaj-logo.png" alt="" className="h-11 w-11 rounded-xl" style={{ opacity: 0.4 }} />
+          <p className="text-xs font-medium" style={{ opacity: 0.7 }}>Select an element</p>
+          <p className="text-[11px]" style={{ opacity: 0.45 }}>Choose a clip, overlay, or track to edit its properties.</p>
+        </div>
+      ),
+      mediaPanel: project ? (
+        <MediaPanel
+          footageLabel={footageLabel}
+          brollAudio={
+            showBrollAudio ? (
+              <BrollAudioPanel
+                voiceover={voiceover}
+                usedSrcs={audioUsedSrcs}
+                durationBySrc={audioDurationBySrc}
+                fileUrl={adapter.fileUrl}
+                projectId={project.id}
+                getWaveformPeaks={adapter.getWaveformPeaks!}
+                sources={project.sources}
+                getFilmstrip={adapter.getFilmstrip!}
+              />
+            ) : undefined
+          }
+          footage={
+            <FootagePanel
+              sources={project.sources ?? []}
+              usedSrcs={usedSrcs}
+              projectId={project.id}
+              getFilmstrip={adapter.getFilmstrip!}
+              fileUrl={adapter.fileUrl}
+              ingestSource={(input) => adapter.ingestSource!(project.id, input)}
+              onRemove={handleRemoveSource}
+              sourcePreview={sourcePreview}
+            />
+          }
+          assets={
+            <>
+              {project.profile && (
+                <div className="border-b border-gray-200 dark:border-gray-800 p-2">
+                  <ProfileAssetsPanel project={project} onProjectChange={handleProjectChange} />
+                </div>
+              )}
+              <AssetsPanel
+                assets={project.assets ?? []}
+                projectId={project.id}
+                onChange={handleAssetsChange}
+                usedSrcs={usedSrcs}
+              />
+            </>
+          }
+        />
       ) : undefined,
       exportActions: (
         <a
@@ -296,7 +455,7 @@ export default function EditorPage() {
           <div className="w-5 h-5 rounded-full border-2 border-gray-700 border-t-gray-400 animate-spin" />
           <p className="text-gray-300 text-sm">
             <span className="text-white font-medium">
-              {(project?.tracks?.[0] ?? []).length} clip(s)
+              {(trackItems(project)[0] ?? []).length} clip(s)
             </span>
             {' queued. Agent is working:'}
           </p>
@@ -308,9 +467,8 @@ export default function EditorPage() {
       runHistory: (
         <RunHistorySidebar history={project?.history ?? []} onRestore={handleRestoreRun} />
       ),
-    }),
-    [project, handleAssetsChange, handleProjectChange, handleRestoreRun, logMessage],
-  )
+    }
+  }, [project, adapter, sourcePreview, handleAssetsChange, handleProjectChange, handleRestoreRun, handleRemoveSource, logMessage])
 
   // Back-to-setup: delete the project and navigate to the setup view, carrying a
   // prefill so the user keeps their clips/name/prompt/workflow/profile. Ported
@@ -397,27 +555,18 @@ export default function EditorPage() {
                   ← Storyboard
                 </Button>
               )}
-              {/* HDR image color mapping, surfaced as a page-header setting.
-                  VideoEditor owns the state + save path and hands it up via
-                  onProvideImageTone; null means SDR project (no control). */}
-              {imageToneApi && (
-                <ImageToneMenu
-                  variant="header"
-                  value={imageToneApi.value}
-                  onChange={imageToneApi.set}
-                />
-              )}
               {project.status !== 'pending' && (
                 <Button variant="outline" size="sm" onClick={() => setRerunOpen(true)}>
                   Re-run
                 </Button>
               )}
-              {/* Render lives in the header for the local OS editor (the package's
+              {/* Export lives in the header for the local OS editor (the package's
                   toolbar button is suppressed via onProvideRenderTrigger below).
                   Shown once the package hands us the trigger (review mode only). */}
               {openRender && (
-                <Button size="sm" onClick={openRender}>
-                  Render →
+                <Button size="sm" onClick={openRender} className="gap-1.5">
+                  <Upload className="w-3.5 h-3.5" />
+                  Export
                 </Button>
               )}
             </>
@@ -430,24 +579,31 @@ export default function EditorPage() {
             onProjectChange={handleProjectChange}
             theme={defaultMontajTheme}
             slots={videoSlots}
-            assetsPlacement="sidebar"
+            sourcePreview={sourcePreview}
             renderProgressView="logs"
             onProvideRenderTrigger={(fn) => setOpenRender(() => fn)}
             onProvideImageTone={setImageToneApi}
             onBackToSetup={handleBackToSetup}
+            // See handleRegenerateCaptions above for why this is guarded on
+            // adapter.generateCaptions rather than passed unconditionally.
+            onRegenerateCaptions={adapter.generateCaptions ? handleRegenerateCaptions : undefined}
+            // The job lives at the app root and outlives this route, so the
+            // projectId check keeps a job started on project A from greying
+            // out project B's trigger after navigating here.
+            captionsGenerating={captionJob.status === 'running' && captionJob.projectId === project.id}
             regenEnabled={project.projectType === 'ai_video'}
+            engine={{ enabled: true }}
             isClipQueued={(itemId) => (project.regenQueue ?? []).some(e => e.clipId === itemId)}
-            renderClipInspector={({ item, onClose }) => (
-              <ClipInspectModal
+            renderGenerationPanel={({ clipId }) => (
+              <GenerationPanel
                 project={project}
-                target={item as InspectTarget}
+                clipId={clipId}
                 onProjectChange={handleProjectChange}
                 onSave={(p) => api.saveProject(p.id, p)}
-                onClose={onClose}
               />
             )}
             renderSubcutRegen={({ clipId, onClose }) => {
-              const clip = (project.tracks?.[0] ?? []).find(c => c.id === clipId)
+              const clip = (trackItems(project)[0] ?? []).find(c => c.id === clipId)
               if (!clip) return null
               return (
                 <SubcutRegenTool

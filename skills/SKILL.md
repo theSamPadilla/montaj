@@ -70,8 +70,6 @@ For HTTP and CLI, **load skill `native`** — it defines how every `_contract` v
 ### Edit
 | Step | What it does | Key params |
 |------|-------------|------------|
-| `trim` | Cut by start/end/duration | `--start 2.5 --end 8.3` or `--duration 5` |
-| `cut` | Remove one or more sections and rejoin | `--start 3.0 --end 7.5` (single) · `--cuts '[[s,e],...]'` (multi, one pass) · `--spec` (trim spec out, no encode) |
 | `materialize_cut` | Encode a trim spec or raw segment to H.264 — required before steps that need an actual video file (e.g. `remove_bg`) | `spec.json` or `clip.mp4 --inpoint 2.0 --outpoint 8.0` |
 | `resize` | Reframe to aspect ratio | `--ratio 9:16` or `1:1` or `16:9` |
 | `extract_audio` | Extract audio track | `--format wav` |
@@ -94,6 +92,17 @@ For HTTP and CLI, **load skill `native`** — it defines how every `_contract` v
 |------|-------------|------------|
 | `materialize_cut` | Encode trim spec or raw segment to H.264. **Use `--inputs` for multiple clips** — caps at 2 concurrent encodes by default. Never fan out more than 2–3 instances in parallel; each is a full libx264 encode and will exhaust memory at 4K if over-parallelised. | `--inputs clip0.json clip1.json`, `--workers 2` |
 | `remove_bg` | Remove video background via RVM → ProRes 4444 `.mov` with alpha channel **plus** a VP9 WebM preview proxy. Store the ProRes path in `nobg_src` (used by render) and the WebM path in `nobg_preview_src` (used by browser preview — ProRes can't decode in `<video>`); keep the original in `src`. Set `remove_bg: true` on the item. **Long-running (minutes per clip) — always run in the background with `--progress` so you can monitor status.** Use `--inputs` for multiple clips. | `--inputs clip0.mp4 clip1.mp4`, `--progress`, `--model rvm_mobilenetv3` (or `rvm_resnet50`), `--downsample 0.5` |
+
+### Preview caches
+
+These produce artifacts the **editor** reads. Render never reads either one.
+
+| Step | What it does | Key params |
+|------|-------------|------------|
+| `proxy` | Full-source, all-intra 720p editing proxy → the `proxySrc` field. One proxy covers a whole source file, never a window, so the same path is correct for every clip cut from it. | `--out <path>` (required) · `--tonemap` for an HDR source |
+| `normalize_window` | Conform just `[inpoint, outpoint)` of a source to the project's colour space → the `normalizedSrc` field. Used by the `clips` workflow under `settings.normalize: "lazy"`. | `--inpoint` · `--outpoint` · `--color-space` · `--out` |
+
+**You almost never run `proxy` by hand.** `project/init.py` encodes one per source at import and records it on both `project.sources` and `tracks[0].items`. Where you do need one — an item you built yourself, or a source that moved — ask the server for it instead of computing the path: `POST /api/projects/{id}/proxies` backfills every video item in the project that has no current proxy, encodes in the background, and writes `proxySrc` back over SSE.
 
 ### Select Takes (`montaj/select_takes`)
 **REQUIRED SUB-SKILL:** Load skill `select-takes` before executing this step.
@@ -136,10 +145,12 @@ Read the assigned workflow from `workflows/{name}.json` (filesystem only — not
 **Available workflows:**
 - `clean_cut` — silence trim, remove non-speech, transcribe, select takes, remove fillers
 - `overlays` — clean_cut + transcribe + overlays
-- `short_captions` — clean_cut + transcribe + caption + overlays + resize 9:16
 - `animations` — no source footage; build entirely from animated JSX sections
 - `explainer` — footage clips + animation sections combined
 - `floating_head` — trim + materialize + RVM background removal; presenter in tracks[1], background asset in tracks[0]
+- `broll` — voiceover-driven B-roll: clean the narration, index the footage at shot granularity, assemble visuals that illustrate it
+- `clips` — one long horizontal source → N vertical clip projects, each fanned out with its own `overlays` pass
+- `carousel` — N still slides at one fixed aspect ratio, rendered to PNGs; no time axis, no audio
 - `lyrics_video` — audio + lyrics → word-synced text video (ffmpeg drawtext or JSX overlays)
 - `ai_video` — director agent writes a storyboard from your prompt and references, you approve, scenes are generated via Kling
 
@@ -162,21 +173,25 @@ If in doubt, **ask your human**.
   "version": "0.2", "id": "<uuid>", "status": "pending",
   "workflow": "overlays", "editingPrompt": "...",
   "settings": {"resolution": [1080, 1920], "fps": 30},
-  "tracks": [[{"id": "clip-0", "type": "video", "src": "/abs/path/clip.mp4", "start": 0.0, "end": 0.0}]],
+  "tracks": [{"id": "trk-0", "items": [{"id": "clip-0", "type": "video", "src": "/abs/path/clip.mp4", "start": 0.0, "end": 0.0, "proxySrc": "/abs/path/clip_proxy_vivid1.mp4", "sourceDuration": 42.5}]}],
   "assets": [], "audio": {}
 }
 ```
 
+**`proxySrc` is written for you at import — your job is not to lose it.** `project/init.py` encodes one editing proxy per source and puts the same item objects on both `project.sources` and `tracks[0].items`. Whenever you *replace* `tracks[0].items` rather than editing the items in place, look each new item's `src` up in `project.sources` and copy that entry's `proxySrc` across verbatim. One proxy covers the whole source file and is never windowed, so the same value is correct for every clip you cut from that source, whatever its `inPoint`/`outPoint`.
+
+Dropping it is silent. The project still validates, the render is still correct, and the only symptoms are downstream: preview falls back to decoding the full-resolution master on every seek (roughly 700ms instead of ~50ms on 4K HDR), the WebCodecs engine refuses the project outright because `montaj_assets/editor/src/engine/eligibility.ts:69` requires `proxySrc` on every track-0 item, and the header shows a chip telling the operator their clips have no previews. Nothing repairs it on its own — the project-open look migration only re-points a `proxySrc` that is present and stale, and skips an item that has none.
+
 **Assets** — image files (logos, watermarks). Each has `id`, absolute `src`, `type: "image"`, optional `name`. Pass at creation: `--assets logo.png` (CLI) or `"assets": ["/path/logo.png"]` (HTTP `/api/run`).
 
 **Update as you work:**
-- After trim/clean: update `tracks[0]` clip `src`; set `inPoint`/`outPoint` and `start`/`end` (seconds)
+- After trim/clean: update `tracks[0].items` clip `src`; set `inPoint`/`outPoint` and `start`/`end` (seconds)
 - After transcribe + caption: set top-level `captions: { "style": "word-by-word", "segments": [...] }` — do NOT store a file pointer
-- After overlays/images/video: populate `tracks[1+]` — array of arrays; items have `type: "overlay"` (JSX), `type: "image"` (static image), or `type: "video"` (video clip with optional `remove_bg: true`)
+- After overlays/images/video: populate `tracks[1+]` — each track is an object (`{id, items, ...}`); its `items` array holds `type: "overlay"` (JSX), `type: "image"` (static image), or `type: "video"` (video clip with optional `remove_bg: true`)
 - After all steps: set `status: "draft"`
 - **Saving is always GET-fresh → merge your delta → save** — the user can edit the project from the UI while the server is running, and a stale save silently overwrites their work (Montaj only auto-commits to git on status transitions, so mid-status edits have no recovery path). The `native` skill defines how the save resolves per mode (PUT in HTTP, file write in CLI) and carries the full discipline.
 
-**HEVC clips:** `concat` handles HEVC automatically. Never manually re-encode before editing steps.
+**HEVC clips:** the editing steps read HEVC directly and the render engine conforms it at assembly time. Never manually re-encode before an editing step.
 
 **One trim pass only.** Running silence removal twice causes boundary glitches.
 
@@ -197,13 +212,19 @@ Refer to sub-skills by name; the reader resolves the name to a path.
 | `native` | HTTP or CLI mode — the native interface; **load before any step / project interaction** |
 | `mcp` | Running as MCP client |
 | `parallel` | Multiple clips, or workflow has `foreach` steps |
+| `edit-session` | The draft is done and the user wants interactive refinements — cuts, re-timing, new overlays |
 | `select-takes` | Executing `montaj/select_takes` in a workflow |
+| `waveform-silence` | `waveform_trim`'s fixed threshold failed because the noise floor varies across clips — read waveforms visually instead |
 | `overlay` | Executing `montaj/overlay` in a workflow |
+| `animation-sections` | Building full-frame opaque sections from scratch (`montaj/animation-sections` in a workflow) |
 | `write-overlay` | Writing custom JSX overlay components |
 | `image-search` | Sourcing outside imagery (`search_images` + `fetch_image`) when the prompt asks for photos / logos / B-roll stills |
 | `style-profile` | Creating or updating a creator style profile |
 | `workflow-builder` | Creating or editing workflows |
 | `lyrics-video` | Working on a `lyrics_video` workflow project |
+| `broll` | Executing `montaj/broll` in a workflow |
+| `find_clips` | Executing `montaj/find_clips` in a workflow |
+| `carousel` | Executing `montaj/carousel` in a workflow |
 | `ai-video-plan` | Working on an `ai_video` project (Phases 0-2: story clarification, storyboard planning) |
 | `ai-video-generate` | Working on an `ai_video` project (Phases 6-7: scene generation, audio assembly, regenQueue) |
 

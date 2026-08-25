@@ -150,3 +150,56 @@ def test_run_without_voiceover_asset_is_unchanged(tmp_path, init_spy):
     })
     assert resp.status_code == 201, resp.text
     assert "--voiceover-asset" not in init_spy["cmd"]
+
+
+def test_run_forwards_multiple_voiceover_assets(tmp_path, init_spy):
+    """voiceoverAssets forwards every path, in order, to --voiceover-asset."""
+    takes = []
+    for n in ("a", "b", "c"):
+        p = tmp_path / f"{n}.mov"
+        p.write_bytes(b"x")
+        takes.append(str(p))
+    clip = tmp_path / "clip.mov"
+    clip.write_bytes(b"x")
+
+    resp = client.post("/api/run", json={
+        "prompt": "p", "workflow": "broll",
+        "clips": [str(clip)], "voiceoverAssets": takes,
+    })
+    assert resp.status_code == 201, resp.text
+    cmd = init_spy["cmd"]
+    i = cmd.index("--voiceover-asset")
+    assert cmd[i + 1:i + 4] == takes
+
+
+def test_run_rejects_missing_file_in_voiceover_assets(tmp_path, init_spy):
+    good = tmp_path / "a.mov"
+    good.write_bytes(b"x")
+    clip = tmp_path / "clip.mov"
+    clip.write_bytes(b"x")
+
+    resp = client.post("/api/run", json={
+        "prompt": "p", "workflow": "broll", "clips": [str(clip)],
+        "voiceoverAssets": [str(good), str(tmp_path / "nope.mov")],
+    })
+    assert resp.status_code == 400
+    detail = resp.json()["detail"]
+    assert "nope.mov" in detail["message"]
+    assert "cmd" not in init_spy
+
+
+def test_run_still_accepts_singular_voiceover_asset(tmp_path, init_spy):
+    """Back-compat: the old singular field keeps working unchanged."""
+    vo = tmp_path / "vo.mov"
+    vo.write_bytes(b"x")
+    clip = tmp_path / "clip.mov"
+    clip.write_bytes(b"x")
+
+    resp = client.post("/api/run", json={
+        "prompt": "p", "workflow": "broll",
+        "clips": [str(clip)], "voiceoverAsset": str(vo),
+    })
+    assert resp.status_code == 201, resp.text
+    cmd = init_spy["cmd"]
+    i = cmd.index("--voiceover-asset")
+    assert cmd[i + 1] == str(vo)

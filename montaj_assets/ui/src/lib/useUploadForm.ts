@@ -35,7 +35,7 @@ export interface UseUploadFormReturn {
   lyricsData: LyricsUploadData; setLyricsData: (v: LyricsUploadData) => void
   carouselAssets: Asset[]; setCarouselAssets: (v: Asset[]) => void
   aiVideoAssets: Asset[]; setAiVideoAssets: (v: Asset[]) => void
-  voiceover: VoiceoverFile | null; setVoiceover: (v: VoiceoverFile | null) => void
+  voiceover: VoiceoverFile[]; setVoiceover: (v: VoiceoverFile[]) => void
   carouselAspect: CarouselAspect; setCarouselAspect: (v: CarouselAspect) => void
   aspectRatio: AspectRatio; setAspectRatio: (v: AspectRatio) => void
   targetDuration: number | null; setTargetDuration: (v: number | null) => void
@@ -80,7 +80,7 @@ export function useUploadForm(): UseUploadFormReturn {
   const [carouselAspect, setCarouselAspect] = useState<CarouselAspect>(DEFAULT_CAROUSEL_ASPECT)
   const [carouselAssets, setCarouselAssets] = useState<Asset[]>([])
   const [aiVideoAssets, setAiVideoAssets]   = useState<Asset[]>([])
-  const [voiceover, setVoiceover] = useState<VoiceoverFile | null>(null)
+  const [voiceover, setVoiceover] = useState<VoiceoverFile[]>([])
 
   const selectedWorkflow = workflows.find(w => w.name === workflow)
   const projectType = normalizeProjectType(selectedWorkflow?.project_type)
@@ -168,7 +168,7 @@ export function useUploadForm(): UseUploadFormReturn {
             prompt: prompt.trim(),
             workflow,
             profile: profile || undefined,
-            voiceoverAsset: voiceover?.path,
+            voiceoverAssets: voiceover.map(v => v.path),
           })
           break
         }

@@ -1,0 +1,19 @@
+{
+  "name": "mix_timeline",
+  "description": "Mix a timeline's audible audio into one file, in timeline time. Every segment is seeked, optionally re-timed and gain-scaled, delayed to its timeline position, and summed onto a silent bed — so gaps stay silent and output time equals timeline time. Unlike materialize_cut, which concatenates one track's keeps, this positions and overlaps.",
+  "input": {
+    "type": "json",
+    "description": "Mix spec: {duration, sampleRate?, segments:[{src, in, out, start, volume?, speed?}]}"
+  },
+  "output": {
+    "type": "audio",
+    "description": "Path to the mixed audio file (16 kHz mono pcm_s16le WAV by default — whisper.cpp's native input)"
+  },
+  "params": [
+    {
+      "name": "sample-rate",
+      "type": "int",
+      "description": "Output sample rate in Hz (default: the spec's sampleRate, else 16000)"
+    }
+  ]
+}

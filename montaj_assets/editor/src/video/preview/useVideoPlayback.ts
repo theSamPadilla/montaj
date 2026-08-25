@@ -1,90 +1,120 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import type { EditorProject as Project } from '../../schema'
-
-// Typed extension for the shared AudioContext cached on window
-interface MontajWindow {
-  __montajSharedCtx?: AudioContext
-}
+import {
+  sourceWindow,
+  playbackSrcFor as resolvePlaybackSrc,
+  projectEnd as timelineProjectEnd,
+  audioWindow,
+} from '@bycrux/timeline-core'
+import { gateProxy, isProxyUsable, markProxyFailed } from './proxySupport'
+import {
+  getSharedAudioContext,
+  latencySeconds,
+  peekSharedAudioContext,
+  resumeAudioContextFromGesture,
+  type MontajWindow,
+} from './audio-context'
+import type { EditorProject as Project, VisualItem, VisualTrack } from '../../schema'
+import { effectiveItemAudio, enabledTrackItems, enabledTracks, withEnabledItemTracks } from '../timeline/timeline-model'
 
 // Typed extension for video elements that cache their GainNode
 interface MontajVideoElement extends HTMLVideoElement {
   __montajGain?: GainNode
 }
 
+// ── Source-window helpers ───────────────────────────────────────────────────
+//
+// The three functions below are thin wrappers over @bycrux/timeline-core with
+// the variant pinned to 'preview'. The canonical implementation — and the full
+// reasoning, with both the editor and render originals quoted verbatim next to
+// the branch that reproduces them — lives in
+// `montaj_assets/timeline-core/src/source-window.js`. Read that module's header
+// before changing anything here; the same math also drives the render engine,
+// and preview/render differences are deliberate, not accidental.
+//
+// The short version of why these exist at all:
+//
+//   • `normalizedSrc` is a per-WINDOW normalized cache: it covers exactly
+//     [normalizedInPoint, normalizedInPoint + duration] of the original source
+//     and plays from its own time 0. Items always store inPoint/outPoint in
+//     ORIGINAL-source coordinates, so whenever the cache is the loaded src the
+//     points must be rebased by the cache origin
+//     (`normalizedInPoint ?? inPoint ?? 0`) or every seek lands in the wrong
+//     place. When `normalizedInPoint` is absent (legacy caches) the origin
+//     collapses to `inPoint`, reproducing the old rebase-to-0 behavior.
+//
+//   • `nobg_preview_src` (VP9 WebM with alpha) covers the FULL source, not a
+//     window, so it is NOT rebased — and it takes precedence over the cache.
+//     `nobg_src` is the ProRes 4444 render-only artifact and is never loaded
+//     into a <video> element; browsers can't decode ProRes.
+//
+//   • `proxySrc` (SP3) is the full-source, all-intra 720p H.264+Opus editing
+//     proxy generated automatically at import. It also covers the FULL
+//     source, so it is NOT rebased either — same shape as `nobg_preview_src`.
+//     It sits AFTER `nobg_preview_src` in the precedence chain (an alpha
+//     preview always wins over the plain proxy), and is preview-only: render
+//     never reads it, and it is never written into project.json by render.
+
+// SP3 precedence, most to least specific: nobg_preview_src > proxySrc >
+// normalizedSrc (rebased) > src.
+
 /**
  * Resolve the file path the browser should load for previewing this clip.
  *
- * For bg-removed clips, prefer `nobg_preview_src` (small WebM with alpha,
- * browser-friendly) over `src` (the original raw file with bg present), so
- * the preview pane shows what the final render will composite — not the
- * un-cut-out source. Mirrors the same pattern used by
- * `OverlayItemsLayer.tsx:406` for tracks[1+] items; this generalises it to
- * the main-track preview so bg-removed clips placed on tracks[0] don't show
- * the wrong layer in preview while rendering correctly. Falls back to `src`
- * when `nobg_preview_src` is absent (most clips).
- *
- * Note: `nobg_src` is the ProRes 4444 render-only artifact and is NEVER
- * loaded into a `<video>` element — browsers can't decode ProRes.
+ * `'preview'` always yields a string (`''` when the clip has no src field at
+ * all) — the `?? ''` below is a type narrowing, not a runtime fallback; see the
+ * `src` note on `SourceWindow` in timeline-core's index.d.ts.
  */
-function playbackSrcFor(clip: { src?: string; nobg_preview_src?: string; normalizedSrc?: string }): string {
-  return clip.nobg_preview_src ?? clip.normalizedSrc ?? clip.src ?? ''
+function playbackSrcFor(clip: { src?: string; nobg_preview_src?: string; normalizedSrc?: string; proxySrc?: string }): string {
+  // gateProxy (SP3 fix B2): strip an unsupported/failed proxy BEFORE the tier
+  // chain runs, so unsupported browsers fall through to normalizedSrc/src
+  // instead of a silently-black <video>.
+  return resolvePlaybackSrc(gateProxy(clip), 'preview') ?? ''
 }
 
 /**
  * The inPoint the preview should SEEK to for this clip, accounting for the
- * normalizedSrc cache origin.
- *
- * A `normalizedSrc` cache is a trimmed file that covers exactly
- * [normalizedInPoint, normalizedInPoint + duration] of the original source and
- * plays starting at time 0. When `playbackSrcFor` chooses the cache as the
- * playback src, we must rebase by the cache origin so the seek position is
- * relative to the cache's own timeline.
- *
- * The origin is `clip.normalizedInPoint ?? clip.inPoint ?? 0`:
- * - When `normalizedInPoint` is set, the cache was built for a specific window
- *   that may differ from the current inPoint (e.g. after a start-trim): the
- *   cache still covers the new window, but we must subtract the origin so the
- *   seek lands at the right position inside the cache.
- * - When `normalizedInPoint` is absent (legacy), the cache was built assuming
- *   it starts at the clip's inPoint → origin = inPoint → effectiveInPoint = 0
- *   (reproduces the old rebase-to-0 behavior).
- *
- * This mirrors render's `collectAllItems` (montaj_assets/render/render.js),
- * which rebases inPoint by the same origin.
- *
- * The rebase applies ONLY when the cache is actually the chosen src.
- * `nobg_preview_src` takes precedence in `playbackSrcFor` and is NOT a window
- * cache (it covers the full source), so it keeps the original inPoint — exactly
- * as render's nobg path does.
+ * normalizedSrc cache origin. `sourceWindow(clip, 'preview').inPoint`.
  */
-export function effectiveInPoint(clip: { inPoint?: number; normalizedInPoint?: number; nobg_preview_src?: string; normalizedSrc?: string; src?: string }): number {
-  const usingNormalizedCache = !clip.nobg_preview_src && !!clip.normalizedSrc
-  if (!usingNormalizedCache) return clip.inPoint ?? 0
-  const origin = clip.normalizedInPoint ?? clip.inPoint ?? 0
-  return (clip.inPoint ?? 0) - origin
+export function effectiveInPoint(clip: { inPoint?: number; normalizedInPoint?: number; nobg_preview_src?: string; normalizedSrc?: string; proxySrc?: string; src?: string }): number {
+  return sourceWindow(gateProxy(clip), 'preview').inPoint
 }
 
 /**
- * The outPoint in the loaded src's own timeline. For a normalizedSrc cache the
- * stored `clip.outPoint` is in ORIGINAL-source coordinates while the cache
- * plays from its own time origin; the boundary/loop checks compare against
- * `video.currentTime` (cache time), so the outPoint must be rebased by the
- * cache origin.
- *
- * The origin is `clip.normalizedInPoint ?? clip.inPoint ?? 0` (same as
- * effectiveInPoint). Legacy clips without `normalizedInPoint` default the
- * origin to inPoint, reproducing the old (outPoint - inPoint) window-length
- * behavior.
+ * The outPoint in the loaded src's own timeline, rebased by the cache origin
+ * when the normalizedSrc cache is what's actually loaded (the boundary/loop
+ * checks below compare against `video.currentTime`, i.e. cache time).
+ * `sourceWindow(clip, 'preview').outPoint`.
  *
  * Returns undefined when no outPoint is stored, so callers keep their existing
  * fallback (clip.end - clip.start + effectiveInPoint).
  */
-export function effectiveOutPoint(clip: { inPoint?: number; outPoint?: number; normalizedInPoint?: number; nobg_preview_src?: string; normalizedSrc?: string; src?: string }): number | undefined {
-  if (clip.outPoint == null) return undefined
-  const usingNormalizedCache = !clip.nobg_preview_src && !!clip.normalizedSrc
-  if (!usingNormalizedCache) return clip.outPoint
-  const origin = clip.normalizedInPoint ?? clip.inPoint ?? 0
-  return clip.outPoint - origin
+export function effectiveOutPoint(clip: { inPoint?: number; outPoint?: number; normalizedInPoint?: number; nobg_preview_src?: string; normalizedSrc?: string; proxySrc?: string; src?: string }): number | undefined {
+  return sourceWindow(gateProxy(clip), 'preview').outPoint
+}
+
+/**
+ * The GainNode value for one clip on `track` — the ONLY place this hook turns
+ * audio settings into a number.
+ *
+ * Track settings fold into the clip's own via `effectiveItemAudio`: volume
+ * MULTIPLIES (a clip the editor already turned down stays proportionally
+ * quieter when its track is pulled down) and mute is either/or. `track` is
+ * `undefined` for a project with no tracks at all, and its `volume`/`muted` are
+ * absent on every track nobody has touched — both reduce to the clip's own
+ * values, which is what every project got before track settings existed.
+ *
+ * The four gain-setting sites below all route through this rather than reading
+ * `clip.muted`/`clip.volume` themselves. Folding by writing the effective
+ * values ONTO the clip is not an option: `clips` holds the project's own item
+ * objects by reference (see `enabledTrackItems`), and the renderer and the
+ * server both mutate those in place.
+ */
+export function clipGain(
+  track: Pick<VisualTrack, 'volume' | 'muted'> | undefined,
+  clip: Pick<VisualItem, 'volume' | 'muted'>,
+): number {
+  const { volume, muted } = effectiveItemAudio(track, clip)
+  return muted ? 0 : volume
 }
 
 export function useVideoPlayback(
@@ -123,6 +153,10 @@ export function useVideoPlayback(
   // Keep ref in sync so effects with narrow deps can read current playing state
   useEffect(() => { isPlayingRef.current = isPlaying }, [isPlaying])
   const [showVideo, setShowVideo] = useState(true)
+  // Bumped when a proxy fails to decode (SP3 fix B2) — the clip-identity
+  // effect depends on it, so the bump forces the reload that drops the
+  // now-suppressed proxy tier.
+  const [proxyFailTick, setProxyFailTick] = useState(0)
 
   // Gap clock — advances time through lift-style gaps between primary clips
   const gapRAFRef     = useRef<number | null>(null)
@@ -136,72 +170,66 @@ export function useVideoPlayback(
   const fileUrlRef = useRef(fileUrl)
   useEffect(() => { fileUrlRef.current = fileUrl }, [fileUrl])
 
+  // The AUDIBLE-time bridge to the store. Every playback-advance emission in
+  // this hook (rAF canvas tick, gap tick, `handleTimeUpdate`, clip-switch and
+  // end-of-clip snaps) routes through this instead of calling `onTimeUpdate`
+  // directly. The `<video>` element's `currentTime` and the RAF wall-clock both
+  // report the same frames-consumed lead the engine's master clock does — the
+  // audio graph is shared — so the picture leads the ear by exactly
+  // `latencySeconds` unless we subtract it here. Read live off the shared ctx
+  // so device switches take effect on the very next emission; clamp ≥ 0.
+  // Scrubs never come through here: the scrub effect updates `lastTimeRef`
+  // without emitting, so seek/scrub display is unaffected.
+  const emitTime = useCallback((t: number) => {
+    // `peek` never creates: production reaches this only during playback, whose
+    // gesture-anchored `togglePlay` has already minted the shared ctx — no ctx
+    // means no gesture yet, so the frames-consumed clock has nothing audible
+    // behind it to lag, and pass-through is the correct behavior.
+    const ctx = peekSharedAudioContext()
+    onTimeUpdate(ctx ? Math.max(0, t - latencySeconds(ctx)) : t)
+  }, [onTimeUpdate])
+
   function getActiveVideo() { return activeSlotRef.current === 0 ? video0Ref.current : video1Ref.current }
   function getInactiveVideo() { return activeSlotRef.current === 0 ? video1Ref.current : video0Ref.current }
 
   // ── Video timeline ─────────────────────────────────────────────────────────
   // Only video items drive the double-buffer player; non-video items (images, etc.)
   // in tracks[0] are exposed separately for the preview to render as a background layer.
-  const clips           = useMemo(() => (project.tracks?.[0] ?? []).filter(c => c.type === 'video').sort((a, b) => a.start - b.start), [project])
-  const tracks0NonVideo = useMemo(() => (project.tracks?.[0] ?? []).filter(c => c.type !== 'video'), [project])
-  const overlayTracks   = useMemo(() => project.tracks?.slice(1) ?? [], [project])
+  const clips           = useMemo(() => (enabledTrackItems(project)[0] ?? []).filter(c => c.type === 'video').sort((a, b) => a.start - b.start), [project])
+  const tracks0NonVideo = useMemo(() => (enabledTrackItems(project)[0] ?? []).filter(c => c.type !== 'video'), [project])
+  const overlayTracks   = useMemo(() => enabledTrackItems(project).slice(1), [project])
+
+  // The track `clips` came out of, kept alongside them because its own
+  // volume/mute fold into every clip on it (see `clipGain`).
+  // `enabledTrackItems(project)[0]` hands back items and drops the track object
+  // that carries those settings; `enabledTracks` is the same filter in the same
+  // order, so `[0]` here is `[0]` there by construction.
+  const videoTrack      = useMemo(() => enabledTracks(project)[0], [project])
 
   // Canvas project: no primary video in tracks[0] (e.g. image-only background track)
   const isCanvasProject = clips.length === 0
 
   // Total project end — includes opaque overlays and audio that extend beyond video clips.
   // Used to decide whether to keep playing after the last video clip ends.
-  const projectEnd = useMemo(() => {
-    const videoEnd = clips.length > 0 ? clips[clips.length - 1].end : 0
-    const overlayEnd = overlayTracks.flat().reduce((m, i) => Math.max(m, i.end), 0)
-    const audioEnd = (project.audio?.tracks ?? []).reduce((m, t) => Math.max(m, t.end ?? 0), 0)
-    return Math.max(videoEnd, overlayEnd, audioEnd)
-  }, [clips, overlayTracks, project.audio?.tracks])
+  //
+  // SP4 T8: this VIDEO-mode formula is `@bycrux/timeline-core`'s `projectEnd`
+  // (`src/durations.js`) ported verbatim FROM this exact memo — the two are
+  // byte-identical for every well-formed project, so calling the shared
+  // implementation here is a no-op substitution, not a behavior change. This
+  // is deliberately NOT shared with the CANVAS-mode ceiling below
+  // (`canvasMaxEndRef`, which excludes audio) — the two ends are legitimately
+  // different formulas (see `durations.js`'s module header) and only this one
+  // has a shared home.
+  const projectEnd = useMemo(() => timelineProjectEnd(withEnabledItemTracks(project)), [project])
 
   // Wire a video slot through a Web Audio GainNode (once per element — createMediaElementSource
   // can only be called once). After this, video.volume/muted have no audible effect; all volume
   // control goes through the GainNode, which supports values > 1.0 for amplification.
   //
-  // CRITICAL: ALL slots AND ALL audio tracks share the SAME AudioContext. Fresh
-  // AudioContexts start suspended and require a user gesture to resume. Creating
-  // separate contexts (one per slot, or a separate one for audio tracks) means
-  // those born inside a useEffect have no user-gesture activation — they stay
-  // suspended → silent. Worse, video frame production is gated on the wired
-  // AudioContext clock running, so a suspended context with a wired <video>
-  // produces "video plays but no frames render" after a hard refresh.
-  // Stash the single shared context on `window` so it survives strict-mode remounts
-  // and is reused across audio tracks, video slots, and re-mounts.
-  function getSharedAudioContext(): AudioContext {
-    const w = window as Window & MontajWindow
-    // If the cached context is closed (shouldn't happen, but defensive), recreate.
-    if (!w.__montajSharedCtx || w.__montajSharedCtx.state === 'closed') {
-      w.__montajSharedCtx = new AudioContext()
-    }
-    return w.__montajSharedCtx
-  }
-
-  /**
-   * MUST be called from inside a user-gesture handler (keydown, click, etc.).
-   * Browsers credit a `resume()` call as gesture-driven only when it happens
-   * synchronously inside a gesture-rooted call stack. Calling resume() from
-   * a useEffect or a setTimeout silently fails — the context stays suspended.
-   *
-   * Symptom of a suspended context with a wired <video>: video appears to
-   * play (paused=false, currentTime advances internally per the DOM clock)
-   * but no frames render and no audio plays — the entire pipeline is gated
-   * on the AudioContext clock running. This bites specifically after a page
-   * refresh, because SPA navigation carries gesture activation across pages
-   * but a hard reload does not.
-   */
-  function resumeAudioContextFromGesture() {
-    const w = window as Window & MontajWindow
-    const ctx: AudioContext | undefined = w.__montajSharedCtx
-    if (ctx && ctx.state === 'suspended') {
-      // Fire-and-forget; resume() returns a Promise but the gesture-credit
-      // happens at the synchronous call site, not when the promise resolves.
-      ctx.resume().catch(() => {})
-    }
-  }
+  // `getSharedAudioContext` / `resumeAudioContextFromGesture` used to live here as
+  // private helpers; SP4 T4 MOVED them to `./audio-context` (unchanged) so the
+  // WebCodecs engine consumes the same context and the same gesture rule instead
+  // of growing a second copy. Their full rationale lives in that module's header.
 
   /**
    * Start playback on a wired <video> from a user gesture. Video frame
@@ -274,22 +302,25 @@ export function useVideoPlayback(
   }
 
   // Set video clip volume via GainNode (supports amplification > 1.0). Muted clips
-  // get gain 0; unmuted clips get the clip's volume value. No-op until the slot is
+  // — or clips on a muted track — get gain 0; the rest get the clip's volume
+  // scaled by its track's (`clipGain`). No-op until the slot is
   // wired (first play) — there's no audio to control on a paused poster, and
   // wiring here would gate the poster frame on the suspended context.
   function applyClipVolume(clip: { muted?: boolean; volume?: number }) {
     const slot = activeSlotRef.current
     const gain = getVideoGain(slot)
-    if (gain) gain.gain.value = clip.muted ? 0 : (clip.volume ?? 1)
+    if (gain) gain.gain.value = clipGain(videoTrack, clip)
   }
 
-  // Apply video clip volume via Web Audio GainNode (supports > 1.0 amplification)
+  // Apply video clip volume via Web Audio GainNode (supports > 1.0 amplification).
+  // `videoTrack` is a dep in its own right: pulling the TRACK's fader while the
+  // clips themselves are untouched has to reach the live gain node too.
   useEffect(() => {
     const idx = activeIdxRef.current
     const clip = clips[idx]
     if (!clip) return
     applyClipVolume(clip)
-  }, [clips, activeSlot])
+  }, [clips, videoTrack, activeSlot])
 
   // maxEnd for the canvas rAF clock — the furthest overlay/caption end. Kept in
   // a ref, updated by its own cheap effect, so the rAF effect below doesn't tear
@@ -313,7 +344,7 @@ export function useVideoPlayback(
         const dt   = (ms - rafLastMs.current) / 1000
         const next = Math.min(lastTimeRef.current + dt, maxEnd)
         lastTimeRef.current = next
-        onTimeUpdate(next)
+        emitTime(next)
         if (next >= maxEnd) {
           setIsPlaying(false)
           rafRef.current = null
@@ -336,7 +367,7 @@ export function useVideoPlayback(
     return () => {
       if (rafRef.current) cancelAnimationFrame(rafRef.current)
     }
-  }, [isPlaying, isCanvasProject, onTimeUpdate])
+  }, [isPlaying, isCanvasProject, emitTime])
 
   // ── Multi-track audio management ───────────────────────────────────────────
   // Derive unmuted tracks. The full tracks array is a new reference on every
@@ -432,54 +463,33 @@ export function useVideoPlayback(
   const unmutedAudioTracksRef = useRef(unmutedAudioTracks)
   useEffect(() => { unmutedAudioTracksRef.current = unmutedAudioTracks }, [unmutedAudioTracks])
 
+  // SP4 T8: the window/gain arithmetic is routed through timeline-core's
+  // `audioWindow` (`src/audio.js`) — the pure port of exactly this logic,
+  // derived-outPoint rule included — the same way `useEnginePlayback.ts`
+  // already does for the WebCodecs engine path. The 0.3s re-seek threshold
+  // and all other imperative behavior (play/pause calls, gain writes) are
+  // kept exactly; only the pure MATH moved to the shared implementation.
   const syncAudioTracks = useCallback(function syncAudioTracks(playhead: number, playing: boolean) {
     for (const track of unmutedAudioTracksRef.current) {
       const el = audioRefsMap.current.get(track.id)
       if (!el) continue
 
-      const inPt = track.inPoint ?? 0
-      const trackTime = (playhead - track.start) + inPt
-      // Derive outPoint from the timeline span — the stored outPoint can drift
-      // out of sync with start/end during trim operations, causing premature silence.
-      // The HTML audio element naturally stops at end-of-file, so sourceDuration
-      // acts as an implicit ceiling without needing an explicit check here.
-      const outPoint = inPt + (track.end - track.start)
-      const outsideWindow =
-        playhead < track.start ||
-        playhead >= track.end ||
-        trackTime < 0 ||
-        trackTime >= outPoint
-
-      if (outsideWindow) {
+      const win = audioWindow(track, playhead)
+      if (!win.active) {
         if (!el.paused) el.pause()
         continue
       }
 
-      if (Math.abs(el.currentTime - trackTime) > 0.3) {
-        el.currentTime = Math.max(0, trackTime)
+      if (Math.abs(el.currentTime - win.trackTime) > 0.3) {
+        el.currentTime = Math.max(0, win.trackTime)
       }
 
       if (playing && el.paused) el.play().catch(() => {})
       if (!playing && !el.paused) el.pause()
 
-      // Apply fade-in / fade-out gain envelope
+      // `audioWindow.gain` is already `baseVolume * max(0, fadeMul)`.
       const gain = gainNodesMap.current.get(track.id)
-      if (gain) {
-        const fadeIn = track.fadeIn ?? 0
-        const fadeOut = track.fadeOut ?? 0
-        const baseVol = track.volume ?? 1
-        const elapsed = playhead - track.start
-        const remaining = track.end - playhead
-
-        let fadeMul = 1
-        if (fadeIn > 0 && elapsed < fadeIn) {
-          fadeMul = elapsed / fadeIn
-        }
-        if (fadeOut > 0 && remaining < fadeOut) {
-          fadeMul = Math.min(fadeMul, remaining / fadeOut)
-        }
-        gain.gain.value = baseVol * Math.max(0, fadeMul)
-      }
+      if (gain) gain.gain.value = win.gain
     }
   }, [])
 
@@ -542,9 +552,17 @@ export function useVideoPlayback(
     // Only reload if the actual clip sources/trim points changed — not just overlay edits.
     // Identity includes nobg_preview_src so a bg-removal completing mid-session
     // (the field appearing on a clip whose src was already loaded) triggers a
-    // reload to swap the preview to the cutout version.
+    // reload to swap the preview to the cutout version. Same reasoning covers
+    // proxySrc: an SP3 proxy arriving via SSE mid-session (the field appearing
+    // on a clip already loaded from its original src) must also trigger a
+    // reload, or the <video> element keeps playing the pre-proxy source until
+    // the next unrelated identity change happens to flush it.
+    // The proxy component is GATED (SP3 fix B2): an unsupported or
+    // failed-this-session proxy contributes '' — so marking a proxy failed
+    // (proxyFailTick bump) changes the identity and triggers the reload that
+    // swaps the clip back to its master.
     const identity = clips
-      .map(c => `${c.nobg_preview_src ?? ''}|${c.src}|${c.inPoint ?? 0}|${c.outPoint ?? ''}`)
+      .map(c => `${c.nobg_preview_src ?? ''}|${isProxyUsable(c.proxySrc) ? c.proxySrc : ''}|${c.src}|${c.inPoint ?? 0}|${c.outPoint ?? ''}`)
       .join(',')
     if (identity === clipsSourceRef.current) return
     clipsSourceRef.current = identity
@@ -559,7 +577,7 @@ export function useVideoPlayback(
     // Clear inactive slot
     const inactive = getInactiveVideo()
     if (inactive) { inactive.pause(); inactive.removeAttribute('src') }
-  }, [clips])
+  }, [clips, proxyFailTick])
 
   const handlePause = useCallback(() => {
     // Ignore pause events while the gap clock owns playback state
@@ -580,7 +598,7 @@ export function useVideoPlayback(
     const elapsed = (performance.now() - gapWallRef.current) / 1000
     const t = Math.min(gapFromRef.current + elapsed, gapTargetRef.current)
     lastTimeRef.current = t
-    onTimeUpdate(t)
+    emitTime(t)
 
     if (t < gapTargetRef.current) {
       gapRAFRef.current = requestAnimationFrame(tickGap)
@@ -601,13 +619,13 @@ export function useVideoPlayback(
     const ns = (1 - activeSlotRef.current) as 0 | 1
     const nv = ns === 0 ? video0Ref.current : video1Ref.current
     lastTimeRef.current = nc.start
-    onTimeUpdate(nc.start)
+    emitTime(nc.start)
     activeIdxRef.current = ni
     if (nv) {
       const src = fileUrlRef.current(playbackSrcFor(nc))
       if (preloadSrcRef.current !== src) { nv.src = src; nv.currentTime = effectiveInPoint(nc) }
       const gain = ensureVideoGain(ns)
-      if (gain) gain.gain.value = nc.muted ? 0 : (nc.volume ?? 1)
+      if (gain) gain.gain.value = clipGain(videoTrack, nc)
       playSoon(nv)
     }
     void (activeSlotRef.current === 0 ? video0Ref.current : video1Ref.current)?.pause()
@@ -615,7 +633,7 @@ export function useVideoPlayback(
     setActiveSlot(ns)
     setShowVideo(true)
     preloadSrcRef.current = ''
-  }, [clips, onTimeUpdate])
+  }, [clips, videoTrack, emitTime])
 
   // Scrub: seek active slot when currentTime jumps externally
   useEffect(() => {
@@ -725,7 +743,7 @@ export function useVideoPlayback(
         inactiveVideo.currentTime = effectiveInPoint(clips[nextIdx])
         const inactiveSlot = (1 - slot) as 0 | 1
         const nextGain = ensureVideoGain(inactiveSlot)
-        if (nextGain) nextGain.gain.value = clips[nextIdx].muted ? 0 : (clips[nextIdx].volume ?? 1)
+        if (nextGain) nextGain.gain.value = clipGain(videoTrack, clips[nextIdx])
       }
     }
 
@@ -770,7 +788,7 @@ export function useVideoPlayback(
           const nextVideo = nextSlot === 0 ? video0Ref.current : video1Ref.current
 
           lastTimeRef.current = next.start
-          onTimeUpdate(next.start)
+          emitTime(next.start)
           activeIdxRef.current = nextIdx
 
           if (nextVideo) {
@@ -780,7 +798,7 @@ export function useVideoPlayback(
               nextVideo.currentTime = effectiveInPoint(next)
             }
             const nextGain = ensureVideoGain(nextSlot)
-            if (nextGain) nextGain.gain.value = next.muted ? 0 : (next.volume ?? 1)
+            if (nextGain) nextGain.gain.value = clipGain(videoTrack, next)
             playSoon(nextVideo)
           }
 
@@ -794,7 +812,7 @@ export function useVideoPlayback(
         video.pause()
         const finalTime = clips[activeIdxRef.current].end
         lastTimeRef.current = finalTime
-        onTimeUpdate(finalTime)
+        emitTime(finalTime)
 
         // If overlays or audio extend beyond the last video clip,
         // continue advancing time via the gap clock (shows overlays, plays audio).
@@ -818,15 +836,41 @@ export function useVideoPlayback(
     if (clip.loop && t >= clip.end) {
       video.pause()
       lastTimeRef.current = clip.end
-      onTimeUpdate(clip.end)
+      emitTime(clip.end)
       for (const el of audioRefsMap.current.values()) { if (!el.paused) el.pause() }
       setIsPlaying(false)
       return
     }
 
     lastTimeRef.current = t
-    onTimeUpdate(t)
-  }, [clips, onTimeUpdate])
+    emitTime(t)
+  }, [clips, videoTrack, emitTime])
+
+  /**
+   * SP3 fix B2 — decode-failure fallback. Wired to both <video> slots'
+   * onError. If the failing element was playing a clip's proxy, suppress that
+   * proxy for the session and force a reload (via proxyFailTick → the
+   * clip-identity effect), which re-selects src without the proxy tier.
+   * Non-proxy errors keep the legacy behavior (logged, nothing else — there
+   * is no better source to fall back to).
+   */
+  const handleVideoError = useCallback((slot: 0 | 1) => {
+    const el = (slot === 0 ? video0Ref : video1Ref).current
+    const current = el?.currentSrc || el?.src || ''
+    // fileUrl() builds `/api/files?path=<encodeURIComponent(abs)>`, so the
+    // encoded proxy path appearing in the element's src identifies the proxy
+    // as what failed, regardless of URL absolutization.
+    const clip = clips.find(c => c.proxySrc && isProxyUsable(c.proxySrc)
+      && current.includes(encodeURIComponent(c.proxySrc)))
+    if (clip?.proxySrc) {
+      console.warn(
+        `[montaj] proxy failed to decode — falling back to the master for this session: ${clip.proxySrc}`)
+      markProxyFailed(clip.proxySrc)
+      setProxyFailTick(t => t + 1)
+      return
+    }
+    console.warn(`[montaj] video error on slot ${slot} (src: ${current || 'none'})`)
+  }, [clips])
 
   const handleEnded = useCallback(() => {
     // For looping clips the ended event fires when the source video reaches its natural end.
@@ -926,11 +970,11 @@ export function useVideoPlayback(
     handleTimeUpdate,
     handlePause,
     handleEnded,
+    handleVideoError,
     togglePlay,
     isCanvasProject,
     clips,
     tracks0NonVideo,
     overlayTracks,
-    unmutedAudioTracks,
   }
 }

@@ -12,17 +12,17 @@ export interface VoiceoverFile {
   path: string
 }
 
-// A single-file zone accepting both audio and video (only the audio track is
+// A multi-file zone accepting both audio and video (only the audio track is
 // used downstream). Built as a bespoke block rather than the shared DropZone
 // because DropZone filters drops by one type prefix and displays the file's
 // basename — here we need audio+video together and need to preserve the
 // original filename, which can differ from the staged upload path's basename.
 function VoiceoverZone({ voiceover, uploading, onBrowse, onDropFiles, onRemove }: {
-  voiceover: VoiceoverFile | null
+  voiceover: VoiceoverFile[]
   uploading: boolean
   onBrowse: () => void
   onDropFiles: (files: File[]) => void
-  onRemove: () => void
+  onRemove: (path: string) => void
 }) {
   const [dragOver, setDragOver] = useState(false)
 
@@ -41,7 +41,7 @@ function VoiceoverZone({ voiceover, uploading, onBrowse, onDropFiles, onRemove }
     const dropped = Array.from(e.dataTransfer.files).filter(
       f => f.type.startsWith('audio/') || f.type.startsWith('video/'),
     )
-    if (dropped.length) onDropFiles(dropped.slice(0, 1))
+    if (dropped.length) onDropFiles(dropped)
   }
 
   return (
@@ -81,27 +81,34 @@ function VoiceoverZone({ voiceover, uploading, onBrowse, onDropFiles, onRemove }
             className="flex items-center gap-2 px-4 py-2 rounded-md bg-gray-100 hover:bg-gray-200 dark:bg-gray-800 dark:hover:bg-gray-700 text-sm text-gray-700 hover:text-gray-900 dark:text-gray-200 dark:hover:text-white transition-colors disabled:opacity-50 border border-gray-300 dark:border-gray-700"
           >
             <FolderOpen size={14} />
-            {uploading ? 'Opening…' : voiceover ? 'Replace' : 'Browse files'}
+            {uploading ? 'Opening…' : voiceover.length > 0 ? 'Add more' : 'Browse files'}
           </button>
         </div>
       </div>
 
-      {voiceover && (
-        <div className="flex items-center gap-2 px-3 py-2 rounded-md border border-green-200 dark:border-green-900/50 bg-green-50 dark:bg-green-900/20 group">
-          <span className="text-green-500 dark:text-green-500 shrink-0">
-            <Mic size={12} />
-          </span>
-          <span className="flex-1 text-xs text-green-800 dark:text-green-300 truncate font-mono">
-            {voiceover.name}
-          </span>
-          <button
-            onClick={onRemove}
-            aria-label="Remove voiceover"
-            className="shrink-0 text-green-500/60 hover:text-green-700 dark:text-green-700 dark:hover:text-green-400 transition-colors"
-          >
-            <X size={12} />
-          </button>
-        </div>
+      {voiceover.length > 0 && (
+        <ul className="flex flex-col gap-1">
+          {voiceover.map(v => (
+            <li
+              key={v.path}
+              className="flex items-center gap-2 px-3 py-2 rounded-md border border-green-200 dark:border-green-900/50 bg-green-50 dark:bg-green-900/20 group"
+            >
+              <span className="text-green-500 dark:text-green-500 shrink-0">
+                <Mic size={12} />
+              </span>
+              <span className="flex-1 text-xs text-green-800 dark:text-green-300 truncate font-mono">
+                {v.name}
+              </span>
+              <button
+                onClick={() => onRemove(v.path)}
+                aria-label="Remove take"
+                className="shrink-0 text-green-500/60 hover:text-green-700 dark:text-green-700 dark:hover:text-green-400 transition-colors"
+              >
+                <X size={12} />
+              </button>
+            </li>
+          ))}
+        </ul>
       )}
     </div>
   )
@@ -110,7 +117,7 @@ function VoiceoverZone({ voiceover, uploading, onBrowse, onDropFiles, onRemove }
 export default function BrollUploadFields({ clips, setClips, assets, setAssets, voiceover, setVoiceover, onError }: {
   clips: string[]; setClips: (v: string[]) => void
   assets: string[]; setAssets: (v: string[]) => void
-  voiceover: VoiceoverFile | null; setVoiceover: (v: VoiceoverFile | null) => void
+  voiceover: VoiceoverFile[]; setVoiceover: (v: VoiceoverFile[]) => void
   onError?: (msg: string | null) => void
 }) {
   const [pickingClips, setPickingClips] = useState(false)
@@ -152,15 +159,20 @@ export default function BrollUploadFields({ clips, setClips, assets, setAssets, 
     }
   }
 
+  function addUniqueVoiceover(prev: VoiceoverFile[], additions: VoiceoverFile[]) {
+    const existing = new Set(prev.map(v => v.path))
+    return [...prev, ...additions.filter(v => !existing.has(v.path))]
+  }
+
   async function browseVoiceover() {
     setPickingVoiceover(true)
     onError?.(null)
     try {
       const { paths } = await api.pickFiles({
         extensions: [...AUDIO_EXTENSIONS, ...VIDEO_EXTENSIONS],
-        prompt: 'Select voiceover file',
+        prompt: 'Select voiceover takes',
       })
-      if (paths.length) setVoiceover({ name: basename(paths[0]), path: paths[0] })
+      if (paths.length) setVoiceover(addUniqueVoiceover(voiceover, paths.map(p => ({ name: basename(p), path: p }))))
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e)
       if (!msg.toLowerCase().includes('cancel')) onError?.(msg)
@@ -196,12 +208,13 @@ export default function BrollUploadFields({ clips, setClips, assets, setAssets, 
   }
 
   async function handleDropVoiceover(files: File[]) {
-    const file = files[0]
     setUploadingVoiceover(true)
     onError?.(null)
     try {
-      const path = await api.uploadFile(file)
-      setVoiceover({ name: file.name, path })
+      const uploaded = await Promise.all(
+        files.map(async f => ({ name: f.name, path: await api.uploadFile(f) })),
+      )
+      setVoiceover(addUniqueVoiceover(voiceover, uploaded))
     } catch (e: unknown) {
       onError?.(e instanceof Error ? e.message : String(e))
     } finally {
@@ -244,7 +257,7 @@ export default function BrollUploadFields({ clips, setClips, assets, setAssets, 
         uploading={pickingVoiceover || uploadingVoiceover}
         onBrowse={browseVoiceover}
         onDropFiles={handleDropVoiceover}
-        onRemove={() => setVoiceover(null)}
+        onRemove={path => setVoiceover(voiceover.filter(v => v.path !== path))}
       />
     </>
   )

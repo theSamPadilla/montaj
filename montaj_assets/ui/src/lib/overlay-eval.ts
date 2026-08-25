@@ -54,6 +54,18 @@ function getBabel() {
 export async function compileOverlay(src: string): Promise<OverlayFactory> {
   if (cache.has(src)) return cache.get(src)!
 
+  // `src` must be an already-servable path — an absolute filesystem path (what
+  // the pipeline writes: project/init.py stores os.path.abspath, so every real
+  // overlay/image/video item carries an absolute src) or an `/api/...` URL. It
+  // is handed straight to /api/files, whose GET resolves a relative path against
+  // the SERVER cwd (the workspace root), not the project dir — so a
+  // project-relative form like `./overlays/x.jsx` 404s here even though render,
+  // which runs in the project dir, resolves it fine. The preview has no project
+  // context at this call site (compileOverlay/fileUrl are host-agnostic and take
+  // an absolute path by contract), so it cannot resolve relative srcs. The
+  // schema's `./…` examples describe location, not a literal preview-fetchable
+  // value; author overlay `src` as an absolute path (or teach the host to
+  // resolve project-relative srcs before they reach here).
   const fetchUrl = src.startsWith('/api/') ? src : `/api/files?path=${encodeURIComponent(src)}`
   const [jsxText, Babel, overlayGlobals] = await Promise.all([
     fetch(fetchUrl, { cache: 'no-store' }).then((r) => {

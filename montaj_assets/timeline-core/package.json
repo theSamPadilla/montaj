@@ -1,0 +1,38 @@
+{
+  "name": "@bycrux/timeline-core",
+  "version": "0.1.0",
+  "private": false,
+  "type": "module",
+  "description": "Pure, dependency-free resolver for \"what is on screen at time T\", shared by Montaj's editor preview, render engine, and sample-frame.",
+  "main": "./index.js",
+  "types": "./index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./index.d.ts",
+      "default": "./index.js"
+    }
+  },
+  "files": [
+    "index.js",
+    "index.d.ts",
+    "src",
+    "fixtures",
+    "expected",
+    "README.md",
+    "KNOWN-DIVERGENCES.md"
+  ],
+  "sideEffects": false,
+  "engines": {
+    "node": ">=18"
+  },
+  "devDependencies": {
+    "typescript": "^5"
+  },
+  "scripts": {
+    "test": "node --test",
+    "typecheck": "tsc --noEmit"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

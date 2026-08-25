@@ -1,0 +1,34 @@
+{
+  "version": "0.2",
+  "id": "sp2-corpus-audio-outlasts-video",
+  "status": "draft",
+  "projectType": "editing",
+  "settings": { "fps": 30, "resolution": [1080, 1920], "colorSpace": "sdr_bt709" },
+  "tracks": [
+    [
+      {
+        "id": "shortVideo",
+        "type": "video",
+        "src": "/corpus/shortVideo.mp4",
+        "start": 0,
+        "end": 5,
+        "inPoint": 0,
+        "outPoint": 5
+      }
+    ]
+  ],
+  "audio": {
+    "tracks": [
+      {
+        "id": "bed",
+        "src": "/corpus/musicbed.mp3",
+        "start": 0,
+        "end": 8,
+        "inPoint": 0,
+        "fadeIn": 1,
+        "fadeOut": 1,
+        "volume": 1
+      }
+    ]
+  }
+}

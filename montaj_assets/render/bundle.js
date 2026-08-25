@@ -30,9 +30,27 @@ const __dirname = dirname(fileURLToPath(import.meta.url))
  * @param {number}  opts.durationFrames  - Total frames this segment runs for
  * @param {number}  opts.width
  * @param {number}  opts.height
+ * @param {number}  [opts.offsetX]   - Percent of frame width.  Read ONLY when `keyframes` is non-empty.
+ * @param {number}  [opts.offsetY]   - Percent of frame height. Read ONLY when `keyframes` is non-empty.
+ * @param {number}  [opts.scale]     - Frame-size multiplier.   Read ONLY when `keyframes` is non-empty.
+ * @param {number}  [opts.scaleX]    - Width multiplier.  Defaults to `scale`, so a legacy
+ *   uniform item is unchanged. Read ONLY when `keyframes` is non-empty.
+ * @param {number}  [opts.scaleY]    - Height multiplier. Defaults to `scale`, ditto.
+ * @param {number}  [opts.rotation]  - Degrees.                 Read ONLY when `keyframes` is non-empty.
+ * @param {number}  [opts.opacity]   - 0-1.                     Read ONLY when `keyframes` is non-empty.
+ * @param {import('@bycrux/timeline-core').KeyframeTrack[]|null} [opts.keyframes]
+ *   The item's keyframe tracks. Non-empty ⇒ the shim BAKES this item's transform
+ *   into the capture per frame (see `generateShim`); absent/empty ⇒ the shim is
+ *   byte-identical to the pre-SP9b one and the scalars above are ignored,
+ *   exactly as they always were. Overlay positioning for a keyframe-free item
+ *   still happens entirely at ffmpeg composite time.
  * @returns {Promise<{ htmlPath: string, workDir: string }>}
  */
-export async function bundleComponent({ componentPath, props, fps, durationFrames, width, height, offsetX = 0, offsetY = 0, scale = 1, opaque = false, googleFonts = [] }) {
+// `scaleX`/`scaleY` default to `scale` (a destructuring default may read an
+// earlier binding), which is the same `?? scale ?? 1` fallback the resolver in
+// @bycrux/timeline-core applies — so a caller that knows only about uniform
+// `scale`, or passes `scaleX: undefined`, still bakes the legacy numbers.
+export async function bundleComponent({ componentPath, props, fps, durationFrames, width, height, offsetX = 0, offsetY = 0, scale = 1, scaleX = scale, scaleY = scale, rotation = 0, opacity = 1, keyframes = null, opaque = false, googleFonts = [] }) {
   const id      = randomBytes(8).toString('hex')
   const workDir = join(tmpdir(), `montaj-bundle-${id}`)
   mkdirSync(workDir, { recursive: true })
@@ -41,7 +59,22 @@ export async function bundleComponent({ componentPath, props, fps, durationFrame
   const bundlePath = join(workDir, 'bundle.js')
   const htmlPath   = join(workDir, 'index.html')
 
-  writeFileSync(shimPath, generateShim(componentPath, props, fps, durationFrames, offsetX, offsetY, scale))
+  // The MINIMAL `GeometryItem` (@bycrux/timeline-core/src/geometry.js) the bake
+  // needs: the animatable scalars, which `geometryAt` falls back to for any
+  // prop the item does not animate, plus the tracks themselves. `null` — the
+  // overwhelmingly common case — means "no bake", and generateShim then emits
+  // exactly the shim it emitted before keyframes existed.
+  //
+  // `scaleX`/`scaleY` ride alongside `scale`, not instead of it: `geometryAt`
+  // resolves each axis as `sampleTrack(scaleX) ?? item.scaleX ?? <resolved
+  // scale>`, so dropping the per-axis pair would snap a non-uniform item that
+  // animates only, say, opacity back to a uniform box, while dropping `scale`
+  // would break the fallback every uniform item still relies on.
+  const bakeGeometry = Array.isArray(keyframes) && keyframes.length > 0
+    ? { offsetX, offsetY, scale, scaleX, scaleY, rotation, opacity, keyframes }
+    : null
+
+  writeFileSync(shimPath, generateShim(componentPath, props, fps, durationFrames, bakeGeometry))
 
   await esbuild.build({
     entryPoints: [shimPath],
@@ -119,17 +152,105 @@ function rewritePathsToFileUrls(value) {
   return value
 }
 
-function generateShim(componentPath, props, fps, durationFrames, offsetX, offsetY, scale) {
+/**
+ * Write the entry shim for one segment.
+ *
+ * @param {string} componentPath
+ * @param {object} props
+ * @param {number} fps
+ * @param {number} durationFrames
+ * @param {{offsetX:number, offsetY:number, scale:number, scaleX:number, scaleY:number, rotation:number, opacity:number, keyframes:object[]}|null} [bakeGeometry]
+ *   Non-null ⇒ this item is KEYFRAMED and the shim wraps the component in a
+ *   full-design-canvas layer whose CSS transform is re-derived every frame from
+ *   `geometryAt(item, 'overlay', frame / fps)`.
+ *
+ *   WHY BAKE AT ALL: the ffmpeg composite (buildOverlayFilterParts,
+ *   encode-segment.js) positions an overlay ONCE for the whole segment — there
+ *   is no per-frame hook in the filter graph. The only per-frame surface the
+ *   render owns is this browser page, so an animated transform has to be
+ *   captured INTO the frames. encode-segment.js then composites a keyframed
+ *   overlay full-canvas at (0,0), because the geometry is already in the pixels.
+ *
+ *   WHY IT MATCHES THE PREVIEW: the transform string, the transform ORDER and
+ *   `transformOrigin: 'center center'` below are copied from the editor preview's
+ *   own wrapper (OverlayItemsLayer.tsx), which is likewise `absolute inset-0`
+ *   over the frame — so `translate(%)` is percent-of-frame on both sides. Both
+ *   engines ask the SAME `geometryAt` for the SAME instant. There is deliberately
+ *   NO easing/interpolation math here: curve evaluation lives only in
+ *   @bycrux/timeline-core/src/curves.js, and any lerp appearing in this file
+ *   would be a parity bug, not an optimization.
+ *
+ *   The two-argument `scale(sx, sy)` is emitted UNCONDITIONALLY, including when
+ *   the two axes are equal. That is not an oversight to tidy up: parity here is
+ *   asserted on the transform STRING (test/overlay-transform-parity.test.mjs),
+ *   the preview emits the two-argument form unconditionally too, and `scale(2)`
+ *   is CSS-equivalent to `scale(2, 2)` but not string-equal — so a
+ *   `sx === sy → scale(s)` shortcut would break the comparison for every
+ *   legacy uniform overlay while changing nothing about the pixels.
+ *
+ *   `localT = frame / fps` is correct because this shim's frame 0 IS the
+ *   overlay item's own (frame-quantized) `start`: collectPuppeteerSegments
+ *   (render.js) emits one segment per overlay item spanning exactly
+ *   [item.start, item.end], and renderChunk (renderer.js) passes the
+ *   SEGMENT-relative frame index to `__setFrame` — a chunked render continues
+ *   the count (`frameStart = i * chunkSize`) rather than restarting at 0, and
+ *   only the PNG *filename* uses the chunk-local index.
+ *
+ *   Every interpolation below is the empty string when `bakeGeometry` is null,
+ *   so a keyframe-free overlay's shim source is byte-identical to the pre-SP9b
+ *   one. That identity is load-bearing: it is what keeps the render goldens
+ *   valid for every project that does not animate anything.
+ */
+// Exported for test/shim-bake.test.mjs only — nothing else calls it directly.
+// The byte-identity of the un-baked shim is a hard contract, and the only way to
+// pin a contract about generated SOURCE is to read the source.
+export function generateShim(componentPath, props, fps, durationFrames, bakeGeometry = null) {
+  // `fps` and `durationFrames` are the only values interpolated RAW into the
+  // generated JS (everything else goes through JSON.stringify, which quotes and
+  // escapes). They originate in project.json — `settings.fps || 30` in
+  // render.js — which is agent- and user-authored, so a non-numeric value would
+  // land as executable source rather than as a number. Coerce them to finite
+  // numbers here, at the single point where the source is built, so every
+  // interpolation site below is covered at once rather than each caller having
+  // to remember. A valid numeric fps is unaffected; a numeric STRING ("30")
+  // still works and simply arrives as the number it always meant.
+  const fpsNum = Number.isFinite(Number(fps)) && Number(fps) > 0 ? Number(fps) : 30
+  const durationNum = Number.isFinite(Number(durationFrames)) ? Number(durationFrames) : 0
+  fps = fpsNum
+  durationFrames = durationNum
   // JSON.stringify handles path quoting and props serialisation safely.
   // Rewrite absolute paths → file:// so <img src> resolves in Puppeteer's file:// context
   const rewrittenProps = rewritePathsToFileUrls(props)
+  const bakeImport = bakeGeometry
+    ? `import { geometryAt } from '@bycrux/timeline-core'\n`
+    : ''
+  // A full-canvas layer, so CSS translate percentages resolve against the FRAME
+  // (matching offsetX/offsetY's percent-of-frame semantics and the preview's own
+  // `absolute inset-0` wrapper). Rebuilt per frame; opacity rides beside the
+  // transform rather than inside it, exactly as the preview applies it.
+  const bakeDecls = bakeGeometry
+    ? `const __bakeItem = ${JSON.stringify(bakeGeometry)}
+function __bakeStyle(f) {
+  const g = geometryAt(__bakeItem, 'overlay', f / ${fps})
+  return {
+    position: 'absolute',
+    inset: 0,
+    transform: \`translate(\${g.offsetX}%, \${g.offsetY}%) rotate(\${g.rotation}deg) scale(\${g.scaleX}, \${g.scaleY})\`,
+    transformOrigin: 'center center',
+    opacity: g.opacity,
+  }
+}
+`
+    : ''
+  const bakeOpen  = bakeGeometry ? '<div style={__bakeStyle(frame)}>' : ''
+  const bakeClose = bakeGeometry ? '</div>' : ''
   return `
 import { useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import { flushSync } from 'react-dom'
 import { makeOverlayGlobals } from 'montaj-overlay-runtime'
 import Component from ${JSON.stringify(componentPath)}
-
+${bakeImport}
 // Overlay components use frame, fps, duration, props, interpolate, spring, Ph, FaIcon,
 // FaSolid, FaBrands, THREE, Canvas, useThreeFrame as bare globals (no imports, no props
 // destructuring). Inject them onto window so bare-identifier access resolves correctly
@@ -146,7 +267,7 @@ window.props       = ${JSON.stringify(rewrittenProps)}
 window.frame       = 0
 
 const __props = ${JSON.stringify(rewrittenProps)}
-let __setFrame
+${bakeDecls}let __setFrame
 
 function App() {
   const [frame, setFrame] = useState(0)
@@ -154,12 +275,12 @@ function App() {
   window.frame = frame  // keep global in sync with React state during render
   return (
     <div style={{ position: 'absolute', inset: 0 }}>
-      <Component
+      ${bakeOpen}<Component
         frame={frame}
         fps={${fps}}
         duration={${durationFrames}}
         {...__props}
-      />
+      />${bakeClose}
     </div>
   )
 }
@@ -215,17 +336,36 @@ window.__setFrame = async (n) => {
 `
 }
 
-function generateHtml(width, height, opaque = false, googleFonts = []) {
+// Escapes ONLY the three characters that can break out of the double-quoted
+// `href="..."` attribute or open a new tag once loose of it: `"` (closes the
+// attribute early), `<` (opens a new element), and `&` (starts what an
+// attacker could make LOOK like a second `family=`/other query param, since
+// `&` is otherwise passed through raw below). This is deliberately NOT a
+// general URL-encode — see `generateHtml`'s own comment for why '+', ':',
+// '@', ';' must stay literal for Google's CSS2 API to parse the family name —
+// so it stops at these three rather than reaching for encodeURIComponent.
+// `%22`/`%3C` (not HTML entities) so the escaped text still reads as part of
+// the URL rather than as HTML markup once inside the attribute.
+function escapeFontSpec(f) {
+  return String(f).replace(/&/g, '&amp;').replace(/"/g, '%22').replace(/</g, '%3C')
+}
+
+export function generateHtml(width, height, opaque = false, googleFonts = []) {
   const bgRule = opaque ? '' : 'background: transparent;'
-  // Each entry in googleFonts is appended verbatim as a `family=...` parameter
-  // on the Google Fonts CSS2 API URL. Callers format entries as
-  // "Anton" / "Playfair+Display:ital@1" / "Roboto:wght@400;700" (spaces as +).
-  // We intentionally do NOT URL-encode the entries — Google's API requires
-  // literal '+', ':', '@', ';' which would be percent-encoded otherwise.
+  // Each entry in googleFonts is appended as a `family=...` parameter on the
+  // Google Fonts CSS2 API URL. Callers format entries as "Anton" /
+  // "Playfair+Display:ital@1" / "Roboto:wght@400;700" (spaces as +). We
+  // intentionally do NOT URL-encode the entries — Google's API requires
+  // literal '+', ':', '@', ';' which would be percent-encoded otherwise —
+  // but entries are still untrusted project.json (`render.js`'s `googleFonts`/
+  // `captionFonts`, `sample-frame.js`'s `ov.googleFonts`), and this page runs
+  // in Puppeteer over `file://` WITH network access, so `escapeFontSpec`
+  // covers the narrower job of keeping an entry from breaking out of the
+  // attribute it's interpolated into.
   const fontLinks = googleFonts.length === 0 ? '' : `
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?${googleFonts.map(f => `family=${f}`).join('&')}&display=swap">`
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?${googleFonts.map(f => `family=${escapeFontSpec(f)}`).join('&')}&display=swap">`
   return `<!DOCTYPE html>
 <html>
 <head>

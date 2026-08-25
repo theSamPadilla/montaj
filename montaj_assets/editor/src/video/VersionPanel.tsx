@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { Save } from 'lucide-react'
 import type { VersionEntry } from '../types'
 
 // VersionPanel reads only the editor-relevant slice of a version — hash,
@@ -16,67 +17,137 @@ function parseVersion(v: ProjectVersion): { run: number; label: string } {
   return m ? { run: parseInt(m[1]), label: m[2] } : { run: 0, label: v.message }
 }
 
-function dedupeVersions(versions: ProjectVersion[]): ProjectVersion[] {
+const KNOWN_LABELS: Record<string, string> = {
+  draft: 'Draft',
+  final: 'Final',
+  pending: 'Pending',
+  export: 'Exported',
+  'autosave before restore': 'Auto-save before restore',
+}
+
+/** Turns a raw parsed label into what the operator sees. Known backend labels
+ *  get a human-readable name; an empty label (no message) reads as "Untitled
+ *  save" rather than blank; anything else is an operator-typed name and is
+ *  shown verbatim, unmangled apart from surrounding whitespace. Returns the
+ *  TRIMMED name, not the raw one: the save path already trims what it stores
+ *  (`nameInput.trim()` below), so stray padding here only ever comes from a
+ *  hand-edited commit message, and rendering it would just misalign the row. */
+export function humanizeLabel(label: string): string {
+  const trimmed = label.trim()
+  if (trimmed === '') return 'Untitled save'
+  const known = KNOWN_LABELS[trimmed.toLowerCase()]
+  return known ?? trimmed
+}
+
+function timestampMs(v: ProjectVersion): number {
+  const ms = Date.parse(v.timestamp)
+  return Number.isNaN(ms) ? 0 : ms
+}
+
+/** Every saved version gets its own row — no collapsing by backend "run".
+ *  Only the run-0 init baseline is filtered out. Sorted newest first by
+ *  timestamp; the sort is stable so same-timestamp entries keep their input
+ *  order, and it never mutates the caller's array. */
+export function listVersions(versions: ProjectVersion[]): ProjectVersion[] {
   const nonInit = versions.filter(v => parseVersion(v).run > 0)
-  const byRun = new Map<number, ProjectVersion>()
-  for (const v of nonInit) {
-    const { run, label } = parseVersion(v)
-    const existing = byRun.get(run)
-    const isDefault = label === 'draft' || label === 'final' || label === 'pending'
-    if (!existing) { byRun.set(run, v); continue }
-    const { label: existingLabel } = parseVersion(existing)
-    const existingIsDefault = existingLabel === 'draft' || existingLabel === 'final' || existingLabel === 'pending'
-    if (existingIsDefault && !isDefault) byRun.set(run, v)
-  }
-  return [...byRun.values()].sort((a, b) => parseVersion(b).run - parseVersion(a).run)
+  return [...nonInit].sort((a, b) => timestampMs(b) - timestampMs(a))
 }
 
 interface VersionPanelProps {
   versions: ProjectVersion[]
   restoring: string | null
   onRestore: (hash: string) => void
+  /** Saves the current project state as a new named version. Absent when the
+   *  host adapter doesn't support it — the Save affordance disables itself
+   *  rather than disappearing, so the panel's layout doesn't jump. */
+  onSaveVersion?: (name?: string) => void
+  saving?: boolean
+  /** Opens the visual A/B compare view seeded on this version's hash. Absent
+   *  when the host adapter has no `versionFrameUrl` — the Compare button then
+   *  just doesn't render, matching Restore/Save's degrade-gracefully pattern. */
+  onCompareVersion?: (hash: string) => void
 }
 
-export default function VersionPanel({ versions, restoring, onRestore }: VersionPanelProps) {
-  const [open, setOpen] = useState(true)
-  const deduped = dedupeVersions(versions)
+export default function VersionPanel({ versions, restoring, onRestore, onSaveVersion, saving, onCompareVersion }: VersionPanelProps) {
+  const [nameInput, setNameInput] = useState('')
+  const rows = listVersions(versions)
+
+  function handleSaveClick() {
+    onSaveVersion?.(nameInput.trim() || undefined)
+    setNameInput('')
+  }
 
   return (
-    <div className="shrink-0 border-b border-[var(--editor-border)] flex flex-col overflow-hidden" style={{ maxHeight: open ? 224 : 0, transition: 'max-height 0.15s ease' }}>
-      <button
-        onClick={() => setOpen(o => !o)}
-        className="flex items-center justify-between px-3 py-2 border-b border-[var(--editor-border)] hover:bg-[var(--editor-surface)] transition-colors w-full text-left"
-      >
+    <div className="flex-1 min-h-0 border-b border-[var(--editor-border)] flex flex-col overflow-hidden">
+      {/* No collapse control: Versions has its own tab now, so the whole panel
+          IS the list. The count sits on the right as an explicit "N versions"
+          label so it reads as a quantity rather than part of the title. */}
+      <div className="shrink-0 flex items-center justify-between px-3 py-2 border-b border-[var(--editor-border)]">
         <span className="text-xs font-medium text-[var(--editor-text)]/60 uppercase tracking-wide">Versions</span>
-        <span className="text-[var(--editor-text)]/50 text-[10px]">{open ? '▲' : '▼'}</span>
-      </button>
-      <div className="overflow-y-auto p-2 flex flex-col gap-1.5">
-        {deduped.length === 0 ? (
-          <p className="text-xs text-[var(--editor-text)]/55 text-center mt-2 px-1 leading-relaxed">No saved versions yet.</p>
-        ) : deduped.map(v => {
-          const { run, label } = parseVersion(v)
-          const isDefault = label === 'draft' || label === 'final' || label === 'pending'
+        {rows.length > 0 && (
+          <span className="text-[10px] text-[var(--editor-text)] opacity-50">
+            {rows.length} {rows.length === 1 ? 'version' : 'versions'}
+          </span>
+        )}
+      </div>
+
+      {/* Save affordance — always visible (not gated on `open`) so saving a
+          version doesn't require expanding the list first. Disabled rather
+          than hidden when the host has no `onSaveVersion`, matching the
+          Restore buttons' pattern of degrading gracefully. */}
+      <div className="shrink-0 flex items-center gap-2 px-3 py-2.5 border-b border-[var(--editor-border)]">
+        <input
+          type="text"
+          value={nameInput}
+          onChange={e => setNameInput(e.target.value)}
+          placeholder="Name (optional)"
+          disabled={saving || !onSaveVersion}
+          className="min-w-0 flex-1 h-8 text-[11px] bg-[var(--editor-bg)] border border-[var(--editor-border)] rounded-md px-2 text-[var(--editor-text)] placeholder:text-[var(--editor-text)]/40 focus:outline-none focus:border-[var(--editor-accent)] disabled:opacity-40"
+        />
+        <button
+          onClick={handleSaveClick}
+          disabled={saving || !onSaveVersion}
+          className="shrink-0 flex items-center gap-1.5 h-8 px-3 rounded-md bg-[var(--editor-accent)] text-white text-xs font-medium hover:opacity-90 transition-opacity disabled:opacity-40 disabled:hover:opacity-40"
+        >
+          <Save size={13} />
+          {saving ? 'Saving…' : 'Save version'}
+        </button>
+      </div>
+
+      <div className="flex-1 min-h-0 overflow-y-auto">
+      <div className="p-2 flex flex-col gap-1.5">
+        {rows.length === 0 ? (
+          <p className="text-xs text-[var(--editor-text)] opacity-55 text-center mt-2 px-1 leading-relaxed">No saved versions yet.</p>
+        ) : rows.map(v => {
+          const { label } = parseVersion(v)
+          const name = humanizeLabel(label)
           return (
-            <div key={v.hash} className="rounded border border-[var(--editor-border)] bg-[var(--editor-surface)] p-2 flex flex-col gap-1">
+            <div key={v.hash} className="rounded-md border border-[var(--editor-border)] bg-[var(--editor-surface)] p-2.5 flex flex-col gap-2">
+              <div className="flex flex-col gap-0.5">
+                <span className="text-xs font-medium text-[var(--editor-text)] truncate" title={name}>{name}</span>
+                <span className="text-[10px] text-[var(--editor-text)] opacity-55">{formatTime(v.timestamp)}</span>
+              </div>
               <div className="flex items-center gap-1.5">
-                <span className="text-[10px] text-[var(--editor-text)]/50 shrink-0">Run {run}</span>
-                {isDefault ? (
-                  <span className="text-[10px] text-[var(--editor-text)]/60 capitalize">{label}</span>
-                ) : (
-                  <span className="text-xs font-medium text-[var(--editor-text)] truncate capitalize" title={label}>{label}</span>
+                <button
+                  onClick={() => onRestore(v.hash)}
+                  disabled={restoring === v.hash}
+                  className="flex items-center h-6 px-2 rounded border border-indigo-500/50 text-[10px] font-medium text-indigo-300 hover:bg-indigo-500/10 transition-colors disabled:opacity-40"
+                >
+                  {restoring === v.hash ? 'Restoring…' : 'Restore →'}
+                </button>
+                {onCompareVersion && (
+                  <button
+                    onClick={() => onCompareVersion(v.hash)}
+                    className="flex items-center h-6 px-2 rounded border border-[var(--editor-border)] text-[10px] font-medium text-[var(--editor-text)] opacity-70 hover:opacity-100 transition-opacity"
+                  >
+                    Compare
+                  </button>
                 )}
               </div>
-              <span className="text-[10px] text-[var(--editor-text)]/55">{formatTime(v.timestamp)}</span>
-              <button
-                onClick={() => onRestore(v.hash)}
-                disabled={restoring === v.hash}
-                className="text-[10px] text-[var(--editor-accent)] hover:opacity-80 text-left transition-colors disabled:opacity-40"
-              >
-                {restoring === v.hash ? 'Restoring…' : 'Restore →'}
-              </button>
             </div>
           )
         })}
+      </div>
       </div>
     </div>
   )

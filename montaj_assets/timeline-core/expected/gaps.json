@@ -1,0 +1,432 @@
+{
+  "planBoundaries": {
+    "24": [
+      0,
+      3,
+      5,
+      9
+    ],
+    "30": [
+      0,
+      3,
+      5,
+      9
+    ],
+    "60": [
+      0,
+      3,
+      5,
+      9
+    ]
+  },
+  "durations": {
+    "visualDuration": 9,
+    "projectEnd": 9
+  },
+  "resolveAt": {
+    "timestamps": [
+      0,
+      1.5,
+      3,
+      4,
+      5,
+      7,
+      9,
+      10
+    ],
+    "preview": [
+      {
+        "t": 0,
+        "items": [
+          {
+            "itemId": "clipA",
+            "trackIdx": 0,
+            "kind": "video",
+            "window": {
+              "src": "/corpus/clipA.mp4",
+              "inPoint": 0,
+              "outPoint": 3,
+              "usedNormalizedCache": false
+            },
+            "seek": 0,
+            "geometry": {
+              "scale": 1,
+              "scaleX": 1,
+              "scaleY": 1,
+              "offsetX": 0,
+              "offsetY": 0,
+              "opacity": 1,
+              "fit": "contain",
+              "rotation": 0
+            }
+          }
+        ]
+      },
+      {
+        "t": 1.5,
+        "items": [
+          {
+            "itemId": "clipA",
+            "trackIdx": 0,
+            "kind": "video",
+            "window": {
+              "src": "/corpus/clipA.mp4",
+              "inPoint": 0,
+              "outPoint": 3,
+              "usedNormalizedCache": false
+            },
+            "seek": 1.5,
+            "geometry": {
+              "scale": 1,
+              "scaleX": 1,
+              "scaleY": 1,
+              "offsetX": 0,
+              "offsetY": 0,
+              "opacity": 1,
+              "fit": "contain",
+              "rotation": 0
+            }
+          }
+        ]
+      },
+      {
+        "t": 3,
+        "items": []
+      },
+      {
+        "t": 4,
+        "items": []
+      },
+      {
+        "t": 5,
+        "items": [
+          {
+            "itemId": "clipB",
+            "trackIdx": 0,
+            "kind": "video",
+            "window": {
+              "src": "/corpus/clipB.mp4",
+              "inPoint": 0,
+              "outPoint": 4,
+              "usedNormalizedCache": false
+            },
+            "seek": 0,
+            "geometry": {
+              "scale": 1,
+              "scaleX": 1,
+              "scaleY": 1,
+              "offsetX": 0,
+              "offsetY": 0,
+              "opacity": 1,
+              "fit": "contain",
+              "rotation": 0
+            }
+          }
+        ]
+      },
+      {
+        "t": 7,
+        "items": [
+          {
+            "itemId": "clipB",
+            "trackIdx": 0,
+            "kind": "video",
+            "window": {
+              "src": "/corpus/clipB.mp4",
+              "inPoint": 0,
+              "outPoint": 4,
+              "usedNormalizedCache": false
+            },
+            "seek": 2,
+            "geometry": {
+              "scale": 1,
+              "scaleX": 1,
+              "scaleY": 1,
+              "offsetX": 0,
+              "offsetY": 0,
+              "opacity": 1,
+              "fit": "contain",
+              "rotation": 0
+            }
+          }
+        ]
+      },
+      {
+        "t": 9,
+        "items": []
+      },
+      {
+        "t": 10,
+        "items": []
+      }
+    ],
+    "render": [
+      {
+        "t": 0,
+        "items": [
+          {
+            "itemId": "clipA",
+            "trackIdx": 0,
+            "kind": "video",
+            "window": {
+              "src": "/corpus/clipA.mp4",
+              "inPoint": 0,
+              "outPoint": 3,
+              "usedNormalizedCache": false
+            },
+            "seek": 0,
+            "geometry": {
+              "scale": 1,
+              "scaleX": 1,
+              "scaleY": 1,
+              "offsetX": 0,
+              "offsetY": 0,
+              "opacity": 1,
+              "fit": "contain",
+              "rotation": 0
+            }
+          }
+        ]
+      },
+      {
+        "t": 1.5,
+        "items": [
+          {
+            "itemId": "clipA",
+            "trackIdx": 0,
+            "kind": "video",
+            "window": {
+              "src": "/corpus/clipA.mp4",
+              "inPoint": 0,
+              "outPoint": 3,
+              "usedNormalizedCache": false
+            },
+            "seek": 1.5,
+            "geometry": {
+              "scale": 1,
+              "scaleX": 1,
+              "scaleY": 1,
+              "offsetX": 0,
+              "offsetY": 0,
+              "opacity": 1,
+              "fit": "contain",
+              "rotation": 0
+            }
+          }
+        ]
+      },
+      {
+        "t": 3,
+        "items": []
+      },
+      {
+        "t": 4,
+        "items": []
+      },
+      {
+        "t": 5,
+        "items": [
+          {
+            "itemId": "clipB",
+            "trackIdx": 0,
+            "kind": "video",
+            "window": {
+              "src": "/corpus/clipB.mp4",
+              "inPoint": 0,
+              "outPoint": 4,
+              "usedNormalizedCache": false
+            },
+            "seek": 0,
+            "geometry": {
+              "scale": 1,
+              "scaleX": 1,
+              "scaleY": 1,
+              "offsetX": 0,
+              "offsetY": 0,
+              "opacity": 1,
+              "fit": "contain",
+              "rotation": 0
+            }
+          }
+        ]
+      },
+      {
+        "t": 7,
+        "items": [
+          {
+            "itemId": "clipB",
+            "trackIdx": 0,
+            "kind": "video",
+            "window": {
+              "src": "/corpus/clipB.mp4",
+              "inPoint": 0,
+              "outPoint": 4,
+              "usedNormalizedCache": false
+            },
+            "seek": 2,
+            "geometry": {
+              "scale": 1,
+              "scaleX": 1,
+              "scaleY": 1,
+              "offsetX": 0,
+              "offsetY": 0,
+              "opacity": 1,
+              "fit": "contain",
+              "rotation": 0
+            }
+          }
+        ]
+      },
+      {
+        "t": 9,
+        "items": []
+      },
+      {
+        "t": 10,
+        "items": []
+      }
+    ]
+  },
+  "resolveSegment": {
+    "fps": 30,
+    "segments": [
+      {
+        "segStart": 0,
+        "segEnd": 3,
+        "scene": {
+          "t": 0,
+          "items": [
+            {
+              "itemId": "clipA",
+              "trackIdx": 0,
+              "kind": "video",
+              "window": {
+                "src": "/corpus/clipA.mp4",
+                "inPoint": 0,
+                "outPoint": 3,
+                "usedNormalizedCache": false
+              },
+              "seek": 0,
+              "geometry": {
+                "scale": 1,
+                "scaleX": 1,
+                "scaleY": 1,
+                "offsetX": 0,
+                "offsetY": 0,
+                "opacity": 1,
+                "fit": "contain",
+                "rotation": 0
+              }
+            }
+          ]
+        }
+      },
+      {
+        "segStart": 3,
+        "segEnd": 5,
+        "scene": {
+          "t": 3,
+          "items": []
+        }
+      },
+      {
+        "segStart": 5,
+        "segEnd": 9,
+        "scene": {
+          "t": 5,
+          "items": [
+            {
+              "itemId": "clipB",
+              "trackIdx": 0,
+              "kind": "video",
+              "window": {
+                "src": "/corpus/clipB.mp4",
+                "inPoint": 0,
+                "outPoint": 4,
+                "usedNormalizedCache": false
+              },
+              "seek": 0,
+              "geometry": {
+                "scale": 1,
+                "scaleX": 1,
+                "scaleY": 1,
+                "offsetX": 0,
+                "offsetY": 0,
+                "opacity": 1,
+                "fit": "contain",
+                "rotation": 0
+              }
+            }
+          ]
+        }
+      }
+    ]
+  },
+  "sourceWindow": {
+    "clipA": {
+      "preview": {
+        "src": "/corpus/clipA.mp4",
+        "inPoint": 0,
+        "outPoint": 3,
+        "usedNormalizedCache": false
+      },
+      "render": {
+        "src": "/corpus/clipA.mp4",
+        "inPoint": 0,
+        "outPoint": 3,
+        "usedNormalizedCache": false
+      }
+    },
+    "clipB": {
+      "preview": {
+        "src": "/corpus/clipB.mp4",
+        "inPoint": 0,
+        "outPoint": 4,
+        "usedNormalizedCache": false
+      },
+      "render": {
+        "src": "/corpus/clipB.mp4",
+        "inPoint": 0,
+        "outPoint": 4,
+        "usedNormalizedCache": false
+      }
+    }
+  },
+  "seekTime": {
+    "clipA": {
+      "preview": {
+        "0": 0,
+        "3": 3,
+        "1.5": 1.5
+      },
+      "render": {
+        "0": 0,
+        "3": 3,
+        "1.5": 1.5
+      }
+    },
+    "clipB": {
+      "preview": {
+        "5": 0,
+        "7": 2,
+        "9": 4
+      },
+      "render": {
+        "5": 0,
+        "7": 2,
+        "9": 4
+      }
+    }
+  },
+  "synthesizedOutPoint": {
+    "clipA": {
+      "preview": 3,
+      "render": 3
+    },
+    "clipB": {
+      "preview": 4,
+      "render": 4
+    }
+  },
+  "audioWindow": {}
+}

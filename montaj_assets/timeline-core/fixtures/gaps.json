@@ -1,0 +1,30 @@
+{
+  "version": "0.2",
+  "id": "sp2-corpus-gaps",
+  "status": "draft",
+  "projectType": "editing",
+  "settings": { "fps": 30, "resolution": [1080, 1920], "colorSpace": "sdr_bt709" },
+  "tracks": [
+    [
+      {
+        "id": "clipA",
+        "type": "video",
+        "src": "/corpus/clipA.mp4",
+        "start": 0,
+        "end": 3,
+        "inPoint": 0,
+        "outPoint": 3
+      },
+      {
+        "id": "clipB",
+        "type": "video",
+        "src": "/corpus/clipB.mp4",
+        "start": 5,
+        "end": 9,
+        "inPoint": 0,
+        "outPoint": 4
+      }
+    ]
+  ],
+  "audio": { "tracks": [] }
+}

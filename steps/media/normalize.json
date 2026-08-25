@@ -24,6 +24,24 @@
       "min": -40,
       "max": 0,
       "description": "Target LUFS. Used only when --target is 'custom'."
+    },
+    {
+      "name": "measure-only",
+      "type": "bool",
+      "default": false,
+      "description": "Print pass-1 loudness stats as JSON and exit; skip pass 2 entirely (no file written, --out not needed)."
+    },
+    {
+      "name": "window-in",
+      "type": "float",
+      "min": 0,
+      "description": "Measure only this window of --input (source seconds), applied as ffmpeg seek flags on the measurement pass itself — native sample rate and channel count are preserved. Must be paired with window-out, and requires measure-only (windowed encoding is not supported)."
+    },
+    {
+      "name": "window-out",
+      "type": "float",
+      "min": 0,
+      "description": "End of the measurement window in source seconds. Must be paired with window-in."
     }
   ]
 }

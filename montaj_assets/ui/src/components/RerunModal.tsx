@@ -76,7 +76,7 @@ export default function RerunModal({ project, onClose, onRerun }: RerunModalProp
               placeholder="e.g. tight cuts, no music"
               className="h-9 rounded-md border border-gray-600 bg-gray-800 px-3 text-sm text-white placeholder:text-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500"
             />
-            <p className="text-[11px] text-gray-600">Labels the current edit before it's archived — so you can restore it later.</p>
+            <p className="text-[11px] text-gray-600">Labels the current edit before it's archived, so you can restore it later.</p>
           </div>
 
           {/* Prompt */}

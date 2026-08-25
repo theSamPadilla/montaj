@@ -147,6 +147,16 @@ montaj render --image-tone vivid
 # 203-nit graphics white (dimmer, TV-standard). punchy: legacy contrast with
 # corrected color. raw: no conversion (legacy oversaturated look).
 # Overrides settings.imageTone in project.json; ignored for SDR projects.
+
+montaj render --export sdr
+# Which deliverable(s) an HDR project renders (auto | sdr | both).
+# auto (default): HDR master only. sdr: a single SDR file tone-mapped
+# through --sdr-curve. both: the HDR master plus a derived SDR sibling.
+# Ignored for SDR projects.
+
+montaj render --sdr-curve vivid1-neutral
+# Look curve used to derive the SDR rendition (with --export sdr|both).
+# Choices: vivid1 | vivid1-neutral. Defaults to the project's master look.
 ```
 
 `montaj run` works headlessly — no UI, no `montaj serve` required. The full pipeline runs in-process.
@@ -366,17 +376,19 @@ montaj step crop_spec --input spec.json --keep 40.28:end
 ### Edit
 
 ```bash
-montaj step trim --input clip.mp4 --start 2.5 --end 8.3
-montaj step trim --input clip.mp4 --start 00:00:02 --end 00:01:30   # HH:MM:SS also accepted
+montaj step materialize_cut --input clip.mp4 --inpoint 2.5 --outpoint 8.3
+# Keep only inpoint→outpoint and encode a real H.264 clip
 
-montaj step cut --input clip.mp4 --start 3.0 --end 7.5
-# Remove a single section and rejoin — opposite of trim
-
-montaj step cut --input clip.mp4 --cuts '[[0,1.2],[5.3,7.8]]'
+montaj step materialize_cut --input clip.mp4 --cuts '[[0,1.2],[5.3,7.8]]'
 # Remove multiple sections in one ffmpeg pass — keeps go 1.2→5.3 and 7.8→end
 
-montaj step cut --input clip.mp4 --cuts '[[3.0,7.5]]' --spec
-# Write a trim spec JSON instead of encoding — use with concat for deferred encode
+montaj step materialize_cut --input clip.mp4 --audio
+# Audio-only output, no video stream — .wav by default (aac if --out ends in another extension)
+
+montaj step waveform_trim --input clip.mp4 > spec.json
+montaj step materialize_cut --input spec.json
+# waveform_trim only detects silence and writes a trim spec {input, keeps} —
+# no encode happens until materialize_cut consumes it
 
 
 montaj step resize --input clip.mp4 --ratio 9:16     # TikTok / Reels / Shorts
@@ -477,6 +489,16 @@ montaj init --prompt "..." --color-space hdr_hlg
 # Choices: auto | sdr_bt709 | hdr_hlg | hdr_pq.
 # Peer of --resolution.
 
+montaj init --prompt "..." --no-proxy
+# Skip editing-proxy generation entirely. The editor falls back to playing
+# masters; proxies can be backfilled later via POST /api/proxy or
+# `montaj step proxy`. Also settable per-workflow with "proxy": false.
+
+montaj init --prompt "..." --proxy-inline-max 120
+# Max source duration (seconds) proxied inline during init; longer sources
+# defer to the backfill job so project creation never blocks on a long
+# encode. Default 480.
+
 montaj status
 # Show current project.json state (pending / draft / final) + step progress
 
@@ -485,39 +507,41 @@ montaj approve
 # storyboard.approval). Prints the message to paste into your agent's
 # chat to trigger Phase 6 scene generation. Use --project PATH for an
 # explicit location; --force to refresh an existing approval.
+
+montaj clean --proxies --dry-run
+# List every editing proxy (*_proxy_*.mp4) and superseded look-tagged
+# normalized master for the current project plus the shared source store
+# (~/Montaj/.sources/), with sizes. Nothing is deleted without --yes.
+
+montaj clean --proxies --yes
+# Delete them, and clear the now-stale proxySrc pointers from project.json so
+# the editor falls back to the full-quality master. Proxies are disposable —
+# they regenerate at next import or via POST /api/proxy.
+
+montaj clean --proxies --project ./workspace/2026-08-14-my-edit
+montaj clean --proxies --all-projects
+# Scope to one project directory, or the whole workspace root.
 ```
 
 ---
 
-## Step params reference
+## Steps
 
-All steps accept `--out <path>` to set the output location. Run `montaj step <name> --help` for full details on any step.
+Most built-in steps accept `--out <path>` to set the output location; a few
+write JSON to stdout instead (`probe`, `waveform_peaks`) or take `--out-dir`
+(`filmstrip`, `shot_sheet`). Run `montaj step <name> --help` for a step's
+exact flags. Full per-step parameter docs: https://docs.montaj.ag/steps
 
-| Step | Key params |
-|------|-----------|
-| `probe` | — |
-| `snapshot` | `--cols <n>`, `--rows <n>` |
-| `trim` | `--start <t>`, `--end <t>` |
-| `cut` | `--start <t>`, `--end <t>` · `--cuts <json>` · `--spec` |
-| `resize` | `--ratio <9:16\|1:1\|16:9>` |
-| `normalize` | `--target <youtube\|podcast\|broadcast\|custom>`, `--lufs <n>` |
-| `extract_audio` | `--format <wav\|mp3\|aac>` |
-| `rm_fillers` | `--model <tiny.en\|base.en\|medium.en\|large>` |
-| `waveform_trim` | `--threshold <dB>`, `--min-silence <s>` |
-| `rm_nonspeech` | `--model <base\|small\|medium>`, `--max-word-gap <s>`, `--sentence-edge <s>` |
-| `crop_spec` | `--keep <start:end>` (repeatable), `--out <path>` |
-| `virtual_to_original` | `--inverse` |
-| `transcribe` | `--model <base.en\|medium.en>`, `--language <code>` |
-| `caption` | `--style <word-by-word\|pop\|karaoke\|subtitle\|highlight-box\|outline\|clean>` |
-| `stem-separation` | `--stems <vocals\|drums\|bass\|other>`, `--out-dir <path>` |
-| `lyrics-sync` | `--lyrics <txt>`, `--model <base.en\|medium.en>`, `--out <path>`, `--start <s>`, `--end <s>` |
-| `lyrics-render` | `--captions <json>`, `--audio <mp3>`, `--input <video>`, `--position <center\|top-left\|bottom-left>`, `--color <str>`, `--fontsize <px>`, `--preview-duration <s>` |
-| `kling-generate` | `--prompt <text>`, `--out <path>`, `--first-frame <img>`, `--last-frame <img>`, `--ref-image <img>` (repeatable, max 3), `--duration <3-15>`, `--negative-prompt <text>`, `--sound <on\|off>`, `--aspect-ratio <16:9\|9:16\|1:1>`, `--mode <std\|pro>` |
-| `analyze-media` | `<input>` (video/audio/image), `--prompt <text>`, `--model <id>`, `--json-output`, `--out <path>` |
-| `generate-image` | `--prompt <text>`, `--out <path>`, `--provider <gemini\|openai>`, `--ref-image <img>` (repeatable), `--size <WxH>`, `--aspect-ratio <ratio>` (Gemini only), `--model <id>` |
-| `doctor` | (no params) |
-| `install ffmpeg` | (no params) |
-| `normalize` | `<file>`, `--color-space <sdr_bt709\|hdr_hlg\|hdr_pq>`, `--out <path>` |
+| Directory | Steps |
+|-----------|-------|
+| `steps/audio/` | `extract_audio`, `mix_timeline`, `stem_separation`, `waveform_image`, `waveform_peaks`, `waveform_trim` |
+| `steps/edit/` | `cross_cut`, `jump_cut`, `montage` |
+| `steps/generate/` | `generate_image`, `generate_music`, `generate_voiceover`, `kling_generate` |
+| `steps/lyrics/` | `caption`, `lyrics_render`, `lyrics_sync` |
+| `steps/media/` | `analyze_media`, `detect_shots`, `fetch`, `fetch_image`, `filmstrip`, `normalize`, `probe`, `search_images`, `search_news`, `shot_sheet`, `snapshot` |
+| `steps/render/` | `sample_frame`, `sample_overlay` |
+| `steps/speech/` | `rm_fillers`, `rm_nonspeech`, `transcribe` |
+| `steps/transform/` | `crop_spec`, `generate_captions`, `materialize_cut`, `normalize_window`, `proxy`, `remove_bg`, `resize`, `virtual_to_original` |
 
 ---
 
@@ -545,7 +569,7 @@ Steps are composable at the shell level — stdout of one step is the `--input` 
 
 ```bash
 FILE=$(montaj step rm_fillers --input clip.mp4 --model base.en)
-FILE=$(montaj step trim --input "$FILE" --start 5 --end 90)
+FILE=$(montaj step materialize_cut --input "$FILE" --inpoint 5 --outpoint 90)
 FILE=$(montaj step resize --input "$FILE" --ratio 9:16)
 # $FILE is the final output path
 ```

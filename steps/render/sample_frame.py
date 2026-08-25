@@ -4,12 +4,14 @@
 Extracts the video frame, active image items, and active overlay JSXs at the
 requested timestamp, composites them at project resolution, and writes a PNG.
 """
-import os, sys, argparse, subprocess
+import os, sys, argparse, subprocess, json
 
 MONTAJ_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 sys.path.insert(0, MONTAJ_ROOT)
 from cli.deps import render_runtime_dir
-from lib.common import ffmpeg_bin, ffprobe_bin
+from lib.common import ffmpeg_bin, ffprobe_bin, fail, require_file
+from lib.look import curve_ids
+from lib.types.colorspace import is_hdr, DEFAULT_COLOR_SPACE
 
 # Resolve the render bundle at its runtime location, not the site-packages
 # source copy. In prod `montaj install ui` runs `npm install` into the build
@@ -26,6 +28,15 @@ def main():
                         help="Absolute path to project.json")
     parser.add_argument("--at", type=float, required=True,
                         help="Timestamp in seconds to sample")
+    parser.add_argument("--sdr-curve", default=None,
+                        help="Look curve id for the HDR-to-SDR grade (see lib/look.py::curve_ids()). "
+                             "Meaningless on SDR projects: ignored with a stderr warning, not an "
+                             "error. Omit to use the project's master look.")
+    parser.add_argument("--prefer-proxy", action="store_true",
+                        help="Decode each clip from its SDR proxy (proxySrc) instead of the master "
+                             "when a proxy exists — a fast path for quick previews. The proxy is "
+                             "already SDR, so no HDR tone-map is applied; do not combine with "
+                             "--sdr-curve. Falls back to the master per clip when no proxy exists.")
     parser.add_argument("--out", default=None,
                         help="Output PNG path (default: <project_dir>/render/samples/frame-<at>s.png)")
     args = parser.parse_args()
@@ -46,6 +57,38 @@ def main():
         "--at", str(args.at),
         "--out", out,
     ]
+
+    if args.prefer_proxy:
+        cmd.append("--prefer-proxy")
+
+    if args.sdr_curve is not None:
+        # Fail loudly here rather than let sample-frame.js's own manifest check
+        # catch it — a typo'd curve id should be a clean step error, not a
+        # subprocess exit code with a JSON blob buried in stderr.
+        if args.sdr_curve not in curve_ids():
+            fail("invalid_sdr_curve",
+                 f"--sdr-curve '{args.sdr_curve}' is not a known look curve. "
+                 f"Expected one of {curve_ids()}.")
+
+        require_file(args.project)
+        try:
+            with open(args.project) as f:
+                project = json.load(f)
+        except (OSError, json.JSONDecodeError) as e:
+            fail("invalid_project", f"Could not read project.json at {args.project}: {e}")
+        color_space = (project.get("settings") or {}).get("colorSpace") or DEFAULT_COLOR_SPACE
+
+        if is_hdr(color_space):
+            cmd += ["--sdr-curve", args.sdr_curve]
+        else:
+            # SDR projects have nothing to grade — the curve only feeds the
+            # HDR->SDR LUT chain (see sample-frame.js's `hdrProject` gate). Not
+            # forwarding it also keeps the JS cache key from splitting SDR
+            # samples across curve values that never affected their pixels.
+            sys.stderr.write(json.dumps({
+                "warn": f"--sdr-curve '{args.sdr_curve}' ignored: project color space "
+                        f"is '{color_space}' (SDR)",
+            }) + "\n")
 
     env = os.environ.copy()
     env["MONTAJ_FFMPEG"] = ffmpeg_bin()

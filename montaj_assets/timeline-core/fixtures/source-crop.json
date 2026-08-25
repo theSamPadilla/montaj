@@ -1,0 +1,29 @@
+{
+  "version": "0.2",
+  "id": "sp2-corpus-source-crop",
+  "status": "draft",
+  "projectType": "editing",
+  "settings": { "fps": 30, "resolution": [1080, 1920], "colorSpace": "sdr_bt709" },
+  "tracks": [
+    [
+      {
+        "id": "cropped",
+        "type": "video",
+        "src": "/corpus/cropVideo.mp4",
+        "proxySrc": "/corpus/cropVideo_proxy.mp4",
+        "start": 0,
+        "end": 5,
+        "inPoint": 0,
+        "outPoint": 5,
+        "offsetX": 0,
+        "offsetY": 0,
+        "scale": 1,
+        "opacity": 1,
+        "sourceCrop": { "x": 0.1, "y": 0.05, "w": 0.8, "h": 0.9 },
+        "sourceWidth": 1920,
+        "sourceHeight": 1080
+      }
+    ]
+  ],
+  "audio": { "tracks": [] }
+}

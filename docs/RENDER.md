@@ -23,11 +23,14 @@ project.json
     │
     ├─ 1. Validate + resolve paths
     ├─ 2. Collect segment specs + video/image items
+    ├─ 2.5. Normalize pre-pass (project working color space)
     ├─ 3. processVideoItems (remove_bg if flagged)
     ├─ 4. Bundle JSX → HTML  (bundle.js, one per overlay/caption)
     ├─ 5. Render HTML → NUT/FFV1  (renderer.js, Puppeteer pool)
     ├─ 6. Probe source video dimensions → pixelRatio
-    └─ 7. compose()  →  final.mp4
+    ├─ 7. compose()  →  segments joined via concat
+    ├─ 7a. mix-audio.js  →  final.mp4
+    └─ 7b. deriveSdr()  (--export sdr|both on an HDR project only)  →  <name>-sdr.mp4
 ```
 
 ### Step 4 — JSX bundling (bundle.js)
@@ -82,6 +85,117 @@ This corruption happens during `avformat_open_input()`, leaving the demuxer stat
 - `-reserve_index_space 1000000` — seek index at the start of the file; the demuxer finds timestamps without backward scanning
 - `-g 1` — every FFV1 frame is a keyframe, so the MKV muxer places a cue point before every frame for accurate per-frame seeking in the compose filter graph
 
+### Overlay keyframes (SP9b)
+
+An overlay item with a non-empty `keyframes` array skips the ordinary
+"position once per segment" path. `bundle.js`'s `generateShim` wraps the
+component in a full-canvas layer whose CSS transform is re-derived every
+frame from `@bycrux/timeline-core`'s `geometryAt(item, 'overlay', frame /
+fps)` — the same function the editor preview samples — so the motion is
+baked into the PNG sequence Step 5 captures, frame by frame, rather than left
+for compositing to apply once. `encode-segment.js`'s `buildOverlayFilterParts`
+(Stage 2, below) then composites a keyframed overlay's capture full-canvas at
+`overlay=x=0:y=0`, with no `scale`/`rotate`/`colorchannelmixer` positioning
+step — the geometry is already in the pixels. A keyframe-free overlay is
+untouched: same shim, same filter graph, byte-identical to before this
+feature existed.
+
+**Cost.** `renderer.js` captures every overlay, keyframed or not, at
+`deviceScaleFactor: 2` over the 1080-short-edge design canvas — 2160px on the
+short edge — so a 4K export's compose-time `scale=` target lands on that same
+2160×3840 native resolution and composites at roughly 1:1, no upscale;
+sub-4K exports downscale it instead. That capture resolution doesn't change
+for a keyframed overlay. What does change is per-frame cost: re-evaluating
+the curve and re-styling the DOM every frame measured at about 27% slower per
+frame than the same overlay captured static, independent of export
+resolution.
+
+### Video and image keyframes (SP9d)
+
+A `video` or `image` item with a non-empty `keyframes` array has its geometry
+compiled into **time-varying ffmpeg filter expressions** rather than the single
+static box the composite normally emits. There is no browser step involved:
+`encode-segment.js` (`animatedGeometry`) turns each curve into an expression in
+`t` and interpolates it into the filter options that accept one — `overlay`'s
+`x`/`y`, `scale`'s `w`/`h` (with `eval=frame`), and `rotate`'s angle.
+
+**What compiles.** `offsetX`, `offsetY`, `scale`/`scaleX`/`scaleY` and
+`rotation`. **`opacity` does not, and cannot** — see below.
+
+**How a curve becomes an expression.** Not by translating the easing. The
+`ease*` easings are cubic Béziers inverted by Newton-Raphson, and porting that
+into ffmpeg's expression language would mean one iterative solver written twice,
+in two languages, that must agree forever. Instead `timeline-core`'s
+`compileTrackExpr` samples the curve through the SAME `sampleTrack` the preview
+uses and emits a piecewise-**linear** expression through those samples, so
+ffmpeg only ever does `if`/`between` plus a lerp. Breakpoints are chosen
+adaptively against a 0.25px tolerance, converted into each property's own units
+(rotation's against the item's PEAK box size, since an angle error's pixel cost
+scales with how large the item is). Subdivision is globally greedy and capped at
+63 segments; hitting the cap logs a warning naming the item and property.
+
+**Why the filter chain changes shape on an animated item.** Three filters cannot
+accept a variable-size input, and all three fail *silently* — no ffmpeg warning,
+roughly right at small deltas, visibly wrong at the extremes:
+
+- `rotate` configures against its first frame and mis-scales every resized frame
+  after it (an animated *angle* alone is fine; it is the changing frame SIZE);
+- the colour conversion (`zscale` + `lut3d`) does the same — the path every HDR
+  source takes, i.e. the common one;
+- `pad` exposes no `t` or `n` at all, even at `eval=frame`.
+
+So an animated item's chain keeps every size-sensitive filter on a constant
+frame and does the varying resize afterwards:
+
+```
+crop → scale(STATIC, peak box) → convert → pad(STATIC, peak box)
+     → scale(ANIMATED, eval=frame)  [→ pad(peak, transparent) → rotate]  → overlay
+```
+
+`pad` still sits after the conversion, so its black bars stay out of the LUT.
+Animating position ALONE skips all of this — `overlay`'s x/y are already
+evaluated per frame — so it costs nothing.
+
+Every expression fed to a pixel option is wrapped in `round()`: ffmpeg truncates
+such an option toward zero while the shared geometry rounds, so a bare
+expression can land a whole pixel short of the preview.
+
+**Cost.** 3s segment, real footage, full encode, median of 5 interleaved runs.
+Only segments that actually use keyframes pay any of this.
+
+| | 1080p | 4K |
+|---|---|---|
+| static baseline | 1.00× | 1.00× |
+| position only | 1.06× | ~1.07× |
+| + scale | 1.67× | ~1.19× |
+| + rotation | 2.28× | ~1.59× |
+
+The 1080p column is measured against the shipped implementation. The 4K column
+is carried over from the SP9d Task 1 spike, whose chains were equivalent but did
+not include the peak-box pre-fit resample this implementation adds — which is
+why 1080p's `+ scale` came out at 1.67× against the spike's 1.50×. Expect the
+4K figures to be similarly conservative-by-a-little rather than exact. They were
+not re-measured against the final code because the machine was under a load
+average of ~37 at the time and 4K run-to-run spread reached 200%; 1080p stayed
+inside 25% and was usable. Re-measure on an idle machine before quoting 4K.
+
+Scale's cost is proportional to the ANIMATED SPAN, not the clip length (a long
+clip with a short push-in pays almost nothing extra); rotation's is per frame of
+the whole segment. Peak memory at 4K rises from ~514 MB to ~900 MB on a
+scale-animated item. Expression arm count is free — 64 arms measured the same as
+1 — so the tolerance can be tightened without a render-time penalty.
+
+**Why opacity is excluded.** ffmpeg applies alpha through `colorchannelmixer`,
+whose `aa` option is declared `<double>`: a literal number, no expression, at any
+evaluation mode. (The `T` flag beside it is `AV_OPT_FLAG_RUNTIME_PARAM` —
+settable via `sendcmd`/`zmq` — not expression support.) A clip's `opacity` track
+is therefore ignored by the renderer, by the preview, and by the still-frame
+sampler, and the editor will not write one. Closing the gap needs the per-frame
+browser bake extended to video — decode every frame of the animated span and
+composite it the way overlays already are. Measured at **14–33×** the expression
+path's render time, versus **15×** for splitting the span into one-frame
+sub-segments. Both were rejected on that basis.
+
 ---
 
 ## Project Color Space
@@ -135,8 +249,60 @@ emit `libx265 yuv420p10le` with `bt2020nc` colorimetry plus the appropriate
 transfer (`arib-std-b67` for HLG, `smpte2084` for PQ with static HDR10
 mastering metadata). Sources whose color space conflicts with the project
 are converted at the per-item filter chain in the segment encoder
-(zscale-based tonemap for HDR→SDR; stretch into HDR container for SDR→HDR;
-HLG↔PQ via zscale transfer-curve conversion).
+(the Montaj Vivid LUT for HDR→SDR — see *One look: Montaj Vivid* below;
+stretch into HDR container for SDR→HDR; HLG↔PQ via zscale transfer-curve
+conversion). The conversion runs AFTER the per-item crop/scale and before
+pad, so a 4K HDR source feeding a 1080 canvas is tone-mapped at 1080, not
+4K (SP6b's ordering fix — pad still runs last so synthetic bars are
+generated in the destination space), with `force_divisible_by=2` pinning
+even scale dims only on converted items (zscale rejects odd dimensions).
+
+## One look: Montaj Vivid
+
+Every HDR→SDR conversion in the product goes through one LUT,
+`montaj_assets/luts/montaj-vivid-v1.cube`, named by the manifest
+`montaj_assets/luts/looks.json` (`masterLook: "vivid1"`) and loaded by
+`lib/look.py` (Python) and `montaj_assets/render/look.js` (Node) — the same
+one-file-two-loaders pattern as the color-space taxonomy. The binding chain,
+character-identical in both runtimes (regression-tested cross-runtime):
+
+```
+zscale=matrixin=2020_ncl:rangein=limited:range=full,format=rgb48le,
+lut3d=file=<cube>:interp=tetrahedral,
+zscale=tin=bt709:t=bt709:pin=bt709:p=bt709:m=bt709:rin=full:r=tv
+```
+
+The `format=rgb48le` pin BEFORE `lut3d` is load-bearing (8-bit quantization
+otherwise); the explicit `t=/m=/p=` on the trailing zscale is too (zscale
+passes stale HDR transfer/primaries tags through unless explicitly
+overridden). The matching `tin=/pin=` are load-bearing for the opposite
+reason: zscale *converts* to the axes it is handed rather than relabelling
+them, and post-LUT frames still carry the source's HDR tags, so without the
+pins it re-ran HLG→709 and BT.2020→709 over pixels the LUT had already
+tone-mapped — clipping highlights per channel and shifting hue. Pinning the
+post-LUT truth turns both conversions into no-ops and leaves only the retag.
+PQ sources prepend `zscale=tin=smpte2084:t=arib-std-b67:npl=1000`
+(PQ→HLG at the LUT's 1000-nit design white). Builds without zscale or lut3d
+fall back to the legacy `tonemap=hable:desat=0` chain with loud warnings;
+`montaj doctor` checks for `lut3d`.
+
+The LUT applies at five sites, which previously carried four independent
+tone-map implementations: the normalize master encode (`lib/normalize.py`,
+paired with a light `hqdn3d=1.5:1.5:3:3` denoise pre-LUT — master creation
+only, never proxies or fallbacks), the editing proxy (`lib/proxy.py`), the
+per-item segment conversion (`encode-segment.js`), the embedded thumbnail
+(`compose.js`), and single-frame sampling (`sample-frame.js`).
+
+The manifest registers a second curve alongside the default:
+`montaj-vivid-v1-neutral.cube` (id `vivid1-neutral`, labeled "Neutral
+brights"). Both files run through the identical binding chain above —
+`vivid1-neutral` is a different `.cube` grade, not a different filter graph.
+`curve_ids()` / `lut_path(curve_id)` (Python) and their Node equivalents in
+`montaj_assets/render/look.js` resolve either id; passing no id resolves to
+`masterLook` (`vivid1`), which is what every site listed above uses. The
+neutral curve is only ever selected explicitly, via `--sdr-curve` on the
+derived SDR export (see *Export modes* below) or `sample_frame`'s matching
+`--sdr-curve` param.
 
 ---
 
@@ -158,8 +324,12 @@ When a source conflicts, normalize emits the project's working format using
 the encoder/pix_fmt/color args from the color-space spec:
 
 - **`sdr_bt709` project:** `libx264 -pix_fmt yuv420p` with `bt709` stream
-  metadata. HDR sources are tonemapped via `zscale` + `tonemap` (with a bare
-  tonemap fallback when `zscale` is missing — accompanied by a loud warning).
+  metadata. HDR sources are tone-mapped through the Montaj Vivid LUT chain
+  (see *One look: Montaj Vivid* above), preceded by a light
+  `hqdn3d=1.5:1.5:3:3` denoise in the source domain — the vivid curve
+  brightens midtones in a way that would otherwise amplify phone-camera
+  shadow grain (a bare tonemap fallback runs when `zscale`/`lut3d` are
+  missing — accompanied by a loud warning, and without the denoise).
 - **`hdr_hlg` project:** `libx265 -pix_fmt yuv420p10le` with `bt2020nc` /
   `arib-std-b67` stream metadata.
 - **`hdr_pq` project:** `libx265 -pix_fmt yuv420p10le` with `bt2020nc` /
@@ -184,7 +354,16 @@ The normalize step creates `_normalized_<colorSpace>.mp4` files alongside the
 originals (e.g. `clip_normalized_sdr_bt709.mp4` or
 `clip_normalized_hdr_hlg.mp4`) — originals are never modified and are
 preserved for potential re-export. Namespacing by color space lets a project
-flip between SDR and HDR without colliding with cached normalize output. The
+flip between SDR and HDR without colliding with cached normalize output.
+Tone-mapped masters additionally carry the master look tag —
+`clip_normalized_sdr_bt709_vivid1.mp4` — so a future LUT change can detect
+stale artifacts by name (same contract as proxy filenames). SDR-source
+conformance masters stay untagged: their pixels carry no look, and retagging
+them would churn every SDR project for nothing. One helper per runtime builds
+the name (`normalized_output_path()` in `lib/normalize.py`,
+`buildNormalizedOutputPath()` in `render.js`); opening a pre-vivid1 project
+heals stale `normalizedSrc`/`proxySrc` fields in the background (see
+*Architecture — look-version regeneration*). The
 `lib/normalize.py` module is the shared infrastructure backing this (also
 used by `project/init.py` for ingest-time normalization and `steps/ai_video.py`
 for generated clip normalization).
@@ -283,6 +462,38 @@ format, so the concat demuxer can stream-copy video without re-encoding:
 Per-frame `setparams` and per-stream color args come from the color-space
 spec in `montaj_assets/schemas/color_space.json`, ensuring downstream players read the
 same colorimetry the encoder produced.
+
+---
+
+## Export modes (`--export`)
+
+HDR projects render an HDR master by default, untouched. `montaj render`
+(and the serve render route, via an optional JSON body
+`{"export": ..., "sdrCurve": ...}`) accepts a render-time choice:
+
+| Mode | HDR project | SDR project |
+|---|---|---|
+| `auto` (default) | HDR master at `<name>.mp4` — today's behavior, byte-identical | unchanged |
+| `sdr` | master rendered to a temp name, SDR rendition derived to `<name>.mp4`, temp removed on success | one notice, behaves as `auto` |
+| `both` | HDR master at `<name>.mp4` + derived sibling `<name>-sdr.mp4` | one notice, behaves as `auto` |
+
+The SDR rendition is **derived from the HDR master** (`derive-sdr.js`): one
+ffmpeg pass through the Vivid LUT chain, `sdr_bt709` spec encode, audio
+stream-copied (never re-encoded), `+faststart`. One full render either way —
+not a second compose. The derive emits a `sdr_derive` progress phase between
+compose and done (`_render_phase_for` maps the `deriving SDR rendition` log
+line); in `both` mode render.js prints one output path per stdout line
+(master first) and the serve status route surfaces `outputPaths[]` alongside
+the first-line `outputPath`. Thumbnails are embedded in every emitted file.
+
+`--sdr-curve <id>` selects the curve from the `looks.json` registry
+(`vivid1` default, `vivid1-neutral` for restrained brights) — it affects the
+EXPORT only; preview and proxies always use vivid1. The editor's RenderModal
+surfaces all of this for HDR projects (export choice + an Advanced curve
+picker with per-project `sample_frame` thumbnails and an honesty line about
+preview/export parity); SDR projects keep the zero-friction fire-on-mount
+render. `sample_frame` accepts the same curve via its optional `sdr-curve`
+param.
 
 ---
 

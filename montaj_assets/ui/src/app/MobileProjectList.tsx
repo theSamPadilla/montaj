@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Trash2 } from 'lucide-react'
-import { StatusBadge } from '@/components/ui/badge'
+import { StatusBadge, WorkflowBadge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { api } from '@/lib/api'
 import type { Project } from '@/lib/types/schema'
@@ -48,7 +48,10 @@ export default function MobileProjectList() {
                 )}
               </div>
               <p className="text-xs text-gray-500 truncate mt-0.5">{p.editingPrompt}</p>
-              <div className="mt-1.5"><StatusBadge status={p.status} /></div>
+              <div className="mt-1.5 flex items-center gap-1.5">
+                <StatusBadge status={p.status} />
+                <WorkflowBadge workflow={p.workflow} />
+              </div>
             </button>
             <button
               onClick={async (e) => {

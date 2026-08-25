@@ -6,8 +6,9 @@ the sys.path that all step scripts set up.
 import json, re, time
 from pathlib import Path
 from common import fail, get_duration
-from normalize import normalize, is_normalized, probe_video
-from lib.types.colorspace import normalize_key, DEFAULT_COLOR_SPACE
+from normalize import normalize, normalized_output_path, is_normalized, probe_video
+from lib.types.colorspace import normalize_key, DEFAULT_COLOR_SPACE, detect_from_transfer, is_hdr
+from lib.project_tracks import track_items, replace_track_items
 
 
 # Optimal Kling prompt order: camera first (framing context), then subject
@@ -212,7 +213,8 @@ def save_clip_to_project(project_path: Path, project: dict, scene: dict,
                          out_path: str, composed_prompt: str, model: str = "kling-v3-omni",
                          seed: int = None):
     """Append the generated clip to tracks[0] and save the project."""
-    tracks0 = project.get("tracks", [[]])[0]
+    items = track_items(project)
+    tracks0 = items[0] if items else []
     scenes = project.get("storyboard", {}).get("scenes", [])
 
     # Remove any existing clip for this scene before appending (idempotency)
@@ -257,7 +259,11 @@ def save_clip_to_project(project_path: Path, project: dict, scene: dict,
 
     info = probe_video(out_path)
     if info and not is_normalized(out_path, info, project_color_space):
-        normalized_path = out_path.rsplit(".", 1)[0] + f"_normalized_{project_color_space}.mp4"
+        tonemapped = (
+            is_hdr(detect_from_transfer(info.get("color_transfer")))
+            and project_color_space == "sdr_bt709"
+        )
+        normalized_path = normalized_output_path(out_path, project_color_space, tonemapped=tonemapped)
         try:
             normalize(out_path, normalized_path, project_color_space, info=info)
             clip["src"] = normalized_path
@@ -272,7 +278,8 @@ def save_clip_to_project(project_path: Path, project: dict, scene: dict,
 
     tracks0.append(clip)
     tracks0.sort(key=lambda c: c.get("start", 0))
-    project["tracks"][0] = tracks0
+    # Assign into the caller's dict at the one key — the caller keeps using it.
+    project["tracks"] = replace_track_items(project, 0, tracks0)
 
     # Clear lastError on this scene
     for s in scenes:

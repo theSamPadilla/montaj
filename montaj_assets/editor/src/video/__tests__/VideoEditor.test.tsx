@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach, onTestFinished } from 'vitest'
 import { render, waitFor, act, fireEvent } from '@testing-library/react'
 import type {
   CaptionEvent,
@@ -9,9 +9,10 @@ import type {
   VersionEntry,
   WaveformChunk,
 } from '../../types'
-import type { VisualItem } from '../../schema'
+import type { Captions, VisualItem } from '../../schema'
 import type { OverlayChanges } from '../preview/useDragOverlay'
 import VideoEditor from '../VideoEditor'
+import { dragCanvasItem, installCanvasHarness, selectCanvasItem } from '../timeline/__tests__/_canvasSelect'
 
 // ── Fake adapter ──────────────────────────────────────────────────────────────
 // Full EditorAdapter with the video-editor capabilities VideoEditor threads:
@@ -94,6 +95,10 @@ function makeFakeAdapter(): FakeAdapter {
 }
 
 beforeEach(() => {
+  // The caption panel now splits into Style / Captions sub-tabs and defaults
+  // to Style; these tests want the transcript + Regenerate trigger visible, so
+  // pin the sub-tab to 'captions' (usePersistentState reads this at mount).
+  window.localStorage.setItem('montaj.editor.captionPanelTab', JSON.stringify('captions'))
   vi.spyOn(console, 'warn').mockImplementation(() => {})
   vi.spyOn(console, 'error').mockImplementation(() => {})
   ;(globalThis as unknown as { ResizeObserver: unknown }).ResizeObserver = class {
@@ -140,7 +145,7 @@ describe('VideoEditor — editor-package integration', () => {
 
   it('shows the host pendingStatus slot for a pending project', async () => {
     const adapter = makeFakeAdapter()
-    const initial = makeVideoProject({ status: 'pending', tracks: [[]] })
+    const initial = makeVideoProject({ status: 'pending', tracks: [{ id: 'trk-0', items: [] }] })
     const { getByTestId } = render(
       <VideoEditor
         project={initial}
@@ -170,7 +175,7 @@ describe('VideoEditor — editor-package integration', () => {
 
   it('invokes onBackToSetup affordance only when the host supplies it', async () => {
     const adapter = makeFakeAdapter()
-    const initial = makeVideoProject({ status: 'pending', tracks: [[]] })
+    const initial = makeVideoProject({ status: 'pending', tracks: [{ id: 'trk-0', items: [] }] })
     const onBackToSetup = vi.fn()
     const { findByText } = render(
       <VideoEditor
@@ -217,7 +222,7 @@ describe('VideoEditor — editor-package integration', () => {
   it('shows the skill-path card on the pending surface when getInfo returns a path', async () => {
     const adapter = makeFakeAdapter()
     adapter.getInfo = vi.fn(async () => ({ root_skill_path: 'skills/video-skill.md' }))
-    const initial = makeVideoProject({ status: 'pending', tracks: [[]] })
+    const initial = makeVideoProject({ status: 'pending', tracks: [{ id: 'trk-0', items: [] }] })
     const { findByText } = render(
       <VideoEditor
         project={initial}
@@ -360,26 +365,85 @@ describe('VideoEditor — editor-package integration', () => {
     )
   })
 
-  // Regression: cancelOverlayEdit routes through sync.applyExternal (see
-  // use-project-sync.ts) to revert the live preview. applyExternal used to leave
-  // the sync core's transient-gesture baseline pointing at the pre-edit snapshot;
-  // if a real external frame then arrived before the *next* gesture, that next
-  // gesture would see a non-null baseline and skip re-baselining, so its commit
-  // pushed the STALE pre-first-gesture snapshot as the undo target — a later
-  // Undo would silently discard the external change. Drives the actual DOM path
-  // (select overlay → open dialog → live preview → Cancel) rather than the core
-  // directly, to prove the fix holds through VideoEditor's wiring too.
-  it('Cancel after previewing an overlay-props edit reverts the project, and a later gesture is not corrupted by the stale pre-edit baseline', async () => {
+  // Regression: a timeline gesture is ONE undo step, not one per mousemove.
+  // `onProjectChange` (the per-move channel) used to be a full `sync.mutate`,
+  // so dragging a clip across the timeline pushed dozens of undo entries and
+  // Undo walked it back a few pixels at a time instead of returning it to where
+  // the drag started. Drives the real DOM drag so the wiring is what's under
+  // test, not the sync core (which already had transient/commit).
+  it('undoes a whole drag in one step, not one step per mousemove', async () => {
+    onTestFinished(installCanvasHarness())
+    const adapter = makeFakeAdapter()
+    const initial = makeVideoProject({
+      tracks: [{
+        id: 'trk-0',
+        items: [
+          { id: 'clip-0', type: 'video', src: 'a.mp4', start: 0, end: 4, inPoint: 0, outPoint: 4, sourceDuration: 40 },
+        ],
+      }],
+    })
+    const { container } = render(
+      <VideoEditor project={initial} adapter={adapter} slots={{ exportActions: <div /> }} />,
+    )
+
+    // Press, then travel in several steps — each one used to be its own undo
+    // entry. `steps` defaults to 5, matching the DOM version's five mousemoves.
+    dragCanvasItem(container, initial, { type: 'video' }, { dxPx: 300 })
+
+    // The gesture moved the clip and persisted exactly one save for it.
+    await waitFor(() => expect(adapter.saveCalls.length).toBeGreaterThan(0))
+    const moved = adapter.saveCalls[adapter.saveCalls.length - 1].project.tracks![0].items[0]
+    expect(moved.start).toBeGreaterThan(0)
+
+    // ONE undo returns it all the way to the start — not to an intermediate
+    // position partway through the drag.
+    await act(async () => {
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'z', metaKey: true }))
+    })
+    await waitFor(() => {
+      const after = adapter.saveCalls[adapter.saveCalls.length - 1].project.tracks![0].items[0]
+      expect(after.start).toBe(0)
+      expect(after.end).toBe(4)
+    })
+  })
+
+  // Regression (now against the Content-tab commit model): the right panel's
+  // Content tab previews an edit transiently through sync.mutateTransient — no
+  // undo entry, no save — and commits it on the field's blur through
+  // sync.commit() — exactly one undo entry + one queued save. This replaced
+  // the floating OverlayPropsModal's Save/Cancel model (see VideoEditor.tsx's
+  // `selectOverlayForEditing` comment): there is no Cancel any more, and no
+  // pre-open snapshot for one to restore — Undo is the only revert path now,
+  // and `editOriginalRef` (the stale pre-edit baseline the old version of this
+  // test guarded surviving a Cancel) is deleted along with the modal, so that
+  // exact bug is structurally impossible.
+  //
+  // The underlying risk it stood in for — a transient-gesture baseline
+  // surviving stale across an external frame that lands between two gestures —
+  // is a SYNC-CORE concern, not a VideoEditor-wiring one, and it is already
+  // covered directly at that layer: see
+  // src/state/__tests__/use-project-sync.test.tsx, describe('useProjectSync —
+  // stale baseline regression'), `it('undo after a gesture that follows an
+  // external frame restores the external state, not the stale pre-gesture
+  // baseline', ...)`. That test drives mutateTransient → applyExternal
+  // (mid-gesture) → mutateTransient → commit → undo directly against the hook,
+  // which is a strictly better place to guard it (no modal, no DOM, no
+  // dependency on VideoEditor's plumbing existing at all). This test's job is
+  // narrower and DOM-specific: prove VideoEditor's Content-tab wiring
+  // (previewOverlayProps → mutateTransient, commitOverlayEdit → sync.commit(),
+  // fired on the field's change/blur) is correct.
+  it('an overlay-props edit previews transiently, then commits on blur as one undo step', async () => {
+    onTestFinished(installCanvasHarness())
     const adapter = makeFakeAdapter()
     const onProjectChange = vi.fn()
     const initial = makeVideoProject({
       name: 'Original',
       tracks: [
-        [{ id: 'clip-0', type: 'video', src: 'a.mp4', start: 0, end: 4, inPoint: 0, outPoint: 4 }],
-        [{ id: 'overlay-1', type: 'overlay', src: 'overlay.jsx', start: 0, end: 4, props: { text: 'Old text' } }],
+        { id: 'trk-0', items: [{ id: 'clip-0', type: 'video', src: 'a.mp4', start: 0, end: 4, inPoint: 0, outPoint: 4 }] },
+        { id: 'trk-1', items: [{ id: 'overlay-1', type: 'overlay', src: 'overlay.jsx', start: 0, end: 4, props: { text: 'Old text' } }] },
       ],
     })
-    const { findByText, findByTitle, findByLabelText, getByText } = render(
+    const { container, findByLabelText } = render(
       <VideoEditor
         project={initial}
         adapter={adapter}
@@ -388,56 +452,138 @@ describe('VideoEditor — editor-package integration', () => {
       />,
     )
 
-    // Select the overlay item — additive (metaKey) click sidesteps the plain-
-    // click playhead-seek branch, which needs real layout metrics jsdom doesn't
-    // provide — then open its props dialog via the timeline's Pencil button.
-    const overlayBlock = await findByText('▪ overlay')
-    fireEvent.click(overlayBlock, { metaKey: true })
-    const editBtn = await findByTitle('Edit overlay')
-    fireEvent.click(editBtn)
+    // Select the overlay item — additive (metaKey) click, matching the DOM
+    // version's modifier. Selecting IS opening it now (no Pencil/dialog step):
+    // the right panel's Content tab shows the overlay's fields immediately —
+    // see VideoEditor.tsx's `overlayPropertiesPanel` / `selectOverlayForEditing`.
+    selectCanvasItem(container, initial, { type: 'overlay' }, { metaKey: true })
+    const textField = await findByLabelText('text')
 
     // Preview an edit — mutateTransient baselines against the pre-gesture state.
-    const textField = await findByLabelText('text')
     fireEvent.change(textField, { target: { value: 'Live preview' } })
     await waitFor(() => expect(onProjectChange).toHaveBeenLastCalledWith(
       expect.objectContaining({
         tracks: expect.arrayContaining([
-          expect.arrayContaining([expect.objectContaining({ id: 'overlay-1', props: { text: 'Live preview' } })]),
+          expect.objectContaining({
+            items: expect.arrayContaining([expect.objectContaining({ id: 'overlay-1', props: { text: 'Live preview' } })]),
+          }),
         ]),
       }),
     ))
 
-    // Cancel — routes through applyExternal, reverting to the pre-edit snapshot.
-    fireEvent.click(getByText('Cancel'))
+    // Still transient: nothing has been pushed to the undo stack yet, so Undo
+    // here is a no-op — sync core's undo() pops an empty stack and returns
+    // before touching project state, so onProjectChange doesn't fire again.
+    const callsBeforeUndo = onProjectChange.mock.calls.length
+    await act(async () => {
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'z', metaKey: true }))
+    })
+    expect(onProjectChange.mock.calls.length).toBe(callsBeforeUndo)
+
+    // Blur commits the gesture as ONE undo step. commit() doesn't itself
+    // change project content (it only pushes the pre-gesture baseline and
+    // queues a save), so the Undo right after is what proves the whole typing
+    // gesture collapsed to exactly one entry — it lands all the way back on
+    // the pre-edit text, not some intermediate preview.
+    fireEvent.blur(textField)
+    await act(async () => {
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'z', metaKey: true }))
+    })
     await waitFor(() => expect(onProjectChange).toHaveBeenLastCalledWith(
       expect.objectContaining({
         name: 'Original',
         tracks: expect.arrayContaining([
-          expect.arrayContaining([expect.objectContaining({ id: 'overlay-1', props: { text: 'Old text' } })]),
+          expect.objectContaining({
+            items: expect.arrayContaining([expect.objectContaining({ id: 'overlay-1', props: { text: 'Old text' } })]),
+          }),
         ]),
       }),
     ))
+  })
 
-    // A real external frame now arrives (SSE echo / caption regen / restoreVersion)
-    // — an authoritative change that must survive whatever the cancelled gesture
-    // left behind in the sync core.
-    await act(async () => { adapter.emit({ ...initial, name: 'FromServer' }) })
-    await waitFor(() => expect(onProjectChange).toHaveBeenLastCalledWith(expect.objectContaining({ name: 'FromServer' })))
+  // Caption LANES are dense from 0 by contract — the bands the painter emits,
+  // the row the hit-test addresses and the fan-out a cross-row drag searches
+  // all assume it. A project.json written by hand or by an agent need not
+  // honour that, so the same defensive pass that backfills ids normalizes
+  // lanes on load.
+  it('normalizes sparse caption lanes on load, and settles instead of looping', async () => {
+    const adapter = makeFakeAdapter()
+    const onProjectChange = vi.fn()
+    render(
+      <VideoEditor
+        project={makeVideoProject({
+          status: 'draft',
+          captions: {
+            style: 'clean',
+            segments: [
+              // `lane: 7` with nothing on lanes 1–6: eight rows of mostly
+              // nothing unless this is collapsed to row 1.
+              { id: 's0', text: 'one', start: 0, end: 1, lane: 7, words: [{ word: 'one', start: 0, end: 1 }] },
+              { id: 's1', text: 'two', start: 1, end: 2, words: [{ word: 'two', start: 1, end: 2 }] },
+            ],
+          },
+        } as Partial<Project>)}
+        adapter={adapter}
+        onProjectChange={onProjectChange}
+        slots={{ exportActions: <div /> }}
+      />,
+    )
 
-    // A second overlay-props gesture must baseline against THIS state, not a
-    // stale pre-first-gesture snapshot left behind if Cancel failed to clear it.
-    const editBtn2 = await findByTitle('Edit overlay')
-    fireEvent.click(editBtn2)
-    const textField2 = await findByLabelText('text')
-    fireEvent.change(textField2, { target: { value: 'Second edit' } })
-    fireEvent.click(getByText('Save'))
-
-    // Undo should remove only the second gesture, landing back on the external
-    // ('FromServer') state — not the stale first-gesture baseline ('Original').
-    await act(async () => {
-      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'z', metaKey: true }))
+    await waitFor(() => {
+      const last = onProjectChange.mock.calls[onProjectChange.mock.calls.length - 1][0] as Project
+      // s0 drops from 7 to 1; s1's absent lane already means 0 and is left
+      // absent rather than rewritten.
+      expect(last.captions?.segments.map((s) => s.lane)).toEqual([1, undefined])
     })
-    await waitFor(() => expect(onProjectChange).toHaveBeenLastCalledWith(expect.objectContaining({ name: 'FromServer' })))
+
+    // Settles: `normalizeCaptionLanes` hands back the same reference once the
+    // lanes are dense, so the pass that follows its own applyExternal is a true
+    // no-op rather than another write.
+    const settledCallCount = onProjectChange.mock.calls.length
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)) })
+    expect(onProjectChange.mock.calls.length).toBe(settledCallCount)
+  })
+
+  it('never publishes a half-normalized project — ids and lanes land in one write', async () => {
+    // Both defensive passes share ONE effect on purpose. Run as two effects
+    // with the same deps they both close over the pre-effect project, so the
+    // second applyExternal lands a project derived from before the first and
+    // drops the ids the backfill just minted — recovered on the next pass, but
+    // only after the host has already been handed that half-normalized frame.
+    const adapter = makeFakeAdapter()
+    const onProjectChange = vi.fn()
+    render(
+      <VideoEditor
+        project={makeVideoProject({
+          status: 'draft',
+          captions: {
+            style: 'clean',
+            segments: [
+              { text: 'one', start: 0, end: 1, lane: 4, words: [{ word: 'one', start: 0, end: 1 }] },
+              { text: 'two', start: 1, end: 2, words: [{ word: 'two', start: 1, end: 2 }] },
+            ],
+          },
+        } as Partial<Project>)}
+        adapter={adapter}
+        onProjectChange={onProjectChange}
+        slots={{ exportActions: <div /> }}
+      />,
+    )
+
+    await waitFor(() => {
+      const last = onProjectChange.mock.calls[onProjectChange.mock.calls.length - 1][0] as Project
+      expect(last.captions?.segments.map((s) => s.id)).toEqual(['cap-0', 'cap-1'])
+      expect(last.captions?.segments.map((s) => s.lane)).toEqual([1, undefined])
+    })
+
+    // Every frame the host saw is either the raw input or the finished result:
+    // no frame has the lanes collapsed while the ids are still missing.
+    for (const call of onProjectChange.mock.calls) {
+      const segments = (call[0] as Project).captions?.segments ?? []
+      if (segments.some((s) => s.lane === 1)) {
+        expect(segments.every((s) => !!s.id)).toBe(true)
+      }
+    }
   })
 
   // Regression: the caption-repair effect (VideoEditor.tsx, near backfillCaptionIds)
@@ -469,7 +615,10 @@ describe('VideoEditor — editor-package integration', () => {
       />,
     )
 
-    const regenBtn = await findByText('Regenerate')
+    // This project starts with no captions, so the panel's trigger is the
+    // empty state's "Generate captions" button; the two tests below seed a
+    // caption track and therefore get "Regenerate captions" instead.
+    const regenBtn = await findByText('Generate captions')
     await act(async () => { regenBtn.click() })
 
     // Repair fired for a captions-only replacement — words[] derived from the
@@ -485,5 +634,209 @@ describe('VideoEditor — editor-package integration', () => {
     const settledCallCount = onProjectChange.mock.calls.length
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)) })
     expect(onProjectChange.mock.calls.length).toBe(settledCallCount)
+  })
+
+  // Round-trip regression: the caption pipeline (serve/routes/projects.py,
+  // _run_caption_pipeline) writes the SAME freshly-regenerated track to two
+  // places — the `done` frame on this fetch's own SSE response (read by
+  // CaptionRegenModal → onDone → applyExternal), and project.json, broadcast
+  // over the AMBIENT per-project stream (read by adapter.subscribe →
+  // applyExternal). Those are two independent connections with no ordering
+  // guarantee between them. Neither arrival order may leave project.captions
+  // stale or half-merged — each segment already carries a fixed-point `words[]`
+  // so the caption-repair effect is a no-op and doesn't obscure the assertion.
+  const regeneratedTrack: Captions = {
+    style: 'pop',
+    segments: [{
+      id: 's1',
+      text: 'fresh take',
+      start: 0,
+      end: 1,
+      words: [{ word: 'fresh', start: 0, end: 0.5 }, { word: 'take', start: 0.5, end: 1 }],
+    }],
+  }
+
+  it('captions land as the new track when the ambient SSE broadcast arrives AFTER the done event', async () => {
+    const adapter = makeFakeAdapter()
+    adapter.generateCaptions = async function* (): AsyncIterable<CaptionEvent> {
+      yield { type: 'done', captions: regeneratedTrack }
+    }
+    const onProjectChange = vi.fn()
+    const { findByText } = render(
+      <VideoEditor
+        project={makeVideoProject({
+          captions: { style: 'clean', segments: [{ id: 'old', text: 'stale', start: 0, end: 1 }] },
+        } as Partial<Project>)}
+        adapter={adapter}
+        onProjectChange={onProjectChange}
+        slots={{ exportActions: <div /> }}
+      />,
+    )
+
+    const regenBtn = await findByText('Regenerate captions')
+    await act(async () => { regenBtn.click() })
+
+    await waitFor(() => {
+      const last = onProjectChange.mock.calls[onProjectChange.mock.calls.length - 1][0] as Project
+      expect(last.captions).toEqual(regeneratedTrack)
+    })
+
+    // The server's whole-project broadcast for this SAME write lands next, on
+    // the ambient stream — carrying the identical track. Must be a no-op.
+    const afterDone = onProjectChange.mock.calls[onProjectChange.mock.calls.length - 1][0] as Project
+    await act(async () => {
+      adapter.emit({ ...afterDone, captions: regeneratedTrack })
+    })
+
+    const final = onProjectChange.mock.calls[onProjectChange.mock.calls.length - 1][0] as Project
+    expect(final.captions).toEqual(regeneratedTrack)
+  })
+
+  it('captions land as the new track when the ambient SSE broadcast arrives BEFORE the done event resolves', async () => {
+    const adapter = makeFakeAdapter()
+    const baseProject = makeVideoProject({
+      captions: { style: 'clean', segments: [{ id: 'old', text: 'stale', start: 0, end: 1 }] },
+    } as Partial<Project>)
+    adapter.generateCaptions = async function* (): AsyncIterable<CaptionEvent> {
+      // Simulate the server writing + broadcasting project.json BEFORE this
+      // request's own `done` frame is read — the two are separate connections
+      // (POST response body vs. GET .../stream), and the route publishes the
+      // broadcast strictly before it yields `done` (serve/routes/projects.py,
+      // _run_caption_pipeline: broadcaster.publish(...) then `return track`,
+      // ahead of the route's `yield f"event: done..."`).
+      adapter.emit({ ...baseProject, captions: regeneratedTrack })
+      yield { type: 'done', captions: regeneratedTrack }
+    }
+    const onProjectChange = vi.fn()
+    const { findByText } = render(
+      <VideoEditor
+        project={baseProject}
+        adapter={adapter}
+        onProjectChange={onProjectChange}
+        slots={{ exportActions: <div /> }}
+      />,
+    )
+
+    const regenBtn = await findByText('Regenerate captions')
+    await act(async () => { regenBtn.click() })
+
+    await waitFor(() => {
+      const last = onProjectChange.mock.calls[onProjectChange.mock.calls.length - 1][0] as Project
+      expect(last.captions).toEqual(regeneratedTrack)
+    })
+  })
+
+  // ── Version history: save / restore / compare (SP8b T8) ──────────────────────
+
+  it('a completed render triggers listVersionHistory to be called again', async () => {
+    const adapter = makeFakeAdapter()
+    // Starting status is already 'final' — openRender always re-sets status to
+    // 'final' (`{ ...project, status: 'final' }`), which for an
+    // already-final project is the SAME primitive value. useVersionHistory's
+    // auto-refetch effect is keyed on `project.status` by reference-equal
+    // primitive, so it will NOT re-fire from that assignment here — isolating
+    // this test to the refetch RenderModal's onRenderComplete triggers once
+    // the fake adapter's render stream reaches its `done` event.
+    const initial = makeVideoProject({ status: 'final' })
+    const { findByText, findByRole } = render(
+      <VideoEditor
+        project={initial}
+        adapter={adapter}
+        onProjectChange={vi.fn()}
+        slots={{ exportActions: <div /> }}
+      />,
+    )
+
+    await waitFor(() => expect(adapter.listVersionHistory).toHaveBeenCalledTimes(1))
+
+    const renderBtn = await findByText('Render →')
+    await act(async () => { renderBtn.click() })
+
+    // ReviewSurface always supplies `preRenderOptions`, so RenderModal opens on
+    // its pre-render options dialog first — the render itself only starts once
+    // the "Export" action inside that dialog is clicked.
+    const startBtn = await findByRole('button', { name: 'Export' })
+    await act(async () => { fireEvent.click(startBtn) })
+
+    await waitFor(() => {
+      expect(adapter.listVersionHistory).toHaveBeenCalledTimes(2)
+    })
+  })
+
+  it('handleSaveVersion calls adapter.saveVersion and refetches history', async () => {
+    const adapter = makeFakeAdapter()
+    adapter.saveVersion = vi.fn(async () => [])
+    const initial = makeVideoProject({ status: 'draft' })
+    const { findByPlaceholderText, findByText } = render(
+      <VideoEditor
+        project={initial}
+        adapter={adapter}
+        onProjectChange={vi.fn()}
+        slots={{ exportActions: <div /> }}
+      />,
+    )
+
+    await waitFor(() => expect(adapter.listVersionHistory).toHaveBeenCalledTimes(1))
+
+    const input = await findByPlaceholderText('Name (optional)')
+    fireEvent.change(input, { target: { value: 'my checkpoint' } })
+    const saveBtn = await findByText('Save version')
+    fireEvent.click(saveBtn)
+
+    await waitFor(() => {
+      expect(adapter.saveVersion).toHaveBeenCalledWith('vid-1', 'my checkpoint')
+    })
+    await waitFor(() => {
+      expect(adapter.listVersionHistory).toHaveBeenCalledTimes(2)
+    })
+  })
+
+  it('handleRestoreVersion refetches history after restore', async () => {
+    const adapter = makeFakeAdapter()
+    const versionEntry = { hash: 'abc123', message: 'version: run 1 — draft', timestamp: '2026-01-01T00:00:00Z' }
+    adapter.listVersionHistory = vi.fn(async () => [versionEntry])
+    const initial = makeVideoProject({ status: 'draft' })
+    const { findByText } = render(
+      <VideoEditor
+        project={initial}
+        adapter={adapter}
+        onProjectChange={vi.fn()}
+        slots={{ exportActions: <div /> }}
+      />,
+    )
+
+    await waitFor(() => expect(adapter.listVersionHistory).toHaveBeenCalledTimes(1))
+
+    const restoreBtn = await findByText('Restore →')
+    fireEvent.click(restoreBtn)
+
+    await waitFor(() => {
+      expect(adapter.restoreVersion).toHaveBeenCalledWith('vid-1', 'abc123')
+    })
+    // Post-Phase-3 behavior: a restore refetches version history rather than
+    // relying on the restored project's status to have changed.
+    await waitFor(() => {
+      expect(adapter.listVersionHistory).toHaveBeenCalledTimes(2)
+    })
+  })
+
+  it('does not render the Compare button when adapter.versionFrameUrl is undefined', async () => {
+    const adapter = makeFakeAdapter()
+    const versionEntry = { hash: 'abc123', message: 'version: run 1 — draft', timestamp: '2026-01-01T00:00:00Z' }
+    adapter.listVersionHistory = vi.fn(async () => [versionEntry])
+    // adapter.versionFrameUrl is intentionally left undefined — makeFakeAdapter's default.
+    const initial = makeVideoProject({ status: 'draft' })
+    const { queryByText } = render(
+      <VideoEditor
+        project={initial}
+        adapter={adapter}
+        onProjectChange={vi.fn()}
+        slots={{ exportActions: <div /> }}
+      />,
+    )
+
+    await waitFor(() => expect(adapter.listVersionHistory).toHaveBeenCalled())
+
+    expect(queryByText('Compare')).toBeNull()
   })
 })

@@ -16,7 +16,7 @@ import { dirname, join } from 'path'
 import { randomBytes } from 'crypto'
 import { FFMPEG } from './ffmpeg-bin.js'
 import { planSegments } from './segment-plan.js'
-import { encodeSegment } from './encode-segment.js'
+import { encodeSegment, buildVividLutChain, hasLut3d } from './encode-segment.js'
 import { mixAudioIntoVideo } from './mix-audio.js'
 import { pMap } from './p-map.js'
 
@@ -47,6 +47,11 @@ export async function compose({
   videoWidth,
   videoHeight,
   colorSpace,
+  // Look curve for every HDR→SDR conversion this compose performs — per-item
+  // conversion inside the segment encoder (an HDR source in an SDR project) and
+  // the poster-frame tonemap below (an HDR project's thumbnail). null uses the
+  // master look, which is what every caller predating --sdr-curve gets.
+  sdrCurve = null,
 }) {
   // Default resolution is portrait (1080x1920) — montaj's default orientation.
   // render.js always passes explicit dimensions, but direct callers hitting
@@ -98,7 +103,7 @@ export async function compose({
     clog(`segment ${i + 1}/${segments.length} (${seg.start.toFixed(2)}-${seg.end.toFixed(2)}s): ` +
          `${seg.items.length} item(s), ${seg.overlays.length} overlay(s)`)
 
-    await encodeSegment(seg, segPath)
+    await encodeSegment(seg, segPath, { sdrCurve })
     return segPath
   }, SEGMENT_WORKERS)
 
@@ -116,7 +121,7 @@ export async function compose({
   // 5. Embed a poster frame as an MP4 attached_pic stream so Finder, QuickTime,
   //    iMessage, Slack, and social platforms show a thumbnail instead of a
   //    black-or-blank placeholder.
-  embedThumbnail(outputPath, projectColorSpace)
+  embedThumbnail(outputPath, projectColorSpace, { sdrCurve })
 
   // Cleanup segment files
   if (!process.env.MONTAJ_KEEP_SEGMENTS) {
@@ -136,19 +141,35 @@ export async function compose({
  *
  * Failure is non-fatal: a missing thumbnail is far better than failing an
  * otherwise-good render. On any error we log and leave outputPath untouched.
+ *
+ * @param {string} outputPath
+ * @param {string} colorSpace  the file's color space, e.g. 'hdr_hlg'
+ * @param {object} [opts]
+ * @param {string|null} [opts.sdrCurve]  look curve for the HDR→SDR poster
+ *   conversion; null uses the master look.
  */
-export function embedThumbnail(outputPath, colorSpace) {
+export function embedThumbnail(outputPath, colorSpace, opts = {}) {
   const tmpJpg = outputPath + '.thumb.jpg'
   const tmpMp4 = outputPath.replace(/(\.\w+)$/, `.thumb.${randomBytes(4).toString('hex')}$1`)
 
   // HDR projects (HLG / PQ) must tonemap before the JPEG encode. JPEG is sRGB
   // by definition — handing it raw HLG/PQ Y'CbCr produces a washed-out,
   // colour-skewed poster on every viewer because the gamma assumption is wrong.
+  // Since SP6b that tonemap is the Montaj Vivid LUT, so the poster is graded the
+  // same way the SDR export and the editor preview are, and `format=yuv420p`
+  // closes the chain for the JPEG encoder.
+  //
   // zscale (libzimg) is already required for the HDR encode path, so it's safe
-  // to assume present here when colorSpace is HDR.
-  const vf = (colorSpace === 'hdr_hlg' || colorSpace === 'hdr_pq')
-    ? `zscale=t=linear:npl=100,format=gbrpf32le,zscale=p=bt709:t=bt709:m=bt709:r=tv,format=yuv420p`
-    : null
+  // to assume present here when colorSpace is HDR. lut3d is NOT — `montaj
+  // doctor` asks for it but an older build can lack it — so fall back to the
+  // pre-SP6b Hable chain rather than emitting a filter this ffmpeg can't run.
+  const isHdrFile = colorSpace === 'hdr_hlg' || colorSpace === 'hdr_pq'
+  let vf = null
+  if (isHdrFile) {
+    vf = hasLut3d()
+      ? `${buildVividLutChain(colorSpace, opts.sdrCurve ?? null)},format=yuv420p`
+      : `zscale=t=linear:npl=100,format=gbrpf32le,zscale=p=bt709:t=bt709:m=bt709:r=tv,format=yuv420p`
+  }
 
   function extractAt(seekSeconds) {
     const args = ['-y', '-v', 'error', '-ss', String(seekSeconds), '-i', outputPath, '-frames:v', '1']

@@ -1,0 +1,14 @@
+{
+  "masterLook": "vivid1",
+  "curves": {
+    "vivid1": {
+      "file": "montaj-vivid-v1.cube",
+      "label": "Montaj Vivid",
+      "default": true
+    },
+    "vivid1-neutral": {
+      "file": "montaj-vivid-v1-neutral.cube",
+      "label": "Neutral brights"
+    }
+  }
+}

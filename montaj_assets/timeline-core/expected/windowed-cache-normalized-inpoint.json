@@ -1,0 +1,229 @@
+{
+  "planBoundaries": {
+    "24": [
+      0,
+      16.041666666666668
+    ],
+    "30": [
+      0,
+      16.066666666666666
+    ],
+    "60": [
+      0,
+      16.05
+    ]
+  },
+  "durations": {
+    "visualDuration": 16.0543,
+    "projectEnd": 16.0543
+  },
+  "resolveAt": {
+    "timestamps": [
+      0,
+      8.02715,
+      16.0543,
+      17.0543
+    ],
+    "preview": [
+      {
+        "t": 0,
+        "items": [
+          {
+            "itemId": "bugA",
+            "trackIdx": 0,
+            "kind": "video",
+            "window": {
+              "src": "/corpus/bugA_normalized.mp4",
+              "inPoint": 0.9157,
+              "outPoint": 16.97,
+              "usedNormalizedCache": true
+            },
+            "seek": 0.9157,
+            "geometry": {
+              "scale": 1,
+              "scaleX": 1,
+              "scaleY": 1,
+              "offsetX": 0,
+              "offsetY": 0,
+              "opacity": 1,
+              "fit": "contain",
+              "rotation": 0
+            }
+          }
+        ]
+      },
+      {
+        "t": 8.02715,
+        "items": [
+          {
+            "itemId": "bugA",
+            "trackIdx": 0,
+            "kind": "video",
+            "window": {
+              "src": "/corpus/bugA_normalized.mp4",
+              "inPoint": 0.9157,
+              "outPoint": 16.97,
+              "usedNormalizedCache": true
+            },
+            "seek": 8.94285,
+            "geometry": {
+              "scale": 1,
+              "scaleX": 1,
+              "scaleY": 1,
+              "offsetX": 0,
+              "offsetY": 0,
+              "opacity": 1,
+              "fit": "contain",
+              "rotation": 0
+            }
+          }
+        ]
+      },
+      {
+        "t": 16.0543,
+        "items": []
+      },
+      {
+        "t": 17.0543,
+        "items": []
+      }
+    ],
+    "render": [
+      {
+        "t": 0,
+        "items": [
+          {
+            "itemId": "bugA",
+            "trackIdx": 0,
+            "kind": "video",
+            "window": {
+              "src": "/corpus/bugA_normalized.mp4",
+              "inPoint": 0.9157,
+              "outPoint": 16.97,
+              "usedNormalizedCache": true
+            },
+            "seek": 0.9157,
+            "geometry": {
+              "scale": 1,
+              "scaleX": 1,
+              "scaleY": 1,
+              "offsetX": 0,
+              "offsetY": 0,
+              "opacity": 1,
+              "fit": "contain",
+              "rotation": 0
+            }
+          }
+        ]
+      },
+      {
+        "t": 8.02715,
+        "items": [
+          {
+            "itemId": "bugA",
+            "trackIdx": 0,
+            "kind": "video",
+            "window": {
+              "src": "/corpus/bugA_normalized.mp4",
+              "inPoint": 0.9157,
+              "outPoint": 16.97,
+              "usedNormalizedCache": true
+            },
+            "seek": 8.94285,
+            "geometry": {
+              "scale": 1,
+              "scaleX": 1,
+              "scaleY": 1,
+              "offsetX": 0,
+              "offsetY": 0,
+              "opacity": 1,
+              "fit": "contain",
+              "rotation": 0
+            }
+          }
+        ]
+      },
+      {
+        "t": 16.0543,
+        "items": []
+      },
+      {
+        "t": 17.0543,
+        "items": []
+      }
+    ]
+  },
+  "resolveSegment": {
+    "fps": 30,
+    "segments": [
+      {
+        "segStart": 0,
+        "segEnd": 16.066666666666666,
+        "scene": {
+          "t": 0,
+          "items": [
+            {
+              "itemId": "bugA",
+              "trackIdx": 0,
+              "kind": "video",
+              "window": {
+                "src": "/corpus/bugA_normalized.mp4",
+                "inPoint": 0.9157,
+                "outPoint": 16.97,
+                "usedNormalizedCache": true
+              },
+              "seek": 0.9157,
+              "geometry": {
+                "scale": 1,
+                "scaleX": 1,
+                "scaleY": 1,
+                "offsetX": 0,
+                "offsetY": 0,
+                "opacity": 1,
+                "fit": "contain",
+                "rotation": 0
+              }
+            }
+          ]
+        }
+      }
+    ]
+  },
+  "sourceWindow": {
+    "bugA": {
+      "preview": {
+        "src": "/corpus/bugA_normalized.mp4",
+        "inPoint": 0.9157,
+        "outPoint": 16.97,
+        "usedNormalizedCache": true
+      },
+      "render": {
+        "src": "/corpus/bugA_normalized.mp4",
+        "inPoint": 0.9157,
+        "outPoint": 16.97,
+        "usedNormalizedCache": true
+      }
+    }
+  },
+  "seekTime": {
+    "bugA": {
+      "preview": {
+        "0": 0.9157,
+        "8.02715": 8.94285,
+        "16.0543": 16.970000000000002
+      },
+      "render": {
+        "0": 0.9157,
+        "8.02715": 8.94285,
+        "16.0543": 16.970000000000002
+      }
+    }
+  },
+  "synthesizedOutPoint": {
+    "bugA": {
+      "preview": 16.97,
+      "render": 16.97
+    }
+  },
+  "audioWindow": {}
+}

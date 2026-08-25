@@ -1,0 +1,125 @@
+{
+  "version": "0.2",
+  "id": "sp2-corpus-nobg-matrix",
+  "status": "draft",
+  "projectType": "editing",
+  "settings": {
+    "fps": 30,
+    "resolution": [
+      1080,
+      1920
+    ],
+    "colorSpace": "sdr_bt709"
+  },
+  "tracks": [
+    [
+      {
+        "id": "nobg-000",
+        "type": "video",
+        "src": "/corpus/nobg-000_orig.mp4",
+        "normalizedSrc": "/corpus/nobg-000_norm.mp4",
+        "normalizedInPoint": 1,
+        "remove_bg": false,
+        "start": 0,
+        "end": 2,
+        "inPoint": 3,
+        "outPoint": 9
+      },
+      {
+        "id": "nobg-001",
+        "type": "video",
+        "src": "/corpus/nobg-001_orig.mp4",
+        "normalizedSrc": "/corpus/nobg-001_norm.mp4",
+        "normalizedInPoint": 1,
+        "remove_bg": false,
+        "start": 2,
+        "end": 4,
+        "inPoint": 3,
+        "outPoint": 9,
+        "nobg_preview_src": "/corpus/nobg-001_alpha_preview.webm"
+      },
+      {
+        "id": "nobg-010",
+        "type": "video",
+        "src": "/corpus/nobg-010_orig.mp4",
+        "normalizedSrc": "/corpus/nobg-010_norm.mp4",
+        "normalizedInPoint": 1,
+        "remove_bg": false,
+        "start": 4,
+        "end": 6,
+        "inPoint": 3,
+        "outPoint": 9,
+        "nobg_src": "/corpus/nobg-010_alpha.mov"
+      },
+      {
+        "id": "nobg-011",
+        "type": "video",
+        "src": "/corpus/nobg-011_orig.mp4",
+        "normalizedSrc": "/corpus/nobg-011_norm.mp4",
+        "normalizedInPoint": 1,
+        "remove_bg": false,
+        "start": 6,
+        "end": 8,
+        "inPoint": 3,
+        "outPoint": 9,
+        "nobg_src": "/corpus/nobg-011_alpha.mov",
+        "nobg_preview_src": "/corpus/nobg-011_alpha_preview.webm"
+      },
+      {
+        "id": "nobg-100",
+        "type": "video",
+        "src": "/corpus/nobg-100_orig.mp4",
+        "normalizedSrc": "/corpus/nobg-100_norm.mp4",
+        "normalizedInPoint": 1,
+        "remove_bg": true,
+        "start": 8,
+        "end": 10,
+        "inPoint": 3,
+        "outPoint": 9
+      },
+      {
+        "id": "nobg-101",
+        "type": "video",
+        "src": "/corpus/nobg-101_orig.mp4",
+        "normalizedSrc": "/corpus/nobg-101_norm.mp4",
+        "normalizedInPoint": 1,
+        "remove_bg": true,
+        "start": 10,
+        "end": 12,
+        "inPoint": 3,
+        "outPoint": 9,
+        "nobg_preview_src": "/corpus/nobg-101_alpha_preview.webm"
+      },
+      {
+        "id": "nobg-110",
+        "type": "video",
+        "src": "/corpus/nobg-110_orig.mp4",
+        "normalizedSrc": "/corpus/nobg-110_norm.mp4",
+        "normalizedInPoint": 1,
+        "remove_bg": true,
+        "start": 12,
+        "end": 14,
+        "inPoint": 3,
+        "outPoint": 9,
+        "nobg_src": "/corpus/nobg-110_alpha.mov"
+      },
+      {
+        "id": "nobg-111",
+        "type": "video",
+        "src": "/corpus/nobg-111_orig.mp4",
+        "normalizedSrc": "/corpus/nobg-111_norm.mp4",
+        "normalizedInPoint": 1,
+        "remove_bg": true,
+        "start": 14,
+        "end": 16,
+        "inPoint": 3,
+        "outPoint": 9,
+        "nobg_src": "/corpus/nobg-111_alpha.mov",
+        "nobg_preview_src": "/corpus/nobg-111_alpha_preview.webm"
+      }
+    ]
+  ],
+  "audio": {
+    "tracks": []
+  }
+}

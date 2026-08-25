@@ -8,7 +8,18 @@
 // Tests (a)–(g) cover sampleOverlay.
 // Tests (h)–(o) cover sampleFrame.
 //
-// Skipped where noted when hardware/fixtures are unavailable.
+// (a)-(g) are ungated — each authors its own throwaway JSX inline into a temp
+// dir, so they run everywhere including CI. (a) used to point at a machine-local
+// `recursion.jsx` that existed nowhere (not even on the author's machine), so it
+// skipped forever; it now writes a solid-fill overlay and asserts real pixels.
+//
+// (h)-(l) and (o) used to be gated on a machine-local project.json
+// (FIXTURE_PROJECT_EXISTS) that did not exist even on the author's machine, so
+// they silently skipped everywhere, including CI. T9 replaced that fixture
+// with `makeSyntheticFixture` below — small ffmpeg-generated media built fresh
+// into each test's own temp dir — so every one of them now actually executes
+// in CI (ffmpeg is installed there; see .github/workflows/ci.yml). (n) never
+// depended on the missing fixture and is unchanged.
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
@@ -21,20 +32,14 @@ import { tmpdir } from 'node:os'
 import { fileURLToPath } from 'node:url'
 import { spawnSync } from 'node:child_process'
 
-import { sampleOverlay, sampleFrame } from '../sample-frame.js'
+import { sampleOverlay, sampleFrame, buildFrameCacheKey } from '../sample-frame.js'
+import { buildOverlayFilterParts } from '../encode-segment.js'
+import { MASTER_LOOK } from '../look.js'
+import { normalizeTracks } from '../project-tracks.js'
+import { resolveAt } from '@bycrux/timeline-core'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const MONTAJ_ROOT = join(__dirname, '..', '..', '..')
-
-// ---------------------------------------------------------------------------
-// Fixture paths
-// ---------------------------------------------------------------------------
-const FIXTURE_PROJECT = '/Users/Sam/Montaj/2026-05-28-opus-4-8/project.json'
-const RECURSION_JSX   = '/Users/Sam/Montaj/2026-05-28-opus-4-8/overlays/recursion.jsx'
-const SCREENSHOT_JSX  = '/Users/Sam/Montaj/2026-05-28-opus-4-8/overlays/screenshot.jsx'
-
-const FIXTURE_PROJECT_EXISTS = existsSync(FIXTURE_PROJECT)
-const RECURSION_JSX_EXISTS   = existsSync(RECURSION_JSX)
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -44,6 +49,12 @@ const RECURSION_JSX_EXISTS   = existsSync(RECURSION_JSX)
 function hasZscale() {
   const r = spawnSync('ffmpeg', ['-hide_banner', '-filters'], { encoding: 'utf8', timeout: 10_000 })
   return r.status === 0 && /zscale/m.test(r.stdout || '')
+}
+
+/** Returns true if ffmpeg has lut3d — the filter that applies the Montaj Vivid cube. */
+function hasLut3d() {
+  const r = spawnSync('ffmpeg', ['-hide_banner', '-filters'], { encoding: 'utf8', timeout: 10_000 })
+  return r.status === 0 && /^[A-Z. ]+ lut3d\b/m.test(r.stdout || '')
 }
 
 /** Read a single pixel (R,G,B,A) from a PNG using ffmpeg rawvideo. */
@@ -71,6 +82,96 @@ function pngDimensions(pngPath) {
     if (v?.width && v?.height) return { w: v.width, h: v.height }
   } catch {}
   return null
+}
+
+/**
+ * Build a small synthetic project + backing media, entirely inside `dir`, so
+ * tests (h)-(l),(o) don't depend on any machine-local fixture. Two solid-color
+ * clips (red then blue, back to back on track 0) plus a tiny JSX overlay
+ * (track 1, active over the first ~1s) — enough to exercise sampleFrame's
+ * video-item, image-item-absent, and overlay-item paths without a real source
+ * video. Colors are deliberately distinct and solid so a single sampled pixel
+ * proves WHICH clip was resolved, not just that ffmpeg produced *some* frame.
+ *
+ * Kept intentionally tiny (64×64 source, 3s clips) — these run in CI on every
+ * `node --test` invocation of this file, so cost matters.
+ *
+ * @param {string} dir
+ * @param {{ colorSpace?: string, resolution?: [number, number], colors?: [string, string] }} [opts]
+ * @returns {{ project: object, clipARaw: string, clipBRaw: string } | null}
+ *   `null` when ffmpeg couldn't synthesize the sources — callers should skip
+ *   the test rather than fail it (this is an environment-capability check,
+ *   not a machine-local-path one: ffmpeg is a hard requirement of this whole
+ *   test file already, via readPixelRgba/pngDimensions/hasZscale above).
+ */
+function makeSyntheticFixture(dir, opts = {}) {
+  // `colors` exists for the curve tests: the default primaries are gamut-edge
+  // colors that every look curve clamps identically, so a test asking "did the
+  // curve change anything?" needs a tone the curves actually treat differently.
+  const { colorSpace = 'sdr_bt709', resolution = [480, 854],
+          colors = ['red', 'blue'] } = opts
+  const clipARaw = join(dir, 'clip-a.mp4')
+  const clipBRaw = join(dir, 'clip-b.mp4')
+  const overlayJsx = join(dir, 'overlay.jsx')
+  writeFitJsx(overlayJsx)
+
+  // For an HDR project, tag the source itself as HLG. sample-frame.js's tonemap
+  // filter chain opens with `zscale=t=linear`, which needs a real source
+  // transfer characteristic to linearize FROM — an untagged source (ffmpeg's
+  // lavfi `color=` default) makes zscale fail with "no path between
+  // colorspaces" before it ever gets to tonemap. `-color_primaries`/
+  // `-color_trc` alone don't reliably stick on an h264 stream; `-x264-params`
+  // does. Real HDR sources (HLG/PQ camera footage) always carry these tags for
+  // real, which is the whole reason this filter chain exists.
+  const hdrArgs = colorSpace === 'hdr_hlg'
+    ? ['-c:v', 'libx264', '-x264-params', 'colorprim=bt2020:transfer=arib-std-b67:colormatrix=bt2020nc']
+    : []
+
+  for (const [color, out] of [[colors[0], clipARaw], [colors[1], clipBRaw]]) {
+    const r = spawnSync('ffmpeg', [
+      '-y', '-f', 'lavfi', '-i', `color=c=${color}:size=64x64:rate=30:duration=3`,
+      '-pix_fmt', 'yuv420p', ...hdrArgs, out,
+    ], { encoding: 'utf8', timeout: 15_000 })
+    if (r.status !== 0) return null
+  }
+
+  const project = {
+    version: '0.2',
+    status: 'final',
+    name: 'synthetic-corpus-fixture',
+    settings: { resolution, fps: 30, colorSpace },
+    tracks: [
+      [
+        { id: 'clip-0', type: 'video', src: clipARaw, start: 0, end: 3, inPoint: 0 },
+        { id: 'clip-1', type: 'video', src: clipBRaw, start: 3, end: 6, inPoint: 0 },
+      ],
+      [
+        { id: 'ov-intro', type: 'overlay', src: overlayJsx, start: 0, end: 1, offsetX: 0, offsetY: 0, scale: 1 },
+      ],
+    ],
+    audio: { tracks: [] },
+  }
+  return { project, clipARaw, clipBRaw }
+}
+
+/**
+ * Write a minimal JSX that paints a solid, fully-opaque field over the whole
+ * canvas plus a text run. Used by (a) to assert sampleOverlay emits a PNG with
+ * genuinely non-zero pixels — a transparent overlay would still produce a valid
+ * PNG, so the fill is what makes the assertion mean something.
+ */
+function writeSolidJsx(path) {
+  writeFileSync(path, `
+export default function Solid() {
+  return (
+    <div style={{ position: 'absolute', inset: 0, background: '#2244cc', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+      <div style={{ fontFamily: 'monospace', fontSize: 96, color: 'white' }}>
+        SOLID
+      </div>
+    </div>
+  )
+}
+`)
 }
 
 /**
@@ -140,28 +241,24 @@ export default function Broken() {
 // ---------------------------------------------------------------------------
 // (a) sampleOverlay on a known overlay produces a non-empty PNG
 // ---------------------------------------------------------------------------
-test('(a) sampleOverlay: produces a PNG with non-zero pixels', { timeout: 60_000 }, async (t) => {
-  if (!RECURSION_JSX_EXISTS) {
-    t.skip('fixture overlay not found at ' + RECURSION_JSX)
-    return
-  }
+test('(a) sampleOverlay: produces a PNG with non-zero pixels', { timeout: 60_000 }, async () => {
   const dir = mkdtempSync(join(tmpdir(), 'montaj-sf-test-a-'))
   try {
+    const jsxPath = join(dir, 'solid.jsx')
+    writeSolidJsx(jsxPath)
     const outPath = join(dir, 'out.png')
+
     const result = await sampleOverlay({
-      componentPath: RECURSION_JSX,
+      componentPath: jsxPath,
       frame: 0,
       fps: 30,
       width: 1080,
       height: 1920,
-      googleFonts: ['Syne:wght@800'],
       outPath,
     })
 
     assert.ok(existsSync(result.pngPath), 'PNG file should exist')
     assert.equal(result.pngPath, outPath)
-    const size = statSync(result.pngPath).size
-    assert.ok(size > 1000, `PNG should be non-trivial (got ${size} bytes)`)
 
     // Check dimensions
     const dims = pngDimensions(result.pngPath)
@@ -169,8 +266,13 @@ test('(a) sampleOverlay: produces a PNG with non-zero pixels', { timeout: 60_000
     assert.equal(dims.w, 1080)
     assert.equal(dims.h, 1920)
 
-    // At frame 0, spring value is 0, so opacity is ~0, but PNG file still exists
-    assert.ok(size > 100, 'PNG is non-empty')
+    // Non-zero PIXELS, not just a non-zero file size: a fully transparent
+    // overlay still writes a valid (small) PNG, so assert the actual fill
+    // colour landed. #2244cc, opaque.
+    const px = readPixelRgba(result.pngPath, 40, 40)
+    assert.ok(px, 'should be able to read a pixel back')
+    assert.equal(px.a, 255, 'fill should be fully opaque')
+    assert.ok(px.b > px.r, `expected a blue-dominant fill, got rgba(${px.r},${px.g},${px.b},${px.a})`)
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }
@@ -392,38 +494,169 @@ test('(g) sampleOverlay: changed props invalidate cache', { timeout: 120_000 }, 
 // (h) sampleFrame at a timestamp where only one video item is active
 // ---------------------------------------------------------------------------
 test('(h) sampleFrame: single video item produces a non-black frame', { timeout: 120_000 }, async (t) => {
-  if (!FIXTURE_PROJECT_EXISTS) {
-    t.skip('fixture project not found at ' + FIXTURE_PROJECT)
-    return
-  }
   const dir = mkdtempSync(join(tmpdir(), 'montaj-sf-test-h-'))
   try {
+    const fixture = makeSyntheticFixture(dir)
+    if (!fixture) { t.skip('ffmpeg synthetic source generation failed'); return }
+
     const outPath = join(dir, 'frame.png')
 
-    // At t=3.0, only clip-0 is active (start=0, end=6.8173), no overlays
+    // At t=1.5, only clip-0 (red, 0-3s) is active; ov-intro ends at 1s so no
+    // overlay is active either.
     const result = await sampleFrame({
-      projectJson: FIXTURE_PROJECT,
-      atSeconds: 3.0,
+      projectJson: fixture.project,
+      atSeconds: 1.5,
       outPath,
     })
 
     assert.ok(existsSync(result.pngPath), 'PNG should exist')
-    const size = statSync(result.pngPath).size
-    assert.ok(size > 10000, `frame PNG should be non-trivial (got ${size} bytes)`)
 
-    // Frame should be non-black (has video content)
     const dims = pngDimensions(result.pngPath)
     assert.ok(dims, 'should be readable PNG')
-    // Project resolution is 2160x3840
-    assert.equal(dims.w, 2160)
-    assert.equal(dims.h, 3840)
+    assert.equal(dims.w, 480)
+    assert.equal(dims.h, 854)
 
-    // Center pixel should not be all-zeros (not empty black frame)
+    // Center pixel should be red-ish (clip-0's solid color), not black.
     const centerPx = readPixelRgba(result.pngPath, dims.w >> 1, dims.h >> 1)
-    const isBlack = centerPx.r < 5 && centerPx.g < 5 && centerPx.b < 5
-    // Video clip may have dark content — check total brightness across multiple samples
-    // At minimum the PNG should exist and have dimensions (visual check is hard to automate)
-    assert.ok(size > 50000, `video frame should be a real image (got ${size} bytes)`)
+    assert.ok(
+      centerPx.r > 150 && centerPx.g < 100 && centerPx.b < 100,
+      `center pixel should be red-ish (clip-0), got R=${centerPx.r} G=${centerPx.g} B=${centerPx.b}`
+    )
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+// ---------------------------------------------------------------------------
+// (h2) sampleFrame: preferProxy decodes the proxy, the default decodes the master
+// ---------------------------------------------------------------------------
+test('(h2) sampleFrame: preferProxy decodes the proxy, not the master', { timeout: 120_000 }, async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), 'montaj-sf-test-h2-'))
+  try {
+    const fixture = makeSyntheticFixture(dir)  // clip-0's master is RED
+    if (!fixture) { t.skip('ffmpeg synthetic source generation failed'); return }
+
+    // A GREEN proxy for clip-0, distinct from its RED master, so which source
+    // was decoded is directly visible in the sampled pixel.
+    const proxyPath = join(dir, 'clip-a_proxy.mp4')
+    const pr = spawnSync('ffmpeg', [
+      '-y', '-f', 'lavfi', '-i', 'color=c=green:size=64x64:rate=30:duration=3',
+      '-pix_fmt', 'yuv420p', proxyPath,
+    ], { encoding: 'utf8', timeout: 15_000 })
+    if (pr.status !== 0) { t.skip('ffmpeg proxy generation failed'); return }
+    fixture.project.tracks[0][0].proxySrc = proxyPath
+
+    // preferProxy → the GREEN proxy is decoded (t=1.5: only clip-0, no overlay).
+    const proxyOut = join(dir, 'proxy.png')
+    const rProxy = await sampleFrame({ projectJson: fixture.project, atSeconds: 1.5, outPath: proxyOut, preferProxy: true })
+    const dims = pngDimensions(rProxy.pngPath)
+    const gpx = readPixelRgba(rProxy.pngPath, dims.w >> 1, dims.h >> 1)
+    assert.ok(gpx.g > 100 && gpx.r < 120 && gpx.b < 120,
+      `preferProxy should decode the green proxy, got R=${gpx.r} G=${gpx.g} B=${gpx.b}`)
+
+    // Default (no preferProxy) → the RED master is decoded. Distinct cache key
+    // (preferProxy is part of it), so this is a real second render, not a hit.
+    const masterOut = join(dir, 'master.png')
+    const rMaster = await sampleFrame({ projectJson: fixture.project, atSeconds: 1.5, outPath: masterOut })
+    const rpx = readPixelRgba(rMaster.pngPath, dims.w >> 1, dims.h >> 1)
+    assert.ok(rpx.r > 150 && rpx.g < 100 && rpx.b < 100,
+      `default should decode the red master, got R=${rpx.r} G=${rpx.g} B=${rpx.b}`)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+// ---------------------------------------------------------------------------
+// (s) sampleFrame: object-shape tracks (VisualTrack[]) resolve, not throw
+// ---------------------------------------------------------------------------
+test('(s) sampleFrame: object-shape tracks produce a frame, not a throw', { timeout: 120_000 }, async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), 'montaj-sf-test-s-'))
+  try {
+    const fixture = makeSyntheticFixture(dir)
+    if (!fixture) { t.skip('ffmpeg synthetic source generation failed'); return }
+
+    // `makeSyntheticFixture` builds the legacy VisualItem[][] shape, like every
+    // other test in this file. `normalizeTracks` is the exact function
+    // `project/init.py`-created and PUT-normalized projects are converged
+    // through in production, so running the fixture through it here produces a
+    // real object-shape project, not a hand-rolled stand-in.
+    //
+    // This is the regression test for the bug where sampleFrame's `resolveAt`
+    // call took the raw project straight from disk: @bycrux/timeline-core's
+    // resolver reads `project.tracks` as bare item arrays, so an un-adapted
+    // object-shape project threw `TypeError: object is not iterable` deep
+    // inside the resolver. sample-frame.js now routes through
+    // `withEnabledItemTracks()` before calling `resolveAt` — this test would
+    // have failed before that fix.
+    const objectProject = normalizeTracks(fixture.project)
+    assert.ok(!Array.isArray(objectProject.tracks[0]), 'fixture sanity: tracks are objects here, not bare arrays')
+
+    const outPath = join(dir, 'frame.png')
+    const result = await sampleFrame({
+      projectJson: objectProject,
+      atSeconds: 1.5,
+      outPath,
+    })
+
+    assert.ok(existsSync(result.pngPath), 'PNG should exist')
+    const dims = pngDimensions(result.pngPath)
+    assert.ok(dims, 'should be readable PNG')
+
+    // Same scene as (h): at t=1.5 only clip-0 (red, 0-3s) is active. Asserting
+    // the actual pixel (not just "didn't throw") proves the object-shape
+    // project resolved the SAME scene the legacy-shape fixture does.
+    const centerPx = readPixelRgba(result.pngPath, dims.w >> 1, dims.h >> 1)
+    assert.ok(
+      centerPx.r > 150 && centerPx.g < 100 && centerPx.b < 100,
+      `center pixel should be red-ish (clip-0), got R=${centerPx.r} G=${centerPx.g} B=${centerPx.b}`
+    )
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+// ---------------------------------------------------------------------------
+// (t) sampleFrame: a skipped track's clip does not appear in the sampled frame
+// ---------------------------------------------------------------------------
+test('(t) sampleFrame: a skipped track\'s clip does not appear in the sampled frame', { timeout: 120_000 }, async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), 'montaj-sf-test-t-'))
+  try {
+    const fixture = makeSyntheticFixture(dir)
+    if (!fixture) { t.skip('ffmpeg synthetic source generation failed'); return }
+
+    // Same scene as (h)/(s), but track 0 — the red/blue video track — is
+    // skipped. This is the regression test for the sample-frame half of the
+    // A2 fix: the duration check used `enabledTrackItems` (enabled tracks
+    // only) while the `resolveAt` compositing call used the ALL-tracks
+    // `withItemTracks` adapter, so the two halves of this file disagreed
+    // about which tracks were "in" — a skipped track's clip kept compositing
+    // into the sampled frame even though the duration calc had already
+    // dropped it.
+    const project = {
+      ...fixture.project,
+      tracks: [
+        { id: 't0', items: fixture.project.tracks[0], enabled: false },
+        { id: 't1', items: fixture.project.tracks[1] },
+      ],
+    }
+
+    const outPath = join(dir, 'frame.png')
+    // t=0.5: ov-intro (track 1, 0-1s) is still active, so the timestamp stays
+    // within the enabled-tracks duration even though clip-0 (track 0, red) is
+    // skipped and must not composite.
+    const result = await sampleFrame({ projectJson: project, atSeconds: 0.5, outPath })
+
+    assert.ok(existsSync(result.pngPath), 'PNG should exist')
+    const dims = pngDimensions(result.pngPath)
+    assert.ok(dims, 'should be readable PNG')
+
+    // clip-0 is red. If the skipped track's clip still composited (the bug),
+    // the center pixel would be red-dominant, same as (h)/(s). It must not be.
+    const centerPx = readPixelRgba(result.pngPath, dims.w >> 1, dims.h >> 1)
+    assert.ok(
+      !(centerPx.r > 150 && centerPx.g < 100 && centerPx.b < 100),
+      `skipped track's clip-0 must not composite into the frame, got R=${centerPx.r} G=${centerPx.g} B=${centerPx.b}`
+    )
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }
@@ -433,19 +666,18 @@ test('(h) sampleFrame: single video item produces a non-black frame', { timeout:
 // (i) sampleFrame with one overlay active composites the overlay
 // ---------------------------------------------------------------------------
 test('(i) sampleFrame: overlay active at timestamp produces larger file than video-only', { timeout: 180_000 }, async (t) => {
-  if (!FIXTURE_PROJECT_EXISTS) {
-    t.skip('fixture project not found at ' + FIXTURE_PROJECT)
-    return
-  }
   const dir = mkdtempSync(join(tmpdir(), 'montaj-sf-test-i-'))
   try {
-    // At t=1.0, clip-0 is active + ov-intro overlay (start=0, end=2.4)
+    const fixture = makeSyntheticFixture(dir)
+    if (!fixture) { t.skip('ffmpeg synthetic source generation failed'); return }
+
+    // At t=0.5, clip-0 is active + ov-intro overlay (start=0, end=1)
     const outWithOverlay = join(dir, 'with-overlay.png')
-    // At t=3.0, clip-0 is active but no overlays
+    // At t=2.0, clip-0 is active but no overlays
     const outNoOverlay = join(dir, 'no-overlay.png')
 
-    await sampleFrame({ projectJson: FIXTURE_PROJECT, atSeconds: 1.0, outPath: outWithOverlay })
-    await sampleFrame({ projectJson: FIXTURE_PROJECT, atSeconds: 3.0, outPath: outNoOverlay })
+    await sampleFrame({ projectJson: fixture.project, atSeconds: 0.5, outPath: outWithOverlay })
+    await sampleFrame({ projectJson: fixture.project, atSeconds: 2.0, outPath: outNoOverlay })
 
     const sizeWith = statSync(outWithOverlay).size
     const sizeWithout = statSync(outNoOverlay).size
@@ -453,8 +685,16 @@ test('(i) sampleFrame: overlay active at timestamp produces larger file than vid
     // Both should be valid PNGs
     assert.ok(existsSync(outWithOverlay))
     assert.ok(existsSync(outNoOverlay))
-    assert.ok(sizeWith > 10000, `overlay frame should be real image (${sizeWith} bytes)`)
-    assert.ok(sizeWithout > 10000, `no-overlay frame should be real image (${sizeWithout} bytes)`)
+    // An absolute byte threshold doesn't suit these solid-color synthetic
+    // clips — a flat color frame compresses far smaller than a real video
+    // frame ever would. Compare the two against EACH OTHER instead, which is
+    // what the test's own name asserts: the overlay's white "Hi" text adds
+    // detail a perfectly flat canvas doesn't have, so it must compress worse
+    // (i.e. produce a larger file) than the video-only frame.
+    assert.ok(
+      sizeWith > sizeWithout,
+      `overlay frame (${sizeWith} bytes) should be larger than video-only frame (${sizeWithout} bytes)`
+    )
     // Both should have the same dimensions
     const d1 = pngDimensions(outWithOverlay)
     const d2 = pngDimensions(outNoOverlay)
@@ -469,23 +709,28 @@ test('(i) sampleFrame: overlay active at timestamp produces larger file than vid
 // ---------------------------------------------------------------------------
 // (j) sampleFrame on HDR project produces sRGB-displayable PNG (tonemap applied)
 // ---------------------------------------------------------------------------
-test('(j) sampleFrame: HDR project sample is tonemapped to sRGB', { timeout: 120_000 }, async (t) => {
-  if (!FIXTURE_PROJECT_EXISTS) {
-    t.skip('fixture project not found at ' + FIXTURE_PROJECT)
-    return
-  }
-  if (!hasZscale()) {
-    t.skip('zscale not available in ffmpeg — skipping HDR tonemap test')
+test('(j) sampleFrame: HDR project sample is graded to SDR', { timeout: 120_000 }, async (t) => {
+  if (!hasZscale() || !hasLut3d()) {
+    t.skip('ffmpeg lacks zscale and/or lut3d — skipping the HDR grade test')
     return
   }
   const dir = mkdtempSync(join(tmpdir(), 'montaj-sf-test-j-'))
   try {
+    // sample-frame.js's HDR branch is gated on project.settings.colorSpace alone
+    // (isHdr(projectColorSpace)) — it doesn't inspect the source file's own
+    // tagged transfer characteristic. makeSyntheticFixture still tags the source
+    // HLG for real, because the chain's first zscale declares matrixin=2020_ncl
+    // and needs a plausible source to convert FROM. What this proves: the
+    // Montaj Vivid chain is syntactically valid, ffmpeg accepts it, and the
+    // resulting PNG is a normal SDR image rather than one left tagged HDR.
+    const fixture = makeSyntheticFixture(dir, { colorSpace: 'hdr_hlg' })
+    if (!fixture) { t.skip('ffmpeg synthetic source generation failed'); return }
+
     const outPath = join(dir, 'hdr-sample.png')
 
-    // The fixture project has colorSpace: "hdr_hlg"
     const result = await sampleFrame({
-      projectJson: FIXTURE_PROJECT,
-      atSeconds: 3.0,
+      projectJson: fixture.project,
+      atSeconds: 1.5,
       outPath,
     })
 
@@ -494,17 +739,146 @@ test('(j) sampleFrame: HDR project sample is tonemapped to sRGB', { timeout: 120
     // Probe the output PNG's transfer characteristic
     const probe = spawnSync('ffprobe', [
       '-v', 'quiet', '-select_streams', 'v:0',
-      '-show_entries', 'stream=color_transfer',
+      '-show_entries', 'stream=color_transfer,pix_fmt',
       '-of', 'csv=p=0', result.pngPath,
     ], { encoding: 'utf8', timeout: 10_000 })
 
-    const transfer = (probe.stdout || '').trim().replace(/,+$/, '')
-    // After tonemap, the PNG should be BT.709 or untagged (sRGB default),
-    // NOT arib-std-b67 (HLG) or smpte2084 (PQ)
+    const fields = (probe.stdout || '').trim().split(',')
+    const pixFmt = fields[0] ?? ''
+    const transfer = (fields[1] ?? '').trim()
+    // After the grade the PNG must be an ordinary SDR image: BT.709 or untagged
+    // (sRGB default), NOT arib-std-b67 (HLG) or smpte2084 (PQ), and in an
+    // RGB pixel format the png encoder actually accepts.
     const isHlgOrPq = transfer === 'arib-std-b67' || transfer === 'smpte2084'
     assert.ok(
       !isHlgOrPq,
-      `sample PNG should NOT have HDR transfer tag after tonemap, got: '${transfer}'`
+      `sample PNG should NOT have HDR transfer tag after the grade, got: '${transfer}'`
+    )
+    assert.match(pixFmt, /^rgb/, `sample PNG should be RGB, got pix_fmt '${pixFmt}'`)
+
+    // The frame is a solid-color clip, so a center pixel is the whole picture:
+    // it must be neither black (extraction silently failed) nor blown to white
+    // (what happens when HDR highlights are clipped instead of tone-mapped).
+    const px = readPixelRgba(result.pngPath, 240, 427)
+    const sum = px.r + px.g + px.b
+    assert.ok(sum > 30 && sum < 720,
+      `graded frame should be a real mid-tone, got rgb(${px.r}, ${px.g}, ${px.b})`)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+// ---------------------------------------------------------------------------
+// (p) Aspect-mismatched HDR source: letterbox bars stay black through the grade
+// ---------------------------------------------------------------------------
+test('(p) sampleFrame: aspect-mismatched HDR source letterboxes to black, not tint',
+  { timeout: 120_000 }, async (t) => {
+  if (!hasZscale() || !hasLut3d()) {
+    t.skip('ffmpeg lacks zscale and/or lut3d — skipping the HDR letterbox test')
+    return
+  }
+  // The synthetic clips are 64x64 square; asking for a wide 854x480 canvas
+  // makes the fit pillarbox them, so most of the frame is bar. Bars are the
+  // canvas showing through a contain-fit composite — they are generated after
+  // the grade and must be pure black. Tinted bars mean something started
+  // pushing synthesized pixels through the cube.
+  const dir = mkdtempSync(join(tmpdir(), 'montaj-sf-test-p-'))
+  try {
+    const fixture = makeSyntheticFixture(dir, {
+      colorSpace: 'hdr_hlg',
+      resolution: [854, 480],
+    })
+    if (!fixture) { t.skip('ffmpeg synthetic source generation failed'); return }
+
+    const outPath = join(dir, 'hdr-letterbox.png')
+    const result = await sampleFrame({
+      projectJson: fixture.project,
+      atSeconds: 4.5, // inside clip-1 (blue), past the overlay's 0-1s window
+      outPath,
+    })
+    assert.ok(existsSync(result.pngPath))
+
+    const dims = pngDimensions(result.pngPath)
+    assert.deepEqual(dims, { w: 854, h: 480 })
+
+    // 64x64 contain-fit into 854x480 → a 480x480 picture centered at x 187-667.
+    for (const x of [20, 830]) {
+      const px = readPixelRgba(result.pngPath, x, 240)
+      assert.ok(px.r <= 4 && px.g <= 4 && px.b <= 4,
+        `pillarbox at x=${x} should be black, got rgb(${px.r}, ${px.g}, ${px.b}) — `
+        + 'tinted bars mean synthesized pixels are being graded')
+    }
+    // And the picture itself is still there, graded, in the middle.
+    const mid = readPixelRgba(result.pngPath, 427, 240)
+    assert.ok(mid.r + mid.g + mid.b > 30,
+      `picture area should carry the graded clip, got rgb(${mid.r}, ${mid.g}, ${mid.b})`)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+// ---------------------------------------------------------------------------
+// (q) The look/curve components of the frame cache key (SP6b decision 10)
+// ---------------------------------------------------------------------------
+test('(q) buildFrameCacheKey: the requested curve is part of the key', () => {
+  // Without this, a frame sampled under one curve is served back for another —
+  // the RenderModal's side-by-side thumbnails would show the same image twice —
+  // and a LUT change would serve pre-change frames forever, since nothing else
+  // in the key moves when the manifest does.
+  //
+  // Asserted on the key itself rather than on rendered pixels: two cubes only
+  // disagree on some colors (both clamp the gamut edge identically), so a
+  // pixel-level version of this test passes or fails on the fixture's color
+  // rather than on the cache logic. The pixel side is covered by (r).
+  const project = { settings: { colorSpace: 'hdr_hlg' } }
+  const base = buildFrameCacheKey(null, project, 1.5)
+  const neutral = buildFrameCacheKey(null, project, 1.5, 'vivid1-neutral')
+
+  assert.notEqual(base, neutral, 'a different curve must produce a different cache key')
+  assert.equal(buildFrameCacheKey(null, project, 1.5, MASTER_LOOK), base,
+    'explicitly naming the master look must match the default')
+  assert.equal(buildFrameCacheKey(null, project, 1.5, null), base, 'null curve → master look')
+  // Sanity: the key still discriminates on everything it used to.
+  assert.notEqual(buildFrameCacheKey(null, project, 2.5), base)
+  assert.notEqual(buildFrameCacheKey(null, { settings: { colorSpace: 'sdr_bt709' } }, 1.5), base)
+})
+
+// ---------------------------------------------------------------------------
+// (r) The curve actually reaches ffmpeg
+// ---------------------------------------------------------------------------
+test('(r) sampleFrame: --sdr-curve changes the graded pixels', { timeout: 120_000 }, async (t) => {
+  if (!hasZscale() || !hasLut3d()) {
+    t.skip('ffmpeg lacks zscale and/or lut3d — skipping the curve grade test')
+    return
+  }
+  // (q) proves the two curves get separate cache entries; this proves the curve
+  // is threaded all the way into the filter chain rather than being accepted
+  // and dropped. Needs a color the two cubes treat differently — vivid1-neutral
+  // is vivid1 minus the Helmholtz-Kohlrausch pop/skin terms, so a warm
+  // skin-adjacent tone separates them where a saturated primary does not (both
+  // clamp those to the same gamut edge).
+  const dir = mkdtempSync(join(tmpdir(), 'montaj-sf-test-r-'))
+  try {
+    const fixture = makeSyntheticFixture(dir, {
+      colorSpace: 'hdr_hlg',
+      colors: ['0xc0a080', '0xc0a080'],
+    })
+    if (!fixture) { t.skip('ffmpeg synthetic source generation failed'); return }
+
+    const defaultPath = join(dir, 'curve-default.png')
+    const neutralPath = join(dir, 'curve-neutral.png')
+    await sampleFrame({ projectJson: fixture.project, atSeconds: 1.5, outPath: defaultPath })
+    await sampleFrame({
+      projectJson: fixture.project, atSeconds: 1.5, outPath: neutralPath,
+      sdrCurve: 'vivid1-neutral',
+    })
+
+    const a = readPixelRgba(defaultPath, 240, 427)
+    const b = readPixelRgba(neutralPath, 240, 427)
+    assert.notDeepEqual(
+      a, b,
+      `both curves produced rgb(${a.r}, ${a.g}, ${a.b}) — sdrCurve is not reaching the LUT `
+      + '(or the two cubes stopped differing on this tone, in which case pick another)',
     )
   } finally {
     rmSync(dir, { recursive: true, force: true })
@@ -515,16 +889,19 @@ test('(j) sampleFrame: HDR project sample is tonemapped to sRGB', { timeout: 120
 // (k) sampleFrame on a 2160×3840 project produces exactly 2160×3840 output
 // ---------------------------------------------------------------------------
 test('(k) sampleFrame: 4K project output is 2160×3840', { timeout: 120_000 }, async (t) => {
-  if (!FIXTURE_PROJECT_EXISTS) {
-    t.skip('fixture project not found at ' + FIXTURE_PROJECT)
-    return
-  }
   const dir = mkdtempSync(join(tmpdir(), 'montaj-sf-test-k-'))
   try {
+    // The output canvas size comes straight from settings.resolution — it does
+    // not depend on the source media's own resolution (ffmpeg's scale filter
+    // fits whatever it's given), so the tiny 64×64 synthetic sources are enough
+    // to exercise the real 4K canvas math end to end.
+    const fixture = makeSyntheticFixture(dir, { resolution: [2160, 3840] })
+    if (!fixture) { t.skip('ffmpeg synthetic source generation failed'); return }
+
     const outPath = join(dir, 'frame-4k.png')
     const result = await sampleFrame({
-      projectJson: FIXTURE_PROJECT,
-      atSeconds: 3.0,
+      projectJson: fixture.project,
+      atSeconds: 1.5,
       outPath,
     })
 
@@ -541,23 +918,32 @@ test('(k) sampleFrame: 4K project output is 2160×3840', { timeout: 120_000 }, a
 // (l) sampleFrame on a project with no overlays still produces a video+image composite
 // ---------------------------------------------------------------------------
 test('(l) sampleFrame: project with no overlays active at timestamp still produces frame', { timeout: 120_000 }, async (t) => {
-  if (!FIXTURE_PROJECT_EXISTS) {
-    t.skip('fixture project not found at ' + FIXTURE_PROJECT)
-    return
-  }
   const dir = mkdtempSync(join(tmpdir(), 'montaj-sf-test-l-'))
   try {
-    // At t=3.0, no overlays are active (ov-intro ends at 2.4, ov-recursion starts at 4.9)
+    const fixture = makeSyntheticFixture(dir)
+    if (!fixture) { t.skip('ffmpeg synthetic source generation failed'); return }
+
+    // At t=2.0, no overlays are active (ov-intro ends at 1.0)
     const outPath = join(dir, 'video-only.png')
     const result = await sampleFrame({
-      projectJson: FIXTURE_PROJECT,
-      atSeconds: 3.0,
+      projectJson: fixture.project,
+      atSeconds: 2.0,
       outPath,
     })
 
     assert.ok(existsSync(result.pngPath))
-    const size = statSync(result.pngPath).size
-    assert.ok(size > 10000, `frame PNG should be non-trivial (got ${size} bytes)`)
+
+    // A solid-color synthetic frame compresses far below the old fixture-derived
+    // "non-trivial size" threshold (a real, detailed video frame doesn't
+    // compress nearly as well as a flat color does), so pin actual content
+    // instead: center pixel should be red-ish (clip-0), not black/empty.
+    const dims = pngDimensions(result.pngPath)
+    assert.ok(dims, 'should be readable PNG')
+    const centerPx = readPixelRgba(result.pngPath, dims.w >> 1, dims.h >> 1)
+    assert.ok(
+      centerPx.r > 150 && centerPx.g < 100 && centerPx.b < 100,
+      `center pixel should be red-ish (clip-0), got R=${centerPx.r} G=${centerPx.g} B=${centerPx.b}`
+    )
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }
@@ -667,15 +1053,33 @@ test('(n) sampleFrame: empty timeline gap produces all-black frame', { timeout: 
 // (o) sampleFrame at clip boundary picks the LATER clip (start <= t < end tiebreak)
 // ---------------------------------------------------------------------------
 test('(o) sampleFrame: clip boundary tiebreak picks later clip', { timeout: 60_000 }, async (t) => {
-  if (!FIXTURE_PROJECT_EXISTS) {
-    t.skip('fixture project not found at ' + FIXTURE_PROJECT)
-    return
+  // --- Part 1: structural, no media — pin the resolver's OWN tiebreak decision ---
+  //
+  // sample-frame.js's item-selection loop now delegates directly to
+  // resolveAt(project, atSeconds, {variant:'render'}) (see sample-frame.js, T9),
+  // whose containsTime predicate is `start <= t < end`. Asserting that decision
+  // here, on a project shaped like the shared timeline-core corpus (nonexistent
+  // `/corpus/...` srcs, matching fixtures/README.md's convention — no real media
+  // needed to check WHICH item gets selected), pins the exact rule sample-frame
+  // depends on: deterministic, sub-millisecond, and immune to ffmpeg/puppeteer
+  // flakiness. This is the "encode as a corpus golden" the tiebreak needed —
+  // this file can't add to the actual timeline-core/fixtures/ corpus (out of
+  // T9's writable scope), so the pin lives here instead, in the same shape.
+  const boundaryProject = {
+    version: '0.2',
+    status: 'final',
+    name: 'boundary-tiebreak-corpus',
+    settings: { resolution: [480, 854], fps: 30, colorSpace: 'sdr_bt709' },
+    tracks: [
+      [
+        { id: 'clip-0', type: 'video', src: '/corpus/clip-0.mp4', start: 0, end: 3, inPoint: 0 },
+        { id: 'clip-1', type: 'video', src: '/corpus/clip-1.mp4', start: 3, end: 6, inPoint: 0 },
+      ],
+    ],
+    audio: { tracks: [] },
   }
-
-  const project = JSON.parse(readFileSync(FIXTURE_PROJECT, 'utf8'))
-  const tracks0 = project.tracks[0]
-  // clip-0 ends at 6.8173, clip-1 starts at 6.8173
-  const clipBoundary = tracks0[0].end  // 6.8173
+  const tracks0 = boundaryProject.tracks[0]
+  const clipBoundary = tracks0[0].end // 3
 
   assert.equal(
     clipBoundary,
@@ -683,18 +1087,32 @@ test('(o) sampleFrame: clip boundary tiebreak picks later clip', { timeout: 60_0
     'test setup: clip-0.end should equal clip-1.start at the boundary'
   )
 
+  // clip-0: start=0 end=3 → 0 <= 3 < 3 is FALSE (not < end) → inactive
+  // clip-1: start=3 end=6 → 3 <= 3 < 6 is TRUE → active
+  const atScene = resolveAt(boundaryProject, clipBoundary, { variant: 'render' })
+  assert.equal(atScene.items.length, 1, 'exactly one item active at the boundary')
+  assert.equal(atScene.items[0].item.id, 'clip-1', 'later clip wins the boundary tie')
+
+  const beforeScene = resolveAt(boundaryProject, clipBoundary - 0.001, { variant: 'render' })
+  assert.equal(beforeScene.items[0].item.id, 'clip-0', 'earlier clip active just before the boundary')
+
+  // --- Part 2: full pipeline, real media — the same rule end to end through sampleFrame ---
+  //
+  // Complements Part 1 with a genuine pixel check: red is clip-0, blue is
+  // clip-1, so a wrong tiebreak (picking clip-0 at t=3) is visible as the wrong
+  // color, not just inferred from file size like this test used to do.
   const dir = mkdtempSync(join(tmpdir(), 'montaj-sf-test-o-'))
   try {
-    // Sample at the exact boundary — should pick clip-1 (start <= t < end)
-    // clip-0: start=0 end=6.8173 → 0 <= 6.8173 < 6.8173 is FALSE (not < end)
-    // clip-1: start=6.8173 end=11.1873 → 6.8173 <= 6.8173 < 11.1873 is TRUE
+    const fixture = makeSyntheticFixture(dir)
+    if (!fixture) { t.skip('ffmpeg synthetic source generation failed'); return }
+
+    const clipBoundarySecs = fixture.project.tracks[0][0].end // 3
     const outAtBoundary = join(dir, 'boundary.png')
     const outAfterBoundary = join(dir, 'after.png')
 
-    await sampleFrame({ projectJson: FIXTURE_PROJECT, atSeconds: clipBoundary, outPath: outAtBoundary })
-    await sampleFrame({ projectJson: FIXTURE_PROJECT, atSeconds: clipBoundary + 0.5, outPath: outAfterBoundary })
+    await sampleFrame({ projectJson: fixture.project, atSeconds: clipBoundarySecs, outPath: outAtBoundary })
+    await sampleFrame({ projectJson: fixture.project, atSeconds: clipBoundarySecs + 0.5, outPath: outAfterBoundary })
 
-    // Both frames should exist and be valid PNGs
     assert.ok(existsSync(outAtBoundary))
     assert.ok(existsSync(outAfterBoundary))
 
@@ -704,13 +1122,103 @@ test('(o) sampleFrame: clip boundary tiebreak picks later clip', { timeout: 60_0
     assert.equal(d1.w, d2.w)
     assert.equal(d1.h, d2.h)
 
-    // Both frames should be at clip-1 (similar visual content)
-    // The file sizes should both be substantial (not black/empty)
-    const s1 = statSync(outAtBoundary).size
-    const s2 = statSync(outAfterBoundary).size
-    assert.ok(s1 > 50000, `boundary frame should be a real image (${s1} bytes)`)
-    assert.ok(s2 > 50000, `post-boundary frame should be a real image (${s2} bytes)`)
+    // Both frames should be blue-ish (clip-1) — the earlier-clip red must NOT show.
+    const p1 = readPixelRgba(outAtBoundary, d1.w >> 1, d1.h >> 1)
+    const p2 = readPixelRgba(outAfterBoundary, d2.w >> 1, d2.h >> 1)
+    assert.ok(p1.b > 150 && p1.r < 100, `boundary frame should be blue-ish (clip-1), got R=${p1.r} G=${p1.g} B=${p1.b}`)
+    assert.ok(p2.b > 150 && p2.r < 100, `post-boundary frame should be blue-ish (clip-1), got R=${p2.r} G=${p2.g} B=${p2.b}`)
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }
+})
+
+// ---------------------------------------------------------------------------
+// (u)-(v) — sample-frame needs NO keyframe bake (SP9b T2.5)
+//
+// The production renderer bakes a keyframed overlay's transform into its capture
+// per frame, because the ffmpeg filter graph places an overlay once per segment
+// and cannot animate within one. sample-frame has the opposite problem: it makes
+// exactly ONE frame, and one frame needs exactly one geometry.
+//
+// It already has it. The descriptor sample-frame hands to buildOverlayFilterParts
+// is a flat list of scalars read off `ri.geometry`, which is
+// `geometryAt(item, kind, ri.seek)` — the item's geometry AT the sampled instant.
+// Carrying no `keyframes` key, that descriptor takes buildOverlayFilterParts'
+// ORDINARY path and gets positioned statically at exactly those values, which is
+// the correct answer. So: no bake, and the Export dialog's preview frame already
+// matches the real render at that timestamp.
+//
+// What would break it is a leak. `sampleOverlay` bundles the overlay with NO
+// geometry at all (an un-baked capture); if `keyframes` ever reached the
+// descriptor — via a spread of the item, or of ri.geometry — the composite would
+// flip to the baked branch (full-canvas, overlay=0:0) against an un-baked
+// capture, and every overlay would silently lose its position in the preview.
+// These two tests are cheap and pin exactly that.
+// ---------------------------------------------------------------------------
+
+test('(u) the sampled geometry positions the overlay statically, at the instant\'s values', () => {
+  // An overlay that slides from offsetX 0 to 40 over its first 2s. Sampled at
+  // t=1.0 (localT 1.0, halfway, linear) the resolver must hand back offsetX 20 —
+  // and the filter graph must place the PNG THERE, not at the item's static 0
+  // and not full-canvas.
+  const project = {
+    settings: { fps: 30, resolution: [1080, 1920] },
+    tracks: [
+      [],
+      [{
+        id: 'ov1', type: 'overlay', src: '/abs/ov.jsx', start: 0.5, end: 4,
+        offsetX: 0, scale: 1,
+        keyframes: [{ prop: 'offsetX', points: [{ t: 0, value: 0 }, { t: 2, value: 40 }] }],
+      }],
+    ],
+  }
+  const scene = resolveAt(project, 1.5, { variant: 'render' })
+  const ri = scene.items.find(i => i.kind === 'overlay')
+  assert.ok(ri, 'the overlay must be active at t=1.5')
+  assert.equal(ri.seek, 1.0, 'seek is item-relative: 1.5 - 0.5')
+  assert.equal(ri.geometry.offsetX, 20, 'halfway along a linear 0→40 track')
+
+  // Rebuilt exactly as sample-frame.js builds it — a flat list of sampled
+  // scalars, no `keyframes` key, no spread.
+  const ov = {
+    webmPath: '/tmp/ov.png',
+    startSeconds: 0.5,
+    offsetX: ri.geometry.offsetX,
+    offsetY: ri.geometry.offsetY,
+    scale: ri.geometry.scale,
+    rotation: ri.geometry.rotation,
+    opaque: false,
+  }
+  const s = buildOverlayFilterParts(ov, 1080, 1920, 1, '[base]', 0, 2, {
+    inputFormatFlag: 'rgba', compositeFormatFlag: 'auto', loopedInput: true,
+  }).filterParts.join('\n')
+
+  // 20% of 1080 = 216. Static placement at the SAMPLED offset is the whole point.
+  assert.match(s, /overlay=x=216:y=0:/,
+    'a still frame must be composited at the geometry of its own instant')
+  assert.doesNotMatch(s, /overlay=x=0:y=0:/, 'not full-canvas — nothing was baked into this PNG')
+})
+
+test('(v) sample-frame\'s overlay descriptor never carries `keyframes`', () => {
+  // A source-level guard, because the invariant IS about the shape of an object
+  // literal: the moment someone "simplifies" it to `...ov` or `...ri.geometry`,
+  // a keyframed overlay silently flips onto the baked composite branch while its
+  // capture stays un-baked. No behavioural test upstream of the PNG would catch
+  // that; this one costs nothing.
+  const src = readFileSync(join(__dirname, '..', 'sample-frame.js'), 'utf8')
+  // Comments stripped first: the guard is about what the literal DOES, and the
+  // comment sitting on it necessarily names the very things forbidden below.
+  const descriptor = src
+    .slice(
+      src.indexOf('// Shape expected by buildOverlayFilterParts'),
+      src.indexOf('}, OVERLAY_CONCURRENCY)'),
+    )
+    .replace(/^\s*\/\/.*$/gm, '')
+  assert.ok(descriptor.includes('webmPath'), 'the overlay descriptor literal must still be findable')
+  assert.doesNotMatch(descriptor, /^\s*keyframes\s*:/m,
+    'sample-frame renders ONE frame at an already-sampled geometry — it must never '
+    + 'claim to be baked')
+  assert.doesNotMatch(descriptor, /\.\.\.ri\.geometry|\.\.\.ov\b|\.\.\.ri\.item/,
+    'spreading would leak keyframes (and anything else added to the item later) '
+    + 'onto the descriptor')
 })

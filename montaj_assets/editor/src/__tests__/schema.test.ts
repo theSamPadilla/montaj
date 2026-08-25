@@ -1,10 +1,12 @@
 import { describe, it, expect } from 'vitest'
 import type {
+  CaptionSegment,
   EditorProject,
   ImageElement,
   OverlayElement,
   Slide,
 } from '../schema'
+import { laneOf } from '../video/captionLanes'
 
 // Compile-time assignability helper: if the argument doesn't satisfy T,
 // this fails to type-check (and thus fails `tsc`/build, which vitest runs through).
@@ -100,5 +102,18 @@ describe('editor schema', () => {
     }
     expectAssignable<Slide>(slide)
     expect(slide.elements).toHaveLength(2)
+  })
+
+  it('round-trips CaptionSegment.lane both present and absent', () => {
+    const withLane: CaptionSegment = { text: 'hi', start: 0, end: 1, lane: 2 }
+    const withoutLane: CaptionSegment = { text: 'hi', start: 0, end: 1 }
+    expectAssignable<CaptionSegment>(withLane)
+    expectAssignable<CaptionSegment>(withoutLane)
+    expect(withLane.lane).toBe(2)
+    expect(withoutLane.lane).toBeUndefined()
+    // Absent lane reads as lane 0 through the module every consumer goes
+    // through — not just `undefined` left for each caller to default itself.
+    expect(laneOf(withoutLane)).toBe(0)
+    expect(laneOf(withLane)).toBe(2)
   })
 })

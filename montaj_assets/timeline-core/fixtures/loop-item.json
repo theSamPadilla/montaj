@@ -1,0 +1,23 @@
+{
+  "version": "0.2",
+  "id": "sp2-corpus-loop-item",
+  "status": "draft",
+  "projectType": "editing",
+  "settings": { "fps": 30, "resolution": [1080, 1920], "colorSpace": "sdr_bt709" },
+  "tracks": [
+    [
+      {
+        "id": "loopedClip",
+        "type": "video",
+        "src": "/corpus/loopedClip.mp4",
+        "loop": true,
+        "transition": { "type": "crossfade", "duration": 0.5 },
+        "start": 0,
+        "end": 10,
+        "inPoint": 0,
+        "outPoint": 2
+      }
+    ]
+  ],
+  "audio": { "tracks": [] }
+}

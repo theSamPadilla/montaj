@@ -8,6 +8,11 @@ interface CaptionRegenModalProps<P extends Project = Project> {
   /** Adapter driving the caption-regeneration stream. Must implement
    *  `generateCaptions` — callers gate rendering on its presence. */
   adapter: EditorAdapter<P>
+  /** Caption rows the project has right now (`maxCaptionLane(segments) + 1`,
+   *  so 1 for a lane-less or empty track). Regeneration replaces the whole
+   *  track with a single fresh row, so this is the count the warning banner
+   *  below reports as about to be discarded. */
+  existingRowCount: number
   /** Fired on terminal success with the freshly transcribed caption track. The
    *  caller patches `project.captions` from this; the modal then closes. */
   onDone: (captions: Captions) => void
@@ -19,7 +24,7 @@ function LogLine({ text }: { text: string }) {
   let color = 'text-[var(--editor-text)]/60'
   if (/ready|complete|done|transcribed/i.test(text))      color = 'text-green-400'
   else if (/transcrib|detecting|loading|model/i.test(text)) color = 'text-sky-400'
-  else if (/extract|building|composing/i.test(text))      color = 'text-amber-400'
+  else if (/extract|building|composing|mixing/i.test(text)) color = 'text-amber-400'
   else if (/error|fail|warn/i.test(text))                 color = 'text-red-400'
 
   return (
@@ -29,7 +34,7 @@ function LogLine({ text }: { text: string }) {
   )
 }
 
-export default function CaptionRegenModal<P extends Project = Project>({ projectId, adapter, onDone, onClose }: CaptionRegenModalProps<P>) {
+export default function CaptionRegenModal<P extends Project = Project>({ projectId, adapter, existingRowCount, onDone, onClose }: CaptionRegenModalProps<P>) {
   const [logs, setLogs]     = useState<string[]>([])
   const [status, setStatus] = useState<'running' | 'done' | 'error'>('running')
   const [errorMsg, setError] = useState<string | null>(null)
@@ -124,12 +129,31 @@ export default function CaptionRegenModal<P extends Project = Project>({ project
                   : status === 'done' ? 'Captions regenerated'
                   : 'Caption regeneration failed'}
               </h2>
+              {/* What gets transcribed is not obvious from the button that
+                  opened this modal, and mute is the one control the editor
+                  has over it — worth one line here rather than a support
+                  question about why a clip's audio showed up in the
+                  captions. Read at generation time only: unmuting later just
+                  means the next run sees it. */}
+              <p className="text-[11px] text-[var(--editor-text)]/50">
+                Transcribes everything audible on the timeline. Muted clips and tracks are skipped.
+              </p>
             </div>
           </div>
           {status !== 'running' && (
             <button onClick={onClose} className="text-[var(--editor-text)]/55 hover:text-[var(--editor-text)] transition-colors text-lg leading-none">×</button>
           )}
         </div>
+
+        {/* Discard warning — only when there is more than one row to lose.
+            Regeneration always replaces project.captions wholesale with a
+            single fresh row (see onDone below), so a hand-built second or
+            third row (a title card, a call-out) is silently gone otherwise. */}
+        {existingRowCount > 1 && (
+          <div className="px-5 py-2 text-[11px] leading-snug text-amber-400/90 border-b border-[var(--editor-border)]">
+            This will replace all {existingRowCount} caption rows with a single new row.
+          </div>
+        )}
 
         {/* Log output */}
         <div className="relative">

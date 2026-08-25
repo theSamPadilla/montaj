@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { PreviewPlayer, createPlaybackClock, type PlaybackClock } from '@bycrux/editor'
+import { PreviewPlayer, createPlaybackClock, trackItems, type PlaybackClock } from '@bycrux/editor'
 import { createMontajAdapter } from './montajAdapter'
 import MobileProjectHeader from '@/components/MobileProjectHeader'
 import MobileRenderModal from '@/components/MobileRenderModal'
@@ -24,7 +24,7 @@ export default function MobileLiveView({ project, logMessage, onProjectChange }:
   const navigate = useNavigate()
   const adapter = useMemo(() => createMontajAdapter(), [])
 
-  const clips = project.tracks?.[0] ?? []
+  const clips = trackItems(project)[0] ?? []
   const hasTrimmedClips = clips.some(c => c.inPoint !== undefined && c.outPoint !== undefined)
   const canGoBack = !hasTrimmedClips
 

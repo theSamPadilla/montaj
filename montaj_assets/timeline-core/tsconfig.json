@@ -1,0 +1,25 @@
+{
+  // Library-only tsconfig: covers index.js + src/**. test/** is deliberately
+  // excluded (see below) so devDependencies stay at just "typescript" — no
+  // @types/node needed just to typecheck node:test imports in the test tree.
+  // `npm run typecheck` (= `tsc --noEmit`, no -p flag) uses this file by
+  // default, so it always covers the library in strict checkJs mode.
+  "compilerOptions": {
+    "target": "ES2022",
+    // NO "DOM" here — deliberate. This package must stay pure per the SP2
+    // contract (no Date, no Math.random, no I/O, no globals): touching
+    // window/document/timers has to be a compile error, not a lint nit.
+    "lib": ["ES2022"],
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "allowJs": true,
+    "checkJs": true,
+    "strict": true,
+    "noEmit": true,
+    // No ambient Node globals either (process, fs, ...) — src/** must be
+    // pure JS with no Node-specific APIs, matching the "no I/O" rule above.
+    "types": []
+  },
+  "include": ["index.js", "index.d.ts", "src/**/*.js"],
+  "exclude": ["node_modules", "test/**"]
+}

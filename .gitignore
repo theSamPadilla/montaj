@@ -11,6 +11,7 @@ venv/
 .venv/
 __pycache__/
 docs/plans/
+docs/qa/
 docs/fullsend/
 *.pyc
 *.egg-info/
@@ -38,11 +39,12 @@ RELEASE.md
 
 .playwright-mcp/
 
-scripts/
+# Root-anchored: only the repo's own scripts/ dir. An unanchored `scripts/`
+# also swallows montaj_assets/timeline-core/scripts/, which test/corpus.test.mjs
+# statically imports — a fresh clone would then fail with ERR_MODULE_NOT_FOUND
+# and the corpus gate would silently never run.
+/scripts/
 docs/ideas/
-docs/qa/
 
-# Local render-quality experiments — multi-GB raw HDR dumps. Untracked and
-# unignored here, these got swept into a release commit by RELEASE.md's
-# `git add -A` (1.34GB pack, stalled push). Already ignored on the v4 branch.
+# Spikes — local prototypes (SP1 playback engine etc.); preserved on disk, never committed
 spikes/

@@ -6,10 +6,12 @@ import type {
   AudioTrack,
   Captions,
   VisualItem,
+  VisualTrack,
   Asset,
   Slide,
   EditorProject,
 } from '@bycrux/editor'
+import { trackItems } from '@bycrux/editor'
 
 // Editor-facing types now live in @bycrux/editor. Re-exported here so existing
 // `@/lib/types/schema` importers keep resolving them unchanged.
@@ -19,6 +21,7 @@ export type {
   CaptionSegment,
   Captions,
   VisualItem,
+  VisualTrack,
   Asset,
   ImageElement,
   OverlayElement,
@@ -26,6 +29,12 @@ export type {
   Slide,
   EditorProject,
 } from '@bycrux/editor'
+
+// Track-shape tolerance, re-exported as values so host files can import it from
+// `@/lib/types/schema` alongside the types. `project.tracks` may be on disk as
+// the legacy `VisualItem[][]` or as `VisualTrack[]`; read it through
+// `trackItems`, and normalize on open with `normalizeTracks`.
+export { enabledTrackItems, mapTrackItems, normalizeTracks, trackItems } from '@bycrux/editor'
 
 export interface Workflow {
   name: string
@@ -110,7 +119,7 @@ export interface Project extends EditorProject {
   runCount?: number
   sources?: VisualItem[]
   settings: { resolution: [number, number]; fps?: number; brandKit?: string }
-  tracks?: VisualItem[][]
+  tracks?: VisualTrack[]
   captions?: Captions
   assets: Asset[]
   audio?: { tracks: AudioTrack[] }
@@ -146,7 +155,7 @@ export interface StepSchema {
 
 export interface RunSnapshot {
   timestamp: string
-  tracks: VisualItem[][]
+  tracks: VisualTrack[]
   captions?: Captions
   editingPrompt: string
 }
@@ -159,7 +168,9 @@ export interface ProjectVersion {
 
 // Helpers
 export function getVisualItems(p: Project): VisualItem[] {
-  return (p.tracks ?? []).flat()
+  // `trackItems` is both-shapes-tolerant — identical behaviour today, and it
+  // keeps working once `tracks` is on disk as `VisualTrack[]`.
+  return trackItems(p).flat()
 }
 
 // React context

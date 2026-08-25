@@ -1,5 +1,7 @@
 /**
- * Pure drag maths for caption-segment positioning in the preview.
+ * Pure drag maths — and the one DOM measurement they depend on — for
+ * caption-segment positioning in the preview. Everything here is React-free so
+ * it can be unit-tested without mounting CaptionPreview.
  *
  * Why this is NOT `useDragOverlay` generalised
  * --------------------------------------------
@@ -198,4 +200,92 @@ export function captionDragPatch(
   return drag.type === 'move'
     ? { offsetX: geom.offsetX, offsetY: geom.offsetY }
     : { scale: geom.scale }
+}
+
+// ── Measuring where a caption actually paints ───────────────────────────────
+
+/** A rectangle in client (screen) coordinates. */
+export interface CaptionContentRect {
+  left: number
+  top: number
+  width: number
+  height: number
+}
+
+/**
+ * The element a measurement should be scoped to: the subtree a caption
+ * template marked with `data-caption-id="<segmentId>"`, or `root` itself when
+ * no id was asked for or no marker was found.
+ *
+ * Matched by walking `[data-caption-id]` and comparing the attribute rather
+ * than building a `[data-caption-id="…"]` selector, so a segment id containing
+ * a quote or backslash (project.json is hand-editable) can't throw a selector
+ * SyntaxError. The subtree is a handful of nodes, so the walk is free.
+ */
+function scopeForSegment(root: HTMLElement, segmentId?: string): HTMLElement {
+  if (!segmentId) return root
+  for (const el of root.querySelectorAll<HTMLElement>('[data-caption-id]')) {
+    if (el.getAttribute('data-caption-id') === segmentId) return el
+  }
+  return root
+}
+
+/**
+ * Union of the client rects of every painted text run (and replaced element)
+ * under `root` — or, when `segmentId` is given, under just that segment's
+ * marked subtree.
+ *
+ * Deliberately NOT `root.getBoundingClientRect()`: the template's own outermost
+ * element is a frame-sized `position: fixed; inset: 0` box (captionOuterStyle),
+ * so its rect — and the rect of any wrapper we put around it — is the entire
+ * preview, which would put the selection box around the whole frame. Walking to
+ * the text nodes is the only markup-agnostic way to find where the caption
+ * actually paints, and it costs nothing on a subtree this small.
+ *
+ * WHY `segmentId`: the templates draw EVERY caption active at an instant now
+ * that captions have lanes, so an unscoped walk would union two unrelated
+ * captions into one selection box spanning both. Naming the target segment
+ * narrows the walk to that caption alone.
+ *
+ * FALLBACK, deliberately: a template with no `data-caption-id` anywhere — one
+ * written before the attribute existed, or supplied by a host — measures the
+ * whole root, i.e. exactly the pre-lane behaviour. A missing marker degrades to
+ * the old selection box, never to no selection box.
+ *
+ * Returns null when nothing is painted (e.g. `pop` renders no word between two
+ * word windows), which is the signal to hide the selection box entirely.
+ */
+export function measureCaptionContentRect(
+  root: HTMLElement,
+  segmentId?: string,
+): CaptionContentRect | null {
+  const scope = scopeForSegment(root, segmentId)
+  const doc = scope.ownerDocument
+  const walker = doc.createTreeWalker(scope, NodeFilter.SHOW_TEXT | NodeFilter.SHOW_ELEMENT)
+  const range = doc.createRange()
+  let left = Infinity, top = Infinity, right = -Infinity, bottom = -Infinity
+
+  for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+    let rect: DOMRect | null = null
+    if (node.nodeType === Node.TEXT_NODE) {
+      if (!node.nodeValue?.trim()) continue
+      range.selectNodeContents(node)
+      rect = range.getBoundingClientRect()
+    } else {
+      // Replaced elements paint without text nodes. Everything else is a
+      // container whose box is either the frame-sized outer wrapper or a
+      // full-width anchor box — including them would defeat the point.
+      const tag = (node as Element).tagName?.toUpperCase()
+      if (tag !== 'IMG' && tag !== 'SVG' && tag !== 'VIDEO' && tag !== 'CANVAS') continue
+      rect = (node as Element).getBoundingClientRect()
+    }
+    if (!rect || (!rect.width && !rect.height)) continue
+    left   = Math.min(left,   rect.left)
+    top    = Math.min(top,    rect.top)
+    right  = Math.max(right,  rect.right)
+    bottom = Math.max(bottom, rect.bottom)
+  }
+
+  if (!Number.isFinite(left)) return null
+  return { left, top, width: right - left, height: bottom - top }
 }

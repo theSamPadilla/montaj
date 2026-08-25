@@ -24,6 +24,7 @@ import type {
   Captions,
 } from './schema'
 import type { ImageTone } from './video/imageTone'
+import type { SourcePreviewStore } from './video/source-preview'
 
 // ── Overlay compiler ─────────────────────────────────────────────────────────
 
@@ -56,25 +57,86 @@ export type { Project, Slide, CarouselElement, ImageElement, OverlayElement }
  */
 export type RenderEvent =
   | { type: 'log'; message: string }
-  | { type: 'done'; outputPath: string }
+  /**
+   * `outputPath` is always the primary (master) file. `outputPaths` is present
+   * only when the render emitted more than one file (an `--export both` HDR
+   * render: master first, derived SDR sibling second) AND the host was able to
+   * learn the full list — hosts that can't simply omit it.
+   */
+  | { type: 'done'; outputPath: string; outputPaths?: string[] }
   | { type: 'error'; message: string }
 
 /**
- * Options for a render request. Kept intentionally minimal — Montaj's render
- * endpoint (`POST /api/projects/:id/render`) takes no body today, so `scale`
- * is the only forward-looking knob and is optional. Hosts ignore fields they
- * don't support.
+ * Which file(s) a render produces for an HDR project:
+ *  - 'auto' — one master in the project's own color space (an HDR project stays
+ *             HDR). The historical behavior and the default.
+ *  - 'sdr'  — one standard-range file, tone-mapped through `sdrCurve`.
+ *  - 'both' — the HDR master plus an SDR sibling derived from it.
+ * SDR projects are unaffected: every value renders the same single SDR file.
+ */
+export type RenderExport = 'auto' | 'sdr' | 'both'
+
+/**
+ * Options for a render request. Hosts ignore fields they don't support, and
+ * omitting the whole object keeps a host's default behavior.
  */
 export interface RenderOptions {
   /** Output scale multiplier (1 = native resolution). */
   scale?: number
+  /** Which file(s) an HDR project exports. Defaults to 'auto' host-side. */
+  export?: RenderExport
+  /**
+   * Id of the HDR→SDR tone curve used for any SDR output (see
+   * `video/sdrCurves.ts` for the descriptors, and the `curves` keys in
+   * montaj_assets/luts/looks.json for what a host validates against). Typed as
+   * `string` so a host can ship curves the package doesn't know about; ignored
+   * when the render produces no SDR file.
+   */
+  sdrCurve?: string
+  /**
+   * Output base filename (no extension) for the rendered file, from the export
+   * dialog's Name field. Hosts that support naming the output read this; others
+   * ignore it. Omitted → the host's default naming applies.
+   */
+  name?: string
+  /**
+   * Poster/cover frame timecode in project-timeline seconds, from the export
+   * dialog's cover picker. Hosts that produce a cover read this; others ignore
+   * it. Omitted → the host's default (e.g. first frame) applies.
+   */
+  cover?: number
+}
+
+/**
+ * Options for a sample-frame request. Only the SDR curve for now — the frame
+ * itself is identified by the project id and timestamp.
+ */
+export interface SampleFrameOptions {
+  /** Tone curve to map an HDR project's frame through (see `RenderOptions.sdrCurve`). */
+  sdrCurve?: string
+  /**
+   * Prefer each clip's SDR proxy over the full-resolution master for a fast
+   * preview (cover posters, the cover-frame grid). The proxy is already SDR, so
+   * this is mutually exclusive with `sdrCurve` — a proxy frame cannot show a
+   * per-curve HDR→SDR grade. Adapters that can't sample from a proxy may ignore
+   * it. Falls back to the master per clip when no proxy exists.
+   */
+  preferProxy?: boolean
 }
 
 /**
  * Coarse phase of an async render pipeline. Ordered roughly by execution order;
- * hosts may skip phases that don't apply to their pipeline.
+ * hosts may skip phases that don't apply to their pipeline — `sdr_derive` in
+ * particular only runs when an HDR project exports SDR (`export: 'sdr' | 'both'`).
  */
-export type RenderPhase = 'preparing' | 'rendering' | 'captions' | 'encoding' | 'saving' | 'done'
+export type RenderPhase =
+  | 'preparing'
+  | 'rendering'
+  | 'captions'
+  | 'encoding'
+  | 'sdr_derive'
+  | 'saving'
+  | 'done'
 
 /**
  * Point-in-time snapshot of an async render's progress. Returned by
@@ -169,6 +231,19 @@ export interface VersionEntry {
   timestamp: string
 }
 
+// ── Host path resolution ─────────────────────────────────────────────────────
+
+/**
+ * Resolves a host-internal asset path into a displayable URL (e.g. Montaj's
+ * `/api/files?path=…`). This is `EditorAdapter.fileUrl`'s signature, named so
+ * the components it is threaded down to as a prop can type it without
+ * depending on the whole adapter: the canvas timeline takes it to display the
+ * `path`s that come back on `WaveformChunk` and `FilmstripSheet` below.
+ * Optional wherever it is a prop — a host that omits it gets identity, and the
+ * feature that needed the URL degrades to nothing rather than erroring.
+ */
+export type ResolveFilePath = (path: string) => string
+
 // ── Waveform chunks (optional capability) ─────────────────────────────────────
 
 /**
@@ -182,6 +257,156 @@ export interface WaveformChunk {
   start: number
   end: number
 }
+
+// ── Waveform peaks & filmstrips (optional capability) ─────────────────────────
+
+/**
+ * Zoom-bucketed audio peak data for a scrubbable waveform view — the
+ * canvas-rendered replacement for `WaveformChunk`'s fixed PNGs. `peaks` is
+ * interleaved `[min, max, min, max, ...]`, one pair per sample bucket, values
+ * in int16 range. `samplesPerSecond` is normally one of the requested
+ * resolution buckets (50 | 200 | 800) but may come back as a lower,
+ * non-bucketed number when the host's total-samples clamp forced a step-down
+ * for a long window — the actual resolution used, never silently truncated,
+ * hence `number` rather than a literal union. `start`/`duration` echo the
+ * decoded source-time window in seconds. Maps to Montaj's `waveform_peaks`
+ * step.
+ */
+export interface PeaksData {
+  samplesPerSecond: number
+  start: number
+  duration: number
+  peaks: number[]
+}
+
+/** The three bucketed resolutions `getWaveformPeaks` may request. */
+export type PeaksResolution = 50 | 200 | 800
+
+/**
+ * Args for `EditorAdapter.getWaveformPeaks`. `projectId` scopes the host's
+ * output cache (mirrors `getWaveformChunks`'s explicit `projectId`, since a
+ * single adapter instance isn't itself project-scoped); `src` is the
+ * source-identity path — a proxy or original file, per the caller's
+ * input-selection policy (see the Montaj adapter implementation comment);
+ * `samplesPerSecond` is the requested resolution bucket; `start`/`duration`
+ * optionally window the request to part of the source (omit for the whole
+ * file).
+ */
+export interface GetWaveformPeaksArgs {
+  projectId: string
+  src: string
+  samplesPerSecond: PeaksResolution
+  start?: number
+  duration?: number
+}
+
+/**
+ * One tiled contact sheet in a `FilmstripIndex`. `path` is a host-resolvable
+ * image path (route through `fileUrl` to display — same convention as
+ * `WaveformChunk.path`). `tiles` maps each cell to its source timestamp `t`
+ * (seconds) and its `row`/`col` position in the sheet's `cols` x `rows` grid.
+ */
+export interface FilmstripSheet {
+  path: string
+  cols: number
+  rows: number
+  tiles: Array<{ t: number; row: number; col: number }>
+}
+
+/**
+ * A video's uniform time-grid thumbnail strip, tiled across one or more
+ * `FilmstripSheet`s. `interval` is the seconds between consecutive tiles
+ * (uniform across the whole filmstrip); `tileWidth` is the pixel width every
+ * tile was scaled to. Maps to Montaj's `filmstrip` step.
+ */
+export interface FilmstripIndex {
+  sheets: FilmstripSheet[]
+  interval: number
+  tileWidth: number
+}
+
+/**
+ * Args for `EditorAdapter.getFilmstrip`. `projectId` scopes the host's output
+ * cache; `src` is the source-identity path (proxy-only, per the video
+ * timeline's filmstrip policy — see the Montaj adapter implementation
+ * comment). The grid params mirror the `filmstrip` step's own knobs and are
+ * optional — omit to use the step's defaults (`max-tiles=100`,
+ * `min-interval=1.0`, `tile-width=160`).
+ */
+export interface GetFilmstripArgs {
+  projectId: string
+  src: string
+  maxTiles?: number
+  minInterval?: number
+  tileWidth?: number
+}
+
+// ── Audio polish (optional capability) ────────────────────────────────────────
+
+/**
+ * Args for `EditorAdapter.analyzeAudioPolish`. `projectId` scopes the host's
+ * job/output cache (mirrors `getWaveformPeaks`/`getFilmstrip`); `piece`
+ * selects which of Montaj's four audio-polish steps to run (or the
+ * `'silence-check'` dry run — see `AudioPolishAnalysis`); `src` is the
+ * source-identity path being analyzed. `window`, when given, restricts
+ * analysis to a slice of the source — in **source** seconds, not timeline
+ * seconds (see `AudioPolishAnalysis` for why that distinction matters).
+ * `options` are piece-specific knobs: `language`/`model` steer `fillers`'
+ * speech recognition, `targetLufs` steers `loudness`'s gain calculation, and
+ * `maxWordGap`/`sentenceEdge` steer `silence`/`silence-check`'s gap-merging
+ * heuristics.
+ */
+export interface AnalyzeAudioPolishArgs {
+  projectId: string
+  piece: 'silence' | 'fillers' | 'loudness' | 'voice' | 'silence-check'
+  src: string
+  window?: { in: number; out: number }
+  options?: {
+    /**
+     * Speech-recognition language hint for `fillers` (e.g. `'en'`). Defaults
+     * to `'en'` at the call site and should be surfaced as a visible user
+     * control — a wrong language silently corrupts detection rather than
+     * failing loudly.
+     */
+    language?: string
+    model?: string
+    targetLufs?: number
+    maxWordGap?: number
+    sentenceEdge?: number
+  }
+}
+
+/**
+ * Result of `EditorAdapter.analyzeAudioPolish`, discriminated on `piece`.
+ * **Every time in here is source time** — an offset into the source file
+ * named by the request's `src`, never timeline time. Mixing the two is the
+ * single easiest way to misuse this type; a caller must convert through the
+ * clip's own timeline↔source mapping before applying a removal/keep to the
+ * project.
+ *
+ *  - `'silence'` / `'fillers'` — `removals`, each a source-time span to cut,
+ *    with optional `text` (the recognized words, for `fillers`).
+ *  - `'silence-check'` — `keeps`, the source-time spans that WOULD survive
+ *    silence removal at the current settings — the inverse framing of
+ *    `'silence'`, for previewing a threshold before committing to it.
+ *  - `'loudness'` — the measured integrated/true-peak/LRA loudness, the
+ *    requested target, and the gain in dB needed to reach it.
+ *  - `'voice'` — the isolated vocal track: `vocalsPath` is the host path,
+ *    `url` a directly displayable/fetchable URL for it (same convention as
+ *    `getSampleFrame`'s `url`).
+ */
+export type AudioPolishAnalysis =
+  | { piece: 'silence' | 'fillers'; removals: Array<{ start: number; end: number; text?: string }> }
+  | { piece: 'silence-check'; keeps: Array<[number, number]> }
+  | {
+      piece: 'loudness'
+      measuredI: number
+      measuredTP: number
+      measuredLRA: number
+      targetI: number
+      gainDb: number
+    }
+  | { piece: 'voice'; vocalsPath: string; url: string }
 
 // ── Media (optional capability) ───────────────────────────────────────────────
 
@@ -207,7 +432,43 @@ export interface MediaItem {
   name?: string
 }
 
+// ── Footage bin drag-and-drop (optional capability) ───────────────────────────
+
+/**
+ * The drag payload for dropping a bin clip onto the timeline. A subset of
+ * `VisualItem`'s fields — just enough for the timeline drop target to insert a
+ * new clip without round-tripping through the host.
+ */
+export interface FootageDropPayload {
+  src: string
+  proxySrc?: string
+  sourceDuration: number
+  sourceWidth?: number
+  sourceHeight?: number
+  name?: string
+}
+
+/**
+ * The custom drag-and-drop MIME type carrying a `FootageDropPayload` JSON
+ * string from the footage bin to the timeline drop target.
+ */
+export const FOOTAGE_DND_MIME = 'application/x-montaj-footage'
+
 // ── Adapter ────────────────────────────────────────────────────────────────
+
+/**
+ * What the editor is looking at right now — ephemeral UI state, never part of
+ * the project document. Reported to the host so an agent can resolve "this
+ * section" against the actual playhead instead of guessing.
+ */
+export interface EditorContext {
+  /** Playhead position in project seconds. */
+  playheadSec: number
+  /** All selected timeline item ids; [0] is the primary. */
+  selectedIds: string[]
+  /** Selected caption segment id, if any. */
+  selectedCaptionId: string | null
+}
 
 /**
  * The contract a host implements to drive the editor. All transport,
@@ -270,6 +531,19 @@ export interface EditorAdapter<P extends Project = Project> {
    * without a media library omit this; the editor must feature-detect it.
    */
   listMedia?(scope: MediaScope): Promise<MediaItem[]>
+
+  /**
+   * Optional: kick a background ingest of a new source clip (probe →
+   * normalize to the project's color space → proxy → register in
+   * `project.sources`). `input` is either a host-resolvable path already on
+   * the host's filesystem, or a `File` the adapter uploads itself. Resolves
+   * with a job id the caller can poll. Optional — hosts that don't support
+   * post-init ingest omit it.
+   */
+  ingestSource?(
+    projectId: string,
+    input: { path: string } | File,
+  ): Promise<{ jobId: string }>
 
   /**
    * Compile a JSX overlay template file into an `OverlayFactory`.
@@ -363,11 +637,31 @@ export interface EditorAdapter<P extends Project = Project> {
   restoreVersion?(id: string, hash: string): Promise<P>
 
   /**
-   * Optional: produce rendered waveform-image chunks for an audio track. The
-   * editor passes the project id, the track id (used to namespace the output
-   * cache), the track's source path, and an optional chunk duration in seconds.
-   * The host renders/caches the chunks and returns their resolvable paths. Maps
-   * to Montaj's `waveform_image` step.
+   * Optional: save the current project state as a named version. Maps to
+   * Montaj's `POST /api/projects/:id/versions` with `{ name? }`. Returns the
+   * updated version list.
+   */
+  saveVersion?(id: string, name?: string): Promise<VersionEntry[]>
+
+  /**
+   * Optional: build the URL for a rendered frame from a specific version
+   * (git commit hash, or the string `"working"` for the live on-disk state)
+   * at time `t` seconds. The URL is used as an `<img src>`; the host serves
+   * the PNG. Maps to Montaj's `GET /api/projects/:id/versions/:commit/frame?t=`.
+   */
+  versionFrameUrl?(id: string, commit: string, t: number): string
+
+  /**
+   * RETIRED — the editor no longer calls this. It produced rendered
+   * waveform-image chunks (fixed PNG strips) for the DOM timeline's audio
+   * rows; those rows are gone and the canvas timeline draws from
+   * `getWaveformPeaks` instead, which is now the package's only waveform
+   * path. The signature is kept so hosts that still implement it keep
+   * compiling, and so a host can go on serving it to its own chrome — but
+   * nothing in this package reads the result. Mapped to Montaj's
+   * `waveform_image` step; args were the project id, the track id (which
+   * namespaced the output cache), the track's source path, and an optional
+   * chunk duration in seconds.
    */
   getWaveformChunks?(
     projectId: string,
@@ -375,6 +669,48 @@ export interface EditorAdapter<P extends Project = Project> {
     trackSrc: string,
     chunkDurationS?: number,
   ): Promise<WaveformChunk[]>
+
+  /**
+   * Optional: produce zoom-bucketed audio peak data for a scrubbable
+   * waveform view. This is the package's ONLY waveform path — the canvas
+   * timeline draws every waveform from it (see the retired
+   * `getWaveformChunks` above). Input-selection policy is the *caller's*
+   * responsibility, not this method's: `item.proxySrc` (proxy only — no
+   * fallback to the original) for per-clip waveforms on visual tracks,
+   * `track.src` for audio lanes (see the Montaj adapter implementation
+   * comment). Maps to Montaj's
+   * `waveform_peaks` step. Optional: a host without a peaks step omits it and
+   * the editor feature-detects its absence, drawing no waveforms.
+   */
+  getWaveformPeaks?(args: GetWaveformPeaksArgs): Promise<PeaksData>
+
+  /**
+   * Optional: produce a uniform time-grid filmstrip (thumbnail strip) for a
+   * video source, tiled into one or more contact sheets with a timestamp
+   * index. Maps to Montaj's `filmstrip` step. Optional: a host without a
+   * filmstrip step omits it and the editor feature-detects its absence,
+   * drawing no tile strips or hover-scrub thumbs.
+   */
+  getFilmstrip?(args: GetFilmstripArgs): Promise<FilmstripIndex>
+
+  /**
+   * Optional: render one fully composited project frame at `at` (project
+   * timeline seconds) and return a directly displayable URL for it — a still
+   * the editor can put straight into an `<img>`. `opts.sdrCurve` picks the
+   * HDR→SDR tone curve so the same frame can be sampled through each curve for
+   * a side-by-side comparison (the RenderModal's curve picker).
+   *
+   * URL rather than a host path because the resolution rule is the host's:
+   * Montaj returns its `/api/files?path=` URL for the produced PNG, a Hub
+   * client would return a presigned one. Hosts without a frame sampler omit
+   * this; the editor feature-detects its absence and shows the picker without
+   * thumbnails. Maps to Montaj's `sample_frame` step.
+   */
+  getSampleFrame?(
+    projectId: string,
+    at: number,
+    opts?: SampleFrameOptions,
+  ): Promise<{ url: string }>
 
   /**
    * Optional: invalidate the host's compiled-overlay cache. When `src` is given,
@@ -400,8 +736,49 @@ export interface EditorAdapter<P extends Project = Project> {
    * the editor patches `project.captions` from the 'done' event. Hosts without a
    * transcription pipeline omit this; the editor feature-detects its absence and
    * hides the "Regenerate captions" control.
+   *
+   * The 'done' `Captions` REPLACES `project.captions` wholesale, not just its
+   * segments in row 0 — a project with more than one caption row (see the
+   * `timeline` prop doc above) loses every row but the single fresh one this
+   * produces. `CaptionRegenModal` warns before that happens whenever the
+   * project has more than one row; there is no partial/per-row regeneration.
    */
   generateCaptions?(id: string, opts?: GenerateCaptionsOptions): AsyncIterable<CaptionEvent>
+
+  /**
+   * Optional: report the editor's live playhead and selection to the host.
+   *
+   * Fire-and-forget and already throttled by the editor (see
+   * `useReportContext`) — a host must not add its own debounce. Hosts with
+   * nowhere to put ephemeral UI state omit this entirely; the editor feature-
+   * detects its absence and reports nothing. A rejected promise is swallowed:
+   * context sync is a convenience and must never surface as an editor error.
+   */
+  reportContext?(id: string, context: EditorContext): Promise<void>
+
+  /**
+   * Optional: analyze a clip's audio for one of four cleanup pieces (or a
+   * `'silence-check'` dry run) and return proposed edits for the user to
+   * review before applying — detect silence/filler words to trim, measure
+   * loudness and the gain needed to hit a target, or isolate vocals. Maps to
+   * Montaj's four underlying audio-polish steps.
+   *
+   * Promise-based, not an async iterable, and deliberately so: these are
+   * polled jobs with no log stream, unlike `generateCaptions`'s streaming
+   * transcription — modeled instead on `getWaveformPeaks`/`getFilmstrip`.
+   *
+   * Optional so Hub keeps compiling against the released `@bycrux/editor`
+   * unchanged; the UI hides the audio-polish entry point on hosts that omit
+   * this, the same `generateCaptions` precedent. Hosts without an
+   * audio-polish pipeline simply don't implement it.
+   *
+   * `args.window` and every time in the result are **source** time — offsets
+   * into `args.src`, never timeline time (see `AudioPolishAnalysis`). This is
+   * the single easiest way to misuse this method; a caller must convert
+   * through the clip's own timeline↔source mapping before applying a
+   * removal/keep to the project.
+   */
+  analyzeAudioPolish?(args: AnalyzeAudioPolishArgs): Promise<AudioPolishAnalysis>
 }
 
 // ── Theme ────────────────────────────────────────────────────────────────────
@@ -463,6 +840,19 @@ export interface EditorSlots {
   exportActions?: ReactNode
   /** Rendered into the editor's assets/media panel area. */
   assetsPanel?: ReactNode
+  /**
+   * Rendered in the left media column of the CapCut layout. When present, the
+   * editor renders the three-column + full-width-timeline layout; otherwise
+   * the classic layout is unchanged.
+   */
+  mediaPanel?: ReactNode
+  /**
+   * Rendered in the CapCut layout's right properties panel when nothing is
+   * selected, in place of the editor's generic centered "Select an element"
+   * empty state. Hosts use it to brand the empty panel (Montaj shows its
+   * logo). Absent → the generic default shows. No effect in the classic layout.
+   */
+  propertiesEmptyState?: ReactNode
   /**
    * Rendered in the pending/empty view in place of the default
    * "Message your agent to start" copy. Hosts use this to surface live agent
@@ -589,22 +979,23 @@ export interface VideoEditorProps<P extends Project = Project> {
   onProvideImageTone?: (api: { value: ImageTone; set: (tone: ImageTone) => void } | null) => void
 
   // ── Host-supplied Montaj-specific UI (render-prop seams) ──────────────────
-  // The clip/audio inspector and the subcut-regeneration tool read host-only
+  // The generation panel and the subcut-regeneration tool read host-only
   // fields (regenQueue, storyboard, the host's full Project) the package types
   // don't know. The editor surfaces them as render-props it threads/renders so
   // those components can stay host-side; the editor stays Montaj-agnostic.
+  // Both take the clip id rather than a project entity — the editor owns the
+  // selection, the host owns what to draw for it.
 
   /**
-   * Render-prop seam for the host's clip/audio inspector (Montaj's
-   * ClipInspectModal). The editor owns the "which item is being inspected"
-   * state — it derives `ctx.item` from the timeline's `onInspectClip` /
-   * `onInspectAudio` callbacks (a Montaj-agnostic `{ kind, id }` selector, not
-   * a project entity) and passes a close callback. Absent → no inspector.
+   * Render-prop seam for the host's per-clip generation panel (Montaj's AI
+   * regenerate surface), rendered inside the right properties panel beneath
+   * the clip properties whenever a VIDEO clip is selected. It reads and writes
+   * `project.regenQueue` and `project.storyboard` — host-only fields this
+   * package deliberately knows nothing about (see EditorProject's index-
+   * signature comment) — so the content stays host-side and the editor only
+   * says WHERE it goes and WHICH clip it is for. Absent → nothing rendered.
    */
-  renderClipInspector?: (ctx: {
-    item: { kind: 'clip' | 'audio'; id: string }
-    onClose: () => void
-  }) => ReactNode
+  renderGenerationPanel?: (ctx: { clipId: string }) => ReactNode
 
   /**
    * Render-prop seam for the host's subcut-regeneration tool (Montaj's
@@ -627,4 +1018,78 @@ export interface VideoEditorProps<P extends Project = Project> {
    * reads `regenQueue`.
    */
   isClipQueued?: (itemId: string) => boolean
+
+  /**
+   * SP4 — opt into the WebCodecs playback engine for the video preview.
+   * Follows the `assetsPlacement`/`regenEnabled` host-knob precedent: an
+   * optional prop, absent by default, that a host passes to change editor
+   * behavior. Threaded straight through to `PreviewPlayer`'s own `engine`
+   * prop (see `video/preview/PreviewPlayer.tsx`).
+   *
+   * Default (prop omitted) or `{ enabled: false }`: the legacy `<video>`-slot
+   * player, completely unchanged — this is the non-regression guarantee the
+   * SP4 plan tests against (the entire editor suite stays green with this
+   * prop untouched).
+   *
+   * `{ enabled: true }` does not itself force engine mode: the editor
+   * evaluates per-project eligibility (`engine/eligibility.ts` — WebCodecs
+   * avc1/opus decode support, plus every track-0 video item proxied and none
+   * requiring the WebM `nobg_preview_src` alpha path) once per project load,
+   * and falls back to the legacy player, reasoned via console, whenever a
+   * project doesn't pass. `debugHud` additionally renders the
+   * fps/drops/buffer/clock-kind readout; it has no effect while `enabled` is
+   * false.
+   *
+   * No flag mechanism existed before this — hosts opt in explicitly, and this
+   * prop stays absent-by-default for every consumer of the package. The montaj
+   * ui app passes `enabled: true` unconditionally; other hosts are unaffected
+   * and must still opt in.
+   */
+  engine?: { enabled: boolean; debugHud?: boolean }
+
+  /**
+   * Opt-in seam letting a host's footage bin drive the MAIN preview on hover.
+   * When the host hovers a bin clip card it sets `{ url, fraction }` on this
+   * store; the editor mounts a paused `<video>` overlay above the preview and
+   * seeks it to `fraction × duration`, so the operator source-scrubs an
+   * OFF-TIMELINE clip without disturbing the playhead. Clearing it to `null`
+   * unmounts the overlay and the normal timeline preview shows again.
+   *
+   * Default (prop omitted): totally inert — no overlay is ever mounted and the
+   * main preview behaves exactly as before, so the classic layout, Hub and LP
+   * are unaffected. A host opts in by creating the store
+   * (`createSourcePreviewStore`) and passing it here AND to the card that writes
+   * to it. Mirrors the `hover-scrub` store pattern; see
+   * `video/source-preview.ts`.
+   */
+  sourcePreview?: SourcePreviewStore
+
+  /**
+   * Opt-in seam for a non-blocking, host-driven caption job. When provided,
+   * the editor delegates the caption generate/regenerate trigger to this
+   * callback instead of opening its own blocking `CaptionRegenModal` — the
+   * host is asserting it owns the job (e.g. running it as a background task
+   * and reconciling `project.captions` itself via its own transport). Wins
+   * over `adapter.generateCaptions` when both are present, since a host that
+   * passes this prop typically still implements `generateCaptions` to power
+   * the job it triggers.
+   *
+   * Absent (the default): the editor's existing built-in `CaptionRegenModal`
+   * path runs completely unchanged — this is the Hub/Los Parceros backward-
+   * compat guarantee. Neither host currently passes this prop.
+   */
+  onRegenerateCaptions?: () => void
+  /**
+   * Lets the host tell the caption panel that ITS background caption job is
+   * in flight, so the generate/regenerate trigger button disables while it
+   * runs. Meaningful only alongside `onRegenerateCaptions` — a host that owns
+   * the trigger also owns knowing when the job is still running, since the
+   * editor has no visibility into a job it didn't start.
+   *
+   * OR'd with the editor's own internal modal-open state at the call site —
+   * it never replaces that state, only adds to it, so the built-in modal's
+   * "disable the trigger while it's open" behavior keeps working even when a
+   * host also sets this. Absent → treated as `false`, no effect.
+   */
+  captionsGenerating?: boolean
 }

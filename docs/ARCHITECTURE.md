@@ -120,13 +120,14 @@ Works with any agent that has shell access — Claude Code, OpenClaw, or any fra
 
 ### MCP
 
-Montaj runs as a local MCP server (`montaj mcp`), started automatically by the MCP client (Claude Desktop, Claude Code). The agent calls steps as native tools — no shell access required.
+Montaj runs as a local MCP server (`montaj mcp`), started automatically by the MCP client (Claude Desktop, Claude Code). The agent calls a curated set of CLI commands as native tools — no shell access required.
 
 ```
 Claude Desktop opens
   → spawns: montaj mcp
-  → montaj mcp reads steps/*.json, registers each as an MCP tool
-  → agent calls: trim({input: "clip.mp4", start: 2.5, end: 8.3})
+  → montaj mcp runs `python3 cli/mcp_schema.py`, which introspects the
+    allowlisted CLI commands' argparse parsers and returns tool schemas
+  → agent calls: transcribe({input: "clip.mp4"})
   → montaj mcp invokes the CLI executable, returns result
 Session ends → process dies
 ```
@@ -140,7 +141,32 @@ Configure once in `claude_desktop_config.json`:
 }
 ```
 
-New steps are picked up automatically — adding `steps/my-step.py` + `.json` makes it available as an MCP tool with no extra configuration.
+**Tools come from CLI commands, not from steps directly.** `cli/mcp_schema.py` builds a parser for each command named in its `_EXPORTED_COMMANDS` allowlist, then flattens subcommands into separate tools — so the 26-command allowlist currently yields 35 tools (`workflow` alone becomes `workflow_new`/`workflow_list`/`workflow_edit`/`workflow_run`). Argument schemas are derived from the argparse actions, so a flag added to a CLI command shows up as an MCP parameter with no extra work.
+
+**Adding a step does not by itself create an MCP tool.** Three things have to line up:
+
+1. `steps/<name>.py` + `.json` — the step itself.
+2. An entry in `cli/main.py`'s `_STEP_COMMANDS`, which generates the CLI command from the step's JSON schema (`cli/step_command.py`). Hand-written commands live in `_COMMANDS` instead.
+3. An entry in `cli/mcp_schema.py`'s `_EXPORTED_COMMANDS`, which is what actually exports it over MCP.
+
+The allowlist is deliberate: it keeps the agent-facing surface curated rather than exposing every command the CLI happens to grow.
+
+### MCP resources
+
+Alongside its tools, `montaj mcp` exposes two read-only resources:
+
+- `montaj://profile/<name>` — a creator style profile, read straight off
+  `~/.montaj/profiles/<name>/style_profile.md`.
+- `montaj://context` — what the editor is looking at *right now*: playhead,
+  selection, the clip under the playhead, and the caption text spanning it.
+
+`montaj://context` is the one place MCP talks to `montaj serve` over HTTP. The
+two are separate processes, so `montaj serve` announces its port in
+`~/.montaj/serve.json` (written at startup, removed at shutdown, pid-checked by
+readers) and the MCP server reads that to find it. The state itself is
+ephemeral — held in memory by serve, never written to `project.json`, expired
+after two minutes, and gone when serve stops. With no editor open the resource
+says so rather than returning stale coordinates.
 
 ### HTTP API (via montaj serve)
 
@@ -573,6 +599,329 @@ concat({inputs: [spec1.json, spec2.json, ...]})
 
 ---
 
+### Timeline resolver (`montaj_assets/timeline-core/`)
+
+`@bycrux/timeline-core` is the single implementation of "what is on screen at
+time T" — plain JS ESM with JSDoc types (`// @ts-check`, strict `tsc --noEmit`,
+a committed hand-written `index.d.ts`), zero runtime dependencies, no build
+step. It answers the questions every consumer of `project.json` timing was
+independently re-deriving: which items are active at a timestamp, where their
+source window seeks to, where they sit in frame, which caption segment is
+speaking, and how long the project runs.
+
+**Entry points.** The project-shaped API is two functions, both returning a
+`Scene` — `{ items: ResolvedItem[], t: number }`, everything on screen at one
+instant, ordered back-to-front by ascending `trackIdx` (captions are excluded;
+`project.captions` is a top-level object, not track items, and its per-instant
+content is `activeCaptionSegment`). `resolveAt(project, t, {variant})` answers
+for a single instant using `start <= t < end`; a `t` inside a gap resolves to
+an empty `Scene`, with no last-clip fallback. `resolveSegment(project,
+segStart, segEnd, fps)` is render-only and variant-free — render cuts the
+timeline into segments rather than sampling instants, so it answers for the
+whole span `[segStart, segEnd]` at once via the containment predicate
+`coversSegment`, and sets `Scene.t` to `segStart`. Each `ResolvedItem` on
+`Scene.items` carries the original item (a reference, never a copy), its
+`trackIdx`, `kind`, the resolved `SourceWindow` (`null` for images and
+overlays, which have no source-file timeline), the `seek` position, and its
+`geometryFor` geometry.
+
+**Three implementations.** All three JS runtimes import the package directly:
+
+- **Editor preview** — `useVideoPlayback`'s `effectiveInPoint`/`effectiveOutPoint`/
+  `playbackSrcFor` are thin wrappers over the resolver; `PreviewPlayer.activeClip`
+  and `OverlayItemsLayer` call its activation predicates and `geometryFor`.
+- **Render engine** — `segment-plan.js` and `render.js`'s `collectAllItems`
+  delegate their boundary/activation math to it.
+- **`sample-frame.js`** — the diagnostic frame-sampling tool adopts it too, so
+  what an engineer inspects offline matches what actually renders.
+
+Python's `serve/caption_job.py` used to be a fourth, hand-ported
+implementation, kept honest against the other three by a pytest pinned to the
+same fixture corpus. It no longer resolves source windows at all: the caption
+job builds an AUDIO mix of the audible timeline rather than a video cut of
+`tracks[0]`, and audio has no `normalizedSrc`/`nobg`/proxy precedence problem
+to solve — every segment reads the original `src` with its raw `inPoint`, and
+window length comes from the item's timeline span. One less port to keep in
+sync.
+
+**The variant model.** The resolver is variant-aware, not silently unified:
+every function whose answer legitimately differs between preview and render
+takes an explicit `Variant = 'preview' | 'render'` argument (an unrecognized
+value throws rather than defaulting). Preview and render really do disagree
+in places — src precedence when a normalized cache or a background-removal
+artifact is present, which items are "active" at a boundary, whether `opaque`
+hides underlying video, whether `rotation` is honored — and the resolver's job
+is to reproduce each side's actual behavior under its own variant, not to
+invent a single "correct" answer and quietly change what ships. Where the two
+variants are supposed to agree, they call the same variant-agnostic primitive.
+
+**The shared fixture corpus.** `fixtures/*.json` (project-shaped test inputs)
+and `expected/*.json` (committed golden output) live in the package and are
+read by all three JS suites — one corpus, three readers, so "does runtime X
+agree with runtime Y" is a fixture-by-fixture diff instead of a claim.
+`fixtures/README.md` documents the corpus's own ground rules (never depend on
+real files, never author a genuinely malformed or unreachable-in-production
+fixture).
+
+**The divergence registry.** Porting three independently-evolved codebases
+into one resolver surfaced places where they already disagreed with each
+other in production, before the resolver existed. `KNOWN-DIVERGENCES.md`
+documents each one it found: what diverges, the exact `file:line` on both
+sides, the user-visible consequence, an **owning SP** for the eventual fix,
+and a fixture pointer where one exists. The resolver **reproduces** whichever
+behavior each consumer currently gets — it does not fix any of these; fixing
+is out of scope for the package that just extracted the shared math. New
+divergences discovered after the initial port are appended to a "Discovered
+during SP2" section rather than folded into the original numbered list.
+
+**Permanent gates.** Two tests exist specifically to keep future edits to the
+resolver (or to render's delegation to it) from silently changing what ships:
+
+- `render/test/resolver-parity.test.mjs` — compares a frozen, verbatim,
+  pre-adoption copy of `segment-plan.js`'s algorithm against both the
+  resolver's composed primitives and the shipped `planSegments`. All three
+  must agree; a change to the resolver that alters segment planning fails
+  here.
+- `render/test/encode-args-golden.test.mjs` — runs the real, fully-swapped
+  `collectAllItems` → `planSegments` → `encodeSegment(..., {_dryRun:true})`
+  pipeline over the fixture corpus and compares the resulting ffmpeg
+  arguments against goldens captured from the pre-resolver pipeline. This is
+  the end-to-end "the bytes ffmpeg is asked to produce did not change" proof.
+
+---
+
+### Playback engine (`montaj_assets/editor/src/engine/`)
+
+**Status: the editor's default player.** `EditorPage.tsx` passes `engine={{
+enabled: true }}` to `VideoEditor` (`EditorPage.tsx:437`), so every project
+loads through the WebCodecs demux→decode→paint pipeline described below in
+place of the legacy double-buffered `<video>` machinery (`useVideoPlayback.ts`,
+three independent rAF clocks) — a project falls back to the legacy player
+automatically, per project, whenever `evaluateEngineEligibility` finds a
+reason not to (see `eligibility.ts` below). The `VideoEditor` `engine?:
+{enabled, debugHud?}` prop remains a real host knob, not leftover rollout
+plumbing: a consumer other than Montaj's own editor can leave it unset to stay
+on the legacy player outright, or set `debugHud` to show the fps/dropped/
+buffered/clock readout. See `docs/UI.md` for the operator-facing surface
+(eligibility, fallback, the Preparing placeholder, the debug HUD).
+
+**Module map:**
+
+| Module | What it does |
+|---|---|
+| `eligibility.ts` | Pure project-shape check (every track-0 video item proxied, none needing WebM alpha) + an async, session-cached WebCodecs capability probe (`VideoDecoder`/`AudioDecoder.isConfigSupported`). `evaluateEngineEligibility` composes both. |
+| `media-loader.ts` | `loadBytes` — a host-injected `FileUrlResolver` (`EditorAdapter.fileUrl`, unchanged) mapped to a whole-file `fetch`. |
+| `demux.ts` | mp4box.js MP4 parse → a flat, codec-agnostic sample table. Samples stay in **decode order** (a `presIndex` answers presentation-time questions separately) — WebCodecs requires decode order, and the source footage's B-frames make the two orders differ. `demuxBytes` is synchronous (mp4box's callback API isn't actually async when handed a whole file at once). |
+| `batch-planner.ts` | Pure decode-ahead planning: pipelined batches (≥1 request queued on the worker so it never idles waiting for main), batches floored at a quarter of the decode-ahead budget so a `decoder.flush()` amortizes over many frames, batch pre-roll targets computed from the batch's minimum presentation time (not its first decode-order sample), and a 1µs pre-roll epsilon reconciling integer-µs `EncodedVideoChunk` timestamps against the demuxer's float sample times. |
+| `frame-server.ts` + `decode-worker-source.ts` | Main-side decode-ahead orchestration, plus the actual decoder: a classic `Worker` loaded from an inlined source **string** via a Blob URL, running one `VideoDecoder` behind a supersession-by-request-id queue (never `decoder.reset()`). |
+| `audio-clock.ts` + `audio-worklet-source.ts` | The master clock. An `AudioWorkletProcessor`, also an inlined Blob-URL source string, renders PCM from a ring buffer and reports its actual output-frame count (`samplesConsumed`) back at ~10Hz; that count — not decode progress, not wall time — is the clock. Includes PCM resampling (the page's shared `AudioContext` rate need not match Opus's 48kHz decode rate), per-clip volume scaling at ring-enqueue time, and a wall-clock fallback for everything with nothing to sync to. |
+| `scheduler.ts` | The single synchronous tick / state machine. Two orthogonal axes — `transport` (idle/paused/playing/ended) and `picture` (video/black/opaque/preparing) — reproduce every legacy behavior (gaps, loop wrap/stop, end-of-project, `sourceCrop` framing) from one master clock instead of three. |
+| `index.ts` | The `createEngine` facade: resource lifecycle (`EngineSourceHost` — one `FrameServer` per `src`, refcounted by clip; one `MasterClock` per clip; a small demux LRU), the rAF loop (runs only while playing), the canvas painter, and `EngineStats` for the debug HUD. |
+| `debug-hud.tsx` | The fps/dropped/buffered/clock readout, rendered only when `engine.debugHud` is true. |
+
+**Data flow.** Video: proxy fetch (via the host's `fileUrl`, whole file) →
+mp4box demux (main thread, decode order preserved) → batch planning (main
+thread, pure functions) → decode (a Blob-URL classic `Worker` running one
+`VideoDecoder`, fed by structured-cloned sample bytes, `VideoFrame`s returned
+by transfer) → paint (canvas 2D `drawImage` of one `VideoFrame` per tick).
+Audio: Opus packets → `AudioDecoder` (main thread) → volume-scaled,
+resampled PCM → an `AudioWorklet` ring buffer (postMessage chunks, deliberately
+**not** `SharedArrayBuffer` — cross-origin isolation is unavailable in Hub's
+serving context) → `samplesConsumed` reported back ~10Hz, which **is** the
+master clock (wall-clock-extrapolated between reports, bounded so a suspended
+`AudioContext` presents as a stalled clock rather than a runaway one). Frames
+paint according to that clock; video drops rather than blocking decode when it
+falls behind — the inverse of the legacy path's audio nudging toward video.
+Wherever there's nothing to derive a clock from — gaps, canvas (image/
+overlay-only) projects, muted clips, undecodable/absent audio, or any failure
+building the real clock — `createMasterClock` resolves (never throws or
+rejects) to a wall-clock fallback with a human-readable reason, surfaced by the
+HUD's `clock: 'fallback'`.
+
+**Flag + eligibility + fallback + Preparing-state design.** `engine` absent or
+`{enabled: false}` (the default): the legacy `<video>`-slot player renders
+exactly as before, and the eligibility probe never even runs — this is SP4's
+non-regression guarantee, checked by keeping the full editor test suite green
+with the prop untouched. `{enabled: true}` only asks the editor to *try*:
+per-project eligibility (every track-0 video item already `proxySrc`'d, none
+needing `nobg_preview_src`, plus the WebCodecs capability probe) is evaluated
+once per project **load** (`PreviewPlayer.tsx`'s `useEngineMode`) and never
+re-run on an edit — a project that fails stays on the legacy player, with a
+one-line console reason, for its whole session even if it becomes eligible a
+minute later; a project that passes stays on the engine for its whole session
+even if a clip added afterward isn't proxied yet. That one clip alone shows
+the **Preparing** picture state instead — `scheduler.ts`'s `picture` state
+machine has a value distinct from `video`/`black`/`opaque` that covers a proxy
+not yet encoded, a proxy that failed to load, and a proxy that failed to
+*decode* mid-session, all through the same path
+(`EngineSourceHost.onDecodeError`) — while the rest of the project (other
+clips, audio) keeps playing. The UI shows a spinner + "Preparing preview…"
+only after 200ms of sustained Preparing, so an ordinary prewarm-covered clip
+boundary never flashes it.
+
+**One deliberate preview/render unification, engine-path only.** An overlay's
+`opaque: true` now hides the underlying video on the engine path (audio keeps
+running) — matching what render has always done — where the legacy `<video>`
+path still shows the video underneath, a pre-existing preview/render
+divergence. See `montaj_assets/timeline-core/KNOWN-DIVERGENCES.md`'s
+`opaque-in-preview` entry for the full disposition; it is closed for the
+engine path and stays open for legacy until that player is retired.
+
+**The inline-string worker/worklet portability decision.** Both the decode
+worker and the `AudioWorkletProcessor` ship as plain-JS **source strings**,
+loaded via `URL.createObjectURL(new Blob([source], {type:
+'text/javascript'}))` and `new Worker(url)` / `audioWorklet.addModule(url)` —
+not as separate asset files. `@bycrux/editor` is a published package consumed
+by hosts with different bundlers (montaj's own `ui/`, Hub); a Vite-only `?raw`
+import or a `new Worker(new URL(...))` asset reference can only be verified
+against the bundlers actually present in this repo and would silently break
+for a host on a different one. The Blob-URL form needs nothing from the
+consumer's build tooling. Consequence: both strings are plain ES5-ish JS with
+no `import`, so they are kept deliberately thin — the worker does queueing,
+request-id supersession, and the pre-roll drop; the worklet does the ring
+buffer, underrun-as-silence, and the report cadence. Every actual *decision*
+(batch sizing, the pre-roll epsilon, the resample ratio, PCM volume scaling,
+the project↔media time mapping) lives in `batch-planner.ts` / `audio-clock.ts`
+— real, type-checked, unit-tested modules — and is injected into the string at
+construction time (`init` / `processorOptions`) rather than duplicated inside
+it.
+
+**One `FrameServer` per source, not per clip.** A silence-trimmed timeline
+that is fifty clips cut from one proxy shares a single decoder session,
+refcounted by clip; a small (3-entry) LRU keeps recently-demuxed sample tables
+around across a scrub back-and-forth even after the last clip referencing them
+drops its live session. Decode *workers* still terminate on every source
+boundary (the SP1 spike's rule: "terminate and respawn, never
+`decoder.reset()` a live worker") — only the parsed bytes linger.
+
+**Testing.** The whole engine down through the scheduler is unit-tested with
+injected seams (a fake `Painter`, a fake `SourceHost`, a fake rAF pair, a fake
+decode-worker port) in jsdom, which has none of `WebCodecs`, `Worker`, or a
+real canvas — see `montaj_assets/editor/src/engine/__tests__/`.
+
+---
+
+### Canvas timeline (`montaj_assets/editor/src/video/timeline/canvas/`)
+
+**Status: the only timeline.** The track-row area — every visual clip and
+audio bar, previously its own positioned `<div>`, recalculated on every
+scroll/zoom, with zero virtualization — renders on one `<canvas>`-rendered
+surface. There is no DOM-rows mode left to opt into: the `VideoEditor`
+`timeline?: {canvas: boolean}` prop is gone from the package entirely, and
+canvas is unconditionally what every host gets, including Montaj's own
+`montaj_assets/ui` editor page. See `docs/UI.md` for the operator-facing
+surface (what changes for the user); the consumer migration runbook (exact
+adapter signatures, call-site patterns, and a verification checklist) is
+maintained internally for the hosts that need it.
+
+**One chrome, one track-row surface.** `Timeline.tsx` owns the surface — zoom
+controls, the scrubber, the transcript panel/modal, and the `TimelineContext`
+provider — same as before this change. The track-row area (visual tracks,
+audio lanes, and caption bands) is one `TimelineCanvas` surface; the
+`VisualTrackRow`/`AudioTrackRow` DOM rows it replaced are deleted from the
+package outright, not kept behind a flag. Captions are not a DOM carve-out:
+they render as bands inside the same canvas layout as clips and audio items
+(`draw.ts`'s `CaptionRowLayout`, hit-tested by `hit-test.ts` alongside
+visual/audio rows) — the old `CaptionTrackRow` DOM component (inline
+`contentEditable` editing) was retired separately, in the 2026-08-23
+captions-canvas-row work, before this change touched anything. Caption
+*text* editing itself lives in the Captions tab of the left panel
+(`CaptionListPanel.tsx`, via `EditableSegment`'s `contentEditable` span), not
+inline on the timeline surface.
+
+**The `timeline-model.ts` contract.** Timing/layout logic the canvas surface
+must reproduce exactly lives in `timeline/timeline-model.ts`. It predates the
+canvas timeline as a module shared between the (now-deleted) DOM rows and the
+canvas surface, so behavior couldn't fork between them while both existed;
+today it's simply the canvas surface's one implementation:
+
+| Export | What it is |
+|---|---|
+| `computeDerivedTiming` | Snap boundaries, content duration, and the padded total duration — the render-time memo `Timeline.tsx` keys its `useMemo` on. |
+| `computeAutoCrossfade` | The auto-crossfade rule (overlapping unmuted audio tracks get complementary fade-out/fade-in). Lifted out of what used to be an untested, DOM-only render-time effect in `Timeline.tsx`; now unit-tested and invoked from ONE `useEffect` in `Timeline.tsx` that sits above the track-row area. |
+| `groupAudioLanes` | Groups audio tracks into lanes (explicit `lane` field, or auto-assigned) — consumed by the canvas layout (`computeTimelineLayout` in `draw.ts`; previously also by the DOM rows' lane rendering, before they were deleted). |
+| `moveItemAcrossTracks` | The cross-track drag placement search (collision-avoidance, track pruning) extracted verbatim from `VisualTrackRow`'s drag handler; reused by the canvas pointer machine for the identical gesture. |
+| Row-geometry constants | `VISUAL_ROW_HEIGHT_PX`, `AUDIO_LANE_HEIGHT_PX`, `VISUAL_ROW_RENDER_HEIGHT_PX`, `BASE_VISUAL_ROW_RENDER_HEIGHT_PX`, `ROW_GAP_PX` — named after the deleted DOM rows' Tailwind heights, so the canvas painter draws rows at the same size those rows used to render. |
+
+**The canvas module layout.** Everything under `timeline/canvas/` is pure,
+DOM-free logic plus one thin React shell:
+
+| Module | What it does |
+|---|---|
+| `viewport.ts` | The scroll/zoom model: `pxPerSecond` (px per second) + `scrollSeconds` (time at the left edge), replacing the DOM path's "multiple of container width against a content-dependent duration" zoom — a model that couldn't zoom out past fit and silently changed px/second whenever a clip moved. Time↔pixel conversion is a pure affine map. Also owns the DPR-crisp rendering plumbing (backing-store sizing, `ResizeObserver` + a `devicePixelRatio`-change watcher, `ctx.setTransform` scaling) — no precedent existed elsewhere in the repo for a resolution-independent 2D canvas. The viewport lives in an external store (`createViewportStore`, `useSyncExternalStore`), not React state, so a wheel-zoom gesture never re-renders `Timeline`. |
+| `draw.ts` | Pure paint functions (`drawClipRect`, `drawAudioItem`, `drawTimelineContent`, `drawTimelineOverlay`, …) taking a structural `DrawContext` subset of `CanvasRenderingContext2D`, so a recording stub can assert on the exact call list in tests. `drawTimelineContent` culls to the visible time range before any draw call — draw cost is bounded by the viewport, not the project (the acceptance probe the parity checklist's §B cites). The playhead is a SEPARATE draw function/layer (see `TimelineCanvas.tsx` below) so a 60Hz-during-playback repaint never touches the content layer. |
+| `hit-test.ts` | Pure point → target resolution (`{kind, itemId, edge\|body, trackIdx\|laneIdx, t}`) over the SAME layout `draw.ts` computes (`computeTimelineLayout`) — the canvas has no DOM elements to let the browser hit-test for it, so this exists where the DOM path never needed an equivalent. |
+| `snap.ts` | ONE magnetic-snapping model (18px attract / 28px release hysteresis, generalized from the Scrubber's playhead-drag implementation) used by every gesture — playhead drag, clip drag, and edge trims alike — retiring the DOM path's other two implementations (a flat 8px "nearest wins" test with no memory, which flickers right at the threshold). |
+| `pointer-machine.ts` | The full gesture state machine — a pure reducer (`pointerReducer`) over `{state, event} → {state, effects}`, with no DOM access, so every transition is a unit test rather than a browser session. Implements click-seek, press-scrub, additive selection, cross-track move, edge trims, and the four new trim gestures (edge-drag = trim, Alt+edge-drag = roll, Alt+body-drag = slip, Cmd/Ctrl+body-drag = slide) with the DOM rows' exact callback contracts (`onProjectChange` per-move, `onOverlayEdit` at commit). |
+| `waveforms.ts` | Turns fetched `PeaksData` into pixel columns and paints them as a content layer inside `drawClipRect`/`drawAudioItem`. Two render targets: audio lanes (replacing the DOM path's fixed-resolution PNG chunks) and NET-NEW per-clip waveforms on visual tracks (clips never had waveforms before this SP). `WaveformPeaksStore` is a small per-mounted-surface fetch-state cache keyed by `(ownerId, src, window, bucket)`, resolution-bucketed at 50/200/800 samples/second based on current zoom (`resolveBucket`) so zoom-in fetches the next bucket up exactly once and zoom-out never re-fetches (a cached higher-resolution bucket downsamples for free). |
+| `filmstrips.ts` | Lazy tile-sheet fetch (gated on BOTH a zoom threshold — `tileWidth / minInterval` from the step's own defaults, 160px/s — and the clip actually intersecting the visible range) plus tile-draw and the hover-scrub preview thumb. `FilmstripStore` caches the index (JSON) and decoded sheet images independently, so a ready index with an undecoded sheet degrades to "no tiles yet" rather than an error. |
+| `TimelineCanvas.tsx` | The React shell: two stacked `<canvas>` elements (content below, playhead-only overlay above — so a ~60Hz-during-playback playhead move repaints two `fillRect`s, not the whole scene), rAF-coalesced redraw scheduling (`requestRedraw('content' \| 'overlay' \| 'all')`), the playhead subscribing directly to the shared `PlaybackClock` (mirroring the DOM path's isolated `PlayheadLine`, but driving an imperative repaint instead of a React render), and the DOM event listeners that translate mouse events into `pointer-machine.ts` calls. |
+
+**Derivative steps + caching conventions.** Two new steps back the
+canvas-only content layers, both proxy-input by design (never the original
+source):
+
+- **`montaj/waveform_peaks`** — windowed min/max peak pairs at a requested
+  samples-per-second (50/200/800, clamped to ≤500k total pairs per call,
+  stepping the resolution down and reporting the actual value used rather
+  than silently truncating). Returns its JSON **inline** — nothing written
+  to disk. The montaj adapter (`montaj_assets/ui/src/app/editor/montajAdapter.ts`)
+  caches in-memory per `(projectId, src, start, duration, samplesPerSecond)`
+  with evict-on-reject, so a bucket transition mid-zoom is fetched at most
+  once. Clip waveforms fetch `item.proxySrc` only (never `item.src` — a
+  clip with no proxy yet simply has no waveform, never an error or a
+  fallback decode of the original); audio-lane waveforms fetch `track.src`
+  (audio tracks have no proxies).
+- **`montaj/filmstrip`** — uniform time-grid JPEG tile sheets (`interval =
+  max(duration / maxTiles, minInterval)`) plus an index JSON mapping every
+  tile to its source timestamp. Ports `shot_sheet.py`'s tiling (including
+  its `nb_frames` partial-final-sheet guard) minus the shot-detection
+  dependency — uniform-grid instead of per-shot sampling. **Writes to disk**,
+  project-scoped: `.cache/filmstrips/<projectId>/<hash of src>/`, distinct
+  from the waveform PNG cache's older workspace-global-by-trackId shape
+  (a collision hazard the SP5 plan called out explicitly). Proxy-only input,
+  same as waveforms — no proxy, no filmstrip, no fallback.
+
+**Testing.** Every module above is unit-tested with no real browser: `draw.ts`
+against a recording `DrawContext` stub, `pointer-machine.ts`'s reducer
+directly (every gesture transition is a table test), `viewport.ts`/`snap.ts`/
+`hit-test.ts` as pure math, and `TimelineCanvas.tsx` itself with a fake
+canvas 2D context in jsdom. See
+`montaj_assets/editor/src/video/timeline/canvas/__tests__/`.
+
+**Keyboard editing is a separate change, not gated by the canvas-timeline
+flag.** `video/keymap.ts` is one `document`-level keydown registry (mounted
+twice — once in `Timeline.tsx` for arrows/delete/enter/escape, once in
+`VideoEditor.tsx`'s `ReviewSurface` for split/undo/redo/ripple-delete/
+palette/shuttle) replacing four independently-racing listeners that used to
+live spread across `VideoEditor` and `Timeline`. It absorbs every existing
+binding verbatim (including each one's typing-surface guard) and adds J/K/L
+seek-loop shuttle (`video/shuttle.ts` — fixed-step, not real variable-rate
+playback; the engine has no rate API), Shift+Delete ripple-delete (the new
+`rippleDelete` op below), timecode go-to (`video/timecode.ts`), and a Cmd/
+Ctrl+K command palette (`video/CommandPalette.tsx`). Space is deliberately
+excluded from the registry — it stays owned by the playback hooks (legacy
+and engine both) so the keymap can never race them. The shuttle and the
+palette's Play/Pause command reach playback through one new seam,
+`PreviewPlayer`'s optional `transportRef` (`{togglePlay, isPlaying}`),
+filled by whichever playback hook is active — a host-level keymap never
+needs to know which player is running.
+
+**`cuts.ts` gains four new pure trim ops**, exported from the package
+(`src/index.ts` — an `@bycrux/editor` npm API addition): `rippleDelete`
+(shifts only items after the deletion point, unlike the existing global
+`collapseGaps`), `rollEdit` (moves a shared clip boundary, both clips'
+durations change, nothing else moves), `slipItem` (shifts the source
+window, timeline position unchanged), `slideItem` (moves the item, its
+immediate neighbors absorb the movement). All follow `cuts.ts`'s existing
+conventions — original-source-coordinate in/outPoints, a `MIN_DURATION`
+clamp, same-reference-return on a no-op. The canvas pointer machine binds
+them to edge-drag/Alt+edge-drag/Alt+body-drag/Cmd-or-Ctrl+body-drag
+respectively (see `pointer-machine.ts` above); the DOM timeline has no UI
+for roll/slip/slide in this SP.
+
+---
+
 ### Render Engine (`render/`)
 
 Turns project.json into a final MP4. Reads the `captions` and `overlays` tracks, renders each item as a transparent video segment via React + Puppeteer, then composites everything with the source footage via ffmpeg.
@@ -663,22 +1012,25 @@ ffmpeg detects and uses available hardware encoders automatically. 5–10x speed
 
 Both are React components rendered frame-by-frame by Puppeteer and composited into the video by ffmpeg. They differ in how they're stored and who authors them.
 
-**Overlays** are custom JSX files written by the agent. They live in `tracks` — a top-level array of arrays (`tracks[0]` is the primary video track; overlay tracks start at index 1). Each item points to a JSX file and a time window:
+**Overlays** are custom JSX files written by the agent. They live in `tracks` — a top-level array of track objects (`{id, items, ...}`); `tracks[0]` is the primary video track, overlay tracks start at index 1, and each track's `items` array holds its clips/overlays. Each item points to a JSX file and a time window:
 
 ```json
 {
   "tracks": [
-    [],
-    [
-      {
-        "id": "ov-hook",
-        "type": "overlay",
-        "src": "/abs/path/to/project/overlays/hook.jsx",
-        "props": { "text": "She built an AI employee" },
-        "start": 0.0,
-        "end": 3.0
-      }
-    ]
+    { "id": "trk-0", "items": [] },
+    {
+      "id": "trk-1",
+      "items": [
+        {
+          "id": "ov-hook",
+          "type": "overlay",
+          "src": "/abs/path/to/project/overlays/hook.jsx",
+          "props": { "text": "She built an AI employee" },
+          "start": 0.0,
+          "end": 3.0
+        }
+      ]
+    }
   ]
 }
 ```
@@ -691,8 +1043,13 @@ Both are React components rendered frame-by-frame by Puppeteer and composited in
 | `props` | no | Arbitrary data injected as the `props` global inside the component |
 | `offsetX` / `offsetY` | no | Position offset as % of frame size — written by the UI when user repositions |
 | `scale` | no | Uniform scale multiplier — written by the UI when user resizes |
+| `scaleX` / `scaleY` | no | Per-axis scale multipliers — written by the UI when user resizes non-uniformly (dragging an edge handle, or unlocking the Transform panel's uniform-scale lock). Each falls back to `scale` when absent, so an item that has never been resized non-uniformly is unaffected |
+| `rotation` | no | Rotation in degrees — written by the UI when user rotates via the Transform panel's dial or the preview's rotate handle |
+| `speed` | no | `type: "video"` only — per-clip playback speed multiplier, default 1.0, range 0.25–4, pitch-corrected. `inPoint`/`outPoint` stay in original-source coordinates (speed never rebases them) |
 
-`offsetX`, `offsetY`, and `scale` are applied by the render engine as a CSS transform on the component container: `translate(offsetX%, offsetY%) scale(scale)`. The JSX component itself is unaware of them.
+`offsetX`, `offsetY`, `scaleX`/`scaleY` (each resolved from `scaleX ?? scale ?? 1`, `scaleY ?? scale ?? 1`), and `rotation` are applied by the render engine as a CSS transform on the component container: `translate(offsetX%, offsetY%) rotate(deg) scale(sx, sy)`. The two-argument `scale(sx, sy)` form is emitted unconditionally — a uniform item just emits both arguments equal — rather than switching to a one-argument `scale(s)` when the axes match, because preview↔render parity is asserted on the transform string itself. The JSX component itself is unaware of any of this.
+
+`speed` is applied at render (`encode-segment.js`) as `setpts=(PTS-STARTPTS)/speed` on the video stream (a no-op at `speed` undefined/1) and, on the audio stream, a chained `atempo` filter — ffmpeg's `atempo` only accepts a factor in `[0.5, 2.0]` per instance, so a speed outside that range (e.g. 4×) is expressed as multiple chained instances (`atempo=2,atempo=2`) rather than one out-of-range call. Preview applies the same factor via `seekTime`'s elapsed-offset scaling in `@bycrux/timeline-core`.
 
 **Captions** live in a separate track (`type: "caption"`). The agent does not write JSX for captions — it chooses a style name, and the render engine loads the matching built-in template:
 
@@ -789,6 +1146,42 @@ This runs at three enforcement points:
 
 The shared implementation lives in `lib/normalize.py` — a single module used by all three call sites. The taxonomy itself lives in `montaj_assets/schemas/color_space.json` and is loaded by both Python (`lib/types/colorspace.py`) and JS (`montaj_assets/render/color-space.js`). Normalize creates `_normalized_<colorSpace>.mp4` alongside the original file (e.g. `clip_normalized_hdr_hlg.mp4`); originals are never modified.
 
+### Editing proxies
+
+Every imported video also gets a lightweight editing copy for instant scrubbing in the editor preview: a full-source, all-intra, 720p H.264+Opus proxy (`h264-crf20-fast`), recorded as `proxySrc` on the track item. It sits alongside the other per-clip derivative artifacts:
+
+| Derivative | Naming | Produced by | Consumed by |
+|---|---|---|---|
+| `_normalized_<colorSpace>.mp4` | sibling of the original | `lib/normalize.py`, at the three enforcement points above | Render (always, safety net); preview when present (`normalizedSrc`) |
+| `_nobg.mov` / `_nobg_preview.webm` | sibling of the source | `remove_bg` step | Render uses `nobg_src` (ProRes 4444, alpha); preview uses `nobg_preview_src` (VP9 WebM, alpha) |
+| `_proxy_<PROXY_LOOK>.mp4` | sibling of the file it's encoded **from** | `lib/proxy.py`, at import (`project/init.py`) or via `POST /api/proxy` backfill | Preview only (`proxySrc`) — **render never reads it** |
+
+**Naming and freshness.** `proxy_path_for(src)` names the proxy `<stem>_proxy_<PROXY_LOOK>.mp4`, a sibling of whatever file it was encoded from — not necessarily the item's original `src`. `is_proxy_fresh(proxy, src)` is the same mtime-invalidation precedent normalize/image-tone caching already use: exists and `mtime(proxy) >= mtime(src)`.
+
+**Two encode paths.** Which file a proxy is encoded from, and whether it needs a tone-map, depends on the project's normalize mode:
+- **Eager projects** (`settings.normalize` absent or `"eager"`) — the proxy encodes from the already-normalized master (the post-`normalize()` `src`), with `tonemap = is_hdr(master colorspace)`. For an SDR project the master already made the one HDR→SDR color decision, so the proxy is a plain hardware-decode + scale + x264 encode, no second tone-map. For an HDR project the master is HDR — the proxy tone-maps it through the vivid1 LUT so the editor preview always shows montaj's SDR curve (policy v3), never the browser's own improvised HDR tone-mapping.
+- **Lazy projects** (`settings.normalize: "lazy"`, used by the `clips` workflow) — there is no normalized master to start from, so the proxy encodes from the original file, with the scale-first HDR→SDR tone-map chain composed ahead of the encode when the source is HDR (`tonemap=True`).
+
+In both cases the proxy encode is scheduled inside `project/init.py`'s `_normalize_one`, under a separate `PROXY_ENCODE_LIMIT = 2` semaphore so proxy encodes never queue behind the heavier libx264/libx265 normalize pool. A proxy failure is never fatal to import — it's logged (`"proxy FAILED — editor will play the master"`) and the item simply keeps no `proxySrc`.
+
+**Shared proxies for shared sources.** The `clips` workflow fans one long source out into N per-clip child projects via `--symlink-clips`, all pointing at the same underlying file (`~/Montaj/.sources/<id>/`). Because a lazy proxy is named after `os.path.realpath()` of the file it's encoded from, every child converges on the same proxy path — the first child to reach it encodes, later children find it already fresh and skip straight to writing `proxySrc`. One caveat worth stating plainly: this sibling-of-the-encoded-from-file naming means an ad-hoc `montaj init --clips <path outside the workspace> --symlink-clips` places the proxy next to the user's original footage, outside `~/Montaj/.sources/` and outside the current project directory — outside every root `montaj clean --proxies` scans by default (see below). The real clips workflow doesn't hit this, since its shared sources always live under `~/Montaj/.sources/`.
+
+**The alpha-ordering rule.** Preview's source precedence (in `@bycrux/timeline-core`) is `nobg_preview_src ?? proxySrc ?? normalizedSrc ?? src`. `proxySrc` is deliberately inserted *after* `nobg_preview_src`, not at the head of the chain: `nobg_preview_src` is VP9-with-alpha, and an opaque MP4 proxy ahead of it would resurrect a removed background in preview while render still composites the alpha channel — exactly the preview/render divergence the resolver exists to prevent.
+
+**Preview-only, provably.** Render's own precedence (`nobg_src ?? normalizedSrc ?? src` when `remove_bg`, else `normalizedSrc ?? src`) never mentions `proxySrc` — the field doesn't exist as a concept on the render side. This is enforced by a permanent guard test (`playbackSrcFor({proxySrc, src}, 'render') === src`) plus the render engine's own encode-args goldens, which stay byte-identical with `proxySrc` present on fixtures.
+
+**Look-version regeneration.** The proxy's encode parameters (scale, codec, tone-map) are frozen behind a look tag, `PROXY_LOOK`, baked into the filename. The tag is the master look from `montaj_assets/luts/looks.json` (currently `"vivid1"`, the Montaj Vivid LUT shipped in SP6b; `"hable1"` is the historical pre-Vivid value). Tone-mapped normalize masters carry the same tag (`_normalized_sdr_bt709_vivid1.mp4`). When a future look ships and the manifest value changes, every existing artifact's filename no longer matches what `proxy_path_for()`/`normalized_output_path()` compute — the freshness check sees a file that doesn't exist under the new name and regenerates lazily.
+
+Filename-based freshness alone can't fix a project whose `project.json` fields (`proxySrc`, and `normalizedSrc` for full-source masters) still point at old-look files that exist on disk — so `GET /projects/{project_id}` runs a **look-migration pass** on open (`serve/routes/projects.py`): stale fields are cleared and committed (this makes project-open a write under some conditions), background re-encode jobs are queued through the serve job registry (one worker, artifact-keyed dedupe, so a stampede of stale items or simultaneously-opened projects encodes serially and never competes with a user render), and each completion writes the fresh path back into `project.json`. The project opens immediately; artifacts arrive as jobs finish, the same UX as import backfill. The pass is idempotent (a second open schedules nothing, even mid-flight), probe-free once migrated, skips items whose source file is missing, and never touches per-window `normalizedSrc` caches (it matches the item's own full-source master name exactly). `montaj clean` reclaims the old look's now-orphaned proxies — and lists superseded untagged masters that have a look-tagged sibling — on request (see below).
+
+**Cleanup.** `montaj clean --proxies` (`cli/commands/clean.py`) scans the current project directory (or `--project <dir>` / `--all-projects` for the whole workspace) plus `~/Montaj/.sources/` — which it always includes, since shared lazy-workflow proxies live there — for `*_proxy_*.mp4`, prints each with its size, and deletes them unless `--dry-run`. Proxies are disposable by design: deleting one just means the editor falls back to playing the master until the proxy is regenerated (at next import, or via `POST /api/proxy`).
+
+**Cost.** Proxies are optional insurance for scrub speed, not free: import takes roughly +11s per minute of source footage on the reference machine (a macOS/videotoolbox number — the encode uses `-hwaccel auto`, which silently falls back to software decode on machines without a hardware decoder, so budget more there), and proxies use about 1.4GB of disk per hour of footage. Both figures improved when the encoder moved from all-intra AV1 to H.264 on 2026-08-22 (a measured 14-clip, 940MB folder went from 4m11s/1.8GB to 1m19s/1.3GB); the pre-H.264 numbers were +30s per minute and 2GB per hour. Both are reclaimable at any time via `montaj clean --proxies --yes`.
+
+**Bounded import time (SP3 fix B1).** The inline proxy encode is duration-gated on the import as a WHOLE, not per source: if the total footage across every clip being imported exceeds `PROXY_INLINE_MAX_TOTAL_SEC` (300s, `--proxy-inline-max` to override) the batch logs `proxy deferred` once and every clip leaves `proxySrc` absent instead of blocking project creation. It was per-clip until 2026-08-22, which got the common case backwards: fourteen individually-short clips each cleared the gate and then all encoded inline, which is exactly the wait the gate exists to bound — critical for the lazy/clips path, whose sources are long-form by definition and whose import must stay a no-re-encode operation. Deferred proxies are backfilled via `POST /api/proxy` (async job) or `montaj step proxy`, then written onto the item with a normal project save. Proxies can be disabled outright with `montaj init --no-proxy` or a workflow's `"proxy": false` (persisted as `settings.proxy: false`).
+
+**Unsupported browsers (SP3 fix B2).** H.264+Opus-in-MP4 isn't universally decodable. H.264 itself is decodable everywhere; the remaining gap is Opus inside an MP4 container, which not every browser muxes even when it can decode both codecs separately. The editor probes decode support once per session and, when unsupported — or when a specific proxy fails to decode mid-session (e.g. a dangling `proxySrc` after an out-of-band delete) — strips the proxy tier for the affected clips and falls back to the master, logging a console warning instead of showing a silent black preview.
+
 ### Render pass
 
 ```
@@ -823,7 +1216,7 @@ See `CONTRIBUTING.md` → "Adding a shared enum" for the developer workflow (edi
 
 | Tool | Purpose |
 |------|---------|
-| `ffmpeg` + `ffprobe` | Core video processing. **Strongly recommended:** build with `zscale` (requires libzimg) for accurate HDR-to-SDR tonemap during normalization. Without it, a fallback tonemap runs with degraded colors. |
+| `ffmpeg` + `ffprobe` | Core video processing. **Strongly recommended:** build with `zscale` (requires libzimg) and `lut3d` — the Montaj Vivid HDR-to-SDR chain needs both (`montaj doctor` checks). Without them, a fallback tonemap runs with degraded colors. |
 | `whisper.cpp` | Local speech-to-text (word-level timestamps) |
 | `yt-dlp` | YouTube downloads |
 | `Python 3.x` | Script + step runtime |

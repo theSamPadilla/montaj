@@ -30,13 +30,32 @@ def register(subparsers):
         default="auto",
         help="Project working color space. 'auto' (default) detects from clip metadata.",
     )
+    p.add_argument(
+        "--no-proxy", dest="no_proxy", action="store_true",
+        help="Skip editing-proxy generation entirely. The editor falls back to "
+             "playing masters; proxies can be backfilled later via POST /api/proxy or "
+             "`montaj step proxy`. Also settable per-workflow with \"proxy\": false.",
+    )
+    p.add_argument(
+        "--proxy-inline-max", dest="proxy_inline_max", type=float, default=None,
+        help="Inline-proxy budget in seconds of TOTAL footage, summed across every source "
+             "in the import; an import over budget defers all of its proxies to the "
+             "background backfill job so project creation never blocks on a long encode. "
+             # Keep in sync with project/init.py's PROXY_INLINE_MAX_TOTAL_SEC — this
+             # help string doesn't read the constant (this module only builds
+             # the subprocess argv; project/init.py's own module isn't imported
+             # here), so a change there needs this string updated by hand.
+             "Default 300.",
+    )
     # Local file pass-through flags (project/init.py accepts --clips/--assets;
     # the CLI now exposes them as --clip/--asset for a nicer UX).
     p.add_argument("--clip", dest="clips", action="append", default=[],
                    help="Local clip path (repeatable)")
     p.add_argument("--asset", dest="assets", action="append", default=[],
                    help="Local asset path (image, logo, etc.) (repeatable)")
-    p.add_argument("--voiceover-asset", help="Audio or video file supplying the voiceover (broll only)")
+    p.add_argument("--voiceover-asset", action="append", dest="voiceover_asset",
+                   help="Audio or video file supplying the voiceover (broll only). "
+                        "Repeat once per take, in order, to concatenate them.")
     # Remote fetch flags (passed verbatim to project/init.py).
     p.add_argument("--remote-clip", dest="remote_clips", action="append", default=[],
                    help="Remote clip JSON: {url, destPath, contentType, sizeBytes, method?, headers?}. "
@@ -85,6 +104,10 @@ def handle(args):
     # defaults to 'auto', so passing it explicitly is unnecessary noise.
     if args.color_space and args.color_space != "auto":
         cmd += ["--color-space", args.color_space]
+    if args.no_proxy:
+        cmd += ["--no-proxy"]
+    if args.proxy_inline_max is not None:
+        cmd += ["--proxy-inline-max", str(args.proxy_inline_max)]
 
     # Local clips and assets (pass each as a separate --clips / --assets value;
     # project/init.py uses nargs="*" with action=append semantics via multiple flags).
@@ -93,7 +116,7 @@ def handle(args):
     if args.assets:
         cmd += ["--assets"] + args.assets
     if args.voiceover_asset:
-        cmd += ["--voiceover-asset", args.voiceover_asset]
+        cmd += ["--voiceover-asset"] + list(args.voiceover_asset)
 
     # Remote clips: collect from --remote-clip flags + optional --remote-clips-file.
     remote_clips = list(args.remote_clips)

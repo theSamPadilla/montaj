@@ -2,6 +2,7 @@
 """montaj render — render project.json [final] to MP4."""
 import os
 from cli.main import add_global_flags, MONTAJ_ROOT
+from lib.look import curve_ids
 from project.render import main as render_main
 
 
@@ -30,6 +31,27 @@ def register(subparsers):
             "Overrides settings.imageTone in project.json. Ignored for SDR projects."
         ),
     )
+    p.add_argument(
+        "--export",
+        choices=["auto", "sdr", "both"],
+        default=None,
+        help=(
+            "Which deliverable(s) an HDR project renders. "
+            "auto: HDR master only (default); "
+            "sdr: a single SDR file tone-mapped through --sdr-curve; "
+            "both: the HDR master plus a derived SDR sibling. "
+            "Ignored for SDR projects."
+        ),
+    )
+    p.add_argument(
+        "--sdr-curve",
+        choices=curve_ids(),
+        default=None,
+        help=(
+            "Look curve used to derive the SDR rendition (with --export sdr|both). "
+            "Defaults to the project's master look."
+        ),
+    )
     add_global_flags(p)  # adds --json, --out, --quiet
     p.set_defaults(func=handle)
 
@@ -49,4 +71,6 @@ def handle(args):
         montaj_root=MONTAJ_ROOT,
         scale=args.scale,
         image_tone=args.image_tone,
+        export=args.export,
+        sdr_curve=args.sdr_curve,
     )

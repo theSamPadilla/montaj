@@ -46,7 +46,7 @@ The agent writes project.json as it works — every write pushes to the browser 
 | `workflow` | string | Workflow used to produce this edit |
 | `editingPrompt` | string | The free-form prompt passed in |
 | `settings` | object | Output resolution, fps, brand kit |
-| `tracks` | array | Array of track arrays. `tracks[0]` is the primary footage track. `tracks[1+]` are overlay tracks. Higher-index tracks render on top. May contain one empty track `[[]]` for animation-only projects. |
+| `tracks` | array | Array of track objects (`{id, items, volume?, muted?, enabled?}`); a legacy array-of-arrays shape is also still read everywhere. `tracks[0]` is the primary footage track. `tracks[1+]` are overlay tracks. Higher-index tracks render on top. `tracks[0]` may have an empty `items` array for animation-only projects. See [tracks](#tracks) below. |
 | `captions` | object | Caption configuration. Always rendered topmost, above all tracks. |
 | `audio` | object | Music and ducking config |
 | `derivedFrom` | string | Optional. Set on clip projects fanned out from a source by the `clips` workflow; the source project's id. |
@@ -78,45 +78,83 @@ The agent writes project.json as it works — every write pushes to the browser 
 
 ## tracks
 
-All timeline items live in `tracks` — a top-level array of track arrays. `tracks[0]` is the primary track (source footage). `tracks[1+]` are overlay tracks. Each inner array is one z-level; items in higher-index tracks render on top.
+Each entry in `tracks` is a track object:
+
+```json
+"tracks": [
+  { "id": "trk-0", "items": [ /* video items */ ] },
+  { "id": "trk-1", "items": [ /* overlay items */ ], "volume": 0.8, "muted": false, "enabled": true }
+]
+```
+
+`tracks[0]` is the primary track (source footage). `tracks[1+]` are overlay tracks. Track order is meaningful: index is z-order, and items on a higher-index track's `items` array render on top of items on a lower one.
+
+### Track object fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | string | Stable track identifier. Assigned when a legacy project is migrated (rule below) or when a drag creates a new track in the editor; never reused within a project. |
+| `items` | array | The track's timeline items — same item shapes as before: `type: "video"` on `tracks[0]`, `overlay`/`image`/`video` on `tracks[1+]`. See [Overlay track items](#overlay-track-items) below. |
+| `volume` | number | Optional. Gain for the track's audio. Absent = unity (1.0). |
+| `muted` | boolean | Optional. Absent or `false` = audible. |
+| `enabled` | boolean | Optional. Absent or `true` = the track renders. |
+
+`volume`/`muted`/`enabled` carry a setting that belongs to the TRACK rather than to one clip on it, and the track rail (the mute button, skip toggle, and volume gear on a track's sidebar) reads and writes them. `volume` scales every item's audio on that track — it multiplies against each item's own `volume` rather than replacing it, so balancing two clips against each other survives turning the whole track down. `muted` silences the track's audio without touching the clip volumes underneath; un-muting restores them. `enabled: false` skips the track entirely — it renders in neither preview nor final render, and its items are excluded when the render pipeline computes the project's total duration. They are unrelated to the per-clip `item.muted`/`item.volume` fields on individual `tracks[1+]` video items (below) and to `audio.tracks[].muted`/`.volume`, both of which render and preview already honor independently. A track carrying none of the three optional fields behaves exactly as it always has.
+
+### Legacy shape and the both-shapes contract
+
+Before this, `tracks` was a bare array of arrays — `[[item, item], [item]]` — with no place to hang a track-level setting. Both shapes are read everywhere in the codebase today. A project converts to the object shape the first time it's opened in the editor, riding the existing lazy on-open pass — there is no separate migration command or button. A project that's never opened keeps rendering and editing correctly as-is: the CLI and the render pipeline read both shapes directly, without requiring a migration.
+
+When a legacy track is converted, its `id` is generated as `trk-<index>`; a collision with an id already present elsewhere in the project is resolved by appending `-2`, `-3`, … A project already in object form is returned unchanged by the conversion (same object, same ids) — converting is idempotent, and a converged project triggers no extra write.
+
+**Read or write tracks through the shared accessors, never `project.tracks` directly** — they absorb the shape difference so callers don't have to:
+
+- Python: `normalize_tracks`, `track_items`, `replace_track_items` in `lib/project_tracks.py`
+- Render pipeline (Node): `normalizeTracks`, `trackItems` in `montaj_assets/render/project-tracks.js`
+- Editor (TypeScript): `normalizeTracks`, `trackItems`, `mapTrackItems` in `montaj_assets/editor/src/video/timeline/timeline-model.ts`
+
+The three are kept in lock-step by convention: the same input produces the same ids and the same structure from any of them. `engine/validate.py` accepts both shapes on read.
 
 ### Track conventions
 
 | Property | Rule |
 |----------|------|
-| **Primary track** | `tracks[0]` — always. Contains the main footage clips (`type: "video"`). |
+| **Primary track** | `tracks[0]` — always. Its `items` contain the main footage clips (`type: "video"`). |
 | **Z-order** | Track index = z-order. `tracks[0]` renders furthest back; higher indices on top. |
-| **Primary audio** | Non-muted items in `tracks[0]` provide the primary audio mix. |
+| **Primary audio** | Non-muted items in `tracks[0]`'s `items` provide the primary audio mix. |
 | **Transcript source** | Whisper runs against `tracks[0]` audio. |
-| **Canvas projects** | `tracks: [[]]` — one empty primary track. Duration is inferred from max `end` across all overlay tracks. |
+| **Canvas projects** | `tracks[0].items` is `[]` for animation-only projects. Duration is inferred from max `end` across all overlay tracks. |
 
 ### Primary track (`tracks[0]`)
 
-Items in `tracks[0]` are always `type: "video"`. They have explicit `start`/`end` positions on the output timeline. Gaps between items render as black + silence.
+Items in `tracks[0].items` are always `type: "video"`. They have explicit `start`/`end` positions on the output timeline. Gaps between items render as black + silence.
 
 ```json
 "tracks": [
-  [
-    {
-      "id": "clip-1",
-      "type": "video",
-      "src": "./footage/take1.mp4",
-      "start": 0.0,
-      "end": 5.8,
-      "inPoint": 2.5,
-      "outPoint": 8.3,
-      "transition": { "type": "crossfade", "duration": 0.3 }
-    },
-    {
-      "id": "clip-2",
-      "type": "video",
-      "src": "./footage/take2.mp4",
-      "start": 5.8,
-      "end": 17.9,
-      "inPoint": 0.0,
-      "outPoint": 12.1
-    }
-  ]
+  {
+    "id": "trk-0",
+    "items": [
+      {
+        "id": "clip-1",
+        "type": "video",
+        "src": "./footage/take1.mp4",
+        "start": 0.0,
+        "end": 5.8,
+        "inPoint": 2.5,
+        "outPoint": 8.3,
+        "transition": { "type": "crossfade", "duration": 0.3 }
+      },
+      {
+        "id": "clip-2",
+        "type": "video",
+        "src": "./footage/take2.mp4",
+        "start": 5.8,
+        "end": 17.9,
+        "inPoint": 0.0,
+        "outPoint": 12.1
+      }
+    ]
+  }
 ]
 ```
 
@@ -134,6 +172,10 @@ Items in `tracks[0]` are always `type: "video"`. They have explicit `start`/`end
 | `sourceWidth` | number | Optional. Source pixel width. Written by the agent from a probe; required for `sourceCrop` to render correctly. |
 | `sourceHeight` | number | Optional. Source pixel height. Written by the agent from a probe; required for `sourceCrop` to render correctly. |
 | `normalizedSrc` | string | Optional. Path to a per-window normalized cache produced by `montaj step normalize_window`. Covers exactly `[inPoint, outPoint]` of the original source — dense-keyframe, conformant. Render and preview prefer `normalizedSrc` over `src` when present; `src` always stays the original file. `inPoint`/`outPoint` remain original-source timestamps; the render engine rebases them automatically when reading from the cache (cache always starts at 0). Written by the `clips` workflow under `settings.normalize: "lazy"`. |
+| `proxySrc` | string | Optional. Path to a full-source, all-intra 720p H.264+Opus editing proxy for instant-scrub preview. Always covers the whole original file — never a window, no `proxyInPoint` — so one proxy can serve every clip that shares a lazy source. **Preview-only: render never reads this field.** Preview's src precedence is `nobg_preview_src ?? proxySrc ?? normalizedSrc ?? src` — the proxy sits after `nobg_preview_src` deliberately, since an opaque proxy ahead of it would resurrect a removed background in preview while render still composites alpha. The filename carries a look-version tag (`<stem>_proxy_<LOOK>.mp4`); `LOOK` is the current master look from `montaj_assets/luts/looks.json` (`lib/look.py`'s `MASTER_LOOK`, currently `"vivid1"`) — bumping the manifest's `masterLook` invalidates every existing proxy by construction, since the freshness check (`mtime(proxy) >= mtime(src)`) sees a different filename and treats it as absent. Written by `project/init.py` at import, best-effort (a failed encode just leaves the item without `proxySrc`; the editor falls back to playing `src`/`normalizedSrc`), or via `POST /api/proxy` for backfill. |
+| `muted` | boolean | Optional. When `true`, this clip's audio is suppressed in both preview and final render. Default: `false`. ORed with the track's own `muted` (above) — either one silences the clip. |
+| `volume` | number | Optional. Gain for this clip's audio, `0.0`–`2.0`. Default `1.0`. Multiplies with the track's own `volume` (above) rather than replacing it. |
+| `speed` | number | Optional. Playback speed, `0.25`–`4`. Default `1.0`. Pitch-corrected in both preview and final render — audio plays at the new speed without a pitch shift. Speeding a clip up shortens its `end - start` on the timeline; slowing it down lengthens it. |
 
 **Transition types:** `cut` (default), `crossfade`, `flash-white`, `flash-black`
 
@@ -144,13 +186,13 @@ totalDuration = max(item.end) across all items in all tracks
 
 ### Overlay tracks (`tracks[1+]`)
 
-Overlay tracks contain the same item types as before: `overlay`, `image`, and `video`. See the field reference below.
+An overlay track's `items` array holds the same item types as before: `overlay`, `image`, and `video`. See the field reference below.
 
 ---
 
 ## Overlay track items
 
-All timed graphical elements in `tracks[1+]` are overlay track items. Each inner track array is one spatial z-level. Items in higher-index tracks render on top. Three item types are supported: `overlay`, `image`, and `video`.
+All timed graphical elements live in `tracks[1+]`'s `items` arrays. Each track is one spatial z-level; items on higher-index tracks render on top. Three item types are supported: `overlay`, `image`, and `video`.
 
 ### `type: "overlay"` — JSX component layer
 
@@ -219,16 +261,87 @@ All timed graphical elements in `tracks[1+]` are overlay track items. Each inner
 | `offsetX` | number | all | Horizontal offset as % of frame width |
 | `offsetY` | number | all | Vertical offset as % of frame height |
 | `scale` | number | all | Size multiplier from center |
+| `rotation` | number | all | Clockwise rotation in degrees. Optional; default 0. Any finite number — values outside [0,360) are normalized at render. |
 | `opacity` | number | all | Opacity 0.0–1.0 (default 1.0). Applied at compose time. |
+| `keyframes` | array | overlay | Animate `offsetX`/`offsetY`/`scale`/`rotation`/`opacity` over the item's own lifetime instead of holding them fixed. Ignored on `image`/`video` items by the final render even if present — see "Overlay keyframes" below for the one narrower exception. |
 | `props` | object | overlay | Arbitrary props passed to the JSX component |
 | `opaque` | boolean | overlay | When `true`, render engine skips alpha — JSX controls full frame |
 | `googleFonts` | array | overlay | Google Font names to load before rendering |
 | `remove_bg` | boolean | video | Marks this item as background-removed. `src` stays as the original (used for browser preview). Render uses `nobg_src` when present. |
 | `nobg_src` | string | video | Path to the ProRes 4444 `.mov` with alpha channel produced by the `remove_bg` step. Used at final render time. |
 | `nobg_preview_src` | string | video | Path to the VP9 WebM with alpha produced by the `remove_bg` step. Used in the browser preview player (Chrome supports VP9 alpha; ProRes does not play in browsers). |
+| `proxySrc` | string | video | Full-source, all-intra 720p H.264+Opus editing proxy — same field and same rules as `tracks[0]`'s `proxySrc` above. `OverlayItemsLayer` adopts it at `nobg_preview_src ?? proxySrc ?? src` (this track type has no `normalizedSrc` tier); render never reads it. |
 | `muted` | boolean | video | When `true`, audio from this video item is suppressed in both preview and final render. Default: `false`. |
 | `inPoint` | number | video | Trim start in the source video file (seconds) |
 | `outPoint` | number | video | Trim end in the source video file (seconds) |
+
+### Overlay keyframes
+
+Any `overlay` item may carry a `keyframes` array to animate `offsetX`,
+`offsetY`, `scale`, `rotation`, and `opacity` over its own lifetime, instead
+of holding them fixed for the item's whole `start`–`end` window. One entry
+per animated property:
+
+```json
+"keyframes": [
+  { "prop": "offsetX", "points": [{ "t": 0, "value": -20 }, { "t": 1.5, "value": 20, "easing": "ease-out" }] },
+  { "prop": "opacity",  "points": [{ "t": 0, "value": 0, "easing": "hold" }, { "t": 0.5, "value": 1 }] }
+]
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `prop` | string | One of `offsetX`, `offsetY`, `scale`, `rotation`, `opacity` |
+| `points` | array | Ascending by `t`, no duplicate `t` |
+| `points[].t` | number | Item-relative seconds — `0` is this overlay's own `start`, not the project timeline |
+| `points[].value` | number | The property's value at `t`, same units as the static field of the same name |
+| `points[].easing` | string | How the segment **leaving** this keyframe is shaped (outgoing, not incoming). Absent or unrecognized = `linear`. Ignored on the last point of a track — it has no outgoing segment. One of `linear`, `ease`, `ease-in`, `ease-out`, `ease-in-out`, `hold` |
+
+`hold` is step-end: the value stays at this keyframe's own value until the
+*next* keyframe's own `t`, then jumps — it does not ease toward the next
+value at all.
+
+A property with no track (or an item with no `keyframes` at all) keeps
+reading its static field exactly as before; a track is only consulted for the
+props it names. Before an animated property's first keyframe or after its
+last, the value clamps to that endpoint rather than extrapolating.
+
+**Which kinds animate, and which property does not.** `overlay`, `image` and
+`video` items all animate `offsetX`, `offsetY`, `scale`/`scaleX`/`scaleY` and
+`rotation`, in the editor preview and in the rendered export alike. Overlays get
+that from the per-frame Puppeteer capture they already went through; clips get it
+from the renderer compiling each curve into a time-varying ffmpeg filter
+expression (`render/encode-segment.js`, `animatedGeometry`).
+
+**`opacity` is the exception: it animates on overlays and NOWHERE on a clip.**
+That is a hard limit of ffmpeg, not a scope decision. Alpha is applied through
+`colorchannelmixer`, whose `aa` option is declared `<double>` — it takes a
+literal number and accepts no expression at any evaluation mode. (The `T` flag
+ffmpeg prints beside it is `AV_OPT_FLAG_RUNTIME_PARAM`, i.e. settable via
+`sendcmd`/`zmq`; it is not expression support, and it has been misread as such.)
+So there is no way to fade a clip through the ffmpeg path at all. An `opacity`
+track on an `image` or `video` item is therefore IGNORED everywhere:
+
+- the render composites the static `opacity` scalar;
+- the editor preview shows that same static value, deliberately, so it never
+  promises a fade the export cannot produce;
+- the editor will not write such a track in the first place — `canKeyframeProp`
+  excludes it, the inspector's opacity keyframe control is visibly disabled with
+  a reason, and double-click-to-key skips it;
+- the Export dialog's still-frame preview reads the static scalar too.
+
+That last point closes a divergence this document used to describe. `resolveItem`
+(`timeline-core/src/activation.js`) calls `geometryAt` for every item kind, so a
+clip's sampled geometry has always been available to `render/sample-frame.js` —
+which is now correct for position/scale/rotation, because the export animates
+those. For `opacity` it would have been wrong, so the sampler explicitly reads
+`item.opacity` rather than the sampled value. The still frame's job is to show
+what the export will look like, so it agrees with the export on every property.
+
+Closing the opacity gap for real would need the per-frame browser bake extended
+to video: decode every frame of the animated span and composite it the way
+overlays already are. That was measured at 14–33× the expression path's render
+time and is out of scope; see `docs/RENDER.md`.
 
 ---
 
@@ -271,12 +384,25 @@ Each style maps to a built-in JSX template served at `GET /api/caption-template/
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `id` | string | — | Stable identifier for the segment, used for selection in the editor (drag in preview, click in timeline). Optional in hand-authored captions — the editor backfills a `cap-<n>` id for any segment missing one, both on load and after caption regeneration. Ids are minted against those already in use, so a track mixing identified and unidentified segments never gets a duplicate. |
+| `lane` | integer | 0 | Which row this segment renders in. Absent means row 0; rows are dense from `0` (no holes) and are read/written through `video/captionLanes.ts` in the editor, never touched directly. Segments in different rows can be simultaneous — **every** active row renders at once, highest lane painting on top. A row is a z-order only, not a vertical offset, so two overlapping rows can visually collide on screen; `offsetX`/`offsetY` per segment (above) is how an author keeps them apart. `Captions.style` and every colour field below stay track-global — one style/theme is shared by every row, there is no per-row override. Consumed only by the JSX browser preview / Puppeteer render path; the ffmpeg `drawtext` render branch has no concept of rows and renders every segment as if `lane` were `0`. |
 | `offsetX` | number | 0 | Horizontal offset as % of frame width. `0` or absent = the style's default anchor (e.g. `bottom: 18%`, which varies per style). |
 | `offsetY` | number | 0 | Vertical offset as % of frame height. `0` or absent = the style's default anchor. |
 | `scale` | number | 1 | Visual scale of the whole caption block, about its own centre. This is a CSS transform, not a font-size change: it scales the background box (`subtitle`) and text stroke (`outline`) along with the text, and it does **not** re-wrap the text — a scaled-up caption keeps its original line breaks and can overflow the frame. |
 | `color` | string | — | Per-segment override of the base text color, overriding the track-level `color` below for this segment only (per-style accent colors — e.g. `highlightColor`, `accentColor` — are not overridable per segment). Absent = inherit the track-level `color` → the style's own default. Like `offsetX`/`offsetY`/`scale`, this is consumed only by the JSX browser preview and the Puppeteer render path; the ffmpeg `drawtext` render branch has no per-segment concept and continues to honour only the track-level `color` field below. |
 
-**ffmpeg-only fields.** The following optional fields may appear on the top-level `captions` object. They are consumed only by the ffmpeg `drawtext` render branch and are ignored by the JSX browser preview. The caption generation route preserves them across regeneration.
+**Text-styling fields.** The following optional fields may appear on the top-level `captions` object. They are consumed only by the JSX caption templates — browser preview and Puppeteer render — and are ignored by the ffmpeg `drawtext` render branch below (the converse of that branch's fields).
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `fontFamily` | string | style-specific | CSS `font-family` stack for the caption text, e.g. `'"Baloo 2", system-ui, sans-serif'`. Each style keeps its own default when the field is absent — `clean` defaults to Figtree, the other six styles (`word-by-word`, `pop`, `karaoke`, `subtitle`, `highlight-box`, `outline`) default to the system sans stack — so an existing project with no `fontFamily` renders unchanged. |
+| `fontWeight` | number \| string | style-specific | CSS `font-weight` value for the caption text. Each style keeps its own default when the field is absent — `clean` and `karaoke` default to 700, `subtitle` to 600, `pop` and `word-by-word` to 800, `highlight-box` and `outline` to 900 — so an existing project with no `fontWeight` renders unchanged. Like its text-styling siblings, it is honoured by the JSX caption templates only and NOT by the ffmpeg `drawtext` render branch. |
+| `googleFonts` | string[] | — | Google Fonts family specs to fetch for the caption template, e.g. `["Figtree:wght@700"]`. **Travels with `fontFamily`:** setting a family without adding its matching `googleFonts` spec means the font file is never fetched, and the caption renders in the fallback face instead. Paired example: `"fontFamily": "\"Baloo 2\", system-ui, sans-serif"` with `"googleFonts": ["Baloo+2:wght@400;700"]` (note Google's `+` for spaces in the spec). |
+| `textTransform` | string | style-specific | CSS `text-transform` value: `uppercase`, `lowercase`, `capitalize`, or `none`. Six styles have no default at all — absent renders in ordinary case. `outline` defaults to `uppercase` (its all-caps stencil look), but only for a segment that has word timestamps; a segment with no `words` array falls back to plain text with no transform applied, default or not. |
+| `letterSpacing` | string | style-specific | CSS length, e.g. `0.02em`. `clean` defaults to `0.01em`; `pop` and `word-by-word` default to `-0.02em`; `karaoke`, `subtitle`, `highlight-box`, and `outline` have no default — absent renders with normal spacing. |
+| `lineHeight` | number \| string | style-specific | CSS `line-height` value. `clean` defaults to `1.3`, `subtitle` to `1.4`. `highlight-box` defaults to `1.25` and `outline` to `1.15`, but — same caveat as `outline`'s `textTransform` above — only for a segment that has word timestamps; the no-timestamps fallback branch renders with no line-height, default or not. `karaoke`, `pop`, and `word-by-word` have no default. |
+| `textAlign` | string | `center` | CSS `text-align` value: `left`, `center`, or `right`. Every style centers by default, with no exceptions — so an existing project with no `textAlign` renders unchanged. |
+
+**ffmpeg-only fields.** The following optional fields may appear on the top-level `captions` object. They are consumed only by the ffmpeg `drawtext` render branch and are ignored by the JSX browser preview (the converse of the text-styling fields above). The caption generation route preserves them across regeneration.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
@@ -293,7 +419,7 @@ Each style maps to a built-in JSX template served at `GET /api/caption-template/
 POST /api/projects/:id/captions
 ```
 
-SSE stream (default). Runs the materialize → transcribe → caption pipeline and streams `log` / `done` / `error` events. Writes `project.captions` on success.
+SSE stream (default). Runs the materialize → transcribe → caption pipeline and streams `log` / `done` / `error` events. Writes `project.captions` on success, REPLACING the field wholesale — the fresh transcript is always a single row (`lane` absent on every segment), so any additional hand-authored rows (see `lane` above) are discarded, not merged.
 
 Optional body fields: `model` (Whisper model, default `"large"`), `language` (default `"auto"`), `style` (default: existing `captions.style`, or `"pop"`).
 
@@ -374,7 +500,8 @@ Present only on `broll` projects — `engine/validate.py` requires this block (w
 
 | Field | Type | Description |
 |-------|------|--------------|
-| `src` | string | Required. Absolute path to the voiceover source file in the workspace — audio or video. Only its audio is used; a video file's picture is never placed on a visual track unless the editing prompt explicitly asks for it. Written by `project/init.py` from `--voiceover-asset` (CLI) or `voiceoverAsset` (HTTP `POST /api/run`). Immutable after init. |
+| `src` | string | Required. Absolute path to the voiceover source file in the workspace — audio or video. Only its audio is used; a video file's picture is never placed on a visual track unless the editing prompt explicitly asks for it. Written by `project/init.py` from `--voiceover-asset` (CLI, accepting one or more paths) or `voiceoverAsset` / `voiceoverAssets` (HTTP `POST /api/run`). When several takes are supplied, `src` points at the concatenated `voiceover_full.wav` rather than at any single input (`voiceover_full_<N>.wav` in the rare case a take of the user's own already claims that name). Not rewritten by any step after init. |
+| `takes` | string[] | Optional. Absolute paths to the individual voiceover takes in the workspace, in the order they were concatenated to produce `src`. Written by `project/init.py` only when more than one file was supplied via `--voiceover-asset` / `voiceoverAssets`; absent for a single-take project, where `src` **is** the take. Provenance only — no step reads it. |
 | `cleanedSrc` | string | Optional. Absolute path to the cleaned voiceover, written by the `broll` skill after running `materialize_cut --audio` on the clean-cut chain. Present once the skill has produced its draft; absent before. |
 
 The footage index the `broll` skill builds while assembling the draft is written to `broll_index.json` in the project workspace — a working artifact for the skill, not part of `project.json`.
@@ -539,7 +666,7 @@ Anything that *appears in* the video: characters, locations, specific objects. P
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `id` | string | Stable within the project. Referenced by `scenes[i].refImages` as well as `tracks[0][i].generation.refImages`. |
+| `id` | string | Stable within the project. Referenced by `scenes[i].refImages` as well as `tracks[0].items[i].generation.refImages`. |
 | `label` | string | Short human-friendly name. The user provides this at intake (e.g. "Max"). Agents use labels to match natural-language prompt mentions to refs. |
 | `anchor` | string | Agent-written longer description. If the user provided an image at intake, the agent writes the anchor from the image + label. If the user provided a text description, the anchor starts as that text and the agent enriches it. |
 | `refImages` | string[] | Absolute paths to reference images. For `source: "upload"`, populated at intake with the user's file. For `source: "text"`, starts empty; agent calls `generate_image` with the anchor as prompt and appends the result. Fed into Kling's `image_list` (up to 7 per scene — Kling's hard limit). |
@@ -657,9 +784,9 @@ When the agent uses Kling's multi-shot mode, a SINGLE `tracks[0]` clip can conta
 | `generation.batchShots[i].end` | number | Shot end in seconds, relative to the batch clip. |
 | `generation.batchShots[i].duration` | number | Requested duration in seconds (same as `end - start` barring Kling rounding). |
 
-**UI progress check.** A scene is "done" if `tracks[0].some(c => c.generation?.sceneId === s.id || c.generation?.batchShots?.some(x => x.sceneId === s.id))`. Both cases must be checked — the agent chooses between single-shot and batched dispatch per its judgment.
+**UI progress check.** A scene is "done" if `tracks[0].items.some(c => c.generation?.sceneId === s.id || c.generation?.batchShots?.some(x => x.sceneId === s.id))`. Both cases must be checked — the agent chooses between single-shot and batched dispatch per its judgment.
 
-**Regenerating one scene from a batch.** Run that scene as a single-shot call; append the resulting clip to `tracks[0]` as a new entry. Leave the original batched clip in place; its window for the replaced scene becomes unused time between other shots. The timeline readers place clips by `start`/`end`; unused windows are acceptable for v1.
+**Regenerating one scene from a batch.** Run that scene as a single-shot call; append the resulting clip to `tracks[0].items` as a new entry. Leave the original batched clip in place; its window for the replaced scene becomes unused time between other shots. The timeline readers place clips by `start`/`end`; unused windows are acceptable for v1.
 
 ### `regenQueue` (ai_video only)
 
@@ -688,7 +815,7 @@ Per-clip regeneration queue. The UI (inspect modal, subcut tool) and CLI (`monta
 | Field | Type | Description |
 |-------|------|-------------|
 | `id` | string | Unique within the queue. Convention: `"req-<timestamp>"`. |
-| `clipId` | string | Must match a `tracks[0][i].id`. |
+| `clipId` | string | Must match a `tracks[0].items[i].id`. |
 | `mode` | string | `"full"` (replace entire clip) or `"subcut"` (replace a window within the clip). |
 | `subrange` | object \| null | `{start: <int>, end: <int>}` in source-seconds. Null for `mode: "full"`. For subcut, `end - start` must be in [3, 15] integer. |
 | `prompt` | string | Natural language. The agent/step composes the ref clause and `<<<image_N>>>` tokens via `compose_prompt()`. |
@@ -708,12 +835,12 @@ Per-clip regeneration queue. The UI (inspect modal, subcut tool) and CLI (`monta
 
 `tracks[0]` holds **real clips only** — items whose `src` is a file that exists on disk. There are no stubs, no placeholder items, no `src: ""` entries. This invariant is consistent across all project types:
 
-- `editing` projects populate `tracks[0]` at intake with user-uploaded clips.
-- `music_video` projects start with `tracks[0] = []` and get populated by the lyrics pipeline.
-- `ai_video` projects start with `tracks[0] = []` and grow by append as each `kling_generate` call returns.
+- `editing` projects populate `tracks[0].items` at intake with user-uploaded clips.
+- `music_video` projects start with `tracks[0].items = []` and get populated by the lyrics pipeline.
+- `ai_video` projects start with `tracks[0].items = []` and grow by append as each `kling_generate` call returns.
 
 For `ai_video`:
-- At `pending` and `storyboard_ready` (including during active generation), `tracks[0]` is empty or partial. The StoryboardView stays mounted; per-scene progress is derived by checking whether `tracks[0].some(c => c.generation?.sceneId === scene.id)`.
+- At `pending` and `storyboard_ready` (including during active generation), `tracks[0].items` is empty or partial. The StoryboardView stays mounted; per-scene progress is derived by checking whether `tracks[0].items.some(c => c.generation?.sceneId === scene.id)`.
 - Status transitions `storyboard_ready → draft` only when every `storyboard.scenes[i]` has a corresponding clip in `tracks[0]`. At that point `EditorPage` routes to `ReviewView` and the user sees a coherent timeline for the first time.
 - On partial failure, status stays `storyboard_ready`. The failed scene has no corresponding clip; the agent can retry later (idempotent — scenes with existing clips are skipped).
 
@@ -730,46 +857,58 @@ Talking-head presenter over a screen recording, with a logo watermark, hook over
   "status": "final",
   "settings": { "resolution": [1080, 1920], "fps": 30 },
   "tracks": [
-    [
-      { "id": "clip-1", "type": "video", "src": "./screen_recording.mp4", "start": 0.0, "end": 120.0, "inPoint": 0, "outPoint": 120 }
-    ],
-    [
-      {
-        "id": "presenter",
-        "type": "video",
-        "src": "./presenter.mp4",
-        "remove_bg": true,
-        "start": 0.0,
-        "end": 120.0,
-        "inPoint": 0.0,
-        "outPoint": 120.0,
-        "offsetX": 0.6,
-        "offsetY": 0.65,
-        "scale": 0.35
-      }
-    ],
-    [
-      {
-        "id": "logo",
-        "type": "image",
-        "src": "./assets/logo.png",
-        "start": 0.0,
-        "end": 120.0,
-        "offsetX": 0.82,
-        "offsetY": 0.04,
-        "scale": 0.12
-      }
-    ],
-    [
-      {
-        "id": "hook",
-        "type": "overlay",
-        "src": "./overlays/hook.jsx",
-        "start": 0.0,
-        "end": 3.5,
-        "props": { "text": "Watch this" }
-      }
-    ]
+    {
+      "id": "trk-0",
+      "items": [
+        { "id": "clip-1", "type": "video", "src": "./screen_recording.mp4", "start": 0.0, "end": 120.0, "inPoint": 0, "outPoint": 120 }
+      ]
+    },
+    {
+      "id": "trk-1",
+      "items": [
+        {
+          "id": "presenter",
+          "type": "video",
+          "src": "./presenter.mp4",
+          "remove_bg": true,
+          "start": 0.0,
+          "end": 120.0,
+          "inPoint": 0.0,
+          "outPoint": 120.0,
+          "offsetX": 0.6,
+          "offsetY": 0.65,
+          "scale": 0.35
+        }
+      ]
+    },
+    {
+      "id": "trk-2",
+      "items": [
+        {
+          "id": "logo",
+          "type": "image",
+          "src": "./assets/logo.png",
+          "start": 0.0,
+          "end": 120.0,
+          "offsetX": 0.82,
+          "offsetY": 0.04,
+          "scale": 0.12
+        }
+      ]
+    },
+    {
+      "id": "trk-3",
+      "items": [
+        {
+          "id": "hook",
+          "type": "overlay",
+          "src": "./overlays/hook.jsx",
+          "start": 0.0,
+          "end": 3.5,
+          "props": { "text": "Watch this" }
+        }
+      ]
+    }
   ],
   "captions": { "style": "word-by-word", "segments": [] }
 }

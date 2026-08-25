@@ -22,6 +22,18 @@
       "type": "string",
       "default": "en",
       "description": "Language code (e.g. es) for transcription and filler matching, or 'auto'. Selects the per-language hesitation-filler set and upgrades *.en models to multilingual."
+    },
+    {
+      "name": "window-in",
+      "type": "float",
+      "min": 0,
+      "description": "Analyse only this window of --input (source seconds), instead of the whole file. Must be paired with window-out; also adds a `cuts` array (the complement of `keeps` within the window, each filler entry carrying the matched word as `text`) to the output."
+    },
+    {
+      "name": "window-out",
+      "type": "float",
+      "min": 0,
+      "description": "End of the analysis window in source seconds. Must be paired with window-in."
     }
   ]
 }

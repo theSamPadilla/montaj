@@ -90,18 +90,25 @@ Requires a background video in `tracks[0]`. Both paths always build `lyric-phras
 {
   "renderMode": "ffmpeg-drawtext",
   "tracks": [
-    [
-      {
-        "id": "bg",
-        "type": "video",
-        "src": "/abs/path/to/background.mov",
-        "start": 0,
-        "end": <song_duration>,
-        "inPoint": 0,
-        "outPoint": <clip_duration>
-      }
-    ],
-    [ ...lyric-phrase overlays styled to match ffmpeg output — see ffmpeg preview fidelity rule above... ]
+    {
+      "id": "trk-0",
+      "items": [
+        {
+          "id": "bg",
+          "type": "video",
+          "src": "/abs/path/to/background.mov",
+          "start": 0,
+          "end": <song_duration>,
+          "inPoint": 0,
+          "outPoint": <clip_duration>,
+          "proxySrc": "<written by the proxy backfill — see Editing proxies below>"
+        }
+      ]
+    },
+    {
+      "id": "trk-1",
+      "items": [ ...lyric-phrase overlays styled to match ffmpeg output — see ffmpeg preview fidelity rule above... ]
+    }
   ],
   "captions": {
     "style": "word-by-word",
@@ -112,7 +119,7 @@ Requires a background video in `tracks[0]`. Both paths always build `lyric-phras
   },
   "audio": {
     "tracks": [
-      { "id": "music", "src": "/abs/path/to/song.mp3", "start": 0, "end": 0, "inPoint": 0, "volume": 1.0, "label": "song" }
+      { "id": "music", "src": "/abs/path/to/song.mp3", "start": 0, "end": <song_duration_seconds>, "inPoint": <audioInPoint>, "volume": 1.0, "label": "song" }
     ]
   },
   "status": "final"
@@ -159,26 +166,46 @@ Verify the burned-in text looks correct, then trigger the full render with `mont
   "workflow": "lyrics_video",
   "settings": { "resolution": [720, 1280], "fps": 30 },
   "tracks": [
-    [],
-    []
+    { "id": "trk-0", "items": [] },
+    { "id": "trk-1", "items": [] }
   ],
   "audio": {
     "tracks": [
-      { "id": "music", "src": "/abs/path/to/song.mp3", "start": 0, "end": 0, "inPoint": 0, "volume": 1.0, "label": "song" }
+      { "id": "music", "src": "/abs/path/to/song.mp3", "start": 0, "end": <song_duration_seconds>, "inPoint": <audioInPoint>, "volume": 1.0, "label": "song" }
     ]
   },
   "status": "draft"
 }
 ```
 
-`tracks[0]` = background video loop OR empty array
-`tracks[1]` = lyric phrase overlays (one per segment from lyrics_sync)
+**`end` is not optional in practice, and `end: 0` is worse than omitting it.** The timeline draws an audio lane from `timeToX(track.start)` to `timeToX(track.end)` (`montaj_assets/editor/src/video/timeline/canvas/draw.ts`, `drawAudioItem`). `end: 0` with `start: 0` makes that span exactly zero-width: the lane row appears, permanently empty, and the song looks like it never landed. It still *plays* — preview filters only on `!muted && src` — so this fails in the one direction that is hardest to notice, looking broken while sounding fine. Set `end` to the song's real duration, from `montaj probe song.mp3`. Set `start` explicitly too, even when it is `0`. And keep `id`: the timeline keys tracks by it for selection and crossfade.
+
+`tracks[0].items` = background video loop OR empty array
+`tracks[1].items` = lyric phrase overlays (one per segment from lyrics_sync)
+
+### Editing proxies
+
+A `lyrics_video` project has `requires_clips: false`, so its background video arrives through the prompt (`Background video: /path/…`) rather than through `montaj init`. That means nothing has encoded an editing proxy for it, and unlike a normal project you cannot copy one across from `project.sources` — there is no `sources` entry to copy from.
+
+**Carrying `proxySrc` still matters.** The WebCodecs playback engine refuses the whole project when any track-0 video item lacks it (`montaj_assets/editor/src/engine/eligibility.ts:69`), so preview falls back to decoding the full-resolution master on every seek, and the header shows a chip telling the operator their clips have no previews. Nothing repairs this on its own: the project-open look migration only re-points a `proxySrc` that is already present and stale, and skips an item that has none (`serve/routes/projects.py:1093`).
+
+**How to get one.** In HTTP mode, after you have written `tracks[0]` and saved the project, run the project's proxy backfill:
+
+```bash
+curl -s -X POST http://localhost:3000/api/projects/{id}/proxies
+```
+
+It computes the proxy path itself, encodes in the background, and writes `proxySrc` back onto the item over SSE. `202` means work was queued; `200` means everything was already fresh. Do not compute the path yourself and do not invent a value for the field.
+
+In CLI mode with no server running there is no one-shot backfill. Leave `proxySrc` off rather than guessing a path, and tell the operator the editor will offer to generate previews the first time they open the project.
+
+With no background video (`tracks[0].items` is `[]`) none of this applies — there is no track-0 video item to proxy.
 
 ### Preview (mandatory)
 
 After setting up `project.json`, **open the project in the montaj UI and preview before rendering.** The PreviewPlayer scrubs through the overlay timing in real time — verify word sync looks correct and adjust any `start`/`end` values in the overlay entries if needed. Only trigger a full render once the preview looks right.
 
-### tracks[0] — With background video
+### tracks[0].items — With background video
 
 ```json
 [
@@ -195,7 +222,7 @@ After setting up `project.json`, **open the project in the montaj UI and preview
 ]
 ```
 
-### tracks[0] — Without background video
+### tracks[0].items — Without background video
 
 ```json
 []
@@ -203,19 +230,19 @@ After setting up `project.json`, **open the project in the montaj UI and preview
 
 `lyric-phrase.jsx` renders its own full-screen colored background automatically.
 
-### tracks[1] — Overlay entries
+### tracks[1].items — Overlay entries
 
 One entry per segment from the lyrics_sync output. The `src` must be an **absolute path** to the template:
 
 ```
-<montaj_root>/render/templates/overlays/lyric-phrase.jsx
+<montaj_root>/montaj_assets/render/templates/overlays/lyric-phrase.jsx
 ```
 
 ```json
 {
   "id": "phrase-0",
   "type": "overlay",
-  "src": "/abs/path/to/montaj/render/templates/overlays/lyric-phrase.jsx",
+  "src": "/abs/path/to/montaj/montaj_assets/render/templates/overlays/lyric-phrase.jsx",
   "start": 0.5,
   "end": 3.2,
   "props": {
@@ -342,7 +369,7 @@ Bright footage: `"textColor": "#111111"`, `"transparent": true`
 | 1:1 square | `[720, 720]` or `[1080, 1080]` | Feed posts |
 | 16:9 landscape | `[1280, 720]` | YouTube |
 
-Always match the background video's native resolution if one is provided. Use `montaj probe --input video.mov` to check.
+Always match the background video's native resolution if one is provided. Use `montaj probe video.mov` to check.
 
 ---
 

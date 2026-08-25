@@ -1,5 +1,6 @@
 """Unit tests for engine/resolve_workflow.py and engine/validate_step.py."""
 import json
+import math
 import sys
 from pathlib import Path
 
@@ -303,8 +304,89 @@ def test_validate_project_fails_missing_tracks(tmp_path):
         v.validate_project(path)
 
 
-def test_validate_project_tracks_must_be_list_of_lists(tmp_path):
+def test_validate_project_track_object_requires_an_items_array(tmp_path):
     data = {**VALID_PROJECT, "tracks": [{"id": "x"}]}
+    path = _write_project(tmp_path, "project.json", data)
+    with pytest.raises(SystemExit):
+        v.validate_project(path)
+
+
+# ── both track shapes ─────────────────────────────────────────────────────────
+
+def test_validate_project_accepts_object_shape_tracks(tmp_path):
+    data = {**VALID_PROJECT, "tracks": [
+        {"id": "trk-0", "items": [VALID_PRIMARY_CLIP]},
+        {"id": "trk-1", "items": [], "volume": 0.8, "muted": False, "enabled": True},
+    ]}
+    path = _write_project(tmp_path, "project.json", data)
+    assert v.validate_project(path)["valid"] is True
+
+
+def test_validate_project_still_accepts_legacy_list_of_lists(tmp_path):
+    data = {**VALID_PROJECT, "tracks": [[VALID_PRIMARY_CLIP], []]}
+    path = _write_project(tmp_path, "project.json", data)
+    assert v.validate_project(path)["valid"] is True
+
+
+def test_validate_project_accepts_the_two_shapes_mixed(tmp_path):
+    data = {**VALID_PROJECT, "tracks": [[VALID_PRIMARY_CLIP], {"id": "trk-1", "items": []}]}
+    path = _write_project(tmp_path, "project.json", data)
+    assert v.validate_project(path)["valid"] is True
+
+
+@pytest.mark.parametrize("track", ["nope", 7, None, True])
+def test_validate_project_rejects_a_track_that_is_neither_shape(tmp_path, track):
+    data = {**VALID_PROJECT, "tracks": [track]}
+    path = _write_project(tmp_path, "project.json", data)
+    with pytest.raises(SystemExit):
+        v.validate_project(path)
+
+
+def test_validate_project_track_object_items_must_be_a_list(tmp_path):
+    data = {**VALID_PROJECT, "tracks": [{"id": "trk-0", "items": {"a": 1}}]}
+    path = _write_project(tmp_path, "project.json", data)
+    with pytest.raises(SystemExit):
+        v.validate_project(path)
+
+
+@pytest.mark.parametrize("settings", [
+    {"id": 7},
+    {"volume": "loud"},
+    {"volume": True},
+    {"muted": "yes"},
+    {"enabled": 1},
+])
+def test_validate_project_rejects_bad_track_settings(tmp_path, settings):
+    track = {"id": "trk-0", "items": [], **settings}
+    data = {**VALID_PROJECT, "tracks": [track]}
+    path = _write_project(tmp_path, "project.json", data)
+    with pytest.raises(SystemExit):
+        v.validate_project(path)
+
+
+def test_validate_project_accepts_integer_volume(tmp_path):
+    data = {**VALID_PROJECT, "tracks": [{"id": "trk-0", "items": [], "volume": 1}]}
+    path = _write_project(tmp_path, "project.json", data)
+    assert v.validate_project(path)["valid"] is True
+
+
+def test_validate_project_overlap_still_fires_on_object_shape_overlay_track(tmp_path):
+    items = [
+        {"id": "v1", "type": "overlay", "src": "./a.jsx", "start": 0.0, "end": 3.0},
+        {"id": "v2", "type": "overlay", "src": "./b.jsx", "start": 2.0, "end": 5.0},
+    ]
+    data = {**VALID_PROJECT, "tracks": [
+        {"id": "trk-0", "items": []},
+        {"id": "trk-1", "items": items},
+    ]}
+    path = _write_project(tmp_path, "project.json", data)
+    with pytest.raises(SystemExit):
+        v.validate_project(path)
+
+
+def test_validate_project_source_crop_is_checked_on_object_shape(tmp_path):
+    clip = {**VALID_PRIMARY_CLIP, "sourceCrop": {"x": 0.0, "y": 0.0, "w": 2.0, "h": 1.0}}
+    data = {**VALID_PROJECT, "tracks": [{"id": "trk-0", "items": [clip]}]}
     path = _write_project(tmp_path, "project.json", data)
     with pytest.raises(SystemExit):
         v.validate_project(path)
@@ -408,6 +490,86 @@ def test_validate_project_rejects_out_of_range_source_crop(tmp_path):
         v.validate_project(path)
 
 
+# ── per-clip speed (montaj/speed) ──────────────────────────────────────────────
+
+def test_validate_project_accepts_absent_speed(tmp_path):
+    # No speed field ⇒ default 1.0 ⇒ valid (VALID_PRIMARY_CLIP has none).
+    path = _write_project(tmp_path, "project.json", {**VALID_PROJECT, "tracks": [[{**VALID_PRIMARY_CLIP}]]})
+    assert v.validate_project(path)["valid"] is True
+
+
+@pytest.mark.parametrize("speed", [0.25, 0.5, 1, 1.0, 2, 4, 4.0])
+def test_validate_project_accepts_in_range_speed(tmp_path, speed):
+    data = {**VALID_PROJECT, "tracks": [[{**VALID_PRIMARY_CLIP, "speed": speed}]]}
+    path = _write_project(tmp_path, "project.json", data)
+    assert v.validate_project(path)["valid"] is True
+
+
+@pytest.mark.parametrize("speed", [0.24, 0, -1, 4.01, 5])
+def test_validate_project_rejects_out_of_range_speed(tmp_path, speed):
+    data = {**VALID_PROJECT, "tracks": [[{**VALID_PRIMARY_CLIP, "speed": speed}]]}
+    path = _write_project(tmp_path, "project.json", data)
+    with pytest.raises(SystemExit):
+        v.validate_project(path)
+
+
+@pytest.mark.parametrize("speed", ["2", True, None])
+def test_validate_project_rejects_non_number_speed(tmp_path, speed):
+    # A JSON null round-trips to None, which validates as "absent" (valid); a
+    # string or bool is a type error. Split so the None case asserts acceptance.
+    clip = {**VALID_PRIMARY_CLIP, "speed": speed}
+    data = {**VALID_PROJECT, "tracks": [[clip]]}
+    path = _write_project(tmp_path, "project.json", data)
+    if speed is None:
+        assert v.validate_project(path)["valid"] is True
+    else:
+        with pytest.raises(SystemExit):
+            v.validate_project(path)
+
+
+# ── per-item rotation ────────────────────────────────────────────────────────
+
+def test_validate_project_accepts_absent_rotation(tmp_path):
+    # No rotation field ⇒ default 0 ⇒ valid (VALID_PRIMARY_CLIP has none).
+    path = _write_project(tmp_path, "project.json", {**VALID_PROJECT, "tracks": [[{**VALID_PRIMARY_CLIP}]]})
+    assert v.validate_project(path)["valid"] is True
+
+
+@pytest.mark.parametrize("rotation", [0, 90, 360, 720, -45, 0.5])
+def test_validate_project_accepts_finite_rotation(tmp_path, rotation):
+    # Range is intentionally unchecked here — a helper elsewhere normalizes
+    # any finite value into [0,360) — so out-of-range values like 720 or -45
+    # are still valid at this layer.
+    data = {**VALID_PROJECT, "tracks": [[{**VALID_PRIMARY_CLIP, "rotation": rotation}]]}
+    path = _write_project(tmp_path, "project.json", data)
+    assert v.validate_project(path)["valid"] is True
+
+
+@pytest.mark.parametrize("rotation", [math.nan, math.inf, -math.inf])
+def test_validate_project_rejects_non_finite_rotation(tmp_path, rotation):
+    # json.load parses NaN/Infinity into float instances, so isinstance alone
+    # would accept them; math.isfinite() is what catches these.
+    data = {**VALID_PROJECT, "tracks": [[{**VALID_PRIMARY_CLIP, "rotation": rotation}]]}
+    path = _write_project(tmp_path, "project.json", data)
+    with pytest.raises(SystemExit):
+        v.validate_project(path)
+
+
+@pytest.mark.parametrize("rotation", ["90", [90], True, None])
+def test_validate_project_rejects_non_number_rotation(tmp_path, rotation):
+    # A JSON null round-trips to None, which validates as "absent" (valid); a
+    # string, list, or bool is a type error. Split so the None case asserts
+    # acceptance.
+    clip = {**VALID_PRIMARY_CLIP, "rotation": rotation}
+    data = {**VALID_PROJECT, "tracks": [[clip]]}
+    path = _write_project(tmp_path, "project.json", data)
+    if rotation is None:
+        assert v.validate_project(path)["valid"] is True
+    else:
+        with pytest.raises(SystemExit):
+            v.validate_project(path)
+
+
 # ---------------------------------------------------------------------------
 # validate_project — broll
 # ---------------------------------------------------------------------------
@@ -464,6 +626,134 @@ def test_validate_broll_still_enforces_track_rules(tmp_path):
 def test_voiceover_ignored_on_non_broll_projects(tmp_path):
     """A stray voiceover block on an editing project is not validated."""
     data = {**VALID_PROJECT, "voiceover": "whatever"}
+    path = _write_project(tmp_path, "project.json", data)
+    assert v.validate_project(path)["valid"] is True
+
+
+# ── audio.tracks ──────────────────────────────────────────────────────────────
+#
+# The load-bearing assertion in this block is the FIRST one: a track with no
+# `end` must stay valid. That shape is what `mix-audio.js` renders as "play the
+# bed for its natural length", and making the validator reject it would outlaw
+# a legitimate project to paper over an editor bug. If a future change makes
+# that test fail, the change is wrong, not the test.
+
+def _audio(*tracks):
+    return {**VALID_PROJECT, "tracks": [[{**VALID_PRIMARY_CLIP}]], "audio": {"tracks": list(tracks)}}
+
+
+def test_validate_project_audio_track_does_not_require_end(tmp_path):
+    """A music bed with no `end` plays its natural length. Legal, and stays legal."""
+    path = _write_project(tmp_path, "project.json", _audio({"src": "/a/song.mp3", "volume": 0.2}))
+    assert v.validate_project(path)["valid"] is True
+
+
+def test_validate_project_audio_track_does_not_require_start_or_id(tmp_path):
+    path = _write_project(tmp_path, "project.json", _audio({"src": "/a/song.mp3"}))
+    assert v.validate_project(path)["valid"] is True
+
+
+def test_validate_project_audio_track_accepts_a_full_track(tmp_path):
+    data = _audio({"id": "aud-0", "src": "/a/vo.wav", "volume": 1.0, "start": 0, "end": 36.4,
+                   "inPoint": 0, "outPoint": 36.4, "lane": 0, "muted": False,
+                   "fadeIn": 0.5, "fadeOut": 0.5})
+    path = _write_project(tmp_path, "project.json", data)
+    assert v.validate_project(path)["valid"] is True
+
+
+def test_validate_project_audio_track_requires_src(tmp_path):
+    path = _write_project(tmp_path, "project.json", _audio({"id": "aud-0", "start": 0, "end": 5}))
+    with pytest.raises(SystemExit):
+        v.validate_project(path)
+
+
+def test_validate_project_audio_track_rejects_empty_src(tmp_path):
+    path = _write_project(tmp_path, "project.json", _audio({"src": ""}))
+    with pytest.raises(SystemExit):
+        v.validate_project(path)
+
+
+def test_validate_project_audio_track_rejects_zero_width_lane(tmp_path):
+    """`start: 0, end: 0` — the exact shape skills/lyrics-video used to ship."""
+    path = _write_project(tmp_path, "project.json",
+                          _audio({"id": "music", "src": "/a/song.mp3", "start": 0, "end": 0}))
+    with pytest.raises(SystemExit):
+        v.validate_project(path)
+
+
+def test_validate_project_audio_track_rejects_zero_end_with_no_start(tmp_path):
+    """`mix-audio.js` delays by `start ?? 0`, so this is the same zero-width lane."""
+    path = _write_project(tmp_path, "project.json", _audio({"src": "/a/song.mp3", "end": 0}))
+    with pytest.raises(SystemExit):
+        v.validate_project(path)
+
+
+@pytest.mark.parametrize("key", ["start", "end", "volume", "inPoint", "outPoint", "fadeIn", "fadeOut"])
+def test_validate_project_audio_track_rejects_negative_numbers(tmp_path, key):
+    """A negative reaches ffmpeg as a malformed filter argument (adelay=-2000)."""
+    path = _write_project(tmp_path, "project.json", _audio({"src": "/a/song.mp3", key: -1}))
+    with pytest.raises(SystemExit):
+        v.validate_project(path)
+
+
+def test_validate_project_audio_track_rejects_end_before_start(tmp_path):
+    path = _write_project(tmp_path, "project.json",
+                          _audio({"src": "/a/song.mp3", "start": 10, "end": 4}))
+    with pytest.raises(SystemExit):
+        v.validate_project(path)
+
+
+@pytest.mark.parametrize("key", ["start", "end", "volume", "inPoint", "outPoint", "fadeIn", "fadeOut"])
+def test_validate_project_audio_track_numeric_fields_must_be_numbers(tmp_path, key):
+    path = _write_project(tmp_path, "project.json", _audio({"src": "/a/song.mp3", key: "1.0"}))
+    with pytest.raises(SystemExit):
+        v.validate_project(path)
+
+
+@pytest.mark.parametrize("key", ["start", "end", "volume", "inPoint", "outPoint", "fadeIn", "fadeOut", "lane"])
+def test_validate_project_audio_track_rejects_bool_for_a_number(tmp_path, key):
+    """bool is a subclass of int — True must not be read as 1."""
+    path = _write_project(tmp_path, "project.json", _audio({"src": "/a/song.mp3", key: True}))
+    with pytest.raises(SystemExit):
+        v.validate_project(path)
+
+
+def test_validate_project_audio_track_lane_must_be_an_integer(tmp_path):
+    path = _write_project(tmp_path, "project.json", _audio({"src": "/a/song.mp3", "lane": 1.5}))
+    with pytest.raises(SystemExit):
+        v.validate_project(path)
+
+
+def test_validate_project_audio_track_muted_must_be_a_bool(tmp_path):
+    path = _write_project(tmp_path, "project.json", _audio({"src": "/a/song.mp3", "muted": "yes"}))
+    with pytest.raises(SystemExit):
+        v.validate_project(path)
+
+
+def test_validate_project_audio_track_rejects_duplicate_ids(tmp_path):
+    data = _audio({"id": "aud-0", "src": "/a/one.wav"}, {"id": "aud-0", "src": "/a/two.wav"})
+    path = _write_project(tmp_path, "project.json", data)
+    with pytest.raises(SystemExit):
+        v.validate_project(path)
+
+
+def test_validate_project_audio_tracks_must_be_a_list(tmp_path):
+    data = {**VALID_PROJECT, "tracks": [[{**VALID_PRIMARY_CLIP}]], "audio": {"tracks": {"src": "/a.mp3"}}}
+    path = _write_project(tmp_path, "project.json", data)
+    with pytest.raises(SystemExit):
+        v.validate_project(path)
+
+
+def test_validate_project_empty_audio_object_still_valid(tmp_path):
+    """`"audio": {}` is what project/init.py writes. It must stay valid."""
+    data = {**VALID_PROJECT, "tracks": [[{**VALID_PRIMARY_CLIP}]], "audio": {}}
+    path = _write_project(tmp_path, "project.json", data)
+    assert v.validate_project(path)["valid"] is True
+
+
+def test_validate_project_no_audio_key_still_valid(tmp_path):
+    data = {**VALID_PROJECT, "tracks": [[{**VALID_PRIMARY_CLIP}]]}
+    del data["audio"]
     path = _write_project(tmp_path, "project.json", data)
     assert v.validate_project(path)["valid"] is True
 

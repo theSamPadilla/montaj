@@ -6,6 +6,216 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+### Video editor
+
+- **Fixed: Dolby Vision sources no longer fail the export.** A DV clip (e.g. an
+  iPhone HDR recording) carries a Dolby Vision RPU that propagated untouched
+  through the pipeline into libx265, which re-emitted it in-band; the MP4 muxer
+  then died with "Error submitting a packet to the muxer: Not yet implemented in
+  FFmpeg". Montaj outputs HDR10/HLG, never Dolby Vision, so the segment encoder
+  now strips the DV RPU (HEVC NAL 62) on the HDR path, leaving plain HEVC with
+  its HDR10 metadata intact. No effect on SDR or non-DV sources.
+- **The render progress bar tracks total work, not just phase headings.** The
+  two heavy phases — overlay assembly and composition — now advance the bar by
+  their real per-segment counters, so it climbs steadily through the actual work
+  instead of leaping to nearly full on a phase heading and freezing there.
+- **UI polish.** The clip **Crop** tab is a centered icon + description + button
+  rather than a bare line of text; the Export dialog's resolution tiles drop the
+  overflowing "recommended" badge (the pre-selected tile already says it).
+
+- **Video and image clips can be keyframed.** A clip's position, scale and
+  rotation now animate over its own lifetime, using the same keyframe controls,
+  curve maths and easings overlays already had — and, unlike before, the export
+  reproduces the motion. The renderer compiles each curve into a time-varying
+  ffmpeg filter expression rather than composing one static box per segment.
+  Keyframing a clip previously did nothing at all: it animated neither in the
+  editor nor in the export. Overlays are unchanged, and a project with no
+  keyframed clips renders byte-identical ffmpeg arguments to before.
+
+  **Opacity is the exception and cannot be animated on a clip.** ffmpeg applies
+  alpha through a filter that accepts a fixed number and no expression, so a
+  fade cannot be expressed on that path at any cost. The opacity keyframe
+  control is therefore shown *disabled* on a video or image clip with a tooltip
+  explaining why, rather than silently doing nothing, and double-clicking a clip
+  to key every property skips opacity. Overlays still animate opacity normally.
+
+- **BREAKING: the DOM timeline is removed — canvas is the only timeline.**
+  The `VideoEditor` `timeline?: { canvas: boolean }` prop is gone from
+  `VideoEditorProps`; a host that still passes it fails typecheck. The old
+  DOM-rows implementation (one positioned `<div>` per visual clip / audio
+  item) is deleted from the package outright, not kept behind a flag. A host
+  that never passed the prop typechecks with no changes required, but its
+  runtime behavior changes silently: it used to fall onto the DOM-rows path
+  by default, and now gets the canvas timeline instead — which needs
+  `EditorAdapter.getWaveformPeaks` and `getFilmstrip` implemented to draw
+  per-clip/audio-lane waveforms and filmstrip thumbnails. Both stay optional
+  and feature-detected, so a host missing either loses that imagery with no
+  error, not a crash. A full migration runbook for consumer hosts — exact
+  adapter method signatures, greppable call-site patterns, and a verification
+  checklist — is maintained internally.
+- **Ported the subcut-regenerate control to the canvas timeline.** It used to
+  be a Scissors button on the old DOM clip rows, which would have made it
+  unreachable — and effectively retired for good — once those rows came out;
+  instead it moved across intact. It appears on a selected clip once the host
+  enables regeneration, the clip still carries its generation provenance, and
+  the clip is at least 3 seconds long, the same conditions the button always
+  required. A "queued" badge shows on a clip the host reports as queued, but
+  the button itself stays clickable while queued, so a queued clip can still
+  be reopened and resubmitted rather than getting locked out. Clicking the
+  button toggles the tool open and closed. It's rendered as a real HTML
+  control positioned over the canvas surface rather than painted into it, so
+  it keeps a genuine button's accessible name, title, and hover state, and it
+  now has test coverage it never had before.
+- **Reorganized the editor panels: left browses, right inspects.** The left
+  sidebar is now a tabbed browser with an icon rail — **Media**, **Captions**
+  (the default) and **Versions** — and the right panel holds only the
+  properties of what is selected. Previously one sidebar stacked both jobs,
+  which is why the version list felt cramped and the properties panel had
+  nowhere to grow. The tab shell (`video/panels/LeftPanelTabs.tsx`) is generic:
+  a new tab is one `{ id, icon, label, content }` entry, so Audio/Effects/Text
+  drop in later without touching it. The active tab persists across reloads,
+  and a tab keeps its state (scroll position, sub-tab, a half-finished edit)
+  when you switch away and back. The right panel is always present, showing a
+  short prompt when nothing is selected, so the preview and timeline never
+  resize as selection changes. The preview and timeline themselves are
+  unchanged. This applies to the three-column layout (the one a host opts into
+  with `slots.mediaPanel`); the classic layout's arrangement is untouched.
+- **The right properties panel has a real empty state, brandable by the host.**
+  With nothing selected it now shows a vertically centered "Select an element"
+  prompt in place of the old terse one-liner. A host can replace it via the new
+  `slots.propertiesEmptyState` (Montaj renders its logo there); absent, the
+  package's generic centered default shows. Classic layout unaffected.
+- **Version history shows every version, by name and date.** The list no longer
+  collapses to one row per backend "run", and the "Run N" prefix is gone: run
+  is plumbing that was never meant to surface, and collapsing by it hid real
+  saved versions. Each version is now its own row with **Compare** and
+  **Restore**, newest first, with auto-generated labels humanized ("Draft",
+  "Exported", "Auto-save before restore", "Untitled save") and operator-typed
+  names shown verbatim. Compare and Restore behave exactly as before.
+- **BREAKING: `renderClipInspector` is removed** from `VideoEditorProps`, and
+  clip properties are now edited in the right panel instead of a modal.
+  Selecting a video clip edits its volume, mute and speed there; selecting an
+  audio track edits its label, volume, mute, fades, ducking, trim and position.
+  A host no longer supplies any of that. Hosts with host-only per-clip UI use
+  the new, narrower `renderGenerationPanel?: (ctx: { clipId: string }) =>
+  ReactNode` seam, which the editor renders inside the properties panel beneath
+  the clip properties when a video clip is selected. Deleting an audio track is
+  deliberately not in the panel (destructive, and the panel is somewhere you
+  land just by selecting) — the timeline's Delete/Backspace still does it.
+- **Speed changes from the panel still ripple.** The retired modal closed the
+  gap a speed-up leaves behind when the magnet is on; the editor's commit
+  handler now owns that, folded into the same undo step as the speed change
+  itself.
+- **Redesigned the overlay properties panel as a Transform inspector.** The flat
+  stack of five number fields is now a sectioned panel: a **Scale** slider with
+  X/Y boxes and a uniform-scale lock, **Position** X/Y, a **Rotate** box with a
+  circular dial (keyboard operable, Shift for coarse steps), **Opacity**, a
+  six-button **Align** row that snaps to the frame edges using the same math as
+  the preview's drag snapping, and a **Reset**. Every animatable row keeps its
+  keyframe diamond, and the section header gains a keyframe unit covering all
+  five properties at once plus arrows that jump the playhead between keyframes.
+  When nothing is selected the panel shows a short prompt instead of vanishing.
+  Keyframe persistence is unchanged: every control routes through the same
+  auto-keyframe rule, so editing an already-animated property adds a keyframe
+  at the playhead rather than overwriting the animation.
+- **Keyframe diamonds are now on the canvas timeline itself, not just the
+  panel.** A selected, keyframed overlay draws a diamond strip along the
+  bottom of its clip, one per distinct keyframe time. Double-clicking the
+  clip keys all five transform properties at the instant you clicked, each at
+  the value it already holds there, so nothing moves; double-clicking a
+  diamond selects it (its fill
+  turns white); dragging a diamond retimes it with snapping to the item's
+  other keyframe times, landing on one merges the two; right-click opens a
+  menu for per-property easing and removal; and Delete/Backspace removes
+  every property keyed at the selected instant. Keyframing stays
+  overlay-only, a render constraint rather than a UI limitation.
+- **Captions can now be generated by the host as a background job, instead of
+  the editor's blocking modal.** `VideoEditorProps` gains two optional props:
+  `onRegenerateCaptions` and `captionsGenerating`. When a host provides
+  `onRegenerateCaptions`, the editor delegates the Captions panel's trigger to
+  it and never mounts its own `CaptionRegenModal`, so the host can run
+  generation in the background and report progress wherever it likes;
+  `captionsGenerating` lets it disable the trigger while a job is in flight,
+  and is OR'd with the editor's own modal state rather than replacing it. A
+  host that passes neither prop is completely unaffected — the built-in modal
+  remains the default and the only path, so embedding apps need no changes.
+- **BREAKING: `OverlayPropsModal` is removed — overlay props move into the
+  properties panel.** The floating "Edit overlay" modal is gone, along with
+  the Pencil "Edit overlay" button that opened it. An overlay's props are now
+  edited in the right properties panel under a new **Content** tab (the
+  default), with the existing Transform inspector as the second tab; the
+  active tab persists (`montaj.editor.overlayPanelTab`). Double-clicking an
+  overlay in the preview now selects it — it no longer opens a modal. Edits
+  preview live against the canvas and commit on blur as a single undo step;
+  there is no Save button and no Cancel, undo is the revert path. A host that
+  imported `OverlayPropsModal` directly will fail to resolve it; the file is
+  deleted, not deprecated.
+- **Overlay scale can now be non-uniform.** `VisualItem` gains optional
+  `scaleX`/`scaleY`; when absent the item falls back to `scale` exactly as
+  before, so every existing project renders byte-identical. The Transform
+  panel's "Uniform scale" lock (previously inert) is now functional:
+  unlocking it reveals independent width/height scaling, adjustable from the
+  panel's X/Y boxes or by dragging the new edge handles on the preview
+  selection box. Unlocking seeds both axes from the current uniform scale so
+  nothing visibly jumps; re-locking keeps the X value and clears the per-axis
+  fields. `KeyframeProp` widens to cover the two new props, so per-axis scale
+  is keyframeable like every other transform property. Preview and render
+  resolve scale through the same shared `@bycrux/timeline-core` geometry
+  resolver, and the emitted CSS transform is now unconditionally the
+  two-argument `scale(sx, sy)`, so the two surfaces can't drift apart.
+- **Unified the overlay selection box with the clip selection box.** A
+  selected overlay in the preview now gets the same crisp treatment a
+  selected clip gets: a 2px `var(--editor-selection)` outline with eight
+  12x12 white square handles — four corners (scale both axes) and four edge
+  midpoints (scale one axis). The old faint amber ring with L-bracket corners
+  is gone, and the drag snap guides are now token-driven instead of
+  hardcoded amber.
+- **The caption panel is now three sub-tabs, and the style picker is a live
+  gallery.** The track-level caption controls used to sit behind one
+  collapsible "Caption style" subsection above the transcript. They are now
+  three sub-tabs: **Format** (the default), holding the fine controls — size,
+  color, font, bold, case, alignment, letter spacing, line height — each now on
+  its own labeled row in a single label/control column, with alignment promoted
+  out of the case row onto its own;
+  **Styles**, a card grid replacing the old text-chip row, with one card per
+  style rendering the real `render/templates/captions/*.jsx` template — the
+  same one the export uses — on a four-word sample, so hovering a card plays
+  its actual animation and clicking applies it; and **Captions**, the
+  transcript list, unchanged. The gallery needs two new optional props on
+  `CaptionListPanelProps`, `compileOverlay` and `resolveCaptionTemplate`; a
+  host that doesn't supply them (Hub, Los Parceros) falls back to a static
+  styled specimen card per style, still clickable. The active sub-tab persists
+  under `montaj.editor.captionPanelTab`.
+- **Extracted a shared `TabNav` component for the editor's small tab
+  strips.** The underline tab strip (uppercase labels, an accent underline
+  under the active tab) is now one component (`video/panels/TabNav.tsx`),
+  used by the caption panel's Format/Styles/Captions switch, the overlay
+  panel's Content/Transform switch, and the new clip properties tabs below.
+  Purely an internal de-duplication: no visual or behavioral change to any
+  panel that already had tabs.
+- **Video and image clips now get a tabbed properties pane, with a new
+  Transform tab.** Selecting a clip used to show one flat pane with just
+  Volume and, for video, Speed. It's now tabbed: **Transform, Speed,
+  Volume, Crop, Generate**, opening on Transform, which is the same
+  inspector overlays already use for scale, position, rotation, opacity and
+  alignment. The tab set adapts to the selection: an image clip has no
+  Speed or Crop tab, a clip that isn't a main-track video with a source has
+  no Crop tab, and Generate only shows for a generated clip. The active tab
+  is remembered per browser. Editing a transform property on a clip with no
+  keyframes sets a static transform on the whole clip rather than creating
+  one; once a property is keyframed, editing it at the playhead keys it
+  there instead, the same auto-keyframe rule overlays already followed.
+  (Opacity can be set statically but not keyframed on a clip, the same
+  ffmpeg limitation noted above.) This is UI plumbing over transforms the
+  render engine already supported, so an existing project with no clip
+  transforms renders identically. Audio tracks keep their own untabbed
+  panel, and captions are unaffected.
+- **The Transform section's collapse chevron is gone.** Both the overlay
+  Transform panel and the new clip Transform tab above now show the section
+  permanently open, with no fold/unfold control. Now that Transform is
+  reached by selecting its own tab rather than sharing a pane with other
+  fields, there was nothing left to collapse it for.
+
 ### Both editors
 
 - **Added: visible Undo (and Redo) toolbar buttons.** Undo/redo was previously

@@ -1,0 +1,751 @@
+{
+  "planBoundaries": {
+    "24": [
+      0,
+      2,
+      4,
+      6,
+      8
+    ],
+    "30": [
+      0,
+      2,
+      4,
+      6,
+      8
+    ],
+    "60": [
+      0,
+      2,
+      4,
+      6,
+      8
+    ]
+  },
+  "durations": {
+    "visualDuration": 8,
+    "projectEnd": 8
+  },
+  "resolveAt": {
+    "timestamps": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9
+    ],
+    "preview": [
+      {
+        "t": 0,
+        "items": [
+          {
+            "itemId": "proxy-00",
+            "trackIdx": 0,
+            "kind": "video",
+            "window": {
+              "src": "/corpus/proxy-00_norm.mp4",
+              "inPoint": 1,
+              "outPoint": 15,
+              "usedNormalizedCache": true
+            },
+            "seek": 1,
+            "geometry": {
+              "scale": 1,
+              "scaleX": 1,
+              "scaleY": 1,
+              "offsetX": 0,
+              "offsetY": 0,
+              "opacity": 1,
+              "fit": "contain",
+              "rotation": 0
+            }
+          }
+        ]
+      },
+      {
+        "t": 1,
+        "items": [
+          {
+            "itemId": "proxy-00",
+            "trackIdx": 0,
+            "kind": "video",
+            "window": {
+              "src": "/corpus/proxy-00_norm.mp4",
+              "inPoint": 1,
+              "outPoint": 15,
+              "usedNormalizedCache": true
+            },
+            "seek": 2,
+            "geometry": {
+              "scale": 1,
+              "scaleX": 1,
+              "scaleY": 1,
+              "offsetX": 0,
+              "offsetY": 0,
+              "opacity": 1,
+              "fit": "contain",
+              "rotation": 0
+            }
+          }
+        ]
+      },
+      {
+        "t": 2,
+        "items": [
+          {
+            "itemId": "proxy-01",
+            "trackIdx": 0,
+            "kind": "video",
+            "window": {
+              "src": "/corpus/proxy-01_proxy.mp4",
+              "inPoint": 6,
+              "outPoint": 20,
+              "usedNormalizedCache": false
+            },
+            "seek": 6,
+            "geometry": {
+              "scale": 1,
+              "scaleX": 1,
+              "scaleY": 1,
+              "offsetX": 0,
+              "offsetY": 0,
+              "opacity": 1,
+              "fit": "contain",
+              "rotation": 0
+            }
+          }
+        ]
+      },
+      {
+        "t": 3,
+        "items": [
+          {
+            "itemId": "proxy-01",
+            "trackIdx": 0,
+            "kind": "video",
+            "window": {
+              "src": "/corpus/proxy-01_proxy.mp4",
+              "inPoint": 6,
+              "outPoint": 20,
+              "usedNormalizedCache": false
+            },
+            "seek": 7,
+            "geometry": {
+              "scale": 1,
+              "scaleX": 1,
+              "scaleY": 1,
+              "offsetX": 0,
+              "offsetY": 0,
+              "opacity": 1,
+              "fit": "contain",
+              "rotation": 0
+            }
+          }
+        ]
+      },
+      {
+        "t": 4,
+        "items": [
+          {
+            "itemId": "proxy-10",
+            "trackIdx": 0,
+            "kind": "video",
+            "window": {
+              "src": "/corpus/proxy-10_nobg_preview.webm",
+              "inPoint": 6,
+              "outPoint": 20,
+              "usedNormalizedCache": false
+            },
+            "seek": 6,
+            "geometry": {
+              "scale": 1,
+              "scaleX": 1,
+              "scaleY": 1,
+              "offsetX": 0,
+              "offsetY": 0,
+              "opacity": 1,
+              "fit": "contain",
+              "rotation": 0
+            }
+          }
+        ]
+      },
+      {
+        "t": 5,
+        "items": [
+          {
+            "itemId": "proxy-10",
+            "trackIdx": 0,
+            "kind": "video",
+            "window": {
+              "src": "/corpus/proxy-10_nobg_preview.webm",
+              "inPoint": 6,
+              "outPoint": 20,
+              "usedNormalizedCache": false
+            },
+            "seek": 7,
+            "geometry": {
+              "scale": 1,
+              "scaleX": 1,
+              "scaleY": 1,
+              "offsetX": 0,
+              "offsetY": 0,
+              "opacity": 1,
+              "fit": "contain",
+              "rotation": 0
+            }
+          }
+        ]
+      },
+      {
+        "t": 6,
+        "items": [
+          {
+            "itemId": "proxy-11",
+            "trackIdx": 0,
+            "kind": "video",
+            "window": {
+              "src": "/corpus/proxy-11_nobg_preview.webm",
+              "inPoint": 6,
+              "outPoint": 20,
+              "usedNormalizedCache": false
+            },
+            "seek": 6,
+            "geometry": {
+              "scale": 1,
+              "scaleX": 1,
+              "scaleY": 1,
+              "offsetX": 0,
+              "offsetY": 0,
+              "opacity": 1,
+              "fit": "contain",
+              "rotation": 0
+            }
+          }
+        ]
+      },
+      {
+        "t": 7,
+        "items": [
+          {
+            "itemId": "proxy-11",
+            "trackIdx": 0,
+            "kind": "video",
+            "window": {
+              "src": "/corpus/proxy-11_nobg_preview.webm",
+              "inPoint": 6,
+              "outPoint": 20,
+              "usedNormalizedCache": false
+            },
+            "seek": 7,
+            "geometry": {
+              "scale": 1,
+              "scaleX": 1,
+              "scaleY": 1,
+              "offsetX": 0,
+              "offsetY": 0,
+              "opacity": 1,
+              "fit": "contain",
+              "rotation": 0
+            }
+          }
+        ]
+      },
+      {
+        "t": 8,
+        "items": []
+      },
+      {
+        "t": 9,
+        "items": []
+      }
+    ],
+    "render": [
+      {
+        "t": 0,
+        "items": [
+          {
+            "itemId": "proxy-00",
+            "trackIdx": 0,
+            "kind": "video",
+            "window": {
+              "src": "/corpus/proxy-00_norm.mp4",
+              "inPoint": 1,
+              "outPoint": 15,
+              "usedNormalizedCache": true
+            },
+            "seek": 1,
+            "geometry": {
+              "scale": 1,
+              "scaleX": 1,
+              "scaleY": 1,
+              "offsetX": 0,
+              "offsetY": 0,
+              "opacity": 1,
+              "fit": "contain",
+              "rotation": 0
+            }
+          }
+        ]
+      },
+      {
+        "t": 1,
+        "items": [
+          {
+            "itemId": "proxy-00",
+            "trackIdx": 0,
+            "kind": "video",
+            "window": {
+              "src": "/corpus/proxy-00_norm.mp4",
+              "inPoint": 1,
+              "outPoint": 15,
+              "usedNormalizedCache": true
+            },
+            "seek": 2,
+            "geometry": {
+              "scale": 1,
+              "scaleX": 1,
+              "scaleY": 1,
+              "offsetX": 0,
+              "offsetY": 0,
+              "opacity": 1,
+              "fit": "contain",
+              "rotation": 0
+            }
+          }
+        ]
+      },
+      {
+        "t": 2,
+        "items": [
+          {
+            "itemId": "proxy-01",
+            "trackIdx": 0,
+            "kind": "video",
+            "window": {
+              "src": "/corpus/proxy-01_norm.mp4",
+              "inPoint": 1,
+              "outPoint": 15,
+              "usedNormalizedCache": true
+            },
+            "seek": 1,
+            "geometry": {
+              "scale": 1,
+              "scaleX": 1,
+              "scaleY": 1,
+              "offsetX": 0,
+              "offsetY": 0,
+              "opacity": 1,
+              "fit": "contain",
+              "rotation": 0
+            }
+          }
+        ]
+      },
+      {
+        "t": 3,
+        "items": [
+          {
+            "itemId": "proxy-01",
+            "trackIdx": 0,
+            "kind": "video",
+            "window": {
+              "src": "/corpus/proxy-01_norm.mp4",
+              "inPoint": 1,
+              "outPoint": 15,
+              "usedNormalizedCache": true
+            },
+            "seek": 2,
+            "geometry": {
+              "scale": 1,
+              "scaleX": 1,
+              "scaleY": 1,
+              "offsetX": 0,
+              "offsetY": 0,
+              "opacity": 1,
+              "fit": "contain",
+              "rotation": 0
+            }
+          }
+        ]
+      },
+      {
+        "t": 4,
+        "items": [
+          {
+            "itemId": "proxy-10",
+            "trackIdx": 0,
+            "kind": "video",
+            "window": {
+              "src": "/corpus/proxy-10_norm.mp4",
+              "inPoint": 1,
+              "outPoint": 15,
+              "usedNormalizedCache": true
+            },
+            "seek": 1,
+            "geometry": {
+              "scale": 1,
+              "scaleX": 1,
+              "scaleY": 1,
+              "offsetX": 0,
+              "offsetY": 0,
+              "opacity": 1,
+              "fit": "contain",
+              "rotation": 0
+            }
+          }
+        ]
+      },
+      {
+        "t": 5,
+        "items": [
+          {
+            "itemId": "proxy-10",
+            "trackIdx": 0,
+            "kind": "video",
+            "window": {
+              "src": "/corpus/proxy-10_norm.mp4",
+              "inPoint": 1,
+              "outPoint": 15,
+              "usedNormalizedCache": true
+            },
+            "seek": 2,
+            "geometry": {
+              "scale": 1,
+              "scaleX": 1,
+              "scaleY": 1,
+              "offsetX": 0,
+              "offsetY": 0,
+              "opacity": 1,
+              "fit": "contain",
+              "rotation": 0
+            }
+          }
+        ]
+      },
+      {
+        "t": 6,
+        "items": [
+          {
+            "itemId": "proxy-11",
+            "trackIdx": 0,
+            "kind": "video",
+            "window": {
+              "src": "/corpus/proxy-11_norm.mp4",
+              "inPoint": 1,
+              "outPoint": 15,
+              "usedNormalizedCache": true
+            },
+            "seek": 1,
+            "geometry": {
+              "scale": 1,
+              "scaleX": 1,
+              "scaleY": 1,
+              "offsetX": 0,
+              "offsetY": 0,
+              "opacity": 1,
+              "fit": "contain",
+              "rotation": 0
+            }
+          }
+        ]
+      },
+      {
+        "t": 7,
+        "items": [
+          {
+            "itemId": "proxy-11",
+            "trackIdx": 0,
+            "kind": "video",
+            "window": {
+              "src": "/corpus/proxy-11_norm.mp4",
+              "inPoint": 1,
+              "outPoint": 15,
+              "usedNormalizedCache": true
+            },
+            "seek": 2,
+            "geometry": {
+              "scale": 1,
+              "scaleX": 1,
+              "scaleY": 1,
+              "offsetX": 0,
+              "offsetY": 0,
+              "opacity": 1,
+              "fit": "contain",
+              "rotation": 0
+            }
+          }
+        ]
+      },
+      {
+        "t": 8,
+        "items": []
+      },
+      {
+        "t": 9,
+        "items": []
+      }
+    ]
+  },
+  "resolveSegment": {
+    "fps": 30,
+    "segments": [
+      {
+        "segStart": 0,
+        "segEnd": 2,
+        "scene": {
+          "t": 0,
+          "items": [
+            {
+              "itemId": "proxy-00",
+              "trackIdx": 0,
+              "kind": "video",
+              "window": {
+                "src": "/corpus/proxy-00_norm.mp4",
+                "inPoint": 1,
+                "outPoint": 15,
+                "usedNormalizedCache": true
+              },
+              "seek": 1,
+              "geometry": {
+                "scale": 1,
+                "scaleX": 1,
+                "scaleY": 1,
+                "offsetX": 0,
+                "offsetY": 0,
+                "opacity": 1,
+                "fit": "contain",
+                "rotation": 0
+              }
+            }
+          ]
+        }
+      },
+      {
+        "segStart": 2,
+        "segEnd": 4,
+        "scene": {
+          "t": 2,
+          "items": [
+            {
+              "itemId": "proxy-01",
+              "trackIdx": 0,
+              "kind": "video",
+              "window": {
+                "src": "/corpus/proxy-01_norm.mp4",
+                "inPoint": 1,
+                "outPoint": 15,
+                "usedNormalizedCache": true
+              },
+              "seek": 1,
+              "geometry": {
+                "scale": 1,
+                "scaleX": 1,
+                "scaleY": 1,
+                "offsetX": 0,
+                "offsetY": 0,
+                "opacity": 1,
+                "fit": "contain",
+                "rotation": 0
+              }
+            }
+          ]
+        }
+      },
+      {
+        "segStart": 4,
+        "segEnd": 6,
+        "scene": {
+          "t": 4,
+          "items": [
+            {
+              "itemId": "proxy-10",
+              "trackIdx": 0,
+              "kind": "video",
+              "window": {
+                "src": "/corpus/proxy-10_norm.mp4",
+                "inPoint": 1,
+                "outPoint": 15,
+                "usedNormalizedCache": true
+              },
+              "seek": 1,
+              "geometry": {
+                "scale": 1,
+                "scaleX": 1,
+                "scaleY": 1,
+                "offsetX": 0,
+                "offsetY": 0,
+                "opacity": 1,
+                "fit": "contain",
+                "rotation": 0
+              }
+            }
+          ]
+        }
+      },
+      {
+        "segStart": 6,
+        "segEnd": 8,
+        "scene": {
+          "t": 6,
+          "items": [
+            {
+              "itemId": "proxy-11",
+              "trackIdx": 0,
+              "kind": "video",
+              "window": {
+                "src": "/corpus/proxy-11_norm.mp4",
+                "inPoint": 1,
+                "outPoint": 15,
+                "usedNormalizedCache": true
+              },
+              "seek": 1,
+              "geometry": {
+                "scale": 1,
+                "scaleX": 1,
+                "scaleY": 1,
+                "offsetX": 0,
+                "offsetY": 0,
+                "opacity": 1,
+                "fit": "contain",
+                "rotation": 0
+              }
+            }
+          ]
+        }
+      }
+    ]
+  },
+  "sourceWindow": {
+    "proxy-00": {
+      "preview": {
+        "src": "/corpus/proxy-00_norm.mp4",
+        "inPoint": 1,
+        "outPoint": 15,
+        "usedNormalizedCache": true
+      },
+      "render": {
+        "src": "/corpus/proxy-00_norm.mp4",
+        "inPoint": 1,
+        "outPoint": 15,
+        "usedNormalizedCache": true
+      }
+    },
+    "proxy-01": {
+      "preview": {
+        "src": "/corpus/proxy-01_proxy.mp4",
+        "inPoint": 6,
+        "outPoint": 20,
+        "usedNormalizedCache": false
+      },
+      "render": {
+        "src": "/corpus/proxy-01_norm.mp4",
+        "inPoint": 1,
+        "outPoint": 15,
+        "usedNormalizedCache": true
+      }
+    },
+    "proxy-10": {
+      "preview": {
+        "src": "/corpus/proxy-10_nobg_preview.webm",
+        "inPoint": 6,
+        "outPoint": 20,
+        "usedNormalizedCache": false
+      },
+      "render": {
+        "src": "/corpus/proxy-10_norm.mp4",
+        "inPoint": 1,
+        "outPoint": 15,
+        "usedNormalizedCache": true
+      }
+    },
+    "proxy-11": {
+      "preview": {
+        "src": "/corpus/proxy-11_nobg_preview.webm",
+        "inPoint": 6,
+        "outPoint": 20,
+        "usedNormalizedCache": false
+      },
+      "render": {
+        "src": "/corpus/proxy-11_norm.mp4",
+        "inPoint": 1,
+        "outPoint": 15,
+        "usedNormalizedCache": true
+      }
+    }
+  },
+  "seekTime": {
+    "proxy-00": {
+      "preview": {
+        "0": 1,
+        "1": 2,
+        "2": 3
+      },
+      "render": {
+        "0": 1,
+        "1": 2,
+        "2": 3
+      }
+    },
+    "proxy-01": {
+      "preview": {
+        "2": 6,
+        "3": 7,
+        "4": 8
+      },
+      "render": {
+        "2": 1,
+        "3": 2,
+        "4": 3
+      }
+    },
+    "proxy-10": {
+      "preview": {
+        "4": 6,
+        "5": 7,
+        "6": 8
+      },
+      "render": {
+        "4": 1,
+        "5": 2,
+        "6": 3
+      }
+    },
+    "proxy-11": {
+      "preview": {
+        "6": 6,
+        "7": 7,
+        "8": 8
+      },
+      "render": {
+        "6": 1,
+        "7": 2,
+        "8": 3
+      }
+    }
+  },
+  "synthesizedOutPoint": {
+    "proxy-00": {
+      "preview": 15,
+      "render": 15
+    },
+    "proxy-01": {
+      "preview": 20,
+      "render": 15
+    },
+    "proxy-10": {
+      "preview": 20,
+      "render": 15
+    },
+    "proxy-11": {
+      "preview": 20,
+      "render": 15
+    }
+  },
+  "audioWindow": {}
+}

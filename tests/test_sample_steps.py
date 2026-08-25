@@ -270,17 +270,23 @@ def test_sample_overlay_explicit_duration_shows_fade(fixture_fade_jsx, tmp_path)
     assert alpha <= 160, f"expected a faded overlay at the dying edge, got center alpha {alpha}/255"
 
 
-# ── (e) HDR tonemap: the extract filter must apply a real tonemap operator ────
+# ── (e) HDR grade: the extract filter must apply the Montaj Vivid LUT ─────────
 
-def test_sample_frame_hdr_filter_applies_tonemap_operator():
-    """The HDR (HLG/PQ) → SDR extract filter in sample-frame.js must include a real
-    `tonemap` operator. Regression: it once converted to linear light and back to
-    BT.709 with no tonemap, so HDR highlights above SDR white clipped and the whole
-    frame blew out to near-white.
+def test_sample_frame_hdr_filter_applies_vivid_lut():
+    """The HDR (HLG/PQ) → SDR extract filter in sample-frame.js must run the
+    Montaj Vivid LUT, not a bare tone-map operator.
 
-    Asserted at the source level rather than end-to-end: a synthetic HLG clip is
-    not a reliable fixture across ffmpeg builds (zscale rejects the lavfi source),
-    while the missing-operator bug is unambiguous in the filter string itself.
+    Two regressions live here. The original one: the chain converted to linear
+    light and back to BT.709 with no tone-map at all, so HDR highlights above SDR
+    white clipped and the frame blew out to near-white. The SP6b one: sample_frame
+    is the surface agents and the editor preview read, so if it grades differently
+    from the render, "the preview matches the export" quietly stops being true.
+    Both are caught by requiring the same lut3d call the renderer makes.
+
+    Asserted at the source level rather than end-to-end because this is a Python
+    test with no ffmpeg fixture of its own; the JS suite owns the pixel-level
+    proof (sample-frame.test.mjs's HLG tests) and the two runtimes' chain strings
+    are compared character-for-character in encode-segment.test.mjs.
     """
     from cli.deps import render_runtime_dir
 
@@ -288,14 +294,27 @@ def test_sample_frame_hdr_filter_applies_tonemap_operator():
     assert js.exists(), f"sample-frame.js not found at {js}"
     src = js.read_text(encoding="utf-8")
 
-    # Locate the HDR branch's -vf string.
+    # The HDR branch still exists and still calls the shared chain builder,
+    # rather than hand-rolling a second copy of it.
     assert "hdrProject" in src, "expected an hdrProject branch in sample-frame.js"
-    line = next((l for l in src.splitlines()
-                 if "zscale=t=linear" in l and "tonemap" in l), None)
-    assert line is not None, (
-        "HDR extract filter must convert to linear light AND apply a tonemap "
-        "operator on the same chain; found no such -vf string"
+    assert "buildVividLutChain" in src, (
+        "sample-frame.js must build its HDR→SDR chain with the shared "
+        "buildVividLutChain helper so it cannot drift from the renderer's"
     )
-    assert "tonemap=hable" in line, (
-        f"HDR extract filter is missing the Hable tonemap operator: {line.strip()}"
+    # PNG output: the chain has to end in an RGB format the png encoder accepts
+    # (yuv420p makes it fail outright with 'Could not open encoder before EOF').
+    assert "format=rgb24" in src, (
+        "the HDR extract chain must terminate in format=rgb24 for the PNG encoder"
+    )
+
+    # The Hable chain may still appear, but only as the no-lut3d fallback — never
+    # as the path a healthy ffmpeg build takes.
+    fallback_lines = [l for l in src.splitlines() if "tonemap=hable" in l]
+    for line in fallback_lines:
+        assert "vfParts.push" in line, (
+            f"unexpected tonemap=hable outside the fallback arm: {line.strip()}"
+        )
+    assert len(fallback_lines) <= 1, (
+        "expected at most one Hable fallback chain in sample-frame.js, found "
+        f"{len(fallback_lines)}"
     )

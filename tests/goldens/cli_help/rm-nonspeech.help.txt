@@ -1,6 +1,7 @@
 usage: montaj rm-nonspeech [-h] [--model MODEL] [--max-word-gap MAX_WORD_GAP]
                            [--sentence-edge SENTENCE_EDGE]
-                           [--language LANGUAGE] [--json] [--out PATH]
+                           [--language LANGUAGE] [--window-in WINDOW_IN]
+                           [--window-out WINDOW_OUT] [--json] [--out PATH]
                            [--quiet]
                            input
 
@@ -21,6 +22,14 @@ options:
                         A non-English value auto-upgrades an *.en model to its
                         multilingual sibling — pass it for non-English audio,
                         otherwise speech is mis-detected and cut as silence.
+  --window-in WINDOW_IN
+                        Analyse only this window of --input (source seconds),
+                        instead of the whole file. Must be paired with window-
+                        out; also adds a `cuts` array (the complement of
+                        `keeps` within the window) to the output.
+  --window-out WINDOW_OUT
+                        End of the analysis window in source seconds. Must be
+                        paired with window-in.
   --json                Output result as JSON
   --out PATH            Output file path
   --quiet               Suppress progress output

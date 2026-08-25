@@ -1,0 +1,33 @@
+{
+  "version": "0.2",
+  "id": "sp2-corpus-negative-start",
+  "status": "draft",
+  "projectType": "editing",
+  "settings": { "fps": 30, "resolution": [1080, 1920], "colorSpace": "sdr_bt709" },
+  "tracks": [
+    [
+      {
+        "id": "mainClip",
+        "type": "video",
+        "src": "/corpus/main.mp4",
+        "start": 0,
+        "end": 6,
+        "inPoint": 2,
+        "outPoint": 8
+      }
+    ],
+    [
+      {
+        "id": "bgReel",
+        "type": "overlay",
+        "src": "/corpus/bg_overlay.jsx",
+        "start": -0.5,
+        "end": 5.5,
+        "offsetX": 0,
+        "offsetY": 0,
+        "scale": 1
+      }
+    ]
+  ],
+  "audio": { "tracks": [] }
+}

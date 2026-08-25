@@ -75,8 +75,20 @@ export const defaultMontajTheme: EditorTheme = {
  * with a different theme overwrites the previously-set vars.
  */
 export function applyTheme(el: HTMLElement, theme: EditorTheme): void {
-  const { style } = el
+  // Write the vars onto the editor container AND :root. The container is the
+  // primary target (scopes the theme to the editor); mirroring to
+  // document.documentElement lets components that portal OUTSIDE the container —
+  // RenderModal renders to document.body so a transformed/filtered host ancestor
+  // can't break its `fixed` overlay — still resolve `var(--editor-*)`. Without
+  // this, those var()-based backgrounds fall back to transparent. Harmless: the
+  // vars are all `--editor-*` prefixed and unused outside editor components.
+  writeThemeVars(el.style, theme)
+  if (typeof document !== 'undefined') {
+    writeThemeVars(document.documentElement.style, theme)
+  }
+}
 
+function writeThemeVars(style: CSSStyleDeclaration, theme: EditorTheme): void {
   // Colors
   style.setProperty('--editor-bg', theme.colors.background)
   style.setProperty('--editor-surface', theme.colors.surface)

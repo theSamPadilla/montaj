@@ -26,6 +26,23 @@ jobs:
       - name: Run tests (fast suite)
         run: pytest -m "not slow" --timeout=300
 
+  timeline-core:
+    name: Timeline-core tests + typecheck (node)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: montaj_assets/timeline-core/package-lock.json
+      - run: npm ci
+        working-directory: montaj_assets/timeline-core
+      - run: npm test
+        working-directory: montaj_assets/timeline-core
+      - run: npm run typecheck
+        working-directory: montaj_assets/timeline-core
+
   render:
     name: Render engine tests (node)
     runs-on: ubuntu-latest
@@ -35,6 +52,13 @@ jobs:
         with:
           node-version: '22'
           cache: npm
+          # render declares @bycrux/timeline-core: file:../timeline-core (SP2).
+          # No path widening needed: render/package-lock.json already pins the
+          # resolved shape of that dependency (it has zero runtime deps, so
+          # there's nothing further to hash), and `npm ci` requires this
+          # lockfile to exactly match render/package.json regardless — a
+          # version bump that isn't reflected here fails npm ci outright, not
+          # silently via a stale cache.
           cache-dependency-path: montaj_assets/render/package-lock.json
       - name: Install ffmpeg
         run: sudo apt-get update && sudo apt-get install -y ffmpeg
@@ -141,6 +165,20 @@ jobs:
           # sanity: the render engine and step schemas must be present
           echo "$listing" | grep -q "montaj_assets/render/render.js"
           echo "$listing" | grep -q "steps/media/probe.json"
+          # timeline-core must ship: cli/commands/install.py copies this dir into
+          # the prod build cache, and render/ + editor/ declare it as a `file:`
+          # dependency. If it's missing from the wheel, `montaj install` fails at
+          # `npm install` with an unresolvable dependency.
+          echo "$listing" | grep -q "montaj_assets/timeline-core/index.js"
+          echo "$listing" | grep -q "montaj_assets/timeline-core/src/source-window.js"
+          # luts/ must ship: `.cube` matches neither the `"*" = ["*.json"]`
+          # package-data glob nor (pre-SP6b) any "montaj_assets" glob in
+          # pyproject.toml, so it's the exact failure mode above — present in
+          # the sdist, silently missing from the wheel. lib/look.py and
+          # render/look.js both load these at runtime with no fallback.
+          echo "$listing" | grep -q "montaj_assets/luts/montaj-vivid-v1.cube"
+          echo "$listing" | grep -q "montaj_assets/luts/montaj-vivid-v1-neutral.cube"
+          echo "$listing" | grep -q "montaj_assets/luts/looks.json"
           # the sdist ships to PyPI too — same gates
           sdist_listing=$(tar tzf dist/*.tar.gz)
           if echo "$sdist_listing" | grep -qE "docs/(plans|ideas|fullsend)/.|node_modules"; then

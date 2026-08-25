@@ -12,6 +12,7 @@ export type {
   CaptionSegment,
   Captions,
   VisualItem,
+  VisualTrack,
   Asset,
   ImageElement,
   OverlayElement,
@@ -29,6 +30,8 @@ export type {
   OverlayFactory,
   RenderEvent,
   RenderOptions,
+  RenderExport,
+  SampleFrameOptions,
   RenderStatus,
   RenderPhase,
   CaptionEvent,
@@ -39,12 +42,25 @@ export type {
   GlobalOverlayProp,
   VersionEntry,
   WaveformChunk,
+  PeaksData,
+  PeaksResolution,
+  GetWaveformPeaksArgs,
+  FilmstripSheet,
+  FilmstripIndex,
+  GetFilmstripArgs,
+  AnalyzeAudioPolishArgs,
+  AudioPolishAnalysis,
+  FootageDropPayload,
   EditorAdapter,
+  EditorContext,
   EditorTheme,
   EditorSlots,
   CarouselEditorProps,
   VideoEditorProps,
 } from './types'
+// `FOOTAGE_DND_MIME` is a value (const), not a type — exported separately so
+// hosts can compare against it when reading a drag event's MIME data.
+export { FOOTAGE_DND_MIME } from './types'
 
 // ── Video editor pure helpers ─────────────────────────────────────────────────
 export {
@@ -52,17 +68,52 @@ export {
   applyCutToItem,
   collapseGaps,
   splitAtTime,
+  rippleDelete,
+  rollEdit,
+  slipItem,
+  slideItem,
+  setClipSpeed,
+  insertClipAt,
+  newClipId,
 } from './video/cuts'
 export type { Cut } from './video/cuts'
 export { getOverlayDesignCanvas } from './video/design-canvas'
+// Track-shape tolerance: `project.tracks` may be on disk as the legacy
+// `VisualItem[][]` or as `VisualTrack[]`. Read through `trackItems`; normalize
+// on open with `normalizeTracks` (same object back when already converged).
+export {
+  effectiveItemAudio,
+  enabledTrackItems,
+  enabledTracks,
+  mapTrackItems,
+  normalizeTracks,
+  trackItems,
+  withEnabledItemTracks,
+  withItemTracks,
+} from './video/timeline/timeline-model'
 
 // ── Image tone (HDR image color mapping) ─────────────────────────────────────
 // The picker component is exported so hosts using `onProvideImageTone` can
 // render the same control (variant="header") in their own chrome.
 export { default as ImageToneMenu } from './video/ImageToneMenu'
 export type { ImageToneMenuProps } from './video/ImageToneMenu'
+
+// ── Speed control (slider + preset chips) ────────────────────────────────────
+// Shared by the per-clip inspect modal (host `montaj_assets/ui`) and the
+// track-wide settings popover (TrackSettingsPopover.tsx).
+export { default as SpeedControl } from './video/timeline/SpeedControl'
+export type { SpeedControlProps } from './video/timeline/SpeedControl'
+export { default as VolumeControl } from './video/timeline/VolumeControl'
+export type { VolumeControlProps } from './video/timeline/VolumeControl'
 export { IMAGE_TONES, DEFAULT_IMAGE_TONE } from './video/imageTone'
 export type { ImageTone, ImageToneInfo } from './video/imageTone'
+
+// ── SDR tone curves (HDR→SDR export look) ────────────────────────────────────
+// Descriptors + the modal's honesty copy. Exported so a host can label its own
+// chrome with the same curve names it sends as `RenderOptions.sdrCurve`.
+export { SDR_CURVES, DEFAULT_SDR_CURVE, sdrCurveInfo, honestyLine } from './video/sdrCurves'
+export type { SdrCurve, SdrCurveInfo } from './video/sdrCurves'
+export type { PreRenderOptions } from './video/RenderModal'
 
 // ── Theme ─────────────────────────────────────────────────────────────────────
 export { defaultMontajTheme, applyTheme } from './theme'
@@ -124,11 +175,20 @@ export type { OverlayPreviewProps } from './preview/OverlayPreview'
 export { createPlaybackClock, usePlaybackTime } from './video/playback-clock'
 export type { PlaybackClock } from './video/playback-clock'
 
+// ── Source preview (footage-bin → main preview scrub, opt-in) ─────────────────
+// External store a host's footage bin sets to drive a source-scrub overlay on
+// the main preview. Pass the store to both the bin card and VideoEditor's
+// `sourcePreview` prop; absent → the main preview is unchanged. See
+// `video/source-preview.ts`.
+export { createSourcePreviewStore, useSourcePreview } from './video/source-preview'
+export type { SourcePreviewStore, SourcePreviewValue } from './video/source-preview'
+
 // ── Video preview ─────────────────────────────────────────────────────────────
 export { default as PreviewPlayer } from './video/preview/PreviewPlayer'
 export { default as CarouselPreview } from './video/preview/CarouselPreview'
 export { default as OverlayItemsLayer } from './video/preview/OverlayItemsLayer'
 export { useVideoPlayback } from './video/preview/useVideoPlayback'
+export { useReportContext, REPORT_INTERVAL_MS } from './video/use-report-context'
 export { useDragOverlay } from './video/preview/useDragOverlay'
 export type { Corner, DragType } from './video/preview/useDragOverlay'
 
@@ -150,3 +210,9 @@ export { default as SlideCanvas, resolveAsset } from './carousel/SlideCanvas'
 export { default as OverlayErrorBoundary } from './carousel/OverlayErrorBoundary'
 export { default as ReadOnlySlide } from './carousel/ReadOnlySlide'
 export type { ReadOnlySlideProps } from './carousel/ReadOnlySlide'
+
+// ── Footage bin (media panel) ─────────────────────────────────────────────────
+// A host's Footage/B-Roll panel drops this in per source card for the
+// hover-scrub thumbnail (docs/plans/footage-bin-media-panel.md, Phase 2/3).
+export { default as FilmstripScrubber } from './components/FilmstripScrubber'
+export type { FilmstripScrubberProps } from './components/FilmstripScrubber'

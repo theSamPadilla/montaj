@@ -20,7 +20,7 @@ Use this instead of (or after) `waveform_trim` when:
 
 ## Output
 
-Same as `select_takes`: an ordered list of cropped trim spec JSON paths, produced by calling `crop_spec`. Feed directly into `rm_fillers` or `concat`.
+Same as `select_takes`: an ordered list of cropped trim spec JSON paths, produced by calling `crop_spec`. Feed directly into `rm_fillers`; the keeps that survive become `tracks[0]` items and the render engine assembles them.
 
 ---
 
@@ -42,8 +42,8 @@ wait
 echo "$out0"; echo "$out1"
 
 # CLI
-montaj waveform-image --input /path/clip0.MOV &
-montaj waveform-image --input /path/clip1.MOV &
+montaj step waveform_image --input /path/clip0.MOV &
+montaj step waveform_image --input /path/clip1.MOV &
 wait
 ```
 
@@ -101,7 +101,7 @@ curl -s -X POST http://localhost:3000/api/steps/crop_spec \
 # → {"path": "/path/clip0_spec_cropped.json"}
 
 # CLI
-montaj crop-spec --input /path/clip0_spec.json --keeps "[[0.0,4.2],[6.8,14.0],[16.3,27.0]]"
+montaj step crop_spec --input /path/clip0_spec.json --keeps "[[0.0,4.2],[6.8,14.0],[16.3,27.0]]"
 ```
 
 If there is no existing spec for the clip (this step is running standalone, not after `waveform_trim`), use the full clip as the base spec: `{"input": "/path/clip0.MOV", "keeps": [[0.0, <duration>]]}`.

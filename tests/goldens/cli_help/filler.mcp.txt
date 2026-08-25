@@ -28,6 +28,14 @@
         "type": "string",
         "default": "en"
       },
+      "window_in": {
+        "description": "Analyse only this window of --input (source seconds), instead of the whole file. Must be paired with window-out; also adds a `cuts` array (the complement of `keeps` within the window, each filler entry carrying the matched word as `text`) to the output",
+        "type": "number"
+      },
+      "window_out": {
+        "description": "End of the analysis window in source seconds. Must be paired with window-in",
+        "type": "number"
+      },
       "out": {
         "description": "Output file path",
         "type": "string"

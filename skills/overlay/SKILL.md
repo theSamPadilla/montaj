@@ -64,22 +64,25 @@ See skill `write-overlay` for the full authoring reference.
 
 ### 5. Save overlays to the project
 
-Overlays live in `tracks[1+]` — overlay tracks in the unified tracks array. Each inner array is one track. Items in the same track cannot overlap in time; items in different tracks are z-ordered (higher indexes render on top). `tracks[0]` is always the primary footage track.
+Overlays live in `tracks[1+]` — overlay tracks in the unified tracks array. Each track is an object (`{id, items, ...}`); its `items` array holds the track's clips/overlays. Items in the same track cannot overlap in time; items in different tracks are z-ordered (higher indexes render on top). `tracks[0]` is always the primary footage track.
 
 ```json
 {
   "tracks": [
-    [],
-    [
-      {
-        "id": "ov-0",
-        "type": "overlay",
-        "src": "/abs/path/to/project/overlays/hook.jsx",
-        "props": { "text": "The source code got leaked" },
-        "start": 0.0,
-        "end": 3.0
-      }
-    ]
+    { "id": "trk-0", "items": [] },
+    {
+      "id": "trk-1",
+      "items": [
+        {
+          "id": "ov-0",
+          "type": "overlay",
+          "src": "/abs/path/to/project/overlays/hook.jsx",
+          "props": { "text": "The source code got leaked" },
+          "start": 0.0,
+          "end": 3.0
+        }
+      ]
+    }
   ]
 }
 ```
@@ -100,6 +103,7 @@ Follow save discipline: **read the project**, merge the updated `tracks` array i
 - **Keep text short** — 2–6 words for lower-thirds, 4–8 for hooks. Short + large beats long + small
 - **Leave `offsetX`, `offsetY`, `scale` at defaults** (`0`, `0`, `1`) — the human positions overlays via the UI drag tool after preview
 - **Use assets from `project.assets`** — pass asset `src` paths as `props`, don't hardcode paths inside JSX
+- **Expose text styling as props** — a text overlay you want editable in the editor's properties panel must READ its font, size, weight, style, color, alignment, transform, and background from `props` (the nine standard text props) with sensible defaults, not hardcode them in the JSX. A hardcoded style shows no control in the panel. See skill `write-overlay` → "Make text overlays editable in the properties panel"
 
 ## Render Constraints
 

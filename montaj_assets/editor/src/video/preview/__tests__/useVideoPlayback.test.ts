@@ -1,11 +1,20 @@
 import { describe, it, expect } from 'vitest'
+import { sourceWindow } from '@bycrux/timeline-core'
 import { effectiveInPoint, effectiveOutPoint } from '../useVideoPlayback'
 
-// These helpers mirror render's collectAllItems rebase (render.js): when the
-// preview loads a normalizedSrc window cache (which starts at 0 and covers
-// [inPoint, outPoint] of the original), the effective seek inPoint is 0 and the
-// outPoint is rebased to the window length. nobg_preview_src is the full source
-// and must NOT rebase.
+// `effectiveInPoint` / `effectiveOutPoint` are thin wrappers over
+// @bycrux/timeline-core's `sourceWindow(clip, 'preview')` — the single
+// implementation shared with render's collectAllItems (render.js). When the
+// preview loads a normalizedSrc window cache (which plays from its own 0 and
+// covers [normalizedInPoint, +duration] of the original), the points are
+// rebased by the cache origin. nobg_preview_src is the full source and must NOT
+// rebase.
+//
+// The cases below are unchanged from before the timeline-core rebase and are
+// kept here as the EDITOR's own guard: they pin the numbers the preview seeks
+// to, whatever the wrappers delegate to. The equivalence block at the bottom
+// pins the delegation itself. timeline-core/test/source-window.test.mjs owns the
+// exhaustive matrix (both variants, degenerate items, bad-variant throws).
 
 describe('effectiveInPoint', () => {
   it('rebases to 0 when normalizedSrc is the chosen src (legacy: no normalizedInPoint)', () => {
@@ -41,6 +50,10 @@ describe('effectiveInPoint', () => {
     expect(
       effectiveInPoint({ inPoint: 6, normalizedInPoint: 5, normalizedSrc: '/cache/window.mp4' }),
     ).toBeCloseTo(1, 5)
+  })
+
+  it('does NOT rebase when a full-source proxy outranks the window cache (SP3)', () => {
+    expect(effectiveInPoint({ inPoint: 6, normalizedInPoint: 5, normalizedSrc: '/cache/window.mp4', proxySrc: '/p.mp4' })).toBe(6)
   })
 })
 
@@ -79,5 +92,25 @@ describe('effectiveOutPoint', () => {
     expect(
       effectiveOutPoint({ inPoint: 6, outPoint: 20, normalizedInPoint: 5, normalizedSrc: '/cache/window.mp4' }),
     ).toBeCloseTo(15, 5)
+  })
+})
+
+// The wrappers must stay wrappers: if someone reintroduces a local copy of the
+// rebase math here, this block fails the moment the two implementations drift.
+describe('delegation to @bycrux/timeline-core', () => {
+  const CLIPS = [
+    { inPoint: 496.92, src: '/orig.mov' },
+    { inPoint: 496.92, outPoint: 514.92, normalizedSrc: '/cache/window.mp4' },
+    { inPoint: 496.92, outPoint: 514.92, nobg_preview_src: '/nobg.webm', normalizedSrc: '/c.mp4' },
+    { inPoint: 0.9157, outPoint: 16.97, normalizedInPoint: 0, normalizedSrc: '/cache/window.mp4' },
+    { inPoint: 6, outPoint: 20, normalizedInPoint: 5, normalizedSrc: '/cache/window.mp4' },
+    { src: '/orig.mov' },
+    {},
+  ]
+
+  it.each(CLIPS)('matches sourceWindow(clip, "preview") for %j', (clip) => {
+    const w = sourceWindow(clip, 'preview')
+    expect(effectiveInPoint(clip)).toBe(w.inPoint)
+    expect(effectiveOutPoint(clip)).toBe(w.outPoint)
   })
 })

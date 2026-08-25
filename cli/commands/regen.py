@@ -14,6 +14,7 @@ from datetime import datetime, timezone
 
 from cli.main import add_global_flags
 from cli.output import emit_error
+from lib.project_tracks import track_items
 
 
 def register(subparsers):
@@ -151,7 +152,7 @@ def _build_and_enqueue(args, *, mode, subrange):
         )
 
     # 3. Find clip in tracks[0]
-    tracks = project.get("tracks") or []
+    tracks = track_items(project)
     if not tracks or not tracks[0]:
         emit_error("no_tracks", "project.tracks[0] is empty.")
 

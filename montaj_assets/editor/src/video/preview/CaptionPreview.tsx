@@ -19,19 +19,29 @@
  * reliably. Instead the rendered caption's bounding box is *measured* and a
  * separate interactive selection box is drawn over it (z 50, the same layer the
  * overlay handles use). That box is the only interactive element: clicking it
- * selects the segment active at the playhead, dragging it moves the segment
- * (offsetX/offsetY), and dragging a corner scales it (scale).
+ * selects the target segment, dragging it moves the segment (offsetX/offsetY),
+ * and dragging a corner scales it (scale).
+ *
+ * Captions have lanes (rows), so several segments can be on screen at once and
+ * the templates paint all of them. There is still exactly ONE selection box:
+ * it addresses the segment the operator already selected when that segment is
+ * on screen, otherwise the highest-lane one (the caption painted last, hence
+ * on top). It is measured from that segment's own `data-caption-id` subtree,
+ * so it wraps one caption rather than the union of everything on screen.
  */
 
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { activeCaptionSegments } from '@bycrux/timeline-core'
 import type { Captions } from '../../schema'
 import type { OverlayFactory } from '../../types'
 import OverlayErrorBoundary from '../../carousel/OverlayErrorBoundary'
+import { ensureGoogleFontsLoaded } from '../../lib/google-fonts'
 import type { CaptionEditPatch } from '../timeline/makeCaptionEdit'
 import {
   captionDragGeometry,
   captionDragPatch,
   hasEscapedClickSlop,
+  measureCaptionContentRect,
   readCaptionGeometry,
   type CaptionDragState,
   type CaptionGeometry,
@@ -69,53 +79,6 @@ export function clampVisible(pos: number, size: number, extent: number): number 
   return Math.max(min, Math.min(max, pos))
 }
 
-interface Rect { left: number; top: number; width: number; height: number }
-
-/**
- * Union of the client rects of every painted text run (and replaced element)
- * under `root`.
- *
- * Deliberately NOT `root.getBoundingClientRect()`: the template's own outermost
- * element is a frame-sized `position: fixed; inset: 0` box (captionOuterStyle),
- * so its rect — and the rect of any wrapper we put around it — is the entire
- * preview, which would put the selection box around the whole frame. Walking to
- * the text nodes is the only markup-agnostic way to find where the caption
- * actually paints, and it costs nothing on a subtree this small.
- *
- * Returns null when nothing is painted (e.g. `pop` renders no word between two
- * word windows), which is the signal to hide the selection box entirely.
- */
-export function measureCaptionContentRect(root: HTMLElement): Rect | null {
-  const doc = root.ownerDocument
-  const walker = doc.createTreeWalker(root, NodeFilter.SHOW_TEXT | NodeFilter.SHOW_ELEMENT)
-  const range = doc.createRange()
-  let left = Infinity, top = Infinity, right = -Infinity, bottom = -Infinity
-
-  for (let node = walker.nextNode(); node; node = walker.nextNode()) {
-    let rect: DOMRect | null = null
-    if (node.nodeType === Node.TEXT_NODE) {
-      if (!node.nodeValue?.trim()) continue
-      range.selectNodeContents(node)
-      rect = range.getBoundingClientRect()
-    } else {
-      // Replaced elements paint without text nodes. Everything else is a
-      // container whose box is either the frame-sized outer wrapper or a
-      // full-width anchor box — including them would defeat the point.
-      const tag = (node as Element).tagName?.toUpperCase()
-      if (tag !== 'IMG' && tag !== 'SVG' && tag !== 'VIDEO' && tag !== 'CANVAS') continue
-      rect = (node as Element).getBoundingClientRect()
-    }
-    if (!rect || (!rect.width && !rect.height)) continue
-    left   = Math.min(left,   rect.left)
-    top    = Math.min(top,    rect.top)
-    right  = Math.max(right,  rect.right)
-    bottom = Math.max(bottom, rect.bottom)
-  }
-
-  if (!Number.isFinite(left)) return null
-  return { left, top, width: right - left, height: bottom - top }
-}
-
 interface CaptionPreviewProps {
   track:                    Captions
   currentTime:              number
@@ -124,7 +87,7 @@ interface CaptionPreviewProps {
   resolveCaptionTemplate?:  (style: string) => string
   /** Currently-selected caption segment id (shared with the timeline row). */
   selectedCaptionId?:       string
-  /** Click on the selection box — selects the segment active at the playhead.
+  /** Click on the selection box — selects the segment the box is addressing.
    *  Accepts null for symmetry with the timeline row's copy of this callback
    *  (VideoEditor supplies one handler to both); the preview only ever passes
    *  an id, since it has no deselect affordance of its own. */
@@ -187,32 +150,53 @@ export default function CaptionPreview({
   const frame    = Math.round(currentTime * fps)
   const lastSeg  = track.segments[track.segments.length - 1]
 
-  // The segment the template is showing. Computed from `frame / fps` (not from
-  // currentTime) with the templates' own `>= start && < end` predicate, so the
-  // selection box can never address a different segment than the one on screen.
-  const t = fps > 0 ? frame / fps : 0
-  const activeSeg = track.segments.find(s => t >= s.start && t < s.end) ?? null
+  // EVERY segment the template is showing, lane-ascending. `activeCaptionSegments`
+  // quantizes to `frame / fps` (not raw currentTime) and applies the templates'
+  // own `>= start && < end` predicate, so the selection box can never address a
+  // segment that is not on screen. Captions have lanes, so more than one can be
+  // painted at once — the templates draw them all.
+  const activeSegs = activeCaptionSegments(track, currentTime, fps)
+
+  // The ONE segment the selection box addresses. With several captions on
+  // screen "the active one" is ambiguous, so: the operator's current selection
+  // if it is among them, otherwise the highest-lane one — the caption painted
+  // last, and therefore the one visually on top at that instant.
+  const targetSeg =
+    (selectedCaptionId ? activeSegs.find(s => s.id === selectedCaptionId) : undefined)
+    ?? activeSegs[activeSegs.length - 1]
+    ?? null
 
   // Interactivity requires a stable segment id (backfilled by VideoEditor) and a
   // host that wired at least one caption callback. Without both, the layer stays
   // exactly as it was: a passive, click-through caption overlay.
-  const activeId    = activeSeg?.id
-  const canInteract = !!activeId && !!(onSelectCaption || onCaptionSegmentChange)
-  const isSelected  = canInteract && selectedCaptionId === activeId
+  const targetId    = targetSeg?.id
+  const canInteract = !!targetId && !!(onSelectCaption || onCaptionSegmentChange)
+  const isSelected  = canInteract && selectedCaptionId === targetId
 
   // The box unmounts when the playhead leaves a segment, so a pending
   // mouseleave never arrives and the hover hairline would carry over onto the
   // next segment's box. Drop it whenever the target segment changes; a pointer
   // that really is over the new box gets its mouseenter back on the next move.
-  useEffect(() => { setHovered(false) }, [activeId])
+  useEffect(() => { setHovered(false) }, [targetId])
 
   // Theme props for the template: everything on the track except style/segments
-  // (handled separately) and googleFonts (a render-time font-loading hint, not
-  // a template prop). Normalize the legacy lowercase `fontsize` key to the
-  // camelCase `fontSize` templates actually read.
-  const { style: _style, segments: _segments, googleFonts: _googleFonts, fontsize, ...theme } = track
+  // (handled separately) and googleFonts — not a template prop, but the editor
+  // must still LOAD it (see the effect below) so preview and render use the same
+  // face. Normalize the legacy lowercase `fontsize` key to the camelCase
+  // `fontSize` templates actually read.
+  const { style: _style, segments: _segments, googleFonts, fontsize, ...theme } = track
   const themeProps: Record<string, unknown> = { ...theme }
   if (fontsize != null) themeProps.fontSize = fontsize
+
+  // Inject the caption track's Google Fonts so the preview paints the same face
+  // the renderer fetches (render.js hands `captions.googleFonts` to
+  // bundleComponent, which injects the same stylesheet into the Puppeteer page).
+  // Without this, `captions.fontFamily` reaches the template in both paths but
+  // only the render has the font file — a silent preview/render divergence.
+  // Depend on the joined list rather than the array: `track` is a fresh object
+  // on every project edit, and String() flattens both the typed string[] and the
+  // bare string persisted projects occasionally carry (see google-fonts.ts).
+  useEffect(() => { ensureGoogleFontsLoaded(googleFonts) }, [String(googleFonts)])
 
   // Live drag preview: overlay the in-flight geometry onto the dragged segment
   // only. The templates read offsetX/offsetY/scale straight off the segment, so
@@ -265,7 +249,7 @@ export default function CaptionPreview({
   }, [drag, scale])
 
   function startGesture(type: CaptionDragState['type'], e: React.MouseEvent) {
-    if (!activeId) return
+    if (!targetId) return
     // Keep the mousedown from starting a text selection and from reaching the
     // player's play/pause layer underneath.
     e.preventDefault()
@@ -273,11 +257,11 @@ export default function CaptionPreview({
     // Select and begin the gesture in the same press: unlike overlays (selected
     // from the timeline) the preview box IS the caption's selection affordance,
     // so requiring a separate click first would just cost a click.
-    if (selectedCaptionId !== activeId) onSelectCaption?.(activeId)
+    if (selectedCaptionId !== targetId) onSelectCaption?.(targetId)
     if (!onCaptionSegmentChange) return
-    const g = readCaptionGeometry(activeSeg)
+    const g = readCaptionGeometry(targetSeg)
     setDrag({
-      id: activeId, type,
+      id: targetId, type,
       initX: e.clientX, initY: e.clientY,
       initOffsetX: g.offsetX, initOffsetY: g.offsetY, initScale: g.scale,
     })
@@ -295,7 +279,11 @@ export default function CaptionPreview({
     const root = wrapRef.current
     const content = contentRef.current
     if (!box || !root || !content) return
-    const rect = measureCaptionContentRect(content)
+    // Measure the TARGET segment's own subtree, not the whole layer: with two
+    // captions on screen the union of both would wrap a box around the pair.
+    // A template that emits no `data-caption-id` marker falls back to the whole
+    // root inside measureCaptionContentRect, i.e. the pre-lane behaviour.
+    const rect = measureCaptionContentRect(content, targetId)
     if (!rect || rect.width <= 0 || rect.height <= 0) {
       box.style.display = 'none'
       return
@@ -307,7 +295,7 @@ export default function CaptionPreview({
     const h = rect.height + BOX_PAD * 2
     // Keep a grabbable sliver of the box inside the frame. offsetX/offsetY are
     // unbounded and there is no numeric reset control for captions (unlike
-    // overlays, which have OverlayPropsModal), so a segment dragged fully past
+    // overlays, whose Transform panel has one), so a segment dragged fully past
     // the frame edge would have BOTH its text and its selection box clipped
     // away by this wrapper's `overflow-hidden` — leaving no way to drag it back
     // short of hand-editing project.json. Dragging is delta-based (see

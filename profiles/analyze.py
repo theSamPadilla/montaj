@@ -120,11 +120,25 @@ def extract_colors(video_path: str, n: int = 8) -> list[str]:
     tmp_dir = tempfile.mkdtemp(prefix="montaj_palette_")
     try:
         palette_path = os.path.join(tmp_dir, "palette.png")
+        # Sample one frame per second at 320px wide before palettegen.
+        #
+        # This used to run `palettegen=stats_mode=diff` straight off the source,
+        # which has to decode and weigh EVERY frame at full resolution. On the
+        # 1080x1920 and 4K phone footage these profiles are actually built from
+        # that does not merely exceed the old 60s timeout — it was measured at
+        # over 5 minutes for a single 32s clip, so the subprocess was killed and
+        # `dominant_colors` came back empty for every video, silently. The same
+        # clip through this sampled chain takes ~24s.
+        #
+        # stats_mode=full (not diff) because we want the palette of the footage
+        # as it looks, not of what changes between frames — the latter biases
+        # toward motion edges and under-weights a static dominant background.
         subprocess.run(
             [ffmpeg_bin(), "-y", "-i", video_path,
-             "-vf", f"palettegen=max_colors={n}:reserve_transparent=0:stats_mode=diff",
+             "-vf", ("fps=1,scale=320:-1:flags=fast_bilinear,"
+                     f"palettegen=max_colors={n}:reserve_transparent=0:stats_mode=full"),
              palette_path],
-            capture_output=True, timeout=60,
+            capture_output=True, timeout=180,
         )
         if not os.path.isfile(palette_path):
             return []
@@ -188,7 +202,8 @@ def aggregate_colors(per_video_colors: list[list[str]], top_n: int = 8) -> list[
 # Main
 # ---------------------------------------------------------------------------
 
-def analyze(videos: list[str], source: str, out_dir: str, name: str) -> dict:
+def analyze(videos: list[str], source: str, out_dir: str, name: str,
+            keep_videos: bool = False) -> dict:
     os.makedirs(out_dir, exist_ok=True)
     frames_dir      = os.path.join(out_dir, "frames")
     transcripts_dir = os.path.join(out_dir, "transcripts")
@@ -280,11 +295,20 @@ def analyze(videos: list[str], source: str, out_dir: str, name: str) -> dict:
         f"videos_{source}": len(results),
     })
 
-    # Clean up source videos — frames are kept, raw videos are ephemeral
+    # Clean up source videos — frames and transcripts are kept, raw videos are
+    # ephemeral. `--keep-videos` opts out: re-running the analysis (to pick up a
+    # fixed extractor, or to re-split the sample) otherwise means re-downloading
+    # the whole set, which for a rate-limited source like TikTok is slow and
+    # partially fails.
     videos_dir = os.path.join(out_dir, "videos", source)
-    if os.path.isdir(videos_dir):
+    if keep_videos:
+        if os.path.isdir(videos_dir):
+            print(f"[analyze] keeping source videos in {videos_dir}", file=sys.stderr)
+    elif os.path.isdir(videos_dir):
         shutil.rmtree(videos_dir, ignore_errors=True)
-        print(f"[analyze] cleaned up {videos_dir}", file=sys.stderr)
+        print(f"[analyze] cleaned up {videos_dir} "
+              f"(frames and transcripts kept; re-analysis needs a re-download — "
+              f"pass --keep-videos to retain them)", file=sys.stderr)
 
     print(out_path)
     return analysis
@@ -341,9 +365,13 @@ def main():
                         help="Source type: your own content (current) or reference accounts (inspired)")
     parser.add_argument("--name",   required=True, help="Profile name (e.g. theSamPadilla)")
     parser.add_argument("--out",    required=True, help="Output directory for analysis files")
+    parser.add_argument("--keep-videos", action="store_true", dest="keep_videos",
+                        help="Keep the downloaded source videos after analysis. Default is to\n"
+                             "delete them (frames and transcripts are always kept); keep them\n"
+                             "when you may need to re-run the analysis without re-downloading.")
     args = parser.parse_args()
 
-    analyze(args.videos, args.source, args.out, args.name)
+    analyze(args.videos, args.source, args.out, args.name, keep_videos=args.keep_videos)
 
 
 if __name__ == "__main__":

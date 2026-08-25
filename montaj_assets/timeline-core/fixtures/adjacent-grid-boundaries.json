@@ -1,0 +1,30 @@
+{
+  "version": "0.2",
+  "id": "sp2-corpus-adjacent-grid-boundaries",
+  "status": "draft",
+  "projectType": "editing",
+  "settings": { "fps": 30, "resolution": [1080, 1920], "colorSpace": "sdr_bt709" },
+  "tracks": [
+    [
+      {
+        "id": "adjA",
+        "type": "video",
+        "src": "/corpus/adjA.mp4",
+        "start": 0,
+        "end": 4.7677,
+        "inPoint": 0,
+        "outPoint": 4.7677
+      },
+      {
+        "id": "adjB",
+        "type": "video",
+        "src": "/corpus/adjB.mp4",
+        "start": 4.8001,
+        "end": 8,
+        "inPoint": 0,
+        "outPoint": 3.1999
+      }
+    ]
+  ],
+  "audio": { "tracks": [] }
+}

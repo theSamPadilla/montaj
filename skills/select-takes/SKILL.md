@@ -6,7 +6,7 @@ step: true
 
 # Select Takes
 
-`montaj/select_takes` is an agent-authored task — no CLI step, no API call. You reason across all clip transcripts and make editorial decisions. The output is a set of cropped trim specs ready for `rm_fillers` and `concat`.
+`montaj/select_takes` is an agent-authored task — no CLI step, no API call. You reason across all clip transcripts and make editorial decisions. The output is a set of cropped trim specs ready for `rm_fillers`. Nothing joins them into a file: the surviving keeps become `tracks[0]` items with their own `inPoint`/`outPoint`, and the render engine assembles them in one pass at the end.
 
 ## Core Purpose
 
@@ -82,13 +82,13 @@ For each flagged seam, fix it by trimming the crop window of whichever section i
 
 **This check is required before writing any spec files.** Seam problems cannot be caught by any automated step downstream.
 
-### 9. Crop the trim specs — do NOT call `trim`
+### 9. Crop the trim specs — never encode an intermediate
 
 For each selected take, the trim spec JSON comes back **inline** (on stdout / in the step result) from the preceding `waveform_trim` step — it is NOT written to disk automatically. The `crop_spec` step requires an on-disk file (its `--input` argument). Before calling `crop_spec`, write the inline spec to the project scratch dir using the `write_file` tool (e.g. save it as `<clip>_spec.json`), then pass that path as `crop_spec`'s `input`.
 
 Crop the written spec to the selected take's virtual-timeline window using the `crop_spec` step.
 
-**Never call the `trim` step.** That encodes an intermediate video file and breaks the single-encode chain. Cropping the spec keeps the original source file all the way through to `concat`.
+**Never encode an intermediate video file here.** There is no `trim` step to call, and reaching for `materialize_cut` at this point would break the single-encode chain for no gain. Cropping the spec keeps `tracks[0].items[*].src` pointing at the original source all the way through to the final render, which is what lets the operator re-trim any cut later without losing quality — and what keeps each item's `proxySrc` valid, since a proxy covers the original file.
 
 **Note:** the `input` path in all `crop_spec` calls below must point to a spec file you've written to disk via `write_file` first (see above).
 
@@ -120,7 +120,7 @@ Run step `virtual_to_original` with `{"input": "spec.json", "inverse": true, "ti
 
 ### 10. Output
 
-An ordered list of `_selected.json` trim spec paths — one per selected section, in narrative order. These become the inputs to `rm_fillers` and ultimately `concat`.
+An ordered list of `_selected.json` trim spec paths — one per selected section, in narrative order. These become the inputs to `rm_fillers`, and the keeps that survive it become the `tracks[0]` items the render engine assembles.
 
 ## What to Log
 

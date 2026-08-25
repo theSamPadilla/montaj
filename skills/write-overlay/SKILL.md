@@ -66,7 +66,7 @@ export default function List() {
 
 ## Writing the JSX
 
-> **Carousel text overlays follow a stricter contract.** For carousel projects, every text-bearing overlay must accept its font size, family, weight, style, color, alignment, transform, and background as props with string defaults — see skill `editable-text`. The "go large — for video" guidance below, and the hardcoded-style style of the `Hook` example, **do not apply** to carousel editable-text overlays.
+> **Expose text styling as props to make an overlay editable.** A text overlay is only restyleable in the editor's properties panel for the props it declares — see "Make text overlays editable in the properties panel" below, which applies to video overlays too. **Carousel text overlays follow a stricter, required version of that contract:** every text-bearing overlay must accept its font size, family, weight, style, color, alignment, transform, and background as props with string defaults — see skill `editable-text`. The "go large — for video" guidance below, and the hardcoded-style `Hook` example just under it, **do not apply** to carousel editable-text overlays.
 
 The default aesthetic is **plain bold text directly on video** — no card, no background, just a text shadow for legibility. Big text (96–160px) that covers the footage, including the speaker's face if needed.
 
@@ -111,6 +111,58 @@ Only add a card or background when the prompt explicitly asks, or when a specifi
 
 ---
 
+## Make text overlays editable in the properties panel
+
+The editor's right-hand properties panel (and the floating text toolbar) can restyle a text overlay **only for the props it actually declares**. It reads the nine standard text props off the item's `props` object:
+
+`text`, `fontSize`, `fontFamily`, `fontWeight`, `fontStyle`, `color`, `textAlign`, `textTransform`, `bgColor`
+
+A control appears for each of those that is present (non-null) on `props`; anything the overlay **hardcodes** in its JSX style instead of reading from `props` shows **no control at all**, and the operator can't change it. This is exactly why an overlay that writes `textTransform: 'uppercase'` straight into its style has no text-transform control in the editor.
+
+**So a text overlay you want a human to be able to restyle must READ its text styling from `props`, with sensible defaults — not hardcode it.** Same house style (big, bold, plain on video), just sourced from props:
+
+```jsx
+// Editable Hook — every text property is adjustable in the panel.
+export default function Hook() {
+  const progress = interpolate(frame, [0, 8], [0, 1], { extrapolateRight: 'clamp' })
+  const slideY   = interpolate(frame, [0, 10], [40, 0], { extrapolateRight: 'clamp' })
+
+  return (
+    <div style={{ position: 'absolute', bottom: 180, left: 48, right: 48, opacity: progress, transform: `translateY(${slideY}px)` }}>
+      <div style={{
+        fontFamily: props.fontFamily ?? 'Anton, Impact, sans-serif',
+        fontSize: props.fontSize ?? 120,
+        fontWeight: props.fontWeight ?? 900,
+        fontStyle: props.fontStyle ?? 'normal',
+        color: props.color ?? '#fff',
+        textAlign: props.textAlign ?? 'left',
+        textTransform: props.textTransform ?? 'uppercase',
+        background: props.bgColor ?? 'transparent',
+        lineHeight: 1.05, letterSpacing: '-1px',
+        textShadow: '0 2px 24px rgba(0,0,0,0.9), 0 0 60px rgba(0,0,0,0.5)',
+      }}>
+        {props.text}
+      </div>
+    </div>
+  )
+}
+```
+
+Declare those same values in the item's `props` too, so the panel opens on the real values rather than blank controls:
+
+```json
+"props": {
+  "text": "She built an AI employee",
+  "fontSize": 120, "fontFamily": "Anton, Impact, sans-serif",
+  "fontWeight": 900, "fontStyle": "normal", "color": "#ffffff",
+  "textAlign": "left", "textTransform": "uppercase", "bgColor": "transparent"
+}
+```
+
+This now applies to **video** text overlays, not just carousel slides — the video editor has the same properties panel. For the full contract (types and validation) see skill `editable-text`. A non-text overlay (logo, image card, chart) has no text props to expose; the same principle still holds for whatever a human would want to tweak — pass it through `props`, don't bury it in the JSX.
+
+---
+
 ## Splitting background from content across tracks
 
 The most reliable way to use frosted-glass / blurred card backgrounds is to **put the background on a separate, lower track** and the animated content on a higher track. The render pipeline composites tracks in order, so the content renders on top.
@@ -129,25 +181,31 @@ The most reliable way to use frosted-glass / blurred card backgrounds is to **pu
 ```json
 {
   "tracks": [
-    [],
-    [
-      {
-        "id": "ov-card-bg",
-        "type": "overlay",
-        "src": "/path/overlays/card-bg.jsx",
-        "start": 2.0,
-        "end": 6.0
-      }
-    ],
-    [
-      {
-        "id": "ov-card-content",
-        "type": "overlay",
-        "src": "/path/overlays/card-content.jsx",
-        "start": 2.0,
-        "end": 6.0
-      }
-    ]
+    { "id": "trk-0", "items": [] },
+    {
+      "id": "trk-1",
+      "items": [
+        {
+          "id": "ov-card-bg",
+          "type": "overlay",
+          "src": "/path/overlays/card-bg.jsx",
+          "start": 2.0,
+          "end": 6.0
+        }
+      ]
+    },
+    {
+      "id": "trk-2",
+      "items": [
+        {
+          "id": "ov-card-content",
+          "type": "overlay",
+          "src": "/path/overlays/card-content.jsx",
+          "start": 2.0,
+          "end": 6.0
+        }
+      ]
+    }
   ]
 }
 ```
@@ -446,29 +504,32 @@ Place overlay items in `tracks[1+]` in `project.json`. Each item must have `type
 ```json
 {
   "tracks": [
-    [],
-    [
-      {
-        "id": "ov-hook",
-        "type": "overlay",
-        "src": "/abs/path/to/project/overlays/hook.jsx",
-        "start": 0.0,
-        "end": 3.0,
-        "props": {
-          "text": "She built an AI employee"
+    { "id": "trk-0", "items": [] },
+    {
+      "id": "trk-1",
+      "items": [
+        {
+          "id": "ov-hook",
+          "type": "overlay",
+          "src": "/abs/path/to/project/overlays/hook.jsx",
+          "start": 0.0,
+          "end": 3.0,
+          "props": {
+            "text": "She built an AI employee"
+          }
+        },
+        {
+          "id": "ov-logo",
+          "type": "overlay",
+          "src": "/abs/path/to/project/overlays/logo.jsx",
+          "start": 0.0,
+          "end": 999.0,
+          "props": {
+            "logoSrc": "/abs/path/to/project/assets/logo.png"
+          }
         }
-      },
-      {
-        "id": "ov-logo",
-        "type": "overlay",
-        "src": "/abs/path/to/project/overlays/logo.jsx",
-        "start": 0.0,
-        "end": 999.0,
-        "props": {
-          "logoSrc": "/abs/path/to/project/assets/logo.png"
-        }
-      }
-    ]
+      ]
+    }
   ]
 }
 ```

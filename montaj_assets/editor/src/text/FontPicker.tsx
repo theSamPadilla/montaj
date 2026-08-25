@@ -5,33 +5,57 @@ export type FontOption = {
   label: string
   value: string
   isGoogleFont: boolean
+  /** The `googleFonts` fetch spec for this family (e.g. 'Baloo+2:wght@400;700').
+   *  A caller that persists `fontFamily` must persist this alongside it — a
+   *  family whose file is never fetched renders as the fallback face. Absent
+   *  for the non-Google System option. */
+  spec?: string
 }
 
+// No spec below requests a weight above 800, even though `highlight-box` and
+// `outline` (captionStyleDefaults.ts) default to 900 — deliberate, not an
+// oversight. Requesting a weight a family doesn't publish makes Google Fonts
+// drop that family from the returned CSS ENTIRELY, so a synthesized
+// (browser-faked) 900 is strictly better than a font that silently fails to
+// load. Do not "fix" this by adding 900 to any spec.
 export const FONT_OPTIONS: FontOption[] = [
   { label: 'System', value: 'system-ui, -apple-system, "Helvetica Neue", sans-serif', isGoogleFont: false },
-  { label: 'Inter', value: '"Inter", system-ui, sans-serif', isGoogleFont: true },
-  { label: 'Roboto', value: '"Roboto", system-ui, sans-serif', isGoogleFont: true },
-  { label: 'Open Sans', value: '"Open Sans", system-ui, sans-serif', isGoogleFont: true },
-  { label: 'Lato', value: '"Lato", system-ui, sans-serif', isGoogleFont: true },
-  { label: 'Montserrat', value: '"Montserrat", system-ui, sans-serif', isGoogleFont: true },
-  { label: 'Poppins', value: '"Poppins", system-ui, sans-serif', isGoogleFont: true },
-  { label: 'Raleway', value: '"Raleway", system-ui, sans-serif', isGoogleFont: true },
-  { label: 'Nunito', value: '"Nunito", system-ui, sans-serif', isGoogleFont: true },
-  { label: 'Work Sans', value: '"Work Sans", system-ui, sans-serif', isGoogleFont: true },
-  { label: 'DM Sans', value: '"DM Sans", system-ui, sans-serif', isGoogleFont: true },
-  { label: 'Rubik', value: '"Rubik", system-ui, sans-serif', isGoogleFont: true },
-  { label: 'Oswald', value: '"Oswald", system-ui, sans-serif', isGoogleFont: true },
-  { label: 'Bebas Neue', value: '"Bebas Neue", system-ui, sans-serif', isGoogleFont: true },
-  { label: 'Playfair Display', value: '"Playfair Display", Georgia, serif', isGoogleFont: true },
-  { label: 'Merriweather', value: '"Merriweather", Georgia, serif', isGoogleFont: true },
-  { label: 'Source Serif 4', value: '"Source Serif 4", Georgia, serif', isGoogleFont: true },
-  { label: 'JetBrains Mono', value: '"JetBrains Mono", ui-monospace, monospace', isGoogleFont: true },
+  { label: 'Inter', value: '"Inter", system-ui, sans-serif', isGoogleFont: true, spec: 'Inter:wght@400;700' },
+  { label: 'Roboto', value: '"Roboto", system-ui, sans-serif', isGoogleFont: true, spec: 'Roboto:wght@400;700' },
+  { label: 'Open Sans', value: '"Open Sans", system-ui, sans-serif', isGoogleFont: true, spec: 'Open+Sans:wght@400;700' },
+  { label: 'Lato', value: '"Lato", system-ui, sans-serif', isGoogleFont: true, spec: 'Lato:wght@400;700' },
+  { label: 'Montserrat', value: '"Montserrat", system-ui, sans-serif', isGoogleFont: true, spec: 'Montserrat:wght@400;700' },
+  { label: 'Poppins', value: '"Poppins", system-ui, sans-serif', isGoogleFont: true, spec: 'Poppins:wght@400;700' },
+  { label: 'Raleway', value: '"Raleway", system-ui, sans-serif', isGoogleFont: true, spec: 'Raleway:wght@400;700' },
+  { label: 'Nunito', value: '"Nunito", system-ui, sans-serif', isGoogleFont: true, spec: 'Nunito:wght@400;700' },
+  { label: 'Work Sans', value: '"Work Sans", system-ui, sans-serif', isGoogleFont: true, spec: 'Work+Sans:wght@400;700' },
+  { label: 'DM Sans', value: '"DM Sans", system-ui, sans-serif', isGoogleFont: true, spec: 'DM+Sans:wght@400;700' },
+  { label: 'Rubik', value: '"Rubik", system-ui, sans-serif', isGoogleFont: true, spec: 'Rubik:wght@400;700' },
+  { label: 'Oswald', value: '"Oswald", system-ui, sans-serif', isGoogleFont: true, spec: 'Oswald:wght@400;700' },
+  { label: 'Bebas Neue', value: '"Bebas Neue", system-ui, sans-serif', isGoogleFont: true, spec: 'Bebas+Neue:wght@400;700' },
+  { label: 'Playfair Display', value: '"Playfair Display", Georgia, serif', isGoogleFont: true, spec: 'Playfair+Display:wght@400;700' },
+  { label: 'Merriweather', value: '"Merriweather", Georgia, serif', isGoogleFont: true, spec: 'Merriweather:wght@400;700' },
+  { label: 'Source Serif 4', value: '"Source Serif 4", Georgia, serif', isGoogleFont: true, spec: 'Source+Serif+4:wght@400;700' },
+  { label: 'JetBrains Mono', value: '"JetBrains Mono", ui-monospace, monospace', isGoogleFont: true, spec: 'JetBrains+Mono:wght@400;700' },
+  // Rounded / display group — approved for the @cruxthedoberman account.
+  { label: 'Baloo 2', value: '"Baloo 2", system-ui, sans-serif', isGoogleFont: true, spec: 'Baloo+2:wght@400;500;600;700;800' },
+  { label: 'Fredoka', value: '"Fredoka", system-ui, sans-serif', isGoogleFont: true, spec: 'Fredoka:wght@300;400;500;600;700' },
+  { label: 'Sniglet', value: '"Sniglet", system-ui, sans-serif', isGoogleFont: true, spec: 'Sniglet:wght@400;800' },
 ]
 
+// Fetches exactly the weights each family publishes, via the `spec` carried
+// on every Google-font option — the same spec a caller persists alongside
+// fontFamily. Falls back to the old label-derived guess only if `spec` is
+// somehow missing, so a stale/partial FontOption still resolves to a URL.
+// The list is now a slightly bigger stylesheet than the old flat
+// wght@400;700-everywhere version (Baloo 2/Fredoka/Sniglet pull in
+// 300/500/600/800), but that's the correct trade: the picker preview and
+// the persisted spec fetch identical weights, so what you see in the
+// dropdown is what actually renders.
 const GOOGLE_FONTS_URL = (() => {
   const params = FONT_OPTIONS
     .filter((f) => f.isGoogleFont)
-    .map((f) => `family=${f.label.replace(/ /g, '+')}:wght@400;700`)
+    .map((f) => `family=${f.spec ?? `${f.label.replace(/ /g, '+')}:wght@400;700`}`)
     .join('&')
   return `https://fonts.googleapis.com/css2?${params}&display=swap`
 })()

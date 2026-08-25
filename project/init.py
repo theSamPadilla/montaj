@@ -7,22 +7,69 @@ from datetime import datetime
 from pathlib import Path
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-from lib.common import SAFE_NAME, fail, get_duration, progress
+from lib.common import SAFE_NAME, fail, ffprobe_bin, progress
 from lib.remote_io import fetch_to_disk, parse_allowed_hosts
-from lib.normalize import normalize, is_normalized, probe_video
+from lib.normalize import normalize, normalized_output_path, is_normalized, probe_video
+from lib.proxy import is_proxy_fresh, make_proxy, proxy_path_for
 from lib.types.project import normalize_project_type
 from lib.types.kling import is_valid_aspect_ratio, ASPECT_RATIOS, ASPECT_RESOLUTIONS, DEFAULT_ASPECT_RATIO
 from lib.types.carousel import CAROUSEL_ASPECTS, CAROUSEL_RESOLUTIONS, DEFAULT_CAROUSEL_ASPECT
 from lib.types.colorspace import (
     ALL_COLOR_SPACES, DEFAULT_COLOR_SPACE, ColorSpaceKey,
-    detect_from_transfer, normalize_key, smart_detect,
+    detect_from_transfer, is_hdr, normalize_key, smart_detect,
 )
 from lib.profile_assets import build_profile_snapshot
+from lib.voiceover import concat_takes
 from lib.workflow import read_workflow
 
 
 NORMALIZE_POOL_SIZE = 4  # outer pool — fast-path/skip workers don't acquire heavy_encode_sem
 HEAVY_ENCODE_LIMIT = 2   # libx264 -preset slow at 4K is memory-heavy — precedent: materialize_cut.py:22
+# Proxy encodes are their own pool, separate from libx264/265 masters so proxies
+# never queue behind normalize. Sized by measurement, not taste — both numbers are
+# recorded so this doesn't get re-litigated from intuition: with AV1 proxies, 2
+# concurrent encodes already drew 976% CPU of the 1200% available, so 2 was the
+# correct cap. H.264 proxies are far cheaper — the same 2-wide pool reaches only
+# 535% — and widening to 4 took a 14-clip folder from 2:02 to 1:19.
+PROXY_ENCODE_LIMIT = 4
+# Inline-proxy TOTAL-footage budget (SP3 fix B1). init runs inside serve's
+# project-creation subprocess with a hard 1800s budget (serve/routes/projects.py).
+# The gate is the whole import, not any one source: N individually-short clips each
+# pass a per-clip gate and then all encode inline, and that batch is the wait the
+# creator actually feels. At the measured ~0.19s of wall per second of footage
+# (78.8s for 415s at concurrency 4), a 300s budget caps inline proxy work at roughly
+# a minute — a tolerable wait behind a loading modal. An import over budget defers
+# every proxy to the POST /api/proxy backfill job instead of blocking (and 504ing)
+# project creation. Override per-run with --proxy-inline-max; disable proxies
+# entirely with --no-proxy or a workflow's "proxy": false.
+PROXY_INLINE_MAX_TOTAL_SEC = 300.0
+
+
+def _probe_duration(path: str) -> float | None:
+    """Source duration in seconds, or None when the file can't be read.
+
+    Deliberately NOT lib.common.get_duration: that routes through run(check=True),
+    which fail()s on an unreadable file — printing an {"error": ...} JSON line to
+    stderr before raising SystemExit. Every duration read in init is best-effort
+    (a clip whose duration is unknown just doesn't get a sourceDuration and
+    doesn't count toward the proxy budget), and init must not leave a stray error
+    object on stderr for a failure it went on to ignore — serve parses stderr for
+    {"error": ...} when init exits non-zero.
+    """
+    try:
+        r = subprocess.run(
+            [ffprobe_bin(), "-v", "quiet", "-show_entries", "format=duration",
+             "-of", "csv=p=0", path],
+            # 60, not the 10 this first shipped with: it replaced get_duration,
+            # whose run() default is 300, and a cold 4K MOV on a network volume
+            # or an external spinning disk can genuinely exceed 10s on the
+            # header read. Timing out here is not free — it silently drops
+            # sourceDuration AND removes the clip from the inline-proxy budget.
+            capture_output=True, text=True, timeout=60,
+        )
+        return float(r.stdout.strip()) if r.returncode == 0 else None
+    except (Exception, SystemExit):
+        return None
 
 
 def _copy_into_workspace(src: str, dest_dir: str, prefix: str, link: bool = False) -> str:
@@ -177,9 +224,11 @@ def main():
     parser = argparse.ArgumentParser(description="Initialize a montaj project workspace")
     parser.add_argument("--clips", nargs="*", default=[], help="Input clip paths")
     parser.add_argument("--assets", nargs="*", default=[], help="Asset file paths (images, logos, etc.)")
-    parser.add_argument("--voiceover-asset",
-                        help="Audio or video file supplying the voiceover. "
-                             "For broll projects only. Only its audio is used.")
+    parser.add_argument("--voiceover-asset", nargs="+", dest="voiceover_asset",
+                        help="Audio or video file(s) supplying the voiceover. "
+                             "For broll projects only. Only its audio is used. "
+                             "Pass several, in order, when narration was recorded "
+                             "as one take per script section — they are concatenated.")
     parser.add_argument("--prompt", required=True, help="Editing prompt")
     parser.add_argument("--workflow", default="clean_cut", help="Workflow name")
     parser.add_argument("--name", help="Project name (used as workspace directory suffix)")
@@ -249,6 +298,19 @@ def main():
              "compose time. Overrides the workflow's normalize setting when provided.",
     )
     parser.add_argument(
+        "--no-proxy", dest="no_proxy", action="store_true",
+        help="Skip editing-proxy generation entirely (SP3). The editor falls back to "
+             "playing masters; proxies can be backfilled later via POST /api/proxy or "
+             "`montaj step proxy`. Also settable per-workflow with \"proxy\": false.",
+    )
+    parser.add_argument(
+        "--proxy-inline-max", dest="proxy_inline_max", type=float, default=None,
+        help=f"Inline-proxy budget in seconds of TOTAL footage, summed across every source "
+             f"in the import; an import over budget defers all of its proxies to the "
+             f"background backfill job so project creation never blocks on a long encode. "
+             f"Default {PROXY_INLINE_MAX_TOTAL_SEC:.0f}.",
+    )
+    parser.add_argument(
         "--language", default="en",
         help="Spoken language of the footage as a whisper code (e.g. 'es', 'pt', 'fr'), or "
              "'auto' to detect. Stored in settings.language and passed to the speech steps "
@@ -258,7 +320,16 @@ def main():
     args = parser.parse_args()
 
     # Normalize mode: CLI flag overrides workflow JSON; workflow JSON overrides default "eager".
-    normalize_mode = args.normalize or (read_workflow(args.workflow) or {}).get("normalize", "eager")
+    _workflow_json = read_workflow(args.workflow) or {}
+    normalize_mode = args.normalize or _workflow_json.get("normalize", "eager")
+
+    # Proxy policy (SP3 fix B1): --no-proxy beats the workflow's "proxy" setting,
+    # which beats the default (enabled). The inline total-footage budget follows the
+    # same CLI-over-default rule.
+    proxy_enabled = (not args.no_proxy) and _workflow_json.get("proxy", True) is not False
+    proxy_inline_max_total = (
+        args.proxy_inline_max if args.proxy_inline_max is not None else PROXY_INLINE_MAX_TOTAL_SEC
+    )
 
     # Early carousel detection — validate incompatible args BEFORE any on-disk side effects.
     early_project_type = _read_project_type(args.workflow)
@@ -340,8 +411,9 @@ def main():
     if early_project_type == "broll" and not args.voiceover_asset:
         fail("missing_argument",
              "broll projects require --voiceover-asset")
-    if args.voiceover_asset and not os.path.isfile(args.voiceover_asset):
-        fail("file_not_found", f"File not found: {args.voiceover_asset}")
+    for _vo in (args.voiceover_asset or []):
+        if not os.path.isfile(_vo):
+            fail("file_not_found", f"File not found: {_vo}")
 
     # Resolve workspace_root first — both branches below need it.
     # Precedence: MONTAJ_WORKSPACE_DIR env var > ~/.montaj/config.json's workspaceDir > ~/Montaj.
@@ -439,6 +511,14 @@ def main():
     # Cache probe results so _normalize_one below doesn't re-ffprobe each clip.
     # Keyed by absolute source path. Populated below for non-canvas projects.
     probe_cache: dict[str, dict] = {}
+    # Source durations, keyed by the ORIGINAL staged path. Filled in the same
+    # single pass as probe_cache — probe_video's ffprobe asks for stream entries
+    # only, so duration needs its own `format=duration` read, and the
+    # total-footage proxy budget has to be known BEFORE the normalize pool starts.
+    # This is the ONE duration read per clip: _normalize_one reads sourceDuration
+    # out of here (both arms) rather than probing again, so the per-clip ffprobe
+    # budget is unchanged — it moved, it didn't grow.
+    duration_cache: dict[str, float] = {}
 
     # Single probe pass — populates probe_cache (consumed by _normalize_one below),
     # collects (w, h, r_frame_rate) tuples for resolution + fps detection. This loop
@@ -455,6 +535,9 @@ def main():
     detected_pairs = []  # [(display_w, display_h, r_frame_rate)] in clip order
     if clips:
         for clip in clips:
+            _duration = _probe_duration(clip["src"])
+            if _duration is not None:
+                duration_cache[clip["src"]] = _duration
             info = probe_video(clip["src"])
             if info is None:
                 continue
@@ -527,15 +610,119 @@ def main():
     # because clips that pass is_normalized() bypass the semaphore entirely.
     _heavy_encode_sem = threading.Semaphore(HEAVY_ENCODE_LIMIT)
 
+    # Whether this import's proxies are encoded inline or deferred wholesale to
+    # the backfill job — decided ONCE, here, before the pool starts, from the
+    # durations collected in the single probe pass above. The gate is the total
+    # footage rather than any one clip: fourteen individually-short sources each
+    # clear a per-clip gate and then all encode inline, which is exactly the wait
+    # this is meant to bound. Already-encoded proxies are still adopted below
+    # regardless — deferral only suppresses new encodes.
+    total_source_duration = sum(duration_cache.values())
+    defer_proxies = total_source_duration > proxy_inline_max_total
+    # A clip contributes 0 to the total when its duration could not be read, so
+    # a partial probe failure understates the budget. That only MATTERS for a
+    # clip that goes on to be proxied anyway, and the two reads are independent
+    # ffprobe calls: a raw elementary stream (and some fragmented MP4s) reports
+    # `format=duration` as N/A while probing its streams perfectly, so it clears
+    # the `info is not None` gate below and encodes inline at unknown cost.
+    #
+    # So fail closed on exactly that set, and no wider. Deferring whenever ANY
+    # probe failed was tried and reverted: a clip that fails BOTH reads is never
+    # proxied at all, and treating it as unknown cost makes one corrupt file
+    # suppress inline proxies for every healthy clip beside it — which is what
+    # `test_init_continues_when_one_clip_fails` exists to prevent, and it fires
+    # on tiny imports nowhere near the budget.
+    unknown_cost = [src for src in probe_cache if src not in duration_cache]
+    if unknown_cost:
+        defer_proxies = True
+        progress(f"proxy deferred: {len(unknown_cost)} source(s) probed OK but "
+                 f"reported no duration, so the inline budget cannot be trusted")
+    if proxy_enabled and defer_proxies:
+        progress(f"proxy deferred for all {len(clips)} clips (total footage "
+                 f"{total_source_duration:.0f}s > inline budget {proxy_inline_max_total:.0f}s) — "
+                 f"backfill runs in the background via POST /api/proxy or `montaj step proxy`")
+
+    # Proxies are their own encoder pool, separate from _heavy_encode_sem so proxy
+    # encodes never queue behind libx264/libx265 master transcodes. Its capacity is
+    # >1, so this alone does NOT serialize same-path racers (several threads can
+    # hold it at once) — that's _proxy_locks_guard's job below.
+    #
+    # NOTE: at PROXY_ENCODE_LIMIT == NORMALIZE_POOL_SIZE this semaphore no longer
+    # bounds anything. _schedule_proxy runs inline inside _normalize_one, so the
+    # outer pool is the real cap and at most NORMALIZE_POOL_SIZE proxies can be in
+    # flight whatever this is set to. It mattered at 2 (it was the binding
+    # constraint, and raising it to 4 is what took the reference folder from 2:02
+    # to 1:19); it would matter again if the pool grew. Raise the pool without
+    # raising this and proxies quietly become the bottleneck again.
+    _proxy_encode_sem = threading.Semaphore(PROXY_ENCODE_LIMIT)
+
+    # Per-proxy-path mutual exclusion for the "is it fresh, and if not, claim
+    # the encode" decision. Concurrent children of one shared lazy source
+    # compute the SAME proxy_out (see the lazy branch's realpath resolution
+    # below) and must fully serialize on THAT check — a semaphore with
+    # capacity > 1 does not provide this (two racers can both pass a
+    # capacity-2 semaphore at once and both encode). Different proxy paths
+    # use different locks, so unrelated clips never block on each other here;
+    # _proxy_encode_sem still separately caps how many encodes run at once.
+    _proxy_locks_guard = threading.Lock()
+    _proxy_locks: dict[str, threading.Lock] = {}
+
+    def _proxy_lock_for(path: str) -> threading.Lock:
+        with _proxy_locks_guard:
+            lock = _proxy_locks.get(path)
+            if lock is None:
+                lock = threading.Lock()
+                _proxy_locks[path] = lock
+            return lock
+
+    def _schedule_proxy(clip: dict, clip_id: str, src: str, *, tonemap: bool, info: dict) -> None:
+        """Encode (or reuse) the full-source editing proxy for `src`, writing
+        `clip["proxySrc"]` on success.
+
+        Proxies are an enhancement, never a blocker: any failure here is
+        reported via progress() and swallowed — the clip simply keeps no
+        proxySrc and the editor falls back to playing the master.
+
+        SP3 fix B1: two gates run BEFORE any encode. Proxies disabled
+        (--no-proxy / workflow "proxy": false) → silent no-op. Import over the
+        total-footage budget (`defer_proxies`, decided once above and already
+        logged once for the batch) → no new encode; the proxy is backfilled
+        later via POST /api/proxy. That second gate is checked AFTER the
+        freshness check, so an already-fresh proxy from a previous run — the
+        clips fan-out case, where every child adopts one shared proxy — still
+        gets picked up even when this import is over budget.
+
+        The freshness check + encode is fully serialized per-path via
+        _proxy_lock_for, so N concurrent children of one shared lazy source
+        only encode once — a thread that loses the race blocks on the lock,
+        then finds the proxy already fresh once it acquires it and skips
+        straight to writing proxySrc.
+        """
+        if not proxy_enabled:
+            return
+        proxy_out = proxy_path_for(src)
+        try:
+            if defer_proxies and not is_proxy_fresh(proxy_out, src):
+                return
+            with _proxy_lock_for(proxy_out):
+                if not is_proxy_fresh(proxy_out, src):
+                    with _proxy_encode_sem:
+                        make_proxy(src, proxy_out, tonemap=tonemap, info=info)
+            clip["proxySrc"] = proxy_out
+        except (Exception, SystemExit):
+            progress(f"[{clip_id}] proxy FAILED — editor will play the master")
+
     # Per-clip path classification stats (collected for the summary log at end).
     # Thread-safe append-only list; final summary read after pool join.
     _stats: list[dict] = []
     _stats_lock = threading.Lock()
 
-    # Each thread mutates its OWN clip dict. There is no shared state between workers
-    # (no shared lists/dicts, no shared file handles, no shared probe cache). If a
-    # future change ever has multiple threads operating on the same clip dict or
-    # the same source file, this needs reconsideration.
+    # Each thread mutates its OWN clip dict. The only shared state is the proxy
+    # bookkeeping above (`_proxy_locks` / `_proxy_locks_guard`, both guarded) —
+    # SP3 deliberately has N lazy children converge on ONE proxy output path via
+    # realpath, and `_proxy_lock_for` serializes the freshness-check-and-encode
+    # for that path. No shared lists, file handles, or probe-cache writes beyond
+    # that. Any NEW cross-thread write needs the same treatment.
     def _normalize_one(clip):
         """Normalize a single clip in place. Mutates clip['src'] and clip['sourceDuration']."""
         clip_path = clip["src"]
@@ -545,11 +732,55 @@ def main():
         # set so the UI can clamp edits; src is left pointing at the original
         # staged file.
         if normalize_mode == "lazy":
-            try:
-                clip["sourceDuration"] = get_duration(clip["src"])
-            except (Exception, SystemExit):
-                pass
+            # Reuse the duration read in the single pre-pool pass above; only
+            # re-read on a cache miss (that probe failed), same idiom as the
+            # probe_cache use below.
+            _duration = duration_cache.get(clip_path)
+            if _duration is None:
+                _duration = _probe_duration(clip_path)
+            if _duration is not None:
+                clip["sourceDuration"] = _duration
             progress(f"[{clip_id}] lazy skip")
+
+            # Full-source editing proxy from the original — lazy mode never
+            # conforms a master, so there's no post-normalize src to encode
+            # from. Reuse the unconditional probe pass above (init.py's single
+            # ffprobe-per-clip contract); only re-probe on an earlier probe
+            # failure (cache miss), same idiom as the eager path below.
+            info = probe_cache.get(clip_path) or probe_video(clip_path)
+            if info is not None:
+                tonemap = is_hdr(detect_from_transfer(info.get("color_transfer")))
+                # Lazy clips are commonly --symlink-clips'd into a shared
+                # source (clips-workflow fan-out — see skills/find_clips):
+                # each child project stages its OWN local symlink under its
+                # own basename-collision-avoided name, so clip_path differs
+                # per child even though the underlying file is identical.
+                # Resolve to the real file so every child names (and races
+                # on) the SAME proxy path — that's what lets is_proxy_fresh()
+                # + make_proxy()'s atomic os.replace (see lib/proxy.py)
+                # converge on ONE shared proxy instead of one redundant proxy
+                # per child, per the one-proxy-serves-every-child contract on
+                # lib/proxy.proxy_path_for. _proxy_encode_sem/_proxy_locks
+                # only dedupe within this one process; cross-process races
+                # (separate init.py calls for separate children) are safe by
+                # construction via that same freshness check + atomic write.
+                # For a non-symlinked (copied) clip under the real ~/Montaj
+                # workspace root this is a no-op — the copy already lives at
+                # its own realpath, so proxy naming/behavior is unchanged.
+                # (The ONLY exception is a path with a symlinked ANCESTOR
+                # directory, e.g. tests running under macOS's /tmp → /private/tmp
+                # — cosmetically different string, same physical file/dir,
+                # no behavior change either way.)
+                #
+                # Placement: proxy_path_for() routes in-workspace sources to a
+                # sibling path (the shared `.sources/<id>/` case) and
+                # OUTSIDE-workspace sources into
+                # `<workspace>/.sources/_proxycache/<realpath-hash>/` so an
+                # ad-hoc `--clips <outside path> --symlink-clips` call never
+                # litters the user's own footage folders and clean --proxies
+                # can always find the artifact (SP3 fix S7).
+                _schedule_proxy(clip, clip_id, os.path.realpath(clip_path), tonemap=tonemap,
+                                info=info)
             return
 
         t0 = time.monotonic()
@@ -572,8 +803,22 @@ def main():
                  f"{info['pix_fmt'] if info else '?'} "
                  f"audio={info.get('audio_sample_rate') if info else '?'})")
 
+        # The color space of whatever clip["src"] ends up pointing at below —
+        # used to decide the preview proxy's tonemap arm. In the normal
+        # "skip"/"transcode" cases this equals project_color_space by
+        # construction: is_normalized() only lets "skip" through when the
+        # source already matches the project's color space, and normalize()
+        # conforms a "transcode" source to it. Only the transcode-FAILED
+        # fallback below (still the untouched original) can disagree, so it's
+        # corrected there.
+        master_color_space = project_color_space
+
         if path_kind == "transcode":
-            normalized_path = clip_path.rsplit(".", 1)[0] + f"_normalized_{project_color_space}.mp4"
+            tonemapped = (
+                is_hdr(detect_from_transfer(info.get("color_transfer")))
+                and project_color_space == "sdr_bt709"
+            )
+            normalized_path = normalized_output_path(clip_path, project_color_space, tonemapped=tonemapped)
             try:
                 sem_wait_t0 = time.monotonic()
                 with _heavy_encode_sem:
@@ -587,12 +832,35 @@ def main():
             except SystemExit:
                 # normalize calls fail() which raises SystemExit — fall back to original
                 progress(f"[{clip_id}] normalize FAILED, falling back to original src")
+                master_color_space = detect_from_transfer(info.get("color_transfer"))
 
-        # Cache source duration so the UI can clamp edits against it
-        try:
-            clip["sourceDuration"] = get_duration(clip["src"])
-        except (Exception, SystemExit):
-            pass
+        # Full-source editing proxy, encoded from the current (post-normalize)
+        # clip["src"]. Policy v3: the editor preview must ALWAYS show montaj's
+        # own SDR curve, never the browser's own ad-hoc HDR tone-mapping — so
+        # the proxy tone-maps whenever the master feeding it is HDR, regardless
+        # of the project's own working color space. Previously this was
+        # unconditionally tonemap=False, which left an EAGER-HDR project (an
+        # HDR-native master, e.g. all-iPhone-HLG import) with an un-tone-mapped
+        # HDR AV1 proxy, leaving the browser to improvise its own tone-mapping
+        # for preview. Mirrors the lazy arm's tonemap decision above — just
+        # derived from master_color_space instead of a fresh probe, since the
+        # master here may be the post-normalize conformed file rather than the
+        # original.
+        # Skipped when probing failed (no info to build the encode from).
+
+        # Cache source duration so the UI can clamp edits against it. Taken from
+        # the pre-pool read on the ORIGINAL staged file rather than a fresh probe
+        # of the post-normalize clip["src"]: normalize() conforms codec/color, it
+        # never trims, so the two are the same length — and the budget gate above
+        # needs this number before the pool starts either way. One read, reused.
+        _duration = duration_cache.get(clip_path)
+        if _duration is None:
+            _duration = _probe_duration(clip["src"])
+        if _duration is not None:
+            clip["sourceDuration"] = _duration
+
+        if info is not None:
+            _schedule_proxy(clip, clip_id, clip["src"], tonemap=is_hdr(master_color_space), info=info)
 
         elapsed = time.monotonic() - t0
         progress(f"[{clip_id}] {path_kind} done in {elapsed:.2f}s")
@@ -627,8 +895,24 @@ def main():
         for i, a in enumerate(args.assets)
     ]
 
-    voiceover_path = (copy_into_workspace(os.path.abspath(args.voiceover_asset), "voiceover")
-                      if args.voiceover_asset else None)
+    # Stage every take into the workspace first, so the project owns its inputs
+    # even if the originals move. One take is used directly (byte-identical to
+    # the pre-list behavior); several are concatenated into one narration file.
+    voiceover_takes = [copy_into_workspace(os.path.abspath(v), "voiceover")
+                       for v in (args.voiceover_asset or [])]
+    if len(voiceover_takes) > 1:
+        # A take of the user's own can already be sitting at voiceover_full.wav
+        # (re-running init on a narration Montaj produced does it), and ffmpeg
+        # refuses to read and write one path. De-collide the same way
+        # _copy_into_workspace does rather than failing on valid input.
+        concat_out = os.path.join(workspace_dir, "voiceover_full.wav")
+        _n = 2
+        while os.path.exists(concat_out):
+            concat_out = os.path.join(workspace_dir, f"voiceover_full_{_n}.wav")
+            _n += 1
+        voiceover_path = concat_takes(voiceover_takes, concat_out)
+    else:
+        voiceover_path = voiceover_takes[0] if voiceover_takes else None
 
     project_type = _read_project_type(args.workflow)
 
@@ -658,7 +942,7 @@ def main():
             "colorSpace": project_color_space,
             "language": args.language,
         },
-        "tracks": [[] if args.canvas else clips],
+        "tracks": [{"id": "trk-0", "items": [] if args.canvas else clips}],
         "assets": assets,
         "audio": {},
         **({"profile": args.profile} if args.profile else {}),
@@ -668,8 +952,17 @@ def main():
     if normalize_mode == "lazy":
         project["settings"]["normalize"] = "lazy"
 
+    if not proxy_enabled:
+        # Record the opt-out so backfill tooling and future sessions can see the
+        # intent (SP3 fix B1); absent means proxies are on (the default).
+        project["settings"]["proxy"] = False
+
     if voiceover_path:
         project["voiceover"] = {"src": voiceover_path}
+        # Provenance for a concatenated narration: which takes produced `src`,
+        # in order. Omitted for a single take, where `src` IS the take.
+        if len(voiceover_takes) > 1:
+            project["voiceover"]["takes"] = voiceover_takes
 
     if args.derived_from:
         project["derivedFrom"] = args.derived_from

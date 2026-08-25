@@ -1,9 +1,11 @@
 import { useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Trash2, Pencil, RefreshCw, AlertCircle } from 'lucide-react'
+import { Trash2, Pencil, RefreshCw, AlertCircle, Sparkles } from 'lucide-react'
 import { StatusBadge } from '@/components/ui/badge'
 import { api } from '@/lib/api'
+import { getVisualItems } from '@/lib/types/schema'
 import type { Project } from '@/lib/types/schema'
+import ProxyMigrationModal from '@/components/ProxyMigrationModal'
 
 interface ProjectHeaderProps {
   project: Project
@@ -18,7 +20,11 @@ export default function ProjectHeader({ project, onProjectChange, actions }: Pro
   const [deleting, setDeleting]     = useState(false)
   const [refreshing, setRefreshing] = useState(false)
   const [refreshState, setRefreshState] = useState<'idle' | 'ok' | 'err'>('idle')
+  const [proxyOpen, setProxyOpen] = useState(false)
   const inputRef = useRef<HTMLInputElement>(null)
+
+  const needsProxy = (project.settings as { proxy?: boolean } | undefined)?.proxy !== false
+    && getVisualItems(project).some(it => it.type === 'video' && it.src && !it.proxySrc)
 
   function startEdit() {
     setNameVal(project.name ?? '')
@@ -58,6 +64,7 @@ export default function ProjectHeader({ project, onProjectChange, actions }: Pro
   }
 
   return (
+    <>
     <div className="flex items-center gap-2 px-4 py-2 border-b border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 shrink-0">
       <button
         onClick={() => navigate('/')}
@@ -92,6 +99,17 @@ export default function ProjectHeader({ project, onProjectChange, actions }: Pro
 
       <StatusBadge status={project.status} />
 
+      {needsProxy && (
+        <button
+          onClick={() => setProxyOpen(true)}
+          className="flex items-center gap-1 rounded px-1.5 py-0.5 text-xs bg-amber-50 text-amber-700 hover:bg-amber-100 dark:bg-amber-900/40 dark:text-amber-300 dark:hover:bg-amber-900/60 transition-colors shrink-0"
+          title="Some clips have no editing preview, so scrubbing is slow. Click to generate them."
+        >
+          <Sparkles size={11} />
+          Generate previews
+        </button>
+      )}
+
       <button
         onClick={async () => {
           setRefreshing(true)
@@ -116,7 +134,7 @@ export default function ProjectHeader({ project, onProjectChange, actions }: Pro
             ? 'text-red-500 bg-red-50 dark:bg-red-950'
             : 'text-gray-500 hover:text-gray-900 dark:hover:text-white hover:bg-gray-100 dark:hover:bg-gray-800',
         ].join(' ')}
-        title={refreshState === 'err' ? 'Refresh failed — check connection' : 'Refresh project'}
+        title={refreshState === 'err' ? 'Refresh failed. Check your connection.' : 'Refresh project'}
       >
         {refreshState === 'err'
           ? <AlertCircle size={12} />
@@ -135,5 +153,7 @@ export default function ProjectHeader({ project, onProjectChange, actions }: Pro
         </button>
       </div>
     </div>
+    {proxyOpen && <ProxyMigrationModal project={project} onClose={() => setProxyOpen(false)} />}
+    </>
   )
 }

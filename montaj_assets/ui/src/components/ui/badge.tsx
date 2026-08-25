@@ -30,3 +30,24 @@ export function StatusBadge({ status }: { status: string }) {
     : 'default'
   return <Badge variant={variant}>{status}</Badge>
 }
+
+/**
+ * Which recipe a project was created with.
+ *
+ * Deliberately the raw workflow name, not a prettified label: it is what the
+ * picker lists, what `montaj init --workflow` takes, and what a custom
+ * workflow's own filename is. Any mapping to friendlier text would cover the
+ * built-ins and silently miss every workflow a user adds themselves.
+ *
+ * Always the neutral variant, so the coloured badge beside it stays the one
+ * that means something — status changes as the project moves, the workflow
+ * never does.
+ */
+export function WorkflowBadge({ workflow }: { workflow?: string | null }) {
+  // Legacy projects predate the field; showing nothing beats showing "unknown".
+  if (!workflow) return null
+  // Capped because the name is user-supplied: a custom workflow file can be
+  // called anything, and on the narrow mobile card an unbounded one would push
+  // the status badge out of the row.
+  return <Badge variant="default" className="max-w-[10rem] truncate" title={workflow}>{workflow}</Badge>
+}

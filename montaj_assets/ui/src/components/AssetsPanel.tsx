@@ -14,9 +14,11 @@ interface AssetsPanelProps {
   profileName?: string
   /** When set, dropped assets are uploaded into the project's own directory instead of _uploads/. */
   projectId?: string
+  /** Asset `src` paths referenced by the timeline/overlays -> show the "Added" badge. */
+  usedSrcs?: Set<string>
 }
 
-export default function AssetsPanel({ assets, onChange, profileName, projectId }: AssetsPanelProps) {
+export default function AssetsPanel({ assets, onChange, profileName, projectId, usedSrcs }: AssetsPanelProps) {
   const [pickingAssets, setPickingAssets]     = useState(false)
   const [uploadingAssets, setUploadingAssets] = useState(false)
   const [dragOverAssets, setDragOverAssets]   = useState(false)
@@ -83,7 +85,7 @@ export default function AssetsPanel({ assets, onChange, profileName, projectId }
   return (
     <>
       <div className="flex flex-col flex-1 overflow-hidden">
-        <div className="flex items-center justify-between px-3 py-2 border-b border-gray-200 dark:border-gray-800">
+        <div className="shrink-0 flex items-center justify-between px-3 py-2 border-b border-gray-200 dark:border-gray-800">
           <span className="text-xs font-medium text-gray-400 uppercase tracking-wide">Assets</span>
           <div className="flex items-center gap-2">
             <ProfileAssetPicker
@@ -116,7 +118,7 @@ export default function AssetsPanel({ assets, onChange, profileName, projectId }
         </div>
 
         <div
-          className={`flex-1 overflow-y-auto p-2 transition-colors ${dragOverAssets ? 'bg-blue-50 dark:bg-blue-950/30' : ''}`}
+          className={`flex-1 min-h-0 overflow-y-auto p-2 transition-colors ${dragOverAssets ? 'bg-blue-50 dark:bg-blue-950/30' : ''}`}
           onDragOver={e => { e.preventDefault(); setDragOverAssets(true) }}
           onDragLeave={e => { if (!e.currentTarget.contains(e.relatedTarget as Node)) setDragOverAssets(false) }}
           onDrop={handleAssetDrop}
@@ -153,6 +155,11 @@ export default function AssetsPanel({ assets, onChange, profileName, projectId }
                       className="absolute inset-0 w-full h-full object-cover"
                       onError={(e) => { (e.target as HTMLImageElement).style.display = 'none' }}
                     />
+                    {usedSrcs?.has(asset.src) && (
+                      <span className="absolute top-1 left-1 px-1.5 py-0.5 rounded bg-black/70 text-white text-[10px] font-medium leading-none">
+                        Added
+                      </span>
+                    )}
                   </div>
                   <button
                     onClick={() => handleRemoveAsset(asset.id)}

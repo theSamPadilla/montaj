@@ -4,7 +4,7 @@
  *
  * Each call composites:
  *   - N visual items: layered by trackIdx (lower = background). Each item has
- *     scale, offsetX, offsetY, opacity. Images loop, videos seek+trim.
+ *     scale, offsetX, offsetY, opacity, rotation. Images loop, videos seek+trim.
  *   - 0-N overlays: Puppeteer-rendered MKV/WebM with alpha, scaled from the
  *     1080-design canvas to the output resolution and positioned via offsetX,
  *     offsetY, scale. Captions are always last (topmost z-layer) — ensured by
@@ -23,15 +23,22 @@
  * with -c:v copy is safe (uniform format invariant holds, just per-project now).
  *
  * Per-item color conversion: when an item's source color space differs from the
- * project's color space, a conversion filter is injected before the per-item scale
- * step. The source's color_transfer is read from item.colorTransfer (stamped by
- * render.js during the videoItems collection pass) — no per-segment ffprobe.
+ * project's color space, a conversion filter is injected between the per-item
+ * scale and pad steps (see the step-order note in buildVideoItemFilterParts —
+ * geometry first so the conversion runs on canvas-sized frames, pad after it so
+ * its bars are synthesized in the destination color space). The source's
+ * color_transfer is read from item.colorTransfer (stamped by render.js during
+ * the videoItems collection pass) — no per-segment ffprobe.
  */
 import { spawn, spawnSync } from 'child_process'
 import { mkdirSync } from 'fs'
 import { dirname } from 'path'
 import { FFMPEG, FFPROBE } from './ffmpeg-bin.js'
 import { specFor, detectFromTransfer, DEFAULT_COLOR_SPACE } from './color-space.js'
+import { lutPath } from './look.js'
+import {
+  geometryFor, geometryAt, toRotatedPixelBox, toPixelBox, compileTrackExprInfo,
+} from '@bycrux/timeline-core'
 
 const FFMPEG_TIMEOUT_MS = 600_000
 const IMAGE_EXTENSIONS = /\.(jpe?g|png|gif|webp|bmp|tiff?)$/i
@@ -84,15 +91,77 @@ function isImageItem(item) {
   return item.type === 'image' || IMAGE_EXTENSIONS.test(item.src)
 }
 
-// Cache the ffmpeg-has-zscale check across calls — it doesn't change between segments.
-let _zscaleCache = null
-function hasZscale() {
-  if (_zscaleCache !== null) return _zscaleCache
+// Cache the `ffmpeg -filters` listing across calls — a build's filter set can't
+// change mid-process, and both probes below read the same listing so this costs
+// one spawn total, not one per filter. Mirrors the functools.lru_cache on
+// lib/normalize.py's _has_zscale/_has_lut3d.
+let _filtersCache = null
+function filterList() {
+  if (_filtersCache !== null) return _filtersCache
   const result = spawnSync(FFMPEG, ['-hide_banner', '-filters'], {
     encoding: 'utf8', timeout: 5000,
   })
-  _zscaleCache = result.status === 0 && /^[A-Z. ]+ zscale\b/m.test(result.stdout || '')
-  return _zscaleCache
+  _filtersCache = result.status === 0 ? (result.stdout || '') : ''
+  return _filtersCache
+}
+
+/** True when this ffmpeg build has zscale (requires libzimg). */
+export function hasZscale() {
+  return /^[A-Z. ]+ zscale\b/m.test(filterList())
+}
+
+/** True when this ffmpeg build has lut3d — the filter that applies the Montaj Vivid .cube. */
+export function hasLut3d() {
+  return /^[A-Z. ]+ lut3d\b/m.test(filterList())
+}
+
+/**
+ * The Montaj Vivid HDR→SDR chain (SP6b decision 8a). VERBATIM — do not reorder.
+ *
+ * Byte-for-byte the same shape lib/normalize.py's `_build_tonemap_vf_to_sdr`
+ * produces, and for the same reasons; both suites assert these literals so the
+ * two runtimes can't drift. Like the Python one, this returns the chain with NO
+ * terminal `format=` — the caller appends whatever its encoder needs
+ * (`yuv420p` for video, `rgb24` for a PNG).
+ *
+ * The `format=rgb48le` pin BEFORE `lut3d` is load-bearing: without it ffmpeg
+ * hands 8-bit to the LUT and quantizes the grade. After the LUT the pixels are
+ * full-range RGB, and the trailing zscale converts them back to limited-range
+ * Rec.709 YUV.
+ *
+ * That trailing zscale sets t=/m=/p= explicitly, not just r=/rin=: zscale only
+ * retags an axis it is explicitly given, and an axis it passes through keeps
+ * the HDR source's tag — which then beats the encoder's own
+ * -color_trc/-color_primaries/-colorspace flags. Omitting t=/p= here produced
+ * files still reporting arib-std-b67/bt2020 over bt709 pixels (verified against
+ * the managed ffmpeg 8.1.2 during T2).
+ *
+ * `tin=`/`pin=` are equally load-bearing, for the opposite reason: zscale does
+ * not relabel an axis, it CONVERTS to it from whatever the frame currently
+ * claims. Arriving frames still carry the source's HDR tags (the LUT rewrites
+ * pixels, not tags), so `t=bt709:p=bt709` alone ran a real HLG→709 transfer
+ * conversion plus a BT.2020→709 gamut map on pixels the LUT had already
+ * tone-mapped — highlights clipped per channel and shifted hue (warm wall →
+ * yellow, window → cyan). Pinning the post-LUT truth makes both conversions
+ * no-ops and leaves only the retag. See lib/normalize.py's twin for the
+ * measured numbers.
+ *
+ * The LUT is graded for HLG input, so PQ sources get a PQ→HLG pre-step at the
+ * LUT's 1000-nit design white — the same value SP6a's generator OOTF used.
+ *
+ * @param {string} srcKey     'hdr_hlg' or 'hdr_pq'
+ * @param {string|null} [sdrCurve]  curve id from looks.json; null → MASTER_LOOK
+ * @returns {string}
+ */
+export function buildVividLutChain(srcKey, sdrCurve = null) {
+  const prestep = srcKey === 'hdr_pq'
+    ? 'zscale=tin=smpte2084:t=arib-std-b67:npl=1000,'
+    : ''
+  return prestep
+       + 'zscale=matrixin=2020_ncl:rangein=limited:range=full,'
+       + 'format=rgb48le,'
+       + `lut3d=file=${lutPath(sdrCurve)}:interp=tetrahedral,`
+       + 'zscale=tin=bt709:t=bt709:pin=bt709:p=bt709:m=bt709:rin=full:r=tv'
 }
 
 /**
@@ -100,16 +169,32 @@ function hasZscale() {
  * Returns an empty string when src === dst (no conversion needed). Mirrors the
  * Python _build_color_conversion_vf() in lib/normalize.py.
  *
- * The hasZscale flag controls the HDR→SDR fallback path — without zscale, the
- * tonemap is degraded (washed out highlights). The Python loader emits a loud
- * warning when this fallback runs at intake; segment-encoder usage is more
+ * The two capability flags control the HDR→SDR arm, in descending fidelity:
+ * zscale + lut3d gives the Montaj Vivid LUT; zscale alone falls back to the
+ * pre-SP6b Hable chain; neither falls back to the bare tonemap. Both fallbacks
+ * are degraded (washed-out highlights, shifted colors). The Python loader emits
+ * a loud warning when it takes them at intake; segment-encoder usage is more
  * limited (only kicks in when intake didn't already convert), and warnings here
  * would spam render logs once per segment, so we silently fall back.
+ *
+ * @param {string} srcKey
+ * @param {string} dstKey
+ * @param {boolean} hasZscaleFlag
+ * @param {object} [opts]
+ * @param {string|null} [opts.sdrCurve]  curve id for the LUT; null → MASTER_LOOK.
+ *   T7 threads `--sdr-curve` down to here for derived SDR renditions.
+ * @param {boolean} [opts.hasLut3d]  defaults to the real probe, so a caller that
+ *   forgets it gets a chain this ffmpeg can actually run rather than one naming
+ *   a missing filter. Deterministic callers (dry-run) pass it explicitly.
  */
-export function buildColorConversionFilter(srcKey, dstKey, hasZscaleFlag) {
+export function buildColorConversionFilter(srcKey, dstKey, hasZscaleFlag, opts = {}) {
   if (srcKey === dstKey) return ''
+  const { sdrCurve = null, hasLut3d: hasLut3dFlag = hasLut3d() } = opts
   // HDR → SDR
   if ((srcKey === 'hdr_hlg' || srcKey === 'hdr_pq') && dstKey === 'sdr_bt709') {
+    if (hasZscaleFlag && hasLut3dFlag) {
+      return buildVividLutChain(srcKey, sdrCurve)
+    }
     if (hasZscaleFlag) {
       return 'zscale=t=linear:npl=100,format=gbrpf32le,'
            + 'zscale=p=bt709,tonemap=hable:desat=0,'
@@ -140,6 +225,297 @@ export function buildColorConversionFilter(srcKey, dstKey, hasZscaleFlag) {
 // ---------------------------------------------------------------------------
 
 /**
+ * The ONE place ffmpeg rotation filter SYNTAX lives. `@bycrux/timeline-core`'s
+ * `toRotatedPixelBox` owns the NUMBERS (normalized degrees, the grown
+ * axis-aligned bounding box, the centre-preserving top-left); this owns the
+ * string that spends them. No `rotate=` appears in timeline-core, and no
+ * geometry is re-derived here — the boundary runs exactly along that seam.
+ *
+ * Returns a chain fragment with a LEADING comma, or `''` when the box is not
+ * rotated. The leading comma (rather than the trailing one `cropStep` /
+ * `conversionStep` use below) is what lets all three call sites share one
+ * helper: on the video path the rotate step lands AFTER `pad`, which is the
+ * last filter before the output label, so there is nothing for a trailing
+ * comma to precede.
+ *
+ * That shape is also what makes the no-rotation guarantee STRUCTURAL rather
+ * than a promise. Every call site interpolates this into an otherwise
+ * unmodified template literal, and concatenating `''` cannot alter a string,
+ * so an item with rotation absent / 0 / 360 emits filters byte-identical to
+ * the pre-rotation pipeline. Two frozen encode-args goldens depend on that.
+ *
+ * `format=yuva420p` is emitted INSIDE this helper — on the video path only,
+ * and UNCONDITIONALLY when rotating — so it structurally cannot leak onto an
+ * unrotated item. It is a defensive pin, not a load-bearing one: in the
+ * production chain (`scale(decrease)` → `pad` → this step → `rotate`), `pad`
+ * already leaves the stream alpha-capable, so the `c=black@0.0` corner fill
+ * shows the canvas through either way (measured corner Y=150 against ffmpeg
+ * 8.1.2, pinned or not). The pin still earns its place: explicitly stating
+ * the format beats trusting filter-negotiation to keep doing the right
+ * thing, and it is what saves a bare `yuv420p → rotate` chain with no
+ * preceding `pad` from going opaque (measured Y=0 unpinned vs. Y=150 pinned
+ * in that isolated shape). Same explicit-pin discipline as the
+ * `format=rgb48le` before `lut3d` in buildVividLutChain, and for the same
+ * class of reason: ffmpeg will pick a format that silently discards what the
+ * next filter needs. The image and overlay paths need no pin — their chains
+ * already carry alpha (every image fit chain runs through `format=rgba`;
+ * the overlay input is pinned to `yuva420p`/`rgba` at its own `format=`
+ * step).
+ *
+ * The angle is emitted as a DEGREE expression (`45*PI/180`), not a
+ * pre-computed float radian. ffmpeg evaluates it to the identical double, and
+ * the authored degrees stay legible in filter strings, render logs and
+ * goldens.
+ *
+ * @param {{outW: number, outH: number, rotationDeg: number, isIdentity: boolean}} box
+ *   — a `toRotatedPixelBox` result. Note that 180° is NOT identity: the box
+ *   does not grow, but the pixels still have to turn.
+ * @param {boolean} [alphaPin=false] — true on the video path only.
+ * @returns {string} `''`, or `,[format=yuva420p,]rotate=…`
+ */
+/**
+ * ANIMATED-ITEM GEOMETRY — the keyframed sibling of `toRotatedPixelBox`.
+ *
+ * Returns `null` for an item with no keyframes, which is what keeps the static
+ * path byte-identical: every caller below branches on this being null and
+ * otherwise emits exactly the strings it always has.
+ *
+ * ── Why the filter chain changes shape, and not just its numbers ────────────
+ *
+ * Three filters in the existing chain CANNOT accept a variable-size input, and
+ * all three fail SILENTLY — no ffmpeg warning, roughly the right picture at
+ * small deltas, visibly wrong at the extremes (measured; see the SP9d spike):
+ *
+ *   1. `rotate` configures against its first frame and mis-scales every
+ *      resized frame after it. An animated ANGLE alone is fine; it is the
+ *      changing frame SIZE that breaks it.
+ *   2. The colour conversion (`zscale` + `lut3d`) does the same. That is the
+ *      path every HDR source takes, i.e. the common one, not an edge case.
+ *   3. `pad` exposes NO `t` and no `n` even at `eval=frame` — its whole
+ *      vocabulary is geometric (`iw ih ow oh a sar dar x y`) — so it cannot be
+ *      driven from a curve at all.
+ *
+ * So the animated chain keeps every size-sensitive filter on a CONSTANT frame
+ * and does the varying resize afterwards. `scale` and `pad` still run at their
+ * usual place in the order, just sized to the PEAK box the item ever reaches
+ * rather than to its current one, and a second `scale` — the animated one —
+ * follows the pad:
+ *
+ *     crop → scale(STATIC, peak box) → convert → pad(STATIC, peak box)
+ *          → scale(ANIMATED)  [→ pad(peak, transparent) → rotate]  → overlay
+ *
+ * `pad` therefore still sits AFTER the conversion, which is the rule the
+ * step-order comment in buildVideoItemFilterParts exists to protect: its bars
+ * are synthesized black and must stay out of the LUT. And because that pad
+ * brings the frame to the canvas's own aspect, the animated `scale` after it is
+ * a plain uniform resize — no second fit, no second pad, and nothing for the
+ * `t`-less `pad` to have to express.
+ *
+ * The cost is one extra resample on animated items only (peak box → current
+ * box, always a downscale since the peak is by definition the largest). The
+ * static path resamples once, and is untouched.
+ *
+ * @param {object} item     the timeline item
+ * @param {'video'|'image'} kind
+ * @param {number} vw       canvas width, pixels
+ * @param {number} vh       canvas height, pixels
+ * @param {number} timeOffset  ITEM-relative seconds at which ffmpeg's `t` is 0
+ * @param {number} duration    segment duration, seconds
+ * @param {(prop: string, info: object) => void} onCap  called per capped track
+ * @returns {null | {
+ *   peakW: number, peakH: number, hasRotation: boolean,
+ *   rotOutW: number, rotOutH: number,
+ *   boxWExpr: string, boxHExpr: string,
+ *   xExpr: string, yExpr: string, angleExpr: string | null,
+ * }}
+ */
+function animatedGeometry(item, kind, vw, vh, timeOffset, duration, onCap) {
+  const tracks = item?.keyframes
+  if (!Array.isArray(tracks) || tracks.length === 0) return null
+
+  // Only the geometry props compile. `opacity` is deliberately absent: ffmpeg's
+  // `colorchannelmixer aa` is a <double> and accepts no expression at all, so a
+  // clip's opacity curve is IGNORED here and the static value is used instead.
+  // That gap is a property of the tool, not an oversight — see docs/RENDER.md.
+  const GEOMETRY_PROPS = ['offsetX', 'offsetY', 'scale', 'scaleX', 'scaleY', 'rotation']
+  const animatedProps = tracks.filter(
+    (tr) => tr && GEOMETRY_PROPS.includes(tr.prop) && Array.isArray(tr.points) && tr.points.length > 0,
+  )
+  if (animatedProps.length === 0) return null
+
+  const staticGeom = geometryFor(item, kind)
+
+  // Sample the resolved geometry across the segment to find the largest box the
+  // item ever occupies, and the widest angle it ever reaches. Keyframe instants
+  // are included explicitly because a cubic-bezier easing is monotone between
+  // keyframes, so the extremes land ON them; the uniform grid is belt-and-braces
+  // for a hand-authored track with an easing that is not.
+  const probes = new Set([0, duration])
+  for (let i = 0; i <= 120; i++) probes.add((duration * i) / 120)
+  for (const tr of animatedProps) {
+    for (const p of tr.points) {
+      const local = p.t - timeOffset
+      if (local >= 0 && local <= duration) probes.add(local)
+    }
+  }
+
+  let peakW = 0
+  let peakH = 0
+  let maxAbsDeg = 0
+  for (const localT of probes) {
+    const g = geometryAt(item, kind, timeOffset + localT)
+    const b = toPixelBox(g, vw, vh)
+    if (b.width > peakW) peakW = b.width
+    if (b.height > peakH) peakH = b.height
+    const deg = Number.isFinite(g.rotation) ? Math.abs(g.rotation) : 0
+    if (deg > maxAbsDeg) maxAbsDeg = deg
+  }
+  // A degenerate track (every sample zero-sized) has nothing to animate.
+  if (!(peakW > 0) || !(peakH > 0)) return null
+
+  /**
+   * One property as an ffmpeg expression, or its static value as a literal.
+   * Times are shifted so the compiled `t` is ffmpeg's `t` (0 at the start of
+   * this segment) rather than the item-relative `t` the curve is authored in —
+   * shifting the BREAKPOINTS rather than rewriting the emitted string keeps
+   * this exact and avoids surgery on an expression we just built.
+   */
+  const exprFor = (prop, staticValue, unitsPerPixel) => {
+    const tr = animatedProps.find((x) => x.prop === prop)
+    if (!tr) return null
+    const shifted = { prop, points: tr.points.map((p) => ({ ...p, t: p.t - timeOffset })) }
+    const info = compileTrackExprInfo(shifted, { pixelTolerance: 0.25, unitsPerPixel })
+    if (info.capped) onCap(prop, info)
+    return info.expr ?? String(staticValue)
+  }
+
+  const lit = (v) => String(v)
+  // scaleX/scaleY fall back to the uniform `scale` track, then to the static
+  // per-axis value — mirroring geometryAt's own resolution order.
+  const sExpr = exprFor('scale', staticGeom.scale, 1 / vw)
+  const sxExpr = exprFor('scaleX', staticGeom.scaleX, 1 / vw) ?? sExpr ?? lit(staticGeom.scaleX)
+  const syExpr = exprFor('scaleY', staticGeom.scaleY, 1 / vh) ?? sExpr ?? lit(staticGeom.scaleY)
+  const oxExpr = exprFor('offsetX', staticGeom.offsetX, 100 / vw) ?? lit(staticGeom.offsetX)
+  const oyExpr = exprFor('offsetY', staticGeom.offsetY, 100 / vh) ?? lit(staticGeom.offsetY)
+  // Rotation's tolerance is converted against the item's PEAK size, per the
+  // plan: the pixel error an angle error produces scales with the box's current
+  // size, so referencing a fixed or first-frame size under-subdivides exactly
+  // when the item is largest and the wobble is most visible. Degrees per pixel
+  // at the peak radius.
+  const peakDim = Math.max(peakW, peakH)
+  const rotExpr = exprFor('rotation', staticGeom.rotation ?? 0, (180 / Math.PI) / (peakDim / 2))
+
+  // `round(...)`, always. ffmpeg TRUNCATES a pixel option's expression toward
+  // zero while toPixelBox uses Math.round, so a bare expression that lands a
+  // hair under an integer costs a whole pixel against the preview. Pinned by
+  // timeline-core's expr.ffmpeg test.
+  const evenBox = (dim, sc) => `round(round(${dim}*(${sc}))/2)*2`
+  const boxWExpr = evenBox(vw, sxExpr)
+  const boxHExpr = evenBox(vh, syExpr)
+
+  // Animating POSITION alone is nearly free — the overlay's x/y are already
+  // evaluated per frame, so nothing else in the chain has to change. Only a
+  // size or rotation curve forces the restructured chain (and its extra
+  // resample), so the two cases are kept apart rather than lumped together.
+  const sizeAnimates = animatedProps.some((tr) => tr.prop === 'scale' || tr.prop === 'scaleX' || tr.prop === 'scaleY')
+  const rotationAnimates = animatedProps.some((tr) => tr.prop === 'rotation')
+  const needsAnimatedChain = sizeAnimates || rotationAnimates
+  // A rotate step is emitted on the animated chain whenever the item is turned
+  // at all, animated or not: a STATIC angle over a resized input breaks exactly
+  // the same way an animated one does.
+  const emitRotate = needsAnimatedChain && maxAbsDeg > 0
+  let rotOutW = peakW
+  let rotOutH = peakH
+  if (emitRotate) {
+    // `rotate`'s ow/oh are CONFIG-TIME ONLY — `t` in them evaluates to nan and
+    // the graph dies — so the grown box is reserved once, at the worst angle the
+    // item reaches, and held for every frame.
+    const a = (maxAbsDeg * Math.PI) / 180
+    rotOutW = Math.round((Math.abs(peakW * Math.cos(a)) + Math.abs(peakH * Math.sin(a))) / 2) * 2
+    rotOutH = Math.round((Math.abs(peakW * Math.sin(a)) + Math.abs(peakH * Math.cos(a))) / 2) * 2
+  }
+
+  // Composite position. Without rotation the overlay input IS the current box,
+  // so its top-left is the box's own. With rotation the input is the frozen
+  // rotOutW×rotOutH box, which has to be re-centred on the box centre every
+  // frame — the expression sibling of toRotatedPixelBox's centre-preserving
+  // `x = xPx - (outW - scaledW)/2`.
+  const xPxExpr = `round(${vw}*(0.5*(1-(${sxExpr}))+(${oxExpr})/100))`
+  const yPxExpr = `round(${vh}*(0.5*(1-(${syExpr}))+(${oyExpr})/100))`
+  const xExpr = emitRotate ? `round(${xPxExpr}+(${boxWExpr})/2-${rotOutW}/2)` : xPxExpr
+  const yExpr = emitRotate ? `round(${yPxExpr}+(${boxHExpr})/2-${rotOutH}/2)` : yPxExpr
+
+  return {
+    peakW, peakH, needsAnimatedChain, emitRotate, rotOutW, rotOutH,
+    boxWExpr, boxHExpr, xExpr, yExpr, xPxExpr, yPxExpr,
+    angleExpr: emitRotate
+      ? (rotExpr ? `(${rotExpr})*PI/180` : `${staticGeom.rotation ?? 0}*PI/180`)
+      : null,
+  }
+}
+
+/**
+ * Composite position for an item whose SIZE and ROTATION are static but whose
+ * POSITION animates. The grown-box correction `toRotatedPixelBox` folds into
+ * `box.x` is a constant here, so it is simply added to the moving top-left
+ * rather than recomputed per frame.
+ */
+function staticBoxPosition(anim, box) {
+  const dx = box.x - box.xPx
+  const dy = box.y - box.yPx
+  return {
+    x: dx === 0 ? anim.xPxExpr : `round(${anim.xPxExpr}+${dx})`,
+    y: dy === 0 ? anim.yPxExpr : `round(${anim.yPxExpr}+${dy})`,
+  }
+}
+
+/**
+ * The `[→ pad(peak, transparent) → rotate]` tail of an animated chain.
+ *
+ * Empty when the item never rotates. Otherwise it re-establishes a CONSTANT
+ * frame size before `rotate` — which is the whole reason this exists, since
+ * `rotate` mis-renders a resized input — by padding out to the peak box with a
+ * TRANSPARENT fill. Transparent, not black: the item's own letterbox bars were
+ * already synthesized by the static pad upstream, and painting more black here
+ * would draw bars beyond the item's actual box.
+ */
+function animatedRotateStep(anim, alphaPin = false) {
+  if (!anim.emitRotate) return ''
+  return `,${alphaPin ? 'format=yuva420p,' : ''}`
+       + `pad=${anim.peakW}:${anim.peakH}:(ow-iw)/2:(oh-ih)/2:color=black@0.0:eval=frame,`
+       + `rotate='${anim.angleExpr}':ow=${anim.rotOutW}:oh=${anim.rotOutH}:c=black@0.0`
+}
+
+/**
+ * Warn, once per property, when a track could not be approximated within
+ * tolerance. Task 2's compiler reports the cap on a return value, which proves
+ * it noticed; this is the only place the information reaches an operator whose
+ * export came out slightly coarse and who has no idea why.
+ */
+function warnIfCapped(item, kind) {
+  return (prop, info) => {
+    console.warn(
+      `[montaj] ${kind} item ${item.id ?? item.src ?? '(unnamed)'}: '${prop}' keyframe curve `
+      + `hit the ${info.segments}-segment cap; achieved ${info.maxError.toPrecision(3)} `
+      + `vs a ${info.tolerance.toPrecision(3)} target (in ${prop} units). `
+      + `The animation renders slightly coarser than the preview.`,
+    )
+  }
+}
+
+function rotateFilterStep(box, alphaPin = false) {
+  if (box.isIdentity) return ''
+  const pin = alphaPin ? 'format=yuva420p,' : ''
+  return `,${pin}rotate=${box.rotationDeg}*PI/180:ow=${box.outW}:oh=${box.outH}:c=black@0.0`
+}
+
+// The geometry of an overlay whose transform is ALREADY baked into its capture:
+// the identity. Built by `geometryFor` from an empty item rather than written
+// out as an object literal, so it cannot drift from the defaults that function
+// applies. Consumed only by buildOverlayFilterParts' keyframed branch.
+const BAKED_OVERLAY_GEOMETRY = geometryFor({}, 'overlay')
+
+/**
  * Build filter-graph parts for one image item.
  *
  * @param {object} item       — the image item from segment.items
@@ -150,12 +526,31 @@ export function buildColorConversionFilter(srcKey, dstKey, hasZscaleFlag) {
  * @param {number} duration   — segment duration in seconds (used for -t)
  * @returns {{ inputArgs: string[], filterParts: string[], newVideoLabel: string }}
  */
-export function buildImageItemFilterParts(item, vw, vh, idx, videoLabel, duration) {
-  const s       = item.scale ?? 1
-  const scaledW = Math.round(vw * s / 2) * 2
-  const scaledH = Math.round(vh * s / 2) * 2
-  const xPx     = Math.round(vw * (0.5 * (1 - s) + (item.offsetX ?? 0) / 100))
-  const yPx     = Math.round(vh * (0.5 * (1 - s) + (item.offsetY ?? 0) / 100))
+// NOTE: item.speed is intentionally ignored here — a still image has no
+// motion to time-scale, so speed is a no-op for image items (unlike video,
+// where it re-times decoded frames).
+export function buildImageItemFilterParts(item, vw, vh, idx, videoLabel, duration, segStart) {
+  // Geometry comes from the shared resolver — see @bycrux/timeline-core's
+  // src/geometry.js. This file used to carry its own copy of the formula; three
+  // copies lived here and a fourth in the editor, which is what KNOWN-DIVERGENCES
+  // D9 tracked. Equivalence is pinned by timeline-core's switchover sweep.
+  // toRotatedPixelBox DELEGATES to toPixelBox for scaledW/scaledH, so those are
+  // the same integers this line has always produced; it adds the bounding box a
+  // rotated frame grows into (outW/outH) and the centre-preserving top-left to
+  // composite that box at (box.x/box.y). At rotation absent/0/360 the grown box
+  // IS the unrotated box, so box.x/box.y are exactly toPixelBox's x/y and every
+  // string below is unchanged.
+  const box = toRotatedPixelBox(geometryFor(item, 'image'), vw, vh)
+  const { scaledW, scaledH } = box
+
+  // ITEM-relative timeline seconds at the instant ffmpeg's `t` reads 0. The
+  // input is `-loop 1 -t duration`, so PTS start at 0 and `t` runs 0..duration
+  // in SEGMENT time — hence the shift is (segStart - item.start), the same
+  // quantity the video path calls seekOffset. `segStart` is optional so
+  // sample-frame.js's six-argument call keeps working; its pseudo-item never
+  // carries `keyframes`, so the animated branch cannot engage there anyway.
+  const imgOffset = segStart == null ? 0 : Math.max(0, segStart - (item.start ?? 0))
+  const anim = animatedGeometry(item, 'image', vw, vh, imgOffset, duration, warnIfCapped(item, 'image'))
 
   const inputArgs = ['-loop', '1', '-t', String(duration), '-i', item.src]
   const filterParts = []
@@ -166,23 +561,53 @@ export function buildImageItemFilterParts(item, vw, vh, idx, videoLabel, duratio
   // (does NOT preserve AR — kept only for explicit opt-in). Mirrors the AR-safe
   // treatment the video branch already applies via force_original_aspect_ratio.
   const fit = item.fit ?? 'cover'
+  // When animated, the fit runs to the PEAK box and the varying resize is
+  // appended after it. All three fits stay correct under that split because the
+  // peak box and every animated box share the CANVAS's aspect ratio, so the
+  // trailing resize is uniform and changes framing in none of them.
+  const fitW = anim?.needsAnimatedChain ? anim.peakW : scaledW
+  const fitH = anim?.needsAnimatedChain ? anim.peakH : scaledH
   let fitChain
   if (fit === 'contain') {
-    fitChain = `scale=${scaledW}:${scaledH}:force_original_aspect_ratio=decrease,format=rgba,`
-             + `pad=${scaledW}:${scaledH}:(ow-iw)/2:(oh-ih)/2:color=black@0.0`
+    fitChain = `scale=${fitW}:${fitH}:force_original_aspect_ratio=decrease,format=rgba,`
+             + `pad=${fitW}:${fitH}:(ow-iw)/2:(oh-ih)/2:color=black@0.0`
   } else if (fit === 'fill') {
-    fitChain = `scale=${scaledW}:${scaledH},format=rgba`
+    fitChain = `scale=${fitW}:${fitH},format=rgba`
   } else { // 'cover' (default)
-    fitChain = `scale=${scaledW}:${scaledH}:force_original_aspect_ratio=increase,`
-             + `crop=${scaledW}:${scaledH},format=rgba`
+    fitChain = `scale=${fitW}:${fitH}:force_original_aspect_ratio=increase,`
+             + `crop=${fitW}:${fitH},format=rgba`
   }
-  filterParts.push(`[${idx}:v]${fitChain},setpts=PTS-STARTPTS[img${idx}]`)
+  // No alpha pin on the rotate: all three fit chains already run through
+  // `format=rgba`, so the transparent pad and `c=black@0.0` corners are
+  // representable exactly as the static path assumes.
+  const animStep = anim?.needsAnimatedChain
+    ? `,scale=w='${anim.boxWExpr}':h='${anim.boxHExpr}':eval=frame${animatedRotateStep(anim, false)}`
+    : ''
+  // Rotate AFTER the fit chain, BEFORE setpts: the fit chain is what establishes
+  // the scaledW×scaledH box rotation is defined against, and setpts is timing,
+  // not geometry, so it neither cares nor should pay for the grown frame. No
+  // alpha pin — all three fit chains above run through `format=rgba`, so the
+  // `c=black@0.0` corners are already representable.
+  filterParts.push(
+    `[${idx}:v]${fitChain}${anim?.needsAnimatedChain ? animStep : rotateFilterStep(box)},setpts=PTS-STARTPTS[img${idx}]`
+  )
   let src = `[img${idx}]`
   if (Math.abs((item.opacity ?? 1) - 1) > 0.001) {
     filterParts.push(`${src}colorchannelmixer=aa=${item.opacity}[imgop${idx}]`)
     src = `[imgop${idx}]`
   }
-  filterParts.push(`${videoLabel}${src}overlay=x=${xPx}:y=${yPx}:shortest=0[iv${idx}]`)
+  // box.x/box.y, not the unrotated x/y: a rotated frame arrives here at
+  // outW×outH, so compositing it at the unrotated top-left would translate it
+  // by half the growth instead of turning it in place.
+  // Opacity is NOT animated even when a curve exists — see the video path.
+  const iPos = anim
+    ? (anim.needsAnimatedChain ? { x: anim.xExpr, y: anim.yExpr } : staticBoxPosition(anim, box))
+    : null
+  filterParts.push(
+    `${videoLabel}${src}overlay=` +
+    `x=${iPos ? `'${iPos.x}'` : box.x}:y=${iPos ? `'${iPos.y}'` : box.y}` +
+    `:shortest=0[iv${idx}]`
+  )
   const newVideoLabel = `[iv${idx}]`
 
   return { inputArgs, filterParts, newVideoLabel }
@@ -202,20 +627,44 @@ export function buildImageItemFilterParts(item, vw, vh, idx, videoLabel, duratio
  * @param {number}  opts.duration         — segment duration (seconds)
  * @param {string}  opts.projectColorSpace — e.g. 'sdr_bt709'
  * @param {boolean} opts.zscaleAvailable  — whether ffmpeg has zscale
+ * @param {boolean} [opts.lut3dAvailable] — whether ffmpeg has lut3d; omitted → probed
+ * @param {string|null} [opts.sdrCurve]   — look curve id for the HDR→SDR LUT
  * @returns {{ inputArgs: string[], filterParts: string[], newVideoLabel: string }}
  */
 export function buildVideoItemFilterParts(item, vw, vh, idx, videoLabel, opts) {
-  const { segStart, duration, projectColorSpace, zscaleAvailable } = opts
+  const { segStart, duration, projectColorSpace, zscaleAvailable,
+          lut3dAvailable, sdrCurve } = opts
 
-  const s       = item.scale ?? 1
-  const scaledW = Math.round(vw * s / 2) * 2
-  const scaledH = Math.round(vh * s / 2) * 2
-  const xPx     = Math.round(vw * (0.5 * (1 - s) + (item.offsetX ?? 0) / 100))
-  const yPx     = Math.round(vh * (0.5 * (1 - s) + (item.offsetY ?? 0) / 100))
+  // Geometry comes from the shared resolver — see @bycrux/timeline-core's
+  // src/geometry.js. This file used to carry its own copy of the formula; three
+  // copies lived here and a fourth in the editor, which is what KNOWN-DIVERGENCES
+  // D9 tracked. Equivalence is pinned by timeline-core's switchover sweep.
+  // See the note on the image path: toRotatedPixelBox delegates for
+  // scaledW/scaledH and adds the grown box plus its centre-preserving top-left.
+  const box = toRotatedPixelBox(geometryFor(item, 'video'), vw, vh)
+  const { scaledW, scaledH } = box
 
   const inPt = item.inPoint ?? 0
   const seekOffset = Math.max(0, segStart - item.start)
-  const actualIn = inPt + seekOffset
+  // Per-clip playback speed (montaj/speed feature): at speed S the clip
+  // consumes S× the source per timeline-second, so the seek advance and the
+  // input trim window both scale by S. STRICT NO-OP at S undefined/1 — every
+  // string below must stay byte-identical to the pre-speed pipeline (two
+  // frozen encode-args goldens depend on it), so the `*speed` arithmetic only
+  // runs when hasSpeed is true.
+  const speed = item.speed
+  const hasSpeed = speed != null && speed !== 1
+  const actualIn = hasSpeed ? inPt + seekOffset * speed : inPt + seekOffset
+
+  // `seekOffset` is ITEM-relative TIMELINE seconds at the instant ffmpeg's `t`
+  // reads 0, which is exactly the base `Keyframe.t` is authored in — so it is
+  // the shift the compiler needs, and it is speed-independent. Speed scales the
+  // SOURCE seek (`actualIn`, above) because a 2x clip eats 2x the source per
+  // timeline-second; it does not scale timeline time. `setpts` at the head of
+  // the chain divides PTS by the speed, so every downstream filter's `t` is
+  // already back in timeline seconds. Verified against real footage at 1x, 2x
+  // and 0.5x: the animation lands identically at all three.
+  const anim = animatedGeometry(item, 'video', vw, vh, seekOffset, duration, warnIfCapped(item, 'video'))
 
   // ProRes 4444 (.mov from remove-bg) has alpha — use format=auto
   const ovFmt = item.src.endsWith('.mov') ? ':format=auto' : ':format=yuv420'
@@ -224,7 +673,8 @@ export function buildVideoItemFilterParts(item, vw, vh, idx, videoLabel, opts) {
   const skipConversionForAlpha = item.remove_bg && item.nobg_src
   const conversionFilter = skipConversionForAlpha
     ? ''
-    : buildColorConversionFilter(itemColorSpace, projectColorSpace, zscaleAvailable)
+    : buildColorConversionFilter(itemColorSpace, projectColorSpace, zscaleAvailable,
+        { sdrCurve, hasLut3d: lut3dAvailable })
   const conversionStep = conversionFilter ? `${conversionFilter},` : ''
 
   // -err_detect ignore_err + -max_error_rate 1.0: tolerate broken audio
@@ -232,7 +682,7 @@ export function buildVideoItemFilterParts(item, vw, vh, idx, videoLabel, opts) {
   const inputArgs = [
     '-err_detect', 'ignore_err',
     '-max_error_rate', '1.0',
-    '-ss', String(actualIn), '-t', String(duration), '-i', item.src,
+    '-ss', String(actualIn), '-t', String(hasSpeed ? duration * speed : duration), '-i', item.src,
   ]
   const filterParts = []
 
@@ -248,17 +698,88 @@ export function buildVideoItemFilterParts(item, vw, vh, idx, videoLabel, opts) {
     cropStep = `crop=${cw}:${ch}:${cx}:${cy},`
   }
 
+  // STEP ORDER IS LOAD-BEARING: crop → scale → convert → pad → rotate
+  // (SP6b T6; rotate added by SP9a-2).
+  //
+  // Geometry first. The conversion used to run at the head of this chain, which
+  // meant tone-mapping every source pixel in float before throwing most of them
+  // away — a 4K clip feeding a 1080 canvas paid ~9× the pixels it needed. crop
+  // and scale are pure geometry (they resample, they don't reinterpret color),
+  // so doing them first is color-neutral and the conversion then runs on canvas
+  // -sized frames.
+  //
+  // pad stays AFTER the conversion, exactly as before. Its bars are synthesized
+  // black, and synthesizing them post-conversion keeps them in the final SDR
+  // domain — black in, black out. Move pad ahead of the conversion and those
+  // bars get pushed through the LUT with everything else, which maps them to
+  // whatever the grade does to 0,0,0 and tints the letterbox.
+  //
+  // force_divisible_by=2, and ONLY when a conversion follows: decrease-fit
+  // computes the un-pinned dimension from the aspect ratio and will happily
+  // return an odd one (a 320x180 source into a 360x640 box fits to 360x203).
+  // zscale rejects odd dimensions on subsampled formats outright — "code 1027:
+  // image dimensions must be divisible by subsampling factor" — and the whole
+  // encode dies. This never bit before because the conversion ran ahead of
+  // scale, on the decoder's always-even frame. Rounding is at most one pixel
+  // and only on items that are being converted, which keeps every SDR render
+  // (and the frozen encode-args goldens) byte-identical.
+  //
+  // rotate goes LAST, after pad, for two independent reasons.
+  //
+  // Geometrically it has to. Rotation is defined against the scaledW×scaledH
+  // box the item occupies on the canvas, and it is `pad` that produces that
+  // box — `scale=…:force_original_aspect_ratio=decrease` fits INSIDE it and
+  // generally lands smaller. Rotating before pad would turn the decrease-fit
+  // frame and then letterbox the result, i.e. rotate the wrong rectangle and
+  // put the bars on the wrong axis.
+  //
+  // And it is the cheap place. rotate is the one geometry step that GROWS the
+  // frame — at scale 1, 45° the bounding box is ~2.2× the pixels — so rotating
+  // ahead of the conversion would hand every one of those extra pixels to the
+  // LUT chain (rgb48le + lut3d + two zscales), which is by far the most
+  // expensive stretch in this graph. Same instinct as the crop → scale →
+  // convert ordering above: never make the color chain pay for pixels the
+  // geometry chain could have settled first.
+  const divisibleBy = conversionStep ? ':force_divisible_by=2' : ''
+  // setpts time-compresses the sped-up source back to timeline-real-time: at
+  // speed S the S× extra source seconds consumed above play out over 1/S the
+  // time. A no-op (bare setpts=PTS-STARTPTS) at speed undefined/1.
+  const ptsStep = hasSpeed ? `setpts=(PTS-STARTPTS)/${speed}` : 'setpts=PTS-STARTPTS'
+  // The animated branch sizes scale+pad to the PEAK box instead of the current
+  // one and appends the varying resize AFTER the pad, so the conversion and
+  // `rotate` only ever see a constant frame size — see animatedGeometry's header
+  // for why all three of them silently mis-render otherwise. The static branch
+  // below is byte-for-byte what it has always been; two frozen goldens say so.
   filterParts.push(
-    `[${idx}:v]setpts=PTS-STARTPTS,${conversionStep}${cropStep}` +
-    `scale=${scaledW}:${scaledH}:force_original_aspect_ratio=decrease,` +
-    `pad=${scaledW}:${scaledH}:(ow-iw)/2:(oh-ih)/2[vid${idx}]`
+    `[${idx}:v]${ptsStep},${cropStep}` +
+    (anim?.needsAnimatedChain
+      ? `scale=${anim.peakW}:${anim.peakH}:force_original_aspect_ratio=decrease${divisibleBy},` +
+        `${conversionStep}` +
+        `pad=${anim.peakW}:${anim.peakH}:(ow-iw)/2:(oh-ih)/2,` +
+        `scale=w='${anim.boxWExpr}':h='${anim.boxHExpr}':eval=frame` +
+        `${animatedRotateStep(anim, true)}`
+      : `scale=${scaledW}:${scaledH}:force_original_aspect_ratio=decrease${divisibleBy},` +
+        `${conversionStep}` +
+        `pad=${scaledW}:${scaledH}:(ow-iw)/2:(oh-ih)/2${rotateFilterStep(box, true)}`) +
+    `[vid${idx}]`
   )
   let src = `[vid${idx}]`
   if (Math.abs((item.opacity ?? 1) - 1) > 0.001) {
     filterParts.push(`${src}colorchannelmixer=aa=${item.opacity}[vidop${idx}]`)
     src = `[vidop${idx}]`
   }
-  filterParts.push(`${videoLabel}${src}overlay=x=${xPx}:y=${yPx}${ovFmt}:shortest=0[iv${idx}]`)
+  // box.x/box.y, not the unrotated x/y — see the image path.
+  // Opacity is NOT animated even when a curve exists: `colorchannelmixer aa` is
+  // a <double> and accepts no expression, so the static value above stands and
+  // the curve is ignored. Documented in docs/RENDER.md; pinned by a test.
+  const vPos = anim
+    ? (anim.needsAnimatedChain ? { x: anim.xExpr, y: anim.yExpr } : staticBoxPosition(anim, box))
+    : null
+  filterParts.push(
+    `${videoLabel}${src}overlay=` +
+    `x=${vPos ? `'${vPos.x}'` : box.x}:y=${vPos ? `'${vPos.y}'` : box.y}` +
+    `${ovFmt}:shortest=0[iv${idx}]`
+  )
   const newVideoLabel = `[iv${idx}]`
 
   return { inputArgs, filterParts, newVideoLabel }
@@ -275,6 +796,9 @@ export function buildVideoItemFilterParts(item, vw, vh, idx, videoLabel, opts) {
  * @param {number} segStart   — segment.start (seconds), used to compute seek offset
  * @param {number} duration   — segment duration (seconds)
  * @param {object} [opts]
+ * @param {number} opts.fps — REQUIRED for stream overlays (see the guard below). The
+ *   segment's own fps, the same value that generates the base canvas, so the overlay
+ *   is re-stamped onto exactly the grid it will be composited against.
  * @param {string} [opts.inputFormatFlag='yuva420p'] — pixel-format conversion applied to
  *   the overlay input before scale/composite. Default `yuva420p` is the production
  *   render's setting — VP9 decoders may silently drop the alpha plane otherwise.
@@ -294,6 +818,16 @@ export function buildOverlayFilterParts(ov, vw, vh, ovIdx, videoLabel, segStart,
   const compositeFormatFlag = opts.compositeFormatFlag ?? 'yuv420'
   const loopedInput         = opts.loopedInput         ?? false
 
+  // Stream overlays MUST declare the segment's fps. The FFV1-in-Matroska chunk
+  // carries millisecond-rounded PTS (0.033/0.067/0.100 against the base
+  // canvas's exact 0.033333/0.066667/0.100000), so framesync holds every third
+  // frame unless the input is re-stamped onto the exact grid below. Defaulting
+  // this to 30 would silently reintroduce that defect on any 24 or 60 fps
+  // project — hence a throw, not a fallback.
+  if (!loopedInput && !(opts.fps > 0)) {
+    throw new Error('buildOverlayFilterParts: opts.fps is required for stream overlays')
+  }
+
   const inputArgs = loopedInput
     ? ['-loop', '1', '-t', String(duration), '-i', ov.webmPath]
     : ['-ss', String(Math.max(0, segStart - ov.startSeconds)), '-t', String(duration), '-i', ov.webmPath]
@@ -310,30 +844,101 @@ export function buildOverlayFilterParts(ov, vw, vh, ovIdx, videoLabel, segStart,
   // shrinking it. Even-rounded — yuv420/yuva420 encoders reject odd dimensions.
   // Mirrors the image/video item path (buildImage/VideoItemFilterParts), which
   // already sizes to round(vw * scale / 2) * 2.
-  const ovScale = ov.scale ?? 1
-  const targetW = Math.round(vw * ovScale / 2) * 2
-  const targetH = Math.round(vh * ovScale / 2) * 2
-  const ovXPx   = Math.round(vw * (0.5 * (1 - ovScale) + (ov.offsetX ?? 0) / 100))
-  const ovYPx   = Math.round(vh * (0.5 * (1 - ovScale) + (ov.offsetY ?? 0) / 100))
+  //
+  // ── Keyframed overlays are already positioned (SP9b T2.3) ─────────────────
+  //
+  // This filter graph places an overlay ONCE for the whole segment; there is no
+  // per-frame hook in it. So an ANIMATED overlay is positioned somewhere that
+  // does have one — the Puppeteer page — where the shim wraps the component in a
+  // full-canvas layer carrying `geometryAt(item,'overlay',frame/fps)` as a CSS
+  // transform (bundle.js `generateShim`). By the time the capture reaches this
+  // function, offset/scale/rotation/opacity are IN THE PIXELS, and the only
+  // correct thing left to do is drop the (already design-canvas-sized) frame
+  // onto the output canvas unchanged.
+  //
+  // "Unchanged" is spelled as the IDENTITY geometry rather than as hand-written
+  // numbers, so it inherits the even-pixel rounding (`round(vw/2)*2`) every
+  // other path here uses, and `rotateFilterStep` sees an identity box and emits
+  // nothing — a keyframed overlay must NOT rotate twice.
+  //
+  // Applying `geometryFor` here as well would DOUBLE-apply the transform: a
+  // half-scaled, animated overlay would come out quarter-sized.
+  const keyframed = Array.isArray(ov.keyframes) && ov.keyframes.length > 0
+  const ovBox = toRotatedPixelBox(keyframed ? BAKED_OVERLAY_GEOMETRY : geometryFor(ov, 'overlay'), vw, vh)
+  const { scaledW: targetW, scaledH: targetH } = ovBox
 
   // Force yuva420p (or caller-specified format) — VP9 decoders may silently drop
   // the alpha plane on the production path; PNG-based callers pass 'rgba' to
   // avoid an unnecessary colorspace bounce.
-  filterParts.push(`[${ovIdx}:v]format=${inputFormatFlag}[ovfmt${ovIdx}]`)
+  const ptsPin = loopedInput ? '' : `,setpts=N/(${opts.fps}*TB)`
+  filterParts.push(`[${ovIdx}:v]format=${inputFormatFlag}${ptsPin}[ovfmt${ovIdx}]`)
   let ovSrc = `[ovfmt${ovIdx}]`
 
   // Scale design-canvas → output-canvas (× user scale). When the output already
   // matches the design canvas at scale 1 this is an identity scale (1080→1080),
   // which ffmpeg fast-paths.
-  filterParts.push(`${ovSrc}scale=${targetW}:${targetH}[ovsc${ovIdx}]`)
+  // Rotate AFTER that scale — the design→output scale is what establishes the
+  // targetW×targetH box rotation turns within. No alpha pin needed here: the
+  // `format=${inputFormatFlag}` step above already put this chain in yuva420p
+  // (or rgba for the PNG callers), so `c=black@0.0` is representable.
+  filterParts.push(`${ovSrc}scale=${targetW}:${targetH}${rotateFilterStep(ovBox)}[ovsc${ovIdx}]`)
   ovSrc = `[ovsc${ovIdx}]`
 
+  // Item-level opacity, in the same position and the same shape the image path
+  // (buildImageItemFilterParts) and video path (buildVideoItemFilterParts) have
+  // always used it: after the geometry chain, before the composite.
+  //
+  // This was MISSING here until SP9b, and missing in two places at once — this
+  // function had no opacity term at all, and render.js never stamped `opacity`
+  // onto the descriptor to begin with. A translucent overlay therefore looked
+  // translucent in the editor preview and rendered fully opaque. Both ends are
+  // fixed now. Unrelated to keyframes; it was simply a gap.
+  //
+  // The epsilon guard is the sibling paths' guard verbatim, and it is
+  // load-bearing beyond tidiness: opacity 1 (and absent) must emit NOTHING, so
+  // every overlay that does not set opacity keeps a byte-identical filter graph
+  // and the frozen render goldens stay valid.
+  //
+  // NOT applied to a keyframed overlay: the shim already baked opacity into the
+  // capture as CSS (bundle.js `generateShim`), so a second multiply here would
+  // square it — 0.5 would render at 0.25. The two paths are mutually exclusive
+  // by construction, and the alpha is definitely present either way because the
+  // `format=${inputFormatFlag}` step above pinned this chain to yuva420p/rgba.
+  if (!keyframed && Math.abs((ov.opacity ?? 1) - 1) > 0.001) {
+    filterParts.push(`${ovSrc}colorchannelmixer=aa=${ov.opacity}[ovop${ovIdx}]`)
+    ovSrc = `[ovop${ovIdx}]`
+  }
+
+  // ovBox.x/ovBox.y is the top-left of the GROWN box; identical to the
+  // unrotated top-left whenever the overlay is not rotated. `overlay` accepts
+  // negative coordinates, and a rotated overlay near an edge legitimately
+  // produces them — do not clamp.
   filterParts.push(
-    `${videoLabel}${ovSrc}overlay=x=${ovXPx}:y=${ovYPx}:format=${compositeFormatFlag}:shortest=0[vov${ovIdx}]`
+    `${videoLabel}${ovSrc}overlay=x=${ovBox.x}:y=${ovBox.y}:format=${compositeFormatFlag}:shortest=0[vov${ovIdx}]`
   )
   const newVideoLabel = `[vov${ovIdx}]`
 
   return { inputArgs, filterParts, newVideoLabel }
+}
+
+/**
+ * Pitch-preserving time-compression chain for a sped-up clip's audio.
+ * ffmpeg's `atempo` filter accepts a per-instance factor in [0.5, 2.0] only —
+ * outside that range it must be chained, each instance's factor still within
+ * bounds, so their product equals the requested speed. Preserves pitch, unlike
+ * scaling PTS directly (which is how the video side re-times, but would
+ * chipmunk/slow-motion-drone the audio).
+ *
+ * @param {number} speed — clip playback speed, e.g. 4 or 0.25
+ * @returns {string} e.g. speed=4 -> 'atempo=2,atempo=2'; speed=0.25 -> 'atempo=0.5,atempo=0.5'
+ */
+function atempoChain(speed) {
+  const factors = []
+  let r = speed
+  while (r > 2.0) { factors.push(2.0); r /= 2.0 }
+  while (r < 0.5) { factors.push(0.5); r *= 2.0 }
+  factors.push(r)
+  return factors.map((f) => `atempo=${f}`).join(',')
 }
 
 /**
@@ -342,6 +947,8 @@ export function buildOverlayFilterParts(ov, vw, vh, ovIdx, videoLabel, segStart,
  * @param {string} outputPath
  * @param {object} [opts]
  * @param {boolean} [opts._dryRun] — return { inputs, filterParts, args } without executing
+ * @param {string|null} [opts.sdrCurve] — look curve id for any HDR→SDR item
+ *   conversion in this segment; null/omitted uses the master look.
  * @returns {string | object} outputPath, or dry-run result
  */
 export async function encodeSegment(segment, outputPath, opts = {}) {
@@ -354,7 +961,11 @@ export async function encodeSegment(segment, outputPath, opts = {}) {
   const duration = end - start
   const projectColorSpace = segment.colorSpace ?? DEFAULT_COLOR_SPACE
   const spec = specFor(projectColorSpace)
+  // Dry-run pins both probes to true so the golden capture never depends on the
+  // host's ffmpeg build (see encode-args-golden.test.mjs's determinism note).
   const zscaleAvailable = opts._dryRun ? true : hasZscale()
+  const lut3dAvailable  = opts._dryRun ? true : hasLut3d()
+  const sdrCurve = opts.sdrCurve ?? null
 
   if (!opts._dryRun) mkdirSync(dirname(outputPath), { recursive: true })
 
@@ -384,7 +995,7 @@ export async function encodeSegment(segment, outputPath, opts = {}) {
       // (no input, no inputIdx bump).
       if (opaqueVideo) continue
       const { inputArgs, filterParts: fp, newVideoLabel } =
-        buildImageItemFilterParts(item, vw, vh, idx, videoLabel, duration)
+        buildImageItemFilterParts(item, vw, vh, idx, videoLabel, duration, start)
       inputs.push(...inputArgs)
       filterParts.push(...fp)
       videoLabel = newVideoLabel
@@ -411,6 +1022,8 @@ export async function encodeSegment(segment, outputPath, opts = {}) {
           duration,
           projectColorSpace,
           zscaleAvailable,
+          lut3dAvailable,
+          sdrCurve,
         })
       // The input (carrying its -ss/-t window) is ALWAYS added so the clip's
       // audio is available to Step 5. Its VIDEO is composited only when the
@@ -436,7 +1049,21 @@ export async function encodeSegment(segment, outputPath, opts = {}) {
         // -accurate_seek + -t behaviour. Matches the anullsrc path which
         // already does this, and pairs with the PCM codec (no AAC framing
         // means no rounding to absorb a stray trailing sample).
-        filterParts.push(`[${idx}:a:0]atrim=0:${duration},asetpts=PTS-STARTPTS,volume=${vol},aformat=channel_layouts=stereo:sample_rates=48000[${aLabel}]`)
+        //
+        // Per-clip speed (S !== 1): the input above was trimmed to S× the
+        // segment duration of source seconds (see buildVideoItemFilterParts),
+        // so atrim's window widens to match, and atempoChain time-compresses
+        // that S× window back down to `duration` output seconds — pitch
+        // preserved, unlike scaling PTS the way the video side does. atrim
+        // stays BEFORE asetpts either way: it locks the sample range against
+        // the input's own (seek-based) PTS, not the zero-based PTS asetpts
+        // produces.
+        const speed = item.speed
+        const hasSpeed = speed != null && speed !== 1
+        const audioFilter = hasSpeed
+          ? `[${idx}:a:0]atrim=0:${duration * speed},asetpts=PTS-STARTPTS,${atempoChain(speed)},volume=${vol},aformat=channel_layouts=stereo:sample_rates=48000[${aLabel}]`
+          : `[${idx}:a:0]atrim=0:${duration},asetpts=PTS-STARTPTS,volume=${vol},aformat=channel_layouts=stereo:sample_rates=48000[${aLabel}]`
+        filterParts.push(audioFilter)
         audioLabels.push(`[${aLabel}]`)
       }
     }
@@ -447,7 +1074,7 @@ export async function encodeSegment(segment, outputPath, opts = {}) {
   for (const ov of overlays) {
     const ovIdx = inputIdx
     const { inputArgs, filterParts: fp, newVideoLabel } =
-      buildOverlayFilterParts(ov, vw, vh, ovIdx, videoLabel, start, duration)
+      buildOverlayFilterParts(ov, vw, vh, ovIdx, videoLabel, start, duration, { fps })
     inputs.push(...inputArgs)
     filterParts.push(...fp)
     videoLabel = newVideoLabel
@@ -519,6 +1146,15 @@ export async function encodeSegment(segment, outputPath, opts = {}) {
     ...audioArgs,
     '-c:v', spec.encoder, ...spec.encoderArgs, '-pix_fmt', spec.outputPixFmt,
     ...spec.outputColorArgs,
+    // A Dolby Vision source (e.g. an iPhone HDR clip) carries a DV RPU, and
+    // nothing upstream strips it: its side data propagates through the filter
+    // graph into libx265, which re-emits the RPU in-band (HEVC NAL type 62), and
+    // the MP4 muxer then dies with "Error submitting a packet to the muxer: Not
+    // yet implemented in FFmpeg, patches welcome". Montaj outputs HDR10/HLG,
+    // never Dolby Vision, so the RPU is unwanted — dropping NAL 62 before the
+    // muxer leaves plain HEVC (the HDR10 mastering-display / content-light SEI,
+    // NAL 39/40, are untouched). No-op on a non-DV or non-HEVC stream.
+    ...(/265|hevc/i.test(spec.encoder) ? ['-bsf:v', 'filter_units=remove_types=62'] : []),
     '-g', String(fps), '-keyint_min', String(fps),
     '-t', String(duration),
     '-movflags', '+faststart',

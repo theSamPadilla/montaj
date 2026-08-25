@@ -1,0 +1,33 @@
+{
+  "version": "0.2",
+  "id": "sp2-corpus-trim-after-cache",
+  "status": "draft",
+  "projectType": "editing",
+  "settings": { "fps": 30, "resolution": [1080, 1920], "colorSpace": "sdr_bt709" },
+  "tracks": [
+    [
+      {
+        "id": "trimLegacy",
+        "type": "video",
+        "src": "/corpus/trimLegacy_orig.mp4",
+        "normalizedSrc": "/corpus/trimLegacy_norm.mp4",
+        "start": 0,
+        "end": 5.0,
+        "inPoint": 3.5,
+        "outPoint": 8.5
+      },
+      {
+        "id": "trimNonZero",
+        "type": "video",
+        "src": "/corpus/trimNonZero_orig.mp4",
+        "normalizedSrc": "/corpus/trimNonZero_norm.mp4",
+        "normalizedInPoint": 5,
+        "start": 5,
+        "end": 10,
+        "inPoint": 6,
+        "outPoint": 11
+      }
+    ]
+  ],
+  "audio": { "tracks": [] }
+}

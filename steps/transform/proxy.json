@@ -1,0 +1,27 @@
+{
+  "name": "proxy",
+  "description": "Encode a full-source, 720p, all-intra H.264+Opus editing proxy for instant-seek preview scrubbing. Preview-only — render never reads a proxy file. Pass tonemap for HDR sources (original, not yet conformed) to compose a scale-first HDR→SDR tonemap chain ahead of the encode; omit it for sources that are already SDR (e.g. post-normalize.py conform pass).",
+  "input": {
+    "type": "video",
+    "description": "Source video file (any codec/color space; probed automatically)"
+  },
+  "output": {
+    "type": "video",
+    "description": "720p all-intra H.264+Opus editing proxy"
+  },
+  "params": [
+    {
+      "name": "tonemap",
+      "type": "bool",
+      "required": false,
+      "default": false,
+      "description": "Source is HDR (original, not yet conformed) — compose scale-first HDR→SDR tonemap ahead of the encode"
+    },
+    {
+      "name": "out",
+      "type": "string",
+      "required": true,
+      "description": "Output path for the proxy file"
+    }
+  ]
+}

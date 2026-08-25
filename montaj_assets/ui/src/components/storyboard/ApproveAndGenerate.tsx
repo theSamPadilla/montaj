@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { api } from '@/lib/api'
 import type { Project } from '@/lib/types/schema'
+import { trackItems } from '@/lib/types/schema'
 
 interface Props {
   project: Project
@@ -36,7 +37,7 @@ export function ApproveAndGenerate({ project, onProjectChange }: Props) {
   const [retryMessage, setRetryMessage] = useState<string | null>(null)
 
   const storyboardScenes = project.storyboard?.scenes ?? []
-  const generatedClips = (project.tracks?.[0] ?? []).filter(item => item.generation)
+  const generatedClips = (trackItems(project)[0] ?? []).filter(item => item.generation)
   const approved = !!project.storyboard?.approval
   const approvedAt = project.storyboard?.approval?.approvedAt
   const agentMessage = retryMessage ?? agentMessageFor(project, storyboardScenes.length)

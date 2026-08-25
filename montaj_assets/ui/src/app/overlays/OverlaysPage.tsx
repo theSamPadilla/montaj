@@ -242,7 +242,7 @@ function VisualItemDetail({ item }: { item: VisualItem }) {
       </div>
       {jsxPath
         ? <OverlayPreview factory={factory} props={itemProps} height={Math.min(680, window.innerHeight - 160)} />
-        : <div className="text-sm text-gray-600">No JSX source — nothing to preview</div>
+        : <div className="text-sm text-gray-600">No JSX source, so there is nothing to preview</div>
       }
       {jsxPath && (
         <p className="text-xs text-gray-500 dark:text-gray-400 border border-gray-300 dark:border-gray-700 rounded px-3 py-1.5">

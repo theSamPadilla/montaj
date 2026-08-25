@@ -36,9 +36,7 @@ The transcript must be named after that exact file — e.g. `IMG_4900_fillers_co
 **Re-transcribe when in doubt:**
 
 ```bash
-python3 steps/transcribe.py \
-  --input "/abs/path/to/clip.mp4" \
-  --model base.en
+montaj transcribe "/abs/path/to/clip.mp4" --model base.en
 ```
 
 Output: `clip.json` (word-level timings) and `clip.srt`. Always read the fresh `clip.json` before deriving overlay or cut timings.
@@ -47,58 +45,36 @@ Output: `clip.json` (word-level timings) and `clip.srt`. Always read the fresh `
 
 ## Cutting
 
-### Cut tool spec
+**Cuts are pure JSON. Nothing re-encodes until the final render.**
 
-```
-steps/cut.py --input <video> [options]
-```
+This is the single most important thing to know about editing a v4 draft: a cut, a split, a ripple delete and a trim are all rewrites of `tracks` and `captions` in `project.json`. No intermediate file is produced, no clip file changes, and every edit is reversible by editing the JSON back. The helpers live in `montaj_assets/editor/src/video/cuts.ts` and the operator reaches them from the timeline; you reach the same outcome by writing the same JSON.
 
-| Param | Type | Description |
-|-------|------|-------------|
-| `--start` | float | Start of section to remove (seconds). Single-cut mode with `--end`. |
-| `--end`   | float | End of section to remove (seconds). Single-cut mode with `--start`. |
-| `--cuts`  | string | JSON array of `[start, end]` pairs — multiple cuts in one ffmpeg pass. |
-| `--spec`  | flag | Write a trim spec JSON instead of re-encoding. Prints `{"path": "..."}` to stdout. |
+The four shapes, and what each does to the timeline:
 
-**Single cut:**
+| Edit | Effect on `tracks[0]` | Gap left behind? |
+|------|----------------------|------------------|
+| **Trim** an edge | move one item's `start` or `end`, and its matching `inPoint`/`outPoint` by the same amount | yes, unless ripple is on |
+| **Split** at time *t* | one item becomes two adjacent items with no gap; `inPoint`/`outPoint` divide at the same source time | no |
+| **Lift** a range out of a clip | the clip's remaining fragments keep their positions | yes, renders as black + silence |
+| **Ripple delete** | as lift, then every later item shifts left to close the gap | no |
+
+Rules that are easy to get wrong:
+
+- **`end - start` must equal `outPoint - inPoint`** for a clip at normal speed, and `outPoint - inPoint === speed × (end - start)` for one with a `speed` set. Moving a timeline edge without moving the source point stretches the clip past the footage it has: the picture runs out partway along and freezes on its last frame while the waveform underneath draws the real, shorter stretch. Change both, always.
+- **Never trim an edge past the source.** An `inPoint` below `0` or an `outPoint` beyond the source's duration is the same fault by a different route.
+- **Overlay tracks are absolute.** `tracks[1+]` items carry timeline positions that do not move when you cut `tracks[0]`, which is deliberate — an overlay is meant to sit over whatever ends up underneath it. If a cut should carry its overlays with it, move them yourself.
+- **Captions follow the primary track.** A cut that removes a span of `tracks[0]` must remove or shift the caption segments inside it, or the words desynchronise from the picture.
+- **`src` never changes.** Cutting does not produce a new file, so the item keeps pointing at the original source — and keeps its `proxySrc` and `normalizedSrc` with it. If you rebuild an item from scratch instead of editing it in place, copy those two fields across or you will silently disable the preview engine.
+
+**When you do need a real file** — `remove_bg` needs one, for instance — that is `materialize_cut`, and it is a deliberate step out of the non-destructive model, not part of ordinary cutting:
+
 ```bash
-python3 steps/cut.py --input clip.mp4 --start 4.2 --end 7.8
+montaj materialize-cut clip.mp4 --inpoint 2.0 --outpoint 8.0   # keep one range
+montaj materialize-cut clip.mp4 --cuts '[[1.0,3.5],[12.4,14.0]]'  # remove ranges, one pass
+montaj materialize-cut spec.json                                # apply every keep in a trim spec
 ```
 
-**Multiple cuts in one pass:**
-```bash
-python3 steps/cut.py --input clip.mp4 --cuts '[[1.0,3.5],[12.4,14.0]]'
-```
-
-**Spec mode (no encode, fast):**
-```bash
-python3 steps/cut.py --input clip.mp4 --cuts '[[1.0,3.5]]' --spec
-# → {"path": "/tmp/clip_spec.json"}
-```
-
-### Cut list (UI workflow)
-
-When using the UI, cuts are **non-destructive until applied**:
-
-1. **"Add to cut list"** — queues a `[start, end]` physical range on the clip instantly (no encode).
-2. Pending cuts appear as red zones on the scrubber. PreviewPlayer skips over them.
-3. **"Apply cuts (N)"** — encodes all queued cuts in one ffmpeg pass and updates the clip.
-
-**Overlap merging:** if a new pending cut overlaps an existing one, they are merged to the outer bounds. Example:
-
-```
-Existing cut: [1.0, 3.0]
-New cut:      [2.0, 5.0]
-Result:       [1.0, 5.0]   ← outer bounds win
-```
-
-```
-Existing: [1.0, 2.0]
-New:      [0.0, 3.0]
-Result:   [0.0, 3.0]       ← new fully contains old
-```
-
-**After applying cuts, the clip file changes.** Re-transcribe if you need to update overlay timings.
+**After a materialize the clip file changes.** Re-transcribe if you need to update overlay timings.
 
 ---
 
@@ -123,18 +99,27 @@ const ITEM_FRAME = Math.round((16.70 - 16.52) * fps)  // 0.18s * fps
 ```json
 {
   "tracks": [
-    [
+    {
       // Track 0 — primary footage track
-      { "id": "clip-0", "type": "video", "src": "/abs/path/clip.mp4", "start": 0.0, "end": 0.0 }
-    ],
-    [
+      "id": "trk-0",
+      "items": [
+        { "id": "clip-0", "type": "video", "src": "/abs/path/clip.mp4", "start": 0.0, "end": 0.0 }
+      ]
+    },
+    {
       // Track 1 — background layer (opaque sections, backgrounds)
-      { "id": "...", "type": "overlay", "src": "/abs/path.jsx", "start": 0.0, "end": 5.0, "opaque": true }
-    ],
-    [
+      "id": "trk-1",
+      "items": [
+        { "id": "...", "type": "overlay", "src": "/abs/path.jsx", "start": 0.0, "end": 5.0, "opaque": true }
+      ]
+    },
+    {
       // Track 2+ — renders on top of track 1
-      { "id": "...", "type": "overlay", "src": "/abs/path.jsx", "start": 2.0, "end": 4.0 }
-    ]
+      "id": "trk-2",
+      "items": [
+        { "id": "...", "type": "overlay", "src": "/abs/path.jsx", "start": 2.0, "end": 4.0 }
+      ]
+    }
   ]
 }
 ```

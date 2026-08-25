@@ -1,6 +1,7 @@
 usage: montaj filler [-h]
                      [--model {tiny.en,base.en,medium.en,tiny,base,medium,large,large-v3}]
-                     [--language LANGUAGE] [--json] [--out PATH] [--quiet]
+                     [--language LANGUAGE] [--window-in WINDOW_IN]
+                     [--window-out WINDOW_OUT] [--json] [--out PATH] [--quiet]
                      input
 
 positional arguments:
@@ -17,6 +18,15 @@ options:
                         matching, or 'auto'. Selects the per-language
                         hesitation-filler set and upgrades *.en models to
                         multilingual.
+  --window-in WINDOW_IN
+                        Analyse only this window of --input (source seconds),
+                        instead of the whole file. Must be paired with window-
+                        out; also adds a `cuts` array (the complement of
+                        `keeps` within the window, each filler entry carrying
+                        the matched word as `text`) to the output.
+  --window-out WINDOW_OUT
+                        End of the analysis window in source seconds. Must be
+                        paired with window-in.
   --json                Output result as JSON
   --out PATH            Output file path
   --quiet               Suppress progress output

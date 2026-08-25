@@ -20,6 +20,7 @@ import serve.routes.projects as projects_mod
 from serve.routes.projects import (
     _CaptionJob,
     _caption_jobs,
+    _merge_caption_theme,
     _run_caption_detached,
     captions_status,
     generate_captions,
@@ -48,6 +49,61 @@ def test_caption_job_initial_state():
     assert job.status == "running"
     assert job.result is None
     assert job.error is None
+
+
+# ---------------------------------------------------------------------------
+# _merge_caption_theme — carry-forward is a denylist, not an allowlist
+# ---------------------------------------------------------------------------
+
+def test_merge_caption_theme_preserves_full_theme():
+    prev = {
+        "style": "subtitle",
+        "position": "bottom",
+        "color": "#fff",
+        "fontsize": 42,
+        "bgColor": "#000",
+        "accentColor": "#f0a",
+        "fontFamily": "Inter",
+        "googleFonts": ["Inter"],
+        "fontWeight": 700,
+        "highlightColor": "#0ff",
+        "letterSpacing": 0.5,
+    }
+    # A freshly regenerated track only carries what the pipeline itself produces.
+    track = {"style": "pop", "segments": [{"text": "hi"}]}
+
+    merged = _merge_caption_theme(prev, track)
+
+    # Every prior theme field survives, including ones a hardcoded allowlist
+    # would have dropped (highlightColor, fontFamily, googleFonts, fontWeight,
+    # letterSpacing) alongside the originally-covered ones (color, fontsize).
+    assert merged["position"] == "bottom"
+    assert merged["color"] == "#fff"
+    assert merged["fontsize"] == 42
+    assert merged["bgColor"] == "#000"
+    assert merged["accentColor"] == "#f0a"
+    assert merged["fontFamily"] == "Inter"
+    assert merged["googleFonts"] == ["Inter"]
+    assert merged["fontWeight"] == 700
+    assert merged["highlightColor"] == "#0ff"
+    assert merged["letterSpacing"] == 0.5
+    # segments is the freshly generated set, not carried from prev (prev has none).
+    assert merged["segments"] == [{"text": "hi"}]
+    # style is the resolved one on the new track, not the stale prior style.
+    assert merged["style"] == "pop"
+
+
+def test_merge_caption_theme_does_not_overwrite_pipeline_output():
+    prev = {"style": "subtitle", "color": "#fff", "fontsize": 42}
+    # The pipeline itself already produced a color on the new track.
+    track = {"style": "pop", "segments": [], "color": "#abc"}
+
+    merged = _merge_caption_theme(prev, track)
+
+    # Pipeline output wins over the carried-forward value.
+    assert merged["color"] == "#abc"
+    # Fields the pipeline didn't touch are still carried forward.
+    assert merged["fontsize"] == 42
 
 
 # ---------------------------------------------------------------------------
