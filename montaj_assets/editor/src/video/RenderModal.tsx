@@ -324,12 +324,26 @@ function LogLine({ text }: { text: string }) {
  * families LogLine colours). Each maps a matched line to how far through the
  * whole render it is, plus a span the within-stage counter can fill.
  */
+// Maps render log lines to a 0..1 bar. The bar tracks TOTAL WORK, not just
+// phase transitions: the two heavy phases each emit an `i/N` counter that
+// `parseLogProgress` refines within the stage's span —
+//   • overlay assembly  — render.js  `bundling segment i/N`
+//   • composition       — compose.js `[montaj compose] segment i/N`  (the long pole)
+// so the bar climbs smoothly through the actual segment work instead of leaping
+// on a phase mention. Stage order is load-bearing: a composition `segment i/N`
+// line contains "compose", so it must fall to the composition stage below and
+// NOT the overlay stage — which is why the overlay stage keys on
+// "bundl"/"puppeteer", never a bare "segment". Bases stay conservative so no
+// phase heading jumps the bar ahead of the work it names (the old table put
+// "assembl" at 0.98, so "Assembling…" logged at the START of the heavy work
+// leapt the bar to nearly full and froze it there).
 const LOG_STAGES: Array<{ re: RegExp; base: number; span: number }> = [
-  { re: /launch|browser|bundl|rendering|segment/i,       base: 0.08, span: 0.37 },
-  { re: /caption/i,                                      base: 0.45, span: 0.05 },
-  { re: /trimm|building|compos|encod|frame\s+\d+\s*\/\s*\d+/i, base: 0.50, span: 0.35 },
-  { re: /sdr|derive/i,                                   base: 0.85, span: 0.10 },
-  { re: /assembl|complete|ready|saved|\bdone\b/i,        base: 0.98, span: 0.02 },
+  { re: /normaliz|audio-strip|smart-detect|colou?r ?space/i, base: 0.00, span: 0.04 },
+  { re: /bundl|puppeteer/i,                                   base: 0.04, span: 0.42 },
+  { re: /caption/i,                                           base: 0.46, span: 0.02 },
+  { re: /compos/i,                                            base: 0.48, span: 0.42 },
+  { re: /concat|deriv|\bsdr\b/i,                              base: 0.90, span: 0.08 },
+  { re: /clean|saved|\bdone\b|complete|ready/i,               base: 0.98, span: 0.02 },
 ]
 
 /**

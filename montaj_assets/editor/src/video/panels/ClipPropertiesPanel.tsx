@@ -1,5 +1,5 @@
 import { useState, type ReactNode } from 'react'
-import { ChevronDown, ChevronRight } from 'lucide-react'
+import { ChevronDown, ChevronRight, Crop } from 'lucide-react'
 import type { AudioTrack, EditorProject, VisualItem } from '../../schema'
 import { setClipSpeed } from '../cuts'
 import SpeedControl from '../timeline/SpeedControl'
@@ -364,15 +364,19 @@ function ClipTabs({ item, onPreviewClip, onCommitClip, onChangeClip, transformSl
                 </div>
               )}
               {tab.value === 'crop' && onOpenCrop && (
-                <div className="flex flex-col gap-2 p-2">
-                  <p className="text-[11px] text-[var(--editor-text)]/55">
-                    Opens a dedicated tool to crop this clip's source video.
+                <div className="flex flex-col items-center gap-3 px-5 pt-8 pb-6 text-center">
+                  <div className="flex h-11 w-11 items-center justify-center rounded-full bg-indigo-500/10 text-indigo-400">
+                    <Crop size={20} />
+                  </div>
+                  <p className="max-w-[220px] text-xs leading-relaxed text-[var(--editor-text)]/60">
+                    Reframe this clip by cropping its source video. Pick the part of the frame to keep.
                   </p>
                   <button
                     type="button"
                     onClick={onOpenCrop}
-                    className="self-start rounded border border-[var(--editor-border)] px-2 py-1 text-[11px] font-medium text-[var(--editor-text)] transition-colors hover:bg-[var(--editor-text)]/5"
+                    className="inline-flex items-center gap-1.5 rounded-md bg-[var(--editor-accent)] px-3 py-1.5 text-xs font-medium text-[var(--editor-accent-foreground)] transition-opacity hover:opacity-90"
                   >
+                    <Crop size={13} />
                     Open crop tool
                   </button>
                 </div>

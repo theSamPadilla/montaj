@@ -48,6 +48,26 @@ test('dry-run: item opacity applies colorchannelmixer', async () => {
   assert.ok(result.filterParts.some(f => f.includes('colorchannelmixer=aa=0.5')))
 })
 
+test('dry-run: strips the Dolby Vision RPU (filter_units NAL 62) on the HEVC/HDR path only', async () => {
+  // A DV source's RPU propagates into libx265, which re-emits it in-band; the
+  // MP4 muxer then fails. Montaj outputs HDR10/HLG, never DV, so the RPU must be
+  // dropped — but only on the HEVC (libx265) path; the SDR (libx264/AVC) path
+  // has no DV to strip.
+  const mkSeg = (colorSpace) => ({
+    start: 0, end: 3, colorSpace, items: [
+      { type: 'video', src: '/dv.mov', start: 0, end: 3, inPoint: 0, trackIdx: 0,
+        scale: 1, offsetX: 0, offsetY: 0, opacity: 1, muted: false },
+    ], overlays: [], vw: 1080, vh: 1920, fps: 30,
+  })
+  for (const cs of ['hdr_pq', 'hdr_hlg']) {
+    const { args } = await encodeSegment(mkSeg(cs), '/tmp/dv.mp4', { _dryRun: true })
+    const i = args.indexOf('-bsf:v')
+    assert.ok(i !== -1 && args[i + 1] === 'filter_units=remove_types=62', `${cs} should strip the DV RPU`)
+  }
+  const { args: sdrArgs } = await encodeSegment(mkSeg('sdr_bt709'), '/tmp/dv.mp4', { _dryRun: true })
+  assert.ok(!sdrArgs.includes('filter_units=remove_types=62'), 'SDR path should not add the DV strip')
+})
+
 test('dry-run: multi-item segment layers both items', async () => {
   const seg = {
     start: 0, end: 5, items: [

@@ -1146,6 +1146,15 @@ export async function encodeSegment(segment, outputPath, opts = {}) {
     ...audioArgs,
     '-c:v', spec.encoder, ...spec.encoderArgs, '-pix_fmt', spec.outputPixFmt,
     ...spec.outputColorArgs,
+    // A Dolby Vision source (e.g. an iPhone HDR clip) carries a DV RPU, and
+    // nothing upstream strips it: its side data propagates through the filter
+    // graph into libx265, which re-emits the RPU in-band (HEVC NAL type 62), and
+    // the MP4 muxer then dies with "Error submitting a packet to the muxer: Not
+    // yet implemented in FFmpeg, patches welcome". Montaj outputs HDR10/HLG,
+    // never Dolby Vision, so the RPU is unwanted — dropping NAL 62 before the
+    // muxer leaves plain HEVC (the HDR10 mastering-display / content-light SEI,
+    // NAL 39/40, are untouched). No-op on a non-DV or non-HEVC stream.
+    ...(/265|hevc/i.test(spec.encoder) ? ['-bsf:v', 'filter_units=remove_types=62'] : []),
     '-g', String(fps), '-keyint_min', String(fps),
     '-t', String(duration),
     '-movflags', '+faststart',

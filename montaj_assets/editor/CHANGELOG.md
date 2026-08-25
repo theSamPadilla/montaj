@@ -8,6 +8,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Video editor
 
+- **Fixed: Dolby Vision sources no longer fail the export.** A DV clip (e.g. an
+  iPhone HDR recording) carries a Dolby Vision RPU that propagated untouched
+  through the pipeline into libx265, which re-emitted it in-band; the MP4 muxer
+  then died with "Error submitting a packet to the muxer: Not yet implemented in
+  FFmpeg". Montaj outputs HDR10/HLG, never Dolby Vision, so the segment encoder
+  now strips the DV RPU (HEVC NAL 62) on the HDR path, leaving plain HEVC with
+  its HDR10 metadata intact. No effect on SDR or non-DV sources.
+- **The render progress bar tracks total work, not just phase headings.** The
+  two heavy phases — overlay assembly and composition — now advance the bar by
+  their real per-segment counters, so it climbs steadily through the actual work
+  instead of leaping to nearly full on a phase heading and freezing there.
+- **UI polish.** The clip **Crop** tab is a centered icon + description + button
+  rather than a bare line of text; the Export dialog's resolution tiles drop the
+  overflowing "recommended" badge (the pre-selected tile already says it).
+
 - **Video and image clips can be keyframed.** A clip's position, scale and
   rotation now animate over its own lifetime, using the same keyframe controls,
   curve maths and easings overlays already had — and, unlike before, the export
