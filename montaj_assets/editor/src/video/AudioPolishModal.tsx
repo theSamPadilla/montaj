@@ -182,6 +182,10 @@ export interface AudioPolishModalProps<P extends Project = Project> {
   /** `sync.discardTransient` — drop the draft, no save, no undo entry. */
   discardTransient: () => void
   onClose: () => void
+  /** Editor theme mode — light/dark. The panel follows `--editor-surface`, so
+   *  warning/error hues need to darken in light mode. Absent -> dark,
+   *  matching every existing caller. */
+  mode?: 'light' | 'dark'
 }
 
 // ── Small pure helpers (display only) ───────────────────────────────────────
@@ -292,6 +296,7 @@ export default function AudioPolishModal<P extends Project = Project>({
   commit,
   discardTransient,
   onClose,
+  mode = 'dark',
 }: AudioPolishModalProps<P>) {
   // The polish baseline: the project as it was when the modal opened. Every
   // draft is rebuilt from this, never from the previous draft.
@@ -719,7 +724,7 @@ export default function AudioPolishModal<P extends Project = Project>({
                   <span className="text-xs font-semibold text-[var(--editor-text)]">{p.label}</span>
                   <span className="text-[10px] leading-snug text-[var(--editor-text)]/55">{p.blurb}</span>
                   {phase === 'review' && pieces[p.id] && !analysedPieces[p.id] && (
-                    <span className="text-[10px] text-amber-400">Not analysed yet. Run Analyse again.</span>
+                    <span className={`text-[10px] ${mode === 'light' ? 'text-amber-700' : 'text-amber-400'}`}>Not analysed yet. Run Analyse again.</span>
                   )}
                 </span>
               </label>
@@ -797,7 +802,7 @@ export default function AudioPolishModal<P extends Project = Project>({
 
         {/* Over-cut warning */}
         {overcut.length > 0 && (
-          <div className="px-5 py-2 text-[11px] leading-snug text-amber-400/90 border-b border-[var(--editor-border)] flex flex-col gap-0.5">
+          <div className={`px-5 py-2 text-[11px] leading-snug ${mode === 'light' ? 'text-amber-700' : 'text-amber-400/90'} border-b border-[var(--editor-border)] flex flex-col gap-0.5`}>
             {overcut.map(o => (
               <span key={o.clip.id}>
                 {`Warning: ${clipLabel(o.clip)} would lose ${Math.round(o.fraction * 100)}% of its length, ${o.removed.toFixed(1)}s. Check the ticked removals below.`}
@@ -832,13 +837,13 @@ export default function AudioPolishModal<P extends Project = Project>({
 
                 {/* Per-piece failures. One piece failing leaves the rest usable. */}
                 {a && Object.entries(a.errors).map(([piece, msg]) => (
-                  <p key={piece} className="text-[11px] text-red-400 leading-snug">
+                  <p key={piece} className={`text-[11px] leading-snug ${mode === 'light' ? 'text-red-600' : 'text-red-400'}`}>
                     {`${piece} could not be analysed: ${msg}`}
                   </p>
                 ))}
 
                 {a?.notes.map(note => (
-                  <p key={note} className="text-[11px] text-amber-400/90 leading-snug">{note}</p>
+                  <p key={note} className={`text-[11px] leading-snug ${mode === 'light' ? 'text-amber-700' : 'text-amber-400/90'}`}>{note}</p>
                 ))}
 
                 {/* Loudness */}
@@ -846,7 +851,7 @@ export default function AudioPolishModal<P extends Project = Project>({
                   <p className="text-[11px] text-[var(--editor-text)]/70">
                     {`Loudness: measured ${a.loudness.measuredI.toFixed(1)} LUFS, true peak ${a.loudness.measuredTP.toFixed(1)} dBTP. Gain ${signedDb(gainDb)} to reach ${targetLufs} LUFS.`}
                     {clamped && (
-                      <span className="text-amber-400">
+                      <span className={mode === 'light' ? 'text-amber-700' : 'text-amber-400'}>
                         {' '}Held at the +6 dB ceiling, so this clip stays under the target.
                       </span>
                     )}
@@ -859,7 +864,7 @@ export default function AudioPolishModal<P extends Project = Project>({
                 {PIECES.filter(p => pieces[p.id] && !supports(clip, p.id)).map(p => (
                   <p
                     key={p.id}
-                    className="self-start text-[11px] px-2 py-0.5 rounded bg-amber-400/10 border border-amber-400/40 text-amber-300"
+                    className={`self-start text-[11px] px-2 py-0.5 rounded ${mode === 'light' ? 'bg-amber-50 border border-amber-300 text-amber-800' : 'bg-amber-400/10 border border-amber-400/40 text-amber-300'}`}
                   >
                     {pieceSupported(clip, p.id).reason}
                   </p>
@@ -920,7 +925,7 @@ export default function AudioPolishModal<P extends Project = Project>({
                           </span>
                           {row.text && <span className="italic truncate">{`"${row.text}"`}</span>}
                           {row.flagged && (
-                            <span className="ml-auto text-[10px] px-1.5 py-0.5 rounded bg-amber-400/10 border border-amber-400/40 text-amber-300 leading-snug">
+                            <span className={`ml-auto text-[10px] px-1.5 py-0.5 rounded leading-snug ${mode === 'light' ? 'bg-amber-50 border border-amber-300 text-amber-800' : 'bg-amber-400/10 border border-amber-400/40 text-amber-300'}`}>
                               {`Flagged. ${row.reason ?? ''}`.trim()}
                             </span>
                           )}
@@ -944,7 +949,7 @@ export default function AudioPolishModal<P extends Project = Project>({
           <div className="flex items-center gap-2">
             <button
               onClick={handleCancel}
-              className="text-sm px-4 py-1.5 rounded-md bg-[var(--editor-surface)] border border-[var(--editor-border)] text-[var(--editor-text)]/80 hover:bg-red-900/40 hover:border-red-700 hover:text-red-300 transition-colors"
+              className={`text-sm px-4 py-1.5 rounded-md bg-[var(--editor-surface)] border border-[var(--editor-border)] text-[var(--editor-text)]/80 transition-colors ${mode === 'light' ? 'hover:bg-red-50 hover:border-red-300 hover:text-red-700' : 'hover:bg-red-900/40 hover:border-red-700 hover:text-red-300'}`}
             >
               Cancel
             </button>

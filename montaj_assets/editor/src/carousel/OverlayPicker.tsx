@@ -11,9 +11,13 @@ interface Props {
   project: Project
   adapter: EditorAdapter<Project>
   onPick: (element: OverlayElement) => void
+  /** Editor theme mode — light/dark. Only affects the load-error text
+   *  (red-400 is sub-AA on a light `--editor-surface`). Absent -> dark,
+   *  matching every existing caller. */
+  mode?: 'light' | 'dark'
 }
 
-export default function OverlayPicker({ open, onClose, project, adapter, onPick }: Props) {
+export default function OverlayPicker({ open, onClose, project, adapter, onPick, mode = 'dark' }: Props) {
   const [overlays, setOverlays] = useState<GlobalOverlay[]>([])
   const [loaded, setLoaded] = useState(false)
   const [loading, setLoading] = useState(false)
@@ -117,7 +121,7 @@ export default function OverlayPicker({ open, onClose, project, adapter, onPick 
             </div>
           )}
           {error && (
-            <div className="text-center text-red-400 text-sm py-8">{error}</div>
+            <div className={`text-center text-sm py-8 ${mode === 'light' ? 'text-red-600' : 'text-red-400'}`}>{error}</div>
           )}
           {!loading && !error && overlays.length === 0 && (
             <div className="text-center text-[var(--editor-text)]/60 text-sm py-8">No overlays available</div>

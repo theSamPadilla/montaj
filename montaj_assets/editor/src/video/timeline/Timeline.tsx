@@ -12,7 +12,7 @@ import { TimelineContext, type TimelineContextValue } from './TimelineContext'
 import type { PlaybackClock } from '../playback-clock'
 import Scrubber from './Scrubber'
 import TrackGutter from './TrackGutter'
-import { computeTimelineLayout, TIMELINE_COLORS, type TimelineLayout } from './canvas/draw'
+import { computeTimelineLayout, timelinePalette, type TimelineLayout, type TimelineMode } from './canvas/draw'
 import { DEFAULT_FADE_CURVE, fadeCurveIconPoints, type FadeCurve } from './canvas/fade-curve'
 import { VISUAL_EDGE_TOLERANCE_PX } from './canvas/hit-test'
 import { keyframeUnionTimes } from './canvas/keyframe-strip'
@@ -24,6 +24,11 @@ import type { KeyframeSelection } from './canvas/pointer-machine'
 import { timeToX, useViewportStore, useViewportValue, xToTime, type ViewportStore } from './canvas/viewport'
 import { useKeymap, matchesArrowLeft, matchesArrowRight, matchesDelete, matchesModKey } from '../keymap'
 import { Tooltip } from '../../ui/Tooltip'
+
+/** Re-exported so the host (`VideoEditor`) can name the mode it resolves from
+ *  the theme without reaching into `canvas/draw` — Timeline is the seam it
+ *  already imports. */
+export type { TimelineMode } from './canvas/draw'
 
 /** How long the auto-crossfade pass waits after an audio-timing change before
  *  it COMMITS the derived fades. Long enough that the continuous changes of a
@@ -107,6 +112,14 @@ interface TimelineProps {
   onOpenGoToTime?: () => void
   /** Imperative zoom actions for a host-level command palette. */
   actionsRef?: MutableRefObject<TimelineActions | null>
+  /**
+   * Which ground the timeline paints on, resolved from the host theme by
+   * `VideoEditor` (`isLightTheme`). Threaded — not looked up here — so the
+   * canvas surface, the track rail and the fade-shape icons can never disagree
+   * about the mode: three independent lookups is three chances to drift.
+   * Defaults to `'dark'`, the only mode this timeline had.
+   */
+  mode?: TimelineMode
 }
 
 /** Icon size for the fade-shape picker's buttons — small enough for a
@@ -131,23 +144,31 @@ const FADE_CURVE_ICON_PAD = 4
  * grips) already use — so the picker itself shows which shape is currently
  * set the moment it opens.
  */
-function FadeCurveIcon({ curve, active }: { curve: FadeCurve; active: boolean }) {
+function FadeCurveIcon({ curve, active, mode = 'dark' }: { curve: FadeCurve; active: boolean; mode?: TimelineMode }) {
   const { width: w, height: h } = FADE_CURVE_ICON_SIZE
   const points = fadeCurveIconPoints(curve, w - FADE_CURVE_ICON_PAD * 2, h - FADE_CURVE_ICON_PAD * 2)
   const d = points.map((p, i) => `${i === 0 ? 'M' : 'L'}${p.x.toFixed(2)},${p.y.toFixed(2)}`).join(' ')
+  // The ACTIVE stroke is the real envelope line, taken from the same palette
+  // the canvas paints the real fade with — the icon and the thing it sets have
+  // to be the same colour or the picker stops being a preview. The inactive
+  // pair is this icon's own: white-on-dark in dark mode, near-black-on-light
+  // in light, matching the menu ground below (which flips with `mode` too).
+  const colors = timelinePalette(mode).colors
+  const idleFrame = mode === 'light' ? 'rgba(15,23,42,0.18)' : 'rgba(255,255,255,0.15)'
+  const idleCurve = mode === 'light' ? 'rgba(15,23,42,0.7)' : 'rgba(255,255,255,0.75)'
   return (
     <svg width={w} height={h} viewBox={`0 0 ${w} ${h}`} aria-hidden="true" className="block">
       <rect
         x={0.5} y={0.5} width={w - 1} height={h - 1} rx={3}
         fill="none"
-        stroke={active ? TIMELINE_COLORS.fadeEnvelopeLine : 'rgba(255,255,255,0.15)'}
+        stroke={active ? colors.fadeEnvelopeLine : idleFrame}
         strokeWidth={1}
       />
       <path
         d={d}
         transform={`translate(${FADE_CURVE_ICON_PAD},${FADE_CURVE_ICON_PAD})`}
         fill="none"
-        stroke={active ? TIMELINE_COLORS.fadeEnvelopeLine : 'rgba(255,255,255,0.75)'}
+        stroke={active ? colors.fadeEnvelopeLine : idleCurve}
         strokeWidth={1.75}
         strokeLinecap="round"
         strokeLinejoin="round"
@@ -271,6 +292,17 @@ function CanvasClipChrome({
             className="pointer-events-none absolute z-20 flex items-center justify-end gap-1 overflow-hidden"
             style={{ top: row.y, height: row.height, left, right }}
           >
+            {/* Deliberately dark in BOTH modes, not `--editor-*` driven — same
+                reasoning as the preview staying black and the canvas' own
+                clip labels: this chip sits over the CLIP's pixels (arbitrary
+                video/filmstrip content), not over editor chrome, so what it
+                has to contrast against is footage brightness, not the host's
+                light/dark setting. A dark plate at 70% opacity reliably shows
+                its light foreground over footage of any brightness; flipping
+                it to a light plate in a light editor theme would remove that
+                guarantee for no benefit, since the editor's theme has no
+                relationship to what's playing under it. Do not "fix" this to
+                use `--editor-surface`. */}
             {queued && (
               <span className="rounded bg-gray-900/70 px-1 text-[10px] font-medium text-amber-300/80">queued</span>
             )}
@@ -303,7 +335,7 @@ const EASING_LABELS: Record<EasingName, string> = {
   hold: 'Hold',
 }
 
-export default function Timeline({ project, clock, onProjectChange, onOverlayEdit, selectedIds = [], onSelectIds, onInspectClip, onInspectAudio, onEditCaption, rippleMode = false, previewAxis = false, onHoverScrub, resolveFilePath, getWaveformPeaks, getFilmstrip, regenEnabled, isClipQueued, renderSubcutRegen, modalOpen = false, onOpenGoToTime, actionsRef }: TimelineProps) {
+export default function Timeline({ project, clock, onProjectChange, onOverlayEdit, selectedIds = [], onSelectIds, onInspectClip, onInspectAudio, onEditCaption, rippleMode = false, previewAxis = false, onHoverScrub, resolveFilePath, getWaveformPeaks, getFilmstrip, regenEnabled, isClipQueued, renderSubcutRegen, modalOpen = false, onOpenGoToTime, actionsRef, mode = 'dark' }: TimelineProps) {
 
   // Click/shift-click handler — additive selection on shift or meta (cmd/ctrl).
   // Under D1, captions share `selectedIds` with everything else, so there is
@@ -851,7 +883,7 @@ export default function Timeline({ project, clock, onProjectChange, onOverlayEdi
         <div className="flex items-center justify-end gap-0.5 -mb-1 cursor-pointer">
           <Tooltip label="Zoom out">
             <button
-              className="text-[11px] leading-none text-gray-500 hover:text-gray-300 w-5 h-5 flex items-center justify-center rounded hover:bg-gray-800 transition-colors"
+              className="text-[11px] leading-none text-[var(--editor-text)]/45 hover:text-[var(--editor-text)]/80 w-5 h-5 flex items-center justify-center rounded hover:bg-[var(--editor-text)]/10 transition-colors"
               aria-label="Zoom out"
               onClick={(e) => { e.stopPropagation(); zoomControls.zoomOut() }}
             >−</button>
@@ -859,7 +891,7 @@ export default function Timeline({ project, clock, onProjectChange, onOverlayEdi
           {zoomControls.badge}
           <Tooltip label="Zoom in">
             <button
-              className="text-[11px] leading-none text-gray-500 hover:text-gray-300 w-5 h-5 flex items-center justify-center rounded hover:bg-gray-800 transition-colors"
+              className="text-[11px] leading-none text-[var(--editor-text)]/45 hover:text-[var(--editor-text)]/80 w-5 h-5 flex items-center justify-center rounded hover:bg-[var(--editor-text)]/10 transition-colors"
               aria-label="Zoom in"
               onClick={(e) => { e.stopPropagation(); zoomControls.zoomIn() }}
             >+</button>
@@ -867,7 +899,7 @@ export default function Timeline({ project, clock, onProjectChange, onOverlayEdi
           {zoomControls.showFit && (
             <Tooltip label="Fit to view" className="ml-0.5">
               <button
-                className="text-[10px] text-gray-500 hover:text-gray-300 px-1.5 h-5 rounded hover:bg-gray-800 transition-colors"
+                className="text-[10px] text-[var(--editor-text)]/45 hover:text-[var(--editor-text)]/80 px-1.5 h-5 rounded hover:bg-[var(--editor-text)]/10 transition-colors"
                 aria-label="Fit to view"
                 onClick={(e) => { e.stopPropagation(); zoomControls.fit() }}
               >fit</button>
@@ -893,7 +925,7 @@ export default function Timeline({ project, clock, onProjectChange, onOverlayEdi
       {/* ── Tracks ── */}
       <div className="flex flex-col gap-1">
         {project.renderMode === 'ffmpeg-drawtext' && (
-          <div className="flex items-center gap-1.5 px-2 py-1 rounded bg-amber-500/10 border border-amber-500/20 text-[10px] text-amber-400/70 select-none">
+          <div className={`flex items-center gap-1.5 px-2 py-1 rounded text-[10px] select-none ${mode === 'light' ? 'bg-amber-50 border border-amber-300 text-amber-800' : 'bg-amber-500/10 border border-amber-500/20 text-amber-400/70'}`}>
             <span>⚡</span>
             <span>ffmpeg render — overlays are preview only, final text is burned by ffmpeg</span>
           </div>
@@ -913,6 +945,7 @@ export default function Timeline({ project, clock, onProjectChange, onOverlayEdi
             <TrackGutter
               project={project}
               layout={canvasLayout}
+              mode={mode}
               onToggleTrackEnabled={handleToggleTrackEnabled}
               onSetTrackVolume={handleSetTrackVolume}
               onSetTrackMuted={handleSetTrackMuted}
@@ -957,6 +990,7 @@ export default function Timeline({ project, clock, onProjectChange, onOverlayEdi
               getWaveformPeaks={getWaveformPeaks}
               getFilmstrip={getFilmstrip}
               resolveFilePath={resolveFilePath}
+              mode={mode}
             />
             {/* ── Per-clip HTML chrome over the canvas ──
                 The subcut-regenerate trigger and the "queued" badge, ported
@@ -1027,7 +1061,11 @@ export default function Timeline({ project, clock, onProjectChange, onOverlayEdi
             />
             <div
               data-timeline-chrome
-              className="fixed z-50 flex gap-1 rounded border border-gray-700 bg-gray-900 p-1 shadow-xl"
+              /* Written per mode rather than through `--editor-*` tokens: the
+                 dark branch is the exact class list this menu has always had,
+                 so a light theme gains a light popover without the dark one
+                 shifting by a single hairline. */
+              className={`fixed z-50 flex gap-1 rounded border p-1 shadow-xl ${mode === 'light' ? 'border-gray-300 bg-white' : 'border-gray-700 bg-gray-900'}`}
               style={{ left: fadeCurveMenu.x, top: fadeCurveMenu.y }}
             >
               {([
@@ -1041,10 +1079,14 @@ export default function Timeline({ project, clock, onProjectChange, onOverlayEdi
                   title={label}
                   aria-label={label}
                   aria-pressed={activeCurve === curve}
-                  className={`rounded p-0.5 transition-colors ${activeCurve === curve ? 'bg-gray-700 ring-1 ring-emerald-400/60' : 'hover:bg-gray-800'}`}
+                  className={`rounded p-0.5 transition-colors ${
+                    activeCurve === curve
+                      ? (mode === 'light' ? 'bg-gray-200 ring-1 ring-emerald-600/60' : 'bg-gray-700 ring-1 ring-emerald-400/60')
+                      : (mode === 'light' ? 'hover:bg-gray-100' : 'hover:bg-gray-800')
+                  }`}
                   onClick={() => handleSetFadeCurve(fadeCurveMenu.trackId, fadeCurveMenu.side, curve)}
                 >
-                  <FadeCurveIcon curve={curve} active={activeCurve === curve} />
+                  <FadeCurveIcon curve={curve} active={activeCurve === curve} mode={mode} />
                 </button>
               ))}
             </div>
@@ -1081,10 +1123,15 @@ export default function Timeline({ project, clock, onProjectChange, onOverlayEdi
             />
             <div
               data-timeline-chrome
-              className="fixed z-50 flex flex-col gap-1.5 rounded border border-gray-700 bg-gray-900 p-2 shadow-xl"
+              /* `fadeCurveMenu`'s exact sibling (see that menu's own comment
+                 below) — mode-conditional per class rather than through
+                 `--editor-*` tokens, so the dark branch is the exact class
+                 list this menu has always had and a light theme gains a
+                 light popover without the dark one shifting by a hairline. */
+              className={`fixed z-50 flex flex-col gap-1.5 rounded border p-2 shadow-xl ${mode === 'light' ? 'border-gray-300 bg-white' : 'border-gray-700 bg-gray-900'}`}
               style={{ left: keyframeMenu.x, top: keyframeMenu.y }}
             >
-              <div className="px-0.5 text-[10px] text-gray-500">Easing to next keyframe</div>
+              <div className={`px-0.5 text-[10px] ${mode === 'light' ? 'text-gray-600' : 'text-gray-500'}`}>Easing to next keyframe</div>
               <div className="flex flex-wrap gap-1 max-w-[220px]">
                 {EASING_NAMES.map((name) => (
                   <button
@@ -1096,10 +1143,10 @@ export default function Timeline({ project, clock, onProjectChange, onOverlayEdi
                     disabled={keyframeMenu.isLast}
                     className={`rounded px-1.5 py-0.5 text-[11px] transition-colors ${
                       keyframeMenu.isLast
-                        ? 'text-gray-600 cursor-not-allowed'
+                        ? (mode === 'light' ? 'text-gray-400 cursor-not-allowed' : 'text-gray-600 cursor-not-allowed')
                         : activeEasing === name
-                          ? 'bg-gray-700 text-gray-100 ring-1 ring-emerald-400/60'
-                          : 'text-gray-300 hover:bg-gray-800'
+                          ? (mode === 'light' ? 'bg-gray-200 text-gray-900 ring-1 ring-emerald-600/60' : 'bg-gray-700 text-gray-100 ring-1 ring-emerald-400/60')
+                          : (mode === 'light' ? 'text-gray-700 hover:bg-gray-100' : 'text-gray-300 hover:bg-gray-800')
                     }`}
                     onClick={() => handleSetKeyframeEasing(keyframeMenu.itemId, keyframeMenu.t, keyframeMenu.props, name)}
                   >
@@ -1107,10 +1154,10 @@ export default function Timeline({ project, clock, onProjectChange, onOverlayEdi
                   </button>
                 ))}
               </div>
-              <div className="h-px bg-gray-700" />
+              <div className={`h-px ${mode === 'light' ? 'bg-gray-200' : 'bg-gray-700'}`} />
               <button
                 type="button"
-                className="rounded px-1.5 py-1 text-left text-[11px] text-red-400 hover:bg-red-500/10"
+                className={`rounded px-1.5 py-1 text-left text-[11px] hover:bg-red-500/10 ${mode === 'light' ? 'text-red-600' : 'text-red-400'}`}
                 onClick={() => handleRemoveKeyframe(keyframeMenu.itemId, keyframeMenu.t)}
               >
                 Remove keyframe

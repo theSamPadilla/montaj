@@ -140,7 +140,7 @@ export default function ControlsInfoModal({ title, sections, onClose }: Controls
           <div className="relative flex items-start justify-between gap-4">
             <div className="flex items-center gap-3">
               <span
-                className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border bg-white/[0.06]"
+                className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border bg-[var(--editor-text)]/[0.06]"
                 style={{ borderColor: 'var(--editor-border)' }}
               >
                 <Command size={17} style={{ color: 'var(--editor-accent)' }} />
@@ -156,7 +156,7 @@ export default function ControlsInfoModal({ title, sections, onClose }: Controls
               type="button"
               onClick={onClose}
               aria-label="Close"
-              className="-mr-1 -mt-1 shrink-0 cursor-pointer rounded-md p-1.5 opacity-55 transition-all hover:bg-white/10 hover:opacity-100"
+              className="-mr-1 -mt-1 shrink-0 cursor-pointer rounded-md p-1.5 opacity-55 transition-all hover:bg-[var(--editor-text)]/10 hover:opacity-100"
             >
               <X size={18} />
             </button>
@@ -182,7 +182,7 @@ export default function ControlsInfoModal({ title, sections, onClose }: Controls
                     style={{ borderColor: 'var(--editor-border)' }}
                   >
                     <span
-                      className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-white/[0.06]"
+                      className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-[var(--editor-text)]/[0.06]"
                     >
                       <Icon size={14} style={{ color: 'var(--editor-accent)' }} />
                     </span>
@@ -194,7 +194,7 @@ export default function ControlsInfoModal({ title, sections, onClose }: Controls
                     {section.entries.map((entry, i) => (
                       <li
                         key={i}
-                        className="flex items-center justify-between gap-3 rounded-md px-2 py-2 text-sm transition-colors hover:bg-white/[0.06]"
+                        className="flex items-center justify-between gap-3 rounded-md px-2 py-2 text-sm transition-colors hover:bg-[var(--editor-text)]/[0.06]"
                       >
                         <span className="flex items-start gap-2.5 opacity-90">
                           {/* A toolbar row shows that button's real glyph;

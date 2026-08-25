@@ -37,6 +37,22 @@ As the agent works, the UI updates in real time.
 - Preview player reflects the current state of the edit
 - You watch the edit take shape as the agent builds it
 
+**Manual bypass.** The pending screen also offers a "Start editing manually"
+button beside the agent command, for anyone who'd rather skip the agent
+entirely. Clicking it flips the project `pending` → `draft` and clears the
+zero-duration placeholder items the pipeline seeds onto the timeline
+(`project/init.py` at create time, and `POST /rerun`) (one per uploaded clip,
+for the agent to fill in), so the timeline starts genuinely empty while
+`project.sources` keeps every uploaded clip for the footage bin. From there
+it's the ordinary Review surface below: drag from
+the media bin onto the timeline, trim, caption, overlay, export. Desktop
+only (mobile's pending screen points you at desktop instead); doesn't apply
+to `ai_video` projects (their own storyboard flow while pending) or carousel
+projects (their own pending gate). The agent path is unchanged — the
+command to hand your agent is still right there — and manual start lands on
+the same `draft` status an agent-finished project reaches, so nothing
+downstream can tell the two apart.
+
 ### 3. Review
 
 When the agent marks the project `draft`, the UI surfaces it for human adjustment.
@@ -789,6 +805,7 @@ ui/
 
 ## Key design decisions
 
+- **The editor follows the host's theme.** `montaj serve`'s light/dark toggle drives the editor's colors live, with no reload needed. The video preview stays black in both modes on purpose — that's how video editors work.
 - **`montaj serve` is thin.** No business logic — just file watching, SSE, and process spawning. The pipeline logic lives in the scripts and workflow engine.
 - **Agent polls, not push.** `GET /projects?status=raw` — agent asks for work. Same pattern as the hosted platform integration.
 - **Filesystem is the source of truth.** Agent writes project.json to disk. Serve watches. Browser reflects. No intermediate state.

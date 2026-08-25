@@ -61,6 +61,10 @@ export interface ClipPropertiesPanelProps {
    *  nothing about (see schema.ts's EditorProject index-signature comment).
    *  Absent -> no Generate tab. */
   generationSlot?: ReactNode
+  /** Editor theme mode — light/dark. Only affects the Crop tab's icon badge
+   *  hue (indigo-400 is sub-AA on a light `--editor-surface`). Absent ->
+   *  dark, matching every existing caller. */
+  mode?: 'light' | 'dark'
 }
 
 const SECTION_CLASS = 'shrink-0 border-b border-[var(--editor-border)] flex flex-col overflow-hidden'
@@ -241,6 +245,7 @@ interface ClipTabsProps {
   transformSlot?: ReactNode
   onOpenCrop?: () => void
   generationSlot?: ReactNode
+  mode?: 'light' | 'dark'
 }
 
 /**
@@ -251,7 +256,7 @@ interface ClipTabsProps {
  * offers all five. Replaces the old flat `ClipSection` (Volume + Mute +
  * video-only Speed stacked above the host's `generationSlot`).
  */
-function ClipTabs({ item, onPreviewClip, onCommitClip, onChangeClip, transformSlot, onOpenCrop, generationSlot }: ClipTabsProps) {
+function ClipTabs({ item, onPreviewClip, onCommitClip, onChangeClip, transformSlot, onOpenCrop, generationSlot, mode = 'dark' }: ClipTabsProps) {
   const tabs: TabNavTab<ClipPanelTab>[] = []
   if (transformSlot !== undefined) tabs.push({ value: 'transform', label: 'Transform' })
   // Speed is video-only, matching the modal this replaces. `setClipSpeed`
@@ -359,13 +364,13 @@ function ClipTabs({ item, onPreviewClip, onCommitClip, onChangeClip, transformSl
                     idBase="clip-properties-volume"
                   />
                   <Row label="Mute">
-                    <Switch checked={muted} onCheckedChange={next => onChangeClip({ ...item, muted: next })} aria-label="Mute clip" />
+                    <Switch checked={muted} onCheckedChange={next => onChangeClip({ ...item, muted: next })} aria-label="Mute clip" mode={mode} />
                   </Row>
                 </div>
               )}
               {tab.value === 'crop' && onOpenCrop && (
                 <div className="flex flex-col items-center gap-3 px-5 pt-8 pb-6 text-center">
-                  <div className="flex h-11 w-11 items-center justify-center rounded-full bg-indigo-500/10 text-indigo-400">
+                  <div className={`flex h-11 w-11 items-center justify-center rounded-full bg-indigo-500/10 ${mode === 'light' ? 'text-indigo-600' : 'text-indigo-400'}`}>
                     <Crop size={20} />
                   </div>
                   <p className="max-w-[220px] text-xs leading-relaxed text-[var(--editor-text)]/60">
@@ -394,6 +399,9 @@ interface AudioSectionProps {
   onPreviewAudio: (track: AudioTrack) => void
   onCommitAudio: () => void
   onChangeAudio: (track: AudioTrack) => void
+  /** Editor theme mode — light/dark. Only affects the Mute/Ducking switches'
+   *  unchecked track colour. Absent -> dark, matching every existing caller. */
+  mode?: 'light' | 'dark'
 }
 
 /**
@@ -403,7 +411,7 @@ interface AudioSectionProps {
  * (host-side, opened by double-click — a more deliberate action) keeps the
  * delete control.
  */
-function AudioSection({ track, onPreviewAudio, onCommitAudio, onChangeAudio }: AudioSectionProps) {
+function AudioSection({ track, onPreviewAudio, onCommitAudio, onChangeAudio, mode = 'dark' }: AudioSectionProps) {
   const [collapsed, setCollapsed] = useState(false)
   const [fadesOpen, setFadesOpen] = useState(false)
   const [duckingOpen, setDuckingOpen] = useState(false)
@@ -502,7 +510,7 @@ function AudioSection({ track, onPreviewAudio, onCommitAudio, onChangeAudio }: A
         idBase="clip-properties-audio-volume"
       />
       <Row label="Mute">
-        <Switch checked={muted} onCheckedChange={next => onChangeAudio({ ...track, muted: next })} aria-label="Mute track" />
+        <Switch checked={muted} onCheckedChange={next => onChangeAudio({ ...track, muted: next })} aria-label="Mute track" mode={mode} />
       </Row>
 
       <CollapsibleSection label="Fades" collapsed={!fadesOpen} onToggle={() => setFadesOpen(o => !o)} nested>
@@ -536,7 +544,7 @@ function AudioSection({ track, onPreviewAudio, onCommitAudio, onChangeAudio }: A
         badge={duckingEnabled ? <span className="text-[10px] text-[var(--editor-accent)]">On</span> : undefined}
       >
         <Row label="Enabled">
-          <Switch checked={duckingEnabled} onCheckedChange={toggleDucking} aria-label="Enable ducking" />
+          <Switch checked={duckingEnabled} onCheckedChange={toggleDucking} aria-label="Enable ducking" mode={mode} />
         </Row>
         <Row label="Depth">
           <DraftField
@@ -634,6 +642,7 @@ export default function ClipPropertiesPanel({
   transformSlot,
   onOpenCrop,
   generationSlot,
+  mode = 'dark',
 }: ClipPropertiesPanelProps) {
   if (!selection) {
     return (
@@ -655,11 +664,12 @@ export default function ClipPropertiesPanel({
         transformSlot={transformSlot}
         onOpenCrop={onOpenCrop}
         generationSlot={generationSlot}
+        mode={mode}
       />
     )
   }
 
   return (
-    <AudioSection track={selection.track} onPreviewAudio={onPreviewAudio} onCommitAudio={onCommitAudio} onChangeAudio={onChangeAudio} />
+    <AudioSection track={selection.track} onPreviewAudio={onPreviewAudio} onCommitAudio={onCommitAudio} onChangeAudio={onChangeAudio} mode={mode} />
   )
 }

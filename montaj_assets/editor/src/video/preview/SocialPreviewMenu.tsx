@@ -36,6 +36,12 @@ export interface SocialPreviewMenuProps {
   /** Persist a new selection (or clear it, via `null`). */
   onChange: (platform: SocialPreviewPlatform | null) => void
   onClose: () => void
+  /** Editor theme mode — light/dark. This popover portals onto
+   *  `--editor-surface`, NOT over the black video canvas like the rest of
+   *  `preview/`, so its accents have to read on a light ground: the selected
+   *  checkmark's sky-400 is ~2.9:1 on white. Defaults to `'dark'`, so a caller
+   *  that omits it renders exactly as before. */
+  mode?: 'light' | 'dark'
 }
 
 /**
@@ -86,7 +92,7 @@ export function PlatformGlyph({ icon: Icon, badgeClassName, size = 20 }: { icon:
   )
 }
 
-export default function SocialPreviewMenu({ anchorRef, value, onChange, onClose }: SocialPreviewMenuProps) {
+export default function SocialPreviewMenu({ anchorRef, value, onChange, onClose, mode = 'dark' }: SocialPreviewMenuProps) {
   const popoverRef = useRef<HTMLDivElement>(null)
   const [position, setPosition] = useState<Position | null>(null)
 
@@ -176,7 +182,7 @@ export default function SocialPreviewMenu({ anchorRef, value, onChange, onClose 
               <PlatformGlyph icon={opt.icon} badgeClassName={opt.badgeClassName} />
               <span>{opt.label}</span>
             </span>
-            {active && <Check size={13} className="text-sky-400" />}
+            {active && <Check size={13} className={mode === 'light' ? 'text-sky-600' : 'text-sky-400'} />}
           </button>
         )
       })}
@@ -200,7 +206,7 @@ export default function SocialPreviewMenu({ anchorRef, value, onChange, onClose 
           <PlatformGlyph icon={Slash} badgeClassName="bg-[var(--editor-text)]/15" />
           <span>None</span>
         </span>
-        {value === null && <Check size={13} className="text-sky-400" />}
+        {value === null && <Check size={13} className={mode === 'light' ? 'text-sky-600' : 'text-sky-400'} />}
       </button>
     </div>,
     document.body,

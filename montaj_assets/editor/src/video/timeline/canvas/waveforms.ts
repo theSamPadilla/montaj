@@ -195,6 +195,42 @@ export const WAVEFORM_COLORS = {
   clipBandMuted: 'rgba(0,0,0,0.45)',
 } as const
 
+/** The shape both waveform sets satisfy — `WAVEFORM_COLORS`'s keys widened
+ *  from its `as const` literals to plain `string`. Carried on
+ *  `TimelinePalette.waveform` (draw.ts) so a draw pass resolves waveform
+ *  colours from the same object as everything else it paints. */
+export type WaveformColors = { [K in keyof typeof WAVEFORM_COLORS]: string }
+
+/**
+ * `WAVEFORM_COLORS` for a LIGHT clip fill.
+ *
+ * The dark set is white bars over a saturated clip hue, sitting in a band
+ * DARKENED relative to that hue. Light inverts both halves, and they have to
+ * invert together or the bars stop separating from their own band:
+ *
+ *  - the bars go near-black, since `LIGHT_TRACK_PALETTE`'s fills are pale
+ *    tints and white bars would be gone;
+ *  - the band goes LIGHTER than the clip fill rather than darker. Keeping the
+ *    black scrim would have worked — dark bars on a mid-grey band do read —
+ *    but it makes the busiest part of the clip its heaviest, and washing the
+ *    band toward white instead gives the dark bars the maximum contrast while
+ *    still marking the waveform half as its own lane.
+ *
+ * The mute pair keeps its meaning by keeping its DIRECTION: dark mutes by
+ * making the band darker still, light mutes by washing it further out. Either
+ * way a muted clip's audio region visibly recedes from an unmuted one.
+ */
+export const LIGHT_WAVEFORM_COLORS: WaveformColors = {
+  clip: 'rgba(15,23,42,0.6)',
+  clipBand: 'rgba(255,255,255,0.45)',
+  /** Sits inside the light emerald bar; DARKER than the fill so it reads as
+   *  drawn "on top of" it — the mirror of dark's "brighter than the fill",
+   *  and echoing `LIGHT_TIMELINE_COLORS.audioRing` the same way. */
+  audioLane: 'rgba(6,95,70,0.75)',
+  clipMuted: 'rgba(15,23,42,0.3)',
+  clipBandMuted: 'rgba(255,255,255,0.72)',
+}
+
 /** Paint one row of min/max columns as vertical bars centered in `rect`,
  *  amplitude scaled to `rect.height / 2`. The shared primitive both
  *  `drawClipWaveform` and `drawAudioLaneWaveform` style differently.
@@ -244,12 +280,18 @@ export function clipWaveformBand(rect: Rect): Rect {
  *  reads as "no audio here" rather than as missing data. `muted` swaps in the
  *  grayed `clipMuted`/`clipBandMuted` pair — the same mute cue `drawAudioItem`
  *  already gives audio-lane bars, extended to video-track clip waveforms. */
-export function drawClipWaveform(ctx: DrawContext, rect: Rect, columns: WaveformColumn[], muted = false): void {
+export function drawClipWaveform(
+  ctx: DrawContext,
+  rect: Rect,
+  columns: WaveformColumn[],
+  muted = false,
+  colors: WaveformColors = WAVEFORM_COLORS,
+): void {
   const band = clipWaveformBand(rect)
   if (band.height <= 0 || band.width <= 0) return
-  ctx.fillStyle = muted ? WAVEFORM_COLORS.clipBandMuted : WAVEFORM_COLORS.clipBand
+  ctx.fillStyle = muted ? colors.clipBandMuted : colors.clipBand
   ctx.fillRect(band.x, band.y, band.width, band.height)
-  drawWaveformBars(ctx, band, columns, muted ? WAVEFORM_COLORS.clipMuted : WAVEFORM_COLORS.clip)
+  drawWaveformBars(ctx, band, columns, muted ? colors.clipMuted : colors.clip)
 }
 
 /** Full-bar audio-lane waveform. `rect` is already the fetched window's
@@ -266,8 +308,9 @@ export function drawAudioLaneWaveform(
   rect: Rect,
   columns: WaveformColumn[],
   gainAt?: (x: number) => number,
+  colors: WaveformColors = WAVEFORM_COLORS,
 ): void {
-  drawWaveformBars(ctx, rect, columns, WAVEFORM_COLORS.audioLane, gainAt)
+  drawWaveformBars(ctx, rect, columns, colors.audioLane, gainAt)
 }
 
 // ── Fetch-state store ────────────────────────────────────────────────────

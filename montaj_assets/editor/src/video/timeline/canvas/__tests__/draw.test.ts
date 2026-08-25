@@ -15,6 +15,20 @@ import {
   AUDIO_ITEM_INSET_PX,
   AUDIO_ITEM_RADIUS_PX,
   CAPTION_PALETTE,
+  CAPTION_RAIL_ACCENT,
+  DARK_TIMELINE_PALETTE,
+  LABEL_SHADOW_COLOR,
+  LIGHT_CAPTION_PALETTE,
+  LIGHT_CAPTION_RAIL_ACCENT,
+  LIGHT_LABEL_SHADOW_COLOR,
+  LIGHT_TIMELINE_COLORS,
+  LIGHT_TIMELINE_PALETTE,
+  LIGHT_TRACK_PALETTE,
+  timelinePalette,
+  drawCursorLine,
+  drawMarquee,
+  drawRuler,
+  type TimelinePalette,
   CLIP_HANDLE_WIDTH_PX,
   FADE_GRIP_SIZE_PX,
   CURSOR_WIDTH_PX,
@@ -54,6 +68,7 @@ import {
   type TimelineScene,
 } from '../draw'
 import { KEYFRAME_DIAMOND_SIZE_PX, KEYFRAME_STRIP_BOTTOM_PAD_PX, keyframeDiamondX } from '../keyframe-strip'
+import { LIGHT_WAVEFORM_COLORS, WAVEFORM_COLORS } from '../waveforms'
 import {
   AUDIO_LANE_HEIGHT_PX,
   BASE_VISUAL_ROW_RENDER_HEIGHT_PX,
@@ -1808,5 +1823,376 @@ describe('drawTimelineContent — an audio track with no start/end', () => {
     const layout = computeTimelineLayout(p)
     const [t] = layout.lanes[0].tracks
     expect(t.end - t.start).toBeGreaterThan(0)
+  })
+})
+
+// ── Light/dark palette ───────────────────────────────────────────────────
+//
+// The canvas can't read a CSS variable, so the whole light theme reaches these
+// pixels through `timelinePalette(mode)`. Two things have to hold at once and
+// they pull in opposite directions: the LIGHT set must genuinely be a different
+// palette (not the dark numbers nudged), and the DARK set must be
+// byte-identical to what it always was — which is why every painter takes the
+// palette as an OPTIONAL trailing argument and every assertion above this
+// block still calls them without one.
+
+/** Every colour string a palette can put on the canvas, flattened. Used to
+ *  ask "did any value from the OTHER mode leak into this paint?", which is the
+ *  question a per-key spot-check can't answer. */
+function paletteValues(p: TimelinePalette): string[] {
+  return [
+    ...Object.values(p.colors),
+    ...p.tracks.flatMap(t => Object.values(t)),
+    ...Object.values(p.caption),
+    p.captionRailAccent,
+    ...Object.values(p.waveform),
+    p.labelShadow,
+  ]
+}
+
+/** Values this mode uses that the OTHER mode never does — the literals whose
+ *  appearance in a paint proves the wrong palette was consulted. Computed
+ *  rather than listed so a future key can't quietly escape the check. */
+function exclusiveTo(mode: TimelinePalette, other: TimelinePalette): string[] {
+  const otherValues = new Set(paletteValues(other))
+  return [...new Set(paletteValues(mode))].filter(v => !otherValues.has(v))
+}
+
+/** Every colour actually written to the context during a paint. */
+function stylesWritten(r: Recorder): unknown[] {
+  return r.calls
+    .filter(c => c.method === 'set:fillStyle' || c.method === 'set:strokeStyle' || c.method === 'set:shadowColor')
+    .map(c => c.args[0])
+}
+
+/** A project exercising every painter that reads a colour: a clip (row
+ *  background, track fill, selection outline, handles, waveform band), a
+ *  labelled overlay (label text + its shadow), a caption block, an audio bar
+ *  with a fade, and — via `selectedIds` — the selected states of each. */
+function paletteProject(): Project {
+  return project({
+    tracks: [
+      [clip({ id: 'c0', start: 0, end: 4 })],
+      // Wide enough (60px at the fixture viewport) to clear MIN_LABEL_WIDTH_PX,
+      // so the label — and the halo behind it — actually paints.
+      [clip({ id: 'ov0', type: 'overlay', src: 'title.jsx', start: 0, end: 6 })],
+    ],
+    audio: { tracks: [audio({ id: 'a0', start: 0, end: 3, fadeIn: 0.5, fadeOut: 0.5 })] },
+    captions: { segments: [captionSegment({ id: 'seg0', start: 0, end: 2 })] },
+  } as unknown as Partial<Project>)
+}
+
+/** A waveform lookup that always has data, so the clip band and the audio-lane
+ *  bars are actually painted and their colours are observable. */
+const ALWAYS_WAVEFORM = {
+  clipColumns: () => [{ min: -0.5, max: 0.5 }],
+  audioColumns: (_t: unknown, rect: { x: number; y: number; width: number; height: number }) =>
+    ({ rect, columns: [{ min: -0.5, max: 0.5 }] }),
+} as unknown as TimelineScene['waveforms']
+
+describe('timelinePalette', () => {
+  it('resolves dark to the exact constants the module has always exported', () => {
+    // Identity, not deep-equality: `TIMELINE_COLORS` and friends are still the
+    // objects every other module imports, so nothing can have been rebuilt or
+    // re-typed underneath them.
+    const dark = timelinePalette('dark')
+    expect(dark).toBe(DARK_TIMELINE_PALETTE)
+    expect(dark.colors).toBe(TIMELINE_COLORS)
+    expect(dark.tracks).toBe(TRACK_PALETTE)
+    expect(dark.caption).toBe(CAPTION_PALETTE)
+    expect(dark.captionRailAccent).toBe(CAPTION_RAIL_ACCENT)
+    expect(dark.waveform).toBe(WAVEFORM_COLORS)
+    expect(dark.labelShadow).toBe(LABEL_SHADOW_COLOR)
+  })
+
+  it('resolves light to the light constants', () => {
+    const light = timelinePalette('light')
+    expect(light).toBe(LIGHT_TIMELINE_PALETTE)
+    expect(light.colors).toBe(LIGHT_TIMELINE_COLORS)
+    expect(light.tracks).toBe(LIGHT_TRACK_PALETTE)
+    expect(light.caption).toBe(LIGHT_CAPTION_PALETTE)
+    expect(light.captionRailAccent).toBe(LIGHT_CAPTION_RAIL_ACCENT)
+    expect(light.waveform).toBe(LIGHT_WAVEFORM_COLORS)
+    expect(light.labelShadow).toBe(LIGHT_LABEL_SHADOW_COLOR)
+  })
+
+  it('returns the same object every call, so callers can memoize on identity', () => {
+    expect(timelinePalette('light')).toBe(timelinePalette('light'))
+    expect(timelinePalette('dark')).toBe(timelinePalette('dark'))
+  })
+
+  it('differs from dark on the keys that carry the theme', () => {
+    const dark = timelinePalette('dark').colors
+    const light = timelinePalette('light').colors
+    // The row field itself, and the chrome strip above it.
+    expect(light.rowBackground).not.toBe(dark.rowBackground)
+    expect(light.rowBackgroundAlt).not.toBe(dark.rowBackgroundAlt)
+    expect(light.rulerBackground).not.toBe(dark.rulerBackground)
+    // The selection vocabulary — white in dark, and it cannot stay white.
+    expect(light.clipSelectedOutline).not.toBe(dark.clipSelectedOutline)
+    expect(light.handleFill).not.toBe(dark.handleFill)
+    expect(light.marqueeBorder).not.toBe(dark.marqueeBorder)
+    // The colourless overlap treatment.
+    expect(light.overlapHatch).not.toBe(dark.overlapHatch)
+    expect(light.overlapEdge).not.toBe(dark.overlapEdge)
+    // Track/caption labels have to be readable on their own fills.
+    expect(light.audioText).not.toBe(dark.audioText)
+    expect(LIGHT_TRACK_PALETTE[0].text).not.toBe(TRACK_PALETTE[0].text)
+    expect(LIGHT_CAPTION_PALETTE.text).not.toBe(CAPTION_PALETTE.text)
+  })
+
+  it('keeps a light entry for every dark key and vice versa', () => {
+    expect(Object.keys(LIGHT_TIMELINE_COLORS).sort()).toEqual(Object.keys(TIMELINE_COLORS).sort())
+    expect(Object.keys(LIGHT_WAVEFORM_COLORS).sort()).toEqual(Object.keys(WAVEFORM_COLORS).sort())
+    expect(LIGHT_TRACK_PALETTE).toHaveLength(TRACK_PALETTE.length)
+  })
+})
+
+describe('the light palette is a real inversion, not a copy', () => {
+  /** The two entries that are IDENTICAL across modes on purpose:
+   *  - `playhead` is red-500 and unmistakable on either ground;
+   *  - `keyframeDiamondFill` is amber because no other hue on this surface is
+   *    free to mean "keyframe", and a diamond is painted over the clip's own
+   *    content (an arbitrary filmstrip frame), not over the row background, so
+   *    it is not tuned to either ground in the first place.
+   *  Everything else must move. */
+  const DELIBERATELY_SHARED = ['playhead', 'keyframeDiamondFill'] as const
+
+  it('changes every colour except the two that are deliberately shared', () => {
+    const shared = (Object.keys(TIMELINE_COLORS) as (keyof typeof TIMELINE_COLORS)[])
+      .filter(k => LIGHT_TIMELINE_COLORS[k] === TIMELINE_COLORS[k])
+    expect(shared.sort()).toEqual([...DELIBERATELY_SHARED].sort())
+  })
+
+  it('inverts every white-on-dark overlay to a dark-on-light one', () => {
+    // These are the trap: `rgba(255,255,255,…)` reads as "the mark" on a dark
+    // row and as "nothing at all" on a light one. Each must have stopped being
+    // white — asserted structurally rather than by naming the replacement, so
+    // the check survives a future tweak to the exact near-black used.
+    const whiteInDark = [
+      'overlapFill', 'overlapHatch', 'overlapEdge',
+      'fadeEnvelopeLine', 'fadeGripSubtle', 'fadeGripActive',
+      'clipSelectedOutline', 'handleFill', 'handleFillHovered',
+      'keyframeDiamondSelectedFill', 'marqueeFill', 'marqueeBorder',
+      'audioMutedFill',
+    ] as const
+    for (const key of whiteInDark) {
+      expect(TIMELINE_COLORS[key]).toMatch(/^(#ffffff|rgba\(255,255,255)/)
+      expect(LIGHT_TIMELINE_COLORS[key]).not.toMatch(/^(#ffffff|rgba\(255,255,255)/)
+    }
+    expect(WAVEFORM_COLORS.clip).toMatch(/^rgba\(255,255,255/)
+    expect(LIGHT_WAVEFORM_COLORS.clip).not.toMatch(/^rgba\(255,255,255/)
+    expect(LIGHT_WAVEFORM_COLORS.clipMuted).not.toMatch(/^rgba\(255,255,255/)
+  })
+
+  it('flips the hatch under-stroke so a dark hatch still has a ground', () => {
+    // Dark: white stripes over a BLACK under-stroke. Light: near-black stripes
+    // over a WHITE one. The under-stroke exists to be the opposite value of
+    // the stripe, whatever filmstrip frame is behind them.
+    expect(TIMELINE_COLORS.overlapHatchShadow).toMatch(/^rgba\(0,0,0/)
+    expect(LIGHT_TIMELINE_COLORS.overlapHatchShadow).toMatch(/^rgba\(255,255,255/)
+    // Same reasoning for the keyframe diamond's halo and the clip label's.
+    expect(TIMELINE_COLORS.keyframeDiamondStroke).toMatch(/^rgba\(0,0,0/)
+    expect(LIGHT_TIMELINE_COLORS.keyframeDiamondStroke).toMatch(/^rgba\(255,255,255/)
+    expect(LABEL_SHADOW_COLOR).toMatch(/^rgba\(0,0,0/)
+    expect(LIGHT_LABEL_SHADOW_COLOR).toMatch(/^rgba\(255,255,255/)
+  })
+
+  it('keeps "no two meanings share one literal" for the overlap/mute pair', () => {
+    // The dark set says 0.12 rather than the natural 0.1 precisely because
+    // `audioMutedFill` already IS 0.1 — a muted bar and an overlap band must
+    // stay distinguishable by colour alone. That property is a rule about the
+    // palette, not about dark, so it has to hold in light too.
+    expect(TIMELINE_COLORS.overlapFill).not.toBe(TIMELINE_COLORS.audioMutedFill)
+    expect(LIGHT_TIMELINE_COLORS.overlapFill).not.toBe(LIGHT_TIMELINE_COLORS.audioMutedFill)
+    expect(LIGHT_TIMELINE_COLORS.marqueeFill).not.toBe(LIGHT_TIMELINE_COLORS.audioMutedFill)
+  })
+
+  it('gives every track hue its own entry in both modes', () => {
+    // Six distinct hues is the whole point of the cycle — a light palette that
+    // collapsed two of them would silently make two tracks look the same.
+    expect(new Set(LIGHT_TRACK_PALETTE.map(t => t.fill)).size).toBe(LIGHT_TRACK_PALETTE.length)
+    expect(new Set(LIGHT_TRACK_PALETTE.map(t => t.text)).size).toBe(LIGHT_TRACK_PALETTE.length)
+  })
+})
+
+describe('painters use the palette they are handed, not the module global', () => {
+  // This is the assertion that catches the real bug: a painter that still
+  // reads `TIMELINE_COLORS` directly passes any test that only checks the
+  // palette CONSTANTS differ.
+
+  it('drawRowBackground paints the light row and its light divider', () => {
+    const r = recordingContext()
+    drawRowBackground(r.ctx, { x: 0, y: 0, width: 100, height: 20 }, undefined, LIGHT_TIMELINE_PALETTE)
+    expect(r.of('set:fillStyle').map(c => c.args[0])).toContain(LIGHT_TIMELINE_COLORS.rowBackground)
+    expect(r.of('set:strokeStyle').map(c => c.args[0])).toContain(LIGHT_TIMELINE_COLORS.rowDivider)
+    expect(r.of('set:fillStyle').map(c => c.args[0])).not.toContain(TIMELINE_COLORS.rowBackground)
+    expect(r.of('set:strokeStyle').map(c => c.args[0])).not.toContain(TIMELINE_COLORS.rowDivider)
+  })
+
+  it('drawItemHandles paints the light pill and the light grip ticks', () => {
+    const r = recordingContext()
+    drawItemHandles(r.ctx, { x: 0, y: 0, width: 200, height: 40 }, CLIP_HANDLE_WIDTH_PX, 'in', undefined, LIGHT_TIMELINE_PALETTE)
+    const fills = r.of('set:fillStyle').map(c => c.args[0])
+    expect(fills).toContain(LIGHT_TIMELINE_COLORS.handleFillHovered)
+    expect(fills).toContain(LIGHT_TIMELINE_COLORS.handleGripHovered)
+    expect(fills).not.toContain(TIMELINE_COLORS.handleFill)
+    expect(fills).not.toContain(TIMELINE_COLORS.handleGrip)
+  })
+
+  it('drawCaptionBlock takes its hue from the palette, not CAPTION_PALETTE', () => {
+    const r = recordingContext()
+    drawCaptionBlock(r.ctx, { rect: { x: 0, y: 0, width: 120, height: 20 }, selected: false, label: 'hi' }, LIGHT_TIMELINE_PALETTE)
+    const fills = r.of('set:fillStyle').map(c => c.args[0])
+    expect(fills).toContain(LIGHT_CAPTION_PALETTE.fill)
+    expect(fills).toContain(LIGHT_CAPTION_PALETTE.text)
+    expect(fills).not.toContain(CAPTION_PALETTE.fill)
+    expect(r.of('set:strokeStyle').map(c => c.args[0])).toContain(LIGHT_CAPTION_PALETTE.border)
+  })
+
+  it('drawOverlapBand paints the light hatch over the light under-stroke', () => {
+    const r = recordingContext()
+    drawOverlapBand(r.ctx, { x: 0, y: 0, width: 60, height: 40 }, LIGHT_TIMELINE_PALETTE)
+    const strokes = r.of('set:strokeStyle').map(c => c.args[0])
+    expect(strokes).toEqual([LIGHT_TIMELINE_COLORS.overlapHatchShadow, LIGHT_TIMELINE_COLORS.overlapHatch])
+    expect(r.of('set:fillStyle').map(c => c.args[0])).toContain(LIGHT_TIMELINE_COLORS.overlapEdge)
+  })
+
+  it('drawRuler paints the light chrome strip, ticks and labels', () => {
+    const r = recordingContext()
+    drawRuler(r.ctx, viewport(), { y: 0, height: RULER_HEIGHT_PX }, 1000, LIGHT_TIMELINE_PALETTE)
+    const fills = r.of('set:fillStyle').map(c => c.args[0])
+    expect(fills).toContain(LIGHT_TIMELINE_COLORS.rulerBackground)
+    expect(fills).toContain(LIGHT_TIMELINE_COLORS.rulerTick)
+    expect(fills).toContain(LIGHT_TIMELINE_COLORS.rulerText)
+    expect(fills).not.toContain(TIMELINE_COLORS.rulerBackground)
+  })
+
+  it('drawMarquee, drawPlayhead, drawCursorLine and drawSnapGuide take theirs too', () => {
+    const r = recordingContext()
+    drawMarquee(r.ctx, { x: 0, y: 0, width: 40, height: 40 }, LIGHT_TIMELINE_PALETTE)
+    drawPlayhead(r.ctx, 10, 0, 40, LIGHT_TIMELINE_PALETTE)
+    drawCursorLine(r.ctx, 12, 0, 40, LIGHT_TIMELINE_PALETTE)
+    drawSnapGuide(r.ctx, 14, 0, 40, 'strong', LIGHT_TIMELINE_PALETTE)
+    const styles = stylesWritten(r)
+    expect(styles).toContain(LIGHT_TIMELINE_COLORS.marqueeFill)
+    expect(styles).toContain(LIGHT_TIMELINE_COLORS.marqueeBorder)
+    expect(styles).toContain(LIGHT_TIMELINE_COLORS.cursor)
+    expect(styles).toContain(LIGHT_TIMELINE_COLORS.snapGuide)
+    // Shared on purpose — the light pass still paints red-500 here.
+    expect(styles).toContain(TIMELINE_COLORS.playhead)
+    expect(styles).not.toContain(TIMELINE_COLORS.cursor)
+    expect(styles).not.toContain(TIMELINE_COLORS.marqueeBorder)
+  })
+})
+
+describe('drawTimelineContent / drawTimelineOverlay — mode', () => {
+  it('paints the whole content layer from the light set and never from the dark one', () => {
+    const p = paletteProject()
+    const r = recordingContext()
+    drawTimelineContent(r.ctx, scene({
+      project: p,
+      layout: computeTimelineLayout(p),
+      selectedIds: ['c0', 'ov0', 'a0', 'seg0'],
+      waveforms: ALWAYS_WAVEFORM,
+      mode: 'light',
+    }))
+    const styles = stylesWritten(r)
+
+    // Spot-checks across every painter the pass runs.
+    expect(styles).toContain(LIGHT_TIMELINE_COLORS.rowBackground)
+    expect(styles).toContain(LIGHT_TIMELINE_COLORS.rowBackgroundAlt)
+    expect(styles).toContain(LIGHT_TIMELINE_COLORS.rulerBackground)
+    expect(styles).toContain(LIGHT_TIMELINE_COLORS.clipSelectedOutline)
+    expect(styles).toContain(LIGHT_TIMELINE_COLORS.handleFill)
+    expect(styles).toContain(LIGHT_TIMELINE_COLORS.audioFill)
+    expect(styles).toContain(LIGHT_TIMELINE_COLORS.fadeEnvelopeDim)
+    expect(styles).toContain(LIGHT_TIMELINE_COLORS.fadeEnvelopeLine)
+    expect(styles).toContain(LIGHT_TRACK_PALETTE[0].fillSelected)
+    expect(styles).toContain(LIGHT_TRACK_PALETTE[1].text)
+    expect(styles).toContain(LIGHT_CAPTION_PALETTE.fillSelected)
+    // Threaded into the waveform painters from the SAME resolved palette.
+    expect(styles).toContain(LIGHT_WAVEFORM_COLORS.clipBand)
+    expect(styles).toContain(LIGHT_WAVEFORM_COLORS.clip)
+    expect(styles).toContain(LIGHT_WAVEFORM_COLORS.audioLane)
+    // The clip label's halo (a shadowColor, not a fill) follows too.
+    expect(styles).toContain(LIGHT_LABEL_SHADOW_COLOR)
+
+    // And nothing dark-only leaked through — the check a spot-check can't make.
+    for (const darkOnly of exclusiveTo(DARK_TIMELINE_PALETTE, LIGHT_TIMELINE_PALETTE)) {
+      expect(styles).not.toContain(darkOnly)
+    }
+  })
+
+  it('defaults to dark when no mode is given, with no light value anywhere', () => {
+    // The no-regression proof: every caller and every test that predates modes
+    // goes down this path.
+    const p = paletteProject()
+    const r = recordingContext()
+    drawTimelineContent(r.ctx, scene({
+      project: p,
+      layout: computeTimelineLayout(p),
+      selectedIds: ['c0', 'ov0', 'a0', 'seg0'],
+      waveforms: ALWAYS_WAVEFORM,
+    }))
+    const styles = stylesWritten(r)
+    expect(styles).toContain(TIMELINE_COLORS.rowBackground)
+    expect(styles).toContain(TIMELINE_COLORS.clipSelectedOutline)
+    expect(styles).toContain(WAVEFORM_COLORS.clip)
+    expect(styles).toContain(LABEL_SHADOW_COLOR)
+    for (const lightOnly of exclusiveTo(LIGHT_TIMELINE_PALETTE, DARK_TIMELINE_PALETTE)) {
+      expect(styles).not.toContain(lightOnly)
+    }
+  })
+
+  it('paints an explicit dark mode identically to an omitted one', () => {
+    const p = paletteProject()
+    const omitted = recordingContext()
+    const explicit = recordingContext()
+    const args = { project: p, layout: computeTimelineLayout(p), selectedIds: ['c0'], waveforms: ALWAYS_WAVEFORM }
+    drawTimelineContent(omitted.ctx, scene(args))
+    drawTimelineContent(explicit.ctx, scene({ ...args, mode: 'dark' }))
+    expect(explicit.calls).toEqual(omitted.calls)
+  })
+
+  it('paints the overlay layer from the light set', () => {
+    const r = recordingContext()
+    drawTimelineOverlay(r.ctx, {
+      viewport: viewport(),
+      currentTime: 1,
+      cursorTime: 1.5,
+      snapTime: 2,
+      snapStrength: 'weak',
+      marquee: { x: 0, y: 0, width: 40, height: 40 },
+      surfaceWidth: 1000,
+      surfaceHeight: 200,
+      mode: 'light',
+    })
+    const styles = stylesWritten(r)
+    expect(styles).toContain(LIGHT_TIMELINE_COLORS.marqueeFill)
+    expect(styles).toContain(LIGHT_TIMELINE_COLORS.cursor)
+    expect(styles).toContain(LIGHT_TIMELINE_COLORS.snapGuideWeak)
+    expect(styles).toContain(TIMELINE_COLORS.playhead) // shared on purpose
+    expect(styles).not.toContain(TIMELINE_COLORS.cursor)
+    expect(styles).not.toContain(TIMELINE_COLORS.snapGuideWeak)
+    expect(styles).not.toContain(TIMELINE_COLORS.marqueeFill)
+  })
+
+  it('leaves the overlay dark when no mode is given', () => {
+    const r = recordingContext()
+    drawTimelineOverlay(r.ctx, {
+      viewport: viewport(),
+      currentTime: 1,
+      cursorTime: 1.5,
+      snapTime: 2,
+      marquee: { x: 0, y: 0, width: 40, height: 40 },
+      surfaceWidth: 1000,
+      surfaceHeight: 200,
+    })
+    const styles = stylesWritten(r)
+    expect(styles).toContain(TIMELINE_COLORS.cursor)
+    expect(styles).toContain(TIMELINE_COLORS.snapGuide)
+    expect(styles).not.toContain(LIGHT_TIMELINE_COLORS.cursor)
+    expect(styles).not.toContain(LIGHT_TIMELINE_COLORS.marqueeFill)
   })
 })

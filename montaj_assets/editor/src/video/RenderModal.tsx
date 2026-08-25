@@ -113,6 +113,16 @@ interface RenderModalProps<P extends Project = Project> {
    * with `isHdr: true` for those and omit it (or pass `isHdr: false`)
    * everywhere else, which preserves the fire-on-mount behavior exactly. */
   preRenderOptions?: PreRenderOptions
+  /** Editor theme mode — light/dark. The export dialog and progress/error
+   *  panels follow `--editor-surface`, so warning/error hues need to darken
+   *  in light mode. The render-log terminal boxes stay dark by design and so
+   *  take no mode: they are painted an OPAQUE near-black (`#0a0e17`/`#0e131f`)
+   *  rather than a translucent `bg-black/40`, which would have composited to
+   *  mid-grey over a light surface instead of staying a terminal. Those two
+   *  values are exactly what the old translucent blacks composited to over the
+   *  dark `--editor-surface`, so dark mode is unchanged. Absent -> dark,
+   *  matching every existing caller. */
+  mode?: 'light' | 'dark'
 }
 
 /** Promoted render output (R2-presigned), as carried by `RenderStatus.media`. */
@@ -391,7 +401,7 @@ function ProgressBar({ value }: { value: number | null }) {
   )
 }
 
-export default function RenderModal<P extends Project = Project>({ projectId, adapter, onClose, onCancel, onRenderComplete, exportActions, progressView, preRenderOptions }: RenderModalProps<P>) {
+export default function RenderModal<P extends Project = Project>({ projectId, adapter, onClose, onCancel, onRenderComplete, exportActions, progressView, preRenderOptions, mode = 'dark' }: RenderModalProps<P>) {
   const [status, setStatus]     = useState<'running' | 'done' | 'error'>('running')
   const [phase, setPhase]       = useState<RenderPhase>('preparing')
   const [logs, setLogs]         = useState<string[]>([])
@@ -1130,7 +1140,7 @@ export default function RenderModal<P extends Project = Project>({ projectId, ad
                           className={`text-[11px] leading-snug ${
                             sdrCurve === DEFAULT_SDR_CURVE
                               ? 'text-[var(--editor-text)]/55'
-                              : 'text-amber-400/90'
+                              : (mode === 'light' ? 'text-amber-700' : 'text-amber-400/90')
                           }`}
                         >
                           {honestyLine(sdrCurve)}
@@ -1345,7 +1355,7 @@ export default function RenderModal<P extends Project = Project>({ projectId, ad
 
             {/* Granular phase progress (poll hosts advance through phases). */}
             {view !== 'logs' && (
-              <div className="w-full max-w-xs rounded-xl border border-white/10 bg-black/20 px-4 py-3">
+              <div className="w-full max-w-xs rounded-xl border border-white/10 bg-[#0e131f] px-4 py-3">
                 <PhaseStepper current={phase} phases={stepperPhases(renderOpts)} />
               </div>
             )}
@@ -1365,14 +1375,14 @@ export default function RenderModal<P extends Project = Project>({ projectId, ad
                   <div className="relative mt-2">
                     <button
                       onClick={() => navigator.clipboard.writeText(logs.join('\n'))}
-                      className="absolute top-2 right-2 z-10 rounded border border-white/10 bg-black/40 px-2 py-0.5 text-[10px] text-[var(--editor-text)]/60 hover:text-[var(--editor-text)] transition-colors"
+                      className="absolute top-2 right-2 z-10 rounded border border-white/10 bg-[#0a0e17] px-2 py-0.5 text-[10px] text-[var(--editor-text)]/60 hover:text-[var(--editor-text)] transition-colors"
                       title="Copy logs"
                     >
                       Copy
                     </button>
                     <div
                       ref={logRef}
-                      className="flex h-52 flex-col gap-0.5 overflow-y-auto rounded-lg border border-white/10 bg-black/40 px-3 py-2 font-mono text-[11px] text-[var(--editor-text)]/80"
+                      className="flex h-52 flex-col gap-0.5 overflow-y-auto rounded-lg border border-white/10 bg-[#0a0e17] px-3 py-2 font-mono text-[11px] text-[var(--editor-text)]/80"
                     >
                       {logs.length === 0
                         ? <span className="italic text-[var(--editor-text)]/40">Starting render engine…</span>
@@ -1390,21 +1400,21 @@ export default function RenderModal<P extends Project = Project>({ projectId, ad
               <div className="relative">
                 <button
                   onClick={() => navigator.clipboard.writeText(logs.join('\n') + (errorMsg ? '\n' + errorMsg : ''))}
-                  className="absolute top-2 right-2 z-10 rounded border border-white/10 bg-black/40 px-2 py-0.5 text-[10px] text-[var(--editor-text)]/60 hover:text-[var(--editor-text)] transition-colors"
+                  className="absolute top-2 right-2 z-10 rounded border border-white/10 bg-[#0a0e17] px-2 py-0.5 text-[10px] text-[var(--editor-text)]/60 hover:text-[var(--editor-text)] transition-colors"
                   title="Copy logs"
                 >
                   Copy
                 </button>
                 <div
                   ref={logRef}
-                  className="flex h-72 flex-col gap-0.5 overflow-y-auto rounded-lg border border-white/10 bg-black/40 px-3 py-2 font-mono text-[11px] text-[var(--editor-text)]/80"
+                  className="flex h-72 flex-col gap-0.5 overflow-y-auto rounded-lg border border-white/10 bg-[#0a0e17] px-3 py-2 font-mono text-[11px] text-[var(--editor-text)]/80"
                 >
                   {logs.map((line, i) => <LogLine key={i} text={line} />)}
                   {errorMsg && <span className="mt-1 text-red-400">{errorMsg}</span>}
                 </div>
               </div>
             ) : (
-              <p className="text-sm text-red-400 whitespace-pre-wrap break-words">
+              <p className={`text-sm whitespace-pre-wrap break-words ${mode === 'light' ? 'text-red-600' : 'text-red-400'}`}>
                 {errorMsg ?? 'Render failed.'}
               </p>
             )}
@@ -1416,14 +1426,14 @@ export default function RenderModal<P extends Project = Project>({ projectId, ad
           {status === 'running' ? (
             <button
               onClick={handleCancel}
-              className="text-sm px-4 py-1.5 rounded-md bg-black/20 border border-white/10 text-[var(--editor-text)]/80 hover:bg-red-900/40 hover:border-red-700 hover:text-red-300 transition-colors"
+              className={`text-sm px-4 py-1.5 rounded-md bg-[#0e131f] border border-white/10 text-[var(--editor-text)]/80 transition-colors ${mode === 'light' ? 'hover:bg-red-50 hover:border-red-300 hover:text-red-700' : 'hover:bg-red-900/40 hover:border-red-700 hover:text-red-300'}`}
             >
               Cancel
             </button>
           ) : (
             <button
               onClick={onClose}
-              className="text-sm px-4 py-1.5 rounded-md bg-black/20 border border-white/10 text-[var(--editor-text)] hover:opacity-90 transition-colors"
+              className="text-sm px-4 py-1.5 rounded-md bg-[#0e131f] border border-white/10 text-[var(--editor-text)] hover:opacity-90 transition-colors"
             >
               Close
             </button>

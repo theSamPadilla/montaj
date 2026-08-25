@@ -14,7 +14,7 @@ import { render, act, cleanup } from '@testing-library/react'
 import { createPlaybackClock } from '../../../playback-clock'
 import type { Project } from '../../../../types'
 import TimelineCanvas from '../TimelineCanvas'
-import { TIMELINE_COLORS } from '../draw'
+import { LIGHT_TIMELINE_COLORS, TIMELINE_COLORS, type TimelineMode } from '../draw'
 import { createViewportStore, type ViewportStore } from '../viewport'
 
 interface RecordedCall { method: string; args: unknown[] }
@@ -324,5 +324,84 @@ describe('TimelineCanvas', () => {
     act(() => { vi.advanceTimersByTime(32) })
 
     expect(content.some(c => c.method === 'clearRect')).toBe(true)
+  })
+})
+
+describe('TimelineCanvas — theme mode', () => {
+  // The canvas coalesces every redraw into one rAF and repaints only the
+  // layers marked dirty, so a theme flip that isn't wired into that
+  // dirty-marking leaves BOTH layers showing the previous theme's pixels until
+  // something unrelated happens to touch them — and on a paused, untouched
+  // timeline the overlay layer is touched by nothing at all. These tests are
+  // about that wiring, not about the colours (draw.test.ts owns those).
+  function mountWithMode(initial: TimelineMode) {
+    const store = createViewportStore()
+    const clock = createPlaybackClock()
+    function Surface({ mode }: { mode: TimelineMode }) {
+      return (
+        <TimelineCanvas
+          project={project}
+          clock={clock}
+          store={store}
+          totalDuration={20}
+          fps={30}
+          selectedIds={NO_SELECTION}
+          mode={mode}
+        />
+      )
+    }
+    const utils = render(<Surface mode={initial} />)
+    act(() => { vi.advanceTimersByTime(32) })
+    const canvases = utils.container.querySelectorAll('canvas')
+    return {
+      content: recorderFor(canvases[0] as HTMLCanvasElement),
+      overlay: recorderFor(canvases[1] as HTMLCanvasElement),
+      setMode: (mode: TimelineMode) => {
+        utils.rerender(<Surface mode={mode} />)
+        act(() => { vi.advanceTimersByTime(32) })
+      },
+    }
+  }
+
+  it('repaints BOTH layers with the new palette when the mode flips', () => {
+    const { content, overlay, setMode } = mountWithMode('dark')
+
+    // Baseline: the surface really did come up dark.
+    expect(content.some(c => c.method === 'set:fillStyle' && c.args[0] === TIMELINE_COLORS.rowBackground)).toBe(true)
+    content.length = 0
+    overlay.length = 0
+
+    setMode('light')
+
+    // Content: repainted, and repainted LIGHT — not merely repainted.
+    expect(content.some(c => c.method === 'set:fillStyle' && c.args[0] === LIGHT_TIMELINE_COLORS.rowBackground)).toBe(true)
+    expect(content.some(c => c.method === 'set:fillStyle' && c.args[0] === TIMELINE_COLORS.rowBackground)).toBe(false)
+    // Overlay: nothing else on this idle surface would ever repaint it, so a
+    // fresh clear+playhead pass here is the whole proof that the flip marked
+    // it dirty too. (Its one mark, the playhead, is red in both modes by
+    // design — see draw.test.ts — so the colour can't be the tell.)
+    expect(overlay.some(c => c.method === 'clearRect')).toBe(true)
+    expect(overlay.some(c => c.method === 'set:fillStyle' && c.args[0] === TIMELINE_COLORS.playhead)).toBe(true)
+  })
+
+  it('flips back to dark, so the dependency is the mode and not "changed once"', () => {
+    const { content, setMode } = mountWithMode('light')
+    expect(content.some(c => c.method === 'set:fillStyle' && c.args[0] === LIGHT_TIMELINE_COLORS.rowBackground)).toBe(true)
+    content.length = 0
+
+    setMode('dark')
+    expect(content.some(c => c.method === 'set:fillStyle' && c.args[0] === TIMELINE_COLORS.rowBackground)).toBe(true)
+    expect(content.some(c => c.method === 'set:fillStyle' && c.args[0] === LIGHT_TIMELINE_COLORS.rowBackground)).toBe(false)
+  })
+
+  it('does not repaint when a rerender leaves the mode alone', () => {
+    // The other half of the contract: a host re-rendering for any other reason
+    // must not cost a full two-layer repaint.
+    const { content, overlay, setMode } = mountWithMode('dark')
+    content.length = 0
+    overlay.length = 0
+    setMode('dark')
+    expect(content).toHaveLength(0)
+    expect(overlay).toHaveLength(0)
   })
 })

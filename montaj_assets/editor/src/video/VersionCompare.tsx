@@ -25,6 +25,10 @@ export interface VersionCompareProps {
    *  compute the project's real duration. */
   durationSeconds?: number
   onClose: () => void
+  /** Editor theme mode — light/dark. Only affects the frame panes' load-error
+   *  text (red-400 is sub-AA on the light `--editor-bg` placeholder box).
+   *  Absent -> dark, matching every existing caller. */
+  mode?: 'light' | 'dark'
 }
 
 /** Sentinel commit id for "the live on-disk state", matching the backend's
@@ -58,12 +62,14 @@ function VersionFramePane({
   commit,
   t,
   frameUrl,
+  mode = 'dark',
 }: {
   label: string
   projectId: string
   commit: string
   t: number
   frameUrl: (id: string, commit: string, t: number) => string
+  mode?: 'light' | 'dark'
 }) {
   const src = frameUrl(projectId, commit, t)
   const [loading, setLoading] = useState(true)
@@ -99,7 +105,7 @@ function VersionFramePane({
           </span>
         )}
         {error && (
-          <span className="absolute inset-0 flex items-center justify-center text-xs text-red-400/90 px-3 text-center">
+          <span className={`absolute inset-0 flex items-center justify-center text-xs px-3 text-center ${mode === 'light' ? 'text-red-600' : 'text-red-400/90'}`}>
             Error rendering frame
           </span>
         )}
@@ -121,6 +127,7 @@ export default function VersionCompare({
   frameUrl,
   durationSeconds,
   onClose,
+  mode = 'dark',
 }: VersionCompareProps) {
   const duration = durationSeconds && durationSeconds > 0 ? durationSeconds : DEFAULT_DURATION_SECONDS
 
@@ -215,6 +222,7 @@ export default function VersionCompare({
               commit={leftHash}
               t={sampleT}
               frameUrl={frameUrl}
+              mode={mode}
             />
             <VersionFramePane
               label={labelFor(rightHash, versions)}
@@ -222,6 +230,7 @@ export default function VersionCompare({
               commit={rightHash}
               t={sampleT}
               frameUrl={frameUrl}
+              mode={mode}
             />
           </div>
 

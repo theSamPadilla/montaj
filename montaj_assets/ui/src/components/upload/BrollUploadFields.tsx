@@ -235,7 +235,8 @@ export default function BrollUploadFields({ clips, setClips, assets, setAssets, 
         onDrop={handleDropClips}
         onRemove={path => setClips(clips.filter(p => p !== path))}
         browseLabel={clips.length === 0 ? 'Browse files' : 'Add more'}
-        accentClass="border-blue-500 bg-blue-500/10"
+        accentClass="border-indigo-500 bg-indigo-500/10"
+        thumbnails
       />
 
       <DropZone
@@ -249,7 +250,8 @@ export default function BrollUploadFields({ clips, setClips, assets, setAssets, 
         onDrop={handleDropAssets}
         onRemove={path => setAssets(assets.filter(p => p !== path))}
         browseLabel={assets.length === 0 ? 'Browse files' : 'Add more'}
-        accentClass="border-purple-500 bg-purple-500/10"
+        accentClass="border-indigo-500 bg-indigo-500/10"
+        thumbnails
       />
 
       <VoiceoverZone

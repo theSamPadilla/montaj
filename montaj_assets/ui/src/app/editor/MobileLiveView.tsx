@@ -97,6 +97,12 @@ export default function MobileLiveView({ project, logMessage, onProjectChange }:
                     </button>
                   </div>
                 )}
+                {/* No manual-start button on mobile: flipping status here would land the user
+                    in MobileVideoPreview, which previews but cannot assemble a timeline. The
+                    bypass lives on the desktop pending screen (PendingIntro). */}
+                <p className="text-gray-500 text-[10px] leading-relaxed">
+                  Want to build it yourself instead? Open this project on a desktop to start editing manually.
+                </p>
                 <p className="text-gray-600 text-[10px] font-mono">project id: {project.id}</p>
                 {canGoBack && (
                   <button onClick={handleBackToSetup} className="text-xs text-gray-500 underline">

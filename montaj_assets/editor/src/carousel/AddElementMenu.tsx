@@ -8,9 +8,14 @@ interface Props {
   selectedSlideId: string | null
   adapter: EditorAdapter<Project>
   onAddElement: (slideId: string, element: CarouselElement) => void
+  /** Editor theme mode — light/dark. Threaded to `OverlayPicker`, and used
+   *  locally for the upload/text/generate error hues (red-400 is sub-AA on
+   *  the light side panel). Absent -> dark, matching every existing
+   *  caller. */
+  mode?: 'light' | 'dark'
 }
 
-export default function AddElementMenu({ project, selectedSlideId, adapter, onAddElement }: Props) {
+export default function AddElementMenu({ project, selectedSlideId, adapter, onAddElement, mode = 'dark' }: Props) {
   const [showPrompt, setShowPrompt] = useState(false)
   const [prompt, setPrompt] = useState('')
   const [generating, setGenerating] = useState(false)
@@ -171,8 +176,8 @@ export default function AddElementMenu({ project, selectedSlideId, adapter, onAd
           + Overlay
         </Button>
       </div>
-      {uploadError && <div className="text-xs text-red-400">{uploadError}</div>}
-      {textError && <div className="text-xs text-red-400">{textError}</div>}
+      {uploadError && <div className={`text-xs ${mode === 'light' ? 'text-red-600' : 'text-red-400'}`}>{uploadError}</div>}
+      {textError && <div className={`text-xs ${mode === 'light' ? 'text-red-600' : 'text-red-400'}`}>{textError}</div>}
 
       {showPrompt && !disabled && (
         <div className="flex flex-col gap-2 p-3 bg-[var(--editor-surface)] border border-[var(--editor-border)] rounded-lg">
@@ -185,7 +190,7 @@ export default function AddElementMenu({ project, selectedSlideId, adapter, onAd
             disabled={generating}
             onKeyDown={e => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) handleGenerate() }}
           />
-          {genError && <div className="text-xs text-red-400">{genError}</div>}
+          {genError && <div className={`text-xs ${mode === 'light' ? 'text-red-600' : 'text-red-400'}`}>{genError}</div>}
           <div className="flex gap-2">
             <Button size="sm" onClick={handleGenerate} disabled={generating || !prompt.trim()} className="text-xs">
               {generating ? 'Generating…' : 'Generate'}
@@ -205,6 +210,7 @@ export default function AddElementMenu({ project, selectedSlideId, adapter, onAd
         onPick={element => {
           if (selectedSlideId) onAddElement(selectedSlideId, element)
         }}
+        mode={mode}
       />
     </div>
   )

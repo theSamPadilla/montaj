@@ -40,7 +40,7 @@ import type { KeyframeProp } from '../../../schema'
 import type { PlaybackClock } from '../../playback-clock'
 import { VISUAL_ROW_RENDER_HEIGHT_PX, normalizeTracks } from '../timeline-model'
 import { insertClipAt } from '../../cuts'
-import { computeTimelineLayout, drawTimelineContent, drawTimelineOverlay } from './draw'
+import { computeTimelineLayout, drawTimelineContent, drawTimelineOverlay, type TimelineMode } from './draw'
 import { hitTest, isEdgeHit, type Point, type SurfaceRect } from './hit-test'
 import { keyframeUnionTimes } from './keyframe-strip'
 import {
@@ -164,6 +164,12 @@ export interface TimelineCanvasProps {
    *  SAME mechanism `WaveformChunk.path` uses for the DOM waveform PNGs
    *  (`adapter.fileUrl`). Threaded from Timeline's own `resolveFilePath`. */
   resolveFilePath?: ResolveFilePath
+  /** Which ground the painter draws on, resolved from the host theme by
+   *  `VideoEditor` (see `isLightTheme`) and threaded through Timeline. The
+   *  canvas cannot read a CSS variable, so this is how a theme flip reaches
+   *  the pixels. Defaults to `'dark'` — the only mode this surface had — so a
+   *  host that never passes it is unchanged. */
+  mode?: TimelineMode
 }
 
 const requestFrame: (cb: () => void) => number =
@@ -246,6 +252,7 @@ export default function TimelineCanvas({
   getWaveformPeaks,
   getFilmstrip,
   resolveFilePath,
+  mode = 'dark',
 }: TimelineCanvasProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const contentCanvasRef = useRef<HTMLCanvasElement>(null)
@@ -280,8 +287,8 @@ export default function TimelineCanvas({
   // Latest draw inputs, readable from the imperative paint without making the
   // paint a dependency of every effect (the ref-to-latest pattern
   // `useTimelineZoom` uses for its wheel handler).
-  const sceneRef = useRef({ project, layout, selectedIds, selectedKeyframe, totalDuration })
-  sceneRef.current = { project, layout, selectedIds, selectedKeyframe, totalDuration }
+  const sceneRef = useRef({ project, layout, selectedIds, selectedKeyframe, totalDuration, mode })
+  sceneRef.current = { project, layout, selectedIds, selectedKeyframe, totalDuration, mode }
 
   // The preview-axis cursor, tracked imperatively for the same reason the
   // filmstrip hover thumb is: it moves with every mousemove, and a React state
@@ -387,6 +394,7 @@ export default function TimelineCanvas({
           surfaceHeight: cssHeight,
           waveforms,
           filmstrips,
+          mode: scene.mode,
         })
       }
     }
@@ -405,6 +413,7 @@ export default function TimelineCanvas({
           marquee: marqueeRef.current,
           surfaceWidth: cssWidth,
           surfaceHeight: cssHeight,
+          mode: scene.mode,
         })
       }
     }
@@ -516,6 +525,18 @@ export default function TimelineCanvas({
   // ── Playhead: the only per-tick subscriber, and it repaints one layer ──
   useEffect(() => clock.subscribe(() => requestRedraw('overlay')), [clock, requestRedraw])
 
+  // ── Theme: a light/dark flip repaints BOTH layers ──
+  //
+  // `mode` is not part of the content effect below on purpose. It changes the
+  // colour of marks on the OVERLAY too — the playhead, the axis cursor, the
+  // marquee — and that layer is repainted only by the clock, the viewport or a
+  // gesture. Without this the surface would keep showing stale pixels of the
+  // previous theme until something unrelated happened to touch each layer,
+  // which for the overlay of a paused, untouched timeline is "never". The
+  // paint reads `sceneRef.current.mode`, written during the same render that
+  // schedules this effect, so the repaint always sees the NEW mode.
+  useEffect(() => { requestRedraw('all') }, [mode, requestRedraw])
+
   // ── Content: project/selection edits ──
   const selectionKey = selectedIds.join('\0')
   // The selected keyframe is content too — the strip draws it filled — so a
@@ -568,11 +589,11 @@ export default function TimelineCanvas({
   // Everything the machine's context and effects need, refreshed each render so
   // handlers bound once on mount never read a stale project or callback.
   const pointerRef = useRef({
-    project, layout, selectedIds, snapBoundaries, totalDuration, fps, rippleMode, previewAxis,
+    project, layout, selectedIds, selectedKeyframe, snapBoundaries, totalDuration, fps, rippleMode, previewAxis,
     onSelectItem, onSelectItems, onSelectKeyframe, onProjectChange, onOverlayEdit, onInspectClip, onInspectAudio, onEditCaption, onHoverScrub, onFadeCurveMenu, onKeyframeMenu,
   })
   pointerRef.current = {
-    project, layout, selectedIds, snapBoundaries, totalDuration, fps, rippleMode, previewAxis,
+    project, layout, selectedIds, selectedKeyframe, snapBoundaries, totalDuration, fps, rippleMode, previewAxis,
     onSelectItem, onSelectItems, onSelectKeyframe, onProjectChange, onOverlayEdit, onInspectClip, onInspectAudio, onEditCaption, onHoverScrub, onFadeCurveMenu, onKeyframeMenu,
   }
 
@@ -583,6 +604,7 @@ export default function TimelineCanvas({
       layout: p.layout,
       viewport: store.get(),
       selectedIds: p.selectedIds,
+      selectedKeyframe: p.selectedKeyframe,
       snapBoundaries: p.snapBoundaries,
       totalDuration: p.totalDuration,
       fps: p.fps,

@@ -1,6 +1,6 @@
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Trash2, Pencil, RefreshCw, AlertCircle, Sparkles } from 'lucide-react'
+import { Trash2, Pencil, RefreshCw, AlertCircle, Sparkles, Loader2 } from 'lucide-react'
 import { StatusBadge } from '@/components/ui/badge'
 import { api } from '@/lib/api'
 import { getVisualItems } from '@/lib/types/schema'
@@ -25,6 +25,32 @@ export default function ProjectHeader({ project, onProjectChange, actions }: Pro
 
   const needsProxy = (project.settings as { proxy?: boolean } | undefined)?.proxy !== false
     && getVisualItems(project).some(it => it.type === 'video' && it.src && !it.proxySrc)
+
+  // Is the background proxy drain actually running? While it is, this project's
+  // unproxied clips are being made ready automatically, so the manual "Generate
+  // previews" trigger must NOT show (it reads as "nothing is happening, do it
+  // yourself" and invites a redundant re-run). We poll the same global status
+  // the ProxyActivityIndicator does — fast while active, slow while idle — only
+  // while this project has clips that still need a proxy.
+  const [proxyActive, setProxyActive] = useState(false)
+  useEffect(() => {
+    if (!needsProxy) { setProxyActive(false); return }
+    let cancelled = false
+    let timer: ReturnType<typeof setTimeout> | null = null
+    async function poll() {
+      let remaining = 0
+      try {
+        const s = await api.proxyStatus()
+        remaining = s.running + s.queued
+      } catch { /* endpoint mid-rollout or a transient error — treat as idle */ }
+      if (cancelled) return
+      const active = remaining > 0
+      setProxyActive(active)
+      timer = setTimeout(poll, active ? 3_000 : 10_000)
+    }
+    poll()
+    return () => { cancelled = true; if (timer) clearTimeout(timer) }
+  }, [needsProxy])
 
   function startEdit() {
     setNameVal(project.name ?? '')
@@ -100,14 +126,24 @@ export default function ProjectHeader({ project, onProjectChange, actions }: Pro
       <StatusBadge status={project.status} />
 
       {needsProxy && (
-        <button
-          onClick={() => setProxyOpen(true)}
-          className="flex items-center gap-1 rounded px-1.5 py-0.5 text-xs bg-amber-50 text-amber-700 hover:bg-amber-100 dark:bg-amber-900/40 dark:text-amber-300 dark:hover:bg-amber-900/60 transition-colors shrink-0"
-          title="Some clips have no editing preview, so scrubbing is slow. Click to generate them."
-        >
-          <Sparkles size={11} />
-          Generate previews
-        </button>
+        proxyActive ? (
+          <span
+            className="flex items-center gap-1.5 rounded px-1.5 py-0.5 text-xs text-gray-500 dark:text-gray-400 shrink-0"
+            title="Montaj is making smooth-scrubbing copies of your footage. You can keep editing while this finishes."
+          >
+            <Loader2 size={11} className="animate-spin" />
+            Getting your footage ready to edit
+          </span>
+        ) : (
+          <button
+            onClick={() => setProxyOpen(true)}
+            className="flex items-center gap-1 rounded px-1.5 py-0.5 text-xs bg-amber-50 text-amber-700 hover:bg-amber-100 dark:bg-amber-900/40 dark:text-amber-300 dark:hover:bg-amber-900/60 transition-colors shrink-0"
+            title="Some clips have no editing preview, so scrubbing is slow. Click to generate them."
+          >
+            <Sparkles size={11} />
+            Generate previews
+          </button>
+        )
       )}
 
       <button

@@ -1,11 +1,12 @@
-import type { ReactNode } from 'react'
-import { Sparkles, Layers, Music, Clapperboard, Film } from 'lucide-react'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
+import { Sparkles, Layers, Music, Clapperboard, Film, ChevronDown, Check } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/textarea'
 import { LoadingModal } from '@/components/ui/loading-modal'
 import { ASPECT_RATIOS } from '@/lib/types/kling'
 import { CAROUSEL_ASPECTS, type CarouselAspect } from '@/lib/types/carousel'
 import type { ProjectType } from '@/lib/types/project'
+import type { Workflow } from '@/lib/types/schema'
 import { ClipUploadFields } from '@/components/upload/ClipUploadFields'
 import { LyricsUploadFields } from '@/components/upload/LyricsUploadFields'
 import { AIVideoUploadFields } from '@/components/upload/AIVideoUploadFields'
@@ -93,6 +94,114 @@ function NameProfileRow({
   )
 }
 
+// Short, user-facing one-liners for the built-in workflows, paraphrased from
+// each workflow's own (agent-facing) description so they stay accurate while
+// reading cleanly. Custom/unknown workflows fall back to a project-type line.
+const WORKFLOW_EXPLAINERS: Record<string, string> = {
+  overlays: 'Trims and cleans your footage, then layers in captions and image overlays. The default for social videos.',
+  clean_cut: 'Trims silence and filler into a tight cut, with no overlays added.',
+  broll: 'Voiceover-led edit: cleans the narration, then covers it with B-roll shots from your footage.',
+  ai_video: 'Generates a storyboard and AI video clips from your prompt and reference images.',
+  carousel: 'Builds a multi-slide image carousel for social from a topic.',
+  lyrics_video: 'Turns a song into a lyric video with word-synced captions.',
+  animations: 'Builds a fully animated video from overlays and audio, with no source footage needed.',
+  clips: 'Turns one long horizontal video into a series of short vertical clips.',
+  explainer: 'Multi-clip edit with animated explainer sections and silence trimming.',
+  floating_head: 'Places a talking-head presenter over a custom background and trims silence.',
+}
+
+const TYPE_EXPLAINERS: Record<ProjectType, string> = {
+  editing: 'Edits your uploaded footage into a finished video.',
+  broll: 'A voiceover-led edit built from your footage.',
+  music_video: 'A lyric video synced to your song.',
+  ai_video: 'An AI-generated video built from a prompt.',
+  carousel: 'A multi-slide image carousel.',
+}
+
+function workflowExplainer(w: Workflow): string {
+  return WORKFLOW_EXPLAINERS[w.name] ?? TYPE_EXPLAINERS[w.project_type] ?? ''
+}
+
+/** Workflow chooser — a custom dropdown (the first real decision on the intake
+ *  page). Unlike a native <select>, each option shows the workflow name AND a
+ *  one-sentence explainer of what it does; the trigger shows the same for the
+ *  current pick. */
+function WorkflowPicker({ workflows, value, onChange }: {
+  workflows: Workflow[]
+  value: string
+  onChange: (name: string) => void
+}) {
+  const [open, setOpen] = useState(false)
+  const ref = useRef<HTMLDivElement>(null)
+  const selected = workflows.find(w => w.name === value)
+
+  useEffect(() => {
+    if (!open) return
+    function onDown(e: MouseEvent) {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false)
+    }
+    function onKey(e: KeyboardEvent) { if (e.key === 'Escape') setOpen(false) }
+    document.addEventListener('mousedown', onDown)
+    document.addEventListener('keydown', onKey)
+    return () => {
+      document.removeEventListener('mousedown', onDown)
+      document.removeEventListener('keydown', onKey)
+    }
+  }, [open])
+
+  return (
+    <div>
+      <p className={FIELD_LABEL}>Workflow</p>
+      <div ref={ref} className="relative">
+        <button
+          type="button"
+          onClick={() => setOpen(o => !o)}
+          aria-haspopup="listbox"
+          aria-expanded={open}
+          className="flex w-full items-center justify-between gap-3 rounded-md border border-gray-300 bg-white px-3 py-2 text-left transition-colors hover:border-gray-400 focus:outline-none focus:ring-2 focus:ring-indigo-500 dark:border-gray-700 dark:bg-gray-900 dark:hover:border-gray-600"
+        >
+          <span className="min-w-0">
+            <span className="block text-sm font-medium text-gray-900 dark:text-white">{selected?.name ?? value}</span>
+            {selected && (
+              <span className="mt-0.5 block truncate text-xs text-gray-500 dark:text-gray-400">{workflowExplainer(selected)}</span>
+            )}
+          </span>
+          <ChevronDown size={16} className={`shrink-0 text-gray-400 transition-transform ${open ? 'rotate-180' : ''}`} />
+        </button>
+
+        {open && workflows.length > 0 && (
+          <div
+            role="listbox"
+            className="absolute z-20 mt-1.5 max-h-80 w-full overflow-y-auto rounded-lg border border-gray-200 bg-white p-1 shadow-xl dark:border-gray-800 dark:bg-gray-900"
+          >
+            {workflows.map(w => {
+              const active = w.name === value
+              return (
+                <button
+                  key={w.name}
+                  type="button"
+                  role="option"
+                  aria-selected={active}
+                  onClick={() => { onChange(w.name); setOpen(false) }}
+                  className={`flex w-full flex-col gap-0.5 rounded-md px-3 py-2 text-left transition-colors ${
+                    active ? 'bg-indigo-500/10' : 'hover:bg-gray-100 dark:hover:bg-gray-800'
+                  }`}
+                >
+                  <span className="flex items-center gap-1.5">
+                    <span className={`text-sm font-medium ${active ? 'text-indigo-600 dark:text-indigo-400' : 'text-gray-900 dark:text-white'}`}>{w.name}</span>
+                    {active && <Check size={13} className="text-indigo-500 dark:text-indigo-400" />}
+                  </span>
+                  <span className="text-xs leading-relaxed text-gray-500 dark:text-gray-400">{workflowExplainer(w)}</span>
+                </button>
+              )
+            })}
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
 export default function UploadView() {
   const {
     name, setName, prompt, setPrompt, workflow, setWorkflow, profile, setProfile,
@@ -113,6 +222,9 @@ export default function UploadView() {
           <IntakeHeader projectType={projectType} description={headerDescription} />
 
           <NameProfileRow name={name} setName={setName} profile={profile} setProfile={setProfile} profiles={profiles} />
+
+          {/* Workflow — first choice, above the prompt */}
+          <WorkflowPicker workflows={workflows} value={workflow} onChange={setWorkflow} />
 
           {/* Prompt */}
           <div>
@@ -183,20 +295,6 @@ export default function UploadView() {
           {error && <p className="text-xs text-red-400">{error}</p>}
           {runError && <p className="text-xs text-red-400">{runError}</p>}
 
-          {/* Workflow (typically only one ai_video workflow, but keep selectable) */}
-          {workflows.length > 1 && (
-            <div>
-              <p className={FIELD_LABEL}>Workflow</p>
-              <select
-                value={workflow}
-                onChange={(e) => setWorkflow(e.target.value)}
-                className={`${FIELD} w-full px-2`}
-              >
-                {workflows.map(w => <option key={w.name} value={w.name}>{w.name}</option>)}
-              </select>
-            </div>
-          )}
-
           <Button
             onClick={handleRun}
             disabled={running || !prompt.trim()}
@@ -228,6 +326,9 @@ export default function UploadView() {
           <IntakeHeader projectType={projectType} description={headerDescription} />
 
           <NameProfileRow name={name} setName={setName} profile={profile} setProfile={setProfile} profiles={profiles} />
+
+          {/* Workflow — first choice, above the prompt */}
+          <WorkflowPicker workflows={workflows} value={workflow} onChange={setWorkflow} />
 
           {/* Prompt */}
           <div>
@@ -277,20 +378,6 @@ export default function UploadView() {
             </div>
           </div>
 
-          {/* Workflow (only shown when more than one carousel workflow exists) */}
-          {workflows.length > 1 && (
-            <div>
-              <p className={FIELD_LABEL}>Workflow</p>
-              <select
-                value={workflow}
-                onChange={(e) => setWorkflow(e.target.value)}
-                className={`${FIELD} w-full px-2`}
-              >
-                {workflows.map(w => <option key={w.name} value={w.name}>{w.name}</option>)}
-              </select>
-            </div>
-          )}
-
           {runError && <p className="text-xs text-red-400">{runError}</p>}
 
           <Button
@@ -311,15 +398,18 @@ export default function UploadView() {
     )
   }
 
-  // --- Default two-column layout (editing, music_video, broll) ---
+  // --- Default single-column, centered layout (editing, music_video, broll) ---
   return (
-    <div className="flex h-full">
-      {/* Left column */}
-      <div className="flex-1 overflow-y-auto p-6 md:p-8 border-r border-gray-200 dark:border-gray-800 flex flex-col gap-6">
+    <div className="h-full overflow-y-auto">
+      <div className="max-w-3xl mx-auto p-6 md:p-8 flex flex-col gap-6">
         <IntakeHeader projectType={projectType} description={headerDescription} />
 
         <NameProfileRow name={name} setName={setName} profile={profile} setProfile={setProfile} profiles={profiles} />
 
+        {/* Workflow — the first choice, one selectable card per workflow with its explainer */}
+        <WorkflowPicker workflows={workflows} value={workflow} onChange={setWorkflow} />
+
+        {/* Content per project type */}
         {projectType === 'music_video' ? (
           <LyricsUploadFields data={lyricsData} onChange={setLyricsData} onError={setError} />
         ) : projectType === 'broll' ? (
@@ -334,47 +424,28 @@ export default function UploadView() {
         )}
 
         {error && <p className="text-xs text-red-400">{error}</p>}
-      </div>
 
-      {/* Right column: prompt + workflow + run */}
-      <div className="w-80 flex flex-col p-6 md:p-8 gap-4">
+        {/* Prompt */}
         <div>
           <p className={FIELD_LABEL}>Prompt</p>
-          <p className="text-xs text-gray-500 dark:text-gray-400">Describe what you want the agent to do.</p>
+          <Textarea
+            className="min-h-[120px] resize-none focus:ring-indigo-500"
+            placeholder={promptPlaceholder}
+            value={prompt}
+            onChange={(e) => setPrompt(e.target.value)}
+            onKeyDown={(e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) handleRun() }}
+          />
         </div>
 
-        <Textarea
-          className="flex-1 resize-none focus:ring-indigo-500"
-          placeholder={promptPlaceholder}
-          value={prompt}
-          onChange={(e) => setPrompt(e.target.value)}
-          onKeyDown={(e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) handleRun() }}
-        />
+        {runError && <p className="text-xs text-red-400">{runError}</p>}
 
-        <div className="flex flex-col gap-3">
-          <div>
-            <p className={FIELD_LABEL}>Workflow</p>
-            <select
-              value={workflow}
-              onChange={(e) => setWorkflow(e.target.value)}
-              className={`${FIELD} w-full px-2`}
-            >
-              {workflows.length > 0
-                ? workflows.map(w => <option key={w.name} value={w.name}>{w.name}</option>)
-                : <option value="clean_cut">clean_cut</option>}
-            </select>
-          </div>
-
-          {runError && <p className="text-xs text-red-400">{runError}</p>}
-
-          <Button
-            onClick={handleRun}
-            disabled={running || !prompt.trim()}
-            className={RUN_BUTTON}
-          >
-            {submitLabel}
-          </Button>
-        </div>
+        <Button
+          onClick={handleRun}
+          disabled={running || !prompt.trim()}
+          className={RUN_BUTTON}
+        >
+          {submitLabel}
+        </Button>
       </div>
       <LoadingModal
         open={running}

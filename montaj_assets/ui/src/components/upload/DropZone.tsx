@@ -18,9 +18,51 @@ export interface DropZoneProps {
   fileIcon?: React.ReactNode
   single?: boolean
   headerAction?: React.ReactNode
+  /** Render added files as a grid of visual thumbnails (image/video preview
+   *  frames) instead of a plain filename list. */
+  thumbnails?: boolean
 }
 
-export function DropZone({ label, sublabel, icon, accept, files, uploading, onBrowse, onDrop, onRemove, browseLabel, accentClass, dropLabel, fileIcon, single, headerAction }: DropZoneProps) {
+const IMAGE_RE = /\.(png|jpe?g|gif|webp|avif|bmp|svg)$/i
+const VIDEO_RE = /\.(mp4|mov|avi|mkv|webm|m4v|mts|mpe?g)$/i
+
+/** One added file as a square thumbnail tile: an image preview, a video's first
+ *  frame, or a type icon, with the name over a gradient and a hover remove. */
+function FileThumb({ path, accept, fileIcon, onRemove }: {
+  path: string
+  accept: string
+  fileIcon?: React.ReactNode
+  onRemove: () => void
+}) {
+  const url = `/api/files?path=${encodeURIComponent(path)}`
+  const isImage = accept === 'image/' || IMAGE_RE.test(path)
+  const isVideo = accept === 'video/' || VIDEO_RE.test(path)
+  return (
+    <div className="group relative aspect-square overflow-hidden rounded-md border border-gray-200 bg-gray-100 dark:border-gray-800 dark:bg-gray-800">
+      {isImage ? (
+        <img src={url} alt="" loading="lazy" className="h-full w-full object-cover" />
+      ) : isVideo ? (
+        <video src={`${url}#t=0.1`} muted preload="metadata" playsInline className="h-full w-full object-cover" />
+      ) : (
+        <div className="flex h-full w-full items-center justify-center text-gray-400 dark:text-gray-500">
+          {fileIcon ?? <FileText size={20} />}
+        </div>
+      )}
+      <div className="pointer-events-none absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/75 to-transparent px-1.5 pb-1 pt-3">
+        <span className="block truncate font-mono text-[10px] text-white/90">{basename(path)}</span>
+      </div>
+      <button
+        onClick={onRemove}
+        title="Remove"
+        className="absolute right-1 top-1 rounded-full bg-black/60 p-1 text-white/80 opacity-0 transition-opacity hover:text-white group-hover:opacity-100"
+      >
+        <X size={11} />
+      </button>
+    </div>
+  )
+}
+
+export function DropZone({ label, sublabel, icon, accept, files, uploading, onBrowse, onDrop, onRemove, browseLabel, accentClass, dropLabel, fileIcon, single, headerAction, thumbnails }: DropZoneProps) {
   const [dragOver, setDragOver] = useState(false)
 
   function handleDragOver(e: React.DragEvent) {
@@ -97,29 +139,37 @@ export function DropZone({ label, sublabel, icon, accept, files, uploading, onBr
         </div>
       </div>
 
-      {/* File list */}
+      {/* Added files — thumbnail grid or a plain filename list */}
       {files.length > 0 && (
-        <ul className="flex flex-col gap-1">
-          {files.map(path => (
-            <li
-              key={path}
-              className="flex items-center gap-2 px-3 py-2 rounded-md border border-green-200 dark:border-green-900/50 bg-green-50 dark:bg-green-900/20 group"
-            >
-              <span className="text-green-500 dark:text-green-500 shrink-0">
-                {fileIcon ?? defaultFileIcon}
-              </span>
-              <span className="flex-1 text-xs text-green-800 dark:text-green-300 truncate font-mono">
-                {basename(path)}
-              </span>
-              <button
-                onClick={() => onRemove(path)}
-                className="shrink-0 text-green-500/60 hover:text-green-700 dark:text-green-700 dark:hover:text-green-400 transition-colors opacity-0 group-hover:opacity-100"
+        thumbnails ? (
+          <div className="grid grid-cols-3 gap-2 sm:grid-cols-4">
+            {files.map(path => (
+              <FileThumb key={path} path={path} accept={accept} fileIcon={fileIcon} onRemove={() => onRemove(path)} />
+            ))}
+          </div>
+        ) : (
+          <ul className="flex flex-col gap-1">
+            {files.map(path => (
+              <li
+                key={path}
+                className="flex items-center gap-2 px-3 py-2 rounded-md border border-green-200 dark:border-green-900/50 bg-green-50 dark:bg-green-900/20 group"
               >
-                <X size={12} />
-              </button>
-            </li>
-          ))}
-        </ul>
+                <span className="text-green-500 dark:text-green-500 shrink-0">
+                  {fileIcon ?? defaultFileIcon}
+                </span>
+                <span className="flex-1 text-xs text-green-800 dark:text-green-300 truncate font-mono">
+                  {basename(path)}
+                </span>
+                <button
+                  onClick={() => onRemove(path)}
+                  className="shrink-0 text-green-500/60 hover:text-green-700 dark:text-green-700 dark:hover:text-green-400 transition-colors opacity-0 group-hover:opacity-100"
+                >
+                  <X size={12} />
+                </button>
+              </li>
+            ))}
+          </ul>
+        )
       )}
     </div>
   )

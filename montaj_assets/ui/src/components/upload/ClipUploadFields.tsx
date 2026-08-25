@@ -93,7 +93,8 @@ export function ClipUploadFields({ data, onChange, onError, profileName }: {
         onDrop={handleDropClips}
         onRemove={path => onChange({ ...data, clips: data.clips.filter(p => p !== path) })}
         browseLabel={data.clips.length === 0 ? 'Browse files' : 'Add more'}
-        accentClass="border-blue-500 bg-blue-500/10"
+        accentClass="border-indigo-500 bg-indigo-500/10"
+        thumbnails
       />
 
       <DropZone
@@ -107,7 +108,8 @@ export function ClipUploadFields({ data, onChange, onError, profileName }: {
         onDrop={handleDropAssets}
         onRemove={path => onChange({ ...data, assets: data.assets.filter(p => p !== path) })}
         browseLabel={data.assets.length === 0 ? 'Browse files' : 'Add more'}
-        accentClass="border-purple-500 bg-purple-500/10"
+        accentClass="border-indigo-500 bg-indigo-500/10"
+        thumbnails
         headerAction={
           <ProfileAssetPicker
             profileName={profileName}

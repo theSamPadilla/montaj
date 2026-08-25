@@ -60,6 +60,10 @@ export type TextFormattingToolbarProps = {
   element: OverlayElement
   updateOverlayProp: (slideId: string, elementId: string, key: string, value: string) => Promise<unknown>
   onDelete?: () => void
+  /** Editor theme mode — light/dark. Only affects the delete button's hover
+   *  hue (red-400 is sub-AA on a light `--editor-surface`). Absent -> dark,
+   *  matching every existing caller. */
+  mode?: 'light' | 'dark'
 }
 
 export function TextFormattingToolbar({
@@ -67,6 +71,7 @@ export function TextFormattingToolbar({
   element,
   updateOverlayProp,
   onDelete,
+  mode = 'dark',
 }: TextFormattingToolbarProps) {
   const props = element.overlay.props
 
@@ -238,7 +243,7 @@ export function TextFormattingToolbar({
             type="button"
             aria-label="Delete text overlay"
             onClick={onDelete}
-            className={`${toolbarBtnBase} border-[var(--editor-border)] bg-[var(--editor-surface)] text-[var(--editor-text)]/60 hover:border-red-500/50 hover:bg-red-900/30 hover:text-red-400`}
+            className={`${toolbarBtnBase} border-[var(--editor-border)] bg-[var(--editor-surface)] text-[var(--editor-text)]/60 ${mode === 'light' ? 'hover:border-red-300 hover:bg-red-50 hover:text-red-700' : 'hover:border-red-500/50 hover:bg-red-900/30 hover:text-red-400'}`}
           >
             <Trash2 className="h-3.5 w-3.5" />
           </button>

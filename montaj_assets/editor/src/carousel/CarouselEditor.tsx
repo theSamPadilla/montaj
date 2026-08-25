@@ -1,7 +1,7 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { RefreshCw, AlertCircle, Download, Info, Undo2, Redo2 } from 'lucide-react'
 import type { Project, Slide, CarouselElement, ImageElement, CarouselEditorProps, OverlayFactory } from '../types'
-import { applyTheme, defaultMontajTheme } from '../theme'
+import { applyTheme, defaultMontajTheme, isLightTheme } from '../theme'
 import { useProjectState } from '../state/use-project-state'
 import SlideCanvas from './SlideCanvas'
 import SlidePropertyPanel from './SlidePropertyPanel'
@@ -179,6 +179,14 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
   useEffect(() => {
     if (containerRef.current) applyTheme(containerRef.current, theme ?? defaultMontajTheme)
   }, [theme])
+
+  // Classified once here, off the same theme object VideoEditor's
+  // `timelineMode` uses — see that file's comment for why (three independent
+  // consumers resolving light/dark separately is three chances to disagree).
+  const mode = useMemo<'light' | 'dark'>(
+    () => (isLightTheme(theme ?? defaultMontajTheme) ? 'light' : 'dark'),
+    [theme],
+  )
 
   // ── Keyboard shortcuts: undo / redo. Guarded against text inputs. ──
   useEffect(() => {
@@ -415,7 +423,7 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
               disabled={refreshing}
               className={`flex items-center gap-2 px-3 py-2 rounded-md border transition-colors ${
                 refreshState === 'err'
-                  ? 'text-red-300 border-red-500/40 bg-red-950/60 hover:bg-red-900/70'
+                  ? (mode === 'light' ? 'text-red-700 border-red-300 bg-red-50 hover:bg-red-100' : 'text-red-300 border-red-500/40 bg-red-950/60 hover:bg-red-900/70')
                   : 'text-[var(--editor-text)] border-[var(--editor-border)] bg-[var(--editor-surface)]/80 hover:text-[var(--editor-text)] hover:border-[var(--editor-accent)] hover:bg-[var(--editor-surface)]'
               }`}
               title={refreshState === 'err' ? 'Refresh failed — check connection' : 'Refresh project'}
@@ -477,8 +485,24 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
             {!slots?.pendingStatus && skillPath && (
               <div className="w-full rounded-xl border-2 border-[var(--editor-accent)] bg-[var(--editor-surface)] p-5 flex flex-col gap-3 text-left shadow-lg shadow-[var(--editor-accent)]/10">
                 <p className="text-[var(--editor-accent)] text-xs font-bold uppercase tracking-widest">Send this to your agent</p>
-                <div className="flex items-start justify-between bg-black/60 border border-transparent rounded-lg px-3 py-3 font-mono gap-3">
-                  <span className="text-[var(--editor-text)] text-[12px] leading-relaxed break-all">
+                {/* Deliberately hardcoded dark chrome, not `--editor-*` tokens: this
+                    is the literal text the user copies and pastes to their coding
+                    agent, styled as terminal/code chrome — same precedent as the
+                    video preview's black canvas, which also stays dark regardless
+                    of editor theme.
+
+                    This was `bg-black/60`, which composited against whatever sat
+                    behind it: near-black over the dark surface, but only ~#666
+                    over a light one — ~3:1 for 12px copyable text, below AA.
+                    It is now an OPAQUE colour so the box no longer depends on
+                    its backdrop. The specific value is not arbitrary: #070a10 is
+                    exactly what `rgba(0,0,0,0.6)` over the dark theme's
+                    `--editor-surface` (#111827) composited to, so dark mode is
+                    pixel-identical to before while light mode is fixed. Text is
+                    pinned to #f3f4f6 (= the dark theme's `--editor-text`), so it
+                    is likewise unchanged in dark mode and ~18:1 in both. */}
+                <div className="flex items-start justify-between bg-[#070a10] border border-transparent rounded-lg px-3 py-3 font-mono gap-3">
+                  <span className="text-gray-100 text-[12px] leading-relaxed break-all">
                     There is a new project pending: &quot;{project.name ?? project.id}&quot;. Please see @{skillPath} and start. Talk to me if you run into questions.
                   </span>
                   <button
@@ -490,7 +514,7 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
                       setTimeout(() => setCopied(false), 2000)
                     }}
                     className={`shrink-0 flex items-center gap-1.5 text-xs font-medium px-3 py-1.5 rounded-md transition-colors ${
-                      copied ? 'bg-green-700 text-green-200' : 'bg-white/10 text-[var(--editor-text)] hover:bg-white/20 hover:text-[var(--editor-text)]'
+                      copied ? 'bg-green-700 text-green-200' : 'bg-white/10 text-gray-100 hover:bg-white/20 hover:text-gray-100'
                     }`}
                     title="Copy prompt"
                   >
@@ -503,7 +527,14 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
           </div>
         ) : selectedSlide ? (
           <>
-            <div className="flex-shrink-0" style={{ boxShadow: '0 0 0 1px rgba(255,255,255,0.08)' }}>
+            {/* Edge definition for the slide canvas, which sits on `--editor-bg`.
+                Was a fixed `rgba(255,255,255,0.08)`, which read as a hairline
+                highlight on the dark ground but composited to under 1/255 on the
+                light one — the edge silently vanished. Keyed to `--editor-text`
+                instead, the same "tint with the foreground colour" idiom the rest
+                of the chrome uses, so it is a light ring on dark and a dark ring
+                on light at the same subtle strength. */}
+            <div className="flex-shrink-0 ring-1 ring-[var(--editor-text)]/10">
               <SlideCanvas
                 slide={selectedSlide}
                 slideId={selectedSlide.id}
@@ -566,6 +597,7 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
                 selectedSlideId={selectedSlideId}
                 adapter={adapter}
                 onAddElement={handleAddElement}
+                mode={mode}
               />
             </div>
           )}
@@ -587,6 +619,7 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
             onToggleElementVisibility={onToggleElementVisibility}
             // Fills the right column (drop the default w-80 width + left border).
             className="w-full border-l-0"
+            mode={mode}
           />
         </div>
       </div>
@@ -616,6 +649,7 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
           exportActions={slots?.exportActions}
           onClose={() => setRenderOpen(false)}
           onCancel={() => setRenderOpen(false)}
+          mode={mode}
         />
       )}
     </div>

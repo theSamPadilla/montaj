@@ -6,8 +6,9 @@ import { useProjectStream } from '@/lib/sse'
 import { createMontajAdapter } from './montajAdapter'
 import { useCaptionJobStatus, useCaptionJobSink } from './captionJob'
 import { useIsMobile } from '@/lib/useIsMobile'
+import { useIsDark } from '@/lib/useIsDark'
 import { Upload } from 'lucide-react'
-import { CarouselEditor, VideoEditor, createSourcePreviewStore, defaultMontajTheme, type Captions, type EditorSlots, type ImageTone } from '@bycrux/editor'
+import { CarouselEditor, VideoEditor, createSourcePreviewStore, defaultMontajTheme, lightMontajTheme, type Captions, type EditorSlots, type ImageTone } from '@bycrux/editor'
 import AssetsPanel from '@/components/AssetsPanel'
 import MediaPanel from '@/components/media/MediaPanel'
 import FootagePanel from '@/components/media/FootagePanel'
@@ -18,6 +19,7 @@ import { Button } from '@/components/ui/button'
 import GenerationPanel from '@/components/timeline/GenerationPanel'
 import SubcutRegenTool from '@/components/timeline/SubcutRegenTool'
 import { ProfileAssetsPanel } from './ProfileAssetsPanel'
+import PendingIntro from './PendingIntro'
 import UploadView from './UploadView'
 import StoryboardView from './StoryboardView'
 import MobileUploadView from './MobileUploadView'
@@ -157,6 +159,7 @@ export default function EditorPage() {
   }, [id, project?.status, project?.projectType])
 
   const isMobile = useIsMobile()
+  const isDark = useIsDark()
 
   // True while a desktop package editor (Carousel/Video) is mounted — mirror the
   // render branches below: every desktop project renders a package editor EXCEPT
@@ -180,6 +183,8 @@ export default function EditorPage() {
   // pipeline re-run. Inspector/subcut state is owned by VideoEditor (render-prop
   // seams); only the Re-run modal toggle is host-local here.
   const [rerunOpen, setRerunOpen] = useState(false)
+  // True while the pending-bypass status flip (handleStartManual) is saving.
+  const [startingManual, setStartingManual] = useState(false)
   // Background caption-regeneration job, owned by the app-root
   // CaptionJobProvider (App.tsx) so it survives navigating away from this
   // project. EditorPage supplies the trigger (below) and reads status here.
@@ -312,6 +317,45 @@ export default function EditorPage() {
     },
     [project, handleProjectChange],
   )
+
+  // Bypass the agent: flip a pending project into the editable `draft` status so
+  // the package renders the full editor instead of its pending gate.
+  //
+  // The clip clear is load-bearing, not cleanup. `project/init.py` seeds
+  // tracks[0] with the uploaded clips as ZERO-DURATION placeholders (start/end
+  // both 0.0, no inPoint/outPoint) for the agent to fill in. Carried into the
+  // editor they would sit on the timeline as invisible slivers at t=0 and badge
+  // every footage card "Added", so a hand-assembled project starts from a
+  // genuinely empty timeline. Nothing is lost: `project.sources` still holds
+  // every clip, which is exactly what the footage bin reads.
+  // A rerun is the second producer: `POST /projects/{id}/rerun` sets status
+  // back to `pending` and rebuilds tracks[0] from `sources` as {id, src, order}
+  // items with NO `start`/`end` at all, which is why the `?? 0` below is
+  // load-bearing rather than defensive. Do not simplify it to `end > start`.
+  const handleStartManual = useCallback(async () => {
+    const base = projectRef.current ?? project
+    if (!base || base.status !== 'pending') return
+    setStartingManual(true)
+    try {
+      const tracks = mapTrackItems(base, items =>
+        items.filter(item => (item.end ?? 0) > (item.start ?? 0)),
+      )
+      const updated: Project = { ...base, status: 'draft', tracks }
+      // Save FIRST, then propagate. The package seeds its sync core from the
+      // `project` prop once on mount and ignores later prop changes, so the
+      // surface flips on the server's SSE echo, not on this call. Propagating
+      // optimistically would therefore buy nothing and would set
+      // projectRef.current.status = 'draft', making the guard above turn every
+      // retry click into a silent no-op if the save failed.
+      await api.saveProject(base.id, updated)
+      handleProjectChange(updated)
+    } catch (e) {
+      console.error(e)
+      alert(`Could not start manual editing: ${e instanceof Error ? e.message : String(e)}`)
+    } finally {
+      setStartingManual(false)
+    }
+  }, [project, handleProjectChange])
 
   const carouselSlots: EditorSlots = useMemo(
     () => ({
@@ -450,25 +494,19 @@ export default function EditorPage() {
           Download all (.zip)
         </a>
       ),
-      pendingStatus: logMessage ? (
-        <>
-          <div className="w-5 h-5 rounded-full border-2 border-gray-700 border-t-gray-400 animate-spin" />
-          <p className="text-gray-300 text-sm">
-            <span className="text-white font-medium">
-              {(trackItems(project)[0] ?? []).length} clip(s)
-            </span>
-            {' queued. Agent is working:'}
-          </p>
-          <p className="text-blue-400 text-xs font-mono bg-gray-900 rounded px-3 py-1.5 w-full text-left truncate">
-            → {logMessage}
-          </p>
-        </>
+      pendingStatus: project ? (
+        <PendingIntro
+          project={project}
+          logMessage={logMessage}
+          onStartManual={handleStartManual}
+          starting={startingManual}
+        />
       ) : undefined,
       runHistory: (
         <RunHistorySidebar history={project?.history ?? []} onRestore={handleRestoreRun} />
       ),
     }
-  }, [project, adapter, sourcePreview, handleAssetsChange, handleProjectChange, handleRestoreRun, handleRemoveSource, logMessage])
+  }, [project, adapter, sourcePreview, handleAssetsChange, handleProjectChange, handleRestoreRun, handleRemoveSource, logMessage, handleStartManual, startingManual])
 
   // Back-to-setup: delete the project and navigate to the setup view, carrying a
   // prefill so the user keeps their clips/name/prompt/workflow/profile. Ported
@@ -511,7 +549,7 @@ export default function EditorPage() {
           project={project}
           adapter={adapter}
           onProjectChange={handleProjectChange}
-          theme={defaultMontajTheme}
+          theme={isDark ? defaultMontajTheme : lightMontajTheme}
           slots={carouselSlots}
         />
       )
@@ -577,7 +615,7 @@ export default function EditorPage() {
             project={project}
             adapter={adapter}
             onProjectChange={handleProjectChange}
-            theme={defaultMontajTheme}
+            theme={isDark ? defaultMontajTheme : lightMontajTheme}
             slots={videoSlots}
             sourcePreview={sourcePreview}
             renderProgressView="logs"

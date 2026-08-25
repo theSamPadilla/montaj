@@ -18,14 +18,18 @@ interface CaptionRegenModalProps<P extends Project = Project> {
   onDone: (captions: Captions) => void
   /** Fired when the modal closes (cancel, error dismiss, or post-done). */
   onClose: () => void
+  /** Editor theme mode — light/dark. The panel and log box follow
+   *  `--editor-surface`, so log/status hues need to darken in light mode.
+   *  Absent -> dark, matching every existing caller. */
+  mode?: 'light' | 'dark'
 }
 
-function LogLine({ text }: { text: string }) {
+function LogLine({ text, mode = 'dark' }: { text: string; mode?: 'light' | 'dark' }) {
   let color = 'text-[var(--editor-text)]/60'
-  if (/ready|complete|done|transcribed/i.test(text))      color = 'text-green-400'
-  else if (/transcrib|detecting|loading|model/i.test(text)) color = 'text-sky-400'
-  else if (/extract|building|composing|mixing/i.test(text)) color = 'text-amber-400'
-  else if (/error|fail|warn/i.test(text))                 color = 'text-red-400'
+  if (/ready|complete|done|transcribed/i.test(text))      color = mode === 'light' ? 'text-green-700' : 'text-green-400'
+  else if (/transcrib|detecting|loading|model/i.test(text)) color = mode === 'light' ? 'text-sky-700' : 'text-sky-400'
+  else if (/extract|building|composing|mixing/i.test(text)) color = mode === 'light' ? 'text-amber-700' : 'text-amber-400'
+  else if (/error|fail|warn/i.test(text))                 color = mode === 'light' ? 'text-red-600' : 'text-red-400'
 
   return (
     <span className={`leading-relaxed whitespace-pre-wrap break-all ${color}`}>
@@ -34,7 +38,7 @@ function LogLine({ text }: { text: string }) {
   )
 }
 
-export default function CaptionRegenModal<P extends Project = Project>({ projectId, adapter, existingRowCount, onDone, onClose }: CaptionRegenModalProps<P>) {
+export default function CaptionRegenModal<P extends Project = Project>({ projectId, adapter, existingRowCount, onDone, onClose, mode = 'dark' }: CaptionRegenModalProps<P>) {
   const [logs, setLogs]     = useState<string[]>([])
   const [status, setStatus] = useState<'running' | 'done' | 'error'>('running')
   const [errorMsg, setError] = useState<string | null>(null)
@@ -150,7 +154,7 @@ export default function CaptionRegenModal<P extends Project = Project>({ project
             single fresh row (see onDone below), so a hand-built second or
             third row (a title card, a call-out) is silently gone otherwise. */}
         {existingRowCount > 1 && (
-          <div className="px-5 py-2 text-[11px] leading-snug text-amber-400/90 border-b border-[var(--editor-border)]">
+          <div className={`px-5 py-2 text-[11px] leading-snug border-b border-[var(--editor-border)] ${mode === 'light' ? 'text-amber-700' : 'text-amber-400/90'}`}>
             This will replace all {existingRowCount} caption rows with a single new row.
           </div>
         )}
@@ -172,10 +176,10 @@ export default function CaptionRegenModal<P extends Project = Project>({ project
               <span className="text-[var(--editor-text)]/40 italic">Starting transcription…</span>
             )}
             {logs.map((line, i) => (
-              <LogLine key={i} text={line} />
+              <LogLine key={i} text={line} mode={mode} />
             ))}
             {status === 'error' && errorMsg && (
-              <span className="text-red-400 mt-1">{errorMsg}</span>
+              <span className={`mt-1 ${mode === 'light' ? 'text-red-600' : 'text-red-400'}`}>{errorMsg}</span>
             )}
           </div>
         </div>
@@ -185,7 +189,7 @@ export default function CaptionRegenModal<P extends Project = Project>({ project
           {status === 'running' ? (
             <button
               onClick={handleCancel}
-              className="text-sm px-4 py-1.5 rounded-md bg-[var(--editor-surface)] border border-[var(--editor-border)] text-[var(--editor-text)]/80 hover:bg-red-900/40 hover:border-red-700 hover:text-red-300 transition-colors"
+              className={`text-sm px-4 py-1.5 rounded-md bg-[var(--editor-surface)] border border-[var(--editor-border)] text-[var(--editor-text)]/80 transition-colors ${mode === 'light' ? 'hover:bg-red-50 hover:border-red-300 hover:text-red-700' : 'hover:bg-red-900/40 hover:border-red-700 hover:text-red-300'}`}
             >
               Cancel
             </button>

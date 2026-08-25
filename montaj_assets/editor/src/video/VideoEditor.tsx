@@ -9,11 +9,11 @@ import { Tooltip } from '../ui/Tooltip'
 import { reviveNumberInRange, usePersistentState } from '../ui/usePersistentState'
 import { getOverlayDesignCanvas } from './design-canvas'
 import { availableResolutionTiers, availableFpsTiers, currentResolutionTier, maxExportFps } from './export-limits'
-import { applyTheme, defaultMontajTheme } from '../theme'
+import { applyTheme, defaultMontajTheme, isLightTheme } from '../theme'
 import { collapseGaps, rippleDelete, splitAtTime } from './cuts'
 import { repairCaptionWords } from './captionRepair'
 import { maxCaptionLane, normalizeCaptionLanes } from './captionLanes'
-import Timeline, { type TimelineActions } from './timeline/Timeline'
+import Timeline, { type TimelineActions, type TimelineMode } from './timeline/Timeline'
 import { computeAutoCrossfade, computeDerivedTiming, enabledTrackItems, mapTrackItems, trackItems } from './timeline/timeline-model'
 import { makeCaptionEdit, type CaptionEditPatch } from './timeline/makeCaptionEdit'
 import PreviewPlayer, { type TransportHandle, type ScrubHandle } from './preview/PreviewPlayer'
@@ -285,6 +285,19 @@ export default function VideoEditor<P extends Project = Project>({
     if (containerRef.current) applyTheme(containerRef.current, theme ?? defaultMontajTheme)
   }, [theme])
 
+  // The chrome flips via the `--editor-*` vars `applyTheme` just wrote; the
+  // canvas timeline cannot read a CSS variable, so it is handed the answer
+  // directly. Classified ONCE here, off the same theme object, rather than
+  // per-surface — three consumers (canvas, track rail, fade-shape icons)
+  // resolving it independently is three chances to disagree. Memoized on
+  // `theme` so the prop identity is stable across the many re-renders an edit
+  // causes, and `TimelineCanvas`'s repaint-on-mode-change effect fires only
+  // when the mode has actually moved.
+  const timelineMode = useMemo<TimelineMode>(
+    () => (isLightTheme(theme ?? defaultMontajTheme) ? 'light' : 'dark'),
+    [theme],
+  )
+
   const isPending = sync.project.status === 'pending'
 
   // ── Shared injected adapter fns, threaded to Timeline + PreviewPlayer. ──
@@ -306,13 +319,14 @@ export default function VideoEditor<P extends Project = Project>({
           getWaveformPeaks={getWaveformPeaks}
           getFilmstrip={getFilmstrip}
           engine={engine}
+          timelineMode={timelineMode}
         />
       </div>
     )
   }
 
   return (
-    <div ref={containerRef} className="flex flex-col h-full">
+    <div ref={containerRef} className="flex flex-col h-full bg-[var(--editor-bg)]">
       <ReviewSurface
         sync={sync}
         captionGestureRef={captionGestureRef}
@@ -334,6 +348,7 @@ export default function VideoEditor<P extends Project = Project>({
         sourcePreview={sourcePreview}
         onRegenerateCaptions={onRegenerateCaptions}
         captionsGenerating={captionsGenerating}
+        timelineMode={timelineMode}
       />
     </div>
   )
@@ -446,6 +461,10 @@ interface SurfaceProps<P extends Project> {
   onProvideRenderTrigger?: VideoEditorProps<P>['onProvideRenderTrigger']
   onProvideImageTone?: VideoEditorProps<P>['onProvideImageTone']
   engine?: VideoEditorProps<P>['engine']
+  /** Light/dark for the canvas timeline, resolved from the host theme by
+   *  `VideoEditor` (the canvas can't read the CSS vars the rest of the chrome
+   *  uses). Both surfaces render a `Timeline`, so both need it. */
+  timelineMode: TimelineMode
 }
 
 function PendingSurface<P extends Project>({
@@ -457,6 +476,7 @@ function PendingSurface<P extends Project>({
   getWaveformPeaks,
   getFilmstrip,
   engine,
+  timelineMode,
 }: SurfaceProps<P> & { onBackToSetup?: () => void }) {
   const project = sync.project
   // The playhead lives in an external store (not useState) so ~60Hz ticks only
@@ -544,7 +564,23 @@ function PendingSurface<P extends Project>({
                   {skillPath && (
                     <div className="w-full rounded-xl border-2 border-[var(--editor-accent)]/50 bg-[var(--editor-surface)] p-5 flex flex-col gap-3 text-left shadow-lg shadow-[var(--editor-accent)]/10">
                       <p className="text-[var(--editor-accent)] text-xs font-bold uppercase tracking-widest">Send this to your agent</p>
-                      <div className="flex items-start justify-between bg-black/60 border border-transparent rounded-lg px-3 py-3 font-mono gap-3">
+                      {/* Deliberately hardcoded dark chrome, not `--editor-*` tokens: this
+                          is the literal text the user copies and pastes to their coding
+                          agent, styled as terminal/code chrome — same precedent as the
+                          video preview's black canvas, which also stays dark regardless
+                          of editor theme.
+
+                          This was `bg-black/60`, which composited against whatever sat
+                          behind it: near-black over the dark surface, but only ~#666
+                          over a light one — ~3:1 for 12px copyable text, below AA.
+                          It is now an OPAQUE colour so the box no longer depends on
+                          its backdrop. The specific value is not arbitrary: #070a10 is
+                          exactly what `rgba(0,0,0,0.6)` over the dark theme's
+                          `--editor-surface` (#111827) composited to, so dark mode is
+                          pixel-identical to before while light mode is fixed. Text is
+                          pinned to #e5e7eb (gray-200, matching this file's original),
+                          so it is likewise unchanged in dark mode and ~16:1 in both. */}
+                      <div className="flex items-start justify-between bg-[#070a10] border border-transparent rounded-lg px-3 py-3 font-mono gap-3">
                         <span className="text-gray-200 text-[12px] leading-relaxed break-all">
                           There is a new project pending: &quot;{project.name ?? project.id}&quot;. Please see @{skillPath} and start. Talk to me if you run into questions.
                         </span>
@@ -557,7 +593,7 @@ function PendingSurface<P extends Project>({
                             setTimeout(() => setCopied(false), 2000)
                           }}
                           className={`shrink-0 flex items-center gap-1.5 text-xs font-medium px-3 py-1.5 rounded-md transition-colors ${
-                            copied ? 'bg-green-700 text-green-200' : 'bg-[var(--editor-text)]/10 text-[var(--editor-text)]/80 hover:bg-[var(--editor-text)]/20 hover:text-[var(--editor-text)]'
+                            copied ? 'bg-green-700 text-green-200' : 'bg-white/10 text-[#f3f4f6]/80 hover:bg-white/20 hover:text-gray-100'
                           }`}
                           title="Copy prompt"
                         >
@@ -588,6 +624,7 @@ function PendingSurface<P extends Project>({
             resolveFilePath={resolveFilePath}
             getWaveformPeaks={getWaveformPeaks}
             getFilmstrip={getFilmstrip}
+            mode={timelineMode}
           />
         </div>
       </div>
@@ -595,7 +632,7 @@ function PendingSurface<P extends Project>({
       {/* Right sidebar — version history (hidden when the capability is absent) */}
       {adapter.listVersionHistory && (
         <div className="w-48 shrink-0 border-l border-[var(--editor-border)] bg-[var(--editor-surface)] flex flex-col overflow-hidden">
-          <VersionPanel versions={versions} restoring={restoring} onRestore={handleRestoreVersion} onSaveVersion={handleSaveVersion} saving={saving} onCompareVersion={adapter.versionFrameUrl ? handleCompareVersion : undefined} />
+          <VersionPanel versions={versions} restoring={restoring} onRestore={handleRestoreVersion} onSaveVersion={handleSaveVersion} saving={saving} onCompareVersion={adapter.versionFrameUrl ? handleCompareVersion : undefined} mode={timelineMode} />
         </div>
       )}
 
@@ -609,6 +646,7 @@ function PendingSurface<P extends Project>({
           initialLeftHash={compareOpen}
           frameUrl={adapter.versionFrameUrl}
           onClose={() => setCompareOpen(null)}
+          mode={timelineMode}
         />
       )}
     </div>
@@ -650,6 +688,7 @@ function ReviewSurface<P extends Project>({
   sourcePreview,
   onRegenerateCaptions,
   captionsGenerating,
+  timelineMode,
 }: SurfaceProps<P> & {
   // See the definition beside `sync` in VideoEditor above — set for the
   // duration of a caption drag gesture so the lane-normalization effect
@@ -1975,7 +2014,7 @@ function ReviewSurface<P extends Project>({
                 aria-pressed={currentSocialPreview !== null}
                 className={`flex items-center justify-center w-5 h-5 rounded transition-colors ${
                   currentSocialPreview !== null
-                    ? 'text-sky-400 bg-sky-400/15 hover:bg-sky-400/25'
+                    ? (timelineMode === 'light' ? 'text-sky-600 bg-sky-400/15 hover:bg-sky-400/25' : 'text-sky-400 bg-sky-400/15 hover:bg-sky-400/25')
                     : 'text-[var(--editor-text)]/60 bg-transparent hover:text-[var(--editor-text)]'
                 }`}
               >
@@ -1993,6 +2032,7 @@ function ReviewSurface<P extends Project>({
                 value={currentSocialPreview}
                 onChange={handleSocialPreviewChange}
                 onClose={() => setSocialPreviewMenuOpen(false)}
+                mode={timelineMode}
               />
             )}
             <Tooltip label={isFullscreen ? 'Exit fullscreen' : 'Enter fullscreen'} keys={['F']}>
@@ -2087,7 +2127,7 @@ function ReviewSurface<P extends Project>({
             aria-pressed={previewAxis}
             className={`flex items-center justify-center w-5 h-5 rounded transition-colors ${
               previewAxis
-                ? 'text-yellow-400 bg-yellow-400/15 hover:bg-yellow-400/25'
+                ? (timelineMode === 'light' ? 'text-yellow-700 bg-yellow-400/15 hover:bg-yellow-400/25' : 'text-yellow-400 bg-yellow-400/15 hover:bg-yellow-400/25')
                 : 'text-[var(--editor-text)]/60 bg-transparent hover:text-[var(--editor-text)]'
             }`}
           >
@@ -2101,7 +2141,7 @@ function ReviewSurface<P extends Project>({
             aria-pressed={rippleMode}
             className={`flex items-center justify-center w-5 h-5 rounded transition-colors ${
               rippleMode
-                ? 'text-teal-400 bg-teal-400/15 hover:bg-teal-400/25'
+                ? (timelineMode === 'light' ? 'text-teal-600 bg-teal-400/15 hover:bg-teal-400/25' : 'text-teal-400 bg-teal-400/15 hover:bg-teal-400/25')
                 : 'text-[var(--editor-text)]/60 bg-transparent hover:text-[var(--editor-text)]'
             }`}
           >
@@ -2118,7 +2158,7 @@ function ReviewSurface<P extends Project>({
             aria-pressed={cropMode}
             className={`flex items-center justify-center w-5 h-5 rounded transition-colors disabled:opacity-50 disabled:pointer-events-none ${
               cropMode
-                ? 'text-amber-400 bg-amber-400/15 hover:bg-amber-400/25'
+                ? (timelineMode === 'light' ? 'text-amber-600 bg-amber-400/15 hover:bg-amber-400/25' : 'text-amber-400 bg-amber-400/15 hover:bg-amber-400/25')
                 : 'text-[var(--editor-text)]/60 bg-transparent hover:text-[var(--editor-text)]'
             }`}
           >
@@ -2137,6 +2177,7 @@ function ReviewSurface<P extends Project>({
           <ImageToneMenu
             value={currentImageTone}
             onChange={handleImageToneChange}
+            mode={timelineMode}
           />
         )}
         {/* Audio polish — silence/fillers/loudness/voice cleanup. Hidden when the
@@ -2208,6 +2249,7 @@ function ReviewSurface<P extends Project>({
           modalOpen={anyModalOpen}
           onOpenGoToTime={openGoToTime}
           actionsRef={timelineActionsRef}
+          mode={timelineMode}
         />
       </div>
     </div>
@@ -2253,10 +2295,11 @@ function ReviewSurface<P extends Project>({
       editFocusId={editFocusId}
       compileOverlay={adapter.compileOverlay}
       resolveCaptionTemplate={adapter.resolveCaptionTemplate}
+      mode={timelineMode}
     />
   )
   const versionPanel = adapter.listVersionHistory && (
-    <VersionPanel versions={versions} restoring={restoring} onRestore={handleRestoreVersion} onSaveVersion={handleSaveVersion} saving={saving} onCompareVersion={adapter.versionFrameUrl ? handleCompareVersion : undefined} />
+    <VersionPanel versions={versions} restoring={restoring} onRestore={handleRestoreVersion} onSaveVersion={handleSaveVersion} saving={saving} onCompareVersion={adapter.versionFrameUrl ? handleCompareVersion : undefined} mode={timelineMode} />
   )
 
   /**
@@ -2307,6 +2350,7 @@ function ReviewSurface<P extends Project>({
           onCommit={commitOverlayEdit}
           fileUrl={adapter.fileUrl}
           uploadFile={file => adapter.uploadFile(file, project.id)}
+          mode={timelineMode}
         />
       ) : (
         <OverlayInspector
@@ -2597,6 +2641,7 @@ function ReviewSurface<P extends Project>({
                   ? <Fragment key={clipSelection.item.id}>{renderGenerationPanel({ clipId: clipSelection.item.id })}</Fragment>
                   : undefined
               }
+              mode={timelineMode}
             />
           ) : selectedOverlayItem ? (
             /* The selected overlay's Content/Transform tabs — the SAME node the
@@ -2721,6 +2766,7 @@ function ReviewSurface<P extends Project>({
           initialMode={paletteOpen === 'goto' ? 'goto' : 'list'}
           onGoToTime={(seconds) => clock.set(Math.max(0, Math.min(getTotalDuration(), seconds)))}
           onClose={closePalette}
+          themeMode={timelineMode}
         />
       )}
 
@@ -2735,6 +2781,7 @@ function ReviewSurface<P extends Project>({
           onClose={() => setRenderOpen(false)}
           onCancel={() => setRenderOpen(false)}
           onRenderComplete={() => { void refreshVersions() }}
+          mode={timelineMode}
         />
       )}
 
@@ -2753,6 +2800,7 @@ function ReviewSurface<P extends Project>({
           frameUrl={adapter.versionFrameUrl}
           durationSeconds={preRenderOptions.durationSec}
           onClose={() => setCompareOpen(null)}
+          mode={timelineMode}
         />
       )}
 
@@ -2771,6 +2819,7 @@ function ReviewSurface<P extends Project>({
             sync.applyExternal({ ...syncProjectRef.current, captions } as P)
             setRegenCaptionsOpen(false)
           }}
+          mode={timelineMode}
         />
       )}
 
@@ -2790,6 +2839,7 @@ function ReviewSurface<P extends Project>({
           commit={sync.commit}
           discardTransient={sync.discardTransient}
           onClose={() => setPolishOpen(false)}
+          mode={timelineMode}
         />
       )}
 

@@ -51,6 +51,10 @@ interface Props {
   // full-width (e.g. below the canvas) pass this to drop the default `w-80`
   // sidebar constraint.
   className?: string
+  /** Editor theme mode — light/dark. Threaded to `TextFormattingToolbar`'s
+   *  delete-icon hover hue. Absent -> dark, matching every existing
+   *  caller. */
+  mode?: 'light' | 'dark'
 }
 
 // Small eye toggle to hide/show the selected element in the editor preview only
@@ -191,6 +195,7 @@ export default function SlidePropertyPanel({
   hiddenElementIds,
   onToggleElementVisibility,
   className,
+  mode = 'dark',
 }: Props) {
   // Map of jsxPath → GlobalOverlay for overlay prop schemas
   const [overlaySchemas, setOverlaySchemas] = useState<Map<string, GlobalOverlay>>(new Map())
@@ -338,6 +343,7 @@ export default function SlidePropertyPanel({
                   slideId={slide.id}
                   element={overlayEl}
                   updateOverlayProp={updateOverlayProp}
+                  mode={mode}
                 />
               )}
 

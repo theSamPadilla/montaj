@@ -128,6 +128,13 @@ export interface PointerContext {
   fps: number
   snapConfig?: SnapConfig
   hitTestOptions?: HitTestOptions
+  /** The host's current keyframe selection, or null/undefined for none. Read
+   *  ONLY by `pointerUp`'s `keyframe-move` branch, to decide whether a
+   *  diamond retime should carry the selection to its new `t` — the machine
+   *  is otherwise stateless about selection (see `KeyframeSelection`), this
+   *  is the one gesture where "was the thing I just dragged the selected
+   *  one?" has to be answered mid-commit rather than left to the host. */
+  selectedKeyframe?: KeyframeSelection | null
 }
 
 export type PointerMachineEvent =
@@ -265,6 +272,12 @@ export type MachineState =
        *  never cleared. Arms the origin boundary so a butted clip can snap back
        *  onto its neighbour — see `originGuard`. */
       escaped: boolean
+      /** `keyframe-move` only: the most recent landed `toT` this gesture has
+       *  produced (see `Applied.keyframeLandedT`), carried forward across a
+       *  no-op frame rather than clobbered by `undefined`. `pointerUp` reads
+       *  this to follow the selection onto the diamond's new time. Undefined
+       *  for every gesture but `keyframe-move`. */
+      keyframeT?: number
     }
 
 export function initialMachineState(): MachineState {
@@ -599,6 +612,12 @@ interface Applied {
    *  effect on its own — the reducer diffs it against the last one and emits
    *  only on a change. */
   guide: SnapGuide | null
+  /** `keyframe-move` only: the diamond's item-relative landed time (`toT`)
+   *  after this move. Undefined for every other gesture, and undefined for a
+   *  `keyframe-move` frame that clamped to a no-op — `pointerUp` falls back
+   *  to the state's last known value (see the dragging state's `keyframeT`)
+   *  so a settled no-op frame at release never loses it. */
+  keyframeLandedT?: number
 }
 
 function noChange(snap: SnapState, lastProject: Project): Applied {
@@ -1033,7 +1052,7 @@ function applyKeyframeMove(
 
   const next = replaceVisualItem(press.baseProject, item.id, nextItem)
   const guide = edgeSnapGuide(snapped, item.start + toT)
-  return { effects: [{ type: 'projectChange', project: next }], snap: snapped.state, lastProject: next, guide }
+  return { effects: [{ type: 'projectChange', project: next }], snap: snapped.state, lastProject: next, guide, keyframeLandedT: toT }
 }
 
 /**
@@ -1394,7 +1413,14 @@ export function pointerReducer(state: MachineState, event: PointerMachineEvent):
     const escaped = state.escaped || hasEscaped(ctx, state.press, point)
     const applied = applyGesture(state.gesture, ctx, state.press, point, state.snap, state.lastProject, escaped)
     return {
-      state: { ...state, snap: applied.snap, guide: applied.guide, lastProject: applied.lastProject, escaped },
+      state: {
+        ...state,
+        snap: applied.snap,
+        guide: applied.guide,
+        lastProject: applied.lastProject,
+        escaped,
+        keyframeT: applied.keyframeLandedT ?? state.keyframeT,
+      },
       effects: guideEffects(state.guide, applied.guide, applied.effects),
     }
   }
@@ -1505,6 +1531,7 @@ export function pointerReducer(state: MachineState, event: PointerMachineEvent):
         guide: applied.guide,
         lastProject: applied.lastProject,
         escaped,
+        keyframeT: applied.keyframeLandedT,
       }
       return withCursor(next, cursorForGesture(gesture), guideEffects(null, applied.guide, [...selectFirst, ...applied.effects]))
     }
@@ -1598,6 +1625,23 @@ export function pointerReducer(state: MachineState, event: PointerMachineEvent):
             if (normalized !== committed.captions) committed = { ...committed, captions: normalized }
           }
           effects.push({ type: 'commit', project: committed })
+          // CapCut-correct retime: the diamond you dragged is the diamond you
+          // have selected, even though its `t` just changed underneath the
+          // selection's old value. Only follows when the dragged diamond WAS
+          // the selected one (`ctx.selectedKeyframe` matches this gesture's
+          // press-time itemId + fromT) — dragging some OTHER, unselected
+          // diamond must not steal the selection, and a menu/Delete-driven
+          // removal (not a retime) still goes through the host's own
+          // clearing paths untouched by this branch. Gated on the same
+          // "did anything actually change" check above, so a drag that
+          // never crossed a real move never touches the selection either.
+          if (state.gesture === 'keyframe-move' && state.keyframeT !== undefined) {
+            const { itemId, kfT: fromT } = state.press.hit
+            const sel = ctx.selectedKeyframe
+            if (itemId !== undefined && fromT !== undefined && sel && sel.itemId === itemId && sel.t === fromT) {
+              effects.push({ type: 'selectKeyframe', itemId, t: state.keyframeT })
+            }
+          }
         }
         return withCursor(
           { kind: 'idle', cursor: state.cursor },

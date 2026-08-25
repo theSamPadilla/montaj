@@ -16,6 +16,10 @@ export interface ImageToneMenuProps {
    *              For host chrome at the top of the page.
    */
   variant?: 'icon' | 'header'
+  /** Editor theme mode — light/dark. Only affects the icon variant's active-
+   *  state hue (violet-400 is sub-AA on a light bottom toolbar). Absent ->
+   *  dark, matching every existing caller. */
+  mode?: 'light' | 'dark'
 }
 
 /**
@@ -25,7 +29,7 @@ export interface ImageToneMenuProps {
  * caller gates on settings.colorSpace). Each option shows an example: the same
  * generic photo converted through the actual render pipeline under that mode.
  */
-export default function ImageToneMenu({ value, onChange, variant = 'icon' }: ImageToneMenuProps) {
+export default function ImageToneMenu({ value, onChange, variant = 'icon', mode = 'dark' }: ImageToneMenuProps) {
   const [open, setOpen] = useState(false)
   const rootRef = useRef<HTMLDivElement>(null)
 
@@ -74,7 +78,7 @@ export default function ImageToneMenu({ value, onChange, variant = 'icon' }: Ima
           aria-haspopup="menu"
           className={`flex items-center justify-center w-5 h-5 rounded transition-colors ${
             open
-              ? 'text-violet-400 bg-violet-400/15 hover:bg-violet-400/25'
+              ? (mode === 'light' ? 'text-violet-600 bg-violet-400/15 hover:bg-violet-400/25' : 'text-violet-400 bg-violet-400/15 hover:bg-violet-400/25')
               : 'text-[var(--editor-text)]/60 bg-transparent hover:text-[var(--editor-text)]'
           }`}
         >

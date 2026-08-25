@@ -66,9 +66,13 @@ interface VersionPanelProps {
    *  when the host adapter has no `versionFrameUrl` — the Compare button then
    *  just doesn't render, matching Restore/Save's degrade-gracefully pattern. */
   onCompareVersion?: (hash: string) => void
+  /** Editor theme mode — light/dark. Only affects the Restore button's hue
+   *  (indigo-300 is sub-AA on a light `--editor-surface` card). Absent ->
+   *  dark, matching every existing caller. */
+  mode?: 'light' | 'dark'
 }
 
-export default function VersionPanel({ versions, restoring, onRestore, onSaveVersion, saving, onCompareVersion }: VersionPanelProps) {
+export default function VersionPanel({ versions, restoring, onRestore, onSaveVersion, saving, onCompareVersion, mode = 'dark' }: VersionPanelProps) {
   const [nameInput, setNameInput] = useState('')
   const rows = listVersions(versions)
 
@@ -131,7 +135,7 @@ export default function VersionPanel({ versions, restoring, onRestore, onSaveVer
                 <button
                   onClick={() => onRestore(v.hash)}
                   disabled={restoring === v.hash}
-                  className="flex items-center h-6 px-2 rounded border border-indigo-500/50 text-[10px] font-medium text-indigo-300 hover:bg-indigo-500/10 transition-colors disabled:opacity-40"
+                  className={`flex items-center h-6 px-2 rounded border border-indigo-500/50 text-[10px] font-medium hover:bg-indigo-500/10 transition-colors disabled:opacity-40 ${mode === 'light' ? 'text-indigo-700' : 'text-indigo-300'}`}
                 >
                   {restoring === v.hash ? 'Restoring…' : 'Restore →'}
                 </button>

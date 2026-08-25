@@ -116,7 +116,7 @@ export type { SdrCurve, SdrCurveInfo } from './video/sdrCurves'
 export type { PreRenderOptions } from './video/RenderModal'
 
 // ── Theme ─────────────────────────────────────────────────────────────────────
-export { defaultMontajTheme, applyTheme } from './theme'
+export { defaultMontajTheme, lightMontajTheme, applyTheme, isLightTheme } from './theme'
 
 // ── State ───────────────────────────────────────────────────────────────────
 export { useProjectState } from './state/use-project-state'

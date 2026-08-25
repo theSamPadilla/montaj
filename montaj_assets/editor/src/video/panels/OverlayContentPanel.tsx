@@ -58,6 +58,10 @@ export interface OverlayContentPanelProps {
   /** Upload a picked file, returning its new workspace path (for image
    *  "change"). Absent on a non-Montaj host — see `ImageField`. */
   uploadFile?: (file: File) => Promise<string>
+  /** Editor theme mode — light/dark. Only affects the image field's upload-
+   *  error text (red-400 is sub-AA on a light `--editor-surface`). Absent ->
+   *  dark, matching every existing caller. */
+  mode?: 'light' | 'dark'
 }
 
 const SECTION_CLASS = 'shrink-0 border-b border-[var(--editor-border)] flex flex-col overflow-hidden'
@@ -82,6 +86,7 @@ function ImageField({
   onChange,
   onInput,
   onCommit,
+  mode = 'dark',
 }: {
   name: string
   value: string
@@ -93,6 +98,7 @@ function ImageField({
   onInput: (v: string) => void
   /** Closes the degraded path field's typing gesture. */
   onCommit: () => void
+  mode?: 'light' | 'dark'
 }) {
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState<string | null>(null)
@@ -131,7 +137,7 @@ function ImageField({
           {value ? value.split('/').pop() : '—'}
         </span>
         {uploadFile ? (
-          <label className="inline-flex w-fit cursor-pointer items-center gap-1.5 rounded-md border border-[var(--editor-border)] px-2.5 py-1 text-xs text-[var(--editor-text)]/80 hover:bg-white/5">
+          <label className="inline-flex w-fit cursor-pointer items-center gap-1.5 rounded-md border border-[var(--editor-border)] px-2.5 py-1 text-xs text-[var(--editor-text)]/80 hover:bg-[var(--editor-text)]/5">
             {busy ? 'Uploading…' : 'Change…'}
             <input
               type="file"
@@ -153,7 +159,7 @@ function ImageField({
             className={cn(inspectorInputClass, 'font-mono')}
           />
         )}
-        {err && <span className="text-[11px] text-red-400">{err}</span>}
+        {err && <span className={`text-[11px] ${mode === 'light' ? 'text-red-600' : 'text-red-400'}`}>{err}</span>}
       </div>
     </div>
   )
@@ -183,12 +189,14 @@ function PropFieldRow({
   onCommit,
   fileUrl,
   uploadFile,
+  mode = 'dark',
 }: {
   field: PropField
   onPreview: (value: string | number | boolean) => void
   onCommit: () => void
   fileUrl?: (path: string) => string
   uploadFile?: (file: File) => Promise<string>
+  mode?: 'light' | 'dark'
 }) {
   const [draft, setDraft] = useState<string | null>(null)
   const dirty = useRef(false)
@@ -269,6 +277,7 @@ function PropFieldRow({
           onChange={v => change(v)}
           onInput={v => { setDraft(v); preview(v) }}
           onCommit={commit}
+          mode={mode}
         />
       ) : (
         <textarea
@@ -290,6 +299,7 @@ export default function OverlayContentPanel({
   onCommit,
   fileUrl,
   uploadFile,
+  mode = 'dark',
 }: OverlayContentPanelProps) {
   // Derived on EVERY render, never held in state. The modal seeded a `draft`
   // array once in a `useState` initializer, which it could get away with
@@ -330,6 +340,7 @@ export default function OverlayContentPanel({
               onCommit={onCommit}
               fileUrl={fileUrl}
               uploadFile={uploadFile}
+              mode={mode}
             />
           ))
         )}

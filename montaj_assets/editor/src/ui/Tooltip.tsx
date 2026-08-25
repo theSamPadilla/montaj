@@ -92,7 +92,7 @@ export function Tooltip({ label, keys, side = 'top', className, children }: Tool
         <div
           ref={pillRef}
           role="tooltip"
-          className="pointer-events-none fixed z-[100] flex items-center gap-1 whitespace-nowrap rounded border border-gray-700 bg-gray-900 px-1.5 py-1 text-[10px] leading-none text-gray-100 shadow-lg"
+          className="pointer-events-none fixed z-[100] flex items-center gap-1 whitespace-nowrap rounded border border-[var(--editor-border)] bg-[var(--editor-surface)] px-1.5 py-1 text-[10px] leading-none text-[var(--editor-text)] shadow-lg"
           style={{
             left: position.x,
             top: position.y,
@@ -103,7 +103,7 @@ export function Tooltip({ label, keys, side = 'top', className, children }: Tool
           {keys?.map((k, i) => (
             <kbd
               key={i}
-              className="rounded border border-gray-700 bg-gray-800 px-1 py-0.5 font-mono text-[9px] leading-none text-gray-300"
+              className="rounded border border-[var(--editor-border)] bg-[var(--editor-text)]/10 px-1 py-0.5 font-mono text-[9px] leading-none text-[var(--editor-text)]/70"
             >
               {k}
             </kbd>

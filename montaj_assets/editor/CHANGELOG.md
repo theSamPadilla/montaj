@@ -34,6 +34,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **UI polish.** The clip **Crop** tab is a centered icon + description + button
   rather than a bare line of text; the Export dialog's resolution tiles drop the
   overflowing "recommended" badge (the pre-selected tile already says it).
+- **Fixed: dragging the selected keyframe diamond no longer drops its selection.**
+  Retiming a selected diamond used to leave the selection pointing at the OLD
+  time, which the drag had just vacated, so the diamond visually deselected the
+  instant you dropped it. The selection now follows the diamond to its new time,
+  matching CapCut — Delete still removes the followed keyframe.
 
 - **Video and image clips can be keyframed.** A clip's position, scale and
   rotation now animate over its own lifetime, using the same keyframe controls,
@@ -230,6 +235,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Both editors
 
+- **Both editors now follow the app's light or dark mode.** They used to
+  render dark-only, so switching Montaj into light mode left the editor
+  looking broken — the surrounding chrome went light while the preview, the
+  properties panel, and the timeline stayed dark. The editor now switches
+  instantly the moment the app's theme toggle is used, with no reload. The
+  video preview and the agent hand-off code box stay dark in both themes on
+  purpose, the same way a real editor's preview always sits on black. Dark
+  mode itself is unchanged — nothing looks different there.
 - **Added: visible Undo (and Redo) toolbar buttons.** Undo/redo was previously
   keyboard-only (`Cmd/Ctrl+Z`, `Cmd/Ctrl+Shift+Z`) and only advertised in the
   canvas hint line + ⓘ modal. The carousel editor now shows **Undo** and

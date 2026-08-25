@@ -334,6 +334,10 @@ export interface CaptionListPanelProps {
    *  only meaningful alongside `compileOverlay` — without either, the gallery
    *  falls back to the static specimen card. */
   resolveCaptionTemplate?: (style: string) => string
+  /** Editor theme mode — light/dark. Only affects the delete/"remove all"
+   *  destructive hues (red-400 is sub-AA on a light `--editor-surface`).
+   *  Absent -> dark, matching every existing caller. */
+  mode?: 'light' | 'dark'
 }
 
 export default function CaptionListPanel({
@@ -353,6 +357,7 @@ export default function CaptionListPanel({
   editFocusId,
   compileOverlay,
   resolveCaptionTemplate,
+  mode = 'dark',
 }: CaptionListPanelProps) {
   const segs = captionTrack?.segments ?? []
 
@@ -378,6 +383,7 @@ export default function CaptionListPanel({
       editFocusId={editFocusId}
       compileOverlay={compileOverlay}
       resolveCaptionTemplate={resolveCaptionTemplate}
+      mode={mode}
     />
   )
 }
@@ -402,6 +408,7 @@ function CaptionListPanelBody({
   editFocusId,
   compileOverlay,
   resolveCaptionTemplate,
+  mode = 'dark',
 }: CaptionListPanelProps) {
   const segs = captionTrack?.segments ?? []
   const [search, setSearch] = useState('')
@@ -1084,7 +1091,7 @@ function CaptionListPanelBody({
                       />
                     </span>
                     <button
-                      className="shrink-0 opacity-0 group-hover:opacity-100 text-[var(--editor-text)]/40 hover:text-red-400 transition-opacity"
+                      className={`shrink-0 opacity-0 group-hover:opacity-100 text-[var(--editor-text)]/40 transition-opacity ${mode === 'light' ? 'hover:text-red-600' : 'hover:text-red-400'}`}
                       onClick={e => { e.stopPropagation(); handleDelete(seg.id) }}
                       title="Delete caption"
                       aria-label="Delete caption"
@@ -1122,8 +1129,10 @@ function CaptionListPanelBody({
                 onClick={handleRemoveAllClick}
                 className={`flex items-center justify-center gap-1.5 h-8 px-3 rounded-md border text-xs font-medium transition-colors ${
                   confirmRemove
-                    ? 'bg-red-500/15 border-red-500/60 text-red-400'
-                    : 'border-[var(--editor-border)] bg-[var(--editor-surface)] text-[var(--editor-text)]/70 hover:border-red-500/50 hover:text-red-400'
+                    ? (mode === 'light' ? 'bg-red-50 border-red-400 text-red-700' : 'bg-red-500/15 border-red-500/60 text-red-400')
+                    : (mode === 'light'
+                        ? 'border-[var(--editor-border)] bg-[var(--editor-surface)] text-[var(--editor-text)]/70 hover:border-red-400 hover:text-red-700'
+                        : 'border-[var(--editor-border)] bg-[var(--editor-surface)] text-[var(--editor-text)]/70 hover:border-red-500/50 hover:text-red-400')
                 }`}
               >
                 <Trash2 size={13} />

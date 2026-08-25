@@ -9,9 +9,14 @@ interface SwitchProps {
    *  visible text of its own, so a caller placing the switch beside a text
    *  label (rather than wrapping it in one) needs this for an accessible name. */
   'aria-label'?: string
+  /** Editor theme mode — light/dark. Only affects the unchecked track's hue:
+   *  `--editor-border` (#e5e7eb) on a light `--editor-surface` (#ffffff) is
+   *  ~1.2:1, so an off switch with a white knob effectively disappears.
+   *  Absent -> dark, matching every existing caller. */
+  mode?: 'light' | 'dark'
 }
 
-export function Switch({ checked, onCheckedChange, className, disabled, 'aria-label': ariaLabel }: SwitchProps) {
+export function Switch({ checked, onCheckedChange, className, disabled, 'aria-label': ariaLabel, mode = 'dark' }: SwitchProps) {
   return (
     <button
       role="switch"
@@ -21,7 +26,7 @@ export function Switch({ checked, onCheckedChange, className, disabled, 'aria-la
       onClick={() => onCheckedChange(!checked)}
       className={cn(
         'relative inline-flex h-5 w-9 items-center rounded-full transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--editor-accent)] disabled:opacity-50',
-        checked ? 'bg-[var(--editor-accent)]' : 'bg-gray-300 dark:bg-[var(--editor-border)]',
+        checked ? 'bg-[var(--editor-accent)]' : (mode === 'light' ? 'bg-gray-400' : 'bg-[var(--editor-border)]'),
         className,
       )}
     >

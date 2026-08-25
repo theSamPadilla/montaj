@@ -70,6 +70,93 @@ export const defaultMontajTheme: EditorTheme = {
 }
 
 /**
+ * Montaj's light editor theme — the counterpart to `defaultMontajTheme` for
+ * hosts that toggle to light mode. Values are chosen to mirror the dark
+ * palette's relationships rather than its literal colors:
+ *   background  gray-100  (#f3f4f6) — the editor shell
+ *   surface     white     (#ffffff) — raised panels/inputs/buttons, brighter
+ *                          than the shell (the dark theme's surface is
+ *                          lighter than its bg too, just inverted in sense)
+ *   border      gray-200  (#e5e7eb) — the hairline
+ *   text        gray-900  (#111827) — primary text
+ *   accent      indigo-500 (#6366f1) — unchanged from the dark theme; Montaj's
+ *                          interactive accent reads fine on either ground
+ *   accentForeground white (#ffffff) — unchanged; readable on the indigo accent
+ *   selection   indigo-500 (#6366f1) — deliberately darker than the dark
+ *                          theme's indigo-400 (#818cf8) so the selection
+ *                          outline has enough contrast against a light ground
+ *   font        Inter (identical to the dark theme)
+ *
+ * fonts/radii/spacing are identical to `defaultMontajTheme` — only the color
+ * ramp changes between modes.
+ */
+export const lightMontajTheme: EditorTheme = {
+  colors: {
+    background: '#f3f4f6',
+    surface: '#ffffff',
+    accent: '#6366f1',
+    accentForeground: '#ffffff',
+    text: '#111827',
+    border: '#e5e7eb',
+    selection: '#6366f1',
+  },
+  fonts: {
+    sans: "'Inter', system-ui, -apple-system, sans-serif",
+  },
+  radii: {
+    sm: '0.25rem',
+    md: '0.5rem',
+    lg: '0.75rem',
+  },
+  spacing: {
+    1: '0.25rem',
+    2: '0.5rem',
+    3: '0.75rem',
+    4: '1rem',
+    6: '1.5rem',
+    8: '2rem',
+  },
+}
+
+/**
+ * Relative-luminance test on `theme.colors.background`, used to classify a
+ * theme as light or dark. Exists because the canvas timeline and
+ * `VideoEditor` render onto an HTML canvas — they can't rely on CSS to pick
+ * their palette, so they need a cheap, direct way to ask "is this theme
+ * light?" without the `EditorTheme` type growing timeline-specific color
+ * tokens (background/grid/playhead/etc.) that only those two consumers care
+ * about. Parses 3- and 6-digit `#rgb`/`#rrggbb` hex; an unparseable or
+ * unrecognized color string falls back to `false` (dark), since dark has
+ * always been the default here and must never silently regress.
+ */
+export function isLightTheme(theme: EditorTheme): boolean {
+  const hex = theme.colors.background.trim()
+  const match = /^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/.exec(hex)
+  if (!match) return false
+
+  const digits = match[1]
+  const expand = (c: string): number => parseInt(c + c, 16)
+
+  let r: number
+  let g: number
+  let b: number
+  if (digits.length === 3) {
+    r = expand(digits[0])
+    g = expand(digits[1])
+    b = expand(digits[2])
+  } else {
+    r = parseInt(digits.slice(0, 2), 16)
+    g = parseInt(digits.slice(2, 4), 16)
+    b = parseInt(digits.slice(4, 6), 16)
+  }
+
+  // Standard relative-luminance weighting (ITU-R BT.601-ish perceptual
+  // weights); thresholded at the midpoint of the 0-255 range.
+  const luminance = 0.299 * r + 0.587 * g + 0.114 * b
+  return luminance > 127.5
+}
+
+/**
  * Write `theme`'s tokens onto `el` as CSS custom properties following the
  * convention documented at the top of this file. Idempotent — calling it again
  * with a different theme overwrites the previously-set vars.

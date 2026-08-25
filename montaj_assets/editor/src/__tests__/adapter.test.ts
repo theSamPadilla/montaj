@@ -7,7 +7,7 @@ import type {
   MediaScope,
 } from '../types'
 import type { Project, ImageElement } from '../types'
-import { defaultMontajTheme, applyTheme } from '../theme'
+import { defaultMontajTheme, lightMontajTheme, applyTheme, isLightTheme } from '../theme'
 
 // ── (a) A fake adapter literal must satisfy the EditorAdapter interface ──────
 // This test is purely structural: it type-checks at build time. The runtime
@@ -196,5 +196,63 @@ describe('applyTheme', () => {
     expect(el.style.getPropertyValue('--editor-space-2')).toBe(
       defaultMontajTheme.spacing[2],
     )
+  })
+
+  it('writes editor CSS vars onto a div for lightMontajTheme', () => {
+    const el = document.createElement('div')
+    applyTheme(el, lightMontajTheme)
+
+    expect(el.style.getPropertyValue('--editor-bg')).toBe(
+      lightMontajTheme.colors.background,
+    )
+    expect(el.style.getPropertyValue('--editor-surface')).toBe(
+      lightMontajTheme.colors.surface,
+    )
+    expect(el.style.getPropertyValue('--editor-accent')).toBe(
+      lightMontajTheme.colors.accent,
+    )
+    expect(el.style.getPropertyValue('--editor-accent-foreground')).toBe(
+      lightMontajTheme.colors.accentForeground,
+    )
+    expect(el.style.getPropertyValue('--editor-text')).toBe(
+      lightMontajTheme.colors.text,
+    )
+    expect(el.style.getPropertyValue('--editor-border')).toBe(
+      lightMontajTheme.colors.border,
+    )
+    expect(el.style.getPropertyValue('--editor-selection')).toBe(
+      lightMontajTheme.colors.selection,
+    )
+    expect(el.style.getPropertyValue('--editor-font-sans')).toBe(
+      lightMontajTheme.fonts.sans,
+    )
+
+    expect(lightMontajTheme.colors.background).not.toBe(defaultMontajTheme.colors.background)
+    expect(lightMontajTheme.colors.text).not.toBe(defaultMontajTheme.colors.text)
+  })
+})
+
+// ── (d) isLightTheme classifies a theme by its background's luminance ───────
+describe('isLightTheme', () => {
+  it('returns true for lightMontajTheme', () => {
+    expect(isLightTheme(lightMontajTheme)).toBe(true)
+  })
+
+  it('returns false for defaultMontajTheme', () => {
+    expect(isLightTheme(defaultMontajTheme)).toBe(false)
+  })
+
+  it('falls back to false for an unparseable background color', () => {
+    expect(
+      isLightTheme({
+        ...defaultMontajTheme,
+        colors: { ...defaultMontajTheme.colors, background: 'not-a-color' },
+      }),
+    ).toBe(false)
+  })
+
+  it('parses 3-digit hex backgrounds', () => {
+    expect(isLightTheme({ ...defaultMontajTheme, colors: { ...defaultMontajTheme.colors, background: '#fff' } })).toBe(true)
+    expect(isLightTheme({ ...defaultMontajTheme, colors: { ...defaultMontajTheme.colors, background: '#000' } })).toBe(false)
   })
 })

@@ -3,7 +3,7 @@ import { AudioLines, Captions, Eye, EyeOff, Film, Layers, Magnet, Settings2, Vol
 import { Tooltip } from '../../ui/Tooltip'
 import type { Project } from '../../types'
 import type { VisualItem } from '../../schema'
-import { computeTimelineLayout, TRACK_PALETTE, CAPTION_RAIL_ACCENT, type TimelineLayout, type TrackPalette, type VisualRowLayout, type AudioLaneLayout } from './canvas/draw'
+import { computeTimelineLayout, timelinePalette, type TimelineLayout, type TimelineMode, type TrackPalette, type VisualRowLayout, type AudioLaneLayout } from './canvas/draw'
 import { AUDIO_LANE_HEIGHT_PX, normalizeTracks, trackItems } from './timeline-model'
 import TrackSettingsPopover from './TrackSettingsPopover'
 
@@ -168,7 +168,7 @@ function RailCell({ height, accent, icon, label, action, dimmed, settingsButton 
  * Only rendered for rows that can actually carry audio: an overlay-only track
  * has no audio to mute, so offering the control there is a lie.
  */
-function MuteToggle({ muted, onToggle, trackLabel }: { muted: boolean; onToggle: () => void; trackLabel: string }) {
+function MuteToggle({ muted, onToggle, trackLabel, mode }: { muted: boolean; onToggle: () => void; trackLabel: string; mode: TimelineMode }) {
   return (
     <Tooltip label={muted ? `Unmute ${trackLabel}` : `Mute ${trackLabel}`}>
       <button
@@ -178,7 +178,7 @@ function MuteToggle({ muted, onToggle, trackLabel }: { muted: boolean; onToggle:
         onClick={onToggle}
         className={`flex h-3.5 w-3.5 items-center justify-center rounded transition-colors ${
           muted
-            ? 'text-amber-400/90 hover:text-amber-300'
+            ? (mode === 'light' ? 'text-amber-600 hover:text-amber-700' : 'text-amber-400/90 hover:text-amber-300')
             : 'text-[var(--editor-text)]/35 hover:text-[var(--editor-text)]/80'
         }`}
       >
@@ -195,7 +195,7 @@ function MuteToggle({ muted, onToggle, trackLabel }: { muted: boolean; onToggle:
  * the settings gear. Audio-lane only today (see `AudioLaneRailRow`); no
  * visual-track equivalent exists yet.
  */
-function MagnetToggle({ magnetic, onToggle, trackLabel }: { magnetic: boolean; onToggle: () => void; trackLabel: string }) {
+function MagnetToggle({ magnetic, onToggle, trackLabel, mode }: { magnetic: boolean; onToggle: () => void; trackLabel: string; mode: TimelineMode }) {
   return (
     <Tooltip label="Magnetic track — keep gapless">
       <button
@@ -205,7 +205,7 @@ function MagnetToggle({ magnetic, onToggle, trackLabel }: { magnetic: boolean; o
         onClick={onToggle}
         className={`flex h-3.5 w-3.5 items-center justify-center rounded transition-colors ${
           magnetic
-            ? 'text-emerald-400/90 hover:text-emerald-300'
+            ? (mode === 'light' ? 'text-emerald-600 hover:text-emerald-700' : 'text-emerald-400/90 hover:text-emerald-300')
             : 'text-[var(--editor-text)]/35 hover:text-[var(--editor-text)]/80'
         }`}
       >
@@ -217,7 +217,7 @@ function MagnetToggle({ magnetic, onToggle, trackLabel }: { magnetic: boolean; o
 
 /** The per-track skip switch. Eye/EyeOff rather than a checkbox: it reads at
  *  14px and says "shown / not shown" without a word. */
-function SkipToggle({ enabled, onToggle, trackLabel }: { enabled: boolean; onToggle: () => void; trackLabel: string }) {
+function SkipToggle({ enabled, onToggle, trackLabel, mode }: { enabled: boolean; onToggle: () => void; trackLabel: string; mode: TimelineMode }) {
   return (
     <Tooltip label={enabled ? `Skip ${trackLabel} track` : `Un-skip ${trackLabel} track`}>
       <button
@@ -228,7 +228,7 @@ function SkipToggle({ enabled, onToggle, trackLabel }: { enabled: boolean; onTog
         className={`flex h-3.5 w-3.5 items-center justify-center rounded transition-colors ${
           enabled
             ? 'text-[var(--editor-text)]/35 hover:text-[var(--editor-text)]/80'
-            : 'text-amber-400/80 hover:text-amber-300'
+            : (mode === 'light' ? 'text-amber-600/90 hover:text-amber-700' : 'text-amber-400/80 hover:text-amber-300')
         }`}
       >
         {enabled ? <Eye size={13} /> : <EyeOff size={13} />}
@@ -246,6 +246,7 @@ function SkipToggle({ enabled, onToggle, trackLabel }: { enabled: boolean; onTog
 function VisualTrackRailRow({
   row,
   palette,
+  mode,
   label,
   kind,
   enabled,
@@ -259,6 +260,7 @@ function VisualTrackRailRow({
 }: {
   row: VisualRowLayout
   palette: TrackPalette
+  mode: TimelineMode
   label: string
   kind: string | null
   enabled: boolean
@@ -306,6 +308,7 @@ function VisualTrackRailRow({
             {onToggleTrackEnabled && (
               <SkipToggle
                 enabled={enabled}
+                mode={mode}
                 trackLabel={trackLabel}
                 onToggle={() => onToggleTrackEnabled(row.trackIdx, !enabled)}
               />
@@ -313,6 +316,7 @@ function VisualTrackRailRow({
             {hasAudio && onSetTrackMuted && (
               <MuteToggle
                 muted={muted}
+                mode={mode}
                 trackLabel={`${trackLabel} track`}
                 onToggle={() => onSetTrackMuted(row.trackIdx, !muted)}
               />
@@ -330,6 +334,7 @@ function VisualTrackRailRow({
           volumeAriaLabel={`${label} volume`}
           speed={hasSpeedControl ? speed : undefined}
           onApplySpeed={hasSpeedControl ? s => onApplySpeed!(row.trackIdx, s) : undefined}
+          mode={mode}
         />
       )}
     </div>
@@ -346,11 +351,18 @@ function VisualTrackRailRow({
  */
 function AudioLaneRailRow({
   lane,
+  accent,
+  mode,
   onSetLaneVolume,
   onSetLaneMuted,
   onSetLaneMagnet,
 }: {
   lane: AudioLaneLayout
+  /** The emerald edge, handed down rather than hardcoded here: it is the audio
+   *  BAR's own border colour, and on a light ground that is a different
+   *  emerald. A literal here would have gone on saying the dark one. */
+  accent: string
+  mode: TimelineMode
   onSetLaneVolume?: (trackIds: string[], volume: number, commit: boolean) => void
   onSetLaneMuted?: (trackIds: string[], muted: boolean) => void
   onSetLaneMagnet?: (trackIds: string[], magnetic: boolean) => void
@@ -375,7 +387,7 @@ function AudioLaneRailRow({
     <div className="absolute inset-x-0" style={{ top: lane.y, height: lane.height }}>
       <RailCell
         height={AUDIO_LANE_HEIGHT_PX}
-        accent="rgba(16,185,129,0.6)"
+        accent={accent}
         icon={<AudioLines size={15} />}
         label="Audio"
         settingsButton={hasSettings ? { onClick: () => setOpen(o => !o), open, buttonRef, label: 'Audio lane settings' } : undefined}
@@ -384,6 +396,7 @@ function AudioLaneRailRow({
             {onSetLaneMuted && (
               <MuteToggle
                 muted={muted}
+                mode={mode}
                 trackLabel="audio lane"
                 onToggle={() => onSetLaneMuted(trackIds, !muted)}
               />
@@ -391,6 +404,7 @@ function AudioLaneRailRow({
             {onSetLaneMagnet && (
               <MagnetToggle
                 magnetic={magnetic}
+                mode={mode}
                 trackLabel="audio lane"
                 onToggle={() => onSetLaneMagnet(trackIds, !magnetic)}
               />
@@ -406,6 +420,7 @@ function AudioLaneRailRow({
           volume={volume}
           onVolumeChange={(v, commit) => onSetLaneVolume!(trackIds, v, commit)}
           volumeAriaLabel="Audio lane volume"
+          mode={mode}
         />
       )}
     </div>
@@ -448,12 +463,20 @@ export interface TrackGutterProps {
   /** Audio-lane magnet (gapless mode), from the rail's inline toggle — same
    *  fan-out as mute/volume, and the same "absent ⇒ no control" convention. */
   onSetLaneMagnet?: (trackIds: string[], magnetic: boolean) => void
+  /** Which ground the rail's non-token colours are picked for. The cell chrome
+   *  itself is `--editor-*` driven and flips on its own; the LEFT-EDGE ACCENTS
+   *  are not — they are the canvas' own track/caption/audio hues, and they have
+   *  to be resolved from the same palette the canvas paints with or the rail
+   *  and the clips beside it stop matching. Threaded from Timeline (never
+   *  looked up here) for exactly that reason. Defaults to `'dark'`. */
+  mode?: TimelineMode
 }
 
 export default function TrackGutter({
   project,
   showCaptionRow = true,
   layout,
+  mode = 'dark',
   onToggleTrackEnabled,
   onSetTrackVolume,
   onSetTrackMuted,
@@ -463,6 +486,7 @@ export default function TrackGutter({
   onSetLaneMagnet,
 }: TrackGutterProps) {
   const resolved = layout ?? computeTimelineLayout(project)
+  const palette = timelinePalette(mode)
   const tracks = trackItems(project)
   // Read `enabled`/`volume`/`muted` off the normalized tracks — `trackItems`
   // gives items only, and a legacy-shaped project has no settings at all
@@ -477,7 +501,7 @@ export default function TrackGutter({
       <div className="relative" style={{ height: resolved.height }}>
         {resolved.rows.map(row => {
           const kind = visualTrackKind(tracks[row.trackIdx] ?? [])
-          const palette = TRACK_PALETTE[row.trackIdx % TRACK_PALETTE.length]
+          const trackPalette = palette.tracks[row.trackIdx % palette.tracks.length]
           const label = kind ? KIND_LABEL[kind] ?? kind : 'Track'
           const settings = trackSettings[row.trackIdx]
           const enabled = settings?.enabled !== false
@@ -485,7 +509,8 @@ export default function TrackGutter({
             <VisualTrackRailRow
               key={`row-${row.trackIdx}`}
               row={row}
-              palette={palette}
+              palette={trackPalette}
+              mode={mode}
               label={label}
               kind={kind}
               enabled={enabled}
@@ -503,6 +528,8 @@ export default function TrackGutter({
           <AudioLaneRailRow
             key={`lane-${lane.laneIndex}`}
             lane={lane}
+            accent={palette.colors.audioBorder}
+            mode={mode}
             onSetLaneVolume={onSetLaneVolume}
             onSetLaneMuted={onSetLaneMuted}
             onSetLaneMagnet={onSetLaneMagnet}
@@ -521,7 +548,7 @@ export default function TrackGutter({
           <div key={`caption-${band.lane}`} className="absolute inset-x-0" style={{ top: band.y, height: band.height }}>
             <RailCell
               height={band.height}
-              accent={CAPTION_RAIL_ACCENT}
+              accent={palette.captionRailAccent}
               icon={<Captions size={15} />}
               label={resolved.captions!.length > 1 ? `Captions ${band.lane + 1}` : 'Captions'}
             />

@@ -80,6 +80,9 @@ export interface TrackSettingsPopoverProps {
   /** Applies `speed` to EVERY clip on the track. Fired on slider release and on
    *  a preset-chip click (via SpeedControl's `onCommit`), not per drag tick. */
   onApplySpeed?: (speed: number) => void
+  /** Editor theme mode — light/dark. Only affects the Mute/Skip switches'
+   *  unchecked track colour. Absent -> dark, matching every existing caller. */
+  mode?: 'light' | 'dark'
 }
 
 export default function TrackSettingsPopover({
@@ -95,6 +98,7 @@ export default function TrackSettingsPopover({
   skip,
   speed,
   onApplySpeed,
+  mode = 'dark',
 }: TrackSettingsPopoverProps) {
   const popoverRef = useRef<HTMLDivElement>(null)
   const [position, setPosition] = useState<Position | null>(null)
@@ -208,14 +212,14 @@ export default function TrackSettingsPopover({
       {showMute && (
         <div className="flex items-center justify-between">
           <span className="text-[11px] text-[var(--editor-text)]/70">Mute</span>
-          <Switch checked={!!muted} onCheckedChange={onMutedChange!} aria-label={muteAriaLabel} />
+          <Switch checked={!!muted} onCheckedChange={onMutedChange!} aria-label={muteAriaLabel} mode={mode} />
         </div>
       )}
 
       {skip && (
         <div className="flex items-center justify-between">
           <span className="text-[11px] text-[var(--editor-text)]/70">Skip</span>
-          <Switch checked={skip.skipped} onCheckedChange={() => skip.onToggle()} aria-label={skip.ariaLabel} />
+          <Switch checked={skip.skipped} onCheckedChange={() => skip.onToggle()} aria-label={skip.ariaLabel} mode={mode} />
         </div>
       )}
     </div>,

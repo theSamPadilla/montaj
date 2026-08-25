@@ -34,14 +34,14 @@ export default function Scrubber({ onOpenGoToTime }: ScrubberProps) {
     /* `cursor-pointer`: the row is a strip of timeline background, and
        Timeline's container click seeks through it (see `handleContainerClick`),
        so it should look live rather than dead. */
-    <div className="flex items-center justify-between text-[10px] font-mono text-gray-600 cursor-pointer">
+    <div className="flex items-center justify-between text-[10px] font-mono text-[var(--editor-text)]/35 cursor-pointer">
       {onOpenGoToTime ? (
         <Tooltip label="Go to time">
           <button
             type="button"
             aria-label="Go to time"
             onClick={(e) => { e.stopPropagation(); onOpenGoToTime() }}
-            className="hover:text-gray-300 transition-colors"
+            className="hover:text-[var(--editor-text)]/80 transition-colors"
           >
             {formatTime(currentTime)}
           </button>

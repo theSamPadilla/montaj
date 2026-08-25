@@ -1248,6 +1248,65 @@ describe('keyframe drag (SP9b T3.3)', () => {
     expect(offsetXTrack(moved).points.map(p => p.t)).toEqual([0.5, 1.5])
     expect(moved.start).not.toBe(2)
   })
+
+  describe('selection follows a retimed diamond (CapCut-correct)', () => {
+    it('carries the selection from the old t to the new one, on the SAME commit that applies the retime', () => {
+      // ctx.selectedKeyframe names the diamond BEFORE the drag (t=0.5) — the
+      // one being dragged here. Without the fix `selectedKeyframe` would keep
+      // pointing at t=0.5, which `moveKeyframe` has just vacated.
+      const d = new Driver(makeContext({
+        project: keyframedProject(),
+        selectedIds: ['o0'],
+        selectedKeyframe: { itemId: 'o0', t: 0.5 },
+        snapConfig: ZERO_SNAP,
+      }))
+      d.down(O0_KEYFRAME_SHARED.x, O0_KEYFRAME_SHARED.y)
+      d.move(O0_KEYFRAME_SHARED.x + 30, O0_KEYFRAME_SHARED.y)   // +30px = +0.3s -> t 0.5 -> 0.8
+      const effects = d.up(O0_KEYFRAME_SHARED.x + 30, O0_KEYFRAME_SHARED.y)
+
+      expect(of(effects, 'commit')).toHaveLength(1)
+      // Fires in the SAME batch of effects as the commit — one gesture, one
+      // update — not deferred to a later, project-watching pass. Pixel-delta
+      // drags land on a float (30px / 100px-per-second = 0.3, not exactly
+      // representable) — same tolerance `expectTimes` above uses.
+      const selects = of(effects, 'selectKeyframe')
+      expect(selects).toHaveLength(1)
+      expect(selects[0].itemId).toBe('o0')
+      expect(selects[0].t).toBeCloseTo(0.8)
+    })
+
+    it('leaves the selection alone when the DRAGGED diamond is not the selected one', () => {
+      // o0's OTHER diamond (t=1.5, offsetX-only) is selected; the shared t=0.5
+      // diamond is what gets dragged. Grabbing an unrelated diamond must not
+      // steal the selection onto it.
+      const d = new Driver(makeContext({
+        project: keyframedProject(),
+        selectedIds: ['o0'],
+        selectedKeyframe: { itemId: 'o0', t: 1.5 },
+        snapConfig: ZERO_SNAP,
+      }))
+      d.down(O0_KEYFRAME_SHARED.x, O0_KEYFRAME_SHARED.y)
+      d.move(O0_KEYFRAME_SHARED.x + 30, O0_KEYFRAME_SHARED.y)
+      const effects = d.up(O0_KEYFRAME_SHARED.x + 30, O0_KEYFRAME_SHARED.y)
+
+      expect(of(effects, 'commit')).toHaveLength(1)
+      expect(of(effects, 'selectKeyframe')).toEqual([])
+    })
+
+    it('leaves the selection alone when nothing was selected at all', () => {
+      const d = new Driver(makeContext({
+        project: keyframedProject(),
+        selectedIds: ['o0'],
+        selectedKeyframe: null,
+        snapConfig: ZERO_SNAP,
+      }))
+      d.down(O0_KEYFRAME_SHARED.x, O0_KEYFRAME_SHARED.y)
+      d.move(O0_KEYFRAME_SHARED.x + 30, O0_KEYFRAME_SHARED.y)
+      const effects = d.up(O0_KEYFRAME_SHARED.x + 30, O0_KEYFRAME_SHARED.y)
+
+      expect(of(effects, 'selectKeyframe')).toEqual([])
+    })
+  })
 })
 
 describe('audio lane magnet', () => {
