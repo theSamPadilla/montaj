@@ -24,7 +24,7 @@ Read the SRT file produced by the `transcribe` step. The path is in the transcri
 {"srt": "/workspace/proj-abc/source.srt", "words": "/workspace/proj-abc/source.json"}
 ```
 
-Read the probe step's output for `width`, `height`, and `duration`. The source is horizontal (16:9 or similar wide format).
+Read the probe step's output for `duration`, `display_width`, and `display_height` — the rotation-corrected dimensions probe reports, not the coded `width`/`height`. `find_clips` assumes the source is horizontal (16:9 or similar wide format); confirm that assumption against `display_width`/`display_height`, never the coded dims, which can read landscape on a source that actually displays something else once its rotation flag is applied. If the display aspect isn't actually horizontal, stop and flag it rather than continuing — the crop math in step 4 assumes a wide source and produces a wrong crop silently otherwise.
 
 ### 2. Determine N and the clip windows
 
@@ -50,27 +50,24 @@ Three modes — pick based on the content in the window and any framing guidance
 
 ### 4. Compute the sourceCrop for zoom mode
 
-For a 16:9 source reframed to 9:16 (zoom mode), compute the centered 9:16 sub-rectangle as fractions of the source dimensions:
+Call the `reframe` step against the original source file once — not per clip, the crop is the same for every window cut from this source:
 
-```
-w = (9/16) / (16/9)  = 81/256  ≈ 0.3164   # width fraction of the source
-h = 1.0                                      # full height
-x = (1 - w) / 2     ≈ 0.3418               # centered horizontally
-y = 0.0                                      # top-aligned
+```bash
+montaj step reframe --input <source_video> --target 9:16
 ```
 
-Use these exact values. sourceCrop fields (`x`, `y`, `w`, `h`) are normalized fractions in [0, 1]. This math is deterministic — do not estimate or eyeball it.
+Write the returned `sourceCrop`, `sourceWidth`, and `sourceHeight` verbatim onto each zoom-mode clip item in step 6. A `null` `sourceCrop` means write no `sourceCrop` at all — still write `sourceWidth`/`sourceHeight`. Do not write the response's `source` field onto the item; it is diagnostics only.
 
-For a source that is not exactly 16:9, substitute the actual aspect ratio:
+**What the step computes for you** (reference only — not a formula to run by hand against the probe's coded dimensions):
 
 ```
-source_ar = source_width / source_height   # e.g. 1920/1080 = 1.7778
-target_ar = 9 / 16                         # 0.5625
-w = target_ar / source_ar                  # e.g. 0.5625 / 1.7778 ≈ 0.3164
+w = target_ar / display_ar   # e.g. 0.5625 / 1.7778 ≈ 0.3164, for a 1920x1080 DISPLAY source
 h = 1.0
-x = (1 - w) / 2
-y = 0.0
+x = (1 - w) / 2               # ≈ 0.3418, centered horizontally
+y = 0.0                        # top-aligned
 ```
+
+`display_ar` here is `display_width / display_height` — the rotation-corrected dimensions `reframe` reads internally, never the probe's coded `width`/`height`. That distinction is the whole reason to call the step instead of running this math yourself: a rotated source can code landscape while displaying something else entirely, and computing off the coded aspect crops footage that didn't need cropping.
 
 ### 5. Create one child project per clip
 
@@ -134,10 +131,12 @@ After creating each child project, read its `project.json`, update `tracks[0].it
 curr=$(curl -s http://localhost:3000/api/projects/<child_id>)
 
 # Apply window + sourceCrop
+# sc/sw/sh are reframe's output for this source — replace with the actual values (omit .sourceCrop entirely when reframe returns null)
 new=$(echo "$curr" | jq \
   --argjson ip 12.0 --argjson op 62.0 \
   --argjson sc '{"x": 0.3418, "y": 0.0, "w": 0.3164, "h": 1.0}' \
-  '.tracks[0].items[0].inPoint = $ip | .tracks[0].items[0].outPoint = $op | .tracks[0].items[0].sourceCrop = $sc')
+  --argjson sw 1920 --argjson sh 1080 \
+  '.tracks[0].items[0].inPoint = $ip | .tracks[0].items[0].outPoint = $op | .tracks[0].items[0].sourceCrop = $sc | .tracks[0].items[0].sourceWidth = $sw | .tracks[0].items[0].sourceHeight = $sh')
 
 curl -s -X PUT http://localhost:3000/api/projects/<child_id> \
   -H "Content-Type: application/json" -d "$new"
@@ -147,7 +146,7 @@ curl -s -X PUT http://localhost:3000/api/projects/<child_id> \
 
 **For mix mode:** add the source as a scaled overlay item (`scale: ~0.5`) anchored to the top of the canvas, with `sourceCrop` applied to trim the horizontal edges. `inPoint`/`outPoint` stay on `tracks[0].items[0]`.
 
-Set `sourceWidth` and `sourceHeight` from the probe output on each `tracks[0].items[0]` item so the renderer has the original dimensions for crop math.
+Set `sourceWidth` and `sourceHeight` on each `tracks[0].items[0]` item from the `reframe` step's output (step 4), not from a raw probe. These must be the source's DISPLAY dimensions (post-rotation), which is exactly what `reframe` returns — the renderer applies `sourceCrop` against the source as displayed, so recording the probe's coded dimensions here crops the wrong axis on a rotated source.
 
 **After setting inPoint/outPoint, run the window-normalize step and record the cache:**
 
@@ -186,6 +185,8 @@ Key invariants:
 - `tracks[0].items[0].normalizedSrc` is the derived per-window cache that render and preview prefer when available.
 - `tracks[0].items[0].normalizedInPoint` is the **cache origin** — the source-time (original coordinates) at which the cache starts. Set it to the same value as `inPoint` when the cache is built (because `normalize_window` builds the cache for the current window). Render and preview rebase inPoint/outPoint by this origin so they seek to the correct position inside the cache. If a user later trims the clip's start inward, the cache still covers the new (narrower) window and the rebased seek still lands correctly, because `effectiveInPoint = inPoint - normalizedInPoint`.
 - `tracks[0].items[0].inPoint` and `tracks[0].items[0].outPoint` remain the **original-source timestamps** in seconds. When the renderer uses `normalizedSrc`, it rebases by `normalizedInPoint` automatically — inPoint/outPoint do not change.
+
+**Validate each child project before moving on.** Run `montaj validate project <child_workspace>/project.json` and fix anything it reports. It catches a `sourceCrop` whose recorded `sourceWidth`/`sourceHeight` disagree with the source's real display dimensions, which is the rotated-source failure that renders as a stretched sliver and stays invisible until someone watches the export.
 
 ### 7. Finalize — remove the source project
 

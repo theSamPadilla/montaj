@@ -1,15 +1,16 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { act, render, screen, fireEvent } from '@testing-library/react'
+import { act, render, screen, fireEvent, waitFor } from '@testing-library/react'
 import { FOOTAGE_DND_MIME, type FootageDropPayload } from '@bycrux/editor'
 import type { VisualItem } from '@/lib/types/schema'
 
-const { pickFiles, getSourceJobStatus } = vi.hoisted(() => ({
+const { pickFiles, getSourceJobStatus, probeSourceDuration } = vi.hoisted(() => ({
   pickFiles: vi.fn(),
   getSourceJobStatus: vi.fn(),
+  probeSourceDuration: vi.fn(),
 }))
 
 vi.mock('@/lib/api', () => ({
-  api: { pickFiles, getSourceJobStatus },
+  api: { pickFiles, getSourceJobStatus, probeSourceDuration },
 }))
 
 vi.mock('@bycrux/editor', async (importOriginal) => {
@@ -58,6 +59,7 @@ let realGetRect: typeof Element.prototype.getBoundingClientRect
 beforeEach(() => {
   pickFiles.mockReset()
   getSourceJobStatus.mockReset()
+  probeSourceDuration.mockReset()
   getFilmstrip.mockClear()
   realGetRect = Element.prototype.getBoundingClientRect
   Element.prototype.getBoundingClientRect = function () {
@@ -237,5 +239,65 @@ describe('FootagePanel', () => {
       mediaCell.dispatchEvent(new MouseEvent('pointerout', { bubbles: true, cancelable: true }))
     })
     expect(set).toHaveBeenLastCalledWith(null)
+  })
+
+  it('renders a probe-less source (no sourceDuration) as non-draggable with a Duration unknown affordance', () => {
+    render(<FootagePanel {...baseProps({ sources: [source({ sourceDuration: undefined })] })} />)
+    const card = screen.getByText('clip-one.mp4').closest('.group') as HTMLElement
+    expect(card.getAttribute('draggable')).toBe('false')
+    expect(screen.getByText('Duration unknown')).toBeInTheDocument()
+    expect(screen.getByTitle('Get duration')).toBeInTheDocument()
+  })
+
+  it('leaves a source that has a duration draggable with no unknown-duration affordance (agent-path parity)', () => {
+    render(<FootagePanel {...baseProps({ sources: [source()] })} />)
+    const card = screen.getByText('clip-one.mp4').closest('.group') as HTMLElement
+    expect(card.getAttribute('draggable')).toBe('true')
+    expect(screen.queryByText(/duration unknown/i)).not.toBeInTheDocument()
+    expect(screen.queryByTitle('Get duration')).not.toBeInTheDocument()
+  })
+
+  it('treats sourceDuration: 0 as probe-less: no bogus 0:00 badge and not draggable', () => {
+    render(<FootagePanel {...baseProps({ sources: [source({ sourceDuration: 0 })] })} />)
+    expect(screen.queryByText('0:00')).not.toBeInTheDocument()
+    const card = screen.getByText('clip-one.mp4').closest('.group') as HTMLElement
+    expect(card.getAttribute('draggable')).toBe('false')
+  })
+
+  it('probes the duration on click and flips the card to draggable on success, without a reload', async () => {
+    probeSourceDuration.mockResolvedValue({ id: 'src-1', src: '/videos/clip-one.mp4', sourceDuration: 12 })
+    render(<FootagePanel {...baseProps({ sources: [source({ sourceDuration: undefined })] })} />)
+
+    fireEvent.click(screen.getByTitle('Get duration'))
+
+    await waitFor(() => expect(screen.queryByText(/duration unknown/i)).not.toBeInTheDocument())
+
+    expect(probeSourceDuration).toHaveBeenCalledWith('proj-1', 'src-1')
+    const card = screen.getByText('clip-one.mp4').closest('.group') as HTMLElement
+    expect(card.getAttribute('draggable')).toBe('true')
+    expect(screen.getByText('0:12')).toBeInTheDocument()
+
+    // Pin the drag payload itself, not just the gate: the failure mode this
+    // feature exists to eliminate is the gate flipping while the payload
+    // still sends 0 (handleDragStart falls back to `?? 0`).
+    const setData = vi.fn()
+    fireEvent.dragStart(card, { dataTransfer: { setData, effectAllowed: '' } })
+    const [, json] = setData.mock.calls[0]
+    expect((JSON.parse(json) as FootageDropPayload).sourceDuration).toBe(12)
+  })
+
+  it('shows the error message on a failed probe and leaves the button retryable', async () => {
+    probeSourceDuration.mockRejectedValue(new Error('Source file is missing: /x.mov'))
+    render(<FootagePanel {...baseProps({ sources: [source({ sourceDuration: undefined })] })} />)
+
+    fireEvent.click(screen.getByTitle('Get duration'))
+
+    await waitFor(() => expect(screen.getByText('Source file is missing: /x.mov')).toBeInTheDocument())
+
+    const retryButton = screen.getByTitle('Get duration')
+    expect(retryButton).not.toBeDisabled()
+    // Duration is still unknown after a failed probe — the card stays gated.
+    const card = screen.getByText('clip-one.mp4').closest('.group') as HTMLElement
+    expect(card.getAttribute('draggable')).toBe('false')
   })
 })

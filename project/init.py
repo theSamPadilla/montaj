@@ -55,19 +55,38 @@ def _probe_duration(path: str) -> float | None:
     doesn't count toward the proxy budget), and init must not leave a stray error
     object on stderr for a failure it went on to ignore — serve parses stderr for
     {"error": ...} when init exits non-zero.
+
+    Retries once, with a much longer timeout, but ONLY on a timeout — a
+    TimeoutExpired is plausibly transient (a cold 4K MOV on a network volume or
+    an external spinning disk can genuinely blow past 60s on the header read),
+    so it's worth a second, more patient attempt. A clean non-zero exit or
+    unparseable stdout is a deterministic failure (corrupt file, not a video,
+    ffprobe missing, ...) — retrying it would just wait out the same failure
+    twice, so those return None on the first attempt without retrying.
     """
-    try:
+    def _attempt(timeout: int) -> float | None:
         r = subprocess.run(
             [ffprobe_bin(), "-v", "quiet", "-show_entries", "format=duration",
              "-of", "csv=p=0", path],
-            # 60, not the 10 this first shipped with: it replaced get_duration,
-            # whose run() default is 300, and a cold 4K MOV on a network volume
-            # or an external spinning disk can genuinely exceed 10s on the
-            # header read. Timing out here is not free — it silently drops
-            # sourceDuration AND removes the clip from the inline-proxy budget.
-            capture_output=True, text=True, timeout=60,
+            capture_output=True, text=True, timeout=timeout,
         )
         return float(r.stdout.strip()) if r.returncode == 0 else None
+
+    try:
+        # 60, not the 10 this first shipped with: it replaced get_duration,
+        # whose run() default is 300, and a cold 4K MOV on a network volume
+        # or an external spinning disk can genuinely exceed 10s on the
+        # header read. Timing out here is not free — it silently drops
+        # sourceDuration AND removes the clip from the inline-proxy budget.
+        return _attempt(60)
+    except subprocess.TimeoutExpired:
+        pass
+    except (Exception, SystemExit):
+        return None
+    try:
+        # Second, more patient attempt — 180s — after the first attempt
+        # specifically timed out (not any other failure).
+        return _attempt(180)
     except (Exception, SystemExit):
         return None
 
@@ -675,6 +694,34 @@ def main():
                 _proxy_locks[path] = lock
             return lock
 
+    def _resolve_source_duration(clip: dict, clip_id: str, cache_key: str, probe_path: str) -> None:
+        """Set clip['sourceDuration'] from duration_cache (falling back to a
+        fresh probe on a cache miss), or emit a visible notice when the
+        duration is still unknown afterward.
+
+        Shared by both the lazy and eager _normalize_one arms below — same
+        cache-then-fallback-probe idiom, same miss-visibility contract, so
+        the notice can't silently drift between them. `cache_key` is the
+        ORIGINAL staged clip path (what duration_cache is keyed by);
+        `probe_path` is what a cache-miss fallback probe actually reads —
+        the two differ in the eager arm once a clip has been transcoded.
+
+        A miss here means a clip with no sourceDuration reaches project.json
+        — downstream that makes it silently undraggable in the editor's
+        footage bin, so this notice is what turns that into something
+        visible instead. It is NOT a hard failure: the recovery path (a
+        "duration unknown" card state + a one-click server re-probe) lives
+        elsewhere; this function only makes the miss loud.
+        """
+        _duration = duration_cache.get(cache_key)
+        if _duration is None:
+            _duration = _probe_duration(probe_path)
+        if _duration is not None:
+            clip["sourceDuration"] = _duration
+        else:
+            progress(f"[{clip_id}] duration unknown for {os.path.basename(probe_path)}"
+                     f": the editor will offer a retry")
+
     def _schedule_proxy(clip: dict, clip_id: str, src: str, *, tonemap: bool, info: dict) -> None:
         """Encode (or reuse) the full-source editing proxy for `src`, writing
         `clip["proxySrc"]` on success.
@@ -735,11 +782,7 @@ def main():
             # Reuse the duration read in the single pre-pool pass above; only
             # re-read on a cache miss (that probe failed), same idiom as the
             # probe_cache use below.
-            _duration = duration_cache.get(clip_path)
-            if _duration is None:
-                _duration = _probe_duration(clip_path)
-            if _duration is not None:
-                clip["sourceDuration"] = _duration
+            _resolve_source_duration(clip, clip_id, clip_path, clip_path)
             progress(f"[{clip_id}] lazy skip")
 
             # Full-source editing proxy from the original — lazy mode never
@@ -853,11 +896,7 @@ def main():
         # of the post-normalize clip["src"]: normalize() conforms codec/color, it
         # never trims, so the two are the same length — and the budget gate above
         # needs this number before the pool starts either way. One read, reused.
-        _duration = duration_cache.get(clip_path)
-        if _duration is None:
-            _duration = _probe_duration(clip["src"])
-        if _duration is not None:
-            clip["sourceDuration"] = _duration
+        _resolve_source_duration(clip, clip_id, clip_path, clip["src"])
 
         if info is not None:
             _schedule_proxy(clip, clip_id, clip["src"], tonemap=is_hdr(master_color_space), info=info)

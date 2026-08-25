@@ -1955,3 +1955,68 @@ def test_init_rejects_missing_file_among_takes(tmp_path):
     # fail() writes the structured error to stderr, not stdout — matching the
     # four pre-existing voiceover error tests above.
     assert json.loads(result.stderr.strip().splitlines()[-1])["error"] == "file_not_found"
+
+
+# ---------------------------------------------------------------------------
+# _probe_duration hardening: retry-once-on-timeout, never raises, never
+# {"error": ...}s.
+# ---------------------------------------------------------------------------
+
+def test_probe_duration_retries_after_timeout(monkeypatch):
+    """A TimeoutExpired on the first (60s) attempt gets exactly one retry, at a
+    longer (180s) timeout, and the value from that successful second attempt
+    is returned."""
+    sys.path.insert(0, str(REPO_ROOT))
+    import project.init as init_mod
+
+    calls = []
+
+    def fake_run(cmd, capture_output, text, timeout):
+        calls.append(timeout)
+        if len(calls) == 1:
+            raise subprocess.TimeoutExpired(cmd, timeout)
+        return subprocess.CompletedProcess(cmd, 0, stdout="12.5\n", stderr="")
+
+    monkeypatch.setattr(init_mod.subprocess, "run", fake_run)
+    assert init_mod._probe_duration("/fake/path.mp4") == 12.5
+    assert calls == [60, 180]
+
+
+def test_probe_duration_returns_none_when_every_attempt_times_out(monkeypatch, capsys):
+    """Both the initial attempt and the retry timing out returns None, never
+    raises, and never writes anything resembling {"error": ...} to stderr —
+    the module docstring's contract that serve parses stderr for that shape
+    only on a non-zero init exit, and a duration miss must not trip it."""
+    sys.path.insert(0, str(REPO_ROOT))
+    import project.init as init_mod
+
+    calls = []
+
+    def fake_run(cmd, capture_output, text, timeout):
+        calls.append(timeout)
+        raise subprocess.TimeoutExpired(cmd, timeout)
+
+    monkeypatch.setattr(init_mod.subprocess, "run", fake_run)
+    assert init_mod._probe_duration("/fake/path.mp4") is None
+    assert calls == [60, 180]
+    captured = capsys.readouterr()
+    assert '"error"' not in captured.err
+    assert '"error"' not in captured.out
+
+
+def test_probe_duration_does_not_retry_on_deterministic_failure(monkeypatch):
+    """A clean non-zero exit (corrupt file, not a video, ...) is a
+    deterministic failure, not a transient one — no retry, single attempt,
+    result is None."""
+    sys.path.insert(0, str(REPO_ROOT))
+    import project.init as init_mod
+
+    calls = []
+
+    def fake_run(cmd, capture_output, text, timeout):
+        calls.append(timeout)
+        return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="not a video")
+
+    monkeypatch.setattr(init_mod.subprocess, "run", fake_run)
+    assert init_mod._probe_duration("/fake/path.mp4") is None
+    assert calls == [60]

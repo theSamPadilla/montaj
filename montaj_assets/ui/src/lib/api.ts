@@ -249,6 +249,19 @@ export const api = {
       `/api/projects/${projectId}/sources/status/${jobId}`,
     ),
 
+  /**
+   * Re-run the duration probe on a source whose `sourceDuration` came back
+   * unset at import (e.g. a slow/failed ffprobe against a large HDR file).
+   * Backfills `sourceDuration` on the source (and its track twin, if
+   * already placed) server-side; the response carries the fresh value so
+   * the caller doesn't need to wait for the SSE frame to update its state.
+   */
+  probeSourceDuration: (projectId: string, sourceId: string) =>
+    request<{ id: string; src: string; sourceDuration: number }>(
+      `/api/projects/${projectId}/sources/${sourceId}/probe-duration`,
+      { method: 'POST' },
+    ),
+
   listWorkflows: () => request<Workflow[]>('/api/workflows'),
 
   getWorkflow: (name: string) => request<Record<string, unknown>>(`/api/workflows/${name}`),

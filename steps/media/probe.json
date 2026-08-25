@@ -7,7 +7,7 @@
   },
   "output": {
     "type": "json",
-    "description": "JSON object with duration, size_bytes, format, and streams array"
+    "description": "JSON object with duration, size_bytes, format, and streams array. Video streams additionally carry display_width, display_height, and rotation (display dims reflect the displaymatrix rotation tag; width/height stay the coded, pre-rotation dims)"
   },
   "params": []
 }

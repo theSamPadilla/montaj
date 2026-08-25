@@ -2,6 +2,7 @@
 import asyncio
 import io
 import json
+import math
 import mimetypes
 import re
 import uuid
@@ -2214,6 +2215,123 @@ async def ingest_source_status(
     elif job.status == "error":
         out["error"] = job.error
     return out
+
+
+def _probe_source_duration(path: str) -> float:
+    """Run ffprobe against `path` and return its duration in seconds.
+
+    Raises ValueError with a short human-readable reason on any failure (bad
+    exit code, unparseable stdout, timeout, or a non-positive/non-finite
+    value) — never swallows the reason, unlike project/init.py's
+    `_probe_duration`, which is best-effort at import time and returns None
+    on any failure. This is the retry path a human explicitly triggered, so
+    the UI needs to say *why* it failed, and a 180s timeout (vs. init's 60s)
+    is warranted: it replaces a probe that already timed out once at import,
+    typically on a large/HDR source, and there's no batch budget to protect
+    here.
+
+    Kept as a bare, synchronous, monkeypatchable function — the route offloads
+    it with `asyncio.to_thread` since ffprobe blocks.
+    """
+    try:
+        r = subprocess.run(
+            # "-v error", not "quiet": quiet silences stderr entirely, which
+            # would make the reason-extraction below dead code — the UI needs
+            # ffprobe's actual reason (e.g. "moov atom not found"), not just
+            # an exit code. stdout still carries only the duration either way.
+            [ffprobe_bin(), "-v", "error", "-show_entries", "format=duration",
+             "-of", "csv=p=0", path],
+            capture_output=True, text=True, timeout=180,
+        )
+    except subprocess.TimeoutExpired:
+        raise ValueError("ffprobe timed out after 180s")
+    except OSError as e:
+        raise ValueError(f"ffprobe failed to start: {e}")
+    if r.returncode != 0:
+        stderr = (r.stderr or "").strip()
+        reason = stderr.splitlines()[-1] if stderr else f"exit code {r.returncode}"
+        raise ValueError(f"ffprobe failed: {reason}")
+    try:
+        value = float(r.stdout.strip())
+    except (TypeError, ValueError):
+        raise ValueError(f"ffprobe produced no usable duration ({r.stdout.strip()!r})")
+    if not math.isfinite(value) or value <= 0:
+        raise ValueError(f"ffprobe produced an invalid duration ({value})")
+    return value
+
+
+@router.post("/projects/{project_id}/sources/{source_id}/probe-duration")
+async def probe_source_duration(
+    project_id: str,
+    source_id: str,
+    request: Request,
+    project_dir: Path = Depends(get_project_dir),
+):
+    """Re-run the duration probe on one source and backfill `sourceDuration`.
+
+    A clip's sourceDuration is best-effort at import (project/init.py's
+    _probe_duration returns None on a non-zero ffprobe exit or its 60s
+    timeout), so an init-created clip can legitimately carry no
+    sourceDuration. The footage bin lets such a card be dragged, but the
+    timeline canvas drop handler rejects any payload whose sourceDuration
+    isn't finite and > 0 — so the clip is otherwise unplaceable. This is
+    that clip's backfill path: the UI offers a retry affordance, this route
+    re-probes with a longer timeout and, on success, writes the value onto
+    the `sources[]` entry AND its `tracks[]` twin (if the clip was already
+    placed) via `_apply_project_edits`, persists project.json, and broadcasts
+    the SSE frame — the same read-modify-write + broadcast path the other
+    source mutations in this module use.
+
+    Never 500s on an ordinary bad file (missing codec info, corrupt header,
+    timeout) — those come back as 400 probe_failed with a short reason so the
+    UI can render it.
+    """
+    project_path = project_dir / "project.json"
+    try:
+        project = json.loads(project_path.read_text())
+    except Exception:
+        raise not_found("project_not_found", f"project.json for {project_id} not found")
+
+    source = next(
+        (s for s in (project.get("sources") or [])
+         if isinstance(s, dict) and s.get("id") == source_id),
+        None,
+    )
+    if source is None:
+        raise not_found("source_not_found", f"Source '{source_id}' not found")
+
+    src = source.get("src")
+    if not src:
+        raise bad_request("source_has_no_src", f"Source '{source_id}' has no src")
+    if not os.path.isfile(src):
+        raise not_found("file_not_found", f"Source file is missing: {src}")
+
+    try:
+        duration = await asyncio.to_thread(_probe_source_duration, src)
+    except ValueError as e:
+        raise bad_request("probe_failed", str(e))
+
+    # _apply_project_edits returns None in three cases: (1) the benign no-op
+    # where the freshly probed value already matched what's on disk, (2) the
+    # tmp+os.replace write raised OSError, or (3) a concurrent PUT re-pathed
+    # the source out from under the (id, src) match. Only (1) is safe to
+    # report as success — (2) and (3) probed a real value that never made it
+    # to disk, which is the same silent-failure shape this feature exists to
+    # fix. We already hold the pre-probe value, so we can tell them apart.
+    result = _apply_project_edits(
+        project_path, [(source_id, src, "sourceDuration", duration)]
+    )
+    if result is None and source.get("sourceDuration") != duration:
+        raise server_error(
+            "probe_write_failed",
+            "Probed the duration but could not save it to project.json",
+        )
+    if result is not None:
+        _, text = result
+        broadcaster: SSEBroadcaster = request.app.state.broadcaster
+        broadcaster.publish(project_id, _sse_data_frame(text))
+
+    return {"id": source_id, "src": src, "sourceDuration": duration}
 
 
 @router.post("/projects/{project_id}/download")

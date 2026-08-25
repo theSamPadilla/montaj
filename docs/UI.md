@@ -212,6 +212,39 @@ Two behaviors worth knowing:
 The rail is a real ARIA tablist: arrow keys move between tabs, Home and End jump
 to the ends.
 
+### Footage bin: probe-less clips
+
+A clip's length comes from an ffprobe read at import time, and that read is
+best-effort: `project/init.py` gives it a generous timeout and retries once,
+more patiently, if the first attempt merely timed out, but a corrupt file, a
+codec ffprobe can't parse, or a genuinely stubborn read can still leave a clip
+with no `sourceDuration`. Init doesn't treat that as fatal — dropping the clip
+over an unmeasured length would be worse than keeping it — so the clip still
+lands in the project, and init logs a one-line notice naming it rather than
+failing silently. Ingested sources never hit this: `lib/ingest.py` reads
+duration through a path that hard-fails the import on a bad probe, so anything
+that made it through ingest already has a length.
+
+A probe-less card shows up in the Media tab dimmed, with an amber `Duration
+unknown` label where the length badge usually sits, and it is not draggable.
+That's deliberate: the timeline's drop handler has always refused a clip with
+no positive, finite duration, so a probe-less card that could be dragged would
+just relocate the same dead end from import time to drag time, with the added
+insult of a drop indicator that appears and then does nothing. Instead, the
+card carries a `Get duration` button. Clicking it re-probes the source's file
+on the server, and on success writes the real `sourceDuration` back onto both
+the project's `sources[]` entry and the clip's `tracks[]` twin, then updates
+the card immediately, badge and draggability both, without a reload or waiting
+on the live-view SSE round-trip. A failed probe (the file is genuinely
+unreadable) shows the server's own reason under the card and leaves the button
+ready to try again, rather than spinning forever.
+
+The timeline's own rejection of a zero-length drop is unchanged; it's just no
+longer something the bin can trigger. And the agent path is untouched
+throughout: an agent writes project.json directly and never drags from the
+bin, so a probe-less clip there was always cosmetic, and a clip with a known
+duration looks and drags exactly as it did before.
+
 ### Caption panel: Format, Styles, and Captions
 
 `CaptionListPanel` has its own sub-tab switch above its content, **Format**

@@ -31,10 +31,72 @@ _BASE_COLOR_RE = re.compile(r"^#[0-9a-fA-F]{6}$|^#[0-9a-fA-F]{8}$")
 _CAROUSEL_FORBIDDEN = ("tracks", "sources", "audio", "storyboard")
 
 
-def _validate_clip_extensions(data):
+def _orientation(w, h):
+    return "landscape" if w > h else "portrait" if w < h else "square"
+
+
+def _int_dim(val):
+    """A recorded pixel dimension as an int, or None if it isn't one.
+
+    `1080.0` counts (JSON round-trips whole numbers as floats); `True` does not,
+    bool being a subclass of int. Anything else has no dimension to compare.
+    """
+    if isinstance(val, bool) or not isinstance(val, (int, float)):
+        return None
+    return int(val) if float(val).is_integer() else None
+
+
+def _probe_display_dims(src, project_dir, cache):
+    """Rotation-corrected (display_width, display_height) for `src`, or None.
+
+    None means "don't judge this item" — an unresolvable relative path, a file
+    that isn't there, an ffprobe failure, a source with no usable dims. See the
+    `sourceCrop`/`sourceWidth` check in `_validate_clip_extensions` for why an
+    unprobeable source is skipped rather than failed.
+
+    `cache` is per-validation-run, keyed by resolved path: a 69-clip b-roll
+    project draws from a handful of sources, so this is a handful of ffprobe
+    calls rather than one per clip. It is deliberately NOT module-level — a
+    long-lived process would then serve dims from before a file was replaced.
+    """
+    if not isinstance(src, str) or not src:
+        return None
+    if not os.path.isabs(src):
+        # Relative `src` is relative to the project.json, never the process CWD.
+        # With no project dir to resolve against, there is nothing to probe.
+        if not project_dir:
+            return None
+        src = os.path.normpath(os.path.join(project_dir, src))
+    if src in cache:
+        return cache[src]
+
+    dims = None
+    if os.path.isfile(src):
+        # Lazy import: `lib/normalize.py` drags in lib.types.colorspace and
+        # lib.look, and the overwhelmingly common project carries no sourceCrop
+        # at all. Importing at module scope would charge every validate for a
+        # check that almost never runs.
+        import subprocess
+        from normalize import probe_video
+        try:
+            info = probe_video(src) or {}
+        except (OSError, subprocess.SubprocessError):
+            info = {}
+        dw, dh, rot = info.get("display_width"), info.get("display_height"), info.get("rotation")
+        if dw and dh:
+            dims = (int(dw), int(dh), int(rot or 0))
+    cache[src] = dims
+    return dims
+
+
+def _validate_clip_extensions(data, project_dir=None):
     """Optional clips-workflow fields plus per-item speed/rotation checks.
 
     Validates derivedFrom (top-level) and sourceCrop on video items.
+
+    `project_dir` is the directory holding the project.json, used to resolve a
+    relative item `src` for the source-dimension check below. Omit it to skip
+    that check for relative paths.
 
     Also range-checks the optional per-clip `speed` (montaj/speed): a number in
     [0.25, 4] when present; absent means the default 1.0.
@@ -49,6 +111,16 @@ def _validate_clip_extensions(data):
     df = data.get("derivedFrom")
     if df is not None and not isinstance(df, str):
         fail("invalid_field", "derivedFrom must be a string")
+    probe_cache = {}
+    # The remediation command below is an instruction the agent will follow, so
+    # it must name THIS project's canvas, not a hardcoded 9:16.
+    _res = (data.get("settings") or {}).get("resolution")
+    if (isinstance(_res, list) and len(_res) == 2
+            and all(isinstance(n, (int, float)) and not isinstance(n, bool) and n > 0 for n in _res)):
+        _g = math.gcd(int(_res[0]), int(_res[1])) or 1
+        _target = f"{int(_res[0]) // _g}:{int(_res[1]) // _g}"
+    else:
+        _target = "9:16"
     for ti, items in enumerate(track_items(data)):
         for item in items:
             speed = item.get("speed")
@@ -72,6 +144,54 @@ def _validate_clip_extensions(data):
                 val = sc.get(k)
                 if not isinstance(val, (int, float)) or not (0.0 <= float(val) <= 1.0):
                     fail("invalid_field", f"tracks[{ti}] item '{item.get('id','?')}': sourceCrop.{k} must be a number in [0,1]")
+
+            # Boundary invariant: the crop's frame of reference must be the frame
+            # of reference the renderer will use. `sourceCrop` is a fraction of
+            # `sourceWidth`/`sourceHeight`, and the renderer applies it to the
+            # source AS DISPLAYED. So a reframe computed from CODED dimensions
+            # crops the wrong axis: an iPhone portrait clip codes 1920x1080 with a
+            # -90 rotation flag but displays 1080x1920, and a "crop this landscape
+            # down to 9:16" computed off the coded 1.78 aspect becomes a ~228px
+            # sliver of an already-upright frame, stretched to fill the canvas.
+            # Nothing downstream notices — the crop is in [0,1], the render
+            # succeeds, and the defect is only visible in the output.
+            #
+            # This lives here rather than in render because the agent gets it as
+            # early, actionable feedback instead of a wasted export. The reframe
+            # step computes these dims correctly; this catches whatever routes
+            # around it — a hand-written crop, a project that arrives by PUT.
+            #
+            # Only items that carry a `sourceCrop` are probed (a project without
+            # one pays nothing, not even the import), and only "video" items —
+            # a still's recorded dims can legitimately differ from its coded ones
+            # (EXIF orientation, which no displaymatrix reports).
+            rw, rh = _int_dim(item.get("sourceWidth")), _int_dim(item.get("sourceHeight"))
+            if item.get("type") != "video" or rw is None or rh is None:
+                # Missing dims mean there is nothing to compare against. That
+                # combination no-ops the crop at render time — a separate,
+                # documented behaviour, not this check's business.
+                continue
+            dims = _probe_display_dims(item.get("src"), project_dir, probe_cache)
+            if dims is None:
+                # An unprobeable source is skipped, never failed: validate has
+                # never been a file-existence checker, and projects are routinely
+                # validated away from their media.
+                continue
+            dw, dh, rot = dims
+            if (rw, rh) != (dw, dh):
+                rot_clause = f" after its {rot} rotation" if rot else ""
+                if _orientation(rw, rh) != _orientation(dw, dh):
+                    diagnosis = f"the reframe was computed as if the source were {_orientation(rw, rh)}"
+                else:
+                    diagnosis = "the recorded dimensions are not this source's"
+                fail(
+                    "source_dims_mismatch",
+                    f"tracks[{ti}] item '{item.get('id','?')}': source displays {dw}x{dh}{rot_clause}; "
+                    f"recorded sourceWidth/sourceHeight are {rw}x{rh} — {diagnosis}. "
+                    f"Recompute it with the reframe step "
+                    f"(`montaj step reframe --input {item.get('src')} --target {_target}`), "
+                    f"which reads rotation-corrected display dimensions."
+                )
 
 
 def _validate_audio_tracks(data):
@@ -332,7 +452,7 @@ def validate_project(path):
                         )
                     prev_end = item["end"]
 
-        _validate_clip_extensions(data)
+        _validate_clip_extensions(data, os.path.dirname(os.path.abspath(path)))
         _validate_audio_tracks(data)
 
     return {"valid": True}

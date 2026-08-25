@@ -14,16 +14,30 @@ ingest_source, not the server driver around it):
      off the request path onto the background queue, not run inline.
   3. GET /api/proxies/status counts only kind == "proxy" units and never
      errors, since a mounted UI component polls it every few seconds.
+  4. POST /api/projects/<id>/sources/<source_id>/probe-duration — the
+     backfill path for a clip whose sourceDuration came back unset at
+     import. Covers the success path (source + track twin both updated and
+     persisted), and the four ways it can legitimately fail without 500ing
+     (unknown source, missing file, no src, probe failure) — plus a direct
+     unit test of the real `_probe_source_duration` (no HTTP, no monkeypatch)
+     so a regression to `-v quiet` (which silences ffprobe's stderr) can't
+     hide behind the HTTP-level test's stub of that function.
 
 Conventions follow tests/test_render_name_cover.py and
 tests/test_look_migration.py: the async detached-job coroutine is driven
 directly with `asyncio.run` (no real ffmpeg — ingest_source and
 _ensure_current_proxies are monkeypatched), and the module-level
 look-migration queue is reset by an autouse fixture so these tests can't
-leak state into the rest of the suite.
+leak state into the rest of the suite. The probe-duration tests drive the
+route through TestClient (a real HTTP call, so `get_project_dir` needs a
+real workspace to resolve) — the `workspace` fixture below follows the same
+MONTAJ_WORKSPACE_DIR + resolve_workspace monkeypatch idiom as
+tests/test_server_rerun_tracks.py.
 """
 import asyncio
 import json
+import shutil
+import uuid
 from pathlib import Path
 
 import pytest
@@ -37,6 +51,10 @@ from serve.sse import SSEBroadcaster
 client = TestClient(app, raise_server_exceptions=False)
 
 PID = "77777777-7777-4777-8777-777777777777"
+
+# _probe_source_duration shells out to ffprobe directly (see FIX 2 test
+# below) — guard the same way tests/test_init.py and tests/test_ingest.py do.
+HAS_FFPROBE = shutil.which("ffprobe") is not None
 
 
 @pytest.fixture(autouse=True)
@@ -54,17 +72,17 @@ def _clean_look_migration_state():
     projects_mod._look_migration_worker = None
 
 
-def _write_project(project_dir: Path, sources=None) -> None:
+def _write_project(project_dir: Path, sources=None, tracks=None, project_id=PID) -> None:
     project_dir.mkdir(parents=True, exist_ok=True)
     (project_dir / "project.json").write_text(json.dumps({
         "version": "0.2",
-        "id": PID,
+        "id": project_id,
         "status": "final",
         "workflow": "default",
         "editingPrompt": "test",
         "settings": {"resolution": [1080, 1920], "fps": 30, "colorSpace": "sdr-bt709"},
         "sources": sources if sources is not None else [],
-        "tracks": [],
+        "tracks": tracks if tracks is not None else [],
         "assets": [],
         "audio": {},
     }))
@@ -253,3 +271,129 @@ def test_post_init_auto_queues_deferred_proxies(tmp_path, monkeypatch):
     assert called_id == "init-pid"
     assert Path(called_dir) == project_json.parent
     assert called_project["id"] == "init-pid"
+
+
+# ---------------------------------------------------------------------------
+# 5. POST /api/projects/<id>/sources/<source_id>/probe-duration
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def workspace(tmp_path, monkeypatch):
+    """Route these tests' TestClient calls at a real, isolated workspace —
+    Depends(get_project_dir) needs one to resolve. Mirrors the fixture in
+    tests/test_server_rerun_tracks.py."""
+    monkeypatch.setenv("MONTAJ_WORKSPACE_DIR", str(tmp_path))
+    monkeypatch.setattr("serve.routes.projects.resolve_workspace", lambda: tmp_path)
+    if not hasattr(app.state, "broadcaster"):
+        app.state.broadcaster = SSEBroadcaster()
+    return tmp_path
+
+
+def test_probe_duration_success_writes_source_and_track_twin(workspace, monkeypatch):
+    pid = str(uuid.uuid4())
+    project_dir = workspace / "probe-ok"
+    clip_path = workspace / "clip.mp4"
+    clip_path.write_bytes(b"fake")
+    _write_project(
+        project_dir,
+        sources=[{"id": "clip-0", "type": "video", "src": str(clip_path),
+                   "start": 0.0, "end": 0.0}],
+        tracks=[{"id": "trk-0", "items": [
+            {"id": "clip-0", "type": "video", "src": str(clip_path),
+             "start": 0.0, "end": 2.0},
+        ]}],
+        project_id=pid,
+    )
+
+    monkeypatch.setattr(projects_mod, "_probe_source_duration", lambda path: 12.5)
+
+    resp = client.post(f"/api/projects/{pid}/sources/clip-0/probe-duration")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body == {"id": "clip-0", "src": str(clip_path), "sourceDuration": 12.5}
+
+    on_disk = json.loads((project_dir / "project.json").read_text())
+    assert on_disk["sources"][0]["sourceDuration"] == 12.5
+    assert on_disk["tracks"][0]["items"][0]["sourceDuration"] == 12.5
+
+
+def test_probe_duration_unknown_source_is_404(workspace, monkeypatch):
+    pid = str(uuid.uuid4())
+    project_dir = workspace / "probe-unknown"
+    _write_project(project_dir, sources=[], project_id=pid)
+
+    resp = client.post(f"/api/projects/{pid}/sources/does-not-exist/probe-duration")
+    assert resp.status_code == 404, resp.text
+    assert resp.json()["detail"]["error"] == "source_not_found"
+
+
+def test_probe_duration_missing_file_is_404(workspace, monkeypatch):
+    pid = str(uuid.uuid4())
+    project_dir = workspace / "probe-missing-file"
+    missing_path = workspace / "gone.mp4"
+    _write_project(
+        project_dir,
+        sources=[{"id": "clip-0", "type": "video", "src": str(missing_path),
+                   "start": 0.0, "end": 0.0}],
+        project_id=pid,
+    )
+
+    resp = client.post(f"/api/projects/{pid}/sources/clip-0/probe-duration")
+    assert resp.status_code == 404, resp.text
+    assert resp.json()["detail"]["error"] == "file_not_found"
+
+
+def test_probe_duration_probe_failure_is_400_and_leaves_project_unchanged(workspace, monkeypatch):
+    pid = str(uuid.uuid4())
+    project_dir = workspace / "probe-fail"
+    clip_path = workspace / "clip.mp4"
+    clip_path.write_bytes(b"fake")
+    _write_project(
+        project_dir,
+        sources=[{"id": "clip-0", "type": "video", "src": str(clip_path),
+                   "start": 0.0, "end": 0.0}],
+        project_id=pid,
+    )
+    before = (project_dir / "project.json").read_text()
+
+    def fake_probe(path):
+        raise ValueError("ffprobe failed: moov atom not found")
+
+    monkeypatch.setattr(projects_mod, "_probe_source_duration", fake_probe)
+
+    resp = client.post(f"/api/projects/{pid}/sources/clip-0/probe-duration")
+    assert resp.status_code == 400, resp.text
+    assert resp.json()["detail"]["error"] == "probe_failed"
+
+    after = (project_dir / "project.json").read_text()
+    assert after == before
+    assert "sourceDuration" not in json.loads(after)["sources"][0]
+
+
+def test_probe_duration_source_has_no_src_is_400(workspace, monkeypatch):
+    pid = str(uuid.uuid4())
+    project_dir = workspace / "probe-no-src"
+    _write_project(
+        project_dir,
+        sources=[{"id": "clip-0", "type": "video"}],
+        project_id=pid,
+    )
+
+    resp = client.post(f"/api/projects/{pid}/sources/clip-0/probe-duration")
+    assert resp.status_code == 400, resp.text
+    assert resp.json()["detail"]["error"] == "source_has_no_src"
+
+
+@pytest.mark.skipif(not HAS_FFPROBE, reason="ffprobe not available")
+def test_probe_source_duration_surfaces_ffprobe_stderr_reason(tmp_path):
+    """Direct unit test of the real `_probe_source_duration` — no HTTP, no
+    monkeypatch. The HTTP-level failure test above stubs this function out
+    entirely, so it can't catch a regression to `-v quiet` (which silences
+    ffprobe's stderr and would make every failure degrade to a bare "exit
+    code N" instead of ffprobe's actual reason)."""
+    bad_file = tmp_path / "not-a-video.mp4"
+    bad_file.write_bytes(b"not a video")
+
+    with pytest.raises(ValueError) as exc_info:
+        projects_mod._probe_source_duration(str(bad_file))
+    assert "Invalid data" in str(exc_info.value)

@@ -495,6 +495,7 @@ All steps are agent-callable tools. The agent decides which to run, when, and wi
 |------|-------------|
 | `montaj/probe` | Metadata: duration, resolution, fps, codec, audio |
 | `montaj/snapshot` | Frame grid — agent's visual understanding of the clip |
+| `montaj/reframe` | Rotation-aware crop for placing a source in a target aspect — `{sourceCrop, sourceWidth, sourceHeight}`, no encode |
 
 ---
 

@@ -119,21 +119,19 @@ Measured across the two voiceover references, cuts sit within ~50ms of a word bo
 
 Every cut is a hard cut. No crossfades, no speed ramps, no whip pans — none appear anywhere in the reference set.
 
-### 6. Reframe horizontal sources
+### 6. Reframe to the project canvas
 
-For any clip whose `sourceWidth / sourceHeight` exceeds 9:16, set `sourceCrop` on its item in `tracks[0].items` using the deterministic centred math from `skills/find_clips/SKILL.md` step 4:
+For each distinct source video behind `tracks[0].items`, call the `reframe` step once and write the returned fields verbatim onto every item cut from that source:
 
-```
-source_ar = source_width / source_height
-w = (9/16) / source_ar
-h = 1.0
-x = (1 - w) / 2
-y = 0.0
+```bash
+montaj step reframe --input <source_video> --target 9:16
 ```
 
-`sourceCrop` is `{x, y, w, h}` — normalized fractions in `[0, 1]`, all four keys required when present. This math is deterministic; do not estimate or eyeball it.
+`--target` should match the project canvas (`settings.resolution`) — 9:16 for a vertical edit. The step returns `{sourceCrop, sourceWidth, sourceHeight, source}`. Write `sourceCrop`, `sourceWidth`, and `sourceHeight` onto the item exactly as returned — a `null` `sourceCrop` means write no `sourceCrop` at all, but still write `sourceWidth`/`sourceHeight`. The `source` field is diagnostics only; never write it onto the item. Call it once per source file, not once per shot — every shot cut from the same source gets the same crop.
 
-Also write `sourceWidth` and `sourceHeight` on the same item, from `probe`. **Without them the crop silently no-ops at render time.** Never letterbox.
+**Rotated iPhone footage codes as landscape (e.g. 1920x1080) but displays portrait.** Never decide orientation from the probe's coded `width`/`height` — a clip whose DISPLAY aspect is already at or narrower than the target gets no crop at all. The `reframe` step reads the rotation tag for you; that is the entire reason to call it instead of doing the arithmetic.
+
+`sourceCrop` is `{x, y, w, h}` — normalized fractions in `[0, 1]`, all four keys required when present. **Without `sourceWidth`/`sourceHeight` the crop silently no-ops at render time.** Never letterbox.
 
 ### 7. Emit the project
 
@@ -167,6 +165,8 @@ Source-clip audio is muted throughout, via the track flag above. The bed is the 
 
 **Leave `tracks[1+]` alone.** `montaj/overlay` runs after you and owns the overlay tracks.
 
+**Validate before you finish.** Run `montaj validate project <workspace>/project.json` and fix anything it reports. This is the only check that catches a reframe computed against the wrong dimensions: a `sourceCrop` whose `sourceWidth`/`sourceHeight` disagree with what the source actually displays fails here, with the exact correction to make. Nothing downstream will tell you. The crop is in range, the render succeeds, and the defect only surfaces as a stretched clip in the finished video.
+
 ### 8. Write the coverage report
 
 Write `broll_coverage.md` in the workspace and summarise it in your final message. One row per beat:
@@ -197,6 +197,7 @@ Confidence is `good` / `weak` / `filler`. Every beat that got an atmospheric fil
 - **Dropping `proxySrc` when building `tracks[0]` items.** The proxies already exist; they are recorded on `project.sources`, not on the items you are creating, so they vanish unless you copy them across. The edit looks correct and validates fine — the damage shows up as sluggish scrubbing, a disabled WebCodecs engine, and a "Generate previews" chip in the header. Copy `proxySrc` from the matching `sources` entry by `src`.
 - **Consolidating the voiceover into one audio track.** It is the shorter path and it takes the operator's section-by-section edits away. One track per take, contiguous on lane 0 — see step 7.
 - **Setting `sourceCrop` without `sourceWidth` / `sourceHeight`** — the crop silently no-ops and the render letterboxes.
+- **Deciding orientation from the probe's coded `width`/`height`, or hand-computing the crop instead of calling `reframe`.** A rotated iPhone clip codes 1920x1080 but displays 1080x1920; cropping off the coded aspect crops footage that was already vertical into a sliver a few hundred pixels wide, which the renderer then stretches to fill the frame.
 - **Enforcing the shot-length ceiling on a protected beat.** This is the failure the reference set exists to prevent — a protected beat has no maximum at all.
 - **Re-estimating `motion_mean` / `motion_peak`** instead of copying them from `detect_shots`.
 - **Cutting in the silence between words** instead of on the word onset.

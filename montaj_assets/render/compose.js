@@ -71,7 +71,61 @@ export async function compose({
 
   if (segments.length === 0) {
     clog('no segments to render')
-    return outputPath
+    // Same shape as the success return below — an empty plan has no gap. Kept
+    // uniform so `const { leadingGap } = await compose(...)` can't silently
+    // destructure `undefined` off a bare string on this path.
+    return { outputPath, leadingGap: 0 }
+  }
+
+  // ── RESPECT A LEADING GAP ───────────────────────────────────────────────
+  //
+  // `planSegments` derives its boundaries purely from item and overlay
+  // endpoints, so t=0 only enters the boundary set when something actually
+  // starts there. A timeline whose first content starts at 2.5s therefore
+  // plans its first segment as [2.5, 10.7] and the concat simply BEGINS at
+  // the first clip: the 2.5s of black the editor shows at the head is
+  // silently dropped, and the export comes out 2.5s shorter than the
+  // timeline it was built from.
+  //
+  // A gap BETWEEN two clips already survives, because both neighbours
+  // contribute boundaries and the segment between them gets `items: []` —
+  // which the encoder renders as black canvas + `anullsrc` silence. Only the
+  // LEADING gap was lost, purely because nothing contributes a 0 boundary.
+  // This prepends the segment the planner would have produced if something
+  // had, so a leading gap behaves exactly like a middle one.
+  //
+  // Deliberately here and NOT in `planSegments` / `boundariesFrom`:
+  //   - `resolver-parity.test.mjs` is a frozen gate proving `planSegments`
+  //     still matches the pre-T7 algorithm over the whole fixture corpus.
+  //     A leading gap is not an edge case, so changing the planner would
+  //     diverge on many fixtures and gut that gate.
+  //   - `boundariesFrom` is shared with the editor preview and
+  //     `sample-frame.js`, and the PREVIEW ALREADY RESPECTS leading gaps
+  //     (it shows black and reports the full duration). The bug was
+  //     render-only, so the fix is render-only; touching the shared resolver
+  //     would risk changing two engines to fix one.
+  // `compose.js` is the only production caller of `planSegments`, so this is
+  // equivalent to fixing the planner for every path that actually renders.
+  //
+  // The result also makes render self-consistent: output duration now equals
+  // `getTotalDurationSeconds` (max end), which is the same basis the overlay
+  // and caption Puppeteer segments were already timed against. Before this,
+  // a leading gap shifted the picture earlier while overlays, captions and
+  // the independently-mixed audio tracks stayed on absolute timeline time —
+  // so they drifted by exactly the gap.
+  const leadingGap = Math.max(0, segments[0].start)
+  if (leadingGap > 0) {
+    segments.unshift({
+      start: 0,
+      end: segments[0].start,
+      items: [],
+      opaqueVideo: false,
+      overlays: [],
+      vw,
+      vh,
+      fps,
+    })
+    clog(`leading gap of ${leadingGap.toFixed(2)}s — prepending a black segment`)
   }
 
   const lastEnd = segments[segments.length - 1].end
@@ -121,21 +175,24 @@ export async function compose({
   // 5. Embed a poster frame as an MP4 attached_pic stream so Finder, QuickTime,
   //    iMessage, Slack, and social platforms show a thumbnail instead of a
   //    black-or-blank placeholder.
-  embedThumbnail(outputPath, projectColorSpace, { sdrCurve })
+  embedThumbnail(outputPath, projectColorSpace, { sdrCurve, leadingGap })
 
   // Cleanup segment files
   if (!process.env.MONTAJ_KEEP_SEGMENTS) {
     rmSync(segDir, { recursive: true, force: true })
   }
 
-  return outputPath
+  // `leadingGap` rides along so the SDR-derive path in render.js can poster
+  // its rendition at the same offset — `deriveSdr` maps only `0:v:0`, dropping
+  // the master's attached_pic, so that file embeds a poster of its own.
+  return { outputPath, leadingGap }
 }
 
 /**
  * Embed a poster image (MP4 attached_pic stream) into the final video so
  * file browsers and social platforms show a thumbnail before playback.
  *
- * Two-step: (1) extract one JPEG frame at 1.0s, (2) re-mux video+audio+jpg
+ * Two-step: (1) extract one JPEG frame at `leadingGap + 1.0s`, (2) re-mux video+audio+jpg
  * with -disposition:v:1 attached_pic. Both passes stream-copy AV; the only
  * encode cost is the single JPEG. Total runtime ~1s on any sane host.
  *
@@ -147,6 +204,9 @@ export async function compose({
  * @param {object} [opts]
  * @param {string|null} [opts.sdrCurve]  look curve for the HDR→SDR poster
  *   conversion; null uses the master look.
+ * @param {number} [opts.leadingGap]  seconds of black at the head of the file
+ *   (a timeline whose first content does not start at 0). The poster is taken
+ *   1s past it so a gapped project does not thumbnail itself black. Default 0.
  */
 export function embedThumbnail(outputPath, colorSpace, opts = {}) {
   const tmpJpg = outputPath + '.thumb.jpg'
@@ -178,9 +238,19 @@ export function embedThumbnail(outputPath, colorSpace, opts = {}) {
     return spawnSync(FFMPEG, args, { encoding: 'utf8', timeout: FFMPEG_TIMEOUT_MS })
   }
 
-  // Try 1.0s first (past most fade-ins). If that fails (e.g. video shorter
-  // than 1.0s, decoder error), retry at 0 — every valid video has a frame 0.
-  let extract = extractAt(1.0)
+  // Try `leadingGap + 1.0` first (past most fade-ins). The offset matters now
+  // that a leading gap is preserved as real black frames: a project whose
+  // first clip starts at 2.5s would otherwise poster itself with a frame from
+  // the middle of that black head, and ship a thumbnail that is entirely
+  // black. Seeking past the gap picks the same "1s into the picture" frame a
+  // gapless project gets. Defaults to 0 so every existing caller is unchanged.
+  //
+  // If that fails (video shorter than the seek, decoder error), retry at 0 —
+  // every valid video has a frame 0. A black frame 0 on a gapped project is
+  // still better than failing the poster outright, and this arm is only
+  // reached when the preferred seek could not be decoded at all.
+  const leadingGap = Number.isFinite(opts.leadingGap) ? Math.max(0, opts.leadingGap) : 0
+  let extract = extractAt(leadingGap + 1.0)
   if (extract.status !== 0) {
     rmSync(tmpJpg, { force: true })
     extract = extractAt(0)

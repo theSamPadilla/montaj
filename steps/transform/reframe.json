@@ -1,0 +1,27 @@
+{
+  "name": "reframe",
+  "description": "Compute the rotation-aware reframe crop for placing a source video in a target aspect (the project canvas). Returns {sourceCrop, sourceWidth, sourceHeight} to write verbatim onto a project clip item — sourceCrop is null when the source's DISPLAY aspect already fits the target (vertical footage on a vertical canvas needs no crop). Gates and computes off display dimensions, never coded dimensions: a rotated iPhone clip codes 1920x1080 but displays 1080x1920, and cropping off the coded aspect squeezes already-vertical footage into a stretched sliver. No encode — geometry only.",
+  "input": {
+    "type": "video",
+    "description": "Source video file (probed automatically; rotation metadata is honored)"
+  },
+  "output": {
+    "type": "json",
+    "description": "{sourceCrop: {x,y,w,h}|null, sourceWidth, sourceHeight, source: {codedWidth, codedHeight, rotation, displayAspect, targetAspect, mode}}. The first three fields go verbatim onto the clip item; 'source' is diagnostics only."
+  },
+  "params": [
+    {
+      "name": "target",
+      "type": "string",
+      "default": "9:16",
+      "description": "Target aspect as W:H — the project canvas, e.g. 9:16 (vertical) or 16:9 (landscape). Default: 9:16."
+    },
+    {
+      "name": "mode",
+      "type": "enum",
+      "options": ["zoom"],
+      "default": "zoom",
+      "description": "Framing mode. 'zoom' centers the crop horizontally — the only mode today; thirds/mix framing are future work."
+    }
+  ]
+}

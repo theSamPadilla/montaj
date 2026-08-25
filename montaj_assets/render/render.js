@@ -668,7 +668,7 @@ async function main(projectPath, { out, workers, clean, imageTone, exportMode = 
   // 7. Compose final MP4
   // PHASE MARKER: "composing final video" → encoding in serve's _render_phase_for.
   log('composing final video...')
-  await compose({
+  const { leadingGap } = await compose({
     projectJson,
     puppeteerSegments: renderedSegments,
     imageItems,
@@ -693,7 +693,7 @@ async function main(projectPath, { out, workers, clean, imageTone, exportMode = 
     // The derived file is Rec.709 already, so its poster needs no tone-map —
     // passing sdr_bt709 (not the project's HDR key) is what keeps the extract
     // from running the LUT a second time over already-graded pixels.
-    embedThumbnail(exportPlan.derivePath, 'sdr_bt709')
+    embedThumbnail(exportPlan.derivePath, 'sdr_bt709', { leadingGap })
     if (exportPlan.tempMaster) {
       // --export sdr: the HDR master was scaffolding. Removed only on success —
       // if the derive threw, the master is the one salvageable artifact of a

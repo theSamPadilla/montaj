@@ -395,6 +395,16 @@ montaj step resize --input clip.mp4 --ratio 9:16     # TikTok / Reels / Shorts
 montaj step resize --input clip.mp4 --ratio 1:1      # Instagram
 montaj step resize --input clip.mp4 --ratio 16:9     # YouTube
 
+montaj step reframe --input clip.mp4 --target 9:16
+# resize encodes a new (letterboxed) file; reframe computes a crop spec to write
+# onto a project clip item instead — no encode. Rotation-aware: gates and computes
+# off the source's DISPLAY dimensions, never its coded width/height.
+# → {"sourceCrop":{"x":0.3418,"y":0.0,"w":0.3164,"h":1.0},"sourceWidth":1920,"sourceHeight":1080,...}
+
+montaj step reframe --input rotated_iphone_clip.mov --target 9:16
+# Rotated iPhone clip: codes 1920x1080 but displays 1080x1920 (already 9:16) — no crop needed
+# → {"sourceCrop":null,"sourceWidth":1080,"sourceHeight":1920,...}
+
 montaj step normalize --input clip.mp4                           # youtube = -14 LUFS
 montaj step normalize --input clip.mp4 --target podcast          # -16 LUFS
 montaj step normalize --input clip.mp4 --target broadcast        # -23 LUFS
@@ -541,7 +551,7 @@ exact flags. Full per-step parameter docs: https://docs.montaj.ag/steps
 | `steps/media/` | `analyze_media`, `detect_shots`, `fetch`, `fetch_image`, `filmstrip`, `normalize`, `probe`, `search_images`, `search_news`, `shot_sheet`, `snapshot` |
 | `steps/render/` | `sample_frame`, `sample_overlay` |
 | `steps/speech/` | `rm_fillers`, `rm_nonspeech`, `transcribe` |
-| `steps/transform/` | `crop_spec`, `generate_captions`, `materialize_cut`, `normalize_window`, `proxy`, `remove_bg`, `resize`, `virtual_to_original` |
+| `steps/transform/` | `crop_spec`, `generate_captions`, `materialize_cut`, `normalize_window`, `proxy`, `reframe`, `remove_bg`, `resize`, `virtual_to_original` |
 
 ---
 

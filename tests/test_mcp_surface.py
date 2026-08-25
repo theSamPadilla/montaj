@@ -80,11 +80,12 @@ _REMAP = {
 #   # generate-voiceover) — expanding MCP's surface is a separate decision. Commands
 #   # with subcommands (workflow, sample, profile) flatten into multiple tools.
 #
-# The 5 named above account for 5 of these 20; the rest (crop_spec, cross_cut,
+# The 5 named above account for 5 of these 21; the rest (crop_spec, cross_cut,
 # fetch_image, filmstrip, generate_captions, jump_cut, mix_timeline, montage,
-# normalize_window, proxy, search_images, search_news, virtual_to_original,
-# waveform_image, waveform_peaks) were never CLI commands at all — they're
-# HTTP/editor-only steps with no corresponding top-level command to allowlist.
+# normalize_window, proxy, reframe, search_images, search_news,
+# virtual_to_original, waveform_image, waveform_peaks) were never CLI commands
+# at all — they're HTTP/editor-only steps with no corresponding top-level
+# command to allowlist.
 # `mix_timeline` is an internal leg of the caption pipeline (the caption route
 # and `generate_captions` both spawn it directly by path), so it stays off the
 # MCP surface for the same reason.
@@ -92,8 +93,8 @@ EXPECTED_HTTP_ONLY = frozenset({
     "crop_spec", "cross_cut", "fetch_image", "filmstrip", "generate_captions",
     "generate_music", "generate_voiceover", "jump_cut", "lyrics_render",
     "lyrics_sync", "mix_timeline", "montage", "normalize_window", "proxy",
-    "search_images", "search_news", "stem_separation", "virtual_to_original",
-    "waveform_image", "waveform_peaks",
+    "reframe", "search_images", "search_news", "stem_separation",
+    "virtual_to_original", "waveform_image", "waveform_peaks",
 })
 
 # MCP tools that name no step at all — run/render/status/upload/init are

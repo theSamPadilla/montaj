@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { X, Film, Plus, ArrowUpDown, Check } from 'lucide-react'
+import { X, Film, Plus, ArrowUpDown, Check, RefreshCw } from 'lucide-react'
 import {
   FilmstripScrubber,
   FOOTAGE_DND_MIME,
@@ -26,6 +26,19 @@ function formatDuration(seconds: number): string {
 
 function clamp(v: number, lo: number, hi: number): number {
   return Math.min(hi, Math.max(lo, v))
+}
+
+/**
+ * True when a source can be placed on the timeline: it has a `src` and a
+ * positive, finite `sourceDuration`. `project/init.py` can leave
+ * `sourceDuration` unset when ffprobe fails or times out at import, and the
+ * canvas drop handler (TimelineCanvas.tsx) rejects any payload that fails
+ * this same check — gating drag on it here means a probe-less card can never
+ * reach that dead end.
+ */
+function hasPlaceableDuration(source: { src?: string; sourceDuration?: number }): boolean {
+  const d = source.sourceDuration
+  return !!source.src && typeof d === 'number' && Number.isFinite(d) && d > 0
 }
 
 /** Lowercased extension without the dot, e.g. `mov`. Empty string if there is none. */
@@ -81,6 +94,13 @@ export default function FootagePanel({
   const [dragOver, setDragOver] = useState(false)
   const [picking, setPicking] = useState(false)
   const [hover, setHover] = useState<{ id: string; fraction: number } | null>(null)
+  // Optimistic override for a source's sourceDuration once the backfill probe
+  // succeeds, keyed by source id — makes the card draggable and shows its
+  // duration immediately, without waiting on the SSE round-trip to re-render
+  // `sources` from the saved project.
+  const [probedDurations, setProbedDurations] = useState<Record<string, number>>({})
+  // Per-source backfill-probe status, keyed by source id.
+  const [probeState, setProbeState] = useState<Record<string, { pending: boolean; error?: string }>>({})
   const pollTimers = useRef(new Map<string, ReturnType<typeof setInterval>>())
   // No active sort = today's default order (whatever `sources` arrives in).
   const [sortKey, setSortKey] = useState<SortKey | null>(null)
@@ -198,15 +218,41 @@ export default function FootagePanel({
     for (const file of files) startImport(file)
   }
 
+  /** `source` with a locally-probed `sourceDuration` override applied, but
+   *  only while the prop itself still lacks a usable duration. Source ids
+   *  are reusable (`_next_clip_id` reissues the highest-numbered id once
+   *  that clip is removed), so once SSE delivers a real `sourceDuration` on
+   *  this id the prop must win outright — an override keyed by a stale id
+   *  must never shadow a different clip's real duration. */
+  function withEffectiveDuration(source: VisualItem): VisualItem {
+    if (hasPlaceableDuration(source)) return source
+    const override = probedDurations[source.id]
+    return override != null ? { ...source, sourceDuration: override } : source
+  }
+
+  /** Backfill a probe-less source's `sourceDuration` via the server. */
+  async function handleProbeDuration(source: VisualItem) {
+    const id = source.id
+    setProbeState(prev => ({ ...prev, [id]: { pending: true } }))
+    try {
+      const result = await api.probeSourceDuration(projectId, id)
+      setProbedDurations(prev => ({ ...prev, [id]: result.sourceDuration }))
+      setProbeState(prev => ({ ...prev, [id]: { pending: false } }))
+    } catch (e: unknown) {
+      setProbeState(prev => ({ ...prev, [id]: { pending: false, error: e instanceof Error ? e.message : String(e) } }))
+    }
+  }
+
   function handleDragStart(e: React.DragEvent, source: VisualItem) {
-    if (!source.src) return
+    const effective = withEffectiveDuration(source)
+    if (!hasPlaceableDuration(effective)) return
     const payload: FootageDropPayload = {
-      src: source.src,
-      proxySrc: source.proxySrc,
-      sourceDuration: source.sourceDuration ?? 0,
-      sourceWidth: source.sourceWidth,
-      sourceHeight: source.sourceHeight,
-      name: basename(source.src),
+      src: effective.src!,
+      proxySrc: effective.proxySrc,
+      sourceDuration: effective.sourceDuration ?? 0,
+      sourceWidth: effective.sourceWidth,
+      sourceHeight: effective.sourceHeight,
+      name: basename(effective.src!),
     }
     e.dataTransfer.setData(FOOTAGE_DND_MIME, JSON.stringify(payload))
     e.dataTransfer.effectAllowed = 'copy'
@@ -317,35 +363,41 @@ export default function FootagePanel({
             {sortedSources.map(source => {
               const used = !!source.src && usedSrcs.has(source.src)
               const name = source.src ? basename(source.src) : 'Untitled'
+              const effective = withEffectiveDuration(source)
+              const placeable = hasPlaceableDuration(effective)
+              const probe = probeState[source.id]
+              const probing = !!probe?.pending
               return (
                 <div
                   key={source.id}
-                  draggable={!!source.src}
+                  draggable={placeable}
                   onDragStart={e => handleDragStart(e, source)}
-                  className="group relative rounded overflow-hidden border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 cursor-grab active:cursor-grabbing"
+                  className={`group relative rounded overflow-hidden border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 ${placeable ? 'cursor-grab active:cursor-grabbing' : 'cursor-default'}`}
                 >
                   <div
                     className="relative w-full aspect-video bg-gray-800"
                     onPointerMove={source.proxySrc ? e => handleMediaPointerMove(e, source) : undefined}
                     onPointerLeave={source.proxySrc ? () => handleMediaPointerLeave(source) : undefined}
                   >
-                    {source.proxySrc ? (
-                      <FilmstripScrubber
-                        interactive={false}
-                        fit="contain"
-                        projectId={projectId}
-                        proxySrc={source.proxySrc}
-                        sourceDuration={source.sourceDuration ?? 0}
-                        getFilmstrip={getFilmstrip}
-                        fileUrl={fileUrl}
-                        className="absolute inset-0"
-                        ariaLabel={name}
-                      />
-                    ) : (
-                      <div className="absolute inset-0 flex items-center justify-center">
-                        <Film size={16} className="text-gray-600" />
-                      </div>
-                    )}
+                    <div className={placeable ? undefined : 'opacity-50'}>
+                      {source.proxySrc ? (
+                        <FilmstripScrubber
+                          interactive={false}
+                          fit="contain"
+                          projectId={projectId}
+                          proxySrc={source.proxySrc}
+                          sourceDuration={effective.sourceDuration ?? 0}
+                          getFilmstrip={getFilmstrip}
+                          fileUrl={fileUrl}
+                          className="absolute inset-0"
+                          ariaLabel={name}
+                        />
+                      ) : (
+                        <div className="absolute inset-0 flex items-center justify-center">
+                          <Film size={16} className="text-gray-600" />
+                        </div>
+                      )}
+                    </div>
                     {hover?.id === source.id && (
                       <div
                         className="pointer-events-none absolute inset-y-0 w-0.5 bg-blue-400 shadow-[0_0_2px_rgba(0,0,0,0.8)]"
@@ -357,9 +409,9 @@ export default function FootagePanel({
                         Added
                       </span>
                     )}
-                    {source.sourceDuration != null && (
+                    {placeable && (
                       <span className="absolute top-1 right-1 px-1 py-0.5 rounded bg-black/70 text-white text-[10px] font-mono leading-none transition-opacity group-hover:opacity-0">
-                        {formatDuration(source.sourceDuration)}
+                        {formatDuration(effective.sourceDuration!)}
                       </span>
                     )}
                     <button
@@ -372,6 +424,36 @@ export default function FootagePanel({
                   </div>
                   <div className="px-1.5 py-1">
                     <p className="text-xs text-gray-600 dark:text-gray-400 truncate" title={name}>{name}</p>
+                    {!placeable && (
+                      <div className="mt-1 flex items-center justify-between gap-1">
+                        <span
+                          className="text-[10px] text-amber-600 dark:text-amber-400 font-medium"
+                          title="Duration unknown, so this clip cannot be placed on the timeline yet. Get its duration to enable it."
+                        >
+                          Duration unknown
+                        </span>
+                        <button
+                          onClick={() => handleProbeDuration(source)}
+                          disabled={probing}
+                          className="shrink-0 flex items-center gap-1 px-1.5 py-0.5 rounded border border-gray-300 dark:border-gray-700 text-[10px] text-gray-600 dark:text-gray-300 hover:text-gray-900 dark:hover:text-white disabled:opacity-50 transition-colors"
+                          title="Get duration"
+                        >
+                          {probing ? (
+                            <RefreshCw size={10} className="animate-spin" />
+                          ) : (
+                            'Get duration'
+                          )}
+                        </button>
+                      </div>
+                    )}
+                    {/* Gated on `placeable` alongside the badge and the button: a
+                        failed probe leaves an error behind, and the source can still
+                        acquire a duration another way (a concurrent backfill, an SSE
+                        reload). Once it is placeable the card must read exactly as
+                        it does on the agent path, stale error included. */}
+                    {!placeable && probe?.error && (
+                      <p className="text-[10px] text-red-400 truncate mt-0.5" title={probe.error}>{probe.error}</p>
+                    )}
                   </div>
                 </div>
               )
