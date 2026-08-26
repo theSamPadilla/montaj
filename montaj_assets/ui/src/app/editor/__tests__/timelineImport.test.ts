@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { renderHook, act } from '@testing-library/react'
+import { StrictMode } from 'react'
 import type { MutableRefObject } from 'react'
 import type { Project } from '@/lib/types/schema'
 
@@ -123,6 +124,43 @@ describe('useTimelineImport', () => {
     expect(items[0].src).toBe('/workspace/proj-1/normalized_a.mp4')
     expect(items[0].start).toBe(5)
     expect(saveProject).toHaveBeenCalledWith('proj-1', saved)
+    expect(result.current.pendingDrops).toHaveLength(0)
+  })
+
+  it('still polls and resolves after a StrictMode mount/unmount/remount', async () => {
+    // Regression: React StrictMode (dev) mounts → unmounts → remounts. The
+    // mount effect's cleanup sets `unmountedRef` true; if the remount does not
+    // reset it to false, EVERY poll bails and the ingest — which finishes
+    // server-side — never gets placed, leaving a permanently stuck ghost. This
+    // was the real "drop never resolves" bug. Rendering under StrictMode here
+    // exercises exactly that double-invocation.
+    vi.useFakeTimers()
+    const project = makeProject()
+    const projectRef = { current: project } as MutableRefObject<Project | null>
+    const onProjectChange = vi.fn((p: Project) => { projectRef.current = p })
+    const ingestSource = vi.fn(async () => ({ jobId: 'job-1' }))
+    probeVideoDuration.mockResolvedValue(8)
+    getSourceJobStatus.mockResolvedValue({
+      status: 'done',
+      result: { id: 'clip-0', type: 'video', src: '/w/n.mp4', start: 0, end: 8, sourceDuration: 8 },
+    })
+
+    const { result } = renderHook(
+      ({ projectId }: { projectId: string | undefined }) =>
+        useTimelineImport({ adapter: { ingestSource }, projectRef, onProjectChange, projectId }),
+      { initialProps: { projectId: project.id }, wrapper: StrictMode },
+    )
+
+    await act(async () => {
+      result.current.handleImportFilesToTimeline([videoFile('a.mp4')], { atTime: 5, preferredTrackIndex: -1, ripple: false })
+      await vi.advanceTimersByTimeAsync(0)
+    })
+    await act(async () => { await vi.advanceTimersByTimeAsync(1000) })
+
+    // The poll actually ran (would never fire if unmountedRef stayed true), the
+    // clip was placed, and the ghost cleared.
+    expect(getSourceJobStatus).toHaveBeenCalledWith('proj-1', 'job-1')
+    expect(projectRef.current!.tracks![0].items).toHaveLength(1)
     expect(result.current.pendingDrops).toHaveLength(0)
   })
 

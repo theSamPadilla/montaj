@@ -95,6 +95,16 @@ function newDropId(): string {
   return `drop-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
 }
 
+/** A dropped file's ingest is polled until the server reports `done` or
+ *  `error`. If it reports NEITHER for this long — a hung ffmpeg probe/normalize
+ *  is the usual cause — give up rather than leave the ghost band on the
+ *  timeline forever (it is not a project item, so nothing else — undo included
+ *  — can clear it). The server keeps ingesting after the client stops polling,
+ *  so a slow-but-successful source still lands in the footage bin; we just stop
+ *  auto-placing it. Generous on purpose: a large HDR normalize is minutes of
+ *  legitimate work, and this must only fire on a genuine stall. */
+const INGEST_POLL_TIMEOUT_MS = 5 * 60_000
+
 export function useTimelineImport({
   adapter,
   projectRef,
@@ -117,6 +127,13 @@ export function useTimelineImport({
   const unmountedRef = useRef(false)
 
   useEffect(() => {
+    // Reset on EVERY (re)mount, not only set-true on cleanup. React StrictMode
+    // (dev) mounts → unmounts → remounts, and the cleanup below sets this true;
+    // without resetting here it stays true after the remount, and then every
+    // guard that reads it (see importOneFile's `poll`) bails — the ingest still
+    // finishes server-side, but the client never polls it, so the ghost never
+    // resolves. This exact stuck-`true` was the "drop never resolves" bug.
+    unmountedRef.current = false
     const timers = pollTimers.current
     return () => {
       unmountedRef.current = true
@@ -248,6 +265,11 @@ export function useTimelineImport({
         // never be cleared by it.
         if (unmountedRef.current) return
 
+        // When this file's ingest began polling — the deadline for
+        // INGEST_POLL_TIMEOUT_MS below, so a hung job never polls (or ghosts)
+        // forever.
+        const startedAt = Date.now()
+
         // Self-rescheduling `setTimeout`, not `setInterval`: a tick's own
         // `await api.getSourceJobStatus` can take longer than the 1s cadence
         // while a large source normalizes, and `setInterval` does not wait
@@ -284,6 +306,12 @@ export function useTimelineImport({
                 removeDrop(dropId)
               } else if (status.status === 'error') {
                 fail(status.error ?? 'Import failed')
+              } else if (Date.now() - startedAt > INGEST_POLL_TIMEOUT_MS) {
+                // Staging/normalizing has run far too long — the server ingest
+                // is hung (a stuck ffmpeg is the usual cause). Stop polling and
+                // clear the ghost so it is never permanent; the source may still
+                // land in the footage bin if the server eventually finishes.
+                fail('Import is taking too long and was stopped. If it finishes, the clip will appear in the footage bin.')
               } else {
                 // Still staging/normalizing/queueing — schedule the next tick.
                 pollTimers.current.set(dropId, setTimeout(poll, 1000))
