@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v4.0.0
+
 - **Changed: every caption style now sits in the same area of the frame, and their default sizes are tuned so they all start on the same line.** Each caption style is a separate render template, and they anchored at different heights (subtitle 15%, clean 17%, the rest 25%), so switching styles moved the caption around the clip. They now all anchor at roughly the same place, and — measured against the real frame — each style's default font size and anchor were tuned so the top of the caption lands within ~0.5% of the frame height across all seven styles (the big single-word styles, word-by-word and pop, drop to a 24% anchor; highlight-box and outline get a slightly smaller default so they read compact and sit lower; clean, the shortest, anchors at 26%). This changes where captions render on existing projects that use subtitle or clean (they move up into the shared band); projects that set an explicit caption font size are unaffected by the size tuning. (`montaj_assets/render/templates/captions/{subtitle,clean,word-by-word,pop,highlight-box,outline}.jsx`, `montaj_assets/render/test/caption-position.test.mjs`, `montaj_assets/editor/src/video/CaptionStyleGallery.tsx`)
 
 - **Added: sort the footage bin by "Date created".** The bin's sort menu (Name / Date added / Type) gains **Date created** — the footage's actual recording timestamp, read from the file's `creation_time` at import and stored on the source. Newest first; footage with no timestamp (older imports, agent-placed clips, files that never carried one) sorts last in insertion order. (`lib/normalize.py`, `lib/ingest.py`, `montaj_assets/editor/src/schema.ts`, `montaj_assets/ui/src/components/media/FootagePanel.tsx`)

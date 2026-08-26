@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "montaj"
-version = "3.10.1"
+version = "4.0.0"
 description = "Video editing toolkit for AI agents — CLI-first, agent-native, open source"
 readme = "README.md"
 license = "MIT"
