@@ -58,7 +58,7 @@ jobs:
           registry-url: 'https://registry.npmjs.org'
           # Was '@devbycrux' — a leftover from an old package name. The
           # published package is @bycrux/editor (montaj_assets/editor/package.json)
-          # and scripts/release-editor.sh's PKG_NAME agrees; '@devbycrux' matched
+          # and the local release script's PKG_NAME agrees; '@devbycrux' matched
           # neither. setup-node's registry-url already sets a scope-independent
           # default registry line, so publishing likely worked anyway, but the
           # "already published" check below queries the package by name
@@ -108,10 +108,10 @@ jobs:
           # "@devbycrux/editor@$VERSION" — a package name that was never
           # published, so this check could never find a hit and would attempt
           # `npm publish` on every run, including re-runs after a version
-          # already released via scripts/release-editor.sh (which npm then
+          # already released locally (which npm then
           # rejects, since published versions are immutable).
           if npm view "@bycrux/editor@$VERSION" version >/dev/null 2>&1; then
-            echo "@bycrux/editor@$VERSION is already published — skipping (likely released via scripts/release-editor.sh)."
+            echo "@bycrux/editor@$VERSION is already published — skipping (likely released locally)."
           else
             TC_VERSION=$(node -p "require('../timeline-core/package.json').version")
             echo "Rewriting @bycrux/timeline-core dependency from file:../timeline-core to ^$TC_VERSION for publish."
