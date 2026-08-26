@@ -28,6 +28,10 @@ include docs/UI.md
 # Built artifacts (node_modules/, ui/dist/) are NOT shipped — `montaj install ui`
 # builds them into ~/.cache/montaj/ on first run.
 graft montaj_assets
+# Top-level montaj_assets/node_modules (a stray Vite cache, `.vite/`, lands here
+# when vite runs with montaj_assets as its root) — prune it like the per-package
+# ones below so it never leaks into the wheel.
+prune montaj_assets/node_modules
 prune montaj_assets/render/node_modules
 prune montaj_assets/ui/node_modules
 prune montaj_assets/ui/dist
