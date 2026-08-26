@@ -207,25 +207,70 @@ class TestFfmpegResolver:
         fake.write_text("#!/bin/sh\n")
         fake.chmod(0o755)
         monkeypatch.setenv("MONTAJ_FFMPEG", str(fake))
-        assert common.ffmpeg_bin() == str(fake)
-
-    def test_managed_binary_preferred_over_path(self, monkeypatch, tmp_path):
-        monkeypatch.delenv("MONTAJ_FFMPEG", raising=False)
-        managed = tmp_path / "ffmpeg"
+        # Even with a managed AND a bundled binary present, env must win.
+        managed_dir = tmp_path / "managed"
+        managed_dir.mkdir()
+        managed = managed_dir / "ffmpeg"
         managed.write_text("#!/bin/sh\n")
         managed.chmod(0o755)
-        monkeypatch.setattr(common, "_managed_ffmpeg_dir", lambda: str(tmp_path))
+        monkeypatch.setattr(common, "_managed_ffmpeg_dir", lambda: str(managed_dir))
+        bundled_dir = tmp_path / "bundled"
+        bundled_dir.mkdir()
+        bundled = bundled_dir / "ffmpeg"
+        bundled.write_text("#!/bin/sh\n")
+        bundled.chmod(0o755)
+        monkeypatch.setattr(common, "_bundled_av_dir", lambda: str(bundled_dir))
+        assert common.ffmpeg_bin() == str(fake)
+
+    def test_managed_binary_preferred_over_bundled(self, monkeypatch, tmp_path):
+        monkeypatch.delenv("MONTAJ_FFMPEG", raising=False)
+        managed_dir = tmp_path / "managed"
+        managed_dir.mkdir()
+        managed = managed_dir / "ffmpeg"
+        managed.write_text("#!/bin/sh\n")
+        managed.chmod(0o755)
+        monkeypatch.setattr(common, "_managed_ffmpeg_dir", lambda: str(managed_dir))
+        bundled_dir = tmp_path / "bundled"
+        bundled_dir.mkdir()
+        bundled = bundled_dir / "ffmpeg"
+        bundled.write_text("#!/bin/sh\n")
+        bundled.chmod(0o755)
+        monkeypatch.setattr(common, "_bundled_av_dir", lambda: str(bundled_dir))
         assert common.ffmpeg_bin() == str(managed)
+
+    def test_bundled_used_when_managed_absent(self, monkeypatch, tmp_path):
+        monkeypatch.delenv("MONTAJ_FFMPEG", raising=False)
+        monkeypatch.setattr(common, "_managed_ffmpeg_dir", lambda: str(tmp_path / "absent"))
+        bundled_dir = tmp_path / "bundled"
+        bundled_dir.mkdir()
+        bundled = bundled_dir / "ffmpeg"
+        bundled.write_text("#!/bin/sh\n")
+        bundled.chmod(0o755)
+        monkeypatch.setattr(common, "_bundled_av_dir", lambda: str(bundled_dir))
+        assert common.ffmpeg_bin() == str(bundled)
 
     def test_falls_back_to_path_name(self, monkeypatch, tmp_path):
         monkeypatch.delenv("MONTAJ_FFMPEG", raising=False)
         monkeypatch.setattr(common, "_managed_ffmpeg_dir", lambda: str(tmp_path / "absent"))
+        monkeypatch.setattr(common, "_bundled_av_dir", lambda: str(tmp_path / "no-bundle"))
         assert common.ffmpeg_bin() == "ffmpeg"
 
     def test_ffprobe_mirrors(self, monkeypatch, tmp_path):
         monkeypatch.delenv("MONTAJ_FFPROBE", raising=False)
         monkeypatch.setattr(common, "_managed_ffmpeg_dir", lambda: str(tmp_path / "absent"))
+        monkeypatch.setattr(common, "_bundled_av_dir", lambda: str(tmp_path / "no-bundle"))
         assert common.ffprobe_bin() == "ffprobe"
+
+    def test_ffprobe_mirrors_bundled_tier(self, monkeypatch, tmp_path):
+        monkeypatch.delenv("MONTAJ_FFPROBE", raising=False)
+        monkeypatch.setattr(common, "_managed_ffmpeg_dir", lambda: str(tmp_path / "absent"))
+        bundled_dir = tmp_path / "bundled"
+        bundled_dir.mkdir()
+        bundled = bundled_dir / "ffprobe"
+        bundled.write_text("#!/bin/sh\n")
+        bundled.chmod(0o755)
+        monkeypatch.setattr(common, "_bundled_av_dir", lambda: str(bundled_dir))
+        assert common.ffprobe_bin() == str(bundled)
 
 
 # ── transcribe_words() ───────────────────────────────────────────────────────

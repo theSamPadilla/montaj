@@ -59,14 +59,27 @@ def _managed_ffmpeg_dir():
     return _models.models_dir("ffmpeg")
 
 
+def _bundled_av_dir():
+    """Directory of the ffmpeg/ffprobe bundled by the Homebrew formula (may not exist).
+
+    The formula stages the pinned zscale static build into `libexec/vendor/ffmpeg`,
+    and for that venv `sys.prefix` == `libexec` — so this is a sys.prefix-relative
+    lookup. Non-Homebrew installs (pip, dev checkout) simply have no such dir.
+    """
+    return os.path.join(sys.prefix, "vendor", "ffmpeg")
+
+
 def _resolve_av_bin(name, env_var):
-    """Resolver: env override -> managed static build -> bare PATH name."""
+    """Resolver: env override -> managed static build -> bundled (Homebrew) -> bare PATH name."""
     env = os.environ.get(env_var)
     if env:
         return env
     managed = os.path.join(_managed_ffmpeg_dir(), name)
     if os.access(managed, os.X_OK):
         return managed
+    bundled = os.path.join(_bundled_av_dir(), name)
+    if os.access(bundled, os.X_OK):
+        return bundled
     return name
 
 

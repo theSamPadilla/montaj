@@ -23,9 +23,9 @@ BUILD_CACHE_DIR = os.path.expanduser("~/.cache/montaj")
 def _av_ok(resolved: str) -> bool:
     """True when a resolved ffmpeg/ffprobe target is an executable file.
 
-    `resolved` is either an absolute path (managed static build or an
-    MONTAJ_FFMPEG/MONTAJ_FFPROBE override) or a bare command name to look
-    up on PATH."""
+    `resolved` is either an absolute path (the montaj-managed static build,
+    the Homebrew-bundled build, or an MONTAJ_FFMPEG/MONTAJ_FFPROBE override)
+    or a bare command name to look up on PATH."""
     path = resolved if os.path.isabs(resolved) else shutil.which(resolved)
     return bool(path) and os.access(path, os.X_OK)
 

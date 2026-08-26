@@ -9,7 +9,7 @@ import os, re, subprocess, sys, shutil
 from cli.main import add_global_flags
 from cli.deps import check_ui, whisper_bin_path, whisper_model_path, is_dev_checkout, BUILD_CACHE_DIR
 from cli.help import bold, green, red, yellow, cyan, dim
-from lib.common import ffmpeg_bin, ffprobe_bin
+from lib.common import ffmpeg_bin, ffprobe_bin, _managed_ffmpeg_dir, _bundled_av_dir
 
 
 REQUIRED_FFMPEG_FILTERS = ["zscale", "tonemap", "overlay", "scale", "format", "amix", "adelay", "lut3d"]
@@ -40,7 +40,12 @@ def _resolve_source(resolved: str, env_var: str) -> str:
     if os.environ.get(env_var):
         return f"{env_var} override"
     if os.path.isabs(resolved):
-        return f"managed: {resolved}"
+        resolved_dir = os.path.dirname(os.path.abspath(resolved))
+        if resolved_dir == os.path.abspath(_managed_ffmpeg_dir()):
+            return f"managed: {resolved}"
+        if resolved_dir == os.path.abspath(_bundled_av_dir()):
+            return f"bundled with Homebrew: {resolved}"
+        return f"resolved: {resolved}"
     return "system PATH"
 
 
@@ -107,7 +112,7 @@ def handle(args):
         if "zscale" in missing:
             print()
             print(f"    {yellow('⚠')} zscale requires libzimg. Fix: {cyan('montaj install ffmpeg')}")
-            print(f"      {dim('(downloads a pinned static build with zscale into the managed dir)')}")
+            print(f"      {dim('(downloads a pinned static build with zscale, Homebrew installs now bundle one)')}")
             print()
     else:
         print(f"  {red('✗')} {bold('ffmpeg')}: not found or not executable")
