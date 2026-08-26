@@ -200,13 +200,47 @@ def test_render_status_done_with_export_both_splits_output_paths(tmp_path):
     }
 
 
-def test_render_status_error_includes_error(tmp_path):
+def test_render_status_error_includes_error_and_log_tail(tmp_path):
     job = _RenderJob()
     job.status, job.phase, job.result = "error", "rendering", "Render failed (exit 2)"
+    job.lines = ["[montaj render] starting", '{"error": "invalid_status", "message": "boom"}']
     projects_mod._render_jobs[PID] = job
 
     out = asyncio.run(render_status(PID, project_dir=tmp_path))
-    assert out == {"status": "error", "phase": "rendering", "error": "Render failed (exit 2)"}
+    assert out == {
+        "status": "error",
+        "phase": "rendering",
+        "error": "Render failed (exit 2)",
+        "log": ["[montaj render] starting", '{"error": "invalid_status", "message": "boom"}'],
+    }
+
+
+def test_render_status_error_log_is_capped_to_the_tail(tmp_path):
+    job = _RenderJob()
+    job.status, job.result = "error", "Render failed (exit 1)"
+    job.lines = [f"line {i}" for i in range(200)]
+    projects_mod._render_jobs[PID] = job
+
+    out = asyncio.run(render_status(PID, project_dir=tmp_path))
+    assert len(out["log"]) == 40
+    assert out["log"][0] == "line 160"
+    assert out["log"][-1] == "line 199"
+
+
+def test_render_status_running_and_done_carry_no_log(tmp_path):
+    # The log is a failure-diagnosis aid, not a progress feed — SSE already
+    # streams lines live for anyone watching a render in flight.
+    running = _RenderJob()
+    running.phase = "rendering"
+    running.lines = ["noisy"]
+    projects_mod._render_jobs[PID] = running
+    assert "log" not in asyncio.run(render_status(PID, project_dir=tmp_path))
+
+    done = _RenderJob()
+    done.status, done.phase, done.result = "done", "done", "/p/output/x.mp4"
+    done.lines = ["noisy"]
+    projects_mod._render_jobs[PID] = done
+    assert "log" not in asyncio.run(render_status(PID, project_dir=tmp_path))
 
 
 # ---------------------------------------------------------------------------

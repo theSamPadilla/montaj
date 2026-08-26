@@ -126,6 +126,11 @@ def _render_phase_for(line: str) -> str | None:
 
 _render_jobs: dict[str, _RenderJob] = {}
 
+# How many trailing stderr lines a failed render reports back. The whole log can
+# run to thousands of ffmpeg/Puppeteer lines; the cause is essentially always at
+# the end, and this travels through the Hub proxy to an agent's context window.
+_RENDER_LOG_TAIL = 40
+
 # Strong refs to in-flight detached render tasks. asyncio only weakly tracks
 # fire-and-forget tasks, so without this a render task could be GC'd mid-run.
 _render_task_refs: set = set()
@@ -2657,6 +2662,15 @@ async def render_status(project_id: str, project_dir: Path = Depends(get_project
         out["outputPaths"] = paths
     elif job.status == "error":
         out["error"] = job.result
+        # Without this an agent driving a render remotely sees ONLY
+        # "Render failed (exit 1)" — the actual cause (render.js's own
+        # `fail()` JSON, an ffmpeg error, a missing file) is written to
+        # stderr and captured in job.lines, and used to die here. A caller
+        # that can't read the log can only guess, which is exactly what
+        # happened: four rediagnoses of a project whose only fault was a
+        # status the renderer refused.
+        if job.lines:
+            out["log"] = job.lines[-_RENDER_LOG_TAIL:]
     return out
 
 

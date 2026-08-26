@@ -16,6 +16,7 @@
  * beyond the width measurement below, and never touches the project.
  */
 import { useEffect, useRef, useState } from 'react'
+import type { CSSProperties } from 'react'
 import type { Captions } from '../schema'
 import { activeCaptionWord } from './captionActiveWord'
 import { findFontOption } from '../text/FontPicker'
@@ -47,7 +48,7 @@ export interface CaptionSpecimenProps {
   fontFamily?: string
   /** The caption's real render font size, in project pixels (`captions.fontsize`). */
   fontSize: number
-  textTransform?: string
+  textTransform?: CSSProperties['textTransform']
   letterSpacing?: string
   /** `captions.fontWeight` — absent means the active style's own designed
    *  weight (the browser/template default), so leaving this unset is what

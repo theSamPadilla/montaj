@@ -12,6 +12,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - **Caption Format tab: a slider on font size, bigger row labels, and the one-word preview is gone.** Font size now has the shared slider next to its typeable box (drag for a quick size, type for an exact one — both drive the same live value), the Format-tab row labels are a touch larger, and the small specimen box that showed a single word for a whole-sentence style has been removed (the Styles gallery is the size-faithful preview). (`CaptionListPanel.tsx`, `CaptionSpecimen` usage dropped)
 
+- **Fixed `CaptionSpecimen`'s `textTransform` TypeScript type.** The `textTransform` prop was typed as `string` and assigned into a `style` object, where React's `CSSProperties` expects a specific `TextTransform` literal union. This caused `tsc --noEmit` to fail in any consumer typechecking against the package's TypeScript sources (since the package ships raw TS, `skipLibCheck` cannot mask it). It is now correctly typed as `CSSProperties['textTransform']`. (`CaptionSpecimen.tsx`)
+
 - **Selecting a caption anywhere jumps the left panel to its Captions tab.** Clicking a caption on the timeline, in the preview, or in the list now switches the browser panel to Captions, so its controls are in front of you. It never fights a manual tab choice on mount, and re-selecting the same caption still snaps back. (`panels/LeftPanelTabs.tsx`, `VideoEditor.tsx`)
 
 - **Transform tab: dropped the redundant "TRANSFORM" heading.** The CONTENT/TRANSFORM tab already names the pane, so the second heading is gone; the reset-all and keyframe-all controls stay, now under a compact "All" label. (`OverlayInspector.tsx`)
@@ -211,6 +213,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   there is no Save button and no Cancel, undo is the revert path. A host that
   imported `OverlayPropsModal` directly will fail to resolve it; the file is
   deleted, not deprecated.
+- **BREAKING: `PreviewPlayer` takes a `clock`, replacing `currentTime` /
+  `onTimeUpdate`.** `PreviewPlayerProps` drops `currentTime: number` and
+  `onTimeUpdate: (t: number) => void`, and gains a required
+  `clock: PlaybackClock` — an external store for the playhead
+  (`{ get, set, subscribe }`), written at playback rate so that only the
+  components which actually render the time re-render. Unlike the rest of this
+  release's breakage, this one fails **loudly**: the prop is required, so a
+  host still passing the old pair gets a hard `TS2322` at the call site rather
+  than quietly losing a feature. It affects hosts that mount `<PreviewPlayer>`
+  directly only — a `<VideoEditor>`-only host is untouched, which is why it is
+  easy to miss when auditing the surface. Migrate by replacing the
+  `currentTime` state with a stable clock —
+  `const clock = useMemo(() => createPlaybackClock(0), [])` — and passing
+  `clock={clock}`; read the time, where you actually need to render it, with
+  `usePlaybackTime(clock)`. Both helpers are exported from the package root.
+  Two traps: the clock must have stable identity (a bare
+  `createPlaybackClock(0)` in the render body mints a fresh one every render
+  and breaks playback silently), and reintroducing a `useState` mirror of the
+  time reinstates the per-frame re-render the external store exists to remove.
 - **Overlay scale can now be non-uniform.** `VisualItem` gains optional
   `scaleX`/`scaleY`; when absent the item falls back to `scale` exactly as
   before, so every existing project renders byte-identical. The Transform
