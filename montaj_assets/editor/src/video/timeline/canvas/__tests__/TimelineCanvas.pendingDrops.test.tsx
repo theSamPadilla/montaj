@@ -31,6 +31,7 @@ import { timeToX } from '../viewport'
 import {
   PENDING_DROP_INSET_PX,
   PENDING_DROP_RADIUS_PX,
+  RULER_HEIGHT_PX,
   computeTimelineLayout,
 } from '../draw'
 
@@ -210,6 +211,42 @@ describe('TimelineCanvas — pending-drop ghosts', () => {
       const { overlay, store } = mount([drop({ trackIndex: 99 })])
       expect(ghostOrigin(overlay)).toEqual(expectedGhostOrigin(0, 3, store))
     }).not.toThrow()
+  })
+
+  it('draws a newTrack ghost on a FRESH row — never the base row, never into the ruler', () => {
+    // `trackIndex` here is deliberately a value that names no real row (the
+    // sentinel `resolveDropTrackIndex` returns for "mint a new track") — the
+    // point of `newTrack` is that the renderer must not need `trackIndex` to
+    // resolve this at all.
+    const { overlay } = mount([drop({ trackIndex: 2, newTrack: true })])
+    const origin = ghostOrigin(overlay)
+    expect(origin).not.toBeNull()
+    const [, y] = origin as [number, number]
+
+    // Not the base row (trackIdx 0, at the bottom of the video block) — the
+    // exact bug this feature fixes: a new-track ghost sitting on top of
+    // whatever footage already occupies the base row.
+    const baseRowY = computeTimelineLayout(project).rows.find(r => r.trackIdx === 0)!.y + PENDING_DROP_INSET_PX
+    expect(y).not.toEqual(baseRowY)
+    // Not even the CURRENT top-of-video-block row (trackIdx 1) — this is a
+    // genuinely fresh row, one slot further toward the ruler than any row
+    // that exists today.
+    const topVideoRowY = computeTimelineLayout(project).rows.find(r => r.trackIdx === 1)!.y + PENDING_DROP_INSET_PX
+    expect(y).not.toEqual(topVideoRowY)
+    // Never intrudes into the ruler strip.
+    expect(y).toBeGreaterThanOrEqual(RULER_HEIGHT_PX)
+    // This fixture has no overlay/caption rows above the video block, so
+    // there is no room for a full extra row without the surface actually
+    // growing by one — the phantom clamps flush against the ruler's bottom
+    // edge. Still a row of its own, and still never past the ruler.
+    expect(y).toEqual(RULER_HEIGHT_PX + PENDING_DROP_INSET_PX)
+  })
+
+  it('ignores newTrack on a drop that already names a real row', () => {
+    // `newTrack` absent (or false) is the ordinary case — unchanged from
+    // before this field existed.
+    const { overlay, store } = mount([drop({ trackIndex: 1 })])
+    expect(ghostOrigin(overlay)).toEqual(expectedGhostOrigin(1, 3, store))
   })
 
   it('resolves each drop in a list independently', () => {

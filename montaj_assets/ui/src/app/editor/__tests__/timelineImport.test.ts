@@ -127,6 +127,58 @@ describe('useTimelineImport', () => {
     expect(result.current.pendingDrops).toHaveLength(0)
   })
 
+  it('sets newTrack:true on the ghost when the only video row is occupied at the drop window', async () => {
+    // No existing video row is free at [5, 8) — the sole track's one item
+    // spans the whole [0, 10) window — so `resolveDropTrackIndex` (and
+    // therefore `placeDroppedClip` itself, once ingest finishes) resolves to
+    // a NEW video track. The ghost must say so explicitly: `trackIndex` alone
+    // (here, `1` — `normalizeTracks(project).tracks.length`) names a row that
+    // does not exist yet, and the canvas renderer has nothing to look up for
+    // it.
+    vi.useFakeTimers()
+    const project = makeProject({
+      tracks: [{
+        id: 'trk-0',
+        items: [{ id: 'existing', type: 'video', src: '/w/existing.mp4', start: 0, end: 10, inPoint: 0, outPoint: 10, sourceDuration: 10 }],
+      }],
+    })
+    const { result } = setup(project)
+    probeVideoDuration.mockResolvedValue(3)
+    getSourceJobStatus.mockResolvedValue({ status: 'running' })
+
+    await act(async () => {
+      result.current.handleImportFilesToTimeline([videoFile('a.mp4')], { atTime: 5, preferredTrackIndex: -1, ripple: false })
+      await vi.advanceTimersByTimeAsync(0)
+    })
+
+    expect(result.current.pendingDrops).toEqual([
+      { id: expect.any(String), atTime: 5, durationSec: 3, trackIndex: 1, newTrack: true, label: 'a.mp4' },
+    ])
+  })
+
+  it('does not set newTrack on a drop that lands on an existing free row', async () => {
+    // The base track is empty — a video candidate per `isVideoCandidate`'s
+    // own "index 0 with no items" rule — so the drop resolves onto it
+    // directly, no new track required.
+    vi.useFakeTimers()
+    const project = makeProject()
+    const { result } = setup(project)
+    probeVideoDuration.mockResolvedValue(4)
+    getSourceJobStatus.mockResolvedValue({ status: 'running' })
+
+    await act(async () => {
+      result.current.handleImportFilesToTimeline([videoFile('a.mp4')], { atTime: 0, preferredTrackIndex: -1, ripple: false })
+      await vi.advanceTimersByTimeAsync(0)
+    })
+
+    // No `newTrack` key at all (not even `false`) — `toEqual` treats an
+    // `undefined` property as absent, so this also proves the common path's
+    // ghost shape is byte-for-byte what it was before this field existed.
+    expect(result.current.pendingDrops).toEqual([
+      { id: expect.any(String), atTime: 0, durationSec: 4, trackIndex: 0, label: 'a.mp4' },
+    ])
+  })
+
   it('still polls and resolves after a StrictMode mount/unmount/remount', async () => {
     // Regression: React StrictMode (dev) mounts → unmounts → remounts. The
     // mount effect's cleanup sets `unmountedRef` true; if the remount does not

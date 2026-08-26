@@ -38,9 +38,9 @@ import type { GetFilmstripArgs, GetWaveformPeaksArgs, FilmstripIndex, PeaksData,
 import { FOOTAGE_DND_MIME } from '../../../types'
 import type { KeyframeProp } from '../../../schema'
 import type { PlaybackClock } from '../../playback-clock'
-import { VISUAL_ROW_RENDER_HEIGHT_PX } from '../timeline-model'
+import { BASE_VISUAL_ROW_RENDER_HEIGHT_PX, ROW_GAP_PX, VISUAL_ROW_RENDER_HEIGHT_PX } from '../timeline-model'
 import { placeDroppedClip, resolveDropPoint } from '../placement'
-import { computeTimelineLayout, drawTimelineContent, drawTimelineOverlay, type PendingDropBand, type TimelineLayout, type TimelineMode } from './draw'
+import { computeTimelineLayout, drawTimelineContent, drawTimelineOverlay, type PendingDropBand, type TimelineLayout, type TimelineMode, type VisualRowLayout } from './draw'
 import { hitTest, isEdgeHit, type Point, type SurfaceRect } from './hit-test'
 import { keyframeUnionTimes } from './keyframe-strip'
 import {
@@ -212,6 +212,11 @@ export function dropTrackIndexAt(y: number, layout: TimelineLayout): number {
  * first row in the layout. With no rows at all there is nowhere to draw, so the
  * band is dropped rather than guessed at a y of 0, which would put it in the
  * ruler.
+ *
+ * `drop.newTrack` is the one exception to "look up `trackIndex` in `layout`":
+ * there IS no row for it yet — `placeOnNewTrack` (placement.ts) hasn't run —
+ * so its rectangle is computed instead of looked up, by `newTrackRowRect`
+ * below.
  */
 export function pendingDropBands(
   pendingDrops: readonly PendingDrop[],
@@ -226,9 +231,21 @@ export function pendingDropBands(
     ? videoRows.reduce((lowest, r) => (r.trackIdx < lowest.trackIdx ? r : lowest))
     : layout.rows[layout.rows.length - 1]
 
+  // Computed lazily, and only once: no drop in the list needs it unless at
+  // least one carries `newTrack`, and every `newTrack` drop shares the exact
+  // same rectangle (there is only ever one "next new track" position for a
+  // given layout).
+  let newTrackRow: { y: number; height: number } | null = null
+  const resolveNewTrackRow = (): { y: number; height: number } => {
+    if (!newTrackRow) newTrackRow = newTrackRowRect(layout, videoRows, baseRow)
+    return newTrackRow
+  }
+
   const bands: PendingDropBand[] = []
   for (const drop of pendingDrops) {
-    const row = layout.rows.find(r => r.trackIdx === drop.trackIndex) ?? baseRow
+    const row = drop.newTrack
+      ? resolveNewTrackRow()
+      : layout.rows.find(r => r.trackIdx === drop.trackIndex) ?? baseRow
     bands.push({
       start: drop.atTime,
       end: drop.atTime + Math.max(0, drop.durationSec),
@@ -238,6 +255,49 @@ export function pendingDropBands(
     })
   }
   return bands
+}
+
+/**
+ * Where a BRAND NEW video track renders, computed against the CURRENT layout
+ * (before that track exists) — the rectangle `pendingDropBands` draws a
+ * `newTrack` ghost's band in.
+ *
+ * `placeOnNewTrack` (placement.ts) always lands a freshly-minted video track
+ * at the TOP of the video block — the highest trackIdx among video-kind
+ * tracks (its own doc comment walks through why: `orderedTrackArray`'s stable
+ * partition keeps the new track last among video-kind tracks, and "last in
+ * the video group" is the highest index in a block that is contiguous from
+ * 0). In DRAW order that is the row directly ABOVE whichever row currently
+ * holds that top-of-video-block spot — above the highest-`trackIdx` entry in
+ * `videoRows`, i.e. one row closer to the ruler than the current top video
+ * row (or than `baseRow`, when the project's only video row IS the base row).
+ * A freshly-created track always carries a video item the moment ingest
+ * finishes, so it takes the SAME height every video-kind row gets
+ * (`BASE_VISUAL_ROW_RENDER_HEIGHT_PX` — see `computeTimelineLayout`'s own
+ * height rule, "any video-kind track", not only trackIdx 0), not the shorter
+ * overlay-row height.
+ *
+ * Clamped so the band can never intrude into the ruler strip: on a project
+ * with little or no room between the ruler and the top video row (few or no
+ * overlay/caption rows above it) there isn't a full row's worth of space to
+ * insert a phantom into without the surface actually growing by one row — the
+ * canvas only grows once the real track lands. That is an inherent limit of
+ * ghosting a row that does not exist yet, not a bug: the clamp keeps the
+ * result directly adjacent to the top of the video block (never past the
+ * ruler) rather than off the top of the surface entirely.
+ */
+function newTrackRowRect(
+  layout: TimelineLayout,
+  videoRows: readonly VisualRowLayout[],
+  baseRow: VisualRowLayout,
+): { y: number; height: number } {
+  const topVideoRow = videoRows.length > 0
+    ? videoRows.reduce((highest, r) => (r.trackIdx > highest.trackIdx ? r : highest))
+    : baseRow
+  const height = BASE_VISUAL_ROW_RENDER_HEIGHT_PX
+  const rulerBottom = layout.ruler.y + layout.ruler.height
+  const y = Math.max(rulerBottom, topVideoRow.y - ROW_GAP_PX - height)
+  return { y, height }
 }
 
 const requestFrame: (cb: () => void) => number =

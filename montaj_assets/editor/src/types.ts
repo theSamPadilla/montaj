@@ -489,6 +489,16 @@ export interface PendingDrop {
   /** Which video row it is drawn on, in normalized track order. -1 → the base
    *  video row. */
   trackIndex: number
+  /** The clip will land on a NEW video track (no existing row matches
+   *  `trackIndex` — it names a row that does not exist yet, per
+   *  `resolveDropTrackIndex`'s own doc). Draw the ghost on a FRESH row where
+   *  that track will appear once ingest finishes and `placeDroppedClip`
+   *  actually creates it, not on the base video row: the base row may already
+   *  carry real footage, and a ghost sitting on top of it reads as
+   *  overlapping a clip that has nothing to do with this drop. Absent/false →
+   *  `trackIndex` names (or falls back to) an existing row, drawn exactly as
+   *  before. */
+  newTrack?: boolean
   /** Filename, drawn inside the band. */
   label?: string
 }

@@ -59,7 +59,7 @@
 import { useCallback, useEffect, useRef, useState, type MutableRefObject } from 'react'
 import { api } from '@/lib/api'
 import { probeVideoDuration } from '@/lib/videoDuration'
-import { placeDroppedClip, resolveDropTrackIndex, type EditorAdapter, type PendingDrop, type TimelineDropPlacement } from '@bycrux/editor'
+import { normalizeTracks, placeDroppedClip, resolveDropTrackIndex, type EditorAdapter, type PendingDrop, type TimelineDropPlacement } from '@bycrux/editor'
 import type { Project, VisualItem } from '@/lib/types/schema'
 
 export interface UseTimelineImportArgs {
@@ -424,9 +424,23 @@ export function useTimelineImport({
                   clip: { sourceDuration: durationSec as number },
                 })
               : placement.preferredTrackIndex
+            // `resolveDropTrackIndex` returns exactly
+            // `normalizeTracks(project).tracks.length` — a row that does not
+            // exist yet — for the "no existing video row fits, mint a new
+            // one" case (see its own doc, and `placeDroppedClip`, which uses
+            // this SAME test to decide when to call `placeOnNewTrack`). The
+            // canvas ghost renderer has no row to look up for that index, so
+            // it needs telling explicitly rather than falling back to the
+            // base video row, which may already carry footage this drop has
+            // nothing to do with. `undefined`, not `false`, for the common
+            // case — `PendingDrop.newTrack` is optional precisely so a normal
+            // drop's ghost object is unchanged from before this field existed.
+            const newTrack = project != null && trackIndex >= (normalizeTracks(project).tracks?.length ?? 0)
+              ? true
+              : undefined
             setPendingDrops(prev => [
               ...prev,
-              { id: dropId, atTime, durationSec: durationSec as number, trackIndex, label: file.name },
+              { id: dropId, atTime, durationSec: durationSec as number, trackIndex, newTrack, label: file.name },
             ])
           })
         })
