@@ -15,11 +15,10 @@ import type { PlaybackClock } from './playback-clock'
 import type { CaptionEditPatch } from './timeline/makeCaptionEdit'
 import { EditableSegment } from './timeline/EditableSegment'
 import { formatTime } from './timeline/utils'
-import { SwatchInput } from '../ui'
+import { NumberField, Slider, stepValue, SwatchInput } from '../ui'
 import { usePersistentState } from '../ui/usePersistentState'
 import { groupCaptionLanes, laneOf } from './captionLanes'
 import { FontFamilyPicker, findFontOption } from '../text/FontPicker'
-import CaptionSpecimen from './CaptionSpecimen'
 import CaptionStyleGallery from './CaptionStyleGallery'
 import TabNav from './panels/TabNav'
 import { CAPTION_STYLE_LETTER_SPACING, CAPTION_STYLE_LINE_HEIGHT, CAPTION_STYLE_TEXT_TRANSFORM } from './captionStyleDefaults'
@@ -108,7 +107,7 @@ const rowClass = 'flex items-center gap-1.5'
 /** The label cell of a `rowClass` row. The width is FIXED rather than intrinsic
  *  — that is the entire point: it is what makes the labels a column, so every
  *  control starts at the same x instead of "Font" and "Alignment" indenting
- *  their controls differently. `w-14` (56px) clears the longest label
+ *  their controls differently. `w-16` (64px) clears the longest label
  *  ("Alignment") at this size and still leaves the ~300px rail enough room for
  *  the widest control (the font picker + Bold).
  *
@@ -121,27 +120,24 @@ const rowClass = 'flex items-center gap-1.5'
  *  disambiguation a screen reader needs in a rail that also carries overlay and
  *  clip controls. Every control here keeps its own `aria-label` unchanged, and
  *  a span that would then repeat those words as loose text beside it carries
- *  `aria-hidden` so they aren't announced twice. `StepperField` is the one
- *  exception, and doesn't need it: its span sits INSIDE the <label> bound to
- *  its input, so it is consumed by that association rather than read as
- *  standalone text — and `aria-label` still outranks it for the name. */
-const rowLabelClass = 'w-14 shrink-0 text-[10px] text-[var(--editor-text)] opacity-60'
+ *  `aria-hidden` so they aren't announced twice. */
+const rowLabelClass = 'w-16 shrink-0 text-xs text-[var(--editor-text)] opacity-60'
 
-/** Display value for the letter-spacing stepper: the numeric part of a stored
- *  CSS length, read as em. Tolerates absent, '0.02em', '-0.02em', '.02em',
+/** Display value for the letter-spacing box: the numeric part of a stored CSS
+ *  length, read as em. Tolerates absent, '0.02em', '-0.02em', '.02em',
  *  ' 0.02 em ' and a bare number. A value stored in some OTHER unit ('2px')
  *  deliberately reads as EMPTY rather than as "2" — showing it would silently
- *  re-interpret it as 2em the moment the operator nudges the stepper. */
+ *  re-interpret it as 2em the moment the operator nudges the field. */
 function parseEmValue(value: string | undefined): string {
   if (!value) return ''
   const m = /^\s*(-?(?:\d+(?:\.\d+)?|\.\d+))\s*(?:em)?\s*$/i.exec(value)
   return m ? m[1] : ''
 }
 
-/** Display value for the line-height stepper. `Captions.lineHeight` is
+/** Display value for the line-height box. `Captions.lineHeight` is
  *  `number | string`; a string is accepted only when it is unitless, which is
  *  the form CSS reads as a multiple of the font size and the only form this
- *  stepper writes. Anything else ('120%', '1.3em') reads as empty, same
+ *  field writes. Anything else ('120%', '1.3em') reads as empty, same
  *  reasoning as above. */
 function parseUnitlessValue(value: number | string | undefined): string {
   if (typeof value === 'number') return Number.isFinite(value) ? String(value) : ''
@@ -155,110 +151,27 @@ function parseUnitlessValue(value: number | string | undefined): string {
  *  stringified into a CSS length that ends up in the saved JSON. */
 const roundTo = (n: number, places: number): number => Number(n.toFixed(places))
 
-interface StepperFieldProps {
-  label: string
-  ariaLabel: string
-  /** Display value, already parsed out of whatever the project stored. */
-  value: string
-  min: number
-  max: number
-  step: number
-  /** Rendered beside the field, e.g. 'em'. The operator never types the unit —
-   *  the same contract as FontSizePicker (text/FontPicker.tsx), which appends
-   *  `px` itself. */
-  unit?: string
-  /** Shown when the field is empty (the project has no explicit value) —
-   *  the active style's OWN default for this field, so the input reports the
-   *  effective value that will actually render instead of looking blank.
-   *  Never written into the project; a style with no default for this field
-   *  passes `''`, which is a no-op placeholder. */
-  placeholder?: string
-  onLive: (n: number) => void
-  onCommit: (n: number) => void
-}
+/** Clamps a typed/stepped value to a field's own range. `NumberField` (see its
+ *  doc comment) deliberately does NOT bound a typed value against its `min`/
+ *  `max` — those are a native spinner hint only — so every numeric field in
+ *  this panel that wants a hard ceiling/floor (font size, letter spacing, line
+ *  height) applies it here, on the write path, exactly where the retired
+ *  `StepperField.numeric()` used to. */
+const clampToRange = (n: number, min: number, max: number): number => Math.min(max, Math.max(min, n))
 
-/** Numeric stepper for the caption text-styling block, on the same live/commit
- *  split as the fontsize slider above it: every intermediate value (a
- *  keystroke, a spinner arrow, a held spinner) previews through `onLive` only,
- *  and the settled value persists ONCE through `onCommit`, on blur or Enter.
- *
- *  `dirtyRef` is what makes "once" true, and why this doesn't just compare the
- *  field against the incoming `value` prop: live preview has ALREADY written
- *  the pending number into the project, so by the time blur fires the prop
- *  equals the pending value and a value-comparison guard would skip the commit
- *  entirely, silently losing the edit. "Did the operator change anything" is
- *  the only signal that survives live preview. It also means a bare focus/blur
- *  commits nothing, and Enter-then-blur commits once rather than twice. */
-function StepperField({ label, ariaLabel, value, min, max, step, unit, placeholder, onLive, onCommit }: StepperFieldProps) {
-  const [text, setText] = useState(value)
-  const focusedRef = useRef(false)
-  const dirtyRef = useRef(false)
-
-  // Don't stomp what the operator is part-way through typing; re-sync from the
-  // project only while the field is unfocused (same guard as FontSizePicker).
-  useEffect(() => {
-    if (!focusedRef.current) setText(value)
-  }, [value])
-
-  /** The clamped number this field currently holds, or `null` while it holds
-   *  nothing usable (empty mid-edit, a lone '-'). min/max on the element are a
-   *  spinner hint only — a typed value can exceed them — so the clamp lives
-   *  here, on the path everything is written through. */
-  const numeric = (raw: string): number | null => {
-    if (raw.trim() === '') return null
-    const n = Number(raw)
-    return Number.isFinite(n) ? Math.min(max, Math.max(min, n)) : null
-  }
-
-  function commit() {
-    if (!dirtyRef.current) return
-    const n = numeric(text)
-    if (n === null) return
-    dirtyRef.current = false
-    onCommit(n)
-  }
-
-  return (
-    // Wears `rowClass`/`rowLabelClass` so a stepper lines up with the plain
-    // rows around it. This one is a real bound <label> rather than the
-    // presentational span those rows use, and that is safe here for the same
-    // reason it was before: `aria-label` on the input OUTRANKS label content in
-    // the accessible-name calculation, so the field is still announced as
-    // "Caption letter spacing" / "Caption line height", not "Spacing" / "Line".
-    <label className={rowClass}>
-      <span className={rowLabelClass}>{label}</span>
-      <input
-        type="number"
-        aria-label={ariaLabel}
-        min={min}
-        max={max}
-        step={step}
-        placeholder={placeholder}
-        value={text}
-        onChange={e => {
-          const raw = e.target.value
-          setText(raw)
-          const n = numeric(raw)
-          if (n === null) return
-          dirtyRef.current = true
-          onLive(n)
-        }}
-        onFocus={() => { focusedRef.current = true }}
-        onBlur={() => {
-          focusedRef.current = false
-          commit()
-          // Left empty or unparseable: nothing was committed, so snap the
-          // display back to what the project actually holds rather than
-          // leaving a blank field that misreports the caption's real value.
-          if (numeric(text) === null) setText(value)
-        }}
-        onKeyUp={e => { if (e.key === 'Enter') commit() }}
-        className="w-12 h-6 rounded border border-[var(--editor-border)] bg-[var(--editor-surface)] px-1 text-[10px] font-mono text-[var(--editor-text)] focus:outline-none focus:border-[var(--editor-accent)]"
-      />
-      {unit && <span className="text-[10px] text-[var(--editor-text)] opacity-40 shrink-0">{unit}</span>}
-    </label>
-  )
-}
+/** Font-size floor/ceiling for the typeable box. The `type="range"` slider
+ *  this replaces was physically stuck at 28-120; a typed value now isn't, on
+ *  purpose (Sam's ask is "type 52, arrow it up/down" with no artificial
+ *  slider ceiling) — but 0/negative would break every caption template's
+ *  layout math, and an unbounded ceiling risks a canvas-filling render that
+ *  is effectively broken output. `8` sits well BELOW the old 28 floor (so the
+ *  box is strictly more permissive than the slider, never less) while keeping
+ *  text nominally visible; `400` is generous enough for a full-frame "giant
+ *  word" caption style on a 1080-wide vertical export without inviting a
+ *  pathological value. Both are judgement calls, not derived from a template
+ *  constraint — revisit if a real project needs more. */
+const CAPTION_FONT_SIZE_MIN = 8
+const CAPTION_FONT_SIZE_MAX = 400
 
 /** A double-click-to-edit request from the canvas timeline (Phase 6). `nonce`
  *  changes on every request even if `id` repeats, so re-double-clicking the
@@ -427,8 +340,11 @@ function CaptionListPanelBody({
     }
   }, [])
 
-  // Live slider value during a drag — only committed (persisted) on
-  // pointer-up/key-up so mid-drag ticks don't each trigger a server PUT.
+  // Live value while dragging the font-size slider or typing into its box —
+  // previewed on every drag-frame/keystroke, committed (persisted) on
+  // release/blur/Enter so mid-gesture updates don't each trigger a server PUT.
+  // Both the slider and the box read and write THIS state, so they stay in
+  // lockstep and the preview tracks the edit as it happens.
   const [fontsize, setFontsize] = useState(captionTrack?.fontsize ?? 46)
   useEffect(() => {
     setFontsize(captionTrack?.fontsize ?? 46)
@@ -726,45 +642,72 @@ function CaptionListPanelBody({
           )}
         </div>
       ) : tab === 'format' ? (
-        /* ── Format tab — the fine caption controls (size, colors, specimen,
-              font, case, alignment, spacing), always visible (no collapse),
-              scrollable. Every control sits on a LABELED ROW: a fixed-width
-              label cell then the control (`rowClass` / `rowLabelClass`), so the
-              tab reads as one two-column grid. The specimen is the deliberate
-              exception — it is a preview, not a control, and spans the full
-              width. ── */
+        /* ── Format tab — the fine caption controls (size, colors, font, case,
+              alignment, spacing), always visible (no collapse), scrollable.
+              Every control sits on a LABELED ROW: a fixed-width label cell then
+              the control (`rowClass` / `rowLabelClass`), so the tab reads as one
+              two-column grid. ── */
         <div className="flex-1 min-h-0 overflow-y-auto px-3 py-3">
           {captionTrack && (
             <div className="flex flex-col gap-1.5">
                 <div className={rowClass}>
                   <span className={rowLabelClass} aria-hidden="true">Font size</span>
-                  <input
-                    type="range"
-                    aria-label="Caption font size"
-                    min={28}
-                    max={120}
-                    step={2}
+                  {/* Both controls drive the same value: drag the slider for a
+                      quick size, or type/arrow an exact one in the box. Slider
+                      previews per drag-frame and commits on release; the box
+                      previews per keystroke and commits on blur/Enter.
+
+                      They carry DIFFERENT accessible names on purpose. Two
+                      controls sharing one name is ambiguous to a screen reader
+                      (and makes `getByLabelText` throw on the duplicate), so
+                      the box keeps the canonical "Caption font size" that the
+                      behavioural tests query and the slider is named for what
+                      it is — the same split OverlayInspector uses for its
+                      "Scale" box and "Scale slider". */}
+                  <Slider
+                    aria-label="Caption font size slider"
+                    className="min-w-0 flex-1"
+                    step={1}
+                    min={CAPTION_FONT_SIZE_MIN}
+                    max={CAPTION_FONT_SIZE_MAX}
                     value={fontsize}
-                    className="flex-1 accent-[var(--editor-accent)]"
-                    onChange={e => {
+                    onChange={v => {
                       if (!project.captions) return
-                      const v = Number(e.target.value)
-                      setFontsize(v)
-                      // Live preview only — cheap local-state update, no save.
-                      onProjectChange?.({ ...project, captions: { ...project.captions, fontsize: v } })
+                      const next = clampToRange(v, CAPTION_FONT_SIZE_MIN, CAPTION_FONT_SIZE_MAX)
+                      setFontsize(next)
+                      onProjectChange?.({ ...project, captions: { ...project.captions, fontsize: next } })
                     }}
-                    onPointerUp={e => {
+                    onCommit={v => {
                       if (!project.captions) return
-                      const v = Number((e.target as HTMLInputElement).value)
-                      onCaptionEdit?.({ ...project, captions: { ...project.captions, fontsize: v } })
-                    }}
-                    onKeyUp={e => {
-                      if (!project.captions) return
-                      const v = Number((e.target as HTMLInputElement).value)
-                      onCaptionEdit?.({ ...project, captions: { ...project.captions, fontsize: v } })
+                      onCaptionEdit?.({ ...project, captions: { ...project.captions, fontsize: clampToRange(v, CAPTION_FONT_SIZE_MIN, CAPTION_FONT_SIZE_MAX) } })
                     }}
                   />
-                  <span className="text-[10px] text-[var(--editor-text)]/50 font-mono w-9 text-right">{fontsize}px</span>
+                  <NumberField
+                    name="Caption font size"
+                    className="w-20"
+                    unit="px"
+                    step={1}
+                    min={CAPTION_FONT_SIZE_MIN}
+                    max={CAPTION_FONT_SIZE_MAX}
+                    value={fontsize}
+                    onPreview={v => {
+                      if (!project.captions) return
+                      const next = clampToRange(v, CAPTION_FONT_SIZE_MIN, CAPTION_FONT_SIZE_MAX)
+                      setFontsize(next)
+                      // Live preview only — cheap local-state update, no save.
+                      onProjectChange?.({ ...project, captions: { ...project.captions, fontsize: next } })
+                    }}
+                    onCommit={v => {
+                      if (!project.captions) return
+                      onCaptionEdit?.({ ...project, captions: { ...project.captions, fontsize: clampToRange(v, CAPTION_FONT_SIZE_MIN, CAPTION_FONT_SIZE_MAX) } })
+                    }}
+                    onStep={d => {
+                      if (!project.captions) return
+                      const next = stepValue(fontsize, d, { step: 1, min: CAPTION_FONT_SIZE_MIN, max: CAPTION_FONT_SIZE_MAX })
+                      setFontsize(next)
+                      onCaptionEdit?.({ ...project, captions: { ...project.captions, fontsize: next } })
+                    }}
+                  />
                 </div>
                 <div className={rowClass}>
                   {/* One label for both swatches: the base one (track, or the
@@ -800,20 +743,6 @@ function CaptionListPanelBody({
                     prop, so one write reaches the editor preview and the
                     export together — no separate render-side plumbing. */}
                 <div className="flex flex-col gap-1.5 border-t border-[var(--editor-border)] pt-2">
-                  <CaptionSpecimen
-                    captions={captionTrack}
-                    currentTime={currentTime}
-                    selectedSegmentId={selectedSeg?.id}
-                    fontFamily={captionTrack.fontFamily}
-                    // The LIVE slider value, not `captionTrack.fontsize`, so
-                    // the specimen scales continuously during a fontsize drag
-                    // instead of jumping only when the drag is committed.
-                    fontSize={fontsize}
-                    textTransform={captionTrack.textTransform}
-                    letterSpacing={captionTrack.letterSpacing}
-                    fontWeight={captionTrack.fontWeight}
-                  />
-
                   <div className={rowClass}>
                     <span className={rowLabelClass} aria-hidden="true">Font</span>
                     <FontFamilyPicker
@@ -922,32 +851,62 @@ function CaptionListPanelBody({
                     </div>
                   </div>
 
-                  {/* One row each rather than the old side-by-side pair —
-                      StepperField renders its own `rowClass` row, so these land
-                      in the same label column as everything above. */}
-                  <StepperField
-                    label="Spacing"
-                    ariaLabel="Caption letter spacing"
-                    value={parseEmValue(captionTrack.letterSpacing)}
-                    placeholder={parseEmValue(CAPTION_STYLE_LETTER_SPACING[captionTrack.style])}
-                    min={-0.1}
-                    max={0.5}
-                    step={0.01}
-                    unit="em"
-                    onLive={n => liveTrack({ letterSpacing: `${roundTo(n, 3)}em` })}
-                    onCommit={n => commitTrack({ letterSpacing: `${roundTo(n, 3)}em` })}
-                  />
-                  <StepperField
-                    label="Line"
-                    ariaLabel="Caption line height"
-                    value={parseUnitlessValue(captionTrack.lineHeight)}
-                    placeholder={parseUnitlessValue(CAPTION_STYLE_LINE_HEIGHT[captionTrack.style])}
-                    min={0.8}
-                    max={2.5}
-                    step={0.05}
-                    onLive={n => liveTrack({ lineHeight: roundTo(n, 2) })}
-                    onCommit={n => commitTrack({ lineHeight: roundTo(n, 2) })}
-                  />
+                  {/* One row each, same `rowClass`/`rowLabelClass` pair every
+                      other row on this tab wears, now that these are plain
+                      `NumberField`s rather than the retired `StepperField`
+                      (which drew its own bound <label> — see the note on
+                      `rowLabelClass` above for why a bound label was never
+                      needed even there). */}
+                  <div className={rowClass}>
+                    <span className={rowLabelClass} aria-hidden="true">Spacing</span>
+                    <NumberField
+                      name="Caption letter spacing"
+                      className="w-20"
+                      unit="em"
+                      min={-0.1}
+                      max={0.5}
+                      step={0.01}
+                      value={parseEmValue(captionTrack.letterSpacing)}
+                      placeholder={parseEmValue(CAPTION_STYLE_LETTER_SPACING[captionTrack.style])}
+                      // NumberField doesn't clamp a typed value (native
+                      // min/max are a spinner hint only) — reuse the same
+                      // clamp+round the retired StepperField's `numeric()`
+                      // applied, on both the live and the committed write.
+                      onPreview={n => liveTrack({ letterSpacing: `${roundTo(clampToRange(n, -0.1, 0.5), 3)}em` })}
+                      onCommit={n => commitTrack({ letterSpacing: `${roundTo(clampToRange(n, -0.1, 0.5), 3)}em` })}
+                      onStep={d => {
+                        // Nudge off whatever is actually IN FORCE — the
+                        // stored value, or (nothing stored) the active
+                        // style's own default shown as the placeholder —
+                        // never off a bare 0, which would ignore what the
+                        // caption is really rendering at right now.
+                        const base = Number(
+                          parseEmValue(captionTrack.letterSpacing) || parseEmValue(CAPTION_STYLE_LETTER_SPACING[captionTrack.style]) || 0,
+                        )
+                        commitTrack({ letterSpacing: `${stepValue(base, d, { step: 0.01, min: -0.1, max: 0.5 })}em` })
+                      }}
+                    />
+                  </div>
+                  <div className={rowClass}>
+                    <span className={rowLabelClass} aria-hidden="true">Line</span>
+                    <NumberField
+                      name="Caption line height"
+                      className="w-20"
+                      min={0.8}
+                      max={2.5}
+                      step={0.05}
+                      value={parseUnitlessValue(captionTrack.lineHeight)}
+                      placeholder={parseUnitlessValue(CAPTION_STYLE_LINE_HEIGHT[captionTrack.style])}
+                      onPreview={n => liveTrack({ lineHeight: roundTo(clampToRange(n, 0.8, 2.5), 2) })}
+                      onCommit={n => commitTrack({ lineHeight: roundTo(clampToRange(n, 0.8, 2.5), 2) })}
+                      onStep={d => {
+                        const base = Number(
+                          parseUnitlessValue(captionTrack.lineHeight) || parseUnitlessValue(CAPTION_STYLE_LINE_HEIGHT[captionTrack.style]) || 0,
+                        )
+                        commitTrack({ lineHeight: stepValue(base, d, { step: 0.05, min: 0.8, max: 2.5 }) })
+                      }}
+                    />
+                  </div>
                 </div>
             </div>
           )}

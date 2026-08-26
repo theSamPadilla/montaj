@@ -6,6 +6,7 @@
 import { describe, it, expect, vi } from 'vitest'
 import {
   EDGE_SCROLL_MAX_PX_PER_SEC,
+  EDGE_SCROLL_RAMP_PX,
   EDGE_SCROLL_ZONE_PX,
   MAX_PX_PER_SECOND,
   MIN_FIT_MULTIPLE,
@@ -136,74 +137,106 @@ describe('scroll clamping', () => {
 
 describe('edge auto-scroll delta', () => {
   // A round scale (100 px/s) keeps the arithmetic legible: 1 content px is
-  // 0.01s, so a max speed of 600 px/s is 6 s/s.
+  // 0.01s, so the 1400 px/s cap is 14s of timeline per second of hold.
   const pxPerSecond = 100
   const canvasWidth = 1000
   const zone = EDGE_SCROLL_ZONE_PX // 40
-  const maxSpeed = EDGE_SCROLL_MAX_PX_PER_SEC // 600 px/s
+  const maxSpeed = EDGE_SCROLL_MAX_PX_PER_SEC // 1400 px/s
+  const ramp = EDGE_SCROLL_RAMP_PX // 70 — the last 30px of it lie PAST the surface edge
+
+  /** The pan the curve owes for a given depth past the zone's outer boundary:
+   *  `(depth / ramp) ^ 1.5` of the cap, converted to timeline seconds. Spelled
+   *  out once here so the expectations below read as the curve's definition
+   *  rather than as copied magic numbers. */
+  const expectedSpeed = (depthPx: number) =>
+    (maxSpeed * Math.pow(Math.min(1, depthPx / ramp), 1.5)) / pxPerSecond
+
+  /** `edgeScrollDelta` against the fixture above; `dt` defaults to a full
+   *  second so the returned value reads directly as seconds/second. */
+  const at = (pointerX: number, dt = 1) =>
+    edgeScrollDelta(pointerX, canvasWidth, pxPerSecond, dt, zone, maxSpeed, ramp)
 
   it('is zero for a pointer in the middle of the surface', () => {
-    expect(edgeScrollDelta(500, canvasWidth, pxPerSecond, 1, zone, maxSpeed)).toBe(0)
+    expect(at(500)).toBe(0)
   })
 
   it('is zero exactly at the zone boundary, on either side', () => {
-    expect(edgeScrollDelta(zone, canvasWidth, pxPerSecond, 1, zone, maxSpeed)).toBe(0)
-    expect(edgeScrollDelta(canvasWidth - zone, canvasWidth, pxPerSecond, 1, zone, maxSpeed)).toBe(0)
+    expect(at(zone)).toBe(0)
+    expect(at(canvasWidth - zone)).toBe(0)
   })
 
   it('pans left (negative) inside the left zone, right (positive) inside the right zone', () => {
-    expect(edgeScrollDelta(10, canvasWidth, pxPerSecond, 1, zone, maxSpeed)).toBeLessThan(0)
-    expect(edgeScrollDelta(canvasWidth - 10, canvasWidth, pxPerSecond, 1, zone, maxSpeed)).toBeGreaterThan(0)
+    expect(at(10)).toBeLessThan(0)
+    expect(at(canvasWidth - 10)).toBeGreaterThan(0)
   })
 
-  it('ramps linearly with how deep into the zone the pointer sits', () => {
-    // Depth 10/40 = 25% of the way in → 25% of max speed either side.
-    const shallow = edgeScrollDelta(zone - 10, canvasWidth, pxPerSecond, 1, zone, maxSpeed)
-    // Depth 30/40 = 75% of the way in → 3× the shallow pan.
-    const deep = edgeScrollDelta(zone - 30, canvasWidth, pxPerSecond, 1, zone, maxSpeed)
-    expect(Math.abs(shallow)).toBeCloseTo((0.25 * maxSpeed * 1) / pxPerSecond, 10)
-    expect(Math.abs(deep)).toBeCloseTo((0.75 * maxSpeed * 1) / pxPerSecond, 10)
-    expect(Math.abs(deep)).toBeCloseTo(Math.abs(shallow) * 3, 10)
+  it('ramps with how deep past the zone boundary the pointer sits, eased rather than linear', () => {
+    // Depths of 10px and 30px past the boundary, both still inside the surface.
+    const shallow = at(zone - 10)
+    const deep = at(zone - 30)
+    expect(Math.abs(shallow)).toBeCloseTo(expectedSpeed(10), 10)
+    expect(Math.abs(deep)).toBeCloseTo(expectedSpeed(30), 10)
+    // Eased, so tripling the depth MORE than triples the speed — a linear ramp
+    // would land exactly on 3x.
+    expect(Math.abs(deep)).toBeGreaterThan(Math.abs(shallow) * 3)
 
-    const shallowRight = edgeScrollDelta(canvasWidth - (zone - 10), canvasWidth, pxPerSecond, 1, zone, maxSpeed)
-    const deepRight = edgeScrollDelta(canvasWidth - (zone - 30), canvasWidth, pxPerSecond, 1, zone, maxSpeed)
+    const shallowRight = at(canvasWidth - (zone - 10))
+    const deepRight = at(canvasWidth - (zone - 30))
     expect(shallowRight).toBeCloseTo(-shallow, 10) // mirror image of the left side
     expect(deepRight).toBeCloseTo(-deep, 10)
   })
 
-  it('holds at max speed for a pointer that has travelled past the surface edge', () => {
-    // The document-level drag listeners can report an x outside the surface
-    // once the real cursor leaves it — depth must clamp, not keep growing.
-    const atEdge = edgeScrollDelta(0, canvasWidth, pxPerSecond, 1, zone, maxSpeed)
-    const wayPast = edgeScrollDelta(-500, canvasWidth, pxPerSecond, 1, zone, maxSpeed)
-    expect(wayPast).toBe(atEdge)
-    expect(atEdge).toBeCloseTo(-maxSpeed / pxPerSecond, 10)
+  it('keeps accelerating PAST the surface edge, not only inside the zone', () => {
+    // This is the whole reason the ramp is wider than the zone. A drag reaches
+    // the surface edge in one flick, so a curve that maxed out there would make
+    // every drag feel like one flat speed no matter how hard it was pushed.
+    const atEdge = at(0)
+    const past15 = at(-15)
+    const past30 = at(-30)
+    expect(Math.abs(past15)).toBeGreaterThan(Math.abs(atEdge))
+    expect(Math.abs(past30)).toBeGreaterThan(Math.abs(past15))
+    // And the edge itself is well under the cap — a nudge, not a launch.
+    expect(Math.abs(atEdge)).toBeCloseTo(expectedSpeed(zone), 10)
+    expect(Math.abs(atEdge)).toBeLessThan(maxSpeed / pxPerSecond / 2)
 
-    const atRightEdge = edgeScrollDelta(canvasWidth, canvasWidth, pxPerSecond, 1, zone, maxSpeed)
-    const wayPastRight = edgeScrollDelta(canvasWidth + 500, canvasWidth, pxPerSecond, 1, zone, maxSpeed)
-    expect(wayPastRight).toBe(atRightEdge)
-    expect(atRightEdge).toBeCloseTo(maxSpeed / pxPerSecond, 10)
+    // Mirrored on the right edge, same depths.
+    expect(at(canvasWidth)).toBeCloseTo(-atEdge, 10)
+    expect(at(canvasWidth + 15)).toBeCloseTo(-past15, 10)
+    expect(at(canvasWidth + 30)).toBeCloseTo(-past30, 10)
+  })
+
+  it('clamps at the max once the pointer is a full ramp past the boundary', () => {
+    // The document-level drag listeners can report an x arbitrarily far outside
+    // the surface once the real cursor leaves it — depth must clamp there, not
+    // keep growing. `zone - ramp` is exactly where the ramp is spent.
+    const rampSpent = at(zone - ramp)
+    expect(rampSpent).toBeCloseTo(-maxSpeed / pxPerSecond, 10)
+    expect(at(-500)).toBe(rampSpent)
+
+    const rightRampSpent = at(canvasWidth - zone + ramp)
+    expect(rightRampSpent).toBeCloseTo(maxSpeed / pxPerSecond, 10)
+    expect(at(canvasWidth + 500)).toBe(rightRampSpent)
   })
 
   it('scales with the frame delta — framerate independent', () => {
-    const oneFrame = edgeScrollDelta(10, canvasWidth, pxPerSecond, 1 / 60, zone, maxSpeed)
-    const doubleFrame = edgeScrollDelta(10, canvasWidth, pxPerSecond, 2 / 60, zone, maxSpeed)
+    const oneFrame = at(10, 1 / 60)
+    const doubleFrame = at(10, 2 / 60)
     expect(doubleFrame).toBeCloseTo(oneFrame * 2, 10)
   })
 
-  it('is zero for a non-positive frame delta, px/second, zone, or surface width', () => {
-    expect(edgeScrollDelta(10, canvasWidth, pxPerSecond, 0, zone, maxSpeed)).toBe(0)
-    expect(edgeScrollDelta(10, canvasWidth, 0, 1, zone, maxSpeed)).toBe(0)
-    expect(edgeScrollDelta(10, canvasWidth, pxPerSecond, 1, 0, maxSpeed)).toBe(0)
-    expect(edgeScrollDelta(10, 0, pxPerSecond, 1, zone, maxSpeed)).toBe(0)
+  it('is zero for a non-positive frame delta, px/second, zone, ramp, or surface width', () => {
+    expect(edgeScrollDelta(10, canvasWidth, pxPerSecond, 0, zone, maxSpeed, ramp)).toBe(0)
+    expect(edgeScrollDelta(10, canvasWidth, 0, 1, zone, maxSpeed, ramp)).toBe(0)
+    expect(edgeScrollDelta(10, canvasWidth, pxPerSecond, 1, 0, maxSpeed, ramp)).toBe(0)
+    expect(edgeScrollDelta(10, canvasWidth, pxPerSecond, 1, zone, maxSpeed, 0)).toBe(0)
+    expect(edgeScrollDelta(10, 0, pxPerSecond, 1, zone, maxSpeed, ramp)).toBe(0)
   })
 
   it('converts content px/second to timeline seconds through the current scale', () => {
-    // At the edge itself (full ramp), a 200 px/s zoom halves the seconds
-    // moved compared to the 100 px/s fixture above for the same content speed.
-    const atZoomedIn = edgeScrollDelta(0, canvasWidth, 200, 1, zone, maxSpeed)
-    const atFixtureScale = edgeScrollDelta(0, canvasWidth, pxPerSecond, 1, zone, maxSpeed)
-    expect(atZoomedIn).toBeCloseTo(atFixtureScale / 2, 10)
+    // At the surface edge, a 200 px/s zoom halves the seconds moved compared to
+    // the 100 px/s fixture above for the same content speed.
+    const atZoomedIn = edgeScrollDelta(0, canvasWidth, 200, 1, zone, maxSpeed, ramp)
+    expect(atZoomedIn).toBeCloseTo(at(0) / 2, 10)
   })
 })
 

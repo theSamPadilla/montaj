@@ -49,11 +49,12 @@ function extensionOf(src: string | undefined): string {
   return dot > 0 ? base.slice(dot + 1).toLowerCase() : ''
 }
 
-type SortKey = 'name' | 'dateAdded' | 'type'
+type SortKey = 'name' | 'dateAdded' | 'dateCreated' | 'type'
 
 const SORT_OPTIONS: { key: SortKey; label: string }[] = [
   { key: 'name', label: 'Name' },
   { key: 'dateAdded', label: 'Date added' },
+  { key: 'dateCreated', label: 'Date created' },
   { key: 'type', label: 'Type' },
 ]
 
@@ -139,6 +140,23 @@ export default function FootagePanel({
       })
     } else if (sortKey === 'type') {
       indexed.sort((a, b) => extensionOf(a.s.src).localeCompare(extensionOf(b.s.src)) || a.i - b.i)
+    } else if (sortKey === 'dateCreated') {
+      // Recording timestamp (`sourceCreatedAt`, ISO 8601), newest first. Only
+      // footage imported after this shipped carries one — sources without it
+      // (older imports, agent-placed clips, or files with no creation_time tag)
+      // sort last in their original insertion order, so the option degrades to
+      // "newest recordings first, everything else after" rather than reshuffling
+      // undated cards arbitrarily.
+      indexed.sort((a, b) => {
+        const at = a.s.sourceCreatedAt ? Date.parse(a.s.sourceCreatedAt) : NaN
+        const bt = b.s.sourceCreatedAt ? Date.parse(b.s.sourceCreatedAt) : NaN
+        const aok = Number.isFinite(at)
+        const bok = Number.isFinite(bt)
+        if (aok && bok) return bt - at || a.i - b.i
+        if (aok) return -1
+        if (bok) return 1
+        return a.i - b.i
+      })
     } else {
       // dateAdded: VisualItem carries no addedAt/createdAt timestamp, so the
       // array's insertion order IS the date-added order (the server appends

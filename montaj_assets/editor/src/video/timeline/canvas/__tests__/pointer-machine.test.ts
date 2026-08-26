@@ -38,7 +38,7 @@ import {
 } from '../pointer-machine'
 import { FADE_GRIP_ZONE_HEIGHT_PX, hitTest } from '../hit-test'
 import type { SnapConfig } from '../snap'
-import type { Viewport } from '../viewport'
+import { xToTime, type Viewport } from '../viewport'
 
 const VIEWPORT: Viewport = { pxPerSecond: 100, scrollSeconds: 0, widthPx: 1000 }
 
@@ -656,6 +656,56 @@ describe('body drag — move', () => {
     const d = new Driver(makeContext())
     d.down(C0_BODY.x, C0_BODY.y)
     expect(of(d.move(C0_BODY.x + 50, C0_BODY.y), 'cursor')).toEqual([{ type: 'cursor', cursor: 'grabbing' }])
+  })
+})
+
+describe('a viewport that pans mid-gesture — edge auto-scroll tracking', () => {
+  // Edge auto-scroll pans the view while the pointer is HELD in the edge band,
+  // re-feeding the machine that same screen point on every frame (see
+  // `edgeAutoScrollTick` in TimelineCanvas). Nothing about the pointer moves —
+  // only the viewport under it does — so a gesture that measured its travel in
+  // raw pixels would report no movement at all for those frames and leave what
+  // it is dragging parked at one time while the timeline slid out from under
+  // the cursor. Travel is measured in timeline time for exactly this reason.
+  const PANNED: Viewport = { ...VIEWPORT, scrollSeconds: 2 }
+
+  it('carries a moving clip along with the pan, keeping it under the cursor', () => {
+    const d = new Driver(makeContext({ snapConfig: ZERO_SNAP }))
+    d.down(C0_BODY.x, C0_BODY.y)
+    const held = { x: C0_BODY.x + 100, y: C0_BODY.y }
+    expect(visual(lastProjectChange(d.move(held.x, held.y)), 'c0').start).toBeCloseTo(1)
+
+    // The view pans 2s to the right. The pointer does not move.
+    d.ctx = makeContext({ snapConfig: ZERO_SNAP, viewport: PANNED })
+    const panned = visual(lastProjectChange(d.move(held.x, held.y)), 'c0')
+    expect(panned.start).toBeCloseTo(3)
+    expect(panned.end).toBeCloseTo(8)
+
+    // The invariant that actually matters, stated directly: the cursor still
+    // sits the same 2.5s into the clip it grabbed at press, so the clip is
+    // still under the hand holding it.
+    expect(xToTime(held.x, PANNED) - panned.start).toBeCloseTo(2.5)
+  })
+
+  it('carries a trimmed edge along with the pan too', () => {
+    // Not just moves: every horizontal gesture shares the delta, so a trim held
+    // in the edge band tracks the same way.
+    const d = new Driver(makeContext({ snapConfig: ZERO_SNAP }))
+    d.down(C0_OUT_EDGE.x, C0_OUT_EDGE.y)
+    const held = { x: C0_OUT_EDGE.x - 100, y: C0_OUT_EDGE.y }
+    expect(visual(lastProjectChange(d.move(held.x, held.y)), 'c0').end).toBeCloseTo(4)
+
+    d.ctx = makeContext({ snapConfig: ZERO_SNAP, viewport: PANNED })
+    expect(visual(lastProjectChange(d.move(held.x, held.y)), 'c0').end).toBeCloseTo(6)
+  })
+
+  it('leaves a gesture alone when the viewport holds still', () => {
+    // The guard on the change above: anchoring in time must not alter the
+    // ordinary case, where scroll never moves and a pixel delta and a time
+    // delta agree exactly.
+    const d = new Driver(makeContext({ snapConfig: ZERO_SNAP }))
+    d.down(C0_BODY.x, C0_BODY.y)
+    expect(visual(lastProjectChange(d.move(C0_BODY.x + 250, C0_BODY.y)), 'c0').start).toBeCloseTo(2.5)
   })
 })
 
@@ -1912,6 +1962,107 @@ describe('cross-track re-tiering — a move follows the row it is currently over
     const d = new Driver(makeContext({ project: sameKindProject() }))
     d.down(C0_BODY.x, SAME_KIND_BASE_Y)
     expect(of(d.move(1242, SAME_KIND_BASE_Y), 'snapGuide')).toEqual(guide(10, 'strong'))
+  })
+
+  it('tiers against the track the drop LANDS on, not the one the vertical travel points at', () => {
+    // Sam's repro, 2026-08-25: an overlay exactly as long as a gap one row
+    // below, dragged down into that gap, showed no guide and refused to click
+    // into place — while landing on the right row the whole time.
+    //
+    // The two facts that produce it, neither visible from the drag alone:
+    //
+    //  - The drag divisor (VISUAL_ROW_HEIGHT_PX, 24) is roughly HALF a
+    //    rendered overlay row (40 + 4 gap = 44), so one row of real travel
+    //    reads as TWO track steps. From track 2 that points at track 0.
+    //  - `moveItemAcrossTracks` does not honour that index: track 0 holds
+    //    video, the dragged item is an overlay, so the kind gate rejects it
+    //    and the outward search puts the drop back on track 1 — the row the
+    //    cursor is genuinely over.
+    //
+    // The drop was therefore right and only the TIER was wrong: it ranked
+    // track 0's boundaries strong and left the gap's own two edges (2s and
+    // 7s, on track 1) weak, a 6px magnet where a 20px one belongs.
+    const project = {
+      id: 'p',
+      tracks: [
+        { id: 'trk-0', items: [{ id: 'c0', type: 'video', src: 'a.mp4', start: 0, end: 12, inPoint: 0, outPoint: 12, sourceDuration: 20 }] },
+        // The gap: 2s–7s, five seconds wide.
+        { id: 'trk-1', items: [{ id: 'g0', type: 'overlay', start: 0, end: 2 }, { id: 'g1', type: 'overlay', start: 7, end: 12 }] },
+        // Five seconds wide too — it fits the gap exactly.
+        { id: 'trk-2', items: [{ id: 'ov', type: 'overlay', start: 2.6, end: 7.6 }] },
+      ],
+    } as unknown as Project
+    const ctx = makeContext({ project })
+    const rowY = (trackIdx: number) => {
+      const row = ctx.layout.rows.find(r => r.trackIdx === trackIdx)!
+      return Math.round(row.y + row.height / 2)
+    }
+
+    const d = new Driver(ctx)
+    d.down(510, rowY(2))                       // ov's midpoint
+    // Straight down onto track 1's row, no horizontal travel: 44px, which the
+    // 24px divisor reads as two track steps.
+    d.move(510, rowY(1))
+    // It really did land on track 1 — the row under the cursor.
+    expect(trackIndexOf(lastProjectChange(d.effects), 'ov')).toBe(1)
+
+    // Now slide left toward the gap's leading edge at 2s. rawStart is 2.18 —
+    // 18px out: inside the strong radius (20px), outside the weak one (6px).
+    // Weak, this is nothing; strong, it catches and the clip drops into the
+    // gap it fits.
+    expect(of(d.move(468, rowY(1)), 'snapGuide')).toEqual(guide(2, 'strong'))
+    expect(visual(lastProjectChange(d.effects), 'ov')).toMatchObject({ start: 2, end: 7 })
+  })
+
+  it('catches the TRAILING edge too — approached from the left, the clip\'s END snaps to the gap\'s far edge', () => {
+    // Same gap (track 1, 2s–7s) and the same double-hop divisor mechanic as
+    // the repro above, but driven from the other side and with a dragged item
+    // that does NOT fill the gap (3s wide, not 5s) — so `snapPointsForSpan`'s
+    // head formula (`p`) and tail formula (`p - duration`) land on two
+    // DIFFERENT numbers, and only the tail one is close enough to catch. The
+    // repro above can't tell the two apart: its item is exactly gap-width, so
+    // both formulas resolve to the same value regardless of which edge is
+    // "really" catching.
+    //
+    // A revert back to tiering the POINTED-AT index (`sourceTrackIdx -
+    // round(dy / 24)`) puts track 0's cuts (0, 12) in the strong tier instead
+    // and drops the gap's own edges (2, 7) to weak — 15px is inside the
+    // strong radius (20px) but outside the weak one (6px), so on a revert
+    // nothing catches at all and this assertion fails.
+    const project = {
+      id: 'p',
+      tracks: [
+        { id: 'trk-0', items: [{ id: 'c0', type: 'video', src: 'a.mp4', start: 0, end: 12, inPoint: 0, outPoint: 12, sourceDuration: 20 }] },
+        // The gap: 2s–7s, same as the repro above.
+        { id: 'trk-1', items: [{ id: 'g0', type: 'overlay', start: 0, end: 2 }, { id: 'g1', type: 'overlay', start: 7, end: 12 }] },
+        // 3s wide — shorter than the gap, unlike the repro above — and parked
+        // INSIDE it (3s–6s) rather than butted against either neighbour, so
+        // the first, purely-vertical move below doesn't trip the (unrelated)
+        // collision gate the real drop still runs: `resolveTargetTrackIdx`'s
+        // `kindOnly` skip only applies to the TIER computation, not to
+        // `moveItemAcrossTracks`'s own search for where the item actually
+        // lands.
+        { id: 'trk-2', items: [{ id: 'ov', type: 'overlay', start: 3, end: 6 }] },
+      ],
+    } as unknown as Project
+    const ctx = makeContext({ project })
+    const rowY = (trackIdx: number) => {
+      const row = ctx.layout.rows.find(r => r.trackIdx === trackIdx)!
+      return Math.round(row.y + row.height / 2)
+    }
+
+    const d = new Driver(ctx)
+    d.down(450, rowY(2))                        // ov's body (3s–6s)
+    d.move(450, rowY(1))                        // straight down onto track 1's row
+    // It really did land on track 1, same as the repro above.
+    expect(trackIndexOf(lastProjectChange(d.effects), 'ov')).toBe(1)
+
+    // Slide right so the clip's END approaches the gap's far edge (7s).
+    // rawStart lands on 4.15 — 15px past the tail candidate (7 − 3 = 4):
+    // inside the strong radius, outside the weak one, and nothing else is
+    // anywhere near 4.15 — so this is the tail formula catching alone.
+    expect(of(d.move(565, rowY(1)), 'snapGuide')).toEqual(guide(7, 'strong'))
+    expect(visual(lastProjectChange(d.effects), 'ov')).toMatchObject({ start: 4, end: 7 })
   })
 })
 

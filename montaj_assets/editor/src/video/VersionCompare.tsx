@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { createPortal } from 'react-dom'
+import { Slider } from '../ui'
 
 /**
  * The editor-relevant slice of a version — matches `VersionEntry` in
@@ -240,15 +241,13 @@ export default function VersionCompare({
               <span className="text-[11px] font-semibold uppercase tracking-wide text-[var(--editor-text)]/50">Time</span>
               <span className="text-xs text-[var(--editor-text)]/60 tabular-nums">{formatT(t)}</span>
             </div>
-            <input
-              type="range"
+            <Slider
               min={0}
               max={duration}
               step={0.1}
               value={t}
-              onChange={(e) => setT(Number(e.target.value))}
+              onChange={setT}
               aria-label="Scrub time"
-              className="w-full accent-[var(--editor-accent)]"
             />
           </div>
         </div>

@@ -34,13 +34,13 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
-import type { GetFilmstripArgs, GetWaveformPeaksArgs, FilmstripIndex, PeaksData, Project, FootageDropPayload, ResolveFilePath } from '../../../types'
+import type { GetFilmstripArgs, GetWaveformPeaksArgs, FilmstripIndex, PeaksData, PendingDrop, Project, FootageDropPayload, ResolveFilePath, TimelineDropPlacement } from '../../../types'
 import { FOOTAGE_DND_MIME } from '../../../types'
 import type { KeyframeProp } from '../../../schema'
 import type { PlaybackClock } from '../../playback-clock'
-import { VISUAL_ROW_RENDER_HEIGHT_PX, normalizeTracks } from '../timeline-model'
-import { insertClipAt } from '../../cuts'
-import { computeTimelineLayout, drawTimelineContent, drawTimelineOverlay, type TimelineMode } from './draw'
+import { VISUAL_ROW_RENDER_HEIGHT_PX } from '../timeline-model'
+import { placeDroppedClip, resolveDropPoint } from '../placement'
+import { computeTimelineLayout, drawTimelineContent, drawTimelineOverlay, type PendingDropBand, type TimelineLayout, type TimelineMode } from './draw'
 import { hitTest, isEdgeHit, type Point, type SurfaceRect } from './hit-test'
 import { keyframeUnionTimes } from './keyframe-strip'
 import {
@@ -50,11 +50,12 @@ import {
   type PointerContext,
   type PointerEffect,
 } from './pointer-machine'
-import type { SnapStrength } from './snap'
+import { DEFAULT_SNAP_CONFIG, type SnapStrength } from './snap'
 import { WaveformPeaksStore, type WaveformSceneLookup } from './waveforms'
 import { FilmstripStore, type FilmstripSceneLookup } from './filmstrips'
 import {
   EDGE_SCROLL_MAX_PX_PER_SEC,
+  EDGE_SCROLL_RAMP_PX,
   EDGE_SCROLL_ZONE_PX,
   ZOOM_BUTTON_FACTOR,
   applyWheelIntent,
@@ -170,6 +171,73 @@ export interface TimelineCanvasProps {
    *  the pixels. Defaults to `'dark'` — the only mode this surface had — so a
    *  host that never passes it is unchanged. */
   mode?: TimelineMode
+  /** A drop of real OS FILES onto this surface, threaded from
+   *  `VideoEditorProps.onImportFilesToTimeline` (see its doc for the contract).
+   *  Its PRESENCE is what makes this surface accept an OS-file drag at all:
+   *  absent, `dragover` never calls `preventDefault` for one, so the browser
+   *  keeps its own handling and the whole gesture is inert — which is exactly
+   *  what a host that predates this feature gets. */
+  onImportFilesToTimeline?: (files: File[], placement: TimelineDropPlacement) => void
+  /** Ghost bands for the host's in-flight imports, drawn on the overlay layer.
+   *  Absent/empty → nothing extra is painted. */
+  pendingDrops?: readonly PendingDrop[]
+}
+
+/**
+ * Which video row a drop at surface-y `y` landed on, as an index into the
+ * NORMALIZED track order `placeDroppedClip` measures in — or `-1` for "no
+ * preference", which is what the ruler, a caption band, an audio lane and the
+ * gap between two rows all resolve to.
+ *
+ * Reads the layout's own row rectangles rather than re-deriving row geometry
+ * from heights and gaps: that is the rule stated at the top of `hit-test.ts`
+ * ("layout is read, never re-derived"), and it applies here for the same
+ * reason — a drop that computed its own rows would drift from the picture the
+ * moment a row height changed, and the drift would show as a clip landing on
+ * the row above the one you aimed at.
+ */
+export function dropTrackIndexAt(y: number, layout: TimelineLayout): number {
+  for (const row of layout.rows) {
+    if (y >= row.y && y < row.y + row.height) return row.trackIdx
+  }
+  return -1
+}
+
+/**
+ * Resolve each host `PendingDrop` to the rectangle its ghost is drawn in.
+ *
+ * A `trackIndex` of -1 (or one naming a row that no longer exists — the host's
+ * list is asynchronous and the project can have changed under it) falls back to
+ * the BASE video row: the lowest-`trackIdx` row that holds video, else the
+ * first row in the layout. With no rows at all there is nowhere to draw, so the
+ * band is dropped rather than guessed at a y of 0, which would put it in the
+ * ruler.
+ */
+export function pendingDropBands(
+  pendingDrops: readonly PendingDrop[],
+  layout: TimelineLayout,
+): PendingDropBand[] {
+  if (layout.rows.length === 0) return []
+  // `rows` is in DRAW order (highest trackIdx first), so the base video row is
+  // found by scanning for the lowest trackIdx that carries video, not by
+  // taking rows[0].
+  const videoRows = layout.rows.filter(r => r.items.some(it => it.type === 'video'))
+  const baseRow = videoRows.length > 0
+    ? videoRows.reduce((lowest, r) => (r.trackIdx < lowest.trackIdx ? r : lowest))
+    : layout.rows[layout.rows.length - 1]
+
+  const bands: PendingDropBand[] = []
+  for (const drop of pendingDrops) {
+    const row = layout.rows.find(r => r.trackIdx === drop.trackIndex) ?? baseRow
+    bands.push({
+      start: drop.atTime,
+      end: drop.atTime + Math.max(0, drop.durationSec),
+      y: row.y,
+      height: row.height,
+      label: drop.label,
+    })
+  }
+  return bands
 }
 
 const requestFrame: (cb: () => void) => number =
@@ -191,6 +259,10 @@ function perfNow(): number {
 /** Stable empty default so an omitted `snapBoundaries` doesn't churn the
  *  pointer layer's latest-props ref with a fresh array every render. */
 const NO_SNAP_BOUNDARIES: number[] = []
+
+/** `NO_SNAP_BOUNDARIES`' sibling, for the same reason: an omitted
+ *  `pendingDrops` must not hand the ghost memo a fresh array each render. */
+const NO_PENDING_DROPS: readonly PendingDrop[] = []
 
 /**
  * How tall the surface must be to reach the bottom of the pane's visible area.
@@ -253,6 +325,8 @@ export default function TimelineCanvas({
   getFilmstrip,
   resolveFilePath,
   mode = 'dark',
+  onImportFilesToTimeline,
+  pendingDrops = NO_PENDING_DROPS,
 }: TimelineCanvasProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const contentCanvasRef = useRef<HTMLCanvasElement>(null)
@@ -287,8 +361,14 @@ export default function TimelineCanvas({
   // Latest draw inputs, readable from the imperative paint without making the
   // paint a dependency of every effect (the ref-to-latest pattern
   // `useTimelineZoom` uses for its wheel handler).
-  const sceneRef = useRef({ project, layout, selectedIds, selectedKeyframe, totalDuration, mode })
-  sceneRef.current = { project, layout, selectedIds, selectedKeyframe, totalDuration, mode }
+  // The host's in-flight imports, resolved to rectangles against the CURRENT
+  // layout. Memoized on the layout too, not just the list: a row added or
+  // removed by an unrelated edit moves every row's y, and a ghost still drawn
+  // at the old one would float over the wrong track.
+  const pendingDropBandList = useMemo(() => pendingDropBands(pendingDrops, layout), [pendingDrops, layout])
+
+  const sceneRef = useRef({ project, layout, selectedIds, selectedKeyframe, totalDuration, mode, pendingDropBandList })
+  sceneRef.current = { project, layout, selectedIds, selectedKeyframe, totalDuration, mode, pendingDropBandList }
 
   // The preview-axis cursor, tracked imperatively for the same reason the
   // filmstrip hover thumb is: it moves with every mousemove, and a React state
@@ -411,6 +491,7 @@ export default function TimelineCanvas({
           snapTime: snapGuideRef.current?.time ?? null,
           snapStrength: snapGuideRef.current?.strength ?? null,
           marquee: marqueeRef.current,
+          pendingDrops: scene.pendingDropBandList,
           surfaceWidth: cssWidth,
           surfaceHeight: cssHeight,
           mode: scene.mode,
@@ -543,6 +624,20 @@ export default function TimelineCanvas({
   // change of diamond has to repaint that layer, same as a change of item.
   useEffect(() => { requestRedraw('content') }, [project, layout, selectionKey, selectedKeyframe, requestRedraw])
 
+  // ── Overlay: the pending-import ghosts ──
+  //
+  // The ghosts live on the overlay layer, which is repainted only by the clock,
+  // the viewport or a gesture — so without this a ghost would appear (or fail
+  // to disappear) only on the next unrelated repaint, i.e. "never" on a paused,
+  // untouched timeline. Keyed by CONTENT rather than by the array's identity,
+  // exactly like `selectionKey` above: a host that rebuilds the list each
+  // render (or passes an inline `[]`) must not schedule a repaint per render
+  // for a picture that hasn't moved.
+  const pendingDropsKey = pendingDropBandList
+    .map(b => [b.start, b.end, b.y, b.height, b.label ?? ''].join('|'))
+    .join('\0')
+  useEffect(() => { requestRedraw('overlay') }, [pendingDropsKey, requestRedraw])
+
   // ── Duration changes re-clamp scale and scroll ──
   useEffect(() => {
     store.set(vp => reclampForDuration(vp, totalDuration))
@@ -591,10 +686,15 @@ export default function TimelineCanvas({
   const pointerRef = useRef({
     project, layout, selectedIds, selectedKeyframe, snapBoundaries, totalDuration, fps, rippleMode, previewAxis,
     onSelectItem, onSelectItems, onSelectKeyframe, onProjectChange, onOverlayEdit, onInspectClip, onInspectAudio, onEditCaption, onHoverScrub, onFadeCurveMenu, onKeyframeMenu,
+    onImportFilesToTimeline,
   })
   pointerRef.current = {
     project, layout, selectedIds, selectedKeyframe, snapBoundaries, totalDuration, fps, rippleMode, previewAxis,
     onSelectItem, onSelectItems, onSelectKeyframe, onProjectChange, onOverlayEdit, onInspectClip, onInspectAudio, onEditCaption, onHoverScrub, onFadeCurveMenu, onKeyframeMenu,
+    // Read by the drag handlers below, which are bound ONCE on mount — a
+    // file-drop hook read from the closure instead of from here would be the
+    // one the host passed on the very first render, forever.
+    onImportFilesToTimeline,
   }
 
   const buildContext = useCallback((): PointerContext => {
@@ -844,7 +944,7 @@ export default function TimelineCanvas({
       const viewport = store.get()
       const delta = edgeScrollDelta(
         drag.point.x, rect.width, viewport.pxPerSecond, dt,
-        EDGE_SCROLL_ZONE_PX, EDGE_SCROLL_MAX_PX_PER_SEC,
+        EDGE_SCROLL_ZONE_PX, EDGE_SCROLL_MAX_PX_PER_SEC, EDGE_SCROLL_RAMP_PX,
       )
       if (delta !== 0) {
         let hitClamp = false
@@ -1018,18 +1118,33 @@ export default function TimelineCanvas({
     }
   }, [])
 
-  // ── Footage-bin drop ──
+  // ── Drops onto the surface: the footage bin, and OS files ──
   //
-  // Dropping a clip dragged from the (host-side) footage bin is NOT a pointer
-  // gesture — the browser owns the drag, there is no mousedown/up pair on this
-  // surface — so it stays out of the pointer machine and commits straight
-  // through the SAME discrete-edit pair every other discrete timeline edit
-  // uses: `onProjectChange` applies it live, `onOverlayEdit` persists it as one
-  // undo step (mirroring the machine's own `projectChange`+`commit` effects in
-  // `runEffects`, and Timeline's ripple-delete keymap). The drop always lands
-  // on the main VIDEO track — the first track holding a video item, `tracks[0]`
-  // in practice — rather than the row under the cursor: bin footage belongs on
-  // the primary track, and it keeps the placement unambiguous.
+  // Two drags land here and neither is a pointer gesture — the browser owns
+  // the drag, there is no mousedown/up pair on this surface — so both stay out
+  // of the pointer machine.
+  //
+  // A FOOTAGE-BIN drag (our own `FOOTAGE_DND_MIME`) carries everything needed
+  // to place a clip, so it commits here, straight through the SAME
+  // discrete-edit pair every other discrete timeline edit uses:
+  // `onProjectChange` applies it live, `onOverlayEdit` persists it as one undo
+  // step (mirroring the machine's own `projectChange`+`commit` effects in
+  // `runEffects`, and Timeline's ripple-delete keymap). WHERE it lands is not
+  // decided here: both drop paths hand the drop time and the row released over
+  // to `placeDroppedClip` (placement.ts), which owns the one rule — "where you
+  // dropped it, without stomping existing footage". (It used to pin every bin
+  // drop to the main video track regardless of the row under the cursor; a
+  // drop onto an occupied span then silently overlapped whatever was there.)
+  //
+  // An OS-FILE drag cannot be placed here at all: a `File` has no duration, no
+  // proxy and no host-resolvable path until the host has probed and ingested
+  // it. So that path only REPORTS the drop — the files, the time, the row —
+  // through `onImportFilesToTimeline`, and the host commits the clip when its
+  // import lands. The hook's PRESENCE is also the feature detection: without
+  // it we never `preventDefault` an OS-file drag, so the browser keeps its own
+  // handling and the gesture is completely inert (`dataTransfer.getData()`
+  // returns "" during `dragover` for security, which is why the accept test
+  // reads `types` rather than the data itself — both paths depend on that).
   //
   // The insertion indicator is the overlay's own cursor line
   // (`drawTimelineOverlay`'s `cursorTime`) reused via `cursorTimeRef` — no new
@@ -1041,12 +1156,49 @@ export default function TimelineCanvas({
     leave: (_e: DragEvent) => {},
     drop: (_e: DragEvent) => {},
   })
+
+  /** Where in the timeline a drop at client-x `clientX` landed, clamped to the
+   *  project's own span. Shared by both drop paths so a bin clip and a
+   *  filesystem file dropped at the same pixel land at the same second. */
+  function dropTimeAt(clientX: number, rect: DOMRect): number {
+    return Math.max(0, Math.min(
+      pointerRef.current.totalDuration,
+      xToTime(clientX - rect.left, store.get()),
+    ))
+  }
+
+  /** The snap inputs `placeDroppedClip` takes: every boundary a gesture would
+   *  magnetize to, plus the playhead, and the magnet's radius expressed in
+   *  SECONDS.
+   *
+   *  Pixels are the unit of feel (see snap.ts's own module comment): a magnet
+   *  has to cover the same distance on screen whether the timeline shows ten
+   *  seconds or ten minutes, so the radius is a pixel count divided by the
+   *  current scale on every call rather than a fixed number of seconds. A
+   *  non-positive `pxPerSecond` (a viewport not yet measured) would divide to
+   *  Infinity and magnetize the drop to the nearest boundary anywhere on the
+   *  timeline, so it disables snapping instead. */
+  function dropSnapInputs(): { snapTimes: number[]; snapToleranceSec: number } {
+    const p = pointerRef.current
+    const pxPerSecond = store.get().pxPerSecond
+    return {
+      snapTimes: [...(p.snapBoundaries ?? []), clock.get()],
+      snapToleranceSec: pxPerSecond > 0 ? DEFAULT_SNAP_CONFIG.attractPx / pxPerSecond : 0,
+    }
+  }
+
   dragHandlersRef.current = {
     over(e) {
       const dt = e.dataTransfer
-      if (!dt?.types?.includes(FOOTAGE_DND_MIME)) return
+      if (!dt) return
+      // EITHER our own bin MIME, or — only when the host gave us somewhere to
+      // send them — an OS-file drag. `getData()` is unreadable during
+      // `dragover`, so this can only test `types`.
+      const isFootage = dt.types?.includes(FOOTAGE_DND_MIME)
+      const isFiles = !!pointerRef.current.onImportFilesToTimeline && dt.types?.includes('Files')
+      if (!isFootage && !isFiles) return
       // Without preventDefault the browser never fires `drop`; `copy` shows the
-      // right affordance (a bin drop adds a placement, it doesn't move the source).
+      // right affordance (a drop adds a placement, it doesn't move the source).
       e.preventDefault()
       dt.dropEffect = 'copy'
       const el = containerRef.current
@@ -1062,45 +1214,81 @@ export default function TimelineCanvas({
       requestRedraw('overlay')
     },
     drop(e) {
-      // Not our drag → leave it for the browser (no preventDefault).
+      const p = pointerRef.current
+      const el = containerRef.current
+      // Which drag this is — decided by what the DataTransfer actually
+      // CARRIES, not by what `dragover` accepted a moment ago: a drop can
+      // arrive from a drag that started outside this surface entirely.
       const raw = e.dataTransfer?.getData(FOOTAGE_DND_MIME)
-      if (!raw) return
-      e.preventDefault()
-      // Take the indicator down whatever happens below.
-      if (cursorTimeRef.current !== null) { cursorTimeRef.current = null; requestRedraw('overlay') }
+      const files = e.dataTransfer?.files
 
-      let payload: FootageDropPayload
-      try {
-        payload = JSON.parse(raw) as FootageDropPayload
-      } catch {
+      if (raw) {
+        e.preventDefault()
+        // Take the indicator down whatever happens below.
+        if (cursorTimeRef.current !== null) { cursorTimeRef.current = null; requestRedraw('overlay') }
+
+        let payload: FootageDropPayload
+        try {
+          payload = JSON.parse(raw) as FootageDropPayload
+        } catch {
+          return
+        }
+        if (
+          !payload ||
+          typeof payload.src !== 'string' ||
+          typeof payload.sourceDuration !== 'number' ||
+          !Number.isFinite(payload.sourceDuration) ||
+          payload.sourceDuration <= 0
+        ) return
+
+        if (!p.onProjectChange && !p.onOverlayEdit) return
+        if (!el) return
+
+        const rect = el.getBoundingClientRect()
+        const placed = placeDroppedClip(p.project, {
+          atTime: dropTimeAt(e.clientX, rect),
+          preferredTrackIndex: dropTrackIndexAt(e.clientY - rect.top, p.layout),
+          clip: payload,
+          ripple: p.rippleMode,
+          ...dropSnapInputs(),
+        })
+        // `placeDroppedClip` returns the input project BY REFERENCE when it
+        // placed nothing (an unplaceable duration). Committing that would push
+        // an undo entry and a save for an edit that never happened.
+        if (placed.project === p.project) return
+        p.onProjectChange?.(placed.project)
+        p.onOverlayEdit?.(placed.project)
         return
       }
-      if (
-        !payload ||
-        typeof payload.src !== 'string' ||
-        typeof payload.sourceDuration !== 'number' ||
-        !Number.isFinite(payload.sourceDuration) ||
-        payload.sourceDuration <= 0
-      ) return
 
-      const p = pointerRef.current
-      if (!p.onProjectChange && !p.onOverlayEdit) return
-      const el = containerRef.current
-      if (!el) return
+      if (files && files.length > 0 && p.onImportFilesToTimeline) {
+        e.preventDefault()
+        if (cursorTimeRef.current !== null) { cursorTimeRef.current = null; requestRedraw('overlay') }
+        if (!el) return
+        const rect = el.getBoundingClientRect()
+        // Snapped HERE, unlike the bin path (which snaps inside its own
+        // synchronous `placeDroppedClip` call): a file drop has no placement
+        // call to snap inside of, since the host places the clip later, once
+        // its background import resolves, at exactly the `atTime` reported
+        // now. Resolving the magnet at drop time — same rule, same inputs
+        // (`dropSnapInputs`) the bin path uses — is therefore the only chance
+        // to apply it at all, and it makes the ghost band land on the same
+        // second the real clip eventually will.
+        p.onImportFilesToTimeline(Array.from(files), {
+          atTime: resolveDropPoint({ atTime: dropTimeAt(e.clientX, rect), ...dropSnapInputs() }),
+          preferredTrackIndex: dropTrackIndexAt(e.clientY - rect.top, p.layout),
+          // Captured HERE, at drop time, not read by the host later: the
+          // magnet is editor state the host cannot see, and by the time its
+          // import resolves the operator may have toggled it. The mode during
+          // the gesture is the one the drop meant. (The bin path above needs
+          // no such capture — it places synchronously, so reading
+          // `p.rippleMode` directly is already the drop-time value.)
+          ripple: p.rippleMode ?? false,
+        })
+        return
+      }
 
-      const atTime = Math.max(0, Math.min(
-        p.totalDuration,
-        xToTime(e.clientX - el.getBoundingClientRect().left, store.get()),
-      ))
-
-      // Target the main video track — the first track that holds a video item.
-      const tracks = normalizeTracks(p.project).tracks ?? []
-      const target = tracks.find(t => (t.items ?? []).some(it => it.type === 'video')) ?? tracks[0]
-      if (!target) return
-
-      const next = insertClipAt(p.project, target.id, payload, atTime, { ripple: p.rippleMode })
-      p.onProjectChange?.(next)
-      p.onOverlayEdit?.(next)
+      // Neither — leave it for the browser (no preventDefault).
     },
   }
 

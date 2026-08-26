@@ -347,7 +347,7 @@ describe('TextFormattingToolbar — adaptive rendering by element prop schema', 
     expect(screen.getByRole('button', { name: /italic/i })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /text case/i })).toBeInTheDocument();
     expect(screen.getByLabelText(/text color/i)).toBeInTheDocument();
-    expect(screen.getByLabelText(/font size/i)).toBeInTheDocument();
+    expect(screen.getByLabelText('Font size')).toBeInTheDocument();
     expect(screen.getByLabelText(/font family/i)).toBeInTheDocument();
     expect(screen.getByRole('radio', { name: /align left/i })).toBeInTheDocument();
   });
@@ -365,7 +365,7 @@ describe('TextFormattingToolbar — adaptive rendering by element prop schema', 
     expect(screen.queryByRole('button', { name: /italic/i })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /text case/i })).not.toBeInTheDocument();
     expect(screen.queryByLabelText(/text color/i)).not.toBeInTheDocument();
-    expect(screen.queryByLabelText(/font size/i)).toBeInTheDocument();
+    expect(screen.queryByLabelText('Font size')).toBeInTheDocument();
     expect(screen.queryByLabelText(/font family/i)).not.toBeInTheDocument();
     expect(screen.queryByRole('radio', { name: /align left/i })).not.toBeInTheDocument();
   });
@@ -380,7 +380,7 @@ describe('TextFormattingToolbar — adaptive rendering by element prop schema', 
       />,
     );
     expect(screen.queryByRole('button', { name: /bold/i })).not.toBeInTheDocument();
-    expect(screen.queryByLabelText(/font size/i)).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Font size')).not.toBeInTheDocument();
     expect(screen.getByText(/property panel/i)).toBeInTheDocument();
   });
 
@@ -396,7 +396,7 @@ describe('TextFormattingToolbar — adaptive rendering by element prop schema', 
         updateOverlayProp={vi.fn(() => Promise.resolve())}
       />,
     );
-    expect(screen.queryByLabelText(/font size/i)).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Font size')).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /bold/i })).not.toBeInTheDocument();
     expect(screen.getByText(/property panel/i)).toBeInTheDocument();
   });

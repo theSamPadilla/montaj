@@ -6,6 +6,7 @@ import { api } from '@/lib/api'
 import { getVisualItems } from '@/lib/types/schema'
 import type { Project } from '@/lib/types/schema'
 import ProxyMigrationModal from '@/components/ProxyMigrationModal'
+import CaptionActivityIndicator from '@/components/CaptionActivityIndicator'
 
 interface ProjectHeaderProps {
   project: Project
@@ -178,6 +179,11 @@ export default function ProjectHeader({ project, onProjectChange, actions }: Pro
       </button>
 
       <div className="ml-auto flex items-center gap-2">
+        {/* Proxy activity is already surfaced by this header's own project-
+            specific chip above (Generate previews / Getting your footage
+            ready), so only the caption-job indicator moves here from the app
+            header — the global ProxyActivityIndicator would double it. */}
+        <CaptionActivityIndicator />
         {actions}
         <button
           onClick={handleDelete}

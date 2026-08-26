@@ -149,13 +149,14 @@ describe('OverlayInspector — rendering', () => {
     expect(screen.queryByLabelText('Offset X')).toBeNull()
   })
 
-  it('renders the transform body unconditionally (no collapse toggle)', () => {
+  it('renders the transform body unconditionally (no title, no collapse toggle)', () => {
     renderInspector(overlayItem(), 5)
 
-    // The header label is inert text now — no button, no aria-expanded, so
-    // there is nothing left to click to hide the body.
+    // The pane carries no "Transform" heading (the CONTENT/TRANSFORM tab names
+    // it) and no collapse toggle — so there is no title text and nothing to
+    // click to hide the body.
+    expect(screen.queryByText('Transform')).toBeNull()
     expect(screen.queryByRole('button', { name: 'Transform' })).toBeNull()
-    expect(screen.getByText('Transform')).not.toHaveAttribute('aria-expanded')
 
     // The body is visible immediately, with no interaction required.
     expect(screen.getByLabelText('Offset X')).toHaveValue(10)

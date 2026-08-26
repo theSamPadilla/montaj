@@ -14,7 +14,10 @@ export default function HighlightBox({
   segments    = [],
   color       = '#ffffff',
   accentColor = '#fbbf24',
-  fontSize    = 68,
+  // Smaller default than the plain styles: the box treatment reads big, so a
+  // lower size keeps this style's caption more compact and sitting a little
+  // lower in the frame (Sam, 2026-08-25).
+  fontSize    = 60,
   fontFamily    = 'system-ui, -apple-system, sans-serif',
   fontWeight    = 900,
   textAlign     = 'center',

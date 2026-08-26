@@ -38,6 +38,7 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
+import { NumberField, stepValue } from '../ui'
 import type { AudioPolishAnalysis, EditorAdapter, Project } from '../types'
 import type { VisualItem, VisualTrack } from '../schema'
 import { normalizeTracks } from './timeline/timeline-model'
@@ -772,13 +773,23 @@ export default function AudioPolishModal<P extends Project = Project>({
                 <span className="text-[11px] font-semibold uppercase tracking-wide text-[var(--editor-text)]/50">
                   Custom LUFS
                 </span>
-                <input
-                  type="number"
+                <NumberField
+                  name="Custom LUFS"
                   value={customLufs}
-                  aria-label="Custom LUFS"
+                  // Local modal state with no separate save step, exactly like
+                  // FontSizePicker — every valid edit writes straight through,
+                  // so both callbacks point at the same setter. LUFS values are
+                  // negative (e.g. -14): no `min` is passed, deliberately, so a
+                  // typed `-` and negative numbers pass through untouched (see
+                  // NumberField's contract — a typed value is never clamped).
+                  // Same reasoning for the stepper's own `stepValue` call below:
+                  // no `min`/`max` there either, so nudging past a round target
+                  // like -14 keeps working in both directions.
+                  onPreview={setCustomLufs}
+                  onCommit={setCustomLufs}
                   step={0.5}
-                  onChange={e => setCustomLufs(Number(e.target.value))}
-                  className="w-24 text-sm px-3 py-1.5 rounded-md bg-[var(--editor-surface)] border border-[var(--editor-border)] text-[var(--editor-text)]"
+                  onStep={d => setCustomLufs(stepValue(customLufs, d, { step: 0.5 }))}
+                  className="w-24"
                 />
               </label>
             )}

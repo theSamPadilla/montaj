@@ -939,8 +939,10 @@ export function newClipId(): string {
 
 /** True when [s, e) overlaps any item's window by more than float slop. Touching
  *  edges (butt-adjacency) are NOT an overlap, matching the EPSILON tolerance the
- *  rest of this file uses for adjacency. */
-function overlapsAny(s: number, e: number, items: VisualItem[]): boolean {
+ *  rest of this file uses for adjacency. Exported because `timeline/placement.ts`
+ *  reuses it for its own free-window check — the butt-adjacency tolerance
+ *  (`EPSILON`) is defined exactly once, here, rather than redeclared. */
+export function overlapsAny(s: number, e: number, items: VisualItem[]): boolean {
   return items.some(it => Math.min(e, it.end) - Math.max(s, it.start) > EPSILON)
 }
 
@@ -957,12 +959,19 @@ function overlapsAny(s: number, e: number, items: VisualItem[]): boolean {
  *
  *   • `ripple: true` — shift-right insert. If the drop point lands inside an
  *     existing item's span (straddles it), the effective insertion point snaps
- *     to that item's NEAREST edge — start or end, ties going to end — so the new
- *     clip never lands inside another clip's window. Every existing item whose
- *     `start` is at/after the (possibly snapped) insertion point then moves
- *     right by the new clip's length, and the new clip takes the freed slot at
- *     the insertion point. This leaves NO overlaps and preserves order;
+ *     to that item's NEAREST edge — start or end, ties going to START — so the
+ *     new clip never lands inside another clip's window. Every existing item
+ *     whose `start` is at/after the (possibly snapped) insertion point then
+ *     moves right by the new clip's length, and the new clip takes the freed
+ *     slot at the insertion point. This leaves NO overlaps and preserves order;
  *     splitting the straddling clip is intentionally NOT done here.
+ *
+ *     The tie-break is Sam's product call (2026-08-25): "never split a clip,
+ *     always keep them whole — if the drop is over 50% into the clip, make
+ *     room to the RIGHT of it (push everything else right); at or before 50%,
+ *     make room to the LEFT of it." A drop in the first half of a clip reads
+ *     as "put the new clip before this one", so an exact-midpoint drop (the
+ *     tie) resolves the same way — to the clip's start, not its end.
  *
  *   • `ripple: false` — place at the drop point WITHOUT moving anything, but
  *     never overlapping: if the drop window collides, the new clip snaps to the
@@ -992,12 +1001,13 @@ export function insertClipAt<P extends Project>(
   let shifted = existing
   if (opts.ripple) {
     // If the drop point lands inside an existing item's span, snap the
-    // effective insertion point to that item's nearest edge (ties → end) so
-    // the new clip never lands inside another clip's window. At most one item
-    // can straddle a point on a non-overlapping track.
+    // effective insertion point to that item's nearest edge (ties → START —
+    // Sam's call, see this function's doc comment) so the new clip never
+    // lands inside another clip's window. At most one item can straddle a
+    // point on a non-overlapping track.
     const straddler = existing.find(it => it.start < dropAt - EPSILON && it.end > dropAt + EPSILON)
     const insertAt = straddler
-      ? (dropAt - straddler.start < straddler.end - dropAt ? straddler.start : straddler.end)
+      ? (dropAt - straddler.start <= straddler.end - dropAt ? straddler.start : straddler.end)
       : dropAt
 
     start = insertAt

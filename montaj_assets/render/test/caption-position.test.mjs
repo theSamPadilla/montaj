@@ -270,23 +270,23 @@ describe('no-offset equivalence gate — outer wrapper (all 7 templates)', () =>
 })
 
 describe('no-offset equivalence gate — inner anchor, historical values (10 wrapper blocks)', () => {
-  test('clean: bottom 17%, padding 0 7%, flex+justifyContent, opacity', () => {
+  test('clean: bottom 26%, padding 0 7%, flex+justifyContent, opacity', () => {
     const { innerEl } = renderNoOffset('clean')
     assert.equal(innerEl.type, 'div')
     assert.deepEqual(innerEl.props.style, {
       position: 'absolute',
-      bottom: '17%', left: 0, right: 0,
+      bottom: '26%', left: 0, right: 0,
       display: 'flex', justifyContent: 'center',
       padding: '0 7%',
       opacity: 1,
     })
   })
 
-  test('subtitle: bottom 15%, padding 0 6%, flex+justifyContent, opacity', () => {
+  test('subtitle: bottom 25%, padding 0 6%, flex+justifyContent, opacity', () => {
     const { innerEl } = renderNoOffset('subtitle')
     assert.deepEqual(innerEl.props.style, {
       position: 'absolute',
-      bottom: '15%', left: 0, right: 0,
+      bottom: '25%', left: 0, right: 0,
       display: 'flex', justifyContent: 'center',
       padding: '0 6%',
       opacity: 1,
@@ -357,20 +357,20 @@ describe('no-offset equivalence gate — inner anchor, historical values (10 wra
     assert.ok(!('opacity' in innerEl.props.style))
   })
 
-  test('word-by-word: bottom 25%, padding 0 8%, textAlign center, no wrapper opacity', () => {
+  test('word-by-word: bottom 24%, padding 0 8%, textAlign center, no wrapper opacity', () => {
     const { innerEl } = renderNoOffset('word-by-word', { words: WORDS })
     assert.deepEqual(innerEl.props.style, {
       position: 'absolute',
-      bottom: '25%', left: 0, right: 0,
+      bottom: '24%', left: 0, right: 0,
       textAlign: 'center', padding: '0 8%',
     })
   })
 
-  test('pop: bottom 25%, padding 0 8%, textAlign center, no wrapper opacity', () => {
+  test('pop: bottom 24%, padding 0 8%, textAlign center, no wrapper opacity', () => {
     const { innerEl } = renderNoOffset('pop', { words: WORDS })
     assert.deepEqual(innerEl.props.style, {
       position: 'absolute',
-      bottom: '25%', left: 0, right: 0,
+      bottom: '24%', left: 0, right: 0,
       textAlign: 'center', padding: '0 8%',
     })
   })

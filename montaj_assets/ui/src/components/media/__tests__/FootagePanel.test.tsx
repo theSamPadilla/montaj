@@ -149,11 +149,12 @@ describe('FootagePanel', () => {
     expect(screen.getByText('No footage yet. Import video to get started.')).toBeInTheDocument()
   })
 
-  it('lists Name, Date added, and Type in the sort menu', () => {
+  it('lists Name, Date added, Date created, and Type in the sort menu', () => {
     render(<FootagePanel {...baseProps({ sources: [source()] })} />)
     fireEvent.click(screen.getByTitle('Sort footage'))
     expect(screen.getByText('Name')).toBeInTheDocument()
     expect(screen.getByText('Date added')).toBeInTheDocument()
+    expect(screen.getByText('Date created')).toBeInTheDocument()
     expect(screen.getByText('Type')).toBeInTheDocument()
   })
 
@@ -211,6 +212,28 @@ describe('FootagePanel', () => {
     const names = screen.getAllByTitle(/\.(mp4|mov)$/).map(el => el.textContent)
     // "mov" < "mp4" lexicographically; ties (one.mp4, three.mp4) keep their original order.
     expect(names).toEqual(['two.mov', 'one.mp4', 'three.mp4'])
+  })
+
+  it('sorts by recording time (newest first) when Date created is picked; undated cards last in insertion order', () => {
+    render(
+      <FootagePanel
+        {...baseProps({
+          sources: [
+            source({ id: 'src-1', src: '/videos/older.mp4', sourceCreatedAt: '2023-01-01T00:00:00.000000Z' }),
+            source({ id: 'src-2', src: '/videos/undated-a.mp4' }),
+            source({ id: 'src-3', src: '/videos/newer.mp4', sourceCreatedAt: '2024-06-15T12:00:00.000000Z' }),
+            source({ id: 'src-4', src: '/videos/undated-b.mp4' }),
+          ],
+        })}
+      />,
+    )
+    fireEvent.click(screen.getByTitle('Sort footage'))
+    fireEvent.click(screen.getByText('Date created'))
+
+    const names = screen.getAllByTitle(/\.(mp4|mov)$/).map(el => el.textContent)
+    // Dated newest-first (newer before older); the two undated cards sort after
+    // both dated ones, keeping their original relative order (a before b).
+    expect(names).toEqual(['newer.mp4', 'older.mp4', 'undated-a.mp4', 'undated-b.mp4'])
   })
 
   it('drives sourcePreview.set with the proxy url and hover fraction on pointer move, and clears it on pointer leave', () => {

@@ -245,6 +245,73 @@ throughout: an agent writes project.json directly and never drags from the
 bin, so a probe-less clip there was always cosmetic, and a clip with a known
 duration looks and drags exactly as it did before.
 
+### Dropping a file from the desktop onto the timeline
+
+Before this, the canvas timeline's drop handler only understood a drag that
+started in the footage bin — dragging a file in from Finder and dropping it
+anywhere on the timeline did nothing at all, which is the gesture most
+people try first. The only way to get footage onto the timeline used to be
+add it to the project, then drag it from the bin. Now dropping a video file
+straight onto the timeline imports it into the project and lands it as a
+clip at the drop point, in one motion.
+
+**The ghost band.** A dashed, translucent band appears instantly where you
+dropped, carrying the filename and sized by a fast in-browser probe of the
+file's duration. It is deliberately not a real timeline clip — it can't be
+selected, trimmed, undone, saved, rendered or exported — because it stands
+in for a file that is still importing. Behind it the file uploads and the
+server ingest runs (stage, probe, colour-normalize); when that resolves, the
+real clip is inserted using the server's final post-normalize path, and the
+ghost disappears. Placement waits for that round-trip rather than happening
+optimistically at drop time: colour-normalize is what decides where the
+clip's source actually points, so placing a clip before it resolves would
+risk placing it against the wrong file. The smooth-scrubbing preview (the
+proxy) keeps generating in the background afterward, exactly as it does for
+footage added the normal way. Dropping several files at once butts them
+end-to-end from the drop point.
+
+A file whose length can't be measured still imports and lands in the
+footage bin, but isn't placed on the timeline — it arrives in the bin's
+existing "Duration unknown" recovery state described above under "Footage
+bin: probe-less clips," rather than a separate state of its own. Non-video
+files are ignored for now; dropping an image or audio file onto the
+timeline, or dropping a file onto an existing clip to replace it, are both
+out of scope here.
+
+**Shared placement rule.** Both this drop and the existing footage-bin drag
+now place a new clip through the same rule, where a bin drop used to always
+land on the main video track regardless of which row you released over:
+
+- the drop's x sets the start time, its y picks the target video track;
+- if that track is free across the clip's span, it lands there;
+- if it would overlap existing footage, it lands at the same time on the
+  closest empty video track instead, measured by vertical distance from the
+  drop (ties go to the lower track);
+- if no video track is free at that spot, a new video track is created for
+  it;
+- nothing already on the timeline is ever moved or overwritten to make
+  room — the rule always finds an empty track rather than displacing
+  anything;
+- only video tracks are ever chosen as a target, never a caption band or an
+  audio lane;
+- the existing magnet still applies, so a drop near a clip edge or the
+  playhead snaps to it.
+
+**Ripple mode.** With ripple (the magnet) on, a drop still inserts and
+pushes later clips right, and a clip is never split to make room. Where the
+space opens is decided by how far into the clip you dropped: past the
+midpoint of the clip you dropped on, room is made to its right; at or
+before the midpoint — including exactly 50% — room is made to its left.
+That tie is a small, deliberate change from prior behavior: an exactly-50%
+drop used to resolve to the right, and now resolves to the left, because a
+drop in the first half of a clip reads as "put the new clip before this
+one" (Sam's call, 2026-08-25).
+
+**Embedded hosts are unaffected.** The capability is optional and
+feature-detected: an editor host that doesn't supply the import hook (Hub,
+Los Parceros) behaves exactly as it did before this — an OS-file drop over
+the timeline is inert and the browser keeps its default handling.
+
 ### Caption panel: Format, Styles, and Captions
 
 `CaptionListPanel` has its own sub-tab switch above its content, **Format**

@@ -61,7 +61,7 @@ import { laneOf, normalizeCaptionLanes, resolveDropLane, sameLaneNeighbours } fr
 import { collapseGaps, rollEdit, slideItem, slipItem } from '../../cuts'
 import { canKeyframe, enableKeyframing, moveKeyframe, setKeyframe, transformProps, valueAt } from '../../keyframeOps'
 import { applyMoveDeltaToSelection, applyResizeDeltaToSelection } from '../multiSelectOps'
-import { AUDIO_LANE_HEIGHT_PX, CAPTION_ROW_HEIGHT_PX, VISUAL_ROW_HEIGHT_PX, computeDerivedTiming, groupAudioLanes, mapTrackItems, moveItemAcrossTracks, normalizeTracks, trackItems, updateAudioTrack } from '../timeline-model'
+import { AUDIO_LANE_HEIGHT_PX, CAPTION_ROW_HEIGHT_PX, computeDerivedTiming, groupAudioLanes, mapTrackItems, moveItemAcrossTracks, normalizeTracks, resolveTargetTrackIdx, trackItems, updateAudioTrack } from '../timeline-model'
 import { DRAG_THRESHOLD_PX, computeResizedItem, resizeWindowedItem, type Draggable } from '../useItemDragDrop'
 import type { TimelineLayout } from './draw'
 import { keyframeUnionTimes } from './keyframe-strip'
@@ -221,6 +221,17 @@ export type GestureKind =
 
 export interface Press {
   origin: Point
+  /** The timeline time under `origin.x` when the press landed.
+   *
+   *  Every gesture measures its travel from HERE, not from `origin.x`, because
+   *  a raw pixel delta is blind to the view moving underneath it: edge
+   *  auto-scroll pans the viewport while the pointer is held still, and
+   *  `point.x - origin.x` is unchanged by that pan, so the dragged item would
+   *  sit at a fixed time while the timeline slid out from under the cursor —
+   *  the clip visibly drifting away from the hand holding it. Anchoring in
+   *  time makes the same held pointer resolve to a later time on every panned
+   *  frame, which is exactly what keeps the item under the cursor. */
+  originTime: number
   modifiers: Modifiers
   hit: HitResult
   /** The project as it stood when the press began. Trims and the three
@@ -447,6 +458,13 @@ function itemSnapPoints(
  * so this reversal is invisible to them — they still tier once, at press time,
  * against the row they're on for their entire run.
  *
+ * "The row it is CURRENTLY over" means the row `moveItemAcrossTracks` actually
+ * PLACES it on, which is not the row the vertical travel points at — see
+ * `applyMove`'s call site and `resolveTargetTrackIdx`. A multi-select move is
+ * exempt for a different reason: `applyMoveDeltaToSelection` shifts a group in
+ * place and never changes anyone's track, so a group's current row IS its
+ * press-time row and `applyGroupMove` correctly stays on the frozen tier.
+ *
  * Audio lanes tier against the LANE, matching how `hitTest` addresses them: a
  * lane can hold several tracks, and to an editor they are one row.
  *
@@ -486,6 +504,29 @@ function tieredBoundaries(
     }
   }
   return points
+}
+
+/**
+ * How far this gesture has travelled since the press, in TIMELINE seconds.
+ *
+ * Measured as "the time under the cursor now, minus the time under the cursor
+ * at press" rather than as a pixel delta divided by the scale. The two agree
+ * exactly while the viewport holds still, and disagree by the scroll travelled
+ * the moment it does not — which is the whole point. Edge auto-scroll pans the
+ * view while the pointer is parked in the edge band, re-feeding the machine
+ * the SAME screen point every frame; a pixel delta would report no movement at
+ * all for those frames, pinning the dragged item to one time while the
+ * timeline slid past it. Reading through the live viewport instead means each
+ * panned frame resolves that same point to a later time, and whatever the
+ * gesture is moving stays under the cursor.
+ *
+ * Every horizontal gesture shares it — move, trim, roll, slip, slide, audio
+ * move/trim/fade, keyframe, caption — so no gesture can drift while its
+ * neighbours track. `hasEscaped` deliberately does NOT: a snap-release radius
+ * is a distance the user's HAND has to travel, which is a screen measure.
+ */
+function dragDeltaSeconds(ctx: PointerContext, press: Press, point: Point): number {
+  return xToTime(point.x, ctx.viewport) - press.originTime
 }
 
 /**
@@ -692,7 +733,7 @@ function applyGroupMove(
   selection: readonly string[],
 ): Applied {
   const duration = dragged.end - dragged.start
-  const dt = (point.x - press.origin.x) / ctx.viewport.pxPerSecond
+  const dt = dragDeltaSeconds(ctx, press, point)
   const boundaries = itemSnapPoints(ctx, press, originGuard(escaped, [dragged.start, dragged.end]))
   const points = snapPointsForSpan(boundaries, duration)
   const snapped = applySnap(dragged.start + dt, points, ctx.viewport, snap, ctx.snapConfig)
@@ -713,15 +754,57 @@ function applyMove(ctx: PointerContext, press: Press, point: Point, snap: SnapSt
   }
 
   const duration = item.end - item.start
-  const dt = (point.x - press.origin.x) / ctx.viewport.pxPerSecond
+  const dt = dragDeltaSeconds(ctx, press, point)
   const rawStart = clamp(item.start + dt, 0, Math.max(0, ctx.totalDuration - duration))
 
-  // Which track the item is CURRENTLY over, mirroring `moveItemAcrossTracks`'s
-  // own `targetIdx` below exactly — same divisor, same rounding, same
-  // "downward travel lowers the index" sign — so the strong snap tier and the
-  // track the drop will actually land on always agree.
+  // Which track the item is CURRENTLY ON. Not the POINTED-AT index
+  // (`sourceTrackIdx - dy/24`) — `moveItemAcrossTracks` treats that as a mere
+  // starting point and searches outward from it, so a pointed-at track the
+  // dragged item's KIND can never occupy is not where it goes. Tiering against
+  // the pointed-at index therefore ranked the boundaries of a row the item had
+  // never been placed on, which is exactly what made a cross-track drag read
+  // as "snapping doesn't work over here": drag an overlay down into a
+  // same-length gap one row below and the pointed-at index lands on the VIDEO
+  // track under it (the 24px drag divisor is roughly half a rendered overlay
+  // row, so one row of real travel counts as two steps), the kind gate bounces
+  // the drop back up onto the row the cursor is actually over, and the gap's
+  // own two edges stay tiered WEAK — a 6px magnet where a 20px one belongs.
+  //
+  // Running the drop's own search removes the second copy of that arithmetic.
+  // (The two can still differ after a mid-drag prune, which renumbers
+  // `lastProject`'s tracks under the move's `baseProject`-space `sourceTrackIdx`
+  // — pre-existing, and orthogonal to the tier.) `kindOnly` deliberately
+  // keeps the COLLISION half of the search out of it — see the option's doc in
+  // `timeline-model.ts`; consulting it here would kill the magnet precisely
+  // where it is aiming and make the tier lurch between rows mid-slide. (It
+  // also makes `ctx.rippleMode` irrelevant to the tier, since ripple mode only
+  // ever relaxes that same collision gate.)
+  //
+  // Resolved against `press.baseProject`, not `lastProject`: `tieredBoundaries`
+  // walks `baseProject`, and `press.hit.trackIdx` indexes it too, so all three
+  // stay in ONE coordinate space even after a mid-drag prune has renumbered the
+  // live project's tracks. The dragged item is filtered out of the kind gate by
+  // id, so its own stale position in `baseProject` cannot affect the answer.
+  //
+  // The window is unread while `kindOnly` is on — the collision gate
+  // short-circuits past it — so the RAW (pre-snap) one is passed for the sake
+  // of the invariant rather than the arithmetic: if `kindOnly` is ever
+  // relaxed, the tier stays a pure function of where the pointer is instead
+  // of letting the magnet it produced decide which magnets exist.
+  //
+  // A past-the-end `currentTrackIdx` is `resolveTargetTrackIdx`'s signal that
+  // the drop would MINT a new track. That intentionally matches no row below,
+  // so every boundary tiers weak — correct by construction for a track with
+  // no neighbours yet, not a case this call site branches on explicitly.
   const dy = point.y - press.origin.y
-  const currentTrackIdx = Math.max(0, press.hit.trackIdx - Math.round(dy / VISUAL_ROW_HEIGHT_PX))
+  const currentTrackIdx = resolveTargetTrackIdx({
+    tracks: normalizeTracks(press.baseProject).tracks ?? [],
+    item,
+    start: rawStart,
+    end: rawStart + duration,
+    sourceTrackIdx: press.hit.trackIdx,
+    dy,
+  }, { kindOnly: true })
 
   const boundaries = itemSnapPoints(ctx, press, originGuard(escaped, [item.start, item.end]), { trackIdx: currentTrackIdx })
   const points = snapPointsForSpan(boundaries, duration)
@@ -759,7 +842,7 @@ function applyTrim(ctx: PointerContext, press: Press, point: Point, snap: SnapSt
 
   const edge = press.hit.edge === 'in' ? 'start' : 'end'
   const initTime = edge === 'start' ? item.start : item.end
-  const dt = (point.x - press.origin.x) / ctx.viewport.pxPerSecond
+  const dt = dragDeltaSeconds(ctx, press, point)
   const raw = clamp(initTime + dt, 0, ctx.totalDuration)
 
   // The opposite edge stays excluded for the whole gesture — trimming an out
@@ -805,7 +888,7 @@ function applyRoll(ctx: PointerContext, press: Press, point: Point, snap: SnapSt
   if (!left || !right) return noChange(snap, lastProject)
 
   const boundary = left.end
-  const dt = (point.x - press.origin.x) / ctx.viewport.pxPerSecond
+  const dt = dragDeltaSeconds(ctx, press, point)
   const candidate = clamp(boundary + dt, 0, ctx.totalDuration)
   // A roll's origin IS the shared boundary, and both neighbours contribute it.
   // The outer edges stay excluded throughout: rolling the cut onto either
@@ -833,7 +916,7 @@ function applySlip(ctx: PointerContext, press: Press, point: Point, snap: SnapSt
   // frames come into view — the film-under-a-gate model every NLE uses. Hence
   // the sign flip. No snapping: the delta is source time, and every snap point
   // the timeline knows about is timeline time.
-  const dt = (point.x - press.origin.x) / ctx.viewport.pxPerSecond
+  const dt = dragDeltaSeconds(ctx, press, point)
   return change(slipItem(press.baseProject, item.id, -dt), lastProject, snap, null)
 }
 
@@ -841,7 +924,7 @@ function applySlide(ctx: PointerContext, press: Press, point: Point, snap: SnapS
   const item = press.hit.item
   if (!item) return noChange(snap, lastProject)
 
-  const dt = (point.x - press.origin.x) / ctx.viewport.pxPerSecond
+  const dt = dragDeltaSeconds(ctx, press, point)
   const candidate = clamp(item.start + dt, 0, ctx.totalDuration)
   const snapped = applySnap(
     candidate,
@@ -866,7 +949,7 @@ function applyAudioMove(ctx: PointerContext, press: Press, point: Point, snap: S
   }
 
   const duration = track.end - track.start
-  const dt = (point.x - press.origin.x) / ctx.viewport.pxPerSecond
+  const dt = dragDeltaSeconds(ctx, press, point)
   const rawStart = clamp(track.start + dt, 0, Math.max(0, ctx.totalDuration - duration))
 
   // Positive dy is downward, which in the audio stack means a HIGHER lane index
@@ -913,7 +996,7 @@ function applyAudioTrim(ctx: PointerContext, press: Press, point: Point, snap: S
 
   const edge = press.hit.edge === 'in' ? 'start' : 'end'
   const initTime = edge === 'start' ? track.start : track.end
-  const dt = (point.x - press.origin.x) / ctx.viewport.pxPerSecond
+  const dt = dragDeltaSeconds(ctx, press, point)
   const raw = clamp(initTime + dt, 0, ctx.totalDuration)
   const fixedEdge = edge === 'start' ? track.end : track.start
   const snapped = applySnap(
@@ -972,7 +1055,7 @@ function applyAudioFade(ctx: PointerContext, press: Press, point: Point, snap: S
   if (!track || !side) return noChange(snap, lastProject)
 
   const duration = Math.max(0, track.end - track.start)
-  const dt = (point.x - press.origin.x) / ctx.viewport.pxPerSecond
+  const dt = dragDeltaSeconds(ctx, press, point)
   const initial = side === 'in' ? (track.fadeIn ?? 0) : (track.fadeOut ?? 0)
   const otherFade = side === 'in' ? (track.fadeOut ?? 0) : (track.fadeIn ?? 0)
   const raw = side === 'in' ? initial + dt : initial - dt
@@ -1032,7 +1115,7 @@ function applyKeyframeMove(
   if (!canKeyframe(item) || fromT === undefined) return noChange(snap, lastProject)
 
   const duration = Math.max(0, item.end - item.start)
-  const dt = (point.x - press.origin.x) / ctx.viewport.pxPerSecond
+  const dt = dragDeltaSeconds(ctx, press, point)
   const raw = clamp(fromT + dt, 0, duration)
 
   const otherTimes = keyframeUnionTimes(item).filter(t => t !== fromT)
@@ -1136,7 +1219,7 @@ function applyCaptionMove(ctx: PointerContext, press: Press, point: Point, snap:
 
   // ── Vertical intent: a row change, resolved lane-first ──────────────────
   const duration = seg.end - seg.start
-  const dt = (point.x - press.origin.x) / ctx.viewport.pxPerSecond
+  const dt = dragDeltaSeconds(ctx, press, point)
   const boundaries = itemSnapPoints(ctx, press, originGuard(escaped, [seg.start, seg.end]))
   const snapped = applySnap(seg.start + dt, snapPointsForSpan(boundaries, duration), ctx.viewport, snap, ctx.snapConfig)
 
@@ -1281,7 +1364,7 @@ function applyCaptionTrim(ctx: PointerContext, press: Press, point: Point, snap:
   // the edge at a bound that is on the wrong side of the other one.
   if (lo > hi) return noChange(snap, lastProject)
 
-  const dt = (point.x - press.origin.x) / ctx.viewport.pxPerSecond
+  const dt = dragDeltaSeconds(ctx, press, point)
   const raw = clamp(initTime + dt, lo, hi)
 
   // Same exclusions as every other trim: the opposite edge stays suppressed
@@ -1460,6 +1543,7 @@ export function pointerReducer(state: MachineState, event: PointerMachineEvent):
           cursor: state.cursor,
           press: {
             origin: point,
+            originTime: xToTime(point.x, ctx.viewport),
             modifiers,
             hit,
             baseProject: ctx.project,
@@ -1485,6 +1569,7 @@ export function pointerReducer(state: MachineState, event: PointerMachineEvent):
       // every time you drew one.
       const press: Press = {
         origin: point,
+        originTime: xToTime(point.x, ctx.viewport),
         modifiers,
         hit,
         baseProject: ctx.project,

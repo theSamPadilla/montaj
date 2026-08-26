@@ -138,6 +138,23 @@ function stubPerfNow() {
   }
 }
 
+/** c0's start time in the most recent `projectChange` the gesture emitted.
+ *  The `project` prop here is a fixed constant (nothing echoes edits back), so
+ *  every emitted project is recomputed from the press-time one — the latest
+ *  call is always the gesture's current position, never an accumulation. */
+function lastC0Start(calls: unknown[][]): number {
+  expect(calls.length).toBeGreaterThan(0)
+  const emitted = calls[calls.length - 1][0] as unknown as {
+    tracks: { items: { id: string; start: number }[] }[]
+  }
+  // Searched across every track: dragging c0 out over c1 makes the mover lift
+  // it to a track of its own rather than overlap, so it is not on trk-0 by the
+  // time the pan starts.
+  const c0 = emitted.tracks.flatMap(t => t.items).find(i => i.id === 'c0')
+  expect(c0).toBeDefined()
+  return c0!.start
+}
+
 describe('TimelineCanvas — edge auto-scroll', () => {
   it('pans the view toward the right edge during a drag, re-feeding the gesture, and clamps at the rightmost legal scroll', () => {
     const perf = stubPerfNow()
@@ -161,10 +178,11 @@ describe('TimelineCanvas — edge auto-scroll', () => {
       expect(store.get().scrollSeconds).toBe(0)
 
       // Each further tick pans right at a large, clock-controlled dt (capped
-      // internally at 0.1s/tick, i.e. 0.75 × 600px/s × 0.1s / 100px/s = 0.45s
-      // of scroll per tick at this depth) — enough ticks to clear the
-      // RIGHTMOST_SCROLL clamp (52.5s) and then some, to prove it holds there
-      // rather than merely arriving at it.
+      // internally at 0.1s/tick). x=990 sits 30px past the zone's boundary, so
+      // the eased ramp gives (30/70)^1.5 ≈ 0.28 of the 1400px/s cap — about
+      // 393px/s, i.e. ≈ 0.393s of scroll per tick at this scale — enough ticks
+      // to clear the RIGHTMOST_SCROLL clamp (52.5s) and then some, to prove it
+      // holds there rather than merely arriving at it.
       for (let i = 0; i < 140; i++) {
         perf.advance(1000)
         act(() => { vi.advanceTimersByTime(20) })
@@ -182,6 +200,44 @@ describe('TimelineCanvas — edge auto-scroll', () => {
       // with more frames available.
       act(() => { vi.advanceTimersByTime(200) })
       expect(store.get().scrollSeconds).toBeCloseTo(RIGHTMOST_SCROLL, 5)
+
+      act(() => { document.dispatchEvent(mouse('mouseup', 990, ROW_Y)) })
+    } finally {
+      perf.restore()
+    }
+  })
+
+  it('carries the dragged clip along with the pan, so it stays under the held cursor', () => {
+    // The pan is only half the job. If the gesture measured its travel in raw
+    // screen pixels it would report NO movement for these frames — the pointer
+    // is parked — and the clip would sit at a fixed time while the timeline
+    // slid out from under it, drifting away from the hand holding it. What is
+    // asserted here is the other half: the clip advances by exactly the pan.
+    const perf = stubPerfNow()
+    try {
+      const { surface, store, onProjectChange } = mount()
+
+      // Grab c0 (0s–4s) 2.0s in, and drag to x=990 — inside the right edge
+      // zone — in one move. 9.9s under the cursor, less the 2.0s grab offset.
+      act(() => { surface.dispatchEvent(mouse('mousedown', 200, ROW_Y)) })
+      act(() => { document.dispatchEvent(mouse('mousemove', 990, ROW_Y)) })
+      const beforePan = lastC0Start(onProjectChange.mock.calls)
+      expect(beforePan).toBeCloseTo(7.9, 5)
+
+      // Ten panning ticks with the pointer held exactly where it was. (The
+      // first tick only seeds the frame clock — see the test above.)
+      act(() => { vi.advanceTimersByTime(20) })
+      for (let i = 0; i < 10; i++) {
+        perf.advance(1000)
+        act(() => { vi.advanceTimersByTime(20) })
+      }
+
+      const scrolled = store.get().scrollSeconds
+      expect(scrolled).toBeGreaterThan(0)
+      // Far from the clamp, so this is the tracking behaviour and not the
+      // timeline's end holding the clip in place.
+      expect(scrolled).toBeLessThan(RIGHTMOST_SCROLL)
+      expect(lastC0Start(onProjectChange.mock.calls)).toBeCloseTo(beforePan + scrolled, 5)
 
       act(() => { document.dispatchEvent(mouse('mouseup', 990, ROW_Y)) })
     } finally {

@@ -111,25 +111,47 @@ export function clampScrollSeconds(scrollSeconds: number, vp: Viewport, totalDur
 }
 
 /** How close to the surface's left/right edge a drag's pointer must sit before
- *  edge auto-scroll starts panning the view to follow it (CSS px). */
+ *  edge auto-scroll starts panning the view to follow it (CSS px). This is
+ *  only the TRIGGER band — how far the pointer must intrude before panning
+ *  starts at all. It says nothing about how fast that panning ramps up; see
+ *  `EDGE_SCROLL_RAMP_PX` for that. */
 export const EDGE_SCROLL_ZONE_PX = 40
 
-/** Panning speed at the edge itself, in content CSS px/second — ramps linearly
- *  from 0 at the zone's outer boundary up to this at the surface edge. Fast
- *  enough to cross a long timeline without feeling like a jump, slow enough to
- *  stay controllable right at the zone's threshold. */
-export const EDGE_SCROLL_MAX_PX_PER_SEC = 600
+/** Panning speed once the ramp is fully spent (`EDGE_SCROLL_RAMP_PX` past the
+ *  zone's outer boundary), in content CSS px/second — roughly a screen-width
+ *  per second, fast enough to cross a long timeline without feeling like a
+ *  jump. Reachable at all only because the ramp now keeps climbing past the
+ *  surface edge itself (see `edgeScrollDelta`); a pointer merely parked at the
+ *  zone's threshold stays well under this. */
+export const EDGE_SCROLL_MAX_PX_PER_SEC = 1400
+
+/** Total depth, from the edge zone's outer boundary outward, over which
+ *  `edgeScrollDelta`'s speed ramps from 0 up to `EDGE_SCROLL_MAX_PX_PER_SEC`.
+ *  Bigger than `EDGE_SCROLL_ZONE_PX` on purpose: a drag is driven by
+ *  document-level listeners, so shoving the cursor to the surface edge is
+ *  effortless and instantaneous, and a ramp that maxed out AT the edge would
+ *  make every such shove feel identical — one flat speed, no matter how hard
+ *  the user pushed. Letting the ramp keep climbing for the 30px beyond the
+ *  zone (`70 - 40`) means the felt speed keeps responding to how far past the
+ *  edge the pointer travels, which is the only room document-level tracking
+ *  gives a user to express "faster." */
+export const EDGE_SCROLL_RAMP_PX = 70
 
 /**
  * How many seconds to pan the viewport for one animation frame of an active
  * drag whose pointer sits at `pointerX` (CSS px from the surface's left edge —
  * the same `Point.x` a gesture already works in). Zero outside the
- * `edgeZonePx` band at either edge; ramps linearly from 0 at the zone's outer
- * boundary to `maxPxPerSec` (content px/second) at the surface edge itself,
- * and holds at `maxPxPerSec` for a pointer that has travelled PAST the edge —
- * a drag driven by document-level listeners (not native pointer capture) can
- * report an x outside [0, canvasWidth] once the real cursor leaves the
- * surface.
+ * `edgeZonePx` band at either edge; from the zone's outer boundary, speed
+ * ramps up over `rampPx` of further depth via `(depth / rampPx) ^ 1.5` — an
+ * ease-in curve, not linear — reaching `maxPxPerSec` once the pointer has
+ * travelled the full ramp distance past that boundary, and holding there for
+ * anything beyond (a drag driven by document-level listeners, not native
+ * pointer capture, can report an x arbitrarily outside [0, canvasWidth] once
+ * the real cursor leaves the surface, so depth must clamp rather than keep
+ * growing forever). The exponent keeps the curve gentle right at the trigger
+ * boundary — where a barely-crossed pointer would otherwise feel like it
+ * suddenly grabbed the view — while still reaching a punchy speed by the time
+ * the user has shoved the cursor visibly past the edge.
  *
  * Negative = pan left/earlier, positive = pan right/later, 0 = the pointer is
  * not near either edge. Framerate-independent: the ramped speed is scaled by
@@ -144,8 +166,9 @@ export function edgeScrollDelta(
   dtSeconds: number,
   edgeZonePx: number,
   maxPxPerSec: number,
+  rampPx: number,
 ): number {
-  if (canvasWidth <= 0 || pxPerSecond <= 0 || edgeZonePx <= 0 || dtSeconds <= 0) return 0
+  if (canvasWidth <= 0 || pxPerSecond <= 0 || edgeZonePx <= 0 || dtSeconds <= 0 || rampPx <= 0) return 0
 
   const leftBoundary = edgeZonePx
   const rightBoundary = canvasWidth - edgeZonePx
@@ -162,8 +185,8 @@ export function edgeScrollDelta(
     return 0
   }
 
-  const ratio = Math.min(1, depthPx / edgeZonePx)
-  const contentPxPerSecond = ratio * maxPxPerSec
+  const ratio = Math.min(1, depthPx / rampPx)
+  const contentPxPerSecond = maxPxPerSec * Math.pow(ratio, 1.5)
   return (direction * contentPxPerSecond * dtSeconds) / pxPerSecond
 }
 

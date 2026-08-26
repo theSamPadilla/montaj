@@ -182,6 +182,8 @@ export default function VideoEditor<P extends Project = Project>({
   sourcePreview,
   onRegenerateCaptions,
   captionsGenerating,
+  onImportFilesToTimeline,
+  pendingDrops,
 }: Props<P>) {
   const emit = onProjectChange ?? (() => {})
 
@@ -348,6 +350,8 @@ export default function VideoEditor<P extends Project = Project>({
         sourcePreview={sourcePreview}
         onRegenerateCaptions={onRegenerateCaptions}
         captionsGenerating={captionsGenerating}
+        onImportFilesToTimeline={onImportFilesToTimeline}
+        pendingDrops={pendingDrops}
         timelineMode={timelineMode}
       />
     </div>
@@ -563,7 +567,11 @@ function PendingSurface<P extends Project>({
                   </div>
                   {skillPath && (
                     <div className="w-full rounded-xl border-2 border-[var(--editor-accent)]/50 bg-[var(--editor-surface)] p-5 flex flex-col gap-3 text-left shadow-lg shadow-[var(--editor-accent)]/10">
-                      <p className="text-[var(--editor-accent)] text-xs font-bold uppercase tracking-widest">Send this to your agent</p>
+                      {/* indigo-600 in light mode: the accent (indigo-500) is ~4.06:1 on
+                          `--editor-surface`, and 12px bold is still NORMAL text under WCAG
+                          (large starts at 18.66px bold), so it needs the 4.5:1 floor. The
+                          border/shadow around it stay accent - this is small-TEXT only. */}
+                      <p className={`text-xs font-bold uppercase tracking-widest ${timelineMode === 'light' ? 'text-indigo-600' : 'text-[var(--editor-accent)]'}`}>Send this to your agent</p>
                       {/* Deliberately hardcoded dark chrome, not `--editor-*` tokens: this
                           is the literal text the user copies and pastes to their coding
                           agent, styled as terminal/code chrome — same precedent as the
@@ -604,11 +612,11 @@ function PendingSurface<P extends Project>({
                   )}
                 </>
               )}
-              <p className="text-[var(--editor-text)]/40 text-xs font-mono">project id: {project.id}</p>
+              <p className="text-gray-100/40 text-xs font-mono">project id: {project.id}</p>
               {canGoBack && (
                 <button
                   onClick={onBackToSetup}
-                  className="text-xs text-[var(--editor-text)]/60 hover:text-[var(--editor-text)] transition-colors underline underline-offset-2"
+                  className="text-xs text-gray-100/60 hover:text-gray-100 transition-colors underline underline-offset-2"
                 >
                   ← Back to setup
                 </button>
@@ -688,6 +696,8 @@ function ReviewSurface<P extends Project>({
   sourcePreview,
   onRegenerateCaptions,
   captionsGenerating,
+  onImportFilesToTimeline,
+  pendingDrops,
   timelineMode,
 }: SurfaceProps<P> & {
   // See the definition beside `sync` in VideoEditor above — set for the
@@ -702,6 +712,12 @@ function ReviewSurface<P extends Project>({
   sourcePreview?: VideoEditorProps<P>['sourcePreview']
   onRegenerateCaptions?: VideoEditorProps<P>['onRegenerateCaptions']
   captionsGenerating?: VideoEditorProps<P>['captionsGenerating']
+  // The filesystem-drop seam. On the REVIEW surface only: PendingSurface's
+  // timeline is a read-only preview of a project the agent is still building
+  // (it passes no `onProjectChange`/`onOverlayEdit` either), so there is
+  // nothing there for a dropped file to become.
+  onImportFilesToTimeline?: VideoEditorProps<P>['onImportFilesToTimeline']
+  pendingDrops?: VideoEditorProps<P>['pendingDrops']
 }) {
   const project = sync.project
   // Playhead in an external store, not useState — ~60Hz ticks re-render only the
@@ -762,6 +778,15 @@ function ReviewSurface<P extends Project>({
     selectedIds,
     selectedCaptionId,
   })
+  // Selecting a caption anywhere (timeline, preview box, or the caption list —
+  // all funnel through `selectedIds` → `selectedCaptionId`) jumps the left
+  // panel to its Captions tab. A per-selection nonce, not the id itself, so
+  // re-selecting the same caption after the user switched tabs still snaps
+  // back; only a truthy selection bumps it, so deselecting never yanks the tab.
+  const [captionTabNonce, setCaptionTabNonce] = useState(0)
+  useEffect(() => {
+    if (selectedCaptionId) setCaptionTabNonce(n => n + 1)
+  }, [selectedCaptionId])
   const [rippleMode, setRippleMode]   = useState(false)
   // CapCut's "preview axis", off by default. Off changes nothing: clicking the
   // timeline moves the red playhead and the preview follows it, as always. On,
@@ -2250,6 +2275,8 @@ function ReviewSurface<P extends Project>({
           onOpenGoToTime={openGoToTime}
           actionsRef={timelineActionsRef}
           mode={timelineMode}
+          onImportFilesToTimeline={onImportFilesToTimeline}
+          pendingDrops={pendingDrops}
         />
       </div>
     </div>
@@ -2508,7 +2535,7 @@ function ReviewSurface<P extends Project>({
         style={{ width: mediaPanelWidth }}
         className="shrink-0 border-r border-[var(--editor-border)] bg-[var(--editor-surface)] flex flex-col overflow-hidden min-h-0"
       >
-        <LeftPanelTabs tabs={leftPanelTabs} defaultTabId="captions" className="flex-1 min-h-0" />
+        <LeftPanelTabs tabs={leftPanelTabs} defaultTabId="captions" activationRequest={{ id: 'captions', nonce: captionTabNonce }} className="flex-1 min-h-0" />
       </div>
       {/* Divider on the left panel's RIGHT edge — drag right widens the column.
           Kept under its original "Resize media panel" name: it is the same

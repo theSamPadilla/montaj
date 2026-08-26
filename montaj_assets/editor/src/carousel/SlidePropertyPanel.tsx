@@ -9,14 +9,9 @@ import type {
   GlobalOverlayProp,
   EditorAdapter,
 } from '../types'
-import { Button, cn, inspectorInputClass, SwatchInput } from '../ui'
+import { Button, cn, inspectorInputClass, NumberField, stepValue, SwatchInput } from '../ui'
 import { Loader } from '../ui/Loader'
 import { TextFormattingToolbar } from '../text/TextFormattingToolbar'
-
-function parseNumber(v: string): number | null {
-  const n = Number(v)
-  return Number.isFinite(n) ? n : null
-}
 
 // Shared small muted label that sits just above an inspector control.
 const fieldLabelClass = 'text-[11px] uppercase tracking-wide text-[var(--editor-text)]/55'
@@ -83,6 +78,26 @@ function HideToggle({
   )
 }
 
+// `label` doubles as NumberField's accessible `name` — there is no separate
+// visible `<label htmlFor>` wired to the box, just the wrapping `<label>`
+// element below (which already associates the two natively), so reusing the
+// same string keeps the accessible name identical to what a screen reader
+// announced before this converted from a bare `<input>`.
+//
+// This box has no distinct preview/commit split today — every valid keystroke
+// already writes straight through the caller's `onChange`, which is a
+// COMMITTED mutator (see CarouselEditor's `handlePanelElementChange`: it goes
+// through `state.resizeElement(...).then(() => state.commit())`, an async
+// round trip). `onPreview` reproduces that keystroke-writes-through behaviour
+// exactly. `onCommit` is deliberately a no-op rather than the same `onChange`:
+// the old bare `<input>` had no `onBlur` handler at all, so blur committed
+// nothing extra, and because the mutator above is async, `value` cannot be
+// trusted to have caught up with the last keystroke by blur time — wiring
+// `onCommit` to `onChange` would risk firing a second, fully redundant
+// resize/commit (and undo entry) for the same edit. What DOES change here is
+// that typing no longer gets stomped mid-edit by a re-render carrying a
+// stale value back down while the async write is in flight (NumberField's own
+// `draft`, see its doc comment, is the fix).
 function numInput(
   label: string,
   value: number,
@@ -92,17 +107,15 @@ function numInput(
   return (
     <label className="flex flex-col gap-1">
       <span className={fieldLabelClass}>{label}</span>
-      <input
-        type="number"
+      <NumberField
+        name={label}
         value={value}
+        onPreview={onChange}
+        onCommit={() => {}}
         min={opts?.min}
         max={opts?.max}
         step={opts?.step ?? 1}
-        onChange={e => {
-          const parsed = parseNumber(e.target.value)
-          if (parsed !== null) onChange(parsed)
-        }}
-        className={cn(inspectorInputClass, 'text-right')}
+        onStep={d => onChange(stepValue(value, d, { step: opts?.step ?? 1, min: opts?.min, max: opts?.max }))}
       />
     </label>
   )
@@ -150,15 +163,17 @@ function PropEditor({
     return (
       <label className="flex flex-col gap-1" title={description}>
         <span className={fieldLabelClass}>{name}</span>
-        <input
-          type="number"
+        {/* No distinct preview/commit split here either — see `numInput`'s
+            comment above for why `onCommit` is a no-op rather than `onChange`
+            again: `onChange` already writes through per keystroke via an
+            async committed mutator, and blur previously fired nothing. */}
+        <NumberField
+          name={name}
           value={Number(value ?? 0)}
           step={type === 'float' ? 0.1 : 1}
-          onChange={e => {
-            const parsed = parseNumber(e.target.value)
-            if (parsed !== null) onChange(parsed)
-          }}
-          className={cn(inspectorInputClass, 'text-right')}
+          onPreview={onChange}
+          onCommit={() => {}}
+          onStep={d => onChange(stepValue(Number(value ?? 0), d, { step: type === 'float' ? 0.1 : 1 }))}
         />
       </label>
     )

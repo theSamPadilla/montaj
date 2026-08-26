@@ -72,7 +72,9 @@ function renderSegment(seg, key, { frame, fps, color, backgroundColor, fontSize,
   return (
     <div key={key} style={captionOuterStyle(seg)} data-caption-id={seg.id}>
       <div style={captionInnerStyle(seg, {
-        bottom: '15%',
+        // 25% to match every other caption style, so switching styles keeps the
+        // caption in the same area of the frame (was 15%).
+        bottom: '25%',
         left: 0,
         right: 0,
         display: 'flex',

@@ -10,7 +10,16 @@
  * commits directly via `onCommit` (slider release and chip click); the clip
  * modal previews live and commits on an explicit Save button (so it omits
  * `onCommit` and just reads `onChange`).
+ *
+ * The slider itself is the shared `<Slider>` (ui/Slider.tsx): its own
+ * `onCommit` already fires on gesture-end carrying the value, so this is a
+ * direct rewiring rather than a reshaping. One behaviour change comes along
+ * for free — `Slider` only commits when the gesture actually moved the value,
+ * where the old bare `<input>` committed on every pointerup/keyup regardless.
+ * That is strictly better (no more no-op undo entries) and no test here
+ * depended on the old wart.
  */
+import { Slider } from '../../ui'
 
 /** `20·log10(v)` dB, matching the readout the volume faders used before this
  *  control existed. Escapes for U+2212 (minus) and U+221E (infinity) so the
@@ -66,18 +75,15 @@ export default function VolumeControl({
           {value.toFixed(2)} ({volumeToDb(value)})
         </span>
       </div>
-      <input
+      <Slider
         id={sliderId}
-        type="range"
         min={min}
         max={max}
         step={step}
         value={value}
         aria-label={ariaLabel ?? label ?? 'Volume'}
-        className="w-full accent-[var(--editor-accent)]"
-        onChange={e => onChange(Number(e.target.value))}
-        onPointerUp={e => onCommit?.(Number((e.target as HTMLInputElement).value))}
-        onKeyUp={e => onCommit?.(Number((e.target as HTMLInputElement).value))}
+        onChange={onChange}
+        onCommit={onCommit}
       />
       {/* Quick-set chips under the slider — a click snaps straight to that
           level rather than dragging for it. The active one is marked with

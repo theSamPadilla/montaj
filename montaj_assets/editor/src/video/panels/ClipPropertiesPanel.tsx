@@ -4,7 +4,7 @@ import type { AudioTrack, EditorProject, VisualItem } from '../../schema'
 import { setClipSpeed } from '../cuts'
 import SpeedControl from '../timeline/SpeedControl'
 import VolumeControl from '../timeline/VolumeControl'
-import { cn, inspectorInputClass, Switch } from '../../ui'
+import { cn, inspectorInputClass, NumberField, stepValue, Switch } from '../../ui'
 import { usePersistentState } from '../../ui/usePersistentState'
 import TabNav, { type TabNavTab } from './TabNav'
 
@@ -131,11 +131,7 @@ function Row({ label, children }: { label: string; children: ReactNode }) {
 
 interface DraftFieldProps {
   ariaLabel: string
-  type: 'text' | 'number'
   value: string
-  min?: number
-  step?: number
-  disabled?: boolean
   /** Raw text as the operator types it. Validate/parse here, not in this
    *  component — different fields want different rules (e.g. an empty
    *  string or a lone "-" mid-number is not yet a value to preview). */
@@ -149,9 +145,13 @@ interface DraftFieldProps {
 }
 
 /**
- * One text/number box, split out so it can hold its OWN `useState` — every
- * field in this panel needs independent "am I mid-edit" state, exactly like
- * `OverlayInspectorField` in the sibling panel.
+ * One TEXT box, split out so it can hold its OWN `useState` — every field in
+ * this panel needs independent "am I mid-edit" state, exactly like
+ * `OverlayInspectorField` in the sibling panel. Every NUMBER field in this
+ * panel is a shared `NumberField` (ui/NumberField.tsx) instead — this
+ * component used to serve both, but the number branch is retired now that
+ * NumberField owns the same draft/preview/commit contract plus steppers; the
+ * only field left that needs it is the audio track Label, which is text.
  *
  * `draft` is the fix for a real, previously-shipped bug: this whole panel can
  * re-render from outside (a playback tick, an unrelated field's edit) while
@@ -163,7 +163,7 @@ interface DraftFieldProps {
  * (not currently being typed into) the field tracks `value` live, exactly as
  * it always did.
  */
-function DraftField({ ariaLabel, type, value, min, step, disabled, onInput, onCommit, className }: DraftFieldProps) {
+function DraftField({ ariaLabel, value, onInput, onCommit, className }: DraftFieldProps) {
   const [draft, setDraft] = useState<string | null>(null)
   const shown = draft ?? value
 
@@ -175,32 +175,17 @@ function DraftField({ ariaLabel, type, value, min, step, disabled, onInput, onCo
 
   return (
     <input
-      type={type}
+      type="text"
       aria-label={ariaLabel}
-      min={type === 'number' ? min : undefined}
-      step={type === 'number' ? step : undefined}
-      disabled={disabled}
       value={shown}
       onChange={e => { setDraft(e.target.value); onInput(e.target.value) }}
       onBlur={commit}
       // Enter closes the typing gesture the same way blur does — it does not
       // duplicate the commit logic, just triggers the same onBlur path.
       onKeyDown={e => { if (e.key === 'Enter') e.currentTarget.blur() }}
-      className={cn(inspectorInputClass, disabled && 'opacity-50 cursor-not-allowed', className)}
+      className={cn(inspectorInputClass, className)}
     />
   )
-}
-
-/** Parses a number-field's raw text, rejecting mid-typing states (empty
- *  field, lone minus) rather than writing `NaN` or `0` over whatever the
- *  operator hasn't finished typing yet. Mirrors OverlayInspector's
- *  `handleInput`. `floor` clamps below (e.g. seconds fields can't go
- *  negative); omit it for a field with no lower bound. */
-function parseNumberInput(raw: string, floor: number | undefined, apply: (value: number) => void) {
-  if (raw === '' || raw === '-') return
-  const value = Number(raw)
-  if (!Number.isFinite(value)) return
-  apply(floor !== undefined ? Math.max(floor, value) : value)
 }
 
 /**
@@ -488,7 +473,6 @@ function AudioSection({ track, onPreviewAudio, onCommitAudio, onChangeAudio, mod
       <Row label="Label">
         <DraftField
           ariaLabel="Track label"
-          type="text"
           value={track.label ?? basename(track.src)}
           onInput={raw => previewAudio({ label: raw })}
           onCommit={raw => {
@@ -515,23 +499,44 @@ function AudioSection({ track, onPreviewAudio, onCommitAudio, onChangeAudio, mod
 
       <CollapsibleSection label="Fades" collapsed={!fadesOpen} onToggle={() => setFadesOpen(o => !o)} nested>
         <Row label="Fade in">
-          <DraftField
-            ariaLabel="Fade in"
-            type="number"
+          <NumberField
+            name="Fade in"
+            className="w-20"
+            value={fadeIn}
+            step={0.1}
             min={0}
-            value={String(fadeIn)}
-            onInput={raw => parseNumberInput(raw, 0, v => previewAudio({ fadeIn: v }))}
+            max={5}
+            // `min`/`max` on the box are a native spinner hint only (see
+            // NumberField's own doc comment). The REAL floor for this row —
+            // and for Fade out, Start, In point and Out point below — is
+            // `clampAudioPatch`, which `previewAudio` and every `onStep`
+            // handler on those fields route their patch through; it floors
+            // fadeIn/fadeOut/start/inPoint at 0 and derives floors for
+            // end/outPoint. The inline `Math.max(0, v)` calls on THIS group
+            // of fields are therefore redundant (harmless — matches the
+            // pre-refactor behaviour) rather than load-bearing.
+            //
+            // That is NOT true of the two DUCKING rows below (Attack,
+            // Release): `previewDucking` does no clamping of its own at all,
+            // so their `Math.max(0, v)` calls are the only floor those two
+            // fields have. Do not remove those thinking this comment covers
+            // them — they are the deliberate exception.
+            onPreview={v => previewAudio({ fadeIn: Math.max(0, v) })}
             onCommit={() => onCommitAudio()}
+            onStep={d => onChangeAudio({ ...track, ...clampAudioPatch({ fadeIn: stepValue(fadeIn, d, { step: 0.1, min: 0, max: 5 }) }) })}
           />
         </Row>
         <Row label="Fade out">
-          <DraftField
-            ariaLabel="Fade out"
-            type="number"
+          <NumberField
+            name="Fade out"
+            className="w-20"
+            value={fadeOut}
+            step={0.1}
             min={0}
-            value={String(fadeOut)}
-            onInput={raw => parseNumberInput(raw, 0, v => previewAudio({ fadeOut: v }))}
+            max={5}
+            onPreview={v => previewAudio({ fadeOut: Math.max(0, v) })}
             onCommit={() => onCommitAudio()}
+            onStep={d => onChangeAudio({ ...track, ...clampAudioPatch({ fadeOut: stepValue(fadeOut, d, { step: 0.1, min: 0, max: 5 }) }) })}
           />
         </Row>
       </CollapsibleSection>
@@ -541,44 +546,62 @@ function AudioSection({ track, onPreviewAudio, onCommitAudio, onChangeAudio, mod
         collapsed={!duckingOpen}
         onToggle={() => setDuckingOpen(o => !o)}
         nested
-        badge={duckingEnabled ? <span className="text-[10px] text-[var(--editor-accent)]">On</span> : undefined}
+        badge={duckingEnabled
+          // ~10px accent text → the AA-safe accent-text token (indigo-600 in
+          // light, where the plain indigo-500 accent is ~4.06:1, under 4.5:1).
+          ? <span className="text-[10px] text-[var(--editor-accent-text)]">On</span>
+          : undefined}
       >
         <Row label="Enabled">
           <Switch checked={duckingEnabled} onCheckedChange={toggleDucking} aria-label="Enable ducking" mode={mode} />
         </Row>
         <Row label="Depth">
-          <DraftField
-            ariaLabel="Depth"
-            type="number"
+          <NumberField
+            name="Depth"
+            className="w-20"
             step={1}
             disabled={!duckingEnabled}
-            value={String(duckingDepth)}
-            onInput={raw => parseNumberInput(raw, undefined, v => previewDucking({ depth: v }))}
+            value={duckingDepth}
+            // No floor: ducking depth is a dB attenuation and the modal this
+            // panel replaces never bounded it either.
+            onPreview={v => previewDucking({ depth: v })}
             onCommit={() => onCommitAudio()}
+            onStep={d => onChangeAudio({
+              ...track,
+              ducking: { enabled: duckingEnabled, depth: stepValue(duckingDepth, d, { step: 1 }), attack: duckingAttack, release: duckingRelease },
+            })}
           />
         </Row>
         <Row label="Attack">
-          <DraftField
-            ariaLabel="Attack"
-            type="number"
+          <NumberField
+            name="Attack"
+            className="w-20"
             min={0}
             step={0.05}
             disabled={!duckingEnabled}
-            value={String(duckingAttack)}
-            onInput={raw => parseNumberInput(raw, 0, v => previewDucking({ attack: v }))}
+            value={duckingAttack}
+            onPreview={v => previewDucking({ attack: Math.max(0, v) })}
             onCommit={() => onCommitAudio()}
+            onStep={d => onChangeAudio({
+              ...track,
+              ducking: { enabled: duckingEnabled, depth: duckingDepth, attack: stepValue(duckingAttack, d, { step: 0.05, min: 0 }), release: duckingRelease },
+            })}
           />
         </Row>
         <Row label="Release">
-          <DraftField
-            ariaLabel="Release"
-            type="number"
+          <NumberField
+            name="Release"
+            className="w-20"
             min={0}
             step={0.05}
             disabled={!duckingEnabled}
-            value={String(duckingRelease)}
-            onInput={raw => parseNumberInput(raw, 0, v => previewDucking({ release: v }))}
+            value={duckingRelease}
+            onPreview={v => previewDucking({ release: Math.max(0, v) })}
             onCommit={() => onCommitAudio()}
+            onStep={d => onChangeAudio({
+              ...track,
+              ducking: { enabled: duckingEnabled, depth: duckingDepth, attack: duckingAttack, release: stepValue(duckingRelease, d, { step: 0.05, min: 0 }) },
+            })}
           />
         </Row>
       </CollapsibleSection>
@@ -588,43 +611,51 @@ function AudioSection({ track, onPreviewAudio, onCommitAudio, onChangeAudio, mod
           drag on the timeline sets, offered numerically so the panel is full
           parity with the modal it replaces and the modal can retire outright. */}
       <Row label="Start">
-        <DraftField
-          ariaLabel="Start"
-          type="number"
+        <NumberField
+          name="Start"
+          className="w-20"
           min={0}
-          value={String(start)}
-          onInput={raw => parseNumberInput(raw, 0, v => previewAudio({ start: v }))}
+          step={0.1}
+          value={start}
+          onPreview={v => previewAudio({ start: Math.max(0, v) })}
           onCommit={() => onCommitAudio()}
+          onStep={d => onChangeAudio({ ...track, ...clampAudioPatch({ start: stepValue(start, d, { step: 0.1, min: 0 }) }) })}
         />
       </Row>
       <Row label="End">
-        <DraftField
-          ariaLabel="End"
-          type="number"
+        <NumberField
+          name="End"
+          className="w-20"
           min={0}
-          value={String(end)}
-          onInput={raw => parseNumberInput(raw, 0, v => previewAudio({ end: v }))}
+          step={0.1}
+          value={end}
+          onPreview={v => previewAudio({ end: Math.max(0, v) })}
           onCommit={() => onCommitAudio()}
+          onStep={d => onChangeAudio({ ...track, ...clampAudioPatch({ end: stepValue(end, d, { step: 0.1, min: 0 }) }) })}
         />
       </Row>
       <Row label="In point">
-        <DraftField
-          ariaLabel="In point"
-          type="number"
+        <NumberField
+          name="In point"
+          className="w-20"
           min={0}
-          value={String(inPoint)}
-          onInput={raw => parseNumberInput(raw, 0, v => previewAudio({ inPoint: v }))}
+          step={0.1}
+          value={inPoint}
+          onPreview={v => previewAudio({ inPoint: Math.max(0, v) })}
           onCommit={() => onCommitAudio()}
+          onStep={d => onChangeAudio({ ...track, ...clampAudioPatch({ inPoint: stepValue(inPoint, d, { step: 0.1, min: 0 }) }) })}
         />
       </Row>
       <Row label="Out point">
-        <DraftField
-          ariaLabel="Out point"
-          type="number"
+        <NumberField
+          name="Out point"
+          className="w-20"
           min={0}
-          value={String(outPoint)}
-          onInput={raw => parseNumberInput(raw, 0, v => previewAudio({ outPoint: v }))}
+          step={0.1}
+          value={outPoint}
+          onPreview={v => previewAudio({ outPoint: Math.max(0, v) })}
           onCommit={() => onCommitAudio()}
+          onStep={d => onChangeAudio({ ...track, ...clampAudioPatch({ outPoint: stepValue(outPoint, d, { step: 0.1, min: 0 }) }) })}
         />
       </Row>
     </CollapsibleSection>

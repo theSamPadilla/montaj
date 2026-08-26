@@ -1,7 +1,7 @@
 import { useRef, useState, type ChangeEvent } from 'react'
 import type { VisualItem } from '../../schema'
 import { inferOverlayPropFields, type PropField } from '../preview/overlay-prop-fields'
-import { cn, inspectorInputClass, SwatchInput } from '../../ui'
+import { cn, inspectorInputClass, NumberField, SwatchInput } from '../../ui'
 
 /**
  * `<OverlayContentPanel>` — the editor's contextual right-hand **Content**
@@ -221,20 +221,6 @@ function PropFieldRow({
     commit()
   }
 
-  /** Rejects mid-typing states (an empty field, a lone minus) rather than
-   *  writing `0` over what the operator hasn't finished typing. The modal this
-   *  replaces coerced `''` straight to `0`, which snapped the field back to 0
-   *  the instant it was cleared; this is the rule every other numeric field in
-   *  the editor already follows (`ClipPropertiesPanel.parseNumberInput`,
-   *  `OverlayInspector.handleInput`). */
-  function previewNumber(raw: string) {
-    setDraft(raw)
-    if (raw === '' || raw === '-') return
-    const value = Number(raw)
-    if (!Number.isFinite(value)) return
-    preview(value)
-  }
-
   return (
     <div className="flex flex-col gap-1">
       <span className={FIELD_LABEL_CLASS}>{field.name}</span>
@@ -247,16 +233,31 @@ function PropFieldRow({
           className="h-4 w-4 accent-[var(--editor-accent)]"
         />
       ) : field.kind === 'number' ? (
-        <input
-          type="number"
-          aria-label={field.name}
-          value={draft ?? String(field.value)}
-          onChange={e => previewNumber(e.target.value)}
-          onBlur={commit}
-          // Enter closes the typing gesture the same way blur does — it does
-          // not duplicate the commit logic, just triggers the same onBlur path.
-          onKeyDown={e => { if (e.key === 'Enter') e.currentTarget.blur() }}
-          className={cn(inspectorInputClass, 'text-right')}
+        // The shared box (ui/NumberField.tsx) already owns the draft/
+        // preview/commit dance this branch used to hand-roll (including
+        // rejecting the mid-typing states `previewNumber` used to guard —
+        // an empty field, a lone minus). `step={1}` with no min/max: an
+        // inferred prop carries no schema (see this file's own doc comment),
+        // so there is no natural bound to hand the stepper either.
+        //
+        // The stepper deliberately does NOT go through `stepValue`, unlike
+        // every other adopter of this shared box. `stepValue` rounds to 2
+        // decimal places to match what the TRANSFORM panel displays — but
+        // this panel neither displays nor stores rounded values, and its
+        // props are SCHEMA-LESS floats (see this file's doc comment): an
+        // inferred prop sitting at `0.125` would become `1.13` on the very
+        // first arrow click and stay wrong forever. With `step: 1` there is
+        // no float noise to strip in the first place, so a plain integer
+        // nudge is already exact and `stepValue`'s rounding would only
+        // throw away precision this panel has no business touching.
+        <NumberField
+          name={field.name}
+          className="w-24"
+          step={1}
+          value={String(field.value)}
+          onPreview={v => preview(v)}
+          onCommit={() => commit()}
+          onStep={d => change(Number(field.value ?? 0) + d)}
         />
       ) : field.kind === 'color' ? (
         // SwatchInput already splits live picking from the picker closing, so

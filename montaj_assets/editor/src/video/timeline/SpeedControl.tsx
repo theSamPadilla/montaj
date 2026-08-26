@@ -11,7 +11,12 @@
  * previews into local state and commits directly via `onCommit` (on slider
  * release and on a chip click), so touching a track control just applies, no
  * button, the same live-preview-then-commit split the volume fader uses.
+ *
+ * The slider itself is the shared `<Slider>` (ui/Slider.tsx) — see
+ * `VolumeControl`'s twin comment for the one behaviour change it brings
+ * (commit only on an actual gesture change, not on every pointerup/keyup).
  */
+import { Slider } from '../../ui'
 
 export interface SpeedControlProps {
   value: number
@@ -51,18 +56,15 @@ export default function SpeedControl({
         {label && <span>{label}</span>}
         <span className="font-mono text-[10px] text-[var(--editor-text)]/50">{value.toFixed(2)}×</span>
       </div>
-      <input
+      <Slider
         id={sliderId}
-        type="range"
         min={min}
         max={max}
         step={step}
         value={value}
         aria-label={label ?? 'Speed'}
-        className="w-full accent-[var(--editor-accent)]"
-        onChange={e => onChange(Number(e.target.value))}
-        onPointerUp={e => onCommit?.(Number((e.target as HTMLInputElement).value))}
-        onKeyUp={e => onCommit?.(Number((e.target as HTMLInputElement).value))}
+        onChange={onChange}
+        onCommit={onCommit}
       />
       {/* Quick-set chips under the slider — a click snaps straight to that
           value rather than dragging for it. The active one is marked with

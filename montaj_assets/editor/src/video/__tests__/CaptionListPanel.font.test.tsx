@@ -1,8 +1,7 @@
 /// <reference types="vite/client" />
 /**
  * CaptionListPanel — the text-styling block inside the "Caption style"
- * subsection (font family, case, letter spacing, line height, alignment, and
- * the live specimen).
+ * subsection (font family, case, letter spacing, line height, alignment).
  *
  * Sits in `__tests__/` while the panel's other tests sit beside the component
  * (`../CaptionListPanel.test.tsx`); the render helpers and fixtures below
@@ -367,33 +366,32 @@ describe('CaptionListPanel letter spacing and line height steppers', () => {
     expandStyle()
     expect(screen.getByLabelText('Caption line height')).toHaveAttribute('placeholder', '')
   })
-})
 
-describe('CaptionListPanel specimen', () => {
-  it('renders the word under the playhead', () => {
-    renderPanel({}, 0.5)
+  // The stepper's `onStep` closure nudges off whatever is ACTUALLY in force —
+  // see the comment on that closure in CaptionListPanel.tsx. With no stored
+  // letterSpacing, "in force" is the active style's own default, read via the
+  // `parseEmValue(stored) || parseEmValue(styleDefault) || 0` fallback chain.
+  // This is the one test that would catch that chain regressing to nudge off
+  // a bare 0 instead: default renderPanel() style is 'pop', whose default is
+  // '-0.02em', so one click has to land on -0.01em, not on 0.01em.
+  it('letter-spacing stepper nudges off the style default, not a bare 0, when nothing is stored', () => {
+    const { onCaptionEdit } = renderPanel()
     expandStyle()
-    expect(screen.getByTestId('caption-specimen-word').textContent).toBe('hello')
+    fireEvent.click(screen.getByRole('button', { name: 'Increase Caption letter spacing' }))
+
+    expect(onCaptionEdit).toHaveBeenCalledTimes(1)
+    expect(onCaptionEdit.mock.calls[0][0].captions.letterSpacing).toBe('-0.01em')
   })
 
-  it('follows the playhead to the next word', () => {
-    renderPanel({}, 1.5)
+  // A stepper click is a DISCRETE edit — one final change, one undo entry —
+  // never a preview/commit pair, on this headline field exactly like every
+  // other adopter of the shared stepper contract.
+  it('font-size stepper is a single discrete edit: one onCaptionEdit, no onProjectChange', () => {
+    const { onCaptionEdit, onProjectChange } = renderPanel()
     expandStyle()
-    expect(screen.getByTestId('caption-specimen-word').textContent).toBe('world')
-  })
+    fireEvent.click(screen.getByRole('button', { name: 'Increase Caption font size' }))
 
-  // The specimen is fed the panel's LIVE fontsize state, not
-  // `captionTrack.fontsize`, so it tracks a slider drag rather than jumping
-  // only once the drag commits. The rendered size is floor-clamped in jsdom
-  // (no layout, so the measured width stays 0), which is why this checks the
-  // reported figure rather than the computed px.
-  it('tracks the fontsize slider live, before the drag is committed', () => {
-    renderPanel()
-    expandStyle()
-    const specimen = screen.getByTestId('caption-specimen')
-    expect(specimen.textContent).toContain('46px')
-
-    fireEvent.change(screen.getByLabelText('Caption font size'), { target: { value: '80' } })
-    expect(specimen.textContent).toContain('80px')
+    expect(onCaptionEdit).toHaveBeenCalledTimes(1)
+    expect(onProjectChange).not.toHaveBeenCalled()
   })
 })

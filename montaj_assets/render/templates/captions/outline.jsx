@@ -14,7 +14,10 @@ export default function Outline({
   segments    = [],
   color       = '#ffffff',
   accentColor = '#fbbf24',
-  fontSize    = 80,
+  // Smaller default than before (was 80): the heavy outline reads big, so a
+  // lower size keeps this style compact and sitting a little lower in the frame
+  // (Sam, 2026-08-25).
+  fontSize    = 70,
   fontFamily    = 'system-ui, -apple-system, sans-serif',
   fontWeight    = 900,
   textAlign     = 'center',

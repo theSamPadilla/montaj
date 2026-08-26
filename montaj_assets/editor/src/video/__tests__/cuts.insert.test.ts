@@ -77,6 +77,29 @@ describe('insertClipAt — ripple', () => {
     expect([0, 10]).toContain(clip.start)
   })
 
+  it('snaps a straddled drop to the START at/before the midpoint (including exactly 50%), and to the END past it', () => {
+    // Sam's product call (2026-08-25): never split a clip. A drop in the
+    // first half of a clip — including dead center — means "put the new
+    // clip before this one"; only a drop strictly past the midpoint pushes
+    // the new clip after it. See insertClipAt's doc comment.
+    const straddler = (): VisualItem[] => [{ id: 'a', type: 'video', start: 0, end: 10 }]
+
+    const before = insertClipAt(
+      makeProject({ tracks: vtracks(straddler()) }), 'trk-0', { src: 'n.mp4', sourceDuration: 2 }, 4, { ripple: true },
+    )
+    expect(inserted(before.tracks![0].items, ['a']).start).toBe(0)
+
+    const tie = insertClipAt(
+      makeProject({ tracks: vtracks(straddler()) }), 'trk-0', { src: 'n.mp4', sourceDuration: 2 }, 5, { ripple: true },
+    )
+    expect(inserted(tie.tracks![0].items, ['a']).start).toBe(0)
+
+    const after = insertClipAt(
+      makeProject({ tracks: vtracks(straddler()) }), 'trk-0', { src: 'n.mp4', sourceDuration: 2 }, 6, { ripple: true },
+    )
+    expect(inserted(after.tracks![0].items, ['a']).start).toBe(10)
+  })
+
   it('snaps to the nearest edge when the drop point straddles the second of two clips', () => {
     const p = makeProject({
       tracks: vtracks([

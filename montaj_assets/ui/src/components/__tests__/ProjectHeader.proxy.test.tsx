@@ -19,6 +19,7 @@ vi.mock('@/lib/api', () => ({
 }))
 
 import ProjectHeader from '../ProjectHeader'
+import { CaptionJobProvider } from '@/app/editor/captionJob'
 
 function baseProject(overrides: Partial<Project> = {}): Project {
   return {
@@ -36,9 +37,14 @@ function baseProject(overrides: Partial<Project> = {}): Project {
 }
 
 function renderHeader(project: Project) {
+  // ProjectHeader now renders CaptionActivityIndicator, which reads
+  // useCaptionJob() — the provider wraps the whole app tree at runtime
+  // (App.tsx), so mirror that here.
   return render(
     <MemoryRouter>
-      <ProjectHeader project={project} onProjectChange={() => {}} />
+      <CaptionJobProvider>
+        <ProjectHeader project={project} onProjectChange={() => {}} />
+      </CaptionJobProvider>
     </MemoryRouter>,
   )
 }

@@ -454,6 +454,45 @@ export interface FootageDropPayload {
  */
 export const FOOTAGE_DND_MIME = 'application/x-montaj-footage'
 
+// ── Filesystem drops onto the timeline (optional capability) ──────────────────
+// The SECOND way footage reaches the timeline by drag: real files from the OS,
+// dropped straight onto the track surface. Unlike a bin drag (above) the
+// package cannot place these itself — a `File` has no duration, no proxy and no
+// host-resolvable path until the host has probed and ingested it — so the
+// package's half is only "where did they drop it, and what did they drop";
+// everything after that is the host's job, and it reports progress back as the
+// `PendingDrop` ghosts below.
+
+/** What a filesystem drop reports about ITSELF: where the pointer released on
+ *  the timeline, which row it released over, and the ripple/magnet mode
+ *  captured at that instant. Named once here — `onImportFilesToTimeline`
+ *  below, `Timeline.tsx`, and `TimelineCanvas.tsx` all threaded the same
+ *  shape as an inline object literal, three chances for it to drift — and
+ *  re-exported from `index.ts` so a host (`timelineImport.ts`) can name it
+ *  too instead of keeping its own duplicate. */
+export interface TimelineDropPlacement {
+  atTime: number
+  preferredTrackIndex: number
+  ripple: boolean
+}
+
+/** A filesystem file mid-import from a timeline drop, drawn as a ghost band at
+ *  the drop point until the host's import resolves. */
+export interface PendingDrop {
+  /** Host-owned id, so the host can retract this ghost when its import
+   *  resolves or fails. */
+  id: string
+  /** Where the ghost band starts, in timeline seconds. */
+  atTime: number
+  /** The band's length in seconds — the host's fast local probe of the file. */
+  durationSec: number
+  /** Which video row it is drawn on, in normalized track order. -1 → the base
+   *  video row. */
+  trackIndex: number
+  /** Filename, drawn inside the band. */
+  label?: string
+}
+
 // ── Adapter ────────────────────────────────────────────────────────────────
 
 /**
@@ -1092,4 +1131,54 @@ export interface VideoEditorProps<P extends Project = Project> {
    * host also sets this. Absent → treated as `false`, no effect.
    */
   captionsGenerating?: boolean
+
+  // ── Filesystem drop onto the timeline (opt-in) ────────────────────────────
+  // Both halves of the same seam, and both FEATURE-DETECTED: a host that
+  // passes neither is byte-unchanged, because the surface only claims an
+  // OS-file drag when the hook below is actually present (see the note on it).
+
+  /**
+   * A drop of real FILES from the OS onto the timeline. Absent → an OS-file
+   * drag is not accepted at all and the browser keeps its default handling,
+   * which is exactly what a host that predates this feature gets.
+   *
+   * The package hands over only what the browser told IT, plus the one piece
+   * of its own state the host cannot see:
+   *  - `placement.atTime` — the timeline second under the pointer.
+   *  - `placement.preferredTrackIndex` — the video row released over, in
+   *    NORMALIZED track order, or `-1` when the pointer was over the ruler, a
+   *    caption band, an audio lane or the gap between rows.
+   *  - `placement.ripple` — the editor's ripple/magnet mode, CAPTURED AT DROP
+   *    TIME rather than read live. This is deliberate and is the whole reason
+   *    the field exists: `rippleMode` is internal editor state with no other
+   *    route to the host, and the host places the clip seconds later, when its
+   *    background import resolves — by which point the operator may well have
+   *    toggled the magnet again. The mode in force during the GESTURE is what
+   *    the user meant by that drop, so that is the one that has to survive the
+   *    wait. Feed it straight back into `placeDroppedClip`'s `ripple`.
+   *
+   * Fire-and-forget: the editor does not wait on this and does not mutate the
+   * project for it. Importing a filesystem file means probing it, normalizing
+   * it and building a proxy — all host-side work, of unbounded duration — so
+   * the host owns the whole job and commits the resulting clip itself (route
+   * it through the exported `placeDroppedClip` with this same `atTime` /
+   * `preferredTrackIndex` and the placement will match what the drop
+   * indicated). Feed `pendingDrops` below while that runs.
+   */
+  onImportFilesToTimeline?: (files: File[], placement: TimelineDropPlacement) => void
+
+  /**
+   * Ghost bands for imports still in flight — one per file the host has
+   * accepted from `onImportFilesToTimeline` and not yet landed as a real clip.
+   * Drawn on the timeline's overlay layer as a dashed, translucent band at the
+   * drop point, so a slow import is visibly "coming" at the place it was
+   * dropped rather than nothing at all until it appears.
+   *
+   * The host owns the list entirely: it adds an entry when it starts an
+   * import and drops that entry when the import lands (or fails). The package
+   * never adds, mutates or expires one — a ghost that is never retracted stays
+   * on screen forever, which is the host's bug to fix, not something the
+   * editor guesses at. Absent or empty → nothing is drawn.
+   */
+  pendingDrops?: readonly PendingDrop[]
 }

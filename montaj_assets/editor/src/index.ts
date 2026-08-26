@@ -51,6 +51,8 @@ export type {
   AnalyzeAudioPolishArgs,
   AudioPolishAnalysis,
   FootageDropPayload,
+  PendingDrop,
+  TimelineDropPlacement,
   EditorAdapter,
   EditorContext,
   EditorTheme,
@@ -91,6 +93,12 @@ export {
   withEnabledItemTracks,
   withItemTracks,
 } from './video/timeline/timeline-model'
+// The one placement rule shared by both new-clip drop entry points (the
+// footage-bin drag today, a filesystem drop in a later task) — public so the
+// host can route either drop through it rather than each reimplementing
+// "land where you dropped it, without stomping existing footage".
+export { placeDroppedClip } from './video/timeline/placement'
+export type { DroppedClipPlacement, PlacedClipResult } from './video/timeline/placement'
 
 // ── Image tone (HDR image color mapping) ─────────────────────────────────────
 // The picker component is exported so hosts using `onProvideImageTone` can

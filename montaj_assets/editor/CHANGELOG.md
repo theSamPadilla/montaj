@@ -8,6 +8,48 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Video editor
 
+- **Caption Format tab: a slider on font size, bigger row labels, and the one-word preview is gone.** Font size now has the shared slider next to its typeable box (drag for a quick size, type for an exact one — both drive the same live value), the Format-tab row labels are a touch larger, and the small specimen box that showed a single word for a whole-sentence style has been removed (the Styles gallery is the size-faithful preview). (`CaptionListPanel.tsx`, `CaptionSpecimen` usage dropped)
+
+- **Selecting a caption anywhere jumps the left panel to its Captions tab.** Clicking a caption on the timeline, in the preview, or in the list now switches the browser panel to Captions, so its controls are in front of you. It never fights a manual tab choice on mount, and re-selecting the same caption still snaps back. (`panels/LeftPanelTabs.tsx`, `VideoEditor.tsx`)
+
+- **Transform tab: dropped the redundant "TRANSFORM" heading.** The CONTENT/TRANSFORM tab already names the pane, so the second heading is gone; the reset-all and keyframe-all controls stay, now under a compact "All" label. (`OverlayInspector.tsx`)
+
+- **Accent text is legible in light mode.** The indigo accent used as ~10px text was marginally under the AA contrast floor on the light theme; a new `--editor-accent-text` token darkens accent *text* to indigo-600 in light mode only (fills, borders, rings and buttons keep the accent), applied at the ducking badge and the active left-panel tab. (`theme.ts`, `panels/ClipPropertiesPanel.tsx`, `panels/LeftPanelTabs.tsx`)
+
+- **Caption style gallery reads consistently, and the pending screen's light-mode text is visible again.** With every caption template now anchored at the same height (see the app changelog), the gallery's seven cards frame their captions identically. Separately, the "project id" line and "Back to setup" link on the pending screen were near-invisible on a light background (a var-opacity class that silently no-ops) and now use a real tint. (`CaptionStyleGallery.tsx`, `VideoEditor.tsx`)
+
+- **One number box and one slider everywhere.** Entering a number used to mean
+  a different control depending on where you were: the clip Transform tab had a
+  nice typeable box with up/down arrows, caption font size was a slider you
+  could not type an exact value into, and the rest were plain boxes with no
+  arrows. Every numeric field in the editor now uses the same control — type a
+  value, nudge it with the arrows, and it previews live and commits when you
+  click away. That covers caption font size (now a typeable box with arrows
+  instead of a slider), letter spacing and line height, clip fades, ducking and
+  trim points, overlay properties, the custom loudness target, the carousel
+  slide properties, and the text toolbar's font size. Typing an exact font size
+  also reaches sizes the old 28-120 slider could not. Every remaining slider —
+  scale, volume, speed, and the version-compare scrubber — is now one shared
+  control with a thin track and a round accent thumb, identical in light and
+  dark. The Transform tab's number boxes are unchanged — they were the
+  reference the rest moved to; its scale slider picked up the new thumb along
+  with every other slider.
+- **Dragging a clip to the edge of the timeline now scrolls faster the harder
+  you push, and the clip stays under your cursor.** Edge auto-scroll used to
+  jump to one flat speed the moment the pointer reached the edge, so there was
+  no way to ask for "faster" — it now ramps with how far past the edge the
+  cursor sits, from a gentle nudge up to a capped maximum, still stopping
+  cleanly at the start and end of the timeline and still measured in real
+  elapsed time so it feels identical at 60Hz and 120Hz. The dragged clip also
+  used to stay put in time while the view scrolled out from under it, drifting
+  away from the pointer; every horizontal gesture (move, trim, roll, slip,
+  slide, audio, keyframes, captions) now measures its travel in timeline time
+  instead of screen pixels, so what you drop is what you saw under the cursor.
+- **Fixed: dragging a clip onto a different track ignored the clips already on
+  it.** Moving a clip onto another track used to show no snap guide and refuse
+  to click into place, even when it fit a gap on that track exactly. Snapping
+  now follows whichever track the clip is actually hovering over, so it lines
+  up flush with the clips beside it.
 - **Fixed: turning on a social-media preview from "None" showed nothing until a
   page reload.** The safe-zone chrome overlay attached its size observer only
   once, on mount — and while "None" was selected the observed element wasn't in

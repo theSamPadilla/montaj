@@ -68,19 +68,21 @@ export const CAPTION_STYLE_LABELS: Record<CaptionStyle, string> = {
 const RENDER_W = 1080
 const RENDER_H = 1920
 
-/** Top of the slice of the render frame a card actually shows, in render px.
- *  A card is a BAND across the bottom of the frame, not the whole 1080×1920.
+/** Card geometry. A card is a BAND across the bottom of the frame (BAND_H tall,
+ *  ~90px at rail width), not the whole 1080×1920 — the templates all anchor
+ *  their text near the bottom edge (`bottom: '25%'` for five, 17% for `clean`,
+ *  15% for `subtitle`), so a full-frame thumbnail would be mostly empty and
+ *  shrink the text to a few illegible pixels.
  *
- *  Every one of the seven templates anchors its text to the bottom edge
- *  (`bottom: '18%'` for five of them, 10% for `clean`, 8% for `subtitle`), so
- *  the top ~62% of a full-frame thumbnail is guaranteed empty. Showing it
- *  would make each card in a 2-column ~300px rail about 240px tall and mostly
- *  blank, pushing the size/colour/font controls below the fold — and it would
- *  shrink the text to a few illegible pixels. Cropping to the bottom 720px
- *  keeps the anchors' RELATIVE positions intact (a `subtitle` still sits lower
- *  than a `pop`) while making a card 90px tall at rail width. */
-const BAND_TOP = 1200
-const BAND_H = RENDER_H - BAND_TOP
+ *  All seven caption templates now anchor at the SAME 25% (see
+ *  `render/templates/captions/*.jsx`), so one fixed window frames every card
+ *  identically — no per-style offset needed. BAND_TOP is tuned so the
+ *  full-sentence block styles (five of the seven, two lines at CARD_FONT_SIZE)
+ *  sit roughly centred; the two single-word styles (word-by-word, pop) then sit
+ *  a touch low, which is fine for a one-word specimen. BAND_H sets the card's
+ *  aspect ratio. */
+const BAND_TOP = 950
+const BAND_H = 720
 
 /** Font size handed to every card's template, overriding both the project's
  *  `fontsize` and each template's own default.
@@ -412,8 +414,10 @@ export function CaptionStyleCard({
             {element && (
               <div style={{
                 position:        'absolute',
-                // Slide the full-height layer up so BAND_TOP lands on the
-                // card's top edge; `overflow-hidden` above crops the rest.
+                // Slide the full-height layer up so BAND_TOP lands on the card's
+                // top edge; `overflow-hidden` above crops the rest. Every caption
+                // template now anchors at the same 25% (see the render templates),
+                // so one fixed window frames all seven cards identically.
                 top:             -BAND_TOP * scale,
                 left:            0,
                 width:           RENDER_W,

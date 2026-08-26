@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { ChevronDown } from 'lucide-react'
+import { NumberField, stepValue } from '../ui'
 
 export type FontOption = {
   label: string
@@ -184,59 +185,68 @@ type FontSizePickerProps = {
 
 // Extract the numeric portion of a stored fontSize. Tolerates "25", "25px",
 // " 25px ", "25 px", or a bare number. Returns '' when no numeric prefix is
-// present so the <input type="number"> can render empty instead of NaN-empty.
+// present so the NumberField renders empty instead of NaN-empty — `''` is
+// exactly how that component spells "no explicit value" (see its `value` doc).
 function parseFontSizeNumeric(value: string): string {
   const m = /^\s*(-?\d+(?:\.\d+)?)/.exec(value)
   return m ? m[1] : ''
 }
 
 export function FontSizePicker({ value, onChange, disabled, min = 8, max = 9999, className }: FontSizePickerProps) {
-  const [local, setLocal] = useState(parseFontSizeNumeric(value))
-  const isFocused = useRef(false)
-  const onChangeRef = useRef(onChange)
-  useEffect(() => {
-    onChangeRef.current = onChange
-  }, [onChange])
-
-  useEffect(() => {
-    if (!isFocused.current) setLocal(parseFontSizeNumeric(value))
-  }, [value])
+  // NumberField carries its own "what's on screen while typing" draft (see its
+  // doc comment) — the bespoke `local` state and `isFocused` ref this used to
+  // hand-roll did exactly that job, so converting drops them rather than
+  // keeping a second copy of the same fix alongside NumberField's.
+  const numericValue = parseFontSizeNumeric(value)
 
   // Commit immediately on every keystroke. Debouncing here is the wrong call
   // for typography — the rendered text is the live preview, so delaying the
-  // PUT delays user feedback.
+  // write delays user feedback. `onPreview` points at this function for that
+  // reason: there is no separate "final" edit here, every valid keystroke
+  // already writes through — and that write is itself a COMMITTED, async
+  // mutator (`onChange` flows to `TextFormattingToolbar`'s
+  // `void updateOverlayProp(...)`, a real round trip; `value` only reflects
+  // it once the promise resolves). `onCommit` is therefore a no-op below,
+  // NOT this same function: blur has nothing left to do once typing already
+  // persisted the edit, and re-firing `commit` there would race the async
+  // write — `outgoing !== value` could still read true for a value
+  // `onPreview` already sent, because `value` has not caught up yet, and
+  // that would fire a second, fully redundant `updateOverlayProp` (and
+  // undo entry) for the same edit. `SlidePropertyPanel`'s `numInput` faces
+  // the identical hazard against its own async mutator — see its comment.
   //
   // CSS font-size requires a unit; a unitless value is invalid and the
   // overlay template falls back to its default. The picker is number-only
   // for the operator, so we attach `px` here before writing — never asking
-  // the user to type the unit themselves.
-  function commit(next: string): void {
-    setLocal(next)
-    if (next === '') return
+  // the user to type the unit themselves. The `outgoing !== value` guard
+  // skips a write that would only echo back what is already stored.
+  //
+  function commit(next: number): void {
     const outgoing = `${next}px`
-    if (outgoing !== value) onChangeRef.current(outgoing)
+    if (outgoing !== value) onChange(outgoing)
+  }
+
+  /** A stepper nudge. Falls back to `min` when the box is empty — the value is
+   *  a free-text CSS length that may carry no numeric prefix at all, and
+   *  nudging from `NaN` would write `NaNpx`. */
+  function step(direction: 1 | -1): void {
+    const from = numericValue === '' ? min : Number(numericValue)
+    commit(stepValue(from, direction, { step: 1, min, max }))
   }
 
   return (
-    <input
-      type="number"
+    <NumberField
+      name="Font size"
+      value={numericValue}
+      onPreview={commit}
+      onCommit={() => {}}
+      onStep={step}
+      disabled={disabled}
       min={min}
       max={max}
-      disabled={disabled}
-      value={local}
       placeholder="size"
-      onChange={(e) => commit(e.target.value)}
-      onFocus={() => {
-        isFocused.current = true
-      }}
-      onBlur={() => {
-        isFocused.current = false
-      }}
-      className={
-        className ??
-        'h-8 w-14 rounded-md border border-[var(--editor-border)] bg-[var(--editor-surface)] px-2.5 text-sm text-[var(--editor-text)] focus:outline-none focus:border-[var(--editor-accent)] focus:ring-1 focus:ring-[var(--editor-accent)] disabled:opacity-50'
-      }
-      aria-label="Font size"
+      unit="px"
+      className={className ?? 'w-14'}
     />
   )
 }

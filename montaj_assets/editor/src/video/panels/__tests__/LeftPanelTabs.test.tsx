@@ -145,4 +145,45 @@ describe('LeftPanelTabs', () => {
       expect(document.activeElement).toBe(screen.getByRole('tab', { name: 'Media' }))
     })
   })
+
+  describe('host-driven activationRequest', () => {
+    const shown = (tabId: string) =>
+      !(screen.getByTestId(`${tabId}-content`).closest('[role="tabpanel"]') as HTMLElement).hidden
+
+    it('nonce 0 never forces a tab — the persisted/default preference wins on mount', () => {
+      render(<LeftPanelTabs tabs={makeTabs()} defaultTabId="media" activationRequest={{ id: 'captions', nonce: 0 }} />)
+      expect(screen.getByTestId('media-content')).toBeTruthy()
+      expect(screen.queryByTestId('captions-content')).toBeNull()
+    })
+
+    it('a positive nonce switches the panel to the requested tab (and mounts it)', () => {
+      const { rerender } = render(
+        <LeftPanelTabs tabs={makeTabs()} defaultTabId="media" activationRequest={{ id: 'captions', nonce: 0 }} />,
+      )
+      expect(screen.getByTestId('media-content')).toBeTruthy()
+      rerender(<LeftPanelTabs tabs={makeTabs()} defaultTabId="media" activationRequest={{ id: 'captions', nonce: 1 }} />)
+      expect(shown('captions')).toBe(true)
+    })
+
+    it('re-switches on a fresh nonce even for the same target after the user navigated away (per-event, not per-value)', () => {
+      const { rerender } = render(
+        <LeftPanelTabs tabs={makeTabs()} defaultTabId="media" activationRequest={{ id: 'captions', nonce: 1 }} />,
+      )
+      expect(shown('captions')).toBe(true)
+      // User manually clicks away.
+      fireEvent.click(screen.getByRole('tab', { name: 'Versions' }))
+      expect(shown('versions')).toBe(true)
+      // Selecting a caption again bumps the nonce to the SAME id → back to captions.
+      rerender(<LeftPanelTabs tabs={makeTabs()} defaultTabId="media" activationRequest={{ id: 'captions', nonce: 2 }} />)
+      expect(shown('captions')).toBe(true)
+    })
+
+    it('ignores an activation for an id that is not a real tab (no crash, no blank pane)', () => {
+      const { rerender } = render(
+        <LeftPanelTabs tabs={makeTabs()} defaultTabId="media" activationRequest={{ id: 'ghost', nonce: 0 }} />,
+      )
+      rerender(<LeftPanelTabs tabs={makeTabs()} defaultTabId="media" activationRequest={{ id: 'ghost', nonce: 1 }} />)
+      expect(shown('media')).toBe(true)
+    })
+  })
 })

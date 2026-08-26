@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type MutableRefObject, type ReactNode } from 'react'
 import { Scissors } from 'lucide-react'
 import { EASING_NAMES } from '@bycrux/timeline-core'
-import type { FilmstripIndex, GetFilmstripArgs, GetWaveformPeaksArgs, PeaksData, Project, ResolveFilePath } from '../../types'
+import type { FilmstripIndex, GetFilmstripArgs, GetWaveformPeaksArgs, PeaksData, PendingDrop, Project, ResolveFilePath, TimelineDropPlacement } from '../../types'
 import type { EasingName, KeyframeProp, VisualItem } from '../../schema'
 import { reflowMagneticLanes } from '../audioMagnet'
 import { normalizeCaptionLanes } from '../captionLanes'
@@ -120,6 +120,15 @@ interface TimelineProps {
    * Defaults to `'dark'`, the only mode this timeline had.
    */
   mode?: TimelineMode
+  /** A drop of real OS files onto the canvas surface, threaded straight to
+   *  `TimelineCanvas` — Timeline does nothing with it beyond passing it
+   *  through, same as `onInspectClip`/`getFilmstrip` above. Absent → an
+   *  OS-file drag is not accepted at all and the browser keeps its default
+   *  handling (see the prop's own doc in types.ts). */
+  onImportFilesToTimeline?: (files: File[], placement: TimelineDropPlacement) => void
+  /** Ghost bands for the host's in-flight file imports. Passed straight to
+   *  `TimelineCanvas`. Absent/empty → nothing extra is drawn. */
+  pendingDrops?: readonly PendingDrop[]
 }
 
 /** Icon size for the fade-shape picker's buttons — small enough for a
@@ -335,7 +344,7 @@ const EASING_LABELS: Record<EasingName, string> = {
   hold: 'Hold',
 }
 
-export default function Timeline({ project, clock, onProjectChange, onOverlayEdit, selectedIds = [], onSelectIds, onInspectClip, onInspectAudio, onEditCaption, rippleMode = false, previewAxis = false, onHoverScrub, resolveFilePath, getWaveformPeaks, getFilmstrip, regenEnabled, isClipQueued, renderSubcutRegen, modalOpen = false, onOpenGoToTime, actionsRef, mode = 'dark' }: TimelineProps) {
+export default function Timeline({ project, clock, onProjectChange, onOverlayEdit, selectedIds = [], onSelectIds, onInspectClip, onInspectAudio, onEditCaption, rippleMode = false, previewAxis = false, onHoverScrub, resolveFilePath, getWaveformPeaks, getFilmstrip, regenEnabled, isClipQueued, renderSubcutRegen, modalOpen = false, onOpenGoToTime, actionsRef, mode = 'dark', onImportFilesToTimeline, pendingDrops }: TimelineProps) {
 
   // Click/shift-click handler — additive selection on shift or meta (cmd/ctrl).
   // Under D1, captions share `selectedIds` with everything else, so there is
@@ -991,6 +1000,8 @@ export default function Timeline({ project, clock, onProjectChange, onOverlayEdi
               getFilmstrip={getFilmstrip}
               resolveFilePath={resolveFilePath}
               mode={mode}
+              onImportFilesToTimeline={onImportFilesToTimeline}
+              pendingDrops={pendingDrops}
             />
             {/* ── Per-clip HTML chrome over the canvas ──
                 The subcut-regenerate trigger and the "queued" badge, ported

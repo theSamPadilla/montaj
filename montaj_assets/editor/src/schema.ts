@@ -163,6 +163,7 @@ export interface VisualItem {
   start: number
   end: number
   sourceDuration?: number     // video type only — used for right-edge drag guard
+  sourceCreatedAt?: string    // video type only — container recording timestamp (ISO 8601); footage-bin "Date created" sort. Absent when the source carried no creation_time tag.
   inPoint?: number            // video type only
   outPoint?: number           // video type only
   loop?: boolean              // video type only — loop source clip within project window

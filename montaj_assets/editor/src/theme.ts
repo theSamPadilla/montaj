@@ -6,8 +6,8 @@
  * ── CSS variable naming convention ───────────────────────────────────────────
  * Every token is written as a custom property prefixed `--editor-`:
  *   colors   →  --editor-bg, --editor-surface, --editor-accent,
- *               --editor-accent-foreground, --editor-text, --editor-border,
- *               --editor-selection
+ *               --editor-accent-foreground, --editor-accent-text, --editor-text,
+ *               --editor-border, --editor-selection
  *   fonts    →  --editor-font-sans, --editor-font-serif, --editor-font-display
  *   radii    →  --editor-radius-{sm|md|lg}
  *   spacing  →  --editor-space-{n}   (n = scale step)
@@ -183,6 +183,12 @@ function writeThemeVars(style: CSSStyleDeclaration, theme: EditorTheme): void {
   // Accent-foreground falls back to `text` so it's never empty (e.g. a host
   // theme that omits it still gets a readable foreground for accent controls).
   style.setProperty('--editor-accent-foreground', theme.colors.accentForeground ?? theme.colors.text)
+  // Accent as small TEXT. In LIGHT mode the indigo-500 accent falls just under
+  // the 4.5:1 AA floor as ~10px text on the light ground (~4.06:1), so accent
+  // text nudges to indigo-600 (#4f46e5) there. Dark mode (and any host theme)
+  // keeps the accent unchanged. Fills, borders, rings and buttons keep
+  // `--editor-accent`; ONLY small accent text should read this token.
+  style.setProperty('--editor-accent-text', isLightTheme(theme) ? '#4f46e5' : theme.colors.accent)
   style.setProperty('--editor-text', theme.colors.text)
   style.setProperty('--editor-border', theme.colors.border)
   style.setProperty('--editor-selection', theme.colors.selection)

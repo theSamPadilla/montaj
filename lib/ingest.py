@@ -107,9 +107,11 @@ def ingest_source(
 
     Returns a clip dict of the same shape init writes, plus source dimensions:
         {"id"?, "type": "video", "src", "start": 0.0, "end": 0.0,
-         "sourceDuration", "sourceWidth"?, "sourceHeight"?, "proxySrc"?}
+         "sourceDuration", "sourceWidth"?, "sourceHeight"?, "sourceCreatedAt"?,
+         "proxySrc"?}
     Optional keys: ``id`` only when *clip_id* is given; ``sourceWidth`` /
-    ``sourceHeight`` only when the probe succeeded; ``proxySrc`` only when a
+    ``sourceHeight`` only when the probe succeeded; ``sourceCreatedAt`` only when
+    the container carried a `creation_time` tag; ``proxySrc`` only when a
     proxy was generated (or an already-fresh one adopted). Transcode/proxy
     failures never raise — they fall back to the staged source and no proxy,
     mirroring init.
@@ -165,6 +167,11 @@ def ingest_source(
     if info is not None:
         clip["sourceWidth"] = info["display_width"]
         clip["sourceHeight"] = info["display_height"]
+        # Recording timestamp (ISO 8601), when the container carries one — lets
+        # the footage bin sort by "Date created". Absent for footage with no
+        # creation_time tag, which the bin sorts last.
+        if info.get("creation_time"):
+            clip["sourceCreatedAt"] = info["creation_time"]
 
     if proxy and info is not None:
         proxy_out = proxy_path_for(proxy_src)

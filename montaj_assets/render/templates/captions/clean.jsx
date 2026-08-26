@@ -73,7 +73,10 @@ function renderSegment(seg, key, { frame, fps, color, fontSize, fontFamily, font
   return (
     <div key={key} style={captionOuterStyle(seg)} data-caption-id={seg.id}>
       <div style={captionInnerStyle(seg, {
-        bottom: '17%',
+        // 26% (up from clean's old 17%): clean's small, plain caption is the
+        // shortest block, so a slightly higher anchor than the 25% group lines
+        // its TOP up with every other style (Sam, 2026-08-25).
+        bottom: '26%',
         left: 0,
         right: 0,
         display: 'flex',

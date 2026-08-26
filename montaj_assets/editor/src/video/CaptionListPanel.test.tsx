@@ -272,7 +272,7 @@ describe('CaptionListPanel row interactions', () => {
 describe('CaptionListPanel relocated style controls', () => {
   // The style controls used to hide behind a collapse toggle, then behind a
   // single "Style" tab; they now split across two tabs — "Format" (the fine
-  // controls: size, colors, specimen, font, Bold, case, alignment, spacing;
+  // controls: size, colors, font, Bold, case, alignment, spacing;
   // the panel's default) and "Styles" (the gallery of live style previews,
   // see CaptionStyleGallery.tsx / .test.tsx). Selecting a tab is what makes
   // its controls visible — these suites seed 'captions' in `beforeEach`, so
@@ -297,21 +297,45 @@ describe('CaptionListPanel relocated style controls', () => {
     expect(onCaptionEdit.mock.calls[0][0].captions.style).toBe('subtitle')
   })
 
-  it('fontsize slider previews live on change and commits once on pointer-up — exactly one channel per gesture', () => {
+  it('fontsize previews live on change and commits once on blur — exactly one channel per gesture', () => {
+    // Was a `type="range"` slider (commit on pointer-up/key-up); now the
+    // shared NumberField box, whose commit gesture is blur/Enter instead —
+    // see NumberField's own doc comment for why.
     const { onProjectChange, onCaptionEdit } = renderPanel()
     expandFormat()
-    const slider = screen.getByLabelText('Caption font size')
+    // Two controls now share this name (the shared Slider + the NumberField box);
+    // target the box (spinbutton) — this test types/commits an exact value.
+    const field = screen.getByRole('spinbutton', { name: 'Caption font size' })
 
-    fireEvent.change(slider, { target: { value: '60' } })
+    fireEvent.change(field, { target: { value: '60' } })
     expect(onProjectChange).toHaveBeenCalledTimes(1)
     expect(onProjectChange.mock.calls[0][0].captions.fontsize).toBe(60)
     expect(onCaptionEdit).not.toHaveBeenCalled()
 
-    fireEvent.pointerUp(slider, { target: { value: '60' } })
+    fireEvent.blur(field)
     expect(onCaptionEdit).toHaveBeenCalledTimes(1)
     expect(onCaptionEdit.mock.calls[0][0].captions.fontsize).toBe(60)
     // The commit did not also fire another live preview.
     expect(onProjectChange).toHaveBeenCalledTimes(1)
+  })
+
+  // NumberField never clamps a TYPED value against its own min/max (those are
+  // a native spinner hint only) — the call site is what enforces the ceiling,
+  // via `clampToRange`. 400 is CAPTION_FONT_SIZE_MAX, the widened ceiling this
+  // feature's changelog entry advertises; this is the only test proving the
+  // call-site clamp actually catches a value typed past it.
+  it('fontsize typed past the ceiling clamps to 400 on commit', () => {
+    const { onCaptionEdit } = renderPanel()
+    expandFormat()
+    // Two controls now share this name (the shared Slider + the NumberField box);
+    // target the box (spinbutton) — this test types/commits an exact value.
+    const field = screen.getByRole('spinbutton', { name: 'Caption font size' })
+
+    fireEvent.change(field, { target: { value: '500' } })
+    fireEvent.blur(field)
+
+    expect(onCaptionEdit).toHaveBeenCalledTimes(1)
+    expect(onCaptionEdit.mock.calls[0][0].captions.fontsize).toBe(400)
   })
 
   it('base text color previews live via onProjectChange and commits via onCaptionEdit when no segment is selected', () => {
@@ -787,7 +811,7 @@ describe('CaptionListPanel tabs', () => {
 
     // Format tab is active: the fine controls are visible, the style gallery
     // and the transcript are not.
-    expect(screen.getByLabelText('Caption font size')).toBeTruthy()
+    expect(screen.getByRole('spinbutton', { name: 'Caption font size' })).toBeTruthy()
     expect(screen.queryByRole('group', { name: 'Caption style' })).toBeNull()
     expect(screen.queryByRole('button', { name: 'Subtitle' })).toBeNull()
     expect(screen.queryByRole('listitem')).toBeNull()
@@ -801,7 +825,7 @@ describe('CaptionListPanel tabs', () => {
     expect(screen.getByLabelText('Search captions')).toBeTruthy()
     expect(screen.getByText('Regenerate captions')).toBeTruthy()
     // The format controls are gone now.
-    expect(screen.queryByLabelText('Caption font size')).toBeNull()
+    expect(screen.queryByRole('spinbutton', { name: 'Caption font size' })).toBeNull()
   })
 
   it('shows all three tabs, in order Format, Styles, Captions', () => {
@@ -826,7 +850,7 @@ describe('CaptionListPanel tabs', () => {
     renderPanel()
 
     expect(screen.getByRole('button', { name: 'Format' })).toHaveAttribute('aria-pressed', 'true')
-    expect(screen.getByLabelText('Caption font size')).toBeTruthy()
+    expect(screen.getByRole('spinbutton', { name: 'Caption font size' })).toBeTruthy()
     expect(screen.queryByRole('listitem')).toBeNull()
   })
 

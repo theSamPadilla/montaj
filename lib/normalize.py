@@ -44,7 +44,8 @@ real filter-chain assembly."""
 
 def probe_video(path):
     """Return dict with codec, width, height, pix_fmt, color_transfer, fps, has_audio,
-    audio_sample_rate, max_keyframe_interval, rotation, display_width, display_height.
+    audio_sample_rate, max_keyframe_interval, rotation, display_width, display_height,
+    creation_time.
 
     Rotation: degrees from the displaymatrix side_data (-180, -90, 0, 90, 180, 270, etc.).
     iPhone vertical recordings have rotation=-90 (sensor outputs landscape, displays
@@ -53,16 +54,23 @@ def probe_video(path):
     Display dimensions: width/height after applying rotation. For a 1920×1080 source
     with rotation=±90 or ±270, display_width=1080, display_height=1920. Use these
     when reasoning about output orientation (e.g., picking project canvas size).
+
+    Creation time: the container's `format.tags.creation_time` (ISO 8601, e.g.
+    `2023-05-14T18:32:10.000000Z`) — the recording timestamp for camera/phone
+    footage. None when absent or a zeroed placeholder (some encoders write
+    `0000-00-00T00:00:00...`, which is not a real date).
     """
     cmd = [
         ffprobe_bin(), "-v", "quiet",
-        "-show_entries", "stream=codec_type,codec_name,width,height,pix_fmt,color_transfer,r_frame_rate,sample_rate",
+        "-show_entries",
+        "stream=codec_type,codec_name,width,height,pix_fmt,color_transfer,r_frame_rate,sample_rate:format_tags=creation_time",
         "-of", "json", path,
     ]
     r = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
     if r.returncode != 0:
         return None
-    streams = json.loads(r.stdout).get("streams", [])
+    probed = json.loads(r.stdout)
+    streams = probed.get("streams", [])
     if not streams:
         return None
     video = next((s for s in streams if s.get("codec_type") == "video"), None)
@@ -88,6 +96,12 @@ def probe_video(path):
     else:
         display_width, display_height = width, height
 
+    # Container recording timestamp. Drop the zeroed placeholder some encoders
+    # emit — it is not a real capture time and would sort as the epoch.
+    creation_time = ((probed.get("format") or {}).get("tags") or {}).get("creation_time")
+    if not creation_time or creation_time.startswith("0000"):
+        creation_time = None
+
     return {
         "codec": video.get("codec_name"),
         "width": width,
@@ -102,6 +116,7 @@ def probe_video(path):
         "rotation": rotation,
         "display_width": display_width,
         "display_height": display_height,
+        "creation_time": creation_time,
     }
 
 

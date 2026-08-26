@@ -90,6 +90,13 @@ export interface DrawContext {
    *  clears it so no shape painter inherits a shadow. */
   shadowColor: string
   shadowBlur: number
+  /** Dash pattern for subsequent strokes; `[]` is a solid line. Used by exactly
+   *  one painter (`drawPendingDropBand`), because "dashed" is the one outline
+   *  on this surface that means "not real yet". It is set INSIDE that painter's
+   *  own save/restore pair — a dash left on the context leaks into every later
+   *  stroke on the same layer, which on the overlay would mean a dashed
+   *  playhead. */
+  setLineDash(segments: number[]): void
 }
 
 // ── Palette ──────────────────────────────────────────────────────────────
@@ -302,6 +309,27 @@ export const TIMELINE_COLORS = {
    *  vocabulary, since what it is doing IS selecting. */
   marqueeFill: 'rgba(255,255,255,0.08)',
   marqueeBorder: 'rgba(255,255,255,0.65)',
+  /** The ghost band for a file still being imported (`drawPendingDropBand`).
+   *
+   *  Deliberately colourless — slate, the same neutral the row divider and the
+   *  ruler ticks are drawn in. Every saturated hue on this surface is spoken
+   *  for and each one is a claim: red is where playback is, cyan is an
+   *  alignment, amber is a keyframe, emerald is audio, white is selection. A
+   *  pending import is none of those; it is a placeholder, and a placeholder
+   *  that borrowed any of those hues would be read as the thing that hue
+   *  means. What says "not real yet" is the DASHED outline, not the colour.
+   *
+   *  The fill is one step up in alpha from `rowDivider` (0.18 vs 0.16) so the
+   *  two are never the same literal — a hairline divider and a whole band are
+   *  different marks and must not be confusable by colour alone. */
+  pendingDropFill: 'rgba(148,163,184,0.18)',
+  /** Slate-200: brighter than the fill, so the dashes hold together as an
+   *  outline over whatever row background the band lands on. */
+  pendingDropStroke: 'rgba(226,232,240,0.7)',
+  /** The filename inside the band. A shade brighter again than the stroke —
+   *  the band is translucent, so the text is competing with the row (and any
+   *  clip) showing through it. */
+  pendingDropText: 'rgba(241,245,249,0.9)',
 } as const
 
 /** The shape both palettes satisfy — `TIMELINE_COLORS`'s own keys, widened
@@ -439,6 +467,16 @@ export const LIGHT_TIMELINE_COLORS: TimelineColors = {
    *  already tuned to "a wash you can see through and a border you can't miss". */
   marqueeFill: 'rgba(15,23,42,0.08)',
   marqueeBorder: 'rgba(15,23,42,0.6)',
+  /** The pending-import ghost. Colourless in dark, colourless here — but the
+   *  neutral has to come from the OTHER end of the slate ramp: on a pale row a
+   *  slate-400 wash is barely a change of value at all, so the fill steps down
+   *  to slate-600 and the outline/text to near-black, exactly the flip the
+   *  marquee above makes. The alphas are carried over from the dark set, which
+   *  is where the "a wash you can see through, an outline you can't miss"
+   *  balance was tuned; only the hue's end of the ramp moves. */
+  pendingDropFill: 'rgba(71,85,105,0.18)',
+  pendingDropStroke: 'rgba(51,65,85,0.7)',
+  pendingDropText: 'rgba(15,23,42,0.9)',
 }
 
 /** Height of the time ruler strip at the top of the surface.
@@ -1714,6 +1752,106 @@ export function drawRuler(
   ctx.restore()
 }
 
+// ── Pending-drop ghost ───────────────────────────────────────────────────
+
+/** Corner radius of a ghost band. The same 4px a clip uses — the band stands
+ *  where a clip is about to be, so it should be the same shape. */
+export const PENDING_DROP_RADIUS_PX = CLIP_RADIUS_PX
+/** Inset from the row's own rectangle, top and bottom, so the ghost reads as
+ *  sitting IN the row rather than replacing it. */
+export const PENDING_DROP_INSET_PX = 2
+/** Stroke width of the dashed outline. 1.5px, not 1: a dash is half gaps, so
+ *  at 1px the outline reads as a faint dotted smudge rather than a border. */
+export const PENDING_DROP_BORDER_PX = 1.5
+/** Dash pattern — 6 on, 4 off. Long enough that each dash is unmistakably a
+ *  dash (not a dot), short enough that a narrow band still shows several. */
+export const PENDING_DROP_DASH: readonly number[] = [6, 4]
+
+/** One in-flight import's ghost band. `start`/`end` are TIMELINE SECONDS (the
+ *  painter converts them through the viewport, so a ghost pans and zooms with
+ *  everything else without the host resending it); `y`/`height` are surface
+ *  CSS pixels, resolved by the caller from the row rectangle in
+ *  `TimelineLayout.rows` — the same "read the layout, never re-derive geometry"
+ *  rule the hit-test states. `label` is the filename, drawn inside. */
+export interface PendingDropBand {
+  start: number
+  end: number
+  y: number
+  height: number
+  label?: string
+}
+
+/**
+ * The ghost band for a file whose import is still in flight: a translucent
+ * rounded rect with a DASHED outline, at the place the file was dropped.
+ *
+ * Dashed is the whole point. A solid band at clip opacity would read as a clip
+ * that is already there, and the one thing this mark has to say is "this is
+ * not real yet" — the outline is what says it, which is why it is dashed
+ * rather than merely faint (a faint solid band just reads as a dimmed clip,
+ * which on this surface already means a disabled track).
+ *
+ * `setLineDash` is scoped to this painter's own save/restore AND explicitly
+ * reset before it returns. A real 2D context restores the dash with the rest
+ * of its drawing state, but the stub contexts the tests drive do not, and a
+ * leaked dash on the overlay layer means a dashed playhead — the single
+ * easiest bug to ship here, so it is closed twice.
+ */
+export function drawPendingDropBand(
+  ctx: DrawContext,
+  band: PendingDropBand,
+  viewport: Viewport,
+  surfaceWidth: number,
+  palette: TimelinePalette = DARK_TIMELINE_PALETTE,
+): void {
+  const x = timeToX(band.start, viewport)
+  const width = Math.max(0, (band.end - band.start) * viewport.pxPerSecond)
+  const rect = clampRectToSurface({ x, y: band.y + PENDING_DROP_INSET_PX, width, height: Math.max(0, band.height - PENDING_DROP_INSET_PX * 2) }, surfaceWidth)
+  if (rect.width <= 0 || rect.height <= 0) return
+
+  const radius = Math.min(PENDING_DROP_RADIUS_PX, rect.width / 2, rect.height / 2)
+
+  ctx.save()
+  ctx.fillStyle = palette.colors.pendingDropFill
+  roundRectPath(ctx, rect.x, rect.y, rect.width, rect.height, radius)
+  ctx.fill()
+
+  // Inset by half the stroke so the dashes sit fully inside the band instead
+  // of straddling its edge — same reason the marquee offsets by half a pixel.
+  const inset = PENDING_DROP_BORDER_PX / 2
+  ctx.strokeStyle = palette.colors.pendingDropStroke
+  ctx.lineWidth = PENDING_DROP_BORDER_PX
+  ctx.setLineDash(PENDING_DROP_DASH as number[])
+  roundRectPath(
+    ctx,
+    rect.x + inset,
+    rect.y + inset,
+    Math.max(0, rect.width - PENDING_DROP_BORDER_PX),
+    Math.max(0, rect.height - PENDING_DROP_BORDER_PX),
+    radius,
+  )
+  ctx.stroke()
+  ctx.setLineDash([])
+
+  // The filename, clipped to the band: an import is usually named after a
+  // camera file, and those are long — without the clip a name would bleed out
+  // over the clips either side of the ghost. Same MIN_LABEL_WIDTH_PX floor the
+  // clip labels use, below which a label is more smear than information.
+  if (band.label && rect.width >= MIN_LABEL_WIDTH_PX) {
+    ctx.save()
+    ctx.beginPath()
+    ctx.rect(rect.x, rect.y, rect.width, rect.height)
+    ctx.clip()
+    ctx.fillStyle = palette.colors.pendingDropText
+    ctx.font = LABEL_FONT
+    ctx.textBaseline = 'middle'
+    ctx.fillText(band.label, rect.x + LABEL_PAD_PX, rect.y + LABEL_TOP_OFFSET_PX)
+    ctx.restore()
+  }
+
+  ctx.restore()
+}
+
 /** The rubber-band selection box. Drawn on the overlay layer because it changes
  *  on every pointer move, exactly like the playhead. */
 export function drawMarquee(
@@ -1980,6 +2118,14 @@ export interface OverlayScene {
   snapStrength?: SnapStrength | null
   /** The rubber-band selection box while one is being dragged, else null. */
   marquee?: Rect | null
+  /** Ghost bands for files the host is still importing (`PendingDrop` in
+   *  types.ts, resolved to rectangles by the canvas). On the OVERLAY layer,
+   *  not the content one, for the same reason the marquee is: they come and go
+   *  on host events unrelated to any project edit, and a ghost must be able to
+   *  appear and be retracted without repainting every clip and filmstrip
+   *  underneath it. Absent or empty → nothing is drawn, and this layer's paint
+   *  is byte-identical to what it was before ghosts existed. */
+  pendingDrops?: readonly PendingDropBand[]
   /** Which ground to paint on — see `TimelineScene.mode`. Carried on BOTH
    *  scenes rather than only the content one: the playhead, the axis cursor
    *  and the marquee all live on this layer, and a mode change has to be able
@@ -2000,6 +2146,18 @@ export function drawTimelineOverlay(ctx: DrawContext, scene: OverlayScene): void
   // First, so the playhead and any guide stay legible over it — the marquee is
   // a translucent wash and would otherwise dull both.
   if (scene.marquee) drawMarquee(ctx, scene.marquee, themePalette)
+  // After the marquee (a ghost is a solid-ish band; under the wash it would be
+  // dulled the same way the lines are), and before every LINE below it. The
+  // playhead in particular has to stay legible over a ghost: an import that
+  // happens to land under the playhead must not hide where playback is, and a
+  // band is far wider than any of these marks, so it can only ever go beneath
+  // them. Each band culls itself the way the playhead and cursor do — the
+  // painter converts to x and returns on a rect that clamps away to nothing.
+  if (scene.pendingDrops) {
+    for (const band of scene.pendingDrops) {
+      drawPendingDropBand(ctx, band, viewport, surfaceWidth, themePalette)
+    }
+  }
   if (cursorTime !== undefined && cursorTime !== null) {
     const cx = timeToX(cursorTime, viewport)
     if (!(cx < -CURSOR_WIDTH_PX || cx > surfaceWidth + CURSOR_WIDTH_PX)) {

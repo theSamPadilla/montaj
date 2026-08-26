@@ -1,4 +1,4 @@
-import { useRef, useState, type ComponentType, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react'
+import { useRef, type ComponentType, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react'
 import {
   AlignCenterHorizontal,
   AlignCenterVertical,
@@ -6,10 +6,8 @@ import {
   AlignEndVertical,
   AlignStartHorizontal,
   AlignStartVertical,
-  ChevronDown,
   ChevronLeft,
   ChevronRight,
-  ChevronUp,
   Diamond,
   RotateCcw,
 } from 'lucide-react'
@@ -28,7 +26,7 @@ import {
   canKeyframeProp,
 } from './keyframeOps'
 import { usePlaybackTime, type PlaybackClock } from './playback-clock'
-import { cn, inspectorInputClass } from '../ui'
+import { NumberField, Slider, cn, stepValue } from '../ui'
 
 /**
  * `<OverlayInspector>` — the editor's contextual right-hand **Transform**
@@ -202,10 +200,10 @@ export function alignedOffset(scale: number, edge: -1 | 0 | 1): number {
 }
 
 // Curve-sampled values can carry float noise (e.g. 29.999999999999996) picked
-// up from interpolation. Rounds only what's DISPLAYED — handleInput below
-// always reads the raw text the operator typed, never this rounded number.
-// The steppers round their RESULT through this too: `1.2 + 0.01` lands on
-// 1.2100000000000002 otherwise, and a stepper is supposed to be exact.
+// up from interpolation. Rounds only what's DISPLAYED — a typed edit is parsed
+// from the operator's own text (NumberField), never from this rounded number.
+// The steppers round their RESULT to the same 2dp, in `stepValue`: `1.2 + 0.01`
+// lands on 1.2100000000000002 otherwise, and a stepper is supposed to be exact.
 function displayValue(value: number): number {
   return Math.round(value * 100) / 100
 }
@@ -239,88 +237,6 @@ function IconButton({
     <button type="button" aria-label={label} title={title} disabled={disabled} onClick={onClick} className={ICON_BUTTON_CLASS}>
       {children}
     </button>
-  )
-}
-
-interface FieldProps {
-  id: string
-  /** Accessible name — see RowSpec.name. */
-  name: string
-  step: number
-  min?: number
-  max?: number
-  /** The prop-derived value for the CURRENT playhead — recomputed on every
-   *  ~60Hz tick (see the component doc). Only actually shown while the field
-   *  is untouched; see `draft` below. */
-  value: number
-  onInput: (raw: string) => void
-  onCommit: () => void
-  className?: string
-}
-
-/**
- * One numeric box, split out of the parent so it can hold its OWN `useState`
- * — hooks can't live inside a loop, and each box in the panel needs
- * independent "am I mid-edit" state.
- *
- * `draft` is the fix for a real bug: this whole panel re-renders on every
- * `usePlaybackTime` tick (~60Hz) whether or not `item` is even the thing
- * being edited, and before this fix the input's `value` came straight from
- * the tick-recomputed prop — a CONTROLLED input with no memory of what was
- * mid-typed. Typing into the field while the timeline played back got
- * silently overwritten between keystrokes. `draft` breaks that link: it goes
- * non-null the moment the operator types (first `onChange`) and stays the
- * single source of truth for what's ON SCREEN until blur/Enter commits it,
- * so ticks arriving mid-edit change `value` underneath without ever touching
- * what's displayed. While `draft` is null (the common case — not currently
- * being typed into) the field tracks `value` live, exactly as it always did,
- * including the desired case of watching it animate during scrub/playback.
- *
- * EVERY number box in this panel goes through this component for exactly that
- * reason; a bare `<input>` anywhere here would reintroduce the bug.
- */
-function OverlayInspectorField({ id, name, step, min, max, value, onInput, onCommit, className }: FieldProps) {
-  const [draft, setDraft] = useState<string | null>(null)
-  const shown = draft ?? String(value)
-
-  function commit() {
-    setDraft(null)
-    onCommit()
-  }
-
-  return (
-    <input
-      id={id}
-      type="number"
-      aria-label={name}
-      step={step}
-      min={min}
-      max={max}
-      value={shown}
-      onChange={e => { setDraft(e.target.value); onInput(e.target.value) }}
-      onBlur={commit}
-      // Enter closes the typing gesture the same way blur does — it does not
-      // duplicate the commit logic, just triggers the same onBlur path.
-      onKeyDown={e => { if (e.key === 'Enter') e.currentTarget.blur() }}
-      className={cn(inspectorInputClass, 'text-right', className)}
-    />
-  )
-}
-
-/** Up/down nudge buttons for one number box. Each click is a DISCRETE edit —
- *  one `onChange`, one undo entry — not a preview/commit pair. */
-function Stepper({ name, onStep }: { name: string; onStep: (direction: 1 | -1) => void }) {
-  const btn =
-    'flex h-3 w-4 items-center justify-center rounded-sm text-[var(--editor-text)]/45 transition-colors hover:bg-[var(--editor-surface)] hover:text-[var(--editor-text)]'
-  return (
-    <div className="flex shrink-0 flex-col gap-px">
-      <button type="button" aria-label={`Increase ${name}`} onClick={() => onStep(1)} className={btn}>
-        <ChevronUp size={9} />
-      </button>
-      <button type="button" aria-label={`Decrease ${name}`} onClick={() => onStep(-1)} className={btn}>
-        <ChevronDown size={9} />
-      </button>
-    </div>
   )
 }
 
@@ -378,36 +294,6 @@ function KeyframeNav({
         <ChevronRight size={11} />
       </IconButton>
     </div>
-  )
-}
-
-/** The scale slider. Previews per change, commits ONCE per gesture: `dirty`
- *  arms on the first change and is disarmed by whichever gesture-end fires
- *  first, so a pointerup immediately followed by a blur can't stack two undo
- *  entries. `onKeyUp` is in that set so keyboard adjustment commits too. */
-function ScaleSlider({ value, onPreview, onCommit }: { value: number; onPreview: (v: number) => void; onCommit: () => void }) {
-  const dirty = useRef(false)
-
-  function end() {
-    if (!dirty.current) return
-    dirty.current = false
-    onCommit()
-  }
-
-  return (
-    <input
-      type="range"
-      aria-label="Scale slider"
-      min={SCALE_SLIDER_MIN}
-      max={SCALE_SLIDER_MAX}
-      step={0.01}
-      value={value}
-      onChange={e => { dirty.current = true; onPreview(Number(e.target.value)) }}
-      onPointerUp={end}
-      onKeyUp={end}
-      onBlur={end}
-      className="h-1 min-w-0 flex-1 cursor-pointer appearance-none rounded-full bg-[var(--editor-border)] accent-[var(--editor-accent)]"
-    />
   )
 }
 
@@ -550,33 +436,37 @@ interface NumberCellProps {
    *  avoid reading it twice. */
   prefix?: string
   value: number
-  onInput: (raw: string) => void
+  onPreview: (value: number) => void
   onCommit: () => void
   onStep: (direction: 1 | -1) => void
 }
 
-/** A number box with its axis prefix and stepper — the panel's repeating unit. */
-function NumberCell({ row, name = row.name, prefix, value, onInput, onCommit, onStep }: NumberCellProps) {
+/** A number box with its axis prefix and stepper — the panel's repeating unit.
+ *  A thin binding onto the shared {@link NumberField}: this component's job is
+ *  only to translate a `RowSpec` into the field's props (and to build the
+ *  stable per-row `id`), not to own any of the box's behaviour.
+ *
+ *  The `overlay-inspector-${name}` id it builds has no consumer today — no
+ *  `<label htmlFor>` points at it, no test queries by it, nothing in
+ *  `montaj_assets/ui` or `montaj_assets/render` reads it. That is deliberate,
+ *  not dead code to prune: it is a stable, predictable hook for a future
+ *  bound label, an automation script, or an external test harness to latch
+ *  onto by row name, laid down now so it doesn't need inventing later. */
+function NumberCell({ row, name = row.name, prefix, value, onPreview, onCommit, onStep }: NumberCellProps) {
   return (
-    <div className="flex shrink-0 items-center gap-1">
-      {prefix && (
-        <span aria-hidden="true" className="w-2 shrink-0 text-[10px] text-[var(--editor-text)]/40">
-          {prefix}
-        </span>
-      )}
-      <OverlayInspectorField
-        id={`overlay-inspector-${name.replace(/\s+/g, '-').toLowerCase()}`}
-        name={name}
-        step={row.step}
-        min={row.min}
-        max={row.max}
-        value={displayValue(value)}
-        onInput={onInput}
-        onCommit={onCommit}
-        className="h-7 w-16 px-1.5 text-xs"
-      />
-      <Stepper name={name} onStep={onStep} />
-    </div>
+    <NumberField
+      id={`overlay-inspector-${name.replace(/\s+/g, '-').toLowerCase()}`}
+      name={name}
+      prefix={prefix}
+      step={row.step}
+      min={row.min}
+      max={row.max}
+      value={displayValue(value)}
+      onPreview={onPreview}
+      onCommit={onCommit}
+      onStep={onStep}
+      className="h-7 w-16 px-1.5 text-xs"
+    />
   )
 }
 
@@ -588,33 +478,32 @@ function NumberCell({ row, name = row.name, prefix, value, onInput, onCommit, on
  *  unlocked Scale X / Scale Y rows have to convert, bound and step identically
  *  to the locked `Scale` row; three copies of the `* 100` would drift. */
 function ScalePercentCell({
-  row, value, onInput, onCommit, onStep,
+  row, value, onPreview, onCommit, onStep,
 }: {
   row: RowSpec
   value: number
-  onInput: (raw: string) => void
+  onPreview: (value: number) => void
   onCommit: () => void
   onStep: (direction: 1 | -1) => void
 }) {
   return (
-    <div className="flex shrink-0 items-center gap-1">
-      <OverlayInspectorField
-        id={`overlay-inspector-${row.name.replace(/\s+/g, '-').toLowerCase()}`}
-        name={row.name}
-        // Percent-side bounds, matching the slider's span. Deliberately NOT
-        // ROWS.scale*'s multiplier `step`/`min`, which are what the STEPPER
-        // works in.
-        step={1}
-        min={5}
-        max={400}
-        value={Math.round(value * 100)}
-        onInput={onInput}
-        onCommit={onCommit}
-        className="h-7 w-12 px-1.5 text-xs"
-      />
-      <span aria-hidden="true" className="text-[10px] text-[var(--editor-text)]/40">%</span>
-      <Stepper name={row.name} onStep={onStep} />
-    </div>
+    <NumberField
+      id={`overlay-inspector-${row.name.replace(/\s+/g, '-').toLowerCase()}`}
+      name={row.name}
+      // Percent-side bounds, matching the slider's span. Deliberately NOT
+      // ROWS.scale*'s multiplier `step`/`min`, which are what the STEPPER
+      // works in — hence `onStep` taking a direction rather than this
+      // component's own bounds deciding the nudge (see stepValue).
+      step={1}
+      min={5}
+      max={400}
+      unit="%"
+      value={Math.round(value * 100)}
+      onPreview={onPreview}
+      onCommit={onCommit}
+      onStep={onStep}
+      className="h-7 w-12 px-1.5 text-xs"
+    />
   )
 }
 
@@ -688,13 +577,6 @@ export default function OverlayInspector({ item, clock, onPreview, onCommit, onC
     onChange(writeProp(target, prop, localT, value))
   }
 
-  function handleInput(prop: KeyframeProp, raw: string) {
-    if (raw === '' || raw === '-') return // mid-typing (empty field, lone minus) — nothing finite to write yet
-    const value = Number(raw)
-    if (!Number.isFinite(value)) return
-    preview(prop, value)
-  }
-
   function handleToggle(prop: KeyframeProp) {
     const next = hasKeyframes(target, prop)
       ? disableKeyframing(target, prop, localT)
@@ -703,10 +585,7 @@ export default function OverlayInspector({ item, clock, onPreview, onCommit, onC
   }
 
   function handleStep(row: RowSpec, direction: 1 | -1) {
-    let next = sampled[row.prop] + direction * row.step
-    if (row.min !== undefined) next = Math.max(row.min, next)
-    if (row.max !== undefined) next = Math.min(row.max, next)
-    commitDiscrete(row.prop, displayValue(next))
+    commitDiscrete(row.prop, stepValue(sampled[row.prop], direction, row))
   }
 
   /** Ascending, de-duplicated keyframe times across `props`. */
@@ -787,13 +666,11 @@ export default function OverlayInspector({ item, clock, onPreview, onCommit, onC
 
   // Scale is shown as a PERCENTAGE (CapCut: 1 => 100%). The box reports percent;
   // the stored scalar stays a multiplier, so convert on the way in. The slider
-  // and stepper stay on the multiplier (ScaleSlider / handleStep). Takes the
-  // prop so the unlocked per-axis boxes convert through the same path as the
-  // locked one instead of a second copy of the `/ 100`.
-  function handleScalePercent(prop: 'scale' | 'scaleX' | 'scaleY', raw: string) {
-    if (raw === '' || raw === '-') return // mid-typing — nothing finite yet
-    const pct = Number(raw)
-    if (!Number.isFinite(pct)) return
+  // and stepper stay on the multiplier (the Slider below / handleStep). Takes
+  // the prop so the unlocked per-axis boxes convert through the same path as
+  // the locked one instead of a second copy of the `/ 100`. Unparseable and
+  // mid-typing values never reach here — NumberField swallows those.
+  function handleScalePercent(prop: 'scale' | 'scaleX' | 'scaleY', pct: number) {
     preview(prop, pct / 100)
   }
 
@@ -887,9 +764,13 @@ export default function OverlayInspector({ item, clock, onPreview, onCommit, onC
 
   return (
     <div className={SECTION_CLASS}>
+      {/* No section TITLE here — the CONTENT/TRANSFORM tab already names this
+          pane, so a second "Transform" heading was redundant. This slim bar now
+          only hosts the ALL-properties actions (reset-all + keyframe-all); the
+          muted "All" scopes them apart from each row's own per-property unit. */}
       <div className="shrink-0 flex items-center gap-1 border-b border-[var(--editor-border)] px-2 py-1.5">
-        <span className="px-1 py-0.5 text-xs font-medium uppercase tracking-wide text-[var(--editor-text)]/60">
-          Transform
+        <span className="px-1 py-0.5 text-[10px] font-medium uppercase tracking-wide text-[var(--editor-text)]/40">
+          All
         </span>
         <div className="ml-auto flex items-center gap-1">
           <IconButton label="Reset transform" title="Reset every transform property to its default" onClick={handleReset}>
@@ -928,15 +809,22 @@ export default function OverlayInspector({ item, clock, onPreview, onCommit, onC
         {uniform ? (
           <div className="flex items-center gap-2">
             <span className={ROW_LABEL_CLASS}>Scale</span>
-            <ScaleSlider
+            <Slider
+              aria-label="Scale slider"
               value={sampled.scale}
-              onPreview={v => preview('scale', v)}
+              min={SCALE_SLIDER_MIN}
+              max={SCALE_SLIDER_MAX}
+              step={0.01}
+              onChange={v => preview('scale', v)}
+              // Zero-arg: the panel commits whatever it last previewed, so it
+              // has no use for the value the Slider offers.
               onCommit={onCommit}
+              className="min-w-0 flex-1"
             />
             <ScalePercentCell
               row={ROWS.scale}
               value={sampled.scale}
-              onInput={raw => handleScalePercent('scale', raw)}
+              onPreview={pct => handleScalePercent('scale', pct)}
               onCommit={onCommit}
               onStep={d => handleStep(ROWS.scale, d)}
             />
@@ -949,7 +837,7 @@ export default function OverlayInspector({ item, clock, onPreview, onCommit, onC
               <ScalePercentCell
                 row={ROWS[prop]}
                 value={sampled[prop]}
-                onInput={raw => handleScalePercent(prop, raw)}
+                onPreview={pct => handleScalePercent(prop, pct)}
                 onCommit={onCommit}
                 onStep={d => handleStep(ROWS[prop], d)}
               />
@@ -1000,7 +888,7 @@ export default function OverlayInspector({ item, clock, onPreview, onCommit, onC
             row={ROWS.offsetX}
             prefix="X"
             value={sampled.offsetX}
-            onInput={raw => handleInput('offsetX', raw)}
+            onPreview={v => preview('offsetX', v)}
             onCommit={onCommit}
             onStep={d => handleStep(ROWS.offsetX, d)}
           />
@@ -1008,7 +896,7 @@ export default function OverlayInspector({ item, clock, onPreview, onCommit, onC
             row={ROWS.offsetY}
             prefix="Y"
             value={sampled.offsetY}
-            onInput={raw => handleInput('offsetY', raw)}
+            onPreview={v => preview('offsetY', v)}
             onCommit={onCommit}
             onStep={d => handleStep(ROWS.offsetY, d)}
           />
@@ -1033,7 +921,7 @@ export default function OverlayInspector({ item, clock, onPreview, onCommit, onC
           <NumberCell
             row={ROWS.rotation}
             value={sampled.rotation}
-            onInput={raw => handleInput('rotation', raw)}
+            onPreview={v => preview('rotation', v)}
             onCommit={onCommit}
             onStep={d => handleStep(ROWS.rotation, d)}
           />
@@ -1052,7 +940,7 @@ export default function OverlayInspector({ item, clock, onPreview, onCommit, onC
           <NumberCell
             row={ROWS.opacity}
             value={sampled.opacity}
-            onInput={raw => handleInput('opacity', raw)}
+            onPreview={v => preview('opacity', v)}
             onCommit={onCommit}
             onStep={d => handleStep(ROWS.opacity, d)}
           />

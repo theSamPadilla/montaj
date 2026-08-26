@@ -484,7 +484,11 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
             )}
             {!slots?.pendingStatus && skillPath && (
               <div className="w-full rounded-xl border-2 border-[var(--editor-accent)] bg-[var(--editor-surface)] p-5 flex flex-col gap-3 text-left shadow-lg shadow-[var(--editor-accent)]/10">
-                <p className="text-[var(--editor-accent)] text-xs font-bold uppercase tracking-widest">Send this to your agent</p>
+                {/* indigo-600 in light mode: the accent (indigo-500) is ~4.06:1 on
+                    `--editor-surface`, and 12px bold is still NORMAL text under WCAG
+                    (large starts at 18.66px bold), so it needs the 4.5:1 floor. The
+                    border/shadow around it stay accent - this is small-TEXT only. */}
+                <p className={`text-xs font-bold uppercase tracking-widest ${mode === 'light' ? 'text-indigo-600' : 'text-[var(--editor-accent)]'}`}>Send this to your agent</p>
                 {/* Deliberately hardcoded dark chrome, not `--editor-*` tokens: this
                     is the literal text the user copies and pastes to their coding
                     agent, styled as terminal/code chrome — same precedent as the

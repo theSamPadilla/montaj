@@ -253,6 +253,59 @@ def test_probe_video_does_not_swap_for_rotation_180(tmp_path, monkeypatch):
     assert info["display_height"] == 1080
 
 
+# ── creation time (footage-bin "Date created" sort) ───────────────────────────
+
+
+def test_probe_video_reads_container_creation_time(tmp_path):
+    """A container `creation_time` tag is surfaced as info['creation_time'].
+
+    Baked in via `-metadata creation_time=...` (writes format.tags.creation_time,
+    the same field iPhone/camera footage carries) so the format_tags read-back
+    path is exercised end to end.
+    """
+    src = tmp_path / "stamped.mp4"
+    _make_conformant_video(src, width=640, height=360)
+    stamped = tmp_path / "stamped_meta.mp4"
+    subprocess.run(
+        ["ffmpeg", "-y", "-i", str(src), "-c", "copy",
+         "-metadata", "creation_time=2024-06-15T12:00:00.000000Z", str(stamped)],
+        check=True, capture_output=True, timeout=60,
+    )
+    info = probe_video(str(stamped))
+    assert info is not None
+    # ffprobe may trim trailing precision; the instant must round-trip.
+    assert info["creation_time"] is not None
+    assert info["creation_time"].startswith("2024-06-15T12:00:00")
+
+
+def test_probe_video_creation_time_none_when_zeroed(tmp_path, monkeypatch):
+    """The zeroed placeholder some encoders emit is dropped to None, not sorted
+    as the epoch. Crafted via a stubbed ffprobe payload so the guard is proven
+    independent of which encoder produced the file."""
+    import lib.normalize as nm
+    real_run = subprocess.run
+
+    def fake_run(cmd, *a, **k):
+        if "format_tags=creation_time" in " ".join(cmd):
+            class R:
+                returncode = 0
+                stdout = json.dumps({
+                    "streams": [{"codec_type": "video", "codec_name": "h264",
+                                 "width": 640, "height": 360, "pix_fmt": "yuv420p",
+                                 "r_frame_rate": "30/1"}],
+                    "format": {"tags": {"creation_time": "0000-00-00T00:00:00.000000Z"}},
+                })
+            return R()
+        return real_run(cmd, *a, **k)
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setattr(nm, "_probe_rotation", lambda _path: 0)
+    monkeypatch.setattr(nm, "_probe_max_keyframe_interval", lambda _path: 1)
+    info = probe_video("/does/not/matter.mp4")
+    assert info is not None
+    assert info["creation_time"] is None
+
+
 # ── normalize() emits the project's working format ────────────────────────────
 
 def test_normalize_skips_when_already_conformant(tmp_path):

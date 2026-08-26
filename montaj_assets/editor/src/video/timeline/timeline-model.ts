@@ -246,49 +246,49 @@ export interface CrossTrackMoveArgs {
   makeSpace?: boolean
 }
 
+export interface ResolveTargetTrackOptions {
+  /** Vet candidate tracks on KIND alone, ignoring collisions entirely.
+   *
+   *  For the MOVE itself this is always off — a collision is what makes a drop
+   *  fan out to a free row in the first place. It exists for callers that need
+   *  a stable answer to "which row is this drag on" while the item is still
+   *  sliding, i.e. the canvas timeline's snap tier.
+   *
+   *  The two rejections in the search differ in kind, and only one of them is
+   *  safe to consult mid-slide:
+   *
+   *  - The kind gate is STRUCTURAL. An overlay can never land on the video
+   *    track under it, at any horizontal position, for the whole gesture.
+   *  - A collision is TRANSIENT — it depends on where the item happens to be
+   *    right now, and it is at its worst precisely where a magnet is trying to
+   *    pull the item INTO alignment with the very neighbour it overlaps. A
+   *    tier that consulted it would go dead exactly when it is wanted, and
+   *    would re-rank (and visibly lurch) every time the clip slid across a
+   *    neighbour. */
+  kindOnly?: boolean
+}
+
 /**
- * Place a dragged item on the visual track its vertical travel points at,
- * searching outward for one where it does not collide.
+ * WHICH track a cross-track move lands on — the outward search `moveItemAcross
+ * Tracks` performs, and nothing else. Extracted from it (it now calls this) so
+ * a caller can ask the question WITHOUT performing the move.
  *
- * Extracted verbatim from VisualTrackRow's drag handler so the canvas pointer
- * machine (SP5 T5) lands items in exactly the same track the DOM rows would.
- * The rules it encodes, none of them obvious from the outside:
+ * That matters because the pointed-at index (`sourceTrackIdx - dy/24`) is NOT
+ * the landing track: the search rejects it for a kind mismatch or a collision
+ * and fans out to a neighbour. Anything that needs to reason about the row the
+ * dragged item is currently sitting ON — the canvas timeline's strong snap tier
+ * does — has to run this same search, or it ends up reasoning about a row the
+ * item was never placed on. See `applyMove` in `canvas/pointer-machine.ts`, and
+ * `kindOnly` above for the half of the search that caller deliberately skips.
  *
- * - Vertical travel is divided by `VISUAL_ROW_HEIGHT_PX` (24), not the rendered
- *   row height, so a drag reaches the neighbouring track before the cursor has
- *   fully left the current one. Downward travel LOWERS the track index, because
- *   tracks are stacked with the highest index on top.
- * - "Collision" means overlapping an existing item by more than 30% of the
- *   dragged item's duration; brushing past a neighbour is allowed.
- * - When the target track is occupied the search fans out — one above, one
- *   below, then two, and so on — and one step past the end of the array is a
- *   legal answer, which is how a drag creates a new top track.
- * - Tracks left empty by the move are pruned, so dragging the last item off a
- *   track collapses it. The surviving TRACK OBJECTS are carried through the
- *   prune, so each keeps its own id and its own volume/muted/enabled. (This is
- *   the whole reason tracks are objects: with settings held in a parallel array
- *   indexed alongside `tracks`, a prune shifts every index above it and hands
- *   the wrong settings to the wrong track.)
- * - A drag past the top of the stack mints a new track, with a fresh id from
- *   the same rule the normalizer uses and deduped against the ids already in
- *   play, so it can never collide with a surviving track.
- *
- * ── Ripple-insert (`makeSpace`, magnet/ripple mode ON) ────────────────────
- * Everything above is the magnet-OFF path and is completely unchanged by
- * `makeSpace` being available — with it omitted or false this function is
- * byte-identical to before. When `makeSpace` is true (the pointer machine
- * passes `ctx.rippleMode`), a collision at the pointed-at track (`targetIdx`)
- * stops being disqualifying, CapCut-style: instead of fanning out to another
- * track, the drop lands exactly where the drag points and PUSHES every item
- * on that track whose `start` is at/after the dropped item's own `start` to
- * the right by the dropped item's duration, making room for it in place. The
- * search below still runs — so the kind-lock and the "one past the end mints
- * a track" rule are unchanged — but with `makeSpace` on it only ever fans out
- * for a KIND mismatch, never for a collision, since collision no longer
- * disqualifies a candidate. Dropping into a genuine gap (no collision at
- * `targetIdx`) is identical in both modes — there is nothing to push.
+ * The answer may be past the end of `tracks`, which is the caller's signal that
+ * the drop would MINT a new track — a legal landing with, by construction, no
+ * neighbours on it.
  */
-export function moveItemAcrossTracks({ tracks, item, start, end, sourceTrackIdx, dy, makeSpace = false }: CrossTrackMoveArgs): VisualTrack[] {
+export function resolveTargetTrackIdx(
+  { tracks, item, start, end, sourceTrackIdx, dy, makeSpace = false }: CrossTrackMoveArgs,
+  { kindOnly = false }: ResolveTargetTrackOptions = {},
+): number {
   const trackDelta = Math.round(dy / VISUAL_ROW_HEIGHT_PX)
   const targetIdx = Math.max(0, sourceTrackIdx - trackDelta)
   const duration = end - start
@@ -327,12 +327,73 @@ export function moveItemAcrossTracks({ tracks, item, start, end, sourceTrackIdx,
       // item's own kind by construction, so `[]` always passes `kindOk`.
       const candidateItems = i < tracks.length ? tracks[i].items : []
       // In ripple mode a collision is no longer disqualifying (it becomes a
-      // ripple-insert below), so the gate drops to kind-only — which is what
-      // keeps the search from fanning out past the pointed-at track just
-      // because something is sitting there.
-      const collisionOk = makeSpace || !hasOverlap(candidateItems)
+      // ripple-insert in `moveItemAcrossTracks`), so the gate drops to
+      // kind-only — which is what keeps the search from fanning out past the
+      // pointed-at track just because something is sitting there. `kindOnly`
+      // drops it for a different reason; see the option's own doc.
+      const collisionOk = kindOnly || makeSpace || !hasOverlap(candidateItems)
       if (collisionOk && kindOk(candidateItems)) { bestIdx = i; break outer }
     }
+  }
+  return bestIdx
+}
+
+/**
+ * Place a dragged item on the visual track its vertical travel points at,
+ * searching outward for one where it does not collide.
+ *
+ * Extracted verbatim from VisualTrackRow's drag handler so the canvas pointer
+ * machine (SP5 T5) lands items in exactly the same track the DOM rows would.
+ * The rules it encodes, none of them obvious from the outside:
+ *
+ * - Vertical travel is divided by `VISUAL_ROW_HEIGHT_PX` (24), not the rendered
+ *   row height, so a drag reaches the neighbouring track before the cursor has
+ *   fully left the current one. Downward travel LOWERS the track index, because
+ *   tracks are stacked with the highest index on top.
+ * - "Collision" means overlapping an existing item by more than 30% of the
+ *   dragged item's duration; brushing past a neighbour is allowed.
+ * - When the target track is occupied the search fans out — one above, one
+ *   below, then two, and so on — and one step past the end of the array is a
+ *   legal answer, which is how a drag creates a new top track. That search now
+ *   lives in `resolveTargetTrackIdx` above, which this calls: the snap tier
+ *   needs the same answer without the move.
+ * - Tracks left empty by the move are pruned, so dragging the last item off a
+ *   track collapses it. The surviving TRACK OBJECTS are carried through the
+ *   prune, so each keeps its own id and its own volume/muted/enabled. (This is
+ *   the whole reason tracks are objects: with settings held in a parallel array
+ *   indexed alongside `tracks`, a prune shifts every index above it and hands
+ *   the wrong settings to the wrong track.)
+ * - A drag past the top of the stack mints a new track, with a fresh id from
+ *   the same rule the normalizer uses and deduped against the ids already in
+ *   play, so it can never collide with a surviving track.
+ *
+ * ── Ripple-insert (`makeSpace`, magnet/ripple mode ON) ────────────────────
+ * Everything above is the magnet-OFF path and is completely unchanged by
+ * `makeSpace` being available — with it omitted or false this function is
+ * byte-identical to before. When `makeSpace` is true (the pointer machine
+ * passes `ctx.rippleMode`), a collision at the pointed-at track
+ * (`resolveTargetTrackIdx`'s `targetIdx`)
+ * stops being disqualifying, CapCut-style: instead of fanning out to another
+ * track, the drop lands exactly where the drag points and PUSHES every item
+ * on that track whose `start` is at/after the dropped item's own `start` to
+ * the right by the dropped item's duration, making room for it in place. The
+ * search still runs — so the kind-lock and the "one past the end mints a track"
+ * rule are unchanged — but with `makeSpace` on it only ever fans out
+ * for a KIND mismatch, never for a collision, since collision no longer
+ * disqualifies a candidate. Dropping into a genuine gap (no collision at that
+ * same pointed-at track) is identical in both modes — there is nothing to push.
+ */
+export function moveItemAcrossTracks(args: CrossTrackMoveArgs): VisualTrack[] {
+  const { tracks, item, start, end, makeSpace = false } = args
+  const duration = end - start
+  const overlapMin = duration * 0.3
+  const bestIdx = resolveTargetTrackIdx(args)
+
+  function hasOverlap(items: VisualItem[]): boolean {
+    return items.some(other => {
+      if (other.id === item.id) return false
+      return Math.min(end, other.end) - Math.max(start, other.start) > overlapMin
+    })
   }
 
   const removed = tracks.map(t => ({ ...t, items: t.items.filter(other => other.id !== item.id) }))
@@ -543,6 +604,27 @@ function assignTrackId(index: number, taken: Set<string>): string {
   }
   taken.add(candidate)
   return candidate
+}
+
+/**
+ * A fresh, collision-free track id for a track about to be appended at the
+ * end of `tracks` — the public door onto `assignTrackId` above, for callers
+ * outside this module that mint a whole new track (today: `placement.ts`'s
+ * "no free video track, make one" case). Delegates to the same private rule
+ * `normalizeTracks`/`moveItemAcrossTracks` use (`trk-<index>`, then
+ * `trk-<index>-2`, `-3`, … until free) rather than re-deriving it, so there
+ * remains exactly ONE implementation of the id convention.
+ *
+ * `index` is `tracks.length` — the new track's own position once appended —
+ * and `taken` is every id already in `tracks`, collected fresh on each call
+ * so a caller never has to keep its own id set in sync.
+ */
+export function nextVisualTrackId(tracks: readonly unknown[]): string {
+  const taken = new Set<string>()
+  for (const track of tracks) {
+    if (isTrackObject(track) && isTrackId(track.id)) taken.add(track.id)
+  }
+  return assignTrackId(tracks.length, taken)
 }
 
 // ── Track group ordering ─────────────────────────────────────────────────

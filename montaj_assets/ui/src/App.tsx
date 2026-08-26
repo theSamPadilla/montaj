@@ -3,8 +3,6 @@ import { Link, Outlet, useLocation } from 'react-router-dom'
 import { Moon, Sun } from 'lucide-react'
 import { useIsMobile } from '@/lib/useIsMobile'
 import MobileTopNav from '@/components/MobileTopNav'
-import ProxyActivityIndicator from '@/components/ProxyActivityIndicator'
-import CaptionActivityIndicator from '@/components/CaptionActivityIndicator'
 import { CaptionJobProvider } from '@/app/editor/captionJob'
 
 function Wordmark() {
@@ -80,10 +78,6 @@ export default function App() {
                 </Link>
               ))}
             </nav>
-            <div className="absolute left-1/2 -translate-x-1/2 flex items-center gap-3 pointer-events-none">
-              <ProxyActivityIndicator />
-              <CaptionActivityIndicator />
-            </div>
             <button
               onClick={() => setDark(d => !d)}
               className="p-1.5 rounded text-gray-400 hover:text-gray-700 hover:bg-gray-100 dark:hover:text-gray-200 dark:hover:bg-gray-800 transition-colors"

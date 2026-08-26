@@ -327,6 +327,23 @@ describe('ClipPropertiesPanel — audio selection', () => {
     expect(onCommitAudio).toHaveBeenCalledTimes(2)
   })
 
+  it('fade in stepper: fires exactly one discrete onChangeAudio through clampAudioPatch, no preview/commit', () => {
+    // The largest new adoption site for the stepper contract, and the only
+    // one routing through `clampAudioPatch` (see AudioSection's comment on
+    // why the fade rows' own `Math.max(0, v)` is redundant with it). A
+    // stepper click is a DISCRETE edit — one final change, one undo entry —
+    // never a preview/commit pair.
+    const { onPreviewAudio, onCommitAudio, onChangeAudio } = renderPanel({ kind: 'audio', track: audioTrack({ fadeIn: 0 }) })
+    openSection('Fades')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Increase Fade in' }))
+
+    expect(onChangeAudio).toHaveBeenCalledTimes(1)
+    expect(onChangeAudio.mock.calls[0][0]).toMatchObject({ fadeIn: 0.1 })
+    expect(onPreviewAudio).not.toHaveBeenCalled()
+    expect(onCommitAudio).not.toHaveBeenCalled()
+  })
+
   it('trim: in point and out point each write their own field', () => {
     const { onPreviewAudio, onCommitAudio } = renderPanel({ kind: 'audio', track: audioTrack({ inPoint: 0, outPoint: 10 }) })
 

@@ -5,6 +5,7 @@ import { ProjectContext, normalizeTracks, mapTrackItems, trackItems, type Asset,
 import { useProjectStream } from '@/lib/sse'
 import { createMontajAdapter } from './montajAdapter'
 import { useCaptionJobStatus, useCaptionJobSink } from './captionJob'
+import { useTimelineImport } from './timelineImport'
 import { useIsMobile } from '@/lib/useIsMobile'
 import { useIsDark } from '@/lib/useIsDark'
 import { Upload } from 'lucide-react'
@@ -357,6 +358,26 @@ export default function EditorPage() {
     }
   }, [project, handleProjectChange])
 
+  // Filesystem-drop-onto-timeline import (video branch only, but declared
+  // unconditionally like every other hook here — see the Rules-of-Hooks
+  // note above handleAssetsChange). `pendingDrops` and
+  // `handleImportFilesToTimeline` are handed straight to VideoEditor below;
+  // see timelineImport.ts's header for the full design (a ghost band is
+  // deliberately NOT a timeline item, and why the sources-reconciliation
+  // race with the ingest SSE frame matters).
+  const { pendingDrops, handleImportFilesToTimeline } = useTimelineImport({
+    adapter,
+    projectRef,
+    onProjectChange: handleProjectChange,
+    // The ROUTE's project id, not `project?.id` — authoritative independent
+    // of `projectRef`'s own staleness (see `projectRef`'s comment above: it
+    // only advances via `handleProjectChange`, so a bare navigation to a new
+    // project can leave it pointing at the OLD one for a while). Same
+    // "outlives its route" guard `captionsGenerating` below already applies
+    // to the caption job.
+    projectId: id,
+  })
+
   const carouselSlots: EditorSlots = useMemo(
     () => ({
       assetsPanel: (
@@ -619,6 +640,8 @@ export default function EditorPage() {
             slots={videoSlots}
             sourcePreview={sourcePreview}
             renderProgressView="logs"
+            pendingDrops={pendingDrops}
+            onImportFilesToTimeline={handleImportFilesToTimeline}
             onProvideRenderTrigger={(fn) => setOpenRender(() => fn)}
             onProvideImageTone={setImageToneApi}
             onBackToSetup={handleBackToSetup}

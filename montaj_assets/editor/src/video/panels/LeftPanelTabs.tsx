@@ -1,4 +1,4 @@
-import { useId, useRef, useState, type KeyboardEvent, type ReactNode } from 'react'
+import { useEffect, useId, useRef, useState, type KeyboardEvent, type ReactNode } from 'react'
 import { cn } from '../../ui'
 import { usePersistentState } from '../../ui/usePersistentState'
 
@@ -21,6 +21,13 @@ export interface LeftPanelTabsProps {
   /** localStorage key for the active-tab preference.
    *  Default: 'montaj.editor.leftPanelTab'. */
   storageKey?: string
+  /** Host-driven tab activation. When `nonce` changes to a positive value, the
+   *  panel switches to `id` (if it names a real tab). Each activation is a
+   *  fresh `nonce` so re-selecting the same target still switches — this stays
+   *  generic (it never learns what a "caption" is): the editor bumps the nonce
+   *  when a caption is selected so the panel jumps to Captions. `nonce` 0 (the
+   *  initial value) never forces a tab, so a persisted preference wins on mount. */
+  activationRequest?: { id: string; nonce: number }
   className?: string
 }
 
@@ -31,7 +38,7 @@ const DEFAULT_STORAGE_KEY = 'montaj.editor.leftPanelTab'
  * Knows nothing about media/captions/versions — the host supplies tabs and
  * this component only handles the rail, persistence, and lazy mounting.
  */
-export default function LeftPanelTabs({ tabs, defaultTabId, storageKey = DEFAULT_STORAGE_KEY, className }: LeftPanelTabsProps) {
+export default function LeftPanelTabs({ tabs, defaultTabId, storageKey = DEFAULT_STORAGE_KEY, activationRequest, className }: LeftPanelTabsProps) {
   const baseId = useId()
   const buttonRefs = useRef(new Map<string, HTMLButtonElement | null>())
 
@@ -47,6 +54,18 @@ export default function LeftPanelTabs({ tabs, defaultTabId, storageKey = DEFAULT
     // rendering a blank pane.
     raw => (typeof raw === 'string' && tabs.some(t => t.id === raw) ? raw : null),
   )
+
+  // Host-driven activation (see `activationRequest`). Keyed ONLY on the nonce:
+  // `tabs` is a fresh array every render, so depending on it would re-fire the
+  // effect (and stomp the user's manual tab choice) on every render. When the
+  // nonce ticks we read the current `id`/`tabs` from this render's closure,
+  // which are up to date, so there is no stale-value risk.
+  const activationNonce = activationRequest?.nonce ?? 0
+  useEffect(() => {
+    if (activationNonce <= 0 || !activationRequest) return
+    if (tabs.some(t => t.id === activationRequest.id)) setActiveId(activationRequest.id)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activationNonce])
 
   // Stale-tab safety at render time too: `tabs` can change after mount (a
   // host swapping which tabs it offers). If the persisted/active id no
@@ -124,7 +143,9 @@ export default function LeftPanelTabs({ tabs, defaultTabId, storageKey = DEFAULT
               className={cn(
                 'relative flex flex-col items-center gap-1 px-1 py-2.5 text-[10px] transition-colors',
                 selected
-                  ? 'text-[var(--editor-accent)] bg-[var(--editor-accent)]/10'
+                  // Label is ~10px accent TEXT → the AA-safe accent-text token
+                  // (indigo-600 in light); the tint fill keeps the plain accent.
+                  ? 'text-[var(--editor-accent-text)] bg-[var(--editor-accent)]/10'
                   : 'text-[var(--editor-text)]/60 hover:text-[var(--editor-text)] hover:bg-[var(--editor-text)]/5',
               )}
             >
