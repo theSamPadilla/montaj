@@ -8,7 +8,7 @@
  */
 import { describe, it, expect } from 'vitest'
 import type { EditorProject as Project, VisualItem, VisualTrack } from '../../../schema'
-import { placeDroppedClip } from '../placement'
+import { placeDroppedClip, resolveDropTrackIndex } from '../placement'
 
 function vtracks(...items: VisualItem[][]): VisualTrack[] {
   return items.map((its, i) => ({ id: `trk-${i}`, items: its }))
@@ -140,6 +140,42 @@ describe('placeDroppedClip — kind lock', () => {
     })
     expect(result.trackIndex).toBe(0)
     expect(result.project.tracks![1].items).toEqual([imageItem('img', 0, 100)]) // untouched
+  })
+})
+
+describe('resolveDropTrackIndex — where the ghost band goes', () => {
+  it('resolves a drop released over an overlay/image row to the VIDEO row (the ghost bug)', () => {
+    // The exact filesystem-drop ghost defect: the pointer released over the
+    // image row (index 1), so the ghost used to draw there — but the clip
+    // always lands on the video row. The ghost must resolve the same way.
+    const p = makeProject({
+      tracks: vtracks(
+        [videoItem('a', 20, 25)],   // trk-0: video-kind, free at the drop window
+        [imageItem('img', 0, 100)], // trk-1: image-kind — never a ghost home
+      ),
+    })
+    const idx = resolveDropTrackIndex(p, {
+      atTime: 0,
+      preferredTrackIndex: 1, // released over the image row
+      clip: { sourceDuration: 3 },
+    })
+    expect(idx).toBe(0)
+  })
+
+  it('returns a past-the-end index (a fresh video row) when no video row is free', () => {
+    const p = makeProject({
+      tracks: vtracks(
+        [videoItem('a', 0, 100)],   // the only video row, occupied across the drop
+        [imageItem('img', 0, 100)],
+      ),
+    })
+    const idx = resolveDropTrackIndex(p, {
+      atTime: 0,
+      preferredTrackIndex: 0,
+      ripple: false,
+      clip: { sourceDuration: 5 }, // overlaps the occupied video row
+    })
+    expect(idx).toBe(2) // == tracks.length ⇒ placeDroppedClip would make a new track
   })
 })
 

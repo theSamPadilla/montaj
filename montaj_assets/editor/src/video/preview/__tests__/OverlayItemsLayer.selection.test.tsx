@@ -24,7 +24,7 @@ import OverlayItemsLayer from '../OverlayItemsLayer'
 // carrier for clientX/clientY in this setup. A gesture test that asserts
 // nothing is worse than no gesture test at all.
 
-const emptySnap = { x: false, y: false, left: false, right: false, top: false, bottom: false }
+const _emptySnap = { x: false, y: false, left: false, right: false, top: false, bottom: false }
 
 // 100×100 makes one pixel of mouse travel exactly 1%, so every delta below
 // reads directly as a percentage of scale.

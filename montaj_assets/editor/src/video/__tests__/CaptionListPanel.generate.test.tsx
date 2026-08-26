@@ -13,7 +13,7 @@ import { render, screen, fireEvent, cleanup } from '@testing-library/react'
 import type { Project } from '../../types'
 import type { Captions, CaptionSegment } from '../../schema'
 import type { PlaybackClock } from '../playback-clock'
-import CaptionListPanel, { type CaptionListPanelProps } from '../CaptionListPanel'
+import CaptionListPanel from '../CaptionListPanel'
 
 // The panel's active sub-tab persists to localStorage (usePersistentState).
 // Clear it, then seed 'captions' so the regenerate-trigger assertions render

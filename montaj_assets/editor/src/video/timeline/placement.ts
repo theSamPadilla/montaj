@@ -218,47 +218,65 @@ function placeOnNewTrack<P extends Project>(
  *     op in this codebase uses). No free candidate → mint a new track.
  * 5. New track: see `placeOnNewTrack`.
  */
+/**
+ * Where a dropped clip WOULD land, WITHOUT placing it — the resolved
+ * video-track index in normalized order, or `normalizeTracks(project).tracks.length`
+ * (a row that does not exist yet) when a NEW video track would be created.
+ *
+ * This is the EXACT selection `placeDroppedClip` makes (it calls this), so a
+ * caller can draw a pre-ingest ghost band on the row the real clip will land on
+ * instead of wherever the pointer happened to be — a filesystem drop that
+ * released over an overlay/image row must still ghost on a VIDEO row, because
+ * that is where the clip resolves to. `closestByIndex` here, and the ghost
+ * renderer's own "unknown index falls back to the base video row" (see
+ * `pendingDropBands`), together guarantee the ghost never sits on an overlay
+ * row. `clip.sourceDuration` matters only in the ripple-OFF free-gap test —
+ * pass the ghost's fast local probe.
+ */
+export function resolveDropTrackIndex<P extends Project>(
+  project: P,
+  placement: Pick<DroppedClipPlacement, 'atTime' | 'preferredTrackIndex' | 'ripple' | 'snapTimes' | 'snapToleranceSec'>
+    & { clip: Pick<NewClipInput, 'sourceDuration'> },
+): number {
+  const { clip, ripple = false, preferredTrackIndex } = placement
+  const dropAt = Math.max(0, resolveDropPoint(placement))
+  const tracks = normalizeTracks(project).tracks ?? []
+  const candidateIdxs: number[] = []
+  tracks.forEach((t, i) => { if (isVideoCandidate(t, i)) candidateIdxs.push(i) })
+  const ref = preferredTrackIndex >= 0 ? preferredTrackIndex : 0
+
+  if (ripple) {
+    // Ripple ON — collision never disqualifies a candidate.
+    if (candidateIdxs.includes(preferredTrackIndex)) return preferredTrackIndex
+    if (candidateIdxs.length > 0) return closestByIndex(candidateIdxs, ref)
+    return tracks.length // no video row exists ⇒ a fresh one would be created
+  }
+
+  // Ripple OFF — only a candidate whose drop window is actually free.
+  const freeIdxs = candidateIdxs.filter(
+    i => !overlapsAny(dropAt, dropAt + clip.sourceDuration, tracks[i].items),
+  )
+  if (freeIdxs.length === 0) return tracks.length
+  return closestByIndex(freeIdxs, ref)
+}
+
 export function placeDroppedClip<P extends Project>(
   project: P,
   placement: DroppedClipPlacement,
 ): PlacedClipResult<P> {
-  const { clip, ripple = false, preferredTrackIndex } = placement
+  const { clip, ripple = false } = placement
 
   // 0. Guard — an unplaceable clip places nothing, by reference.
   if (!(Number.isFinite(clip.sourceDuration) && clip.sourceDuration > 0)) return nothingPlaced(project)
 
-  // 1. Drop point.
+  // 1. Drop point + target row. The row is resolved by `resolveDropTrackIndex`
+  // so placement and the pre-ingest ghost band can never diverge.
   const dropAt = Math.max(0, resolveDropPoint(placement))
-
-  // 2. Candidates, in NORMALIZED order — every index below refers into this
-  // same array, and the array itself (not just its ids) is what `ref` and
-  // `closestByIndex` measure distance over.
   const tracks = normalizeTracks(project).tracks ?? []
-  const candidateIdxs: number[] = []
-  tracks.forEach((t, i) => { if (isVideoCandidate(t, i)) candidateIdxs.push(i) })
+  const targetIdx = resolveDropTrackIndex(project, placement)
 
-  // 3. Reference point for "closest".
-  const ref = preferredTrackIndex >= 0 ? preferredTrackIndex : 0
-
-  if (ripple) {
-    // 4a. Ripple ON — collision never disqualifies a candidate.
-    let targetIdx: number
-    if (candidateIdxs.includes(preferredTrackIndex)) {
-      targetIdx = preferredTrackIndex
-    } else if (candidateIdxs.length > 0) {
-      targetIdx = closestByIndex(candidateIdxs, ref)
-    } else {
-      return placeOnNewTrack(project, tracks, clip, dropAt, true)
-    }
-    return placeOnTrack(project, tracks[targetIdx].id, clip, dropAt, true, false)
-  }
-
-  // 4b. Ripple OFF — only a candidate whose drop window is actually free.
-  const freeIdxs = candidateIdxs.filter(
-    i => !overlapsAny(dropAt, dropAt + clip.sourceDuration, tracks[i].items),
-  )
-  if (freeIdxs.length === 0) return placeOnNewTrack(project, tracks, clip, dropAt, false)
-
-  const targetIdx = closestByIndex(freeIdxs, ref)
-  return placeOnTrack(project, tracks[targetIdx].id, clip, dropAt, false, false)
+  // targetIdx past the end of the (same, normalized) array ⇒ no existing video
+  // row fits ⇒ a new track is created.
+  if (targetIdx >= tracks.length) return placeOnNewTrack(project, tracks, clip, dropAt, ripple)
+  return placeOnTrack(project, tracks[targetIdx].id, clip, dropAt, ripple, false)
 }

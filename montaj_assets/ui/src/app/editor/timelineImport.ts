@@ -59,7 +59,7 @@
 import { useCallback, useEffect, useRef, useState, type MutableRefObject } from 'react'
 import { api } from '@/lib/api'
 import { probeVideoDuration } from '@/lib/videoDuration'
-import { placeDroppedClip, type EditorAdapter, type PendingDrop, type TimelineDropPlacement } from '@bycrux/editor'
+import { placeDroppedClip, resolveDropTrackIndex, type EditorAdapter, type PendingDrop, type TimelineDropPlacement } from '@bycrux/editor'
 import type { Project, VisualItem } from '@/lib/types/schema'
 
 export interface UseTimelineImportArgs {
@@ -379,9 +379,26 @@ export function useTimelineImport({
           // `atTimePromise` above derives both from the same `settled`
           // result — so this second `.then` never actually waits.
           void ownProbe.then(durationSec => {
+            // Draw the ghost on the VIDEO row the clip will actually land on,
+            // NOT the raw row the pointer released over — that raw row can be
+            // an overlay/image row, and a ghost there is misleading (the clip
+            // itself always resolves to a video row via `placeDroppedClip`).
+            // Same selection rule, so the ghost and the eventual placement can
+            // never disagree. If the project momentarily isn't available, fall
+            // back to the raw index (the canvas ghost renderer clamps an
+            // unknown row to the base video row regardless).
+            const project = projectRef.current
+            const trackIndex = project
+              ? resolveDropTrackIndex(project, {
+                  atTime,
+                  preferredTrackIndex: placement.preferredTrackIndex,
+                  ripple: placement.ripple,
+                  clip: { sourceDuration: durationSec as number },
+                })
+              : placement.preferredTrackIndex
             setPendingDrops(prev => [
               ...prev,
-              { id: dropId, atTime, durationSec: durationSec as number, trackIndex: placement.preferredTrackIndex, label: file.name },
+              { id: dropId, atTime, durationSec: durationSec as number, trackIndex, label: file.name },
             ])
           })
         })

@@ -97,7 +97,7 @@ export {
 // footage-bin drag today, a filesystem drop in a later task) — public so the
 // host can route either drop through it rather than each reimplementing
 // "land where you dropped it, without stomping existing footage".
-export { placeDroppedClip } from './video/timeline/placement'
+export { placeDroppedClip, resolveDropTrackIndex } from './video/timeline/placement'
 export type { DroppedClipPlacement, PlacedClipResult } from './video/timeline/placement'
 
 // ── Image tone (HDR image color mapping) ─────────────────────────────────────

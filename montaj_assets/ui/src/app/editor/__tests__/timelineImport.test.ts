@@ -102,9 +102,12 @@ describe('useTimelineImport', () => {
       result.current.handleImportFilesToTimeline([videoFile('a.mp4')], { atTime: 5, preferredTrackIndex: -1, ripple: false })
       await vi.advanceTimersByTimeAsync(0)
     })
-    // Ghost appears immediately, at the drop point, before the job resolves.
+    // Ghost appears immediately, at the drop point, before the job resolves —
+    // resolved onto the VIDEO row the clip will land on (the empty base row,
+    // index 0, is a video candidate), NOT the raw "no preference" -1 the drop
+    // carried. This is what keeps a ghost off an overlay/image row.
     expect(result.current.pendingDrops).toEqual([
-      { id: expect.any(String), atTime: 5, durationSec: 8, trackIndex: -1, label: 'a.mp4' },
+      { id: expect.any(String), atTime: 5, durationSec: 8, trackIndex: 0, label: 'a.mp4' },
     ])
 
     await act(async () => {
@@ -424,8 +427,8 @@ describe('useTimelineImport', () => {
     // point, b butted against its end) — not resolution order, even though
     // b's probe settled first.
     expect(result.current.pendingDrops).toEqual([
-      { id: expect.any(String), atTime: 10, durationSec: 4, trackIndex: -1, label: 'a.mp4' },
-      { id: expect.any(String), atTime: 14, durationSec: 6, trackIndex: -1, label: 'b.mp4' },
+      { id: expect.any(String), atTime: 10, durationSec: 4, trackIndex: 0, label: 'a.mp4' },
+      { id: expect.any(String), atTime: 14, durationSec: 6, trackIndex: 0, label: 'b.mp4' },
     ])
   })
 

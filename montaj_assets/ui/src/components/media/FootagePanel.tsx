@@ -11,6 +11,7 @@ import {
 import { api } from '@/lib/api'
 import { basename } from '@/lib/utils'
 import type { VisualItem } from '@/lib/types/schema'
+import VideoPreviewModal from './VideoPreviewModal'
 
 // Duplicated across upload/*UploadFields.tsx (no shared export exists) —
 // matches that convention rather than introducing a new one.
@@ -107,6 +108,9 @@ export default function FootagePanel({
   const [sortKey, setSortKey] = useState<SortKey | null>(null)
   const [sortMenuOpen, setSortMenuOpen] = useState(false)
   const sortMenuRef = useRef<HTMLDivElement>(null)
+  // The source currently open in the fullscreen preview modal, opened by
+  // double-clicking its card. Null = no modal.
+  const [previewSource, setPreviewSource] = useState<VisualItem | null>(null)
 
   useEffect(() => {
     const timers = pollTimers.current
@@ -390,6 +394,7 @@ export default function FootagePanel({
                   key={source.id}
                   draggable={placeable}
                   onDragStart={e => handleDragStart(e, source)}
+                  onDoubleClick={() => setPreviewSource(source)}
                   className={`group relative rounded overflow-hidden border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 ${placeable ? 'cursor-grab active:cursor-grabbing' : 'cursor-default'}`}
                 >
                   <div
@@ -479,6 +484,15 @@ export default function FootagePanel({
           </div>
         )}
       </div>
+
+      {previewSource && (
+        <VideoPreviewModal
+          source={previewSource}
+          fileUrl={fileUrl}
+          onClose={() => setPreviewSource(null)}
+          onRemove={onRemove}
+        />
+      )}
     </div>
   )
 }

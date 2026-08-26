@@ -105,7 +105,7 @@ function keyframedProject(): Project {
  *  `project.tracks` straight through, so this is what an editor genuinely
  *  reaches for when server-side shape normalization hasn't run yet (e.g. the
  *  SSE stream's initial frame reads project.json off disk unmigrated). */
-function legacyProject(): Project {
+function _legacyProject(): Project {
   return {
     id: 'p',
     tracks: [

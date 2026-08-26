@@ -309,6 +309,31 @@ describe('FootagePanel', () => {
     expect((JSON.parse(json) as FootageDropPayload).sourceDuration).toBe(12)
   })
 
+  it('opens the video preview modal on double-click, without affecting single-click drag setup', () => {
+    render(<FootagePanel {...baseProps({ sources: [source()] })} />)
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+
+    const card = screen.getByText('clip-one.mp4').closest('.group') as HTMLElement
+    fireEvent.doubleClick(card)
+
+    expect(screen.getByRole('dialog')).toBeInTheDocument()
+    // Two "clip-one.mp4" now render: the card's own label and the modal's.
+    expect(screen.getAllByText('clip-one.mp4').length).toBeGreaterThanOrEqual(2)
+  })
+
+  it('closes the preview modal on Escape and deletes via onRemove from the modal', () => {
+    const onRemove = vi.fn()
+    render(<FootagePanel {...baseProps({ sources: [source()], onRemove })} />)
+
+    const card = screen.getByText('clip-one.mp4').closest('.group') as HTMLElement
+    fireEvent.doubleClick(card)
+    expect(screen.getByRole('dialog')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByText('Delete'))
+    expect(onRemove).toHaveBeenCalledWith('src-1')
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+  })
+
   it('shows the error message on a failed probe and leaves the button retryable', async () => {
     probeSourceDuration.mockRejectedValue(new Error('Source file is missing: /x.mov'))
     render(<FootagePanel {...baseProps({ sources: [source({ sourceDuration: undefined })] })} />)

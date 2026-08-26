@@ -8,6 +8,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Video editor
 
+- **Filesystem-drop ghost lands on the video row the clip will.** A dropped desktop video's pre-ingest ghost band used to draw on whatever row the pointer released over — an overlay or image row included — even though the finished clip always resolves to a video row. It now resolves to that same video row, via a new shared `resolveDropTrackIndex` (exported beside `placeDroppedClip`), so the ghost and the placement can never disagree. (`video/timeline/placement.ts`, `index.ts`)
+
 - **Caption Format tab: a slider on font size, bigger row labels, and the one-word preview is gone.** Font size now has the shared slider next to its typeable box (drag for a quick size, type for an exact one — both drive the same live value), the Format-tab row labels are a touch larger, and the small specimen box that showed a single word for a whole-sentence style has been removed (the Styles gallery is the size-faithful preview). (`CaptionListPanel.tsx`, `CaptionSpecimen` usage dropped)
 
 - **Selecting a caption anywhere jumps the left panel to its Captions tab.** Clicking a caption on the timeline, in the preview, or in the list now switches the browser panel to Captions, so its controls are in front of you. It never fights a manual tab choice on mount, and re-selecting the same caption still snaps back. (`panels/LeftPanelTabs.tsx`, `VideoEditor.tsx`)

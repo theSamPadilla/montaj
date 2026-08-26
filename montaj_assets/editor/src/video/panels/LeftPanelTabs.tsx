@@ -61,11 +61,14 @@ export default function LeftPanelTabs({ tabs, defaultTabId, storageKey = DEFAULT
   // nonce ticks we read the current `id`/`tabs` from this render's closure,
   // which are up to date, so there is no stale-value risk.
   const activationNonce = activationRequest?.nonce ?? 0
+  const activationId = activationRequest?.id
   useEffect(() => {
-    if (activationNonce <= 0 || !activationRequest) return
-    if (tabs.some(t => t.id === activationRequest.id)) setActiveId(activationRequest.id)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activationNonce])
+    if (activationNonce <= 0 || !activationId) return
+    if (tabs.some(t => t.id === activationId)) setActiveId(activationId)
+    // Intentionally keyed on the nonce alone (see the note above); `tabs`/
+    // `setActiveId` are deliberately not deps. `react-hooks/exhaustive-deps`
+    // is not enabled in this package's eslint config, so no disable is used.
+  }, [activationNonce, activationId])
 
   // Stale-tab safety at render time too: `tabs` can change after mount (a
   // host swapping which tabs it offers). If the persisted/active id no

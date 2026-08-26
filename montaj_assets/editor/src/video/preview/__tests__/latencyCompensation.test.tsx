@@ -431,7 +431,7 @@ describe('engine bridge — syncAudioTracks callsites outside emitTime', () => {
   it('a transport transition re-syncs lanes to the RAW playhead, not the latency-painted one', () => {
     stubCtx({ outputLatency: 1, baseLatency: 0 })
     const onTimeUpdate = vi.fn<(t: number) => void>()
-    const view = renderHook(
+    renderHook(
       ({ p }: { p: EditorProject }) => useEnginePlayback(p, 0, onTimeUpdate, (path) => path),
       { initialProps: { p: projectWithAudio(true) } },
     )
