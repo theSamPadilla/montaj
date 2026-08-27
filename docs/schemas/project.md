@@ -158,6 +158,11 @@ Items in `tracks[0].items` are always `type: "video"`. They have explicit `start
 ]
 ```
 
+`clip-1`'s `transition` field above is round-tripped but **inert** — nothing
+in the editor or the render pipeline reads it. See the `transition` row below
+and [Transitions](#transitions) for the mechanism that actually blends two
+overlapping clips.
+
 | Field | Type | Description |
 |-------|------|-------------|
 | `id` | string | Unique identifier |
@@ -167,7 +172,7 @@ Items in `tracks[0].items` are always `type: "video"`. They have explicit `start
 | `end` | number | Output timeline position — when this clip ends (seconds). `end - start` must equal `outPoint - inPoint`. |
 | `inPoint` | number | Start time in the source file (seconds). Set by clean/trim steps. |
 | `outPoint` | number | End time in the source file (seconds). Set by clean/trim steps. |
-| `transition` | object | Transition into this clip. Omit for hard cut. |
+| `transition` | object | **Dead — nothing reads this field.** Round-tripped for backward compatibility only; a project written years ago may still carry it. It described the shape of a per-clip transition, but a real crossfade mechanism now exists and does not use it — see [Transitions](#transitions) below for what actually drives a blend between two overlapping clips. |
 | `sourceCrop` | object | Optional. `{x, y, w, h}` as fractions of the source's DISPLAY dimensions — rotation-corrected, not the coded/stored dimensions (`[0, 1]`). Defines the visible region for vertical reframing (e.g. auto-reframe from landscape to portrait). All four keys required when present. |
 | `sourceWidth` | number | Optional. The source's DISPLAY pixel width (post-rotation) — required for `sourceCrop` to render correctly. Written by the `montaj/reframe` step; a raw `probe` reports CODED dimensions instead (e.g. a rotated iPhone clip codes 1920x1080 but displays 1080x1920), and using those here crops the wrong axis. `engine/validate.py` rejects a `sourceCrop`ped item whose recorded dims disagree with the source's real display dimensions. |
 | `sourceHeight` | number | Optional. The source's DISPLAY pixel height (post-rotation) — see `sourceWidth` above; same source, same validation. |
@@ -177,7 +182,10 @@ Items in `tracks[0].items` are always `type: "video"`. They have explicit `start
 | `volume` | number | Optional. Gain for this clip's audio, `0.0`–`2.0`. Default `1.0`. Multiplies with the track's own `volume` (above) rather than replacing it. |
 | `speed` | number | Optional. Playback speed, `0.25`–`4`. Default `1.0`. Pitch-corrected in both preview and final render — audio plays at the new speed without a pitch shift. Speeding a clip up shortens its `end - start` on the timeline; slowing it down lengthens it. |
 
-**Transition types:** `cut` (default), `crossfade`, `flash-white`, `flash-black`
+**Transition types (historical, unused):** `cut` (default), `crossfade`,
+`flash-white`, `flash-black` — the values the dead `transition.type` field
+above would take if anything read it. Nothing does; see
+[Transitions](#transitions).
 
 **Duration formula:**
 ```
@@ -262,7 +270,7 @@ All timed graphical elements live in `tracks[1+]`'s `items` arrays. Each track i
 | `offsetY` | number | all | Vertical offset as % of frame height |
 | `scale` | number | all | Size multiplier from center |
 | `rotation` | number | all | Clockwise rotation in degrees. Optional; default 0. Any finite number — values outside [0,360) are normalized at render. |
-| `opacity` | number | all | Opacity 0.0–1.0 (default 1.0). Applied at compose time. |
+| `opacity` | number | all | Opacity 0.0–1.0 (default 1.0). Applied at compose time. An overlapping OVERLAY pair may carry editor-derived `opacity` *keyframes* that dissolve between the two — see [Transitions](#transitions) below. |
 | `keyframes` | array | overlay | Animate `offsetX`/`offsetY`/`scale`/`rotation`/`opacity` over the item's own lifetime instead of holding them fixed. Ignored on `image`/`video` items by the final render even if present — see "Overlay keyframes" below for the one narrower exception. |
 | `props` | object | overlay | Arbitrary props passed to the JSX component |
 | `opaque` | boolean | overlay | When `true`, render engine skips alpha — JSX controls full frame |
@@ -330,6 +338,14 @@ track on an `image` or `video` item is therefore IGNORED everywhere:
   a reason, and double-click-to-key skips it;
 - the Export dialog's still-frame preview reads the static scalar too.
 
+**[Transitions](#transitions) below do not reopen this.** A crossfade between
+two overlapping clips is not an `opacity` keyframe track at all — it is a
+structural blend, computed from the pair's overlap span and applied directly
+by the renderer and the editor's preview engine, never written as data and
+never sampled by `geometryAt`. A clip's own `opacity` field and any `opacity`
+curve remain exactly as ignored as everything above describes; a transition is
+not a curve.
+
 That last point closes a divergence this document used to describe. `resolveItem`
 (`timeline-core/src/activation.js`) calls `geometryAt` for every item kind, so a
 clip's sampled geometry has always been available to `render/sample-frame.js` —
@@ -342,6 +358,93 @@ Closing the opacity gap for real would need the per-frame browser bake extended
 to video: decode every frame of the animated span and composite it the way
 overlays already are. That was measured at 14–33× the expression path's render
 time and is out of scope; see `docs/RENDER.md`.
+
+### Transitions
+
+Two neighbouring items on the same track — either `tracks[0]` or an overlay
+track — may partially overlap: the incoming item starts before the outgoing
+one ends. Where the overlap is legal, that overlap **is** the transition: the
+render and the editor's preview both dissolve from one item to the other
+across the shared span, from the same blend factor.
+
+**The bounded-overlap rule.** A partial overlap between two neighbours is
+always legal. Two shapes are not, and `engine/validate.py` rejects both under
+the error code `visual_track_overlap`:
+
+- **Containment** — one item's span fully swallows the other's, identical
+  spans included. There is no "from" and no "to" to blend between; the inner
+  item is simply buried.
+- **Three or more items live at the same instant.** A transition is a pair.
+  A third overlapping item is the authoring mistake this check exists to
+  catch — put it on its own track instead.
+
+`tracks[0]` has never enforced the CONTAINMENT check — primary clips have
+always been free to overlap that way, with render compositing them in
+`itsoffset` order, and that stays true. The THREE-OR-MORE-LIVE check,
+however, applies to every track including `tracks[0]`: the resolver
+(`@bycrux/timeline-core`'s `transitionPairs`) always pairs CONSECUTIVE
+neighbours only, so a third clip live at the same instant as an existing
+pair has no honest "from"/"to" to join — the pair model itself breaks, not
+just the render's compositing order, so `tracks[0]` gets the same rejection
+an overlay track does. To summarize: on `tracks[0]`, an unbounded number of
+clips may overlap or nest so long as no more than two are ever live at the
+same instant; overlay tracks additionally forbid nesting (containment)
+between any two.
+
+**Two mechanisms, because a clip and an overlay can't use the same one.**
+
+- **A clip pair (`tracks[0]`, or `type: "image"`/`"video"` on an overlay
+  track) blends structurally, with nothing written to the project file.** The
+  resolver (`@bycrux/timeline-core`'s `transitionPairs`/`transitionProgress`)
+  derives the blend purely from each pair's overlap span, and both the render
+  and the editor's own preview engine read that same factor to composite the
+  two frames. No `opacity` field, static or keyframed, is involved at any
+  point. This is a hard requirement, not a design choice: ffmpeg applies a
+  clip's alpha through `colorchannelmixer=aa=`, whose `aa` option is a literal
+  `<double>` with no expression support at any evaluation mode, so a clip's
+  alpha cannot vary over time through the render's filter graph — see
+  "`opacity` is the exception" above.
+- **An overlay pair (`tracks[1+]`, `type: "overlay"` items) gets real,
+  editable `opacity` keyframes.** The editor writes complementary keyframe
+  tracks across the overlap — the outgoing item fading `1 → 0`, the incoming
+  one `0 → 1` — each marked `"origin": "crossfade"` on its `KeyframeTrack`
+  (see [Overlay keyframes](#overlay-keyframes) above for the track shape).
+  The operator can edit a derived curve like any other keyframe curve; the
+  moment it is edited by hand it stops carrying that marker, and from then on
+  the editor never rewrites it again — it belongs to the operator. This
+  derivation runs in the editor only. A project authored directly — a script,
+  an agent — gets no automatic fade: writing two overlapping overlays with no
+  `opacity` keyframes produces two items simply drawn on top of each other,
+  not a dissolve. To author a crossfade by hand, write the same `1 → 0` /
+  `0 → 1` `opacity` keyframe pair the editor would derive.
+
+**A mixed clip/overlay pair is NOT a transition — it hard-cuts.** The
+bounded-overlap rule only says a pairwise overlap is *legal*; it does not
+promise every legal overlap blends. On an overlay track, a `type: "video"`
+or `type: "image"` clip item can partially overlap a `type: "overlay"` item
+and pass validation (each item individually satisfies the bounded-overlap
+check), but nothing composites a blend between them: `transitionPairs`
+(the clip mechanism above) only ever pairs two CLIPS, and the editor's
+`opacity`-keyframe derivation (the overlay mechanism above) only ever pairs
+two OVERLAYS. Neither mechanism has any notion of the other's item type, and
+there is no meaningful way to make them agree — one is a structural frame
+blend computed from an overlap span, the other is baked `opacity` keyframe
+data on a JSX-rendered layer; there is no shared "blend factor" a clip's
+ffmpeg filter and an overlay's Puppeteer capture could both read. A clip and
+an overlay that partially overlap on the same track are therefore composited
+exactly as an author who wrote no crossfade at all would see: one item
+simply appears on top of (or beside) the other, cutting cleanly at each
+item's own `start`/`end`, with no dissolve. This is not something
+`engine/validate.py` rejects — a hard cut is a safe, unsurprising outcome,
+and rejecting a shape that safely degrades would risk breaking projects that
+already carry it.
+
+**The HOLD rule.** An overlay marked `opaque: true` covers the whole frame, so
+fading it out during a transition would reveal black — not the incoming item
+underneath it. When the OUTGOING side of a pair is `opaque`, it holds at full
+opacity for the whole transition and only the incoming item fades in over it —
+a true dissolve with no dip to black. An `opaque` item fading IN stays
+symmetric, since fading it in uncovers nothing.
 
 ---
 
@@ -471,13 +574,31 @@ Independent audio tracks, mixed into the video in a final pass. Every audio sour
 | field | type | meaning |
 |---|---|---|
 | `src` | string | Absolute path to the audio (or video — only its audio is read) file. Required. |
+| `id` | string | Optional. Unique id for this track. Not required when writing a project — the editor backfills it on open — but required for the editor to address a track individually (mute/volume/fade/delete); leaving it out on every track in a project is safe, since the backfill assigns each one its own id before any edit is applied. |
 | `muted` | bool | When true the track is skipped entirely. |
 | `volume` | number | Linear gain. Defaults to `1.0`. |
 | `start` | number | Where the track begins on the output timeline, in seconds. Implemented as a delay; defaults to `0`. |
 | `end` | number | Where the track stops on the output timeline, in seconds. |
 | `inPoint` / `outPoint` | number | Slice of the **source** file to use. Optional. |
-| `fadeIn` / `fadeOut` | number | Fade durations in seconds. |
+| `fadeIn` / `fadeOut` | number | Fade durations in seconds. **Auto-managed on overlap** — see "Automatic crossfade" below before setting these by hand. |
+| `fadeInCurve` / `fadeOutCurve` | string | `'linear' \| 'log' \| 'exp'`. Absent means `'exp'`, which is also the shape every fade rendered before curves existed, so an un-set project looks unchanged. Maps to ffmpeg `afade`'s `curve=`. |
+| `lane` | integer | Which timeline **row** this track renders in. Absent means "give me my own row": the editor assigns one auto-incrementing lane per unlabelled track, so **N tracks with no `lane` render as N separate rows.** Give several tracks the same `lane` to stack them in one row — that is how a multi-clip music bed reads as a single element rather than a pile of rows. Purely visual: the mix is unaffected by lane, and every track is summed regardless of which row it sits in. |
+| `magnetic` | bool | When set, this track's whole **lane** is kept gapless — no gaps and **no overlaps**. Fanned out across the lane like `muted`: a lane counts as magnetic only when every track in it sets it, so toggling it makes the whole row magnetic at once. **A magnetic lane can never crossfade**, because a crossfade requires the overlap magnetism removes. Dragging a track onto a magnetic row in the editor makes it inherit that row's magnet state. |
 | `ducking` | object | `{ enabled, depth, attack, release }` — see below. |
+
+**Automatic crossfade.** When two audio tracks overlap in time, the editor sets
+the outgoing track's `fadeOut` and the incoming track's `fadeIn` to the overlap
+duration (rounded to 0.1s), producing a symmetric crossfade. This happens on any
+audio change with no user gesture, so **a hand-authored fade on an overlapping
+pair will be overwritten** — write the overlap you want and let the fades be
+derived, rather than authoring mismatched fades and expecting them to survive.
+Non-overlapping fades (a track's outer fade-in at the top of the timeline, or
+fade-out at the end) are left alone. The pairing is computed across all audio
+tracks sorted by `start`, independent of `lane`, so tracks on different rows
+still crossfade with each other. Muted tracks are skipped. Implemented by
+`computeAutoCrossfade` in the editor; the render side needs nothing special,
+since `mix-audio.js` emits a per-track `afade` either way and the sum of two
+complementary fades *is* the crossfade.
 
 **One track is one contiguous slice of one file.** There is no multi-segment cut list for audio; a track carries a single `inPoint`/`outPoint` pair. A voiceover that has been cut down (silence, non-speech, and fillers removed) is therefore materialized to a single file first — see `materialize_cut --audio` — rather than emitted as one track per surviving segment.
 

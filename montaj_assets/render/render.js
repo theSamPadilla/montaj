@@ -22,7 +22,7 @@ import { requireValidKey, detectFromTransfer, smartDetect, isHdr, DEFAULT_COLOR_
 import { pMap }                           from './p-map.js'
 import { fileHasAudio }                   from './encode-segment.js'
 import { deriveSdr, probeColorTransfer }  from './derive-sdr.js'
-import { sourceWindow }                   from '@bycrux/timeline-core'
+import { sourceWindow, transitionPairs }  from '@bycrux/timeline-core'
 import { MASTER_LOOK, curveIds }          from './look.js'
 import { effectiveItemAudio, enabledTrackItems, enabledTracks, trackItems } from './project-tracks.js'
 
@@ -759,12 +759,16 @@ function collectPuppeteerSegments(projectJson, fps, width, height, segDir) {
   const overlayTracks = enabledTrackItems(projectJson).slice(1)
   for (let trackIdx = 0; trackIdx < overlayTracks.length; trackIdx++) {
     const track = overlayTracks[trackIdx]
+    // Specs this track just produced, keyed by the item's OWN id (not the
+    // compound `overlay-${trackIdx}--${item.id}` spec id) — that's the id
+    // `transitionPairs` below hands back on `pair.to`.
+    const specsById = new Map()
     for (const item of track ?? []) {
       if (item.type === 'overlay') {
         const startSeconds = quantize(item.start)
         const endSeconds   = quantize(item.end)
         const frameCount   = Math.round((endSeconds - startSeconds) * fps)
-        specs.push({
+        const spec = {
           id:            `overlay-${trackIdx}--${item.id}`,
           componentPath: overlayTemplatePath(item),
           props:         item.props ?? {},
@@ -796,9 +800,27 @@ function collectPuppeteerSegments(projectJson, fps, width, height, segDir) {
           outputPath:    join(segDir, `overlay-${trackIdx}--${item.id}.mkv`),
           width,
           height,
-        })
+        }
+        specs.push(spec)
+        specsById.set(item.id, spec)
       }
       // image and video types → handled by collectAllItems, not Puppeteer
+    }
+
+    // An opaque overlay that is the INCOMING side of a crossfade needs an alpha
+    // capture — see `captureOptionsFor` (renderer.js) for why. Derived here from
+    // the same `transitionPairs` the editor and the resolver use, so render can
+    // never disagree with them about which item is the incoming one.
+    //
+    // Fed the RAW (un-quantized) item start/end, filtered to this track's
+    // `overlay`-type items only — exactly what the editor's own
+    // `computeVisualCrossfade` passes (timeline-model.ts), so render's pairing
+    // decision can never diverge from the one that derived the fade in the
+    // first place.
+    const overlayItems = (track ?? []).filter(it => it.type === 'overlay')
+    for (const pair of transitionPairs(overlayItems)) {
+      const toSpec = specsById.get(pair.to.id)
+      if (toSpec && toSpec.opaque) toSpec.transitionTo = true
     }
   }
 
@@ -872,6 +894,12 @@ function collectAllItems(projectJson) {
   const tracks = enabledTracks(projectJson)
   for (let trackIdx = 0; trackIdx < tracks.length; trackIdx++) {
     const track = tracks[trackIdx]
+    // The object this collector emitted for each SOURCE item on this track, so
+    // the crossfade pass below can stamp the emitted copies. Keyed by the source
+    // item because that is what `transitionPairs` hands back on `pair.from` /
+    // `pair.to` — the same indirection collectPuppeteerSegments uses for the
+    // opaque-overlay `transitionTo` flag.
+    const emitted = new Map()
     for (const item of track.items ?? []) {
       const passthrough = omitFields(item, DROPPED_PREVIEW_FIELDS)
       const geometryDefaults = {
@@ -889,7 +917,9 @@ function collectAllItems(projectJson) {
         opacity: item.opacity ?? 1,
       }
       if (item.type === 'image') {
-        imageItems.push({ ...passthrough, ...geometryDefaults, fit: item.fit ?? 'cover', trackIdx })
+        const emit = { ...passthrough, ...geometryDefaults, fit: item.fit ?? 'cover', trackIdx }
+        imageItems.push(emit)
+        emitted.set(item, emit)
       } else if (item.type === 'video') {
         // Prefer the normalizedSrc cache when present (and not on the nobg
         // path). A normalizedSrc cache covers [normalizedInPoint, normalizedInPoint + duration]
@@ -950,7 +980,7 @@ function collectAllItems(projectJson) {
         // docs/plans/2026-08-21-track-skip.md ("F1 · Track-wide volume and
         // mute").
         const { volume, muted } = effectiveItemAudio(track, item)
-        videoItems.push({
+        const emit = {
           ...passthrough,
           ...geometryDefaults,
           trackIdx,
@@ -997,8 +1027,59 @@ function collectAllItems(projectJson) {
           // the "not defaulted" contract visible in the diff rather than
           // relying on spread behavior alone.
           speed: item.speed,
-        })
+        }
+        videoItems.push(emit)
+        emitted.set(item, emit)
       }
+    }
+
+    // ── Clip crossfades, derived per track ────────────────────────────────
+    //
+    // Derived from the SAME `transitionPairs` the editor's
+    // `computeVisualCrossfade` and the resolver's `crossfadesAt` use, so render
+    // can never disagree with either about which items are paired. Fed the RAW
+    // source items, exactly as the overlay `transitionTo` pass above does.
+    //
+    // PER TRACK, and CLIPS ONLY (`image`/`video`). Two items on different tracks
+    // are stacked, not sequenced, so blending them would be meaningless; and an
+    // overlay's crossfade is already real `opacity` keyframe data baked into the
+    // Puppeteer capture, so stamping one here would apply the fade twice. Both
+    // rules are activation.js's `crossfadesAt`, reproduced.
+    //
+    // ── TWO FIELDS NAMED `crossfade`, AND THEY ARE NOT THE SAME SHAPE ──────
+    //
+    //   render (here):       { role, start, end }  — the pair's TIMELINE SPAN
+    //   resolver:            { role, p }           — progress AT ONE INSTANT
+    //                                                (activation.js's ItemCrossfade)
+    //
+    // They differ because the two paths are asked different questions. The
+    // resolver answers for a single instant — preview's playhead, sample_frame's
+    // requested time — so a scalar `p` is the whole answer and recomputing it
+    // costs one call. Render fans ONE item object across MANY segments:
+    // `planSegments`'s `activeIn` hands every segment the same objects (it
+    // "preserves input order and object identity"), so there is no such thing as
+    // "the" progress for this item and a scalar would be wrong in every segment
+    // but one. The span is the segment-invariant fact, and encode-segment.js's
+    // `crossfadeIn` derives `p0`/`p1` from the segment it is actually handed.
+    //
+    // Do NOT "unify" these by copying one shape onto the other path. Give the
+    // render item a scalar `p` and every segment past the first renders the
+    // wrong frame; give the resolver a span and every consumer has to redo the
+    // clamp it already does. Same name, same concept, different question.
+    //
+    // Written on EVERY clip, `null` when it is not transitioning, so this field
+    // is authoritative rather than something a hand-authored project item could
+    // leak through the passthrough spread.
+    const clips = (track.items ?? []).filter(it => it.type === 'image' || it.type === 'video')
+    for (const it of clips) {
+      const emit = emitted.get(it)
+      if (emit) emit.crossfade = null
+    }
+    for (const pair of transitionPairs(clips)) {
+      const from = emitted.get(pair.from)
+      const to   = emitted.get(pair.to)
+      if (from) from.crossfade = { role: 'from', start: pair.start, end: pair.end }
+      if (to)   to.crossfade   = { role: 'to',   start: pair.start, end: pair.end }
     }
   }
 

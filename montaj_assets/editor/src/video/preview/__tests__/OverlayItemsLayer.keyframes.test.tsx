@@ -361,3 +361,94 @@ describe('OverlayItemsLayer — per-axis scale', () => {
     expect(nw.style.transform).toBe('scale(0.5, 0.5) translate(-50%, -50%)')
   })
 })
+
+// ---------------------------------------------------------------------------
+// Layered-clip transition blend (Task 11). SP9d's pin — a clip's opacity
+// CURVE is ignored in this layer — still holds; it is not what this section
+// tests. What's new is the resolver's `crossfade` stamp: two clips on the
+// SAME overlay track that overlap now blend, because the export genuinely
+// blends that pair (encode-segment.js's `blend` branch, SP9d/T8). Showing the
+// same blend here is an application of the SP9d rule, not an exception to it.
+//
+// Unlike `renderLayer` above (which renders its item from the `overlayTracks`
+// prop while `project.tracks` stays empty), these tests need `project.tracks`
+// itself to carry the items: the component looks its resolved crossfade stamp
+// up via `resolveAt(project, ...)`, matched back to the rendered item BY
+// REFERENCE — so the fixture's `project.tracks` and its `overlayTracks` prop
+// must share the exact same item objects.
+// ---------------------------------------------------------------------------
+
+function renderLayeredClips(overlayItems: VisualItem[], currentTime: number) {
+  const project = {
+    id: 'p',
+    status: 'draft',
+    settings: { resolution: [1080, 1920], fps: 30 },
+    tracks: [[], overlayItems],
+  } as unknown as EditorProject
+
+  const utils = render(
+    <OverlayItemsLayer
+      project={project}
+      currentTime={currentTime}
+      isPlaying={false}
+      isCanvasProject={false}
+      overlayTracks={[overlayItems]}
+      tracks0NonVideo={[]}
+      renderScale={0.2}
+      selectedOverlayId={undefined}
+      containerRef={{ current: document.createElement('div') }}
+      dragState={null}
+      setDragState={vi.fn()}
+      liveOffset={null}
+      liveScale={null}
+      liveRotation={null}
+      snapGuides={emptySnap}
+      snapRotation={null}
+      compileOverlay={vi.fn(async (): Promise<OverlayFactory> => () => null)}
+      fileUrl={(pth: string) => pth}
+    />,
+  )
+  // Each clip's <img> sits directly inside its own wrapper div — the wrapper
+  // is where `opacity` actually lands (OverlayItemsLayer.tsx's `wrapperStyle`).
+  const styleOf = (src: string) =>
+    (utils.container.querySelector(`img[src="${src}"]`) as HTMLElement).parentElement!.style
+  return { ...utils, styleOf }
+}
+
+describe('OverlayItemsLayer — layered clip transition blend (Task 11)', () => {
+  it('a layered clip mid-transition renders at its blended opacity', () => {
+    // a: [0,4), b: [3,7) — overlap [3,4). At t=3.5 the pair is exactly
+    // half-through: p=0.5.
+    //
+    // ONLY THE INCOMING SIDE RAMPS. `a` (role 'from') stays at 1 and `b` (role
+    // 'to') gets 0.5, because this layer stacks DOM nodes with source-over: `b`
+    // at alpha 0.5 over an opaque `a` composites to `0.5*b + 0.5*a`, which is
+    // exactly the lerp `encode-segment.js` emits as `blend=all_expr='A+(B-A)*p'`.
+    //
+    // The old expectation was '0.5' / '0.5', and it was WRONG: symmetric factors
+    // in a sequential stack give `p*b + (1-p)^2*a + p(1-p)*bg` — `a` at quarter
+    // weight with the background leaking through mid-transition. It passed only
+    // because it was written against the same mistaken model as the code.
+    // `createCanvasPainter.paintBlend` (engine/index.ts) is the reference.
+    const a = { id: 'a', type: 'image', src: 'a.png', start: 0, end: 4 } as VisualItem
+    const b = { id: 'b', type: 'image', src: 'b.png', start: 3, end: 7 } as VisualItem
+    const { styleOf } = renderLayeredClips([a, b], 3.5)
+
+    expect(styleOf('a.png').opacity).toBe('1')
+    expect(styleOf('b.png').opacity).toBe('0.5')
+  })
+
+  it('a layered clip outside a transition still reads its STATIC opacity', () => {
+    // A lone clip on its track has no partner to pair with, so the resolver
+    // stamps `crossfade: null` — this is the SP9d regression guard: the
+    // opacity keyframe curve must stay ignored, and the wrapper must show the
+    // STATIC `opacity` field (0.4), not a sampled curve value.
+    const item = {
+      id: 'a', type: 'image', src: 'a.png', start: 0, end: 10, opacity: 0.4,
+      keyframes: [{ prop: 'opacity', points: [{ t: 0, value: 0 }, { t: 10, value: 1 }] }],
+    } as VisualItem
+    const { styleOf } = renderLayeredClips([item], 1)
+
+    expect(styleOf('a.png').opacity).toBe('0.4')
+  })
+})

@@ -3,7 +3,8 @@
 // here is behavior BOTH surfaces must reproduce identically, so it lives
 // outside either render path.
 
-import type { AudioTrack, VisualItem, VisualTrack } from '../../schema'
+import { fadeShape, transitionPairs } from '@bycrux/timeline-core'
+import type { AudioTrack, KeyframeTrack, VisualItem, VisualTrack } from '../../schema'
 import type { Project } from '../../types'
 
 // ── Row geometry ─────────────────────────────────────────────────────────
@@ -436,13 +437,24 @@ export function moveItemAcrossTracks(args: CrossTrackMoveArgs): VisualTrack[] {
 
 /** Patch one audio track by id, leaving the rest of the project alone. Shared
  *  by the canvas pointer machine and Timeline.tsx so audio edits take the
- *  same shape wherever they're made. */
+ *  same shape wherever they're made.
+ *
+ *  Normalizes audio track ids first (`normalizeAudioTracks`, below) — the
+ *  same reason `mapTrackItems` normalizes visual tracks before touching them.
+ *  Without it, a project with id-less audio tracks (legal per
+ *  `docs/schemas/project.md`; VideoEditor's mount effect backfills them on
+ *  open, but this function has to be correct on its own too) reads every
+ *  track's `id` as the same `undefined`, so `t.id === trackId` matches ALL of
+ *  them at once — one fade-handle drag fanned out and clobbered every other
+ *  track's `src`. Normalizing first gives every track a real, distinct id
+ *  before the `===` match runs, so the patch lands on exactly one. */
 export function updateAudioTrack(project: Project, trackId: string, changes: Partial<AudioTrack>): Project {
+  const normalized = normalizeAudioTracks(project)
   return {
-    ...project,
+    ...normalized,
     audio: {
-      ...project.audio,
-      tracks: (project.audio?.tracks ?? []).map(t =>
+      ...normalized.audio,
+      tracks: (normalized.audio?.tracks ?? []).map(t =>
         t.id === trackId ? { ...t, ...changes } : t,
       ),
     },
@@ -490,9 +502,21 @@ export function computeDerivedTiming(project: Project): DerivedTiming {
  * Returns `null` — the no-change signal — when no track's fade needs to
  * change, so the caller's effect can skip calling `onProjectChange` and
  * avoid re-triggering itself forever.
+ *
+ * Normalizes audio track ids first (`normalizeAudioTracks`, below) for the
+ * same reason `updateAudioTrack` does: this is very likely the SHARPEST edge
+ * of the id-less-audio-track defect, because it runs unconditionally on any
+ * project with two overlapping audio tracks — no user edit required. The
+ * `trackMap = new Map(updated.map(t => [t.id, t]))` below keys on `t.id`; with
+ * every track's `id` reading as the same `undefined`, the whole map collapses
+ * to ONE entry — whichever track was processed last — and every track in the
+ * output becomes a byte-identical COPY of it, `src` included. That is this
+ * function's own account of the exact symptom reported live ("both tracks
+ * became byte-identical copies of the edited one").
  */
 export function computeAutoCrossfade(project: Project): Project | null {
-  const audioTracks = project.audio?.tracks ?? []
+  const withIds = normalizeAudioTracks(project)
+  const audioTracks = withIds.audio?.tracks ?? []
   if (!audioTracks.length) return null
 
   const sorted = [...audioTracks].sort((a, b) => a.start - b.start)
@@ -530,12 +554,173 @@ export function computeAutoCrossfade(project: Project): Project | null {
 
   const trackMap = new Map(updated.map(t => [t.id, t]))
   return {
-    ...project,
+    ...withIds,
     audio: {
-      ...project.audio,
+      ...withIds.audio,
       tracks: audioTracks.map(t => trackMap.get(t.id) ?? t),
     },
   }
+}
+
+// ── Visual crossfade (overlays) ───────────────────────────────────────────
+
+/** Marks an `opacity` track as DERIVED from an overlap rather than authored by
+ *  hand. Without it this function cannot tell its own previous output from a
+ *  curve the operator drew, and would either clobber their work or refuse to
+ *  ever update its own. The flag rides on the track, not the item, so an item
+ *  can carry a derived opacity curve beside a hand-authored offsetX one. */
+const DERIVED_FADE = 'crossfade' as const
+
+/**
+ * Auto-crossfade for OVERLAY items: when two overlays overlap on the same
+ * track, write complementary `opacity` keyframe curves across the overlap.
+ *
+ * The visual sibling of `computeAutoCrossfade` above, with the same contract —
+ * idempotent, and `null` means "nothing to change" so the caller's effect does
+ * not re-trigger itself forever.
+ *
+ * ── Why this writes DATA, and why only for overlays ────────────────────────
+ *
+ * An overlay's opacity already animates end to end: `bundle.js`'s shim bakes
+ * `geometryAt(item, 'overlay', frame/fps).opacity` into the Puppeteer capture
+ * per frame, and `buildOverlayFilterParts` composites the result full-canvas.
+ * So the entire overlay crossfade is expressible as keyframes that already
+ * render — no resolver change, no render change, and the curves show up in the
+ * inspector where the operator can adjust them.
+ *
+ * A CLIP cannot do this at any price: `colorchannelmixer=aa=` takes a
+ * `<double>` and no expression, so ffmpeg cannot vary a clip's alpha over time
+ * (see `keyframeOps.ts`'s `canKeyframeProp`, which refuses to write such a
+ * track at all). Clip crossfades are therefore structural and derived at draw
+ * time from the overlap itself — `timeline-core`'s `crossfade` field — never
+ * data. This function skips every non-overlay item for that reason; writing an
+ * opacity curve onto a clip would promise a fade the export cannot produce.
+ *
+ * ── What it will not touch ────────────────────────────────────────────────
+ *
+ * An item whose `opacity` track is NOT marked `origin: 'crossfade'` was drawn
+ * by hand, and is left exactly as it is — the pair simply gets no derived fade.
+ * That is deliberate: a derived curve silently overwriting an authored one is
+ * far worse than a missing transition, which is visible immediately.
+ */
+export function computeVisualCrossfade(project: Project): Project | null {
+  const withTracks = normalizeTracks(project)
+  const tracks = (withTracks as { tracks?: VisualTrack[] }).tracks ?? []
+  let changed = false
+
+  const nextTracks = tracks.map((track, trackIdx) => {
+    // tracks[0] is the primary footage row — video clips only, which cannot
+    // carry a derived opacity curve. Skip it wholesale rather than relying on
+    // the per-item type test below, so the intent is legible.
+    if (trackIdx === 0) return track
+
+    const overlays = track.items.filter(it => it.type === 'overlay')
+    const pairs = transitionPairs(overlays) as unknown as Array<{
+      from: VisualItem; to: VisualItem; start: number; end: number
+    }>
+
+    // What each item's derived curve SHOULD be, by id. An item absent from this
+    // map should carry no derived curve at all.
+    const wanted = new Map<string, KeyframeTrack>()
+    for (const pair of pairs) {
+      if (hasAuthoredOpacity(pair.from) || hasAuthoredOpacity(pair.to)) continue
+      const shapeStart = fadeShape(pair, 0)
+      const shapeEnd   = fadeShape(pair, 1)
+      // `fadeShape` returns absolute 0..1 fractions of a FULL fade — it knows
+      // nothing about either item's own authored `opacity`. An overlay drawn
+      // at 0.5 must fade between 0.5 and 0 (its own visible level and gone),
+      // not between 1 and 0, or the derived curve silently overwrites the
+      // static opacity for the item's whole pre/post-overlap life. Scale by
+      // the item's own base opacity when building the points; the hold test
+      // below stays on the UNSCALED shapeStart/shapeEnd, since multiplying
+      // both sides by the same constant preserves (or preserves the absence
+      // of) their equality either way.
+      const fromBase = pair.from.opacity ?? 1
+      const toBase   = pair.to.opacity   ?? 1
+      // Item-relative seconds — keyframe `t` is measured from the item's own
+      // `start`, never from the timeline origin (docs/schemas/project.md).
+      const fromT0 = pair.start - (pair.from.start ?? 0)
+      const fromT1 = pair.end   - (pair.from.start ?? 0)
+      const toT0   = pair.start - (pair.to.start   ?? 0)
+      const toT1   = pair.end   - (pair.to.start   ?? 0)
+      // A held side (opaque outgoing) gets NO track — a flat 1→1 curve is a
+      // no-op that would flip the item onto the full-canvas baked capture path
+      // (`encode-segment.js`'s `keyframed` test is "has any keyframes", not
+      // "has a non-trivial curve") for no benefit and a real cost.
+      if (shapeStart.from !== shapeEnd.from) {
+        wanted.set(pair.from.id, {
+          prop: 'opacity',
+          origin: DERIVED_FADE,
+          points: [
+            { t: fromT0, value: shapeStart.from * fromBase },
+            { t: fromT1, value: shapeEnd.from * fromBase },
+          ],
+        })
+      }
+      if (shapeStart.to !== shapeEnd.to) {
+        wanted.set(pair.to.id, {
+          prop: 'opacity',
+          origin: DERIVED_FADE,
+          points: [
+            { t: toT0, value: shapeStart.to * toBase },
+            { t: toT1, value: shapeEnd.to * toBase },
+          ],
+        })
+      }
+    }
+
+    // `.map()` always allocates a new array, so comparing its result against
+    // `track.items` by reference below would never be true — this flag is
+    // the real "did anything in this track actually change" test.
+    let trackChanged = false
+
+    const items = track.items.map(item => {
+      if (item.type !== 'overlay') return item
+      const existing = (item.keyframes ?? []).find(k => k.prop === 'opacity')
+      const derived  = existing?.origin === DERIVED_FADE
+      const target   = wanted.get(item.id)
+
+      if (!target) {
+        if (!derived) return item                    // nothing there, or hand-authored
+        changed = true
+        trackChanged = true
+        const rest = (item.keyframes ?? []).filter(k => k.prop !== 'opacity')
+        const next = { ...item }
+        if (rest.length) next.keyframes = rest
+        else delete next.keyframes
+        return next
+      }
+
+      if (existing && !derived) return item          // hand-authored — never clobber
+      if (derived && sameTrack(existing!, target)) return item   // already converged
+      changed = true
+      trackChanged = true
+      return {
+        ...item,
+        keyframes: [...(item.keyframes ?? []).filter(k => k.prop !== 'opacity'), target],
+      }
+    })
+
+    return trackChanged ? { ...track, items } : track
+  })
+
+  if (!changed) return null
+  return { ...withTracks, tracks: nextTracks } as Project
+}
+
+/** An `opacity` track the operator drew — anything not marked as our own. */
+function hasAuthoredOpacity(item: VisualItem): boolean {
+  const track = (item.keyframes ?? []).find(k => k.prop === 'opacity')
+  return !!track && track.origin !== DERIVED_FADE
+}
+
+/** Point-for-point equality. The convergence test: comparing anything looser
+ *  (length, endpoints) makes this non-idempotent the moment a trim moves a
+ *  boundary by less than the compared tolerance — the same defect
+ *  `computeAutoCrossfade` above records in its rounding comment. */
+function sameTrack(a: KeyframeTrack, b: KeyframeTrack): boolean {
+  if (a.points.length !== b.points.length) return false
+  return a.points.every((pt, i) => pt.t === b.points[i].t && pt.value === b.points[i].value)
 }
 
 // ── Track shape (legacy VisualItem[][] ⟷ VisualTrack[]) ───────────────────
@@ -591,15 +776,18 @@ function isTrackObjectForm(tracks: unknown[]): boolean {
 }
 
 /** Generate an id for the track at `index`, avoiding every id in `taken`. The
- *  rule: `trk-<index>`; if that is already taken, append an incrementing
- *  counter starting at 2 — `trk-<index>-2`, `trk-<index>-3`, … — until one is
- *  free. Deterministic and collision-free. `taken` is updated in place with the
- *  id handed out. */
-function assignTrackId(index: number, taken: Set<string>): string {
-  let candidate = `trk-${index}`
+ *  rule: `<prefix>-<index>`; if that is already taken, append an incrementing
+ *  counter starting at 2 — `<prefix>-<index>-2`, `<prefix>-<index>-3`, … —
+ *  until one is free. Deterministic and collision-free. `taken` is updated in
+ *  place with the id handed out. `prefix` defaults to `trk` (every existing
+ *  caller is a VISUAL track); `normalizeAudioTracks` below passes `aud` so a
+ *  project's audio and visual ids can never collide with each other by
+ *  construction. */
+function assignTrackId(index: number, taken: Set<string>, prefix: string = 'trk'): string {
+  let candidate = `${prefix}-${index}`
   let suffix = 2
   while (taken.has(candidate)) {
-    candidate = `trk-${index}-${suffix}`
+    candidate = `${prefix}-${index}-${suffix}`
     suffix += 1
   }
   taken.add(candidate)
@@ -756,6 +944,89 @@ export function normalizeTracks<T extends { tracks?: unknown }>(project: T): T {
   // A brand-new `tracks` array either way, so no identity to preserve here —
   // just order it before handing it back.
   return { ...project, tracks: orderedTrackArray(out as unknown as VisualTrack[]) } as T
+}
+
+// ── Audio track id policy ────────────────────────────────────────────────
+
+/** True when `tracks` needs no work: every element is an object carrying a
+ *  non-empty string `id`, and no two share an id. Audio tracks have no legacy
+ *  alternate shape the way `project.tracks` does — `docs/schemas/project.md`
+ *  has always described `audio.tracks` as an array of track objects — so
+ *  unlike `isTrackObjectForm` there is nothing else to tolerate here. */
+function isAudioTrackIdForm(tracks: unknown[]): boolean {
+  const seen = new Set<string>()
+  for (const track of tracks) {
+    if (!isTrackObject(track)) return false
+    if (!isTrackId(track.id)) return false
+    if (seen.has(track.id)) return false
+    seen.add(track.id)
+  }
+  return true
+}
+
+/**
+ * Return `project` with every `audio.tracks[*].id` filled in wherever it's
+ * missing, not a string, empty, or a duplicate of an earlier track's id — the
+ * audio sibling of `normalizeTracks`' id policy above. Read that function's
+ * doc comment for the property in full; this mirrors it exactly, minus the
+ * legacy array-of-arrays tolerance that belongs to `project.tracks` alone.
+ *
+ * `docs/schemas/project.md`'s audio-tracks field table has never listed `id`
+ * as something an agent/CLI has to write — only `src` is required — while the
+ * editor's `AudioTrack` type (schema.ts) declares `id: string` required and
+ * every editor mutation keys a track by it with `===`: `updateAudioTrack`
+ * below, the track-replace path in VideoEditor.tsx, and the multi-select
+ * mute/delete ops in multiSelectOps.ts. With every track's `id` reading as
+ * the SAME `undefined`, `t.id === trackId` was true for every track at once —
+ * editing one audio track (e.g. dragging a single fade handle) fanned the
+ * edit out to all of them and clobbered their `src`. This is the fix: give
+ * every track a real, distinct id before anything addresses one by id.
+ *
+ * Pure — never mutates the input, at any depth. Tolerant of a project with no
+ * `audio`, an `audio` that isn't an object, or a `tracks` that is missing,
+ * `null`, or not an array: normalization is not validation and never throws
+ * on malformed input.
+ *
+ * Identity-preserving: when every track already carries a usable, unique id,
+ * the input object itself is returned, so `normalizeAudioTracks(p) === p`.
+ * Same load-bearing contract as `normalizeTracks` — this is what VideoEditor's
+ * mount effect (the same one that backfills caption ids) reads as "nothing to
+ * write", so a converged project triggers no save.
+ *
+ * Ids are minted `aud-<index>` via `assignTrackId`'s `aud` prefix — same
+ * collision rule as visual tracks (`-2`, `-3`, … on collision), but a
+ * different prefix so an audio id can never collide with a visual track id.
+ * Existing real ids — the `vo-01`-style ids `project/init.py` writes for a
+ * voiceover track — are preserved untouched; only a track missing an id, or
+ * colliding with an earlier one, gets a generated replacement.
+ */
+export function normalizeAudioTracks<T extends { audio?: unknown }>(project: T): T {
+  if (project === null || typeof project !== 'object') return project
+  const audio: unknown = (project as { audio?: unknown }).audio
+  if (!isTrackObject(audio)) return project
+  const tracks: unknown = audio.tracks
+  if (!Array.isArray(tracks)) return project
+  if (isAudioTrackIdForm(tracks)) return project
+
+  // Every explicit id already on the project's audio tracks, collected up
+  // front so a generated `aud-<i>` can never land on an id a LATER track
+  // already claims.
+  const taken = new Set<string>()
+  for (const track of tracks) {
+    if (isTrackObject(track) && isTrackId(track.id)) taken.add(track.id)
+  }
+
+  const kept = new Set<string>()  // ids handed out so far, so a duplicate loses to the first holder
+  const out = tracks.map((track, index) => {
+    // Not an object — not this function's job to fix the track's shape, only
+    // its id policy; leave it as-is rather than fabricate fields.
+    if (!isTrackObject(track)) return track
+    const id = isTrackId(track.id) && !kept.has(track.id) ? track.id : assignTrackId(index, taken, 'aud')
+    kept.add(id)
+    return { ...track, id }
+  })
+
+  return { ...project, audio: { ...audio, tracks: out } } as T
 }
 
 /**

@@ -263,6 +263,123 @@ describe('encode-args golden: post-swap render pipeline == pre-T7 legacy output'
 })
 
 // ---------------------------------------------------------------------------
+// The transition golden (clip crossfade, T8)
+// ---------------------------------------------------------------------------
+//
+// WHY THIS IS NOT A MEMBER OF `ENCODE_ARGS_FIXTURES`. That array is the frozen
+// PRE-T7 legacy corpus, and the `no frozen golden contains a rotate= step` test
+// above spells out the rule this obeys: no legitimate frozen golden can exist
+// for a feature that did not exist when those files were captured. Adding
+// `clip-crossfade` to the array would mint an `expected/encode-args.*.json`
+// from today's pipeline and quietly relabel it "the pre-T7 output", which is
+// exactly the tautology the freeze banner exists to prevent. (It would also
+// break the freeze-mechanism block below, which asserts a three-element
+// `['identical','identical','identical']`.)
+//
+// So the expectation lives HERE, inline, and it is a golden in the only sense
+// that matters: the exact graph, frozen, byte for byte. It runs the same real
+// pipeline the frozen corpus does — `collectAllItems` -> `planSegments` ->
+// `encodeSegment(..., {_dryRun:true})` — over timeline-core's `clip-crossfade`
+// fixture, so it pins the whole chain and not just the encoder's arithmetic.
+//
+// What makes it worth its length is the segments on either SIDE of the overlap.
+// The item objects are shared across every segment they are active in, so the
+// outgoing clip reaches [0,3) still carrying its `crossfade` field; if the
+// gating were on the field's mere presence rather than on the segment's own
+// progress through the span, that segment would carry an audio fade-out ramp
+// and the clip would die to silence three seconds before the transition began.
+
+describe('transition golden: a clip crossfade, end to end through the real pipeline', () => {
+  const CANVAS = '[0:v]format=yuv420p[canvas]'
+  const SETPARAMS = 'setparams=colorspace=bt709:color_trc=bt709:color_primaries=bt709[vout]'
+  const fit = (i) =>
+    `[${i}:v]setpts=PTS-STARTPTS,scale=1080:1920:force_original_aspect_ratio=decrease,` +
+    `pad=1080:1920:(ow-iw)/2:(oh-ih)/2[vid${i}]`
+
+  /** @type {Array<{start: number, end: number, filterParts: string[]}>} */
+  const EXPECTED = [
+    // Before the overlap: clipA alone. No split, no blend, and no audio ramp.
+    {
+      start: 0, end: 3,
+      filterParts: [
+        CANVAS,
+        fit(1),
+        '[canvas][vid1]overlay=x=0:y=0:format=yuv420:shortest=0[iv1]',
+        '[1:a:0]atrim=0:3,asetpts=PTS-STARTPTS,volume=1,aformat=channel_layouts=stereo:sample_rates=48000[a1]',
+        `[iv1]${SETPARAMS}`,
+      ],
+    },
+    // The overlap. The canvas is split, each clip composites onto its own
+    // branch, and the two finished frames are lerped in the FOLDED form. Both
+    // clips' audio carries a complementary `volume` ramp (NOT `afade` — it
+    // cannot express a partial slice of the span; see the fix's comment in
+    // encode-segment.js), which the existing amix sums.
+    {
+      start: 3, end: 4,
+      filterParts: [
+        CANVAS,
+        '[canvas]split=2[xfa1][xfb1]',
+        fit(1),
+        '[xfa1][vid1]overlay=x=0:y=0:format=yuv420:shortest=0[iv1]',
+        "[1:a:0]atrim=0:1,asetpts=PTS-STARTPTS,volume=1,volume='1-(1*t)':eval=frame,aformat=channel_layouts=stereo:sample_rates=48000[a1]",
+        fit(2),
+        '[xfb1][vid2]overlay=x=0:y=0:format=yuv420:shortest=0[iv2]',
+        "[2:a:0]atrim=0:1,asetpts=PTS-STARTPTS,volume=1,volume='1*t':eval=frame,aformat=channel_layouts=stereo:sample_rates=48000[a2]",
+        "[iv1][iv2]blend=all_expr='A+(B-A)*(1*T)'[xf1]",
+        `[xf1]${SETPARAMS}`,
+        '[a1][a2]amix=inputs=2:duration=longest:normalize=0[amixed]',
+      ],
+    },
+    // After the overlap: clipB alone. Same shape as the first segment.
+    {
+      start: 4, end: 8,
+      filterParts: [
+        CANVAS,
+        fit(1),
+        '[canvas][vid1]overlay=x=0:y=0:format=yuv420:shortest=0[iv1]',
+        '[1:a:0]atrim=0:4,asetpts=PTS-STARTPTS,volume=1,aformat=channel_layouts=stereo:sample_rates=48000[a1]',
+        `[iv1]${SETPARAMS}`,
+      ],
+    },
+  ]
+
+  test('clip-crossfade: every segment\'s filter graph is byte-identical', async () => {
+    const golden = await buildEncodeArgsGolden('clip-crossfade')
+    assert.deepEqual(
+      golden.segments.map((s) => ({ start: s.start, end: s.end, filterParts: s.filterParts })),
+      EXPECTED,
+    )
+  })
+
+  test('the blend is the FOLDED form — the literal one is a measured regression', async () => {
+    // 1.86-2.01x the hard-cut baseline for the literal `A*(1-p)+B*p` on real 4K
+    // HDR footage, against a 2x gate, versus 1.35-1.49x for byte-identical
+    // output from this form. See the plan's Spike Results. Asserted here as
+    // well as in encode-segment.test.mjs because THIS is the file someone reads
+    // when they are about to change what the encoder emits.
+    const golden = await buildEncodeArgsGolden('clip-crossfade')
+    const filters = golden.segments.flatMap((s) => s.filterParts).join('\n')
+    assert.match(filters, /blend=all_expr='A\+\(B-A\)\*/)
+    assert.doesNotMatch(filters, /A\*\(1-/)
+  })
+
+  test('no FROZEN golden grew a split= or blend= step', async () => {
+    // The other half of the T8 gate, and the reason this feature could be
+    // landed at all: a transition must be invisible to a project that has none.
+    // Every one of the three frozen fixtures is butt-joined or single-clip, so
+    // none may acquire a split, a blend, or an audio ramp (afade, historically;
+    // `,volume='...':eval=frame` now — see the fix's comment in
+    // encode-segment.js). If one does, the gating is on the wrong thing — fix
+    // the encoder, do not regenerate.
+    for (const fixtureName of ENCODE_ARGS_FIXTURES) {
+      const filters = readGolden(fixtureName).segments.flatMap((s) => s.filterParts).join('\n')
+      assert.doesNotMatch(filters, /split=2|blend=all_expr=|afade=|,volume='/,
+        `${fixtureName}: a frozen golden picked up a crossfade step`)
+    }
+  })
+})
+
+// ---------------------------------------------------------------------------
 // The freeze mechanism itself (SP2 T8 part 4B, hardened)
 // ---------------------------------------------------------------------------
 //

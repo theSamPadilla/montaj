@@ -245,6 +245,14 @@ const BASE_Y = rowMidY(0)      // track 0, the tall base row
 const OVERLAY_Y = rowMidY(1)   // track 1, stacked above it
 const LANE_Y = Math.round(LAYOUT.lanes[0].y + LAYOUT.lanes[0].height / 2)
 
+/** `rowMidY`'s twin for a one-off project whose layout isn't the shared
+ *  `LAYOUT` above — the overlay-trim containment tests below each build
+ *  their own small fixture. */
+function rowMidYFor(ctx: PointerContext, trackIdx: number): number {
+  const row = ctx.layout.rows.find(r => r.trackIdx === trackIdx)!
+  return Math.round(row.y + row.height / 2)
+}
+
 const C0_BODY = { x: 250, y: BASE_Y }
 const C0_OUT_EDGE = { x: 495, y: BASE_Y }
 const C1_BODY = { x: 750, y: BASE_Y }
@@ -937,6 +945,114 @@ describe('edge trim — ripple mode', () => {
     d.down(C0_BODY.x, C0_BODY.y)
     const next = lastProjectChange(d.move(C0_BODY.x + 100, C0_BODY.y))
     expect(visual(next, 'c1').start).toBe(5)
+  })
+})
+
+// Two butt-joined overlays on trk-1: a 0s–4s, b 4s–8s. trk-0 carries one
+// plain video clip spanning both, just so the fixture is a valid project —
+// no test below touches it.
+function overlapProject(): Project {
+  return {
+    id: 'p',
+    tracks: [
+      { id: 'trk-0', items: [{ id: 'c0', type: 'video', src: 'a.mp4', start: 0, end: 8, inPoint: 0, outPoint: 8, sourceDuration: 20 }] },
+      {
+        id: 'trk-1',
+        items: [
+          { id: 'a', type: 'overlay', start: 0, end: 4 },
+          { id: 'b', type: 'overlay', start: 4, end: 8 },
+        ],
+      },
+    ],
+  } as unknown as Project
+}
+
+describe('edge trim on an overlay track — bounded overlap (transitions)', () => {
+  it("trimming an overlay's right edge past its neighbour's start creates an overlap", () => {
+    const ctx = makeContext({ project: overlapProject() })
+    const row1Y = rowMidYFor(ctx, 1)
+    const d = new Driver(ctx)
+    // a's out edge sits at t=4 (x=400); offset 5px toward `a` so the hit
+    // resolves to ITS edge rather than b's in edge at the same x — the same
+    // disambiguation `C0_OUT_EDGE`/`C1_IN_EDGE` use above.
+    d.down(395, row1Y)
+    // +1s worth of pixels (100px/s): the edge lands at t=5, one second into b.
+    const next = lastProjectChange(d.move(495, row1Y))
+    expect(visual(next, 'a')).toMatchObject({ start: 0, end: 5 })
+    expect(visual(next, 'b')).toMatchObject({ start: 4, end: 8 })
+  })
+
+  it('trimming still refuses to swallow the neighbour entirely', () => {
+    const ctx = makeContext({ project: overlapProject() })
+    const row1Y = rowMidYFor(ctx, 1)
+    const d = new Driver(ctx)
+    d.down(395, row1Y)
+    // +5s worth of pixels would land a's edge at t=9, past b's own end (8) —
+    // full containment, which is not a transition.
+    const next = lastProjectChange(d.move(895, row1Y))
+    expect(visual(next, 'a').end).toBeLessThan(visual(next, 'b').end)
+    expect(visual(next, 'b')).toMatchObject({ start: 4, end: 8 })
+  })
+
+  it('stops short of a three-way overlap when the next neighbour already overlaps ITS next', () => {
+    // a 0-4, b 4-8, c 7-10: b and c already overlap at [7, 8) before this
+    // drag even starts. The single-neighbour clamp (against b.end alone)
+    // would let a's edge travel anywhere up to b.end (8), including into
+    // b∩c — landing a, b, and c all live at the same instant, a shape the
+    // editor would accept but `validate_project` rejects.
+    const threeWayProject: Project = {
+      id: 'p',
+      tracks: [
+        { id: 'trk-0', items: [{ id: 'c0', type: 'video', src: 'a.mp4', start: 0, end: 10, inPoint: 0, outPoint: 10, sourceDuration: 20 }] },
+        {
+          id: 'trk-1',
+          items: [
+            { id: 'a', type: 'overlay', start: 0, end: 4 },
+            { id: 'b', type: 'overlay', start: 4, end: 8 },
+            { id: 'c', type: 'overlay', start: 7, end: 10 },
+          ],
+        },
+      ],
+    } as unknown as Project
+    const ctx = makeContext({ project: threeWayProject })
+    const row1Y = rowMidYFor(ctx, 1)
+    const d = new Driver(ctx)
+    // a's out edge sits at t=4 (x=400); offset 5px toward `a` for the same
+    // disambiguation the tests above use.
+    d.down(395, row1Y)
+    // +4s worth of pixels targets a's edge at t=8 — inside b (4-8) and past
+    // c's start (7). The new guard must clamp short of c.start, not just
+    // short of b.end.
+    const next = lastProjectChange(d.move(795, row1Y))
+    expect(visual(next, 'a').end).toBeLessThan(7)
+    expect(visual(next, 'a').end).toBeGreaterThan(6.9)
+    expect(visual(next, 'b')).toMatchObject({ start: 4, end: 8 })
+    expect(visual(next, 'c')).toMatchObject({ start: 7, end: 10 })
+  })
+
+  it("still stops a tracks[0] trim at nothing — overlap there was never checked", () => {
+    // Same shape, but the pair sits on tracks[0] instead: no containment
+    // guard applies there (see the comment in `applyTrim`), so the edge
+    // travels exactly as far as the drag and the magnet/floor logic alone
+    // would already take it — this only guards against the new clamp
+    // accidentally leaking onto trackIdx 0.
+    const project: Project = {
+      id: 'p',
+      tracks: [{
+        id: 'trk-0',
+        items: [
+          { id: 'a', type: 'video', src: 'a.mp4', start: 0, end: 4, inPoint: 0, outPoint: 4, sourceDuration: 20 },
+          { id: 'b', type: 'video', src: 'b.mp4', start: 4, end: 8, inPoint: 0, outPoint: 4, sourceDuration: 20 },
+        ],
+      }],
+    } as unknown as Project
+    const ctx = makeContext({ project })
+    const row0Y = rowMidYFor(ctx, 0)
+    const d = new Driver(ctx)
+    d.down(395, row0Y)
+    const next = lastProjectChange(d.move(895, row0Y))
+    expect(visual(next, 'a').end).toBeCloseTo(9)
+    expect(visual(next, 'b')).toMatchObject({ start: 4, end: 8 })
   })
 })
 

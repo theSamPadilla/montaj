@@ -18,6 +18,12 @@
  *     when `src` itself changed;
  *   - `volume`/`muted` edits on a live clip never reached the session at all
  *     (`MasterClock.setVolume` had zero call sites anywhere in the engine).
+ *
+ * SP-transitions 9b added the exclusive-server block at the foot of the file,
+ * for the same reason: `acquireServer`'s keying and its refcount hygiene are
+ * only reachable from here. `demuxCalls` is the fetch counter those tests
+ * assert on and `serverInstances` is the decoder ledger — both already hoisted
+ * above, no parallel helpers needed.
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { EditorProject as Project, VisualItem } from '../../schema'
@@ -449,6 +455,165 @@ describe('EngineSourceHost.acquirePinnedDemux — shared demux LRU', () => {
     // Scheduler session still holds the server, so nothing torn down.
     expect(serverInstances).toHaveLength(1)
     expect(serverInstances[0].disposed).toBe(false)
+
+    engine.dispose()
+  })
+})
+
+// ── 9b: the exclusive-server carve-out ──────────────────────────────────────
+describe('EngineSourceHost.acquireServer — a second decoder for a blending pair off ONE src', () => {
+  /**
+   * Three cuts of ONE take — what a silence-trimmed timeline is made of. `a`
+   * and `b` overlap on [3, 4) so the resolver reads them as a crossfade pair:
+   * the commonest crossfade there is, and the one the engine could not blend
+   * before 9b. `c` picks the picture up at 8 off the same take, which is what
+   * makes the demotion observable — it is the clip that inherits `b`'s decoder.
+   */
+  function sameTakeProject(): Project {
+    const cut = (id: string, start: number, end: number): VisualItem =>
+      videoItem({
+        id,
+        src: '/media/take.mov',
+        proxySrc: '/proxies/take_proxy.mp4',
+        start,
+        end,
+        inPoint: start,
+        outPoint: end,
+      })
+    return {
+      id: 'p1',
+      status: 'draft',
+      settings: { resolution: [1080, 1920], fps: 30 },
+      tracks: [{ id: 'trk-0', items: [cut('a', 0, 4), cut('b', 3, 8), cut('c', 8, 12)] }],
+    } as Project
+  }
+
+  const engineFor = (project: Project) =>
+    createEngine(project, { fileUrl: (p) => p, nowMs: () => 0 })
+
+  it('an exclusive request gets its OWN FrameServer for the same src', async () => {
+    const engine = engineFor(sameTakeProject())
+    engine.seek(3.5) // mid-overlap: `a` outgoing, `b` incoming and exclusive
+    await flush()
+
+    // Two decoders off one proxy — the carve-out. Before 9b this was one, and
+    // the blend had no second read position to ask for.
+    expect(serverInstances).toHaveLength(2)
+
+    engine.dispose()
+  })
+
+  it('non-exclusive requests on one src still SHARE a server — the invariant holds', async () => {
+    const engine = engineFor(sameTakeProject())
+    engine.seek(2.5) // `a` active, `b` prewarmed as `next`; no blend yet
+    await flush()
+
+    expect(serverInstances).toHaveLength(1)
+
+    engine.dispose()
+  })
+
+  it('the exclusive server reuses the cached demux rather than re-fetching', async () => {
+    // The whole justification for the carve-out. If this fails the carve-out is
+    // not cheap and the invariant should win instead.
+    const engine = engineFor(sameTakeProject())
+    engine.seek(2.5)
+    await flush()
+    const fetches = demuxCalls.length
+    expect(fetches).toBe(1)
+
+    engine.seek(3.5) // `b` moves onto a decoder of its own
+    await flush()
+
+    expect(serverInstances.length).toBeGreaterThan(1) // it really did spawn one
+    // LENGTH, not membership: a re-demux appends a SECOND '/proxies/take_proxy
+    // .mp4' to this array, so `toContain` would stay green through the exact
+    // regression this test exists to catch.
+    expect(demuxCalls).toHaveLength(fetches)
+
+    engine.dispose()
+  })
+
+  it('releasing the exclusive clip disposes ITS server and leaves the shared one alive', async () => {
+    // The refcount key CHANGES between calls — the release path must use the
+    // same key the acquire used, or the entry is orphaned and never disposed.
+    const project = sameTakeProject()
+    const engine = engineFor(project)
+    engine.seek(3.5)
+    await flush()
+    expect(serverInstances).toHaveLength(2)
+    const [shared, exclusive] = serverInstances
+
+    // Drop `b` outright, leaving the shared clip retained.
+    const items = project.tracks[0].items as VisualItem[]
+    engine.updateProject({ ...project, tracks: [{ id: 'trk-0', items: [items[0]] }] } as Project)
+    await flush()
+
+    // Named instances, not a count: "exactly one server was disposed" is also
+    // true when the WRONG one was, which is precisely what an inverted key does.
+    expect(exclusive.disposed).toBe(true)
+    expect(shared.disposed).toBe(false)
+
+    engine.dispose()
+  })
+
+  it('keeps the exclusive server while the outgoing clip still holds the shared key', async () => {
+    // The blend ends at 4, but `retainFor` keeps the outgoing clip as `prev`,
+    // so the shared key is still TAKEN at the moment `b` stops being exclusive.
+    // Two live servers for one src cannot be merged into one: re-filing `b`
+    // there would either overwrite `a`'s entry — orphaning a worker that is
+    // still decoding, and one nothing would ever dispose — or merge the
+    // refcounts, so the first release would tear down a server the other clip
+    // is still streaming from. `demoteServer` declines and waits instead.
+    //
+    // Both halves have to be in ONE test: the orphan an overwrite creates is
+    // invisible until `a` is released and its server fails to be disposed.
+    const engine = engineFor(sameTakeProject())
+    engine.seek(3.5)
+    await flush()
+    expect(serverInstances).toHaveLength(2)
+    const [outgoing, incoming] = serverInstances
+
+    engine.seek(4.5) // past the overlap; `b` active, `a` still retained as `prev`
+    await flush()
+    expect(serverInstances).toHaveLength(2)
+    expect(outgoing.disposed).toBe(false)
+    expect(incoming.disposed).toBe(false)
+
+    engine.seek(8.5) // `a` finally leaves the retained set
+    await flush()
+
+    // `a`'s worker was terminated under the key `a` itself held. An overwrite
+    // back at 4.5 would have left this false forever — `a`'s release would find
+    // `b`'s entry under the shared key, delete a ref that was never there, and
+    // walk away from a running decoder.
+    expect(outgoing.disposed).toBe(true)
+    expect(incoming.disposed).toBe(false)
+    // And `c` still shares the demoted server rather than spawning a third.
+    expect(serverInstances).toHaveLength(2)
+
+    engine.dispose()
+  })
+
+  it('hands the exclusive server back to the shared key once that key frees', async () => {
+    // The demotion on its own, with no contended step in between: once `a`
+    // leaves the retained set its entry is disposed and removed in the SAME
+    // `retain` — the drop loop runs before the demotion loop — so the shared
+    // key is free by the time `b` is re-filed under it, decoder untouched. `c`
+    // then finds that entry and shares it, which is the invariant restored
+    // rather than merely deferred.
+    const engine = engineFor(sameTakeProject())
+    engine.seek(3.5)
+    await flush()
+    expect(serverInstances).toHaveLength(2)
+
+    engine.seek(8.5) // `c` active, `b` is `prev`, `a` has left the retained set
+    await flush()
+
+    // Still two: `c` found `b`'s demoted server instead of spawning a third.
+    expect(serverInstances).toHaveLength(2)
+    expect(serverInstances[0].disposed).toBe(true)
+    expect(serverInstances[1].disposed).toBe(false)
 
     engine.dispose()
   })

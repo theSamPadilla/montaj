@@ -112,6 +112,11 @@ function serializeResolvedItem(ri) {
     window: ri.window,
     seek: ri.seek,
     geometry: ri.geometry,
+    // A ResolvedItem field that is NOT listed here is invisible to
+    // test/corpus.test.mjs — the suite keeps passing while giving the field
+    // zero regression coverage across the whole fixture corpus. Add every new
+    // one, and hand-audit the resulting diff (fixtures/README.md).
+    crossfade: ri.crossfade,
   }
 }
 

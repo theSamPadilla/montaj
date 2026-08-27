@@ -314,6 +314,23 @@ to the window start. The same item also carries a `transition` object purely
 to document that the field exists and is inert; no assertion targets it
 specifically since nothing anywhere reads it.
 
+**SP9d-T7 note — `transition` is STILL DEAD, and the near-collision of names is
+a trap.** T7 added `ResolvedItem.crossfade`, the live per-instant blend factor
+for a clip pair. It did **not** revive `VisualItem.transition`, and the two are
+unrelated:
+
+- `VisualItem.transition` is AUTHORED data (`{ type, duration }`) persisted on
+  the item. Still read by nothing, in the editor or in render. Still fully dead.
+- `ResolvedItem.crossfade` is DERIVED — computed from the OVERLAP between two
+  neighbouring clips on one track (`src/transitions.js`'s `transitionPairs`),
+  never read off the item. Deleting every `transition` object in a project would
+  not change a single `crossfade` value.
+
+The resolver field is deliberately named `crossfade` rather than `transition`
+precisely so a live field and a dead field never share a name on the same
+conceptual object. If this entry ever closes by deleting `VisualItem.transition`
+from the schema, that deletion does not touch `crossfade`.
+
 **Owner: SP4 / schema-cleanup backlog.**
 
 ## 8. `sourcecrop-missing-dims-silent-drop`
@@ -404,37 +421,91 @@ audio track is a plain non-trimmed case and does not exercise the
 stale-outPoint path. Flagging here so whoever picks this up from render/backlog
 knows to add a dedicated fixture when fixing `mix-audio.js`.
 
-## D2. `mix-audio-afade-curve-unverified`
+## D2. `mix-audio-afade-curve-unverified` — ⚠️ REOPENED, THEN FIXED (2026-08-26)
 
-**RESOLVED — CHECKED IN SP4 T8. NOT a live divergence: both sides are linear.**
+**The curve half was right. The entry as a whole was wrong, and its wrongness
+shipped a silent bug.** The real defect was `st=` in the wrong time base — see
+"What it missed" and "Resolution" below.
 
-The preview computes a LINEAR fade ramp (`elapsed / fadeIn`,
-`src/audio.js:105-110`, inside `audioWindow` — `useVideoPlayback.ts` no longer
-computes this inline as of SP4 T8; the hook's `syncAudioTracks` now calls
-`audioWindow` for the gain envelope, same as `useEnginePlayback.ts` already
-did). `mix-audio.js` emits `afade=t=in:d=${fadeIn}` (line 62) /
-`afade=t=out:...` (line 63) with no explicit `curve=` parameter, which means
-ffmpeg's `afade` filter uses its OWN DEFAULT curve.
+### What this entry used to say
 
-**The check:** `ffmpeg -h filter=afade` (ffmpeg 8.1.2, this machine) documents:
+It concluded **"RESOLVED — CHECKED IN SP4 T8. NOT a live divergence: both sides
+are linear."** The reasoning: the preview computes a linear ramp
+(`src/audio.js:105-110`), `mix-audio.js` emitted a bare `afade=t=in:d=${fadeIn}`
+with no explicit `curve=`, and `ffmpeg -h filter=afade` documents `tri`
+("linear slope") as the default curve. Both sides therefore agreed on fade
+SHAPE, and no code change was needed.
 
-    curve             <int>        ..F.A....T. set fade curve type (from -1 to 22) (default tri)
-      tri             0            ..F.A....T. linear slope
+That much is still true, and the curve question is genuinely closed —
+`mix-audio.js` now passes `curve=` explicitly via `ffmpegFadeCurve()`.
 
-`tri` — ffmpeg's own name for "linear slope" — is the DEFAULT `curve`, and it
-is exactly the linear ramp the preview computes. `mix-audio.js`'s bare
-`afade=t=in:d=...` / `afade=t=out:...` (no `curve=` override) therefore
-renders a linear fade, matching preview's `elapsed / fadeIn` /
-`remaining / fadeOut` ramp. No divergence exists here; this was an honestly-
-flagged unknown that resolved in the "they already agree" direction once
-checked.
+### What it missed
 
-**Owner: SP4 — CLOSED (T8, verified via `ffmpeg -h filter=afade`; no code
-change needed since there is nothing to fix).**
+The audit read these exact filter strings, line by line, and did not see that
+**`st=` was computed in the wrong time base**. `adelay` prepends `start` seconds
+of silence, so everything chained after it runs in stream time; `st` was being
+computed as `(end - start) - fadeOut`, track-local. For any track with
+`start > 0` the fade-out fired `start` seconds early, and `afade=t=out` holds
+zero for the remainder of the stream. A music bed at start 27.67 / end 53.8 with
+a 3.08s fade-out reached zero gain at stream time 26.13s — before its own audio
+began. All 26.1s of that bed was zeroed, and the 54-second deliverable measured
+−91.0 dB (`volumedetect`) across its last 24 seconds, once the voiceover
+underneath it ended. The render reported success.
 
-## D3. `mix-audio-duplicated-fade-formula`
+`afade=t=in` carried the same fault: with no `st` at all it ran at stream time 0,
+entirely inside the silent padding, so an offset track received no fade-in.
 
-**Verified — drift hazard, not a live divergence.** `mix-audio.js`'s
+### Why it was missed — the reusable lesson
+
+**The audit picked the degenerate case.** It worked its example with `start: 0`,
+where `(end - start) - fadeOut` and `end - fadeOut` are *numerically identical*.
+The broken expression and the correct one produce the same number at the origin,
+so no amount of care spent reading that example could have surfaced the bug. The
+unit tests in `render/test/mix-audio.test.mjs` made the same choice
+independently — all five sat at `start: 0`, and the four that set a fade landed
+on the one value where the broken and correct expressions are numerically
+identical (the fifth sets no fade, so it never evaluated the expression at all)
+— and `integration-compose.test.mjs` used `audio: { tracks: [] }` in every
+fixture, so the mixing path had no end-to-end coverage whatever.
+
+Three separate checks, all landing on the one input value that cannot
+discriminate. **An audit that exercises the degenerate case proves nothing about
+the general one** — when a divergence check has a parameter, deliberately pick a
+value where a wrong implementation and a right one must disagree, and say in the
+entry which value you picked and why it discriminates.
+
+A narrower lesson too: this entry scoped itself to fade *shape* and answered that
+question well. But it was filed against the fade filters as a whole, and its
+"RESOLVED / NOT a live divergence" verdict read — to everyone downstream — as a
+clearance of those filters, not of the one attribute actually examined. State the
+attribute in the verdict, not just in the body.
+
+### Resolution
+
+**Fixed 2026-08-26.** Both `st=` values are now expressed in delayed-stream time
+by a single shared `buildFadeFilters()` helper in `mix-audio.js` (which also
+closes D3 below): `st = end - fadeOut` for the fade-out, `st = start` for the
+fade-in. Regression coverage is a `start > 0` fixture in both branches
+(`render/test/mix-audio.test.mjs`) plus the first end-to-end test of the audio
+mixing path (`render/test/integration-compose.test.mjs`), which renders an
+offset track and asserts on measured level — it reproduces −91 dB against the
+unfixed code. Making `st` explicit on the fade-in is a verified no-op at the
+origin: mixing a `start: 0` fixture before and after and decoding to raw PCM
+gives byte-identical output (sha256 `014ab3916dad500302c577374cb550c51e2755c1acb84acfa0efe09cf7e99ac9`).
+
+**Owner: ✅ closed (render, 2026-08-26).** D1 above remains open and untouched —
+same file, adjacent lines, different bug.
+
+## D3. `mix-audio-duplicated-fade-formula` — ✅ RESOLVED (2026-08-26)
+
+**The drift hazard was real and it cashed in.** Both copies carried the D2
+stream-time bug, and both had to be fixed. Resolved by extracting the shared
+`buildFadeFilters()` helper in `mix-audio.js` — there is now one copy, so the
+next fix cannot land on one branch and miss the other. The description below is
+retained as the historical finding; its snippet and line numbers predate both
+this fix and the earlier `curve=` addition.
+
+**Verified at the time — drift hazard, not a live divergence.** `mix-audio.js`'s
 `buildAudioTrackFilters` has two branches for the same computation: the
 `ducking` branch (lines 52-70) and the non-ducking branch (lines 71-83). Both
 independently compute:
@@ -451,9 +522,12 @@ to one without the other silently reintroduces a divergence. Not something
 `src/audio.js` can guard against — it's an internal `mix-audio.js` code-health
 issue, not a preview/render behavior difference.
 
-**Owner: render/backlog** (reassigned from `schema-cleanup / SP4 backlog` per
+~~**Owner: render/backlog** (reassigned from `schema-cleanup / SP4 backlog` per
 decision 7, SP4 T8 — this is internal `mix-audio.js` code health, not
-`editor/src/engine/` work; SP4's scope ends at the preview/engine boundary).
+`editor/src/engine/` work; SP4's scope ends at the preview/engine boundary).~~
+
+**Owner: ✅ closed (render, 2026-08-26)** — picked up off render/backlog and
+fixed alongside D2, which is what the duplication cost.
 
 ## D4. `boundary-totality-guard` — ADOPTED BY RENDER IN T7 (was: resolver vs. legacy)
 
@@ -958,3 +1032,267 @@ closing the silent-drop trap before anyone falls into it.
 **Owner: backlog.** Precedent for registering rather than fixing a
 preview/render split mid-flight: `opaque-in-preview` (entry 2), which carried a
 partially-unified state across SP4 with the legacy path left open.
+
+## D16. `clip-crossfade-not-blended-on-the-legacy-video-path`
+
+**Verified.** `ResolvedItem.crossfade` gives every consumer the blend factor
+for a clip crossfade. The SP4 WebCodecs engine honours it (two decode sessions,
+one composited paint) and render honours it (`encode-segment.js`'s `blend`
+branch). The LEGACY `<video>` player cannot: it mounts one `<video>` element per
+active clip and has no compositing stage in which to mix two decoded frames.
+
+The disposition is NOT "let the legacy path hard-cut silently" — that is
+exactly the preview/export divergence v4 was spent eliminating, and a silent
+one would be invisible until export. **What actually shipped (Task 10b) is
+narrower than an earlier draft of this entry described**: `eligibility.ts`'s
+`engineRequiredReason(project)` answers "does this project need the engine
+for a reason the legacy player can't serve" — clip crossfades are its one
+reason today — but that answer is deliberately **NOT folded into
+`checkProjectShapeEligibility`/`evaluateEngineEligibility`'s eligibility
+verdict**. See `engineRequiredReason`'s own doc comment in `eligibility.ts`:
+"Additive to the checks above... this is not part of
+`checkProjectShapeEligibility`/`evaluateEngineEligibility`'s eligibility
+verdict, it answers a different question." A project containing a clip
+crossfade does **not** become engine-only, and an engine-ineligible project
+with a crossfade does **not** get blocked from previewing.
+
+Instead, `PreviewPlayer.tsx:650-659` renders a persistent, NON-BLOCKING
+banner — "Crossfades will not appear in this preview. They will render in
+the export." — whenever `playback.mode === 'legacy' && engineRequiredReason(project)
+!== null`. The legacy `<video>` player still mounts and still plays; the
+banner is the only difference, and it is recomputed on EVERY render
+(deliberately not memoized into the once-per-load `useEngineMode`/`mode`
+check — see the comment at that call site) so it appears the instant an
+operator drags two clips into overlap and disappears the instant they pull
+them apart, without remounting the player.
+
+**Why non-blocking, not a hard eligibility gate.** Making crossfade detection
+part of the eligibility verdict would make a WHOLE PROJECT un-previewable
+over ONE transition — including during the perfectly ordinary window where a
+project sits on the LEGACY player for a reason that has nothing to do with
+crossfades at all: `checkProjectShapeEligibility` requires every `tracks[0]`
+video item to carry `proxySrc` (`eligibility.ts:77-78`), and `proxySrc` is
+written best-effort at import and can still be mid-encode. A project with one
+freshly-imported, not-yet-proxied clip is legacy-bound for that reason alone
+— and, per `useEngineMode`'s "evaluated once per project LOAD" rule, STAYS
+legacy-bound for the rest of the session even once the proxy finishes, a
+reload being the only way back onto the engine. Folding crossfade detection
+into eligibility would mean a project in exactly that ordinary transient
+state — proxy still encoding, nothing wrong with the project — could become
+unpreviewable in ANY player the moment it also contained a crossfade, which
+also compounds with the pre-existing `nobg_preview_src`-requires-legacy case
+(v1's background-removed projects are legacy-only). A visible, honest notice
+that the preview and the export will differ satisfies v4's "never silently
+disagree" rule without paying that cost.
+
+**The D17 qualification no longer applies (SP-transitions 9b).** It read: "two
+decode sessions" exist only when the two clips resolve to DIFFERENT preview
+srcs, so a pair off one proxy could not blend either. 9b closed that — the
+incoming side of a blend now asks for a decoder of its own, and the engine
+honours a crossfade whatever the two sides resolve to. The statement above is
+unqualified again: the engine blends, render blends, and only the legacy
+`<video>` player cannot.
+
+**Owner: SP4 — closes when the legacy `<video>` player is retired.**
+
+## D17. `same-src-clip-crossfade-not-blended-in-preview` — ✅ RESOLVED IN SP-transitions 9b (2026-08-26)
+
+**Retained rather than deleted**, in the style of entry 1: this tracked the gap
+from the moment T9 found it to the moment 9b closed it, hours later, and the
+reasoning is the useful part of the record — particularly the argument for why
+the invariant it bends was right in the first place.
+
+**What it was.** Verified against the code, not inferred. A clip crossfade blended at render
+and hard-cut in the ENGINE preview whenever both sides of the pair resolved to
+the same preview src. Different srcs blended correctly, playing and scrubbing
+alike. This was narrower than D16 — not the legacy `<video>` player, the
+WebCodecs engine itself — and it had a different mechanism.
+
+**The mechanism.** Three facts compose into the gap:
+
+1. `FrameServer` is **one per `src`, refcounted by clip** (`engine/index.ts`'s
+   module header states it outright: "Two clips never stream from one server at
+   once"), and `acquireServer` (`engine/index.ts:618`) keys the map on `src`.
+2. A frame server serves **one decode intent at a time**. `startStream`
+   (`frame-server.ts:335`) and `seek` (`:310`) both open by calling
+   `stopStream()`, and `claimReqId` (`:293`) marks every older pending seek
+   superseded so it resolves `null`.
+3. `engineSrcFor` (`engine/scheduler.ts`) always resolves to `item.proxySrc` —
+   proxy-only playback is structural, not a preference.
+
+So two clips cut from ONE take share a single decoder, and a crossfade between
+them asks that decoder for two positions in the same file at the same instant.
+There is no second position to read.
+
+**Why the engine declined rather than trying.** `blendSideFor`
+(`engine/scheduler.ts`) gated the blend on
+`blendSource.frameServer !== outgoing.frameServer` and fell back to painting
+the outgoing clip alone — the same fallback an undecoded incoming frame takes.
+Without that guard the naive implementation is **worse than the hard cut it
+replaces**: opening the incoming stream would stop the outgoing clip's stream,
+and `nextFrameFor` would answer from the wrong place in the file. A stalled
+picture reads as a decoder bug, not a missing transition.
+
+**Severity: this was the COMMON case, not the exotic one** — which is why it was
+closed the same day rather than carried. A silence-trimmed or select-takes
+timeline is many clips off one proxy, so a dissolve between two adjacent cuts of
+a single take — the ordinary jump-cut softener — landed here. Cross-source
+crossfades, the rarer authoring gesture, were the ones that worked.
+
+**What shipped (9b).** `SourceRequest.exclusiveServer` asks the host for a
+decoder of this clip's own; `serverKeyFor` (`engine/index.ts`) files such a
+session under `` `${src}#${clipId}` `` instead of `src`, and the session stores
+the key it acquired so it releases that one rather than the one its current
+request implies. `retainFor` sets the flag for `plan.blend`'s clip — and ONLY
+when the two sides resolve to one src, because a cross-source pair already has
+two decoders and the flag would just force the host to respawn a session it had
+prewarmed. The invariant in fact 1 above is bent, not overturned: what it
+actually saves is the demux, and `demuxCache` is keyed by `src` independently of
+the server map, so the second decoder costs one worker and zero extra fetches
+(pinned by `source-host.test.ts`'s "reuses the cached demux rather than
+re-fetching"). The exclusive entry is re-filed under the shared key once that
+key is free, so the extra worker does not outlive its reason.
+
+**The same-server check in `blendSideFor` was KEPT as an assertion**, not
+deleted: `exclusiveServer` makes the two sides distinct by construction, but if
+they ever resolve to one server again, painting the outgoing frame alone is
+still better than reading a stream from the wrong position. Pinned by
+`engine/__tests__/scheduler.test.ts`'s "still paints the outgoing frame alone if
+the host hands both sides one server", which reaches that branch through a fake
+host that deliberately ignores the flag — the only way in now.
+
+**Owner: ✅ closed (SP-transitions 9b).** D16's qualification is lifted with it;
+the legacy `<video>` half of D16 is still open.
+
+## D18. `audio-fade-curve-three-way-disagreement` — discovered 2026-08-26
+
+**Open. Measured, not inferred.** Found while fixing D2; deliberately left
+unfixed so it gets its own change rather than being folded into a timing fix.
+
+Three consumers compute the audio fade envelope and **all three disagree** —
+not by a shade of curve, but by 44 dB.
+
+`fade-curve.ts`'s module header does enumerate "three consumers that must never
+disagree about what a given shape sounds/looks like" — but **playback is not one
+of them.** The three it lists are the envelope drawn on the bar
+(`draw.ts`'s `drawFadeEnvelope`), the waveform's amplitude scaling
+(`waveforms.ts`'s `drawWaveformBars`), and the rendered mix. Two of the three
+are drawing consumers. The file that exists to enumerate who depends on this
+math never counted the audible path at all, which is very likely why nobody
+noticed that the audible path ignores the curve entirely.
+
+| Consumer | Formula for `exp` | Where |
+|---|---|---|
+| Editor **playback** (what the operator HEARS) | linear `elapsed / fadeIn` — **the curve is never read at all** | `timeline-core/src/audio.js:108-111` (`audioWindow`) |
+| Editor **drawing** (what the operator SEES) | `t²` | `editor/src/video/timeline/canvas/fade-curve.ts` (`fadeGain`) |
+| **Render** (what ships) | ffmpeg `afade curve=exp` — a decade curve, ≈`10^(-5t)` | `render/mix-audio.js` (`buildFadeFilters`) |
+
+`audioWindow` takes no `fadeInCurve`/`fadeOutCurve` argument and contains no
+reference to either — so an operator who picks a curve changes the drawn
+envelope and the exported audio, but never what they hear while editing.
+
+### Why the gap is enormous, not cosmetic
+
+ffmpeg's `exp` is nothing like the editor's `t²`. Measured by applying each
+curve to a 1 kHz tone, decoding to raw PCM and taking the peak envelope per
+200 ms window (normalised against an unfaded reference — lavfi's `sine` peaks
+at 0.125, not full scale, which will silently halve your numbers if missed):
+
+```
+ffmpeg exp OUT: 0.999 0.562 0.316 0.177 0.100 0.056 0.031 0.018 0.010 0.006 0.003 ... 0
+ffmpeg tri OUT: 1.000 0.949 0.900 0.850 0.800 0.750 0.700 0.650 0.600 0.550 0.500 ...
+editor  t²  OUT: 1.000 0.902 0.810 0.722 0.640 0.562 0.490 0.422 0.360 0.302 0.250 ...
+```
+
+ffmpeg's `exp` is already at 0.1 one-fifth of the way through the fade and at
+0.01 two-fifths through. The editor's `t²` is still at 0.64 and 0.36.
+
+### The consequence: every auto-crossfade exports with a hole in it
+
+`computeAutoCrossfade` (`editor/src/video/timeline/timeline-model.ts:517`)
+builds a crossfade out of a fade-out plus a fade-in of equal length wherever
+two audio tracks overlap — `a.fadeOut = b.fadeIn = round(overlap, 0.1s)`. It
+pairs only ADJACENT tracks in start-sorted order (`i`, `i+1`), so three mutually
+overlapping tracks get pairs (0,1) and (1,2) and no others.
+
+It does this for any overlapping pair and does **not** look at whether the two
+tracks share a source — nor at `lane` (`docs/schemas/project.md`: "independent of
+`lane`, so tracks on different rows still crossfade with each other"). That makes
+the correlated/uncorrelated caveat below load-bearing rather than academic: a 60s
+music bed under a 60s voiceover on separate lanes is an overlapping adjacent
+pair, so it gets `fadeOut = fadeIn = 60s` applied to both. The uncorrelated case
+is not a hypothetical edge — it is this function's routine behaviour.
+
+The case that surfaced this was two slices of the SAME file. That material is
+maximally correlated, so the amplitudes ADD — unity sum is the criterion for an
+inaudible crossfade. Sum of the two gains at the crossfade midpoint:
+
+| curve | midpoint sum | worst dip |
+|---|---|---|
+| `tri` (linear) | 1.0000 | 0.00 dB — exactly flat |
+| `exp` (**`DEFAULT_FADE_CURVE`**) | 0.0063 | **−44.0 dB** |
+| `log` | 1.8796 | +5.5 dB boost |
+
+Exact values, sampled at the fade midpoint. The 200 ms peak-envelope method
+below reproduces them to within ±0.03 — close enough to trust the method, not
+close enough to quote its output as the figure.
+
+And across the three consumers, for the default `exp`:
+
+| | midpoint sum | |
+|---|---|---|
+| playback (linear) | 1.000 | 0 dB — flat, sounds correct |
+| drawing (`t²`) | 0.500 | −6 dB |
+| render (ffmpeg `exp`) | 0.007 | **−43 dB** |
+
+So the operator hears a clean crossfade and exports a near-total dropout. The
+middle row is derived, not seen: the canvas draws each track's OWN envelope via
+`fadeGain` and never draws the sum, so −6 dB is what the two drawn envelopes
+imply if you add them by eye. Since `exp` is the default, this
+affects every multi-clip audio timeline that has not had its curve changed by
+hand.
+
+### Corroborated end-to-end in a real render
+
+The table above is synthetic (envelope probe). The same hole shows up in an
+actual export. Two beds at −24 dB steady state, A fading out 4→5s and B fading
+in 5→5.5s, both on the default `exp`, measured with `volumedetect` in 200 ms
+windows:
+
+```
+4.2-4.4s  -50.8 dB      5.0-5.2s  -90.3 dB
+4.4-4.6s  -70.8 dB      5.2-5.4s  -53.8 dB
+4.6-4.8s  -90.3 dB      5.4-5.6s  -26.3 dB
+4.8-5.0s  -91.0 dB      5.6-5.8s  -24.1 dB
+```
+
+Roughly **0.8 seconds of audible silence** (4.4→5.2s below −70 dB) in material
+that never drops below −24 dB on either side of it.
+
+Note this particular fixture is a *non-overlapping* seam — A ends exactly where
+B begins — so nothing is summing here; each track is simply already inaudible
+well before its own fade edge, because `exp` reaches 0.01 two-fifths of the way
+through. An overlapping crossfade (what `computeAutoCrossfade` actually
+produces) sums the two and lands at the −43 dB figure in the table above. Same
+root cause, and neither case is visible in preview.
+
+### The fix is `tri` — but ONLY because the material is correlated
+
+**Do not write down "linear is correct" without this qualifier.** For two
+slices of the same file the amplitudes add, so linear (`tri`) summing to 1.0
+is exactly right. For UNCORRELATED material — music under a voiceover, two
+different beds — the powers add instead, the correct choice is an equal-power
+crossfade, and linear would itself dip about 3 dB. A fix that blanket-switches
+every crossfade to linear will improve the same-source case and degrade the
+music-under-voice case.
+
+`ffmpegFadeCurve()`'s `linear → tri` mapping in `mix-audio.js` is correct and
+is not implicated; the question is which curve `computeAutoCrossfade` should
+CHOOSE for a same-source crossfade, plus whether `audioWindow` should honour
+the curve at all so preview stops lying about it.
+
+**Owner: unassigned (render + editor — needs its own plan).** Out of scope for
+the D2 timing fix, which deliberately changed no curve and did not touch
+`computeAutoCrossfade`. Note this is a strictly separate axis from D14
+(`ducking-not-simulated-in-preview`) and from D2: D2 was WHEN the fade fires,
+this is WHAT SHAPE it has once it does.

@@ -96,6 +96,7 @@
 import { sourceWindow } from './source-window.js'
 import { visualDuration } from './durations.js'
 import { geometryAt } from './geometry.js'
+import { transitionPairs, transitionProgress } from './transitions.js'
 
 // NOTE: T2's `Variant` / `SourceWindow` / `SourceWindowItem` are referenced
 // below as inline `import('./source-window.js').X` types rather than aliased
@@ -142,6 +143,16 @@ import { geometryAt } from './geometry.js'
  */
 
 /**
+ * One side of a crossfade, and how far through it this instant is.
+ *
+ * @typedef {Object} ItemCrossfade
+ * @property {'from' | 'to'} role `'from'` = the outgoing item, `'to'` = the incoming one.
+ * @property {number} p
+ *   0 at the overlap's start, 1 at its end. Consumers blend
+ *   `(1-p)*from + p*to`.
+ */
+
+/**
  * One item that is on screen, with everything a consumer needs to draw it.
  *
  * @typedef {Object} ResolvedItem
@@ -184,7 +195,18 @@ import { geometryAt } from './geometry.js'
  *   NOTE for `resolveSegment`: it resolves the whole segment at `segStart`, so
  *   an animated item's geometry there is the value at the SEGMENT's start, not
  *   a per-frame curve. The render bake samples per frame through its own
- *   `geometryAt` calls; `resolveSegment` is the segment-planning view.
+ *   `geometryAt` calls; `resolveSegment` is the segment-planning view. The same
+ *   applies to `crossfade` below: its `p` there is the blend factor at the
+ *   SEGMENT's start, not a curve across the segment.
+ * @property {ItemCrossfade | null} crossfade
+ *   Set when this item is one side of a crossfade with its neighbour ON THE
+ *   SAME TRACK; `null` otherwise, which is the overwhelmingly common case.
+ *
+ *   CLIPS ONLY (`kind === 'video' | 'image'`) — see `crossfadesAt` for why an
+ *   overlay is excluded rather than merely absent from today's projects.
+ *
+ *   NOTE for `resolveSegment`: like `geometry`, this is the value at the
+ *   SEGMENT's start, not a per-frame curve.
  */
 
 /**
@@ -571,6 +593,145 @@ export function planBoundaries(project, fps) {
 }
 
 /**
+ * Per-track TRANSITION PAIR LIST (clips only, sorted, paired — the expensive
+ * half of `crossfadesAt`: a filter, a copy, and an O(k log k) sort), memoized
+ * on the track's ITEMS ARRAY IDENTITY.
+ *
+ * WHY A WeakMap KEYED ON THE ARRAY ITSELF IS SAFE: `crossfadesAt` runs once
+ * per track PER TICK — `previewResolver`/`resolveAt` is called every
+ * scheduler frame (see `resolveAt`'s own doc), and on a silence-trimmed
+ * `tracks[0]` that can be 100-200 clips at 60 Hz, a cost that did not exist
+ * before this module. But the pair list only changes when the track's OWN
+ * items array changes — an edit that reorders, adds, removes, or retimes an
+ * item. This is an identity-keyed cache of a PURE function: same array
+ * reference in, same pairs out, always, by construction (`transitionPairs`
+ * takes no clock, no project, nothing but the array). It relies on the same
+ * invariant the resolver's purity contract already requires of every caller —
+ * `ResolvedItem.item` is documented as "the ORIGINAL item object from the
+ * project — a reference, never a copy" for exactly this reason, and an
+ * editor commit that changes a track's items always produces a NEW array
+ * (immutable-update convention throughout this codebase) rather than
+ * mutating the old one in place. A `WeakMap`, not a plain `Map`, so a track
+ * array that falls out of scope — an undo/redo history entry nobody points
+ * to any more — is garbage-collected normally instead of pinned forever.
+ *
+ * @type {WeakMap<ReadonlyArray<TimelineItem>, import('./transitions.js').TransitionPair[]>}
+ */
+const trackPairsCache = new WeakMap()
+
+/**
+ * `transitionPairsFor(trackItems)` — memoized wrapper around the CLIPS-ONLY
+ * filter + `transitionPairs`. See `trackPairsCache` for the memoization
+ * contract.
+ *
+ * @param {ReadonlyArray<TimelineItem>} trackItems
+ * @returns {import('./transitions.js').TransitionPair[]}
+ */
+function transitionPairsFor(trackItems) {
+  const cached = trackPairsCache.get(trackItems)
+  if (cached) return cached
+
+  // ── Crossfades are stamped for CLIPS ONLY ───────────────────────────────
+  //
+  // An overlay's crossfade is real `opacity` keyframe data on the item
+  // (the editor's `computeVisualCrossfade` writes it), and that data already
+  // animates end to end through the Puppeteer capture. Stamping `crossfade`
+  // on an overlay as well would make every consumer apply the fade TWICE —
+  // once from the baked capture, once from this field. Clips get it because
+  // they have no data-level way to express a fade at all: ffmpeg's
+  // `colorchannelmixer=aa=` takes a <double> and no expression.
+  //
+  // Pairs are computed PER TRACK. Two items on different tracks are stacked,
+  // not sequenced, and blending them would be meaningless.
+  /** @type {TimelineItem[]} */
+  const clips = []
+  for (const item of trackItems) {
+    const kind = kindOf(item)
+    if (kind === 'video' || kind === 'image') clips.push(item)
+  }
+  const pairs = clips.length < 2 ? [] : transitionPairs(clips)
+  trackPairsCache.set(trackItems, pairs)
+  return pairs
+}
+
+/**
+ * Every crossfade IN EFFECT AT `t` on one track, keyed by the item object.
+ *
+ * Keyed by REFERENCE, not by `id`: `id` is optional on a `TimelineItem`, and
+ * two id-less clips on one track would collide into a single key and silently
+ * stamp one item's blend onto the other. `transitionPairs` returns the very
+ * objects it was handed, so identity lookup is exact.
+ *
+ * The pair list is filtered to the pairs whose `[start, end)` span contains
+ * `t`, using the same half-open predicate as activation itself. Without that
+ * filter an item that is one side of a pair would carry a clamped `p` of 0 or 1
+ * for its ENTIRE life rather than `null` outside the overlap.
+ *
+ * ── TOTAL over the pair model's blind spot ──────────────────────────────
+ *
+ * `transitionPairs` only ever considers CONSECUTIVE neighbours, so three (or
+ * more) clips live at once — A/B/C where A-B and B-C both partially overlap —
+ * yield TWO live pairs sharing item B. `engine/validate.py` rejects this
+ * shape outright (`visual_track_overlap`, "N items are live at t=..."), but
+ * this function cannot assume every project reaching it already passed
+ * validation, and must answer *something* rather than silently pick a
+ * winner. It used to: the pre-fix version called `out.set(item, ...)`
+ * unconditionally per pair, so B kept whichever of its two pairs was written
+ * LAST, and A — the `from` of a pair the encoder never opens because B's
+ * later pair overwrote it in this map — kept a stale `{role:'from', p}` for
+ * its entire life, disagreeing with every consumer that recomputes the pair
+ * fresh (preview, sample-frame both fade A out; this map alone did not).
+ *
+ * The fix: collect every LIVE pair's per-item entry keyed by item first. An
+ * item with MORE THAN ONE entry is live in more than one pair at once, and
+ * gets no crossfade — along with its partner in EVERY pair it appears in,
+ * since a pair adjacent to a three-way collision has no honest "from"/"to"
+ * story either. Hard-cutting the whole cluster is the honest answer, not
+ * silently blending some subset of it.
+ *
+ * @param {ReadonlyArray<TimelineItem>} trackItems Every item on ONE track, in document order.
+ * @param {number} t
+ * @returns {Map<import('./transitions.js').TransitionItem, ItemCrossfade>}
+ */
+function crossfadesAt(trackItems, t) {
+  /** @type {Map<import('./transitions.js').TransitionItem, ItemCrossfade>} */
+  const out = new Map()
+
+  const pairs = transitionPairsFor(trackItems)
+  if (pairs.length === 0) return out
+
+  /** @type {import('./transitions.js').TransitionPair[]} */
+  const livePairs = []
+  /** @type {Map<import('./transitions.js').TransitionItem, ItemCrossfade[]>} */
+  const byItem = new Map()
+  for (const pair of pairs) {
+    if (!containsTime(pair.start, pair.end, t)) continue
+    livePairs.push(pair)
+    const p = transitionProgress(pair, t)
+    /** @type {ItemCrossfade} */
+    const fromEntry = { role: 'from', p }
+    /** @type {ItemCrossfade} */
+    const toEntry = { role: 'to', p }
+    const fromEntries = byItem.get(pair.from)
+    if (fromEntries) fromEntries.push(fromEntry)
+    else byItem.set(pair.from, [fromEntry])
+    const toEntries = byItem.get(pair.to)
+    if (toEntries) toEntries.push(toEntry)
+    else byItem.set(pair.to, [toEntry])
+  }
+
+  for (const pair of livePairs) {
+    const fromEntries = byItem.get(pair.from)
+    const toEntries = byItem.get(pair.to)
+    if (!fromEntries || !toEntries) continue // unreachable: every livePairs item was added to byItem above
+    if (fromEntries.length > 1 || toEntries.length > 1) continue // three-or-more-live: no honest blend
+    out.set(pair.from, fromEntries[0])
+    out.set(pair.to, toEntries[0])
+  }
+  return out
+}
+
+/**
  * Resolve one item that is already known to be active.
  *
  * @param {TimelineItem} item
@@ -578,9 +739,10 @@ export function planBoundaries(project, fps) {
  * @param {number} trackIdx
  * @param {number} t
  * @param {import('./source-window.js').Variant} variant
+ * @param {ItemCrossfade | null} crossfade The entry `crossfadesAt` found for this item, or `null`.
  * @returns {ResolvedItem}
  */
-function resolveItem(item, kind, trackIdx, t, variant) {
+function resolveItem(item, kind, trackIdx, t, variant, crossfade) {
   const elapsed = Math.max(0, t - (item.start ?? 0))
   // `elapsed` is already the ITEM-RELATIVE clock keyframes are authored
   // against (src/curves.js convention 1), so the same number that drives
@@ -593,11 +755,11 @@ function resolveItem(item, kind, trackIdx, t, variant) {
     // is `sourceWindow(item, variant).inPoint + max(0, t - item.start)`. Reusing
     // the window we already computed just avoids resolving it twice; the test
     // suite asserts the two agree.
-    return { item, trackIdx, kind, window, seek: window.inPoint + elapsed, geometry }
+    return { item, trackIdx, kind, window, seek: window.inPoint + elapsed, geometry, crossfade }
   }
   // Images and overlays have no source window; `seek` is elapsed time into the
   // item itself. See the `ResolvedItem` typedef for why.
-  return { item, trackIdx, kind, window: null, seek: elapsed, geometry }
+  return { item, trackIdx, kind, window: null, seek: elapsed, geometry, crossfade }
 }
 
 /**
@@ -619,11 +781,16 @@ function collectScene(project, t, variant, isActive) {
   // overlayTracks partition (useVideoPlayback.ts:145-147); T6 maps this Scene
   // onto that partition rather than the resolver pre-splitting it.
   for (let trackIdx = 0; trackIdx < tracks.length; trackIdx++) {
-    for (const item of tracks[trackIdx] ?? []) {
+    const track = tracks[trackIdx] ?? []
+    // Computed ONCE per track, over that track's clips — including the ones
+    // `isActive` is about to reject, because a pair is a property of the
+    // TRACK's layout, not of what happens to be on screen.
+    const crossfades = crossfadesAt(track, t)
+    for (const item of track) {
       const kind = kindOf(item)
       if (kind === null) continue
       if (!isActive(item)) continue
-      items.push(resolveItem(item, kind, trackIdx, t, variant))
+      items.push(resolveItem(item, kind, trackIdx, t, variant, crossfades.get(item) ?? null))
     }
   }
   // Sorted by trackIdx ascending. Lower trackIdx = further back (composited

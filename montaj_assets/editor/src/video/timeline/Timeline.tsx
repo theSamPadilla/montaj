@@ -18,7 +18,7 @@ import { VISUAL_EDGE_TOLERANCE_PX } from './canvas/hit-test'
 import { keyframeUnionTimes } from './canvas/keyframe-strip'
 import { mapTrackItems, normalizeTracks, updateAudioTrack } from './timeline-model'
 import { deleteSelection, toggleSelection } from './multiSelectOps'
-import { computeAutoCrossfade, computeDerivedTiming, trackItems } from './timeline-model'
+import { computeAutoCrossfade, computeDerivedTiming, computeVisualCrossfade, trackItems } from './timeline-model'
 import TimelineCanvas, { useCanvasZoomControls, type ZoomControls } from './canvas/TimelineCanvas'
 import type { KeyframeSelection } from './canvas/pointer-machine'
 import { timeToX, useViewportStore, useViewportValue, xToTime, type ViewportStore } from './canvas/viewport'
@@ -656,6 +656,48 @@ export default function Timeline({ project, clock, onProjectChange, onOverlayEdi
   // Keyed on a stable digest of audio-track timing/mute AND fades, so the pass
   // re-runs on real edits (see above for why the fades belong in the key).
   }, [audioTracks.map(t => `${t.id}:${t.start}:${t.end}:${t.muted}:${t.fadeIn ?? ''}:${t.fadeOut ?? ''}`).join('|')])
+
+  // The VISUAL sibling of the pass above: two OVERLAYS overlapping on the same
+  // track get complementary derived `opacity` curves (`computeVisualCrossfade`
+  // in timeline-model.ts, so the decision logic is shared and testable away
+  // from React).
+  //
+  // A separate effect, deliberately NOT folded into the one above. That one's
+  // dependency digest is keyed on the audio FADES on purpose — the digest is
+  // what clears a pending timer instead of letting a stale one fire — and
+  // mixing a second, independently-changing key into it would re-arm the audio
+  // timer on every unrelated overlay edit, and the visual timer on every
+  // unrelated audio edit. Two passes, two digests, two timers.
+  //
+  // Same debounce, for the same reason: an overlay's span moves on every
+  // mousemove of a drag, and committing each one is the per-move-undo bug. A
+  // gesture's own commit (`commitTimelineEdit`) folds the visual fade into its
+  // one undo step, so mid-drag this timer is cleared and rescheduled every
+  // frame and never fires, and right after a gesture it no-ops because
+  // `computeVisualCrossfade` is idempotent. This pass is therefore only the
+  // catch-all for overlay timing that changes OUTSIDE a gesture — ripple-
+  // delete, gap-collapse — which reach `sync.mutate` directly and never pass
+  // through `commitTimelineEdit` at all. Commits only; a preview via
+  // `onProjectChange` would change the digest below and clear the timer before
+  // it fired, so a ripple-delete's fade would never get saved.
+  useEffect(() => {
+    if (!onOverlayEdit) return
+    const next = computeVisualCrossfade(project)
+    if (!next) return
+    const timer = setTimeout(() => onOverlayEdit(next), CROSSFADE_COMMIT_DELAY_MS)
+    return () => clearTimeout(timer)
+  // Keyed on every visual item's SPAN and its DERIVED opacity curve, for
+  // exactly the reason the audio digest above includes the fades: the
+  // gesture's own crossfade commit changes this digest, which re-runs the
+  // effect and clears the pending timer rather than letting a stale one fire.
+  // `origin` is what makes a curve derived, and this pass is its only writer,
+  // so a hand-authored curve (no `origin`) contributes nothing to the key —
+  // it can never be the reason this pass needs to run again.
+  }, [allTracks.map(items => items.map(i => {
+    const fade = i.keyframes?.find(k => k.prop === 'opacity')
+    const curve = fade?.origin ? fade.points.map(p => `${p.t},${p.value}`).join(';') : ''
+    return `${i.id}:${i.start}:${i.end}:${curve}`
+  }).join('|')).join('||')])
 
   // The tabIndex={0} root below — Delete/Enter's guards below check focus is
   // inside it before firing (see the useKeymap block), restoring the pre-T9

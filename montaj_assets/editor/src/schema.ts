@@ -79,6 +79,19 @@ export interface CaptionSegment {
   lane?: number
 }
 
+/**
+ * The CSS `text-transform` values the caption text-styling controls offer.
+ *
+ * A named union rather than `string`, because this value is ultimately spread
+ * into a React `style={{...}}` object, where `CSSProperties['textTransform']`
+ * is itself a union — a bare `string` there is a hard `TS2322` in any consumer
+ * that typechecks against this package's sources, which every consumer does
+ * (the package ships raw TS, so `skipLibCheck` cannot mask it). Narrowing the
+ * one consuming component instead of this field just moves the error to the
+ * call site that feeds it.
+ */
+export type CaptionTextTransform = 'uppercase' | 'lowercase' | 'capitalize' | 'none'
+
 export interface Captions {
   style: 'word-by-word' | 'pop' | 'karaoke' | 'subtitle' | 'highlight-box' | 'outline' | 'clean'
   segments: CaptionSegment[]
@@ -105,7 +118,7 @@ export interface Captions {
   fontWeight?: number | string // default is per style: clean/karaoke 700, subtitle 600,
                                 // pop/word-by-word 800, highlight-box/outline 900 — so an
                                 // existing project with no fontWeight renders unchanged.
-  textTransform?: string   // 'uppercase' | 'lowercase' | 'capitalize' | 'none'
+  textTransform?: CaptionTextTransform
   letterSpacing?: string   // CSS length, e.g. '0.02em'
   lineHeight?: number | string
   textAlign?: string       // 'left' | 'center' | 'right'
@@ -154,6 +167,12 @@ export interface Keyframe {
 export interface KeyframeTrack {
   prop: KeyframeProp
   points: Keyframe[]
+  /** Marks a track as DERIVED (`'crossfade'`) rather than hand-authored. Only
+   *  `computeVisualCrossfade` writes it; every reader treats an absent `origin`
+   *  as hand-authored and never overwrites such a track. Ignored by the
+   *  renderer and by `timeline-core` — it is editor bookkeeping that rides
+   *  along in `project.json`. */
+  origin?: string
 }
 
 export interface VisualItem {

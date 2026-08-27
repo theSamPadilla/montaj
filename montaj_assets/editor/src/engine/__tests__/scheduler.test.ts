@@ -190,6 +190,10 @@ interface FakeSession {
   src: string
   item: VisualItem
   server: FakeFrameServer
+  /** The `serverEntries` key this session holds a ref under — see `acquireServer`. */
+  key: string
+  /** Whether it was BUILT exclusive, which is what the real host stamps on its session. */
+  exclusive: boolean
   clock: FakeClock
   ready: boolean
   failed?: string
@@ -208,17 +212,32 @@ class FakeHost implements SourceHost {
   readonly fallbacks: FakeClock[] = []
   /** When false, a retained clip stays `loading` until `ready()` is called. */
   autoReady = true
+  /**
+   * When false, `exclusiveServer` is ignored and both sides of a blend land on
+   * one server — the state `blendSideFor`'s same-server assertion exists for.
+   * The real host always honours it; this is the only way to reach that branch.
+   */
+  honourExclusive = true
   scheduler: Scheduler | null = null
   private time = 0
   private readonly clocks: FakeClock[] = []
+  /** Frame servers by server KEY, with the clips referencing each — see `acquireServer`. */
+  private readonly serverEntries = new Map<string, { server: FakeFrameServer; refs: Set<string> }>()
 
   retain(requests: readonly SourceRequest[]): void {
     this.retainLog.push([...requests])
     for (const [clipId, session] of [...this.sessions]) {
-      if (requests.some((r) => r.clipId === clipId && r.src === session.src)) continue
+      const want = requests.find((r) => r.clipId === clipId && r.src === session.src)
+      // A clip that BECOMES exclusive is respawned onto a server of its own,
+      // exactly as the real host does it (`index.ts`'s `retain`): a live
+      // session cannot change servers, and the incoming side of a blend is
+      // usually already built as `next` before the overlap starts. The reverse
+      // edge is NOT a respawn there either — the real host re-files the entry
+      // under the shared key instead, bookkeeping this fake has no way to show.
+      if (want && !(want.exclusiveServer && !session.exclusive)) continue
       this.sessions.delete(clipId)
       this.droppedClips.push(clipId)
-      session.server.dispose()
+      this.releaseServer(session.key, clipId)
       session.clock.dispose()
     }
     for (const request of requests) {
@@ -226,14 +245,48 @@ class FakeHost implements SourceHost {
       const clock = new FakeClock('audio', request.anchorProjectS)
       clock.t = this.time
       this.clocks.push(clock)
+      const exclusive = !!request.exclusiveServer
+      const key =
+        exclusive && this.honourExclusive ? `${request.src}#${request.clipId}` : request.src
       this.sessions.set(request.clipId, {
         src: request.src,
         item: request.item,
-        server: new FakeFrameServer(request.src),
+        server: this.acquireServer(key, request.src, request.clipId),
+        key,
+        exclusive,
         clock,
         ready: this.autoReady,
       })
     }
+  }
+
+  /**
+   * One `FakeFrameServer` per KEY, refcounted by clip — the real host's rule
+   * (`index.ts`: "FrameServer — one per `src`, refcounted by clip … Two clips
+   * never stream from one server at once"), including its one carve-out: an
+   * `exclusiveServer` request is filed under `${src}#${clipId}` and gets a
+   * server of its own. A fake that handed EVERY clip its own server would let
+   * a crossfade between two cuts of ONE take blend in these tests and hard-cut
+   * in the browser; a fake that honoured no exclusivity at all would do the
+   * reverse, and fail the blend that now works.
+   */
+  private acquireServer(key: string, src: string, clipId: string): FakeFrameServer {
+    let entry = this.serverEntries.get(key)
+    if (!entry) {
+      entry = { server: new FakeFrameServer(src), refs: new Set() }
+      this.serverEntries.set(key, entry)
+    }
+    entry.refs.add(clipId)
+    return entry.server
+  }
+
+  private releaseServer(key: string, clipId: string): void {
+    const entry = this.serverEntries.get(key)
+    if (!entry) return
+    entry.refs.delete(clipId)
+    if (entry.refs.size > 0) return
+    entry.server.dispose()
+    this.serverEntries.delete(key)
   }
 
   state(clipId: string): SourceState {
@@ -299,6 +352,14 @@ class FakeHost implements SourceHost {
 
 class FakePainter implements Painter {
   readonly paints: Array<{ frame: FakeFrame; plan: DrawPlan }> = []
+  /** Every `paintBlend` call — the crossfade tests read `p` and both frames off this. */
+  readonly blends: Array<{
+    from: FakeFrame
+    to: FakeFrame
+    p: number
+    fromPlan: DrawPlan
+    toPlan: DrawPlan
+  }> = []
   clears = 0
   constructor(
     private readonly width = 1080,
@@ -309,6 +370,15 @@ class FakePainter implements Painter {
   }
   paint(frame: VideoFrame, plan: DrawPlan) {
     this.paints.push({ frame: frame as unknown as FakeFrame, plan })
+  }
+  paintBlend(from: VideoFrame, to: VideoFrame, p: number, fromPlan: DrawPlan, toPlan: DrawPlan) {
+    this.blends.push({
+      from: from as unknown as FakeFrame,
+      to: to as unknown as FakeFrame,
+      p,
+      fromPlan,
+      toPlan,
+    })
   }
   clear() {
     this.clears++
@@ -347,6 +417,15 @@ function project(
     tracks: overlays.length > 0 ? [track0, overlays] : [track0],
     ...extra,
   } as Project
+}
+
+/**
+ * Two track-0 clips that really are a crossfade pair: they overlap on [3, 4)
+ * and `b` outlives `a`, so `transitionPairs` pairs them rather than reading it
+ * as containment. `p` is 0.5 at t = 3.5, the midpoint of the overlap.
+ */
+function crossfade(overlays: VisualItem[] = [], extra: Partial<VisualItem> = {}): Project {
+  return project([clip('a', 0, 4, extra), clip('b', 3, 8, extra)], overlays)
 }
 
 interface Harness {
@@ -559,6 +638,29 @@ describe('planTick', () => {
     // Document order puts 'late' first; the legacy hook start-sorts.
     const p = project([clip('late', 1, 4), clip('early', 0, 4)])
     expect(planTick(p, 2, track0VideoItems(p)).active?.clipId).toBe('early')
+  })
+
+  it('plans a blend when two track-0 clips overlap', () => {
+    const p = crossfade()
+    const plan = planTick(p, 3.5, track0VideoItems(p))
+    expect(plan.active?.clipId).toBe('a')
+    expect(plan.blend).toEqual({ clipId: 'b', p: 0.5 })
+  })
+
+  it('plans no blend outside the overlap', () => {
+    const p = crossfade()
+    expect(planTick(p, 1, track0VideoItems(p)).blend).toBeNull()
+    expect(planTick(p, 6, track0VideoItems(p)).blend).toBeNull()
+  })
+
+  it('plans no blend for an overlap that is not a transition pair', () => {
+    // Containment — 'late' never outlives 'early', so there is no ordering to
+    // blend along and the resolver stamps no crossfade. Something still has to
+    // own the picture, which is why the earliest-start tiebreak stays.
+    const p = project([clip('late', 1, 4), clip('early', 0, 4)])
+    const plan = planTick(p, 2, track0VideoItems(p))
+    expect(plan.active?.clipId).toBe('early')
+    expect(plan.blend).toBeNull()
   })
 
   it('flags a canvas project', () => {
@@ -1226,6 +1328,265 @@ describe('painting', () => {
     h.scheduler.setProject(project([clip('a', 0, 4)], [overlay('o', 0, 4)]))
     expect(server.starts).toHaveLength(1)
     expect(server.disposed).toBe(false)
+  })
+})
+
+// ── Clip crossfade ──────────────────────────────────────────────────────────
+
+describe('clip crossfade', () => {
+  /** Let a `Promise.all` of two seek promises settle. */
+  const flush = () => new Promise((resolve) => setTimeout(resolve, 0))
+
+  /** Both sides cut from ONE take — what a silence-trimmed timeline is made of. */
+  const sameTake = { src: '/media/take.mov', proxySrc: '/proxies/take_proxy.mp4' }
+
+  /**
+   * Play to the midpoint of the overlap with both sides supplying frames.
+   *
+   * The stop at 2.5 is load-bearing: it is inside the prewarm lead, so the
+   * incoming clip's session is already live when the blend starts, which is
+   * the state a real transport arrives in.
+   */
+  function intoBlend(
+    opts: {
+      supplyIncoming?: boolean
+      overlays?: VisualItem[]
+      extra?: Partial<VisualItem>
+    } = {},
+  ) {
+    const h = harness(crossfade(opts.overlays ?? [], opts.extra ?? {}))
+    h.scheduler.play()
+    step(h, 2.5)
+    const fromFrame = fakeFrame(2_500_000)
+    const toFrame = fakeFrame(500_000)
+    h.host.server('a').supply = () => fromFrame
+    if (opts.supplyIncoming !== false) h.host.server('b').supply = () => toFrame
+    step(h, 3.5)
+    return { h, fromFrame, toFrame }
+  }
+
+  it('retains BOTH sessions through a blend', () => {
+    // the incoming clip's source must be live before the blend starts, not
+    // requested at the instant it is first painted
+    const h = harness(crossfade())
+    h.scheduler.play()
+    step(h, 3.5)
+    const requests = h.host.lastRetain()
+    expect(requests.map((r) => r.clipId).sort()).toEqual(['a', 'b'])
+    // `prev` names the incoming clip too (it starts before `t`), so the blend
+    // must not push a second request for it.
+    expect(requests).toHaveLength(2)
+  })
+
+  it('paints a blend via paintBlend, not two paint calls', () => {
+    const { h, fromFrame, toFrame } = intoBlend()
+    expect(h.painter.blends).toHaveLength(1)
+    expect(h.painter.blends[0].from).toBe(fromFrame)
+    expect(h.painter.blends[0].to).toBe(toFrame)
+    expect(h.painter.blends[0].p).toBeCloseTo(0.5, 10)
+    expect(h.painter.paints).toHaveLength(0)
+  })
+
+  it('closes both frames of a blend', () => {
+    const { fromFrame, toFrame } = intoBlend()
+    expect(fromFrame.closed).toBe(true)
+    expect(toFrame.closed).toBe(true)
+  })
+
+  it('gives each side of the blend its own draw plan', () => {
+    // `drawPlanFor` folds the item's own sourceCrop, and render composites each
+    // item down its own branch before blending them — one shared plan would put
+    // the outgoing clip's geometry on both pictures.
+    const a = clip('a', 0, 4)
+    const b = clip('b', 3, 8, {
+      sourceCrop: { x: 0.25, y: 0, w: 0.5, h: 1 },
+      sourceWidth: 1920,
+      sourceHeight: 1080,
+    })
+    const h = harness(project([a, b]))
+    h.scheduler.play()
+    step(h, 2.5)
+    h.host.server('a').supply = () => fakeFrame(2_500_000)
+    h.host.server('b').supply = () => fakeFrame(500_000)
+    step(h, 3.5)
+
+    const blend = h.painter.blends[0]
+    expect(blend.fromPlan).toEqual(drawPlanFor(a, 1280, 720, 1080, 1920))
+    expect(blend.toPlan).toEqual(drawPlanFor(b, 1280, 720, 1080, 1920))
+    expect(blend.toPlan).not.toEqual(blend.fromPlan)
+  })
+
+  it('falls back to the outgoing clip alone when the incoming frame is not ready', () => {
+    const { h, fromFrame } = intoBlend({ supplyIncoming: false })
+    expect(h.painter.blends).toHaveLength(0)
+    expect(h.painter.paints.map((paint) => paint.frame)).toEqual([fromFrame])
+    expect(fromFrame.closed).toBe(true)
+  })
+
+  it('an opaque overlay still suppresses the picture during a blend', () => {
+    const { h, fromFrame, toFrame } = intoBlend({ overlays: [overlay('o', 3, 4, true)] })
+    expect(h.scheduler.status().picture).toBe('opaque')
+    expect(h.painter.blends).toHaveLength(0)
+    expect(h.painter.paints).toHaveLength(0)
+    expect(h.painter.clears).toBeGreaterThan(0)
+    // The outgoing frame is still pulled and closed unpainted; the incoming
+    // side is not streaming at all under an opaque overlay.
+    expect(fromFrame.closed).toBe(true)
+    expect(toFrame.closed).toBe(false)
+  })
+
+  it('streams the incoming clip only while the blend is live', () => {
+    const h = harness(crossfade())
+    h.scheduler.play()
+    step(h, 2.5)
+    expect(h.host.server('b').starts).toHaveLength(0)
+    step(h, 3.5)
+    expect(h.host.server('b').starts).toHaveLength(1)
+
+    // Past the outgoing clip's end the blend is over and the incoming clip owns
+    // the picture outright. Its blend stream has to be retired BEFORE the
+    // active path starts one, or the two fight over the same server.
+    step(h, 4.5)
+    expect(h.host.server('b').stops).toBeGreaterThan(0)
+    expect(h.host.server('b').starts).toHaveLength(2)
+  })
+
+  it('reopens the incoming stream after a pause lands inside the blend', () => {
+    // Pausing mid-blend sends the picture down the seek path, and `seek` stops
+    // whatever was streaming on that server. If the scheduler still believed
+    // its blend session were live, the resume would skip `startStream` and the
+    // rest of the crossfade would silently play un-blended.
+    const h = harness(crossfade())
+    h.scheduler.play()
+    step(h, 3.4)
+    expect(h.host.server('b').starts).toHaveLength(1)
+
+    h.scheduler.pause()
+    h.scheduler.seek(3.5)
+    h.scheduler.play()
+    step(h, 3.6)
+    expect(h.host.server('b').starts).toHaveLength(2)
+  })
+
+  it('two clips off ONE take blend — the case Task 9 had to skip', () => {
+    // Both clips carry the same proxySrc, as a silence-trimmed timeline
+    // produces: a dissolve between two adjacent cuts of a single take is the
+    // ordinary jump-cut softener, and the commonest crossfade there is. One
+    // FrameServer serves one decode intent at a time, so the incoming side
+    // asks for a decoder of its own and the pair really does have two read
+    // positions.
+    const h = harness(crossfade([], sameTake))
+    h.scheduler.play()
+    step(h, 2.5)
+    // Prewarmed as `next` on the SHARED server — this is the state the blend
+    // has to upgrade out of, not a state it can assume away.
+    expect(h.host.server('a')).toBe(h.host.server('b'))
+
+    const fromFrame = fakeFrame(2_500_000)
+    const toFrame = fakeFrame(500_000)
+    h.host.server('a').supply = () => fromFrame
+    // First tick of the overlap: the host moves `b` onto a decoder of its own,
+    // so the blend engages a tick late and this one paints the outgoing clip
+    // alone — the same fallback an undecoded incoming frame takes, at a `p`
+    // near zero where the two pictures are indistinguishable anyway.
+    step(h, 3.5)
+    expect(h.host.server('a')).not.toBe(h.host.server('b'))
+    expect(h.painter.blends).toHaveLength(0)
+
+    h.host.server('b').supply = () => toFrame
+    step(h, 3.5)
+
+    expect(h.painter.blends).toHaveLength(1)
+    expect(h.painter.blends[0].from).toBe(fromFrame)
+    expect(h.painter.blends[0].to).toBe(toFrame)
+    expect(h.painter.blends[0].p).toBeCloseTo(0.5, 10)
+  })
+
+  it('the blend request is marked exclusive; the active one is not', () => {
+    const h = harness(crossfade([], sameTake))
+    h.scheduler.play()
+    step(h, 3.5)
+    const reqs = h.host.lastRetain()
+    expect(reqs.find((r) => r.clipId === 'b')!.exclusiveServer).toBe(true)
+    expect(reqs.find((r) => r.clipId === 'a')!.exclusiveServer).toBeFalsy()
+  })
+
+  it('leaves a cross-source blend alone — it already has two servers', () => {
+    // Asking for exclusivity here would force the host to respawn a session it
+    // had already prewarmed, tearing down a decoder at the instant the blend
+    // needs frames from it, to reach the state it was in to begin with.
+    const h = harness(crossfade())
+    h.scheduler.play()
+    step(h, 2.5)
+    const prewarmed = h.host.server('b')
+    step(h, 3.5)
+    expect(h.host.lastRetain().find((r) => r.clipId === 'b')!.exclusiveServer).toBeFalsy()
+    expect(h.host.droppedClips).not.toContain('b')
+    expect(h.host.server('b')).toBe(prewarmed)
+  })
+
+  it('keeps the incoming session when the blend ends and it stops being exclusive', () => {
+    // The end of a crossfade is NOT a respawn point. By then the incoming clip
+    // is the active one and the transport runs on its master clock, so dropping
+    // its session to re-file its server would tear down that clock and
+    // terminate its decoder mid-playback — an artefact worse than the hard cut
+    // this task removed. The exclusive server is released when the clip leaves
+    // the retained set, not when the flag does.
+    const h = harness(crossfade([], sameTake))
+    h.scheduler.play()
+    step(h, 3.5)
+    const during = h.host.server('b')
+    step(h, 4.5)
+    expect(h.host.lastRetain().find((r) => r.clipId === 'b')!.exclusiveServer).toBeFalsy()
+    expect(h.host.droppedClips).not.toContain('b')
+    expect(h.host.server('b')).toBe(during)
+    expect(during.disposed).toBe(false)
+  })
+
+  it('still paints the outgoing frame alone if the host hands both sides one server', () => {
+    // `blendSideFor`'s same-server check, which `exclusiveServer` makes
+    // unreachable by construction — the only way in is a host that ignores the
+    // flag. Kept as an assertion rather than deleted: two read positions on one
+    // decoder would have `nextFrameFor` answer from the wrong place in the
+    // file, and a stalled picture reads as a decoder bug, not a transition.
+    const h = harness(crossfade([], sameTake))
+    h.host.honourExclusive = false
+    h.scheduler.play()
+    step(h, 2.5)
+    const frame = fakeFrame(2_500_000)
+    h.host.server('a').supply = () => frame
+    step(h, 3.5)
+
+    expect(h.host.server('a')).toBe(h.host.server('b'))
+    expect(h.painter.blends).toHaveLength(0)
+    expect(h.painter.paints.map((paint) => paint.frame)).toEqual([frame])
+  })
+
+  it('blends a paused scrub from both seeks', async () => {
+    const h = harness(crossfade())
+    h.scheduler.seek(3.5)
+    const fromFrame = fakeFrame(3_500_000)
+    const toFrame = fakeFrame(500_000)
+    h.host.server('a').pendingSeeks[0](asFrame(fromFrame))
+    h.host.server('b').pendingSeeks[0](asFrame(toFrame))
+    await flush()
+
+    expect(h.painter.blends).toHaveLength(1)
+    expect(h.painter.blends[0].from).toBe(fromFrame)
+    expect(h.painter.blends[0].to).toBe(toFrame)
+    expect(h.painter.blends[0].p).toBeCloseTo(0.5, 10)
+  })
+
+  it('paints the outgoing clip alone when a paused scrub lands only one frame', async () => {
+    const h = harness(crossfade())
+    h.scheduler.seek(3.5)
+    const fromFrame = fakeFrame(3_500_000)
+    h.host.server('a').pendingSeeks[0](asFrame(fromFrame))
+    h.host.server('b').pendingSeeks[0](null)
+    await flush()
+
+    expect(h.painter.blends).toHaveLength(0)
+    expect(h.painter.paints.map((paint) => paint.frame)).toEqual([fromFrame])
   })
 })
 

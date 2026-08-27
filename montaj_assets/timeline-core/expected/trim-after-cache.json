@@ -53,7 +53,8 @@
               "opacity": 1,
               "fit": "contain",
               "rotation": 0
-            }
+            },
+            "crossfade": null
           }
         ]
       },
@@ -80,7 +81,8 @@
               "opacity": 1,
               "fit": "contain",
               "rotation": 0
-            }
+            },
+            "crossfade": null
           }
         ]
       },
@@ -107,7 +109,8 @@
               "opacity": 1,
               "fit": "contain",
               "rotation": 0
-            }
+            },
+            "crossfade": null
           }
         ]
       },
@@ -134,7 +137,8 @@
               "opacity": 1,
               "fit": "contain",
               "rotation": 0
-            }
+            },
+            "crossfade": null
           }
         ]
       },
@@ -171,7 +175,8 @@
               "opacity": 1,
               "fit": "contain",
               "rotation": 0
-            }
+            },
+            "crossfade": null
           }
         ]
       },
@@ -198,7 +203,8 @@
               "opacity": 1,
               "fit": "contain",
               "rotation": 0
-            }
+            },
+            "crossfade": null
           }
         ]
       },
@@ -225,7 +231,8 @@
               "opacity": 1,
               "fit": "contain",
               "rotation": 0
-            }
+            },
+            "crossfade": null
           }
         ]
       },
@@ -252,7 +259,8 @@
               "opacity": 1,
               "fit": "contain",
               "rotation": 0
-            }
+            },
+            "crossfade": null
           }
         ]
       },
@@ -295,7 +303,8 @@
                 "opacity": 1,
                 "fit": "contain",
                 "rotation": 0
-              }
+              },
+              "crossfade": null
             }
           ]
         }
@@ -326,7 +335,8 @@
                 "opacity": 1,
                 "fit": "contain",
                 "rotation": 0
-              }
+              },
+              "crossfade": null
             }
           ]
         }

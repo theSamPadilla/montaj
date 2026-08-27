@@ -79,7 +79,7 @@ import {
   resolveAt,
   sourceWindow,
 } from '@bycrux/timeline-core'
-import type { Scene, SourceWindow } from '@bycrux/timeline-core'
+import type { ItemCrossfade, Scene, SourceWindow } from '@bycrux/timeline-core'
 import type { EditorProject as Project, VisualItem, VisualTrack } from '../schema'
 import type { ClipTimebase, MasterClock } from './audio-clock'
 import type { FrameServer } from './frame-server'
@@ -140,6 +140,18 @@ export interface Painter {
   size(): { width: number; height: number }
   /** Draw one frame. The scheduler closes the frame immediately after this returns. */
   paint(frame: VideoFrame, plan: DrawPlan): void
+  /**
+   * Draw both sides of a crossfade as ONE picture: `from` at full alpha, `to`
+   * over it at alpha `p`. Source-over composites `p*src + (1-p)*dst`, so that
+   * is `(1-p)*from + p*to` — the same lerp `encode-segment.js` emits as
+   * `blend=all_expr='A+(B-A)*p'` with A the outgoing picture.
+   *
+   * Each side carries its own `DrawPlan` because `drawPlanFor` folds that
+   * item's `sourceCrop` and its frame's display dimensions, and render puts
+   * each item down its own filter branch before blending the two finished
+   * frames. Both frames are the scheduler's to close once this returns.
+   */
+  paintBlend(from: VideoFrame, to: VideoFrame, p: number, fromPlan: DrawPlan, toPlan: DrawPlan): void
   /** Fill the whole surface with black (gap / opaque / preparing). */
   clear(): void
 }
@@ -399,6 +411,21 @@ export interface ActiveClip {
   placement: SourcePlacement
 }
 
+/**
+ * The incoming side of a crossfade with its decode session attached — what
+ * `TickPlan.blend` names, resolved against the host. Built by `blendSideFor`,
+ * which is also where the cases that CANNOT blend are documented.
+ */
+interface BlendSide {
+  clipId: string
+  /** The resolver's blend factor: 0 at the overlap's start, 1 at its end. */
+  p: number
+  source: ClipSource
+  active: ActiveClip
+  /** The incoming clip's own position in its own file, in container µs. */
+  mediaUs: number
+}
+
 /** Everything one tick needs to know about the timeline at `t`. */
 export interface TickPlan {
   t: number
@@ -421,6 +448,16 @@ export interface TickPlan {
    * retained source cost a sample index rather than a file.
    */
   prev: { item: VisualItem; clipId: string; start: number } | null
+  /**
+   * The INCOMING clip of a crossfade and how far through it is; `active` is the
+   * outgoing one. Null on every ordinary tick.
+   *
+   * `p` is the resolver's, so preview blends on exactly the ramp the segment
+   * encoder does — `(1-p)*from + p*to`, which is `blend=all_expr='A+(B-A)*p'`
+   * with A the outgoing picture (`encode-segment.js`). Deriving a second one
+   * here is how the two engines would drift.
+   */
+  blend: { clipId: string; p: number } | null
   /** No track-0 video items at all — the legacy `isCanvasProject`. */
   canvas: boolean
 }
@@ -553,7 +590,19 @@ export const previewResolver: SceneResolver = (project, t) =>
  *  - **Which track-0 video item wins** when two overlap. `resolveAt` returns
  *    them in document order; the legacy hook picks the first in START order.
  *    The earliest-start rule is reproduced so an overlapping pair resolves the
- *    same way it does today.
+ *    same way it does today. It still answers for every overlap the resolver
+ *    does NOT call a crossfade — containment, and the three-way overlap
+ *    `engine/validate.py` rejects — where something must own the picture and
+ *    there is no pair to blend along.
+ *  - **`blend`**, the incoming side of a crossfade. `transitionPairs` names the
+ *    earlier item `from`, so a real pair's outgoing side is the same clip the
+ *    earliest-start rule already picks: the crossfade does not change WHO owns
+ *    the picture, it stops the incoming clip from being ignored until the
+ *    outgoing one ends. That hard cut was a genuine preview/export divergence —
+ *    render composites the LATER item on top for the whole overlap
+ *    (`segment-plan.js`'s stable trackIdx sort over document order, then
+ *    `encode-segment.js`'s overlay chain), so preview showed the outgoing clip
+ *    across a window where the export showed the incoming one.
  *  - **`opaque`** is read off any active OVERLAY item on any track, matching
  *    render's `overlays.some(o => o.opaque)` (`segment-plan.js`). Track-0
  *    videos and images never carry it.
@@ -567,6 +616,10 @@ export function planTick(
   const scene = resolver(project, t)
 
   let active: ActiveClip | null = null
+  /** The winning clip's own crossfade stamp — `blend` is matched against it below. */
+  let activeCrossfade: ItemCrossfade | null = null
+  /** Every incoming side the scan saw. More than one means a three-way overlap. */
+  const incoming: Array<{ clipId: string; p: number }> = []
   let opaque = false
   for (const resolved of scene.items) {
     if (resolved.kind === 'overlay' && resolved.item.opaque === true) opaque = true
@@ -575,8 +628,15 @@ export function planTick(
     // in timeline-core's `ResolvedItem`), so this recovers the editor-side
     // fields (`loop`, `volume`, `muted`) the resolver's structural view omits.
     const item = resolved.item as unknown as VisualItem
+    // Collected, but NOT skipped by the tiebreak below: an incoming clip whose
+    // outgoing partner is an IMAGE has no video to blend into, and excluding it
+    // from the scan would leave the picture black for the whole overlap.
+    if (resolved.crossfade?.role === 'to') {
+      incoming.push({ clipId: item.id, p: resolved.crossfade.p })
+    }
     if (active && (active.item.start ?? 0) <= (item.start ?? 0)) continue
     const usable = engineSrcFor(item, resolved.window)
+    activeCrossfade = resolved.crossfade
     active = {
       item,
       clipId: item.id,
@@ -585,6 +645,19 @@ export function planTick(
       window: resolved.window,
       placement: placeInSource(item, resolved.window, t),
     }
+  }
+
+  // Both sides of ONE pair are stamped from a single `transitionProgress` call
+  // (`activation.js`'s `crossfadesAt`), so an exactly equal `p` is what says
+  // "these two are partners" — the resolver exposes no pair identity. It only
+  // matters for the three-way overlap the validator rejects, where two pairs
+  // are live at once and the middle clip ends up stamped `from`: no incoming
+  // side then carries the active clip's `p`, and the tick degrades to today's
+  // hard cut rather than blending two clips that are not a pair.
+  let blend: TickPlan['blend'] = null
+  if (activeCrossfade?.role === 'from') {
+    const p = activeCrossfade.p
+    blend = incoming.find((side) => side.p === p) ?? null
   }
 
   let next: TickPlan['next'] = null
@@ -596,10 +669,17 @@ export function planTick(
   }
 
   // `clips` is start-sorted, so the LAST one starting before `t` that is not
-  // the active clip is the one immediately behind it. Excluding the active clip
-  // by id matters when clips overlap: `active` resolves to the latest start
-  // among the overlapping set, and without the check `prev` would name that
-  // same clip and retain nothing extra.
+  // the active clip is the one immediately behind it. The id check is what
+  // keeps `prev` from naming the active clip itself, which is otherwise the
+  // answer on every ordinary tick — the active clip IS the last one to have
+  // started.
+  //
+  // Inside an overlap it names the clip AHEAD instead: `active` resolves to the
+  // EARLIEST start among the overlapping set (the loop above keeps an incumbent
+  // whose start is `<=` the candidate's), so the other side of the overlap
+  // started later and is still the last one before `t`. That is why the
+  // incoming side of a crossfade is already retained today, by accident;
+  // `retainFor` names `blend` outright rather than leaning on it.
   let prev: TickPlan['prev'] = null
   for (const clip of clips) {
     if (clip.start >= t) break
@@ -607,7 +687,7 @@ export function planTick(
     prev = { item: clip, clipId: clip.id, start: clip.start }
   }
 
-  return { t, active, opaque, next, prev, canvas: clips.length === 0 }
+  return { t, active, opaque, next, prev, blend, canvas: clips.length === 0 }
 }
 
 // ── Injected async surfaces ─────────────────────────────────────────────────
@@ -641,6 +721,14 @@ export interface SourceRequest {
   src: string
   /** Project time this clip's clock should be anchored at when it is built. */
   anchorProjectS: number
+  /**
+   * Give this clip its own `FrameServer` even though another clip already
+   * streams from the same `src`. Set ONLY for the incoming side of a crossfade,
+   * and only while it blends. The one-server-per-src rule in `index.ts`'s
+   * header is otherwise intact — and its actual saving, the demux, is preserved
+   * either way because `demuxCache` is keyed by `src` independently of this map.
+   */
+  exclusiveServer?: boolean
 }
 
 /**
@@ -790,6 +878,11 @@ class SchedulerImpl implements Scheduler {
   private clipId: string | null = null
   /** The session with a streaming decode-ahead session open, if any. */
   private streamingSource: ClipSource | null = null
+  /**
+   * The INCOMING crossfade session streaming alongside it. A second stream is
+   * only ever opened on a second frame server — see `blendSideFor`.
+   */
+  private blendStream: ClipSource | null = null
   /** Bumped on every seek / boundary / dispose; a resolved seek frame paints only if it still matches. */
   private seekGen = 0
   private pendingSeeks = 0
@@ -958,6 +1051,7 @@ class SchedulerImpl implements Scheduler {
     this.disposed = true
     this.seekGen++
     this.stopStream()
+    this.stopBlendStream()
     if (this.clockOwner === null) this.clock.dispose()
     this.clockOwner = null
     this.clockSource = null
@@ -1088,6 +1182,20 @@ class SchedulerImpl implements Scheduler {
     this.pictureReason = reason
 
     // ── 6. Media session ───────────────────────────────────────────────────
+    // The incoming side of a crossfade, resolved only while the picture is
+    // actually the video: under an opaque overlay there is nothing to blend
+    // into, and the blend stream below is stopped rather than left running.
+    //
+    // Retired BEFORE the active session is touched below, for two reasons. When
+    // a blend ends because the outgoing clip ran out, the clip that was blending
+    // IN becomes the active one — the same server, which serves one decode
+    // intent at a time, so the blend's stream has to be closed before the active
+    // path opens its own. And on a PAUSE mid-blend, the seek path stops that
+    // stream from underneath this bookkeeping; forgetting the session here is
+    // what lets a resume open a fresh one instead of assuming the old one lives.
+    const incoming = picture === 'video' ? this.blendSideFor(plan, source, t) : null
+    if (!incoming || this.transport !== 'playing') this.stopBlendStream()
+
     if (source && plan.active) {
       const mediaUs = containerTsUsFor(
         source.frameServer.video.firstPresentationTsUs,
@@ -1099,6 +1207,11 @@ class SchedulerImpl implements Scheduler {
       const discontinuity = ownerChanged || clipChanged || wrapped || opts.seeked === true
 
       if (this.transport === 'playing') {
+        if (incoming && (this.blendStream !== incoming.source || discontinuity)) {
+          this.stopBlendStream()
+          incoming.source.frameServer.startStream(incoming.mediaUs)
+          this.blendStream = incoming.source
+        }
         if (discontinuity || this.streamingSource !== source) {
           // Loop wrap: the media pointer jumps back to the window start while
           // project time keeps advancing — the legacy wrap site's
@@ -1117,17 +1230,21 @@ class SchedulerImpl implements Scheduler {
         // The stream owns the canvas while playing; whatever a paused seek had
         // put there is long gone.
         this.paintedKey = null
-        this.pullFrame(source, plan.active, mediaUs)
+        this.pullFrame(source, plan.active, mediaUs, incoming)
       } else {
         this.stopStream()
         // Repaint only when the canvas does not already hold this exact frame.
         // Without this guard every project spread — an overlay drag emits one
         // per pointer event — would fire a fresh decoder seek for a picture
-        // that has not moved.
-        const key = `${plan.active.clipId}@${Math.round(mediaUs)}`
+        // that has not moved. Inside a blend the key carries BOTH positions:
+        // the outgoing one alone would hold a stale mix as `p` moves.
+        const key = incoming
+          ? `${plan.active.clipId}@${Math.round(mediaUs)}+${incoming.clipId}@${Math.round(incoming.mediaUs)}`
+          : `${plan.active.clipId}@${Math.round(mediaUs)}`
         if (picture === 'video' && key !== this.paintedKey) {
           this.paintedKey = key
-          this.paintFromSeek(source, plan.active, mediaUs)
+          if (incoming) this.paintBlendFromSeek(source, plan.active, mediaUs, incoming)
+          else this.paintFromSeek(source, plan.active, mediaUs)
         }
       }
     } else {
@@ -1181,6 +1298,35 @@ class SchedulerImpl implements Scheduler {
         anchorProjectS: t,
       })
     }
+    // The incoming side of a crossfade, named outright. `prev` happens to cover
+    // it today (it started before `t`, and `active` is the earlier clip), but
+    // that is a side effect of how `prev` is computed, not a guarantee — and it
+    // says nothing about a blend that starts further back than the prewarm
+    // lead. The session has to be live for the WHOLE blend.
+    const blendClip = plan.blend ? this.clips.find((c) => c.id === plan.blend?.clipId) : undefined
+    if (blendClip) {
+      // The two sides of a blend need two read positions at once, and one
+      // `FrameServer` serves one decode intent at a time — so ask the host for
+      // a decoder of this clip's own, but ONLY when the sides would otherwise
+      // land on the same one. The host keys its servers by src, so that is
+      // exactly when the two resolve to one src.
+      //
+      // Asking unconditionally would be worse than useless on a cross-source
+      // pair: it already has two servers, and the flag would only force the
+      // host to respawn a session it had prewarmed — tearing down a decoder at
+      // the instant the blend needs frames from it, to arrive at the state it
+      // was already in. Exclusivity is a fix for one shape of pair, not a
+      // property of blending.
+      const { src } = engineSrcFor(blendClip, sourceWindow(blendClip, 'preview'))
+      // Pushed BEFORE `next`/`prev` (either of which can name this same clip)
+      // so the flag is on the request that actually reaches the host —
+      // `pushRetain` keeps the first request per clipId, not the last.
+      this.pushRetain(
+        requests,
+        { item: blendClip, clipId: blendClip.id, start: blendClip.start },
+        !!src && src === plan.active?.src,
+      )
+    }
     if (plan.next && plan.next.start - t <= this.prewarmLeadS) {
       this.pushRetain(requests, plan.next)
     }
@@ -1200,7 +1346,11 @@ class SchedulerImpl implements Scheduler {
   private pushRetain(
     requests: SourceRequest[],
     clip: { item: VisualItem; clipId: string; start: number },
+    exclusiveServer = false,
   ): void {
+    // `blend` and `prev` name the same clip throughout a crossfade, and two
+    // requests for one clipId would read as two sessions to reconcile.
+    if (requests.some((request) => request.clipId === clip.clipId)) return
     const { src } = engineSrcFor(clip.item, sourceWindow(clip.item, 'preview'))
     if (!src) return
     requests.push({
@@ -1208,11 +1358,71 @@ class SchedulerImpl implements Scheduler {
       item: withTrackAudio(this.clipsTrack, clip.item),
       src,
       anchorProjectS: clip.start,
+      // Omitted rather than `false` on an ordinary request: the host's session
+      // comparison reads it as a plain boolean, and an undefined field keeps
+      // every non-blend request byte-identical to what it was before 9b.
+      ...(exclusiveServer ? { exclusiveServer: true } : {}),
     })
   }
 
+  /**
+   * Everything the INCOMING side of a crossfade needs to be painted, or `null`
+   * when this tick cannot blend.
+   *
+   * Resolved here rather than carried on the plan because `TickPlan.blend` is
+   * the timeline's answer (which clip, how far through) and this is the decode
+   * session's — the same split `pushRetain` already lives on, over the same
+   * `sourceWindow(item, 'preview')` the resolver itself computes.
+   *
+   * ── Why two clips off ONE proxy need TWO servers ─────────────────────────
+   *
+   * `FrameServer` is one per SRC, refcounted by clip (`index.ts`), and it
+   * serves one decode intent at a time — `startStream` and `seek` both open by
+   * stopping whatever was running. When both sides of a crossfade come off the
+   * same proxy (two cuts of one take, the commonest crossfade there is) a
+   * SHARED server would leave no second position to read: opening the incoming
+   * stream would stop the outgoing one, and `nextFrameFor` would hand back a
+   * frame from the wrong place in the file — a worse picture than the hard cut
+   * it replaced. `retainFor` therefore asks the host for a second decoder
+   * (`SourceRequest.exclusiveServer`) for the incoming side, for the length of
+   * the blend. The demux cache is keyed by src independently of the server map,
+   * so the cost is one more decoder worker rather than a second fetch.
+   *
+   * The same-server check below is what remains of that gap: an ASSERTION, not
+   * a path anything is expected to take. `exclusiveServer` makes the two sides
+   * distinct by construction, but if they ever resolve to one server again,
+   * painting the outgoing frame alone is still better than reading a stream
+   * from the wrong position.
+   */
+  private blendSideFor(plan: TickPlan, outgoing: ClipSource | null, t: number): BlendSide | null {
+    const blend = plan.blend
+    if (!blend || !outgoing) return null
+    const item = this.clips.find((clip) => clip.id === blend.clipId)
+    if (!item) return null
+    const state = this.host.state(blend.clipId)
+    if (state.status !== 'ready') return null
+    const source = state.source
+    if (source.frameServer === outgoing.frameServer) return null
+    const window = sourceWindow(item, 'preview')
+    const { src } = engineSrcFor(item, window)
+    if (!src) return null
+    const placement = placeInSource(item, window, t)
+    return {
+      clipId: blend.clipId,
+      p: blend.p,
+      source,
+      active: { item, clipId: blend.clipId, src, window, placement },
+      mediaUs: containerTsUsFor(source.frameServer.video.firstPresentationTsUs, placement.mediaS),
+    }
+  }
+
   /** Playback path: paint whatever frame is due at the media clock. */
-  private pullFrame(source: ClipSource, active: ActiveClip, mediaUs: number): void {
+  private pullFrame(
+    source: ClipSource,
+    active: ActiveClip,
+    mediaUs: number,
+    incoming: BlendSide | null,
+  ): void {
     const { frame } = source.frameServer.nextFrameFor(mediaUs)
     if (!frame) return
     // Under an opaque overlay the frame is still PULLED, then closed unpainted.
@@ -1222,6 +1432,16 @@ class SchedulerImpl implements Scheduler {
     if (this.picture !== 'video' || !this.painter) {
       frame.close()
       return
+    }
+    if (incoming) {
+      const { frame: toFrame } = incoming.source.frameServer.nextFrameFor(incoming.mediaUs)
+      if (toFrame) {
+        this.paintBlendFrames(frame, source, active, toFrame, incoming)
+        return
+      }
+      // The incoming session has not decoded its first frame yet — it opened
+      // this very tick. A momentarily un-blended picture beats a dropped one,
+      // and the next tick catches up.
     }
     this.paintFrame(frame, source, active)
   }
@@ -1254,6 +1474,50 @@ class SchedulerImpl implements Scheduler {
     })
   }
 
+  /**
+   * Paused path through a crossfade: one seek per side, blended when both land.
+   *
+   * The two seeks run concurrently because `blendSideFor` has already
+   * guaranteed two distinct frame servers — issuing both at one server would
+   * supersede the first (`claimReqId`) and resolve it `null`.
+   */
+  private paintBlendFromSeek(
+    source: ClipSource,
+    active: ActiveClip,
+    mediaUs: number,
+    incoming: BlendSide,
+  ): void {
+    if (!this.painter) return
+    const gen = this.seekGen
+    this.pendingSeeks += 2
+    const from = source.frameServer.seek(mediaUs).frame
+    const to = incoming.source.frameServer.seek(incoming.mediaUs).frame
+    void Promise.all([from, to]).then(([fromFrame, toFrame]) => {
+      this.pendingSeeks -= 2
+      // Either half missing leaves the canvas holding something the key does
+      // not describe, so the key must not claim it — see `paintFromSeek`.
+      if (!fromFrame || !toFrame) {
+        if (gen === this.seekGen) this.paintedKey = null
+      }
+      if (!fromFrame) {
+        toFrame?.close()
+        this.publish()
+        return
+      }
+      if (this.disposed || gen !== this.seekGen || !this.painter || this.picture !== 'video') {
+        fromFrame.close()
+        toFrame?.close()
+        this.publish()
+        return
+      }
+      // The outgoing clip alone is the same fallback the playback path takes
+      // when the incoming frame has not arrived.
+      if (toFrame) this.paintBlendFrames(fromFrame, source, active, toFrame, incoming)
+      else this.paintFrame(fromFrame, source, active)
+      this.publish()
+    })
+  }
+
   private paintFrame(frame: VideoFrame, source: ClipSource, active: ActiveClip): void {
     const painter = this.painter
     if (!painter) {
@@ -1261,13 +1525,7 @@ class SchedulerImpl implements Scheduler {
       return
     }
     try {
-      const size = painter.size()
-      // `drawImage` reads a VideoFrame in its DISPLAY coordinates (pixel aspect
-      // applied); the track's `coded` dims are the fallback for a frame that
-      // does not report them.
-      const w = frame.displayWidth || source.frameServer.video.coded.width
-      const h = frame.displayHeight || source.frameServer.video.coded.height
-      painter.paint(frame, drawPlanFor(active.item, w, h, size.width, size.height))
+      painter.paint(frame, this.planFor(frame, source, active, painter.size()))
     } catch (err) {
       this.onError?.(`paint: ${err instanceof Error ? err.message : String(err)}`)
     } finally {
@@ -1277,10 +1535,64 @@ class SchedulerImpl implements Scheduler {
     }
   }
 
+  /** Both sides of a crossfade onto the canvas as one picture. */
+  private paintBlendFrames(
+    from: VideoFrame,
+    fromSource: ClipSource,
+    fromActive: ActiveClip,
+    to: VideoFrame,
+    incoming: BlendSide,
+  ): void {
+    const painter = this.painter
+    if (!painter) {
+      from.close()
+      to.close()
+      return
+    }
+    try {
+      const size = painter.size()
+      painter.paintBlend(
+        from,
+        to,
+        incoming.p,
+        this.planFor(from, fromSource, fromActive, size),
+        this.planFor(to, incoming.source, incoming.active, size),
+      )
+    } catch (err) {
+      this.onError?.(`paint: ${err instanceof Error ? err.message : String(err)}`)
+    } finally {
+      from.close()
+      to.close()
+    }
+  }
+
+  /**
+   * One frame's `drawImage` rect. `drawImage` reads a VideoFrame in its DISPLAY
+   * coordinates (pixel aspect applied); the track's `coded` dims are the
+   * fallback for a frame that does not report them.
+   */
+  private planFor(
+    frame: VideoFrame,
+    source: ClipSource,
+    active: ActiveClip,
+    size: { width: number; height: number },
+  ): DrawPlan {
+    const w = frame.displayWidth || source.frameServer.video.coded.width
+    const h = frame.displayHeight || source.frameServer.video.coded.height
+    return drawPlanFor(active.item, w, h, size.width, size.height)
+  }
+
   private stopStream(): void {
     const source = this.streamingSource
     if (!source) return
     this.streamingSource = null
+    source.frameServer.stopStream()
+  }
+
+  private stopBlendStream(): void {
+    const source = this.blendStream
+    if (!source) return
+    this.blendStream = null
     source.frameServer.stopStream()
   }
 

@@ -371,9 +371,12 @@ def test_validate_project_accepts_integer_volume(tmp_path):
 
 
 def test_validate_project_overlap_still_fires_on_object_shape_overlay_track(tmp_path):
+    # The subject here is the TRACK SHAPE, not the overlap flavour: an object-shape
+    # track is checked like a bare list. The fixture is a containment because a
+    # bounded overlap is legal now — see the bounded-overlay-overlap block below.
     items = [
-        {"id": "v1", "type": "overlay", "src": "./a.jsx", "start": 0.0, "end": 3.0},
-        {"id": "v2", "type": "overlay", "src": "./b.jsx", "start": 2.0, "end": 5.0},
+        {"id": "v1", "type": "overlay", "src": "./a.jsx", "start": 0.0, "end": 5.0},
+        {"id": "v2", "type": "overlay", "src": "./b.jsx", "start": 1.0, "end": 3.0},
     ]
     data = {**VALID_PROJECT, "tracks": [
         {"id": "trk-0", "items": []},
@@ -432,10 +435,14 @@ def test_validate_project_opaque_must_be_bool(tmp_path):
         v.validate_project(path)
 
 
-def test_validate_project_no_overlap_in_overlay_track(tmp_path):
+def test_validate_project_rejects_overlay_containment_sharing_an_end_point(tmp_path):
+    # Was `..._no_overlap_in_overlay_track`, which asserted the retired
+    # any-overlap-is-an-error rule. Repointed to the boundary the new rule turns
+    # on: b ends exactly where a ends, so it is contained, not a transition.
+    # This is where a `>` written in place of `>=` would hide.
     items = [
         {"id": "ov-0", "type": "overlay", "src": "./a.jsx", "start": 0.0, "end": 5.0},
-        {"id": "ov-1", "type": "overlay", "src": "./b.jsx", "start": 3.0, "end": 7.0},
+        {"id": "ov-1", "type": "overlay", "src": "./b.jsx", "start": 3.0, "end": 5.0},
     ]
     data = {**VALID_PROJECT, "tracks": [[], items]}
     path = _write_project(tmp_path, "project.json", data)
@@ -452,6 +459,144 @@ def test_validate_project_sequential_overlay_items_pass(tmp_path):
     path = _write_project(tmp_path, "project.json", data)
     result = v.validate_project(path)
     assert result["valid"] is True
+
+
+# ── bounded overlay overlap ───────────────────────────────────────────────────
+
+def _overlay_project(items):
+    return {**VALID_PROJECT, "tracks": [[], items]}
+
+
+def _visual(id_, start, end, **extra):
+    item = {"id": id_, "type": "overlay", "src": "Card.jsx", "start": start, "end": end}
+    item.update(extra)
+    return item
+
+
+def test_validate_project_allows_a_bounded_overlay_overlap(tmp_path):
+    # A transition: B starts inside A, neither contains the other.
+    data = _overlay_project([_visual("a", 0.0, 4.0), _visual("b", 3.0, 8.0)])
+    path = _write_project(tmp_path, "project.json", data)
+    assert v.validate_project(path)["valid"] is True
+
+
+def test_validate_project_rejects_full_containment_on_an_overlay_track(tmp_path):
+    data = _overlay_project([_visual("a", 0.0, 9.0), _visual("b", 3.0, 5.0)])
+    path = _write_project(tmp_path, "project.json", data)
+    with pytest.raises(SystemExit):
+        v.validate_project(path)
+
+
+def test_validate_project_rejects_identical_spans_on_an_overlay_track(tmp_path):
+    # Mutual containment — the "two overlays fighting for the same instant" case.
+    data = _overlay_project([_visual("a", 0.0, 4.0), _visual("b", 0.0, 4.0)])
+    path = _write_project(tmp_path, "project.json", data)
+    with pytest.raises(SystemExit):
+        v.validate_project(path)
+
+
+@pytest.mark.parametrize("order", ["outer_first", "inner_first"])
+def test_validate_project_rejects_containment_when_both_share_a_start(tmp_path, order):
+    # Regression: sorting by (start, end) puts the SHORTER item first when two
+    # items share a start, so a one-directional "a contains b" test reads
+    # (0,3) then (0,9) and lets the buried overlay through. The 3-live check
+    # does not cover it either — only two items are live at t=0. Both input
+    # orders are asserted so the sort, not the authoring order, is what's proven.
+    outer, inner = _visual("outer", 0.0, 9.0), _visual("inner", 0.0, 3.0)
+    items = [outer, inner] if order == "outer_first" else [inner, outer]
+    path = _write_project(tmp_path, "project.json", _overlay_project(items))
+    with pytest.raises(SystemExit):
+        v.validate_project(path)
+
+
+def test_validate_project_rejects_three_items_live_at_the_same_instant(tmp_path):
+    # Each PAIR is a legal transition; all three are live at t=3.4.
+    data = _overlay_project([
+        _visual("a", 0.0, 4.0), _visual("b", 3.0, 8.0), _visual("c", 3.4, 12.0),
+    ])
+    path = _write_project(tmp_path, "project.json", data)
+    with pytest.raises(SystemExit):
+        v.validate_project(path)
+
+
+def test_validate_project_three_way_overlap_names_the_three_way_rule(tmp_path, capsys):
+    # Guards the *reason* for the rejection: not the old consecutive-overlap
+    # message, but the one naming how many items are live at once.
+    data = _overlay_project([
+        _visual("a", 0.0, 4.0), _visual("b", 3.0, 8.0), _visual("c", 3.4, 12.0),
+    ])
+    path = _write_project(tmp_path, "project.json", data)
+    with pytest.raises(SystemExit):
+        v.validate_project(path)
+    err = json.loads(capsys.readouterr().err.strip().splitlines()[-1])
+    assert err["error"] == "visual_track_overlap"
+    assert "3 items are live at t=3.4" in err["message"]
+
+
+def test_validate_project_containment_names_the_containment_rule(tmp_path, capsys):
+    data = _overlay_project([_visual("a", 0.0, 9.0), _visual("b", 3.0, 5.0)])
+    path = _write_project(tmp_path, "project.json", data)
+    with pytest.raises(SystemExit):
+        v.validate_project(path)
+    err = json.loads(capsys.readouterr().err.strip().splitlines()[-1])
+    assert err["error"] == "visual_track_overlap"
+    assert "fully contained by" in err["message"]
+
+
+def test_validate_project_still_allows_butt_joined_overlays(tmp_path):
+    # The animation-sections model: nine sections, every second covered exactly once.
+    data = _overlay_project([_visual("a", 0.0, 4.0), _visual("b", 4.0, 8.0)])
+    path = _write_project(tmp_path, "project.json", data)
+    assert v.validate_project(path)["valid"] is True
+
+
+# ── track 0 three-live check (Finding 7) ──────────────────────────────────────
+# Containment stays exempt on tracks[0] — primary clips have always been free to
+# overlap, compose.js orders them via itsoffset — but a three-way overlap breaks
+# the pair model `activation.js`'s `crossfadesAt` / `transitions.js`'s
+# `transitionPairs` are built on, on ANY track, track 0 included.
+
+def _primary(id_, start, end, **extra):
+    item = {"id": id_, "type": "video", "src": "./x.mp4", "start": start, "end": end}
+    item.update(extra)
+    return item
+
+
+def test_validate_project_still_allows_a_bounded_overlap_on_track_0(tmp_path):
+    # A pairwise overlap on the primary track is a legal transition, unchanged.
+    data = {**VALID_PROJECT, "tracks": [[_primary("a", 0.0, 4.0), _primary("b", 3.0, 8.0)]]}
+    path = _write_project(tmp_path, "project.json", data)
+    assert v.validate_project(path)["valid"] is True
+
+
+def test_validate_project_still_allows_containment_on_track_0(tmp_path):
+    # Containment is exempt on tracks[0] — unlike overlay tracks, this must NOT fail.
+    data = {**VALID_PROJECT, "tracks": [[_primary("outer", 0.0, 9.0), _primary("inner", 3.0, 5.0)]]}
+    path = _write_project(tmp_path, "project.json", data)
+    assert v.validate_project(path)["valid"] is True
+
+
+def test_validate_project_rejects_three_items_live_at_the_same_instant_on_track_0(tmp_path):
+    # Each PAIR is a legal transition; all three are live at t=3.4 — same rule
+    # as the overlay-track version of this test, now proven on track 0 too.
+    data = {**VALID_PROJECT, "tracks": [[
+        _primary("a", 0.0, 4.0), _primary("b", 3.0, 8.0), _primary("c", 3.4, 12.0),
+    ]]}
+    path = _write_project(tmp_path, "project.json", data)
+    with pytest.raises(SystemExit):
+        v.validate_project(path)
+
+
+def test_validate_project_track_0_three_way_overlap_names_the_three_way_rule(tmp_path, capsys):
+    data = {**VALID_PROJECT, "tracks": [[
+        _primary("a", 0.0, 4.0), _primary("b", 3.0, 8.0), _primary("c", 3.4, 12.0),
+    ]]}
+    path = _write_project(tmp_path, "project.json", data)
+    with pytest.raises(SystemExit):
+        v.validate_project(path)
+    err = json.loads(capsys.readouterr().err.strip().splitlines()[-1])
+    assert err["error"] == "visual_track_overlap"
+    assert "3 items are live at t=3.4" in err["message"]
 
 
 def test_validate_project_primary_clip_passes_full_valid(tmp_path):

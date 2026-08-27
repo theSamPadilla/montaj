@@ -14,7 +14,7 @@ import { collapseGaps, rippleDelete, splitAtTime } from './cuts'
 import { repairCaptionWords } from './captionRepair'
 import { maxCaptionLane, normalizeCaptionLanes } from './captionLanes'
 import Timeline, { type TimelineActions, type TimelineMode } from './timeline/Timeline'
-import { computeAutoCrossfade, computeDerivedTiming, enabledTrackItems, mapTrackItems, trackItems } from './timeline/timeline-model'
+import { computeAutoCrossfade, computeDerivedTiming, computeVisualCrossfade, enabledTrackItems, mapTrackItems, normalizeAudioTracks, trackItems } from './timeline/timeline-model'
 import { makeCaptionEdit, type CaptionEditPatch } from './timeline/makeCaptionEdit'
 import PreviewPlayer, { type TransportHandle, type ScrubHandle } from './preview/PreviewPlayer'
 import SocialPreviewMenu, { PlatformGlyph, platformOption } from './preview/SocialPreviewMenu'
@@ -253,6 +253,18 @@ export default function VideoEditor<P extends Project = Project>({
   // `onProjectChange` and paying an extra render for it. Chained, the host only
   // ever sees the input or the finished result.
   //
+  // A THIRD pass, same treatment, backfills AUDIO track ids
+  // (`normalizeAudioTracks`). `audio.tracks[*].id` is optional on disk
+  // (`docs/schemas/project.md` only requires `src`) but required by the
+  // editor's `AudioTrack` type, and every audio mutation — `updateAudioTrack`,
+  // this component's own track-replace path, multi-select mute/delete — keys
+  // a track by `id` with `===`. Id-less tracks all read as the same
+  // `undefined`, so editing one fanned the edit out to every audio track at
+  // once. Chained onto the captions result (not `sync.project` directly) for
+  // the same half-normalized-frame reason as the lane pass, and keyed into the
+  // deps below on `sync.project.audio` so an id-less track arriving via SSE
+  // mid-session self-heals too, not just on first mount.
+  //
   // `applyExternal` — no save, no undo push: this is normalization of loaded
   // data, not a user edit, so it must not dirty the project or contend with the
   // undo stack; the ids and lanes persist naturally the next time the operator
@@ -267,9 +279,10 @@ export default function VideoEditor<P extends Project = Project>({
     const captions = captionGestureRef.current
       ? backfilled.captions
       : normalizeCaptionLanes(backfilled.captions)
-    const normalized = captions === backfilled.captions ? backfilled : { ...backfilled, captions }
+    const withCaptions = captions === backfilled.captions ? backfilled : { ...backfilled, captions }
+    const normalized = normalizeAudioTracks(withCaptions)
     if (normalized !== sync.project) sync.applyExternal(normalized)
-  }, [sync.project.id, sync.project.captions])
+  }, [sync.project.id, sync.project.captions, sync.project.audio])
 
   // Notify the host of every authoritative change — edits, undo/redo, and SSE
   // frames — so its non-editor chrome (title, status pill) stays in sync. Mirrors
@@ -1385,13 +1398,20 @@ function ReviewSurface<P extends Project>({
    */
   function commitTimelineEdit(p: Project) {
     captionGestureRef.current = false
-    // Fold the auto-crossfade into the SAME commit as the gesture, so an audio
+    // Fold BOTH derived crossfades into the SAME commit as the gesture, so a
     // drag/trim that ends overlapping a neighbour lands as ONE undo step (the
     // move and its derived fade together) rather than the move here plus a
-    // separate fade commit. Idempotent — a project needing no fade comes back
-    // unchanged — so video moves and non-overlapping audio moves are untouched.
-    const faded = computeAutoCrossfade(p) ?? p
-    sync.mutateTransient(() => faded as P)
+    // separate fade commit. Both passes are idempotent — a gesture that creates
+    // no overlap gets its project back unchanged — so a move that overlaps
+    // nothing is untouched by either.
+    //
+    // Audio first, then visual, on the audio pass's OUTPUT: the two touch
+    // disjoint parts of the project (`audio.tracks` vs `tracks`), so the order
+    // is not load-bearing, but chaining them means one commit carries both
+    // rather than the second silently dropping the first's work.
+    const withAudio  = computeAutoCrossfade(p) ?? p
+    const withVisual = computeVisualCrossfade(withAudio) ?? withAudio
+    sync.mutateTransient(() => withVisual as P)
     void sync.commit()
   }
 

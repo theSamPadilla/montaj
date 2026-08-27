@@ -12,6 +12,8 @@ import type {
 import type { Captions, VisualItem } from '../../schema'
 import type { OverlayChanges } from '../preview/useDragOverlay'
 import VideoEditor from '../VideoEditor'
+import { CROSSFADE_COMMIT_DELAY_MS } from '../timeline/Timeline'
+import { trackItems } from '../timeline/timeline-model'
 import { dragCanvasItem, installCanvasHarness, selectCanvasItem } from '../timeline/__tests__/_canvasSelect'
 
 // ── Fake adapter ──────────────────────────────────────────────────────────────
@@ -838,5 +840,172 @@ describe('VideoEditor — editor-package integration', () => {
     await waitFor(() => expect(adapter.listVersionHistory).toHaveBeenCalled())
 
     expect(queryByText('Compare')).toBeNull()
+  })
+
+  // ── Derived OVERLAY crossfades: the wiring, not the function ─────────────
+  //
+  // `computeVisualCrossfade` (timeline-model.ts, unit-tested in
+  // timeline/__tests__/timeline-model.test.ts) ships INERT without two call
+  // sites, exactly as `computeAutoCrossfade` needs two: the gesture commit
+  // (`commitTimelineEdit` here in VideoEditor) and Timeline.tsx's debounced
+  // catch-all for overlay timing that changes without a gesture. One test each.
+  //
+  // Both assert on the ADAPTER's saveProject payload rather than on local
+  // `onProjectChange` state, for the reason
+  // VideoEditor.rippleDeleteCaptions.test.tsx records in full: only a real
+  // commit reaches `saveProject`, so an assertion on client state can pass on
+  // a transient preview that was never persisted.
+
+  /** The `opacity` keyframe track on `itemId` in a saved project, wherever the
+   *  item lives. `undefined` when the item carries no opacity curve at all. */
+  function opacityTrackOf(project: Project, itemId: string) {
+    for (const items of trackItems(project)) {
+      const item = items.find((i) => i.id === itemId)
+      if (item) return item.keyframes?.find((k) => k.prop === 'opacity')
+    }
+    return undefined
+  }
+
+  /** The item itself, for the span assertions. */
+  function itemOf(project: Project, itemId: string): VisualItem | undefined {
+    for (const items of trackItems(project)) {
+      const item = items.find((i) => i.id === itemId)
+      if (item) return item
+    }
+    return undefined
+  }
+
+  it('a trim that creates an overlay overlap commits the fade in ONE undo step', async () => {
+    onTestFinished(installCanvasHarness())
+    // Fake timers, never advanced: Timeline.tsx's debounced catch-all cannot
+    // fire, so a fade in the saved project can ONLY have come from the gesture
+    // commit. Without this the two call sites are indistinguishable.
+    vi.useFakeTimers()
+    onTestFinished(() => { vi.useRealTimers() })
+
+    const adapter = makeFakeAdapter()
+    // The overlays start APART — the gesture is what creates the overlap.
+    const initial = makeVideoProject({
+      tracks: [
+        {
+          id: 'trk-0',
+          items: [
+            { id: 'clip-0', type: 'video', src: 'a.mp4', start: 0, end: 10, inPoint: 0, outPoint: 10, sourceDuration: 40 },
+          ],
+        },
+        {
+          id: 'trk-1',
+          items: [
+            { id: 'ov-a', type: 'overlay', src: 'A.jsx', start: 0, end: 4 },
+            { id: 'ov-b', type: 'overlay', src: 'B.jsx', start: 5, end: 9 },
+          ],
+        },
+      ],
+    })
+    const { container } = render(
+      <VideoEditor project={initial} adapter={adapter} slots={{ exportActions: <div /> }} />,
+    )
+    await act(async () => { await Promise.resolve() })
+
+    // Drag ov-a's OUT edge from t=4 to t=6, so it runs 1s into ov-b. A trim on
+    // a non-zero track is allowed past a neighbour's near boundary (a partial
+    // overlap is a transition) but not past its far one.
+    dragCanvasItem(container, initial, { id: 'ov-a' }, { fromTime: 4, toTime: 6 })
+    await act(async () => { await Promise.resolve() })
+
+    expect(adapter.saveCalls.length).toBe(1)
+    const trimmed = adapter.saveCalls[0].project
+    expect(itemOf(trimmed, 'ov-a')!.end).toBeCloseTo(6, 5)
+
+    // ov-a fades 1 -> 0 across the overlap, in ITS OWN item-relative seconds.
+    const fadeOut = opacityTrackOf(trimmed, 'ov-a')!
+    expect(fadeOut.origin).toBe('crossfade')
+    expect(fadeOut.points.length).toBe(2)
+    expect(fadeOut.points[0]).toEqual({ t: 5, value: 1 })
+    expect(fadeOut.points[1].value).toBe(0)
+    expect(fadeOut.points[1].t).toBeCloseTo(6, 5)
+
+    // ov-b fades 0 -> 1 across the same span, measured from ITS start (t=5).
+    const fadeIn = opacityTrackOf(trimmed, 'ov-b')!
+    expect(fadeIn.origin).toBe('crossfade')
+    expect(fadeIn.points[0]).toEqual({ t: 0, value: 0 })
+    expect(fadeIn.points[1].value).toBe(1)
+    expect(fadeIn.points[1].t).toBeCloseTo(1, 5)
+
+    // ONE undo takes back the trim AND its derived fade together. The audio
+    // version of this bug recorded dozens of entries for a single drag; a
+    // second undo being needed here, or either curve surviving the first, is
+    // the regression.
+    await act(async () => {
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'z', metaKey: true }))
+    })
+    expect(adapter.saveCalls.length).toBe(2)
+    const undone = adapter.saveCalls[1].project
+    expect(itemOf(undone, 'ov-a')!.end).toBe(4)
+    expect(opacityTrackOf(undone, 'ov-a')).toBeUndefined()
+    expect(opacityTrackOf(undone, 'ov-b')).toBeUndefined()
+  })
+
+  it('a ripple-delete that creates an overlay overlap commits a fade without a gesture', async () => {
+    onTestFinished(installCanvasHarness())
+    vi.useFakeTimers()
+    onTestFinished(() => { vi.useRealTimers() })
+
+    const adapter = makeFakeAdapter()
+    // Shift+Delete on clip-A (0-2s) shifts everything starting at or after 2s
+    // left by 2s — across EVERY track. ov-b travels 4->2 while ov-a stays at
+    // 0-4, so the two overlap by 2s without any pointer ever touching them.
+    const initial = makeVideoProject({
+      tracks: [
+        {
+          id: 'trk-0',
+          items: [
+            { id: 'clip-A', type: 'video', src: 'a.mp4', start: 0, end: 2, inPoint: 0, outPoint: 2 },
+            { id: 'clip-B', type: 'video', src: 'a.mp4', start: 2, end: 6, inPoint: 2, outPoint: 6 },
+          ],
+        },
+        {
+          id: 'trk-1',
+          items: [
+            { id: 'ov-a', type: 'overlay', src: 'A.jsx', start: 0, end: 4 },
+            { id: 'ov-b', type: 'overlay', src: 'B.jsx', start: 4, end: 8 },
+          ],
+        },
+      ],
+    })
+    const { container } = render(
+      <VideoEditor project={initial} adapter={adapter} slots={{ exportActions: <div /> }} />,
+    )
+    await act(async () => { await Promise.resolve() })
+
+    selectCanvasItem(container, initial, { id: 'clip-A' })
+    await act(async () => {
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Delete', shiftKey: true }))
+    })
+
+    // `handleRippleDelete` goes straight to `sync.mutate` — it never passes
+    // through `commitTimelineEdit`, so its own commit carries no fade. That is
+    // precisely the hole the debounced pass fills.
+    expect(adapter.saveCalls.length).toBe(1)
+    const rippled = adapter.saveCalls[0].project
+    expect(itemOf(rippled, 'ov-b')!.start).toBe(2)
+    expect(opacityTrackOf(rippled, 'ov-a')).toBeUndefined()
+    expect(opacityTrackOf(rippled, 'ov-b')).toBeUndefined()
+
+    await act(async () => { vi.advanceTimersByTime(CROSSFADE_COMMIT_DELAY_MS) })
+
+    expect(adapter.saveCalls.length).toBe(2)
+    const faded = adapter.saveCalls[1].project
+    expect(opacityTrackOf(faded, 'ov-a')!.points).toEqual([
+      { t: 2, value: 1 }, { t: 4, value: 0 },
+    ])
+    expect(opacityTrackOf(faded, 'ov-b')!.points).toEqual([
+      { t: 0, value: 0 }, { t: 2, value: 1 },
+    ])
+
+    // Idempotent: the pass re-runs off its own commit and must find nothing,
+    // or it would commit forever.
+    await act(async () => { vi.advanceTimersByTime(CROSSFADE_COMMIT_DELAY_MS * 4) })
+    expect(adapter.saveCalls.length).toBe(2)
   })
 })

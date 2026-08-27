@@ -263,17 +263,26 @@ describe('createCanvasPainter', () => {
   interface Recorded {
     fills: Array<[number, number, number, number]>
     draws: unknown[][]
+    /** `ctx.globalAlpha` as each `drawImage` saw it, index-for-index with `draws`. */
+    alphas: number[]
   }
 
   function stubCanvas(width = 1080, height = 1920): { canvas: HTMLCanvasElement; rec: Recorded } {
     const canvas = document.createElement('canvas')
     canvas.width = width
     canvas.height = height
-    const rec: Recorded = { fills: [], draws: [] }
+    const rec: Recorded = { fills: [], draws: [], alphas: [] }
     const ctx = {
       fillStyle: '',
+      globalAlpha: 1,
       fillRect: (...args: [number, number, number, number]) => rec.fills.push(args),
-      drawImage: (...args: unknown[]) => rec.draws.push(args),
+      drawImage: (...args: unknown[]) => {
+        rec.draws.push(args)
+        // The alpha IN FORCE at the moment of the call. A blend is expressed
+        // entirely through `globalAlpha`, so a recorder that ignored it could
+        // not tell a blend from two opaque draws.
+        rec.alphas.push(ctx.globalAlpha)
+      },
     }
     vi.spyOn(canvas, 'getContext').mockReturnValue(ctx as unknown as CanvasRenderingContext2D)
     return { canvas, rec }
@@ -312,6 +321,42 @@ describe('createCanvasPainter', () => {
     expect(painter.size()).toEqual({ width: 540, height: 960 })
     painter.clear()
     expect(last(rec.fills)).toEqual([0, 0, 540, 960])
+  })
+
+  it('blends by drawing the outgoing frame opaque and the incoming one at p', () => {
+    // `A + (B-A)*p` as source-over: the outgoing picture goes down at full
+    // alpha, the incoming one over it at p, giving `(1-p)*from + p*to` — the
+    // same lerp `encode-segment.js` hands to ffmpeg's `blend=all_expr`.
+    const { canvas, rec } = stubCanvas()
+    const to = { close() {} } as unknown as VideoFrame
+    const toPlan: DrawPlan = { ...plan, dx: 5, dy: 6 }
+    createCanvasPainter(canvas).paintBlend(frame, to, 0.25, plan, toPlan)
+
+    expect(rec.draws).toEqual([
+      [frame, 10, 20, 30, 40, 1, 2, 3, 4],
+      [to, 10, 20, 30, 40, 5, 6, 3, 4],
+    ])
+    expect(rec.alphas).toEqual([1, 0.25])
+  })
+
+  it('restores globalAlpha after a blend, so the next paint is opaque', () => {
+    // The context outlives the call. A leaked alpha would ghost every later
+    // frame — and the black fill with it.
+    const { canvas, rec } = stubCanvas()
+    const painter = createCanvasPainter(canvas)
+    painter.paintBlend(frame, frame, 0.25, plan, plan)
+    painter.paint(frame, plan)
+    expect(last(rec.alphas)).toBe(1)
+  })
+
+  it('skips a degenerate rect on either side of a blend', () => {
+    const { canvas, rec } = stubCanvas()
+    const painter = createCanvasPainter(canvas)
+    painter.paintBlend(frame, frame, 0.5, { ...plan, sw: 0 }, plan)
+    expect(rec.draws).toHaveLength(1)
+    // Still restored, even though the outgoing side drew nothing.
+    painter.paint(frame, plan)
+    expect(last(rec.alphas)).toBe(1)
   })
 
   it('is inert when the canvas gives no 2D context', () => {

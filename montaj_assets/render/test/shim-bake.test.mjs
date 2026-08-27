@@ -24,6 +24,7 @@ import { tmpdir } from 'os'
 import { randomBytes } from 'crypto'
 import { fileURLToPath } from 'url'
 import { generateShim, bundleComponent, cleanupBundle, generateHtml } from '../bundle.js'
+import { captureOptionsFor } from '../renderer.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const FIXTURE = join(__dirname, 'fixtures', 'shim-unbaked.expected.jsx')
@@ -304,5 +305,34 @@ describe('generateHtml: googleFonts entries cannot break out of the href attribu
     const html = generateHtml(1080, 1920, false, ['Baloo+2:wght@700', 'Roboto:wght@400;700'])
     assert.match(html, /family=Baloo\+2:wght@700/)
     assert.match(html, /family=Roboto:wght@400;700/)
+  })
+})
+
+// captureOptionsFor (renderer.js) — the Puppeteer capture side of an opaque
+// overlay that is the INCOMING side of a crossfade. `opaque: true` normally
+// skips the alpha plane entirely (cheaper, and correct for something that
+// covers the whole frame); `transitionTo: true` is the one case that has to
+// override that, because the incoming side of an opaque pair fades IN over
+// the section beneath it and an alpha-less capture cannot do that — see the
+// function's own doc comment in renderer.js for the full reasoning.
+describe('captureOptionsFor: opaque overlays inside a crossfade need alpha', () => {
+  test('an opaque overlay that is a transition\'s incoming side is captured WITH alpha', () => {
+    const job = { id: 'seg-1', opaque: true, transitionTo: true }
+    assert.equal(captureOptionsFor(job).omitBackground, true)
+    assert.equal(captureOptionsFor(job).pixFmt, 'yuva420p')
+  })
+
+  test('an opaque overlay that is NOT a transition target keeps the opaque capture', () => {
+    const job = { id: 'seg-1', opaque: true }
+    assert.equal(captureOptionsFor(job).omitBackground, false)
+    assert.equal(captureOptionsFor(job).pixFmt, 'yuv420p')
+  })
+
+  test('a transparent overlay is unaffected by the flag', () => {
+    for (const transitionTo of [true, false, undefined]) {
+      const opts = captureOptionsFor({ id: 'seg-1', opaque: false, transitionTo })
+      assert.equal(opts.omitBackground, true)
+      assert.equal(opts.pixFmt, 'yuva420p')
+    }
   })
 })

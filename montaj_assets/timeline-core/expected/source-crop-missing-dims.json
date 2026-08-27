@@ -54,7 +54,8 @@
                 "h": 0.7
               },
               "rotation": 0
-            }
+            },
+            "crossfade": null
           }
         ]
       },
@@ -87,7 +88,8 @@
                 "h": 0.7
               },
               "rotation": 0
-            }
+            },
+            "crossfade": null
           }
         ]
       },
@@ -130,7 +132,8 @@
                 "h": 0.7
               },
               "rotation": 0
-            }
+            },
+            "crossfade": null
           }
         ]
       },
@@ -163,7 +166,8 @@
                 "h": 0.7
               },
               "rotation": 0
-            }
+            },
+            "crossfade": null
           }
         ]
       },
@@ -212,7 +216,8 @@
                   "h": 0.7
                 },
                 "rotation": 0
-              }
+              },
+              "crossfade": null
             }
           ]
         }

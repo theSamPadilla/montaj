@@ -1,0 +1,30 @@
+{
+  "version": "0.2",
+  "id": "sp2-corpus-clip-crossfade",
+  "status": "draft",
+  "projectType": "editing",
+  "settings": { "fps": 30, "resolution": [1080, 1920], "colorSpace": "sdr_bt709" },
+  "tracks": [
+    [
+      {
+        "id": "clipA",
+        "type": "video",
+        "src": "/corpus/clipA.mp4",
+        "start": 0,
+        "end": 4,
+        "inPoint": 0,
+        "outPoint": 4
+      },
+      {
+        "id": "clipB",
+        "type": "video",
+        "src": "/corpus/clipB.mp4",
+        "start": 3,
+        "end": 8,
+        "inPoint": 0,
+        "outPoint": 5
+      }
+    ]
+  ],
+  "audio": { "tracks": [] }
+}

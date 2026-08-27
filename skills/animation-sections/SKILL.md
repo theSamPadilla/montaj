@@ -91,9 +91,36 @@ Use `tracks[1]` for the primary visual layer — opaque backgrounds and section 
 
 Use `tracks[2+]` for **layered animations on top** — text, icons, motion graphics that sit above the background layer. Items in higher-numbered tracks render on top.
 
-### 4. No time overlap within a track
+### 4. A partial overlap is a crossfade — but you have to author it yourself
 
-Items in the same track must not overlap in time. If you need two overlays at the same time at different z-levels, put them in different tracks.
+Two neighbouring items on the same track may now partially overlap; the overlap **is** a dissolve between them. Two shapes are still rejected by the validator (`visual_track_overlap`):
+
+- **Containment** — one item's span fully swallows the other's (identical spans included).
+- **Three or more items live at the same instant** — a transition is a pair. If you need two overlays at the same time at different z-levels, put them in different tracks; that guidance still holds.
+
+**The automatic fade is written by the editor, not by this skill.** `montaj/animation-sections` writes `project.json` directly, so overlapping two items with no `opacity` keyframes just draws one on top of the other at full strength — no dissolve. To get a crossfade, write it yourself: give the incoming item a two-point `opacity` keyframe track spanning the overlap, `t` measured in seconds from that item's *own* `start` (not the timeline).
+
+**Sections in this skill are almost always `opaque: true`, and that changes which item gets the keyframes.** An opaque item tells the renderer it covers the whole frame, so whatever is beneath it is skipped rather than composited — fading its own opacity down reveals that skipped-over black, not the item you're transitioning to. So when the OUTGOING item is opaque (the normal case here), leave it out of the fade entirely — no `keyframes` on it at all, holding it at its default `1` — and only the incoming item fades in over it:
+
+```json
+{
+  "id": "section-a",
+  "start": 5.0, "end": 9.5,
+  "opaque": true
+},
+{
+  "id": "section-b",
+  "start": 9.0, "end": 14.0,
+  "opaque": true,
+  "keyframes": [
+    { "prop": "opacity", "points": [{ "t": 0, "value": 0 }, { "t": 0.5, "value": 1 }] }
+  ]
+}
+```
+
+The overlap here is `9.0`–`9.5`, a 0.5s dissolve: `section-b`'s points run `0 → 0.5`, relative to its own `start` of `9.0`. `section-a` needs no `keyframes` field at all.
+
+If neither item is opaque (layered animations on `tracks[2+]`, for instance), fade both sides symmetrically instead — the outgoing item's own points run `1 → 0` over the same span, in its own item-relative time (here, `4.0 → 4.5`, relative to `section-a`'s `start` of `5.0`).
 
 For animation projects (no footage), every timestamp must be covered by an item in `tracks[1]` or higher. Gaps in coverage produce a black frame.
 

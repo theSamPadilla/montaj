@@ -153,6 +153,29 @@ export async function renderAllSegments(segments, config = {}) {
 // Internal helpers
 // ---------------------------------------------------------------------------
 
+/**
+ * How a Puppeteer overlay capture treats its background.
+ *
+ * `opaque: true` normally means "this overlay replaces the frame" — so the page
+ * background is left alone (the JSX root's CSS owns it) and the capture is
+ * encoded `yuv420p` with no alpha plane, which is cheaper and correct for
+ * something that covers everything.
+ *
+ * `transitionTo` breaks that. When an opaque overlay is the INCOMING side of a
+ * crossfade it has to fade IN over the section beneath it, and an alpha-less
+ * capture cannot: the shim's CSS opacity would fade the component against the
+ * browser's own page background, and the composite would have no alpha to blend
+ * with even if it did not. So such a capture switches to the transparent path.
+ *
+ * Only the incoming side needs this. The OUTGOING side of an opaque pair holds
+ * at full opacity by design (`timeline-core`'s `fadeShape` — fading it out would
+ * reveal black), so it never needs an alpha plane and keeps the cheaper capture.
+ */
+export function captureOptionsFor(job) {
+  const needsAlpha = !job.opaque || job.transitionTo === true
+  return { omitBackground: needsAlpha, pixFmt: needsAlpha ? 'yuva420p' : 'yuv420p' }
+}
+
 async function renderChunk(browser, job) {
   const { id, htmlPath, fps, width, height, frameStart, frameEnd, chunkIndex, outputPath, colorSpace, imageTone } = job
 
@@ -289,7 +312,7 @@ async function renderChunk(browser, job) {
 
   // For transparent overlays, force-clear any background the OS/browser might add.
   // For opaque overlays, skip this — the JSX root's CSS controls the background.
-  if (!job.opaque) {
+  if (captureOptionsFor(job).omitBackground) {
     await page.evaluate(() => {
       document.documentElement.style.background = 'transparent'
       document.body.style.background = 'transparent'
@@ -324,7 +347,7 @@ async function renderChunk(browser, job) {
     await page.evaluate(() => new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r))))
     const localIdx = frame - frameStart
     const framePath = join(frameDir, `frame-${String(localIdx).padStart(6, '0')}.png`)
-    await page.screenshot({ path: framePath, omitBackground: !job.opaque })
+    await page.screenshot({ path: framePath, omitBackground: captureOptionsFor(job).omitBackground })
     if ((localIdx + 1) % reportEvery === 0 || localIdx + 1 === totalFrames) {
       log(progressBar(id, localIdx + 1, totalFrames, renderStartMs))
     }
@@ -351,7 +374,7 @@ async function renderChunk(browser, job) {
   const chunkMkv = outputPath.replace(/\.\w+$/, '') + `-chunk-${chunkIndex}.mkv`
   mkdirSync(dirname(chunkMkv), { recursive: true })
 
-  const pixFmt = job.opaque ? 'yuv420p' : 'yuva420p'
+  const pixFmt = captureOptionsFor(job).pixFmt
   await spawnAsync(FFMPEG, [
     '-y',
     '-framerate',           String(fps),

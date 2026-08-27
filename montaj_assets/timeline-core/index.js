@@ -62,6 +62,12 @@ export * from './src/curves.js'
 // why translating the beziers into ffmpeg's expression language was rejected.
 export * from './src/expr.js'
 
+// SP9d-T3 — crossfade math: transitionPairs, transitionProgress, fadeShape.
+// THE single definition of "what a crossfade is", shared by the editor's
+// derived keyframes, the resolver's `crossfade` stamp and the segment
+// encoder's `blend` expression — see the src/transitions.js header.
+export * from './src/transitions.js'
+
 /**
  * Version salt for resolver-derived caches. sample-frame.js mixes this into its
  * cache key so a change in resolver semantics invalidates stale cached frames
@@ -75,4 +81,4 @@ export * from './src/expr.js'
  * or new function with no effect on existing outputs does not need a bump.
  * @type {string}
  */
-export const RESOLVER_VERSION = '2'
+export const RESOLVER_VERSION = '3'

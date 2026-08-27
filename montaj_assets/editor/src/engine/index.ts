@@ -31,6 +31,14 @@
  *     stream from one server at once — the scheduler stops the outgoing
  *     session before starting the incoming one — and when the last clip
  *     referencing a src is dropped, the worker really is terminated.
+ *
+ *     ONE carve-out, and it does not overturn the reasoning above: the two
+ *     sides of a crossfade cut from a single take need two read positions at
+ *     the same instant, which one server cannot serve, so the incoming side
+ *     asks for its own (`SourceRequest.exclusiveServer`) for the length of the
+ *     blend. What the rule actually saves is the DEMUX, and that survives — the
+ *     cache below is keyed by `src` independently of the server map, so the
+ *     second decoder costs one worker and not one byte of extra fetch.
  *   - **`MasterClock` — one per CLIP**, because it is anchored to that clip's
  *     `start`/`inPoint`/`volume`/`muted` and T4 is explicit that a live clock is
  *     never reconfigured.
@@ -52,6 +60,7 @@ import type { FileUrlResolver } from './media-loader'
 import {
   createScheduler,
   type ClipSource,
+  type DrawPlan,
   type EngineStatus,
   type Painter,
   type Scheduler,
@@ -249,23 +258,43 @@ export function createCanvasPainter(canvas: HTMLCanvasElement): Painter {
     ctx.fillStyle = '#000'
     ctx.fillRect(0, 0, canvas.width, canvas.height)
   }
+  const draw = (frame: VideoFrame, plan: DrawPlan) => {
+    if (!ctx) return
+    if (plan.sw <= 0 || plan.sh <= 0 || plan.dw <= 0 || plan.dh <= 0) return
+    ctx.drawImage(
+      frame,
+      plan.sx,
+      plan.sy,
+      plan.sw,
+      plan.sh,
+      plan.dx,
+      plan.dy,
+      plan.dw,
+      plan.dh,
+    )
+  }
   return {
     size: () => ({ width: canvas.width, height: canvas.height }),
     paint(frame, plan) {
       if (!ctx) return
       fill()
-      if (plan.sw <= 0 || plan.sh <= 0 || plan.dw <= 0 || plan.dh <= 0) return
-      ctx.drawImage(
-        frame,
-        plan.sx,
-        plan.sy,
-        plan.sw,
-        plan.sh,
-        plan.dx,
-        plan.dy,
-        plan.dw,
-        plan.dh,
-      )
+      draw(frame, plan)
+    },
+    paintBlend(from, to, p, fromPlan, toPlan) {
+      if (!ctx) return
+      fill()
+      draw(from, fromPlan)
+      // Source-over at alpha p composites `p*to + (1-p)*from` onto the outgoing
+      // picture already on the canvas — the lerp `encode-segment.js` emits as
+      // `blend=all_expr='A+(B-A)*p'`. Restored in `finally` because the context
+      // is long-lived: a leaked alpha would ghost every later paint, including
+      // the black fill.
+      try {
+        ctx.globalAlpha = p
+        draw(to, toPlan)
+      } finally {
+        ctx.globalAlpha = 1
+      }
     },
     clear: fill,
   }
@@ -311,6 +340,23 @@ interface Session {
    * not.
    */
   speed: number
+  /**
+   * `!!request.exclusiveServer` as of the last (re)build — see
+   * {@link serverKeyFor}. Stamped alongside the fields above so `retain`'s drop
+   * test can see it change, but it is NOT one of them: a clip that stops being
+   * the incoming side of a blend keeps the session and the decoder it already
+   * has. See `retain`.
+   */
+  exclusive: boolean
+  /**
+   * The `servers` key this session actually holds a ref under, set when
+   * `acquireServer` returns. Stored rather than re-derived at release time:
+   * the REQUEST's exclusivity can change between two `retain` calls while the
+   * acquired entry cannot, and a release keyed off the current request would
+   * leave the acquired entry orphaned in the map with its worker running for
+   * the rest of the session's life. Undefined until the server is acquired.
+   */
+  serverKey?: string
   /** Rebuild attempts already spent on this clip — see {@link MAX_SESSION_RETRIES}. */
   retries: number
   /**
@@ -320,8 +366,25 @@ interface Session {
   retryAfterMs: number
 }
 
+/**
+ * The `servers` key for one clip's decode session.
+ *
+ * `src` for the ordinary case — that IS the one-server-per-src rule this file's
+ * header states. An exclusive request gets an entry of its own instead, so the
+ * two sides of a crossfade cut from a single take have two read positions; see
+ * `SourceRequest.exclusiveServer` for why that carve-out is cheap.
+ */
+const serverKeyFor = (src: string, clipId: string, exclusive: boolean): string =>
+  exclusive ? `${src}#${clipId}` : src
+
 interface ServerEntry {
   server: FrameServer
+  /**
+   * The src this server decodes. Not derivable from the map key, which carries
+   * a clip id too on an exclusive entry — and `evictDemux` has to know whether
+   * ANY live session is reading a src before it drops that src's demux.
+   */
+  src: string
   refs: Set<string>
 }
 
@@ -373,8 +436,26 @@ class EngineSourceHost implements SourceHost {
         want.item.start !== session.start ||
         sourceWindow(want.item, 'preview').inPoint !== session.inPoint ||
         !!want.item.muted !== session.muted ||
-        (want.item.speed ?? 1) !== session.speed
+        (want.item.speed ?? 1) !== session.speed ||
+        // A clip that BECOMES the incoming side of a blend has to move onto a
+        // decoder of its own, and a live session cannot change servers. It is
+        // usually already built by then — the scheduler prewarms it as `next`
+        // before the overlap starts — so without this the blend would find both
+        // sides on one server and decline. Deliberately one-directional: see
+        // the demotion loop below for why the reverse is NOT a respawn.
+        (!!want.exclusiveServer && !session.exclusive)
       if (changed) this.dropSession(clipId)
+    }
+    // The other edge of `exclusiveServer`: a clip that STOPS being the incoming
+    // side of a blend, which happens the instant the outgoing clip ends. By
+    // then it is the ACTIVE clip — the transport is running on its master clock
+    // — so a respawn here would tear down that clock and terminate its decoder
+    // mid-playback at the end of every crossfade, an artefact worse than the
+    // hard cut 9b removed. The session keeps the decoder it already has; all
+    // that changes is the key it is filed under.
+    for (const request of requests) {
+      const session = this.sessions.get(request.clipId)
+      if (session?.exclusive && !request.exclusiveServer) this.demoteServer(session)
     }
     // A clip's volume can change without a rebuild: push it straight to the
     // live clock (`MasterClock.setVolume`) rather than tearing the session
@@ -468,6 +549,7 @@ class EngineSourceHost implements SourceHost {
       muted: !!request.item.muted,
       volume: request.item.volume ?? 1,
       speed: request.item.speed ?? 1,
+      exclusive: !!request.exclusiveServer,
       retries,
       retryAfterMs: 0,
     }
@@ -483,7 +565,7 @@ class EngineSourceHost implements SourceHost {
     try {
       const demuxed = await this.acquireDemux(session.src)
       if (session.cancelled) return
-      const server = this.acquireServer(session.src, demuxed, session.clipId)
+      const server = this.acquireServer(session, demuxed, !!request.exclusiveServer)
       acquired = true
 
       const window = sourceWindow(request.item, 'preview')
@@ -523,7 +605,7 @@ class EngineSourceHost implements SourceHost {
       })
       if (session.cancelled) {
         clock.dispose()
-        this.releaseServer(session.src, session.clipId)
+        this.releaseServer(session)
         return
       }
       session.source = {
@@ -535,7 +617,7 @@ class EngineSourceHost implements SourceHost {
       }
       session.status = 'ready'
     } catch (err) {
-      if (acquired) this.releaseServer(session.src, session.clipId)
+      if (acquired) this.releaseServer(session)
       if (session.cancelled) return
       const message = err instanceof Error ? err.message : String(err)
       this.markFailed(session, message)
@@ -563,7 +645,7 @@ class EngineSourceHost implements SourceHost {
     this.sessions.delete(clipId)
     session.cancelled = true
     session.source?.clock.dispose()
-    if (session.source) this.releaseServer(session.src, clipId)
+    if (session.source) this.releaseServer(session)
     else this.abandonDemux(session.src)
   }
 
@@ -586,7 +668,7 @@ class EngineSourceHost implements SourceHost {
       session.source?.clock.dispose()
       if (session.source) {
         session.source = undefined
-        this.releaseServer(src, session.clipId)
+        this.releaseServer(session)
       }
       this.scheduler?.sourceChanged(session.clipId)
     }
@@ -594,32 +676,68 @@ class EngineSourceHost implements SourceHost {
 
   // ── per-src resources ─────────────────────────────────────────────────────
 
-  private acquireServer(src: string, source: DemuxedSource, clipId: string): FrameServer {
-    let entry = this.servers.get(src)
+  private acquireServer(session: Session, source: DemuxedSource, exclusive: boolean): FrameServer {
+    const src = session.src
+    const key = serverKeyFor(src, session.clipId, exclusive)
+    let entry = this.servers.get(key)
     if (!entry) {
       entry = {
         server: createFrameServer({
           source,
           hardwareAcceleration: this.deps.hardwareAcceleration,
           decodeAheadFrames: this.deps.decodeAheadFrames,
+          // Reported against the RAW src, never the key: a decode error is a
+          // property of the file, so every session reading it has to hear
+          // about it — including the one on the other side of a blend.
           onError: (message) => this.onDecodeError(src, message),
         }),
+        src,
         refs: new Set(),
       }
-      this.servers.set(src, entry)
+      this.servers.set(key, entry)
     }
-    entry.refs.add(clipId)
+    entry.refs.add(session.clipId)
+    // Stamped here rather than by the caller so the key a session releases is
+    // by construction the key it acquired, whatever the request said later.
+    session.serverKey = key
+    session.exclusive = exclusive
     return entry.server
   }
 
-  /** Last clip off this src leaves ⇒ the worker is terminated. The spike's `load` rule. */
-  private releaseServer(src: string, clipId: string): void {
-    const entry = this.servers.get(src)
+  /** Last clip off this server leaves ⇒ the worker is terminated. The spike's `load` rule. */
+  private releaseServer(session: Session): void {
+    const key = session.serverKey
+    if (key === undefined) return
+    session.serverKey = undefined
+    const entry = this.servers.get(key)
     if (!entry) return
-    entry.refs.delete(clipId)
+    entry.refs.delete(session.clipId)
     if (entry.refs.size > 0) return
     entry.server.dispose()
-    this.servers.delete(src)
+    this.servers.delete(key)
+  }
+
+  /**
+   * File a no-longer-exclusive session's server back under the shared key,
+   * without disturbing the decoder itself — see the demotion loop in `retain`
+   * for why this is not a respawn.
+   *
+   * Only possible while the shared key is free: two live servers for one src
+   * cannot be merged into one. When it is taken (the outgoing clip of the
+   * crossfade is usually still retained as `prev`, holding exactly that key)
+   * the exclusive entry simply stays where it is and is terminated with the
+   * clip, which is bounded by the retained set and costs one worker — never a
+   * leak, because the session still holds the key it acquired.
+   */
+  private demoteServer(session: Session): void {
+    const key = session.serverKey
+    if (key === undefined || key === session.src) return
+    const entry = this.servers.get(key)
+    if (!entry || this.servers.has(session.src)) return
+    this.servers.delete(key)
+    this.servers.set(session.src, entry)
+    session.serverKey = session.src
+    session.exclusive = false
   }
 
   private async acquireDemux(src: string): Promise<DemuxedSource> {
@@ -706,8 +824,11 @@ class EngineSourceHost implements SourceHost {
     while (this.demuxCache.size > DEMUX_CACHE_MAX) {
       let victim: string | null = null
       for (const src of this.demuxCache.keys()) {
-        // Never evict a source a live decode session is reading from.
-        if (this.servers.has(src)) continue
+        // Never evict a source a live decode session is reading from. Asked of
+        // the ENTRIES, not the keys: an exclusive server is filed under a key
+        // that carries a clip id, and evicting the demux out from under one is
+        // exactly the re-fetch the carve-out promises not to cause.
+        if (this.hasServerFor(src)) continue
         // Or one an outside consumer (the drag-scrub source) is holding.
         if (this.demuxPins.has(src)) continue
         victim = src
@@ -716,6 +837,14 @@ class EngineSourceHost implements SourceHost {
       if (victim === null) return
       this.demuxCache.delete(victim)
     }
+  }
+
+  /** Any live decode session reading this src — under the shared key or an exclusive one. */
+  private hasServerFor(src: string): boolean {
+    for (const [, entry] of this.servers) {
+      if (entry.src === src) return true
+    }
+    return false
   }
 
   /**
@@ -878,11 +1007,18 @@ export function createEngine(project: Project, deps: EngineDeps): Engine {
       sizeCanvas()
       const painter = createCanvasPainter(next)
       // Wrapped only to feed `stats().fps` — every other call is `painter`'s own.
+      // A blend is ONE painted frame however many sources it composites, so it
+      // records exactly like a plain paint; leaving it out would read as a
+      // frame rate collapse for the length of every crossfade.
       scheduler.attach({
         ...painter,
         paint: (frame, plan) => {
           recordPaint()
           painter.paint(frame, plan)
+        },
+        paintBlend: (from, to, p, fromPlan, toPlan) => {
+          recordPaint()
+          painter.paintBlend(from, to, p, fromPlan, toPlan)
         },
       })
     },

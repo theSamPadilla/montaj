@@ -200,6 +200,14 @@ export interface FrameGrid {
   frameOf(t: number): number
 }
 
+/** One side of a crossfade, and how far through it this instant is. */
+export interface ItemCrossfade {
+  /** `'from'` = the outgoing item, `'to'` = the incoming one. */
+  role: 'from' | 'to'
+  /** 0 at the overlap's start, 1 at its end. Consumers blend `(1-p)*from + p*to`. */
+  p: number
+}
+
 /**
  * One item that is on screen, with everything a consumer needs to draw it.
  */
@@ -235,6 +243,19 @@ export interface ResolvedItem {
    * SEGMENT's start, not a per-frame curve.
    */
   geometry: Geometry
+  /**
+   * Set when this item is one side of a crossfade with its neighbour ON THE
+   * SAME TRACK; `null` otherwise, which is the overwhelmingly common case.
+   *
+   * CLIPS ONLY (`kind === 'video' | 'image'`). An overlay's crossfade is
+   * `opacity` keyframe data on the item itself and is already in its geometry;
+   * an overlay therefore ALWAYS has `crossfade: null` and a consumer that
+   * applied both would fade it twice.
+   *
+   * NOTE for {@link resolveSegment}: like `geometry`, this is the value at the
+   * SEGMENT's start, not a per-frame curve.
+   */
+  crossfade: ItemCrossfade | null
 }
 
 /** Everything on screen at one instant, ordered back-to-front. */
@@ -964,3 +985,71 @@ export declare function compileTrackExprInfo(
   track: KeyframeTrack | Keyframe[] | null | undefined,
   options?: CompileTrackExprOptions,
 ): CompiledTrackExpr
+
+// ---------------------------------------------------------------------------
+// Transitions — crossfade math (src/transitions.js)
+// ---------------------------------------------------------------------------
+
+/**
+ * The subset of a timeline item that crossfade math reads. Nothing outside
+ * this list is consulted. `start`/`end` are required by the project schema but
+ * optional here so the functions stay total; a missing or non-finite value is
+ * read as 0.
+ */
+export interface TransitionItem {
+  id?: string
+  start?: number
+  end?: number
+  /** Overlay only. Drives {@link fadeShape}'s hold-vs-symmetric choice. */
+  opaque?: boolean
+}
+
+/** One crossfade: the pair being blended, and the span it blends across. */
+export interface TransitionPair {
+  /** The earlier item — the one being left. */
+  from: TransitionItem
+  /** The later item — the one being entered. */
+  to: TransitionItem
+  /** Timeline seconds the blend begins (`to.start`). */
+  start: number
+  /** Timeline seconds the blend ends (`from.end`). */
+  end: number
+}
+
+/**
+ * Every crossfade on ONE track's items, earliest first.
+ *
+ * Sorts a COPY by `start` then `end`, so the caller's array is never reordered
+ * and the items may be passed in any order. Only CONSECUTIVE pairs in that
+ * order are considered. A pair is skipped when the two are butt-joined or
+ * gapped (`to.start >= from.end`) and when one CONTAINS the other
+ * (`to.end <= from.end`) — containment has no "from" and "to" to blend along,
+ * and `engine/validate.py` rejects it outright.
+ */
+export declare function transitionPairs(
+  items: ReadonlyArray<TransitionItem> | null | undefined,
+): TransitionPair[]
+
+/**
+ * How far through the blend `t` is: 0 at the pair's start, 1 at its end,
+ * clamped outside. A zero-length or malformed span returns 0, never `NaN`.
+ */
+export declare function transitionProgress(
+  pair: { start?: number; end?: number } | null | undefined,
+  t: number,
+): number
+
+/**
+ * The two alphas at progress `p`.
+ *
+ * SYMMETRIC (`from` 1→0, `to` 0→1) by default, mirroring the shipped audio
+ * crossfade. HOLD (`from` stays 1) when the OUTGOING item is `opaque`: such an
+ * overlay covers the frame and the renderer suppresses the picture under it,
+ * so fading it out would reveal black rather than the item beneath. Keyed off
+ * the outgoing side ONLY — an opaque item fading IN over a transparent one
+ * reveals nothing and stays symmetric.
+ */
+export declare function fadeShape(
+  pair: TransitionPair | null | undefined,
+  p: number,
+): { from: number; to: number }

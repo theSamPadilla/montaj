@@ -1314,3 +1314,330 @@ test('not rotated: the video grown box IS the unrotated box (x === xPx, y === yP
       `rotation ${label}: the composite must spend the unrotated top-left`)
   }
 })
+
+// ---------------------------------------------------------------------------
+// Clip crossfade — a transitioning pair splits the canvas and blends
+// ---------------------------------------------------------------------------
+//
+// `item.crossfade` carries the PAIR'S SPAN in timeline seconds, not a progress
+// value, and encodeSegment derives its own `p0`/`p1` from the segment it was
+// handed. It has to: segment-plan.js's `activeIn` gives every segment the SAME
+// item objects (it "preserves input order and object identity"), so a
+// per-segment number has nowhere to live on the item. Carrying the span is also
+// what gates the audio fade correctly — a segment sitting entirely BEFORE the
+// overlap yields p0 === p1 === 0, so nothing fades there.
+
+// `b` starts at 3, `a` ends at 4 — a 1.0s overlap.
+const XF_SPAN = { start: 3, end: 4 }
+
+/** A two-clip overlap sliced to the segment [start, end). */
+function crossfadeSeg(start, end, patch = {}) {
+  return {
+    start, end, vw: 1080, vh: 1920, fps: 30, colorSpace: 'sdr_bt709',
+    overlays: [],
+    items: [
+      { id: 'a', type: 'video', src: 'a.mov', start: 0, end: 4, trackIdx: 0,
+        inPoint: 0, outPoint: 4, hasAudio: true,
+        crossfade: { role: 'from', ...XF_SPAN } },
+      { id: 'b', type: 'video', src: 'b.mov', start: 3, end: 8, trackIdx: 0,
+        inPoint: 0, outPoint: 5, hasAudio: true,
+        crossfade: { role: 'to', ...XF_SPAN } },
+    ],
+    ...patch,
+  }
+}
+
+test('a transitioning clip pair splits the canvas and blends the two branches', async () => {
+  const { filterParts } = await encodeSegment(crossfadeSeg(3, 4), '/tmp/x.mp4', { _dryRun: true })
+  const graph = filterParts.join(';')
+  assert.match(graph, /split=2/)
+  assert.match(graph, /blend=all_expr=/)
+  // The ramp runs 0 -> 1 across this segment's own 1.0s, in the FOLDED form.
+  assert.match(graph, /blend=all_expr='A\+\(B-A\)\*\(1\*T\)'/)
+})
+
+test('the blend expression is the FOLDED form, never the literal one', async () => {
+  // Not a style preference: the literal `A*(1-p)+B*p` measured 1.86-2.01x the
+  // hard-cut baseline on real 4K HDR footage, against a 2x gate, while this
+  // form measured 1.35-1.49x for byte-identical output. See the plan's Spike
+  // Results. A future "clarifying" rewrite to the literal form is a regression.
+  const { filterParts } = await encodeSegment(crossfadeSeg(3, 4), '/tmp/x.mp4', { _dryRun: true })
+  const graph = filterParts.join(';')
+  assert.doesNotMatch(graph, /A\*\(1-/)
+  assert.match(graph, /A\+\(B-A\)\*/)
+})
+
+test('a PARTIAL slice of a transition ramps only its own sub-range', async () => {
+  // The segment covers the second half of a 1.0s transition — the shape a
+  // caption or overlay boundary landing strictly inside the overlap produces.
+  const { filterParts } = await encodeSegment(crossfadeSeg(3.5, 4), '/tmp/x.mp4', { _dryRun: true })
+  // p0 = 0.5, k = (1 - 0.5) / 0.5 = 1 -> `0.5+1*T`, still folded.
+  assert.match(filterParts.join(';'), /blend=all_expr='A\+\(B-A\)\*\(0\.5\+1\*T\)'/)
+})
+
+test('the blend takes the OUTGOING branch as A and the INCOMING one as B', async () => {
+  // Verified against ffmpeg, not assumed: `blend`'s first input is `A` (running
+  // `all_expr='A'` over a dark/light pair returns the dark, first one). So the
+  // outgoing clip must be the first label and `A+(B-A)*p` lands on A at p=0 and
+  // on B at p=1. Reverse the two labels and every transition plays backwards.
+  const { filterParts } = await encodeSegment(crossfadeSeg(3, 4), '/tmp/x.mp4', { _dryRun: true })
+  const graph = filterParts.join(';')
+  // The split feeds branch `a` first, and branch `a` is where the FROM item
+  // (input 1, `a.mov`) composites.
+  assert.match(graph, /\[canvas\]split=2\[xfa1\]\[xfb1\]/)
+  assert.match(graph, /\[xfa1\]\[vid1\]overlay=/, 'the FROM item composites onto branch a')
+  assert.match(graph, /\[xfb1\]\[vid2\]overlay=/, 'the TO item composites onto branch b')
+  assert.match(graph, /\[iv1\]\[iv2\]blend=/, 'outgoing item 1 must be A, incoming item 2 must be B')
+})
+
+test('the audio of a transitioning pair crossfades too', async () => {
+  const { filterParts } = await encodeSegment(crossfadeSeg(3, 4), '/tmp/x.mp4', { _dryRun: true })
+  const graph = filterParts.join(';')
+  // Full-span segment: p0 = 0, k = 1 -> the outgoing clip's `volume` ramps
+  // 1 -> 0 and the incoming clip's ramps 0 -> 1, both over this segment's own
+  // 1.0s `t`. NOT `afade`: see the fix's comment in encode-segment.js for why.
+  assert.match(graph, /volume='1-\(1\*t\)':eval=frame/)
+  assert.match(graph, /volume='1\*t':eval=frame/)
+  assert.doesNotMatch(graph, /afade=/)
+  // The fade shapes the item's OWN level, so amix then sums two complementary
+  // ramps — same construction as mix-audio.js's per-track fade.
+  assert.match(graph, /volume=1,volume='1-\(1\*t\)':eval=frame,aformat=/)
+  assert.match(graph, /volume=1,volume='1\*t':eval=frame,aformat=/)
+})
+
+test('a PARTIAL slice ramps AUDIO over its own sub-range too, not the full fade', async () => {
+  // The bug this pins: audio used `afade=t=out:st=0:d=<segment>`, which ignores
+  // p0 and jumps the outgoing clip back to full gain at every segment boundary
+  // inside a transition. Video ramped 0.5 -> 1 while audio ramped 1 -> 0.
+  const { filterParts } = await encodeSegment(crossfadeSeg(3.5, 4), '/tmp/x.mp4', { _dryRun: true })
+  const graph = filterParts.join(';')
+  assert.match(graph, /volume='1-\(0\.5\+1\*t\)':eval=frame/)   // outgoing: 0.5 -> 0
+  assert.match(graph, /volume='0\.5\+1\*t':eval=frame/)          // incoming: 0.5 -> 1
+  assert.doesNotMatch(graph, /afade=/)
+})
+
+test('a segment with NO transition emits a byte-identical graph', async () => {
+  const nulled = crossfadeSeg(3, 4)
+  for (const it of nulled.items) it.crossfade = null
+  const absent = crossfadeSeg(3, 4)
+  for (const it of absent.items) delete it.crossfade
+
+  const withField = await encodeSegment(nulled, '/tmp/x.mp4', { _dryRun: true })
+  const without   = await encodeSegment(absent, '/tmp/x.mp4', { _dryRun: true })
+  assert.deepEqual(withField.filterParts, without.filterParts)
+  assert.deepEqual(withField.args, without.args)
+  // And neither builds a blend.
+  assert.doesNotMatch(withField.filterParts.join(';'), /split=2|blend=all_expr=/)
+})
+
+// ── THE REGRESSION GUARD: gate on PROGRESS, never on the field's presence ──
+//
+// These two are the reason `crossfadeIn` returns null unless `p1 > p0`, and
+// they are the only tests in this file that would catch a "simplification" back
+// to `if (item.crossfade)`. Every other test here passes under that null check.
+//
+// The trap is that `planSegments` hands every segment the SAME item objects
+// (`activeIn` "preserves input order and object identity"), so ONE item carries
+// its `crossfade` into every segment it is active in — not just the overlap.
+// The outgoing clip is active from t=0; the incoming one stays active until it
+// ends. Gate on the field being non-null and the outgoing clip gets an audio
+// ramp on every segment before the overlap begins, dying to silence seconds
+// early, and the incoming clip gets one long after it has arrived. The
+// span-plus-progress form is self-correcting at both ends: p0 === p1 === 0
+// before, p0 === p1 === 1 after, and neither is a transition.
+
+test('a segment BEFORE the span carries the field but fades nothing', async () => {
+  // The outgoing clip alone, three seconds ahead of its own transition.
+  const seg = crossfadeSeg(0, 3)
+  seg.items = [seg.items[0]]   // `b` is not active before t=3
+  const { filterParts } = await encodeSegment(seg, '/tmp/x.mp4', { _dryRun: true })
+  const graph = filterParts.join(';')
+  assert.match(graph, /\[1:a:0\]/, 'the clip must still contribute its audio')
+  assert.doesNotMatch(graph, /afade=|,volume='/, 'no fade before the overlap begins')
+  assert.doesNotMatch(graph, /split=2|blend=all_expr=/)
+})
+
+test('a segment AFTER the span carries the field but fades nothing', async () => {
+  // The incoming clip alone, after the overlap has finished. `b` runs to t=8,
+  // so it carries `crossfade` through four more seconds of segments.
+  const seg = crossfadeSeg(4, 8)
+  seg.items = [seg.items[1]]   // `a` ended at t=4
+  const { filterParts } = await encodeSegment(seg, '/tmp/x.mp4', { _dryRun: true })
+  const graph = filterParts.join(';')
+  assert.match(graph, /\[1:a:0\]/, 'the clip must still contribute its audio')
+  assert.doesNotMatch(graph, /afade=|,volume='/, 'no fade after the overlap has ended')
+  assert.doesNotMatch(graph, /split=2|blend=all_expr=/)
+})
+
+test('the graph outside the span is byte-identical to one with no crossfade at all', async () => {
+  // The strongest form of the guard: not merely "no afade", but that a
+  // crossfading clip's non-overlap segments are indistinguishable from the same
+  // clip in a project that has no transition anywhere.
+  for (const [label, [s, e], keep] of [['before', [0, 3], 0], ['after', [4, 8], 1]]) {
+    const withSpan = crossfadeSeg(s, e)
+    withSpan.items = [withSpan.items[keep]]
+    const without = crossfadeSeg(s, e)
+    without.items = [without.items[keep]]
+    delete without.items[0].crossfade
+
+    const a = await encodeSegment(withSpan, '/tmp/x.mp4', { _dryRun: true })
+    const b = await encodeSegment(without,  '/tmp/x.mp4', { _dryRun: true })
+    assert.deepEqual(a.filterParts, b.filterParts, `${label}: filter graph diverged`)
+    assert.deepEqual(a.args, b.args, `${label}: encoder args diverged`)
+  }
+})
+
+test('an opaque overlay still suppresses the picture — no blend is built under it', async () => {
+  const { filterParts } = await encodeSegment(
+    crossfadeSeg(3, 4, { opaqueVideo: true }), '/tmp/x.mp4', { _dryRun: true })
+  const graph = filterParts.join(';')
+  assert.doesNotMatch(graph, /blend=all_expr=/)
+  assert.doesNotMatch(graph, /split=2/)
+  assert.match(graph, /volume='1-\(1\*t\)':eval=frame/)   // audio still crossfades
+  assert.match(graph, /volume='1\*t':eval=frame/)
+})
+
+// ---------------------------------------------------------------------------
+// Matching the PARTNER — by span + track, never by array position
+// ---------------------------------------------------------------------------
+//
+// The pair's two halves do NOT arrive adjacent. `compose.js:69` merges as
+// `[...imageItems, ...videoItems]` and `planSegments` stable-sorts that by
+// `trackIdx` ONLY, so two clips sharing a track keep the images-before-videos
+// order that merge imposed (KNOWN-DIVERGENCES D7) — a video -> image transition
+// therefore hands the encoder the INCOMING item first. Anything that reads the
+// partner off `items[ii + 1]` blends the wrong pair, or no pair at all.
+
+/** Geometry every image item needs; the values are the resolver's identity. */
+const XF_IMG_GEO = { scale: 1, offsetX: 0, offsetY: 0, opacity: 1 }
+
+/** The outgoing VIDEO and incoming IMAGE of one pair, in compose's order. */
+function videoToImageSeg(start, end, patch = {}) {
+  return {
+    start, end, vw: 1080, vh: 1920, fps: 30, colorSpace: 'sdr_bt709',
+    overlays: [],
+    items: [
+      // Second in the document, FIRST in the array: it is the only image.
+      { id: 'b', type: 'image', src: '/b.png', start: 3, end: 8, trackIdx: 0,
+        ...XF_IMG_GEO, crossfade: { role: 'to', ...XF_SPAN } },
+      { id: 'a', type: 'video', src: '/a.mov', start: 0, end: 4, trackIdx: 0,
+        inPoint: 0, outPoint: 4, hasAudio: true,
+        crossfade: { role: 'from', ...XF_SPAN } },
+    ],
+    ...patch,
+  }
+}
+
+test('a video -> image pair blends even though compose hands over the image FIRST', async () => {
+  const { filterParts } = await encodeSegment(videoToImageSeg(3, 4), '/tmp/x.mp4', { _dryRun: true })
+  const graph = filterParts.join(';')
+  // The outgoing VIDEO opens the split and stays `A`, regardless of the order
+  // the two halves arrived in.
+  assert.match(graph, /\[canvas\]split=2\[xfa1\]\[xfb1\]/)
+  assert.match(graph, /\[xfa1\]\[vid1\]overlay=[^;]*\[iv1\]/, 'the outgoing VIDEO composites onto branch a')
+  assert.match(graph, /\[xfb1\]\[img2\]overlay=[^;]*\[iv2\]/, 'the incoming IMAGE composites onto branch b')
+  assert.match(graph, /\[iv1\]\[iv2\]blend=all_expr='A\+\(B-A\)\*\(1\*T\)'\[xf1\]/)
+})
+
+test('a video -> image pair ramps its audio in the same segment it blends', async () => {
+  // The divergence this pins is preview-vs-export: `sample-frame.js` and
+  // `OverlayItemsLayer.tsx` both crossfade this pair, so an export that
+  // hard-cut the picture while ducking the sound was wrong twice over.
+  const { filterParts } = await encodeSegment(videoToImageSeg(3, 4), '/tmp/x.mp4', { _dryRun: true })
+  const graph = filterParts.join(';')
+  assert.match(graph, /volume='1-\(1\*t\)':eval=frame/)
+  // The image carries no audio, so the outgoing ramp is the only one.
+  assert.match(graph, /blend=all_expr=/)
+})
+
+/** Two genuine pairs on two tracks, each ordered image-then-video by compose. */
+function twoTrackPairsSeg(start, end) {
+  return {
+    start, end, vw: 1080, vh: 1920, fps: 30, colorSpace: 'sdr_bt709',
+    overlays: [],
+    // As `[...imageItems, ...videoItems]` + a stable sort by trackIdx builds it:
+    // both images sort ahead of their own track's video, so `items[ii + 1]` for
+    // track 0's outgoing clip is track 1's INCOMING clip — a `to` that is mid
+    // transition and belongs to somebody else.
+    items: [
+      { id: 'b', type: 'image', src: '/b.png', start: 3, end: 8, trackIdx: 0,
+        ...XF_IMG_GEO, crossfade: { role: 'to', ...XF_SPAN } },
+      { id: 'a', type: 'video', src: '/a.mov', start: 0, end: 4, trackIdx: 0,
+        inPoint: 0, outPoint: 4, hasAudio: true,
+        crossfade: { role: 'from', ...XF_SPAN } },
+      { id: 'd', type: 'image', src: '/d.png', start: 3, end: 8, trackIdx: 1,
+        ...XF_IMG_GEO, crossfade: { role: 'to', ...XF_SPAN } },
+      { id: 'c', type: 'video', src: '/c.mov', start: 0, end: 4, trackIdx: 1,
+        inPoint: 0, outPoint: 4, hasAudio: true,
+        crossfade: { role: 'from', ...XF_SPAN } },
+    ],
+  }
+}
+
+test('a mid-transition item on ANOTHER track is never adopted as the partner', async () => {
+  const { filterParts } = await encodeSegment(twoTrackPairsSeg(3, 4), '/tmp/x.mp4', { _dryRun: true })
+  const graph = filterParts.join(';')
+  const blends = filterParts.filter(f => f.includes('blend=all_expr='))
+  assert.equal(blends.length, 2, 'one blend per pair — two pairs must never be conflated into one')
+  // Track 0's pair, blended around itself.
+  assert.match(graph, /\[canvas\]split=2\[xfa1\]\[xfb1\]/)
+  assert.match(graph, /\[xfa1\]\[vid1\]overlay=[^;]*\[iv1\]/)
+  assert.match(graph, /\[xfb1\]\[img2\]overlay=[^;]*\[iv2\]/)
+  assert.match(graph, /\[iv1\]\[iv2\]blend=all_expr='A\+\(B-A\)\*\(1\*T\)'\[xf1\]/)
+  // Track 1's pair, blended around itself, on top of track 0's finished frame.
+  assert.match(graph, /\[xf1\]split=2\[xfa3\]\[xfb3\]/)
+  assert.match(graph, /\[xfa3\]\[vid3\]overlay=[^;]*\[iv3\]/)
+  assert.match(graph, /\[xfb3\]\[img4\]overlay=[^;]*\[iv4\]/)
+  assert.match(graph, /\[iv3\]\[iv4\]blend=all_expr='A\+\(B-A\)\*\(1\*T\)'\[xf3\]/)
+  // And never the cross-track mix: track 0's outgoing clip against track 1's
+  // incoming one. Two items on different tracks are STACKED, not sequenced —
+  // blending them is meaningless, and it splits the canvas around the wrong
+  // picture. (render.js derives crossfades per track for exactly this reason.)
+  assert.doesNotMatch(graph, /\[iv1\]\[iv4\]blend=/)
+})
+
+test('a neighbour mid-transition on a DIFFERENT span is not the partner', async () => {
+  // Same track, both sides genuinely transitioning, spans that do not match:
+  // the span is the pair's identity (render.js stamps the same one on both
+  // halves), so this must not blend and must not ramp either clip's audio.
+  const seg = {
+    start: 3, end: 4, vw: 1080, vh: 1920, fps: 30, colorSpace: 'sdr_bt709',
+    overlays: [],
+    items: [
+      { id: 'a', type: 'video', src: '/a.mov', start: 0, end: 4, trackIdx: 0,
+        inPoint: 0, outPoint: 4, hasAudio: true,
+        crossfade: { role: 'from', start: 3, end: 4 } },
+      { id: 'z', type: 'video', src: '/z.mov', start: 2, end: 8, trackIdx: 0,
+        inPoint: 0, outPoint: 6, hasAudio: true,
+        crossfade: { role: 'to', start: 2, end: 4 } },
+    ],
+  }
+  const { filterParts } = await encodeSegment(seg, '/tmp/x.mp4', { _dryRun: true })
+  const graph = filterParts.join(';')
+  assert.doesNotMatch(graph, /split=2|blend=all_expr=/)
+  assert.doesNotMatch(graph, /:eval=frame/, 'no partner, so no audio ramp on either clip')
+})
+
+test('no partner found means no AUDIO ramp either', async () => {
+  // The outgoing clip alone, inside its own span, with nothing to blend into.
+  // The picture hard-cuts; the sound must hard-cut with it. Audio and video are
+  // never allowed to disagree about whether a transition is happening — the
+  // same invariant the partial-segment audio fix restored.
+  const seg = crossfadeSeg(3, 4)
+  seg.items = [seg.items[0]]
+  const { filterParts } = await encodeSegment(seg, '/tmp/x.mp4', { _dryRun: true })
+  const graph = filterParts.join(';')
+  assert.doesNotMatch(graph, /split=2|blend=all_expr=/)
+  assert.doesNotMatch(graph, /:eval=frame/)
+  assert.doesNotMatch(graph, /afade=/)
+  assert.match(graph, /\[1:a:0\]/, 'the clip still contributes its audio, at full level')
+})
+
+test('a lone INCOMING clip gets no audio ramp either', async () => {
+  const seg = crossfadeSeg(3, 4)
+  seg.items = [seg.items[1]]
+  const { filterParts } = await encodeSegment(seg, '/tmp/x.mp4', { _dryRun: true })
+  const graph = filterParts.join(';')
+  assert.doesNotMatch(graph, /split=2|blend=all_expr=/)
+  assert.doesNotMatch(graph, /:eval=frame/)
+})

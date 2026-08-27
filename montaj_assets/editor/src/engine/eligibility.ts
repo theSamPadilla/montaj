@@ -29,8 +29,9 @@
  * placeholder fallback rather than a whole-project revert) land in T6. This
  * module is the pure/async logic T6 calls into.
  */
+import { transitionPairs } from '@bycrux/timeline-core'
 import type { EditorProject as Project } from '../schema'
-import { trackItems } from '../video/timeline/timeline-model'
+import { enabledTrackItems, trackItems } from '../video/timeline/timeline-model'
 
 export interface EligibilityResult {
   eligible: boolean
@@ -137,4 +138,39 @@ export async function evaluateEngineEligibility(project: Project): Promise<Eligi
     }
   }
   return { eligible: true }
+}
+
+/**
+ * Does this project need the engine for a reason the LEGACY `<video>` player
+ * cannot serve on its own? Additive to the checks above — this is not part of
+ * `checkProjectShapeEligibility`/`evaluateEngineEligibility`'s eligibility
+ * verdict, it answers a different question ("is legacy playback wrong here",
+ * not "can the engine run this project").
+ *
+ * Today the only such reason is a CLIP (video/image) crossfade on the
+ * PRIMARY footage track (`tracks[0]`): the resolver stamps
+ * `ResolvedItem.crossfade` for clip pairs per `transitionPairs`
+ * (`@bycrux/timeline-core`, matching `activation.js`'s `crossfadesAt`), and
+ * both render and the engine's own preview blend it — but the legacy player
+ * mounts one `<video>` element per clip with no compositing stage, so it can
+ * only hard-cut. Clip pairs on an OVERLAY track are excluded, and not just
+ * because their fade is baked `opacity` keyframe data
+ * (`computeVisualCrossfade`, which the legacy player already renders
+ * correctly via the DOM/CSS layer): `OverlayItemsLayer` blends overlay clip
+ * pairs itself in legacy mode too, so there is nothing here the legacy path
+ * cannot already serve. A track-0-only check also means `transitionPairs`
+ * naturally short-circuits (needs 2+ items) so an empty or single-clip
+ * primary track costs nothing extra.
+ *
+ * Reads via `enabledTrackItems`, not `trackItems`: a `enabled: false` track's
+ * clips are invisible to every real blend consumer (preview, render), so an
+ * overlapping pair sitting on a skipped track must not raise this banner —
+ * there is no crossfade for the legacy player to fail at rendering.
+ */
+export function engineRequiredReason(project: Project): 'clip-crossfade' | null {
+  const primary = enabledTrackItems(project)[0] ?? []
+  const clips = primary.filter((item) => item.type === 'video' || item.type === 'image')
+  if (clips.length < 2) return null
+  if (transitionPairs(clips).length > 0) return 'clip-crossfade'
+  return null
 }

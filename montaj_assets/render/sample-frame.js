@@ -859,7 +859,48 @@ export async function sampleFrame({
           // reads the same static scalar the export does. Geometry — position,
           // scale, rotation — stays SAMPLED above, because the export animates
           // those now and the two agree.
-          opacity:  ri.item.opacity ?? 1,
+          //
+          // A TRANSITION is not an exception to that rule but another
+          // application of it (T12): the export genuinely blends a
+          // transitioning pair now (encode-segment.js's `blend` branch, T8),
+          // so a still caught mid-transition must show the blend too, or it
+          // would be lying about the one thing this whole file exists to get
+          // right.
+          //
+          // ONLY THE INCOMING SIDE RAMPS. The OUTGOING side keeps its own full
+          // opacity — factor 1, not `1-p`. That looks wrong and is not, and the
+          // reason is the compositing model:
+          //
+          //   - The EXPORT is a SPLIT-AND-LERP compositor. encode-segment.js
+          //     splits the running canvas, composites the outgoing item down one
+          //     branch and the incoming one down the other — each at its OWN
+          //     full opacity — and then lerps the two finished frames with
+          //     `blend=all_expr='A+(B-A)*p'`, i.e. `(1-p)*from + p*to`.
+          //   - THIS file is a SEQUENTIAL source-over compositor: each item is
+          //     layered onto the one running canvas in turn (the
+          //     buildImageItemFilterParts loop below). Painting `from` at 1 and
+          //     then `to` at alpha p gives exactly `p*to + (1-p)*from` — the
+          //     same lerp, reached by a different route.
+          //
+          // Feeding the symmetric `1-p` / `p` pair into a SEQUENTIAL stack does
+          // NOT reproduce the lerp; it yields
+          // `p*to + (1-p)^2*from + p(1-p)*bg`, which at p=0.5 lands the outgoing
+          // clip at QUARTER weight and leaks the background through the middle
+          // of the transition.
+          //
+          // The shared reference for the sequential form is
+          // `createCanvasPainter.paintBlend` (editor/src/engine/index.ts):
+          // `globalAlpha = 1` for `from`, then `globalAlpha = p` for `to`. The
+          // DOM preview (editor's video/preview/OverlayItemsLayer.tsx) is the
+          // same kind of compositor and reads the same factor. All three land on
+          // one picture. Do not "restore" the symmetric form here — it is the
+          // obvious-looking wrong answer for this compositor.
+          //
+          // `ri.crossfade` is CLIPS-ONLY and already `null` outside an overlap
+          // (@bycrux/timeline-core/src/activation.js's `ItemCrossfade`), so the
+          // factor below is 1 — a no-op — everywhere this pin used to apply
+          // unconditionally.
+          opacity: (ri.item.opacity ?? 1) * (ri.crossfade?.role === 'to' ? ri.crossfade.p : 1),
           // TRAP: buildImageItemFilterParts defaults to 'cover' when fit is
           // omitted, which CROPS the frame to fill its box. Production video is
           // ALWAYS contain-fit — buildVideoItemFilterParts' own scale step uses

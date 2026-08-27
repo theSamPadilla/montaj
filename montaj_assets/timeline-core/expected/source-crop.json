@@ -56,7 +56,8 @@
               "sourceWidth": 1920,
               "sourceHeight": 1080,
               "rotation": 0
-            }
+            },
+            "crossfade": null
           }
         ]
       },
@@ -91,7 +92,8 @@
               "sourceWidth": 1920,
               "sourceHeight": 1080,
               "rotation": 0
-            }
+            },
+            "crossfade": null
           }
         ]
       },
@@ -136,7 +138,8 @@
               "sourceWidth": 1920,
               "sourceHeight": 1080,
               "rotation": 0
-            }
+            },
+            "crossfade": null
           }
         ]
       },
@@ -171,7 +174,8 @@
               "sourceWidth": 1920,
               "sourceHeight": 1080,
               "rotation": 0
-            }
+            },
+            "crossfade": null
           }
         ]
       },
@@ -222,7 +226,8 @@
                 "sourceWidth": 1920,
                 "sourceHeight": 1080,
                 "rotation": 0
-              }
+              },
+              "crossfade": null
             }
           ]
         }

@@ -420,8 +420,13 @@ def validate_project(path):
 
             if i == 0:
                 # Primary track: items must be type "video" with start/end.
-                # Overlap is intentionally NOT checked here — primary clips can overlap
-                # on the timeline; compose.js handles rendering order via itsoffset.
+                # CONTAINMENT is intentionally NOT checked here — primary clips can
+                # overlap on the timeline; compose.js handles rendering order via
+                # itsoffset. THREE-OR-MORE-LIVE *is* checked below, shared with
+                # overlay tracks: `activation.js`'s `crossfadesAt` models an overlap
+                # as a PAIR (`out.set(pair.from, ...)` / `out.set(pair.to, ...)`), and
+                # a three-way overlap on track 0 breaks that pair model exactly the
+                # way it does on an overlay track — see the shared check below.
                 for item in items:
                     for field in PRIMARY_CLIP_REQUIRED:
                         if field not in item:
@@ -434,23 +439,79 @@ def validate_project(path):
                         # the agent fills real values after probing the source file.
                         if not (s == 0.0 and e == 0.0) and e < s:
                             fail("invalid_field", f"tracks[0] item '{item.get('id', '?')}': end ({e}) < start ({s})")
+                sorted_items = sorted(items, key=lambda x: (x.get("start", 0), x.get("end", 0)))
             else:
-                # Overlay tracks: standard visual item validation + overlap check
-                sorted_items = sorted(items, key=lambda x: x.get("start", 0))
-                prev_end = None
+                # Overlay tracks: standard visual item validation + bounded-overlap check.
+                #
+                # Overlap is no longer forbidden outright. A partial overlap between two
+                # neighbours is how a crossfade is expressed (see docs/schemas/project.md,
+                # "Transitions"), and rejecting it made the validator stricter than the
+                # editor, whose drag rule (`resolveTargetTrackIdx`, overlapMin = 30% of the
+                # dragged item's duration) has always permitted a small overlap. Two cases
+                # remain errors because neither can be a transition:
+                #
+                #   1. CONTAINMENT — one item's span swallows the other's. There is no
+                #      "from" and "to" to blend between; the inner item is simply buried.
+                #      Identical spans are mutual containment and are caught here too.
+                #      Overlay-tracks-only: track 0 stays exempt, see the `i == 0`
+                #      branch above.
+                #   2. THREE OR MORE LIVE AT ONE INSTANT — a transition is a pair. Three
+                #      overlapping items is the authoring mistake this check was written
+                #      to catch, and it survives. Shared with track 0 below.
+                #
+                # The error code stays `visual_track_overlap` so existing consumers of it
+                # keep working.
+                sorted_items = sorted(items, key=lambda x: (x.get("start", 0), x.get("end", 0)))
                 for item in sorted_items:
                     for field in VISUAL_ITEM_REQUIRED:
                         if field not in item:
                             fail("missing_field", f"tracks[{i}] item missing required field '{field}': {item.get('id', '?')}")
                     if "opaque" in item and not isinstance(item["opaque"], bool):
                         fail("invalid_field", f"Visual item '{item['id']}': 'opaque' must be boolean")
-                    if prev_end is not None and item["start"] < prev_end:
+
+                for a_idx, a in enumerate(sorted_items):
+                    for b in sorted_items[a_idx + 1:]:
+                        if b["start"] >= a["end"]:
+                            break  # sorted by start: nothing further can overlap `a`
+                        # Containment is tested BOTH ways round, because `a` is not
+                        # reliably the outer item. Two items sharing a start sort by
+                        # `end` ascending, which puts the SHORTER — the contained —
+                        # one first: an `a`-contains-`b` test alone reads (0,3) then
+                        # (0,9), finds 3 >= 9 false, and lets a buried overlay pass.
+                        # The 3-live check below does not cover it either (only two
+                        # items are live). Identical spans satisfy both directions.
+                        if a["start"] <= b["start"] and a["end"] >= b["end"]:
+                            outer, inner = a, b
+                        elif b["start"] <= a["start"] and b["end"] >= a["end"]:
+                            outer, inner = b, a
+                        else:
+                            continue
                         fail(
                             "visual_track_overlap",
-                            f"Overlap in tracks[{i}]: item '{item['id']}' starts at {item['start']} "
-                            f"but previous item ends at {prev_end}"
+                            f"Overlap in tracks[{i}]: item '{inner['id']}' ({inner['start']}-{inner['end']}) is "
+                            f"fully contained by '{outer['id']}' ({outer['start']}-{outer['end']}). A partial "
+                            f"overlap is a transition; containment is not."
                         )
-                    prev_end = item["end"]
+
+            # Three-or-more live at one instant. Applies to EVERY track, track 0
+            # included: containment is exempt there (primary clips can overlap by
+            # design), but a three-way overlap still breaks the pair model
+            # `activation.js`'s `crossfadesAt` and `transitions.js`'s
+            # `transitionPairs` are built on — a THIRD clip live at the same
+            # instant has nowhere to go in a `from`/`to` pair, and (pre-fix)
+            # silently lost its blend on whichever pair got overwritten last.
+            # Every start is a candidate instant: the live count can only rise at
+            # a start, so checking starts is exhaustive.
+            for probe in sorted_items:
+                t = probe["start"]
+                live = [x for x in sorted_items if x["start"] <= t < x["end"]]
+                if len(live) > 2:
+                    names = ", ".join(f"'{x['id']}'" for x in live)
+                    fail(
+                        "visual_track_overlap",
+                        f"Overlap in tracks[{i}]: {len(live)} items are live at t={t} ({names}). "
+                        f"A transition is a pair; put the extra item on its own track."
+                    )
 
         _validate_clip_extensions(data, os.path.dirname(os.path.abspath(path)))
         _validate_audio_tracks(data)

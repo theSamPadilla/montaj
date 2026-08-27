@@ -15,7 +15,7 @@
  * here is which surface mounts, not what it paints.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { render, waitFor } from '@testing-library/react'
+import { render, screen, waitFor } from '@testing-library/react'
 import PreviewPlayer from '../PreviewPlayer'
 import { createPlaybackClock } from '../../playback-clock'
 import { __setEngineCapabilityForTests } from '../../../engine/eligibility'
@@ -45,6 +45,27 @@ function makeProject(clipOverrides: Record<string, unknown> = {}): Project {
     status: 'draft',
     settings: { resolution: [1080, 1920], fps: 30 },
     tracks: [[{ id: 'c0', type: 'video', src: 'a.mp4', start: 0, end: 4, ...clipOverrides }]],
+  } as unknown as Project
+}
+
+/**
+ * Two overlapping track-0 video clips — c1 starts (3) before c0 ends (5) and
+ * does not contain it, a real `transitionPairs()` pair per
+ * `engineRequiredReason`'s test in eligibility.test.ts. `withProxy` controls
+ * whether the pair is also engine-shape-eligible, so the same fixture serves
+ * both the "still building proxies" legacy case and the "engine running"
+ * case.
+ */
+function makeCrossfadeProject(withProxy: boolean): Project {
+  const proxy = withProxy ? { proxySrc: 'proxy.mp4' } : {}
+  return {
+    id: withProxy ? 'p-crossfade-proxy' : 'p-crossfade-no-proxy',
+    status: 'draft',
+    settings: { resolution: [1080, 1920], fps: 30 },
+    tracks: [[
+      { id: 'c0', type: 'video', src: 'a.mp4', start: 0, end: 5, ...proxy },
+      { id: 'c1', type: 'video', src: 'b.mp4', start: 3, end: 8, ...proxy },
+    ]],
   } as unknown as Project
 }
 
@@ -135,5 +156,32 @@ describe('PreviewPlayer engine branch', () => {
     // over it, unchanged.
     expect(root.querySelectorAll('div.absolute.inset-0.cursor-pointer')).toHaveLength(1)
     expect(root.querySelectorAll('svg')).toHaveLength(1)
+  })
+})
+
+describe('PreviewPlayer legacy crossfade banner (Task 10b)', () => {
+  it('warns that crossfades are missing when a crossfading project falls back to legacy', async () => {
+    // No proxySrc => shape-ineligible => legacy player, which cannot blend.
+    renderPreview(makeCrossfadeProject(false))
+    await screen.findByText(/crossfades will not appear/i)
+  })
+
+  it('shows no such warning when the engine is running', async () => {
+    __setEngineCapabilityForTests(true)
+    renderPreview(makeCrossfadeProject(true), { enabled: true })
+
+    // Wait for the engine to actually take over (canvas mounted, legacy
+    // <video> slots gone) before asserting the banner's absence — otherwise
+    // the assertion could pass trivially on the pre-decision render.
+    await waitFor(() => expect(document.querySelector('canvas')).not.toBeNull())
+    expect(screen.queryByText(/crossfades will not appear/i)).toBeNull()
+  })
+
+  it('shows no such warning on a legacy project that has no crossfade', () => {
+    // A single track-0 clip: engineRequiredReason is trivially null
+    // (transitionPairs needs 2+ items), and the flag is absent so this is
+    // legacy synchronously, same as the "flag absent" test above.
+    renderPreview(makeProject())
+    expect(screen.queryByText(/crossfades will not appear/i)).toBeNull()
   })
 })

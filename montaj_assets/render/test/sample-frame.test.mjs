@@ -155,6 +155,49 @@ function makeSyntheticFixture(dir, opts = {}) {
 }
 
 /**
+ * Two solid, fully-opaque clips on ONE track that OVERLAP by 1s — clip-a
+ * [0,4), clip-b [3,7). `crossfadesAt` (@bycrux/timeline-core/src/activation.js)
+ * derives a transition straight from that overlap; no explicit transition
+ * field is needed. Distinct primaries with no source alpha channel, so a
+ * still sampled inside [3,4) proves the ACTUAL blend factor was applied, not
+ * merely that ffmpeg produced a frame: an unfixed sampler shows plain blue
+ * there (clip-b's static opacity 1, fully covering clip-a), while a fixed one
+ * shows both colors mixed at the pair's progress.
+ *
+ * No overlay track — this exercises the video-item path only, so it runs
+ * without Puppeteer.
+ *
+ * @param {string} dir
+ * @returns {{ project: object } | null} `null` when ffmpeg couldn't
+ *   synthesize the sources — see `makeSyntheticFixture`'s note above.
+ */
+function makeOverlappingClipsFixture(dir) {
+  const clipARaw = join(dir, 'clip-a.mp4')
+  const clipBRaw = join(dir, 'clip-b.mp4')
+  for (const [color, out] of [['red', clipARaw], ['blue', clipBRaw]]) {
+    const r = spawnSync('ffmpeg', [
+      '-y', '-f', 'lavfi', '-i', `color=c=${color}:size=480x854:rate=30:duration=8`,
+      '-pix_fmt', 'yuv420p', out,
+    ], { encoding: 'utf8', timeout: 15_000 })
+    if (r.status !== 0) return null
+  }
+  const project = {
+    version: '0.2',
+    status: 'final',
+    name: 'crossfade-sample-fixture',
+    settings: { resolution: [480, 854], fps: 30, colorSpace: 'sdr_bt709' },
+    tracks: [
+      [
+        { id: 'clip-a', type: 'video', src: clipARaw, start: 0, end: 4, inPoint: 0 },
+        { id: 'clip-b', type: 'video', src: clipBRaw, start: 3, end: 7, inPoint: 0 },
+      ],
+    ],
+    audio: { tracks: [] },
+  }
+  return { project }
+}
+
+/**
  * Write a minimal JSX that paints a solid, fully-opaque field over the whole
  * canvas plus a text run. Used by (a) to assert sampleOverlay emits a PNG with
  * genuinely non-zero pixels — a transparent overlay would still produce a valid
@@ -1222,3 +1265,82 @@ test('(v) sample-frame\'s overlay descriptor never carries `keyframes`', () => {
     'spreading would leak keyframes (and anything else added to the item later) '
     + 'onto the descriptor')
 })
+
+// ---------------------------------------------------------------------------
+// (w)-(x) T12: the still-frame sampler honours clip crossfades
+// ---------------------------------------------------------------------------
+test('(w) a still frame inside a clip transition composites both sides at their blend alphas',
+  { timeout: 60_000 }, async (t) => {
+    const dir = mkdtempSync(join(tmpdir(), 'montaj-sf-test-w-'))
+    try {
+      const fixture = makeOverlappingClipsFixture(dir)
+      if (!fixture) { t.skip('ffmpeg synthetic source generation failed'); return }
+
+      const outPath = join(dir, 'frame.png')
+      // 3.5s is the midpoint of the pair's [3,4) overlap — p=0.5, so the
+      // finished picture must be a 50/50 mix of the two clips.
+      await sampleFrame({ projectJson: fixture.project, atSeconds: 3.5, outPath })
+
+      const dims = pngDimensions(outPath)
+      assert.ok(dims, 'should be readable PNG')
+      const { r, g, b, a } = readPixelRgba(outPath, dims.w >> 1, dims.h >> 1)
+
+      // What the EXPORT produces for this fixture at this instant, and therefore
+      // the only correct answer here: encode-segment.js composites solid red
+      // over black down one branch and solid blue over black down the other,
+      // then lerps them with `A+(B-A)*0.5` — (128, 0, 128).
+      //
+      // sample-frame is a SEQUENTIAL source-over compositor, so it reaches the
+      // same pixel a different way: red painted at factor 1, then blue painted
+      // at alpha p=0.5 over it — `0.5*blue + 0.5*red`. Hence BOTH channels at
+      // ~128, and hence the outgoing side is NOT scaled by `1-p`.
+      //
+      // The old expectation here was r ≈ 64 (255*0.5*0.5), and it was WRONG: it
+      // pinned the symmetric `1-p`/`p` factors, which in a sequential stack give
+      // `p*to + (1-p)^2*from + p(1-p)*bg` — the outgoing clip at quarter weight
+      // with black leaking through. It passed only because it was written
+      // against the same mistaken model as the code. Do not widen these bands
+      // back down toward 64.
+      assert.ok(r > 105 && r < 150,
+        `expected clip-a at half weight (~128), got r=${r}`)
+      assert.ok(b > 105 && b < 150,
+        `expected clip-b at half weight (~128), got b=${b}`)
+      assert.equal(g, 0, 'neither source color has a green component')
+      assert.equal(a, 255, 'the still frame itself carries no alpha channel')
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+test('(x) a still frame outside a transition reads the STATIC opacity, unchanged',
+  { timeout: 120_000 }, async (t) => {
+    const dir = mkdtempSync(join(tmpdir(), 'montaj-sf-test-x-'))
+    try {
+      const fixture = makeSyntheticFixture(dir)
+      if (!fixture) { t.skip('ffmpeg synthetic source generation failed'); return }
+
+      // clip-0 [0,3) and clip-1 [3,6) are butt-joined, not overlapping —
+      // `transitionPairs`' own `start >= end` guard treats that as no
+      // transition at all, so clip-0's `crossfade` is null the whole way
+      // through. Give it a static opacity and sample well inside its span:
+      // the SP9d rule (a clip's opacity CURVE is unreachable by ffmpeg) still
+      // applies, and T12's transition factor must default to 1 with no
+      // crossfade in play, so this must read exactly as it always has.
+      fixture.project.tracks[0][0].opacity = 0.4
+
+      const outPath = join(dir, 'frame.png')
+      await sampleFrame({ projectJson: fixture.project, atSeconds: 1.5, outPath })
+
+      const dims = pngDimensions(outPath)
+      assert.ok(dims, 'should be readable PNG')
+      const { r, g, b } = readPixelRgba(outPath, dims.w >> 1, dims.h >> 1)
+
+      // Solid red at opacity 0.4 over an opaque black canvas: r ≈ 255*0.4 ≈ 102.
+      assert.ok(r > 85 && r < 120,
+        `expected static opacity 0.4 red over black (~102), got r=${r}`)
+      assert.equal(g, 0)
+      assert.equal(b, 0)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })

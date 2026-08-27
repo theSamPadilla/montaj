@@ -38,6 +38,7 @@ import { specFor, detectFromTransfer, DEFAULT_COLOR_SPACE } from './color-space.
 import { lutPath } from './look.js'
 import {
   geometryFor, geometryAt, toRotatedPixelBox, toPixelBox, compileTrackExprInfo,
+  transitionProgress,
 } from '@bycrux/timeline-core'
 
 const FFMPEG_TIMEOUT_MS = 600_000
@@ -942,6 +943,127 @@ function atempoChain(speed) {
 }
 
 /**
+ * How far through its crossfade this item is at BOTH ends of one segment, or
+ * null when it is not crossfading here.
+ *
+ * `item.crossfade` (stamped by render.js's collectAllItems) carries the PAIR'S
+ * SPAN in timeline seconds — `{ role, start, end }` — never a progress value,
+ * and the progress is derived here instead. That split is forced, not stylistic:
+ * `segment-plan.js`'s `activeIn` hands every segment the SAME item objects (it
+ * "preserves input order and object identity"), so one item is shared by every
+ * segment it is active in and a per-segment number has nowhere to live on it.
+ *
+ * Deriving it here is also what gates the fade correctly. The outgoing clip
+ * carries its `crossfade` through every earlier segment too, and `p0 === p1`
+ * there — so a segment sitting outside the span reads as "not transitioning"
+ * and emits exactly the graph it always did, rather than fading a clip to
+ * silence long before the overlap begins.
+ *
+ * @param {object} [item]
+ * @param {number} segStart
+ * @param {number} segEnd
+ * @returns {{ role: 'from' | 'to', p0: number, p1: number } | null}
+ */
+function crossfadeIn(item, segStart, segEnd) {
+  const cf = item?.crossfade
+  if (!cf) return null
+  const p0 = transitionProgress(cf, segStart)
+  const p1 = transitionProgress(cf, segEnd)
+  if (!(p1 > p0)) return null
+  return { role: cf.role, p0, p1 }
+}
+
+/**
+ * Match every outgoing item with the incoming one it is actually paired with,
+ * and return the items reordered so each matched partner sits IMMEDIATELY
+ * AFTER its own outgoing item.
+ *
+ * ── WHY THIS EXISTS: THE TWO HALVES DO NOT ARRIVE ADJACENT ─────────────────
+ *
+ * They do not even arrive in document order. `compose.js` merges its two
+ * collections as `[...imageItems, ...videoItems]` and `planSegments`
+ * stable-sorts that by `trackIdx` ONLY, so two clips sharing a track keep the
+ * images-before-videos order the merge imposed (KNOWN-DIVERGENCES D7). A
+ * video → image transition therefore reaches the encoder with the INCOMING
+ * item FIRST. Read the partner off `items[ii + 1]` and that pair finds no
+ * incoming item at all: the export hard-cuts while the preview,
+ * `sample-frame.js` and the audio ramp all crossfade. Worse, when some
+ * unrelated item happens to sit at `ii + 1` — the incoming half of a DIFFERENT
+ * pair, on a different track — position-matching adopts it and splits the
+ * canvas around a pair that does not exist.
+ *
+ * ── WHAT IDENTIFIES A PAIR: THE SPAN, PLUS THE TRACK ───────────────────────
+ *
+ * `render.js` stamps the identical `{ start, end }` on both halves as it walks
+ * `transitionPairs`, so the span is the pair's NAME — the one fact both sides
+ * share and nobody else does. The track is the other half of the rule because
+ * crossfades are derived PER TRACK: two items on different tracks are stacked,
+ * not sequenced, so blending them is meaningless even when their spans
+ * coincide (which, for two transitions running at the same instant, they do).
+ * Array position identifies nothing at all.
+ *
+ * The search runs over the WHOLE array rather than forward from the outgoing
+ * item, because in front of it is exactly where the partner is most often
+ * found — see the merge order above.
+ *
+ * ── REORDERING IS SAFE FOR Z-ORDER ─────────────────────────────────────────
+ *
+ * `planSegments` hands this an array already sorted ascending by `trackIdx`,
+ * and a pair shares a track, so every item BETWEEN the two halves shares that
+ * track too. The permutation is contained inside a single track's group —
+ * where the order was already the arbitrary images-then-videos artifact of the
+ * merge and never a meaningful z-order. Nothing moves across tracks, so the
+ * layering the segment renders is untouched. Reordering here (rather than
+ * matching at the branch) is also what keeps the compositing correct when a
+ * third item on the same track sits between the two halves: it would otherwise
+ * composite onto ONE branch of the split and vanish from the other.
+ *
+ * @param {object[]} items — one segment's visual items, trackIdx-ascending
+ * @param {number} segStart
+ * @param {number} segEnd
+ * @returns {{ items: object[], partnerOf: Map<object, object>, paired: Set<object> }}
+ *   `partnerOf` is keyed by outgoing item; `paired` holds BOTH halves of every
+ *   matched pair, and is what gates the audio ramp.
+ */
+function matchCrossfadePairs(items, segStart, segEnd) {
+  const partnerOf = new Map()
+  const paired = new Set()
+  for (const from of items) {
+    if (crossfadeIn(from, segStart, segEnd)?.role !== 'from') continue
+    const span = from.crossfade
+    // `!paired.has(c)` keeps two simultaneous transitions from claiming the
+    // same incoming item; missing trackIdx reads as 0, matching timeline-core's
+    // `byTrackIdx` (segment-plan.js's sort comparator).
+    const to = items.find((c) =>
+      !paired.has(c) &&
+      (c.trackIdx ?? 0) === (from.trackIdx ?? 0) &&
+      c.crossfade?.start === span.start &&
+      c.crossfade?.end === span.end &&
+      crossfadeIn(c, segStart, segEnd)?.role === 'to')
+    if (!to) continue
+    partnerOf.set(from, to)
+    paired.add(from)
+    paired.add(to)
+  }
+  // The overwhelmingly common case: nothing is transitioning here. Return the
+  // caller's own array so a segment with no pair is byte-identical to one from
+  // a project that has no transition anywhere.
+  if (partnerOf.size === 0) return { items, partnerOf, paired }
+
+  // Stable: every item keeps its place except a matched incoming one, which is
+  // lifted out and re-inserted directly behind its own outgoing item.
+  const lifted = new Set(partnerOf.values())
+  const ordered = []
+  for (const item of items) {
+    if (lifted.has(item)) continue
+    ordered.push(item)
+    const to = partnerOf.get(item)
+    if (to) ordered.push(to)
+  }
+  return { items: ordered, partnerOf, paired }
+}
+
+/**
  * @param {object} segment — from planSegments(); may carry a colorSpace key
  *   (project working color space). Defaults to sdr_bt709 when missing.
  * @param {string} outputPath
@@ -952,7 +1074,12 @@ function atempoChain(speed) {
  * @returns {string | object} outputPath, or dry-run result
  */
 export async function encodeSegment(segment, outputPath, opts = {}) {
-  const { start, end, items, overlays, vw, vh, fps } = segment
+  const { start, end, overlays, vw, vh, fps } = segment
+  // Pair up the crossfading items BEFORE anything is emitted. `items` is the
+  // reordered array from here down, so every "the incoming item follows the
+  // outgoing one" assumption below is true by construction rather than by
+  // luck — see matchCrossfadePairs for why the raw order cannot be trusted.
+  const { items, partnerOf, paired } = matchCrossfadePairs(segment.items, start, end)
   // When an opaque overlay covers this segment, the overlay replaces the frame
   // but the underlying items still contribute their AUDIO. opaqueVideo gates the
   // VIDEO compositing of items only — never their audio. Defaults to false so
@@ -985,9 +1112,58 @@ export async function encodeSegment(segment, outputPath, opts = {}) {
   inputIdx++
 
   // --- Step 2: Visual items layered in trackIdx order (lower = background) ---
+  // The half-built crossfade, live only between the outgoing item and its
+  // matched partner — which the pre-pass has already placed immediately after
+  // it. Carries that partner so the blend closes on the item it opened for and
+  // not merely on the next `to` to come along. Null everywhere else.
+  let pendingBlend = null
   for (let ii = 0; ii < items.length; ii++) {
     const item = items[ii]
     const idx  = inputIdx
+
+    // ── Clip crossfade ──────────────────────────────────────────────────
+    //
+    // Split the running canvas, composite the OUTGOING item down one branch
+    // and the INCOMING one down the other, then blend the two finished frames.
+    //
+    // Blending the composited FRAMES (rather than alpha-ramping the incoming
+    // item's layer) is what makes this exact: both branches share the same
+    // background, so the background cancels out of the mix and what is left is
+    // a straight lerp between the two pictures — no dip toward black, and it
+    // works whether the items are full-frame or small boxes.
+    //
+    // `blend` and not `xfade`: xfade can only run a full 0->1 ramp, and a
+    // segment gets a PARTIAL slice of the span whenever an overlay or caption
+    // boundary lands strictly inside the overlap. `blend`'s all_expr takes the
+    // sub-range directly, so there is one code path and no boundary surgery.
+    // Its per-pixel cost was measured before this was committed — see the
+    // plan's Spike Results.
+    //
+    // Do NOT "optimize" this to xfade later on its headline 1.10-1.12x. That
+    // number is not one cheap filter: xfade refuses 4:2:0 and forces
+    // yuva420p -> yuva444p on BOTH branches plus one conversion back to
+    // yuv420p10le — three extra full-frame conversions this path never incurs
+    // — and it still cannot express a partial ramp, which is the whole reason
+    // the design does not use it.
+    //
+    // Colour: each branch has already been through its own per-item conversion
+    // inside buildVideoItemFilterParts, so both sides are in the project's
+    // working colour space by the time they meet here. Blending BEFORE that
+    // conversion would mix two different transfer curves.
+    //
+    // The partner is the one `matchCrossfadePairs` matched by SPAN + TRACK, not
+    // whatever sits at `items[ii + 1]`. The two halves reach this loop in an
+    // order that is neither document order nor adjacency (compose merges
+    // `[...imageItems, ...videoItems]`, sorted by trackIdx only), so a
+    // positional read blends the wrong pair or no pair at all — the full
+    // argument is on that function.
+    const xf = crossfadeIn(item, start, end)
+    const opensCrossfade = !opaqueVideo && partnerOf.has(item)
+    if (opensCrossfade) {
+      filterParts.push(`${videoLabel}split=2[xfa${idx}][xfb${idx}]`)
+      pendingBlend = { idx, p0: xf.p0, p1: xf.p1, fromOut: null, to: partnerOf.get(item) }
+      videoLabel = `[xfa${idx}]`
+    }
 
     if (isImageItem(item)) {
       // Under an opaque overlay the frame is fully covered and images carry no
@@ -1060,12 +1236,88 @@ export async function encodeSegment(segment, outputPath, opts = {}) {
         // produces.
         const speed = item.speed
         const hasSpeed = speed != null && speed !== 1
+        // The picture crossfades; the sound must too, or the overlap plays both
+        // clips at full level. Same shape as mix-audio.js's per-track fade, and
+        // it runs even under an opaque overlay — opaque replaces the picture,
+        // never the voiceover.
+        //
+        // NOT `afade`: a segment gets a PARTIAL slice of the transition span
+        // whenever an overlay or caption boundary lands strictly inside the
+        // overlap (same reason the video ramp above uses `blend` and not
+        // `xfade`), and `afade` cannot express a partial ramp — it anchors the
+        // fade at `st=0` and rejects a negative `st` outright (verified:
+        // "Value -0.500000 for parameter 'st' out of range"), so there is no
+        // way to tell it "this segment's slice of the fade already began
+        // before t=0". Instead this mirrors the video's own `p0 + k*T` ramp
+        // (see `prog` above) with a `volume` time expression: `afade`'s
+        // default curve is `tri` (linear), so this produces the identical
+        // ramp `afade` did for the old full-span case and the correct
+        // sub-range ramp for a partial one.
+        //
+        // Placed after `volume` and before `aformat` so it shapes the item's own
+        // level and the existing `amix` then sums two complementary ramps. After
+        // `atempoChain` too, on the sped-up branch: by that point the audio has
+        // already been time-compressed back to `duration` output seconds, which
+        // is the clock this expression's `t` is measured in.
+        //
+        // Gated on the PAIR, not on this item's own `crossfade` field: an item
+        // whose partner could not be matched is not transitioning, whatever its
+        // field says, and its picture hard-cuts. Duck its sound anyway and the
+        // two disagree about whether a transition is happening — the same fault
+        // the partial-segment ramp above fixes, in a different direction (there
+        // the ramp had the wrong SHAPE; here it should not exist at all). Note
+        // this is the pair and NOT `opensCrossfade`: an opaque overlay replaces
+        // the picture, so the blend is skipped while the voiceover underneath
+        // still crossfades, and `paired` is deliberately blind to that flag.
+        let fade = ''
+        if (xf && paired.has(item)) {
+          const k = (xf.p1 - xf.p0) / duration
+          const aprog = xf.p0 === 0 ? `${k}*t` : `${xf.p0}+${k}*t`
+          fade = xf.role === 'from'
+            ? `,volume='1-(${aprog})':eval=frame`
+            : `,volume='${aprog}':eval=frame`
+        }
         const audioFilter = hasSpeed
-          ? `[${idx}:a:0]atrim=0:${duration * speed},asetpts=PTS-STARTPTS,${atempoChain(speed)},volume=${vol},aformat=channel_layouts=stereo:sample_rates=48000[${aLabel}]`
-          : `[${idx}:a:0]atrim=0:${duration},asetpts=PTS-STARTPTS,volume=${vol},aformat=channel_layouts=stereo:sample_rates=48000[${aLabel}]`
+          ? `[${idx}:a:0]atrim=0:${duration * speed},asetpts=PTS-STARTPTS,${atempoChain(speed)},volume=${vol}${fade},aformat=channel_layouts=stereo:sample_rates=48000[${aLabel}]`
+          : `[${idx}:a:0]atrim=0:${duration},asetpts=PTS-STARTPTS,volume=${vol}${fade},aformat=channel_layouts=stereo:sample_rates=48000[${aLabel}]`
         filterParts.push(audioFilter)
         audioLabels.push(`[${aLabel}]`)
       }
+    }
+
+    if (opensCrossfade) {
+      // Park the outgoing branch's finished frame and send the incoming item
+      // down the other half of the split.
+      pendingBlend.fromOut = videoLabel
+      videoLabel = `[xfb${pendingBlend.idx}]`
+    } else if (pendingBlend?.to === item) {
+      // Closes on the MATCHED partner by identity — not on the next item that
+      // happens to be a `to`. The pre-pass has already made these the same item,
+      // and keeping the identity check means a future change to the ordering
+      // cannot silently resurrect the cross-track mismatch.
+      //
+      // ── The EXPRESSION FORM IS LOAD-BEARING (measured, Task 1) ───────────
+      //
+      // Emit `A+(B-A)*p`, NEVER the algebraically identical `A*(1-p)+B*p`.
+      // On a real 4K HDR overlap segment the literal form costs 1.86-2.01x the
+      // hard-cut baseline — straddling this feature's 2x gate — while the folded
+      // form costs 1.35-1.49x and produces BYTE-IDENTICAL output (verified
+      // per-pixel over the whole 8.3 MP frame: max|diff| = 0). `blend` evaluates
+      // all_expr per pixel per plane, so one fewer multiply and one fewer
+      // subtract per pixel is worth ~0.5x of baseline. Fold the coefficients in
+      // JS at graph-build time; do not make ffmpeg do arithmetic it can't hoist.
+      //
+      // `A` is the FIRST input — verified against ffmpeg, not assumed — so the
+      // outgoing branch goes first and the expression lands on it at p=0 and on
+      // the incoming one at p=1.
+      const { idx: xfIdx, p0, p1, fromOut } = pendingBlend
+      // p(T) = p0 + k*T over this segment's own clock. The p0 === 0 case (the
+      // common one — a segment covering the whole overlap) drops a term.
+      const k = (p1 - p0) / duration
+      const prog = p0 === 0 ? `${k}*T` : `${p0}+${k}*T`
+      filterParts.push(`${fromOut}${videoLabel}blend=all_expr='A+(B-A)*(${prog})'[xf${xfIdx}]`)
+      videoLabel = `[xf${xfIdx}]`
+      pendingBlend = null
     }
     inputIdx++
   }

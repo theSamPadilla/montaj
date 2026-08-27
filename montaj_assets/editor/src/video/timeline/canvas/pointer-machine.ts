@@ -637,6 +637,23 @@ function adjacentOnTrack(project: Project, item: VisualItem): { prev?: VisualIte
   }
 }
 
+/** `adjacentOnTrack`'s twin for trim's containment guard — the nearest item
+ *  in either direction on `item`'s own track, WHETHER OR NOT it touches.
+ *  Roll needs a shared boundary to move (that's what it's rolling); a trim's
+ *  containment guard needs the nearest neighbour regardless, because the
+ *  overlap it is bounding is exactly the case where the two are no longer
+ *  touching. */
+function neighboursOnTrack(project: Project, item: VisualItem): { prev?: VisualItem; next?: VisualItem } {
+  const track = trackItems(project).find(t => t.some(other => other.id === item.id))
+  if (!track) return {}
+  const sorted = [...track].sort((a, b) => a.start - b.start)
+  const pos = sorted.findIndex(other => other.id === item.id)
+  return {
+    prev: pos > 0 ? sorted[pos - 1] : undefined,
+    next: pos >= 0 && pos < sorted.length - 1 ? sorted[pos + 1] : undefined,
+  }
+}
+
 /** Where a guide line goes, and how hard the magnet holding it pulls. */
 export interface SnapGuide {
   time: number
@@ -854,7 +871,48 @@ function applyTrim(ctx: PointerContext, press: Press, point: Point, snap: SnapSt
     itemSnapPoints(ctx, press, [fixedEdge, ...originGuard(escaped, [initTime])]),
     ctx.viewport, snap, ctx.snapConfig,
   )
-  const resized = computeResizedItem(item as Draggable, edge, snapped.time)
+
+  // Overlay tracks (anything but tracks[0]) may trim an edge PAST a
+  // neighbour's near boundary — see transitions.js's header: a partial
+  // overlap is a transition, containment is not — but not far enough to
+  // contain the neighbour outright, which `engine/validate.py` rejects.
+  // tracks[0] gets none of this: its own overlap is never checked at all
+  // (primary clips render in `itsoffset` order), so its trim stays exactly
+  // as it was — bounded only by `computeResizedItem`'s own floor below.
+  // Clamped on the TARGET time, before `computeResizedItem` runs, so a
+  // clamp that lands short of the drag still produces a consistent
+  // inPoint/outPoint for video items via `resizeWindowedItem`, rather than
+  // trimming the span after the fact and leaving the source window stale.
+  let targetTime = snapped.time
+  if ((press.hit.trackIdx ?? 0) !== 0) {
+    const { prev, next } = neighboursOnTrack(press.baseProject, item)
+    if (edge === 'end' && next) {
+      targetTime = Math.min(targetTime, next.end - EPSILON)
+      // `next` may ALREADY overlap its own next neighbour (a transition that
+      // predates this drag). The clamp above only keeps this item from
+      // containing `next` outright — it says nothing about that second
+      // overlap, so extending into `next` can still land inside next∩afterNext
+      // and put three items live at the same instant, a shape the two-item
+      // containment guard allows but `engine/validate.py` rejects. Clamp
+      // short of that second neighbour's start whenever the overlap exists.
+      const { next: afterNext } = neighboursOnTrack(press.baseProject, next)
+      if (afterNext && afterNext.start < next.end) {
+        targetTime = Math.min(targetTime, afterNext.start - EPSILON)
+      }
+    }
+    if (edge === 'start' && prev) {
+      targetTime = Math.max(targetTime, prev.start + EPSILON)
+      // Mirror of the `end`-edge guard above: `prev` may already overlap ITS
+      // own previous neighbour, and shrinking this item's start into `prev`
+      // can land inside beforePrev∩prev, making three items live at once.
+      const { prev: beforePrev } = neighboursOnTrack(press.baseProject, prev)
+      if (beforePrev && beforePrev.end > prev.start) {
+        targetTime = Math.max(targetTime, beforePrev.end + EPSILON)
+      }
+    }
+  }
+
+  const resized = computeResizedItem(item as Draggable, edge, targetTime)
 
   // Trims always rebuild from the pressed-at project, never from the running
   // preview — otherwise ripple's gap collapse would compound move by move.

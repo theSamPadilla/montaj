@@ -1544,3 +1544,102 @@ describe('resolveSegment geometry: resolved at the SEGMENT start (documented, no
     closeTo(b.scale, 1)
   })
 })
+
+// ---------------------------------------------------------------------------
+// 8. crossfade — the per-track clip blend factor stamped on every ResolvedItem
+// ---------------------------------------------------------------------------
+
+test('a clip pair mid-transition carries transition on both items', () => {
+  const project = { tracks: [[
+    { id: 'a', type: 'video', src: 'a.mov', start: 0, end: 4 },
+    { id: 'b', type: 'video', src: 'b.mov', start: 3, end: 8 },
+  ]] }
+  const scene = resolveAt(project, 3.5, { variant: 'render' })
+  const byId = Object.fromEntries(scene.items.map(r => [r.item.id, r]))
+  assert.deepEqual(byId.a.crossfade, { role: 'from', p: 0.5 })
+  assert.deepEqual(byId.b.crossfade, { role: 'to', p: 0.5 })
+})
+
+test('crossfade is null outside the overlap', () => {
+  const project = { tracks: [[
+    { id: 'a', type: 'video', src: 'a.mov', start: 0, end: 4 },
+    { id: 'b', type: 'video', src: 'b.mov', start: 3, end: 8 },
+  ]] }
+  assert.equal(resolveAt(project, 1, { variant: 'render' }).items[0].crossfade, null)
+  assert.equal(resolveAt(project, 6, { variant: 'render' }).items[0].crossfade, null)
+})
+
+test('OVERLAYS never carry crossfade — their fade is keyframe data, not structure', () => {
+  const project = { tracks: [[], [
+    { id: 'a', type: 'overlay', src: 'A.jsx', start: 0, end: 4 },
+    { id: 'b', type: 'overlay', src: 'B.jsx', start: 3, end: 8 },
+  ]] }
+  for (const r of resolveAt(project, 3.5, { variant: 'render' }).items) {
+    assert.equal(r.crossfade, null)
+  }
+})
+
+test('crossfade is computed per TRACK — items on different tracks never pair', () => {
+  const project = { tracks: [
+    [{ id: 'a', type: 'video', src: 'a.mov', start: 0, end: 4 }],
+    [{ id: 'b', type: 'video', src: 'b.mov', start: 3, end: 8 }],
+  ] }
+  for (const r of resolveAt(project, 3.5, { variant: 'render' }).items) {
+    assert.equal(r.crossfade, null)
+  }
+})
+
+test('preview and render agree on crossfade at the same instant', () => {
+  const project = { tracks: [[
+    { id: 'a', type: 'video', src: 'a.mov', start: 0, end: 4 },
+    { id: 'b', type: 'video', src: 'b.mov', start: 3, end: 8 },
+  ]] }
+  const p = resolveAt(project, 3.25, { variant: 'preview' }).items.map(r => r.crossfade)
+  const r = resolveAt(project, 3.25, { variant: 'render' }).items.map(r => r.crossfade)
+  assert.deepEqual(p, r)
+  // NOT VACUOUS: `t` is inside the overlap on purpose, so both sides are real
+  // crossfades. Without this the assertion above passes for two lists of
+  // `undefined` — which is exactly what it did before the field existed.
+  assert.deepEqual(p, [{ role: 'from', p: 0.25 }, { role: 'to', p: 0.25 }])
+})
+
+test('a three-way overlap gets NO crossfade at all — the pair model has no honest from/to for it', () => {
+  // A(0-10) / B(5-15) / C(8-20): `transitionPairs` only pairs CONSECUTIVE
+  // neighbours, so this yields TWO pairs sharing B — A-B (5-10) and B-C
+  // (8-15) — both live at t=8.5. `engine/validate.py` rejects this shape
+  // outright (Finding 7: the THREE-LIVE check now runs on every track,
+  // tracks[0] included), but the resolver must not assume every project
+  // reaching it already passed validation. Pre-fix, `crossfadesAt` used
+  // `out.set(item, ...)` unconditionally per pair, so B silently kept
+  // whichever pair was written LAST and A kept a stale `{role:'from', p}`
+  // from a pair the encoder never opens. The fix hard-cuts the whole
+  // cluster: every item that is live in more than one pair at once, AND its
+  // partner in every pair it appears in, gets `crossfade: null`.
+  const project = { tracks: [[
+    { id: 'a', type: 'video', src: 'a.mov', start: 0, end: 10 },
+    { id: 'b', type: 'video', src: 'b.mov', start: 5, end: 15 },
+    { id: 'c', type: 'video', src: 'c.mov', start: 8, end: 20 },
+  ]] }
+  const scene = resolveAt(project, 8.5, { variant: 'render' })
+  assert.equal(scene.items.length, 3) // all three are individually active at t=8.5
+  for (const r of scene.items) {
+    assert.equal(r.crossfade, null, `expected '${r.item.id}' to carry no crossfade`)
+  }
+})
+
+test('the three-way overlap above resolves back to a normal pairwise crossfade once only two are live', () => {
+  // Same A/B/C layout as the test above, but t=6 is inside A-B's span
+  // (5-10) and OUTSIDE B-C's span (8-15) — only two clips are live in a
+  // pair at this instant, so the ordinary crossfade applies. Proves the fix
+  // is scoped to LIVE three-way collisions, not "any item that ever shares
+  // a track with a third clip."
+  const project = { tracks: [[
+    { id: 'a', type: 'video', src: 'a.mov', start: 0, end: 10 },
+    { id: 'b', type: 'video', src: 'b.mov', start: 5, end: 15 },
+    { id: 'c', type: 'video', src: 'c.mov', start: 8, end: 20 },
+  ]] }
+  const scene = resolveAt(project, 6, { variant: 'render' })
+  const byId = Object.fromEntries(scene.items.map(r => [r.item.id, r]))
+  assert.deepEqual(byId.a.crossfade, { role: 'from', p: 0.2 })
+  assert.deepEqual(byId.b.crossfade, { role: 'to', p: 0.2 })
+})

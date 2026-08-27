@@ -12,7 +12,7 @@ import OverlayItemsLayer from './OverlayItemsLayer'
 import { useVideoPlayback } from './useVideoPlayback'
 import { useEnginePlayback, type EnginePlayback } from './useEnginePlayback'
 import EngineSurface from './EngineSurface'
-import { evaluateEngineEligibility } from '../../engine/eligibility'
+import { evaluateEngineEligibility, engineRequiredReason } from '../../engine/eligibility'
 import type { AcquiredDemux } from '../../engine'
 import { usePlaybackTime, type PlaybackClock } from '../playback-clock'
 import { gateTimeSink, handOverToHover, useHoverScrubTime, type HoverScrub } from '../hover-scrub'
@@ -630,6 +630,33 @@ function PreviewSurface({
           internal ordering). No-ops on an absent/unrecognized platform, so
           this is unconditional. */}
       <SocialSafeZoneOverlay platform={socialPreview} />
+
+      {/* Task 10b — legacy has no compositing stage (one <video> element per
+          clip), so it cannot blend a clip crossfade the way render does. v4's
+          rule is against a preview that SILENTLY disagrees with the export;
+          a visible, persistent notice satisfies that without blocking
+          preview outright, which would make a whole project un-previewable
+          over one transition (and would make every background-removed
+          project, legacy-only in v1, never previewable at all — see
+          `engineRequiredReason`'s doc in eligibility.ts).
+
+          Deliberately NOT folded into `useEngineMode`/`mode` above: that hook
+          evaluates once per project LOAD, on purpose, so the PLAYER never
+          remounts mid-edit (the anti-flapping rule — see its comment). This
+          check is the opposite by design: cheap, synchronous, recomputed on
+          every render, so the banner appears the instant an operator drags
+          two clips into overlap and disappears the instant they pull them
+          apart, without ever touching which player is mounted. */}
+      {playback.mode === 'legacy' && engineRequiredReason(project) !== null && (
+        <div
+          className="montaj-legacy-crossfade-banner absolute inset-x-0 bottom-0 flex justify-center pointer-events-none"
+          style={{ zIndex: 90 }}
+        >
+          <div className="mb-2 rounded bg-black/70 px-3 py-1.5 text-center text-xs text-white/90">
+            Crossfades will not appear in this preview. They will render in the export.
+          </div>
+        </div>
+      )}
     </div>
   )
 }

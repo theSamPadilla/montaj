@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react'
-import { containsTime, geometryAt, geometryFor } from '@bycrux/timeline-core'
+import { containsTime, geometryAt, geometryFor, resolveAt } from '@bycrux/timeline-core'
 import { isProxyUsable, markProxyFailed } from './proxySupport'
 import type { EditorProject as Project, VisualItem } from '../../schema'
 import type { OverlayFactory } from '../../types'
@@ -8,7 +8,7 @@ import { getOverlayDesignCanvas } from '../design-canvas'
 import { ensureGoogleFontsLoaded } from '../../lib/google-fonts'
 import type { Corner, Edge, OverlayChanges } from './useDragOverlay'
 import type { useDragOverlay } from './useDragOverlay'
-import { enabledTrackItems } from '../timeline/timeline-model'
+import { enabledTrackItems, withEnabledItemTracks } from '../timeline/timeline-model'
 
 // Mount video items this many seconds before item.start so the frame is ready.
 //
@@ -421,6 +421,62 @@ export default function OverlayItemsLayer({
   // Enabled only: a skipped track must not be draggable in the preview either.
   const interactiveTracks = isCanvasProject ? enabledTrackItems(project) : overlayTracks
 
+  // Split from the `scene` memo below ON PURPOSE. `withEnabledItemTracks`
+  // spreads the project and re-runs `normalizeTracks` plus a `.map()` over every
+  // track — work that depends on `project` alone. Folded into one memo keyed
+  // `[project, currentTime]` it re-ran on EVERY frame of playback, rebuilding an
+  // identical track array 30-60 times a second. Keyed on `project` it runs once
+  // per edit, and only the genuinely time-dependent `resolveAt` runs per frame.
+  const previewProject = useMemo(() => withEnabledItemTracks(project), [project])
+
+  // The resolver's Scene at this instant — the SAME `resolveAt` call the canvas
+  // engine's `previewResolver` makes (engine/scheduler.ts), so this layer and
+  // the engine read the identical `crossfade` stamp for a clip that happens to
+  // sit on an overlay track. `ResolvedItem.item` is the project's own object by
+  // reference (timeline-core's contract), so the blocks below look their
+  // resolved counterparts up by identity rather than recomputing anything.
+  const scene = useMemo(
+    () => resolveAt(previewProject, currentTime, { variant: 'preview' }),
+    [previewProject, currentTime],
+  )
+
+  // The transition weight for ONE clip at this instant, shared by BOTH render
+  // blocks below — the tracks[0] images and the interactive tracks. Both are
+  // fed by `enabledTrackItems(project)` (`useVideoPlayback.ts` / this file's own
+  // `previewProject`), so the identity lookup resolves in either.
+  //
+  // ONLY THE INCOMING SIDE RAMPS. The outgoing side keeps its own full opacity —
+  // factor 1, not `1-p` — and that is not a shortcut, it is what this kind of
+  // compositor requires:
+  //
+  //   - The EXPORT is a SPLIT-AND-LERP compositor: `encode-segment.js` splits
+  //     the canvas, composites each side down its own branch at its OWN full
+  //     opacity, then lerps the two finished frames with
+  //     `blend=all_expr='A+(B-A)*p'` — `(1-p)*from + p*to`.
+  //   - THIS layer is a SEQUENTIAL source-over compositor: each item is a DOM
+  //     node painted over the ones before it. Leaving `from` at 1 and giving
+  //     `to` alpha p produces exactly `p*to + (1-p)*from` — the same lerp,
+  //     reached by a different route.
+  //
+  // Feeding the symmetric `1-p` / `p` pair into a sequential stack does NOT
+  // reproduce the lerp; it yields `p*to + (1-p)^2*from + p(1-p)*bg`, which at
+  // p=0.5 shows the outgoing clip at QUARTER weight and lets the background leak
+  // through the middle of every transition.
+  //
+  // `createCanvasPainter.paintBlend` (engine/index.ts) is the shared reference
+  // for the sequential form: `globalAlpha = 1` for `from`, then `globalAlpha = p`
+  // for `to`. `render/sample-frame.js` — also sequential — carries the same
+  // factor. Do not "restore" the symmetric form; it is the obvious-looking wrong
+  // answer for this compositor.
+  //
+  // `crossfade` is CLIPS-ONLY and null outside an overlap
+  // (@bycrux/timeline-core's `crossfadesAt`), so this returns 1 — a no-op —
+  // everywhere a transition is not actually in play.
+  const crossfadeFactor = (item: VisualItem) => {
+    const xf = scene.items.find((r) => r.item === item)?.crossfade ?? null
+    return xf?.role === 'to' ? xf.p : 1
+  }
+
   return (
     <>
       {/* tracks[0] non-video items (background images) — rendered with drag support at base z-level */}
@@ -438,9 +494,20 @@ export default function OverlayItemsLayer({
         // buildImageItemFilterParts, which since SP9d compiles their curves into
         // ffmpeg expressions. Leaving this branch on the static resolve would
         // put back a preview/render divergence in the one place nobody would
-        // look for it. Opacity stays static here too — ffmpeg cannot vary it.
+        // look for it. The opacity CURVE stays ignored here too — ffmpeg cannot
+        // vary clip alpha.
+        //
+        // A TRANSITION is the one thing that does move this opacity, and these
+        // items need it as much as the interactive block below does:
+        // `crossfadesAt` stamps IMAGE clips exactly like video ones, and the
+        // export blends a track[0] image pair through the same
+        // `encode-segment.js` `blend` branch. The canvas engine skips them
+        // (`scheduler.ts` filters its scan to `trackIdx === 0 && kind ===
+        // 'video'`), so this block is the ONLY thing drawing them in non-canvas
+        // mode — leave it static and the preview hard-cuts a pair the export
+        // dissolves. Same shared factor, same reasoning: see `crossfadeFactor`.
         const gAnimated = geometryAt(item, 'image', currentTime - item.start)
-        const g        = { ...gAnimated, opacity: geometryFor(item, 'image').opacity }
+        const g        = { ...gAnimated, opacity: geometryFor(item, 'image').opacity * crossfadeFactor(item) }
         const fit      = g.fit ?? 'cover'
         const offsetX  = (liveOffset?.id   === item.id ? liveOffset.x       : null) ?? g.offsetX
         const offsetY  = (liveOffset?.id   === item.id ? liveOffset.y       : null) ?? g.offsetY
@@ -542,9 +609,21 @@ export default function OverlayItemsLayer({
           // unaffected — they are baked per frame in a browser, where opacity is
           // just another CSS value.
           const animated = geometryAt(item, item.type, currentTime - item.start)
-          const g        = item.type === 'overlay'
+          // SP9d's pin STANDS: a clip's opacity CURVE is still ignored here,
+          // because ffmpeg cannot animate clip alpha and preview must not
+          // promise a fade the export cannot produce.
+          //
+          // A TRANSITION is different, and is not an exception to that rule but
+          // an application of it: the export really does blend a transitioning
+          // pair (`encode-segment.js`'s `blend` branch), so showing the blend
+          // here is what keeps preview honest. The factor comes from the shared
+          // resolver via `crossfadeFactor` above — read its note for WHY only
+          // the incoming side ramps while the outgoing side stays at 1. That is
+          // the compositing model, not an oversight.
+          const factor = crossfadeFactor(item)
+          const g      = item.type === 'overlay'
             ? animated
-            : { ...animated, opacity: geometryFor(item, item.type).opacity }
+            : { ...animated, opacity: geometryFor(item, item.type).opacity * factor }
           const fit      = g.fit ?? 'cover'
           const offsetX  = (liveOffset?.id   === item.id ? liveOffset.x       : null) ?? g.offsetX
           const offsetY  = (liveOffset?.id   === item.id ? liveOffset.y       : null) ?? g.offsetY
