@@ -545,7 +545,7 @@ describe('EngineSourceHost.acquireServer — a second decoder for a blending pai
     const [shared, exclusive] = serverInstances
 
     // Drop `b` outright, leaving the shared clip retained.
-    const items = project.tracks[0].items as VisualItem[]
+    const items = project.tracks![0].items as VisualItem[]
     engine.updateProject({ ...project, tracks: [{ id: 'trk-0', items: [items[0]] }] } as Project)
     await flush()
 
