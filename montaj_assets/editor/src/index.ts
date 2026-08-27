@@ -83,11 +83,15 @@ export { getOverlayDesignCanvas } from './video/design-canvas'
 // Track-shape tolerance: `project.tracks` may be on disk as the legacy
 // `VisualItem[][]` or as `VisualTrack[]`. Read through `trackItems`; normalize
 // on open with `normalizeTracks` (same object back when already converged).
+// `normalizeAudioTracks` is the audio sibling — `audio.tracks[*].id` is
+// optional on disk but required by the editor, so it's backfilled the same
+// way (same object back when already converged).
 export {
   effectiveItemAudio,
   enabledTrackItems,
   enabledTracks,
   mapTrackItems,
+  normalizeAudioTracks,
   normalizeTracks,
   trackItems,
   withEnabledItemTracks,

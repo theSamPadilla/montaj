@@ -22,7 +22,7 @@
  *   highlight-box.jsx, outline.jsx
  * (all under montaj_assets/render/templates/captions/).
  */
-import type { Captions } from '../schema'
+import type { Captions, CaptionTextTransform } from '../schema'
 
 type Style = Captions['style']
 
@@ -95,6 +95,6 @@ export const CAPTION_STYLE_TEXT_ALIGN: Record<Style, string> = {
  *  `renderSegment` call site); the no-timestamps fallback branch renders the
  *  segment text as-is, never uppercased. Every other style has no default in
  *  any branch. */
-export const CAPTION_STYLE_TEXT_TRANSFORM: Partial<Record<Style, string>> = {
+export const CAPTION_STYLE_TEXT_TRANSFORM: Partial<Record<Style, CaptionTextTransform>> = {
   outline: 'uppercase',
 }
