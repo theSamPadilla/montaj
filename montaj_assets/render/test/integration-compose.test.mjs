@@ -212,3 +212,95 @@ test('compose: a gap BETWEEN clips still survives (unchanged behavior)', async (
 
   rmSync(outputPath, { force: true })
 })
+
+// ── Independent audio tracks ────────────────────────────────────────────────
+//
+// Every fixture above uses `audio: { tracks: [] }`, so until 2026-08-26 the
+// mixAudioIntoVideo path had ZERO end-to-end coverage — which is how a bug that
+// left the last 24s of a 54s deliverable at -91 dB shipped without a single
+// red test. `mix-audio.test.mjs` asserts the filter STRING; this asserts that
+// audio actually comes out, because the defining feature of that bug was that
+// nothing failed, the level just went to zero.
+
+function ensureTestAudio(path, duration, freq) {
+  if (existsSync(path)) return
+  spawnSync('ffmpeg', [
+    '-y', '-f', 'lavfi', '-i', `sine=frequency=${freq}:duration=${duration}:sample_rate=48000`,
+    '-c:a', 'aac', '-b:a', '192k', path,
+  ], { encoding: 'utf8', timeout: 30_000 })
+}
+
+// Mean volume over a window, in dB. Digital silence reports -91.0.
+function meanVolumeDb(path, from, to) {
+  const probe = spawnSync('ffmpeg', [
+    '-hide_banner', '-ss', String(from), '-to', String(to), '-i', path,
+    '-vn', '-af', 'volumedetect', '-f', 'null', '-',
+  ], { encoding: 'utf8', timeout: 60_000 })
+  // spawnSync gives stderr: null if the binary can't be spawned at all — guard so
+  // that surfaces as this assertion rather than a TypeError on .match.
+  const err = probe.stderr ?? ''
+  const m = err.match(/mean_volume:\s*(-?[\d.]+) dB/)
+  assert.ok(m, `volumedetect produced no mean_volume for ${path}:\n${err.slice(-500)}`)
+  return parseFloat(m[1])
+}
+
+test('compose: an audio track that starts partway through is audible in the export', async () => {
+  const clip       = '/tmp/montaj-test-audiofade-clip.mp4'
+  const bedA       = '/tmp/montaj-test-audiofade-a.m4a'
+  const bedB       = '/tmp/montaj-test-audiofade-b.m4a'
+  const outputPath = '/tmp/montaj-compose-audiofade.mp4'
+  ensureTestClip(clip, 10, 640, 360)
+  ensureTestAudio(bedA, 10, 440)
+  ensureTestAudio(bedB, 10, 880)
+  rmSync(outputPath, { force: true })
+
+  // The clip is muted so the ONLY audio in the export comes from audio.tracks —
+  // otherwise the video's own soundtrack masks exactly the failure under test.
+  // Two beds handing off at 5s, the shape that surfaced the bug: bed B starts
+  // offset, with both a fade-in and a fade-out.
+  //
+  // `outPoint: 5` on both is load-bearing, not tidiness. This file's source
+  // window is inPoint/outPoint alone — mix-audio.js never trims on `end` — so
+  // an untrimmed bed A would run its full 10s source straight through the 6-9s
+  // window and mask bed B's silence, and the test would pass against the
+  // unfixed code. Trimming makes that boundary explicit rather than leaving it
+  // resting on bed A's fade-out happening to reach zero in time.
+  await compose({
+    projectJson: {
+      settings: { resolution: [640, 360], fps: 30 },
+      audio: {
+        tracks: [
+          { id: 'bedA', src: bedA, start: 0, end: 5,  inPoint: 0, outPoint: 5, volume: 1, fadeOut: 1 },
+          { id: 'bedB', src: bedB, start: 5, end: 10, inPoint: 0, outPoint: 5, volume: 1, fadeIn: 0.5, fadeOut: 1 },
+        ],
+      },
+    },
+    puppeteerSegments: [],
+    imageItems: [],
+    videoItems: [{
+      id: 'v', type: 'video', trackIdx: 0, src: clip, start: 0, end: 10,
+      inPoint: 0, outPoint: 10, offsetX: 0, offsetY: 0, scale: 1, opacity: 1, muted: true,
+    }],
+    outputPath,
+  })
+
+  assert.ok(existsSync(outputPath), 'output file should exist')
+
+  // THE load-bearing assertion. Pre-fix, bed B's fade-out was timed from its own
+  // duration (5s) rather than its timeline end (10s) — st = (10-5)-1 = 4 — so it
+  // ran 4..5s in stream time and reached zero exactly as B's audio began at 5s.
+  // afade=t=out holds zero thereafter: -91 dB (digital silence) across this
+  // whole window. Full account: KNOWN-DIVERGENCES D2.
+  const offsetLevel = meanVolumeDb(outputPath, 6, 9)
+  assert.ok(
+    offsetLevel > -40,
+    `offset audio track should be audible after its start; got ${offsetLevel} dB ` +
+    `(-91 dB means the fade-out was timed against the wrong clock and silenced it)`,
+  )
+
+  // A track at the origin already worked — this guards it against the fix.
+  const originLevel = meanVolumeDb(outputPath, 1, 4)
+  assert.ok(originLevel > -40, `origin audio track should still be audible; got ${originLevel} dB`)
+
+  rmSync(outputPath, { force: true })
+})

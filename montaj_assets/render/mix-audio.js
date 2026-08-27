@@ -32,6 +32,72 @@ function ffmpegFadeCurve(shape) {
 }
 
 /**
+ * Build the `afade` chain for one track. Both `st=` values are in DELAYED-STREAM
+ * time — absolute timeline position — NOT track-local time.
+ *
+ * Why: every track is pushed into place with `adelay=${start * 1000}`, which
+ * PREPENDS `start` seconds of silence. Every filter chained after that delay
+ * therefore sees the padded stream, so t=0 for `afade` is the start of the
+ * TIMELINE, not the start of the track's own audio.
+ *
+ * Getting this wrong fails silently rather than loudly, which is why it went
+ * unnoticed until 2026-08-26: the fade-out used `st = (end - start) - fadeOut`
+ * (track-local), so for any offset track it fired `start` seconds early. A music
+ * bed at start 27.67 / end 53.8 with a 3.08s fade-out hit zero gain at stream
+ * time 26.13s — 1.5s BEFORE its audio was due to begin — and `afade=t=out` holds
+ * zero for the rest of the stream. The track's entire audible length was
+ * multiplied by zero — all 26.1s of it — and the deliverable measured -91 dB
+ * across its last 24 seconds, once the voiceover underneath it ended. The render
+ * reported success. `afade=t=in` had the same root cause — carrying
+ * no `st` at all, it ran at stream time 0, entirely inside the silent padding,
+ * so an offset track jumped in at full volume with no fade whatever.
+ *
+ * If you change these, test with `start > 0`. At `start: 0` the correct and the
+ * broken expressions are numerically identical, which is exactly how this
+ * survived a full audit (timeline-core KNOWN-DIVERGENCES D2).
+ *
+ * Deliberately shared by BOTH the ducking and plain branches below. They used to
+ * hold byte-identical copies of this expression — catalogued as a drift hazard in
+ * KNOWN-DIVERGENCES D3 — and the bug above lived in both of them. One copy means
+ * the next fix cannot land on one branch and miss the other. Both must stay in
+ * step: the ducking branch chains this same envelope into `sidechaincompress` as
+ * its MAIN input (`#0`; the untouched speech split is `#1`, the detection key), so
+ * a mistimed fade silences a ducked bed exactly as it silences a plain one.
+ *
+ * @param {object} track — one entry from project.audio.tracks
+ * @returns {string}     — '' when the track has no fades, otherwise a
+ *                         leading-comma fragment to append to the delay chain
+ */
+function buildFadeFilters(track) {
+  const start   = track.start   ?? 0
+  const fadeIn  = track.fadeIn  ?? 0
+  const fadeOut = track.fadeOut ?? 0
+  // NOT `?? 0`. A track with no `end` is legal and common — `_validate_audio_tracks`
+  // in engine/validate.py deliberately does not require one, because this file
+  // never trims on `end` (the source window is inPoint/outPoint alone), so a music
+  // bed without one plays its natural length. Defaulting a missing `end` to 0 would
+  // put the fade-out at st=0, inside the adelay padding, and zero the track for the
+  // whole stream — the very failure this helper exists to prevent, reachable just by
+  // dragging a fade-out grip on an end-less bed. A zero- or negative-width window
+  // counts as undeclared too, matching the editor's `resolveAudioWindow`.
+  const end = Number.isFinite(track.end) ? track.end : null
+
+  let fadeFilters = ''
+  // Begins the instant the adelay padding ends — i.e. when the track starts.
+  if (fadeIn > 0) {
+    fadeFilters += `,afade=t=in:st=${start}:d=${fadeIn}:curve=${ffmpegFadeCurve(track.fadeInCurve)}`
+  }
+  // Must FINISH at the track's end on the timeline, so it begins one fade-length
+  // before it. `end`, not `end - start`: see the stream-time note above. With no
+  // declared end there is no timeline position to fade out AT, so emit nothing
+  // rather than guess — the track simply plays out.
+  if (fadeOut > 0 && end !== null && end > start) {
+    fadeFilters += `,afade=t=out:st=${Math.max(0, end - fadeOut)}:d=${fadeOut}:curve=${ffmpegFadeCurve(track.fadeOutCurve)}`
+  }
+  return fadeFilters
+}
+
+/**
  * Build ffmpeg input args for all unmuted audio tracks.
  *
  * @param {Array} audioTracks  — project.audio.tracks
@@ -77,12 +143,7 @@ export function buildAudioTrackFilters(audioTracks = [], baseInputIdx, currentAu
       const release = track.ducking.release ?? 0.5
       // Map dB depth → compressor ratio (e.g. -12 dB ≈ ratio 4, -6 dB ≈ ratio 2)
       const ratio   = Math.max(1, Math.round(10 ** (-depthDb / 20)))
-      let fadeFilters = ''
-      const fadeIn = track.fadeIn ?? 0
-      const fadeOut = track.fadeOut ?? 0
-      const trackDur = (track.end ?? 0) - (track.start ?? 0)
-      if (fadeIn > 0) fadeFilters += `,afade=t=in:d=${fadeIn}:curve=${ffmpegFadeCurve(track.fadeInCurve)}`
-      if (fadeOut > 0) fadeFilters += `,afade=t=out:st=${Math.max(0, trackDur - fadeOut)}:d=${fadeOut}:curve=${ffmpegFadeCurve(track.fadeOutCurve)}`
+      const fadeFilters = buildFadeFilters(track)
       filterParts.push(
         `${audioIn}asplit=2[speech${offset}][sc${offset}]`,
         `[${inputIdx}:a]adelay=${delayMs}:all=1,volume=${vol}${fadeFilters}[mscaled${offset}]`,
@@ -91,12 +152,7 @@ export function buildAudioTrackFilters(audioTracks = [], baseInputIdx, currentAu
       )
       audioLabel = `[aout${offset}]`
     } else {
-      let fadeFilters = ''
-      const fadeIn = track.fadeIn ?? 0
-      const fadeOut = track.fadeOut ?? 0
-      const trackDur = (track.end ?? 0) - (track.start ?? 0)
-      if (fadeIn > 0) fadeFilters += `,afade=t=in:d=${fadeIn}:curve=${ffmpegFadeCurve(track.fadeInCurve)}`
-      if (fadeOut > 0) fadeFilters += `,afade=t=out:st=${Math.max(0, trackDur - fadeOut)}:d=${fadeOut}:curve=${ffmpegFadeCurve(track.fadeOutCurve)}`
+      const fadeFilters = buildFadeFilters(track)
       filterParts.push(
         `[${inputIdx}:a]adelay=${delayMs}:all=1,volume=${vol}${fadeFilters}[atrack${offset}]`,
         `${audioIn}[atrack${offset}]amix=inputs=2:duration=longest:normalize=0[amid${offset}]`,
