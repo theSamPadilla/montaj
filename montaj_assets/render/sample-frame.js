@@ -818,6 +818,69 @@ export async function sampleFrame({
   // own file. Skipped entirely under an opaque overlay (hasOpaque).
   if (!hasOpaque) {
     for (const ri of visualItems) {
+      // ── The opacity rule, for EVERY clip kind ────────────────────────────
+      //
+      // Computed once, above the branch, because it is ONE decision that both
+      // the video and the image descriptor must make identically. It used to
+      // live inside the video branch with the image branch deferring to it by
+      // comment — and the image branch then quietly failed to apply the
+      // transition half of the rule at all.
+      //
+      // STATIC opacity, deliberately, and that half is a PARITY fix (SP9d T6).
+      // `ri.geometry` is `geometryAt(...)`, so `.opacity` is the SAMPLED curve
+      // value — but the export cannot fade a clip at all (ffmpeg's
+      // `colorchannelmixer aa` is a <double> and takes no expression), so
+      // honouring the curve here would make the Export dialog's still and
+      // version-compare show a fade the rendered file never has. The still
+      // frame's whole job is to show what the export will look like, so it
+      // reads the same static scalar the export does. Geometry — position,
+      // scale, rotation — stays SAMPLED in the descriptors below, because the
+      // export animates those now and the two agree.
+      //
+      // A TRANSITION is not an exception to that rule but another application
+      // of it (T12): the export genuinely blends a transitioning pair now
+      // (encode-segment.js's `blend` branch, T8), so a still caught
+      // mid-transition must show the blend too, or it would be lying about the
+      // one thing this whole file exists to get right. This applies to IMAGE
+      // clips as much as video ones: `crossfadesAt` pushes both kinds into its
+      // `clips` array, and `encode-segment.js` evaluates `opensCrossfade` and
+      // emits the split BEFORE its `isImageItem` branch, so the export really
+      // does dissolve an image pair.
+      //
+      // ONLY THE INCOMING SIDE RAMPS. The OUTGOING side keeps its own full
+      // opacity — factor 1, not `1-p`. That looks wrong and is not, and the
+      // reason is the compositing model:
+      //
+      //   - The EXPORT is a SPLIT-AND-LERP compositor. encode-segment.js
+      //     splits the running canvas, composites the outgoing item down one
+      //     branch and the incoming one down the other — each at its OWN full
+      //     opacity — and then lerps the two finished frames with
+      //     `blend=all_expr='A+(B-A)*p'`, i.e. `(1-p)*from + p*to`.
+      //   - THIS file is a SEQUENTIAL source-over compositor: each item is
+      //     layered onto the one running canvas in turn (the
+      //     buildImageItemFilterParts loop below). Painting `from` at 1 and
+      //     then `to` at alpha p gives exactly `p*to + (1-p)*from` — the same
+      //     lerp, reached by a different route.
+      //
+      // Feeding the symmetric `1-p` / `p` pair into a SEQUENTIAL stack does NOT
+      // reproduce the lerp; it yields `p*to + (1-p)^2*from + p(1-p)*bg`, which
+      // at p=0.5 lands the outgoing clip at QUARTER weight and leaks the
+      // background through the middle of the transition.
+      //
+      // The shared reference for the sequential form is
+      // `createCanvasPainter.paintBlend` (editor/src/engine/index.ts):
+      // `globalAlpha = 1` for `from`, then `globalAlpha = p` for `to`. The DOM
+      // preview (editor's video/preview/OverlayItemsLayer.tsx) is the same kind
+      // of compositor and reads the same factor. All three land on one picture.
+      // Do not "restore" the symmetric form here — it is the obvious-looking
+      // wrong answer for this compositor.
+      //
+      // `ri.crossfade` is CLIPS-ONLY and already `null` outside an overlap
+      // (@bycrux/timeline-core/src/activation.js's `ItemCrossfade`), so the
+      // factor is 1 — a no-op — everywhere this pin used to apply
+      // unconditionally.
+      const opacity = (ri.item.opacity ?? 1) * (ri.crossfade?.role === 'to' ? ri.crossfade.p : 1)
+
       let pseudoItem
       if (ri.kind === 'video') {
         const framePng = videoFramePaths.get(ri)
@@ -849,58 +912,7 @@ export async function sampleFrame({
           offsetX:  ri.geometry.offsetX,
           offsetY:  ri.geometry.offsetY,
           rotation: ri.geometry.rotation,
-          // STATIC opacity, deliberately, and this is a PARITY fix (SP9d T6).
-          // `ri.geometry` is `geometryAt(...)`, so `.opacity` is the SAMPLED
-          // curve value — but the export cannot fade a clip at all (ffmpeg's
-          // `colorchannelmixer aa` is a <double> and takes no expression), so
-          // honouring the curve here would make the Export dialog's still and
-          // version-compare show a fade the rendered file never has. The still
-          // frame's whole job is to show what the export will look like, so it
-          // reads the same static scalar the export does. Geometry — position,
-          // scale, rotation — stays SAMPLED above, because the export animates
-          // those now and the two agree.
-          //
-          // A TRANSITION is not an exception to that rule but another
-          // application of it (T12): the export genuinely blends a
-          // transitioning pair now (encode-segment.js's `blend` branch, T8),
-          // so a still caught mid-transition must show the blend too, or it
-          // would be lying about the one thing this whole file exists to get
-          // right.
-          //
-          // ONLY THE INCOMING SIDE RAMPS. The OUTGOING side keeps its own full
-          // opacity — factor 1, not `1-p`. That looks wrong and is not, and the
-          // reason is the compositing model:
-          //
-          //   - The EXPORT is a SPLIT-AND-LERP compositor. encode-segment.js
-          //     splits the running canvas, composites the outgoing item down one
-          //     branch and the incoming one down the other — each at its OWN
-          //     full opacity — and then lerps the two finished frames with
-          //     `blend=all_expr='A+(B-A)*p'`, i.e. `(1-p)*from + p*to`.
-          //   - THIS file is a SEQUENTIAL source-over compositor: each item is
-          //     layered onto the one running canvas in turn (the
-          //     buildImageItemFilterParts loop below). Painting `from` at 1 and
-          //     then `to` at alpha p gives exactly `p*to + (1-p)*from` — the
-          //     same lerp, reached by a different route.
-          //
-          // Feeding the symmetric `1-p` / `p` pair into a SEQUENTIAL stack does
-          // NOT reproduce the lerp; it yields
-          // `p*to + (1-p)^2*from + p(1-p)*bg`, which at p=0.5 lands the outgoing
-          // clip at QUARTER weight and leaks the background through the middle
-          // of the transition.
-          //
-          // The shared reference for the sequential form is
-          // `createCanvasPainter.paintBlend` (editor/src/engine/index.ts):
-          // `globalAlpha = 1` for `from`, then `globalAlpha = p` for `to`. The
-          // DOM preview (editor's video/preview/OverlayItemsLayer.tsx) is the
-          // same kind of compositor and reads the same factor. All three land on
-          // one picture. Do not "restore" the symmetric form here — it is the
-          // obvious-looking wrong answer for this compositor.
-          //
-          // `ri.crossfade` is CLIPS-ONLY and already `null` outside an overlap
-          // (@bycrux/timeline-core/src/activation.js's `ItemCrossfade`), so the
-          // factor below is 1 — a no-op — everywhere this pin used to apply
-          // unconditionally.
-          opacity: (ri.item.opacity ?? 1) * (ri.crossfade?.role === 'to' ? ri.crossfade.p : 1),
+          opacity, // the shared rule — see the note above the branch
           // TRAP: buildImageItemFilterParts defaults to 'cover' when fit is
           // omitted, which CROPS the frame to fill its box. Production video is
           // ALWAYS contain-fit — buildVideoItemFilterParts' own scale step uses
@@ -920,7 +932,7 @@ export async function sampleFrame({
           offsetX:  ri.geometry.offsetX,
           offsetY:  ri.geometry.offsetY,
           rotation: ri.geometry.rotation,
-          opacity:  ri.item.opacity ?? 1, // static — see the video branch above
+          opacity, // the shared rule — see the note above the branch
           fit:      ri.geometry.fit, // image's own tri-state, default 'cover'
         }
       }

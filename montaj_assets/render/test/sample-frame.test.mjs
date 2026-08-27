@@ -198,6 +198,50 @@ function makeOverlappingClipsFixture(dir) {
 }
 
 /**
+ * The IMAGE twin of `makeOverlappingClipsFixture`: two solid-colour PNGs on one
+ * track with the same [3,4) overlap.
+ *
+ * Image clips are not exempt from transitions on either side of the parity
+ * boundary, which is exactly why this fixture exists separately:
+ *   - `crossfadesAt` (timeline-core/src/activation.js) pushes BOTH
+ *     `kind === 'video'` and `kind === 'image'` into its `clips` array, so it
+ *     stamps `crossfade` on an image pair.
+ *   - `encode-segment.js` evaluates `opensCrossfade` and emits the canvas split
+ *     BEFORE its `isImageItem(item)` branch, so the export really does dissolve
+ *     an image pair rather than hard-cutting it.
+ *
+ * sample-frame.js reached the video branch's transition factor and the image
+ * branch's static opacity through two separate expressions once, and the image
+ * one silently skipped the transition half. The rule is computed once above the
+ * branch now; (y) is what keeps it that way.
+ */
+function makeOverlappingImagesFixture(dir) {
+  const imgA = join(dir, 'img-a.png')
+  const imgB = join(dir, 'img-b.png')
+  for (const [color, out] of [['red', imgA], ['blue', imgB]]) {
+    const r = spawnSync('ffmpeg', [
+      '-y', '-f', 'lavfi', '-i', `color=c=${color}:size=480x854:rate=1`,
+      '-frames:v', '1', '-update', '1', out,
+    ], { encoding: 'utf8', timeout: 15_000 })
+    if (r.status !== 0) return null
+  }
+  const project = {
+    version: '0.2',
+    status: 'final',
+    name: 'crossfade-image-sample-fixture',
+    settings: { resolution: [480, 854], fps: 30, colorSpace: 'sdr_bt709' },
+    tracks: [
+      [
+        { id: 'img-a', type: 'image', src: imgA, start: 0, end: 4, scale: 1, opacity: 1 },
+        { id: 'img-b', type: 'image', src: imgB, start: 3, end: 7, scale: 1, opacity: 1 },
+      ],
+    ],
+    audio: { tracks: [] },
+  }
+  return { project }
+}
+
+/**
  * Write a minimal JSX that paints a solid, fully-opaque field over the whole
  * canvas plus a text run. Used by (a) to assert sampleOverlay emits a PNG with
  * genuinely non-zero pixels — a transparent overlay would still produce a valid
@@ -1340,6 +1384,43 @@ test('(x) a still frame outside a transition reads the STATIC opacity, unchanged
         `expected static opacity 0.4 red over black (~102), got r=${r}`)
       assert.equal(g, 0)
       assert.equal(b, 0)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+test('(y) a still frame inside an IMAGE clip transition blends, exactly like a video pair',
+  { timeout: 60_000 }, async (t) => {
+    const dir = mkdtempSync(join(tmpdir(), 'montaj-sf-test-y-'))
+    try {
+      const fixture = makeOverlappingImagesFixture(dir)
+      if (!fixture) { t.skip('ffmpeg synthetic image generation failed'); return }
+
+      const outPath = join(dir, 'frame.png')
+      // Same instant and same pair geometry as (w), so the two tests are
+      // directly comparable: 3.5s is the midpoint of the [3,4) overlap, p=0.5.
+      await sampleFrame({ projectJson: fixture.project, atSeconds: 3.5, outPath })
+
+      const dims = pngDimensions(outPath)
+      assert.ok(dims, 'should be readable PNG')
+      const { r, g, b, a } = readPixelRgba(outPath, dims.w >> 1, dims.h >> 1)
+
+      // IDENTICAL expectation to (w), and that is the whole point: the still's
+      // opacity rule is computed once for every clip kind, so an image pair and
+      // a video pair at the same p must land on the same pixel. Red painted at
+      // factor 1, then blue painted at alpha p=0.5 over it — `0.5*blue +
+      // 0.5*red` — which is what `encode-segment.js` produces for an image pair
+      // too (it splits the canvas before its `isImageItem` branch).
+      //
+      // Before the shared rule existed this branch hard-coded a static opacity
+      // and ignored `crossfade` entirely, so this read plain blue (0, 0, 255):
+      // img-b at opacity 1, fully covering img-a, while the export dissolved.
+      assert.ok(r > 105 && r < 150,
+        `expected img-a at half weight (~128), got r=${r}`)
+      assert.ok(b > 105 && b < 150,
+        `expected img-b at half weight (~128), got b=${b}`)
+      assert.equal(g, 0, 'neither source color has a green component')
+      assert.equal(a, 255, 'the still frame itself carries no alpha channel')
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
