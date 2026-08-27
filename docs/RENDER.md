@@ -100,12 +100,14 @@ step — the geometry is already in the pixels. A keyframe-free overlay is
 untouched: same shim, same filter graph, byte-identical to before this
 feature existed.
 
-**Cost.** `renderer.js` captures every overlay, keyframed or not, at
-`deviceScaleFactor: 2` over the 1080-short-edge design canvas — 2160px on the
-short edge — so a 4K export's compose-time `scale=` target lands on that same
-2160×3840 native resolution and composites at roughly 1:1, no upscale;
-sub-4K exports downscale it instead. That capture resolution doesn't change
-for a keyframed overlay. What does change is per-frame cost: re-evaluating
+**Cost.** `renderer.js` captures every overlay, keyframed or not, over the
+1080-short-edge design canvas at a `deviceScaleFactor` derived from
+`settings.resolution` and clamped to `[1, 2]` (`captureScaleFor` in
+`render.js`): 2 for a 4K export, 1 for 1080p, fractional in between, 1 below
+1080, and 2 when `settings.resolution` is unset. The capture therefore lands
+on the export's own pixel grid and composites at roughly 1:1 — a 4K export
+gets no upscale, and a 1080p export no longer gets a 2:1 downscale. That
+capture resolution doesn't change for a keyframed overlay. What does change is per-frame cost: re-evaluating
 the curve and re-styling the DOM every frame measured at about 27% slower per
 frame than the same overlay captured static, independent of export
 resolution.

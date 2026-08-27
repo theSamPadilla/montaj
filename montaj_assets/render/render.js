@@ -76,6 +76,91 @@ const EXPORT_MODES = ['auto', 'sdr', 'both']
 const DROPPED_PREVIEW_FIELDS = ['proxySrc', 'nobg_preview_src']
 
 // ---------------------------------------------------------------------------
+// Design resolution for overlay capture — always 1080 on the short edge,
+// with the aspect ratio of settings.resolution (or 9:16 portrait by default).
+//
+// Why "always 1080 short edge" and not settings.resolution itself: overlay
+// JSX is authored in fixed design-px coordinates (fontSize: 120, top: 350).
+// If the Puppeteer viewport scaled with settings.resolution (e.g. 2160×3840
+// for a 4K project), those same hardcoded sizes would be interpreted at the
+// larger canvas — a 120px headline would only cover ~5% of canvas width
+// instead of ~11%, and overlays would render small + top-left-cornered.
+//
+// Keeping the overlay canvas at 1080 short edge means JSX coordinates have
+// one consistent meaning regardless of output resolution; the compose step
+// then scales the captured overlay to the actual output dimensions when
+// compositing onto the final video, so the same JSX fits every output size.
+//
+// Note the compose-time scale is NOT the design-canvas-to-output ratio: the
+// capture is taken at captureScaleFor's deviceScaleFactor, so it already
+// arrives on the output's own pixel grid wherever that scale is exact (an
+// identity at 4K and at 1080p alike). Compose only rescales where it isn't —
+// a sub-1080 output, or a project with no settings.resolution.
+//
+// Hoisted to module scope (rather than local to main()) so main()'s
+// renderWidth/renderHeight math and captureScaleFor, below, share one
+// definition of what "1080" means.
+// ---------------------------------------------------------------------------
+const SHORT_EDGE_TARGET = 1080
+
+/**
+ * Puppeteer capture scale (deviceScaleFactor) for a project's output resolution.
+ *
+ * Captures on the OUTPUT's own pixel grid so the compose-time scale from
+ * captured-overlay to final-video is an identity, not a resample.
+ * `deviceScaleFactor: 2` is correct only when the output is exactly 2× the
+ * SHORT_EDGE_TARGET design canvas — i.e. a 4K (2160 short edge) project,
+ * where 1080 × 2 = 2160. At 1080p output that same fixed 2× forces compose
+ * to downscale the capture 2160 → 1080, discarding roughly a third of the
+ * detail Chrome actually drew for no benefit.
+ *
+ * Clamped to [1, 2]: the floor of 1 keeps a sub-1080 output from capturing
+ * BELOW the design canvas (the capture itself would be blurrier than the
+ * design, before compose ever runs); the ceiling of 2 stops an 8K project
+ * from quadrupling capture memory/CPU without that being a deliberate
+ * decision.
+ *
+ * Takes `settings.resolution` directly rather than the eventually-resolved
+ * output width/height, and deliberately does NOT fall back to probing a video
+ * item when resolution is unset.
+ *
+ * Why not: `probeVideoDimensions` reads *coded* dimensions and ignores rotation
+ * side-data. The step-"6." probe below runs late, on the POST-normalize source,
+ * and normalize re-encodes through ffmpeg without `-noautorotate` — so it bakes
+ * rotation into the pixels and strips the side-data, leaving coded == display.
+ * Running the same probe early, before normalize, would instead read the
+ * pre-normalize source, where rotated footage (an iPhone vertical clip: coded
+ * 1920×1080, rotation −90, display 1080×1920) reports its dimensions
+ * TRANSPOSED relative to what step 6 sees. Deriving a capture scale from that
+ * is how a portrait project silently captures landscape.
+ *
+ * So a project with no settings.resolution keeps today's unconditional 2× — a
+ * safe, deliberate no-op — rather than gaining the improvement at the cost of
+ * an early probe that can be transposed.
+ */
+function captureScaleFor(resolution) {
+  // Array.isArray, not `?? []`: settings.resolution comes from JSON.parse, so a
+  // hand-edited project can hold an object, string, number or boolean there.
+  // Those are not nullish, so `?? []` would pass them to the destructure, and
+  // anything non-iterable throws — aborting the whole render on a malformed
+  // field that every other consumer (settings.resolution?.[0] ?? 1080) has
+  // always tolerated. Array.isArray splits the JSON value space exactly.
+  const [rawW, rawH] = Array.isArray(resolution) ? resolution : []
+  // Coerced, not type-checked, to stay consistent with the design-canvas math
+  // below, which reaches the same numbers through Math.min/Math.round and so
+  // accepts numeric strings. Without this, ["1920","1080"] would build a real
+  // 1920x1080 canvas there while silently falling back to 2 here — the same
+  // "two places disagree about a dimension" shape this change exists to fix.
+  const w = Number(rawW)
+  const h = Number(rawH)
+  // Non-positive is malformed, not merely small: it must degrade to 2 like any
+  // other bad value rather than reach the clamp, which would floor it to 1 and
+  // quietly contradict this function's own contract.
+  if (!Number.isFinite(w) || !Number.isFinite(h) || w <= 0 || h <= 0) return 2
+  return Math.min(2, Math.max(1, Math.min(w, h) / SHORT_EDGE_TARGET))
+}
+
+// ---------------------------------------------------------------------------
 // CLI argument parsing
 // ---------------------------------------------------------------------------
 
@@ -268,22 +353,8 @@ async function main(projectPath, { out, workers, clean, imageTone, exportMode = 
   const settings = projectJson.settings || {}
   const fps    = settings.fps || 30
 
-  // Design resolution for overlay capture — always 1080 on the short edge,
-  // with the aspect ratio of settings.resolution (or 9:16 portrait by default).
-  //
-  // Why "always 1080 short edge" and not settings.resolution itself: overlay
-  // JSX is authored in fixed design-px coordinates (fontSize: 120, top: 350).
-  // If the Puppeteer viewport scaled with settings.resolution (e.g. 2160×3840
-  // for a 4K project), those same hardcoded sizes would be interpreted at the
-  // larger canvas — a 120px headline would only cover ~5% of canvas width
-  // instead of ~11%, and overlays would render small + top-left-cornered.
-  //
-  // Keeping the overlay canvas at 1080 short edge means JSX coordinates have
-  // one consistent meaning regardless of output resolution; the compose step
-  // then scales the captured overlay to the actual output dimensions when
-  // compositing onto the final video (2× up at 4K, fractional down for a
-  // sub-1080 source), so the same JSX fits every output size.
-  const SHORT_EDGE_TARGET = 1080
+  // See SHORT_EDGE_TARGET's module-level comment for why the overlay design
+  // canvas is always 1080 on the short edge, independent of settings.resolution.
   const aspectW = settings.resolution?.[0] ?? 1080
   const aspectH = settings.resolution?.[1] ?? 1920
   const aspectRatio = SHORT_EDGE_TARGET / Math.min(aspectW, aspectH)
@@ -431,6 +502,16 @@ async function main(projectPath, { out, workers, clean, imageTone, exportMode = 
   // 2. Collect segments and items
   const segmentSpecs = collectPuppeteerSegments(projectJson, fps, renderWidth, renderHeight, segDir)
   const { imageItems, videoItems } = collectAllItems(projectJson)
+
+  // Puppeteer overlay capture scale — derived from settings.resolution alone
+  // (not the eventual actualWidth/actualHeight below, which for a project with
+  // no settings.resolution isn't resolved until AFTER normalize/remove_bg have
+  // run — see captureScaleFor's doc comment for why an early probe of the
+  // pre-normalize src would be unsafe for rotated footage). Computed once here
+  // and stamped onto every segment spec so renderAllSegments' `{ ...seg, ... }`
+  // job spread (renderer.js) carries it through to each Puppeteer capture.
+  const captureScale = captureScaleFor(settings.resolution)
+  for (const spec of segmentSpecs) spec.captureScale = captureScale
 
   // Pre-probe color_transfer once per unique source so the segment encoder can
   // build per-item conversion filters without re-probing per segment. A typical
@@ -1397,4 +1478,4 @@ function fail(code, message) {
 }
 
 export { getTotalDurationSeconds, collectPuppeteerSegments, collectAllItems, resolveFilePath, shouldSkipNormalize, buildNormalizedOutputPath,
-         EXPORT_MODES, resolveExportMode, resolveSdrCurve, planExport }
+         EXPORT_MODES, resolveExportMode, resolveSdrCurve, planExport, captureScaleFor }

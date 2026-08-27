@@ -177,18 +177,30 @@ export function captureOptionsFor(job) {
 }
 
 async function renderChunk(browser, job) {
-  const { id, htmlPath, fps, width, height, frameStart, frameEnd, chunkIndex, outputPath, colorSpace, imageTone } = job
+  const { id, htmlPath, fps, width, height, frameStart, frameEnd, chunkIndex, outputPath, colorSpace, imageTone, captureScale } = job
 
   const frameDir = join(tmpdir(), `montaj-frames-${id}-c${chunkIndex}-${randomBytes(4).toString('hex')}`)
   mkdirSync(frameDir, { recursive: true })
 
   const page = await browser.newPage()
-  // deviceScaleFactor 2 supersamples the capture: the viewport reported to CSS
+  // deviceScaleFactor supersamples the capture: the viewport reported to CSS
   // stays width × height, so overlay JSX authored in design pixels lays out
-  // identically, while the screenshot comes back at 2× device pixels. This is
-  // deliberately NOT done by raising the design canvas — that changes the CSS
-  // coordinate space and shrinks every overlay (see render.js:251-256).
-  await page.setViewport({ width, height, deviceScaleFactor: 2 })
+  // identically, while the screenshot comes back at `captureScale`× device
+  // pixels. The factor is derived from the output resolution (captureScaleFor,
+  // render.js) rather than fixed at 2, so the capture lands on the OUTPUT's own
+  // pixel grid — an identity at 4K, native (1×) at 1080p — instead of always
+  // capturing at 4K's scale and forcing compose to downscale it for every
+  // smaller output. Two cases still capture off the output grid, both
+  // deliberately: a sub-1080 output (clamped to 1, so compose scales down from
+  // the design canvas) and a project with no `settings.resolution` at all,
+  // where the true output size isn't known this early and captureScaleFor
+  // returns 2 to preserve today's behaviour rather than guess.
+  // This is deliberately NOT done by raising the design canvas
+  // — that changes the CSS coordinate space and shrinks every overlay (see
+  // SHORT_EDGE_TARGET's comment in render.js). `?? 2` is the pre-existing
+  // fixed behavior, kept as a fallback for any caller that doesn't stamp
+  // `captureScale` onto its job.
+  await page.setViewport({ width, height, deviceScaleFactor: captureScale ?? 2 })
 
   // Capture page-level JS errors so we can surface them in the render log
   const pageErrors = []

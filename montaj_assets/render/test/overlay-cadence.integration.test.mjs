@@ -94,7 +94,7 @@ test('(a) every overlay frame is composited exactly once', { timeout: 300_000 },
   }
 })
 
-test('(b) overlay chunks are captured at 2x the design canvas', { timeout: 300_000 }, (t) => {
+test('(b) overlay chunks are captured on the output pixel grid, not always at 2x', { timeout: 300_000 }, (t) => {
   if (!haveTools()) { t.skip('ffprobe not available'); return }
 
   const dir = mkdtempSync(join(tmpdir(), 'montaj-capture-'))
@@ -117,11 +117,33 @@ test('(b) overlay chunks are captured at 2x the design canvas', { timeout: 300_0
       '-select_streams', 'v:0', '-show_entries', 'stream=width',
       '-of', 'csv=p=0', join(segDir, mkv)], { encoding: 'utf8' })
 
-    // 1080 short-edge design canvas at deviceScaleFactor 2. Asserts the CAPTURE
-    // resolution only — chroma is deliberately left at 4:2:0 (4:4:4 measured no
-    // quality gain on real footage and, combined with 2x, broke full renders).
-    assert.equal(Number(probe.stdout.trim()), 2160,
-      'capture must be 2x the design canvas — coordinates unchanged, detail doubled')
+    // This project renders at 540x960 — a sub-1080 output — so its design canvas
+    // is 1080x1920 and captureScaleFor clamps the capture scale to 1. The capture
+    // is therefore 1080 wide, ON the design canvas, not 2160.
+    //
+    // deviceScaleFactor was formerly a hardcoded 2, which made this 2160 for every
+    // output size. That was correct only at 4K (where 1080x2 == the output's own
+    // 2160 short edge, so compose does an identity) and pure loss everywhere else:
+    // at 1080p it forced compose to resample 2160 -> 1080 and threw away ~30% of
+    // the detail Chrome drew. The scale is now derived from settings.resolution.
+    //
+    // Keep this assertion a HARDCODED number, not one computed from
+    // captureScaleFor: the point is to check the render pipeline against an
+    // independently-derived expectation, and deriving it from the function under
+    // test would make the assertion vacuous.
+    //
+    // This is also the only end-to-end proof that `captureScale` reaches
+    // Puppeteer's setViewport at all — render.js stamps it onto each segment spec,
+    // renderAllSegments spreads it into the job, renderChunk destructures it. 1080
+    // is unreachable unless every link holds; the old hardcoded 2 yields 2160 here.
+    // Nothing else in the suite covers that path.
+    //
+    // Asserts the CAPTURE resolution only — chroma is deliberately left at 4:2:0
+    // (4:4:4 measured no quality gain on real footage and, combined with 2x, broke
+    // full renders).
+    assert.equal(Number(probe.stdout.trim()), 1080,
+      'capture must land on the output pixel grid (scale clamped to 1 for this ' +
+      'sub-1080 project), not at the old unconditional 2x')
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }
