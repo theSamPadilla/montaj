@@ -310,6 +310,90 @@ describe('splitAtTime', () => {
     expect(lw.duration + rw.duration).toBeCloseTo(10)
   })
 
+  // A fade belongs to an EDGE. Both halves used to inherit BOTH fades from the
+  // spread, so every cut manufactured a fade-out into the razor and a fade-in
+  // out of it — on a voiceover with the usual trailing fade, each cut left a
+  // fragment ramping to silence at the cut that the operator had to zero by
+  // hand.
+  it('does not manufacture a fade-out at the cut on the left half', () => {
+    const p = makeProject({
+      tracks: vtracks([]),
+      audio: { tracks: [{ id: 'au', src: 'a.mp3', start: 0, end: 100, fadeOut: 0.4 }] },
+    })
+    const [left, right] = splitAtTime(p, 40, null).audio!.tracks
+    expect(left.fadeOut).toBeUndefined()   // the cut edge — no fade was asked for
+    expect(right.fadeOut).toBe(0.4)        // still the original END, keeps its fade
+  })
+
+  it('does not manufacture a fade-in at the cut on the right half', () => {
+    const p = makeProject({
+      tracks: vtracks([]),
+      audio: { tracks: [{ id: 'au', src: 'a.mp3', start: 0, end: 100, fadeIn: 0.3 }] },
+    })
+    const [left, right] = splitAtTime(p, 40, null).audio!.tracks
+    expect(left.fadeIn).toBe(0.3)          // still the original START, keeps its fade
+    expect(right.fadeIn).toBeUndefined()   // the cut edge
+  })
+
+  it('drops the curve along with the fade it described', () => {
+    // A `fadeOutCurve` on a half with no fade-out is dead data, and the next
+    // hand-drawn fade there should start from the default shape.
+    const p = makeProject({
+      tracks: vtracks([]),
+      audio: { tracks: [{
+        id: 'au', src: 'a.mp3', start: 0, end: 100,
+        fadeIn: 0.3, fadeInCurve: 'linear', fadeOut: 0.4, fadeOutCurve: 'log',
+      }] },
+    })
+    const [left, right] = splitAtTime(p, 40, null).audio!.tracks
+    expect(left.fadeInCurve).toBe('linear')
+    expect(left.fadeOutCurve).toBeUndefined()
+    expect(right.fadeOutCurve).toBe('log')
+    expect(right.fadeInCurve).toBeUndefined()
+  })
+
+  it('splitting twice never reintroduces a fade at either cut', () => {
+    // The shape that surfaced this: successive razors down one voiceover. The
+    // middle fragment owns neither original edge, so it must carry no fade at
+    // all — before the fix it carried both.
+    const p = makeProject({
+      tracks: vtracks([]),
+      audio: { tracks: [{ id: 'au', src: 'a.mp3', start: 0, end: 100, fadeIn: 0.3, fadeOut: 0.4 }] },
+    })
+    const once = splitAtTime(p, 40, null)
+    const twice = splitAtTime(once, 70, once.audio!.tracks[1].id)
+    const [a, b, c] = twice.audio!.tracks
+    expect([a.fadeIn, a.fadeOut]).toEqual([0.3, undefined])
+    expect([b.fadeIn, b.fadeOut]).toEqual([undefined, undefined])
+    expect([c.fadeIn, c.fadeOut]).toEqual([undefined, 0.4])
+  })
+
+  it('clamps a kept fade that no longer fits its own fragment', () => {
+    // A 3s fade-out is fine on the whole 20s track; the fragment it lands on is
+    // 1s long. Nothing downstream re-clamps — the renderer just anchors
+    // `st = end - fadeOut`, which would start the fade before this fragment's
+    // audio begins.
+    const p = makeProject({
+      tracks: vtracks([]),
+      audio: { tracks: [{ id: 'au', src: 'a.mp3', start: 0, end: 20, fadeIn: 3, fadeOut: 3 }] },
+    })
+    const [left, right] = splitAtTime(p, 19, null).audio!.tracks
+    expect(right.fadeOut).toBe(1)   // clamped to the 1s fragment
+    expect(left.fadeIn).toBe(3)     // still fits the 19s fragment, untouched
+  })
+
+  it('leaves a track with no fades alone', () => {
+    const p = makeProject({
+      tracks: vtracks([]),
+      audio: { tracks: [{ id: 'au', src: 'a.mp3', start: 0, end: 10 }] },
+    })
+    const [left, right] = splitAtTime(p, 4, null).audio!.tracks
+    for (const half of [left, right]) {
+      expect(half).not.toHaveProperty('fadeIn')
+      expect(half).not.toHaveProperty('fadeOut')
+    }
+  })
+
   it('carries an existing trim window across a split (both halves stay within source)', () => {
     // A pre-trimmed track: source window [2,12] mapped onto timeline [0,10].
     const p = makeProject({

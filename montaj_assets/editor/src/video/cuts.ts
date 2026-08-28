@@ -481,19 +481,47 @@ function splitAudioTrack(track: AudioTrack, at: number): [AudioTrack, AudioTrack
   const outPoint = track.outPoint ?? track.sourceDuration ?? (track.end - track.start)
   const splitPoint = inPoint + (at - track.start)
 
+  // A FADE BELONGS TO AN EDGE, NOT TO THE CLIP. Spreading `...track` into both
+  // halves gave both fragments both fades, which is wrong on the two edges the
+  // split just created: the left half fades OUT into the cut and the right half
+  // fades IN out of it, neither of which anyone asked for. On a voiceover
+  // carrying the usual trailing fade-out that is very visible — every cut
+  // produced a fragment that ramps to silence at the razor, and the operator
+  // has to zero it by hand each time. Fades are added deliberately; a cut is
+  // not a request for one.
+  //
+  // So each half keeps only the fade whose EDGE it still owns:
+  //   • the left half keeps the original START, so it keeps `fadeIn`;
+  //   • the right half keeps the original END, so it keeps `fadeOut`;
+  //   • the two new edges at the cut carry no fade at all.
+  // The paired curve goes with its fade — a `fadeOutCurve` describing a
+  // fade-out that no longer exists is dead data, and the operator's next
+  // hand-drawn fade should start from the default shape like any other new one.
+  //
+  // The kept fade is then clamped to its own fragment's span. A 3s fade-out on
+  // a 20s track is fine; split that track 1s from its end and the 3s fade no
+  // longer fits inside the 1s fragment it lands on. Nothing downstream
+  // re-clamps for us — the pointer-machine and the properties panel each clamp
+  // their OWN edits, and the renderer just anchors `st = end - fadeOut`, which
+  // for an oversized fade starts before the fragment's audio does.
+  const { fadeOut: _outAmt, fadeOutCurve: _outCurve, ...leftBase } = track
+  const { fadeIn: _inAmt, fadeInCurve: _inCurve, ...rightBase } = track
+
   const left: AudioTrack = {
-    ...track,
+    ...leftBase,
     end: at,
     inPoint,
     outPoint: splitPoint,
   }
   const right: AudioTrack = {
-    ...track,
+    ...rightBase,
     id: uniqueId(track.id),
     start: at,
     inPoint: splitPoint,
     outPoint,
   }
+  if (left.fadeIn !== undefined)  left.fadeIn  = Math.min(left.fadeIn, at - track.start)
+  if (right.fadeOut !== undefined) right.fadeOut = Math.min(right.fadeOut, track.end - at)
   return [left, right]
 }
 
