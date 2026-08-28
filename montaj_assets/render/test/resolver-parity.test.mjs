@@ -616,13 +616,17 @@ test('divergence: an item with NO trackIdx sorts differently (byTrackIdx treats 
 // Divergences that are INERT here — confirmed empirically, not by argument
 // ---------------------------------------------------------------------------
 
-test('inert (KNOWN-DIVERGENCES D5): a track-0 overlay reaches neither input array', () => {
-  // The resolver's PROJECT-shaped path honours an overlay on track 0; render
-  // does not. That cannot reach this file: `collectAllItems` (render.js:599-601)
-  // only emits image/video items, and `collectPuppeteerSegments` (render.js:503)
-  // slices tracks from 1. `planSegments` is fed those two arrays and nothing
-  // else, so the divergence is structurally out of reach — asserted here rather
-  // than assumed, because the whole swap rests on it.
+test('RESOLVED (was KNOWN-DIVERGENCES D5): a track-0 overlay renders like any other', () => {
+  // D5 recorded that render dropped an `overlay`-type item on track 0 —
+  // `collectPuppeteerSegments` sliced tracks from 1 — while the resolver and
+  // `sample-frame.js` both honoured it. Preview showed the overlay; the export
+  // did not contain it, and an overlay-ONLY project (the animations workflow
+  // emits exactly that) rendered to nothing at all while reporting success.
+  //
+  // The slice is gone. `collectPuppeteerSegments` now scans every enabled
+  // track and relies on its own `item.type === 'overlay'` test to keep footage
+  // out, so render agrees with the resolver here. This test is kept in place,
+  // inverted, because it is the one that would catch the slice coming back.
   const project = {
     settings,
     tracks: [
@@ -632,16 +636,28 @@ test('inert (KNOWN-DIVERGENCES D5): a track-0 overlay reaches neither input arra
   }
   const { allItems, puppeteerSegs } = composeInputs(project, 30, 1080, 1920)
 
+  // Unchanged, and still the reason dropping the slice is safe: the visual
+  // collector emits image/video only, so the track-0 overlay reaches the
+  // Puppeteer path and nothing else.
   assert.deepStrictEqual(allItems.map(i => i.id), ['c1'],
-    'collectAllItems must not emit the track-0 overlay')
-  assert.deepStrictEqual(puppeteerSegs.map(s => s.id), ['overlay-0--track1Overlay'],
-    'collectPuppeteerSegments must see only tracks 1+')
+    'collectAllItems must still not emit the track-0 overlay')
+  assert.deepStrictEqual(puppeteerSegs.map(s => s.id),
+    ['overlay-0--track0Overlay', 'overlay-1--track1Overlay'],
+    'collectPuppeteerSegments must now see track 0 too, lower track first')
 
-  // The track-0 overlay contributes no boundary at 1s or 3s and never appears.
+  // The track-0 overlay now contributes its boundaries at 1s and 3s, so the
+  // plan splits there instead of running straight from 0 to 2.
   const plan = assertParity('d5-track0-overlay', allItems, puppeteerSegs, 1080, 1920, 30)
-  assert.deepStrictEqual(plan.map(s => [s.start, s.end]), [[0, 2], [2, 4], [4, 6]])
-  assert.ok(plan.every(s => !s.opaqueVideo),
-    'the track-0 overlay\'s opaque flag must have no effect')
+  assert.deepStrictEqual(plan.map(s => [s.start, s.end]),
+    [[0, 1], [1, 2], [2, 3], [3, 4], [4, 6]])
+
+  // And its `opaque` flag now takes effect, over exactly the span it covers
+  // (1s–3s): those segments skip compositing the video beneath it, which is
+  // the whole point of marking an overlay opaque.
+  assert.deepStrictEqual(
+    plan.map(s => [s.start, s.end, !!s.opaqueVideo]),
+    [[0, 1, false], [1, 2, true], [2, 3, true], [3, 4, false], [4, 6, false]],
+  )
 })
 
 test('inert (KNOWN-DIVERGENCES D7): compose.js decides the same-trackIdx tie, not planSegments', () => {

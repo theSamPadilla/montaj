@@ -580,7 +580,8 @@ see D5 above). **SP4's WebCodecs engine is now a second, PREVIEW-FACING
 consumer**: `engine/scheduler.ts`'s `planTick` calls `resolveAt(project, t,
 {variant:'preview'})` (the `previewResolver` default) every tick. The engine
 therefore inherits `resolveAt`'s 'preview' semantics — including D5's
-uniform per-track walk, D6's single consistent quantization, and D7's
+uniform per-track walk (which the RENDER side has since adopted too, closing
+D5 — see that entry), D6's single consistent quantization, and D7's
 document-order (not image-then-video) tie order — wherever they differ from
 what `collectAllItems`/`compose.js`/legacy `segment-plan.js` still do on the
 RENDER side. This does not create a NEW divergence (the engine's preview
@@ -591,33 +592,40 @@ preview surfaces now agree with the resolver's project-shaped semantics while
 render's legacy pipeline has not adopted them, until render's own
 project-shaped adoption (tracked separately per-entry above) closes the gap.
 
-## D5. `track-0-overlay-items`
+## D5. `track-0-overlay-items` — **RESOLVED**
 
-**Verified.** `collectAllItems` (`render.js:582-688`) only collects `type ===
-'image'` / `type === 'video'` items, from EVERY track including track 0.
-`collectPuppeteerSegments` (`render.js:504`, `overlayTracks =
-(projectJson.tracks ?? []).slice(1)`) only looks at tracks 1+. The combined
-effect: an `overlay`-type item placed on track 0 contributes NO boundary and
-NEVER RENDERS today. `sample-frame.js` has no such track-0 exclusion — it now
-calls the shared resolver directly (`resolveAt(resolvedProject, atSeconds,
-{variant:'render'})`, `sample-frame.js:537`) rather than hand-walking tracks,
-so it inherits the resolver's uniform per-track walk and honors a track-0
-overlay. The resolver's project-shaped `collectScene` (`activation.js`) is
-exactly that walk: every track uniformly, so a track-0 overlay is a
-first-class item.
+**Resolved, in render's favour of the resolver.** `collectPuppeteerSegments`
+no longer slices tracks from 1; it scans every enabled track and relies on its
+own `item.type === 'overlay'` test to keep footage out of the Puppeteer path.
+Render therefore honors a track-0 overlay exactly as the resolver,
+`sample-frame.js` and SP4's engine always did, and this entry is closed.
 
-No fixture in this corpus places an overlay on track 0 specifically (all
-overlay-bearing fixtures here use track 1, matching the common case); this is
-inert for T7's `planSegments`/`collectAllItems`/`collectPuppeteerSegments` path
-(whose parity harness is fed by `compose.js`'s pre-split
-`imageItems`/`videoItems`/`puppeteerSegs` arrays, which already have this
-exclusion baked in before the resolver ever sees them) but is REAL for any
-consumer of the project-shaped API — which now concretely includes
-`sample-frame.js` (see above) and SP4's engine (`planTick`, next entry's note),
-not just a hypothetical future one. Pinned instead by
-`test/activation.test.mjs` per that module's own header.
+Pinned by `render/test/overlay-track0.test.mjs` and by the inverted
+`RESOLVED (was KNOWN-DIVERGENCES D5)` case in
+`render/test/resolver-parity.test.mjs`, which asserts the track-0 overlay now
+contributes its boundaries and that its `opaque` flag takes effect over the
+span it covers.
 
-**Owner: SP4.**
+### What it used to say, and why it mattered
+
+`collectAllItems` (`render.js`) only collects `type === 'image'` / `type ===
+'video'` items, from EVERY track including track 0 — that part is unchanged
+and is exactly what makes scanning track 0 for overlays safe.
+`collectPuppeteerSegments` used to read `(projectJson.tracks ?? []).slice(1)`,
+so an `overlay`-type item placed on track 0 contributed NO boundary and NEVER
+RENDERED. Preview showed it (the resolver's `collectScene` in `activation.js`
+walks every track uniformly) and the export silently did not contain it.
+
+The corpus never caught this because no fixture placed an overlay on track 0 —
+every overlay-bearing fixture used track 1, matching the filmed-edit common
+case. The shape that broke it in the field is agent-authored: the animations
+workflow emits projects that are ONE track of nothing but overlays, and those
+rendered to an empty output while reporting success. The same defect had
+already surfaced twice on the editor side, in the canvas playback ceiling and
+in the export dialog's cover picker — three consumers, one wrong assumption
+that `tracks[0]` is always primary footage.
+
+**Owner: SP4. Closed.**
 
 ## D6. `overlay-boundary-quantization`
 

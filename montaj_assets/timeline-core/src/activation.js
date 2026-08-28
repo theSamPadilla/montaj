@@ -67,12 +67,14 @@
 // delegates through LEVEL 1 with the caller's own arrays:
 //
 //   • TRACK-0 OVERLAYS. `collectAllItems` (render.js:581-637) takes only
-//     image/video items and `collectPuppeteerSegments` (render.js:502) slices
-//     tracks from 1, so an `overlay` item sitting on track 0 contributes no
-//     boundary and never renders today. `sample-frame.js:535-545` DOES honour
-//     it. The project-shaped level follows sample-frame and treats it as a
-//     first-class item. Registered as KNOWN-DIVERGENCES.md entry D5,
-//     `track-0-overlay-items`.
+//     image/video items, and `collectPuppeteerSegments` USED TO slice tracks
+//     from 1, so an `overlay` item sitting on track 0 contributed no boundary
+//     and never rendered. `sample-frame.js:535-545` always honoured it, as
+//     does the project-shaped level here. That divergence is now RESOLVED in
+//     this level's favour: `collectPuppeteerSegments` scans every enabled
+//     track and filters by `item.type === 'overlay'` instead, so render agrees
+//     with this walk. See KNOWN-DIVERGENCES.md entry D5,
+//     `track-0-overlay-items` (closed).
 //   • OVERLAY QUANTIZATION. `collectPuppeteerSegments` pre-quantizes overlay
 //     `startSeconds`/`endSeconds` (render.js:508-509) for its own frame-count
 //     reasons, so legacy compares overlays against segment bounds using

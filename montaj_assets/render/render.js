@@ -836,8 +836,24 @@ function collectPuppeteerSegments(projectJson, fps, width, height, segDir) {
   const quantize = t => Math.round(t * fps) / fps
   const totalSecs = quantize(getTotalDurationSeconds(projectJson))
 
-  // Overlay items live in tracks[1+]; tracks[0] is primary footage
-  const overlayTracks = enabledTrackItems(projectJson).slice(1)
+  // EVERY enabled track, tracks[0] included. The `item.type === 'overlay'`
+  // test below is what keeps footage out of the Puppeteer path, so scanning
+  // track 0 picks up its overlays without touching its video or images —
+  // those still belong to `collectAllItems`.
+  //
+  // This used to be `.slice(1)`, on the assumption that tracks[0] is always
+  // primary footage. That holds for a filmed edit and fails outright for an
+  // agent-authored one: the animations workflow emits projects that are ONE
+  // track of nothing but overlays. Those collected zero overlay segments, so
+  // the render composited nothing and reported success over an empty output.
+  //
+  // `trackIdx` shifts by one for overlays that were already on tracks[1+], but
+  // it only ever reaches a spec's id and its segment filename — both per-run,
+  // and the segment dir is wiped at the start of every render. It is NOT the
+  // overlay z-order: overlays composite last and in emission order (see
+  // sample-frame.js's ordering note and encode-segment.js), which track order
+  // still gives us, so a lower track's overlay stays beneath a higher one's.
+  const overlayTracks = enabledTrackItems(projectJson)
   for (let trackIdx = 0; trackIdx < overlayTracks.length; trackIdx++) {
     const track = overlayTracks[trackIdx]
     // Specs this track just produced, keyed by the item's OWN id (not the

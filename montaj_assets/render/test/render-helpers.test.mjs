@@ -402,7 +402,13 @@ test('collectPuppeteerSegments: picks up overlay items from tracks[1+]', () => {
   }
   const specs = collectPuppeteerSegments(project, 30, 1080, 1920, '/tmp/seg')
   assert.equal(specs.length, 1)
-  assert.equal(specs[0].id, 'overlay-0--ov1')
+  // `overlay-1--`, not `overlay-0--`: the collector no longer slices tracks
+  // from 1 (that dropped track-0 overlays entirely — see
+  // test/overlay-track0.test.mjs), so the index in a spec id is now the item's
+  // REAL track index rather than an offset into a sliced array. The id and the
+  // matching segment filename are per-run and the segment dir is wiped at the
+  // start of every render, so nothing reads the old numbering.
+  assert.equal(specs[0].id, 'overlay-1--ov1')
   assert.equal(specs[0].startSeconds, 1.0)
   assert.equal(specs[0].endSeconds, 4.0)
   assert.equal(specs[0].frameCount, 90)  // round((4.0-1.0)*30)
