@@ -309,6 +309,7 @@ export const VIDEO_CONTROLS: ControlSection[] = [
     heading: 'Keyboard',
     entries: [
       { keys: ['S'], label: 'Split at the playhead' },
+      { keys: ['M'], label: 'Drop a marker at the playhead (or the preview axis)' },
       { keys: ['⌘/Ctrl', 'A'], label: 'Toggle the preview axis' },
       { keys: ['⇧', 'Delete'], label: 'Ripple-delete the selection' },
       { keys: ['⌘/Ctrl', 'Z'], label: 'Undo' },

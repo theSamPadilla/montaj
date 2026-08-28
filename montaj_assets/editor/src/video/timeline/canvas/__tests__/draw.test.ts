@@ -26,8 +26,10 @@ import {
   LIGHT_TRACK_PALETTE,
   timelinePalette,
   drawCursorLine,
+  drawMarkers,
   drawMarquee,
   drawRuler,
+  MARKER_STRIP_HEIGHT_PX,
   type TimelinePalette,
   CLIP_HANDLE_WIDTH_PX,
   FADE_GRIP_SIZE_PX,
@@ -2194,5 +2196,76 @@ describe('drawTimelineContent / drawTimelineOverlay — mode', () => {
     expect(styles).toContain(TIMELINE_COLORS.snapGuide)
     expect(styles).not.toContain(LIGHT_TIMELINE_COLORS.cursor)
     expect(styles).not.toContain(LIGHT_TIMELINE_COLORS.marqueeFill)
+  })
+})
+
+describe('marker strip layout', () => {
+  it('is absent, and the ruler still starts at 0, when the project has no markers', () => {
+    // A marker-less project must lay out byte-identically to before the feature.
+    const layout = computeTimelineLayout(project({ tracks: [{ id: 'trk-0', items: [] }] }))
+    expect(layout.markers).toBeUndefined()
+    expect(layout.ruler).toEqual({ y: 0, height: RULER_HEIGHT_PX })
+  })
+
+  it('claims the top strip and pushes the ruler down once markers exist', () => {
+    const layout = computeTimelineLayout(project({
+      tracks: [{ id: 'trk-0', items: [] }],
+      markers: [{ id: 'a', t: 1, label: '1' }],
+    }))
+    expect(layout.markers).toEqual({ y: 0, height: MARKER_STRIP_HEIGHT_PX })
+    expect(layout.ruler).toEqual({ y: MARKER_STRIP_HEIGHT_PX, height: RULER_HEIGHT_PX })
+  })
+
+  it('pushes every row down by exactly the strip height', () => {
+    const withOut = computeTimelineLayout(project({ tracks: [{ id: 'trk-0', items: [clip()] }] }))
+    const withIn = computeTimelineLayout(project({
+      tracks: [{ id: 'trk-0', items: [clip()] }],
+      markers: [{ id: 'a', t: 1, label: '1' }],
+    }))
+    expect(withIn.rows[0].y - withOut.rows[0].y).toBe(MARKER_STRIP_HEIGHT_PX)
+    expect(withIn.height - withOut.height).toBe(MARKER_STRIP_HEIGHT_PX)
+  })
+})
+
+describe('drawMarkers', () => {
+  const strip = { y: 0, height: MARKER_STRIP_HEIGHT_PX }
+
+  it('draws nothing at all for an empty list', () => {
+    const r = recordingContext()
+    drawMarkers(r.ctx, [], viewport(), strip, 800, [])
+    expect(r.calls).toHaveLength(0)   // not even a background fill
+  })
+
+  it('draws a flag and its label at the marker time', () => {
+    const r = recordingContext()
+    const vp = viewport({ pxPerSecond: 10, scrollSeconds: 0 })
+    drawMarkers(r.ctx, [{ id: 'a', t: 5, label: 'intro' }], vp, strip, 800, [])
+    const text = r.of('fillText')
+    expect(text).toHaveLength(1)
+    expect(text[0].args[0]).toBe('intro')
+    // Label sits just right of the flag, which stands at timeToX(5) = 50.
+    expect(text[0].args[1]).toBeGreaterThanOrEqual(50)
+    expect(r.of('fillRect').length).toBeGreaterThan(0)
+  })
+
+  it('skips a marker scrolled out of view', () => {
+    const r = recordingContext()
+    drawMarkers(r.ctx, [{ id: 'a', t: 500, label: '1' }], viewport({ pxPerSecond: 10, scrollSeconds: 0 }), strip, 800, [])
+    expect(r.of('fillText')).toHaveLength(0)
+  })
+
+  it('paints a selected marker in the selected colour', () => {
+    const base = recordingContext()
+    drawMarkers(base.ctx, [{ id: 'a', t: 5, label: '1' }], viewport({ pxPerSecond: 10 }), strip, 800, [])
+    const sel = recordingContext()
+    drawMarkers(sel.ctx, [{ id: 'a', t: 5, label: '1' }], viewport({ pxPerSecond: 10 }), strip, 800, ['a'])
+    const fills = (r: typeof base) => r.calls.filter(c => c.method === 'set:fillStyle').map(c => c.args[0])
+    expect(fills(sel)).not.toEqual(fills(base))
+  })
+
+  it('truncates a long label instead of letting it run across the strip', () => {
+    const r = recordingContext()
+    drawMarkers(r.ctx, [{ id: 'a', t: 0, label: 'a'.repeat(400) }], viewport({ pxPerSecond: 10 }), strip, 800, [])
+    expect((r.of('fillText')[0].args[0] as string).length).toBeLessThan(400)
   })
 })

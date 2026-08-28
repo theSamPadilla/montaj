@@ -19,6 +19,7 @@ export type {
   CarouselElement,
   Slide,
   EditorProject,
+  Marker,
 } from './schema'
 
 // ── Contracts (adapter, theme, render, media, component props) ────────────────
@@ -103,6 +104,9 @@ export {
 // "land where you dropped it, without stomping existing footage".
 export { placeDroppedClip, resolveDropTrackIndex } from './video/timeline/placement'
 export type { DroppedClipPlacement, PlacedClipResult } from './video/timeline/placement'
+// Marker model — pure mutations over `project.markers` (see markers.ts's file
+// header for the "same reference when unchanged" contract they all share).
+export { addMarker, moveMarker, renameMarker, removeMarkers, nextMarkerLabel } from './video/timeline/markers'
 
 // ── Image tone (HDR image color mapping) ─────────────────────────────────────
 // The picker component is exported so hosts using `onProvideImageTone` can

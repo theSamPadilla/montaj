@@ -386,6 +386,70 @@ describe('VideoEditor — preview axis toggle', () => {
   })
 })
 
+describe('VideoEditor — M drops a marker', () => {
+  it('drops one at the playhead with an auto-number label', async () => {
+    const adapter = makeFakeAdapter()
+    const onProjectChange = vi.fn()
+    render(<VideoEditor project={makeVideoProject()} adapter={adapter} onProjectChange={onProjectChange} slots={{ exportActions: <div /> }} />)
+    await screen.findByLabelText('Preview axis')
+
+    await act(async () => {
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'm' }))
+    })
+    const next = onProjectChange.mock.calls[onProjectChange.mock.calls.length - 1][0]
+    expect(next.markers).toHaveLength(1)
+    expect(next.markers[0]).toMatchObject({ t: 0, label: '1' })   // playhead starts at 0
+  })
+
+  it('does not fire while typing in a text surface', async () => {
+    const adapter = makeFakeAdapter()
+    const onProjectChange = vi.fn()
+    render(<VideoEditor project={makeVideoProject()} adapter={adapter} onProjectChange={onProjectChange} slots={{ exportActions: <div /> }} />)
+    await screen.findByLabelText('Preview axis')
+    onProjectChange.mockClear()   // drop the mount-time "notify host" call — see the Space test above
+
+    const input = document.createElement('input')
+    document.body.appendChild(input)
+    await act(async () => {
+      input.dispatchEvent(new KeyboardEvent('keydown', { key: 'm', bubbles: true }))
+    })
+    expect(onProjectChange).not.toHaveBeenCalled()
+    input.remove()
+  })
+
+  it('Cmd+M is left alone — the shortcut is the bare letter', async () => {
+    // Cmd+M minimises the window on macOS; swallowing it would be hostile.
+    const adapter = makeFakeAdapter()
+    const onProjectChange = vi.fn()
+    render(<VideoEditor project={makeVideoProject()} adapter={adapter} onProjectChange={onProjectChange} slots={{ exportActions: <div /> }} />)
+    await screen.findByLabelText('Preview axis')
+    onProjectChange.mockClear()   // drop the mount-time "notify host" call — see the Space test above
+
+    await act(async () => {
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'm', metaKey: true }))
+    })
+    expect(onProjectChange).not.toHaveBeenCalled()
+  })
+
+  it('holding M does not spray markers', async () => {
+    // Key repeat fires keydown over and over at the same playhead; the
+    // half-frame guard in addMarker must make every repeat after the first a
+    // no-op that never reaches onProjectChange.
+    const adapter = makeFakeAdapter()
+    const onProjectChange = vi.fn()
+    render(<VideoEditor project={makeVideoProject()} adapter={adapter} onProjectChange={onProjectChange} slots={{ exportActions: <div /> }} />)
+    await screen.findByLabelText('Preview axis')
+
+    for (let i = 0; i < 5; i++) {
+      await act(async () => {
+        document.dispatchEvent(new KeyboardEvent('keydown', { key: 'm' }))
+      })
+    }
+    const last = onProjectChange.mock.calls[onProjectChange.mock.calls.length - 1][0]
+    expect(last.markers).toHaveLength(1)
+  })
+})
+
 // ── T2 — copy / paste / duplicate / paste-attributes ────────────────────
 //
 // Persistence assertions read `adapter.saveProject`'s SECOND argument (the

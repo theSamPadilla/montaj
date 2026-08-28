@@ -36,13 +36,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import type { GetFilmstripArgs, GetWaveformPeaksArgs, FilmstripIndex, PeaksData, PendingDrop, Project, FootageDropPayload, ResolveFilePath, TimelineDropPlacement } from '../../../types'
 import { FOOTAGE_DND_MIME } from '../../../types'
-import type { KeyframeProp } from '../../../schema'
+import type { KeyframeProp, Marker } from '../../../schema'
 import type { PlaybackClock } from '../../playback-clock'
 import { BASE_VISUAL_ROW_RENDER_HEIGHT_PX, ROW_GAP_PX, VISUAL_ROW_RENDER_HEIGHT_PX } from '../timeline-model'
 import { placeDroppedClip, resolveDropPoint } from '../placement'
-import { computeTimelineLayout, drawTimelineContent, drawTimelineOverlay, type PendingDropBand, type TimelineLayout, type TimelineMode, type VisualRowLayout } from './draw'
+import { computeTimelineLayout, drawTimelineContent, drawTimelineOverlay, MARKER_FLAG_WIDTH_PX, MARKER_LABEL_GAP_PX, type PendingDropBand, type TimelineLayout, type TimelineMode, type VisualRowLayout } from './draw'
 import { hitTest, isEdgeHit, type Point, type SurfaceRect } from './hit-test'
 import { keyframeUnionTimes } from './keyframe-strip'
+import { renameMarker } from '../markers'
 import {
   createPointerMachine,
   type KeyframeSelection,
@@ -67,6 +68,7 @@ import {
   reclampForDuration,
   scaleContextToDpr,
   syncCanvasBackingStore,
+  timeToX,
   useViewportValue,
   wheelIntent,
   withSurfaceWidth,
@@ -181,6 +183,53 @@ export interface TimelineCanvasProps {
   /** Ghost bands for the host's in-flight imports, drawn on the overlay layer.
    *  Absent/empty → nothing extra is painted. */
   pendingDrops?: readonly PendingDrop[]
+}
+
+/**
+ * The marker rename box, isolated into its own component for the same reason
+ * `CanvasZoomBadge` (bottom of this file) is: it owns the viewport
+ * subscription itself, so a zoom or scroll while the box is open moves it
+ * without making `TimelineCanvas`'s own render body subscribe to the
+ * viewport — which would re-render the whole surface on every wheel-zoom
+ * tick and pan frame, the exact thing this file's header doc says never
+ * happens. The subscription only exists for as long as this component is
+ * mounted, i.e. only while a rename is actually open.
+ */
+function MarkerRenameBox({
+  marker,
+  store,
+  top,
+  onCommit,
+  onCancel,
+}: {
+  marker: Marker
+  store: ViewportStore
+  top: number
+  onCommit: (value: string) => void
+  onCancel: () => void
+}) {
+  const viewport = useViewportValue(store)
+  return (
+    <input
+      aria-label="Rename marker"
+      autoFocus
+      defaultValue={marker.label}
+      className="absolute z-10 h-4 rounded-sm border border-sky-400 bg-slate-900 px-1 text-[11px] text-slate-50 outline-none"
+      style={{
+        left: Math.round(timeToX(marker.t, viewport)) + MARKER_FLAG_WIDTH_PX + MARKER_LABEL_GAP_PX,
+        top,
+        width: 120,
+      }}
+      onKeyDown={e => {
+        // Stop Escape/Enter reaching the document keymap: this box owns
+        // them while it is open.
+        e.stopPropagation()
+        if (e.key === 'Enter') onCommit((e.target as HTMLInputElement).value)
+        if (e.key === 'Escape') onCancel()
+      }}
+      onBlur={e => onCommit(e.target.value)}
+    />
+  )
 }
 
 /**
@@ -417,6 +466,13 @@ export default function TimelineCanvas({
   // below), which degrades to the pre-fill behaviour.
   const [paneFill, setPaneFill] = useState(0)
   const surfaceHeight = Math.max(layout.height, VISUAL_ROW_RENDER_HEIGHT_PX, paneFill)
+
+  // Which marker's rename box is open, or null for none. The box itself is a
+  // real DOM `<input>` (rendered below, as a third child of the wrapper div)
+  // rather than a canvas-drawn fake — `editCaption` has no equivalent here
+  // because it routes to the transcript sidebar instead, so this is the one
+  // inline text editor this canvas hosts directly.
+  const [editingMarkerId, setEditingMarkerId] = useState<string | null>(null)
 
   // Latest draw inputs, readable from the imperative paint without making the
   // paint a dependency of every effect (the ref-to-latest pattern
@@ -785,6 +841,7 @@ export default function TimelineCanvas({
         case 'commit':        p.onOverlayEdit?.(effect.project); break
         case 'inspect':       (effect.target === 'visual' ? p.onInspectClip : p.onInspectAudio)?.(effect.id); break
         case 'editCaption':   p.onEditCaption?.(effect.id); break
+        case 'editMarker':    setEditingMarkerId(effect.id); break
         // Cursor is written straight to the node: an affordance that changes on
         // every hover must not cost a React render.
         case 'cursor':        if (containerRef.current) containerRef.current.style.cursor = effect.cursor; break
@@ -888,7 +945,7 @@ export default function TimelineCanvas({
     // precedence here, same as it does in the machine's own hit-test — a
     // trim handle must not light up underneath a diamond that would win the
     // actual press.
-    const hit = hitTest(point, p.layout, store.get(), { selectedIds: p.selectedIds })
+    const hit = hitTest(point, p.layout, store.get(), { selectedIds: p.selectedIds, markers: p.project.markers })
     if (!isEdgeHit(hit) || hit.itemId === undefined || hit.edge === undefined) return null
     return p.selectedIds.includes(hit.itemId) ? { itemId: hit.itemId, edge: hit.edge } : null
   }
@@ -1137,7 +1194,7 @@ export default function TimelineCanvas({
       if (!p.onFadeCurveMenu && !p.onKeyframeMenu) return
       const point = surfacePoint(e)
       if (!point) return
-      const hit = hitTest(point, p.layout, store.get(), { selectedIds: p.selectedIds })
+      const hit = hitTest(point, p.layout, store.get(), { selectedIds: p.selectedIds, markers: p.project.markers })
       if (p.onFadeCurveMenu && hit.kind === 'audio-fade' && hit.itemId !== undefined && hit.side) {
         e.preventDefault()
         p.onFadeCurveMenu({ trackId: hit.itemId, side: hit.side, x: e.clientX, y: e.clientY })
@@ -1368,6 +1425,36 @@ export default function TimelineCanvas({
     }
   }, [])
 
+  // ── Marker rename box ──
+  //
+  // Unlike the imperative paint (which reads `store.get()` fresh per frame),
+  // the box's `left` is a React-owned DOM style, so it needs a subscription to
+  // follow a zoom or scroll that happens while it's open. That subscription
+  // lives on `MarkerRenameBox` itself, below, rather than here — the same
+  // reason `CanvasZoomBadge` is its own component: TimelineCanvas must not
+  // subscribe to the viewport in its own render body, or every wheel-zoom
+  // tick and pan frame re-renders this whole surface, which is exactly what
+  // this file's header doc promises never happens.
+  const editingMarker = editingMarkerId
+    ? (project.markers ?? []).find(m => m.id === editingMarkerId) ?? null
+    : null
+
+  const commitRename = (value: string) => {
+    // The id is captured and null-checked here because this same function is
+    // also the input's blur handler, and it must be safe to call when there
+    // is nothing being edited. Escape does not route through here at all —
+    // its handler clears `editingMarkerId` directly (see `MarkerRenameBox`
+    // below) — so the null check is for blur-with-nothing-open, not for
+    // "Escape already cleared it before blur could commit."
+    const id = editingMarkerId
+    setEditingMarkerId(null)
+    if (!id) return
+    const next = renameMarker(project, id, value)
+    if (next === project) return          // blank or unchanged — no undo entry
+    onProjectChange?.(next)
+    onOverlayEdit?.(next)                  // one commit, one undo step
+  }
+
   return (
     <div
       ref={containerRef}
@@ -1399,6 +1486,15 @@ export default function TimelineCanvas({
     >
       <canvas ref={contentCanvasRef} className="absolute inset-0 w-full h-full" />
       <canvas ref={overlayCanvasRef} className="absolute inset-0 w-full h-full pointer-events-none" />
+      {editingMarker && (
+        <MarkerRenameBox
+          marker={editingMarker}
+          store={store}
+          top={layout.markers?.y ?? 0}
+          onCommit={commitRename}
+          onCancel={() => setEditingMarkerId(null)}
+        />
+      )}
     </div>
   )
 }

@@ -216,6 +216,40 @@ def test_enrich_carries_freshness():
     assert out["project"]["name"] == "robotics-ban"
 
 
+def test_enrich_includes_markers_sorted_by_time():
+    project = _project()
+    project["markers"] = [
+        {"id": "m2", "t": 8.0, "label": "outro"},
+        {"id": "m1", "t": 2.0, "label": "1"},
+    ]
+    state = context.report("p1", {"playheadSec": 5.0, "selectedIds": []})
+    out = context.enrich("p1", project, state)
+    assert out["markers"] == [
+        {"id": "m1", "t": 2.0, "label": "1"},
+        {"id": "m2", "t": 8.0, "label": "outro"},
+    ]
+
+
+def test_enrich_omits_markers_when_the_project_has_none():
+    # An empty list would read to an agent as "the operator marked nothing",
+    # which is a different claim from "this project has no markers at all".
+    project = _project()
+    state = context.report("p1", {"playheadSec": 0.0, "selectedIds": []})
+    assert "markers" not in context.enrich("p1", project, state)
+
+
+def test_enrich_skips_malformed_markers():
+    project = _project()
+    project["markers"] = [
+        {"id": "ok", "t": 1.0, "label": "a"},
+        {"id": "bad"},
+        "nonsense",
+        {"t": 2.0},
+    ]
+    state = context.report("p1", {"playheadSec": 0.0, "selectedIds": []})
+    assert context.enrich("p1", project, state)["markers"] == [{"id": "ok", "t": 1.0, "label": "a"}]
+
+
 client = TestClient(app, raise_server_exceptions=False)
 
 

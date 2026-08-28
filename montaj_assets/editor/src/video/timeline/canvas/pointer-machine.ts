@@ -60,6 +60,7 @@ import { reflowMagneticLanes } from '../../audioMagnet'
 import { laneOf, normalizeCaptionLanes, resolveDropLane, sameLaneNeighbours } from '../../captionLanes'
 import { collapseGaps, rollEdit, slideItem, slipItem } from '../../cuts'
 import { canKeyframe, enableKeyframing, moveKeyframe, setKeyframe, transformProps, valueAt } from '../../keyframeOps'
+import { moveMarker } from '../markers'
 import { applyMoveDeltaToSelection, applyResizeDeltaToSelection } from '../multiSelectOps'
 import { AUDIO_LANE_HEIGHT_PX, CAPTION_ROW_HEIGHT_PX, computeDerivedTiming, groupAudioLanes, mapTrackItems, moveItemAcrossTracks, normalizeTracks, resolveTargetTrackIdx, trackItems, updateAudioTrack } from '../timeline-model'
 import { DRAG_THRESHOLD_PX, computeResizedItem, resizeWindowedItem, type Draggable } from '../useItemDragDrop'
@@ -167,6 +168,10 @@ export type PointerEffect =
    *  sidebar, which is where caption text is edited now that the inline
    *  contentEditable row is gone. */
   | { type: 'editCaption'; id: string }
+  /** Double-click on a marker: the host opens its inline rename box. Named
+   *  separately from `editCaption` because it routes somewhere else entirely —
+   *  an overlay input on the canvas, not the transcript sidebar. */
+  | { type: 'editMarker'; id: string }
   /** The surface's CSS cursor. Emitted only when it changes. */
   | { type: 'cursor'; cursor: Cursor }
   /** Where to draw the snap guide and how hard it is holding, or nulls to take
@@ -214,6 +219,8 @@ export type GestureKind =
   /** Dragging one caption block's in/out edge. Single-segment: multi-caption
    *  trim is out of scope for v1. */
   | 'caption-trim'
+  /** Re-timing a marker in the strip above the ruler. See `applyMarkerMove`. */
+  | 'marker-move'
   /** Dragging the playhead. Lives on the ruler strip only. */
   | 'scrub'
   /** Dragging a rubber-band box across empty track area to select. */
@@ -330,6 +337,10 @@ export function cursorForHit(hit: HitResult): Cursor {
     // retime-in-place gesture a trim edge does, so it gets the same cursor.
     case 'keyframe':
       return 'ew-resize'
+    // A marker only ever moves horizontally along the strip — same
+    // retime-in-place gesture, same cursor.
+    case 'marker':
+      return 'ew-resize'
     case 'item-edge':
     case 'audio-edge':
     case 'caption-edge':
@@ -355,6 +366,7 @@ function cursorForGesture(gesture: GestureKind): Cursor {
     case 'caption-trim':
     case 'scrub':
     case 'keyframe-move':
+    case 'marker-move':
       return 'ew-resize'
     case 'marquee':
       return 'crosshair'
@@ -384,6 +396,10 @@ export function resolveGesture(hit: HitResult, modifiers: Modifiers): GestureKin
     // A keyframe diamond does exactly one thing too — retime.
     case 'keyframe':
       return 'keyframe-move'
+    // So does a marker: there is nothing to trim and no second dimension to
+    // drag it in, so no modifiers of its own either.
+    case 'marker':
+      return 'marker-move'
     // Captions have no roll/slip/slide either — there is no source window to
     // slip and no neighbour to roll against — so modifiers fall through here
     // exactly as they do for audio.
@@ -567,9 +583,19 @@ function isOverPlayhead(point: Point, ctx: PointerContext): boolean {
  *  into `isEdgeHit` (whose contract is specifically "describes a trim grab",
  *  read via `hit.edge`; a fade grip has no `edge`, only `side`). Keyframe
  *  diamonds win for the identical reason — same size class as a fade grip,
- *  same "smaller and more deliberate than a trim edge" case for the grab. */
+ *  same "smaller and more deliberate than a trim edge" case for the grab.
+ *
+ *  MARKERS win too, and for a stronger reason than any of the above (decision
+ *  D3). A flag is a small target the operator aimed at deliberately, so the D1
+ *  reasoning already covers it — but a marker is also routinely dropped AT the
+ *  playhead: `M` places one at the current time, which puts it exactly on the
+ *  line. Without this exclusion the freshest marker is always the one under the
+ *  playhead, so the COMMONEST marker on the strip would be the one you can
+ *  never pick up. */
 function grabsPlayhead(hit: HitResult, point: Point, ctx: PointerContext): boolean {
-  return !isEdgeHit(hit) && hit.kind !== 'audio-fade' && hit.kind !== 'keyframe' && isOverPlayhead(point, ctx)
+  return !isEdgeHit(hit) && hit.kind !== 'audio-fade' && hit.kind !== 'keyframe'
+    && hit.kind !== 'marker'
+    && isOverPlayhead(point, ctx)
 }
 
 /**
@@ -1125,6 +1151,36 @@ function applyAudioFade(ctx: PointerContext, press: Press, point: Point, snap: S
 }
 
 /**
+ * Retime a marker under the pointer.
+ *
+ * Snapping is deliberately NOT applied: a marker is a free annotation, and the
+ * snap boundaries are clip and audio edges — the moments a marker most often
+ * needs to sit slightly OFF. Nothing else in the strip has edges to snap to.
+ *
+ * GRAB-RELATIVE, not absolute. The hit region is a flat `MARKER_HIT_WIDTH_PX`
+ * wide (hit-test.ts) so that the LABEL is clickable and not just the 2px flag
+ * stem — which means a press very often lands well right of the flag itself.
+ * Retiming to the raw pointer time would teleport the marker up to that full
+ * width to meet the cursor on the first move past threshold. Every other drag
+ * on this surface preserves its grab offset through `dragDeltaSeconds`, and so
+ * does this one. `applyScrub` is absolute and is NOT a precedent for it: when
+ * you scrub, the playhead IS the cursor, so there is no offset to preserve.
+ */
+function applyMarkerMove(ctx: PointerContext, press: Press, point: Point, snap: SnapState, lastProject: Project): Applied {
+  const id = press.hit.markerId
+  const from = press.hit.marker
+  if (!id || !from) return noChange(snap, lastProject)
+  // Anchor on the marker the HIT captured, the way `applyAudioFade` reads
+  // `press.hit.track` — `hitTest` took it from the same project `baseProject`
+  // holds, at the same instant, so it is that project's own marker and needs no
+  // per-move lookup. `HitResult.marker` exists for exactly this.
+  const t = Math.max(0, from.t + dragDeltaSeconds(ctx, press, point))
+  const next = moveMarker(press.baseProject, id, t)
+  if (next === press.baseProject && lastProject === press.baseProject) return noChange(snap, lastProject)
+  return { effects: [{ type: 'projectChange', project: next }], snap, lastProject: next, guide: null }
+}
+
+/**
  * Drag a keyframe-strip diamond to retime it (plan decision 5).
  *
  * The diamond represents every prop that has a point at the SAME
@@ -1480,6 +1536,7 @@ function applyGesture(
     case 'audio-trim':  return applyAudioTrim(ctx, press, point, snap, lastProject, escaped)
     case 'audio-fade':  return applyAudioFade(ctx, press, point, snap, lastProject)
     case 'keyframe-move': return applyKeyframeMove(ctx, press, point, snap, lastProject, escaped)
+    case 'marker-move': return applyMarkerMove(ctx, press, point, snap, lastProject)
     case 'caption-move': return applyCaptionMove(ctx, press, point, snap, lastProject, escaped)
     case 'caption-trim': return applyCaptionTrim(ctx, press, point, snap, lastProject, escaped)
     case 'scrub':       return applyScrub(ctx, point, snap, lastProject)
@@ -1571,7 +1628,9 @@ export function pointerReducer(state: MachineState, event: PointerMachineEvent):
   // gets keyframe hit-testing for free the moment it has a selection —
   // exactly like `ctx.selectedIds` itself is already required on the context,
   // not an opt-in.
-  const hit = hitTest(point, ctx.layout, ctx.viewport, { ...ctx.hitTestOptions, selectedIds: ctx.selectedIds })
+  const hit = hitTest(point, ctx.layout, ctx.viewport, {
+    ...ctx.hitTestOptions, selectedIds: ctx.selectedIds, markers: ctx.project.markers,
+  })
 
   switch (event.type) {
     case 'pointerDown': {
@@ -1582,6 +1641,12 @@ export function pointerReducer(state: MachineState, event: PointerMachineEvent):
       // the full-height red bar anywhere it is reachable does the same thing
       // (`grabsPlayhead`). Landing the seek on mousedown rather than mouseup is
       // what makes the drag continuous.
+      //
+      // A MARKER hit must never reach this branch: it presses like an item, not
+      // like the ruler. Two things keep it out, and both have to hold — `hitTest`
+      // returns 'marker' (never 'ruler') for a point in the strip, and
+      // `grabsPlayhead` excludes 'marker' explicitly. Change either and every
+      // marker press starts scrubbing again.
       const onRuler = hit.kind === 'ruler'
       if (onRuler || grabsPlayhead(hit, point, ctx)) {
         const applied = applyScrub(ctx, point, createSnapState(), ctx.project)
@@ -1683,7 +1748,15 @@ export function pointerReducer(state: MachineState, event: PointerMachineEvent):
       if (state.kind === 'pressed') {
         const { hit: pressed, wasSelected } = state.press
         const effects: PointerEffect[] = []
-        if (pressed.itemId !== undefined) {
+        if (pressed.kind === 'marker' && pressed.markerId !== undefined) {
+          // A marker click selects it, exactly as a clip click does — same
+          // `select` effect, same host selection, which is what lets Delete
+          // reach it. Its id lives in `markerId` rather than `itemId` (a marker
+          // is not an item), so it needs its own branch rather than falling
+          // into the one below. No seek: the playhead belongs to the ruler,
+          // and a marker press is aimed at the flag, not at the time under it.
+          effects.push({ type: 'select', id: pressed.markerId, additive: isAdditive(modifiers) })
+        } else if (pressed.itemId !== undefined) {
           const additive = isAdditive(modifiers)
           effects.push({ type: 'select', id: pressed.itemId, additive })
           // VisualTrackRow seeks on a plain click that changes the selection;
@@ -1801,6 +1874,12 @@ export function pointerReducer(state: MachineState, event: PointerMachineEvent):
       // itemId, so the generic branch below would otherwise swallow it.
       if (hit.kind === 'keyframe' && hit.itemId !== undefined && hit.kfT !== undefined) {
         return { state, effects: [{ type: 'selectKeyframe', itemId: hit.itemId, t: hit.kfT }] }
+      }
+      // A marker opens its rename box. Checked up here with the diamond for the
+      // same reason: it carries no `itemId`, so the generic branches below
+      // would drop it on the floor rather than swallow it.
+      if (hit.kind === 'marker' && hit.markerId !== undefined) {
+        return { state, effects: [{ type: 'editMarker', id: hit.markerId }] }
       }
       // Key the SELECTED element, and only when the click landed ON it. Checked
       // against `ctx.selectedIds` rather than "is there a selection" so a

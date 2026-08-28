@@ -10,11 +10,11 @@
  */
 import { StrictMode } from 'react'
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { render, act, cleanup } from '@testing-library/react'
+import { render, act, cleanup, screen, fireEvent } from '@testing-library/react'
 import { createPlaybackClock } from '../../../playback-clock'
 import type { Project } from '../../../../types'
 import TimelineCanvas from '../TimelineCanvas'
-import { LIGHT_TIMELINE_COLORS, TIMELINE_COLORS, type TimelineMode } from '../draw'
+import { LIGHT_TIMELINE_COLORS, TIMELINE_COLORS, computeTimelineLayout, type TimelineMode } from '../draw'
 import { createViewportStore, type ViewportStore } from '../viewport'
 
 interface RecordedCall { method: string; args: unknown[] }
@@ -403,5 +403,109 @@ describe('TimelineCanvas — theme mode', () => {
     setMode('dark')
     expect(content).toHaveLength(0)
     expect(overlay).toHaveLength(0)
+  })
+})
+
+// ── Marker rename box ────────────────────────────────────────────────────
+//
+// The gesture DECISION (double-click on a marker → `editMarker` effect) is
+// covered as pure data in pointer-machine.test.ts. What only a mounted
+// component can show is the box itself: that it mounts, that it prefills,
+// and that Enter/Escape commit or cancel through the same
+// onProjectChange/onOverlayEdit pair every other discrete edit here uses.
+describe('marker rename box', () => {
+  const markerProject = {
+    id: 'p-marker',
+    tracks: [[{ id: 'c0', type: 'video', src: 'a.mp4', start: 0, end: 8 }]],
+    markers: [{ id: 'm1', t: 2, label: '1' }],
+  } as unknown as Project
+
+  // Derived from the layout itself, not hardcoded, so a strip-height change
+  // elsewhere can't quietly desync this from where the flag actually paints.
+  const MARKER_STRIP = computeTimelineLayout(markerProject).markers!
+  const MARKER_STRIP_Y = Math.round(MARKER_STRIP.y + MARKER_STRIP.height / 2)
+
+  function renderMarkerCanvas(overrides: Partial<React.ComponentProps<typeof TimelineCanvas>> = {}) {
+    const store = createViewportStore()
+    const clock = createPlaybackClock()
+    const utils = render(
+      <TimelineCanvas
+        project={markerProject}
+        clock={clock}
+        store={store}
+        totalDuration={20}
+        fps={30}
+        selectedIds={NO_SELECTION}
+        {...overrides}
+      />,
+    )
+    act(() => { vi.advanceTimersByTime(32) })
+    // Pin the scale so the marker's on-screen x is deterministic: t=2s at
+    // 100px/s is x=200.
+    act(() => { store.set({ pxPerSecond: 100, scrollSeconds: 0, widthPx: 1000 }) })
+    act(() => { vi.advanceTimersByTime(32) })
+    return { ...utils, store, clock }
+  }
+
+  /** Dispatches a real `dblclick` at marker m1's surface coordinates, exactly
+   *  the way an operator's browser event would arrive — not by poking state. */
+  function doubleClickAtMarker(container: HTMLElement) {
+    const surface = container.querySelector('[data-timeline-canvas]') as HTMLElement
+    act(() => {
+      surface.dispatchEvent(new MouseEvent('dblclick', {
+        clientX: 200, clientY: MARKER_STRIP_Y, bubbles: true, cancelable: true,
+      }))
+    })
+  }
+
+  it('is not mounted until a marker is double-clicked', () => {
+    renderMarkerCanvas()
+    expect(screen.queryByLabelText('Rename marker')).toBeNull()
+  })
+
+  it('mounts prefilled with the marker label after an editMarker effect', () => {
+    const { container } = renderMarkerCanvas()
+    doubleClickAtMarker(container)
+    // The state update lands synchronously inside `doubleClickAtMarker`'s own
+    // `act()`, so the box is already in the DOM — no need for `findBy`'s
+    // real-timer polling, which never fires under `vi.useFakeTimers()`.
+    const input = screen.getByLabelText('Rename marker')
+    expect((input as HTMLInputElement).value).toBe('1')
+  })
+
+  it('Enter commits the new name through onProjectChange and onOverlayEdit', () => {
+    const onProjectChange = vi.fn()
+    const onOverlayEdit = vi.fn()
+    const { container } = renderMarkerCanvas({ onProjectChange, onOverlayEdit })
+    doubleClickAtMarker(container)
+    const input = screen.getByLabelText('Rename marker')
+    fireEvent.change(input, { target: { value: 'intro' } })
+    fireEvent.keyDown(input, { key: 'Enter' })
+    expect(onProjectChange).toHaveBeenCalled()
+    const next = onProjectChange.mock.calls[onProjectChange.mock.calls.length - 1][0] as Project
+    expect(next.markers![0].label).toBe('intro')
+    expect(onOverlayEdit).toHaveBeenCalled()   // one undo entry
+    expect(screen.queryByLabelText('Rename marker')).toBeNull()
+  })
+
+  it('Escape cancels and commits nothing', () => {
+    const onProjectChange = vi.fn()
+    const { container } = renderMarkerCanvas({ onProjectChange })
+    doubleClickAtMarker(container)
+    const input = screen.getByLabelText('Rename marker')
+    fireEvent.change(input, { target: { value: 'nope' } })
+    fireEvent.keyDown(input, { key: 'Escape' })
+    expect(onProjectChange).not.toHaveBeenCalled()
+    expect(screen.queryByLabelText('Rename marker')).toBeNull()
+  })
+
+  it('is a real <input>, so the document keymap ignores typing in it', () => {
+    // useKeymap's isTypingTarget guards INPUT/TEXTAREA/contentEditable — this
+    // pins that the box is a real input in the document, not a canvas-drawn
+    // fake.
+    const { container } = renderMarkerCanvas()
+    doubleClickAtMarker(container)
+    const input = screen.getByLabelText('Rename marker')
+    expect(input.tagName).toBe('INPUT')
   })
 })

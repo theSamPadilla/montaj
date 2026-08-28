@@ -15,7 +15,7 @@
  * design.
  */
 
-import type { AudioTrack, CaptionSegment, VisualItem } from '../../../schema'
+import type { AudioTrack, CaptionSegment, Marker, VisualItem } from '../../../schema'
 import type { Project } from '../../../types'
 import { groupCaptionLanes } from '../../captionLanes'
 import {
@@ -305,6 +305,14 @@ export const TIMELINE_COLORS = {
   rulerTick: 'rgba(148,163,184,0.55)',
   rulerTickMinor: 'rgba(148,163,184,0.25)',
   rulerText: 'rgba(148,163,184,0.9)',
+  /** A marker's flag stem, in the strip above the ruler. Sky-400 — every
+   *  saturated hue below it is spoken for (red is playback, yellow the
+   *  preview axis, cyan the snap guide, amber a keyframe, emerald audio), and
+   *  a marker is none of those: it is a bookmark, not a state of the edit. */
+  markerFlag: '#38bdf8',
+  /** The one marker in the current selection. White, the same selection
+   *  vocabulary `clipSelectedOutline`/`handleFill` already use. */
+  markerFlagSelected: '#f8fafc',
   /** The marquee (rubber-band) selection box. Same white as the selection
    *  vocabulary, since what it is doing IS selecting. */
   marqueeFill: 'rgba(255,255,255,0.08)',
@@ -462,6 +470,13 @@ export const LIGHT_TIMELINE_COLORS: TimelineColors = {
   rulerTick: 'rgba(71,85,105,0.55)',
   rulerTickMinor: 'rgba(71,85,105,0.3)',
   rulerText: 'rgba(51,65,85,0.85)',
+  /** Still sky, stepped from sky-400 to sky-600 for the same reason
+   *  `snapGuide` steps cyan-400 to cyan-600: the lighter tone doesn't clear a
+   *  light row. */
+  markerFlag: '#0284c7',
+  /** The selected marker. Near-black, following `clipSelectedOutline` into
+   *  the same "white becomes near-black here" rule. */
+  markerFlagSelected: '#0f172a',
   /** The marquee. Selection vocabulary again, so it follows the outline and
    *  the handles into near-black — at the dark set's own alphas, which were
    *  already tuned to "a wash you can see through and a border you can't miss". */
@@ -502,6 +517,35 @@ export const RULER_STEPS_SECONDS = [
   0.1, 0.25, 0.5, 1, 2, 5, 10, 15, 30,
   60, 120, 300, 600, 900, 1800, 3600,
 ] as const
+
+/**
+ * The marker strip: a thin band ABOVE the ruler.
+ *
+ * Markers do NOT share the ruler's 18px. Two reasons, and the second is the
+ * load-bearing one:
+ *
+ *   1. The ruler already spends that band on tick labels. A marker name would
+ *      overprint them at any useful zoom.
+ *   2. `hitTest` returns `'ruler'` for the WHOLE ruler band before it tests
+ *      anything else, and the pointer machine scrubs on pointerDown the instant
+ *      it sees that — no drag threshold, no deferral. A marker sharing the band
+ *      would have to fight that branch for precedence. Its own band means the
+ *      ruler's behaviour is untouched and a marker hit is simply a different
+ *      rectangle.
+ *
+ * Present ONLY when the project has markers, the same discipline
+ * `TimelineLayout.captions` follows: a marker-less project lays out exactly as
+ * it did before this existed, so no existing layout expectation moves.
+ */
+export const MARKER_STRIP_HEIGHT_PX = 16
+/** Width of a marker's flag stem, and the gap before its label. */
+export const MARKER_FLAG_WIDTH_PX = 2
+export const MARKER_LABEL_GAP_PX = 4
+/** Baseline for a marker label, measured from the top of the strip. */
+export const MARKER_LABEL_BASELINE_PX = 11
+/** Longest label drawn, in characters. Past this the name is clipped with an
+ *  ellipsis — a marker is a flag, not a notes field. */
+export const MARKER_LABEL_MAX_CHARS = 24
 
 export const ROW_RADIUS_PX = 4           // Tailwind `rounded`
 /** Horizontal inset per side between a clip's time span and its drawn body —
@@ -673,10 +717,14 @@ export interface CaptionRowLayout {
 }
 
 export interface TimelineLayout {
-  /** The time ruler strip across the top. Always present and always at y=0;
-   *  carried in the layout rather than assumed so hit-testing and painting
-   *  read the same rectangle, the same contract the rows have. */
+  /** The time ruler strip. Always present; carried in the layout rather than
+   *  assumed so hit-testing and painting read the same rectangle, the same
+   *  contract the rows have. Sits at y=0 when the project has no markers, and
+   *  below the marker strip (see `MARKER_STRIP_HEIGHT_PX`) when it does. */
   ruler: { y: number; height: number }
+  /** The marker strip above the ruler. Absent — not a zero-height rect — when
+   *  the project has no markers; see `MARKER_STRIP_HEIGHT_PX`. */
+  markers?: { y: number; height: number }
   /** Visual rows in DRAW order (top of the surface first). */
   rows: VisualRowLayout[]
   lanes: AudioLaneLayout[]
@@ -717,9 +765,13 @@ export function computeTimelineLayout(project: Project): TimelineLayout {
   // legacy-shaped project has no settings, so every row is enabled.
   const trackSettings = normalizeTracks(project).tracks ?? []
   const rows: VisualRowLayout[] = []
-  // The ruler owns the top strip; everything else starts below it.
-  const ruler = { y: 0, height: RULER_HEIGHT_PX }
-  let y = RULER_HEIGHT_PX + ROW_GAP_PX
+  // The marker strip owns the very top when there is anything to put in it;
+  // the ruler starts below it, and every row below that.
+  const hasMarkers = (project.markers?.length ?? 0) > 0
+  const markers = hasMarkers ? { y: 0, height: MARKER_STRIP_HEIGHT_PX } : undefined
+  const stripHeight = hasMarkers ? MARKER_STRIP_HEIGHT_PX : 0
+  const ruler = { y: stripHeight, height: RULER_HEIGHT_PX }
+  let y = stripHeight + RULER_HEIGHT_PX + ROW_GAP_PX
 
   // Only stored when there is something to show — an empty `segments` (or no
   // `project.captions` at all) means no bands at all, not an empty array, so a
@@ -811,6 +863,7 @@ export function computeTimelineLayout(project: Project): TimelineLayout {
   })
 
   const layout: TimelineLayout = { ruler, rows, lanes, height: Math.max(0, y - ROW_GAP_PX) }
+  if (markers) layout.markers = markers
   if (captions.length > 0) layout.captions = captions
   return layout
 }
@@ -1752,6 +1805,47 @@ export function drawRuler(
   ctx.restore()
 }
 
+/**
+ * The operator's markers, as small flags along the top strip.
+ *
+ * Content-layer, not overlay: markers are project data that changes on an edit,
+ * not per frame. A drag repaints the content layer per move exactly the way a
+ * clip drag already does (`applyMove` emits `projectChange`, the host redraws
+ * content) — there is no ghost, because there is no ghost for clips either.
+ *
+ * `markers` is expected sorted by `t` (the model guarantees it), so this walks
+ * in draw order and a later marker's label overprints an earlier one's when
+ * they crowd. That is the correct z-order: the one further right is the one
+ * whose flag you can still see.
+ */
+export function drawMarkers(
+  ctx: DrawContext,
+  markers: readonly Marker[],
+  viewport: Viewport,
+  rect: { y: number; height: number },
+  surfaceWidth: number,
+  selectedIds: readonly string[],
+  palette: TimelinePalette = DARK_TIMELINE_PALETTE,
+): void {
+  if (markers.length === 0) return
+  ctx.save()
+  ctx.font = LABEL_FONT
+  ctx.textBaseline = 'alphabetic'
+  for (const m of markers) {
+    const x = Math.round(timeToX(m.t, viewport)) + 0.5
+    if (x < 0 || x > surfaceWidth) continue
+    const selected = selectedIds.includes(m.id)
+    ctx.fillStyle = selected ? palette.colors.markerFlagSelected : palette.colors.markerFlag
+    ctx.fillRect(x, rect.y + 2, MARKER_FLAG_WIDTH_PX, rect.height - 4)
+    ctx.fillStyle = selected ? palette.colors.markerFlagSelected : palette.colors.rulerText
+    const label = m.label.length > MARKER_LABEL_MAX_CHARS
+      ? `${m.label.slice(0, MARKER_LABEL_MAX_CHARS - 1)}…`
+      : m.label
+    ctx.fillText(label, x + MARKER_FLAG_WIDTH_PX + MARKER_LABEL_GAP_PX, rect.y + MARKER_LABEL_BASELINE_PX)
+  }
+  ctx.restore()
+}
+
 // ── Pending-drop ghost ───────────────────────────────────────────────────
 
 /** Corner radius of a ghost band. The same 4px a clip uses — the band stands
@@ -1886,6 +1980,9 @@ export function drawTimelineContent(ctx: DrawContext, scene: TimelineScene): Dra
 
   ctx.clearRect(0, 0, surfaceWidth, surfaceHeight)
 
+  if (layout.markers) {
+    drawMarkers(ctx, scene.project.markers ?? [], viewport, layout.markers, surfaceWidth, selectedIds, themePalette)
+  }
   drawRuler(ctx, viewport, layout.ruler, surfaceWidth, themePalette)
 
 

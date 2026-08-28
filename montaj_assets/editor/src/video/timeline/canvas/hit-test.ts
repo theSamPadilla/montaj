@@ -22,7 +22,7 @@
  * which is why captions hit-test at the audio tolerance.
  */
 
-import type { AudioTrack, CaptionSegment, VisualItem } from '../../../schema'
+import type { AudioTrack, CaptionSegment, Marker, VisualItem } from '../../../schema'
 import { canKeyframe, isKeyframed } from '../../keyframeOps'
 import { AUDIO_ITEM_INSET_PX, type TimelineLayout } from './draw'
 import { KEYFRAME_HIT_HALF_WIDTH_PX, KEYFRAME_STRIP_ZONE_HEIGHT_PX, keyframeDiamondX, keyframeUnionTimes } from './keyframe-strip'
@@ -58,6 +58,10 @@ export const FADE_GRIP_HALF_WIDTH_PX = 5
  *  this. */
 export const FADE_GRIP_ZONE_HEIGHT_PX = 10
 
+/** How far right of a marker's flag the label claims as a target. Wide enough
+ *  that the LABEL is clickable, not just the 2px stem. */
+export const MARKER_HIT_WIDTH_PX = 72
+
 export interface HitTestOptions {
   visualEdgeTolerancePx?: number
   audioEdgeTolerancePx?: number
@@ -68,9 +72,18 @@ export interface HitTestOptions {
    *  is also what every caller that predates T3.3 gets — this option is
    *  purely additive. */
   selectedIds?: readonly string[]
+  /** The project's markers, threaded the same way `selectedIds` is: the layout
+   *  carries the strip's RECTANGLE but not what sits in it, so the flags have
+   *  to arrive here to be hit-testable. Absent means no marker hits are
+   *  possible, which is what every caller that predates this gets. */
+  markers?: readonly Marker[]
 }
 
 export type HitKind =
+  /** On a marker's flag or its label, in the strip ABOVE the ruler. Only ever
+   *  produced when the project HAS markers (the strip is absent otherwise) and
+   *  the caller passed them through `HitTestOptions.markers`. */
+  | 'marker'
   /** The time ruler strip along the top. Scrubbing lives here, and only here:
    *  the track area's empty space belongs to the marquee now. */
   | 'ruler'
@@ -111,6 +124,10 @@ export interface HitResult {
    *  point outside the rows is still a point in time. */
   t: number
   itemId?: string
+  /** The hit marker's id, on a `'marker'` hit. A field of its own rather than a
+   *  reuse of `itemId`: a marker is not an item, and every caller that reads
+   *  `itemId` means "a thing on a track" by it. */
+  markerId?: string
   /** Which trim handle, on the two `*-edge` kinds. `in` is the left/start
    *  handle, `out` the right/end one — the vocabulary `cuts.ts` uses for source
    *  windows, rather than the DOM hook's `start`/`end`. */
@@ -144,6 +161,10 @@ export interface HitResult {
    *  press time by the pointer machine and used as the gesture's origin. */
   item?: VisualItem
   track?: AudioTrack
+  /** The hit marker itself, for the same reason `item`/`track` are here: the
+   *  pointer machine captures it at press time and reads its `t` for the whole
+   *  gesture rather than re-scanning `project.markers` per move. */
+  marker?: Marker
   /** The hit caption segment, for the same reason `item`/`track` are here: the
    *  pointer machine captures it at press time and reads its `start`/`end` for
    *  the whole gesture, rather than re-scanning `project.captions` per move. */
@@ -306,6 +327,51 @@ export function hitTest(
   const t = xToTime(point.x, viewport)
   const visualTolerance = opts.visualEdgeTolerancePx ?? VISUAL_EDGE_TOLERANCE_PX
   const audioTolerance = opts.audioEdgeTolerancePx ?? AUDIO_EDGE_TOLERANCE_PX
+
+  // The marker strip sits ABOVE the ruler and is tested first, because the
+  // ruler's own check below claims its whole band unconditionally. Ordering is
+  // the entire mechanism here: reverse these two and every marker click scrubs.
+  //
+  // NO LOWER BOUND on the band, deliberately. The ruler's check below is
+  // written the same way, and its comment says why: a pointer that has run off
+  // the TOP of the surface is still aiming at the topmost strip. With a marker
+  // strip present that strip is the topmost one, so it inherits that duty —
+  // adding a `point.y >= strip.y` guard would drop those points through to the
+  // ruler and scrub instead.
+  const strip = layout.markers
+  if (strip && point.y < strip.y + strip.height) {
+    const markers = opts.markers ?? []
+    // Right-to-left, matching draw order: a later marker paints OVER an earlier
+    // one, so it must also win the click.
+    for (let i = markers.length - 1; i >= 0; i--) {
+      const m = markers[i]
+      const x = timeToX(m.t, viewport)
+      // Cull exactly where `drawMarkers` culls, so the hit region cannot
+      // outlive the picture. A marker scrolled off the LEFT is not drawn at
+      // all — label included — but its claim reaches MARKER_HIT_WIDTH_PX to
+      // the RIGHT of the flag, so without this a click on apparently-empty
+      // strip near the left edge grabs a marker nobody can see, and can then
+      // drag it.
+      //
+      // The predicate is copied from the painter (`Math.round(x) + 0.5 < 0`)
+      // but the hit region is measured from the TRUE `x`. That asymmetry is
+      // deliberate: the painter's `+ 0.5` is a half-pixel crispness offset for
+      // drawing a sharp 1px stem, not a position. Folding it into the hit
+      // region shifts every marker's target half a pixel right of its own
+      // flag, so a click landing exactly on the flag misses.
+      //
+      // `drawMarkers` also culls `x > surfaceWidth`; that needs no counterpart
+      // here, since a hit requires `point.x >= x` and `point.x` never exceeds
+      // the surface.
+      if (Math.round(x) + 0.5 < 0) continue
+      if (point.x >= x && point.x <= x + MARKER_HIT_WIDTH_PX) {
+        return { kind: 'marker', t, markerId: m.id, marker: m }
+      }
+    }
+    // Bare strip: not a marker, and deliberately NOT the ruler either — a click
+    // on empty strip should do nothing, not seek.
+    return { kind: 'background', t }
+  }
 
   // Before the rows, and including everything above the strip: a pointer that
   // has run off the top of the surface is still aiming at the ruler, and
@@ -488,6 +554,11 @@ export function isEdgeHit(hit: HitResult): boolean {
 export function isItemHit(hit: HitResult): boolean {
   return hit.kind === 'item-body' || hit.kind === 'item-edge'
     || hit.kind === 'audio-body' || hit.kind === 'audio-edge'
+}
+
+/** Is this a hit on a marker's flag or label in the strip? */
+export function isMarkerHit(hit: HitResult): boolean {
+  return hit.kind === 'marker'
 }
 
 /** Is this a hit on a caption block (either body or edge)? */

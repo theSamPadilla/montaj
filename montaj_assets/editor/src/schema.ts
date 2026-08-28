@@ -290,6 +290,23 @@ export interface Asset {
   name?: string
 }
 
+/**
+ * An operator's flag on the timeline — a moment worth coming back to.
+ *
+ * Markers are an EDITING and COMMUNICATION aid: they are drawn in the editor's
+ * marker strip and handed to the agent through the context endpoint, and the
+ * renderer ignores them completely. Nothing about a marker reaches the export.
+ *
+ * `label` is always present. A new marker gets an auto-number so dropping one
+ * never interrupts the edit to type; renaming it is a separate, deliberate act.
+ */
+export interface Marker {
+  id: string
+  /** Timeline position in seconds. Never negative. */
+  t: number
+  label: string
+}
+
 // ── Carousel types ─────────────────────────────────────────────────────────
 export interface ImageElement {
   id: string
@@ -385,6 +402,10 @@ export interface EditorProject {
   captions?: Captions
   audio?: { tracks: AudioTrack[] }
   assets?: Asset[]
+  /** Operator markers, kept sorted by `t`. Absent — not `[]` — when the
+   *  project has none, so a marker-less project is byte-identical to one from
+   *  before the feature existed (the same discipline `captions` follows). */
+  markers?: Marker[]
   carousel?: { aspect: string }
   profile?: string
   derivedFrom?: string  // ID of the source project this was derived from (e.g. clips workflow)

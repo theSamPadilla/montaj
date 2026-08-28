@@ -18,6 +18,7 @@ import { VISUAL_EDGE_TOLERANCE_PX } from './canvas/hit-test'
 import { keyframeUnionTimes } from './canvas/keyframe-strip'
 import { mapTrackItems, normalizeTracks, updateAudioTrack } from './timeline-model'
 import { deleteSelection, toggleSelection } from './multiSelectOps'
+import { removeMarkers } from './markers'
 import { computeAutoCrossfade, computeDerivedTiming, computeVisualCrossfade, trackItems } from './timeline-model'
 import TimelineCanvas, { useCanvasZoomControls, type ZoomControls } from './canvas/TimelineCanvas'
 import type { KeyframeSelection } from './canvas/pointer-machine'
@@ -836,6 +837,11 @@ export default function Timeline({ project, clock, onProjectChange, onOverlayEdi
             updated = { ...updated, captions: normalizeCaptionLanes({ ...captionTrack, segments: kept }) }
           }
         }
+        // Markers live at project.markers, outside tracks/audio, so `deleteSelection`
+        // cannot see them — same reason captions need their own strip above. Folded
+        // into the SAME commit so a mixed clip + caption + marker delete is one
+        // undo entry.
+        updated = removeMarkers(updated, new Set(selectedIds))
         if (rippleMode) updated = collapseGaps(updated)
         // Deleting a clip out of a magnetic audio lane leaves a gap exactly
         // like a trim or a move would — close it the same way, on release.

@@ -251,6 +251,35 @@ def _captions_around(project: dict, t: float) -> dict | None:
     }
 
 
+def _markers(project: dict) -> list[dict] | None:
+    """The operator's markers, sorted by time.
+
+    ALL of them, not a window around the playhead the way captions are: a
+    marker list is short by nature and its whole purpose is to be an index of
+    the moments the operator cared about, so handing over only the nearby ones
+    would defeat the point ("work through my markers" needs all of them).
+
+    None — not [] — when the project has no markers, matching
+    `_captions_around`'s discipline: "the operator marked nothing" and "this
+    project has no markers" are different claims, and only the first should
+    read as an empty list.
+    """
+    markers = project.get("markers")
+    if not isinstance(markers, list):
+        return None
+    usable = [
+        {"id": m["id"], "t": float(m["t"]), "label": str(m.get("label", ""))}
+        for m in markers
+        if isinstance(m, dict)
+        and isinstance(m.get("id"), str)
+        and isinstance(m.get("t"), (int, float))
+    ]
+    if not usable:
+        return None
+    usable.sort(key=lambda m: m["t"])
+    return usable
+
+
 def enrich(project_id: str, project: dict, state: ContextState) -> dict:
     """Join a reported playhead against the project into one actionable answer.
 
@@ -282,6 +311,8 @@ def enrich(project_id: str, project: dict, state: ContextState) -> dict:
             "end":      item.get("end"),
         })
 
+    markers = _markers(project)
+
     return {
         "project": {
             "id":          project_id,
@@ -298,5 +329,6 @@ def enrich(project_id: str, project: dict, state: ContextState) -> dict:
         "selection":                 selection,
         "selectedCaptionId":         state.selected_caption_id,
         "transcriptAroundPlayhead":  _captions_around(project, t),
+        **({"markers": markers} if markers is not None else {}),
         "ageMs":                     state.age_ms(),
     }

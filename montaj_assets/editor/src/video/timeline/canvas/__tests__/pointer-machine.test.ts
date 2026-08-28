@@ -38,7 +38,7 @@ import {
 } from '../pointer-machine'
 import { FADE_GRIP_ZONE_HEIGHT_PX, hitTest } from '../hit-test'
 import type { SnapConfig } from '../snap'
-import { xToTime, type Viewport } from '../viewport'
+import { timeToX, xToTime, type Viewport } from '../viewport'
 
 const VIEWPORT: Viewport = { pxPerSecond: 100, scrollSeconds: 0, widthPx: 1000 }
 
@@ -3470,5 +3470,104 @@ describe('caption lanes — hole collapse at commit', () => {
     const committed = of(d.up(400, y), 'commit')
     expect(committed[0].project.captions).toBe(moved.captions)
     expect(lanes(committed[0].project)).toEqual({ low: 0, mid: 1, top: 2 })
+  })
+})
+
+describe('marker drag', () => {
+  const MARKERS = [{ id: 'm1', t: 5, label: '1' }]
+  /** The module fixture plus markers, so the strip exists in the layout. */
+  function markerCtx(over: Partial<PointerContext> = {}): PointerContext {
+    return makeContext({ project: { ...baseProject(), markers: MARKERS }, ...over })
+  }
+  /** x of the flag, and a y inside the strip. */
+  const flagX = (ctx: PointerContext) => timeToX(5, ctx.viewport)
+  const STRIP_Y = 8
+
+  it('pressing a marker does NOT scrub — the ruler branch must not claim it', () => {
+    // The whole risk of this feature: pointerDown scrubs on sight for the ruler
+    // and for the playhead grab band, with no drag threshold.
+    const ctx = markerCtx()
+    const m = createPointerMachine()
+    const effects = m.dispatch({ type: 'pointerDown', point: { x: flagX(ctx), y: STRIP_Y }, modifiers: NO_MODIFIERS, ctx })
+    expect(effects.some(e => e.type === 'seek')).toBe(false)
+    expect(m.state.kind).toBe('pressed')
+  })
+
+  it('still scrubs on the ruler band itself', () => {
+    const ctx = markerCtx()
+    const m = createPointerMachine()
+    const y = ctx.layout.ruler.y + 4
+    const effects = m.dispatch({ type: 'pointerDown', point: { x: 200, y }, modifiers: NO_MODIFIERS, ctx })
+    expect(effects.some(e => e.type === 'seek')).toBe(true)
+  })
+
+  it('a marker sitting under the playhead is still grabbable', () => {
+    // grabsPlayhead is not y-gated, so without an explicit exclusion the
+    // playhead swallows any marker that happens to line up with it — and a
+    // marker dropped with M lands exactly on the playhead, so that is the
+    // COMMONEST marker, not an edge case.
+    const ctx = markerCtx({ playheadTime: 5 })
+    const m = createPointerMachine()
+    const effects = m.dispatch({ type: 'pointerDown', point: { x: flagX(ctx), y: STRIP_Y }, modifiers: NO_MODIFIERS, ctx })
+    expect(effects.some(e => e.type === 'seek')).toBe(false)
+  })
+
+  it('dragging past the threshold retimes the marker', () => {
+    const ctx = markerCtx()
+    const m = createPointerMachine()
+    const x0 = flagX(ctx)
+    m.dispatch({ type: 'pointerDown', point: { x: x0, y: STRIP_Y }, modifiers: NO_MODIFIERS, ctx })
+    const effects = m.dispatch({ type: 'pointerMove', point: { x: x0 + 100, y: STRIP_Y }, modifiers: NO_MODIFIERS, ctx })
+    const changes = of(effects, 'projectChange')
+    expect(changes).toHaveLength(1)
+    const moved = changes[0].project.markers![0]
+    expect(moved.t).toBeGreaterThan(5)
+    expect(moved.id).toBe('m1')
+  })
+
+  it('drags grab-relative — pressing the label does not teleport the marker to the cursor', () => {
+    // The 40px press offset is the entire point of this test. The hit region is
+    // a flat MARKER_HIT_WIDTH_PX (72) wide, so a press 40px right of the flag
+    // lands on the LABEL — the common case, not a contrived one — and the two
+    // candidate behaviours diverge there by exactly that offset. At 100px/s a
+    // 100px drag is 1s: grab-relative lands the marker at 6, absolute lands it
+    // at 6.4, the cursor's own time. Only one of those can pass, which is what
+    // the `> 5` assertion in the test above cannot distinguish.
+    const ctx = markerCtx()
+    const m = createPointerMachine()
+    const x0 = flagX(ctx) + 40
+    m.dispatch({ type: 'pointerDown', point: { x: x0, y: STRIP_Y }, modifiers: NO_MODIFIERS, ctx })
+    const effects = m.dispatch({ type: 'pointerMove', point: { x: x0 + 100, y: STRIP_Y }, modifiers: NO_MODIFIERS, ctx })
+    const changes = of(effects, 'projectChange')
+    expect(changes).toHaveLength(1)
+    const moved = changes[0].project.markers![0]
+    expect(moved.t).toBeCloseTo(6, 6)
+    expect(moved.t).not.toBeCloseTo(xToTime(x0 + 100, ctx.viewport), 6)
+  })
+
+  it('commits once on release', () => {
+    const ctx = markerCtx()
+    const m = createPointerMachine()
+    const x0 = flagX(ctx)
+    m.dispatch({ type: 'pointerDown', point: { x: x0, y: STRIP_Y }, modifiers: NO_MODIFIERS, ctx })
+    m.dispatch({ type: 'pointerMove', point: { x: x0 + 100, y: STRIP_Y }, modifiers: NO_MODIFIERS, ctx })
+    const up = m.dispatch({ type: 'pointerUp', point: { x: x0 + 100, y: STRIP_Y }, modifiers: NO_MODIFIERS, ctx })
+    expect(up.filter(e => e.type === 'commit')).toHaveLength(1)
+  })
+
+  it('a press with no drag selects the marker instead of moving it', () => {
+    const ctx = markerCtx()
+    const m = createPointerMachine()
+    const x0 = flagX(ctx)
+    m.dispatch({ type: 'pointerDown', point: { x: x0, y: STRIP_Y }, modifiers: NO_MODIFIERS, ctx })
+    const up = m.dispatch({ type: 'pointerUp', point: { x: x0, y: STRIP_Y }, modifiers: NO_MODIFIERS, ctx })
+    expect(up).toContainEqual(expect.objectContaining({ type: 'select', id: 'm1' }))
+  })
+
+  it('double-clicking a marker asks the host to edit it', () => {
+    const ctx = markerCtx()
+    const m = createPointerMachine()
+    const effects = m.dispatch({ type: 'doubleClick', point: { x: flagX(ctx), y: STRIP_Y }, modifiers: NO_MODIFIERS, ctx })
+    expect(effects).toContainEqual({ type: 'editMarker', id: 'm1' })
   })
 })

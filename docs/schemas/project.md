@@ -48,6 +48,7 @@ The agent writes project.json as it works — every write pushes to the browser 
 | `settings` | object | Output resolution, fps, brand kit |
 | `tracks` | array | Array of track objects (`{id, items, volume?, muted?, enabled?}`); a legacy array-of-arrays shape is also still read everywhere. `tracks[0]` is the primary footage track. `tracks[1+]` are overlay tracks. Higher-index tracks render on top. `tracks[0]` may have an empty `items` array for animation-only projects. See [tracks](#tracks) below. |
 | `captions` | object | Caption configuration. Always rendered topmost, above all tracks. |
+| `markers` | array | Optional. Operator markers dropped with `M` in the editor — `{id, t, label}`, kept sorted by `t`. Editing aid only: never rendered into output. Surfaced to agents through the context endpoint. See [markers](#markers). |
 | `audio` | object | Music and ducking config |
 | `derivedFrom` | string | Optional. Set on clip projects fanned out from a source by the `clips` workflow; the source project's id. |
 
@@ -665,6 +666,40 @@ To use an asset in a `tracks[1+]` item, pass its `src` path via `props` (for ove
 { "id": "logo", "type": "image", "src": "/abs/path/to/workspace/logo.png", "start": 0.0, "end": 30.0,
   "offsetX": 0.82, "offsetY": 0.04, "scale": 0.12 }
 ```
+
+---
+
+## Markers
+
+Timestamps the operator dropped while scrubbing the timeline, for their own
+navigation and to give an agent an index of "the moments I cared about."
+Editing aid only — nothing in the render pipeline or the preview reads
+`markers`; it never affects output.
+
+```json
+{
+  "markers": [
+    { "id": "m1", "t": 2.0, "label": "intro ends" },
+    { "id": "m2", "t": 8.0, "label": "outro" }
+  ]
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | string | Unique identifier for this marker. |
+| `t` | number | Position on the output timeline, in seconds. |
+| `label` | string | Operator-entered text. May be empty. |
+
+**Kept sorted by `t`.** Both the editor and the context endpoint maintain
+this invariant, so nothing downstream needs to sort markers itself.
+
+**Absent, not `[]`, when a project has no markers.** "The operator marked
+nothing" and "this project has never had markers" are different claims —
+only the first should read as an empty array. A project that has never had a
+marker dropped simply omits the field.
+
+**Dropped with `M` in the editor**, at the current playhead position.
 
 ---
 

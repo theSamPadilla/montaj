@@ -11,6 +11,7 @@ import { getOverlayDesignCanvas } from './design-canvas'
 import { availableResolutionTiers, availableFpsTiers, currentResolutionTier, maxExportFps } from './export-limits'
 import { applyTheme, defaultMontajTheme, isLightTheme } from '../theme'
 import { collapseGaps, rippleDelete, splitAtTime } from './cuts'
+import { addMarker } from './timeline/markers'
 import { repairCaptionWords } from './captionRepair'
 import { maxCaptionLane, normalizeCaptionLanes } from './captionLanes'
 import Timeline, { type TimelineActions, type TimelineMode } from './timeline/Timeline'
@@ -142,6 +143,27 @@ export function backfillCaptionIds<P extends Project>(project: P): P {
     ...project,
     captions: { ...captions, segments: segments.map((seg) => (seg.id ? seg : { ...seg, id: mint() })) },
   }
+}
+
+/**
+ * Where a marker lands.
+ *
+ * With the preview axis ON, the yellow line is what the operator is looking at,
+ * so that is where the marker goes; with it OFF — or ON but with the pointer
+ * off the timeline, where `hoverScrub` reads null — the playhead is.
+ *
+ * `??`, never `||`: a hovered 0 is the start of the timeline, a perfectly
+ * ordinary place to mark, and `||` would silently reroute it to the playhead.
+ *
+ * Exported and tested on its own because `hoverScrub` is a private ref with no
+ * test seam. `handleSplit` carries the same rule inline
+ * (`previewAxis ? (hoverScrub.get() ?? undefined) : undefined`) and is
+ * deliberately NOT refactored onto this helper here: that is existing,
+ * currently-untested behavior and changing it is outside this plan. If you
+ * touch Split's rule later, unify it with this one.
+ */
+export function markerDropTime(previewAxis: boolean, hovered: number | null, playhead: number): number {
+  return previewAxis ? (hovered ?? playhead) : playhead
 }
 
 /**
@@ -1621,6 +1643,13 @@ function ReviewSurface<P extends Project>({
     void sync.mutate(() => updated as P)
   }
 
+  function handleAddMarker(at?: number) {
+    const base = syncProjectRef.current
+    const updated = addMarker(base, at ?? clock.get())
+    if (updated === base) return   // key repeat inside the half-frame window
+    void sync.mutate(() => updated as P)
+  }
+
   function handleRippleToggle() {
     const next = !rippleMode
     setRippleMode(next)
@@ -1756,6 +1785,13 @@ function ReviewSurface<P extends Project>({
       // splits the selected item at that time, or the base track when nothing
       // is selected (a no-op if the axis isn't over the item).
       action: () => handleSplit(previewAxis ? (hoverScrub.get() ?? undefined) : undefined),
+    },
+    {
+      id: 'video.add-marker',
+      description: 'Drop a marker',
+      keyHint: ['M'],
+      matches: matchesPlainKey('m'),
+      action: () => handleAddMarker(markerDropTime(previewAxis, hoverScrub.get(), clock.get())),
     },
     {
       id: 'video.undo',
@@ -1897,6 +1933,7 @@ function ReviewSurface<P extends Project>({
   const paletteCommands: PaletteCommand[] = [
     { id: 'play-pause', label: 'Play/Pause', keyHint: ['Space'], run: () => transportRef.current?.togglePlay() },
     { id: 'split', label: 'Split at playhead', keyHint: ['S'], run: () => handleSplit() },
+    { id: 'add-marker', label: 'Drop a marker', keyHint: ['M'], run: () => handleAddMarker() },
   ]
   if (primarySelectedId) {
     paletteCommands.push({ id: 'ripple-delete', label: 'Ripple-delete selection', keyHint: ['⇧', 'Delete'], run: () => handleRippleDelete() })

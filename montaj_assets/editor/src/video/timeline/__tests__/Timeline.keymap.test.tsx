@@ -360,6 +360,22 @@ describe('Timeline — T9 keymap (arrows / delete / enter / escape)', () => {
     expect(onProjectChange).not.toHaveBeenCalled()
   })
 
+  it('Delete removes a selected marker, in the same commit as everything else', () => {
+    // Markers live outside tracks/audio, so deleteSelection cannot see them —
+    // the same reason captions needed their own strip in this action.
+    const clock = createPlaybackClock(0)
+    const onProjectChange = vi.fn()
+    const project = { ...makeProject(), markers: [{ id: 'm1', t: 5, label: '1' }] }
+    const { container } = render(
+      <Timeline project={project} clock={clock} selectedIds={['m1']} onProjectChange={onProjectChange} />,
+    )
+    focusTimelineRoot(container)
+    fireEvent.keyDown(document.body, { key: 'Delete' })
+    expect(onProjectChange).toHaveBeenCalledTimes(1)
+    const updated = onProjectChange.mock.calls[0][0] as Project
+    expect(updated.markers).toBeUndefined()   // last one gone → key dropped
+  })
+
   it('exposes zoomFit through actionsRef for a host-level palette', () => {
     const clock = createPlaybackClock(1)
     const actionsRef: { current: TimelineActions | null } = { current: null }

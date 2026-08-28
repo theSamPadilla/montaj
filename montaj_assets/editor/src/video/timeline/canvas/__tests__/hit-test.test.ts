@@ -18,6 +18,7 @@ import { AUDIO_ITEM_INSET_PX, RULER_HEIGHT_PX, computeTimelineLayout } from '../
 import {
   AUDIO_EDGE_TOLERANCE_PX,
   FADE_GRIP_ZONE_HEIGHT_PX,
+  MARKER_HIT_WIDTH_PX,
   VISUAL_EDGE_TOLERANCE_PX,
   hitTest,
   isCaptionHit,
@@ -471,6 +472,81 @@ describe('hitTest — outside the rows', () => {
   it('still reports a time for points off either end of the surface', () => {
     expect(at(-50, BASE_Y)).toMatchObject({ kind: 'empty-row', t: -0.5 })
     expect(at(5000, BASE_Y)).toMatchObject({ kind: 'empty-row', t: 50 })
+  })
+})
+
+describe('marker hit region', () => {
+  // A marker-bearing twin of the module fixture. Local, because adding markers
+  // to the shared `project` would shift every other probe's Y by the strip
+  // height and rewrite this whole file's expectations.
+  const markers = [{ id: 'm1', t: 5, label: 'intro' }]
+  const markerProject = { ...project, markers } as unknown as Project
+  const markerLayout = () => computeTimelineLayout(markerProject)
+  // x === t * 100 at this viewport, so the flag stands at 500.
+  const FLAG_X = 500
+
+  it('hits the marker when the pointer is on its flag in the strip', () => {
+    const hit = hitTest({ x: FLAG_X, y: 8 }, markerLayout(), VIEWPORT, { markers })
+    expect(hit.kind).toBe('marker')
+    expect(hit.markerId).toBe('m1')
+  })
+
+  it('claims the whole label box, not just the flag stem', () => {
+    // The label is what the operator aims at — a 2px stem is not a target.
+    const hit = hitTest({ x: FLAG_X + 40, y: 8 }, markerLayout(), VIEWPORT, { markers })
+    expect(hit.kind).toBe('marker')
+  })
+
+  it('does not claim strip for a marker scrolled off the LEFT edge', () => {
+    // `drawMarkers` culls a marker whose flag has scrolled left of x=0 — the
+    // whole marker, label included. Without the same cull here, the hit region
+    // outlives the picture: the marker is invisible but its 72px claim still
+    // covers the left of the strip, so a click on apparently-empty strip
+    // selects (and can then DRAG) a marker nobody can see. Painting and hitting
+    // have to cull on the same rule or one of them is lying.
+    const scrolled = { ...VIEWPORT, scrollSeconds: 5.05 }   // marker t=5 → x = -5
+    const hit = hitTest({ x: 10, y: 8 }, markerLayout(), scrolled, { markers })
+    expect(hit.kind).toBe('background')
+  })
+
+  it('still claims a marker whose flag is just INSIDE the left edge', () => {
+    // The boundary the cull sits on, from the visible side — proves the fix
+    // culls off-screen markers rather than simply narrowing the hit region.
+    const scrolled = { ...VIEWPORT, scrollSeconds: 4.99 }   // marker t=5 → x = +1
+    const hit = hitTest({ x: 10, y: 8 }, markerLayout(), scrolled, { markers })
+    expect(hit.kind).toBe('marker')
+    expect(hit.markerId).toBe('m1')
+  })
+
+  it('stops claiming past the label box', () => {
+    const hit = hitTest({ x: FLAG_X + MARKER_HIT_WIDTH_PX + 10, y: 8 }, markerLayout(), VIEWPORT, { markers })
+    expect(hit.kind).not.toBe('marker')
+  })
+
+  it('is background, NOT ruler, on empty strip — a click there must not seek', () => {
+    const hit = hitTest({ x: 20, y: 8 }, markerLayout(), VIEWPORT, { markers })
+    expect(hit.kind).toBe('background')
+  })
+
+  it('never returns a marker for a point in the RULER band', () => {
+    // The ruler keeps its band and its scrub behaviour, untouched.
+    const layout = markerLayout()
+    const hit = hitTest({ x: FLAG_X, y: layout.ruler.y + 4 }, layout, VIEWPORT, { markers })
+    expect(hit.kind).toBe('ruler')
+  })
+
+  it('catches a pointer that has run off the TOP of the surface', () => {
+    // The ruler's own early return used to be what caught this; the strip now
+    // sits above it and must inherit the same duty.
+    const hit = hitTest({ x: FLAG_X, y: -20 }, markerLayout(), VIEWPORT, { markers })
+    expect(hit.kind).toBe('marker')
+  })
+
+  it('returns ruler in the top band when the project has no markers', () => {
+    // No strip exists, so y=8 is inside the ruler exactly as it was before —
+    // this is the guard that every existing probe in this file still holds.
+    const layout = computeTimelineLayout(project as unknown as Project)
+    expect(hitTest({ x: 50, y: 8 }, layout, VIEWPORT).kind).toBe('ruler')
   })
 })
 
