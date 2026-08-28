@@ -15,7 +15,8 @@ import { addMarker } from './timeline/markers'
 import { repairCaptionWords } from './captionRepair'
 import { maxCaptionLane, normalizeCaptionLanes } from './captionLanes'
 import Timeline, { type TimelineActions, type TimelineMode } from './timeline/Timeline'
-import { computeAutoCrossfade, computeDerivedTiming, computeVisualCrossfade, enabledTrackItems, mapTrackItems, normalizeAudioTracks, trackItems } from './timeline/timeline-model'
+import { visualDuration } from '@bycrux/timeline-core'
+import { computeAutoCrossfade, computeDerivedTiming, computeVisualCrossfade, enabledTrackItems, mapTrackItems, normalizeAudioTracks, trackItems, withEnabledItemTracks } from './timeline/timeline-model'
 import { makeCaptionEdit, type CaptionEditPatch } from './timeline/makeCaptionEdit'
 import PreviewPlayer, { type TransportHandle, type ScrubHandle } from './preview/PreviewPlayer'
 import SocialPreviewMenu, { PlatformGlyph, platformOption } from './preview/SocialPreviewMenu'
@@ -164,6 +165,35 @@ export function backfillCaptionIds<P extends Project>(project: P): P {
  */
 export function markerDropTime(previewAxis: boolean, hovered: number | null, playhead: number): number {
   return previewAxis ? (hovered ?? playhead) : playhead
+}
+
+/**
+ * How long the export dialog thinks the finished video is.
+ *
+ * This is what bounds the cover-frame picker, so it has to be the duration the
+ * RENDER produces — hence `visualDuration`, timeline-core's port of render.js's
+ * own `getTotalDurationSeconds`: the furthest `end` over every item on every
+ * track, audio excluded. Anything narrower offers the operator a grid that
+ * stops before their video does.
+ *
+ * It used to be `max(end)` over the track-0 VIDEO items alone (the same list
+ * that feeds `keeps`). That reads track 0 as "the footage track", which is only
+ * true when there IS footage: an overlay-only project — one track of nothing
+ * but overlays, which the animations workflow emits routinely — measured 0, so
+ * the picker reported "No frames to pick from" for a project made entirely of
+ * pickable frames. The milder version of the same bug cut the grid short
+ * whenever an outro overlay outlived the last clip.
+ *
+ * `keeps` is deliberately NOT widened to match. It answers a different
+ * question — which windows contain real footage the SDR curve thumbnails can
+ * sample — and an overlay-only project genuinely has none.
+ *
+ * Enabled tracks only, and via `withEnabledItemTracks` because `visualDuration`
+ * wants the flat array-of-arrays shape: a track the operator has switched off
+ * is skipped by the render too, so it must not stretch the picker.
+ */
+export function exportDurationSec(project: { tracks?: unknown }): number {
+  return visualDuration(withEnabledItemTracks(project))
 }
 
 /**
@@ -1200,7 +1230,10 @@ function ReviewSurface<P extends Project>({
     keeps: renderKeeps,
     imageTone: { value: currentImageTone ?? 'vivid', set: handleImageToneChange },
     name: project.name?.trim() || undefined,
-    durationSec: renderKeeps.reduce((m, k) => Math.max(m, k.end), 0),
+    // NOT derived from `renderKeeps` — see `exportDurationSec`. Keeps covers
+    // the footage windows the curve thumbnails can sample; the cover picker
+    // has to span the whole rendered video, overlay-only projects included.
+    durationSec: exportDurationSec(project),
     aspectRatio: (() => {
       const r = project.settings?.resolution
       return r && r[0] > 0 && r[1] > 0 ? r[0] / r[1] : undefined
@@ -1216,7 +1249,13 @@ function ReviewSurface<P extends Project>({
       set: handleExportFpsChange,
     },
   }), [
-    isHdrProject, renderKeeps, currentImageTone, handleImageToneChange,
+    // `project.tracks` is listed for `exportDurationSec`, which reads every
+    // track rather than just the footage keeps. `renderKeeps` already changes
+    // identity with it, so this is belt-and-braces — but relying on that would
+    // leave the duration silently stale the day keeps stops being memoized on
+    // tracks. Deliberately NOT the whole `project`: this memo is kept off
+    // unrelated project mutations on purpose (see `availableRes` above).
+    isHdrProject, renderKeeps, project.tracks, currentImageTone, handleImageToneChange,
     project.name, project.settings?.resolution, project.settings?.fps,
     availableRes, availableFpsList, handleExportResolutionChange, handleExportFpsChange,
   ])
