@@ -322,18 +322,33 @@ export function useVideoPlayback(
     applyClipVolume(clip)
   }, [clips, videoTrack, activeSlot])
 
-  // maxEnd for the canvas rAF clock — the furthest overlay/caption end. Kept in
+  // maxEnd for the canvas rAF clock — the furthest visual/caption end. Kept in
   // a ref, updated by its own cheap effect, so the rAF effect below doesn't tear
   // down and rebuild on every project spread (only isPlaying/onTimeUpdate matter
   // to it). onTimeUpdate is the stable clock.set identity.
+  //
+  // Spans EVERY enabled track, track 0 INCLUDED — not `overlayTracks`
+  // (`slice(1)`). This clock only ever runs for canvas projects, where track 0
+  // holds content rather than the primary footage: the background images, and
+  // on an agent-authored project frequently the overlays themselves (an
+  // animations-workflow project is often ONE track of nothing but overlays).
+  // Reading `overlayTracks` here collapsed the ceiling to 0 for exactly those,
+  // so the very first tick clamped to 0 and immediately called
+  // `setIsPlaying(false)` — space appeared to do nothing at all.
+  // `OverlayItemsLayer` already draws track 0 in canvas mode; this keeps the
+  // clock's ceiling and what's on screen in agreement. Mirrored in the engine
+  // path's `transportEndFor` (engine/scheduler.ts) — change both together.
+  //
+  // Audio stays OUT, unchanged: the canvas/video divergence over the audio tail
+  // is documented in timeline-core's `durations.js` and is not this fix.
   const canvasMaxEndRef = useRef(0)
   useEffect(() => {
     const captionEnd = (project.captions?.segments ?? []).reduce((m: number, s) => Math.max(m, s.end), 0)
     canvasMaxEndRef.current = Math.max(
-      overlayTracks.flat().reduce((m, i) => Math.max(m, i.end), 0),
+      enabledTrackItems(project).flat().reduce((m, i) => Math.max(m, i.end ?? 0), 0),
       captionEnd,
     )
-  }, [overlayTracks, project.captions])
+  }, [project])
 
   useEffect(() => {
     if (!isCanvasProject) return

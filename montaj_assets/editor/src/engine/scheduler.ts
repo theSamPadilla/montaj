@@ -517,9 +517,9 @@ function withTrackAudio(track: VisualTrack | undefined, item: VisualItem): Visua
  * Two formulas, because the legacy hook has two and they legitimately differ:
  *
  *   - **Canvas projects** (no track-0 video) run the `isCanvasProject` rAF,
- *     whose ceiling is `canvasMaxEndRef` = `max(overlayEnd, captionEnd)`. Note
+ *     whose ceiling is `canvasMaxEndRef` = `max(visualEnd, captionEnd)`. Note
  *     what is NOT in it: audio. A canvas project whose music outlasts its
- *     overlays stops at the overlays today.
+ *     visuals stops at the visuals today.
  *   - **Video projects** use `projectEnd` = `max(videoEnd, overlayEnd,
  *     audioEnd)` — captions excluded, audio included — which timeline-core
  *     already ports verbatim (including its two documented faithfulness warts:
@@ -527,18 +527,28 @@ function withTrackAudio(track: VisualTrack | undefined, item: VisualItem): Visua
  *
  * Unifying them would be a behavior change in one mode or the other, so both
  * are kept and the divergence is named here rather than smoothed over.
+ *
+ * `visualEnd` spans EVERY enabled track, track 0 included — it is deliberately
+ * not the video path's `overlayEnd` (`tracks.slice(1)`). In canvas mode track 0
+ * is a content track like any other: it carries the background images, and an
+ * agent-authored project can put its overlays there too (an animations-workflow
+ * project is frequently ONE track holding nothing but overlays). Skipping it
+ * made the ceiling collapse to 0 for exactly those projects, so play/space
+ * started the transport and stopped it in the same tick. `OverlayItemsLayer`
+ * has always drawn track 0 in canvas mode (`isCanvasProject ? enabledTrackItems
+ * : overlayTracks`); this is the transport agreeing with what is on screen.
  */
 export function transportEndFor(project: Project): number {
   const clips = track0VideoItems(project)
   if (clips.length > 0) return timelineProjectEnd(withEnabledItemTracks(project))
-  const overlayEnd = enabledTrackItems(project).slice(1)
+  const visualEnd = enabledTrackItems(project)
     .flat()
     .reduce((m, i) => Math.max(m, i?.end ?? 0), 0)
   const captionEnd = (project.captions?.segments ?? []).reduce(
     (m: number, s) => Math.max(m, s.end ?? 0),
     0,
   )
-  return Math.max(overlayEnd, captionEnd)
+  return Math.max(visualEnd, captionEnd)
 }
 
 /**

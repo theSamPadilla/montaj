@@ -483,7 +483,27 @@ describe('transportEndFor', () => {
     expect(transportEndFor(p)).toBe(8)
   })
 
-  it('uses max(overlayEnd, captionEnd) for a canvas project — audio EXCLUDED', () => {
+  it('counts track 0 in a canvas project — an overlay-only single track is not a zero-length transport', () => {
+    // The shape an animations-workflow project actually has: ONE track, holding
+    // nothing but overlays, and no captions. Reading the ceiling off
+    // `tracks.slice(1)` made this 0, so play/space started the transport and
+    // stopped it in the same tick — the picture never moved.
+    const p = project([overlay('o1', 0, 5), overlay('o2', 5, 12)])
+    expect(p.tracks).toHaveLength(1)
+    expect(transportEndFor(p)).toBe(12)
+  })
+
+  it('counts track 0 images in a canvas project, even past the overlay tracks', () => {
+    // Same defect, other content kind: a background image outlasting every
+    // overlay used to be invisible to the ceiling.
+    const p = project(
+      [{ id: 'img', type: 'image', src: '/a.png', start: 0, end: 9 }],
+      [overlay('o', 0, 4)],
+    )
+    expect(transportEndFor(p)).toBe(9)
+  })
+
+  it('uses max(visualEnd, captionEnd) for a canvas project — audio EXCLUDED', () => {
     // The legacy canvas rAF's ceiling is `canvasMaxEndRef`, which really does
     // leave audio out. Faithful, not unified.
     const p = project([{ id: 'img', type: 'image', src: '/a.png', start: 0, end: 3 }], [
