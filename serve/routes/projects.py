@@ -30,6 +30,7 @@ from serve.common import (
 )
 from serve import context as context_store
 from serve.caption_job import build_audio_mix_spec
+from serve.jobs import create_job, set_done, set_error, get_job
 from serve.routes.files import save_upload
 from lib.ingest import ingest_source
 from lib.project_tracks import normalize_tracks, track_items
@@ -2339,6 +2340,29 @@ async def probe_source_duration(
     return {"id": source_id, "src": src, "sourceDuration": duration}
 
 
+# Strong refs to in-flight detached download tasks. asyncio only weakly tracks
+# fire-and-forget tasks, so without this a 2GB transfer can be garbage collected
+# mid-run with no error surfaced anywhere. Same idiom as steps.py's
+# _BACKGROUND_TASKS and _ingest_task_refs above.
+_DOWNLOAD_TASKS: set[asyncio.Task] = set()
+
+
+async def _run_download_to_job(
+    job_id: str, downloads: list, project_dir: Path, allowed_hosts: set
+) -> None:
+    """Run a transfer to completion independent of any client connection.
+
+    A per-item failure is DATA, not a job failure: it lands in the results
+    envelope exactly as the sync path's 207 does. Only a raised exception makes
+    the job itself an error.
+    """
+    try:
+        results = await fetch_to_disk_async(downloads, project_dir, allowed_hosts)
+        set_done(job_id, {"results": results})
+    except Exception as e:
+        set_error(job_id, {"error": "download_failed", "message": str(e)})
+
+
 @router.post("/projects/{project_id}/download")
 async def download_assets(
     project_id: str,
@@ -2355,6 +2379,12 @@ async def download_assets(
     Per-item errors are surfaced in the results list, not as 4xx (per-op failures
     are never request-level).
 
+    An optional `"_async": true` field switches the route from blocking to
+    fire-and-forget: it returns 202 {job_id, status: "running"} immediately and
+    runs the transfer in a background task, polled via
+    GET /projects/{id}/download/jobs/{job_id}. Both guards below still run
+    before any job exists, so a bad body or an unset allowlist is still a 4xx.
+
     Symmetric to /upload — same envelope shape, same allowlist enforcement,
     same path-traversal guards, same content-type / size validation. All those
     guards live in fetch_to_disk_async; this route is wiring only.
@@ -2367,6 +2397,16 @@ async def download_assets(
     if not allowed_hosts:
         raise forbidden("allowlist_unset", "MONTAJ_HTTP_ALLOWED_HOSTS is required")
 
+    is_async = bool(body.get("_async", False))
+    if is_async:
+        job_id = create_job()
+        task = asyncio.create_task(
+            _run_download_to_job(job_id, downloads, project_dir, allowed_hosts)
+        )
+        _DOWNLOAD_TASKS.add(task)
+        task.add_done_callback(_DOWNLOAD_TASKS.discard)
+        return JSONResponse({"job_id": job_id, "status": "running"}, status_code=202)
+
     results = await fetch_to_disk_async(downloads, project_dir, allowed_hosts)
 
     any_error = any(r.get("status") == "error" for r in results)
@@ -2374,6 +2414,27 @@ async def download_assets(
         status_code=207 if any_error else 200,
         content={"results": results},
     )
+
+
+@router.get("/projects/{project_id}/download/jobs/{job_id}")
+async def get_download_job(
+    project_id: str,
+    job_id: str,
+    project_dir: Path = Depends(get_project_dir),
+):
+    """Poll a transfer started with {"_async": true}.
+
+    Returns {"status": "running"} | {"status": "done", "result": {"results": [...]}}
+    | {"status": "error", "error": {...}}. The done payload is byte-identical to
+    what the synchronous path would have returned in its body.
+
+    404 if job_id is unknown: never ran in this process, or the process restarted
+    since. Jobs are in-process and ephemeral by design (serve/jobs.py).
+    """
+    job = get_job(job_id)
+    if job is None:
+        raise not_found("job_not_found", f"Download job '{job_id}' not found")
+    return job
 
 
 @router.delete("/projects/{project_id}/files")
