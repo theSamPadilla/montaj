@@ -1,11 +1,12 @@
 """Skills + /info endpoints."""
 import re
+import shutil
 from importlib.metadata import PackageNotFoundError, version as pkg_version
 from pathlib import Path
 
 from fastapi import APIRouter
 
-from serve.common import MONTAJ_ROOT
+from serve.common import MONTAJ_ROOT, resolve_workspace
 
 router = APIRouter(prefix="/api")
 
@@ -21,12 +22,36 @@ def _montaj_version() -> str:
 
 @router.get("/info")
 async def get_info():
-    return {
+    info = {
         "version": _montaj_version(),
         "skill_path": str(MONTAJ_ROOT / "skills/onboarding/SKILL.md"),
         "root_skill_path": str(MONTAJ_ROOT / "skills" / "SKILL.md"),
         "style_profile_skill_path": str(MONTAJ_ROOT / "skills/style-profile/SKILL.md"),
     }
+
+    # Filesystem-level only, deliberately not a du walk: /api/info is called
+    # casually and a recursive size walk over a 100GB volume of video would make
+    # it a heavy call. A threshold only needs the filesystem numbers.
+    #
+    # Omitted entirely on failure rather than reported as zero. A caller that
+    # cannot read this must treat it as unknown, not as an empty disk.
+    try:
+        usage = shutil.disk_usage(resolve_workspace())
+        # A non-positive total means we cannot characterise the filesystem at
+        # all. Omit `disk` exactly as on OSError rather than reporting zeros:
+        # a caller must be able to tell "cannot tell" from "empty", and an
+        # all-zero object reads as a completely free disk.
+        if usage.total > 0:
+            info["disk"] = {
+                "totalBytes": usage.total,
+                "freeBytes": usage.free,
+                "usedBytes": usage.total - usage.free,
+                "usedPercent": round((usage.total - usage.free) / usage.total * 100, 2),
+            }
+    except OSError:
+        pass
+
+    return info
 
 
 def scan_skills() -> list[dict]:
