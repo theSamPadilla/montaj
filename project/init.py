@@ -792,6 +792,13 @@ def main():
             # failure (cache miss), same idiom as the eager path below.
             info = probe_cache.get(clip_path) or probe_video(clip_path)
             if info is not None:
+                # Recording timestamp (ISO 8601), when the container carries
+                # one — lets the footage bin sort by "Date created". Mirrors
+                # lib/ingest.py; init is the bulk-import path, so without this
+                # nearly every source in a project is undated and the sort
+                # silently degrades to a no-op.
+                if info.get("creation_time"):
+                    clip["sourceCreatedAt"] = info["creation_time"]
                 tonemap = is_hdr(detect_from_transfer(info.get("color_transfer")))
                 # Lazy clips are commonly --symlink-clips'd into a shared
                 # source (clips-workflow fan-out — see skills/find_clips):
@@ -831,6 +838,13 @@ def main():
         # Falls back to a fresh probe for clips not in cache (e.g., probe failed earlier
         # or this code path is reached from a non-init caller).
         info = probe_cache.get(clip_path) or probe_video(clip_path)
+
+        # Recording timestamp (ISO 8601) — see the lazy arm above. Read off the
+        # ORIGINAL here: a transcode rewrites the container and drops the
+        # camera's creation_time tag, so probing the normalized output instead
+        # would lose it for exactly the clips that needed conforming.
+        if info is not None and info.get("creation_time"):
+            clip["sourceCreatedAt"] = info["creation_time"]
 
         # 3-way classifier: skip / transcode / probe_failed.
         if info is None:

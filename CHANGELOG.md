@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v4.4.0
+
 - **Added: `GET /api/info` reports scratch disk usage.** The sidecar had no way to say how full its volume was: no `shutil.disk_usage`, no `statvfs`, no health route reporting anything but a version string. On a 100GB volume shared by every tenant, where imports keep three copies of each source and render outputs are never removed locally, the first symptom of a full disk was jobs failing.
 
   `/api/info` now carries a `disk` object with `totalBytes`, `freeBytes`, `usedBytes` and `usedPercent` for the workspace filesystem. Filesystem-level only, deliberately not a recursive size walk, so the call stays cheap. `usedBytes` is `total - free` rather than the kernel's `used` field, so root-reserved blocks count as unavailable and the percentage reaches 100 at the point writes actually start failing. On any `OSError`, or a non-positive `total` (a filesystem that cannot be characterised), the key is omitted rather than reported as zero, so a caller distinguishes "cannot tell" from "empty". Every existing field is unchanged, so an older caller is unaffected. (serve/routes/skills.py, tests/test_serve_info_disk.py)
