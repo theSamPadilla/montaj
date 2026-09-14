@@ -203,3 +203,132 @@ def test_run_still_accepts_singular_voiceover_asset(tmp_path, init_spy):
     cmd = init_spy["cmd"]
     i = cmd.index("--voiceover-asset")
     assert cmd[i + 1] == str(vo)
+
+
+# --- initSettings: the top-level block that carries resolution + the three flags
+# plumbed for the clips fan-out. Each behaviour is pinned by its own test so that
+# no one of them can mask another — in particular the precedence rule, which is the
+# one that would rot silently if it only ever rode along with another assertion.
+
+
+def _clip(tmp_path):
+    c = tmp_path / "clip.mp4"
+    c.write_bytes(b"fake")
+    return str(c)
+
+
+def test_init_settings_resolution_alone(tmp_path, init_spy, capsys):
+    """initSettings.resolution works on its own, and says nothing while doing it."""
+    resp = client.post("/api/run", json={
+        "prompt": "p", "workflow": "clean_cut", "clips": [_clip(tmp_path)],
+        "initSettings": {"resolution": "1080x1920"},
+    })
+    assert resp.status_code == 201, resp.text
+    cmd = init_spy["cmd"]
+    assert cmd[cmd.index("--resolution") + 1] == "1080x1920"
+    # Correct usage must not emit the deprecation notice.
+    assert "DEPRECATED" not in capsys.readouterr().out
+
+
+def test_ai_video_intake_resolution_still_works_and_warns(tmp_path, init_spy, capsys):
+    """The legacy spelling keeps working — montaj's own UI sends it — and logs."""
+    resp = client.post("/api/run", json={
+        "prompt": "p", "workflow": "clean_cut", "clips": [_clip(tmp_path)],
+        "aiVideoIntake": {"resolution": "1920x1080"},
+    })
+    assert resp.status_code == 201, resp.text
+    cmd = init_spy["cmd"]
+    assert cmd[cmd.index("--resolution") + 1] == "1920x1080"
+    out = capsys.readouterr().out
+    assert "DEPRECATED" in out
+    assert "aiVideoIntake.resolution" in out
+    assert "initSettings.resolution" in out  # names the replacement, not just the sin
+
+
+def test_init_settings_resolution_beats_ai_video_intake(tmp_path, init_spy, capsys):
+    """Precedence: both present -> initSettings wins, and only once."""
+    resp = client.post("/api/run", json={
+        "prompt": "p", "workflow": "clean_cut", "clips": [_clip(tmp_path)],
+        "initSettings": {"resolution": "1080x1920"},
+        "aiVideoIntake": {"resolution": "1920x1080"},
+    })
+    assert resp.status_code == 201, resp.text
+    cmd = init_spy["cmd"]
+    assert cmd.count("--resolution") == 1, "the losing spelling must not also append"
+    assert cmd[cmd.index("--resolution") + 1] == "1080x1920"
+    # The legacy key did NOT supply the value, so there is nothing to deprecate.
+    assert "DEPRECATED" not in capsys.readouterr().out
+
+
+def test_init_settings_forwards_normalize(tmp_path, init_spy):
+    resp = client.post("/api/run", json={
+        "prompt": "p", "workflow": "clean_cut", "clips": [_clip(tmp_path)],
+        "initSettings": {"normalize": "lazy"},
+    })
+    assert resp.status_code == 201, resp.text
+    cmd = init_spy["cmd"]
+    assert cmd[cmd.index("--normalize") + 1] == "lazy"
+
+
+def test_init_settings_rejects_unknown_normalize(tmp_path, init_spy):
+    """400 naming the field, rather than an opaque nonzero exit from argparse."""
+    resp = client.post("/api/run", json={
+        "prompt": "p", "workflow": "clean_cut", "clips": [_clip(tmp_path)],
+        "initSettings": {"normalize": "sometimes"},
+    })
+    assert resp.status_code == 400
+    detail = resp.json()["detail"]
+    assert detail["error"] != "clips_required"
+    assert "normalize" in detail["message"]
+    assert "cmd" not in init_spy  # rejected before init was ever spawned
+
+
+def test_init_settings_forwards_symlink_clips(tmp_path, init_spy):
+    resp = client.post("/api/run", json={
+        "prompt": "p", "workflow": "clean_cut", "clips": [_clip(tmp_path)],
+        "initSettings": {"symlinkClips": True},
+    })
+    assert resp.status_code == 201, resp.text
+    assert "--symlink-clips" in init_spy["cmd"]
+
+
+def test_init_settings_symlink_clips_false_appends_nothing(tmp_path, init_spy):
+    """store_true downstream: false must omit the flag, not pass a value."""
+    resp = client.post("/api/run", json={
+        "prompt": "p", "workflow": "clean_cut", "clips": [_clip(tmp_path)],
+        "initSettings": {"symlinkClips": False},
+    })
+    assert resp.status_code == 201, resp.text
+    assert "--symlink-clips" not in init_spy["cmd"]
+
+
+def test_init_settings_forwards_derived_from(tmp_path, init_spy):
+    resp = client.post("/api/run", json={
+        "prompt": "p", "workflow": "clean_cut", "clips": [_clip(tmp_path)],
+        "initSettings": {"derivedFrom": "e3f1c0de-0000-4000-8000-000000000001"},
+    })
+    assert resp.status_code == 201, resp.text
+    cmd = init_spy["cmd"]
+    assert cmd[cmd.index("--derived-from") + 1] == "e3f1c0de-0000-4000-8000-000000000001"
+
+
+def test_init_settings_rejects_unknown_key(tmp_path, init_spy):
+    """A typo must be loud. Silent acceptance is the failure this block exists to stop."""
+    resp = client.post("/api/run", json={
+        "prompt": "p", "workflow": "clean_cut", "clips": [_clip(tmp_path)],
+        "initSettings": {"normalise": "lazy"},
+    })
+    assert resp.status_code == 400
+    assert "normalise" in resp.json()["detail"]["message"]
+    assert "cmd" not in init_spy
+
+
+def test_absent_init_settings_changes_nothing(tmp_path, init_spy):
+    """Backward compatibility: the whole block absent appends none of the four."""
+    resp = client.post("/api/run", json={
+        "prompt": "p", "workflow": "clean_cut", "clips": [_clip(tmp_path)],
+    })
+    assert resp.status_code == 201, resp.text
+    cmd = init_spy["cmd"]
+    for flag in ("--resolution", "--normalize", "--symlink-clips", "--derived-from"):
+        assert flag not in cmd

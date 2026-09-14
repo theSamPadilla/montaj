@@ -645,6 +645,28 @@ async def _run_init_subprocess(
 
 @router.post("/run", status_code=201)
 async def run_project(request: Request, body: dict = Body(...)):
+    """Create a project by invoking project/init.py, and stream its progress.
+
+    Init settings are accepted under two body keys:
+
+    - ``initSettings`` — the current spelling. Keys: ``resolution`` ("WxH"),
+      ``normalize`` ("eager" | "lazy"), ``symlinkClips`` (bool), ``derivedFrom``
+      (str). Unknown keys are rejected rather than ignored. These are forwarded
+      for EVERY workflow, not just ai_video.
+    - ``aiVideoIntake`` — the legacy spelling, still supported (montaj's own UI
+      sends it). It additionally carries imageRefs/styleRefs/aspectRatio/
+      targetDurationSeconds/colorSpace/music/voiceover, which have no
+      ``initSettings`` equivalent. Where both supply ``resolution``,
+      ``initSettings`` wins and the legacy key logs a deprecation.
+
+    CAVEAT — carousel workflows: this route takes a fast path for carousel
+    project types that returns before any intake parsing, so ``initSettings``
+    and ``aiVideoIntake`` are **not read at all** for a carousel. In particular
+    ``derivedFrom`` is accepted by the request and silently discarded: the
+    carousel builder in init.py never writes it either. Carousel lineage is
+    unsupported, not merely unplumbed. See _validate_carousel_args in
+    project/init.py for what would have to change.
+    """
     clips        = body.get("clips", [])
     assets       = body.get("assets", [])
     prompt       = body.get("prompt")
@@ -748,6 +770,35 @@ async def run_project(request: Request, body: dict = Body(...)):
     # ai_video intake — structured image/style refs + intake settings forwarded to init.py
     intake = body.get("aiVideoIntake") or {}
 
+    # Init settings — top-level, workflow-agnostic knobs forwarded to project/init.py.
+    #
+    # Why this block exists separately from `aiVideoIntake`: the intake_setting_args
+    # list built below is appended to the init argv UNCONDITIONALLY, for every
+    # workflow (see the `cmd +=` assembly further down) — it is not ai_video-specific
+    # despite the body key's name. That misleading name has already cost one review a
+    # wrong conclusion (it read `--resolution` as unreachable when it was never gated).
+    # New settings go here, under an honest name, rather than growing that block.
+    #
+    # `aiVideoIntake` keeps working for every key it has ever accepted. Where both
+    # spellings supply the same key, `initSettings` wins and the legacy one logs.
+    init_settings = body.get("initSettings") or {}
+    if not isinstance(init_settings, dict):
+        raise bad_request(
+            "invalid_field",
+            f"'initSettings' must be an object (got {type(init_settings).__name__})",
+        )
+    # Strict key set. An unrecognised key here is a typo or a version mismatch, and
+    # silently ignoring it is precisely the failure this plumbing exists to prevent:
+    # a caller sets a knob, nothing complains, and nothing happens either.
+    _KNOWN_INIT_SETTINGS = {"resolution", "normalize", "symlinkClips", "derivedFrom"}
+    unknown_keys = set(init_settings) - _KNOWN_INIT_SETTINGS
+    if unknown_keys:
+        raise bad_request(
+            "invalid_intake",
+            f"unknown initSettings key(s): {', '.join(sorted(unknown_keys))} "
+            f"(known: {', '.join(sorted(_KNOWN_INIT_SETTINGS))})",
+        )
+
     if len(intake.get("styleRefs", [])) > 2:
         raise bad_request("invalid_intake", "at most 2 style refs allowed")
 
@@ -778,7 +829,16 @@ async def run_project(request: Request, body: dict = Body(...)):
         if not isinstance(target_duration, int) or target_duration <= 0:
             raise bad_request("invalid_intake", f"targetDurationSeconds must be a positive integer (got {target_duration!r})")
         intake_setting_args += ["--target-duration", str(target_duration)]
-    resolution = intake.get("resolution")
+    # `initSettings` wins; `aiVideoIntake.resolution` still works and says so. The
+    # log fires only when the legacy key is the one that actually supplied the value
+    # — using initSettings correctly must stay silent.
+    resolution = init_settings.get("resolution")
+    if resolution is None and intake.get("resolution") is not None:
+        resolution = intake.get("resolution")
+        print(
+            "[montaj] DEPRECATED: aiVideoIntake.resolution supplied this run's "
+            "resolution; use initSettings.resolution instead."
+        )
     if resolution is not None:
         if not isinstance(resolution, str) or "x" not in resolution.lower():
             raise bad_request(
@@ -810,6 +870,40 @@ async def run_project(request: Request, body: dict = Body(...)):
                 f"(got {color_space!r})",
             )
         intake_setting_args += ["--color-space", color_space]
+
+    # --- Flags plumbed for the clips fan-out. initSettings-only: these have never
+    # had an aiVideoIntake spelling, so there is no alias to honour. init.py has
+    # implemented all three for some time; only the forwarding was missing.
+    normalize_mode = init_settings.get("normalize")
+    if normalize_mode is not None:
+        # Rejected here rather than left to init.py: argparse's choices= would exit
+        # nonzero and surface as an opaque init failure, not a 400 naming the field.
+        if normalize_mode not in ("eager", "lazy"):
+            raise bad_request(
+                "invalid_intake",
+                f"normalize must be 'eager' or 'lazy' (got {normalize_mode!r})",
+            )
+        intake_setting_args += ["--normalize", normalize_mode]
+
+    symlink_clips = init_settings.get("symlinkClips")
+    if symlink_clips is not None:
+        if not isinstance(symlink_clips, bool):
+            raise bad_request(
+                "invalid_intake",
+                f"symlinkClips must be a boolean (got {symlink_clips!r})",
+            )
+        # store_true downstream: false must append nothing, not "--symlink-clips false".
+        if symlink_clips:
+            intake_setting_args += ["--symlink-clips"]
+
+    derived_from = init_settings.get("derivedFrom")
+    if derived_from is not None:
+        if not isinstance(derived_from, str) or not derived_from.strip():
+            raise bad_request(
+                "invalid_intake",
+                f"derivedFrom must be a non-empty string (got {derived_from!r})",
+            )
+        intake_setting_args += ["--derived-from", derived_from]
 
     # Music intake validation
     music = intake.get('music')

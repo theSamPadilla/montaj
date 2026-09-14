@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- **Added: `/api/run` accepts a top-level `initSettings` object, and forwards `--normalize`, `--symlink-clips` and `--derived-from` for the first time.** `project/init.py` has implemented all three for some time; nothing could reach them over HTTP, so a remote caller could not ask for lazy normalization, could not avoid a redundant staging copy, and could not record project lineage. Only the forwarding was missing — this adds it and nothing else.
+
+  The settings live under a new top-level `initSettings` rather than joining `aiVideoIntake`, which is where `resolution` has always lived. That name is misleading and has already cost a review a wrong conclusion: the argv list it builds is appended **unconditionally, for every workflow**, so `resolution` was never ai_video-gated, yet a careful reader concluded it was unreachable. Rather than add three more settings behind that name, `initSettings` accepts all four — `resolution`, `normalize`, `symlinkClips`, `derivedFrom` — under an honest one.
+
+  `aiVideoIntake` keeps working unchanged, which is not optional: montaj's own local UI sends it. Where both spellings supply `resolution`, `initSettings` wins, and the legacy key logs a deprecation naming its replacement — only when it is the key that actually supplied the value, so correct use of `initSettings` stays silent. An unrecognised `initSettings` key is rejected rather than ignored, on the grounds that a knob which is set, accepted, and then does nothing is the failure this plumbing exists to prevent. `normalize` is validated at the endpoint too: `init.py`'s `choices=` would otherwise exit nonzero and surface as an opaque init-subprocess failure instead of a 400 naming the field. `symlinkClips: false` appends nothing, matching the `store_true` downstream.
+
+  Absent keys change nothing, so an existing caller is byte-for-byte unaffected.
+
+  **Known gap, documented rather than fixed:** the route's carousel fast path returns before any intake parsing, so neither `initSettings` nor `aiVideoIntake` is read for a carousel workflow. `derivedFrom` in particular is accepted by the request and silently discarded — `_build_carousel_project` never writes it either, so carousel lineage is unsupported at both layers rather than merely unplumbed. Left alone deliberately: making a carousel the first-ever writer of `derivedFrom`, on a path nothing exercises yet, would ship an unverified producer. Recorded in the route docstring and at `_validate_carousel_args`. (serve/routes/projects.py, project/init.py, tests/test_server_intake.py)
+
 ## v4.4.0
 
 - **Added: `GET /api/info` reports scratch disk usage.** The sidecar had no way to say how full its volume was: no `shutil.disk_usage`, no `statvfs`, no health route reporting anything but a version string. On a 100GB volume shared by every tenant, where imports keep three copies of each source and render outputs are never removed locally, the first symptom of a full disk was jobs failing.

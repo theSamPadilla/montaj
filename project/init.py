@@ -203,6 +203,20 @@ def _validate_carousel_args(args) -> None:
     _reject_if(bool(args.remote_clips),       "--remote-clip")
     _reject_if(bool(args.remote_assets),      "--remote-asset")
     _reject_if(args.color_space != "auto",    "--color-space")
+    # Deliberately NOT rejected here: --normalize, --symlink-clips, --derived-from.
+    # All three are INERT on this path rather than invalid, which is why they are
+    # absent from a list whose job is to reject the actively wrong:
+    #   --normalize / --symlink-clips act only on clips, and a carousel never has any.
+    #   --derived-from is read at the bottom of the video builder; the carousel
+    #     builder (_build_carousel_project) constructs its own dict and never writes
+    #     derivedFrom, so passing it here silently does nothing.
+    # Do not "complete" this list for consistency: a caller forwarding one uniform
+    # settings block across project types would start 400ing for flags that never
+    # hurt anything. But note the asymmetry is not free — carousel lineage is
+    # silently unsupported, at BOTH layers (/api/run's carousel fast path returns
+    # before intake parsing, so it never reads `initSettings` either). If a carousel
+    # ever needs derivedFrom, the fix is to write it in _build_carousel_project and
+    # parse it on that fast path — not to add a rejection here.
 
 
 def _build_carousel_project(args, workspace_dir: str, assets: list) -> None:
