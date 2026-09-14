@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v4.5.0
+
 - **Added: `/api/run` accepts a top-level `initSettings` object, and forwards `--normalize`, `--symlink-clips` and `--derived-from` for the first time.** `project/init.py` has implemented all three for some time; nothing could reach them over HTTP, so a remote caller could not ask for lazy normalization, could not avoid a redundant staging copy, and could not record project lineage. Only the forwarding was missing — this adds it and nothing else.
 
   The settings live under a new top-level `initSettings` rather than joining `aiVideoIntake`, which is where `resolution` has always lived. That name is misleading and has already cost a review a wrong conclusion: the argv list it builds is appended **unconditionally, for every workflow**, so `resolution` was never ai_video-gated, yet a careful reader concluded it was unreachable. Rather than add three more settings behind that name, `initSettings` accepts all four — `resolution`, `normalize`, `symlinkClips`, `derivedFrom` — under an honest one.
