@@ -128,6 +128,8 @@ For animation projects (no footage), every timestamp must be covered by an item 
 
 Write `tracks` to `project.json` — `PUT /api/projects/{id}` (HTTP) or write directly (headless).
 
+When this is the last editorial pass before the render, the project must be `final` before the render will run — see skill `native` → "Project lifecycle — status, and the render gate".
+
 ---
 
 ## Rules

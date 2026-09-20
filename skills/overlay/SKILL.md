@@ -91,6 +91,8 @@ For multiple non-overlapping overlays, add them to the same track. For simultane
 
 Follow save discipline: **read the project**, merge the updated `tracks` array into the fresh state, then **save the project (delta)**.
 
+When this is the last editorial pass before the render, the project must be `final` before the render will run — see skill `native` → "Project lifecycle — status, and the render gate".
+
 ## Rules
 
 - **Use icons, not emojis** — `Ph.*` (Phosphor) or `FaIcon` with `FaSolid`/`FaBrands` (Font Awesome). Both are available as globals — no imports needed. Only use emojis if the prompt asks.

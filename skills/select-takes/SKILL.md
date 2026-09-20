@@ -122,6 +122,8 @@ Run step `virtual_to_original` with `{"input": "spec.json", "inverse": true, "ti
 
 An ordered list of `_selected.json` trim spec paths — one per selected section, in narrative order. These become the inputs to `rm_fillers`, and the keeps that survive it become the `tracks[0]` items the render engine assembles.
 
+When this is the last editorial pass before the render, the project must be `final` before the render will run — see skill `native` → "Project lifecycle — status, and the render gate".
+
 ## What to Log
 
 Before writing specs, log your decisions clearly:

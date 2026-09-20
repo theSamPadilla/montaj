@@ -42,9 +42,11 @@ Never save from a stale cached body. The operator may be editing the project con
 
 These verbs are sufficient for the Phase-1 domain skills:
 
-- **select-takes** — run step `crop_spec`, run step `virtual_to_original`; read the project.
+- **select-takes** — run step `crop_spec`, run step `virtual_to_original`; read the project; write a file (the trim spec comes back inline from `waveform_trim` and must be on disk before `crop_spec` can take it as `--input`).
 - **overlay** — read the project; save the project (delta); load skill `write-overlay`.
-- **write-overlay** — save the project (delta); write a file (the JSX); reference asset paths via written/read files.
+- **write-overlay** — save the project (delta); write a file (the JSX); run step `sample_overlay` (the end-of-authoring measure pass, required for any overlay that declares `googleFonts`); reference asset paths via written/read files.
 - **image-search** — run step `search_images`, run step `fetch_image`; write a file / read a file.
 
 If a future domain skill needs an operation not on this list, extend this contract first — do not let a domain skill invent its own transport-specific phrasing.
+
+**This list is a starting index, not the final word.** It has drifted from the skill bodies before: `select-takes`'s "write a file" and `write-overlay`'s `sample_overlay` were both required by their skills and missing here. Anyone deriving the operations a workflow needs must confirm against the skill body itself — a set derived from this list alone can silently omit something the skill genuinely requires.
