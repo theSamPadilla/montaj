@@ -31,8 +31,9 @@ import { join, dirname, basename } from 'node:path'
 import { tmpdir } from 'node:os'
 import { fileURLToPath } from 'node:url'
 import { spawnSync } from 'node:child_process'
+import { createHash } from 'node:crypto'
 
-import { sampleOverlay, sampleFrame, buildFrameCacheKey } from '../sample-frame.js'
+import { sampleOverlay, sampleFrame, buildFrameCacheKey, buildOverlayCacheKey } from '../sample-frame.js'
 import { buildOverlayFilterParts } from '../encode-segment.js'
 import { MASTER_LOOK } from '../look.js'
 import { normalizeTracks } from '../project-tracks.js'
@@ -928,6 +929,56 @@ test('(q) buildFrameCacheKey: the requested curve is part of the key', () => {
   // Sanity: the key still discriminates on everything it used to.
   assert.notEqual(buildFrameCacheKey(null, project, 2.5), base)
   assert.notEqual(buildFrameCacheKey(null, { settings: { colorSpace: 'sdr_bt709' } }, 1.5), base)
+})
+
+// ---------------------------------------------------------------------------
+// (q2) The fonts-base component of the overlay cache key
+// ---------------------------------------------------------------------------
+test('(q2) buildOverlayCacheKey: fontsBaseDir is part of the key, and unset is unchanged', () => {
+  // Without this, sampling the same overlay once with MONTAJ_FONTS_DIR set and
+  // once unset (or set to a different base) — both spawn a fresh process
+  // against the SAME on-disk cache under tmpdir(), which is outside $HOME and
+  // outside this repo's scratch-HOME QA isolation — gets a cache hit on the
+  // second call and silently serves a PNG rendered under the OTHER font
+  // configuration. See buildOverlayCacheKey's doc comment in sample-frame.js.
+  const componentPath = fileURLToPath(import.meta.url) // any real, stat-able path; content is irrelevant to the key
+  const props = { foo: 'bar' }
+  const args = [componentPath, props, 0, 1080, 1920, ['Figtree:wght@700'], false, 30]
+
+  // Reference re-implementation of the PRE-fontsBaseDir raw-string build, byte
+  // for byte, so "unset reproduces today's key" is checked against the actual
+  // old algorithm rather than merely against buildOverlayCacheKey calling
+  // itself twice.
+  function oldStyleKey(componentPath, props, frame, width, height, googleFonts, measure, durationFrames) {
+    let mtime = '0'
+    try { mtime = String(statSync(componentPath).mtimeMs) } catch {}
+    const raw = [
+      `${componentPath}:${mtime}`,
+      JSON.stringify(props),
+      String(frame),
+      String(width),
+      String(height),
+      googleFonts.join(','),
+      measure ? 'measure' : '',
+      String(durationFrames),
+    ].join('|')
+    return createHash('sha256').update(raw).digest('hex')
+  }
+
+  const preChangeKey = oldStyleKey(...args)
+  const unsetOmitted   = buildOverlayCacheKey(...args)
+  const unsetExplicit  = buildOverlayCacheKey(...args, '')
+  const baseA1 = buildOverlayCacheKey(...args, '/Users/x/fonts/a')
+  const baseA2 = buildOverlayCacheKey(...args, '/Users/x/fonts/a')
+  const baseB  = buildOverlayCacheKey(...args, '/Users/x/fonts/b')
+
+  assert.equal(unsetOmitted, preChangeKey,
+    'omitting fontsBaseDir must reproduce the pre-change key byte-for-byte, so existing cache entries do not go stale')
+  assert.equal(unsetExplicit, preChangeKey,
+    'an explicit empty string must behave identically to omitting the argument')
+  assert.equal(baseA1, baseA2, 'the same base must produce the same key (deterministic, cacheable)')
+  assert.notEqual(baseA1, unsetOmitted, 'a set base must differ from unset')
+  assert.notEqual(baseA1, baseB, 'two different bases must produce different keys — the VALUE is hashed, not just whether a base was set')
 })
 
 // ---------------------------------------------------------------------------

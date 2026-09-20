@@ -122,6 +122,7 @@ export function useVideoPlayback(
   currentTime: number,
   onTimeUpdate: (t: number) => void,
   fileUrl: (path: string) => string,
+  muted = false,
 ) {
   // Double-buffer video elements for seamless clip transitions
   const video0Ref     = useRef<HTMLVideoElement>(null)
@@ -137,6 +138,20 @@ export function useVideoPlayback(
   const loopOffsetRef = useRef(0)
   const rafRef        = useRef<number | null>(null)
   const rafLastMs     = useRef<number | null>(null)
+  // Second-rider master mute (PreviewPlayer's `muted` prop). Read through a
+  // ref — not the `muted` param directly — so every gain-setting site below,
+  // including the useCallback closures whose own dependency arrays this
+  // deliberately leaves untouched (`tickGap`, `handleTimeUpdate`,
+  // `syncAudioTracks`), always sees the current value without forcing a
+  // reload/re-wire of anything. Covers BOTH GainNode families this hook owns:
+  // the video-slot slots (`videoGainRef`, via `applyClipVolume`) and every
+  // background audio-track lane (`gainNodesMap`) — `<video muted>`/
+  // `el.muted` alone would silence neither, since both are routed through
+  // `MediaElementSource → GainNode → ctx.destination` (see `audio-context.ts`
+  // and `ensureVideoGain` below): once wired, the element's own mute/volume
+  // have no audible effect.
+  const mutedRef      = useRef(muted)
+  useEffect(() => { mutedRef.current = muted }, [muted])
   // rAF clock for VIDEO projects — drives clip-boundary detection at ~60Hz
   // instead of the <video> element's coarse `timeupdate` event (~4Hz). See the
   // effect below for why.
@@ -309,18 +324,21 @@ export function useVideoPlayback(
   function applyClipVolume(clip: { muted?: boolean; volume?: number }) {
     const slot = activeSlotRef.current
     const gain = getVideoGain(slot)
-    if (gain) gain.gain.value = clipGain(videoTrack, clip)
+    if (gain) gain.gain.value = mutedRef.current ? 0 : clipGain(videoTrack, clip)
   }
 
   // Apply video clip volume via Web Audio GainNode (supports > 1.0 amplification).
   // `videoTrack` is a dep in its own right: pulling the TRACK's fader while the
-  // clips themselves are untouched has to reach the live gain node too.
+  // clips themselves are untouched has to reach the live gain node too. `muted`
+  // is a dep for the same reason: an external mute toggle on an already-loaded
+  // slot must reach the live node immediately, not wait for the next natural
+  // clip switch (which is the only other place `mutedRef` gets re-read).
   useEffect(() => {
     const idx = activeIdxRef.current
     const clip = clips[idx]
     if (!clip) return
     applyClipVolume(clip)
-  }, [clips, videoTrack, activeSlot])
+  }, [clips, videoTrack, activeSlot, muted])
 
   // maxEnd for the canvas rAF clock — the furthest visual/caption end. Kept in
   // a ref, updated by its own cheap effect, so the rAF effect below doesn't tear
@@ -442,7 +460,7 @@ export function useVideoPlayback(
         const ctx = getSharedAudioContext()
         const source = ctx.createMediaElementSource(el)
         const gain = ctx.createGain()
-        gain.gain.value = track.volume ?? 1
+        gain.gain.value = mutedRef.current ? 0 : (track.volume ?? 1)
         source.connect(gain)
         gain.connect(ctx.destination)
         gains.set(track.id, gain)
@@ -453,18 +471,21 @@ export function useVideoPlayback(
       }
       // Volume is controlled via GainNode, not el.volume
       const gain = gains.get(track.id)
-      if (gain) gain.gain.value = track.volume ?? 1
+      if (gain) gain.gain.value = mutedRef.current ? 0 : (track.volume ?? 1)
     }
   // Keyed on identity string — only fires when tracks are added/removed/src changes
   }, [audioTrackIdentity])
 
-  // Update volume in-place on every render via GainNode — cheap, no element churn
+  // Update volume in-place on every render via GainNode — cheap, no element churn.
+  // `muted` is a dep (not just read via `mutedRef`) so an external mute toggle
+  // reaches every lane immediately rather than waiting for the next track-set
+  // change or `syncAudioTracks` tick.
   useEffect(() => {
     for (const track of unmutedAudioTracks) {
       const gain = gainNodesMap.current.get(track.id)
-      if (gain) gain.gain.value = track.volume ?? 1
+      if (gain) gain.gain.value = mutedRef.current ? 0 : (track.volume ?? 1)
     }
-  }, [unmutedAudioTracks])
+  }, [unmutedAudioTracks, muted])
 
   // Cleanup on unmount only. The shared AudioContext (window.__montajSharedCtx)
   // is intentionally NOT closed — it's window-scoped and reused across remounts
@@ -515,7 +536,7 @@ export function useVideoPlayback(
 
       // `audioWindow.gain` is already `baseVolume * max(0, fadeMul)`.
       const gain = gainNodesMap.current.get(track.id)
-      if (gain) gain.gain.value = win.gain
+      if (gain) gain.gain.value = mutedRef.current ? 0 : win.gain
     }
   }, [])
 
@@ -651,7 +672,7 @@ export function useVideoPlayback(
       const src = fileUrlRef.current(playbackSrcFor(nc))
       if (preloadSrcRef.current !== src) { nv.src = src; nv.currentTime = effectiveInPoint(nc) }
       const gain = ensureVideoGain(ns)
-      if (gain) gain.gain.value = clipGain(videoTrack, nc)
+      if (gain) gain.gain.value = mutedRef.current ? 0 : clipGain(videoTrack, nc)
       playSoon(nv)
     }
     void (activeSlotRef.current === 0 ? video0Ref.current : video1Ref.current)?.pause()
@@ -769,7 +790,7 @@ export function useVideoPlayback(
         inactiveVideo.currentTime = effectiveInPoint(clips[nextIdx])
         const inactiveSlot = (1 - slot) as 0 | 1
         const nextGain = ensureVideoGain(inactiveSlot)
-        if (nextGain) nextGain.gain.value = clipGain(videoTrack, clips[nextIdx])
+        if (nextGain) nextGain.gain.value = mutedRef.current ? 0 : clipGain(videoTrack, clips[nextIdx])
       }
     }
 
@@ -824,7 +845,7 @@ export function useVideoPlayback(
               nextVideo.currentTime = effectiveInPoint(next)
             }
             const nextGain = ensureVideoGain(nextSlot)
-            if (nextGain) nextGain.gain.value = clipGain(videoTrack, next)
+            if (nextGain) nextGain.gain.value = mutedRef.current ? 0 : clipGain(videoTrack, next)
             playSoon(nextVideo)
           }
 

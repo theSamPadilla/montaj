@@ -111,7 +111,7 @@ export default function VersionPanel({ versions, restoring, onRestore, onSaveVer
         <button
           onClick={handleSaveClick}
           disabled={saving || !onSaveVersion}
-          className="shrink-0 flex items-center gap-1.5 h-8 px-3 rounded-md bg-[var(--editor-accent)] text-white text-xs font-medium hover:opacity-90 transition-opacity disabled:opacity-40 disabled:hover:opacity-40"
+          className="shrink-0 flex items-center gap-1.5 h-8 px-3 rounded-md bg-[var(--editor-accent)] text-[var(--editor-accent-foreground)] text-xs font-medium hover:opacity-90 transition-opacity disabled:opacity-40 disabled:hover:opacity-40"
         >
           <Save size={13} />
           {saving ? 'Saving…' : 'Save version'}

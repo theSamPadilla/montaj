@@ -31,6 +31,13 @@ const isMain = resolve(process.argv[1] ?? '') === fileURLToPath(import.meta.url)
 // MONTAJ_ROOT is two levels above montaj_assets/render/ (i.e. the Python project root).
 const MONTAJ_ROOT = process.env.MONTAJ_ROOT || join(__dirname, '..', '..')
 const PYTHON = process.env.MONTAJ_PYTHON || 'python3'
+// Absolute directory holding a vendored fonts.css, set by whoever spawns this
+// process (the Electron shell; nothing in the CLI/OSS case). Configuration,
+// never project data — see bundleComponent's fontsBaseDir doc (bundle.js) for
+// why a base must never travel inside a project file. Unset → '', which
+// bundleComponent's own default already treats as "no base" and falls back to
+// today's googleapis output byte-for-byte.
+const MONTAJ_FONTS_DIR = process.env.MONTAJ_FONTS_DIR || ''
 export const REMOVE_BG_SCRIPT = join(MONTAJ_ROOT, 'steps', 'transform', 'remove_bg.py')
 
 const TTY = process.stderr.isTTY
@@ -678,6 +685,7 @@ async function main(projectPath, { out, workers, clean, imageTone, exportMode = 
       opacity:        spec.opacity     ?? 1,
       keyframes:      spec.keyframes   ?? null,
       googleFonts:    spec.googleFonts ?? [],
+      fontsBaseDir:   MONTAJ_FONTS_DIR,
     })
     spec.htmlPath = htmlPath
     workDirs.push(workDir)

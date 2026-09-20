@@ -9,7 +9,7 @@
  *     before Puppeteer takes the next screenshot
  */
 import esbuild from 'esbuild'
-import { writeFileSync, mkdirSync, rmSync, existsSync, readdirSync } from 'fs'
+import { writeFileSync, readFileSync, mkdirSync, rmSync, existsSync, readdirSync } from 'fs'
 import { join, dirname, basename } from 'path'
 import { fileURLToPath } from 'url'
 import { tmpdir } from 'os'
@@ -44,13 +44,18 @@ const __dirname = dirname(fileURLToPath(import.meta.url))
  *   byte-identical to the pre-SP9b one and the scalars above are ignored,
  *   exactly as they always were. Overlay positioning for a keyframe-free item
  *   still happens entirely at ffmpeg composite time.
+ * @param {string} [opts.fontsBaseDir]
+ *   Absolute filesystem DIRECTORY path holding a vendored `fonts.css`. Set ⇒ the
+ *   page links that one stylesheet over `file://` instead of reaching
+ *   fonts.googleapis.com. Unset (the default, and every OSS caller) ⇒ the page is
+ *   byte-identical to before. See `vendoredFontsHref` for the shape and the why.
  * @returns {Promise<{ htmlPath: string, workDir: string }>}
  */
 // `scaleX`/`scaleY` default to `scale` (a destructuring default may read an
 // earlier binding), which is the same `?? scale ?? 1` fallback the resolver in
 // @bycrux/timeline-core applies — so a caller that knows only about uniform
 // `scale`, or passes `scaleX: undefined`, still bakes the legacy numbers.
-export async function bundleComponent({ componentPath, props, fps, durationFrames, width, height, offsetX = 0, offsetY = 0, scale = 1, scaleX = scale, scaleY = scale, rotation = 0, opacity = 1, keyframes = null, opaque = false, googleFonts = [] }) {
+export async function bundleComponent({ componentPath, props, fps, durationFrames, width, height, offsetX = 0, offsetY = 0, scale = 1, scaleX = scale, scaleY = scale, rotation = 0, opacity = 1, keyframes = null, opaque = false, googleFonts = [], fontsBaseDir = '' }) {
   const id      = randomBytes(8).toString('hex')
   const workDir = join(tmpdir(), `montaj-bundle-${id}`)
   mkdirSync(workDir, { recursive: true })
@@ -102,7 +107,7 @@ export async function bundleComponent({ componentPath, props, fps, durationFrame
     logLevel: 'silent',
   })
 
-  writeFileSync(htmlPath, generateHtml(width, height, opaque, googleFonts))
+  writeFileSync(htmlPath, generateHtml(width, height, opaque, googleFonts, fontsBaseDir))
 
   return { htmlPath, workDir }
 }
@@ -350,7 +355,310 @@ function escapeFontSpec(f) {
   return String(f).replace(/&/g, '&amp;').replace(/"/g, '%22').replace(/</g, '%3C')
 }
 
-export function generateHtml(width, height, opaque = false, googleFonts = []) {
+// Turn an optional fonts base into the href of a vendored stylesheet, or '' for
+// "no base — emit the googleapis URL exactly as before".
+//
+// `fontsBaseDir` is an absolute filesystem DIRECTORY path containing a
+// `fonts.css` that declares every face. It is app CONFIGURATION threaded down
+// from the caller, NOT project data — and that distinction is the whole reason
+// this needs no `escapeFontSpec` treatment. googleFonts entries come out of
+// project.json and are untrusted; nothing an author or an attacker can write
+// into a project file reaches this parameter.
+//
+// `file://` + encodeURI is precisely the rewrite this file already applies to
+// image paths (`rewritePathsToFileUrls`) so they resolve in Puppeteer's file://
+// page context; fonts take that same route deliberately. It is NOT the shell's
+// http origin: render.js also runs under the plain CLI (serve/routes/projects.py
+// spawns it) where there is no Electron shell and therefore no shell server, so
+// an origin would work in the packaged app and fail for every other caller.
+//
+// encodeURI also escapes the two characters that could break out of the
+// `href="..."` attribute it lands in (`"` → %22, `<` → %3C), which is all the
+// base needs.
+//
+// Anything that is not a SINGLE-slash absolute path is ignored rather than
+// emitted as a half-formed URL: a relative path, a non-string, an `http(s)://`
+// or `file://` URL, and — explicitly — a `//host`-shaped value, which passes a
+// naive `startsWith('/')` and would yield `file:////host/fonts.css`. Chromium
+// reads that as an empty-host local path and 404s, so it is not egress; it is
+// a silent fall to system-fallback glyphs, where the googleapis URL this
+// rejection falls back to at least renders.
+//
+// The guard below is duplicated verbatim in render-carousel.js's own copy of
+// this helper, and `shim-bake.test.mjs` asserts the two stay identical — a
+// rule tightened in one renderer only is worse than neither, because the two
+// would then disagree about what a valid base is.
+function vendoredFontsHref(fontsBaseDir) {
+  if (typeof fontsBaseDir !== 'string' || !fontsBaseDir.startsWith('/') || fontsBaseDir.startsWith('//')) return ''
+  return 'file://' + encodeURI(fontsBaseDir.replace(/\/+$/, '')) + '/fonts.css'
+}
+
+// A `googleFonts` entry is a SPEC, not a family name: "Baloo+2:wght@400;500",
+// "Playfair+Display:ital@1", "Anton". Everything from the first ':' is the
+// axis list, and '+' is how Google's API encodes the space in a family name —
+// strip the one, undo the other, and what is left is the family exactly as
+// `fonts.css` spells it in its `font-family` declarations, which is what
+// `families.json` lists.
+//
+// Case-folded because CSS font-family matching is case-insensitive: a spec
+// that differs from the manifest only in case names a family the vendored
+// stylesheet genuinely serves, and treating it as unvendored would buy
+// nothing but a fetch from Google.
+//
+// Duplicated verbatim in render-carousel.js, and pinned identical by
+// `shim-bake.test.mjs` — see `vendoredFontsHref` above for why the two
+// renderers copy rather than import, and why a rule changed in one copy only
+// is worse than the change not being made at all.
+function fontFamilyKey(spec) {
+  return String(spec).split(':')[0].replace(/\+/g, ' ').trim().toLowerCase()
+}
+
+// Read `<base>/families.json` — the manifest the vendoring step writes next to
+// `fonts.css` — or `null` if there is no readable one. Read ONCE and handed to
+// the three readers below, rather than each opening the file for itself.
+//
+// Parsing `fonts.css` for its `font-family` declarations, or hardcoding the
+// twenty picker families here, would both work today and both rot silently the
+// next time the vendored set changes — which is the exact failure this reads a
+// manifest to avoid. The manifest is the contract; if it is absent, say so
+// (see `reportVendoredFonts`) rather than inventing a list.
+//
+// Duplicated verbatim in the other renderer and pinned identical by
+// `shim-bake.test.mjs`.
+function vendoredFontsManifest(fontsBaseDir) {
+  try {
+    return JSON.parse(readFileSync(fontsBaseDir.replace(/\/+$/, '') + '/families.json', 'utf8'))
+  } catch {
+    return null
+  }
+}
+
+// The set of family keys the manifest declares, or `null` for "there is no
+// usable manifest here".
+//
+// `null` and an EMPTY SET lead to the same OUTPUT — nothing is treated as
+// vendored — but they are still distinguished, because only `null` is a fault
+// and only `null` gets the loud line. An empty `families` array is a
+// well-formed manifest saying "nothing is vendored"; `null` says "I cannot
+// tell", which is a misconfigured base and worth naming as one.
+//
+// Manifest entries go through `fontFamilyKey` too, not just the requested
+// specs. That is deliberate leniency: a generator that writes Google's
+// '+'-encoded spelling ("Open+Sans") into families.json instead of the
+// `fonts.css` one still matches, and the failure it avoids is silent egress
+// for a family sitting right there on disk.
+//
+// Duplicated verbatim in the other renderer and pinned identical by
+// `shim-bake.test.mjs`.
+function vendoredFamilyKeys(manifest) {
+  if (!manifest || !Array.isArray(manifest.families)) return null
+  return new Set(manifest.families.filter(f => typeof f === 'string').map(fontFamilyKey))
+}
+
+// Resolve a `googleFonts` SPEC to the concrete faces it asks Google for, or
+// `null` for "I cannot parse this confidently".
+//
+// `null` MUST be treated as a fall-through by the caller. That is the safe
+// direction and it is this feature's established philosophy: fetching a font
+// we happen to have costs one request, while silently dropping one we lack
+// costs the author a wrong face in a finished export with no visible cause.
+//
+// A spec is `Family[:axes@tuples]`, where the axes are named in one
+// comma-separated list and their values in another, POSITIONALLY:
+//
+//   Anton                                   → normal 400  (Google's default)
+//   Inter:wght@400;700                      → normal 400, normal 700
+//   Playfair+Display:ital@1                 → italic 400
+//   Playfair+Display:ital,wght@1,700        → italic 700
+//   Playfair+Display:ital,wght@0,400;1,700  → normal 400, italic 700
+//
+// `ital@0` is normal and `ital@1` is italic. Any other axis (`opsz`, `slnt`, a
+// custom one like `GRAD`), any variable RANGE (`wght@100..900`), a duplicated
+// axis, or a tuple whose arity does not match the axis list all return `null`
+// rather than a guess.
+//
+// Duplicated verbatim in the other renderer and pinned identical by
+// `shim-bake.test.mjs`.
+function requiredFaces(spec) {
+  const s = String(spec)
+  const colon = s.indexOf(':')
+  // No axis list: Google serves the family's default face, which is normal 400.
+  if (colon === -1) return [{ style: 'normal', weight: 400 }]
+  const axisPart = s.slice(colon + 1)
+  const at = axisPart.indexOf('@')
+  // `Family:` with no '@' at all, or more than one — not a shape we model.
+  if (at === -1 || axisPart.indexOf('@', at + 1) !== -1) return null
+  const axes = axisPart.slice(0, at).split(',')
+  const tuples = axisPart.slice(at + 1).split(';')
+  const iItal = axes.indexOf('ital')
+  const iWght = axes.indexOf('wght')
+  // Every axis must be one we model. An unmodelled, duplicated or empty axis
+  // name makes the face set unknowable, and a guess here is the silent-wrong
+  // answer this whole refinement exists to delete.
+  for (let i = 0; i < axes.length; i++) if (i !== iItal && i !== iWght) return null
+  const faces = []
+  for (const tuple of tuples) {
+    const values = tuple.split(',')
+    if (values.length !== axes.length) return null
+    let style = 'normal'
+    let weight = 400
+    if (iItal !== -1) {
+      const v = values[iItal]
+      if (v === '0') style = 'normal'
+      else if (v === '1') style = 'italic'
+      else return null // an `ital` range (0..1), or junk
+    }
+    if (iWght !== -1) {
+      const v = values[iWght]
+      if (!/^\d{1,4}$/.test(v)) return null // a `wght` range (100..900), or junk
+      weight = Number(v)
+      if (weight < 1 || weight > 1000) return null
+    }
+    faces.push({ style, weight })
+  }
+  return faces
+}
+
+// The manifest's `faces` and `requested` maps, flattened into one lookup of
+// family key → available weights per style. `undefined` means the manifest
+// carries NO face information at all.
+//
+// The vendored set is family + STYLE + WEIGHT, not family. `fonts.css` carries
+// only the faces the vendoring pass actually received — every face is
+// `font-style: normal`, and the weights are only the ones it asked for. So a
+// family-level partition gets `Playfair+Display:ital@1` wrong: the family
+// matches, the spec is treated as vendored, the real italic is never fetched,
+// and the browser synthesises an oblique from the upright. `Inter:wght@300` is
+// the same shape one axis over. Both are silent, and both change what the user
+// sees.
+//
+// A face counts as AVAILABLE if it is in `faces` (we have the file) or in
+// `requested` (we asked Google for it and were refused). The second half is
+// not a special case: the gap between the two maps is exactly "weights Google
+// does not publish", and falling through for one of those fetches a stylesheet
+// that declines identically — a guaranteed-useless request rather than a
+// probably-useless one. `Bebas+Neue:wght@400;700` is the only picker spec that
+// exercises it; Bebas Neue ships no 700 face at all.
+//
+// NO face information is different from face information covering nothing.
+// The first returns `undefined` and leaves the partition at family level, for
+// a manifest written before this refinement existed; the second is an empty
+// Map and means every requested face is genuinely absent.
+//
+// Duplicated verbatim in the other renderer and pinned identical by
+// `shim-bake.test.mjs`.
+function vendoredFaceIndex(manifest) {
+  const usable = [manifest && manifest.faces, manifest && manifest.requested]
+    .filter(m => m && typeof m === 'object' && !Array.isArray(m))
+  if (!usable.length) return undefined
+  const index = new Map()
+  for (const source of usable) {
+    for (const [family, styles] of Object.entries(source)) {
+      if (!styles || typeof styles !== 'object') continue
+      const key = fontFamilyKey(family)
+      let entry = index.get(key)
+      if (!entry) index.set(key, (entry = { normal: new Set(), italic: new Set() }))
+      for (const style of ['normal', 'italic']) {
+        const weights = styles[style]
+        if (!Array.isArray(weights)) continue
+        for (const w of weights) if (Number.isInteger(w)) entry[style].add(w)
+      }
+    }
+  }
+  return index
+}
+
+// Whether every face `spec` requires is available locally.
+//
+// A family with no entry in the index is NOT covered — the index is built from
+// the same manifest as the family list, so a family present in one and absent
+// from the other means the two disagree, and the safe reading of a
+// disagreement is "fall through".
+//
+// A PARTIALLY vendored spec falls through WHOLE. `Inter:wght@400;300` goes to
+// Google as one spec rather than being split into a vendored half and a
+// fetched half. Splitting would mean synthesising a new spec string, and a
+// spec is the author's — ours to honour or to pass on untouched, never to
+// rewrite.
+//
+// Duplicated verbatim in the other renderer and pinned identical by
+// `shim-bake.test.mjs`.
+function specFacesAvailable(spec, index) {
+  const entry = index.get(fontFamilyKey(spec))
+  if (!entry) return false
+  const required = requiredFaces(spec)
+  if (!required) return false
+  return required.every(f => entry[f.style].has(f.weight))
+}
+
+// A short, stable fingerprint of the vendored set, logged once per render so a
+// preview/render divergence becomes two visibly different strings instead of
+// something a human has to infer by watching which fonts load. The editor logs
+// the same digest for the manifest its host handed it; if the two do not
+// match, the two sides are partitioning against different vendored sets and
+// captions WILL differ between editing and export.
+//
+// It fingerprints the FACES, not just the families, when face information is
+// available. A families-only digest would report a match across a set that
+// materially changed — re-vendor at a different weight, or drop one, and every
+// family name is still identical while what the stylesheet can actually
+// resolve is not. That is precisely the silent drift this exists to make loud.
+//
+// With NO face index the input is byte-for-byte what it was before faces
+// existed, so a family-only manifest keeps producing its old digest and stays
+// comparable against an older renderer. A face index changes the value exactly
+// when there is new information to report, never incidentally.
+//
+// FNV-1a over the sorted lines, not a crypto hash, and that is deliberate: it
+// has to be computable synchronously in a browser too (`crypto.subtle` is
+// async), and it is a comparison token, never a security primitive. The
+// editor's copy is the same algorithm over the same normalised input, and
+// `fonts-fallthrough.test.mjs` pins a literal digest that the editor suite
+// pins as well — this TS↔JS seam is the one place a textual comparison cannot
+// reach, which is why the literal is the pin.
+//
+// Duplicated verbatim in the other renderer and pinned identical by
+// `shim-bake.test.mjs`.
+function familiesDigest(keys, faceIndex) {
+  const lines = [...keys].sort().map(key => {
+    const entry = faceIndex ? faceIndex.get(key) : undefined
+    if (!entry) return key
+    const axis = style => `${style}:${[...entry[style]].sort((a, b) => a - b).join(',')}`
+    return `${key}\t${axis('normal')}\t${axis('italic')}`
+  })
+  let h = 0x811c9dc5
+  for (const ch of lines.join('\n')) {
+    h = Math.imul(h ^ ch.codePointAt(0), 0x01000193) >>> 0
+  }
+  return h.toString(16).padStart(8, '0')
+}
+
+// Make the vendored set, and any fall-through out of it, visible. An author
+// who names a family the vendored set does not carry should learn it here,
+// while the render is running, rather than by noticing the wrong face in the
+// exported video — silent is the whole defect this partition exists to fix.
+// The digest line goes out unconditionally so it can be compared against the
+// editor's, which logs the same digest for the list its host handed it.
+//
+// stderr, never stdout: render.js emits its JSON result on stdout and
+// render-carousel.js emits the output directory there, so a line printed to
+// stdout would corrupt a caller's parse.
+//
+// Duplicated verbatim in render-carousel.js and pinned identical by
+// `shim-bake.test.mjs`.
+function reportVendoredFonts(vendoredKeys, fellThrough, faceIndex) {
+  if (vendoredKeys === null) {
+    console.error('[montaj] fonts: no readable families.json at the fonts base — treating NOTHING as vendored, '
+      + `so the vendored stylesheet is not linked and all ${fellThrough.length} requested families are being fetched from fonts.googleapis.com`)
+    return
+  }
+  console.error(`[montaj] fonts: vendored set ${familiesDigest(vendoredKeys, faceIndex)} (${vendoredKeys.size} families)`)
+  if (fellThrough.length) {
+    console.error(`[montaj] fonts: not in the vendored set, fetching from fonts.googleapis.com: ${fellThrough.join(', ')}`)
+  }
+}
+
+export function generateHtml(width, height, opaque = false, googleFonts = [], fontsBaseDir = '') {
   const bgRule = opaque ? '' : 'background: transparent;'
   // Each entry in googleFonts is appended as a `family=...` parameter on the
   // Google Fonts CSS2 API URL. Callers format entries as "Anton" /
@@ -362,10 +670,57 @@ export function generateHtml(width, height, opaque = false, googleFonts = []) {
   // in Puppeteer over `file://` WITH network access, so `escapeFontSpec`
   // covers the narrower job of keeping an entry from breaking out of the
   // attribute it's interpolated into.
-  const fontLinks = googleFonts.length === 0 ? '' : `
+  //
+  // A `fontsBaseDir` changes that for the families the vendored stylesheet
+  // actually declares — and ONLY those. The vendored set is built from the
+  // editor's picker list, while `googleFonts` comes out of project.json, and
+  // skills/write-overlay documents arbitrary Google families as first-class
+  // (its own worked example names "Anton", which the picker does not carry).
+  // So the page links the vendored stylesheet for what it covers and falls
+  // through to googleapis for the remainder, per family.
+  //
+  // A family that falls through is interpolated into a googleapis URL exactly
+  // as it would be with no base at all, `escapeFontSpec` and all: it is the
+  // same untrusted project.json string either way.
+  //
+  // The vendored <link> is emitted only when at least one requested family is
+  // actually in the vendored set, and the googleapis <link> only for the
+  // remainder. When the remainder is empty — the common case, a project using
+  // only picker fonts — the googleapis link and both `preconnect` hints are
+  // gone entirely and the page reaches Google not at all. That is the point of
+  // the base; a partition that leaked a preconnect would make it pointless.
+  //
+  // An unreadable manifest is treated as "NOTHING is vendored": no vendored
+  // link, every family from Google. The tempting opposite — assume the sheet
+  // covers what was asked for — is the silent-wrong option, and it is what
+  // this whole change is fixing. This one is loud-wrong: every glyph is
+  // correct, preview and render still agree, and the only cost is egress,
+  // which is the one failure the log line below already detects. It also
+  // matches the editor exactly, where the same rule applies when a host sets
+  // a base without handing over a family list.
+  const vendoredHref = vendoredFontsHref(fontsBaseDir)
+  //
+  // The partition is family-level FIRST and then refined per FACE: a spec is
+  // vendored only when its family is declared AND every face it requires is
+  // available. `faceIndex === undefined` means the manifest carries no face
+  // information, which leaves the refinement off and the behaviour at family
+  // level — see `vendoredFaceIndex`.
+  const manifest     = vendoredHref && googleFonts.length ? vendoredFontsManifest(fontsBaseDir) : null
+  const vendoredKeys = vendoredFamilyKeys(manifest)
+  const faceIndex    = vendoredFaceIndex(manifest)
+  const covered      = f => vendoredKeys.has(fontFamilyKey(f)) && (!faceIndex || specFacesAvailable(f, faceIndex))
+  const vendored     = vendoredKeys ? googleFonts.filter(f =>  covered(f)) : []
+  const fellThrough  = vendoredKeys ? googleFonts.filter(f => !covered(f)) : googleFonts
+  if (vendoredHref && googleFonts.length) reportVendoredFonts(vendoredKeys, fellThrough, faceIndex)
+  const googleFontLinks =
+    fellThrough.length === 0 ? '' : `
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?${googleFonts.map(f => `family=${escapeFontSpec(f)}`).join('&')}&display=swap">`
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?${fellThrough.map(f => `family=${escapeFontSpec(f)}`).join('&')}&display=swap">`
+  const fontLinks =
+    googleFonts.length === 0 ? ''
+    : (vendored.length ? `
+<link rel="stylesheet" href="${vendoredHref}">` : '') + googleFontLinks
   return `<!DOCTYPE html>
 <html>
 <head>

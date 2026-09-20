@@ -18,7 +18,7 @@
 //       not have.
 import { test, describe, after } from 'node:test'
 import assert from 'node:assert/strict'
-import { readFileSync, writeFileSync, existsSync, rmSync } from 'fs'
+import { readFileSync, writeFileSync, existsSync, rmSync, mkdtempSync } from 'fs'
 import { join, dirname } from 'path'
 import { tmpdir } from 'os'
 import { randomBytes } from 'crypto'
@@ -306,6 +306,82 @@ describe('generateHtml: googleFonts entries cannot break out of the href attribu
     assert.match(html, /family=Baloo\+2:wght@700/)
     assert.match(html, /family=Roboto:wght@400;700/)
   })
+})
+
+// A `fontsBaseDir` (L1) adds a file:// link to a vendored stylesheet, and
+// drops from the googleapis URL every family that stylesheet declares — which
+// families those are comes from `<base>/families.json`, and the partition and
+// its failure modes are pinned in `fonts-fallthrough.test.mjs`. What is pinned
+// HERE is only the guard on the base itself. Two properties matter and neither
+// is visible from the happy path:
+//
+//   (1) A base that is not a SINGLE-slash absolute path must fall all the way
+//       back to today's output. `//evil.test` is the one that slips through a
+//       naive `startsWith('/')`: it emits `file:////evil.test/fonts.css`, which
+//       Chromium reads as an empty-host local path and 404s — measured, not
+//       assumed, so it is NOT network egress. What it is is a silent fall to
+//       system-fallback glyphs, where the googleapis URL would at least render.
+//
+//   (2) render-carousel.js keeps its OWN copy of `vendoredFontsHref` on purpose
+//       (the two renderers share no code and no import). A guard tightened in
+//       one copy only is worse than neither, because the two would then
+//       disagree about what a valid base is — so pin them as identical text.
+//
+// A rejected base must ALSO skip the manifest read entirely: the no-base path
+// is the OSS default and has to stay a pure string build, with no filesystem
+// access added to it by a feature it does not use.
+describe('generateHtml: a fonts base is honoured only when it is a single-slash absolute path', () => {
+  const DEFAULT = generateHtml(1080, 1920, false, ['Anton'])
+
+  for (const bad of ['', '//evil.test', '//evil.test/fonts', 'fonts/editor', './fonts',
+                     'https://evil.test/f', 'file:///x/fonts', 42, null, undefined, {}]) {
+    test(`(l) a base of ${JSON.stringify(bad)} emits today's googleapis URL, unchanged`, () => {
+      assert.equal(generateHtml(1080, 1920, false, ['Anton'], bad), DEFAULT)
+    })
+  }
+
+  test('(l) a real absolute base links the vendored stylesheet, and with a manifest that covers the family it is the only <link>', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'shim-fontsbase-'))
+    try {
+      writeFileSync(join(dir, 'families.json'), JSON.stringify({ families: ['Anton'] }))
+      const html = generateHtml(1080, 1920, false, ['Anton'], dir)
+      assert.match(html, new RegExp(`<link rel="stylesheet" href="file://${dir}/fonts\\.css">`))
+      assert.doesNotMatch(html, /fonts\.(googleapis|gstatic)\.com|preconnect/)
+      assert.equal((html.match(/<link /g) ?? []).length, 1, 'the vendored stylesheet is the only <link> on the page')
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  // The same duplicate-on-purpose rule now covers eight more helpers. A base
+  // does NOT mean "link the vendored stylesheet and stop consulting
+  // googleFonts" — it means partition the requested specs against
+  // `<base>/families.json` and fall through to googleapis for the rest (see
+  // `fonts-fallthrough.test.mjs` for the behaviour).
+  //
+  // The partition is family-level AND face-level: `requiredFaces`,
+  // `vendoredFaceIndex` and `specFacesAvailable` decide whether a spec's
+  // particular style and weight are actually on disk, which is why
+  // `Playfair+Display:ital@1` must NOT be treated as vendored merely because
+  // Playfair Display is. Every one of these functions decides where a face's
+  // bytes come from, so every one has to stay identical across the two
+  // renderers; drift here is preview/render disagreement, which shows up only
+  // as a caption in the wrong face in a finished export.
+  for (const fn of ['vendoredFontsHref', 'fontFamilyKey', 'vendoredFontsManifest', 'vendoredFamilyKeys',
+                    'requiredFaces', 'vendoredFaceIndex', 'specFacesAvailable',
+                    'familiesDigest', 'reportVendoredFonts']) {
+    test(`(l) render-carousel.js's private copy of ${fn} is identical to bundle.js's`, () => {
+      const grab = (file) => {
+        const src = readFileSync(join(__dirname, '..', file), 'utf8')
+        const m = src.match(new RegExp(`function ${fn}\\([^]*?\\n\\}`))
+        assert.ok(m, `expected a ${fn} in ${file}`)
+        return m[0]
+      }
+      assert.equal(grab('render-carousel.js'), grab('bundle.js'),
+        'the two renderers must agree on what a valid fonts base is and which families it covers '
+        + '— change both copies, or neither')
+    })
+  }
 })
 
 // captureOptionsFor (renderer.js) — the Puppeteer capture side of an opaque

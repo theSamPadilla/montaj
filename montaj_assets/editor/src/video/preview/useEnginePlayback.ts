@@ -34,8 +34,16 @@
  *  - **Video-item volume, including >1.0.** The legacy hook routes each
  *    `<video>` slot through a GainNode to get amplification. The engine has no
  *    element to route: `createMasterClock` takes the item's `volume`/`muted`
- *    and scales the PCM at ring-enqueue time (T4), reached from
- *    `engine/index.ts`'s `SourceRequest` → `request.item.volume`. The TRACK's
+ *    and applies the level on a PER-SESSION output `GainNode` (one node → gain
+ *    → destination chain per clip session, `engine/audio-clock.ts`), reached
+ *    from `engine/index.ts`'s `SourceRequest` → `request.item.volume`. It is
+ *    NOT scaled into the PCM at ring-enqueue time — that was the original
+ *    design and it was replaced, so that a level change is heard immediately
+ *    rather than only after the up-to-`RING_SECONDS` already in the ring
+ *    drains. `audio-clock.ts` marks both ends of that change in place: the
+ *    interleave helper now says "**Volume no longer rides here**" and is
+ *    called with `volume === 1`, and the gain chain says "the clip's volume
+ *    rides HERE, not in the PCM". Read those, not this paragraph. The TRACK's
  *    volume/mute ride the same path: the scheduler folds them into the request
  *    item (`withTrackAudio`) before the host ever sees it. Nothing to thread
  *    here either way; adding a second volume path would be the duplication the
@@ -180,7 +188,48 @@ export function useEnginePlayback(
   currentTime: number,
   onTimeUpdate: (t: number) => void,
   fileUrl: (path: string) => string,
+  muted = false,
 ): EnginePlayback {
+  // Second-rider master mute (PreviewPlayer's `muted` prop) — see the
+  // matching ref in `useVideoPlayback.ts`, whose reasoning this mirrors.
+  //
+  // PARTIAL COVERAGE, DELIBERATELY: this only reaches the audio-LANE
+  // GainNodes below (`project.audio.tracks` — music/VO beds), the one audio
+  // path this hook owns an element/GainNode for (see "THE AUDIO LANES" in
+  // this file's header). Track-0 VIDEO-ITEM audio does NOT route through a
+  // GainNode *this hook* owns, so `muted` does not reach it today.
+  //
+  // Be precise about WHY, because the obvious guess is wrong and this file's
+  // own header asserted the wrong thing until 2026-09-20: that the item's
+  // volume is scaled into the PCM at ring-enqueue time. It is not, and
+  // `engine/audio-clock.ts` says so twice — "**Volume no longer rides here.**
+  // `createAudioClock` calls this with `volume === 1` and applies the clip's
+  // real level on a per-session output `GainNode` instead", and at the chain
+  // itself, "the clip's volume rides HERE, not in the PCM". Enqueue-time
+  // scaling was REPLACED precisely so a level change could be heard
+  // immediately, including in the up-to-`RING_SECONDS` already buffered.
+  //
+  // So closing this is cheap, and it is left undone only because it is out of
+  // this rider's scope — not because it is hard. `MasterClock.setVolume` is
+  // that live lever and it is already wired: `engine/index.ts` pushes a clip's
+  // volume change straight to the live clock rather than tearing the session
+  // down. Pushing 0 through that same path when `muted` is the whole change.
+  // It does NOT touch `SourceRequest`/session-build plumbing and it never goes
+  // near `session.muted` or the retain-drop test, because `muted` is the
+  // CONSTRUCTION-time decision (a muted clip runs on the wall clock and builds
+  // no audio graph at all) while `volume` is the live one — `audio-clock.ts`
+  // draws exactly that distinction on `muted`'s own doc comment.
+  //
+  // Flagged rather than shipped, and deliberately not described as expensive:
+  // a comment claiming a cheap fix is costly is how a hole stays open. In
+  // practice this is currently moot: every caller of
+  // `PreviewPlayer` that passes `muted` (the project-card hover preview)
+  // never sets `engine: {enabled: true}`, so this hook — and the gap — is
+  // unreached. If a future host DOES combine `engine.enabled` with `muted`,
+  // primary clip audio will still play; that combination needs its own task.
+  const mutedRef = useRef(muted)
+  useEffect(() => { mutedRef.current = muted }, [muted])
+
   // ── Derived collections (the legacy memos, verbatim) ──────────────────────
   // `track0VideoItems` IS the legacy `clips` memo, lifted into the scheduler so
   // one definition serves both the engine's tick and this surface.
@@ -329,7 +378,7 @@ export function useEnginePlayback(
 
       // `audioWindow.gain` is already `baseVolume * max(0, fadeMul)`.
       const gain = gainNodesMap.current.get(track.id)
-      if (gain) gain.gain.value = win.gain
+      if (gain) gain.gain.value = mutedRef.current ? 0 : win.gain
     }
   }, [])
 
@@ -361,7 +410,7 @@ export function useEnginePlayback(
         const ctx = getSharedAudioContext()
         const source = ctx.createMediaElementSource(el)
         const gain = ctx.createGain()
-        gain.gain.value = track.volume ?? 1
+        gain.gain.value = mutedRef.current ? 0 : (track.volume ?? 1)
         source.connect(gain)
         gain.connect(ctx.destination)
         gains.set(track.id, gain)
@@ -371,7 +420,7 @@ export function useEnginePlayback(
         srcMap.set(track.id, track.src!)
       }
       const gain = gains.get(track.id)
-      if (gain) gain.gain.value = track.volume ?? 1
+      if (gain) gain.gain.value = mutedRef.current ? 0 : (track.volume ?? 1)
     }
 
     // A lane added mid-session has to be placed at the current playhead
@@ -385,13 +434,14 @@ export function useEnginePlayback(
   // changed, which is the render whose track set this effect is reconciling.
   }, [audioTrackIdentity])
 
-  // Volume in place, no element churn.
+  // Volume in place, no element churn. `muted` is a dep so an external mute
+  // toggle reaches every lane immediately (mirrors the legacy hook).
   useEffect(() => {
     for (const track of unmutedAudioTracks) {
       const gain = gainNodesMap.current.get(track.id)
-      if (gain) gain.gain.value = track.volume ?? 1
+      if (gain) gain.gain.value = mutedRef.current ? 0 : (track.volume ?? 1)
     }
-  }, [unmutedAudioTracks])
+  }, [unmutedAudioTracks, muted])
 
   // Unmount only. The shared AudioContext is window-scoped and never closed.
   useEffect(() => {

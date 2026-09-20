@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
 import { ChevronDown } from 'lucide-react'
 import { NumberField, stepValue } from '../ui'
+import { partitionFontSpecs, reportUnvendoredFonts, reportVendoredSet, vendoredFaceIndex, vendoredKeySet } from '../lib/font-families'
+import type { FaceIndex, FaceMap } from '../lib/font-families'
 
 export type FontOption = {
   label: string
@@ -53,22 +55,91 @@ export const FONT_OPTIONS: FontOption[] = [
 // 300/500/600/800), but that's the correct trade: the picker preview and
 // the persisted spec fetch identical weights, so what you see in the
 // dropdown is what actually renders.
-const GOOGLE_FONTS_URL = (() => {
-  const params = FONT_OPTIONS
-    .filter((f) => f.isGoogleFont)
-    .map((f) => `family=${f.spec ?? `${f.label.replace(/ /g, '+')}:wght@400;700`}`)
-    .join('&')
-  return `https://fonts.googleapis.com/css2?${params}&display=swap`
-})()
+//
+// This loader is private to FontPicker.tsx and unrelated to the one in
+// `lib/google-fonts.ts` despite sharing a name — see that file's header. Each
+// keeps its own setFontsBaseUrl() and its own injection state. What they do
+// NOT keep separate is the partition itself: both import it from
+// `lib/font-families.ts`, so they cannot disagree about which families a
+// vendored stylesheet covers. Two loaders reaching different answers is a
+// caption in one face while editing and another at export.
 
-let fontsInjected = false
-function ensureGoogleFontsLoaded(): void {
-  if (fontsInjected || typeof document === 'undefined') return
-  fontsInjected = true
+// Unset (OSS default): the per-family fonts.googleapis.com/css2 URL below,
+// exactly as before. Set: `${base}/fonts.css` for the families the host says
+// that stylesheet declares, plus a googleapis URL for any picker family it
+// does not.
+//
+// The picker's own families are the vendored set's reason for existing, so
+// in a correctly configured app nothing here ever falls through. It is
+// guarded anyway: the day a family is added to FONT_OPTIONS and not yet
+// vendored, the alternative is a picker preview silently showing a system
+// fallback — which is the exact rot a declared family list exists to catch.
+let fontsBaseUrl: string | undefined
+let vendoredFamilies = new Set<string>()
+let vendoredFaces: FaceIndex | undefined
+
+/** Point the picker's preview loader at a vendored stylesheet. Same contract
+ *  as `lib/google-fonts.ts`'s setter of the same name, including that the
+ *  family list is passed IN rather than fetched — see that file for why. A
+ *  host must call BOTH setters; neither covers the other's surface.
+ *
+ *  `faceData` matters more here than anywhere else: the picker requests
+ *  `Bebas+Neue:wght@400;700`, and only the 400 is on disk because Bebas Neue
+ *  publishes no 700. Without the `requested` half of `faceData` that spec
+ *  falls through and a picker-only project stops being zero-egress. */
+export function setFontsBaseUrl(
+  url: string | undefined,
+  families?: readonly string[],
+  faceData?: { faces?: FaceMap; requested?: FaceMap },
+): void {
+  fontsBaseUrl = url
+  vendoredFamilies = vendoredKeySet(families)
+  vendoredFaces = faceData ? vendoredFaceIndex(faceData.faces, faceData.requested) : undefined
+  if (url) reportVendoredSet(url, vendoredFamilies, vendoredFaces)
+}
+
+/** Every Google family the picker previews, as fetch specs. Falls back to a
+ *  label-derived guess only if `spec` is somehow missing, so a stale/partial
+ *  FontOption still resolves. */
+function pickerFontSpecs(): string[] {
+  return FONT_OPTIONS
+    .filter((f) => f.isGoogleFont)
+    .map((f) => f.spec ?? `${f.label.replace(/ /g, '+')}:wght@400;700`)
+}
+
+// Keyed on the URLs actually injected (not a bare boolean, and not a single
+// last-URL string) so that neither a base change after a prior injection nor
+// the two-stylesheet partition case is suppressed by a stale "already done"
+// flag. A new base produces URLs this Set has never seen, so it injects again.
+const injectedFontsUrls = new Set<string>()
+function injectOnce(url: string): boolean {
+  if (injectedFontsUrls.has(url)) return false
+  injectedFontsUrls.add(url)
+  if (typeof document === 'undefined') return false
   const link = document.createElement('link')
   link.rel = 'stylesheet'
-  link.href = GOOGLE_FONTS_URL
+  link.href = url
   document.head.appendChild(link)
+  return true
+}
+
+function ensureGoogleFontsLoaded(): void {
+  if (typeof document === 'undefined') return
+  // Trailing slash stripped, matching `lib/google-fonts.ts` and
+  // `montaj_assets/render/bundle.js`'s `vendoredFontsHref`. All three build a
+  // URL from a base set elsewhere, and a host that passes `/fonts/editor/` to
+  // one and `/fonts/editor` to another must not get two different stylesheets.
+  const base = fontsBaseUrl ? fontsBaseUrl.replace(/\/+$/, '') : ''
+  const { vendored, fellThrough } = partitionFontSpecs(
+    pickerFontSpecs(),
+    base ? vendoredFamilies : new Set(),
+    base ? vendoredFaces : undefined,
+  )
+  if (vendored.length) injectOnce(`${base}/fonts.css`)
+  if (!fellThrough.length) return
+  if (injectOnce(`https://fonts.googleapis.com/css2?${fellThrough.map((f) => `family=${f}`).join('&')}&display=swap`) && base) {
+    reportUnvendoredFonts(fellThrough)
+  }
 }
 
 function firstFontToken(value: string): string {

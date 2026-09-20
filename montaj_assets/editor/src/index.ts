@@ -169,6 +169,38 @@ export {
   FontSizePicker,
 } from './text/FontPicker'
 export type { FontOption } from './text/FontPicker'
+// Two independent Google Fonts base-URL setters, one per loader — see each
+// file's own header for why there are two. `setFontsBaseUrl` (from
+// `lib/google-fonts.ts`) covers the broader surface: captions, overlays and
+// the timeline/overlay preview. `setPickerFontsBaseUrl` (renamed at this
+// export boundary only — the source file still calls it `setFontsBaseUrl`,
+// same as the other loader) covers just the font-family picker's own
+// preview list. A host must call BOTH to eliminate Google Fonts egress
+// entirely; calling only one still leaves the other loader fetching from
+// fonts.googleapis.com.
+//
+// Both take the same two arguments: `(url, families)`. `families` is the list
+// of families the stylesheet at `url` declares — the host reads its own
+// `families.json` (or equivalent) ONCE at app init and passes the result to
+// both setters. It is deliberately not fetched inside the loaders: they are
+// synchronous and called from effects, and a pending fetch would leave them
+// unable to decide the partition at the moment they have to act on it.
+//
+// **Passing a url with no families means NOTHING is treated as vendored** —
+// the vendored stylesheet is not linked and every family is fetched from
+// Google. That is the safe direction: glyphs stay correct and preview and
+// render still agree, at the cost of the egress the base exists to remove.
+// Assuming the stylesheet covers everything would instead preview unvendored
+// families as a system fallback while the renderer — reading its own manifest
+// off local disk — got them right, and nothing on screen would say so.
+//
+// `vendoredFamiliesDigest()` returns a short fingerprint of the family list in
+// force. The renderers log the same digest for the manifest they read; two
+// different strings mean the two sides are partitioning against different
+// vendored sets, and captions will differ between editing and export.
+export { setFontsBaseUrl, vendoredFamiliesDigest } from './lib/google-fonts'
+export { setFontsBaseUrl as setPickerFontsBaseUrl } from './text/FontPicker'
+export { fontFamilyKey, familiesDigest, partitionFontSpecs, vendoredKeySet } from './lib/font-families'
 export { InlineTextEditor } from './text/InlineTextEditor'
 export type { InlineTextEditorProps } from './text/InlineTextEditor'
 export {

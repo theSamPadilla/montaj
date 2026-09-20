@@ -46,6 +46,17 @@ import { enabledTrackItems, trackItems, withEnabledItemTracks } from './project-
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const isMain = resolve(process.argv[1] ?? '') === fileURLToPath(import.meta.url)
 
+// Absolute directory holding a vendored fonts.css — same env var and same
+// "configuration, never project data" contract as render.js's MONTAJ_FONTS_DIR
+// (see that file, and bundleComponent's doc in bundle.js). Read directly here
+// rather than threaded through as a parameter: this file has no caller that
+// already carries app configuration down to it (sampleOverlay is invoked both
+// from this file's own CLI and from sampleFrame()'s internal overlay loop
+// below), so matching render.js's module-scope env idiom covers both call
+// paths at once instead of requiring a new plumbing argument on each. Unset →
+// '', which bundleComponent's own default already treats as "no base".
+const MONTAJ_FONTS_DIR = process.env.MONTAJ_FONTS_DIR || ''
+
 const TTY = process.stderr.isTTY
 const C = { cyan: TTY ? '\x1b[96m' : '', reset: TTY ? '\x1b[0m' : '' }
 
@@ -203,6 +214,13 @@ if (isMain) {
  * @param {boolean}  [opts.measure]      If true, walk DOM and return measurements
  * @param {string}   opts.outPath        Where to write the PNG (required)
  * @returns {Promise<{ pngPath: string, measurements?: object }>}
+ *
+ * Takes no `fontsBaseDir` parameter — it reads the module-scope
+ * `MONTAJ_FONTS_DIR` constant (resolved once from `process.env` at import
+ * time) instead. That's fine under today's spawn-per-call model (this file's
+ * own CLI, and `steps/render/sample_overlay.py`, both start a fresh process
+ * per sample), but it means an in-process caller cannot vary the fonts base
+ * per call — the value is fixed for the life of the process.
  */
 export async function sampleOverlay({
   componentPath,
@@ -230,7 +248,7 @@ export async function sampleOverlay({
   gcCache()
 
   // Build cache key
-  const cacheKey = buildOverlayCacheKey(componentPath, props, frame, width, height, googleFonts, measure, effectiveDuration)
+  const cacheKey = buildOverlayCacheKey(componentPath, props, frame, width, height, googleFonts, measure, effectiveDuration, MONTAJ_FONTS_DIR)
   const cachePng = join(CACHE_DIR, `${cacheKey}.png`)
   const cacheJson = join(CACHE_DIR, `${cacheKey}.json`)
 
@@ -256,6 +274,7 @@ export async function sampleOverlay({
     width,
     height,
     googleFonts,
+    fontsBaseDir: MONTAJ_FONTS_DIR,
   })
 
   let browser = null
@@ -1096,8 +1115,34 @@ function getTotalDurationSeconds(projectJson) {
   return Math.max(...allItems.map(i => i.end ?? 0))
 }
 
-/** Build a content-hash cache key for sampleOverlay. */
-function buildOverlayCacheKey(componentPath, props, frame, width, height, googleFonts, measure, durationFrames) {
+/**
+ * Build a content-hash cache key for sampleOverlay.
+ *
+ * `fontsBaseDir` MUST be part of this key. This cache (CACHE_DIR, above) lives
+ * under the system `tmpdir()` — NOT under `$HOME` — with a 24h TTL, and it
+ * survives across process invocations: `steps/render/sample_overlay.py` spawns
+ * this script fresh per sample rather than importing it, so every sample is a
+ * new process hitting the same on-disk cache. Two things follow from that:
+ *   1. Sampling the same overlay once with MONTAJ_FONTS_DIR set and once unset
+ *      (or set to a different base), within the TTL, must produce DIFFERENT
+ *      keys — otherwise the second call gets a cache hit and silently serves a
+ *      PNG rendered under the OTHER font configuration.
+ *   2. Because the cache directory is outside `$HOME`, this repo's scratch-HOME
+ *      QA procedure (see montaj-app's CLAUDE.md) does not isolate it — a prior
+ *      Electron-shell run and a later plain-CLI run on the same machine share
+ *      this cache and can cross-contaminate silently.
+ * So the fonts base's actual VALUE is folded into the hashed input below,
+ * exactly like `googleFonts` — not a boolean "was a base set" flag, which
+ * would re-collide the moment anyone points it at a second directory.
+ *
+ * The fold is appended ONLY when `fontsBaseDir` is truthy, rather than always
+ * joined in as another `|`-delimited field, so that the unset case (every OSS
+ * caller, and every caller before this parameter existed) produces the exact
+ * same raw string — and therefore the exact same key — as before this field
+ * was added. Existing cache entries for users who never set the var do not go
+ * stale. Pinned by test/sample-frame.test.mjs.
+ */
+function buildOverlayCacheKey(componentPath, props, frame, width, height, googleFonts, measure, durationFrames, fontsBaseDir = '') {
   let mtime = '0'
   try { mtime = String(statSync(componentPath).mtimeMs) } catch {}
   const raw = [
@@ -1109,7 +1154,7 @@ function buildOverlayCacheKey(componentPath, props, frame, width, height, google
     googleFonts.join(','),
     measure ? 'measure' : '',
     String(durationFrames),
-  ].join('|')
+  ].join('|') + (fontsBaseDir ? `|fontsBaseDir:${fontsBaseDir}` : '')
   return createHash('sha256').update(raw).digest('hex')
 }
 
@@ -1178,5 +1223,10 @@ function fail(code, message) {
 // buildFrameCacheKey is here so the look/curve components (SP6b decision 10)
 // can be asserted directly: proving it through rendered pixels only works for
 // colors where two cubes happen to disagree, which is not a property a cache
-// test should depend on.
-export { resolveVideoSource, buildFrameCacheKey }
+// test should depend on. buildOverlayCacheKey is here for the same reason,
+// for its fontsBaseDir component: two different bases render pixel-identical
+// text in this test's fixtures (no fonts.css asset to actually diverge on),
+// so the property under test — different key for different base, same key
+// for unset vs. the pre-fontsBaseDir key — has to be asserted on the key
+// itself, not inferred from rendered output.
+export { resolveVideoSource, buildFrameCacheKey, buildOverlayCacheKey }

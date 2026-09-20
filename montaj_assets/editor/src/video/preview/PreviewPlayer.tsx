@@ -112,6 +112,47 @@ interface PreviewPlayerProps {
    * note at its render site below.
    */
   socialPreview?: SocialPreviewPlatform | string | null
+  /**
+   * A second rider on this same pin bump (operator decision, 2026-09-20) —
+   * not font work, riding because it is the same package and the same
+   * release. Silences every audio path this component owns. Default `false`
+   * — today's behavior, unchanged, for every existing host.
+   *
+   * Exists for hosts that mount a live timeline preview somewhere audio isn't
+   * wanted (the project-card hover preview: moving the pointer across a grid
+   * must not play each project's audio in turn). `<video muted>` is NOT
+   * sufficient on its own — see `ensureVideoGain` and the "Multi-track audio
+   * management" section in `useVideoPlayback.ts`: once a slot or a lane is
+   * wired `MediaElementSource → GainNode → ctx.destination`, the element's
+   * own `muted`/`volume` stop having any audible effect and the GainNode is
+   * the only real lever. This prop zeroes every such GainNode (video slots
+   * AND background audio-track lanes) via `mutedRef` in `useVideoPlayback.ts`
+   * — the `muted` attribute set on the `<video>` slots below is defense in
+   * depth for the brief pre-wire window, not the mechanism.
+   *
+   * Read the scope of that precisely: this silences every audio path these
+   * hooks INSTANTIATE, which is not the same as every path reachable through
+   * a seam this component EXPOSES. The audible drag-scrub source
+   * (`engine/scrub-source.ts`) owns its own gain → destination chain on the
+   * same shared AudioContext, and `muted` does not touch it — it is
+   * constructed and driven by `VideoEditor`, and only reached here via the
+   * `ScrubHandle` seam below. That is sound today because a scrub needs a
+   * timeline-drag gesture that a thumbnail-hover mount has no UI for, so a
+   * silent host cannot reach it. A host that both passes `muted` and wires
+   * scrubbing would hear it, and would be right to call that a bug.
+   *
+   * Engine-mode (`engine.enabled`) coverage is PARTIAL: `useEnginePlayback.ts`
+   * zeroes the same background-lane GainNodes, but track-0 video-item audio
+   * is not reached, because this rider did not extend to the engine's own
+   * clock. It is a scope boundary, NOT a hard one — the clip's level already
+   * rides a per-session output `GainNode` with a live `MasterClock.setVolume`
+   * lever wired through `engine/index.ts`, so closing it means pushing 0 down
+   * that existing path. See that hook's own comment, which spells out why and
+   * corrects a stale claim in its file header about PCM-level scaling. No
+   * current host combines `engine.enabled` with `muted`, so this is a
+   * documented gap, not a live bug.
+   */
+  muted?: boolean
 }
 
 export default function PreviewPlayer(props: PreviewPlayerProps) {
@@ -245,12 +286,12 @@ type SurfaceProps = PreviewPlayerProps & {
 }
 
 function LegacyPreview(props: SurfaceProps) {
-  const playback = useVideoPlayback(props.project, props.currentTime, props.timeSink, props.fileUrl)
+  const playback = useVideoPlayback(props.project, props.currentTime, props.timeSink, props.fileUrl, !!props.muted)
   return <PreviewSurface {...props} playback={{ mode: 'legacy', ...playback }} />
 }
 
 function EnginePreview(props: SurfaceProps) {
-  const playback = useEnginePlayback(props.project, props.currentTime, props.timeSink, props.fileUrl)
+  const playback = useEnginePlayback(props.project, props.currentTime, props.timeSink, props.fileUrl, !!props.muted)
   return <PreviewSurface {...props} playback={{ mode: 'engine', ...playback }} />
 }
 
@@ -275,6 +316,7 @@ function PreviewSurface({
   transportRef,
   scrubHandleRef,
   socialPreview,
+  muted,
 }: SurfaceProps & { playback: PlaybackBinding }) {
   const [RENDER_W, RENDER_H] = getOverlayDesignCanvas(project.settings?.resolution)
 
@@ -497,6 +539,12 @@ function PreviewSurface({
                 onPlay={() => { if (playback.activeSlotRef.current === 0) playback.setIsPlaying(true) }}
                 onPause={() => { if (playback.activeSlotRef.current === 0) playback.handlePause() }}
                 playsInline
+                // Defense in depth, not the mechanism — see the `muted` prop
+                // doc above. Once `ensureVideoGain` wires this element through
+                // Web Audio (on first play), this attribute stops having any
+                // audible effect; the GainNode zeroed via `mutedRef` in
+                // `useVideoPlayback.ts` is what actually silences it.
+                muted={!!muted}
                 style={{ ...baseVideoStyle, opacity: showVideo && playback.activeSlot === 0 ? 1 : 0, pointerEvents: playback.activeSlot === 0 ? 'auto' : 'none', zIndex: playback.activeSlot === 0 ? 1 : 0 }}
               />
               {/* Slot 1 */}
@@ -513,6 +561,8 @@ function PreviewSurface({
                 onPlay={() => { if (playback.activeSlotRef.current === 1) playback.setIsPlaying(true) }}
                 onPause={() => { if (playback.activeSlotRef.current === 1) playback.handlePause() }}
                 playsInline
+                // See slot 0.
+                muted={!!muted}
                 style={{ ...baseVideoStyle, opacity: showVideo && playback.activeSlot === 1 ? 1 : 0, pointerEvents: playback.activeSlot === 1 ? 'auto' : 'none', zIndex: playback.activeSlot === 1 ? 1 : 0 }}
               />
             </>
