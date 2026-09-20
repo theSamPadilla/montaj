@@ -16,7 +16,7 @@ import { repairCaptionWords } from './captionRepair'
 import { maxCaptionLane, normalizeCaptionLanes } from './captionLanes'
 import Timeline, { type TimelineActions, type TimelineMode } from './timeline/Timeline'
 import { visualDuration } from '@bycrux/timeline-core'
-import { computeAutoCrossfade, computeDerivedTiming, computeVisualCrossfade, enabledTrackItems, mapTrackItems, normalizeAudioTracks, trackItems, withEnabledItemTracks } from './timeline/timeline-model'
+import { audioEnd, computeAutoCrossfade, computeDerivedTiming, computeVisualCrossfade, enabledTrackItems, mapTrackItems, normalizeAudioTracks, trackItems, withEnabledItemTracks } from './timeline/timeline-model'
 import { makeCaptionEdit, type CaptionEditPatch } from './timeline/makeCaptionEdit'
 import PreviewPlayer, { type TransportHandle, type ScrubHandle } from './preview/PreviewPlayer'
 import SocialPreviewMenu, { PlatformGlyph, platformOption } from './preview/SocialPreviewMenu'
@@ -1307,7 +1307,25 @@ function ReviewSurface<P extends Project>({
   }, [project.id, project.captions])
 
   const clips      = trackItems(project)[0] ?? []
-  const hasContent = clips.length > 0 || (trackItems(project).slice(1).flat().length ?? 0) > 0 || (project.captions?.segments?.length ?? 0) > 0
+  // Gates the ENTIRE preview region — transport, click-to-play surface and the
+  // multi-track audio elements all live inside it, so anything this misses is
+  // not merely invisible, it is unplayable with no UI saying why.
+  //
+  // Audio counts. An audio-only timeline is the normal state of an animations
+  // project between wiring music and authoring the first overlay, and gating
+  // the region out there left the operator a populated timeline, a drawn
+  // waveform lane, and no transport to press: space did nothing at all.
+  //
+  // `trackItems` is deliberately NOT sliced to `[1:]`. Track 0 is a content
+  // track in a canvas project — an animations-workflow project is frequently
+  // ONE track holding nothing but overlays — and `clips` only counts track-0
+  // *video* items, so a track-0 overlay fell through both terms. Same blind
+  // spot `transportEndFor` and `canvasMaxEndRef` were fixed for.
+  const hasContent =
+    clips.length > 0
+    || trackItems(project).flat().length > 0
+    || (project.captions?.segments?.length ?? 0) > 0
+    || audioEnd(project) > 0
 
   // Preview controls row's timecode readout. `currentTime` is the same
   // `usePlaybackTime(clock)` subscription `CaptionListPanelWithClock` uses

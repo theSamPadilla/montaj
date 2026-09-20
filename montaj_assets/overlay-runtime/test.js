@@ -7,7 +7,7 @@
 //
 // Run via `npm test` from the package directory, or directly via `node test.js`.
 import assert from 'node:assert/strict'
-import { makeOverlayGlobals } from './index.js'
+import { makeOverlayGlobals, makeUseCanvas2DFrame } from './index.js'
 import { spring } from './helpers.js'
 
 const renderGlobals  = makeOverlayGlobals('render')
@@ -56,9 +56,65 @@ assert.equal(typeof renderGlobals.useThreeFrame,  'function', 'render.useThreeFr
 assert.equal(typeof previewGlobals.useThreeFrame, 'function', 'preview.useThreeFrame must be a hook (no-op)')
 assert.ok(isComponentLike(renderGlobals.Canvas),  'render.Canvas must be component-like (r3f Canvas is a forwardRef object)')
 assert.ok(isComponentLike(previewGlobals.Canvas), 'preview.Canvas must be component-like (preview wrapper is a function component)')
+assert.equal(typeof renderGlobals.useCanvas2DFrame,  'function', 'render.useCanvas2DFrame must be a hook')
+assert.equal(typeof previewGlobals.useCanvas2DFrame, 'function', 'preview.useCanvas2DFrame must be a hook')
 
 // Sanity — unknown contexts must throw.
 assert.throws(() => makeOverlayGlobals('bogus'), /unknown context/)
+assert.throws(() => makeUseCanvas2DFrame('bogus'), /unknown context/)
+
+// useCanvas2DFrame behavior — identical for 'render' and 'preview' (see
+// canvas2d-bridge.js for why). Exercise both contexts with a fake canvas
+// node (a real HTMLCanvasElement needs a DOM; a minimal stand-in with a
+// spyable getContext('2d') is enough to assert the contract).
+for (const ctx of ['render', 'preview']) {
+  const useCanvas2DFrame = makeUseCanvas2DFrame(ctx)
+
+  // Calls draw synchronously with the 2D context and the exact frame info
+  // passed in, once a node is attached.
+  {
+    const fake2dCtx = { fillRect() {} }
+    const fakeNode = { getContext: (kind) => (kind === '2d' ? fake2dCtx : null) }
+    let seenCtx, seenInfo
+    const draw = (c, info) => { seenCtx = c; seenInfo = info }
+    const refCallback = useCanvas2DFrame(draw, 12, 30, 90)
+    refCallback(fakeNode)
+    assert.equal(seenCtx, fake2dCtx, `[${ctx}] draw must receive the canvas's 2D context`)
+    assert.deepEqual(seenInfo, { frame: 12, fps: 30, duration: 90 }, `[${ctx}] draw must receive {frame, fps, duration} exactly as passed`)
+  }
+
+  // A fresh callback every call (so React sees the ref identity change and
+  // re-invokes it every frame) — the whole mechanism this hook relies on
+  // instead of useLayoutEffect.
+  {
+    const draw = () => {}
+    const a = useCanvas2DFrame(draw, 0, 30, 90)
+    const b = useCanvas2DFrame(draw, 1, 30, 90)
+    assert.notEqual(a, b, `[${ctx}] useCanvas2DFrame must return a new ref callback on every call`)
+  }
+
+  // null node (React detaching the old ref on unmount/identity-change) is a
+  // silent no-op, not a throw — mirrors how a ref callback must tolerate
+  // being called with null.
+  {
+    let called = false
+    const refCallback = useCanvas2DFrame(() => { called = true }, 0, 30, 90)
+    assert.doesNotThrow(() => refCallback(null), `[${ctx}] ref callback must tolerate a null node`)
+    assert.equal(called, false, `[${ctx}] draw must not run when the node is null`)
+  }
+
+  // A canvas whose 2D context is unavailable (e.g. already claimed by a
+  // different context type) degrades to a no-op rather than throwing.
+  {
+    let called = false
+    const fakeNode = { getContext: () => null }
+    const refCallback = useCanvas2DFrame(() => { called = true }, 0, 30, 90)
+    assert.doesNotThrow(() => refCallback(fakeNode), `[${ctx}] ref callback must tolerate a missing 2D context`)
+    assert.equal(called, false, `[${ctx}] draw must not run when getContext('2d') returns null`)
+  }
+}
+
+console.log('overlay-runtime: useCanvas2DFrame contract OK')
 
 // Recharts globals are exposed for both render and preview contexts.
 // Some Recharts components are forwardRef-wrapped (typeof 'object'); use

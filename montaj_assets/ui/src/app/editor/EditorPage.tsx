@@ -13,7 +13,10 @@ import { CarouselEditor, VideoEditor, createSourcePreviewStore, defaultMontajThe
 import AssetsPanel from '@/components/AssetsPanel'
 import MediaPanel from '@/components/media/MediaPanel'
 import FootagePanel from '@/components/media/FootagePanel'
-import BrollAudioPanel, { type Voiceover } from '@/components/media/BrollAudioPanel'
+// `BrollAudioPanel` itself is no longer rendered here — its voiceover files are
+// now cards in AudioPanel's unified grid. Only its `Voiceover` type is needed.
+import { type Voiceover } from '@/components/media/BrollAudioPanel'
+import AudioPanel from '@/components/media/AudioPanel'
 import ProjectHeader from '@/components/ProjectHeader'
 import RerunModal from '@/components/RerunModal'
 import { Button } from '@/components/ui/button'
@@ -427,18 +430,31 @@ export default function EditorPage() {
     }
     const footageLabel = project?.projectType === 'broll' ? 'Videos' : 'Footage'
 
-    // Broll-audio tab data. `voiceover` is a passthrough field (index signature
-    // on EditorProject), so read it defensively. The tab appears only for a
-    // b-roll project that actually carries voiceover audio (a src or takes);
-    // every other project passes no `brollAudio` node and keeps the two tabs.
+    // Audio tab data. The tab is ONE generalized tab, not a b-roll special case:
+    // it appears for any project carrying audio — tracks placed on the timeline,
+    // or a b-roll voiceover, or both. A project with neither (a carousel, which
+    // omits `audio` entirely, or a fresh edit) passes no `audio` node and keeps
+    // the two tabs. `voiceover` is a passthrough field (index signature on
+    // EditorProject), so it is read defensively.
+    //
+    // AudioPanel merges both into ONE Footage-style grid rather than showing
+    // them as separate lists: on a finished b-roll edit the cleaned narration is
+    // often the same file as a placed track, and a single pool de-duplicated by
+    // exact path shows it once, marked, instead of twice framed two ways.
+    const audioTracks = project?.audio?.tracks ?? []
     const voiceover = (project?.voiceover as Voiceover | undefined) ?? undefined
     const hasVoiceoverAudio = !!(voiceover && (voiceover.src || voiceover.takes?.length))
-    const showBrollAudio = project?.projectType === 'broll' && hasVoiceoverAudio
-    // The per-take wavs actually placed on the timeline drive the "Added" badge;
-    // their sourceDuration (when present) drives the duration chip.
+    // Voiceover files only belong in the pool for the project shape that
+    // produces them; `isFootageInUse`'s stem matching (which decides their
+    // "Added" mark) is tuned to b-roll's split-per-take filename convention.
+    const brollVoiceover = project?.projectType === 'broll' && hasVoiceoverAudio ? voiceover : undefined
+    const showAudioTab = !!brollVoiceover || audioTracks.length > 0
+    // Exact `src` membership + intrinsic durations, both drawn from the placed
+    // tracks. `audioUsedSrcs` decides the voiceover cards' Added/Not-placed
+    // pill; timeline cards are placed by construction and need no lookup.
     const audioUsedSrcs = new Set<string>()
     const audioDurationBySrc = new Map<string, number>()
-    for (const track of project?.audio?.tracks ?? []) {
+    for (const track of audioTracks) {
       if (track.src) {
         audioUsedSrcs.add(track.src)
         if (track.sourceDuration != null) audioDurationBySrc.set(track.src, track.sourceDuration)
@@ -463,17 +479,17 @@ export default function EditorPage() {
       mediaPanel: project ? (
         <MediaPanel
           footageLabel={footageLabel}
-          brollAudio={
-            showBrollAudio ? (
-              <BrollAudioPanel
-                voiceover={voiceover}
+          audioLabel={project.projectType === 'broll' ? undefined : 'Audio'}
+          audio={
+            showAudioTab ? (
+              <AudioPanel
+                tracks={audioTracks}
+                voiceover={brollVoiceover}
                 usedSrcs={audioUsedSrcs}
                 durationBySrc={audioDurationBySrc}
                 fileUrl={adapter.fileUrl}
                 projectId={project.id}
                 getWaveformPeaks={adapter.getWaveformPeaks!}
-                sources={project.sources}
-                getFilmstrip={adapter.getFilmstrip!}
               />
             ) : undefined
           }

@@ -67,7 +67,6 @@ export default defineConfig({
     dedupe: ['react', 'react-dom', '@react-three/fiber', 'three'],
   },
   optimizeDeps: {
-    include: ['montaj-overlay-runtime'],
     // @bycrux/editor and @bycrux/timeline-core are file:-linked workspace packages
     // under active development — serve them from source (not pre-bundled deps) so
     // edits to editor/src or timeline-core/src apply via HMR instead of requiring a
@@ -76,7 +75,14 @@ export default defineConfig({
     // pre-bundling skips anyway. It matters if that alias is ever removed — then
     // Vite would discover timeline-core mid-session as a new bare import and
     // trigger a re-optimize plus a full page reload.
-    exclude: ['@bycrux/editor', '@bycrux/timeline-core'],
+    // montaj-overlay-runtime belongs here for the same reason: it is a symlinked
+    // workspace package (node_modules/montaj-overlay-runtime -> ../../overlay-runtime)
+    // under active development. Pre-bundling it froze the overlay globals at
+    // optimize time, so adding one (useCanvas2DFrame) left every overlay using it
+    // throwing `is not defined` until someone cleared .vite by hand — and because
+    // Vite reused the same browserHash, the module URL was byte-identical and
+    // browsers kept serving the stale copy straight through a hard reload.
+    exclude: ['@bycrux/editor', '@bycrux/timeline-core', 'montaj-overlay-runtime'],
   },
   server: {
     port: 5173,

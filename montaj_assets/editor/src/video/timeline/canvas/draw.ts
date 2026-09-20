@@ -603,6 +603,17 @@ export const LABEL_FONT = '10px ui-sans-serif, system-ui, sans-serif'
 export const LABEL_PAD_PX = 6
 /** Below this width a label is more smear than information, so it is skipped. */
 export const MIN_LABEL_WIDTH_PX = 28
+/** Muted-speaker glyph drawn at the head of a muted audio bar. Mute used to be
+ *  carried by fill alone (`audioMutedFill` plus a dropped border), which reads
+ *  as "a slightly different colour" rather than "this is off" — operators asked
+ *  why a lane was silent while looking straight at the thing telling them. */
+export const MUTED_ICON_SIZE_PX = 9
+/** Gap between the glyph and the label that follows it. */
+export const MUTED_ICON_GAP_PX = 4
+/** Below this bar width even the glyph is dropped. Lower than
+ *  `MIN_LABEL_WIDTH_PX` on purpose: on a bar too narrow to name, "is it muted"
+ *  is the more valuable of the two answers, so the glyph outlives the label. */
+export const MIN_MUTED_ICON_WIDTH_PX = 14
 /** Middle-baseline offset from a clip's top edge — half the font's 10px plus a
  *  4px margin, so the label rides just inside the clip's top border. */
 export const LABEL_TOP_OFFSET_PX = 9
@@ -1375,6 +1386,57 @@ export interface AudioItemDrawArgs {
   hoveredFadeSide?: 'in' | 'out' | null
 }
 
+/**
+ * A speaker with a cross beside it, drawn in a `size`×`size` box anchored at
+ * (x, y). Filled for the speaker body and stroked for the cross, so it holds
+ * up both against the washed-out muted fill and over whatever waveform the
+ * content layer painted underneath.
+ *
+ * Deliberately geometry rather than a font glyph or an inline SVG: this runs
+ * inside the timeline's canvas painter, where the only other text is drawn with
+ * `LABEL_FONT`, and a missing icon font would fail as a blank box with no
+ * fallback path to notice it.
+ */
+function drawMutedGlyph(
+  ctx: DrawContext,
+  x: number,
+  y: number,
+  size: number,
+  color: string,
+): void {
+  const s = size
+  ctx.save()
+  ctx.strokeStyle = color
+  ctx.fillStyle = color
+  // `DrawContext` is the painter's narrowed surface and carries no
+  // `lineJoin`/`lineCap`; at 9px neither is visible anyway.
+  ctx.lineWidth = 1
+
+  // Speaker: a small back plate, then the cone flaring out of it.
+  const bodyW = s * 0.26
+  const bodyH = s * 0.34
+  const bodyX = x + s * 0.04
+  const bodyY = y + (s - bodyH) / 2
+  ctx.beginPath()
+  ctx.moveTo(bodyX, bodyY)
+  ctx.lineTo(bodyX + bodyW, bodyY)
+  ctx.lineTo(x + s * 0.48, y + s * 0.14)
+  ctx.lineTo(x + s * 0.48, y + s * 0.86)
+  ctx.lineTo(bodyX + bodyW, bodyY + bodyH)
+  ctx.lineTo(bodyX, bodyY + bodyH)
+  ctx.closePath()
+  ctx.fill()
+
+  // The cross — what actually says "off" at a glance.
+  ctx.beginPath()
+  ctx.moveTo(x + s * 0.62, y + s * 0.3)
+  ctx.lineTo(x + s * 0.96, y + s * 0.7)
+  ctx.moveTo(x + s * 0.96, y + s * 0.3)
+  ctx.lineTo(x + s * 0.62, y + s * 0.7)
+  ctx.stroke()
+  ctx.restore()
+}
+
 export function drawAudioItem(
   ctx: DrawContext,
   args: AudioItemDrawArgs,
@@ -1412,11 +1474,26 @@ export function drawAudioItem(
   if (fadeInPx > 0) drawFadeEnvelope(ctx, rect, 'in', fadeInPx, fadeSpanX, fadeSpanWidth, fadeInCurve, palette)
   if (fadeOutPx > 0) drawFadeEnvelope(ctx, rect, 'out', fadeOutPx, fadeSpanX, fadeSpanWidth, fadeOutCurve, palette)
 
+  // Mute glyph leads, and the label starts after it, so the two can never
+  // overlap on a narrow bar.
+  const headX = rect.x + LABEL_PAD_PX + handleWidth
+  let labelX = headX
+  if (muted && rect.width >= MIN_MUTED_ICON_WIDTH_PX) {
+    drawMutedGlyph(
+      ctx,
+      headX,
+      rect.y + (rect.height - MUTED_ICON_SIZE_PX) / 2,
+      MUTED_ICON_SIZE_PX,
+      palette.colors.audioText,
+    )
+    labelX = headX + MUTED_ICON_SIZE_PX + MUTED_ICON_GAP_PX
+  }
+
   if (rect.width >= MIN_LABEL_WIDTH_PX) {
     ctx.fillStyle = palette.colors.audioText
     ctx.font = LABEL_FONT
     ctx.textBaseline = 'middle'
-    ctx.fillText(label, rect.x + LABEL_PAD_PX + handleWidth, rect.y + rect.height / 2)
+    ctx.fillText(label, labelX, rect.y + rect.height / 2)
   }
   ctx.restore()
 

@@ -1,5 +1,5 @@
 """Tests for connectors.gemini — Gemini media analysis and image generation."""
-import os, types as stdlib_types
+import os, wave, types as stdlib_types
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -663,3 +663,136 @@ class TestGenerateImageErrors:
         import connectors.gemini as mod
         with pytest.raises(ConnectorError, match="Prompt must not be empty"):
             mod.generate_image("", "/tmp/out.png")
+
+
+# ---------------------------------------------------------------------------
+# Audio output naming — _generate_audio, reached via generate_music/_speech
+# ---------------------------------------------------------------------------
+
+def _make_audio_response(data=b"AUDIO_BYTES", mime_type="audio/mpeg"):
+    """Mock response whose inline part carries audio bytes plus a mime type."""
+    inline = MagicMock()
+    inline.data = data
+    inline.mime_type = mime_type
+
+    part = MagicMock()
+    part.inline_data = inline
+
+    content = MagicMock()
+    content.parts = [part]
+
+    candidate = MagicMock()
+    candidate.content = content
+
+    resp = MagicMock()
+    resp.candidates = [candidate]
+    return resp
+
+
+class TestAudioExtensionHelpers:
+    """The pure mime->extension mapping, independent of any SDK call."""
+
+    def test_every_spelling_of_mpeg_maps_to_mp3(self):
+        import connectors.gemini as mod
+        for mime in ("audio/mpeg", "audio/mp3", "AUDIO/MPEG", "audio/mpeg3"):
+            assert mod._audio_ext_for_mime(mime) == ".mp3"
+
+    def test_wav_spellings(self):
+        import connectors.gemini as mod
+        assert mod._audio_ext_for_mime("audio/wav") == ".wav"
+        assert mod._audio_ext_for_mime("audio/x-wav") == ".wav"
+
+    def test_unrecognised_and_missing_are_none(self):
+        """None is the signal for 'raw PCM', so it must not be a catch-all ext."""
+        import connectors.gemini as mod
+        assert mod._audio_ext_for_mime(None) is None
+        assert mod._audio_ext_for_mime("") is None
+        assert mod._audio_ext_for_mime("application/octet-stream") is None
+        assert mod._audio_ext_for_mime("audio/L16;rate=24000") is None
+
+    def test_retarget_leaves_a_matching_extension_alone(self):
+        """Identity is what suppresses the warning, so it has to be exact."""
+        import connectors.gemini as mod
+        assert mod._retarget_extension("/tmp/cue.mp3", ".mp3") == "/tmp/cue.mp3"
+        assert mod._retarget_extension("/tmp/cue.MP3", ".mp3") == "/tmp/cue.MP3"
+
+    def test_retarget_substitutes_a_mismatched_one(self):
+        import connectors.gemini as mod
+        assert mod._retarget_extension("/tmp/cue.wav", ".mp3") == "/tmp/cue.mp3"
+        assert mod._retarget_extension("/tmp/cue", ".mp3") == "/tmp/cue.mp3"
+
+
+class TestGenerateMusicNamesFileAfterBytes:
+    """Lyria answers audio/mpeg whatever --out asked for. The file is named
+    after the bytes, and the REAL path is what comes back."""
+
+    def test_wav_request_returning_mpeg_writes_mp3(self, monkeypatch, tmp_path):
+        client = MagicMock()
+        client.models.generate_content.return_value = _make_audio_response(
+            b"ID3_MP3_BYTES", "audio/mpeg")
+        monkeypatch.setattr("connectors.gemini._client", lambda: client)
+        _, _, modules = _patch_genai_types()
+
+        import connectors.gemini as mod
+        asked = str(tmp_path / "cue.wav")
+        with patch.dict("sys.modules", modules):
+            result = mod.generate_music("cyberpunk", asked)
+
+        assert result == str(tmp_path / "cue.mp3")
+        assert not os.path.exists(asked), "a mislabelled .wav must not be left behind"
+        with open(result, "rb") as f:
+            assert f.read() == b"ID3_MP3_BYTES"
+
+    def test_bytes_are_never_re_encoded(self, monkeypatch, tmp_path):
+        """A generation step writes vendor bytes verbatim; encoding is render's
+        job. Transcoding to honour the requested container is the other way to
+        fix the naming bug and is deliberately NOT what happens."""
+        raw = b"\xff\xfb\x90\x00 arbitrary payload that must survive byte for byte"
+        client = MagicMock()
+        client.models.generate_content.return_value = _make_audio_response(raw, "audio/mpeg")
+        monkeypatch.setattr("connectors.gemini._client", lambda: client)
+        _, _, modules = _patch_genai_types()
+
+        import connectors.gemini as mod
+        with patch.dict("sys.modules", modules):
+            result = mod.generate_music("x", str(tmp_path / "c.wav"))
+        with open(result, "rb") as f:
+            assert f.read() == raw
+
+    def test_a_request_that_already_matches_is_untouched(self, monkeypatch, tmp_path):
+        client = MagicMock()
+        client.models.generate_content.return_value = _make_audio_response(b"W", "audio/wav")
+        monkeypatch.setattr("connectors.gemini._client", lambda: client)
+        _, _, modules = _patch_genai_types()
+
+        import connectors.gemini as mod
+        asked = str(tmp_path / "cue.wav")
+        with patch.dict("sys.modules", modules):
+            result = mod.generate_music("x", asked)
+
+        assert result == asked
+        assert os.path.exists(asked)
+
+
+class TestGenerateSpeechRawPCM:
+    """Gemini TTS returns raw PCM. It is wrapped as WAV, and named .wav even
+    when the caller asked for something else."""
+
+    def test_raw_pcm_is_wrapped_and_named_wav(self, monkeypatch, tmp_path):
+        client = MagicMock()
+        client.models.generate_content.return_value = _make_audio_response(
+            b"\x00\x01" * 64, "audio/L16;rate=24000")
+        monkeypatch.setattr("connectors.gemini._client", lambda: client)
+        _, _, modules = _patch_genai_types()
+
+        import connectors.gemini as mod
+        asked = str(tmp_path / "vo.mp3")  # deliberately wrong for PCM
+        with patch.dict("sys.modules", modules):
+            result = mod.generate_speech("hello", out_path=asked)
+
+        assert result == str(tmp_path / "vo.wav")
+        assert not os.path.exists(asked)
+        with wave.open(result, "rb") as wf:
+            assert wf.getnchannels() == 1
+            assert wf.getframerate() == 24000
+            assert wf.getsampwidth() == 2

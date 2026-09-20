@@ -3,6 +3,7 @@ import { interpolate, spring }          from './helpers.js'
 import { captionOuterStyle, captionInnerStyle } from './position.js'
 import { makeUseThreeFrame }            from './three-bridge.js'
 import { makeCanvas }                   from './canvas-wrapper.js'
+import { makeUseCanvas2DFrame }         from './canvas2d-bridge.js'
 import { Ph, FaSolid, FaBrands, FaIcon } from './icons.js'
 import * as THREE                       from 'three'
 import {
@@ -24,10 +25,11 @@ import {
 // because that's what existing overlay JSX expects.
 export { interpolate, spring }
 export { captionOuterStyle, captionInnerStyle }
-export const useThreeFrame = makeUseThreeFrame('render')
-export const Canvas        = makeCanvas('render')
+export const useThreeFrame     = makeUseThreeFrame('render')
+export const Canvas            = makeCanvas('render')
+export const useCanvas2DFrame  = makeUseCanvas2DFrame('render')
 export { Ph, FaSolid, FaBrands, FaIcon, THREE }
-export { makeUseThreeFrame, makeCanvas }
+export { makeUseThreeFrame, makeCanvas, makeUseCanvas2DFrame }
 export {
   BarChart, Bar,
   LineChart, Line,
@@ -71,6 +73,11 @@ export function makeOverlayGlobals(context) {
     captionInnerStyle,
     useThreeFrame: makeUseThreeFrame(context),
     Canvas:        makeCanvas(context),
+    // Also a make*(context) factory for shape-parity with useThreeFrame, but
+    // (unlike useThreeFrame) returns the identical implementation for both
+    // contexts — see canvas2d-bridge.js for why a plain 2D canvas doesn't
+    // need the render/preview split r3f's internal RAF loop forces.
+    useCanvas2DFrame: makeUseCanvas2DFrame(context),
     THREE,
     Ph,
     FaIcon,

@@ -128,6 +128,25 @@ export function resolveAudioWindow(
 }
 
 /**
+ * Furthest end across the project's unmuted audio tracks, resolving each
+ * track's window through `resolveAudioWindow` — so a track carrying no explicit
+ * `end` reports its natural length instead of collapsing to 0.
+ *
+ * Deliberately called with NO horizon: this feeds the value `contentDuration`
+ * is derived from, so passing one back in would be circular.
+ *
+ * Callers use this only as a LAST-RESORT transport ceiling, for a project with
+ * nothing visual in it. Audio stays out of the ceiling whenever there IS visual
+ * content — the canvas/video divergence over the audio tail is intentional and
+ * documented in timeline-core's `durations.js`.
+ */
+export function audioEnd(project: Project): number {
+  return (project.audio?.tracks ?? [])
+    .filter(t => !t.muted)
+    .reduce((m, t) => Math.max(m, resolveAudioWindow(t).end), 0)
+}
+
+/**
  * Group audio tracks into rendered lanes, in ascending lane order. Tracks
  * carrying an explicit `lane` keep it; the rest are auto-assigned lanes above
  * the highest explicit one, in array order. Lifted out of Timeline's inline

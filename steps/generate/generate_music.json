@@ -9,7 +9,7 @@
     {"name": "prompt", "type": "string", "required": true,
      "description": "Text description of the music (genre, mood, instrumentation, BPM)"},
     {"name": "out", "type": "string", "required": true,
-     "description": "Output audio file path (.wav or .mp3)"},
+     "description": "Output audio file path. The extension is advisory — the file is named after the container Lyria actually returns (mp3 in practice), never re-encoded to match. Read the emitted path rather than assuming this one."},
     {"name": "model", "type": "string", "required": false,
      "description": "Override the Lyria model (default: lyria-3-clip-preview, ~30s clips)"},
     {"name": "seed", "type": "int", "required": false,

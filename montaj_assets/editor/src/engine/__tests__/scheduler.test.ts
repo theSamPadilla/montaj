@@ -514,6 +514,41 @@ describe('transportEndFor', () => {
     })
     expect(transportEndFor(p)).toBe(6)
   })
+
+  it('falls back to the audio end when NOTHING visual sets a ceiling', () => {
+    // Audio-only timeline: the shape an animations-workflow project has while
+    // the music is wired but no overlay exists yet. The ceiling was 0, so the
+    // transport started and stopped on the same tick and play did nothing at
+    // all — with no feedback saying why.
+    const p = project([], [], {
+      audio: { tracks: [{ id: 'm', src: '/m.wav', start: 0, end: 15 }] },
+    })
+    expect(transportEndFor(p)).toBe(15)
+  })
+
+  it('resolves an audio-only track carrying no explicit end to its natural length', () => {
+    const p = project([], [], {
+      // `AudioTrack` types `start`/`end` as required, but project.json files on
+      // disk routinely omit them — `resolveAudioWindow` exists precisely to cope
+      // at runtime. That gap between the type and the real shape is what this
+      // test pins, so the under-specified track is the point, not a shortcut.
+      // @ts-expect-error — deliberately the under-specified on-disk shape
+      audio: { tracks: [{ id: 'm', src: '/m.wav', sourceDuration: 15 }] },
+    })
+    expect(transportEndFor(p)).toBe(15)
+  })
+
+  it('skips muted tracks in the audio-only fallback', () => {
+    const p = project([], [], {
+      audio: {
+        tracks: [
+          { id: 'a', src: '/a.wav', start: 0, end: 30, muted: true },
+          { id: 'b', src: '/b.wav', start: 0, end: 15 },
+        ],
+      },
+    })
+    expect(transportEndFor(p)).toBe(15)
+  })
 })
 
 describe('engineSrcFor — proxy-only playback is structural', () => {

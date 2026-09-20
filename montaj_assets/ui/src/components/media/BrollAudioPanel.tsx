@@ -154,7 +154,7 @@ type PeaksFetcher = (args: GetWaveformPeaksArgs) => Promise<PeaksData>
  * degrades to the same icon at full opacity, matching the pre-preview
  * fallback.
  */
-function AudioWaveformPreview({
+export function AudioWaveformPreview({
   path,
   projectId,
   getWaveformPeaks,
@@ -217,9 +217,9 @@ export interface Voiceover {
   cleanedSrc?: string
 }
 
-type AudioKind = 'take' | 'assembled' | 'cleaned'
+export type AudioKind = 'take' | 'assembled' | 'cleaned'
 
-const KIND_LABEL: Record<AudioKind, string> = {
+export const KIND_LABEL: Record<AudioKind, string> = {
   take: 'Submitted take',
   assembled: 'Assembled voiceover',
   cleaned: 'Cleaned voiceover',

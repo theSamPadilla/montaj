@@ -28,6 +28,7 @@ Custom overlay JSX runs in a sandboxed evaluator. All identifiers below are inje
 | `THREE` | namespace | All [Three.js](https://threejs.org) primitives — `THREE.Vector3`, `THREE.MathUtils`, etc. Only reach for it when you genuinely need 3D — see "3D / Three.js" section. |
 | `Canvas` | component | [@react-three/fiber](https://r3f.docs.pmnd.rs) Canvas. **Always pass `frameloop="never"`** and mount a `useThreeFrame()` child — see "3D / Three.js" section. |
 | `useThreeFrame` | hook | Bridges r3f to Montaj's frame-stepped renderer. Mount exactly once inside any `<Canvas>`. |
+| `useCanvas2DFrame` | hook | Drives a plain `CanvasRenderingContext2D` from `frame` — for pixel-level 2D drawing HTML/CSS can't do (per-pixel effects, arbitrary paths, `drawImage` compositing). See "2D Canvas" section. |
 
 **No imports.** All `import` statements are stripped before evaluation. Do not import anything — use the globals above instead.
 
@@ -472,6 +473,35 @@ A known-good minimal overlay lives at `tests/fixtures/overlays/three-cube.jsx` �
 ### Bundle weight
 
 Three.js + r3f add ~250 KB to an overlay segment's bundle after esbuild tree-shakes. Overlays that don't use `<Canvas>` pay zero cost. Don't reach for Three "just in case" — use it only when the result genuinely needs 3D.
+
+---
+
+## 2D Canvas
+
+For plain 2D drawing HTML/CSS can't do — per-pixel effects, arbitrary paths, `drawImage` compositing — overlay JSX can drive a `CanvasRenderingContext2D` via `useCanvas2DFrame`. Unlike Three.js, this needs no library and behaves identically in preview and render — there's no internal render loop to disable.
+
+```jsx
+export default function CanvasExample() {
+  const draw = (ctx, { frame, fps, duration }) => {
+    ctx.fillStyle = '#EFE3CE'
+    ctx.fillRect(0, 0, 1080, 1080)
+
+    const x = interpolate(frame, [0, duration], [0, 1080 - 120])
+    ctx.fillStyle = '#3b82f6'
+    ctx.fillRect(x, 480, 120, 120)
+  }
+
+  const ref = useCanvas2DFrame(draw, frame, fps, duration)
+
+  return <canvas ref={ref} width={1080} height={1080} style={{ position: 'absolute', inset: 0 }} />
+}
+```
+
+**`useCanvas2DFrame(draw, frame, fps, duration)` — always pass `frame`/`fps`/`duration` explicitly**, the same as `interpolate`/`spring`. It returns a ref to attach to a `<canvas>` element; `draw(ctx, { frame, fps, duration })` runs synchronously every time that ref is attached, which happens on every frame.
+
+**Draw the complete frame from scratch every call** — same rule as everywhere else in overlay JSX: same `frame` in, same pixels out. Don't rely on anything painted by a previous call still being there (start with a fill/clear, as in the example above).
+
+**One `<canvas>` per `useCanvas2DFrame` call.** Each call returns its own ref; don't share one ref across multiple canvases or call the hook conditionally.
 
 ---
 

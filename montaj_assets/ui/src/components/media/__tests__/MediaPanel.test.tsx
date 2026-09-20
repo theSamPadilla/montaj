@@ -12,31 +12,37 @@ function baseProps(overrides: Partial<React.ComponentProps<typeof MediaPanel>> =
 }
 
 describe('MediaPanel', () => {
-  it('renders only Footage and Assets tabs when no brollAudio node is given', () => {
+  it('renders only Footage and Assets tabs when no audio node is given', () => {
     render(<MediaPanel {...baseProps()} />)
     expect(screen.getByRole('button', { name: 'B-Roll' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Assets' })).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Broll Audio' })).not.toBeInTheDocument()
   })
 
-  it('renders the third tab between Footage and Assets when brollAudio is provided', () => {
-    render(<MediaPanel {...baseProps({ brollAudio: <div>broll audio body</div> })} />)
+  it('renders the third tab between Footage and Assets when an audio node is provided', () => {
+    render(<MediaPanel {...baseProps({ audio: <div>audio body</div> })} />)
     const tabs = screen.getAllByRole('button').map(b => b.textContent)
     expect(tabs).toEqual(['B-Roll', 'Broll Audio', 'Assets'])
   })
 
-  it('honors a custom brollAudioLabel', () => {
-    render(<MediaPanel {...baseProps({ brollAudio: <div />, brollAudioLabel: 'Voiceover' })} />)
+  it('honors a custom audioLabel', () => {
+    render(<MediaPanel {...baseProps({ audio: <div />, audioLabel: 'Voiceover' })} />)
     expect(screen.getByRole('button', { name: 'Voiceover' })).toBeInTheDocument()
   })
 
-  it('shows the footage body first, then switches to the broll-audio body on click', () => {
-    render(<MediaPanel {...baseProps({ brollAudio: <div>broll audio body</div> })} />)
+  it('labels the audio tab "Audio" when the caller passes that label', () => {
+    render(<MediaPanel {...baseProps({ audio: <div />, audioLabel: 'Audio' })} />)
+    const tabs = screen.getAllByRole('button').map(b => b.textContent)
+    expect(tabs).toEqual(['B-Roll', 'Audio', 'Assets'])
+  })
+
+  it('shows the footage body first, then switches to the audio body on click', () => {
+    render(<MediaPanel {...baseProps({ audio: <div>audio body</div> })} />)
     expect(screen.getByText('footage body')).toBeInTheDocument()
-    expect(screen.queryByText('broll audio body')).not.toBeInTheDocument()
+    expect(screen.queryByText('audio body')).not.toBeInTheDocument()
 
     fireEvent.click(screen.getByRole('button', { name: 'Broll Audio' }))
-    expect(screen.getByText('broll audio body')).toBeInTheDocument()
+    expect(screen.getByText('audio body')).toBeInTheDocument()
     expect(screen.queryByText('footage body')).not.toBeInTheDocument()
 
     fireEvent.click(screen.getByRole('button', { name: 'Assets' }))

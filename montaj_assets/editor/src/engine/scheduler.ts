@@ -83,7 +83,7 @@ import type { ItemCrossfade, Scene, SourceWindow } from '@bycrux/timeline-core'
 import type { EditorProject as Project, VisualItem, VisualTrack } from '../schema'
 import type { ClipTimebase, MasterClock } from './audio-clock'
 import type { FrameServer } from './frame-server'
-import { effectiveItemAudio, enabledTrackItems, enabledTracks, withEnabledItemTracks } from '../video/timeline/timeline-model'
+import { audioEnd, effectiveItemAudio, enabledTrackItems, enabledTracks, withEnabledItemTracks } from '../video/timeline/timeline-model'
 
 // ── Tuning constants ────────────────────────────────────────────────────────
 
@@ -548,7 +548,15 @@ export function transportEndFor(project: Project): number {
     (m: number, s) => Math.max(m, s.end ?? 0),
     0,
   )
-  return Math.max(visualEnd, captionEnd)
+  const ceiling = Math.max(visualEnd, captionEnd)
+  if (ceiling > 0) return ceiling
+  // Nothing visual sets a ceiling: an audio-only timeline. Returning 0 here
+  // started the transport and stopped it in the same tick, so play did nothing
+  // at all. Audio is otherwise deliberately kept out of the ceiling (the
+  // canvas/video divergence over the audio tail, above) — this is the last
+  // resort that only fires when there is no visual content to measure.
+  // Mirrored in `canvasMaxEndRef` (video/preview/useVideoPlayback.ts).
+  return audioEnd(project)
 }
 
 /**

@@ -54,6 +54,42 @@ _IMAGE_MIME_BY_EXT = {
     ".gif":  "image/gif",
 }
 
+# Container extension per mime-type token, for _generate_audio's pass-through
+# branch. Scanned as an ordered tuple of substrings rather than keyed on the
+# full type because vendors spell the same container several ways
+# ("audio/mpeg", "audio/mp3", "audio/mpeg3") and a prefix table would miss two
+# of the three.
+_AUDIO_EXT_BY_MIME_TOKEN = (
+    ("wav",  ".wav"),
+    ("mpeg", ".mp3"),
+    ("mp3",  ".mp3"),
+    ("flac", ".flac"),
+    ("opus", ".opus"),
+    ("ogg",  ".ogg"),
+    ("aac",  ".m4a"),
+    ("mp4",  ".m4a"),
+)
+
+
+def _audio_ext_for_mime(mime_type: str | None) -> str | None:
+    """Container extension for a PRE-ENCODED audio mime type.
+
+    ``None`` means "no container recognised", which callers read as raw PCM.
+    """
+    if not mime_type:
+        return None
+    lowered = mime_type.lower()
+    for token, ext in _AUDIO_EXT_BY_MIME_TOKEN:
+        if token in lowered:
+            return ext
+    return None
+
+
+def _retarget_extension(path: str, ext: str) -> str:
+    """`path` with `ext` substituted; unchanged when it already matches."""
+    base, current = os.path.splitext(path)
+    return path if current.lower() == ext else base + ext
+
 
 def _strip_markdown_fences(text: str) -> str:
     """Strip ```json ... ``` fences that Gemini often wraps around JSON responses.
@@ -307,21 +343,38 @@ def _generate_audio(
 
     os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
 
-    if mime_type and ("wav" in mime_type or "mp3" in mime_type or "mpeg" in mime_type):
-        with open(out_path, "wb") as f:
+    # The file is named after what the bytes ARE, not what the caller asked to
+    # call them. Lyria answers `audio/mpeg` whatever `--out` said, so honouring
+    # the requested name wrote an MP3 called `.wav`: ffmpeg sniffs content and
+    # coped, but Finder, QuickTime and every consumer that trusts the extension
+    # refused to open it, with nothing anywhere saying why. Re-encoding to the
+    # requested container is the other way to close this, and is deliberately
+    # NOT what happens — a generation step writes vendor bytes verbatim and
+    # leaves encoding to render time.
+    ext = _audio_ext_for_mime(mime_type)
+    written = _retarget_extension(out_path, ext if ext is not None else ".wav")
+    if written != out_path:
+        detail = (f"vendor returned {mime_type}" if ext is not None
+                  else f"raw PCM wrapped as WAV (mime_type={mime_type!r})")
+        print(_json.dumps({"warn": f"{error_prefix}: {detail}; wrote {written}, not {out_path}"}),
+              file=sys.stderr)
+
+    if ext is not None:
+        with open(written, "wb") as f:
             f.write(audio_bytes)
     else:
-        # Raw PCM — wrap in WAV header at the caller-specified rate/channels.
-        # If mime_type is None or unrecognised, this may produce corrupt output.
-        import sys as _sys
-        print(f'{{"warn": "{error_prefix}: assuming raw PCM (mime_type={mime_type!r})"}}', file=_sys.stderr)
-        with wave.open(out_path, "wb") as wf:
+        # No container recognised — treat as raw PCM and wrap it at the
+        # caller-specified rate/channels. If mime_type was None or unknown
+        # this may still produce corrupt output, hence the warning above.
+        print(_json.dumps({"warn": f"{error_prefix}: assuming raw PCM (mime_type={mime_type!r})"}),
+              file=sys.stderr)
+        with wave.open(written, "wb") as wf:
             wf.setnchannels(channels)
             wf.setsampwidth(2)  # 16-bit
             wf.setframerate(sample_rate)
             wf.writeframes(audio_bytes)
 
-    return out_path
+    return written
 
 
 def generate_speech(
@@ -332,7 +385,10 @@ def generate_speech(
 ) -> str:
     """Generate speech audio from text via Gemini TTS (single-speaker).
 
-    Writes a WAV file at out_path. Returns out_path on success.
+    Writes a WAV file — Gemini TTS returns raw PCM, which is wrapped here — and
+    returns the path written. That path is normally out_path; if TTS ever answers
+    with a pre-encoded container instead, the extension follows the bytes, so use
+    the return value rather than assuming out_path exists.
     Raises ConnectorError on failure.
     """
     if not text or not text.strip():
@@ -371,13 +427,18 @@ def generate_music(
     """Generate a music clip from a text prompt via Lyria 3.
 
     prompt       — text description of the music (genre, mood, instrumentation).
-    out_path     — local file path for the downloaded audio (wav or mp3 per docs).
+    out_path     — desired local file path. Its EXTENSION is advisory: the file
+                   is named after the container Lyria actually returns, which is
+                   `audio/mpeg` in practice, so asking for `cue.wav` writes
+                   `cue.mp3`. The bytes are never re-encoded to match the request.
     instrumental — if True, ask Lyria to produce instrumental-only output
                    (suitable for background music under narration).
     model        — Lyria model variant. Default: lyria-3-clip-preview (30s clips).
     seed         — optional RNG seed for reproducible outputs.
 
-    Returns out_path on success. Raises ConnectorError on failure.
+    Returns THE PATH WRITTEN, which may differ from out_path by extension — use
+    the return value rather than assuming out_path exists. Raises ConnectorError
+    on failure.
     """
     if not prompt or not prompt.strip():
         raise ConnectorError("prompt must not be empty")

@@ -14,7 +14,7 @@ import {
   type MontajWindow,
 } from './audio-context'
 import type { EditorProject as Project, VisualItem, VisualTrack } from '../../schema'
-import { effectiveItemAudio, enabledTrackItems, enabledTracks, withEnabledItemTracks } from '../timeline/timeline-model'
+import { audioEnd, effectiveItemAudio, enabledTrackItems, enabledTracks, withEnabledItemTracks } from '../timeline/timeline-model'
 
 // Typed extension for video elements that cache their GainNode
 interface MontajVideoElement extends HTMLVideoElement {
@@ -339,15 +339,26 @@ export function useVideoPlayback(
   // clock's ceiling and what's on screen in agreement. Mirrored in the engine
   // path's `transportEndFor` (engine/scheduler.ts) — change both together.
   //
-  // Audio stays OUT, unchanged: the canvas/video divergence over the audio tail
-  // is documented in timeline-core's `durations.js` and is not this fix.
+  // Audio stays OUT of the ceiling whenever anything VISUAL sets one: the
+  // canvas/video divergence over the audio tail is documented in timeline-core's
+  // `durations.js` and is deliberate.
+  //
+  // It cannot stay out when nothing visual sets one at all, though. An
+  // audio-only timeline — an animations-workflow project whose music is wired
+  // before any overlay exists — left this at 0, so the first tick clamped to 0
+  // and immediately called `setIsPlaying(false)`: play/space did nothing
+  // whatsoever, with no feedback saying why. The audio end is the last-resort
+  // ceiling for exactly that case and changes nothing for any project that has
+  // visual content. Mirrored in `transportEndFor` (engine/scheduler.ts) — change
+  // both together.
   const canvasMaxEndRef = useRef(0)
   useEffect(() => {
     const captionEnd = (project.captions?.segments ?? []).reduce((m: number, s) => Math.max(m, s.end), 0)
-    canvasMaxEndRef.current = Math.max(
+    const visualCeiling = Math.max(
       enabledTrackItems(project).flat().reduce((m, i) => Math.max(m, i.end ?? 0), 0),
       captionEnd,
     )
+    canvasMaxEndRef.current = visualCeiling > 0 ? visualCeiling : audioEnd(project)
   }, [project])
 
   useEffect(() => {
