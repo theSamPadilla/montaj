@@ -45,7 +45,7 @@ beforeEach(() => {
     return { fillRect: () => {} } as unknown as CanvasRenderingContext2D
   } as typeof HTMLCanvasElement.prototype.getContext
 
-  global.fetch = vi.fn(async () => ({
+  globalThis.fetch = vi.fn(async () => ({
     ok: true,
     text: async () => OVERLAY_SOURCE,
   })) as unknown as typeof fetch
