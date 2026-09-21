@@ -8,9 +8,10 @@
  * The ramp/clamp MATH is `edgeScrollDelta` in viewport.ts, covered exhaustively
  * as pure data in viewport.test.ts. What can only be shown with a mounted
  * component is here: that a real drag actually starts the loop, that panning
- * re-feeds the pointer machine so the dragged item keeps tracking, that it
- * clamps and stops at the legal scroll range, and that it stands down when the
- * pointer leaves the zone, the drag ends, or the gesture is a ruler scrub.
+ * re-feeds the pointer machine so the dragged item (or, for a ruler scrub,
+ * the playhead) keeps tracking, that it clamps and stops at the legal scroll
+ * range, and that it stands down when the pointer leaves the zone or the
+ * drag ends.
  *
  * jsdom's `performance.now()` is NOT tied to Vitest's fake timers (verified:
  * advancing the fake clock by 16ms moves it by a fraction of a millisecond of
@@ -306,7 +307,7 @@ describe('TimelineCanvas — edge auto-scroll', () => {
     }
   })
 
-  it('does not auto-scroll for a ruler scrub, even with the pointer held at the edge', () => {
+  it('auto-scrolls for a ruler scrub held at the edge, same as any other drag', () => {
     const perf = stubPerfNow()
     try {
       const { surface, store, clock } = mount()
@@ -316,13 +317,43 @@ describe('TimelineCanvas — edge auto-scroll', () => {
       expect(clock.get()).toBeCloseTo(9.9)
       act(() => { document.dispatchEvent(mouse('mousemove', 990, RULER_Y)) })
 
+      act(() => { vi.advanceTimersByTime(20) }) // seed
       perf.advance(1000)
-      act(() => { vi.advanceTimersByTime(200) })
+      act(() => { vi.advanceTimersByTime(20) }) // one real pan
+
+      // The view panned to follow the scrub, same as it would for a clip
+      // drag, and the playhead kept tracking the held screen point.
+      expect(store.get().scrollSeconds).toBeGreaterThan(0)
+      expect(clock.get()).toBeGreaterThan(9.9)
+
+      act(() => { document.dispatchEvent(mouse('mouseup', 990, RULER_Y)) })
+
+      const pannedTo = store.get().scrollSeconds
       perf.advance(5000)
       act(() => { vi.advanceTimersByTime(200) })
+      expect(store.get().scrollSeconds).toBe(pannedTo)
+    } finally {
+      perf.restore()
+    }
+  })
 
-      // The playhead moved (that's what a scrub does); the VIEWPORT did not.
-      expect(store.get().scrollSeconds).toBe(0)
+  it('scrub auto-scroll clamps at the rightmost legal scroll and stops panning', () => {
+    const perf = stubPerfNow()
+    try {
+      const { surface, store } = mount()
+      act(() => { surface.dispatchEvent(mouse('mousedown', 990, RULER_Y)) })
+      act(() => { document.dispatchEvent(mouse('mousemove', 990, RULER_Y)) })
+
+      // x=990 pans at ≈0.393s/tick at this scale (see the equivalent
+      // non-scrub clamp test above) — 140 ticks clears RIGHTMOST_SCROLL
+      // (52.5s) and then some, to prove it holds there rather than merely
+      // arriving at it.
+      for (let i = 0; i < 140; i++) {
+        perf.advance(1000)
+        act(() => { vi.advanceTimersByTime(20) })
+      }
+
+      expect(store.get().scrollSeconds).toBeCloseTo(RIGHTMOST_SCROLL, 5)
 
       act(() => { document.dispatchEvent(mouse('mouseup', 990, RULER_Y)) })
     } finally {

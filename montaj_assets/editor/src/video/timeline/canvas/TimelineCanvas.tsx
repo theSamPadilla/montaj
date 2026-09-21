@@ -1016,12 +1016,14 @@ export default function TimelineCanvas({
   //
   // Standard NLE behaviour: drag an item/handle past the visible edge and the
   // view pans to follow, rather than trapping the gesture at whatever was on
-  // screen when the drag started. Only gestures where "the pointer is
-  // captured and following makes sense" qualify — every `dragging` state
-  // EXCEPT `scrub` (the ruler already owns the playhead directly; panning
-  // underneath it while it drags would fight the seek instead of extending
-  // it). Marquee selection is included: dragging the box out past the edge to
-  // catch items further along the timeline is the same affordance.
+  // screen when the drag started. Every `dragging` state qualifies, including
+  // `scrub` — dragging the playhead to the edge should extend the visible
+  // range the same way dragging a clip does, rather than capping the seek at
+  // whatever was on screen when the scrub started. `applyScrub` resolves an
+  // absolute time from the screen point each call, so re-feeding the same
+  // point after a pan naturally advances the seek. Marquee selection is
+  // included too: dragging the box out past the edge to catch items further
+  // along the timeline is the same affordance.
 
   function dispatchPointerMove(point: Point, modifiers: Modifiers) {
     runEffects(machine.dispatch({ type: 'pointerMove', point, modifiers, ctx: buildContext() }))
@@ -1043,7 +1045,7 @@ export default function TimelineCanvas({
     edgeScrollFrameRef.current = null
 
     const state = machine.state
-    if (state.kind !== 'dragging' || state.gesture === 'scrub') { stopEdgeAutoScroll(); return }
+    if (state.kind !== 'dragging') { stopEdgeAutoScroll(); return }
     const drag = lastDragPointRef.current
     const rect = gestureRectRef.current
     if (!drag || !rect || rect.width <= 0) { stopEdgeAutoScroll(); return }
@@ -1088,7 +1090,7 @@ export default function TimelineCanvas({
    *  that leaves the zone is caught on the loop's own next tick). */
   function updateEdgeAutoScroll() {
     const state = machine.state
-    if (state.kind !== 'dragging' || state.gesture === 'scrub') { stopEdgeAutoScroll(); return }
+    if (state.kind !== 'dragging') { stopEdgeAutoScroll(); return }
     const drag = lastDragPointRef.current
     const rect = gestureRectRef.current
     if (!drag || !rect || rect.width <= 0 || !inEdgeZone(drag.point.x, rect.width)) return
