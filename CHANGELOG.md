@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **Editor: dragging the playhead to the visible edge now auto-scrolls the timeline, matching clip drags.** Edge auto-scroll — pan the view while a drag holds the pointer near the surface's left/right edge — already ran for every other drag gesture (clip move, trim, roll, audio, marquee) but explicitly excluded the playhead scrub, on the assumption that panning underneath a held scrub would fight the seek rather than extend it. That assumption didn't hold: the scrub gesture resolves an absolute time from the screen point on every move rather than a delta from the press origin, so re-feeding the same held point after the view pans naturally advances the seek — the same mechanism clip drags already relied on. Zoomed into a section of the timeline, dragging the playhead to the edge now pans to keep following it instead of capping the scrub at whatever was on screen when the drag started. Also published as `@bycrux/editor@1.2.1` on npm. (`montaj_assets/editor/src/video/timeline/canvas/TimelineCanvas.tsx`)
+
 ## v4.6.2
 
 - **Fixed: nothing in the always-loaded skill set told the agent to move a project to `final`, so a correct edit refused to render.** `render.js` checks `status` before doing any work and fails with `Project status must be 'final', got 'draft'`. An agent that completed the whole editorial pipeline and wrote a genuinely populated timeline would then call the render and be refused — reproduced 3/3 across two source videos. The renderer was never at fault: setting `status: "final"` by hand on a failed run's project and re-rendering produced a valid file immediately.
