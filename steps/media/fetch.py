@@ -21,6 +21,21 @@ def main():
         "--format", args.format,
         "--merge-output-format", "mp4",
         "--print", "after_move:filepath",
+        # YouTube extraction needs a JavaScript runtime to run the player JS,
+        # and yt-dlp enables ONLY deno by default. Without one it degrades to
+        # "No supported JavaScript runtime could be found", then "No title
+        # found in player responses", then fails outright. That is not
+        # hypothetical: it is what every YouTube fetch did on Hub's sidecar,
+        # which ships Node 20 and no deno.
+        #
+        # THIS ADDS A RUNTIME, IT DOES NOT REPLACE THE DEFAULT SET. yt-dlp
+        # documents the flag as "Additional JavaScript runtime to enable" and
+        # picks "the highest priority runtime that is both enabled and
+        # available", with deno ranked above node. So a machine with deno keeps
+        # using deno and is unaffected, a machine with only node now works, and
+        # a machine with neither fails exactly as it did before. That is why
+        # this is safe to hardcode in a package other people install.
+        "--js-runtimes", "node",
     ]
 
     if args.limit:
@@ -41,7 +56,14 @@ def main():
     r = run(cmd, check=False)
     # yt-dlp exits 101 when --max-downloads limit is reached — that's expected, not an error
     if r.returncode not in (0, 101):
-        fail("unexpected_error", f"Command failed: {' '.join(cmd)}\n{r.stderr[:500]}")
+        # THE TAIL, NOT THE HEAD, AND THAT IS THE WHOLE POINT. yt-dlp writes
+        # warnings first and the fatal error last, so `stderr[:500]` reliably
+        # reports the least useful 500 characters it produced. A real failure
+        # reached a caller as "ERROR: [youtube" with the cause cut off, and
+        # diagnosing it took reading the sidecar's own logs by timestamp.
+        # 4000 matches `lib/common.py`'s existing slice; this file was the
+        # outlier at 500, not the convention.
+        fail("unexpected_error", f"Command failed: {' '.join(cmd)}\n{r.stderr[-4000:]}")
 
     paths = [line.strip() for line in r.stdout.strip().splitlines() if line.strip()]
 
