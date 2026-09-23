@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v4.6.3
+
 - **Editor: a new optional adapter seam, `getCaptionProfileDefaults`, lets a host seed a regenerated caption track with the style, font and color its profile already implies.** Regeneration replaces `project.captions` wholesale with whatever the transcription route returns, and that route returns a bare `{ style, segments }` — `steps/caption/caption.py` builds nothing else. So every regeneration dropped the user back to an unstyled track and made them re-pick the same three things they picked last time. The style is the expensive one: it is not a post-hoc edit but a parameter of the request (`GenerateCaptionsOptions.style`, read server-side at `serve/routes/projects.py`), so getting it wrong means transcribing again rather than adjusting a field.
 
   **The editor cannot look a profile up itself, and the seam exists precisely so it never learns how.** `Project.profile` is a bare name string in this package's schema and that is the whole of what it knows: whether a profile is a file on disk, a row in a host's database, or not a concept at all is the host's business, and it differs between the three hosts consuming `@bycrux/editor` today. `getCaptionProfileDefaults?(profile: string): Promise<CaptionProfileDefaults | null>` asks the host the one question the editor needs answered and takes `null` for an answer. Its fields are named after the `Captions` fields they seed — `fontFamily`, `googleFonts`, `color`, plus `style` for the request — rather than after any host's columns, so the mapping from a host's own schema happens once, in that host's adapter, instead of leaking upstream.
