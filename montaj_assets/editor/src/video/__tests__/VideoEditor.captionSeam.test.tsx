@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, waitFor, fireEvent } from '@testing-library/react'
 import type { CaptionEvent, EditorAdapter, ImageElement, Project, RenderEvent, VersionEntry, WaveformChunk } from '../../types'
+import type { Captions } from '../../schema'
 import VideoEditor from '../VideoEditor'
 
 // ── T1 — host-driven caption trigger seam ────────────────────────────────────
@@ -130,5 +131,106 @@ describe('VideoEditor — host-driven caption trigger seam', () => {
     fireEvent.click(trigger)
 
     await waitFor(() => expect(screen.getByText('Regenerating captions…')).toBeTruthy())
+  })
+})
+
+// ── Profile-seeded caption defaults, through the real apply seam ─────────────
+//
+// The unit-level rules live in `captionProfileDefaults.test.ts`; what these
+// two prove is the WIRING — that `project.profile` reaches the host seam, and
+// that the merged track is what `applyExternal` lands on the project. There is
+// no spy for `applyExternal` (it is internal to `useProjectSync`, and it
+// deliberately calls neither `onProjectChange` nor `adapter.saveProject` — see
+// VideoEditor.captionDelete.test.tsx's note), so the assertion reads the
+// caption color back out of the Format tab's swatch, which renders
+// `project.captions.color` and falls back to '#ffffff' when unset.
+
+function readCaptionColor(): string {
+  fireEvent.click(screen.getByRole('button', { name: 'Format' }))
+  return (screen.getByLabelText('Caption text color') as HTMLInputElement).value
+}
+
+/** Adapter whose regen stream terminates with the given track. */
+function makeRegenAdapter(captions: Captions) {
+  const adapter = makeFakeAdapter()
+  adapter.generateCaptions = vi.fn(async function* (): AsyncIterable<CaptionEvent> {
+    yield { type: 'done', captions }
+  })
+  return adapter
+}
+
+describe('VideoEditor — profile-seeded caption defaults', () => {
+  it('merges the profile font/color onto a server track that set neither', async () => {
+    const adapter = makeRegenAdapter({
+      style: 'pop',
+      segments: [{ id: 'cap-new', text: 'fresh', start: 0, end: 1, words: [{ word: 'fresh', start: 0, end: 1 }] }],
+    })
+    const getCaptionProfileDefaults = vi.fn(async () => ({
+      style: 'karaoke',
+      fontFamily: '"Inter", system-ui, sans-serif',
+      color: '#112233',
+    }))
+    ;(adapter as unknown as { getCaptionProfileDefaults: unknown }).getCaptionProfileDefaults = getCaptionProfileDefaults
+
+    render(
+      <VideoEditor
+        project={makeVideoProject({ profile: 'sam' })}
+        adapter={adapter}
+        onProjectChange={vi.fn()}
+      />,
+    )
+
+    fireEvent.click(await screen.findByText('Regenerate captions'))
+
+    // The modal closes itself once the host's onDone runs, which is also when
+    // the merged track has landed.
+    await waitFor(() => expect(screen.queryByText('Regenerating captions…')).toBeNull())
+    expect(getCaptionProfileDefaults).toHaveBeenCalledWith('sam')
+    expect(adapter.generateCaptions).toHaveBeenCalledWith('vid-1', { style: 'karaoke' })
+    expect(readCaptionColor()).toBe('#112233')
+  })
+
+  it('leaves a color the server response already set alone', async () => {
+    const adapter = makeRegenAdapter({
+      style: 'pop',
+      color: '#ff0000',
+      segments: [{ id: 'cap-new', text: 'fresh', start: 0, end: 1, words: [{ word: 'fresh', start: 0, end: 1 }] }],
+    })
+    ;(adapter as unknown as { getCaptionProfileDefaults: unknown }).getCaptionProfileDefaults =
+      vi.fn(async () => ({ color: '#112233' }))
+
+    render(
+      <VideoEditor
+        project={makeVideoProject({ profile: 'sam' })}
+        adapter={adapter}
+        onProjectChange={vi.fn()}
+      />,
+    )
+
+    fireEvent.click(await screen.findByText('Regenerate captions'))
+    await waitFor(() => expect(screen.queryByText('Regenerating captions…')).toBeNull())
+    expect(readCaptionColor()).toBe('#ff0000')
+  })
+
+  it('applies the server track untouched on a host with no caption-defaults seam', async () => {
+    // Every host shipping today is in this case; the regen call must stay the
+    // bare one-argument call it has always been.
+    const adapter = makeRegenAdapter({
+      style: 'pop',
+      segments: [{ id: 'cap-new', text: 'fresh', start: 0, end: 1, words: [{ word: 'fresh', start: 0, end: 1 }] }],
+    })
+
+    render(
+      <VideoEditor
+        project={makeVideoProject({ profile: 'sam' })}
+        adapter={adapter}
+        onProjectChange={vi.fn()}
+      />,
+    )
+
+    fireEvent.click(await screen.findByText('Regenerate captions'))
+    await waitFor(() => expect(screen.queryByText('Regenerating captions…')).toBeNull())
+    expect(adapter.generateCaptions).toHaveBeenCalledWith('vid-1')
+    expect(readCaptionColor()).toBe('#ffffff')
   })
 })

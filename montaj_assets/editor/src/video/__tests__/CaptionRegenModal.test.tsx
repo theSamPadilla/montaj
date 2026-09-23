@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
 import { render, screen, waitFor, cleanup } from '@testing-library/react'
-import type { CaptionEvent, EditorAdapter, ImageElement, Project } from '../../types'
+import type { CaptionEvent, CaptionProfileDefaults, EditorAdapter, ImageElement, Project } from '../../types'
 import type { Captions } from '../../schema'
 import CaptionRegenModal from '../CaptionRegenModal'
 
@@ -45,7 +45,9 @@ describe('CaptionRegenModal', () => {
     )
 
     await waitFor(() => expect(screen.getByText(/transcribing audio/i)).toBeTruthy())
-    await waitFor(() => expect(onDone).toHaveBeenCalledWith(doneCaptions))
+    // Second argument is the profile defaults the host resolved — `null` on
+    // this adapter, which implements no `getCaptionProfileDefaults`.
+    await waitFor(() => expect(onDone).toHaveBeenCalledWith(doneCaptions, null))
   })
 
   it('shows an error message verbatim on error', async () => {
@@ -90,5 +92,162 @@ describe('CaptionRegenModal', () => {
     )
     await waitFor(() => expect(screen.getByText(/transcribing audio/i)).toBeTruthy())
     expect(screen.queryByText(/caption rows/i)).toBeNull()
+  })
+})
+
+// ── Profile-seeded caption defaults ──────────────────────────────────────────
+//
+// `adapter.getCaptionProfileDefaults` is an OPTIONAL host seam: this package
+// owns no notion of what a profile is beyond `Project.profile`'s bare name, so
+// a host that can resolve one answers, and a host that cannot omits the method
+// entirely. Every assertion below therefore comes in a pair — the seam present
+// and the seam absent — because the absent case is the one every existing host
+// (Hub, Los Parceros, the OSS `serve` UI) is in today, and it must keep
+// producing the byte-identical call it produced before this seam existed.
+
+/** Adapter whose `generateCaptions` is a spy, so the opts argument is readable. */
+function makeSpyAdapter() {
+  const adapter = makeAdapter()
+  const generateCaptions = vi.fn(async function* (): AsyncIterable<CaptionEvent> {
+    yield { type: 'done', captions: doneCaptions }
+  })
+  adapter.generateCaptions = generateCaptions
+  return { adapter, generateCaptions }
+}
+
+const PROFILE_DEFAULTS: CaptionProfileDefaults = {
+  style: 'karaoke',
+  fontFamily: '"Inter", system-ui, sans-serif',
+  color: '#112233',
+}
+
+describe('CaptionRegenModal — profile-seeded caption defaults', () => {
+  it('seeds the generation style from the defaults the host resolves for the project profile', async () => {
+    const { adapter, generateCaptions } = makeSpyAdapter()
+    const getCaptionProfileDefaults = vi.fn(async () => PROFILE_DEFAULTS)
+    adapter.getCaptionProfileDefaults = getCaptionProfileDefaults
+
+    render(
+      <CaptionRegenModal
+        adapter={adapter}
+        projectId="vid-1"
+        profile="sam"
+        existingRowCount={1}
+        onDone={vi.fn()}
+        onClose={vi.fn()}
+      />,
+    )
+
+    await waitFor(() => expect(generateCaptions).toHaveBeenCalledWith('vid-1', { style: 'karaoke' }))
+    expect(getCaptionProfileDefaults).toHaveBeenCalledWith('sam')
+  })
+
+  it('hands the resolved defaults to onDone alongside the fresh captions', async () => {
+    // The host merges font/color onto the track at its own apply seam; the
+    // modal resolves the profile ONCE and passes what it got, so the host
+    // never repeats the round trip (and can never race a second answer).
+    const { adapter } = makeSpyAdapter()
+    adapter.getCaptionProfileDefaults = vi.fn(async () => PROFILE_DEFAULTS)
+    const onDone = vi.fn()
+
+    render(
+      <CaptionRegenModal
+        adapter={adapter}
+        projectId="vid-1"
+        profile="sam"
+        existingRowCount={1}
+        onDone={onDone}
+        onClose={vi.fn()}
+      />,
+    )
+
+    await waitFor(() => expect(onDone).toHaveBeenCalledWith(doneCaptions, PROFILE_DEFAULTS))
+  })
+
+  it('passes no opts at all when the host implements no caption-defaults seam', async () => {
+    // Today's behaviour for every existing host, pinned: a bare one-argument
+    // call, not `(id, undefined)` and not `(id, {})`.
+    const { adapter, generateCaptions } = makeSpyAdapter()
+    const onDone = vi.fn()
+
+    render(
+      <CaptionRegenModal
+        adapter={adapter}
+        projectId="vid-1"
+        profile="sam"
+        existingRowCount={1}
+        onDone={onDone}
+        onClose={vi.fn()}
+      />,
+    )
+
+    await waitFor(() => expect(onDone).toHaveBeenCalled())
+    expect(generateCaptions).toHaveBeenCalledWith('vid-1')
+    expect(onDone).toHaveBeenCalledWith(doneCaptions, null)
+  })
+
+  it('never asks for defaults when the project has no profile', async () => {
+    const { adapter, generateCaptions } = makeSpyAdapter()
+    const getCaptionProfileDefaults = vi.fn(async () => PROFILE_DEFAULTS)
+    adapter.getCaptionProfileDefaults = getCaptionProfileDefaults
+
+    render(
+      <CaptionRegenModal
+        adapter={adapter}
+        projectId="vid-1"
+        existingRowCount={1}
+        onDone={vi.fn()}
+        onClose={vi.fn()}
+      />,
+    )
+
+    await waitFor(() => expect(generateCaptions).toHaveBeenCalledWith('vid-1'))
+    expect(getCaptionProfileDefaults).not.toHaveBeenCalled()
+  })
+
+  it('still generates when the caption-defaults seam rejects', async () => {
+    // Seeding is a convenience. A profile lookup that 500s must never be the
+    // reason a user cannot regenerate their captions.
+    const { adapter, generateCaptions } = makeSpyAdapter()
+    adapter.getCaptionProfileDefaults = vi.fn(async () => { throw new Error('boom') })
+    const onDone = vi.fn()
+
+    render(
+      <CaptionRegenModal
+        adapter={adapter}
+        projectId="vid-1"
+        profile="sam"
+        existingRowCount={1}
+        onDone={onDone}
+        onClose={vi.fn()}
+      />,
+    )
+
+    await waitFor(() => expect(generateCaptions).toHaveBeenCalledWith('vid-1'))
+    await waitFor(() => expect(onDone).toHaveBeenCalledWith(doneCaptions, null))
+    expect(screen.queryByText('boom')).toBeNull()
+  })
+
+  it('passes no style when the profile resolves without one', async () => {
+    // A profile that sets only a font and a color must not send `style:
+    // undefined` — the host route reads presence, not value.
+    const { adapter, generateCaptions } = makeSpyAdapter()
+    const fontOnly: CaptionProfileDefaults = { fontFamily: '"Inter", system-ui, sans-serif' }
+    adapter.getCaptionProfileDefaults = vi.fn(async () => fontOnly)
+    const onDone = vi.fn()
+
+    render(
+      <CaptionRegenModal
+        adapter={adapter}
+        projectId="vid-1"
+        profile="sam"
+        existingRowCount={1}
+        onDone={onDone}
+        onClose={vi.fn()}
+      />,
+    )
+
+    await waitFor(() => expect(generateCaptions).toHaveBeenCalledWith('vid-1'))
+    await waitFor(() => expect(onDone).toHaveBeenCalledWith(doneCaptions, fontOnly))
   })
 })

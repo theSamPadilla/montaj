@@ -186,6 +186,50 @@ export interface GenerateCaptionsOptions {
   style?: string
 }
 
+/**
+ * The caption look a host has on file for one of its named profiles —
+ * everything this package can seed a freshly transcribed track with.
+ *
+ * This package owns NO notion of what a profile is beyond `Project.profile`'s
+ * bare name: whether profiles are files on disk, rows in the host's database,
+ * or nothing at all is the host's business, and asking the host through
+ * `getCaptionProfileDefaults` is how the editor stays ignorant of it. Every
+ * field is optional and the whole thing is nullable, so "this host has no
+ * profiles", "this profile has no styling" and "this profile sets only a
+ * color" are all expressible without the editor knowing which it got.
+ *
+ * Field names are the *editor's* vocabulary, not any host's — each one is
+ * named after the field it seeds, so the mapping from a host's own schema
+ * happens once, in that host's adapter, rather than leaking a host's column
+ * names into this package.
+ */
+export interface CaptionProfileDefaults {
+  /**
+   * Seeds `GenerateCaptionsOptions.style` on the regeneration request — the
+   * style the new track is transcribed INTO. Deliberately `string` rather
+   * than `Captions['style']`, matching the field it feeds: the host is what
+   * validates a style name, and a host storing one in a free-text column
+   * should not have to narrow before it can answer.
+   *
+   * Never written onto the returned track: the host reports the style it
+   * actually used, and that report wins (see `mergeCaptionProfileDefaults`).
+   */
+  style?: string
+  /** Seeds `Captions.fontFamily` — a CSS font-family stack. */
+  fontFamily?: string
+  /**
+   * Seeds `Captions.googleFonts` alongside `fontFamily`, and only alongside
+   * it. The two travel together (see `Captions.fontFamily`'s own note): a
+   * family whose font file is not also fetched renders as the fallback face,
+   * in the editor preview and the export alike. A host that seeds a Google
+   * family without its spec here gets a silent half-application — the right
+   * stack, the wrong glyphs.
+   */
+  googleFonts?: string[]
+  /** Seeds `Captions.color` — the base caption text color. */
+  color?: string
+}
+
 // ── Overlay library types ─────────────────────────────────────────────────────
 // Copied verbatim from Montaj's `ui/src/lib/api.ts` so the package owns the
 // shape the editor consumes. A host's overlay-listing endpoints return these;
@@ -793,6 +837,30 @@ export interface EditorAdapter<P extends Project = Project> {
    * project has more than one row; there is no partial/per-row regeneration.
    */
   generateCaptions?(id: string, opts?: GenerateCaptionsOptions): AsyncIterable<CaptionEvent>
+
+  /**
+   * Optional: resolve the caption look the host has on file for `profile` —
+   * the value of `Project.profile`, which this package treats as an opaque
+   * name and nothing more. Used to seed a freshly transcribed caption track
+   * with the style, font and color the profile already implies, instead of
+   * leaving the user to re-pick all three every regeneration.
+   *
+   * THE PROFILE CONCEPT ITSELF STAYS ON THE HOST SIDE, which is the whole
+   * reason this is a seam rather than a lookup. `Project.profile` is a bare
+   * string here; what it resolves to is the host's — a local file for the
+   * OSS `serve` UI, an account-scoped database row for a hosted app, nothing
+   * at all for a host with no profile concept. A host that cannot answer
+   * omits this method; the editor feature-detects its absence and generates
+   * captions exactly as it did before this existed, with no second argument
+   * on `generateCaptions` and no merge on the result.
+   *
+   * Best-effort on the editor's side: a rejection is swallowed and treated as
+   * `null`. Caption regeneration is the user's actual request and must never
+   * fail because a styling convenience could not be looked up.
+   *
+   * Returns `null` when the host has no defaults for that name.
+   */
+  getCaptionProfileDefaults?(profile: string): Promise<CaptionProfileDefaults | null>
 
   /**
    * Optional: report the editor's live playhead and selection to the host.

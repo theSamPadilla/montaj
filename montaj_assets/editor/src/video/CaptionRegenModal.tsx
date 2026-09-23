@@ -1,21 +1,35 @@
 import { useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
-import type { EditorAdapter, Project } from '../types'
+import type { CaptionProfileDefaults, EditorAdapter, Project } from '../types'
 import type { Captions } from '../schema'
+import { resolveCaptionProfileDefaults } from './captionProfileDefaults'
 
 interface CaptionRegenModalProps<P extends Project = Project> {
   projectId: string
   /** Adapter driving the caption-regeneration stream. Must implement
    *  `generateCaptions` — callers gate rendering on its presence. */
   adapter: EditorAdapter<P>
+  /** The project's attached profile name (`Project.profile`), if it has one.
+   *  Passed to `adapter.getCaptionProfileDefaults` to seed the new track's
+   *  style/font/color. Absent — or a host with no such seam — and the run is
+   *  byte-identical to what it was before profile seeding existed. */
+  profile?: string
   /** Caption rows the project has right now (`maxCaptionLane(segments) + 1`,
    *  so 1 for a lane-less or empty track). Regeneration replaces the whole
    *  track with a single fresh row, so this is the count the warning banner
    *  below reports as about to be discarded. */
   existingRowCount: number
-  /** Fired on terminal success with the freshly transcribed caption track. The
-   *  caller patches `project.captions` from this; the modal then closes. */
-  onDone: (captions: Captions) => void
+  /** Fired on terminal success with the freshly transcribed caption track,
+   *  plus whatever the host answered for `profile` (null when it answered
+   *  nothing). The caller patches `project.captions` from the first and folds
+   *  the second onto it — see `mergeCaptionProfileDefaults`. The modal then
+   *  closes.
+   *
+   *  The defaults are handed OVER rather than re-fetched by the caller so the
+   *  profile is resolved exactly once per run: the modal already had to ask
+   *  before the stream started (it needs the style for the request), and a
+   *  second lookup at apply time could answer differently. */
+  onDone: (captions: Captions, profileDefaults: CaptionProfileDefaults | null) => void
   /** Fired when the modal closes (cancel, error dismiss, or post-done). */
   onClose: () => void
   /** Editor theme mode — light/dark. The panel and log box follow
@@ -38,7 +52,7 @@ function LogLine({ text, mode = 'dark' }: { text: string; mode?: 'light' | 'dark
   )
 }
 
-export default function CaptionRegenModal<P extends Project = Project>({ projectId, adapter, existingRowCount, onDone, onClose, mode = 'dark' }: CaptionRegenModalProps<P>) {
+export default function CaptionRegenModal<P extends Project = Project>({ projectId, adapter, profile, existingRowCount, onDone, onClose, mode = 'dark' }: CaptionRegenModalProps<P>) {
   const [logs, setLogs]     = useState<string[]>([])
   const [status, setStatus] = useState<'running' | 'done' | 'error'>('running')
   const [errorMsg, setError] = useState<string | null>(null)
@@ -66,13 +80,25 @@ export default function CaptionRegenModal<P extends Project = Project>({ project
 
     void (async () => {
       try {
-        for await (const ev of adapter.generateCaptions!(projectId)) {
+        // Seeding, before anything is spawned: the style has to be on the
+        // request, so this one await sits in front of the stream. It cannot
+        // reject (see `resolveCaptionProfileDefaults`) and it cannot stop the
+        // run — a host with no profile seam, or a lookup that failed, simply
+        // produces `null` and everything below behaves exactly as it did
+        // before this existed, down to the arity of the call.
+        const profileDefaults = await resolveCaptionProfileDefaults(adapter, profile)
+        if (unmountedRef.current || cancelledRef.current) return
+        const stream = profileDefaults?.style
+          ? adapter.generateCaptions!(projectId, { style: profileDefaults.style })
+          : adapter.generateCaptions!(projectId)
+
+        for await (const ev of stream) {
           if (unmountedRef.current || cancelledRef.current) break
           if (ev.type === 'log') {
             setLogs(l => [...l, ev.message])
           } else if (ev.type === 'done') {
             setStatus('done')
-            onDone(ev.captions)
+            onDone(ev.captions, profileDefaults)
           } else {
             setError(ev.message)
             setStatus('error')
@@ -94,7 +120,7 @@ export default function CaptionRegenModal<P extends Project = Project>({ project
         unmountedRef.current = true
       }, 0)
     }
-  }, [projectId, adapter, onDone])
+  }, [projectId, adapter, profile, onDone])
 
   // Auto-scroll logs
   useEffect(() => {

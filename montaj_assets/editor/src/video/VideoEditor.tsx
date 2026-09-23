@@ -14,6 +14,7 @@ import { collapseGaps, rippleDelete, splitAtTime } from './cuts'
 import { addMarker } from './timeline/markers'
 import { repairCaptionWords } from './captionRepair'
 import { maxCaptionLane, normalizeCaptionLanes } from './captionLanes'
+import { mergeCaptionProfileDefaults } from './captionProfileDefaults'
 import Timeline, { type TimelineActions, type TimelineMode } from './timeline/Timeline'
 import { visualDuration } from '@bycrux/timeline-core'
 import { audioEnd, computeAutoCrossfade, computeDerivedTiming, computeVisualCrossfade, enabledTrackItems, mapTrackItems, normalizeAudioTracks, trackItems, withEnabledItemTracks } from './timeline/timeline-model'
@@ -2954,10 +2955,19 @@ function ReviewSurface<P extends Project>({
         <CaptionRegenModal
           adapter={adapter}
           projectId={project.id}
+          profile={project.profile}
           existingRowCount={maxCaptionLane(project.captions?.segments ?? []) + 1}
           onClose={() => setRegenCaptionsOpen(false)}
-          onDone={(captions) => {
-            sync.applyExternal({ ...syncProjectRef.current, captions } as P)
+          onDone={(captions, profileDefaults) => {
+            // The modal resolved the profile once, before the stream; we fold
+            // its font/color onto the fresh track here rather than there
+            // because this is the seam that decides what lands on the project
+            // — and the merge only ever fills fields the host left unset, so
+            // a host that starts returning them keeps authoring them.
+            // `mergeCaptionProfileDefaults` returns `captions` itself when
+            // there is nothing to seed, which is every host without the seam.
+            const seeded = mergeCaptionProfileDefaults(captions, profileDefaults)
+            sync.applyExternal({ ...syncProjectRef.current, captions: seeded } as P)
             setRegenCaptionsOpen(false)
           }}
           mode={timelineMode}

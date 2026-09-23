@@ -37,6 +37,7 @@ export type {
   RenderPhase,
   CaptionEvent,
   GenerateCaptionsOptions,
+  CaptionProfileDefaults,
   MediaScope,
   MediaItem,
   GlobalOverlay,
