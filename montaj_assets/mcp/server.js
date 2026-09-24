@@ -204,6 +204,54 @@ export function renderContextResource(result) {
 }
 
 // ---------------------------------------------------------------------------
+// Resource read — montaj://context and montaj://profile/<name>
+// ---------------------------------------------------------------------------
+
+/**
+ * The handler behind ReadResourceRequestSchema, pulled out of main() so tests
+ * can drive it directly — same reasoning as renderContextResource.
+ *
+ * Gated the same way CallToolRequestSchema is (see entitlement-check.js): a
+ * no-op for standalone `montaj mcp`, and a refusal for a non-Studio account
+ * when montaj-app mediated this launch. These resources are as much a live
+ * BYOA connection into the editor as any tool call — montaj://context reads
+ * the live playhead/selection/transcript, montaj://profile/<name> reads a
+ * style profile's full contents — and were left ungated when the
+ * tool-dispatch guard shipped. Checked per call, not once at startup, for
+ * the same reason CallToolRequestSchema's check is.
+ *
+ * The refusal is shaped like this handler's own "unknown resource" response
+ * (`{ contents: [{ uri, mimeType: "text/plain", text }] }`), not the
+ * `{ content, isError }` shape CallToolRequestSchema uses for its refusal —
+ * that shape belongs to tool results, not resource reads.
+ */
+export async function readResource(uri, { env = process.env, readJwt, readPublicKey } = {}) {
+  const entitlement = checkByoaEntitlement({ env, readJwt, readPublicKey })
+  if (!entitlement.allowed) {
+    return { contents: [{ uri, mimeType: "text/plain", text: entitlement.reason }] }
+  }
+
+  if (uri === CONTEXT_URI) {
+    return {
+      contents: [{
+        uri,
+        mimeType: "text/markdown",
+        text: renderContextResource(await fetchContext()),
+      }],
+    }
+  }
+  if (!uri.startsWith("montaj://profile/")) {
+    return { contents: [{ uri, mimeType: "text/plain", text: `Unknown resource: ${uri}` }] }
+  }
+  const name      = uri.slice("montaj://profile/".length)
+  const stylePath = join(homedir(), ".montaj", "profiles", name, "style_profile.md")
+  if (!existsSync(stylePath)) {
+    return { contents: [{ uri, mimeType: "text/plain", text: `Profile '${name}' not found.` }] }
+  }
+  return { contents: [{ uri, mimeType: "text/markdown", text: readFileSync(stylePath, "utf8") }] }
+}
+
+// ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
 
@@ -256,27 +304,7 @@ async function main() {
     ],
   }))
 
-  server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
-    const { uri } = request.params
-    if (uri === CONTEXT_URI) {
-      return {
-        contents: [{
-          uri,
-          mimeType: "text/markdown",
-          text: renderContextResource(await fetchContext()),
-        }],
-      }
-    }
-    if (!uri.startsWith("montaj://profile/")) {
-      return { contents: [{ uri, mimeType: "text/plain", text: `Unknown resource: ${uri}` }] }
-    }
-    const name      = uri.slice("montaj://profile/".length)
-    const stylePath = join(homedir(), ".montaj", "profiles", name, "style_profile.md")
-    if (!existsSync(stylePath)) {
-      return { contents: [{ uri, mimeType: "text/plain", text: `Profile '${name}' not found.` }] }
-    }
-    return { contents: [{ uri, mimeType: "text/markdown", text: readFileSync(stylePath, "utf8") }] }
-  })
+  server.setRequestHandler(ReadResourceRequestSchema, async (request) => readResource(request.params.uri))
 
   // ---------------------------------------------------------------------------
   // Tools
