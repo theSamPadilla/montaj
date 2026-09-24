@@ -929,6 +929,12 @@ def test_validate_workflow_passes_valid(tmp_path):
     assert result["valid"] is True
 
 
+def test_validate_workflow_accepts_blank(tmp_path):
+    path = str(REPO_ROOT / "workflows" / "blank.json")
+    result = v.validate_workflow(path)
+    assert result["valid"] is True
+
+
 def test_validate_workflow_fails_missing_name(tmp_path):
     data = {**VALID_WORKFLOW}; del data["name"]
     path = _write_workflow(tmp_path, "my_workflow", data)

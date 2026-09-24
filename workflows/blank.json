@@ -1,0 +1,7 @@
+{
+  "name": "blank",
+  "description": "Empty editing project — no source footage and no automated steps. The user builds the edit by hand in the editor. An agent working on a blank project follows the user's instructions directly; there is no workflow to run.",
+  "project_type": "editing",
+  "requires_clips": false,
+  "steps": []
+}

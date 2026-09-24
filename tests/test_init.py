@@ -156,6 +156,16 @@ def test_lyrics_video_gets_music_video_type(tmp_path):
     assert "storyboard" not in project
 
 
+def test_blank_workflow_creates_empty_editing_project(tmp_path):
+    result = run_init("--canvas", "--prompt", " ", "--workflow", "blank",
+                      env_override={"MONTAJ_WORKSPACE_DIR": str(tmp_path)})
+    assert result.returncode == 0, result.stderr
+    project = json.loads(_project_path_from_stdout(result.stdout).read_text())
+    assert project["projectType"] == "editing"
+    assert project["workflow"] == "blank"
+    assert track_items(project)[0] == []
+
+
 def test_clean_cut_defaults_to_editing(tmp_path):
     clip = tmp_path / "clip.mp4"
     clip.write_bytes(b"fake")

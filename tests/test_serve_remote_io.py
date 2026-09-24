@@ -379,6 +379,31 @@ class TestRunRemoteClipsSubprocess:
         assert resp.status_code == 201
         assert "--canvas" in captured_cmd
 
+    def test_blank_workflow_without_clips_adds_canvas_flag(self, client, monkeypatch, tmp_path):
+        """POST /run with a canvas workflow and no clips → --canvas IS added (unchanged behavior)."""
+        captured_cmd = []
+
+        async def _fake_run_subprocess(cmd, **kwargs):
+            captured_cmd.extend(cmd)
+            project_json = tmp_path / "project.json"
+            project_json.write_text(json.dumps({
+                "version": "0.2", "id": "test-proj", "status": "pending",
+                "name": "test", "workflow": "blank", "editingPrompt": "test",
+                "settings": {"resolution": [1920, 1080], "fps": 30},
+                "tracks": [], "assets": [], "audio": {},
+            }))
+            return (str(project_json) + "\n", "", 0)
+
+        with patch("serve.routes.projects.run_subprocess", side_effect=_fake_run_subprocess):
+            resp = client.post("/api/run", json={
+                "prompt": " ",
+                "workflow": "blank",  # requires_clips: false
+                # No clips or remoteClips → should add --canvas
+            })
+
+        assert resp.status_code == 201
+        assert "--canvas" in captured_cmd
+
 
 # ---------------------------------------------------------------------------
 # POST /api/projects/{id}/upload tests
