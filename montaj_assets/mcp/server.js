@@ -24,6 +24,7 @@ import { spawnSync }                            from "child_process";
 import { homedir }                              from "os";
 import { runCli }                               from "./run-cli.js";
 import { fetchContext }                         from "./serve-client.js";
+import { checkByoaEntitlement }                 from "./entitlement-check.js";
 
 const __dirname       = dirname(fileURLToPath(import.meta.url))
 // MCP_DIR  = where this server.js lives (montaj_assets/mcp/) — for sibling files like node_modules.
@@ -296,6 +297,20 @@ async function main() {
     if (!tool) {
       return {
         content:  [{ type: "text", text: JSON.stringify({ error: "unknown_tool", message: `No tool: ${name}` }) }],
+        isError:  true,
+      }
+    }
+
+    // Checked per call, not once at startup: a user who upgrades to Studio (or
+    // signs out) mid-session must see that take effect without restarting the
+    // AI client that spawned this process. The read is one small file; the work
+    // it guards is a Python subprocess, so the cost is noise.
+    //
+    // This is a no-op for standalone `montaj mcp` — see entitlement-check.js.
+    const entitlement = checkByoaEntitlement({ env: process.env })
+    if (!entitlement.allowed) {
+      return {
+        content:  [{ type: "text", text: JSON.stringify({ error: "byoa_requires_studio", message: entitlement.reason }) }],
         isError:  true,
       }
     }

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- MCP tool calls now check the caller's Montaj entitlement when launched via the desktop app's own generated client config (Claude Desktop, Claude Code, Cursor, Codex) — connecting your own AI assistant requires a Studio subscription. Standalone CLI usage, with no Montaj app involved, is unaffected.
+
 ## v4.6.4
 
 - **New built-in workflow, `blank`: an empty editing project with no steps.** A host that wants an empty editor — no footage yet, no agent — had no honest way to ask for one: `POST /api/run` with zero clips 400s (`clips_required`) unless the workflow declares `requires_clips: false`, and the only editing workflow that did was `animations`, which labelled the project as an animation and told any later agent run to leave track 0 empty. `blank` declares `requires_clips: false` and `steps: []`, so a clip-less create becomes a canvas project with an empty track 0 and nothing runs against it. No serve or init change was needed: empty `steps` was already valid everywhere a workflow is read.
