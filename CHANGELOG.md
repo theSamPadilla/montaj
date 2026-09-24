@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v4.6.6
+
 - **MCP `serverInfo` now reports a `title` and, when the host provides one, an `icons` array** — protocol 2025-11-25 fields an AI client can show in its server list instead of the bare package name "montaj". `title` defaults to "Montaj" and can be overridden via `MONTAJ_MCP_SERVER_TITLE`; `icons` is populated only when `MONTAJ_MCP_ICON_PATH` points at a readable `.png` or `.svg` under 256 KB, read once at startup and embedded as a `data:` URI — omitted (with a stderr note) on any failure, never crashing the server. OSS stays brand-neutral: no icon ships here, a host app supplies one via the env var. (`montaj_assets/mcp/server.js`)
 
 ## v4.6.5
