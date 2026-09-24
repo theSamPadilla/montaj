@@ -255,6 +255,10 @@ Multi-clip edit with animation sections — silence trim, remove non-speech, tra
 
 Animation-only project — no source footage required. The agent builds the video entirely from overlays and audio. Use when the prompt describes a fully animated or motion-graphics video. `project_type: "editing"`, `requires_clips: false`.
 
+### `blank`
+
+Empty editing project — no source footage and no steps. Hosts use it to open an editor with nothing in it; the user (or an agent following the user's direct instructions) builds the edit by hand. `project_type: "editing"`, `requires_clips: false`, `steps: []`.
+
 ### `lyrics_video`
 
 Music lyrics video — word-synced text over a background (video or colour). JSX overlays are always used for preview; at render time `renderMode` selects Puppeteer (JSX) or ffmpeg `drawtext`. Build is delegated to the `montaj/lyrics-video` skill. `project_type: "music_video"`, `requires_clips: false`.

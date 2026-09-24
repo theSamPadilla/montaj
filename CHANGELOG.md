@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **New built-in workflow, `blank`: an empty editing project with no steps.** A host that wants an empty editor — no footage yet, no agent — had no honest way to ask for one: `POST /api/run` with zero clips 400s (`clips_required`) unless the workflow declares `requires_clips: false`, and the only editing workflow that did was `animations`, which labelled the project as an animation and told any later agent run to leave track 0 empty. `blank` declares `requires_clips: false` and `steps: []`, so a clip-less create becomes a canvas project with an empty track 0 and nothing runs against it. No serve or init change was needed: empty `steps` was already valid everywhere a workflow is read.
+
 ## v4.6.3
 
 - **Editor: a new optional adapter seam, `getCaptionProfileDefaults`, lets a host seed a regenerated caption track with the style, font and color its profile already implies.** Regeneration replaces `project.captions` wholesale with whatever the transcription route returns, and that route returns a bare `{ style, segments }` — `steps/caption/caption.py` builds nothing else. So every regeneration dropped the user back to an unstyled track and made them re-pick the same three things they picked last time. The style is the expensive one: it is not a post-hoc edit but a parameter of the request (`GenerateCaptionsOptions.style`, read server-side at `serve/routes/projects.py`), so getting it wrong means transcribing again rather than adjusting a field.

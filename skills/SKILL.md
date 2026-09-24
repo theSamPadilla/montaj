@@ -146,6 +146,7 @@ Read the assigned workflow from `workflows/{name}.json` (filesystem only — not
 - `clean_cut` — silence trim, remove non-speech, transcribe, select takes, remove fillers
 - `overlays` — clean_cut + transcribe + overlays
 - `animations` — no source footage; build entirely from animated JSX sections
+- `blank` — empty project, no steps; edit directly per the user's instructions
 - `explainer` — footage clips + animation sections combined
 - `floating_head` — trim + materialize + RVM background removal; presenter in tracks[1], background asset in tracks[0]
 - `broll` — voiceover-driven B-roll: clean the narration, index the footage at shot granularity, assemble visuals that illustrate it
