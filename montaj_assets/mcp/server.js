@@ -17,7 +17,7 @@ import {
   ListResourcesRequestSchema,
   ReadResourceRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
-import { readFileSync, existsSync, readdirSync, realpathSync } from "fs";
+import { readFileSync, existsSync, readdirSync, realpathSync, statSync } from "fs";
 import { resolve, join, dirname }               from "path";
 import { fileURLToPath, pathToFileURL }         from "url";
 import { spawnSync }                            from "child_process";
@@ -252,6 +252,65 @@ export async function readResource(uri, { env = process.env, readJwt, readPublic
 }
 
 // ---------------------------------------------------------------------------
+// Server identity — name/title/icons reported in the `initialize` response.
+//
+// The name stays "montaj" and brand-neutral: OSS ships no logo of its own.
+// A host app (e.g. the Montaj desktop app) that wants its own title/icon in
+// an AI client's server list sets MONTAJ_MCP_SERVER_TITLE / MONTAJ_MCP_ICON_PATH
+// when it spawns this process; without them the server is just "Montaj" with
+// no icon, same as today.
+// ---------------------------------------------------------------------------
+
+const MAX_ICON_BYTES = 256 * 1024 // 256 KB
+const ICON_MIME_TYPES = { png: "image/png", svg: "image/svg+xml" }
+
+// Reads MONTAJ_MCP_ICON_PATH once at startup and embeds it as a data: URI.
+// Returns undefined (never throws) on any failure — icons are optional and
+// a bad path must never crash the server. Logs the reason to stderr.
+function buildServerIcons(iconPath) {
+  if (!iconPath) return undefined
+  try {
+    if (!existsSync(iconPath) || !statSync(iconPath).isFile()) {
+      process.stderr.write(`[montaj-mcp] MONTAJ_MCP_ICON_PATH not a readable file, omitting icon: ${iconPath}\n`)
+      return undefined
+    }
+    const stat = statSync(iconPath)
+    if (stat.size > MAX_ICON_BYTES) {
+      process.stderr.write(
+        `[montaj-mcp] MONTAJ_MCP_ICON_PATH exceeds ${MAX_ICON_BYTES} bytes (${stat.size}), omitting icon: ${iconPath}\n`
+      )
+      return undefined
+    }
+    const ext = iconPath.toLowerCase().split(".").pop()
+    const mimeType = ICON_MIME_TYPES[ext]
+    if (!mimeType) {
+      process.stderr.write(`[montaj-mcp] MONTAJ_MCP_ICON_PATH must be .png or .svg, omitting icon: ${iconPath}\n`)
+      return undefined
+    }
+    const base64 = readFileSync(iconPath).toString("base64")
+    const sizes  = mimeType === "image/svg+xml" ? ["any"] : ["256x256"]
+    return [{ src: `data:${mimeType};base64,${base64}`, mimeType, sizes }]
+  } catch (err) {
+    process.stderr.write(`[montaj-mcp] failed to load MONTAJ_MCP_ICON_PATH (${iconPath}), omitting icon: ${err.message}\n`)
+    return undefined
+  }
+}
+
+// Exported for tests. Builds the `serverInfo` object passed to the SDK's
+// Server constructor — read raw off env so a host app can brand the server
+// without any OSS source change.
+export function buildServerInfo(env = process.env) {
+  const serverInfo = {
+    name:    "montaj",
+    version: "0.2.0",
+    title:   env.MONTAJ_MCP_SERVER_TITLE || "Montaj",
+  }
+  const icons = buildServerIcons(env.MONTAJ_MCP_ICON_PATH)
+  if (icons) serverInfo.icons = icons
+  return serverInfo
+}
+
+// ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
 
@@ -263,7 +322,7 @@ async function main() {
   )
 
   const server = new Server(
-    { name: "montaj", version: "0.2.0" },
+    buildServerInfo(),
     { capabilities: { tools: {}, resources: {} } },
   )
 
