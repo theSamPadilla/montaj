@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v4.6.5
+
 - **The MCP connector no longer exposes `workflow_new` or `workflow_edit`.** `workflow edit` launches `$EDITOR` on the user's machine, which from an AI client either hangs the call or does nothing visible, and scaffolding new workflow files is an authoring task outside what the connector is for. `workflow_list` and `workflow_run` stay. The CLI subcommands themselves are unchanged. (`cli/mcp_schema.py`)
 
 - MCP tool calls now check the caller's Montaj entitlement when launched via the desktop app's own generated client config (Claude Desktop, Claude Code, Cursor, Codex) — connecting your own AI assistant requires a Studio subscription. Standalone CLI usage, with no Montaj app involved, is unaffected.
