@@ -103,8 +103,7 @@ EXPECTED_HTTP_ONLY = frozenset({
 EXPECTED_MCP_ONLY = frozenset({
     "init", "profile_analyze", "profile_asset_add", "profile_asset_list",
     "profile_asset_rm", "profile_asset_summary", "profile_list", "render",
-    "run", "status", "upload", "workflow_edit", "workflow_list",
-    "workflow_new", "workflow_run",
+    "run", "status", "upload", "workflow_list", "workflow_run",
 })
 
 _OPTIONS_MSG = (
@@ -201,6 +200,22 @@ def test_mcp_only_tools_match_frozen_set():
         f"{sorted(EXPECTED_MCP_ONLY - mcp_only)}\n"
         + _OPTIONS_MSG
     )
+
+
+# ── (c.1) workflow_new and workflow_edit are excluded from the MCP surface ──
+
+def test_workflow_new_and_edit_excluded_from_mcp_surface():
+    """`workflow new` and `workflow edit` must not surface as MCP tools:
+    `edit` launches $EDITOR on the user's machine, which hangs or does
+    nothing from an AI client, and scaffolding a workflow is an authoring
+    task outside the connector's editing surface. `workflow list` and
+    `workflow run` stay exported.
+    """
+    mcp_tool_names = {t["name"] for t in _mcp_tools()}
+    assert "workflow_new" not in mcp_tool_names
+    assert "workflow_edit" not in mcp_tool_names
+    assert "workflow_list" in mcp_tool_names
+    assert "workflow_run" in mcp_tool_names
 
 
 # ── (d) param parity for the MCP-exposed ∩ schema-conformance-reconciled set ─

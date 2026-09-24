@@ -34,6 +34,18 @@ _SKIP_COMMANDS = frozenset({
 # argparse arg dests to exclude from MCP input schemas
 _SKIP_DESTS = frozenset({'json', 'quiet', 'func', 'help'})
 
+# Subcommands to omit from MCP tools even though their parent command is
+# allowlisted, keyed by the full (command, subcommand) token path. `workflow
+# new` and `workflow edit` are both authoring commands, not connector
+# operations: `edit` launches $EDITOR on the user's machine, which hangs or
+# does nothing from an AI client with no TTY, and scaffolding a new workflow
+# is an authoring task outside the connector's editing surface. `workflow
+# list` and `workflow run` stay exported.
+_EXCLUDED_SUBCOMMANDS = frozenset({
+    ('workflow', 'new'),
+    ('workflow', 'edit'),
+})
+
 
 def _action_to_prop(action):
     """Convert an argparse action to a JSON Schema property dict."""
@@ -74,6 +86,8 @@ def _collect(tokens, parser, out, description=None):
         # Build help-text map from the subparsers pseudo-actions
         sub_help = {a.dest: a.help for a in sub_action._choices_actions}
         for sub_name, sub_parser in sub_action.choices.items():
+            if tuple(tokens + [sub_name]) in _EXCLUDED_SUBCOMMANDS:
+                continue
             _collect(tokens + [sub_name], sub_parser, out,
                      description=sub_help.get(sub_name))
         return

@@ -141,7 +141,7 @@ Configure once in `claude_desktop_config.json`:
 }
 ```
 
-**Tools come from CLI commands, not from steps directly.** `cli/mcp_schema.py` builds a parser for each command named in its `_EXPORTED_COMMANDS` allowlist, then flattens subcommands into separate tools — so the 26-command allowlist currently yields 35 tools (`workflow` alone becomes `workflow_new`/`workflow_list`/`workflow_edit`/`workflow_run`). Argument schemas are derived from the argparse actions, so a flag added to a CLI command shows up as an MCP parameter with no extra work.
+**Tools come from CLI commands, not from steps directly.** `cli/mcp_schema.py` builds a parser for each command named in its `_EXPORTED_COMMANDS` allowlist, then flattens subcommands into separate tools — so the 26-command allowlist currently yields 33 tools (`workflow` becomes `workflow_list`/`workflow_run`; its `new` and `edit` subcommands are excluded via `_EXCLUDED_SUBCOMMANDS` — `edit` launches $EDITOR, which doesn't work from an AI client, and `new` is an authoring task outside the connector's editing surface). Argument schemas are derived from the argparse actions, so a flag added to a CLI command shows up as an MCP parameter with no extra work.
 
 **Adding a step does not by itself create an MCP tool.** Three things have to line up:
 
