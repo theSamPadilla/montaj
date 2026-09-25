@@ -235,3 +235,37 @@ def test_build_snapshot_entry_with_missing_description_and_tags(profile):
     assert snap["availableAssets"] == [
         {"filename": "bare.png", "description": "", "tags": []},
     ]
+
+
+def test_build_snapshot_includes_preferences_when_present(profile):
+    """preferences.json present and a JSON object → included verbatim
+    under `preferences`."""
+    (profile / "preferences.json").write_text(json.dumps({"tone": "casual", "emoji": False}))
+    snap = build_profile_snapshot("alpha")
+    assert snap is not None
+    assert snap["preferences"] == {"tone": "casual", "emoji": False}
+
+
+def test_build_snapshot_omits_preferences_when_absent(profile):
+    """No preferences.json → key is OMITTED entirely (not None, not {})."""
+    snap = build_profile_snapshot("alpha")
+    assert snap is not None
+    assert "preferences" not in snap
+
+
+def test_build_snapshot_omits_preferences_when_malformed_json(profile):
+    """preferences.json exists but isn't valid JSON → key is omitted, no
+    exception raised."""
+    (profile / "preferences.json").write_text("{not json")
+    snap = build_profile_snapshot("alpha")
+    assert snap is not None
+    assert "preferences" not in snap
+
+
+def test_build_snapshot_omits_preferences_when_json_array(profile):
+    """preferences.json parses but its top-level value is a JSON array, not
+    an object → key is omitted."""
+    (profile / "preferences.json").write_text(json.dumps(["casual", "no-emoji"]))
+    snap = build_profile_snapshot("alpha")
+    assert snap is not None
+    assert "preferences" not in snap

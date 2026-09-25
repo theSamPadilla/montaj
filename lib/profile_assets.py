@@ -112,6 +112,11 @@ def build_profile_snapshot(profile_name: str | None) -> dict | None:
                           content; the snapshot only pins the location.
     - `availableAssets`  — list of asset entries (filename + description +
                           tags) sorted by filename. Frozen at init time.
+    - `preferences`      — the parsed contents of the profile's
+                          preferences.json, frozen at init time. OMITTED if
+                          the file does not exist, isn't readable, isn't
+                          valid JSON, or its top-level value isn't a JSON
+                          object.
     """
     if not profile_name:
         return None
@@ -131,4 +136,16 @@ def build_profile_snapshot(profile_name: str | None) -> dict | None:
     style_profile = _profile_dir(profile_name) / "style_profile.md"
     if style_profile.exists():
         snapshot["styleProfilePath"] = str(style_profile)
+    preferences_path = _profile_dir(profile_name) / "preferences.json"
+    try:
+        preferences_text = preferences_path.read_text()
+    except (FileNotFoundError, OSError):
+        preferences_text = None
+    if preferences_text is not None:
+        try:
+            preferences = json.loads(preferences_text)
+        except (json.JSONDecodeError, ValueError):
+            preferences = None
+        if isinstance(preferences, dict):
+            snapshot["preferences"] = preferences
     return snapshot

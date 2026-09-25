@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **Project init's `profileSnapshot` now includes the profile's `preferences.json` as a `preferences` field, when present.** `build_profile_snapshot` reads `~/.montaj/profiles/{name}/preferences.json` at init time and includes it verbatim under `preferences` when it exists and parses as a JSON object; a missing, unreadable, malformed, or non-object file is skipped silently, never raised, and the key is omitted from the snapshot rather than written as `null` or `{}`. Frozen at init time like the rest of the snapshot's fields. (`lib/profile_assets.py`)
+
 ## v4.6.6
 
 - **MCP `serverInfo` now reports a `title` and, when the host provides one, an `icons` array** — protocol 2025-11-25 fields an AI client can show in its server list instead of the bare package name "montaj". `title` defaults to "Montaj" and can be overridden via `MONTAJ_MCP_SERVER_TITLE`; `icons` is populated only when `MONTAJ_MCP_ICON_PATH` points at a readable `.png` or `.svg` under 256 KB, read once at startup and embedded as a `data:` URI — omitted (with a stderr note) on any failure, never crashing the server. OSS stays brand-neutral: no icon ships here, a host app supplies one via the env var. (`montaj_assets/mcp/server.js`)
