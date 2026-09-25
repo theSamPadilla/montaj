@@ -97,7 +97,7 @@ def build_profile_snapshot(profile_name: str | None) -> dict | None:
 
     Snapshot shape is the source of truth here; both the linear init flow
     in project/init.py and the carousel early-return branch (and any future
-    project type) call this once and write the result. Three fields:
+    project type) call this once and write the result. Fields:
 
     - `name`            — the profile name (redundant with the sibling
                           `profile` field, but convenient for the agent).
@@ -138,8 +138,8 @@ def build_profile_snapshot(profile_name: str | None) -> dict | None:
         snapshot["styleProfilePath"] = str(style_profile)
     preferences_path = _profile_dir(profile_name) / "preferences.json"
     try:
-        preferences_text = preferences_path.read_text()
-    except (FileNotFoundError, OSError):
+        preferences_text = preferences_path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
         preferences_text = None
     if preferences_text is not None:
         try:

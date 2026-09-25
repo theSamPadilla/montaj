@@ -269,3 +269,12 @@ def test_build_snapshot_omits_preferences_when_json_array(profile):
     snap = build_profile_snapshot("alpha")
     assert snap is not None
     assert "preferences" not in snap
+
+
+def test_build_snapshot_omits_preferences_when_not_valid_utf8(profile):
+    """preferences.json exists but its bytes aren't valid UTF-8 → key is
+    omitted, no exception raised (P3 terminator-review fix 2)."""
+    (profile / "preferences.json").write_bytes(b"\xff\xfe")
+    snap = build_profile_snapshot("alpha")
+    assert snap is not None
+    assert "preferences" not in snap
