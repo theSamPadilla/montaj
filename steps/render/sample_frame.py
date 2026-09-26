@@ -9,7 +9,7 @@ import os, sys, argparse, subprocess, json
 MONTAJ_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 sys.path.insert(0, MONTAJ_ROOT)
 from cli.deps import render_runtime_dir
-from lib.common import ffmpeg_bin, ffprobe_bin, fail, require_file
+from lib.common import node_child_env, fail, require_file
 from lib.look import curve_ids
 from lib.types.colorspace import is_hdr, DEFAULT_COLOR_SPACE
 
@@ -90,9 +90,7 @@ def main():
                         f"is '{color_space}' (SDR)",
             }) + "\n")
 
-    env = os.environ.copy()
-    env["MONTAJ_FFMPEG"] = ffmpeg_bin()
-    env["MONTAJ_FFPROBE"] = ffprobe_bin()
+    env = node_child_env()
 
     result = subprocess.run(cmd, check=False, capture_output=True, env=env)
     sys.stdout.write(result.stdout.decode("utf-8", errors="replace"))

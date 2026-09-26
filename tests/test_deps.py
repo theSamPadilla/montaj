@@ -6,6 +6,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "lib"))
 
 from cli import deps
 import models as _models
+import common
 
 
 def test_whisper_model_path_prefers_managed_model(tmp_path, monkeypatch):
@@ -78,3 +79,55 @@ def test_check_deps_reports_missing_whisper_model(tmp_path, monkeypatch):
     monkeypatch.setattr(deps.shutil, "which", lambda name: f"/usr/bin/{name}")
 
     assert "whisper model 'base.en' not downloaded" in deps.check_deps()
+
+
+# ── whisper_bin_path() ────────────────────────────────────────────────────────
+# Must consult the same montaj-managed path find_whisper_bin (lib/common.py)
+# checks, and check it FIRST — otherwise check_deps()/`montaj doctor` can
+# report "whisper.cpp binary not found" while transcription itself works fine
+# from the managed install, because the two would be looking in different
+# places.
+
+def test_whisper_bin_path_prefers_managed_binary_over_path(tmp_path, monkeypatch):
+    monkeypatch.setattr(_models, "MONTAJ_MODELS_DIR", str(tmp_path))
+    managed = Path(_models.model_path("whisper", common._exe("whisper-cli")))
+    managed.parent.mkdir(parents=True)
+    managed.write_bytes(b"fake binary")
+    # Even if PATH would also resolve one, the managed path wins.
+    monkeypatch.setattr(deps.shutil, "which", lambda name: f"/usr/bin/{name}")
+
+    assert deps.whisper_bin_path() == str(managed)
+
+
+def test_whisper_bin_path_falls_back_to_path_when_no_managed_binary(tmp_path, monkeypatch):
+    monkeypatch.setattr(_models, "MONTAJ_MODELS_DIR", str(tmp_path))
+    monkeypatch.setattr(deps.shutil, "which",
+                         lambda name: "/usr/bin/whisper-cli" if name == "whisper-cli" else None)
+
+    assert deps.whisper_bin_path() == "/usr/bin/whisper-cli"
+
+
+def test_whisper_bin_path_falls_back_to_legacy_when_nothing_else_found(tmp_path, monkeypatch):
+    monkeypatch.setattr(_models, "MONTAJ_MODELS_DIR", str(tmp_path / "managed"))
+    monkeypatch.setattr(deps.shutil, "which", lambda name: None)
+    # os.path.expanduser("~/...") honours $HOME on POSIX — redirect HOME
+    # rather than touching os.path.expanduser itself.
+    fake_home = tmp_path / "home"
+    legacy = fake_home / ".local" / "bin" / "whisper-cpp"
+    legacy.parent.mkdir(parents=True)
+    legacy.write_bytes(b"legacy")
+    monkeypatch.setenv("HOME", str(fake_home))
+
+    assert deps.whisper_bin_path() == str(legacy)
+
+
+def test_whisper_bin_path_managed_looks_for_exe_on_windows(tmp_path, monkeypatch):
+    """Windows seam: same _EXE_SUFFIX seam as find_whisper_bin, never sys.platform."""
+    monkeypatch.setattr(common, "_EXE_SUFFIX", ".exe")
+    monkeypatch.setattr(_models, "MONTAJ_MODELS_DIR", str(tmp_path))
+    managed = Path(_models.model_path("whisper", common._exe("whisper-cli")))
+    managed.parent.mkdir(parents=True)
+    managed.write_bytes(b"MZ")
+    monkeypatch.setattr(deps.shutil, "which", lambda name: None)
+
+    assert deps.whisper_bin_path() == str(managed)

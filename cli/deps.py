@@ -8,7 +8,7 @@ import sys
 from cli.main import MONTAJ_ROOT
 sys.path.insert(0, os.path.join(MONTAJ_ROOT, "lib"))
 import models as _models
-from common import ffmpeg_bin, ffprobe_bin
+from common import ffmpeg_bin, ffprobe_bin, _exe
 
 LEGACY_WHISPER_MODELS_DIR = os.path.expanduser("~/.local/share/whisper.cpp/models")
 WHISPER_MODEL = "base.en"
@@ -67,9 +67,14 @@ def whisper_model_path(model: str = WHISPER_MODEL) -> str | None:
 def whisper_bin_path() -> str | None:
     """Return the whisper-cli/whisper-cpp binary location, or None.
 
-    Checks PATH first (catches `brew install whisper-cpp` on macOS, apt or
-    a manual install on Linux), then montaj's legacy local locations. Used
-    by both `check_deps` and `montaj doctor` so the two never disagree."""
+    Checks the montaj-managed path first — same one lib/common.py's
+    find_whisper_bin uses — then PATH (catches `brew install whisper-cpp` on
+    macOS, apt or a manual install on Linux), then montaj's legacy local
+    locations. Used by both `check_deps` and `montaj doctor`, so they must
+    never disagree with what transcription itself actually finds."""
+    managed = _models.model_path("whisper", _exe("whisper-cli"))
+    if os.path.isfile(managed):
+        return managed
     # PATH lookup — covers brew (/opt/homebrew/bin/whisper-cli), apt, manual
     on_path = shutil.which("whisper-cli") or shutil.which("whisper-cpp")
     if on_path:

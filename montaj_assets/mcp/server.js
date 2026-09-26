@@ -18,7 +18,7 @@ import {
   ReadResourceRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
 import { readFileSync, existsSync, readdirSync, realpathSync, statSync } from "fs";
-import { resolve, join, dirname }               from "path";
+import { resolve, join, dirname, delimiter }     from "path";
 import { fileURLToPath, pathToFileURL }         from "url";
 import { spawnSync }                            from "child_process";
 import { homedir }                              from "os";
@@ -48,7 +48,7 @@ function scanCliTools() {
   }
 
   const pythonPath = process.env.PYTHONPATH
-    ? `${MONTAJ_ROOT}:${process.env.PYTHONPATH}`
+    ? `${MONTAJ_ROOT}${delimiter}${process.env.PYTHONPATH}`
     : MONTAJ_ROOT
 
   const result = spawnSync(PYTHON, [schemaScript], {
@@ -405,7 +405,7 @@ async function main() {
     const cliArgs = buildCliArgs(tool, args || {})
 
     const pythonPath = process.env.PYTHONPATH
-      ? `${MONTAJ_ROOT}:${process.env.PYTHONPATH}`
+      ? `${MONTAJ_ROOT}${delimiter}${process.env.PYTHONPATH}`
       : MONTAJ_ROOT
 
     const result = await runCli(

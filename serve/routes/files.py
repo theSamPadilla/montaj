@@ -1,6 +1,7 @@
 """File-serving + asset endpoints: /files, /files/stream, /upload, /pick-files, /caption-template."""
 import asyncio
 import mimetypes
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -18,6 +19,11 @@ from cli.deps import render_runtime_dir
 router = APIRouter(prefix="/api")
 
 CAPTION_STYLES = {"word-by-word", "pop", "karaoke", "subtitle", "highlight-box", "outline", "clean"}
+
+# Absolute-path check seam. On POSIX this is os.path.isabs (== startswith("/")
+# for str paths); tests prove Windows behaviour by swapping this to
+# ntpath.isabs, never by patching os.path.isabs or sys.platform globally.
+_is_abs = os.path.isabs
 
 
 async def save_upload(file: UploadFile, dest_dir: Path) -> Path:
@@ -146,7 +152,7 @@ async def write_file(request: Request):
 
     if not raw_path:
         raise bad_request("bad_request", "path is required")
-    if not isinstance(raw_path, str) or not raw_path.startswith("/"):
+    if not isinstance(raw_path, str) or not _is_abs(raw_path):
         raise bad_request("bad_request", f"path must be absolute: {raw_path!r}")
     if not isinstance(content, str):
         raise bad_request("bad_request", "content must be a string")

@@ -104,6 +104,26 @@ def ffprobe_bin():
     return _resolve_av_bin("ffprobe", "MONTAJ_FFPROBE")
 
 
+def node_child_env() -> dict:
+    """Environment for spawning the node-based render children (render.js,
+    sample-frame.js, sample-overlay.js, render-carousel.js).
+
+    Those scripts fall back to a bare `python3` on PATH when MONTAJ_PYTHON is
+    unset — fine on a Mac with Xcode CLT, but there is no `python3` on PATH on
+    a stock Windows install, so every render there failed with `spawn python3
+    ENOENT`. Only cli/commands/mcp.py set MONTAJ_PYTHON before this; serve's
+    render spawns never did. Also carries the resolved ffmpeg/ffprobe binaries
+    (MONTAJ_FFMPEG/MONTAJ_FFPROBE) those same children need.
+
+    Returns a fresh copy of os.environ each call; never mutates os.environ.
+    """
+    env = os.environ.copy()
+    env["MONTAJ_FFMPEG"] = ffmpeg_bin()
+    env["MONTAJ_FFPROBE"] = ffprobe_bin()
+    env["MONTAJ_PYTHON"] = sys.executable
+    return env
+
+
 def run_ffmpeg(args: list[str], timeout: int = 300):
     """Run ffmpeg, suppress output."""
     return run([ffmpeg_bin()] + args, timeout=timeout)
@@ -159,11 +179,11 @@ def find_whisper_bin() -> str:
     """Return path to whisper.cpp binary.
 
     Priority:
-    1. Montaj-managed binary (~/.local/share/montaj/models/whisper/whisper-cli)
+    1. Montaj-managed binary (~/.local/share/montaj/models/whisper/whisper-cli[.exe])
     2. System PATH (whisper-cpp or whisper-cli) — fallback for existing installs
     """
     import models as _models
-    managed = _models.model_path("whisper", "whisper-cli")
+    managed = _models.model_path("whisper", _exe("whisper-cli"))
     if os.path.isfile(managed):
         return managed
     for name in ("whisper-cpp", "whisper-cli"):

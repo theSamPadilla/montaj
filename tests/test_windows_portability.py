@@ -17,14 +17,19 @@ globally — that would also flip every other module's own platform check.
 """
 import ctypes
 import inspect
+import json
+import ntpath
+from pathlib import Path
 from unittest.mock import Mock
 
 import pytest
+from starlette.testclient import TestClient
 
 from lib import proc as proc_mod
 import lib.normalize as normalize_mod
 import serve.lockfile as lockfile_mod
 import serve.routes.projects as projects_mod
+from serve.server import app
 
 
 # ---------------------------------------------------------------------------
@@ -292,3 +297,123 @@ def test_projects_module_never_hardcodes_start_new_session():
     src = inspect.getsource(projects_mod)
     assert "start_new_session=True" not in src
     assert "detached_kwargs" in src
+
+
+# ---------------------------------------------------------------------------
+# serve/routes/files.py — POST /api/files's "must be absolute" check goes
+# through a module-level seam (_is_abs), not a hardcoded startswith("/"), so
+# a Windows client's `C:\Users\a\x.jsx` isn't rejected purely for not
+# starting with a slash. Proven via the ntpath seam, never sys.platform or a
+# global os.path.isabs monkeypatch.
+# ---------------------------------------------------------------------------
+
+def test_write_file_posix_absolute_path_still_works(tmp_path, monkeypatch):
+    """Sanity: on macOS, files._is_abs is os.path.isabs, which agrees with the
+    old startswith("/") check for str paths — no behaviour change here."""
+    monkeypatch.setattr("serve.routes.files.resolve_workspace", lambda: tmp_path)
+    client = TestClient(app, raise_server_exceptions=False)
+
+    target = tmp_path / "x.jsx"
+    resp = client.post("/api/files", json={"path": str(target), "content": "ok"})
+
+    assert resp.status_code == 200
+    assert target.read_text() == "ok"
+
+
+def test_write_file_relative_path_rejected_with_bad_request(tmp_path, monkeypatch):
+    monkeypatch.setattr("serve.routes.files.resolve_workspace", lambda: tmp_path)
+    client = TestClient(app, raise_server_exceptions=False)
+
+    resp = client.post("/api/files", json={"path": "relative/x.jsx", "content": "bad"})
+
+    assert resp.status_code == 400
+    assert resp.json()["detail"]["error"] == "bad_request"
+
+
+def test_write_file_windows_absolute_path_passes_isabs_gate_under_ntpath_seam(tmp_path, monkeypatch):
+    """With files._is_abs swapped to ntpath.isabs (the injected Windows seam),
+    a Windows-style absolute path like C:\\Users\\a\\x.jsx clears the "must be
+    absolute" gate — it no longer starts with "/" so the old check would 400
+    it. It still can't actually resolve into this POSIX workspace, so the
+    request 403s afterward; the point proven here is specifically that it is
+    no longer rejected as a *relative* path."""
+    monkeypatch.setattr("serve.routes.files._is_abs", ntpath.isabs)
+    monkeypatch.setattr("serve.routes.files.resolve_workspace", lambda: tmp_path)
+    client = TestClient(app, raise_server_exceptions=False)
+
+    resp = client.post("/api/files", json={"path": r"C:\Users\a\x.jsx", "content": "bad"})
+
+    assert resp.status_code == 403
+    assert resp.json()["detail"]["error"] == "forbidden"
+
+
+# ---------------------------------------------------------------------------
+# project/init.py — _copy_into_workspace's link=True path. Windows commonly
+# denies CreateSymbolicLink to a non-elevated process (OSError winerror 1314,
+# "A required privilege is not held by the client"); falling back to a real
+# copy keeps project init working there instead of crashing the whole init.
+# ---------------------------------------------------------------------------
+
+def test_copy_into_workspace_falls_back_to_copy_when_symlink_denied(tmp_path, monkeypatch, capsys):
+    import project.init as init_mod
+
+    def _boom(src, dst):
+        raise OSError(1314, "A required privilege is not held by the client")
+    monkeypatch.setattr(init_mod.os, "symlink", _boom)
+
+    src = tmp_path / "clip.mp4"
+    src.write_bytes(b"fake video data")
+    dest_dir = tmp_path / "workspace"
+    dest_dir.mkdir()
+
+    dest = init_mod._copy_into_workspace(str(src), str(dest_dir), "clip", link=True)
+
+    dest_path = Path(dest)
+    assert dest_path.is_file()
+    assert not dest_path.is_symlink()
+    assert dest_path.read_bytes() == b"fake video data"
+
+    err_lines = [ln for ln in capsys.readouterr().err.strip().splitlines() if ln]
+    assert len(err_lines) == 1
+    assert "warning" in err_lines[0].lower()
+
+
+def test_copy_into_workspace_symlinks_when_supported(tmp_path):
+    """Unchanged macOS/Linux path: link=True still symlinks when os.symlink
+    succeeds — the fallback only fires on OSError."""
+    import project.init as init_mod
+
+    src = tmp_path / "clip.mp4"
+    src.write_bytes(b"fake video data")
+    dest_dir = tmp_path / "workspace"
+    dest_dir.mkdir()
+
+    dest = init_mod._copy_into_workspace(str(src), str(dest_dir), "clip", link=True)
+
+    dest_path = Path(dest)
+    assert dest_path.is_symlink()
+
+
+# ---------------------------------------------------------------------------
+# lib/ai_video.py — save_project must write UTF-8 explicitly. Windows' default
+# locale is a legacy code page (not UTF-8); Path.write_text's platform-default
+# encoding would raise UnicodeEncodeError on a project with non-ASCII content
+# (CJK names, emoji) instead of relying on it implicitly.
+# ---------------------------------------------------------------------------
+
+def test_save_project_writes_utf8_explicitly_and_round_trips_non_ascii(tmp_path, monkeypatch):
+    calls = {}
+    orig_write_text = Path.write_text
+
+    def spy(self, data, *args, **kwargs):
+        calls["encoding"] = kwargs.get("encoding")
+        return orig_write_text(self, data, *args, **kwargs)
+    monkeypatch.setattr(Path, "write_text", spy)
+
+    from lib.ai_video import save_project
+    path = tmp_path / "project.json"
+    save_project(path, {"name": "名前 🎬"})
+
+    assert calls.get("encoding") == "utf-8"
+    raw = path.read_bytes()
+    assert json.loads(raw.decode("utf-8"))["name"] == "名前 🎬"

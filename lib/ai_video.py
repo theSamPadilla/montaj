@@ -123,7 +123,7 @@ def find_project(project_id: str) -> tuple[Path, dict]:
 
 def save_project(path: Path, project: dict):
     """Write project JSON back to disk."""
-    path.write_text(json.dumps(project, indent=2, ensure_ascii=False))
+    path.write_text(json.dumps(project, indent=2, ensure_ascii=False), encoding="utf-8")
 
 
 def compose_prompt(project: dict, scene: dict) -> str:

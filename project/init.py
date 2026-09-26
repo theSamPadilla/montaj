@@ -116,7 +116,14 @@ def _copy_into_workspace(src: str, dest_dir: str, prefix: str, link: bool = Fals
             counter += 1
         dest = os.path.join(dest_dir, f"{base}_{prefix}{counter}{ext}")
     if link:
-        os.symlink(os.path.abspath(src), dest)
+        try:
+            os.symlink(os.path.abspath(src), dest)
+        except OSError as exc:
+            # Windows commonly denies CreateSymbolicLink to a non-elevated
+            # process (winerror 1314, "a required privilege is not held").
+            # Fall back to a real copy rather than failing the whole init.
+            print(f"warning: symlink failed ({exc}); copied instead", file=sys.stderr)
+            shutil.copy2(src, dest)
     else:
         shutil.copy2(src, dest)
     return dest

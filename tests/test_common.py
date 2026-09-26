@@ -130,6 +130,20 @@ def test_find_whisper_bin_falls_back_to_path(tmp_path, monkeypatch):
     assert result == "/usr/bin/whisper-cli"
 
 
+def test_find_whisper_bin_managed_looks_for_exe_on_windows(tmp_path, monkeypatch):
+    """Windows seam: the managed-path check must look for whisper-cli.exe via
+    common._exe (the _EXE_SUFFIX seam), never sys.platform."""
+    import models as _models
+    monkeypatch.setattr(common, "_EXE_SUFFIX", ".exe")
+    monkeypatch.setattr(_models, "MONTAJ_MODELS_DIR", str(tmp_path))
+    wdir = tmp_path / "whisper"
+    wdir.mkdir()
+    exe = wdir / "whisper-cli.exe"
+    exe.write_text("MZ")
+    result = common.find_whisper_bin()
+    assert result == str(exe)
+
+
 # ── resolve_whisper_model() ──────────────────────────────────────────────────
 
 @pytest.fixture
@@ -316,6 +330,40 @@ class TestFfmpegResolver:
         assert common._exe("ffmpeg") == "ffmpeg"
         monkeypatch.setattr(common, "_EXE_SUFFIX", ".exe")
         assert common._exe("whisper-cli") == "whisper-cli.exe"
+
+
+# ── node_child_env() ──────────────────────────────────────────────────────────
+# Environment for the node-based render children (render.js, sample-frame.js,
+# sample-overlay.js, render-carousel.js), which fall back to bare `python3` on
+# PATH when MONTAJ_PYTHON is unset. Only cli/commands/mcp.py set it before this
+# change; serve's render spawns never did, so every render on a stock Windows
+# install failed with `spawn python3 ENOENT` (no python3.exe on PATH there).
+
+class TestNodeChildEnv:
+    def test_sets_ffmpeg_ffprobe_and_python(self, monkeypatch):
+        monkeypatch.setattr(common, "ffmpeg_bin", lambda: "/resolved/ffmpeg")
+        monkeypatch.setattr(common, "ffprobe_bin", lambda: "/resolved/ffprobe")
+        env = common.node_child_env()
+        assert env["MONTAJ_FFMPEG"] == "/resolved/ffmpeg"
+        assert env["MONTAJ_FFPROBE"] == "/resolved/ffprobe"
+        assert env["MONTAJ_PYTHON"] == sys.executable
+
+    def test_returns_a_copy_and_never_mutates_os_environ(self, monkeypatch):
+        monkeypatch.delenv("MONTAJ_FFMPEG", raising=False)
+        monkeypatch.delenv("MONTAJ_FFPROBE", raising=False)
+        monkeypatch.delenv("MONTAJ_PYTHON", raising=False)
+
+        env = common.node_child_env()
+
+        assert env is not os.environ
+        assert "MONTAJ_FFMPEG" not in os.environ
+        assert "MONTAJ_FFPROBE" not in os.environ
+        assert "MONTAJ_PYTHON" not in os.environ
+
+    def test_preserves_existing_environ_entries(self, monkeypatch):
+        monkeypatch.setenv("SOME_UNRELATED_VAR", "keep-me")
+        env = common.node_child_env()
+        assert env["SOME_UNRELATED_VAR"] == "keep-me"
 
 
 # ── transcribe_words() ───────────────────────────────────────────────────────

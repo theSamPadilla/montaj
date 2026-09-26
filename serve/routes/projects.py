@@ -39,7 +39,7 @@ from lib.remote_io import fetch_to_disk_async, push_from_disk_async, parse_allow
 from project.init import _copy_into_workspace
 from serve.sse import SSEBroadcaster, sse_stream
 
-from lib.common import SAFE_NAME as _SAFE_NAME, ffmpeg_bin, ffprobe_bin
+from lib.common import SAFE_NAME as _SAFE_NAME, ffmpeg_bin, ffprobe_bin, node_child_env
 from lib.look import curve_ids
 from lib.profile_assets import FILENAME_RE, NAME_RE
 from lib.types.kling import ASPECT_RATIOS, is_valid_aspect_ratio
@@ -2026,10 +2026,8 @@ async def _run_carousel_render_detached(project_id: str, project_dir: Path, scal
         args = [node_bin, str(render_script), "--project-json", str(render_input)]
         if scale is not None:
             args += ["--scale", str(scale)]
-        env = os.environ.copy()
+        env = node_child_env()
         env["MONTAJ_ROOT"] = str(MONTAJ_ROOT)
-        env["MONTAJ_FFMPEG"] = ffmpeg_bin()
-        env["MONTAJ_FFPROBE"] = ffprobe_bin()
         proc = await asyncio.create_subprocess_exec(
             *args,
             stdout=asyncio.subprocess.PIPE,
@@ -2283,10 +2281,8 @@ async def version_frame(
     if not node_bin:
         raise server_error("not_found", "node not found in PATH")
 
-    env = os.environ.copy()
+    env = node_child_env()
     env["MONTAJ_ROOT"] = str(MONTAJ_ROOT)
-    env["MONTAJ_FFMPEG"] = ffmpeg_bin()
-    env["MONTAJ_FFPROBE"] = ffprobe_bin()
 
     cmd = [
         node_bin, str(render_script),
@@ -3040,10 +3036,8 @@ async def render_project(project_id: str, request: Request, project_dir: Path = 
     if not node_bin:
         raise server_error("not_found", "node not found in PATH")
 
-    env = os.environ.copy()
+    env = node_child_env()
     env["MONTAJ_ROOT"] = str(MONTAJ_ROOT)
-    env["MONTAJ_FFMPEG"] = ffmpeg_bin()
-    env["MONTAJ_FFPROBE"] = ffprobe_bin()
 
     # Reserve the slot and kick the render off DETACHED, so it runs to completion
     # even if this SSE connection drops. A multi-minute render streamed through the
