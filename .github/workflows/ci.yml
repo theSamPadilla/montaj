@@ -185,3 +185,89 @@ jobs:
             echo "::error::internal docs or node_modules leaked into the sdist"
             exit 1
           fi
+
+  windows:
+    name: Windows portability smoke
+    runs-on: windows-latest
+    env:
+      PUPPETEER_SKIP_DOWNLOAD: 'true'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: montaj_assets/render/package-lock.json
+      - name: Install montaj
+        run: pip install -e ".[test]"
+      - name: Run Windows-portability + adjacent Python tests (fast suite)
+        run: pytest tests/test_windows_portability.py tests/test_ffmpeg_static.py tests/test_render_supersede.py tests/test_server_files.py -m "not slow" --timeout=300
+      - name: Install render engine deps
+        run: npm ci
+        working-directory: montaj_assets/render
+      - name: Render engine portability unit tests (node --test)
+        run: node --test test/file-url.test.mjs test/is-main.test.mjs test/ffmpeg-filter-path.test.mjs
+        working-directory: montaj_assets/render
+      - name: ffmpeg smoke — real download, filters/encoders, lut3d path escaping
+        run: python tests/ci/windows_ffmpeg_smoke.py
+      - name: pid-probe smoke — lib.proc.pid_alive across a real process boundary
+        run: python tests/ci/windows_smoke.py
+      - name: isMain smoke — node render.js --help through symlink-like path shapes
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $render = Join-Path $env:GITHUB_WORKSPACE "montaj_assets\render\render.js"
+
+          function Assert-Usage([string]$label, [string]$path) {
+            Write-Host "--- $label : $path ---"
+            $out = (& node $path --help 2>&1 | Out-String)
+            Write-Host $out
+            if ($out -notmatch "Usage: render\.js") {
+              throw "[$label] expected 'Usage: render.js' in node's output, got: $out"
+            }
+            Write-Host "[$label] OK"
+          }
+
+          # 1. Plain checkout path — baseline.
+          Assert-Usage "checkout path" $render
+
+          # 2. Lower-cased drive letter (GITHUB_WORKSPACE's drive is upper-case).
+          $lower = $render.Substring(0,1).ToLower() + $render.Substring(1)
+          Assert-Usage "lower-cased drive letter" $lower
+
+          # 3. mklink /J junction pointing at the render dir (mklink is a cmd
+          #    builtin, not a pwsh one — shelled out via cmd /c).
+          $renderDir = Join-Path $env:GITHUB_WORKSPACE "montaj_assets\render"
+          $junction = Join-Path $env:RUNNER_TEMP "render-junction"
+          cmd /c mklink /J $junction $renderDir
+          if ($LASTEXITCODE -ne 0) { throw "mklink /J failed with exit $LASTEXITCODE" }
+          Assert-Usage "mklink /J junction" (Join-Path $junction "render.js")
+
+          # 4. subst drive mapped to the repo root.
+          $substDrive = "T:"
+          subst $substDrive $env:GITHUB_WORKSPACE
+          if ($LASTEXITCODE -ne 0) { throw "subst failed with exit $LASTEXITCODE" }
+          try {
+            Assert-Usage "subst drive" (Join-Path $substDrive "montaj_assets\render\render.js")
+          } finally {
+            subst $substDrive /D | Out-Null
+          }
+
+  windows-discovery:
+    name: Windows full-suite discovery (non-blocking)
+    runs-on: windows-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+      - name: Install montaj
+        run: pip install -e ".[test]"
+      - name: Run full suite (fast tests) — expected NOT green; failure list feeds later plans
+        run: pytest -m "not slow" --timeout=300
