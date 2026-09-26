@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- **MCP tool calls and resource reads no longer check a Montaj app
+  entitlement.** The desktop app's Free tier now works without an account, so
+  the check added in v4.6.5 is removed: an AI assistant launched through the
+  app's own client config (Claude Desktop, Claude Code, Cursor, Codex) gets
+  every tool and resource, signed in or not. Standalone CLI use was never
+  gated and is unchanged. (`montaj_assets/mcp/server.js`;
+  `montaj_assets/mcp/entitlement-check.js` and its tests removed)
+
 - **Windows engine groundwork for the desktop app — Windows is not yet a supported CLI platform.** This batch makes the render engine, the editor preview, and `serve`'s file/process handling correct against Windows paths and Windows process semantics, gated behind platform seams and exercised in a new `windows-latest` CI job. There is no Windows CLI install, packaging, or documentation yet. macOS behavior is unchanged except for the few fixes below that reach it too: `MONTAJ_PYTHON` now set on every node-child spawn and the whisper-binary lookup order made consistent (see below), a path containing `#` or `?` now loads instead of being cut short, and `isMain` now resolves correctly through a symlinked `argv[1]` (macOS `/var` → `/private/var`).
 
 - **A pinned Windows x64 ffmpeg/ffprobe: gyan.dev's 8.1.2 "essentials" release, verified by SHA-256.** martin-riedl.de, the existing macOS/Linux source, publishes no Windows build, so `lib/ffmpeg_static.py` gains a second, archive-shaped provider for Windows only: one zip holding both binaries, pinned by the archive's own SHA-256 (matches GitHub's release-asset digest and a local re-derivation) rather than per-binary hashes. `essentials` covers every codec and filter montaj selects (libx264/libx265, zscale, tonemap, lut3d, drawtext, libass, ...); Windows on ARM is refused outright since no native build is pinned and running the x64 build there is untested. An R2 mirror is planned but not yet added — only the GitHub release URL is wired up. (`lib/ffmpeg_static.py`, `lib/common.py`)

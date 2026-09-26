@@ -24,7 +24,6 @@ import { spawnSync }                            from "child_process";
 import { homedir }                              from "os";
 import { runCli }                               from "./run-cli.js";
 import { fetchContext }                         from "./serve-client.js";
-import { checkByoaEntitlement }                 from "./entitlement-check.js";
 
 const __dirname       = dirname(fileURLToPath(import.meta.url))
 // MCP_DIR  = where this server.js lives (montaj_assets/mcp/) — for sibling files like node_modules.
@@ -211,26 +210,11 @@ export function renderContextResource(result) {
  * The handler behind ReadResourceRequestSchema, pulled out of main() so tests
  * can drive it directly — same reasoning as renderContextResource.
  *
- * Gated the same way CallToolRequestSchema is (see entitlement-check.js): a
- * no-op for standalone `montaj mcp`, and a refusal for a non-Studio account
- * when montaj-app mediated this launch. These resources are as much a live
- * BYOA connection into the editor as any tool call — montaj://context reads
- * the live playhead/selection/transcript, montaj://profile/<name> reads a
- * style profile's full contents — and were left ungated when the
- * tool-dispatch guard shipped. Checked per call, not once at startup, for
- * the same reason CallToolRequestSchema's check is.
- *
- * The refusal is shaped like this handler's own "unknown resource" response
- * (`{ contents: [{ uri, mimeType: "text/plain", text }] }`), not the
- * `{ content, isError }` shape CallToolRequestSchema uses for its refusal —
- * that shape belongs to tool results, not resource reads.
+ * No entitlement gate: every tool call and resource read gets the same
+ * treatment, signed in or not, whether launched standalone (`montaj mcp`) or
+ * mediated by montaj-app.
  */
-export async function readResource(uri, { env = process.env, readJwt, readPublicKey } = {}) {
-  const entitlement = checkByoaEntitlement({ env, readJwt, readPublicKey })
-  if (!entitlement.allowed) {
-    return { contents: [{ uri, mimeType: "text/plain", text: entitlement.reason }] }
-  }
-
+export async function readResource(uri) {
   if (uri === CONTEXT_URI) {
     return {
       contents: [{
@@ -384,20 +368,6 @@ async function main() {
     if (!tool) {
       return {
         content:  [{ type: "text", text: JSON.stringify({ error: "unknown_tool", message: `No tool: ${name}` }) }],
-        isError:  true,
-      }
-    }
-
-    // Checked per call, not once at startup: a user who upgrades to Studio (or
-    // signs out) mid-session must see that take effect without restarting the
-    // AI client that spawned this process. The read is one small file; the work
-    // it guards is a Python subprocess, so the cost is noise.
-    //
-    // This is a no-op for standalone `montaj mcp` — see entitlement-check.js.
-    const entitlement = checkByoaEntitlement({ env: process.env })
-    if (!entitlement.allowed) {
-      return {
-        content:  [{ type: "text", text: JSON.stringify({ error: "byoa_requires_studio", message: entitlement.reason }) }],
         isError:  true,
       }
     }

@@ -1,6 +1,9 @@
 import { test } from "node:test"
 import assert from "node:assert/strict"
 import { generateKeyPairSync, sign } from "node:crypto"
+import { mkdtempSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 
 import { CONTEXT_URI, renderContextResource, readResource } from "../server.js"
 
@@ -61,12 +64,13 @@ test("an active editor with no captions says so rather than printing null", () =
 })
 
 // ---------------------------------------------------------------------------
-// readResource — entitlement gating (montaj://context and montaj://profile/*
-// are as much a live BYOA connection as a tool call, and must be gated the
-// same way CallToolRequestSchema is; see entitlement-check.js).
+// readResource — no entitlement gate. montaj-app's own entitlement check was
+// removed (the app's Free tier now works without an account); these resources
+// resolve the same way whether or not montaj-app's env vars are present.
 //
-// JWT-construction helpers mirrored from entitlement-check.test.mjs rather
-// than imported — that file doesn't export them, and they're a few lines.
+// JWT-construction helpers below are no longer load-bearing for gating — kept
+// only for the "a valid Studio JWT still resolves normally" case, which now
+// exercises the same no-op path as everything else.
 // ---------------------------------------------------------------------------
 
 const APP_ENV = { MONTAJ_APP_RUNTIME_HOME: "/rt", MONTAJ_APP_VENDOR_ROOT: "/vr" }
@@ -120,42 +124,17 @@ test("readResource: a valid Studio JWT resolves the resource normally", async ()
   })
 })
 
-test("readResource: a non-Studio JWT is refused, in this handler's own resource-content shape", async () => {
-  const { publicPem, privatePem } = keypair()
-  const claims = { capabilities: { byoa: false }, exp: Math.floor(Date.now() / 1000) + 3600 }
-  const result = await readResource(MISSING_PROFILE_URI, {
-    env: APP_ENV,
-    readJwt: () => makeJwt(claims, privatePem),
-    readPublicKey: () => publicPem,
-  })
-  assert.deepEqual(Object.keys(result), ["contents"])
-  assert.equal(result.contents.length, 1)
-  const [entry] = result.contents
-  assert.deepEqual(Object.keys(entry).sort(), ["mimeType", "text", "uri"])
-  assert.equal(entry.uri, MISSING_PROFILE_URI)
-  assert.equal(entry.mimeType, "text/plain")
-  assert.match(entry.text, /studio/i)
-  // Must NOT be the CallToolRequestSchema refusal shape ({content, isError}).
-  assert.equal(result.content, undefined)
-  assert.equal(result.isError, undefined)
-})
-
-test("readResource: a missing/invalid entitlement (never signed in) is refused the same way", async () => {
-  const result = await readResource(MISSING_PROFILE_URI, {
-    env: APP_ENV,
-    readJwt: () => null,
-    readPublicKey: () => "irrelevant",
-  })
-  assert.equal(result.contents[0].mimeType, "text/plain")
-  assert.match(result.contents[0].text, /sign in/i)
-})
-
-test("readResource: refusal happens before any resource-specific work — an otherwise-valid montaj://context read is still blocked", async () => {
-  const result = await readResource(CONTEXT_URI, {
-    env: APP_ENV,
-    readJwt: () => null,
-    readPublicKey: () => "irrelevant",
-  })
-  assert.equal(result.contents[0].uri, CONTEXT_URI)
-  assert.doesNotMatch(result.contents[0].text, /# Editor context/)
+test("an app-mediated env with no entitlement JWT still reads resources (gate removed)", async () => {
+  const runtimeHome = mkdtempSync(join(tmpdir(), "mcp-nogate-"))
+  const vendorRoot  = mkdtempSync(join(tmpdir(), "mcp-nogate-v-"))
+  process.env.MONTAJ_APP_RUNTIME_HOME = runtimeHome
+  process.env.MONTAJ_APP_VENDOR_ROOT  = vendorRoot
+  try {
+    const out = await readResource(CONTEXT_URI)
+    assert.ok(Array.isArray(out.contents))
+    assert.doesNotMatch(out.contents[0].text, /requires Studio|sign in/i)
+  } finally {
+    delete process.env.MONTAJ_APP_RUNTIME_HOME
+    delete process.env.MONTAJ_APP_VENDOR_ROOT
+  }
 })
