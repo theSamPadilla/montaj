@@ -10,7 +10,6 @@ import zipfile
 import os
 import secrets
 import shutil
-import signal
 import subprocess
 import sys
 from collections import deque
