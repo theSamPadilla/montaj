@@ -535,9 +535,14 @@ async def _run_init_subprocess(
     *,
     timeout: int = 1800,
     broadcaster: "SSEBroadcaster | None" = None,
+    background_normalize: bool = False,
 ) -> dict:
     """Spawn project/init.py via subprocess, capture stdout (project path), and
     return the parsed project.json dict. Raises HTTPException on any failure.
+
+    `background_normalize`: init ran lazy on serve's behalf (no transcode), so
+    the colour conversions eager mode would have done inline are queued here,
+    after the proxies. See `_ensure_background_normalize`.
 
     When MONTAJ_DEBUG=1, stderr is streamed live to the server's own stderr so
     operators can watch progress in real time. Default (unset): stderr is buffered
@@ -635,6 +640,17 @@ async def _run_init_subprocess(
         _ensure_current_proxies(project.get("id"), project_path.parent, project, broadcaster)
     except Exception:
         pass
+
+    # Queued AFTER the proxies on purpose: the queue is FIFO and single-worker,
+    # so every clip gets a fast preview first and the conversions (minutes each
+    # at 4K) run behind them.
+    if background_normalize:
+        try:
+            project = await _ensure_background_normalize(
+                project.get("id"), project_path.parent, project, broadcaster, created=True,
+            ) or project
+        except Exception:
+            pass
 
     return project
 
@@ -885,6 +901,17 @@ async def run_project(request: Request, body: dict = Body(...)):
             )
         intake_setting_args += ["--normalize", normalize_mode]
 
+    # Nobody chose a normalize mode (neither the caller nor the workflow JSON):
+    # run init lazy, so the create request never waits on a colour conversion,
+    # and let serve do eager's conversions in the background instead. An
+    # explicit choice is left exactly as it was: "eager" still converts inline,
+    # and "lazy" (the clips workflow) still means never convert the full source.
+    background_normalize = (
+        normalize_mode is None and (wf_data or {}).get("normalize") is None
+    )
+    if background_normalize:
+        intake_setting_args += ["--normalize", "lazy"]
+
     symlink_clips = init_settings.get("symlinkClips")
     if symlink_clips is not None:
         if not isinstance(symlink_clips, bool):
@@ -947,6 +974,13 @@ async def run_project(request: Request, body: dict = Body(...)):
     if project_id_arg:
         cmd += ["--id", project_id_arg]
     cmd += image_ref_args + style_ref_args + intake_setting_args + audio_args
+    # Never encode editing proxies inside the create request. An inline budget
+    # of 0 makes init defer every new proxy encode (it still adopts proxies that
+    # are already fresh on disk), and `_run_init_subprocess` queues the deferred
+    # work on the background proxy queue as soon as init returns. Under the old
+    # 300s default an import just below the budget held the create request for
+    # the whole batch of encodes. The CLI's own default is unchanged.
+    cmd += ["--proxy-inline-max", "0"]
 
     if clips:
         cmd += ["--clips"] + [str(c) for c in clips]
@@ -975,7 +1009,11 @@ async def run_project(request: Request, body: dict = Body(...)):
     # 30 min ceiling is a sanity bound, not a real expected duration — with parallel
     # normalize + audio fast path + resolution preservation, realistic init time is
     # seconds to a few minutes even on heavy footage.
-    return await _run_init_subprocess(cmd, broadcaster=getattr(request.app.state, "broadcaster", None))
+    return await _run_init_subprocess(
+        cmd,
+        broadcaster=getattr(request.app.state, "broadcaster", None),
+        background_normalize=background_normalize,
+    )
 
 
 @router.get("/projects")
@@ -1077,7 +1115,14 @@ async def _look_migration_drain() -> None:
             finally:
                 _look_migration_current = None
             if path:
-                _apply_look_migration_result(unit, path)
+                try:
+                    _apply_look_migration_result(unit, path)
+                except Exception:
+                    pass  # one bad write-back must not stop the rest of the queue
+            try:
+                _settle_background_normalize(unit)
+            except Exception:
+                pass
     finally:
         _look_migration_worker = None
 
@@ -1151,13 +1196,262 @@ def _apply_project_edits(project_path: Path, edits: list[tuple]) -> tuple[dict, 
 
 
 def _apply_look_migration_result(unit: _LookMigrationUnit, path: str) -> None:
-    """Write `path` back into every project.json waiting on this unit."""
+    """Write `path` back into every project.json waiting on this unit.
+
+    A proxy unit also repoints every OTHER video item in those projects whose
+    source maps to the same proxy (`_proxy_items_for`). Targets are matched by
+    item id, and ids do not survive the edits that happen while a background
+    encode runs: a host that lays the timeline out itself after create (new
+    item ids), an agent placing clips, a user dragging a clip from the footage
+    bin. Without this those items would never get the proxy that was encoded
+    for them.
+
+    A `src` target is a background colour conversion (`_ensure_background_normalize`):
+    every item on the unconverted source is swapped to the converted file, then
+    that file's proxy is queued. The swapped items keep their old `proxySrc`
+    until the new proxy lands, so the preview never drops to the 4K master."""
+    seen: set[str] = set()
+    swapped: set[str] = set()
     for project_id, project_dir, field, item_id, item_src, broadcaster in unit.targets:
-        result = _apply_project_edits(
-            Path(project_dir) / "project.json", [(item_id, item_src, field, path)]
-        )
+        project_path = Path(project_dir) / "project.json"
+        if field == "src":
+            if str(project_path) in swapped:
+                continue
+            swapped.add(str(project_path))
+            result = _apply_project_edits(project_path, _src_items_for(project_path, unit.src, path))
+            if result is None:
+                continue
+            if broadcaster is not None:
+                broadcaster.publish(project_id, _sse_data_frame(result[1]))
+            try:
+                _ensure_current_proxies(project_id, Path(project_dir), result[0], broadcaster)
+            except Exception:
+                pass
+            continue
+        edits = [(item_id, item_src, field, path)]
+        if unit.kind == "proxy" and str(project_path) not in seen:
+            seen.add(str(project_path))
+            edits += _proxy_items_for(project_path, unit.out, path)
+        result = _apply_project_edits(project_path, edits)
         if result is not None and broadcaster is not None:
             broadcaster.publish(project_id, _sse_data_frame(result[1]))
+
+
+def _proxy_items_for(project_path: Path, out: str, path: str) -> list[tuple]:
+    """`(item_id, item_src, "proxySrc", path)` edits for every video item in
+    `project_path` whose canonical proxy is `out` and that does not already
+    point at `path`. Best-effort: an unreadable project yields no edits."""
+    from lib.proxy import proxy_path_for
+
+    try:
+        project = json.loads(project_path.read_text())
+    except (OSError, ValueError):
+        return []
+    edits: list[tuple] = []
+    for item in _look_migration_items(project):
+        src = item["src"]
+        if item.get("proxySrc") == path or not os.path.isabs(src):
+            continue
+        try:
+            if proxy_path_for(os.path.realpath(src)) != out:
+                continue
+        except Exception:
+            continue
+        edits.append((item.get("id"), src, "proxySrc", path))
+    return edits
+
+
+# ---------------------------------------------------------------------------
+# Background colour conversion (serve's default for /api/run)
+#
+# Eager init conforms every non-conformant clip to the project colour space
+# inside the create request, which is minutes for one 4K SDR->HLG clip. When a
+# create names no normalize mode, serve runs init LAZY instead (clips staged and
+# probed, nothing transcoded, `src` left on the original) and does eager's
+# conversions here, on the look-migration queue: each finished conversion swaps
+# `src` to the converted file on every item using that source, exactly the end
+# state eager would have written, then queues that file's proxy.
+#
+# `settings.normalizeInBackground` marks a project that still owes conversions.
+# While it is set, opening the project re-runs the pass, which joins a queued
+# conversion rather than starting a second one, and restarts any a serve restart
+# dropped. It is cleared once nothing for the project is queued or running.
+#
+# Export does not wait on any of this: render.js's normalize pre-pass conforms
+# any clip that is still on its original inline, to the same output path this
+# pass writes (lib.normalize's writes are atomic), and reuses the file when a
+# conversion already finished.
+# ---------------------------------------------------------------------------
+
+BACKGROUND_NORMALIZE_KEY = "normalizeInBackground"
+
+
+def _src_items_for(project_path: Path, src: str, path: str) -> list[tuple]:
+    """`(item_id, item_src, "src", path)` edits swapping every video item whose
+    source is `src` (compared by realpath) onto `path`."""
+    try:
+        project = json.loads(project_path.read_text())
+    except (OSError, ValueError):
+        return []
+    real = os.path.realpath(src)
+    edits: list[tuple] = []
+    for item in _look_migration_items(project):
+        item_src = item["src"]
+        if item_src == path or not os.path.isabs(item_src):
+            continue
+        if os.path.realpath(item_src) == real:
+            edits.append((item.get("id"), item_src, "src", path))
+    return edits
+
+
+def _background_normalize_pending(project_dir: str) -> bool:
+    """Is a background conversion for this project queued or running?"""
+    units = list(_look_migration_queue)
+    if _look_migration_current is not None:
+        units.append(_look_migration_current)
+    return any(
+        t[2] == "src" and t[1] == project_dir
+        for unit in units for t in unit.targets
+    )
+
+
+def _set_background_normalize(project_path: Path, pending: bool) -> tuple[dict, str] | None:
+    """Set or clear the marker (and drop the `normalize: "lazy"` init wrote on
+    serve's behalf — the lazy run was serve's choice, not the project's). Same
+    no-await read-modify-write as `_apply_project_edits`. None when unchanged."""
+    try:
+        project = json.loads(project_path.read_text())
+    except (OSError, ValueError):
+        return None
+    settings = project.get("settings")
+    if not isinstance(settings, dict):
+        return None
+    changed = False
+    if settings.get("normalize") == "lazy":
+        del settings["normalize"]
+        changed = True
+    if pending and settings.get(BACKGROUND_NORMALIZE_KEY) is not True:
+        settings[BACKGROUND_NORMALIZE_KEY] = True
+        changed = True
+    elif not pending and BACKGROUND_NORMALIZE_KEY in settings:
+        del settings[BACKGROUND_NORMALIZE_KEY]
+        changed = True
+    if not changed:
+        return None
+    text = json.dumps(project, indent=2)
+    try:
+        tmp = str(project_path) + ".tmp"
+        Path(tmp).write_text(text)
+        os.replace(tmp, project_path)
+    except OSError:
+        return None
+    return project, text
+
+
+def _settle_background_normalize(unit: _LookMigrationUnit) -> None:
+    """After a unit finishes (either way), clear the marker on every project it
+    converted for that has nothing else queued. A failed conversion clears it
+    too: export still conforms that clip inline, and a marker left set would
+    re-run a doomed encode on every open."""
+    done: set[str] = set()
+    for project_id, project_dir, field, _item_id, _item_src, broadcaster in unit.targets:
+        if field != "src" or project_dir in done:
+            continue
+        done.add(project_dir)
+        if _background_normalize_pending(project_dir):
+            continue
+        result = _set_background_normalize(Path(project_dir) / "project.json", False)
+        if result is not None and broadcaster is not None:
+            broadcaster.publish(project_id, _sse_data_frame(result[1]))
+
+
+def _is_fresh(out: str, src: str) -> bool:
+    """`out` exists and is at least as new as `src` — render.js's own cache test."""
+    try:
+        return os.path.getmtime(out) >= os.path.getmtime(src)
+    except OSError:
+        return False
+
+
+async def _ensure_background_normalize(
+    project_id: str,
+    project_dir: Path,
+    project: dict,
+    broadcaster: "SSEBroadcaster | None" = None,
+    *,
+    created: bool = False,
+) -> dict | None:
+    """Queue the colour conversion for every video source that is not conformant
+    to the project colour space, or swap it at once when the converted file is
+    already fresh on disk. Runs at create (`created=True`) and on every open of a
+    project still carrying the marker. Never awaits an encode. Returns the
+    project as last written, or None when nothing changed."""
+    from lib.normalize import is_normalized, normalized_output_path, probe_video
+    from lib.types.colorspace import DEFAULT_COLOR_SPACE, detect_from_transfer, is_hdr
+
+    settings = project.get("settings") or {}
+    if not created and settings.get(BACKGROUND_NORMALIZE_KEY) is not True:
+        return None
+    color_space = settings.get("colorSpace") or DEFAULT_COLOR_SPACE
+    converted_tag = f"_normalized_{color_space}"
+
+    # A source already swapped onto a converted file is skipped by name, so a
+    # finished project costs no ffprobe at all.
+    srcs = sorted({
+        item["src"] for item in _look_migration_items(project)
+        if os.path.isabs(item["src"]) and os.path.isfile(item["src"])
+        and converted_tag not in os.path.basename(item["src"])
+    })
+
+    def _plan(src: str) -> str | None:
+        """The converted output `src` needs, or None when it needs none (or
+        can't be read — export will try again, and report it)."""
+        try:
+            info = probe_video(src)
+            if info is None or is_normalized(src, info, color_space):
+                return None
+            tonemapped = is_hdr(detect_from_transfer(info.get("color_transfer"))) \
+                and color_space == "sdr_bt709"
+            return normalized_output_path(src, color_space, tonemapped=tonemapped)
+        except (Exception, SystemExit):
+            return None
+
+    outs = await asyncio.gather(*(asyncio.to_thread(_plan, s) for s in srcs))
+
+    project_path = project_dir / "project.json"
+    latest: tuple[dict, str] | None = None
+    swapped_now = False
+    new_units: list[_LookMigrationUnit] = []
+    for src, out in zip(srcs, outs):
+        if out is None:
+            continue
+        if _is_fresh(out, src):
+            result = _apply_project_edits(project_path, _src_items_for(project_path, src, out))
+            if result is not None:
+                latest, swapped_now = result, True
+            continue
+        unit = _look_migration_pending("normalize", out)
+        if unit is None:
+            unit = _LookMigrationUnit("normalize", src, out, color_space)
+            new_units.append(unit)
+        if not any(t[2] == "src" and t[1] == str(project_dir) for t in unit.targets):
+            unit.targets.append((project_id, str(project_dir), "src", None, src, broadcaster))
+
+    for unit in new_units:
+        _look_migration_enqueue(unit)
+
+    if swapped_now:
+        try:
+            _ensure_current_proxies(project_id, project_dir, latest[0], broadcaster)
+        except Exception:
+            pass
+
+    marked = _set_background_normalize(project_path, _background_normalize_pending(str(project_dir)))
+    if marked is not None:
+        latest = marked
+    if latest is not None and broadcaster is not None:
+        broadcaster.publish(project_id, _sse_data_frame(latest[1]))
+    return latest[0] if latest is not None else None
 
 
 def _look_migration_items(project: dict):
@@ -1237,6 +1531,12 @@ async def _migrate_project_look(
     # a migrated (or SDR-source, or carousel) project reaches the return below
     # having touched neither ffprobe nor the disk beyond a few isfile() calls.
     proxy_stale: list[dict] = []
+    # Items with no proxySrc at all. Never scheduled from here (a pre-proxy
+    # project stays on the manual migration), only ADOPTED: repointed when the
+    # proxy is already fresh on disk, or attached to an encode already queued.
+    # serve defers every create-time proxy to the background queue, so a save
+    # that raced that queue's write-back must heal on the next open.
+    proxy_missing: list[dict] = []
     master_candidates: list[dict] = []
     for item in items:
         src = item["src"]
@@ -1258,6 +1558,8 @@ async def _migrate_project_look(
             or not os.path.isfile(proxy_src)
         ):
             proxy_stale.append(item)
+        elif proxies_enabled and not proxy_src:
+            proxy_missing.append(item)
 
         normalized_src = item.get("normalizedSrc")
         if normalized_src and color_space == "sdr_bt709":
@@ -1270,7 +1572,7 @@ async def _migrate_project_look(
             elif normalized_src == untagged:
                 master_candidates.append(item)
 
-    if not proxy_stale and not master_candidates:
+    if not proxy_stale and not master_candidates and not proxy_missing:
         return None
 
     # Pass 2 — one ffprobe per unique src (project/init.py:489's discipline),
@@ -1323,6 +1625,19 @@ async def _migrate_project_look(
             edits[key] = out  # already encoded — just repoint
         else:
             _schedule("proxy", key, real_src, out)
+
+    for item in proxy_missing:
+        key = (item.get("id"), item["src"], "proxySrc")
+        if key in edits:
+            continue
+        real_src = os.path.realpath(item["src"])
+        out = proxy_path_for(real_src)
+        if is_proxy_fresh(out, real_src):
+            edits[key] = out
+            continue
+        pending = units.get(("proxy", out)) or _look_migration_pending("proxy", out)
+        if pending is not None:
+            pending.targets.append((project_id, str(project_dir), "proxySrc", key[0], key[1], broadcaster))
 
     for item in master_candidates:
         src = item["src"]
@@ -1523,7 +1838,19 @@ async def get_project(project_id: str, request: Request = None, project_dir: Pat
     # Heal look-stale artifact pointers before handing the project over. The
     # response is the MIGRATED body — the pass only ever does name/stat work
     # plus a bounded ffprobe pass; every re-encode is queued, never awaited.
-    return await migrate_project_look(project_id, project_dir, project, broadcaster)
+    project = await migrate_project_look(project_id, project_dir, project, broadcaster)
+
+    # A project still owed background colour conversions (see
+    # `_ensure_background_normalize`): join what is queued, restart what a serve
+    # restart dropped. Best-effort — a project must always open.
+    if (project.get("settings") or {}).get(BACKGROUND_NORMALIZE_KEY) is True:
+        try:
+            project = await _ensure_background_normalize(
+                project_id, project_dir, project, broadcaster,
+            ) or project
+        except Exception:
+            pass
+    return project
 
 
 @router.get("/projects/{project_id}/stream")

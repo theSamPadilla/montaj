@@ -352,3 +352,28 @@ def test_out_of_workspace_source_lands_in_proxycache(workspace, encodes):
     out = encodes.proxy[0][1]
     assert out.startswith(str(workspace / ".sources" / "_proxycache"))
     assert _item(_read(project_dir))["proxySrc"] == out
+
+
+def test_write_back_reaches_items_re_laid_while_encoding(workspace, encodes):
+    """A host re-lays the timeline while the encode runs (new item ids, same
+    source) — the direct-to-editor create does exactly this. The write-back
+    must still reach the new item, not only the id it was scheduled for."""
+    project_dir, src = _make_project(workspace, PID)
+
+    async def _run():
+        encodes.gate = asyncio.Event()
+        _ensure_current_proxies(PID, project_dir, _read(project_dir), None)
+        await asyncio.sleep(0)
+        project = _read(project_dir)
+        project["tracks"][0] = [{"id": "clip_relaid", "type": "video", "src": str(src),
+                                 "start": 0.0, "end": 5.0, "inPoint": 0.0, "outPoint": 5.0}]
+        _write(project_dir, project)
+        encodes.gate.set()
+        await _settle()
+
+    asyncio.run(_run())
+
+    project = _read(project_dir)
+    assert _item(project)["id"] == "clip_relaid"
+    assert _item(project)["proxySrc"] == encodes.proxy[0][1]
+    assert project["sources"][0]["proxySrc"] == encodes.proxy[0][1]

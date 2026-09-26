@@ -324,11 +324,28 @@ def test_init_settings_rejects_unknown_key(tmp_path, init_spy):
 
 
 def test_absent_init_settings_changes_nothing(tmp_path, init_spy):
-    """Backward compatibility: the whole block absent appends none of the four."""
+    """The whole block absent appends none of the four caller flags. The one
+    thing serve adds of its own is `--normalize lazy`: with no mode chosen by
+    the caller or the workflow, init skips the colour conversion and serve runs
+    it in the background (see serve/routes/projects.py `_ensure_background_normalize`)."""
     resp = client.post("/api/run", json={
         "prompt": "p", "workflow": "clean_cut", "clips": [_clip(tmp_path)],
     })
     assert resp.status_code == 201, resp.text
     cmd = init_spy["cmd"]
-    for flag in ("--resolution", "--normalize", "--symlink-clips", "--derived-from"):
+    for flag in ("--resolution", "--symlink-clips", "--derived-from"):
         assert flag not in cmd
+    assert cmd.count("--normalize") == 1
+    assert cmd[cmd.index("--normalize") + 1] == "lazy"
+
+
+def test_explicit_eager_is_not_turned_into_background(tmp_path, init_spy):
+    """A caller that asks for eager gets eager: converted inline, no lazy flag."""
+    resp = client.post("/api/run", json={
+        "prompt": "p", "workflow": "clean_cut", "clips": [_clip(tmp_path)],
+        "initSettings": {"normalize": "eager"},
+    })
+    assert resp.status_code == 201, resp.text
+    cmd = init_spy["cmd"]
+    assert cmd.count("--normalize") == 1
+    assert cmd[cmd.index("--normalize") + 1] == "eager"

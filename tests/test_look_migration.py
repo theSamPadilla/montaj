@@ -650,3 +650,42 @@ def test_item_removed_before_completion_is_skipped(workspace, encodes, probe_hdr
     project = _read(project_dir)
     assert project["tracks"][0] == []
     assert project["sources"] == []
+
+
+def test_open_adopts_fresh_proxy_for_item_without_one(workspace, encodes, probe_hdr):
+    """An item with NO proxySrc whose current proxy is already on disk (a save
+    raced the background write-back) is repointed on open, with no encode."""
+    from lib.proxy import proxy_path_for
+
+    project_dir, src = _make_project(workspace, PID)
+    fresh = Path(proxy_path_for(os.path.realpath(str(src))))
+    fresh.write_bytes(b"proxy")
+
+    body = _open_and_settle(PID, project_dir)
+
+    assert encodes.total == 0
+    assert _item(body)["proxySrc"] == str(fresh)
+    assert _item(_read(project_dir))["proxySrc"] == str(fresh)
+
+
+def test_open_attaches_item_without_proxy_to_queued_encode(workspace, encodes, probe_hdr):
+    """An item with no proxySrc whose proxy is already being encoded gets the
+    write-back too, without a second encode being scheduled."""
+    project_dir, src = _make_project(workspace, PID)
+
+    async def _run():
+        encodes.gate = asyncio.Event()
+        projects_mod._ensure_current_proxies(PID, project_dir, _read(project_dir), None)
+        await asyncio.sleep(0)
+        project = _read(project_dir)
+        project["tracks"][0] = [{"id": "clip-new", "type": "video", "src": str(src),
+                                 "start": 0.0, "end": 5.0, "inPoint": 0.0, "outPoint": 5.0}]
+        _write(project_dir, project)
+        await get_project(PID, project_dir=project_dir)
+        encodes.gate.set()
+        await _settle()
+
+    asyncio.run(_run())
+
+    assert len(encodes.proxy) == 1
+    assert _item(_read(project_dir))["proxySrc"] == encodes.proxy[0][1]

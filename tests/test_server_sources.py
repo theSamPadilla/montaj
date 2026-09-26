@@ -246,7 +246,10 @@ def test_post_init_auto_queues_deferred_proxies(tmp_path, monkeypatch):
     project_json.parent.mkdir(parents=True, exist_ok=True)
     project_json.write_text(json.dumps({"version": "0.2", "id": "init-pid", "status": "pending"}))
 
+    argv = []
+
     async def _fake_exec(*args, **kwargs):
+        argv.extend(args)
         return _CapturedInitProc(project_json)
 
     monkeypatch.setattr(projects_mod.asyncio, "create_subprocess_exec", _fake_exec)
@@ -271,6 +274,45 @@ def test_post_init_auto_queues_deferred_proxies(tmp_path, monkeypatch):
     assert called_id == "init-pid"
     assert Path(called_dir) == project_json.parent
     assert called_project["id"] == "init-pid"
+    # serve never encodes proxies inside the create request: init gets an
+    # inline budget of 0, so every new encode goes to the background queue.
+    i = argv.index("--proxy-inline-max")
+    assert argv[i + 1] == "0"
+
+
+@pytest.mark.parametrize("init_settings, expect_background", [
+    (None, True),                       # nobody chose: lazy init + background conversion
+    ({"normalize": "eager"}, False),    # explicit eager converts inline, as before
+    ({"normalize": "lazy"}, False),     # explicit lazy never converts the full source
+])
+def test_post_init_background_normalize_only_when_unchosen(tmp_path, monkeypatch, init_settings, expect_background):
+    project_json = tmp_path / "initproj" / "project.json"
+    project_json.parent.mkdir(parents=True, exist_ok=True)
+    project_json.write_text(json.dumps({"version": "0.2", "id": "init-pid", "status": "pending"}))
+
+    async def _fake_exec(*args, **kwargs):
+        return _CapturedInitProc(project_json)
+
+    monkeypatch.setattr(projects_mod.asyncio, "create_subprocess_exec", _fake_exec)
+    monkeypatch.setattr(projects_mod, "_ensure_current_proxies", lambda *a, **k: None)
+
+    calls = []
+
+    async def fake_background(project_id, project_dir_arg, project, broadcaster, *, created=False):
+        calls.append((project_id, created))
+        return None
+
+    monkeypatch.setattr(projects_mod, "_ensure_background_normalize", fake_background)
+
+    clip = tmp_path / "clip.mp4"
+    clip.write_bytes(b"fake")
+    body = {"workflow": "clean_cut", "prompt": "clean it", "clips": [str(clip)]}
+    if init_settings is not None:
+        body["initSettings"] = init_settings
+    resp = client.post("/api/run", json=body)
+    assert resp.status_code == 201, resp.text
+
+    assert calls == ([("init-pid", True)] if expect_background else [])
 
 
 # ---------------------------------------------------------------------------
