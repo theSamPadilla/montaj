@@ -54,13 +54,31 @@ async def pick_files(extensions: str | None = None, prompt: str = "Select files"
     return await asyncio.to_thread(_pick_files_sync, exts, prompt)
 
 
+def _downloads_dir() -> Path:
+    return Path.home() / "Downloads"
+
+
+def _existing_downloads_dir() -> Path | None:
+    """~/Downloads if it exists on disk, else None — so the native picker is
+    given no default location at all rather than one that would make
+    AppleScript error."""
+    downloads = _downloads_dir()
+    return downloads if downloads.is_dir() else None
+
+
 def _pick_files_sync(exts: set[str] | None, prompt: str) -> dict:
     """Blocking file-picker — runs in a thread pool so it doesn't block the event loop."""
+    default_dir = _existing_downloads_dir()
     if sys.platform == "darwin":
+        default_location = ""
+        if default_dir is not None:
+            location = str(default_dir).replace("\\", "\\\\").replace('"', '\\"')
+            default_location = f'default location (POSIX file "{location}") '
         script = (
             f'set chosen to choose file '
             f'with multiple selections allowed '
-            f'with prompt "{prompt}"\n'
+            f'with prompt "{prompt}" '
+            f'{default_location}\n'
             'set out to ""\n'
             'repeat with f in chosen\n'
             '  set out to out & POSIX path of f & "\\n"\n'
@@ -83,7 +101,10 @@ def _pick_files_sync(exts: set[str] | None, prompt: str) -> dict:
                 filetypes = [(f"Supported files", pattern), ("All files", "*.*")]
             else:
                 filetypes = [("All files", "*.*")]
-            paths = list(filedialog.askopenfilenames(title=prompt, filetypes=filetypes))
+            askopen_kwargs = {"title": prompt, "filetypes": filetypes}
+            if default_dir is not None:
+                askopen_kwargs["initialdir"] = str(default_dir)
+            paths = list(filedialog.askopenfilenames(**askopen_kwargs))
             root.destroy()
         except Exception as exc:
             raise server_error("picker_failed", str(exc))

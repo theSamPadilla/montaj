@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **`GET /api/pick-files` now always opens the native file dialog in `~/Downloads`, instead of wherever the OS last happened to leave it (often the last-used app's own directory, e.g. Documents).** No directory is remembered between picks — every dialog, in every session, defaults to `~/Downloads`. If `~/Downloads` doesn't exist, no default location is passed at all rather than handing the picker a path that isn't there. Same endpoint backs every file picker (clips, images, audio, etc.) so this covers all of them. (`serve/routes/files.py`)
+
 - **Project init's `profileSnapshot` now includes the profile's `preferences.json` as a `preferences` field, when present.** `build_profile_snapshot` reads `~/.montaj/profiles/{name}/preferences.json` at init time and includes it verbatim under `preferences` when it exists and parses as a JSON object; a missing, unreadable, malformed, or non-object file is skipped silently, never raised, and the key is omitted from the snapshot rather than written as `null` or `{}`. Frozen at init time like the rest of the snapshot's fields. (`lib/profile_assets.py`)
 
 ## v4.6.6
