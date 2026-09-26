@@ -34,17 +34,29 @@ def _win_query(pid: int) -> bool:
     `os.kill`, see module docstring). Any handle OpenProcess hands back is
     always closed, including on the GetExitCodeProcess-failure path.
 
+    If `OpenProcess` fails with `ERROR_ACCESS_DENIED` (5), the process
+    exists — this process simply lacks rights to query it (elevated, or
+    owned by another user) — so that case returns True. That matches the
+    POSIX branch below, where `os.kill` raising `PermissionError` also
+    means alive.
+
     Kept as its own function (rather than inlined into `pid_alive`) so tests
-    — run on macOS, where `ctypes.windll` doesn't exist — can monkeypatch
+    — run on macOS, where `ctypes.WinDLL` doesn't exist — can monkeypatch
     this one call directly instead of faking the whole ctypes layer.
     """
     PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
     STILL_ACTIVE = 259
+    ERROR_ACCESS_DENIED = 5
 
-    kernel32 = ctypes.windll.kernel32
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.OpenProcess.restype = wintypes.HANDLE
+    kernel32.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+    kernel32.GetExitCodeProcess.argtypes = (wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD))
+    kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
+
     handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
     if not handle:
-        return False
+        return ctypes.get_last_error() == ERROR_ACCESS_DENIED
     try:
         exit_code = wintypes.DWORD()
         if not kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code)):
@@ -88,6 +100,10 @@ def kill_tree(proc) -> None:
     equivalent is `taskkill /T /F /PID <pid>` (`/T` kills the whole tree
     rooted at pid, `/F` forces it), falling back to `proc.kill()` if taskkill
     itself fails to run. Never touches `os.killpg`/`os.getpgid` on Windows.
+
+    `creationflags=CREATE_NO_WINDOW` keeps taskkill from flashing a console
+    window when this runs from a console-less serve (an Electron-spawned
+    child has no console of its own to inherit).
     """
     if _IS_WINDOWS:
         try:
@@ -95,6 +111,7 @@ def kill_tree(proc) -> None:
                 ["taskkill", "/T", "/F", "/PID", str(proc.pid)],
                 check=True,
                 capture_output=True,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000),
             )
         except Exception:
             try:

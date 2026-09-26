@@ -5,7 +5,7 @@ Not a pytest test file — its name matches neither `test_*.py` nor `*_test.py`,
 so pytest's default collection (testpaths = ["tests"]) never picks it up even
 though it lives under tests/. Run directly: `python tests/ci/windows_smoke.py`.
 
-tests/test_windows_portability.py fakes `ctypes.windll.kernel32` end to end,
+tests/test_windows_portability.py fakes `ctypes.WinDLL("kernel32", ...)` end to end,
 which proves _win_query's own logic but never actually calls OpenProcess /
 GetExitCodeProcess against a real Windows process. This script does that for
 real, and specifically guards against the failure mode the module's docstring

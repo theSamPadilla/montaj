@@ -12,7 +12,7 @@ be killed the POSIX way, and children were never actually detached.
 No Windows machine runs these tests (see montaj-app CLAUDE.md — "No Windows
 machine"). Windows behaviour is proven entirely via injected seams: flipping
 `lib.proc._IS_WINDOWS`, patching `lib.proc._win_query`, or (to exercise the
-real ctypes-calling logic) faking `ctypes.windll`. Never `sys.platform`
+real ctypes-calling logic) faking `ctypes.WinDLL`. Never `sys.platform`
 globally — that would also flip every other module's own platform check.
 """
 import ctypes
@@ -75,8 +75,9 @@ def test_windows_pid_alive_never_calls_os_kill(monkeypatch):
 # lib.proc._win_query — the actual ctypes call, proven with a faked kernel32
 # ---------------------------------------------------------------------------
 
-def _fake_windll(monkeypatch, *, open_returns, get_exit_ok, exit_code_value):
-    """Installs a fake ctypes.windll.kernel32 and returns (kernel32, closed_handles)."""
+def _fake_windll(monkeypatch, *, open_returns, get_exit_ok, exit_code_value, last_error=0):
+    """Installs a fake ctypes.WinDLL("kernel32", ...) and ctypes.get_last_error,
+    and returns (kernel32, closed_handles)."""
     kernel32 = Mock()
     kernel32.OpenProcess.return_value = open_returns
     closed = []
@@ -89,13 +90,27 @@ def _fake_windll(monkeypatch, *, open_returns, get_exit_ok, exit_code_value):
         return 1
     kernel32.GetExitCodeProcess.side_effect = _get_exit_code
 
-    monkeypatch.setattr(proc_mod.ctypes, "windll", Mock(kernel32=kernel32), raising=False)
+    monkeypatch.setattr(proc_mod.ctypes, "WinDLL", Mock(return_value=kernel32), raising=False)
+    monkeypatch.setattr(proc_mod.ctypes, "get_last_error", lambda: last_error, raising=False)
     return kernel32, closed
 
 
 def test_win_query_open_process_fails_is_not_alive(monkeypatch):
-    kernel32, closed = _fake_windll(monkeypatch, open_returns=0, get_exit_ok=True, exit_code_value=259)
+    kernel32, closed = _fake_windll(
+        monkeypatch, open_returns=0, get_exit_ok=True, exit_code_value=259, last_error=87,
+    )
     assert proc_mod._win_query(4242) is False
+    kernel32.GetExitCodeProcess.assert_not_called()
+    assert closed == []  # no handle to close
+
+
+def test_win_query_access_denied_is_alive(monkeypatch):
+    """ERROR_ACCESS_DENIED (5) means the process exists but this process
+    lacks rights to query it — matches POSIX's PermissionError -> alive."""
+    kernel32, closed = _fake_windll(
+        monkeypatch, open_returns=0, get_exit_ok=True, exit_code_value=259, last_error=5,
+    )
+    assert proc_mod._win_query(4242) is True
     kernel32.GetExitCodeProcess.assert_not_called()
     assert closed == []  # no handle to close
 
@@ -159,8 +174,12 @@ def test_posix_kill_tree_falls_back_to_proc_kill_when_group_gone(monkeypatch):
 def test_windows_kill_tree_uses_taskkill_never_killpg(monkeypatch):
     monkeypatch.setattr(proc_mod, "_IS_WINDOWS", True)
     calls = []
-    monkeypatch.setattr(proc_mod.subprocess, "run",
-                         lambda cmd, **kw: calls.append(cmd) or Mock(returncode=0))
+    kwargs_seen = []
+    def _run(cmd, **kw):
+        calls.append(cmd)
+        kwargs_seen.append(kw)
+        return Mock(returncode=0)
+    monkeypatch.setattr(proc_mod.subprocess, "run", _run)
     def _boom(pid):
         raise AssertionError("os.getpgid must not be called on win32")
     monkeypatch.setattr(proc_mod.os, "getpgid", _boom, raising=False)
@@ -169,6 +188,7 @@ def test_windows_kill_tree_uses_taskkill_never_killpg(monkeypatch):
     proc_mod.kill_tree(proc)
 
     assert calls == [["taskkill", "/T", "/F", "/PID", "4321"]]
+    assert kwargs_seen[0]["creationflags"] == getattr(proc_mod.subprocess, "CREATE_NO_WINDOW", 0x08000000)
     proc.kill.assert_not_called()
 
 
