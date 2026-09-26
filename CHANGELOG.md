@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v4.7.0
+
 - **Fixed: the MCP `init` tool rejected its `clips` argument (and, less
   visibly, `assets`/`remote_clips`/`remote_assets`) with `unrecognized
   arguments: --clips ...`.** `cli/mcp_schema.py` names each tool property
