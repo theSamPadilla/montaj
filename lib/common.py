@@ -145,19 +145,25 @@ def ffmpeg_filter_path(p) -> str:
     A path that looks like Windows (a drive letter, or any backslash) has its
     backslashes turned into forward slashes first. Then, if the (possibly
     slash-converted) value contains any of the characters above, the whole
-    value is single-quoted per ffmpeg's documented filtergraph escaping: a
-    literal ``'`` becomes ``'\\''`` (close quote, escaped quote, reopen quote)
-    and a literal ``:`` becomes ``\\:`` (it still separates key=value pairs
-    once ffmpeg's own arg parser runs, even inside the quoted value). Accepts
-    a ``str`` or ``pathlib.Path`` (``lib.look.lut_path()`` returns the latter).
+    value is quoted per ffmpeg's documented *two-level* filtergraph escaping:
+    ffmpeg parses a filter option value once as a filtergraph (splitting on
+    unquoted ``'``) and again as the option's own value (interpreting ``\\``
+    escapes). A single-level ``'\\''`` for an embedded ``'`` survives the
+    first parse but is then re-read as a quote by the second, so the value
+    must be escaped for the inner (option) level first, and only then quoted
+    for the outer (filtergraph) level: a literal ``'`` becomes ``\\'`` and a
+    literal ``:`` becomes ``\\:`` at the inner level, then any literal ``'``
+    still present (from that inner escape) is itself requoted as ``'\\''``
+    before the whole value is wrapped in single quotes. Accepts a ``str`` or
+    ``pathlib.Path`` (``lib.look.lut_path()`` returns the latter).
     """
     s = str(p)
     if _FILTER_DRIVE.match(s) or "\\" in s:
         s = s.replace("\\", "/")
     if not _FILTER_NEEDS_ESCAPE.search(s):
         return s
-    escaped = s.replace("'", "'\\''").replace(":", "\\:")
-    return f"'{escaped}'"
+    inner = s.replace("'", "\\'").replace(":", "\\:")
+    return "'" + inner.replace("'", "'\\''") + "'"
 
 
 def run_ffmpeg(args: list[str], timeout: int = 300):

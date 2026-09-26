@@ -483,7 +483,7 @@ def test_ffmpeg_filter_path_windows_drive_path_is_escaped_and_pinned():
 
 @pytest.mark.parametrize("raw,expected", [
     ("/a:b/x.cube", r"'/a\:b/x.cube'"),
-    ("/a'b/x.cube", r"'/a'\''b/x.cube'"),
+    ("/a'b/x.cube", r"'/a\'\''b/x.cube'"),
     ("/a,b/x.cube", "'/a,b/x.cube'"),
     ("/a[b]/x.cube", "'/a[b]/x.cube'"),
     ("/a;b/x.cube", "'/a;b/x.cube'"),
@@ -557,3 +557,14 @@ def test_drawtext_fontfile_windows_path_is_escaped_not_double_quoted():
     )
     assert "fontfile='C\\:/Windows/Fonts/arial.ttf'" in filters[0]
     assert "fontfile=''" not in filters[0]
+
+
+def test_drawtext_fontfile_apostrophe_path_uses_two_level_escaping():
+    """A fontfile path containing an apostrophe must go through
+    ffmpeg_filter_path's own (already-quoted) output rather than being
+    wrapped a second time in fontfile='...'."""
+    filters = _lyrics_render_mod._make_line_filters(
+        ["hi"], 0.0, 1.0, 48, "white", "(w-tw)/2", "center", 1280, 60,
+        "/Users/sam/Fonts/it's/arial.ttf", False,
+    )
+    assert "fontfile='/Users/sam/Fonts/it\\'\\''s/arial.ttf'" in filters[0]

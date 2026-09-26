@@ -27,7 +27,7 @@ describe('ffmpegFilterPath — Windows drive path', () => {
 describe('ffmpegFilterPath — POSIX paths with filtergraph-special characters', () => {
   const cases = [
     ['/a:b/x.cube', "'/a\\:b/x.cube'"],
-    ["/a'b/x.cube", "'/a'\\''b/x.cube'"],
+    ["/a'b/x.cube", "'/a\\'\\''b/x.cube'"],
     ['/a,b/x.cube', "'/a,b/x.cube'"],
     ['/a[b]/x.cube', "'/a[b]/x.cube'"],
     ['/a;b/x.cube', "'/a;b/x.cube'"],
