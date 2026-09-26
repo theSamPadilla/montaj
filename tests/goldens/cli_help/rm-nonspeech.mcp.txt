@@ -51,5 +51,14 @@
   "_positionals": [
     "input"
   ],
+  "_flags": {
+    "model": "--model",
+    "max_word_gap": "--max-word-gap",
+    "sentence_edge": "--sentence-edge",
+    "language": "--language",
+    "window_in": "--window-in",
+    "window_out": "--window-out",
+    "out": "--out"
+  },
   "_has_json": true
 }

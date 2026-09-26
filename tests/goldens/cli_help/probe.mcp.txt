@@ -23,5 +23,8 @@
   "_positionals": [
     "input"
   ],
+  "_flags": {
+    "out": "--out"
+  },
   "_has_json": true
 }

@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+- **Fixed: the MCP `init` tool rejected its `clips` argument (and, less
+  visibly, `assets`/`remote_clips`/`remote_assets`) with `unrecognized
+  arguments: --clips ...`.** `cli/mcp_schema.py` names each tool property
+  after its argparse `dest`, but a command can deliberately give a flag a
+  different name than its `dest` (`cli/commands/init.py`'s `--clip` populates
+  `dest="clips"`, for CLI ergonomics). `montaj_assets/mcp/server.js`'s
+  `buildCliArgs()` was reconstructing the flag from the property name
+  (`--clips`) instead of the real flag (`--clip`), so every MCP `init` call
+  using the documented `clips` key failed. `mcp_schema.py` now records each
+  optional argument's real flag string in a new `_flags` map alongside the
+  schema (general — every command's schema gets it, not just `init`'s), and
+  `buildCliArgs` looks the flag up there first, falling back to its old
+  derivation only if a schema predates `_flags`. The advertised property name
+  (`clips`) is unchanged. (`cli/mcp_schema.py`, `montaj_assets/mcp/server.js`)
+
 - **MCP tool calls and resource reads no longer check a Montaj app
   entitlement.** The desktop app's Free tier now works without an account, so
   the check added in v4.6.5 is removed: an AI assistant launched through the

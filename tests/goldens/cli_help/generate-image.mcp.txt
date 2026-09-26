@@ -48,5 +48,14 @@
     "generate-image"
   ],
   "_positionals": [],
+  "_flags": {
+    "prompt": "--prompt",
+    "provider": "--provider",
+    "ref_image": "--ref-image",
+    "size": "--size",
+    "aspect_ratio": "--aspect-ratio",
+    "model": "--model",
+    "out": "--out"
+  },
   "_has_json": true
 }

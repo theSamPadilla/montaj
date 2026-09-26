@@ -50,5 +50,14 @@
   "_positionals": [
     "input"
   ],
+  "_flags": {
+    "cols": "--cols",
+    "rows": "--rows",
+    "start": "--start",
+    "end": "--end",
+    "frames": "--frames",
+    "at": "--at",
+    "out": "--out"
+  },
   "_has_json": true
 }

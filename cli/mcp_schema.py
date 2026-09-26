@@ -76,6 +76,21 @@ def _action_to_prop(action):
     return prop
 
 
+def _primary_flag(option_strings):
+    """Pick the flag string to use when rebuilding CLI args from a dest.
+
+    An argparse option's `dest` is not always derivable from its flag: a
+    command can deliberately name the flag differently from the dest it
+    populates (e.g. cli/commands/init.py's `--clip` with dest="clips" — the
+    flag is singular for CLI ergonomics, the dest matches the downstream
+    flag it forwards to). Prefer a long option ('--foo'), since that's what
+    a human — and an MCP caller rebuilding argv — would type; fall back to
+    the first option string if only short forms exist.
+    """
+    long_opts = [s for s in option_strings if s.startswith('--')]
+    return long_opts[0] if long_opts else option_strings[0]
+
+
 def _collect(tokens, parser, out, description=None):
     """Recursively walk a parser, flattening subcommands into separate tools."""
     sub_action = next(
@@ -96,6 +111,7 @@ def _collect(tokens, parser, out, description=None):
     properties  = {}
     required    = []
     positionals = []
+    flags       = {}
 
     for action in parser._actions:
         if isinstance(action, (argparse._HelpAction, argparse._SubParsersAction)):
@@ -110,8 +126,15 @@ def _collect(tokens, parser, out, description=None):
             # Required unless nargs allows zero matches or there is a default
             if action.nargs not in ('?', '*') and action.default is None:
                 required.append(action.dest)
-        elif getattr(action, 'required', False):
-            required.append(action.dest)
+        else:
+            # Record the real flag for every optional, not just the ones
+            # known to mismatch today — deriving "--" + dest.replace('_',
+            # '-') from the property name is exactly the bug this closes,
+            # and it's silent for any option whose dest happens to differ
+            # from its flag, not just `init`'s.
+            flags[action.dest] = _primary_flag(action.option_strings)
+            if getattr(action, 'required', False):
+                required.append(action.dest)
 
     has_json = any(
         a.dest == 'json'
@@ -130,6 +153,7 @@ def _collect(tokens, parser, out, description=None):
         },
         '_cli_tokens':  tokens,
         '_positionals': positionals,
+        '_flags':       flags,
         '_has_json':    has_json,
     })
 

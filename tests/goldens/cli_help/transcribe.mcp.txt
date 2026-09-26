@@ -47,5 +47,11 @@
   "_positionals": [
     "input"
   ],
+  "_flags": {
+    "model": "--model",
+    "language": "--language",
+    "max_context": "--max-context",
+    "out": "--out"
+  },
   "_has_json": true
 }

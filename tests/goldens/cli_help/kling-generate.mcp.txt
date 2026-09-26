@@ -101,5 +101,24 @@
     "kling-generate"
   ],
   "_positionals": [],
+  "_flags": {
+    "prompt": "--prompt",
+    "first_frame": "--first-frame",
+    "last_frame": "--last-frame",
+    "ref_image": "--ref-image",
+    "duration": "--duration",
+    "negative_prompt": "--negative-prompt",
+    "sound": "--sound",
+    "aspect_ratio": "--aspect-ratio",
+    "mode": "--mode",
+    "model": "--model",
+    "external_task_id": "--external-task-id",
+    "multi_shot": "--multi-shot",
+    "shot_type": "--shot-type",
+    "multi_prompt": "--multi-prompt",
+    "project_id": "--project-id",
+    "scene_id": "--scene-id",
+    "out": "--out"
+  },
   "_has_json": true
 }

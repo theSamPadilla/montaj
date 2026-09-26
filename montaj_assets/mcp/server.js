@@ -73,8 +73,9 @@ function scanCliTools() {
 // CLI arg builder — maps MCP args object → CLI flag array
 // ---------------------------------------------------------------------------
 
-function buildCliArgs(tool, args) {
+export function buildCliArgs(tool, args) {
   const positionals = tool._positionals || []
+  const flags       = tool._flags || {}
   const cliArgs     = []
 
   // 1. Positional arguments in declared order
@@ -91,7 +92,13 @@ function buildCliArgs(tool, args) {
     if (val === undefined || val === null)      continue
     if (val === false)                         continue
 
-    const flag = "--" + key.replace(/_/g, "-")
+    // Prefer the real flag the schema recorded (cli/mcp_schema.py's
+    // _flags map) — an argparse option's dest can deliberately differ from
+    // its flag (e.g. `--clip` with dest="clips"), so deriving "--clips"
+    // from the property name here would silently rebuild the wrong flag.
+    // Fall back to the naive derivation only for schemas that predate
+    // _flags (e.g. a stale cached scan).
+    const flag = flags[key] || ("--" + key.replace(/_/g, "-"))
 
     if (val === true)         cliArgs.push(flag)
     else if (Array.isArray(val)) cliArgs.push(flag, ...val.map(String))
