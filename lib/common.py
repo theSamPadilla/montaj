@@ -48,6 +48,19 @@ def run(cmd: list[str], timeout: int = 300, check: bool = True) -> subprocess.Co
     return r
 
 
+# Executable-name seam. Windows binaries carry a ".exe" suffix; everywhere
+# else the name is used as-is, so on macOS/Linux _exe() is the identity.
+# Tests prove Windows behaviour by patching _EXE_SUFFIX on this module, never
+# sys.platform. Reused by other managed-binary lookups (ffmpeg_static, and
+# whisper-cli in a later change).
+_EXE_SUFFIX = ".exe" if sys.platform == "win32" else ""
+
+
+def _exe(name):
+    """Platform executable filename for `name` ("ffmpeg" -> "ffmpeg.exe" on Windows)."""
+    return name + _EXE_SUFFIX
+
+
 def _managed_ffmpeg_dir():
     """Directory of the montaj-managed static ffmpeg build (may not exist).
 
@@ -74,10 +87,10 @@ def _resolve_av_bin(name, env_var):
     env = os.environ.get(env_var)
     if env:
         return env
-    managed = os.path.join(_managed_ffmpeg_dir(), name)
+    managed = os.path.join(_managed_ffmpeg_dir(), _exe(name))
     if os.access(managed, os.X_OK):
         return managed
-    bundled = os.path.join(_bundled_av_dir(), name)
+    bundled = os.path.join(_bundled_av_dir(), _exe(name))
     if os.access(bundled, os.X_OK):
         return bundled
     return name

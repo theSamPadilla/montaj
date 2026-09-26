@@ -11,6 +11,12 @@ Nothing enforces the two agree except this test. If it fails, one of the two
 files is stale: update whichever one disagrees so both name the same
 build_id/sha256 for every (os, arch), then re-run this test to confirm.
 
+Only per-binary (martin-riedl.de) entries are mirrored in the formula. The
+Windows entry is archive-shaped (gyan.dev, `archive_urls`) and the Homebrew
+formula has no Windows resource, so the forward test iterates only entries
+WITHOUT `archive_urls`; the reverse test is unchanged (a formula resource for
+a key missing from PINNED_BUILDS is still an error).
+
 Skips (module-wide) when the homebrew-montaj tap isn't checked out next to
 this repo, e.g. in CI that only checks out montaj.
 """
@@ -73,7 +79,8 @@ def _parse_formula():
 
 class TestFfmpegPinSync:
     @pytest.mark.parametrize("name", ["ffmpeg", "ffprobe"])
-    @pytest.mark.parametrize("key", sorted(ffmpeg_static.PINNED_BUILDS.keys()))
+    @pytest.mark.parametrize("key", sorted(
+        k for k, e in ffmpeg_static.PINNED_BUILDS.items() if "archive_urls" not in e))
     def test_formula_matches_pinned_build(self, key, name):
         os_key, arch = key
         entry = ffmpeg_static.PINNED_BUILDS[key]

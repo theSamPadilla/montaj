@@ -272,6 +272,51 @@ class TestFfmpegResolver:
         monkeypatch.setattr(common, "_bundled_av_dir", lambda: str(bundled_dir))
         assert common.ffprobe_bin() == str(bundled)
 
+    # Windows: proven through common's _EXE_SUFFIX seam, never sys.platform.
+    def test_windows_managed_looks_for_exe(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(common, "_EXE_SUFFIX", ".exe")
+        monkeypatch.delenv("MONTAJ_FFMPEG", raising=False)
+        managed_dir = tmp_path / "managed"
+        managed_dir.mkdir()
+        # A suffix-less decoy must NOT be picked on Windows.
+        (managed_dir / "ffmpeg").write_text("#!/bin/sh\n")
+        (managed_dir / "ffmpeg").chmod(0o755)
+        exe = managed_dir / "ffmpeg.exe"
+        exe.write_text("MZ")
+        exe.chmod(0o755)
+        monkeypatch.setattr(common, "_managed_ffmpeg_dir", lambda: str(managed_dir))
+        monkeypatch.setattr(common, "_bundled_av_dir", lambda: str(tmp_path / "no-bundle"))
+        assert common.ffmpeg_bin() == str(exe)
+
+    def test_windows_bundled_looks_for_exe(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(common, "_EXE_SUFFIX", ".exe")
+        monkeypatch.delenv("MONTAJ_FFPROBE", raising=False)
+        monkeypatch.setattr(common, "_managed_ffmpeg_dir", lambda: str(tmp_path / "absent"))
+        bundled_dir = tmp_path / "bundled"
+        bundled_dir.mkdir()
+        exe = bundled_dir / "ffprobe.exe"
+        exe.write_text("MZ")
+        exe.chmod(0o755)
+        monkeypatch.setattr(common, "_bundled_av_dir", lambda: str(bundled_dir))
+        assert common.ffprobe_bin() == str(exe)
+
+    def test_windows_ignores_suffixless_managed(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(common, "_EXE_SUFFIX", ".exe")
+        monkeypatch.delenv("MONTAJ_FFMPEG", raising=False)
+        managed_dir = tmp_path / "managed"
+        managed_dir.mkdir()
+        (managed_dir / "ffmpeg").write_text("#!/bin/sh\n")
+        (managed_dir / "ffmpeg").chmod(0o755)
+        monkeypatch.setattr(common, "_managed_ffmpeg_dir", lambda: str(managed_dir))
+        monkeypatch.setattr(common, "_bundled_av_dir", lambda: str(tmp_path / "no-bundle"))
+        assert common.ffmpeg_bin() == "ffmpeg"
+
+    def test_exe_is_identity_off_windows(self, monkeypatch):
+        monkeypatch.setattr(common, "_EXE_SUFFIX", "")
+        assert common._exe("ffmpeg") == "ffmpeg"
+        monkeypatch.setattr(common, "_EXE_SUFFIX", ".exe")
+        assert common._exe("whisper-cli") == "whisper-cli.exe"
+
 
 # ── transcribe_words() ───────────────────────────────────────────────────────
 
