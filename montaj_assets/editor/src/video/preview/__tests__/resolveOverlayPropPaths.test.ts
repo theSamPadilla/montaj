@@ -50,4 +50,25 @@ describe('resolveOverlayPropPaths', () => {
     expect(out.duration).toBe(90)
     expect(out.nested.deep[0].src).toBe(fileUrl('/var/x.png'))
   })
+
+  // Windows: an absolute image prop is a drive-letter path. It must reach
+  // fileUrl like a posix absolute path does; a UNC path stays refused.
+  it('rewrites drive-letter absolute paths in either slash style', () => {
+    expect(resolveOverlayPropPaths('C:\\a\\x.png', fileUrl)).toBe(fileUrl('C:\\a\\x.png'))
+    expect(resolveOverlayPropPaths('C:/a/x.png', fileUrl)).toBe(fileUrl('C:/a/x.png'))
+    expect(resolveOverlayPropPaths('d:\\x.png', fileUrl)).toBe(fileUrl('d:\\x.png'))
+  })
+
+  it('leaves UNC, drive-relative and relative paths untouched', () => {
+    for (const v of ['\\\\server\\x', 'C:x.png', 'a\\x.png', 'a/x.png']) {
+      expect(resolveOverlayPropPaths(v, fileUrl)).toBe(v)
+    }
+  })
+
+  it('keeps posix behaviour exactly: /abs and //host rewritten, /api/ untouched', () => {
+    expect(resolveOverlayPropPaths('/abs/x.png', fileUrl)).toBe(fileUrl('/abs/x.png'))
+    expect(resolveOverlayPropPaths('//host/x.png', fileUrl)).toBe(fileUrl('//host/x.png'))
+    expect(resolveOverlayPropPaths('/api/x', fileUrl)).toBe('/api/x')
+    expect(resolveOverlayPropPaths('/apix', fileUrl)).toBe(fileUrl('/apix'))
+  })
 })

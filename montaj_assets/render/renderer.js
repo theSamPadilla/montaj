@@ -17,6 +17,7 @@ import os from 'os'
 import { FFMPEG } from './ffmpeg-bin.js'
 import { isHdr } from './color-space.js'
 import { adaptiveChunkSize, workerCap } from './chunk-plan.js'
+import { toFileHref, fromFileHref } from './file-url.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 // MONTAJ_ROOT is two levels above montaj_assets/render/ (i.e. the Python project root).
@@ -252,7 +253,7 @@ async function renderChunk(browser, job) {
         // file:// URLs from bundle.js use encodeURI so decode it back.
         let srcPath
         try {
-          srcPath = decodeURIComponent(url.replace(/^file:\/\//, ''))
+          srcPath = fromFileHref(url)
         } catch {
           request.continue()
           return
@@ -320,7 +321,7 @@ async function renderChunk(browser, job) {
   // but only on file:// image fetches we replace — remote font fetches
   // (the load-bearing case for networkidle0) go through request.continue()
   // and are unaffected.
-  await page.goto(`file://${htmlPath}`, { waitUntil: 'networkidle0' })
+  await page.goto(toFileHref(htmlPath), { waitUntil: 'networkidle0' })
 
   // For transparent overlays, force-clear any background the OS/browser might add.
   // For opaque overlays, skip this — the JSX root's CSS controls the background.

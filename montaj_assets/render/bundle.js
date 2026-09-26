@@ -14,6 +14,7 @@ import { join, dirname, basename } from 'path'
 import { fileURLToPath } from 'url'
 import { tmpdir } from 'os'
 import { randomBytes } from 'crypto'
+import { isAbsPath, toFileHref, fontsCssHref } from './file-url.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 // `core/` and `node_modules/` are siblings of bundle.js — always resolve via
@@ -140,11 +141,11 @@ function resolveFilePath(p) {
  * so they resolve correctly in Puppeteer's file:// page context.
  */
 function rewritePathsToFileUrls(value) {
-  if (typeof value === 'string' && value.startsWith('/')) {
+  if (typeof value === 'string' && isAbsPath(value)) {
     // Resolve the actual path on disk — macOS screenshot filenames contain narrow
     // no-break spaces (\u202f) that don't match the regular spaces in project.json.
     const resolved = resolveFilePath(value) ?? value
-    return 'file://' + encodeURI(resolved)
+    return toFileHref(resolved)
   }
   if (Array.isArray(value)) {
     return value.map(rewritePathsToFileUrls)
@@ -388,9 +389,11 @@ function escapeFontSpec(f) {
 // this helper, and `shim-bake.test.mjs` asserts the two stay identical — a
 // rule tightened in one renderer only is worse than neither, because the two
 // would then disagree about what a valid base is.
+// The guard itself now lives in file-url.js (fontsCssHref), portable to
+// Windows drive-letter bases and refusing UNC in both spellings (`//host`,
+// `\\host`); both renderers delegate to it, so they cannot drift.
 function vendoredFontsHref(fontsBaseDir) {
-  if (typeof fontsBaseDir !== 'string' || !fontsBaseDir.startsWith('/') || fontsBaseDir.startsWith('//')) return ''
-  return 'file://' + encodeURI(fontsBaseDir.replace(/\/+$/, '')) + '/fonts.css'
+  return fontsCssHref(fontsBaseDir)
 }
 
 // A `googleFonts` entry is a SPEC, not a family name: "Baloo+2:wght@400;500",

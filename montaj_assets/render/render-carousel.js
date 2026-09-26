@@ -22,6 +22,7 @@ import { resolve, join, dirname }                         from 'path'
 import { fileURLToPath }                                  from 'url'
 import { tmpdir }                                         from 'os'
 import { randomBytes }                                    from 'crypto'
+import { toFileHref, fontsCssHref, assetResolverSource } from './file-url.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 
@@ -174,7 +175,7 @@ async function main(projectJsonPath, { out, clean, scale = DEFAULT_SCALE }) {
 
           try {
             await page.setViewport({ width, height, deviceScaleFactor: scale })
-            await page.goto(`file://${htmlPath}`, { waitUntil: 'networkidle0', timeout: 30_000 })
+            await page.goto(toFileHref(htmlPath), { waitUntil: 'networkidle0', timeout: 30_000 })
 
             // Belt-and-suspenders: wait for all images to finish loading
             await page.evaluate(() =>
@@ -319,12 +320,7 @@ const width      = ${width}
 const height     = ${height}
 const projectDir = ${projDirStr}
 
-function resolveAsset(p) {
-  if (!p) return p
-  if (p.startsWith('http://') || p.startsWith('https://') || p.startsWith('data:')) return p
-  if (p.startsWith('/')) return 'file://' + p
-  return 'file://' + projectDir + '/' + p
-}
+${assetResolverSource(projectDir)}
 
 createRoot(document.getElementById('root')).render(
   <Slide
@@ -404,9 +400,11 @@ createRoot(document.getElementById('root')).render(
 // guard must therefore stay byte-identical to bundle.js's — `shim-bake.test.mjs`
 // asserts exactly that, because a rule tightened in one renderer only leaves
 // the two disagreeing about what a valid base is.
+// The guard itself now lives in file-url.js (fontsCssHref), portable to
+// Windows drive-letter bases and refusing UNC in both spellings (`//host`,
+// `\\host`); both renderers delegate to it, so they cannot drift.
 function vendoredFontsHref(fontsBaseDir) {
-  if (typeof fontsBaseDir !== 'string' || !fontsBaseDir.startsWith('/') || fontsBaseDir.startsWith('//')) return ''
-  return 'file://' + encodeURI(fontsBaseDir.replace(/\/+$/, '')) + '/fonts.css'
+  return fontsCssHref(fontsBaseDir)
 }
 
 // A `googleFonts` entry is a SPEC, not a family name: "Baloo+2:wght@400;500",

@@ -43,7 +43,7 @@ import assert from 'node:assert/strict'
 import { mkdtempSync, writeFileSync, readFileSync, rmSync, mkdirSync } from 'fs'
 import { join, dirname } from 'path'
 import { tmpdir } from 'os'
-import { fileURLToPath } from 'url'
+import { fileURLToPath, pathToFileURL } from 'url'
 import { generateHtml as bundleHtml } from '../bundle.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
@@ -63,6 +63,10 @@ const __dirname = dirname(fileURLToPath(import.meta.url))
 // the file the regexes fail loudly, and `shim-bake.test.mjs` separately pins
 // the helper bodies as byte-identical to bundle.js's.
 const HARNESS = join(tmpdir(), `carousel-fonts-harness-${process.pid}`)
+// vendoredFontsHref delegates to file-url.js's fontsCssHref; the harness lives
+// in tmpdir, so it imports that by absolute URL.
+const FONTS_CSS_HREF_IMPORT =
+  `import { fontsCssHref } from ${JSON.stringify(pathToFileURL(join(__dirname, '..', 'file-url.js')).href)}\n`
 
 function extractCarouselHtml() {
   const src = readFileSync(join(__dirname, '..', 'render-carousel.js'), 'utf8')
@@ -82,7 +86,7 @@ function extractCarouselHtml() {
   parts.push(g[0].replace('\nfunction generateHtml(', '\nexport function generateHtml('))
   mkdirSync(HARNESS, { recursive: true })
   const out = join(HARNESS, 'carousel-generate-html.mjs')
-  writeFileSync(out, "import { readFileSync } from 'fs'\n" + parts.join('\n'))
+  writeFileSync(out, "import { readFileSync } from 'fs'\n" + FONTS_CSS_HREF_IMPORT + parts.join('\n'))
   return out
 }
 
@@ -207,7 +211,7 @@ describe('fonts: with no base, the page is byte-identical to the pre-fall-throug
     assert.ok(g, 'expected a generateHtml in the HEAD render-carousel.js')
     parts.push(g[0].replace('\nfunction generateHtml(', '\nexport function generateHtml('))
     const out = join(HARNESS, 'carousel-head.mjs')
-    writeFileSync(out, "import { readFileSync } from 'fs'\n" + parts.join('\n'))
+    writeFileSync(out, "import { readFileSync } from 'fs'\n" + FONTS_CSS_HREF_IMPORT + parts.join('\n'))
     const { generateHtml: head } = await import(out)
     for (const [fonts, base] of CASES) {
       const [now] = capturingStderr(() => carouselHtml(1080, 1350, fonts, base))

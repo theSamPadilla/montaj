@@ -15,6 +15,7 @@ import { fileURLToPath } from 'url'
 import { spawnSync, spawn } from 'child_process'
 
 import { bundleComponent, cleanupBundle } from './bundle.js'
+import { isMain as isMainModule }        from './is-main.js'
 import { renderAllSegments }              from './renderer.js'
 import { compose, embedThumbnail }        from './compose.js'
 import { FFMPEG, FFPROBE }                from './ffmpeg-bin.js'
@@ -27,7 +28,7 @@ import { MASTER_LOOK, curveIds }          from './look.js'
 import { effectiveItemAudio, enabledTrackItems, enabledTracks, trackItems } from './project-tracks.js'
 
 const __dirname  = dirname(fileURLToPath(import.meta.url))
-const isMain = resolve(process.argv[1] ?? '') === fileURLToPath(import.meta.url)
+const isMain = isMainModule(import.meta.url, process.argv[1])
 // MONTAJ_ROOT is two levels above montaj_assets/render/ (i.e. the Python project root).
 const MONTAJ_ROOT = process.env.MONTAJ_ROOT || join(__dirname, '..', '..')
 const PYTHON = process.env.MONTAJ_PYTHON || 'python3'

@@ -113,13 +113,18 @@ function OverlayVideo({ src, currentTime, itemStart, inPoint, speed = 1, isPlayi
 // already recurses — without this, image paths nested in array/object props
 // (e.g. players[].src, items[].src) reach <img> raw as /var/hub-scratch/... and
 // render blank in preview even though they render correctly in the final MP4.
-// Already-proxied /api/ URLs are left untouched (idempotent).
+// Already-proxied /api/ URLs are left untouched (idempotent). On Windows an
+// absolute path is a drive-letter one (C:\ or C:/); this runs in the browser,
+// so that is a regex, not Node's path module. UNC (\\host) is not rewritten.
+const DRIVE_ABS_PATH = /^[A-Za-z]:[\\/]/
+
 export function resolveOverlayPropPaths(
   value: unknown,
   fileUrl: (path: string) => string,
 ): unknown {
   if (typeof value === 'string') {
-    return value.startsWith('/') && !value.startsWith('/api/') ? fileUrl(value) : value
+    const abs = (value.startsWith('/') && !value.startsWith('/api/')) || DRIVE_ABS_PATH.test(value)
+    return abs ? fileUrl(value) : value
   }
   if (Array.isArray(value)) {
     return value.map((v) => resolveOverlayPropPaths(v, fileUrl))

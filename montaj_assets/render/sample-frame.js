@@ -28,6 +28,8 @@ import { tmpdir } from 'os'
 import { createHash } from 'crypto'
 
 import { bundleComponent, cleanupBundle } from './bundle.js'
+import { isMain as isMainModule } from './is-main.js'
+import { toFileHref } from './file-url.js'
 import { pMap } from './p-map.js'
 import { FFMPEG } from './ffmpeg-bin.js'
 import { isHdr } from './color-space.js'
@@ -44,7 +46,7 @@ import { resolveAt, RESOLVER_VERSION } from '@bycrux/timeline-core'
 import { enabledTrackItems, trackItems, withEnabledItemTracks } from './project-tracks.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
-const isMain = resolve(process.argv[1] ?? '') === fileURLToPath(import.meta.url)
+const isMain = isMainModule(import.meta.url, process.argv[1])
 
 // Absolute directory holding a vendored fonts.css — same env var and same
 // "configuration, never project data" contract as render.js's MONTAJ_FONTS_DIR
@@ -300,7 +302,7 @@ export async function sampleOverlay({
     // networkidle0 is critical for font loading — fonts are not loaded until
     // React commits to DOM, and we need the woff2 fetches to complete before
     // we measure text layout.
-    await page.goto(`file://${htmlPath}`, { waitUntil: 'networkidle0' })
+    await page.goto(toFileHref(htmlPath), { waitUntil: 'networkidle0' })
 
     // Verify the component mounted
     const ready = await page.evaluate(() => typeof window.__setFrame === 'function')
