@@ -352,10 +352,15 @@ def test_write_file_windows_absolute_path_passes_isabs_gate_under_ntpath_seam(tm
 # denies CreateSymbolicLink to a non-elevated process (OSError winerror 1314,
 # "A required privilege is not held by the client"); falling back to a real
 # copy keeps project init working there instead of crashing the whole init.
+# The fallback is gated on the module's _IS_WINDOWS seam (same convention as
+# lib/proc.py) — on macOS/Linux an OSError here (FileExistsError from the
+# ThreadPoolExecutor dest-collision race, PermissionError, EROFS, ...) must
+# still propagate exactly as before, never be silently swallowed into a copy.
 # ---------------------------------------------------------------------------
 
-def test_copy_into_workspace_falls_back_to_copy_when_symlink_denied(tmp_path, monkeypatch, capsys):
+def test_copy_into_workspace_falls_back_to_copy_when_symlink_denied_on_windows(tmp_path, monkeypatch, capsys):
     import project.init as init_mod
+    monkeypatch.setattr(init_mod, "_IS_WINDOWS", True)
 
     def _boom(src, dst):
         raise OSError(1314, "A required privilege is not held by the client")
@@ -376,6 +381,27 @@ def test_copy_into_workspace_falls_back_to_copy_when_symlink_denied(tmp_path, mo
     err_lines = [ln for ln in capsys.readouterr().err.strip().splitlines() if ln]
     assert len(err_lines) == 1
     assert "warning" in err_lines[0].lower()
+
+
+def test_copy_into_workspace_reraises_symlink_error_on_non_windows(tmp_path, monkeypatch):
+    """With the Windows seam False (macOS/Linux), an OSError from os.symlink —
+    e.g. FileExistsError from the ThreadPoolExecutor dest-collision race, or a
+    PermissionError/EROFS — must propagate exactly as before the Windows
+    fallback was added, never be swallowed into a silent copy."""
+    import project.init as init_mod
+    monkeypatch.setattr(init_mod, "_IS_WINDOWS", False)
+
+    def _boom(src, dst):
+        raise FileExistsError(17, "File exists")
+    monkeypatch.setattr(init_mod.os, "symlink", _boom)
+
+    src = tmp_path / "clip.mp4"
+    src.write_bytes(b"fake video data")
+    dest_dir = tmp_path / "workspace"
+    dest_dir.mkdir()
+
+    with pytest.raises(FileExistsError):
+        init_mod._copy_into_workspace(str(src), str(dest_dir), "clip", link=True)
 
 
 def test_copy_into_workspace_symlinks_when_supported(tmp_path):

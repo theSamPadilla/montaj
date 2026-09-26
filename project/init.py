@@ -44,6 +44,11 @@ PROXY_ENCODE_LIMIT = 4
 # entirely with --no-proxy or a workflow's "proxy": false.
 PROXY_INLINE_MAX_TOTAL_SEC = 300.0
 
+# Windows-vs-POSIX seam for _copy_into_workspace's symlink fallback, same
+# convention as lib/proc.py's _IS_WINDOWS: tests patch THIS module attribute,
+# never sys.platform globally.
+_IS_WINDOWS = sys.platform == "win32"
+
 
 def _probe_duration(path: str) -> float | None:
     """Source duration in seconds, or None when the file can't be read.
@@ -119,6 +124,12 @@ def _copy_into_workspace(src: str, dest_dir: str, prefix: str, link: bool = Fals
         try:
             os.symlink(os.path.abspath(src), dest)
         except OSError as exc:
+            if not _IS_WINDOWS:
+                # On macOS/Linux an OSError here (FileExistsError from the
+                # ThreadPoolExecutor dest-collision race, PermissionError,
+                # EROFS, ...) is a real failure — never silently swallow it
+                # into a copy. Only Windows gets the fallback below.
+                raise
             # Windows commonly denies CreateSymbolicLink to a non-elevated
             # process (winerror 1314, "a required privilege is not held").
             # Fall back to a real copy rather than failing the whole init.
