@@ -148,8 +148,26 @@ export default function LeftPanelTabs({ tabs, defaultTabId, storageKey = DEFAULT
                 selected
                   // Label is ~10px accent TEXT → the AA-safe accent-text token
                   // (indigo-600 in light); the tint fill keeps the plain accent.
-                  ? 'text-[var(--editor-accent-text)] bg-[var(--editor-accent)]/10'
-                  : 'text-[var(--editor-text)]/60 hover:text-[var(--editor-text)] hover:bg-[var(--editor-text)]/5',
+                  //
+                  // The tint uses `color-mix(...)` baked directly into the
+                  // arbitrary value, NOT Tailwind's `/NN` opacity modifier —
+                  // that modifier only works when Tailwind itself can parse
+                  // the color to inject an alpha channel, which it cannot do
+                  // for an arbitrary `var(...)` reference. `text-[var(--x)]/60`
+                  // silently emits NO utility at all (no build error, no
+                  // fallback), in this package's own Tailwind build and in a
+                  // host's. Measured: building this component under
+                  // montaj-app/desktop/ui's Tailwind (v3.4) produced zero
+                  // `editor-text`/`editor-accent` rules for any `/NN`-modified
+                  // class here, while the identical `color-mix(in_srgb,
+                  // var(--editor-text)_60%,transparent)` arbitrary value
+                  // compiled correctly in both builds. That silent failure is
+                  // exactly what made the rail's inactive items (all but the
+                  // selected tab) unreadable — no color rule at all, so the
+                  // button fell back to inherited/default text color against
+                  // the editor's dark background.
+                  ? 'text-[var(--editor-accent-text)] bg-[color-mix(in_srgb,var(--editor-accent)_10%,transparent)]'
+                  : 'text-[color-mix(in_srgb,var(--editor-text)_60%,transparent)] hover:text-[var(--editor-text)] hover:bg-[color-mix(in_srgb,var(--editor-text)_5%,transparent)]',
               )}
             >
               {selected && (
