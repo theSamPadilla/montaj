@@ -94,6 +94,12 @@ class TestEnsureFfmpeg:
     def test_downloads_extracts_and_chmods(self, fake_downloads, monkeypatch, tmp_path):
         key = ("macos", "arm64")
         monkeypatch.setattr(ffmpeg_static, "_platform_key", lambda: key)
+        # common._EXE_SUFFIX defaults to the real host's suffix (".exe" on a
+        # Windows CI runner) regardless of which platform `key` is faked —
+        # pin it explicitly so the extracted-binary basename this test
+        # asserts on matches the "macos" key being simulated, not whatever
+        # host happens to run it.
+        monkeypatch.setattr(ffmpeg_static.common, "_EXE_SUFFIX", "")
         entry = self._register(fake_downloads, key)
         monkeypatch.setitem(ffmpeg_static.PINNED_BUILDS, key, entry)
 
@@ -109,6 +115,7 @@ class TestEnsureFfmpeg:
     def test_checksum_mismatch_raises(self, fake_downloads, monkeypatch):
         key = ("macos", "arm64")
         monkeypatch.setattr(ffmpeg_static, "_platform_key", lambda: key)
+        monkeypatch.setattr(ffmpeg_static.common, "_EXE_SUFFIX", "")
         entry = self._register(fake_downloads, key)
         entry["ffmpeg_sha256"] = "0" * 64  # wrong
         monkeypatch.setitem(ffmpeg_static.PINNED_BUILDS, key, entry)
@@ -118,6 +125,7 @@ class TestEnsureFfmpeg:
     def test_idempotent_when_stamp_matches(self, fake_downloads, monkeypatch):
         key = ("macos", "arm64")
         monkeypatch.setattr(ffmpeg_static, "_platform_key", lambda: key)
+        monkeypatch.setattr(ffmpeg_static.common, "_EXE_SUFFIX", "")
         entry = self._register(fake_downloads, key)
         monkeypatch.setitem(ffmpeg_static.PINNED_BUILDS, key, entry)
         first = ffmpeg_static.ensure_ffmpeg()
@@ -128,6 +136,7 @@ class TestEnsureFfmpeg:
     def test_stale_stamp_triggers_redownload(self, fake_downloads, monkeypatch):
         key = ("macos", "arm64")
         monkeypatch.setattr(ffmpeg_static, "_platform_key", lambda: key)
+        monkeypatch.setattr(ffmpeg_static.common, "_EXE_SUFFIX", "")
         entry = self._register(fake_downloads, key)
         monkeypatch.setitem(ffmpeg_static.PINNED_BUILDS, key, entry)
         paths = ffmpeg_static.ensure_ffmpeg()

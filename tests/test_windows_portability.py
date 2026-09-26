@@ -19,7 +19,7 @@ import ctypes
 import inspect
 import json
 import ntpath
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from unittest.mock import Mock
 
 import pytest
@@ -123,11 +123,15 @@ def test_win_query_get_exit_code_failure_closes_handle_and_is_not_alive(monkeypa
 # ---------------------------------------------------------------------------
 
 def test_posix_kill_tree_terminates_the_process_group(monkeypatch):
+    # os.getpgid/os.killpg don't exist on the real (Windows) os module in CI —
+    # raising=False lets the seam add them for the duration of this test
+    # rather than requiring the host to already have them (module docstring).
     import signal as signal_mod
     monkeypatch.setattr(proc_mod, "_IS_WINDOWS", False)
     calls = {}
-    monkeypatch.setattr(proc_mod.os, "getpgid", lambda pid: 4242)
-    monkeypatch.setattr(proc_mod.os, "killpg", lambda pgid, sig: calls.update(pgid=pgid, sig=sig))
+    monkeypatch.setattr(proc_mod.os, "getpgid", lambda pid: 4242, raising=False)
+    monkeypatch.setattr(proc_mod.os, "killpg", lambda pgid, sig: calls.update(pgid=pgid, sig=sig),
+                         raising=False)
 
     proc_mod.kill_tree(Mock(pid=999))
 
@@ -138,7 +142,13 @@ def test_posix_kill_tree_falls_back_to_proc_kill_when_group_gone(monkeypatch):
     monkeypatch.setattr(proc_mod, "_IS_WINDOWS", False)
     def _no_group(pid):
         raise ProcessLookupError()
-    monkeypatch.setattr(proc_mod.os, "getpgid", _no_group)
+    # os.killpg(os.getpgid(pid), ...) looks up the `killpg` attribute before
+    # evaluating its `getpgid(pid)` argument, so killpg must exist (even
+    # though _no_group means it's never actually invoked) or the lookup
+    # itself raises AttributeError on a host os module missing it.
+    monkeypatch.setattr(proc_mod.os, "killpg",
+                         lambda *a, **kw: pytest.fail("killpg must not be called"), raising=False)
+    monkeypatch.setattr(proc_mod.os, "getpgid", _no_group, raising=False)
     proc = Mock(pid=999)
 
     proc_mod.kill_tree(proc)
@@ -153,7 +163,7 @@ def test_windows_kill_tree_uses_taskkill_never_killpg(monkeypatch):
                          lambda cmd, **kw: calls.append(cmd) or Mock(returncode=0))
     def _boom(pid):
         raise AssertionError("os.getpgid must not be called on win32")
-    monkeypatch.setattr(proc_mod.os, "getpgid", _boom)
+    monkeypatch.setattr(proc_mod.os, "getpgid", _boom, raising=False)
     proc = Mock(pid=4321)
 
     proc_mod.kill_tree(proc)
@@ -285,7 +295,7 @@ def test_kill_render_proc_uses_taskkill_on_windows(monkeypatch):
                          lambda cmd, **kw: calls.append(cmd) or Mock(returncode=0))
     def _boom(pid):
         raise AssertionError("os.getpgid must not be called on win32")
-    monkeypatch.setattr(proc_mod.os, "getpgid", _boom)
+    monkeypatch.setattr(proc_mod.os, "getpgid", _boom, raising=False)
 
     projects_mod._kill_render_proc(Mock(pid=4321))
 
@@ -492,13 +502,23 @@ def test_ffmpeg_filter_path_accepts_a_path_object():
 def test_tonemap_hlg_arm_still_uses_manifest_default_lut_unescaped(monkeypatch):
     """Regression pin: on a plain checkout path (no drive letter, no special
     chars), the built filter string is unaffected by ffmpeg_filter_path —
-    same assertion as tests/test_normalize.py's own copy of this test."""
-    from lib.look import lut_path
+    same assertion as tests/test_normalize.py's own copy of this test.
+
+    The real lut_path() is the repo's own on-disk checkout path, which is
+    itself host-dependent (a Windows CI runner checks out under a drive
+    letter, e.g. D:\\a\\montaj\\montaj\\..., which ffmpeg_filter_path
+    correctly escapes). So this pins lut_path() via the module seam
+    _build_tonemap_vf_to_sdr reads to a fixed plain POSIX-style path,
+    instead of asserting against whatever path the repo happens to be
+    checked out at.
+    """
     from lib.normalize import _build_tonemap_vf_to_sdr
+    plain_lut_path = PurePosixPath("/Users/sam/Montaj/montaj_assets/luts/montaj-vivid-v1.cube")
     monkeypatch.setattr(normalize_mod, "_has_zscale", lambda: True)
     monkeypatch.setattr(normalize_mod, "_has_lut3d", lambda: True)
+    monkeypatch.setattr(normalize_mod, "lut_path", lambda curve_id=None: plain_lut_path)
     vf, _ = _build_tonemap_vf_to_sdr("hdr_hlg")
-    assert f"lut3d=file={lut_path()}:interp=tetrahedral" in vf
+    assert f"lut3d=file={plain_lut_path}:interp=tetrahedral" in vf
 
 
 # ---------------------------------------------------------------------------

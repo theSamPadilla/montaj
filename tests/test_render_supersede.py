@@ -12,6 +12,7 @@ from unittest.mock import Mock
 
 import pytest
 
+from lib import proc as proc_mod
 import serve.routes.projects as projects_mod
 from serve.routes.projects import _supersede_active_render, _kill_render_proc
 
@@ -54,10 +55,17 @@ def test_supersede_allows_when_idle():
 
 
 def test_kill_render_proc_terminates_the_process_group(monkeypatch):
+    # _kill_render_proc delegates to lib.proc.kill_tree, whose POSIX/Windows
+    # branch is picked by proc_mod._IS_WINDOWS, which defaults to the real
+    # host — pin it so this exercises the POSIX (getpgid/killpg) branch
+    # regardless of what CI runner this executes on. os.getpgid/os.killpg
+    # don't exist on the real (Windows) os module, so raising=False lets the
+    # seam add them for the duration of the test.
+    monkeypatch.setattr(proc_mod, "_IS_WINDOWS", False)
     calls = {}
-    monkeypatch.setattr(projects_mod.os, "getpgid", lambda pid: 4242)
+    monkeypatch.setattr(projects_mod.os, "getpgid", lambda pid: 4242, raising=False)
     monkeypatch.setattr(projects_mod.os, "killpg",
-                        lambda pgid, sig: calls.update(pgid=pgid, sig=sig))
+                        lambda pgid, sig: calls.update(pgid=pgid, sig=sig), raising=False)
 
     _kill_render_proc(Mock(pid=999))
 
@@ -65,9 +73,16 @@ def test_kill_render_proc_terminates_the_process_group(monkeypatch):
 
 
 def test_kill_render_proc_falls_back_to_proc_kill_when_group_gone(monkeypatch):
+    monkeypatch.setattr(proc_mod, "_IS_WINDOWS", False)
     def _no_group(pid):
         raise ProcessLookupError()
-    monkeypatch.setattr(projects_mod.os, "getpgid", _no_group)
+    # os.killpg(os.getpgid(pid), ...) looks up the `killpg` attribute before
+    # evaluating its `getpgid(pid)` argument, so killpg must exist (even
+    # though _no_group means it's never actually invoked) or the lookup
+    # itself raises AttributeError on a host os module missing it.
+    monkeypatch.setattr(projects_mod.os, "killpg",
+                        lambda *a, **kw: pytest.fail("killpg must not be called"), raising=False)
+    monkeypatch.setattr(projects_mod.os, "getpgid", _no_group, raising=False)
     proc = Mock(pid=999)
 
     _kill_render_proc(proc)

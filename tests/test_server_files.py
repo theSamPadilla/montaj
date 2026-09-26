@@ -136,8 +136,16 @@ def test_files_montaj_credentials_returns_403(client, roots):
     assert resp.json()["detail"]["error"] == "forbidden"
 
 
-def test_files_absolute_outside_allowlist_returns_403(client):
-    resp = client.get("/api/files", params={"path": "/etc/passwd"})
+def test_files_absolute_outside_allowlist_returns_403(client, roots):
+    # A real file outside every allowed root, but still an absolute path with
+    # no ".." traversal component (distinct from the traversal test below).
+    # Not /etc/passwd: that's POSIX-only and doesn't exist on a Windows CI
+    # runner, where the missing-file check (404) would fire before the scope
+    # check ever ran — see test_files_traversal_outside_allowlist_returns_403's
+    # own comment on the same ordering.
+    outside = roots["tmp_path"] / "outside-abs.txt"
+    outside.write_text("secret")
+    resp = client.get("/api/files", params={"path": str(outside)})
     assert resp.status_code == 403
     assert resp.json()["detail"]["error"] == "forbidden"
 
@@ -157,9 +165,17 @@ def test_files_traversal_outside_allowlist_returns_403(client, roots):
 
 
 def test_files_symlink_outside_allowlist_returns_403(client, roots):
+    # The symlink target must be a real, existing, host-appropriate path: a
+    # dangling symlink (e.g. to POSIX-only /etc/passwd, which doesn't exist
+    # on Windows) makes is_file() False, so the missing-file check (404)
+    # fires before the scope check ever runs — see
+    # test_files_traversal_outside_allowlist_returns_403's own comment on the
+    # same ordering.
+    outside = roots["tmp_path"] / "leak-target.txt"
+    outside.write_text("secret")
     proj = roots["workspace"] / "2026-05-02-test"
     link = proj / "leak"
-    link.symlink_to("/etc/passwd")
+    link.symlink_to(outside)
     resp = client.get("/api/files", params={"path": str(link)})
     assert resp.status_code == 403
     assert resp.json()["detail"]["error"] == "forbidden"
