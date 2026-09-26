@@ -8,7 +8,7 @@ import json, os, sys, argparse, subprocess
 from pathlib import Path
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "lib"))
-from common import fail, require_file, check_output, run, run_ffmpeg, get_duration, ffmpeg_bin, ffprobe_bin
+from common import fail, require_file, check_output, run, run_ffmpeg, get_duration, ffmpeg_bin, ffprobe_bin, ffmpeg_filter_path
 
 try:
     import static_ffmpeg
@@ -209,7 +209,18 @@ def _make_line_filters(lines, t_start, t_end, fontsize, color, x_expr,
         if box:
             options += ["box=1", "boxcolor=black@0.45", "boxborderw=14"]
         if fontfile:
-            options.insert(0, f"fontfile='{fontfile}'")
+            # Today's format always wraps fontfile in a literal single quote.
+            # ffmpeg_filter_path only adds its own quoting when the path needs
+            # escaping (drive letter, backslash, or a filtergraph-special
+            # character) — a plain path comes back unchanged, so the literal
+            # quotes below keep a plain fontfile's output byte-for-byte
+            # identical to before. A path ffmpeg_filter_path already quoted
+            # is used as-is to avoid double-quoting.
+            escaped_fontfile = ffmpeg_filter_path(fontfile)
+            if escaped_fontfile.startswith("'"):
+                options.insert(0, f"fontfile={escaped_fontfile}")
+            else:
+                options.insert(0, f"fontfile='{escaped_fontfile}'")
         filters.append("drawtext=" + ":".join(options))
     return filters
 

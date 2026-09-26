@@ -26,6 +26,7 @@ import pytest
 from starlette.testclient import TestClient
 
 from lib import proc as proc_mod
+import lib.common as common_mod
 import lib.normalize as normalize_mod
 import serve.lockfile as lockfile_mod
 import serve.routes.projects as projects_mod
@@ -443,3 +444,96 @@ def test_save_project_writes_utf8_explicitly_and_round_trips_non_ascii(tmp_path,
     assert calls.get("encoding") == "utf-8"
     raw = path.read_bytes()
     assert json.loads(raw.decode("utf-8"))["name"] == "名前 🎬"
+
+
+# ---------------------------------------------------------------------------
+# lib/common.py's ffmpeg_filter_path — filtergraph-safe path escaping, used at
+# lut3d=file= (lib/normalize.py, montaj_assets/render/encode-segment.js) and
+# drawtext fontfile= (steps/lyrics/lyrics_render.py). ':' is ffmpeg's own
+# key=value separator within a filter's args and '\' is its escape character,
+# so a raw Windows path like C:\Users\a\x.cube breaks a filter description
+# twice: `file=C` ends at the drive colon, and the backslashes are read as
+# escapes. Windows-ness is read from the string itself (a drive letter or a
+# literal backslash), not the host OS, so this is provable on macOS.
+# ---------------------------------------------------------------------------
+
+def test_ffmpeg_filter_path_plain_posix_path_is_unchanged():
+    """No special characters -> returned byte-for-byte, so every existing
+    caller (lut3d=file=<plain path>) keeps producing today's exact string."""
+    p = "/Users/sam/Montaj/montaj_assets/luts/montaj-vivid-v1.cube"
+    assert common_mod.ffmpeg_filter_path(p) == p
+
+
+def test_ffmpeg_filter_path_windows_drive_path_is_escaped_and_pinned():
+    """The motivating case: a Windows drive path must not reach the filter
+    description unescaped. Backslashes become forward slashes, the drive
+    colon is backslash-escaped, and the whole value is single-quoted."""
+    assert common_mod.ffmpeg_filter_path(r"C:\Users\a\x.cube") == r"'C\:/Users/a/x.cube'"
+
+
+@pytest.mark.parametrize("raw,expected", [
+    ("/a:b/x.cube", r"'/a\:b/x.cube'"),
+    ("/a'b/x.cube", r"'/a'\''b/x.cube'"),
+    ("/a,b/x.cube", "'/a,b/x.cube'"),
+    ("/a[b]/x.cube", "'/a[b]/x.cube'"),
+    ("/a;b/x.cube", "'/a;b/x.cube'"),
+    ("/a b/x.cube", "'/a b/x.cube'"),
+])
+def test_ffmpeg_filter_path_posix_special_chars_are_escaped(raw, expected):
+    assert common_mod.ffmpeg_filter_path(raw) == expected
+
+
+def test_ffmpeg_filter_path_accepts_a_path_object():
+    """lib.look.lut_path() returns a pathlib.Path, not a str — the callers at
+    lut3d=file= pass that straight through."""
+    assert common_mod.ffmpeg_filter_path(Path("/a/x.cube")) == "/a/x.cube"
+
+
+def test_tonemap_hlg_arm_still_uses_manifest_default_lut_unescaped(monkeypatch):
+    """Regression pin: on a plain checkout path (no drive letter, no special
+    chars), the built filter string is unaffected by ffmpeg_filter_path —
+    same assertion as tests/test_normalize.py's own copy of this test."""
+    from lib.look import lut_path
+    from lib.normalize import _build_tonemap_vf_to_sdr
+    monkeypatch.setattr(normalize_mod, "_has_zscale", lambda: True)
+    monkeypatch.setattr(normalize_mod, "_has_lut3d", lambda: True)
+    vf, _ = _build_tonemap_vf_to_sdr("hdr_hlg")
+    assert f"lut3d=file={lut_path()}:interp=tetrahedral" in vf
+
+
+# ---------------------------------------------------------------------------
+# steps/lyrics/lyrics_render.py — drawtext's fontfile= goes through the same
+# ffmpeg_filter_path seam. Today's code always wraps fontfile in a literal
+# single quote (`fontfile='<path>'`); that must stay byte-for-byte identical
+# for a plain path, and a path ffmpeg_filter_path itself quotes (Windows drive
+# path, or a filtergraph-special character) must be spliced in as-is rather
+# than double-quoted.
+# ---------------------------------------------------------------------------
+
+def _load_lyrics_render():
+    import importlib.util
+    path = Path(__file__).parent.parent / "steps" / "lyrics" / "lyrics_render.py"
+    spec = importlib.util.spec_from_file_location("lyrics_render_wp", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+_lyrics_render_mod = _load_lyrics_render()
+
+
+def test_drawtext_fontfile_plain_path_quoting_is_unchanged():
+    filters = _lyrics_render_mod._make_line_filters(
+        ["hi"], 0.0, 1.0, 48, "white", "(w-tw)/2", "center", 1280, 60,
+        "/System/Library/Fonts/HelveticaNeue.ttc", False,
+    )
+    assert "fontfile='/System/Library/Fonts/HelveticaNeue.ttc'" in filters[0]
+
+
+def test_drawtext_fontfile_windows_path_is_escaped_not_double_quoted():
+    filters = _lyrics_render_mod._make_line_filters(
+        ["hi"], 0.0, 1.0, 48, "white", "(w-tw)/2", "center", 1280, 60,
+        r"C:\Windows\Fonts\arial.ttf", False,
+    )
+    assert "fontfile='C\\:/Windows/Fonts/arial.ttf'" in filters[0]
+    assert "fontfile=''" not in filters[0]

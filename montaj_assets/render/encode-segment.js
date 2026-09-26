@@ -36,6 +36,7 @@ import { dirname } from 'path'
 import { FFMPEG, FFPROBE } from './ffmpeg-bin.js'
 import { specFor, detectFromTransfer, DEFAULT_COLOR_SPACE } from './color-space.js'
 import { lutPath } from './look.js'
+import { ffmpegFilterPath } from './ffmpeg-filter-path.js'
 import {
   geometryFor, geometryAt, toRotatedPixelBox, toPixelBox, compileTrackExprInfo,
   transitionProgress,
@@ -161,7 +162,7 @@ export function buildVividLutChain(srcKey, sdrCurve = null) {
   return prestep
        + 'zscale=matrixin=2020_ncl:rangein=limited:range=full,'
        + 'format=rgb48le,'
-       + `lut3d=file=${lutPath(sdrCurve)}:interp=tetrahedral,`
+       + `lut3d=file=${ffmpegFilterPath(lutPath(sdrCurve))}:interp=tetrahedral,`
        + 'zscale=tin=bt709:t=bt709:pin=bt709:p=bt709:m=bt709:rin=full:r=tv'
 }
 

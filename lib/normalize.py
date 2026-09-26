@@ -19,7 +19,7 @@ The sys.path.insert below adds lib/ itself so `from common import ...` works in 
 import sys, os, json, subprocess, argparse, glob, re, functools
 
 sys.path.insert(0, os.path.dirname(__file__))  # add lib/ so `from common` works in all invocation modes
-from common import fail, require_file, progress, ffmpeg_bin, ffprobe_bin
+from common import fail, require_file, progress, ffmpeg_bin, ffprobe_bin, ffmpeg_filter_path
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))  # add repo root so `from lib.types.colorspace` works
 from lib.types.colorspace import (
@@ -348,7 +348,7 @@ def _build_tonemap_vf_to_sdr(src: ColorSpaceKey) -> tuple[str, bool]:
             f"{prestep}"
             "zscale=matrixin=2020_ncl:rangein=limited:range=full,"
             "format=rgb48le,"
-            f"lut3d=file={lut_path()}:interp=tetrahedral,"
+            f"lut3d=file={ffmpeg_filter_path(lut_path())}:interp=tetrahedral,"
             "zscale=tin=bt709:t=bt709:pin=bt709:p=bt709:m=bt709:rin=full:r=tv",
             False,
         )

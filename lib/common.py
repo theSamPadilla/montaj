@@ -124,6 +124,42 @@ def node_child_env() -> dict:
     return env
 
 
+# Filtergraph path-escaping seam. ':' is ffmpeg's own key=value separator
+# inside a filter's option list, and '\' is its escape character — so a raw
+# Windows path spliced into a filter description (`lut3d=file=C:\Users\a\x.cube`,
+# `drawtext=fontfile=C:\Users\a\x.ttf`) breaks twice: `file=C` ends at the
+# drive colon, and the backslashes are read as escapes rather than separators.
+# Windows-ness is read from the string itself (a drive letter, or any literal
+# backslash), never from the host OS, so this is provable on macOS/Linux too.
+_FILTER_DRIVE = re.compile(r"^[A-Za-z]:")
+_FILTER_NEEDS_ESCAPE = re.compile(r"[:'\[\],; ]")
+
+
+def ffmpeg_filter_path(p) -> str:
+    """Escape a filesystem path for splicing into an ffmpeg filtergraph option
+    value (``lut3d=file=...``, ``drawtext=fontfile=...``).
+
+    A plain path with none of ``: ' , ; [ ]`` or a space is returned UNCHANGED
+    — every existing caller's filter string stays byte-for-byte identical.
+
+    A path that looks like Windows (a drive letter, or any backslash) has its
+    backslashes turned into forward slashes first. Then, if the (possibly
+    slash-converted) value contains any of the characters above, the whole
+    value is single-quoted per ffmpeg's documented filtergraph escaping: a
+    literal ``'`` becomes ``'\\''`` (close quote, escaped quote, reopen quote)
+    and a literal ``:`` becomes ``\\:`` (it still separates key=value pairs
+    once ffmpeg's own arg parser runs, even inside the quoted value). Accepts
+    a ``str`` or ``pathlib.Path`` (``lib.look.lut_path()`` returns the latter).
+    """
+    s = str(p)
+    if _FILTER_DRIVE.match(s) or "\\" in s:
+        s = s.replace("\\", "/")
+    if not _FILTER_NEEDS_ESCAPE.search(s):
+        return s
+    escaped = s.replace("'", "'\\''").replace(":", "\\:")
+    return f"'{escaped}'"
+
+
 def run_ffmpeg(args: list[str], timeout: int = 300):
     """Run ffmpeg, suppress output."""
     return run([ffmpeg_bin()] + args, timeout=timeout)
