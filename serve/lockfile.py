@@ -13,22 +13,22 @@ import json
 import os
 from pathlib import Path
 
+from lib import proc
+
 
 def _lockfile_path() -> Path:
     return Path.home() / ".montaj" / "serve.json"
 
 
 def _pid_alive(pid: int) -> bool:
+    # lib.proc.pid_alive is the Windows-safe probe (never os.kill(pid, 0) on
+    # win32 — see lib/proc.py). This wrapper keeps this file's own extra
+    # handling of a malformed pid, which lib.proc.pid_alive deliberately
+    # leaves uncaught.
     try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        # Exists but is owned by someone else — still a live process.
-        return True
+        return proc.pid_alive(pid)
     except (OverflowError, ValueError):
         return False
-    return True
 
 
 def write(*, port: int, workspace: Path) -> None:

@@ -33,6 +33,7 @@ from serve.caption_job import build_audio_mix_spec
 from serve.jobs import create_job, set_done, set_error, get_job
 from serve.routes.files import save_upload
 from lib.ingest import ingest_source
+from lib.proc import kill_tree as _kill_tree, detached_kwargs as _detached_kwargs
 from lib.project_tracks import normalize_tracks, track_items
 from lib.remote_io import fetch_to_disk_async, push_from_disk_async, parse_allowed_hosts
 from project.init import _copy_into_workspace
@@ -69,13 +70,7 @@ _render_procs: dict[str, "asyncio.subprocess.Process"] = {}
 
 def _kill_render_proc(proc: "asyncio.subprocess.Process") -> None:
     """Kill a render's whole process group so orphaned ffmpeg/browser children die too."""
-    try:
-        os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
-    except (ProcessLookupError, OSError):
-        try:
-            proc.kill()
-        except Exception:
-            pass
+    _kill_tree(proc)
 
 
 def _supersede_active_render(project_id: str) -> bool:
@@ -203,7 +198,7 @@ async def _run_render_detached(project_id: str, cmd: list[str], env: dict,
             cwd=str(MONTAJ_ROOT),
             env=env,
             limit=10 * 1024 * 1024,  # ffmpeg config/filter lines exceed the 64KB default
-            start_new_session=True,   # process-group leader so killpg reaches ffmpeg grandchildren
+            **_detached_kwargs(),   # process-group leader so kill_tree reaches ffmpeg grandchildren
         )
         _render_procs[project_id] = proc  # register so a later render can supersede / cancel can kill
         while True:
@@ -2041,7 +2036,7 @@ async def _run_carousel_render_detached(project_id: str, project_dir: Path, scal
             stderr=asyncio.subprocess.PIPE,
             cwd=str(MONTAJ_ROOT),
             env=env,
-            start_new_session=True,
+            **_detached_kwargs(),
         )
         # Drain pipes so the child never blocks on a full stderr buffer; output is
         # advisory here (no client is listening). A non-zero exit (partial render)
@@ -3283,17 +3278,11 @@ async def _run_caption_pipeline(
             cwd=str(MONTAJ_ROOT),
             env=env,
             limit=10 * 1024 * 1024,
-            start_new_session=True,
+            **_detached_kwargs(),
         )
 
         def kill_tree(p=proc):
-            try:
-                os.killpg(os.getpgid(p.pid), signal.SIGTERM)
-            except (ProcessLookupError, OSError):
-                try:
-                    p.kill()
-                except Exception:
-                    pass
+            _kill_tree(p)
 
         tail = deque(maxlen=40)
         disconnected = False

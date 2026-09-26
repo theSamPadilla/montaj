@@ -32,6 +32,7 @@ from lib.types.colorspace import (
     require_valid_key,
 )
 from lib.look import MASTER_LOOK, lut_path
+from lib import proc
 
 HDR_TO_SDR_DENOISE_VF = "hqdn3d=1.5:1.5:3:3"
 """Light source-domain denoise paired with the HDR→SDR Vivid LUT (decision
@@ -495,16 +496,18 @@ def _tmp_for(out_path: str) -> str:
 
 
 def _pid_alive(pid: int) -> bool:
-    """True if a process with this pid currently exists (best-effort)."""
+    """True if a process with this pid currently exists (best-effort).
+
+    Delegates to lib.proc.pid_alive, the Windows-safe probe (never
+    os.kill(pid, 0) on win32 — see lib/proc.py's module docstring). Keeps
+    this file's own extra handling of an ambiguous OSError that isn't
+    ProcessLookupError/PermissionError, which lib.proc.pid_alive deliberately
+    leaves uncaught.
+    """
     try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True  # exists but owned by another user
+        return proc.pid_alive(pid)
     except OSError:
         return True  # be conservative — don't reap on an ambiguous error
-    return True
 
 
 def _sweep_stale_temps(out_path: str) -> None:
