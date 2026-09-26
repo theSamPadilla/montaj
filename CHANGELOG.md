@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v4.6.8
+
 - **`POST /api/run` no longer encodes editing proxies inside the request.** serve now runs init with `--proxy-inline-max 0`, so every new proxy encode is deferred and goes to the existing background proxy queue as soon as init returns (the same path an import over the old 300s total-footage budget already took). An import under the budget used to hold the create request for the whole batch of encodes; now the project comes back as soon as its clips are staged and probed, and proxies land in `project.json` over SSE as they finish. Proxies already fresh on disk are still adopted at create time. `montaj init` from the CLI keeps its 300s default. (`serve/routes/projects.py`)
 
 - **A background proxy now reaches every item that uses its source, not only the item ids it was queued for.** The write-back matched items by id, so a timeline laid out after create (new item ids), clips an agent placed, or a clip dragged from the footage bin while the encode ran never got the proxy. Opening a project also adopts an already-fresh proxy for any video item with no `proxySrc`, and attaches such an item to an encode already queued for it, which heals a save that raced the write-back. Neither path schedules a new encode for a project that never had proxies; that stays with `POST /api/projects/{id}/proxies`. (`serve/routes/projects.py`)
