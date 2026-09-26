@@ -184,6 +184,11 @@ describe('fonts: with no base, the page is byte-identical to the pre-fall-throug
     if (!existsSync(join(HARNESS, 'node_modules'))) {
       symlinkSync(join(__dirname, '..', 'node_modules'), join(HARNESS, 'node_modules'))
     }
+    // bundle.js imports './file-url.js' (vendoredFontsHref delegates to it), so
+    // that sibling must resolve too. Harmless for a baseline that predates it.
+    if (!existsSync(join(HARNESS, 'file-url.js'))) {
+      symlinkSync(join(__dirname, '..', 'file-url.js'), join(HARNESS, 'file-url.js'))
+    }
     const { generateHtml: head } = await import(baseline)
     for (const [fonts, base] of CASES) {
       const [now] = capturingStderr(() => bundleHtml(1080, 1920, false, fonts, base))
