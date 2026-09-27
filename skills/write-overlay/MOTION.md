@@ -74,7 +74,7 @@ const anticipate = t => t < 0.3
 Used:
 
 ```jsx
-const raw = interpolate(frame, [0, 18], [0, 1])       // linear 0 → 1
+const raw = interpolate(frame, [0, Math.round(fps * 0.6)], [0, 1])       // linear 0 → 1
 const e   = easeOutQuint(raw)                          // now it has a shape
 const y   = interpolate(e, [0, 1], [120, 0])           // map the EASED value
 ```
@@ -84,7 +84,7 @@ const y   = interpolate(e, [0, 1], [120, 0])           // map the EASED value
 | Intent | Use |
 |---|---|
 | Anything entering frame | `easeOutCubic`, or `easeOutQuint` for more snap |
-| A hit that must feel violent | `easeOutExpo` over 6–10 frames |
+| A hit that must feel violent | `easeOutExpo` over ~0.2–0.33s (`Math.round(fps * 0.2)` to `Math.round(fps * 0.33)` frames) |
 | A move between two on-screen positions | `easeInOutCubic` |
 | Something leaving frame | `easeInCubic` — it should accelerate away |
 | A card/badge landing with personality | `easeOutBack` |
@@ -97,7 +97,7 @@ const y   = interpolate(e, [0, 1], [120, 0])           // map the EASED value
 
 ## Duration, in frames, at the project's fps
 
-Canvas projects now init at **60fps** (`project/init.py`). Read `fps` from the global; never hardcode 30 or you will author everything at half speed.
+Canvas projects now init at **60fps** (`project/init.py`). Read `fps` from the global; never hardcode 30 or you will author everything at half speed. The same goes for frame counts, not just the fps value itself: **never hardcode frame counts; projects can be 24, 30 or 60fps.** Every `interpolate(frame, [0, N], ...)` in this file derives `N` from `fps` (`Math.round(fps * <seconds>)`) for exactly this reason — a literal frame count copied from a 30fps example into a 60fps project runs at half the intended duration.
 
 *(Design rule.)* Entrances want to be fast. At 60fps:
 

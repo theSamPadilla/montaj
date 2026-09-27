@@ -45,7 +45,7 @@ If the prompt says "no overlays" — write nothing. Don't add an opening hook an
 - **Go large** — 96–160px is a starting point, not a ceiling. If it looks a little too big, it's probably right. Small text gets scrolled past.
 - **No backgrounds** — avoid dark cards, frosted panels, and semi-transparent boxes unless the prompt asks for them. A text shadow (`textShadow: '0 2px 16px rgba(0,0,0,0.9)'`) is enough to ensure legibility on any footage without boxing the text in.
 - **Covering the face is fine** — text is more important than an unobstructed view of the speaker. Don't shrink or reposition text just to avoid the face.
-- **Match the energy of the speech** — fast, punchy delivery gets tight entrance animations (4–6 frames). Slower, deliberate speech gets a smoother slide or fade (10–15 frames).
+- **Match the energy of the speech** — fast, punchy delivery gets tight entrance animations (about 0.13–0.2s: `Math.round(fps * 0.13)` to `Math.round(fps * 0.2)`). Slower, deliberate speech gets a smoother slide or fade (about 0.33–0.5s). Never hardcode frame counts; projects can be 24, 30 or 60fps.
 - **Use color sparingly** — one accent color maximum. White text with a colored word or icon reads better than multi-color text.
 - **Avoid the bottom ~350px** — that's where captions render and where platform UI lives (TikTok progress bar, Instagram controls). Keep `bottom` values above 350px, or use `top`-anchored placement instead.
 - **Avoid the right ~200px** — TikTok and Instagram stack action buttons (like, comment, share, follow) down the right edge. Don't push text or icons into that zone.

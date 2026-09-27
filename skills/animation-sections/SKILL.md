@@ -12,6 +12,8 @@ step: true
 
 **Then read `skills/write-overlay/MOTION.md`.** An animation project is 100% motion graphics — there is no footage to carry it, so the motion *is* the product. MOTION.md has the easing catalog (`interpolate` is strictly linear, which is why untutored sections look flat), velocity-driven directional motion blur, per-character stagger, and the measurement commands this skill's verification step refers to.
 
+**This is your showreel, not a safe draft.** Research the actual subject first — the site, the repos/docs the prompt points to, any brand materials in the project — and use real specifics (names, products, numbers, the actual look), not generic filler. Use the full range of what these skills support: bold typographic scale, the brand's real colours and marks, a genuinely different kind of motion per section (no two sections move the same way), deliberate transitions, no static frames. If a section looks merely fine, push it further before moving on to the next one.
+
 ---
 
 ## When to use animation sections
@@ -45,7 +47,7 @@ For animation projects (no footage), plan the full sequence: every second must b
 
 ### 1a. No dead air — the rule that matters most
 
-**Every section must keep something in continuous motion for its entire span.** Not "animate in, then hold." A section that eases in over 10 frames and then sits perfectly still for the remaining two seconds is the single biggest quality defect this pipeline produces, and it is worth more to fix than any amount of styling.
+**Every section must keep something in continuous motion for its entire span.** Not "animate in, then hold." A section that eases in over ~0.33s (`Math.round(fps * 0.33)` frames — never a hardcoded frame count; projects can be 24, 30 or 60fps) and then sits perfectly still for the remaining two seconds is the single biggest quality defect this pipeline produces, and it is worth more to fix than any amount of styling.
 
 Measured on a real Montaj promo, against a professionally-directed reference reel sampled at the same rate: 44.5% of the promo's frames were still, versus 15.0% — and its motion energy was 2.32 against 8.96, about a quarter. Nearly half the video was a still image, and the rest barely moved.
 

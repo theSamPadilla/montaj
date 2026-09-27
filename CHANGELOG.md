@@ -2,6 +2,26 @@
 
 ## Unreleased
 
+- **Overlay JSX examples no longer hardcode frame counts, which played
+  animations at half speed on a 60fps project.** New motion-graphics
+  projects default to 60fps, but `skills/write-overlay/SKILL.md`,
+  `skills/write-overlay/MOTION.md`, `skills/overlay/SKILL.md`, and
+  `skills/animation-sections/SKILL.md` taught durations as literal frame
+  counts (e.g. `interpolate(frame, [0, 10], ...)`) written against an
+  implicit 30fps — copied literally into a 60fps project, a "10 frame"
+  entrance ran in half its intended time. All of them now derive frame
+  counts from `fps` (`Math.round(fps * <seconds>)`) and state plainly:
+  never hardcode frame counts, projects can be 24, 30 or 60fps.
+
+- **The `animations` workflow now treats every piece as a showreel, not a
+  safe draft.** `workflows/animations.json` and
+  `skills/animation-sections/SKILL.md` now open with an explicit bar:
+  research the actual subject first (site, repos/docs, brand materials) and
+  use real specifics instead of generic filler; use the full range of what
+  the skills support (bold typographic scale, real brand colours/marks,
+  a different kind of motion per section, deliberate transitions, no
+  static frames); push a section further if it looks merely fine.
+
 - **Gemini's default model moved off `gemini-2.5-flash`, which now 404s for
   new API keys ("no longer available to new users").** `analyze_media` (and
   the `analyze-media` step's own `--model` default) now default to

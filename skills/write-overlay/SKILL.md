@@ -34,18 +34,20 @@ Custom overlay JSX runs in a sandboxed evaluator. All identifiers below are inje
 
 **No imports.** All `import` statements are stripped before evaluation. Do not import anything — use the globals above instead.
 
+**Never hardcode frame counts; projects can be 24, 30 or 60fps.** A literal like `[0, 10]` means a different real-world duration on every project — 10 frames is 0.33s at 30fps but 0.17s at 60fps, so an overlay copied between projects (or a 30fps example copied into a 60fps project, which is the current default) plays at the wrong speed. Always derive the frame count from `fps`: `Math.round(fps * 0.33)` for "about a third of a second," not `10`.
+
 ### Top-level vs component-body
 
 **All calls to `interpolate`, `spring`, and any read of `frame`, `fps`, `duration`, or `props` must be inside the component function body.** The module's top-level code runs before the render shim sets up these globals — calling them outside a function will throw `interpolate is not defined` and crash the entire render.
 
 ```jsx
 // WRONG — crashes at render time
-const opacity = interpolate(frame, [0, 10], [0, 1])
+const opacity = interpolate(frame, [0, Math.round(fps * 0.33)], [0, 1])
 export default function Hook() { ... }
 
 // CORRECT — inside the component, runs each frame
 export default function Hook() {
-  const opacity = interpolate(frame, [0, 10], [0, 1])
+  const opacity = interpolate(frame, [0, Math.round(fps * 0.33)], [0, 1])
   return <div style={{ opacity }}>...</div>
 }
 ```
@@ -77,8 +79,8 @@ The default aesthetic is **plain bold text directly on video** — no card, no b
 // overlays/hook.jsx — plain text on video, no background
 
 export default function Hook() {
-  const progress = interpolate(frame, [0, 8], [0, 1])
-  const slideY   = interpolate(frame, [0, 10], [40, 0])
+  const progress = interpolate(frame, [0, Math.round(fps * 0.27)], [0, 1])
+  const slideY   = interpolate(frame, [0, Math.round(fps * 0.33)], [40, 0])
 
   return (
     <div style={{
@@ -127,8 +129,8 @@ A control appears for each of those that is present (non-null) on `props`; anyth
 ```jsx
 // Editable Hook — every text property is adjustable in the panel.
 export default function Hook() {
-  const progress = interpolate(frame, [0, 8], [0, 1])
-  const slideY   = interpolate(frame, [0, 10], [40, 0])
+  const progress = interpolate(frame, [0, Math.round(fps * 0.27)], [0, 1])
+  const slideY   = interpolate(frame, [0, Math.round(fps * 0.33)], [40, 0])
 
   return (
     <div style={{ position: 'absolute', bottom: 180, left: 48, right: 48, opacity: progress, transform: `translateY(${slideY}px)` }}>
@@ -218,7 +220,7 @@ The most reliable way to use frosted-glass / blurred card backgrounds is to **pu
 ```jsx
 // overlays/card-bg.jsx
 // Just a frosted card that fades in. No children that animate opacity.
-const opacity = interpolate(frame, [0, 8], [0, 1])
+const opacity = interpolate(frame, [0, Math.round(fps * 0.27)], [0, 1])
 
 export default function CardBg() {
   return (
@@ -273,16 +275,18 @@ background: 'rgba(10,10,10,0.88)'  // solid dark — visually similar, no GPU la
 Maps a frame number to any output value. Clamps at both ends by default.
 
 ```jsx
-// Fade in over frames 0–15
-const opacity = interpolate(frame, [0, 15], [0, 1])
+// Fade in over the first ~0.5s
+const holdIn = Math.round(fps * 0.5)
+const opacity = interpolate(frame, [0, holdIn], [0, 1])
 
-// Fade in then out
-const fadeIn  = interpolate(frame, [0, 15], [0, 1])
-const fadeOut = interpolate(frame, [duration - 15, duration], [1, 0])
+// Fade in then out, each over ~0.5s
+const holdOut = Math.round(fps * 0.5)
+const fadeIn  = interpolate(frame, [0, holdIn], [0, 1])
+const fadeOut = interpolate(frame, [duration - holdOut, duration], [1, 0])
 const opacity = Math.min(fadeIn, fadeOut)
 
-// Slide in from left
-const x = interpolate(frame, [0, 20], [-200, 0])
+// Slide in from left over ~0.67s
+const x = interpolate(frame, [0, Math.round(fps * 0.67)], [-200, 0])
 ```
 
 One option: `extrapolate` — `'clamp'` (default) or `'extend'`. That is the whole options object; the runtime destructures `{ extrapolate = 'clamp' }` and ignores everything else. Earlier versions of this file used `extrapolateRight`, which does not exist and was silently dropped — harmless only because the default was already `'clamp'`.
@@ -599,7 +603,7 @@ Assets (logos, images) are declared in `project.assets`. Reference them by passi
 
 ```jsx
 // overlays/logo.jsx
-const opacity = interpolate(frame, [0, 6], [0, 1])
+const opacity = interpolate(frame, [0, Math.round(fps * 0.2)], [0, 1])
 
 export default function Logo() {
   return (
